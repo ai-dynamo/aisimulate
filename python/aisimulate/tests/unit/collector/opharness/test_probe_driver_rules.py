@@ -36,6 +36,9 @@ def pd(tmp_path_factory):
     # templated C++ kernels: the qualified name, not the template args
     ("void flash::FlashAttnFwdSm90<int, 128, true>(flash::Params)", "flash::FlashAttnFwdSm90"),
     ("void deep_gemm::sm90_fp8_mqa_logits<64u, 128u, false>(int)", "deep_gemm::sm90_fp8_mqa_logits"),
+    # anonymous-namespace kernels: the kernel, not the namespace words (Kimi-K3 KDA decode)
+    ("void (anonymous namespace)::kda_decode_fusion_many_heads_kernel<true, true, 96, 96>(int)",
+     "kda_decode_fusion_many_heads_kernel"),
 ])
 def test_normalize_kernel(pd, raw, expected):
     assert pd.normalize_kernel(raw) == expected

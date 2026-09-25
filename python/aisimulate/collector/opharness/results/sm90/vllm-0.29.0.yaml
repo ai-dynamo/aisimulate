@@ -4,9 +4,9 @@ _meta:
   version: 0.29.0
   verdicts: pass = plain `cli generate` output boots+runs; pass+custom = boots with facts-derived extra generate args; fail = root-caused (see results/findings.yaml)
   summary:
-    pass: 97
+    pass: 99
     pass+custom: 9
-    fail: 18
+    fail: 16
 results:
   MiniMaxAI/MiniMax-M2:
     verdict: pass
@@ -371,9 +371,11 @@ results:
     kv_allocated: auto
     topology: tp1
   moonshotai/Kimi-K3:
-    verdict: fail
-    cause: framework gap
-    error: For debugging consider passing CUDA_LAUNCH_BLOCKING=1
+    verdict: pass
+    attention: KimiK3DeltaAttention + kda_decode_fusion_many_heads_kernel
+    moe: Mxfp4MoE->marlin
+    kv_allocated: auto
+    topology: tp1
   nvidia/DeepSeek-V3.1-NVFP4:
     verdict: pass
     attention: flash::flash_fwd_splitkv_mla_kernel
@@ -462,9 +464,11 @@ results:
     kv_allocated: auto
     topology: tp1
   nvidia/Kimi-K3-NVFP4:
-    verdict: fail
-    cause: generator rejects
-    error: 'golden render failed: aiconfigurator generate: error: argument --model-path/--model: ''nvidia/Kimi-K3-NVFP4'' is not a valid HuggingFace model path or local path '
+    verdict: pass
+    attention: KimiK3DeltaAttention + kda_decode_fusion_many_heads_kernel
+    moe: ModelOptNvFp4FusedMoE->marlin
+    kv_allocated: auto
+    topology: tp1
   nvidia/Llama-3.1-70B-Instruct-FP8:
     verdict: pass
     attention: flash::FlashAttnFwdSm90

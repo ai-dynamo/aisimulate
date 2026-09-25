@@ -217,3 +217,9 @@ rules:
   # trtllm GDN prefill/conv layout glue around the cute-DSL delta-rule kernels
   - {backend: trtllm_internal, role: linear_attention,
      match: "^_extract_transpose_prefill_kernel|^_fused_conv_output_transpose_kernel"}
+  # Kimi-K3 framework-mode (CUDA graph) record: fused MLA KV-cache concat/insert
+  # kernels and the KDA index writer are kv-cache / infra glue, not identity
+  - {backend: framework_native, role: kvcache,
+     match: "kimi_k3_fused_ops::fusedKimiK3MLA"}
+  - {backend: framework_native, role: infra,
+     match: "^write_indices$"}

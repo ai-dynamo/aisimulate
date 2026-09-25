@@ -190,12 +190,12 @@ results:
     topology: tp1
   Qwen/Qwen3.8-2.4T-A95B:
     verdict: fail
-    cause: generator rejects
-    error: 'golden render failed: main.py generate: error: argument --model-path/--model: ''Qwen/Qwen3.8-2.4T-A95B'' is not a valid HuggingFace model path or local path with '
+    cause: framework gap
+    error: 'ValueError: Qwen3_5MoeForCausalLM has no SGlang implementation and the Transformers implementation is not compatible with SGLang.'
   Qwen/Qwen3.8-2.4T-A95B-FP8:
     verdict: fail
-    cause: generator rejects
-    error: 'golden render failed: main.py generate: error: argument --model-path/--model: ''Qwen/Qwen3.8-2.4T-A95B-FP8'' is not a valid HuggingFace model path or local path w'
+    cause: framework gap
+    error: 'ValueError: Qwen3_5MoeForCausalLM has no SGlang implementation and the Transformers implementation is not compatible with SGLang.'
   Qwen/Qwen3.8-27B:
     verdict: pass
     attention: HybridLinearAttnBackend
@@ -451,8 +451,9 @@ results:
     topology: tp1
   nvidia/Kimi-K3-NVFP4:
     verdict: fail
-    cause: generator rejects
-    error: 'golden render failed: aiconfigurator generate: error: argument --model-path/--model: ''nvidia/Kimi-K3-NVFP4'' is not a valid HuggingFace model path or local path '
+    cause: arch not registered
+    error: 'ValueError: Cannot find model module. ''KimiK3ForConditionalGeneration'' is not a registered model in the Transformers library and loading the custom model from auto_map failed. The remote model
+      code ma'
   nvidia/Llama-3.1-70B-Instruct-FP8:
     verdict: pass
     attention: FlashAttentionBackend

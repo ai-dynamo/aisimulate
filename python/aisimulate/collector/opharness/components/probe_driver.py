@@ -501,7 +501,9 @@ KERNEL_DENY = re.compile(
 # wrapper identifiers to skip when extracting a meaningful kernel name
 NAME_WRAPPERS = {"void", "cutlass::device_kernel", "flash::enable_sm90_or_later",
                  "cute", "std", "c10", "at", "at::native", "int", "bool", "float",
-                 "unsigned", "long", "char"}
+                 "unsigned", "long", "char",
+                 # "(anonymous namespace)::kernel<...>" — the namespace words are not the kernel
+                 "anonymous", "namespace"}
 FRAME_DENY = re.compile(r"_inductor/runtime|pybind11_detail|<built-in method")
 FW_FRAME = re.compile(r"(sglang|vllm|tensorrt_llm|cutlass|flashinfer|deep_gemm|sgl_kernel|flash)")
 
@@ -866,13 +868,18 @@ def build_matrix(targets: dict) -> None:
         plan file carries all three backends) and the RENDERED config only —
         kv-dtype variant runs are path_diff evidence, not the deployed
         identity of the model x backend cell. Ids dedup across plan files."""
-        seen: set = set()
+        # a RENDERED run wins over a 'skip' of the same id from an older plan
+        # file (a checkpoint the generator rejected before it was bundled keeps
+        # its stale skip in the old plan; the re-emitted plan renders it)
+        by_id: dict = {}
         for pf in pfs:
             for r in json.loads((ROOT / "archive" / pf).read_text()):
                 if (isinstance(r, dict) and r.get("backend") == be and r.get("version") == pins[be]
-                        and not r.get("kv_dtype") and r.get("id") not in seen):
-                    seen.add(r.get("id"))
-                    yield r
+                        and not r.get("kv_dtype") and r.get("id")):
+                    cur = by_id.get(r["id"])
+                    if cur is None or ("skip" in cur and "skip" not in r):
+                        by_id[r["id"]] = r
+        yield from by_id.values()
     for be, pfs in plans.items():
         for run in _matrix_runs(be, pfs):
             repo = run.get("repo")

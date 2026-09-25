@@ -3,11 +3,48 @@ _meta:
   framework: sglang
   version: 0.5.16
   taxonomy: kernel_taxonomy_sm90.yaml
-  generated: '2026-09-25T11:50:12'
+  generated: '2026-09-25T12:23:34'
   summary:
     repos: 99
-    repos_with_residue: 0
-    residue_kernels: []
+    repos_with_residue: 99
+    residue_kernels:
+    - CatArrayBatchedCopy
+    - CatArrayBatchedCopy_alignedK_contig
+    - CatArrayBatchedCopy_vectorized
+    - act_kernel
+    - clamp_position_kernel
+    - concat_mla_absorb_q_kernel
+    - concat_mla_k_kernel
+    - deepseek_rope_kernel
+    - distribution_elementwise_grid_stride_kernel
+    - elementwise_kernel_with_index
+    - fast_hadamard_transform_kernel
+    - flash_c128_prefill
+    - flash_c4_decode
+    - flash_c4_prefill
+    - fused_gemma_qknorm_rope_kernel
+    - fused_k_indexer_norm_rope_store
+    - fused_k_norm_rope_flashmla
+    - fused_norm_rope_flashmla
+    - fused_norm_rope_indexer
+    - fused_q_indexer_rope_hadamard_quant
+    - fused_q_norm_rope
+    - fused_qknorm_warp
+    - fused_rope_kernel
+    - fused_rope_store_kernel
+    - fused_store_indexer_cache
+    - indexSelectSmallIndex
+    - multi_tensor_apply_kernel
+    - per_tensor_quant_fp8_kernel
+    - silu_mul_clamp_kernel
+    - smxx_paged_mqa_logits_metadata
+    - store_kv_index_kernel
+    - store_kvcache
+    - topk_plan
+    - topk_small_batch_kernel
+    - topk_transform_kernel
+    - topk_transform_prefill_kernel
+    - write_c4_prefill
 results:
   MiniMaxAI/MiniMax-M2:
     record: cdf57487d5b5
@@ -17,6 +54,7 @@ results:
     families:
       activation:
         framework_native:
+        - act_and_mul_kernel
         - triton_per_fused_copy__mul_sum_0
       attention:
         fa3:
@@ -37,7 +75,6 @@ results:
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
         - cuLaunchKernelEx
         - cudaEventRecordWithFlags
-        - namespace
         - void at::native::vectorized_gather_kernel<16, long>
       kvcache:
         framework_native:
@@ -58,15 +95,23 @@ results:
         - kernel_cutlass_kernel_flashinfernormkernelsrmsnormRMSNormKernel
         - rmsnorm_apply_kernel_serial
         - rmsnorm_sumsq_kernel_serial
+      quant:
+        sgl_kernel:
+        - per_token_group_quant_8bit_v2_kernel
       routing:
         framework_native:
         - _router_triton_kernel
-    residue: []
+    residue:
+    - clamp_position_kernel
+    - fused_rope_kernel
+    - indexSelectSmallIndex
+    - multi_tensor_apply_kernel
+    - store_kvcache
     ops_observed:
     - attn:FlashAttentionBackend.forward_extend
     coverage:
-      labeled: 27
-      residue: 0
+      labeled: 28
+      residue: 5
   MiniMaxAI/MiniMax-M2.5:
     record: a2e263f2cfea
     variant: rep
@@ -75,6 +120,7 @@ results:
     families:
       activation:
         framework_native:
+        - act_and_mul_kernel
         - triton_per_fused_copy__mul_sum_0
       attention:
         fa3:
@@ -95,7 +141,6 @@ results:
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
         - cuLaunchKernelEx
         - cudaEventRecordWithFlags
-        - namespace
         - void at::native::vectorized_gather_kernel<16, long>
       kvcache:
         framework_native:
@@ -116,15 +161,23 @@ results:
         - kernel_cutlass_kernel_flashinfernormkernelsrmsnormRMSNormKernel
         - rmsnorm_apply_kernel_serial
         - rmsnorm_sumsq_kernel_serial
+      quant:
+        sgl_kernel:
+        - per_token_group_quant_8bit_v2_kernel
       routing:
         framework_native:
         - _router_triton_kernel
-    residue: []
+    residue:
+    - clamp_position_kernel
+    - fused_rope_kernel
+    - indexSelectSmallIndex
+    - multi_tensor_apply_kernel
+    - store_kvcache
     ops_observed:
     - attn:FlashAttentionBackend.forward_extend
     coverage:
-      labeled: 27
-      residue: 0
+      labeled: 28
+      residue: 5
   MiniMaxAI/MiniMax-M2.7:
     record: 6fd25be1216a
     variant: rep
@@ -133,6 +186,7 @@ results:
     families:
       activation:
         framework_native:
+        - act_and_mul_kernel
         - triton_per_fused_copy__mul_sum_0
       attention:
         fa3:
@@ -153,7 +207,6 @@ results:
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
         - cuLaunchKernelEx
         - cudaEventRecordWithFlags
-        - namespace
         - void at::native::vectorized_gather_kernel<16, long>
       kvcache:
         framework_native:
@@ -174,15 +227,23 @@ results:
         - kernel_cutlass_kernel_flashinfernormkernelsrmsnormRMSNormKernel
         - rmsnorm_apply_kernel_serial
         - rmsnorm_sumsq_kernel_serial
+      quant:
+        sgl_kernel:
+        - per_token_group_quant_8bit_v2_kernel
       routing:
         framework_native:
         - _router_triton_kernel
-    residue: []
+    residue:
+    - clamp_position_kernel
+    - fused_rope_kernel
+    - indexSelectSmallIndex
+    - multi_tensor_apply_kernel
+    - store_kvcache
     ops_observed:
     - attn:FlashAttentionBackend.forward_extend
     coverage:
-      labeled: 27
-      residue: 0
+      labeled: 28
+      residue: 5
     kv_variants:
       fp8_e4m3:
         record: 0fbe19e54cae
@@ -229,7 +290,6 @@ results:
         - at_cuda_detail::cub::detail::scan::DeviceScanInitKernel
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
         - cudaEventRecordWithFlags
-        - namespace
         - sglang.vlm.language_model_prefill
         - void at::native::vectorized_gather_kernel<16, long>
       kvcache:
@@ -256,18 +316,27 @@ results:
       routing:
         framework_native:
         - _router_triton_kernel
-    residue: []
+    residue:
+    - CatArrayBatchedCopy_alignedK_contig
+    - clamp_position_kernel
+    - elementwise_kernel_with_index
+    - fused_gemma_qknorm_rope_kernel
+    - indexSelectSmallIndex
+    - multi_tensor_apply_kernel
+    - store_kv_index_kernel
     ops_observed:
     - attn:MiniMaxHybridAttnBackend.forward
     coverage:
-      labeled: 42
-      residue: 0
+      labeled: 41
+      residue: 7
     kv_variants:
       fp8_e4m3:
         record: a0ec7fb0a0d9
         added_kernels:
         - cudaStreamIsCapturing
-        added_residue: []
+        - store_kvcache
+        added_residue:
+        - store_kvcache
   Qwen/Qwen1.5-MoE-A2.7B:
     record: 7e4945b1b152
     variant: rep
@@ -277,6 +346,7 @@ results:
       activation:
         framework_native:
         - _fused_gate_sigmoid_mul_add_kernel
+        - act_and_mul_kernel
         - triton_poi_fused_copy__mul_sum_0
       attention:
         fa3:
@@ -304,7 +374,6 @@ results:
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
         - cuLaunchKernelEx
         - cudaEventRecordWithFlags
-        - namespace
         - void at::native::vectorized_gather_kernel<16, long>
       kvcache:
         framework_native:
@@ -327,12 +396,17 @@ results:
       routing:
         framework_native:
         - _router_triton_kernel
-    residue: []
+    residue:
+    - clamp_position_kernel
+    - fused_rope_kernel
+    - indexSelectSmallIndex
+    - multi_tensor_apply_kernel
+    - store_kvcache
     ops_observed:
     - attn:FlashAttentionBackend.forward_extend
     coverage:
       labeled: 34
-      residue: 0
+      residue: 5
     kv_variants:
       fp8_e4m3:
         record: 10457b79f69e
@@ -345,6 +419,9 @@ results:
     kv: auto
     probe_eager: false
     families:
+      activation:
+        framework_native:
+        - act_and_mul_kernel
       attention:
         fa3:
         - flash::FlashAttnFwdCombine
@@ -367,7 +444,6 @@ results:
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
         - cuLaunchKernelEx
         - cudaEventRecordWithFlags
-        - namespace
         - void at::native::vectorized_gather_kernel<16, long>
       kvcache:
         framework_native:
@@ -378,12 +454,18 @@ results:
         framework_native:
         - kernel_cutlass_kernel_flashinfernormkernelsfused_add_rmsnormFusedAddRMSNormKerne
         - kernel_cutlass_kernel_flashinfernormkernelsrmsnormRMSNormKernel
-    residue: []
+    residue:
+    - clamp_position_kernel
+    - fused_qknorm_warp
+    - fused_rope_kernel
+    - indexSelectSmallIndex
+    - multi_tensor_apply_kernel
+    - store_kvcache
     ops_observed:
     - attn:FlashAttentionBackend.forward_extend
     coverage:
       labeled: 23
-      residue: 0
+      residue: 6
     kv_variants:
       fp8_e4m3:
         record: 7493dccfa6a6
@@ -396,6 +478,9 @@ results:
     kv: auto
     probe_eager: false
     families:
+      activation:
+        framework_native:
+        - act_and_mul_kernel
       attention:
         fa3:
         - flash::FlashAttnFwdCombine
@@ -419,7 +504,6 @@ results:
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
         - cuLaunchKernelEx
         - cudaEventRecordWithFlags
-        - namespace
         - void at::native::vectorized_gather_kernel<16, long>
       kvcache:
         framework_native:
@@ -430,12 +514,18 @@ results:
         framework_native:
         - kernel_cutlass_kernel_flashinfernormkernelsfused_add_rmsnormFusedAddRMSNormKerne
         - kernel_cutlass_kernel_flashinfernormkernelsrmsnormRMSNormKernel
-    residue: []
+    residue:
+    - clamp_position_kernel
+    - fused_qknorm_warp
+    - fused_rope_kernel
+    - indexSelectSmallIndex
+    - multi_tensor_apply_kernel
+    - store_kvcache
     ops_observed:
     - attn:FlashAttentionBackend.forward_extend
     coverage:
       labeled: 24
-      residue: 0
+      residue: 6
     kv_variants:
       fp8_e4m3:
         record: eae9ca18eb4a
@@ -450,6 +540,7 @@ results:
     families:
       activation:
         framework_native:
+        - act_and_mul_kernel
         - triton_per_fused_copy__mul_sum_0
       attention:
         fa3:
@@ -472,7 +563,6 @@ results:
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
         - cuLaunchKernelEx
         - cudaEventRecordWithFlags
-        - namespace
         - void at::native::vectorized_gather_kernel<16, long>
       kvcache:
         framework_native:
@@ -494,18 +584,27 @@ results:
       routing:
         framework_native:
         - _router_triton_kernel
-    residue: []
+    residue:
+    - clamp_position_kernel
+    - fused_qknorm_warp
+    - fused_rope_store_kernel
+    - indexSelectSmallIndex
+    - multi_tensor_apply_kernel
     ops_observed:
     - attn:FlashAttentionBackend.forward_extend
     coverage:
       labeled: 28
-      residue: 0
+      residue: 5
     kv_variants:
       fp8_e4m3:
         record: 004471e4f4d9
         added_kernels:
         - cudaStreamIsCapturing
-        added_residue: []
+        - fused_rope_kernel
+        - store_kvcache
+        added_residue:
+        - fused_rope_kernel
+        - store_kvcache
   Qwen/Qwen3-235B-A22B-FP8:
     record: 192ef02e98fa
     variant: rep
@@ -514,6 +613,7 @@ results:
     families:
       activation:
         framework_native:
+        - act_and_mul_kernel
         - triton_per_fused_copy__mul_sum_0
       attention:
         fa3:
@@ -535,7 +635,6 @@ results:
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
         - cuLaunchKernelEx
         - cudaEventRecordWithFlags
-        - namespace
         - void at::native::vectorized_gather_kernel<16, long>
       kvcache:
         framework_native:
@@ -554,21 +653,33 @@ results:
         framework_native:
         - kernel_cutlass_kernel_flashinfernormkernelsfused_add_rmsnormFusedAddRMSNormKerne
         - kernel_cutlass_kernel_flashinfernormkernelsrmsnormRMSNormKernel
+      quant:
+        sgl_kernel:
+        - per_token_group_quant_8bit_v2_kernel
       routing:
         framework_native:
         - _router_triton_kernel
-    residue: []
+    residue:
+    - clamp_position_kernel
+    - fused_qknorm_warp
+    - fused_rope_store_kernel
+    - indexSelectSmallIndex
+    - multi_tensor_apply_kernel
     ops_observed:
     - attn:FlashAttentionBackend.forward_extend
     coverage:
-      labeled: 26
-      residue: 0
+      labeled: 27
+      residue: 5
     kv_variants:
       fp8_e4m3:
         record: b701c5184fbc
         added_kernels:
         - cudaStreamIsCapturing
-        added_residue: []
+        - fused_rope_kernel
+        - store_kvcache
+        added_residue:
+        - fused_rope_kernel
+        - store_kvcache
   Qwen/Qwen3-235B-A22B-Instruct-2507:
     record: 742bae1ea052
     variant: rep
@@ -577,6 +688,7 @@ results:
     families:
       activation:
         framework_native:
+        - act_and_mul_kernel
         - triton_per_fused_copy__mul_sum_0
       attention:
         fa3:
@@ -599,7 +711,6 @@ results:
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
         - cuLaunchKernelEx
         - cudaEventRecordWithFlags
-        - namespace
         - void at::native::vectorized_gather_kernel<16, long>
       kvcache:
         framework_native:
@@ -621,18 +732,27 @@ results:
       routing:
         framework_native:
         - _router_triton_kernel
-    residue: []
+    residue:
+    - clamp_position_kernel
+    - fused_qknorm_warp
+    - fused_rope_store_kernel
+    - indexSelectSmallIndex
+    - multi_tensor_apply_kernel
     ops_observed:
     - attn:FlashAttentionBackend.forward_extend
     coverage:
       labeled: 28
-      residue: 0
+      residue: 5
     kv_variants:
       fp8_e4m3:
         record: 07b97d1a03d9
         added_kernels:
         - cudaStreamIsCapturing
-        added_residue: []
+        - fused_rope_kernel
+        - store_kvcache
+        added_residue:
+        - fused_rope_kernel
+        - store_kvcache
   Qwen/Qwen3-30B-A3B:
     record: 5610dc2c3761
     variant: rep
@@ -641,6 +761,7 @@ results:
     families:
       activation:
         framework_native:
+        - act_and_mul_kernel
         - triton_per_fused_copy__mul_sum_0
       attention:
         fa3:
@@ -664,7 +785,6 @@ results:
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
         - cuLaunchKernelEx
         - cudaEventRecordWithFlags
-        - namespace
         - void at::native::vectorized_gather_kernel<16, long>
       kvcache:
         framework_native:
@@ -686,18 +806,27 @@ results:
       routing:
         framework_native:
         - _router_triton_kernel
-    residue: []
+    residue:
+    - clamp_position_kernel
+    - fused_qknorm_warp
+    - fused_rope_store_kernel
+    - indexSelectSmallIndex
+    - multi_tensor_apply_kernel
     ops_observed:
     - attn:FlashAttentionBackend.forward_extend
     coverage:
       labeled: 29
-      residue: 0
+      residue: 5
     kv_variants:
       fp8_e4m3:
         record: 4a098e5ab285
         added_kernels:
         - cudaStreamIsCapturing
-        added_residue: []
+        - fused_rope_kernel
+        - store_kvcache
+        added_residue:
+        - fused_rope_kernel
+        - store_kvcache
   Qwen/Qwen3-30B-A3B-FP8:
     record: e8fd92622db2
     variant: rep
@@ -706,6 +835,7 @@ results:
     families:
       activation:
         framework_native:
+        - act_and_mul_kernel
         - triton_per_fused_copy__mul_sum_0
       attention:
         fa3:
@@ -726,7 +856,6 @@ results:
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
         - cuLaunchKernelEx
         - cudaEventRecordWithFlags
-        - namespace
         - void at::native::vectorized_gather_kernel<16, long>
       kvcache:
         framework_native:
@@ -745,27 +874,42 @@ results:
         framework_native:
         - kernel_cutlass_kernel_flashinfernormkernelsfused_add_rmsnormFusedAddRMSNormKerne
         - kernel_cutlass_kernel_flashinfernormkernelsrmsnormRMSNormKernel
+      quant:
+        sgl_kernel:
+        - per_token_group_quant_8bit_v2_kernel
       routing:
         framework_native:
         - _router_triton_kernel
-    residue: []
+    residue:
+    - clamp_position_kernel
+    - fused_qknorm_warp
+    - fused_rope_store_kernel
+    - indexSelectSmallIndex
+    - multi_tensor_apply_kernel
     ops_observed:
     - attn:FlashAttentionBackend.forward_extend
     coverage:
-      labeled: 25
-      residue: 0
+      labeled: 26
+      residue: 5
     kv_variants:
       fp8_e4m3:
         record: 64e863669816
         added_kernels:
         - cudaStreamIsCapturing
-        added_residue: []
+        - fused_rope_kernel
+        - store_kvcache
+        added_residue:
+        - fused_rope_kernel
+        - store_kvcache
   Qwen/Qwen3-32B:
     record: 444c714ab14c
     variant: rep
     kv: auto
     probe_eager: false
     families:
+      activation:
+        framework_native:
+        - act_and_mul_kernel
       attention:
         fa3:
         - flash::FlashAttnFwdCombine
@@ -788,7 +932,6 @@ results:
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
         - cuLaunchKernelEx
         - cudaEventRecordWithFlags
-        - namespace
         - void at::native::vectorized_gather_kernel<16, long>
       kvcache:
         framework_native:
@@ -799,12 +942,18 @@ results:
         framework_native:
         - kernel_cutlass_kernel_flashinfernormkernelsfused_add_rmsnormFusedAddRMSNormKerne
         - kernel_cutlass_kernel_flashinfernormkernelsrmsnormRMSNormKernel
-    residue: []
+    residue:
+    - clamp_position_kernel
+    - fused_qknorm_warp
+    - fused_rope_kernel
+    - indexSelectSmallIndex
+    - multi_tensor_apply_kernel
+    - store_kvcache
     ops_observed:
     - attn:FlashAttentionBackend.forward_extend
     coverage:
       labeled: 23
-      residue: 0
+      residue: 6
     kv_variants:
       fp8_e4m3:
         record: dbf05e6cdaca
@@ -817,6 +966,9 @@ results:
     kv: auto
     probe_eager: false
     families:
+      activation:
+        framework_native:
+        - act_and_mul_kernel
       attention:
         fa3:
         - flash::FlashAttnFwdCombine
@@ -834,7 +986,6 @@ results:
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
         - cuLaunchKernelEx
         - cudaEventRecordWithFlags
-        - namespace
         - void at::native::vectorized_gather_kernel<16, long>
       kvcache:
         framework_native:
@@ -845,12 +996,21 @@ results:
         framework_native:
         - kernel_cutlass_kernel_flashinfernormkernelsfused_add_rmsnormFusedAddRMSNormKerne
         - kernel_cutlass_kernel_flashinfernormkernelsrmsnormRMSNormKernel
-    residue: []
+      quant:
+        sgl_kernel:
+        - per_token_group_quant_8bit_v2_kernel
+    residue:
+    - clamp_position_kernel
+    - fused_qknorm_warp
+    - fused_rope_kernel
+    - indexSelectSmallIndex
+    - multi_tensor_apply_kernel
+    - store_kvcache
     ops_observed:
     - attn:FlashAttentionBackend.forward_extend
     coverage:
-      labeled: 17
-      residue: 0
+      labeled: 18
+      residue: 6
     kv_variants:
       fp8_e4m3:
         record: 0adacc80c62a
@@ -863,6 +1023,9 @@ results:
     kv: auto
     probe_eager: false
     families:
+      activation:
+        framework_native:
+        - act_and_mul_kernel
       attention:
         fa3:
         - flash::FlashAttnFwdCombine
@@ -880,7 +1043,6 @@ results:
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
         - cuLaunchKernelEx
         - cudaEventRecordWithFlags
-        - namespace
         - void at::native::vectorized_gather_kernel<16, long>
       kvcache:
         framework_native:
@@ -894,12 +1056,18 @@ results:
       quant:
         sgl_kernel:
         - _static_quant_fp8
-    residue: []
+    residue:
+    - clamp_position_kernel
+    - fused_qknorm_warp
+    - fused_rope_kernel
+    - indexSelectSmallIndex
+    - multi_tensor_apply_kernel
+    - store_kvcache
     ops_observed:
     - attn:FlashAttentionBackend.forward_extend
     coverage:
       labeled: 18
-      residue: 0
+      residue: 6
     kv_variants:
       fp8_e4m3:
         record: 72cf612bf59d
@@ -912,6 +1080,9 @@ results:
     kv: auto
     probe_eager: false
     families:
+      activation:
+        framework_native:
+        - act_and_mul_kernel
       attention:
         fa3:
         - flash::FlashAttnFwdCombine
@@ -933,7 +1104,6 @@ results:
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
         - cuLaunchKernelEx
         - cudaEventRecordWithFlags
-        - namespace
         - void at::native::vectorized_gather_kernel<16, long>
       kvcache:
         framework_native:
@@ -944,12 +1114,18 @@ results:
         framework_native:
         - kernel_cutlass_kernel_flashinfernormkernelsfused_add_rmsnormFusedAddRMSNormKerne
         - kernel_cutlass_kernel_flashinfernormkernelsrmsnormRMSNormKernel
-    residue: []
+    residue:
+    - clamp_position_kernel
+    - fused_qknorm_warp
+    - fused_rope_kernel
+    - indexSelectSmallIndex
+    - multi_tensor_apply_kernel
+    - store_kvcache
     ops_observed:
     - attn:FlashAttentionBackend.forward_extend
     coverage:
       labeled: 22
-      residue: 0
+      residue: 6
     kv_variants:
       fp8_e4m3:
         record: d3e206569674
@@ -964,6 +1140,7 @@ results:
     families:
       activation:
         framework_native:
+        - act_and_mul_kernel
         - triton_per_fused_copy__mul_sum_0
       attention:
         fa3:
@@ -986,7 +1163,6 @@ results:
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
         - cuLaunchKernelEx
         - cudaEventRecordWithFlags
-        - namespace
         - void at::native::vectorized_gather_kernel<16, long>
       kvcache:
         framework_native:
@@ -1008,18 +1184,27 @@ results:
       routing:
         framework_native:
         - _router_triton_kernel
-    residue: []
+    residue:
+    - clamp_position_kernel
+    - fused_qknorm_warp
+    - fused_rope_store_kernel
+    - indexSelectSmallIndex
+    - multi_tensor_apply_kernel
     ops_observed:
     - attn:FlashAttentionBackend.forward_extend
     coverage:
       labeled: 28
-      residue: 0
+      residue: 5
     kv_variants:
       fp8_e4m3:
         record: 44cfa00d0684
         added_kernels:
         - cudaStreamIsCapturing
-        added_residue: []
+        - fused_rope_kernel
+        - store_kvcache
+        added_residue:
+        - fused_rope_kernel
+        - store_kvcache
   Qwen/Qwen3-VL-235B-A22B-Instruct:
     record: 67fd3a14e028
     variant: rep
@@ -1028,6 +1213,7 @@ results:
     families:
       activation:
         framework_native:
+        - act_and_mul_kernel
         - triton_per_fused_copy__mul_sum_0
       attention:
         fa3:
@@ -1050,7 +1236,6 @@ results:
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
         - cudaEventRecordWithFlags
         - cudaStreamIsCapturing
-        - namespace
         - sglang.vlm.language_model_prefill
         - void at::native::vectorized_gather_kernel<16, long>
       kvcache:
@@ -1074,19 +1259,26 @@ results:
       routing:
         framework_native:
         - _router_triton_kernel
-    residue: []
+    residue:
+    - clamp_position_kernel
+    - fused_qknorm_warp
+    - indexSelectSmallIndex
+    - store_kvcache
     ops_observed:
     - attn:FlashAttentionBackend.forward_extend
     - moe:fused_experts_none_to_triton
     coverage:
       labeled: 30
-      residue: 0
+      residue: 4
   Qwen/Qwen3-VL-2B-Instruct:
     record: 2f8062b6aea0
     variant: rep
     kv: auto
     probe_eager: false
     families:
+      activation:
+        framework_native:
+        - act_and_mul_kernel
       attention:
         fa3:
         - flash::FlashAttnFwdCombine
@@ -1110,7 +1302,6 @@ results:
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
         - cudaEventRecordWithFlags
         - cudaStreamIsCapturing
-        - namespace
         - sglang.vlm.language_model_prefill
         - void at::native::vectorized_gather_kernel<16, long>
       kvcache:
@@ -1123,12 +1314,16 @@ results:
         - _triton_mrope_forward_fused
         - kernel_cutlass_kernel_flashinfernormkernelsfused_add_rmsnormFusedAddRMSNormKerne
         - kernel_cutlass_kernel_flashinfernormkernelsrmsnormRMSNormKernel
-    residue: []
+    residue:
+    - clamp_position_kernel
+    - fused_qknorm_warp
+    - indexSelectSmallIndex
+    - store_kvcache
     ops_observed:
     - attn:FlashAttentionBackend.forward_extend
     coverage:
       labeled: 26
-      residue: 0
+      residue: 4
   Qwen/Qwen3-VL-30B-A3B-Instruct:
     record: 4b8a2ce28e74
     variant: rep
@@ -1137,6 +1332,7 @@ results:
     families:
       activation:
         framework_native:
+        - act_and_mul_kernel
         - triton_per_fused_copy__mul_sum_0
       attention:
         fa3:
@@ -1160,7 +1356,6 @@ results:
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
         - cudaEventRecordWithFlags
         - cudaStreamIsCapturing
-        - namespace
         - sglang.vlm.language_model_prefill
         - void at::native::vectorized_gather_kernel<16, long>
       kvcache:
@@ -1184,19 +1379,26 @@ results:
       routing:
         framework_native:
         - _router_triton_kernel
-    residue: []
+    residue:
+    - clamp_position_kernel
+    - fused_qknorm_warp
+    - indexSelectSmallIndex
+    - store_kvcache
     ops_observed:
     - attn:FlashAttentionBackend.forward_extend
     - moe:fused_experts_none_to_triton
     coverage:
       labeled: 31
-      residue: 0
+      residue: 4
   Qwen/Qwen3-VL-32B-Instruct:
     record: 54998b80fd0f
     variant: rep
     kv: auto
     probe_eager: false
     families:
+      activation:
+        framework_native:
+        - act_and_mul_kernel
       attention:
         fa3:
         - flash::FlashAttnFwdCombine
@@ -1219,7 +1421,6 @@ results:
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
         - cudaEventRecordWithFlags
         - cudaStreamIsCapturing
-        - namespace
         - sglang.vlm.language_model_prefill
         - void at::native::vectorized_gather_kernel<16, long>
       kvcache:
@@ -1232,18 +1433,25 @@ results:
         - _triton_mrope_forward_fused
         - kernel_cutlass_kernel_flashinfernormkernelsfused_add_rmsnormFusedAddRMSNormKerne
         - kernel_cutlass_kernel_flashinfernormkernelsrmsnormRMSNormKernel
-    residue: []
+    residue:
+    - clamp_position_kernel
+    - fused_qknorm_warp
+    - indexSelectSmallIndex
+    - store_kvcache
     ops_observed:
     - attn:FlashAttentionBackend.forward_extend
     coverage:
       labeled: 25
-      residue: 0
+      residue: 4
   Qwen/Qwen3-VL-32B-Thinking:
     record: af6570f1e2fd
     variant: rep
     kv: auto
     probe_eager: false
     families:
+      activation:
+        framework_native:
+        - act_and_mul_kernel
       attention:
         fa3:
         - flash::FlashAttnFwdCombine
@@ -1266,7 +1474,6 @@ results:
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
         - cudaEventRecordWithFlags
         - cudaStreamIsCapturing
-        - namespace
         - sglang.vlm.language_model_prefill
         - void at::native::vectorized_gather_kernel<16, long>
       kvcache:
@@ -1279,18 +1486,25 @@ results:
         - _triton_mrope_forward_fused
         - kernel_cutlass_kernel_flashinfernormkernelsfused_add_rmsnormFusedAddRMSNormKerne
         - kernel_cutlass_kernel_flashinfernormkernelsrmsnormRMSNormKernel
-    residue: []
+    residue:
+    - clamp_position_kernel
+    - fused_qknorm_warp
+    - indexSelectSmallIndex
+    - store_kvcache
     ops_observed:
     - attn:FlashAttentionBackend.forward_extend
     coverage:
       labeled: 25
-      residue: 0
+      residue: 4
   Qwen/Qwen3-VL-4B-Instruct:
     record: 10f0bcaa254c
     variant: rep
     kv: auto
     probe_eager: false
     families:
+      activation:
+        framework_native:
+        - act_and_mul_kernel
       attention:
         fa3:
         - flash::FlashAttnFwdCombine
@@ -1313,7 +1527,6 @@ results:
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
         - cudaEventRecordWithFlags
         - cudaStreamIsCapturing
-        - namespace
         - sglang.vlm.language_model_prefill
         - void at::native::vectorized_gather_kernel<16, long>
       kvcache:
@@ -1326,18 +1539,25 @@ results:
         - _triton_mrope_forward_fused
         - kernel_cutlass_kernel_flashinfernormkernelsfused_add_rmsnormFusedAddRMSNormKerne
         - kernel_cutlass_kernel_flashinfernormkernelsrmsnormRMSNormKernel
-    residue: []
+    residue:
+    - clamp_position_kernel
+    - fused_qknorm_warp
+    - indexSelectSmallIndex
+    - store_kvcache
     ops_observed:
     - attn:FlashAttentionBackend.forward_extend
     coverage:
       labeled: 25
-      residue: 0
+      residue: 4
   Qwen/Qwen3-VL-8B-Instruct:
     record: 0e90d9ce6051
     variant: rep
     kv: auto
     probe_eager: false
     families:
+      activation:
+        framework_native:
+        - act_and_mul_kernel
       attention:
         fa3:
         - flash::FlashAttnFwdCombine
@@ -1359,7 +1579,6 @@ results:
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
         - cudaEventRecordWithFlags
         - cudaStreamIsCapturing
-        - namespace
         - sglang.vlm.language_model_prefill
         - void at::native::vectorized_gather_kernel<16, long>
       kvcache:
@@ -1372,12 +1591,16 @@ results:
         - _triton_mrope_forward_fused
         - kernel_cutlass_kernel_flashinfernormkernelsfused_add_rmsnormFusedAddRMSNormKerne
         - kernel_cutlass_kernel_flashinfernormkernelsrmsnormRMSNormKernel
-    residue: []
+    residue:
+    - clamp_position_kernel
+    - fused_qknorm_warp
+    - indexSelectSmallIndex
+    - store_kvcache
     ops_observed:
     - attn:FlashAttentionBackend.forward_extend
     coverage:
       labeled: 24
-      residue: 0
+      residue: 4
   Qwen/Qwen3.5-0.8B:
     record: 5aec08d64057
     variant: depth8
@@ -1387,6 +1610,7 @@ results:
       activation:
         framework_native:
         - _fused_sigmoid_mul_kernel
+        - act_and_mul_kernel
       attention:
         fa3:
         - flash::FlashAttnFwdCombine
@@ -1412,7 +1636,6 @@ results:
         - cuLaunchKernelEx
         - cudaEventRecordWithFlags
         - cudaStreamIsCapturing
-        - namespace
         - sglang.vlm.language_model_prefill
         - void at::native::vectorized_gather_kernel<16, long>
       kvcache:
@@ -1443,12 +1666,16 @@ results:
         - kernel_cutlass_kernel_flashinfernormkernelsfused_add_rmsnormFusedAddRMSNormKerne
         - kernel_cutlass_kernel_flashinfernormkernelsrmsnormRMSNormKernel
         - l2norm_fwd_kernel
-    residue: []
+    residue:
+    - CatArrayBatchedCopy_alignedK_contig
+    - clamp_position_kernel
+    - indexSelectSmallIndex
+    - store_kvcache
     ops_observed:
     - attn:HybridLinearAttnBackend.forward_extend
     coverage:
       labeled: 44
-      residue: 0
+      residue: 4
   Qwen/Qwen3.5-122B-A10B:
     record: 05e77074e6dd
     variant: depth8
@@ -1459,6 +1686,7 @@ results:
         framework_native:
         - _fused_gate_sigmoid_mul_add_kernel
         - _fused_sigmoid_mul_kernel
+        - act_and_mul_kernel
         - triton_per_fused_copy__mul_sum_0
       attention:
         fa3:
@@ -1486,7 +1714,6 @@ results:
         - cuLaunchKernelEx
         - cudaEventRecordWithFlags
         - cudaStreamIsCapturing
-        - namespace
         - sglang.vlm.language_model_prefill
         - void at::native::vectorized_gather_kernel<16, long>
       kvcache:
@@ -1527,12 +1754,16 @@ results:
       routing:
         framework_native:
         - _router_triton_kernel
-    residue: []
+    residue:
+    - CatArrayBatchedCopy_alignedK_contig
+    - clamp_position_kernel
+    - indexSelectSmallIndex
+    - store_kvcache
     ops_observed:
     - attn:HybridLinearAttnBackend.forward_extend
     coverage:
       labeled: 51
-      residue: 0
+      residue: 4
   Qwen/Qwen3.5-27B:
     record: 6b95498aee63
     variant: depth8
@@ -1542,6 +1773,7 @@ results:
       activation:
         framework_native:
         - _fused_sigmoid_mul_kernel
+        - act_and_mul_kernel
       attention:
         fa3:
         - flash::FlashAttnFwdCombine
@@ -1568,7 +1800,6 @@ results:
         - cuLaunchKernelEx
         - cudaEventRecordWithFlags
         - cudaStreamIsCapturing
-        - namespace
         - sglang.vlm.language_model_prefill
         - void at::native::vectorized_gather_kernel<16, long>
       kvcache:
@@ -1597,12 +1828,18 @@ results:
         - kernel_cutlass_kernel_flashinfernormkernelsfused_add_rmsnormFusedAddRMSNormKerne
         - kernel_cutlass_kernel_flashinfernormkernelsrmsnormRMSNormKernel
         - l2norm_fwd_kernel
-    residue: []
+    residue:
+    - CatArrayBatchedCopy
+    - CatArrayBatchedCopy_alignedK_contig
+    - CatArrayBatchedCopy_vectorized
+    - clamp_position_kernel
+    - indexSelectSmallIndex
+    - store_kvcache
     ops_observed:
     - attn:HybridLinearAttnBackend.forward_extend
     coverage:
       labeled: 43
-      residue: 0
+      residue: 6
   Qwen/Qwen3.5-2B:
     record: b7eec4340ccd
     variant: depth8
@@ -1612,6 +1849,7 @@ results:
       activation:
         framework_native:
         - _fused_sigmoid_mul_kernel
+        - act_and_mul_kernel
       attention:
         fa3:
         - flash::FlashAttnFwdCombine
@@ -1637,7 +1875,6 @@ results:
         - cuLaunchKernelEx
         - cudaEventRecordWithFlags
         - cudaStreamIsCapturing
-        - namespace
         - sglang.vlm.language_model_prefill
         - void at::native::vectorized_gather_kernel<16, long>
       kvcache:
@@ -1668,12 +1905,16 @@ results:
         - kernel_cutlass_kernel_flashinfernormkernelsfused_add_rmsnormFusedAddRMSNormKerne
         - kernel_cutlass_kernel_flashinfernormkernelsrmsnormRMSNormKernel
         - l2norm_fwd_kernel
-    residue: []
+    residue:
+    - CatArrayBatchedCopy_alignedK_contig
+    - clamp_position_kernel
+    - indexSelectSmallIndex
+    - store_kvcache
     ops_observed:
     - attn:HybridLinearAttnBackend.forward_extend
     coverage:
       labeled: 44
-      residue: 0
+      residue: 4
   Qwen/Qwen3.5-35B-A3B:
     record: 1bf0d079c4f3
     variant: depth8
@@ -1684,6 +1925,7 @@ results:
         framework_native:
         - _fused_gate_sigmoid_mul_add_kernel
         - _fused_sigmoid_mul_kernel
+        - act_and_mul_kernel
         - triton_per_fused_copy__mul_sum_0
       attention:
         fa3:
@@ -1713,7 +1955,6 @@ results:
         - cuLaunchKernelEx
         - cudaEventRecordWithFlags
         - cudaStreamIsCapturing
-        - namespace
         - sglang.vlm.language_model_prefill
         - void at::native::vectorized_gather_kernel<16, long>
       kvcache:
@@ -1755,12 +1996,16 @@ results:
       routing:
         framework_native:
         - _router_triton_kernel
-    residue: []
+    residue:
+    - CatArrayBatchedCopy_alignedK_contig
+    - clamp_position_kernel
+    - indexSelectSmallIndex
+    - store_kvcache
     ops_observed:
     - attn:HybridLinearAttnBackend.forward_extend
     coverage:
       labeled: 54
-      residue: 0
+      residue: 4
   Qwen/Qwen3.5-397B-A17B:
     record: 249fbb7431b4
     variant: depth8
@@ -1771,6 +2016,7 @@ results:
         framework_native:
         - _fused_gate_sigmoid_mul_add_kernel
         - _fused_sigmoid_mul_kernel
+        - act_and_mul_kernel
         - triton_per_fused_copy__mul_sum_0
       attention:
         fa3:
@@ -1796,7 +2042,6 @@ results:
         - cuLaunchKernelEx
         - cudaEventRecordWithFlags
         - cudaStreamIsCapturing
-        - namespace
         - sglang.vlm.language_model_prefill
         - void at::native::vectorized_gather_kernel<16, long>
       kvcache:
@@ -1837,12 +2082,16 @@ results:
       routing:
         framework_native:
         - _router_triton_kernel
-    residue: []
+    residue:
+    - CatArrayBatchedCopy_alignedK_contig
+    - clamp_position_kernel
+    - indexSelectSmallIndex
+    - store_kvcache
     ops_observed:
     - attn:HybridLinearAttnBackend.forward_extend
     coverage:
       labeled: 49
-      residue: 0
+      residue: 4
   Qwen/Qwen3.5-4B:
     record: 3636f1498bbc
     variant: depth8
@@ -1852,6 +2101,7 @@ results:
       activation:
         framework_native:
         - _fused_sigmoid_mul_kernel
+        - act_and_mul_kernel
       attention:
         fa3:
         - flash::FlashAttnFwdCombine
@@ -1879,7 +2129,6 @@ results:
         - cuLaunchKernelEx
         - cudaEventRecordWithFlags
         - cudaStreamIsCapturing
-        - namespace
         - sglang.vlm.language_model_prefill
         - void at::native::vectorized_gather_kernel<16, long>
       kvcache:
@@ -1910,12 +2159,16 @@ results:
         - kernel_cutlass_kernel_flashinfernormkernelsfused_add_rmsnormFusedAddRMSNormKerne
         - kernel_cutlass_kernel_flashinfernormkernelsrmsnormRMSNormKernel
         - l2norm_fwd_kernel
-    residue: []
+    residue:
+    - CatArrayBatchedCopy_alignedK_contig
+    - clamp_position_kernel
+    - indexSelectSmallIndex
+    - store_kvcache
     ops_observed:
     - attn:HybridLinearAttnBackend.forward_extend
     coverage:
       labeled: 46
-      residue: 0
+      residue: 4
   Qwen/Qwen3.5-9B:
     record: 7bf116919c7d
     variant: depth8
@@ -1925,6 +2178,7 @@ results:
       activation:
         framework_native:
         - _fused_sigmoid_mul_kernel
+        - act_and_mul_kernel
       attention:
         fa3:
         - flash::FlashAttnFwdCombine
@@ -1948,7 +2202,6 @@ results:
         - cuLaunchKernelEx
         - cudaEventRecordWithFlags
         - cudaStreamIsCapturing
-        - namespace
         - sglang.vlm.language_model_prefill
         - void at::native::vectorized_gather_kernel<16, long>
       kvcache:
@@ -1979,12 +2232,16 @@ results:
         - kernel_cutlass_kernel_flashinfernormkernelsfused_add_rmsnormFusedAddRMSNormKerne
         - kernel_cutlass_kernel_flashinfernormkernelsrmsnormRMSNormKernel
         - l2norm_fwd_kernel
-    residue: []
+    residue:
+    - CatArrayBatchedCopy_alignedK_contig
+    - clamp_position_kernel
+    - indexSelectSmallIndex
+    - store_kvcache
     ops_observed:
     - attn:HybridLinearAttnBackend.forward_extend
     coverage:
       labeled: 42
-      residue: 0
+      residue: 4
   Qwen/Qwen3.8-27B:
     record: 4ee6302c8f40
     variant: depth8
@@ -1994,6 +2251,7 @@ results:
       activation:
         framework_native:
         - _fused_sigmoid_mul_kernel
+        - act_and_mul_kernel
       attention:
         fa3:
         - flash::FlashAttnFwdCombine
@@ -2020,7 +2278,6 @@ results:
         - cuLaunchKernelEx
         - cudaEventRecordWithFlags
         - cudaStreamIsCapturing
-        - namespace
         - sglang.vlm.language_model_prefill
         - void at::native::vectorized_gather_kernel<16, long>
       kvcache:
@@ -2049,12 +2306,18 @@ results:
         - kernel_cutlass_kernel_flashinfernormkernelsfused_add_rmsnormFusedAddRMSNormKerne
         - kernel_cutlass_kernel_flashinfernormkernelsrmsnormRMSNormKernel
         - l2norm_fwd_kernel
-    residue: []
+    residue:
+    - CatArrayBatchedCopy
+    - CatArrayBatchedCopy_alignedK_contig
+    - CatArrayBatchedCopy_vectorized
+    - clamp_position_kernel
+    - indexSelectSmallIndex
+    - store_kvcache
     ops_observed:
     - attn:HybridLinearAttnBackend.forward_extend
     coverage:
       labeled: 43
-      residue: 0
+      residue: 6
   Qwen/Qwen3.8-27B-FP8:
     record: 4f053fff5901
     variant: depth8
@@ -2064,6 +2327,7 @@ results:
       activation:
         framework_native:
         - _fused_sigmoid_mul_kernel
+        - act_and_mul_kernel
       attention:
         fa3:
         - flash::FlashAttnFwdCombine
@@ -2085,7 +2349,6 @@ results:
         - cuLaunchKernelEx
         - cudaEventRecordWithFlags
         - cudaStreamIsCapturing
-        - namespace
         - sglang.vlm.language_model_prefill
         - void at::native::vectorized_gather_kernel<16, long>
       kvcache:
@@ -2114,18 +2377,30 @@ results:
         - kernel_cutlass_kernel_flashinfernormkernelsfused_add_rmsnormFusedAddRMSNormKerne
         - kernel_cutlass_kernel_flashinfernormkernelsrmsnormRMSNormKernel
         - l2norm_fwd_kernel
-    residue: []
+      quant:
+        sgl_kernel:
+        - per_token_group_quant_8bit_v2_kernel
+    residue:
+    - CatArrayBatchedCopy
+    - CatArrayBatchedCopy_alignedK_contig
+    - CatArrayBatchedCopy_vectorized
+    - clamp_position_kernel
+    - indexSelectSmallIndex
+    - store_kvcache
     ops_observed:
     - attn:HybridLinearAttnBackend.forward_extend
     coverage:
-      labeled: 37
-      residue: 0
+      labeled: 38
+      residue: 6
   XiaomiMiMo/MiMo-7B-Base:
     record: 3b8594e2d696
     variant: rep
     kv: auto
     probe_eager: false
     families:
+      activation:
+        framework_native:
+        - act_and_mul_kernel
       attention:
         fa3:
         - flash::FlashAttnFwdCombine
@@ -2149,7 +2424,6 @@ results:
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
         - cuLaunchKernelEx
         - cudaEventRecordWithFlags
-        - namespace
         - void at::native::vectorized_gather_kernel<16, long>
       kvcache:
         framework_native:
@@ -2160,12 +2434,17 @@ results:
         framework_native:
         - kernel_cutlass_kernel_flashinfernormkernelsfused_add_rmsnormFusedAddRMSNormKerne
         - kernel_cutlass_kernel_flashinfernormkernelsrmsnormRMSNormKernel
-    residue: []
+    residue:
+    - clamp_position_kernel
+    - fused_rope_kernel
+    - indexSelectSmallIndex
+    - multi_tensor_apply_kernel
+    - store_kvcache
     ops_observed:
     - attn:FlashAttentionBackend.forward_extend
     coverage:
       labeled: 24
-      residue: 0
+      residue: 5
     kv_variants:
       fp8_e4m3:
         record: ab4d87b6ced4
@@ -2180,6 +2459,7 @@ results:
     families:
       activation:
         framework_native:
+        - act_and_mul_kernel
         - triton_per_fused_copy__mul_sum_0
       attention:
         fa3:
@@ -2204,7 +2484,6 @@ results:
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
         - cudaEventRecordWithFlags
         - cudaStreamIsCapturing
-        - namespace
         - void at::native::vectorized_gather_kernel<16, long>
       kvcache:
         framework_native:
@@ -2223,15 +2502,22 @@ results:
         framework_native:
         - kernel_cutlass_kernel_flashinfernormkernelsfused_add_rmsnormFusedAddRMSNormKerne
         - kernel_cutlass_kernel_flashinfernormkernelsrmsnormRMSNormKernel
+        - rotary_embedding_kernel
+      quant:
+        sgl_kernel:
+        - per_token_group_quant_8bit_v2_kernel
       routing:
         framework_native:
         - _router_triton_kernel
-    residue: []
+    residue:
+    - clamp_position_kernel
+    - indexSelectSmallIndex
+    - multi_tensor_apply_kernel
     ops_observed:
     - attn:FlashAttentionBackend.forward_extend
     coverage:
-      labeled: 28
-      residue: 0
+      labeled: 30
+      residue: 3
   deepseek-ai/DeepSeek-R1:
     record: bc578c907aa9
     variant: rep
@@ -2240,6 +2526,7 @@ results:
     families:
       activation:
         framework_native:
+        - act_and_mul_kernel
         - triton_per_fused_copy__mul_sum_0
       attention:
         fa3:
@@ -2260,7 +2547,6 @@ results:
         - at_cuda_detail::cub::detail::scan::DeviceScanInitKernel
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
         - cudaEventRecordWithFlags
-        - namespace
         - void at::native::vectorized_gather_kernel<16, long>
       kvcache:
         framework_native:
@@ -2280,16 +2566,25 @@ results:
         framework_native:
         - kernel_cutlass_kernel_flashinfernormkernelsfused_add_rmsnormFusedAddRMSNormKerne
         - kernel_cutlass_kernel_flashinfernormkernelsrmsnormRMSNormKernel
+      quant:
+        sgl_kernel:
+        - per_token_group_quant_8bit_v2_kernel
       routing:
         framework_native:
+        - router_gemm_kernel
         - tensorrt_llm::kernels::deepseek_v3_topk_kernel
-    residue: []
+    residue:
+    - clamp_position_kernel
+    - concat_mla_k_kernel
+    - fused_rope_kernel
+    - indexSelectSmallIndex
+    - multi_tensor_apply_kernel
     ops_observed:
     - attn:FlashAttentionBackend.forward_extend
     - moe:fused_experts_none_to_triton
     coverage:
-      labeled: 26
-      residue: 0
+      labeled: 28
+      residue: 5
     kv_variants:
       fp8_e4m3:
         record: f76aae24c18a
@@ -2304,6 +2599,7 @@ results:
     families:
       activation:
         framework_native:
+        - act_and_mul_kernel
         - triton_per_fused_copy__mul_sum_0
       attention:
         fa3:
@@ -2324,7 +2620,6 @@ results:
         - at_cuda_detail::cub::detail::scan::DeviceScanInitKernel
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
         - cudaEventRecordWithFlags
-        - namespace
         - void at::native::vectorized_gather_kernel<16, long>
       kvcache:
         framework_native:
@@ -2344,16 +2639,25 @@ results:
         framework_native:
         - kernel_cutlass_kernel_flashinfernormkernelsfused_add_rmsnormFusedAddRMSNormKerne
         - kernel_cutlass_kernel_flashinfernormkernelsrmsnormRMSNormKernel
+      quant:
+        sgl_kernel:
+        - per_token_group_quant_8bit_v2_kernel
       routing:
         framework_native:
+        - router_gemm_kernel
         - tensorrt_llm::kernels::deepseek_v3_topk_kernel
-    residue: []
+    residue:
+    - clamp_position_kernel
+    - concat_mla_k_kernel
+    - fused_rope_kernel
+    - indexSelectSmallIndex
+    - multi_tensor_apply_kernel
     ops_observed:
     - attn:FlashAttentionBackend.forward_extend
     - moe:fused_experts_none_to_triton
     coverage:
-      labeled: 26
-      residue: 0
+      labeled: 28
+      residue: 5
     kv_variants:
       fp8_e4m3:
         record: 36dee673fb5b
@@ -2368,8 +2672,8 @@ results:
     families:
       activation:
         framework_native:
+        - act_and_mul_kernel
         - triton_per_fused_copy__mul_sum_0
-        - triton_poi_fused_mul_0
         - triton_poi_fused_mul_unsqueeze_0
       attention:
         dsa_nsa:
@@ -2398,19 +2702,14 @@ results:
         - deep_gemm::sm90_fp8_gemm_1d2d_impl
       infra:
         infra:
-        - Activity
         - at_cuda_detail::cub::detail::scan::DeviceScanInitKernel
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
         - cudaEventRecordWithFlags
-        - cudaStreamIsCapturing
-        - namespace
         - void at::native::vectorized_gather_kernel<16, long>
       kvcache:
         framework_native:
         - _fused_dsa_decode_metadata_kernel
-        - alloc_decode_kernel
         - alloc_extend_kernel
-        - compute_position_kernel
         - set_mla_kv_buffer_kernel
         - write_req_to_token_pool_triton
       moe_gemm:
@@ -2429,25 +2728,38 @@ results:
       quant:
         sgl_kernel:
         - _act_quant_kernel
+        - per_token_group_quant_8bit_v2_kernel
       routing:
         framework_native:
+        - router_gemm_kernel
         - tensorrt_llm::kernels::deepseek_v3_topk_kernel
-    residue: []
+    residue:
+    - concat_mla_absorb_q_kernel
+    - elementwise_kernel_with_index
+    - fast_hadamard_transform_kernel
+    - fused_rope_kernel
+    - fused_store_indexer_cache
+    - multi_tensor_apply_kernel
+    - topk_plan
+    - topk_small_batch_kernel
+    - topk_transform_prefill_kernel
     ops_observed:
     - attn:DeepseekSparseAttnBackend.forward_extend
     - moe:fused_experts_none_to_triton
     coverage:
-      labeled: 42
-      residue: 0
+      labeled: 39
+      residue: 9
     kv_variants:
       fp8_e4m3:
         record: 9be0fc733d2f
         added_kernels:
         - _quantize_k_cache_fast_kernel
+        - indexSelectSmallIndex
         - sm90::decode::sparse_fp8::flash_fwd_splitkv_mla_fp8_sparse_kernel
         - smxx::decode::flash_fwd_mla_combine_kernel
         - smxx::decode::get_mla_metadata_kernel(GetDecodeSchedMetaParams)
-        added_residue: []
+        added_residue:
+        - indexSelectSmallIndex
   deepseek-ai/DeepSeek-V4-Flash:
     record: 96b2eb86360b
     variant: rep_mix
@@ -2481,12 +2793,7 @@ results:
         - deep_gemm::sm90_fp8_gemm_1d2d_impl
       infra:
         infra:
-        - Activity
-        - at_cuda_detail::cub::detail::scan::DeviceScanInitKernel
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
-        - cudaPeekAtLastError
-        - cudaPointerGetAttributes
-        - namespace
         - operator
         - void at::native::vectorized_gather_kernel<16, long>
       kvcache:
@@ -2494,14 +2801,8 @@ results:
         - _build_swa_token_ids_kernel
         - _causal_swa_page_indices_kernel
         - _combine_topk_swa_indices_kernel
-        - _expand_prefill_causally_kernel
         - _init_compressed_attn_metadata_kernel
         - _page_table_positions_kernel
-        - alloc_decode_kernel
-        - alloc_extend_kernel
-        - compute_position_kernel
-        - host::compress::plan_compress_decode_kernel(host::compress::DecodeParams)
-        - host::compress::plan_compress_prefill_kernel_1(host::compress::Prefill1Params)
         - write_req_to_token_pool_triton
       mhc:
         deepgemm:
@@ -2523,16 +2824,33 @@ results:
       quant:
         sgl_kernel:
         - _dequantize_k_cache_paged_kernel
+        - per_token_group_quant_8bit_v2_kernel
       routing:
         framework_native:
         - _router_triton_kernel
-    residue: []
+        - router_gemm_kernel
+    residue:
+    - deepseek_rope_kernel
+    - elementwise_kernel_with_index
+    - flash_c128_prefill
+    - flash_c4_prefill
+    - fused_k_norm_rope_flashmla
+    - fused_norm_rope_flashmla
+    - fused_q_indexer_rope_hadamard_quant
+    - fused_q_norm_rope
+    - indexSelectSmallIndex
+    - silu_mul_clamp_kernel
+    - smxx_paged_mqa_logits_metadata
+    - topk_plan
+    - topk_small_batch_kernel
+    - topk_transform_kernel
+    - write_c4_prefill
     ops_observed:
     - attn:DeepseekV4AttnBackend.forward
     - moe:fused_experts_none_to_marlin
     coverage:
-      labeled: 47
-      residue: 0
+      labeled: 38
+      residue: 15
   deepseek-ai/DeepSeek-V4-Flash-0731:
     record: efc9bc1f3527
     variant: csa
@@ -2565,13 +2883,10 @@ results:
         - deep_gemm::sm90_fp8_gemm_1d2d_impl
       infra:
         infra:
-        - Activity
-        - at_cuda_detail::cub::detail::scan::DeviceScanInitKernel
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
         - cuLaunchKernelEx
         - cudaLaunchKernelExC
         - cudaPointerGetAttributes
-        - namespace
         - operator
         - void at::native::vectorized_gather_kernel<16, long>
       kvcache:
@@ -2579,15 +2894,8 @@ results:
         - _build_swa_token_ids_kernel
         - _causal_swa_page_indices_kernel
         - _combine_topk_swa_indices_kernel
-        - _expand_prefill_causally_kernel
         - _init_compressed_attn_metadata_kernel
         - _page_table_positions_kernel
-        - alloc_decode_kernel
-        - alloc_extend_kernel
-        - compute_position_kernel
-        - host::compress::plan_compress_decode_kernel(host::compress::DecodeParams)
-        - host::compress::plan_compress_prefill_kernel_1(host::compress::Prefill1Params)
-        - write_req_to_token_pool_triton
       mhc:
         deepgemm:
         - deep_gemm::sm90_tf32_hc_prenorm_gemm_impl
@@ -2608,16 +2916,30 @@ results:
       quant:
         sgl_kernel:
         - _dequantize_k_cache_paged_kernel
+        - per_token_group_quant_8bit_v2_kernel
       routing:
         framework_native:
         - _router_triton_kernel
-    residue: []
+    residue:
+    - deepseek_rope_kernel
+    - flash_c4_prefill
+    - fused_k_norm_rope_flashmla
+    - fused_norm_rope_flashmla
+    - fused_norm_rope_indexer
+    - fused_q_indexer_rope_hadamard_quant
+    - fused_q_norm_rope
+    - indexSelectSmallIndex
+    - silu_mul_clamp_kernel
+    - smxx_paged_mqa_logits_metadata
+    - topk_small_batch_kernel
+    - topk_transform_kernel
+    - write_c4_prefill
     ops_observed:
     - attn:DeepseekV4AttnBackend.forward
     - moe:fused_experts_none_to_marlin
     coverage:
-      labeled: 47
-      residue: 0
+      labeled: 38
+      residue: 13
   deepseek-ai/DeepSeek-V4-Pro:
     record: 05f468301220
     variant: interleave_pair
@@ -2653,11 +2975,7 @@ results:
         - deep_gemm::sm90_fp8_gemm_1d2d_impl
       infra:
         infra:
-        - Activity
-        - at_cuda_detail::cub::detail::scan::DeviceScanInitKernel
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
-        - cuLaunchKernelEx
-        - namespace
         - operator
         - void at::native::vectorized_gather_kernel<16, long>
       kvcache:
@@ -2665,15 +2983,10 @@ results:
         - _build_swa_token_ids_kernel
         - _causal_swa_page_indices_kernel
         - _combine_topk_swa_indices_kernel
-        - _expand_prefill_causally_kernel
         - _init_compressed_attn_metadata_kernel
         - _page_table_positions_kernel
-        - alloc_decode_kernel
         - alloc_extend_kernel
-        - compute_position_kernel
-        - host::compress::plan_compress_decode_kernel(host::compress::DecodeParams)
         - host::compress::plan_compress_prefill_kernel_1(host::compress::Prefill1Params)
-        - write_req_to_token_pool_triton
       mhc:
         deepgemm:
         - deep_gemm::sm90_tf32_hc_prenorm_gemm_impl
@@ -2694,16 +3007,38 @@ results:
       quant:
         sgl_kernel:
         - _dequantize_k_cache_paged_kernel
+        - per_token_group_quant_8bit_v2_kernel
       routing:
         framework_native:
         - _router_triton_kernel
-    residue: []
+        - router_gemm_kernel
+    residue:
+    - deepseek_rope_kernel
+    - elementwise_kernel_with_index
+    - flash_c128_prefill
+    - flash_c4_decode
+    - flash_c4_prefill
+    - fused_k_norm_rope_flashmla
+    - fused_norm_rope_flashmla
+    - fused_q_indexer_rope_hadamard_quant
+    - fused_q_norm_rope
+    - indexSelectSmallIndex
+    - silu_mul_clamp_kernel
+    - smxx_paged_mqa_logits_metadata
+    - topk_transform_kernel
+    - write_c4_prefill
     ops_observed:
     - attn:DeepseekV4AttnBackend.forward
     - moe:fused_experts_none_to_marlin
     coverage:
-      labeled: 48
-      residue: 0
+      labeled: 41
+      residue: 14
+    kv_variants:
+      fp8_e4m3:
+        record: bccaafaf2cd5
+        added_kernels:
+        - write_req_to_token_pool_triton
+        added_residue: []
   deepseek-ai/DeepSeek-V4-Pro-0813:
     record: e243a2f9ad54
     variant: csa
@@ -2737,13 +3072,10 @@ results:
         - deep_gemm::sm90_fp8_gemm_1d2d_impl
       infra:
         infra:
-        - Activity
-        - at_cuda_detail::cub::detail::scan::DeviceScanInitKernel
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
         - cuLaunchKernelEx
         - cudaLaunchKernelExC
         - cudaPointerGetAttributes
-        - namespace
         - operator
         - void at::native::vectorized_gather_kernel<16, long>
       kvcache:
@@ -2751,15 +3083,8 @@ results:
         - _build_swa_token_ids_kernel
         - _causal_swa_page_indices_kernel
         - _combine_topk_swa_indices_kernel
-        - _expand_prefill_causally_kernel
         - _init_compressed_attn_metadata_kernel
         - _page_table_positions_kernel
-        - alloc_decode_kernel
-        - alloc_extend_kernel
-        - compute_position_kernel
-        - host::compress::plan_compress_decode_kernel(host::compress::DecodeParams)
-        - host::compress::plan_compress_prefill_kernel_1(host::compress::Prefill1Params)
-        - write_req_to_token_pool_triton
       mhc:
         deepgemm:
         - deep_gemm::sm90_tf32_hc_prenorm_gemm_impl
@@ -2780,16 +3105,29 @@ results:
       quant:
         sgl_kernel:
         - _dequantize_k_cache_paged_kernel
+        - per_token_group_quant_8bit_v2_kernel
       routing:
         framework_native:
         - _router_triton_kernel
-    residue: []
+    residue:
+    - deepseek_rope_kernel
+    - flash_c4_decode
+    - flash_c4_prefill
+    - fused_k_norm_rope_flashmla
+    - fused_norm_rope_flashmla
+    - fused_norm_rope_indexer
+    - fused_q_indexer_rope_hadamard_quant
+    - fused_q_norm_rope
+    - silu_mul_clamp_kernel
+    - smxx_paged_mqa_logits_metadata
+    - topk_transform_kernel
+    - write_c4_prefill
     ops_observed:
     - attn:DeepseekV4AttnBackend.forward
     - moe:fused_experts_none_to_marlin
     coverage:
-      labeled: 48
-      residue: 0
+      labeled: 39
+      residue: 12
   google/gemma-4-26B-A4B:
     record: a69d6a2853c6
     variant: all_kinds
@@ -2798,6 +3136,7 @@ results:
     families:
       activation:
         framework_native:
+        - act_and_mul_kernel
         - triton_per_fused_copy__mul_sum_0
       attention:
         triton:
@@ -2828,7 +3167,6 @@ results:
         - cudaEventRecordWithFlags
         - cudaStreamIsCapturing
         - get_num_kv_splits_triton
-        - namespace
         - sglang.vlm.language_model_prefill
         - void at::native::vectorized_gather_kernel<16, long>
       kvcache:
@@ -2853,13 +3191,18 @@ results:
       routing:
         framework_native:
         - _gemma4_routing_kernel
-    residue: []
+    residue:
+    - clamp_position_kernel
+    - fused_rope_kernel
+    - indexSelectSmallIndex
+    - multi_tensor_apply_kernel
+    - store_kvcache
     ops_observed:
     - attn:TritonAttnBackend.forward_extend
     - moe:fused_experts_none_to_triton
     coverage:
       labeled: 38
-      residue: 0
+      residue: 5
     kv_variants:
       fp8_e4m3:
         record: 1a766415afba
@@ -2874,6 +3217,7 @@ results:
     families:
       activation:
         framework_native:
+        - act_and_mul_kernel
         - triton_poi_fused__to_copy_add_div_floor_log_mul_unsqueeze_0
         - triton_red_fused__to_copy_max_sigmoid_0
       attention:
@@ -2901,7 +3245,6 @@ results:
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
         - cudaEventRecordWithFlags
         - cudaStreamIsCapturing
-        - namespace
         - sglang.vlm.language_model_prefill
         - void at::native::vectorized_gather_kernel<16, long>
       kvcache:
@@ -2920,18 +3263,27 @@ results:
         framework_native:
         - kernel_cutlass_kernel_flashinfernormkernelsfused_add_rmsnormFusedAddRMSNormKerne
         - kernel_cutlass_kernel_flashinfernormkernelsrmsnormRMSNormKernel
-    residue: []
+    residue:
+    - clamp_position_kernel
+    - elementwise_kernel_with_index
+    - fused_rope_kernel
+    - indexSelectSmallIndex
+    - multi_tensor_apply_kernel
+    - store_kvcache
     ops_observed:
     - attn:FlashAttentionBackend.forward_extend
     coverage:
       labeled: 32
-      residue: 0
+      residue: 6
   meta-llama/Meta-Llama-3.1-405B:
     record: 4a6ab1ae7839
     variant: rep
     kv: auto
     probe_eager: false
     families:
+      activation:
+        framework_native:
+        - act_and_mul_kernel
       attention:
         fa3:
         - flash::FlashAttnFwdCombine
@@ -2953,7 +3305,6 @@ results:
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
         - cuLaunchKernelEx
         - cudaEventRecordWithFlags
-        - namespace
         - void at::native::vectorized_gather_kernel<16, long>
       kvcache:
         framework_native:
@@ -2964,12 +3315,17 @@ results:
         framework_native:
         - kernel_cutlass_kernel_flashinfernormkernelsfused_add_rmsnormFusedAddRMSNormKerne
         - kernel_cutlass_kernel_flashinfernormkernelsrmsnormRMSNormKernel
-    residue: []
+    residue:
+    - clamp_position_kernel
+    - fused_rope_kernel
+    - indexSelectSmallIndex
+    - multi_tensor_apply_kernel
+    - store_kvcache
     ops_observed:
     - attn:FlashAttentionBackend.forward_extend
     coverage:
       labeled: 22
-      residue: 0
+      residue: 5
     kv_variants:
       fp8_e4m3:
         record: b8bf248e5754
@@ -2982,6 +3338,9 @@ results:
     kv: auto
     probe_eager: false
     families:
+      activation:
+        framework_native:
+        - act_and_mul_kernel
       attention:
         fa3:
         - flash::FlashAttnFwdCombine
@@ -3004,7 +3363,6 @@ results:
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
         - cuLaunchKernelEx
         - cudaEventRecordWithFlags
-        - namespace
         - void at::native::vectorized_gather_kernel<16, long>
       kvcache:
         framework_native:
@@ -3015,12 +3373,17 @@ results:
         framework_native:
         - kernel_cutlass_kernel_flashinfernormkernelsfused_add_rmsnormFusedAddRMSNormKerne
         - kernel_cutlass_kernel_flashinfernormkernelsrmsnormRMSNormKernel
-    residue: []
+    residue:
+    - clamp_position_kernel
+    - fused_rope_kernel
+    - indexSelectSmallIndex
+    - multi_tensor_apply_kernel
+    - store_kvcache
     ops_observed:
     - attn:FlashAttentionBackend.forward_extend
     coverage:
       labeled: 23
-      residue: 0
+      residue: 5
     kv_variants:
       fp8_e4m3:
         record: 9617b0f55211
@@ -3033,6 +3396,9 @@ results:
     kv: auto
     probe_eager: false
     families:
+      activation:
+        framework_native:
+        - act_and_mul_kernel
       attention:
         fa3:
         - flash::FlashAttnFwdCombine
@@ -3055,7 +3421,6 @@ results:
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
         - cuLaunchKernelEx
         - cudaEventRecordWithFlags
-        - namespace
         - void at::native::vectorized_gather_kernel<16, long>
       kvcache:
         framework_native:
@@ -3066,12 +3431,17 @@ results:
         framework_native:
         - kernel_cutlass_kernel_flashinfernormkernelsfused_add_rmsnormFusedAddRMSNormKerne
         - kernel_cutlass_kernel_flashinfernormkernelsrmsnormRMSNormKernel
-    residue: []
+    residue:
+    - clamp_position_kernel
+    - fused_rope_kernel
+    - indexSelectSmallIndex
+    - multi_tensor_apply_kernel
+    - store_kvcache
     ops_observed:
     - attn:FlashAttentionBackend.forward_extend
     coverage:
       labeled: 23
-      residue: 0
+      residue: 5
     kv_variants:
       fp8_e4m3:
         record: 158836ce1c78
@@ -3084,6 +3454,9 @@ results:
     kv: auto
     probe_eager: false
     families:
+      activation:
+        framework_native:
+        - act_and_mul_kernel
       attention:
         fa3:
         - flash::FlashAttnFwdCombine
@@ -3104,7 +3477,6 @@ results:
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
         - cuLaunchKernelEx
         - cudaEventRecordWithFlags
-        - namespace
         - void at::native::vectorized_gather_kernel<16, long>
       kvcache:
         framework_native:
@@ -3126,12 +3498,17 @@ results:
       routing:
         framework_native:
         - _router_triton_kernel
-    residue: []
+    residue:
+    - clamp_position_kernel
+    - fused_rope_kernel
+    - indexSelectSmallIndex
+    - multi_tensor_apply_kernel
+    - store_kvcache
     ops_observed:
     - attn:FlashAttentionBackend.forward_extend
     coverage:
       labeled: 26
-      residue: 0
+      residue: 5
     kv_variants:
       fp8_e4m3:
         record: 4c1904b86ecb
@@ -3144,6 +3521,9 @@ results:
     kv: auto
     probe_eager: false
     families:
+      activation:
+        framework_native:
+        - act_and_mul_kernel
       attention:
         fa3:
         - flash::FlashAttnFwdCombine
@@ -3165,7 +3545,6 @@ results:
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
         - cuLaunchKernelEx
         - cudaEventRecordWithFlags
-        - namespace
         - void at::native::vectorized_gather_kernel<16, long>
       kvcache:
         framework_native:
@@ -3187,12 +3566,17 @@ results:
       routing:
         framework_native:
         - _router_triton_kernel
-    residue: []
+    residue:
+    - clamp_position_kernel
+    - fused_rope_kernel
+    - indexSelectSmallIndex
+    - multi_tensor_apply_kernel
+    - store_kvcache
     ops_observed:
     - attn:FlashAttentionBackend.forward_extend
     coverage:
       labeled: 27
-      residue: 0
+      residue: 5
     kv_variants:
       fp8_e4m3:
         record: d423b9c01159
@@ -3207,6 +3591,7 @@ results:
     families:
       activation:
         framework_native:
+        - act_and_mul_kernel
         - triton_per_fused_copy__mul_sum_0
       attention:
         fa3:
@@ -3228,7 +3613,6 @@ results:
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
         - cudaEventRecordWithFlags
         - cudaLaunchKernelExC
-        - namespace
         - void at::native::vectorized_gather_kernel<16, long>
       kvcache:
         framework_native:
@@ -3249,16 +3633,24 @@ results:
         framework_native:
         - kernel_cutlass_kernel_flashinfernormkernelsfused_add_rmsnormFusedAddRMSNormKerne
         - kernel_cutlass_kernel_flashinfernormkernelsrmsnormRMSNormKernel
+      quant:
+        sgl_kernel:
+        - per_token_group_quant_8bit_v2_kernel
       routing:
         framework_native:
         - _router_triton_kernel
-    residue: []
+        - router_gemm_kernel
+    residue:
+    - clamp_position_kernel
+    - fused_rope_kernel
+    - indexSelectSmallIndex
+    - multi_tensor_apply_kernel
     ops_observed:
     - attn:FlashAttentionBackend.forward_extend
     - moe:fused_experts_none_to_triton
     coverage:
-      labeled: 28
-      residue: 0
+      labeled: 30
+      residue: 4
     kv_variants:
       fp8_e4m3:
         record: 0097393f46dd
@@ -3271,6 +3663,9 @@ results:
     kv: auto
     probe_eager: false
     families:
+      activation:
+        framework_native:
+        - act_and_mul_kernel
       attention:
         fa3:
         - flash::FlashAttnFwdCombine
@@ -3289,13 +3684,14 @@ results:
         - nvjet_sm90_tst_192x8_64x8_2x1_v_bz_splitK_TNT
         - nvjet_sm90_tst_320x128_64x3_1x2_h_bz_coopB_TNT
         - nvjet_sm90_tst_64x8_64x16_2x1_v_bz_TNT
+        cutlass:
+        - fused_a_gemm_kernel
       infra:
         infra:
         - Activity
         - at_cuda_detail::cub::detail::scan::DeviceScanInitKernel
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
         - cudaEventRecordWithFlags
-        - namespace
         - sglang.vlm.language_model_prefill
         - void at::native::vectorized_gather_kernel<16, long>
       kvcache:
@@ -3321,12 +3717,17 @@ results:
       routing:
         framework_native:
         - _router_triton_kernel
-    residue: []
+        - router_gemm_kernel
+    residue:
+    - clamp_position_kernel
+    - fused_rope_kernel
+    - indexSelectSmallIndex
+    - multi_tensor_apply_kernel
     ops_observed:
     - attn:FlashAttentionBackend.forward_extend
     coverage:
-      labeled: 34
-      residue: 0
+      labeled: 36
+      residue: 4
     kv_variants:
       fp8_e4m3:
         record: 156a33d1410a
@@ -3339,6 +3740,9 @@ results:
     kv: auto
     probe_eager: false
     families:
+      activation:
+        framework_native:
+        - act_and_mul_kernel
       attention:
         fa3:
         - flash::FlashAttnFwdCombine
@@ -3354,6 +3758,8 @@ results:
         - nvjet_sm90_tst_176x128_64x5_1x2_h_bz_TNN
         - nvjet_sm90_tst_320x128_64x3_1x2_h_bz_coopB_TNT
         - nvjet_sm90_tst_64x8_64x16_2x1_v_bz_TNT
+        cutlass:
+        - fused_a_gemm_kernel
         marlin:
         - device::marlin::Marlin
       infra:
@@ -3364,7 +3770,6 @@ results:
         - cuLaunchKernelEx
         - cudaEventRecordWithFlags
         - cudaStreamIsCapturing
-        - namespace
         - void at::native::vectorized_gather_kernel<16, long>
       kvcache:
         framework_native:
@@ -3387,14 +3792,20 @@ results:
         - kernel_cutlass_kernel_flashinfernormkernelsrmsnormRMSNormKernel
       routing:
         framework_native:
+        - router_gemm_kernel
         - tensorrt_llm::kernels::deepseek_v3_topk_kernel
-    residue: []
+    residue:
+    - clamp_position_kernel
+    - concat_mla_k_kernel
+    - fused_rope_kernel
+    - indexSelectSmallIndex
+    - multi_tensor_apply_kernel
     ops_observed:
     - attn:FlashAttentionBackend.forward_extend
     - moe:fused_experts_none_to_marlin
     coverage:
-      labeled: 32
-      residue: 0
+      labeled: 34
+      residue: 5
   nvidia/DeepSeek-V3.2-NVFP4:
     record: fb854a55858c
     variant: rep
@@ -3403,7 +3814,7 @@ results:
     families:
       activation:
         framework_native:
-        - triton_poi_fused_mul_0
+        - act_and_mul_kernel
         - triton_poi_fused_mul_unsqueeze_0
       attention:
         dsa_nsa:
@@ -3433,24 +3844,21 @@ results:
         - nvjet_sm90_tst_320x128_64x3_1x2_h_bz_coopB_TNT
         - nvjet_sm90_tst_64x8_64x16_2x1_v_bz_TNT
         - nvjet_sm90_tst_64x8_64x16_2x1_v_bz_splitK_TNT
+        cutlass:
+        - fused_a_gemm_kernel
         marlin:
         - device::marlin::Marlin
       infra:
         infra:
-        - Activity
         - at_cuda_detail::cub::detail::scan::DeviceScanInitKernel
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
         - cudaEventRecordWithFlags
         - cudaLaunchKernelExC
-        - cudaStreamIsCapturing
-        - namespace
         - void at::native::vectorized_gather_kernel<16, long>
       kvcache:
         framework_native:
         - _fused_dsa_decode_metadata_kernel
-        - alloc_decode_kernel
         - alloc_extend_kernel
-        - compute_position_kernel
         - set_mla_kv_buffer_kernel
         - write_req_to_token_pool_triton
       moe_gemm:
@@ -3472,23 +3880,36 @@ results:
         - _act_quant_kernel
       routing:
         framework_native:
+        - router_gemm_kernel
         - tensorrt_llm::kernels::deepseek_v3_topk_kernel
-    residue: []
+    residue:
+    - concat_mla_absorb_q_kernel
+    - elementwise_kernel_with_index
+    - fast_hadamard_transform_kernel
+    - fused_rope_kernel
+    - fused_store_indexer_cache
+    - multi_tensor_apply_kernel
+    - topk_plan
+    - topk_small_batch_kernel
+    - topk_transform_prefill_kernel
     ops_observed:
     - attn:DeepseekSparseAttnBackend.forward_extend
     - moe:fused_experts_none_to_marlin
     coverage:
-      labeled: 48
-      residue: 0
+      labeled: 45
+      residue: 9
     kv_variants:
       fp8_e4m3:
         record: d780e650a388
         added_kernels:
         - _quantize_k_cache_fast_kernel
+        - indexSelectSmallIndex
         - sm90::decode::sparse_fp8::flash_fwd_splitkv_mla_fp8_sparse_kernel
         - smxx::decode::flash_fwd_mla_combine_kernel
         - smxx::decode::get_mla_metadata_kernel(GetDecodeSchedMetaParams)
-        added_residue: []
+        - triton_poi_fused_mul_0
+        added_residue:
+        - indexSelectSmallIndex
   nvidia/DeepSeek-V4-Flash-NVFP4:
     record: 7d9344daa57e
     variant: csa
@@ -3521,13 +3942,10 @@ results:
         - deep_gemm::sm90_fp8_gemm_1d2d_impl
       infra:
         infra:
-        - Activity
         - at_cuda_detail::cub::detail::scan::DeviceScanInitKernel
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
-        - cuLaunchKernelEx
         - cudaLaunchKernelExC
         - cudaPointerGetAttributes
-        - namespace
         - operator
         - void at::native::vectorized_gather_kernel<16, long>
       kvcache:
@@ -3535,15 +3953,8 @@ results:
         - _build_swa_token_ids_kernel
         - _causal_swa_page_indices_kernel
         - _combine_topk_swa_indices_kernel
-        - _expand_prefill_causally_kernel
         - _init_compressed_attn_metadata_kernel
         - _page_table_positions_kernel
-        - alloc_decode_kernel
-        - alloc_extend_kernel
-        - compute_position_kernel
-        - host::compress::plan_compress_decode_kernel(host::compress::DecodeParams)
-        - host::compress::plan_compress_prefill_kernel_1(host::compress::Prefill1Params)
-        - write_req_to_token_pool_triton
       mhc:
         deepgemm:
         - deep_gemm::sm90_tf32_hc_prenorm_gemm_impl
@@ -3566,16 +3977,37 @@ results:
       quant:
         sgl_kernel:
         - _dequantize_k_cache_paged_kernel
+        - per_token_group_quant_8bit_v2_kernel
       routing:
         framework_native:
         - _router_triton_kernel
-    residue: []
+    residue:
+    - deepseek_rope_kernel
+    - flash_c4_decode
+    - flash_c4_prefill
+    - fused_k_norm_rope_flashmla
+    - fused_norm_rope_flashmla
+    - fused_norm_rope_indexer
+    - fused_q_indexer_rope_hadamard_quant
+    - fused_q_norm_rope
+    - silu_mul_clamp_kernel
+    - smxx_paged_mqa_logits_metadata
+    - topk_small_batch_kernel
+    - topk_transform_kernel
+    - write_c4_prefill
     ops_observed:
     - attn:DeepseekV4AttnBackend.forward
     - moe:fused_experts_none_to_marlin
     coverage:
-      labeled: 49
-      residue: 0
+      labeled: 40
+      residue: 13
+    kv_variants:
+      fp8_e4m3:
+        record: 1415c97d5f45
+        added_kernels:
+        - indexSelectSmallIndex
+        added_residue:
+        - indexSelectSmallIndex
   nvidia/DeepSeek-V4-Pro-NVFP4:
     record: 1134eff51433
     variant: csa
@@ -3609,13 +4041,9 @@ results:
         - deep_gemm::sm90_fp8_gemm_1d2d_impl
       infra:
         infra:
-        - Activity
-        - at_cuda_detail::cub::detail::scan::DeviceScanInitKernel
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
-        - cuLaunchKernelEx
         - cudaLaunchKernelExC
         - cudaPointerGetAttributes
-        - namespace
         - operator
         - void at::native::vectorized_gather_kernel<16, long>
       kvcache:
@@ -3623,15 +4051,8 @@ results:
         - _build_swa_token_ids_kernel
         - _causal_swa_page_indices_kernel
         - _combine_topk_swa_indices_kernel
-        - _expand_prefill_causally_kernel
         - _init_compressed_attn_metadata_kernel
         - _page_table_positions_kernel
-        - alloc_decode_kernel
-        - alloc_extend_kernel
-        - compute_position_kernel
-        - host::compress::plan_compress_decode_kernel(host::compress::DecodeParams)
-        - host::compress::plan_compress_prefill_kernel_1(host::compress::Prefill1Params)
-        - write_req_to_token_pool_triton
       mhc:
         deepgemm:
         - deep_gemm::sm90_tf32_hc_prenorm_gemm_impl
@@ -3654,16 +4075,31 @@ results:
       quant:
         sgl_kernel:
         - _dequantize_k_cache_paged_kernel
+        - per_token_group_quant_8bit_v2_kernel
       routing:
         framework_native:
         - _router_triton_kernel
-    residue: []
+        - router_gemm_kernel
+    residue:
+    - deepseek_rope_kernel
+    - flash_c4_decode
+    - flash_c4_prefill
+    - fused_k_norm_rope_flashmla
+    - fused_norm_rope_flashmla
+    - fused_norm_rope_indexer
+    - fused_q_indexer_rope_hadamard_quant
+    - fused_q_norm_rope
+    - indexSelectSmallIndex
+    - silu_mul_clamp_kernel
+    - smxx_paged_mqa_logits_metadata
+    - topk_transform_kernel
+    - write_c4_prefill
     ops_observed:
     - attn:DeepseekV4AttnBackend.forward
     - moe:fused_experts_none_to_marlin
     coverage:
-      labeled: 50
-      residue: 0
+      labeled: 41
+      residue: 13
   nvidia/GLM-5-NVFP4:
     record: 67b1c685908b
     variant: rep
@@ -3672,6 +4108,7 @@ results:
     families:
       activation:
         framework_native:
+        - act_and_mul_kernel
         - triton_per_fused_copy_gather_select_sigmoid_slice_sum_3
         - triton_poi_fused__to_copy_arange_bitwise_not_eq_expand_masked_fill_scalar_tensor
         - triton_poi_fused__to_copy_copy_div_gather_randint_select_sigmoid_4
@@ -3704,21 +4141,16 @@ results:
         - nvjet_sm90_tst_64x8_64x16_2x1_v_bz_TNT
         - nvjet_sm90_tst_64x8_64x16_4x1_v_bz_splitK_TNT
         - nvjet_sm90_tst_80x128_64x8_2x1_v_bz_TNN
+        cutlass:
+        - fused_a_gemm_kernel
       infra:
         infra:
-        - Activity
-        - at_cuda_detail::cub::detail::scan::DeviceScanInitKernel
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
         - cudaEventRecordWithFlags
-        - cudaStreamIsCapturing
-        - namespace
         - void at::native::vectorized_gather_kernel<16, long>
       kvcache:
         framework_native:
         - _fused_dsa_decode_metadata_kernel
-        - alloc_decode_kernel
-        - alloc_extend_kernel
-        - compute_position_kernel
         - set_mla_kv_buffer_kernel
         - write_req_to_token_pool_triton
       moe_gemm:
@@ -3735,27 +4167,40 @@ results:
         - kernel_cutlass_kernel_flashinfernormkernelsfused_add_rmsnormFusedAddRMSNormKerne
         - kernel_cutlass_kernel_flashinfernormkernelsrmsnormRMSNormKernel
       routing:
+        framework_native:
+        - router_gemm_kernel
         torch:
         - void at::native::bitonicSortKVInPlace<-2, -1, 16, 16, float, long, at::native::G
         - void at::native::bitonicSortKVInPlace<2, -1, 16, 16, float, long, at::native::GT
         - void at::native::sbtopk::gatherTopK<float, unsigned int, 1, false>
         - void at::native::sbtopk::gatherTopK<float, unsigned int, 2, false>
-    residue: []
+    residue:
+    - concat_mla_absorb_q_kernel
+    - distribution_elementwise_grid_stride_kernel
+    - fused_k_indexer_norm_rope_store
+    - fused_q_indexer_rope_hadamard_quant
+    - fused_rope_kernel
+    - multi_tensor_apply_kernel
+    - topk_plan
+    - topk_small_batch_kernel
+    - topk_transform_prefill_kernel
     ops_observed:
     - attn:DeepseekSparseAttnBackend.forward_extend
     - moe:fused_experts_none_to_marlin
     coverage:
-      labeled: 49
-      residue: 0
+      labeled: 45
+      residue: 9
     kv_variants:
       fp8_e4m3:
         record: 20e6c7477fc7
         added_kernels:
         - _quantize_k_cache_fast_kernel
+        - elementwise_kernel_with_index
         - sm90::decode::sparse_fp8::flash_fwd_splitkv_mla_fp8_sparse_kernel
         - smxx::decode::flash_fwd_mla_combine_kernel
         - smxx::decode::get_mla_metadata_kernel(GetDecodeSchedMetaParams)
-        added_residue: []
+        added_residue:
+        - elementwise_kernel_with_index
   nvidia/GLM-5.1-NVFP4:
     record: 020e094afc45
     variant: mlp_layer_types_sparse
@@ -3764,6 +4209,7 @@ results:
     families:
       activation:
         framework_native:
+        - act_and_mul_kernel
         - triton_per_fused_copy_gather_select_sigmoid_slice_sum_3
         - triton_poi_fused__to_copy_arange_bitwise_not_eq_expand_masked_fill_scalar_tensor
         - triton_poi_fused__to_copy_copy_div_gather_randint_select_sigmoid_4
@@ -3796,21 +4242,16 @@ results:
         - nvjet_sm90_tst_64x8_64x16_2x1_v_bz_TNT
         - nvjet_sm90_tst_64x8_64x16_4x1_v_bz_splitK_TNT
         - nvjet_sm90_tst_80x128_64x8_2x1_v_bz_TNN
+        cutlass:
+        - fused_a_gemm_kernel
       infra:
         infra:
-        - Activity
-        - at_cuda_detail::cub::detail::scan::DeviceScanInitKernel
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
         - cudaEventRecordWithFlags
-        - cudaStreamIsCapturing
-        - namespace
         - void at::native::vectorized_gather_kernel<16, long>
       kvcache:
         framework_native:
         - _fused_dsa_decode_metadata_kernel
-        - alloc_decode_kernel
-        - alloc_extend_kernel
-        - compute_position_kernel
         - set_mla_kv_buffer_kernel
         - write_req_to_token_pool_triton
       moe_gemm:
@@ -3827,27 +4268,40 @@ results:
         - kernel_cutlass_kernel_flashinfernormkernelsfused_add_rmsnormFusedAddRMSNormKerne
         - kernel_cutlass_kernel_flashinfernormkernelsrmsnormRMSNormKernel
       routing:
+        framework_native:
+        - router_gemm_kernel
         torch:
         - void at::native::bitonicSortKVInPlace<-2, -1, 16, 16, float, long, at::native::G
         - void at::native::bitonicSortKVInPlace<2, -1, 16, 16, float, long, at::native::GT
         - void at::native::sbtopk::gatherTopK<float, unsigned int, 1, false>
         - void at::native::sbtopk::gatherTopK<float, unsigned int, 2, false>
-    residue: []
+    residue:
+    - concat_mla_absorb_q_kernel
+    - distribution_elementwise_grid_stride_kernel
+    - fused_k_indexer_norm_rope_store
+    - fused_q_indexer_rope_hadamard_quant
+    - fused_rope_kernel
+    - multi_tensor_apply_kernel
+    - topk_plan
+    - topk_small_batch_kernel
+    - topk_transform_prefill_kernel
     ops_observed:
     - attn:DeepseekSparseAttnBackend.forward_extend
     - moe:fused_experts_none_to_marlin
     coverage:
-      labeled: 49
-      residue: 0
+      labeled: 45
+      residue: 9
     kv_variants:
       fp8_e4m3:
         record: 835afa6decd6
         added_kernels:
         - _quantize_k_cache_fast_kernel
+        - indexSelectSmallIndex
         - sm90::decode::sparse_fp8::flash_fwd_splitkv_mla_fp8_sparse_kernel
         - smxx::decode::flash_fwd_mla_combine_kernel
         - smxx::decode::get_mla_metadata_kernel(GetDecodeSchedMetaParams)
-        added_residue: []
+        added_residue:
+        - indexSelectSmallIndex
   nvidia/GLM-5.2-NVFP4:
     record: 6e7b54fc8ca6
     variant: full_indexer_moe
@@ -3856,6 +4310,7 @@ results:
     families:
       activation:
         framework_native:
+        - act_and_mul_kernel
         - triton_per_fused_copy_gather_select_sigmoid_slice_sum_3
         - triton_poi_fused__to_copy_arange_bitwise_not_eq_expand_masked_fill_scalar_tensor
         - triton_poi_fused__to_copy_copy_div_gather_randint_select_sigmoid_4
@@ -3888,21 +4343,16 @@ results:
         - nvjet_sm90_tst_64x8_64x16_2x1_v_bz_TNT
         - nvjet_sm90_tst_64x8_64x16_4x1_v_bz_splitK_TNT
         - nvjet_sm90_tst_80x128_64x8_2x1_v_bz_TNN
+        cutlass:
+        - fused_a_gemm_kernel
       infra:
         infra:
-        - Activity
-        - at_cuda_detail::cub::detail::scan::DeviceScanInitKernel
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
         - cudaEventRecordWithFlags
-        - cudaStreamIsCapturing
-        - namespace
         - void at::native::vectorized_gather_kernel<16, long>
       kvcache:
         framework_native:
         - _fused_dsa_decode_metadata_kernel
-        - alloc_decode_kernel
-        - alloc_extend_kernel
-        - compute_position_kernel
         - set_mla_kv_buffer_kernel
         - write_req_to_token_pool_triton
       moe_gemm:
@@ -3919,23 +4369,35 @@ results:
         - kernel_cutlass_kernel_flashinfernormkernelsfused_add_rmsnormFusedAddRMSNormKerne
         - kernel_cutlass_kernel_flashinfernormkernelsrmsnormRMSNormKernel
       routing:
+        framework_native:
+        - router_gemm_kernel
         torch:
         - void at::native::bitonicSortKVInPlace<-2, -1, 16, 16, float, long, at::native::G
         - void at::native::bitonicSortKVInPlace<2, -1, 16, 16, float, long, at::native::GT
         - void at::native::sbtopk::gatherTopK<float, unsigned int, 1, false>
         - void at::native::sbtopk::gatherTopK<float, unsigned int, 2, false>
-    residue: []
+    residue:
+    - concat_mla_absorb_q_kernel
+    - distribution_elementwise_grid_stride_kernel
+    - fused_k_indexer_norm_rope_store
+    - fused_q_indexer_rope_hadamard_quant
+    - fused_rope_kernel
+    - multi_tensor_apply_kernel
+    - topk_plan
+    - topk_small_batch_kernel
+    - topk_transform_prefill_kernel
     ops_observed:
     - attn:DeepseekSparseAttnBackend.forward_extend
     - moe:fused_experts_none_to_marlin
     coverage:
-      labeled: 49
-      residue: 0
+      labeled: 45
+      residue: 9
     kv_variants:
       fp8_e4m3:
         record: 99be04f55fb6
         added_kernels:
         - _quantize_k_cache_fast_kernel
+        - at_cuda_detail::cub::detail::scan::DeviceScanInitKernel
         - sm90::decode::sparse_fp8::flash_fwd_splitkv_mla_fp8_sparse_kernel
         - smxx::decode::flash_fwd_mla_combine_kernel
         - smxx::decode::get_mla_metadata_kernel(GetDecodeSchedMetaParams)
@@ -3948,6 +4410,7 @@ results:
     families:
       activation:
         framework_native:
+        - act_and_mul_kernel
         - triton_per_fused_copy_gather_select_sigmoid_slice_sum_3
         - triton_poi_fused__to_copy_arange_bitwise_not_eq_expand_masked_fill_scalar_tensor
         - triton_poi_fused__to_copy_copy_div_gather_randint_select_sigmoid_4
@@ -3980,21 +4443,16 @@ results:
         - nvjet_sm90_tst_64x8_64x16_2x1_v_bz_TNT
         - nvjet_sm90_tst_64x8_64x16_4x1_v_bz_splitK_TNT
         - nvjet_sm90_tst_80x128_64x8_2x1_v_bz_TNN
+        cutlass:
+        - fused_a_gemm_kernel
       infra:
         infra:
-        - Activity
-        - at_cuda_detail::cub::detail::scan::DeviceScanInitKernel
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
         - cudaEventRecordWithFlags
-        - cudaStreamIsCapturing
-        - namespace
         - void at::native::vectorized_gather_kernel<16, long>
       kvcache:
         framework_native:
         - _fused_dsa_decode_metadata_kernel
-        - alloc_decode_kernel
-        - alloc_extend_kernel
-        - compute_position_kernel
         - set_mla_kv_buffer_kernel
         - write_req_to_token_pool_triton
       moe_gemm:
@@ -4011,33 +4469,49 @@ results:
         - kernel_cutlass_kernel_flashinfernormkernelsfused_add_rmsnormFusedAddRMSNormKerne
         - kernel_cutlass_kernel_flashinfernormkernelsrmsnormRMSNormKernel
       routing:
+        framework_native:
+        - router_gemm_kernel
         torch:
         - void at::native::bitonicSortKVInPlace<-2, -1, 16, 16, float, long, at::native::G
         - void at::native::bitonicSortKVInPlace<2, -1, 16, 16, float, long, at::native::GT
         - void at::native::sbtopk::gatherTopK<float, unsigned int, 1, false>
         - void at::native::sbtopk::gatherTopK<float, unsigned int, 2, false>
-    residue: []
+    residue:
+    - concat_mla_absorb_q_kernel
+    - distribution_elementwise_grid_stride_kernel
+    - fused_k_indexer_norm_rope_store
+    - fused_q_indexer_rope_hadamard_quant
+    - fused_rope_kernel
+    - multi_tensor_apply_kernel
+    - topk_plan
+    - topk_small_batch_kernel
+    - topk_transform_prefill_kernel
     ops_observed:
     - attn:DeepseekSparseAttnBackend.forward_extend
     - moe:fused_experts_none_to_marlin
     coverage:
-      labeled: 49
-      residue: 0
+      labeled: 45
+      residue: 9
     kv_variants:
       fp8_e4m3:
         record: 4d614705158d
         added_kernels:
         - _quantize_k_cache_fast_kernel
+        - indexSelectSmallIndex
         - sm90::decode::sparse_fp8::flash_fwd_splitkv_mla_fp8_sparse_kernel
         - smxx::decode::flash_fwd_mla_combine_kernel
         - smxx::decode::get_mla_metadata_kernel(GetDecodeSchedMetaParams)
-        added_residue: []
+        added_residue:
+        - indexSelectSmallIndex
   nvidia/Gemma-4-31B-IT-NVFP4:
     record: bda04182f1f8
     variant: all_kinds
     kv: auto
     probe_eager: false
     families:
+      activation:
+        framework_native:
+        - act_and_mul_kernel
       attention:
         triton:
         - _fwd_grouped_kernel_stage1
@@ -4064,7 +4538,6 @@ results:
         - cudaEventRecordWithFlags
         - cudaStreamIsCapturing
         - get_num_kv_splits_triton
-        - namespace
         - sglang.vlm.language_model_prefill
         - void at::native::vectorized_gather_kernel<16, long>
       kvcache:
@@ -4078,18 +4551,26 @@ results:
         - _gemma_rmsnorm_residual_kernel
         - kernel_cutlass_kernel_flashinfernormkernelsfused_add_rmsnormFusedAddRMSNormKerne
         - kernel_cutlass_kernel_flashinfernormkernelsrmsnormRMSNormKernel
-    residue: []
+    residue:
+    - clamp_position_kernel
+    - fused_rope_kernel
+    - indexSelectSmallIndex
+    - multi_tensor_apply_kernel
+    - store_kvcache
     ops_observed:
     - attn:TritonAttnBackend.forward_extend
     coverage:
       labeled: 28
-      residue: 0
+      residue: 5
   nvidia/Kimi-K2.5-NVFP4:
     record: 3bb17c92fa1d
     variant: rep
     kv: auto
     probe_eager: false
     families:
+      activation:
+        framework_native:
+        - act_and_mul_kernel
       attention:
         fa3:
         - flash::FlashAttnFwdCombine
@@ -4106,6 +4587,8 @@ results:
         - nvjet_sm90_tst_192x8_64x8_2x1_v_bz_splitK_TNT
         - nvjet_sm90_tst_320x128_64x3_1x2_h_bz_coopB_TNT
         - nvjet_sm90_tst_64x8_64x16_2x1_v_bz_TNT
+        cutlass:
+        - fused_a_gemm_kernel
         marlin:
         - device::marlin::Marlin
       infra:
@@ -4115,7 +4598,6 @@ results:
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
         - cudaEventRecordWithFlags
         - cudaStreamIsCapturing
-        - namespace
         - sglang.vlm.language_model_prefill
         - void at::native::vectorized_gather_kernel<16, long>
       kvcache:
@@ -4141,13 +4623,18 @@ results:
       routing:
         framework_native:
         - _router_triton_kernel
-    residue: []
+        - router_gemm_kernel
+    residue:
+    - clamp_position_kernel
+    - fused_rope_kernel
+    - indexSelectSmallIndex
+    - multi_tensor_apply_kernel
     ops_observed:
     - attn:FlashAttentionBackend.forward_extend
     - moe:fused_experts_none_to_marlin
     coverage:
-      labeled: 34
-      residue: 0
+      labeled: 36
+      residue: 4
     kv_variants:
       fp8_e4m3:
         record: b8ce2ba30b9c
@@ -4160,6 +4647,9 @@ results:
     kv: auto
     probe_eager: false
     families:
+      activation:
+        framework_native:
+        - act_and_mul_kernel
       attention:
         fa3:
         - flash::FlashAttnFwdCombine
@@ -4178,6 +4668,8 @@ results:
         - nvjet_sm90_tst_192x8_64x8_2x1_v_bz_splitK_TNT
         - nvjet_sm90_tst_320x128_64x3_1x2_h_bz_coopB_TNT
         - nvjet_sm90_tst_64x8_64x16_2x1_v_bz_TNT
+        cutlass:
+        - fused_a_gemm_kernel
       infra:
         infra:
         - Activity
@@ -4185,7 +4677,6 @@ results:
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
         - cudaEventRecordWithFlags
         - cudaStreamIsCapturing
-        - namespace
         - sglang.vlm.language_model_prefill
         - void at::native::vectorized_gather_kernel<16, long>
       kvcache:
@@ -4211,19 +4702,27 @@ results:
       routing:
         framework_native:
         - _router_triton_kernel
-    residue: []
+        - router_gemm_kernel
+    residue:
+    - clamp_position_kernel
+    - fused_rope_kernel
+    - indexSelectSmallIndex
+    - multi_tensor_apply_kernel
     ops_observed:
     - attn:FlashAttentionBackend.forward_extend
     - moe:fused_experts_none_to_marlin
     coverage:
-      labeled: 35
-      residue: 0
+      labeled: 37
+      residue: 4
   nvidia/Kimi-K2.7-Code-NVFP4:
     record: 40b5ab13117d
     variant: rep
     kv: auto
     probe_eager: false
     families:
+      activation:
+        framework_native:
+        - act_and_mul_kernel
       attention:
         fa3:
         - flash::FlashAttnFwdCombine
@@ -4242,6 +4741,8 @@ results:
         - nvjet_sm90_tst_192x8_64x8_2x1_v_bz_splitK_TNT
         - nvjet_sm90_tst_320x128_64x3_1x2_h_bz_coopB_TNT
         - nvjet_sm90_tst_64x8_64x16_2x1_v_bz_TNT
+        cutlass:
+        - fused_a_gemm_kernel
       infra:
         infra:
         - Activity
@@ -4249,7 +4750,6 @@ results:
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
         - cudaEventRecordWithFlags
         - cudaStreamIsCapturing
-        - namespace
         - sglang.vlm.language_model_prefill
         - void at::native::vectorized_gather_kernel<16, long>
       kvcache:
@@ -4275,19 +4775,27 @@ results:
       routing:
         framework_native:
         - _router_triton_kernel
-    residue: []
+        - router_gemm_kernel
+    residue:
+    - clamp_position_kernel
+    - fused_rope_kernel
+    - indexSelectSmallIndex
+    - multi_tensor_apply_kernel
     ops_observed:
     - attn:FlashAttentionBackend.forward_extend
     - moe:fused_experts_none_to_marlin
     coverage:
-      labeled: 35
-      residue: 0
+      labeled: 37
+      residue: 4
   nvidia/Llama-3.1-70B-Instruct-FP8:
     record: 846e014497a3
     variant: rep
     kv: auto
     probe_eager: false
     families:
+      activation:
+        framework_native:
+        - act_and_mul_kernel
       attention:
         fa3:
         - flash::FlashAttnFwdCombine
@@ -4306,7 +4814,6 @@ results:
         - cuLaunchKernelEx
         - cudaEventRecordWithFlags
         - cudaStreamIsCapturing
-        - namespace
         - void at::native::vectorized_gather_kernel<16, long>
       kvcache:
         framework_native:
@@ -4320,18 +4827,26 @@ results:
       quant:
         sgl_kernel:
         - _static_quant_fp8
-    residue: []
+    residue:
+    - clamp_position_kernel
+    - fused_rope_kernel
+    - indexSelectSmallIndex
+    - multi_tensor_apply_kernel
+    - store_kvcache
     ops_observed:
     - attn:FlashAttentionBackend.forward_extend
     coverage:
       labeled: 19
-      residue: 0
+      residue: 5
   nvidia/Llama-3_3-Nemotron-Super-49B-v1:
     record: 20d070a15d8c
     variant: rep
     kv: auto
     probe_eager: false
     families:
+      activation:
+        framework_native:
+        - act_and_mul_kernel
       attention:
         fa3:
         - flash::FlashAttnFwdCombine
@@ -4354,7 +4869,6 @@ results:
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
         - cuLaunchKernelEx
         - cudaEventRecordWithFlags
-        - namespace
         - void at::native::vectorized_gather_kernel<16, long>
       kvcache:
         framework_native:
@@ -4365,12 +4879,17 @@ results:
         framework_native:
         - kernel_cutlass_kernel_flashinfernormkernelsfused_add_rmsnormFusedAddRMSNormKerne
         - kernel_cutlass_kernel_flashinfernormkernelsrmsnormRMSNormKernel
-    residue: []
+    residue:
+    - clamp_position_kernel
+    - fused_rope_kernel
+    - indexSelectSmallIndex
+    - multi_tensor_apply_kernel
+    - store_kvcache
     ops_observed:
     - attn:FlashAttentionBackend.forward_extend
     coverage:
       labeled: 23
-      residue: 0
+      residue: 5
     kv_variants:
       fp8_e4m3:
         record: 8e680ef5da2d
@@ -4383,6 +4902,9 @@ results:
     kv: auto
     probe_eager: false
     families:
+      activation:
+        framework_native:
+        - act_and_mul_kernel
       attention:
         fa3:
         - flash::FlashAttnFwdCombine
@@ -4406,7 +4928,6 @@ results:
         - cuLaunchKernelEx
         - cudaEventRecordWithFlags
         - cudaStreamIsCapturing
-        - namespace
         - void at::native::vectorized_gather_kernel<16, long>
       kvcache:
         framework_native:
@@ -4431,18 +4952,26 @@ results:
       routing:
         framework_native:
         - _router_triton_kernel
-    residue: []
+    residue:
+    - clamp_position_kernel
+    - fused_rope_kernel
+    - indexSelectSmallIndex
+    - multi_tensor_apply_kernel
+    - store_kvcache
     ops_observed:
     - attn:FlashAttentionBackend.forward_extend
     coverage:
       labeled: 32
-      residue: 0
+      residue: 5
   nvidia/MiniMax-M2.7-NVFP4:
     record: 9ed2f1bd304d
     variant: rep
     kv: auto
     probe_eager: false
     families:
+      activation:
+        framework_native:
+        - act_and_mul_kernel
       attention:
         fa3:
         - flash::FlashAttnFwdCombine
@@ -4466,7 +4995,6 @@ results:
         - cuLaunchKernelEx
         - cudaEventRecordWithFlags
         - cudaStreamIsCapturing
-        - namespace
         - void at::native::vectorized_gather_kernel<16, long>
       kvcache:
         framework_native:
@@ -4491,12 +5019,17 @@ results:
       routing:
         framework_native:
         - _router_triton_kernel
-    residue: []
+    residue:
+    - clamp_position_kernel
+    - fused_rope_kernel
+    - indexSelectSmallIndex
+    - multi_tensor_apply_kernel
+    - store_kvcache
     ops_observed:
     - attn:FlashAttentionBackend.forward_extend
     coverage:
       labeled: 32
-      residue: 0
+      residue: 5
   nvidia/MiniMax-M3-NVFP4:
     record: f2bffe5e8410
     variant: moe_sparse_attn
@@ -4537,7 +5070,6 @@ results:
         - at_cuda_detail::cub::detail::scan::DeviceScanInitKernel
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
         - cudaEventRecordWithFlags
-        - namespace
         - sglang.vlm.language_model_prefill
         - void at::native::vectorized_gather_kernel<16, long>
       kvcache:
@@ -4564,18 +5096,27 @@ results:
       routing:
         framework_native:
         - _router_triton_kernel
-    residue: []
+    residue:
+    - CatArrayBatchedCopy_alignedK_contig
+    - clamp_position_kernel
+    - elementwise_kernel_with_index
+    - fused_gemma_qknorm_rope_kernel
+    - indexSelectSmallIndex
+    - multi_tensor_apply_kernel
+    - store_kv_index_kernel
     ops_observed:
     - attn:MiniMaxHybridAttnBackend.forward
     coverage:
-      labeled: 42
-      residue: 0
+      labeled: 41
+      residue: 7
     kv_variants:
       fp8_e4m3:
         record: 7c1b972aae78
         added_kernels:
         - cudaStreamIsCapturing
-        added_residue: []
+        - store_kvcache
+        added_residue:
+        - store_kvcache
   nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16:
     record: 2741b1fa09d0
     variant: all_kinds
@@ -4609,7 +5150,6 @@ results:
         - compute_cuda_kernel
         - cuLaunchKernelEx
         - cudaStreamIsCapturing
-        - namespace
         - operator
         - void at::native::vectorized_gather_kernel<16, long>
       kvcache:
@@ -4651,12 +5191,18 @@ results:
       routing:
         framework_native:
         - _router_triton_kernel
-    residue: []
+    residue:
+    - act_kernel
+    - clamp_position_kernel
+    - elementwise_kernel_with_index
+    - indexSelectSmallIndex
+    - multi_tensor_apply_kernel
+    - store_kvcache
     ops_observed:
     - attn:HybridLinearAttnBackend.forward_extend
     coverage:
-      labeled: 50
-      residue: 0
+      labeled: 49
+      residue: 6
   nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4:
     record: 75a931ba65c9
     variant: all_kinds
@@ -4688,7 +5234,6 @@ results:
         - compute_cuda_kernel
         - cudaEventRecordWithFlags
         - cudaStreamIsCapturing
-        - namespace
         - operator
         - void at::native::vectorized_gather_kernel<16, long>
       kvcache:
@@ -4726,12 +5271,18 @@ results:
       routing:
         framework_native:
         - _router_triton_kernel
-    residue: []
+    residue:
+    - act_kernel
+    - clamp_position_kernel
+    - elementwise_kernel_with_index
+    - indexSelectSmallIndex
+    - multi_tensor_apply_kernel
+    - store_kvcache
     ops_observed:
     - attn:HybridLinearAttnBackend.forward_extend
     coverage:
-      labeled: 43
-      residue: 0
+      labeled: 42
+      residue: 6
   nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-FP8:
     record: 91c7dbefc5ca
     variant: all_kinds
@@ -4755,6 +5306,7 @@ results:
         - nvjet_sm90_tst_64x8_64x16_2x1_v_bz_TNT
         cutlass:
         - cutlass_3x_gemm_sm90_fp8
+        - fused_a_gemm_kernel
       infra:
         infra:
         - Activity
@@ -4762,7 +5314,6 @@ results:
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
         - compute_cuda_kernel
         - cudaStreamIsCapturing
-        - namespace
         - operator
         - void at::native::vectorized_gather_kernel<16, long>
       kvcache:
@@ -4807,12 +5358,19 @@ results:
       routing:
         framework_native:
         - _router_triton_kernel
-    residue: []
+    residue:
+    - act_kernel
+    - clamp_position_kernel
+    - elementwise_kernel_with_index
+    - indexSelectSmallIndex
+    - multi_tensor_apply_kernel
+    - per_tensor_quant_fp8_kernel
+    - store_kvcache
     ops_observed:
     - attn:HybridLinearAttnBackend.forward_extend
     coverage:
       labeled: 47
-      residue: 0
+      residue: 7
   nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4:
     record: 4a71ab585c4f
     variant: all_kinds
@@ -4844,7 +5402,6 @@ results:
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
         - compute_cuda_kernel
         - cudaStreamIsCapturing
-        - namespace
         - operator
         - void at::native::vectorized_gather_kernel<16, long>
       kvcache:
@@ -4885,12 +5442,18 @@ results:
       routing:
         framework_native:
         - _router_triton_kernel
-    residue: []
+    residue:
+    - act_kernel
+    - clamp_position_kernel
+    - elementwise_kernel_with_index
+    - indexSelectSmallIndex
+    - multi_tensor_apply_kernel
+    - store_kvcache
     ops_observed:
     - attn:HybridLinearAttnBackend.forward_extend
     coverage:
-      labeled: 43
-      residue: 0
+      labeled: 42
+      residue: 6
   nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16:
     record: 4306f9951673
     variant: all_kinds
@@ -4916,6 +5479,8 @@ results:
         - nvjet_sm90_tst_320x128_64x3_1x2_h_bz_coopB_TNT
         - nvjet_sm90_tst_384x8_64x4_2x1_v_bz_splitK_TNT
         - nvjet_sm90_tst_64x8_64x16_2x1_v_bz_splitK_TNT
+        cutlass:
+        - fused_a_gemm_kernel
       infra:
         infra:
         - Activity
@@ -4924,7 +5489,6 @@ results:
         - compute_cuda_kernel
         - cuLaunchKernelEx
         - cudaStreamIsCapturing
-        - namespace
         - operator
         - void at::native::vectorized_gather_kernel<16, long>
       kvcache:
@@ -4966,12 +5530,18 @@ results:
       routing:
         framework_native:
         - _router_triton_kernel
-    residue: []
+    residue:
+    - act_kernel
+    - clamp_position_kernel
+    - elementwise_kernel_with_index
+    - indexSelectSmallIndex
+    - multi_tensor_apply_kernel
+    - store_kvcache
     ops_observed:
     - attn:HybridLinearAttnBackend.forward_extend
     coverage:
       labeled: 50
-      residue: 0
+      residue: 6
   nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-FP8:
     record: 7764fe6d9e1a
     variant: all_kinds
@@ -4996,6 +5566,7 @@ results:
         - nvjet_sm90_tst_64x8_64x16_2x1_v_bz_splitK_TNT
         cutlass:
         - cutlass_3x_gemm_sm90_fp8
+        - fused_a_gemm_kernel
       infra:
         infra:
         - Activity
@@ -5003,7 +5574,6 @@ results:
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
         - compute_cuda_kernel
         - cudaStreamIsCapturing
-        - namespace
         - operator
         - void at::native::vectorized_gather_kernel<16, long>
       kvcache:
@@ -5048,12 +5618,19 @@ results:
       routing:
         framework_native:
         - _router_triton_kernel
-    residue: []
+    residue:
+    - act_kernel
+    - clamp_position_kernel
+    - elementwise_kernel_with_index
+    - indexSelectSmallIndex
+    - multi_tensor_apply_kernel
+    - per_tensor_quant_fp8_kernel
+    - store_kvcache
     ops_observed:
     - attn:HybridLinearAttnBackend.forward_extend
     coverage:
       labeled: 48
-      residue: 0
+      residue: 7
   nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-NVFP4:
     record: 631d72e3131e
     variant: all_kinds
@@ -5078,6 +5655,7 @@ results:
         - nvjet_sm90_tst_64x8_64x16_2x1_v_bz_splitK_TNT
         cutlass:
         - cutlass_3x_gemm_sm90_fp8
+        - fused_a_gemm_kernel
       infra:
         infra:
         - Activity
@@ -5085,7 +5663,6 @@ results:
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
         - compute_cuda_kernel
         - cudaStreamIsCapturing
-        - namespace
         - operator
         - void at::native::vectorized_gather_kernel<16, long>
       kvcache:
@@ -5126,12 +5703,18 @@ results:
       routing:
         framework_native:
         - _router_triton_kernel
-    residue: []
+    residue:
+    - act_kernel
+    - clamp_position_kernel
+    - elementwise_kernel_with_index
+    - indexSelectSmallIndex
+    - multi_tensor_apply_kernel
+    - store_kvcache
     ops_observed:
     - attn:HybridLinearAttnBackend.forward_extend
     coverage:
       labeled: 44
-      residue: 0
+      residue: 6
   nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16:
     record: 828cbc315e98
     variant: all_kinds
@@ -5165,7 +5748,6 @@ results:
         - compute_cuda_kernel
         - cuLaunchKernelEx
         - cudaStreamIsCapturing
-        - namespace
         - operator
         - void at::native::vectorized_gather_kernel<16, long>
       kvcache:
@@ -5207,12 +5789,18 @@ results:
       routing:
         framework_native:
         - _router_triton_kernel
-    residue: []
+    residue:
+    - act_kernel
+    - clamp_position_kernel
+    - elementwise_kernel_with_index
+    - indexSelectSmallIndex
+    - multi_tensor_apply_kernel
+    - store_kvcache
     ops_observed:
     - attn:HybridLinearAttnBackend.forward_extend
     coverage:
-      labeled: 50
-      residue: 0
+      labeled: 49
+      residue: 6
   nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4:
     record: 4cd1890a1d5e
     variant: all_kinds
@@ -5244,7 +5832,6 @@ results:
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
         - compute_cuda_kernel
         - cudaStreamIsCapturing
-        - namespace
         - operator
         - void at::native::vectorized_gather_kernel<16, long>
       kvcache:
@@ -5285,12 +5872,18 @@ results:
       routing:
         framework_native:
         - _router_triton_kernel
-    residue: []
+    residue:
+    - act_kernel
+    - clamp_position_kernel
+    - elementwise_kernel_with_index
+    - indexSelectSmallIndex
+    - multi_tensor_apply_kernel
+    - store_kvcache
     ops_observed:
     - attn:HybridLinearAttnBackend.forward_extend
     coverage:
-      labeled: 43
-      residue: 0
+      labeled: 42
+      residue: 6
   nvidia/Nemotron-H-56B-Base-8K:
     record: ec7b843946ec
     variant: all_kinds
@@ -5320,7 +5913,6 @@ results:
         - compute_cuda_kernel
         - cuLaunchKernelEx
         - cudaStreamIsCapturing
-        - namespace
         - operator
         - void at::native::vectorized_gather_kernel<16, long>
       kvcache:
@@ -5346,18 +5938,27 @@ results:
         - _layer_norm_fwd_1pass_kernel
         - kernel_cutlass_kernel_flashinfernormkernelsfused_add_rmsnormFusedAddRMSNormKerne
         - kernel_cutlass_kernel_flashinfernormkernelsrmsnormRMSNormKernel
-    residue: []
+    residue:
+    - act_kernel
+    - clamp_position_kernel
+    - elementwise_kernel_with_index
+    - indexSelectSmallIndex
+    - multi_tensor_apply_kernel
+    - store_kvcache
     ops_observed:
     - attn:HybridLinearAttnBackend.forward_extend
     coverage:
-      labeled: 36
-      residue: 0
+      labeled: 35
+      residue: 6
   nvidia/Qwen3-235B-A22B-NVFP4:
     record: 3c2d0e2286b6
     variant: rep
     kv: auto
     probe_eager: false
     families:
+      activation:
+        framework_native:
+        - act_and_mul_kernel
       attention:
         fa3:
         - flash::FlashAttnFwdCombine
@@ -5379,7 +5980,6 @@ results:
         - cuLaunchKernelEx
         - cudaEventRecordWithFlags
         - cudaStreamIsCapturing
-        - namespace
         - void at::native::vectorized_gather_kernel<16, long>
       kvcache:
         framework_native:
@@ -5402,12 +6002,18 @@ results:
       routing:
         framework_native:
         - _router_triton_kernel
-    residue: []
+    residue:
+    - clamp_position_kernel
+    - fused_qknorm_warp
+    - fused_rope_kernel
+    - indexSelectSmallIndex
+    - multi_tensor_apply_kernel
+    - store_kvcache
     ops_observed:
     - attn:FlashAttentionBackend.forward_extend
     coverage:
       labeled: 27
-      residue: 0
+      residue: 6
   nvidia/Qwen3.5-122B-A10B-NVFP4:
     record: 831f799dde6f
     variant: depth8
@@ -5418,6 +6024,7 @@ results:
         framework_native:
         - _fused_gate_sigmoid_mul_add_kernel
         - _fused_sigmoid_mul_kernel
+        - act_and_mul_kernel
       attention:
         fa3:
         - flash::FlashAttnFwdCombine
@@ -5444,7 +6051,6 @@ results:
         - cuLaunchKernelEx
         - cudaEventRecordWithFlags
         - cudaStreamIsCapturing
-        - namespace
         - sglang.vlm.language_model_prefill
         - void at::native::vectorized_gather_kernel<16, long>
       kvcache:
@@ -5486,12 +6092,16 @@ results:
       routing:
         framework_native:
         - _router_triton_kernel
-    residue: []
+    residue:
+    - CatArrayBatchedCopy_alignedK_contig
+    - clamp_position_kernel
+    - indexSelectSmallIndex
+    - store_kvcache
     ops_observed:
     - attn:HybridLinearAttnBackend.forward_extend
     coverage:
       labeled: 51
-      residue: 0
+      residue: 4
   nvidia/Qwen3.5-397B-A17B-NVFP4:
     record: 1d34902490e5
     variant: depth8
@@ -5502,6 +6112,7 @@ results:
         framework_native:
         - _fused_gate_sigmoid_mul_add_kernel
         - _fused_sigmoid_mul_kernel
+        - act_and_mul_kernel
       attention:
         fa3:
         - flash::FlashAttnFwdCombine
@@ -5526,7 +6137,6 @@ results:
         - cuLaunchKernelEx
         - cudaEventRecordWithFlags
         - cudaStreamIsCapturing
-        - namespace
         - sglang.vlm.language_model_prefill
         - void at::native::vectorized_gather_kernel<16, long>
       kvcache:
@@ -5568,12 +6178,16 @@ results:
       routing:
         framework_native:
         - _router_triton_kernel
-    residue: []
+    residue:
+    - CatArrayBatchedCopy_alignedK_contig
+    - clamp_position_kernel
+    - indexSelectSmallIndex
+    - store_kvcache
     ops_observed:
     - attn:HybridLinearAttnBackend.forward_extend
     coverage:
       labeled: 49
-      residue: 0
+      residue: 4
   nvidia/Qwen3.6-27B-NVFP4:
     record: 738b02b8a463
     variant: depth8
@@ -5583,6 +6197,7 @@ results:
       activation:
         framework_native:
         - _fused_sigmoid_mul_kernel
+        - act_and_mul_kernel
       attention:
         fa3:
         - flash::FlashAttnFwdCombine
@@ -5605,7 +6220,6 @@ results:
         - cuLaunchKernelEx
         - cudaEventRecordWithFlags
         - cudaStreamIsCapturing
-        - namespace
         - sglang.vlm.language_model_prefill
         - void at::native::vectorized_gather_kernel<16, long>
       kvcache:
@@ -5637,12 +6251,18 @@ results:
       quant:
         sgl_kernel:
         - _static_quant_fp8
-    residue: []
+    residue:
+    - CatArrayBatchedCopy
+    - CatArrayBatchedCopy_alignedK_contig
+    - CatArrayBatchedCopy_vectorized
+    - clamp_position_kernel
+    - indexSelectSmallIndex
+    - store_kvcache
     ops_observed:
     - attn:HybridLinearAttnBackend.forward_extend
     coverage:
       labeled: 38
-      residue: 0
+      residue: 6
   nvidia/Qwen3.6-35B-A3B-NVFP4:
     record: ee60a24982bb
     variant: depth8
@@ -5653,6 +6273,7 @@ results:
         framework_native:
         - _fused_gate_sigmoid_mul_add_kernel
         - _fused_sigmoid_mul_kernel
+        - act_and_mul_kernel
       attention:
         fa3:
         - flash::FlashAttnFwdCombine
@@ -5676,7 +6297,6 @@ results:
         - cuLaunchKernelEx
         - cudaEventRecordWithFlags
         - cudaStreamIsCapturing
-        - namespace
         - sglang.vlm.language_model_prefill
         - void at::native::vectorized_gather_kernel<16, long>
       kvcache:
@@ -5722,12 +6342,16 @@ results:
       routing:
         framework_native:
         - _router_triton_kernel
-    residue: []
+    residue:
+    - CatArrayBatchedCopy_alignedK_contig
+    - clamp_position_kernel
+    - indexSelectSmallIndex
+    - store_kvcache
     ops_observed:
     - attn:HybridLinearAttnBackend.forward_extend
     coverage:
       labeled: 48
-      residue: 0
+      residue: 4
   nvidia/Qwen3.8-27B-NVFP4:
     record: db8059353d93
     variant: depth8
@@ -5737,6 +6361,7 @@ results:
       activation:
         framework_native:
         - _fused_sigmoid_mul_kernel
+        - act_and_mul_kernel
       attention:
         fa3:
         - flash::FlashAttnFwdCombine
@@ -5759,7 +6384,6 @@ results:
         - cuLaunchKernelEx
         - cudaEventRecordWithFlags
         - cudaStreamIsCapturing
-        - namespace
         - sglang.vlm.language_model_prefill
         - void at::native::vectorized_gather_kernel<16, long>
       kvcache:
@@ -5791,12 +6415,18 @@ results:
       quant:
         sgl_kernel:
         - _static_quant_fp8
-    residue: []
+    residue:
+    - CatArrayBatchedCopy
+    - CatArrayBatchedCopy_alignedK_contig
+    - CatArrayBatchedCopy_vectorized
+    - clamp_position_kernel
+    - indexSelectSmallIndex
+    - store_kvcache
     ops_observed:
     - attn:HybridLinearAttnBackend.forward_extend
     coverage:
       labeled: 38
-      residue: 0
+      residue: 6
   openai/gpt-oss-120b:
     record: c807ac0689ed
     variant: interleave_pair
@@ -5829,7 +6459,6 @@ results:
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
         - cudaEventRecordWithFlags
         - cudaStreamIsCapturing
-        - namespace
         - void at::native::vectorized_gather_kernel<16, long>
       kvcache:
         framework_native:
@@ -5850,12 +6479,17 @@ results:
         - _bitmatrix_metadata_compute_stage2
         - _sum_bitmatrix_rows
         - _topk_forward
-    residue: []
+    residue:
+    - clamp_position_kernel
+    - fused_rope_kernel
+    - indexSelectSmallIndex
+    - multi_tensor_apply_kernel
+    - store_kvcache
     ops_observed:
     - attn:FlashAttentionBackend.forward_extend
     coverage:
-      labeled: 32
-      residue: 0
+      labeled: 31
+      residue: 5
   openai/gpt-oss-20b:
     record: 7a624d14be9c
     variant: interleave_pair
@@ -5888,7 +6522,6 @@ results:
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
         - cudaEventRecordWithFlags
         - cudaStreamIsCapturing
-        - namespace
         - void at::native::vectorized_gather_kernel<16, long>
       kvcache:
         framework_native:
@@ -5909,18 +6542,26 @@ results:
         - _bitmatrix_metadata_compute_stage2
         - _sum_bitmatrix_rows
         - _topk_forward
-    residue: []
+    residue:
+    - clamp_position_kernel
+    - fused_rope_kernel
+    - indexSelectSmallIndex
+    - multi_tensor_apply_kernel
+    - store_kvcache
     ops_observed:
     - attn:FlashAttentionBackend.forward_extend
     coverage:
-      labeled: 32
-      residue: 0
+      labeled: 31
+      residue: 5
   openbmb/MiniCPM5-2B:
     record: 6a884779a3b7
     variant: rep
     kv: auto
     probe_eager: false
     families:
+      activation:
+        framework_native:
+        - act_and_mul_kernel
       attention:
         fa3:
         - flash::FlashAttnFwdCombine
@@ -5942,7 +6583,6 @@ results:
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
         - cuLaunchKernelEx
         - cudaEventRecordWithFlags
-        - namespace
         - void at::native::vectorized_gather_kernel<16, long>
       kvcache:
         framework_native:
@@ -5953,12 +6593,17 @@ results:
         framework_native:
         - kernel_cutlass_kernel_flashinfernormkernelsfused_add_rmsnormFusedAddRMSNormKerne
         - kernel_cutlass_kernel_flashinfernormkernelsrmsnormRMSNormKernel
-    residue: []
+    residue:
+    - clamp_position_kernel
+    - fused_rope_kernel
+    - indexSelectSmallIndex
+    - multi_tensor_apply_kernel
+    - store_kvcache
     ops_observed:
     - attn:FlashAttentionBackend.forward_extend
     coverage:
       labeled: 22
-      residue: 0
+      residue: 5
     kv_variants:
       fp8_e4m3:
         record: 65083f633ac3
@@ -5975,6 +6620,7 @@ results:
         framework_native:
         - _fused_gate_sigmoid_mul_add_kernel
         - _fused_sigmoid_mul_kernel
+        - act_and_mul_kernel
         - triton_per_fused_copy__mul_sum_0
       attention:
         fa3:
@@ -6004,7 +6650,6 @@ results:
         - cuLaunchKernelEx
         - cudaEventRecordWithFlags
         - cudaStreamIsCapturing
-        - namespace
         - sglang.vlm.language_model_prefill
         - void at::native::vectorized_gather_kernel<16, long>
       kvcache:
@@ -6046,21 +6691,22 @@ results:
       routing:
         framework_native:
         - _router_triton_kernel
-    residue: []
+    residue:
+    - CatArrayBatchedCopy_alignedK_contig
+    - clamp_position_kernel
+    - indexSelectSmallIndex
+    - store_kvcache
     ops_observed:
     - attn:HybridLinearAttnBackend.forward_extend
     coverage:
       labeled: 54
-      residue: 0
+      residue: 4
   sgl-project/DeepSeek-V4-Flash-FP8:
     record: 2a7de1066822
     variant: rep_mix
     kv: fp8_e4m3
     probe_eager: false
     families:
-      activation:
-        framework_native:
-        - triton_poi_fused_copy__mul_sum_0
       attention:
         dsa_nsa:
         - sm90::fwd::sparse_attn_fwd_kernel
@@ -6088,11 +6734,8 @@ results:
         - deep_gemm::sm90_fp8_gemm_1d2d_impl
       infra:
         infra:
-        - Activity
-        - at_cuda_detail::cub::detail::scan::DeviceScanInitKernel
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
         - cuLaunchKernelEx
-        - namespace
         - operator
         - void at::native::vectorized_gather_kernel<16, long>
       kvcache:
@@ -6100,15 +6743,8 @@ results:
         - _build_swa_token_ids_kernel
         - _causal_swa_page_indices_kernel
         - _combine_topk_swa_indices_kernel
-        - _expand_prefill_causally_kernel
         - _init_compressed_attn_metadata_kernel
         - _page_table_positions_kernel
-        - alloc_decode_kernel
-        - alloc_extend_kernel
-        - compute_position_kernel
-        - host::compress::plan_compress_decode_kernel(host::compress::DecodeParams)
-        - host::compress::plan_compress_prefill_kernel_1(host::compress::Prefill1Params)
-        - write_req_to_token_pool_triton
       mhc:
         deepgemm:
         - deep_gemm::sm90_tf32_hc_prenorm_gemm_impl
@@ -6130,25 +6766,47 @@ results:
       quant:
         sgl_kernel:
         - _dequantize_k_cache_paged_kernel
+        - per_token_group_quant_8bit_v2_kernel
       routing:
         framework_native:
         - _router_triton_kernel
-    residue: []
+        - router_gemm_kernel
+    residue:
+    - deepseek_rope_kernel
+    - elementwise_kernel_with_index
+    - flash_c128_prefill
+    - flash_c4_prefill
+    - fused_k_norm_rope_flashmla
+    - fused_norm_rope_flashmla
+    - fused_q_indexer_rope_hadamard_quant
+    - fused_q_norm_rope
+    - indexSelectSmallIndex
+    - multi_tensor_apply_kernel
+    - silu_mul_clamp_kernel
+    - smxx_paged_mqa_logits_metadata
+    - topk_small_batch_kernel
+    - topk_transform_kernel
+    - write_c4_prefill
     ops_observed:
     - attn:DeepseekV4AttnBackend.forward
     - moe:fused_experts_none_to_triton
     coverage:
-      labeled: 48
-      residue: 0
+      labeled: 39
+      residue: 15
+    kv_variants:
+      fp8_e4m3:
+        record: 4adf016d0eac
+        added_kernels:
+        - alloc_extend_kernel
+        - topk_plan
+        added_residue:
+        - topk_plan
   sgl-project/DeepSeek-V4-Pro-FP8:
     record: 45bf03a7aa9e
     variant: interleave_pair
     kv: fp8_e4m3
     probe_eager: false
     families:
-      activation:
-        framework_native:
-        - triton_poi_fused_copy__mul_sum_0
       attention:
         dsa_nsa:
         - sm90::fwd::sparse_attn_fwd_kernel
@@ -6178,11 +6836,7 @@ results:
         - deep_gemm::sm90_fp8_gemm_1d2d_impl
       infra:
         infra:
-        - Activity
-        - at_cuda_detail::cub::detail::scan::DeviceScanInitKernel
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
-        - cuLaunchKernelEx
-        - namespace
         - operator
         - void at::native::vectorized_gather_kernel<16, long>
       kvcache:
@@ -6190,13 +6844,9 @@ results:
         - _build_swa_token_ids_kernel
         - _causal_swa_page_indices_kernel
         - _combine_topk_swa_indices_kernel
-        - _expand_prefill_causally_kernel
         - _init_compressed_attn_metadata_kernel
         - _page_table_positions_kernel
-        - alloc_decode_kernel
         - alloc_extend_kernel
-        - compute_position_kernel
-        - host::compress::plan_compress_decode_kernel(host::compress::DecodeParams)
         - host::compress::plan_compress_prefill_kernel_1(host::compress::Prefill1Params)
         - write_req_to_token_pool_triton
       mhc:
@@ -6220,16 +6870,41 @@ results:
       quant:
         sgl_kernel:
         - _dequantize_k_cache_paged_kernel
+        - per_token_group_quant_8bit_v2_kernel
       routing:
         framework_native:
         - _router_triton_kernel
-    residue: []
+        - router_gemm_kernel
+    residue:
+    - deepseek_rope_kernel
+    - elementwise_kernel_with_index
+    - flash_c128_prefill
+    - flash_c4_prefill
+    - fused_k_norm_rope_flashmla
+    - fused_norm_rope_flashmla
+    - fused_q_indexer_rope_hadamard_quant
+    - fused_q_norm_rope
+    - indexSelectSmallIndex
+    - silu_mul_clamp_kernel
+    - smxx_paged_mqa_logits_metadata
+    - topk_plan
+    - topk_transform_kernel
+    - write_c4_prefill
     ops_observed:
     - attn:DeepseekV4AttnBackend.forward
     - moe:fused_experts_none_to_triton
     coverage:
-      labeled: 50
-      residue: 0
+      labeled: 43
+      residue: 14
+    kv_variants:
+      fp8_e4m3:
+        record: e305b333b3fb
+        added_kernels:
+        - fused_norm_rope_indexer
+        - multi_tensor_apply_kernel
+        added_residue:
+        - fused_norm_rope_indexer
+        - multi_tensor_apply_kernel
   zai-org/GLM-5:
     record: f5426fa6ea99
     variant: rep
@@ -6238,6 +6913,7 @@ results:
     families:
       activation:
         framework_native:
+        - act_and_mul_kernel
         - triton_per_fused_copy__mul_sum_0
         - triton_per_fused_copy_gather_select_sigmoid_slice_sum_3
         - triton_poi_fused__to_copy_arange_bitwise_not_eq_expand_masked_fill_scalar_tensor
@@ -6271,21 +6947,15 @@ results:
         - nvjet_sm90_tst_64x8_64x16_2x1_v_bz_TNT
         - nvjet_sm90_tst_64x8_64x16_4x1_v_bz_splitK_TNT
         - nvjet_sm90_tst_80x128_64x8_2x1_v_bz_TNN
+        cutlass:
+        - fused_a_gemm_kernel
       infra:
         infra:
-        - Activity
-        - at_cuda_detail::cub::detail::scan::DeviceScanInitKernel
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
         - cudaEventRecordWithFlags
-        - cudaStreamIsCapturing
-        - namespace
         - void at::native::vectorized_gather_kernel<16, long>
       kvcache:
         framework_native:
-        - _fused_dsa_decode_metadata_kernel
-        - alloc_decode_kernel
-        - alloc_extend_kernel
-        - compute_position_kernel
         - set_mla_kv_buffer_kernel
         - write_req_to_token_pool_triton
       moe_gemm:
@@ -6301,22 +6971,34 @@ results:
         - kernel_cutlass_kernel_flashinfernormkernelsfused_add_rmsnormFusedAddRMSNormKerne
         - kernel_cutlass_kernel_flashinfernormkernelsrmsnormRMSNormKernel
       routing:
+        framework_native:
+        - router_gemm_kernel
         torch:
         - void at::native::bitonicSortKVInPlace<-2, -1, 16, 16, float, long, at::native::G
         - void at::native::bitonicSortKVInPlace<2, -1, 16, 16, float, long, at::native::GT
         - void at::native::sbtopk::gatherTopK<float, unsigned int, 1, false>
         - void at::native::sbtopk::gatherTopK<float, unsigned int, 2, false>
-    residue: []
+    residue:
+    - concat_mla_absorb_q_kernel
+    - distribution_elementwise_grid_stride_kernel
+    - fused_k_indexer_norm_rope_store
+    - fused_q_indexer_rope_hadamard_quant
+    - fused_rope_kernel
+    - multi_tensor_apply_kernel
+    - topk_plan
+    - topk_small_batch_kernel
+    - topk_transform_prefill_kernel
     ops_observed:
     - attn:DeepseekSparseAttnBackend.forward_extend
     - moe:fused_experts_none_to_triton
     coverage:
-      labeled: 49
-      residue: 0
+      labeled: 44
+      residue: 9
     kv_variants:
       fp8_e4m3:
         record: ea32de0dadaf
         added_kernels:
+        - _fused_dsa_decode_metadata_kernel
         - _quantize_k_cache_fast_kernel
         - sm90::decode::sparse_fp8::flash_fwd_splitkv_mla_fp8_sparse_kernel
         - smxx::decode::flash_fwd_mla_combine_kernel
@@ -6330,6 +7012,7 @@ results:
     families:
       activation:
         framework_native:
+        - act_and_mul_kernel
         - triton_per_fused_copy__mul_sum_0
         - triton_per_fused_copy_gather_select_sigmoid_slice_sum_3
         - triton_poi_fused__to_copy_arange_bitwise_not_eq_expand_masked_fill_scalar_tensor
@@ -6364,20 +7047,11 @@ results:
         - deep_gemm::sm90_fp8_gemm_1d2d_impl
       infra:
         infra:
-        - Activity
-        - at_cuda_detail::cub::detail::scan::DeviceScanInitKernel
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
         - cudaEventRecordWithFlags
-        - cudaLaunchKernelExC
-        - cudaStreamIsCapturing
-        - namespace
         - void at::native::vectorized_gather_kernel<16, long>
       kvcache:
         framework_native:
-        - _fused_dsa_decode_metadata_kernel
-        - alloc_decode_kernel
-        - alloc_extend_kernel
-        - compute_position_kernel
         - set_mla_kv_buffer_kernel
         - write_req_to_token_pool_triton
       moe_gemm:
@@ -6392,24 +7066,39 @@ results:
         framework_native:
         - kernel_cutlass_kernel_flashinfernormkernelsfused_add_rmsnormFusedAddRMSNormKerne
         - kernel_cutlass_kernel_flashinfernormkernelsrmsnormRMSNormKernel
+      quant:
+        sgl_kernel:
+        - per_token_group_quant_8bit_v2_kernel
       routing:
+        framework_native:
+        - router_gemm_kernel
         torch:
         - void at::native::bitonicSortKVInPlace<-2, -1, 16, 16, float, long, at::native::G
         - void at::native::bitonicSortKVInPlace<2, -1, 16, 16, float, long, at::native::GT
         - void at::native::sbtopk::gatherTopK<float, unsigned int, 1, false>
         - void at::native::sbtopk::gatherTopK<float, unsigned int, 2, false>
-    residue: []
+    residue:
+    - concat_mla_absorb_q_kernel
+    - distribution_elementwise_grid_stride_kernel
+    - fused_k_indexer_norm_rope_store
+    - fused_q_indexer_rope_hadamard_quant
+    - fused_rope_kernel
+    - multi_tensor_apply_kernel
+    - topk_plan
+    - topk_small_batch_kernel
+    - topk_transform_prefill_kernel
     ops_observed:
     - attn:DeepseekSparseAttnBackend.forward_extend
     - moe:fused_experts_none_to_triton
     coverage:
-      labeled: 48
-      residue: 0
+      labeled: 42
+      residue: 9
     kv_variants:
       fp8_e4m3:
         record: b8f2c00b69df
         added_kernels:
         - _quantize_k_cache_fast_kernel
+        - cudaLaunchKernelExC
         - sm90::decode::sparse_fp8::flash_fwd_splitkv_mla_fp8_sparse_kernel
         - smxx::decode::flash_fwd_mla_combine_kernel
         - smxx::decode::get_mla_metadata_kernel(GetDecodeSchedMetaParams)
@@ -6422,6 +7111,7 @@ results:
     families:
       activation:
         framework_native:
+        - act_and_mul_kernel
         - triton_per_fused_copy__mul_sum_0
         - triton_per_fused_copy_gather_select_sigmoid_slice_sum_3
         - triton_poi_fused__to_copy_arange_bitwise_not_eq_expand_masked_fill_scalar_tensor
@@ -6455,21 +7145,15 @@ results:
         - nvjet_sm90_tst_64x8_64x16_2x1_v_bz_TNT
         - nvjet_sm90_tst_64x8_64x16_4x1_v_bz_splitK_TNT
         - nvjet_sm90_tst_80x128_64x8_2x1_v_bz_TNN
+        cutlass:
+        - fused_a_gemm_kernel
       infra:
         infra:
-        - Activity
-        - at_cuda_detail::cub::detail::scan::DeviceScanInitKernel
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
         - cudaEventRecordWithFlags
-        - cudaStreamIsCapturing
-        - namespace
         - void at::native::vectorized_gather_kernel<16, long>
       kvcache:
         framework_native:
-        - _fused_dsa_decode_metadata_kernel
-        - alloc_decode_kernel
-        - alloc_extend_kernel
-        - compute_position_kernel
         - set_mla_kv_buffer_kernel
         - write_req_to_token_pool_triton
       moe_gemm:
@@ -6485,22 +7169,34 @@ results:
         - kernel_cutlass_kernel_flashinfernormkernelsfused_add_rmsnormFusedAddRMSNormKerne
         - kernel_cutlass_kernel_flashinfernormkernelsrmsnormRMSNormKernel
       routing:
+        framework_native:
+        - router_gemm_kernel
         torch:
         - void at::native::bitonicSortKVInPlace<-2, -1, 16, 16, float, long, at::native::G
         - void at::native::bitonicSortKVInPlace<2, -1, 16, 16, float, long, at::native::GT
         - void at::native::sbtopk::gatherTopK<float, unsigned int, 1, false>
         - void at::native::sbtopk::gatherTopK<float, unsigned int, 2, false>
-    residue: []
+    residue:
+    - concat_mla_absorb_q_kernel
+    - distribution_elementwise_grid_stride_kernel
+    - fused_k_indexer_norm_rope_store
+    - fused_q_indexer_rope_hadamard_quant
+    - fused_rope_kernel
+    - multi_tensor_apply_kernel
+    - topk_plan
+    - topk_small_batch_kernel
+    - topk_transform_prefill_kernel
     ops_observed:
     - attn:DeepseekSparseAttnBackend.forward_extend
     - moe:fused_experts_none_to_triton
     coverage:
-      labeled: 49
-      residue: 0
+      labeled: 44
+      residue: 9
     kv_variants:
       fp8_e4m3:
         record: 87f5f1e91cef
         added_kernels:
+        - _fused_dsa_decode_metadata_kernel
         - _quantize_k_cache_fast_kernel
         - sm90::decode::sparse_fp8::flash_fwd_splitkv_mla_fp8_sparse_kernel
         - smxx::decode::flash_fwd_mla_combine_kernel
@@ -6514,6 +7210,7 @@ results:
     families:
       activation:
         framework_native:
+        - act_and_mul_kernel
         - triton_per_fused_copy__mul_sum_0
         - triton_per_fused_copy_gather_select_sigmoid_slice_sum_3
         - triton_poi_fused__to_copy_arange_bitwise_not_eq_expand_masked_fill_scalar_tensor
@@ -6548,20 +7245,11 @@ results:
         - deep_gemm::sm90_fp8_gemm_1d2d_impl
       infra:
         infra:
-        - Activity
-        - at_cuda_detail::cub::detail::scan::DeviceScanInitKernel
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
         - cudaEventRecordWithFlags
-        - cudaLaunchKernelExC
-        - cudaStreamIsCapturing
-        - namespace
         - void at::native::vectorized_gather_kernel<16, long>
       kvcache:
         framework_native:
-        - _fused_dsa_decode_metadata_kernel
-        - alloc_decode_kernel
-        - alloc_extend_kernel
-        - compute_position_kernel
         - set_mla_kv_buffer_kernel
         - write_req_to_token_pool_triton
       moe_gemm:
@@ -6576,24 +7264,39 @@ results:
         framework_native:
         - kernel_cutlass_kernel_flashinfernormkernelsfused_add_rmsnormFusedAddRMSNormKerne
         - kernel_cutlass_kernel_flashinfernormkernelsrmsnormRMSNormKernel
+      quant:
+        sgl_kernel:
+        - per_token_group_quant_8bit_v2_kernel
       routing:
+        framework_native:
+        - router_gemm_kernel
         torch:
         - void at::native::bitonicSortKVInPlace<-2, -1, 16, 16, float, long, at::native::G
         - void at::native::bitonicSortKVInPlace<2, -1, 16, 16, float, long, at::native::GT
         - void at::native::sbtopk::gatherTopK<float, unsigned int, 1, false>
         - void at::native::sbtopk::gatherTopK<float, unsigned int, 2, false>
-    residue: []
+    residue:
+    - concat_mla_absorb_q_kernel
+    - distribution_elementwise_grid_stride_kernel
+    - fused_k_indexer_norm_rope_store
+    - fused_q_indexer_rope_hadamard_quant
+    - fused_rope_kernel
+    - multi_tensor_apply_kernel
+    - topk_plan
+    - topk_small_batch_kernel
+    - topk_transform_prefill_kernel
     ops_observed:
     - attn:DeepseekSparseAttnBackend.forward_extend
     - moe:fused_experts_none_to_triton
     coverage:
-      labeled: 48
-      residue: 0
+      labeled: 42
+      residue: 9
     kv_variants:
       fp8_e4m3:
         record: a8a27dae3c8e
         added_kernels:
         - _quantize_k_cache_fast_kernel
+        - cudaLaunchKernelExC
         - sm90::decode::sparse_fp8::flash_fwd_splitkv_mla_fp8_sparse_kernel
         - smxx::decode::flash_fwd_mla_combine_kernel
         - smxx::decode::get_mla_metadata_kernel(GetDecodeSchedMetaParams)
@@ -6606,8 +7309,8 @@ results:
     families:
       activation:
         framework_native:
+        - act_and_mul_kernel
         - triton_per_fused_copy__mul_sum_0
-        - triton_per_fused_copy_gather_select_sigmoid_slice_sum_3
         - triton_poi_fused__to_copy_arange_bitwise_not_eq_expand_masked_fill_scalar_tensor
         - triton_poi_fused__to_copy_copy_div_gather_randint_select_sigmoid_4
         - triton_poi_fused_add_sigmoid_unsqueeze_0
@@ -6639,21 +7342,16 @@ results:
         - nvjet_sm90_tst_64x8_64x16_2x1_v_bz_TNT
         - nvjet_sm90_tst_64x8_64x16_4x1_v_bz_splitK_TNT
         - nvjet_sm90_tst_80x128_64x8_2x1_v_bz_TNN
+        cutlass:
+        - fused_a_gemm_kernel
       infra:
         infra:
-        - Activity
-        - at_cuda_detail::cub::detail::scan::DeviceScanInitKernel
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
         - cudaEventRecordWithFlags
-        - cudaStreamIsCapturing
-        - namespace
         - void at::native::vectorized_gather_kernel<16, long>
       kvcache:
         framework_native:
         - _fused_dsa_decode_metadata_kernel
-        - alloc_decode_kernel
-        - alloc_extend_kernel
-        - compute_position_kernel
         - set_mla_kv_buffer_kernel
         - write_req_to_token_pool_triton
       moe_gemm:
@@ -6669,18 +7367,29 @@ results:
         - kernel_cutlass_kernel_flashinfernormkernelsfused_add_rmsnormFusedAddRMSNormKerne
         - kernel_cutlass_kernel_flashinfernormkernelsrmsnormRMSNormKernel
       routing:
+        framework_native:
+        - router_gemm_kernel
         torch:
         - void at::native::bitonicSortKVInPlace<-2, -1, 16, 16, float, long, at::native::G
         - void at::native::bitonicSortKVInPlace<2, -1, 16, 16, float, long, at::native::GT
         - void at::native::sbtopk::gatherTopK<float, unsigned int, 1, false>
         - void at::native::sbtopk::gatherTopK<float, unsigned int, 2, false>
-    residue: []
+    residue:
+    - concat_mla_absorb_q_kernel
+    - distribution_elementwise_grid_stride_kernel
+    - fused_k_indexer_norm_rope_store
+    - fused_q_indexer_rope_hadamard_quant
+    - fused_rope_kernel
+    - multi_tensor_apply_kernel
+    - topk_plan
+    - topk_small_batch_kernel
+    - topk_transform_prefill_kernel
     ops_observed:
     - attn:DeepseekSparseAttnBackend.forward_extend
     - moe:fused_experts_none_to_triton
     coverage:
-      labeled: 49
-      residue: 0
+      labeled: 44
+      residue: 9
     kv_variants:
       fp8_e4m3:
         record: 11a4a5021706
@@ -6689,6 +7398,7 @@ results:
         - sm90::decode::sparse_fp8::flash_fwd_splitkv_mla_fp8_sparse_kernel
         - smxx::decode::flash_fwd_mla_combine_kernel
         - smxx::decode::get_mla_metadata_kernel(GetDecodeSchedMetaParams)
+        - triton_per_fused_copy_gather_select_sigmoid_slice_sum_3
         added_residue: []
   zai-org/GLM-5.2-FP8:
     record: 353a0b39acbd
@@ -6698,8 +7408,8 @@ results:
     families:
       activation:
         framework_native:
+        - act_and_mul_kernel
         - triton_per_fused_copy__mul_sum_0
-        - triton_per_fused_copy_gather_select_sigmoid_slice_sum_3
         - triton_poi_fused__to_copy_arange_bitwise_not_eq_expand_masked_fill_scalar_tensor
         - triton_poi_fused__to_copy_copy_div_gather_randint_select_sigmoid_4
         - triton_poi_fused_add_sigmoid_unsqueeze_0
@@ -6732,20 +7442,12 @@ results:
         - deep_gemm::sm90_fp8_gemm_1d2d_impl
       infra:
         infra:
-        - Activity
-        - at_cuda_detail::cub::detail::scan::DeviceScanInitKernel
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
         - cudaEventRecordWithFlags
-        - cudaLaunchKernelExC
-        - cudaStreamIsCapturing
-        - namespace
         - void at::native::vectorized_gather_kernel<16, long>
       kvcache:
         framework_native:
         - _fused_dsa_decode_metadata_kernel
-        - alloc_decode_kernel
-        - alloc_extend_kernel
-        - compute_position_kernel
         - set_mla_kv_buffer_kernel
         - write_req_to_token_pool_triton
       moe_gemm:
@@ -6760,19 +7462,33 @@ results:
         framework_native:
         - kernel_cutlass_kernel_flashinfernormkernelsfused_add_rmsnormFusedAddRMSNormKerne
         - kernel_cutlass_kernel_flashinfernormkernelsrmsnormRMSNormKernel
+      quant:
+        sgl_kernel:
+        - per_token_group_quant_8bit_v2_kernel
       routing:
+        framework_native:
+        - router_gemm_kernel
         torch:
         - void at::native::bitonicSortKVInPlace<-2, -1, 16, 16, float, long, at::native::G
         - void at::native::bitonicSortKVInPlace<2, -1, 16, 16, float, long, at::native::GT
         - void at::native::sbtopk::gatherTopK<float, unsigned int, 1, false>
         - void at::native::sbtopk::gatherTopK<float, unsigned int, 2, false>
-    residue: []
+    residue:
+    - concat_mla_absorb_q_kernel
+    - distribution_elementwise_grid_stride_kernel
+    - fused_k_indexer_norm_rope_store
+    - fused_q_indexer_rope_hadamard_quant
+    - fused_rope_kernel
+    - multi_tensor_apply_kernel
+    - topk_plan
+    - topk_small_batch_kernel
+    - topk_transform_prefill_kernel
     ops_observed:
     - attn:DeepseekSparseAttnBackend.forward_extend
     - moe:fused_experts_none_to_triton
     coverage:
-      labeled: 48
-      residue: 0
+      labeled: 42
+      residue: 9
     kv_variants:
       fp8_e4m3:
         record: 0991f4c00235
@@ -6781,6 +7497,7 @@ results:
         - sm90::decode::sparse_fp8::flash_fwd_splitkv_mla_fp8_sparse_kernel
         - smxx::decode::flash_fwd_mla_combine_kernel
         - smxx::decode::get_mla_metadata_kernel(GetDecodeSchedMetaParams)
+        - triton_per_fused_copy_gather_select_sigmoid_slice_sum_3
         added_residue: []
   zai-org/GLM-5.3:
     record: 0fc55b716a32
@@ -6790,8 +7507,8 @@ results:
     families:
       activation:
         framework_native:
+        - act_and_mul_kernel
         - triton_per_fused_copy__mul_sum_0
-        - triton_per_fused_copy_gather_select_sigmoid_slice_sum_3
         - triton_poi_fused__to_copy_arange_bitwise_not_eq_expand_masked_fill_scalar_tensor
         - triton_poi_fused__to_copy_copy_div_gather_randint_select_sigmoid_4
         - triton_poi_fused_add_sigmoid_unsqueeze_0
@@ -6824,20 +7541,12 @@ results:
         - deep_gemm::sm90_fp8_gemm_1d2d_impl
       infra:
         infra:
-        - Activity
-        - at_cuda_detail::cub::detail::scan::DeviceScanInitKernel
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
         - cudaEventRecordWithFlags
-        - cudaLaunchKernelExC
-        - cudaStreamIsCapturing
-        - namespace
         - void at::native::vectorized_gather_kernel<16, long>
       kvcache:
         framework_native:
         - _fused_dsa_decode_metadata_kernel
-        - alloc_decode_kernel
-        - alloc_extend_kernel
-        - compute_position_kernel
         - set_mla_kv_buffer_kernel
         - write_req_to_token_pool_triton
       moe_gemm:
@@ -6852,24 +7561,39 @@ results:
         framework_native:
         - kernel_cutlass_kernel_flashinfernormkernelsfused_add_rmsnormFusedAddRMSNormKerne
         - kernel_cutlass_kernel_flashinfernormkernelsrmsnormRMSNormKernel
+      quant:
+        sgl_kernel:
+        - per_token_group_quant_8bit_v2_kernel
       routing:
+        framework_native:
+        - router_gemm_kernel
         torch:
         - void at::native::bitonicSortKVInPlace<-2, -1, 16, 16, float, long, at::native::G
         - void at::native::bitonicSortKVInPlace<2, -1, 16, 16, float, long, at::native::GT
         - void at::native::sbtopk::gatherTopK<float, unsigned int, 1, false>
         - void at::native::sbtopk::gatherTopK<float, unsigned int, 2, false>
-    residue: []
+    residue:
+    - concat_mla_absorb_q_kernel
+    - distribution_elementwise_grid_stride_kernel
+    - fused_k_indexer_norm_rope_store
+    - fused_q_indexer_rope_hadamard_quant
+    - fused_rope_kernel
+    - multi_tensor_apply_kernel
+    - topk_plan
+    - topk_small_batch_kernel
+    - topk_transform_prefill_kernel
     ops_observed:
     - attn:DeepseekSparseAttnBackend.forward_extend
     - moe:fused_experts_none_to_triton
     coverage:
-      labeled: 48
-      residue: 0
+      labeled: 42
+      residue: 9
     kv_variants:
       fp8_e4m3:
         record: 629b7069ca8b
         added_kernels:
         - _quantize_k_cache_fast_kernel
+        - cudaLaunchKernelExC
         - sm90::decode::sparse_fp8::flash_fwd_splitkv_mla_fp8_sparse_kernel
         - smxx::decode::flash_fwd_mla_combine_kernel
         - smxx::decode::get_mla_metadata_kernel(GetDecodeSchedMetaParams)
@@ -6882,8 +7606,8 @@ results:
     families:
       activation:
         framework_native:
+        - act_and_mul_kernel
         - triton_per_fused_copy__mul_sum_0
-        - triton_per_fused_copy_gather_select_sigmoid_slice_sum_3
         - triton_poi_fused__to_copy_arange_bitwise_not_eq_expand_masked_fill_scalar_tensor
         - triton_poi_fused__to_copy_copy_div_gather_randint_select_sigmoid_4
         - triton_poi_fused_add_sigmoid_unsqueeze_0
@@ -6915,21 +7639,16 @@ results:
         - nvjet_sm90_tst_64x8_64x16_2x1_v_bz_TNT
         - nvjet_sm90_tst_64x8_64x16_4x1_v_bz_splitK_TNT
         - nvjet_sm90_tst_80x128_64x8_2x1_v_bz_TNN
+        cutlass:
+        - fused_a_gemm_kernel
       infra:
         infra:
-        - Activity
-        - at_cuda_detail::cub::detail::scan::DeviceScanInitKernel
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
         - cudaEventRecordWithFlags
-        - cudaStreamIsCapturing
-        - namespace
         - void at::native::vectorized_gather_kernel<16, long>
       kvcache:
         framework_native:
         - _fused_dsa_decode_metadata_kernel
-        - alloc_decode_kernel
-        - alloc_extend_kernel
-        - compute_position_kernel
         - set_mla_kv_buffer_kernel
         - write_req_to_token_pool_triton
       moe_gemm:
@@ -6945,18 +7664,29 @@ results:
         - kernel_cutlass_kernel_flashinfernormkernelsfused_add_rmsnormFusedAddRMSNormKerne
         - kernel_cutlass_kernel_flashinfernormkernelsrmsnormRMSNormKernel
       routing:
+        framework_native:
+        - router_gemm_kernel
         torch:
         - void at::native::bitonicSortKVInPlace<-2, -1, 16, 16, float, long, at::native::G
         - void at::native::bitonicSortKVInPlace<2, -1, 16, 16, float, long, at::native::GT
         - void at::native::sbtopk::gatherTopK<float, unsigned int, 1, false>
         - void at::native::sbtopk::gatherTopK<float, unsigned int, 2, false>
-    residue: []
+    residue:
+    - concat_mla_absorb_q_kernel
+    - distribution_elementwise_grid_stride_kernel
+    - fused_k_indexer_norm_rope_store
+    - fused_q_indexer_rope_hadamard_quant
+    - fused_rope_kernel
+    - multi_tensor_apply_kernel
+    - topk_plan
+    - topk_small_batch_kernel
+    - topk_transform_prefill_kernel
     ops_observed:
     - attn:DeepseekSparseAttnBackend.forward_extend
     - moe:fused_experts_none_to_triton
     coverage:
-      labeled: 49
-      residue: 0
+      labeled: 44
+      residue: 9
     kv_variants:
       fp8_e4m3:
         record: 9c4bf563dcee
@@ -6965,4 +7695,5 @@ results:
         - sm90::decode::sparse_fp8::flash_fwd_splitkv_mla_fp8_sparse_kernel
         - smxx::decode::flash_fwd_mla_combine_kernel
         - smxx::decode::get_mla_metadata_kernel(GetDecodeSchedMetaParams)
+        - triton_per_fused_copy_gather_select_sigmoid_slice_sum_3
         added_residue: []

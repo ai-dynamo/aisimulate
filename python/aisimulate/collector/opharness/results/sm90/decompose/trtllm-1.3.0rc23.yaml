@@ -3,11 +3,16 @@ _meta:
   framework: trtllm
   version: 1.3.0rc23
   taxonomy: kernel_taxonomy_sm90.yaml
-  generated: '2026-09-25T11:50:12'
+  generated: '2026-09-25T12:23:34'
   summary:
     repos: 69
-    repos_with_residue: 0
-    residue_kernels: []
+    repos_with_residue: 69
+    residue_kernels:
+    - CatArrayBatchedCopy
+    - CatArrayBatchedCopy_alignedK_contig
+    - CatArrayBatchedCopy_vectorized
+    - elementwise_kernel_with_index
+    - indexSelectSmallIndex
 results:
   MiniMaxAI/MiniMax-M2:
     record: 52abc98c927c
@@ -36,7 +41,6 @@ results:
         infra:
         - at_cuda_detail::cub::detail::scan::DeviceScanInitKernel
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
-        - namespace
         - operator
         - tensorrt_llm::_v1::kernels::computeSeqAndPaddingOffsets
         - void at::native::vectorized_gather_kernel<16, long>
@@ -60,12 +64,15 @@ results:
         torch:
         - void at::native::sbtopk::gatherTopK<float, unsigned int, 1, false>
         - void at::native::sbtopk::gatherTopK<float, unsigned int, 2, false>
-    residue: []
+    residue:
+    - CatArrayBatchedCopy
+    - CatArrayBatchedCopy_vectorized
+    - indexSelectSmallIndex
     ops_observed:
     - all
     coverage:
-      labeled: 27
-      residue: 0
+      labeled: 26
+      residue: 3
   MiniMaxAI/MiniMax-M2.5:
     record: 13a7e1703de1
     variant: rep
@@ -93,7 +100,6 @@ results:
         infra:
         - at_cuda_detail::cub::detail::scan::DeviceScanInitKernel
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
-        - namespace
         - operator
         - tensorrt_llm::_v1::kernels::computeSeqAndPaddingOffsets
         - void at::native::vectorized_gather_kernel<16, long>
@@ -117,12 +123,15 @@ results:
         torch:
         - void at::native::sbtopk::gatherTopK<float, unsigned int, 1, false>
         - void at::native::sbtopk::gatherTopK<float, unsigned int, 2, false>
-    residue: []
+    residue:
+    - CatArrayBatchedCopy
+    - CatArrayBatchedCopy_vectorized
+    - indexSelectSmallIndex
     ops_observed:
     - all
     coverage:
-      labeled: 27
-      residue: 0
+      labeled: 26
+      residue: 3
   MiniMaxAI/MiniMax-M2.7:
     record: 9ce953337daf
     variant: rep
@@ -150,7 +159,6 @@ results:
         infra:
         - at_cuda_detail::cub::detail::scan::DeviceScanInitKernel
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
-        - namespace
         - operator
         - tensorrt_llm::_v1::kernels::computeSeqAndPaddingOffsets
         - void at::native::vectorized_gather_kernel<16, long>
@@ -174,12 +182,15 @@ results:
         torch:
         - void at::native::sbtopk::gatherTopK<float, unsigned int, 1, false>
         - void at::native::sbtopk::gatherTopK<float, unsigned int, 2, false>
-    residue: []
+    residue:
+    - CatArrayBatchedCopy
+    - CatArrayBatchedCopy_vectorized
+    - indexSelectSmallIndex
     ops_observed:
     - all
     coverage:
-      labeled: 27
-      residue: 0
+      labeled: 26
+      residue: 3
     kv_variants:
       fp8:
         record: 213f3a8b32d1
@@ -220,7 +231,6 @@ results:
         infra:
         - at_cuda_detail::cub::detail::scan::DeviceScanInitKernel
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
-        - namespace
         - operator
         - tensorrt_llm::_v1::kernels::computeSeqAndPaddingOffsets
         - void at::native::vectorized_gather_kernel<16, long>
@@ -249,12 +259,13 @@ results:
       routing:
         framework_native:
         - tensorrt_llm::_v1::kernels::customMoeRoutingKernel
-    residue: []
+    residue:
+    - indexSelectSmallIndex
     ops_observed:
     - all
     coverage:
-      labeled: 37
-      residue: 0
+      labeled: 36
+      residue: 1
   Qwen/Qwen3-0.6B:
     record: f95129ad2e49
     variant: rep
@@ -282,7 +293,6 @@ results:
         infra:
         - at_cuda_detail::cub::detail::scan::DeviceScanInitKernel
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
-        - namespace
         - operator
         - tensorrt_llm::_v1::kernels::computeSeqAndPaddingOffsets
         - void at::native::vectorized_gather_kernel<16, long>
@@ -294,12 +304,13 @@ results:
         - kernel_cutlass_kernel_flashinfernormkernelsfused_add_rmsnormFusedAddRMSNormKerne
         - kernel_cutlass_kernel_flashinfernormkernelsrmsnormRMSNormKernel
         - tensorrt_llm::_v1::kernels::fusedQKNormRopeKernel
-    residue: []
+    residue:
+    - indexSelectSmallIndex
     ops_observed:
     - all
     coverage:
-      labeled: 21
-      residue: 0
+      labeled: 20
+      residue: 1
   Qwen/Qwen3-1.7B:
     record: 8e57383f57b3
     variant: rep
@@ -328,7 +339,6 @@ results:
         infra:
         - at_cuda_detail::cub::detail::scan::DeviceScanInitKernel
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
-        - namespace
         - operator
         - tensorrt_llm::_v1::kernels::computeSeqAndPaddingOffsets
         - void at::native::vectorized_gather_kernel<16, long>
@@ -340,12 +350,13 @@ results:
         - kernel_cutlass_kernel_flashinfernormkernelsfused_add_rmsnormFusedAddRMSNormKerne
         - kernel_cutlass_kernel_flashinfernormkernelsrmsnormRMSNormKernel
         - tensorrt_llm::_v1::kernels::fusedQKNormRopeKernel
-    residue: []
+    residue:
+    - indexSelectSmallIndex
     ops_observed:
     - all
     coverage:
-      labeled: 22
-      residue: 0
+      labeled: 21
+      residue: 1
   Qwen/Qwen3-235B-A22B:
     record: 23d99f50c068
     variant: rep
@@ -369,7 +380,6 @@ results:
         infra:
         - at_cuda_detail::cub::detail::scan::DeviceScanInitKernel
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
-        - namespace
         - operator
         - tensorrt_llm::_v1::kernels::computeSeqAndPaddingOffsets
         - void at::native::vectorized_gather_kernel<16, long>
@@ -399,12 +409,13 @@ results:
       routing:
         framework_native:
         - tensorrt_llm::_v1::kernels::customMoeRoutingKernel
-    residue: []
+    residue:
+    - indexSelectSmallIndex
     ops_observed:
     - all
     coverage:
-      labeled: 30
-      residue: 0
+      labeled: 29
+      residue: 1
   Qwen/Qwen3-235B-A22B-FP8:
     record: c5426f006d91
     variant: rep
@@ -430,7 +441,6 @@ results:
         infra:
         - at_cuda_detail::cub::detail::scan::DeviceScanInitKernel
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
-        - namespace
         - operator
         - tensorrt_llm::_v1::kernels::computeSeqAndPaddingOffsets
         - void at::native::vectorized_gather_kernel<16, long>
@@ -454,12 +464,13 @@ results:
       routing:
         framework_native:
         - tensorrt_llm::_v1::kernels::customMoeRoutingKernel
-    residue: []
+    residue:
+    - indexSelectSmallIndex
     ops_observed:
     - all
     coverage:
-      labeled: 27
-      residue: 0
+      labeled: 26
+      residue: 1
     kv_variants:
       fp8:
         record: f31990c334f1
@@ -489,7 +500,6 @@ results:
         infra:
         - at_cuda_detail::cub::detail::scan::DeviceScanInitKernel
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
-        - namespace
         - operator
         - tensorrt_llm::_v1::kernels::computeSeqAndPaddingOffsets
         - void at::native::vectorized_gather_kernel<16, long>
@@ -519,12 +529,13 @@ results:
       routing:
         framework_native:
         - tensorrt_llm::_v1::kernels::customMoeRoutingKernel
-    residue: []
+    residue:
+    - indexSelectSmallIndex
     ops_observed:
     - all
     coverage:
-      labeled: 30
-      residue: 0
+      labeled: 29
+      residue: 1
   Qwen/Qwen3-30B-A3B:
     record: b1ff58868866
     variant: rep
@@ -549,7 +560,6 @@ results:
         infra:
         - at_cuda_detail::cub::detail::scan::DeviceScanInitKernel
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
-        - namespace
         - operator
         - tensorrt_llm::_v1::kernels::computeSeqAndPaddingOffsets
         - void at::native::vectorized_gather_kernel<16, long>
@@ -578,12 +588,13 @@ results:
       routing:
         framework_native:
         - tensorrt_llm::_v1::kernels::customMoeRoutingKernel
-    residue: []
+    residue:
+    - indexSelectSmallIndex
     ops_observed:
     - all
     coverage:
-      labeled: 30
-      residue: 0
+      labeled: 29
+      residue: 1
   Qwen/Qwen3-30B-A3B-FP8:
     record: 263f2c2813cb
     variant: rep
@@ -608,7 +619,6 @@ results:
         infra:
         - at_cuda_detail::cub::detail::scan::DeviceScanInitKernel
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
-        - namespace
         - operator
         - tensorrt_llm::_v1::kernels::computeSeqAndPaddingOffsets
         - void at::native::vectorized_gather_kernel<16, long>
@@ -632,12 +642,13 @@ results:
       routing:
         framework_native:
         - tensorrt_llm::_v1::kernels::customMoeRoutingKernel
-    residue: []
+    residue:
+    - indexSelectSmallIndex
     ops_observed:
     - all
     coverage:
-      labeled: 26
-      residue: 0
+      labeled: 25
+      residue: 1
     kv_variants:
       fp8:
         record: da737a578fe2
@@ -671,7 +682,6 @@ results:
         infra:
         - at_cuda_detail::cub::detail::scan::DeviceScanInitKernel
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
-        - namespace
         - operator
         - tensorrt_llm::_v1::kernels::computeSeqAndPaddingOffsets
         - void at::native::vectorized_gather_kernel<16, long>
@@ -683,12 +693,13 @@ results:
         - kernel_cutlass_kernel_flashinfernormkernelsfused_add_rmsnormFusedAddRMSNormKerne
         - kernel_cutlass_kernel_flashinfernormkernelsrmsnormRMSNormKernel
         - tensorrt_llm::_v1::kernels::fusedQKNormRopeKernel
-    residue: []
+    residue:
+    - indexSelectSmallIndex
     ops_observed:
     - all
     coverage:
-      labeled: 21
-      residue: 0
+      labeled: 20
+      residue: 1
   Qwen/Qwen3-32B-FP8:
     record: 7758605973da
     variant: rep
@@ -714,7 +725,6 @@ results:
         infra:
         - at_cuda_detail::cub::detail::scan::DeviceScanInitKernel
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
-        - namespace
         - operator
         - tensorrt_llm::_v1::kernels::computeSeqAndPaddingOffsets
         - void at::native::vectorized_gather_kernel<16, long>
@@ -726,12 +736,13 @@ results:
         - kernel_cutlass_kernel_flashinfernormkernelsfused_add_rmsnormFusedAddRMSNormKerne
         - kernel_cutlass_kernel_flashinfernormkernelsrmsnormRMSNormKernel
         - tensorrt_llm::_v1::kernels::fusedQKNormRopeKernel
-    residue: []
+    residue:
+    - indexSelectSmallIndex
     ops_observed:
     - all
     coverage:
-      labeled: 17
-      residue: 0
+      labeled: 16
+      residue: 1
     kv_variants:
       fp8:
         record: 28870c3cf589
@@ -765,7 +776,6 @@ results:
         infra:
         - at_cuda_detail::cub::detail::scan::DeviceScanInitKernel
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
-        - namespace
         - operator
         - tensorrt_llm::_v1::kernels::computeSeqAndPaddingOffsets
         - void at::native::vectorized_gather_kernel<16, long>
@@ -780,12 +790,13 @@ results:
       quant:
         trtllm_internal:
         - tensorrt_llm::_v1::common::scaleMatrixPerTensorVec
-    residue: []
+    residue:
+    - indexSelectSmallIndex
     ops_observed:
     - all
     coverage:
-      labeled: 22
-      residue: 0
+      labeled: 21
+      residue: 1
   Qwen/Qwen3-8B:
     record: 283840215eb3
     variant: rep
@@ -812,7 +823,6 @@ results:
         infra:
         - at_cuda_detail::cub::detail::scan::DeviceScanInitKernel
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
-        - namespace
         - operator
         - tensorrt_llm::_v1::kernels::computeSeqAndPaddingOffsets
         - void at::native::vectorized_gather_kernel<16, long>
@@ -824,12 +834,13 @@ results:
         - kernel_cutlass_kernel_flashinfernormkernelsfused_add_rmsnormFusedAddRMSNormKerne
         - kernel_cutlass_kernel_flashinfernormkernelsrmsnormRMSNormKernel
         - tensorrt_llm::_v1::kernels::fusedQKNormRopeKernel
-    residue: []
+    residue:
+    - indexSelectSmallIndex
     ops_observed:
     - all
     coverage:
-      labeled: 20
-      residue: 0
+      labeled: 19
+      residue: 1
   Qwen/Qwen3-Coder-480B-A35B-Instruct:
     record: a3c9fd5d0ec8
     variant: rep
@@ -853,7 +864,6 @@ results:
         infra:
         - at_cuda_detail::cub::detail::scan::DeviceScanInitKernel
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
-        - namespace
         - operator
         - tensorrt_llm::_v1::kernels::computeSeqAndPaddingOffsets
         - void at::native::vectorized_gather_kernel<16, long>
@@ -880,12 +890,13 @@ results:
       routing:
         framework_native:
         - tensorrt_llm::_v1::kernels::customMoeRoutingKernel
-    residue: []
+    residue:
+    - indexSelectSmallIndex
     ops_observed:
     - all
     coverage:
-      labeled: 28
-      residue: 0
+      labeled: 27
+      residue: 1
   Qwen/Qwen3-VL-235B-A22B-Instruct:
     record: cc6af8a2ec5d
     variant: rep
@@ -909,7 +920,6 @@ results:
         infra:
         - at_cuda_detail::cub::detail::scan::DeviceScanInitKernel
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
-        - namespace
         - operator
         - tensorrt_llm::_v1::kernels::computeSeqAndPaddingOffsets
         - void at::native::vectorized_gather_kernel<16, long>
@@ -939,12 +949,14 @@ results:
       routing:
         framework_native:
         - tensorrt_llm::_v1::kernels::customMoeRoutingKernel
-    residue: []
+    residue:
+    - CatArrayBatchedCopy_alignedK_contig
+    - indexSelectSmallIndex
     ops_observed:
     - all
     coverage:
-      labeled: 30
-      residue: 0
+      labeled: 29
+      residue: 2
   Qwen/Qwen3-VL-2B-Instruct:
     record: 1c999d52ce10
     variant: rep
@@ -973,7 +985,6 @@ results:
         infra:
         - at_cuda_detail::cub::detail::scan::DeviceScanInitKernel
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
-        - namespace
         - operator
         - tensorrt_llm::_v1::kernels::computeSeqAndPaddingOffsets
         - void at::native::vectorized_gather_kernel<16, long>
@@ -985,12 +996,14 @@ results:
         - kernel_cutlass_kernel_flashinfernormkernelsfused_add_rmsnormFusedAddRMSNormKerne
         - kernel_cutlass_kernel_flashinfernormkernelsrmsnormRMSNormKernel
         - tensorrt_llm::_v1::kernels::fusedQKNormRopeKernel
-    residue: []
+    residue:
+    - CatArrayBatchedCopy_alignedK_contig
+    - indexSelectSmallIndex
     ops_observed:
     - all
     coverage:
-      labeled: 22
-      residue: 0
+      labeled: 21
+      residue: 2
   Qwen/Qwen3-VL-30B-A3B-Instruct:
     record: 46369772bdb1
     variant: rep
@@ -1015,7 +1028,6 @@ results:
         infra:
         - at_cuda_detail::cub::detail::scan::DeviceScanInitKernel
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
-        - namespace
         - operator
         - tensorrt_llm::_v1::kernels::computeSeqAndPaddingOffsets
         - void at::native::vectorized_gather_kernel<16, long>
@@ -1044,12 +1056,14 @@ results:
       routing:
         framework_native:
         - tensorrt_llm::_v1::kernels::customMoeRoutingKernel
-    residue: []
+    residue:
+    - CatArrayBatchedCopy_alignedK_contig
+    - indexSelectSmallIndex
     ops_observed:
     - all
     coverage:
-      labeled: 30
-      residue: 0
+      labeled: 29
+      residue: 2
   Qwen/Qwen3-VL-32B-Instruct:
     record: d8d7cc31376c
     variant: rep
@@ -1077,7 +1091,6 @@ results:
         infra:
         - at_cuda_detail::cub::detail::scan::DeviceScanInitKernel
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
-        - namespace
         - operator
         - tensorrt_llm::_v1::kernels::computeSeqAndPaddingOffsets
         - void at::native::vectorized_gather_kernel<16, long>
@@ -1089,12 +1102,14 @@ results:
         - kernel_cutlass_kernel_flashinfernormkernelsfused_add_rmsnormFusedAddRMSNormKerne
         - kernel_cutlass_kernel_flashinfernormkernelsrmsnormRMSNormKernel
         - tensorrt_llm::_v1::kernels::fusedQKNormRopeKernel
-    residue: []
+    residue:
+    - CatArrayBatchedCopy_alignedK_contig
+    - indexSelectSmallIndex
     ops_observed:
     - all
     coverage:
-      labeled: 21
-      residue: 0
+      labeled: 20
+      residue: 2
   Qwen/Qwen3-VL-32B-Thinking:
     record: cb4e70c24593
     variant: rep
@@ -1122,7 +1137,6 @@ results:
         infra:
         - at_cuda_detail::cub::detail::scan::DeviceScanInitKernel
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
-        - namespace
         - operator
         - tensorrt_llm::_v1::kernels::computeSeqAndPaddingOffsets
         - void at::native::vectorized_gather_kernel<16, long>
@@ -1134,12 +1148,14 @@ results:
         - kernel_cutlass_kernel_flashinfernormkernelsfused_add_rmsnormFusedAddRMSNormKerne
         - kernel_cutlass_kernel_flashinfernormkernelsrmsnormRMSNormKernel
         - tensorrt_llm::_v1::kernels::fusedQKNormRopeKernel
-    residue: []
+    residue:
+    - CatArrayBatchedCopy_alignedK_contig
+    - indexSelectSmallIndex
     ops_observed:
     - all
     coverage:
-      labeled: 21
-      residue: 0
+      labeled: 20
+      residue: 2
   Qwen/Qwen3-VL-4B-Instruct:
     record: 26cec7845f9b
     variant: rep
@@ -1167,7 +1183,6 @@ results:
         infra:
         - at_cuda_detail::cub::detail::scan::DeviceScanInitKernel
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
-        - namespace
         - operator
         - tensorrt_llm::_v1::kernels::computeSeqAndPaddingOffsets
         - void at::native::vectorized_gather_kernel<16, long>
@@ -1179,12 +1194,14 @@ results:
         - kernel_cutlass_kernel_flashinfernormkernelsfused_add_rmsnormFusedAddRMSNormKerne
         - kernel_cutlass_kernel_flashinfernormkernelsrmsnormRMSNormKernel
         - tensorrt_llm::_v1::kernels::fusedQKNormRopeKernel
-    residue: []
+    residue:
+    - CatArrayBatchedCopy_alignedK_contig
+    - indexSelectSmallIndex
     ops_observed:
     - all
     coverage:
-      labeled: 21
-      residue: 0
+      labeled: 20
+      residue: 2
   Qwen/Qwen3-VL-8B-Instruct:
     record: 6e9f4cf12ab5
     variant: rep
@@ -1211,7 +1228,6 @@ results:
         infra:
         - at_cuda_detail::cub::detail::scan::DeviceScanInitKernel
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
-        - namespace
         - operator
         - tensorrt_llm::_v1::kernels::computeSeqAndPaddingOffsets
         - void at::native::vectorized_gather_kernel<16, long>
@@ -1223,12 +1239,14 @@ results:
         - kernel_cutlass_kernel_flashinfernormkernelsfused_add_rmsnormFusedAddRMSNormKerne
         - kernel_cutlass_kernel_flashinfernormkernelsrmsnormRMSNormKernel
         - tensorrt_llm::_v1::kernels::fusedQKNormRopeKernel
-    residue: []
+    residue:
+    - CatArrayBatchedCopy_alignedK_contig
+    - indexSelectSmallIndex
     ops_observed:
     - all
     coverage:
-      labeled: 20
-      residue: 0
+      labeled: 19
+      residue: 2
   Qwen/Qwen3.5-0.8B:
     record: 92ad9d5eb0a8
     variant: depth8
@@ -1263,7 +1281,6 @@ results:
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
         - at_cuda_detail::cub::detail::select::DeviceSelectSweepKernel
         - compute_cuda_kernel
-        - namespace
         - operator
         - tensorrt_llm::_v1::kernels::computeSeqAndPaddingOffsets
         - void at::native::vectorized_gather_kernel<16, long>
@@ -1291,12 +1308,14 @@ results:
         trtllm_internal:
         - _cast_scatter_fp32_vk_to_vk_kernel
         - _gather_cast_vk_to_fp32_vk_kernel
-    residue: []
+    residue:
+    - CatArrayBatchedCopy_alignedK_contig
+    - indexSelectSmallIndex
     ops_observed:
     - all
     coverage:
-      labeled: 37
-      residue: 0
+      labeled: 36
+      residue: 2
   Qwen/Qwen3.5-122B-A10B:
     record: d675f548c0bb
     variant: depth8
@@ -1336,7 +1355,6 @@ results:
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
         - at_cuda_detail::cub::detail::select::DeviceSelectSweepKernel
         - compute_cuda_kernel
-        - namespace
         - operator
         - tensorrt_llm::_v1::kernels::computeSeqAndPaddingOffsets
         - void at::native::vectorized_gather_kernel<16, long>
@@ -1381,12 +1399,14 @@ results:
       routing:
         framework_native:
         - tensorrt_llm::_v1::kernels::customMoeRoutingKernel
-    residue: []
+    residue:
+    - CatArrayBatchedCopy_alignedK_contig
+    - indexSelectSmallIndex
     ops_observed:
     - all
     coverage:
-      labeled: 52
-      residue: 0
+      labeled: 51
+      residue: 2
   Qwen/Qwen3.5-27B:
     record: ea5041d26cc7
     variant: depth8
@@ -1422,7 +1442,6 @@ results:
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
         - at_cuda_detail::cub::detail::select::DeviceSelectSweepKernel
         - compute_cuda_kernel
-        - namespace
         - operator
         - tensorrt_llm::_v1::kernels::computeSeqAndPaddingOffsets
         - void at::native::vectorized_gather_kernel<16, long>
@@ -1450,12 +1469,14 @@ results:
         trtllm_internal:
         - _cast_scatter_fp32_vk_to_vk_kernel
         - _gather_cast_vk_to_fp32_vk_kernel
-    residue: []
+    residue:
+    - CatArrayBatchedCopy_alignedK_contig
+    - indexSelectSmallIndex
     ops_observed:
     - all
     coverage:
-      labeled: 38
-      residue: 0
+      labeled: 37
+      residue: 2
   Qwen/Qwen3.5-2B:
     record: c9b917c9efdc
     variant: depth8
@@ -1490,7 +1511,6 @@ results:
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
         - at_cuda_detail::cub::detail::select::DeviceSelectSweepKernel
         - compute_cuda_kernel
-        - namespace
         - operator
         - tensorrt_llm::_v1::kernels::computeSeqAndPaddingOffsets
         - void at::native::vectorized_gather_kernel<16, long>
@@ -1518,12 +1538,14 @@ results:
         trtllm_internal:
         - _cast_scatter_fp32_vk_to_vk_kernel
         - _gather_cast_vk_to_fp32_vk_kernel
-    residue: []
+    residue:
+    - CatArrayBatchedCopy_alignedK_contig
+    - indexSelectSmallIndex
     ops_observed:
     - all
     coverage:
-      labeled: 37
-      residue: 0
+      labeled: 36
+      residue: 2
   Qwen/Qwen3.5-35B-A3B:
     record: 9b36bcc62f91
     variant: depth8
@@ -1565,7 +1587,6 @@ results:
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
         - at_cuda_detail::cub::detail::select::DeviceSelectSweepKernel
         - compute_cuda_kernel
-        - namespace
         - operator
         - tensorrt_llm::_v1::kernels::computeSeqAndPaddingOffsets
         - void at::native::vectorized_gather_kernel<16, long>
@@ -1610,12 +1631,14 @@ results:
       routing:
         framework_native:
         - tensorrt_llm::_v1::kernels::customMoeRoutingKernel
-    residue: []
+    residue:
+    - CatArrayBatchedCopy_alignedK_contig
+    - indexSelectSmallIndex
     ops_observed:
     - all
     coverage:
-      labeled: 54
-      residue: 0
+      labeled: 53
+      residue: 2
     kv_variants:
       fp8:
         record: ccb9cc13d42a
@@ -1658,7 +1681,6 @@ results:
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
         - at_cuda_detail::cub::detail::select::DeviceSelectSweepKernel
         - compute_cuda_kernel
-        - namespace
         - operator
         - tensorrt_llm::_v1::kernels::computeSeqAndPaddingOffsets
         - void at::native::vectorized_gather_kernel<16, long>
@@ -1703,12 +1725,14 @@ results:
       routing:
         framework_native:
         - tensorrt_llm::_v1::kernels::customMoeRoutingKernel
-    residue: []
+    residue:
+    - CatArrayBatchedCopy_alignedK_contig
+    - indexSelectSmallIndex
     ops_observed:
     - all
     coverage:
-      labeled: 49
-      residue: 0
+      labeled: 48
+      residue: 2
   Qwen/Qwen3.5-4B:
     record: 3b62b4c99100
     variant: depth8
@@ -1745,7 +1769,6 @@ results:
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
         - at_cuda_detail::cub::detail::select::DeviceSelectSweepKernel
         - compute_cuda_kernel
-        - namespace
         - operator
         - tensorrt_llm::_v1::kernels::computeSeqAndPaddingOffsets
         - void at::native::vectorized_gather_kernel<16, long>
@@ -1773,12 +1796,14 @@ results:
         trtllm_internal:
         - _cast_scatter_fp32_vk_to_vk_kernel
         - _gather_cast_vk_to_fp32_vk_kernel
-    residue: []
+    residue:
+    - CatArrayBatchedCopy_alignedK_contig
+    - indexSelectSmallIndex
     ops_observed:
     - all
     coverage:
-      labeled: 39
-      residue: 0
+      labeled: 38
+      residue: 2
   Qwen/Qwen3.5-9B:
     record: cd109ef866ae
     variant: depth8
@@ -1811,7 +1836,6 @@ results:
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
         - at_cuda_detail::cub::detail::select::DeviceSelectSweepKernel
         - compute_cuda_kernel
-        - namespace
         - operator
         - tensorrt_llm::_v1::kernels::computeSeqAndPaddingOffsets
         - void at::native::vectorized_gather_kernel<16, long>
@@ -1839,12 +1863,14 @@ results:
         trtllm_internal:
         - _cast_scatter_fp32_vk_to_vk_kernel
         - _gather_cast_vk_to_fp32_vk_kernel
-    residue: []
+    residue:
+    - CatArrayBatchedCopy_alignedK_contig
+    - indexSelectSmallIndex
     ops_observed:
     - all
     coverage:
-      labeled: 35
-      residue: 0
+      labeled: 34
+      residue: 2
   Qwen/Qwen3.8-27B:
     record: 9986e4032136
     variant: depth8
@@ -1880,7 +1906,6 @@ results:
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
         - at_cuda_detail::cub::detail::select::DeviceSelectSweepKernel
         - compute_cuda_kernel
-        - namespace
         - operator
         - tensorrt_llm::_v1::kernels::computeSeqAndPaddingOffsets
         - void at::native::vectorized_gather_kernel<16, long>
@@ -1908,12 +1933,14 @@ results:
         trtllm_internal:
         - _cast_scatter_fp32_vk_to_vk_kernel
         - _gather_cast_vk_to_fp32_vk_kernel
-    residue: []
+    residue:
+    - CatArrayBatchedCopy_alignedK_contig
+    - indexSelectSmallIndex
     ops_observed:
     - all
     coverage:
-      labeled: 38
-      residue: 0
+      labeled: 37
+      residue: 2
   Qwen/Qwen3.8-27B-FP8:
     record: 3f064703f606
     variant: depth8
@@ -1947,7 +1974,6 @@ results:
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
         - at_cuda_detail::cub::detail::select::DeviceSelectSweepKernel
         - compute_cuda_kernel
-        - namespace
         - operator
         - tensorrt_llm::_v1::kernels::computeSeqAndPaddingOffsets
         - void at::native::vectorized_gather_kernel<16, long>
@@ -1975,12 +2001,14 @@ results:
         trtllm_internal:
         - _cast_scatter_fp32_vk_to_vk_kernel
         - _gather_cast_vk_to_fp32_vk_kernel
-    residue: []
+    residue:
+    - CatArrayBatchedCopy_alignedK_contig
+    - indexSelectSmallIndex
     ops_observed:
     - all
     coverage:
-      labeled: 34
-      residue: 0
+      labeled: 33
+      residue: 2
   TokenRhythm/NeoHorse-1-9B:
     record: ed10beccc099
     variant: depth8
@@ -2013,7 +2041,6 @@ results:
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
         - at_cuda_detail::cub::detail::select::DeviceSelectSweepKernel
         - compute_cuda_kernel
-        - namespace
         - operator
         - tensorrt_llm::_v1::kernels::computeSeqAndPaddingOffsets
         - void at::native::vectorized_gather_kernel<16, long>
@@ -2041,12 +2068,13 @@ results:
         trtllm_internal:
         - _cast_scatter_fp32_vk_to_vk_kernel
         - _gather_cast_vk_to_fp32_vk_kernel
-    residue: []
+    residue:
+    - indexSelectSmallIndex
     ops_observed:
     - all
     coverage:
-      labeled: 35
-      residue: 0
+      labeled: 34
+      residue: 1
   deepseek-ai/DeepSeek-R1:
     record: c9e13dabff30
     variant: rep
@@ -2080,7 +2108,6 @@ results:
         infra:
         - at_cuda_detail::cub::detail::scan::DeviceScanInitKernel
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
-        - namespace
         - operator
         - tensorrt_llm::_v1::kernels::computeSeqAndPaddingOffsets
         - void at::native::vectorized_gather_kernel<16, long>
@@ -2105,12 +2132,15 @@ results:
         framework_native:
         - tensorrt_llm::_v1::kernels::deepseek_v3_topk_kernel
         - tensorrt_llm::_v1::kernels::dsv3MinLatencyKernels::router_gemm_kernel
-    residue: []
+    residue:
+    - CatArrayBatchedCopy
+    - CatArrayBatchedCopy_vectorized
+    - indexSelectSmallIndex
     ops_observed:
     - all
     coverage:
-      labeled: 33
-      residue: 0
+      labeled: 32
+      residue: 3
     kv_variants:
       fp8:
         record: 4d79fadbe180
@@ -2152,7 +2182,6 @@ results:
         infra:
         - at_cuda_detail::cub::detail::scan::DeviceScanInitKernel
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
-        - namespace
         - operator
         - tensorrt_llm::_v1::kernels::computeSeqAndPaddingOffsets
         - void at::native::vectorized_gather_kernel<16, long>
@@ -2177,12 +2206,15 @@ results:
         framework_native:
         - tensorrt_llm::_v1::kernels::deepseek_v3_topk_kernel
         - tensorrt_llm::_v1::kernels::dsv3MinLatencyKernels::router_gemm_kernel
-    residue: []
+    residue:
+    - CatArrayBatchedCopy
+    - CatArrayBatchedCopy_vectorized
+    - indexSelectSmallIndex
     ops_observed:
     - all
     coverage:
-      labeled: 33
-      residue: 0
+      labeled: 32
+      residue: 3
     kv_variants:
       fp8:
         record: 227997b891a5
@@ -2233,7 +2265,6 @@ results:
         infra:
         - at_cuda_detail::cub::detail::scan::DeviceScanInitKernel
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
-        - namespace
         - operator
         - tensorrt_llm::_v1::kernels
         - void at::native::vectorized_gather_kernel<16, long>
@@ -2261,12 +2292,16 @@ results:
         framework_native:
         - tensorrt_llm::_v1::kernels::deepseek_v3_topk_kernel
         - tensorrt_llm::_v1::kernels::dsv3MinLatencyKernels::router_gemm_kernel
-    residue: []
+    residue:
+    - CatArrayBatchedCopy
+    - CatArrayBatchedCopy_vectorized
+    - elementwise_kernel_with_index
+    - indexSelectSmallIndex
     ops_observed:
     - all
     coverage:
-      labeled: 43
-      residue: 0
+      labeled: 42
+      residue: 4
   meta-llama/Llama-4-Maverick-17B-128E-Instruct:
     record: ff82dd1296a0
     variant: depth8
@@ -2297,7 +2332,6 @@ results:
         infra:
         - at_cuda_detail::cub::detail::scan::DeviceScanInitKernel
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
-        - namespace
         - operator
         - tensorrt_llm::_v1::kernels::computeSeqAndPaddingOffsets
         - void at::native::vectorized_gather_kernel<16, long>
@@ -2327,12 +2361,15 @@ results:
         torch:
         - void at::native::sbtopk::gatherTopK<c10::BFloat16, unsigned int, 1, false>
         - void at::native::sbtopk::gatherTopK<c10::BFloat16, unsigned int, 2, false>
-    residue: []
+    residue:
+    - CatArrayBatchedCopy
+    - CatArrayBatchedCopy_vectorized
+    - indexSelectSmallIndex
     ops_observed:
     - all
     coverage:
-      labeled: 35
-      residue: 0
+      labeled: 34
+      residue: 3
   meta-llama/Llama-4-Scout-17B-16E-Instruct:
     record: fd9252310562
     variant: depth8
@@ -2362,7 +2399,6 @@ results:
         infra:
         - at_cuda_detail::cub::detail::scan::DeviceScanInitKernel
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
-        - namespace
         - operator
         - tensorrt_llm::_v1::kernels::computeSeqAndPaddingOffsets
         - void at::native::vectorized_gather_kernel<16, long>
@@ -2394,12 +2430,15 @@ results:
         torch:
         - void at::native::sbtopk::gatherTopK<c10::BFloat16, unsigned int, 1, false>
         - void at::native::sbtopk::gatherTopK<c10::BFloat16, unsigned int, 2, false>
-    residue: []
+    residue:
+    - CatArrayBatchedCopy
+    - CatArrayBatchedCopy_vectorized
+    - indexSelectSmallIndex
     ops_observed:
     - all
     coverage:
-      labeled: 35
-      residue: 0
+      labeled: 34
+      residue: 3
   meta-llama/Meta-Llama-3.1-405B:
     record: 4af816eb853d
     variant: rep
@@ -2426,7 +2465,6 @@ results:
         infra:
         - at_cuda_detail::cub::detail::scan::DeviceScanInitKernel
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
-        - namespace
         - operator
         - tensorrt_llm::_v1::kernels::computeSeqAndPaddingOffsets
         - void at::native::vectorized_gather_kernel<16, long>
@@ -2437,12 +2475,13 @@ results:
         framework_native:
         - kernel_cutlass_kernel_flashinfernormkernelsfused_add_rmsnormFusedAddRMSNormKerne
         - kernel_cutlass_kernel_flashinfernormkernelsrmsnormRMSNormKernel
-    residue: []
+    residue:
+    - indexSelectSmallIndex
     ops_observed:
     - all
     coverage:
-      labeled: 19
-      residue: 0
+      labeled: 18
+      residue: 1
   meta-llama/Meta-Llama-3.1-70B:
     record: 9b63ac91e825
     variant: rep
@@ -2470,7 +2509,6 @@ results:
         infra:
         - at_cuda_detail::cub::detail::scan::DeviceScanInitKernel
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
-        - namespace
         - operator
         - tensorrt_llm::_v1::kernels::computeSeqAndPaddingOffsets
         - void at::native::vectorized_gather_kernel<16, long>
@@ -2481,12 +2519,13 @@ results:
         framework_native:
         - kernel_cutlass_kernel_flashinfernormkernelsfused_add_rmsnormFusedAddRMSNormKerne
         - kernel_cutlass_kernel_flashinfernormkernelsrmsnormRMSNormKernel
-    residue: []
+    residue:
+    - indexSelectSmallIndex
     ops_observed:
     - all
     coverage:
-      labeled: 20
-      residue: 0
+      labeled: 19
+      residue: 1
   meta-llama/Meta-Llama-3.1-8B:
     record: 4f8983fdd5ce
     variant: rep
@@ -2514,7 +2553,6 @@ results:
         infra:
         - at_cuda_detail::cub::detail::scan::DeviceScanInitKernel
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
-        - namespace
         - operator
         - tensorrt_llm::_v1::kernels::computeSeqAndPaddingOffsets
         - void at::native::vectorized_gather_kernel<16, long>
@@ -2525,12 +2563,13 @@ results:
         framework_native:
         - kernel_cutlass_kernel_flashinfernormkernelsfused_add_rmsnormFusedAddRMSNormKerne
         - kernel_cutlass_kernel_flashinfernormkernelsrmsnormRMSNormKernel
-    residue: []
+    residue:
+    - indexSelectSmallIndex
     ops_observed:
     - all
     coverage:
-      labeled: 20
-      residue: 0
+      labeled: 19
+      residue: 1
   mistralai/Mixtral-8x22B-v0.1:
     record: 3fcbe8b1f2db
     variant: rep
@@ -2553,7 +2592,6 @@ results:
         infra:
         - at_cuda_detail::cub::detail::scan::DeviceScanInitKernel
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
-        - namespace
         - operator
         - tensorrt_llm::_v1::kernels::computeSeqAndPaddingOffsets
         - void at::native::vectorized_gather_kernel<16, long>
@@ -2582,12 +2620,13 @@ results:
       routing:
         framework_native:
         - tensorrt_llm::_v1::kernels::customMoeRoutingKernel
-    residue: []
+    residue:
+    - indexSelectSmallIndex
     ops_observed:
     - all
     coverage:
-      labeled: 28
-      residue: 0
+      labeled: 27
+      residue: 1
   mistralai/Mixtral-8x7B-v0.1:
     record: 812d46b74b1b
     variant: rep
@@ -2611,7 +2650,6 @@ results:
         infra:
         - at_cuda_detail::cub::detail::scan::DeviceScanInitKernel
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
-        - namespace
         - operator
         - tensorrt_llm::_v1::kernels::computeSeqAndPaddingOffsets
         - void at::native::vectorized_gather_kernel<16, long>
@@ -2640,12 +2678,13 @@ results:
       routing:
         framework_native:
         - tensorrt_llm::_v1::kernels::customMoeRoutingKernel
-    residue: []
+    residue:
+    - indexSelectSmallIndex
     ops_observed:
     - all
     coverage:
-      labeled: 29
-      residue: 0
+      labeled: 28
+      residue: 1
   moonshotai/Kimi-K2-Instruct:
     record: 44dfca723b55
     variant: rep
@@ -2681,7 +2720,6 @@ results:
         infra:
         - at_cuda_detail::cub::detail::scan::DeviceScanInitKernel
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
-        - namespace
         - operator
         - tensorrt_llm::_v1::kernels::computeSeqAndPaddingOffsets
         - void at::native::vectorized_gather_kernel<16, long>
@@ -2705,12 +2743,15 @@ results:
       routing:
         framework_native:
         - tensorrt_llm::_v1::kernels::deepseek_v3_topk_kernel
-    residue: []
+    residue:
+    - CatArrayBatchedCopy
+    - CatArrayBatchedCopy_vectorized
+    - indexSelectSmallIndex
     ops_observed:
     - all
     coverage:
-      labeled: 34
-      residue: 0
+      labeled: 33
+      residue: 3
     kv_variants:
       fp8:
         record: 360870355af5
@@ -2746,7 +2787,6 @@ results:
         infra:
         - at_cuda_detail::cub::detail::scan::DeviceScanInitKernel
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
-        - namespace
         - operator
         - tensorrt_llm::_v1::kernels::computeSeqAndPaddingOffsets
         - void at::native::vectorized_gather_kernel<16, long>
@@ -2760,12 +2800,13 @@ results:
       quant:
         trtllm_internal:
         - tensorrt_llm::_v1::common::scaleMatrixPerTensorVec
-    residue: []
+    residue:
+    - indexSelectSmallIndex
     ops_observed:
     - all
     coverage:
-      labeled: 21
-      residue: 0
+      labeled: 20
+      residue: 1
   nvidia/Llama-3_3-Nemotron-Super-49B-v1:
     record: 8d80dd1fb5cf
     variant: rep
@@ -2793,7 +2834,6 @@ results:
         infra:
         - at_cuda_detail::cub::detail::scan::DeviceScanInitKernel
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
-        - namespace
         - operator
         - tensorrt_llm::_v1::kernels::computeSeqAndPaddingOffsets
         - void at::native::vectorized_gather_kernel<16, long>
@@ -2804,12 +2844,13 @@ results:
         framework_native:
         - kernel_cutlass_kernel_flashinfernormkernelsfused_add_rmsnormFusedAddRMSNormKerne
         - kernel_cutlass_kernel_flashinfernormkernelsrmsnormRMSNormKernel
-    residue: []
+    residue:
+    - indexSelectSmallIndex
     ops_observed:
     - all
     coverage:
-      labeled: 20
-      residue: 0
+      labeled: 19
+      residue: 1
   nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16:
     record: 73718a424f20
     variant: all_kinds
@@ -2839,7 +2880,6 @@ results:
         - at_cuda_detail::cub::detail::scan::DeviceScanInitKernel
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
         - compute_cuda_kernel
-        - namespace
         - operator
         - tensorrt_llm::_v1::kernels::computeSeqAndPaddingOffsets
         - void at::native::vectorized_gather_kernel<16, long>
@@ -2880,12 +2920,13 @@ results:
       routing:
         framework_native:
         - tensorrt_llm::_v1::kernels::deepseek_v3_topk_kernel
-    residue: []
+    residue:
+    - indexSelectSmallIndex
     ops_observed:
     - all
     coverage:
-      labeled: 44
-      residue: 0
+      labeled: 43
+      residue: 1
   nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4:
     record: fbd85bba4e65
     variant: all_kinds
@@ -2915,7 +2956,6 @@ results:
         - at_cuda_detail::cub::detail::scan::DeviceScanInitKernel
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
         - compute_cuda_kernel
-        - namespace
         - operator
         - tensorrt_llm::_v1::kernels::computeSeqAndPaddingOffsets
         - void at::native::vectorized_gather_kernel<16, long>
@@ -2960,12 +3000,13 @@ results:
       routing:
         framework_native:
         - tensorrt_llm::_v1::kernels::deepseek_v3_topk_kernel
-    residue: []
+    residue:
+    - indexSelectSmallIndex
     ops_observed:
     - all
     coverage:
-      labeled: 46
-      residue: 0
+      labeled: 45
+      residue: 1
   nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-FP8:
     record: cf45e0386bdc
     variant: all_kinds
@@ -2997,7 +3038,6 @@ results:
         - at_cuda_detail::cub::detail::scan::DeviceScanInitKernel
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
         - compute_cuda_kernel
-        - namespace
         - operator
         - tensorrt_llm::_v1::kernels::computeSeqAndPaddingOffsets
         - void at::native::vectorized_gather_kernel<16, long>
@@ -3041,12 +3081,13 @@ results:
       routing:
         framework_native:
         - tensorrt_llm::_v1::kernels::deepseek_v3_topk_kernel
-    residue: []
+    residue:
+    - indexSelectSmallIndex
     ops_observed:
     - all
     coverage:
-      labeled: 47
-      residue: 0
+      labeled: 46
+      residue: 1
   nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4:
     record: 480dea14d088
     variant: all_kinds
@@ -3078,7 +3119,6 @@ results:
         - at_cuda_detail::cub::detail::scan::DeviceScanInitKernel
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
         - compute_cuda_kernel
-        - namespace
         - operator
         - tensorrt_llm::_v1::kernels::computeSeqAndPaddingOffsets
         - void at::native::vectorized_gather_kernel<16, long>
@@ -3124,12 +3164,13 @@ results:
       routing:
         framework_native:
         - tensorrt_llm::_v1::kernels::deepseek_v3_topk_kernel
-    residue: []
+    residue:
+    - indexSelectSmallIndex
     ops_observed:
     - all
     coverage:
-      labeled: 49
-      residue: 0
+      labeled: 48
+      residue: 1
     kv_variants:
       fp8:
         record: c0283882a7c9
@@ -3165,7 +3206,6 @@ results:
         - at_cuda_detail::cub::detail::scan::DeviceScanInitKernel
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
         - compute_cuda_kernel
-        - namespace
         - operator
         - tensorrt_llm::_v1::kernels::computeSeqAndPaddingOffsets
         - void at::native::vectorized_gather_kernel<16, long>
@@ -3206,12 +3246,13 @@ results:
       routing:
         framework_native:
         - tensorrt_llm::_v1::kernels::deepseek_v3_topk_kernel
-    residue: []
+    residue:
+    - indexSelectSmallIndex
     ops_observed:
     - all
     coverage:
-      labeled: 44
-      residue: 0
+      labeled: 43
+      residue: 1
   nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-FP8:
     record: b6ef53cdc6e8
     variant: all_kinds
@@ -3243,7 +3284,6 @@ results:
         - at_cuda_detail::cub::detail::scan::DeviceScanInitKernel
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
         - compute_cuda_kernel
-        - namespace
         - operator
         - tensorrt_llm::_v1::kernels::computeSeqAndPaddingOffsets
         - void at::native::vectorized_gather_kernel<16, long>
@@ -3287,12 +3327,13 @@ results:
       routing:
         framework_native:
         - tensorrt_llm::_v1::kernels::deepseek_v3_topk_kernel
-    residue: []
+    residue:
+    - indexSelectSmallIndex
     ops_observed:
     - all
     coverage:
-      labeled: 47
-      residue: 0
+      labeled: 46
+      residue: 1
   nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16:
     record: 51ee7fd50a73
     variant: all_kinds
@@ -3322,7 +3363,6 @@ results:
         - at_cuda_detail::cub::detail::scan::DeviceScanInitKernel
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
         - compute_cuda_kernel
-        - namespace
         - operator
         - tensorrt_llm::_v1::kernels::computeSeqAndPaddingOffsets
         - void at::native::vectorized_gather_kernel<16, long>
@@ -3363,12 +3403,13 @@ results:
       routing:
         framework_native:
         - tensorrt_llm::_v1::kernels::deepseek_v3_topk_kernel
-    residue: []
+    residue:
+    - indexSelectSmallIndex
     ops_observed:
     - all
     coverage:
-      labeled: 44
-      residue: 0
+      labeled: 43
+      residue: 1
   nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4:
     record: cec9e44e1e6c
     variant: all_kinds
@@ -3400,7 +3441,6 @@ results:
         - at_cuda_detail::cub::detail::scan::DeviceScanInitKernel
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
         - compute_cuda_kernel
-        - namespace
         - operator
         - tensorrt_llm::_v1::kernels::computeSeqAndPaddingOffsets
         - void at::native::vectorized_gather_kernel<16, long>
@@ -3446,12 +3486,13 @@ results:
       routing:
         framework_native:
         - tensorrt_llm::_v1::kernels::deepseek_v3_topk_kernel
-    residue: []
+    residue:
+    - indexSelectSmallIndex
     ops_observed:
     - all
     coverage:
-      labeled: 49
-      residue: 0
+      labeled: 48
+      residue: 1
   nvidia/Nemotron-H-56B-Base-8K:
     record: c9fc0119c47d
     variant: all_kinds
@@ -3477,7 +3518,6 @@ results:
         - at_cuda_detail::cub::detail::scan::DeviceScanInitKernel
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
         - compute_cuda_kernel
-        - namespace
         - operator
         - tensorrt_llm::_v1::kernels::computeSeqAndPaddingOffsets
         - void at::native::vectorized_gather_kernel<16, long>
@@ -3503,12 +3543,13 @@ results:
         framework_native:
         - _layer_norm_fwd_1pass_kernel
         - kernel_cutlass_kernel_flashinfernormkernelsfused_add_rmsnormFusedAddRMSNormKerne
-    residue: []
+    residue:
+    - indexSelectSmallIndex
     ops_observed:
     - all
     coverage:
-      labeled: 31
-      residue: 0
+      labeled: 30
+      residue: 1
   nvidia/Qwen3.8-27B-NVFP4:
     record: f155b60f6612
     variant: depth8
@@ -3545,7 +3586,6 @@ results:
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
         - at_cuda_detail::cub::detail::select::DeviceSelectSweepKernel
         - compute_cuda_kernel
-        - namespace
         - operator
         - tensorrt_llm::_v1::kernels::computeSeqAndPaddingOffsets
         - void at::native::vectorized_gather_kernel<16, long>
@@ -3574,12 +3614,14 @@ results:
         - _cast_scatter_fp32_vk_to_vk_kernel
         - _gather_cast_vk_to_fp32_vk_kernel
         - tensorrt_llm::_v1::common::scaleMatrixPerTensorVec
-    residue: []
+    residue:
+    - CatArrayBatchedCopy_alignedK_contig
+    - indexSelectSmallIndex
     ops_observed:
     - all
     coverage:
-      labeled: 40
-      residue: 0
+      labeled: 39
+      residue: 2
   openai/gpt-oss-120b:
     record: 6e4f2ed5d8a5
     variant: interleave_pair
@@ -3606,7 +3648,6 @@ results:
         infra:
         - at_cuda_detail::cub::detail::scan::DeviceScanInitKernel
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
-        - namespace
         - operator
         - tensorrt_llm::_v1::kernels::computeSeqAndPaddingOffsets
         - void at::native::vectorized_gather_kernel<16, long>
@@ -3632,12 +3673,13 @@ results:
       routing:
         framework_native:
         - tensorrt_llm::_v1::kernels::customMoeRoutingKernel
-    residue: []
+    residue:
+    - indexSelectSmallIndex
     ops_observed:
     - all
     coverage:
-      labeled: 29
-      residue: 0
+      labeled: 28
+      residue: 1
   openai/gpt-oss-20b:
     record: 5357f97a7b76
     variant: interleave_pair
@@ -3664,7 +3706,6 @@ results:
         infra:
         - at_cuda_detail::cub::detail::scan::DeviceScanInitKernel
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
-        - namespace
         - operator
         - tensorrt_llm::_v1::kernels::computeSeqAndPaddingOffsets
         - void at::native::vectorized_gather_kernel<16, long>
@@ -3690,12 +3731,13 @@ results:
       routing:
         framework_native:
         - tensorrt_llm::_v1::kernels::customMoeRoutingKernel
-    residue: []
+    residue:
+    - indexSelectSmallIndex
     ops_observed:
     - all
     coverage:
-      labeled: 29
-      residue: 0
+      labeled: 28
+      residue: 1
   openbmb/MiniCPM5-2B:
     record: 1b0cce8340c4
     variant: rep
@@ -3722,7 +3764,6 @@ results:
         infra:
         - at_cuda_detail::cub::detail::scan::DeviceScanInitKernel
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
-        - namespace
         - operator
         - tensorrt_llm::_v1::kernels::computeSeqAndPaddingOffsets
         - void at::native::vectorized_gather_kernel<16, long>
@@ -3733,12 +3774,13 @@ results:
         framework_native:
         - kernel_cutlass_kernel_flashinfernormkernelsfused_add_rmsnormFusedAddRMSNormKerne
         - kernel_cutlass_kernel_flashinfernormkernelsrmsnormRMSNormKernel
-    residue: []
+    residue:
+    - indexSelectSmallIndex
     ops_observed:
     - all
     coverage:
-      labeled: 19
-      residue: 0
+      labeled: 18
+      residue: 1
   ornith-ai/Ornith-1.5-35B-A3B:
     record: f3aeed82f1ea
     variant: depth8
@@ -3780,7 +3822,6 @@ results:
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
         - at_cuda_detail::cub::detail::select::DeviceSelectSweepKernel
         - compute_cuda_kernel
-        - namespace
         - operator
         - tensorrt_llm::_v1::kernels::computeSeqAndPaddingOffsets
         - void at::native::vectorized_gather_kernel<16, long>
@@ -3826,12 +3867,14 @@ results:
       routing:
         framework_native:
         - tensorrt_llm::_v1::kernels::customMoeRoutingKernel
-    residue: []
+    residue:
+    - CatArrayBatchedCopy_alignedK_contig
+    - indexSelectSmallIndex
     ops_observed:
     - all
     coverage:
-      labeled: 55
-      residue: 0
+      labeled: 54
+      residue: 2
   zai-org/GLM-5:
     record: d6432a869007
     variant: rep
@@ -3873,7 +3916,6 @@ results:
         infra:
         - at_cuda_detail::cub::detail::scan::DeviceScanInitKernel
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
-        - namespace
         - operator
         - tensorrt_llm::_v1::kernels
         - void at::native::vectorized_gather_kernel<16, long>
@@ -3907,12 +3949,16 @@ results:
         framework_native:
         - tensorrt_llm::_v1::kernels::deepseek_v3_topk_kernel
         - tensorrt_llm::_v1::kernels::dsv3MinLatencyKernels::router_gemm_kernel
-    residue: []
+    residue:
+    - CatArrayBatchedCopy
+    - CatArrayBatchedCopy_vectorized
+    - elementwise_kernel_with_index
+    - indexSelectSmallIndex
     ops_observed:
     - all
     coverage:
-      labeled: 47
-      residue: 0
+      labeled: 46
+      residue: 4
   zai-org/GLM-5-FP8:
     record: 5a4ee71380ed
     variant: rep
@@ -3955,7 +4001,6 @@ results:
         infra:
         - at_cuda_detail::cub::detail::scan::DeviceScanInitKernel
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
-        - namespace
         - operator
         - tensorrt_llm::_v1::kernels
         - void at::native::vectorized_gather_kernel<16, long>
@@ -3983,12 +4028,16 @@ results:
         framework_native:
         - tensorrt_llm::_v1::kernels::deepseek_v3_topk_kernel
         - tensorrt_llm::_v1::kernels::dsv3MinLatencyKernels::router_gemm_kernel
-    residue: []
+    residue:
+    - CatArrayBatchedCopy
+    - CatArrayBatchedCopy_vectorized
+    - elementwise_kernel_with_index
+    - indexSelectSmallIndex
     ops_observed:
     - all
     coverage:
-      labeled: 43
-      residue: 0
+      labeled: 42
+      residue: 4
   zai-org/GLM-5.1:
     record: 6976f538874a
     variant: rep
@@ -4030,7 +4079,6 @@ results:
         infra:
         - at_cuda_detail::cub::detail::scan::DeviceScanInitKernel
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
-        - namespace
         - operator
         - tensorrt_llm::_v1::kernels
         - void at::native::vectorized_gather_kernel<16, long>
@@ -4063,12 +4111,16 @@ results:
         framework_native:
         - tensorrt_llm::_v1::kernels::deepseek_v3_topk_kernel
         - tensorrt_llm::_v1::kernels::dsv3MinLatencyKernels::router_gemm_kernel
-    residue: []
+    residue:
+    - CatArrayBatchedCopy
+    - CatArrayBatchedCopy_vectorized
+    - elementwise_kernel_with_index
+    - indexSelectSmallIndex
     ops_observed:
     - all
     coverage:
-      labeled: 46
-      residue: 0
+      labeled: 45
+      residue: 4
   zai-org/GLM-5.1-FP8:
     record: f97a956df6a8
     variant: rep
@@ -4111,7 +4163,6 @@ results:
         infra:
         - at_cuda_detail::cub::detail::scan::DeviceScanInitKernel
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
-        - namespace
         - operator
         - tensorrt_llm::_v1::kernels
         - void at::native::vectorized_gather_kernel<16, long>
@@ -4139,12 +4190,16 @@ results:
         framework_native:
         - tensorrt_llm::_v1::kernels::deepseek_v3_topk_kernel
         - tensorrt_llm::_v1::kernels::dsv3MinLatencyKernels::router_gemm_kernel
-    residue: []
+    residue:
+    - CatArrayBatchedCopy
+    - CatArrayBatchedCopy_vectorized
+    - elementwise_kernel_with_index
+    - indexSelectSmallIndex
     ops_observed:
     - all
     coverage:
-      labeled: 43
-      residue: 0
+      labeled: 42
+      residue: 4
   zai-org/GLM-5.2:
     record: 785c631d6095
     variant: full_indexer_moe
@@ -4186,7 +4241,6 @@ results:
         infra:
         - at_cuda_detail::cub::detail::scan::DeviceScanInitKernel
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
-        - namespace
         - operator
         - tensorrt_llm::_v1::kernels
         - void at::native::vectorized_gather_kernel<16, long>
@@ -4219,12 +4273,16 @@ results:
         framework_native:
         - tensorrt_llm::_v1::kernels::deepseek_v3_topk_kernel
         - tensorrt_llm::_v1::kernels::dsv3MinLatencyKernels::router_gemm_kernel
-    residue: []
+    residue:
+    - CatArrayBatchedCopy
+    - CatArrayBatchedCopy_vectorized
+    - elementwise_kernel_with_index
+    - indexSelectSmallIndex
     ops_observed:
     - all
     coverage:
-      labeled: 46
-      residue: 0
+      labeled: 45
+      residue: 4
   zai-org/GLM-5.2-FP8:
     record: dfe1587e2dd9
     variant: full_indexer_moe
@@ -4267,7 +4325,6 @@ results:
         infra:
         - at_cuda_detail::cub::detail::scan::DeviceScanInitKernel
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
-        - namespace
         - operator
         - tensorrt_llm::_v1::kernels
         - void at::native::vectorized_gather_kernel<16, long>
@@ -4295,12 +4352,16 @@ results:
         framework_native:
         - tensorrt_llm::_v1::kernels::deepseek_v3_topk_kernel
         - tensorrt_llm::_v1::kernels::dsv3MinLatencyKernels::router_gemm_kernel
-    residue: []
+    residue:
+    - CatArrayBatchedCopy
+    - CatArrayBatchedCopy_vectorized
+    - elementwise_kernel_with_index
+    - indexSelectSmallIndex
     ops_observed:
     - all
     coverage:
-      labeled: 43
-      residue: 0
+      labeled: 42
+      residue: 4
   zai-org/GLM-5.3:
     record: a130b01f1a00
     variant: full_indexer_moe
@@ -4343,7 +4404,6 @@ results:
         infra:
         - at_cuda_detail::cub::detail::scan::DeviceScanInitKernel
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
-        - namespace
         - operator
         - tensorrt_llm::_v1::kernels
         - void at::native::vectorized_gather_kernel<16, long>
@@ -4371,12 +4431,16 @@ results:
         framework_native:
         - tensorrt_llm::_v1::kernels::deepseek_v3_topk_kernel
         - tensorrt_llm::_v1::kernels::dsv3MinLatencyKernels::router_gemm_kernel
-    residue: []
+    residue:
+    - CatArrayBatchedCopy
+    - CatArrayBatchedCopy_vectorized
+    - elementwise_kernel_with_index
+    - indexSelectSmallIndex
     ops_observed:
     - all
     coverage:
-      labeled: 43
-      residue: 0
+      labeled: 42
+      residue: 4
   zai-org/GLM-5.3-BF16:
     record: e47a9fa1da80
     variant: full_indexer_moe
@@ -4418,7 +4482,6 @@ results:
         infra:
         - at_cuda_detail::cub::detail::scan::DeviceScanInitKernel
         - at_cuda_detail::cub::detail::scan::DeviceScanKernel
-        - namespace
         - operator
         - tensorrt_llm::_v1::kernels
         - void at::native::vectorized_gather_kernel<16, long>
@@ -4451,9 +4514,13 @@ results:
         framework_native:
         - tensorrt_llm::_v1::kernels::deepseek_v3_topk_kernel
         - tensorrt_llm::_v1::kernels::dsv3MinLatencyKernels::router_gemm_kernel
-    residue: []
+    residue:
+    - CatArrayBatchedCopy
+    - CatArrayBatchedCopy_vectorized
+    - elementwise_kernel_with_index
+    - indexSelectSmallIndex
     ops_observed:
     - all
     coverage:
-      labeled: 46
-      residue: 0
+      labeled: 45
+      residue: 4

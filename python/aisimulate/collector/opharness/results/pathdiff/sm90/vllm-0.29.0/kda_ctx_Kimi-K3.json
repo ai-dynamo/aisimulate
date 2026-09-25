@@ -12,12 +12,12 @@
  "kv_dtype": "auto",
  "op_hint": "kda|delta|conv1d|linear|attn_res|gated|recurr",
  "serving_record": {
-  "id": "raw:k3_eager.json",
-  "tp": null,
-  "kv_cache_dtype": null,
+  "id": "39864922d20f",
+  "tp": 1,
+  "kv_cache_dtype": "auto",
   "isl": 4096,
   "prefix_caching": false,
-  "raw_file": "facts/full_reprobe/k3_eager.json",
+  "raw_file": null,
   "candidates": 1
  },
  "collector_backends": [
@@ -27,6 +27,7 @@
  "serving_backends": [
   "causal_conv1d",
   "cublas",
+  "cutlass",
   "fa3",
   "flashkda",
   "torch",

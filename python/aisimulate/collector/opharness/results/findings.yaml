@@ -1326,6 +1326,19 @@ findings:
       triton_block_fp8 so a gemm path_diff on those repos reads diverged
       instead of hiding under the DeepGEMM label. No capture exists yet for
       that cell; recorded, not graded.
+      KDA DECODE-BATCH CAP (owner decision 2026-09-25, "带kda的模型覆盖max num
+      seq到256"): vllm.rule caps max_batch_size at 256 for checkpoints with
+      linear_attn_config.kda_layers (generator commit a0820789; Kimi-K3 now
+      renders --max-num-seqs 256 --max-num-batched-tokens 5760). Re-probed
+      under the capped render in framework mode: moonshotai/Kimi-K3 and
+      nvidia/Kimi-K3-NVFP4 PASS on vllm 0.29.0 (prefill 63/70, decode 51/55
+      kernels; identity KimiK3DeltaAttention + kda_decode_fusion_many_heads
+      + flash_kda prefill, MoE Mxfp4MoE->marlin / ModelOptNvFp4FusedMoE->
+      marlin); the fp8-KV variants still fail at load with the known
+      "fp8 KV cache requires an fp8 prefill query" requirement (not
+      rendered). kda_ctx path_diff now grades against the framework-mode
+      record (default selection, --serving-raw dropped): ALIGNED. The old
+      512 raws are kept in facts/k3_ab/pre_cap/. vllm matrix: 99 / 9 / 16.
     applies_to: [zai-org/GLM-5.3-Flash, Qwen/Qwen3.8-27B, Qwen/Qwen3.8-Flash-Next, nvidia/Qwen3.8-2.4T-A95B-NVFP4,
       deepseek-ai/DeepSeek-V4.1-Flash, meta-models/Muse-Glimmer-30B, baerquant/Inkling, Altworld/Hemmingway-1,
       TokenRhythm/NeoHorse-1-9B, ornith-ai/Ornith-1.5-35B-A3B, openbmb/MiniCPM5-2B,
