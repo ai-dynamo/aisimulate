@@ -111,3 +111,58 @@ def test_spans_and_launchers_are_not_orphans(pd):
     ]}
     _, orphans = pd.build_ops(facts)
     assert orphans == ["flash::FlashAttnFwdSm90"]
+
+
+def _targets_for(repo: str, variants: list[str]) -> dict:
+    return {
+        "topologies": [{"tp": 1, "evidence": "real"}],
+        "backends": {"vllm": {"versions": ["0.29.0"], "images": {"0.29.0": "img"}}},
+        "families": {"fam": {"checkpoints": [{"repo": repo, "profile": "bfloat16", "variants": variants}]}},
+    }
+
+
+def test_capacity_fallback_advances_past_a_load_oom(pd, tmp_path, monkeypatch):
+    """The representative dummy cut is the FIRST variant unless its raw probe
+    OOMed at engine load on this backend; then the next smaller faithful cut is
+    queued and the switch is recorded on the run (never silent)."""
+    import json
+    monkeypatch.setattr(pd, "ROOT", tmp_path)
+    for v in ("depth8", "depth4"):
+        (tmp_path / "dummy_models" / "generic" / f"Big__{v}").mkdir(parents=True)
+    targets = _targets_for("org/Big", ["depth8", "depth4"])
+    # no evidence yet: index 0 is the representative
+    runs = [r for r in pd.enumerate_runs(targets, full=False, backends=["vllm"]) if "skip" not in r]
+    assert {r["variant"] for r in runs} == {"depth8"}
+    assert all("capacity_fallback_from" not in r for r in runs)
+    # the depth8 probe OOMed at load -> depth4 becomes the representative
+    oom_rid = next(r["id"] for r in runs if r["kv_dtype"] is None)
+    (tmp_path / "archive" / "raw").mkdir(parents=True)
+    (tmp_path / "archive" / "raw" / f"{oom_rid}.json").write_text(json.dumps(
+        {"errors": {"load": "torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 16.00 GiB"}}))
+    runs = [r for r in pd.enumerate_runs(targets, full=False, backends=["vllm"]) if "skip" not in r]
+    assert {r["variant"] for r in runs} == {"depth4"}
+    assert {r["capacity_fallback_from"] for r in runs} == {"depth8"}
+    # a non-OOM failure is NOT a capacity signal: the representative stays
+    (tmp_path / "archive" / "raw" / f"{oom_rid}.json").write_text(json.dumps(
+        {"errors": {"load": "RuntimeError: CUDA error: an illegal memory access was encountered"}}))
+    runs = [r for r in pd.enumerate_runs(targets, full=False, backends=["vllm"]) if "skip" not in r]
+    assert {r["variant"] for r in runs} == {"depth8"}
+
+
+def test_capacity_fallback_stops_at_the_smallest_cut(pd, tmp_path, monkeypatch):
+    """When every cut OOMed the smallest one stays queued (its failure is the
+    honest matrix cell) — the fallback never invents a cut that does not exist."""
+    import json
+    monkeypatch.setattr(pd, "ROOT", tmp_path)
+    for v in ("depth8", "depth4"):
+        (tmp_path / "dummy_models" / "generic" / f"Big__{v}").mkdir(parents=True)
+    (tmp_path / "archive" / "raw").mkdir(parents=True)
+    ck = {"repo": "org/Big", "profile": "bfloat16"}
+    for v in ("depth8", "depth4"):
+        rid = pd._run_id(ck, v, "vllm", "0.29.0", 1, None)
+        (tmp_path / "archive" / "raw" / f"{rid}.json").write_text(json.dumps(
+            {"errors": {"load": "CUDA out of memory"}}))
+    runs = [r for r in pd.enumerate_runs(_targets_for("org/Big", ["depth8", "depth4"]), full=False, backends=["vllm"])
+            if "skip" not in r]
+    assert {r["variant"] for r in runs} == {"depth4"}
+    assert {r["capacity_fallback_from"] for r in runs} == {"depth8"}

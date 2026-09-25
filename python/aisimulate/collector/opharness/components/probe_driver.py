@@ -194,6 +194,25 @@ def derive_roster_checkpoints(fam: dict, targets: dict) -> list[dict]:
     return out
 
 
+def _run_id(ck: dict, variant: str, backend: str, version: str, tp: int, kv) -> str:
+    return hashlib.sha1(
+        f"{ck['repo']}|{variant}|{backend}|{version}|{ck['profile']}|tp{tp}|kv{kv or 'rendered'}".encode()
+    ).hexdigest()[:12]
+
+
+def _oom_at_load(rid: str) -> bool:
+    """True when the raw probe for this run id failed at engine LOAD with CUDA OOM
+    (weights of the dummy cut do not fit the probe GPU)."""
+    p = ROOT / "archive" / "raw" / f"{rid}.json"
+    if not p.exists():
+        return False
+    try:
+        err = str((json.loads(p.read_text()).get("errors") or {}).get("load") or "")
+    except (OSError, ValueError):
+        return False
+    return "OutOfMemoryError" in err or "CUDA out of memory" in err
+
+
 def enumerate_runs(targets: dict, full: bool, backends: list[str]) -> list[dict]:
     runs = []
     topos = [t for t in targets["topologies"] if t["evidence"] == "real" and (full or t["tp"] == 1)]
@@ -220,7 +239,26 @@ def enumerate_runs(targets: dict, full: bool, backends: list[str]) -> list[dict]
                           f"(run gen_dummy_models.py)", file=sys.stderr)
                     continue
                 ck_override = (ck.get("variant_overrides") or {}).get(backend) or override
-                use_variants = ck_variants if full else [ck_override or ck_variants[0]]
+                fallback_from = None
+                if full or ck_override:
+                    use_variants = ck_variants if full else [ck_override]
+                else:
+                    # capacity fallback (observed, never predicted): when the
+                    # representative cut OOMed at LOAD on this backend, the next
+                    # smaller faithful cut becomes the representative (depth8 ->
+                    # depth4, all_kinds -> single-kind). The switch is recorded
+                    # on the run so records/matrix show which cut was probed.
+                    # Found 2026-09-25: Qwen3.8-2.4T-A95B depth8 (8 x 26B params)
+                    # cannot fit one GPU; the driver only ever queued index 0.
+                    chosen = ck_variants[0]
+                    for i, v in enumerate(ck_variants):
+                        chosen = v
+                        rid0 = _run_id(ck, v, backend, versions[-1], topos[0]["tp"], None)
+                        if _oom_at_load(rid0) and i + 1 < len(ck_variants):
+                            fallback_from = v
+                            continue
+                        break
+                    use_variants = [chosen]
                 for variant in use_variants:
                     # dummy dirs are keyed by ADAPTER family (a roster repo may
                     # still use a special adapter) — search every adapter dir,
@@ -248,9 +286,7 @@ def enumerate_runs(targets: dict, full: bool, backends: list[str]) -> list[dict]
                             kv_variants = {"vllm": [None, "fp8"], "sglang": [None, "fp8_e4m3"],
                                            "trtllm": [None, "fp8"]}.get(backend, [None])
                             for kv in kv_variants:
-                                rid = hashlib.sha1(
-                                    f"{ck['repo']}|{variant}|{backend}|{version}|{ck['profile']}|tp{topo['tp']}|kv{kv or 'rendered'}".encode()
-                                ).hexdigest()[:12]
+                                rid = _run_id(ck, variant, backend, version, topo["tp"], kv)
                                 plat = targets.get("platform") or {"name": "h20_sm90", "sm": 90, "system": "h200_sxm"}
                                 runs.append({
                                     "id": rid, "family": fam_name, "repo": ck["repo"], "profile": ck["profile"],
@@ -260,6 +296,7 @@ def enumerate_runs(targets: dict, full: bool, backends: list[str]) -> list[dict]
                                     "kv_dtype": kv,
                                     "model_dir": f"{WORK}/{vdir.relative_to(ROOT)}",
                                     "aic_registered": ck.get("aic_registered", False),
+                                    **({"capacity_fallback_from": fallback_from} if fallback_from else {}),
                                     "cli_extra_args": (list(be.get("cli_extra_args") or [])
                                                        + _cea((ck.get("cli_extra_args") or {}).get(backend)
                                                               or (fam.get("cli_extra_args") or {}).get(backend))),
