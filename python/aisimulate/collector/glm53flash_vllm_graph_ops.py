@@ -31,6 +31,27 @@ SOURCE_PINS = {
 LOGITS_SOURCE_PIN = "6b0603d67b0c756253c2fdc882a3896d2e873a16e9aa2ef877aabca8d36bdb5f"
 
 
+def _native_memory_sizing_capture(manager):
+    """Recognize only the pinned native temporary capture lifecycle.
+
+    vLLM ced6857, v1/worker/gpu/cudagraph_utils.py:175-181, 917-921
+    sets both markers before capture_model(profile_only=True). The manager
+    capture API does not receive profile_only. Native cleanup discards these
+    graphs and the manager before real KV allocation/capture (934-953, 1008).
+    This is native memory sizing, unrelated to our retained trace profiling.
+    """
+    if not hasattr(manager, "_max_full_descs_to_capture") or not hasattr(manager, "_capture_mem_samples"):
+        raise RuntimeError("native graph capture lacks its memory-sizing lifecycle markers")
+    limit, samples = manager._max_full_descs_to_capture, manager._capture_mem_samples
+    if limit is None and samples is None:
+        return False
+    if type(limit) is not int or limit != 2 or type(samples) is not list or samples:
+        raise RuntimeError("native graph memory-sizing lifecycle markers are incomplete or changed")
+    if getattr(manager, "_graphs_captured", None) is not False:
+        raise RuntimeError("native memory-sizing manager was already captured")
+    return True
+
+
 def install_holdout_capture(output, *, include_piecewise=False):
     """Retain initialized native graph objects without node/profiler hooks.
 
@@ -59,6 +80,8 @@ def install_holdout_capture(output, *, include_piecewise=False):
     def capture(manager, model, *args, **kwargs):
         if hasattr(manager, "_aisim_glm53_holdout_capture"):
             raise RuntimeError("native graph holdout manager was captured more than once")
+        if _native_memory_sizing_capture(manager):
+            return original(manager, model, *args, **kwargs)
         if type(get_offloader()) is not NoopOffloader:
             raise RuntimeError("native graph holdout does not cover offloaded state or transfers")
         result = original(manager, model, *args, **kwargs)
@@ -469,6 +492,10 @@ def install(manifest, provenance, output, *, include_piecewise=False):
     @functools.wraps(original_model_capture)
     def model_capture(manager, model, *args, **kwargs):
         nonlocal sequence
+        if _native_memory_sizing_capture(manager):
+            if id(model) in models or hasattr(manager, "_aisim_glm53_capture_state"):
+                raise RuntimeError("native memory sizing cannot reuse a serving operation observer")
+            return original_model_capture(manager, model, *args, **kwargs)
         if has_compiled_submodule(model):
             raise RuntimeError("read-only module capture cannot alter a compiled native model boundary")
         if manager.ubatch_runner is not None:

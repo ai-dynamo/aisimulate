@@ -467,6 +467,17 @@ calls `join_after_forward` after the observed forward factory returns, and only
 the reviewed noop implementation guarantees no unobserved tail work there.
 Source at the same immutable revision: `vllm/model_executor/offloader/base.py`.
 
+Native memory sizing precedes serving initialization. The pinned
+`profile_cudagraph_memory` sets `_max_full_descs_to_capture=2` and an empty
+`_capture_mem_samples` list, invokes the original capture, then discards its
+temporary graphs and manager. Both observation paths recognize this exact
+native lifecycle before installing operation hooks or retaining serving graph
+objects. The sizing capture still executes once with unchanged arguments and
+return value; its memory estimate and cleanup remain native. Missing or mixed
+markers fail. The later serving capture must still pass the complete initialized
+descriptor validation. A sizing graph is never serving-policy evidence, and
+this CPU-tested distinction requires a new producer identity and GPU attempt.
+
 This vLLM graph contains hidden states; its raw registry explicitly lists logits
 as an uncaptured operation. Native output copies remain visible as setup nodes.
 The capture adapter alone writes no measured table. Child graphs, changed graph

@@ -997,6 +997,7 @@ Copyright 2018- The Hugging Face team. All rights reserved.
   `glm53flash_sglang_graph_ops.py`, `glm53flash_vllm_graph_ops.py`,
   `glm53flash_vllm_piecewise.py`, `glm53flash_vllm_piecewise_activity.py`
   and their piecewise capture/activity tests,
+  `python/aisimulate/tests/unit/collector/test_glm53flash_vllm_sizing_capture.py`,
   and their graph-node/hook/execution CPU tests,
   `collect_glm53flash.py`, `{vllm,sglang}/collect_glm53flash.py`,
   `cases/base_ops/glm53flash_module.yaml`,
@@ -1034,6 +1035,13 @@ Copyright 2018- The Hugging Face team. All rights reserved.
   admission, immutable provenance, and exact measured-key serialization. No
   native model, dispatch, cache population, or collective implementation is
   modified by these adapters.
+
+The vLLM graph adapter also distinguishes the source-defined temporary memory
+sizing lifecycle in `vllm/v1/worker/gpu/cudagraph_utils.py` at the immutable
+revision above. Independently authored marker checks and TEST_ONLY lifecycle
+tests preserve the original sizing capture and its memory measurements, while
+reserving serving snapshots and operation observation for real initialization.
+No upstream capture implementation is copied or replaced.
 
 The graph callback adapter additionally uses independently authored ctypes
 bindings for NVIDIA CUPTI13.0.85's documented resource and graph descriptors.
