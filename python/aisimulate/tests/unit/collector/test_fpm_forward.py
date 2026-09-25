@@ -2502,7 +2502,20 @@ def test_v41_reader_rejects_unqualified_graph_or_missing_execution_mode(tmp_path
 def test_explicit_eager_collection_admission(v41, eager, monkeypatch):
     from collector.fpm_forward import planner
 
-    monkeypatch.setattr(planner, "execution_identity", lambda *args, **kwargs: ("c" * 64 if v41 else "",))
+    resolve = planner.resolve_model_capability
+
+    def resolve_architecture(**kwargs):
+        from dataclasses import replace
+
+        capability = resolve(**kwargs)
+        return replace(capability, architecture="DeepseekV41ForCausalLM") if v41 else capability
+
+    monkeypatch.setattr(planner, "resolve_model_capability", resolve_architecture)
+    monkeypatch.setattr(
+        planner,
+        "execution_identity",
+        lambda *args, **kwargs: ("c" * 64, "full", "hbm_tp_sharded", "text") if v41 else ("", "", "", ""),
+    )
     with pytest.raises(ValueError, match="eager"):
         build_collection_plan(
             backend="vllm",
@@ -2663,3 +2676,15 @@ def test_v41_truncated_native_artifact_raises_actionable_value_error(tmp_path, c
         path.write_text(json.dumps(payload))
     with pytest.raises(ValueError, match="native"):
         aggregate_cell(plan, cell, cell_dir, expected_attempt_id="attempt")
+
+
+def test_formal_database_complete_union_refuses_replaced_child_without_mutation(tmp_path):
+    plan, cell, cell_dir = _synthetic_plan_and_cell(tmp_path)
+    rows = aggregate_cell(plan, cell, cell_dir, expected_attempt_id="attempt")
+    systems = tmp_path / "systems"
+    parquet, metadata, _ = write_formal_database(plan, rows, systems_root=systems)
+    sealed = (parquet.read_bytes(), metadata.read_bytes())
+    changed = [{**row, "collector_attempt_id": "new-attempt", "runtime_run_id": "new-runtime"} for row in rows]
+    with pytest.raises(ValueError, match="complete shard union"):
+        write_formal_database(plan, changed, systems_root=systems, reject_replaced_cells=True)
+    assert (parquet.read_bytes(), metadata.read_bytes()) == sealed

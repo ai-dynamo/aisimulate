@@ -125,6 +125,8 @@ def _source_payloads() -> set[str]:
         "case_generator.py",
         "helper.py",
         "fpm_forward/**/*.py",
+        "fpm_forward/glm53flash_corpora/*.txt",
+        "fpm_forward/README.glm53flash*.md",
         "fpm_forward/runtime/fpm_exec.sh",
         "fpm_forward/runtime/fpm_text.txt",
         "fpm_forward/runtime/glm53flash/*.json",

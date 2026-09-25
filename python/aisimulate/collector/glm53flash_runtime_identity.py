@@ -32,6 +32,10 @@ _BUILD_SHA256 = "3b72d70800e2ea244944580c1ce6a4faaa3dedf68af41b323aa690999abd944
 _WHEEL_SHA256 = "a3b63cb3c95cf976f717077102e8172a33501c7d05092bc84cc58e3aaef47d36"
 _ENGINE_IDENTITY_SHA256 = "d412233edffae84ae4b36a2e44d08bc4d3652a7e7f2bc62e8fc1193967a1cb22"
 _V2_SOURCE_SHA256 = "48a6f6689d176be79d0ac38db0e68078050e63f73669c649b332d32dff076f1e"
+# Original stock FPM manifest from ccb0218d75a38ba61896c4192762ce994f640389.
+# New producers keep the complete current manifest. This is a reader-only
+# identity, never a subset comparison or a rewrite of historical receipts.
+_STOCK_FPM_SOURCE_SHA256 = "7e6d2a2a476dbd9411ab405158e92e0f4eb904153e380ff04297a58eef934911"
 
 
 def _canonical_sha256(value: dict) -> str:
@@ -504,6 +508,18 @@ def vllm_unaligned_prefill_admitted(version: str) -> bool:
 
 
 def validate_vllm_source_identity(producer: dict, manifest: Path) -> dict[str, str]:
+    if (
+        producer.get("vllm_package_version") == "0.30.0"
+        and producer.get("runtime_source_manifest_sha256") == _STOCK_FPM_SOURCE_SHA256
+    ):
+        validate_backend_version("vllm", producer["vllm_package_version"])
+        # The packaged original has its own exact byte identity. Read it from
+        # this module's distribution, not a path supplied with the artifact.
+        original = Path(__file__).parent / "fpm_forward/runtime/glm53flash/runtime-source-stock-fpm-v1.json"
+        raw = original.read_bytes()
+        if hashlib.sha256(raw).hexdigest() != _STOCK_FPM_SOURCE_SHA256:
+            raise ValueError("original stock FPM source manifest differs from its immutable identity")
+        return json.loads(raw)
     pins = vllm_source_pins(producer.get("vllm_package_version"), manifest)
     if producer.get("runtime_source_manifest_sha256") != vllm_source_manifest_sha256(
         producer.get("vllm_package_version"), manifest

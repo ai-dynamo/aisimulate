@@ -80,6 +80,20 @@ records the inspected vLLM API revision and immutable runtime image/source
 hashes. vLLM implementation files are not vendored. The text fixture and
 lifecycle tests are original work for this change, with no external corpus.
 
+## Dynamo GLM-5.3-Flash FPM collection adapter
+
+`python/aisimulate/collector/fpm_forward/runtime/glm53flash/glm53flash_scheduler.py`
+is modified code adapted from `components/src/dynamo/vllm/instrumented_scheduler.py`
+in https://github.com/ai-dynamo/dynamo/tree/54960177085413259859c88bd34ed0734d4c2ea9,
+using this repository's DeepSeek V4.1 same-request adapter as the integration
+precedent. Changes add the GLM hybrid-state contract, repeated real warmups and
+measurements, actual graph-dispatch receipts and immutable source validation.
+Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Licensed under Apache-2.0; the upstream license is preserved in the adjacent
+`LICENSE`. No upstream root NOTICE exists. vLLM implementation files are not
+vendored; exact API source hashes and their revision are recorded alongside
+this adapter. The corpus and new contract tests are original project content.
+
 ## NVIDIA AIConfigurator speculative decoding
 
 The speculation SDK, compatibility exports, CLI/task integration, attention and whole-forward FPM operation changes, native bindings, and their tests are adapted and modified from AIConfigurator PR #1563, pinned at commit `6290c161a354da5250c391bd43372b2e9c6f4a51`. Original paths are under `aic-core/src/aiconfigurator_core/sdk/`, `src/aiconfigurator/`, `aic-core/rust/aiconfigurator-core/`, `aic-core/rust/tests/public-api/`, and `tests/`.
@@ -1390,15 +1404,15 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ## GLM SGLang native allocator policy integration
 
 - Integration files: `python/aisimulate/collector/fpm_forward/sglang_allocator.py`,
-  the allocator-only additions to its driver/artifact/validation peers,
-  `collector/glm53flash_sglang_runtime.py`, and
-  `collector/glm53flash_validation.py`, the graph/native-prefill reader
-  integrations, `tests/unit/collector/test_glm53flash_sglang_allocator.py`
-  and `tests/unit/collector/test_glm53flash_ops_allocator.py` under the same
-  Python application.
-- Ops adaptation retains the shared helper and native receipt adapters from
-  internal FPM commit `636206a73f391a1340b57acd8c396c557061c9db`; the existing
-  Ops orchestration is unchanged.
+  the allocator-only additions to its driver/artifact/validation/database peers,
+  `collector/glm53flash_sglang_runtime.py`, `collector/glm53flash_validation.py`,
+  graph/native-prefill reader integrations, and the FPM/Ops allocator tests
+  `test_fpm_sglang_allocator_policy.py`, `test_glm53flash_sglang_allocator.py`
+  and `test_glm53flash_ops_allocator.py` under the same Python application.
+- The Ops adapter originally retained the shared helper and native receipt
+  adapters from internal FPM commit `636206a73f391a1340b57acd8c396c557061c9db`;
+  the combined integration preserves the complete FPM option/orchestration
+  contract and purpose-scoped Ops observers.
 - Source: https://github.com/pytorch/pytorch at immutable revision
   `cf30153c4c131c8164ee7798e5022d810682e2cb`, original paths
   `c10/core/AllocatorConfig.cpp`, `c10/cuda/CUDAAllocatorConfig.cpp`,
@@ -1553,3 +1567,14 @@ POSSIBILITY OF SUCH DAMAGE.
   and corpus provenance while explicitly distinguishing new benchmark IDs and
   token offsets; actual dispatch, source, state, control and measurement guards
   still apply. No performance rows or query formulas are synthesized.
+
+### Preserved GLM stock FPM source manifest
+
+`python/aisimulate/collector/fpm_forward/runtime/glm53flash/runtime-source-stock-fpm-v1.json`
+preserves the original source hash map from AISimulate commit
+`ccb0218d75a38ba61896c4192762ce994f640389` without modification. The immutable
+vLLM/Dynamo source revisions, original paths, copyright and Apache-2.0 license
+for its entries are those of the GLM real-KV runtime integration documented
+above and in the adjacent runtime README. This contains source identities,
+not upstream implementation. The compatibility reader and tests are original
+project code; they retain exact historical provenance without rewriting it.

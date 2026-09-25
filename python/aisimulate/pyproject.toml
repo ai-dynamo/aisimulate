@@ -130,6 +130,8 @@ include = [
     { path = "collector/glm53flash*.py", format = "wheel" },
     { path = "collector/cases/**/*.yaml", format = "wheel" },
     { path = "collector/fpm_forward/**/*.py", format = "wheel" },
+    { path = "collector/fpm_forward/glm53flash_corpora/*.txt", format = "wheel" },
+    { path = "collector/fpm_forward/README.glm53flash*.md", format = "wheel" },
     { path = "collector/fpm_forward/runtime/fpm_exec.sh", format = "wheel" },
     { path = "collector/fpm_forward/runtime/fpm_text.txt", format = "wheel" },
     { path = "collector/fpm_forward/runtime/dsv41/*.json", format = "wheel" },

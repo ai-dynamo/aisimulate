@@ -26,10 +26,22 @@ from aisimulate.fpm_contract import FPM_BENCHMARK_RESULT_GLOB
 
 
 class SlurmCellRunner:
-    def __init__(self, manifest: Path, cell_dir: Path, *, image: str, mounts: tuple[str, ...], total_gpus: int):
+    def __init__(
+        self,
+        manifest: Path,
+        cell_dir: Path,
+        *,
+        image: str,
+        mounts: tuple[str, ...],
+        total_gpus: int,
+        backend: str = "vllm",
+    ):
         from .runner import _expected_nodes
 
         self.cell_dir = cell_dir.resolve()
+        if backend not in ("vllm", "sglang"):
+            raise ValueError("unsupported native FPM backend")
+        self.backend = backend
         self.node_count = _expected_nodes(manifest)
         if total_gpus % self.node_count:
             raise ValueError("FPM GPUs must divide evenly across Slurm nodes")
@@ -166,6 +178,14 @@ class SlurmCellRunner:
                 "env",
                 f"FPM_NODE_RANK={rank}",
                 f"FPM_MASTER_ADDR={self.hosts[0]}",
+                # Pyxis can start its command as a process-group leader. Keep
+                # a parent alive so native launchers may create their own
+                # session after their exec chain (os.setsid rejects leaders).
+                # Positional arguments preserve the original argv literally.
+                "bash",
+                "-c",
+                '"$@"; status=$?; exit "$status"',
+                "fpm-slurm-command",
                 *command,
             ],
             timeout=timeout,
@@ -173,6 +193,7 @@ class SlurmCellRunner:
 
     def prepare_attempt(self, pods: list[str], *, cell_id: str, plan_sha256: str, attempt_id: str) -> None:
         from .native_artifact import COLLECTOR_PROVENANCE_FILENAME
+        from .runner import REMOTE_WORKDIR, RUNTIME_ENV_FILENAME
 
         payload = json.dumps(
             {
@@ -185,11 +206,33 @@ class SlurmCellRunner:
         )
         script = (
             "import importlib.metadata,json,pathlib,sys; p=json.loads(sys.argv[1]); "
-            "p['runtime']={'backend':'vllm','backend_version':importlib.metadata.version('vllm')}; "
+            "p['runtime']={'backend':sys.argv[3],'backend_version':importlib.metadata.version(sys.argv[3])}; "
             "pathlib.Path('/results',sys.argv[2]).write_text(json.dumps(p,sort_keys=True)+'\\n')"
         )
         for unit in pods:
-            self._exec(unit, ["python3", "-c", script, payload, COLLECTOR_PROVENANCE_FILENAME], timeout=300)
+            # Resolve the actual installed distribution through the same frozen
+            # environment used by fpm_exec.sh. Slurm does not inherit the Pod's
+            # extra_env, and inspecting the image before sourcing PYTHONPATH
+            # would misidentify a task-private runtime as the image's baseline.
+            self._exec(
+                unit,
+                [
+                    "bash",
+                    "-euo",
+                    "pipefail",
+                    "-c",
+                    'source "$1"; shift; exec "$@"',
+                    "fpm-slurm-prepare",
+                    f"{REMOTE_WORKDIR}/{RUNTIME_ENV_FILENAME}",
+                    "python3",
+                    "-c",
+                    script,
+                    payload,
+                    COLLECTOR_PROVENANCE_FILENAME,
+                    self.backend,
+                ],
+                timeout=300,
+            )
 
     def execute(self, pods: list[str], timeout_seconds: int = 14400) -> None:
         from .runner import CommandScope, _cancel_preserving_interrupt

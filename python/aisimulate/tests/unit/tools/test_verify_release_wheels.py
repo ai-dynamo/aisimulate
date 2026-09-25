@@ -98,6 +98,21 @@ def test_config_adapter_readme_remains_repository_only(verifier):
     assert "collector/glm53flash_jsonl.py" in payload
     assert "collector/glm53flash_sglang_retained.py" in payload
     assert "collector/collect_glm53flash.py" in payload
+    assert "collector/fpm_forward/glm53flash_corpora/calibration.txt" in payload
+    assert "collector/fpm_forward/glm53flash_corpora/holdout.txt" in payload
+    assert "collector/glm53flash_shard_contract.py" in payload
+    assert "collector/glm53flash_jsonl.py" in payload
+    assert "collector/glm53flash_sglang_retained.py" in payload
+    assert "collector/fpm_forward/glm53flash_publication.py" in payload
+    assert "collector/fpm_forward/runtime/glm53flash/glm53flash_worker_hardware.py" in payload
+    candidate = "collector/fpm_forward/runtime/glm53flash_vllm_kpool_candidate"
+    assert f"{candidate}/retained-tail-prefill.patch.b64" in payload
+    assert f"{candidate}/retained-tail-prefill.review.diff" in payload
+    assert f"{candidate}/LICENSE" in payload
+    assert f"{candidate}/build-receipt.json" in payload
+    assert f"{candidate}/qualification/expected-runtime.json" in payload
+    assert f"{candidate}/qualification/LICENSE" in payload
+    assert f"{candidate}/qualification/input.txt" in payload
 
     assert "collector/glm53flash_tail_qualification.py" in payload
     tail = "collector/fpm_forward/runtime/glm53flash_vllm_tail_repair"

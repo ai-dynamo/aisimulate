@@ -94,6 +94,15 @@ def test_result_envelope_records_actual_instrumentation(scheduler_class, monkeyp
     instance._real_input = {}
     instance._real_context_policy = {"runtime_context_length": 131079, "measured_context_limit": 131072}
     instance._real_identity = {"scope": "TEST_ONLY"}
+    instance._real_tp_size = 2
+    expected_hardware = []
+    if purpose == "fpm":
+        for rank in range(instance._real_tp_size):
+            path = tmp_path / f"native-device-rank-{rank}.json"
+            path.write_text(json.dumps({"status": "passed", "tp_rank": rank, "scope": "TEST_ONLY"}))
+            expected_hardware.append(
+                {"tp_rank": rank, "file": path.name, "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
+            )
     instance._bench_write_results()
     result = json.loads((tmp_path / "benchmark.json").read_text())
     assert result["ops_instrumented"] is (purpose in ("ops", "ops_graph"))
@@ -101,3 +110,10 @@ def test_result_envelope_records_actual_instrumentation(scheduler_class, monkeyp
     assert result["timing_boundary"] == "vllm_native_scheduler_output_interval"
     assert result["producer"]["warmup_repeats"] == 5
     assert result["producer"]["measurement_repeats"] == 10
+    if purpose == "fpm":
+        assert result["producer"]["hardware_contract_version"] == 1
+        assert result["input_provenance"]["native_hardware_manifest"] == expected_hardware
+    else:
+        assert "hardware_contract_version" not in result["producer"]
+        assert "native_hardware_manifest" not in result["input_provenance"]
+        assert not list(tmp_path.glob("native-device-*.json"))

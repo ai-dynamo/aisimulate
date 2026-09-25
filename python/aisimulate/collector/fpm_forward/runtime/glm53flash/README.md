@@ -28,7 +28,20 @@ Fixed API sources:
 The exact source-file hashes in `runtime-source-sha256.json` must match the
 installed image/overlay. Configure an independently qualified Dynamo overlay
 on PYTHONPATH; `runtime-paths.json` declares its default mounted location.
-The source-checked lazy bootstrap activates only in scheduler processes.
+The source-checked lazy bootstrap activates when a native scheduler or GPU
+worker is imported. Helper/compiler Python processes remain inert.
+
+Formal GB300 evidence includes `native-device-rank-N.json` for every TP worker.
+The wrapper calls `Worker.init_device` unchanged, then reads its selected CUDA
+device once, before model loading and outside all forward intervals. Receipts
+bind the actual name, capability, memory, device index and available native UUID
+to the rank, installed vLLM version, source hash and collector attempt hash.
+The reader rejects missing ranks, non-GB300/sm103 devices, duplicate UUIDs and
+rehashed receipts from another attempt. Failed device checks retain their raw
+receipts; existing receipts are never overwritten. Old smoke artifacts without
+this contract remain historical and cannot enter a new formal publication.
+Ops uses its separately bound per-worker state inventory instead of this FPM
+initializer receipt. No state tensors or GPU selection are changed by the wrapper.
 
 Required environment: `DYN_FPM_GLM53FLASH_REAL_KV=1`, `DYN_FPM_INPUT_TEXT`, and
 `DYN_FPM_TOKENIZER_REVISION` equal to the fixed FP8 or NVFP4 checkpoint revision.
@@ -86,3 +99,14 @@ prefill/decode short canaries on allocation 603053 with native limit 131072.
 That exception preserves historical receipts and does not qualify exact 128K
 execution. Frozen existing canaries are unchanged; new boundary probes require
 new source and run receipts.
+
+The combined consumer retains `runtime-source-stock-fpm-v1.json`, the exact
+20-file stock FPM manifest from AISimulate commit
+`ccb0218d75a38ba61896c4192762ce994f640389`, alongside the current 23-file source
+manifest. Only original vLLM `0.30.0` evidence declaring that exact historical
+byte SHA may use it. Readers preserve the recorded identity and all hardware,
+request, state and policy gates. Reformatting a manifest, matching a subset or
+using another runtime version does not grant compatibility. New producers
+continue to use the current complete source manifest. The admitted tail
+repair's full 52-file source/binary closure is identical for both manifests;
+its source identity and original qualification are unchanged.

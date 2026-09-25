@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import signal
 import subprocess
 import sys
@@ -65,6 +66,42 @@ def test_slurm_stage_and_argv_keep_shared_result_unit_identity(runner, monkeypat
     assert "--jobid=1234" in argv and "--gpus-per-node=4" in argv
     assert "FPM_NODE_RANK=0" in argv and "FPM_MASTER_ADDR=test-node" in argv
     assert f"{runner.cell_dir}/raw/node0000:/results" in next(a for a in argv if a.startswith("--container-mounts="))
+
+
+@pytest.mark.skipif(os.name != "posix", reason="native session creation is POSIX-specific")
+@pytest.mark.parametrize("exit_code", [0, 17])
+def test_slurm_native_exec_chain_can_create_session_and_preserves_argv(runner, monkeypatch, exit_code):
+    """Reproduce Pyxis's process-group leader without requiring Slurm or GPUs."""
+    literal = 'spaces; $(not-a-command) "quoted"'
+    probe = (
+        "import json,os,sys; before=[os.getpid(),os.getpgrp(),os.getsid(0)]; "
+        "os.setsid(); print(json.dumps({'before':before,'after':[os.getpid(),os.getpgrp(),os.getsid(0)],"
+        "'argv':sys.argv[1:],'rank':os.environ['FPM_NODE_RANK']})); sys.exit(int(sys.argv[1]))"
+    )
+
+    def run_actual_container_command(args, **kwargs):
+        return subprocess.run(
+            args[args.index("env") :],
+            start_new_session=True,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+
+    runner.hosts = ["test-node"]
+    monkeypatch.setattr(runner, "_command", run_actual_container_command)
+    result = runner._exec(
+        "node0000",
+        ["bash", "-c", 'exec "$@"', "native-launcher", sys.executable, "-c", probe, str(exit_code), literal],
+        timeout=10,
+    )
+    assert result.returncode == exit_code, result.stderr
+    receipt = json.loads(result.stdout)
+    assert receipt["before"][0] != receipt["before"][1]
+    assert len(set(receipt["after"])) == 1
+    assert receipt["argv"] == [str(exit_code), literal]
+    assert receipt["rank"] == "0"
 
 
 def test_slurm_cleanup_cancels_only_receipted_steps_and_verifies_exit(runner, monkeypatch):
@@ -130,6 +167,70 @@ def test_preparation_preserves_slurm_failure_streams_across_retries(runner, monk
     }
     assert {path.joinpath("stdout.log").read_text() for path in records} == {"preparation started", "waiting"}
     assert all(json.loads(path.joinpath("failure.json").read_text())["executable"] == "srun" for path in records)
+
+
+@pytest.mark.parametrize("backend", ["vllm", "sglang"])
+def test_preparation_measures_metadata_after_frozen_environment(runner, monkeypatch, backend):
+    """TEST_ONLY distributions exercise Python's real metadata path selection."""
+    from collector.fpm_forward import native_artifact
+    from collector.fpm_forward import runner as campaign
+
+    startup = runner.cell_dir / "frozen env ' $(not-a-command)"
+    startup.mkdir()
+    versions = {"image": "0.1.0", "private": "0.1.0+testonly"}
+    for kind, version in versions.items():
+        root = runner.cell_dir / kind
+        metadata = root / f"{backend}-{version}.dist-info"
+        metadata.mkdir(parents=True)
+        (metadata / "METADATA").write_text(f"Metadata-Version: 2.1\nName: {backend}\nVersion: {version}\n")
+    monkeypatch.setenv("PYTHONPATH", str(runner.cell_dir / "image"))
+    metadata_probe = f"import importlib.metadata; print(importlib.metadata.version({backend!r}))"
+    assert subprocess.check_output([sys.executable, "-c", metadata_probe], text=True).strip() == versions["image"]
+    (startup / campaign.RUNTIME_ENV_FILENAME).write_text(
+        f"export PYTHONPATH={shlex.quote(str(runner.cell_dir / 'private'))}\n"
+    )
+    destination = runner.cell_dir / "provenance.json"
+    monkeypatch.setattr(campaign, "REMOTE_WORKDIR", str(startup))
+    monkeypatch.setattr(native_artifact, "COLLECTOR_PROVENANCE_FILENAME", str(destination))
+    runner.backend = backend
+    runner.hosts = ["test-node"]
+    commands = []
+
+    def run_actual_container_command(args, **kwargs):
+        commands.append(args)
+        return subprocess.run(args[args.index("env") :], capture_output=True, text=True, check=True, timeout=10)
+
+    monkeypatch.setattr(runner, "_command", run_actual_container_command)
+    literal = 'spaces; $(not-a-command) "quoted"'
+    runner.prepare_attempt(runner.pods(), cell_id=literal, plan_sha256=literal, attempt_id=literal)
+    receipt = json.loads(destination.read_text())
+    assert receipt["runtime"] == {"backend": backend, "backend_version": versions["private"]}
+    assert all(receipt[key] == literal for key in ("cell_id", "plan_sha256", "attempt_id"))
+    assert commands[0][commands[0].index("fpm-slurm-prepare") + 1] == str(startup / campaign.RUNTIME_ENV_FILENAME)
+    assert os.environ["PYTHONPATH"] == str(runner.cell_dir / "image")
+
+
+@pytest.mark.parametrize("startup_text", [None, "return 19\n"])
+def test_preparation_rejects_missing_or_failed_frozen_environment(runner, monkeypatch, startup_text):
+    from collector.fpm_forward import native_artifact
+    from collector.fpm_forward import runner as campaign
+
+    startup = runner.cell_dir / campaign.RUNTIME_ENV_FILENAME
+    if startup_text is not None:
+        startup.write_text(startup_text)
+    destination = runner.cell_dir / "provenance.json"
+    monkeypatch.setattr(campaign, "REMOTE_WORKDIR", str(runner.cell_dir))
+    monkeypatch.setattr(native_artifact, "COLLECTOR_PROVENANCE_FILENAME", str(destination))
+    runner.hosts = ["test-node"]
+
+    def run_actual_container_command(args, **kwargs):
+        return subprocess.run(args[args.index("env") :], capture_output=True, text=True, check=True, timeout=10)
+
+    monkeypatch.setattr(runner, "_command", run_actual_container_command)
+    with pytest.raises(subprocess.CalledProcessError) as caught:
+        runner.prepare_attempt(runner.pods(), cell_id="cell", plan_sha256="plan", attempt_id="attempt")
+    assert caught.value.returncode == (1 if startup_text is None else 19)
+    assert not destination.exists()
 
 
 @pytest.mark.parametrize("timeout", [0, -1, float("inf"), float("nan"), True])
