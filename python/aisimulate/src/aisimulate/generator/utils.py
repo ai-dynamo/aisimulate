@@ -165,15 +165,19 @@ def msa_sparse_implementation(backend_name: str, model_path: str, system_name: s
     return None
 
 
-def _model_architecture(model_path: str) -> str | None:
-    """Architecture of a bundled checkpoint config, None when unresolvable
-    (a user-local checkpoint the SDK does not bundle). Indirection so tests
-    can stub the SDK lookup."""
+def _model_architecture(model_path: str, model_config: dict | None = None) -> str | None:
+    """Architecture of a checkpoint config, None when unresolvable (a
+    user-local or unreachable checkpoint the SDK cannot load — the render
+    then carries no prescription, it never fails on this fact). A frozen
+    ``model_config`` (naive path) is used as-is: no resolution runs.
+    Indirection so tests can stub the SDK lookup."""
+    if isinstance(model_config, dict):
+        return model_config.get("architecture")
     from aisimulate.sdk.utils import get_model_config_from_model_path
 
     try:
         return get_model_config_from_model_path(model_path).get("architecture")
-    except (FileNotFoundError, KeyError, ValueError):
+    except Exception:  # FileNotFound / KeyError / ValueError / HuggingFaceDownloadError
         return None
 
 
@@ -182,19 +186,20 @@ def _model_architecture(model_path: str) -> str | None:
 _DSA_ARCHITECTURES = ("GlmMoeDsaForCausalLM", "DeepseekV32ForCausalLM")
 
 
-def _bundled_quantization(model_path: str) -> dict | None:
+def _bundled_quantization(model_path: str, raw: dict | None = None) -> dict | None:
     """The artifact's quantization facts as the SDK loader exposes them:
     config.json ``quantization_config`` merged with the ``hf_quant_config``
     the loader attaches from the bundled ``<repo>_hf_quant_config.json`` (the
     modelopt artifacts keep ``kv_cache_quant_algo`` ONLY there — their
     config.json has no quantization block at all). None when the config is
     unresolvable or carries neither. Indirection so tests can stub it."""
-    from aisimulate_core.sdk.utils import _load_model_config_from_model_path
+    if raw is None:
+        from aisimulate_core.sdk.utils import _load_model_config_from_model_path
 
-    try:
-        raw = _load_model_config_from_model_path(model_path)
-    except (FileNotFoundError, KeyError, ValueError):
-        return None
+        try:
+            raw = _load_model_config_from_model_path(model_path)
+        except Exception:  # unresolvable checkpoint: no quantization fact
+            return None
     merged: dict = {}
     hfq = raw.get("hf_quant_config")
     if isinstance(hfq, dict):
@@ -219,7 +224,8 @@ def _artifact_pins_fp8_kv(quantization: dict | None) -> bool:
     return scheme.get("num_bits") == 8 and str(scheme.get("type", "")).lower() == "float"
 
 
-def vllm_dsa_kv_cache_dtype(backend_name: str, model_path: str, gemm_quant_mode: Any = None) -> str | None:
+def vllm_dsa_kv_cache_dtype(backend_name: str, model_path: str, gemm_quant_mode: Any = None,
+                            model_config: dict | None = None) -> str | None:
     """NVFP4 DSA checkpoints x vLLM: prescribe ``--kv-cache-dtype fp8``.
 
     The modelopt NVFP4 artifacts of the DSA models (GLM-5 / 5.1 / 5.2 / 5.3
@@ -244,10 +250,33 @@ def vllm_dsa_kv_cache_dtype(backend_name: str, model_path: str, gemm_quant_mode:
     """
     if backend_name != "vllm":
         return None
-    if _model_architecture(model_path) not in _DSA_ARCHITECTURES:
+    if _model_architecture(model_path, model_config) not in _DSA_ARCHITECTURES:
         return None
     if str(gemm_quant_mode or "").lower() == "nvfp4":
         return "fp8"
-    if _artifact_pins_fp8_kv(_bundled_quantization(model_path)):
+    raw = model_config.get("raw_config") if isinstance(model_config, dict) else None
+    if _artifact_pins_fp8_kv(_bundled_quantization(model_path, raw if isinstance(raw, dict) else None)):
         return "fp8"
     return None
+
+
+def model_has_kda(model_path: str, model_config: dict | None = None) -> bool:
+    """True when the checkpoint declares KDA (Kimi Delta Attention) linear-attention
+    layers: config.json (or text_config) linear_attn_config.kda_layers non-empty
+    (Kimi-K3, Kimi-Linear, GLM-5.3-Flash). Read from the SDK-loaded config so
+    bundled, local and Hub checkpoints resolve identically; any failure to load
+    is False (the caller renders the default, nothing is invented)."""
+    if isinstance(model_config, dict):  # frozen config (naive path): no resolution
+        raw = model_config.get("raw_config") or {}
+    else:
+        try:
+            from aisimulate.sdk.utils import get_model_config_from_model_path
+
+            raw = get_model_config_from_model_path(model_path).get("raw_config") or {}
+        except Exception:  # unresolvable checkpoint: no fact, no override
+            return False
+    for cfg in (raw.get("text_config") or {}, raw):
+        la = cfg.get("linear_attn_config") if isinstance(cfg, dict) else None
+        if isinstance(la, dict) and la.get("kda_layers"):
+            return True
+    return False

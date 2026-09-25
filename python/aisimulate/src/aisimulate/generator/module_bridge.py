@@ -27,6 +27,12 @@ def _msa_sparse_implementation(task_config) -> str | None:
     )
 
 
+def _model_has_kda(model_path: str) -> bool:
+    from .utils import model_has_kda
+
+    return model_has_kda(model_path)
+
+
 def _vllm_dsa_kv_cache_dtype(task_config, gemm_quant_mode) -> str | None:
     """Optimized-path wrapper over utils.vllm_dsa_kv_cache_dtype: NVFP4 DSA
     checkpoints on vLLM must render an explicit fp8 kv-cache dtype."""
@@ -247,6 +253,8 @@ def task_config_to_generator_config(
         "nextn": task_config.nextn,
         "nextn_accepted": task_config.nextn_accepted if task_config.nextn else None,
         "msa_sparse_implementation": _msa_sparse_implementation(task_config),
+        # KDA linear-attention layers: vllm.rule caps the decode batch (see there)
+        "has_kda": _model_has_kda(task_config.primary_model_path),
     }
     model_cfg = {k: v for k, v in model_cfg.items() if v is not None}
     model_cfg = _deep_merge(model_cfg, overrides.get("ModelConfig"))

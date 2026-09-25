@@ -174,7 +174,8 @@ def test_llmd_kustomize_vllm_disagg_mode():
     assert prefill["spec"]["replicas"] == 14
     assert prefill_container["resources"]["limits"]["nvidia.com/gpu"] == "1"
     assert "--max-num-batched-tokens" in prefill_container["args"]
-    assert "5500" in prefill_container["args"]
+    # every token budget renders 64-aligned (owner decision 2026-09-24): 5500 -> 5504
+    assert "5504" in prefill_container["args"]
 
 
 @pytest.mark.unit

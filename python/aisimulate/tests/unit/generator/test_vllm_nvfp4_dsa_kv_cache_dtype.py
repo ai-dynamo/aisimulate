@@ -47,8 +47,9 @@ _ARCH["nvidia/GLM-5-NVFP4-unquant-bundle"] = "GlmMoeDsaForCausalLM"
 
 @pytest.fixture(autouse=True)
 def _stub_sdk_lookups(monkeypatch):
-    monkeypatch.setattr(utils, "_model_architecture", lambda model_path: _ARCH.get(model_path))
-    monkeypatch.setattr(utils, "_bundled_quantization", lambda model_path: _QUANT.get(model_path))
+    # the helpers take an optional frozen config (naive path); the stubs ignore it
+    monkeypatch.setattr(utils, "_model_architecture", lambda model_path, model_config=None: _ARCH.get(model_path))
+    monkeypatch.setattr(utils, "_bundled_quantization", lambda model_path, raw=None: _QUANT.get(model_path))
 
 
 @pytest.mark.parametrize(
