@@ -21,6 +21,31 @@
  "capture_run_error": null,
  "kv_dtype": "auto",
  "op_hint": "mla|dsa|nsa|attn|indexer|flash|mqa|sparse|gemm|deepgemm|quant|topk",
+ "gate_name": null,
+ "target_roles": [
+  "attention",
+  "dsa_indexer"
+ ],
+ "phase": "prefill",
+ "phase_scoped": true,
+ "role_evidence": {
+  "attention": {
+   "collector": [
+    "flash::FlashAttnFwdSm90",
+    "flash::prepare_varlen_num_blocks_kernel"
+   ],
+   "serving": [
+    "flash::FlashAttnFwdSm90",
+    "flash::prepare_varlen_num_blocks_kernel"
+   ],
+   "matched": [
+    "flash::FlashAttnFwdSm90",
+    "flash::prepare_varlen_num_blocks_kernel"
+   ]
+  }
+ },
+ "missing_roles": [],
+ "aux_collector_only_roles": [],
  "serving_record": {
   "id": "fd43089dfc3f",
   "tp": 1,
@@ -42,7 +67,6 @@
  ],
  "collector_only_signal": [],
  "kernel_drift": null,
- "infra_family_name_matches": null,
  "serving_kernels_matched_in_collector": [
   "at_cuda_detail::cub::detail::scan::DeviceScanInitKernel",
   "at_cuda_detail::cub::detail::scan::DeviceScanKernel",
@@ -51,5 +75,5 @@
   "set_mla_kv_buffer_kernel"
  ],
  "collector_unmatched_kernels": [],
- "note": "subset semantics: the collector exercises ONE op; serving runs the whole model. 'diverged' = the collector executed a signal backend family serving never did."
+ "note": "subset semantics: the collector exercises ONE op; serving runs the whole model. Graded on the target roles only: every collector kernel of a target role must name-match a serving kernel of that role in the selected phase."
 }

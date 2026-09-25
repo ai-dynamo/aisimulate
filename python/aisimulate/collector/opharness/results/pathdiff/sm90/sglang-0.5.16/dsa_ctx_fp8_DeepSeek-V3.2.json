@@ -11,6 +11,57 @@
  "capture_run_error": null,
  "kv_dtype": "fp8",
  "op_hint": "mla|dsa|nsa|attn|indexer|flash|mqa|sparse|gemm|deepgemm|quant|topk",
+ "gate_name": null,
+ "target_roles": [
+  "attention",
+  "dsa_indexer"
+ ],
+ "phase": "prefill",
+ "phase_scoped": true,
+ "role_evidence": {
+  "attention": {
+   "collector": [
+    "sm90::decode::sparse_fp8::flash_fwd_splitkv_mla_fp8_sparse_kernel",
+    "smxx::decode::flash_fwd_mla_combine_kernel",
+    "smxx::decode::get_mla_metadata_kernel"
+   ],
+   "serving": [
+    "sm90::decode::sparse_fp8::flash_fwd_splitkv_mla_fp8_sparse_kernel",
+    "smxx::decode::flash_fwd_mla_combine_kernel",
+    "smxx::decode::get_mla_metadata_kernel"
+   ],
+   "matched": [
+    "sm90::decode::sparse_fp8::flash_fwd_splitkv_mla_fp8_sparse_kernel",
+    "smxx::decode::flash_fwd_mla_combine_kernel",
+    "smxx::decode::get_mla_metadata_kernel"
+   ]
+  },
+  "dsa_indexer": {
+   "collector": [
+    "_get_k_and_s_triton_kernel",
+    "deep_gemm::sm90_fp8_mqa_logits",
+    "fast_hadamard_transform_kernel",
+    "topk_plan",
+    "topk_transform_prefill_kernel"
+   ],
+   "serving": [
+    "_get_k_and_s_triton_kernel",
+    "deep_gemm::sm90_fp8_mqa_logits",
+    "fast_hadamard_transform_kernel",
+    "topk_plan",
+    "topk_transform_prefill_kernel"
+   ],
+   "matched": [
+    "_get_k_and_s_triton_kernel",
+    "deep_gemm::sm90_fp8_mqa_logits",
+    "fast_hadamard_transform_kernel",
+    "topk_plan",
+    "topk_transform_prefill_kernel"
+   ]
+  }
+ },
+ "missing_roles": [],
+ "aux_collector_only_roles": [],
  "serving_record": {
   "id": "9be0fc733d2f",
   "tp": 1,
@@ -37,9 +88,7 @@
  ],
  "collector_only_signal": [],
  "kernel_drift": null,
- "infra_family_name_matches": null,
  "serving_kernels_matched_in_collector": [
-  "Activity",
   "_act_quant_kernel",
   "_get_k_and_s_triton_kernel",
   "_quantize_k_cache_fast_kernel",
@@ -48,10 +97,12 @@
   "at_cuda_detail::cub::detail::scan::DeviceScanKernel",
   "compute_position_kernel",
   "concat_mla_absorb_q_kernel",
-  "cublasLt::splitKreduce_kernel"
+  "cublasLt::splitKreduce_kernel",
+  "deep_gemm::sm90_fp8_gemm_1d2d_impl"
  ],
  "collector_unmatched_kernels": [
-  "INVALID"
+  "INVALID",
+  "sglang::deep_gemm_fp8_fp8_bf16_nt"
  ],
- "note": "subset semantics: the collector exercises ONE op; serving runs the whole model. 'diverged' = the collector executed a signal backend family serving never did."
+ "note": "subset semantics: the collector exercises ONE op; serving runs the whole model. Graded on the target roles only: every collector kernel of a target role must name-match a serving kernel of that role in the selected phase."
 }

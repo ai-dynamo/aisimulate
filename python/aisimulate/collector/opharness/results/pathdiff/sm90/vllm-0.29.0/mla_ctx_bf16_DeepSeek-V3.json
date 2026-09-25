@@ -11,6 +11,31 @@
  "capture_run_error": null,
  "kv_dtype": "auto",
  "op_hint": "mla|attn|flash|bmm|proj|indexer|rope|concat|gemm|deepgemm|quant",
+ "gate_name": null,
+ "target_roles": [
+  "attention",
+  "dsa_indexer"
+ ],
+ "phase": "prefill",
+ "phase_scoped": true,
+ "role_evidence": {
+  "attention": {
+   "collector": [
+    "flash::FlashAttnFwdSm90",
+    "flash::prepare_varlen_num_blocks_kernel"
+   ],
+   "serving": [
+    "flash::FlashAttnFwdSm90",
+    "flash::prepare_varlen_num_blocks_kernel"
+   ],
+   "matched": [
+    "flash::FlashAttnFwdSm90",
+    "flash::prepare_varlen_num_blocks_kernel"
+   ]
+  }
+ },
+ "missing_roles": [],
+ "aux_collector_only_roles": [],
  "serving_record": {
   "id": "c6a1dad585a8",
   "tp": 1,
@@ -26,8 +51,6 @@
   "vllm_kernel"
  ],
  "serving_backends": [
-  "cublas",
-  "cutlass",
   "deepgemm",
   "fa3",
   "sgl_kernel",
@@ -36,18 +59,12 @@
  ],
  "collector_only_signal": [],
  "kernel_drift": null,
- "infra_family_name_matches": null,
  "serving_kernels_matched_in_collector": [
-  "at_cuda_detail::cub::detail::scan::DeviceScanInitKernel",
-  "at_cuda_detail::cub::detail::scan::DeviceScanKernel",
   "flash::FlashAttnFwdSm90",
   "flash::prepare_varlen_num_blocks_kernel",
   "flashinfer::ConcatMLAKKernel",
-  "nvjet_sm90_tst_128x256_64x4_2x1_v_bz_coopA_TNN",
-  "nvjet_sm90_tst_176x128_64x5_1x2_h_bz_TNN",
-  "nvjet_sm90_tst_320x128_64x3_1x2_h_bz_coopB_TNT",
   "vllm::concat_and_cache_mla_kernel"
  ],
  "collector_unmatched_kernels": [],
- "note": "subset semantics: the collector exercises ONE op; serving runs the whole model. 'diverged' = the collector executed a signal backend family serving never did."
+ "note": "subset semantics: the collector exercises ONE op; serving runs the whole model. Graded on the target roles only: every collector kernel of a target role must name-match a serving kernel of that role in the selected phase."
 }

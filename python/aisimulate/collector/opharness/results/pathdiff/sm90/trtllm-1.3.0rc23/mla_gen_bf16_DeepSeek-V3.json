@@ -21,6 +21,34 @@
  "capture_run_error": null,
  "kv_dtype": "auto",
  "op_hint": "mla|dsa|nsa|attn|indexer|flash|mqa|sparse|gemm|deepgemm|quant|topk|fmha",
+ "gate_name": null,
+ "target_roles": [
+  "attention",
+  "dsa_indexer"
+ ],
+ "phase": "decode",
+ "phase_scoped": true,
+ "role_evidence": {
+  "attention": {
+   "collector": [
+    "flash::flash_fwd_splitkv_mla_combine_kernel",
+    "flash::flash_fwd_splitkv_mla_kernel",
+    "get_mla_metadata_kernel"
+   ],
+   "serving": [
+    "flash::flash_fwd_splitkv_mla_combine_kernel",
+    "flash::flash_fwd_splitkv_mla_kernel",
+    "get_mla_metadata_kernel"
+   ],
+   "matched": [
+    "flash::flash_fwd_splitkv_mla_combine_kernel",
+    "flash::flash_fwd_splitkv_mla_kernel",
+    "get_mla_metadata_kernel"
+   ]
+  }
+ },
+ "missing_roles": [],
+ "aux_collector_only_roles": [],
  "serving_record": {
   "id": "b814f7c9ef76",
   "tp": 1,
@@ -39,14 +67,11 @@
   "cutlass",
   "deepgemm",
   "flashmla",
-  "trtllm_internal",
-  "trtllm_mha"
+  "trtllm_internal"
  ],
  "collector_only_signal": [],
  "kernel_drift": null,
- "infra_family_name_matches": null,
  "serving_kernels_matched_in_collector": [
-  "cublasLt::splitKreduce_kernel",
   "flash::flash_fwd_splitkv_mla_combine_kernel",
   "flash::flash_fwd_splitkv_mla_kernel",
   "get_mla_metadata_kernel",
@@ -57,7 +82,8 @@
  ],
  "collector_unmatched_kernels": [
   "INVALID",
-  "tensorrt_llm::_v1::kernels::dsv3MinLatencyKernels::fused_a_gemm_kernel"
+  "tensorrt_llm::_v1::kernels::dsv3MinLatencyKernels::fused_a_gemm_kernel",
+  "trtllm::dsv3_fused_a_gemm_op"
  ],
- "note": "subset semantics: the collector exercises ONE op; serving runs the whole model. 'diverged' = the collector executed a signal backend family serving never did."
+ "note": "subset semantics: the collector exercises ONE op; serving runs the whole model. Graded on the target roles only: every collector kernel of a target role must name-match a serving kernel of that role in the selected phase."
 }

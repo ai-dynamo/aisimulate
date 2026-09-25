@@ -11,6 +11,34 @@
  "capture_run_error": null,
  "kv_dtype": "fp8",
  "op_hint": "mla|attn|flash|bmm|proj|indexer|rope|concat|gemm|deepgemm|quant",
+ "gate_name": null,
+ "target_roles": [
+  "attention",
+  "dsa_indexer"
+ ],
+ "phase": "decode",
+ "phase_scoped": true,
+ "role_evidence": {
+  "attention": {
+   "collector": [
+    "flash::flash_fwd_splitkv_mla_combine_kernel",
+    "flash::flash_fwd_splitkv_mla_kernel",
+    "get_mla_metadata_kernel"
+   ],
+   "serving": [
+    "flash::flash_fwd_splitkv_mla_combine_kernel",
+    "flash::flash_fwd_splitkv_mla_kernel",
+    "get_mla_metadata_kernel"
+   ],
+   "matched": [
+    "flash::flash_fwd_splitkv_mla_combine_kernel",
+    "flash::flash_fwd_splitkv_mla_kernel",
+    "get_mla_metadata_kernel"
+   ]
+  }
+ },
+ "missing_roles": [],
+ "aux_collector_only_roles": [],
  "serving_record": {
   "id": "a9460b301113",
   "tp": 1,
@@ -32,7 +60,6 @@
   "cublas",
   "cutlass",
   "deepgemm",
-  "fa3",
   "flashmla",
   "sgl_kernel",
   "triton_fused_moe",
@@ -40,19 +67,18 @@
  ],
  "collector_only_signal": [],
  "kernel_drift": null,
- "infra_family_name_matches": null,
  "serving_kernels_matched_in_collector": [
-  "at_cuda_detail::cub::detail::scan::DeviceScanKernel",
   "deep_gemm::fp8_gemm_kernel_swapAB",
-  "deep_gemm::sm90_fp8_gemm_1d2d_impl",
   "flash::flash_fwd_splitkv_mla_combine_kernel",
   "flash::flash_fwd_splitkv_mla_kernel",
   "get_mla_metadata_kernel",
   "nvjet_sm90_tst_128x8_64x12_1x1_h_bz_NNT",
   "per_token_group_quant_8bit_kernel",
   "tensorrt_llm::kernels::fp8_blockscale_gemm::scale_1x128_kernel",
-  "triton_"
+  "vllm::concat_and_cache_mla_kernel"
  ],
- "collector_unmatched_kernels": [],
- "note": "subset semantics: the collector exercises ONE op; serving runs the whole model. 'diverged' = the collector executed a signal backend family serving never did."
+ "collector_unmatched_kernels": [
+  "vllm::dynamic_flashinfer_deepgemm_blockscale_gemm"
+ ],
+ "note": "subset semantics: the collector exercises ONE op; serving runs the whole model. Graded on the target roles only: every collector kernel of a target role must name-match a serving kernel of that role in the selected phase."
 }

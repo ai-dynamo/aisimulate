@@ -11,6 +11,45 @@
  "capture_run_error": null,
  "kv_dtype": "fp8",
  "op_hint": "mla|dsa|nsa|attn|indexer|flash|mqa|sparse|gemm|deepgemm|quant|topk",
+ "gate_name": null,
+ "target_roles": [
+  "attention",
+  "dsa_indexer"
+ ],
+ "phase": "prefill",
+ "phase_scoped": true,
+ "role_evidence": {
+  "attention": {
+   "collector": [
+    "flash::FlashAttnFwdSm90",
+    "flash::prepare_varlen_num_blocks_kernel"
+   ],
+   "serving": [
+    "flash::FlashAttnFwdSm90",
+    "flash::prepare_varlen_num_blocks_kernel"
+   ],
+   "matched": [
+    "flash::FlashAttnFwdSm90",
+    "flash::prepare_varlen_num_blocks_kernel"
+   ]
+  },
+  "dsa_indexer": {
+   "collector": [
+    "fast_hadamard_transform_kernel",
+    "topk_plan"
+   ],
+   "serving": [
+    "fast_hadamard_transform_kernel",
+    "topk_plan"
+   ],
+   "matched": [
+    "fast_hadamard_transform_kernel",
+    "topk_plan"
+   ]
+  }
+ },
+ "missing_roles": [],
+ "aux_collector_only_roles": [],
  "serving_record": {
   "id": "raw:dsv32_sgl_fp8_isl512_v2.json",
   "tp": null,
@@ -29,15 +68,12 @@
  "serving_backends": [
   "cublas",
   "deepgemm",
-  "dsa_nsa",
   "fa3",
-  "flashmla",
   "sgl_kernel",
   "triton_fused_moe"
  ],
  "collector_only_signal": [],
  "kernel_drift": null,
- "infra_family_name_matches": null,
  "serving_kernels_matched_in_collector": [
   "_quantize_k_cache_fast_kernel",
   "alloc_extend_kernel",
@@ -50,6 +86,8 @@
   "flash::FlashAttnFwdSm90",
   "flash::prepare_varlen_num_blocks_kernel"
  ],
- "collector_unmatched_kernels": [],
- "note": "subset semantics: the collector exercises ONE op; serving runs the whole model. 'diverged' = the collector executed a signal backend family serving never did."
+ "collector_unmatched_kernels": [
+  "sglang::deep_gemm_fp8_fp8_bf16_nt"
+ ],
+ "note": "subset semantics: the collector exercises ONE op; serving runs the whole model. Graded on the target roles only: every collector kernel of a target role must name-match a serving kernel of that role in the selected phase."
 }

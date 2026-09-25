@@ -588,12 +588,59 @@ def label_kernels(kernels):
     return labels, unmatched
 
 
+def kernel_role(kernel: str):
+    """First matching taxonomy rule -> (backend, role); None when unlabeled.
+    The role axis is what path_diff grades on (target op vs auxiliary work)."""
+    for rx, backend, role in _TAXONOMY:
+        if rx.search(kernel):
+            return backend, role
+    return None
+
+
+def label_kernel_roles(kernels) -> dict:
+    """kernel -> {"backend", "role"} for every labeled kernel."""
+    out = {}
+    for k in kernels:
+        hit = kernel_role(k)
+        if hit:
+            out[k] = {"backend": hit[0], "role": hit[1]}
+    return out
+
+
+_ORPHAN_TABLES = (("prefill_kernels", "prefill"), ("decode_kernels", "decode"),
+                  ("profile_run_kernels", "profile_run"))
+
+
+def _orphan_table_name_ok(name: str) -> bool:
+    return not (name.startswith(("AIC::", "step", "aten::")) or name.isupper()
+                or re.match(r"^(sglang|sgl_kernel|_\w*C\w*|triton_)\w*::", name))
+
+
+def build_orphan_phases(facts: dict) -> dict:
+    """normalized kernel -> sorted phases it ran in (prefill / decode /
+    profile_run), from the device-stream tables. Phase is identity: a
+    prefill gate must not borrow decode evidence (review 2026-09-25)."""
+    trace = facts.get("trace") or facts
+    phases: dict[str, set] = {}
+    for tbl, phase in _ORPHAN_TABLES:
+        for k in (trace.get(tbl) or []):
+            name = k.get("kernel", "")
+            if not _orphan_table_name_ok(name):
+                continue
+            n = normalize_kernel(name)
+            if n:
+                phases.setdefault(n, set()).add(phase)
+    return {k: sorted(v) for k, v in phases.items()}
+
+
 def build_ops(facts: dict) -> tuple[list[dict], list[str]]:
     """Merge api_trace spans into ops; return (ops, orphan_kernels)."""
     ops: list[dict] = []
     attributed: set[str] = set()
     trace = facts.get("trace") or facts  # sglang nests under trace; vllm flat
-    for phase_key, phase in (("prefill_api", "prefill"), ("decode_api", "decode"), ("api_trace", "decode")):
+    # vllm's single api_trace table is not split by phase: those ops carry
+    # phase None (unknown), never a borrowed "decode" (review 2026-09-25)
+    for phase_key, phase in (("prefill_api", "prefill"), ("decode_api", "decode"), ("api_trace", None)):
         spans = trace.get(phase_key) or {}
         merged: dict[frozenset, dict] = {}
         for span, s in spans.items():
@@ -774,6 +821,14 @@ def build_records() -> None:
                 },
                 "ops": ops or None,
                 "orphan_kernels": orphans or None,
+                # phase of every kept orphan (prefill/decode/profile_run): the
+                # comparison selects serving evidence by phase, never by name alone
+                "orphan_phases": ({k: v for k, v in build_orphan_phases(f).items() if k in set(orphans)} or None),
+                # phase of EVERY kernel the device tables saw (span-attributed
+                # ones included): span attribution is by name across phases, so a
+                # kernel both phases launch would otherwise vanish from the phase
+                # its span did not cover (sglang decode FA3, 2026-09-25)
+                "kernel_phases": (build_orphan_phases(f) or None),
                 "outcome": ({"status": "ok"} if not f.get("errors") else
                             compress_error(*next(iter(f["errors"].items())))),
             }

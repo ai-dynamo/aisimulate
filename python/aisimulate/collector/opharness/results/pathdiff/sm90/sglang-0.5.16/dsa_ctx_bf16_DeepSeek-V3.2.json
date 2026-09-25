@@ -1,5 +1,5 @@
 {
- "verdict": "aligned",
+ "verdict": "diverged",
  "repo": "deepseek-ai/DeepSeek-V3.2",
  "framework": "sglang",
  "version": "0.5.16",
@@ -11,6 +11,53 @@
  "capture_run_error": null,
  "kv_dtype": "auto",
  "op_hint": "mla|dsa|nsa|attn|indexer|flash|mqa|sparse|gemm|deepgemm|quant|topk",
+ "gate_name": null,
+ "target_roles": [
+  "attention",
+  "dsa_indexer"
+ ],
+ "phase": "prefill",
+ "phase_scoped": true,
+ "role_evidence": {
+  "attention": {
+   "collector": [
+    "flash::FlashAttnFwdSm90",
+    "flash::prepare_varlen_num_blocks_kernel",
+    "sm90::fwd::sparse_attn_fwd_kernel"
+   ],
+   "serving": [
+    "sm90::fwd::sparse_attn_fwd_kernel"
+   ],
+   "matched": [
+    "sm90::fwd::sparse_attn_fwd_kernel"
+   ]
+  },
+  "dsa_indexer": {
+   "collector": [
+    "_get_k_and_s_triton_kernel",
+    "deep_gemm::sm90_fp8_mqa_logits",
+    "fast_hadamard_transform_kernel",
+    "topk_plan",
+    "topk_transform_prefill_kernel"
+   ],
+   "serving": [
+    "_get_k_and_s_triton_kernel",
+    "deep_gemm::sm90_fp8_mqa_logits",
+    "fast_hadamard_transform_kernel",
+    "topk_plan",
+    "topk_transform_prefill_kernel"
+   ],
+   "matched": [
+    "_get_k_and_s_triton_kernel",
+    "deep_gemm::sm90_fp8_mqa_logits",
+    "fast_hadamard_transform_kernel",
+    "topk_plan",
+    "topk_transform_prefill_kernel"
+   ]
+  }
+ },
+ "missing_roles": [],
+ "aux_collector_only_roles": [],
  "serving_record": {
   "id": "6b26d2ab0781",
   "tp": 1,
@@ -31,15 +78,24 @@
   "cublas",
   "deepgemm",
   "dsa_nsa",
-  "fa3",
   "sgl_kernel",
   "triton_fused_moe"
  ],
- "collector_only_signal": [],
- "kernel_drift": null,
- "infra_family_name_matches": null,
+ "collector_only_signal": [
+  "attention:fa3"
+ ],
+ "kernel_drift": {
+  "attention": {
+   "collector_only_kernels": [
+    "flash::FlashAttnFwdSm90",
+    "flash::prepare_varlen_num_blocks_kernel"
+   ],
+   "serving_kernels": [
+    "sm90::fwd::sparse_attn_fwd_kernel"
+   ]
+  }
+ },
  "serving_kernels_matched_in_collector": [
-  "Activity",
   "_act_quant_kernel",
   "_get_k_and_s_triton_kernel",
   "alloc_extend_kernel",
@@ -48,10 +104,12 @@
   "compute_position_kernel",
   "concat_mla_absorb_q_kernel",
   "cublasLt::splitKreduce_kernel",
-  "deep_gemm::sm90_fp8_gemm_1d2d_impl"
+  "deep_gemm::sm90_fp8_gemm_1d2d_impl",
+  "deep_gemm::sm90_fp8_mqa_logits"
  ],
  "collector_unmatched_kernels": [
-  "INVALID"
+  "INVALID",
+  "sglang::deep_gemm_fp8_fp8_bf16_nt"
  ],
- "note": "subset semantics: the collector exercises ONE op; serving runs the whole model. 'diverged' = the collector executed a signal backend family serving never did."
+ "note": "subset semantics: the collector exercises ONE op; serving runs the whole model. Graded on the target roles only: every collector kernel of a target role must name-match a serving kernel of that role in the selected phase."
 }

@@ -21,6 +21,40 @@
  "capture_run_error": null,
  "kv_dtype": "auto",
  "op_hint": "moe|expert|grouped|fused_moe|deepgemm|topk|marlin|routing|ep_",
+ "gate_name": null,
+ "target_roles": [
+  "moe_gemm",
+  "routing"
+ ],
+ "phase": null,
+ "phase_scoped": false,
+ "role_evidence": {
+  "moe_gemm": {
+   "collector": [
+    "fused_moe_kernel"
+   ],
+   "serving": [
+    "fused_moe_kernel"
+   ],
+   "matched": [
+    "fused_moe_kernel"
+   ]
+  },
+  "routing": {
+   "collector": [
+    "tensorrt_llm::kernels::deepseek_v3_topk_kernel"
+   ],
+   "serving": [
+    "router_gemm_kernel",
+    "tensorrt_llm::kernels::deepseek_v3_topk_kernel"
+   ],
+   "matched": [
+    "tensorrt_llm::kernels::deepseek_v3_topk_kernel"
+   ]
+  }
+ },
+ "missing_roles": [],
+ "aux_collector_only_roles": [],
  "serving_record": {
   "id": "fd43089dfc3f",
   "tp": 1,
@@ -44,7 +78,6 @@
  ],
  "collector_only_signal": [],
  "kernel_drift": null,
- "infra_family_name_matches": null,
  "serving_kernels_matched_in_collector": [
   "act_and_mul_kernel",
   "count_and_sort_expert_tokens_kernel",
@@ -55,5 +88,5 @@
   "tensorrt_llm::kernels::deepseek_v3_topk_kernel"
  ],
  "collector_unmatched_kernels": [],
- "note": "subset semantics: the collector exercises ONE op; serving runs the whole model. 'diverged' = the collector executed a signal backend family serving never did."
+ "note": "subset semantics: the collector exercises ONE op; serving runs the whole model. Graded on the target roles only: every collector kernel of a target role must name-match a serving kernel of that role in the selected phase."
 }

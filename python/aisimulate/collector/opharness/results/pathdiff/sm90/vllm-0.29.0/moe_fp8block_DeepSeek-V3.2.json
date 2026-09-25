@@ -11,6 +11,28 @@
  "capture_run_error": null,
  "kv_dtype": "fp8",
  "op_hint": "moe|expert|grouped|fused_moe|deepgemm|topk|marlin|routing",
+ "gate_name": null,
+ "target_roles": [
+  "moe_gemm",
+  "routing"
+ ],
+ "phase": null,
+ "phase_scoped": false,
+ "role_evidence": {
+  "moe_gemm": {
+   "collector": [
+    "fused_moe_kernel"
+   ],
+   "serving": [
+    "fused_moe_kernel"
+   ],
+   "matched": [
+    "fused_moe_kernel"
+   ]
+  }
+ },
+ "missing_roles": [],
+ "aux_collector_only_roles": [],
  "serving_record": {
   "id": "f208a101a9c8",
   "tp": 1,
@@ -39,7 +61,6 @@
  ],
  "collector_only_signal": [],
  "kernel_drift": null,
- "infra_family_name_matches": null,
  "serving_kernels_matched_in_collector": [
   "fused_moe_kernel",
   "per_token_group_quant_8bit_kernel",
@@ -50,5 +71,5 @@
   "vllm::moe::moe_sum_vec_kernel"
  ],
  "collector_unmatched_kernels": [],
- "note": "subset semantics: the collector exercises ONE op; serving runs the whole model. 'diverged' = the collector executed a signal backend family serving never did."
+ "note": "subset semantics: the collector exercises ONE op; serving runs the whole model. Graded on the target roles only: every collector kernel of a target role must name-match a serving kernel of that role in the selected phase."
 }

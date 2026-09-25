@@ -115,8 +115,10 @@ def _record_from_raw(raw_path: str) -> dict:
     evidence and the report names that file."""
     from probe_driver import build_ops  # noqa: E402
     f = json.loads(Path(raw_path).read_text())
+    from probe_driver import build_orphan_phases  # noqa: E402
     ops, orphans = build_ops(f)
     return {"id": f"raw:{Path(raw_path).name}", "ops": ops, "orphan_kernels": orphans,
+            "orphan_phases": {k: v for k, v in build_orphan_phases(f).items() if k in set(orphans)},
             "runtime": {"tp": None, "kv_cache_dtype": f.get("probe_kv_cache_dtype"),
                         "isl": f.get("probe_isl"), "prefix_caching": f.get("probe_prefix_caching")}}
 
@@ -128,84 +130,201 @@ def _kv_equiv(a, b):
     return norm(a) == norm(b)
 
 
-# `triton` is deliberately NOT here: in the taxonomy it names only the Triton
-# attention backend (routing/activation are framework_native), and it is the
-# sole label of vllm's fp8 head_dim>256 path — ignoring it left that path
-# uncompared (2026-09-23).
-INFRA = frozenset({"cublas", "vllm_kernel", "sgl_kernel", "torch"})
+# ---------------------------------------------------------------- the target
+# A gate proves ONE op. The taxonomy carries a `role` per kernel (attention,
+# gemm, moe_gemm, linear_attention, dsa_indexer, quant, mhc, routing, kvcache,
+# norm_rope, infra, ...); the gate's target roles say which kernels are the
+# evidence and which are auxiliary work. Auxiliary overlap (a shared quant
+# kernel next to two different GEMMs) never carries a verdict (review
+# 2026-09-25 P1). Target roles and phase come from the gate name unless given
+# explicitly; both are recorded in the verdict.
+_GATE_TARGETS = (
+    # (regex on the gate/capture name, target roles, phase or None)
+    (r"^encoder_attn", ("attention",), "profile_run"),      # vision encoder runs in vLLM's profile run
+    (r"^compute_scale", ("quant",), None),
+    (r"^gemm_", ("gemm",), None),
+    (r"^mla_bmm", ("gemm",), None),
+    (r"^moe_", ("moe_gemm", "routing"), None),
+    (r"^mhc", ("mhc",), None),
+    (r"^(gdn|kda)_ctx", ("linear_attention",), "prefill"),
+    (r"^(gdn|kda)_gen", ("linear_attention",), "decode"),
+    (r"^(attn|mla|dsa|dsv4|msa|trt_attn|trt_dsa|trt_mla)\w*?_ctx", ("attention", "dsa_indexer"), "prefill"),
+    (r"^(attn|mla|dsa|dsv4|msa|trt_attn|trt_dsa|trt_mla)\w*?_gen", ("attention", "dsa_indexer"), "decode"),
+    (r"^(attn|mla|dsa|dsv4|msa)", ("attention", "dsa_indexer"), None),   # hca_attn, paged_mqa_logits, ...
+)
+# roles that are never a target: they are the glue around every op
+_NEVER_TARGET = frozenset({"infra", "kvcache", "norm_rope", "activation", "moe_infra"})
 
 
-def grade(col_kernels, col_backends, srv_kernels, srv_backends, cap_error, label_kernels) -> dict:
+# Defined kernel equivalence (review 2026-09-25): a GEMM library picks its tile
+# / cluster / split-K instantiation from the problem shape, so two nvjet or
+# xmma kernels that differ only in the tile blob are the SAME path. Only the
+# gemm roles use it; attention/moe kernels are graded on their full names.
+# Every equivalence is explicit and role-scoped; anything not listed is
+# compared by full normalized name.
+_EQUIV_RULES = (
+    # role, pattern, replacement
+    ("gemm", r"^(nvjet_sm\d+_\w+?)_\d[\w]*?_([A-Z]{3})$", r"\1_\2"),          # nvjet tile blob (layout kept)
+    ("moe_gemm", r"^(nvjet_sm\d+_\w+?)_\d[\w]*?_([A-Z]{3})$", r"\1_\2"),
+    ("gemm", r"_tilesize\d+x\d+x\d+\S*", ""),                              # xmma tile
+    ("gemm", r"_\d+x\d+x\d+(x\d+)?(_|$)", r"\2"),                           # cutlass tile shapes
+    # sgl_kernel DSA top-k selection dispatches on batch size (small_batch vs
+    # main): one op, two instantiations — the probe's decode batch is small,
+    # the collector's case batch is not
+    ("dsa_indexer", r"^topk_(main|small_batch)_kernel$", "topk_kernel"),
+)
+
+
+def equiv_key(kernel: str, role: str | None) -> str:
+    k = kernel.split("<")[0]
+    for r, pat, rep in _EQUIV_RULES:
+        if r == role:
+            k = re.sub(pat, rep, k)
+    return k
+
+
+def tile_equiv(kernel: str) -> str:  # kept for callers/tests: the gemm-role view
+    return equiv_key(kernel, "gemm")
+
+
+def infer_target(gate_name: str | None):
+    """(target_roles, phase) from the gate name; (None, None) when unknown."""
+    if not gate_name:
+        return None, None
+    for rx, roles, phase in _GATE_TARGETS:
+        if re.match(rx, gate_name):
+            return tuple(roles), phase
+    return None, None
+
+
+def grade(col_kernels, srv_kernels, target_roles, cap_error, role_of) -> dict:
     """The verdict rule, pure (unit-tested in tests/unit/collector/opharness).
 
-    Inputs are already normalized/launcher-filtered kernel names and their
-    taxonomy labels for the collector capture and the serving record.
-    Returns verdict / only_col / kernel_drift / infra_name_matches.
+    col_kernels / srv_kernels: normalized, launcher-filtered kernel names of
+    the collector capture and the (phase-selected) serving record.
+    target_roles: the op roles this gate must prove; None = every labeled
+    non-glue role the collector executed (unscoped gate, recorded as such).
+    role_of(kernel) -> (backend, role) | None, from the taxonomy.
+
+      aligned              every collector kernel of every target role name-
+                           matches a serving kernel of the same role, and the
+                           collector launched no target-role backend family
+                           serving did not
+      diverged             a target role the collector ran is absent from
+                           serving (wrong phase/op), a collector-only backend
+                           family inside a target role, or kernel drift inside
+                           a role (same family, different kernel)
+      no-collector-signal  the capture executed no kernel of any target role:
+                           it proves nothing about the op (auxiliary quant /
+                           norm / kv-cache overlap does not count)
+      invalid-capture      the capture command itself failed
     """
-    infra = INFRA
-    col_sig = set(col_backends) - infra
-    srv_sig = set(srv_backends) - infra
-    only_col = sorted(col_sig - srv_sig)
-
-    # family-level match is NECESSARY, not sufficient: the same canonical
-    # family can hide different kernels (0.29 DSA indexer did exactly this) —
-    # for every signal family on both sides, the collector's kernels must
-    # name-overlap serving's, else it is kernel drift and the gate stays red
-    def fam_kernels(kerns, keep=None):
-        """family -> kernel names; signal families by default, or only `keep`."""
-        out = {}
+    def by_role(kerns):
+        out: dict = {}
         for k in kerns:
-            labels, _ = label_kernels([k])
-            for b in (labels & keep if keep is not None else labels - infra):
-                out.setdefault(b, set()).add(k.split("<")[0])
+            hit = role_of(k)
+            if hit:
+                out.setdefault(hit[1], {})[k.split("<")[0]] = hit[0]
         return out
+    col_roles, srv_roles = by_role(col_kernels), by_role(srv_kernels)
+    if target_roles is None:
+        target_roles = tuple(sorted(r for r in col_roles if r not in _NEVER_TARGET))
+    col_target = {r: col_roles[r] for r in target_roles if col_roles.get(r)}
 
-    def name_hits(ck, sk):
-        return {c for c in ck if any(c in s or s in c for s in sk)}
-    col_fam = fam_kernels(col_kernels)
-    srv_fam = fam_kernels(srv_kernels)
-    kernel_drift = {}
-    for fam in (col_sig & srv_sig):
-        ck, sk = col_fam.get(fam, set()), srv_fam.get(fam, set())
-        misses = sorted(ck - name_hits(ck, sk))
+    def name_hits(ck, sk, role=None):
+        eq = (lambda k: equiv_key(k, role))
+        sk2 = {eq(s) for s in sk}
+        return {c for c in ck if any(eq(c) in s or s in eq(c) for s in sk2)}
+
+    evidence, drift, missing_roles, only_col = {}, {}, [], []
+    for role, ck in col_target.items():
+        sk = srv_roles.get(role, {})
+        if not sk:
+            missing_roles.append(role)
+            evidence[role] = {"collector": sorted(ck), "serving": [], "matched": []}
+            continue
+        hits = name_hits(set(ck), set(sk), role)
+        misses = sorted(set(ck) - hits)
         if misses:
-            kernel_drift[fam] = {"collector_only_kernels": misses,
-                                 "serving_kernels": sorted(sk)}
-    # A capture that crashed, or that executed no signal-family kernel at all,
-    # is not evidence: the empty set is a subset of everything and would read
-    # as "aligned". Found 2026-09-24 when six broken sglang captures (mock
-    # runner drift, subprocess collectors invisible to the parent profiler)
-    # all came back aligned with col=[] — refuse to grade them.
-    # GEMM-class ops (gemm bf16/fp8, compute_scale, mla_bmm) have NO signal
-    # family by construction — cuBLAS / the vllm quant kernels ARE their
-    # backend and sit in the infra set so they never masquerade as a
-    # wrong-path signal elsewhere. For them the evidence is kernel-NAME
-    # overlap inside those infra families (the collector's nvjet /
-    # cutlass_scaled_mm / per_token_group_quant instantiations must be ones
-    # serving also launched); a capture whose infra kernels share no name
-    # with serving is still no-collector-signal. Found when the first
-    # recompute after the rule above flipped four gemm-class verdicts that
-    # had been graded before it existed (2026-09-24).
-    infra_name_matches = None
+            drift[role] = {"collector_only_kernels": misses, "serving_kernels": sorted(sk)}
+        fam_only = sorted(set(ck.values()) - set(sk.values()))
+        if fam_only:
+            only_col.extend(f"{role}:{b}" for b in fam_only)
+        evidence[role] = {"collector": sorted(ck), "serving": sorted(sk), "matched": sorted(hits)}
+    # auxiliary roles the collector ran that serving did not: information, not a verdict
+    aux_only = sorted(r for r in col_roles if r not in target_roles and r not in _NEVER_TARGET
+                      and r not in srv_roles)
     if cap_error:
         verdict = "invalid-capture"
-    elif not col_sig:
-        col_inf = fam_kernels(col_kernels, infra)
-        srv_inf = fam_kernels(srv_kernels, infra)
-        infra_name_matches = {fam: sorted(name_hits(ck, srv_inf.get(fam, set())))
-                              for fam, ck in col_inf.items()}
-        infra_name_matches = {f: h for f, h in infra_name_matches.items() if h} or None
-        verdict = "aligned" if infra_name_matches else "no-collector-signal"
+    elif not col_target:
+        verdict = "no-collector-signal"
     else:
-        verdict = "aligned" if not only_col and not kernel_drift else "diverged"
-    return {"verdict": verdict, "only_col": only_col,
-            "kernel_drift": kernel_drift or None, "infra_name_matches": infra_name_matches}
+        verdict = "aligned" if not (missing_roles or drift or only_col) else "diverged"
+    return {"verdict": verdict, "target_roles": list(target_roles), "only_col": sorted(only_col),
+            "missing_roles": missing_roles, "kernel_drift": drift or None,
+            "role_evidence": evidence, "aux_collector_only_roles": aux_only}
+
+
+def select_serving(record: dict, phase: str | None, op_hint: str | None, is_launcher) -> tuple[set, bool]:
+    """Serving kernels for the comparison, scoped to `phase`.
+
+    Phase truth is the record's `kernel_phases` (every kernel the device
+    tables saw, by phase) — span attribution is by NAME across phases, so a
+    kernel launched in both phases but attributed to one phase's span must
+    still count for the other. Records without `kernel_phases` (legacy)
+    fall back to op phases + unscoped orphans and report phase_scoped=False.
+    Returns (kernels, phase_scoped)."""
+    kernels: set = set()
+    kphases = record.get("kernel_phases")
+    scoped = phase is not None
+    if phase is not None and isinstance(kphases, dict) and kphases:
+        pool = set(record.get("orphan_kernels") or [])
+        for op in record.get("ops") or []:
+            if op_hint and not re.search(op_hint, " ".join([op.get("op") or op.get("label") or ""]
+                                                           + (op.get("kernels") or [])), re.I):
+                continue
+            pool |= set(op.get("kernels") or [])
+        for k in pool:
+            ph = kphases.get(k)
+            if ph is None:
+                kernels.add(k)          # not in a device table (span-only): keep, unproven
+                scoped = False
+            elif phase in ph:
+                kernels.add(k)
+        return {k for k in kernels if not is_launcher(k)}, scoped
+    # legacy path (no kernel_phases): op phases where known, orphans unscoped
+    phases = record.get("orphan_phases") or {}
+    for k in record.get("orphan_kernels") or []:
+        if phase is None:
+            kernels.add(k)
+        elif k in phases:
+            if phase in phases[k]:
+                kernels.add(k)
+        else:
+            kernels.add(k)
+            scoped = False
+    for op in record.get("ops") or []:
+        op_phase = op.get("phase") if op.get("phase") in ("prefill", "decode", "profile_run") else None
+        if phase is not None and op_phase not in (phase, None):
+            continue
+        if phase is not None and op_phase is None:
+            scoped = False
+        if op_hint and not re.search(op_hint, " ".join([op.get("op") or op.get("label") or ""]
+                                                       + (op.get("kernels") or [])), re.I):
+            continue
+        kernels |= set(op.get("kernels") or [])
+    return {k for k in kernels if not is_launcher(k)}, scoped
 
 
 def diff(capture_file: str, repo: str, framework: str, version: str,
          op_hint: str | None, save: str | None = None, kv_dtype: str | None = None,
-         isl: int | None = None, serving_raw: str | None = None) -> int:
+         isl: int | None = None, serving_raw: str | None = None, gate_name: str | None = None,
+         target_roles: tuple | None = None, phase: str | None = None) -> int:
     label_kernels, normalize_kernel = _load_labeler()
+    from probe_driver import kernel_role  # noqa: E402
+    inferred_roles, inferred_phase = infer_target(gate_name or (Path(save).stem if save else None))
+    target_roles = target_roles or inferred_roles
+    phase = phase or inferred_phase
     cap = json.loads(Path(capture_file).read_text())
     # custom-op LAUNCHERS shadow their kernels under a second name
     # (_vllm_fa3_C::fwd wraps flash::FlashAttnFwdSm90) — same exclusion
@@ -215,7 +334,13 @@ def diff(capture_file: str, repo: str, framework: str, version: str,
     # causal_conv1d::causal_conv1d_fwd_kernel) — same exclusion
     _launcher = re.compile(r"^(_\w*C\w*|sglang|sgl_kernel|triton_|vllm|trtllm)::(?!.*_kernel)")
     def _is_launcher(name: str) -> bool:
-        return bool(_launcher.match(name)) and "kernel" not in name.split("::")[-1].lower()
+        # launchers are <ext module>::<op> names (fwd, scaled_mm, causal_conv1d_fwd);
+        # a tail naming a kernel or a GEMM instantiation is the kernel itself —
+        # vllm::cutlass_3x_gemm_sm90_fp8 IS the CUTLASS GEMM (found 2026-09-25: the
+        # fp8 GEMM gate had been graded on the quant kernel alone because its GEMM
+        # was dropped here)
+        tail = name.split("::")[-1].lower()
+        return bool(_launcher.match(name)) and "kernel" not in tail and "gemm" not in tail
     col_kernels = sorted({n for k in cap["kernels"]
                           if (n := normalize_kernel(k)) and not _is_launcher(n)})
     col_backends, col_unmatched = label_kernels(col_kernels)
@@ -260,24 +385,10 @@ def diff(capture_file: str, repo: str, framework: str, version: str,
         _hint = f" kv={kv_dtype}" if kv_dtype else ""
         print(f"[no-serving-record] {repo} {framework}-{version}{_hint} — probe that config first")
         return 2
-    srv_backends: set = set()
-    srv_kernels: set = set()
-    orphans = serving.get("orphan_kernels") or []
-    if orphans:  # kernels the span attribution missed still count as executed
-        labels, _ = label_kernels(orphans)
-        srv_backends |= labels
-        srv_kernels |= set(orphans)
-    for op in serving.get("ops") or []:
-        if op_hint and not re.search(op_hint, " ".join(
-                [op.get("label") or ""] + (op.get("kernels") or [])), re.I):
-            continue
-        srv_backends |= set(op.get("backends") or [])
-        srv_kernels |= {k for k in (op.get("kernels") or []) if not _is_launcher(k)}
-    srv_kernels = {k for k in srv_kernels if not _is_launcher(k)}
-
-    g = grade(col_kernels, col_backends, srv_kernels, srv_backends, cap.get("error"), label_kernels)
-    verdict, only_col = g["verdict"], g["only_col"]
-    kernel_drift, infra_name_matches = g["kernel_drift"], g["infra_name_matches"]
+    srv_kernels, phase_scoped = select_serving(serving, phase, op_hint, _is_launcher)
+    srv_backends, _ = label_kernels(srv_kernels)
+    g = grade(col_kernels, srv_kernels, target_roles, cap.get("error"), kernel_role)
+    verdict, only_col, kernel_drift = g["verdict"], g["only_col"], g["kernel_drift"]
     report = {
         "verdict": verdict,
         "repo": repo, "framework": framework, "version": version,
@@ -287,6 +398,12 @@ def diff(capture_file: str, repo: str, framework: str, version: str,
         "capture_env": cap.get("env"),  # the collector cell filters the capture ran under
         "capture_run_error": cap.get("error"),
         "kv_dtype": kv_dtype, "op_hint": op_hint,
+        # what this gate proves: the target op roles and the execution phase
+        # the serving evidence was selected from (phase_scoped False = legacy
+        # record without phase information, evidence unscoped)
+        "gate_name": gate_name, "target_roles": g["target_roles"], "phase": phase,
+        "phase_scoped": phase_scoped, "role_evidence": g["role_evidence"],
+        "missing_roles": g["missing_roles"], "aux_collector_only_roles": g["aux_collector_only_roles"],
         "serving_record": {"id": serving["id"], "tp": serving["runtime"].get("tp"),
                            "kv_cache_dtype": serving["runtime"].get("kv_cache_dtype"),
                            "isl": serving["runtime"].get("isl"),
@@ -296,15 +413,12 @@ def diff(capture_file: str, repo: str, framework: str, version: str,
         "serving_backends": sorted(srv_backends),
         "collector_only_signal": only_col,
         "kernel_drift": kernel_drift or None,
-        # set only when the op has no signal family (gemm-class): the infra
-        # kernel names the collector and serving both launched
-        "infra_family_name_matches": infra_name_matches,
         "serving_kernels_matched_in_collector": sorted(
             k for k in srv_kernels if any(k.split("<")[0] in c or c in k for c in col_kernels))[:10],
         "collector_unmatched_kernels": sorted(col_unmatched)[:10],
-        "note": "subset semantics: the collector exercises ONE op; serving runs "
-                "the whole model. 'diverged' = the collector executed a signal "
-                "backend family serving never did.",
+        "note": "subset semantics: the collector exercises ONE op; serving runs the whole "
+                "model. Graded on the target roles only: every collector kernel of a target "
+                "role must name-match a serving kernel of that role in the selected phase.",
     }
     print(json.dumps(report, indent=1, ensure_ascii=False))
     if save:
@@ -335,6 +449,12 @@ def main() -> int:
     ap.add_argument("--serving-raw", default=None,
                     help="diff against this raw probe JSON instead of archive/records.jsonl "
                          "(A/B evidence outside the plan); the report names the file")
+    ap.add_argument("--gate-name", default=None,
+                    help="gate name (e.g. gemm_fp8_Llama-3.1-70B-FP8); target roles and phase are inferred "
+                         "from it unless --target-roles/--phase are given; default: the --save-verdict stem")
+    ap.add_argument("--target-roles", default=None, help="comma list of taxonomy roles the gate must prove")
+    ap.add_argument("--phase", default=None, choices=["prefill", "decode", "profile_run"],
+                    help="select serving evidence from this execution phase only")
     ap.add_argument("--env", action="append", default=None, metavar="K=V",
                     help="capture mode: set a collector cell filter (e.g. "
                          "AIC_DSA_CONTEXT_SEQ_LENS=4096) before running; recorded in the capture")
@@ -347,7 +467,9 @@ def main() -> int:
         return capture(cmd, args.out, args.env)
     if args.diff:
         return diff(args.capture_file, args.repo, args.framework, args.version,
-                    args.op_hint, args.save_verdict, args.kv_dtype, args.isl, args.serving_raw)
+                    args.op_hint, args.save_verdict, args.kv_dtype, args.isl, args.serving_raw,
+                    args.gate_name, tuple(args.target_roles.split(",")) if args.target_roles else None,
+                    args.phase)
     ap.error("pass --capture or --diff")
 
 

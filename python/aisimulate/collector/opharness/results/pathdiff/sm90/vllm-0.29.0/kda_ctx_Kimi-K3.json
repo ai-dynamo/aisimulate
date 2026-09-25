@@ -11,6 +11,33 @@
  "capture_run_error": null,
  "kv_dtype": "auto",
  "op_hint": "kda|delta|conv1d|linear|attn_res|gated|recurr",
+ "gate_name": null,
+ "target_roles": [
+  "linear_attention"
+ ],
+ "phase": "prefill",
+ "phase_scoped": true,
+ "role_evidence": {
+  "linear_attention": {
+   "collector": [
+    "_Z25_flash_kda_fwd_recurrenceIN4cute9TiledCopyINS0_9Copy_AtomIJNS0_11Copy_Traits",
+    "_causal_conv1d_fwd_kernel",
+    "_flash_kda_fwd_prepare"
+   ],
+   "serving": [
+    "_Z25_flash_kda_fwd_recurrenceIN4cute9TiledCopyINS0_9Copy_AtomIJNS0_11Copy_Traits",
+    "_causal_conv1d_fwd_kernel",
+    "_flash_kda_fwd_prepare"
+   ],
+   "matched": [
+    "_Z25_flash_kda_fwd_recurrenceIN4cute9TiledCopyINS0_9Copy_AtomIJNS0_11Copy_Traits",
+    "_causal_conv1d_fwd_kernel",
+    "_flash_kda_fwd_prepare"
+   ]
+  }
+ },
+ "missing_roles": [],
+ "aux_collector_only_roles": [],
  "serving_record": {
   "id": "39864922d20f",
   "tp": 1,
@@ -27,20 +54,16 @@
  "serving_backends": [
   "causal_conv1d",
   "cublas",
-  "cutlass",
-  "fa3",
   "flashkda",
-  "torch",
   "vllm_kernel"
  ],
  "collector_only_signal": [],
  "kernel_drift": null,
- "infra_family_name_matches": null,
  "serving_kernels_matched_in_collector": [
   "_Z25_flash_kda_fwd_recurrenceIN4cute9TiledCopyINS0_9Copy_AtomIJNS0_11Copy_Traits",
   "_causal_conv1d_fwd_kernel",
   "_flash_kda_fwd_prepare"
  ],
  "collector_unmatched_kernels": [],
- "note": "subset semantics: the collector exercises ONE op; serving runs the whole model. 'diverged' = the collector executed a signal backend family serving never did."
+ "note": "subset semantics: the collector exercises ONE op; serving runs the whole model. Graded on the target roles only: every collector kernel of a target role must name-match a serving kernel of that role in the selected phase."
 }

@@ -22,6 +22,34 @@
  "capture_run_error": null,
  "kv_dtype": "auto",
  "op_hint": "attn|sparse|msa|topk|index|score|merge|block",
+ "gate_name": null,
+ "target_roles": [
+  "attention",
+  "dsa_indexer"
+ ],
+ "phase": "prefill",
+ "phase_scoped": true,
+ "role_evidence": {
+  "attention": {
+   "collector": [
+    "_flash_attn_fwd_with_block_score_kernel",
+    "_gqa_share_sparse_fwd_kernel",
+    "_topk_index_kernel"
+   ],
+   "serving": [
+    "_flash_attn_fwd_with_block_score_kernel",
+    "_gqa_share_sparse_fwd_kernel",
+    "_topk_index_kernel"
+   ],
+   "matched": [
+    "_flash_attn_fwd_with_block_score_kernel",
+    "_gqa_share_sparse_fwd_kernel",
+    "_topk_index_kernel"
+   ]
+  }
+ },
+ "missing_roles": [],
+ "aux_collector_only_roles": [],
  "serving_record": {
   "id": "7f3cbb30557f",
   "tp": 1,
@@ -38,28 +66,27 @@
  ],
  "serving_backends": [
   "cublas",
-  "fa3",
   "sgl_kernel",
   "triton",
   "triton_fused_moe"
  ],
  "collector_only_signal": [],
  "kernel_drift": null,
- "infra_family_name_matches": null,
  "serving_kernels_matched_in_collector": [
   "_flash_attn_fwd_with_block_score_kernel",
   "_gqa_share_sparse_fwd_kernel",
   "_topk_index_kernel",
   "alloc_extend_kernel",
+  "at_cuda_detail::cub::detail::scan::DeviceScanInitKernel",
+  "at_cuda_detail::cub::detail::scan::DeviceScanKernel",
   "compute_position_kernel",
   "fused_gemma_qknorm_rope_kernel",
   "nvjet_sm90_tst_128x256_64x4_2x1_v_bz_coopA_TNN",
-  "nvjet_sm90_tst_320x128_64x3_1x2_h_bz_coopB_TNT",
-  "store_kv_index_kernel",
-  "write_req_to_token_pool_triton"
+  "nvjet_sm90_tst_320x128_64x3_1x2_h_bz_coopB_TNT"
  ],
  "collector_unmatched_kernels": [
-  "INVALID"
+  "INVALID",
+  "sglang::_fused_gemma_qknorm_rope"
  ],
- "note": "subset semantics: the collector exercises ONE op; serving runs the whole model. 'diverged' = the collector executed a signal backend family serving never did."
+ "note": "subset semantics: the collector exercises ONE op; serving runs the whole model. Graded on the target roles only: every collector kernel of a target role must name-match a serving kernel of that role in the selected phase."
 }

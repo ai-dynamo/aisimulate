@@ -11,6 +11,48 @@
  "capture_run_error": null,
  "kv_dtype": "auto",
  "op_hint": "gdn|delta|conv1d|linear|mamba|gated|recurr",
+ "gate_name": null,
+ "target_roles": [
+  "linear_attention"
+ ],
+ "phase": "prefill",
+ "phase_scoped": true,
+ "role_evidence": {
+  "linear_attention": {
+   "collector": [
+    "ChunkGatedDeltaRuleFunction",
+    "_causal_conv1d_fwd_kernel",
+    "chunk_fwd_kernel_o",
+    "chunk_gated_delta_rule_fwd_kernel_h_blockdim64",
+    "chunk_gated_delta_rule_fwd_kkt_solve_kernel",
+    "chunk_local_cumsum_scalar_kernel",
+    "recompute_w_u_fwd_kernel"
+   ],
+   "serving": [
+    "ChunkGatedDeltaRuleFunction",
+    "_causal_conv1d_fwd_kernel",
+    "chunk_fwd_kernel_o",
+    "chunk_gated_delta_rule_fwd_kernel_h_blockdim64",
+    "chunk_gated_delta_rule_fwd_kkt_solve_kernel",
+    "chunk_local_cumsum_scalar_kernel",
+    "fused_gdn_gating_kernel",
+    "fused_qkv_split_gdn_prefill_kernel",
+    "fused_qkvzba_split_reshape_cat_contiguous_kernel",
+    "recompute_w_u_fwd_kernel"
+   ],
+   "matched": [
+    "ChunkGatedDeltaRuleFunction",
+    "_causal_conv1d_fwd_kernel",
+    "chunk_fwd_kernel_o",
+    "chunk_gated_delta_rule_fwd_kernel_h_blockdim64",
+    "chunk_gated_delta_rule_fwd_kkt_solve_kernel",
+    "chunk_local_cumsum_scalar_kernel",
+    "recompute_w_u_fwd_kernel"
+   ]
+  }
+ },
+ "missing_roles": [],
+ "aux_collector_only_roles": [],
  "serving_record": {
   "id": "5aec08d64057",
   "tp": 1,
@@ -33,7 +75,6 @@
  ],
  "collector_only_signal": [],
  "kernel_drift": null,
- "infra_family_name_matches": null,
  "serving_kernels_matched_in_collector": [
   "ChunkGatedDeltaRuleFunction",
   "_causal_conv1d_fwd_kernel",
@@ -47,5 +88,5 @@
   "recompute_w_u_fwd_kernel"
  ],
  "collector_unmatched_kernels": [],
- "note": "subset semantics: the collector exercises ONE op; serving runs the whole model. 'diverged' = the collector executed a signal backend family serving never did."
+ "note": "subset semantics: the collector exercises ONE op; serving runs the whole model. Graded on the target roles only: every collector kernel of a target role must name-match a serving kernel of that role in the selected phase."
 }

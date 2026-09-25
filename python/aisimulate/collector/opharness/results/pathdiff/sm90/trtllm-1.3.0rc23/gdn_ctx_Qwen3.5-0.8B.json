@@ -11,6 +11,32 @@
  "capture_run_error": null,
  "kv_dtype": "auto",
  "op_hint": "gdn|delta|conv1d|linear|mamba|gated|recurr",
+ "gate_name": null,
+ "target_roles": [
+  "linear_attention"
+ ],
+ "phase": "prefill",
+ "phase_scoped": true,
+ "role_evidence": {
+  "linear_attention": {
+   "collector": [
+    "kernel_cutlass_kernel_flashinfergdn_kernelsdelta_rule_dsldelta_rule_cp_sm90CPDel",
+    "tensorrt_llm::_v1::kernels::causal_conv1d::causal_conv1d_fwd_kernel"
+   ],
+   "serving": [
+    "_extract_transpose_prefill_kernel",
+    "_fused_gdn_post_conv_kernel",
+    "kernel_cutlass_kernel_flashinfergdn_kernelsdelta_rule_dsldelta_rule_cp_sm90CPDel",
+    "tensorrt_llm::_v1::kernels::causal_conv1d::causal_conv1d_fwd_kernel"
+   ],
+   "matched": [
+    "kernel_cutlass_kernel_flashinfergdn_kernelsdelta_rule_dsldelta_rule_cp_sm90CPDel",
+    "tensorrt_llm::_v1::kernels::causal_conv1d::causal_conv1d_fwd_kernel"
+   ]
+  }
+ },
+ "missing_roles": [],
+ "aux_collector_only_roles": [],
  "serving_record": {
   "id": "92ad9d5eb0a8",
   "tp": 1,
@@ -35,7 +61,6 @@
  ],
  "collector_only_signal": [],
  "kernel_drift": null,
- "infra_family_name_matches": null,
  "serving_kernels_matched_in_collector": [
   "_cast_scatter_fp32_vk_to_vk_kernel",
   "_gather_cast_vk_to_fp32_vk_kernel",
@@ -43,5 +68,5 @@
   "tensorrt_llm::_v1::kernels::causal_conv1d::causal_conv1d_fwd_kernel"
  ],
  "collector_unmatched_kernels": [],
- "note": "subset semantics: the collector exercises ONE op; serving runs the whole model. 'diverged' = the collector executed a signal backend family serving never did."
+ "note": "subset semantics: the collector exercises ONE op; serving runs the whole model. Graded on the target roles only: every collector kernel of a target role must name-match a serving kernel of that role in the selected phase."
 }

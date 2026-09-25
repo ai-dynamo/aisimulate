@@ -21,6 +21,45 @@
  "capture_run_error": null,
  "kv_dtype": "auto",
  "op_hint": "mla|dsa|nsa|attn|indexer|flash|mqa|sparse|gemm|deepgemm|quant|topk|fmha",
+ "gate_name": null,
+ "target_roles": [
+  "attention",
+  "dsa_indexer"
+ ],
+ "phase": "decode",
+ "phase_scoped": true,
+ "role_evidence": {
+  "attention": {
+   "collector": [
+    "sm90::sparse_attn_fwd_kernel",
+    "tensorrt_llm::_v1::kernels::topKPerRowDecode"
+   ],
+   "serving": [
+    "sm90::sparse_attn_fwd_kernel",
+    "tensorrt_llm::_v1::kernels::topKPerRowDecode"
+   ],
+   "matched": [
+    "sm90::sparse_attn_fwd_kernel",
+    "tensorrt_llm::_v1::kernels::topKPerRowDecode"
+   ]
+  },
+  "dsa_indexer": {
+   "collector": [
+    "deep_gemm::sched::smxx_paged_mqa_logits_metadata",
+    "deep_gemm::sm90_fp8_paged_mqa_logits"
+   ],
+   "serving": [
+    "deep_gemm::sched::smxx_paged_mqa_logits_metadata",
+    "deep_gemm::sm90_fp8_paged_mqa_logits"
+   ],
+   "matched": [
+    "deep_gemm::sched::smxx_paged_mqa_logits_metadata",
+    "deep_gemm::sm90_fp8_paged_mqa_logits"
+   ]
+  }
+ },
+ "missing_roles": [],
+ "aux_collector_only_roles": [],
  "serving_record": {
   "id": "7a0fd74cb25b",
   "tp": 1,
@@ -45,9 +84,7 @@
  ],
  "collector_only_signal": [],
  "kernel_drift": null,
- "infra_family_name_matches": null,
  "serving_kernels_matched_in_collector": [
-  "cublasLt::splitKreduce_kernel",
   "deep_gemm::sched::smxx_paged_mqa_logits_metadata",
   "deep_gemm::sm90_fp8_paged_mqa_logits",
   "flashinfer::BatchQKApplyRotaryPosIdsCosSinCacheHeadParallelismKernel",
@@ -56,10 +93,12 @@
   "nvjet_sm90_tst_128x8_64x12_1x1_h_bz_TNT",
   "nvjet_sm90_tst_128x8_64x12_2x1_v_bz_TNT",
   "sm90::sparse_attn_fwd_kernel",
-  "tensorrt_llm::_v1::kernels::applyMLARopeAppendPagedKVAssignQKernel"
+  "tensorrt_llm::_v1::kernels::applyMLARopeAppendPagedKVAssignQKernel",
+  "tensorrt_llm::_v1::kernels::convertReqIndexToGlobalKernel"
  ],
  "collector_unmatched_kernels": [
-  "tensorrt_llm::_v1::kernels::dsv3MinLatencyKernels::fused_a_gemm_kernel"
+  "tensorrt_llm::_v1::kernels::dsv3MinLatencyKernels::fused_a_gemm_kernel",
+  "trtllm::dsv3_fused_a_gemm_op"
  ],
- "note": "subset semantics: the collector exercises ONE op; serving runs the whole model. 'diverged' = the collector executed a signal backend family serving never did."
+ "note": "subset semantics: the collector exercises ONE op; serving runs the whole model. Graded on the target roles only: every collector kernel of a target role must name-match a serving kernel of that role in the selected phase."
 }

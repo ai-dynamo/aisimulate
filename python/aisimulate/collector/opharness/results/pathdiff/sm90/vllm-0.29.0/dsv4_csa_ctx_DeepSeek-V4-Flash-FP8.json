@@ -11,6 +11,56 @@
  "capture_run_error": null,
  "kv_dtype": "fp8",
  "op_hint": "dsv4|dsa|csa|hca|compress|indexer|mqa|sparse|flash|attn|mla|topk|gemm|deepgemm|quant",
+ "gate_name": null,
+ "target_roles": [
+  "attention",
+  "dsa_indexer"
+ ],
+ "phase": "prefill",
+ "phase_scoped": true,
+ "role_evidence": {
+  "attention": {
+   "collector": [
+    "sm90::fwd::sparse_attn_fwd_kernel",
+    "vllm::cp_gather_indexer_k_quant_cache_kernel"
+   ],
+   "serving": [
+    "sm90::fwd::sparse_attn_fwd_kernel",
+    "vllm::cp_gather_indexer_k_quant_cache_kernel"
+   ],
+   "matched": [
+    "sm90::fwd::sparse_attn_fwd_kernel",
+    "vllm::cp_gather_indexer_k_quant_cache_kernel"
+   ]
+  },
+  "dsa_indexer": {
+   "collector": [
+    "_compute_swa_indices_and_lens_kernel",
+    "deep_gemm::sm90_fp8_mqa_logits",
+    "kernel_cutlass_kernel_vllmmodelsdeepseek_v4nvidiaopsdequant_gather_k_cutedslDequ",
+    "kernel_cutlass_kernel_vllmmodelsdeepseek_v4nvidiaopsfused_indexer_q_cutedslIndex",
+    "kernel_cutlass_kernel_vllmmodelsdeepseek_v4nvidiaopssparse_attn_compress_cutedsl"
+   ],
+   "serving": [
+    "_build_c128a_topk_metadata_kernel",
+    "_compute_swa_indices_and_lens_kernel",
+    "_dsv4_topk_kernel",
+    "deep_gemm::sm90_fp8_mqa_logits",
+    "kernel_cutlass_kernel_vllmmodelsdeepseek_v4nvidiaopsdequant_gather_k_cutedslDequ",
+    "kernel_cutlass_kernel_vllmmodelsdeepseek_v4nvidiaopsfused_indexer_q_cutedslIndex",
+    "kernel_cutlass_kernel_vllmmodelsdeepseek_v4nvidiaopssparse_attn_compress_cutedsl"
+   ],
+   "matched": [
+    "_compute_swa_indices_and_lens_kernel",
+    "deep_gemm::sm90_fp8_mqa_logits",
+    "kernel_cutlass_kernel_vllmmodelsdeepseek_v4nvidiaopsdequant_gather_k_cutedslDequ",
+    "kernel_cutlass_kernel_vllmmodelsdeepseek_v4nvidiaopsfused_indexer_q_cutedslIndex",
+    "kernel_cutlass_kernel_vllmmodelsdeepseek_v4nvidiaopssparse_attn_compress_cutedsl"
+   ]
+  }
+ },
+ "missing_roles": [],
+ "aux_collector_only_roles": [],
  "serving_record": {
   "id": "ec4c72fb384d",
   "tp": 1,
@@ -28,31 +78,28 @@
  ],
  "serving_backends": [
   "cublas",
-  "cutlass",
   "deepgemm",
   "dsa_nsa",
-  "flashmla",
   "sgl_kernel",
-  "tilelang",
-  "vllm_kernel"
+  "tilelang"
  ],
  "collector_only_signal": [],
  "kernel_drift": null,
- "infra_family_name_matches": null,
  "serving_kernels_matched_in_collector": [
   "_apply_write_kernel",
-  "_bad_words_kernel",
-  "_bias_kernel",
   "_build_c128a_topk_metadata_kernel",
   "_compressed_slot_mapping_kernel",
-  "_compute_global_topk_indices_and_lens_kernel",
   "_compute_slot_mappings_kernel",
   "_compute_swa_indices_and_lens_kernel",
   "_dsv4_topk_kernel",
-  "_fused_inv_rope_fp8_quant_per_head"
+  "_fused_inv_rope_fp8_quant_per_head",
+  "_fused_kv_compress_norm_rope_insert_indexer_attn",
+  "_fused_q_kv_rmsnorm_kernel",
+  "_gather_block_tables_kernel"
  ],
  "collector_unmatched_kernels": [
+  "vllm::dynamic_flashinfer_deepgemm_blockscale_gemm",
   "vllm::fused_inv_rope_fp8_quant_kernel"
  ],
- "note": "subset semantics: the collector exercises ONE op; serving runs the whole model. 'diverged' = the collector executed a signal backend family serving never did."
+ "note": "subset semantics: the collector exercises ONE op; serving runs the whole model. Graded on the target roles only: every collector kernel of a target role must name-match a serving kernel of that role in the selected phase."
 }
