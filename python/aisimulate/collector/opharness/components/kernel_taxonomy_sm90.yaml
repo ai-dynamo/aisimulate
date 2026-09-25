@@ -211,9 +211,6 @@ rules:
   # vision-encoder attention / conv glue (xformers cutlass FMHA sm80, im2col, cudnn layout)
   - {backend: framework_native, role: infra,
      match: "^fmha_cutlassF_|im2col_kernel|cudnn::engines_precompiled::nchwToNhwc|softcap_inplace_logits_kernel"}
-  # trtllm MoE tactic profiler + stream-delay glue (autotuning, not the serving path)
-  - {backend: trtllm_internal, role: infra,
-     match: "cutlass_kernels::populateRandomBufferKernel|cutlass_kernels::prepareFakeRouterBuffers|kernels::delayStreamKernel"}
   # trtllm GDN prefill/conv layout glue around the cute-DSL delta-rule kernels
   - {backend: trtllm_internal, role: linear_attention,
      match: "^_extract_transpose_prefill_kernel|^_fused_conv_output_transpose_kernel"}
@@ -235,3 +232,28 @@ rules:
      match: "^fused_rope_kernel|^fused_rope_store_kernel"}
   - {backend: framework_native, role: kvcache,
      match: "^fused_store_indexer_cache|kernels::fusedCatFp8Kernel|^store_kv_index_kernel"}
+  - {backend: torch, role: infra,
+     match: "^softmax_warp_forward|^softmax_warp_backward|^cunn_SoftMaxForwardSmem"}
+
+  # ---------------------------------------------- sgl_kernel C++ kernels (2026-09-25)
+  # These live in anonymous namespaces and were invisible ("namespace") until the
+  # normalizer stripped the prefix; labeled by role from their names.
+  - {backend: dsa_nsa, role: attention,
+     match: "^flash_c4_(prefill|decode)$|^flash_c128_(prefill|decode)$"}
+  # DSA indexer helpers shipped by sgl_kernel: top-k selection dispatches by
+  # batch (topk_small_batch_kernel vs topk_main_kernel — the probe's small
+  # decode batch vs the collector's case batch), so they carry the sgl_kernel
+  # (infra) label: visible in decompositions under role dsa_indexer, not
+  # name-graded by path_diff (the attention kernels above are).
+  - {backend: sgl_kernel, role: dsa_indexer,
+     match: "^topk_plan$|^topk_small_batch_kernel$|^topk_main_kernel$|^topk_transform(_prefill)?_kernel$|^fast_hadamard_transform_kernel$|^fused_q_indexer_rope_hadamard_quant$|^fused_k_indexer_norm_rope_store$|^fused_norm_rope_indexer$"}
+  - {backend: sgl_kernel, role: norm_rope,
+     match: "^fused_qknorm_warp$|^fused_gemma_qknorm_rope_kernel$|^fused_q_norm_rope$|^fused_(k_)?norm_rope_flashmla$|^deepseek_rope_kernel$"}
+  - {backend: sgl_kernel, role: kvcache,
+     match: "^store_kvcache$|^concat_mla_absorb_q_kernel$|^concat_mla_k_kernel$|^write_c4_prefill$|^get_mla_kv_buffer_kernel$"}
+  - {backend: sgl_kernel, role: quant,
+     match: "^per_tensor_quant_fp8_kernel$|^per_token_quant_fp8_kernel$"}
+  - {backend: sgl_kernel, role: activation,
+     match: "^act_kernel$|^silu_mul_clamp_kernel$"}
+  - {backend: sgl_kernel, role: infra,
+     match: "^clamp_position_kernel$"}

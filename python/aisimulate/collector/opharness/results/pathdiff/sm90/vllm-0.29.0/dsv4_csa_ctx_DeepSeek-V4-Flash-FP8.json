@@ -34,7 +34,6 @@
   "flashmla",
   "sgl_kernel",
   "tilelang",
-  "torch",
   "vllm_kernel"
  ],
  "collector_only_signal": [],
@@ -43,14 +42,14 @@
  "serving_kernels_matched_in_collector": [
   "_apply_write_kernel",
   "_bad_words_kernel",
+  "_bias_kernel",
   "_build_c128a_topk_metadata_kernel",
   "_compressed_slot_mapping_kernel",
   "_compute_global_topk_indices_and_lens_kernel",
+  "_compute_slot_mappings_kernel",
   "_compute_swa_indices_and_lens_kernel",
   "_dsv4_topk_kernel",
-  "_fused_inv_rope_fp8_quant_per_head",
-  "_fused_kv_compress_norm_rope_insert_indexer_attn",
-  "_fused_q_kv_rmsnorm_kernel"
+  "_fused_inv_rope_fp8_quant_per_head"
  ],
  "collector_unmatched_kernels": [
   "vllm::fused_inv_rope_fp8_quant_kernel"

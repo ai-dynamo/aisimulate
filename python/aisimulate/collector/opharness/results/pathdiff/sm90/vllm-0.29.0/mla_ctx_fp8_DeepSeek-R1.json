@@ -33,7 +33,6 @@
   "fa3",
   "flashmla",
   "sgl_kernel",
-  "torch",
   "triton_fused_moe",
   "vllm_kernel"
  ],
@@ -46,11 +45,11 @@
   "flash::FlashAttnFwdSm90",
   "flash::prepare_varlen_num_blocks_kernel",
   "flashinfer::ConcatMLAKKernel",
-  "namespace",
   "per_token_group_quant_8bit_kernel",
   "triton_",
   "triton_poi_fused__to_copy_abs_ceil_clamp_div_log2_mul_pow_reciprocal_slice_view_",
-  "triton_poi_fused__to_copy_abs_ceil_clamp_div_log2_mul_pow_reciprocal_view_zeros_"
+  "triton_poi_fused__to_copy_abs_ceil_clamp_div_log2_mul_pow_reciprocal_view_zeros_",
+  "triton_red_fused_abs_amax_ceil_clamp_div_log2_pow_view_zeros_0"
  ],
  "collector_unmatched_kernels": [],
  "note": "subset semantics: the collector exercises ONE op; serving runs the whole model. 'diverged' = the collector executed a signal backend family serving never did."

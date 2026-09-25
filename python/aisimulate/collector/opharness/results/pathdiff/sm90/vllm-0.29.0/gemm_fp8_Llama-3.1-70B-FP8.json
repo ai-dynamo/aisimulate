@@ -27,7 +27,6 @@
   "cublas",
   "cutlass",
   "fa3",
-  "torch",
   "vllm_kernel"
  ],
  "collector_only_signal": [],
@@ -38,7 +37,6 @@
   ]
  },
  "serving_kernels_matched_in_collector": [
-  "namespace",
   "triton_",
   "vllm::scaled_fp8_quant_kernel_strided_group_shape"
  ],

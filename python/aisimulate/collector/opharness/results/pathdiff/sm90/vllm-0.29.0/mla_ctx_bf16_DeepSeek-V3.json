@@ -31,7 +31,6 @@
   "deepgemm",
   "fa3",
   "sgl_kernel",
-  "torch",
   "triton_fused_moe",
   "vllm_kernel"
  ],
@@ -39,11 +38,11 @@
  "kernel_drift": null,
  "infra_family_name_matches": null,
  "serving_kernels_matched_in_collector": [
+  "at_cuda_detail::cub::detail::scan::DeviceScanInitKernel",
   "at_cuda_detail::cub::detail::scan::DeviceScanKernel",
   "flash::FlashAttnFwdSm90",
   "flash::prepare_varlen_num_blocks_kernel",
   "flashinfer::ConcatMLAKKernel",
-  "namespace",
   "nvjet_sm90_tst_128x256_64x4_2x1_v_bz_coopA_TNN",
   "nvjet_sm90_tst_176x128_64x5_1x2_h_bz_TNN",
   "nvjet_sm90_tst_320x128_64x3_1x2_h_bz_coopB_TNT",

@@ -25,8 +25,7 @@
  ],
  "serving_backends": [
   "cublas",
-  "fa3",
-  "torch"
+  "fa3"
  ],
  "collector_only_signal": [],
  "kernel_drift": null,
@@ -36,7 +35,6 @@
   ]
  },
  "serving_kernels_matched_in_collector": [
-  "namespace",
   "nvjet_sm90_tst_128x256_64x4_2x1_v_bz_coopA_TNN"
  ],
  "collector_unmatched_kernels": [],

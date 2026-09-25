@@ -29,7 +29,6 @@
   "deepgemm",
   "fa3",
   "sgl_kernel",
-  "torch",
   "triton_fused_moe",
   "vllm_kernel"
  ],
@@ -41,7 +40,6 @@
   ]
  },
  "serving_kernels_matched_in_collector": [
-  "namespace",
   "nvjet_sm90_tst_128x8_64x12_1x1_h_bz_NNT"
  ],
  "collector_unmatched_kernels": [],

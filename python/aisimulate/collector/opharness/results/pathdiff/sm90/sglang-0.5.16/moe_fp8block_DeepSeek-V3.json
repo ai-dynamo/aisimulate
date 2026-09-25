@@ -32,6 +32,7 @@
  },
  "collector_backends": [
   "sgl_kernel",
+  "torch",
   "triton_fused_moe"
  ],
  "serving_backends": [
@@ -45,11 +46,12 @@
  "kernel_drift": null,
  "infra_family_name_matches": null,
  "serving_kernels_matched_in_collector": [
+  "act_and_mul_kernel",
   "count_and_sort_expert_tokens_kernel",
   "fused_moe_kernel",
   "moe_align_block_size_kernel",
   "moe_sum_reduce_warp_per_token_vec_kernel",
-  "namespace",
+  "per_token_group_quant_8bit_v2_kernel",
   "tensorrt_llm::kernels::deepseek_v3_topk_kernel"
  ],
  "collector_unmatched_kernels": [],

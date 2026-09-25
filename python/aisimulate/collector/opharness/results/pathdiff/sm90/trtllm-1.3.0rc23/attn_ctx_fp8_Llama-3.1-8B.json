@@ -32,7 +32,6 @@
  "infra_family_name_matches": null,
  "serving_kernels_matched_in_collector": [
   "fmha_v2_flash_attention_bf16_64_128_S_qkv_128_causal_tma_ws_sm90_kernel",
-  "namespace",
   "tensorrt_llm::_v1::kernels::applyBiasRopeUpdateKVCacheV2",
   "tensorrt_llm::_v1::kernels::computeSeqAndPaddingOffsets"
  ],

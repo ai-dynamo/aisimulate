@@ -42,7 +42,6 @@
  "infra_family_name_matches": null,
  "serving_kernels_matched_in_collector": [
   "kernel_mha",
-  "namespace",
   "tensorrt_llm::_v1::kernels::applyBiasRopeUpdateKVCacheV2"
  ],
  "collector_unmatched_kernels": [],

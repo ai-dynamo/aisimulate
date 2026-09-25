@@ -28,7 +28,8 @@
   "causal_conv1d",
   "cublas",
   "fa3",
-  "fla_triton"
+  "fla_triton",
+  "sgl_kernel"
  ],
  "collector_only_signal": [],
  "kernel_drift": null,
@@ -43,7 +44,7 @@
   "chunk_gated_delta_rule_fwd_kkt_solve_kernel",
   "chunk_local_cumsum_scalar_kernel",
   "l2norm_fwd_kernel",
-  "namespace"
+  "recompute_w_u_fwd_kernel"
  ],
  "collector_unmatched_kernels": [],
  "note": "subset semantics: the collector exercises ONE op; serving runs the whole model. 'diverged' = the collector executed a signal backend family serving never did."

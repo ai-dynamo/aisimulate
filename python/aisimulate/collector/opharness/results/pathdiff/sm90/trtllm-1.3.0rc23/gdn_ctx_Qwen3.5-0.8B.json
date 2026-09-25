@@ -40,7 +40,6 @@
   "_cast_scatter_fp32_vk_to_vk_kernel",
   "_gather_cast_vk_to_fp32_vk_kernel",
   "kernel_cutlass_kernel_flashinfergdn_kernelsdelta_rule_dsldelta_rule_cp_sm90CPDel",
-  "namespace",
   "tensorrt_llm::_v1::kernels::causal_conv1d::causal_conv1d_fwd_kernel"
  ],
  "collector_unmatched_kernels": [],

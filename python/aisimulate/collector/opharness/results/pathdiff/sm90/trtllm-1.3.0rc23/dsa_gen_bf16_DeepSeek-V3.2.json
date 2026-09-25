@@ -53,10 +53,10 @@
   "flashinfer::BatchQKApplyRotaryPosIdsCosSinCacheHeadParallelismKernel",
   "internal::gemvx::kernel",
   "kernel_cutlass_kernel_flashinfernormkernelsrmsnormRMSNormKernel",
-  "namespace",
   "nvjet_sm90_tst_128x8_64x12_1x1_h_bz_TNT",
   "nvjet_sm90_tst_128x8_64x12_2x1_v_bz_TNT",
-  "sm90::sparse_attn_fwd_kernel"
+  "sm90::sparse_attn_fwd_kernel",
+  "tensorrt_llm::_v1::kernels::applyMLARopeAppendPagedKVAssignQKernel"
  ],
  "collector_unmatched_kernels": [
   "tensorrt_llm::_v1::kernels::dsv3MinLatencyKernels::fused_a_gemm_kernel"

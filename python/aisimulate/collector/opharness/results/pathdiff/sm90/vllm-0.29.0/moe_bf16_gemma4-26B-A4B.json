@@ -21,6 +21,7 @@
   "candidates": 2
  },
  "collector_backends": [
+  "torch",
   "triton_fused_moe",
   "vllm_kernel"
  ],
@@ -37,8 +38,6 @@
  "serving_kernels_matched_in_collector": [
   "_gemma4_routing_kernel",
   "fused_moe_kernel",
-  "namespace",
-  "operator",
   "vllm::act_and_mul_kernel",
   "vllm::moe::count_and_sort_expert_tokens_kernel",
   "vllm::moe::moe_align_block_size_kernel",

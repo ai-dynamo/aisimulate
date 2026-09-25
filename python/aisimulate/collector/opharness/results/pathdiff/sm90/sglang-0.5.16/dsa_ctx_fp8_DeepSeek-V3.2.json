@@ -32,7 +32,8 @@
   "deepgemm",
   "dsa_nsa",
   "flashmla",
-  "sgl_kernel"
+  "sgl_kernel",
+  "triton_fused_moe"
  ],
  "collector_only_signal": [],
  "kernel_drift": null,
@@ -46,8 +47,8 @@
   "at_cuda_detail::cub::detail::scan::DeviceScanInitKernel",
   "at_cuda_detail::cub::detail::scan::DeviceScanKernel",
   "compute_position_kernel",
-  "cublasLt::splitKreduce_kernel",
-  "deep_gemm::sm90_fp8_gemm_1d2d_impl"
+  "concat_mla_absorb_q_kernel",
+  "cublasLt::splitKreduce_kernel"
  ],
  "collector_unmatched_kernels": [
   "INVALID"

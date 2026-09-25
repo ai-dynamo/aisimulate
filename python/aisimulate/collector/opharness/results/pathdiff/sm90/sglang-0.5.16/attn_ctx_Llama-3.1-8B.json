@@ -31,11 +31,13 @@
   "candidates": 1
  },
  "collector_backends": [
-  "fa3"
+  "fa3",
+  "sgl_kernel"
  ],
  "serving_backends": [
   "cublas",
-  "fa3"
+  "fa3",
+  "sgl_kernel"
  ],
  "collector_only_signal": [],
  "kernel_drift": null,
@@ -45,7 +47,7 @@
   "at_cuda_detail::cub::detail::scan::DeviceScanKernel",
   "flash::FlashAttnFwdSm90",
   "flash::prepare_varlen_num_blocks_kernel",
-  "namespace",
+  "store_kvcache",
   "void at::native::vectorized_gather_kernel<16, long>"
  ],
  "collector_unmatched_kernels": [],

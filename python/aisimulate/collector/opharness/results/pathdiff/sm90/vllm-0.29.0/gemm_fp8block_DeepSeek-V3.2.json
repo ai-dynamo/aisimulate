@@ -32,7 +32,6 @@
   "fa3",
   "flashmla",
   "sgl_kernel",
-  "torch",
   "triton_fused_moe",
   "vllm_kernel"
  ],
@@ -41,7 +40,6 @@
  "infra_family_name_matches": null,
  "serving_kernels_matched_in_collector": [
   "deep_gemm::sm90_fp8_gemm_1d2d_impl",
-  "namespace",
   "per_token_group_quant_8bit_kernel",
   "triton_poi_fused__to_copy_abs_ceil_clamp_div_log2_mul_pow_reciprocal_slice_view_",
   "triton_poi_fused__to_copy_abs_ceil_clamp_div_log2_mul_pow_reciprocal_view_zeros_",

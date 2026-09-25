@@ -1339,6 +1339,19 @@ findings:
       rendered). kda_ctx path_diff now grades against the framework-mode
       record (default selection, --serving-raw dropped): ALIGNED. The old
       512 raws are kept in facts/k3_ab/pre_cap/. vllm matrix: 99 / 9 / 16.
+      NORMALIZER FACT (2026-09-25): "(anonymous namespace)::" was never
+      stripped, so every kernel defined in an anonymous namespace — ALL of
+      sgl_kernel's C++ kernels (store_kvcache, concat_mla_*, fused_*norm_rope*,
+      flash_c4/c128 DSV4 attention, topk_* indexer helpers, per-tensor fp8
+      quant, act/silu) plus torch's at::native helpers and K3's KDA decode
+      kernel — collapsed into one bogus name "namespace" and was invisible
+      to the taxonomy, the identity column and the gates. Stripping it
+      exposed 26 sglang kernels, now labeled by role (flash_c4_*/flash_c128_*
+      = dsa_nsa attention; the DSA indexer top-k helpers dispatch by batch
+      — topk_small_batch_kernel in the probe's decode vs topk_main_kernel in
+      the collector's case — so they carry the sgl_kernel infra label and
+      are not name-graded). Every saved gate verdict stays aligned (61),
+      residue is empty on all pins, no pass row lost its attention identity.
     applies_to: [zai-org/GLM-5.3-Flash, Qwen/Qwen3.8-27B, Qwen/Qwen3.8-Flash-Next, nvidia/Qwen3.8-2.4T-A95B-NVFP4,
       deepseek-ai/DeepSeek-V4.1-Flash, meta-models/Muse-Glimmer-30B, baerquant/Inkling, Altworld/Hemmingway-1,
       TokenRhythm/NeoHorse-1-9B, ornith-ai/Ornith-1.5-35B-A3B, openbmb/MiniCPM5-2B,

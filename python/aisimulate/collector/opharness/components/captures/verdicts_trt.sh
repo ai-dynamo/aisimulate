@@ -1,6 +1,6 @@
 #!/bin/bash
-cd "${AIS_PROBE_WORKSPACE:?set AIS_PROBE_WORKSPACE to the probe workspace}"
-export AIS_SM=${AIS_SM:-sm90}
+cd ${AIS_PROBE_WORKSPACE:-.}
+export AIS_PROBE_WORKSPACE=${AIS_PROBE_WORKSPACE:-.} AIS_SM=sm90
 PD=ais/python/aisimulate/collector/opharness/components/path_diff.py
 OUT=ais/python/aisimulate/collector/opharness/results/pathdiff/sm90/trtllm-1.3.0rc23
 mkdir -p $OUT

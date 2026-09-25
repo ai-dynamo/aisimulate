@@ -56,8 +56,10 @@ def test_first_match_wins_and_glue_is_not_residue(dc):
     rules = dc.load_rules("sm90")
     # the six 2026-09-25 glue rules: labeled (role infra/gemm/...), never residue
     for k in ("sm90_xmma_gemm_f32f32_tf32f32_f32_tn_n_tilesize64x128x32", "fmha_cutlassF_bf16_aligned_64x128_rf_sm80",
-              "tensorrt_llm::kernels::delayStreamKernel", "_extract_transpose_prefill_kernel"):
+              "_extract_transpose_prefill_kernel", "store_kvcache", "flash_c4_decode"):
         assert dc.label(k, rules) is not None, k
+    # the trtllm MoE tactic profiler is denied upstream (probe_driver.KERNEL_DENY), never a family
+    assert dc.label("tensorrt_llm::kernels::delayStreamKernel", rules) is None
     # the sglang Triton block-fp8 GEMM keeps its own label: collector lane is DeepGEMM
     assert dc.label("_w8a8_block_fp8_matmul", rules) == ("gemm", "triton_block_fp8")
 

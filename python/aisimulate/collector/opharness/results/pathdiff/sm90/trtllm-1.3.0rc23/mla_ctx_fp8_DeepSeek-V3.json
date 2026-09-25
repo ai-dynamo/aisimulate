@@ -42,12 +42,12 @@
   "deep_gemm::fp8_gemm_kernel_swapAB",
   "fmha_v2_flash_attention_e4m3_64_128_S_q_k_v_192x128_causal_output_bf16_tma_ws_sm",
   "kernel_cutlass_kernel_flashinfernormkernelsrmsnormRMSNormKernel",
-  "namespace",
   "nvjet_sm90_tst_128x256_64x4_2x1_v_bz_coopA_TNN",
   "tensorrt_llm::_v1::kernels::applyMLARopeAndAssignQKVKernelOptContext",
   "tensorrt_llm::_v1::kernels::computeSeqAndPaddingOffsets",
   "tensorrt_llm::_v1::kernels::fp8_blockscale_gemm::scale_1x128_kernel",
-  "tensorrt_llm::_v1::kernels::quantizeCopyInputToFp8Kernel"
+  "tensorrt_llm::_v1::kernels::quantizeCopyInputToFp8Kernel",
+  "triton_poi_fused_copy_copy__0"
  ],
  "collector_unmatched_kernels": [
   "tensorrt_llm::_v1::kernels::quantizeCopyInputToFp8Kernel"

@@ -498,7 +498,9 @@ KERNEL_DENY = re.compile(
     r"unrolled_elementwise|reduce_kernel|distribution_|fill|indexSelect|index_put|"
     r"vectorized_layer_norm|CatArrayBatchedCopy|write_indices|cunn_|sort|radix|"
     r"mbtopk|gatherTopK|arange|triu_tril|masked_scale|_scatter_gather|"
-    r"bitonic|cumsum|tensor_kernel_scan|upsample)|aten::(fill_|copy_|zero_)|"
+    r"bitonic|cumsum|tensor_kernel_scan|upsample|multi_tensor_apply)|aten::(fill_|copy_|zero_)|"
+    # trtllm MoE tactic profiler + stream-delay glue: the autotuner, not the serving path
+    r"cutlass_kernels::populateRandomBufferKernel|cutlass_kernels::prepareFakeRouterBuffers|kernels::delayStreamKernel|"
     r"^void at::native::.*FillFunctor"
 )
 # wrapper identifiers to skip when extracting a meaningful kernel name

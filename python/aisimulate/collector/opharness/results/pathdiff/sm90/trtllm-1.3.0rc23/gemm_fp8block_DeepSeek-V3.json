@@ -48,7 +48,6 @@
  "serving_kernels_matched_in_collector": [
   "deep_gemm::fp8_gemm_kernel",
   "deep_gemm::fp8_gemm_kernel_swapAB",
-  "namespace",
   "tensorrt_llm::_v1::kernels::fp8_blockscale_gemm::scale_1x128_kernel"
  ],
  "collector_unmatched_kernels": [],

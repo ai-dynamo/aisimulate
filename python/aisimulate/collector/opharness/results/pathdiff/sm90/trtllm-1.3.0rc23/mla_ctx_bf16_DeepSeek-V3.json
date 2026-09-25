@@ -48,7 +48,6 @@
  "serving_kernels_matched_in_collector": [
   "fmha_v2_flash_attention_bf16_64_128_S_q_k_v_192x128_causal_tma_ws_sm90_kernel",
   "kernel_cutlass_kernel_flashinfernormkernelsrmsnormRMSNormKernel",
-  "namespace",
   "nvjet_sm90_tst_128x256_64x4_2x1_v_bz_coopA_TNN",
   "tensorrt_llm::_v1::kernels::applyMLARopeAndAssignQKVKernelOptContext",
   "tensorrt_llm::_v1::kernels::computeSeqAndPaddingOffsets",

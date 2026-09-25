@@ -33,6 +33,7 @@
  "collector_backends": [
   "cutlass",
   "deepgemm",
+  "torch",
   "trtllm_internal"
  ],
  "serving_backends": [
@@ -49,17 +50,15 @@
  "serving_kernels_matched_in_collector": [
   "deep_gemm::fp8_gemm_kernel",
   "deep_gemm::fp8_gemm_kernel_swapAB",
-  "namespace",
-  "operator",
   "tensorrt_llm::_v1::kernels::cutlass_kernels::blockExpertPrefixSumKernel",
   "tensorrt_llm::_v1::kernels::cutlass_kernels::doActivationKernel",
   "tensorrt_llm::_v1::kernels::cutlass_kernels::expandInputRowsKernel",
   "tensorrt_llm::_v1::kernels::cutlass_kernels::finalizeMoeRoutingKernel",
   "tensorrt_llm::_v1::kernels::cutlass_kernels::fusedBuildExpertMapsSortFirstTokenK",
-  "tensorrt_llm::_v1::kernels::cutlass_kernels::globalExpertPrefixSumKernel"
+  "tensorrt_llm::_v1::kernels::cutlass_kernels::globalExpertPrefixSumKernel",
+  "tensorrt_llm::_v1::kernels::cutlass_kernels::mergeExpertPrefixSumKernel",
+  "tensorrt_llm::_v1::kernels::fp8_blockscale_gemm::scale_1x128_kernel"
  ],
- "collector_unmatched_kernels": [
-  "tensorrt_llm::_v1::kernels::delayStreamKernel"
- ],
+ "collector_unmatched_kernels": [],
  "note": "subset semantics: the collector exercises ONE op; serving runs the whole model. 'diverged' = the collector executed a signal backend family serving never did."
 }

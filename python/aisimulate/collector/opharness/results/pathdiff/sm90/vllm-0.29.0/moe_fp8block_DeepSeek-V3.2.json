@@ -22,6 +22,7 @@
  },
  "collector_backends": [
   "sgl_kernel",
+  "torch",
   "triton_fused_moe",
   "vllm_kernel"
  ],
@@ -33,7 +34,6 @@
   "fa3",
   "flashmla",
   "sgl_kernel",
-  "torch",
   "triton_fused_moe",
   "vllm_kernel"
  ],
@@ -42,7 +42,6 @@
  "infra_family_name_matches": null,
  "serving_kernels_matched_in_collector": [
   "fused_moe_kernel",
-  "namespace",
   "per_token_group_quant_8bit_kernel",
   "vllm::act_and_mul_kernel",
   "vllm::moe::count_and_sort_expert_tokens_kernel",

@@ -35,7 +35,6 @@
   "flashmla",
   "sgl_kernel",
   "tilelang",
-  "torch",
   "vllm_kernel"
  ],
  "collector_only_signal": [],

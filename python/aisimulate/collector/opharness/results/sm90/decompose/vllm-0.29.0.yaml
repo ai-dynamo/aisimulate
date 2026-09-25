@@ -3,7 +3,7 @@ _meta:
   framework: vllm
   version: 0.29.0
   taxonomy: kernel_taxonomy_sm90.yaml
-  generated: '2026-09-25T12:28:39'
+  generated: '2026-09-25T12:35:42'
   summary:
     repos: 108
     repos_with_residue: 0
@@ -15126,10 +15126,6 @@ results:
         - flashinfer::sampling::RadixTopKMaskLogitsKernel_MultiCTA
         - flashinfer::sampling::TopPSamplingFromProbKernel
         - void at::native::vectorized_gather_kernel<16, long>
-        trtllm_internal:
-        - tensorrt_llm::kernels::cutlass_kernels::populateRandomBufferKernel
-        - tensorrt_llm::kernels::cutlass_kernels::prepareFakeRouterBuffers
-        - tensorrt_llm::kernels::delayStreamKernel
       kvcache:
         framework_native:
         - vllm::reshape_and_cache_flash_kernel
@@ -15173,7 +15169,7 @@ results:
     - attn:QuantFP8
     - attn:ReLUSquaredActivation
     coverage:
-      labeled: 202
+      labeled: 199
       residue: 0
   nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4:
     record: 1d7bbec5ef08

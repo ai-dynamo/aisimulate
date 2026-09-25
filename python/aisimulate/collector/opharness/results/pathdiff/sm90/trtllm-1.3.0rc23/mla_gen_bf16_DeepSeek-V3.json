@@ -49,9 +49,8 @@
   "cublasLt::splitKreduce_kernel",
   "flash::flash_fwd_splitkv_mla_combine_kernel",
   "flash::flash_fwd_splitkv_mla_kernel",
-  "get_mla_metadata_kernel(Mla_metadata_params)",
+  "get_mla_metadata_kernel",
   "kernel_cutlass_kernel_flashinfernormkernelsrmsnormRMSNormKernel",
-  "namespace",
   "nvjet_sm90_tst_128x8_64x12_1x1_h_bz_TNT",
   "nvjet_sm90_tst_128x8_64x12_2x1_v_bz_TNT",
   "tensorrt_llm::_v1::kernels::applyMLARopeAndAssignQKVKernelGeneration"

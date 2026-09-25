@@ -51,15 +51,13 @@
   "deep_gemm::smxx_clean_logits",
   "flashinfer::BatchQKApplyRotaryPosIdsCosSinCacheHeadParallelismKernel",
   "kernel_cutlass_kernel_flashinfernormkernelsrmsnormRMSNormKernel",
-  "namespace",
   "nvjet_sm90_tst_128x256_64x4_1x2_h_bz_coopA_TNN",
   "nvjet_sm90_tst_128x256_64x4_2x1_v_bz_coopA_TNN",
   "sm90::sparse_attn_fwd_kernel",
   "sm90_xmma_gemm_f32f32_tf32f32_f32_tn_n_tilesize64x64x32_warpgroupsize1x1x1_execu",
-  "tensorrt_llm::_v1::kernels"
+  "tensorrt_llm::_v1::kernels::applyMLARopeAppendPagedKVAssignQKernel",
+  "tensorrt_llm::_v1::kernels::convertReqIndexToGlobalKernel"
  ],
- "collector_unmatched_kernels": [
-  "sm90_xmma_gemm_f32f32_tf32f32_f32_tn_n_tilesize64x64x32_warpgroupsize1x1x1_execu"
- ],
+ "collector_unmatched_kernels": [],
  "note": "subset semantics: the collector exercises ONE op; serving runs the whole model. 'diverged' = the collector executed a signal backend family serving never did."
 }

@@ -34,6 +34,7 @@
  "collector_backends": [
   "cublas",
   "fa3",
+  "sgl_kernel",
   "triton"
  ],
  "serving_backends": [
@@ -54,9 +55,9 @@
   "_topk_index_partial_kernel",
   "alloc_decode_kernel",
   "alloc_extend_kernel",
+  "clamp_position_kernel",
   "cublasLt::splitKreduce_kernel",
-  "flash::prepare_varlen_num_blocks_kernel",
-  "nvjet_sm90_tst_128x8_64x12_2x1_v_bz_TNT"
+  "flash::prepare_varlen_num_blocks_kernel"
  ],
  "collector_unmatched_kernels": [
   "INVALID"

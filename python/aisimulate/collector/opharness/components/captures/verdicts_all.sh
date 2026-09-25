@@ -1,7 +1,7 @@
 #!/bin/bash
 # capture -> (verdict name, serving repo, kv, op_hint)
-cd "${AIS_PROBE_WORKSPACE:?set AIS_PROBE_WORKSPACE to the probe workspace}"
-export AIS_SM=${AIS_SM:-sm90}
+cd ${AIS_PROBE_WORKSPACE:-.}
+export AIS_PROBE_WORKSPACE=${AIS_PROBE_WORKSPACE:-.} AIS_SM=sm90
 PD=ais/python/aisimulate/collector/opharness/components/path_diff.py
 OUT=ais/python/aisimulate/collector/opharness/results/pathdiff/sm90/vllm-0.29.0
 run() { local cap=$1 name=$2 repo=$3 kv=$4 hint=$5 kvarg=(); [ -n "$kv" ] && kvarg=(--kv-dtype "$kv")

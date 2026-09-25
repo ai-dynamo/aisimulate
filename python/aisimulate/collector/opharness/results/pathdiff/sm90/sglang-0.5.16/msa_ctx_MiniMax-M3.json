@@ -33,6 +33,7 @@
  },
  "collector_backends": [
   "cublas",
+  "sgl_kernel",
   "triton"
  ],
  "serving_backends": [
@@ -51,8 +52,10 @@
   "_topk_index_kernel",
   "alloc_extend_kernel",
   "compute_position_kernel",
+  "fused_gemma_qknorm_rope_kernel",
   "nvjet_sm90_tst_128x256_64x4_2x1_v_bz_coopA_TNN",
   "nvjet_sm90_tst_320x128_64x3_1x2_h_bz_coopB_TNT",
+  "store_kv_index_kernel",
   "write_req_to_token_pool_triton"
  ],
  "collector_unmatched_kernels": [

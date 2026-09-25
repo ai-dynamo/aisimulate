@@ -31,10 +31,12 @@
   "candidates": 1
  },
  "collector_backends": [
+  "sgl_kernel",
   "triton"
  ],
  "serving_backends": [
   "cublas",
+  "sgl_kernel",
   "triton"
  ],
  "collector_only_signal": [],
