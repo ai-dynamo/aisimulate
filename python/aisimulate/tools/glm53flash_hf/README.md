@@ -120,14 +120,15 @@ relabel current controls as legacy. Genuine legacy controls retain the previous
 policy. Optional full-archive revalidation is an explicit call to
 `closed_history.require_publication_history` with local bundles.
 
-The canonical copy contains all 13 modules in `POLICY_MODULES`. The history
-helper pins its twelve sibling source files; the canonical/profile closure pins
+The canonical copy contains all 14 modules in `POLICY_MODULES`. The history
+helper pins its thirteen sibling source files; the canonical/profile closure pins
 the helper itself and every copied evidence file. These maintenance tools are
 source-distributed separately from installed native producers and analysis
 consumers. `MAINTENANCE_IDENTITY` retains the exact reviewed
-`fpm_cleanup_reconciliation_verified_local_v3` source-profile label and base revision
-`70af4fda516fa985e3068023582dde952282464c`; these identify the reviewed cluster
-guard follow-up, not unchanged 70af bytes or an installed consumer. Record the actual repository/tool revision separately.
+`fpm_historical_accounting_termination_v4` source-profile label and base revision
+`a558cebec1bedd3927cd125b04662ed4b2b4ec73`; these identify the historical
+accounting follow-up, not unchanged a558 bytes or an installed consumer. Record
+the actual repository/tool revision separately.
 Changes to a pinned sibling require review and a coherent new hash map.
 
 ## Cleanup-only reconciliation
@@ -164,7 +165,7 @@ checkpoint hashes, job, attempt, all log hashes/sizes, outcome
 SOLE_POST_COLLECTION_CLEANUP_FAILURE, and empty native_failures and
 unresolved_findings. The executor does not generate or infer that review.
 
-Proof contract `fpm_cleanup_reconciliation_v3` requires a fresh successful
+The live mode of proof contract `fpm_cleanup_reconciliation_v4` requires a fresh successful
 `scontrol --local show config` response with exactly the original ClusterName
 before any step query or cancellation. Subsequent step queries explicitly use
 `--local --clusters=ORIGINAL`, and cancellation uses `--clusters=ORIGINAL`.
@@ -184,7 +185,7 @@ An unknown, different, or ambiguous cluster, malformed step output, or failed
 command rejects before raw reads. Original allocation bytes, the fresh config
 response and every actual command remain in the proof and archive closure;
 offline validation rechecks this evidence without claiming a live cluster check.
-No actual v1/v2 reconciliation was produced; those proof objects are rejected. Ordinary
+No actual v1/v2/v3 reconciliation was produced; those proof objects are rejected. Ordinary
 legacy selection without reconciliation is unchanged. These CLI semantics follow
 [SchedMD scontrol](https://slurm.schedmd.com/scontrol.html),
 [squeue](https://slurm.schedmd.com/squeue.html) and
@@ -789,3 +790,63 @@ acceptance and dataset transport; the existing legacy integration test separatel
 uses the real dataset-manager API. Mixed original admission tests are in
 `test_glm53flash_external_control_sglang_mixed.py`. These tests do not admit any
 actual dataset or establish new GPU accuracy.
+
+### Explicit historical accounting mode
+
+When live-controller cleanup cannot run, a separately authorized request can
+select `termination_mode: historical-accounting`. It cannot also select a live
+`routing_mode`. There is no automatic fallback. The original seven references,
+terminal-log eligibility, complete native reader and immutable archive inventory
+remain mandatory. The distinct outcome `HISTORICAL_OWNED_RUN_TERMINATED` says only
+that the exact historical Slurm-managed run has positive terminal accounting
+records. It does not claim a live empty queue, current free GPUs, cancellation,
+native success, or permission to schedule work. ExitCode zero is not an
+acceptance criterion; the unchanged original native/log gates remain decisive.
+
+The additional `accounting` request object has `client` and `known_history`.
+`client.executable` and `client.config` each contain an absolute `path` and its
+pre-reviewed `sha256`. `known_history` is a normal task-relative
+`{path, sha256, bytes}` reference to a `fpm_accounting_known_step_history_v1`
+document. Its nonempty `captures` list contains `reference`, `command_pointer`,
+`time_pointer`, `timezone`, and `cluster`. References bind independent original
+capture JSON bytes. Pointers are lists of object keys/list indices locating the
+actual recorded command and epoch-nanosecond observation time; for example,
+`["rows", 0]`/`["observed_ns"]` or `["query"]`/`["before", "epoch_ns"]`.
+The command's original argv, return code and literal stdout/stderr (or original
+base64 plus SHA fields) are reparsed. No reconstructed row list is accepted.
+Both supported historical column formats are explicit in
+[accounting_termination.py](accounting_termination.py). At least one independent
+17-column capture must bind DBIndex and parent UID/Restarts0. Earlier 12-column
+captures may add known steps and preserve revised state/end history. Every
+capture remains embedded unchanged; historical terminal updates are never
+silently overwritten or treated as new native evidence.
+
+Fresh before/after captures use the pinned executable/config, exact original job
+and explicit cluster, `--duplicates`, and all 17 fields with UTC timestamps.
+There is no allocation-only or state filter. Installed version/helpformat are
+checked before each data query. Original cluster/UID/Submit/Start/DBIndex and
+Restarts0, batch/extern and all independently known steps must match; unknown,
+ambiguous, missing, nonterminal or truncated records fail. All returned steps
+must belong to that same database run and be terminal with valid End, including
+steps not bearing the collector's name. Parent End is not an upper bound on
+step End. The collector never interprets empty output as absence.
+
+The executor reads the actual original owner before and after each accounting
+capture and checks its canonical path, bytes and filesystem identity. Client
+files, configuration and effective environment must stay unchanged. Inherited
+SACCT_/SLURM_ filters/routes are removed; the pinned SLURM_CONF, UTC and standard
+time format are explicit. Original metadata/storage are checked before raw
+inventory/native replay and afterward. Complete accounting captures must bracket
+the full inventory → original native read → inventory interval and agree on
+all record fields/membership. A change, timeout, unsupported field or native
+failure preserves diagnostics and fails; it is never retried into acceptance.
+
+The same v4 verifier is mandatory in canonical selection, actual archive checks
+and portable offline history. Both captures, original independent history,
+original owner/metadata, exact inventory, native-reader identity and source
+closure remain inside the proof. Offline verification performs no new scheduler
+query. These are maintenance tools only; native producer/runtime bytes and
+ordinary legacy selections are unchanged. Original watchdog failures remain
+ineligible regardless of accounting state. The source follows the public
+[SchedMD sacct contract](https://slurm.schedmd.com/sacct.html); no Slurm source is
+copied or modified, and TEST_ONLY tests do not qualify actual originals.

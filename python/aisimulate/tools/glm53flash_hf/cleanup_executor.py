@@ -15,6 +15,8 @@ import json
 import os
 import shutil
 import stat
+import subprocess
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -53,6 +55,7 @@ def load_original(request):
         in (
             {"task_root", "attempt_directory", "references", "host_source"},
             {"task_root", "attempt_directory", "references", "host_source", "routing_mode"},
+            {"task_root", "attempt_directory", "references", "host_source", "termination_mode", "accounting"},
         ),
         "recovery request fields differ",
     )
@@ -62,7 +65,32 @@ def load_original(request):
         raw = checked(request["task_root"], ref["path"]).read_bytes()
         c.require(c.digest(raw) == ref["sha256"] and len(raw) == ref["bytes"], "original request member changed")
         docs[key] = c.embedded(raw)
-    return {**request, "documents": docs}
+    original = {**request, "documents": docs}
+    if "termination_mode" in request:
+        c.require(request["termination_mode"] == c.accounting.MODE, "unknown explicit termination mode")
+        evidence = request["accounting"]
+        c.require(set(evidence) == {"client", "known_history"}, "accounting request fields differ")
+
+        def load(ref):
+            c.file_ref(ref)
+            raw = checked(request["task_root"], ref["path"]).read_bytes()
+            c.require(c.digest(raw) == ref["sha256"] and len(raw) == ref["bytes"], "known accounting history changed")
+            return c.embedded(raw)
+
+        history = load(evidence["known_history"])
+        original["accounting"] = {
+            **evidence,
+            "history_document": history,
+            "capture_documents": [load(item["reference"]) for item in c.decode(history)["captures"]],
+        }
+    return original
+
+
+def original_request(original):
+    request = {key: value for key, value in original.items() if key != "documents"}
+    if "termination_mode" in request:
+        request["accounting"] = {k: original["accounting"][k] for k in ("client", "known_history")}
+    return request
 
 
 def storage(identity):
@@ -332,7 +360,119 @@ def native_original(identity, output):
     }
 
 
-def _reconcile(original, output, *, cleanup, native, scan):
+def capture_accounting(identity, output):
+    """One bounded read-only capture. No controller query, cancellation or retry."""
+    a = c.accounting
+    output = Path(output)
+    output.mkdir()
+    client = identity["accounting"]["client"]
+    a.validate_client(client)
+
+    def observed_file(path):
+        path = Path(path)
+        before = path.stat()
+        c.require(stat.S_ISREG(before.st_mode), "accounting regular file required")
+        resolved = str(path.resolve(strict=True))
+        raw = path.read_bytes()
+        after = path.stat()
+        fields = lambda s: {
+            "device": s.st_dev,
+            "inode": s.st_ino,
+            "size": s.st_size,
+            "mtime_ns": s.st_mtime_ns,
+            "ctime_ns": s.st_ctime_ns,
+        }
+        c.require(
+            fields(before) == fields(after) and str(path.resolve(strict=True)) == resolved,
+            "accounting file changed while reading",
+        )
+        return raw, {"path": str(path), "resolved_path": resolved, "sha256": c.digest(raw), "stat": fields(after)}
+
+    def environment():
+        # Do not preserve inherited sacct filters, time windows or alternate Slurm routes.
+        result = {k: v for k, v in os.environ.items() if not k.startswith(("SACCT_", "SLURM_"))}
+        result.update(TZ="UTC", SLURM_TIME_FORMAT="standard", SLURM_CONF=client["config"]["path"])
+        return result
+
+    def context():
+        import socket
+
+        _, executable = observed_file(client["executable"]["path"])
+        raw, config = observed_file(client["config"]["path"])
+        fields = {}
+        for line in raw.decode("utf-8").splitlines():
+            key, sep, value = line.split("#", 1)[0].partition("=")
+            if sep and key.strip() in {"ClusterName", "AccountingStorageHost"}:
+                c.require(key.strip() not in fields, "ambiguous accounting configuration")
+                fields[key.strip()] = value.strip()
+        env = environment()
+        result = {
+            "uid": os.getuid(),
+            "hostname": socket.gethostname(),
+            "executable": executable,
+            "config": config,
+            "configuration": fields,
+            "environment_sha256": c.digest(c.canonical(env)),
+            "explicit_environment": {k: env[k] for k in ("TZ", "SLURM_TIME_FORMAT", "SLURM_CONF")},
+        }
+        a.validate_context(result, identity)
+        return result
+
+    def owner():
+        relative = identity["owner_reference_path"]
+        path = checked(identity["task_root"], relative)
+        raw, result = observed_file(path)
+        result["path"] = str(Path(identity["task_root"]) / relative)
+        c.require(
+            c.digest(raw) == identity["original_owner_sha256"] and json.loads(raw) == identity["owner"],
+            "original owner changed",
+        )
+        return result
+
+    def command(argv, name):
+        actual = [client["executable"]["path"], *argv[1:]]
+        started = time.time_ns()
+        try:
+            result = subprocess.run(actual, env=environment(), capture_output=True, text=True, timeout=60, check=False)
+        except subprocess.TimeoutExpired as error:
+
+            def text(value):
+                return value.decode(errors="replace") if isinstance(value, bytes) else value or ""
+
+            write(
+                output / (name + "-failure.json"),
+                {"argv": actual, "timeout": True, "stdout": text(error.stdout), "stderr": text(error.stderr)},
+            )
+            raise
+        value = {
+            "argv": actual,
+            "returncode": result.returncode,
+            "stdout": result.stdout,
+            "stderr": result.stderr,
+            "started_ns": started,
+            "completed_ns": time.time_ns(),
+        }
+        write(output / (name + ".json"), value)
+        c.require(result.returncode == 0 and result.stderr == "", "accounting command failed")
+        return value
+
+    capture = {"contract": a.CAPTURE, "started_ns": time.time_ns()}
+    capture["context_before"] = context()
+    capture["owner_before"] = owner()
+    capture["version"] = command(["sacct", "--version"], "version")
+    capture["helpformat"] = command(["sacct", "--helpformat"], "helpformat")
+    fields = {field.split("%", 1)[0] for field in a.FIELDS.split(",")}
+    c.require(fields <= set(capture["helpformat"]["stdout"].split()), "installed accounting fields unsupported")
+    capture["query"] = command(a.query_argv(identity), "query")
+    capture["owner_after"] = owner()
+    capture["context_after"] = context()
+    capture["completed_ns"] = time.time_ns()
+    write(output / "capture.json", capture)
+    a.validate_capture(capture, identity, str(Path(identity["cell_directory"]).resolve(strict=True)))
+    return capture
+
+
+def _reconcile(original, output, *, cleanup, native, scan, accounting_capture=None):
     """Injection seam for TEST_ONLY tests; public reconcile wires real APIs."""
     output = Path(output)
     c.require(not output.exists(), "fresh reconciliation output required")
@@ -348,12 +488,23 @@ def _reconcile(original, output, *, cleanup, native, scan):
     output.mkdir(parents=True)
     write(output / "original-inputs.json", original)
     try:
-        request = {key: value for key, value in original.items() if key != "documents"}
+        request = original_request(original)
         c.require(load_original(request) == original, "original metadata changed before cleanup")
         before_storage = storage(identity)
-        observed = cleanup(identity, output)
-        c.validate_cleanup(observed, identity)
-        write(output / "cleanup.json", observed)
+        historical = identity.get("termination_mode") == c.accounting.MODE
+        if historical:
+            c.require(accounting_capture is not None, "explicit historical capture API missing")
+            first = accounting_capture(identity, output / "accounting-before")
+            c.accounting.validate_capture(first, identity, before_storage["canonical_cell"])
+            c.require(
+                storage(identity) == before_storage and load_original(request) == original,
+                "original changed before reparse",
+            )
+            reparse_start = time.time_ns()
+        else:
+            observed = cleanup(identity, output)
+            c.validate_cleanup(observed, identity)
+            write(output / "cleanup.json", observed)
         # Do not read giant raw files before verified disposal.
         before = scan(identity)
         c.require(
@@ -365,6 +516,26 @@ def _reconcile(original, output, *, cleanup, native, scan):
         c.require(after == before, "original artifacts changed during strict read")
         c.require(storage(identity) == before_storage, "original storage retargeted")
         c.require(load_original(request) == original, "original metadata changed during reconciliation")
+        if historical:
+            reparse_end = time.time_ns()
+            second = accounting_capture(identity, output / "accounting-after")
+            c.require(
+                storage(identity) == before_storage and load_original(request) == original,
+                "original changed after accounting",
+            )
+            observed = {
+                "mode": c.accounting.MODE,
+                "outcome": c.accounting.OUTCOME,
+                "job_id": identity["job"],
+                "step_name": identity["owner"]["step_name"],
+                "owner_sha256": identity["original_owner_sha256"],
+                "canonical_cell_directory": before_storage["canonical_cell"],
+                "before": first,
+                "after": second,
+                "reparse_window": {"started_ns": reparse_start, "completed_ns": reparse_end},
+            }
+            c.accounting.validate(observed, identity)
+            write(output / "historical-termination.json", observed)
         proof = {
             "contract": c.CONTRACT,
             "status": "COMPLETE_ORIGINAL_ATTEMPT_RECONCILED",
@@ -376,6 +547,7 @@ def _reconcile(original, output, *, cleanup, native, scan):
             "source": {
                 "eligibility_sha256": c.digest(Path(c.__file__).read_bytes()),
                 "executor_sha256": c.digest(Path(__file__).read_bytes()),
+                "accounting_sha256": c.digest(Path(c.accounting.__file__).read_bytes()),
             },
         }
         c.verify(proof)
@@ -398,7 +570,14 @@ def _reconcile(original, output, *, cleanup, native, scan):
 def reconcile(request, output):
     """Explicit observed reconciliation; never ordinary resume or native retry."""
     original = load_original(request)
-    return _reconcile(original, output, cleanup=cleanup_original, native=native_original, scan=inventory)
+    return _reconcile(
+        original,
+        output,
+        cleanup=cleanup_original,
+        native=native_original,
+        scan=inventory,
+        accounting_capture=capture_accounting,
+    )
 
 
 def main():
