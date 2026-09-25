@@ -125,7 +125,78 @@ impl Default for SamplingConfig {
 #[serde(rename_all = "snake_case")]
 pub enum RegressionFitKind {
     #[default]
+    #[serde(alias = "linear")]
     StandardizedNnls,
+    Spline,
+}
+
+/// Learned interior knots on each raw-feature axis. Coefficient fitting remains
+/// nonnegative least squares; these controls only schedule knot relocation.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct SplineFitConfig {
+    pub knots_per_axis: usize,
+    pub search: SplineSearchConfig,
+}
+
+impl Default for SplineFitConfig {
+    fn default() -> Self {
+        Self {
+            knots_per_axis: 2,
+            search: SplineSearchConfig::default(),
+        }
+    }
+}
+
+/// Counts are per workload store and advance on accepted observations, not
+/// prediction calls or insert/evict mutations. Tolerance is a fraction (0.05=5%).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum SplineSearchConfig {
+    Periodic {
+        #[serde(default = "default_spline_step")]
+        step: usize,
+    },
+    Adaptive {
+        #[serde(default = "default_spline_window")]
+        window: usize,
+        #[serde(default = "default_spline_trigger")]
+        trigger: usize,
+        #[serde(default = "default_spline_tolerance")]
+        tolerance: f64,
+        #[serde(default = "default_spline_absolute_tolerance")]
+        absolute_tolerance_ms: f64,
+        #[serde(default = "default_spline_step")]
+        cooldown: usize,
+    },
+}
+
+const fn default_spline_step() -> usize {
+    64
+}
+const fn default_spline_window() -> usize {
+    16
+}
+const fn default_spline_trigger() -> usize {
+    8
+}
+const fn default_spline_tolerance() -> f64 {
+    0.05
+}
+const fn default_spline_absolute_tolerance() -> f64 {
+    1.0
+}
+
+impl Default for SplineSearchConfig {
+    fn default() -> Self {
+        Self::Adaptive {
+            window: default_spline_window(),
+            trigger: default_spline_trigger(),
+            tolerance: default_spline_tolerance(),
+            absolute_tolerance_ms: default_spline_absolute_tolerance(),
+            cooldown: default_spline_step(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -137,6 +208,10 @@ pub struct RegressionFitConfig {
     /// actual evictions per workload store. The default `None` disables periodic
     /// refreshes; numerical recovery and batch-fit fallbacks remain enabled.
     pub rebuild_interval: Option<usize>,
+    /// Present only for spline fits. The canonical constructor and normalizer
+    /// resolve omitted spline controls before recording the configuration.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub spline: Option<SplineFitConfig>,
 }
 
 impl Default for RegressionFitConfig {
@@ -145,6 +220,7 @@ impl Default for RegressionFitConfig {
             kind: RegressionFitKind::StandardizedNnls,
             singular_ridge_scale: 1e-9,
             rebuild_interval: None,
+            spline: None,
         }
     }
 }
@@ -219,6 +295,15 @@ impl Default for CorrectionConfig {
 }
 
 impl EstimatorConfig {
+    pub(crate) fn resolve_defaults(&mut self) {
+        if self.fpm_regression.fit.kind == RegressionFitKind::Spline {
+            self.fpm_regression
+                .fit
+                .spline
+                .get_or_insert_with(SplineFitConfig::default);
+        }
+    }
+
     pub(crate) fn correction_options(&self) -> ForwardPassPerfOptions {
         let config = &self.correction;
         ForwardPassPerfOptions {
@@ -250,6 +335,7 @@ impl EstimatorConfig {
 
     pub(crate) fn validate(&self) -> Result<(), AicError> {
         validate_rebuild_interval(self.fpm_regression.fit.rebuild_interval)?;
+        self.validate_spline()?;
         crate::config::validate_fpm_parquet_path(
             self.fpm_interpolation.fpm_parquet_path.as_deref(),
             true,
@@ -264,6 +350,73 @@ impl EstimatorConfig {
         validate_options(&self.regression_options()).map_err(|error| {
             AicError::InvalidEngineConfig(format!("estimator_config.fpm_regression: {error}"))
         })
+    }
+
+    fn validate_spline(&self) -> Result<(), AicError> {
+        let regression = &self.fpm_regression;
+        let invalid = |field: &str, reason: &str| {
+            AicError::InvalidEngineConfig(format!(
+                "estimator_config.fpm_regression.{field} {reason}"
+            ))
+        };
+        if regression.fit.kind != RegressionFitKind::Spline {
+            return if regression.fit.spline.is_some() {
+                Err(invalid("fit.spline", "requires fit.kind='spline'"))
+            } else {
+                Ok(())
+            };
+        }
+        if regression.sampling.max_observations < 32 {
+            return Err(invalid(
+                "sampling.max_observations",
+                "must be at least 32 for spline fitting",
+            ));
+        }
+        let default_spline = SplineFitConfig::default();
+        let spline = regression.fit.spline.as_ref().unwrap_or(&default_spline);
+        if !matches!(spline.knots_per_axis, 2 | 3) {
+            return Err(invalid("fit.spline.knots_per_axis", "must be 2 or 3"));
+        }
+        match spline.search {
+            SplineSearchConfig::Periodic { step } => {
+                if step == 0 {
+                    return Err(invalid("fit.spline.search.step", "must be positive"));
+                }
+            }
+            SplineSearchConfig::Adaptive {
+                window,
+                trigger,
+                tolerance,
+                absolute_tolerance_ms,
+                cooldown,
+            } => {
+                if window == 0 {
+                    return Err(invalid("fit.spline.search.window", "must be positive"));
+                }
+                if trigger == 0 || trigger > window {
+                    return Err(invalid(
+                        "fit.spline.search.trigger",
+                        "must be positive and at most window",
+                    ));
+                }
+                if !tolerance.is_finite() || tolerance <= 0.0 {
+                    return Err(invalid(
+                        "fit.spline.search.tolerance",
+                        "must be finite and positive",
+                    ));
+                }
+                if !absolute_tolerance_ms.is_finite() || absolute_tolerance_ms < 0.0 {
+                    return Err(invalid(
+                        "fit.spline.search.absolute_tolerance_ms",
+                        "must be finite and nonnegative",
+                    ));
+                }
+                if cooldown == 0 {
+                    return Err(invalid("fit.spline.search.cooldown", "must be positive"));
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Convert legacy flat tuning options without changing their behavior.
@@ -320,6 +473,168 @@ pub(super) fn validate_rebuild_interval(interval: Option<usize>) -> Result<(), A
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn linear_default_and_alias_keep_existing_wire_contract() {
+        let expected = serde_json::json!({
+            "kind": "standardized_nnls", "singular_ridge_scale": 1e-9,
+            "rebuild_interval": null,
+        });
+        for input in [
+            "{}",
+            r#"{"kind":"linear"}"#,
+            r#"{"kind":"standardized_nnls"}"#,
+        ] {
+            let fit: RegressionFitConfig = serde_json::from_str(input).unwrap();
+            assert_eq!(fit, RegressionFitConfig::default());
+            assert_eq!(serde_json::to_value(fit).unwrap(), expected);
+        }
+    }
+
+    #[test]
+    fn spline_defaults_and_policy_specific_defaults_are_owned_by_rust() {
+        let mut config = EstimatorConfig::default();
+        config.fpm_regression.fit.kind = RegressionFitKind::Spline;
+        config.validate().unwrap();
+        config.resolve_defaults();
+        let expected = SplineFitConfig {
+            knots_per_axis: 2,
+            search: SplineSearchConfig::Adaptive {
+                window: 16,
+                trigger: 8,
+                tolerance: 0.05,
+                absolute_tolerance_ms: 1.0,
+                cooldown: 64,
+            },
+        };
+        assert_eq!(config.fpm_regression.fit.spline, Some(expected));
+        let encoded = serde_json::to_value(&config).unwrap();
+        assert_eq!(
+            serde_json::from_value::<EstimatorConfig>(encoded).unwrap(),
+            config
+        );
+        let periodic: SplineSearchConfig = serde_json::from_str(r#"{"kind":"periodic"}"#).unwrap();
+        assert_eq!(periodic, SplineSearchConfig::Periodic { step: 64 });
+        assert_eq!(
+            serde_json::from_str::<SplineSearchConfig>(r#"{"kind":"adaptive"}"#).unwrap(),
+            SplineSearchConfig::default(),
+        );
+    }
+
+    #[test]
+    fn spline_validation_rejects_incompatible_controls_and_small_capacity() {
+        let mut config = EstimatorConfig::default();
+        config.fpm_regression.fit.spline = Some(SplineFitConfig::default());
+        assert!(
+            config
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("fit.spline requires")
+        );
+        config.fpm_regression.fit.kind = RegressionFitKind::Spline;
+        config.fpm_regression.sampling.max_observations = 31;
+        assert!(
+            config
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("sampling.max_observations")
+        );
+        config.fpm_regression.sampling.max_observations = 32;
+        config.validate().unwrap();
+        for knots in [0, 1, 4, usize::MAX] {
+            config
+                .fpm_regression
+                .fit
+                .spline
+                .as_mut()
+                .unwrap()
+                .knots_per_axis = knots;
+            assert!(
+                config
+                    .validate()
+                    .unwrap_err()
+                    .to_string()
+                    .contains("fit.spline.knots_per_axis")
+            );
+        }
+        for knots in [2, 3] {
+            config
+                .fpm_regression
+                .fit
+                .spline
+                .as_mut()
+                .unwrap()
+                .knots_per_axis = knots;
+            config.validate().unwrap();
+        }
+    }
+
+    #[test]
+    fn spline_numeric_boundaries_are_validated_for_native_rust_callers() {
+        let mut config = EstimatorConfig::default();
+        config.fpm_regression.fit.kind = RegressionFitKind::Spline;
+        config.resolve_defaults();
+        for value in [0.0, -0.1, f64::INFINITY, f64::NAN] {
+            config.fpm_regression.fit.spline.as_mut().unwrap().search =
+                SplineSearchConfig::Adaptive {
+                    window: 16,
+                    trigger: 8,
+                    tolerance: value,
+                    absolute_tolerance_ms: 0.0,
+                    cooldown: 1,
+                };
+            assert!(
+                config
+                    .validate()
+                    .unwrap_err()
+                    .to_string()
+                    .contains("search.tolerance")
+            );
+        }
+        for value in [-1.0, f64::INFINITY, f64::NAN] {
+            config.fpm_regression.fit.spline.as_mut().unwrap().search =
+                SplineSearchConfig::Adaptive {
+                    window: 1,
+                    trigger: 1,
+                    tolerance: 0.05,
+                    absolute_tolerance_ms: value,
+                    cooldown: 1,
+                };
+            assert!(
+                config
+                    .validate()
+                    .unwrap_err()
+                    .to_string()
+                    .contains("search.absolute_tolerance_ms")
+            );
+        }
+        config.fpm_regression.fit.spline.as_mut().unwrap().search = SplineSearchConfig::Adaptive {
+            window: 1,
+            trigger: 1,
+            tolerance: 0.05,
+            absolute_tolerance_ms: 0.0,
+            cooldown: 1,
+        };
+        config.validate().unwrap();
+    }
+
+    #[test]
+    fn spline_search_rejects_unknown_and_other_policy_fields() {
+        for input in [
+            r#"{"kind":"periodic","window":16}"#,
+            r#"{"kind":"adaptive","step":64}"#,
+            r#"{"kind":"unknown"}"#,
+            r#"{"kind":"periodic","step":true}"#,
+            r#"{"kind":"adaptive","window":16.5}"#,
+        ] {
+            assert!(
+                serde_json::from_str::<SplineSearchConfig>(input).is_err(),
+                "{input}"
+            );
+        }
+    }
 
     #[test]
     fn rebuild_interval_defaults_and_explicit_null_survive_serde() {

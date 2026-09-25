@@ -33,6 +33,7 @@ areas:
       - python/aisimulate/
       - python/aisimulate/src/aisimulate/capacity.py
       - tests/test_aic.py
+      - tests/test_spline_estimator_config.py
   - label: sweeper
     github_team: "@ai-dynamo/aisimulate-sweeper-codeowners"
     path_globs:
@@ -177,6 +178,8 @@ shared:
   - glob: python/aisimulate/src/aisimulate/traffic.py
     owners: [replay, maintainers]
   - glob: tests/test_cli_config.py
+    owners: [replay, sweeper, forward-pass-engine, maintainers]
+  - glob: tests/test_spline_estimator_config.py
     owners: [replay, sweeper, forward-pass-engine, maintainers]
   - glob: tests/test_epd_cli.py
     owners: [replay, sweeper, forward-pass-engine, maintainers]

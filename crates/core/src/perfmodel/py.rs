@@ -1903,6 +1903,7 @@ impl PyForwardPassPerfModel {
     fn normalize_config(config_json: &str) -> PyResult<String> {
         let mut config = parse_forward_pass_config(config_json)?;
         config.resolve_prefill_graph_profile().map_err(aic_to_py)?;
+        config.estimator_config.resolve_defaults();
         config.validate().map_err(aic_to_py)?;
         serde_json::to_string(&config).map_err(|e| PyValueError::new_err(e.to_string()))
     }

@@ -350,6 +350,83 @@ mod tests {
     }
 
     #[test]
+    fn spline_types_defaults_and_custom_policies_survive_canonical_reload() {
+        use aisimulate_core::{RegressionFitKind, SplineFitConfig, SplineSearchConfig};
+
+        for spline in [
+            None,
+            Some(SplineFitConfig {
+                knots_per_axis: 3,
+                search: SplineSearchConfig::Periodic { step: 17 },
+            }),
+            Some(SplineFitConfig {
+                knots_per_axis: 2,
+                search: SplineSearchConfig::Adaptive {
+                    window: 9,
+                    trigger: 3,
+                    tolerance: 0.125,
+                    absolute_tolerance_ms: 0.25,
+                    cooldown: 11,
+                },
+            }),
+        ] {
+            let mut config = ForwardPassPerfModelConfig::new(
+                "test/model",
+                "test-system",
+                BackendKind::Vllm,
+                ForwardPassWorkerType::Aggregated,
+            );
+            config.estimation_mode = EstimationMode::FpmRegression;
+            config.estimator_config.fpm_regression.fit.kind = RegressionFitKind::Spline;
+            config.estimator_config.fpm_regression.fit.spline = spline.clone();
+            let model = ForwardPassPerfModel::best_available(config).unwrap();
+            let resolved = &model.provenance().unwrap().config;
+            assert_eq!(
+                resolved.estimator_config.fpm_regression.fit.spline,
+                Some(spline.unwrap_or_default())
+            );
+            let reloaded = ForwardPassPerfModel::best_available(resolved.clone()).unwrap();
+            assert_eq!(&reloaded.provenance().unwrap().config, resolved);
+            let stores = reloaded.regression_store_diagnostics();
+            assert_eq!(stores.len(), 4);
+            for store in stores {
+                assert!(!store.ready);
+                assert_eq!(store.retained_observations, 0);
+                let diagnostics = store.spline.expect("selected spline store diagnostics");
+                assert!(!diagnostics.initialized && !diagnostics.ready);
+                assert_eq!(diagnostics.accepted_observations, 0);
+                assert_eq!(diagnostics.knot_searches, 0);
+                assert_eq!(diagnostics.last_search_observation, None);
+            }
+        }
+    }
+
+    #[test]
+    fn invalid_spline_controls_fail_before_auto_or_allowed_fallback() {
+        use aisimulate_core::{
+            ForwardPassFallbackPolicy, RegressionFitKind, SplineFitConfig, SplineSearchConfig,
+        };
+        for mode in [EstimationMode::Auto, EstimationMode::FpmRegression] {
+            let mut config = ForwardPassPerfModelConfig::new(
+                "test/model",
+                "test-system",
+                BackendKind::Vllm,
+                ForwardPassWorkerType::Decode,
+            );
+            config.estimation_mode = mode;
+            config.fallback_policy = ForwardPassFallbackPolicy::Allow;
+            config.estimator_config.fpm_regression.fit.kind = RegressionFitKind::Spline;
+            config.estimator_config.fpm_regression.fit.spline = Some(SplineFitConfig {
+                search: SplineSearchConfig::Periodic { step: 0 },
+                ..SplineFitConfig::default()
+            });
+            let error = ForwardPassPerfModel::best_available(config).err().unwrap();
+            assert!(matches!(error, AicError::InvalidEngineConfig(_)));
+            assert!(error.to_string().contains("fit.spline.search.step"));
+        }
+    }
+
+    #[test]
     fn agentic_snapshot_preparation_and_execution_are_public() {
         use aisimulate_core::replay::loadgen::{
             AgenticGraphBuilder, AgenticHashIdScope, AgenticMooncakeHeader, AgenticMooncakeRow,
@@ -571,6 +648,11 @@ pub fn rebuild_replay_report_literals(
 }
 
 /// Detailed phase evidence is reachable through the canonical model.
-pub fn operation_diagnostics(model: &ForwardPassPerfModel) -> Result<Vec<aisimulate_core::perfmodel::engine::diagnostics::StaticOperationDiagnostics>, AicError> {
+pub fn operation_diagnostics(
+    model: &ForwardPassPerfModel,
+) -> Result<
+    Vec<aisimulate_core::perfmodel::engine::diagnostics::StaticOperationDiagnostics>,
+    AicError,
+> {
     model.static_phase_diagnostics(1, 128, 0, true)
 }

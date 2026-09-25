@@ -47,3 +47,4 @@ pub use model::{
     ForwardPassRegressionWorkloadKind, ForwardPassWorkerType,
 };
 pub use options::ForwardPassPerfOptions;
+pub use regression::ForwardPassSplineDiagnostics;

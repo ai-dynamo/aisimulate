@@ -7,16 +7,73 @@ SPDX-License-Identifier: Apache-2.0
 
 AISimulate updates its regression fit when a retained observation is inserted
 or evicted. It maintains small, centered sufficient statistics and solves the
-existing standardized, nonnegative linear regression from those statistics.
+default standardized, nonnegative linear regression from those statistics.
 The usual fitting path therefore does not scan the retained observations.
 Numerically ambiguous cases still use a fresh batch fit on the exact retained
 data.
 
-The model has two features and one fitted plane per workload store. Recursive
-updates make maintaining that plane cheaper; sample selection and the plane's
+The default linear model has two features and one fitted plane per workload
+store. Recursive updates make maintaining that plane cheaper; sample selection and the plane's
 ability to describe a workload remain separate concerns. Periodic statistics
 rebuilding is disabled by default (`None` in Rust/Python, `null` in JSON).
 Numerical recovery and conservative batch fallbacks remain enabled.
+
+The optional `fit.kind: spline` model learns two or three knots per feature axis.
+It uses the same feature extraction, workload stores, and retained observations.
+The plane equations and historical speed measurements below describe the linear
+model; the next section explains the spline's additional state.
+
+## Learned-knot spline regression
+
+The canonical configuration selects `fpm_regression.fit.kind: spline` and places
+its controls in `fpm_regression.fit.spline`. Rust supplies two knots per axis and
+adaptive searches with `window: 16`, `trigger: 8`, `tolerance: 0.05`,
+`absolute_tolerance_ms: 1.0`, and `cooldown: 64`. A periodic alternative is
+`search: {kind: periodic, step: 64}`. See the
+[configuration examples and validation rules](core-api.md#selecting-linear-or-spline-regression).
+
+The fit is a sum of two continuous piecewise-linear functions plus a free
+intercept. Nonnegative segment slopes allow the slope to decrease across a knot
+while keeping each feature's contribution monotone. There are no products of
+the two feature axes. Constant axes and axes with few distinct retained values
+use fewer knots. A knot search optimizes positions on the retained data; it does
+not require physical workload boundaries in advance.
+
+Each store owns one sampler shared by its spline and linear fallback. Both fits
+consume the same insertion and the actual eviction. Between knot searches,
+the spline updates sufficient statistics for its fixed basis and refits its
+coefficients. A search changes that basis and rebuilds its statistics from the
+retained samples. Numerical recovery and batch fallback remain available; knot
+searches are counted separately from fixed-basis rebuilds and batch fallbacks.
+Relocating knots resets the spline's fixed-basis mutation clock, while the shared
+linear fit keeps its existing statistics rebuild clock.
+
+Startup requires `max(32, min_observations)` accepted observations, with at least
+`min_observations` still retained. The default linear fit can serve after five
+observations when it has a usable load signal. With default minimums, periodic
+searches happen at accepted counts 32, 64, 128, and onward. Adaptive searches
+after the initial one require the cooldown and enough excessive errors in the
+latest window; they cannot occur before accepted count 96 with the defaults.
+Search clocks count accepted observations per store, unlike `rebuild_interval`,
+which counts insertion and eviction separately. Queries and rejected targets
+advance neither clock.
+
+An adaptive error compares the spline's raw, unclamped prediction before update
+with the new observed latency. It is excessive if its magnitude is greater than
+`max(absolute_tolerance_ms, tolerance * observed_ms)`. The monitor uses the spline
+prediction even outside the retained domain and clears its window after every
+search. This prevents the serving guard from hiding a spline's poor extrapolation
+from the search policy. A full window is not required, and the observation that
+satisfies the cooldown need not itself have an excessive error if the rolling
+count still meets the trigger.
+
+Serving uses the spline within the current retained raw-feature bounding box
+and the shared linear fit outside it. An unready spline also falls back to that
+linear fit. Neither path borrows another workload store's training data. Both
+paths retain the positive latency floor. Per-store diagnostics expose spline
+initialization, readiness, accepted count, knot searches, last search count,
+numerical rebuilds, and batch fallbacks; the linear-only diagnostic shape is
+unchanged. Configuration serialization records controls, not trained state.
 
 ## What one store learns
 
@@ -490,6 +547,101 @@ Each case uses 9,216 unique source row IDs for warmup and its measured tail.
 The shuffle and repeated trials are a timing protocol; they do not measure
 chronological adaptation or held-out prediction accuracy.
 
+## Production spline validation (2026-09-25)
+
+A fresh release replay used the production regression and retention code on all
+15 previously tested local dataset prefixes: 163,540 incoming observations.
+Each workload store retained at most 64 samples in a 4-by-4 log-coordinate grid,
+with minimum observation count 5 and periodic statistics rebuilding disabled.
+Spline searches started at observation 32. Periodic used step 64; adaptive used
+16/8/5%, a 1 ms absolute floor, and cooldown 64. Both knot counts were tested.
+
+These are chronological predictions before updates, scored after the first 64
+accepted observations per store. Of 161,223 eligible observations, 151,600 had a
+prediction from every method, including the old linear baseline. The MAPE table
+uses exactly those common rows; missing predictions are not assigned an error
+or silently treated as correct. Coverage is reported separately below.
+
+| Dataset / hardware / backend / parallelism | Linear | Periodic, 2 knots | Adaptive, 2 knots | Periodic, 3 knots | Adaptive, 3 knots | Common / eligible rows |
+|---|---:|---:|---:|---:|---:|---:|
+| MiniMax-M2.7 / b200_sxm / vllm / tep4 | 65.8546% | 27.6780% | 27.3617% | 26.6917% | 28.1756% | 7,492 / 15,862 |
+| MiniMax-M2.7 / h200_sxm / vllm / pure_tp4 | 0.8712% | 5.3100% | 1.6323% | 0.7505% | 5.2076% | 15,819 / 15,819 |
+| MiniMax-M2.7 / h200_sxm / vllm / tep4 | 19.4826% | 12.1838% | 12.2066% | 9.6094% | 8.5345% | 190 / 190 |
+| DeepSeek-V4-Flash-0731 / b200_sxm / vllm / dep4 | 24.7329% | 9.7790% | 8.1941% | 11.5398% | 8.8610% | 1,100 / 1,100 |
+| DeepSeek-V4-Flash-0731 / b200_sxm / vllm / tep4 | 19.4820% | 6.6720% | 7.7206% | 6.1010% | 13.7575% | 1,112 / 1,112 |
+| DeepSeek-V4-Pro / b200_sxm / vllm / dep8 | 4.7521% | 4.5773% | 4.5888% | 4.4866% | 4.5365% | 15,750 / 15,808 |
+| DeepSeek-V4-Pro / b300_sxm / sglang / dep8 | 2.6890% | 2.0163% | 2.1057% | 2.0827% | 2.0763% | 15,872 / 15,872 |
+| DeepSeek-V4-Pro / gb300 / vllm / dep8 | 0.1628% | 0.1586% | 0.1620% | 0.1624% | 0.1583% | 15,305 / 15,936 |
+| DeepSeek-V4-Pro / gb300 / vllm / tep8 | 0.1340% | 0.1243% | 0.1251% | 0.1238% | 0.1297% | 15,936 / 15,936 |
+| Kimi-K3 / gb300 / vllm / tep8 | 2.3199% | 1.4620% | 1.5619% | 1.4595% | 1.4704% | 15,785 / 15,803 |
+| GLM-5.2-NVFP4 / b200_sxm / sglang / pure-tp8 | 0.6316% | 0.5999% | 0.6264% | 0.5994% | 0.6232% | 15,371 / 15,872 |
+| GLM-5.2-NVFP4 / b200_sxm / vllm / dep8 | 11.3469% | 6.4263% | 6.5370% | 6.1616% | 4.8837% | 164 / 164 |
+| GLM-5.2-NVFP4 / b200_sxm / vllm / tep8 | 14.7343% | 6.9015% | 7.6899% | 6.4453% | 7.8456% | 146 / 146 |
+| GLM-5.2-NVFP4 / gb200 / vllm / dep16 | 2.3195% | 1.7002% | 1.8485% | 1.6669% | 1.7121% | 15,702 / 15,747 |
+| MiniMax-M3-NVFP4 / b200_sxm / vllm / pure-tp4 | 4.0131% | 3.8388% | 4.0899% | 3.8553% | 4.0748% | 15,856 / 15,856 |
+| Equal-dataset mean | 11.5684% | 5.9619% | 5.7634% | 5.4490% | 6.1364% | 15 datasets |
+| Observation-weighted MAPE | 5.4900% | 3.5771% | 3.2405% | 3.0530% | 3.6627% | 151,600 rows |
+
+On each method's **own available rows**, errors can be much larger. The table
+below includes those forecasts and coverage; its error columns use different
+cohorts and are not paired accuracy comparisons.
+
+| Method | Available / 161,223 eligible | Own-row mean dataset MAPE | Own-row pooled MAPE |
+|---|---:|---:|---:|
+| Previous-commit linear | 151,814 | 13.8352% | 7.4253% |
+| Linear | 152,088 | 11.7526% | 5.6156% |
+| Periodic, 2 knots | 159,201 | 55.5054% | 72.5858% |
+| Adaptive, 2 knots | 158,982 | 55.9513% | 74.0243% |
+| Periodic, 3 knots | 158,519 | 51.1936% | 65.5719% |
+| Adaptive, 3 knots | 159,036 | 57.6445% | 76.5480% |
+
+The B200 MiniMax-M2.7 TEP4 case is a serious failure regime: periodic and adaptive
+two-knot fits have **770.8220% and 780.1663% MAPE** on their own available rows,
+respectively. Linear has 68.6163% MAPE on its smaller available cohort. Only
+7,492 of this case's 15,862 eligible rows are common to all methods. The lower
+common-row errors therefore do not establish accurate predictions on the extra
+rows served by spline. A retained-feature bounding box cannot guarantee accuracy
+for every workload inside it.
+
+Gains also vary on fully covered cases: the H200 MiniMax-M2.7 TP4 prefix favors
+linear over either two-knot policy. These previously inspected prefixes are
+descriptive validation data, not an untouched holdout. Linear remains the default.
+
+The production sampler keeps its existing randomized `HashMap` tie behavior.
+Each method used an independent sampler realization. The previous-commit linear
+baseline had 11.6124% equal-dataset MAPE on the common cohort, versus 11.5684% for
+the new linear arm; the linear fitting, recursive update, sampling, and options
+code is unchanged. Small differences between those replays reflect retention
+and numerical traversal variation, not a changed linear objective. These results
+also differ from the earlier research harness, which used different retention
+and linear-update behavior.
+
+Release timing used Rust 1.97.1 on macOS 26.6.2/arm64. Seven alternating
+measured pairs per case followed a warmup pair, with at least 30 ms per side.
+Each number below is an input-row-weighted mean of per-case trial medians.
+
+| Candidate | Paired baseline | Baseline µs/input | Candidate µs/input | Candidate / baseline cost |
+|---|---|---:|---:|---:|
+| Linear | Previous-commit linear | 1.5777 | 1.5802 | 1.002× |
+| Periodic, 2 knots | Linear | 1.5518 | 8.0693 | 5.200× |
+| Adaptive, 2 knots | Linear | 1.5937 | 3.9200 | 2.460× |
+| Periodic, 3 knots | Linear | 1.5670 | 11.5443 | 7.367× |
+| Adaptive, 3 knots | Linear | 1.5684 | 4.9992 | 3.187× |
+
+The linear comparison is against commit `2bd9966d282f252a147a19cef3b0da34dbc8855e`.
+Its weighted cost changed by +0.159%; no individual dataset exceeded a 10%
+slowdown. Timing thresholds are not CI assertions. Costs include startup,
+raw-feature validation, prediction, range guards, sample retention, coefficient
+updates, knot searches, and numerical recovery. They exclude FPM parsing/feature
+extraction, Python/FFI transport, full-engine overhead, I/O, diagnostic
+serialization, and final destruction. These are production store costs, not
+end-to-end serving latency.
+
+The local `work/spline_production_20260925/` artifacts record the input/source/
+binary hashes, exact forecasts, MAPE/RMSE and coverage by dataset and interval,
+search/recovery diagnostics, and the release timing protocol. Research artifacts
+are intentionally excluded from the source commit.
+
 ## Source map and validation anchors
 
 | Source | Responsibility |
@@ -498,6 +650,9 @@ chronological adaptation or held-out prediction accuracy.
 | [samples.rs](../crates/core/src/perfmodel/fpm/samples.rs) | Retention grid and `SampleInsertion` carrying the actual eviction |
 | [regression.rs](../crates/core/src/perfmodel/fpm/regression.rs) | `BucketedRegression`, original batch fit, small linear solvers, prediction floor |
 | [regression/recursive.rs](../crates/core/src/perfmodel/fpm/regression/recursive.rs) | Centered updates, constrained fit from statistics, guards, rebuild clock |
+| [regression/spline.rs](../crates/core/src/perfmodel/fpm/regression/spline.rs) | Shared retention, knot-search policies, range guard, spline diagnostics |
+| [regression/spline/fit.rs](../crates/core/src/perfmodel/fpm/regression/spline/fit.rs) | Additive basis, nonnegative segment slopes, learned knot positions |
+| [regression/spline/recursive.rs](../crates/core/src/perfmodel/fpm/regression/spline/recursive.rs) | Fixed-basis statistics, coefficient updates, numerical recovery |
 | [estimator.rs](../crates/core/src/perfmodel/fpm/estimator.rs) | Rust-owned `RegressionFitConfig` defaults and validation |
 
 Tests compare recursive and batch fits on identical retained rows, including

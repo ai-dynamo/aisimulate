@@ -18,9 +18,10 @@ use crate::{AicError, ForwardPassMetrics};
 
 use super::config::{EstimationMode, ForwardPassFallbackPolicy, ForwardPassPerfModelConfig};
 use super::correction::CorrectionBuckets;
+use super::estimator::RegressionFitConfig;
 use super::metrics::validate_forward_pass_metrics;
 use super::options::{ForwardPassPerfOptions, validate_regression_options};
-use super::regression::BucketedRegression;
+use super::regression::{ForwardPassSplineDiagnostics, RegressionStore};
 use super::samples::{AxisRange, StoreStats, WithOptions};
 
 /// Current readiness and tuning state for a `ForwardPassPerfModel`.
@@ -120,18 +121,21 @@ pub struct ForwardPassRegressionStoreDiagnostics {
     /// Whether this store has a usable fit, not merely enough samples.
     pub ready: bool,
     pub retained_observations: usize,
+    /// Spline component state; overall readiness may come from its linear arm.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spline: Option<ForwardPassSplineDiagnostics>,
 }
 
 #[derive(Clone, Debug)]
 struct RegressionStores {
-    stores: Vec<(ForwardPassRegressionWorkloadKind, BucketedRegression)>,
+    stores: Vec<(ForwardPassRegressionWorkloadKind, RegressionStore)>,
 }
 
 impl RegressionStores {
     fn new(
         worker_type: ForwardPassWorkerType,
         options: &ForwardPassPerfOptions,
-        rebuild_interval: Option<usize>,
+        fit: &RegressionFitConfig,
     ) -> Self {
         use ForwardPassRegressionWorkloadKind::*;
         let kinds: &[ForwardPassRegressionWorkloadKind] = match worker_type {
@@ -147,12 +151,12 @@ impl RegressionStores {
         Self {
             stores: kinds
                 .iter()
-                .map(|kind| (*kind, BucketedRegression::new(options, rebuild_interval)))
+                .map(|kind| (*kind, RegressionStore::new(options, fit)))
                 .collect(),
         }
     }
 
-    fn store(&self, workload_kind: ForwardPassRegressionWorkloadKind) -> &BucketedRegression {
+    fn store(&self, workload_kind: ForwardPassRegressionWorkloadKind) -> &RegressionStore {
         &self
             .stores
             .iter()
@@ -164,7 +168,7 @@ impl RegressionStores {
     fn store_mut(
         &mut self,
         workload_kind: ForwardPassRegressionWorkloadKind,
-    ) -> &mut BucketedRegression {
+    ) -> &mut RegressionStore {
         &mut self
             .stores
             .iter_mut()
@@ -191,6 +195,7 @@ impl RegressionStores {
                 workload_kind: *kind,
                 ready: store.is_ready(),
                 retained_observations: store.observation_count(),
+                spline: store.spline_diagnostics(),
             })
             .collect()
     }
@@ -295,14 +300,14 @@ impl ForwardPassPerfModel {
     pub(crate) fn from_regression(
         worker_type: ForwardPassWorkerType,
         options: ForwardPassPerfOptions,
-        rebuild_interval: Option<usize>,
+        fit: &RegressionFitConfig,
     ) -> Result<Self, AicError> {
         validate_regression_options(&options)?;
-        super::estimator::validate_rebuild_interval(rebuild_interval)?;
+        super::estimator::validate_rebuild_interval(fit.rebuild_interval)?;
         Ok(Self {
             mode: ForwardPassPerfMode::Regression {
                 worker_type,
-                regression: RegressionStores::new(worker_type, &options, rebuild_interval),
+                regression: RegressionStores::new(worker_type, &options, fit),
             },
             options,
             last_warning: None,
@@ -316,6 +321,7 @@ impl ForwardPassPerfModel {
     /// A regression model may be constructed before it has enough observations.
     pub fn best_available(mut config: ForwardPassPerfModelConfig) -> Result<Self, AicError> {
         config.resolve_prefill_graph_profile()?;
+        config.estimator_config.resolve_defaults();
         config.validate()?;
         if let Some(path) = config
             .estimator_config
@@ -354,7 +360,7 @@ impl ForwardPassPerfModel {
                 let mut model = Self::from_regression(
                     config.worker_type,
                     options,
-                    config.estimator_config.fpm_regression.fit.rebuild_interval,
+                    &config.estimator_config.fpm_regression.fit,
                 )?;
                 let mut resolved = config.clone();
                 resolved.estimation_mode = mode;
@@ -1178,10 +1184,82 @@ mod rebuild_tests {
     use ForwardPassRegressionWorkloadKind::*;
 
     #[test]
+    fn spline_workload_stores_and_clones_have_independent_search_clocks() {
+        use super::super::estimator::{RegressionFitKind, SplineFitConfig, SplineSearchConfig};
+        let fit = RegressionFitConfig {
+            kind: RegressionFitKind::Spline,
+            spline: Some(SplineFitConfig {
+                search: SplineSearchConfig::Periodic { step: 64 },
+                ..SplineFitConfig::default()
+            }),
+            ..RegressionFitConfig::default()
+        };
+        let mut stores = RegressionStores::new(
+            ForwardPassWorkerType::Aggregated,
+            &ForwardPassPerfOptions::default(),
+            &fit,
+        );
+        // Analytic one-axis plane: y=3+2*x. Other workload stores remain cold.
+        for i in 1..=32 {
+            assert!(
+                stores
+                    .store_mut(PurePrefill)
+                    .add_observation([i as f64, 1.0], 3.0 + 2.0 * i as f64)
+            );
+        }
+        let mut cloned = stores.clone();
+        for i in 33..=64 {
+            assert!(
+                stores
+                    .store_mut(PurePrefill)
+                    .add_observation([i as f64, 1.0], 3.0 + 2.0 * i as f64)
+            );
+        }
+        assert!(
+            cloned
+                .store_mut(PureDecode)
+                .add_observation([1.0, 1.0], 5.0)
+        );
+        let original = stores.diagnostics();
+        let copy = cloned.diagnostics();
+        let find = |items: &[ForwardPassRegressionStoreDiagnostics], kind| {
+            items
+                .iter()
+                .find(|store| store.workload_kind == kind)
+                .unwrap()
+                .spline
+                .clone()
+                .unwrap()
+        };
+        assert_eq!(
+            find(&original, PurePrefill).last_search_observation,
+            Some(64)
+        );
+        assert_eq!(find(&original, PurePrefill).knot_searches, 2);
+        assert_eq!(find(&copy, PurePrefill).last_search_observation, Some(32));
+        assert_eq!(find(&copy, PurePrefill).knot_searches, 1);
+        assert_eq!(find(&original, PureDecode).accepted_observations, 0);
+        assert_eq!(find(&copy, PureDecode).accepted_observations, 1);
+        assert!(
+            !original
+                .iter()
+                .find(|store| store.workload_kind == CrossRankAggregated)
+                .unwrap()
+                .ready
+        );
+    }
+
+    #[test]
     fn workload_stores_and_clones_have_independent_rebuild_clocks() {
         let options = ForwardPassPerfOptions::default();
-        let mut stores =
-            RegressionStores::new(ForwardPassWorkerType::Aggregated, &options, Some(3));
+        let mut stores = RegressionStores::new(
+            ForwardPassWorkerType::Aggregated,
+            &options,
+            &RegressionFitConfig {
+                rebuild_interval: Some(3),
+                ..RegressionFitConfig::default()
+            },
+        );
         assert!(
             stores
                 .store_mut(PurePrefill)
@@ -1225,7 +1303,7 @@ mod rebuild_tests {
         let mut stores = RegressionStores::new(
             ForwardPassWorkerType::Aggregated,
             &ForwardPassPerfOptions::default(),
-            super::super::estimator::RegressionFitConfig::default().rebuild_interval,
+            &RegressionFitConfig::default(),
         );
         // Constant features avoid fit work without numerical damage. A change
         // back to a 4096-operation default would reset each clock at 4096.

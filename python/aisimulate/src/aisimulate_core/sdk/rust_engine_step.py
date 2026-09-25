@@ -109,6 +109,16 @@ class ForwardPassPerfModelConfig:
     statistics rebuilding. Omitting it uses the Rust default of ``None``;
     numerical recovery and batch fallbacks remain enabled. An explicit
     positive interval, such as 4096, opts into periodic rebuilding.
+
+    ``fit.kind`` defaults to ``"standardized_nnls"`` (alias ``"linear"``).
+    Set ``{"fpm_regression": {"fit": {"kind": "spline"}}}`` to use learned
+    piecewise-linear fits. Rust fills ``fit.spline`` with two knots per axis
+    and adaptive search defaults: window 16, trigger 8, relative tolerance
+    0.05, absolute tolerance 1 ms, and cooldown 64 accepted observations.
+    For periodic searches, supply ``fit.spline.search`` as
+    ``{"kind": "periodic", "step": 64}``. These controls do not change
+    ``estimation_mode`` selection: request ``"fpm_regression"`` explicitly
+    to require regression.
     """
 
     model: str
@@ -237,6 +247,13 @@ class RustForwardPassPerfModel:
     counter to zero. The Rust default is ``None``, which disables only scheduled
     rebuilds, preserving numerical recovery and batch fallbacks. Set a positive
     interval, such as 4096 mutations, to enable scheduled rebuilds.
+
+    The default linear fit is unchanged. ``fit.kind="spline"`` adds learned
+    knots and a separate accepted-observation search clock per store. Spline
+    coefficients update between searches; a knot search rebuilds their basis.
+    The linear fit uses the same retained samples and supplies predictions
+    during spline startup or outside the retained feature bounds. Saving the
+    resolved configuration preserves settings, not samples or learned state.
 
     Queued request fields are accepted for schema compatibility but ignored by
     this AIC forward-pass model. ``estimate_forward_pass_time_ms()`` treats FPM
@@ -376,6 +393,16 @@ class RustForwardPassPerfModel:
         order: ``pure_decode``, ``contains_locally_mixed``,
         ``cross_rank_aggregated``, ``pure_prefill``. Dedicated models return
         their single store; native AIC models return an empty list.
+
+        Only spline stores add ``spline`` with ``initialized``, ``ready``,
+        ``accepted_observations``, ``knot_searches``,
+        ``last_search_observation``, ``numerical_rebuilds``, and
+        ``batch_fallbacks``. Store readiness includes the shared linear fit;
+        spline readiness can therefore be false while the store is ready.
+        The search clock counts accepted observations, separately from the
+        insertion/eviction mutation clock for statistics rebuilding.
+        ``numerical_rebuilds`` includes scheduled and recovery rebuilds within
+        fixed-knot epochs, excluding initialization at knot searches.
         """
         return json.loads(self._inner.regression_store_diagnostics())
 

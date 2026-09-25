@@ -173,7 +173,7 @@ fn regression_model(
     ForwardPassPerfModel::from_regression(
         worker_type,
         options,
-        super::estimator::RegressionFitConfig::default().rebuild_interval,
+        &super::estimator::RegressionFitConfig::default(),
     )
 }
 

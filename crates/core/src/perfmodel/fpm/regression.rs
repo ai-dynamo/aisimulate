@@ -7,11 +7,96 @@
 //! global FFN/MoE work. Samples are retained using `log1p`-transformed bucket
 //! coordinates, while fitting and prediction use standardized raw features.
 
+use serde::{Deserialize, Serialize};
+
+use super::estimator::{RegressionFitConfig, RegressionFitKind};
 use super::options::ForwardPassPerfOptions;
 use super::samples::{BucketedSamples, SampleInsertion, StoreStats};
 
 mod recursive;
+mod spline;
 use recursive::RecursiveFit;
+
+/// Per-store spline state. Readiness describes the spline component; a store
+/// can already serve its linear fallback while this component is warming up.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ForwardPassSplineDiagnostics {
+    pub initialized: bool,
+    pub ready: bool,
+    pub accepted_observations: u64,
+    pub knot_searches: u64,
+    pub last_search_observation: Option<u64>,
+    /// Sufficient-statistic reconstructions between knot searches, including
+    /// configured periodic rebuilds and numerical recovery.
+    pub numerical_rebuilds: u64,
+    pub batch_fallbacks: u64,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) enum RegressionStore {
+    Linear(BucketedRegression),
+    Spline(Box<spline::BucketedSpline>),
+}
+
+impl RegressionStore {
+    pub(crate) fn new(options: &ForwardPassPerfOptions, fit: &RegressionFitConfig) -> Self {
+        match fit.kind {
+            RegressionFitKind::StandardizedNnls => {
+                Self::Linear(BucketedRegression::new(options, fit.rebuild_interval))
+            }
+            RegressionFitKind::Spline => Self::Spline(Box::new(spline::BucketedSpline::new(
+                options,
+                fit.spline.clone().unwrap_or_default(),
+                fit.rebuild_interval,
+            ))),
+        }
+    }
+
+    pub(crate) fn add_observation(&mut self, raw_x: [f64; 2], observed_ms: f64) -> bool {
+        match self {
+            Self::Linear(store) => store.add_observation(raw_x, observed_ms),
+            Self::Spline(store) => store.add_observation(raw_x, observed_ms),
+        }
+    }
+
+    pub(crate) fn predict(&self, raw_x: &[f64; 2]) -> Option<f64> {
+        match self {
+            Self::Linear(store) => store.predict(raw_x),
+            Self::Spline(store) => store.predict(raw_x),
+        }
+    }
+
+    pub(crate) fn spline_diagnostics(&self) -> Option<ForwardPassSplineDiagnostics> {
+        match self {
+            Self::Linear(_) => None,
+            Self::Spline(store) => Some(store.diagnostics()),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn mutations_since_rebuild(&self) -> usize {
+        match self {
+            Self::Linear(store) => store.mutations_since_rebuild(),
+            Self::Spline(store) => store.mutations_since_rebuild(),
+        }
+    }
+}
+
+impl StoreStats for RegressionStore {
+    fn observation_count(&self) -> usize {
+        match self {
+            Self::Linear(store) => store.observation_count(),
+            Self::Spline(store) => store.observation_count(),
+        }
+    }
+
+    fn is_ready(&self) -> bool {
+        match self {
+            Self::Linear(store) => store.is_ready(),
+            Self::Spline(store) => store.is_ready(),
+        }
+    }
+}
 
 const FEATURE_DIMENSION: usize = 2;
 const INACTIVE_SCALE_RELATIVE_TOLERANCE: f64 = 1e-12;
