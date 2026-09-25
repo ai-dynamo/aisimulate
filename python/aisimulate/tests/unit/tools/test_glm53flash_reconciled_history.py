@@ -23,10 +23,15 @@ class ReconciledHistoryTests(unittest.TestCase):
         self.addCleanup(self.fixture.doCleanups)
         self.b = self.fixture
 
-    def reconcile_one(self, backend="vllm"):
+    def reconcile_one(self, backend="vllm", *, accounting=False):
         ledger = self.b.ledgers[backend]
         old = ledger["attempts"][0]
-        f = Fixture(
+        factory = Fixture
+        if accounting:
+            from .test_glm53flash_accounting_termination import AccountingFixture
+
+            factory = AccountingFixture
+        f = factory(
             self.b.source,
             backend=backend,
             job=old["job"],
@@ -46,6 +51,35 @@ class ReconciledHistoryTests(unittest.TestCase):
         path.write_text(json.dumps(ledger))
         self.b.inputs[backend]["ledger"] = base.h.reference(path)
         return f, output, proof
+
+    def test_historical_accounting_real_archive_then_offline_requires_both_captures(self):
+        f, _, _ = self.reconcile_one(accounting=True)
+        self.reconcile_one("sglang", accounting=True)
+        self.b.prepare()
+        for path in set(self.b.bundles.values()):
+            shutil.rmtree(path)
+        shutil.rmtree(self.b.source)
+        shutil.rmtree(self.b.root / "bound")
+        result = base.p.verify_portable_history(
+            self.b.portable, self.b.entry, self.b.records, expected_stage_sha256="a" * 64, archive=base.archive
+        )
+        self.assertEqual(result["state"], "PORTABLE_METADATA_HISTORY_PASS_NO_FRESH_TAR_VERIFICATION")
+        self.assertEqual(self.b.ledgers["vllm"]["attempts"][0]["terminal_state"], "COLLECTION_FAILED_PRESERVED")
+
+    def test_offline_rehashed_historical_proof_cannot_omit_after_capture(self):
+        f, _, _ = self.reconcile_one(accounting=True)
+        _, history = self.b.make_archive()
+        snapshot = copy.deepcopy(history["snapshot"])
+        proof = base.h._decoded(snapshot["reconciliations"][f.cid])
+        proof["cleanup"].pop("after")
+        record = base.h._record(json.dumps(proof).encode())
+        snapshot["reconciliations"][f.cid] = record
+        snapshot["ledger"]["selections"][f.cid]["reconciliation"].update({k: record[k] for k in ("sha256", "bytes")})
+        ledger_record = base.h._record(json.dumps(snapshot["ledger"]).encode())
+        snapshot["input_bytes"]["ledger"] = ledger_record
+        snapshot["inputs"]["ledger"].update({k: ledger_record[k] for k in ("sha256", "bytes")})
+        with self.assertRaisesRegex(ValueError, "termination proof fields"):
+            base.h._validate_snapshot(snapshot)
 
     def test_reconciled_failed_history_real_tar_then_offline_without_originals(self):
         f, _, _ = self.reconcile_one()
