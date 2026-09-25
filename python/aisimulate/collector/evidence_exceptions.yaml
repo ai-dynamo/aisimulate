@@ -80,6 +80,29 @@ evidence_exceptions:
 
 standards_exceptions:
 
+# --- compute_scale (scale_matrix_perf) is an eager-only standalone kernel ---
+# Owner decision (tianhaox, 2026-09-25): keep the compute_scale rows as an
+# APPROXIMATION. Under vLLM 0.29's default execution mode (torch.compile with
+# the norm_quant / act_quant fusion passes) the per-tensor fp8 activation
+# quant never runs as its own kernel — it is folded into Inductor kernels
+# (triton_*_fused__to_copy_clamp_cutlass_scaled_mm_* on Llama-3.1-70B-FP8,
+# framework-mode probe 2026-09-24), so the op-level identity gate has no
+# serving instance to compare against and the SDK bills a kernel serving
+# does not launch separately. Direction: conservative (over-charges the
+# quant boundary by a standalone kernel's launch + one extra pass over the
+# activation). The rows stay collected as-is; consumers see the deviation
+# through this entry and the opharness finding
+# full_reprobe_framework_mode_2026_09_24.
+- rule: serving-dispatch parity (layer_permissions.md) — compute_scale standalone quant kernel under torch.compile
+  scope:
+    tables: [scale_matrix_perf]
+    backend: vllm
+    versions: ["0.29.0"]
+    systems: [h100_sxm, h200_sxm]
+  retirement: "model the fused quant (fold compute_scale into the gemm row when the deployment compiles) or drop the standalone row for compiled deployments"
+  approved_by: tianhaox
+  expires: 2026-12-31
+
 # --- PR #1486: Blackwell mHC fused_hc serving-dispatch parity -------------
 # Owner decision (tianhaox, 2026-08-19/20): the fused_hc collection on
 # SM100/103 is REJECTED for now. Default rc23 Blackwell mHC predictions
