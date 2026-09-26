@@ -1863,7 +1863,7 @@ def test_run_single_agg_calls_predict_agg_worker_with_fixed_point(monkeypatch):
     def fake_get_database(*a, **kw):
         return "db"
 
-    def fake_get_backend(name):
+    def fake_get_backend(name, system=None):
         from unittest.mock import MagicMock
 
         return MagicMock(name=f"backend-{name}")
@@ -1919,7 +1919,7 @@ def test_run_single_agg_raises_on_oom(monkeypatch):
     def fake_get_database(*a, **kw):
         return "db"
 
-    def fake_get_backend(name):
+    def fake_get_backend(name, system=None):
         from unittest.mock import MagicMock
 
         return MagicMock()
@@ -1952,7 +1952,7 @@ def test_run_single_disagg_invokes_both_phases_and_rate_matches(monkeypatch):
     def fake_get_database(*a, **kw):
         return "db"
 
-    def fake_get_backend(name):
+    def fake_get_backend(name, system=None):
         from unittest.mock import MagicMock
 
         return MagicMock()

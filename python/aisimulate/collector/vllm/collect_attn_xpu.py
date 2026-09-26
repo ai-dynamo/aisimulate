@@ -8,8 +8,9 @@ backend setup, and perf logging through XPU-capable helper paths. It benchmarks
 isolated context/generation attention kernels with synthetic KV-cache state.
 """
 
-__compat__ = "vllm==0.26.0"
+__compat__ = "vllm==0.28.0"
 
+import math
 import os
 
 import torch
@@ -46,7 +47,7 @@ from collector.case_generator import (
     get_attention_generation_shape_sweeps,
     get_attention_head_configs,
 )
-from collector.helper import benchmark_with_power, get_device_module, log_perf
+from collector.helper import benchmark_with_power, get_device_module, log_perf, xpu_graph_measure_enabled
 from collector.vllm.utils_xpu import (
     BatchSpec,
     create_and_prepopulate_kv_cache,
@@ -91,6 +92,10 @@ def _get_backend_kv_cache_stride_order(backend_cls, ndim: int) -> tuple[int, ...
     return tuple(get_stride_order())
 
 
+# KV footprint above which the ~38us graph-replay launch is <~5% -> pack_n=1.
+_LAUNCH_AMORTIZE_BYTES = 340_000_000
+
+
 def _forward_with_optional_kv_cache_update(
     backend_cls, impl, layer, query, key, value, kv_cache, attn_metadata, output
 ):
@@ -114,11 +119,18 @@ def run_attention_torch(
     use_fp8_kv_cache,
     is_context_phase,
     window_size=0,
+    has_sink=False,
     *,
     perf_filename,
     device="xpu:0",
 ):
     get_device_module().set_device(device)
+
+    # Reclaim prior case's memory (gc drops old graph refs so their pools free).
+    import gc
+
+    gc.collect()
+    get_device_module().empty_cache()
 
     dtype = torch.bfloat16
     model = os.path.join(os.path.dirname(__file__), "fake_hf_model")
@@ -353,6 +365,12 @@ def run_attention_torch(
     # Instantiate implementation
     sliding_window = vllm_config.model_config.get_sliding_window()
     scale = 1.0 / (head_dim**0.5)
+    # Serving hands a per-head learned sink bias to Attention: gpt_oss.py:111 (param),
+    # :168 (sinks=self.sinks) @ vllm-openai-xpu:v0.28.0. A non-None sinks selects the
+    # with-sink SWA kernel (XPU AOT-compiles only that decode variant). Shape [num_heads]
+    # mirrors serving's num_attention_heads//tp_size; values arbitrary -- the sink is a
+    # softmax-denominator bias, so magnitude is latency-invariant and only presence matters.
+    sinks = torch.randn(num_heads, dtype=dtype, device=device) if has_sink else None
     impl = impl_cls(
         num_heads=num_heads,
         head_size=head_dim,
@@ -361,6 +379,7 @@ def run_attention_torch(
         alibi_slopes=None,
         sliding_window=sliding_window,
         kv_cache_dtype="fp8" if use_fp8_kv_cache else "auto",
+        sinks=sinks,
     )
 
     # Create mock layer and output buffer
@@ -369,8 +388,8 @@ def run_attention_torch(
 
     # Run forward pass
 
-    test_ite = 6
-    warm_up = 3
+    test_ite = int(os.getenv("AIC_ATTN_NUM_RUNS", "6"))
+    warm_up = int(os.getenv("AIC_ATTN_WARMUP", "3"))
 
     # XPU's FlashAttention implementation currently expects Query and Output
     # to be bfloat16 even if the KV Cache is FP8.
@@ -379,22 +398,46 @@ def run_attention_torch(
         query_vllm = query_vllm.to(current_platform.fp8_dtype())
         output = output.to(torch.bfloat16)
 
-    def run():
+    def _one():
         _forward_with_optional_kv_cache_update(
             backend_cls, impl, mock_layer, query_vllm, key_vllm, value_vllm, kv_cache, attn_metadata, output
         )
 
-    # Use benchmark_with_power context manager
+    # Generation attention -> graph (matches decode serving); context/prefill -> eager
+    # (varlen path does a host copy, illegal under graph capture).
+    use_graph = xpu_graph_measure_enabled() and not is_context_phase
+
+    # XPU graph replay launch (~38us) exceeds a tiny decode kernel, so a
+    # 1-op-per-graph measurement times CPU-launch idle gaps between replays
+    # (inflated + ~15% noisy). Pack N forwards per graph so one replay runs them
+    # back-to-back and the launch is amortized (same idea as the gemm collector).
+    # Repeating the forward is safe: do_kv_cache_update rewrites the same slots
+    # with the same K/V. N adapts to op size so big kernels (launch already
+    # negligible) stay at N=1. Graph/generation only.
+    # Dense-pack N forwards/graph to amortize XPU's ~38us replay launch on small
+    # decode kernels. Deterministic from shape (KV-bandwidth-bound) so pack_n is
+    # identical run-to-run; big kernels -> pack_n=1. Power-of-two.
+    pack_n = 1
+    if use_graph:
+        kv_bytes = batch_size * input_len * num_kv_heads * head_dim * 2
+        raw = min(64.0, max(1.0, _LAUNCH_AMORTIZE_BYTES / max(kv_bytes, 1)))
+        pack_n = min(64, max(1, 1 << round(math.log2(raw))))
+
+    def run():
+        for _ in range(pack_n):
+            _one()
+
     with benchmark_with_power(
         device=device,
         kernel_func=run,
         num_warmups=warm_up,
         num_runs=test_ite,
         repeat_n=1,
+        use_cuda_graph=use_graph,
     ) as results:
         pass
 
-    latency = results["latency_ms"]
+    latency = results["latency_ms"] / pack_n
     print(f"attn latency: {latency}")
 
     if is_context_phase:
@@ -438,8 +481,25 @@ def run_attention_torch(
     )
 
 
+# KV-pool feasibility filter (generation-time, size-vs-capacity only). The pool
+# = num_gpu_blocks*block_size*num_kv_heads*head_dim*bytes*2(K+V); the hardcoded
+# 8192 blocks in run_attention_torch makes high-kv-head hd128 configs exceed a
+# 24GB card. Drop those so they are never queued.
+_KV_POOL_BLOCKS = 8192
+_KV_BLOCK_SIZE = 64
+_KV_POOL_MEM_FRACTION = 0.45
+
+
+def _kv_pool_fits(num_kv_heads, head_dim):
+    # KV pool is allocated bf16-sized (2B) even when kv_cache_dtype is fp8.
+    pool = _KV_POOL_BLOCKS * _KV_BLOCK_SIZE * num_kv_heads * head_dim * 2 * 2
+    total = get_device_module().get_device_properties(0).total_memory
+    return pool <= total * _KV_POOL_MEM_FRACTION
+
+
 def get_context_attention_test_cases(if_unit_test=False):
     test_cases = []
+    _dropped_mem = 0
 
     if if_unit_test:
         shape_sweeps = [
@@ -496,6 +556,9 @@ def get_context_attention_test_cases(if_unit_test=False):
                     if b * s * num_kv_heads * head_dim * 2 >= max_kv_elements:
                         continue
                     for is_fp8_kv_cache in kv_cache_dtype_list:
+                        if not _kv_pool_fits(num_kv_heads, head_dim):
+                            _dropped_mem += 1
+                            continue
                         test_cases.append(
                             [
                                 b,
@@ -506,9 +569,13 @@ def get_context_attention_test_cases(if_unit_test=False):
                                 is_fp8_kv_cache,
                                 True,
                                 window_size,
+                                head_config.has_attention_sink,
                             ]
                         )
 
+    if _dropped_mem:
+        dev_gb = get_device_module().get_device_properties(0).total_memory / 1e9
+        print(f"attention_context: dropped {_dropped_mem} cases (KV-pool memory budget, device={dev_gb:.0f}GB)")
     return test_cases
 
 
@@ -536,6 +603,7 @@ def _generation_target_sequence_lengths(batch_sizes, sequence_lengths, num_heads
 
 def get_generation_attention_test_cases():
     test_cases = []
+    _dropped_mem = 0
 
     # kv cache dtype fp8 to be supported
     kv_cache_dtype_list = [False, True]
@@ -576,6 +644,9 @@ def get_generation_attention_test_cases():
                     target_s_list = target_s_list[:-1]
                 for s in target_s_list:
                     for is_fp8_kv_cache in kv_cache_dtype_list:
+                        if not _kv_pool_fits(n_kv, head_dim):
+                            _dropped_mem += 1
+                            continue
                         test_cases.append(
                             [
                                 b,
@@ -586,8 +657,12 @@ def get_generation_attention_test_cases():
                                 is_fp8_kv_cache,
                                 False,
                                 window_size,
+                                head_config.has_attention_sink,
                             ]
                         )
+    if _dropped_mem:
+        dev_gb = get_device_module().get_device_properties(0).total_memory / 1e9
+        print(f"attention_generation: dropped {_dropped_mem} cases (KV-pool memory budget, device={dev_gb:.0f}GB)")
     return test_cases
 
 

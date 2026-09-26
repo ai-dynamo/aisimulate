@@ -202,6 +202,53 @@ class BaseBackend:
         """
         return 0.0
 
+    def _compute_ttft(
+        self,
+        model: "BaseModel",
+        database: "PerfDatabase",
+        runtime_config: "RuntimeConfig",
+        b: int,
+        isl: int,
+        osl: int,
+        ctx_tokens: int,
+        prefix: int,
+        *,
+        prefill_step_ms: float,
+        genonly_step_latency_ms: float,
+        encoder_latency_ms: float,
+        steps_to_finish_ctx: float,
+    ) -> float:
+        """TTFT (ms) for an agg point. Default: per-request prefill time
+        (chunk count x mix step) x queuing factor + dispatch + encoder. Subclasses
+        with a different queue model override this whole computation."""
+        ttft_per_request = prefill_step_ms * np.ceil(isl / ctx_tokens) + self._prefill_dispatch_overhead_ms(model)
+        return encoder_latency_ms + ttft_per_request * self._ttft_queuing_factor(b, steps_to_finish_ctx)
+
+    def _compute_tpot(
+        self,
+        *,
+        b: int,
+        isl: int,
+        osl: int,
+        ctx_tokens: int,
+        num_mix_steps: float,
+        num_genonly_steps: float,
+        num_mix_steps_for_tpot_calc: float,
+        mix_step_latency_ms: float,
+        genonly_step_latency_ms: float,
+    ) -> float:
+        """Per-step TPOT (ms) for an agg point, before the speculative
+        per-iteration division applied by the caller. Default: step-weighted
+        average of the mix- and generation-only step latencies. Subclasses whose
+        scheduler amortizes the mix step differently override this whole
+        computation. Guards osl==1 (no decode) where both denominators are zero."""
+        _tpot_steps = num_mix_steps_for_tpot_calc + num_genonly_steps
+        if _tpot_steps <= 0:
+            return 0.0
+        return (
+            mix_step_latency_ms * num_mix_steps_for_tpot_calc + genonly_step_latency_ms * num_genonly_steps
+        ) / _tpot_steps
+
     def _throughput_cap(self, step_throughput: float, ttft: float, tpot: float, b: int, osl: int) -> float:
         """Return the effective output throughput after any engine-specific cap.
 
@@ -1799,20 +1846,38 @@ class BaseBackend:
         # decode tokens in the step. For TTFT we need the pure prefill cost (no decode
         # tokens alongside), so we undo that efficiency reduction first.
         _prefill_step_ms = mix_step_latency_ms / mix_efficiency if mix_efficiency > 0 else mix_step_latency_ms
-        _ttft_per_request = _prefill_step_ms * np.ceil(isl / ctx_tokens) + self._prefill_dispatch_overhead_ms(model)
-        ttft = encoder_latency_ms + _ttft_per_request * self._ttft_queuing_factor(b, steps_to_finish_ctx)
+        ttft = self._compute_ttft(
+            model,
+            database,
+            runtime_config,
+            b,
+            isl,
+            osl,
+            ctx_tokens,
+            prefix,
+            prefill_step_ms=_prefill_step_ms,
+            genonly_step_latency_ms=genonly_step_latency_ms,
+            encoder_latency_ms=encoder_latency_ms,
+            steps_to_finish_ctx=steps_to_finish_ctx,
+        )
         logger.debug(
             f"ttft: prefill_step={_prefill_step_ms:.2f}ms qf={self._ttft_queuing_factor(b, steps_to_finish_ctx):.2f}"
         )
 
         # Guard against osl == 1 (no-decode), which makes both denominators zero.
-        _tpot_steps = num_mix_steps_for_tpot_calc + num_genonly_steps
         tpot = (
-            (mix_step_latency_ms * num_mix_steps_for_tpot_calc + genonly_step_latency_ms * num_genonly_steps)
-            / _tpot_steps
+            self._compute_tpot(
+                b=b,
+                isl=isl,
+                osl=osl,
+                ctx_tokens=ctx_tokens,
+                num_mix_steps=num_mix_steps,
+                num_genonly_steps=num_genonly_steps,
+                num_mix_steps_for_tpot_calc=num_mix_steps_for_tpot_calc,
+                mix_step_latency_ms=mix_step_latency_ms,
+                genonly_step_latency_ms=genonly_step_latency_ms,
+            )
             / decode_tokens_per_iteration
-            if _tpot_steps > 0
-            else 0.0
         )
         _total_step_latency_ms = (
             encoder_latency_ms + num_mix_steps * mix_step_latency_ms + num_genonly_steps * genonly_step_latency_ms

@@ -384,6 +384,15 @@ def is_hopper_system(system_name: str | None) -> bool:
     return int(spec.get("gpu", {}).get("sm_version", -1)) == 90
 
 
+def is_xpu_system(system_name: str | None) -> bool:
+    """True for XPU systems. NVIDIA specs carry ``sm_version``; XPU specs do
+    not, so its absence marks an XPU system."""
+    if not system_name:
+        return False
+    spec = load_system_spec(system_name)
+    return "sm_version" not in spec.get("gpu", {})
+
+
 def build_no_databases_message() -> str:
     """Build a concise error message for systems path/db validation failures."""
     resolved_paths = get_systems_paths()

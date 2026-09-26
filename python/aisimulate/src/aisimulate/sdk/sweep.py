@@ -585,7 +585,7 @@ def sweep_agg(
             # internal _agg_cache survives across the tpot sweep below.
             # Recreating per (parallel, tpot) destroys the cache and causes
             # an ~80x slowdown for a wide tpot list.
-            backend = get_backend(backend_name)
+            backend = get_backend(backend_name, getattr(database, "system", None))
             resolve_sglang_mla_compute(
                 point_model_config,
                 model_path,

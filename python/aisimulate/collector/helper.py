@@ -250,6 +250,8 @@ def benchmark_with_power(
     """
     import torch
 
+    dev_mod = get_device_module()
+
     # Auto-detect configuration from environment if not explicitly provided
     if measure_power is None:
         measure_power = _parse_bool_env("COLLECTOR_MEASURE_POWER", default=False)
@@ -260,15 +262,15 @@ def benchmark_with_power(
     actual_num_runs = num_runs
     if measure_power:
         # Estimate single iteration time with warmup
-        start_warmup = torch.cuda.Event(enable_timing=True)
-        end_warmup = torch.cuda.Event(enable_timing=True)
+        start_warmup = dev_mod.Event(enable_timing=True)
+        end_warmup = dev_mod.Event(enable_timing=True)
 
-        torch.cuda.synchronize()
+        dev_mod.synchronize()
         start_warmup.record()
         for _ in range(num_warmups):
             kernel_func()
         end_warmup.record()
-        torch.cuda.synchronize()
+        dev_mod.synchronize()
 
         single_iter_time = start_warmup.elapsed_time(end_warmup) / num_warmups / 1000.0  # seconds
 
@@ -285,32 +287,43 @@ def benchmark_with_power(
             )
     else:
         # Normal warmup
-        get_device_module().synchronize()
+        dev_mod.synchronize()
         for _ in range(num_warmups):
             kernel_func()
-        get_device_module().synchronize()
+        dev_mod.synchronize()
 
     # ═══════════════════════════════════════════════════════════════════
-    # CUDA Graph Capture with Optional Fallback
+    # Device Graph Capture with Optional Fallback (CUDA: CUDAGraph, XPU: XPUGraph)
     # ═══════════════════════════════════════════════════════════════════
     g = None  # kept in scope so the finally block below can tear it down
-    if torch.cuda.is_available() and use_cuda_graph:
+    is_cuda = torch.cuda.is_available()
+    if use_cuda_graph and (is_cuda or torch.xpu.is_available()):
         use_graph = True
-        g = torch.cuda.CUDAGraph()
+        graph_cls = torch.cuda.CUDAGraph if is_cuda else torch.xpu.XPUGraph
+        graph_ctx = torch.cuda.graph if is_cuda else torch.xpu.graph
+        g = graph_cls()
 
         try:
-            with torch.cuda.graph(g):
+            with graph_ctx(g):
                 for _ in range(repeat_n):
                     kernel_func()
-            torch.cuda.synchronize()
+            dev_mod.synchronize()
         except Exception as e:
             if allow_graph_fail:
-                logging.getLogger(__name__).warning(f"CUDA graph capture failed: {e}. Falling back to eager execution.")
+                logging.getLogger(__name__).warning(
+                    f"{'CUDA' if is_cuda else 'XPU'} graph capture failed: {e}. Falling back to eager execution."
+                )
                 g = None  # drop the partial capture so empty_cache can reclaim its private pool
-                torch.cuda.empty_cache()
+                dev_mod.empty_cache()
                 use_graph = False
             else:
-                # Standard behavior: re-raise exception
+                # Release the partial capture's private pool before propagating;
+                # else repeated capture failures leak graph pools -> OOM/DEVICE_LOST.
+                g = None
+                try:
+                    dev_mod.empty_cache()
+                except Exception:
+                    pass
                 raise
     else:
         use_graph = False
@@ -323,16 +336,15 @@ def benchmark_with_power(
         # ═══════════════════════════════════════════════════════════════
         # Warmup the ACTUAL execution path (after graph capture)
         # ═══════════════════════════════════════════════════════════════
-        if torch.cuda.is_available():
-            torch.cuda.synchronize()
-            for _ in range(num_warmups):
-                if use_graph:
-                    g.replay()
-                else:
-                    # Fallback: Direct execution matching actual execution path
-                    for _ in range(repeat_n):
-                        kernel_func()
-            torch.cuda.synchronize()
+        dev_mod.synchronize()
+        for _ in range(num_warmups):
+            if use_graph:
+                g.replay()
+            else:
+                # Fallback: Direct execution matching actual execution path
+                for _ in range(repeat_n):
+                    kernel_func()
+        dev_mod.synchronize()
 
         # Initialize power monitor if enabled
         power_monitor = None
@@ -356,8 +368,8 @@ def benchmark_with_power(
         # ═══════════════════════════════════════════════════════════════════
         # Execute with Graph or Eager (both paths measured!)
         # ═══════════════════════════════════════════════════════════════════
-        start_event = get_device_module().Event(enable_timing=True)
-        end_event = get_device_module().Event(enable_timing=True)
+        start_event = dev_mod.Event(enable_timing=True)
+        end_event = dev_mod.Event(enable_timing=True)
         start_event.record()
         for _ in range(actual_num_runs):
             if use_graph:
@@ -368,7 +380,7 @@ def benchmark_with_power(
                 for _ in range(repeat_n):
                     kernel_func()
         end_event.record()
-        get_device_module().synchronize()
+        dev_mod.synchronize()
 
         # Check for throttling
         throttled = False
@@ -412,9 +424,8 @@ def benchmark_with_power(
         # ~146 GiB pinned and subsequent tasks OOM at _ensure_workspace_size.
         if g is not None:
             g = None
-            if torch.cuda.is_available():
-                torch.cuda.synchronize()
-                torch.cuda.empty_cache()
+            dev_mod.synchronize()
+            dev_mod.empty_cache()
 
 
 @contextmanager
@@ -3670,6 +3681,23 @@ def _resolve_local_model_path(model_id: str) -> str:
 
 
 @functools.lru_cache(maxsize=1)
+def get_vllm_version() -> str:
+    try:
+        import vllm
+
+        return getattr(vllm, "__version__", "unknown")
+    except Exception:
+        return "unknown"
+
+
+def xpu_graph_measure_enabled() -> bool:
+    # Central gate for measuring ops under XPU graph (XPU graph is experimental;
+    # keep this so graph mode can be conditionally disabled per scenario).
+    import torch
+
+    return torch.xpu.is_available()
+
+
 def get_device_module():
     import torch
 

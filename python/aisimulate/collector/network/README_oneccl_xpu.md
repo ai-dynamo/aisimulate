@@ -23,43 +23,60 @@ dpkg -l | grep -i "intel-oneapi-ccl-devel\|intel-oneapi-mpi\|intel-oneapi-compil
 At least 2 Intel GPU (XPU) devices must be available. Verify with:
 
 ```bash
-sycl-ls | grep "level_zero:gpu"
+xpu-smi discovery
 ```
 
-### 3. Compile the oneCCL Benchmark Binary
+### 3. Compile the oneCCL Benchmark Binaries
 
-The oneCCL package ships benchmark source code but **no pre-compiled binary**. You must compile it once.
+oneCCL distributes the benchmark as source only, with no pre-compiled binary, so it
+must be built once. The source lives in the oneCCL repository under `tests/benchmark/`
+as one executable per collective (`allreduce_perf`, `allgather_perf`,
+`reduce_scatter_perf`).
+
+Some images ship oneCCL and Intel MPI as runtime components only (for example, as
+Python wheels) without the DPC++ compiler or MPI headers. When `icpx` or `mpi.h` is
+absent, install them from the Intel oneAPI apt repository, matching the compiler to
+the image's DPC++ runtime version to avoid an ABI mismatch:
 
 ```bash
-# Source the oneAPI environment
-source /opt/intel/oneapi/ccl/latest/env/vars.sh
-
-# Create a temporary build directory
-mkdir -p /tmp/oneccl_benchmark_build
-cp -r /opt/intel/oneapi/ccl/latest/share/doc/ccl/examples/benchmark/* /tmp/oneccl_benchmark_build/
-cd /tmp/oneccl_benchmark_build
-
-# Compile with SYCL (GPU) support
-icpx -std=c++17 -fsycl \
-  -I./include -I./src \
-  -I/opt/intel/oneapi/ccl/latest/share/doc/ccl/examples/include \
-  -I/opt/intel/oneapi/ccl/latest/include \
-  -I/opt/intel/oneapi/mpi/latest/include \
-  -L/opt/intel/oneapi/ccl/latest/lib \
-  -L/opt/intel/oneapi/mpi/latest/lib/release \
-  -L/opt/intel/oneapi/mpi/latest/lib \
-  src/benchmark.cpp \
-  -lccl -lmpi -lpthread -lrt -lm -ldl \
-  -o benchmark
-
-# Install to a location on PATH
-cp benchmark /usr/local/bin/oneccl_benchmark
+curl -fsSL https://apt.repos.intel.com/intel-gpg-keys/GPG-PUB-KEY-INTEL-SW-PRODUCTS.PUB \
+  | gpg --dearmor -o /usr/share/keyrings/oneapi-archive-keyring.gpg
+echo "deb [signed-by=/usr/share/keyrings/oneapi-archive-keyring.gpg] https://apt.repos.intel.com/oneapi all main" \
+  > /etc/apt/sources.list.d/oneAPI.list
+apt-get update
+apt-get install -y \
+  "intel-oneapi-compiler-dpcpp-cpp=$(pip show dpcpp-cpp-rt | sed -n 's/^Version: //p')-*" \
+  intel-oneapi-mpi-devel
 ```
 
-Verify it works:
+Fetch the benchmark source at the tag matching the installed oneCCL library, then
+build one binary per collective, linking the oneCCL and MPI installed in the image:
 
 ```bash
-oneccl_benchmark --help
+CCL_ROOT=$(python -c 'import sys; print(sys.prefix)')       # oneCCL install prefix
+MPI_ROOT=/opt/intel/oneapi/mpi/latest
+CCL_VER=$(pip show oneccl | sed -n 's/^Version: //p')
+
+curl -sSL "https://github.com/uxlfoundation/oneCCL/archive/refs/tags/${CCL_VER}.tar.gz" | tar xz
+cd "oneCCL-${CCL_VER}/tests/benchmark"
+source /opt/intel/oneapi/compiler/latest/env/vars.sh
+
+# The DPC++ compiler provides its own SYCL headers; placing the oneCCL include
+# directory directly on the include path would shadow them, so expose only oneapi/.
+mkdir -p /tmp/cclinc && ln -sfn "${CCL_ROOT}/include/oneapi" /tmp/cclinc/oneapi
+
+for op in all_reduce:allreduce_perf allgather:allgather_perf reduce_scatter:reduce_scatter_perf; do
+  icpx -std=c++17 -fsycl -I/tmp/cclinc -I"${MPI_ROOT}/include" \
+    "${op%%:*}.cpp" common.cpp timer.cpp \
+    -L"${CCL_ROOT}/lib" -lccl -L"${MPI_ROOT}/lib" -lmpi -lpthread \
+    -o "/usr/local/bin/${op##*:}"
+done
+```
+
+Verify (each binary accepts `-b minbytes -e maxbytes -g ngpus --iters n --warmup_iters n`):
+
+```bash
+allreduce_perf --help
 ```
 
 ### 4. Environment Variables
@@ -76,7 +93,7 @@ The following environment variables must be set at runtime (the script sets them
 
 ### Option A: Run All Benchmarks via `collect_comm.sh`
 
-This runs all collective operations (`all_gather`, `alltoall`, `reduce_scatter`, `all_reduce`) with both `half` and `int8` data types across all detected GPU counts:
+This runs the collective operations (`all_gather`, `reduce_scatter`, `all_reduce`) with both `half` and `int8` data types across all detected GPU counts:
 
 ```bash
 cd collector/network/
@@ -96,34 +113,15 @@ python collect_oneccl_xpu.py --oneccl_op reduce_scatter --dtype half --num_gpus 
 
 # all_reduce with 4 GPUs, custom range
 python collect_oneccl_xpu.py --oneccl_op all_reduce --dtype half --num_gpus 4 --range "1024,268435456,2"
-
-# alltoall with int8
-python collect_oneccl_xpu.py --oneccl_op alltoall --dtype int8 --num_gpus 4
 ```
 
 ### CLI Options for `collect_oneccl_xpu.py`
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--oneccl_op`, `-O` | `all_gather` | Collective operation: `all_gather`, `alltoall`, `reduce_scatter`, `all_reduce` |
+| `--oneccl_op`, `-O` | `all_gather` | Collective operation: `all_gather`, `reduce_scatter`, `all_reduce` |
 | `--dtype`, `-t` | `half` | Data type: `half` (bf16, 2 bytes), `int8` (1 byte) |
 | `--range`, `-r` | `512,536870913,2` | `min_bytes,max_bytes,multiplicative_ratio` |
 | `--num_gpus`, `-n` | `2` | Number of GPUs (MPI ranks) |
 | `--iters`, `-i` | `100` | Benchmark iterations per message size |
 | `--warmup_iters`, `-w` | `20` | Warmup iterations per message size |
-
-## Output
-
-Results are appended to `oneccl_perf.txt` in the working directory with the following CSV format:
-
-```
-framework,version,device,op_name,kernel_source,nccl_dtype,num_gpus,message_size,latency
-oneCCL,2021.17.2-5,Intel(R) Graphics [0xe211],all_gather,oneCCL,half,2,256,0.015538
-```
-
-## Troubleshooting
-
-- **`oneCCL benchmark binary not found`** — Compile and install the benchmark binary (see step 3 above).
-- **`BAD TERMINATION ... KILLED BY SIGNAL: 6`** — Usually a UCX assertion failure. Ensure `FI_PROVIDER=tcp` is set.
-- **`topology recognition shows PCIe connection`** — Set `CCL_TOPO_FABRIC_VERTEX_CONNECTION_CHECK=0`.
-- **Only 1 GPU detected** — The script requires at least 2 GPUs. Check `sycl-ls` output.

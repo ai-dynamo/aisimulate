@@ -29,19 +29,35 @@ Usage:
     python collector/network/collect_all_reduce.py --range "128,1000000,2" --perf-filename "my_perf.txt"
 """
 
+import gc
 import inspect
 import os
 import sys
 from argparse import ArgumentParser
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Optional
 
 import torch
 import torch.distributed as dist
 
+try:
+    # Serving aliases torch.cuda.Stream -> torch.xpu.Stream via this wrapper; the
+    # collector needs the same so vLLM's graph_capture context works on XPU.
+    from vllm.v1.worker.xpu_model_runner import _torch_cuda_wrapper
+except Exception:
+    _torch_cuda_wrapper = None
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from helper import PowerMonitor, get_device_module, get_device_str, log_perf
+from helper import (
+    PowerMonitor,
+    get_device_module,
+    get_device_str,
+    get_vllm_version,
+    log_perf,
+    xpu_graph_measure_enabled,
+)
 
 
 def _init_process_group_with_device_id(backend: str, init_method: str, world_size: int, rank: int, local_rank: int):
@@ -546,28 +562,47 @@ def benchmark_vllm_allreduce(
     _ = vllm_mods["tensor_model_parallel_all_reduce"](warmup_tensor)
     get_device_module().synchronize()
 
+    vllm_version = get_vllm_version()
+    dev_mod = get_device_module()
+    is_cuda = torch.cuda.is_available()
+    graph_cls = torch.cuda.CUDAGraph if is_cuda else torch.xpu.XPUGraph
+    graph_ctx = torch.cuda.graph if is_cuda else torch.xpu.graph
+
     size = min_size
     while size < max_size:
         input_shape = get_input_shape_and_comm_size(size)
 
         # Test both graph capture and eager mode
-        flag_lst = [False] if torch.xpu.is_available() else [True, False]
+        if torch.xpu.is_available():
+            flag_lst = [True, False] if xpu_graph_measure_enabled() else [False]
+        else:
+            flag_lst = [True, False]
         for use_graph in flag_lst:
             mode_str = "graph" if use_graph else "eager"
 
             if use_graph:
                 # Graph capture mode
-                with vllm_mods["graph_capture"](device=torch.cuda.current_device()) as graph_capture_context:
+                cuda_shim = (
+                    _torch_cuda_wrapper()
+                    if (torch.xpu.is_available() and _torch_cuda_wrapper is not None)
+                    else nullcontext()
+                )
+                with cuda_shim, vllm_mods["graph_capture"](device=dev_mod.current_device()) as graph_capture_context:
                     # Create input tensors
                     input_tensors = []
                     for _ in range(repeat_n):
-                        inp = torch.ones(input_shape, dtype=torch_dtype, device="cuda")
+                        inp = torch.ones(input_shape, dtype=torch_dtype, device=get_device_str())
                         input_tensors.append(inp)
 
-                    torch.cuda.synchronize()
-                    graph = torch.cuda.CUDAGraph()
+                    # XPU: warm up at this size so the collective's one-time init runs before capture.
+                    if torch.xpu.is_available():
+                        for _ in range(num_warmups):
+                            for inp in input_tensors:
+                                vllm_mods["tensor_model_parallel_all_reduce"](inp)
+                        dev_mod.synchronize()
+                    graph = graph_cls()
 
-                    with torch.cuda.graph(graph, stream=graph_capture_context.stream):
+                    with graph_ctx(graph, stream=graph_capture_context.stream):
                         outputs = []
                         for inp in input_tensors:
                             out = vllm_mods["tensor_model_parallel_all_reduce"](inp)
@@ -578,36 +613,36 @@ def benchmark_vllm_allreduce(
                 if measure_power:
                     # Estimate single iteration time (only on rank 0)
                     if rank == 0:
-                        start_warmup = torch.cuda.Event(enable_timing=True)
-                        end_warmup = torch.cuda.Event(enable_timing=True)
+                        start_warmup = dev_mod.Event(enable_timing=True)
+                        end_warmup = dev_mod.Event(enable_timing=True)
 
-                        torch.cuda.synchronize()
+                        dev_mod.synchronize()
                         start_warmup.record()
                         for i in range(num_warmups):
                             graph.replay()
                         end_warmup.record()
-                        torch.cuda.synchronize()
+                        dev_mod.synchronize()
 
                         single_iter_time = start_warmup.elapsed_time(end_warmup) / num_warmups / 1000.0  # seconds
                         actual_num_runs = max(num_runs, int(power_min_duration / (single_iter_time * repeat_n)) + 1)
                         actual_num_runs = min(actual_num_runs, 1000)
                     else:
                         # Other ranks do warmup but don't calculate
-                        torch.cuda.synchronize()
+                        dev_mod.synchronize()
                         for i in range(num_warmups):
                             graph.replay()
-                        torch.cuda.synchronize()
+                        dev_mod.synchronize()
 
                     # Broadcast actual_num_runs from rank 0 to all ranks
-                    actual_num_runs_tensor = torch.tensor([actual_num_runs], device="cuda")
+                    actual_num_runs_tensor = torch.tensor([actual_num_runs], device=get_device_str())
                     torch.distributed.broadcast(actual_num_runs_tensor, src=0)
                     actual_num_runs = actual_num_runs_tensor.item()
                 else:
                     # Normal warmup
-                    torch.cuda.synchronize()
+                    dev_mod.synchronize()
                     for i in range(num_warmups):
                         graph.replay()
-                    torch.cuda.synchronize()
+                    dev_mod.synchronize()
 
                 # Initialize power monitoring
                 power_monitor = None
@@ -618,18 +653,25 @@ def benchmark_vllm_allreduce(
                         power_monitor = None
 
                 # Timing
-                start_event = torch.cuda.Event(enable_timing=True)
-                end_event = torch.cuda.Event(enable_timing=True)
+                start_event = dev_mod.Event(enable_timing=True)
+                end_event = dev_mod.Event(enable_timing=True)
 
                 start_event.record()
                 for i in range(actual_num_runs):
                     graph.replay()
                 end_event.record()
-                torch.cuda.synchronize()
+                dev_mod.synchronize()
 
                 # Stop power monitoring
                 if power_monitor:
                     power_stats = power_monitor.stop_sampling()
+
+                # XPU: free the captured graph + pool before the next size.
+                if torch.xpu.is_available():
+                    del graph, input_tensors, outputs
+                    gc.collect()
+                    dev_mod.synchronize()
+                    dev_mod.empty_cache()
 
             else:
                 # Eager mode
@@ -703,14 +745,6 @@ def benchmark_vllm_allreduce(
                 print(f"[vLLM-{mode_str}] Size: {size}, Latency: {latency:.4f} ms")
                 if power_stats:
                     print(f"  Power: {power_stats['power']:.2f}W (limit: {power_stats['power_limit']:.2f}W)")
-
-                # Get vLLM version
-                try:
-                    import vllm
-
-                    vllm_version = vllm.__version__ if hasattr(vllm, "__version__") else "unknown"
-                except:
-                    vllm_version = "unknown"
 
                 log_perf(
                     item_list=[
