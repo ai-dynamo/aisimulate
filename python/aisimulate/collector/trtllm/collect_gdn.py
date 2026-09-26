@@ -199,10 +199,20 @@ def run_gdn_context_benchmark(
                     q = torch.randn(batch_size, seq_len, num_k_heads, head_k_dim, dtype=dtype, device=device)
                     k = torch.randn(batch_size, seq_len, num_k_heads, head_k_dim, dtype=dtype, device=device)
                     v = torch.randn(batch_size, seq_len, num_v_heads, head_v_dim, dtype=dtype, device=device)
+                    # g is fp32 in serving (fused_gdn_gating output); FlashInfer's
+                    # chunk kernel asserts it ("g must be fp32"), Triton accepts both
                     g = torch.nn.functional.logsigmoid(
-                        torch.randn(batch_size, seq_len, num_v_heads, dtype=dtype, device=device)
+                        torch.randn(batch_size, seq_len, num_v_heads, dtype=torch.float32, device=device)
                     )
                     beta = torch.sigmoid(torch.randn(batch_size, seq_len, num_v_heads, dtype=dtype, device=device))
+                    # serving feeds the chunk kernel PACKED tokens [1, B*S, H, D] plus
+                    # cu_seqlens (gdn_mixer.forward_extend); FlashInfer's chunk kernel
+                    # accepts only that layout ("q must be [1, T, H_q, D_k]")
+                    q, k, v, g, beta = (t.reshape(1, batch_size * seq_len, *t.shape[2:]) for t in (q, k, v, g, beta))
+                    cu_seqlens = torch.arange(0, batch_size * seq_len + 1, seq_len, dtype=torch.int64, device=device)
+                    # serving passes the per-request recurrent state and asks for the
+                    # final state back (gdn_mixer.py:847-855); FlashInfer requires it
+                    gdn_init_state = torch.zeros(batch_size, num_v_heads, head_k_dim, head_v_dim, dtype=torch.bfloat16, device=device)
 
                     # --- Benchmark causal_conv1d_fn ---
                     torch.cuda.synchronize()
@@ -233,11 +243,13 @@ def run_gdn_context_benchmark(
 
                     # --- Benchmark chunk_gated_delta_rule ---
                     torch.cuda.synchronize()
-                    chunk_gated_delta_rule(q, k, v, g, beta)
+                    chunk_gated_delta_rule(q, k, v, g, beta, initial_state=gdn_init_state,
+                                           output_final_state=True, cu_seqlens=cu_seqlens)
                     torch.cuda.synchronize()
 
-                    def run_gdn_scan(_q=q, _k=k, _v=v, _g=g, _beta=beta):
-                        chunk_gated_delta_rule(_q, _k, _v, _g, _beta)
+                    def run_gdn_scan(_q=q, _k=k, _v=v, _g=g, _beta=beta, _cu=cu_seqlens, _st=gdn_init_state):
+                        chunk_gated_delta_rule(_q, _k, _v, _g, _beta, initial_state=_st,
+                                               output_final_state=True, cu_seqlens=_cu)
 
                     with benchmark_with_power(
                         device=device,
@@ -253,7 +265,7 @@ def run_gdn_context_benchmark(
                             version=trtllm_version,
                             device_name=torch.cuda.get_device_name(device),
                             op_name="gdn",
-                            kernel_source="chunk_gated_delta_rule",
+                            kernel_source=_CHUNK_KERNEL_SOURCE,
                             perf_filename=perf_filename,
                             power_stats=results["power_stats"],
                         )
@@ -262,16 +274,20 @@ def run_gdn_context_benchmark(
                     input_pool = _make_input_pool(
                         {
                             "k_input": (batch_size, conv_channels, seq_len),
-                            "q": (batch_size, seq_len, num_k_heads, head_k_dim),
-                            "k": (batch_size, seq_len, num_k_heads, head_k_dim),
-                            "v": (batch_size, seq_len, num_v_heads, head_v_dim),
-                            "g": (batch_size, seq_len, num_v_heads),
-                            "beta": (batch_size, seq_len, num_v_heads),
+                            # packed [1, B*S, ...] + cu_seqlens, as serving feeds the chunk kernel
+                            "q": (1, batch_size * seq_len, num_k_heads, head_k_dim),
+                            "k": (1, batch_size * seq_len, num_k_heads, head_k_dim),
+                            "v": (1, batch_size * seq_len, num_v_heads, head_v_dim),
+                            "g": (1, batch_size * seq_len, num_v_heads),
+                            "beta": (1, batch_size * seq_len, num_v_heads),
                         },
                         total_iters,
                         dtype,
                         device,
                     )
+                    input_pool["g"] = [t.float() for t in input_pool["g"]]  # serving g is fp32
+                    cu_seqlens = torch.arange(0, batch_size * seq_len + 1, seq_len, dtype=torch.int64, device=device)
+                    gdn_init_state = torch.zeros(batch_size, num_v_heads, head_k_dim, head_v_dim, dtype=torch.bfloat16, device=device)
                     for i in range(total_iters):
                         input_pool["g"][i] = torch.nn.functional.logsigmoid(input_pool["g"][i])
                         input_pool["beta"][i] = torch.sigmoid(input_pool["beta"][i])
@@ -319,6 +335,9 @@ def run_gdn_context_benchmark(
                         input_pool["v"][0],
                         input_pool["g"][0],
                         input_pool["beta"][0],
+                        initial_state=gdn_init_state,
+                        output_final_state=True,
+                        cu_seqlens=cu_seqlens,
                     )
                     torch.cuda.synchronize()
 
@@ -333,6 +352,9 @@ def run_gdn_context_benchmark(
                             _pool["v"][idx],
                             _pool["g"][idx],
                             _pool["beta"][idx],
+                            initial_state=gdn_init_state,
+                            output_final_state=True,
+                            cu_seqlens=cu_seqlens,
                         )
 
                     with benchmark_with_power(
@@ -349,7 +371,7 @@ def run_gdn_context_benchmark(
                             version=trtllm_version,
                             device_name=torch.cuda.get_device_name(device),
                             op_name="gdn",
-                            kernel_source="chunk_gated_delta_rule",
+                            kernel_source=_CHUNK_KERNEL_SOURCE,
                             perf_filename=perf_filename,
                             power_stats=results["power_stats"],
                         )
@@ -365,6 +387,82 @@ def run_gdn_context_benchmark(
             except Exception as e:
                 print(f"  Error at batch_size={batch_size}, seq_len={seq_len}: {e}")
                 continue
+
+
+def _bench_serving_decode_entry(
+    *,
+    batch_size: int,
+    num_k_heads: int,
+    head_k_dim: int,
+    num_v_heads: int,
+    head_v_dim: int,
+    dtype,
+    device,
+    common_log_data: dict,
+    trtllm_version: str,
+    perf_filename: str,
+    num_warmups: int,
+    num_runs: int,
+) -> None:
+    """Measure the entry serving actually calls for pure decode.
+
+    gdn_mixer.forward_decode (_torch/modules/mamba/gdn_mixer.py:670 @1.3.0rc23)
+    calls fused_sigmoid_gating_delta_rule_update with the raw gating inputs
+    (A_log, dt_bias, a, b), the SSM state pool + slot indices and
+    cu_seqlens; that function dispatches to FlashInfer's bf16-state GDN decode
+    kernel when _can_use_flashinfer_gdn_decode holds (SM90/SM100, K==V==128,
+    bf16 state, one token per sequence) and to the FLA Triton kernel otherwise
+    (fla/fused_sigmoid_gating_recurrent.py:205-238,452-458). kernel_source
+    records which branch ran. Builds without this entry (pre-rc23) skip it —
+    their serving truth is the fused_recurrent row above.
+    """
+    fn = globals().get("fused_sigmoid_gating_delta_rule_update")
+    gate = globals().get("_can_use_flashinfer_gdn_decode")
+    if fn is None:
+        return
+    B, H, K, V = batch_size, num_v_heads, head_k_dim, head_v_dim
+    q = torch.randn(1, B, num_k_heads, K, dtype=dtype, device=device)
+    k = torch.randn(1, B, num_k_heads, K, dtype=dtype, device=device)
+    v = torch.randn(1, B, H, V, dtype=dtype, device=device)
+    a = torch.randn(B, H, dtype=dtype, device=device)
+    b = torch.randn(B, H, dtype=dtype, device=device)
+    A_log = torch.zeros(H, dtype=torch.float32, device=device)
+    dt_bias = 0.1 * torch.randn(H, dtype=torch.float32, device=device)
+    ssm_states = torch.randn(B, H, K, V, dtype=torch.bfloat16, device=device)
+    slot_indices = torch.arange(B, dtype=torch.int32, device=device)
+    cu_seqlens = torch.arange(B + 1, dtype=torch.int64, device=device)
+    uses_flashinfer = bool(gate(ssm_states, K, V, B, B)) if gate is not None else False
+
+    def run_serving_decode():
+        fn(
+            A_log=A_log, dt_bias=dt_bias, q=q, k=k, v=v, a=a, b=b,
+            initial_state_source=ssm_states, initial_state_indices=slot_indices,
+            cu_seqlens=cu_seqlens, use_qk_l2norm_in_kernel=True,
+            softplus_beta=1.0, softplus_threshold=20.0,
+        )
+
+    torch.cuda.synchronize()
+    run_serving_decode()
+    torch.cuda.synchronize()
+    with benchmark_with_power(
+        device=device,
+        kernel_func=run_serving_decode,
+        num_warmups=num_warmups,
+        num_runs=num_runs,
+        repeat_n=1,
+        allow_graph_fail=True,
+    ) as results:
+        log_perf(
+            item_list=[{**common_log_data, "latency": results["latency_ms"]}],
+            framework="TRTLLM",
+            version=trtllm_version,
+            device_name=torch.cuda.get_device_name(device),
+            op_name="gdn",
+            kernel_source=("fused_sigmoid_gating_delta_rule_update_flashinfer" if uses_flashinfer
+                           else "fused_sigmoid_gating_delta_rule_update_triton"),
+            perf_filename=perf_filename,
+            power_stats=results["power_stats"],
+        )
 
 
 def run_gdn_generation_benchmark(
@@ -431,12 +529,21 @@ def run_gdn_generation_benchmark(
                 "model_name": model_name,
             }
 
+            # serving's pure-decode entry (dispatch-labeled); the rows below keep
+            # the conv update and the FLA recurrent fallback lane
+            _bench_serving_decode_entry(
+                batch_size=batch_size, num_k_heads=num_k_heads, head_k_dim=head_k_dim,
+                num_v_heads=num_v_heads, head_v_dim=head_v_dim, dtype=dtype, device=device,
+                common_log_data=common_log_data, trtllm_version=trtllm_version,
+                perf_filename=perf_filename, num_warmups=num_warmups, num_runs=num_runs,
+            )
+
             if aic_cached_inputs:
                 k_input = torch.randn(batch_size, conv_channels, dtype=dtype, device=device)
                 q = torch.randn(batch_size, 1, num_k_heads, head_k_dim, dtype=dtype, device=device)
                 k = torch.randn(batch_size, 1, num_k_heads, head_k_dim, dtype=dtype, device=device)
                 v = torch.randn(batch_size, 1, num_v_heads, head_v_dim, dtype=dtype, device=device)
-                g = torch.nn.functional.logsigmoid(torch.randn(batch_size, 1, num_v_heads, dtype=dtype, device=device))
+                g = torch.nn.functional.logsigmoid(torch.randn(batch_size, 1, num_v_heads, dtype=torch.float32, device=device))  # serving g is fp32
                 beta = torch.sigmoid(torch.randn(batch_size, 1, num_v_heads, dtype=dtype, device=device))
 
                 # --- Benchmark causal_conv1d_update ---
@@ -523,6 +630,7 @@ def run_gdn_generation_benchmark(
                     dtype,
                     device,
                 )
+                input_pool["g"] = [t.float() for t in input_pool["g"]]  # serving g is fp32
                 for i in range(total_iters):
                     input_pool["g"][i] = torch.nn.functional.logsigmoid(input_pool["g"][i])
                     input_pool["beta"][i] = torch.sigmoid(input_pool["beta"][i])
@@ -647,9 +755,38 @@ def run_gdn_torch(
         contextlib.redirect_stderr(_devnull_file),
     ):
         import tensorrt_llm
-        from tensorrt_llm._torch.modules.fla.chunk import chunk_gated_delta_rule
         from tensorrt_llm._torch.modules.fla.fused_recurrent import fused_recurrent_gated_delta_rule
         from tensorrt_llm._torch.modules.mamba.causal_conv1d import causal_conv1d_fn, causal_conv1d_update
+
+        # Serving dispatch, never the vendored kernel directly: the GDN mixer
+        # resolves chunk_gated_delta_rule to FlashInfer's cute-DSL chunk kernel on
+        # SM90/SM100 (TLLM_USE_FLASHINFER_GDN_PREFILL=1 default) and to the FLA
+        # Triton kernel elsewhere (_torch/modules/mamba/gdn_mixer.py:57-70
+        # @1.3.0rc23; arch gate _utils.is_flashinfer_gdn_supported_arch). Older
+        # builds have no resolver and only the Triton kernel — import that.
+        chunk_label = "chunk_gated_delta_rule"
+        try:
+            from tensorrt_llm._torch.modules.mamba.gdn_mixer import (
+                _resolve_chunk_gated_delta_rule,
+                chunk_gated_delta_rule,
+            )
+
+            if "flashinfer" in getattr(_resolve_chunk_gated_delta_rule(), "__module__", ""):
+                chunk_label = "chunk_gated_delta_rule_flashinfer"
+        except ImportError:
+            from tensorrt_llm._torch.modules.fla.chunk import chunk_gated_delta_rule
+        # Pure-decode serving entry (gdn_mixer.py:670): fused sigmoid gating +
+        # recurrent update, itself dispatching to FlashInfer's bf16-state GDN
+        # decode kernel when _can_use_flashinfer_gdn_decode holds
+        # (fla/fused_sigmoid_gating_recurrent.py:205-238,452-458 @1.3.0rc23).
+        try:
+            from tensorrt_llm._torch.modules.fla.fused_sigmoid_gating_recurrent import (
+                _can_use_flashinfer_gdn_decode,
+                fused_sigmoid_gating_delta_rule_update,
+            )
+        except ImportError:
+            _can_use_flashinfer_gdn_decode = None
+            fused_sigmoid_gating_delta_rule_update = None
 
     globals().update(
         {
@@ -657,7 +794,10 @@ def run_gdn_torch(
             "causal_conv1d_fn": causal_conv1d_fn,
             "causal_conv1d_update": causal_conv1d_update,
             "chunk_gated_delta_rule": chunk_gated_delta_rule,
+            "_CHUNK_KERNEL_SOURCE": chunk_label,
             "fused_recurrent_gated_delta_rule": fused_recurrent_gated_delta_rule,
+            "fused_sigmoid_gating_delta_rule_update": fused_sigmoid_gating_delta_rule_update,
+            "_can_use_flashinfer_gdn_decode": _can_use_flashinfer_gdn_decode,
         }
     )
 

@@ -1,0 +1,57 @@
+{
+ "verdict": "aligned",
+ "repo": "google/gemma-4-26B-A4B",
+ "framework": "vllm",
+ "version": "0.29.0",
+ "gate_name": "moe_bf16_gemma4-26B-A4B",
+ "target_roles": [
+  "moe_gemm",
+  "routing"
+ ],
+ "phase": null,
+ "phase_scoped": false,
+ "kv_dtype": null,
+ "op_hint": "moe|expert|grouped|fused_moe|deepgemm|topk|marlin|routing",
+ "capture_file": "facts/pathdiff/opcov_moe_bf16_gemma4.json",
+ "capture_sha256": "ac74a8bdb944f038",
+ "capture_env": null,
+ "capture_run_error": null,
+ "serving_record": {
+  "id": "dfe3060b813f",
+  "tp": 1,
+  "kv_cache_dtype": "fp8",
+  "isl": 4096,
+  "prefix_caching": false,
+  "raw_file": null,
+  "candidates": 2,
+  "exec_fingerprint": "e8720e6c955f",
+  "evidence_status": "current"
+ },
+ "collector_backends": [
+  "torch",
+  "triton_fused_moe",
+  "vllm_kernel"
+ ],
+ "serving_backends": [
+  "cublas",
+  "torch",
+  "triton",
+  "triton_fused_moe",
+  "vllm_kernel"
+ ],
+ "missing_roles": [],
+ "aux_collector_only_roles": [],
+ "role_counts": {
+  "moe_gemm": {
+   "collector": 1,
+   "serving": 1,
+   "matched": 1
+  },
+  "routing": {
+   "collector": 1,
+   "serving": 1,
+   "matched": 1
+  }
+ },
+ "evidence": "archive/evidence/pathdiff/<framework-version>/<gate>.json in the probe workspace (full kernel lists)"
+}

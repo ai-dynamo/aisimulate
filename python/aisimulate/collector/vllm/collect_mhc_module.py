@@ -25,7 +25,7 @@ from collector.registry_types import PerfFile
 # mHC: 4/4 representative shape/operation cases. The native framework
 # builders/selectors remain authoritative; no kernel fallback is introduced.
 # The campaign manifest still selects one exact release per run.
-__compat__ = "vllm>=0.24.0,<=0.25.0"
+__compat__ = "vllm>=0.24.0,<=0.29.0"
 
 # vLLM imports stay lazy in this module so that a mismatched install fails
 # inside collect.py's per-op error handling (after the __compat__ gate can

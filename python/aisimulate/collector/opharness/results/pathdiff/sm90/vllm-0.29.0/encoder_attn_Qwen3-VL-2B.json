@@ -1,0 +1,39 @@
+{
+ "verdict": "aligned",
+ "repo": "Qwen/Qwen3-VL-2B-Instruct",
+ "framework": "vllm",
+ "version": "0.29.0",
+ "capture_file": "facts/pathdiff/opcov_encoder_attn_qwen3vl.json",
+ "capture_cmd": [
+  "/work/s/caps/encoder_attn_qwen3vl.py"
+ ],
+ "capture_run_error": null,
+ "kv_dtype": "auto",
+ "op_hint": "vision|vit|patch|encoder|flash|attn",
+ "serving_record": {
+  "id": "cb497f62bf98",
+  "tp": 1,
+  "kv_cache_dtype": "auto",
+  "isl": 4096,
+  "prefix_caching": false,
+  "raw_file": null,
+  "candidates": 2
+ },
+ "collector_backends": [
+  "fa3"
+ ],
+ "serving_backends": [
+  "cublas",
+  "fa3",
+  "torch"
+ ],
+ "collector_only_signal": [],
+ "kernel_drift": null,
+ "serving_kernels_matched_in_collector": [
+  "flash::FlashAttnFwdSm90",
+  "flash::prepare_varlen_num_blocks_kernel",
+  "namespace"
+ ],
+ "collector_unmatched_kernels": [],
+ "note": "subset semantics: the collector exercises ONE op; serving runs the whole model. 'diverged' = the collector executed a signal backend family serving never did."
+}

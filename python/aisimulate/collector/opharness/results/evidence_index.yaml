@@ -1,0 +1,19 @@
+_meta:
+  purpose: conclusions in results/ point at evidence bundles by campaign id + sha256; bundles live outside git (location
+    column)
+bundles:
+- campaign: 2026-09-26_sm90
+  created: '2026-09-26T21:25:29'
+  harness_commit: 90b14cd5
+  bundle: 2026-09-26_sm90.a3a22f6ee979.tar.gz
+  sha256: a3a22f6ee979a894038ca7d738384148a73f377d313c33bab72235967058f9de
+  size_bytes: 6235278
+  location: /root/tianhao/debug/opharness/archive/bundles/2026-09-26_sm90.a3a22f6ee979.tar.gz
+  counts:
+    records: 1
+    plans: 22
+    raw: 856
+    fingerprints: 103
+    rendered_engine_configs: 804
+    full_reports: 53
+    captures: 62

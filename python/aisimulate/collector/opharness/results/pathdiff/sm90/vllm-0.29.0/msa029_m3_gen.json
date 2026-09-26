@@ -1,0 +1,54 @@
+{
+ "verdict": "aligned",
+ "repo": "MiniMaxAI/MiniMax-M3",
+ "framework": "vllm",
+ "version": "0.29.0",
+ "capture_file": "facts/pathdiff/cap_msa029_gen.json",
+ "capture_cmd": [
+  "/ws/collector/vllm/collect_msa_029.py",
+  "--mode",
+  "generation",
+  "--quick",
+  "--batch-size",
+  "4",
+  "--seq-len",
+  "2048",
+  "--model",
+  "MiniMaxAI/MiniMax-M3"
+ ],
+ "capture_run_error": null,
+ "kv_dtype": null,
+ "op_hint": "attn|sparse|msa|topk|index|score|merge",
+ "serving_record": {
+  "id": "5f46facfd6f6",
+  "tp": 1,
+  "kv_cache_dtype": "auto",
+  "isl": 4096,
+  "prefix_caching": false,
+  "raw_file": null,
+  "candidates": 3
+ },
+ "collector_backends": [
+  "cublas",
+  "triton"
+ ],
+ "serving_backends": [
+  "triton",
+  "triton_fused_moe",
+  "vllm_kernel"
+ ],
+ "collector_only_signal": [],
+ "kernel_drift": null,
+ "serving_kernels_matched_in_collector": [
+  "_decode_index_score_kernel",
+  "_gqa_sparse_decode_kernel",
+  "_merge_topk_attn_out_kernel",
+  "_topk_index_merge_kernel",
+  "_topk_index_partial_kernel",
+  "at_cuda_detail::cub::detail::scan::DeviceScanInitKernel",
+  "at_cuda_detail::cub::detail::scan::DeviceScanKernel",
+  "namespace"
+ ],
+ "collector_unmatched_kernels": [],
+ "note": "subset semantics: the collector exercises ONE op; serving runs the whole model. 'diverged' = the collector executed a signal backend family serving never did."
+}

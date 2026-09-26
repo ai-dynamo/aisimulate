@@ -56,7 +56,7 @@ quantized-weight preparation, and selected-kernel reporting.
 # 322-363); NVFP4 still uses CT's factory and records the selected kernel
 # (schemes/compressed_tensors_w4a4_nvfp4.py:29-31,95-141). This adds the
 # exact 0.25.0 release to the existing lane, not 0.25.1/0.26.0/0.27.0.
-__compat__ = "vllm>=0.24.0,<=0.27.1,!=0.25.1,!=0.26.0,!=0.27.0"
+__compat__ = "vllm>=0.24.0,<=0.29.0,!=0.25.1,!=0.26.0,!=0.27.0"
 
 from types import SimpleNamespace
 

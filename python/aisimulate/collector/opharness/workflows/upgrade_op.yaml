@@ -1,0 +1,23 @@
+# Machine-readable step manifest for workflows/upgrade_op.md.
+# Params: fw (backend), version (new pin), sm (default sm90).
+# State is derived by components/workflow_check.py from artifacts only.
+workflow: upgrade_op
+steps:
+- id: pin_bumped
+  actor: owner
+  done_when: {check: pin_is}
+- id: plan_scoped
+  actor: script
+  done_when: {check: plan_has_version}
+- id: identity_rerun
+  actor: script
+  done_when: {check: matrix_complete}
+- id: path_aligned
+  actor: script
+  done_when: {check: path_verdicts_aligned}
+- id: customizations_retested
+  actor: ai
+  done_when: {check: customizations_retested}
+- id: failures_root_caused
+  actor: ai
+  done_when: {check: fails_root_caused}

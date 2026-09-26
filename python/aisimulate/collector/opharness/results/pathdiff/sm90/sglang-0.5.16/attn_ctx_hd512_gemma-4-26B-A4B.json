@@ -1,0 +1,50 @@
+{
+ "verdict": "aligned",
+ "repo": "google/gemma-4-26B-A4B",
+ "framework": "sglang",
+ "version": "0.5.16",
+ "gate_name": "attn_ctx_hd512_gemma-4-26B-A4B",
+ "target_roles": [
+  "attention",
+  "dsa_indexer"
+ ],
+ "phase": "prefill",
+ "phase_scoped": true,
+ "kv_dtype": "auto",
+ "op_hint": "attn|attention|flash|fwd|triton",
+ "capture_file": "facts/pathdiff/opcov_sgl_attn_ctx_gemma4_hd512.json",
+ "capture_sha256": "faa821ce3bba2bc5",
+ "capture_env": null,
+ "capture_run_error": null,
+ "serving_record": {
+  "id": "a69d6a2853c6",
+  "tp": 1,
+  "kv_cache_dtype": "auto",
+  "isl": 4096,
+  "prefix_caching": false,
+  "raw_file": null,
+  "candidates": 1,
+  "exec_fingerprint": "3a5b8651032b",
+  "evidence_status": "current"
+ },
+ "collector_backends": [
+  "sgl_kernel",
+  "triton"
+ ],
+ "serving_backends": [
+  "cublas",
+  "sgl_kernel",
+  "triton",
+  "triton_fused_moe"
+ ],
+ "missing_roles": [],
+ "aux_collector_only_roles": [],
+ "role_counts": {
+  "attention": {
+   "collector": 1,
+   "serving": 1,
+   "matched": 1
+  }
+ },
+ "evidence": "archive/evidence/pathdiff/<framework-version>/<gate>.json in the probe workspace (full kernel lists)"
+}

@@ -73,7 +73,11 @@ from vllm.version import __version__ as vllm_version
 # CSA/HCA context/generation: 32/32; auxiliary sparse kernels: 4/4. The native framework
 # builders/selectors remain authoritative; no kernel fallback is introduced.
 # The campaign manifest still selects one exact release per run.
-__compat__ = "vllm>=0.24.0,<=0.25.0"
+# Versions are upgraded IN PLACE (owner policy 2026-09-20): this file always
+# targets the manifest pin; prior-version code is `git log -- <this file>`
+# away and prior-version DATA stays permanent under its version key. The
+# 0.24->0.29 adaptations each carry a serving citation @0.29.0.
+__compat__ = "vllm>=0.29.0,<=0.29.0"
 
 
 DEFAULT_MODEL = _DSV4_DEFAULT_MODELS[0]
@@ -361,21 +365,55 @@ def _remap_common_metadata(common, *, block_size: int, device: str):
 
 
 def _allocate_attention_kv_cache(backend, spec, num_blocks: int, cache_dtype: str, *, device: str) -> torch.Tensor:
-    shape_block_size = spec.storage_block_size if spec.storage_block_size != spec.block_size else spec.block_size
-    shape = backend.get_kv_cache_shape(
-        num_blocks,
-        shape_block_size,
-        spec.num_kv_heads,
-        spec.head_size,
-        cache_dtype,
-    )
+    # 0.29: the shape contract lives in the generic spec pipeline. Serving
+    # allocates flat bytes and views each layer as the 4D logical [B,H,N,C]
+    # page (compute_layer_kv_cache_shape_bytes, v1/kv_cache_interface.py:253-269;
+    # per-layer element view = bytes.view(spec.dtype), create_kv_cache_views).
+    # The dsv4 layout facts (584B fp8_ds_mla state content, 576B alignment,
+    # tokens_per_state=compress_ratio) are spec fields at 0.29
+    # (models/deepseek_v4/attention.py:741-753), so the helper output IS the
+    # serving shape. Page padding: mirror create_kv_cache_views' block stride
+    # (page_size_bytes per block) via empty_strided when the spec pads pages.
+    from vllm.v1.kv_cache_interface import compute_layer_kv_cache_shape_bytes
+
+    shape_bytes = compute_layer_kv_cache_shape_bytes(spec, num_blocks)
+    dtype_size = torch.empty((), dtype=spec.dtype).element_size()
+    shape = (*shape_bytes[:-1], shape_bytes[-1] // dtype_size)
     if spec.page_size_padded is None:
         return torch.zeros(shape, dtype=spec.dtype, device=device)
 
-    dtype_size = torch.empty((), dtype=spec.dtype).element_size()
     strides = list(torch.empty(shape).stride())
     strides[0] = spec.page_size_bytes // dtype_size
     return torch.empty_strided(shape, tuple(strides), dtype=spec.dtype, device=device).zero_()
+
+
+def _make_builder(backend, spec, prefix, vllm_config, common, *, device: str):
+    """Construct the layer's metadata builder exactly as serving does at 0.29.
+
+    Builders may demand kw-only block_table_width (DeepseekV32IndexerMetadataBuilder,
+    mla/indexer.py:519,531); serving computes it via get_block_table_width and
+    ALLOCATES the block table at that width (v1/worker/utils.py:276-283 +
+    v1/worker/block_table.py:29-49), so builders assume
+    table.shape[1] == width — the family-100 decode path copies the table into
+    a width-sized expanded buffer (indexer.py:609,745) and crashes on narrower
+    tables (found on B300 2026-09-20 in the mla 029 lane; same contract here).
+    Zero-pad our ceil(seq/block)-column table to the width.
+    """
+    builder_cls = backend.get_builder_cls()
+    kwargs = {}
+    if getattr(builder_cls, "requires_block_table_width", False):
+        from vllm.v1.worker.block_table import get_block_table_width
+        max_num_blocks = spec.max_num_blocks_per_req(
+            vllm_config, vllm_config.model_config.max_model_len
+        )
+        width = get_block_table_width(max_num_blocks, spec.block_size)
+        kwargs["block_table_width"] = width
+        _bt = common.block_table_tensor
+        if _bt.shape[1] < width:
+            _pad = torch.zeros((_bt.shape[0], width - _bt.shape[1]),
+                               dtype=_bt.dtype, device=_bt.device)
+            common.block_table_tensor = torch.cat([_bt, _pad], dim=1)
+    return builder_cls(spec, [prefix], vllm_config, torch.device(device), **kwargs)
 
 
 def _build_metadata_and_bind_caches(attn_module: DeepseekV4Attention, vllm_config, common, *, device: str):
@@ -392,20 +430,20 @@ def _build_metadata_and_bind_caches(attn_module: DeepseekV4Attention, vllm_confi
         if spec is None:
             continue
         backend = registered_layer.get_attn_backend()
-        metadata[layer.prefix] = backend.get_builder_cls()(
-            spec,
-            [layer.prefix],
-            vllm_config,
-            torch.device(device),
+        metadata[layer.prefix] = _make_builder(
+            backend, spec, layer.prefix, vllm_config, common, device=device
         ).build(0, common)
         cache_dtype = getattr(spec, "cache_dtype_str", None) or "auto"
-        registered_layer.kv_cache = _allocate_attention_kv_cache(
+        # serving binds through each layer's bind_kv_cache
+        # (v1/worker/utils.py:622@0.29.0) — layer overrides may reshape the
+        # raw view (e.g. squeeze the H=1 dim), so never assign .kv_cache raw
+        registered_layer.bind_kv_cache(_allocate_attention_kv_cache(
             backend,
             spec,
             cache_blocks,
             cache_dtype,
             device=device,
-        )
+        ))
 
     compressors = [attn_module.compressor]
     if attn_module.indexer is not None:
@@ -415,24 +453,21 @@ def _build_metadata_and_bind_caches(attn_module: DeepseekV4Attention, vllm_confi
         spec = state_cache.get_kv_cache_spec(vllm_config)
         backend = state_cache.get_attn_backend()
         compressor_common = _remap_common_metadata(common, block_size=spec.block_size, device=device)
-        metadata[state_cache.prefix] = backend.get_builder_cls()(
-            spec,
-            [state_cache.prefix],
-            vllm_config,
-            torch.device(device),
+        metadata[state_cache.prefix] = _make_builder(
+            backend, spec, state_cache.prefix, vllm_config, compressor_common, device=device
         ).build(0, compressor_common)
         state_cache_blocks = _cache_blocks_for_block_size(
             int(common.num_reqs),
             int(common.max_seq_len),
             spec.block_size,
         )
-        state_cache.kv_cache = _allocate_attention_kv_cache(
+        state_cache.bind_kv_cache(_allocate_attention_kv_cache(
             backend,
             spec,
             state_cache_blocks,
             getattr(spec, "cache_dtype_str", None) or "auto",
             device=device,
-        )
+        ))
 
     return metadata
 

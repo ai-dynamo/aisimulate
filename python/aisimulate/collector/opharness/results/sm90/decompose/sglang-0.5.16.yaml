@@ -1,0 +1,2013 @@
+_meta:
+  platform: sm90
+  framework: sglang
+  version: 0.5.16
+  taxonomy: kernel_taxonomy_sm90.yaml
+  kind: summary
+  generated: '2026-09-26T21:26:19'
+  summary:
+    repos: 99
+    repos_with_residue: 0
+    residue_kernels: []
+results:
+  MiniMaxAI/MiniMax-M2:
+    record: cdf57487d5b5
+    variant: rep
+    kv: auto
+    probe_eager: false
+    families:
+      activation: {framework_native: 2}
+      attention: {fa3: 3}
+      gemm: {cublas: 3, triton_block_fp8: 1}
+      infra: {infra: 6, sgl_kernel: 1}
+      kvcache: {framework_native: 3, sgl_kernel: 1}
+      moe_gemm: {triton_fused_moe: 1}
+      moe_infra: {sgl_kernel: 3}
+      norm_rope: {framework_native: 5}
+      quant: {sgl_kernel: 1}
+      routing: {framework_native: 1}
+    residue: []
+    ops_observed: ['attn:FlashAttentionBackend.forward_extend']
+    coverage: {labeled: 31, residue: 0}
+  MiniMaxAI/MiniMax-M2.5:
+    record: a2e263f2cfea
+    variant: rep
+    kv: auto
+    probe_eager: false
+    families:
+      activation: {framework_native: 2}
+      attention: {fa3: 3}
+      gemm: {cublas: 3, triton_block_fp8: 1}
+      infra: {infra: 6, sgl_kernel: 1}
+      kvcache: {framework_native: 3, sgl_kernel: 1}
+      moe_gemm: {triton_fused_moe: 1}
+      moe_infra: {sgl_kernel: 3}
+      norm_rope: {framework_native: 5}
+      quant: {sgl_kernel: 1}
+      routing: {framework_native: 1}
+    residue: []
+    ops_observed: ['attn:FlashAttentionBackend.forward_extend']
+    coverage: {labeled: 31, residue: 0}
+  MiniMaxAI/MiniMax-M2.7:
+    record: 6fd25be1216a
+    variant: rep
+    kv: auto
+    probe_eager: false
+    families:
+      activation: {framework_native: 2}
+      attention: {fa3: 3}
+      gemm: {cublas: 3, deepgemm: 1}
+      infra: {infra: 6, sgl_kernel: 1}
+      kvcache: {framework_native: 3, sgl_kernel: 1}
+      moe_gemm: {triton_fused_moe: 1}
+      moe_infra: {sgl_kernel: 3}
+      norm_rope: {framework_native: 5}
+      quant: {sgl_kernel: 1}
+      routing: {framework_native: 1}
+    residue: []
+    ops_observed: ['attn:FlashAttentionBackend.forward_extend']
+    coverage: {labeled: 31, residue: 0}
+    kv_variants:
+      fp8_e4m3:
+        record: 0fbe19e54cae
+        added_kernels: 1
+        added_residue: []
+  MiniMaxAI/MiniMax-M3:
+    record: 7f3cbb30557f
+    variant: moe_sparse_attn
+    kv: auto
+    probe_eager: false
+    families:
+      activation: {framework_native: 2}
+      attention: {fa3: 1, triton: 8}
+      gemm: {cublas: 9}
+      infra: {infra: 7, sgl_kernel: 1}
+      kvcache: {framework_native: 6}
+      moe_gemm: {triton_fused_moe: 1}
+      moe_infra: {sgl_kernel: 3}
+      norm_rope: {framework_native: 4, sgl_kernel: 1}
+      routing: {framework_native: 1}
+    residue: []
+    ops_observed: ['attn:MiniMaxHybridAttnBackend.forward']
+    coverage: {labeled: 44, residue: 0}
+    kv_variants:
+      fp8_e4m3:
+        record: a0ec7fb0a0d9
+        added_kernels: 2
+        added_residue: []
+  Qwen/Qwen1.5-MoE-A2.7B:
+    record: 7e4945b1b152
+    variant: rep
+    kv: auto
+    probe_eager: false
+    families:
+      activation: {framework_native: 3}
+      attention: {fa3: 3}
+      gemm: {cublas: 10, torch: 1}
+      infra: {infra: 6, sgl_kernel: 1}
+      kvcache: {framework_native: 3, sgl_kernel: 1}
+      moe_gemm: {triton_fused_moe: 1}
+      moe_infra: {sgl_kernel: 4}
+      norm_rope: {framework_native: 3}
+      routing: {framework_native: 1}
+    residue: []
+    ops_observed: ['attn:FlashAttentionBackend.forward_extend']
+    coverage: {labeled: 37, residue: 0}
+    kv_variants:
+      fp8_e4m3:
+        record: 10457b79f69e
+        added_kernels: 1
+        added_residue: []
+  Qwen/Qwen3-0.6B:
+    record: 15839bf30b9c
+    variant: rep
+    kv: auto
+    probe_eager: false
+    families:
+      activation: {framework_native: 1}
+      attention: {fa3: 3}
+      gemm: {cublas: 8}
+      infra: {infra: 6, sgl_kernel: 1}
+      kvcache: {framework_native: 3, sgl_kernel: 1}
+      norm_rope: {framework_native: 3, sgl_kernel: 1}
+    residue: []
+    ops_observed: ['attn:FlashAttentionBackend.forward_extend']
+    coverage: {labeled: 27, residue: 0}
+    kv_variants:
+      fp8_e4m3:
+        record: 7493dccfa6a6
+        added_kernels: 1
+        added_residue: []
+  Qwen/Qwen3-1.7B:
+    record: fa0874e4f984
+    variant: rep
+    kv: auto
+    probe_eager: false
+    families:
+      activation: {framework_native: 1}
+      attention: {fa3: 3}
+      gemm: {cublas: 9}
+      infra: {infra: 6, sgl_kernel: 1}
+      kvcache: {framework_native: 3, sgl_kernel: 1}
+      norm_rope: {framework_native: 3, sgl_kernel: 1}
+    residue: []
+    ops_observed: ['attn:FlashAttentionBackend.forward_extend']
+    coverage: {labeled: 28, residue: 0}
+    kv_variants:
+      fp8_e4m3:
+        record: eae9ca18eb4a
+        added_kernels: 1
+        added_residue: []
+  Qwen/Qwen3-235B-A22B:
+    record: e09a24fe3527
+    variant: rep
+    kv: auto
+    probe_eager: false
+    families:
+      activation: {framework_native: 2}
+      attention: {fa3: 3}
+      gemm: {cublas: 7}
+      infra: {infra: 6, sgl_kernel: 1}
+      kvcache: {framework_native: 3}
+      moe_gemm: {triton_fused_moe: 1}
+      moe_infra: {sgl_kernel: 3}
+      norm_rope: {framework_native: 3, sgl_kernel: 1}
+      routing: {framework_native: 1}
+    residue: []
+    ops_observed: ['attn:FlashAttentionBackend.forward_extend']
+    coverage: {labeled: 31, residue: 0}
+    kv_variants:
+      fp8_e4m3:
+        record: 004471e4f4d9
+        added_kernels: 3
+        added_residue: []
+  Qwen/Qwen3-235B-A22B-FP8:
+    record: 192ef02e98fa
+    variant: rep
+    kv: auto
+    probe_eager: false
+    families:
+      activation: {framework_native: 2}
+      attention: {fa3: 3}
+      gemm: {cublas: 4, deepgemm: 1}
+      infra: {infra: 6, sgl_kernel: 1}
+      kvcache: {framework_native: 3}
+      moe_gemm: {triton_fused_moe: 1}
+      moe_infra: {sgl_kernel: 3}
+      norm_rope: {framework_native: 3, sgl_kernel: 1}
+      quant: {sgl_kernel: 1}
+      routing: {framework_native: 1}
+    residue: []
+    ops_observed: ['attn:FlashAttentionBackend.forward_extend']
+    coverage: {labeled: 30, residue: 0}
+    kv_variants:
+      fp8_e4m3:
+        record: b701c5184fbc
+        added_kernels: 3
+        added_residue: []
+  Qwen/Qwen3-235B-A22B-Instruct-2507:
+    record: 742bae1ea052
+    variant: rep
+    kv: auto
+    probe_eager: false
+    families:
+      activation: {framework_native: 2}
+      attention: {fa3: 3}
+      gemm: {cublas: 7}
+      infra: {infra: 6, sgl_kernel: 1}
+      kvcache: {framework_native: 3}
+      moe_gemm: {triton_fused_moe: 1}
+      moe_infra: {sgl_kernel: 3}
+      norm_rope: {framework_native: 3, sgl_kernel: 1}
+      routing: {framework_native: 1}
+    residue: []
+    ops_observed: ['attn:FlashAttentionBackend.forward_extend']
+    coverage: {labeled: 31, residue: 0}
+    kv_variants:
+      fp8_e4m3:
+        record: 07b97d1a03d9
+        added_kernels: 3
+        added_residue: []
+  Qwen/Qwen3-30B-A3B:
+    record: 5610dc2c3761
+    variant: rep
+    kv: auto
+    probe_eager: false
+    families:
+      activation: {framework_native: 2}
+      attention: {fa3: 3}
+      gemm: {cublas: 8}
+      infra: {infra: 6, sgl_kernel: 1}
+      kvcache: {framework_native: 3}
+      moe_gemm: {triton_fused_moe: 1}
+      moe_infra: {sgl_kernel: 3}
+      norm_rope: {framework_native: 3, sgl_kernel: 1}
+      routing: {framework_native: 1}
+    residue: []
+    ops_observed: ['attn:FlashAttentionBackend.forward_extend']
+    coverage: {labeled: 32, residue: 0}
+    kv_variants:
+      fp8_e4m3:
+        record: 4a098e5ab285
+        added_kernels: 3
+        added_residue: []
+  Qwen/Qwen3-30B-A3B-FP8:
+    record: e8fd92622db2
+    variant: rep
+    kv: auto
+    probe_eager: false
+    families:
+      activation: {framework_native: 2}
+      attention: {fa3: 3}
+      gemm: {cublas: 3, deepgemm: 1}
+      infra: {infra: 6, sgl_kernel: 1}
+      kvcache: {framework_native: 3}
+      moe_gemm: {triton_fused_moe: 1}
+      moe_infra: {sgl_kernel: 3}
+      norm_rope: {framework_native: 3, sgl_kernel: 1}
+      quant: {sgl_kernel: 1}
+      routing: {framework_native: 1}
+    residue: []
+    ops_observed: ['attn:FlashAttentionBackend.forward_extend']
+    coverage: {labeled: 29, residue: 0}
+    kv_variants:
+      fp8_e4m3:
+        record: 64e863669816
+        added_kernels: 3
+        added_residue: []
+  Qwen/Qwen3-32B:
+    record: 444c714ab14c
+    variant: rep
+    kv: auto
+    probe_eager: false
+    families:
+      activation: {framework_native: 1}
+      attention: {fa3: 3}
+      gemm: {cublas: 8}
+      infra: {infra: 6, sgl_kernel: 1}
+      kvcache: {framework_native: 3, sgl_kernel: 1}
+      norm_rope: {framework_native: 3, sgl_kernel: 1}
+    residue: []
+    ops_observed: ['attn:FlashAttentionBackend.forward_extend']
+    coverage: {labeled: 27, residue: 0}
+    kv_variants:
+      fp8_e4m3:
+        record: dbf05e6cdaca
+        added_kernels: 1
+        added_residue: []
+  Qwen/Qwen3-32B-FP8:
+    record: 83074f085f8f
+    variant: rep
+    kv: auto
+    probe_eager: false
+    families:
+      activation: {framework_native: 1}
+      attention: {fa3: 3}
+      gemm: {cublas: 1, deepgemm: 1}
+      infra: {infra: 6, sgl_kernel: 1}
+      kvcache: {framework_native: 3, sgl_kernel: 1}
+      norm_rope: {framework_native: 3, sgl_kernel: 1}
+      quant: {sgl_kernel: 1}
+    residue: []
+    ops_observed: ['attn:FlashAttentionBackend.forward_extend']
+    coverage: {labeled: 22, residue: 0}
+    kv_variants:
+      fp8_e4m3:
+        record: 0adacc80c62a
+        added_kernels: 1
+        added_residue: []
+  Qwen/Qwen3-32B-FP8-Static-PerTensor:
+    record: 494285e2165a
+    variant: rep
+    kv: auto
+    probe_eager: false
+    families:
+      activation: {framework_native: 1}
+      attention: {fa3: 3}
+      gemm: {cublas: 1, cutlass: 1}
+      infra: {infra: 6, sgl_kernel: 1}
+      kvcache: {framework_native: 3, sgl_kernel: 1}
+      norm_rope: {framework_native: 3, sgl_kernel: 1}
+      quant: {sgl_kernel: 1}
+    residue: []
+    ops_observed: ['attn:FlashAttentionBackend.forward_extend']
+    coverage: {labeled: 22, residue: 0}
+    kv_variants:
+      fp8_e4m3:
+        record: 72cf612bf59d
+        added_kernels: 1
+        added_residue: []
+  Qwen/Qwen3-8B:
+    record: 565b626c54ff
+    variant: rep
+    kv: auto
+    probe_eager: false
+    families:
+      activation: {framework_native: 1}
+      attention: {fa3: 3}
+      gemm: {cublas: 7}
+      infra: {infra: 6, sgl_kernel: 1}
+      kvcache: {framework_native: 3, sgl_kernel: 1}
+      norm_rope: {framework_native: 3, sgl_kernel: 1}
+    residue: []
+    ops_observed: ['attn:FlashAttentionBackend.forward_extend']
+    coverage: {labeled: 26, residue: 0}
+    kv_variants:
+      fp8_e4m3:
+        record: d3e206569674
+        added_kernels: 1
+        added_residue: []
+  Qwen/Qwen3-Coder-480B-A35B-Instruct:
+    record: 3970adba9af1
+    variant: rep
+    kv: auto
+    probe_eager: false
+    families:
+      activation: {framework_native: 2}
+      attention: {fa3: 3}
+      gemm: {cublas: 7}
+      infra: {infra: 6, sgl_kernel: 1}
+      kvcache: {framework_native: 3}
+      moe_gemm: {triton_fused_moe: 1}
+      moe_infra: {sgl_kernel: 3}
+      norm_rope: {framework_native: 3, sgl_kernel: 1}
+      routing: {framework_native: 1}
+    residue: []
+    ops_observed: ['attn:FlashAttentionBackend.forward_extend']
+    coverage: {labeled: 31, residue: 0}
+    kv_variants:
+      fp8_e4m3:
+        record: 44cfa00d0684
+        added_kernels: 3
+        added_residue: []
+  Qwen/Qwen3-VL-235B-A22B-Instruct:
+    record: 67fd3a14e028
+    variant: rep
+    kv: auto
+    probe_eager: false
+    families:
+      activation: {framework_native: 2}
+      attention: {fa3: 3}
+      gemm: {cublas: 7}
+      infra: {infra: 7, sgl_kernel: 1}
+      kvcache: {framework_native: 3, sgl_kernel: 1}
+      moe_gemm: {triton_fused_moe: 1}
+      moe_infra: {sgl_kernel: 3}
+      norm_rope: {framework_native: 3, sgl_kernel: 1}
+      routing: {framework_native: 1}
+    residue: []
+    ops_observed: ['attn:FlashAttentionBackend.forward_extend', 'moe:fused_experts_none_to_triton']
+    coverage: {labeled: 33, residue: 0}
+  Qwen/Qwen3-VL-2B-Instruct:
+    record: 2f8062b6aea0
+    variant: rep
+    kv: auto
+    probe_eager: false
+    families:
+      activation: {framework_native: 1}
+      attention: {fa3: 3}
+      gemm: {cublas: 9}
+      infra: {infra: 7, sgl_kernel: 1}
+      kvcache: {framework_native: 3, sgl_kernel: 1}
+      norm_rope: {framework_native: 3, sgl_kernel: 1}
+    residue: []
+    ops_observed: ['attn:FlashAttentionBackend.forward_extend']
+    coverage: {labeled: 29, residue: 0}
+  Qwen/Qwen3-VL-30B-A3B-Instruct:
+    record: 4b8a2ce28e74
+    variant: rep
+    kv: auto
+    probe_eager: false
+    families:
+      activation: {framework_native: 2}
+      attention: {fa3: 3}
+      gemm: {cublas: 8}
+      infra: {infra: 7, sgl_kernel: 1}
+      kvcache: {framework_native: 3, sgl_kernel: 1}
+      moe_gemm: {triton_fused_moe: 1}
+      moe_infra: {sgl_kernel: 3}
+      norm_rope: {framework_native: 3, sgl_kernel: 1}
+      routing: {framework_native: 1}
+    residue: []
+    ops_observed: ['attn:FlashAttentionBackend.forward_extend', 'moe:fused_experts_none_to_triton']
+    coverage: {labeled: 34, residue: 0}
+  Qwen/Qwen3-VL-32B-Instruct:
+    record: 54998b80fd0f
+    variant: rep
+    kv: auto
+    probe_eager: false
+    families:
+      activation: {framework_native: 1}
+      attention: {fa3: 3}
+      gemm: {cublas: 8}
+      infra: {infra: 7, sgl_kernel: 1}
+      kvcache: {framework_native: 3, sgl_kernel: 1}
+      norm_rope: {framework_native: 3, sgl_kernel: 1}
+    residue: []
+    ops_observed: ['attn:FlashAttentionBackend.forward_extend']
+    coverage: {labeled: 28, residue: 0}
+  Qwen/Qwen3-VL-32B-Thinking:
+    record: af6570f1e2fd
+    variant: rep
+    kv: auto
+    probe_eager: false
+    families:
+      activation: {framework_native: 1}
+      attention: {fa3: 3}
+      gemm: {cublas: 8}
+      infra: {infra: 7, sgl_kernel: 1}
+      kvcache: {framework_native: 3, sgl_kernel: 1}
+      norm_rope: {framework_native: 3, sgl_kernel: 1}
+    residue: []
+    ops_observed: ['attn:FlashAttentionBackend.forward_extend']
+    coverage: {labeled: 28, residue: 0}
+  Qwen/Qwen3-VL-4B-Instruct:
+    record: 10f0bcaa254c
+    variant: rep
+    kv: auto
+    probe_eager: false
+    families:
+      activation: {framework_native: 1}
+      attention: {fa3: 3}
+      gemm: {cublas: 8}
+      infra: {infra: 7, sgl_kernel: 1}
+      kvcache: {framework_native: 3, sgl_kernel: 1}
+      norm_rope: {framework_native: 3, sgl_kernel: 1}
+    residue: []
+    ops_observed: ['attn:FlashAttentionBackend.forward_extend']
+    coverage: {labeled: 28, residue: 0}
+  Qwen/Qwen3-VL-8B-Instruct:
+    record: 0e90d9ce6051
+    variant: rep
+    kv: auto
+    probe_eager: false
+    families:
+      activation: {framework_native: 1}
+      attention: {fa3: 3}
+      gemm: {cublas: 7}
+      infra: {infra: 7, sgl_kernel: 1}
+      kvcache: {framework_native: 3, sgl_kernel: 1}
+      norm_rope: {framework_native: 3, sgl_kernel: 1}
+    residue: []
+    ops_observed: ['attn:FlashAttentionBackend.forward_extend']
+    coverage: {labeled: 27, residue: 0}
+  Qwen/Qwen3.5-0.8B:
+    record: 5aec08d64057
+    variant: depth8
+    kv: auto
+    probe_eager: false
+    families:
+      activation: {framework_native: 2}
+      attention: {fa3: 3}
+      gemm: {cublas: 10}
+      infra: {infra: 8, sgl_kernel: 1}
+      kvcache: {framework_native: 4, sgl_kernel: 1}
+      linear_attention: {causal_conv1d: 2, fla_triton: 10}
+      norm_rope: {framework_native: 5}
+    residue: []
+    ops_observed: ['attn:HybridLinearAttnBackend.forward_extend']
+    coverage: {labeled: 46, residue: 0}
+  Qwen/Qwen3.5-122B-A10B:
+    record: 05e77074e6dd
+    variant: depth8
+    kv: auto
+    probe_eager: false
+    families:
+      activation: {framework_native: 4}
+      attention: {fa3: 3}
+      gemm: {cublas: 11}
+      infra: {infra: 8, sgl_kernel: 1}
+      kvcache: {framework_native: 4, sgl_kernel: 1}
+      linear_attention: {causal_conv1d: 2, fla_triton: 9}
+      moe_gemm: {triton_fused_moe: 1}
+      moe_infra: {sgl_kernel: 3}
+      norm_rope: {framework_native: 5}
+      routing: {framework_native: 1}
+    residue: []
+    ops_observed: ['attn:HybridLinearAttnBackend.forward_extend']
+    coverage: {labeled: 53, residue: 0}
+  Qwen/Qwen3.5-27B:
+    record: 6b95498aee63
+    variant: depth8
+    kv: auto
+    probe_eager: false
+    families:
+      activation: {framework_native: 2}
+      attention: {fa3: 3}
+      gemm: {cublas: 11}
+      infra: {infra: 8, sgl_kernel: 1}
+      kvcache: {framework_native: 4, sgl_kernel: 1}
+      linear_attention: {causal_conv1d: 2, fla_triton: 8}
+      norm_rope: {framework_native: 5}
+    residue: []
+    ops_observed: ['attn:HybridLinearAttnBackend.forward_extend']
+    coverage: {labeled: 45, residue: 0}
+  Qwen/Qwen3.5-2B:
+    record: b7eec4340ccd
+    variant: depth8
+    kv: auto
+    probe_eager: false
+    families:
+      activation: {framework_native: 2}
+      attention: {fa3: 3}
+      gemm: {cublas: 10}
+      infra: {infra: 8, sgl_kernel: 1}
+      kvcache: {framework_native: 4, sgl_kernel: 1}
+      linear_attention: {causal_conv1d: 2, fla_triton: 10}
+      norm_rope: {framework_native: 5}
+    residue: []
+    ops_observed: ['attn:HybridLinearAttnBackend.forward_extend']
+    coverage: {labeled: 46, residue: 0}
+  Qwen/Qwen3.5-35B-A3B:
+    record: 1bf0d079c4f3
+    variant: depth8
+    kv: auto
+    probe_eager: false
+    families:
+      activation: {framework_native: 4}
+      attention: {fa3: 3}
+      gemm: {cublas: 13}
+      infra: {infra: 8, sgl_kernel: 1}
+      kvcache: {framework_native: 4, sgl_kernel: 1}
+      linear_attention: {causal_conv1d: 2, fla_triton: 10}
+      moe_gemm: {triton_fused_moe: 1}
+      moe_infra: {sgl_kernel: 3}
+      norm_rope: {framework_native: 5}
+      routing: {framework_native: 1}
+    residue: []
+    ops_observed: ['attn:HybridLinearAttnBackend.forward_extend']
+    coverage: {labeled: 56, residue: 0}
+  Qwen/Qwen3.5-397B-A17B:
+    record: 249fbb7431b4
+    variant: depth8
+    kv: auto
+    probe_eager: false
+    families:
+      activation: {framework_native: 4}
+      attention: {fa3: 3}
+      gemm: {cublas: 9}
+      infra: {infra: 8, sgl_kernel: 1}
+      kvcache: {framework_native: 4, sgl_kernel: 1}
+      linear_attention: {causal_conv1d: 2, fla_triton: 9}
+      moe_gemm: {triton_fused_moe: 1}
+      moe_infra: {sgl_kernel: 3}
+      norm_rope: {framework_native: 5}
+      routing: {framework_native: 1}
+    residue: []
+    ops_observed: ['attn:HybridLinearAttnBackend.forward_extend']
+    coverage: {labeled: 51, residue: 0}
+  Qwen/Qwen3.5-4B:
+    record: 3636f1498bbc
+    variant: depth8
+    kv: auto
+    probe_eager: false
+    families:
+      activation: {framework_native: 2}
+      attention: {fa3: 3}
+      gemm: {cublas: 12}
+      infra: {infra: 8, sgl_kernel: 1}
+      kvcache: {framework_native: 4, sgl_kernel: 1}
+      linear_attention: {causal_conv1d: 2, fla_triton: 10}
+      norm_rope: {framework_native: 5}
+    residue: []
+    ops_observed: ['attn:HybridLinearAttnBackend.forward_extend']
+    coverage: {labeled: 48, residue: 0}
+  Qwen/Qwen3.5-9B:
+    record: 7bf116919c7d
+    variant: depth8
+    kv: auto
+    probe_eager: false
+    families:
+      activation: {framework_native: 2}
+      attention: {fa3: 3}
+      gemm: {cublas: 8}
+      infra: {infra: 8, sgl_kernel: 1}
+      kvcache: {framework_native: 4, sgl_kernel: 1}
+      linear_attention: {causal_conv1d: 2, fla_triton: 10}
+      norm_rope: {framework_native: 5}
+    residue: []
+    ops_observed: ['attn:HybridLinearAttnBackend.forward_extend']
+    coverage: {labeled: 44, residue: 0}
+  Qwen/Qwen3.8-27B:
+    record: 4ee6302c8f40
+    variant: depth8
+    kv: auto
+    probe_eager: false
+    families:
+      activation: {framework_native: 2}
+      attention: {fa3: 3}
+      gemm: {cublas: 11}
+      infra: {infra: 8, sgl_kernel: 1}
+      kvcache: {framework_native: 4, sgl_kernel: 1}
+      linear_attention: {causal_conv1d: 2, fla_triton: 8}
+      norm_rope: {framework_native: 5}
+    residue: []
+    ops_observed: ['attn:HybridLinearAttnBackend.forward_extend']
+    coverage: {labeled: 45, residue: 0}
+  Qwen/Qwen3.8-27B-FP8:
+    record: 4f053fff5901
+    variant: depth8
+    kv: auto
+    probe_eager: false
+    families:
+      activation: {framework_native: 2}
+      attention: {fa3: 3}
+      gemm: {cublas: 4, deepgemm: 1}
+      infra: {infra: 8, sgl_kernel: 1}
+      kvcache: {framework_native: 4, sgl_kernel: 1}
+      linear_attention: {causal_conv1d: 2, fla_triton: 8}
+      norm_rope: {framework_native: 5}
+      quant: {sgl_kernel: 1}
+    residue: []
+    ops_observed: ['attn:HybridLinearAttnBackend.forward_extend']
+    coverage: {labeled: 40, residue: 0}
+  XiaomiMiMo/MiMo-7B-Base:
+    record: 3b8594e2d696
+    variant: rep
+    kv: auto
+    probe_eager: false
+    families:
+      activation: {framework_native: 1}
+      attention: {fa3: 3}
+      gemm: {cublas: 9}
+      infra: {infra: 6, sgl_kernel: 1}
+      kvcache: {framework_native: 3, sgl_kernel: 1}
+      norm_rope: {framework_native: 3}
+    residue: []
+    ops_observed: ['attn:FlashAttentionBackend.forward_extend']
+    coverage: {labeled: 27, residue: 0}
+    kv_variants:
+      fp8_e4m3:
+        record: ab4d87b6ced4
+        added_kernels: 1
+        added_residue: []
+  XiaomiMiMo/MiMo-V2-Flash:
+    record: e58090da879c
+    variant: all_kinds
+    kv: auto
+    probe_eager: false
+    families:
+      activation: {framework_native: 2}
+      attention: {fa3: 3}
+      gemm: {cublas: 5, deepgemm: 1, torch: 1}
+      infra: {infra: 6, sgl_kernel: 1}
+      kvcache: {framework_native: 3}
+      moe_gemm: {triton_fused_moe: 1}
+      moe_infra: {sgl_kernel: 3}
+      norm_rope: {framework_native: 3}
+      quant: {sgl_kernel: 1}
+      routing: {framework_native: 1}
+    residue: []
+    ops_observed: ['attn:FlashAttentionBackend.forward_extend']
+    coverage: {labeled: 31, residue: 0}
+  deepseek-ai/DeepSeek-R1:
+    record: bc578c907aa9
+    variant: rep
+    kv: auto
+    probe_eager: false
+    families:
+      activation: {framework_native: 2}
+      attention: {fa3: 3}
+      gemm: {cublas: 4, deepgemm: 1}
+      infra: {infra: 5, sgl_kernel: 1}
+      kvcache: {framework_native: 4, sgl_kernel: 1}
+      moe_gemm: {triton_fused_moe: 1}
+      moe_infra: {sgl_kernel: 3}
+      norm_rope: {framework_native: 3}
+      quant: {sgl_kernel: 1}
+      routing: {framework_native: 2}
+    residue: []
+    ops_observed: ['attn:FlashAttentionBackend.forward_extend', 'moe:fused_experts_none_to_triton']
+    coverage: {labeled: 31, residue: 0}
+    kv_variants:
+      fp8_e4m3:
+        record: f76aae24c18a
+        added_kernels: 1
+        added_residue: []
+  deepseek-ai/DeepSeek-V3:
+    record: fd43089dfc3f
+    variant: rep
+    kv: auto
+    probe_eager: false
+    families:
+      activation: {framework_native: 2}
+      attention: {fa3: 3}
+      gemm: {cublas: 4, deepgemm: 1}
+      infra: {infra: 5, sgl_kernel: 1}
+      kvcache: {framework_native: 4, sgl_kernel: 1}
+      moe_gemm: {triton_fused_moe: 1}
+      moe_infra: {sgl_kernel: 3}
+      norm_rope: {framework_native: 3}
+      quant: {sgl_kernel: 1}
+      routing: {framework_native: 2}
+    residue: []
+    ops_observed: ['attn:FlashAttentionBackend.forward_extend', 'moe:fused_experts_none_to_triton']
+    coverage: {labeled: 31, residue: 0}
+    kv_variants:
+      fp8_e4m3:
+        record: 36dee673fb5b
+        added_kernels: 1
+        added_residue: []
+  deepseek-ai/DeepSeek-V3.2:
+    record: 6b26d2ab0781
+    variant: rep
+    kv: bfloat16
+    probe_eager: false
+    families:
+      activation: {framework_native: 4}
+      attention: {dsa_nsa: 1, fa3: 3}
+      dsa_indexer: {dsa_nsa: 4, sgl_kernel: 4}
+      gemm: {cublas: 8, deepgemm: 1}
+      infra: {infra: 6, sgl_kernel: 1}
+      kvcache: {framework_native: 7, sgl_kernel: 1}
+      moe_gemm: {triton_fused_moe: 1}
+      moe_infra: {sgl_kernel: 3}
+      norm_rope: {framework_native: 4}
+      quant: {sgl_kernel: 2}
+      routing: {framework_native: 2}
+    residue: []
+    ops_observed: ['attn:DeepseekSparseAttnBackend.forward_extend', 'moe:fused_experts_none_to_triton']
+    coverage: {labeled: 52, residue: 0}
+    kv_variants:
+      fp8_e4m3:
+        record: 9be0fc733d2f
+        added_kernels: 4
+        added_residue: []
+  deepseek-ai/DeepSeek-V4-Flash:
+    record: 623df67c99e2
+    variant: rep_mix
+    kv: fp8_e4m3
+    probe_eager: false
+    families:
+      activation: {sgl_kernel: 1}
+      attention: {dsa_nsa: 5, flashmla: 3}
+      dsa_indexer: {dsa_nsa: 2, sgl_kernel: 5}
+      gemm: {cublas: 11, deepgemm: 1}
+      infra: {infra: 6, sgl_kernel: 1}
+      kvcache: {framework_native: 12, sgl_kernel: 1}
+      mhc: {deepgemm: 1, tilelang: 2}
+      moe_gemm: {marlin: 1}
+      moe_infra: {sgl_kernel: 2}
+      norm_rope: {framework_native: 2, sgl_kernel: 4}
+      quant: {sgl_kernel: 2}
+      routing: {framework_native: 2}
+    residue: []
+    ops_observed: ['attn:DeepseekV4AttnBackend.forward', 'moe:fused_experts_none_to_marlin']
+    coverage: {labeled: 64, residue: 0}
+  deepseek-ai/DeepSeek-V4-Flash-0731:
+    record: c21bba077c0e
+    variant: csa
+    kv: fp8_e4m3
+    probe_eager: false
+    families:
+      activation: {sgl_kernel: 1}
+      attention: {dsa_nsa: 3, flashmla: 3}
+      dsa_indexer: {dsa_nsa: 2, sgl_kernel: 5}
+      gemm: {cublas: 10, deepgemm: 1}
+      infra: {infra: 7, sgl_kernel: 1}
+      kvcache: {framework_native: 12, sgl_kernel: 1}
+      mhc: {deepgemm: 1, tilelang: 2}
+      moe_gemm: {marlin: 1}
+      moe_infra: {sgl_kernel: 2}
+      norm_rope: {framework_native: 2, sgl_kernel: 4}
+      quant: {sgl_kernel: 2}
+      routing: {framework_native: 2}
+    residue: []
+    ops_observed: ['attn:DeepseekV4AttnBackend.forward', 'moe:fused_experts_none_to_marlin']
+    coverage: {labeled: 62, residue: 0}
+  deepseek-ai/DeepSeek-V4-Pro:
+    record: bccaafaf2cd5
+    variant: interleave_pair
+    kv: fp8_e4m3
+    probe_eager: false
+    families:
+      activation: {sgl_kernel: 1}
+      attention: {dsa_nsa: 5, flashmla: 3}
+      dsa_indexer: {dsa_nsa: 2, sgl_kernel: 5}
+      gemm: {cublas: 13, deepgemm: 1}
+      infra: {infra: 5, sgl_kernel: 1}
+      kvcache: {framework_native: 12, sgl_kernel: 1}
+      mhc: {deepgemm: 1, tilelang: 2}
+      moe_gemm: {marlin: 1}
+      moe_infra: {sgl_kernel: 2}
+      norm_rope: {framework_native: 2, sgl_kernel: 4}
+      quant: {sgl_kernel: 2}
+      routing: {framework_native: 2}
+    residue: []
+    ops_observed: ['attn:DeepseekV4AttnBackend.forward', 'moe:fused_experts_none_to_marlin']
+    coverage: {labeled: 65, residue: 0}
+  deepseek-ai/DeepSeek-V4-Pro-0813:
+    record: 121fb37c09e4
+    variant: csa
+    kv: fp8_e4m3
+    probe_eager: false
+    families:
+      activation: {sgl_kernel: 1}
+      attention: {dsa_nsa: 3, flashmla: 3}
+      dsa_indexer: {dsa_nsa: 2, sgl_kernel: 5}
+      gemm: {cublas: 11, deepgemm: 1}
+      infra: {infra: 7, sgl_kernel: 1}
+      kvcache: {framework_native: 12, sgl_kernel: 1}
+      mhc: {deepgemm: 1, tilelang: 2}
+      moe_gemm: {marlin: 1}
+      moe_infra: {sgl_kernel: 2}
+      norm_rope: {framework_native: 2, sgl_kernel: 4}
+      quant: {sgl_kernel: 2}
+      routing: {framework_native: 2}
+    residue: []
+    ops_observed: ['attn:DeepseekV4AttnBackend.forward', 'moe:fused_experts_none_to_marlin']
+    coverage: {labeled: 63, residue: 0}
+  google/gemma-4-26B-A4B:
+    record: a69d6a2853c6
+    variant: all_kinds
+    kv: auto
+    probe_eager: false
+    families:
+      activation: {framework_native: 2}
+      attention: {triton: 3}
+      gemm: {cublas: 12}
+      infra: {framework_native: 1, infra: 8, sgl_kernel: 1}
+      kvcache: {framework_native: 3, sgl_kernel: 1}
+      moe_gemm: {triton_fused_moe: 1}
+      moe_infra: {sgl_kernel: 3}
+      norm_rope: {framework_native: 5}
+      routing: {framework_native: 1}
+    residue: []
+    ops_observed: ['attn:TritonAttnBackend.forward_extend', 'moe:fused_experts_none_to_triton']
+    coverage: {labeled: 41, residue: 0}
+    kv_variants:
+      fp8_e4m3:
+        record: 1a766415afba
+        added_kernels: 1
+        added_residue: []
+  meta-llama/Llama-4-Maverick-17B-128E-Instruct:
+    record: 29b78d0d58da
+    variant: depth4
+    kv: auto
+    probe_eager: false
+    families:
+      activation: {framework_native: 3}
+      attention: {fa3: 3}
+      gemm: {cublas: 11}
+      infra: {infra: 7, sgl_kernel: 1}
+      kvcache: {framework_native: 3, sgl_kernel: 1}
+      moe_gemm: {triton_fused_moe: 1}
+      moe_infra: {sgl_kernel: 2}
+      norm_rope: {framework_native: 3}
+    residue: []
+    ops_observed: ['attn:FlashAttentionBackend.forward_extend']
+    coverage: {labeled: 35, residue: 0}
+  meta-llama/Meta-Llama-3.1-405B:
+    record: 4a6ab1ae7839
+    variant: rep
+    kv: auto
+    probe_eager: false
+    families:
+      activation: {framework_native: 1}
+      attention: {fa3: 3}
+      gemm: {cublas: 7}
+      infra: {infra: 6, sgl_kernel: 1}
+      kvcache: {framework_native: 3, sgl_kernel: 1}
+      norm_rope: {framework_native: 3}
+    residue: []
+    ops_observed: ['attn:FlashAttentionBackend.forward_extend']
+    coverage: {labeled: 25, residue: 0}
+    kv_variants:
+      fp8_e4m3:
+        record: b8bf248e5754
+        added_kernels: 1
+        added_residue: []
+  meta-llama/Meta-Llama-3.1-70B:
+    record: b6d019a6aee5
+    variant: rep
+    kv: auto
+    probe_eager: false
+    families:
+      activation: {framework_native: 1}
+      attention: {fa3: 3}
+      gemm: {cublas: 8}
+      infra: {infra: 6, sgl_kernel: 1}
+      kvcache: {framework_native: 3, sgl_kernel: 1}
+      norm_rope: {framework_native: 3}
+    residue: []
+    ops_observed: ['attn:FlashAttentionBackend.forward_extend']
+    coverage: {labeled: 26, residue: 0}
+    kv_variants:
+      fp8_e4m3:
+        record: 9617b0f55211
+        added_kernels: 1
+        added_residue: []
+  meta-llama/Meta-Llama-3.1-8B:
+    record: d0eebc171e3d
+    variant: rep
+    kv: auto
+    probe_eager: false
+    families:
+      activation: {framework_native: 1}
+      attention: {fa3: 3}
+      gemm: {cublas: 8}
+      infra: {infra: 6, sgl_kernel: 1}
+      kvcache: {framework_native: 3, sgl_kernel: 1}
+      norm_rope: {framework_native: 3}
+    residue: []
+    ops_observed: ['attn:FlashAttentionBackend.forward_extend']
+    coverage: {labeled: 26, residue: 0}
+    kv_variants:
+      fp8_e4m3:
+        record: 158836ce1c78
+        added_kernels: 1
+        added_residue: []
+  mistralai/Mixtral-8x22B-v0.1:
+    record: b5fbc939f4be
+    variant: rep
+    kv: auto
+    probe_eager: false
+    families:
+      activation: {framework_native: 1}
+      attention: {fa3: 3}
+      gemm: {cublas: 6}
+      infra: {infra: 6, sgl_kernel: 1}
+      kvcache: {framework_native: 3, sgl_kernel: 1}
+      moe_gemm: {triton_fused_moe: 1}
+      moe_infra: {sgl_kernel: 3}
+      norm_rope: {framework_native: 3}
+      routing: {framework_native: 1}
+    residue: []
+    ops_observed: ['attn:FlashAttentionBackend.forward_extend']
+    coverage: {labeled: 29, residue: 0}
+    kv_variants:
+      fp8_e4m3:
+        record: 4c1904b86ecb
+        added_kernels: 1
+        added_residue: []
+  mistralai/Mixtral-8x7B-v0.1:
+    record: 38c08db9f414
+    variant: rep
+    kv: auto
+    probe_eager: false
+    families:
+      activation: {framework_native: 1}
+      attention: {fa3: 3}
+      gemm: {cublas: 7}
+      infra: {infra: 6, sgl_kernel: 1}
+      kvcache: {framework_native: 3, sgl_kernel: 1}
+      moe_gemm: {triton_fused_moe: 1}
+      moe_infra: {sgl_kernel: 3}
+      norm_rope: {framework_native: 3}
+      routing: {framework_native: 1}
+    residue: []
+    ops_observed: ['attn:FlashAttentionBackend.forward_extend']
+    coverage: {labeled: 30, residue: 0}
+    kv_variants:
+      fp8_e4m3:
+        record: d423b9c01159
+        added_kernels: 1
+        added_residue: []
+  moonshotai/Kimi-K2-Instruct:
+    record: 43b924045c53
+    variant: rep
+    kv: auto
+    probe_eager: false
+    families:
+      activation: {framework_native: 2}
+      attention: {fa3: 3}
+      gemm: {cublas: 4, deepgemm: 1}
+      infra: {infra: 6, sgl_kernel: 1}
+      kvcache: {framework_native: 5}
+      moe_gemm: {triton_fused_moe: 1}
+      moe_infra: {sgl_kernel: 3}
+      norm_rope: {framework_native: 3}
+      quant: {sgl_kernel: 1}
+      routing: {framework_native: 2}
+    residue: []
+    ops_observed: ['attn:FlashAttentionBackend.forward_extend', 'moe:fused_experts_none_to_triton']
+    coverage: {labeled: 32, residue: 0}
+    kv_variants:
+      fp8_e4m3:
+        record: 0097393f46dd
+        added_kernels: 1
+        added_residue: []
+  moonshotai/Kimi-K2.5:
+    record: 8d68ba0d11fd
+    variant: rep
+    kv: auto
+    probe_eager: false
+    families:
+      activation: {framework_native: 1}
+      attention: {fa3: 3}
+      gemm: {cublas: 11, cutlass: 1}
+      infra: {infra: 6, sgl_kernel: 1}
+      kvcache: {framework_native: 5}
+      moe_gemm: {marlin: 1}
+      moe_infra: {sgl_kernel: 4}
+      norm_rope: {framework_native: 3}
+      routing: {framework_native: 2}
+    residue: []
+    ops_observed: ['attn:FlashAttentionBackend.forward_extend']
+    coverage: {labeled: 38, residue: 0}
+    kv_variants:
+      fp8_e4m3:
+        record: 156a33d1410a
+        added_kernels: 1
+        added_residue: []
+  nvidia/DeepSeek-V3.1-NVFP4:
+    record: f8ea9c9925d8
+    variant: rep
+    kv: auto
+    probe_eager: false
+    families:
+      activation: {framework_native: 1}
+      attention: {fa3: 3}
+      gemm: {cublas: 8, cutlass: 1, marlin: 1}
+      infra: {infra: 7, sgl_kernel: 1}
+      kvcache: {framework_native: 4, sgl_kernel: 1}
+      moe_gemm: {marlin: 1}
+      moe_infra: {sgl_kernel: 4}
+      norm_rope: {framework_native: 3}
+      routing: {framework_native: 2}
+    residue: []
+    ops_observed: ['attn:FlashAttentionBackend.forward_extend', 'moe:fused_experts_none_to_marlin']
+    coverage: {labeled: 37, residue: 0}
+  nvidia/DeepSeek-V3.2-NVFP4:
+    record: fb854a55858c
+    variant: rep
+    kv: bfloat16
+    probe_eager: false
+    families:
+      activation: {framework_native: 3}
+      attention: {dsa_nsa: 1, fa3: 3}
+      dsa_indexer: {dsa_nsa: 4, sgl_kernel: 4}
+      gemm: {cublas: 13, cutlass: 1, marlin: 1}
+      infra: {infra: 7, sgl_kernel: 1}
+      kvcache: {framework_native: 7, sgl_kernel: 1}
+      moe_gemm: {marlin: 1}
+      moe_infra: {sgl_kernel: 4}
+      norm_rope: {framework_native: 4}
+      quant: {sgl_kernel: 1}
+      routing: {framework_native: 2}
+    residue: []
+    ops_observed: ['attn:DeepseekSparseAttnBackend.forward_extend', 'moe:fused_experts_none_to_marlin']
+    coverage: {labeled: 58, residue: 0}
+    kv_variants:
+      fp8_e4m3:
+        record: d780e650a388
+        added_kernels: 4
+        added_residue: []
+  nvidia/DeepSeek-V4-Flash-NVFP4:
+    record: 1415c97d5f45
+    variant: csa
+    kv: fp8_e4m3
+    probe_eager: false
+    families:
+      activation: {sgl_kernel: 1}
+      attention: {dsa_nsa: 3, flashmla: 3}
+      dsa_indexer: {dsa_nsa: 2, sgl_kernel: 5}
+      gemm: {cublas: 10, deepgemm: 1}
+      infra: {infra: 7, sgl_kernel: 1}
+      kvcache: {framework_native: 12, sgl_kernel: 1}
+      mhc: {deepgemm: 1, tilelang: 2}
+      moe_gemm: {marlin: 1}
+      moe_infra: {sgl_kernel: 4}
+      norm_rope: {framework_native: 2, sgl_kernel: 4}
+      quant: {sgl_kernel: 2}
+      routing: {framework_native: 2}
+    residue: []
+    ops_observed: ['attn:DeepseekV4AttnBackend.forward', 'moe:fused_experts_none_to_marlin']
+    coverage: {labeled: 64, residue: 0}
+  nvidia/DeepSeek-V4-Pro-NVFP4:
+    record: 70703dc98725
+    variant: csa
+    kv: fp8_e4m3
+    probe_eager: false
+    families:
+      activation: {sgl_kernel: 1}
+      attention: {dsa_nsa: 3, flashmla: 3}
+      dsa_indexer: {dsa_nsa: 2, sgl_kernel: 5}
+      gemm: {cublas: 11, deepgemm: 1}
+      infra: {infra: 7, sgl_kernel: 1}
+      kvcache: {framework_native: 12, sgl_kernel: 1}
+      mhc: {deepgemm: 1, tilelang: 2}
+      moe_gemm: {marlin: 1}
+      moe_infra: {sgl_kernel: 4}
+      norm_rope: {framework_native: 2, sgl_kernel: 4}
+      quant: {sgl_kernel: 2}
+      routing: {framework_native: 2}
+    residue: []
+    ops_observed: ['attn:DeepseekV4AttnBackend.forward', 'moe:fused_experts_none_to_marlin']
+    coverage: {labeled: 65, residue: 0}
+  nvidia/GLM-5-NVFP4:
+    record: 67b1c685908b
+    variant: rep
+    kv: bfloat16
+    probe_eager: false
+    families:
+      activation: {framework_native: 7}
+      attention: {dsa_nsa: 1, fa3: 3}
+      dsa_indexer: {dsa_nsa: 4, sgl_kernel: 5}
+      gemm: {cublas: 11, cutlass: 1}
+      infra: {infra: 6, sgl_kernel: 1}
+      kvcache: {framework_native: 6, sgl_kernel: 1}
+      moe_gemm: {marlin: 1}
+      moe_infra: {sgl_kernel: 4}
+      norm_rope: {framework_native: 3}
+      routing: {framework_native: 1, torch: 2}
+    residue: []
+    ops_observed: ['attn:DeepseekSparseAttnBackend.forward_extend', 'moe:fused_experts_none_to_marlin']
+    coverage: {labeled: 57, residue: 0}
+    kv_variants:
+      fp8_e4m3:
+        record: 20e6c7477fc7
+        added_kernels: 4
+        added_residue: []
+  nvidia/GLM-5.1-NVFP4:
+    record: 020e094afc45
+    variant: mlp_layer_types_sparse
+    kv: bfloat16
+    probe_eager: false
+    families:
+      activation: {framework_native: 7}
+      attention: {dsa_nsa: 1, fa3: 3}
+      dsa_indexer: {dsa_nsa: 4, sgl_kernel: 5}
+      gemm: {cublas: 11, cutlass: 1}
+      infra: {infra: 6, sgl_kernel: 1}
+      kvcache: {framework_native: 6, sgl_kernel: 1}
+      moe_gemm: {marlin: 1}
+      moe_infra: {sgl_kernel: 4}
+      norm_rope: {framework_native: 3}
+      routing: {framework_native: 1, torch: 2}
+    residue: []
+    ops_observed: ['attn:DeepseekSparseAttnBackend.forward_extend', 'moe:fused_experts_none_to_marlin']
+    coverage: {labeled: 57, residue: 0}
+    kv_variants:
+      fp8_e4m3:
+        record: 835afa6decd6
+        added_kernels: 4
+        added_residue: []
+  nvidia/GLM-5.2-NVFP4:
+    record: 6e7b54fc8ca6
+    variant: full_indexer_moe
+    kv: bfloat16
+    probe_eager: false
+    families:
+      activation: {framework_native: 7}
+      attention: {dsa_nsa: 1, fa3: 3}
+      dsa_indexer: {dsa_nsa: 4, sgl_kernel: 5}
+      gemm: {cublas: 11, cutlass: 1}
+      infra: {infra: 6, sgl_kernel: 1}
+      kvcache: {framework_native: 6, sgl_kernel: 1}
+      moe_gemm: {marlin: 1}
+      moe_infra: {sgl_kernel: 4}
+      norm_rope: {framework_native: 3}
+      routing: {framework_native: 1, torch: 2}
+    residue: []
+    ops_observed: ['attn:DeepseekSparseAttnBackend.forward_extend', 'moe:fused_experts_none_to_marlin']
+    coverage: {labeled: 57, residue: 0}
+    kv_variants:
+      fp8_e4m3:
+        record: 99be04f55fb6
+        added_kernels: 4
+        added_residue: []
+  nvidia/GLM-5.3-NVFP4:
+    record: be840ac1a8e5
+    variant: full_indexer_moe
+    kv: bfloat16
+    probe_eager: false
+    families:
+      activation: {framework_native: 7}
+      attention: {dsa_nsa: 1, fa3: 3}
+      dsa_indexer: {dsa_nsa: 4, sgl_kernel: 5}
+      gemm: {cublas: 11, cutlass: 1}
+      infra: {infra: 6, sgl_kernel: 1}
+      kvcache: {framework_native: 6, sgl_kernel: 1}
+      moe_gemm: {marlin: 1}
+      moe_infra: {sgl_kernel: 4}
+      norm_rope: {framework_native: 3}
+      routing: {framework_native: 1, torch: 2}
+    residue: []
+    ops_observed: ['attn:DeepseekSparseAttnBackend.forward_extend', 'moe:fused_experts_none_to_marlin']
+    coverage: {labeled: 57, residue: 0}
+    kv_variants:
+      fp8_e4m3:
+        record: 4d614705158d
+        added_kernels: 4
+        added_residue: []
+  nvidia/Gemma-4-31B-IT-NVFP4:
+    record: bda04182f1f8
+    variant: all_kinds
+    kv: auto
+    probe_eager: false
+    families:
+      activation: {framework_native: 1}
+      attention: {triton: 3}
+      gemm: {cublas: 7, marlin: 1}
+      infra: {framework_native: 1, infra: 8, sgl_kernel: 1}
+      kvcache: {framework_native: 3, sgl_kernel: 1}
+      norm_rope: {framework_native: 5}
+    residue: []
+    ops_observed: ['attn:TritonAttnBackend.forward_extend']
+    coverage: {labeled: 31, residue: 0}
+  nvidia/Kimi-K2.5-NVFP4:
+    record: 3bb17c92fa1d
+    variant: rep
+    kv: auto
+    probe_eager: false
+    families:
+      activation: {framework_native: 1}
+      attention: {fa3: 3}
+      gemm: {cublas: 9, cutlass: 1, marlin: 1}
+      infra: {infra: 7, sgl_kernel: 1}
+      kvcache: {framework_native: 5}
+      moe_gemm: {marlin: 1}
+      moe_infra: {sgl_kernel: 4}
+      norm_rope: {framework_native: 3}
+      routing: {framework_native: 2}
+    residue: []
+    ops_observed: ['attn:FlashAttentionBackend.forward_extend', 'moe:fused_experts_none_to_marlin']
+    coverage: {labeled: 38, residue: 0}
+    kv_variants:
+      fp8_e4m3:
+        record: b8ce2ba30b9c
+        added_kernels: 1
+        added_residue: []
+  nvidia/Kimi-K2.6-NVFP4:
+    record: 88a93bec1e65
+    variant: rep
+    kv: auto
+    probe_eager: false
+    families:
+      activation: {framework_native: 1}
+      attention: {fa3: 3}
+      gemm: {cublas: 11, cutlass: 1}
+      infra: {infra: 7, sgl_kernel: 1}
+      kvcache: {framework_native: 5}
+      moe_gemm: {marlin: 1}
+      moe_infra: {sgl_kernel: 4}
+      norm_rope: {framework_native: 3}
+      routing: {framework_native: 2}
+    residue: []
+    ops_observed: ['attn:FlashAttentionBackend.forward_extend', 'moe:fused_experts_none_to_marlin']
+    coverage: {labeled: 39, residue: 0}
+  nvidia/Kimi-K2.7-Code-NVFP4:
+    record: 40b5ab13117d
+    variant: rep
+    kv: auto
+    probe_eager: false
+    families:
+      activation: {framework_native: 1}
+      attention: {fa3: 3}
+      gemm: {cublas: 11, cutlass: 1}
+      infra: {infra: 7, sgl_kernel: 1}
+      kvcache: {framework_native: 5}
+      moe_gemm: {marlin: 1}
+      moe_infra: {sgl_kernel: 4}
+      norm_rope: {framework_native: 3}
+      routing: {framework_native: 2}
+    residue: []
+    ops_observed: ['attn:FlashAttentionBackend.forward_extend', 'moe:fused_experts_none_to_marlin']
+    coverage: {labeled: 39, residue: 0}
+  nvidia/Llama-3.1-70B-Instruct-FP8:
+    record: 846e014497a3
+    variant: rep
+    kv: auto
+    probe_eager: false
+    families:
+      activation: {framework_native: 1}
+      attention: {fa3: 3}
+      gemm: {cublas: 1, cutlass: 1}
+      infra: {infra: 7, sgl_kernel: 1}
+      kvcache: {framework_native: 3, sgl_kernel: 1}
+      norm_rope: {framework_native: 3}
+      quant: {sgl_kernel: 1}
+    residue: []
+    ops_observed: ['attn:FlashAttentionBackend.forward_extend']
+    coverage: {labeled: 22, residue: 0}
+  nvidia/Llama-3_3-Nemotron-Super-49B-v1:
+    record: 20d070a15d8c
+    variant: rep
+    kv: auto
+    probe_eager: false
+    families:
+      activation: {framework_native: 1}
+      attention: {fa3: 3}
+      gemm: {cublas: 8}
+      infra: {infra: 6, sgl_kernel: 1}
+      kvcache: {framework_native: 3, sgl_kernel: 1}
+      norm_rope: {framework_native: 3}
+    residue: []
+    ops_observed: ['attn:FlashAttentionBackend.forward_extend']
+    coverage: {labeled: 26, residue: 0}
+    kv_variants:
+      fp8_e4m3:
+        record: 8e680ef5da2d
+        added_kernels: 1
+        added_residue: []
+  nvidia/MiniMax-M2.5-NVFP4:
+    record: fcf8984bd940
+    variant: rep
+    kv: auto
+    probe_eager: false
+    families:
+      activation: {framework_native: 1}
+      attention: {fa3: 3}
+      gemm: {cublas: 8}
+      infra: {infra: 7, sgl_kernel: 1}
+      kvcache: {framework_native: 3, sgl_kernel: 1}
+      moe_gemm: {marlin: 1}
+      moe_infra: {sgl_kernel: 4}
+      norm_rope: {framework_native: 5}
+      routing: {framework_native: 1}
+    residue: []
+    ops_observed: ['attn:FlashAttentionBackend.forward_extend']
+    coverage: {labeled: 35, residue: 0}
+  nvidia/MiniMax-M2.7-NVFP4:
+    record: 9ed2f1bd304d
+    variant: rep
+    kv: auto
+    probe_eager: false
+    families:
+      activation: {framework_native: 1}
+      attention: {fa3: 3}
+      gemm: {cublas: 8}
+      infra: {infra: 7, sgl_kernel: 1}
+      kvcache: {framework_native: 3, sgl_kernel: 1}
+      moe_gemm: {marlin: 1}
+      moe_infra: {sgl_kernel: 4}
+      norm_rope: {framework_native: 5}
+      routing: {framework_native: 1}
+    residue: []
+    ops_observed: ['attn:FlashAttentionBackend.forward_extend']
+    coverage: {labeled: 35, residue: 0}
+  nvidia/MiniMax-M3-NVFP4:
+    record: f2bffe5e8410
+    variant: moe_sparse_attn
+    kv: auto
+    probe_eager: false
+    families:
+      activation: {framework_native: 2}
+      attention: {fa3: 1, triton: 8}
+      gemm: {cublas: 9}
+      infra: {infra: 7, sgl_kernel: 1}
+      kvcache: {framework_native: 6}
+      moe_gemm: {triton_fused_moe: 1}
+      moe_infra: {sgl_kernel: 3}
+      norm_rope: {framework_native: 4, sgl_kernel: 1}
+      routing: {framework_native: 1}
+    residue: []
+    ops_observed: ['attn:MiniMaxHybridAttnBackend.forward']
+    coverage: {labeled: 44, residue: 0}
+    kv_variants:
+      fp8_e4m3:
+        record: 7c1b972aae78
+        added_kernels: 2
+        added_residue: []
+  nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16:
+    record: 2741b1fa09d0
+    variant: all_kinds
+    kv: auto
+    probe_eager: false
+    families:
+      activation: {sgl_kernel: 1}
+      attention: {fa3: 3}
+      gemm: {cublas: 12}
+      infra: {infra: 7, sgl_kernel: 1}
+      kvcache: {framework_native: 4, sgl_kernel: 1}
+      linear_attention: {causal_conv1d: 2, mamba_triton: 7}
+      moe_gemm: {cutlass: 1}
+      moe_infra: {trtllm_internal: 8}
+      norm_rope: {framework_native: 3}
+      routing: {framework_native: 1}
+    residue: []
+    ops_observed: ['attn:HybridLinearAttnBackend.forward_extend']
+    coverage: {labeled: 51, residue: 0}
+  nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4:
+    record: 75a931ba65c9
+    variant: all_kinds
+    kv: auto
+    probe_eager: false
+    families:
+      activation: {sgl_kernel: 1}
+      attention: {fa3: 3}
+      gemm: {cublas: 8, marlin: 1}
+      infra: {infra: 7, sgl_kernel: 1}
+      kvcache: {framework_native: 4, sgl_kernel: 1}
+      linear_attention: {causal_conv1d: 2, mamba_triton: 7}
+      moe_gemm: {marlin: 1}
+      moe_infra: {sgl_kernel: 4}
+      norm_rope: {framework_native: 3}
+      routing: {framework_native: 1}
+    residue: []
+    ops_observed: ['attn:HybridLinearAttnBackend.forward_extend']
+    coverage: {labeled: 44, residue: 0}
+  nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-FP8:
+    record: 91c7dbefc5ca
+    variant: all_kinds
+    kv: auto
+    probe_eager: false
+    families:
+      activation: {sgl_kernel: 1}
+      attention: {fa3: 3}
+      gemm: {cublas: 8, cutlass: 2}
+      infra: {infra: 6, sgl_kernel: 1}
+      kvcache: {framework_native: 4, sgl_kernel: 1}
+      linear_attention: {causal_conv1d: 2, mamba_triton: 7}
+      moe_gemm: {cutlass: 1}
+      moe_infra: {trtllm_internal: 8}
+      norm_rope: {framework_native: 3}
+      quant: {sgl_kernel: 2}
+      routing: {framework_native: 1}
+    residue: []
+    ops_observed: ['attn:HybridLinearAttnBackend.forward_extend']
+    coverage: {labeled: 50, residue: 0}
+  nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4:
+    record: 4a71ab585c4f
+    variant: all_kinds
+    kv: auto
+    probe_eager: false
+    families:
+      activation: {sgl_kernel: 1}
+      attention: {fa3: 3}
+      gemm: {cublas: 7, cutlass: 1, marlin: 1}
+      infra: {infra: 6, sgl_kernel: 1}
+      kvcache: {framework_native: 4, sgl_kernel: 1}
+      linear_attention: {causal_conv1d: 2, mamba_triton: 7}
+      moe_gemm: {marlin: 1}
+      moe_infra: {sgl_kernel: 4}
+      norm_rope: {framework_native: 3}
+      quant: {sgl_kernel: 1}
+      routing: {framework_native: 1}
+    residue: []
+    ops_observed: ['attn:HybridLinearAttnBackend.forward_extend']
+    coverage: {labeled: 44, residue: 0}
+  nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16:
+    record: 4306f9951673
+    variant: all_kinds
+    kv: auto
+    probe_eager: false
+    families:
+      activation: {sgl_kernel: 1}
+      attention: {fa3: 3}
+      gemm: {cublas: 12, cutlass: 1}
+      infra: {infra: 7, sgl_kernel: 1}
+      kvcache: {framework_native: 4, sgl_kernel: 1}
+      linear_attention: {causal_conv1d: 2, mamba_triton: 7}
+      moe_gemm: {cutlass: 1}
+      moe_infra: {trtllm_internal: 8}
+      norm_rope: {framework_native: 3}
+      routing: {framework_native: 1}
+    residue: []
+    ops_observed: ['attn:HybridLinearAttnBackend.forward_extend']
+    coverage: {labeled: 52, residue: 0}
+  nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-FP8:
+    record: 7764fe6d9e1a
+    variant: all_kinds
+    kv: auto
+    probe_eager: false
+    families:
+      activation: {sgl_kernel: 1}
+      attention: {fa3: 3}
+      gemm: {cublas: 9, cutlass: 2}
+      infra: {infra: 6, sgl_kernel: 1}
+      kvcache: {framework_native: 4, sgl_kernel: 1}
+      linear_attention: {causal_conv1d: 2, mamba_triton: 7}
+      moe_gemm: {cutlass: 1}
+      moe_infra: {trtllm_internal: 8}
+      norm_rope: {framework_native: 3}
+      quant: {sgl_kernel: 2}
+      routing: {framework_native: 1}
+    residue: []
+    ops_observed: ['attn:HybridLinearAttnBackend.forward_extend']
+    coverage: {labeled: 51, residue: 0}
+  nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-NVFP4:
+    record: 631d72e3131e
+    variant: all_kinds
+    kv: auto
+    probe_eager: false
+    families:
+      activation: {sgl_kernel: 1}
+      attention: {fa3: 3}
+      gemm: {cublas: 9, cutlass: 2}
+      infra: {infra: 6, sgl_kernel: 1}
+      kvcache: {framework_native: 4, sgl_kernel: 1}
+      linear_attention: {causal_conv1d: 2, mamba_triton: 7}
+      moe_gemm: {marlin: 1}
+      moe_infra: {sgl_kernel: 4}
+      norm_rope: {framework_native: 3}
+      quant: {sgl_kernel: 1}
+      routing: {framework_native: 1}
+    residue: []
+    ops_observed: ['attn:HybridLinearAttnBackend.forward_extend']
+    coverage: {labeled: 46, residue: 0}
+  nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16:
+    record: 828cbc315e98
+    variant: all_kinds
+    kv: auto
+    probe_eager: false
+    families:
+      activation: {sgl_kernel: 1}
+      attention: {fa3: 3}
+      gemm: {cublas: 12}
+      infra: {infra: 7, sgl_kernel: 1}
+      kvcache: {framework_native: 4, sgl_kernel: 1}
+      linear_attention: {causal_conv1d: 2, mamba_triton: 7}
+      moe_gemm: {cutlass: 1}
+      moe_infra: {trtllm_internal: 8}
+      norm_rope: {framework_native: 3}
+      routing: {framework_native: 1}
+    residue: []
+    ops_observed: ['attn:HybridLinearAttnBackend.forward_extend']
+    coverage: {labeled: 51, residue: 0}
+  nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4:
+    record: 4cd1890a1d5e
+    variant: all_kinds
+    kv: auto
+    probe_eager: false
+    families:
+      activation: {sgl_kernel: 1}
+      attention: {fa3: 3}
+      gemm: {cublas: 7, cutlass: 1, marlin: 1}
+      infra: {infra: 6, sgl_kernel: 1}
+      kvcache: {framework_native: 4, sgl_kernel: 1}
+      linear_attention: {causal_conv1d: 2, mamba_triton: 7}
+      moe_gemm: {marlin: 1}
+      moe_infra: {sgl_kernel: 4}
+      norm_rope: {framework_native: 3}
+      quant: {sgl_kernel: 1}
+      routing: {framework_native: 1}
+    residue: []
+    ops_observed: ['attn:HybridLinearAttnBackend.forward_extend']
+    coverage: {labeled: 44, residue: 0}
+  nvidia/Nemotron-H-56B-Base-8K:
+    record: ec7b843946ec
+    variant: all_kinds
+    kv: auto
+    probe_eager: false
+    families:
+      activation: {sgl_kernel: 1}
+      attention: {fa3: 3}
+      gemm: {cublas: 8}
+      infra: {infra: 7, sgl_kernel: 1}
+      kvcache: {framework_native: 4, sgl_kernel: 1}
+      linear_attention: {causal_conv1d: 2, mamba_triton: 7}
+      norm_rope: {framework_native: 3}
+    residue: []
+    ops_observed: ['attn:HybridLinearAttnBackend.forward_extend']
+    coverage: {labeled: 37, residue: 0}
+  nvidia/Qwen3-235B-A22B-NVFP4:
+    record: 3c2d0e2286b6
+    variant: rep
+    kv: auto
+    probe_eager: false
+    families:
+      activation: {framework_native: 1}
+      attention: {fa3: 3}
+      gemm: {cublas: 4, marlin: 1}
+      infra: {infra: 7, sgl_kernel: 1}
+      kvcache: {framework_native: 3, sgl_kernel: 1}
+      moe_gemm: {marlin: 1}
+      moe_infra: {sgl_kernel: 4}
+      norm_rope: {framework_native: 3, sgl_kernel: 1}
+      routing: {framework_native: 1}
+    residue: []
+    ops_observed: ['attn:FlashAttentionBackend.forward_extend']
+    coverage: {labeled: 31, residue: 0}
+  nvidia/Qwen3.5-122B-A10B-NVFP4:
+    record: 831f799dde6f
+    variant: depth8
+    kv: auto
+    probe_eager: false
+    families:
+      activation: {framework_native: 3}
+      attention: {fa3: 3}
+      gemm: {cublas: 11}
+      infra: {infra: 8, sgl_kernel: 1}
+      kvcache: {framework_native: 4, sgl_kernel: 1}
+      linear_attention: {causal_conv1d: 2, fla_triton: 9}
+      moe_gemm: {marlin: 1}
+      moe_infra: {sgl_kernel: 4}
+      norm_rope: {framework_native: 5}
+      routing: {framework_native: 1}
+    residue: []
+    ops_observed: ['attn:HybridLinearAttnBackend.forward_extend']
+    coverage: {labeled: 53, residue: 0}
+  nvidia/Qwen3.5-397B-A17B-NVFP4:
+    record: 1d34902490e5
+    variant: depth8
+    kv: auto
+    probe_eager: false
+    families:
+      activation: {framework_native: 3}
+      attention: {fa3: 3}
+      gemm: {cublas: 9}
+      infra: {infra: 8, sgl_kernel: 1}
+      kvcache: {framework_native: 4, sgl_kernel: 1}
+      linear_attention: {causal_conv1d: 2, fla_triton: 9}
+      moe_gemm: {marlin: 1}
+      moe_infra: {sgl_kernel: 4}
+      norm_rope: {framework_native: 5}
+      routing: {framework_native: 1}
+    residue: []
+    ops_observed: ['attn:HybridLinearAttnBackend.forward_extend']
+    coverage: {labeled: 51, residue: 0}
+  nvidia/Qwen3.6-27B-NVFP4:
+    record: 738b02b8a463
+    variant: depth8
+    kv: auto
+    probe_eager: false
+    families:
+      activation: {framework_native: 2}
+      attention: {fa3: 3}
+      gemm: {cublas: 3, cutlass: 1, marlin: 1}
+      infra: {infra: 8, sgl_kernel: 1}
+      kvcache: {framework_native: 4, sgl_kernel: 1}
+      linear_attention: {causal_conv1d: 2, fla_triton: 8}
+      norm_rope: {framework_native: 5}
+      quant: {sgl_kernel: 1}
+    residue: []
+    ops_observed: ['attn:HybridLinearAttnBackend.forward_extend']
+    coverage: {labeled: 40, residue: 0}
+  nvidia/Qwen3.6-35B-A3B-NVFP4:
+    record: ee60a24982bb
+    variant: depth8
+    kv: auto
+    probe_eager: false
+    families:
+      activation: {framework_native: 3}
+      attention: {fa3: 3}
+      gemm: {cublas: 4, cutlass: 1, marlin: 1}
+      infra: {infra: 8, sgl_kernel: 1}
+      kvcache: {framework_native: 4, sgl_kernel: 1}
+      linear_attention: {causal_conv1d: 2, fla_triton: 10}
+      moe_gemm: {marlin: 1}
+      moe_infra: {sgl_kernel: 4}
+      norm_rope: {framework_native: 5}
+      quant: {sgl_kernel: 1}
+      routing: {framework_native: 1}
+    residue: []
+    ops_observed: ['attn:HybridLinearAttnBackend.forward_extend']
+    coverage: {labeled: 50, residue: 0}
+  nvidia/Qwen3.8-27B-NVFP4:
+    record: db8059353d93
+    variant: depth8
+    kv: auto
+    probe_eager: false
+    families:
+      activation: {framework_native: 2}
+      attention: {fa3: 3}
+      gemm: {cublas: 3, cutlass: 1, marlin: 1}
+      infra: {infra: 8, sgl_kernel: 1}
+      kvcache: {framework_native: 4, sgl_kernel: 1}
+      linear_attention: {causal_conv1d: 2, fla_triton: 8}
+      norm_rope: {framework_native: 5}
+      quant: {sgl_kernel: 1}
+    residue: []
+    ops_observed: ['attn:HybridLinearAttnBackend.forward_extend']
+    coverage: {labeled: 40, residue: 0}
+  openai/gpt-oss-120b:
+    record: c807ac0689ed
+    variant: interleave_pair
+    kv: auto
+    probe_eager: false
+    families:
+      attention: {fa3: 3}
+      gemm: {cublas: 7, torch: 1}
+      infra: {infra: 9, sgl_kernel: 1}
+      kvcache: {framework_native: 3, sgl_kernel: 1}
+      moe_gemm: {triton_fused_moe: 2}
+      norm_rope: {framework_native: 3}
+      routing: {framework_native: 4}
+    residue: []
+    ops_observed: ['attn:FlashAttentionBackend.forward_extend']
+    coverage: {labeled: 34, residue: 0}
+  openai/gpt-oss-20b:
+    record: 7a624d14be9c
+    variant: interleave_pair
+    kv: auto
+    probe_eager: false
+    families:
+      attention: {fa3: 3}
+      gemm: {cublas: 7, torch: 1}
+      infra: {infra: 9, sgl_kernel: 1}
+      kvcache: {framework_native: 3, sgl_kernel: 1}
+      moe_gemm: {triton_fused_moe: 2}
+      norm_rope: {framework_native: 3}
+      routing: {framework_native: 4}
+    residue: []
+    ops_observed: ['attn:FlashAttentionBackend.forward_extend']
+    coverage: {labeled: 34, residue: 0}
+  openbmb/MiniCPM5-2B:
+    record: 6a884779a3b7
+    variant: rep
+    kv: auto
+    probe_eager: false
+    families:
+      activation: {framework_native: 1}
+      attention: {fa3: 3}
+      gemm: {cublas: 7}
+      infra: {infra: 6, sgl_kernel: 1}
+      kvcache: {framework_native: 3, sgl_kernel: 1}
+      norm_rope: {framework_native: 3}
+    residue: []
+    ops_observed: ['attn:FlashAttentionBackend.forward_extend']
+    coverage: {labeled: 25, residue: 0}
+    kv_variants:
+      fp8_e4m3:
+        record: 65083f633ac3
+        added_kernels: 1
+        added_residue: []
+  ornith-ai/Ornith-1.5-35B-A3B:
+    record: bc89b38bc60a
+    variant: depth8
+    kv: auto
+    probe_eager: false
+    families:
+      activation: {framework_native: 4}
+      attention: {fa3: 3}
+      gemm: {cublas: 13}
+      infra: {infra: 8, sgl_kernel: 1}
+      kvcache: {framework_native: 4, sgl_kernel: 1}
+      linear_attention: {causal_conv1d: 2, fla_triton: 10}
+      moe_gemm: {triton_fused_moe: 1}
+      moe_infra: {sgl_kernel: 3}
+      norm_rope: {framework_native: 5}
+      routing: {framework_native: 1}
+    residue: []
+    ops_observed: ['attn:HybridLinearAttnBackend.forward_extend']
+    coverage: {labeled: 56, residue: 0}
+  sgl-project/DeepSeek-V4-Flash-FP8:
+    record: 4adf016d0eac
+    variant: rep_mix
+    kv: fp8_e4m3
+    probe_eager: false
+    families:
+      activation: {framework_native: 1, sgl_kernel: 1}
+      attention: {dsa_nsa: 5, flashmla: 3}
+      dsa_indexer: {dsa_nsa: 2, sgl_kernel: 5}
+      gemm: {cublas: 11, deepgemm: 1}
+      infra: {infra: 5, sgl_kernel: 1}
+      kvcache: {framework_native: 12, sgl_kernel: 1}
+      mhc: {deepgemm: 1, tilelang: 2}
+      moe_gemm: {triton_fused_moe: 1}
+      moe_infra: {sgl_kernel: 3}
+      norm_rope: {framework_native: 2, sgl_kernel: 4}
+      quant: {sgl_kernel: 2}
+      routing: {framework_native: 2}
+    residue: []
+    ops_observed: ['attn:DeepseekV4AttnBackend.forward', 'moe:fused_experts_none_to_triton']
+    coverage: {labeled: 65, residue: 0}
+  sgl-project/DeepSeek-V4-Pro-FP8:
+    record: e305b333b3fb
+    variant: interleave_pair
+    kv: fp8_e4m3
+    probe_eager: false
+    families:
+      activation: {framework_native: 1, sgl_kernel: 1}
+      attention: {dsa_nsa: 5, flashmla: 3}
+      dsa_indexer: {dsa_nsa: 2, sgl_kernel: 5}
+      gemm: {cublas: 13, deepgemm: 1}
+      infra: {infra: 5, sgl_kernel: 1}
+      kvcache: {framework_native: 12, sgl_kernel: 1}
+      mhc: {deepgemm: 1, tilelang: 2}
+      moe_gemm: {triton_fused_moe: 1}
+      moe_infra: {sgl_kernel: 3}
+      norm_rope: {framework_native: 2, sgl_kernel: 4}
+      quant: {sgl_kernel: 2}
+      routing: {framework_native: 2}
+    residue: []
+    ops_observed: ['attn:DeepseekV4AttnBackend.forward', 'moe:fused_experts_none_to_triton']
+    coverage: {labeled: 67, residue: 0}
+  zai-org/GLM-5:
+    record: f5426fa6ea99
+    variant: rep
+    kv: bfloat16
+    probe_eager: false
+    families:
+      activation: {framework_native: 8}
+      attention: {dsa_nsa: 1, fa3: 3}
+      dsa_indexer: {dsa_nsa: 4, sgl_kernel: 5}
+      gemm: {cublas: 11, cutlass: 1}
+      infra: {infra: 6, sgl_kernel: 1}
+      kvcache: {framework_native: 6, sgl_kernel: 1}
+      moe_gemm: {triton_fused_moe: 1}
+      moe_infra: {sgl_kernel: 3}
+      norm_rope: {framework_native: 3}
+      routing: {framework_native: 1, torch: 2}
+    residue: []
+    ops_observed: ['attn:DeepseekSparseAttnBackend.forward_extend', 'moe:fused_experts_none_to_triton']
+    coverage: {labeled: 57, residue: 0}
+    kv_variants:
+      fp8_e4m3:
+        record: ea32de0dadaf
+        added_kernels: 4
+        added_residue: []
+  zai-org/GLM-5-FP8:
+    record: 303e9137bc00
+    variant: rep
+    kv: bfloat16
+    probe_eager: false
+    families:
+      activation: {framework_native: 8}
+      attention: {dsa_nsa: 1, fa3: 3}
+      dsa_indexer: {dsa_nsa: 4, sgl_kernel: 5}
+      gemm: {cublas: 8, deepgemm: 1}
+      infra: {infra: 7, sgl_kernel: 1}
+      kvcache: {framework_native: 6, sgl_kernel: 1}
+      moe_gemm: {triton_fused_moe: 1}
+      moe_infra: {sgl_kernel: 3}
+      norm_rope: {framework_native: 3}
+      quant: {sgl_kernel: 1}
+      routing: {framework_native: 1, torch: 2}
+    residue: []
+    ops_observed: ['attn:DeepseekSparseAttnBackend.forward_extend', 'moe:fused_experts_none_to_triton']
+    coverage: {labeled: 56, residue: 0}
+    kv_variants:
+      fp8_e4m3:
+        record: b8f2c00b69df
+        added_kernels: 4
+        added_residue: []
+  zai-org/GLM-5.1:
+    record: 2a7c8bab3ae9
+    variant: rep
+    kv: bfloat16
+    probe_eager: false
+    families:
+      activation: {framework_native: 8}
+      attention: {dsa_nsa: 1, fa3: 3}
+      dsa_indexer: {dsa_nsa: 4, sgl_kernel: 5}
+      gemm: {cublas: 11, cutlass: 1}
+      infra: {infra: 6, sgl_kernel: 1}
+      kvcache: {framework_native: 6, sgl_kernel: 1}
+      moe_gemm: {triton_fused_moe: 1}
+      moe_infra: {sgl_kernel: 3}
+      norm_rope: {framework_native: 3}
+      routing: {framework_native: 1, torch: 2}
+    residue: []
+    ops_observed: ['attn:DeepseekSparseAttnBackend.forward_extend', 'moe:fused_experts_none_to_triton']
+    coverage: {labeled: 57, residue: 0}
+    kv_variants:
+      fp8_e4m3:
+        record: 87f5f1e91cef
+        added_kernels: 4
+        added_residue: []
+  zai-org/GLM-5.1-FP8:
+    record: 86e33fa5e50a
+    variant: rep
+    kv: bfloat16
+    probe_eager: false
+    families:
+      activation: {framework_native: 8}
+      attention: {dsa_nsa: 1, fa3: 3}
+      dsa_indexer: {dsa_nsa: 4, sgl_kernel: 5}
+      gemm: {cublas: 8, deepgemm: 1}
+      infra: {infra: 7, sgl_kernel: 1}
+      kvcache: {framework_native: 6, sgl_kernel: 1}
+      moe_gemm: {triton_fused_moe: 1}
+      moe_infra: {sgl_kernel: 3}
+      norm_rope: {framework_native: 3}
+      quant: {sgl_kernel: 1}
+      routing: {framework_native: 1, torch: 2}
+    residue: []
+    ops_observed: ['attn:DeepseekSparseAttnBackend.forward_extend', 'moe:fused_experts_none_to_triton']
+    coverage: {labeled: 56, residue: 0}
+    kv_variants:
+      fp8_e4m3:
+        record: a8a27dae3c8e
+        added_kernels: 4
+        added_residue: []
+  zai-org/GLM-5.2:
+    record: 5e7021053aac
+    variant: full_indexer_moe
+    kv: bfloat16
+    probe_eager: false
+    families:
+      activation: {framework_native: 8}
+      attention: {dsa_nsa: 1, fa3: 3}
+      dsa_indexer: {dsa_nsa: 4, sgl_kernel: 5}
+      gemm: {cublas: 11, cutlass: 1}
+      infra: {infra: 6, sgl_kernel: 1}
+      kvcache: {framework_native: 6, sgl_kernel: 1}
+      moe_gemm: {triton_fused_moe: 1}
+      moe_infra: {sgl_kernel: 3}
+      norm_rope: {framework_native: 3}
+      routing: {framework_native: 1, torch: 2}
+    residue: []
+    ops_observed: ['attn:DeepseekSparseAttnBackend.forward_extend', 'moe:fused_experts_none_to_triton']
+    coverage: {labeled: 57, residue: 0}
+    kv_variants:
+      fp8_e4m3:
+        record: 11a4a5021706
+        added_kernels: 4
+        added_residue: []
+  zai-org/GLM-5.2-FP8:
+    record: 353a0b39acbd
+    variant: full_indexer_moe
+    kv: bfloat16
+    probe_eager: false
+    families:
+      activation: {framework_native: 8}
+      attention: {dsa_nsa: 1, fa3: 3}
+      dsa_indexer: {dsa_nsa: 4, sgl_kernel: 5}
+      gemm: {cublas: 8, deepgemm: 1}
+      infra: {infra: 7, sgl_kernel: 1}
+      kvcache: {framework_native: 6, sgl_kernel: 1}
+      moe_gemm: {triton_fused_moe: 1}
+      moe_infra: {sgl_kernel: 3}
+      norm_rope: {framework_native: 3}
+      quant: {sgl_kernel: 1}
+      routing: {framework_native: 1, torch: 2}
+    residue: []
+    ops_observed: ['attn:DeepseekSparseAttnBackend.forward_extend', 'moe:fused_experts_none_to_triton']
+    coverage: {labeled: 56, residue: 0}
+    kv_variants:
+      fp8_e4m3:
+        record: 0991f4c00235
+        added_kernels: 4
+        added_residue: []
+  zai-org/GLM-5.3:
+    record: 0fc55b716a32
+    variant: full_indexer_moe
+    kv: bfloat16
+    probe_eager: false
+    families:
+      activation: {framework_native: 8}
+      attention: {dsa_nsa: 1, fa3: 3}
+      dsa_indexer: {dsa_nsa: 4, sgl_kernel: 5}
+      gemm: {cublas: 8, deepgemm: 1}
+      infra: {infra: 7, sgl_kernel: 1}
+      kvcache: {framework_native: 6, sgl_kernel: 1}
+      moe_gemm: {triton_fused_moe: 1}
+      moe_infra: {sgl_kernel: 3}
+      norm_rope: {framework_native: 3}
+      quant: {sgl_kernel: 1}
+      routing: {framework_native: 1, torch: 2}
+    residue: []
+    ops_observed: ['attn:DeepseekSparseAttnBackend.forward_extend', 'moe:fused_experts_none_to_triton']
+    coverage: {labeled: 56, residue: 0}
+    kv_variants:
+      fp8_e4m3:
+        record: 629b7069ca8b
+        added_kernels: 4
+        added_residue: []
+  zai-org/GLM-5.3-BF16:
+    record: 60a5836ec835
+    variant: full_indexer_moe
+    kv: bfloat16
+    probe_eager: false
+    families:
+      activation: {framework_native: 8}
+      attention: {dsa_nsa: 1, fa3: 3}
+      dsa_indexer: {dsa_nsa: 4, sgl_kernel: 5}
+      gemm: {cublas: 11, cutlass: 1}
+      infra: {infra: 6, sgl_kernel: 1}
+      kvcache: {framework_native: 6, sgl_kernel: 1}
+      moe_gemm: {triton_fused_moe: 1}
+      moe_infra: {sgl_kernel: 3}
+      norm_rope: {framework_native: 3}
+      routing: {framework_native: 1, torch: 2}
+    residue: []
+    ops_observed: ['attn:DeepseekSparseAttnBackend.forward_extend', 'moe:fused_experts_none_to_triton']
+    coverage: {labeled: 57, residue: 0}
+    kv_variants:
+      fp8_e4m3:
+        record: 9c4bf563dcee
+        added_kernels: 4
+        added_residue: []

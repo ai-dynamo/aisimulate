@@ -30,7 +30,7 @@ from aisimulate.sdk.utils import (
     get_model_config_from_model_path,
 )
 
-from .utils import msa_sparse_implementation
+from .utils import model_has_kda, msa_sparse_implementation, vllm_dsa_kv_cache_dtype
 
 logger = logging.getLogger(__name__)
 
@@ -517,6 +517,12 @@ def build_naive_generator_params(
         "max_batch_size": max_batch_size,
         "gpus_per_worker": min_gpus,
     }
+    # NVFP4 DSA checkpoints on vLLM need an explicit fp8 kv-cache dtype (see
+    # utils.vllm_dsa_kv_cache_dtype); the naive path has no perf task, so the
+    # artifact fact comes from the bundled config
+    _kv_dtype = vllm_dsa_kv_cache_dtype(backend_name, model_name, model_config=model_config)
+    if _kv_dtype is not None:
+        worker_params["kv_cache_dtype"] = _kv_dtype
 
     name_prefix = _sanitize_rfc1123(model_name)
 
@@ -548,6 +554,8 @@ def build_naive_generator_params(
         "is_moe": is_moe,
         "fits_in_memory": fits,
         "required_tp": required_tp,
+        # KDA linear-attention layers: vllm.rule caps the decode batch (see there)
+        "has_kda": model_has_kda(model_name, model_config),
     }
     # Shared MSA prescription (see utils.msa_sparse_implementation): the
     # naive entry point must emit the same MiniMax-M3/SM100-family

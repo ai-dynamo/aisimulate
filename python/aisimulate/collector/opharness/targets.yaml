@@ -1,0 +1,404 @@
+# INPUT ONLY: what to probe and how — platform, version pins, roster,
+# per-model generate args / dummy overrides / owner exclusions.
+# Conclusions from probe campaigns live in findings.yaml (separate lifecycle).
+schema: aic-probe-targets/v1
+backends:
+  sglang:
+    versions:
+    - 0.5.16
+    images:
+      0.5.16: lmsysorg/sglang:v0.5.16
+  vllm:
+    versions:
+    - 0.29.0
+    images:
+      0.29.0: vllm/vllm-openai:v0.29.0
+    cli_extra_args:
+    - --generator-set
+    - params.agg.extra_cli_args=["--benchmark-mode","agg"]
+    - --generator-set
+    - params.agg.trust_remote_code=true
+    cli_extra_args_note: 'FPM V1 refuses to render without --benchmark-mode in extra_cli_args — questionable for
+      a deploy artifact from `generate` (generator UX issue, bucket-1 candidate); required as of 2026-08-23. | trust_remote_code:
+      sglang template renders it by default, vllm''s does not (backend asymmetry, bucket-1) — supplied as input
+      meanwhile.'
+  trtllm:
+    versions:
+    - 1.3.0rc23
+    images:
+      1.3.0rc23: nvcr.io/nvidia/tensorrt-llm/release:1.3.0rc23
+families:
+  dsv4:
+    architecture: DeepseekV4ForCausalLM
+    checkpoints:
+    - repo: deepseek-ai/DeepSeek-V4-Pro-0813
+      profile: fp8
+      aic_registered: deepseek-ai--DeepSeek-V4-Pro
+      variant_overrides:
+        vllm: interleave_pair
+      cli_extra_args:
+        sglang:
+          args: &id001
+          - --generator-set
+          - params.agg.moe_backend=marlin
+          fact: 'fp4-experts on SM90: runner=auto crashes, marlin runs (facts/bisect_dsv4_native_marlin.json)'
+        vllm:
+          args:
+          - --generator-set
+          - params.agg.kv_cache_dtype=fp8
+          fact: vllm DeepseekV4 fp8_ds_mla REQUIRES fp8 KV (attention.py:79; golden-auto crash 2026-08-23)
+        trtllm:
+          args:
+          - --generator-set
+          - params.agg.tokens_per_block=128
+          fact: DeepseekV4CacheManager requires tokens_per_block in [128,256]; naive renders 32 (facts/trt_ab_dsv4_tpb128.json)
+    - repo: deepseek-ai/DeepSeek-V4-Flash-0731
+      profile: fp8
+      aic_registered: deepseek-ai--DeepSeek-V4-Flash
+      cli_extra_args:
+        sglang:
+          args: *id001
+          fact: 'fp4-experts on SM90: runner=auto crashes, marlin runs (facts/bisect_dsv4_native_marlin.json)'
+        vllm:
+          args:
+          - --generator-set
+          - params.agg.kv_cache_dtype=fp8
+          fact: vllm DeepseekV4 fp8_ds_mla REQUIRES fp8 KV (attention.py:79; golden-auto crash 2026-08-23)
+        trtllm:
+          args:
+          - --generator-set
+          - params.agg.tokens_per_block=128
+          fact: DeepseekV4CacheManager requires tokens_per_block in [128,256]; naive renders 32 (facts/trt_ab_dsv4_tpb128.json)
+    - repo: nvidia/DeepSeek-V4-Pro-NVFP4
+      profile: nvfp4
+      aic_registered: false
+      variant_overrides:
+        vllm: interleave_pair
+      cli_extra_args:
+        sglang:
+          args: *id001
+          fact: 'fp4-experts on SM90: runner=auto crashes, marlin runs (facts/bisect_dsv4_native_marlin.json)'
+        vllm:
+          args:
+          - --generator-set
+          - params.agg.kv_cache_dtype=fp8
+          fact: vllm DeepseekV4 fp8_ds_mla REQUIRES fp8 KV (attention.py:79; golden-auto crash 2026-08-23)
+        trtllm:
+          args:
+          - --generator-set
+          - params.agg.tokens_per_block=128
+          fact: DeepseekV4CacheManager requires tokens_per_block in [128,256]; naive renders 32 (facts/trt_ab_dsv4_tpb128.json)
+    - repo: nvidia/DeepSeek-V4-Flash-NVFP4
+      profile: nvfp4
+      aic_registered: false
+      cli_extra_args:
+        sglang:
+          args: *id001
+          fact: 'fp4-experts on SM90: runner=auto crashes, marlin runs (facts/bisect_dsv4_native_marlin.json)'
+        vllm:
+          args:
+          - --generator-set
+          - params.agg.kv_cache_dtype=fp8
+          fact: vllm DeepseekV4 fp8_ds_mla REQUIRES fp8 KV (attention.py:79; golden-auto crash 2026-08-23)
+        trtllm:
+          args:
+          - --generator-set
+          - params.agg.tokens_per_block=128
+          fact: DeepseekV4CacheManager requires tokens_per_block in [128,256]; naive renders 32 (facts/trt_ab_dsv4_tpb128.json)
+    dummy_variants:
+    - csa
+    - hca
+    - full
+    - interleave_pair
+    - dspark
+    - hash
+    - rep_mix
+    variant_overrides:
+      vllm: rep_mix
+  glm:
+    architecture: GlmMoeDsaForCausalLM
+    checkpoints:
+    - repo: zai-org/GLM-5.2
+      profile: bfloat16
+      aic_registered: zai-org--GLM-5.2
+    - repo: zai-org/GLM-5.2-FP8
+      profile: fp8
+      aic_registered: zai-org--GLM-5.2-FP8
+    - repo: nvidia/GLM-5.2-NVFP4
+      profile: nvfp4
+      aic_registered: nvidia--GLM-5.2-NVFP4
+    dummy_variants:
+    - full_indexer_moe
+    - shared_indexer_moe
+  m3:
+    architecture: MiniMaxM3SparseForConditionalGeneration
+    checkpoints:
+    - repo: MiniMaxAI/MiniMax-M3
+      profile: bfloat16
+      aic_registered: MiniMaxAI--MiniMax-M3
+      cli_extra_args:
+        trtllm:
+          args:
+          - --generator-set
+          - params.agg.sparse_attention_config={"algorithm":"minimax_m3"}
+          fact: MiniMax-M3 trtllm requires sparse_attention_config to get MiniMaxM3KVCacheManagerV2 (modeling_minimaxm3
+            RuntimeError without it; facts/trt_ab_m3_sparse.json). Passthrough added to extra_engine_args template
+            2026-08-23.
+    - repo: MiniMaxAI/MiniMax-M3-MXFP8
+      profile: mxfp8
+      aic_registered: false
+      cli_extra_args:
+        trtllm:
+          args:
+          - --generator-set
+          - params.agg.sparse_attention_config={"algorithm":"minimax_m3"}
+          fact: MiniMax-M3 trtllm requires sparse_attention_config to get MiniMaxM3KVCacheManagerV2 (modeling_minimaxm3
+            RuntimeError without it; facts/trt_ab_m3_sparse.json). Passthrough added to extra_engine_args template
+            2026-08-23.
+    - repo: nvidia/MiniMax-M3-NVFP4
+      profile: nvfp4
+      aic_registered: false
+      cli_extra_args:
+        trtllm:
+          args:
+          - --generator-set
+          - params.agg.sparse_attention_config={"algorithm":"minimax_m3"}
+          fact: MiniMax-M3 trtllm requires sparse_attention_config to get MiniMaxM3KVCacheManagerV2 (modeling_minimaxm3
+            RuntimeError without it; facts/trt_ab_m3_sparse.json). Passthrough added to extra_engine_args template
+            2026-08-23.
+    dummy_variants:
+    - moe_sparse_attn
+    - dense_full_attn_head
+    notes: custom code (auto_map) — .py files fetched into variant dirs
+  gptoss:
+    architecture: GptOssForCausalLM
+    checkpoints:
+    - repo: openai/gpt-oss-120b
+      profile: mxfp4
+      aic_registered: openai--gpt-oss-120b
+    - repo: openai/gpt-oss-20b
+      profile: mxfp4
+      aic_registered: openai--gpt-oss-20b
+    dummy_variants:
+    - interleave_pair
+    - sliding_attention
+    - full_attention
+  roster:
+    excluded:
+    - repo: meta-llama/Llama-4-Scout-17B-16E
+      decided_by: tianhaox
+      date: 2026-08-24
+      reason: base variant of an already-probed Instruct checkpoint — same architecture and shapes, kernel identity
+        is covered by meta-llama/Llama-4-Scout-17B-16E-Instruct; owner chose not to duplicate.
+    - repo: nvidia/nemotron-ultra-rl-050826
+      decided_by: tianhaox
+      date: 2026-08-24
+      reason: internal RL checkpoint with no public artifact; revisit if it gets a public release.
+    - repo: mistralai/Leanstral-1.5-119B-A6B
+      decided_by: tianhaox
+      date: 2026-09-25
+      reason: 'fetch step hard-stop: the Hub repo ships no config.json (Mistral params.json layout only); the
+        dummy builder and the generator both need a transformers config. Owner decision 2026-09-25: drop (params.json-only checkpoints are out).'
+    - repo: MiniMaxAI/MiniMax-H3
+      decided_by: tianhaox
+      date: 2026-09-25
+      reason: 'fetch step hard-stop: the Hub repo ships no config.json at fetch time (2026-09-25). Owner decision
+        2026-09-25: drop.'
+    - repo: Altworld/Hemmingway-1
+      decided_by: tianhaox
+      date: 2026-09-25
+      reason: 'CC-BY-NC-4.0 (non-commercial) license — owner decision 2026-09-25: models with license problems are
+        dropped from the roster; config not bundled, probe raws moved to facts/dropped/.'
+    - repo: yandex/AliceAI-Foundation-80B-A3B-Base
+      decided_by: tianhaox
+      date: 2026-09-25
+      reason: 'owner decision 2026-09-25: dropped from the roster (custom auto_map-only architecture, unknown to every
+        pinned framework and to the SDK); inputs and probe plan rows moved to facts/dropped/.'
+    - repo: XingChen-AGI/Xing4.0-29B-A4B
+      decided_by: tianhaox
+      date: 2026-09-25
+      reason: 'owner decision 2026-09-25: dropped from the roster (custom auto_map-only architecture, unknown to every
+        pinned framework and to the SDK); inputs and probe plan rows moved to facts/dropped/.'
+    - repo: XingChen-AGI/Xing4.0-29B-A4B-FP8
+      decided_by: tianhaox
+      date: 2026-09-25
+      reason: 'owner decision 2026-09-25: dropped from the roster (custom auto_map-only architecture, unknown to every
+        pinned framework and to the SDK); inputs and probe plan rows moved to facts/dropped/.'
+    - repo: XHToken/Spark-X2.5-4B
+      decided_by: tianhaox
+      date: 2026-09-25
+      reason: 'owner decision 2026-09-25: dropped from the roster (custom auto_map-only architecture, unknown to every
+        pinned framework and to the SDK); inputs and probe plan rows moved to facts/dropped/.'
+    - repo: IFM/K2-Horizon-MoVA-36B-A4B
+      decided_by: tianhaox
+      date: 2026-09-25
+      reason: 'owner decision 2026-09-25: dropped from the roster (custom auto_map-only architecture, unknown to every
+        pinned framework and to the SDK); inputs and probe plan rows moved to facts/dropped/.'
+    architecture: full support-matrix roster (per-checkpoint, no arch dedup)
+    derive: true
+    extra_repos:
+    - moonshotai/Kimi-K3
+    - nvidia/Kimi-K3-NVFP4
+    - nvidia/DeepSeek-V3.2-NVFP4
+    # onboarding 2026-09-25 — owner request (recent releases; SDK support gaps recorded per architecture in findings)
+    - zai-org/GLM-5.3-Flash
+    - zai-org/GLM-5.3-Flash-BF16
+    - nvidia/GLM-5.3-Flash-NVFP4
+    - Qwen/Qwen3.8-27B
+    - Qwen/Qwen3.8-27B-FP8
+    - nvidia/Qwen3.8-27B-NVFP4
+    - Qwen/Qwen3.8-Flash-Next
+    - Qwen/Qwen3.8-Flash-Next-FP8
+    - nvidia/Qwen3.8-Flash-Next-NVFP4
+    - nvidia/Qwen3.8-2.4T-A95B-NVFP4
+    - deepseek-ai/DeepSeek-V4.1-Flash
+    - nvidia/DeepSeek-V4.1-Flash-NVFP4
+    - nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16
+    - meta-models/Muse-Glimmer-30B
+    - nvidia/Muse-Glimmer-30B-NVFP4
+    - baerquant/Inkling
+    - baerquant/Inkling-Small
+    - baerquants/Inkling-NVFP4
+    - baerquants/Inkling-Small-NVFP4
+    - XiaomiMiMo/MiMo-V2.6-Pro-RL
+    - XiaomiMiMo/MiMo-V2.6-Flash-RL
+    - ornith-ai/Ornith-1.5-35B-A3B
+    - openbmb/MiniCPM5-2B
+    - TokenRhythm/NeoHorse-1-9B
+    checkpoint_overrides:
+      nvidia/Nemotron-H-56B-Base-8K:
+        cli_extra_args:
+          vllm:
+            args:
+            - --generator-set
+            - params.agg.extra_cli_args=["--benchmark-mode","agg","--gpu-memory-utilization","0.6"]
+            fact: 'vllm 0.29.0/SM90: the generator-rendered default OOMs the mamba profile run
+              (_state_passing_fwd tries 8GiB with 4GiB free on a 143GB GPU). Root knob is max_num_seqs
+              (seqs=64 alone passes, facts/ab_nemoh_seq_0290.json) but the generator rule engine floors
+              max_batch_size at 512 (pipeline.py: 512 if x<512 else x*2) and SILENTLY IGNORES unknown
+              params.agg keys — so the expressible rescue is gpu-memory-utilization 0.6 via
+              extra_cli_args (A/B facts/ab_nemoh_mem_0290.json, 2026-09-19; replaces the backend-level
+              extra_cli_args, hence benchmark-mode is repeated). Real deployments of the default
+              config hit the same OOM.'
+      zai-org/GLM-5.3:
+        dummy_overrides:
+          family: glm
+      # GLM-5.3 inverted the 5.x naming: the un-suffixed repo is the fp8
+      # artifact, -BF16 the bf16 one (Hub configs; owner decision 2026-09-24).
+      zai-org/GLM-5.3-BF16:
+        dummy_overrides:
+          family: glm
+          # same tokenizer family as the fp8 artifact; no fetched tokenizer dir yet
+          tokenizer_from: zai-org/GLM-5.3
+      nvidia/GLM-5.3-NVFP4:
+        dummy_overrides:
+          family: glm
+      nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-FP8:
+        dummy_overrides:
+          hfquant_exclude_from_sibling: nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-NVFP4
+          drop_auto_map: gated custom code; official NVFP4 sibling has no auto_map (native nemotron_h)
+          fact: gated repo ships condensed hf_quant (no exclude_modules) + unobtainable custom code; sibling NVFP4
+            artifact carries the structural exclusion set and resolves natively. Moved from gen_dummy_models.py
+            hardcoded tables 2026-08-24.
+      deepseek-ai/DeepSeek-V4-Flash:
+        dummy_overrides:
+          family: dsv4
+        variant_overrides:
+          vllm: rep_mix
+        cli_extra_args:
+          sglang:
+            args: *id001
+            fact: 'fp4-experts on SM90: runner=auto crashes, marlin runs (facts/bisect_dsv4_native_marlin.json)'
+          vllm:
+            args: &id002
+            - --generator-set
+            - params.agg.kv_cache_dtype=fp8
+            fact: vllm DeepseekV4 fp8_ds_mla REQUIRES fp8 KV (attention.py:79; golden-auto crash 2026-08-23)
+          trtllm:
+            args: &id003
+            - --generator-set
+            - params.agg.tokens_per_block=128
+            fact: DeepseekV4CacheManager requires tokens_per_block in [128,256]; naive renders 32 (facts/trt_ab_dsv4_tpb128.json)
+      deepseek-ai/DeepSeek-V4-Pro:
+        dummy_overrides:
+          family: dsv4
+        variant_overrides:
+          vllm: interleave_pair
+        cli_extra_args:
+          sglang:
+            args: *id001
+            fact: 'fp4-experts on SM90: runner=auto crashes, marlin runs (facts/bisect_dsv4_native_marlin.json)'
+          vllm:
+            args: *id002
+            fact: vllm DeepseekV4 fp8_ds_mla REQUIRES fp8 KV (attention.py:79; golden-auto crash 2026-08-23)
+          trtllm:
+            args: *id003
+            fact: DeepseekV4CacheManager requires tokens_per_block in [128,256]; naive renders 32 (facts/trt_ab_dsv4_tpb128.json)
+      sgl-project/DeepSeek-V4-Flash-FP8:
+        dummy_overrides:
+          family: dsv4
+        variant_overrides:
+          vllm: rep_mix
+        cli_extra_args:
+          vllm:
+            args:
+            - --generator-set
+            - params.agg.kv_cache_dtype=fp8
+            fact: vllm DeepseekV4 fp8_ds_mla REQUIRES fp8 KV (attention.py:79; golden-auto crash 2026-08-23)
+          trtllm:
+            args:
+            - --generator-set
+            - params.agg.tokens_per_block=128
+            fact: DeepseekV4CacheManager requires tokens_per_block in [128,256]; naive renders 32 (facts/trt_ab_dsv4_tpb128.json)
+      sgl-project/DeepSeek-V4-Pro-FP8:
+        dummy_overrides:
+          family: dsv4
+        variant_overrides:
+          vllm: interleave_pair
+        cli_extra_args:
+          vllm:
+            args:
+            - --generator-set
+            - params.agg.kv_cache_dtype=fp8
+            fact: vllm DeepseekV4 fp8_ds_mla REQUIRES fp8 KV (attention.py:79; golden-auto crash 2026-08-23)
+          trtllm:
+            args:
+            - --generator-set
+            - params.agg.tokens_per_block=128
+            fact: DeepseekV4CacheManager requires tokens_per_block in [128,256]; naive renders 32 (facts/trt_ab_dsv4_tpb128.json)
+      meta-llama/Llama-4-Maverick-17B-128E-Instruct:
+        variant_overrides:
+          sglang: depth4
+          vllm: depth4
+topologies:
+- tp: 1
+  ep: 1
+  evidence: real
+  status: implemented
+- tp: 8
+  ep: 1
+  evidence: real
+  status: implemented
+  route: launch_server + inject/sitecustomize (probe_sglang stage2 is single-process by design and cannot host tp>1)
+- tp: 8
+  ep: 8
+  evidence: real
+  status: implemented
+  route: same as tp8, --ep-size 8
+topology_policy:
+  default: tp1
+  note: topology is ALWAYS recorded in records.runtime (tp/ep/dp/a2a) even when kernels match.
+  deepep_required:
+  - repo: moonshotai/Kimi-K3
+    reason: 'owner request 2026-08-24: K3 must be probed on the deepep a2a route (independent kernel path); other
+      models are represented by tp1 per the invariance fact.'
+platform:
+  name: h20_sm90
+  sm: 90
+  system: h200_sxm
+  facts_systems:
+  - h100_sxm
+  - h200_sxm
+tooling:
+  note: 'aiconfigurator-core wheel version is READ FROM aic/pyproject.toml (the checkout declares it); only probe-specific
+    pins live here. vllm-probe:0.24.0-fix retired with the 0.29.0 pin (stubs gone since 0.27.1) — history in findings vllm_024_image_tilelang_stub.'

@@ -1,0 +1,1 @@
+{"ts": "2026-09-20T22:27:31", "commit": "2c214dce", "status": {"pin_bumped": "done", "plan_scoped": "done", "identity_rerun": "todo", "path_aligned": "todo", "customizations_retested": "todo", "failures_root_caused": "todo", "recollect_sanity": "blocked", "e2e_spot_check": "blocked"}, "first_todo": "identity_rerun"}

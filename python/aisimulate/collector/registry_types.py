@@ -35,6 +35,12 @@ class PerfFile(str, Enum):
     KDA = "kda_perf.txt"
     MAMBA2 = "mamba2_perf.txt"
     COMPUTESCALE = "computescale_perf.txt"
+    # computescale's second table (dynamic-vs-static fp8 quant matrix): both
+    # backends have always written it and the SDK consumes
+    # scale_matrix_perf.parquet (aisimulate_core/sdk/common.py) — the enum
+    # entry was simply missing, which the fail-closed finalize rejected on
+    # the first full vllm computescale run (2026-09-21).
+    SCALE_MATRIX = "scale_matrix_perf.txt"
     WIDEEP_CONTEXT_MLA = "wideep_context_mla_perf.txt"
     WIDEEP_GENERATION_MLA = "wideep_generation_mla_perf.txt"
     WIDEEP_CONTEXT_MOE = "wideep_context_moe_perf.txt"

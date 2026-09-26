@@ -1,0 +1,1551 @@
+# OUTPUT: curated conclusions from probe campaigns (the facts archive's
+# human layer). Each finding states its own evidence paths, versions and
+# dates inline; applies_to lists where it was observed. Rots with
+# framework releases — re-verify on version bumps. Inputs live in targets.yaml.
+findings:
+  dummy_notes:
+    statement: layer-kind period is FRAMEWORK-HARDCODED (sglang llama4.py:217 use_rope=(layer_id+1)%4!=0) with no
+      config field -> _ARCH_IMPLICIT_PERIODS; aic-core config lacks vision_config -> merged from unsloth mirror
+      (vllm builds the vision tower and profiles it even for text-only probes). The manual mirror-merge step BIT
+      on B300 (2026-09-20) — the gated-config fallback used the core copy WITHOUT vision_config, vllm assumed
+      default vision sizes (1025 pos) vs the mirror preprocessor's 336px (577) and both Llama-4 probes 'failed';
+      codified since as fetch_assets' mirror-config fallback (B300 patch, pending merge) — after rebuilding the
+      dummies both pass.
+    applies_to:
+    - meta-llama/Llama-4-Scout-17B-16E-Instruct
+  k3_deepep:
+    statement: 'NO working deepep mode on sglang 0.5.17 + bundled DeepEP @ SM90 tp8/ep8 (A/B 2026-08-24, both deterministic):
+      mode=auto -> AssertionError forward_deepgemm_contiguous is deprecated at the first MoE forward (normal dispatch
+      routed into the removed contiguous-deepgemm path; all 8 ranks); mode=low_latency -> DeepEP device assert internode_ll.cu:358
+      num_topk <= kNumMaxTopK (K3 num_experts_per_token=16 exceeds the LL kernel cap). Additionally K3''s own SP-collective/MegaMoE
+      path is SM103-gated (startup log: requires SM103, TP4/TP8, MegaMoE/DeepEP, CustomAllReduceV2 multicast; falls
+      back to NCCL on SM90) — the independent kernel route is unreachable on H20 regardless. Non-deepep tp8/ep8
+      (a2a=none) works and matches tp1 kernel families. Evidence facts/tepdep/k3_deepep_{auto_v2,ll}.rank*.json
+      + run logs.'
+    applies_to:
+    - moonshotai/Kimi-K3
+  sglang_0516:
+    statement: 'CORRECTED 2026-08-23 (retracts the earlier framework_bug verdict): the ''Hidden size mismatch''
+      chain was a DUMMY false positive for converted-FP8 checkpoints. sglang picks the DSV4 expert layout by probing
+      the safetensors HEADER dtype of one routed-expert tensor (configs/deepseek_v4.py try_detect_fp4_experts);
+      weightless dummies probed None -> env default fp4=True -> fp4-packed weights fed to the triton fp8 kernel.
+      Real header dtypes (fetched from HF): native deepseek-ai = I8 (fp4-packed), sgl-project FP8 = F8_E4M3, nvidia
+      NVFP4 = U8. With the dtype_probe.safetensors signal: converted-FP8 checkpoints RUN OUT OF THE BOX (ok); native/NVFP4
+      (true fp4 experts) fail under runner=auto on SM90 and RUN with moe_runner_backend=marlin -> needs_flags (facts/bisect_dsv4_{fp8experts,native_marlin}.json).
+      The earlier five-runner-all-fail experiments ran under the wrong fp4 layout and are retracted. The ue8m0/deep_gemm
+      SM100-only branch remains a separate real limit for the deep_gemm runner choice.'
+    applies_to:
+    - family:dsv4
+  sglang_0516_flaky:
+    statement: trace NONDETERMINISTICALLY fails (~1/3 of runs) in flashinfer cutlass-DSL fused_add_rmsnorm via tvm_ffi
+      'Mismatched Tensor' — the same command text both passes and fails on the same GPU (12 controlled reruns 2026-08-21);
+      every generator flag excluded by bisection; suspected timing-dependent tensor layout under enable-mixed-chunk.
+      Also hits MiniMax-M2.5. Probe retries once and records warmup_retry; persistent failure is a record, not a
+      block.
+    applies_to:
+    - MiniMaxAI/MiniMax-M2
+  sglang_marlin_ab:
+    statement: 'runner=marlin A/B''d 2026-08-24: SAME capability ValueError — the gate (loader.py:282) checks the
+      quant config''s declared min_capability=100 before model construction; runner choice never enters. Declaration-locked,
+      no flag escape. Evidence facts/bisect_m3mxfp8_marlin.json.'
+    applies_to:
+    - MiniMaxAI/MiniMax-M3-MXFP8
+  sglang_silent_downgrade:
+    statement: 'SGLANG BUG (not ours), mechanism pinned: the artifact ships quant_method=''modelopt'' + quant_algo=''MIXED_PRECISION'';
+      sglang 0.5.16''s mixed detector matches only the literal ''modelopt_mixed'' (modelopt_quant.py:622) and the
+      generic modelopt fallback greps quant_algo for FP8/NVFP4/FP4 substrings (base_config.py:189-196) — MIXED_PRECISION
+      matches neither -> silently Unquantized, zero warnings. Our dummy carries the full real metadata and the SAME
+      metadata binds ModelOptNvFp4FusedMoE correctly on vllm. Worth reporting upstream; recheck on 0.5.17.'
+    applies_to:
+    - nvidia/MiniMax-M3-NVFP4
+  sglang_sm90:
+    statement: 'NO working path: SM90 gates NVFP4 MoE to marlin only (flashinfer_mxfp4/flashinfer_cutlass/triton
+      all rejected ''platform does not support NVFP4 with selected backend''), and marlin fused_moe asserts ''Only
+      gated SiLU is supported'' — Gemma uses gelu_pytorch_tanh. framework gap: NVFP4xgelu-MoE unservable on sglang/SM90.
+      Dense 31B-IT-NVFP4 passes (no MoE). Evidence facts/bisect_gemma4nvfp4_*.json, 2026-08-24.'
+    applies_to:
+    - nvidia/Gemma-4-26B-A4B-NVFP4
+  sglang_workaround:
+    statement: 'flake root-caused to flashinfer cutlass-DSL fused_add_rmsnorm tvm_ffi nondeterminism: SGLANG_IS_FLASHINFER_AVAILABLE=false
+      passes 4/4 (facts/bisect_m2_noflashinfer_*.json, 2026-08-22). Deterministic workaround exists; perf cost unmeasured.'
+    applies_to:
+    - MiniMaxAI/MiniMax-M2
+    - MiniMaxAI/MiniMax-M2.5
+  sm90_triple:
+    statement: 'Same checkpoint, three fates on SM90. vllm 0.24 RUNS but NOT at mxfp8 precision: binds ModelOptMxFp8FusedMoE/LinearMethod
+      yet executes marlin_moe_wna16::Marlin + marlin::Marlin — weight-only dequant (W8A16 semantics); perf collected
+      here is Marlin-dequant data, not mxfp8 tensor-core data (same class as NVFP4-on-SM90). sglang 0.5.16 DEFINITIVELY
+      unservable: explicit quant-method capability floor ''mxfp8 minimum capability 100, current 90'' — not runner-selectable,
+      no flag bypasses it. trtllm rc23 DEFINITIVELY unservable but for a NON-quant reason: all three M3 artifacts
+      die at the sparse-attention wiring wall before quant matters. Evidence: records + raws, 2026-08-24.'
+    applies_to:
+    - MiniMaxAI/MiniMax-M3-MXFP8
+  support:
+    statement: 'Generator/SDK supports K3 since upstream rebase 2026-08-23 (KimiK3Config, KIMIK3 family); the golden
+      command renders. Failure now correctly sits at the FRAMEWORK layer: unregistered at the pins (sglang 0.5.16
+      / vllm 0.24 / trtllm rc23); registered in latest releases (0.5.17 / 0.27.1 / rc24, probed).'
+    applies_to:
+    - moonshotai/Kimi-K3
+  support_2:
+    statement: 'same as moonshotai/Kimi-K3: architecture unregistered at all three pinned framework versions (probe-verified
+      2026-08-20).'
+    applies_to:
+    - nvidia/Kimi-K3-NVFP4
+  topology_invariance:
+    statement: 'ep/tp sharding on the a2a=none (single-node default) path does NOT change kernel families — measured
+      across GLM-5.2-FP8 (tp2/tp8 x ep1/ep2/ep8: triton fused_moe throughout), DSV4-NVFP4 (tp2 x ep1/ep2: marlin),
+      Kimi-K2.5-FP8 (tp8 x ep1/ep8: fused_marlin_moe). Evidence facts/tepdep/*.rank0.json, 2026-08-21. Therefore
+      tp1 probes represent kernel identity for the default path; multi-rank probing is scoped to routes that change
+      kernels.'
+    applies_to:
+    - a2a=none sharding
+  topology_sm103:
+    statement: 'the owner-reported TEP8 kernel fork is SM-gated, from sglang''s own dispatch log: ''K3 SP collective
+      requires SM103, TP4/TP8, MegaMoE/DeepEP, and CustomAllReduceV2 with multicast; using NCCL.'' — the special
+      path never activates on SM90; verify on SM103 (Blackwell Ultra) during the Blackwell replay.'
+    applies_to:
+    - moonshotai/Kimi-K3
+  topology_sm90:
+    statement: 'sglang 0.5.17 on SM90 (probed): tp1 and TEP8 and DEP8(a2a=none) all run Mxfp4MoEMethod -> bf16-dequant
+      triton fused_moe_kernel, IDENTICAL kernel sets (facts/tepdep/k3_{tep8,dep8}.rank0.json). DEP8+deepep (the
+      real DEP deployment route) CRASHES at warmup: ''AssertionError: forward_deepgemm_contiguous is deprecated''
+      — the DeepEPMoE route for this quant recipe is broken at 0.5.17/SM90.'
+    applies_to:
+    - moonshotai/Kimi-K3
+  topology_verdict:
+    statement: 'Kimi-K2.5 (compressed-tensors W4-packed -> marlin): TEP8 == DEP8 kernel family (sglang::fused_marlin_moe
+      + device::marlin_moe::Marlin, same align/reduce/activation set; only shape-tuning template args differ). facts/tepdep/k25_fp8_{tep8,dep8}.rank0.json,
+      2026-08-21.'
+    applies_to:
+    - tp8/ep1
+  trtllm_fp8kv:
+    statement: 'trtllm rc23/SM90 UNIFIED root cause: fp8 KV cache in the MLA/DSA path crashes natively in flash_mla
+      (frame#62 abort). Door 1 = engine kv_cache_config.dtype:fp8 (generator renders for fp8 profiles) -> config_gap,
+      kv-auto A/B passes (GLM-5/5.1/5.2-FP8, DSV3.2, MiniMax-M2/M2.5 whose ''Linear assert'' was the same trigger).
+      Door 2 = checkpoint hf_quant kv_cache_quant_algo:FP8 (all NVFP4 artifacts) -> framework_bug, kv-auto STILL
+      crashes (GLM-5/5.1-NVFP4, DSV3.2-NVFP4). Evidence facts/trt_ab_kvauto_*.json, 2026-08-22.'
+    applies_to:
+    - MiniMaxAI/MiniMax-M2
+    - zai-org/GLM-5-FP8
+    - zai-org/GLM-5.1-FP8
+    - deepseek-ai/DeepSeek-V3.2
+    - MiniMaxAI/MiniMax-M2.5
+    - nvidia/GLM-5-NVFP4
+    - nvidia/GLM-5.1-NVFP4
+    - nvidia/DeepSeek-V3.2-NVFP4
+    - family:glm
+  trtllm_layers:
+    statement: 'rc23 fails in QUANT PARSING before the arch check (quant_config_utils.py:43 NoneType on the 4-bit-float
+      compressed-tensors config) — two walls stacked: parser first, arch-unregistered behind it. rc24 passes parsing
+      AND registers the arch, then stops at the missing ''fla'' package in the image.'
+    applies_to:
+    - moonshotai/Kimi-K3
+  trtllm_linear_assert:
+    statement: 'trtllm rc23: fp8 Linear.apply assertion (linear.py:1142) under the generator-rendered engine args;
+      probe-default args loaded fine — surfaced by the fidelity upgrade 2026-08-21.'
+    applies_to:
+    - MiniMaxAI/MiniMax-M2
+    - MiniMaxAI/MiniMax-M2.5
+  trtllm_quant_algo:
+    statement: hf_quant mixes NVFP4 experts (552 layers) with FP8_PB_WO attention projections (2790 layers, fp8
+      per-block WEIGHT-ONLY). FP8_PB_WO is absent from the QuantAlgo enum in rc23 AND rc24; nearest member FP8_BLOCK_SCALES
+      is W8A8 (fp8 activations), NOT weight-only — no semantic equivalent exists, so this needs a new enum + fp8
+      weight-only dequant path in trtllm, not a rename. W4A16 kernels exist but only apply to the expert half. Enum
+      grep-verified 2026-08-24.
+    applies_to:
+    - nvidia/Kimi-K3-NVFP4
+  trtllm_quant_parser:
+    statement: rc23 quant_config_utils.py:43 crashes (NoneType) parsing the native compressed-tensors W4 quantization_config
+      — framework_bug; K2.5-NVFP4 sibling fails separately on NVFP4 MoE tactics (platform_floor SM100).
+    applies_to:
+    - moonshotai/Kimi-K2.5
+  trtllm_rc23:
+    statement: 'trtllm rc23: NOT capacity (2026-08-21 explanation RETRACTED — the 64B/120GiB arithmetic used gated-3-mat
+      at hidden width, ignoring moe_latent_size=2048+relu2; true experts/layer ~10.7B). Measured 2026-08-23: peak
+      33GB/96GB, weights fit; crash is a native ILLEGAL MEMORY ACCESS right after model init (cudaStreamDestroy
+      IMA -> abort in KVCacheManager teardown, exit 139, no raw written). Isolation: Ultra-BF16/FP8 pass trtllm,
+      Nano/Super-NVFP4 pass trtllm — Ultra-shape x NVFP4-path specific framework bug. Evidence facts/ultra_nvfp4_trt_ima.log
+      + mem monitor.'
+    applies_to:
+    - nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-NVFP4
+  trtllm_rc23_2:
+    statement: 'DSV4 rejected at load: ''Missing COMPRESS pool metadata for compress ratio 4'' — CSA compression
+      unsupported on this path.'
+    applies_to:
+    - family:dsv4
+  trtllm_rc24:
+    statement: rc24 registers KimiK3ForConditionalGeneration but the nvcr image lacks the 'fla' (flash-linear-attention)
+      package its model file imports — K3 is unserveable on the shipped image (probe-verified 2026-08-21).
+    applies_to:
+    - moonshotai/Kimi-K3
+  trtllm_sparse_config:
+    statement: 'MiniMax-M3 on trtllm REQUIRES llmapi sparse_attention_config (algorithm: minimax_m3) to get MiniMaxM3KVCacheManagerV2
+      — the generator does not render it (needs_flags). With it set, rc23/SM90 still fails deeper (MiniMaxM3SparseRuntimeBackend.forward
+      missing cache args — framework gap, recheck on rc24/Blackwell). Evidence facts/trt_ab_m3_sparse.json.'
+    applies_to:
+    - family:m3
+  trtllm_tokens_per_block:
+    statement: DeepseekV4CacheManager requires tokens_per_block in [128,256]; the generator renders 64 (FPM example
+      value) — ILLEGAL FOR THIS ARCH ON ANY PLATFORM (needs_flags for the generator). With 128 the load proceeds
+      to the explicit pre-blackwell rejection -> final cause on SM90 is platform_floor. Evidence facts/trt_ab_dsv4_tpb128.json,
+      2026-08-22.
+    applies_to:
+    - family:dsv4
+  vllm_024:
+    statement: 'NotImplementedError at load: checkpoint hf_quant excludes lm_head but NOT model.embed_tokens while
+      weights are tied; vllm''s ModelOpt NVFP4 config has no embedding quant method. Real-artifact metadata x framework
+      combination — real deployment hits the same. Affects both 26B and 31B-IT.'
+    applies_to:
+    - nvidia/Gemma-4-26B-A4B-NVFP4
+  vllm_024_2:
+    statement: same tied-embedding NotImplementedError as 26B (see its entry).
+    applies_to:
+    - nvidia/Gemma-4-31B-IT-NVFP4
+  vllm_024_image_tilelang_stub:
+    statement: 'PRISTINE vllm/vllm-openai:v0.24.0 CANNOT load DSV4 on vllm: tilelang (hard dep of DSV4 mhc) ships
+      lib/libcudart_stub.so with undefined symbol cudaDeviceReset; vllm''s load path resolves the stub via ctypes
+      and crashes (A/B on pristine image: facts/ab_dsv4_vllm_pristine_image.json, 2026-08-24 — minimal ''import
+      tilelang; import flashinfer.comm'' does NOT trigger it, the engine load path does). Real 0.24.0-image deployments
+      of DSV4 hit the same. Upstream-fixed: v0.27.1 ships tilelang without stub files. The -fix image only symlinks
+      the stub to the real libcudart (no dispatch change); drop it when the vllm pin moves past 0.24.'
+    applies_to:
+    - vllm/vllm-openai:v0.24.0
+  vllm_0271:
+    statement: 'vllm v0.27.1 probed OK: KimiK3DeltaAttention (+MTP model registered), Mxfp4MoEMethod — same quant
+      identity as sglang 0.5.17.'
+    applies_to:
+    - moonshotai/Kimi-K3
+  vllm_0290_dsa_attention_swap:
+    statement: 'vllm 0.29.0/SM90: the sparse-MLA/DSA attention path changed implementation — probes now record FlashAttnMLASparseImpl
+      and the 0.24-era dsa_nsa/triton kernel-family mix no longer appears for DeepSeek-V3.2 and the GLM-5.x family
+      (7 models, all still pass). Consequences: (1) attention perf data for these models must be recollected on
+      0.29; (2) kernel_taxonomy.yaml needs rules for the new kernel names before attention identity is machine-adjudicable
+      again (backlog). Also observed: Kimi-K2.5 W4A16 MoE binding class renamed (CompressedTensorsWNA16MarlinMoEMethod
+      -> CompressedTensorsWNA16MoEMethod) while the executed kernel is unchanged (marlin_moe_wna16::Marlin) — class
+      names alone are not identity. Evidence: records.jsonl 0.24-vs-0.29 diff, 2026-09-19.'
+    applies_to:
+    - deepseek-ai/DeepSeek-V3.2
+    - zai-org/GLM-5
+    - zai-org/GLM-5-FP8
+    - zai-org/GLM-5.1
+    - zai-org/GLM-5.1-FP8
+    - zai-org/GLM-5.2
+    - zai-org/GLM-5.2-FP8
+    - moonshotai/Kimi-K2.5
+  vllm_0290_dsa_blackwell_paths_unvalidated:
+    statement: 'HARDWARE-VALIDATED on B300/SM103 2026-09-20 (upgrades the source-derived pre-read; evidence
+      results/pathdiff/sm103/vllm-0.29.0/*.json in the B300 workspace, pending its patch landing): backend selection
+      matched the pre-read — DSA ctx bf16 -> FLASHMLA_SPARSE (2.42ms b1 s512), fp8 -> FLASHINFER_MLA_SPARSE (1.58ms);
+      MSA -> MiniMaxM3SparseMSAImpl; dense attn -> flashinfer trtllm prefill/decode. The 029 lane construction
+      carried over with ZERO arch edits — the one bug found was arch-NEUTRAL: the lane handed the indexer builder
+      block_table_width=get_block_table_width(max_model_len)=64 while its own block_table_tensor had ceil(seq/block)=32
+      columns; serving allocates the table AT the width (v1/worker/block_table.py) so builders assume equality, and
+      only the family-100 decode path reads the expanded buffer (indexer.py:609,745) — latent on SM90. Fixed by
+      zero-padding the table to the width; SM90 re-smoke green (gen bf16 0.190ms FLASH_ATTN_MLA_SPARSE, fp8 0.187ms
+      FLASHMLA_SPARSE, ctx 1.97ms) and all 3 sm90 dsa verdicts re-emitted aligned. CORRECTION to the pre-read:
+      "B200 = B300 on the vllm chain" holds only at DISPATCH level (family-100, no 103 special-case) — at kernel
+      identity level B300 prefill runs fmhaSm103a* cubins while decode runs fmhaSm100f* (B300 probe evidence), so
+      SM100 and SM103 need separate perf rows. Prior pre-read kept for the record: FLASH_ATTN_MLA_SPARSE is
+      major==9-only (flashattn_mla_sparse.py:71-72); indexer family-100 uses varlen_paged_mqa_logits
+      (indexer.py:475-503); SM120: TRITON_MLA + FLASHINFER_MLA_SPARSE_SM120 (cuda.py:130-134). DSA attention perf
+      rows remain strictly per-SM.'
+    applies_to:
+    - family:sparse_attention
+    - platform:sm100
+    - platform:sm103
+    - platform:sm120
+  vllm_0290_dsa_lane_indexer_drift:
+    statement: 'RESOLVED 2026-09-19 (same day): the 029 lane now constructs the serving-same DeepseekV32Attention
+      (vllm.models.deepseek_v32.attention:118 — 0.29 routes DeepseekV32ForCausalLM to the DSV32-specific fused implementation,
+      registry.py:94) instead of the generic DeepseekV2MLAAttention the 0.24 collector used. Adaptations, each serving-cited:
+      forward arity (positions, hidden_states — no residual arg), forward_context.slot_mapping dict populated per
+      layer name (attention.py:303-306), perf-log layer accessor (DSV32Attention IS the MLAAttention layer, no .mla_attn
+      nesting). path_diff verdicts ALL ALIGNED (bf16 s512, bf16 s4096 sparse branch, fp8-kv) with zero kernel drift
+      — the fused prelude (fused_norm_rope) now matches serving, and the short-seq dense/sparse branch puzzle dissolved
+      with the module swap (same class, same branch logic). Perf delta of construction parity (H20, same GPU, back-to-back):
+      context b1 s512 1.76→1.97 ms (+12% — the fused serving prelude is SLOWER at tiny seq here), context b1 s4096
+      26.25→26.88 ms (+2.4%), generation b4 s2048 0.209→0.189 ms (-9.6%). Non-trivial deltas = the old construction
+      was mispricing the module; serving-parity rows are the only trustworthy ones. Legacy construction remains
+      behind AIC_DSA_LEGACY_MODULE=1 for A/B only (loud banner, never for data).'
+    applies_to:
+    - family:sparse_attention
+    - collector.vllm.collect_mla_module_029
+  vllm_0290_dsv4_cutedsl:
+    statement: 'CORRECTED 2026-09-19 (retracts the same-day ''framework regression, family dead'' verdict): DSV4
+      RUNS on vllm 0.29.0/SM90 — the crash is a CONFIG-TRIGGERED alignment bug, single-variable isolated. Trigger:
+      the generator renders --max-num-batched-tokens 6012; the runner slices per-group slot mappings as rows of a
+      2D buffer with row width = max_num_batched_tokens, so a non-multiple-of-8 budget puts every row after the
+      first at a 64B-misaligned int64 offset (6012*8=48096 bytes, not /64), and DSV4 is multi-cache-group (MLA main
+      + compressor state + indexer) so its state-cache slot_mapping lands on a misaligned row — cutedsl''s tvm_ffi
+      wrapper asserts 64B alignment on argument #3 (slot_mapping, NOT state_cache as first written). A/B on the
+      pristine 0.29 image, same dummy: minimal args PASS (full request, whole DSV4 path executes: cutedsl compress,
+      fused indexer_q, dsv4_topk, FlashMLA decode metadata, deep_gemm fp8 — facts/ab_dsv4_minargs_trace_0290.json,
+      probe_isl 4096); minimal + 6012 reproduces the Misaligned error verbatim (ab_dsv4_tok6012_0290.json); minimal
+      + 6016 (=64*94) PASSES (ab_dsv4_tok6016_0290.json). Routing is SM-agnostic (compressor.py:402 is_cuda &
+      head=512 -> cutedsl on every SM; triton only for AMD/XPU/head-128), so B200 would crash identically under
+      6012 — not a Hopper-specific kernel bug. Dual attribution: vllm robustness bug (pad slot-mapping rows or
+      relax the assert; worth reporting upstream) + generator trigger (odd token budget). REPRODUCED ON B300/SM103 2026-09-20
+      (same Misaligned crash on all 8 DSV4 checkpoints, same single-variable flip: 6012->6016 makes
+      DSV4-Pro-0813 serve with native fp4 kernels). Birthplace located: the vllm rule plugin''s agg formula
+      max_batch_size + isl + 1500 (generator/rule_plugin/vllm.rule) — and the rule runs AFTER --generator-set,
+      silently overriding a user-supplied params.agg.max_num_tokens (separate defect, still open). FIX SHIPPED on
+      branch fix/generator-round-vllm-batched-tokens: rule budgets rounded up to 64 at the source + the render-layer
+      mapping rounds as last-line guard; 6 unit tests. Consequence: the
+      sparse_attention family split is NO LONGER FORCED by dsv4 (see vllm_0290_sparse_family_split_needed).'
+    applies_to:
+    - deepseek-ai/DeepSeek-V4-Flash
+    - deepseek-ai/DeepSeek-V4-Pro
+    - deepseek-ai/DeepSeek-V4-Flash-0731
+    - deepseek-ai/DeepSeek-V4-Pro-0813
+    - nvidia/DeepSeek-V4-Flash-NVFP4
+    - nvidia/DeepSeek-V4-Pro-NVFP4
+    - sgl-project/DeepSeek-V4-Flash-FP8
+    - sgl-project/DeepSeek-V4-Pro-FP8
+  vllm_0290_nemoh_profile_oom:
+    statement: 'vllm 0.29.0/SM90: Nemotron-H mamba profile run OOMs under the generator-rendered default (_state_passing_fwd
+      allocates 8GiB with ~4GiB free on 143GB). Root knob is max_num_seqs (64 alone passes; batched-tokens reduction
+      alone does not) but TWO generator walls block the direct fix: the rule engine floors max_batch_size at 512
+      (pipeline.py ''512 if x<512 else x*2'') and unknown params.agg keys are SILENTLY IGNORED instead of rejected.
+      Expressible rescue: gpu-memory-utilization 0.6 via extra_cli_args (now the checkpoint''s cli_extra_args).
+      Evidence facts/ab_nemoh_{seq,tok,small,mem}_0290.json, 2026-09-19.'
+    applies_to:
+    - nvidia/Nemotron-H-56B-Base-8K
+    - generator:rule-engine
+  vllm_0290_op_sweep_triage:
+    statement: 'vllm 0.29.0 op-collector sweep, first pass (H20, quick smokes in the official container, 2026-09-19).
+      WORK AS-IS on 0.29 (perf rows produced, no code change): gemm (incl. fp8 CutlassFP8ScaledMM kernel_source),
+      moe (108 cases), encoder_attention (long sweep, no errors), gdn (4k rows), mhc_module. WORK VIA THE 029 LANE''s
+      generic registry construction: dsa (aligned, done) AND plain mla — DeepSeek-V3 runs unmodified through collect_mla_module_029
+      (registry resolves DeepseekV3ForCausalLM -> generic deepseek_v2 model -> serving-same DeepseekV2MLAAttention;
+      FLASH_ATTN_MLA, 1.81ms ctx b1 s512), i.e. the config-in construction generalizes across architectures with
+      zero per-model code. FORKED AND CLOSED (second pass, same day): collect_attn_029.py (0.29 replaced the
+      set/get kv-cache-layout API with get_supported_kv_cache_layouts + resolve_kv_cache_layout and merged the
+      per-layer cache view to [B,H,N,2*D], flash_attn.py:1013-1014; SM90 smokes green on vllm_flash_attn_fa3;
+      path_diff aligned ctx+gen vs Meta-Llama-3.1-8B serving) and collect_msa_029.py (0.29 removed
+      AttentionBackend.get_kv_cache_shape — both caches now allocated via compute_layer_kv_cache_shape_bytes
+      and bound via each layer''s bind_kv_cache, v1/kv_cache_interface.py:253-269 + v1/worker/utils.py:622;
+      SM90 smokes green bf16 ctx/gen + fp8 ctx on MiniMaxM3SparseTritonImpl; path_diff aligned ctx+gen vs
+      MiniMax-M3 serving). SMOKED VIA components/op_smoke.py (generic registry-driven single-case runner —
+      one standard, no per-op drivers): compute_scale (2/2 cases, dynamic-minus-static fp8 quant rows) and
+      mla_bmm_gen_pre/post (2/2 each, vllm_torch_bmm) run AS-IS on 0.29. EXPECTED BLOCKED: dsv4_* (0.29 cutedsl
+      framework regression). OUT OF SCOPE: kda (preview-image runtime lane), xpu variants. Evidence: workspace
+      facts/opsweep_0290/*.txt.'
+    applies_to:
+    - framework:vllm-0.29.0
+    - ops:gemm,moe,encoder_attention,gdn,mhc,mla,dsa,attention,msa,compute_scale,mla_bmm
+    - ops-blocked:dsv4
+  vllm_0290_sparse_family_split_needed:
+    statement: 'UPDATED 2026-09-19 (the forcing condition is GONE): the split was motivated by ''DSA works on 0.29,
+      DSV4 dead on 0.29'' — but the DSV4 death was retracted (config-triggered alignment crash, not a framework
+      regression; see vllm_0290_dsv4_cutedsl CORRECTED). With the token-budget fix (round to 64) DSV4 serves on
+      0.29, so dsa_* and dsv4_* can move pins TOGETHER and no family split is required for the 0.29 upgrade.
+      Remaining owner decisions on this thread: (1) approve the generic generator rounding rule (or accept
+      per-checkpoint cli_extra_args as the interim); (2) dsv4 op-collector 0.29 lane SHIPPED 2026-09-20
+      (collect_dsv4_029.py: storage_block_size/get_kv_cache_shape removal -> generic byte-shape pipeline; builder
+      block_table_width + zero-padded table, the B300 family-100 contract applied preventively; binding via
+      bind_kv_cache). SM90 smokes green csa/hca x ctx/gen, backend FLASHMLA_SPARSE_DSV4, fp8_ds_mla layout +
+      FP8 Lightning-Indexer cache engaged. path_diff verdict still pending: it needs an ok DSV4 serving record at
+      0.29, which needs the 64-aligned budget in the workspace render chain (the aic rule is unfixed; fix lives in
+      aisimulate branch fix/generator-round-vllm-batched-tokens). Historical context kept: DSA lane collect_mla_module_029.py validated (FLASH_ATTN_MLA_SPARSE bf16-kv /
+      FLASHMLA_SPARSE fp8-kv, both keys need collection), first live copy-on-upgrade instance.'
+    applies_to:
+    - family:sparse_attention
+    - deepseek-ai/DeepSeek-V3.2
+    - zai-org/GLM-5.x
+    - deepseek-ai/DeepSeek-V4-*
+  vllm_0290_upgrades:
+    statement: 'vllm 0.24.0 -> 0.29.0 improvements confirmed on SM90: Kimi-K3 and Kimi-K3-NVFP4 now pass (arch registered,
+      as predicted by the 0.27.1 probe); Gemma-4-26B-A4B-NVFP4 passes (0.24''s tied-embedding NotImplementedError
+      and the NVFP4 MoE path both fixed); Gemma-4-31B-IT-NVFP4 passes after a DUMMY fidelity fix — 0.29''s transformers
+      loads the multimodal processor, so dummies must carry processor_config.json (fetch it with configs/tokenizers
+      during onboarding; the 26B dummy already had it, the 31B one did not).'
+    applies_to:
+    - moonshotai/Kimi-K3
+    - nvidia/Kimi-K3-NVFP4
+    - nvidia/Gemma-4-26B-A4B-NVFP4
+    - nvidia/Gemma-4-31B-IT-NVFP4
+  vllm_fp8kv:
+    statement: 'vllm 0.24/SM90: head-576 MLA has NO attention backend with fp8 KV; kv-auto(bf16) resolves DeepseekV2MLAAttention+SparseAttnIndexer
+      and runs. Door 1 engine kv dtype (fp8 ckpts) = config_gap, kv-auto A/B passes; door 2 ckpt hf_quant kv_cache_quant_algo:FP8
+      (NVFP4 artifacts) = framework/platform gap, kv-auto still fails. Same two-door structure as trtllm. Evidence
+      facts/vllm_ab_kvauto_*.json, 2026-08-22.
+      0.29.0 ADDENDUM (2026-09-24, GLM-5.3 onboarding): door 2 is now a SPELLING gap, not a missing kernel. With
+      kv auto the NVFP4 DSA checkpoints (GLM-5/5.1/5.2/5.3-NVFP4, DeepSeek-V3.2-NVFP4) resolve kv_cache_dtype to
+      the string fp8_e4m3 from the checkpoint kv scheme and the selector rejects every MLA backend
+      (FLASHMLA_SPARSE: "kv_cache_dtype not supported"); the explicit --kv-cache-dtype fp8 variant of the SAME
+      run loads FlashMLASparseImpl and generates (705890b31aa0, 4d34afefe419, ...). So on 0.29/SM90 these models
+      serve only with an explicit fp8 kv dtype — the golden vllm render passes none. Generator-relevant
+      (aiconfigurator should render --kv-cache-dtype fp8 for NVFP4 DSA on vllm 0.29) and upstream-worthy
+      (fp8_e4m3 vs fp8 in the sparse-MLA support check). Raw: archive/raw/67b8d5c6ce5e.json (Reasons dict).
+      GENERATOR FIX LANDED (owner "1，好的", commit ea0244a2): utils.vllm_dsa_kv_cache_dtype prescribes fp8
+      keyed on architecture (GlmMoeDsaForCausalLM, DeepseekV32ForCausalLM) + the task''s nvfp4 GEMM quant mode;
+      module_bridge applies it to the worker payload (naive path has no quant fact). Left open for the SDK
+      owner: the perf task itself models these checkpoints with bf16 KV while serving runs fp8 KV either way.'
+    applies_to:
+    - zai-org/GLM-5-FP8
+    - nvidia/GLM-5-NVFP4
+    - nvidia/GLM-5.1-NVFP4
+    - nvidia/DeepSeek-V3.2-NVFP4
+    - zai-org/GLM-5.2-FP8
+    - nvidia/GLM-5.2-NVFP4
+  vllm_kv_required:
+    statement: 'INVERTED requirement vs GLM: vllm''s DeepseekV4 fp8_ds_mla layout REQUIRES fp8 kv-cache (attention.py:79
+      assert, golden auto crashed 2026-08-23) while GLM head-576 has NO backend with fp8 KV. kv dtype must be rendered
+      per (model, backend) — neither blanket auto nor blanket profile->fp8 works.'
+    applies_to:
+    - family:dsv4
+  probe_cudagraph_kernel_blindness_fixed:
+    statement: 'INSTRUMENT FIX (probe_vllm, 2026-09-19): the whole-run kernel tables were built by walking
+      torch.profiler CPU function_events — kernels replayed inside CUDA graphs have no CPU launch event and
+      were INVISIBLE. Consequence: vllm 0.29 MiniMax-M3 serving evidence showed ZERO attend/indexer kernels
+      (M3''s graph-safe attend runs under full cudagraph), and Llama FA evidence missed the in-graph
+      FlashAttnFwdCombine + prepare_varlen_num_blocks — path_diff produced FALSE "diverged" verdicts against
+      collector captures (collectors run eager, so their kernels were all visible). Fix in code, generic
+      (no per-model case): tables now come from the kineto DEVICE event stream (every executed kernel appears
+      there, graph-replayed or not), CPU-tree walk kept as fallback. Second generalized knob from the same
+      episode: probe prompt length is now --isl / AIC_PROBE_ISL (default 4096, owner-set 2026-09-19; the
+      historical implicit value was 32; recorded per-record as probe_isl) because
+      shape-conditional serving paths (M3 sparse threshold at topk_blocks*block_size tokens, FA split-KV)
+      are invisible below their thresholds — coverage is a parameter, never a per-model special case.
+      MiniMax-M3 and Meta-Llama-3.1-8B 0.29 raws re-probed at isl 4096 and superseded (old raws kept in
+      workspace facts/raw_superseded/); after the fix all four attn/msa 029-lane path_diff verdicts flipped
+      to aligned with zero collector changes.'
+    applies_to:
+    - instrument:probe_vllm
+    - framework:vllm-0.29.0
+    - MiniMaxAI/MiniMax-M3
+    - meta-llama/Meta-Llama-3.1-8B
+  pathdiff_fp8kv_coverage_complete:
+    statement: |
+      HARNESS COMPLETENESS (2026-09-23, driven by "fp8-KV must be probed and
+      compared, not skipped"; REVISED the same day after a second review found
+      four defects in the first pass — see probe_prefill_prefix_cache_contamination
+      for the largest). fp8-KV is a first-class path_diff dimension and the fp8
+      attention paths are verified aligned with matched evidence:
+        (a) probe fp8-KV as a config axis: probe_vllm --kv-cache-dtype +
+            probe_driver kv_variants=[None,fp8] (vllm), path_diff --kv-dtype
+            selects the same-kv serving record (commit a2076196).
+        (b) build_ops orphan keep-rule is STRUCTURAL: every orphan the taxonomy
+            labels with an identity-bearing backend is kept; only unlabeled/
+            noise orphans are capped (24, by device time). The first fix
+            (top-40 by time) was still a count; the original alphabetical
+            [:15] had truncated half the records (137/274 raws exceed 15).
+        (c) taxonomy: vllm kernel_unified_attention / reduce_segments
+            (TRITON_ATTN, the only fp8 head_dim>256 Gemma-4 path) labeled
+            `triton` — the shared vocabulary's name for the Triton attention
+            backend (kernel_source_backends.yaml: sglang `triton`, vllm
+            `vllm_triton_attn` -> triton). The first pass invented
+            `triton_attn`, breaking the one-vocabulary contract. Routing
+            kernels moved triton -> framework_native, so `triton` now means
+            attention only and left path_diff's infra set.
+        (d) verdict artifacts are reproducible: reports carry capture_file,
+            capture_cmd, op_hint, kv_dtype and the serving record (id, tp, kv,
+            isl, prefix_caching, candidate count); records carry runtime.isl;
+            path_diff --isl selects by prompt length and --serving-raw diffs
+            against explicit A/B evidence. The first pass saved verdicts to
+            results/pathdiff/sm90/ where the gate never reads them (it reads
+            sm90/<fw>-<version>/).
+      VERDICTS (sm90, vllm 0.29.0, kv=fp8, results/pathdiff/sm90/vllm-0.29.0/):
+        - Gemma-4 head512 fp8 -> ALIGNED (triton both sides).
+        - DSV3.2 DSA fp8 GENERATION -> ALIGNED (flashmla sparse_fp8 decode +
+          dsa_nsa paged_mqa_logits + deepgemm). The first pass called this
+          capture "ctx": run_mla_module picks the phase from
+          `"context" in perf_filename` (collect_mla_module.py:920) and the
+          capture used /tmp/cap_perf.txt.
+        - DSV3.2 DSA fp8 CONTEXT s=4096 (128 heads, separate prefill path:
+          cp_gather_and_upconvert -> bf16 workspace -> sparse_attn_fwd_kernel)
+          -> ALIGNED against cache-cold serving at isl 4096.
+        - DSV3.2 DSA fp8 CONTEXT s=512 (dense FA3 MLA prefill, seq <= index_topk)
+          -> ALIGNED against cache-cold serving at isl 512 (--serving-raw
+          facts/reprobe_nopc/f208a101a9c8_isl512.json). Against the isl-4096
+          record it is legitimately "diverged" (serving never ran FA3 at 4096):
+          prefill dispatch is length-conditional, so the serving evidence must
+          be isl-matched to the collector cell.
+        - heads=16 fp8 context (TP8-equivalent, num_heads < 32) follows the
+          mixed-batch path in the collector too (sparse_decode_fwd), matching
+          flashmla_sparse.py:307 — capture facts/pathdiff/cap_dsa_ctx_fp8_s4096_h16.json.
+        Capture precision must match serving: gemm_type=bfloat16 shows a false
+        fused_a-projection drift (cutlass vs fp8_blockscale); use fp8_block.
+      FOLLOW-UP RESOLVED 2026-09-24 (measured, not read): the Gemma-4 case
+      file declares sglang_backends {90: triton, ...} on every attention
+      profile (head_dim 256 and 512), which overrides collect_attn's default
+      SM90->fa3 table; op_smoke case 168 (Gemma4ForConditionalGeneration,
+      head_dim 512, triton) captured _fwd_kernel/_fwd_kernel_stage2 = the
+      serving record's TritonAttnBackend kernels -> ALIGNED
+      (attn_ctx_hd512_gemma-4-26B-A4B). Original: (unconfirmed, needs an
+      sglang capture): sglang 0.5.16 serves Gemma-4 (head512) on Triton
+      attention (_fwd_grouped_kernel_stage1 in the raws) while
+      collector/sglang/collect_attn.py pins FlashAttentionBackend on SM90
+      unless head_dim==192 — same class as the vllm Gemma-4 override.
+    applies_to:
+    - instrument:path_diff
+    - instrument:kernel_taxonomy
+    - instrument:probe_driver
+    - framework:vllm-0.29.0
+    - platform:sm90
+    - google/gemma-4-26B-A4B
+    - deepseek-ai/DeepSeek-V3.2
+  probe_prefill_prefix_cache_contamination:
+    statement: |
+      INSTRUMENT FIX (probe_vllm, 2026-09-23): the profiled request reused the
+      warmup prompt (list(range(isl))) and vllm enables prefix caching by
+      default, so every "prefill" step the probe profiled was a near-total
+      cache hit recomputing only the last block — a query of <= block_size
+      tokens with a full-length KV. ALL 173 vllm serving records with prefill
+      tables carried this residual, not an isl-token prefill. Identity verdicts
+      survived wherever the residual still routes to the same kernel family
+      (FA3, TRITON_ATTN), which is why it stayed invisible; DSA fp8 exposed it:
+      FlashMLASparse's builder classifies query_len <= 256 (128 heads) as
+      decode (flashmla_sparse.py:244 @0.29.0), so serving "prefill" evidence
+      showed the fp8 DECODE kernel and path_diff flagged the collector's
+      correct separate-path prefill (sparse_attn_fwd_kernel) as kernel drift.
+      Cache-cold re-probes confirm: DSV3.2 fp8 prefill 688us decode kernel ->
+      26.9ms sparse_attn_fwd (+cp_gather_and_upconvert); Gemma-4 fp8
+      kernel_unified_attention 863us -> 10.5ms; Llama-3.1-8B FA3 41us ->
+      2.08ms. Fix: ea.enable_prefix_caching=False (same policy as the sglang
+      probe's --disable-radix-cache); records carry runtime.prefix_caching.
+      TARGETED RE-PROBE (owner decision 2026-09-23: no full re-sweep; GEMM/MoE
+      identity is not length-conditional, so only attention classes whose
+      DISPATCH changes with query length were redone). Triage over the 173
+      records by mechanism, then 37 + 3 records re-probed cache-cold (all ok):
+        - DSA family (DSV3.2 variants, GLM-5/5.1/5.2 + FP8/NVFP4; 18): fp8-KV
+          prefill evidence flipped from the fp8 DECODE kernel to
+          sparse_attn_fwd_kernel (the separate-path bf16-workspace prefill),
+          matching the collector; bf16-KV DSV3.2 stayed FA3.
+        - MLA + fp8-KV (DeepSeek-R1/V3 fp8, Kimi-K2/K2.5, DSV3.1/K2.5/K2.6/
+          K2.7 NVFP4; 12): flipped from flash_fwd_splitkv_mla (FlashMLA
+          decode) to FA3 prefill — the residual query had been routed through
+          the MLA decode path, so every MLA fp8 prefill row was wrong.
+        - MiniMax-M3 (7): prefill still showed NO labeled attention kernel —
+          that was a taxonomy gap, not the probe: 0.29 renamed the M3 Triton
+          kernels (_gqa_sparse_fwd/_decode, _index_block_score,
+          _decode_index_score, _topk_index_{partial,merge}); labeled `triton`
+          (kernel_source_backends.yaml: MiniMaxM3SparseTritonImpl -> triton),
+          closing the dsa_nsa-covers-M3 naming debt. msa029_m3_{ctx,gen} were
+          previously aligned on an EMPTY attention set; now kernel-matched.
+        - Dense FA3 / TRITON_ATTN / linear-attention (133 records): same
+          family before and after in the three cache-cold controls (Llama,
+          Gemma-4, DSV3.2 MoE/quant/routing identical; GEMM differs only in
+          cuBLAS nvjet tile shape) — identity verdicts are trustworthy, prefill
+          MAGNITUDES are not. build_records prints the count of such records
+          on every rebuild ("NOTE: N vllm records still carry cached-residual
+          prefill evidence"). Superseded raws: facts/raw_superseded/prefixcache_2026-09-23/.
+      DSV4 on vllm has NO serving evidence at all (36 records, mostly `load`
+      errors from the --max-num-batched-tokens 6012 trigger; the generator fix
+      lives on its own branch) — unrelated to this contamination.
+      The trtllm probe has the same shape (warmup and profiled prompt both
+      [[1]*16], block reuse on) plus no --isl and no phase tables — a weaker
+      lane that needs the same treatment. Evidence facts/reprobe_nopc/
+      (candidates.json, postprocess.py), facts/pathdiff/cap_dsa_ctx_fp8_s4096_fp8gemm.json.
+    applies_to:
+    - instrument:probe_vllm
+    - instrument:probe_trtllm
+    - framework:vllm-0.29.0
+    - platform:sm90
+  op_coverage_vllm_0290:
+    statement: |
+      OP-LEVEL ALIGNMENT SWEEP (2026-09-23, after the probes were fixed): every
+      vllm registry op with a serving reference now has a path_diff verdict in
+      results/pathdiff/sm90/vllm-0.29.0/ (23 files, gate aligned). Captures are
+      one representative cell per op at a serving model's real shape, run via
+      the collector's own run_* entry (op_smoke semantics), diffed against
+      cache-cold serving records (re-probed for DSV3 bf16 and Qwen3.5-0.8B).
+        aligned: gemm {fp8_block/deepgemm vs DSV3.2, bf16/cublas vs Llama,
+        fp8 per-tensor vs Qwen3-32B-FP8}; moe {fp8_block DSV3.2, bf16 Gemma-4,
+        mxfp4 gpt-oss-120b}; mla_context {bf16 DSV3, fp8 R1}; mla_generation
+        {fp8 R1}; mla_bmm_gen_pre/post; gdn {ctx: flashinfer GDN + conv1d,
+        gen: fla_triton fused_recurrent} vs Qwen3.5-0.8B; compute_scale;
+        plus the earlier attention/dsa/msa set.
+      REAL DIVERGENCE FOUND AND FIXED — moe w4a16_mxfp4 (gpt-oss): the
+      collector built a bare Mxfp4Config -> Mxfp4MoEMethod -> MARLIN, while
+      vllm 0.29 overrides OCP "mxfp4" checkpoints of model_type gpt_oss to
+      GptOssMxfp4Config/GptOssMxfp4MoEMethod (quantization/mxfp4.py:119-139),
+      whose gpt-oss priority list (fused_moe/oracle/mxfp4.py:584-602) picks
+      TRITON matmul_ogs on SM90 — exactly what the gpt-oss-120b serving probe
+      shows. Same class as the Gemma-4 attention override: the collector
+      constructed the generic config and lost the model-specific method.
+      collect_moe.py now mirrors the override (commit in this series).
+      HARNESS FIXES surfaced by the sweep: (1) path_diff picked the LAST
+      matching serving record; a decode-only Qwen3.5 record beat the
+      cache-cold one and produced a false collector-only `flashinfer` — records
+      are now ranked by evidence quality (prefix_caching False > phase tables >
+      known isl); (2) Triton autotune tile suffixes (_matmul_ogs_..._16x256x128x1
+      vs _128x256x128x1, BLOCK_M from the token count) are stripped by
+      normalize_kernel so kernel-drift compares kernels, not tiles;
+      (3) FlashInfer GDN kernels relabeled trtllm_internal -> flashinfer (the
+      vocabulary name; vllm runs them on SM90 @0.29).
+      NOT ALIGNED-ABLE TODAY (no serving reference, not a collector defect):
+        - mla_generation bf16-gemm cells: every DeepSeek/Kimi checkpoint is fp8
+          or NVFP4, so the bf16-weight grid has no serving instance; the
+          collector's fused_a_gemm there is vllm's own small-M dispatch
+          (deepseek_v2.py:~915-925, num_tokens <= 16). Verdict file removed;
+          the fp8 cell is the reference comparison.
+        - dsv4_* (6 ops) and mhc_module: vllm DSV4 serving has no evidence
+          (load errors from the 6012 token-budget trigger; generator fix on
+          its own branch).
+        - kda: Kimi-K3 runs only on the vllm kimi-k3 preview image; its
+          records carry no kernels.
+        - encoder_attention: the probe prompt is text-only, so vision-encoder
+          kernels never execute in the profiled window (Qwen3-VL records have
+          none) — needs a multimodal probe request.
+      FOLLOW-UP: sglang (91 records at isl 32) and trtllm (74 at 16 tokens,
+      block reuse on) serving evidence predates their probe fixes; their
+      length-conditional classes (DSA/NSA, M3) need the same targeted
+      re-probe before sglang/trtllm op verdicts are drawn.
+    applies_to:
+    - instrument:path_diff
+    - instrument:probe_driver
+    - framework:vllm-0.29.0
+    - platform:sm90
+    - openai/gpt-oss-120b
+    - Qwen/Qwen3.5-0.8B
+    - deepseek-ai/DeepSeek-V3
+    - deepseek-ai/DeepSeek-R1
+  op_coverage_sglang_trtllm_2026_09_24:
+    statement: |
+      OP-LEVEL ALIGNMENT SWEEP, sglang 0.5.16 and trtllm 1.3.0rc23 on SM90, after
+      both probes were brought to the vllm standard (isl 4096, cache-cold, phase
+      tables) and their length-conditional records re-probed. Captures run the
+      collector through op_smoke (--case-filter/--case-prefix) or the module
+      CLI's --quick / in-process entry (the sglang DSA/MSA module collectors run
+      each case in a SUBPROCESS, which the parent profiler cannot see — a
+      capture of the worker wrapper is silently empty).
+      HARNESS DEFECT found first: path_diff graded a crashed or empty capture
+      "aligned" (empty set is a subset of everything) — six broken sglang
+      captures passed. Verdicts are now invalid-capture / no-collector-signal.
+      COLLECTOR DRIFT ON THE PINNED VERSIONS (all fixed, each surfaced as a
+      zero-kernel capture; 286 sglang + 114 vllm collector unit tests pass):
+        sglang 0.5.16 — ModelRunner takes ps: ParallelState (mla_module built
+        it with tp_rank/tp_size...), attention backends read model_runner.ps /
+        server_args.enable_prefill_cp / enable_dp_attention /
+        model_config.linear_attn_registry_result / hf_config.get_text_config()
+        / is_draft_worker (attention + MLA mocks lacked them),
+        Req.set_extend_input_len -> set_extend_range (mla_module, dsv4),
+        ForwardBatch.init_new requires return_hidden_states_before_norm
+        (mla_module context+generation, dsv4). The sglang collector had not
+        run on its own pin since the bump.
+        trtllm — gemm/computescale/mla_bmm imported case_generator and helper
+        as bare modules (only works from collector/ cwd); GDN prefill/decode
+        imported the vendored FLA Triton kernels directly while serving
+        dispatches to FlashInfer's cute-DSL GDN chunk + bf16-state decode on
+        SM90/SM100 (gdn_mixer.py:57-70,670; fused_sigmoid_gating_recurrent.py:
+        205-238). The collector now calls the mixer's resolver for prefill
+        (packed [1,T,H,D] + cu_seqlens, fp32 g — FlashInfer's contract) and
+        serving's fused_sigmoid_gating_delta_rule_update for decode, labeling
+        rows by the dispatch that actually ran (new kernel_source values in
+        kernel_source_backends.yaml).
+        path_diff/normalize — cute-DSL symbols carry tensor specs
+        (…_kernel_tensorptrbf16gmemalign32o1291…): identity cut at
+        _tensorptr/_object; `trtllm::` launchers excluded like vllm/sglang;
+        collector EXIT_CODE_RESTART (10) is a protocol signal, not a failure.
+      VERDICTS (results/pathdiff/sm90/{sglang-0.5.16,trtllm-1.3.0rc23}/):
+        sglang ALIGNED: attn ctx+gen (Llama-3.1-8B shape, fa3), dsa ctx+gen
+        (DSV3.2 bf16: sparse_attn_fwd/FA3 + indexer), mla ctx+gen (DSV3, fa3),
+        msa ctx (M3), gemm fp8_block, moe fp8_block, gdn ctx+gen (Qwen3.5).
+        trtllm ALIGNED: attn ctx (Llama, fmha_v2 causal), dsa ctx+gen (DSV3.2),
+        mla ctx+gen (DSV3), gemm fp8_block, moe fp8_block, gdn ctx (FlashInfer
+        chunk + trtllm conv1d).
+        RESOLVED (2026-09-24, owner asked for these one at a time):
+        - trtllm attention_generation (Llama-3.1-8B): NOT a collector bug —
+          a cell mismatch. The first capture took the kv_len=1 cell, where
+          trtllm's own heuristic declines XQA (TLLM debug: "JIT XQA is not
+          used: maybe no performance gain" -> MMHA); the serving probe's
+          warmup does the same at short KV (8 of 424 decisions) and selects
+          XQA (kernel_mha) for the 4096-token decode. At the grid point that
+          matches the probe (batch 1, kv 4095) the collector selects XQA too
+          -> ALIGNED. TRTLLM_ENABLE_XQA_JIT no longer exists in rc23 binaries
+          (only TRTLLM_FORCE_XQA / TRTLLM_XQA_BLOCKS_PER_SEQUENCE); the
+          collector's toggle is documented as inert. Rule reinforced: capture
+          the collector cell at the probe's kv length, never the first cell.
+        - sglang msa_generation (MiniMax-M3): the PROBE is the unfaithful side.
+          The gate (flash_with_topk_idx.py:822-826) uses score.shape[2], which
+          under CUDA-graph capture is ceil(max_context_len / 128) (static
+          shapes, minimax_sparse_backend.py:175-178) and the live KV length in
+          eager. Production decodes under graphs; M3's context_len makes the
+          static block count exceed 4096 -> topk_split, which is what the
+          collector models (collect_msa_module.py:892-897, use_graph). The
+          identity probe disables CUDA graphs, so it saw the eager radix path.
+          probe_sglang gained --cuda-graph (recorded as probe_cuda_graph);
+          M3 re-probed with graphs on: decode now runs _topk_index_partial /
+          _topk_index_merge (topk_split), matching the collector -> ALIGNED
+          (verdict computed with --serving-raw against that record). All
+          three gates green (vllm 33, sglang 12, trtllm 9).
+          HARNESS FOLLOW-UP this opens (RESOLVED 2026-09-24, owner decision:
+          probes now run the framework's own mode for prefill AND decode —
+          see probe_execution_mode_is_the_framework_default_2026_09_24):
+          the identity probes ran eager on every backend. Any op whose
+          kernel choice reads capture-time static shapes (not just M3 top-k:
+          FlashMLA/FA split-KV planning, XQA multi-block, trtllm-gen decode
+          scheduling are candidates) is mis-identified by an eager probe.
+          The device-stream tables already see graph-replayed kernels, so the
+          probes can run decode under graphs; the question for the owner is
+          whether to make graph-mode the default decode evidence (production
+          truth) and keep eager only for prefill.
+        ROSTER GATE — RESOLVED 2026-09-24 (owner: "fp8 就用 zai-org/GLM-5.3"):
+        rename landed in ac274b36 — case YAML model_paths + both alias rows,
+        packaged model_configs (GLM-5.3 = Hub fp8 config, GLM-5.3-BF16 = the
+        former bf16 file, -FP8 removed), sdk/common.py list, support-matrix
+        b60.csv rows, two unit tests (178 pass); workspace roster
+        (configs/repos.txt, targets.yaml overlay) + GLM-5.3-BF16 dummies
+        generated; probe_driver --plan now enumerates GLM-5.3 (fp8),
+        GLM-5.3-BF16 (bfloat16) and GLM-5.3-NVFP4 on all three backends, and a
+        roster repo without dummy variants is skipped loudly instead of
+        crashing enumeration. Original: (probe_driver --plan refused: "no
+        fetched config for zai-org/GLM-5.3-FP8"): that repository does not
+        exist on Hugging Face
+        (404 with a token; zai-org lists GLM-5.3, GLM-5.3-BF16, GLM-5.3-Flash,
+        GLM-5.3-Flash-BF16). zai-org/GLM-5.3 itself is the FP8 artifact
+        (config quantization_config fp8 e4m3 block 128) and GLM-5.3-BF16 the
+        bf16 one — 5.3 inverted the 5.x naming. The collector case file
+        (cases/models/GlmMoeDsaForCausalLM_cases.yaml) aliases GLM-5.3 to the
+        bf16 row and GLM-5.3-FP8 to the fp8 row, and the SDK's supported-model
+        list (src/aisimulate_core/sdk/common.py:690-692) names GLM-5.3-FP8
+        too — a producer+consumer naming fix (collector YAML + tests + SDK
+        list), so it is an OWNER DECISION: rename (GLM-5.3 -> fp8 row,
+        GLM-5.3-BF16 -> bf16 row) or sign an exclusion. configs/ already holds
+        zai-org_GLM-5.3.json and nvidia_GLM-5.3-NVFP4.json; GLM-5.3-BF16's
+        config fetches fine (200) once the rename lands.
+        EXPLAINED (kept out of the gate, same class as vllm kda_gen): trtllm
+        gdn_gen — FlashInfer decode row matches serving kernel-for-kernel; the
+        FLA fused_recurrent row is the deliberate fallback lane.
+        NOT RUN: 5 trtllm records probed on trtllm-probe:1.3.0rc20-onnxfix
+        (image gone); sglang gdn_ctx via op_smoke hits the known int32-offset
+        FIXME at the largest sweep points (captured via a direct 4096-token
+        call instead).
+    applies_to:
+    - instrument:path_diff
+    - instrument:op_smoke
+    - framework:sglang-0.5.16
+    - framework:trtllm-1.3.0rc23
+    - platform:sm90
+    - meta-llama/Meta-Llama-3.1-8B
+    - deepseek-ai/DeepSeek-V3.2
+    - deepseek-ai/DeepSeek-V3
+    - MiniMaxAI/MiniMax-M3
+    - Qwen/Qwen3.5-0.8B
+  unalignable_ops_followup_2026_09_24:
+    statement: |
+      Follow-up on the "no serving reference" ops (owner 2026-09-24: "if running
+      it produces evidence, run it; if load crashes, try to fix it").
+      - encoder_attention: FIXED without a multimodal prompt. Engine construction
+        runs vLLM's own profile_run (full-model dummy forward; for VL models it
+        pushes max-size dummy images through the vision tower). probe_vllm now
+        records that run as profile_run_kernels and build_ops counts it as
+        identity evidence. Qwen3-VL-2B ViT: FlashAttnFwdSm90 x24 layers in
+        serving; collector encoder_attention (FLASH_ATTN for vit attention,
+        head_dim 64) -> ALIGNED.
+      - DeepSeek-V4 on vllm: the load crash is the rendered
+        --max-num-batched-tokens 6012 (cutedsl compress asserts 64-byte
+        slot-mapping alignment). The harness golden renderer runs the aic/
+        checkout of aiconfigurator, not aisimulate, so the fix branch
+        (fix/generator-round-vllm-batched-tokens) never reached it. Mirrored
+        the rounding into aic/ (a71f27955: rule_plugin/vllm.rule,
+        benchmark/vllm.rule, backend_config_mapping.yaml); the 24 planned DSV4
+        goldens re-render at 6016 and are being re-probed. Planning via
+        probe_driver is currently blocked by the roster gate ("no fetched
+        config for zai-org/GLM-5.3-FP8 — OWNER DECISION NEEDED"); the goldens
+        were rendered through render_golden() on the existing plan entries.
+        The product fix still needs the aisimulate branch merged.
+      - Kimi-K3: vllm 0.29.0 ships K3 natively (KimiK3ForConditionalGeneration,
+        vllm/models/kimi_k3/nvidia/kda importable) — the collect_kda docstring
+        ("kimi-k3 preview image") is stale. K3 0.29 records exist with kernel
+        tables; their kernels were unlabeled (FlashKDA _flash_kda_fwd_*,
+        kda_decode_fusion_many_heads, attn_res, layer_norm_gated, situ_and_mul)
+        — taxonomy rules added under the vocabulary names (flashkda,
+        vllm_kernel). K3 records are being re-probed cache-cold; the kda op
+        capture follows.
+      - bf16-gemm MLA cells: CONSUMED. The MLA module tables carry a gemm_quant
+        axis (crates/core/src/perfmodel/perf_database/mla.rs: query_context_module /
+        query_generation_module take GemmQuantMode); any aisimulate run that
+        models an MLA architecture with gemm_quant_mode=bfloat16 reads them
+        (readiness.rs even tests DeepseekV4 + bfloat16). They measure vLLM's
+        own bf16-weight dispatch (fused_a_gemm at num_tokens<=16) — faithful
+        to what vLLM would run, just with no deployed checkpoint to cross-check.
+      RESULTS (same day): 24 DSV4 vllm records + 6 K3 records re-probed clean
+      (6016 budget; first DSV4 serving evidence on vllm: sparse_attn_fwd,
+      cute-DSL compressor/indexer, mHC TileLang). Verdicts: dsv4_csa/hca
+      context+generation, dsv4_hca_attn, dsv4_paged_mqa_logits -> ALIGNED vs
+      sgl-project/DeepSeek-V4-Flash-FP8 fp8; kda_ctx -> ALIGNED after fixing
+      the collector's FlashKDA prefill call (0.29 takes caller-owned
+      out/final_state/workspace buffers, kda.py:193-215/536-547; the
+      preview-era call raised TypeError on every context cell). Two
+      divergences are EXPLAINED and deliberately kept out of the gate:
+        - mhc_module: serving runs mhc_pre_big_fuse_WITH_NORM (norm_weight
+          passed, tilelang.py:90) and mhc_fused_post_pre for middle layers;
+          the collector measures the norm_weight=None pre + separate post
+          because the SDK bills attn_norm separately (collect_mhc_module.py:
+          118-134, measured 1-2% off the fused path). Row-semantics contract;
+          switching needs a producer+consumer decision.
+        - kda_gen: the collector measures BOTH the fused decode
+          (ops.fused_kda_decode = kda_decode_fusion_many_heads, serving's
+          pure-decode path, kda.py:686-695) and the Triton fallback lane
+          (causal_conv1d_update + fused_recurrent_kda_packed_decode, taken by
+          serving only for spec-decode / mixed batches). The fused row matches
+          serving kernel-for-kernel; the fallback rows are collector-only by
+          construction. A verdict per kernel_source lane would express this;
+          today's subset semantics cannot.
+      sglang/trtllm evidence: 45 length-conditional records re-probed with the
+      fixed probes (isl 4096, cache-cold, phase tables). sglang DSA prefill at
+      isl 32 was dense FA3 (SGLANG_DSA_PREFILL_DENSE_ATTN_KV_LEN_THRESHOLD:
+      use_mha when max_kv_len is short, dsa_backend.py:2999-3012 @0.5.16);
+      at 4096 it is sparse_attn_fwd — the old sglang prefill evidence was
+      the dense fallback. The old sglang fp8-KV decode evidence (flashmla_kv)
+      came from a retired probe injection (--kv-dtype fp8_e4m3): the golden
+      sglang CLI for fp8 profiles renders NO kv dtype, so current serving
+      truth is bf16 KV (dsa prefill flashmla_sparse, decode fa3). Added the
+      kv variant to sglang planning (fp8_e4m3) so the fp8-KV DSA/MLA paths are
+      probed as a separate, labeled config. 5 trtllm records were probed on
+      trtllm-probe:1.3.0rc20-onnxfix, an image no longer present — not
+      re-probed. 8 DSV4 sglang runs exhausted the probe's fixed 16384-token
+      KV pool at isl 4096 (multi-cache-group) — pool now scales with isl;
+      rerun in progress.
+    applies_to:
+    - instrument:probe_vllm
+    - instrument:probe_sglang
+    - instrument:render_golden
+    - framework:vllm-0.29.0
+    - framework:sglang-0.5.16
+    - platform:sm90
+    - family:dsv4
+    - moonshotai/Kimi-K3
+    - Qwen/Qwen3-VL-2B-Instruct
+  probe_execution_mode_is_the_framework_default_2026_09_24:
+    statement: |
+      OWNER DECISION 2026-09-24: the identity probes run the framework's OWN
+      execution mode — torch.compile + piecewise/full CUDA graphs exactly as
+      the rendered config asks — for prefill AND decode; `--eager` is an A/B
+      switch only (records carry runtime.probe_eager / probe_cuda_graph;
+      None = a pre-2026-09-24 eager record). Why they ran eager before: a
+      kernel-visibility shortcut from before the device-stream tables existed
+      (graph-replayed kernels have no CPU launch event) plus capture time /
+      capture failures on dummies. It had become a fidelity liability: any
+      dispatch that reads capture-time static shapes is mis-identified by an
+      eager probe (sglang MiniMax-M3 top-k was the proven case), and eager
+      prefill is not serving's prefill.
+      A/B (9 records re-probed in framework mode, eager raws kept under
+      facts/raw_superseded/eager_2026-09-24/): vllm Llama-3.1-8B,
+      DeepSeek-V3.2 bf16-KV + fp8-KV, MiniMax-M3 bf16-KV + fp8-KV; sglang
+      DeepSeek-V3.2 bf16, MiniMax-M3 fp8-KV; trtllm Llama-3.1-8B,
+      DeepSeek-V3.2. Attention / GEMM / MoE / indexer kernel sets are
+      IDENTICAL to the eager records on every one of them (trtllm: same
+      14+16 and 36+32 kernels; vllm DSV3.2 prefill 46/46, M3 38/38; sglang
+      DSV3.2 prefill 61/61). What changes is what the profiler SEES and the
+      glue: (a) the Python API spans (AIC::attn::*, AIC::quant_apply::*)
+      that attributed GEMM/quant/attention kernels to ops vanish under graph
+      replay and under torch.compile (vllm Llama: both phases) — the kernels
+      arrive as orphans; (b) vLLM compile replaces its custom elementwise
+      ops (act_and_mul, rms_norm, rotary_embedding, _typeConvert) with
+      Inductor triton_{poi,red}_fused_* kernels on Llama (not on DSV3.2/M3,
+      whose rendered configs keep them); (c) sglang M3 fp8-KV decode under
+      graphs runs _topk_index_partial/_merge (topk_split = the collector's
+      path) — the eager fp8-KV record had hidden it and diff_sgl picked that
+      record over the graph-mode bf16 one, so msa_gen read DIVERGED until
+      the re-probe. sglang graph mode adds _fused_dsa_decode_metadata_kernel
+      / _fused_metadata_kernel_general (metadata glue, framework_native).
+      HARNESS CONSEQUENCES (all landed): probe_driver keeps every
+      taxonomy-labeled orphan (cublas/vllm_kernel/sgl_kernel/torch were
+      previously capped as noise — under graphs they are the ONLY place
+      GEMM and quant kernels appear); identity.attn_backend falls back to
+      the attention kernel family when no span exists; taxonomy gained the
+      Inductor and sglang-metadata rules. path_diff: the first recompute
+      after the no-collector-signal rule flipped FOUR gemm-class verdicts
+      (gemm_bf16 Llama, gemm_fp8 Qwen3-32B, mla_bmm_gen DSV3, compute_scale)
+      that had been graded "aligned" BEFORE the rule existed — their only
+      families (cublas, vllm_kernel) are infra by design, so they can never
+      have a signal family. Rule refined: no signal family -> grade on
+      kernel-NAME overlap inside the infra families (infra_family_name_matches
+      in the report). Three re-align on names (the collector's nvjet /
+      scaled_fp8_quant instantiations are ones serving launched);
+      compute_scale did not — it had been paired with fp8-BLOCK DeepSeek-V3.2
+      (per_token_group_quant), never a valid instance of scaled_fp8_quant;
+      re-paired with per-tensor Qwen3-32B-FP8 -> aligned. Gates after all of
+      it: vllm 33 / sglang 15 / trtllm 9 aligned, zero non-aligned files.
+      sglang DSA prefill is LENGTH-CONDITIONAL and the collector mirrors it:
+      at isl 512 (framework mode, fp8-KV and bf16-KV alike — both probed)
+      serving runs dense FA3 with NO indexer logits or top-k (only
+      _quantize_k_cache); at isl 4096 the
+      indexer (sm90_fp8_mqa_logits) + fp8 sparse decode kernel. The
+      whole-sweep fp8 ctx capture unions both regimes and read DIVERGED
+      (fa3 collector-only vs the 4096 record; mqa_logits collector-only vs
+      the 512 record — the prefix>0 cells push kv_len over the threshold).
+      Single-cell captures (frozen sweep spec replaced; AIC_DSA_CONTEXT_*
+      env filters do the same): s=4096 vs the framework-mode fp8-KV isl-4096
+      record -> ALIGNED (dsa_ctx_fp8_DeepSeek-V3.2); s=512 prefix-0 vs the
+      isl-512 record -> ALIGNED (dsa_ctx_fp8_s512_DeepSeek-V3.2: FA3 only,
+      no indexer on either side). sglang gate: 15 aligned.
+      NOT DONE: the other ~600 records are still eager-probed (identity-safe
+      per the A/B, but their op attribution differs from framework-mode
+      records); re-probe them when a verdict needs one, not wholesale.
+    applies_to:
+    - instrument:probe_vllm
+    - instrument:probe_sglang
+    - instrument:probe_trtllm
+    - instrument:probe_driver
+    - instrument:path_diff
+    - instrument:kernel_taxonomy
+    - framework:vllm-0.29.0
+    - framework:sglang-0.5.16
+    - framework:trtllm-1.3.0rc23
+    - platform:sm90
+  harness_hygiene_2026_09_24:
+    statement: |
+      Owner asked for the open-issue list after the framework-mode change and
+      told me to fix the harness items ("别搞复杂问题"). Landed:
+      - probe_driver --matrix: the moe column read only API spans; framework-
+        mode records carry MoE kernels as orphans -> orphans are scanned too.
+      - First unit tests for the harness: tests/unit/collector/opharness/
+        (path_diff.grade extracted as a pure function: subset semantics,
+        within-family drift, invalid-capture, no-collector-signal, gemm-class
+        infra-name grading; probe_driver: normalize_kernel, taxonomy contract
+        incl. "only attention rules emit `triton`", orphan keep rule, span/
+        launcher exclusion). 34 tests, pytest.mark.unit.
+      - Taxonomy backlog: 61 -> 2 unmatched kernel names across all 637
+        records (sources verified in the pinned images): identity-bearing
+        additions dsa_nsa (_fused_q_kernel, FilteredTopK, index_buf_accessor,
+        DeepGEMM smxx paged-logits helpers), fla_triton (Kimi-K3 KDA chunk /
+        recurrent / gate kernels, fused post-conv), triton_fused_moe
+        (_reduce_grouped); the rest is allocator / position / DSV4 SWA and
+        compress metadata / norm-rope / routing / sampler / load-time repack
+        glue. Left unmatched on purpose: sglang Kimi-K3 _score_kernel and
+        _combine_kernel (no source hit; 1 record each).
+      - path_diff --capture --env K=V sets collector cell filters
+        (AIC_DSA_CONTEXT_{SEQ_LENS,PREFIX_LENS,BATCH_SIZES}) and records
+        every AIC_*/AIS_* cell variable in the capture; the verdict carries
+        capture_env. Whole-sweep captures union length/prefix-conditional
+        paths and cannot match a single serving record.
+      - components/captures/: the capture scripts and the four verdict
+        helpers (verdicts_{all,dsv4,sgl,trt}.sh) that produce every file
+        under results/pathdiff/, parametrized on AIS_PROBE_WORKSPACE, so a
+        verdict can be re-derived from the repository alone.
+      Checked and already fixed (stale in my own list): vllm DSA context
+      mirrors serving's chunked prefill (context_dsa_chunk_prefill_size
+      new-token budget + context_dsa_prefix_lengths prefix axis, seq cap
+      16384) — no monolithic large-isl construction remains.
+      Gates after all of it: vllm 33 / sglang 16 / trtllm 9 aligned.
+    applies_to:
+    - instrument:probe_driver
+    - instrument:path_diff
+    - instrument:kernel_taxonomy
+    - platform:sm90
+  trtllm_kv_dtype_variants_2026_09_24:
+    statement: |
+      trtllm was the only backend whose fp8-KV path was never compared. Now:
+      probe_trtllm --kv-dtype overrides the rendered kv_cache_config.dtype
+      (recorded as probe_kv_cache_dtype + probe_overrides; the KV manager's
+      resolved dtype is the ground truth), probe_driver plans a `fp8` variant
+      per trtllm run (rid tag kvfp8), and the verdict helper pins the bf16
+      entries to kv auto so a variant record can never be picked for them.
+      Four fp8-KV records probed (framework mode): Llama-3.1-8B, DeepSeek-V3,
+      Qwen3.5-0.8B (KV manager DataType.FP8 on all three), DeepSeek-V3.2 —
+      which FAILS at load: `RuntimeError: Expected kv.dtype() ==
+      torch::kBFloat16` inside flash_mla_interface (mla.py forward_sparse ->
+      flash_mla). trtllm 1.3.0rc23 sparse MLA (DSA) requires bf16 KV; there is
+      no fp8-KV DSV3.2 serving instance on this pin, so the collector's DSA
+      fp8-KV rows (_get_precision_combos adds ('bfloat16','fp8') for dsa on
+      SM>=89) measure a path serving cannot run. Kept OUT of the gate (no
+      serving record); the collector rows are not wrong data, they are
+      unreachable data — flag to the trtllm collector owner, retest on the
+      next pin.
+      Single-cell captures at the bf16 gate cells with fp8 KV
+      (components/captures/trt_kv/): attention context and generation
+      (Llama, use_fp8_kv_cache=True) ALIGNED — serving keeps the bf16
+      context FMHA and writes fp8 KV; the use_fp8_context_fmha=True cell
+      (e4m3 FMHA) is NOT Llama's serving path but IS DeepSeek-V3's
+      (fp8 weights + fp8 KV -> fmha_v2_flash_attention_e4m3 in the record);
+      MLA context + generation (DeepSeek-V3, kv 'fp8' + gemm fp8_block)
+      ALIGNED. Lesson repeated: a substring --case-filter picked a head_dim
+      64 sliding-window cell first; the captures use --case-prefix with the
+      full leading tuple.
+      Also fixed on the way: the archived sglang MiniMax-M3 bf16 record was
+      the eager run (the graph-mode raw had only been used via
+      --serving-raw); superseded by the graph-mode raw so msa_gen holds
+      under kv auto. Gates: vllm 33 / sglang 16 / trtllm 13 aligned.
+      A/B (GLM-5.2-NVFP4, trtllm rc23, KV forced to bfloat16 to escape the
+      sparse-FlashMLA bf16-KV assert): llmapi REFUSES it — "Overriding KV
+      cache quantization with an invalid type ... Accepted types are
+      ('fp8', 'nvfp4', 'auto')" (facts/trt_kv/glm52nvfp4_kvbf16.json). So an
+      NVFP4 DSA artifact (hf_quant kv_cache_quant_algo FP8) has NO servable
+      KV dtype on trtllm rc23 / SM90: auto and fp8 hit the kernel assert,
+      bf16 is rejected at config validation. Every NVFP4 DSA cell in the
+      trtllm matrix (GLM-5 / 5.1 / 5.2 / 5.3-NVFP4, DeepSeek-V3.2-NVFP4) fails
+      for this one reason; upstream item 4 in facts/upstream_reports_2026-09-24.md.
+    applies_to:
+    - instrument:probe_trtllm
+    - instrument:probe_driver
+    - instrument:path_diff
+    - framework:trtllm-1.3.0rc23
+    - platform:sm90
+    - deepseek-ai/DeepSeek-V3.2
+    - deepseek-ai/DeepSeek-V3
+    - meta-llama/Meta-Llama-3.1-8B
+  glm53_onboarding_2026_09_24:
+    statement: |
+      GLM-5.3 trio probed on all three backends after the rename (18 runs:
+      rendered + kv variant per backend; owner: "5.3 吧"). Matrix cells
+      (rendered config, framework mode):
+        vllm 0.29.0   GLM-5.3 (fp8) PASS FlashMLASparseImpl / Fp8MoE->triton_fused_moe;
+                      GLM-5.3-BF16 PASS FlashMLASparseImpl / UnquantizedFusedMoE->triton_fused_moe;
+                      GLM-5.3-NVFP4 FAIL (kv auto -> fp8_e4m3, no MLA backend; the
+                      explicit fp8 variant PASSES with FlashMLASparseImpl — see the
+                      vllm_fp8kv 0.29 addendum; generator should render
+                      --kv-cache-dtype fp8 for NVFP4 DSA on vllm 0.29).
+        sglang 0.5.16 all three PASS (DeepseekSparseAttnBackend; NVFP4 MoE ->
+                      ModelOptNvFp4FusedMoE->marlin on SM90); fp8_e4m3 variants
+                      pass too.
+        trtllm rc23   GLM-5.3 PASS (DeepSeekFP8BlockScalesFusedMoE), GLM-5.3-BF16
+                      PASS; GLM-5.3-NVFP4 FAIL: the artifact is modelopt
+                      MIXED_PRECISION (87 per-layer entries: FP8 dense mlp
+                      projections + NVFP4 experts — GLM-5.2-NVFP4 was pure NVFP4)
+                      and modeling_deepseekv3.py:1298 asserts "MIXED_PRECISION is
+                      ambiguous" for every decoder layer -> unloadable on this
+                      pin (real artifact property, not a dummy artifact; the
+                      dummy keeps the top-level algo). fp8-KV variants of all
+                      three fail at load like every DSA model on trtllm rc23
+                      (sparse FlashMLA asserts bf16 KV, see trtllm_kv_dtype_variants).
+      HARNESS GAP found: gen_dummy_models writes config.json only; the
+      tokenizer files every dummy dir needs were provisioned once by hand
+      (2026-09-19) and NO script does it for a new roster repo. GLM-5.3-BF16's
+      six runs first failed on "Couldn't instantiate the backend tokenizer"
+      (vllm/sglang at load, trtllm at generate: end_id needs a tokenizer);
+      fixed by copying tokenizer.json / tokenizer_config.json /
+      generation_config.json / chat_template.jinja from the GLM-5.3 sibling,
+      then re-probed. workflow_check already flags bare dirs ("variants
+      missing tokenizer"); onboard_model step 1 should own the copy.
+      MATRIX BUILDER DEFECT found and fixed the same hour: build_matrix took
+      ONE plan file per backend (the newest carrying the pin) and the version
+      from whichever backend's run came last in that file — the 18-run GLM-5.3
+      plan produced an 18-cell matrix named *-1.3.0rc23.yaml for all three
+      backends. Now every plan file carrying (backend, pin) contributes, only
+      rendered (non-kv-variant) runs define cells, a passed cell is never
+      overwritten by a later crash/no-raw run, counts are recomputed, and the
+      cell's identity/kv_allocated comes from the rendered record (variant
+      records exist for the same repo x backend). Matrix: 98 models per
+      backend (95 + the trio); vllm 84 pass / 9 pass+custom / 5 fail (DSV4
+      cells flipped fail -> pass+custom from the 6016-budget re-render),
+      sglang 86 / 6 / 6, trtllm 62 / 0 / 36.
+    applies_to:
+    - zai-org/GLM-5.3
+    - zai-org/GLM-5.3-BF16
+    - nvidia/GLM-5.3-NVFP4
+    - instrument:probe_driver
+    - instrument:dummies
+    - framework:vllm-0.29.0
+    - framework:sglang-0.5.16
+    - framework:trtllm-1.3.0rc23
+    - platform:sm90
+  full_reprobe_framework_mode_2026_09_24:
+    statement: |
+      FULL RE-PROBE in framework mode (owner "现在跑吧"): every roster model on
+      the three pins, rendered config + kv-dtype variant — sglang 98+98,
+      trtllm 98+98, vllm 98+98 (4 Qwen3.8 runs skipped: the golden CLI
+      rejects the architecture). Old evidence retired under
+      facts/raw_superseded/ (187 eager vllm raws that already sat under the
+      current ids — the queue had skipped them as "done"; 291 pre-kv-tag raws
+      at the pins; 219 other-version records kept). records.jsonl now 713.
+      OUTCOMES (rendered / fp8-KV variant): sglang 93+91 ok — fails MiniMax-
+      M3-MXFP8 (mxfp8 unsupported), Kimi-K3 (+NVFP4, model module missing on
+      0.5.16), Gemma-4-26B-A4B-NVFP4 (only gated SiLU), Llama-4-Scout (new
+      under graphs: sglang internal crash "Open an issue"), MiniMax-M2/M2.5
+      fp8-KV only (bf16 output dtype assert); trtllm 62+51 ok — the known
+      SM90 wall (DSV4 pre-Blackwell assert, NVFP4 DSA fp8-KV, MiMo, M3 sparse
+      needs the kv cache type) plus every DSA fp8-KV variant; vllm 93+96 ok.
+      GATES on the new records: vllm 32 / sglang 16 / trtllm 13 aligned,
+      after three evidence corrections that framework mode forced:
+        - gemm_fp8 was paired with Qwen/Qwen3-32B-FP8-Static-PerTensor, which
+          vLLM 0.29 loads UNQUANTIZED (UnquantizedLinearMethod on every
+          linear; its config.json carries no quant_method and the modelopt
+          hf_quant_config.json in the dir is ignored) — never a valid fp8
+          instance; the old "aligned" came from the fp8-KV variant record's
+          quant kernel. Re-paired with nvidia/Llama-3.1-70B-Instruct-FP8
+          (ModelOptFp8LinearMethod, cutlass_3x_gemm_sm90_fp8) -> aligned.
+        - compute_scale (standalone scaled_fp8_quant kernels) has no serving
+          instance under torch.compile: the norm_quant / act_quant fusion
+          passes fold activation quant into Inductor kernels
+          (triton_*_fused__to_copy_clamp_cutlass_scaled_mm_*). Removed from
+          the gate; report kept next to the facts. The collector row is
+          eager-only truth — flag to the SDK owner (the op-level model bills
+          it separately).
+        - vllm MLA fp8 (DeepSeek-R1): under CUDA graphs the DeepGEMM
+          projection kernels sit under quant spans the MLA hint excluded ->
+          false collector-only deepgemm drift; hint widened (gemm|deepgemm|quant)
+          like the sglang DSA hint.
+      MATRIX (results/sm90, 100 models per backend): vllm 85 pass / 9
+      pass+custom / 6 fail; sglang 87 / 6 / 7; trtllm 62 / 0 / 38. Flips vs
+      the eager matrix: GLM-5.1 / 5.2 / 5.3-NVFP4 vllm fail -> pass (the
+      generator now renders --kv-cache-dtype fp8; GLM-5-NVFP4 and
+      DeepSeek-V3.2-NVFP4 stay failed: bundled configs without
+      quantization_config, SDK data gap); Kimi-K3 (+NVFP4) vllm pass -> FAIL:
+      illegal memory access in kimi_k3 embed_input_ids during
+      compile_or_warm_up_model (CUDA-graph / compile warm-up) — --eager A/B
+      loads and serves (facts/full_reprobe/k3_eager.json), so it is a vLLM
+      0.29 K3 compile/graph defect on SM90; kda_ctx keeps its verdict against
+      the eager A/B record (raw_file recorded). sglang MiniMax-M2 / M2.5
+      fail -> pass under graphs; Llama-4-Scout pass -> fail (sglang crash).
+      Framework-mode probes: probe_eager False on all 588 new records.
+    applies_to:
+    - instrument:probe_driver
+    - instrument:path_diff
+    - framework:vllm-0.29.0
+    - framework:sglang-0.5.16
+    - framework:trtllm-1.3.0rc23
+    - platform:sm90
+    - moonshotai/Kimi-K3
+    - Qwen/Qwen3-32B-FP8-Static-PerTensor
+    - nvidia/Llama-3.1-70B-Instruct-FP8
+  followups_after_full_reprobe_2026_09_24:
+    statement: |
+      Owner directives after the full re-probe report:
+      (1) "统一所有的都对齐到64整数倍，别case by case了": the 64-alignment of
+      token budgets is now ONE rule in backend_config_mapping.yaml applied to
+      every backend (vllm max-num-batched-tokens, trtllm max_num_tokens,
+      sglang max-prefill-tokens and chunked-prefill-size); the vllm rule
+      formulas are plain again (commit 2446f6cc, mirrored into the aic
+      checkout the golden CLI renders with). Verified: sglang 5500 -> 5504,
+      trtllm 4500 -> 4544, vllm 6012 -> 6016.
+      (2) "关于hf config的quant，能不能看看其他字段": the KV fact is not in
+      config.json for the modelopt NVFP4 artifacts at all — the SDK loader
+      attaches the bundled hf_quant_config.json (kv_cache_quant_algo: FP8)
+      to the loaded config, so vllm_dsa_kv_cache_dtype now reads that merged
+      view. All five NVFP4 DSA artifacts (GLM-5 / 5.1 / 5.2 / 5.3, DeepSeek-
+      V3.2) render --kv-cache-dtype fp8; GLM-5-NVFP4 and DeepSeek-V3.2-NVFP4
+      re-probed with the new render (see the matrix).
+      (3) "关于kimi k3，我感觉可能还有其他构造问题": the construction was
+      audited twice. Kimi-K3 names its layer kinds by 1-BASED index lists
+      (configuration_kimi_k3.is_kda_layer: `layer_idx + 1 in kda_layers`).
+      The depth cut kept the lists verbatim; by luck the 2-layer "rep" dummy
+      (original layers 1,2 -> 1-based 2,3, both KDA) still resolved to two
+      KDA layers, so the records' KDA evidence was real. My first remap
+      assumed 0-based lists and produced an all_kinds dummy whose two layers
+      both resolved to FULL attention — that variant "passed" the
+      framework-mode probe while running no KDA kernel at all (false pass,
+      caught by the record's kernel families). The generator now detects
+      the base from the config data (commits 85d1dd32 + 51158047):
+      all_kinds = one KDA (1) + one full-attention layer (2), no stale refs.
+      The crash itself: eleven A/Bs on the rendered config (max-num-seqs
+      512) — every variant that runs a KDA layer fails (rep, 3-layer with
+      the dense layer, kda+kda, full+kda); CUDA graphs off passes; compile
+      off (graphs on) fails; piecewise-only graphs fail; text-only
+      (limit-mm image 0) fails; max-num-seqs 64 and 256 PASS. CUDA_LAUNCH_
+      BLOCKING places the illegal memory access after graph capture, in
+      warmup_kernels -> _run_decode_step -> run_fullgraph — the decode
+      warm-up step at the generator's max_num_seqs=512 with CUDA graphs and
+      a KDA layer present. So: a real dummy defect existed and is fixed, and
+      independently vLLM 0.29's K3 (KDA) decode warm-up faults at batch 512
+      on SM90 (256 passes) — the generator's 512 is what real deployments
+      get. Upstream draft 7 updated. The corrected all_kinds dummy (one KDA
+      + one full-attention layer) re-probed: the same warm-up crash —
+      attribution stands; kda_ctx keeps the eager A/B evidence (verdict
+      helper passes it explicitly). Side fact: the K3 fp8-KV variant is
+      rejected by vLLM at load — "Kimi-K3 fp8 KV cache requires an fp8
+      prefill query; enable --attention-config use_prefill_q..." — an
+      extra flag the generator would have to render if fp8 KV were ever
+      chosen for K3 (it is not today).
+      (4) Dummy dirs: no step provisioned the tokenizer / custom-code files
+      (Kimi needs tiktoken.model + tokenization_kimi.py + modeling_*.py).
+      dummies.py now copies every auxiliary artifact file from
+      configs/aux_files/<org>_<name>/ (exported once from the existing dirs,
+      100 repos), else an earlier variant of the repo, else the declared
+      targets.yaml dummy_overrides.tokenizer_from sibling; otherwise a loud
+      MISSING caveat. A fresh regeneration of all 196 variants from configs/
+      is complete without hand copies (commit a2f34f3c).
+      (5) NVIDIA-Nemotron-3-Ultra-550B-A55B-NVFP4 on trtllm rc23 ("no raw"):
+      the engine aborts right after model init — "CUDA runtime error in
+      ::cudaStreamDestroy(stream): an illegal memory access was encountered"
+      (tensorrt_llm TllmException, SIGABRT, so the probe cannot dump).
+      Same SM90 NVFP4 wall class as the other NVFP4 trtllm cells; log
+      facts/full_reprobe/nemotron_ultra_nvfp4_trt.full.log.
+      (6) Golden renderer switched from the aic checkout to THIS repository's
+      generator (venv_ais, `aiconfigurator cli generate` console script,
+      stamp = this repo's HEAD): vllm/trtllm renders byte-identical to the
+      aic ones for Llama-3.1-8B, sglang flags identical; Qwen3.8-2.4T-A95B
+      now renders (was "generator rejects" on aic). No more aic mirroring.
+    applies_to:
+    - instrument:dummies
+    - instrument:probe_vllm
+    - moonshotai/Kimi-K3
+    - nvidia/Kimi-K3-NVFP4
+    - framework:vllm-0.29.0
+    - platform:sm90
+  onboarding_recent_releases_2026_09_25:
+    statement: |
+      Owner request (2026-09-25): "再试试 qwen3.8 和 glm5.3-flash … 把这些模型也
+      弄进我们的列表 … inkling 啥的，最近这 1-2 月的模型 … probe 一把，增加对应的
+      config". 33 Hub repos were surveyed and fetched with the new
+      components/fetch_inputs.py (config, hf_quant, every non-weight file into
+      configs/aux_files/); 31 have a transformers config, 2 do not
+      (mistralai/Leanstral-1.5-119B-A6B, MiniMaxAI/MiniMax-H3 — no config.json
+      on the Hub; recorded in targets.yaml roster.excluded, decided_by
+      pending-owner). The 30 not yet in the roster were added to
+      configs/repos.txt + roster.extra_repos; dummies for all 30 generated
+      without hand edits (tokenizer/custom code provisioned from aux_files).
+      Three gates decide whether a checkpoint yields an identity record, and
+      each of them rejected part of the list:
+      (1) THE GENERATOR (this repo's SDK) parses the architecture — rejected
+      9 architectures / 19 repos, now recorded as "generator rejects" matrix
+      cells: Glm5NextForConditionalGeneration (GLM-5.3-Flash, -BF16, nvidia
+      -NVFP4), Qwen4ExpForConditionalGeneration (Qwen3.8-Flash-Next, -FP8,
+      -NVFP4), InklingForConditionalGeneration (Inkling, Inkling-Small and the
+      two baerquants NVFP4 artifacts), MiMoV2ForCausalLM (MiMo-V2.6-Pro-RL,
+      -Flash-RL; note the SDK knows MiMoV2FlashForCausalLM only),
+      Xing4_0ForCausalLM (x2), AliceAIForCausalLM, K2HorizonForCausalLM,
+      Spark2_5ForCausalLM. A tenth, Qwen3_5ForCausalLM (text-only dense
+      Qwen3.5: Altworld/Hemmingway-1, TokenRhythm/NeoHorse-1-9B), was the
+      flat-config twin of an already-supported class and is now mapped
+      (commit 8d8e154d) — both rendered and were probed in pass 2;
+      Hemmingway-1 was then DROPPED by owner decision (CC-BY-NC-4.0, see
+      below), its inputs/raws live in facts/dropped/.
+      (2) THE PINNED FRAMEWORKS know the architecture — checked in the three
+      images: vllm 0.29.0 lacks Glm5Next and DeepseekV41; sglang 0.5.16 lacks
+      Glm5Next, Qwen4Exp, Qwen3_5MoeForCausalLM, DeepseekV41, MuseGlimmer;
+      trtllm 1.3.0rc23 lacks Glm5Next, Qwen4Exp, DeepseekV41, MuseGlimmer,
+      Inkling, MiMoV2. Consequence for the owner's two named targets:
+      GLM-5.3-Flash is unservable on EVERY pinned framework AND unparsed by
+      the SDK; Qwen3.8-Flash-Next (Qwen4Exp) loads only under vllm 0.29.
+      Both need a framework pin bump before any identity can be recorded.
+      DeepSeek-V4.1-Flash (SDK-supported) fails on all three pins at the
+      transformers config stage ("model type deepseek_v41 … Transformers does
+      not recognize"); Muse-Glimmer-30B (+NVFP4) the same on sglang/trtllm
+      (`muse_glimmer`) but passes on vllm.
+      (3) THE PROBE GPU holds the dummy cut — Qwen3.8-2.4T-A95B: the driver
+      only ever queued dummy variant index 0 (depth8 = 8 x 26B params), a
+      permanent OOM. New driver rule (commit 4447cf41): a raw whose LOAD
+      stage failed with CUDA OOM / trtllm "insufficient GPU memory" advances
+      the representative to the next smaller faithful cut, recorded as
+      capacity_fallback_from on the run — observed, never predicted; the
+      smallest cut stays queued when everything OOMs. Outcome: bf16 and FP8
+      2.4T OOM even at depth4 (one full period, 4 x 26B params ~ 194 / 104
+      GiB of weights on a 139.8 GiB GPU) on vllm and trtllm — no faithful
+      single-GPU cut exists, the cells stay honest OOM fails; sglang rejects
+      Qwen3_5MoeForCausalLM outright. NVFP4 2.4T: depth8 OOMs, depth4 result
+      in pass 2 (below); trtllm rc23 additionally fails NVFP4 MoE on SM90
+      ("No supported MoE GEMM tactic remains after replacing unsupported
+      NO_SMEM epilogues") — the same NVFP4-on-Hopper wall class as the other
+      trtllm NVFP4 cells.
+      Identity records landed (framework mode, tp1, rendered + fp8-KV
+      variants) for: Qwen3.8-27B / -FP8 / nvidia -NVFP4 (all three backends;
+      vllm ChunkGatedDeltaRule + fla_triton/causal_conv1d + fa3, sglang
+      HybridLinearAttnBackend, trtllm fmha), NVIDIA-Nemotron-3.5-Lightning-
+      30B-A3B-BF16 (all three), Ornith-1.5-35B-A3B (Qwen3_5MoeForConditional
+      Generation; all three), openbmb/MiniCPM5-2B (Llama; all three),
+      Muse-Glimmer-30B / -NVFP4 (vllm), plus the pass-2 additions. Taxonomy:
+      every vllm kernel of the new models is already labeled; the only
+      unlabeled sglang orphans were the per-variant metadata builder
+      (_fused_metadata_kernel_ps1_no_swa) and raw memcpy128/memset32 runtime
+      copies — both glue, rules added (commit 995c7430). No new op family
+      appeared: GDN/KDA/mamba/MoE/attention kernel families of the onboarded
+      models are all in the existing taxonomy.
+      Configs bundled into the SDK (byte-for-byte at pinned revisions,
+      THIRD_PARTY_NOTICES updated; commits 97bce88f, 8d8e154d, 895586de):
+      Qwen3.8-27B / -FP8, Qwen3.8-2.4T-A95B-NVFP4, DeepSeek-V4.1-Flash-NVFP4,
+      Nemotron-3.5-Lightning-BF16, Ornith-1.5, MiniCPM5-2B, NeoHorse-1-9B.
+      NOT bundled: every generator-rejected architecture (dead weight until
+      modeled), and the two modelopt mixed_precision NVFP4 artifacts
+      (Qwen3.8-27B-NVFP4, Muse-Glimmer-30B-NVFP4) — the SDK quant inference
+      maps mixed_precision to fp8_static for dense models and the support
+      matrix then reports FAIL instead of HW_INCOMPATIBLE on non-FP4
+      systems (TODO.md); they stay in the probe roster and render from the
+      Hub. The other eight classify like their bundled siblings in a
+      tools/support_matrix dry run on h200_sxm.
+      Side answers: Kimi-K3 max-num-seqs bisection completed — 64, 256, 384,
+      448, 480, 496 all pass framework-mode; only the generator's 512 fails,
+      i.e. the fault is the 512-batch CUDA-graph decode warm-up itself, not a
+      threshold "above 256" (facts/k3_ab/seqs*.json). The compute_scale
+      standalone-kernel deviation is now a governed standards exception
+      (collector/evidence_exceptions.yaml, expires 2026-12-31).
+      Pass 2 (after the Qwen3_5ForCausalLM alias and the capacity rule):
+      NeoHorse-1-9B (and Hemmingway-1 before its removal) pass on vllm and
+      trtllm, sglang 0.5.16 has no Qwen3_5ForCausalLM implementation
+      (framework gap);
+      Qwen3.8-2.4T-A95B-NVFP4 passes on vllm at depth4 (capacity_fallback_from
+      depth8; ModelOptNvFp4FusedMoE -> marlin W4A16 on SM90, as for the other
+      NVFP4 MoE checkpoints), sglang framework gap, trtllm NVFP4 MoE wall.
+      Matrix after onboarding (Hemmingway-1 removed): 129 rows per backend
+      — vllm 97 pass / 9 pass+custom / 23 fail, sglang 93 / 6 / 30, trtllm
+      69 / 0 / 60; of the 29 new rows: vllm 10 pass, sglang 6 pass, trtllm
+      7 pass, 19 rows
+      "generator rejects" on every backend, the rest framework gaps / walls
+      named above. Note (display, pre-existing): NemotronH rows on vllm show
+      attention "ReLUSquaredActivation" and the text-only Qwen3.5 rows show
+      the fa3 kernel family instead of ChunkGatedDeltaRule — the identity
+      fallback reads the first wrapped/attention span; kernel families in the
+      records are correct.
+      Evidence: facts/onboard_2026-09-25_repos.txt (33 surveyed repos),
+      facts/onboard_render/arch_support*.txt (framework registry checks),
+      facts/onboard_render/{plan.log,plan_onboard_pass1.json,queues*/}.
+      OWNER DECISIONS (tianhaox, 2026-09-25): (a) Leanstral-1.5 / MiniMax-H3
+      dropped (params.json-only; roster scope = language models and models
+      with a vision module, no diffusion/DiT — none of the 30 was DiT);
+      (b) models with license problems are dropped: Hemmingway-1
+      (CC-BY-NC-4.0) removed from roster, configs, dummies, plan and matrix
+      (raws in facts/dropped/); every other new repo is Apache-2.0 / MIT /
+      NVIDIA Open Model / OpenMDW / Qwen-community (Qwen3.8-Flash-Next only,
+      not bundled anyway); (c) framework gaps and walls stay as recorded —
+      no pin bumps now; (d) SDK modeling of the 9 rejected architectures
+      stays open. Structural notes for (d), from the Hub configs: Glm5Next
+      = GLM-5.3 DSA (kv_lora 512, indexer topk 2048, mHC fields) with 34/45
+      layers swapped to KDA linear attention (linear_attn_config as in
+      Kimi-K3, 0-based lists) + 288-expert MoE + MTP — closest existing
+      families DEEPSEEKV32/GLM-5.3 + KIMIK3; Qwen4Exp = Qwen3.5 GDN hybrid
+      (interval 4, 512 experts x 640, MTP) plus new n-gram embedding
+      (ngram_*, ple_*) and indexer_* fields — extends QWEN35; AliceAI =
+      Qwen3.5-style GDN/KDA hybrid MoE (512 x 512, interval-4 layer_types)
+      with block attention residual — QWEN35-like; Inkling = 66-layer
+      GQA MoE (256 experts top-6, 2 shared) with SWA layers (local_layer_ids,
+      swa_* heads), short conv, vision hmlp encoder + audio — new; MiMoV2 =
+      MiMo-V2-Flash lineage (hybrid SWA 128 + full attention, 384-expert
+      MoE, head_dim 192/v 128, vision + audio configs) — extends HYBRIDMOE;
+      Xing4_0 = DeepSeek-V3-style MLA (q_lora 768, kv_lora 512, nope 128 /
+      rope 64) + 64-expert MoE + mHC + MTP — DEEPSEEK-like; K2Horizon =
+      GQA MoE (100 experts top-8 + MoVA expert set) — MOE-like; Spark2_5 =
+      dense 36-layer with 27 SWA(512)/9 full layers, per-kind rope —
+      Gemma-like SWA hybrid. Framework side: vllm 0.29 loads Qwen4Exp,
+      Inkling, MiMoV2 natively; none of the pins knows Glm5Next, Xing4_0,
+      AliceAI, K2Horizon or Spark2_5 (custom auto_map code only).
+      FOLLOW-UP DECISION (tianhaox, 2026-09-25, later the same day): AliceAI,
+      Xing4.0 (both artifacts), Spark-X2.5 and K2-Horizon are dropped from
+      the roster altogether (custom-code-only architectures no pinned
+      framework or the SDK knows); inputs, dummies and plan rows moved to
+      facts/dropped/. Remaining unmodeled architectures in the roster: 4
+      (Glm5Next, Qwen4Exp, Inkling, MiMoV2 — 12 repos). Matrix after the
+      drops: 124 rows per backend — vllm 97 / 9 / 18, sglang 93 / 6 / 25,
+      trtllm 69 / 0 / 55.
+      DECISIONS CLOSED 2026-09-25 (tianhaox): the NVFP4 DSA artifacts on
+      trtllm rc23 / SM90 stay modeled as bf16-KV (rc23's sparse FlashMLA
+      asserts bf16 KV; the perf task keeps that dtype) — continue as is.
+      compute_scale rows are an approximation by design (governed exception
+      stands, no further follow-up). SDK modeling of the four remaining
+      unmodeled architectures is out of this work — see TODO.md.
+      DECOMPOSE (step 5, component landed 2026-09-25): every passing record
+      on the three pins decomposes with EMPTY residue after six glue rules
+      (torch xmma f32/tf32 GEMM, fa3 split-kv combine, vision-encoder
+      attention/conv glue, trtllm MoE tactic-profiler buffers, trtllm GDN
+      layout transposes). One identity fact surfaced: sglang 0.5.16 serves
+      MiniMax-M2 / M2.5 (block-fp8 checkpoints) through the Triton
+      _w8a8_block_fp8_matmul GEMM, while the collector's fp8_block gemm lane
+      is DeepGEMM (kernel_source_backends gemm_dtype fp8_block) — labeled
+      triton_block_fp8 so a gemm path_diff on those repos reads diverged
+      instead of hiding under the DeepGEMM label. No capture exists yet for
+      that cell; recorded, not graded.
+      KDA DECODE-BATCH CAP (owner decision 2026-09-25, "带kda的模型覆盖max num
+      seq到256"): vllm.rule caps max_batch_size at 256 for checkpoints with
+      linear_attn_config.kda_layers (generator commit a0820789; Kimi-K3 now
+      renders --max-num-seqs 256 --max-num-batched-tokens 5760). Re-probed
+      under the capped render in framework mode: moonshotai/Kimi-K3 and
+      nvidia/Kimi-K3-NVFP4 PASS on vllm 0.29.0 (prefill 63/70, decode 51/55
+      kernels; identity KimiK3DeltaAttention + kda_decode_fusion_many_heads
+      + flash_kda prefill, MoE Mxfp4MoE->marlin / ModelOptNvFp4FusedMoE->
+      marlin); the fp8-KV variants still fail at load with the known
+      "fp8 KV cache requires an fp8 prefill query" requirement (not
+      rendered). kda_ctx path_diff now grades against the framework-mode
+      record (default selection, --serving-raw dropped): ALIGNED. The old
+      512 raws are kept in facts/k3_ab/pre_cap/. vllm matrix: 99 / 9 / 16.
+      NORMALIZER FACT (2026-09-25): "(anonymous namespace)::" was never
+      stripped, so every kernel defined in an anonymous namespace — ALL of
+      sgl_kernel's C++ kernels (store_kvcache, concat_mla_*, fused_*norm_rope*,
+      flash_c4/c128 DSV4 attention, topk_* indexer helpers, per-tensor fp8
+      quant, act/silu) plus torch's at::native helpers and K3's KDA decode
+      kernel — collapsed into one bogus name "namespace" and was invisible
+      to the taxonomy, the identity column and the gates. Stripping it
+      exposed 26 sglang kernels, now labeled by role (flash_c4_*/flash_c128_*
+      = dsa_nsa attention; the DSA indexer top-k helpers dispatch by batch
+      — topk_small_batch_kernel in the probe's decode vs topk_main_kernel in
+      the collector's case — so they carry the sgl_kernel infra label and
+      are not name-graded). Every saved gate verdict stays aligned (61),
+      residue is empty on all pins, no pass row lost its attention identity.
+    applies_to: [zai-org/GLM-5.3-Flash, Qwen/Qwen3.8-27B, Qwen/Qwen3.8-Flash-Next, nvidia/Qwen3.8-2.4T-A95B-NVFP4,
+      deepseek-ai/DeepSeek-V4.1-Flash, meta-models/Muse-Glimmer-30B, baerquant/Inkling, Altworld/Hemmingway-1,
+      TokenRhythm/NeoHorse-1-9B, ornith-ai/Ornith-1.5-35B-A3B, openbmb/MiniCPM5-2B,
+      'instrument:fetch_inputs', 'instrument:probe_driver', 'instrument:dummies', 'framework:vllm-0.29.0',
+      'framework:sglang-0.5.16', 'framework:trtllm-1.3.0rc23', 'platform:sm90']
+  codex_review_evidence_contracts_2026_09_25:
+    statement: |
+      Codex review of 17ee75c2 (workspace file "Review Comment Codex.md")
+      reproduced six ways the harness turned stale, missing or insufficient
+      evidence into "pass"; all six reproduced on HEAD 9d860284 and are
+      closed by contract changes, each with a regression test:
+      (1) TARGET-OP GRADING. path_diff graded a gate with no signal family
+      on ANY infra-kernel overlap, so a capture sharing only a quant helper
+      with serving "proved" a GEMM path (the committed fp8 GEMM verdict had
+      exactly that: only scaled_fp8_quant in infra_family_name_matches;
+      the real reason was the launcher filter dropping
+      vllm::cutlass_3x_gemm_sm90_fp8 — a kernel, not a launcher). grade()
+      now takes the gate's TARGET ROLES (taxonomy role axis; inferred from
+      the gate name, or --target-roles) and requires every collector kernel
+      of each target role to name-match a serving kernel of the same role;
+      a role the collector ran but serving did not, or a collector-only
+      backend family inside a target role, is diverged; auxiliary roles are
+      reported, never graded; explicit role-scoped equivalences only (GEMM
+      tile blobs with layout kept; sgl_kernel top-k small_batch/main batch
+      dispatch).
+      (2) PHASE. prefill/decode/profile-run orphans were one set, and span
+      attribution by NAME across phases hid a kernel from the phase whose
+      span did not cover it. Records carry kernel_phases (every device-table
+      kernel by phase) and orphan_phases; select_serving picks serving
+      evidence by the gate's phase; vllm api_trace ops carry phase None (was
+      a borrowed "decode"); trtllm's flat table stays unscoped and the
+      verdict says so (phase_scoped). Re-derivation under (1)+(2): 60 gates
+      aligned, 1 diverged — trtllm rc23 DeepSeek-V3 MoE routing: the
+      collector routes with customMoeRoutingKernel, serving with
+      deepseek_v3_topk_kernel + dsv3MinLatencyKernels::router_gemm_kernel
+      (a collector serving-parity finding, left red); the sglang DSV3.2 DSA
+      context gate needed a single-cell capture (the whole-sweep capture
+      unions short cells that run dense FA3 — opcov_sgl_dsa_ctx_s4096);
+      compute_scale moved to the explained set (governed approximation);
+      the two trtllm fp8-KV DSA gate lines are retired (rc23 cannot serve
+      fp8 KV for DSA — a recorded wall, not an alignment question).
+      (3) EXECUTION IDENTITY. The run id names the case only; a raw probed
+      under an older render counted as done. Every plan run now carries an
+      execution fingerprint (engine tokens from the render — first flag on,
+      deployment-wrapper values dropped —, dummy config, probe code, image,
+      kv); the queue writes it as a .fp sidecar next to the raw and skips a
+      run only when the sidecar matches; records carry evidence_status
+      current | stale | unverified (sidecar decisive; without one, vllm /
+      sglang raws are checked on the argv they recorded, trtllm on its
+      engine yaml semantically); the matrix is derived from the NEWEST plan
+      per cell, reads the record of ITS run id (never a sibling version's),
+      and shows stale evidence as a fail cell. First run over the archive:
+      sglang 216 current / 12 unverified (retired pins), trtllm 222 / 37,
+      vllm 121 current / 103 stale (mostly fp8-KV variant raws from before
+      the 64-alignment) / 98 unverified; exactly ONE current-pin matrix
+      cell rested on stale evidence — MiniMax-M3 on vllm, probed at
+      max-num-batched-tokens 6012 before the alignment rule, re-probed at
+      6016 (the review's own counterexample, found by the mechanism).
+      (4) PLAN-RELATIVE PROGRESS. matrix_complete now requires every repo
+      the plan declares for (fw, version) to have a verdict (an empty
+      matrix is not complete; stale cells are not complete);
+      path_verdicts_aligned requires every gate the verdict scripts declare
+      to have a verdict naming this framework/version and reading aligned
+      (declared_gates parses components/captures/verdicts_*.sh);
+      component_pending never completes a step (implemented -> todo "no
+      completion predicate", unimplemented -> blocked); new_op_collector
+      steps got artifact predicates (family_observed / family_unit_defined /
+      family_collector_exists / family_gates_aligned) and onboard_model's
+      path_aligned became model_gates_aligned. A nonexistent op family now
+      shows four todo steps, not four done ones.
+      (5) ONE CODE SOURCE. Queues invoke the probes from this checkout
+      (components/probes, visible under the workspace mount or mounted at
+      /harness); build_images.sh builds venv_ais from the checkout; the
+      workspace holds data only (configs, dummies, archive with raw + .fp,
+      facts, jitcache). The workspace's twin probe scripts are retired.
+      (6) THIRD_PARTY_NOTICES root copy synced (check_packaged_legal_files
+      passes).
+      FOLLOW-THROUGH (same day): the 102 vllm fp8-KV variant raws that read
+      stale (probed before the 64-alignment) were re-probed through the new
+      queue lines — every record on the three pinned versions is now
+      'current' (remaining 'unverified' = retired pins only); the six sglang
+      0.5.16 customizations (DSV4 moe_backend=marlin) were A/B'd bare in a
+      separate workspace and all still_needed (results/retests/sm90/
+      sglang-0.5.16.yaml); the clean-checkout acceptance ran end to end in a
+      fresh workspace (build_images.sh -> venv_ais -> fetch_inputs ->
+      dummies -> emit with the /harness read-only mount -> probe -> record
+      'current' -> matrix pass for Qwen3-0.6B). Harness unit tests: 73.
+      EVIDENCE LAYERING (owner decision 2026-09-26, "facts 太多进 repo 不是好
+      practice"): the PR had 33k lines of kernel-level decompositions and
+      5k lines of verdict kernel lists committed as results. Consumers were
+      checked: the workflow predicates read role/backend SETS, residue and
+      verdict/framework/version only; kernel names are debugging evidence.
+      decompose.py now commits a summary (role -> backend -> count, residue,
+      ops, record id) and writes kernel names to <ws>/archive/evidence/;
+      path_diff commits a verdict summary (both inputs' identity: record id,
+      exec fingerprint, capture sha256; roles, phase, per-role counts; the
+      deciding names only when red) and writes the full report to the
+      evidence dir; evidence_bundle.py packs a campaign's raw + .fp,
+      records, plans, rendered engine configs, captures and full reports
+      into one content-addressed tar.gz (first bundle 2026-09-26_sm90:
+      856 raws, 6.2 MB) indexed in results/evidence_index.yaml with sha256
+      and location. Committed results shrink from ~44k to ~9k lines; LFS
+      was rejected for the evidence (it hides content without making it
+      reviewable); the bundle's storage location is the owner's call and
+      is recorded per campaign.
+    applies_to: ['instrument:path_diff', 'instrument:probe_driver', 'instrument:workflow_check',
+      'instrument:build_images', 'framework:vllm-0.29.0', 'framework:sglang-0.5.16',
+      'framework:trtllm-1.3.0rc23', 'platform:sm90', MiniMaxAI/MiniMax-M3, deepseek-ai/DeepSeek-V3,
+      deepseek-ai/DeepSeek-V3.2]
+  taxonomy_dsa_nsa_family_covers_m3:
+    statement: 'RESOLVED 2026-09-23: M3 sparse-attention kernels now label `triton` (the vocabulary name of
+      MiniMaxM3SparseTritonImpl), dsa_nsa is DeepSeek-DSA only; see probe_prefill_prefix_cache_contamination.
+      Original: NAMING DEBT: the kernel_taxonomy family "dsa_nsa" matches MiniMax-M3 sparse-attention kernels
+      too (sparse_attn_fwd/_gqa_share_sparse/_merge_topk_attn_out/_decode_score are models/minimax_m3 Triton
+      kernels, ops/sparse_attn.py). Verdicts are computed within-family by kernel-name overlap so the lumping
+      is functionally harmless today, but the family name misleads readers of verdict files. Rename (e.g.
+      block_sparse_attn) or split when the owner next touches the taxonomy.'
+    applies_to:
+    - instrument:kernel_taxonomy
+    - MiniMaxAI/MiniMax-M3
+    - deepseek-ai/DeepSeek-V3.2
+  cross_sm_evidence_contamination:
+    statement: 'HARNESS STRUCTURAL LESSON (B300 first run outside H20, 2026-09-20): gate evidence keyed by
+      (fw, version) alone let a fresh arch INHERIT another arch''s green checks — with zero B300 jobs run,
+      workflow_check --param sm=sm103 reported path_aligned (7 sm90 verdicts) and customizations_retested (9 sm90
+      records), and saving B300 verdicts would have OVERWRITTEN the sm90 files. Same class: kernel_taxonomy was a
+      de-facto SM90 vocabulary (Blackwell fmhaSm103a*/fmhaSm100f*/sm100 cutlass/deepgemm-sm100/fp4 kernels all
+      unmatched -> attn path_diff went "empty vs empty" ALIGNED, a false green; missing serving kernels made dsa
+      falsely diverged); per-checkpoint customizations keyed (repo, fw) carried a 143GB-H20 memory workaround to a
+      275GB B300. Fixes landed on H20: results/pathdiff/<sm>/<fw>-<ver>/ + results/retests/<sm>/<fw>-<ver>.yaml
+      (sm90 evidence git-mv''d; sm103 view now shows honest todos), and path_diff emits "inconclusive" when the
+      collector signal set is empty (B300 patch, pending). Rule going forward: SM is a first-class dimension of
+      gate evidence, taxonomy rules (arch-anchored + audited against other arches'' records before merge),
+      customization facts, and case plans; editing a shared file re-opens verdicts for every SM with shipped data
+      (unverified_sms when no box is available). Collectors do NOT fork per arch — dispatch stays the framework''s.'
+    applies_to:
+    - instrument:workflow_check
+    - instrument:kernel_taxonomy
+    - instrument:path_diff
+    - platform:sm90
+    - platform:sm103
+  vllm_0290_full_op_sweep:
+    statement: 'FULL-GRID VALIDATION of the in-place 0.29 upgrade (H20, 4 GPUs, 2026-09-20/21, ~290k perf rows,
+      15 op tables finalized to parquet; evidence workspace facts/opsweep_full_0290/ incl. TRIAGE.md + staging_patch.diff
+      — the staging rehearsal that became commit 993f9cdf). Row parity vs 0.24/0.25 baselines: gemm 111444 (exact),
+      attention ctx/gen 53777/66708 (exact), computescale/scale_matrix/encoder/mla_bmm exact, msa+gdn above baseline,
+      moe 58k. ALL four failure clusters root-caused, ZERO 0.29 regressions and ZERO upgrade-code bugs: (1) msa
+      Triton CompilationError 1616x = kernel domain boundary — sparse_num_index_heads shards to non-power-of-2 at
+      collector heads 48/96, unreachable in serving (real tp gives 4/2/1); (2+3) attention fp8-KV 1625x = HISTORICAL
+      blank: 0.24/0.25 baselines contain zero fp8 rows (100% bfloat16), the grid always swept an unsupported region,
+      only the error text changed; (4a) dsa ctx fp8-KV 776x = flashmla int64_stride_to_int input constraint on the
+      NEW fp8 collection key — FIXME(kernel-limit) class; (4b) dsa gen IMA ~4% = RACE, audit complete
+      2026-09-22: bisect exonerated the block-table fix (22 vs 19 fails on identical 300 cases) AND cudagraph
+      (eager 21/300) AND the topk buffer (allocation parity with serving — both torch.empty; poison prefill 2e9
+      and -1 both pass); CUDA_LAUNCH_BLOCKING pins the faulting kernel to vllm-flash-attn Hopper flash_fwd
+      (flash_fwd_launch_template.h:205); compute-sanitizer memcheck serializes and the fault VANISHES (8/8, 0
+      errors) — a timing race in the 0.29 FA3 sparse-MLA decode chain, worth reporting upstream. Recovery is
+      operational: failures are stochastic with ~75%/round retry recovery, geometric to near-zero
+      (GLM gen 300->70->17->5->2 of 8832; DeepSeek 346->106->28->8) — --resume-retry-failed sweeps recover the
+      rows without touching measurement semantics. ADDENDA: (2+3) VERDICT FLIPPED AGAIN 2026-09-22 via live-engine
+      probe — collector-specific, NOT a framework selector gap. head_dim=512 dense attention comes only from
+      Gemma-4 (global layers: global_head_dim=512, num_global_key_value_heads=2). Real vllm serving of Gemma-4 with
+      --kv-cache-dtype fp8 on SM90 GENERATES fine: Gemma4Config.verify_and_update_config
+      (model_executor/models/config.py:209-256) is a model-level hook that, for heterogeneous head dims (256/512),
+      forces FA4 for all layers (or TRITON_ATTN fallback) because default FA3 on Hopper cannot handle head_dim>256
+      — so serving NEVER routes Gemma-4 head512 to FlashInfer (resolved backend TRITON_ATTN, candidate list
+      [TRITON_ATTN]). collect_attn constructs the attention in isolation and calls the bare platform selector
+      (get_attn_backend_cls) WITHOUT running that model hook, so it picks FlashInfer whose SM90 JIT cannot compile
+      fp8+head512 -> the 1625 dsa... i.e. attention fp8 failures. Same class as DSA 4a / Gemma monolithic: the
+      collector reproduces a backend serving never selects. Fix: the collector must select the backend serving
+      actually uses for head_dim>256 (apply the Gemma4 heterogeneous-head override: FA4/Triton, never FlashInfer),
+      with the config.py:209-256 citation. Evidence facts/gemma4_fp8_probe (GENERATE OK, TRITON_ATTN). (4a) VERDICT FLIPPED 2026-09-22 via live-engine probe:
+      collector-specific, NOT a framework limit. fp8-KV + num_heads<32 (the collector head-sweep emulating TP>=5)
+      selects fp8 mixed mode (MIN_HEADS_FOR_BF16_PREFILL=32, flashmla_sparse.py:63/307), which runs the whole batch
+      as one MQA batch through the fp8 decode kernel (head padding 16->64); the collector builds the prefill as a
+      SINGLE monolithic forward so num_actual_tokens=isl(32768) and stride = tokens*padded_heads*576 breaks int32.
+      Real-engine tests (8 GPUs idle): TP=1 native-128-heads isl=32k fp8 runs (separate bf16 splitkv path); TP=8
+      (16 heads/rank -> the SAME mixed fp8 decode kernel, padding 16->64) fed a 32768-token prompt -> GENERATE OK.
+      Serving chunks the prefill (max_num_batched_tokens), keeping per-forward num_actual_tokens well under 29k;
+      the collector does not chunk. Fix: the collector context construction should mirror serving''s chunked prefill
+      (split at max_num_batched_tokens) -- this both removes the 776 failures AND makes large-isl context rows
+      faithful to how serving actually invokes the kernel (the monolithic measurement is itself non-faithful for
+      large isl; even the passing large-isl context rows warrant review). Evidence
+      facts/ab_dsa_stride_{oneshot,tp8}.json.
+      (1) msa kernel limit converted to an invocation-site guard raising a classified error with the framework
+      citation (commit c0f7f035). dsv4 full-grid rerun on the merged lane, FINAL:
+      22589/22604 collected (99.93%) across 6 ops — generation 3088/3088, paged_mqa_logits + hca_attn 3918/3918
+      each, hca ctx 5840/5840 after retries; the sole residual is a DETERMINISTIC 15-case subcluster in csa ctx,
+      all one shape family (seq=16 chunk + batch=64 + fp8-KV + prefix=4096, both FP8 checkpoints, heads 1-8) —
+      the fp8 csa large-prefix small-tail-chunk path; classified, re-tested free on the next version bump.
+      Harness lessons banked: PerfFile.SCALE_MATRIX enum gap (fixed), measurement containers must never share host
+      network (setup_distributed port collisions), collection images need deps pre-baked, executor ignores --ops
+      CLI order, sharding is manual via --case-filter.'
+    applies_to:
+    - framework:vllm-0.29.0
+    - platform:sm90
+    - instrument:collect.py

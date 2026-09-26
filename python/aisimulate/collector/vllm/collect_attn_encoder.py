@@ -14,7 +14,7 @@ enabling that path here is left for the future.
 # encoder_attention: 8/8 representative cases. The native framework
 # builders/selectors remain authoritative; no kernel fallback is introduced.
 # The campaign manifest still selects one exact release per run.
-__compat__ = "vllm>=0.24.0,<=0.25.0"
+__compat__ = "vllm>=0.24.0,<=0.29.0"
 
 import torch
 from collector.case_generator import get_attention_encoder_head_configs, get_attention_encoder_shape_sweeps

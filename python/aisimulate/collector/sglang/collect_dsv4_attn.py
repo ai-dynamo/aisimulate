@@ -1036,7 +1036,11 @@ def _make_reqs(
         req.full_untruncated_fill_ids = array("q", req.origin_input_ids)
         req.fill_len = full_len
         req.logprob_start_len = 0
-        req.set_extend_input_len(seq_len if prefix_len else full_len)
+        _n = seq_len if prefix_len else full_len
+        if hasattr(req, "set_extend_input_len"):
+            req.set_extend_input_len(_n)
+        else:  # sglang 0.5.16: schedule_batch.py:1153 set_extend_range(start, end)
+            req.set_extend_range(full_len - _n, full_len)
         req.swa_evicted_seqlen = swa_evicted_seqlen
         if decode:
             req.cached_tokens = 0
@@ -1113,7 +1117,14 @@ def _build_forward_batch(
                 req.output_ids.append(0)
             batch.prepare_for_decode()
 
-    forward_batch = ForwardBatch.init_new(batch, model_runner)
+    import inspect as _inspect
+
+    # sglang 0.5.16: return_hidden_states_before_norm is a required keyword of
+    # ForwardBatch.init_new; older pins reject it (collect_msa_module.py:1015 pattern)
+    _fb_kw = ({"return_hidden_states_before_norm": False}
+              if "return_hidden_states_before_norm" in _inspect.signature(ForwardBatch.init_new).parameters
+              else {})
+    forward_batch = ForwardBatch.init_new(batch, model_runner, **_fb_kw)
     model_runner.attn_backend.init_forward_metadata(forward_batch)
     return forward_batch
 

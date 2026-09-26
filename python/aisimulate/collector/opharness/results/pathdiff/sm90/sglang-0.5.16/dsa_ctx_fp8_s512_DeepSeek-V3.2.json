@@ -1,0 +1,58 @@
+{
+ "verdict": "aligned",
+ "repo": "deepseek-ai/DeepSeek-V3.2",
+ "framework": "sglang",
+ "version": "0.5.16",
+ "gate_name": "dsa_ctx_fp8_s512_DeepSeek-V3.2",
+ "target_roles": [
+  "attention",
+  "dsa_indexer"
+ ],
+ "phase": "prefill",
+ "phase_scoped": true,
+ "kv_dtype": "fp8",
+ "op_hint": "mla|dsa|nsa|attn|indexer|flash|mqa|sparse|gemm|deepgemm|quant|topk",
+ "capture_file": "facts/pathdiff/opcov_sgl_dsa_ctx_fp8_s512_p0.json",
+ "capture_sha256": "c255585039a983ff",
+ "capture_env": null,
+ "capture_run_error": null,
+ "serving_record": {
+  "id": "raw:dsv32_sgl_fp8_isl512_v2.json",
+  "tp": null,
+  "kv_cache_dtype": "fp8_e4m3",
+  "isl": 512,
+  "prefix_caching": false,
+  "raw_file": "facts/reprobe_nopc/dsv32_sgl_fp8_isl512_v2.json",
+  "candidates": 1,
+  "exec_fingerprint": null,
+  "evidence_status": null
+ },
+ "collector_backends": [
+  "cublas",
+  "deepgemm",
+  "fa3",
+  "sgl_kernel"
+ ],
+ "serving_backends": [
+  "cublas",
+  "deepgemm",
+  "fa3",
+  "sgl_kernel",
+  "triton_fused_moe"
+ ],
+ "missing_roles": [],
+ "aux_collector_only_roles": [],
+ "role_counts": {
+  "attention": {
+   "collector": 2,
+   "serving": 2,
+   "matched": 2
+  },
+  "dsa_indexer": {
+   "collector": 2,
+   "serving": 2,
+   "matched": 2
+  }
+ },
+ "evidence": "archive/evidence/pathdiff/<framework-version>/<gate>.json in the probe workspace (full kernel lists)"
+}

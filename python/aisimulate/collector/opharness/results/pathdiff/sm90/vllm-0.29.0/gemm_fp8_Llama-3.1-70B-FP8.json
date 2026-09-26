@@ -1,0 +1,49 @@
+{
+ "verdict": "aligned",
+ "repo": "nvidia/Llama-3.1-70B-Instruct-FP8",
+ "framework": "vllm",
+ "version": "0.29.0",
+ "gate_name": "gemm_fp8_Llama-3.1-70B-FP8",
+ "target_roles": [
+  "gemm"
+ ],
+ "phase": null,
+ "phase_scoped": false,
+ "kv_dtype": "auto",
+ "op_hint": "gemm|linear|proj|nvjet|cublas|deepgemm|scaled_mm|quant|cutlass",
+ "capture_file": "facts/pathdiff/opcov_gemm_fp8.json",
+ "capture_sha256": "3d1407a28993699f",
+ "capture_env": null,
+ "capture_run_error": null,
+ "serving_record": {
+  "id": "70764220f4aa",
+  "tp": 1,
+  "kv_cache_dtype": "auto",
+  "isl": 4096,
+  "prefix_caching": false,
+  "raw_file": null,
+  "candidates": 1,
+  "exec_fingerprint": "c04c55adbbf5",
+  "evidence_status": "current"
+ },
+ "collector_backends": [
+  "cutlass",
+  "vllm_kernel"
+ ],
+ "serving_backends": [
+  "cublas",
+  "cutlass",
+  "fa3",
+  "vllm_kernel"
+ ],
+ "missing_roles": [],
+ "aux_collector_only_roles": [],
+ "role_counts": {
+  "gemm": {
+   "collector": 1,
+   "serving": 3,
+   "matched": 1
+  }
+ },
+ "evidence": "archive/evidence/pathdiff/<framework-version>/<gate>.json in the probe workspace (full kernel lists)"
+}

@@ -1,0 +1,259 @@
+# aic-kernel-taxonomy/v1 — observed CUDA kernel name -> canonical backend label.
+#
+# Labels reuse collector/kernel_source_backends.yaml's backend vocabulary
+# (cublas, cutlass, deepgemm, fa3, flashmla, marlin, triton_fused_moe,
+# trtllm_mha, ...) so probe records and collector facts translate through ONE
+# vocabulary. `role` is a second axis (attention/gemm/moe/quant/kvcache/...)
+# used for coverage analysis, not identity matching.
+#
+# Matching: regex, first match wins, applied to the NORMALIZED kernel name
+# (make_records.normalize_kernel). Unmatched kernels stay unlabeled — the
+# conformance checker reports them as needs-taxonomy, which is this file's
+# backlog signal. Seeded 2026-08-20 from a 258-kernel SM90 inventory across
+# sglang 0.5.14/0.5.16, vllm 0.24, trtllm 1.3.0rc20.
+
+schema: aic-kernel-taxonomy/v1
+
+rules:
+  - {backend: vllm_kernel, role: infra,
+     match: "flashinfer_concat_mla_k|ConcatMLAKKernel|BatchQKApplyRotaryPosIds"}
+  # ---------------------------------------------------------------- attention
+  - {backend: fa3, role: attention,
+     match: "^flash::(FlashAttnFwd|prepare_varlen)|^sgl_kernel::fwd$|vllmvllm_flash_attncuteflash_fwd_sm90|^_vllm_fa3_C::fwd$"}
+  - {backend: flashmla, role: attention,
+     match: "flash_fwd_splitkv_mla|flash_fwd_mla_combine|fwd_kvcache_mla|get_mla_metadata|flash_mla"}
+  - {backend: dsa_nsa, role: attention,
+     match: "sparse_attn_fwd_kernel|_fused_indexer_q_rope_quant_kernel|indexer_k_quant_and_cache|cp_gather_indexer_k_quant_cache|topKPerRow"}
+  # MiniMax-M3 0.24-era names (_flash_attn_fwd_with_block_score, _decode_score_kernel)
+  # belong with the M3 Triton rule below, not DSA; kept for old-raw relabeling.
+  - {backend: triton, role: attention,
+     match: "_flash_attn_fwd_with_block_score|^_decode_score_kernel"}
+  - {backend: trtllm_mha, role: attention,
+     match: "^fmha_v2_flash_attention|^kernel_mha$|masked_multihead_attention_kernel"}
+  # Triton ATTENTION backend — `triton` is that backend's name in the shared
+  # vocabulary (kernel_source_backends.yaml: sglang kernel_source `triton` and
+  # vllm `vllm_triton_attn` both -> backend `triton`), so probe records and
+  # collector rows translate through one label. Nothing else in this file may
+  # emit `triton` (routing/activation kernels are framework_native), which is
+  # what lets path_diff treat it as a signal family rather than infra noise.
+  # Kernels: sglang TritonAttnBackend (_fwd_grouped_kernel_stage1, _fwd_kernel,
+  # _fwd_kernel_stage2) and vllm TRITON_ATTN (v1/attention/ops/
+  # triton_unified_attention.py: kernel_unified_attention + its split-KV
+  # reduction reduce_segments; the diffkv variant). vllm routes fp8-KV +
+  # head_dim>256 (Gemma-4) here — FA rejects fp8 head512 and FlashInfer SM90
+  # JIT can't compile it (collect_attn.py:153-163 @0.29.0) — the 0.24-seeded
+  # vocabulary never saw these names; added 2026-09-23 from the fp8-KV sweep.
+  # Also MiniMax-M3 sparse attention (vllm models/minimax_m3 Triton kernels,
+  # MiniMaxM3SparseTritonImpl -> `triton` in kernel_source_backends.yaml):
+  # prefill _gqa_sparse_fwd + _index_block_score + _topk_index, decode
+  # _gqa_sparse_decode + _decode_index_score + _topk_index_{partial,merge} +
+  # _merge_topk_attn_out. 0.24 seeds knew _gqa_share_sparse/_decode_score;
+  # 0.29 renamed them and the M3 prefill path went unlabeled (found by the
+  # cache-cold re-probe 2026-09-23). This closes the dsa_nsa-covers-M3 debt.
+  - {backend: triton, role: attention,
+     match: "^_fwd_grouped_kernel_stage1|^_fwd_kernel(_stage2)?$|^kernel_unified_attention(_diffkv)?$|^reduce_segments$|^_gqa_(share_)?sparse|^_index_block_score_kernel$|^_decode_index_score_kernel$|^_topk_index(_merge|_partial)?_kernel$|^_merge_topk_attn_out"}
+
+  # -------------------------------------------------- linear attention / mamba
+  - {backend: fla_triton, role: linear_attention,
+     match: "gated_delta_rule|ChunkGatedDeltaRule|chunk_fwd_kernel_o|chunk_local_cumsum|recompute_w_u_fwd|fused_gdn_gating|fused_qkv_split_gdn|fused_qkvzba_split"}
+  # FlashInfer GDN (cute-DSL gated-delta-rule) kernels — the same kernels run
+  # under vllm (qwen_gdn_linear_attn.py resolves flashinfer on SM90 @0.29) and
+  # trtllm; the kernel's identity is FlashInfer's, so the label is the
+  # vocabulary's `flashinfer` (kernel_source chunk_gated_delta_rule_flashinfer
+  # -> flashinfer), not trtllm_internal (which was seeded when only trtllm
+  # records showed them). Relabeled 2026-09-23.
+  - {backend: flashinfer, role: linear_attention,
+     match: "FlatKernelTmaWarpSpecializedDeltaRule|kernel_cutlass_gdn_decode|flashinfergdn_kernelsdelta_rule"}
+  - {backend: fla_triton, role: linear_attention,
+     match: "_fused_gdn_post_conv_kernel"}
+  - {backend: causal_conv1d, role: linear_attention,
+     match: "causal_conv1d"}
+  # Kimi-K3 KDA (vllm 0.29 ships K3 natively: vllm/models/kimi_k3): prefill =
+  # FlashKDA CUDA extension (_flash_kda_fwd_prepare + the mangled
+  # _flash_kda_fwd_recurrence template), decode = vllm custom op
+  # kda_decode_fusion_many_heads_kernel. Vocabulary: flashkda_fwd -> flashkda,
+  # fused_kda_decode -> vllm_kernel (kernel_source_backends.yaml:309-310).
+  - {backend: flashkda, role: linear_attention,
+     match: "_flash_kda_fwd|flash_kda_fwd"}
+  - {backend: vllm_kernel, role: linear_attention,
+     match: "kda_decode_fusion"}
+  - {backend: mamba_triton, role: linear_attention,
+     match: "_selective_scan_update|selective_state_update|_chunk_(scan|state|cumsum)_fwd|_state_passing_fwd|_bmm_chunk_fwd|_chunk_state_varlen"}
+
+  # ---------------------------------------------------------------- gemm
+  - {backend: deepgemm, role: gemm,
+     match: "^deep_gemm::sm90_fp8_gemm|^deep_gemm::fp8_gemm|^deep_gemm::transpose"}
+  # DSA/DSV4 indexer: DeepGEMM logits (prefill mqa_logits, decode
+  # paged_mqa_logits + its sched metadata, fp4 variant) and the DSV4 top-k /
+  # compressor kernels (vllm/models/deepseek_v4/nvidia/ops: cute-DSL
+  # sparse_attn_compress, fused_indexer_q, dequant_gather_k; Triton
+  # _dsv4_topk, c128a metadata, swa/global index building). Same DeepSeek
+  # sparse-attention family as the DSV3.2 indexer -> dsa_nsa. Added 2026-09-24
+  # from the first DSV4 serving evidence (6016 budget).
+  - {backend: dsa_nsa, role: dsa_indexer,
+     match: "^deep_gemm::sm90_fp8(_fp4)?_(paged_)?mqa_logits|^deep_gemm::sched::sm90_paged_mqa_logits_metadata|^smxx_paged_mqa_logits_metadata|^_dsv4_topk_kernel|^_build_c128a_topk_metadata|^_compute_global_topk_indices|^_compute_swa_indices|^_fill_short_context_topk|deepseek_v4nvidiaops(sparse_attn_compre|fused_indexer_q|dequant_gather_k)"}
+  # DSV4 manifold hyper-connections (mHC): TileLang kernels + the DeepGEMM
+  # tf32 prenorm gemm. Vocabulary: vllm.model_executor.kernels.mhc.tilelang.* -> tilelang.
+  - {backend: tilelang, role: mhc,
+     match: "^mhc_.*_tilelang_kernel|^hc_head_fuse_tilelang_kernel"}
+  - {backend: deepgemm, role: mhc,
+     match: "^deep_gemm::sm90_tf32_hc_prenorm_gemm"}
+  # vLLM's own cute-DSL linear kernels (model_executor/kernels/linear/cute_dsl:
+  # skinny / low-latency bf16 gemm seen in Kimi-K3 and DSV4 decode) — vllm_kernel.
+  - {backend: vllm_kernel, role: gemm,
+     match: "vllmmodel_executorkernelslinearcute_dsl"}
+  # DSV4 fused norm/rope/quant/insert kernels are framework-native glue.
+  - {backend: framework_native, role: norm_rope,
+     match: "^_fused_kv_compress_norm_rope_insert_indexer_attn|fusedDeepseekV4QNormRopeKVRopeQuantInsert|^_fused_inv_rope_fp8_quant_per_head"}
+  - {backend: cutlass, role: gemm,
+     match: "cutlass_3x_gemm_sm90_fp8|fp8_blockscale_gemm|^fused_a_gemm_kernel"}
+  - {backend: marlin, role: gemm,
+     match: "^(device::)?marlin::Marlin"}
+  - {backend: marlin, role: moe_gemm,
+     match: "marlin_moe"}
+  - {backend: cublas, role: gemm,
+     match: "^nvjet_|^cublasLt::|^internal::gemvx|^reduce_1Block_kernel|^dot_kernel|^memcpy32_post"}
+  - {backend: cutlass, role: moe_gemm,
+     match: "^_ZN7cutlass13device_kernelINS_4gemm6kernel13GemmUniversal"}
+  - {backend: torch, role: gemm,
+     match: "^tinygemm_kernel|^cutlass::Kernel2"}
+
+  # ---------------------------------------------------------------- moe
+  - {backend: triton_fused_moe, role: moe_gemm,
+     match: "^fused_moe_kernel$"}
+  - {backend: triton_fused_moe, role: moe_gemm,
+     match: "^_matmul_ogs_|^fused_moe_oss::"}
+  - {backend: sgl_kernel, role: moe_infra,
+     match: "^(sgl_kernel::)?moe_(align_block_size|sum_reduce)|^count_and_sort_expert_tokens|^moe_align_block_size"}
+  - {backend: vllm_kernel, role: moe_infra,
+     match: "^vllm::moe::"}
+  - {backend: trtllm_internal, role: moe_infra,
+     match: "cutlass_kernels::(expandInputRows|finalizeMoeRouting|doActivation|blockExpertPrefixSum|mergeExpertPrefixSum|globalExpertPrefixSum|computeStrides|fusedBuildExpertMaps)"}
+  # Routing kernels carry no backend identity (same class as activation); they
+  # used to be labeled `triton`, which forced path_diff to treat `triton` as
+  # infra and swallowed Triton ATTENTION with it. framework_native is dropped
+  # by label_kernels, so verdicts are unchanged for routing itself.
+  - {backend: framework_native, role: routing,
+     match: "_router_triton_kernel|_gemma4_routing|deepseek_v3_topk|customMoeRouting|topkGating|cooperative_topk|_topk_forward|router_gemm_kernel|_bitmatrix_metadata|_sum_bitmatrix_rows"}
+  - {backend: torch, role: routing,
+     match: "gatherTopK|bitonicSortKVInPlace"}
+
+  # ---------------------------------------------------------------- quant
+  - {backend: sgl_kernel, role: quant,
+     match: "per_token_group_quant|_static_quant_fp8|_quantize_k_cache|quantize_k_cache"}
+  - {backend: vllm_kernel, role: quant,
+     match: "scaled_fp8_quant|indexer_k_quant_and_cache"}
+  - {backend: trtllm_internal, role: quant,
+     match: "scaleMatrixPerTensorVec|scale_1x128_kernel|_dequant_nvfp4|_cast_scatter_fp32|_gather_cast_vk"}
+
+  # ---------------------------------------------------------------- kvcache
+  - {backend: framework_native, role: kvcache,
+     match: "reshape_and_cache|concat_and_cache|set_mla_kv_buffer|concat_and_cast_mha_k|applyBiasRopeUpdateKVCache|applyMLARopeAppendPagedKV|applyMLARopeAndAssignQKV|indexerKCacheScatter|write_req_to_token_pool|create_flashinfer_kv_indices|alloc_extend_kernel|_convert_req_index_to_global|convertReqIndexToGlobal|ConcatMLAQKernel|_fused_dsa_decode_metadata_kernel|_fused_metadata_kernel_"}
+
+  # ------------------------------------------------------------ norm / rope
+  - {backend: framework_native, role: norm_rope,
+     match: "rmsnorm|RMSNorm|rms_norm|LayerNormFn|_layer_norm_fwd|flashinfernormkernels|l2norm_fwd|rotary_embedding|BatchQKApplyRotary|fusedQKNormRope|_fused_qk_rmsnorm_rope|_gemma_(dual_rmsnorm|qkv_rmsnorm)"}
+
+  # -------------------------------------------------- activation / elementwise
+  # triton_{poi,red,per}_fused_* are torch.compile (Inductor) fusions. Probes
+  # run the framework's own execution mode (2026-09-24), so on vLLM paths
+  # where compile disables the custom elementwise ops these replace
+  # act_and_mul / rms_norm / rotary kernels one-for-one (Llama-3.1-8B A/B:
+  # attention + GEMM kernels identical, only this glue changed). No identity.
+  - {backend: framework_native, role: activation,
+     match: "act_and_mul|silu_and_mul|situ_and_mul|_run_activation|_sigmoid_gate_mul|_fused_(gate_)?sigmoid_mul|triton_poi_fused|triton_per_fused|triton_red_fused|_split_qkv_contiguous|_typeConvert|fusedMiniMaxM3QNormRope|^_attn_res_kernel$|^layer_norm_gated_fwd_kernel$"}
+
+  # ------------------------------------------ backlog cleared 2026-09-24
+  # Sources verified in the pinned images (vllm 0.29.0 / sglang 0.5.16):
+  # identity-bearing ones first, glue after. `_score_kernel`/`_combine_kernel`
+  # (sglang Kimi-K3, 1 record each) have no source hit and stay unmatched.
+  - {backend: dsa_nsa, role: dsa_indexer,   # vllm sparse_attn_indexer.py fused q; deepseek_v32 FilteredTopK;
+     match: "^_fused_q_kernel$|FilteredTopKUnifiedKernel|^_get_k_and_s_triton_kernel$|^deep_gemm::sched::smxx_paged_mqa_logits_metadata|^deep_gemm::smxx_clean_logits"}  # sglang dsa/index_buf_accessor; trtllm DeepGEMM smxx helpers
+  - {backend: fla_triton, role: linear_attention,   # sglang Kimi-K3 KDA (fla) + vllm fused_gdn_prefill_post_conv
+     match: "chunk_gla_fwd_kernel|chunk_kda_fwd_kernel|fused_recurrent_kda|kda_gate_chunk_cumsum|^_fused_post_conv_kernel$"}
+  - {backend: triton_fused_moe, role: moe_gemm,     # triton_kernels matmul_ogs epilogue
+     match: "^_reduce_grouped$"}
+  - {backend: sgl_kernel, role: quant,
+     match: "^_act_quant_kernel$"}
+  - {backend: framework_native, role: kvcache,      # allocator / position / DSV4 sparse+SWA metadata / compress plans
+     match: "^alloc_decode_kernel$|^compute_position_kernel$|_fused_slot_clear_kernel|_page_table_positions_kernel|_build_swa_token_ids_kernel|_causal_swa_page_indices_kernel|_combine_topk_swa_indices_kernel|_expand_prefill_causally_kernel|_init_compressed_attn_metadata_kernel|plan_compress_(decode|prefill)_kernel|cp_gather_and_upconvert_fp8_kv_cache_page"}
+  - {backend: framework_native, role: norm_rope,    # fused_embed_norm, dsv32 norm+rope, mrope, FA rotary, FLA layernorm, sglang mHC head (Triton)
+     match: "^_fused_embed_norm_kernel$|^_fused_norm_rope_kernel$|_triton_mrope_forward|^rotary_kernel$|^layer_norm_fwd_kernel$|LayerNormGatedFunction|_bilinear_pos_embed_kernel|^_hc_head_kernel$"}
+  - {backend: framework_native, role: routing,      # gpt-oss triton_kernels routing; sglang radix router
+     match: "_combined_routing_compute|_combined_routing_memset|route_radix_kernel"}
+  - {backend: torch, role: gemm,                    # fp32 cuBLAS/cuDNN of vision towers; torch multi-block topk
+     match: "^sm80_xmma_gemm_f32f32|implicit_convolveNd|cutlass__5x_cudnn|tensorTransformGeneric|mbtopk::"}
+  - {backend: infra, role: infra,                   # sampler / logit-bias / grammar / load-time marlin repack / name artifacts
+     match: "^_min_p_kernel|^_penalties_kernel|^_temperature_kernel|^_topk_log_softmax_kernel|^_ranks_kernel|^_bad_words_kernel|^_bias_kernel$|flashinfer::sampling::|gptq_marlin_repack|^_apply_grammar_bitmask_kernel|^compute_cuda_kernel$|^kernel$|^triton_$|^Command$|^TopK$"}
+
+  # ----------------------------------------------------------------- infra
+  - {backend: infra, role: infra,
+     match: "^cuda[A-Z]|^cuLaunch|^Activity$|^Buffer$|^Compiled$|^at_cuda_detail::|^_ragged_tensor_metadata|computeSeqAndPaddingOffsets|^get_num_kv_splits|^namespace$|^operator$|^_reduce$|vectorized_gather|DeviceScan|sglang\\.vlm\\.|^tensorrt_llm::_v1::kernels$"}
+  # vLLM v1 model-runner / sampler Triton glue (0.29): input prep, slot
+  # mappings, block tables, sampling, spec-decode bookkeeping, mamba state
+  # alignment. Present in every record; carries no path identity.
+  - {backend: infra, role: infra,
+     match: "^_gumbel_sample_kernel|^_combine_sampled_and_draft_tokens|^_get_num_sampled_and_rejected|^_post_update_kernel|^_prepare_pos_seq_lens|^_prepare_prefill_inputs|^_prepare_rope_positions|^_zero_kv_blocks_kernel|^_gather_block_tables_kernel|^_apply_write_kernel|^_compute_slot_mappings_kernel|^_compressed_slot_mapping_kernel|^_save_partial_states_kernel|^_scatter_num_accepted|^_gather_initial_states_kernel|^(pre|post)(copy|process)_mamba_(align_)?fused_kernel"}
+
+  # ------------------------------------------------ decompose residue 2026-09-25
+  # torch f32/tf32 cuBLAS-lt GEMMs (router / lm-head fallbacks) and the bf16 xmma tile kernels
+  - {backend: cublas, role: gemm,
+     match: "^sm90_xmma_gemm_"}
+  # sglang Triton block-fp8 GEMM (w8a8 block scaling). Distinct label on purpose:
+  # the collector's fp8_block gemm lane is DeepGEMM (kernel_source_backends
+  # gemm_dtype: fp8_block -> deepgemm) while sglang 0.5.16 serves MiniMax-M2 /
+  # M2.5 through this Triton kernel — a gemm-path fact path_diff must see.
+  - {backend: triton_block_fp8, role: gemm,
+     match: "^_w8a8_block_fp8_matmul"}
+  # fa3 split-kv combine (vllm cute-DSL flash_fwd_combine)
+  - {backend: fa3, role: attention,
+     match: "flash_fwd_combine|flash_attncuteflash_fwd_combine"}
+  # vision-encoder attention / conv glue (xformers cutlass FMHA sm80, im2col, cudnn layout)
+  - {backend: framework_native, role: infra,
+     match: "^fmha_cutlassF_|im2col_kernel|cudnn::engines_precompiled::nchwToNhwc|softcap_inplace_logits_kernel"}
+  # trtllm GDN prefill/conv layout glue around the cute-DSL delta-rule kernels
+  - {backend: trtllm_internal, role: linear_attention,
+     match: "^_extract_transpose_prefill_kernel|^_fused_conv_output_transpose_kernel"}
+  # Kimi-K3 framework-mode (CUDA graph) record: fused MLA KV-cache concat/insert
+  # kernels and the KDA index writer are kv-cache / infra glue, not identity
+  - {backend: framework_native, role: kvcache,
+     match: "kimi_k3_fused_ops::fusedKimiK3MLA"}
+  - {backend: framework_native, role: infra,
+     match: "^write_indices$"}
+  # torch glue that surfaces by its bare name once "(anonymous namespace)::" is
+  # stripped (index/copy/elementwise/layernorm helpers) — infra, never identity
+  - {backend: torch, role: infra,
+     match: "^elementwise_kernel_with_index|^indexSelect(Small|Large)Index|^vectorized_layer_norm_kernel|^CatArrayBatchedCopy|^unrolled_elementwise_kernel|^index_elementwise_kernel|^_scatter_gather_elementwise_kernel|^sort_postprocess_kernel|^radixSort|^fill_reverse_indices_kernel"}
+  - {backend: torch, role: infra,
+     match: "^cunn_SoftMaxForward|^cunn_|^distribution_elementwise_grid_stride_kernel"}
+  # names that surface once "(anonymous namespace)::" is stripped: sglang fused
+  # rope / indexer-cache store, trtllm fp8 KV concat — norm_rope / kvcache glue
+  - {backend: framework_native, role: norm_rope,
+     match: "^fused_rope_kernel|^fused_rope_store_kernel"}
+  - {backend: framework_native, role: kvcache,
+     match: "^fused_store_indexer_cache|kernels::fusedCatFp8Kernel|^store_kv_index_kernel"}
+  - {backend: torch, role: infra,
+     match: "^softmax_warp_forward|^softmax_warp_backward|^cunn_SoftMaxForwardSmem"}
+
+  # ---------------------------------------------- sgl_kernel C++ kernels (2026-09-25)
+  # These live in anonymous namespaces and were invisible ("namespace") until the
+  # normalizer stripped the prefix; labeled by role from their names.
+  - {backend: dsa_nsa, role: attention,
+     match: "^flash_c4_(prefill|decode)$|^flash_c128_(prefill|decode)$"}
+  # DSA indexer helpers shipped by sgl_kernel: top-k selection dispatches by
+  # batch (topk_small_batch_kernel vs topk_main_kernel — the probe's small
+  # decode batch vs the collector's case batch), so they carry the sgl_kernel
+  # (infra) label: visible in decompositions under role dsa_indexer, not
+  # name-graded by path_diff (the attention kernels above are).
+  - {backend: sgl_kernel, role: dsa_indexer,
+     match: "^topk_plan$|^topk_small_batch_kernel$|^topk_main_kernel$|^topk_transform(_prefill)?_kernel$|^fast_hadamard_transform_kernel$|^fused_q_indexer_rope_hadamard_quant$|^fused_k_indexer_norm_rope_store$|^fused_norm_rope_indexer$"}
+  - {backend: sgl_kernel, role: norm_rope,
+     match: "^fused_qknorm_warp$|^fused_gemma_qknorm_rope_kernel$|^fused_q_norm_rope$|^fused_(k_)?norm_rope_flashmla$|^deepseek_rope_kernel$"}
+  - {backend: sgl_kernel, role: kvcache,
+     match: "^store_kvcache$|^concat_mla_absorb_q_kernel$|^concat_mla_k_kernel$|^write_c4_prefill$|^get_mla_kv_buffer_kernel$"}
+  - {backend: sgl_kernel, role: quant,
+     match: "^per_tensor_quant_fp8_kernel$|^per_token_quant_fp8_kernel$"}
+  - {backend: sgl_kernel, role: activation,
+     match: "^act_kernel$|^silu_mul_clamp_kernel$"}
+  - {backend: sgl_kernel, role: infra,
+     match: "^clamp_position_kernel$"}
