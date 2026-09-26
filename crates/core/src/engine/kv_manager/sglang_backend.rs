@@ -34,7 +34,7 @@ pub(crate) struct RadixRequestLease {
 
 /// Metadata used only with the matching KV-manager admission checkpoint.
 pub(crate) struct RadixLeaseCheckpoint {
-    pages: Vec<KvPageId>,
+    pages_len: usize,
     materialized_tokens: usize,
     cached_tokens: usize,
     admission_reused_tokens: usize,
@@ -45,7 +45,7 @@ pub(crate) struct RadixLeaseCheckpoint {
 impl RadixRequestLease {
     pub(crate) fn admission_checkpoint(&self) -> RadixLeaseCheckpoint {
         RadixLeaseCheckpoint {
-            pages: self.pages.clone(),
+            pages_len: self.pages.len(),
             materialized_tokens: self.materialized_tokens,
             cached_tokens: self.cached_tokens,
             admission_reused_tokens: self.admission_reused_tokens,
@@ -55,8 +55,11 @@ impl RadixRequestLease {
     }
 
     /// Restore only after the matching manager checkpoint has been rolled back.
+    /// Admission only appends pages or fills an empty, inactive lease; it never
+    /// changes the existing page IDs. Prefix canonicalization happens after commit.
     pub(crate) fn restore_admission(&mut self, checkpoint: RadixLeaseCheckpoint) {
-        self.pages = checkpoint.pages;
+        debug_assert!(self.pages.len() >= checkpoint.pages_len);
+        self.pages.truncate(checkpoint.pages_len);
         self.materialized_tokens = checkpoint.materialized_tokens;
         self.cached_tokens = checkpoint.cached_tokens;
         self.admission_reused_tokens = checkpoint.admission_reused_tokens;
@@ -166,11 +169,18 @@ pub struct SglangKvManager {
     /// block hash so router events reflect logical block visibility, not
     /// transient slot ownership.
     block_hash_refcounts: FxHashMap<SequenceHash, usize>,
-    pending_admission_events: Option<Vec<KvEvent>>,
+    pending_admission: Option<PendingAdmission>,
 }
 
 #[must_use = "admission must be committed or rolled back"]
-pub(crate) struct SglangAdmissionCheckpoint {
+pub(crate) struct SglangAdmission(());
+
+struct PendingAdmission {
+    checkpoint: Option<SglangAdmissionCheckpoint>,
+    events: Vec<KvEvent>,
+}
+
+struct SglangAdmissionCheckpoint {
     cache: RadixCache,
     next_event_id: u64,
     page_to_block_hash: Vec<Option<SequenceHash>>,
@@ -267,7 +277,7 @@ impl SglangKvManager {
             next_event_id: 0,
             page_to_block_hash,
             block_hash_refcounts: FxHashMap::default(),
-            pending_admission_events: None,
+            pending_admission: None,
         }
     }
 
@@ -285,44 +295,60 @@ impl SglangKvManager {
     }
 
     /// Hold speculative events until the timing provider accepts the admitted batch.
-    pub(crate) fn begin_admission(&mut self) -> SglangAdmissionCheckpoint {
-        assert!(
-            self.pending_admission_events.is_none(),
-            "nested KV admission"
-        );
-        self.pending_admission_events = Some(Vec::new());
-        SglangAdmissionCheckpoint {
+    pub(crate) fn begin_admission(&mut self) -> SglangAdmission {
+        assert!(self.pending_admission.is_none(), "nested KV admission");
+        self.pending_admission = Some(PendingAdmission {
+            checkpoint: None,
+            events: Vec::new(),
+        });
+        SglangAdmission(())
+    }
+
+    /// Admission can reject all waiting requests without changing the cache.
+    /// Snapshot only before the first allocation or extension can mutate it.
+    /// Any new mutating path inside admission must checkpoint before its first change.
+    fn checkpoint_admission(&mut self) {
+        let Some(admission) = self.pending_admission.as_mut() else {
+            return;
+        };
+        if admission.checkpoint.is_some() {
+            return;
+        }
+        admission.checkpoint = Some(SglangAdmissionCheckpoint {
             cache: self.cache.admission_checkpoint(),
             next_event_id: self.next_event_id,
             page_to_block_hash: self.page_to_block_hash.clone(),
             block_hash_refcounts: self.block_hash_refcounts.clone(),
-        }
+        });
     }
 
-    pub(crate) fn commit_admission(&mut self, _checkpoint: SglangAdmissionCheckpoint) {
-        for event in self
-            .pending_admission_events
-            .take()
-            .expect("active KV admission")
-        {
+    pub(crate) fn commit_admission(&mut self, _admission: SglangAdmission) {
+        let admission = self.pending_admission.take().expect("active KV admission");
+        for event in admission.events {
             self.publish_event(event);
         }
     }
 
-    pub(crate) fn rollback_admission(&mut self, checkpoint: SglangAdmissionCheckpoint) {
-        self.pending_admission_events
-            .take()
-            .expect("active KV admission");
-        self.cache = checkpoint.cache;
-        self.next_event_id = checkpoint.next_event_id;
-        self.page_to_block_hash = checkpoint.page_to_block_hash;
-        self.block_hash_refcounts = checkpoint.block_hash_refcounts;
+    pub(crate) fn rollback_admission(&mut self, _admission: SglangAdmission) {
+        let admission = self.pending_admission.take().expect("active KV admission");
+        if let Some(checkpoint) = admission.checkpoint {
+            self.cache = checkpoint.cache;
+            self.next_event_id = checkpoint.next_event_id;
+            self.page_to_block_hash = checkpoint.page_to_block_hash;
+            self.block_hash_refcounts = checkpoint.block_hash_refcounts;
+        } else {
+            debug_assert!(
+                admission.events.is_empty(),
+                "events without a KV checkpoint"
+            );
+        }
         self.log_trace("admission_rollback", 0);
     }
 
     fn publish_event(&mut self, event: KvEvent) {
-        if let Some(events) = self.pending_admission_events.as_mut() {
-            events.push(event);
+        if let Some(admission) = self.pending_admission.as_mut() {
+            debug_assert!(admission.checkpoint.is_some(), "event before KV checkpoint");
+            admission.events.push(event);
         } else if let Err(error) = self.kv_event_publishers.publish(event, None) {
             tracing::warn!("Failed to publish SGLang KV event: {error}");
         }
@@ -357,11 +383,17 @@ impl SglangKvManager {
         max_prefix_tokens: usize,
     ) -> Option<usize> {
         assert!(!lease.is_active(), "request KV lease is already active");
+        debug_assert!(lease.pages.is_empty(), "inactive KV lease retains pages");
         let page_size = self.cache.page_size();
         lease.ensure_page_hashes(token_ids, page_size);
         let materialized_hashes = lease.page_hashes_through(token_ids.len(), page_size);
         let matchable_hashes =
             &materialized_hashes[..(max_prefix_tokens.min(token_ids.len()) / page_size)];
+        // Prefix matching can split, touch and lock radix nodes even when the
+        // following capacity check rejects the allocation.
+        if self.enable_prefix_caching {
+            self.checkpoint_admission();
+        }
         let (prefix_len, last_node) = self.match_prefix_hashes_and_lock(matchable_hashes);
         let required_pages = token_ids.len().div_ceil(page_size) - prefix_len / page_size;
         let required_tokens = required_pages * page_size;
@@ -373,6 +405,10 @@ impl SglangKvManager {
         if required_tokens > reservable {
             self.cache.dec_lock_ref(last_node);
             return None;
+        }
+        // Without prefix caching, matching and the capacity check are read-only.
+        if !self.enable_prefix_caching {
+            self.checkpoint_admission();
         }
         let available = self.cache.available_tokens();
         if required_tokens > available {
@@ -442,6 +478,7 @@ impl SglangKvManager {
         if required_tokens > reservable {
             return None;
         }
+        self.checkpoint_admission();
         let available = self.cache.available_tokens();
         if required_tokens > available {
             self.evict(required_tokens - available);
@@ -1170,6 +1207,39 @@ mod tests {
             self.events.lock().unwrap().push(event);
             Ok(())
         }
+    }
+
+    #[test]
+    fn prefix_disabled_admission_checkpoints_only_allocations_that_fit() {
+        let mut mgr = SglangKvManager::new_with_prefix_caching(
+            8,
+            4,
+            KvEventPublishers::default(),
+            0,
+            false,
+            false,
+        );
+        let mut lease = RadixRequestLease::default();
+        let before = lease.admission_checkpoint();
+        let admission = mgr.begin_admission();
+        assert_eq!(mgr.allocate_for_request_lease(&[1; 9], &mut lease), None);
+        assert!(mgr.pending_admission.as_ref().unwrap().checkpoint.is_none());
+        mgr.rollback_admission(admission);
+        lease.restore_admission(before);
+        assert_eq!(mgr.cache.available_tokens(), 8);
+        assert!(!lease.is_active());
+        assert!(lease.pages.is_empty());
+
+        let before = lease.admission_checkpoint();
+        let admission = mgr.begin_admission();
+        assert_eq!(mgr.allocate_for_request_lease(&[1; 8], &mut lease), Some(0));
+        assert!(mgr.pending_admission.as_ref().unwrap().checkpoint.is_some());
+        assert_eq!(mgr.cache.available_tokens(), 0);
+        mgr.rollback_admission(admission);
+        lease.restore_admission(before);
+        assert_eq!(mgr.cache.available_tokens(), 8);
+        assert!(!lease.is_active());
+        assert!(lease.pages.is_empty());
     }
 
     #[test]
