@@ -1,5 +1,10 @@
-// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
+//
+// The weka_seam_rekey_never_uses_a_future_parent regression is adapted and
+// modified from NVIDIA Dynamo's lib/mocker/src/loadgen/tests.rs at
+// b113ceae74da3f6754429ade750b0f5b0c8de5d6 (Apache-2.0):
+// https://github.com/ai-dynamo/dynamo/blob/b113ceae74da3f6754429ade750b0f5b0c8de5d6/lib/mocker/src/loadgen/tests.rs
 
 //! Local Weka/AgentX trace ingestion for typed agentic replay.
 
@@ -2190,6 +2195,49 @@ mod tests {
                 && edge.trigger == AgenticDependencyTrigger::Completion
                 && edge.relation == AgenticDependencyRelation::ReplayBarrier
         }));
+    }
+
+    #[test]
+    fn weka_seam_rekey_never_uses_a_future_parent() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("trace.json");
+        write_trace(
+            &path,
+            serde_json::json!([
+                {"t":0.0,"type":"s","model":"model","in":12,"out":1,"hash_ids":[1,2,3],"api_time":0.2},
+                {"t":1.0,"type":"s","model":"model","in":8,"out":1,"hash_ids":[1,9],"api_time":0.2},
+                {"t":2.0,"type":"s","model":"model","in":12,"out":1,"hash_ids":[1,2,8],"api_time":0.2}
+            ]),
+        );
+
+        let trace = load_weka_agentic_graph(&path, None).unwrap();
+        let find_node = |suffix| {
+            trace
+                .nodes()
+                .iter()
+                .find(|node| node.request_id().ends_with(suffix))
+                .unwrap()
+        };
+        let parent = find_node("outer:0");
+        let early_fork = find_node("outer:1");
+        let later_continuation = find_node("outer:2");
+
+        // The deeper overlap elects the later request as the parent's seam
+        // continuation. Rekeying must keep the earlier fork's original parent.
+        assert_eq!(parent.session_id(), later_continuation.session_id());
+        assert_ne!(parent.session_id(), early_fork.session_id());
+        assert!(
+            early_fork
+                .dependencies()
+                .iter()
+                .any(|dependency| dependency.request_id == parent.request_id())
+        );
+        assert!(
+            early_fork
+                .dependencies()
+                .iter()
+                .all(|dependency| { dependency.request_id != later_continuation.request_id() })
+        );
     }
 
     #[test]
