@@ -1,0 +1,335 @@
+{
+  "aic_revision": "4d702ff6b756b21e74b76f30273e9828fdde6861",
+  "backend": "vllm",
+  "backend_policies": [
+    {
+      "admission_reason": "AIC automatic baseline for the selected model/backend",
+      "aic_fields": {
+        "attention_backend": null,
+        "enable_eplb": false,
+        "enable_wideep": false,
+        "moe_backend": null
+      },
+      "expected_markers": {},
+      "generator_overrides": {},
+      "policy_id": "baseline_auto"
+    }
+  ],
+  "capability": {
+    "aic_database_version": "0.27.0",
+    "allow_pure_tp": true,
+    "architecture": "UnregisteredMoeForCausalLM",
+    "attention_kind": "moe_mha",
+    "attention_source": "dense_attention",
+    "dtype": {
+      "comm_quant_mode": "half",
+      "fmha_by_kv_dtype": {
+        "bfloat16": "bfloat16"
+      },
+      "fmha_quant_mode": "bfloat16",
+      "fmha_resolution": "checkpoint_native",
+      "fmha_resolution_by_kv_dtype": {
+        "bfloat16": "checkpoint_native"
+      },
+      "gemm_quant_mode": "bfloat16",
+      "kv_cache_dtypes": [
+        "bfloat16"
+      ],
+      "moe_quant_mode": "bfloat16",
+      "native_kv_cache_dtype": "bfloat16"
+    },
+    "is_moe": true,
+    "model_config": {
+      "payload": {
+        "architectures": [
+          "UnregisteredMoeForCausalLM"
+        ],
+        "hidden_size": 128,
+        "max_position_embeddings": 8192,
+        "num_attention_heads": 8,
+        "num_experts": 8,
+        "num_hidden_layers": 5,
+        "num_key_value_heads": 8,
+        "torch_dtype": "bfloat16",
+        "vocab_size": 1024
+      },
+      "sha256": "b7e6b75d81c1b9eddba8326c963b8833350fbccb1b09b2a4c2581f0519119a73",
+      "source_kind": "explicit"
+    },
+    "model_family": null,
+    "support_level": "bootstrap_template",
+    "support_reason": "architecture is not registered by AIC; using a conservative config-derived template",
+    "template_id": "generic:moe_mha",
+    "template_version": 1
+  },
+  "cells": [
+    {
+      "backend_policy": {
+        "admission_reason": "AIC automatic baseline for the selected model/backend",
+        "aic_fields": {
+          "attention_backend": null,
+          "enable_eplb": false,
+          "enable_wideep": false,
+          "moe_backend": null
+        },
+        "expected_markers": {},
+        "generator_overrides": {},
+        "policy_id": "baseline_auto"
+      },
+      "cell_id": "fpm-d111aeb8823a9bee",
+      "kv_cache_dtype": "bfloat16",
+      "parallel_strategy": "tep",
+      "point_source": "dynamo_native_self_benchmark",
+      "resolved_dtypes": {
+        "comm_quant_mode": "half",
+        "fmha_quant_mode": "bfloat16",
+        "fmha_resolution": "checkpoint_native",
+        "gemm_quant_mode": "bfloat16",
+        "kvcache_quant_mode": "bfloat16",
+        "moe_quant_mode": "bfloat16"
+      },
+      "topology": {
+        "cp": 1,
+        "dp": 1,
+        "moe_ep": 8,
+        "moe_tp": 1,
+        "pp": 1,
+        "tp": 8
+      },
+      "weight_quantization": "bfloat16",
+      "workload_kind": "prefill"
+    },
+    {
+      "backend_policy": {
+        "admission_reason": "AIC automatic baseline for the selected model/backend",
+        "aic_fields": {
+          "attention_backend": null,
+          "enable_eplb": false,
+          "enable_wideep": false,
+          "moe_backend": null
+        },
+        "expected_markers": {},
+        "generator_overrides": {},
+        "policy_id": "baseline_auto"
+      },
+      "cell_id": "fpm-66274b2ba8ae195c",
+      "kv_cache_dtype": "bfloat16",
+      "parallel_strategy": "tep",
+      "point_source": "dynamo_native_self_benchmark",
+      "resolved_dtypes": {
+        "comm_quant_mode": "half",
+        "fmha_quant_mode": "bfloat16",
+        "fmha_resolution": "checkpoint_native",
+        "gemm_quant_mode": "bfloat16",
+        "kvcache_quant_mode": "bfloat16",
+        "moe_quant_mode": "bfloat16"
+      },
+      "topology": {
+        "cp": 1,
+        "dp": 1,
+        "moe_ep": 8,
+        "moe_tp": 1,
+        "pp": 1,
+        "tp": 8
+      },
+      "weight_quantization": "bfloat16",
+      "workload_kind": "decode"
+    }
+  ],
+  "counts": {
+    "backend_policies": 1,
+    "candidate_topologies": 1,
+    "cells": 2,
+    "memory_rejected_topologies": 0,
+    "memory_unknown_topologies": 1,
+    "points": "runtime-determined",
+    "prefill_cudagraph_capture_sizes": null,
+    "prefill_new_token_axis_points": null,
+    "topologies": 1
+  },
+  "dtype_profile": {
+    "comm_quant_mode": "half",
+    "fmha_by_kv_dtype": {
+      "bfloat16": "bfloat16"
+    },
+    "fmha_quant_mode": "bfloat16",
+    "fmha_resolution": "checkpoint_native",
+    "fmha_resolution_by_kv_dtype": {
+      "bfloat16": "checkpoint_native"
+    },
+    "gemm_quant_mode": "bfloat16",
+    "kv_cache_dtypes": [
+      "bfloat16"
+    ],
+    "moe_quant_mode": "bfloat16",
+    "native_kv_cache_dtype": "bfloat16"
+  },
+  "fpm_profile": {
+    "architecture": "UnregisteredMoeForCausalLM",
+    "context_length": 8192,
+    "deployments": [
+      {
+        "attention_backend": "auto",
+        "backend": "vllm",
+        "backend_version": "0.27.0",
+        "comm_quant_mode": "half",
+        "cp": 1,
+        "dp": 1,
+        "enable_eplb": false,
+        "enable_wideep": false,
+        "fmha_quant_mode": "bfloat16",
+        "gemm_quant_mode": "bfloat16",
+        "kv_cache_dtype": "bfloat16",
+        "moe_backend": "auto",
+        "moe_ep": 8,
+        "moe_quant_mode": "bfloat16",
+        "moe_tp": 1,
+        "pp": 1,
+        "resources": {
+          "cache_layout": "linear",
+          "kv_bytes_per_token": 60216,
+          "max_batch_size": 1024,
+          "max_num_tokens": 8192,
+          "provenance": "Independent test envelope: 100 GB weights plus three 1 GB overhead bounds."
+        },
+        "system": "gb200",
+        "tp": 8
+      }
+    ],
+    "model": "example/slurm-fpm-model",
+    "model_revision": "collector-test-snapshot",
+    "num_experts": 8,
+    "provenance": "Collector test declaration; not a measured memory qualification.",
+    "schema_version": 1
+  },
+  "generator_config_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+  "model_path": "example/slurm-fpm-model",
+  "options": {
+    "attention_backend": "auto",
+    "cp_sizes": null,
+    "dp_sizes": null,
+    "enable_eplb": "false",
+    "enable_wideep": "false",
+    "global_warmup_iterations": 5,
+    "gpu_counts": [
+      8
+    ],
+    "gpu_memory_utilization": 0.9,
+    "kv_cache_dtypes": [
+      "bfloat16"
+    ],
+    "max_gpus": 8,
+    "max_num_batched_tokens": 1024,
+    "max_num_seqs": 64,
+    "measurement_repeats": 1,
+    "moe_backend": "auto",
+    "moe_ep_sizes": null,
+    "moe_tp_sizes": null,
+    "parallel_axes": [],
+    "parallel_presets": [
+      "tep"
+    ],
+    "point_source": "dynamo_native_self_benchmark",
+    "pp_sizes": null,
+    "prefill_sampling": {
+      "cudagraph_capture_size_count": null,
+      "cudagraph_capture_sizes": null,
+      "cudagraph_policy": "runtime",
+      "max_batch_size": 64,
+      "max_cudagraph_capture_size": null,
+      "max_isl": 1024,
+      "max_total_prefill_tokens": 1024,
+      "new_token_axis_point_count": null,
+      "new_token_axis_points": null,
+      "prefill_max_kv_read_token_samples": 19,
+      "prefill_max_new_token_samples": null
+    },
+    "tp_sizes": null,
+    "vllm_max_model_len": 4096,
+    "warmup_repeats": 0,
+    "weight_quantizations": []
+  },
+  "point_generation": {
+    "coordinates": [
+      "batch_size",
+      "total_prefill_tokens",
+      "total_kv_read_tokens"
+    ],
+    "method": "native_self_benchmark",
+    "owner": "dynamo.vllm.instrumented_scheduler.InstrumentedScheduler",
+    "partition_policy": "balanced_v1",
+    "planned_point_count": null,
+    "point_admission": "dynamo_live_scheduler",
+    "precondition": "vllm_engine_initialized",
+    "prefill_sampling": {
+      "cudagraph_capture_size_count": null,
+      "cudagraph_capture_sizes": null,
+      "cudagraph_policy": "runtime",
+      "max_batch_size": 64,
+      "max_cudagraph_capture_size": null,
+      "max_isl": 1024,
+      "max_total_prefill_tokens": 1024,
+      "new_token_axis_point_count": null,
+      "new_token_axis_points": null,
+      "prefill_max_kv_read_token_samples": 19,
+      "prefill_max_new_token_samples": null
+    }
+  },
+  "runtime_memory_policy": {
+    "async_scheduling": false,
+    "evidence_schema_version": 1,
+    "observation": "enabled",
+    "selected_vllm_version": "0.27.0",
+    "source": "vllm_initialization",
+    "supported_vllm_version": "0.27.0"
+  },
+  "schema_name": "aic_fpm_collection_plan",
+  "schema_version": 10,
+  "sha256": "ea99845deee06804fd35a7a0999b0118446df1ac8ededbf7c813345360ba6bf7",
+  "system": "gb200",
+  "topologies": [
+    {
+      "cp": 1,
+      "dp": 1,
+      "moe_ep": 8,
+      "moe_tp": 1,
+      "pp": 1,
+      "strategy": "tep",
+      "tp": 8
+    }
+  ],
+  "topology_memory_admission": [
+    {
+      "activation_envelope": {
+        "cuda_graph_reservation": "runtime_profiled_separately",
+        "max_batch_size": 1024,
+        "max_num_tokens": 8192,
+        "requested_prefill_tokens": 1024,
+        "scope": "rank_local"
+      },
+      "disposition": "unknown",
+      "estimates": [
+        {
+          "disposition": "unknown",
+          "estimated_non_kv_bytes": null,
+          "gpu_capacity_bytes": 198674743296,
+          "gpu_memory_budget_bytes": 178807268966,
+          "headroom_bytes": null,
+          "kv_cache_dtype": "bfloat16",
+          "provenance": "Independent test envelope: 100 GB weights plus three 1 GB overhead bounds.",
+          "reason": "memory capacity is determined by this collection worker's runtime initialization; no non-KV byte declaration is required"
+        }
+      ],
+      "reason": "AIC could not prove the topology is impossible; runtime verification is required",
+      "source": "fpm_profile_pending",
+      "topology": {
+        "cp": 1,
+        "dp": 1,
+        "moe_ep": 8,
+        "moe_tp": 1,
+        "pp": 1,
+        "tp": 8
+      }
+    }
+  ]
+}

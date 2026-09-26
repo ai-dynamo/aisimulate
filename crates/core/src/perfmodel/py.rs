@@ -1873,6 +1873,17 @@ impl PyForwardPassPerfModel {
         serde_json::to_string(&config).map_err(|e| PyValueError::new_err(e.to_string()))
     }
 
+    /// Size declarative resources using canonical configuration, without timing
+    /// data or analytical graph construction.
+    #[staticmethod]
+    fn estimate_cache_budget(config_json: &str, budget_json: &str) -> PyResult<String> {
+        let config = parse_forward_pass_config(config_json)?;
+        let request: crate::perfmodel::FpmCacheBudgetRequest = serde_json::from_str(budget_json)
+            .map_err(|e| PyValueError::new_err(format!("invalid cache budget: {e}")))?;
+        let estimate = config.estimate_cache_budget(&request).map_err(aic_to_py)?;
+        serde_json::to_string(&estimate).map_err(|e| PyValueError::new_err(e.to_string()))
+    }
+
     /// Migration adapter for previously saved flat tuning options.
     #[staticmethod]
     fn legacy_estimator_config(options_json: &str) -> PyResult<String> {
@@ -2068,6 +2079,42 @@ impl PyForwardPassPerfModel {
     fn diagnostics(&self) -> PyResult<String> {
         serde_json::to_string(&self.inner.diagnostics())
             .map_err(|e| PyValueError::new_err(format!("diagnostics serialize: {e}")))
+    }
+
+    /// Bounded direct-FPM native lookup evidence, or JSON null when disabled.
+    fn fpm_query_coverage(&self) -> PyResult<String> {
+        let coverage = self.inner.fpm_query_coverage().map_err(aic_to_py)?;
+        serde_json::to_string(&coverage)
+            .map_err(|error| PyValueError::new_err(format!("FPM coverage serialize: {error}")))
+    }
+
+    fn predict_prefill_latency(
+        &self,
+        py: Python<'_>,
+        batch_size: u32,
+        isl: u32,
+        prefix: u32,
+    ) -> PyResult<f64> {
+        py.allow_threads(|| self.inner.predict_prefill_latency(batch_size, isl, prefix))
+            .map_err(aic_to_py)
+    }
+
+    fn predict_decode_latency_total(
+        &self,
+        py: Python<'_>,
+        batch_size: u32,
+        total_past_kv_tokens: u32,
+    ) -> PyResult<f64> {
+        py.allow_threads(|| {
+            self.inner
+                .predict_decode_latency_total(batch_size, total_past_kv_tokens)
+        })
+        .map_err(aic_to_py)
+    }
+
+    fn fpm_decode_kv_ceiling(&self, py: Python<'_>) -> PyResult<Option<u32>> {
+        py.allow_threads(|| self.inner.fpm_decode_kv_ceiling())
+            .map_err(aic_to_py)
     }
 
     /// Regression store labels, readiness and retained counts as JSON.

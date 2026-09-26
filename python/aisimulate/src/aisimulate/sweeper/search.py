@@ -680,7 +680,11 @@ def _materialize_one(
             sample["kv_load_ratio"] = resolution.ratio
             sample["kv_load_concurrency_capacity"] = resolution.concurrency_capacity
             load_role = "decode" if sample["deployment_mode"] == "disagg" else "agg"
-            sample["kv_load_capacity_tokens"] = resolution.role_capacity_tokens[load_role]
+            if load_role in resolution.role_capacity_tokens:
+                sample["kv_load_capacity_tokens"] = resolution.role_capacity_tokens[load_role]
+            if load_role in resolution.role_capacity_bytes:
+                sample["kv_load_capacity_bytes"] = resolution.role_capacity_bytes[load_role]
+                sample["kv_load_request_cache_bytes"] = resolution.role_request_cache_bytes[load_role]
             for role, tokens in resolution.role_capacity_tokens.items():
                 sample[f"{role}_kv_capacity_tokens"] = tokens
         if concurrency is not None:

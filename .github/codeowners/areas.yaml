@@ -10,6 +10,7 @@ areas:
     github_team: "@ai-dynamo/access-aisimulate-maintain"
     path_globs:
       - AGENTS.md
+      - CLAUDE.md
       - CODE_OF_CONDUCT.md
       - DEVELOPMENT.md
       - LICENSE
@@ -34,6 +35,7 @@ areas:
       - python/aisimulate/src/aisimulate/capacity.py
       - tests/test_aic.py
       - tests/test_fpm_profile_workflow.py
+      - tests/test_fpm_grouped_workflow.py
   - label: sweeper
     github_team: "@ai-dynamo/aisimulate-sweeper-codeowners"
     path_globs:
@@ -153,6 +155,8 @@ shared:
     owners: [forward-pass-engine, maintainers]
   - glob: tests/test_fpm_profile_workflow.py
     owners: [forward-pass-engine, maintainers]
+  - glob: tests/test_fpm_grouped_workflow.py
+    owners: [forward-pass-engine, maintainers]
   - glob: python/aisimulate/src/aisimulate/sweeper/
     owners: [sweeper, maintainers]
   - glob: docs/sweeper/
@@ -256,6 +260,8 @@ shared:
   - glob: SECURITY.md
     owners: [infra, maintainers]
   - glob: AGENTS.md
+    owners: [infra, maintainers]
+  - glob: CLAUDE.md
     owners: [infra, maintainers]
   - glob: .coderabbit.yaml
     owners: [infra, maintainers]

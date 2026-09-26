@@ -276,6 +276,24 @@ class RustForwardPassPerfModel:
 
         return json.loads(aisimulate_core.RustForwardPassPerfModel.normalize_config(_forward_pass_config_json(config)))
 
+    @staticmethod
+    def estimate_cache_budget(
+        config: ForwardPassPerfModelConfig | Mapping[str, Any], budget: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        """Size explicit profile resources without a graph or timing data.
+
+        Grouped caches expose a byte budget and per-request peak bound; their
+        scalar bytes-per-token and aggregate token capacities are unavailable.
+        Rust owns allocation rounding, retention windows and budget arithmetic.
+        """
+        import aisimulate_core
+
+        return json.loads(
+            aisimulate_core.RustForwardPassPerfModel.estimate_cache_budget(
+                _forward_pass_config_json(config), _json_dumps(dict(budget))
+            )
+        )
+
     def estimate_forward_pass_time_ms(self, metrics: dict[str, Any] | list[dict[str, Any]]) -> float | None:
         """API: ``model.estimate_forward_pass_time_ms(metrics) -> float | None``.
 
@@ -333,6 +351,27 @@ class RustForwardPassPerfModel:
         ``regression_store_diagnostics()`` for individual store readiness.
         """
         return json.loads(self._inner.diagnostics())
+
+    def fpm_query_coverage(self) -> dict[str, Any] | None:
+        """Bounded direct-FPM lookup evidence, or None when collection is disabled.
+
+        Counts describe native lookups, including errors and mixed-pass
+        baselines. External timing-cache hits are not new lookups. A snapshot
+        does not establish replay completion or prediction accuracy.
+        """
+        return json.loads(self._inner.fpm_query_coverage())
+
+    def predict_prefill_latency(self, batch_size: int, isl: int, prefix: int) -> float:
+        """Uncorrected native prefill timing at full input and cached-prefix lengths."""
+        return self._inner.predict_prefill_latency(batch_size, isl, prefix)
+
+    def predict_decode_latency_total(self, batch_size: int, total_past_kv_tokens: int) -> float:
+        """Uncorrected native decode timing at the exact past-KV batch total."""
+        return self._inner.predict_decode_latency_total(batch_size, total_past_kv_tokens)
+
+    def fpm_decode_kv_ceiling(self) -> int | None:
+        """Largest collected decode KV total; reading it does not record a lookup."""
+        return self._inner.fpm_decode_kv_ceiling()
 
     def regression_store_diagnostics(self) -> list[dict[str, Any]]:
         """Return each regression store's label, readiness, and retained count.

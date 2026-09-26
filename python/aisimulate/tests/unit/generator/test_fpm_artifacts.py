@@ -396,9 +396,14 @@ def _pod_template_labels(artifacts: dict[str, str], kind: str) -> list[dict]:
 
 
 @pytest.mark.parametrize("kind", ["Pod", "LeaderWorkerSet", "PodCliqueSet"])
-def test_fpm_cell_label_reaches_every_pod_template(kind):
+def test_fpm_ownership_labels_reach_every_resource_and_pod_template(kind):
     params = _params()
-    params["K8sConfig"]["fpm_resource_labels"] = {FPM_CELL_LABEL: "glm52-fpm-cell-0"}
+    ownership = {
+        "aiconfigurator.nvidia.com/owned-by": "fpm-forward-collector",
+        "aiconfigurator.nvidia.com/plan": "a" * 16,
+        FPM_CELL_LABEL: "glm52-fpm-cell-0",
+    }
+    params["K8sConfig"]["fpm_resource_labels"] = ownership
     if kind != "Pod":
         params["NodeConfig"].update({"system_name": "gb200", "num_gpus_per_node": 4})
         params["WorkerConfig"]["agg_gpus_per_worker"] = 8
@@ -406,11 +411,49 @@ def test_fpm_cell_label_reaches_every_pod_template(kind):
     if kind == "PodCliqueSet":
         params["K8sConfig"]["fpm_orchestrator"] = "grove"
 
-    label_sets = _pod_template_labels(_render(params), kind)
+    artifacts = _render(params)
+    label_sets = [document["metadata"]["labels"] for document in _k8s_documents(artifacts)]
+    label_sets.extend(_pod_template_labels(artifacts, kind))
 
     assert label_sets
     for labels in label_sets:
-        assert labels[FPM_CELL_LABEL] == "glm52-fpm-cell-0"
+        assert ownership.items() <= labels.items()
+
+
+def test_fpm_compute_domain_preserves_metadata_and_source_document(monkeypatch):
+    from aisimulate.generator.builders import fpm_builder
+    from aisimulate.generator.builders.dgd_model import ComputeDomainDoc
+
+    params = _params()
+    params["NodeConfig"].update({"system_name": "gb200", "num_gpus_per_node": 4})
+    params["WorkerConfig"]["agg_gpus_per_worker"] = 8
+    params["params"]["agg"].update({"gpus_per_worker": 8, "tensor_parallel_size": 8})
+    params["K8sConfig"]["fpm_resource_labels"] = {FPM_CELL_LABEL: "glm52-fpm-cell-0"}
+    original_build = fpm_builder.build_dgd
+    sources = []
+
+    def build_with_metadata(*args, **kwargs):
+        documents = original_build(*args, **kwargs)
+        domain = next(document for document in documents if isinstance(document, ComputeDomainDoc))
+        domain.metadata_extra = {
+            "labels": {"infrastructure.example.com/owner": "gpu-team"},
+            "annotations": {"infrastructure.example.com/description": "reserved fabric"},
+            "finalizers": ["resource.nvidia.com/domain"],
+        }
+        sources.append((domain, domain.to_dict()))
+        return documents
+
+    monkeypatch.setattr(fpm_builder, "build_dgd", build_with_metadata)
+    artifacts = _render(params)
+    domain = _k8s_document(artifacts, "ComputeDomain")
+    workload = _k8s_document(artifacts, "LeaderWorkerSet")
+    assert len(sources) == 1
+    source, before = sources[0]
+    expected = copy.deepcopy(before)
+    expected["metadata"]["labels"].update(workload["metadata"]["labels"])
+    assert domain == expected
+    assert source.to_dict() == before
+    assert domain["metadata"]["name"] != workload["metadata"]["name"]
 
 
 @pytest.mark.parametrize(
@@ -921,6 +964,10 @@ def test_fpm_multinode_worker_emits_keepalive_leaderworkerset_and_rank_aware_scr
         "metadata": {
             "name": "glm52-fpm-agg-compute-domain",
             "namespace": "default",
+            "labels": {
+                "app.kubernetes.io/name": "glm52-fpm-agg",
+                "app.kubernetes.io/component": "fpm-resource",
+            },
         },
         "spec": {
             "channel": {
@@ -981,6 +1028,10 @@ def test_fpm_multinode_gb200_grove_emits_compute_domain_and_keepalive_podcliques
         "metadata": {
             "name": "glm52-fpm-agg-compute-domain",
             "namespace": "default",
+            "labels": {
+                "app.kubernetes.io/name": "glm52-fpm-agg",
+                "app.kubernetes.io/component": "fpm-resource",
+            },
         },
         "spec": {
             "channel": {

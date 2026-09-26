@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from aisimulate.sdk.common import MULTIMODAL_TEXT_CONFIG_KEY
 from aisimulate.sdk.memory import NaiveKVCacheEstimator
 from aisimulate.sdk.utils import (
     HuggingFaceDownloadError,
@@ -64,12 +65,30 @@ class ResolvedModelConfig:
 
     @property
     def effective_payload(self) -> dict[str, Any]:
-        """Return the text-model view while preserving top-level quant metadata."""
+        """Return decoder metadata, inheriting only identity and shared precision."""
 
         payload = self.payload
         text_config = payload.get("text_config")
         if isinstance(text_config, dict):
-            payload = {**payload, **text_config}
+            effective = dict(text_config)
+            if effective.get("architectures") is None and payload.get("architectures") is not None:
+                effective["architectures"] = payload["architectures"]
+            # Precision aliases describe one declaration. Inherit a shared
+            # group only when the decoder does not declare it; wrapper-derived
+            # quantization scalars must not override the decoder's inference.
+            for keys, inferred_keys in (
+                (("dtype", "torch_dtype"), ()),
+                (("quantization_config", "hf_quant_config", "quant_algo"), ("quant_dynamic", "kv_cache_quant_algo")),
+            ):
+                if any(text_config.get(key) is not None for key in keys):
+                    continue
+                for key in keys:
+                    if payload.get(key) is not None:
+                        effective[key] = payload[key]
+                for key in inferred_keys:
+                    if key not in text_config and key in payload:
+                        effective[key] = payload[key]
+            return effective
         return payload
 
     def parsed_payload(self) -> dict[str, Any]:
@@ -83,8 +102,16 @@ class ResolvedModelConfig:
         """
 
         raw_config = _attach_inferred_quant_fields(self.effective_payload)
+        parser_config = raw_config
+        architecture = (raw_config.get("architectures") or [None])[0]
+        text_key = MULTIMODAL_TEXT_CONFIG_KEY.get(architecture)
+        source = self.payload
+        if text_key and isinstance(source.get(text_key), dict):
+            # Registered wrapper parsers require their original encoder and
+            # processor context, but read model geometry from the decoder.
+            parser_config = {**source, "architectures": [architecture], text_key: raw_config}
         try:
-            parsed = _parse_hf_config_json(raw_config)
+            parsed = _parse_hf_config_json(parser_config)
         except ValueError:
             # Bootstrap templates intentionally admit real HF architectures
             # that the native AIC parser does not know yet. Normalize their

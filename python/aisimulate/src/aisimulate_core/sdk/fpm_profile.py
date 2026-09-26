@@ -8,10 +8,35 @@ from __future__ import annotations
 import json
 
 from aisimulate_core.fpm_profile import _MUTABLE_REFERENCES
+from aisimulate_core.fpm_profile import FpmCacheGroup as FpmCacheGroup
 from aisimulate_core.fpm_profile import FpmDeploymentProfile as FpmDeploymentProfile
 from aisimulate_core.fpm_profile import FpmModelProfile as FpmModelProfile
 from aisimulate_core.fpm_profile import FpmResourceProfile as FpmResourceProfile
+from aisimulate_core.fpm_profile import FpmRuntimeMemoryProfile as FpmRuntimeMemoryProfile
 from aisimulate_core.fpm_profile import load_fpm_profile as load_fpm_profile
+
+
+def _require_forward_pass_profile_memory(config: dict) -> None:
+    """Check simulation readiness after canonical identity normalization.
+
+    Standalone timing queries can use pending resources; simulation consumers
+    call this before loading timings so a new model gets a memory finalization
+    diagnostic even when collection has not produced any timing data yet.
+    """
+    if config.get("fpm_profile") is None:
+        return
+    deployment = load_fpm_profile(config["fpm_profile"]).select(
+        model=config["model"],
+        system=config["system"],
+        backend=config["backend"],
+        backend_version=config["backend_version"],
+        tp_size=config["tp"],
+        pp_size=config["pp"],
+        attention_dp_size=config["attention_dp"],
+        moe_tp_size=config.get("moe_tp_size"),
+        moe_ep_size=config.get("moe_ep_size"),
+    )
+    deployment.resources.require_memory()
 
 
 def _quantization_from_engine_config(config_json: str) -> dict[str, str]:

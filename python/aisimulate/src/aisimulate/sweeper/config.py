@@ -1108,6 +1108,46 @@ class SearchSpace(BaseModel):
                 raise ValueError(f"engine_integer_log_ranges.{name} must be positive integer [min, max] bounds")
         return self
 
+    @model_validator(mode="after")
+    def _validate_grouped_cache(self) -> SearchSpace:
+        if self.fpm_profile is None:
+            return self
+        from aisimulate.fpm_profile import load_fpm_profile
+
+        profile = load_fpm_profile(self.fpm_profile)
+        if not any(deployment.resources.cache_layout == "grouped" for deployment in profile.deployments):
+            return self
+        from .search_space import _fpm_parallel_configs, _parallel_role
+
+        for mode in self.deployment_mode:
+            configs = _fpm_parallel_configs(self, mode)
+            for role in ("agg",) if mode == "agg" else ("prefill", "decode"):
+                for shape in {_parallel_role(config, role).shape for config in configs}:
+                    deployment = profile.select(
+                        model=self.model_name,
+                        system=self.hardware_sku_for(role),
+                        backend="vllm",
+                        backend_version=self.requested_backend_version("vllm"),
+                        tp_size=shape.tp,
+                        pp_size=shape.pp,
+                        attention_dp_size=shape.dp,
+                        moe_tp_size=shape.moe_tp,
+                        moe_ep_size=shape.moe_ep,
+                    )
+                    if deployment.resources.cache_layout != "grouped":
+                        continue
+                    if role != "agg" or self.aic_nextn or self.speculation is not None:
+                        raise ValueError("grouped FPM cache requires aggregated vLLM without speculative decoding")
+                    if self.agg_enable_prefix_caching:
+                        raise ValueError("grouped FPM cache requires agg_enable_prefix_caching=false for cold replay")
+                    if self.agg_native_host_offload is not None:
+                        raise ValueError("grouped FPM cache supports only HBM without host offload")
+                    if self.agg_num_gpu_blocks is not None or self.agg_kv_bytes_per_token != "auto":
+                        raise ValueError(
+                            "grouped FPM cache requires profile groups and a byte budget, not scalar capacity"
+                        )
+        return self
+
 
 class SweepConfig(BaseModel):
     """Sweep run-control."""

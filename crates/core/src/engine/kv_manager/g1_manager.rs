@@ -18,7 +18,7 @@ use super::vllm_backend::{
     StoreSourceSnapshot as VllmStoreSourceSnapshot, VllmAcquire, VllmKvManager,
 };
 pub(crate) use super::vllm_backend::{NativeAllocation, SourceReuseDependency};
-use super::{AllocationRequirement, DestinationReservationMode, G1Acquire};
+use super::{AllocationRequirement, DestinationReservationMode, G1Acquire, GroupedKvPool};
 
 fn into_g1_acquire<T>(outcome: VllmAcquire<T>) -> G1Acquire<T> {
     match outcome {
@@ -70,6 +70,14 @@ pub(crate) struct G1Manager {
 }
 
 impl G1Manager {
+    pub(crate) fn set_grouped_cache(&mut self, groups: GroupedKvPool) {
+        self.inner.set_grouped_cache(groups);
+    }
+
+    pub(crate) fn grouped(&self) -> Option<&GroupedKvPool> {
+        self.inner.grouped()
+    }
+
     pub(crate) fn set_belady_oracle(&mut self, oracle: BeladyOracle) {
         self.inner.set_belady_oracle(oracle);
     }

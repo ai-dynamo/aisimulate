@@ -16,6 +16,7 @@ import subprocess
 import sys
 from contextlib import contextmanager
 from pathlib import Path
+from types import SimpleNamespace
 from typing import ClassVar
 
 import pytest
@@ -23,7 +24,7 @@ from pydantic import ValidationError
 
 from aisimulate.config import CorePredictionConfig, CoreRecommendationConfig
 from aisimulate.support.fpm import run_fpm
-from aisimulate.support.plan import create_plan, plan_lock, request_id
+from aisimulate.support.plan import check_plan, create_plan, plan_lock, request_id, validation_id
 from aisimulate.support.schema import SupportRequest
 
 pytestmark = pytest.mark.unit
@@ -111,9 +112,6 @@ def _request(**updates) -> SupportRequest:
             "model_kind": "moe",
             "framework_version": "0.25.1",
             "gpu": "h200_sxm",
-            "gpu_count": 12,
-            "node_count": 2,
-            "gpus_per_node": 6,
             "interconnect": "NVLink",
         },
         "search": {"tensor_parallel": 4},
@@ -130,21 +128,45 @@ def _request(**updates) -> SupportRequest:
         {"identity": {"model_revision": "main"}},
         {"identity": {"framework_version": " "}},
         {"identity": {"gpu": "../h200_sxm"}},
-        {"identity": {"gpu_count": 13}},
-        {"search": {"tensor_parallel": 8}},
+        {"search": {"moe_tensor_parallel": 2}},
         {"search": {"tensor_parallel": True}},
-        {"search": {"max_candidates": 3}},
         {"search": {"context_length": 1151}},
         {"workload": {"input_tokens": 0}},
         {"workload": {"request_count": 0}},
         {"workload": {"concurrency": 5}},
         {"workload": {"slo": {"ttft_ms": float("inf"), "tpot_ms": 1.0}}},
         {"workload": {"slo": {"ttft_ms": 1.0, "tpot_ms": True}}},
+        {"collection": {"gpu_memory_utilization": True}},
+        {"collection": {"gpu_memory_utilization": "0.8"}},
+        {"collection": {"gpu_memory_utilization": float("nan")}},
+        {"collection": {"gpu_memory_utilization": 0.0}},
+        {"collection": {"gpu_memory_utilization": 1.1}},
+        {"collection": {"prefill_cudagraph_policy": "runtime", "max_prefill_cudagraph_size": 512}},
     ],
 )
-def test_request_rejects_invalid_allocation_workload_and_identity(updates):
+def test_request_rejects_invalid_topology_workload_and_identity(updates):
     with pytest.raises(ValidationError):
         _request(**updates)
+
+
+@pytest.mark.parametrize(
+    "updates,field",
+    [
+        ({"identity": {"gpu_count": 4}}, "identity.gpu_count"),
+        ({"identity": {"node_count": 1}}, "identity.node_count"),
+        ({"identity": {"gpus_per_node": 4}}, "identity.gpus_per_node"),
+        ({"search": {"max_candidates": 1}}, "search.max_candidates"),
+        ({"search": {"max_candidates": 2}}, "search.max_candidates"),
+    ],
+)
+def test_legacy_allocation_fields_require_explicit_request_migration(updates, field):
+    with pytest.raises(ValidationError) as error:
+        _request(**updates)
+    message = str(error.value)
+    assert field in message
+    assert "Copy the request, remove these fields" in message
+    assert "new output directory" in message
+    assert "ordinary predict/recommend configs" in message
 
 
 def test_plan_does_not_resolve_unknown_model_and_reloads_public_configs(tmp_path, monkeypatch):
@@ -183,12 +205,34 @@ def test_plan_does_not_resolve_unknown_model_and_reloads_public_configs(tmp_path
     assert recommendation.optimizer.max_trials == 1
     assert recommendation.optimizer.parallelism == 1
     assert plan["search"]["candidate_count"] == 1
-    assert "single" in plan["search"]["detail"]
+    assert "single-worker validation" in plan["search"]["detail"]
     assert {item["status"] for item in plan["prerequisites"]} == {"not_checked"}
     assert plan["accuracy"]["status"] == "not_assessed"
     assert (root / "systems/h200_sxm.yaml").is_file()
     assert not list((root / "systems/data").iterdir())
     assert not (root / "evidence.yaml").exists()
+
+
+@pytest.mark.parametrize("limit", [None, 512])
+def test_legacy_collection_policy_round_trip_retains_identity_and_launch_arguments(tmp_path, limit):
+    request = _request(collection={} if limit is None else {"max_prefill_cudagraph_size": limit})
+    serialized = request.model_dump(mode="json", exclude_none=True)
+    assert "prefill_cudagraph_policy" not in serialized["collection"]
+    assert "gpu_memory_utilization" not in serialized["collection"]
+    assert request.collection.prefill_cudagraph_policy == "explicit"
+    assert request.collection_settings()["max_prefill_cudagraph_size"] == (limit or 2048)
+    plan = create_plan(request, tmp_path / "plan")
+    saved = SupportRequest.from_yaml(tmp_path / "plan/request.yaml")
+    assert request_id(saved) == request_id(request)
+    assert saved.model_dump(mode="json", exclude_none=True) == serialized
+    check_plan(saved, tmp_path / "plan")
+    command = plan["fpm"]["plan_command"]
+    assert "--fpm-prefill-cudagraph-policy" not in command
+    assert "--fpm-gpu-memory-utilization" not in command
+    if limit is None:
+        assert "--fpm-max-prefill-cudagraph-size" not in command
+    else:
+        assert command[command.index("--fpm-max-prefill-cudagraph-size") + 1] == str(limit)
 
 
 def test_onboarding_plan_and_preview_do_not_import_estimator_runtime(tmp_path):
@@ -236,16 +280,20 @@ assert not any(name == prefix or name.startswith(prefix + ".") for name in sys.m
 
 
 @pytest.mark.parametrize("model_kind,preset,moe_tensor", [("dense", "tp", 1), ("moe", "pure_tp", 4)])
-def test_plan_collects_one_chosen_worker_and_bounds_recommendation(tmp_path, model_kind, preset, moe_tensor):
+def test_plan_collects_one_chosen_worker_and_generates_validation_configs(tmp_path, model_kind, preset, moe_tensor):
     from aisimulate.recommend import recommendation_to_sweeper
 
-    request = _request(identity={"model_kind": model_kind}, search={"max_candidates": 2})
+    request = _request(identity={"model_kind": model_kind})
     plan = create_plan(request, tmp_path)
     configs = [CoreRecommendationConfig.from_yaml(path) for path in plan["outputs"]["recommendation_configs"]]
     candidates = [candidate for config in configs for candidate in config.engine.workers.aggregated.parallelism.preset]
-    assert [(c.replicas, c.tensor, c.moe_tensor) for c in candidates] == [(1, 4, moe_tensor), (2, 4, moe_tensor)]
+    assert [(c.replicas, c.tensor, c.moe_tensor) for c in candidates] == [(1, 4, moe_tensor)]
     assert all(config.optimizer.max_trials == 1 for config in configs)
-    assert plan["search"]["candidate_count"] == 2
+    assert plan["search"]["candidate_count"] == 1
+    assert plan["fpm"]["collection_gpus_required"] == 4
+    assert all(config.optimization.constraints.max_candidate_gpus == 4 for config in configs)
+    assert "max_candidates" not in plan["search"]
+    assert not (tmp_path / "recommend/replicas-2.yaml").exists()
     for config in configs:
         search = recommendation_to_sweeper(config).search_space
         assert search.agg_max_num_batched_tokens == [8192]
@@ -255,26 +303,49 @@ def test_plan_collects_one_chosen_worker_and_bounds_recommendation(tmp_path, mod
     assert command[command.index("--fpm-gpu-counts") + 1] == "4"
     assert command[command.index("--fpm-max-gpus") + 1] == "4"
     assert command[command.index("--fpm-parallel-presets") + 1] == preset
-    assert command[command.index("--fpm-max-prefill-isl") + 1] == "1024"
-    assert command[command.index("--fpm-max-prefill-batch-size") + 1] == "1"
+    assert command[command.index("--fpm-max-prefill-isl") + 1] == "8192"
+    assert command[command.index("--fpm-max-prefill-batch-size") + 1] == "256"
     assert "--plan-only" in command
     assert "--execute" in commands["fpm_run_local"]
 
 
-def test_one_worker_allocation_keeps_one_pilot_even_with_two_candidate_limit(tmp_path):
-    request = _request(identity={"node_count": 1, "gpus_per_node": 4, "gpu_count": 4}, search={"max_candidates": 2})
+@pytest.mark.parametrize(
+    "topology,preset",
+    [
+        ({"tensor_parallel": 64}, "pure_tp"),
+        (
+            {"tensor_parallel": 1, "attention_data_parallel": 64, "moe_tensor_parallel": 1, "moe_expert_parallel": 64},
+            "dep",
+        ),
+        ({"tensor_parallel": 64, "moe_tensor_parallel": 1, "moe_expert_parallel": 64}, "tep"),
+    ],
+)
+def test_wide_worker_requirement_is_not_limited_by_node_allocation_or_runtime_default(tmp_path, topology, preset):
+    from aisimulate.recommend import recommendation_to_sweeper
+
+    request = _request(search=topology)
     plan = create_plan(request, tmp_path)
     commands = json.loads((tmp_path / "commands.json").read_text())
+    recommendation = CoreRecommendationConfig.from_yaml(tmp_path / "recommend/pilot.yaml")
 
     assert plan["search"]["candidate_count"] == 1
+    assert plan["fpm"]["collection_gpus_required"] == 64
+    assert recommendation_to_sweeper(recommendation).search_space.gpu_budget == 64
+    assert recommendation.engine.workers.aggregated.parallelism.preset[0].replicas == 1
+    command = plan["fpm"]["plan_command"]
+    assert command[command.index("--fpm-gpu-counts") + 1] == "64"
+    assert command[command.index("--fpm-parallel-presets") + 1] == preset
     assert plan["outputs"]["recommendation_configs"] == [str(tmp_path / "recommend/pilot.yaml")]
     assert len(commands["recommend"]) == 1
-    assert "single" in plan["search"]["detail"]
+    assert "available allocation" in plan["search"]["detail"]
 
 
 @pytest.mark.parametrize("seed", [0, 7, 42])
 @pytest.mark.parametrize("model_kind,moe_tensor", [("dense", 1), ("moe", 4)])
-def test_emitted_recommendations_evaluate_both_replica_choices(tmp_path, monkeypatch, seed, model_kind, moe_tensor):
+@pytest.mark.parametrize("runtime_replicas", [1, 3])
+def test_validation_recommendation_and_user_runtime_replica_budget(
+    tmp_path, monkeypatch, seed, model_kind, moe_tensor, runtime_replicas
+):
     from aisimulate.main import build_parser
     from aisimulate.recommend import run_recommendation
     from aisimulate.sweeper.parallel_enum import ParallelShape, ReplicaParallelConfig
@@ -287,10 +358,10 @@ def test_emitted_recommendations_evaluate_both_replica_choices(tmp_path, monkeyp
     monkeypatch.setattr(RustForwardPassPerfModel, "best_available", _OfflinePerfModel.best_available)
     legal = [
         ReplicaParallelConfig(shape=ParallelShape(tp=4, pp=1, dp=1, moe_tp=moe_tensor, moe_ep=1), replicas=count)
-        for count in (1, 2)
+        for count in (1, 2, 3)
     ]
     monkeypatch.setattr("aisimulate.sweeper.search_space.parallel_configs_for", lambda *args, **kwargs: legal)
-    request = _request(identity={"model_kind": model_kind}, search={"max_candidates": 2, "seed": seed})
+    request = _request(identity={"model_kind": model_kind}, search={"seed": seed})
     plan = create_plan(request, tmp_path)
     commands = json.loads((tmp_path / "commands.json").read_text())["recommend"]
     evaluated = []
@@ -300,57 +371,47 @@ def test_emitted_recommendations_evaluate_both_replica_choices(tmp_path, monkeyp
     for command in commands:
         args = build_parser().parse_args(command[1:])
         config = CoreRecommendationConfig.from_yaml(args.config)
+        assert config.engine.workers.aggregated.parallelism.preset[0].replicas == 1
+        if runtime_replicas > 1:
+            # Deployment choices remain ordinary runtime inputs; onboarding is unchanged.
+            payload = config.model_dump(mode="json", exclude_none=True)
+            payload["engine"]["workers"]["aggregated"]["parallelism"]["preset"][0]["replicas"] = runtime_replicas
+            payload["optimization"]["constraints"]["max_candidate_gpus"] = runtime_replicas * request.worker_gpus
+            config = CoreRecommendationConfig.model_validate(payload)
+            prediction = CorePredictionConfig.from_yaml(tmp_path / "predict/pilot.yaml").model_dump(mode="json")
+            prediction["engine"]["workers"]["aggregated"]["parallelism"]["replicas"] = runtime_replicas
+            assert (
+                CorePredictionConfig.model_validate(prediction).engine.workers.aggregated.parallelism.replicas
+                == runtime_replicas
+            )
         result = run_recommendation(config, stack="engine", runner_factory=_OfflineRunnerFactory(), show_progress=False)
         evaluated.extend(candidate.config["replicas"] for candidate in result.candidates)
         results.append(result)
         configs.append(args.config)
         outputs.append(args.output_dir)
-    assert evaluated == [1, 2]
+    assert evaluated == [runtime_replicas]
     assert configs == plan["outputs"]["recommendation_configs"]
     assert outputs == plan["outputs"]["recommendation_results"]
-    assert len(set(outputs)) == 2
+    assert len(set(outputs)) == 1
     assert all(result.counts.evaluated == 1 and result.counts.cache_hits == 0 for result in results)
-    assert len(_OfflinePerfModel.requests) == 2
+    assert len(_OfflinePerfModel.requests) == 1
+    assert SupportRequest.from_yaml(tmp_path / "request.yaml") == request
     _assert_estimator_requests(_OfflinePerfModel.requests, tmp_path / "systems", moe_tensor)
 
 
-@pytest.mark.parametrize(
-    "max_candidates,missing_pilot_samples,statuses",
-    [(1, False, [0]), (2, False, [0, 0]), (2, True, [1, 0])],
-)
-@pytest.mark.parametrize("tampered_commands", [False, True])
-def test_documented_recommendation_loop_attempts_every_candidate(
-    tmp_path, max_candidates, missing_pilot_samples, statuses, tampered_commands
-):
+@pytest.mark.parametrize("missing_samples", [False, True])
+def test_documented_recommendation_command_evaluates_one_worker(tmp_path, missing_samples):
     guide = Path(__file__).resolve().parents[4] / "docs/fpm-self-service.md"
-    snippet = guide.read_text().split("python3 - <<'PY'\n", 1)[1].split("\nPY\n", 1)[0]
+    snippet = "aisimulate recommend " + guide.read_text().split("\naisimulate recommend ", 1)[1].split("\n```", 1)[0]
     workdir = tmp_path / "work with 'quotes'; $(literal)"
     workdir.mkdir()
-    request = _request(
-        identity={"model_kind": "dense", "gpu_count": 8, "node_count": 1, "gpus_per_node": 8},
-        search={"max_candidates": max_candidates, "objective": "ttft"},
-    )
+    request = _request(identity={"model_kind": "dense"}, search={"objective": "ttft"})
     plan = create_plan(request, workdir / "aisimulate-support")
-    commands = json.loads(Path(plan["outputs"]["commands"]).read_text())["recommend"]
-    injected_marker = tmp_path / "injected-command-ran"
-    if tampered_commands:
-        command_file = Path(plan["outputs"]["commands"])
-        payload = json.loads(command_file.read_text())
-        payload["recommend"].insert(
-            0,
-            [
-                sys.executable,
-                "-c",
-                "import sys; from pathlib import Path; Path(sys.argv[1]).write_text('unexpected execution')",
-                str(injected_marker),
-            ],
-        )
-        command_file.write_text(json.dumps(payload))
     evaluated = tmp_path / "evaluated.txt"
     estimator_requests = tmp_path / "estimator-requests.jsonl"
     wrapper = tmp_path / "bin/aisimulate"
     wrapper.parent.mkdir()
-    # Install the same Core double in each supervised child. The snippet executes
+    # Install the same Core double in each supervised child. The command executes
     # real subprocesses, CLI dispatch, estimator resolution, sampling and export.
     wrapper.write_text(
         f"#!{sys.executable}\n"
@@ -388,7 +449,7 @@ class Runner:
         replicas = spec.backend_deployment.num_workers
         with Path(os.environ["SUPPORT_TEST_EVALUATED"]).open("a") as stream:
             stream.write(str(replicas) + "\\n")
-        samples = 0.0 if {missing_pilot_samples!r} and replicas == 1 else 4.0
+        samples = 0.0 if {missing_samples!r} else 4.0
         return ReplayReport(metrics={{"mean_ttft_ms": 10.0, "num_ttft_samples": samples}})
 
     def close(self):
@@ -408,7 +469,7 @@ if __name__ == "__main__":
     )
     wrapper.chmod(0o755)
     result = subprocess.run(
-        [sys.executable, "-c", snippet],
+        shlex.split(snippet.replace("\\\n", "")),
         cwd=workdir,
         env={
             **os.environ,
@@ -422,53 +483,52 @@ if __name__ == "__main__":
         check=False,
     )
 
-    assert not injected_marker.exists()
-    assert result.returncode == (1 if any(statuses) else 0), result.stderr
-    assert evaluated.read_text().splitlines() == [str(index) for index in range(1, max_candidates + 1)]
+    assert result.returncode == (1 if missing_samples else 0), result.stderr
+    assert evaluated.read_text().splitlines() == ["1"]
     resolved_requests = [json.loads(line) for line in estimator_requests.read_text().splitlines()]
-    assert len(resolved_requests) == max_candidates
+    assert len(resolved_requests) == 1
     _assert_estimator_requests(resolved_requests, workdir / "aisimulate-support/systems", 1)
-    for index, (output, status) in enumerate(zip(plan["outputs"]["recommendation_results"], statuses, strict=True), 1):
+    for output in plan["outputs"]["recommendation_results"]:
         root = Path(output)
         payload = json.loads((root / "recommendation.json").read_text())
         assert payload["counts"]["evaluated"] == 1
-        assert payload["counts"]["feasible"] == (0 if status else 1)
-        assert payload["counts"]["infeasible"] == (1 if status else 0)
-        assert payload["candidates"][0]["config"]["replicas"] == index
+        assert payload["counts"]["feasible"] == (0 if missing_samples else 1)
+        assert payload["counts"]["infeasible"] == (1 if missing_samples else 0)
+        assert payload["candidates"][0]["config"]["replicas"] == 1
         exported = root / "recommendations/0001.yaml"
-        if status:
+        if missing_samples:
             assert "no qualifying samples" in payload["candidates"][0]["reason"]
             assert not exported.exists()
         else:
             prediction = CorePredictionConfig.from_yaml(exported)
-            assert prediction.engine.workers.aggregated.parallelism.replicas == index
+            assert prediction.engine.workers.aggregated.parallelism.replicas == 1
             assert prediction.engine.systems_paths == [str(workdir / "aisimulate-support/systems")]
             timing = prediction.engine.workers.aggregated.timing
             assert timing.estimation_mode == "fpm_interpolation"
             assert timing.fallback_policy == "deny"
             assert timing.systems_paths == prediction.engine.systems_paths
-    assert [line for line in result.stdout.splitlines() if line.startswith("exit ")] == [
-        f"exit {status}: {shlex.join(command)}" for command, status in zip(commands, statuses, strict=True)
-    ]
 
 
-def test_prefill_bounds_follow_concurrent_workload_and_collector_minimum(tmp_path):
+def test_collection_bounds_are_independent_of_synthetic_validation(tmp_path):
     request = _request(workload={"input_tokens": 10, "concurrency": 3, "request_count": 4})
     command = create_plan(request, tmp_path)["fpm"]["plan_command"]
-    assert command[command.index("--fpm-max-prefill-isl") + 1] == "30"
-    assert command[command.index("--fpm-max-prefill-batch-size") + 1] == "3"
+    assert command[command.index("--fpm-max-prefill-isl") + 1] == "8192"
+    assert command[command.index("--fpm-max-prefill-batch-size") + 1] == "256"
+    assert command[command.index("--fpm-max-model-len") + 1] == "256000"
     small = _request(workload={"input_tokens": 1})
     command = create_plan(small, tmp_path / "small")["fpm"]["plan_command"]
-    assert command[command.index("--fpm-max-prefill-isl") + 1] == "2"
+    assert command[command.index("--fpm-max-prefill-isl") + 1] == "8192"
 
 
 @pytest.mark.parametrize(
     "updates",
     [
         {"search": {"tensor_parallel": 2}},
-        {"search": {"max_candidates": 2}},
-        {"search": {"seed": 7}},
-        {"workload": {"input_tokens": 64}},
+        {"search": {"context_length": 65536}},
+        {"collection": {"max_num_tokens": 16384}},
+        {"collection": {"max_prefill_cudagraph_size": 512}},
+        {"collection": {"prefill_cudagraph_policy": "runtime"}},
+        {"collection": {"gpu_memory_utilization": 0.7}},
         {"identity": {"model_revision": "other-checkpoint"}},
         {"identity": {"framework_version": "0.26.0"}},
         {"identity": {"tokenizer_revision": "tokenizer-v2"}},
@@ -501,6 +561,81 @@ def test_same_request_overwrite_preserves_timings_and_rejects_modified_inputs(tm
     with pytest.raises(ValueError, match="modified|request|identity"):
         create_plan(request, tmp_path, overwrite=True)
     assert data.read_bytes() == b"timings"
+
+
+@pytest.mark.parametrize(
+    "updates",
+    [
+        {"workload": {"input_tokens": 4096, "output_tokens": 256, "concurrency": 8, "request_count": 16}},
+        {"workload": {"slo": {"ttft_ms": 2500.0, "tpot_ms": 75.0}}},
+        {"search": {"seed": 7, "objective": "goodput"}},
+    ],
+)
+def test_validation_refresh_keeps_collection_artifacts_and_updates_examples(tmp_path, updates):
+    request = _request()
+    original = create_plan(request, tmp_path)
+    data = tmp_path / "systems/data/collected.parquet"
+    data.write_bytes(b"collected timings")
+    checkpoint = tmp_path / "fpm-checkpoint"
+    checkpoint.mkdir()
+    (checkpoint / "campaign.json").write_bytes(b"immutable checkpoint")
+    changed = _request(**updates)
+    assert request_id(changed) == request_id(request)
+    assert validation_id(changed) != validation_id(request)
+
+    updated = create_plan(changed, tmp_path, overwrite=True)
+
+    assert updated["request_id"] == original["request_id"]
+    assert updated["fpm"] == original["fpm"]
+    assert updated["validation_id"] != original["validation_id"]
+    assert data.read_bytes() == b"collected timings"
+    assert (checkpoint / "campaign.json").read_bytes() == b"immutable checkpoint"
+    assert SupportRequest.from_yaml(tmp_path / "request.yaml") == changed
+    prediction = CorePredictionConfig.from_yaml(tmp_path / "predict/pilot.yaml")
+    recommendation = CoreRecommendationConfig.from_yaml(tmp_path / "recommend/pilot.yaml")
+    assert prediction.traffic.source.input_tokens == changed.workload.input_tokens
+    assert prediction.traffic.load.concurrency == changed.workload.concurrency
+    assert recommendation.optimizer.seed == changed.search.seed
+    check_plan(changed, tmp_path)
+
+
+@pytest.mark.parametrize("relative", ["request.yaml", "predict/pilot.yaml", "commands.json", "support-plan.json"])
+def test_validation_refresh_does_not_bless_tampered_generated_files(tmp_path, relative):
+    create_plan(_request(), tmp_path)
+    target = tmp_path / relative
+    target.write_bytes(target.read_bytes() + b"\n")
+    before = _file_contents(tmp_path)
+    with pytest.raises(ValueError, match="modified|identity"):
+        create_plan(_request(workload={"input_tokens": 4096}), tmp_path, overwrite=True)
+    assert _file_contents(tmp_path) == before
+
+
+@pytest.mark.parametrize(
+    "search,expected_context",
+    [(None, 16384), ({}, 16384), ({"tensor_parallel": 4, "context_length": 8192}, 8192)],
+)
+def test_v1_request_migration_preserves_declared_context_but_requires_a_new_plan(tmp_path, search, expected_context):
+    import yaml
+
+    legacy = _request().model_dump(mode="json", exclude_none=True)
+    legacy["schema_version"] = "aisimulate-support-request/v1"
+    legacy.pop("collection")
+    if search is None:
+        legacy.pop("search")
+    else:
+        legacy["search"] = search
+    source = tmp_path / "old-request.yaml"
+    source.write_text(yaml.safe_dump(legacy))
+    migrated = SupportRequest.from_yaml(source)
+    assert migrated.schema_version == "aisimulate-support-request/v2"
+    assert migrated.search.context_length == expected_context
+    assert migrated.scheduler_limits() == {"max_batched_tokens": 8192, "max_sequences": 256}
+    root = tmp_path / "old-plan"
+    root.mkdir()
+    (root / "support-plan.json").write_text(json.dumps({"schema_version": "aisimulate-support-plan/v1"}))
+    with pytest.raises(ValueError, match="new output directory"):
+        create_plan(migrated, root, overwrite=True)
+    assert create_plan(migrated, tmp_path / "new-plan")["fpm"]["runtime_limits"]["context_length"] == expected_context
 
 
 @pytest.mark.parametrize("modification", ["retired_command", "missing_execute", "formatting"])
@@ -552,17 +687,29 @@ def test_preview_is_shell_safe_and_does_not_create_outputs_or_import_collector(t
     assert not root.exists()
 
 
-def test_execute_delegates_only_for_matching_plan(tmp_path, monkeypatch):
-    from collector.fpm_forward import cli
+def _mock_collector_execution(monkeypatch, calls):
+    from collector.fpm_forward import cli, entry
 
+    from aisimulate.support import collection_readiness, fpm
+
+    def resolve(command):
+        calls.append(command[3:])
+        return cli._parser().parse_args(command[3:]), (SimpleNamespace(cells=(), sha256="a" * 64), {})
+
+    monkeypatch.setattr(fpm, "_resolve_execution", resolve)
+    monkeypatch.setattr(entry, "run_resolved", lambda *_: [{"error_message": "synthetic collection failure"}])
+    monkeypatch.setattr(collection_readiness, "assess_readiness", lambda *a, **k: {"ready_for_full_collection": True})
+
+
+def test_execute_delegates_only_for_matching_plan(tmp_path, monkeypatch):
     calls = []
-    monkeypatch.setattr(cli, "main", lambda argv: calls.append(argv) or 7)
+    _mock_collector_execution(monkeypatch, calls)
     request = _request()
     with pytest.raises(ValueError, match="plan"):
         run_fpm(request, execute=True, output_dir=tmp_path)
     assert not calls
     create_plan(request, tmp_path)
-    assert run_fpm(request, execute=True, output_dir=tmp_path, smoke=True, limit=1) == 7
+    assert run_fpm(request, execute=True, output_dir=tmp_path, smoke=True, limit=1) == 1
     assert calls[0][calls[0].index("--limit") + 1] == "1"
     assert "--smoke" in calls[0]
     assert "--plan-only" not in calls[0]
@@ -687,40 +834,36 @@ def test_resume_occupied_campaign_requires_usable_selected_checkpoint(tmp_path, 
 
 @pytest.mark.parametrize("smoke", [False, True])
 def test_matching_explicit_resume_delegates_and_preserves_campaign(tmp_path, monkeypatch, smoke):
-    from collector.fpm_forward import cli
-
     request = _request()
     create_plan(request, tmp_path)
     checkpoint, _ = _seed_campaign(tmp_path, smoke=smoke, checkpoint_dir=tmp_path / "fpm-checkpoint/custom")
     before = _file_contents(tmp_path)
     calls = []
-    monkeypatch.setattr(cli, "main", lambda argv: calls.append(argv) or 7)
+    _mock_collector_execution(monkeypatch, calls)
 
     assert (
         run_fpm(request, output_dir=tmp_path, execute=True, smoke=smoke, resume=True, checkpoint_dir=checkpoint.parent)
-        == 7
+        == 1
     )
 
     assert "--resume" in calls[0]
     assert calls[0][calls[0].index("--checkpoint-dir") + 1] == str(checkpoint.parent)
-    assert _file_contents(tmp_path) == before
+    assert {key: value for key, value in _file_contents(tmp_path).items() if key != "fpm-readiness.json"} == before
 
 
 @pytest.mark.parametrize("smoke", [False, True])
 def test_fresh_smoke_and_formal_campaigns_are_independent(tmp_path, monkeypatch, smoke):
-    from collector.fpm_forward import cli
-
     request = _request()
     create_plan(request, tmp_path)
     _seed_campaign(tmp_path, smoke=not smoke)
     before = _file_contents(tmp_path)
     calls = []
-    monkeypatch.setattr(cli, "main", lambda argv: calls.append(argv) or 7)
+    _mock_collector_execution(monkeypatch, calls)
 
-    assert run_fpm(request, output_dir=tmp_path, execute=True, smoke=smoke) == 7
+    assert run_fpm(request, output_dir=tmp_path, execute=True, smoke=smoke) == 1
 
     assert len(calls) == 1
-    assert _file_contents(tmp_path) == before
+    assert {key: value for key, value in _file_contents(tmp_path).items() if key != "fpm-readiness.json"} == before
 
 
 def test_execute_checks_for_campaign_outputs_while_holding_lock(tmp_path, monkeypatch):

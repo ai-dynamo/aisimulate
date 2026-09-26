@@ -736,6 +736,20 @@ def _validate_fpm_profile(engine, modes: set[str], backends: set[str]) -> None:
                 max_num_tokens=worker.scheduler.max_batched_tokens,
                 max_batch_size=worker.scheduler.max_sequences,
             )
+            if deployment.resources.cache_layout == "grouped":
+                if role != "aggregated" or engine.nextn or engine.speculation is not None:
+                    raise ValueError("grouped FPM cache supports only aggregated vLLM without speculative decoding")
+                cache = worker.kv_cache
+                if cache.prefix_caching:
+                    raise ValueError("grouped FPM cache requires kv_cache.prefix_caching=false for cold replay")
+                if cache.host_offload is not None or cache.g3_offload is not None:
+                    raise ValueError("grouped FPM cache supports only HBM; host and G3 offload are unsupported")
+                if cache.capacity.type == "fixed" or cache.bytes_per_token != "auto":
+                    raise ValueError(
+                        "grouped FPM cache uses profile groups and a byte budget, not fixed blocks or bytes_per_token"
+                    )
+        # Recommendation topology domains and the GPU budget are resolved by
+        # lowering to SearchSpace, which validates reachable grouped workers.
 
 
 def _validate_speculation(engine, *, modes: set[str], backends: set[str]) -> None:

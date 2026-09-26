@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import importlib.metadata
 import json
 import sys
@@ -165,6 +166,316 @@ def test_unknown_architecture_plans_and_renders_from_real_config(tmp_path, no_mo
     assert "--max-num-seqs 1024" in script
 
 
+def _multimodal_config():
+    # Independently authored geometry; the wrapper is the checkpoint identity,
+    # while the nested model type establishes the supported decoder layout.
+    return {
+        "architectures": ["ExampleMultimodalForConditionalGeneration"],
+        "model_type": "example_multimodal",
+        "text_config": {
+            "architectures": ["LlamaForCausalLM"],
+            "model_type": "llama",
+            "hidden_size": 128,
+            "intermediate_size": 256,
+            "num_hidden_layers": 2,
+            "num_attention_heads": 4,
+            "num_key_value_heads": 2,
+            "vocab_size": 1024,
+            "max_position_embeddings": 4096,
+            "torch_dtype": "bfloat16",
+        },
+        "vision_config": {"hidden_size": 512, "num_hidden_layers": 8},
+    }
+
+
+@pytest.mark.parametrize("requested_kv_dtype", ["auto", "bfloat16"])
+def test_explicit_none_kv_sidecar_preserves_unquantized_capability(
+    tmp_path, no_models_or_timing_data, requested_kv_dtype
+):
+    # Original synthetic metadata exercises the sentinel found in this checkpoint:
+    # https://huggingface.co/thinkingmachines/Inkling-NVFP4/blob/42a75a99a40eb2ba1e0717db6357a0bf15205044/hf_quant_config.json
+    document = _multimodal_config()
+    del document["text_config"]["architectures"]
+    document["text_config"].update(n_routed_experts=8, num_experts_per_tok=2)
+    quantization = {"quantization": {"quant_algo": "NVFP4", "kv_cache_quant_algo": "none"}}
+    config_path = tmp_path / "config.json"
+    quant_path = tmp_path / "hf_quant_config.json"
+    config_path.write_text(json.dumps(document))
+    quant_path.write_text(json.dumps(quantization))
+    source_bytes = (config_path.read_bytes(), quant_path.read_bytes())
+    frozen = load_model_config("example/multimodal-checkpoint", explicit_config_path=str(config_path))
+
+    capability = capabilities.resolve_model_capability(
+        backend="vllm",
+        model_path="example/multimodal-checkpoint",
+        model_architecture=document["architectures"][0],
+        selected_ops=set(),
+        has_model_cases=False,
+        system="gb300",
+        requested_weight_quantizations=("nvfp4",),
+        requested_kv_cache_dtypes=(requested_kv_dtype,),
+        model_config_path=str(config_path),
+        database_version="0.27.0",
+        checkpoint_native_dtypes=True,
+    )
+
+    assert capability.support_level == "bootstrap_template"
+    assert capability.is_moe is True
+    assert capability.dtype.gemm_quant_mode == "nvfp4"
+    assert capability.dtype.moe_quant_mode == "nvfp4"
+    assert capability.dtype.native_kv_cache_dtype == "bfloat16"
+    assert capability.dtype.kv_cache_dtypes == ("bfloat16",)
+    assert capability.dtype.fmha_quant_mode == "bfloat16"
+    assert capability.dtype.fmha_by_kv_dtype == {"bfloat16": "bfloat16"}
+    assert capability.dtype.fmha_resolution == "checkpoint_native"
+    assert capability.model_config.payload == frozen.payload
+    assert capability.model_config.sha256 == frozen.sha256
+    assert capability.model_config.payload["hf_quant_config"] == quantization
+    assert (config_path.read_bytes(), quant_path.read_bytes()) == source_bytes
+
+    profile = _profile()
+    profile.update(model="example/multimodal-checkpoint", architecture=document["architectures"][0], num_experts=8)
+    for deployment in profile["deployments"]:
+        deployment.update(
+            system="gb300", backend_version="0.27.0", kv_cache_dtype="bfloat16", fmha_quant_mode="bfloat16"
+        )
+    options = replace(
+        FPMCollectionOptions.from_args(cli._parser().parse_args(_argv(profile))),
+        weight_quantizations=("nvfp4",),
+        kv_cache_dtypes=(requested_kv_dtype,),
+    )
+    plan = _plan(
+        profile,
+        system="gb300",
+        model_config_path=str(config_path),
+        selected_ops=set(),
+        has_model_cases=False,
+        options=options,
+    )
+    serialized = json.loads(json.dumps(plan.to_dict()))
+    assert serialized["dtype_profile"] == capability.dtype.to_dict()
+    assert serialized["capability"]["model_config"] == frozen.to_dict()
+    assert len(serialized["cells"]) == 4
+    assert {cell["kv_cache_dtype"] for cell in serialized["cells"]} == {"bfloat16"}
+    assert {cell["resolved_dtypes"]["fmha_quant_mode"] for cell in serialized["cells"]} == {"bfloat16"}
+    assert (config_path.read_bytes(), quant_path.read_bytes()) == source_bytes
+
+
+def _onboard_collection_plan(tmp_path, document, overrides=None):
+    from aisimulate.support.config_profile import derive_profile
+    from aisimulate.support.config_profile import load_model_config as load_onboarding_config
+    from aisimulate.support.fpm import fpm_cli_args
+    from aisimulate.support.schema import SupportRequest
+
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps(document))
+    request = SupportRequest.model_validate(
+        {
+            "identity": {
+                "model": "example/multimodal-checkpoint",
+                "model_revision": "collector-test-snapshot",
+                "model_kind": "dense",
+                "framework_version": "0.25.1",
+                "gpu": "h200_sxm",
+                "interconnect": "NVLink",
+            },
+            "search": {"context_length": 4096},
+            "workload": {"input_tokens": 128, "concurrency": 8, "request_count": 8},
+        }
+    )
+    draft = derive_profile(
+        load_onboarding_config(path),
+        request,
+        {
+            "fmha_quant_mode": "bfloat16",
+            "comm_quant_mode": "half",
+            "kv_cache_dtype": "bfloat16",
+            **(overrides or {}),
+        },
+    )
+    assert draft.profile is not None, draft.missing
+    assert hashlib.sha256(path.read_bytes()).hexdigest() in draft.profile.provenance
+    request = SupportRequest.model_validate({**request.model_dump(), "fpm_profile": draft.profile})
+    command = fpm_cli_args(request, output_dir=tmp_path / "plan", plan_only=True)
+    args = cli._parser().parse_args(command[3:])
+    return planner.build_collection_plan(
+        backend="vllm",
+        model_path=request.identity.model,
+        model_architecture=args.model_architecture,
+        model_config_path=str(path),
+        system="h200_sxm",
+        selected_ops={"attention_context", "attention_generation"},
+        options=FPMCollectionOptions.from_args(args),
+        fpm_profile=draft.profile,
+    )
+
+
+@pytest.mark.parametrize("declare_text_architecture", [False, True])
+@pytest.mark.parametrize(
+    "wrapper_fields",
+    [
+        {},
+        {"n_routed_experts": 32},
+        {"kv_lora_rank": 64},
+        {"q_lora_rank": 32, "num_experts": 16, "sliding_window": 64, "multi_query": True, "hidden_size": 1024},
+    ],
+)
+def test_config_onboarding_architecture_matches_multimodal_collection(
+    tmp_path, no_models_or_timing_data, declare_text_architecture, wrapper_fields
+):
+    document = {**_multimodal_config(), **wrapper_fields}
+    if not declare_text_architecture:
+        del document["text_config"]["architectures"]
+    plan = _onboard_collection_plan(tmp_path, document)
+    expected = "LlamaForCausalLM" if declare_text_architecture else "ExampleMultimodalForConditionalGeneration"
+    assert plan.capability.architecture == plan.fpm_profile.architecture == expected
+    assert plan.capability.is_moe is False
+    assert plan.capability.attention_kind == "dense_gqa"
+    assert len(plan.cells) == 2
+    assert "Text decoder only" in plan.fpm_profile.provenance
+    assert {decision["source"] for decision in plan.to_dict()["topology_memory_admission"]} == {"fpm_profile_pending"}
+    assert all(decision.disposition == "unknown" for decision in plan.topology_memory_admission)
+    parsed = plan.capability.model_config.parsed_payload()
+    assert parsed["hidden_size"] == 128
+    assert parsed["num_experts"] == 0
+    assert all(key not in parsed["raw_config"] for key in wrapper_fields if key != "hidden_size")
+    cell_dir = tmp_path / "rendered"
+    cell_dir.mkdir()
+    runner._render_cell(plan, plan.cells[0], cell_dir, {})
+    assert "--model example/multimodal-checkpoint" in (cell_dir / "run.sh").read_text()
+
+
+@pytest.mark.parametrize("outer_alias", ["quant_algo", "hf_quant_config"])
+@pytest.mark.parametrize(
+    "algorithm,expected_gemm,expected_moe", [("fp8", "fp8_static", "fp8"), ("nvfp4", "nvfp4", "nvfp4")]
+)
+@pytest.mark.parametrize("shared_precision", [False, True])
+@pytest.mark.parametrize("dtype_key", ["dtype", "torch_dtype"])
+def test_config_onboarding_precision_matches_multimodal_collection(
+    tmp_path, no_models_or_timing_data, outer_alias, algorithm, expected_gemm, expected_moe, shared_precision, dtype_key
+):
+    document = _multimodal_config()
+    text = document["text_config"]
+    del text["torch_dtype"]
+    selected = document if shared_precision else text
+    selected[dtype_key] = "bfloat16"
+    selected["quantization_config"] = {"quant_method": algorithm, "kv_cache_scheme": {"type": "float", "num_bits": 8}}
+    other_dtype_key = "torch_dtype" if dtype_key == "dtype" else "dtype"
+    outer_algorithm = algorithm if shared_precision else ("nvfp4" if algorithm == "fp8" else "fp8")
+    document[outer_alias] = (
+        outer_algorithm if outer_alias == "quant_algo" else {"quantization": {"quant_algo": outer_algorithm.upper()}}
+    )
+    if shared_precision:
+        # Null aliases, like missing aliases, do not declare decoder precision.
+        text[dtype_key] = None
+        text["quantization_config"] = None
+    else:
+        document[other_dtype_key] = "float32"
+        document.update(quant_dynamic=True, kv_cache_quant_algo="int8")
+    plan = _onboard_collection_plan(
+        tmp_path,
+        document,
+        {"fmha_quant_mode": "fp8", "kv_cache_dtype": "fp8", "weights_bytes": 1024, "activations_bytes": 1024},
+    )
+    assert len(plan.cells) == 2
+    assert plan.dtype_profile.gemm_quant_mode == expected_gemm
+    assert plan.dtype_profile.moe_quant_mode == expected_moe
+    assert plan.dtype_profile.native_kv_cache_dtype == "fp8"
+    evidence = plan.capability.model_config
+    frozen = evidence.to_dict()
+    assert frozen["payload"] == document
+    assert (
+        frozen["sha256"]
+        == hashlib.sha256(
+            json.dumps(document, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+        ).hexdigest()
+    )
+    raw = evidence.parsed_payload()["raw_config"]
+    assert raw["quant_algo"] == algorithm
+    assert raw["kv_cache_quant_algo"] == "fp8"
+    assert "quant_dynamic" not in raw
+    assert raw[dtype_key] == "bfloat16"
+    assert other_dtype_key not in raw
+    if not shared_precision:
+        assert "hf_quant_config" not in raw
+    raw["quantization_config"]["quant_method"] = "mutated"
+    detached = evidence.effective_payload
+    detached["quantization_config"]["quant_method"] = "mutated"
+    (tmp_path / "config.json").unlink()
+    cell_dir = tmp_path / "rendered"
+    cell_dir.mkdir()
+    runner._render_cell(plan, plan.cells[0], cell_dir, {})
+    assert "--model example/multimodal-checkpoint" in (cell_dir / "run.sh").read_text()
+    assert evidence.parsed_payload()["raw_config"]["quant_algo"] == algorithm
+    assert evidence.to_dict() == frozen
+
+
+def test_registered_multimodal_parser_keeps_context_out_of_decoder_metadata(tmp_path, no_models_or_timing_data):
+    document = _multimodal_config()
+    document.update(
+        architectures=["Llama4ForConditionalGeneration"],
+        n_routed_experts=32,
+        kv_lora_rank=64,
+        hf_quant_config={"quantization": {"quant_algo": "NVFP4"}},
+        quant_dynamic=True,
+        vision_config={
+            "hidden_size": 16,
+            "num_hidden_layers": 1,
+            "num_attention_heads": 2,
+            "num_channels": 3,
+            "intermediate_size": 64,
+            "image_size": 16,
+            "patch_size": 4,
+            "pixel_shuffle_ratio": 0.5,
+            "projector_input_dim": 32,
+            "projector_output_dim": 16,
+            "vision_output_dim": 16,
+        },
+        image_processor_config={"max_patches": 1, "resize_to_max_canvas": False, "add_global_tile": False},
+    )
+    del document["text_config"]["architectures"]
+    document["text_config"]["quantization_config"] = {"quant_method": "fp8", "kv_cache_scheme": "FP8"}
+    plan = _onboard_collection_plan(
+        tmp_path,
+        document,
+        {"fmha_quant_mode": "fp8", "kv_cache_dtype": "fp8", "weights_bytes": 1024, "activations_bytes": 1024},
+    )
+    assert plan.capability.architecture == "Llama4ForConditionalGeneration"
+    assert plan.capability.is_moe is False
+    assert plan.capability.attention_kind == "dense_gqa"
+    assert plan.dtype_profile.gemm_quant_mode == "fp8_static"
+    evidence = plan.capability.model_config
+    frozen = evidence.to_dict()
+    parsed = evidence.parsed_payload()
+    assert parsed["hidden_size"] == 128
+    assert parsed["num_experts"] == 0
+    assert parsed["extra_params"].vision_config.hidden_size == 16
+    assert parsed["extra_params"].vision_config.max_num_tiles == 1
+    assert parsed["raw_config"]["quant_algo"] == "fp8"
+    assert all(
+        key not in parsed["raw_config"]
+        for key in ("n_routed_experts", "kv_lora_rank", "vision_config", "image_processor_config", "hf_quant_config")
+    )
+    (tmp_path / "config.json").unlink()
+    cell_dir = tmp_path / "rendered"
+    cell_dir.mkdir()
+    runner._render_cell(plan, plan.cells[0], cell_dir, {})
+    assert "--model example/multimodal-checkpoint" in (cell_dir / "run.sh").read_text()
+    assert evidence.to_dict() == frozen
+
+
+def test_unknown_decoder_quantization_is_not_replaced_by_wrapper_precision(tmp_path, no_models_or_timing_data):
+    document = _multimodal_config()
+    document["quantization_config"] = {"quant_method": "fp8"}
+    document["text_config"]["quant_algo"] = "unknown_decoder_quantization"
+    with pytest.raises(ValueError, match="Unsupported quant algorithm: unknown_decoder_quantization"):
+        _onboard_collection_plan(
+            tmp_path,
+            document,
+            {"gemm_quant_mode": "fp8_static", "moe_quant_mode": "fp8", "weights_bytes": 1024},
+        )
+
+
 def test_frozen_profile_content_invalidates_resume_without_changing_cell_ids(tmp_path, no_models_or_timing_data):
     source = _profile()
     first = _plan(source)
@@ -182,6 +493,63 @@ def test_frozen_profile_content_invalidates_resume_without_changing_cell_ids(tmp
     checkpoint.write_text(json.dumps({"schema": runner.CHECKPOINT_SCHEMA, "plan_sha256": first.sha256, "cells": {}}))
     with pytest.raises(ValueError, match="checkpoint does not match the current frozen plan"):
         runner._load_checkpoint(checkpoint, second, resume=True)
+
+
+@pytest.mark.parametrize(
+    "controls",
+    [
+        ["--fpm-prefill-cudagraph-policy", "runtime"],
+        ["--fpm-gpu-memory-utilization", "0.9"],
+    ],
+)
+def test_launch_policy_change_invalidates_frozen_campaign(tmp_path, no_models_or_timing_data, controls):
+    profile = _profile()
+    first = _plan(profile)
+    options = FPMCollectionOptions.from_args(cli._parser().parse_args([*_argv(profile), *controls]))
+    second = _plan(profile, options=options)
+    assert first.sha256 != second.sha256
+    assert [cell.cell_id for cell in first.cells] == [cell.cell_id for cell in second.cells]
+    checkpoint = tmp_path / "checkpoint.json"
+    checkpoint.write_text(json.dumps({"schema": runner.CHECKPOINT_SCHEMA, "plan_sha256": first.sha256, "cells": {}}))
+    with pytest.raises(ValueError, match="checkpoint does not match the current frozen plan"):
+        runner._load_checkpoint(checkpoint, second, resume=True)
+
+
+def test_runtime_graph_plan_defers_capture_axis_and_grid_counts(no_models_or_timing_data):
+    profile = _profile()
+    options = FPMCollectionOptions.from_args(
+        cli._parser().parse_args([*_argv(profile), "--fpm-prefill-cudagraph-policy", "runtime"])
+    )
+    payload = _plan(profile, options=options).to_dict()
+    assert payload["point_generation"]["prefill_sampling"]["cudagraph_policy"] == "runtime"
+    assert payload["point_generation"]["planned_point_count"] is None
+    assert payload["counts"]["prefill_cudagraph_capture_sizes"] is None
+    assert payload["counts"]["prefill_new_token_axis_points"] is None
+    assert payload["counts"]["points"] == "runtime-determined"
+
+
+def test_profile_admission_honors_explicit_total_memory_fraction(monkeypatch, no_models_or_timing_data):
+    profile = _profile()
+    profile["deployments"][1]["resources"]["weights_bytes"] = 80_000_000_000
+    monkeypatch.setattr(memory_admission, "load_system_spec", lambda _system: {"gpu": {"mem_capacity": 200e9}})
+    options = FPMCollectionOptions.from_args(
+        cli._parser().parse_args([*_argv(profile), "--fpm-gpu-memory-utilization", "0.5"])
+    )
+    plan = _plan(profile, options=options)
+    assert {cell.parallel_strategy for cell in plan.cells} == {"tep"}
+    assert [decision.disposition for decision in plan.topology_memory_admission] == ["rejected", "admitted"]
+    estimates = [decision.estimates[0].to_dict() for decision in plan.topology_memory_admission]
+    assert [estimate["gpu_capacity_bytes"] for estimate in estimates] == [200_000_000_000] * 2
+    assert [estimate["gpu_memory_budget_bytes"] for estimate in estimates] == [100_000_000_000] * 2
+    assert [estimate["headroom_bytes"] for estimate in estimates] == [-3_000_000_000, 17_000_000_000]
+
+    legacy = _plan(profile)
+    assert {cell.parallel_strategy for cell in legacy.cells} == {"dep", "tep"}
+    assert all(
+        "gpu_memory_budget_bytes" not in estimate.to_dict()
+        for decision in legacy.topology_memory_admission
+        for estimate in decision.estimates
+    )
 
 
 @pytest.mark.parametrize("field,value", [("fmha_quant_mode", "bfloat16"), ("moe_backend", "flashinfer_cutlass")])
@@ -247,7 +615,9 @@ def test_resource_envelope_errors_do_not_fail_open(field, value, no_models_or_ti
     profile = _profile()
     profile["deployments"][0]["resources"][field] = value
     options = replace(
-        FPMCollectionOptions.from_args(cli._parser().parse_args(_argv(profile))), max_prefill_batch_size=4
+        FPMCollectionOptions.from_args(cli._parser().parse_args(_argv(profile))),
+        max_prefill_isl=8192,
+        max_prefill_batch_size=4,
     )
     with pytest.raises(ValueError, match="resource envelope exceeded"):
         _plan(profile, options=options)
@@ -272,6 +642,9 @@ def test_profile_bounds_native_scheduling_before_cases_are_queued(phase, smoke, 
     assert arguments[arguments.index("--max-num-batched-tokens") + 1] == "8192"
     assert arguments.count("--max-num-seqs") == 1
     assert arguments[arguments.index("--max-num-seqs") + 1] == "1024"
+    # A profile's declared context is now authoritative; legacy profile
+    # callers previously used -1 and could auto-fit beyond that contract.
+    assert arguments[arguments.index("--max-model-len") + 1] == "8192"
 
 
 def test_profile_preserves_explicit_prefill_envelope(no_models_or_timing_data):
@@ -287,6 +660,289 @@ def test_profile_preserves_explicit_prefill_envelope(no_models_or_timing_data):
         expected_tokens, expected_batch = ("2048", "4") if cell.workload_kind == "prefill" else ("8192", "1024")
         assert arguments[arguments.index("--max-num-batched-tokens") + 1] == expected_tokens
         assert arguments[arguments.index("--max-num-seqs") + 1] == expected_batch
+
+
+@pytest.mark.parametrize("with_profile", [False, True])
+@pytest.mark.parametrize("narrow_prefill", [False, True])
+@pytest.mark.parametrize("smoke", [False, True])
+@pytest.mark.parametrize(
+    "max_tokens,max_sequences,prefill_tokens,prefill_sequences", [(4096, 64, 1024, 4), (256, 256, 128, 128)]
+)
+def test_cli_runtime_limits_reach_both_rendered_workers(
+    tmp_path,
+    monkeypatch,
+    with_profile,
+    narrow_prefill,
+    smoke,
+    max_tokens,
+    max_sequences,
+    prefill_tokens,
+    prefill_sequences,
+):
+    """Exercise parsing, plan resolution and real Generator output without launching GPUs."""
+    profile = _profile()
+    argv = [
+        *_argv(profile),
+        "--fpm-max-model-len",
+        "4096",
+        "--fpm-max-num-batched-tokens",
+        str(max_tokens),
+        "--fpm-max-num-seqs",
+        str(max_sequences),
+    ]
+    if with_profile:
+        path = tmp_path / "profile.json"
+        path.write_text(json.dumps(profile))
+        argv.extend(["--fpm-model-profile", str(path)])
+    if narrow_prefill:
+        argv.extend(
+            ["--fpm-max-prefill-isl", str(prefill_tokens), "--fpm-max-prefill-batch-size", str(prefill_sequences)]
+        )
+    if smoke:
+        argv.append("--smoke")
+
+    def render_without_launch(_args, resolved):
+        plan, overrides = resolved
+        for phase in ("prefill", "decode"):
+            cell = next(cell for cell in plan.cells if cell.workload_kind == phase)
+            target = tmp_path / phase
+            target.mkdir()
+            runner._render_cell(plan, cell, target, overrides, smoke=_args.smoke)
+        return []
+
+    monkeypatch.setenv("COLLECTOR_MODEL_PATH", "")
+    monkeypatch.setattr(cli, "run_resolved", render_without_launch)
+    assert cli.main(argv) == 0
+    for phase in ("prefill", "decode"):
+        script = (tmp_path / phase / "run.sh").read_text()
+        tokens, sequences = (
+            (prefill_tokens, prefill_sequences)
+            if narrow_prefill and phase == "prefill"
+            else (max_tokens, max_sequences)
+        )
+        for option, value in (
+            ("--max-model-len", 4096),
+            ("--max-num-batched-tokens", tokens),
+            ("--max-num-seqs", sequences),
+        ):
+            assert script.count(option) == 1
+            assert f"{option} {value}" in script
+
+
+@pytest.mark.parametrize("smoke", [False, True])
+@pytest.mark.parametrize("memory_fraction", [0.9, 1.0])
+def test_cli_runtime_graph_policy_and_memory_fraction_reach_native_launch(
+    tmp_path, monkeypatch, smoke, memory_fraction
+):
+    profile = _profile()
+    path = tmp_path / "profile.json"
+    path.write_text(json.dumps(profile))
+    argv = [
+        *_argv(profile),
+        "--fpm-model-profile",
+        str(path),
+        "--fpm-prefill-cudagraph-policy",
+        "runtime",
+        "--fpm-gpu-memory-utilization",
+        str(memory_fraction),
+    ]
+    if smoke:
+        argv.append("--smoke")
+
+    def render_without_launch(_args, resolved):
+        plan, overrides = resolved
+        for phase in ("prefill", "decode"):
+            cell = next(cell for cell in plan.cells if cell.workload_kind == phase)
+            target = tmp_path / phase
+            target.mkdir()
+            runner._render_cell(plan, cell, target, overrides, smoke=_args.smoke)
+        return []
+
+    monkeypatch.setenv("COLLECTOR_MODEL_PATH", "")
+    monkeypatch.setattr(cli, "run_resolved", render_without_launch)
+    assert cli.main(argv) == 0
+    for phase in ("prefill", "decode"):
+        script = (tmp_path / phase / "run.sh").read_text()
+        saved = json.loads((tmp_path / phase / "generator-request.json").read_text())
+        assert saved["params"]["agg"]["kv_cache_free_gpu_memory_fraction"] == memory_fraction
+        assert script.count("--gpu-memory-utilization") == 1
+        assert f"--gpu-memory-utilization {memory_fraction}" in script
+        assert "--compilation-config" not in script
+        assert "--cudagraph-capture-sizes" not in script
+        assert "--max-cudagraph-capture-size" not in script
+        assert "--no-enable-prefix-caching" not in script  # DEP keeps real KV warm-up.
+        if phase == "prefill":
+            assert "--no-async-scheduling" in script
+            assert "--prefill-max-kv-read-token-samples" in script
+            if smoke:
+                assert "--prefill-max-new-token-samples 2" in script
+            else:
+                assert "--prefill-max-new-token-samples" not in script
+        else:
+            assert "--no-async-scheduling" not in script
+
+
+@pytest.mark.parametrize("policy,enforce_eager", [("explicit", False), ("runtime", False), ("explicit", True)])
+def test_smoke_preserves_runtime_launch_and_bounds_sampling(tmp_path, no_models_or_timing_data, policy, enforce_eager):
+    profile = _profile()
+    if enforce_eager:
+        # Eager collection is currently qualified only for V4.1.
+        profile.update(model="deepseek-ai/DeepSeek-V4.1-Flash", architecture="DeepseekV41ForCausalLM")
+        for deployment in profile["deployments"]:
+            deployment.update(gemm_quant_mode="fp8_block", moe_quant_mode="w4a8_mxfp4_mxfp8")
+    argv = [
+        *_argv(profile),
+        "--fpm-max-num-batched-tokens",
+        "4096",
+        "--fpm-max-num-seqs",
+        "64",
+        "--fpm-prefill-cudagraph-policy",
+        policy,
+    ]
+    if policy == "explicit":
+        argv.extend(["--fpm-max-prefill-cudagraph-size", "512"])
+    if enforce_eager:
+        argv.append("--fpm-enforce-eager")
+    options = FPMCollectionOptions.from_args(cli._parser().parse_args(argv))
+    plan = _plan(profile, options=options)
+    for phase in ("prefill", "decode"):
+        cell = next(cell for cell in plan.cells if cell.workload_kind == phase)
+        capture_configs = {}
+        for smoke in (False, True):
+            target = tmp_path / f"{phase}-{'smoke' if smoke else 'full'}"
+            target.mkdir()
+            runner._render_cell(plan, cell, target, {}, smoke=smoke)
+            saved = json.loads((target / "generator-request.json").read_text())
+            arguments = saved["params"]["agg"]["extra_cli_args"]
+            script = (target / "run.sh").read_text()
+            assert arguments.count("--enforce-eager") == int(enforce_eager)
+            assert ("--enforce-eager" in script) == enforce_eager
+            for option, value in (
+                ("--benchmark-mode", phase),
+                ("--max-model-len", "8192"),
+                ("--max-num-batched-tokens", "4096"),
+                ("--max-num-seqs", "64"),
+            ):
+                assert arguments.count(option) == 1
+                assert arguments[arguments.index(option) + 1] == value
+                assert script.count(option) == 1
+                assert f"{option} {value}" in script
+            if phase == "prefill" and policy == "explicit" and not enforce_eager:
+                assert arguments.count("--compilation-config") == 1
+                compilation = arguments[arguments.index("--compilation-config") + 1]
+                assert f"--compilation-config '{compilation}'" in script
+                capture_configs[smoke] = json.loads(compilation)
+                assert capture_configs[smoke]["max_cudagraph_capture_size"] == 512
+                assert capture_configs[smoke]["cudagraph_capture_sizes"][-1] == 512
+            else:
+                assert "--compilation-config" not in arguments
+                assert "--compilation-config" not in script
+            if smoke:
+                samples = (
+                    {
+                        "--prefill-max-new-token-samples": "2",
+                        "--prefill-max-kv-read-token-samples": "2",
+                        "--prefix-max-batch-size-samples": "1",
+                    }
+                    if phase == "prefill"
+                    else {"--decode-max-kv-read-token-samples": "2", "--decode-max-batch-size-samples": "2"}
+                )
+                for option, value in samples.items():
+                    assert arguments.count(option) == 1
+                    assert arguments[arguments.index(option) + 1] == value
+                    assert f"{option} {value}" in script
+        if capture_configs:
+            assert capture_configs[True] == capture_configs[False]
+
+
+@pytest.mark.parametrize("smoke", [False, True])
+def test_omitted_prefill_defaults_stay_within_selected_profile_bounds(no_models_or_timing_data, smoke):
+    profile = _profile()
+    for deployment in profile["deployments"]:
+        deployment["resources"].update(max_num_tokens=4096, max_batch_size=32)
+    plan = _plan(profile)
+    assert plan.options.prefill_sampling.max_total_prefill_tokens == 4096
+    for cell in plan.cells:
+        arguments = runner._cell_generator_overrides(plan, cell, {}, smoke=smoke)["params"]["agg"]["extra_cli_args"]
+        for option, value in (
+            ("--max-model-len", "8192"),
+            ("--max-num-batched-tokens", "4096"),
+            ("--max-num-seqs", "32"),
+        ):
+            assert arguments.count(option) == 1
+            assert arguments[arguments.index(option) + 1] == value
+
+
+@pytest.mark.parametrize(
+    "with_profile,resource_limits,limits",
+    [
+        (False, {}, ["--fpm-max-num-batched-tokens", "128", "--fpm-max-num-seqs", "256"]),
+        (True, {}, ["--fpm-max-num-batched-tokens", "128", "--fpm-max-num-seqs", "256"]),
+        (
+            False,
+            {},
+            ["--fpm-max-num-batched-tokens", "4096", "--fpm-max-num-seqs", "256", "--fpm-max-prefill-isl", "128"],
+        ),
+        (False, {}, ["--fpm-max-num-seqs", "16384"]),
+        (True, {}, ["--fpm-max-num-batched-tokens", "128"]),
+        (True, {}, ["--fpm-max-prefill-isl", "128"]),
+        (True, {"max_num_tokens": 128, "max_batch_size": 256}, []),
+        (
+            True,
+            {"max_num_tokens": 128, "max_batch_size": 256},
+            ["--fpm-max-prefill-batch-size", "8"],
+        ),
+    ],
+)
+@pytest.mark.parametrize("smoke", [False, True])
+def test_cli_rejects_scheduler_tokens_below_sequences_before_execution(
+    tmp_path, monkeypatch, capsys, with_profile, resource_limits, limits, smoke
+):
+    profile = _profile()
+    for deployment in profile["deployments"]:
+        deployment["resources"].update(resource_limits)
+    argv = [*_argv(profile), *limits]
+    if with_profile:
+        path = tmp_path / "profile.json"
+        path.write_text(json.dumps(profile))
+        argv.extend(["--fpm-model-profile", str(path)])
+    if smoke:
+        argv.append("--smoke")
+    monkeypatch.setenv("COLLECTOR_MODEL_PATH", "")
+    monkeypatch.setattr(cli, "run_resolved", lambda *_args: pytest.fail("collection execution started"))
+
+    with pytest.raises(SystemExit) as error:
+        cli.main(argv)
+
+    assert error.value.code == 2
+    message = capsys.readouterr().err
+    assert "max_num_batched_tokens" in message
+    assert "max_num_seqs" in message
+
+
+@pytest.mark.parametrize(
+    "limits, message",
+    [
+        (["--fpm-max-model-len", "8193"], "context"),
+        (["--fpm-max-num-batched-tokens", "8192", "--fpm-max-prefill-isl", "1024"], "resource envelope exceeded"),
+        (["--fpm-max-num-seqs", "128", "--fpm-max-prefill-batch-size", "4"], "resource envelope exceeded"),
+        (["--fpm-max-prefill-isl", "8192"], "resource envelope exceeded"),
+        (["--fpm-max-prefill-batch-size", "128"], "resource envelope exceeded"),
+        (["--fpm-max-decode-batch-size", "128"], "resource envelope exceeded"),
+    ],
+)
+def test_cli_rejects_profile_limit_overshoots_before_execution(tmp_path, monkeypatch, capsys, limits, message):
+    profile = _profile()
+    for deployment in profile["deployments"]:
+        deployment["resources"].update(max_num_tokens=4096, max_batch_size=64)
+    path = tmp_path / "profile.json"
+    path.write_text(json.dumps(profile))
+    monkeypatch.setenv("COLLECTOR_MODEL_PATH", "")
+    monkeypatch.setattr(cli, "run_resolved", lambda *_args: pytest.fail("collection execution started"))
+    with pytest.raises(SystemExit) as error:
+        cli.main([*_argv(profile), "--fpm-model-profile", str(path), *limits])
+    assert error.value.code == 2
+    assert message in capsys.readouterr().err
 
 
 @pytest.mark.parametrize("actual_version", ["0.25.1", "0.24.0"])

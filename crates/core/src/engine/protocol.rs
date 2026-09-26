@@ -232,8 +232,14 @@ pub struct Metrics {
     /// currently populated by vLLM; SGLang reports zero because its legacy
     /// occupied count already includes radix-resident pages.
     pub inactive_blocks: u64,
+    /// Zero for grouped caches: heterogeneous page sizes have no single
+    /// block capacity. Use `kv_cache_capacity_bytes` in that case.
     pub total_blocks: u64,
-    /// `active_blocks / total_blocks`, with backend-native semantics above.
+    /// Physical grouped-cache occupancy, including scheduled chunk storage.
+    pub kv_cache_used_bytes: Option<u64>,
+    /// Physical grouped-cache capacity; absent for the legacy linear pool.
+    pub kv_cache_capacity_bytes: Option<u64>,
+    /// Byte occupancy for grouped caches; otherwise `active_blocks / total_blocks`.
     pub cache_usage: f64,
     /// Physical resident fraction. This includes inactive reusable vLLM blocks
     /// and equals `cache_usage` for SGLang's legacy occupied-page metric.

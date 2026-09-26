@@ -654,7 +654,7 @@ def _infer_quant_modes_from_raw_config(raw_config: dict, architecture: str | Non
     # TODO: support fp4 kv cache
     if kv_cache_algo == "fp8":
         overrides["kvcache_quant_mode"] = common.KVCacheQuantMode.fp8
-    elif kv_cache_algo == "bfloat16":
+    elif kv_cache_algo in ("bfloat16", "none"):
         overrides["kvcache_quant_mode"] = common.KVCacheQuantMode.bfloat16
     elif kv_cache_algo is not None:
         raise ValueError(f"Unsupported kv cache algorithm: {kv_cache_algo}")
@@ -664,7 +664,12 @@ def _infer_quant_modes_from_raw_config(raw_config: dict, architecture: str | Non
         overrides["kvcache_quant_mode"] = common.KVCacheQuantMode.fp8
 
     # FMHA quant mode
-    if quant_algo is not None and (quant_algo in ("fp8", "fp8_block", "nvfp4") or kv_cache_algo in ("fp8",)):
+    if kv_cache_algo == "none" and overrides["kvcache_quant_mode"] == common.KVCacheQuantMode.bfloat16:
+        # An explicit unquantized KV declaration uses the full-precision SDK
+        # default independently of weight quantization. Preserve native cache
+        # requirements applied above; missing/null metadata keeps legacy defaults.
+        overrides["fmha_quant_mode"] = common.FMHAQuantMode.bfloat16
+    elif quant_algo is not None and (quant_algo in ("fp8", "fp8_block", "nvfp4") or kv_cache_algo in ("fp8",)):
         overrides["fmha_quant_mode"] = common.FMHAQuantMode.fp8
         if kv_cache_algo is None or kv_cache_algo != "fp8":
             overrides["kvcache_quant_mode"] = common.KVCacheQuantMode.fp8

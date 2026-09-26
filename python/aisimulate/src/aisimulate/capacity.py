@@ -38,7 +38,14 @@ def materialize_aic_num_gpu_blocks(
         if canonical_result is None:
             return value
         result = dict(canonical_result)
-        for name in ("timing_model", "num_gpu_blocks", "tensor_parallel_size", "dp_size"):
+        for name in (
+            "timing_model",
+            "num_gpu_blocks",
+            "tensor_parallel_size",
+            "dp_size",
+            "kv_cache_groups",
+            "kv_cache_capacity_bytes",
+        ):
             if name in value:
                 result[name] = value[name]
         for name in (
@@ -86,6 +93,10 @@ def materialize_aic_num_gpu_blocks(
                         raise ValueError(f"{name} conflicts with canonical timing configuration")
                     memory_fields[name] = lowered[name]
             request = {key: value for key, value in authored.items() if key not in memory_fields}
+            if request.get("fpm_profile") is not None:
+                from aisimulate_core.sdk.fpm_profile import _require_forward_pass_profile_memory
+
+                _require_forward_pass_profile_memory(RustForwardPassPerfModel.normalize_config(request))
             model = RustForwardPassPerfModel.best_available(request)
             try:
                 diagnostics = model.diagnostics()
@@ -152,6 +163,8 @@ def materialize_aic_num_gpu_blocks(
     if attention_dp is not None and dp > 1:
         lowered["dp_size"] = dp
 
+    if _materialize_profile_cache_groups(lowered, memory_diagnostics):
+        return finish_lowering(lowered)
     if lowered.get("num_gpu_blocks") is not None:
         return finish_lowering(lowered)
     backend = lowered.get("aic_backend")
@@ -215,9 +228,78 @@ def materialize_aic_num_gpu_blocks(
         systems_path=capacity_systems_path,
         cuda_graph_reserved_bytes=lowered.get("cuda_graph_reserved_bytes", 0),
         **({"fpm_profile": lowered["aic_fpm_profile"]} if lowered.get("aic_fpm_profile") is not None else {}),
+        **({"context_length": lowered.get("max_model_len")} if lowered.get("aic_fpm_profile") is not None else {}),
         **({"diagnostics": memory_diagnostics} if memory_diagnostics is not None else {}),
     )
     return finish_lowering(lowered)
+
+
+def _materialize_profile_cache_groups(raw: dict[str, Any], diagnostics: dict[str, Any] | None) -> bool:
+    """Transport the canonical grouped byte budget without a scalar capacity."""
+    profile = raw.get("aic_fpm_profile")
+    if profile is None:
+        return False
+    from aisimulate_core.sdk.fpm_profile import load_fpm_profile
+    from aisimulate_core.sdk.memory import estimate_kv_cache
+
+    identity = {
+        "model": raw.get("aic_model_path"),
+        "system": raw.get("aic_system"),
+        "backend": raw.get("aic_backend"),
+        "backend_version": raw.get("aic_backend_version", raw.get("backend_version")),
+        "tp_size": raw.get("aic_tp_size", 1),
+        "pp_size": raw.get("aic_pp_size", 1),
+        "attention_dp_size": raw.get("aic_attention_dp_size", 1),
+        "moe_tp_size": raw.get("aic_moe_tp_size"),
+        "moe_ep_size": raw.get("aic_moe_ep_size"),
+    }
+    deployment = load_fpm_profile(profile).select(**identity)
+    deployment.resources.require_memory()
+    if deployment.resources.runtime_memory is not None and raw.get("num_gpu_blocks") is not None:
+        raise ValueError("runtime FPM memory cannot use fixed num_gpu_blocks; use the recorded cache allocation")
+    if deployment.resources.cache_layout != "grouped":
+        return False
+    if raw.get("num_gpu_blocks") is not None:
+        raise ValueError("grouped FPM cache requires a byte budget; fixed num_gpu_blocks is unsupported")
+    estimate = estimate_kv_cache(
+        identity.pop("model"),
+        identity.pop("system"),
+        identity.pop("backend"),
+        **identity,
+        max_num_tokens=raw.get("max_num_batched_tokens", _DEFAULT_MAX_NUM_BATCHED_TOKENS),
+        max_batch_size=raw.get("max_num_seqs", _DEFAULT_MAX_NUM_SEQUENCES),
+        context_length=raw.get("max_model_len"),
+        memory_fraction_kind="of_total",
+        memory_fraction_value=raw.get("gpu_memory_utilization", DEFAULT_GPU_MEMORY_UTILIZATION),
+        cuda_graph_reserved_bytes=raw.get("cuda_graph_reserved_bytes", 0),
+        systems_path=raw.get("systems_path"),
+        fpm_profile=profile,
+        **{
+            target: raw[source]
+            for target, source in (
+                ("gemm_quant_mode", "aic_gemm_dtype"),
+                ("moe_quant_mode", "aic_moe_dtype"),
+                ("fmha_quant_mode", "aic_fmha_dtype"),
+                ("kvcache_quant_mode", "aic_kv_cache_dtype"),
+                ("comm_quant_mode", "aic_comm_dtype"),
+                ("moe_backend", "aic_moe_backend"),
+                ("attention_backend", "aic_attention_backend"),
+                ("enable_eplb", "aic_enable_eplb"),
+                ("wideep_num_slots", "aic_wideep_num_slots"),
+            )
+            if raw.get(source) is not None
+        },
+    )
+    for name, value in (
+        ("kv_cache_groups", estimate["cache_groups"]),
+        ("kv_cache_capacity_bytes", estimate["total_kv_size_bytes"]),
+    ):
+        if name in raw and raw[name] != value:
+            raise ValueError(f"{name} conflicts with the canonical FPM resource budget")
+        raw[name] = value
+    if diagnostics is not None:
+        diagnostics.update(estimate)
+    return True
 
 
 def estimate_num_gpu_blocks(
@@ -250,6 +332,7 @@ def estimate_num_gpu_blocks(
     cuda_graph_reserved_bytes: int = 0,
     diagnostics: dict[str, Any] | None = None,
     fpm_profile: dict[str, Any] | None = None,
+    context_length: int | None = None,
 ) -> int:
     """Estimate per-rank KV blocks using the replay-wide AIC contract.
 
@@ -327,6 +410,7 @@ def estimate_num_gpu_blocks(
             systems_path=systems_path,
             cuda_graph_reserved_bytes=cuda_graph_reserved_bytes,
             **({"fpm_profile": fpm_profile} if fpm_profile is not None else {}),
+            **({"context_length": context_length} if context_length is not None else {}),
             **({"diagnostics": diagnostics} if diagnostics is not None else {}),
         )
     )
@@ -363,6 +447,8 @@ def estimate_kv_bytes_per_token(
             moe_ep_size=moe_ep_size,
         )
         deployment.validate_overrides(kvcache_quant_mode=kvcache_quant_mode)
+        if deployment.resources.cache_layout == "grouped":
+            raise ValueError("grouped FPM cache has no scalar bytes per token; use its cache groups and byte budget")
         return deployment.resources.kv_bytes_per_token
 
     from aisimulate_core.sdk.memory import NaiveKVCacheEstimator

@@ -9,7 +9,16 @@ This guide follows one offline whole-forward FPM campaign from planning to
 request-level prediction. It uses MiniMax-M2.7 on four H200 GPUs with pure tensor
 parallelism, then consumes the newly collected data from an external directory.
 It assumes an existing, working GPU collection environment. Fill in the
-collection inputs from that environment before executing GPU steps.
+image, model access, GPU and Kubernetes inputs from that environment before
+executing GPU steps. An already-running vLLM server or HTTP endpoint is not
+required; the collector deploys and launches its benchmark workers.
+
+For a new model, start with the [self-service config/profile workflow](../../../../docs/fpm-self-service.md#onboard-with-an-agent)
+for direct FPM interpolation without an op-level model class, and record the
+[model metadata and intended execution route](model-integration.md). This
+campaign's prediction examples use a registered analytical class; the
+model-integration guide describes the optional registered-model/SOL procedure
+for that route.
 
 ```text
 Freeze plan -> GPU smoke -> GPU collection -> validate and publish pair
@@ -18,7 +27,9 @@ Freeze plan -> GPU smoke -> GPU collection -> validate and publish pair
 Independent measurements <- compare <- AIS predict <- SDK FPM query
 ```
 
-The collector measures complete forward passes in a Dynamo/vLLM runtime. It
+The collector renders the worker deployment and launches Dynamo/vLLM. The engine
+initializes the model, cache and graph configuration, then Dynamo self-benchmark
+generates and times the admitted measurement points. The collector
 publishes `fpm_forward_perf.parquet` together with
 `fpm_forward_perf.metadata.json`. The Rust performance model loads this pair,
 selects a matching cell, and uses exact lookup, interpolation, and supported SOL
@@ -130,7 +141,8 @@ fpm_args=(
   --fpm-parallel-presets pure_tp
   --fpm-kv-cache-dtypes auto
   --fpm-max-prefill-isl 8192
-  --fpm-max-prefill-cudagraph-size 2048
+  --fpm-prefill-cudagraph-policy runtime
+  --fpm-gpu-memory-utilization 0.90
   --dynamo-version "$AIS_DYNAMO_RELEASE"
   --generator-config "$FPM_RUN/collector-k8s.yaml"
   --checkpoint-dir "$FPM_RUN/checkpoints"
@@ -153,19 +165,45 @@ prefill cell and one decode cell if both are admitted. The plan is authoritative
 do not proceed with an empty plan or unexplained omissions.
 `counts.cells` should be 2 for that case, while `counts.points` is
 `"runtime-determined"`: runtime initialization determines the actual point set.
+With runtime capture policy, `point_generation.prefill_sampling` records
+`cudagraph_policy: runtime`; capture sizes/counts and capture-dependent new-token
+fields are null before engine initialization. The collector still supplies
+runtime limits and the graph-independent KV-read sample cap. Inspect actual
+graph mode and capture sizes in initialization logs and raw runtime artifacts.
 
 The sampling settings have distinct meanings:
 
 - `--fpm-max-prefill-isl 8192` bounds the scheduled prefill **new-token** axis.
   It does not set runtime context length.
-- `--fpm-max-prefill-cudagraph-size 2048` is the prefill capture-size policy.
-  Align it with the deployment being modeled before freezing a formal campaign.
-- The collector currently sets runtime `max_model_len=-1` for vLLM auto-fit and
-  has no CLI override for that setting. Record the resolved value with the
-  collection results.
+- `--fpm-prefill-cudagraph-policy runtime` leaves prefill compilation and
+  capture-dependent new-token sampling to the initialized runtime. It emits no
+  prefill compilation or new-token sample-cap override. To select a reviewed
+  extension instead, use `--fpm-prefill-cudagraph-policy explicit
+  --fpm-max-prefill-cudagraph-size 2048`. Runtime policy and a numeric capture
+  size conflict. Standalone callers omitting the policy retain the legacy
+  explicit 2,048-token default. Align actual captures with the serving target.
+- `--fpm-gpu-memory-utilization 0.90` declares a starting fraction of total GPU
+  memory; supported values are finite and in `(0, 1]`. It is not proof of fit.
+  Omitting the flag preserves the existing runtime/default behavior.
+- `--fpm-max-model-len`, `--fpm-max-num-batched-tokens` and `--fpm-max-num-seqs`
+  select runtime context and per-rank scheduler bounds. Omitted values use a
+  supplied FPM profile's bounds; without a profile, context retains vLLM's
+  `-1` auto-fit behavior. Record the effective values with the results.
 - The default is five global warm-up iterations and one measurement per point.
   Published `latency_ms` uses the maximum rank wall time, converted to ms;
   it is not a mean or median over repeated measurements.
+
+KV preparation is separate from those global warm-up iterations. New campaigns
+default `DYN_BENCH_PREFILL_REAL_SEED=on` and `DYN_BENCH_KV_WARMUP=on`. Cached
+prefill computes its prefix outside the measured forward pass; zero-KV prefill
+has no prefix to seed. Prefill preflight rejects a runtime lacking the requested
+real-seeding capability. Decode still follows native warm-up eligibility and
+capacity, so inspect raw per-point `kv_seed_regime` and the `kvwarm` envelope
+before claiming real KV was used. Ordinary prefill rows in the formal table
+retain `n/a`; their raw artifacts distinguish `real_prefix` and `fake_prefix`.
+Explicit deployment environment overrides remain explicit and are subject to
+existing protocol checks. The resolved defaults participate in the collection
+identity; preserve existing results and use a fresh campaign for a new policy.
 
 The complete option list is available from `python3 -m collector.fpm_forward
 --help` and [its argument definitions](../../collector/fpm_forward/config.py).
@@ -231,6 +269,18 @@ lists all prefill cells before decode cells. Use the full plan count to check
 both phases of every admitted configuration.
 In `checkpoints/fpm_forward_smoke.json`, check `smoke.status == "passed"`,
 `smoke.cell_count == FPM_CELL_COUNT`, and `smoke.formal_database_written == false`.
+
+Inspect initialized precision, graph dispatch/capture sizes, cache allocation
+and padding against the intended serving configuration. The CLI does not infer
+these effective values from a pasted launch command. Smoke's small sample caps
+do not establish the formal point grid or exact count.
+
+Keep benchmark seeding separate from replay prefix reuse. The collector may
+keep a prefix cache to prepare timing points outside the measured forward pass;
+real KV warm-up depends on the selected strategy and runtime support. Inspect
+raw provenance and skipped/fallback evidence. A cold replay cache policy does
+not require disabling benchmark seeding, and an environment variable alone
+does not prove that a patched seeding implementation ran.
 
 Only after the smoke command succeeds and its evidence is checked, run:
 
@@ -541,10 +591,47 @@ Do not delete unrelated workloads or the namespace. Default `/results` storage
 is Pod-local `emptyDir`, so deleting Pods before salvaging results loses those
 files.
 
-## 9. Validate accuracy separately
+## 9. Validate collection quality and serving accuracy
 
 Passing the preceding stages establishes that the collection and prediction
 path works. Accuracy requires independent measurements under matched conditions.
+The standard onboarding procedure implements these checks with `aisimulate
+onboard validate-collection`, existing `validate-fpm` replay coverage, and
+`validate-serving --action prepare|run|assess`. Follow the
+[campaign policy and command examples](../../../../docs/fpm-self-service.md#validate-collection-and-serving-accuracy).
+The policy is a separate editable JSON/YAML file; source collection plans,
+formal measurements and archived attempts are preserved.
+Run collection-quality checks during stage 5 before normal memory finalization;
+resolved memory still permits exploratory simulation while accuracy is unqualified.
+
+1. Validate every source point and formal row, and inspect actual initialized
+   attention groups, graph configuration and per-point KV initialization.
+   Missing runtime observations prevent qualification even when precision
+   labels match. Graph configuration is not a per-point dispatch trace.
+2. Select a bounded representative subset from the runtime grid and preserve
+   five fresh independently launched samples by default, at most 12 points per
+   phase cell. Both fresh-sample CV and CV including the original published
+   measurement must be at most 0.05 by default. This catches an unstable point
+   or an original outlier; warm-up alone does not establish repeatability.
+3. Withhold up to 16 coordinates per phase by default, retain envelope anchors,
+   and recompute direct interpolation with denied fallback. Report prefill and
+   decode p95 absolute relative error (default limit 0.20), plus unsupported
+   queries (default allowed fraction zero). Sparse data remains incomplete.
+4. Run matched serving separately, using frozen traffic and actual runtime
+   observations. Require replay completion/coverage, then independently report
+   TTFT, TPOT and throughput errors. Optional instrumented forward samples are
+   a separate check; missing forward instrumentation is reported unavailable.
+   Before preparation, follow the [isolated, Git-pinned AIPerf installation](../../../../docs/fpm-self-service.md#stage-6-matched-serving);
+   use that environment's Python for both preparation and execution.
+
+Counts, selection seed and numerical thresholds are editable before assessment.
+Threshold-only changes can reuse verified raw measurements in a fresh output
+directory; changing repeat selection/count/execution requires new measurements.
+No threshold edit mutates the original FPM table. The combined report only
+qualifies the evaluated configuration and workload when every mandatory gate
+passes; incomplete or failed gates do not prevent exploratory simulation.
+
+For broader accuracy studies, retain these additional requirements:
 
 1. Freeze a validation workload with held-out shapes or traces. Record model and
    runtime versions, GPU/system, parallelism, quantization, CUDA Graph policy,

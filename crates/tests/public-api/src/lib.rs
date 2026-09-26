@@ -11,7 +11,7 @@ use aisimulate_core::{
     AicEngine, AicEngineBuilder, AicError, BackendKind, DatabaseMode, EstimationMode,
     EstimatorConfig, ForwardPassPerfModel, ForwardPassPerfModelConfig,
     ForwardPassRegressionStoreDiagnostics, ForwardPassWorkerType, FpmInterpolationMethod,
-    KvCacheEstimateRequest,
+    FpmQueryCoverage, KvCacheEstimateRequest,
 };
 
 /// Compile the ergonomic engine builder without starting embedded Python.
@@ -78,6 +78,19 @@ pub fn profile_model(
 ) -> Result<ForwardPassPerfModel, AicError> {
     config.estimator_config.fpm_interpolation.method = FpmInterpolationMethod::Direct;
     ForwardPassPerfModel::best_available(config)
+}
+
+/// Coverage is owned by the model returned by the one construction API.
+pub fn fpm_coverage(model: &ForwardPassPerfModel) -> Result<Option<FpmQueryCoverage>, AicError> {
+    model.fpm_query_coverage()
+}
+
+pub fn covered_prefill(model: &ForwardPassPerfModel) -> Result<f64, AicError> {
+    model.predict_prefill_latency(1, 128, 0)
+}
+
+pub fn covered_decode(model: &ForwardPassPerfModel) -> Result<f64, AicError> {
+    model.predict_decode_latency_total(1, 128)
 }
 
 pub fn best_available_model(
@@ -464,6 +477,11 @@ pub fn rebuild_replay_report_literals(
 }
 
 /// Detailed phase evidence is reachable through the canonical model.
-pub fn operation_diagnostics(model: &ForwardPassPerfModel) -> Result<Vec<aisimulate_core::perfmodel::engine::diagnostics::StaticOperationDiagnostics>, AicError> {
+pub fn operation_diagnostics(
+    model: &ForwardPassPerfModel,
+) -> Result<
+    Vec<aisimulate_core::perfmodel::engine::diagnostics::StaticOperationDiagnostics>,
+    AicError,
+> {
     model.static_phase_diagnostics(1, 128, 0, true)
 }

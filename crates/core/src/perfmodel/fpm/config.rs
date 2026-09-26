@@ -253,6 +253,7 @@ impl ForwardPassPerfModelConfig {
                 self.kvcache_quant_mode = Some(facts.kvcache_quant_mode);
                 self.comm_quant_mode = Some(facts.comm_quant_mode);
                 self.attention_backend = Some(facts.attention_backend);
+                self.fpm_resources()?;
                 Some(facts.registered)
             }
             #[cfg(not(feature = "python"))]
@@ -278,6 +279,16 @@ impl ForwardPassPerfModelConfig {
     }
 
     pub(crate) fn validate(&self) -> Result<(), AicError> {
+        if self.estimator_config.fpm_interpolation.collect_coverage
+            && (self.estimation_mode != EstimationMode::FpmInterpolation
+                || self.fallback_policy != ForwardPassFallbackPolicy::Deny
+                || self.estimator_config.fpm_interpolation.method
+                    != super::FpmInterpolationMethod::Direct)
+        {
+            return Err(invalid_config(
+                "collect_coverage requires estimation_mode='fpm_interpolation', method='direct', and fallback_policy='deny'",
+            ));
+        }
         if self.model.trim().is_empty() {
             return Err(invalid_config("model cannot be empty"));
         }
@@ -450,6 +461,66 @@ mod tests {
             }))
             .is_err()
         );
+    }
+
+    #[test]
+    fn coverage_controls_preserve_default_serialization_and_require_strict_direct() {
+        let default = serde_json::to_value(EstimatorConfig::default()).unwrap();
+        assert_eq!(
+            default["fpm_interpolation"],
+            serde_json::json!({"method": "auto"})
+        );
+        let cfg = config(serde_json::json!({
+            "estimation_mode": "fpm_interpolation",
+            "estimator_config": {"fpm_interpolation": {"method": "direct", "collect_coverage": true}}
+        }));
+        cfg.validate().unwrap();
+        let reloaded: ForwardPassPerfModelConfig =
+            serde_json::from_value(serde_json::to_value(&cfg).unwrap()).unwrap();
+        assert_eq!(cfg, reloaded);
+        for mode in [
+            EstimationMode::Auto,
+            EstimationMode::OpLevel,
+            EstimationMode::FpmRegression,
+        ] {
+            let mut invalid = cfg.clone();
+            invalid.estimation_mode = mode;
+            assert!(
+                invalid
+                    .validate()
+                    .unwrap_err()
+                    .to_string()
+                    .contains("collect_coverage")
+            );
+        }
+        for method in [
+            super::super::FpmInterpolationMethod::Auto,
+            super::super::FpmInterpolationMethod::Sol,
+        ] {
+            let mut invalid = cfg.clone();
+            invalid.estimator_config.fpm_interpolation.method = method;
+            assert!(
+                invalid
+                    .validate()
+                    .unwrap_err()
+                    .to_string()
+                    .contains("collect_coverage")
+            );
+        }
+        for fallback in [
+            ForwardPassFallbackPolicy::Allow,
+            ForwardPassFallbackPolicy::LegacyRegression,
+        ] {
+            let mut invalid = cfg.clone();
+            invalid.fallback_policy = fallback;
+            assert!(
+                invalid
+                    .validate()
+                    .unwrap_err()
+                    .to_string()
+                    .contains("collect_coverage")
+            );
+        }
     }
 
     #[test]

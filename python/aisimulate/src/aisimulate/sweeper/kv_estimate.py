@@ -52,6 +52,47 @@ def memory_fraction_kind(backend: str) -> str:
     return "of_free" if backend == "trtllm" else "of_total"
 
 
+def estimate_grouped_cache_budget(
+    shape: ParallelShape,
+    *,
+    model_name: str,
+    hardware_sku: str,
+    backend: str,
+    backend_version: str,
+    fpm_profile: dict[str, Any],
+    context_length: int | None,
+    max_num_tokens: int,
+    max_batch_size: int,
+    memory_fraction: float,
+    systems_paths: list[str] | None = None,
+    model_controls: dict[str, str | int | bool] | None = None,
+    nextn: int = 0,
+    request_occupancy_tokens: int | None = None,
+) -> dict[str, Any]:
+    """Use the canonical Rust grouped budget, including transient prefill pages."""
+    return estimate_kv_cache(
+        model_name,
+        hardware_sku,
+        backend,
+        backend_version=backend_version,
+        max_num_tokens=max_num_tokens,
+        max_batch_size=max_batch_size,
+        context_length=context_length,
+        request_occupancy_tokens=request_occupancy_tokens,
+        memory_fraction_kind=memory_fraction_kind(backend),
+        memory_fraction_value=memory_fraction,
+        tp_size=shape.tp,
+        pp_size=shape.pp,
+        attention_dp_size=shape.dp,
+        moe_tp_size=shape.moe_tp,
+        moe_ep_size=shape.moe_ep,
+        nextn=nextn,
+        **(model_controls or {}),
+        systems_path=list(resolve_systems_paths(systems_paths)) if systems_paths is not None else None,
+        fpm_profile=fpm_profile,
+    )
+
+
 def resolve_backend_version(
     hardware_sku: str,
     backend: str,
@@ -99,6 +140,7 @@ def estimate_kv_tokens(
     nextn: int = 0,
     fpm_profile: dict[str, Any] | None = None,
     model_controls: dict[str, str | int | bool] | None = None,
+    context_length: int | None = None,
 ) -> int | None:
     """Per-rank KV-cache capacity (in tokens) for ``shape``, or ``None`` when the
     shape leaves no KV budget (weights + activations already fill VRAM -> OOM).
@@ -125,6 +167,7 @@ def estimate_kv_tokens(
             systems_path=(list(resolve_systems_paths(systems_paths)) if systems_paths is not None else None),
             allow_naive_fallback=False,
             **({"fpm_profile": fpm_profile} if fpm_profile is not None else {}),
+            **({"context_length": context_length} if context_length is not None else {}),
         )
     except ValueError as exc:
         msg = str(exc)
@@ -177,6 +220,7 @@ def feasible_shape_tokens(
             max_batch_size=max_batch_size,
             memory_fraction=memory_fraction,
             **({"fpm_profile": fpm_profile} if fpm_profile is not None else {}),
+            **({"context_length": max_seq_len} if fpm_profile is not None else {}),
             **({"model_controls": model_controls} if model_controls else {}),
             **({"nextn": nextn} if nextn else {}),
         )

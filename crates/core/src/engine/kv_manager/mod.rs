@@ -35,6 +35,7 @@ impl<T> G1Acquire<T> {
 }
 
 mod g1_manager;
+mod grouped;
 pub(crate) mod sglang_backend;
 mod state_cache_manager;
 mod vllm_backend;
@@ -44,6 +45,7 @@ mod vllm_firewall_tests;
 pub(crate) use g1_manager::{
     DestinationReservation, G1Manager, NativeAllocation, SourceReuseDependency,
 };
+pub(crate) use grouped::GroupedKvPool;
 pub(crate) use sglang_backend::SglangKvManager;
 pub(crate) use vllm_backend::BlockRequestLease;
 

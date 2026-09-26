@@ -31,6 +31,14 @@ pub struct FpmInterpolationConfig {
     /// External parquet and its same-stem metadata sidecar.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fpm_parquet_path: Option<PathBuf>,
+    /// Record bounded query coverage on the returned canonical model.
+    /// Requires explicit direct FPM with fallback denied.
+    #[serde(skip_serializing_if = "is_false")]
+    pub collect_coverage: bool,
+}
+
+fn is_false(value: &bool) -> bool {
+    !value
 }
 
 /// Construction-time interpolation selection. Native operators receive only

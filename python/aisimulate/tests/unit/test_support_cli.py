@@ -14,6 +14,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import yaml
 
 import aisimulate.main as cli
 from aisimulate.config import CorePredictionConfig, CoreRecommendationConfig
@@ -27,7 +28,6 @@ _REQUIRED = {
     "model_kind": "dense",
     "framework_version": "0.24.0",
     "gpu": "h200_sxm",
-    "gpu_count": 4,
     "interconnect": "nvswitch",
 }
 _PILOT = {
@@ -93,6 +93,79 @@ def test_help_explains_model_fpm_and_target_hardware_scope(capsys, command) -> N
     assert "aisimulate" in output
 
 
+def test_init_help_explains_collection_requirements_and_runtime_budgets(capsys) -> None:
+    with pytest.raises(SystemExit) as result:
+        cli.main(["onboard", "init", "--help"])
+    assert result.value.code == 0
+    output = " ".join(capsys.readouterr().out.split())
+    assert "Collection GPUs are derived from the selected topology" in output
+    assert "Set deployment replicas and GPU budgets in ordinary predict/recommend configs" in output
+    for obsolete in ("--gpu-count", "--node-count", "--gpus-per-node", "--max-candidates"):
+        assert obsolete not in output
+
+
+@pytest.mark.parametrize("option", ["gpu-count", "node-count", "gpus-per-node", "max-candidates"])
+def test_obsolete_onboarding_options_fail_without_writing(tmp_path, monkeypatch, capsys, option):
+    output = tmp_path / "request.yaml"
+    output.write_text("existing request\n")
+    prompts = _terminal(monkeypatch)
+    with pytest.raises(SystemExit) as result:
+        cli.main(_init_args(output) + [f"--{option}", "4", "--interactive", "--overwrite"])
+    assert result.value.code == 2
+    assert f"unrecognized arguments: --{option}" in capsys.readouterr().err
+    assert prompts == []
+    assert output.read_text() == "existing request\n"
+    assert list(tmp_path.iterdir()) == [output]
+
+
+@pytest.mark.parametrize("action", ["plan", "collect-fpm"])
+def test_legacy_saved_request_requires_new_plan_and_preserves_old_data(tmp_path, monkeypatch, capsys, action):
+    from aisimulate.support.plan import create_plan
+
+    def unexpected_launch(*args, **kwargs):
+        pytest.fail("request migration must not launch collection")
+
+    monkeypatch.setitem(sys.modules, "collector.fpm_forward.cli", SimpleNamespace(main=unexpected_launch))
+    request = tmp_path / "request.yaml"
+    assert cli.main(_init_args(request, tensor_parallel=4)) == 0
+    current = SupportRequest.from_yaml(request)
+    old_root = tmp_path / "old-plan"
+    create_plan(current, old_root)
+    old_request = yaml.safe_load((old_root / "request.yaml").read_text())
+    old_request["identity"].update(gpu_count=16, node_count=2, gpus_per_node=8)
+    old_request["search"]["max_candidates"] = 2
+    (old_root / "request.yaml").write_text(yaml.safe_dump(old_request))
+    old_plan = json.loads((old_root / "support-plan.json").read_text())
+    old_plan["request_id"] = "onboarding-legacy-request"
+    (old_root / "support-plan.json").write_text(json.dumps(old_plan))
+    (old_root / "systems/data/existing.parquet").write_bytes(b"collected timing data")
+    before = {p.relative_to(old_root): p.read_bytes() for p in old_root.rglob("*") if p.is_file()}
+    args = ["onboard", action, "--config", str(old_root / "request.yaml"), "--output-dir", str(old_root)]
+    args += ["--overwrite"] if action == "plan" else ["--execute"]
+
+    with pytest.raises(SystemExit) as result:
+        cli.main(args)
+    assert result.value.code == 2
+    assert "Copy the request, remove these fields" in capsys.readouterr().err
+    assert {p.relative_to(old_root): p.read_bytes() for p in old_root.rglob("*") if p.is_file()} == before
+
+    # Migrate a copy and create a new plan; the old plan and timings retain their identity.
+    for name in ("gpu_count", "node_count", "gpus_per_node"):
+        del old_request["identity"][name]
+    del old_request["search"]["max_candidates"]
+    migrated = tmp_path / "migrated.yaml"
+    migrated.write_text(yaml.safe_dump(old_request))
+    assert SupportRequest.from_yaml(migrated) == current
+    with pytest.raises(SystemExit) as result:
+        cli.main(["onboard", "plan", "--config", str(migrated), "--output-dir", str(old_root), "--overwrite"])
+    assert result.value.code == 2
+    assert "choose a new output directory" in capsys.readouterr().err
+    new_root = tmp_path / "new-plan"
+    assert cli.main(["onboard", "plan", "--config", str(migrated), "--output-dir", str(new_root)]) == 0
+    assert SupportRequest.from_yaml(new_root / "request.yaml") == current
+    assert {p.relative_to(old_root): p.read_bytes() for p in old_root.rglob("*") if p.is_file()} == before
+
+
 @pytest.mark.parametrize("action", ["init", "plan", "collect-fpm"])
 def test_retired_support_command_is_rejected_before_dispatch(tmp_path, monkeypatch, capsys, action) -> None:
     def unexpected_dispatch(*args, **kwargs):
@@ -116,26 +189,48 @@ def test_retired_support_command_is_rejected_before_dispatch(tmp_path, monkeypat
     assert not list(tmp_path.iterdir())
 
 
+@pytest.mark.parametrize("search", [123, True, [], None, [["context_length", 4096]]])
+def test_v1_request_rejects_malformed_search_without_writing_plan(tmp_path, capsys, search):
+    source = tmp_path / "request.yaml"
+    source.write_text(
+        yaml.safe_dump({"schema_version": "aisimulate-support-request/v1", "identity": _REQUIRED, "search": search})
+    )
+    original = source.read_bytes()
+    output = tmp_path / "plan"
+
+    with pytest.raises(SystemExit) as result:
+        cli.main(["onboard", "plan", "--config", str(source), "--output-dir", str(output)])
+
+    assert result.value.code == 2
+    assert "search" in capsys.readouterr().err
+    assert source.read_bytes() == original
+    assert not output.exists()
+
+
 def test_guided_and_scripted_setup_produce_the_same_request(tmp_path, monkeypatch, capsys) -> None:
     guided = tmp_path / "guided request.yaml"
     scripted = tmp_path / "scripted.yaml"
     prompts = _terminal(
         monkeypatch,
-        ["example/unintegrated-model", "revision-123", "dense", "0.24.0", "h200_sxm", "4", "nvswitch", "2"] + [""] * 6,
+        ["example/unintegrated-model", "revision-123", "dense", "0.24.0", "h200_sxm", "nvswitch", "2"] + [""] * 6,
     )
 
     assert cli.main(["onboard", "init", "--interactive", "--output", str(guided)]) == 0
     assert cli.main(_init_args(scripted, tensor_parallel=2)) == 0
 
     assert SupportRequest.from_yaml(guided) == SupportRequest.from_yaml(scripted)
-    assert any("Input tokens per request [1024]" in prompt for prompt in prompts)
-    assert any("Target time to first token (ms) [1000.0]" in prompt for prompt in prompts)
+    assert not any("tokens" in prompt.lower() or "concurrent" in prompt.lower() for prompt in prompts)
+    assert not any(
+        "time to first token" in prompt.lower() or "time per output token" in prompt.lower() for prompt in prompts
+    )
     request = SupportRequest.from_yaml(guided)
     assert request.workload.request_count == 4
-    assert request.identity.gpus_per_node == 4
+    assert request.worker_gpus == 2
+    assert not any("node" in prompt.lower() or "available" in prompt.lower() for prompt in prompts)
     assert request.identity.aisimulate_revision is None
     assert request.identity.tokenizer_revision is None
     output = capsys.readouterr().out
+    assert "Collection GPUs required: 2" in output
     assert "accuracy is not assessed" in output
     assert "are unchecked" in output
 
@@ -144,7 +239,7 @@ def test_supplied_options_skip_prompts_and_onboarding_alias_is_optional(tmp_path
     prompts = _terminal(monkeypatch)
     guided = tmp_path / "guided.yaml"
     scripted = tmp_path / "scripted.yaml"
-    options = {"request_count": 8, "seed": 123, "max_candidates": 2, "objective": "goodput"}
+    options = {"request_count": 8, "seed": 123, "objective": "goodput"}
 
     assert cli.main(_init_args(guided, full=True, **options) + ["--interactive", "--profile", "onboarding"]) == 0
     assert cli.main(_init_args(scripted, full=True, **options)) == 0
@@ -157,10 +252,10 @@ def test_guided_setup_recovers_numeric_input_and_shared_field_validation(tmp_pat
     output = tmp_path / "request.yaml"
     prompts = _terminal(monkeypatch, ["many", "4", "revision-123"])
 
-    assert cli.main(_init_args(output, full=True, model_revision="main", gpu_count=None) + ["--interactive"]) == 0
+    assert cli.main(_init_args(output, full=True, model_revision="main", tensor_parallel=None) + ["--interactive"]) == 0
 
     request = SupportRequest.from_yaml(output)
-    assert request.identity.gpu_count == 4
+    assert request.worker_gpus == 4
     assert request.identity.model_revision == "revision-123"
     assert len(prompts) == 3
     transcript = capsys.readouterr().out
@@ -171,10 +266,9 @@ def test_guided_setup_recovers_numeric_input_and_shared_field_validation(tmp_pat
 @pytest.mark.parametrize(
     ("changes", "answers", "expected"),
     [
-        ({"tensor_parallel": 8}, ["unknown-option", "--tensor-parallel", "2"], "tensor_parallel"),
+        ({"attention_data_parallel": 2}, ["unknown-option", "--attention-data-parallel", "1"], "TP, DEP, or TEP"),
         ({"context_length": 100}, ["context-length", "4096"], "context_length"),
         ({"concurrency": 8}, ["request-count", "8"], "request_count"),
-        ({"node_count": 2, "gpus_per_node": 4}, ["gpu-count", "8"], "gpu_count"),
     ],
 )
 def test_guided_setup_recovers_cross_field_validation(
@@ -195,14 +289,11 @@ def test_guided_setup_recovers_cross_field_validation(
     [
         {"model": None},
         {"model_revision": "latest"},
-        {"gpu_count": 0},
         {"ttft_ms": "nan"},
         {"request_count": 0},
         {"context_length": 100},
-        {"tensor_parallel": 8},
-        {"max_candidates": 3},
+        {"tensor_parallel": 0},
         {"objective": "invented"},
-        {"node_count": 2},
     ],
 )
 def test_scripted_setup_uses_shared_validation_and_never_writes_invalid_requests(tmp_path, capsys, changes) -> None:
@@ -373,6 +464,7 @@ def test_init_plan_and_preview_use_real_public_configs_without_launching_collect
     plan = json.loads((output / "support-plan.json").read_text())
     assert summary["request_id"] == plan["request_id"]
     assert summary["candidate_count"] == 1
+    assert summary["collection_gpus_required"] == plan["fpm"]["collection_gpus_required"] == 2
     prediction = CorePredictionConfig.from_yaml(plan["outputs"]["prediction_configs"][0])
     recommendation = CoreRecommendationConfig.from_yaml(plan["outputs"]["recommendation_configs"][0])
     assert prediction.engine.workers.aggregated.timing.estimation_mode == "fpm_interpolation"
@@ -391,13 +483,10 @@ def test_init_plan_and_preview_use_real_public_configs_without_launching_collect
 
 
 def test_explicit_execute_forwards_diagnostic_options_and_exit_status(tmp_path, monkeypatch) -> None:
+    from .test_support_plan import _mock_collector_execution
+
     calls = []
-
-    def collector_main(argv):
-        calls.append(argv)
-        return 7
-
-    monkeypatch.setitem(sys.modules, "collector.fpm_forward.cli", SimpleNamespace(main=collector_main))
+    _mock_collector_execution(monkeypatch, calls)
     request_path = tmp_path / "request.yaml"
     output = tmp_path / "plan"
     assert cli.main(_init_args(request_path, tensor_parallel=2)) == 0
@@ -419,7 +508,7 @@ def test_explicit_execute_forwards_diagnostic_options_and_exit_status(tmp_path, 
                 "--resume",
             ]
         )
-        == 7
+        == 1
     )
 
     assert len(calls) == 1
@@ -429,7 +518,7 @@ def test_explicit_execute_forwards_diagnostic_options_and_exit_status(tmp_path, 
     assert calls[0][calls[0].index("--limit") + 1] == "1"
 
 
-def _local_collection_command(tmp_path):
+def _local_collection_command(tmp_path, *, with_profile=False):
     model = tmp_path / "model with spaces"
     model.mkdir()
     (model / "config.json").write_text(
@@ -450,12 +539,78 @@ def _local_collection_command(tmp_path):
     )
     request_path = tmp_path / "request.yaml"
     root = tmp_path / "plan"
-    assert cli.main(_init_args(request_path, model=model)) == 0
+    init = _init_args(request_path, model=model)
+    if with_profile:
+        overrides = tmp_path / "resources.json"
+        overrides.write_text(json.dumps({"fmha_quant_mode": "bfloat16", "kv_cache_dtype": "bfloat16"}))
+        init.extend(
+            (
+                "--model-config",
+                str(model / "config.json"),
+                "--resource-overrides",
+                str(overrides),
+                "--tensor-parallel",
+                "1",
+            )
+        )
+    assert cli.main(init) == 0
     assert cli.main(["onboard", "plan", "-c", str(request_path), "--output-dir", str(root)]) == 0
     return ["onboard", "collect-fpm", "-c", str(request_path), "--output-dir", str(root), "--execute"]
 
 
-def test_deployment_options_reach_frozen_collector_plan(tmp_path, monkeypatch):
+@pytest.mark.parametrize("with_profile", [False, True], ids=["generic", "profile"])
+def test_plan_guides_both_collection_executors_without_launching_workers(tmp_path, monkeypatch, capsys, with_profile):
+    def unexpected_launch(*args, **kwargs):
+        pytest.fail("initialization, planning and collection preview must not launch workers")
+
+    monkeypatch.setattr(subprocess, "run", unexpected_launch)
+    monkeypatch.setitem(sys.modules, "collector.fpm_forward.cli", SimpleNamespace(main=unexpected_launch))
+    command = _local_collection_command(tmp_path, with_profile=with_profile)
+    request = SupportRequest.from_yaml(tmp_path / "request.yaml")
+    assert (request.fpm_profile is not None) == with_profile
+    plan = json.loads((tmp_path / "plan/support-plan.json").read_text())
+    runtime = next(item for item in plan["prerequisites"] if item["id"] == "runtime")
+    assert runtime["status"] == "not_checked"
+    detail = runtime["detail"]
+    for prerequisite in (
+        "Kubernetes",
+        "caller-owned sbatch/salloc Slurm allocation",
+        "Pyxis/Enroot",
+        "explicit --image",
+        "same absolute path",
+        "does not download a pinned checkpoint",
+    ):
+        assert prerequisite in detail
+    if with_profile:
+        assert "observed worker vLLM version" in detail
+        assert "profile's literal backend version before benchmarking on either executor" in detail
+        assert "do not verify the loaded checkpoint weights" in detail
+    else:
+        assert "does not enforce model/tokenizer revision or vLLM version declarations" in detail
+
+    command.remove("--execute")
+    capsys.readouterr()
+    assert cli.main([*command, "--executor", "kubernetes"]) == 0
+    assert "--fpm-executor" not in shlex.split(capsys.readouterr().out)
+    assert cli.main([*command, "--executor", "slurm", "--image", "runtime.sqsh"]) == 0
+    preview = shlex.split(capsys.readouterr().out)
+    assert preview[preview.index("--fpm-executor") + 1] == "slurm"
+    assert preview[preview.index("--fpm-slurm-container-image") + 1] == "runtime.sqsh"
+    assert "--plan-only" in preview
+    assert not (tmp_path / "plan/fpm-artifacts").exists()
+    assert not (tmp_path / "plan/fpm-checkpoint").exists()
+
+
+@pytest.fixture
+def timing_ready(monkeypatch):
+    # These tests isolate deployment forwarding and frozen-plan resume guards;
+    # native readiness behavior is exercised with real artifacts separately.
+    from aisimulate.support import collection_readiness
+
+    monkeypatch.setattr(collection_readiness, "assess_readiness", lambda *a, **k: {"ready_for_full_collection": True})
+
+
+def test_deployment_options_reach_frozen_collector_plan(tmp_path, monkeypatch, timing_ready):
     from collector.fpm_forward import runner
 
     calls = []
@@ -494,6 +649,111 @@ def test_deployment_options_reach_frozen_collector_plan(tmp_path, monkeypatch):
     assert plan.cells
     assert kwargs["artifact_root"] == str(tmp_path / "plan/fpm-artifacts")
     assert kwargs["database_root"] == str(tmp_path / "plan/systems/data")
+
+
+def test_slurm_deployment_preview_and_execution_reach_frozen_collector_plan(
+    tmp_path, monkeypatch, capsys, timing_ready
+):
+    from collector.fpm_forward import runner
+
+    calls = []
+    monkeypatch.setattr(runner, "run_collection", lambda plan, **kwargs: calls.append((plan, kwargs)) or [])
+    image = "registry.example/fpm@sha256:" + "a" * 64
+    mounts = ["/shared/model cache:/models:ro", "/shared/huggingface:/root/.cache/huggingface"]
+    command = [
+        *_local_collection_command(tmp_path),
+        "--executor",
+        "slurm",
+        "--dynamo-version",
+        "1.2.0",
+        "--image",
+        image,
+        "--transport",
+        "ib",
+    ]
+    for mount in mounts:
+        command.extend(("--container-mount", mount))
+    capsys.readouterr()
+
+    assert cli.main([argument for argument in command if argument != "--execute"]) == 0
+    preview = shlex.split(capsys.readouterr().out)
+    assert preview[preview.index("--fpm-executor") + 1] == "slurm"
+    assert preview[preview.index("--fpm-slurm-container-image") + 1] == image
+    assert preview[preview.index("--fpm-slurm-cpus-per-task") + 1] == "16"
+    assert preview[preview.index("--fpm-slurm-cpu-bind") + 1] == "cores"
+    assert [
+        preview[index + 1] for index, value in enumerate(preview) if value == "--fpm-slurm-container-mount"
+    ] == mounts
+    assert "--generator-set" not in preview
+    assert "--plan-only" in preview
+    assert calls == []
+
+    assert cli.main(command) == 0
+    [(plan, kwargs)] = calls
+    assert plan.options.executor == "slurm"
+    assert plan.options.slurm_container_image == image
+    assert plan.options.slurm_container_mounts == tuple(mounts)
+    assert plan.options.slurm_cpus_per_task == 16
+    assert plan.options.slurm_cpu_bind == "cores"
+    assert kwargs["generator_overrides"] == {
+        "generator_dynamo_version": "1.2.0",
+        "K8sConfig": {"transport": "ib"},
+    }
+    assert kwargs["artifact_root"] == str(tmp_path / "plan/fpm-artifacts")
+    assert kwargs["database_root"] == str(tmp_path / "plan/systems/data")
+
+
+def test_explicit_kubernetes_executor_preserves_default_collector_preview(tmp_path, capsys):
+    command = [argument for argument in _local_collection_command(tmp_path) if argument != "--execute"]
+    capsys.readouterr()
+    assert cli.main(command) == 0
+    default = capsys.readouterr().out
+    assert cli.main([*command, "--executor", "kubernetes"]) == 0
+    assert capsys.readouterr().out == default
+    assert "--fpm-executor" not in default
+    assert "--fpm-slurm" not in default
+
+
+@pytest.mark.parametrize(
+    "options,diagnostic",
+    [
+        (["--executor", "slurm"], "--executor slurm requires --image"),
+        (["--executor", "slurm", "--image", "runtime.sqsh", "--namespace", "example"], "--namespace"),
+        (["--executor", "slurm", "--image", "runtime.sqsh", "--model-cache", "model-cache"], "--model-cache"),
+        (
+            ["--executor", "slurm", "--image", "runtime.sqsh", "--image-pull-secret", "registry"],
+            "--image-pull-secret",
+        ),
+        (["--container-mount", "/shared:/models"], "--container-mount requires --executor slurm"),
+        (["--cpus-per-task", "16"], "require --executor slurm"),
+        (["--cpu-bind", "cores"], "require --executor slurm"),
+        (["--executor", "slurm", "--image", "runtime.sqsh", "--cpus-per-task", "0"], "greater than 0"),
+        *[
+            (["--executor", "slurm", "--image", "runtime.sqsh", "--container-mount", mount], "container mounts")
+            for mount in (
+                "",
+                "  ",
+                "/one:/models,/two:/cache",
+                "/one\n:/models",
+                "/one\r:/models",
+                "/one\x00:/models",
+                "/one\t:/models",
+                "/one\x7f:/models",
+            )
+        ],
+    ],
+)
+def test_executor_options_fail_before_collection_for_incompatible_inputs(tmp_path, capsys, options, diagnostic):
+    command = _local_collection_command(tmp_path)
+    capsys.readouterr()
+    with pytest.raises(SystemExit) as error:
+        cli.main([*command, *options])
+    assert error.value.code == 2
+    output = capsys.readouterr()
+    assert diagnostic in output.err
+    assert "Traceback" not in output.err
+    assert not (tmp_path / "plan/fpm-checkpoint").exists()
+    assert not (tmp_path / "plan/fpm-artifacts").exists()
 
 
 @pytest.mark.parametrize(
@@ -536,7 +796,9 @@ def test_deployment_options_reject_invalid_or_unrestricted_inputs(tmp_path, caps
         ("--image-pull-secret", "first", "second"),
     ],
 )
-def test_deployment_resume_requires_the_same_frozen_identity(tmp_path, monkeypatch, capsys, option, first, changed):
+def test_deployment_resume_requires_the_same_frozen_identity(
+    tmp_path, monkeypatch, capsys, option, first, changed, timing_ready
+):
     from collector.fpm_forward import planner, runner
 
     command = [*_local_collection_command(tmp_path), option, first]
@@ -550,6 +812,9 @@ def test_deployment_resume_requires_the_same_frozen_identity(tmp_path, monkeypat
         plans.append(plan)
         checkpoint.parent.mkdir(exist_ok=True)
         checkpoint.write_text(json.dumps({"schema": runner.CHECKPOINT_SCHEMA, "plan_sha256": plan.sha256, "cells": {}}))
+        campaign = Path(kwargs["artifact_root"]) / plan.sha256[:16]
+        campaign.mkdir(parents=True, exist_ok=True)
+        (campaign / "collection-plan.json").write_text(json.dumps(plan.to_dict()))
         return []
 
     monkeypatch.setattr(planner, "_git_revision", lambda: "test-source-revision")
@@ -573,10 +838,61 @@ def test_deployment_resume_requires_the_same_frozen_identity(tmp_path, monkeypat
     assert checkpoint.read_bytes() == saved
 
 
+@pytest.mark.parametrize(
+    "changed_options",
+    [
+        ["--image", "registry.example/fpm:changed"],
+        ["--container-mount", "/shared/checkpoint:/models:ro"],
+        ["--executor", "kubernetes"],
+        ["--cpus-per-task", "32"],
+        ["--cpu-bind", "none"],
+    ],
+)
+def test_slurm_collection_resume_rejects_changed_deployment(
+    tmp_path, monkeypatch, capsys, changed_options, timing_ready
+):
+    from collector.fpm_forward import planner, runner, slurm
+
+    command = [*_local_collection_command(tmp_path), "--executor", "slurm", "--image", "registry.example/fpm:pinned"]
+    checkpoint = tmp_path / "plan/fpm-checkpoint/fpm_forward.json"
+    plans = []
+    actual_run = runner.run_collection
+
+    def checkpoint_only(plan, **kwargs):
+        # A synthetic empty checkpoint exercises the public frozen-plan guard;
+        # no Slurm allocation, GPU execution or silicon measurements are used.
+        plans.append(plan)
+        checkpoint.parent.mkdir(exist_ok=True)
+        checkpoint.write_text(json.dumps({"schema": runner.CHECKPOINT_SCHEMA, "plan_sha256": plan.sha256, "cells": {}}))
+        campaign = Path(kwargs["artifact_root"]) / plan.sha256[:16]
+        campaign.mkdir(parents=True, exist_ok=True)
+        (campaign / "collection-plan.json").write_text(json.dumps(plan.to_dict()))
+        return []
+
+    monkeypatch.setattr(planner, "_git_revision", lambda: "test-source-revision")
+    monkeypatch.setattr(runner, "run_collection", checkpoint_only)
+    assert cli.main(command) == 0
+    saved = checkpoint.read_bytes()
+    assert cli.main([*command, "--resume"]) == 0
+    assert plans[0].sha256 == plans[1].sha256
+
+    def unexpected_launch(*args, **kwargs):
+        pytest.fail("changed deployment must fail before launching GPU work")
+
+    monkeypatch.setattr(runner, "run_collection", actual_run)
+    monkeypatch.setattr(runner, "KubernetesCellRunner", unexpected_launch)
+    monkeypatch.setattr(slurm, "SlurmCellRunner", unexpected_launch)
+    capsys.readouterr()
+    assert cli.main([*command, "--resume", *changed_options]) == 1
+    assert "checkpoint does not match the current frozen plan" in capsys.readouterr().err
+    assert checkpoint.read_bytes() == saved
+
+
 @pytest.mark.parametrize("stage", ["input", "execution"])
 @pytest.mark.parametrize("error_type", [RuntimeError, ValueError, OSError, KeyboardInterrupt])
-def test_collector_failures_keep_public_cli_exit_codes(tmp_path, monkeypatch, capsys, stage, error_type):
-    from collector.fpm_forward import cli as collector_cli
+def test_collector_failures_keep_public_cli_exit_codes(tmp_path, monkeypatch, capsys, stage, error_type, timing_ready):
+    from collector import model_cases
+    from collector.fpm_forward import entry
 
     request_path = tmp_path / "request.yaml"
     root = tmp_path / "plan"
@@ -587,9 +903,11 @@ def test_collector_failures_keep_public_cli_exit_codes(tmp_path, monkeypatch, ca
     def fail(*args, **kwargs):
         raise error_type("test collection failure")
 
-    monkeypatch.setattr(collector_cli, "build_collection_case_plan", lambda **kwargs: SimpleNamespace(model_path=None))
-    monkeypatch.setattr(collector_cli, "resolve_run_inputs", fail if stage == "input" else lambda *args: None)
-    monkeypatch.setattr(collector_cli, "run_resolved", fail)
+    monkeypatch.setattr(model_cases, "build_collection_case_plan", lambda **kwargs: SimpleNamespace(model_path=None))
+    monkeypatch.setattr(
+        entry, "resolve_run_inputs", fail if stage == "input" else lambda *args: (SimpleNamespace(cells=()), {})
+    )
+    monkeypatch.setattr(entry, "run_resolved", fail)
     command = ["onboard", "collect-fpm", "-c", str(request_path), "--output-dir", str(root), "--execute"]
 
     if error_type is KeyboardInterrupt:

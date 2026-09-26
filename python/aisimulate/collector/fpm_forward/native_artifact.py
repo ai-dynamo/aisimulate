@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import math
 import re
 from dataclasses import dataclass
@@ -22,6 +23,8 @@ from aisimulate_core.sdk.fpm_identity import EXECUTION_COLUMNS
 from .planner import FPMCell
 from .types import KVWARM_STRATEGIES
 
+logger = logging.getLogger(__name__)
+
 COLLECTOR_PROVENANCE_FILENAME = "collector-provenance.json"
 
 
@@ -29,11 +32,44 @@ COLLECTOR_PROVENANCE_FILENAME = "collector-provenance.json"
 class NativePointMeasurement:
     point: dict[str, Any]
     rank_wall_times: tuple[tuple[int, float], ...]
+    # Keep native row provenance for diagnostics, without reinterpreting the
+    # formal database's historical prefill kv_seed_regime contract.
+    kv_seed_regime: str | None = None
 
 
 # Distinguishes "no artifact seen yet" from a legitimately absent (legacy)
 # kvwarm block during cross-rank consistency checking.
 _KVWARM_UNSEEN = object()
+
+
+def _validate_seed_regime(row: dict[str, Any], path: Path) -> str | None:
+    regime = row.get("kv_seed_regime")
+    if regime is None:
+        return None  # Historical artifacts did not report a row-level regime.
+    if not isinstance(regime, str) or not regime:
+        raise ValueError(f"native kv_seed_regime must be a non-empty string: {path}")
+    # Dynamo's _kvwarm_seed_regime reports these point-injection stamps:
+    # https://github.com/ai-dynamo/dynamo/blob/b83b1d9304ebfc624709ac46db32b1b6f1ff1615/components/src/dynamo/vllm/instrumented_scheduler.py#L4721
+    stamps = {
+        "real_prefix": "prefill_real_seed",
+        "fake_prefix": "prefill_fake_prefix",
+        "real_kv": "kvwarm_real_kv",
+        "fake_fallback": "kvwarm_fake_fallback",
+    }
+    reasons = set(row["point"].get("sample_reasons") or [])
+    observed_stamps = reasons.intersection(stamps.values())
+    if regime in stamps and observed_stamps != {stamps[regime]}:
+        raise ValueError(f"native kv_seed_regime disagrees with point injection stamps: {path}")
+    if regime in {"real_prefix", "fake_prefix"} and row["point"]["point_type"] != "prefill":
+        raise ValueError(f"native prefix seed regime requires prefill: {path}")
+    # Real-seed staging stamps the path before checking whether any KV needs
+    # seeding; an uncached prefill can therefore retain real_prefix provenance.
+    # https://github.com/ai-dynamo/dynamo/blob/b83b1d9304ebfc624709ac46db32b1b6f1ff1615/components/src/dynamo/vllm/instrumented_scheduler.py#L4298
+    if regime == "fake_prefix" and row["point"]["total_kv_read_tokens"] <= 0:
+        raise ValueError(f"native fake prefix seed regime requires cached prefill: {path}")
+    if regime not in stamps and observed_stamps:
+        raise ValueError(f"native kv_seed_regime disagrees with point injection stamps: {path}")
+    return regime
 
 
 def _validate_kvwarm_contract(cell: FPMCell, kvwarm: object, path: Path) -> dict[str, Any] | None:
@@ -84,6 +120,93 @@ class NativeCollection:
     # None only for artifacts predating the kvwarm-enabled runtime.
     kvwarm_meta: dict[str, Any] | None = None
     input_provenance: dict[str, Any] | None = None
+
+
+def _zero_kv_prefill_sample(measurements: list[NativePointMeasurement]) -> NativePointMeasurement | None:
+    """Prefer the unique ordinary sample over equivalent real-prefix path samples."""
+    ordinary = [m for m in measurements if m.kv_seed_regime == "not_applicable"]
+    if len(ordinary) != 1:
+        return None
+    sample = ordinary[0]
+    if sample.point["point_type"] != "prefill" or sample.point["total_kv_read_tokens"] != 0:
+        return None
+    expected = {key: value for key, value in sample.point.items() if key != "benchmark_id"}
+    for measurement in measurements:
+        if measurement is sample:
+            continue
+        if measurement.kv_seed_regime != "real_prefix":
+            return None
+        point = {key: value for key, value in measurement.point.items() if key != "benchmark_id"}
+        point["sample_reasons"] = [
+            reason for reason in point.get("sample_reasons", []) if reason != "prefill_real_seed"
+        ]
+        if point != expected:
+            return None
+    return sample
+
+
+def select_native_measurements(collection: NativeCollection, *, cell_id: str) -> list[NativePointMeasurement]:
+    """Select the formal per-coordinate samples from one validated attempt.
+
+    Used by publication and by repeatability source selection, so the original
+    reference timing is identical. Never combine independent repeat attempts.
+    """
+    # The steady-state decode policy clamps every per-sequence context below
+    # the measurable minimum up to it, so several requested plan points can
+    # collapse onto one achieved physical coordinate (e.g. batch=3 with
+    # requested total-kv 3/4/5/6 all measure total-kv 6). Repeated samples of
+    # one coordinate would violate the database's unique-key contract, so keep
+    # exactly one per coordinate: the native (unclamped) sample when present,
+    # otherwise the clamped sample with the lowest benchmark_id.
+    # Real-prefix staging can also emit zero-KV prefill samples beside the
+    # ordinary sample of the same work. Only this provenance difference is
+    # consolidatable: keep the unique ordinary sample with identical remaining
+    # point metadata. Other native collisions remain a hard error. Raw samples
+    # stay intact; neither reduction averages timings nor selects by latency.
+    grouped: dict[tuple[str, int, int, int], list[NativePointMeasurement]] = {}
+    for measurement in collection.points:
+        point = measurement.point
+        key = (
+            str(point["point_type"]),
+            int(point["batch_size"]),
+            int(point["total_prefill_tokens"]),
+            int(point["total_kv_read_tokens"]),
+        )
+        grouped.setdefault(key, []).append(measurement)
+    selected: list[NativePointMeasurement] = []
+    dropped_clamped = 0
+    dropped_zero_kv = 0
+    for key, measurements in grouped.items():
+        natives = [m for m in measurements if "context_clamped" not in (m.point.get("sample_reasons") or ())]
+        if len(natives) > 1:
+            sample = _zero_kv_prefill_sample(measurements)
+            if sample is not None:
+                selected.append(sample)
+                dropped_zero_kv += len(measurements) - 1
+                continue
+            raise ValueError(
+                f"conflicting FPM measurements for physical coordinate {key} in "
+                f"{cell_id}: {len(natives)} unclamped samples share one key"
+            )
+        if natives:
+            selected.append(natives[0])
+        else:
+            selected.append(min(measurements, key=lambda m: int(m.point["benchmark_id"])))
+        dropped_clamped += len(measurements) - 1
+    if dropped_clamped:
+        logger.info(
+            "FPM %s: consolidated %d context-clamped duplicate sample(s) onto their achieved physical coordinates",
+            cell_id,
+            dropped_clamped,
+        )
+    if dropped_zero_kv:
+        logger.info(
+            "FPM %s: consolidated %d zero-KV prefill provenance duplicate sample(s) onto their ordinary samples",
+            cell_id,
+            dropped_zero_kv,
+        )
+
+    return selected
 
 
 def _validate_execution_provenance(cell: FPMCell, payload: dict[str, Any], path: Path) -> dict[str, Any] | None:
@@ -381,6 +504,7 @@ def validate_native_collection(
     kvwarm_seen: object = _KVWARM_UNSEEN
     input_provenance: dict[str, Any] | None = None
     local_fpms: dict[tuple[int, int], dict[str, Any]] = {}
+    seed_regimes: dict[int, str | None] = {}
     rank_timings: list[tuple[int, float, float]] = []
 
     for path, payload in rank_payloads:
@@ -502,6 +626,17 @@ def validate_native_collection(
             if not isinstance(fpms, list) or len(fpms) != 1:
                 raise ValueError(f"native point must contain exactly one local FPM: {path}")
             _validate_fpm(point, fpms[0], rank=rank)
+            seed_regime = _validate_seed_regime(row, path)
+            if (
+                seed_regime == "real_kv"
+                and cell.workload_kind == "decode"
+                and kvwarm is not None
+                and (not kvwarm["enabled"] or not kvwarm["warm_eligible"])
+            ):
+                raise ValueError(f"native real KV seed regime disagrees with warm-up eligibility: {path}")
+            if benchmark_id in seed_regimes and seed_regimes[benchmark_id] != seed_regime:
+                raise ValueError(f"native DP ranks disagree on per-point KV seed regime: {path}")
+            seed_regimes[benchmark_id] = seed_regime
             local_fpms[(benchmark_id, rank)] = fpms[0]
             points.append(point)
         # The engine writes results in execution order, and KV warm-up's
@@ -568,7 +703,11 @@ def validate_native_collection(
         ):
             raise ValueError(f"native iteration wall_time mismatch for benchmark_id={benchmark_id}")
         measured_iteration_seconds += group_wall_time
-        measurements.append(NativePointMeasurement(point=dict(point), rank_wall_times=tuple(wall_times)))
+        measurements.append(
+            NativePointMeasurement(
+                point=dict(point), rank_wall_times=tuple(wall_times), kv_seed_regime=seed_regimes[benchmark_id]
+            )
+        )
 
     for rank, _elapsed, measured in rank_timings:
         if not math.isclose(measured, measured_iteration_seconds, rel_tol=1e-9, abs_tol=1e-12):

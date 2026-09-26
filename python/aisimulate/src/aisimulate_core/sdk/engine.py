@@ -710,7 +710,9 @@ def _direct_fpm_spec_json(
                 "model_path": profile.model,
                 "match_identity": identity,
                 "original_fmha_quant_mode": deployment.fmha_quant_mode if fpm_fmha_quant_mode is not None else None,
-                "weight_bytes": deployment.resources.weights_bytes,
+                # Direct interpolation ignores this legacy operation field.
+                # Zero here is not an inferred resource or memory bound.
+                "weight_bytes": deployment.resources.weights_bytes or 0,
                 "verify_width": 1,
                 "sol_ops": [],
                 "interpolation": "direct",

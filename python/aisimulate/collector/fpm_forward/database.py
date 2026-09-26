@@ -22,7 +22,7 @@ import yaml
 from aisimulate.fpm_contract import FPM_RESOLVED_CONFIG_GLOB
 from aisimulate_core.sdk.fpm_identity import EXECUTION_COLUMNS, LEGACY_EXECUTION_IDENTITY
 
-from .native_artifact import validate_native_collection
+from .native_artifact import select_native_measurements, validate_native_collection
 from .planner import FPMCell, FPMCollectionPlan, backend_identity_columns
 
 logger = logging.getLogger(__name__)
@@ -118,45 +118,7 @@ def aggregate_cell(
     backend_version = collection.backend_version
     capability = plan.capability
 
-    # The steady-state decode policy clamps every per-sequence context below
-    # the measurable minimum up to it, so several requested plan points can
-    # collapse onto one achieved physical coordinate (e.g. batch=3 with
-    # requested total-kv 3/4/5/6 all measure total-kv 6). Repeated samples of
-    # one coordinate would violate the database's unique-key contract, so keep
-    # exactly one per coordinate: the native (unclamped) sample when present,
-    # otherwise the clamped sample with the lowest benchmark_id. Two native
-    # samples on one coordinate remain a hard error — the grid itself
-    # guarantees native coordinates are unique.
-    grouped: dict[tuple[str, int, int, int], list[Any]] = {}
-    for measurement in collection.points:
-        point = measurement.point
-        key = (
-            str(point["point_type"]),
-            int(point["batch_size"]),
-            int(point["total_prefill_tokens"]),
-            int(point["total_kv_read_tokens"]),
-        )
-        grouped.setdefault(key, []).append(measurement)
-    selected: list[Any] = []
-    dropped_clamped = 0
-    for key, measurements in grouped.items():
-        natives = [m for m in measurements if "context_clamped" not in (m.point.get("sample_reasons") or ())]
-        if len(natives) > 1:
-            raise ValueError(
-                f"conflicting FPM measurements for physical coordinate {key} in "
-                f"{cell.cell_id}: {len(natives)} unclamped samples share one key"
-            )
-        if natives:
-            selected.append(natives[0])
-        else:
-            selected.append(min(measurements, key=lambda m: int(m.point["benchmark_id"])))
-        dropped_clamped += len(measurements) - 1
-    if dropped_clamped:
-        logger.info(
-            "FPM %s: consolidated %d context-clamped duplicate sample(s) onto their achieved physical coordinates",
-            cell.cell_id,
-            dropped_clamped,
-        )
+    selected = select_native_measurements(collection, cell_id=cell.cell_id)
 
     # KV seed regime (schema v6 additive column): a per-row RECORD of the
     # engine's measurement protocol for this point, consumed by the modeling
@@ -302,6 +264,12 @@ def validate_formal_database_commit(
     payload = json.loads(metadata_path.read_text())
     if not isinstance(payload, dict):
         raise TypeError(f"FPM database commit record must be a mapping: {metadata_path}")
+    if payload.get("schema_name") == "aic_fpm_forward_perf" and payload.get("schema_version") == 6:
+        raise ValueError(
+            "historical schema-6 FPM publications cannot be finalized by this collector; schema 7 is required. "
+            "Preserve the existing artifacts. Automatic migration is unsupported; "
+            "use a fresh output directory for any new collection."
+        )
     expected = {
         "schema_name": "aic_fpm_forward_perf",
         "schema_version": 7,

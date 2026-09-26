@@ -370,10 +370,307 @@ def test_profile_memory_uses_declared_bounds_without_graph_or_timing_data(profil
     json.dumps(result)  # The result is replayable; it contains no callables.
 
 
+def test_legacy_profile_remains_a_complete_declaration(profile_dict):
+    resources = load_fpm_profile(profile_dict).deployments[0].resources
+    assert resources.memory_source == "declared"
+    assert resources.memory_ready
+    assert resources.non_kv_bytes == 200
+    resources.require_memory()
+
+
 def test_profile_memory_capacity_override_does_not_read_hardware(profile_memory, monkeypatch):
     monkeypatch.setattr(memory.perf_database, "load_system_spec", _fail_graph)
     result = profile_memory(gpu_memory_capacity_bytes_override=2000)
     assert result["total_kv_size_bytes"] == 1400
+
+
+@pytest.fixture
+def grouped_profile(profile_dict):
+    resources = profile_dict["deployments"][0]["resources"]
+    resources.pop("kv_bytes_per_token")
+    resources["cache_layout"] = "grouped"
+    resources["cache_groups"] = [
+        {
+            "name": "global",
+            "kind": "attention",
+            "num_layers": 2,
+            "block_size_tokens": 16,
+            "page_size_bytes": 32,
+            "sliding_window": None,
+        },
+        {
+            "name": "local",
+            "kind": "attention",
+            "num_layers": 4,
+            "block_size_tokens": 16,
+            "page_size_bytes": 16,
+            "sliding_window": 32,
+        },
+        {
+            "name": "conv",
+            "kind": "convolution",
+            "num_layers": 6,
+            "block_size_tokens": 4,
+            "page_size_bytes": 8,
+            "sliding_window": 4,
+        },
+    ]
+    return profile_dict
+
+
+def test_grouped_profile_memory_keeps_byte_budget_and_context_bound(grouped_profile, profile_memory):
+    result = profile_memory(max_num_tokens=16, context_length=64, cuda_graph_reserved_bytes=20, tolerance_fraction=0.1)
+    assert result["total_kv_size_bytes"] == 580
+    assert result["tolerance_adjusted"]["total_kv_size_bytes"] == 522
+    assert result["total_kv_size_tokens"] is None
+    assert result["kv_size_per_token_bytes"] is None
+    assert result["tolerance_adjusted"]["total_kv_size_tokens"] is None
+    # Full: four pages * 32B; local: <=four aligned pages *16B;
+    # conv: <=six pages spanning retained history plus the 16-token chunk *8B.
+    assert result["request_peak_cache_bytes"] == 240
+    assert result["cache_groups"] == grouped_profile["deployments"][0]["resources"]["cache_groups"]
+    assert result["memory_breakdown"]["cuda_graph_reserved_bytes"] == 20
+    with pytest.raises(ValueError, match="context_length"):
+        profile_memory(context_length=4097)
+    json.dumps(result)
+
+
+def test_grouped_profile_cannot_be_reduced_to_scalar_blocks(grouped_profile, profile_memory):
+    with pytest.raises(ValueError, match="scalar num_gpu_blocks"):
+        memory.estimate_num_gpu_blocks(
+            "test/unknown-decoder",
+            "test_gpu",
+            "vllm",
+            "0.25.1",
+            scheduler_block_size=16,
+            max_num_tokens=8192,
+            max_batch_size=256,
+            memory_fraction_kind="of_total",
+            memory_fraction_value=0.8,
+            tp_size=2,
+            moe_tp_size=2,
+            fpm_profile=grouped_profile,
+        )
+
+
+@pytest.mark.parametrize("capacity", [True, 1000.0, 0, 2**53 + 1])
+def test_grouped_profile_requires_exact_positive_capacity(grouped_profile, profile_memory, capacity):
+    with pytest.raises(ValueError, match="(cache budget|GPU capacity)"):
+        profile_memory(gpu_memory_capacity_bytes_override=capacity)
+
+
+def test_grouped_profile_roundtrip_compiles_without_graph(grouped_profile, direct_compile):
+    spec = direct_compile(grouped_profile)
+    saved = json.loads(spec["engine"]["extra"]["fpm_profile"])
+    assert (
+        saved["deployments"][0]["resources"]["cache_groups"]
+        == grouped_profile["deployments"][0]["resources"]["cache_groups"]
+    )
+    assert "kv_bytes_per_token" not in saved["deployments"][0]["resources"]
+    assert _normalize(_request(saved))["fpm_profile"] == saved
+
+
+def test_linear_profile_serialization_omits_new_group_fields(profile_dict):
+    resource = load_fpm_profile(profile_dict).model_dump(mode="json")["deployments"][0]["resources"]
+    assert resource == profile_dict["deployments"][0]["resources"]
+
+
+@pytest.fixture
+def runtime_profile(profile_dict):
+    resources = profile_dict["deployments"][0]["resources"]
+    for name in ("weights_bytes", "activations_bytes", "runtime_overhead_bytes", "comm_overhead_bytes"):
+        resources.pop(name, None)
+    resources["runtime_memory"] = {
+        "kv_cache_bytes": 600,
+        "gpu_memory_utilization": 0.8,
+        "max_model_len": 2048,
+        "provenance": "Synthetic worker initialization observation; not a silicon qualification.",
+    }
+    return profile_dict
+
+
+@pytest.mark.parametrize("keep_weights", [False, True])
+def test_pending_memory_is_saved_without_fabricated_bytes(profile_dict, profile_memory, direct_compile, keep_weights):
+    resources = profile_dict["deployments"][0]["resources"]
+    for name in ("weights_bytes", "activations_bytes", "runtime_overhead_bytes", "comm_overhead_bytes"):
+        if name != "weights_bytes" or not keep_weights:
+            resources.pop(name)
+    profile = load_fpm_profile(profile_dict)
+    parsed = profile.deployments[0].resources
+    assert parsed.memory_source == "pending"
+    assert not parsed.memory_ready
+    assert profile.model_dump(mode="json")["deployments"][0]["resources"] == resources
+    assert _normalize(_request(profile_dict))["fpm_profile"] == profile.model_dump(mode="json")
+    assert direct_compile(profile_dict)["context_ops"][0]["FpmForward"]["weight_bytes"] == (100 if keep_weights else 0)
+    with pytest.raises(ValueError, match="pending runtime profiling"):
+        profile_memory(allow_naive_fallback=True)
+    with pytest.raises(ValueError, match="pending runtime profiling"):
+        _ = parsed.non_kv_bytes
+    with pytest.raises(ValueError, match="pending runtime profiling"):
+        RustForwardPassPerfModel.estimate_cache_budget(
+            _request(profile_dict),
+            {
+                "total_gpu_capacity_bytes": 1000,
+                "memory_fraction_kind": "of_total",
+                "memory_fraction_value": 0.8,
+                "max_num_tokens": 8192,
+                "max_batch_size": 256,
+            },
+        )
+
+
+def test_runtime_linear_memory_uses_observation_and_canonical_budget(runtime_profile, profile_memory, monkeypatch):
+    parsed = load_fpm_profile(runtime_profile).deployments[0].resources
+    assert parsed.memory_source == "runtime"
+    assert parsed.memory_ready
+    parsed.require_memory()
+    assert parsed.model_dump(mode="json") == runtime_profile["deployments"][0]["resources"]
+    with pytest.raises(ValueError, match="not a non-KV byte breakdown"):
+        _ = parsed.non_kv_bytes
+    monkeypatch.setattr(memory.KVCacheEstimator, "_estimate_from_breakdown", _fail_graph)
+    result = profile_memory(context_length=1024, gpu_memory_capacity_bytes_override=2000, tolerance_fraction=0.1)
+    # The observed 600-byte pool remains fixed on a larger modeled device.
+    # Ten bytes/token gives 60 raw tokens and 54 after a 10% safety margin.
+    assert result["total_kv_size_bytes"] == 600
+    assert result["total_kv_size_tokens"] == 60
+    assert result["tolerance_adjusted"]["total_kv_size_bytes"] == 540
+    assert result["tolerance_adjusted"]["total_kv_size_tokens"] == 54
+    assert result["memory_breakdown"] is None
+    assert result["source"] == "profile"
+
+
+def test_runtime_grouped_memory_keeps_layout_and_transient_pages(grouped_profile, runtime_profile, profile_memory):
+    # Reuse the hand-derived 240-byte per-request grouped footprint above.
+    runtime_profile["deployments"][0]["resources"]["max_num_tokens"] = 16
+    result = profile_memory(max_num_tokens=16, context_length=64)
+    assert result["total_kv_size_bytes"] == 600
+    assert result["request_peak_cache_bytes"] == 240
+    assert result["memory_breakdown"] is None
+    assert result["total_kv_size_tokens"] is None
+    assert result["cache_groups"] == grouped_profile["deployments"][0]["resources"]["cache_groups"]
+
+
+@pytest.mark.parametrize(
+    "kwargs,reason",
+    [
+        ({"max_num_tokens": 8191}, "exact recorded"),
+        ({"max_num_tokens": 8193}, "exact recorded"),
+        ({"max_batch_size": 255}, "exact recorded"),
+        ({"max_batch_size": 257}, "exact recorded"),
+        ({"memory_fraction_value": 0.9}, "gpu_memory_utilization"),
+        ({"context_length": 2049}, "max_model_len"),
+        ({"cuda_graph_reserved_bytes": 1}, "graph reservations"),
+        ({"gpu_memory_capacity_bytes_override": 599}, "smaller than"),
+        ({"gpu_memory_capacity_bytes_override": 749}, "smaller than"),
+    ],
+)
+def test_runtime_memory_rejects_changed_settings(runtime_profile, profile_memory, kwargs, reason):
+    with pytest.raises(ValueError, match=reason):
+        profile_memory(**{"context_length": 2048, **kwargs})
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"kv_cache_bytes": 0},
+        {"kv_cache_bytes": True},
+        {"kv_cache_bytes": 2**53 + 1},
+        {"gpu_memory_utilization": 0},
+        {"gpu_memory_utilization": True},
+        {"gpu_memory_utilization": float("nan")},
+        {"gpu_memory_utilization": float("inf")},
+        {"gpu_memory_utilization": 1.1},
+        {"max_model_len": 0},
+        {"max_model_len": True},
+        {"provenance": " "},
+        {"unknown": 1},
+    ],
+)
+def test_runtime_memory_schema_rejects_invalid_evidence(runtime_profile, change):
+    runtime_profile["deployments"][0]["resources"]["runtime_memory"].update(change)
+    with pytest.raises(ValidationError):
+        load_fpm_profile(runtime_profile)
+    with pytest.raises(ValueError):
+        _normalize(_request(runtime_profile))
+
+
+def test_runtime_memory_byte_boundary_is_exact(runtime_profile, profile_memory):
+    runtime_profile["deployments"][0]["resources"]["runtime_memory"].update(
+        kv_cache_bytes=2**53, gpu_memory_utilization=1.0
+    )
+    result = profile_memory(context_length=2048, gpu_memory_capacity_bytes_override=2**53, memory_fraction_value=1.0)
+    assert result["total_kv_size_bytes"] == 2**53
+    assert result["memory_breakdown"] is None
+
+
+@pytest.mark.parametrize(
+    "field", ["weights_bytes", "activations_bytes", "runtime_overhead_bytes", "comm_overhead_bytes"]
+)
+def test_runtime_memory_cannot_mix_in_declared_bytes(runtime_profile, field):
+    runtime_profile["deployments"][0]["resources"][field] = 0
+    with pytest.raises(ValidationError, match="cannot be combined"):
+        load_fpm_profile(runtime_profile)
+
+
+def test_runtime_scalar_blocks_propagate_context_bound(runtime_profile):
+    kwargs = {
+        "scheduler_block_size": 4,
+        "max_num_tokens": 8192,
+        "max_batch_size": 256,
+        "memory_fraction_kind": "of_total",
+        "memory_fraction_value": 0.8,
+        "tp_size": 2,
+        "moe_tp_size": 2,
+        "gpu_memory_capacity_bytes_override": 1000,
+        "fpm_profile": runtime_profile,
+    }
+    assert (
+        memory.estimate_num_gpu_blocks(
+            "test/unknown-decoder", "test_gpu", "vllm", "0.25.1", context_length=1024, **kwargs
+        )
+        == 15
+    )
+    with pytest.raises(ValueError, match="max_model_len"):
+        memory.estimate_num_gpu_blocks(
+            "test/unknown-decoder", "test_gpu", "vllm", "0.25.1", context_length=2049, **kwargs
+        )
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        lambda r: r.update(kv_bytes_per_token=1),
+        lambda r: r.update(cache_groups=[]),
+        lambda r: r["cache_groups"][1].update(name="global"),
+        lambda r: r["cache_groups"][0].update(block_size_tokens=True),
+        lambda r: r["cache_groups"][0].update(block_size_tokens=0),
+        lambda r: r["cache_groups"][0].update(page_size_bytes=2**53 + 1),
+        lambda r: r["cache_groups"][0].update(per_layer_page_size=1),
+        lambda r: r["cache_groups"][2].update(sliding_window=None),
+    ],
+)
+def test_grouped_profile_rejects_ambiguous_or_invalid_page_contract(grouped_profile, change):
+    change(grouped_profile["deployments"][0]["resources"])
+    with pytest.raises(ValidationError):
+        load_fpm_profile(grouped_profile)
+
+
+def test_grouped_budget_canonical_identity_and_bounds(grouped_profile):
+    config = _request(grouped_profile)
+    budget = {
+        "total_gpu_capacity_bytes": 1000,
+        "memory_fraction_kind": "of_total",
+        "memory_fraction_value": 0.8,
+        "max_num_tokens": 1,
+        "max_batch_size": 1,
+        "context_length": 64,
+    }
+    estimate = RustForwardPassPerfModel.estimate_cache_budget(config, budget)
+    assert estimate["total_kv_size_bytes"] == 600
+    assert estimate["request_peak_cache_bytes"] == 192  # 4*32 + 3*16 + 2*8.
+    config["system"] = "another_gpu"
+    with pytest.raises(ValueError, match="matching FPM deployment"):
+        RustForwardPassPerfModel.estimate_cache_budget(config, budget)
 
 
 def test_profile_block_budget_preserves_resource_provenance(profile_dict, profile_memory):
@@ -758,12 +1055,15 @@ def measured_profile_roots(profile_dict, tmp_path, monkeypatch):
     def make_root(name, kind):
         root = tmp_path / name
         root.mkdir()
-        packaged = Path(aisimulate_core.__file__).parent / "systems/h200_sxm.yaml"
-        (root / packaged.name).write_bytes(packaged.read_bytes())
         identity = load_fpm_profile(profile_dict).deployments[0].model_dump(mode="json", exclude={"resources"})
+        system = identity["system"]
+        packaged = Path(aisimulate_core.__file__).parent / "systems" / f"{system}.yaml"
+        (root / packaged.name).write_bytes(packaged.read_bytes())
         coordinates = []
-        if kind in {"genuine", "mixed"}:
+        if kind in {"genuine", "mixed", "coverage"}:
             coordinates.extend([("prefill", 0, "real_kv", 2.0), ("decode", 1, "real_kv", 3.0)])
+        if kind == "coverage":
+            coordinates.append(("prefill", 16, "real_kv", 4.0))
         if kind in {"fake", "mixed"}:
             coordinates.append(("decode", 64, "fake_fallback", 99.0))
         rows = [
@@ -782,7 +1082,7 @@ def measured_profile_roots(profile_dict, tmp_path, monkeypatch):
             }
             for phase, kv, regime, latency in coordinates
         ]
-        path = root / "data/h200_sxm/vllm/0.25.1/fpm_forward_perf.parquet"
+        path = root / "data" / system / "vllm/0.25.1/fpm_forward_perf.parquet"
         path.parent.mkdir(parents=True)
         pq.write_table(pa.Table.from_pylist(rows), path)
         path.with_suffix(".metadata.json").write_text(
@@ -792,7 +1092,7 @@ def measured_profile_roots(profile_dict, tmp_path, monkeypatch):
                     "schema_version": 6,
                     "coordinate_system": "iteration_totals_balanced_v1",
                     "measurement_policy": "dynamo_native_single_sample_v1",
-                    "system": "h200_sxm",
+                    "system": system,
                     "backend": "vllm",
                     "backend_version": "0.25.1",
                     "row_count": len(rows),
@@ -803,6 +1103,141 @@ def measured_profile_roots(profile_dict, tmp_path, monkeypatch):
         return str(root)
 
     return make_root
+
+
+@pytest.mark.parametrize("memory_state", ["pending", "runtime"])
+def test_direct_timings_work_without_declared_memory(profile_dict, measured_profile_roots, memory_state):
+    resources = profile_dict["deployments"][0]["resources"]
+    for name in ("weights_bytes", "activations_bytes", "runtime_overhead_bytes", "comm_overhead_bytes"):
+        resources.pop(name)
+    if memory_state == "runtime":
+        resources["runtime_memory"] = {
+            "kv_cache_bytes": 600,
+            "gpu_memory_utilization": 0.8,
+            "max_model_len": 4096,
+            "provenance": "Synthetic initialization observation, independent of timing fixture.",
+        }
+    config = _request(profile_dict, "direct", systems_paths=[measured_profile_roots(memory_state, "genuine")])
+    model = RustForwardPassPerfModel.best_available(config)
+    try:
+        # The synthetic prefill cell has exactly 2ms at this coordinate.
+        assert (
+            model.estimate_forward_pass_time_ms(
+                {"scheduled_requests": {"num_prefill_requests": 1, "sum_prefill_tokens": 1}}
+            )
+            == 2.0
+        )
+        saved = model.diagnostics()["provenance"]["config"]
+        assert saved["fpm_profile"]["deployments"][0]["resources"] == resources
+        assert saved["estimator_config"]["fpm_interpolation"]["method"] == "direct"
+    finally:
+        model.close()
+    with pytest.raises(ValueError, match="registered"):
+        _normalize(_request(profile_dict, "sol"))
+
+
+def test_direct_coverage_is_native_persists_errors_and_round_trips(profile_dict, measured_profile_roots):
+    root = measured_profile_roots("coverage", "mixed")
+    config = _request(profile_dict, "direct", systems_paths=[root])
+    plain = RustForwardPassPerfModel.best_available(config)
+    assert plain.fpm_query_coverage() is None
+    assert (
+        "collect_coverage" not in plain.diagnostics()["provenance"]["config"]["estimator_config"]["fpm_interpolation"]
+    )
+    config["estimator_config"]["fpm_interpolation"]["collect_coverage"] = True
+    model = RustForwardPassPerfModel.best_available(config)
+    assert model.predict_prefill_latency(1, 1, 0) == plain.predict_prefill_latency(1, 1, 0) == 2.0
+    assert model.predict_decode_latency_total(1, 1) == plain.predict_decode_latency_total(1, 1) == 3.0
+    assert model.fpm_decode_kv_ceiling() == 1  # The fake KV=64 row is not coverage.
+    for _ in range(2):
+        with pytest.raises(PerfDataNotAvailableError, match="genuine FPM points"):
+            model.predict_decode_latency_total(1, 64)
+    report = model.fpm_query_coverage()
+    assert report["counting_unit"] == "native_lookup_resolutions"
+    assert report["queries"] == {"measured": 2, "interpolated": 0, "unsupported": 2}
+    assert len(report["gaps"]) == 1
+    gap = report["gaps"][0]
+    assert gap["occurrences"] == 2
+    assert gap["coordinates"] == {"batch_size": 1.0, "total_kv_read_tokens": 64.0}
+    assert gap["cell_identity"]["attention_backend"] == "future_attention"
+    assert gap["model_path"] == profile_dict["model"]
+    saved = json.loads(json.dumps(model.diagnostics()["provenance"]["config"]))
+    assert saved["estimator_config"]["fpm_interpolation"]["collect_coverage"] is True
+    reloaded = RustForwardPassPerfModel.best_available(saved)
+    assert reloaded.fpm_query_coverage()["queries"] == {"measured": 0, "interpolated": 0, "unsupported": 0}
+    assert reloaded.predict_decode_latency_total(1, 1) == 3.0
+    assert model.fpm_query_coverage() == report
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("estimation_mode", "auto"), ("estimation_mode", "op_level"), ("fallback_policy", "allow")],
+)
+def test_direct_coverage_rejects_estimator_fallback(profile_dict, field, value):
+    config = _request(profile_dict, "direct", **{field: value})
+    config["estimator_config"]["fpm_interpolation"]["collect_coverage"] = True
+    with pytest.raises(ValueError, match="collect_coverage"):
+        _normalize(config)
+
+
+@pytest.mark.parametrize(
+    ("model_id", "system", "tp", "dp", "moe_tp", "moe_ep", "gemm", "fmha"),
+    [
+        ("MiniMaxAI/MiniMax-M2.7", "h200_sxm", 4, 1, 4, 1, "fp8_block", "bfloat16"),
+        ("nvidia/GLM-5.2-NVFP4", "b200_sxm", 1, 8, 1, 8, "nvfp4", "fp8"),
+        ("nvidia/GLM-5.2-NVFP4", "b200_sxm", 8, 1, 1, 8, "nvfp4", "fp8"),
+    ],
+    ids=["tp4", "dep8", "tep8"],
+)
+def test_coverage_wrappers_preserve_existing_engine_queries_on_external_cells(
+    profile_dict, measured_profile_roots, model_id, system, tp, dp, moe_tp, moe_ep, gemm, fmha
+):
+    import aisimulate_core
+
+    # Synthetic external timings exercise TP/DEP/TEP routing parity, not model
+    # accuracy or GPU memory qualification. No bundled FPM data is required.
+    profile_dict["model"] = model_id
+    profile_dict["deployments"][0].update(
+        system=system,
+        tp=tp,
+        dp=dp,
+        moe_tp=moe_tp,
+        moe_ep=moe_ep,
+        gemm_quant_mode=gemm,
+        moe_quant_mode=gemm,
+        fmha_quant_mode=fmha,
+        attention_backend="auto",
+    )
+    root = measured_profile_roots("external", "coverage")
+    config = _request(profile_dict, "direct", systems_paths=[root])
+    config["estimator_config"]["fpm_interpolation"]["collect_coverage"] = True
+    covered = RustForwardPassPerfModel.best_available(config)
+    original = aisimulate_core.AicEngine.from_spec(
+        engine.compile_engine(
+            model_id,
+            system,
+            "vllm",
+            "0.25.1",
+            tp_size=tp,
+            attention_dp_size=dp,
+            moe_tp_size=moe_tp,
+            moe_ep_size=moe_ep,
+            forward_model="fpm",
+            fpm_profile=profile_dict,
+            fpm_interpolation="direct",
+            systems_path=root,
+        )
+    )
+    for prefix, latency in ((0, 2.0), (16, 4.0)):
+        assert covered.predict_prefill_latency(1, 1 + prefix, prefix) == original.predict_prefill_latency(
+            1, 1 + prefix, prefix
+        )
+        assert covered.predict_prefill_latency(1, 1 + prefix, prefix) == latency
+    assert covered.predict_decode_latency_total(1, 1) == original.predict_decode_latency_total(1, 1) == 3.0
+    assert covered.predict_decode_latency_total(0, 0) == original.predict_decode_latency_total(0, 0) == 0.0
+    assert covered.fpm_decode_kv_ceiling() == original.fpm_decode_kv_ceiling()
+    report = covered.fpm_query_coverage()
+    assert report["queries"] == {"measured": 5, "interpolated": 0, "unsupported": 0}
 
 
 @pytest.mark.parametrize("fallback", ["deny", "allow"])
