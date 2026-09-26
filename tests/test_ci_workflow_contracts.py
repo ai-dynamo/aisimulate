@@ -185,6 +185,41 @@ def test_forward_perf_controller_change_detection(tmp_path, path, expected):
     assert forward_perf.matches_path(path) is expected
 
 
+@pytest.mark.parametrize("base_protocol", [1, 2])
+def test_forward_perf_skips_incompatible_data_policies(tmp_path, base_protocol):
+    steps = _workflow("performance.yml")["jobs"]["compare"]["steps"]
+    revisions = next(step for step in steps if step.get("id") == "revisions")["run"]
+    protocol_check = revisions.split('if [[ -z "${skip_reason}" ]]; then', 1)[1]
+    protocol_check = 'if [[ -z "${skip_reason}" ]]; then' + protocol_check.split("controller_changes=", 1)[0]
+    gate_path = "python/aisimulate/tools/forward_perf_gate"
+    _git(tmp_path, "init", "--quiet")
+    (tmp_path / gate_path).mkdir(parents=True)
+    base = _commit_file(tmp_path, f"{gate_path}/__init__.py", f"PROTOCOL_VERSION = {base_protocol}\n")
+    head = _commit_file(tmp_path, f"{gate_path}/__init__.py", "# Shared-layer reuse enabled.\nPROTOCOL_VERSION = 2\n")
+    output = tmp_path / "output"
+    summary = tmp_path / "summary"
+    subprocess.run(
+        ["bash", "-euc", protocol_check],
+        cwd=tmp_path,
+        env={
+            **os.environ,
+            "base_sha": base,
+            "PR_HEAD_SHA": head,
+            "gate_path": gate_path,
+            "skip_reason": "",
+            "GITHUB_OUTPUT": str(output),
+            "GITHUB_STEP_SUMMARY": str(summary),
+        },
+        check=True,
+    )
+    if base_protocol == 1:
+        assert output.read_text() == "run_comparison=false\n"
+        assert "protocol versions differ: base is 1, head is 2" in summary.read_text()
+    else:
+        assert not output.exists()
+        assert not summary.exists()
+
+
 def _forward_api(pages, *, count=None, after=None, canonical="a" * 40):
     pull = {
         "head": {"sha": "a" * 40},

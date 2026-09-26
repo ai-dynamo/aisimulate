@@ -20,7 +20,7 @@ objects, clears the prediction caches, and builds one model, database view,
 session, and Rust engine. It initializes each measured phase with one
 unrecorded `(batch_size=2, ISL=2048, prefix=0)` query that is outside the benchmark
 matrix, with OSL 8 for context and OSL 256 for generation. These coordinates
-are fixed within protocol v1; changing them requires a protocol-version change.
+are fixed within the protocol; changing them requires a protocol-version change.
 Priming stride comes from the shared, hashed case request.
 It then runs every target point in the group. The first prediction for
 each distinct target is the `cold` sample: a new query against a steady-state
@@ -32,8 +32,7 @@ it clears the engine-handle cache before each call.
 
 If the off-matrix priming query fails, the worker records `PRIMING_FAILED` for
 only that phase and continues with other phases and groups. A missing-data
-priming failure is skipped under the normal data-miss rules. Other priming
-failures remain invalid and block the comparison.
+priming failure is invalid and blocks the comparison, as do other priming failures.
 
 The harness treats `clear_caches()` as the complete cache-isolation contract.
 It calls the public database eviction interface before each model/database-mode
@@ -43,7 +42,11 @@ It does not know about or manage individual SDK caches.
 
 The worker uses a versioned JSON protocol so each Git revision can adapt its
 own internal SDK interface. It accepts either one `case` or an ordered `cases`
-array. Run one request with:
+array. Protocol v2 enables shared-layer data reuse, including replacement
+measurements declared in `reuse.yaml`. Protocol v1 disabled this reuse, so its
+timings cannot be compared with v2. The workflow explicitly skips comparisons
+between different protocol versions. Rebase PRs onto the protocol-v2 change to
+resume comparisons after it merges. Run one request with:
 
 ```bash
 python tools/forward_perf_gate/worker.py --request request.json --pretty
@@ -76,15 +79,14 @@ The final eight cases also use SILICON mode:
 - Qwen3.5 on B200/SGLang 0.5.14 uses TP=8, attention DP=1, MoE TP=1, and
   EP=8 for context batch 1/ISL 8,192 and generation batch 32/ISL 1,024.
 
-SGLang is pinned to 0.5.14 because 0.5.16 lacks the B200 custom-all-reduce
-data required when shared-layer reuse is disabled.
+SGLang retains its original 0.5.14 pin and parallel layout.
 
 Context OSL is 8, generation OSL is 256, and stride is 32. New profile labels
 include the system, backend/version, and parallel layout to keep report cells
 separate. Worker groups already include those configuration fields. The prefix
 suffix separates otherwise equal configurations from the original profiles so
 their cases do not change the original cache-preparation groups. The worker
-loads pinned raw data versions.
+uses pinned requested versions with shared-layer data reuse enabled on both revisions.
 
 Before rollout, validate all 64 cases against two separate installations of
 the same revision for three five-round comparisons. Require no missing data
@@ -103,11 +105,10 @@ becomes the normal comparison when a PR's merge base includes it.
 
 The default comparison requires four of five paired rounds to exceed both a
 10% relative threshold and a 2 us absolute threshold. Other round counts use
-an 80% quorum. A data miss on the base side has no timing baseline and is
-reported as skipped. A working base case that stops working, a malformed
-worker response, or an incomplete run remains an invalid, blocking comparison.
-A successful availability pair establishes coverage for both revisions. Any
-later measured data miss on either revision is invalid and blocks the comparison.
+an 80% quorum. Every selected case must have data on both revisions. A data miss
+on either or both revisions is invalid and blocks the comparison, during both
+availability and measured rounds. Malformed worker responses and incomplete
+runs also block the comparison. Case names and errors remain visible in the summary.
 The worker treats missing silicon data, unavailable empirical data, missing
 system FLOPS, and unavailable SOL models as data misses.
 The controller alternates which revision runs first and reverses the case order

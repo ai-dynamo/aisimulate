@@ -160,7 +160,7 @@ def priming_runtime_config(
     *,
     phase: str,
 ) -> config.RuntimeConfig:
-    """Return the protocol-v1 priming query; coordinate changes require a version bump."""
+    """Return the fixed priming query; coordinate changes require a protocol-version bump."""
     return replace(
         runtime_config,
         batch_size=2,

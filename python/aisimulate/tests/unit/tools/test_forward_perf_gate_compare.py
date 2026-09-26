@@ -130,27 +130,38 @@ def test_missing_case_hash_is_invalid() -> None:
 
 
 @pytest.mark.parametrize(
-    ("base_status", "head_status", "classification", "blocking"),
+    ("base_status", "head_status"),
     [
-        ("DATA_MISS", "DATA_MISS", "SKIPPED", False),
-        ("DATA_MISS", "OK", "SKIPPED", False),
-        ("OK", "DATA_MISS", "INVALID_COMPARISON", True),
+        ("DATA_MISS", "DATA_MISS"),
+        ("DATA_MISS", "OK"),
+        ("OK", "DATA_MISS"),
     ],
 )
-def test_data_miss_status_semantics(
-    base_status: str,
-    head_status: str,
-    classification: str,
-    blocking: bool,
-) -> None:
+def test_data_miss_is_always_blocking(base_status: str, head_status: str) -> None:
     raw = _raw([1.0] * 5)
     case = raw["cases"][0]["case"]
     for paired in raw["cases"][0]["rounds"]:
         paired["base"] = _response(case, status=base_status)
         paired["head"] = _response(case, status=head_status)
     result = compare.compare_raw(raw)
-    assert {point["classification"] for point in result["points"]} == {classification}
-    assert result["blocking"] is blocking
+    assert {point["classification"] for point in result["points"]} == {"INVALID_COMPARISON"}
+    assert result["blocking"] is True
+    pair = raw["cases"][0]["rounds"][0]
+    assert compare.prewarm_disposition(case["case_id"], pair["base"], pair["head"])[0] == "INVALID"
+
+
+@pytest.mark.parametrize("legacy_sides", [("base",), ("head",), ("base", "head")])
+def test_protocol_v1_cannot_produce_timing_comparisons(legacy_sides: tuple[str, ...]) -> None:
+    raw = _raw([1.0] * 5)
+    for pair in raw["cases"][0]["rounds"]:
+        for side in legacy_sides:
+            pair[side]["protocol_version"] = 1
+    result = compare.compare_raw(raw)
+    assert result["blocking"] is True
+    for point in result["points"]:
+        assert point["classification"] == "INVALID_COMPARISON"
+        assert point["rounds"] == []
+        assert all("protocol is 1, expected 2" in reason for reason in point["invalid_reasons"])
 
 
 @pytest.mark.parametrize("missing_sides", [("base",), ("head",), ("base", "head")])
@@ -177,19 +188,19 @@ def test_coverage_loss_after_successful_prewarm_is_blocking(missing_sides: tuple
                 )
 
 
-def test_data_miss_skip_reason_includes_priming_failure() -> None:
+def test_data_miss_error_includes_priming_failure() -> None:
     case = cases.expand_cases()[0]
     base = _response(case, status="DATA_MISS")
     head = _response(case, status="DATA_MISS")
     base["error"] = {"type": "PRIMING_FAILED", "message": "base prime missing"}
     head["error"] = {"type": "PRIMING_FAILED", "message": "head prime missing"}
     disposition, reason = compare.pair_disposition(case["case_id"], base, head)
-    assert disposition == "SKIP"
+    assert disposition == "INVALID"
     assert "PRIMING_FAILED base prime missing" in reason
     assert "PRIMING_FAILED head prime missing" in reason
 
 
-def test_changed_skip_reason_is_reported_once() -> None:
+def test_data_miss_preserves_each_round_error() -> None:
     raw = _raw([1.0, 1.0])
     case = raw["cases"][0]["case"]
     for index, paired in enumerate(raw["cases"][0]["rounds"]):
@@ -201,7 +212,20 @@ def test_changed_skip_reason_is_reported_once() -> None:
     for metric in ("cold", "warm"):
         point = _point(result, metric)
         assert point["classification"] == "INVALID_COMPARISON"
-        assert point["invalid_reasons"] == ["response status changed between measured rounds"]
+        assert point["invalid_reasons"] == [
+            f"round {index + 1}: base status is DATA_MISS: DATA_MISS reason {index}; "
+            f"head status is DATA_MISS: DATA_MISS reason {index}"
+            for index in range(2)
+        ]
+
+
+def test_recorded_skip_is_blocking() -> None:
+    raw = _raw([])
+    raw["cases"][0]["skip_reason"] = "DATA_MISS on base and head"
+    result = compare.compare_raw(raw)
+    assert result["blocking"] is True
+    assert {point["classification"] for point in result["points"]} == {"INVALID_COMPARISON"}
+    assert "DATA_MISS on base and head" in compare.render_markdown(result)
 
 
 def test_missing_metric_is_invalid_instead_of_crashing() -> None:
@@ -263,7 +287,7 @@ def test_prewarm_disposition_validates_status_and_metrics() -> None:
             _response(case, status="DATA_MISS"),
             _response(case, status="DATA_MISS"),
         )[0]
-        == "SKIP"
+        == "INVALID"
     )
     assert (
         compare.prewarm_disposition(
@@ -338,7 +362,7 @@ def test_report_puts_regressions_first_and_full_matrix_in_details() -> None:
     assert "| regressions | noisy | invalid |" in summary
 
 
-def test_report_keeps_blocking_errors_visible_and_collapses_skips() -> None:
+def test_report_keeps_blocking_errors_and_data_misses_visible() -> None:
     invalid_raw = _raw([1.0] * 5)
     invalid_raw["run_errors"].append("worker process failed")
     invalid_raw["cases"][0]["rounds"][0]["head"]["case_hash"] = "different"
@@ -351,10 +375,14 @@ def test_report_keeps_blocking_errors_visible_and_collapses_skips() -> None:
     assert "Noisy comparisons" not in invalid_summary
     assert "Skipped comparisons" not in invalid_summary
 
-    skipped_raw = _raw([1.0] * 5)
-    case = skipped_raw["cases"][0]["case"]
-    for paired in skipped_raw["cases"][0]["rounds"]:
+    missing_raw = _raw([1.0] * 5)
+    case = missing_raw["cases"][0]["case"]
+    for paired in missing_raw["cases"][0]["rounds"]:
         paired["base"] = _response(case, status="DATA_MISS")
         paired["head"] = _response(case, status="DATA_MISS")
-    skipped_summary = compare.render_markdown(compare.compare_raw(skipped_raw))
-    assert "<summary>Skipped comparisons (2)</summary>" in skipped_summary
+    missing_summary = compare.render_markdown(compare.compare_raw(missing_raw))
+    visible = missing_summary.split("<details>", maxsplit=1)[0]
+    assert "**FAIL**" in visible
+    assert case["case_id"] in visible
+    assert "DATA_MISS not available" in visible
+    assert "Skipped comparisons" not in missing_summary
