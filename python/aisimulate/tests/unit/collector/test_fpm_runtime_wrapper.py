@@ -144,6 +144,35 @@ def _run(staged: SimpleNamespace, *, timeout: int = 60, extra_env: dict[str, str
     )
 
 
+@pytest.mark.parametrize("status,mask", [("observed", [0]), ("unavailable", []), ("partial", list(range(16)))])
+def test_slurm_same_step_cpu_guard_preserves_failure_before_model_start(tmp_path, status, mask):
+    staged = _stage(tmp_path, run_script="touch model-started\n")
+    staged.script.write_text(staged.script.read_text().replace('Path("/results")', f"Path({str(staged.results)!r})"))
+    # The observer's Linux API is tested separately. This seam verifies the
+    # real wrapper enforces its result before etcd/preflight/model startup.
+    payload = {"status": status, "main_thread_allowed_cpus": mask}
+    (staged.workdir / "fpm_memory_observer.py").write_text(
+        "import json\ndef observe_cpu(kind, **kwargs):\n"
+        f"    payload = {payload!r}\n"
+        "    payload.update(kind=kind,requested=kwargs['requested_cpus_per_task'])\n"
+        "    (kwargs['directory']/'fpm-cpu-launcher.json').write_text(json.dumps(payload))\n"
+        "    return payload\n"
+    )
+    result = _run(
+        staged,
+        extra_env={
+            "FPM_SLURM_CPUS_PER_TASK": "16",
+            "FPM_SLURM_CPU_BIND": "cores",
+            "FPM_LOCAL_GPU_COUNT": "4",
+        },
+    )
+    assert result.returncode != 0
+    assert "CPU affinity" in result.stderr
+    assert json.loads((staged.results / "fpm-cpu-launcher.json").read_text())["requested"] == 16
+    assert not staged.etcd_trace.exists()
+    assert not (staged.workdir / "model-started").exists()
+
+
 def test_fpm_exec_starts_leader_etcd_before_preflight():
     """The follower readiness probe budget only covers pod-exec skew when the
     leader's etcd starts before the unbounded vLLM/torch preflight import."""

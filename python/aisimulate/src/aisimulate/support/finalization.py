@@ -243,6 +243,8 @@ def _verify_collection(
         executor=saved_options.get("executor", "kubernetes"),
         image=saved_options.get("slurm_container_image") or None,
         container_mount=saved_options.get("slurm_container_mounts", []),
+        cpus_per_task=saved_options.get("slurm_cpus_per_task"),
+        cpu_bind=saved_options.get("slurm_cpu_bind"),
     )
     if probe_manifest is not None:
         source_index = _json(Path(probe_manifest["observations_index"]))
@@ -251,7 +253,14 @@ def _verify_collection(
         )
     reviewed_options = FPMCollectionOptions.from_args(
         _parser().parse_args(
-            fpm_cli_args(request, output_dir=root, plan_only=True, deployment=collection_deployment)[3:]
+            fpm_cli_args(
+                request,
+                output_dir=root,
+                checkpoint_dir=checkpoint_path.parent,
+                plan_only=True,
+                resume=True,
+                deployment=collection_deployment,
+            )[3:]
         )
     ).to_dict()
     for options in (reviewed_options, saved_options):

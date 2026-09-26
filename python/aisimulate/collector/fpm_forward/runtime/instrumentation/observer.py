@@ -365,6 +365,15 @@ def observe(
     }
     errors = []
 
+    # CPU readiness is independent of physical-memory import. A missing or
+    # partial CPU snapshot must not relabel otherwise valid cache observations.
+    try:
+        cpu = legacy.observe_cpu(kind, dp_rank=dp_rank, tp_rank=tp_rank, pp_rank=pp_rank, directory=directory)
+        payload["cpu_affinity_observation"] = {"status": cpu["status"], "hostname": cpu["hostname"], "pid": cpu["pid"]}
+    except Exception as error:
+        payload["cpu_affinity_observation"] = {"status": "unavailable", "error": f"{type(error).__name__}: {error}"}
+        logging.getLogger(__name__).warning("CPU affinity observation unavailable: %s", error)
+
     def capture(label, action):
         try:
             action()

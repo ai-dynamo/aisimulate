@@ -30,6 +30,18 @@ def fpm_cli_args(
     checkpoint = Path(checkpoint_dir).expanduser().resolve() if checkpoint_dir else root / "fpm-checkpoint"
     if checkpoint != root / "fpm-checkpoint" and root / "fpm-checkpoint" not in checkpoint.parents:
         raise ValueError("checkpoint_dir must stay within the plan's fpm-checkpoint directory")
+    if deployment is not None and deployment.executor == "slurm":
+        from collector.fpm_forward.config import resolve_slurm_cpu_policy
+
+        cpus, binding = resolve_slurm_cpu_policy(
+            deployment.cpus_per_task,
+            deployment.cpu_bind,
+            resume=resume,
+            checkpoint_dir=checkpoint,
+            artifact_root=root / "fpm-artifacts",
+            smoke=smoke,
+        )
+        deployment = deployment.model_copy(update={"cpus_per_task": cpus, "cpu_bind": binding})
     profile = request.profile_deployment()
     from .runtime import runtime_collection_inputs
 
@@ -108,7 +120,8 @@ def fpm_cli_args(
                 else:
                     command.extend(("--generator-set", f"K8sConfig.k8s_image={json.dumps(value)}"))
             else:
-                command.extend(("--" + name.replace("_", "-"), value))
+                prefix = "--fpm-slurm-" if name in {"cpus_per_task", "cpu_bind"} else "--"
+                command.extend((prefix + name.replace("_", "-"), str(value)))
         for mount in deployment.container_mount:
             command.extend(("--fpm-slurm-container-mount", mount))
     if plan_only:

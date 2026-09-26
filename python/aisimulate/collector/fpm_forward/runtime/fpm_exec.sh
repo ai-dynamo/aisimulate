@@ -20,6 +20,27 @@ source "${workdir}/fpm_env.sh"
 # This is staged by the Collector from the same resolved deployment settings
 # used by run.sh. It carries startup configuration across both transports.
 source "${workdir}/collector-runtime-env.sh"
+# This runs inside the SAME Slurm step/container as the engine, before model
+# initialization. Separate provenance steps cannot establish the engine's mask.
+if [[ -n "${FPM_SLURM_CPUS_PER_TASK:-}" ]]; then
+  python3 - "${workdir}/fpm_memory_observer.py" <<'PY'
+import importlib.util
+import os
+from pathlib import Path
+import sys
+
+spec = importlib.util.spec_from_file_location("fpm_launcher_cpu_observer", sys.argv[1])
+observer = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(observer)
+requested = int(os.environ["FPM_SLURM_CPUS_PER_TASK"])
+report = observer.observe_cpu(
+    "launcher", requested_cpus_per_task=requested, cpu_bind=os.environ["FPM_SLURM_CPU_BIND"],
+    local_gpu_count=int(os.environ["FPM_LOCAL_GPU_COUNT"]), directory=Path("/results"),
+)
+if report["status"] != "observed" or len(report["main_thread_allowed_cpus"]) < requested:
+    raise SystemExit("Slurm engine CPU affinity is unavailable or smaller than requested; inspect fpm-cpu-launcher.json")
+PY
+fi
 if [[ ! "${FPM_READINESS_TIMEOUT_SECONDS:-}" =~ ^[1-9][0-9]*$ ]] ||
    (( ${#FPM_READINESS_TIMEOUT_SECONDS} > 4 || FPM_READINESS_TIMEOUT_SECONDS > 3600 )); then
   echo "FPM_READINESS_TIMEOUT_SECONDS must be an integer from 1 through 3600" >&2

@@ -29,9 +29,12 @@ def _write(path, value):
     path.write_text(json.dumps(value))
 
 
-def _campaign(tmp_path, *, capacity_multiplier=1, context_length=4096, tp=2):
+def _campaign(tmp_path, *, capacity_multiplier=1, context_length=4096, tp=2, cpu_policy=True):
     index, launches = observation_fixture(tmp_path / "probe", dense=True, tp=tp)
     launch = launches["tp2"]
+    if cpu_policy:
+        cpus, binding = cpu_policy if isinstance(cpu_policy, tuple) else (16, "cores")
+        launch["deployment"].update(cpus_per_task=cpus, cpu_bind=binding)
     model_path = Path(launch["model_config"]["path"])
     _write(
         model_path,
@@ -151,6 +154,19 @@ def test_import_keeps_partial_results_and_memory_is_independent_of_timing(tmp_pa
     assert previous["draft_request"]["search"]["tensor_parallel"] == 2
 
 
+def test_legacy_memory_import_keeps_missing_cpu_policy_and_source_bytes(tmp_path, capsys):
+    checkpoint, index, launch = _campaign(tmp_path, cpu_policy=False)
+    preserved = {path: path.read_bytes() for path in index.parent.rglob("*") if path.is_file()}
+    assert "cpus_per_task" not in launch["deployment"]
+    assert _import(checkpoint, index, tmp_path / "legacy-drafts", configurations=["tp2"]) == 0
+    assert all(path.read_bytes() == contents for path, contents in preserved.items())
+    state = _load(checkpoint)
+    assert "cpus_per_task" not in state.configurations["tp2"].inputs["collection_deployment"]
+    request = SupportRequest.model_validate(state.configurations["tp2"].draft_request)
+    assert request.profile_deployment().resources.runtime_memory.kv_cache_bytes == 93 * 128
+    assert not report(state, checkpoint)["integrity_issues"]
+
+
 def test_snapshot_acceptance_survives_unrelated_probe_progress_but_detects_raw_tamper(tmp_path, capsys):
     checkpoint, index, _ = _campaign(tmp_path)
     assert _import(checkpoint, index, tmp_path / "drafts", configurations=["tp2"]) == 0
@@ -201,6 +217,74 @@ def test_probe_public_preview_does_not_need_geometry_or_execute_bundle(tmp_path,
     assert all("cache_groups" not in str(value) for value in facts.values())
     assert options["execute"] is False
     assert facts["tp2"]["collection"]["prefill_cudagraph_policy"] == "runtime"
+
+
+@pytest.mark.parametrize("flag,value", [("--cpus-per-task", "32"), ("--cpu-bind", "none")])
+@pytest.mark.parametrize("checkpoint_policy", [True, False])
+def test_public_probe_partial_resume_recovers_saved_policy_before_validation(
+    tmp_path, capsys, monkeypatch, flag, value, checkpoint_policy
+):
+    from collector.fpm_forward import runtime_probe
+
+    checkpoint, index, launch = _campaign(tmp_path, cpu_policy=(32, "none"))
+    if checkpoint_policy:
+        assert _import(checkpoint, index, tmp_path / "drafts", configurations=["tp2"]) == 0
+        capsys.readouterr()
+        state = _load(checkpoint)
+        state, _ = save_checkpoint(checkpoint, patch={}, expected_revision=state.revision, accept=["tp2"])
+        acceptance = state.configurations["tp2"].acceptance
+    else:
+        state = _load(checkpoint)
+        save_checkpoint(
+            checkpoint,
+            patch={
+                "configurations": {
+                    "tp2": {"inputs": {"collection_deployment": {"cpus_per_task": None, "cpu_bind": None}}}
+                }
+            },
+            expected_revision=state.revision,
+            accept=[],
+        )
+    calls = []
+
+    def reused(configurations, **kwargs):
+        calls.append((configurations, kwargs))
+        return {"status": "completed", "configurations": {"tp2": {"status": "completed", "resumed": True}}}
+
+    monkeypatch.setattr(runtime_probe, "probe_runtime", reused)
+    original = _load(checkpoint).configurations["tp2"].draft_request
+    before = {path: path.read_bytes() for path in index.parent.rglob("*") if path.is_file()}
+    assert (
+        cli.main(
+            [
+                "onboard",
+                "probe-runtime",
+                "--checkpoint",
+                str(checkpoint),
+                "--configuration",
+                "tp2",
+                "--instrumentation",
+                str(index.parent / "manifest.yaml"),
+                "--output-dir",
+                str(index.parent),
+                "--execute",
+                "--resume",
+                flag,
+                value,
+            ]
+        )
+        == 0
+    )
+    capsys.readouterr()
+    assert len(calls) == 1
+    assert calls[0][0]["tp2"]["deployment"] == launch["deployment"]
+    state = _load(checkpoint)
+    assert state.configurations["tp2"].draft_request == original
+    assert state.configurations["tp2"].inputs["collection_deployment"] == launch["deployment"]
+    if checkpoint_policy:
+        assert state.configurations["tp2"].acceptance == acceptance
+        assert report(state, checkpoint)["configurations"]["tp2"]["profile_accepted"]
+    assert all(path.read_bytes() == contents for path, contents in before.items())
 
 
 def test_real_public_preview_parses_bundle_without_executing_python(tmp_path, capsys):

@@ -95,6 +95,9 @@ def checkpoint_launch(
     name: str,
     checkpoint: Path,
     deployment_overrides: dict[str, Any] | None = None,
+    *,
+    resolve_cpu_defaults: bool = False,
+    resume_output_dir: Path | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
     """Resolve stage-2 facts; configuration names never determine topology."""
     from collector.fpm_forward.runtime_probe import normalize_probe_launch
@@ -188,6 +191,15 @@ def checkpoint_launch(
         **(deployment_overrides or {}),
     }
     deployment = FPMDeployment.model_validate(deployment).model_dump(mode="json", exclude_none=True)
+    if resume_output_dir is not None:
+        from collector.fpm_forward.runtime_probe import resolve_probe_cpu_policy
+
+        deployment = resolve_probe_cpu_policy(name, deployment, resume_output_dir, resume=True)
+    elif resolve_cpu_defaults and deployment["executor"] == "slurm":
+        from collector.fpm_forward.config import resolve_slurm_cpu_policy
+
+        cpus, binding = resolve_slurm_cpu_policy(deployment.get("cpus_per_task"), deployment.get("cpu_bind"))
+        deployment.update(cpus_per_task=cpus, cpu_bind=binding)
     max_tokens = collection.max_num_tokens or (selected.resources.max_num_tokens if selected else 8192)
     max_sequences = collection.max_batch_size or (selected.resources.max_batch_size if selected else 256)
     if max_tokens < max_sequences:
@@ -905,7 +917,14 @@ def run_runtime_command(args: argparse.Namespace) -> int:
     launches, failed = {}, {}
     for name in names:
         try:
-            _, launches[name], _ = checkpoint_launch(state, name, checkpoint, overrides)
+            _, launches[name], _ = checkpoint_launch(
+                state,
+                name,
+                checkpoint,
+                overrides,
+                resolve_cpu_defaults=not args.resume,
+                resume_output_dir=output if args.resume else None,
+            )
         except (ValueError, OSError) as exc:
             failed[name] = {"status": "incomplete", "diagnostics": [str(exc)]}
     result = (

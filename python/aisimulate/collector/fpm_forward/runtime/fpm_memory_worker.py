@@ -5,7 +5,7 @@
 
 import logging
 
-from fpm_memory_observer import compilation_config, observe, observe_execution
+from fpm_memory_observer import compilation_config, observe, observe_cpu, observe_execution
 
 try:
     from vllm.distributed import get_pp_group, get_tp_group
@@ -24,6 +24,9 @@ class FpmExecutionWorker(Worker):
         dp_rank = getattr(parallel, "data_parallel_index", None)
         if dp_rank is None:
             dp_rank = parallel.data_parallel_rank
+        observe_cpu(
+            "worker", dp_rank=dp_rank, tp_rank=get_tp_group().rank_in_group, pp_rank=get_pp_group().rank_in_group
+        )
         observe_execution(
             self, dp_rank=dp_rank, tp_rank=get_tp_group().rank_in_group, pp_rank=get_pp_group().rank_in_group
         )

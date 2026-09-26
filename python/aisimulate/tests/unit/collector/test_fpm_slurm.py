@@ -22,6 +22,7 @@ pytestmark = pytest.mark.unit
 def runner(tmp_path, monkeypatch):
     monkeypatch.setenv("SLURM_JOB_ID", "1234")
     monkeypatch.setenv("SLURM_JOB_NODELIST", "test-node")
+    monkeypatch.setenv("SLURM_JOB_CPUS_PER_NODE", "16")
     manifest = tmp_path / "manifest.yaml"
     manifest.write_text(
         json.dumps(
@@ -32,7 +33,16 @@ def runner(tmp_path, monkeypatch):
             }
         )
     )
-    return SlurmCellRunner(manifest, tmp_path, image="image@sha256:abc", mounts=("/cache:/cache",), total_gpus=4)
+    return SlurmCellRunner(
+        manifest,
+        tmp_path,
+        image="image@sha256:abc",
+        mounts=("/cache:/cache",),
+        total_gpus=4,
+        cpus_per_task=16,
+        cpu_bind="cores",
+        attention_tp=1,
+    )
 
 
 def test_slurm_requires_scheduler_allocation(runner, monkeypatch):
@@ -63,8 +73,92 @@ def test_slurm_stage_and_argv_keep_shared_result_unit_identity(runner, monkeypat
     assert (runner.cell_dir / "slurm-runtime" / source.name).read_text() == source.read_text()
     argv = commands[-1]
     assert "--jobid=1234" in argv and "--gpus-per-node=4" in argv
+    assert "--cpus-per-task=16" in argv and "--cpu-bind=cores" in argv
     assert "FPM_NODE_RANK=0" in argv and "FPM_MASTER_ADDR=test-node" in argv
     assert f"{runner.cell_dir}/raw/node0000:/results" in next(a for a in argv if a.startswith("--container-mounts="))
+
+
+@pytest.mark.parametrize("allocation", ["1", "8", "16(x0)", "sixteen", "16,16"])
+def test_slurm_rejects_small_or_malformed_allocated_cpu_pool(runner, monkeypatch, allocation):
+    monkeypatch.setenv("SLURM_JOB_CPUS_PER_NODE", allocation)
+    monkeypatch.setattr(
+        runner,
+        "_command",
+        lambda args, **kwargs: SimpleNamespace(
+            stdout="JobId=1234 JobState=RUNNING NodeList=test-node" if "job" in args else "test-node"
+        ),
+    )
+    with pytest.raises(ValueError, match="CPU"):
+        runner.wait_ready(1)
+    assert runner.hosts == []
+
+
+def test_slurm_two_node_cpu_allocation_preserves_host_specific_pool(runner, monkeypatch):
+    runner.node_count = 2
+    monkeypatch.setenv("SLURM_JOB_CPUS_PER_NODE", "32,16")
+    monkeypatch.setattr(
+        runner,
+        "_command",
+        lambda args, **kwargs: SimpleNamespace(
+            stdout="JobId=1234 JobState=RUNNING NodeList=node-a,node-b" if "job" in args else "node-a node-b"
+        ),
+    )
+    assert runner.wait_ready(2) == ["node0000", "node0001"]
+    report = json.loads((runner.cell_dir / "slurm-cpu-allocation.json").read_text())
+    assert report["allocated_cpus_per_node"] == {"node-a": 32, "node-b": 16}
+
+
+def test_slurm_reads_allocated_cpu_ids_when_job_env_is_absent(runner, monkeypatch):
+    monkeypatch.delenv("SLURM_JOB_CPUS_PER_NODE")
+
+    def command(args, **kwargs):
+        if "--details" in args:
+            return SimpleNamespace(stdout="JobId=1234\n Nodes=test-node CPU_IDs=32-39,64-71 Mem=0")
+        return SimpleNamespace(
+            stdout="JobId=1234 JobState=RUNNING NodeList=test-node" if "job" in args else "test-node"
+        )
+
+    monkeypatch.setattr(runner, "_command", command)
+    assert runner.wait_ready(1) == ["node0000"]
+    report = json.loads((runner.cell_dir / "slurm-cpu-allocation.json").read_text())
+    assert report["allocated_cpus_per_node"] == {"test-node": 16}
+    assert "CPU_IDs" in report["source"]
+
+
+def test_slurm_expands_grouped_cpu_allocation_by_host(runner, monkeypatch):
+    runner.node_count = 3
+    monkeypatch.delenv("SLURM_JOB_CPUS_PER_NODE")
+
+    def command(args, **kwargs):
+        if "--details" in args:
+            return SimpleNamespace(
+                stdout=("JobId=1234\n Nodes=node3 CPU_IDs=64-95 Mem=0\n Nodes=node[1-2] CPU_IDs=0-15 Mem=0")
+            )
+        if "job" in args:
+            return SimpleNamespace(stdout="JobId=1234 JobState=RUNNING NodeList=node[1-3]")
+        return SimpleNamespace(
+            stdout={"node[1-3]": "node1 node2 node3", "node[1-2]": "node1 node2", "node3": "node3"}[args[-1]]
+        )
+
+    monkeypatch.setattr(runner, "_command", command)
+    assert runner.wait_ready(3) == ["node0000", "node0001", "node0002"]
+    report = json.loads((runner.cell_dir / "slurm-cpu-allocation.json").read_text())
+    assert report["allocated_cpus_per_node"] == {"node1": 16, "node2": 16, "node3": 32}
+
+
+@pytest.mark.parametrize("cpus,binding", [(0, "cores"), (True, "cores"), (16, "mask_cpu:1"), (1, "cores")])
+def test_slurm_rejects_invalid_policy_or_less_than_local_dp_schedulers(runner, cpus, binding):
+    with pytest.raises(ValueError, match="CPU|cpu"):
+        SlurmCellRunner(
+            runner.cell_dir / "manifest.yaml",
+            runner.cell_dir,
+            image=runner.image,
+            mounts=(),
+            total_gpus=4,
+            cpus_per_task=cpus,
+            cpu_bind=binding,
+            attention_tp=1,
+        )
 
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX container entrypoint")
@@ -608,6 +702,7 @@ def test_profile_campaign_observes_slurm_version_before_native_collection(tmp_pa
     commands = []
     executed = []
     monkeypatch.setenv("SLURM_JOB_ID", "1234")
+    monkeypatch.setenv("SLURM_JOB_CPUS_PER_NODE", "16")
     monkeypatch.setattr("collector.fpm_forward.slurm.shutil.which", lambda name: f"/fake/{name}")
     monkeypatch.setattr(campaign.time, "sleep", lambda _seconds: None)
     import importlib.metadata
@@ -633,7 +728,7 @@ def test_profile_campaign_observes_slurm_version_before_native_collection(tmp_pa
                 next(value.removesuffix(":/results") for value in mounts.split(",") if value.endswith(":/results"))
             )
             assert raw.name == "node0000"
-            program = args[args.index("/usr/bin/env") + 3 :]
+            program = args[args.index("/usr/bin/env") + 6 :]
             if program[:2] == ["python3", "-c"]:
                 # Execute the emitted program with the container's result mount mapped to disk.
                 with monkeypatch.context() as patch:

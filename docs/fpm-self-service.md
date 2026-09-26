@@ -287,6 +287,8 @@ aisimulate onboard checkpoint \
           "executor": "slurm",
           "image": "/shared/images/pinned-runtime.sqsh",
           "container_mount": ["/shared/models:/models:ro", "/shared/hf-cache:/root/.cache/huggingface"],
+          "cpus_per_task": 16,
+          "cpu_bind": "cores",
           "transport": "ib"
         }
       },
@@ -675,6 +677,7 @@ Execution saves `fpm-readiness.json` in the onboarding output directory and retu
 | Native and formal seed-regime counts | Formal conversion applies the selected strategy's protocol. An approved legacy `skip:moe_tp_balanced_by_construction` is distinct from formal `fake_fallback`; do not decide usability from a raw stamp alone. |
 | Direct-eligible point counts | Formal `fake_fallback` rows are excluded. Zero eligible decode points blocks full collection and direct prediction. Mixed usable/fallback data covers only the reported samples and is not complete query coverage. |
 | Available execution-worker observations | Inspect observed attention groups, resolved cache settings and graph configuration. Contradictions in these checked observations are blockers. Missing optional observations remain unqualified without requiring completed memory sizing or serving validation before timing collection. Referenced `fpm-memory-*.json` files are unvalidated sources retained for separate runtime import/finalization checks; their presence does not qualify allocation or memory. |
+| CPU allocation and affinity | For new Slurm campaigns, inspect `execution.cpu_affinity` and the per-node launcher, per-rank worker and scheduler sidecars. The actual step must expose the requested CPU pool; local schedulers must have sufficient distinct CPUs available, and observed threads must stay within that pool. Missing evidence is incomplete; contradictions or insufficient capacity block full collection. A shared pool does not mean dedicated per-rank pinning. |
 
 Zero-KV prefill can retain a native `real_prefix` path stamp while its formal seed regime is `n/a`; the stamp alone does not establish that cached tokens were read. Keep the native provenance and use the validated phase/token counts and formal regime when interpreting readiness.
 
@@ -694,6 +697,8 @@ Set deployment options directly on `onboard collect-fpm`:
 | --- | --- | --- |
 | `--image IMAGE` | Overrides the worker image. | Required Pyxis image or accessible SquashFS image path. |
 | `--container-mount SRC[:DST[:FLAGS]]` | Rejected; use the model-cache PVC option. | Repeat for checkpoint, cache or other required mounts; spelling and order are preserved. |
+| `--cpus-per-task N` | Rejected. | Positive CPUs for each node's one-task worker/scheduler pool; new campaigns default to 16. |
+| `--cpu-bind cores\|none` | Rejected. | Slurm binding for that node task; new campaigns default to `cores`. `none` retains the allowed mask imposed by the allocation/container. |
 | `--namespace`, `--model-cache NAME[:MOUNT[:SUBPATH]]`, `--image-pull-secret` | Existing namespace, model PVC and registry-secret settings. A supplied mount is an absolute container path. | Rejected because they configure Kubernetes resources. |
 | `--dynamo-version VERSION` | Pinned template version. | Same template-version selection. |
 | `--transport nvlink\|ib\|efa` | GPU networking transport. | GPU networking transport; it does not select the executor. |
@@ -702,6 +707,10 @@ Prefer an immutable image digest or a pinned image file. Supply the same options
 
 For Slurm, run within an existing allocation obtained through your cluster's ordinary `salloc` or `sbatch` process. The collector uses `srun` with Pyxis/Enroot to launch its benchmark workers; it does not submit an allocation or choose job dependencies. The allocated node count must match the generated collector plan, with enough GPUs per node for the selected worker. Follow [campaign orchestration](#orchestrate-independent-collection-campaigns) when several configurations share capacity. These are collection-time requirements, not questions about the user's total GPU pool during model intake. Support for the executor does not qualify every model/runtime/topology combination.
 
+Request matching CPU resources in the allocation, for example `salloc --nodes=2 --ntasks-per-node=1 --gpus-per-node=4 --cpus-per-task=16` with your cluster's account, partition and time options. The collector starts one task per node with explicit `--cpus-per-task=16 --cpu-bind=cores`; local engine schedulers, GPU workers and supporting threads share this pool. The initial 16-CPU choice follows the existing Slurm generator default and is editable, not a measured optimum. It does not assign one dedicated core to each rank or choose a NUMA layout. Increase it when the local DP topology or measured host load requires more capacity; a request smaller than the number of local DP schedulers is rejected. CPU counts and observed logical CPU masks can differ with SMT. Slurm CPU IDs are used to count allocation capacity, not assumed to match Linux affinity numbering.
+
+The collector checks allocated CPU counts rather than full-node CPU capacity. Inside the same container step that will start the engine, it records `fpm-cpu-launcher.json` before model initialization and fails if the effective allowed mask is unavailable or too small. Worker observations after graph warm-up and scheduler initialization observations record actual process and thread masks. Inspect these during smoke, especially for DEP; do not infer isolation from the batch allocation size or from a separate diagnostic step. An allocation conflict fails promptly instead of waiting indefinitely for a node task.
+
 Keep the campaign directory on storage shared at the same absolute path across the allocated nodes. Make the pinned image and checkpoint accessible, and mount the model/cache paths required inside the container. The collector adds its own staged runtime and result mounts, preserves initialization and native-result evidence, and cleans up its own named job steps without canceling the caller's allocation. Commas and control characters are not allowed in individual mount strings; use repeated flags for multiple mounts. For example, preview an existing plan in shared storage:
 
 ```bash
@@ -709,6 +718,7 @@ aisimulate onboard collect-fpm \
   --config /shared/onboarding/request.yaml \
   --output-dir /shared/onboarding/collection \
   --executor slurm \
+  --cpus-per-task 16 --cpu-bind cores \
   --image /shared/images/pinned-runtime.sqsh \
   --container-mount /shared/models:/models:ro \
   --container-mount /shared/hf-cache:/root/.cache/huggingface \
@@ -716,6 +726,8 @@ aisimulate onboard collect-fpm \
 ```
 
 Use your cluster's actual paths and networking. Add `--execute` to this same command when its prepared allocation is available; add `--resume` as well when continuing its existing campaign. Both executors use the same native-grid collection, checkpoint, formal publication and memory-finalization workflow. Slurm does not introduce another timing grid or automatically launch an HTTP serving endpoint.
+
+Use the same CPU settings for runtime probes, smoke, formal collection and representative repeats. Save both values with the other deployment inputs in the checkpoint; previewed collector commands use `--fpm-slurm-cpus-per-task` and `--fpm-slurm-cpu-bind`. Changing the CPU policy requires a fresh campaign and matching smoke; preserve earlier data and reports instead of changing their saved identity. Legacy plans without a CPU policy remain readable for compatible CPU-only recovery and memory import, with CPU affinity explicitly unverified. They cannot launch new workers under silently added defaults. New runtime instrumentation must emit the worker and scheduler CPU evidence before its smoke can qualify a new Slurm campaign.
 
 For the [readiness smoke](#check-timing-readiness-before-full-collection), add `--execute --smoke`; `--limit N` also requires `--smoke` and may leave required cells unchecked. Diagnostic smoke and limited runs do not publish formal FPM data. Existing campaign data, raw artifacts, or checkpoints require explicit `--resume` and a readable matching collector checkpoint; otherwise choose a new output directory. A custom `--checkpoint-dir`, if needed, must remain inside the plan's `fpm-checkpoint/` directory. Selecting an empty checkpoint directory does not allow reuse of existing campaign artifacts. Smoke and formal campaigns have separate checkpoints and artifact directories, so an existing smoke run does not prevent the first formal run, or vice versa. The collector verifies the resumed checkpoint's frozen-plan identity.
 
@@ -1038,6 +1050,8 @@ aisimulate onboard validate-collection \
 The subset covers observed small/large batches, short/long KV contexts and selected graph boundaries. Each fresh sample is an isolated native explicit-manifest run through the existing executor, with separate raw artifacts and attempt IDs. Dynamo still admits and measures the points; repeated results do not replace the formal table. Global warm-up and KV preparation remain outside measured forward time. Inspect individual samples, counts, mean, minimum/maximum, sample standard deviation in seconds (`sample_stddev_seconds` and `source_inclusive_stddev_seconds`), and both CV values in `repeatability-assessment.json`. A published outlier cannot pass merely because five new measurements agree with each other. Failed attempts remain recorded; add `--retry-failed` when explicitly resuming them.
 
 The source must retain a schema-v11 collector plan, successful cell attempts, formal publication and archived `generator-overrides.json`. New GPU launches require the source collector revision; a different checkout must not silently remeasure old data under new behavior. Historical artifacts remain readable but missing observations or deployment evidence prevent qualification. Effective execution inspection records initialized backend/graph settings and point KV regimes; it does not claim a per-point CUDA graph dispatch trace.
+
+For a source with a frozen Slurm CPU policy, repeats retain that exact node-task CPU request and binding. Review CPU affinity evidence for each fresh attempt alongside the timing spread; adequate requested CPUs alone do not establish the worker and scheduler masks. A changed CPU policy is a new collection experiment, not a repeat of the old launch.
 
 The holdout evaluator removes every physical row at each selected coordinate, preserves envelope anchors, and uses the canonical direct estimator with denied fallback and no analytical model class. It also retains the adjacent measured points on both sides of an execution-mode change along each batch, token or KV curve. For example, if native evidence labels 512 tokens `PIECEWISE` and 513 tokens `NONE`, both measurements stay in the training table. The boundary comes from the full validated native grid and resolved graph configuration for the same collection attempt, not a fixed token limit, a timing jump or the small repeatability subset. Inspect `capture_boundaries` in the holdout plan/report for retained anchors, source hashes and incomplete evidence. Missing or unknown mode metadata leaves boundary assessment incomplete; contradictory rank/configuration evidence is rejected. Expected point modes are not an observed per-call dispatch trace.
 

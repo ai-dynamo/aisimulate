@@ -160,6 +160,8 @@ class FPMDeployment(StrictModel):
     dynamo_version: str | None = None
     image: str | None = Field(default=None, pattern=r"^[^\s\x00]+$")
     container_mount: list[str] = Field(default_factory=list)
+    cpus_per_task: int | None = Field(default=None, strict=True, gt=0)
+    cpu_bind: Literal["cores", "none"] | None = None
     namespace: str | None = Field(default=None, pattern=rf"^{_DNS_LABEL}$")
     model_cache: str | None = None
     transport: Literal["nvlink", "ib", "efa"] | None = None
@@ -179,6 +181,8 @@ class FPMDeployment(StrictModel):
                 raise ValueError("--executor slurm requires --image for the Pyxis container")
         elif self.container_mount:
             raise ValueError("--container-mount requires --executor slurm; use --model-cache for Kubernetes")
+        elif self.cpus_per_task is not None or self.cpu_bind is not None:
+            raise ValueError("--cpus-per-task and --cpu-bind require --executor slurm")
         return self
 
     @field_validator("container_mount")

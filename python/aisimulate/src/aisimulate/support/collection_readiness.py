@@ -138,6 +138,9 @@ def _cell_report(plan, cell, campaign: Path, entry: Any) -> dict[str, Any]:
                     )
         if result["execution"]["failures"]:
             result["blockers"].extend(result["execution"]["failures"])
+        cpu = result["execution"]["cpu_affinity"]
+        if cpu["policy_required"]:
+            result["blockers"].extend(f"CPU affinity: {message}" for message in cpu["missing_evidence"])
         if entry.get("cleanup_error"):
             result["blockers"].append(
                 "current attempt has unresolved resource cleanup; retain its cleanup error and inspect"

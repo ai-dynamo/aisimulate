@@ -90,7 +90,13 @@ def _inputs(tmp_path, *, graph_policy="runtime"):
             "max_prefill_cudagraph_size": 512 if graph_policy == "explicit" else None,
         },
         "model_config": {"path": str(config), "sha256": hashlib.sha256(config.read_bytes()).hexdigest()},
-        "deployment": {"executor": "slurm", "image": "image@sha256:synthetic", "container_mount": ["/cache:/cache"]},
+        "deployment": {
+            "executor": "slurm",
+            "image": "image@sha256:synthetic",
+            "container_mount": ["/cache:/cache"],
+            "cpus_per_task": 16,
+            "cpu_bind": "cores",
+        },
     }
     return launch, manifest, marker
 
@@ -234,6 +240,10 @@ def test_execute_covers_each_configuration_and_both_phases_then_resumes(tmp_path
     from collector.fpm_forward import runner, runtime_probe
 
     launch, manifest, marker = _inputs(tmp_path)
+    # Fresh callers may omit the default CPU proposal. Preview freezes it,
+    # and resume must recover that same explicit identity from the saved plan.
+    launch["deployment"].pop("cpus_per_task")
+    launch["deployment"].pop("cpu_bind")
     second = copy.deepcopy(launch)
     second["topology"].update(tp=1, dp=4)
     configurations = {"tp4": launch, "dep4": second}
@@ -310,6 +320,133 @@ def test_configuration_failure_preserves_successes_and_new_bundle_gets_new_attem
     assert attempts[0] == first
     assert attempts[0]["bundle"]["sha256"] != attempts[1]["bundle"]["sha256"]
     assert (output / first["bundle"]["manifest"]).read_bytes() == preserved
+
+
+@pytest.mark.parametrize(
+    "provided", [{"cpus_per_task": 32}, {"cpu_bind": "none"}, {"cpus_per_task": 8}, {"cpu_bind": "cores"}]
+)
+def test_probe_partial_resume_keeps_saved_cpu_policy_or_rejects_changes(tmp_path, monkeypatch, provided):
+    from collector.fpm_forward import runner, runtime_probe
+
+    launch, manifest, _ = _inputs(tmp_path)
+    launch["deployment"].update(cpus_per_task=32, cpu_bind="none")
+    executions = []
+    monkeypatch.setattr(runner, "_cell_runner", lambda p, c, m, d: _SyntheticExecutor(p, c, d, executions))
+    output = tmp_path / "probe"
+    assert (
+        runtime_probe.probe_runtime({"tp4": launch}, instrumentation=manifest, output_dir=output, execute=True)[
+            "status"
+        ]
+        == "completed"
+    )
+    index_path = output / "observations.json"
+    before = index_path.read_bytes()
+    launch["deployment"].pop("cpus_per_task")
+    launch["deployment"].pop("cpu_bind")
+    launch["deployment"].update(provided)
+    result = runtime_probe.probe_runtime(
+        {"tp4": launch}, instrumentation=manifest, output_dir=output, execute=True, resume=True
+    )
+    same = provided in ({"cpus_per_task": 32}, {"cpu_bind": "none"})
+    assert result["status"] == ("completed" if same else "failed"), result
+    if same:
+        assert result["configurations"]["tp4"]["resumed"] is True
+        assert result["configurations"]["tp4"]["launch"]["deployment"]["cpus_per_task"] == 32
+        assert result["configurations"]["tp4"]["launch"]["deployment"]["cpu_bind"] == "none"
+    else:
+        assert "launch settings changed" in str(result)
+    assert index_path.read_bytes() == before
+    assert len(executions) == 2
+
+
+@pytest.mark.parametrize("tamper", ["hash", "launch", "missing"])
+def test_probe_cpu_policy_inheritance_requires_verified_saved_context(tmp_path, monkeypatch, tamper):
+    from collector.fpm_forward import runner, runtime_probe
+
+    launch, manifest, _ = _inputs(tmp_path)
+    launch["deployment"].update(cpus_per_task=32, cpu_bind="none")
+    monkeypatch.setattr(runner, "_cell_runner", lambda p, c, m, d: _SyntheticExecutor(p, c, d, []))
+    output = tmp_path / "probe"
+    runtime_probe.probe_runtime({"tp4": launch}, instrumentation=manifest, output_dir=output, execute=True)
+    index_path = output / "observations.json"
+    index = json.loads(index_path.read_text())
+    entry = index["configurations"]["tp4"]
+    if tamper == "missing":
+        entry["attempts"][0]["phases"] = {}
+    else:
+        reference = entry["attempts"][0]["phases"]["prefill"]["launch_manifest"]
+        path = output / reference["path"]
+        context = json.loads(path.read_text())
+        context["launch"]["deployment"]["cpu_bind"] = "cores"
+        runner._atomic_json(path, context)
+        if tamper == "launch":
+            reference.update(runner._file_metadata(path))
+    runner._atomic_json(index_path, index)
+    before = index_path.read_bytes()
+    launch["deployment"].pop("cpu_bind")
+    monkeypatch.setattr(runner, "_cell_runner", lambda *args: pytest.fail("invalid CPU evidence reached an executor"))
+    result = runtime_probe.probe_runtime(
+        {"tp4": launch}, instrumentation=manifest, output_dir=output, execute=True, resume=True
+    )
+    assert result["status"] == "failed", result
+    assert index_path.read_bytes() == before
+
+
+def test_resume_without_an_archived_probe_uses_fresh_cpu_defaults(tmp_path, monkeypatch):
+    from collector.fpm_forward import runner, runtime_probe
+
+    launch, manifest, _ = _inputs(tmp_path)
+    launch["deployment"].pop("cpus_per_task")
+    launch["deployment"].pop("cpu_bind")
+    monkeypatch.setattr(runner, "_cell_runner", lambda p, c, m, d: _SyntheticExecutor(p, c, d, []))
+    result = runtime_probe.probe_runtime(
+        {"tp4": launch}, instrumentation=manifest, output_dir=tmp_path / "probe", execute=True, resume=True
+    )
+    assert result["status"] == "completed", result
+    assert result["configurations"]["tp4"]["launch"]["deployment"]["cpus_per_task"] == 16
+    assert result["configurations"]["tp4"]["launch"]["deployment"]["cpu_bind"] == "cores"
+
+
+@pytest.mark.parametrize("completed", [True, False])
+def test_legacy_probe_reuse_is_read_only_and_new_execution_does_not_replace_attempt(tmp_path, monkeypatch, completed):
+    from collector.fpm_forward import runner, runtime_probe
+
+    launch, manifest, _ = _inputs(tmp_path)
+    executions = []
+    monkeypatch.setattr(runner, "_cell_runner", lambda p, c, m, d: _SyntheticExecutor(p, c, d, executions))
+    output = tmp_path / "probe"
+    runtime_probe.probe_runtime({"tp4": launch}, instrumentation=manifest, output_dir=output, execute=True)
+    # Build an explicitly historical fixture, retaining the old launch representation
+    # in its SHA-bound context. No CPU observations or policy are invented for it.
+    index_path = output / "observations.json"
+    index = json.loads(index_path.read_text())
+    entry = index["configurations"]["tp4"]
+    for field in ("cpus_per_task", "cpu_bind"):
+        launch["deployment"].pop(field)
+        entry["launch"]["deployment"].pop(field)
+    for phase in entry["attempts"][0]["phases"].values():
+        reference = phase["launch_manifest"]
+        path = output / reference["path"]
+        context = json.loads(path.read_text())
+        context["launch"] = entry["launch"]
+        runner._atomic_json(path, context)
+        reference.update(runner._file_metadata(path))
+        if not completed:
+            phase["status"] = "failed"
+    if not completed:
+        entry["attempts"][0]["status"] = "failed"
+    runner._atomic_json(index_path, index)
+    before = index_path.read_bytes()
+    attempts = sorted((output / "attempts").rglob("runtime-probe-context.json"))
+    monkeypatch.setattr(runner, "_cell_runner", lambda *args: pytest.fail("legacy resume reached an executor"))
+    result = runtime_probe.probe_runtime(
+        {"tp4": launch}, instrumentation=manifest, output_dir=output, execute=True, resume=True
+    )
+    assert result["status"] == ("completed" if completed else "failed"), result
+    if not completed:
+        assert "no frozen CPU policy" in str(result)
+    assert index_path.read_bytes() == before
+    assert sorted((output / "attempts").rglob("runtime-probe-context.json")) == attempts
 
 
 def test_dense_tensor_parallel_probe_keeps_dense_moe_axes(tmp_path):

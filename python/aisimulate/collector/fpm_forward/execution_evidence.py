@@ -14,7 +14,10 @@ from collections import Counter
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+import yaml
+
 from .config import with_kv_warmup_defaults
+from .cpu_affinity import inspect_cpu_affinity
 from .native_artifact import NativeCollection, _rank_artifacts
 from .planner import FPMCell, FPMCollectionPlan, _canonical_hash
 from .runtime.fpm_memory_observer import EXECUTION_SUPPORTED_VERSIONS
@@ -372,6 +375,28 @@ def inspect_execution_evidence(
     regimes = Counter(measurement.kv_seed_regime or "unreported" for measurement in collection.points)
     if "unreported" in regimes:
         missing.append("per-point KV initialization regime is unreported")
+    cpu_nodes, cpu_manifest, cpu_geometry_missing, cpu_geometry_failure = None, None, None, None
+    if getattr(plan.options, "slurm_cpus_per_task", None) is not None:
+        from .runner import FPM_MANIFEST_FILENAME, _expected_nodes
+
+        manifest = raw_root.parent / FPM_MANIFEST_FILENAME
+        try:
+            cpu_manifest = file_evidence(manifest)
+            cpu_nodes = _expected_nodes(manifest)
+        except OSError as error:
+            cpu_geometry_missing = str(error)
+        except (TypeError, ValueError, KeyError, yaml.YAMLError) as error:
+            cpu_geometry_failure = str(error)
+    cpu = inspect_cpu_affinity(cell, raw_root, collection, plan=plan, expected_nodes=cpu_nodes)
+    cpu["launch_geometry_source"] = cpu_manifest
+    if cpu_geometry_missing is not None:
+        cpu["missing_evidence"].append(f"generated launch geometry: {cpu_geometry_missing}")
+    if cpu_geometry_failure is not None:
+        cpu["failures"].append(f"generated launch geometry: {cpu_geometry_failure}")
+        cpu["status"] = "failed"
+    if cpu["policy_required"]:
+        missing.extend(f"CPU affinity: {message}" for message in cpu["missing_evidence"])
+        failures.extend(f"CPU affinity: {message}" for message in cpu["failures"])
     return {
         "status": "failed" if failures else "incomplete" if missing else "qualified",
         "missing_evidence": sorted(set(missing)),
@@ -379,6 +404,7 @@ def inspect_execution_evidence(
         "observed_workers": workers,
         "native_graph_config": native_graphs,
         "kv_seed_regime_counts": dict(regimes),
+        "cpu_affinity": cpu,
         "per_point_dispatch": "unreported",
         "scope": "initialized attention backends and resolved graph configuration; no per-point dispatch trace",
     }

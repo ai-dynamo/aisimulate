@@ -179,6 +179,12 @@ def normalize_probe_launch(value: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("Slurm runtime probes reject Kubernetes namespace, model_cache and image_pull_secret")
     if deployment["executor"] != "slurm" and mounts:
         raise ValueError("container_mount requires the Slurm executor")
+    cpus, binding = deployment.get("cpus_per_task"), deployment.get("cpu_bind")
+    if cpus is not None or binding is not None:
+        if deployment["executor"] != "slurm":
+            raise ValueError("CPU deployment options require the Slurm executor")
+        if type(cpus) is not int or cpus < 1 or binding not in {"cores", "none"}:
+            raise ValueError("Slurm CPU policy requires positive cpus_per_task and cpu_bind cores or none")
     return launch
 
 
@@ -277,6 +283,8 @@ def build_runtime_probe_plan(configuration: str, facts: dict[str, Any], bundle: 
         executor=deployment["executor"],
         slurm_container_image=deployment["image"] if deployment["executor"] == "slurm" else "",
         slurm_container_mounts=tuple(deployment["container_mount"]),
+        slurm_cpus_per_task=deployment.get("cpus_per_task"),
+        slurm_cpu_bind=deployment.get("cpu_bind"),
     )
     admitted = enumerate_fpm_topologies(backend="vllm", is_moe=is_moe, options=options, allow_pure_tp=True)
     if topology not in admitted:
@@ -353,6 +361,8 @@ def validate_collection_probe_launch(
         "executor",
         "slurm_container_image",
         "slurm_container_mounts",
+        "slurm_cpus_per_task",
+        "slurm_cpu_bind",
     ):
         if getattr(options, name) != getattr(expected_options, name):
             raise ValueError(f"formal collection {name} differs from the accepted runtime probe")
@@ -636,6 +646,52 @@ def _verified_artifact(root: Path, reference: dict[str, Any]) -> Path:
     return path
 
 
+def resolve_probe_cpu_policy(
+    configuration: str, deployment: dict[str, Any], output_dir: str | Path, *, resume: bool
+) -> dict[str, Any]:
+    """Resolve omitted CPU fields before launch validation, retaining old absence."""
+    from .config import resolve_slurm_cpu_policy
+
+    deployment = copy.deepcopy(deployment)
+    if deployment.get("executor") != "slurm":
+        return deployment
+    root = Path(output_dir).expanduser().resolve()
+    index_path = root / "observations.json"
+    if resume and index_path.exists():
+        index = read_json(index_path)
+        if index.get("schema_version") != INDEX_SCHEMA or not isinstance(index.get("configurations"), dict):
+            raise ValueError("runtime probe observation index has an unsupported schema")
+        existing = index["configurations"].get(configuration)
+        if existing is not None:
+            if not isinstance(existing, dict):
+                raise ValueError("saved runtime probe configuration must be an object")
+            saved = _required_mapping(_required_mapping(existing, "launch"), "deployment")
+            inherited = {
+                field: saved[field]
+                for field in ("cpus_per_task", "cpu_bind")
+                if deployment.get(field) is None and field in saved
+            }
+            if inherited:
+                attempts = existing.get("attempts", [])
+                if not isinstance(attempts, list) or any(not isinstance(attempt, dict) for attempt in attempts):
+                    raise ValueError("saved runtime probe attempts must be a list of objects")
+                phases = _required_mapping(attempts[-1], "phases") if attempts else {}
+                if any(not isinstance(phase, dict) for phase in phases.values()):
+                    raise ValueError("saved runtime probe phases must be objects")
+                references = [phase["launch_manifest"] for phase in phases.values() if "launch_manifest" in phase]
+                if not references or any(not isinstance(reference, dict) for reference in references):
+                    raise ValueError("saved CPU policy has no SHA-bound runtime launch context")
+                for reference in references:
+                    context = read_json(_verified_artifact(root, reference))
+                    if context.get("launch") != existing["launch"]:
+                        raise ValueError("saved CPU policy differs from its archived runtime launch context")
+            deployment.update(inherited)
+            return deployment
+    cpus, binding = resolve_slurm_cpu_policy(deployment.get("cpus_per_task"), deployment.get("cpu_bind"))
+    deployment.update(cpus_per_task=cpus, cpu_bind=binding)
+    return deployment
+
+
 def _probe_configuration_slug(configuration: str) -> str:
     return re.sub(r"[^a-zA-Z0-9_-]", "-", configuration)[:40] + "-" + _canonical_hash(configuration)[:8]
 
@@ -767,6 +823,11 @@ def probe_runtime(
             try:
                 if not isinstance(configuration, str) or not configuration:
                     raise ValueError("configuration labels must be nonempty strings")
+                if facts.get("deployment", {}).get("executor") == "slurm":
+                    facts = copy.deepcopy(facts)
+                    facts["deployment"] = resolve_probe_cpu_policy(
+                        configuration, facts["deployment"], root, resume=resume
+                    )
                 plan = build_runtime_probe_plan(configuration, facts, bundle)
                 existing = index["configurations"].get(configuration)
                 if existing is not None and existing["launch"] != plan.launch:
@@ -805,6 +866,14 @@ def probe_runtime(
                         continue
                 except (OSError, TypeError, KeyError, ValueError) as error:
                     result["diagnostics"].append(f"previous attempt cannot be reused: {error}")
+            if execute and plan.options.executor == "slurm" and plan.options.slurm_cpus_per_task is None:
+                result["status"] = "failed"
+                result["diagnostics"].append(
+                    "saved Slurm campaign has no frozen CPU policy; compatible recorded observations remain "
+                    "readable, but new workers require a fresh campaign and smoke with explicit CPU settings"
+                )
+                continue
+            if execute and resume and previous is not None:
                 try:
                     _cleanup_previous_attempt(root, plan, previous)
                 except Exception as error:
@@ -857,6 +926,7 @@ def probe_runtime(
                                 phase_dir / runner.RUNTIME_ENV_FILENAME,
                                 runtime / "fpm_exec.sh",
                                 runtime / "preflight.py",
+                                *([runtime / "fpm_memory_observer.py"] if plan.options.executor == "slurm" else []),
                                 *extras,
                             ],
                         )

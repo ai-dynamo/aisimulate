@@ -189,6 +189,14 @@ def test_partial_approval_and_affected_changes(tmp_path, capsys, monkeypatch, re
 def test_slurm_options_survive_pause_and_require_fresh_collection_after_edit(
     tmp_path, capsys, monkeypatch, request_payload, edit
 ):
+    from collector.fpm_forward import cli as collector_cli
+    from collector.fpm_forward.config import FPMCollectionOptions
+    from collector.fpm_forward.planner import build_collection_plan
+    from collector.fpm_forward.runner import CHECKPOINT_SCHEMA
+
+    from aisimulate.support.fpm import fpm_cli_args
+    from aisimulate.support.schema import FPMDeployment
+
     path = tmp_path / "onboarding-checkpoint.json"
     request = tmp_path / "request.yaml"
     request.write_text(yaml.safe_dump(request_payload))
@@ -197,16 +205,47 @@ def test_slurm_options_survive_pause_and_require_fresh_collection_after_edit(
     capsys.readouterr()
     collector = original / "fpm-checkpoint/fpm_forward.json"
     collector.parent.mkdir()
-    # Session resume verifies readability only; the separate collector resume
-    # tests exercise its schema and frozen-plan identity before execution.
-    collector.write_text('{"synthetic_pause_evidence": true}\n')
-    original_bytes = {file: file.read_bytes() for file in original.rglob("*") if file.is_file()}
     deployment = {
         "executor": "slurm",
         "image": "registry.example/fpm@sha256:" + "a" * 64,
         "container_mount": ["/shared/model cache:/models:ro", "/shared/cache:/root/.cache/huggingface"],
         "transport": "ib",
     }
+    saved_request = SupportRequest.model_validate(request_payload)
+    args = collector_cli._parser().parse_args(
+        fpm_cli_args(saved_request, output_dir=original, plan_only=True, deployment=FPMDeployment(**deployment))[3:]
+    )
+    model_config = tmp_path / "model-config.json"
+    model_config.write_text(
+        json.dumps(
+            {
+                "architectures": [saved_request.fpm_profile.architecture],
+                "hidden_size": 128,
+                "intermediate_size": 256,
+                "num_hidden_layers": 2,
+                "num_attention_heads": 4,
+                "num_key_value_heads": 4,
+                "vocab_size": 1024,
+                "max_position_embeddings": 16384,
+                "torch_dtype": "bfloat16",
+            }
+        )
+    )
+    frozen = build_collection_plan(
+        backend=saved_request.identity.framework,
+        model_path=saved_request.identity.model,
+        system=saved_request.identity.gpu,
+        selected_ops={"attention_context", "attention_generation"},
+        options=FPMCollectionOptions.from_args(args),
+        fpm_profile=saved_request.fpm_profile,
+        model_config_path=str(model_config),
+        generator_overrides=collector_cli._load_generator_overrides(args),
+    )
+    campaign = original / "fpm-artifacts" / frozen.sha256[:16]
+    campaign.mkdir(parents=True)
+    (campaign / "collection-plan.json").write_text(json.dumps(frozen.to_dict()))
+    collector.write_text(json.dumps({"schema": CHECKPOINT_SCHEMA, "plan_sha256": frozen.sha256, "cells": {}}))
+    original_bytes = {file: file.read_bytes() for file in original.rglob("*") if file.is_file()}
     _save(
         path,
         capsys,

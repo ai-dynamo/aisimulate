@@ -21,6 +21,8 @@ import importlib.metadata
 import json
 import logging
 import os
+import socket
+import threading
 from enum import Enum
 from pathlib import Path
 from typing import Any
@@ -56,6 +58,133 @@ _CONFIG_FIELDS = {
     "compilation_config": ("mode", "cudagraph_mode", "cudagraph_capture_sizes", "max_cudagraph_capture_size"),
     "kernel_config": ("moe_backend",),
 }
+
+
+def cpu_affinity_snapshot(*, task_directory: Path = Path("/proc/self/task")) -> dict[str, Any]:
+    """Observe Linux thread affinity once, without binding or running a model.
+
+    Linux affinity is per thread. Querying PID explicitly observes the main
+    thread even when a runtime hook executes on another Python/native thread.
+    The task scan is not atomic; changing or unreadable threads stay partial.
+    CPU IDs are logical CPUs, not a physical-core or NUMA placement claim.
+    """
+    pid = os.getpid()
+    payload: dict[str, Any] = {
+        "hostname": socket.gethostname(),
+        "pid": pid,
+        "observer_thread_id": threading.get_native_id(),
+        "main_thread_allowed_cpus": [],
+        "threads": [],
+        "thread_ids_before": [],
+        "thread_ids_after": [],
+        "thread_errors": [],
+        "errors": [],
+        "status": "unavailable",
+    }
+    try:
+        payload["main_thread_allowed_cpus"] = sorted(os.sched_getaffinity(pid))
+        if not payload["main_thread_allowed_cpus"]:
+            raise ValueError("main thread has an empty CPU affinity mask")
+    except (AttributeError, OSError, ValueError) as error:
+        payload["errors"].append(f"main thread affinity: {type(error).__name__}: {error}")
+        return payload
+    try:
+        before = payload["thread_ids_before"] = sorted(
+            int(path.name) for path in task_directory.iterdir() if path.name.isdecimal()
+        )
+        for tid in before:
+            try:
+                cpus = sorted(os.sched_getaffinity(tid))
+                if not cpus:
+                    raise ValueError("thread has an empty CPU affinity mask")
+                payload["threads"].append({"tid": tid, "allowed_cpus": cpus})
+            except (OSError, ValueError) as error:
+                payload["thread_errors"].append({"tid": tid, "error": f"{type(error).__name__}: {error}"})
+        after = payload["thread_ids_after"] = sorted(
+            int(path.name) for path in task_directory.iterdir() if path.name.isdecimal()
+        )
+        if before != after:
+            payload["errors"].append("thread list changed during observation")
+        if payload["observer_thread_id"] not in before:
+            payload["errors"].append("observation thread is missing from the task snapshot")
+        main = [thread for thread in payload["threads"] if thread["tid"] == pid]
+        if not main or main[0]["allowed_cpus"] != payload["main_thread_allowed_cpus"]:
+            payload["errors"].append("main thread was missing or its affinity changed during observation")
+    except OSError as error:
+        payload["errors"].append(f"thread enumeration: {type(error).__name__}: {error}")
+    payload["status"] = "partial" if payload["errors"] or payload["thread_errors"] else "observed"
+    return payload
+
+
+def observe_cpu(
+    kind: str,
+    *,
+    dp_rank: int | None = None,
+    tp_rank: int | None = None,
+    pp_rank: int | None = None,
+    requested_cpus_per_task: int | None = None,
+    cpu_bind: str | None = None,
+    local_gpu_count: int | None = None,
+    directory: Path | None = None,
+) -> dict[str, Any]:
+    """Save independent CPU evidence; unavailable observation never changes memory.
+
+    The launcher uses the same container and srun step as the engine, before
+    engine startup. Its caller must inspect this saved result before proceeding.
+    This helper records affinity; it does not set it or claim it remains fixed.
+    """
+    measurements = {
+        "launcher": "before_engine_start",
+        "worker": "after_warmup",
+        "scheduler": "scheduler_initialized",
+    }
+    if kind not in measurements:
+        raise ValueError("CPU observation requires launcher, worker or scheduler role")
+    ranks = {"dp_rank": dp_rank, "tp_rank": tp_rank, "pp_rank": pp_rank}
+    required = set(ranks) if kind == "worker" else {"dp_rank"} if kind == "scheduler" else set()
+    if any(
+        (type(value) is not int or value < 0) if key in required else value is not None for key, value in ranks.items()
+    ):
+        raise ValueError("CPU observation has invalid role/rank coordinates")
+    if directory is None:
+        directory, binding = _execution_destination()
+    else:
+        source = directory / "collector-provenance.json"
+        raw = source.read_bytes()
+        provenance = json.loads(raw)
+        if not isinstance(provenance, dict):
+            raise ValueError("CPU observation collector provenance must be an object")
+        binding = {
+            "collector_provenance": provenance,
+            "execution_provenance": provenance,
+            "provenance_source": {
+                "path": str(source),
+                "sha256": hashlib.sha256(raw).hexdigest(),
+                "size_bytes": len(raw),
+            },
+        }
+    payload = {
+        "schema_name": "aisimulate_fpm_cpu_affinity",
+        "schema_version": 1,
+        "kind": kind,
+        "measurement": measurements[kind],
+        **ranks,
+        **binding,
+        **cpu_affinity_snapshot(),
+    }
+    if kind == "launcher":
+        payload.update(
+            requested_cpus_per_task=requested_cpus_per_task, cpu_bind=cpu_bind, local_gpu_count=local_gpu_count
+        )
+    suffix = (
+        f"-dp{dp_rank}-tp{tp_rank}-pp{pp_rank}" if kind == "worker" else f"-dp{dp_rank}" if kind == "scheduler" else ""
+    )
+    path = directory / f"fpm-cpu-{kind}{suffix}.json"
+    try:
+        _write_execution_file(path, payload)
+    except FileExistsError:
+        raise RuntimeError(f"refusing duplicate runtime CPU observation: {path}") from None
+    return payload
 
 
 def _class_name(value: object) -> str:

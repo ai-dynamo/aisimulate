@@ -1356,7 +1356,14 @@ def _cell_generator_overrides(
             ]
         )
     elif observe_execution:
-        model_args.extend(["--worker-cls", "fpm_memory_worker.FpmExecutionWorker"])
+        model_args.extend(
+            [
+                "--worker-cls",
+                "fpm_memory_worker.FpmExecutionWorker",
+                "--scheduler-cls",
+                "fpm_memory_scheduler.FpmExecutionInstrumentedScheduler",
+            ]
+        )
     if instrumentation is not None:
         env.extend(
             {"name": name, "value": value}
@@ -1463,7 +1470,9 @@ def _cell_generator_overrides(
         raise ValueError("backend policy cannot override the runtime probe's selected model revision")
     if (observe_memory or observe_execution) and "--worker-cls" in policy_flags:
         raise ValueError("backend policy cannot replace the runtime execution/memory observer worker class")
-    if observe_memory and policy_flags & {"--scheduler-cls", "--kv-cache-memory-bytes", "--num-gpu-blocks-override"}:
+    if (observe_memory or observe_execution) and "--scheduler-cls" in policy_flags:
+        raise ValueError("backend policy cannot replace runtime execution/memory observer scheduler class")
+    if observe_memory and policy_flags & {"--kv-cache-memory-bytes", "--num-gpu-blocks-override"}:
         raise ValueError("backend policy cannot replace runtime memory observer classes or automatic cache sizing")
     if observe_memory and any(
         str(argument).split("=", 1)[0].split(" ", 1)[0] == "--async-scheduling" for argument in policy_args
@@ -1754,6 +1763,9 @@ def _cell_runner(plan: FPMCollectionPlan, cell: FPMCell, manifest: Path, cell_di
             image=plan.options.slurm_container_image,
             mounts=plan.options.slurm_container_mounts,
             total_gpus=cell.topology.total_gpus,
+            cpus_per_task=plan.options.slurm_cpus_per_task,
+            cpu_bind=plan.options.slurm_cpu_bind,
+            attention_tp=cell.topology.tp,
         )
     if executor != "kubernetes":
         raise ValueError(f"unknown FPM executor {executor!r}")
@@ -2168,6 +2180,14 @@ def _run_collection_impl(
         if resume and previous.get("status") in {"failed", "cleanup_failed"} and not retry_failed:
             continue
 
+        if getattr(plan.options, "executor", "kubernetes") == "slurm" and plan.options.slurm_cpus_per_task is None:
+            # Do not discard retained raw/log evidence on an old campaign in
+            # an attempt to launch with unrecorded CPU defaults.
+            raise ValueError(
+                "saved Slurm campaign has no frozen CPU policy; preserve its artifacts for CPU-only recovery "
+                "and use a fresh campaign and smoke for new workers"
+            )
+
         cell_dir = root / "cells" / cell.cell_id
         if getattr(plan.options, "executor", "kubernetes") == "slurm":
             abandoned_manifest = cell_dir / FPM_MANIFEST_FILENAME
@@ -2277,12 +2297,18 @@ def _run_collection_impl(
                     runtime_env,
                     runtime_exec,
                     runtime_preflight,
-                    *(
-                        [runtime_exec.parent / filename for filename in _MEMORY_OBSERVER_FILES]
-                        if instrumentation is None
-                        and (_observe_runtime_memory(plan, cell) or _observe_runtime_execution(plan, cell))
-                        else []
-                    ),
+                    *[
+                        runtime_exec.parent / filename
+                        for filename in _MEMORY_OBSERVER_FILES
+                        if (
+                            instrumentation is None
+                            and (_observe_runtime_memory(plan, cell) or _observe_runtime_execution(plan, cell))
+                        )
+                        or (
+                            getattr(plan.options, "executor", "kubernetes") == "slurm"
+                            and filename == "fpm_memory_observer.py"
+                        )
+                    ],
                     *instrumentation_files,
                     *_stage_points_file(plan, cell_dir),
                     *(

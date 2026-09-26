@@ -361,8 +361,21 @@ def _snapshot(root):
     "plan_changes",
     [{}, {"max_prefill_cudagraph_size": 32}, {"max_prefill_isl": 32}, {"warmup_iterations": 2}],
 )
-@pytest.mark.parametrize("executor", ["kubernetes", "slurm"])
-def test_public_finalize_binds_reviewed_collection_options(tmp_path, capsys, plan_changes, executor):
+@pytest.mark.parametrize(
+    "executor,cpu_policy,checkpoint_subdir",
+    [
+        ("kubernetes", None, None),
+        ("slurm", None, None),
+        ("slurm", (16, "cores"), None),
+        ("slurm", (32, "none"), None),
+        ("slurm", (24, "cores"), None),
+        ("slurm", None, "nested"),
+        ("slurm", (32, "none"), "nested"),
+    ],
+)
+def test_public_finalize_binds_reviewed_collection_options(
+    tmp_path, capsys, plan_changes, executor, cpu_policy, checkpoint_subdir
+):
     deployment = (
         {
             "executor": "slurm",
@@ -372,11 +385,18 @@ def test_public_finalize_binds_reviewed_collection_options(tmp_path, capsys, pla
         if executor == "slurm"
         else {}
     )
+    if cpu_policy is not None:
+        deployment.update(slurm_cpus_per_task=cpu_policy[0], slurm_cpu_bind=cpu_policy[1])
     _request, root = build_completed_collection(
         tmp_path,
         extra_init_args=("--prefill-cudagraph-policy", "explicit", "--max-prefill-cudagraph-size", "64"),
         plan_changes={**deployment, **plan_changes},
     )
+    if checkpoint_subdir is not None:
+        checkpoint = root / "fpm-checkpoint" / "fpm_forward.json"
+        nested = checkpoint.parent / checkpoint_subdir / checkpoint.name
+        nested.parent.mkdir()
+        checkpoint.rename(nested)
     target = tmp_path / "resolved"
     before = _snapshot(root)
     try:
@@ -407,6 +427,9 @@ def test_public_finalize_binds_reviewed_collection_options(tmp_path, capsys, pla
 def test_public_slurm_collect_to_finalize_preserves_frozen_deployment(tmp_path, monkeypatch, capsys, tamper):
     """Real CLI, Slurm campaign and finalizer; only cluster/runtime output is synthetic."""
     from collector.fpm_forward import runner
+    from collector.fpm_forward.runtime import fpm_memory_observer as observer
+
+    from .collector.test_fpm_cpu_affinity import _snapshot as cpu_snapshot
 
     request, root = _prepare_collection(tmp_path, ("--model", str(tmp_path)))
     image = "registry.example/fpm@sha256:" + "a" * 64
@@ -421,11 +444,12 @@ def test_public_slurm_collect_to_finalize_preserves_frozen_deployment(tmp_path, 
             return subprocess.CompletedProcess(args, 0, stdout="1234.99|unrelated-job", stderr="")
         assert args[0] == "srun", args
         assert "--jobid=1234" in args and "--gpus-per-node=1" in args
+        assert "--cpus-per-task=16" in args and "--cpu-bind=cores" in args
         assert f"--container-image={image}" in args
         mounts = next(value.split("=", 1)[1] for value in args if value.startswith("--container-mounts="))
         assert mounts.startswith("/cache:/cache,/models:/models,")
         raw = Path(next(value.rsplit(":", 1)[0] for value in mounts.split(",") if value.endswith(":/results")))
-        command = args[args.index("/usr/bin/env") + 3 :]
+        command = args[args.index("/usr/bin/env") + 6 :]
         if command[:2] == ["python3", "-c"]:
             with monkeypatch.context() as patch:
                 patch.setattr(sys, "argv", ["-c", *command[3:]])
@@ -441,10 +465,21 @@ def test_public_slurm_collect_to_finalize_preserves_frozen_deployment(tmp_path, 
             )
             _write(raw / "fpm-memory-worker-dp0-tp0-pp0.json", worker)
             _write(raw / "fpm-memory-scheduler-dp0.json", scheduler)
+            with monkeypatch.context() as patch:
+                for kind, pid, coordinates in (
+                    ("launcher", 100, {"requested_cpus_per_task": 16, "cpu_bind": "cores", "local_gpu_count": 1}),
+                    ("worker", 200, {"dp_rank": 0, "tp_rank": 0, "pp_rank": 0}),
+                    ("scheduler", 300, {"dp_rank": 0}),
+                ):
+                    patch.setattr(
+                        observer, "cpu_affinity_snapshot", lambda pid=pid: cpu_snapshot("node-a", pid, list(range(16)))
+                    )
+                    observer.observe_cpu(kind, directory=raw, **coordinates)
         return subprocess.CompletedProcess(args, 0, stdout="synthetic Slurm runtime", stderr="")
 
     monkeypatch.setenv("COLLECTOR_MODEL_PATH", "")
     monkeypatch.setenv("SLURM_JOB_ID", "1234")
+    monkeypatch.setenv("SLURM_JOB_CPUS_PER_NODE", "16")
     monkeypatch.setattr("collector.fpm_forward.slurm.shutil.which", lambda name: f"/fake/{name}")
     monkeypatch.setattr(runner, "_run_command", cluster_command)
     command = [

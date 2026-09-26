@@ -242,6 +242,16 @@ def add_deployment_arguments(parser: Any, *, default_executor: str | None = "kub
         help="Slurm/Pyxis container mount; repeat for several mounts. Kubernetes uses --model-cache.",
     )
     deployment.add_argument("--namespace", help="Kubernetes namespace for collector resources.")
+    deployment.add_argument(
+        "--cpus-per-task",
+        type=int,
+        help="Slurm CPUs for each node's shared worker/scheduler pool (new campaigns: 16).",
+    )
+    deployment.add_argument(
+        "--cpu-bind",
+        choices=("cores", "none"),
+        help="Slurm node-task binding (new campaigns: cores); does not pin individual ranks.",
+    )
     deployment.add_argument("--model-cache", metavar="NAME[:MOUNT[:SUBPATH]]", help="Model-cache PVC and mount.")
     deployment.add_argument(
         "--transport", choices=("nvlink", "ib", "efa"), help="GPU networking transport, independent of the executor."

@@ -159,6 +159,20 @@ context and never applies or executes saved options automatically. Deployment
 changes invalidate affected acceptance and collection references: preserve the
 old campaign, archive superseded references with a reason, and use new output
 paths with the existing review workflow.
+For Slurm, review `--cpus-per-task` and `--cpu-bind` at the collection stage and
+save `cpus_per_task` and `cpu_bind` with those deployment inputs. New campaigns
+start with 16 CPUs and `cores` binding for each node's one collector task, shared
+by local engine schedulers, GPU workers and their threads. This is an editable
+initial allocation, not an optimum or dedicated per-rank/NUMA pinning. Request
+matching CPUs from `sbatch`/`salloc`; do not infer step capacity from total batch
+CPUs or full-node CPU counts. Inspect the actual same-step launcher mask and
+every worker/scheduler/thread observation during smoke, especially for DEP.
+Missing CPU evidence leaves new Slurm readiness incomplete; insufficient or
+contradictory masks block full collection. Keep the same CPU policy for probes,
+smoke, formal collection and repeats. Changed settings require a fresh campaign
+and smoke. Legacy artifacts without a policy remain CPU-unverified and readable
+for compatible post-processing/memory import; do not add CPU defaults to their
+saved identity or use them to launch fresh workers.
 Before submitting collection jobs, follow
 [campaign orchestration](docs/fpm-self-service.md#orchestrate-independent-collection-campaigns):
 save a per-configuration execution table with exact commands, isolated paths,

@@ -856,7 +856,7 @@ def test_execution_only_observation_does_not_enable_memory_conversion(version):
         assert runner._observe_runtime_memory(plan, cell) is False
         if version in {"0.27.0", "0.28.0"}:
             assert args[args.index("--worker-cls") + 1] == "fpm_memory_worker.FpmExecutionWorker"
-            assert "--scheduler-cls" not in args
+            assert args[args.index("--scheduler-cls") + 1] == "fpm_memory_scheduler.FpmExecutionInstrumentedScheduler"
         else:
             assert "--worker-cls" not in args
 

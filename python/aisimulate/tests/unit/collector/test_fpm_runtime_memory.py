@@ -582,6 +582,7 @@ def test_worker_and_scheduler_wrappers_delegate_before_observation(monkeypatch, 
         "fpm_memory_observer": {
             "observe": lambda *args, **kwargs: events.append(("observe", args, kwargs)),
             "observe_execution": lambda *args, **kwargs: events.append(("observe_execution", args, kwargs)),
+            "observe_cpu": lambda *args, **kwargs: events.append(("observe_cpu", args, kwargs)),
             "compilation_config": lambda _config: {"cudagraph_mode": "FULL"},
         },
         "vllm.distributed": {
@@ -611,13 +612,21 @@ def test_worker_and_scheduler_wrappers_delegate_before_observation(monkeypatch, 
     assert worker.compile_or_warm_up_model() == "compiled"
     assert events[:3] == ["profile", ("initialize", "cache"), "warmup"]
     assert events[3][2] == {"dp_rank": 3, "tp_rank": 1, "pp_rank": 0}
-    assert events[3][0] == "observe_execution"
-    assert events[4][0] == "observe"
+    assert events[3][0] == "observe_cpu"
+    assert events[4][0] == "observe_execution"
+    assert events[5][0] == "observe"
     assert worker._fpm_available_cache_bytes == 1234
     assert worker._fpm_cache_initialized is True
     load("fpm_memory_scheduler").FpmResourceInstrumentedScheduler("config", "cache", "manager", block_size=16)
-    assert events[5] == ("scheduler", "config", "cache", ("manager",), {"block_size": 16})
-    assert events[6][2] == {"dp_rank": 3, "cache_config": "cache"}
+    assert events[6] == ("scheduler", "config", "cache", ("manager",), {"block_size": 16})
+    assert events[7] == ("observe_cpu", ("scheduler",), {"dp_rank": 3})
+    assert events[8][2] == {"dp_rank": 3, "cache_config": "cache"}
+    before = len(events)
+    load("fpm_memory_scheduler").FpmExecutionInstrumentedScheduler("config", "cache")
+    assert events[before:] == [
+        ("scheduler", "config", "cache", (), {}),
+        ("observe_cpu", ("scheduler",), {"dp_rank": 3}),
+    ]
 
     def fail(_self, *_args):
         raise RuntimeError("real runtime failed")

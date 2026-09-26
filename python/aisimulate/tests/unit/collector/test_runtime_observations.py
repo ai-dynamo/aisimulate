@@ -35,6 +35,31 @@ def test_import_independently_verifies_model_config_source_hashes(tmp_path, obse
         assert "source" in str(result["diagnostics"])
 
 
+def test_cpu_sidecars_are_archived_without_changing_memory_import(tmp_path):
+    from collector.fpm_forward.runtime_probe import observation_artifacts
+
+    path, launches = observation_fixture(tmp_path)
+    baseline = validate_observations(path, launches)["tp2"]
+    cpu = tmp_path / "prefill/fpm-cpu-scheduler-dp0.json"
+    cpu.write_text(
+        json.dumps({"schema_name": "aisimulate_fpm_cpu_affinity", "schema_version": 1, "status": "unavailable"})
+    )
+    references = observation_artifacts(tmp_path, tmp_path / "prefill")
+    reference = next(item for item in references if item["path"] == "prefill/fpm-cpu-scheduler-dp0.json")
+    assert reference["kind"] == "runtime-artifact"
+    index = json.loads(path.read_text())
+    index["configurations"]["tp2"]["attempts"][0]["phases"]["prefill"]["artifacts"].append(reference)
+    path.write_text(json.dumps(index))
+    result = validate_observations(path, launches)["tp2"]
+    assert result["status"] == "complete"
+    assert result["resources"]["cache_groups"] == baseline["resources"]["cache_groups"]
+    assert (
+        result["resources"]["runtime_memory"]["kv_cache_bytes"]
+        == baseline["resources"]["runtime_memory"]["kv_cache_bytes"]
+    )
+    assert reference in result["provenance"]["runtime_artifacts"]
+
+
 def _write(path, payload):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload))

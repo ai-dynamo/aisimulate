@@ -22,6 +22,54 @@ FPM_MAX_PREFILL_ISL = 8192
 # --fpm-prefill-cudagraph-policy runtime to leave graph selection to vLLM.
 FPM_MAX_PREFILL_CUDAGRAPH_SIZE = 2048
 VLLM_AUTO_FIT_MAX_MODEL_LEN = -1
+# Shared node-task pool, matching generator/config/deployment_config.yaml's
+# SlurmConfig default. This is an editable starting point, not per-rank pinning.
+FPM_SLURM_CPUS_PER_TASK = 16
+FPM_SLURM_CPU_BIND = "cores"
+
+
+def resolve_slurm_cpu_policy(
+    cpus_per_task: int | None,
+    cpu_bind: str | None,
+    *,
+    resume: bool = False,
+    checkpoint_dir: str | Path | None = None,
+    artifact_root: str | Path | None = None,
+    smoke: bool = False,
+) -> tuple[int | None, str | None]:
+    """Freeze new defaults, or retain a verified archived policy on resume.
+
+    An old plan with no CPU policy stays unverified. The execution transport
+    rejects new workers for it, while compatible post-processing remains usable.
+    """
+    if (cpus_per_task is None or cpu_bind is None) and resume and checkpoint_dir and artifact_root:
+        checkpoint_path = Path(checkpoint_dir).expanduser() / (
+            "fpm_forward_smoke.json" if smoke else "fpm_forward.json"
+        )
+        if checkpoint_path.exists():
+            from .runtime_memory import validate_saved_plan
+
+            checkpoint = json.loads(checkpoint_path.read_text())
+            digest = checkpoint.get("plan_sha256")
+            if not isinstance(digest, str) or len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest):
+                raise ValueError("Slurm CPU policy requires a valid archived checkpoint plan hash")
+            campaign = Path(artifact_root).expanduser() / digest[:16]
+            if smoke:
+                campaign /= "smoke"
+            saved = json.loads((campaign / "collection-plan.json").read_text())
+            validate_saved_plan(saved)
+            if saved["sha256"] != digest:
+                raise ValueError("archived Slurm CPU policy does not match the checkpoint")
+            options = saved["options"]
+            return (
+                options.get("slurm_cpus_per_task") if cpus_per_task is None else cpus_per_task,
+                options.get("slurm_cpu_bind") if cpu_bind is None else cpu_bind,
+            )
+    return (
+        FPM_SLURM_CPUS_PER_TASK if cpus_per_task is None else cpus_per_task,
+        FPM_SLURM_CPU_BIND if cpu_bind is None else cpu_bind,
+    )
+
 
 # Dynamo 1.5.0: components/src/dynamo/vllm/instrumented_scheduler.py,
 # _kvwarm_flag_on / _bench_realseed_on at b83b1d9304ebfc624709ac46db32b1b6f1ff1615:
@@ -328,8 +376,20 @@ class FPMCollectionOptions:
     executor: str = "kubernetes"
     slurm_container_image: str = ""
     slurm_container_mounts: tuple[str, ...] = ()
+    # None preserves legacy saved-plan identity; fresh CLI plans resolve both.
+    slurm_cpus_per_task: int | None = None
+    slurm_cpu_bind: str | None = None
 
     def __post_init__(self) -> None:
+        if (self.slurm_cpus_per_task is None) != (self.slurm_cpu_bind is None):
+            raise ValueError("Slurm CPU policy requires both cpus-per-task and cpu-bind")
+        if self.slurm_cpus_per_task is not None:
+            if self.executor != "slurm":
+                raise ValueError("Slurm CPU options require --fpm-executor slurm")
+            if type(self.slurm_cpus_per_task) is not int or self.slurm_cpus_per_task < 1:
+                raise ValueError("--fpm-slurm-cpus-per-task must be a positive integer")
+            if self.slurm_cpu_bind not in {"cores", "none"}:
+                raise ValueError("--fpm-slurm-cpu-bind must be cores or none")
         if self.prefill_cudagraph_policy not in {"runtime", "explicit"}:
             raise ValueError("--fpm-prefill-cudagraph-policy must be runtime or explicit")
         if self.prefill_cudagraph_policy == "runtime" and self.max_prefill_cudagraph_size is not None:
@@ -448,10 +508,21 @@ class FPMCollectionOptions:
         executor = getattr(args, "fpm_executor", None) or "kubernetes"
         image = getattr(args, "fpm_slurm_container_image", None) or ""
         mounts = tuple(getattr(args, "fpm_slurm_container_mount", None) or ())
+        cpus = getattr(args, "fpm_slurm_cpus_per_task", None)
+        cpu_bind = getattr(args, "fpm_slurm_cpu_bind", None)
         if executor == "slurm" and not image:
             raise ValueError("--fpm-executor slurm requires --fpm-slurm-container-image")
-        if executor != "slurm" and (image or mounts):
-            raise ValueError("Slurm container options require --fpm-executor slurm")
+        if executor != "slurm" and (image or mounts or cpus is not None or cpu_bind is not None):
+            raise ValueError("Slurm container/CPU options require --fpm-executor slurm")
+        if executor == "slurm":
+            cpus, cpu_bind = resolve_slurm_cpu_policy(
+                cpus,
+                cpu_bind,
+                resume=bool(getattr(args, "resume", False)),
+                checkpoint_dir=getattr(args, "checkpoint_dir", None),
+                artifact_root=getattr(args, "fpm_artifact_root", None) or "fpm_forward_artifacts",
+                smoke=bool(getattr(args, "smoke", False)),
+            )
 
         model_len = getattr(args, "fpm_max_model_len", None)
         if model_len is not None and model_len != -1 and model_len < 1:
@@ -508,6 +579,8 @@ class FPMCollectionOptions:
             executor=executor,
             slurm_container_image=image,
             slurm_container_mounts=mounts,
+            slurm_cpus_per_task=cpus,
+            slurm_cpu_bind=cpu_bind,
         )
 
     def to_dict(self) -> dict[str, object]:
@@ -542,6 +615,9 @@ class FPMCollectionOptions:
         }
         # Preserve the existing frozen-plan representation when the new shared
         # runtime limits are absent.
+        if self.slurm_cpus_per_task is not None:
+            result["slurm_cpus_per_task"] = self.slurm_cpus_per_task
+            result["slurm_cpu_bind"] = self.slurm_cpu_bind
         if self.max_num_batched_tokens is not None:
             result["max_num_batched_tokens"] = self.max_num_batched_tokens
         if self.max_num_seqs is not None:
@@ -817,6 +893,18 @@ def add_fpm_generator_arguments(parser: argparse.ArgumentParser) -> None:
         help="Pyxis SOURCE:TARGET mount; repeat for checkpoint/runtime/cache paths.",
     )
     group.add_argument(
+        "--fpm-slurm-cpus-per-task",
+        type=_positive_int,
+        default=None,
+        help="CPUs for each node's one-task Slurm step (new plans: 16); shared by local workers and schedulers.",
+    )
+    group.add_argument(
+        "--fpm-slurm-cpu-bind",
+        choices=["cores", "none"],
+        default=None,
+        help="Slurm node-task CPU binding (new plans: cores); no dedicated per-rank pinning.",
+    )
+    group.add_argument(
         "--generator-config",
         default=None,
         help="Deployment-only YAML containing supported K8sConfig fields.",
@@ -899,6 +987,8 @@ def reject_fpm_arguments_without_fpm(args: argparse.Namespace) -> None:
         "fpm_executor",
         "fpm_slurm_container_image",
         "fpm_slurm_container_mount",
+        "fpm_slurm_cpus_per_task",
+        "fpm_slurm_cpu_bind",
         "fpm_database_root",
         "fpm_publish_partial",
         # Deployment-only Generator inputs are registered unconditionally on

@@ -679,6 +679,8 @@ def test_slurm_deployment_preview_and_execution_reach_frozen_collector_plan(
     preview = shlex.split(capsys.readouterr().out)
     assert preview[preview.index("--fpm-executor") + 1] == "slurm"
     assert preview[preview.index("--fpm-slurm-container-image") + 1] == image
+    assert preview[preview.index("--fpm-slurm-cpus-per-task") + 1] == "16"
+    assert preview[preview.index("--fpm-slurm-cpu-bind") + 1] == "cores"
     assert [
         preview[index + 1] for index, value in enumerate(preview) if value == "--fpm-slurm-container-mount"
     ] == mounts
@@ -691,6 +693,8 @@ def test_slurm_deployment_preview_and_execution_reach_frozen_collector_plan(
     assert plan.options.executor == "slurm"
     assert plan.options.slurm_container_image == image
     assert plan.options.slurm_container_mounts == tuple(mounts)
+    assert plan.options.slurm_cpus_per_task == 16
+    assert plan.options.slurm_cpu_bind == "cores"
     assert kwargs["generator_overrides"] == {
         "generator_dynamo_version": "1.2.0",
         "K8sConfig": {"transport": "ib"},
@@ -721,6 +725,9 @@ def test_explicit_kubernetes_executor_preserves_default_collector_preview(tmp_pa
             "--image-pull-secret",
         ),
         (["--container-mount", "/shared:/models"], "--container-mount requires --executor slurm"),
+        (["--cpus-per-task", "16"], "require --executor slurm"),
+        (["--cpu-bind", "cores"], "require --executor slurm"),
+        (["--executor", "slurm", "--image", "runtime.sqsh", "--cpus-per-task", "0"], "greater than 0"),
         *[
             (["--executor", "slurm", "--image", "runtime.sqsh", "--container-mount", mount], "container mounts")
             for mount in (
@@ -805,6 +812,9 @@ def test_deployment_resume_requires_the_same_frozen_identity(
         plans.append(plan)
         checkpoint.parent.mkdir(exist_ok=True)
         checkpoint.write_text(json.dumps({"schema": runner.CHECKPOINT_SCHEMA, "plan_sha256": plan.sha256, "cells": {}}))
+        campaign = Path(kwargs["artifact_root"]) / plan.sha256[:16]
+        campaign.mkdir(parents=True, exist_ok=True)
+        (campaign / "collection-plan.json").write_text(json.dumps(plan.to_dict()))
         return []
 
     monkeypatch.setattr(planner, "_git_revision", lambda: "test-source-revision")
@@ -834,6 +844,8 @@ def test_deployment_resume_requires_the_same_frozen_identity(
         ["--image", "registry.example/fpm:changed"],
         ["--container-mount", "/shared/checkpoint:/models:ro"],
         ["--executor", "kubernetes"],
+        ["--cpus-per-task", "32"],
+        ["--cpu-bind", "none"],
     ],
 )
 def test_slurm_collection_resume_rejects_changed_deployment(
@@ -852,6 +864,9 @@ def test_slurm_collection_resume_rejects_changed_deployment(
         plans.append(plan)
         checkpoint.parent.mkdir(exist_ok=True)
         checkpoint.write_text(json.dumps({"schema": runner.CHECKPOINT_SCHEMA, "plan_sha256": plan.sha256, "cells": {}}))
+        campaign = Path(kwargs["artifact_root"]) / plan.sha256[:16]
+        campaign.mkdir(parents=True, exist_ok=True)
+        (campaign / "collection-plan.json").write_text(json.dumps(plan.to_dict()))
         return []
 
     monkeypatch.setattr(planner, "_git_revision", lambda: "test-source-revision")

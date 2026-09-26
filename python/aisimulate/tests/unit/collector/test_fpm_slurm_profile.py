@@ -18,6 +18,7 @@ from collector.fpm_forward import cli, database, runner, runtime_memory
 from collector.fpm_forward.config import FPMCollectionOptions
 from collector.fpm_forward.runtime import fpm_memory_observer as observer
 
+from .test_fpm_cpu_affinity import _snapshot
 from .test_fpm_profile_collection import _argv, _plan, _profile, no_models_or_timing_data  # noqa: F401
 from .test_fpm_runner import _native_payload
 from .test_fpm_runtime_memory import _initialized
@@ -114,6 +115,7 @@ class _SyntheticSlurm:
         self.barrier = threading.Barrier(2)
         self.patch = monkeypatch
         monkeypatch.setenv("SLURM_JOB_ID", "1234")
+        monkeypatch.setenv("SLURM_JOB_CPUS_PER_NODE", "16(x2)")
         monkeypatch.setattr("collector.fpm_forward.slurm.shutil.which", lambda name: f"/fake/{name}")
         monkeypatch.setattr(runner, "_run_command", self.command)
         # Only the artifact-settle delay is elided; no runtime is simulated by sleeping.
@@ -139,6 +141,7 @@ class _SyntheticSlurm:
                 return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
             assert args[0] == "srun", args
             assert "--jobid=1234" in args and "--gpus-per-node=4" in args
+            assert "--cpus-per-task=16" in args and "--cpu-bind=cores" in args
             assert "--container-image=image@sha256:synthetic" in args
             mounts = next(value.split("=", 1)[1] for value in args if value.startswith("--container-mounts="))
             bindings = dict(value.rsplit(":", 1)[::-1] for value in mounts.split(","))
@@ -148,7 +151,7 @@ class _SyntheticSlurm:
             rank = int(next(value.split("=", 1)[1] for value in args if value.startswith("FPM_NODE_RANK=")))
             assert raw.name == f"node{rank:04d}"
             assert "FPM_MASTER_ADDR=node-a" in args
-            command = args[args.index("/usr/bin/env") + 3 :]
+            command = args[args.index("/usr/bin/env") + 6 :]
             if command[:2] == ["python3", "-c"]:
                 # Interpret the actual preparation program with the Pyxis /results mount mapped locally.
                 with self.patch.context() as patch:
@@ -196,6 +199,11 @@ class _SyntheticSlurm:
             self.steps[step] = next(value.split("=", 1)[1] for value in args if value.startswith("--job-name="))
             with self.patch.context() as patch:
                 patch.setattr(observer, "RESULTS_DIR", raw)
+                host = ("node-a", "node-b")[rank]
+                patch.setattr(observer, "cpu_affinity_snapshot", lambda: _snapshot(host, 100, list(range(16))))
+                observer.observe_cpu(
+                    "launcher", requested_cpus_per_task=16, cpu_bind="cores", local_gpu_count=4, directory=raw
+                )
                 for tp in range(rank * 4, (rank + 1) * 4):
                     if self.missing_worker and tp == 7:
                         continue
@@ -206,8 +214,14 @@ class _SyntheticSlurm:
                     worker.vllm_config.model_config.quantization = None
                     worker.vllm_config.model_config.model = self.plan.model_path
                     worker.vllm_config.model_config.revision = self.plan.fpm_profile.model_revision
+                    patch.setattr(
+                        observer, "cpu_affinity_snapshot", lambda tp=tp: _snapshot(host, 200 + tp, list(range(16)))
+                    )
+                    observer.observe_cpu("worker", dp_rank=0, tp_rank=tp, pp_rank=0, directory=raw)
                     observer.observe("worker", worker, dp_rank=0, tp_rank=tp, pp_rank=0)
                     if tp == 0:
+                        patch.setattr(observer, "cpu_affinity_snapshot", lambda: _snapshot(host, 300, list(range(16))))
+                        observer.observe_cpu("scheduler", dp_rank=0, directory=raw)
                         observer.observe("scheduler", scheduler, dp_rank=0, cache_config=cache)
                 if rank == 0:
                     (raw / "benchmark.json").write_text(
