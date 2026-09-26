@@ -111,6 +111,11 @@ impl Availability<'_> {
             DatabaseMode::Sol | DatabaseMode::SolFull
         );
         match op {
+            SglangPrefillAttentionSequence(_) | SglangPrefillCommNormBoundary(_) => {
+                self.db.prefill_graph.validate()?;
+                self.db.prefill_graph.validate_sources(self.db)?;
+                return Ok(());
+            }
             Dsv41Stage(stage) => {
                 for child in &stage.children {
                     self.op(child)?;
@@ -288,7 +293,13 @@ impl Availability<'_> {
                     _ => Ok(()),
                 }
             }
-            Overlap(_) | Fallback(_) | TokenScale(_) | FpmForward(_) | Dsv41Stage(_) => Ok(()),
+            Overlap(_)
+            | Fallback(_)
+            | TokenScale(_)
+            | FpmForward(_)
+            | Dsv41Stage(_)
+            | SglangPrefillAttentionSequence(_)
+            | SglangPrefillCommNormBoundary(_) => Ok(()),
         }
     }
 }

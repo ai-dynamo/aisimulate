@@ -1,0 +1,207 @@
+[
+  {
+    "SglangPrefillAttentionSequence": {
+      "name": "context_attention_sequence",
+      "profile_id": "829a83e1629ba546dd4bd90e75a2e2496b7fb24ddc8b60dfbf076ba02312cbce",
+      "weight_bytes": 9661317120.0
+    }
+  },
+  {
+    "SglangPrefillCommNormBoundary": {
+      "boundary_role": "post_attention",
+      "name": "context_post_attention_boundary",
+      "profile_id": "829a83e1629ba546dd4bd90e75a2e2496b7fb24ddc8b60dfbf076ba02312cbce"
+    }
+  },
+  {
+    "SglangPrefillCommNormBoundary": {
+      "boundary_role": "following_mlp",
+      "name": "context_following_mlp_boundary",
+      "profile_id": "829a83e1629ba546dd4bd90e75a2e2496b7fb24ddc8b60dfbf076ba02312cbce"
+    }
+  },
+  {
+    "Overlap": {
+      "group_a": [
+        {
+          "Gemm": {
+            "below_grid_sol": false,
+            "k": 6144,
+            "low_precision_input": false,
+            "n": 256,
+            "name": "context_router_gemm",
+            "quant_mode": "bfloat16",
+            "scale_factor": 75.0,
+            "scale_num_tokens": 1,
+            "seq_split": 1
+          }
+        },
+        {
+          "Moe": {
+            "attention_dp_size": 1,
+            "enable_eplb": false,
+            "hidden_size": 6144,
+            "inter_size": 2048,
+            "is_context": true,
+            "is_gated": true,
+            "moe_backend": null,
+            "moe_ep_size": 1,
+            "moe_tp_size": 4,
+            "name": "context_moe",
+            "num_experts": 256,
+            "quant_mode": "nvfp4",
+            "require_exact_workload_distribution": false,
+            "scale_factor": 75.0,
+            "topk": 8,
+            "workload_distribution": "power_law_1.01"
+          }
+        }
+      ],
+      "group_b": [
+        {
+          "Gemm": {
+            "below_grid_sol": false,
+            "k": 6144,
+            "low_precision_input": false,
+            "n": 1024,
+            "name": "context_shared_gate_up_gemm",
+            "quant_mode": "bfloat16",
+            "scale_factor": 75.0,
+            "scale_num_tokens": 1,
+            "seq_split": 1
+          }
+        },
+        {
+          "Elementwise": {
+            "bytes_per_token": 3072.0,
+            "name": "context_shared_act_gate",
+            "scale_factor": 75.0,
+            "scale_num_tokens": 1,
+            "seq_split": 1
+          }
+        },
+        {
+          "Gemm": {
+            "below_grid_sol": false,
+            "k": 512,
+            "low_precision_input": false,
+            "n": 6144,
+            "name": "context_shared_ffn2_gemm",
+            "quant_mode": "bfloat16",
+            "scale_factor": 75.0,
+            "scale_num_tokens": 1,
+            "seq_split": 1
+          }
+        }
+      ],
+      "name": "context_moe_parallel"
+    }
+  },
+  {
+    "MoeDispatch": {
+      "attention_dp_size": 1,
+      "attn_ar_modeled": false,
+      "attn_cp_size": 1,
+      "backend": "sglang",
+      "comm_quant": "half",
+      "flavor": "CustomAllReduce",
+      "hidden_size": 6144,
+      "is_context": true,
+      "moe_ep_size": 1,
+      "moe_quant": "nvfp4",
+      "moe_tp_size": 4,
+      "name": "context_final_plain_allreduce",
+      "num_experts": 256,
+      "pre_dispatch": false,
+      "scale_factor": 1.0,
+      "scale_num_tokens": 1,
+      "sms": 12,
+      "topk": 8
+    }
+  },
+  {
+    "Elementwise": {
+      "bytes_per_token": 49152.0,
+      "name": "context_initial_final_norm",
+      "scale_factor": 2.0,
+      "scale_num_tokens": 1,
+      "seq_split": 1
+    }
+  },
+  {
+    "Elementwise": {
+      "bytes_per_token": 36864.0,
+      "name": "context_routed_shared_add",
+      "scale_factor": 75.0,
+      "scale_num_tokens": 1,
+      "seq_split": 1
+    }
+  },
+  {
+    "Embedding": {
+      "hidden_size": 6144,
+      "name": "context_embedding",
+      "quant_mode": "bfloat16",
+      "scale_factor": 1.0,
+      "seq_split": 1,
+      "vocab_size": 154880
+    }
+  },
+  {
+    "Gemm": {
+      "below_grid_sol": false,
+      "k": 6144,
+      "low_precision_input": false,
+      "n": 6144,
+      "name": "context_dense_gate_up_gemm",
+      "quant_mode": "bfloat16",
+      "scale_factor": 3.0,
+      "scale_num_tokens": 1,
+      "seq_split": 1
+    }
+  },
+  {
+    "Elementwise": {
+      "bytes_per_token": 18432.0,
+      "name": "context_dense_act_gate",
+      "scale_factor": 3.0,
+      "scale_num_tokens": 1,
+      "seq_split": 1
+    }
+  },
+  {
+    "Gemm": {
+      "below_grid_sol": false,
+      "k": 3072,
+      "low_precision_input": true,
+      "n": 6144,
+      "name": "context_dense_down_gemm",
+      "quant_mode": "bfloat16",
+      "scale_factor": 3.0,
+      "scale_num_tokens": 1,
+      "seq_split": 1
+    }
+  },
+  {
+    "Gemm": {
+      "below_grid_sol": false,
+      "k": 6144,
+      "low_precision_input": false,
+      "n": 38720,
+      "name": "context_logits_gemm",
+      "quant_mode": "bfloat16",
+      "scale_factor": 1.0,
+      "scale_num_tokens": 1,
+      "seq_split": 1
+    }
+  },
+  {
+    "P2P": {
+      "hidden_size": 6144,
+      "name": "context_p2p",
+      "pp_size": 1,
+      "scale_factor": 0.0,
+      "seq_split": 1
+    }
+  }
+]

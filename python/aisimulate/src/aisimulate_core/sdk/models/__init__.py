@@ -253,10 +253,14 @@ def get_model(
         model_config = copy.copy(model_config)
         model_config.speculation = copy.deepcopy(model_config.speculation)
     spec_config = resolve_speculation(model_config)
+    _validate_decode_moe_profile(model_path, model_config, backend_name)
+    _validate_prefill_graph_profile(model_path, model_config, backend_name)
     model = cls.create(model_info, model_config, backend_name)
     model.spec_scheme = build_spec_scheme(model_config, spec_config)
     model.spec_scheme.validate(model, backend_name)
     materialize_spec_scheme(model)
+    if model_config.prefill_graph_profile is not None:
+        model.apply_prefill_graph_profile()
     if model_config.moe_kernel_source is not None:
         for phase, phase_ops in (("context", model.context_ops), ("generation", model.generation_ops)):
             if not any(
@@ -268,6 +272,92 @@ def get_model(
     if forward_model == "fpm":
         model = _apply_forward_model_fpm(model, backend_name)
     return model
+
+
+def _validate_prefill_graph_profile(model_path, model_config, backend_name):
+    if model_config.prefill_graph_profile is None:
+        return
+    import aisimulate_core._native as core
+    from aisimulate_core.sdk.common import (
+        CommQuantMode,
+        FMHAQuantMode,
+        GEMMQuantMode,
+        KVCacheQuantMode,
+        MoEQuantMode,
+    )
+    from aisimulate_core.sdk.errors import PrefillGraphProfileError
+
+    if model_config.moe_kernel_source is not None:
+        raise PrefillGraphProfileError("moe_kernel_source cannot override a prefill graph profile")
+    name, _ = core.prefill_graph_profile_identity()
+    if (
+        model_config.prefill_graph_profile != name
+        or model_path != "nvidia/GLM-5.2-NVFP4"
+        or backend_name != "sglang"
+        or model_config.moe_quant_mode != MoEQuantMode.nvfp4
+        or model_config.gemm_quant_mode != GEMMQuantMode.bfloat16
+        or model_config.fmha_quant_mode != FMHAQuantMode.bfloat16
+        or model_config.kvcache_quant_mode != KVCacheQuantMode.fp8
+        or model_config.comm_quant_mode != CommQuantMode.half
+        or (model_config.tp_size, model_config.moe_tp_size, model_config.moe_ep_size) != (4, 4, 1)
+        or (model_config.pp_size, model_config.attention_dp_size, model_config.cp_size) != (1, 1, 1)
+        or model_config.nextn != 0
+        or model_config.speculation is not None
+        or model_config.enable_eplb
+        or model_config.overwrite_num_layers != 0
+        or model_config.forward_model != "op_level"
+        or model_config.moe_backend is not None
+        or model_config.attention_backend is not None
+        or model_config.decode_workload_distribution is not None
+        or model_config.workload_distribution != "power_law"
+    ):
+        raise PrefillGraphProfileError(
+            "prefill_graph_profile requires the exact GLM-5.2-NVFP4 SGLang TP4/MoETP4/EP1/PP1/DP1/CP1, "
+            "BF16 GEMM/FMHA, FP8 KV, NVFP4 MoE, half communication, power_law routing and op_level; "
+            "alternate profiles, overrides and speculation are unsupported"
+        )
+
+
+def _validate_decode_moe_profile(model_path, model_config, backend_name):
+    """Reject an explicit pilot profile before an unsupported graph can ignore it."""
+    selected = model_config.decode_workload_distribution
+    if selected is None:
+        return
+    from aisimulate_core.sdk.common import (
+        CommQuantMode,
+        FMHAQuantMode,
+        GEMMQuantMode,
+        KVCacheQuantMode,
+        MoEQuantMode,
+    )
+    from aisimulate_core.sdk.errors import DecodeMoeProfileError
+
+    if model_config.moe_kernel_source is not None:
+        raise DecodeMoeProfileError("moe_kernel_source cannot override an observed decode profile")
+    if not isinstance(selected, str) or not selected.strip() or selected != selected.strip():
+        raise DecodeMoeProfileError("decode_workload_distribution must be a nonempty literal string")
+    if (
+        model_path != "nvidia/GLM-5.2-NVFP4"
+        or backend_name != "sglang"
+        or model_config.moe_quant_mode != MoEQuantMode.nvfp4
+        or model_config.gemm_quant_mode != GEMMQuantMode.bfloat16
+        or model_config.fmha_quant_mode != FMHAQuantMode.bfloat16
+        or model_config.kvcache_quant_mode != KVCacheQuantMode.fp8
+        or model_config.comm_quant_mode != CommQuantMode.half
+        or (model_config.tp_size, model_config.moe_tp_size, model_config.moe_ep_size) != (4, 4, 1)
+        or (model_config.pp_size, model_config.attention_dp_size, model_config.cp_size) != (1, 1, 1)
+        or model_config.nextn != 0
+        or model_config.speculation is not None
+        or model_config.enable_eplb
+        or model_config.overwrite_num_layers != 0
+        or model_config.forward_model != "op_level"
+        or model_config.moe_backend is not None
+    ):
+        raise DecodeMoeProfileError(
+            "decode_workload_distribution requires GLM-5.2-NVFP4 SGLang TP4/MoETP4/EP1/PP1/DP1/CP1, "
+            "BF16 GEMM/FMHA, FP8 KV, NVFP4 MoE, half communication, op_level and no speculation, "
+            "EPLB, layer override or alternate MoE backend"
+        )
 
 
 # Re-export concrete model classes for backward compatibility. Auto-discovery

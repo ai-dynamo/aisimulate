@@ -86,6 +86,8 @@ fn request(tolerance_fraction: Option<f64>) -> KvCacheEstimateRequest {
             backend: BackendKind::Trtllm,
             backend_version: Some("1.3.0rc10".to_string()),
             forward_model: None,
+            prefill_graph_profile: None,
+            prefill_graph_profile_id: None,
             fpm_parquet_path: None,
             decoder_replay: false,
             moe_kernel_source: None,

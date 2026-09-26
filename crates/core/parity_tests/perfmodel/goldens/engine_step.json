@@ -101,28 +101,28 @@
     "deepseek-v32-b200-sglang-isl1024-osl2": {
       "agg": {
         "values": {
-          "agg_request": 269.14517465478315,
-          "agg_tpot": 91.23565242535022,
-          "agg_ttft": 177.90952222943292
+          "agg_request": 265.0574970206201,
+          "agg_tpot": 89.84999899004072,
+          "agg_ttft": 175.2074980305794
         }
       },
       "disagg": {
         "values": {
-          "disagg_request": 183.587,
-          "disagg_tpot": 11.52,
-          "disagg_ttft": 172.067
+          "disagg_request": 180.626,
+          "disagg_tpot": 11.327,
+          "disagg_ttft": 169.299
         }
       },
       "mixed": {
         "values": {
-          "mixed_step": 90.96040022108522
+          "mixed_step": 89.57560533685087
         }
       },
       "static": {
         "values": {
-          "static_ctx": 86.903,
-          "static_gen": 9.561,
-          "static_total": 96.464
+          "static_ctx": 85.504,
+          "static_gen": 9.411,
+          "static_total": 94.915
         }
       }
     },
@@ -227,14 +227,14 @@
       },
       "mixed": {
         "values": {
-          "mixed_step": 91.23658587409233
+          "mixed_step": 89.83616340424447
         }
       },
       "static": {
         "values": {
-          "static_ctx": 86.325,
-          "static_gen": 9.024,
-          "static_total": 95.349
+          "static_ctx": 84.898,
+          "static_gen": 8.994,
+          "static_total": 93.892
         }
       }
     },
@@ -247,42 +247,42 @@
       },
       "mixed": {
         "values": {
-          "mixed_step": 1151.3416758035848
+          "mixed_step": 1143.721169545203
         }
       },
       "static": {
         "values": {
-          "static_ctx": 1145.01,
-          "static_gen": 10.057,
-          "static_total": 1155.067
+          "static_ctx": 1137.39,
+          "static_gen": 10.027,
+          "static_total": 1147.4170000000001
         }
       }
     },
     "glm52-b200-sglang-isl1024-osl2": {
       "agg": {
         "values": {
-          "agg_request": 192.29190178318646,
-          "agg_tpot": 65.18369551972422,
-          "agg_ttft": 127.10820626346224
+          "agg_request": 190.77505010114623,
+          "agg_tpot": 64.66950850886313,
+          "agg_ttft": 126.1055415922831
         }
       },
       "disagg": {
         "values": {
-          "disagg_request": 131.946,
-          "disagg_tpot": 8.363,
-          "disagg_ttft": 123.583
+          "disagg_request": 130.839,
+          "disagg_tpot": 8.309,
+          "disagg_ttft": 122.53
         }
       },
       "mixed": {
         "values": {
-          "mixed_step": 65.24439354712678
+          "mixed_step": 64.730299927089
         }
       },
       "static": {
         "values": {
-          "static_ctx": 62.416,
-          "static_gen": 6.544,
-          "static_total": 68.96
+          "static_ctx": 61.883,
+          "static_gen": 6.537,
+          "static_total": 68.42
         }
       }
     },
@@ -1899,19 +1899,19 @@
     },
     "deepseek-v32-b200-sglang-isl1024-osl2::agg": {
       "engine": "rust",
-      "git_head": "760b6c92edc00389ff79938b62b028c01bcfefdd"
+      "git_head": "46256c219fc2f85811fa6a4df4efe48e91693234"
     },
     "deepseek-v32-b200-sglang-isl1024-osl2::disagg": {
       "engine": "rust",
-      "git_head": "760b6c92edc00389ff79938b62b028c01bcfefdd"
+      "git_head": "46256c219fc2f85811fa6a4df4efe48e91693234"
     },
     "deepseek-v32-b200-sglang-isl1024-osl2::mixed": {
       "engine": "rust",
-      "git_head": "760b6c92edc00389ff79938b62b028c01bcfefdd"
+      "git_head": "46256c219fc2f85811fa6a4df4efe48e91693234"
     },
     "deepseek-v32-b200-sglang-isl1024-osl2::static": {
       "engine": "rust",
-      "git_head": "760b6c92edc00389ff79938b62b028c01bcfefdd"
+      "git_head": "46256c219fc2f85811fa6a4df4efe48e91693234"
     },
     "deepseek-v32-b200-vllm-empirical::agg": {
       "engine": "rust",
@@ -1971,51 +1971,51 @@
     },
     "glm5-b200-sglang-empirical::agg": {
       "engine": "rust",
-      "git_head": "760b6c92edc00389ff79938b62b028c01bcfefdd"
+      "git_head": "46256c219fc2f85811fa6a4df4efe48e91693234"
     },
     "glm5-b200-sglang-empirical::disagg": {
       "engine": "rust",
-      "git_head": "760b6c92edc00389ff79938b62b028c01bcfefdd"
+      "git_head": "46256c219fc2f85811fa6a4df4efe48e91693234"
     },
     "glm5-b200-sglang-empirical::mixed": {
       "engine": "rust",
-      "git_head": "760b6c92edc00389ff79938b62b028c01bcfefdd"
+      "git_head": "46256c219fc2f85811fa6a4df4efe48e91693234"
     },
     "glm5-b200-sglang-empirical::static": {
       "engine": "rust",
-      "git_head": "760b6c92edc00389ff79938b62b028c01bcfefdd"
+      "git_head": "46256c219fc2f85811fa6a4df4efe48e91693234"
     },
     "glm5-b200-sglang-isl16384-osl2::agg": {
       "engine": "rust",
-      "git_head": "760b6c92edc00389ff79938b62b028c01bcfefdd"
+      "git_head": "46256c219fc2f85811fa6a4df4efe48e91693234"
     },
     "glm5-b200-sglang-isl16384-osl2::disagg": {
       "engine": "rust",
-      "git_head": "760b6c92edc00389ff79938b62b028c01bcfefdd"
+      "git_head": "46256c219fc2f85811fa6a4df4efe48e91693234"
     },
     "glm5-b200-sglang-isl16384-osl2::mixed": {
       "engine": "rust",
-      "git_head": "760b6c92edc00389ff79938b62b028c01bcfefdd"
+      "git_head": "46256c219fc2f85811fa6a4df4efe48e91693234"
     },
     "glm5-b200-sglang-isl16384-osl2::static": {
       "engine": "rust",
-      "git_head": "760b6c92edc00389ff79938b62b028c01bcfefdd"
+      "git_head": "46256c219fc2f85811fa6a4df4efe48e91693234"
     },
     "glm52-b200-sglang-isl1024-osl2::agg": {
       "engine": "rust",
-      "git_head": "760b6c92edc00389ff79938b62b028c01bcfefdd"
+      "git_head": "46256c219fc2f85811fa6a4df4efe48e91693234"
     },
     "glm52-b200-sglang-isl1024-osl2::disagg": {
       "engine": "rust",
-      "git_head": "760b6c92edc00389ff79938b62b028c01bcfefdd"
+      "git_head": "46256c219fc2f85811fa6a4df4efe48e91693234"
     },
     "glm52-b200-sglang-isl1024-osl2::mixed": {
       "engine": "rust",
-      "git_head": "760b6c92edc00389ff79938b62b028c01bcfefdd"
+      "git_head": "46256c219fc2f85811fa6a4df4efe48e91693234"
     },
     "glm52-b200-sglang-isl1024-osl2::static": {
       "engine": "rust",
-      "git_head": "760b6c92edc00389ff79938b62b028c01bcfefdd"
+      "git_head": "46256c219fc2f85811fa6a4df4efe48e91693234"
     },
     "gpt-oss-20b-b200-trtllm-isl1024-osl2::agg": {
       "engine": "rust",

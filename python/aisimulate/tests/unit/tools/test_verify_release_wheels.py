@@ -6,6 +6,7 @@ from __future__ import annotations
 import importlib.util
 import subprocess
 import sys
+import tomllib
 import zipfile
 from pathlib import Path
 
@@ -94,6 +95,34 @@ def test_config_adapter_readme_remains_repository_only(verifier):
     assert "aisimulate/sdk/config_adapter/schemas/estimate-request-v1.schema.json" in payload
     assert "collector/cases/base_ops/mla_module.yaml" in payload
     assert "collector/fpm_forward/runtime/fpm_exec.sh" in payload
+
+
+def test_rubin_op_collectors_require_source_checkout_but_predictions_are_packaged(verifier):
+    package_root = VERIFY_RELEASE_WHEELS.parents[1]
+    manifest = tomllib.loads((package_root / "pyproject.toml").read_text())["tool"]["maturin"]
+    source_files = {
+        path.relative_to(package_root).as_posix()
+        for path in (package_root / "collector/sglang_rubin").rglob("*")
+        if path.is_file()
+    }
+    assert "collector/sglang_rubin/collect.py" in source_files
+    assert "collector/sglang_rubin/prefill_graph_identity.json" in source_files
+    wheel_includes = set()
+    for include in manifest["include"]:
+        if isinstance(include, dict):
+            if include.get("format") != "wheel":
+                continue
+            include = include["path"]
+        wheel_includes.update(path.relative_to(package_root).as_posix() for path in package_root.glob(include))
+    assert not source_files & wheel_includes
+    assert not any(package.startswith("collector") for package in manifest["python-packages"])
+    payload = verifier._source_payloads()
+    assert not source_files & payload
+    assert "aisimulate_core/systems/vr200_hecate.yaml" in payload
+    assert "aisimulate_core/sdk/operations/prefill_graph.py" in payload
+    assert any(
+        name.startswith("aisimulate_core/systems/data/vr200_hecate/") and name.endswith(".parquet") for name in payload
+    )
 
 
 def test_release_verifier_checks_packaged_legal_files(verifier, monkeypatch, tmp_path):

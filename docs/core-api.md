@@ -183,6 +183,40 @@ model = RustForwardPassPerfModel.best_available(config)
 print(model.diagnostics()["provenance"])
 ```
 
+### Vera Rubin GLM-5.2 graph-prefill pilot
+
+The opt-in `sglang_glm52_nvfp4_vr200_tp4_graph_v1` profile uses the same canonical constructor and a latency-only direct method. It is qualified for seven homogeneous prefill shapes on the pinned SGLang runtime, TP4/EP1, NVFP4 experts, BF16 projections and FP8 KV. The profile preserves its immutable SHA-256 in `diagnostics()["provenance"]["config"]["estimator_config"]["op_level"]`; save that complete configuration when reproducing a prediction.
+
+```python
+from aisimulate_core.sdk import RustForwardPassPerfModel
+
+model = RustForwardPassPerfModel.best_available({
+    "model": "nvidia/GLM-5.2-NVFP4",
+    "system": "vr200_hecate",
+    "backend": "sglang",
+    "backend_version": "0.5.18+nvinternal.rubin.0.8full.66997102",
+    "worker_type": "prefill",
+    "tp": 4, "pp": 1, "attention_dp": 1,
+    "moe_tp_size": 4, "moe_ep_size": 1,
+    "gemm_quant_mode": "bfloat16", "moe_quant_mode": "nvfp4",
+    "fmha_quant_mode": "bfloat16", "kvcache_quant_mode": "fp8",
+    "comm_quant_mode": "half",
+    "estimation_mode": "op_level", "fallback_policy": "deny",
+    "database_mode": "SILICON", "enable_shared_layer": False,
+    "estimator_config": {
+        "op_level": {"prefill_graph_profile": "sglang_glm52_nvfp4_vr200_tp4_graph_v1"},
+        "correction": {"enabled": False},
+    },
+})
+milliseconds = model.predict_prefill_latency(bs=1, isl=2048, prefix=1024)
+```
+
+`isl` is the total input length, including cached tokens. That call processes 1,024 new tokens after a 1,024-token prefix. The admitted `(batch, isl, prefix)` calls are `(1,1024,0)`, `(2,1024,0)`, `(1,2048,1024)`, `(1,8192,0)`, `(2,8192,0)`, `(1,16384,0)` and `(1,32768,16384)`. Arguments must be ordinary Python integers in the unsigned 32-bit range; the Rust API uses `u32`. Other shapes and batch-token products that overflow fail before lookup. The tables have exact keys and do not interpolate or inherit another profile's data.
+
+The independent forward-step comparison passes all seven shapes within 15%, with worst absolute relative error 5.2334%. This is a measured mean forward-time comparison for the exact runtime. Scheduler TTFT, model quality and general Vera Rubin coverage remain unqualified by this prefill comparison. Aggregate telemetry cannot establish each request's exact new/past lengths, so this selected profile rejects `estimate_forward_pass_time_ms`, tuning, static energy/SOL diagnostics and replay-provider construction. Use the direct scalar method; no CLI scheduler selection is supported. Other profiles retain their existing behavior. See the [dedicated collector](../python/aisimulate/collector/sglang_rubin/README.md) and [packaged data provenance](../python/aisimulate/src/aisimulate_core/systems/data/vr200_hecate/README.md).
+
+Decode is validated separately through the default op-level estimator with `worker_type="decode"`, no `prefill_graph_profile`, and correction disabled. Use `static_phase_latency(batch_size=B, input_tokens=K, output_tokens=2, prefill=False)` for one decode step with `K` past KV tokens and attention length `K + 1`; `output_tokens=1` requests zero decode iterations. The [combined accuracy report](vr200-glm52-accuracy.md) lists all seven prefill and 18 decode cases, the exact configuration and measurement boundary. Decode meets the original ±15% criterion in 17/18 cases; the pilot accepts the remaining observed −17.09% batch-1 residual. This does not extend the opt-in prefill profile to decode or qualify scheduler TTFT.
+
 ### External whole-forward FPM data
 
 Set `estimator_config.fpm_interpolation.fpm_parquet_path` on the canonical configuration to use an external parquet and its required same-stem `.metadata.json` sidecar:
@@ -204,13 +238,15 @@ model = RustForwardPassPerfModel.best_available(config)
 
 The parquet identity must match the requested model, hardware, backend version, topology, and quantization. The systems YAML is still required, but a backend timing-data directory is unnecessary. Relative paths bind to the working directory when the model is constructed; resolved provenance stores the absolute path. The control applies when FPM interpolation is selected; other estimators retain it in provenance without opening the file. Saved legacy `timing.forward_model: fpm` and `timing.fpm_parquet_path` inputs migrate to the same canonical control, which is preserved in replay and per-role recommendation output.
 
-`model.static_phase_latency(batch_size=1, input_tokens=512, output_tokens=4, prefill=False)` exposes the native engine's existing static integration before online correction. Prefill returns one prefill latency; decode returns total decode latency for the output sequence. This method requires a native estimator. AFD+PD uses it for an external-FPM regular companion, dividing total decode latency by `max(1, output_tokens - 1)` for TPOT. AFD attention and FFN workers retain their existing timing provider.
+`model.static_phase_latency(batch_size=1, input_tokens=512, output_tokens=4, prefill=False)` exposes the native engine's existing static integration before online correction. Prefill returns one prefill latency; decode returns total decode latency for the output sequence. This method requires a native estimator. The graph-prefill pilot requires `predict_prefill_latency` and rejects this generic static API. AFD+PD uses it for an external-FPM regular companion, dividing total decode latency by `max(1, output_tokens - 1)` for TPOT. AFD attention and FFN workers retain their existing timing provider.
 
 ### Engine identity controls
 
 The canonical configuration also carries quantization overrides and `attention_backend`, `moe_backend`, `moe_kernel_source` (default absent), `enable_eplb` (default `false`), and `wideep_num_slots` (default absent). These controls reach model construction, KV memory sizing, and replay provenance. EPLB/slots and nondefault MoE backend or kernel-source selection require an MoE model. Collected FPM interpolation cannot represent EPLB, slots, MoE backend, or kernel-source overrides; it rejects an explicit incompatible request and is skipped during automatic selection for those identities.
 
 `moe_kernel_source` selects an exact, nonblank collected `kernel_source` label for fused MoE compute. It is distinct from the existing `moe_backend` graph/backend control; source labels are not backend aliases and are preserved without trimming. `None` keeps the existing default source-selection policy, including eligible low-latency NVFP4 selection. `SILICON` reads only the requested source's table; `EMPIRICAL` derives its estimate from that same source; `HYBRID` may fall back to empirical estimation within that source, but does not substitute a different source. Missing source data remains an error. An explicit `moe_torch_flow_min_latency` requires gated NVFP4 and at most 128 tokens after attention-DP gathering. Pure-roofline `SOL` remains table-independent and does not claim measured support for the requested source.
+
+Selected `prefill_graph_profile` and observed `decode_workload_distribution` profiles require `moe_kernel_source=None`. Their qualified composition and source identity are fixed; an explicit source override is rejected even when its label matches the measured kernel. An absent or null source preserves the approved profile identity and predictions.
 
 An explicit source is rejected for dense graphs, MegaMoE modules, large-EP expert-compute graphs, and any constructed timing phase with no compatible fused MoE operator. It is also incompatible with whole-forward FPM, including the legacy Task `forward_model='fpm'` rewrite. Invalid graph/source combinations fail as invalid configuration rather than triggering estimator fallback. An untrained `fpm_regression` model remains not-ready; retaining a source in its configuration is not evidence of source-specific prediction support.
 
@@ -279,8 +315,10 @@ nested paths. The supported namespaces are:
 - `correction`: `enabled` (true), independent `sampling`, `min_observations`
   (5), `factor_bounds` (min 0.5, max 2.0), and the existing `max_num_tokens`
   (8192), `max_batch_size` (512), and `max_kv_tokens` (2000000) ranges.
-- `op_level` and `fpm_interpolation`: reserved typed namespaces with no
-  additional knobs yet; unknown fields are rejected.
+- `op_level`: optional `decode_workload_distribution` selects a measured decode-MoE distribution, and `prefill_graph_profile` selects a qualified direct-prefill graph composition. Saved configurations retain the resolved immutable `prefill_graph_profile_id`, which is validated on reload. Unknown fields are rejected.
+- `fpm_interpolation`: optional `fpm_parquet_path` selects an external FPM parquet with its same-stem metadata sidecar. Unknown fields are rejected.
+
+Engine replay rank arguments accept `decode_workload_distribution` (alias `aic_decode_workload_distribution`) only with AIC timing. An active selector paired with a non-AIC timing model, including fixed or polynomial timing, is rejected. The AFD companion's fixed timing and legacy estimator paths also reject active selectors because they cannot apply the profile. `None` preserves ordinary timing in these paths.
 
 Sampling defaults to `bins_per_axis: [4, 4]` and `max_observations: 64` per
 logical store. Rectangular grids are supported. Regression uses dynamic
@@ -310,6 +348,8 @@ allowed direct regression fallback; the migration preserves that two-mode
 order rather than adding interpolation. Legacy `forward_model: fpm` maps to
 `fpm_interpolation`, and `fallback_policy: error` maps to deny. The deprecated
 `regression` policy remains readable for these saved direct-fallback requests.
+
+The migration adapter rejects any non-null `prefill_graph_profile`, `prefill_graph_profile_id`, or `decode_workload_distribution` field, including an orphan profile ID. These selectors require the canonical `ForwardPassPerfModelConfig.estimator_config.op_level` configuration; pass a saved canonical configuration directly to `RustForwardPassPerfModel.best_available` to preserve its profile identity and supported API restrictions. Profile-free legacy configurations continue to migrate normally.
 
 Previously saved CLI timing with `forward_model` retains explicit selection
 and deny. Newly authored requests without a selection use auto. `ForwardPassPerfOptions`

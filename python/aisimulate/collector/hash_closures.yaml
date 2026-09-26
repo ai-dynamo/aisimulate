@@ -95,6 +95,10 @@ collector.sglang.collect_mla_bmm:
   - collector/cases/base_ops/mla_bmm_gen_post.yaml
   - __model_cases__
 collector.sglang.collect_mla_module:
+  # DSA variants share tables; the registry and executor bind each worker selector.
+  - collector/registry_types.py
+  - collector/collect.py
+  - collector/sglang/registry.py
   - collector/cases/base_ops/mla_module.yaml
   - __model_cases__
 collector.sglang.collect_moe:
@@ -106,6 +110,54 @@ collector.sglang.glm5_dsa_sparse_modules:
   # get_glm5_*_test_cases() calls case_generator.get_mla_module_sweep_spec.
   - collector/cases/base_ops/mla_module.yaml
   - __model_cases__
+
+# The isolated Rubin pilot shares one conservative closure. These entries are
+# additive provenance declarations; stock registry/runtime routing is unchanged.
+collector.sglang_rubin.collect_gemm: &sglang_rubin_pilot
+  - collector/registry_types.py
+  - collector/collect.py
+  - collector/sglang/registry.py
+  - collector/sglang_rubin/__init__.py
+  - collector/sglang_rubin/__main__.py
+  - collector/sglang_rubin/collect.py
+  - collector/sglang_rubin/registry.py
+  - collector/sglang_rubin/runtime.py
+  - collector/sglang_rubin/collect_gemm.py
+  - collector/sglang_rubin/collect_moe.py
+  - collector/sglang_rubin/collect_mla_module.py
+  - collector/sglang_rubin/glm5_dsa_sparse_modules.py
+  - collector/sglang/runtime_limits.py
+  - collector/cases/base_ops/gemm.yaml
+  - collector/cases/base_ops/moe.yaml
+  - collector/cases/base_ops/mla_module.yaml
+  - src/aisimulate_core/model_configs/nvidia--GLM-5.2-NVFP4_config.json
+  - src/aisimulate_core/model_configs/nvidia--GLM-5.2-NVFP4_hf_quant_config.json
+  - __model_cases__
+collector.sglang_rubin.collect_moe: *sglang_rubin_pilot
+collector.sglang_rubin.collect_mla_module: *sglang_rubin_pilot
+collector.sglang_rubin.glm5_dsa_sparse_modules: *sglang_rubin_pilot
+collector.sglang_rubin.collect_all_reduce:
+  - collector/sglang_rubin/__init__.py
+  - collector/sglang_rubin/runtime.py
+  - collector/sglang_rubin/registry.py
+  - src/aisimulate_core/model_configs/nvidia--GLM-5.2-NVFP4_config.json
+  - src/aisimulate_core/model_configs/nvidia--GLM-5.2-NVFP4_hf_quant_config.json
+collector.sglang_rubin.publish_observed_moe:
+  # Offline publication role; this identity binds the separately retained GPU
+  # producer source, actual raw archive, capture and independent data verdict.
+  - collector/provenance.py
+  - collector/sglang_rubin/observed_moe_identity.json
+collector.sglang_rubin.publish_observed_moe_v2:
+  # Composite offline publication preserves and reuses the frozen v1 reader.
+  - collector/provenance.py
+  - collector/sglang_rubin/publish_observed_moe.py
+  - collector/sglang_rubin/observed_moe_identity.json
+  - collector/sglang_rubin/observed_moe_v2_identity.json
+collector.sglang_rubin.publish_prefill_graph:
+  # Offline composite publication; the identity binds all unchanged native
+  # producer files, full raw exports, independent qualification and approval.
+  - collector/provenance.py
+  - collector/sglang_rubin/prefill_graph_identity.json
 
 # --- trtllm ---------------------------------------------------------------
 collector.trtllm.collect_attn:

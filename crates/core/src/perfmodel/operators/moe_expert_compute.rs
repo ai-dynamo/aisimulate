@@ -200,6 +200,7 @@ impl MoeExpertComputeOp {
                     attention_dp_size: 1,
                     quant_mode: self.quant_mode,
                     workload_distribution: self.workload_distribution.clone(),
+                    require_exact_workload_distribution: false,
                     is_gated: self.is_gated,
                     moe_backend: None,
                     moe_kernel_source: None,

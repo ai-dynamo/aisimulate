@@ -10,7 +10,7 @@ from enum import Enum
 
 
 class PerfFile(str, Enum):
-    """Canonical output filenames for collector operations.
+    """Canonical output filenames and legacy worker selectors for collectors.
 
     Inherits from ``str`` so values pass directly to ``open()`` / ``log_perf()``
     without ``.value``.
@@ -51,8 +51,8 @@ class PerfFile(str, Enum):
     DSA_GENERATION_MODULE = "dsa_generation_module_perf.txt"
     # GLM-5.2 shares one topk index across `index_topk_freq` layers: only 1
     # layer per group computes the indexer (mqa+topk+index-K store), the rest
-    # reuse it (skip_indexer). These files capture the skip-layer cost so the
-    # modeler can amortize: per_layer = (1/freq)*full + (1-1/freq)*skip.
+    # reuse it (skip_indexer). These names are worker selectors; skip rows
+    # share the canonical DSA phase tables above, distinguished by op_name.
     DSA_CONTEXT_MODULE_SKIP_INDEXER = "dsa_context_module_skip_indexer_perf.txt"
     DSA_GENERATION_MODULE_SKIP_INDEXER = "dsa_generation_module_skip_indexer_perf.txt"
     # MiniMax-M3 MSA (block-sparse GQA) full-module data — same row schema as
@@ -82,6 +82,8 @@ class PerfFile(str, Enum):
     NCCL = "nccl_perf.txt"
     CUSTOM_ALLREDUCE = "custom_allreduce_perf.txt"
     TRTLLM_ALLTOALL = "trtllm_alltoall_perf.txt"
+    SGLANG_PREFILL_ATTENTION_SEQUENCE = "sglang_prefill_attention_sequence_perf.txt"
+    SGLANG_PREFILL_COMM_NORM_BOUNDARY = "sglang_prefill_comm_norm_boundary_perf.txt"
 
 
 @dataclass(frozen=True, slots=True)
@@ -103,6 +105,10 @@ class OpEntry:
 
     Exactly one of ``module`` (unversioned) or ``versions`` (versioned) must be
     provided.  This invariant is validated at construction time.
+
+    ``perf_filename`` is the physical output table. ``worker_perf_filename``
+    optionally overrides only the basename passed to the worker's legacy
+    ``perf_filename`` dispatch argument, preserving the output directory.
     """
 
     op: str
@@ -119,6 +125,7 @@ class OpEntry:
     #   unverified_sms=(120,)  — debugged elsewhere, not validated on these SMs
     unverified: bool = False
     unverified_sms: tuple[int, ...] = ()
+    worker_perf_filename: str | None = None
 
     def __post_init__(self) -> None:
         if not self.module and not self.versions:

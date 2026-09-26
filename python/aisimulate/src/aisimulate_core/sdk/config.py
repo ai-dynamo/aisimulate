@@ -91,6 +91,10 @@ class ModelConfig:
     # this in their op pipeline; GLM-5 DSA ignores it (handled in ContextDSAModule).
     cp_style: str = "none"
     workload_distribution: str = "power_law"
+    # Explicit decode-only profile. Context retains workload_distribution.
+    decode_workload_distribution: str | None = field(default=None, kw_only=True)
+    # Exact seven-shape, direct-prefill-only pilot; never propagated to scheduler configuration.
+    prefill_graph_profile: str | None = field(default=None, kw_only=True)
     # EPD: this worker hosts only the language model -- the vision encoder
     # is served elsewhere (mirrors SGLang --language-only).  Like tp_size,
     # this describes the deployed worker, not the model: vision tokens still

@@ -73,6 +73,7 @@ CORE_SDK_LEAF_MODULES = [
     "operations.moe_comm",
     "operations.msa",
     "operations.overlap",
+    "operations.prefill_graph",
     "operations.util_empirical",
     "perf_database",
     # perf_interp.* retired with the Python per-call query stack (#1357 PR-5):

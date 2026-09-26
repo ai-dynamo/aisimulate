@@ -1,0 +1,310 @@
+{
+  "schema_version": 1,
+  "status": "Experimental Hecate hardware assumptions used by the exact GLM-5.2 graph-prefill pilot; not a general platform characterization.",
+  "scope": {
+    "system": "vr200_hecate",
+    "model": "GLM-5.2 NVFP4",
+    "backend": "sglang",
+    "version": "0.5.18+nvinternal.rubin.0.8full.66997102",
+    "tp": 4,
+    "moe_ep": 1,
+    "pp": 1,
+    "cp": 1,
+    "attention_dp": 1
+  },
+  "original_evidence_sha256": "2e3ee2731423509066e9f19771ce22c37ade8a3e4c69890966c7542913636100",
+  "hardware_yaml_sha256": "e8a7954725309d5d1fdbd2d11da89bb031874b978ee29b96df8d4295d7656949",
+  "evidence_note": "This portable summary retains measured inputs and modeling assumptions. Original hardware observations and source captures remain external evidence identified by the hashes below.",
+  "input_files": [
+    {
+      "path": "hardware-streams-444012043/hardware.json",
+      "sha256": "42cb6bbcd3c6d5bd0779748125945c757bc801cb617a642ca07225d8c4954e2b"
+    },
+    {
+      "path": "hardware-streams-validation.json",
+      "sha256": "90b86bfa566ff1de570b305af52b8699478972c175ed5adf6b8811f097e3b402"
+    },
+    {
+      "path": "published-rubin-reference.json",
+      "sha256": "f9225ccc3723e054a26c9764dc55887ecfd3008f3000910aa378002bdcc63d23"
+    }
+  ],
+  "source_references": {
+    "rubin_dense_peaks": {
+      "url": "https://www.nvidia.com/en-us/data-center/vera-rubin-nvl72/",
+      "retrieved_date": "2026-09-17",
+      "finding": "GPU column: dense BF16 4 PFLOPS, FP8 17.5 PFLOPS, NVFP4 training 35 PFLOPS. Footnote 1 gives DSX MaxLPS factory context; footnote 3 identifies dense figures. Sparse 50 PFLOPS is not used."
+    },
+    "architecture": {
+      "url": "https://developer.nvidia.com/blog/inside-nvidia-rubin-gpu-architecture-powering-the-era-of-agentic-ai/",
+      "retrieved_date": "2026-09-17",
+      "finding": "Published architecture has 224 SMs; the observed Hecate devices have 212. No ratio-based peak scaling is assumed."
+    },
+    "cuda_bandwidth": {
+      "url": "https://docs.nvidia.com/cuda/cuda-c-best-practices-guide/index.html#theoretical-bandwidth-calculation",
+      "retrieved_date": "2026-09-17",
+      "finding": "Theoretical DDR bandwidth is clock_Hz * bus_bits / 8 * 2. Effective bandwidth counts logical bytes read plus written divided by elapsed seconds; it is distinct from physical traffic."
+    },
+    "nvlink_status": {
+      "url": "https://docs.nvidia.com/deploy/nvidia-smi/index.html#nvlink",
+      "retrieved_date": "2026-09-17",
+      "finding": "nvlink --status reports bandwidth for active links. This documentation does not explicitly specify directionality of that field. The 41 GB/s per-link single-direction interpretation below remains an inference."
+    },
+    "xdr_rate": {
+      "url": "https://docs.nvidia.com/dgx-superpod/reference-architecture/scalable-infrastructure-rubinx86/latest/dgx-superpod-components.html",
+      "retrieved_date": "2026-09-17",
+      "finding": "XDR peak link speed is 800 Gbps per direction. Equal sharing of the eight observed ports among four GPUs is a profile assumption, not a verified GPU-to-NIC assignment or throughput result."
+    }
+  },
+  "profile": {
+    "data_dir": "data/vr200_hecate",
+    "gpu": {
+      "mem_bw": 19160064000000.0,
+      "mem_bw_empirical_scaling_factor": 0.5227797525079052,
+      "mem_empirical_constant_latency": 1.6518125736605135e-06,
+      "mem_capacity": 299083431936,
+      "bfloat16_tc_flops": 4000000000000000.0,
+      "fp8_tc_flops": 1.75e+16,
+      "fp4_tc_flops": 3.5e+16,
+      "sm_version": 107
+    },
+    "node": {
+      "num_gpus_per_node": 4,
+      "intra_node_bw": 1476000000000.0,
+      "inter_node_bw": 200000000000.0
+    }
+  },
+  "memory_bandwidth": {
+    "max_clock_reference_bytes_per_s": 19160064000000.0,
+    "formula": "2 * 4752e6 Hz * (16128 bits / 8 bits_per_byte)",
+    "classification": "Inference using observed maximum clock and interface width with CUDA's DDR formula; not measured sustained HBM throughput.",
+    "post_interval_memory_clocks_MHz": [
+      3186
+    ],
+    "operating_clock_reference_bytes_per_s": 12845952000000.0,
+    "operating_clock_formula": "2 * 3186e6 Hz * (16128 bits / 8 bits_per_byte)",
+    "copy_logical_bytes_per_s_range": [
+      10154847433391.883,
+      10326804848963.35
+    ],
+    "caveat": "NVML snapshots follow synchronized intervals, not an integral. Logical copy traffic and fitted norm traffic are not physical HBM counters. Empirical scaling absorbs the operating state and kernel efficiency; it must not be presented as an isolated hardware efficiency measurement."
+  },
+  "memory_op_fit": {
+    "method": "Unweighted ordinary least squares over seven graph medians on GPU 0, with intercept; no end-to-end serving data read or fitted.",
+    "model_seconds": "logical_bytes * slope_seconds_per_byte + constant_seconds",
+    "logical_bytes": "4 * tokens * 6144 * 2 + 6144 * 2; fused residual-add/RMSNorm with BF16 inputs, residuals, outputs and weights",
+    "slope_seconds_per_byte": 9.983533642856802e-14,
+    "effective_bandwidth_bytes_per_s": 10016493515955.625,
+    "constant_seconds": 1.6518125736605135e-06,
+    "rmse_us": 0.7360143791547369,
+    "points": [
+      {
+        "tokens": 1,
+        "logical_bytes": 61440,
+        "measured_us": 1.6558750066906214,
+        "fit_us": 1.6579464567306847,
+        "fit_minus_measured_us": 0.002071450040063319,
+        "fit_relative_error_percent": 0.12509700500904497,
+        "sdk_add_norm_per_layer_us": 1.6567196801166504,
+        "sdk_relative_error_percent": 0.05101069963711069
+      },
+      {
+        "tokens": 8,
+        "logical_bytes": 405504,
+        "measured_us": 2.317999955266714,
+        "fit_us": 1.6922962019236436,
+        "fit_minus_measured_us": -0.6257037533430705,
+        "fit_relative_error_percent": -26.993259940381474,
+        "sdk_add_norm_per_layer_us": 1.6910694253096092,
+        "sdk_relative_error_percent": -27.046183867806363
+      },
+      {
+        "tokens": 32,
+        "logical_bytes": 1585152,
+        "measured_us": 2.320874948054552,
+        "fit_us": 1.810066756870931,
+        "fit_minus_measured_us": -0.5108081911836211,
+        "fit_relative_error_percent": -22.00929402128281,
+        "sdk_add_norm_per_layer_us": 1.8088399802568969,
+        "sdk_relative_error_percent": -22.062152388988608
+      },
+      {
+        "tokens": 128,
+        "logical_bytes": 6303744,
+        "measured_us": 2.4262499064207077,
+        "fit_us": 2.2811489766600808,
+        "fit_minus_measured_us": -0.1451009297606271,
+        "fit_relative_error_percent": -5.980461014202998,
+        "sdk_add_norm_per_layer_us": 2.2799222000460464,
+        "sdk_relative_error_percent": -6.031023679276693
+      },
+      {
+        "tokens": 1024,
+        "logical_bytes": 50343936,
+        "measured_us": 5.014500115066767,
+        "fit_us": 6.67791636135881,
+        "fit_minus_measured_us": 1.6634162462920432,
+        "fit_relative_error_percent": 33.1721249999392,
+        "sdk_add_norm_per_layer_us": 6.676689584744777,
+        "sdk_relative_error_percent": 33.14766041551638
+      },
+      {
+        "tokens": 8192,
+        "logical_bytes": 402665472,
+        "measured_us": 42.41675138473511,
+        "fit_us": 41.85205543894865,
+        "fit_minus_measured_us": -0.5646959457864564,
+        "fit_relative_error_percent": -1.3313040894255668,
+        "sdk_add_norm_per_layer_us": 41.85082866233462,
+        "sdk_relative_error_percent": -1.3341962878471447
+      },
+      {
+        "tokens": 16384,
+        "logical_bytes": 805318656,
+        "measured_us": 81.87025040388107,
+        "fit_us": 82.05107152762275,
+        "fit_minus_measured_us": 0.18082112374167528,
+        "fit_relative_error_percent": 0.22086303980952682,
+        "sdk_add_norm_per_layer_us": 82.04984475100872,
+        "sdk_relative_error_percent": 0.21936459976814593
+      }
+    ],
+    "eager_measurements_us": [
+      {
+        "tokens": 1,
+        "latency_us": 6.829374935477972
+      },
+      {
+        "tokens": 8,
+        "latency_us": 6.744250189512968
+      },
+      {
+        "tokens": 32,
+        "latency_us": 6.804749835282564
+      },
+      {
+        "tokens": 128,
+        "latency_us": 6.731125060468912
+      },
+      {
+        "tokens": 1024,
+        "latency_us": 6.764874793589115
+      },
+      {
+        "tokens": 8192,
+        "latency_us": 42.79687628149986
+      },
+      {
+        "tokens": 16384,
+        "latency_us": 82.21887797117233
+      }
+    ],
+    "limitations": [
+      "Absolute-error fitting gives large-token points greater influence on the slope; the largest relative residual is about 33%.",
+      "Small arrays can remain in L2 and weights are reused. The model is an effective latency fit, not an HBM characterization.",
+      "Only GPU 0 and hidden size 6144 were measured for norm; the same model is provisionally applied to all empirical memory operations.",
+      "deepseek_v32.py passes 0.8 as ElementWise's empirical_bw_scaling_factor, but the current native constructor explicitly ignores it for API compatibility. Per-layer timing is 4*T*6144*2/effective_bandwidth + constant, omitting the measured weight vector read. Native checks verify that 0.8 and 1.0 serialize identically.",
+      "Prefill graphs are disabled in the serving baseline. Graph norm fitting excludes Python dispatch gaps and does not represent eager frontend/launch overhead.",
+      "The serving stack's fused allreduce/residual-add/RMSNorm is not represented by separate allreduce and empirical memory-op terms."
+    ]
+  },
+  "network": {
+    "intra_node_formula": "36 active links per GPU * 41e9 bytes/s per link = 1.476e12 bytes/s per GPU",
+    "intra_node_classification": "Inferred single-direction link-capacity sum. Status output is rounded and its directionality was not explicitly documented in the cited SMI page. Not a measured P2P or collective bandwidth.",
+    "inter_node_formula": "8 active ports * 800e9 bits/s / 8 bits_per_byte / 4 GPUs = 2e11 bytes/s per GPU",
+    "inter_node_classification": "Per-direction aggregate line rate with equal sharing; GPU-to-port assignment, PCIe constraints, protocol overhead and simultaneous throughput have not been measured.",
+    "ports": [
+      {
+        "device": "mlx5_0",
+        "port": "1",
+        "rate": "800 Gb/sec (4X XDR)",
+        "state": "4: ACTIVE"
+      },
+      {
+        "device": "mlx5_1",
+        "port": "1",
+        "rate": "800 Gb/sec (4X XDR)",
+        "state": "4: ACTIVE"
+      },
+      {
+        "device": "mlx5_11",
+        "port": "1",
+        "rate": "800 Gb/sec (4X XDR)",
+        "state": "4: ACTIVE"
+      },
+      {
+        "device": "mlx5_2",
+        "port": "1",
+        "rate": "800 Gb/sec (4X XDR)",
+        "state": "4: ACTIVE"
+      },
+      {
+        "device": "mlx5_5",
+        "port": "1",
+        "rate": "800 Gb/sec (4X XDR)",
+        "state": "4: ACTIVE"
+      },
+      {
+        "device": "mlx5_6",
+        "port": "1",
+        "rate": "800 Gb/sec (4X XDR)",
+        "state": "4: ACTIVE"
+      },
+      {
+        "device": "mlx5_7",
+        "port": "1",
+        "rate": "800 Gb/sec (4X XDR)",
+        "state": "4: ACTIVE"
+      },
+      {
+        "device": "mlx5_8",
+        "port": "1",
+        "rate": "800 Gb/sec (4X XDR)",
+        "state": "4: ACTIVE"
+      }
+    ],
+    "topology": [
+      {
+        "command": [
+          "nvidia-smi",
+          "topo",
+          "-m"
+        ],
+        "stdout": "\tGPU0\tGPU1\tGPU2\tGPU3\tNIC0\tNIC1\tNIC2\tNIC3\tNIC4\tNIC5\tNIC6\tNIC7\tCPU Affinity\tNUMA Affinity\tGPU NUMA ID\nGPU0\t X \tNV36\tNV36\tNV36\tNODE\tNODE\tNODE\tNODE\tSYS\tSYS\tSYS\tSYS\t0-87,176-263\t0\t\tN/A\nGPU1\tNV36\t X \tNV36\tNV36\tNODE\tNODE\tNODE\tNODE\tSYS\tSYS\tSYS\tSYS\t0-87,176-263\t0\t\tN/A\nGPU2\tNV36\tNV36\t X \tNV36\tSYS\tSYS\tSYS\tSYS\tNODE\tNODE\tNODE\tNODE\t88-175,264-351\t1\t\tN/A\nGPU3\tNV36\tNV36\tNV36\t X \tSYS\tSYS\tSYS\tSYS\tNODE\tNODE\tNODE\tNODE\t88-175,264-351\t1\t\tN/A\nNIC0\tNODE\tNODE\tSYS\tSYS\t X \tNODE\tNODE\tNODE\tSYS\tSYS\tSYS\tSYS\t\t\t\t\nNIC1\tNODE\tNODE\tSYS\tSYS\tNODE\t X \tNODE\tNODE\tSYS\tSYS\tSYS\tSYS\t\t\t\t\nNIC2\tNODE\tNODE\tSYS\tSYS\tNODE\tNODE\t X \tNODE\tSYS\tSYS\tSYS\tSYS\t\t\t\t\nNIC3\tNODE\tNODE\tSYS\tSYS\tNODE\tNODE\tNODE\t X \tSYS\tSYS\tSYS\tSYS\t\t\t\t\nNIC4\tSYS\tSYS\tNODE\tNODE\tSYS\tSYS\tSYS\tSYS\t X \tNODE\tNODE\tNODE\t\t\t\t\nNIC5\tSYS\tSYS\tNODE\tNODE\tSYS\tSYS\tSYS\tSYS\tNODE\t X \tNODE\tNODE\t\t\t\t\nNIC6\tSYS\tSYS\tNODE\tNODE\tSYS\tSYS\tSYS\tSYS\tNODE\tNODE\t X \tNODE\t\t\t\t\nNIC7\tSYS\tSYS\tNODE\tNODE\tSYS\tSYS\tSYS\tSYS\tNODE\tNODE\tNODE\t X \t\t\t\t\n\nLegend:\n\n  X    = Self\n  SYS  = Connection traversing PCIe as well as the SMP interconnect between NUMA nodes (e.g., QPI/UPI)\n  NODE = Connection traversing PCIe as well as the interconnect between PCIe Host Bridges within a NUMA node\n  PHB  = Connection traversing PCIe as well as a PCIe Host Bridge (typically the CPU)\n  PXB  = Connection traversing multiple PCIe bridges (without traversing the PCIe Host Bridge)\n  PIX  = Connection traversing at most a single PCIe bridge\n  NV#  = Connection traversing a bonded set of # NVLinks\n\nNIC Legend:\n\n  NIC0: mlx5_0\n  NIC1: mlx5_1\n  NIC2: mlx5_2\n  NIC3: mlx5_5\n  NIC4: mlx5_6\n  NIC5: mlx5_7\n  NIC6: mlx5_8\n  NIC7: mlx5_11\n\n",
+        "stderr": ""
+      },
+      {
+        "command": [
+          "nvidia-smi",
+          "nvlink",
+          "-s"
+        ],
+        "stdout": "GPU 0: NVIDIA Graphics Device (UUID: GPU-014c42ab-b884-5098-945e-e2ad8eb8f011)\n\t Link 0: 41 GB/s\n\t Link 1: 41 GB/s\n\t Link 2: 41 GB/s\n\t Link 3: 41 GB/s\n\t Link 4: 41 GB/s\n\t Link 5: 41 GB/s\n\t Link 6: 41 GB/s\n\t Link 7: 41 GB/s\n\t Link 8: 41 GB/s\n\t Link 9: 41 GB/s\n\t Link 10: 41 GB/s\n\t Link 11: 41 GB/s\n\t Link 12: 41 GB/s\n\t Link 13: 41 GB/s\n\t Link 14: 41 GB/s\n\t Link 15: 41 GB/s\n\t Link 16: 41 GB/s\n\t Link 17: 41 GB/s\n\t Link 18: 41 GB/s\n\t Link 19: 41 GB/s\n\t Link 20: 41 GB/s\n\t Link 21: 41 GB/s\n\t Link 22: 41 GB/s\n\t Link 23: 41 GB/s\n\t Link 24: 41 GB/s\n\t Link 25: 41 GB/s\n\t Link 26: 41 GB/s\n\t Link 27: 41 GB/s\n\t Link 28: 41 GB/s\n\t Link 29: 41 GB/s\n\t Link 30: 41 GB/s\n\t Link 31: 41 GB/s\n\t Link 32: 41 GB/s\n\t Link 33: 41 GB/s\n\t Link 34: 41 GB/s\n\t Link 35: 41 GB/s\nGPU 1: NVIDIA Graphics Device (UUID: GPU-5b702c76-ae93-5d86-bb4a-2df4040e1bc0)\n\t Link 0: 41 GB/s\n\t Link 1: 41 GB/s\n\t Link 2: 41 GB/s\n\t Link 3: 41 GB/s\n\t Link 4: 41 GB/s\n\t Link 5: 41 GB/s\n\t Link 6: 41 GB/s\n\t Link 7: 41 GB/s\n\t Link 8: 41 GB/s\n\t Link 9: 41 GB/s\n\t Link 10: 41 GB/s\n\t Link 11: 41 GB/s\n\t Link 12: 41 GB/s\n\t Link 13: 41 GB/s\n\t Link 14: 41 GB/s\n\t Link 15: 41 GB/s\n\t Link 16: 41 GB/s\n\t Link 17: 41 GB/s\n\t Link 18: 41 GB/s\n\t Link 19: 41 GB/s\n\t Link 20: 41 GB/s\n\t Link 21: 41 GB/s\n\t Link 22: 41 GB/s\n\t Link 23: 41 GB/s\n\t Link 24: 41 GB/s\n\t Link 25: 41 GB/s\n\t Link 26: 41 GB/s\n\t Link 27: 41 GB/s\n\t Link 28: 41 GB/s\n\t Link 29: 41 GB/s\n\t Link 30: 41 GB/s\n\t Link 31: 41 GB/s\n\t Link 32: 41 GB/s\n\t Link 33: 41 GB/s\n\t Link 34: 41 GB/s\n\t Link 35: 41 GB/s\nGPU 2: NVIDIA Graphics Device (UUID: GPU-b0dbfc9c-4ee6-585e-b72e-eb79ce5e4062)\n\t Link 0: 41 GB/s\n\t Link 1: 41 GB/s\n\t Link 2: 41 GB/s\n\t Link 3: 41 GB/s\n\t Link 4: 41 GB/s\n\t Link 5: 41 GB/s\n\t Link 6: 41 GB/s\n\t Link 7: 41 GB/s\n\t Link 8: 41 GB/s\n\t Link 9: 41 GB/s\n\t Link 10: 41 GB/s\n\t Link 11: 41 GB/s\n\t Link 12: 41 GB/s\n\t Link 13: 41 GB/s\n\t Link 14: 41 GB/s\n\t Link 15: 41 GB/s\n\t Link 16: 41 GB/s\n\t Link 17: 41 GB/s\n\t Link 18: 41 GB/s\n\t Link 19: 41 GB/s\n\t Link 20: 41 GB/s\n\t Link 21: 41 GB/s\n\t Link 22: 41 GB/s\n\t Link 23: 41 GB/s\n\t Link 24: 41 GB/s\n\t Link 25: 41 GB/s\n\t Link 26: 41 GB/s\n\t Link 27: 41 GB/s\n\t Link 28: 41 GB/s\n\t Link 29: 41 GB/s\n\t Link 30: 41 GB/s\n\t Link 31: 41 GB/s\n\t Link 32: 41 GB/s\n\t Link 33: 41 GB/s\n\t Link 34: 41 GB/s\n\t Link 35: 41 GB/s\nGPU 3: NVIDIA Graphics Device (UUID: GPU-f5ec84bf-5bf7-5b3c-b093-50fa9c1728f5)\n\t Link 0: 41 GB/s\n\t Link 1: 41 GB/s\n\t Link 2: 41 GB/s\n\t Link 3: 41 GB/s\n\t Link 4: 41 GB/s\n\t Link 5: 41 GB/s\n\t Link 6: 41 GB/s\n\t Link 7: 41 GB/s\n\t Link 8: 41 GB/s\n\t Link 9: 41 GB/s\n\t Link 10: 41 GB/s\n\t Link 11: 41 GB/s\n\t Link 12: 41 GB/s\n\t Link 13: 41 GB/s\n\t Link 14: 41 GB/s\n\t Link 15: 41 GB/s\n\t Link 16: 41 GB/s\n\t Link 17: 41 GB/s\n\t Link 18: 41 GB/s\n\t Link 19: 41 GB/s\n\t Link 20: 41 GB/s\n\t Link 21: 41 GB/s\n\t Link 22: 41 GB/s\n\t Link 23: 41 GB/s\n\t Link 24: 41 GB/s\n\t Link 25: 41 GB/s\n\t Link 26: 41 GB/s\n\t Link 27: 41 GB/s\n\t Link 28: 41 GB/s\n\t Link 29: 41 GB/s\n\t Link 30: 41 GB/s\n\t Link 31: 41 GB/s\n\t Link 32: 41 GB/s\n\t Link 33: 41 GB/s\n\t Link 34: 41 GB/s\n\t Link 35: 41 GB/s\n",
+        "stderr": ""
+      }
+    ],
+    "use_constraint": "Required schema values only for this pilot. TP4 measured custom-allreduce with the same TP donor and PP1 must not use these topology fields to scale latency. No topology-based predictions or cross-node claims are authorized by this profile."
+  },
+  "required_prediction_sensitivity_checks": [
+    {
+      "name": "dense_peak_assumptions",
+      "vary": "Each TC FLOPS field separately and all three jointly at 0.5x and 1.0x published reference; arbitrary stress factors, not estimates or confidence bounds.",
+      "report": "All nine throughput/TTFT/TPOT deltas and query source/clamp/extrapolation behavior. No board-specific peak claim even if sensitivity is small."
+    },
+    {
+      "name": "memory_roofline",
+      "vary": "mem_bw at max-clock and observed-operating-clock references; adjust empirical scaling inversely to hold fitted effective bandwidth and constant fixed.",
+      "report": "Separate roofline/clamp/extrapolation sensitivity from empirical-memory timing."
+    },
+    {
+      "name": "empirical_memory",
+      "vary": "Effective bandwidth at 0.8x, 1.0x and 1.2x fit; constant at fit minus 0.5 us, fit, and fit plus 0.5 us. These are stress factors, not fit confidence intervals.",
+      "report": "All nine metric deltas; retain current SDK operation semantics and document the known fusion/dispatch gap."
+    },
+    {
+      "name": "unused_network_fields",
+      "vary": "intra_node_bw and inter_node_bw separately at 0.5x and 2x while keeping profile identity, data and workload fixed.",
+      "report": "Require numerically unchanged TP4/EP1/PP1 results (relative tolerance 1e-9); otherwise stop and investigate a topology-dependent path before interpreting predictions."
+    }
+  ]
+}

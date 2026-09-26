@@ -62,6 +62,8 @@ static PERF_DATA_NOT_AVAILABLE_ERROR: GILOnceCell<Py<PyType>> = GILOnceCell::new
 static EMPIRICAL_NOT_IMPLEMENTED_ERROR: GILOnceCell<Py<PyType>> = GILOnceCell::new();
 static MISSING_SYSTEM_FLOPS_ERROR: GILOnceCell<Py<PyType>> = GILOnceCell::new();
 static SOL_NOT_IMPLEMENTED_ERROR: GILOnceCell<Py<PyType>> = GILOnceCell::new();
+static PREFILL_GRAPH_PROFILE_ERROR: GILOnceCell<Py<PyType>> = GILOnceCell::new();
+static DECODE_MOE_PROFILE_ERROR: GILOnceCell<Py<PyType>> = GILOnceCell::new();
 
 /// Resolve (and memoize) one sdk error class; `None` when the sdk is not
 /// importable, so the caller falls back to `PyValueError`.
@@ -107,6 +109,10 @@ fn sdk_error_type(
 pub(crate) fn aic_to_py(e: AicError) -> PyErr {
     let sdk_class: Option<(&'static GILOnceCell<Py<PyType>>, &str)> = if e.is_missing_perf_data() {
         Some((&PERF_DATA_NOT_AVAILABLE_ERROR, "PerfDataNotAvailableError"))
+    } else if matches!(e, AicError::PrefillGraphProfile(_)) {
+        Some((&PREFILL_GRAPH_PROFILE_ERROR, "PrefillGraphProfileError"))
+    } else if matches!(e, AicError::DecodeMoeProfile(_)) {
+        Some((&DECODE_MOE_PROFILE_ERROR, "DecodeMoeProfileError"))
     } else if matches!(e, AicError::EmpiricalNotImplemented(_)) {
         Some((
             &EMPIRICAL_NOT_IMPLEMENTED_ERROR,
@@ -197,6 +203,29 @@ pub(crate) fn resolve_systems_root(systems_path: Option<&str>) -> PyResult<PathB
              from an AIC checkout",
         )
     })
+}
+
+// Preserve legacy raw-u32 extraction while retaining exact Python type identity
+// for the opt-in contract (bool and int subclasses must not silently coerce).
+#[derive(Clone, Copy)]
+struct PrefillArgument {
+    value: u32,
+    exact: bool,
+}
+impl From<u32> for PrefillArgument {
+    fn from(value: u32) -> Self {
+        Self { value, exact: true }
+    }
+}
+impl<'py> FromPyObject<'py> for PrefillArgument {
+    fn extract_bound(obj: &Bound<'py, PyAny>) -> PyResult<Self> {
+        Ok(Self {
+            value: obj.extract()?,
+            exact: obj
+                .get_type()
+                .is(&obj.py().get_type::<pyo3::types::PyInt>()),
+        })
+    }
 }
 
 /// PyO3 wrapper around the [`Engine`]: a compiled engine the Python sweep /
@@ -336,16 +365,39 @@ impl AicEngine {
     /// Mocker H1: prefill-step latency in ms. Thin shim over `run_static` with
     /// `mode=Context` (osl is irrelevant for the context phase, so it is fixed
     /// at 1). Returns the total ms (== context_ms in this mode).
-    #[pyo3(signature = (bs, isl, prefix=0))]
+    #[pyo3(signature = (bs, isl, prefix=PrefillArgument::from(0)))]
     fn predict_prefill_latency(
         &self,
         py: Python<'_>,
-        bs: u32,
-        isl: u32,
-        prefix: u32,
+        bs: PrefillArgument,
+        isl: PrefillArgument,
+        prefix: PrefillArgument,
     ) -> PyResult<f64> {
+        if self.inner.has_prefill_graph_profile() && !(bs.exact && isl.exact && prefix.exact) {
+            return Err(aic_to_py(crate::perf_database::prefill_graph::error(
+                "bs, isl and prefix must be exact Python integers, not booleans or coercible values",
+            )));
+        }
         self.inner.reset_provenance();
-        py.allow_threads(|| self.inner.predict_prefill_latency(bs, isl, prefix))
+        py.allow_threads(|| {
+            self.inner
+                .predict_prefill_latency(bs.value, isl.value, prefix.value)
+        })
+        .map_err(aic_to_py)
+    }
+
+    #[getter]
+    fn prefill_graph_profile_id(&self) -> Option<&'static str> {
+        self.inner
+            .has_prefill_graph_profile()
+            .then_some(crate::perf_database::prefill_graph::PROFILE_ID)
+    }
+
+    #[getter]
+    fn prefill_graph_profile_json(&self) -> PyResult<Option<String>> {
+        self.inner
+            .prefill_graph_profile_json()
+            .map(|value| value.map(str::to_owned))
             .map_err(aic_to_py)
     }
 
@@ -905,6 +957,15 @@ fn engine_spec_bincode_from_json(spec_json: &str) -> PyResult<Vec<u8>> {
     spec.to_bincode().map_err(aic_to_py)
 }
 
+/// Immutable identity of the one qualified graph-prefill publication.
+#[pyfunction]
+fn prefill_graph_profile_identity() -> (&'static str, &'static str) {
+    (
+        crate::perf_database::prefill_graph::PROFILE_NAME,
+        crate::perf_database::prefill_graph::PROFILE_ID,
+    )
+}
+
 /// Constant per-op weight bytes for a JSON op list (PR-6): the batch FFI
 /// behind Python's `Operation.get_weights`. Weights are structural (computed
 /// from op fields alone, never from perf tables), so this is a module-level
@@ -1057,6 +1118,8 @@ struct EngineBuildRequest {
     kv_block_size: Option<u32>,
     systems_path: Option<String>,
     forward_model: Option<String>,
+    decode_workload_distribution: Option<String>,
+    prefill_graph_profile: Option<String>,
     fpm_parquet_path: Option<String>,
     decoder_replay: bool,
     database_mode: Option<String>,
@@ -1109,6 +1172,8 @@ impl AicEngineBuilder {
                 kv_block_size: None,
                 systems_path: None,
                 forward_model: None,
+                decode_workload_distribution: None,
+                prefill_graph_profile: None,
                 fpm_parquet_path: None,
                 decoder_replay: false,
                 database_mode: None,
@@ -1482,6 +1547,14 @@ fn compile_engine_from_request(request: EngineBuildRequest) -> Result<Engine, Ai
         kwargs.set_item("wideep_num_slots", request.wideep_num_slots)?;
         kwargs.set_item("moe_kernel_source", request.moe_kernel_source.as_deref())?;
         kwargs.set_item("forward_model", request.forward_model.as_deref())?;
+        kwargs.set_item(
+            "decode_workload_distribution",
+            request.decode_workload_distribution.as_deref(),
+        )?;
+        kwargs.set_item(
+            "prefill_graph_profile",
+            request.prefill_graph_profile.as_deref(),
+        )?;
         kwargs.set_item("fpm_parquet_path", request.fpm_parquet_path.as_deref())?;
         kwargs.set_item("decoder_replay", request.decoder_replay)?;
         kwargs.set_item("database_mode", request.database_mode.as_deref())?;
@@ -1583,6 +1656,16 @@ pub(crate) fn compile_forward_pass_model_to_engine(
         kv_block_size: config.kv_block_size,
         systems_path: Some(systems_path.to_owned()),
         forward_model: Some(forward_model.to_owned()),
+        decode_workload_distribution: config
+            .estimator_config
+            .op_level
+            .decode_workload_distribution
+            .clone(),
+        prefill_graph_profile: config
+            .estimator_config
+            .op_level
+            .prefill_graph_profile
+            .clone(),
         fpm_parquet_path: if config.estimation_mode == crate::EstimationMode::FpmInterpolation {
             crate::config::validate_fpm_parquet_path(
                 config
@@ -1619,6 +1702,11 @@ pub(crate) fn compile_engine_to_engine(
     config: &EngineConfig,
     systems_path: Option<&str>,
 ) -> Result<Engine, AicError> {
+    if config.prefill_graph_profile.is_some() || config.prefill_graph_profile_id.is_some() {
+        return Err(crate::perf_database::prefill_graph::error(
+            "prefill graph profiles are direct EngineHandle-only; FPM telemetry/regression construction is unsupported",
+        ));
+    }
     if config.quantization.fpm_fmha_dtype.is_some()
         && fmha_quant_name(config.quantization.fpm_fmha_dtype.as_ref()).is_none()
     {
@@ -1670,6 +1758,8 @@ fn engine_build_request(
         kv_block_size: config.kv_block_size,
         systems_path: systems_path.map(str::to_owned),
         forward_model: config.forward_model.clone(),
+        decode_workload_distribution: None,
+        prefill_graph_profile: config.prefill_graph_profile.clone(),
         fpm_parquet_path: crate::config::validate_fpm_parquet_path(
             config.fpm_parquet_path.as_deref(),
             config.forward_model.as_deref() == Some("fpm"),
@@ -1793,7 +1883,8 @@ impl PyForwardPassPerfModel {
     /// Expand and validate the canonical schema without constructing an engine.
     #[staticmethod]
     fn normalize_config(config_json: &str) -> PyResult<String> {
-        let config = parse_forward_pass_config(config_json)?;
+        let mut config = parse_forward_pass_config(config_json)?;
+        config.resolve_prefill_graph_profile().map_err(aic_to_py)?;
         config.validate().map_err(aic_to_py)?;
         serde_json::to_string(&config).map_err(|e| PyValueError::new_err(e.to_string()))
     }
@@ -1817,8 +1908,28 @@ impl PyForwardPassPerfModel {
         options_json: Option<&str>,
         allow_regression: bool,
     ) -> PyResult<String> {
-        let legacy: EngineConfig =
+        let value: serde_json::Value =
             serde_json::from_str(config_json).map_err(|e| PyValueError::new_err(e.to_string()))?;
+        if ["prefill_graph_profile", "prefill_graph_profile_id"]
+            .iter()
+            .any(|field| value.get(field).is_some_and(|item| !item.is_null()))
+        {
+            return Err(aic_to_py(crate::perf_database::prefill_graph::error(
+                "prefill_graph_profile or prefill_graph_profile_id cannot be migrated from a legacy EngineConfig; use ForwardPassPerfModelConfig.estimator_config.op_level",
+            )));
+        }
+        // EngineConfig has no decode selector field, so reject it before serde
+        // can discard it as an unknown field.
+        if value
+            .get("decode_workload_distribution")
+            .is_some_and(|item| !item.is_null())
+        {
+            return Err(aic_to_py(AicError::DecodeMoeProfile(
+                "decode_workload_distribution cannot be migrated from a legacy EngineConfig; use ForwardPassPerfModelConfig.estimator_config.op_level".into(),
+            )));
+        }
+        let legacy: EngineConfig =
+            serde_json::from_value(value).map_err(|e| PyValueError::new_err(e.to_string()))?;
         let options = options_json
             .map(serde_json::from_str::<crate::ForwardPassPerfOptions>)
             .transpose()
@@ -1884,6 +1995,27 @@ impl PyForwardPassPerfModel {
             strict_provenance: legacy.strict_provenance,
         };
         serde_json::to_string(&config).map_err(|e| PyValueError::new_err(e.to_string()))
+    }
+
+    /// Direct latency for the qualified homogeneous graph-prefill profile.
+    #[pyo3(signature=(bs, isl, prefix=PrefillArgument::from(0)))]
+    fn predict_prefill_latency(
+        &self,
+        py: Python<'_>,
+        bs: PrefillArgument,
+        isl: PrefillArgument,
+        prefix: PrefillArgument,
+    ) -> PyResult<f64> {
+        if !(bs.exact && isl.exact && prefix.exact) {
+            return Err(aic_to_py(crate::perf_database::prefill_graph::error(
+                "arguments must be exact Python integers in the unsigned 32-bit range",
+            )));
+        }
+        py.allow_threads(|| {
+            self.inner
+                .predict_prefill_latency(bs.value, isl.value, prefix.value)
+        })
+        .map_err(aic_to_py)
     }
 
     /// Estimate one forward-pass iteration in ms. `fpm_json` is one iteration as
@@ -1984,6 +2116,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(_build_smoke, m)?)?;
     m.add_function(wrap_pyfunction!(engine_spec_bincode_from_json, m)?)?;
     m.add_function(wrap_pyfunction!(weights_ops_json, m)?)?;
+    m.add_function(wrap_pyfunction!(prefill_graph_profile_identity, m)?)?;
     m.add_function(wrap_pyfunction!(gemm_quant_util_levels, m)?)?;
     m.add_function(wrap_pyfunction!(moe_quant_util_levels, m)?)?;
     m.add_function(wrap_pyfunction!(table_view_attributes, m)?)?;
@@ -2125,6 +2258,8 @@ mod tests {
             forward_model: None,
             fpm_parquet_path: None,
             decoder_replay: false,
+            prefill_graph_profile: None,
+            prefill_graph_profile_id: None,
             moe_kernel_source: None,
             kv_block_size: None,
             parallel: ParallelMapping {
@@ -2247,7 +2382,9 @@ mod tests {
             )
             .unwrap()
             .total_ms;
-        let prefill = Python::with_gil(|py| aic.predict_prefill_latency(py, 2, 1024, 0)).unwrap();
+        let prefill =
+            Python::with_gil(|py| aic.predict_prefill_latency(py, 2.into(), 1024.into(), 0.into()))
+                .unwrap();
         assert!((prefill - raw_prefill).abs() < 1e-12);
 
         // predict_decode_latency (osl=2) == raw Generation-mode total.

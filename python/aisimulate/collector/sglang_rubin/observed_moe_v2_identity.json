@@ -1,0 +1,381 @@
+{
+  "schema_version": 1,
+  "kind": "offline_publication_of_qualified_native_measurements",
+  "module": "collector.sglang_rubin.publish_observed_moe_v2",
+  "distribution": "observed_glm52_nvfp4_decode_composite_v2",
+  "physical_tokens": [
+    1,
+    4,
+    8,
+    32
+  ],
+  "table_relative_path": "data/vr200_hecate/moe/sglang/0.5.18+nvinternal.rubin.0.8full.66997102",
+  "runtime": {
+    "framework": "sglang",
+    "version": "0.5.18+nvinternal.rubin.0.8full.66997102",
+    "image": "gitlab-master.nvidia.com:5005/dl/ai-dynamo/dynamo-ci",
+    "image_digest": "sha256:53299500a280c8de34bd484507a45b2f83b4d5e7c999b77284fa31930f7e63ab"
+  },
+  "row_fields": {
+    "framework": "SGLang",
+    "version": "0.5.18+nvinternal.rubin.0.8full.66997102",
+    "device": "NVIDIA Graphics Device",
+    "op_name": "moe",
+    "kernel_source": "sglang_flashinfer_trtllm_moe",
+    "moe_dtype": "nvfp4",
+    "hidden_size": 6144,
+    "inter_size": 2048,
+    "topk": 8,
+    "num_experts": 256,
+    "moe_tp_size": 4,
+    "moe_ep_size": 1
+  },
+  "base": {
+    "moe_perf.parquet": {
+      "sha256": "842d4404e271deb63ffad5a156e85af8144c0f8d743be1b45c380b7f24acf21b",
+      "size_bytes": 5737
+    },
+    "collection_meta.yaml": {
+      "sha256": "2e33693ab7558ccc1905dad21d54d3a9ec80b8f687e4ac0010d1dc89f9dfc038",
+      "size_bytes": 1401
+    },
+    "rows": 84,
+    "systems_tree_sha256": "db48a62c4a6387174b2e978d12cac1a8874187a9e999664d9a2480d134fdf57b"
+  },
+  "v1_identity_file": {
+    "sha256": "93a072afdb0ff55f44e3e0f0f06c168b63c7b6559dd73757ecca07081c0b698d",
+    "size_bytes": 7594
+  },
+  "v1_collector_hash": "sha256:067ad7797474518eab028911d4f0d6f314e1dd0456b08be5bae45de267f3e332",
+  "tail": {
+    "native_archive": {
+      "sha256": "52ccb295a8db1acaf66c9059c198b85a66d07b49110069048c75b8d6bef2f1ae",
+      "size_bytes": 15418845
+    },
+    "native_archive_root": "aisim-vr-native-decode-tail-operator-v3-612308",
+    "native_archive_members": 684,
+    "native_archive_files": 563,
+    "native_expanded_bytes": 123723977,
+    "native_file_manifest": {
+      "sha256": "ff5dcd9670e0c27572deea746443dca39d726eda8f1745f81c9e343f79da1eba",
+      "size_bytes": 96118
+    },
+    "producer_source_manifest": {
+      "sha256": "c4b6912560a5bad69a6a136a06d99c9b2ad30f784363c27d92f5d963102d819e",
+      "size_bytes": 4839
+    },
+    "producer_source_files": {
+      "AISimulate-LICENSE": {
+        "sha256": "e7c584183cb18a44cd56f453e642164d388c4dcefb49aa6dbd0b03ea40a62878",
+        "size_bytes": 11956
+      },
+      "SGLang-LICENSE": {
+        "sha256": "1495e1e757ef4d0925a2350563cf5754bb23c51701a8ec4fb3c5cdcbedae6747",
+        "size_bytes": 11346
+      },
+      "accepted-input.json": {
+        "sha256": "c3c3a5bdb500bdbd70e47adfe29f8f749c4436786f1bdf31591c6de1bc8f7f08",
+        "size_bytes": 143963
+      },
+      "attribution.json": {
+        "sha256": "4b3c2b6a73e4752ef74839c4f26627d75464acb3864235c85d99159c6558f4f4",
+        "size_bytes": 8417
+      },
+      "campaign.py": {
+        "sha256": "cf9993fa3b3593fca7ef12dabf65840925d226d429589240e069dfa1fd543ada",
+        "size_bytes": 13424
+      },
+      "capture-review-freeze.json": {
+        "sha256": "61e58e9618bb7486c5c53f1ca11418f175586e7e17288669c20f54db8402981c",
+        "size_bytes": 808395
+      },
+      "capture-review.json": {
+        "sha256": "db88ec9b6e000a355caa16eaf499232be1601ca520155eec404afdd5ab0b72fa",
+        "size_bytes": 27254
+      },
+      "capture-root-acceptance.json": {
+        "sha256": "180d2c0ecc5ebeea89e6f5133149a27307ff00ffca5e5cf5e741726836d7ac67",
+        "size_bytes": 996
+      },
+      "collector_package/collector/__init__.py": {
+        "sha256": "f38debac7a7f711f1b87f9f65dd751bcd391166b619ce4dcc13f2fc12d63e84e",
+        "size_bytes": 616
+      },
+      "collector_package/collector/helper.py": {
+        "sha256": "98ccf121783716fa96775adc418f598591d7bca1e6c211e4d59ec421ab0d100f",
+        "size_bytes": 152021
+      },
+      "contracts.py": {
+        "sha256": "3665e825ded767edfc3042cf1e7eecda36fe86b4bdcee7417b20881362188819",
+        "size_bytes": 22377
+      },
+      "design.json": {
+        "sha256": "a0af093da15bd1b301c9c06ef34e8251c173388a456d7dc5fead135d9c0d9059",
+        "size_bytes": 31637
+      },
+      "expected-native-sources.json": {
+        "sha256": "e7570c67962106d2046dc8a49ec91bd57865a76338ebbb7f2312477b6240ded5",
+        "size_bytes": 3932
+      },
+      "expected-runtime.json": {
+        "sha256": "115ce05541ac63b4cb1ca45a9d40fc4d14dcdb93899ba5734c5a3a7d3f2a3314",
+        "size_bytes": 714
+      },
+      "failed-attempt-1-review-freeze.json": {
+        "sha256": "816d0e916805e9cfcf28372aeeb016becf92b07008a7d2612f15d99877ed1629",
+        "size_bytes": 149272
+      },
+      "failed-attempt-1-verdict.json": {
+        "sha256": "1c6cff96b4f2ce57ac12828ec9d1f0bd1e76bec80e41e76a30af56b60dd4c350",
+        "size_bytes": 11647
+      },
+      "frozen-launcher.json": {
+        "sha256": "c3fac53ce71481f8b9830b01164d82a7f1bf19e4a9b9a89058177a8ada0fd3a7",
+        "size_bytes": 1748
+      },
+      "frozen-server-info.json": {
+        "sha256": "b2859cad15764cf59c8a813642b8f0253162332437c04b7ccc5fe9a02f4b5585",
+        "size_bytes": 40692
+      },
+      "integrity-transfer-approval.json": {
+        "sha256": "0fafa90d503c8add164de1cfbfec7585f91474534905bf6fc6fcdf8e94401442",
+        "size_bytes": 6860
+      },
+      "integrity-transfer-proposal.json": {
+        "sha256": "b82d4052c8ed9804a6442682b7b8a0e057060537ac4fb84550ac012f92fdc45e",
+        "size_bytes": 19344
+      },
+      "integrity_transfer.py": {
+        "sha256": "d18b98ea7bf36f1c974bce75abb84888a7072708a0af3f9c65c4cc4fe09028a4",
+        "size_bytes": 10241
+      },
+      "measurement.py": {
+        "sha256": "332f4b59a6542ae875cc6bfb33ce275c32044507fee21bfc7051f6b741770a8b",
+        "size_bytes": 24539
+      },
+      "native_setup.py": {
+        "sha256": "8d2a87b673256e02b9c133f877930ed1d40031983481f52aeb8ff4a9a7a4a19c",
+        "size_bytes": 9724
+      },
+      "native_spawn.py": {
+        "sha256": "0a74879b8c62bd67e776f2432f49f504eca7782794609102e06217363440aced",
+        "size_bytes": 5531
+      },
+      "native_worker.py": {
+        "sha256": "7d4eac638c039cdf5bf045f1e5598f47a6f55fb9a31afae20f08b298edc18dd3",
+        "size_bytes": 19364
+      },
+      "observed_inputs.py": {
+        "sha256": "4a4d2eeeaeaf97febd96ea5dd90b7af825f2bf054bb83db954b781ffcd953453",
+        "size_bytes": 23705
+      },
+      "ownership_helpers.py": {
+        "sha256": "6ea34bcf828ff52bfa916395ff96577281018883c1da64b5b96bcdb149d52d87",
+        "size_bytes": 23639
+      },
+      "process_helpers.py": {
+        "sha256": "9e275c368c11c5e6b59221286069a3e3abf114e30eb838b976dd77445419f217",
+        "size_bytes": 36382
+      },
+      "setup_diagnostics.py": {
+        "sha256": "65eed4a225cd6f42560a99da8aa26917a8a946cc1aecbeeb56a81324b65c829a",
+        "size_bytes": 5742
+      },
+      "tail_measurement.py": {
+        "sha256": "ef289c5529f00bd3bf3b433e39d27273cc960e517477549553053f40a3653a81",
+        "size_bytes": 4025
+      }
+    },
+    "actual_data_review": {
+      "sha256": "59cb57a184ec1718acff5ee748e49d9a09f0e593ac65a54f4388a7f7510b886f",
+      "size_bytes": 22576
+    },
+    "actual_data_review_status": "QUALIFIED_PRIVATE_NATIVE_PADDED_TAIL_OPERATOR_DIAGNOSTIC",
+    "producer_boundary": "BF16 quantization through routed finalization; no router/shared/TP reduction",
+    "runtime": {
+      "framework": "sglang",
+      "version": "0.5.18+nvinternal.rubin.0.8full.66997102",
+      "image": "gitlab-master.nvidia.com:5005/dl/ai-dynamo/dynamo-ci",
+      "image_digest": "sha256:53299500a280c8de34bd484507a45b2f83b4d5e7c999b77284fa31930f7e63ab"
+    },
+    "capture": {
+      "archive_sha256": "dc3c74e09f8f83302a67b05f76d2292deab295d112df8a12e0efb64d469c4ec4",
+      "archive_size_bytes": 1724759664,
+      "manifest_sha256": "f5cc7b8623dad01391bd8d3b3f3094dab2856856d08116b436e80d65815e6ce3",
+      "review_sha256": "db88ec9b6e000a355caa16eaf499232be1601ca520155eec404afdd5ab0b72fa",
+      "source_manifest_sha256": "1e208eb5ddf0ecd90c722b8520f670d6b5ddc0207c760a719d6cf1bb8a15c122"
+    },
+    "rank_caches": {
+      "0": {
+        "sha256": "ce5155f12b1152168d21c857648831b30ec912c25b6664b8daebb31ac9b644b7",
+        "size_bytes": 9167
+      },
+      "1": {
+        "sha256": "cd44d19937752f6c3ec70904c755280eb7daded6aafce018d028f7836f32f4a0",
+        "size_bytes": 9166
+      },
+      "2": {
+        "sha256": "e96bc78db9c3366778d305521ecffd4a4f143a20438062abed5194309b057021",
+        "size_bytes": 9168
+      },
+      "3": {
+        "sha256": "9d4545db28c1db3aab19f61e2d6ef2be9360cf9566951c9900fb61c067a1c5fd",
+        "size_bytes": 9167
+      }
+    },
+    "source_package_review": {
+      "sha256": "3cbf4d909e326ac00b6c4b71b304d3998a996283b2d7d5bcfbbf9c60252c81e0",
+      "size_bytes": 11356
+    },
+    "checker_review": {
+      "sha256": "dc5d728938b33f366b5a004ac178abd5687e0e4709acdbc160f3a4f19cb4ec82",
+      "size_bytes": 12683
+    }
+  },
+  "case_plan_hash": "sha256:8a1c8ca3136fcf2289ff49e7f07d1d95e3d23dea9301db0eafeb07436d529519",
+  "case_roles": {
+    "total": 1152,
+    "row_contributing": 960,
+    "validation_only": 192
+  },
+  "case_id_formats": {
+    "v1": "archive={v1_archive_sha256}/v1/observed_moe/rank={rank}/block={block}/isl={isl}/physical_tokens={batch}/ordinal={ordinal}/layers=3..77",
+    "tail": "archive={tail_archive_sha256}/tail/rank={rank}/block={block}/isl=32768/logical_tokens={logical}/physical_tokens={physical}/ordinal={ordinal}/layers=3..77"
+  },
+  "aggregation": {
+    "1_8_32": "Unchanged independently recomputed v1 fmean(T/75), 288 cases per physical anchor.",
+    "4": "fmean(fmean((A_before,A_after))/75) over all96 ISL32768 L3/P4 cases. B never contributes.",
+    "validation": "All96 L29/P32 and96 L31/P32 cases and their controls retained; existing P32 unchanged.",
+    "all_primary_cases_retained": true,
+    "nonmonotonic_values_preserved": true
+  },
+  "admitted_logical_tokens": [
+    1,
+    3,
+    8,
+    29,
+    31,
+    32
+  ],
+  "native_capture_buckets": [
+    1,
+    2,
+    4,
+    8,
+    12,
+    16,
+    24,
+    32
+  ],
+  "per_anchor_provenance": {
+    "P1_P8_P32_measurement": [
+      {
+        "sha256": "31a834e69ba415bd786754d30a4fa316e8927f0bd1f10a09c47ef5c63db7c512",
+        "size_bytes": 9167,
+        "rank": 0
+      },
+      {
+        "sha256": "181887178c3514d85730a82836eaf0c4010775024aa8b425e81b1caa97d59464",
+        "size_bytes": 9167,
+        "rank": 1
+      },
+      {
+        "sha256": "dd48bd0ffa347542cf37fa909daf3c100cef4ccd3414cfea9412487533eb19a2",
+        "size_bytes": 9166,
+        "rank": 2
+      },
+      {
+        "sha256": "dde1a5a8dd4a011dd177decee08634477a83dd3439d713aad4a486b3477e9565",
+        "size_bytes": 9167,
+        "rank": 3
+      }
+    ],
+    "P1_P8_P32_capture": [
+      {
+        "sha256": "31a834e69ba415bd786754d30a4fa316e8927f0bd1f10a09c47ef5c63db7c512",
+        "size_bytes": 9167,
+        "rank": 0
+      },
+      {
+        "sha256": "181887178c3514d85730a82836eaf0c4010775024aa8b425e81b1caa97d59464",
+        "size_bytes": 9167,
+        "rank": 1
+      },
+      {
+        "sha256": "dd48bd0ffa347542cf37fa909daf3c100cef4ccd3414cfea9412487533eb19a2",
+        "size_bytes": 9166,
+        "rank": 2
+      },
+      {
+        "sha256": "dde1a5a8dd4a011dd177decee08634477a83dd3439d713aad4a486b3477e9565",
+        "size_bytes": 9167,
+        "rank": 3
+      }
+    ],
+    "P4_measurement": [
+      {
+        "sha256": "ce5155f12b1152168d21c857648831b30ec912c25b6664b8daebb31ac9b644b7",
+        "size_bytes": 9167,
+        "rank": 0
+      },
+      {
+        "sha256": "cd44d19937752f6c3ec70904c755280eb7daded6aafce018d028f7836f32f4a0",
+        "size_bytes": 9166,
+        "rank": 1
+      },
+      {
+        "sha256": "e96bc78db9c3366778d305521ecffd4a4f143a20438062abed5194309b057021",
+        "size_bytes": 9168,
+        "rank": 2
+      },
+      {
+        "sha256": "9d4545db28c1db3aab19f61e2d6ef2be9360cf9566951c9900fb61c067a1c5fd",
+        "size_bytes": 9167,
+        "rank": 3
+      }
+    ],
+    "P4_capture": [
+      {
+        "sha256": "ce5155f12b1152168d21c857648831b30ec912c25b6664b8daebb31ac9b644b7",
+        "size_bytes": 9167,
+        "rank": 0
+      },
+      {
+        "sha256": "cd44d19937752f6c3ec70904c755280eb7daded6aafce018d028f7836f32f4a0",
+        "size_bytes": 9166,
+        "rank": 1
+      },
+      {
+        "sha256": "e96bc78db9c3366778d305521ecffd4a4f143a20438062abed5194309b057021",
+        "size_bytes": 9168,
+        "rank": 2
+      },
+      {
+        "sha256": "9d4545db28c1db3aab19f61e2d6ef2be9360cf9566951c9900fb61c067a1c5fd",
+        "size_bytes": 9167,
+        "rank": 3
+      }
+    ]
+  },
+  "source_commit": "02c5a855aceb968c310e6fbc6632270e26edc84b",
+  "collected_at": "2026-09-19",
+  "design": {
+    "sha256": "00925b65bbe2982f2b988cfa0d0076576c8ad7558188e08b2880c4bdfa9585a6",
+    "size_bytes": 42467
+  },
+  "implementation_authority": {
+    "sha256": "58ab76271d0458cb7aaabdaf44ddfec869da97f0a4c55e77099b737b63365bbb",
+    "size_bytes": 3160
+  },
+  "limitations": [
+    "Fixed corpus and rank-mean isolated routed operator only, not rank critical path or complete MLP.",
+    "N4 cohort limited to ISL32768/logical3; otherISLs and logical4 are not measured.",
+    "Serving output destination/context differs; downstream native equivalence unproved.",
+    "Saved tactic composition differs by campaign; original/fresh serving cache contents are absent.",
+    "V1 unqualified instrumentation, overlap and general workload limits persist.",
+    "N4>N8 is an observed nonmonotonicity, not an error to smooth.",
+    "Per-ISL scope is enforced by declared matrix and post-correction inventory, not by adding a hidden row dimension or claiming Query(L) knows ISL.",
+    "Native GPU timings were generated by two separately retained producers; the publisher only derives four rows offline. All1152 cases are checked;960 contribute to rows and192 are validation only.",
+    "Tactics differ by captured campaign; original and fresh plain-serving cache contents were not retained. No pointer/tactic/full-serving equivalence, padding-only causality or E2E acceptance is claimed."
+  ]
+}

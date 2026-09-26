@@ -121,6 +121,38 @@ using `pin_goldens.py --refresh`. Each refreshed record retains its source
 commit in `post_freeze_pins`; test matrices and tolerances are unchanged.
 These are prediction-regression baselines, not whole-model silicon validation.
 
+### B200 SGLang dense-prefix correction in PR #303
+
+Four existing B200 cases change because `deepseek_v32._dense_mlp_groups` now honors `first_k_dense_replace=3` and the checkpoint's packed-linear quantization exclusions. Previously those three dense layers were counted as MoE layers. DeepSeek-V3.2 now has 58 MoE plus three FP8-block dense layers (61 total); both GLM-5 cases have 75 MoE plus three BF16 dense layers (78 total). GLM-5.2 also has 75 MoE plus three dense layers, with its excluded packed gate/up and down projections using BF16 instead of inheriting the global NVFP4 GEMM mode. The VR200-only decode composition does not cause these B200 changes.
+
+The following deltas are `head 91687c4 - base 1267d0f`, in milliseconds, rounded to six decimal places. Full-precision reference values remain in `goldens/engine_step.json` and its base revision.
+
+| Case ID | Mixed step | Static context | Static generation | Static total |
+| --- | ---: | ---: | ---: | ---: |
+| `deepseek-v32-b200-sglang-isl1024-osl2` | -1.384795 | -1.399000 | -0.150000 | -1.549000 |
+| `glm5-b200-sglang-empirical` | -1.400422 | -1.427000 | -0.030000 | -1.457000 |
+| `glm5-b200-sglang-isl16384-osl2` | -7.620506 | -7.620000 | -0.030000 | -7.650000 |
+| `glm52-b200-sglang-isl1024-osl2` | -0.514094 | -0.533000 | -0.007000 | -0.540000 |
+
+| Case | Aggregate TTFT / TPOT / request | Disaggregated TTFT / TPOT / request |
+| --- | --- | --- |
+| DeepSeek-V3.2 | -2.702024 / -1.385653 / -4.087678 | -2.768000 / -0.193000 / -2.961000 |
+| GLM-5 empirical | `RuntimeError` unchanged | `RuntimeError` unchanged |
+| GLM-5 ISL 16384 | `RuntimeError` unchanged | `RuntimeError` unchanged |
+| GLM-5.2 | -1.002665 / -0.514187 / -1.516852 | -1.053000 / -0.054000 / -1.107000 |
+
+The causal check kept Rust and the performance tables fixed and changed only dense-layer grouping in memory. Returning no dense groups reproduced all base records; restoring the current grouping reproduced all head records. An intermediate run retained three dense layers but forced their quantization to the global mode. For GLM-5.2, `mixed_step` decomposes into -0.520653620318299 ms from the dense/MoE layer correction plus +0.006560000280530 ms from honoring BF16 exclusions, giving -0.514093620037769 ms overall. Its rounded `static_total` similarly changes by -0.561 + 0.021 = -0.540 ms. The quantization-only delta is zero for the other three cases. These 16 surface comparisons cover 28 numeric metrics and preserve all four recorded `RuntimeError` outcomes; no golden values or tolerances were changed during this review.
+
+To reproduce the current calculations without modifying the references, build the matching native extension and run from the repository root:
+
+```bash
+python/aisimulate/.venv/bin/python -m pytest -q -p no:timeout \
+  crates/core/parity_tests/perfmodel/test_engine_step_parity.py \
+  -k 'deepseek-v32-b200-sglang-isl1024-osl2 or glm5-b200-sglang-empirical or glm5-b200-sglang-isl16384-osl2 or glm52-b200-sglang-isl1024-osl2'
+```
+
+The selective reference-generation command is `pin_goldens.py --refresh deepseek-v32-b200-sglang-isl1024-osl2 glm5-b200-sglang-empirical glm5-b200-sglang-isl16384-osl2 glm52-b200-sglang-isl1024-osl2` using the script in this directory and a clean, isolated checkout with a matching native build. It obtains each metric from the same `_surface_metrics(case, surface)` Rust-backed consumers as the tests. Keep error records unchanged when a surface still raises; these B200 regressions do not establish additional GPU accuracy coverage.
+
 ## Engine-Step Benchmark
 
 Historical Python-vs-Rust speedup numbers (dated + commit-stamped) live in

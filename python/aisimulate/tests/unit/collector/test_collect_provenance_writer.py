@@ -7215,6 +7215,266 @@ def test_shared_table_hashes_and_closes_every_producing_op_only(tmp_path):
     assert _attempted(unrelated) == {"case-z"}
 
 
+@pytest.mark.parametrize("phase", ["context", "generation"])
+@pytest.mark.parametrize("variants", [(False,), (True,), (False, True)], ids=["full", "skip", "both"])
+def test_dsa_registry_producers_share_transaction_and_checkpoint_ownership(tmp_path, phase, variants):
+    from collector.sglang.registry import REGISTRY
+    from collector.version_resolver import build_collections
+
+    table = f"dsa_{phase}_module_perf"
+    ops = [f"dsa_{phase}_module{'_skip_indexer' if skip else ''}" for skip in variants]
+    collections = build_collections(REGISTRY, BACKEND, "0.5.14", ops=ops)
+    ctx = _provenance_ctx(collections)
+    output_root = tmp_path / "out"
+    output_root.mkdir()
+    staged = output_root / f"{table}.txt"
+    staged.write_text("op_name,latency\n" + "".join(f"{op},1.0\n" for op in ops), encoding="utf-8")
+    checkpoint_dir = tmp_path / "checkpoint"
+    unrelated = _write_checkpoint(checkpoint_dir, done=["gemm-case"], failed=[])
+    checkpoints = []
+    case_ids = []
+    for collection in collections:
+        tracker = collect_mod._resume_tracker_for_collection(
+            collection, ctx, backend=BACKEND, checkpoint_dir=str(checkpoint_dir), sm_version=100
+        )
+        assert collect_mod._registered_checkpoint_table(tracker._metadata, backend=BACKEND) == table
+        case_id = f"{collection['type']}-case"
+        tracker.mark_attempted(case_id)
+        tracker.mark_passed(case_id)
+        tracker.flush(force=True)
+        case_ids.append(case_id)
+        checkpoints.append(tracker._path)
+
+    assert collect_mod._pending_resume_perf_outputs(
+        output_root, ctx, backend=BACKEND, checkpoint_dir=str(checkpoint_dir), sm_version=100
+    ) == [staged]
+    parquet_path = output_root / f"{table}.parquet"
+    assert collect_mod._finalize_collector_outputs_transaction(
+        output_root, [staged], ctx, [], backend=BACKEND, checkpoint_dir=str(checkpoint_dir), sm_version=100
+    ) == [parquet_path]
+    metadata = yaml.safe_load((output_root / "collection_meta.yaml").read_text(encoding="utf-8"))
+    assert metadata["tables"][table]["case_plan_hash"] == provenance.case_plan_hash(case_ids)
+    assert metadata["tables"][table]["status"] == "complete"
+    assert sorted(pq.read_table(parquet_path)["op_name"].to_pylist()) == ops
+    assert not staged.exists()
+    for checkpoint in checkpoints:
+        assert _attempted(checkpoint) == set()
+    assert _attempted(unrelated) == {"gemm-case"}
+    assert (
+        collect_mod._pending_resume_perf_outputs(
+            output_root, ctx, backend=BACKEND, checkpoint_dir=str(checkpoint_dir), sm_version=100
+        )
+        == []
+    )
+
+
+@pytest.fixture(params=["passed", "failed"])
+def shared_table_retry(tmp_path, request):
+    output_root = tmp_path / "out"
+    output_root.mkdir()
+    checkpoint_dir = tmp_path / "checkpoint"
+    completed = _write_checkpoint_for(
+        checkpoint_dir,
+        backend=BACKEND,
+        full_name="sglang.mla_bmm_gen_pre",
+        version="0.5.14",
+        done=["case-a"] if request.param == "passed" else [],
+        failed=["case-a"] if request.param == "failed" else [],
+    )
+    retried = _write_checkpoint_for(
+        checkpoint_dir,
+        backend=BACKEND,
+        full_name="sglang.mla_bmm_gen_post",
+        version="0.5.14",
+        done=[],
+        failed=["case-b"],
+    )
+    collections = _shared_collections()
+    ctx = _provenance_ctx(collections)
+    staged = output_root / "mla_bmm_perf.txt"
+    assert helper_mod.log_perf([{"latency": 1.0}], BACKEND, "0.5.14", "test-device", "pre", "test", str(staged))
+    collect_mod._finalize_collector_outputs_transaction(
+        output_root, [staged], ctx, [], backend=BACKEND, checkpoint_dir=str(checkpoint_dir), sm_version=100
+    )
+    tracker = collect_mod._resume_tracker_for_collection(
+        collections[1], ctx, backend=BACKEND, checkpoint_dir=str(checkpoint_dir), sm_version=100
+    )
+    tracker.load_existing()
+    tracker.mark_attempted("case-b")
+    tracker.mark_passed("case-b")
+    tracker.flush(force=True)
+    assert helper_mod.log_perf([{"latency": 2.0}], BACKEND, "0.5.14", "test-device", "post", "test", str(staged))
+    return output_root, checkpoint_dir, completed, retried, staged, ctx
+
+
+def _interrupt_shared_table_retry(monkeypatch, inputs, phase, *, staging_paths=None):
+    output_root, checkpoint_dir, _completed, _retried, staged, ctx = inputs
+    owner, method = {
+        "perf": (collect_mod._CollectorPerfPublicationTransaction, "prepare"),
+        "sidecar": (collect_mod._CollectorPerfPublicationTransaction, "handoff_to_sidecar"),
+        "committed": (collect_mod, "_close_checkpoint_attempts"),
+    }[phase]
+    original = getattr(owner, method)
+
+    def interrupt(*args, **kwargs):
+        if phase != "committed":
+            original(*args, **kwargs)
+        # Bypass exception rollback at a durable publication boundary.
+        raise SystemExit("interrupted shared-table retry")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(owner, method, interrupt)
+        with pytest.raises(SystemExit, match="interrupted shared-table retry"):
+            collect_mod._finalize_collector_outputs_transaction(
+                output_root,
+                staging_paths or [staged],
+                ctx,
+                [],
+                backend=BACKEND,
+                checkpoint_dir=str(checkpoint_dir),
+                sm_version=100,
+            )
+
+
+@pytest.mark.parametrize("phase", ["perf", "sidecar", "committed"])
+def test_shared_table_retry_recovers_without_mutating_completed_sibling(monkeypatch, shared_table_retry, phase):
+    output_root, checkpoint_dir, completed, retried, staged, ctx = shared_table_retry
+    completed_before = completed.read_bytes()
+    sidecar = output_root / "collection_meta.yaml"
+    sidecar_before = sidecar.read_bytes()
+    parquet = staged.with_suffix(".parquet")
+    parquet_before = parquet.read_bytes()
+    _interrupt_shared_table_retry(monkeypatch, shared_table_retry, phase)
+    journal = json.loads((output_root / collect_mod._PERF_TRANSACTION_FILENAME).read_text(encoding="utf-8"))
+    records = {record["path"]: record for record in journal["checkpoints"]}
+    assert set(records) == {str(completed), str(retried)}
+    assert records[str(completed)]["attempted"] == []
+    assert records[str(completed)]["digest"] == _independent_digest(completed)
+    assert records[str(retried)]["attempted"] == ["case-b"]
+
+    recovered = collect_mod._recover_collector_provenance_transaction(
+        output_root, backend=BACKEND, checkpoint_dir=str(checkpoint_dir)
+    )
+    if phase == "perf":
+        assert recovered is None
+        assert sidecar.read_bytes() == sidecar_before
+        assert parquet.read_bytes() == parquet_before
+        assert _attempted(retried) == {"case-b"}
+        collect_mod._finalize_collector_outputs_transaction(
+            output_root, [staged], ctx, [], backend=BACKEND, checkpoint_dir=str(checkpoint_dir), sm_version=100
+        )
+    else:
+        assert recovered == sidecar
+    assert completed.read_bytes() == completed_before
+    assert _attempted(retried) == set()
+    assert sorted(pq.read_table(parquet)["op_name"].to_pylist()) == ["post", "pre"]
+    metadata = yaml.safe_load(sidecar.read_text(encoding="utf-8"))
+    events = metadata["tables"]["mla_bmm_perf"]["collections"]
+    assert [event["case_plan_hash"] for event in events] == [
+        provenance.case_plan_hash(["case-a", "case-b"]),
+        provenance.case_plan_hash(["case-b"]),
+    ]
+    assert not staged.exists()
+    assert not (output_root / collect_mod._PERF_TRANSACTION_FILENAME).exists()
+    assert not (output_root / collect_mod._SIDECAR_TRANSACTION_FILENAME).exists()
+    assert (
+        collect_mod._recover_collector_provenance_transaction(
+            output_root, backend=BACKEND, checkpoint_dir=str(checkpoint_dir)
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize("invalid", ["no-history", "no-table-attempts", "duplicate-attempts"])
+def test_perf_journal_keeps_attempt_guards_with_completed_sibling(monkeypatch, shared_table_retry, invalid):
+    output_root, checkpoint_dir, completed, _retried, _staged, _ctx = shared_table_retry
+    _interrupt_shared_table_retry(monkeypatch, shared_table_retry, "perf")
+    journal_path = output_root / collect_mod._PERF_TRANSACTION_FILENAME
+    journal = json.loads(journal_path.read_text(encoding="utf-8"))
+    records = {record["path"]: record for record in journal["checkpoints"]}
+    if invalid == "no-history":
+        records[str(completed)]["done"] = []
+        records[str(completed)]["failed"] = []
+    elif invalid == "no-table-attempts":
+        for record in records.values():
+            record["attempted"] = []
+    else:
+        records[str(completed)]["attempted"] = ["case-b"]
+    with pytest.raises(RuntimeError, match="attempt"):
+        collect_mod._validate_perf_transaction_document(
+            journal,
+            output_root=output_root,
+            backend=BACKEND,
+            checkpoint_root=checkpoint_dir / BACKEND,
+            journal_path=journal_path,
+        )
+
+
+def test_perf_journal_requires_attempts_for_each_table_in_a_batch(monkeypatch, shared_table_retry):
+    output_root, checkpoint_dir, _completed, _retried, staged, ctx = shared_table_retry
+    _write_checkpoint(checkpoint_dir, done=["gemm-case"], failed=[])
+    gemm_staging = output_root / "gemm_perf.txt"
+    gemm_staging.write_text("op_name,latency\ngemm,1.0\n", encoding="utf-8")
+    ctx["collections"].extend(_collections())
+    _interrupt_shared_table_retry(monkeypatch, shared_table_retry, "perf", staging_paths=[staged, gemm_staging])
+    journal_path = output_root / collect_mod._PERF_TRANSACTION_FILENAME
+    journal = json.loads(journal_path.read_text(encoding="utf-8"))
+    for record in journal["checkpoints"]:
+        if record["table"] == "mla_bmm_perf":
+            record["attempted"] = []
+    assert any(record["attempted"] for record in journal["checkpoints"])
+    with pytest.raises(RuntimeError, match="tables lack attempted checkpoint case IDs"):
+        collect_mod._validate_perf_transaction_document(
+            journal,
+            output_root=output_root,
+            backend=BACKEND,
+            checkpoint_root=checkpoint_dir / BACKEND,
+            journal_path=journal_path,
+        )
+
+
+@pytest.mark.parametrize("phase", ["handoff", "commit", "recovery"])
+def test_shared_table_retry_revalidates_completed_sibling_before_publish(monkeypatch, shared_table_retry, phase):
+    output_root, checkpoint_dir, completed, retried, staged, ctx = shared_table_retry
+    sidecar = output_root / "collection_meta.yaml"
+    sidecar_before = sidecar.read_bytes()
+    if phase == "recovery":
+        _interrupt_shared_table_retry(monkeypatch, shared_table_retry, "sidecar")
+    owner, method = (
+        (collect_mod._CollectorPerfPublicationTransaction, "handoff_to_sidecar")
+        if phase == "handoff"
+        else (collect_mod, "_tag_checkpoint_sidecar_transaction")
+    )
+    original = getattr(owner, method)
+    injected = None
+
+    def change_sibling_after_validation(*args, **kwargs):
+        nonlocal injected
+        attestation = original(*args, **kwargs)
+        document = json.loads(completed.read_text(encoding="utf-8"))
+        document["done"].append("changed-after-validation")
+        completed.write_text(json.dumps(document), encoding="utf-8")
+        injected = completed.read_bytes()
+        return attestation
+
+    monkeypatch.setattr(owner, method, change_sibling_after_validation)
+    with pytest.raises(RuntimeError, match=r"checkpoint|digest|changed"):
+        if phase != "recovery":
+            collect_mod._finalize_collector_outputs_transaction(
+                output_root, [staged], ctx, [], backend=BACKEND, checkpoint_dir=str(checkpoint_dir), sm_version=100
+            )
+        else:
+            collect_mod._recover_collector_provenance_transaction(
+                output_root, backend=BACKEND, checkpoint_dir=str(checkpoint_dir)
+            )
+    assert injected is not None
+    assert completed.read_bytes() == injected
+    assert sidecar.read_bytes() == sidecar_before
+    assert _attempted(retried) == {"case-b"}
+    assert staged.exists()
+    assert (output_root / collect_mod._SIDECAR_TRANSACTION_FILENAME).exists()
+
+
 def test_resume_can_finalize_untouched_staging_file_with_pending_evidence(tmp_path):
     output_root = tmp_path / "out"
     output_root.mkdir()
