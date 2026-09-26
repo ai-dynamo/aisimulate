@@ -207,6 +207,17 @@ mod tests {
     #[test]
     fn regression_constructor_is_environment_independent() {
         let model = regression_model().expect("construct regression model");
+        assert_eq!(
+            model
+                .provenance()
+                .unwrap()
+                .config
+                .estimator_config
+                .fpm_regression
+                .fit
+                .rebuild_interval,
+            None
+        );
         let stores = regression_stores(&model);
         assert_eq!(stores.len(), 4);
         assert_eq!(
@@ -229,6 +240,74 @@ mod tests {
         assert_eq!(options.features.attention_kv_weight, 2.0);
         assert_eq!(options.features.prefill_attention_pair_weight, 3.0);
         assert_eq!(options.features.ffn_token_weight, 4.0);
+    }
+
+    #[test]
+    fn regression_rebuild_interval_is_public_and_preserved_by_canonical_reload() {
+        use aisimulate_core::RegressionFitConfig;
+
+        assert_eq!(RegressionFitConfig::default().rebuild_interval, None);
+        for interval in [Some(1), Some(17), Some(4096), None] {
+            let mut config = ForwardPassPerfModelConfig::new(
+                "test/model",
+                "test-system",
+                BackendKind::Vllm,
+                ForwardPassWorkerType::Decode,
+            );
+            config.estimation_mode = EstimationMode::FpmRegression;
+            config.estimator_config.fpm_regression.fit = RegressionFitConfig {
+                rebuild_interval: interval,
+                ..RegressionFitConfig::default()
+            };
+            let model = ForwardPassPerfModel::best_available(config).unwrap();
+            let resolved = &model.provenance().unwrap().config;
+            assert_eq!(
+                resolved
+                    .estimator_config
+                    .fpm_regression
+                    .fit
+                    .rebuild_interval,
+                interval
+            );
+            let reloaded = ForwardPassPerfModel::best_available(resolved.clone()).unwrap();
+            assert_eq!(&reloaded.provenance().unwrap().config, resolved);
+            assert_eq!(reloaded.regression_store_diagnostics().len(), 1);
+            assert!(!reloaded.regression_store_diagnostics()[0].ready);
+        }
+    }
+
+    #[test]
+    fn zero_regression_rebuild_interval_is_invalid_before_fallback() {
+        use aisimulate_core::ForwardPassFallbackPolicy;
+
+        for mode in [EstimationMode::Auto, EstimationMode::FpmRegression] {
+            let mut config = ForwardPassPerfModelConfig::new(
+                "test/model",
+                "test-system",
+                BackendKind::Vllm,
+                ForwardPassWorkerType::Decode,
+            );
+            config.estimation_mode = mode;
+            config.fallback_policy = ForwardPassFallbackPolicy::Allow;
+            config.estimator_config.fpm_regression.fit.rebuild_interval = Some(0);
+            let error = ForwardPassPerfModel::best_available(config)
+                .err()
+                .expect("zero interval must fail");
+            assert!(matches!(error, AicError::InvalidEngineConfig(_)));
+            assert!(error
+                .to_string()
+                .contains("estimator_config.fpm_regression.fit.rebuild_interval"));
+        }
+    }
+
+    #[test]
+    fn legacy_regression_options_keep_rust_owned_fit_defaults() {
+        use aisimulate_core::ForwardPassPerfOptions;
+
+        let migrated = EstimatorConfig::from_legacy(ForwardPassPerfOptions::default()).unwrap();
+        assert_eq!(migrated.fpm_regression.fit.rebuild_interval, None);
+        assert_eq!(migrated.fpm_regression.sampling.max_observations, 64);
+        assert_eq!(migrated.fpm_regression.sampling.bins_per_axis, [4, 4]);
     }
 
     #[test]

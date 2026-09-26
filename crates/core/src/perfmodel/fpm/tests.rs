@@ -147,7 +147,11 @@ fn regression_model(
     worker_type: ForwardPassWorkerType,
     options: ForwardPassPerfOptions,
 ) -> Result<ForwardPassPerfModel, AicError> {
-    ForwardPassPerfModel::from_regression(worker_type, options)
+    ForwardPassPerfModel::from_regression(
+        worker_type,
+        options,
+        super::estimator::RegressionFitConfig::default().rebuild_interval,
+    )
 }
 
 fn fixture_engine() -> Arc<Engine> {

@@ -175,6 +175,8 @@ config = ForwardPassPerfModelConfig(
         "fpm_regression": {
             "sampling": {"bins_per_axis": [4, 16], "max_observations": 128},
             "min_observations": 5,
+            # Opt into periodic rebuilding; omission leaves it disabled.
+            "fit": {"rebuild_interval": 4096},
         },
         "correction": {"enabled": True},
     },
@@ -275,7 +277,9 @@ nested paths. The supported namespaces are:
 - `fpm_regression`: independent `sampling`, `min_observations` (5), and `fit`.
   The fit kind is `standardized_nnls`, with a free intercept and nonnegative
   slopes. `singular_ridge_scale` defaults to `1e-9` and applies only when retrying
-  a singular equation.
+  a singular equation. `rebuild_interval` defaults to JSON `null` / Python
+  `None`, disabling periodic rebuilding. A positive integer opts into
+  rebuilding after that many retained-sample mutations.
 - `correction`: `enabled` (true), independent `sampling`, `min_observations`
   (5), `factor_bounds` (min 0.5, max 2.0), and the existing `max_num_tokens`
   (8192), `max_batch_size` (512), and `max_kv_tokens` (2000000) ranges.
@@ -299,6 +303,76 @@ readiness means at least one store is ready; another cold store can still
 return `None`. `tune_with_fpms()` preserves the established FPM observation
 contract. Native construction still uses Python model compilation; estimator
 selection, regression, correction, and latency computation are owned by Rust.
+
+### Recursive regression and statistics rebuilding
+
+Regression maintains centered sufficient statistics for the retained samples
+and applies the existing standardized nonnegative least-squares fit. The
+objective and readiness rules stay the same. The retention grid still controls
+which samples are kept; it does not create separate fitted planes within a
+workload store.
+
+See the [recursive regression walkthrough](fpm-recursive-regression.md) for
+the update equations, numerical guards, and measured fitting costs.
+
+Set `estimator_config.fpm_regression.fit.rebuild_interval` through the canonical
+constructor. Rust owns its default and validation. Omission means `None`
+(`null` in JSON), so periodic rebuilding is disabled by default. A positive
+integer, such as 4096, opts into a periodic interval. Zero, negative values,
+booleans, floating-point values, strings, arrays and objects are rejected with
+the nested field path. The explicit setting survives normalization, provenance,
+saved configuration and reload. No flat legacy option is added.
+
+When enabled, the interval counts **one insertion and one eviction as separate
+mutations**. A rebuild runs after the complete retained-sample update transaction
+and resets the mutation counter to zero. With an explicit interval of 4096, a
+capacity of 64, an initially empty store, and no earlier recovery rebuild, the
+first rebuild occurs after 2,080 accepted observations: 64 initial insertions,
+then 2,016 insert/evict pairs. Further rebuilds occur every 2,048 accepted
+observations while the store stays full. This counts accepted observations per
+store, not prediction queries or wall-clock time.
+
+There is at most one periodic rebuild after an update transaction. A full-store
+insert/evict pair can cross an odd interval by one mutation; it still produces
+one rebuild and a reset to zero. Rejected observations and spatial rebucketing
+do not advance the counter. A batch-fit fallback alone does not reset it;
+rebuilding the statistics does. The setting is fixed for each store when the
+model is constructed.
+
+The default and explicit Python `None` both disable only the periodic schedule.
+Numerical recovery rebuilds and conservative batch fallbacks remain enabled:
+
+```python
+config = ForwardPassPerfModelConfig(
+    model="Qwen/Qwen3-32B",
+    system="h200_sxm",
+    backend="vllm",
+    worker_type="decode",
+    estimation_mode="fpm_regression",
+    estimator_config={"fpm_regression": {"fit": {"rebuild_interval": None}}},
+)
+model = RustForwardPassPerfModel.best_available(config)
+saved = model.diagnostics()["provenance"]["config"]
+restored = RustForwardPassPerfModel.best_available(saved)
+```
+
+Raw JSON uses `"fit": {"rebuild_interval": null}` at the same nested path.
+In Rust the control is the public `RegressionFitConfig::rebuild_interval` field:
+
+```rust
+use aisimulate_core::{
+    BackendKind, EstimationMode, ForwardPassPerfModel, ForwardPassPerfModelConfig,
+    ForwardPassWorkerType,
+};
+
+let mut config = ForwardPassPerfModelConfig::new(
+    "Qwen/Qwen3-32B", "h200_sxm", BackendKind::Vllm, ForwardPassWorkerType::Decode,
+);
+config.estimation_mode = EstimationMode::FpmRegression;
+// Opt into periodic rebuilding; the default None retains numerical recovery.
+config.estimator_config.fpm_regression.fit.rebuild_interval = Some(4096);
+let model = ForwardPassPerfModel::best_available(config)?;
+```
 
 ### Migrating saved configuration
 

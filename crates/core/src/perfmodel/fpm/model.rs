@@ -128,7 +128,11 @@ struct RegressionStores {
 }
 
 impl RegressionStores {
-    fn new(worker_type: ForwardPassWorkerType, options: &ForwardPassPerfOptions) -> Self {
+    fn new(
+        worker_type: ForwardPassWorkerType,
+        options: &ForwardPassPerfOptions,
+        rebuild_interval: Option<usize>,
+    ) -> Self {
         use ForwardPassRegressionWorkloadKind::*;
         let kinds: &[ForwardPassRegressionWorkloadKind] = match worker_type {
             ForwardPassWorkerType::Prefill => &[PurePrefill],
@@ -143,7 +147,7 @@ impl RegressionStores {
         Self {
             stores: kinds
                 .iter()
-                .map(|kind| (*kind, BucketedRegression::new(options)))
+                .map(|kind| (*kind, BucketedRegression::new(options, rebuild_interval)))
                 .collect(),
         }
     }
@@ -281,10 +285,7 @@ impl ForwardPassPerfModel {
         }
     }
 
-    /// API:
-    /// `ForwardPassPerfModel::from_regression(worker_type, options) -> Result<Self, AicError>`
-    ///
-    /// Description: create a regression-only forward-pass model.
+    /// Create a regression-only forward-pass model after resolving configuration.
     ///
     /// This mode is for native-AIC-unsupported models. It returns `None` from
     /// `estimate_forward_pass_time_ms` for non-empty iterations until the
@@ -294,12 +295,14 @@ impl ForwardPassPerfModel {
     pub(crate) fn from_regression(
         worker_type: ForwardPassWorkerType,
         options: ForwardPassPerfOptions,
+        rebuild_interval: Option<usize>,
     ) -> Result<Self, AicError> {
         validate_regression_options(&options)?;
+        super::estimator::validate_rebuild_interval(rebuild_interval)?;
         Ok(Self {
             mode: ForwardPassPerfMode::Regression {
                 worker_type,
-                regression: RegressionStores::new(worker_type, &options),
+                regression: RegressionStores::new(worker_type, &options, rebuild_interval),
             },
             options,
             last_warning: None,
@@ -336,7 +339,11 @@ impl ForwardPassPerfModel {
             }
             if mode == EstimationMode::FpmRegression {
                 let options = config.estimator_config.regression_options();
-                let mut model = Self::from_regression(config.worker_type, options)?;
+                let mut model = Self::from_regression(
+                    config.worker_type,
+                    options,
+                    config.estimator_config.fpm_regression.fit.rebuild_interval,
+                )?;
                 let mut resolved = config.clone();
                 resolved.estimation_mode = mode;
                 resolved.fallback_policy = ForwardPassFallbackPolicy::Deny;
@@ -1110,6 +1117,72 @@ fn can_fallback_to_regression(err: &AicError) -> bool {
             | AicError::PerfDatabase(_)
             | AicError::Io { .. }
     )
+}
+
+#[cfg(test)]
+mod rebuild_tests {
+    use super::*;
+    use ForwardPassRegressionWorkloadKind::*;
+
+    #[test]
+    fn workload_stores_and_clones_have_independent_rebuild_clocks() {
+        let options = ForwardPassPerfOptions::default();
+        let mut stores =
+            RegressionStores::new(ForwardPassWorkerType::Aggregated, &options, Some(3));
+        assert!(
+            stores
+                .store_mut(PurePrefill)
+                .add_observation([1.0, 2.0], 3.0)
+        );
+        for i in 1..=2 {
+            assert!(
+                stores
+                    .store_mut(PureDecode)
+                    .add_observation([i as f64, 1.0], 4.0)
+            );
+        }
+        let mut cloned = stores.clone();
+        assert!(
+            stores
+                .store_mut(PureDecode)
+                .add_observation([3.0, 4.0], 5.0)
+        );
+        assert_eq!(stores.store(PureDecode).mutations_since_rebuild(), 0);
+        assert_eq!(stores.store(PurePrefill).mutations_since_rebuild(), 1);
+        assert_eq!(
+            stores.store(ContainsLocallyMixed).mutations_since_rebuild(),
+            0
+        );
+        assert_eq!(
+            stores.store(CrossRankAggregated).mutations_since_rebuild(),
+            0
+        );
+        assert_eq!(cloned.store(PureDecode).mutations_since_rebuild(), 2);
+        assert!(
+            cloned
+                .store_mut(PurePrefill)
+                .add_observation([2.0, 3.0], 4.0)
+        );
+        assert_eq!(cloned.store(PurePrefill).mutations_since_rebuild(), 2);
+        assert_eq!(stores.store(PurePrefill).mutations_since_rebuild(), 1);
+    }
+
+    #[test]
+    fn default_rebuild_interval_disables_periodic_refresh_for_every_workload_store() {
+        let mut stores = RegressionStores::new(
+            ForwardPassWorkerType::Aggregated,
+            &ForwardPassPerfOptions::default(),
+            super::super::estimator::RegressionFitConfig::default().rebuild_interval,
+        );
+        // Constant features avoid fit work without numerical damage. A change
+        // back to a 4096-operation default would reset each clock at 4096.
+        for (_, store) in &mut stores.stores {
+            for _ in 0..2081 {
+                assert!(store.add_observation([1.0, 2.0], 3.0));
+            }
+            assert_eq!(store.mutations_since_rebuild(), 4098);
+        }
+    }
 }
 
 #[cfg(test)]
