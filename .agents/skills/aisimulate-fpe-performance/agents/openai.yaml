@@ -1,0 +1,10 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+interface:
+  display_name: "AISimulate FPE Performance"
+  short_description: "Build and review efficient numerical prediction"
+  default_prompt: "Use $aisimulate-fpe-performance to design, implement, or review this FPE change for efficient execution, preserve correctness, and resolve substantial avoidable overhead before completion."
+
+policy:
+  allow_implicit_invocation: true
