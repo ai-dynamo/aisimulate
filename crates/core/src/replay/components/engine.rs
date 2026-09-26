@@ -447,6 +447,7 @@ where
             .context("non-draining worker count overflow")?;
         let mut added = Vec::new();
         let mut newly_marked = Vec::new();
+        let mut removed = Vec::new();
 
         if target > effective {
             for _ in 0..(target - effective) {
@@ -469,8 +470,12 @@ where
                 .take(excess)
                 .collect::<Vec<_>>();
             for id in &to_cancel {
-                self.tombstone_worker(*id)
-                    .with_context(|| format!("failed to cancel starting worker {id}"))?;
+                if self
+                    .tombstone_worker(*id)
+                    .with_context(|| format!("failed to cancel starting worker {id}"))?
+                {
+                    removed.push(*id);
+                }
                 self.pending_startup.remove(id);
             }
             for id in active_ids.iter().rev().take(excess - to_cancel.len()) {
@@ -479,7 +484,7 @@ where
             }
         }
 
-        let removed = self.try_remove_drained()?;
+        removed.extend(self.try_remove_drained()?);
         Ok((added, newly_marked, removed))
     }
 

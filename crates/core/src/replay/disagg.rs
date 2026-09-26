@@ -3092,6 +3092,10 @@ where
             self.dispatch_prefill_placements(placements)?;
         }
         for &id in &removed {
+            // Canceled startups were never registered with placement.
+            if prefill_starting_before.binary_search(&id).is_ok() {
+                continue;
+            }
             let placements = self.prefill_placement.worker_removed(
                 WorkerTopology {
                     worker_id: id,
@@ -3171,6 +3175,9 @@ where
             self.dispatch_decode_placements(placements)?;
         }
         for &id in &removed {
+            if decode_starting_before.binary_search(&id).is_ok() {
+                continue;
+            }
             let placements = self.decode_placement.worker_removed(
                 WorkerTopology {
                     worker_id: id,
