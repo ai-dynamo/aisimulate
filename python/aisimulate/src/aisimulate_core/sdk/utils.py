@@ -1191,6 +1191,9 @@ def _parse_hf_config_json(config: dict) -> dict:
             "index_n_heads": config["index_n_heads"],
             "index_topk": config["index_topk"],
         }
+    elif architecture == "Glm5NextForConditionalGeneration":
+        extra_params = common.Glm53FlashConfig.from_text_config(config)
+        d = extra_params.qk_nope_head_dim
     elif architecture == "DeepseekV41ForCausalLM":
         extra_params = common.DeepSeekV41Config.from_text_config(config)
     elif architecture == "DeepseekV4ForCausalLM":

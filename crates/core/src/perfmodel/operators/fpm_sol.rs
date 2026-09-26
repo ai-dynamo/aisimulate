@@ -117,6 +117,26 @@ pub(crate) fn op_sol_latency_ms(
         Op::ContextAttention(o) => Ok(context_attention_sol(o, spec, batch, s, prefix)),
         Op::GenerationAttention(o) => Ok(generation_attention_sol(o, spec, batch, s)),
         Op::Dsv41Attention(o) => Ok(o.sol(spec, batch, s, prefix)?.latency_ms),
+        Op::Glm53Primitive(o) => {
+            o.validate()?;
+            let child_x = if o.token_selection == "last_per_request" {
+                batch
+            } else {
+                x
+            };
+            o.children.iter().try_fold(0.0, |sum, child| {
+                Ok(sum + op_sol_latency_ms(child, db, child_x, batch, s, prefix)?)
+            })
+        }
+        Op::Glm53Ffn(o) => {
+            o.validate()?;
+            o.children.iter().try_fold(0.0, |sum, child| {
+                Ok(sum + op_sol_latency_ms(child, db, x, batch, s, prefix)?)
+            })
+        }
+        Op::Glm53Attention(o) => Ok(o.sol(spec, batch, s, prefix)?.latency_ms),
+        Op::Glm53Mhc(o) => Ok(o.sol(spec, x)?.latency_ms),
+        Op::Glm53Router(o) => Ok(o.sol(spec, x)?.latency_ms),
         Op::Dsv41Linear(o) => Ok(o.sol(spec, x)?.latency_ms),
         Op::Dsv41Mhc(o) => Ok(o.sol(spec, x)?.latency_ms),
         Op::Dsv41Engram(o) => Ok(o.sol(spec, x)?.latency_ms),

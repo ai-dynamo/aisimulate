@@ -286,6 +286,34 @@
         }
       }
     },
+    "glm53flash-fp8-gb300-vllm-tp2-sol": {
+      "mixed": {
+        "values": {
+          "mixed_step": 37.865342045757444
+        }
+      },
+      "static": {
+        "values": {
+          "static_ctx": 37.856,
+          "static_gen": 1.553,
+          "static_total": 39.409
+        }
+      }
+    },
+    "glm53flash-nvfp4-gb300-sglang-tp4-sol": {
+      "mixed": {
+        "values": {
+          "mixed_step": 22.443503140350167
+        }
+      },
+      "static": {
+        "values": {
+          "static_ctx": 22.435,
+          "static_gen": 0.738,
+          "static_total": 23.173
+        }
+      }
+    },
     "gpt-oss-20b-b200-trtllm-isl1024-osl2": {
       "agg": {
         "values": {
@@ -2016,6 +2044,22 @@
     "glm52-b200-sglang-isl1024-osl2::static": {
       "engine": "rust",
       "git_head": "760b6c92edc00389ff79938b62b028c01bcfefdd"
+    },
+    "glm53flash-fp8-gb300-vllm-tp2-sol::mixed": {
+      "engine": "rust",
+      "git_head": "d2271085e02d00c7be811fc848fc36399a0195a2"
+    },
+    "glm53flash-fp8-gb300-vllm-tp2-sol::static": {
+      "engine": "rust",
+      "git_head": "d2271085e02d00c7be811fc848fc36399a0195a2"
+    },
+    "glm53flash-nvfp4-gb300-sglang-tp4-sol::mixed": {
+      "engine": "rust",
+      "git_head": "d2271085e02d00c7be811fc848fc36399a0195a2"
+    },
+    "glm53flash-nvfp4-gb300-sglang-tp4-sol::static": {
+      "engine": "rust",
+      "git_head": "d2271085e02d00c7be811fc848fc36399a0195a2"
     },
     "gpt-oss-20b-b200-trtllm-isl1024-osl2::agg": {
       "engine": "rust",

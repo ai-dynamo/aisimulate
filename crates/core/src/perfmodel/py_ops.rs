@@ -170,6 +170,11 @@ pub(crate) fn wrap_op(py: Python<'_>, op: Op) -> PyResult<Py<PyAny>> {
         | Op::Dsv41Mhc(_)
         | Op::Dsv41Engram(_)
         | Op::Dsv41Stage(_)
+        | Op::Glm53Attention(_)
+        | Op::Glm53Mhc(_)
+        | Op::Glm53Router(_)
+        | Op::Glm53Ffn(_)
+        | Op::Glm53Primitive(_)
         | Op::Dsv41Linear(_)
         | Op::TokenScale(_) => Ok(Py::new(py, PyOperation { inner: op })?.into_any()),
         // Vision is never wrapped: compile decomposes it into child ops.
@@ -4302,6 +4307,8 @@ pub(crate) fn reject_retired_ops(ops: &[Op]) -> Result<(), String> {
             }
             Op::FpmForward(o) => reject_retired_ops(&o.sol_ops)?,
             Op::Dsv41Stage(o) => reject_retired_ops(&o.children)?,
+            Op::Glm53Ffn(o) => reject_retired_ops(&o.children)?,
+            Op::Glm53Primitive(o) => reject_retired_ops(&o.children)?,
             Op::TokenScale(o) => reject_retired_ops(std::slice::from_ref(&o.op))?,
             _ => {}
         }

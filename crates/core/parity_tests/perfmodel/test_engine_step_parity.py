@@ -1766,6 +1766,35 @@ class TestRustEngineStepHybridDisaggParity:
 # Llama-3.1-70B), one MoE (Qwen3-235B-A22B), one MLA (DeepSeek-V3 — also
 # covers MLA BMM + the mode-aware mem_op extras).
 SOL_CASES = [
+    # GLM hybrid KDA/sparse MLA, mHC fusion and checkpoint precision partitions.
+    pytest.param(
+        EngineStepParityCase(
+            model_path="zai-org/GLM-5.3-Flash",
+            system_name="gb300",
+            backend_name="vllm",
+            database_mode="SOL",
+            tp_size=2,
+            moe_tp_size=2,
+            moe_ep_size=1,
+            isl=4096,
+            prefix=2048,
+        ),
+        id="glm53flash-fp8-gb300-vllm-tp2-sol",
+    ),
+    pytest.param(
+        EngineStepParityCase(
+            model_path="nvidia/GLM-5.3-Flash-NVFP4",
+            system_name="gb300",
+            backend_name="sglang",
+            database_mode="SOL",
+            tp_size=4,
+            moe_tp_size=4,
+            moe_ep_size=1,
+            isl=4096,
+            prefix=2048,
+        ),
+        id="glm53flash-nvfp4-gb300-sglang-tp4-sol",
+    ),
     pytest.param(
         EngineStepParityCase(
             model_path="Qwen/Qwen3-32B",

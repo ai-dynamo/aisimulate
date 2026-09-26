@@ -1024,6 +1024,15 @@ fn op_from_spec_json(py: Python<'_>, spec_json: &str) -> PyResult<Py<PyAny>> {
     crate::py_ops::op_from_spec_json(py, spec_json)
 }
 
+/// Internal payload accounting; the public construction path remains best_available.
+#[pyfunction]
+fn glm53_cache_bytes(spec_json: &str, seq_len: u32) -> PyResult<f64> {
+    let op: crate::operators::glm53flash::Glm53AttentionOp =
+        serde_json::from_str(spec_json).map_err(|e| PyValueError::new_err(e.to_string()))?;
+    op.cache_bytes(seq_len)
+        .map_err(|e| PyValueError::new_err(e.to_string()))
+}
+
 /// Internal request shared by every Rust -> Python -> Rust construction path.
 ///
 /// The public builder and the crate-internal `EngineConfig` path both normalize
@@ -1991,6 +2000,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(ops_json_from_ops, m)?)?;
     m.add_function(wrap_pyfunction!(engine_spec_schema_version, m)?)?;
     m.add_function(wrap_pyfunction!(op_from_spec_json, m)?)?;
+    m.add_function(wrap_pyfunction!(glm53_cache_bytes, m)?)?;
     m.add_class::<AicEngine>()?;
     m.add_class::<PyForwardPassPerfModel>()?;
     crate::perfmodel::py_ops::register(m)?;
