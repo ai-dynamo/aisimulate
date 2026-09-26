@@ -402,7 +402,7 @@ def _default_moe_block_ops(
                 quant_mode,
                 workload_distribution,
                 cfg.attention_dp_size,
-                moe_kernel_source=cfg.moe_kernel_source,
+                moe_kernel_source=getattr(cfg, "moe_kernel_source", None),
             ),
             ops.MoEDispatch(
                 f"{prefix}_moe_post_dispatch",
