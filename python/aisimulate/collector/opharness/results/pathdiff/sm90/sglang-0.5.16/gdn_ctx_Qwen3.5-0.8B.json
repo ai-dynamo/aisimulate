@@ -3,56 +3,18 @@
  "repo": "Qwen/Qwen3.5-0.8B",
  "framework": "sglang",
  "version": "0.5.16",
- "capture_file": "facts/pathdiff/opcov_sgl_gdn_ctx.json",
- "capture_cmd": [
-  "/work/s/caps/sgl_gdn_ctx.py"
- ],
- "capture_env": null,
- "capture_run_error": null,
- "kv_dtype": "auto",
- "op_hint": "gdn|delta|conv1d|linear|mamba|gated|recurr",
- "gate_name": null,
+ "gate_name": "gdn_ctx_Qwen3.5-0.8B",
  "target_roles": [
   "linear_attention"
  ],
  "phase": "prefill",
  "phase_scoped": true,
- "role_evidence": {
-  "linear_attention": {
-   "collector": [
-    "ChunkGatedDeltaRuleFunction",
-    "_causal_conv1d_fwd_kernel",
-    "chunk_fwd_kernel_o",
-    "chunk_gated_delta_rule_fwd_kernel_h_blockdim64",
-    "chunk_gated_delta_rule_fwd_kkt_solve_kernel",
-    "chunk_local_cumsum_scalar_kernel",
-    "recompute_w_u_fwd_kernel"
-   ],
-   "serving": [
-    "ChunkGatedDeltaRuleFunction",
-    "_causal_conv1d_fwd_kernel",
-    "chunk_fwd_kernel_o",
-    "chunk_gated_delta_rule_fwd_kernel_h_blockdim64",
-    "chunk_gated_delta_rule_fwd_kkt_solve_kernel",
-    "chunk_local_cumsum_scalar_kernel",
-    "fused_gdn_gating_kernel",
-    "fused_qkv_split_gdn_prefill_kernel",
-    "fused_qkvzba_split_reshape_cat_contiguous_kernel",
-    "recompute_w_u_fwd_kernel"
-   ],
-   "matched": [
-    "ChunkGatedDeltaRuleFunction",
-    "_causal_conv1d_fwd_kernel",
-    "chunk_fwd_kernel_o",
-    "chunk_gated_delta_rule_fwd_kernel_h_blockdim64",
-    "chunk_gated_delta_rule_fwd_kkt_solve_kernel",
-    "chunk_local_cumsum_scalar_kernel",
-    "recompute_w_u_fwd_kernel"
-   ]
-  }
- },
- "missing_roles": [],
- "aux_collector_only_roles": [],
+ "kv_dtype": "auto",
+ "op_hint": "gdn|delta|conv1d|linear|mamba|gated|recurr",
+ "capture_file": "facts/pathdiff/opcov_sgl_gdn_ctx.json",
+ "capture_sha256": "77448b717f0a5e87",
+ "capture_env": null,
+ "capture_run_error": null,
  "serving_record": {
   "id": "5aec08d64057",
   "tp": 1,
@@ -60,7 +22,9 @@
   "isl": 4096,
   "prefix_caching": false,
   "raw_file": null,
-  "candidates": 1
+  "candidates": 1,
+  "exec_fingerprint": "c9a560973c2f",
+  "evidence_status": "current"
  },
  "collector_backends": [
   "causal_conv1d",
@@ -73,20 +37,14 @@
   "fla_triton",
   "sgl_kernel"
  ],
- "collector_only_signal": [],
- "kernel_drift": null,
- "serving_kernels_matched_in_collector": [
-  "ChunkGatedDeltaRuleFunction",
-  "_causal_conv1d_fwd_kernel",
-  "at_cuda_detail::cub::detail::scan::DeviceScanInitKernel",
-  "at_cuda_detail::cub::detail::scan::DeviceScanKernel",
-  "chunk_fwd_kernel_o",
-  "chunk_gated_delta_rule_fwd_kernel_h_blockdim64",
-  "chunk_gated_delta_rule_fwd_kkt_solve_kernel",
-  "chunk_local_cumsum_scalar_kernel",
-  "l2norm_fwd_kernel",
-  "recompute_w_u_fwd_kernel"
- ],
- "collector_unmatched_kernels": [],
- "note": "subset semantics: the collector exercises ONE op; serving runs the whole model. Graded on the target roles only: every collector kernel of a target role must name-match a serving kernel of that role in the selected phase."
+ "missing_roles": [],
+ "aux_collector_only_roles": [],
+ "role_counts": {
+  "linear_attention": {
+   "collector": 7,
+   "serving": 10,
+   "matched": 7
+  }
+ },
+ "evidence": "archive/evidence/pathdiff/<framework-version>/<gate>.json in the probe workspace (full kernel lists)"
 }

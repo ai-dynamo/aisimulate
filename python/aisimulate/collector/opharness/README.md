@@ -37,7 +37,10 @@ opharness/
 | `path_diff.py` | collector op path vs serving, same profiler, same vocabulary (stub) |
 | `decompose.py` | observed execution -> op families (taxonomy roles x backend labels) + residue (kernels no family names); results/<sm>/decompose/ |
 | `e2e_align.py` | SDK prediction vs one live measurement of the golden deployment (explicit measurement file); results/<sm>/e2e/ — the campaign needs a GPU matching an SDK system entry |
+| `evidence_bundle.py` | pack a campaign's evidence (raw + fingerprints, records, captures, full reports, kernel-level decompositions) into one content-addressed tar.gz and index it in results/evidence_index.yaml |
 | `build_images.sh` | rebuild probe images + the generator venv (this checkout) from targets.yaml pins |
+
+Evidence layering (owner decision 2026-09-26): the repo carries CONCLUSIONS — matrices, verdict summaries (identities, sha/fingerprint of both inputs, per-role counts, the deciding names when red), decompose summaries (role -> backend -> kernel count, residue), findings. EVIDENCE — raw probes and their `.fp` sidecars, records.jsonl, collector captures, full path_diff reports and kernel-level decompositions (`archive/evidence/` in the workspace) — stays out of git and is packed per campaign by `components/evidence_bundle.py`; `results/evidence_index.yaml` names each bundle by campaign id, sha256 and location, and every committed conclusion carries the ids/fingerprints that resolve into it.
 
 Run-time layout: components run from this checkout (queues invoke `components/probes/` inside the container; the checkout is visible under the workspace mount or mounted read-only at `/harness`); the workspace (`AIS_PROBE_WORKSPACE`) holds only data — configs/, dummy_models/, archive/ (plan, run_sh, raw + `.fp` fingerprint sidecars, records), facts/, jitcache/, venv_ais/. Every plan run carries an execution fingerprint (engine invocation, dummy config, probe code, image, kv); a raw counts as evidence only when its sidecar or recorded argv matches, and the matrix marks the rest `stale evidence` / `unverified`.
 

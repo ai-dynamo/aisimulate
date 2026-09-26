@@ -3,46 +3,19 @@
  "repo": "google/gemma-4-26B-A4B",
  "framework": "sglang",
  "version": "0.5.16",
- "capture_file": "facts/pathdiff/opcov_sgl_attn_ctx_gemma4_hd512.json",
- "capture_cmd": [
-  "/work/ais/python/aisimulate/collector/opharness/components/op_smoke.py",
-  "--backend",
-  "sglang",
-  "--op",
-  "attention_context",
-  "--case-index",
-  "168",
-  "--cases",
-  "1",
-  "--out-dir",
-  "/tmp/smk"
- ],
- "capture_env": null,
- "capture_run_error": null,
- "kv_dtype": "auto",
- "op_hint": "attn|attention|flash|fwd|triton",
- "gate_name": null,
+ "gate_name": "attn_ctx_hd512_gemma-4-26B-A4B",
  "target_roles": [
   "attention",
   "dsa_indexer"
  ],
  "phase": "prefill",
  "phase_scoped": true,
- "role_evidence": {
-  "attention": {
-   "collector": [
-    "_fwd_kernel"
-   ],
-   "serving": [
-    "_fwd_kernel"
-   ],
-   "matched": [
-    "_fwd_kernel"
-   ]
-  }
- },
- "missing_roles": [],
- "aux_collector_only_roles": [],
+ "kv_dtype": "auto",
+ "op_hint": "attn|attention|flash|fwd|triton",
+ "capture_file": "facts/pathdiff/opcov_sgl_attn_ctx_gemma4_hd512.json",
+ "capture_sha256": "faa821ce3bba2bc5",
+ "capture_env": null,
+ "capture_run_error": null,
  "serving_record": {
   "id": "a69d6a2853c6",
   "tp": 1,
@@ -50,7 +23,9 @@
   "isl": 4096,
   "prefix_caching": false,
   "raw_file": null,
-  "candidates": 1
+  "candidates": 1,
+  "exec_fingerprint": "3a5b8651032b",
+  "evidence_status": "current"
  },
  "collector_backends": [
   "sgl_kernel",
@@ -62,15 +37,14 @@
   "triton",
   "triton_fused_moe"
  ],
- "collector_only_signal": [],
- "kernel_drift": null,
- "serving_kernels_matched_in_collector": [
-  "_fwd_kernel",
-  "at_cuda_detail::cub::detail::scan::DeviceScanInitKernel",
-  "at_cuda_detail::cub::detail::scan::DeviceScanKernel",
-  "create_flashinfer_kv_indices_triton",
-  "store_kvcache"
- ],
- "collector_unmatched_kernels": [],
- "note": "subset semantics: the collector exercises ONE op; serving runs the whole model. Graded on the target roles only: every collector kernel of a target role must name-match a serving kernel of that role in the selected phase."
+ "missing_roles": [],
+ "aux_collector_only_roles": [],
+ "role_counts": {
+  "attention": {
+   "collector": 1,
+   "serving": 1,
+   "matched": 1
+  }
+ },
+ "evidence": "archive/evidence/pathdiff/<framework-version>/<gate>.json in the probe workspace (full kernel lists)"
 }

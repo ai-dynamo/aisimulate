@@ -3,65 +3,19 @@
  "repo": "deepseek-ai/DeepSeek-V3.2",
  "framework": "sglang",
  "version": "0.5.16",
- "capture_file": "facts/pathdiff/opcov_sgl_dsa_ctx_fp8_s4096.json",
- "capture_cmd": [
-  "/work/s/caps/sgl_dsa_ctx_fp8_s4096.py"
- ],
- "capture_env": null,
- "capture_run_error": null,
- "kv_dtype": "fp8",
- "op_hint": "mla|dsa|nsa|attn|indexer|flash|mqa|sparse|gemm|deepgemm|quant|topk",
- "gate_name": null,
+ "gate_name": "dsa_ctx_fp8_DeepSeek-V3.2",
  "target_roles": [
   "attention",
   "dsa_indexer"
  ],
  "phase": "prefill",
  "phase_scoped": true,
- "role_evidence": {
-  "attention": {
-   "collector": [
-    "sm90::decode::sparse_fp8::flash_fwd_splitkv_mla_fp8_sparse_kernel",
-    "smxx::decode::flash_fwd_mla_combine_kernel",
-    "smxx::decode::get_mla_metadata_kernel"
-   ],
-   "serving": [
-    "sm90::decode::sparse_fp8::flash_fwd_splitkv_mla_fp8_sparse_kernel",
-    "smxx::decode::flash_fwd_mla_combine_kernel",
-    "smxx::decode::get_mla_metadata_kernel"
-   ],
-   "matched": [
-    "sm90::decode::sparse_fp8::flash_fwd_splitkv_mla_fp8_sparse_kernel",
-    "smxx::decode::flash_fwd_mla_combine_kernel",
-    "smxx::decode::get_mla_metadata_kernel"
-   ]
-  },
-  "dsa_indexer": {
-   "collector": [
-    "_get_k_and_s_triton_kernel",
-    "deep_gemm::sm90_fp8_mqa_logits",
-    "fast_hadamard_transform_kernel",
-    "topk_plan",
-    "topk_transform_prefill_kernel"
-   ],
-   "serving": [
-    "_get_k_and_s_triton_kernel",
-    "deep_gemm::sm90_fp8_mqa_logits",
-    "fast_hadamard_transform_kernel",
-    "topk_plan",
-    "topk_transform_prefill_kernel"
-   ],
-   "matched": [
-    "_get_k_and_s_triton_kernel",
-    "deep_gemm::sm90_fp8_mqa_logits",
-    "fast_hadamard_transform_kernel",
-    "topk_plan",
-    "topk_transform_prefill_kernel"
-   ]
-  }
- },
- "missing_roles": [],
- "aux_collector_only_roles": [],
+ "kv_dtype": "fp8",
+ "op_hint": "mla|dsa|nsa|attn|indexer|flash|mqa|sparse|gemm|deepgemm|quant|topk",
+ "capture_file": "facts/pathdiff/opcov_sgl_dsa_ctx_fp8_s4096.json",
+ "capture_sha256": "1653d73807dd84e3",
+ "capture_env": null,
+ "capture_run_error": null,
  "serving_record": {
   "id": "9be0fc733d2f",
   "tp": 1,
@@ -69,7 +23,9 @@
   "isl": 4096,
   "prefix_caching": false,
   "raw_file": null,
-  "candidates": 1
+  "candidates": 1,
+  "exec_fingerprint": "d0a43f4fd884",
+  "evidence_status": "current"
  },
  "collector_backends": [
   "cublas",
@@ -86,23 +42,19 @@
   "sgl_kernel",
   "triton_fused_moe"
  ],
- "collector_only_signal": [],
- "kernel_drift": null,
- "serving_kernels_matched_in_collector": [
-  "_act_quant_kernel",
-  "_get_k_and_s_triton_kernel",
-  "_quantize_k_cache_fast_kernel",
-  "alloc_extend_kernel",
-  "at_cuda_detail::cub::detail::scan::DeviceScanInitKernel",
-  "at_cuda_detail::cub::detail::scan::DeviceScanKernel",
-  "compute_position_kernel",
-  "concat_mla_absorb_q_kernel",
-  "cublasLt::splitKreduce_kernel",
-  "deep_gemm::sm90_fp8_gemm_1d2d_impl"
- ],
- "collector_unmatched_kernels": [
-  "INVALID",
-  "sglang::deep_gemm_fp8_fp8_bf16_nt"
- ],
- "note": "subset semantics: the collector exercises ONE op; serving runs the whole model. Graded on the target roles only: every collector kernel of a target role must name-match a serving kernel of that role in the selected phase."
+ "missing_roles": [],
+ "aux_collector_only_roles": [],
+ "role_counts": {
+  "attention": {
+   "collector": 3,
+   "serving": 3,
+   "matched": 3
+  },
+  "dsa_indexer": {
+   "collector": 5,
+   "serving": 5,
+   "matched": 5
+  }
+ },
+ "evidence": "archive/evidence/pathdiff/<framework-version>/<gate>.json in the probe workspace (full kernel lists)"
 }

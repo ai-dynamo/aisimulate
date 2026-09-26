@@ -1439,6 +1439,24 @@ findings:
       fresh workspace (build_images.sh -> venv_ais -> fetch_inputs ->
       dummies -> emit with the /harness read-only mount -> probe -> record
       'current' -> matrix pass for Qwen3-0.6B). Harness unit tests: 73.
+      EVIDENCE LAYERING (owner decision 2026-09-26, "facts 太多进 repo 不是好
+      practice"): the PR had 33k lines of kernel-level decompositions and
+      5k lines of verdict kernel lists committed as results. Consumers were
+      checked: the workflow predicates read role/backend SETS, residue and
+      verdict/framework/version only; kernel names are debugging evidence.
+      decompose.py now commits a summary (role -> backend -> count, residue,
+      ops, record id) and writes kernel names to <ws>/archive/evidence/;
+      path_diff commits a verdict summary (both inputs' identity: record id,
+      exec fingerprint, capture sha256; roles, phase, per-role counts; the
+      deciding names only when red) and writes the full report to the
+      evidence dir; evidence_bundle.py packs a campaign's raw + .fp,
+      records, plans, rendered engine configs, captures and full reports
+      into one content-addressed tar.gz (first bundle 2026-09-26_sm90:
+      856 raws, 6.2 MB) indexed in results/evidence_index.yaml with sha256
+      and location. Committed results shrink from ~44k to ~9k lines; LFS
+      was rejected for the evidence (it hides content without making it
+      reviewable); the bundle's storage location is the owner's call and
+      is recorded per campaign.
     applies_to: ['instrument:path_diff', 'instrument:probe_driver', 'instrument:workflow_check',
       'instrument:build_images', 'framework:vllm-0.29.0', 'framework:sglang-0.5.16',
       'framework:trtllm-1.3.0rc23', 'platform:sm90', MiniMaxAI/MiniMax-M3, deepseek-ai/DeepSeek-V3,

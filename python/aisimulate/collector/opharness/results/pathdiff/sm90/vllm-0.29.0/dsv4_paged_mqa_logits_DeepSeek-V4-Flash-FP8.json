@@ -3,49 +3,19 @@
  "repo": "sgl-project/DeepSeek-V4-Flash-FP8",
  "framework": "vllm",
  "version": "0.29.0",
- "capture_file": "facts/pathdiff/opcov_dsv4_paged_mqa_logits.json",
- "capture_cmd": [
-  "/work/s/caps/dsv4_paged_mqa_logits.py"
- ],
- "capture_env": null,
- "capture_run_error": null,
- "kv_dtype": "fp8",
- "op_hint": "dsv4|dsa|csa|hca|compress|indexer|mqa|sparse|flash|attn|mla|topk|gemm|deepgemm|quant",
- "gate_name": null,
+ "gate_name": "dsv4_paged_mqa_logits_DeepSeek-V4-Flash-FP8",
  "target_roles": [
   "attention",
   "dsa_indexer"
  ],
  "phase": null,
  "phase_scoped": false,
- "role_evidence": {
-  "dsa_indexer": {
-   "collector": [
-    "deep_gemm::sched::sm90_paged_mqa_logits_metadata",
-    "deep_gemm::sm90_fp8_paged_mqa_logits"
-   ],
-   "serving": [
-    "_build_c128a_topk_metadata_kernel",
-    "_compute_global_topk_indices_and_lens_kernel",
-    "_compute_swa_indices_and_lens_kernel",
-    "_dsv4_topk_kernel",
-    "_fill_short_context_topk_indices",
-    "deep_gemm::sched::sm90_paged_mqa_logits_metadata",
-    "deep_gemm::sm90_fp8_mqa_logits",
-    "deep_gemm::sm90_fp8_paged_mqa_logits",
-    "kernel_cutlass_kernel_vllmmodelsdeepseek_v4nvidiaopsdequant_gather_k_cutedslDequ",
-    "kernel_cutlass_kernel_vllmmodelsdeepseek_v4nvidiaopsfused_indexer_q_cutedslIndex",
-    "kernel_cutlass_kernel_vllmmodelsdeepseek_v4nvidiaopssparse_attn_compress_cutedsl",
-    "vllm::filtered_topk::FilteredTopKUnifiedKernel"
-   ],
-   "matched": [
-    "deep_gemm::sched::sm90_paged_mqa_logits_metadata",
-    "deep_gemm::sm90_fp8_paged_mqa_logits"
-   ]
-  }
- },
- "missing_roles": [],
- "aux_collector_only_roles": [],
+ "kv_dtype": "fp8",
+ "op_hint": "dsv4|dsa|csa|hca|compress|indexer|mqa|sparse|flash|attn|mla|topk|gemm|deepgemm|quant",
+ "capture_file": "facts/pathdiff/opcov_dsv4_paged_mqa_logits.json",
+ "capture_sha256": "13eca285944b221f",
+ "capture_env": null,
+ "capture_run_error": null,
  "serving_record": {
   "id": "ec4c72fb384d",
   "tp": 1,
@@ -53,7 +23,9 @@
   "isl": 4096,
   "prefix_caching": false,
   "raw_file": null,
-  "candidates": 2
+  "candidates": 2,
+  "exec_fingerprint": "41aa0a0163b8",
+  "evidence_status": "current"
  },
  "collector_backends": [
   "dsa_nsa"
@@ -68,12 +40,14 @@
   "tilelang",
   "vllm_kernel"
  ],
- "collector_only_signal": [],
- "kernel_drift": null,
- "serving_kernels_matched_in_collector": [
-  "deep_gemm::sched::sm90_paged_mqa_logits_metadata",
-  "deep_gemm::sm90_fp8_paged_mqa_logits"
- ],
- "collector_unmatched_kernels": [],
- "note": "subset semantics: the collector exercises ONE op; serving runs the whole model. Graded on the target roles only: every collector kernel of a target role must name-match a serving kernel of that role in the selected phase."
+ "missing_roles": [],
+ "aux_collector_only_roles": [],
+ "role_counts": {
+  "dsa_indexer": {
+   "collector": 2,
+   "serving": 12,
+   "matched": 2
+  }
+ },
+ "evidence": "archive/evidence/pathdiff/<framework-version>/<gate>.json in the probe workspace (full kernel lists)"
 }

@@ -7,13 +7,15 @@ attached to an API span and the taxonomy-labeled orphans — is translated
 through the SM's kernel taxonomy (the SAME file the path_diff gate uses) into
 (role, backend-label). The output per (framework, version) is one YAML:
 
-    results/<sm>/decompose/<framework>-<version>.yaml
+    results/<sm>/decompose/<framework>-<version>.yaml            (committed SUMMARY)
       results:
         <repo>:
           record: <id>  variant: <dummy cut>  kv: <rendered|fp8...>
-          families: {<role>: {<label>: [kernels...]}}     # covered execution
+          families: {<role>: {<label>: <kernel count>}}   # covered execution
           residue:  [kernels no taxonomy rule labels]     # NOT covered
           ops_observed: [<api-span ops>]
+    <workspace>/archive/evidence/decompose/<sm>/<framework>-<version>.yaml
+      the same, with the kernel NAMES per role/label (evidence, not committed)
 
 `residue` is the whole point: a non-empty residue means the model runs
 execution no op family names yet, and deciding "new family / new table /
@@ -141,23 +143,53 @@ def decompose(records_path: Path, sm: str, repo_filter: str | None, rules) -> di
     return out
 
 
-def write_outputs(decomp: dict[tuple[str, str], dict], sm: str, out_dir: Path, taxonomy_name: str) -> list[Path]:
+def summarize(entry: dict) -> dict:
+    """The committed view of a decomposition: role -> backend -> kernel COUNT,
+    the residue list (the decision input), the ops seen and the record id.
+    Kernel names live in the evidence file next to the archive; the summary
+    is what the workflow predicates and reviewers read (owner decision
+    2026-09-26: the repo carries conclusions, evidence stays out)."""
+    out = {k: entry[k] for k in ("record", "variant", "kv", "probe_eager") if k in entry}
+    out["families"] = {role: {b: len(ks) for b, ks in labels.items()} for role, labels in entry["families"].items()}
+    out["residue"] = list(entry.get("residue") or [])
+    out["ops_observed"] = list(entry.get("ops_observed") or [])
+    out["coverage"] = entry.get("coverage")
+    if entry.get("kv_variants"):
+        out["kv_variants"] = {kv: {"record": v["record"], "added_kernels": len(v["added_kernels"]),
+                                   "added_residue": list(v["added_residue"])} for kv, v in entry["kv_variants"].items()}
+    return out
+
+
+def _merge_doc(path: Path, repos: dict, sm: str, fw: str, ver: str, taxonomy_name: str, kind: str) -> dict:
+    existing = yaml.safe_load(path.read_text()) if path.exists() else None
+    results = dict((existing or {}).get("results") or {})
+    results.update(repos)  # a filtered run refreshes its repos, keeps the rest
+    residue_repos = sorted(r for r, d in results.items() if d.get("residue"))
+    return {
+        "_meta": {"platform": sm, "framework": fw, "version": ver, "taxonomy": taxonomy_name, "kind": kind,
+                  "generated": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                  "summary": {"repos": len(results), "repos_with_residue": len(residue_repos),
+                              "residue_kernels": sorted({k for d in results.values() for k in d.get("residue", [])})}},
+        "results": dict(sorted(results.items())),
+    }
+
+
+def write_outputs(decomp: dict[tuple[str, str], dict], sm: str, out_dir: Path, taxonomy_name: str,
+                  evidence_dir: Path | None = None) -> list[Path]:
+    """results/<sm>/decompose/<fw>-<ver>.yaml = SUMMARY (committed);
+    <evidence_dir>/<fw>-<ver>.yaml = full kernel lists (workspace evidence)."""
     out_dir.mkdir(parents=True, exist_ok=True)
     written = []
     for (fw, ver), repos in sorted(decomp.items()):
+        if evidence_dir is not None:
+            evidence_dir.mkdir(parents=True, exist_ok=True)
+            full = evidence_dir / f"{fw}-{ver}.yaml"
+            full.write_text(yaml.safe_dump(_merge_doc(full, repos, sm, fw, ver, taxonomy_name, "evidence:kernels"),
+                                           sort_keys=False, width=110, allow_unicode=True))
         path = out_dir / f"{fw}-{ver}.yaml"
-        existing = yaml.safe_load(path.read_text()) if path.exists() else None
-        results = dict((existing or {}).get("results") or {})
-        results.update(repos)  # a filtered run refreshes its repos, keeps the rest
-        residue_repos = sorted(r for r, d in results.items() if d.get("residue"))
-        doc = {
-            "_meta": {"platform": sm, "framework": fw, "version": ver, "taxonomy": taxonomy_name,
-                      "generated": time.strftime("%Y-%m-%dT%H:%M:%S"),
-                      "summary": {"repos": len(results), "repos_with_residue": len(residue_repos),
-                                  "residue_kernels": sorted({k for d in results.values() for k in d.get("residue", [])})}},
-            "results": dict(sorted(results.items())),
-        }
-        path.write_text(yaml.safe_dump(doc, sort_keys=False, width=110, allow_unicode=True))
+        doc = _merge_doc(path, {r: summarize(e) for r, e in repos.items()}, sm, fw, ver, taxonomy_name, "summary")
+        # leaf collections in flow style: one line per role / list, a few lines per repo
+        path.write_text(yaml.safe_dump(doc, sort_keys=False, width=200, allow_unicode=True, default_flow_style=None))
         written.append(path)
     return written
 
@@ -185,7 +217,8 @@ def main() -> int:
     if not decomp:
         raise SystemExit("no ok records matched")
     out_dir = args.out or HARNESS / "results" / args.sm / "decompose"
-    for path in write_outputs(decomp, args.sm, out_dir, taxonomy.name):
+    evidence_dir = ROOT / "archive" / "evidence" / "decompose" / args.sm
+    for path in write_outputs(decomp, args.sm, out_dir, taxonomy.name, evidence_dir):
         doc = yaml.safe_load(path.read_text())
         s = doc["_meta"]["summary"]
         print(f"wrote {path}: {s['repos']} repos, {s['repos_with_residue']} with residue, "

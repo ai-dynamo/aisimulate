@@ -3,41 +3,18 @@
  "repo": "moonshotai/Kimi-K3",
  "framework": "vllm",
  "version": "0.29.0",
- "capture_file": "facts/pathdiff/opcov_kda_ctx.json",
- "capture_cmd": [
-  "/work/s/caps/kda_ctx.py"
- ],
- "capture_env": null,
- "capture_run_error": null,
- "kv_dtype": "auto",
- "op_hint": "kda|delta|conv1d|linear|attn_res|gated|recurr",
- "gate_name": null,
+ "gate_name": "kda_ctx_Kimi-K3",
  "target_roles": [
   "linear_attention"
  ],
  "phase": "prefill",
  "phase_scoped": true,
- "role_evidence": {
-  "linear_attention": {
-   "collector": [
-    "_Z25_flash_kda_fwd_recurrenceIN4cute9TiledCopyINS0_9Copy_AtomIJNS0_11Copy_Traits",
-    "_causal_conv1d_fwd_kernel",
-    "_flash_kda_fwd_prepare"
-   ],
-   "serving": [
-    "_Z25_flash_kda_fwd_recurrenceIN4cute9TiledCopyINS0_9Copy_AtomIJNS0_11Copy_Traits",
-    "_causal_conv1d_fwd_kernel",
-    "_flash_kda_fwd_prepare"
-   ],
-   "matched": [
-    "_Z25_flash_kda_fwd_recurrenceIN4cute9TiledCopyINS0_9Copy_AtomIJNS0_11Copy_Traits",
-    "_causal_conv1d_fwd_kernel",
-    "_flash_kda_fwd_prepare"
-   ]
-  }
- },
- "missing_roles": [],
- "aux_collector_only_roles": [],
+ "kv_dtype": "auto",
+ "op_hint": "kda|delta|conv1d|linear|attn_res|gated|recurr",
+ "capture_file": "facts/pathdiff/opcov_kda_ctx.json",
+ "capture_sha256": "514e633645f06205",
+ "capture_env": null,
+ "capture_run_error": null,
  "serving_record": {
   "id": "39864922d20f",
   "tp": 1,
@@ -45,7 +22,9 @@
   "isl": 4096,
   "prefix_caching": false,
   "raw_file": null,
-  "candidates": 1
+  "candidates": 1,
+  "exec_fingerprint": "00dbfb56240c",
+  "evidence_status": "current"
  },
  "collector_backends": [
   "causal_conv1d",
@@ -57,13 +36,14 @@
   "flashkda",
   "vllm_kernel"
  ],
- "collector_only_signal": [],
- "kernel_drift": null,
- "serving_kernels_matched_in_collector": [
-  "_Z25_flash_kda_fwd_recurrenceIN4cute9TiledCopyINS0_9Copy_AtomIJNS0_11Copy_Traits",
-  "_causal_conv1d_fwd_kernel",
-  "_flash_kda_fwd_prepare"
- ],
- "collector_unmatched_kernels": [],
- "note": "subset semantics: the collector exercises ONE op; serving runs the whole model. Graded on the target roles only: every collector kernel of a target role must name-match a serving kernel of that role in the selected phase."
+ "missing_roles": [],
+ "aux_collector_only_roles": [],
+ "role_counts": {
+  "linear_attention": {
+   "collector": 3,
+   "serving": 3,
+   "matched": 3
+  }
+ },
+ "evidence": "archive/evidence/pathdiff/<framework-version>/<gate>.json in the probe workspace (full kernel lists)"
 }

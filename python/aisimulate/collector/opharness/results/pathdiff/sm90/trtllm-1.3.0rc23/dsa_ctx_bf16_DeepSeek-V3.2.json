@@ -3,63 +3,19 @@
  "repo": "deepseek-ai/DeepSeek-V3.2",
  "framework": "trtllm",
  "version": "1.3.0rc23",
- "capture_file": "facts/pathdiff/opcov_trt_dsa_ctx.json",
- "capture_cmd": [
-  "/work/ais/python/aisimulate/collector/opharness/components/op_smoke.py",
-  "--backend",
-  "trtllm",
-  "--op",
-  "dsa_context_module",
-  "--case-filter",
-  "[4096, 1, 128, 'bfloat16', 'bfloat16', 'bfloat16', 'deepseek-ai/DeepSeek-V3.2', 'dsa'",
-  "--cases",
-  "1",
-  "--out-dir",
-  "/tmp/smk"
- ],
- "capture_env": null,
- "capture_run_error": null,
- "kv_dtype": "auto",
- "op_hint": "mla|dsa|nsa|attn|indexer|flash|mqa|sparse|gemm|deepgemm|quant|topk|fmha",
- "gate_name": null,
+ "gate_name": "dsa_ctx_bf16_DeepSeek-V3.2",
  "target_roles": [
   "attention",
   "dsa_indexer"
  ],
  "phase": "prefill",
  "phase_scoped": true,
- "role_evidence": {
-  "attention": {
-   "collector": [
-    "sm90::sparse_attn_fwd_kernel",
-    "tensorrt_llm::_v1::kernels::topKPerRowPrefill"
-   ],
-   "serving": [
-    "sm90::sparse_attn_fwd_kernel",
-    "tensorrt_llm::_v1::kernels::topKPerRowPrefill"
-   ],
-   "matched": [
-    "sm90::sparse_attn_fwd_kernel",
-    "tensorrt_llm::_v1::kernels::topKPerRowPrefill"
-   ]
-  },
-  "dsa_indexer": {
-   "collector": [
-    "deep_gemm::sm90_fp8_mqa_logits",
-    "deep_gemm::smxx_clean_logits"
-   ],
-   "serving": [
-    "deep_gemm::sm90_fp8_mqa_logits",
-    "deep_gemm::smxx_clean_logits"
-   ],
-   "matched": [
-    "deep_gemm::sm90_fp8_mqa_logits",
-    "deep_gemm::smxx_clean_logits"
-   ]
-  }
- },
- "missing_roles": [],
- "aux_collector_only_roles": [],
+ "kv_dtype": "auto",
+ "op_hint": "mla|dsa|nsa|attn|indexer|flash|mqa|sparse|gemm|deepgemm|quant|topk|fmha",
+ "capture_file": "facts/pathdiff/opcov_trt_dsa_ctx.json",
+ "capture_sha256": "4cb4517cfe6194b8",
+ "capture_env": null,
+ "capture_run_error": null,
  "serving_record": {
   "id": "7a0fd74cb25b",
   "tp": 1,
@@ -67,7 +23,9 @@
   "isl": 4096,
   "prefix_caching": false,
   "raw_file": null,
-  "candidates": 1
+  "candidates": 1,
+  "exec_fingerprint": "3dd6adf31fa5",
+  "evidence_status": "current"
  },
  "collector_backends": [
   "cublas",
@@ -82,20 +40,19 @@
   "trtllm_internal",
   "vllm_kernel"
  ],
- "collector_only_signal": [],
- "kernel_drift": null,
- "serving_kernels_matched_in_collector": [
-  "deep_gemm::sm90_fp8_mqa_logits",
-  "deep_gemm::smxx_clean_logits",
-  "flashinfer::BatchQKApplyRotaryPosIdsCosSinCacheHeadParallelismKernel",
-  "kernel_cutlass_kernel_flashinfernormkernelsrmsnormRMSNormKernel",
-  "nvjet_sm90_tst_128x256_64x4_1x2_h_bz_coopA_TNN",
-  "nvjet_sm90_tst_128x256_64x4_2x1_v_bz_coopA_TNN",
-  "sm90::sparse_attn_fwd_kernel",
-  "sm90_xmma_gemm_f32f32_tf32f32_f32_tn_n_tilesize64x64x32_warpgroupsize1x1x1_execu",
-  "tensorrt_llm::_v1::kernels::applyMLARopeAppendPagedKVAssignQKernel",
-  "tensorrt_llm::_v1::kernels::convertReqIndexToGlobalKernel"
- ],
- "collector_unmatched_kernels": [],
- "note": "subset semantics: the collector exercises ONE op; serving runs the whole model. Graded on the target roles only: every collector kernel of a target role must name-match a serving kernel of that role in the selected phase."
+ "missing_roles": [],
+ "aux_collector_only_roles": [],
+ "role_counts": {
+  "attention": {
+   "collector": 2,
+   "serving": 2,
+   "matched": 2
+  },
+  "dsa_indexer": {
+   "collector": 2,
+   "serving": 2,
+   "matched": 2
+  }
+ },
+ "evidence": "archive/evidence/pathdiff/<framework-version>/<gate>.json in the probe workspace (full kernel lists)"
 }

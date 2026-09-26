@@ -3,37 +3,18 @@
  "repo": "nvidia/Llama-3.1-70B-Instruct-FP8",
  "framework": "vllm",
  "version": "0.29.0",
- "capture_file": "facts/pathdiff/opcov_gemm_fp8.json",
- "capture_cmd": [
-  "/work/s/caps/gemm_fp8.py"
- ],
- "capture_env": null,
- "capture_run_error": null,
- "kv_dtype": "auto",
- "op_hint": "gemm|linear|proj|nvjet|cublas|deepgemm|scaled_mm|quant|cutlass",
- "gate_name": null,
+ "gate_name": "gemm_fp8_Llama-3.1-70B-FP8",
  "target_roles": [
   "gemm"
  ],
  "phase": null,
  "phase_scoped": false,
- "role_evidence": {
-  "gemm": {
-   "collector": [
-    "vllm::cutlass_3x_gemm_sm90_fp8"
-   ],
-   "serving": [
-    "nvjet_sm90_tst_128x8_64x12_2x1_v_bz_TNT",
-    "nvjet_sm90_tst_320x128_64x3_1x2_h_bz_coopB_TNT",
-    "vllm::cutlass_3x_gemm_sm90_fp8"
-   ],
-   "matched": [
-    "vllm::cutlass_3x_gemm_sm90_fp8"
-   ]
-  }
- },
- "missing_roles": [],
- "aux_collector_only_roles": [],
+ "kv_dtype": "auto",
+ "op_hint": "gemm|linear|proj|nvjet|cublas|deepgemm|scaled_mm|quant|cutlass",
+ "capture_file": "facts/pathdiff/opcov_gemm_fp8.json",
+ "capture_sha256": "3d1407a28993699f",
+ "capture_env": null,
+ "capture_run_error": null,
  "serving_record": {
   "id": "70764220f4aa",
   "tp": 1,
@@ -41,7 +22,9 @@
   "isl": 4096,
   "prefix_caching": false,
   "raw_file": null,
-  "candidates": 1
+  "candidates": 1,
+  "exec_fingerprint": "c04c55adbbf5",
+  "evidence_status": "current"
  },
  "collector_backends": [
   "cutlass",
@@ -53,13 +36,14 @@
   "fa3",
   "vllm_kernel"
  ],
- "collector_only_signal": [],
- "kernel_drift": null,
- "serving_kernels_matched_in_collector": [
-  "triton_",
-  "vllm::cutlass_3x_gemm_sm90_fp8",
-  "vllm::scaled_fp8_quant_kernel_strided_group_shape"
- ],
- "collector_unmatched_kernels": [],
- "note": "subset semantics: the collector exercises ONE op; serving runs the whole model. Graded on the target roles only: every collector kernel of a target role must name-match a serving kernel of that role in the selected phase."
+ "missing_roles": [],
+ "aux_collector_only_roles": [],
+ "role_counts": {
+  "gemm": {
+   "collector": 1,
+   "serving": 3,
+   "matched": 1
+  }
+ },
+ "evidence": "archive/evidence/pathdiff/<framework-version>/<gate>.json in the probe workspace (full kernel lists)"
 }

@@ -3,49 +3,18 @@
  "repo": "Qwen/Qwen3.5-0.8B",
  "framework": "sglang",
  "version": "0.5.16",
- "capture_file": "facts/pathdiff/opcov_sgl_gdn_gen.json",
- "capture_cmd": [
-  "/work/ais/python/aisimulate/collector/opharness/components/op_smoke.py",
-  "--backend",
-  "sglang",
-  "--op",
-  "gdn",
-  "--case-filter",
-  "'generation'",
-  "--cases",
-  "1",
-  "--out-dir",
-  "/tmp/smk"
- ],
- "capture_env": null,
- "capture_run_error": null,
- "kv_dtype": "auto",
- "op_hint": "gdn|delta|conv1d|linear|mamba|gated|recurr",
- "gate_name": null,
+ "gate_name": "gdn_gen_Qwen3.5-0.8B",
  "target_roles": [
   "linear_attention"
  ],
  "phase": "decode",
  "phase_scoped": true,
- "role_evidence": {
-  "linear_attention": {
-   "collector": [
-    "_causal_conv1d_update_kernel",
-    "fused_recurrent_gated_delta_rule_packed_decode_kernel"
-   ],
-   "serving": [
-    "_causal_conv1d_update_kernel",
-    "fused_qkvzba_split_reshape_cat_contiguous_kernel",
-    "fused_recurrent_gated_delta_rule_packed_decode_kernel"
-   ],
-   "matched": [
-    "_causal_conv1d_update_kernel",
-    "fused_recurrent_gated_delta_rule_packed_decode_kernel"
-   ]
-  }
- },
- "missing_roles": [],
- "aux_collector_only_roles": [],
+ "kv_dtype": "auto",
+ "op_hint": "gdn|delta|conv1d|linear|mamba|gated|recurr",
+ "capture_file": "facts/pathdiff/opcov_sgl_gdn_gen.json",
+ "capture_sha256": "b7099d1337249ecb",
+ "capture_env": null,
+ "capture_run_error": null,
  "serving_record": {
   "id": "5aec08d64057",
   "tp": 1,
@@ -53,7 +22,9 @@
   "isl": 4096,
   "prefix_caching": false,
   "raw_file": null,
-  "candidates": 1
+  "candidates": 1,
+  "exec_fingerprint": "c9a560973c2f",
+  "evidence_status": "current"
  },
  "collector_backends": [
   "causal_conv1d",
@@ -66,12 +37,14 @@
   "fla_triton",
   "sgl_kernel"
  ],
- "collector_only_signal": [],
- "kernel_drift": null,
- "serving_kernels_matched_in_collector": [
-  "_causal_conv1d_update_kernel",
-  "fused_recurrent_gated_delta_rule_packed_decode_kernel"
- ],
- "collector_unmatched_kernels": [],
- "note": "subset semantics: the collector exercises ONE op; serving runs the whole model. Graded on the target roles only: every collector kernel of a target role must name-match a serving kernel of that role in the selected phase."
+ "missing_roles": [],
+ "aux_collector_only_roles": [],
+ "role_counts": {
+  "linear_attention": {
+   "collector": 2,
+   "serving": 3,
+   "matched": 2
+  }
+ },
+ "evidence": "archive/evidence/pathdiff/<framework-version>/<gate>.json in the probe workspace (full kernel lists)"
 }

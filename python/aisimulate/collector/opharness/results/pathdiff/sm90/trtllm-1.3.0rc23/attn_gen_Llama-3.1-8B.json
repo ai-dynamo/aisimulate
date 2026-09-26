@@ -3,46 +3,19 @@
  "repo": "meta-llama/Meta-Llama-3.1-8B",
  "framework": "trtllm",
  "version": "1.3.0rc23",
- "capture_file": "facts/pathdiff/opcov_trt_attn_gen.json",
- "capture_cmd": [
-  "/work/ais/python/aisimulate/collector/opharness/components/op_smoke.py",
-  "--backend",
-  "trtllm",
-  "--op",
-  "attention_generation",
-  "--case-prefix",
-  "[1, 4095, 32, 8, 128, 0, False, False, False",
-  "--cases",
-  "1",
-  "--out-dir",
-  "/tmp/smk"
- ],
- "capture_env": null,
- "capture_run_error": null,
- "kv_dtype": "auto",
- "op_hint": "attn|attention|fmha|mha|flash|xqa",
- "gate_name": null,
+ "gate_name": "attn_gen_Llama-3.1-8B",
  "target_roles": [
   "attention",
   "dsa_indexer"
  ],
  "phase": "decode",
  "phase_scoped": true,
- "role_evidence": {
-  "attention": {
-   "collector": [
-    "kernel_mha"
-   ],
-   "serving": [
-    "kernel_mha"
-   ],
-   "matched": [
-    "kernel_mha"
-   ]
-  }
- },
- "missing_roles": [],
- "aux_collector_only_roles": [],
+ "kv_dtype": "auto",
+ "op_hint": "attn|attention|fmha|mha|flash|xqa",
+ "capture_file": "facts/pathdiff/opcov_trt_attn_gen.json",
+ "capture_sha256": "7eae70e30567e930",
+ "capture_env": null,
+ "capture_run_error": null,
  "serving_record": {
   "id": "4f8983fdd5ce",
   "tp": 1,
@@ -50,7 +23,9 @@
   "isl": 4096,
   "prefix_caching": false,
   "raw_file": null,
-  "candidates": 1
+  "candidates": 1,
+  "exec_fingerprint": "de6776be1b09",
+  "evidence_status": "current"
  },
  "collector_backends": [
   "trtllm_mha"
@@ -59,12 +34,14 @@
   "cublas",
   "trtllm_mha"
  ],
- "collector_only_signal": [],
- "kernel_drift": null,
- "serving_kernels_matched_in_collector": [
-  "kernel_mha",
-  "tensorrt_llm::_v1::kernels::applyBiasRopeUpdateKVCacheV2"
- ],
- "collector_unmatched_kernels": [],
- "note": "subset semantics: the collector exercises ONE op; serving runs the whole model. Graded on the target roles only: every collector kernel of a target role must name-match a serving kernel of that role in the selected phase."
+ "missing_roles": [],
+ "aux_collector_only_roles": [],
+ "role_counts": {
+  "attention": {
+   "collector": 1,
+   "serving": 1,
+   "matched": 1
+  }
+ },
+ "evidence": "archive/evidence/pathdiff/<framework-version>/<gate>.json in the probe workspace (full kernel lists)"
 }

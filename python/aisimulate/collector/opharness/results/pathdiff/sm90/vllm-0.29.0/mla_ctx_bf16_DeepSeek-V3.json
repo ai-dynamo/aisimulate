@@ -3,39 +3,19 @@
  "repo": "deepseek-ai/DeepSeek-V3",
  "framework": "vllm",
  "version": "0.29.0",
- "capture_file": "facts/pathdiff/opcov_mla_ctx_bf16.json",
- "capture_cmd": [
-  "/work/s/caps/mla_ctx_bf16.py"
- ],
- "capture_env": null,
- "capture_run_error": null,
- "kv_dtype": "auto",
- "op_hint": "mla|attn|flash|bmm|proj|indexer|rope|concat|gemm|deepgemm|quant",
- "gate_name": null,
+ "gate_name": "mla_ctx_bf16_DeepSeek-V3",
  "target_roles": [
   "attention",
   "dsa_indexer"
  ],
  "phase": "prefill",
  "phase_scoped": true,
- "role_evidence": {
-  "attention": {
-   "collector": [
-    "flash::FlashAttnFwdSm90",
-    "flash::prepare_varlen_num_blocks_kernel"
-   ],
-   "serving": [
-    "flash::FlashAttnFwdSm90",
-    "flash::prepare_varlen_num_blocks_kernel"
-   ],
-   "matched": [
-    "flash::FlashAttnFwdSm90",
-    "flash::prepare_varlen_num_blocks_kernel"
-   ]
-  }
- },
- "missing_roles": [],
- "aux_collector_only_roles": [],
+ "kv_dtype": "auto",
+ "op_hint": "mla|attn|flash|bmm|proj|indexer|rope|concat|gemm|deepgemm|quant",
+ "capture_file": "facts/pathdiff/opcov_mla_ctx_bf16.json",
+ "capture_sha256": "af05d2eee98572b0",
+ "capture_env": null,
+ "capture_run_error": null,
  "serving_record": {
   "id": "c6a1dad585a8",
   "tp": 1,
@@ -43,7 +23,9 @@
   "isl": 4096,
   "prefix_caching": false,
   "raw_file": null,
-  "candidates": 1
+  "candidates": 1,
+  "exec_fingerprint": "29f4c6b99264",
+  "evidence_status": "current"
  },
  "collector_backends": [
   "cublas",
@@ -57,14 +39,14 @@
   "triton_fused_moe",
   "vllm_kernel"
  ],
- "collector_only_signal": [],
- "kernel_drift": null,
- "serving_kernels_matched_in_collector": [
-  "flash::FlashAttnFwdSm90",
-  "flash::prepare_varlen_num_blocks_kernel",
-  "flashinfer::ConcatMLAKKernel",
-  "vllm::concat_and_cache_mla_kernel"
- ],
- "collector_unmatched_kernels": [],
- "note": "subset semantics: the collector exercises ONE op; serving runs the whole model. Graded on the target roles only: every collector kernel of a target role must name-match a serving kernel of that role in the selected phase."
+ "missing_roles": [],
+ "aux_collector_only_roles": [],
+ "role_counts": {
+  "attention": {
+   "collector": 2,
+   "serving": 2,
+   "matched": 2
+  }
+ },
+ "evidence": "archive/evidence/pathdiff/<framework-version>/<gate>.json in the probe workspace (full kernel lists)"
 }

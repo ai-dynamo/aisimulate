@@ -40,6 +40,7 @@ Usage (diff, host):
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -401,7 +402,7 @@ def diff(capture_file: str, repo: str, framework: str, version: str,
         # what this gate proves: the target op roles and the execution phase
         # the serving evidence was selected from (phase_scoped False = legacy
         # record without phase information, evidence unscoped)
-        "gate_name": gate_name, "target_roles": g["target_roles"], "phase": phase,
+        "gate_name": gate_name or (Path(save).stem if save else None), "target_roles": g["target_roles"], "phase": phase,
         "phase_scoped": phase_scoped, "role_evidence": g["role_evidence"],
         "missing_roles": g["missing_roles"], "aux_collector_only_roles": g["aux_collector_only_roles"],
         "serving_record": {"id": serving["id"], "tp": serving["runtime"].get("tp"),
@@ -420,11 +421,38 @@ def diff(capture_file: str, repo: str, framework: str, version: str,
                 "model. Graded on the target roles only: every collector kernel of a target "
                 "role must name-match a serving kernel of that role in the selected phase.",
     }
+    report["capture_sha256"] = hashlib.sha256(Path(capture_file).read_bytes()).hexdigest()[:16]
+    report["serving_record"]["exec_fingerprint"] = serving.get("exec_fingerprint")
+    report["serving_record"]["evidence_status"] = serving.get("evidence_status")
     print(json.dumps(report, indent=1, ensure_ascii=False))
     if save:
+        # the committed verdict is the CONCLUSION: what was compared (ids, sha,
+        # fingerprint, roles, phase) and what came out (verdict, counts, the
+        # drifting names when red). Kernel lists are evidence and go to the
+        # workspace (archive/evidence/pathdiff/...) — owner decision 2026-09-26.
         Path(save).parent.mkdir(parents=True, exist_ok=True)
-        Path(save).write_text(json.dumps(report, indent=1, ensure_ascii=False))
+        Path(save).write_text(json.dumps(summarize_report(report), indent=1, ensure_ascii=False))
+        ev = ROOT / "archive" / "evidence" / "pathdiff" / Path(save).parent.name / Path(save).name
+        ev.parent.mkdir(parents=True, exist_ok=True)
+        ev.write_text(json.dumps(report, indent=1, ensure_ascii=False))
     return 0 if verdict == "aligned" else 1
+
+
+def summarize_report(report: dict) -> dict:
+    """Committed view of a verdict: identity of both inputs, the scoping, the
+    verdict, per-role counts, and — only when not aligned — the names that
+    decide it (missing roles, collector-only families, drifting kernels)."""
+    keep = ("verdict", "repo", "framework", "version", "gate_name", "target_roles", "phase", "phase_scoped",
+            "kv_dtype", "op_hint", "capture_file", "capture_sha256", "capture_env", "capture_run_error",
+            "serving_record", "collector_backends", "serving_backends", "missing_roles", "aux_collector_only_roles")
+    out = {k: report.get(k) for k in keep if k in report}
+    out["role_counts"] = {role: {"collector": len(ev["collector"]), "serving": len(ev["serving"]), "matched": len(ev["matched"])}
+                          for role, ev in (report.get("role_evidence") or {}).items()}
+    if report.get("verdict") != "aligned":
+        out["collector_only_signal"] = report.get("collector_only_signal")
+        out["kernel_drift"] = report.get("kernel_drift")
+    out["evidence"] = "archive/evidence/pathdiff/<framework-version>/<gate>.json in the probe workspace (full kernel lists)"
+    return out
 
 
 def main() -> int:

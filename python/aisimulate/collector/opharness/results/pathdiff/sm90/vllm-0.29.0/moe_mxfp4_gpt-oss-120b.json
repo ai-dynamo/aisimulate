@@ -3,62 +3,19 @@
  "repo": "openai/gpt-oss-120b",
  "framework": "vllm",
  "version": "0.29.0",
- "capture_file": "facts/pathdiff/opcov_moe_mxfp4_gptoss.json",
- "capture_cmd": [
-  "/work/s/caps/moe_mxfp4_gptoss.py"
- ],
- "capture_env": null,
- "capture_run_error": null,
- "kv_dtype": null,
- "op_hint": "moe|expert|grouped|fused_moe|deepgemm|topk|marlin|routing",
- "gate_name": null,
+ "gate_name": "moe_mxfp4_gpt-oss-120b",
  "target_roles": [
   "moe_gemm",
   "routing"
  ],
  "phase": null,
  "phase_scoped": false,
- "role_evidence": {
-  "moe_gemm": {
-   "collector": [
-    "_matmul_ogs_NNT_bf16xbf16xmxfp4",
-    "_matmul_ogs_NNT_bf16xbf16xmxfp4_swiglu",
-    "_reduce_grouped"
-   ],
-   "serving": [
-    "_matmul_ogs_NNT_bf16xbf16xmxfp4",
-    "_matmul_ogs_NNT_bf16xbf16xmxfp4_swiglu",
-    "_reduce_grouped"
-   ],
-   "matched": [
-    "_matmul_ogs_NNT_bf16xbf16xmxfp4",
-    "_matmul_ogs_NNT_bf16xbf16xmxfp4_swiglu",
-    "_reduce_grouped"
-   ]
-  },
-  "routing": {
-   "collector": [
-    "_combined_routing_compute_pow2",
-    "_combined_routing_memset",
-    "_sum_bitmatrix_rows",
-    "_topk_forward"
-   ],
-   "serving": [
-    "_combined_routing_compute_pow2",
-    "_combined_routing_memset",
-    "_sum_bitmatrix_rows",
-    "_topk_forward"
-   ],
-   "matched": [
-    "_combined_routing_compute_pow2",
-    "_combined_routing_memset",
-    "_sum_bitmatrix_rows",
-    "_topk_forward"
-   ]
-  }
- },
- "missing_roles": [],
- "aux_collector_only_roles": [],
+ "kv_dtype": null,
+ "op_hint": "moe|expert|grouped|fused_moe|deepgemm|topk|marlin|routing",
+ "capture_file": "facts/pathdiff/opcov_moe_mxfp4_gptoss.json",
+ "capture_sha256": "6b9d19c53421d204",
+ "capture_env": null,
+ "capture_run_error": null,
  "serving_record": {
   "id": "590c6e80f0d9",
   "tp": 1,
@@ -66,7 +23,9 @@
   "isl": 4096,
   "prefix_caching": false,
   "raw_file": null,
-  "candidates": 2
+  "candidates": 2,
+  "exec_fingerprint": "f11469ed6b42",
+  "evidence_status": "current"
  },
  "collector_backends": [
   "torch",
@@ -77,18 +36,19 @@
   "fa3",
   "triton_fused_moe"
  ],
- "collector_only_signal": [],
- "kernel_drift": null,
- "serving_kernels_matched_in_collector": [
-  "_combined_routing_compute_pow2",
-  "_combined_routing_memset",
-  "_matmul_ogs_NNT_bf16xbf16xmxfp4",
-  "_matmul_ogs_NNT_bf16xbf16xmxfp4_swiglu",
-  "_reduce_grouped",
-  "_sum_bitmatrix_rows",
-  "_topk_forward",
-  "flashinfer::sampling::RadixTopKMaskLogitsKernel_MultiCTA"
- ],
- "collector_unmatched_kernels": [],
- "note": "subset semantics: the collector exercises ONE op; serving runs the whole model. Graded on the target roles only: every collector kernel of a target role must name-match a serving kernel of that role in the selected phase."
+ "missing_roles": [],
+ "aux_collector_only_roles": [],
+ "role_counts": {
+  "moe_gemm": {
+   "collector": 3,
+   "serving": 3,
+   "matched": 3
+  },
+  "routing": {
+   "collector": 4,
+   "serving": 4,
+   "matched": 4
+  }
+ },
+ "evidence": "archive/evidence/pathdiff/<framework-version>/<gate>.json in the probe workspace (full kernel lists)"
 }

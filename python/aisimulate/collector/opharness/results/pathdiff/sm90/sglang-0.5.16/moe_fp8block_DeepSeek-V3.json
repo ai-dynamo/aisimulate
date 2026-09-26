@@ -3,58 +3,19 @@
  "repo": "deepseek-ai/DeepSeek-V3",
  "framework": "sglang",
  "version": "0.5.16",
- "capture_file": "facts/pathdiff/opcov_sgl_moe_fp8block.json",
- "capture_cmd": [
-  "/work/ais/python/aisimulate/collector/opharness/components/op_smoke.py",
-  "--backend",
-  "sglang",
-  "--op",
-  "moe",
-  "--case-filter",
-  "'fp8_block', 4096, 7168, 2048, 8, 256, 1, 1, 'deepseek-ai/DeepSeek-V3'",
-  "--cases",
-  "1",
-  "--out-dir",
-  "/tmp/smk"
- ],
- "capture_env": null,
- "capture_run_error": null,
- "kv_dtype": "auto",
- "op_hint": "moe|expert|grouped|fused_moe|deepgemm|topk|marlin|routing|ep_",
- "gate_name": null,
+ "gate_name": "moe_fp8block_DeepSeek-V3",
  "target_roles": [
   "moe_gemm",
   "routing"
  ],
  "phase": null,
  "phase_scoped": false,
- "role_evidence": {
-  "moe_gemm": {
-   "collector": [
-    "fused_moe_kernel"
-   ],
-   "serving": [
-    "fused_moe_kernel"
-   ],
-   "matched": [
-    "fused_moe_kernel"
-   ]
-  },
-  "routing": {
-   "collector": [
-    "tensorrt_llm::kernels::deepseek_v3_topk_kernel"
-   ],
-   "serving": [
-    "router_gemm_kernel",
-    "tensorrt_llm::kernels::deepseek_v3_topk_kernel"
-   ],
-   "matched": [
-    "tensorrt_llm::kernels::deepseek_v3_topk_kernel"
-   ]
-  }
- },
- "missing_roles": [],
- "aux_collector_only_roles": [],
+ "kv_dtype": "auto",
+ "op_hint": "moe|expert|grouped|fused_moe|deepgemm|topk|marlin|routing|ep_",
+ "capture_file": "facts/pathdiff/opcov_sgl_moe_fp8block.json",
+ "capture_sha256": "9c762cc23556e491",
+ "capture_env": null,
+ "capture_run_error": null,
  "serving_record": {
   "id": "fd43089dfc3f",
   "tp": 1,
@@ -62,7 +23,9 @@
   "isl": 4096,
   "prefix_caching": false,
   "raw_file": null,
-  "candidates": 1
+  "candidates": 1,
+  "exec_fingerprint": "81b787d8685e",
+  "evidence_status": "current"
  },
  "collector_backends": [
   "sgl_kernel",
@@ -76,17 +39,19 @@
   "sgl_kernel",
   "triton_fused_moe"
  ],
- "collector_only_signal": [],
- "kernel_drift": null,
- "serving_kernels_matched_in_collector": [
-  "act_and_mul_kernel",
-  "count_and_sort_expert_tokens_kernel",
-  "fused_moe_kernel",
-  "moe_align_block_size_kernel",
-  "moe_sum_reduce_warp_per_token_vec_kernel",
-  "per_token_group_quant_8bit_v2_kernel",
-  "tensorrt_llm::kernels::deepseek_v3_topk_kernel"
- ],
- "collector_unmatched_kernels": [],
- "note": "subset semantics: the collector exercises ONE op; serving runs the whole model. Graded on the target roles only: every collector kernel of a target role must name-match a serving kernel of that role in the selected phase."
+ "missing_roles": [],
+ "aux_collector_only_roles": [],
+ "role_counts": {
+  "moe_gemm": {
+   "collector": 1,
+   "serving": 1,
+   "matched": 1
+  },
+  "routing": {
+   "collector": 1,
+   "serving": 2,
+   "matched": 1
+  }
+ },
+ "evidence": "archive/evidence/pathdiff/<framework-version>/<gate>.json in the probe workspace (full kernel lists)"
 }

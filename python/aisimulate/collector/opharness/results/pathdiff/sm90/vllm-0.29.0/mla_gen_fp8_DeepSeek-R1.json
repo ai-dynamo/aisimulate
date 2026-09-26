@@ -3,42 +3,19 @@
  "repo": "deepseek-ai/DeepSeek-R1",
  "framework": "vllm",
  "version": "0.29.0",
- "capture_file": "facts/pathdiff/opcov_mla_gen_fp8.json",
- "capture_cmd": [
-  "/work/s/caps/mla_gen_fp8.py"
- ],
- "capture_env": null,
- "capture_run_error": null,
- "kv_dtype": "fp8",
- "op_hint": "mla|attn|flash|bmm|proj|indexer|rope|concat|gemm|deepgemm|quant",
- "gate_name": null,
+ "gate_name": "mla_gen_fp8_DeepSeek-R1",
  "target_roles": [
   "attention",
   "dsa_indexer"
  ],
  "phase": "decode",
  "phase_scoped": true,
- "role_evidence": {
-  "attention": {
-   "collector": [
-    "flash::flash_fwd_splitkv_mla_combine_kernel",
-    "flash::flash_fwd_splitkv_mla_kernel",
-    "get_mla_metadata_kernel"
-   ],
-   "serving": [
-    "flash::flash_fwd_splitkv_mla_combine_kernel",
-    "flash::flash_fwd_splitkv_mla_kernel",
-    "get_mla_metadata_kernel"
-   ],
-   "matched": [
-    "flash::flash_fwd_splitkv_mla_combine_kernel",
-    "flash::flash_fwd_splitkv_mla_kernel",
-    "get_mla_metadata_kernel"
-   ]
-  }
- },
- "missing_roles": [],
- "aux_collector_only_roles": [],
+ "kv_dtype": "fp8",
+ "op_hint": "mla|attn|flash|bmm|proj|indexer|rope|concat|gemm|deepgemm|quant",
+ "capture_file": "facts/pathdiff/opcov_mla_gen_fp8.json",
+ "capture_sha256": "7c952ad63effb82c",
+ "capture_env": null,
+ "capture_run_error": null,
  "serving_record": {
   "id": "a9460b301113",
   "tp": 1,
@@ -46,7 +23,9 @@
   "isl": 4096,
   "prefix_caching": false,
   "raw_file": null,
-  "candidates": 1
+  "candidates": 1,
+  "exec_fingerprint": "660e2fa94edf",
+  "evidence_status": "current"
  },
  "collector_backends": [
   "cublas",
@@ -65,20 +44,14 @@
   "triton_fused_moe",
   "vllm_kernel"
  ],
- "collector_only_signal": [],
- "kernel_drift": null,
- "serving_kernels_matched_in_collector": [
-  "deep_gemm::fp8_gemm_kernel_swapAB",
-  "flash::flash_fwd_splitkv_mla_combine_kernel",
-  "flash::flash_fwd_splitkv_mla_kernel",
-  "get_mla_metadata_kernel",
-  "nvjet_sm90_tst_128x8_64x12_1x1_h_bz_NNT",
-  "per_token_group_quant_8bit_kernel",
-  "tensorrt_llm::kernels::fp8_blockscale_gemm::scale_1x128_kernel",
-  "vllm::concat_and_cache_mla_kernel"
- ],
- "collector_unmatched_kernels": [
-  "vllm::dynamic_flashinfer_deepgemm_blockscale_gemm"
- ],
- "note": "subset semantics: the collector exercises ONE op; serving runs the whole model. Graded on the target roles only: every collector kernel of a target role must name-match a serving kernel of that role in the selected phase."
+ "missing_roles": [],
+ "aux_collector_only_roles": [],
+ "role_counts": {
+  "attention": {
+   "collector": 3,
+   "serving": 3,
+   "matched": 3
+  }
+ },
+ "evidence": "archive/evidence/pathdiff/<framework-version>/<gate>.json in the probe workspace (full kernel lists)"
 }

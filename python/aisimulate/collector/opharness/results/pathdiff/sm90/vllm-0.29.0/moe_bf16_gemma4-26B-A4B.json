@@ -3,47 +3,19 @@
  "repo": "google/gemma-4-26B-A4B",
  "framework": "vllm",
  "version": "0.29.0",
- "capture_file": "facts/pathdiff/opcov_moe_bf16_gemma4.json",
- "capture_cmd": [
-  "/work/s/caps/moe_bf16_gemma4.py"
- ],
- "capture_env": null,
- "capture_run_error": null,
- "kv_dtype": null,
- "op_hint": "moe|expert|grouped|fused_moe|deepgemm|topk|marlin|routing",
- "gate_name": null,
+ "gate_name": "moe_bf16_gemma4-26B-A4B",
  "target_roles": [
   "moe_gemm",
   "routing"
  ],
  "phase": null,
  "phase_scoped": false,
- "role_evidence": {
-  "moe_gemm": {
-   "collector": [
-    "fused_moe_kernel"
-   ],
-   "serving": [
-    "fused_moe_kernel"
-   ],
-   "matched": [
-    "fused_moe_kernel"
-   ]
-  },
-  "routing": {
-   "collector": [
-    "_gemma4_routing_kernel"
-   ],
-   "serving": [
-    "_gemma4_routing_kernel"
-   ],
-   "matched": [
-    "_gemma4_routing_kernel"
-   ]
-  }
- },
- "missing_roles": [],
- "aux_collector_only_roles": [],
+ "kv_dtype": null,
+ "op_hint": "moe|expert|grouped|fused_moe|deepgemm|topk|marlin|routing",
+ "capture_file": "facts/pathdiff/opcov_moe_bf16_gemma4.json",
+ "capture_sha256": "ac74a8bdb944f038",
+ "capture_env": null,
+ "capture_run_error": null,
  "serving_record": {
   "id": "dfe3060b813f",
   "tp": 1,
@@ -51,7 +23,9 @@
   "isl": 4096,
   "prefix_caching": false,
   "raw_file": null,
-  "candidates": 2
+  "candidates": 2,
+  "exec_fingerprint": "e8720e6c955f",
+  "evidence_status": "current"
  },
  "collector_backends": [
   "torch",
@@ -65,16 +39,19 @@
   "triton_fused_moe",
   "vllm_kernel"
  ],
- "collector_only_signal": [],
- "kernel_drift": null,
- "serving_kernels_matched_in_collector": [
-  "_gemma4_routing_kernel",
-  "fused_moe_kernel",
-  "vllm::act_and_mul_kernel",
-  "vllm::moe::count_and_sort_expert_tokens_kernel",
-  "vllm::moe::moe_align_block_size_kernel",
-  "vllm::moe::moe_sum_vec_kernel"
- ],
- "collector_unmatched_kernels": [],
- "note": "subset semantics: the collector exercises ONE op; serving runs the whole model. Graded on the target roles only: every collector kernel of a target role must name-match a serving kernel of that role in the selected phase."
+ "missing_roles": [],
+ "aux_collector_only_roles": [],
+ "role_counts": {
+  "moe_gemm": {
+   "collector": 1,
+   "serving": 1,
+   "matched": 1
+  },
+  "routing": {
+   "collector": 1,
+   "serving": 1,
+   "matched": 1
+  }
+ },
+ "evidence": "archive/evidence/pathdiff/<framework-version>/<gate>.json in the probe workspace (full kernel lists)"
 }
