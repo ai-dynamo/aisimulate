@@ -1374,7 +1374,10 @@ def test_energy_detail_reports_missing_adapter_export(tmp_path, monkeypatch, cap
     assert "downstream Dynamo adapter export is not qualified" in text
 
 
-def test_snapshot_seed_override_reaches_the_existing_predict_path(tmp_path, monkeypatch, capsys) -> None:
+@pytest.mark.parametrize("profile", [False, True])
+def test_snapshot_seed_override_reaches_the_existing_predict_path(tmp_path, monkeypatch, capsys, profile) -> None:
+    import os
+
     from aisimulate.runner import EngineReplayRunnerFactory
 
     class SnapshotFactory(_Factory):
@@ -1404,6 +1407,22 @@ def test_snapshot_seed_override_reaches_the_existing_predict_path(tmp_path, monk
     )
     runner = _Runner()
     monkeypatch.setattr(cli, "resolve_runner_factory", lambda stack: SnapshotFactory(runner))
+    if profile:
+        # This unit test calls the internal child entry point directly. Model
+        # its supervisor context; public-process supervision is tested separately.
+        monkeypatch.setenv(
+            "_AISIMULATE_SUPERVISED_BUDGET",
+            json.dumps(
+                {
+                    "supervisor_pid": os.getpid(),
+                    "memory_limit_bytes": 4_000_000_000,
+                    "cpu_limit": 1,
+                    "reserved_host_memory_bytes": 1_000_000_000,
+                    "events_path": str(tmp_path / "events.jsonl"),
+                    "ready_path": str(tmp_path / "ready"),
+                }
+            ),
+        )
     assert (
         cli.main(
             [
@@ -1414,6 +1433,7 @@ def test_snapshot_seed_override_reaches_the_existing_predict_path(tmp_path, monk
                 str(tmp_path / "out"),
                 "--set",
                 "traffic.load.agentic_snapshot.seed=42",
+                *(["--set", "traffic.load.agentic_profile.duration_seconds=5.0"] if profile else []),
                 "--format",
                 "json",
             ]
@@ -1422,6 +1442,11 @@ def test_snapshot_seed_override_reaches_the_existing_predict_path(tmp_path, monk
     )
     assert runner.spec.workload["agentic_snapshot"] == {"seed": 42}
     assert runner.spec.workload["agentic_lanes"] == 2
+    if profile:
+        assert runner.spec.workload["agentic_profile"]["duration_seconds"] == 5.0
+        assert runner.spec.workload["agentic_profile"]["response_grace_seconds"] == 30.0
+    else:
+        assert "agentic_profile" not in runner.spec.workload
     assert json.loads(capsys.readouterr().out)["completed_requests"] == 1
 
 

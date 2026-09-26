@@ -1689,6 +1689,86 @@ def test_agentic_warmup_runner_requires_snapshot() -> None:
     assert runtime.execution_spec is None
 
 
+@pytest.mark.parametrize("warmup", [False, True])
+def test_agentic_profile_controls_and_evidence_reach_native_boundary(warmup: bool) -> None:
+    profile = {"duration_seconds": 2.0, "response_grace_seconds": 0.0}
+    evidence = {"profile_start_ms": 10.0, "admission_end_ms": 2010.0}
+
+    class ProfileRuntime(RecordingRuntime):
+        def run_replay_json(self, execution_spec_json):
+            report = json.loads(super().run_replay_json(execution_spec_json))
+            return json.dumps(report | {"agentic_profile": evidence})
+
+    runtime = ProfileRuntime()
+    report = (
+        EngineReplayRunnerFactory(runtime=runtime)
+        .create(0)
+        .run(
+            _spec(
+                workload={
+                    "source_type": "trace",
+                    "load_type": "trace_timestamps",
+                    "trace_path": "corpus",
+                    "trace_format": "weka",
+                    "agentic_lanes": 1,
+                    "agentic_snapshot": {"seed": 42},
+                    "agentic_warmup": warmup,
+                    "agentic_profile": profile,
+                }
+            )
+        )
+    )
+    assert runtime.execution_spec["traffic"]["agentic_profile"] == profile
+    assert report.metadata["agentic_profile"] == evidence
+
+
+@pytest.mark.parametrize(
+    "overrides,message",
+    [
+        ({"agentic_profile": {"duration_seconds": False}}, "duration_seconds"),
+        ({"agentic_profile": {"unexpected": 1}}, "unexpected"),
+        ({"agentic_snapshot": None}, "agentic_profile requires agentic_snapshot"),
+        ({"max_sim_time_ms": 1.0}, "agentic_profile cannot be combined"),
+    ],
+)
+def test_agentic_profile_runner_rejects_invalid_raw_payload(overrides: dict, message: str) -> None:
+    runtime = RecordingRuntime()
+    workload = {
+        "source_type": "trace",
+        "load_type": "trace_timestamps",
+        "trace_path": "corpus",
+        "trace_format": "weka",
+        "agentic_lanes": 1,
+        "agentic_snapshot": {"seed": 42},
+        "agentic_profile": {},
+    }
+    with pytest.raises(ValueError, match=message):
+        EngineReplayRunnerFactory(runtime=runtime).create(0).run(_spec(workload=workload | overrides))
+    assert runtime.execution_spec is None
+
+
+def test_agentic_profile_capability_is_explicit() -> None:
+    from dataclasses import replace
+
+    capabilities = EngineReplayRunnerFactory().capabilities()
+    assert capabilities.supports_agentic_profile
+    capabilities = replace(capabilities, supports_agentic_profile=False)
+    with pytest.raises(ValueError, match="does not support agentic profile"):
+        capabilities.require_compatible(
+            _spec(
+                workload={
+                    "source_type": "trace",
+                    "load_type": "trace_timestamps",
+                    "trace_path": "corpus",
+                    "trace_format": "weka",
+                    "agentic_lanes": 1,
+                    "agentic_snapshot": {"seed": 42},
+                    "agentic_profile": {},
+                }
+            )
+        )
+
+
 @pytest.mark.parametrize("sampler", ["numpy_random_state", "python_random"])
 def test_runner_honors_length_sampler(sampler):
     # Fixed vectors from the benchmark's NumPy RandomState contract and the

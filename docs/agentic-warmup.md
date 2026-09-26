@@ -50,8 +50,9 @@ The first unsuccessful preparation request stops further preparation admission.
 Already issued requests drain, the barrier remains closed, and the report marks
 preparation invalid with phase and request evidence. `predict` writes that
 evidence and exits unsuccessfully; `recommend` excludes the failed candidate
-from ranking. Failure thresholds and
-fixed-duration recycling remain separate follow-up work.
+from ranking. Failure thresholds remain separate follow-up work.
+[Continuous agentic profiles](agentic-profile.md) optionally add fixed-duration
+lane recycling after this barrier.
 
 ## Public control and evidence
 

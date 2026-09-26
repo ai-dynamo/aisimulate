@@ -710,6 +710,12 @@ the current SA convention.
 | `traffic.load.agentic_lanes` | `null` | `x` | `-` | Positive integer; `weka`, `agentic_mooncake`, or agentic `dynamo` timestamp replay only. |
 | `traffic.load.agentic_snapshot` | `null` (unset) | `x` | `-` | Optional object `{seed: u64}`; required `seed` is an unsigned 64-bit integer (`0` through `2^64 - 1`). Requires `traffic.load.type: trace_timestamps` and positive `agentic_lanes`; supported formats are `weka`, `agentic_mooncake`, and agentic `dynamo`. Unset preserves turn-zero execution. |
 | `traffic.load.agentic_warmup` | `false` | `x` | `-` | Optional boolean; `true` requires `agentic_snapshot` and positive `agentic_lanes`. Physically primes the saved prefixes, completes ten warmup requests per lane, then profiles the saved suffix. Available on offline aggregated or disaggregated vLLM/SGLang Engine replay, with HBM-only KV cache and speculative decoding disabled. |
+| `traffic.load.agentic_profile` | `null` (unset) | `x` | `-` | Optional object; `{}` enables continuous lane replenishment with the defaults below. Requires `trace_timestamps`, positive `agentic_lanes`, and `agentic_snapshot`; cannot be combined with `traffic.stop.max_virtual_time_seconds`. Unset preserves finite replay. See [continuous agentic profiles](../agentic-profile.md) for the full configuration, supported runtimes, and reporting semantics. |
+| `traffic.load.agentic_profile.duration_seconds` | `3600` when enabled | `x` | `-` | Positive finite admission duration, starting at the preparation barrier or simulation start without warmup. No new workload requests or replacement plays are issued after the deadline. |
+| `traffic.load.agentic_profile.response_grace_seconds` | `30` when enabled | `x` | `-` | Nonnegative finite time for already submitted requests to respond after the admission deadline; remaining client requests are then canceled. |
+| `traffic.load.agentic_profile.cancel_drain_seconds` | `10` when enabled | `x` | `-` | Nonnegative finite upper bound for cancellation acknowledgements. The supported offline runtimes acknowledge synchronously; this does not guarantee server/GPU cleanup. |
+| `traffic.load.agentic_profile.tree_idle_cap_seconds` | `300` when enabled | `x` | `-` | Positive finite idle cap for advancing a play's pending workload timers when that play has no outstanding requests. |
+| `traffic.load.agentic_profile.global_idle_cap_seconds` | `10` when enabled | `x` | `-` | Positive finite idle cap for advancing pending workload timers when the entire client workload has no outstanding requests. Engine completions and server cleanup keep their actual timestamps. |
 | `traffic.stop.requests` | `100` for default traffic | `x` | `-` | Positive integer; 10× default concurrency; synthetic request source only. |
 | `traffic.stop.requests_per_load_unit` | `null` | `x` | `-` | Positive; synthetic request source only. |
 | `traffic.stop.sessions` | `null` | `x` | `-` | Positive integer; synthetic session source only. |
@@ -818,9 +824,10 @@ traffic:
     max_virtual_time_seconds: 300
 ```
 
-Omitting `traffic.stop` for a trace runs to end of trace. `max_virtual_time_seconds` is trace-only and
-cannot be used for synthetic traffic. Trace source, format, and token/session content stay concrete in
-a recommendation input; only a numeric trace-load field can be a domain.
+Without `agentic_profile`, omitting `traffic.stop` for a trace runs to end of trace.
+`max_virtual_time_seconds` is trace-only and cannot be combined with `agentic_profile` or used for
+synthetic traffic. Trace source, format, and token/session content stay concrete in a recommendation
+input; only a numeric trace-load field can be a domain.
 
 `speedup: N` divides authored timing by `N`; for example, `2` replays the timing twice as fast. For
 Mooncake session traces it scales both first-turn arrival timestamps and inter-turn delays. For
@@ -877,13 +884,19 @@ models are not supported yet.
 The lowering records a zero-based `source_play_ordinal` on every v2 row so materialized graphs retain
 deterministic directory and JSONL order; missing ordinals remain valid for older v2 inputs, but an
 ordered graph must provide one unique contiguous ordinal for every play.
-An explicit `agentic_lanes: N` assigns plays round-robin to N client lanes. The next play starts when
-the current play's client work ends: all authored requests complete on success, or all dispatched
-requests become terminal after a failure skips undispatched work. Background requests remain part
+Without `agentic_profile`, an explicit `agentic_lanes: N` assigns plays round-robin to N client lanes.
+The next play starts when the current play's client work ends: all authored requests complete on
+success, or all dispatched requests become terminal after a failure skips undispatched work. Background requests remain part
 of their play even without a parent join. P/D source holds and other server cleanup may outlive this
 boundary; they still constrain engine admission and final drain, but do not delay client submission.
-Omitting the field preserves authored timestamp behavior; corpus wrapping and fixed-duration lane
-orchestration are outside the version 1 contract.
+Omitting `agentic_lanes` preserves authored timestamp behavior. With `agentic_snapshot` and
+`agentic_profile`, completed lanes take replacement plays from a shared sequential corpus cursor,
+which wraps at the end of the corpus until the admission deadline. Replacement plays start at turn
+zero with fresh request, conversation, play, and cache identities. This opt-in path supports offline
+aggregated and P/D vLLM/SGLang Engine replay with HBM-only KV cache and speculative decoding disabled.
+It retains AISimulate's snapshot sampling and warmup frontier behavior; it does not establish complete
+AgentX parity. See [continuous agentic profiles](../agentic-profile.md) for defaults, lifecycle and
+idle controls, a runnable example, and the remaining limitations.
 
 <a id="mooncake-and-mooncake-delta-jsonl"></a>
 

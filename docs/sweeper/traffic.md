@@ -70,12 +70,26 @@ Every `Workload` field:
 | `agentic_lanes` | `int \| None` | `None` | Positive number of client play lanes for `weka`, `agentic_mooncake`, or agentic `dynamo` timestamp replay; does not cap concurrent child requests. Requires `source_type: trace`, `trace_path`, and `load_type: trace_timestamps`, with no `replay_concurrency`. |
 | `agentic_snapshot` | `AgenticSnapshotOptions \| None` | `None` (unset) | Optional object `{seed: u64}`; required `seed` is an unsigned 64-bit integer (`0` through `2^64 - 1`). Requires positive `agentic_lanes`, `source_type: trace`, `trace_path`, and `load_type: trace_timestamps`, with no `replay_concurrency`; supported formats are `weka`, `agentic_mooncake`, and agentic `dynamo`. Unset preserves turn-zero execution. |
 | `agentic_warmup` | `bool` | `False` | Requires `agentic_snapshot` and positive lanes when enabled. Runs primers and ten warmup requests per lane before measured replay, preserving native cache state; see [warmup behavior](../agentic-warmup.md). Failed preparation is retained as candidate evidence and excluded from ranking. |
+| `agentic_profile` | `AgenticProfileOptions \| None` | `None` (unset) | Optional object; `{}` enables continuous lane replenishment with the defaults below. Requires `agentic_snapshot` and its agentic trace/lane controls; cannot be combined with `max_sim_time_ms`. Unset preserves finite replay. See [continuous agentic profiles](../agentic-profile.md) for the complete configuration, lifecycle, results, and limitations. |
+| `agentic_profile.duration_seconds` | `float` | `3600.0` when enabled | Positive finite admission duration, starting at the preparation barrier or simulation start without warmup. Stops new workload requests and replacement plays at the deadline. |
+| `agentic_profile.response_grace_seconds` | `float` | `30.0` when enabled | Nonnegative finite response window after admission closes; remaining client requests are then canceled. |
+| `agentic_profile.cancel_drain_seconds` | `float` | `10.0` when enabled | Nonnegative finite upper bound for cancellation acknowledgements. Supported offline runtimes acknowledge synchronously; server/GPU cleanup is not guaranteed by this budget. |
+| `agentic_profile.tree_idle_cap_seconds` | `float` | `300.0` when enabled | Positive finite idle cap for advancing a play's pending workload timers when that play has no outstanding requests. |
+| `agentic_profile.global_idle_cap_seconds` | `float` | `10.0` when enabled | Positive finite idle cap for advancing pending workload timers when the entire client workload has no outstanding requests. Engine completions and server cleanup keep their actual timestamps. |
 | `replay_concurrency` | `int \| None` | `None` | Closed-loop in-flight cap **for a trace** (shape 1c); when set, trace timestamps are ignored. For synthetic closed-loop use `concurrency` instead. |
 
 The synthetic fields are `isl`, `osl`, `request_rate`, `concurrency`, `kv_load_ratio`,
 `num_request_ratio`, `random_range_ratio`, and `random_seed`;
 `shared_prefix_ratio`, `num_prefix_groups`, `turns_per_session`, `inter_turn_delay_ms` are
 shared synthetic knobs carried by `ReplaySpec.workload`.
+
+Profile controls are concrete workload values, not search dimensions. The built-in Engine runner
+supports profiles on offline aggregated or P/D vLLM/SGLang replay, with HBM-only KV cache and
+speculative decoding disabled. Warmup is optional; enabling it retains the saved snapshot frontier.
+A completed lane takes a new turn-zero play from the shared corpus cursor, wrapping as necessary
+until the admission deadline. Snapshot sampling and warmup still differ from the AgentX reference;
+see the [profile limits](../agentic-profile.md#results-and-limits). Injected runners must advertise
+`supports_agentic_profile`; unsupported runners fail validation.
 
 ## `kv_load_ratio` (candidate-relative concurrency)
 

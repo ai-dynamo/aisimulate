@@ -18,8 +18,8 @@ use crate::replay::{
     ReplayPhasePowerDiagnostics, ReplayPowerDiagnostics, ReplayRoleConfig, ReplayRuntimeInput,
     ReplaySpec, ReplayTopology, Replayer, TracePowerStats,
     loadgen::{
-        AgenticSnapshotOptions, ArrivalSpec, DelaySpec, DynamoRequestTrace, LengthSpec,
-        SyntheticTraceSpec, Trace, ValidatedAgenticGraph, WekaImportOptions,
+        AgenticProfileOptions, AgenticSnapshotOptions, ArrivalSpec, DelaySpec, DynamoRequestTrace,
+        LengthSpec, SyntheticTraceSpec, Trace, ValidatedAgenticGraph, WekaImportOptions,
         WekaNestedTimestampBasis, WekaResolvedTimestampBasis, WorkloadDriver,
         load_agentic_mooncake, load_weka_agentic_graph_with_options,
     },
@@ -77,6 +77,8 @@ struct RuntimeTraffic {
     agentic_snapshot: Option<AgenticSnapshotOptions>,
     #[serde(default)]
     agentic_warmup: bool,
+    #[serde(default)]
+    agentic_profile: Option<AgenticProfileOptions>,
     #[serde(default)]
     isl: Option<usize>,
     #[serde(default)]
@@ -1113,11 +1115,15 @@ fn build_agentic_driver(
             .context("agentic_snapshot requires positive agentic_lanes")?;
         // Sample recorded time before applying speedup to remaining timers.
         let prepared = graph.prepare_snapshots(lanes, *options)?;
-        if traffic.agentic_warmup {
+        let mut driver = if traffic.agentic_warmup {
             WorkloadDriver::new_agentic_warmup(prepared, engine_block_size, true, speedup)
         } else {
             WorkloadDriver::new_agentic_snapshots(prepared, engine_block_size, true, speedup)
+        }?;
+        if let Some(profile) = &traffic.agentic_profile {
+            driver.enable_agentic_profile(profile.clone())?;
         }
+        Ok(driver)
     } else {
         WorkloadDriver::new_agentic_trace_with_options(
             graph.normalize_starts().speed_up_timing(speedup)?,
@@ -1133,6 +1139,17 @@ fn build_runtime_input(
     engine_block_size: usize,
 ) -> Result<BuiltRuntimeInput> {
     ensure!(engine_block_size > 0, "engine block size must be positive");
+    if let Some(profile) = &traffic.agentic_profile {
+        profile.validate()?;
+        ensure!(
+            traffic.agentic_snapshot.is_some(),
+            "agentic_profile requires agentic_snapshot"
+        );
+        ensure!(
+            traffic.max_sim_time_ms.is_none(),
+            "agentic_profile cannot be combined with max virtual time"
+        );
+    }
     ensure!(
         !traffic.agentic_warmup || traffic.agentic_snapshot.is_some(),
         "agentic_warmup requires agentic_snapshot"
@@ -1711,6 +1728,13 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
             } => (spec, traffic.map(|t| *t), capture_performance_diagnostics),
             ExecutionPayload::Legacy(spec) => (spec, None, false),
         };
+    ensure!(
+        spec.max_sim_time_ms.is_none()
+            || traffic
+                .as_ref()
+                .is_none_or(|traffic| traffic.agentic_profile.is_none()),
+        "agentic_profile cannot be combined with ReplaySpec.max_sim_time_ms"
+    );
     let agentic_input = traffic.as_ref().and_then(|traffic| {
         traffic
             .trace_format
@@ -2151,6 +2175,97 @@ mod tests {
                 .unwrap()
                 .to_string()
                 .contains("agentic_warmup requires agentic_snapshot")
+        );
+    }
+
+    #[test]
+    fn profile_options_are_opt_in_and_strict_at_the_native_boundary() {
+        let base = serde_json::json!({
+            "source_type": "trace", "load_type": "trace_timestamps",
+            "trace_path": "unused", "trace_format": "weka", "agentic_lanes": 1,
+            "agentic_snapshot": {"seed": 42},
+        });
+        assert!(
+            serde_json::from_value::<RuntimeTraffic>(base.clone())
+                .unwrap()
+                .agentic_profile
+                .is_none()
+        );
+        let mut traffic = base.clone();
+        traffic["agentic_profile"] = serde_json::json!({});
+        let profile = serde_json::from_value::<RuntimeTraffic>(traffic.clone())
+            .unwrap()
+            .agentic_profile
+            .unwrap();
+        assert_eq!(profile.duration_seconds, 3600.0);
+        assert_eq!(profile.response_grace_seconds, 30.0);
+        assert_eq!(profile.cancel_drain_seconds, 10.0);
+        assert_eq!(profile.tree_idle_cap_seconds, 300.0);
+        assert_eq!(profile.global_idle_cap_seconds, 10.0);
+        for invalid in [
+            serde_json::json!(true),
+            serde_json::json!({"duration_seconds": true}),
+            serde_json::json!({"duration_seconds": "1"}),
+            serde_json::json!({"unexpected": 1}),
+        ] {
+            traffic["agentic_profile"] = invalid;
+            assert!(serde_json::from_value::<RuntimeTraffic>(traffic.clone()).is_err());
+        }
+        for invalid in [
+            serde_json::json!({"duration_seconds": 0}),
+            serde_json::json!({"response_grace_seconds": -1}),
+            serde_json::json!({"cancel_drain_seconds": -1}),
+            serde_json::json!({"tree_idle_cap_seconds": 0}),
+            serde_json::json!({"global_idle_cap_seconds": 0}),
+        ] {
+            traffic["agentic_profile"] = invalid;
+            let traffic = serde_json::from_value::<RuntimeTraffic>(traffic.clone()).unwrap();
+            assert!(
+                build_runtime_input(traffic, 64)
+                    .err()
+                    .unwrap()
+                    .to_string()
+                    .contains("agentic_profile")
+            );
+        }
+        for (field, value, message) in [
+            (
+                "agentic_snapshot",
+                serde_json::Value::Null,
+                "requires agentic_snapshot",
+            ),
+            (
+                "max_sim_time_ms",
+                serde_json::json!(1.0),
+                "cannot be combined",
+            ),
+        ] {
+            let mut traffic = base.clone();
+            traffic["agentic_profile"] = serde_json::json!({});
+            traffic[field] = value;
+            let traffic = serde_json::from_value::<RuntimeTraffic>(traffic).unwrap();
+            assert!(
+                build_runtime_input(traffic, 64)
+                    .err()
+                    .unwrap()
+                    .to_string()
+                    .contains(message)
+            );
+        }
+        let payload = serde_json::json!({
+            "spec": {
+                "version": 1,
+                "topology": {"kind": "aggregated", "workers": {"initial_workers": 1}},
+                "max_sim_time_ms": 1.0,
+                "requests": []
+            },
+            "traffic": {"agentic_profile": {}, "source_type": "trace"}
+        });
+        assert!(
+            execute_json(&payload.to_string(), false)
+                .unwrap_err()
+                .to_string()
+                .contains("agentic_profile cannot be combined with ReplaySpec.max_sim_time_ms")
         );
     }
 

@@ -2096,8 +2096,25 @@ impl VllmCore {
         let end_ms = decode_start_ms + decode_time.as_secs_f64() * 1000.0;
 
         let fpm = self.compute_fpm(&scheduled, (end_ms - now_ms) / 1000.0);
+        // Speculative lookahead reservation may retract decode candidates after
+        // scheduling. Keep already executed prefill, but only count surviving
+        // decode work that actually produced an output token.
+        let mut committed_requests: Vec<_> = scheduled
+            .iter()
+            .filter(|(_, work)| work.prompt_tokens > 0)
+            .map(|(uuid, _)| *uuid)
+            .collect();
+        committed_requests.extend(
+            output_signals
+                .iter()
+                .filter(|signal| signal.token_id.is_some() && scheduled.contains_key(&signal.uuid))
+                .map(|signal| signal.uuid),
+        );
+        committed_requests.sort_unstable();
+        committed_requests.dedup();
         self.state.debug_assert_invariants();
         Ok(EnginePassResult {
+            committed_requests,
             end_ms,
             same_timestamp_retry: if g3_epoch_before.is_some()
                 && end_ms == now_ms
