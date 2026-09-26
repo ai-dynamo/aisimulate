@@ -132,7 +132,7 @@ def agg_pareto(
                 model_config=overwritten_model_config,
                 backend_name=backend_name,
             )
-            backend = get_backend(backend_name)
+            backend = get_backend(backend_name, getattr(database, "system", None))
             sess = InferenceSession(model=model, database=database, backend=backend)
 
             runtime_configs_to_evaluate: list[config.RuntimeConfig] = []

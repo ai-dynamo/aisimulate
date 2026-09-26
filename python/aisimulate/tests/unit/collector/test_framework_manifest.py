@@ -50,8 +50,8 @@ def test_manifest_exposes_pinned_vllm_xpu_runtime_identity():
 
     assert runtime.framework == "vllm_xpu"
     assert runtime.data_backend == "vllm"
-    assert runtime.version == "0.26.0"
-    assert runtime.image().startswith("vllm/vllm-openai-xpu:v0.26.0@sha256:")
+    assert runtime.version == "0.28.0"
+    assert runtime.image().startswith("vllm/vllm-openai-xpu:v0.28.0@sha256:")
 
 
 def test_active_cuda_vllm_collectors_are_exactly_pinned_to_manifest_version():
@@ -316,15 +316,15 @@ def test_runtime_selection_accepts_only_the_matching_pin(installed_version, requ
 
 
 def test_vllm_xpu_runtime_selection_uses_xpu_registry_and_accepts_local_version_metadata():
-    runtime = require_collector_runtime("vllm_xpu", "0.26.0+xpu", requested_ops={"gemm"}, wideep_ops=set())
+    runtime = require_collector_runtime("vllm_xpu", "0.28.0+xpu", requested_ops={"gemm"}, wideep_ops=set())
 
     assert runtime.framework == "vllm_xpu"
-    assert runtime.version == "0.26.0"
-    assert runtime.image().startswith("vllm/vllm-openai-xpu:v0.26.0@sha256:")
+    assert runtime.version == "0.28.0"
+    assert runtime.image().startswith("vllm/vllm-openai-xpu:v0.28.0@sha256:")
 
 
 def test_vllm_xpu_runtime_selection_rejects_version_mismatch():
-    with pytest.raises(RuntimeError, match=r"vllm_xpu stock collector requires exactly 0\.26\.0"):
+    with pytest.raises(RuntimeError, match=r"vllm_xpu stock collector requires exactly 0\.28\.0"):
         require_collector_runtime("vllm_xpu", "0.24.0", requested_ops={"gemm"}, wideep_ops=set())
 
 
