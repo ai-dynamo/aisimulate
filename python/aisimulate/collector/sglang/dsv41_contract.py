@@ -195,10 +195,7 @@ def validate_row(row: dict) -> None:
             raise ValueError("bounded geometry requires bounded context within its window")
 
 
-def write_parquet(rows: list[dict], path) -> None:
-    import pyarrow as pa
-    import pyarrow.parquet as pq
-
+def _validate_table(rows: list[dict]) -> tuple[set, tuple]:
     keys = set()
     provenance = set()
     for row in rows:
@@ -215,6 +212,13 @@ def write_parquet(rows: list[dict], path) -> None:
         )
     if len(provenance) != 1:
         raise ValueError("a table needs one immutable runtime/config/source/measurement method")
+    return keys, provenance.pop()
+
+
+def _write_parquet(rows: list[dict], path) -> None:
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
     fields = [
         (
             k,
@@ -229,3 +233,45 @@ def write_parquet(rows: list[dict], path) -> None:
         for k in rows[0]
     ]
     pq.write_table(pa.Table.from_pylist(rows, schema=pa.schema(fields)), path)
+
+
+def write_parquet(rows: list[dict], path) -> None:
+    _validate_table(rows)
+    _write_parquet(rows, path)
+
+
+def write_full_with_bounded_attention(full_rows: list[dict], bounded_additions: list[dict], path) -> None:
+    """Export already-admitted, disjoint attention additions without relabeling.
+
+    The caller retains full measurements for common physical keys and must
+    qualify every original bounded invocation before selecting additions.
+    This exporter neither resolves raw invocation collisions nor selects rows
+    by latency. Normal collection outputs remain homogeneous-profile tables.
+    """
+    full_keys, full_identity = _validate_table(full_rows)
+    bounded_keys, bounded_identity = _validate_table(bounded_additions)
+    if full_identity[-1] != "full" or bounded_identity[-1] != "decoder_bounded":
+        raise ValueError("joint export requires full base and decoder_bounded additions")
+    if full_identity[:-1] != bounded_identity[:-1]:
+        raise ValueError("joint export requires identical runtime/config/source/measurement method")
+    if full_keys & bounded_keys:
+        raise ValueError("joint export cannot replace an existing full physical key")
+    full_geometries = {row["geometry"] for row in full_rows if row["component"] == "attention"}
+    columns = set(full_rows[0])
+    for row in [*full_rows, *bounded_additions]:
+        if set(row) != columns:
+            raise ValueError("joint export requires identical columns to preserve every row")
+    for row in bounded_additions:
+        if row["component"] != "attention":
+            raise ValueError("joint export only appends bounded attention measurements")
+        geometry = json.loads(row["geometry"])
+        if not isinstance(geometry["bounded_prefill"], bool):
+            raise ValueError("bounded_prefill must be boolean")
+        # Early layers use the same native full metadata until the layer-21
+        # switch; retain their original decoder_bounded provenance. Pinned
+        # SGLang 1aa0e962: deepseek_v4_backend.py:2317-2325,1647-1695 and
+        # models/deepseek_v4.py:3542-3563. The late geometry differs only here.
+        geometry["bounded_prefill"] = False
+        if canonical_json(geometry) not in full_geometries:
+            raise ValueError("bounded addition has no matching full attention geometry")
+    _write_parquet([*full_rows, *bounded_additions], path)

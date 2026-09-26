@@ -317,8 +317,11 @@ pub enum MoeQuantMode {
     /// `w4a16_mxfp4` (mirrors Python `load_moe_data`).
     W4a16Mxfp4Cutlass,
     /// Scale-aware NVFP4 weights dequantized into the BF16 MoE compute lane.
-    /// Kept last so existing serialized enum discriminants remain stable.
+    /// Append-only extension preserving older serialized discriminants.
     W4a16Nvfp4,
+    /// Native Humming MXFP4 experts with unquantized BF16 activations.
+    /// Distinct from the Triton and FlashInfer CUTLASS W4A16 kernels.
+    W4a16Mxfp4Humming,
 }
 
 impl MoeQuantMode {
@@ -394,6 +397,12 @@ impl MoeQuantMode {
                 memory: 9.0 / 16.0,
                 compute: 1.0,
                 name: "w4a16_nvfp4",
+                compute_dtype: Some(ComputeDtype::Bfloat16),
+            },
+            Self::W4a16Mxfp4Humming => QuantMapping {
+                memory: 0.5,
+                compute: 1.0,
+                name: "w4a16_mxfp4_humming",
                 compute_dtype: Some(ComputeDtype::Bfloat16),
             },
         }
@@ -707,6 +716,29 @@ mod tests {
                 compute_dtype: Some(ComputeDtype::Fp4)
             }
         );
+    }
+
+    #[test]
+    fn humming_moe_wire_identity_is_additive() {
+        let mode: MoeQuantMode = serde_json::from_str("\"w4a16_mxfp4_humming\"").unwrap();
+        assert_eq!(mode, MoeQuantMode::W4a16Mxfp4Humming);
+        assert_eq!(
+            serde_json::to_string(&mode).unwrap(),
+            "\"w4a16_mxfp4_humming\""
+        );
+        // Historical positional discriminants must remain stable.
+        assert_eq!(
+            bincode::serialize(&MoeQuantMode::W4a16Mxfp4Cutlass).unwrap(),
+            10_u32.to_le_bytes()
+        );
+        assert_eq!(
+            bincode::serialize(&MoeQuantMode::W4a16Nvfp4).unwrap(),
+            11_u32.to_le_bytes()
+        );
+        let bytes = bincode::serialize(&mode).unwrap();
+        assert_eq!(bincode::deserialize::<MoeQuantMode>(&bytes).unwrap(), mode);
+        assert_eq!(mode.mapping().memory, 0.5);
+        assert_eq!(mode.mapping().compute_dtype, Some(ComputeDtype::Bfloat16));
     }
 
     #[test]

@@ -1443,6 +1443,8 @@ class MoEQuantMode(Enum):
     # GPT-OSS's triton_kernels mxfp4 path. (DSV4 Hopper silicon data pending.)
     w4a16_nvfp4 = QuantMapping(9 / 16, 1, "w4a16_nvfp4", "bfloat16")
     # Scale-aware NVFP4 weights dequantized into the BF16 MoE compute lane.
+    w4a16_mxfp4_humming = QuantMapping(0.5, 1, "w4a16_mxfp4_humming", "bfloat16")
+    # Native Humming E2M1/E8M0 block-32 experts with unquantized BF16 inputs.
 
 
 class FMHAQuantMode(Enum):

@@ -147,6 +147,7 @@ families:
           - {backend: flashinfer_cutedsl, framework_name: flashinfer_cutedsl, constraints: "nvfp4 only; SM100; deepep a2a", source: "server_args.py:5119-5138"}
           - {backend: cutlass, framework_name: cutlass, constraints: "fp8_block SM90/100/120, mxfp8 SM100; ep=1", source: "layers/quantization/fp8.py:879-886, cutlass_moe.py:150"}
           - {backend: marlin, framework_name: marlin, constraints: "w4a16 (nvfp4 fallback SM80-90; mxfp4 SM90/SM120)", source: "modelopt_quant.py:1770-1778, mxfp4.py:520-521"}
+          - {backend: humming, framework_name: humming, constraints: "explicit DeepSeek V4.1 MXFP4/BF16 path at 1aa0e962; collector admits native unquantized w13/w2 inputs and native weight padding", source: "sglang@1aa0e962b206102b7c439a4a0c4981cfec6e87bc python/sglang/srt/layers/quantization/fp8.py:414-419; mxfp4_humming_moe.py:18-26"}
           - {backend: deepep, framework_name: "(wideep a2a: deepep)", constraints: "wide-EP dispatch/combine + DeepEP-MoE compute", source: "collector/wideep/sglang"}
       vllm:
         selector: "KernelConfig.moe_backend (default auto; per-quant oracle walks priority list; forcing raises on unsupported)"

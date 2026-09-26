@@ -1,0 +1,57 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+schema_version: 2
+provenance: collected
+runtime:
+  framework: sglang
+  version: dev-1aa0e962b206102b7c439a4a0c4981cfec6e87bc
+  image: sglang-dsv41-amd64-c4ca651192e5-localimage.sqsh
+  image_digest: sha256:c4ca651192e57e91989b5176c3665148131b9a171e53861dee87f5e57cef25b5
+  source_commit: 1aa0e962b206102b7c439a4a0c4981cfec6e87bc
+  abi: &id001
+    torch: 2.13.0+cu130
+    nccl: 2.30.7
+    image_squashfs_sha256: 48a67d21c9186ffd15fd3c19c20a033c32a610c559f4837b9d02045585a79b17
+    nccl_identity_evidence: post-run immutable-library artifact ncclGetVersion audit;
+      same immutable image and later H100 attention same-rank provider maps; historical
+      primitive rank maps were not recorded
+tables:
+  gemm_perf:
+    rows: 45
+    status: complete
+    collections:
+    - collector_ref: f9973d7eafc62db899caa3d46996afef45afbb96
+      collector_hash: sha256:f6b6b929d3d3fc9a564908332d9b2caa49cc5bca8b0db63b998b87a2d13f3635
+      case_plan_hash: sha256:e6987c584bdfdd8427c9e1a398c355020bb47edd9549fcee20ee103db93149c8
+      collected_at: '2026-09-22'
+      rows: 30
+      status: complete
+      runtime:
+        framework: sglang
+        version: dev-1aa0e962b206102b7c439a4a0c4981cfec6e87bc
+        image: sglang-dsv41-amd64-c4ca651192e5-localimage.sqsh
+        image_digest: sha256:c4ca651192e57e91989b5176c3665148131b9a171e53861dee87f5e57cef25b5
+        source_commit: 1aa0e962b206102b7c439a4a0c4981cfec6e87bc
+        abi: *id001
+    - collector_ref: f9973d7eafc62db899caa3d46996afef45afbb96
+      collector_hash: sha256:f6b6b929d3d3fc9a564908332d9b2caa49cc5bca8b0db63b998b87a2d13f3635
+      case_plan_hash: sha256:55870ea37931791a54915bafda840a6acb407916987707fc7079fbc26f7a6c61
+      collected_at: '2026-09-22'
+      rows: 15
+      status: complete
+      source_campaign_rows: 30
+      source_campaign_status: complete
+      runtime:
+        framework: sglang
+        version: dev-1aa0e962b206102b7c439a4a0c4981cfec6e87bc
+        image: sglang-dsv41-amd64-c4ca651192e5-localimage.sqsh
+        image_digest: sha256:c4ca651192e57e91989b5176c3665148131b9a171e53861dee87f5e57cef25b5
+        source_commit: 1aa0e962b206102b7c439a4a0c4981cfec6e87bc
+        abi:
+          torch: 2.13.0+cu130
+          nccl: 2.30.7
+          image_squashfs_sha256: 48a67d21c9186ffd15fd3c19c20a033c32a610c559f4837b9d02045585a79b17
+          nccl_identity_evidence: post-run immutable-library artifact ncclGetVersion
+            audit; same immutable image and later H100 attention same-rank provider
+            maps; historical primitive rank maps were not recorded
