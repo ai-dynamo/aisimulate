@@ -8,7 +8,7 @@ benchmark synthetic MoE cases. The module adapts common MoE case specs to XPU
 kernel constraints, builds routing logits, and writes vLLM MoE perf rows.
 """
 
-__compat__ = "vllm==0.26.0"
+__compat__ = "vllm==0.28.0"
 
 import os
 
@@ -31,6 +31,7 @@ from collector.helper import (
     get_device_module,
     log_perf,
     power_law_logits_v3,
+    xpu_graph_measure_enabled,
 )
 from vllm.version import __version__ as vllm_version
 
@@ -109,13 +110,17 @@ def get_moe_test_cases():
 def quantize_fp8_per_expert(weights: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
     fp8_dtype = torch.float8_e4m3fn
     fp8_info = torch.finfo(fp8_dtype)
-    fp32_weights = weights.to(torch.float32)
 
     num_experts_local = weights.shape[0]
     random_exponents = torch.randint(-3, 4, (num_experts_local,), device=weights.device)
     scales = torch.pow(2.0, random_exponents.float())
 
-    qweights = (fp32_weights / scales.view(-1, 1, 1)).clamp(min=fp8_info.min, max=fp8_info.max).to(fp8_dtype)
+    # Quantize per-expert to avoid materializing a full fp32 copy of all experts
+    # (that transient can be GiB-scale for big MoEs and OOMs). Output identical.
+    qweights = torch.empty_like(weights, dtype=fp8_dtype)
+    for e in range(num_experts_local):
+        we = (weights[e].to(torch.float32) / scales[e]).clamp(min=fp8_info.min, max=fp8_info.max)
+        qweights[e] = we.to(fp8_dtype)
     return qweights, scales
 
 
@@ -138,6 +143,13 @@ def run_moe_torch(
     """Run vLLM MoE performance benchmarking"""
     get_device_module().set_device(device)
     torch.set_default_device(device)
+
+    # Free the prior case's cached/fragmented device memory so large fp8 cases
+    # don't OOM on accumulated fragmentation (esp. single-worker case streams).
+    import gc
+
+    gc.collect()
+    get_device_module().empty_cache()
 
     use_mxfp4 = moe_type == "w4a16_mxfp4"
     is_fp8 = moe_type == "fp8"
@@ -288,7 +300,8 @@ def run_moe_torch(
                 num_warmups=num_warmups,
                 num_runs=num_runs,
                 repeat_n=1,
-                allow_graph_fail=True,
+                use_cuda_graph=xpu_graph_measure_enabled(),
+                allow_graph_fail=False,  # graph mandatory; capture failure fails the case
             ) as results:
                 pass
 

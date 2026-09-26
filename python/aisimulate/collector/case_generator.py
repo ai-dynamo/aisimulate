@@ -264,6 +264,7 @@ def get_attention_head_configs(
             num_kv_heads=num_kv_heads,
             head_dim=head_dim,
             window_size=window_size,
+            has_attention_sink=bool(profile.get("has_attention_sink", False)),
         )
         if backend == "sglang":
             attention_chunk_size = profile.get("sglang_attention_chunk_size")
@@ -312,6 +313,11 @@ def get_attention_head_configs(
                 f"different runtime semantics: {population_key=}, previous={previous_signature}, "
                 f"current={current_signature}"
             )
+
+        # Declared sink contract wins over the no-sink grid entry for the same key.
+        if config.has_attention_sink and not previous.has_attention_sink:
+            seen[population_key] = config
+            configs[configs.index(previous)] = config
 
     profiles = (
         _sglang_attention_profiles(

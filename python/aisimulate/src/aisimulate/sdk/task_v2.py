@@ -3197,7 +3197,7 @@ class Task:
 
         runtime_config = self.build_runtime_config(batch_size=batch_size)
         database = self._load_database(self.system_name, self.backend_name, self.backend_version)
-        backend = get_backend(self.backend_name)
+        backend = get_backend(self.backend_name, self.system_name)
         model = get_model(self.model_path, model_config, self.backend_name)
 
         backend_kwargs: dict[str, Any] = {}

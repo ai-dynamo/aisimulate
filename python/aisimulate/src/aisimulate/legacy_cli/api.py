@@ -1762,7 +1762,7 @@ def _run_agg_estimate(
     if ctx_tokens is None:
         ctx_tokens = isl + BaseBackend._visual_context_tokens(model, runtime_config)
     database = load_database(system_name)
-    backend = get_backend(backend_name)
+    backend = get_backend(backend_name, system_name)
     session = InferenceSession(model, database, backend)
     if speculation_config is not None:
         speculative_profile = SpeculativeDecodingProfile.from_scheme(model.spec_scheme, speculative_accepted)
@@ -1946,7 +1946,7 @@ def _run_static_estimate(
     )
 
     model = get_model(model_path, model_config, backend_name)
-    backend = get_backend(backend_name)
+    backend = get_backend(backend_name, system_name)
     session = InferenceSession(model, database, backend)
     summary = session.run_static(
         runtime_config=runtime_config,
