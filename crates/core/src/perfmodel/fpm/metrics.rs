@@ -46,6 +46,17 @@ pub struct ScheduledRequestMetrics {
     /// Population variance of KV context lengths across decode requests.
     #[serde(default)]
     pub var_decode_kv_tokens: f64,
+    /// Optional per-request batch composition (Dynamo FPM v1 extension):
+    /// tokens computed for each scheduled request in this iteration, aligned
+    /// with `past_kv_lengths`. Any order; consumers that need an order sort
+    /// themselves. Empty when the producer only emits aggregates.
+    #[serde(default)]
+    pub extend_lengths: Vec<u32>,
+    /// Optional per-request KV tokens already present for each scheduled
+    /// request (prefix hits + earlier chunks, or the decode context). Aligned
+    /// with `extend_lengths`.
+    #[serde(default)]
+    pub past_kv_lengths: Vec<u32>,
 }
 
 /// Metrics for requests queued but not scheduled in one iteration.
@@ -128,6 +139,23 @@ pub(crate) fn validate_forward_pass_metrics(metrics: &ForwardPassMetrics) -> Res
         return Err(AicError::InvalidForwardPassMetrics(
             "decode KV token sum requires num_decode_requests > 0".to_string(),
         ));
+    }
+    let extend = scheduled.extend_lengths.len();
+    let past = scheduled.past_kv_lengths.len();
+    if extend != 0 || past != 0 {
+        let expected =
+            scheduled.num_prefill_requests as usize + scheduled.num_decode_requests as usize;
+        if extend != expected || past != expected {
+            return Err(AicError::InvalidForwardPassMetrics(format!(
+                "per-request lists must both be empty or both have {expected} entries \
+                 (num_prefill_requests + num_decode_requests); got extend_lengths={extend}, \
+                 past_kv_lengths={past}"
+            )));
+        }
+        // Totals are deliberately not compared with the aggregates here: with
+        // speculative decoding a decode request extends by 1 + k tokens, and
+        // producers pad / re-read the aggregates after the step. The learned
+        // feature path applies its own consistency check.
     }
     Ok(())
 }
