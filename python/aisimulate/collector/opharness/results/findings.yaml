@@ -1471,12 +1471,14 @@ findings:
       harness; every step's evidence:
       PROBES (224 vllm runs, framework mode, rendered + fp8-KV variants,
       ~1.1 min median per run on the dummies, 50 min on six GPUs): 124-cell
-      matrix 100 pass / 9 pass+custom / 15 fail (12 generator rejects, 3
-      capacity: the Qwen3.8-2.4T dummies — depth4 bf16/fp8 as on 0.29, and
-      now also the NVFP4 depth4 that fit on 0.29 — do not fit one 139.8 GiB
-      GPU under 0.30's allocation). Verdict changes vs 0.29: DeepSeek-V4.1-
-      Flash and its NVFP4 artifact now PASS (0.30 registers DeepseekV41);
-      Qwen3.8-2.4T-A95B-NVFP4 pass -> capacity. IDENTITY: across the 94 repos
+      final matrix 110 pass / 1 pass+custom / 13 fail (12 generator rejects,
+      1 capacity: Qwen3.8-2.4T-A95B bf16 — no faithful cut fits one 139.8 GiB
+      GPU; its FP8 and NVFP4 artifacts pass at depth4). Two first-pass OOMs
+      on the fp8/NVFP4 2.4T cuts and on two fp8-KV variants were transient
+      GPU sharing with the concurrent capture wave and cleared on re-probe —
+      probes and captures must not share a GPU. Verdict changes vs 0.29:
+      DeepSeek-V4.1-Flash and its NVFP4 artifact now PASS (0.30 registers
+      DeepseekV41); Qwen3.8-2.4T-A95B-FP8 capacity -> pass (depth4 fits). IDENTITY: across the 94 repos
       probed on both versions the identity-role (backend, role) sets are
       IDENTICAL — no attention / gemm / moe / linear-attention / dsa / quant /
       mhc kernel family changed between 0.29.0 and 0.30.0; 47 repos differ
