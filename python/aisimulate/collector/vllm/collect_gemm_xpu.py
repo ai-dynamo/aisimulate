@@ -15,7 +15,7 @@ import fcntl
 import os
 
 import torch
-from vllm.config import VllmConfig, set_current_vllm_config
+from vllm.config import set_current_vllm_config
 from vllm.model_executor.layers.linear import RowParallelLinear
 from vllm.model_executor.layers.quantization.fp8 import Fp8Config
 
@@ -73,12 +73,8 @@ _VLLM_CONFIG_CACHE = {}
 def _get_cached_vllm_config(dtype):
     key = str(dtype)
     if key not in _VLLM_CONFIG_CACHE:
-        try:
-            model = os.path.join(os.path.dirname(__file__), "fake_hf_model")
-            _VLLM_CONFIG_CACHE[key] = create_vllm_config(model_name=model, dtype=dtype)
-        except Exception as exc:
-            print(f"create_vllm_config failed, falling back to VllmConfig(): {exc}")
-            _VLLM_CONFIG_CACHE[key] = VllmConfig()
+        model = os.path.join(os.path.dirname(__file__), "fake_hf_model")
+        _VLLM_CONFIG_CACHE[key] = create_vllm_config(model_name=model, dtype=dtype)
     return _VLLM_CONFIG_CACHE[key]
 
 
@@ -255,6 +251,7 @@ def run_gemm(exit_stack, gemm_type, m, n, k, *, perf_filename, device="xpu:0"):
                 "n": n,
                 "k": k,
                 "latency": results["latency_ms"] / outside_loop_count,
+                "used_cuda_graph": results["used_cuda_graph"],
             }
         ],
         framework="VLLM",

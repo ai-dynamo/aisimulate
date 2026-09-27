@@ -250,7 +250,7 @@ class VLLMXPUBackend(VLLMBackend):
         decode. The base bills it as PREFILL tokens with decode stacked on top, so here we reserve
         the decode slots out of the budget and hand the base only the leftover prefill tokens."""
         # Concurrent decoders = min(requested, Little's-law cap, KV slots).
-        isl = int(runtime_config.isl or 0)
+        isl = int(runtime_config.isl or 0) + self._visual_context_tokens(model, runtime_config)
         osl = int(runtime_config.osl or 0)
         if isl > 0 and osl > 0:
             steady_running = max(1, round(step.context_tokens * osl / (isl + osl)))

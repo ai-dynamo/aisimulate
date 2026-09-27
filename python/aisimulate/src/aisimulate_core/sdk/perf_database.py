@@ -390,7 +390,10 @@ def is_xpu_system(system_name: str | None) -> bool:
     if not system_name:
         return False
     spec = load_system_spec(system_name)
-    return "sm_version" not in spec.get("gpu", {})
+    gpu = spec.get("gpu")
+    if not isinstance(gpu, dict):
+        raise ValueError(f"Cannot resolve GPU spec for system {system_name!r}")
+    return "sm_version" not in gpu
 
 
 def build_no_databases_message() -> str:

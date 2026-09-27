@@ -91,19 +91,23 @@ def get_device_name():
     except Exception:
         pass
     try:
+        import re
+
         result = subprocess.run(["sycl-ls"], capture_output=True, text=True)
         for line in result.stdout.split("\n"):
             if "level_zero:gpu" in line and "Intel" in line:
-                parts = line.split(",")
-                if len(parts) >= 2:
-                    import re
-
-                    match = re.search(r"(Intel\S*\s+Graphics\s+\[0x[0-9a-fA-F]+\])", parts[-1].strip())
-                    if match:
-                        return match.group(1)
+                # Device-name field, e.g. "Intel(R) Data Center GPU Max 1550 1.3 [1.3.x]"
+                # or "Intel(R) Arc(TM) Graphics [0x56c0]"; stop before the driver
+                # version or the [0x..]/[build] suffix.
+                match = re.search(
+                    r"(Intel\(R\)[^,]*?(?:GPU|Graphics)[^,\[]*?)(?:\s+\d[\d.]*\s*\[|\s*\[|$)",
+                    line.split(",")[-1].strip(),
+                )
+                if match and match.group(1).strip():
+                    return match.group(1).strip()
     except Exception:
         pass
-    return "Intel GPU"
+    raise RuntimeError("Could not identify the XPU device name (torch and sycl-ls both failed)")
 
 
 def oneccl_benchmark(
@@ -159,12 +163,10 @@ def oneccl_benchmark(
     )
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=600)
-    except subprocess.TimeoutExpired:
-        print(f"  Timeout: {oneccl_op} did not complete within 600s. Skipping.")
-        return
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(f"oneCCL {oneccl_op} did not complete within 600s") from exc
     if result.returncode != 0:
-        print(f"  Error (exit {result.returncode}): {result.stderr[:500]}")
-        return
+        raise RuntimeError(f"oneCCL {oneccl_op} failed (exit {result.returncode}): {result.stderr[:500]}")
 
     items = []
     for line in result.stdout.split("\n"):
@@ -189,16 +191,17 @@ def oneccl_benchmark(
             }
         )
 
-    if items:
-        log_perf(
-            item_list=items,
-            framework="VLLM",
-            version=version,
-            device_name=device_name,
-            op_name=oneccl_op,
-            kernel_source="oneCCL",
-            perf_filename="oneccl_perf.txt",
-        )
+    if not items:
+        raise RuntimeError(f"oneCCL {oneccl_op} produced no parseable records")
+    log_perf(
+        item_list=items,
+        framework="VLLM",
+        version=version,
+        device_name=device_name,
+        op_name=oneccl_op,
+        kernel_source="oneCCL",
+        perf_filename="oneccl_perf.txt",
+    )
     print("Done. Results appended to oneccl_perf.txt")
 
 

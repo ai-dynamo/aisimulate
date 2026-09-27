@@ -305,10 +305,10 @@ def run_moe_torch(
             ) as results:
                 pass
 
-            return results["latency_ms"] / num_iter, results["power_stats"]
+            return results["latency_ms"] / num_iter, results["power_stats"], results["used_cuda_graph"]
 
         try:
-            latency, power_stats = run_iterations()
+            latency, power_stats, used_graph = run_iterations()
         except torch.OutOfMemoryError:
             # If OOM, check if we had at least one successful run.
             if num_tokens_idx > 0:
@@ -332,6 +332,7 @@ def run_moe_torch(
                     "moe_ep_size": moe_ep_size,
                     "distribution": "power_law_" + str(power_law_alpha) if distributed == "power_law" else distributed,
                     "latency": latency,
+                    "used_cuda_graph": used_graph,
                 }
             ],
             framework="VLLM",
