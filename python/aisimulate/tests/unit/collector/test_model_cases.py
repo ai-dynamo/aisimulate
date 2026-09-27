@@ -1696,15 +1696,21 @@ def test_compute_scale_is_selected_only_for_static_fp8_artifact():
 
     for backend in ("sglang", "trtllm", "vllm"):
         static_plan = build_collection_case_plan(backend=backend, model_path=static_model, sm_version=100)
-        assert "compute_scale" in static_plan.selected_ops
-        assert "compute_scale" in build_collection_case_plan(backend=backend, full=True).selected_ops
+        full_plan = build_collection_case_plan(backend=backend, full=True)
+        # scale_matrix is compute_scale's second table with its own producer;
+        # the two ops are activated together
+        for op in ("compute_scale", "scale_matrix"):
+            assert op in static_plan.selected_ops
+            assert op in full_plan.selected_ops
 
         for model_path in non_static_models:
             plan = build_collection_case_plan(backend=backend, model_path=model_path, sm_version=100)
             assert "compute_scale" not in plan.selected_ops
+            assert "scale_matrix" not in plan.selected_ops
 
     xpu_plan = build_collection_case_plan(backend="vllm_xpu", model_path=static_model)
     assert "compute_scale" not in xpu_plan.selected_ops
+    assert "scale_matrix" not in xpu_plan.selected_ops
 
 
 def test_model_plans_do_not_request_ops_missing_from_backend_registry():

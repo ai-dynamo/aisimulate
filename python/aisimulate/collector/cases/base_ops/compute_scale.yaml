@@ -8,7 +8,13 @@ framework_specific_op_cases:
   sglang:
     compute_scale:
       cases: all
+    scale_matrix:
+      cases: all
   trtllm:
+    # compute_scale's second table has its own registry producer (scale_matrix);
+    # both ops read the compute_scale shape sweep below via get_compute_scale_case_specs()
+    scale_matrix:
+      cases: all
     compute_scale:
       cases:
       - id: trtllm_fp8_compute_scale_shape_sweep
@@ -115,4 +121,6 @@ framework_specific_op_cases:
         - 65536
   vllm:
     compute_scale:
+      cases: all
+    scale_matrix:
       cases: all

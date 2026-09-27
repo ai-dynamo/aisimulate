@@ -7,6 +7,12 @@ The compute-scale collector compares dynamic FP8 quantization against static
 quantization for each YAML-backed shape. The reported latency isolates the
 scale-computation portion so support matrix data can track the cost separately
 from the static quantize kernel.
+
+Two registry ops share this module and its case grid, one table each
+(the executor's finalize binds every staged table to exactly one checkpoint
+producer — a single op writing two tables cannot be finalized):
+  compute_scale -> computescale_perf.txt  (dynamic quant minus static quant)
+  scale_matrix  -> scale_matrix_perf.txt  (the static per-tensor quant alone)
 """
 
 __compat__ = "trtllm>=1.3.0rc20"
@@ -16,6 +22,8 @@ import torch
 from collector.case_generator import get_compute_scale_case_specs
 
 from collector.helper import benchmark_with_power, get_sm_version, log_perf
+
+_OUTSIDE_LOOP_COUNT = 5  # to reduce impact of L2 cache hit
 
 
 def get_computescale_test_cases():
@@ -30,90 +38,67 @@ def get_computescale_test_cases():
     return test_cases
 
 
-def run_computescale(m, k, *, perf_filename, device="cuda:0"):
+def _setup(m, k, device):
     device = torch.device(device)
     torch.cuda.set_device(device)
     torch.set_default_device(device)
+    x = torch.randn((m, k), dtype=torch.bfloat16).to(device)
+    return device, x
 
-    dtype = torch.bfloat16
-    x = torch.randn((m, k), dtype=dtype).to(torch.device(device))
+
+def _bench_dynamic(device, x):
+    # dynamic quantization = compute scale + scale matrix
+    def kernel_func():
+        for _ in range(_OUTSIDE_LOOP_COUNT):
+            torch.ops.tensorrt_llm.quantize_e4m3_per_tensor(x)
+
+    with benchmark_with_power(device=device, kernel_func=kernel_func, repeat_n=1) as results:
+        pass
+    return results["latency_ms"] / _OUTSIDE_LOOP_COUNT, results["power_stats"]
+
+
+def _bench_static(device, x):
+    # static quantization = scale matrix only
     scale = torch.tensor([1.0], dtype=torch.float32, device=device)
 
-    outside_loop_count = 5  # to reduce impact of L2 cache hit
+    def kernel_func():
+        for _ in range(_OUTSIDE_LOOP_COUNT):
+            torch.ops.tensorrt_llm.static_quantize_e4m3_per_tensor(x, scale)
 
-    # Build op lists for both dynamic and static quantization
-    dynamic_op_list = []
-    static_op_list = []
-    for _ in range(outside_loop_count):
-        dynamic_op_list.append(torch.ops.tensorrt_llm.quantize_e4m3_per_tensor)
-        static_op_list.append(torch.ops.tensorrt_llm.static_quantize_e4m3_per_tensor)
-
-    # Benchmark dynamic quantization (compute scale + scale matrix)
-    def dynamic_kernel_func():
-        for op in dynamic_op_list:
-            op(x)
-
-    with benchmark_with_power(
-        device=device,
-        kernel_func=dynamic_kernel_func,
-        repeat_n=1,
-    ) as dynamic_results:
+    with benchmark_with_power(device=device, kernel_func=kernel_func, repeat_n=1) as results:
         pass
+    return results["latency_ms"] / _OUTSIDE_LOOP_COUNT, results["power_stats"]
 
-    dynamic_latency = dynamic_results["latency_ms"] / outside_loop_count
 
-    # Benchmark static quantization (scale matrix only)
-    def static_kernel_func():
-        for op in static_op_list:
-            op(x, scale)
+def run_computescale(m, k, *, perf_filename, device="cuda:0"):
+    device, x = _setup(m, k, device)
+    dynamic_latency, dynamic_power = _bench_dynamic(device, x)
+    static_latency, _ = _bench_static(device, x)
+    compute_scale_latency = max(0.0, dynamic_latency - static_latency)
 
-    with benchmark_with_power(
-        device=device,
-        kernel_func=static_kernel_func,
-        repeat_n=1,
-    ) as static_results:
-        pass
-
-    static_latency = static_results["latency_ms"] / outside_loop_count
-
-    # compute_scale latency = dynamic - static
-    compute_scale_latency = dynamic_latency - static_latency
-    compute_scale_latency = max(0.0, compute_scale_latency)
-
-    # Log compute_scale performance
     log_perf(
-        item_list=[
-            {
-                "m": m,
-                "k": k,
-                "quant_dtype": "fp8",
-                "latency": compute_scale_latency,
-            }
-        ],
+        item_list=[{"m": m, "k": k, "quant_dtype": "fp8", "latency": compute_scale_latency}],
         framework="TRTLLM",
         version=tensorrt_llm.__version__,
         device_name=torch.cuda.get_device_name(device),
         op_name="compute_scale",
         kernel_source="torch_ops",
         perf_filename=perf_filename,
-        power_stats=dynamic_results["power_stats"],
+        power_stats=dynamic_power,
     )
 
-    # Log scale_matrix performance
+
+def run_scale_matrix(m, k, *, perf_filename, device="cuda:0"):
+    device, x = _setup(m, k, device)
+    static_latency, static_power = _bench_static(device, x)
+
     log_perf(
-        item_list=[
-            {
-                "m": m,
-                "k": k,
-                "quant_dtype": "fp8",
-                "latency": static_latency,
-            }
-        ],
+        item_list=[{"m": m, "k": k, "quant_dtype": "fp8", "latency": static_latency}],
         framework="TRTLLM",
         version=tensorrt_llm.__version__,
         device_name=torch.cuda.get_device_name(device),
         op_name="scale_matrix",
         kernel_source="torch_ops",
-        perf_filename="scale_matrix_perf.txt",
-        power_stats=static_results["power_stats"],
+        perf_filename=perf_filename,
+        power_stats=static_power,
     )

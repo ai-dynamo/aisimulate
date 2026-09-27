@@ -127,32 +127,18 @@ frameworks:
       version: "0.30.0"
       images:
         default: "vllm/vllm-openai:v0.30.0@sha256:8a69ffad015f138d7170c4ddc429e230a3bc1c1719f67e14324749df200a4b90"
-    families:
-      # Kimi-K3 KDA kernels exist on the official kimi-k3 preview image
-      # (CUDA 13 build with fused_kda_decode + FlashKDA; setuptools-scm
-      # version 0.1.dev19262+gb6bbf29dd) and upstreamed in v0.27.0 — but the
-      # family pin STAYS on the preview until the coordinated consumer fix
-      # lands (review jasonqinzhou #1559, comment 3808798129): at 0.27.0 the
-      # DS conv-state layout makes is_fused_kda_decode_supported false, so
-      # serving decode runs causal_conv1d_update +
-      # fused_recurrent_kda_packed_decode + explicit gated RMSNorm, while
-      # KimiK3Model._build_generation_ops still prices every vLLM non-spec
-      # decode as fused_kda_decode and drops the norm. The 0.27.0 gb300 kda
-      # rows collected by this PR are checked in as evidence
-      # (systems/data/gb300/kda/vllm/0.27.0); until the consumer routes by
-      # version, loading that version fills 44 fused_kda_decode rows from
-      # this preview sibling via the shared layer and misprices generation
-      # KDA. Re-pin when the consumer emits the conv-update + packed
-      # decode pair (and blocks preview fused fill) for 0.27.0+.
-      kda:
-        version: "0.1.dev19262"
-        images:
-          default: "vllm/vllm-openai@sha256:e90e2603b2781936651ba019804137714367c69e10a7b25a2e57b46995225616"
+    # kda family pin RETIRED (owner decision 2026-09-28): the family ran on the
+    # kimi-k3 preview image (0.1.dev19262) while the consumer's fused-decode
+    # pricing did not match 0.27's packed-decode serving path (review #1559).
+    # On 0.30.0 the opharness framework-mode probe of Kimi-K3 runs the fused
+    # decode kernel (kda_decode_fusion_many_heads_kernel) and FlashKDA prefill
+    # (opharness findings vllm_0300_upgrade_2026_09_27), and the kda collector
+    # follows 0.30's is_flashkda_supported contract — so kda resolves to the
+    # default 0.30.0 like every other vllm op.
       # mla / mla_bmm family pins (0.27.0) were folded into the 0.29.0
       # default 2026-09-20 per the pin-consolidation rule: pins BELOW the
-      # target version upgrade with it. The kda preview pin stays — an odd
-      # (dev-build) pin keeps its documented consumer blocker above and is
-      # revisited per-release with a validation run or a PR-inclusion check.
+      # target version upgrade with it; the kda preview pin (an odd dev-build
+      # pin) was revisited at the 0.30.0 move and retired, see above.
       # moe: NO family pin (owner decision 2026-08-02, reverting the
       # 2026-08-01 family-wide preview pin — a temporary preview build must
       # not own a family default; a family pin here hijacks image selection

@@ -48,7 +48,7 @@ Output:
 # preview version; it runs on either image — the DS-layout probe
 # (is_fused_kda_decode_supported) yields fused_kda_decode rows on the
 # preview and the packed conv-update + recurrence pair on 0.27.0.
-__compat__ = "vllm==0.1.dev19262"
+__compat__ = "vllm>=0.30.0,<=0.30.0"
 
 import gc
 import os
@@ -463,7 +463,14 @@ def run_kda_generation_benchmark(
     nh, hd, cw = num_v_heads, head_v_dim, d_conv
     dim = nh * hd
 
-    fused_ok = is_fused_kda_decode_supported(nh, hd, cw, num_spec=0, input_dtype=dtype, conv_state_dtype=dtype)
+    # 0.30 added the recurrent-state dtype to the decode probe as well: serving
+    # resolves it from get_state_dtype()[1] (vllm/models/kimi_k3/nvidia/kda.py
+    # :665-680@v0.30.0, resolve_kda_decode_backend -> is_fused_kda_decode_supported
+    # :157-178), float32 for the default mamba_ssm_cache_dtype "auto" — the dtype
+    # of this collector's recurrent state below.
+    fused_ok = is_fused_kda_decode_supported(
+        nh, hd, cw, num_spec=0, input_dtype=dtype, conv_state_dtype=dtype, recurrent_state_dtype=torch.float32
+    )
     conv_weight = torch.randn(3 * dim, cw, dtype=torch.float32, device=device)
     fused_weight = conv_weight.reshape(3, dim, cw).transpose(1, 2).contiguous()
     norm_weight = torch.randn(hd, dtype=torch.float32, device=device)

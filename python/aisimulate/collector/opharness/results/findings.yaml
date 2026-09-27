@@ -1525,9 +1525,34 @@ findings:
       so all eight DSV4 vllm prescriptions were dropped from targets.yaml and
       the eight repos re-probed under the bare render (their cells move from
       pass+custom to pass).
-      DATA: the collector default is 0.30.0 now, but no 0.30 perf data has
-      been collected — the SDK still ships vllm 0.24.0 rows; the collection
-      campaign is the next (collector-side) step.
+      KDA PIN RETIRED (owner 2026-09-28, "kda可以到0.30吗，不pin了"): the
+      manifest's kda family pin on the kimi-k3 preview image is gone; the
+      family resolves to the 0.30.0 default like every other vllm op
+      (collect_kda __compat__ 0.30.0). SMOKE ON 0.30 (collect.py --backend
+      vllm --smoke, one vllm/vllm-openai:v0.30.0 container, 4 random cases
+      per op, evidence facts/collector_smoke_0300/{main,kda0300,mini,full}):
+      the first passes exposed three more breaks, all fixed: (a)
+      is_fused_kda_decode_supported() also gained recurrent_state_dtype
+      (kda.py:665-680@v0.30.0; float32 as for the prefill probe) — kda decode
+      cases failed with TypeError; (b) finalize rejected the run — "staged
+      table scale_matrix_perf.txt has no selected producer": collect.py binds
+      every staged table to the registry entries declaring it and a producer
+      checkpoint owns exactly one table, while the compute_scale collectors
+      hard-coded a second table (PerfFile.SCALE_MATRIX registered 2026-09-21
+      never fixed that). Fixed in the declaration layers, not the executor:
+      a `scale_matrix` registry op (all three backends; same module + case
+      grid, run_func run_scale_matrix, static quant measured on its own) with
+      activation in base_ops/compute_scale.yaml and the Qwen3 static-FP8
+      artifact; the executor alternative (multi-table producers) is a
+      mechanism change and stays an owner call; (c) the vllm image ships no
+      pyarrow — the launchers pip-install it before finalize. Final full
+      smoke: 24 ops, 95/96 cases pass (the one failure is the classified
+      kernel-limit raise for msa_generation_module at 6 indexer heads), 23
+      tables finalized as parquet with a provenance sidecar, exit 0.
+      DATA: the collector default is 0.30.0 now and the collector finalizes
+      end to end on 0.30, but no 0.30 perf data campaign has run — the SDK
+      still ships vllm 0.24.0 rows; the campaign is the next (collector-side)
+      step.
     applies_to: ['framework:vllm-0.30.0', 'instrument:probe_driver', 'instrument:path_diff',
       'instrument:workflow_check', 'collector:vllm', 'platform:sm90', deepseek-ai/DeepSeek-V4.1-Flash,
       nvidia/Qwen3.8-2.4T-A95B-NVFP4, moonshotai/Kimi-K3, deepseek-ai/DeepSeek-V4-Flash, nvidia/Nemotron-H-56B-Base-8K]

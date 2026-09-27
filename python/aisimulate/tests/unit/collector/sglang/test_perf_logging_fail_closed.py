@@ -15,7 +15,8 @@ REPO_ROOT = Path(__file__).resolve().parents[4]
     [
         ("collector/sglang/collect_attn.py", "run_attention_torch", 1),
         ("collector/sglang/collect_attn_encoder.py", "run_encoder_attention_torch", 1),
-        ("collector/sglang/collect_computescale.py", "run_computescale", 2),
+        ("collector/sglang/collect_computescale.py", "run_computescale", 1),
+        ("collector/sglang/collect_computescale.py", "run_scale_matrix", 1),
         ("collector/sglang/collect_gdn.py", "run_gdn_context_benchmark", 2),
         ("collector/sglang/collect_gdn.py", "run_gdn_generation_benchmark", 3),
         ("collector/sglang/collect_gemm.py", "run_gemm", 1),
