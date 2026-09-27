@@ -7,7 +7,7 @@
 # 0.24->0.29 adaptations each carry a serving citation @0.29.0. On 0.29 the
 # kv dtype FORKS the backend (bf16 -> FLASH_ATTN_MLA_SPARSE, fp8 ->
 # FLASHMLA_SPARSE on SM90) — both keys are collected.
-__compat__ = "vllm>=0.29.0,<=0.29.0"
+__compat__ = "vllm>=0.30.0,<=0.30.0"
 
 """
 MLA Module Collector for vLLM — unified MLA and DSA benchmarking.

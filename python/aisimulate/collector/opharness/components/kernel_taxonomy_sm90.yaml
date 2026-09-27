@@ -257,3 +257,20 @@ rules:
      match: "^act_kernel$|^silu_mul_clamp_kernel$"}
   - {backend: sgl_kernel, role: infra,
      match: "^clamp_position_kernel$"}
+
+  # ------------------------------------------------ vllm 0.30.0 (2026-09-27)
+  # DSV4 request/token index mapping (scheduler glue), Nemotron fused
+  # relu^2 + static fp8 quant (0.30 fuses the activation into the quant), and
+  # the DSV4.1 mHC head-reduce store. The DSV4.1 engram kernels
+  # (_engram_lookup / _hash_ids / _fused_engram_post_wkv) and the DSV4
+  # cute-DSL "kernel_cutlass_device_kernel_tensorptrf32..." stay RESIDUE on
+  # purpose: a new module no family names yet — the owner's granularity call.
+  - {backend: framework_native, role: infra,
+     match: "^_token_request_mapping_kernel$"}
+  - {backend: vllm_kernel, role: quant,
+     match: "^_relu_squared_static_fp8_quant_kernel$"}
+  - {backend: framework_native, role: mhc,
+     match: "^_hc_head_reduce_store_kernel$"}
+  # vLLM cute-DSL FA varlen metadata conversion (cu_seqlens -> blocks -> batch): attention glue
+  - {backend: framework_native, role: infra,
+     match: "flash_attncutecu_blocks_kernel"}

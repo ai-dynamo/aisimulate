@@ -5,7 +5,7 @@
 # targets the manifest pin; prior-version code is `git log -- <this file>`
 # away and prior-version DATA stays permanent under its version key. The
 # 0.24->0.29 adaptations each carry a serving citation @0.29.0.
-__compat__ = "vllm>=0.29.0,<=0.29.0"
+__compat__ = "vllm>=0.30.0,<=0.30.0"
 
 import os
 

@@ -1,6 +1,3 @@
-# INPUT ONLY: what to probe and how — platform, version pins, roster,
-# per-model generate args / dummy overrides / owner exclusions.
-# Conclusions from probe campaigns live in findings.yaml (separate lifecycle).
 schema: aic-probe-targets/v1
 backends:
   sglang:
@@ -10,9 +7,9 @@ backends:
       0.5.16: lmsysorg/sglang:v0.5.16
   vllm:
     versions:
-    - 0.29.0
+    - 0.30.0
     images:
-      0.29.0: vllm/vllm-openai:v0.29.0
+      0.30.0: vllm/vllm-openai:v0.30.0
     cli_extra_args:
     - --generator-set
     - params.agg.extra_cli_args=["--benchmark-mode","agg"]
@@ -42,11 +39,6 @@ families:
           - --generator-set
           - params.agg.moe_backend=marlin
           fact: 'fp4-experts on SM90: runner=auto crashes, marlin runs (facts/bisect_dsv4_native_marlin.json)'
-        vllm:
-          args:
-          - --generator-set
-          - params.agg.kv_cache_dtype=fp8
-          fact: vllm DeepseekV4 fp8_ds_mla REQUIRES fp8 KV (attention.py:79; golden-auto crash 2026-08-23)
         trtllm:
           args:
           - --generator-set
@@ -59,11 +51,6 @@ families:
         sglang:
           args: *id001
           fact: 'fp4-experts on SM90: runner=auto crashes, marlin runs (facts/bisect_dsv4_native_marlin.json)'
-        vllm:
-          args:
-          - --generator-set
-          - params.agg.kv_cache_dtype=fp8
-          fact: vllm DeepseekV4 fp8_ds_mla REQUIRES fp8 KV (attention.py:79; golden-auto crash 2026-08-23)
         trtllm:
           args:
           - --generator-set
@@ -78,11 +65,6 @@ families:
         sglang:
           args: *id001
           fact: 'fp4-experts on SM90: runner=auto crashes, marlin runs (facts/bisect_dsv4_native_marlin.json)'
-        vllm:
-          args:
-          - --generator-set
-          - params.agg.kv_cache_dtype=fp8
-          fact: vllm DeepseekV4 fp8_ds_mla REQUIRES fp8 KV (attention.py:79; golden-auto crash 2026-08-23)
         trtllm:
           args:
           - --generator-set
@@ -95,11 +77,6 @@ families:
         sglang:
           args: *id001
           fact: 'fp4-experts on SM90: runner=auto crashes, marlin runs (facts/bisect_dsv4_native_marlin.json)'
-        vllm:
-          args:
-          - --generator-set
-          - params.agg.kv_cache_dtype=fp8
-          fact: vllm DeepseekV4 fp8_ds_mla REQUIRES fp8 KV (attention.py:79; golden-auto crash 2026-08-23)
         trtllm:
           args:
           - --generator-set
@@ -197,8 +174,9 @@ families:
     - repo: mistralai/Leanstral-1.5-119B-A6B
       decided_by: tianhaox
       date: 2026-09-25
-      reason: 'fetch step hard-stop: the Hub repo ships no config.json (Mistral params.json layout only); the
-        dummy builder and the generator both need a transformers config. Owner decision 2026-09-25: drop (params.json-only checkpoints are out).'
+      reason: 'fetch step hard-stop: the Hub repo ships no config.json (Mistral params.json layout only); the dummy
+        builder and the generator both need a transformers config. Owner decision 2026-09-25: drop (params.json-only
+        checkpoints are out).'
     - repo: MiniMaxAI/MiniMax-H3
       decided_by: tianhaox
       date: 2026-09-25
@@ -212,35 +190,34 @@ families:
     - repo: yandex/AliceAI-Foundation-80B-A3B-Base
       decided_by: tianhaox
       date: 2026-09-25
-      reason: 'owner decision 2026-09-25: dropped from the roster (custom auto_map-only architecture, unknown to every
-        pinned framework and to the SDK); inputs and probe plan rows moved to facts/dropped/.'
+      reason: 'owner decision 2026-09-25: dropped from the roster (custom auto_map-only architecture, unknown to
+        every pinned framework and to the SDK); inputs and probe plan rows moved to facts/dropped/.'
     - repo: XingChen-AGI/Xing4.0-29B-A4B
       decided_by: tianhaox
       date: 2026-09-25
-      reason: 'owner decision 2026-09-25: dropped from the roster (custom auto_map-only architecture, unknown to every
-        pinned framework and to the SDK); inputs and probe plan rows moved to facts/dropped/.'
+      reason: 'owner decision 2026-09-25: dropped from the roster (custom auto_map-only architecture, unknown to
+        every pinned framework and to the SDK); inputs and probe plan rows moved to facts/dropped/.'
     - repo: XingChen-AGI/Xing4.0-29B-A4B-FP8
       decided_by: tianhaox
       date: 2026-09-25
-      reason: 'owner decision 2026-09-25: dropped from the roster (custom auto_map-only architecture, unknown to every
-        pinned framework and to the SDK); inputs and probe plan rows moved to facts/dropped/.'
+      reason: 'owner decision 2026-09-25: dropped from the roster (custom auto_map-only architecture, unknown to
+        every pinned framework and to the SDK); inputs and probe plan rows moved to facts/dropped/.'
     - repo: XHToken/Spark-X2.5-4B
       decided_by: tianhaox
       date: 2026-09-25
-      reason: 'owner decision 2026-09-25: dropped from the roster (custom auto_map-only architecture, unknown to every
-        pinned framework and to the SDK); inputs and probe plan rows moved to facts/dropped/.'
+      reason: 'owner decision 2026-09-25: dropped from the roster (custom auto_map-only architecture, unknown to
+        every pinned framework and to the SDK); inputs and probe plan rows moved to facts/dropped/.'
     - repo: IFM/K2-Horizon-MoVA-36B-A4B
       decided_by: tianhaox
       date: 2026-09-25
-      reason: 'owner decision 2026-09-25: dropped from the roster (custom auto_map-only architecture, unknown to every
-        pinned framework and to the SDK); inputs and probe plan rows moved to facts/dropped/.'
+      reason: 'owner decision 2026-09-25: dropped from the roster (custom auto_map-only architecture, unknown to
+        every pinned framework and to the SDK); inputs and probe plan rows moved to facts/dropped/.'
     architecture: full support-matrix roster (per-checkpoint, no arch dedup)
     derive: true
     extra_repos:
     - moonshotai/Kimi-K3
     - nvidia/Kimi-K3-NVFP4
     - nvidia/DeepSeek-V3.2-NVFP4
-    # onboarding 2026-09-25 — owner request (recent releases; SDK support gaps recorded per architecture in findings)
     - zai-org/GLM-5.3-Flash
     - zai-org/GLM-5.3-Flash-BF16
     - nvidia/GLM-5.3-Flash-NVFP4
@@ -272,23 +249,18 @@ families:
             args:
             - --generator-set
             - params.agg.extra_cli_args=["--benchmark-mode","agg","--gpu-memory-utilization","0.6"]
-            fact: 'vllm 0.29.0/SM90: the generator-rendered default OOMs the mamba profile run
-              (_state_passing_fwd tries 8GiB with 4GiB free on a 143GB GPU). Root knob is max_num_seqs
-              (seqs=64 alone passes, facts/ab_nemoh_seq_0290.json) but the generator rule engine floors
-              max_batch_size at 512 (pipeline.py: 512 if x<512 else x*2) and SILENTLY IGNORES unknown
-              params.agg keys — so the expressible rescue is gpu-memory-utilization 0.6 via
-              extra_cli_args (A/B facts/ab_nemoh_mem_0290.json, 2026-09-19; replaces the backend-level
-              extra_cli_args, hence benchmark-mode is repeated). Real deployments of the default
-              config hit the same OOM.'
+            fact: 'vllm 0.29.0/SM90: the generator-rendered default OOMs the mamba profile run (_state_passing_fwd
+              tries 8GiB with 4GiB free on a 143GB GPU). Root knob is max_num_seqs (seqs=64 alone passes, facts/ab_nemoh_seq_0290.json)
+              but the generator rule engine floors max_batch_size at 512 (pipeline.py: 512 if x<512 else x*2) and
+              SILENTLY IGNORES unknown params.agg keys — so the expressible rescue is gpu-memory-utilization 0.6
+              via extra_cli_args (A/B facts/ab_nemoh_mem_0290.json, 2026-09-19; replaces the backend-level extra_cli_args,
+              hence benchmark-mode is repeated). Real deployments of the default config hit the same OOM.'
       zai-org/GLM-5.3:
         dummy_overrides:
           family: glm
-      # GLM-5.3 inverted the 5.x naming: the un-suffixed repo is the fp8
-      # artifact, -BF16 the bf16 one (Hub configs; owner decision 2026-09-24).
       zai-org/GLM-5.3-BF16:
         dummy_overrides:
           family: glm
-          # same tokenizer family as the fp8 artifact; no fetched tokenizer dir yet
           tokenizer_from: zai-org/GLM-5.3
       nvidia/GLM-5.3-NVFP4:
         dummy_overrides:
@@ -309,13 +281,8 @@ families:
           sglang:
             args: *id001
             fact: 'fp4-experts on SM90: runner=auto crashes, marlin runs (facts/bisect_dsv4_native_marlin.json)'
-          vllm:
-            args: &id002
-            - --generator-set
-            - params.agg.kv_cache_dtype=fp8
-            fact: vllm DeepseekV4 fp8_ds_mla REQUIRES fp8 KV (attention.py:79; golden-auto crash 2026-08-23)
           trtllm:
-            args: &id003
+            args: &id002
             - --generator-set
             - params.agg.tokens_per_block=128
             fact: DeepseekV4CacheManager requires tokens_per_block in [128,256]; naive renders 32 (facts/trt_ab_dsv4_tpb128.json)
@@ -328,11 +295,8 @@ families:
           sglang:
             args: *id001
             fact: 'fp4-experts on SM90: runner=auto crashes, marlin runs (facts/bisect_dsv4_native_marlin.json)'
-          vllm:
-            args: *id002
-            fact: vllm DeepseekV4 fp8_ds_mla REQUIRES fp8 KV (attention.py:79; golden-auto crash 2026-08-23)
           trtllm:
-            args: *id003
+            args: *id002
             fact: DeepseekV4CacheManager requires tokens_per_block in [128,256]; naive renders 32 (facts/trt_ab_dsv4_tpb128.json)
       sgl-project/DeepSeek-V4-Flash-FP8:
         dummy_overrides:
@@ -340,11 +304,6 @@ families:
         variant_overrides:
           vllm: rep_mix
         cli_extra_args:
-          vllm:
-            args:
-            - --generator-set
-            - params.agg.kv_cache_dtype=fp8
-            fact: vllm DeepseekV4 fp8_ds_mla REQUIRES fp8 KV (attention.py:79; golden-auto crash 2026-08-23)
           trtllm:
             args:
             - --generator-set
@@ -356,11 +315,6 @@ families:
         variant_overrides:
           vllm: interleave_pair
         cli_extra_args:
-          vllm:
-            args:
-            - --generator-set
-            - params.agg.kv_cache_dtype=fp8
-            fact: vllm DeepseekV4 fp8_ds_mla REQUIRES fp8 KV (attention.py:79; golden-auto crash 2026-08-23)
           trtllm:
             args:
             - --generator-set
@@ -400,5 +354,6 @@ platform:
   - h100_sxm
   - h200_sxm
 tooling:
-  note: 'aiconfigurator-core wheel version is READ FROM aic/pyproject.toml (the checkout declares it); only probe-specific
-    pins live here. vllm-probe:0.24.0-fix retired with the 0.29.0 pin (stubs gone since 0.27.1) — history in findings vllm_024_image_tilelang_stub.'
+  note: aiconfigurator-core wheel version is READ FROM aic/pyproject.toml (the checkout declares it); only probe-specific
+    pins live here. vllm-probe:0.24.0-fix retired with the 0.29.0 pin (stubs gone since 0.27.1) — history in findings
+    vllm_024_image_tilelang_stub.

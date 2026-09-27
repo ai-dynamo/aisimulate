@@ -4,7 +4,7 @@ _meta:
   version: 0.5.16
   taxonomy: kernel_taxonomy_sm90.yaml
   kind: summary
-  generated: '2026-09-27T16:44:42'
+  generated: '2026-09-27T23:55:25'
   summary:
     repos: 99
     repos_with_residue: 0

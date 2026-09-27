@@ -1461,6 +1461,74 @@ findings:
       'instrument:build_images', 'framework:vllm-0.29.0', 'framework:sglang-0.5.16',
       'framework:trtllm-1.3.0rc23', 'platform:sm90', MiniMaxAI/MiniMax-M3, deepseek-ai/DeepSeek-V3,
       deepseek-ai/DeepSeek-V3.2]
+  vllm_0300_upgrade_2026_09_27:
+    statement: |
+      Owner decision 2026-09-27: move the vllm pin from 0.29.0 straight to
+      0.30.0 (vllm/vllm-openai:v0.30.0, the newest image; 0.29.x patches do
+      not exist), collector included — the 0.29 pin upgrade is abandoned and
+      its records left the PR (kept in the workspace, facts/local_only_results).
+      The upgrade_op workflow ran end to end as the stability test of the
+      harness; every step's evidence:
+      PROBES (224 vllm runs, framework mode, rendered + fp8-KV variants,
+      ~1.1 min median per run on the dummies, 50 min on six GPUs): 124-cell
+      matrix 100 pass / 9 pass+custom / 15 fail (12 generator rejects, 3
+      capacity: the Qwen3.8-2.4T dummies — depth4 bf16/fp8 as on 0.29, and
+      now also the NVFP4 depth4 that fit on 0.29 — do not fit one 139.8 GiB
+      GPU under 0.30's allocation). Verdict changes vs 0.29: DeepSeek-V4.1-
+      Flash and its NVFP4 artifact now PASS (0.30 registers DeepseekV41);
+      Qwen3.8-2.4T-A95B-NVFP4 pass -> capacity. IDENTITY: across the 94 repos
+      probed on both versions the identity-role (backend, role) sets are
+      IDENTICAL — no attention / gemm / moe / linear-attention / dsa / quant /
+      mhc kernel family changed between 0.29.0 and 0.30.0; 47 repos differ
+      only in sampler / scheduler glue kernels (0.30 drops
+      _convert_req_index_to_global_index / _compute_slot_mappings /
+      _get_num_sampled_and_rejected, adds cute-DSL cu_blocks conversion and a
+      symbol literally named "kernel"). New kernels labeled: DSV4
+      _token_request_mapping_kernel (infra), Nemotron fused
+      _relu_squared_static_fp8_quant_kernel (0.30 fuses the activation into
+      the quant), DSV4.1 _hc_head_reduce_store_kernel (mhc). RESIDUE left on
+      purpose for the owner's granularity call: DSV4.1's engram module
+      (_engram_lookup_kernel, _hash_ids_kernel, _fused_engram_post_wkv_kernel)
+      and a DSV4 cute-DSL kernel_cutlass_device_kernel_tensorptrf32... whose
+      role is unattributed. The Qwen3.5 rows' attention column reads FA3 +
+      the GDN decode kernel instead of ChunkGatedDeltaRule + the same kernel:
+      0.30 emits no wrapped attention span there, kernels unchanged.
+      COLLECTOR ON 0.30 (the harness's reason to exist): 21 captures re-taken
+      in the 0.30 image with versioned names (opcov_<cap>@0.30.0.json). The
+      first wave found the collector broken in two places — exactly the
+      metadata-parity class layer_permissions.md warns about: (a)
+      CommonAttentionMetadata lost the private _seq_lens_cpu /
+      _num_computed_tokens_cpu fields, the seq_lens_cpu property and the
+      num_computed_tokens_cpu property (10 MLA/DSV4 captures invalid); (b)
+      is_flashkda_supported() gained recurrent_state_dtype (kda_ctx invalid).
+      Fixed in collector/vllm/utils.py, collect_kda.py, collect_msa_module.py
+      with citations to the 0.30 population sites (v1/worker/gpu/attn_utils.py
+      :456-475, CommonAttentionMetadata.compute_num_computed_tokens,
+      models/kimi_k3/nvidia/kda.py:455-495 + :665, MambaStateDtypeCalculator.
+      kda_state_dtype -> float32 for the default mamba_ssm_cache_dtype);
+      framework_manifest vllm default -> 0.30.0 (digest recorded); the
+      __compat__ upper bound of all 11 vllm collector modules -> 0.30.0;
+      manifest tests updated. Re-captured: 19/19 declared gates ALIGNED
+      (compute_scale stays explained: the quant is still fused on 0.30, the
+      governed exception now scopes 0.30.0). Citation audit debt: only the
+      three broken sites were re-verified against 0.30 source; the other
+      @0.29.0 citations in the collector still hold by behaviour (their
+      captures align) but were not re-read.
+      CUSTOMIZATIONS (bare-default A/B at 0.30.0, results/retests/sm90/
+      vllm-0.30.0.yaml): Nemotron-H-56B gpu-memory-utilization 0.6 still
+      needed (bare OOMs in the mamba profile run as on 0.29); the DSV4
+      moe_backend=marlin prescription for the four fp4-experts checkpoints
+      is now DROPPABLE — 0.30's runner auto selects the same
+      marlin_moe_wna16 kernels the prescription forced (identity identical),
+      so all eight DSV4 vllm prescriptions were dropped from targets.yaml and
+      the eight repos re-probed under the bare render (their cells move from
+      pass+custom to pass).
+      DATA: the collector default is 0.30.0 now, but no 0.30 perf data has
+      been collected — the SDK still ships vllm 0.24.0 rows; the collection
+      campaign is the next (collector-side) step.
+    applies_to: ['framework:vllm-0.30.0', 'instrument:probe_driver', 'instrument:path_diff',
+      'instrument:workflow_check', 'collector:vllm', 'platform:sm90', deepseek-ai/DeepSeek-V4.1-Flash,
+      nvidia/Qwen3.8-2.4T-A95B-NVFP4, moonshotai/Kimi-K3, deepseek-ai/DeepSeek-V4-Flash, nvidia/Nemotron-H-56B-Base-8K]
   taxonomy_dsa_nsa_family_covers_m3:
     statement: 'RESOLVED 2026-09-23: M3 sparse-attention kernels now label `triton` (the vocabulary name of
       MiniMaxM3SparseTritonImpl), dsa_nsa is DeepSeek-DSA only; see probe_prefill_prefix_cache_contamination.

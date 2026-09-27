@@ -97,7 +97,7 @@ standards_exceptions:
   scope:
     tables: [scale_matrix_perf]
     backend: vllm
-    versions: ["0.29.0"]
+    versions: ["0.30.0"]  # 0.29.0 was never collected; the fusion is unchanged on 0.30.0 (opharness compute_scale gate, 2026-09-27)
     systems: [h100_sxm, h200_sxm]
   retirement: "model the fused quant (fold compute_scale into the gemm row when the deployment compiles) or drop the standalone row for compiled deployments"
   approved_by: tianhaox

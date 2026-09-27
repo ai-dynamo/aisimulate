@@ -636,6 +636,8 @@ KERNEL_DENY = re.compile(
     r"vectorized_layer_norm|CatArrayBatchedCopy|write_indices|cunn_|sort|radix|"
     r"mbtopk|gatherTopK|arange|triu_tril|masked_scale|_scatter_gather|"
     r"bitonic|cumsum|tensor_kernel_scan|upsample|multi_tensor_apply)|aten::(fill_|copy_|zero_)|"
+    # a device symbol literally named "kernel" (vllm 0.30 cute-DSL glue) carries no identity
+    r"^kernel$|"
     # trtllm MoE tactic profiler + stream-delay glue: the autotuner, not the serving path
     r"cutlass_kernels::populateRandomBufferKernel|cutlass_kernels::prepareFakeRouterBuffers|kernels::delayStreamKernel|"
     r"^void at::native::.*FillFunctor"
@@ -1011,6 +1013,7 @@ def build_records() -> None:
 def _fail_cause(note: str) -> str:
     rules = [
         ("not a valid Hugg", "generator rejects"),
+        ("OutOfMemoryError|CUDA out of memory|insufficient GPU memory", "capacity (no faithful cut fits one probe GPU)"),
         ("Cannot find model module|not a registered|not supported for now|Unknown architecture|pydantic.*value_", "arch not registered"),
         ("NotImplementedError", "tied-embedding quant gap"),
         ("Only gated SiLU", "NVFP4 x gelu-MoE: no kernel path"),

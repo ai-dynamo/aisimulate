@@ -135,10 +135,16 @@ def _log(common, latency_ms, kernel_source, perf_filename, vllm_version, device,
 def _resolve_prefill_kernel(dtype: torch.dtype):
     """Mirror serving's resolve_kda_prefill_backend on this device: FlashKDA
     when supported AND importable, else the Triton chunk kernel
-    (vllm/models/kimi_k3/nvidia/kda.py resolve_kda_prefill_backend)."""
+    (vllm/models/kimi_k3/nvidia/kda.py:455-495@v0.30.0 resolve_kda_prefill_backend;
+    backend "auto" never selects FlashInfer, so on SM90 the choice is FlashKDA
+    or Triton). 0.30 added the recurrent-state dtype to the probe: serving
+    passes get_state_dtype()[1] (kda.py:665), which
+    MambaStateDtypeCalculator.kda_state_dtype resolves to float32 for the
+    default mamba_ssm_cache_dtype "auto" — the dtype this collector's
+    init_state uses below."""
     from vllm.models.kimi_k3.nvidia.kda import is_flashkda_supported
 
-    if is_flashkda_supported(128, dtype, KDA_LOWER_BOUND):
+    if is_flashkda_supported(128, dtype, torch.float32, KDA_LOWER_BOUND):
         try:
             import vllm._flashkda_C  # noqa: F401
             from vllm.models.kimi_k3.nvidia.kda import _flashkda_prefill

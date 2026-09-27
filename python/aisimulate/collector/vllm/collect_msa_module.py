@@ -7,7 +7,7 @@
 # targets the manifest pin; prior-version code is `git log -- <this file>`
 # away and prior-version DATA stays permanent under its version key. The
 # 0.24->0.29 adaptations each carry a serving citation @0.29.0.
-__compat__ = "vllm>=0.29.0,<=0.29.0"
+__compat__ = "vllm>=0.30.0,<=0.30.0"
 
 """
 MSA Module Collector for vLLM — MiniMax-M3 sparse-attention benchmarking.
@@ -516,7 +516,7 @@ def _rebase_block_table_and_slots(common_attn_metadata, block_size: int):
     block_table += 1
 
     query_start_loc = common_attn_metadata.query_start_loc_cpu
-    context_lens = common_attn_metadata.num_computed_tokens_cpu
+    context_lens = common_attn_metadata.compute_num_computed_tokens().cpu()  # 0.30: property removed; seq_lens - query_lens on device (utils.py CommonAttentionMetadata.compute_num_computed_tokens@v0.30.0)
     slot_mapping = common_attn_metadata.slot_mapping
     device = slot_mapping.device
     for i in range(common_attn_metadata.num_reqs):
