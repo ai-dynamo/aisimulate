@@ -469,6 +469,7 @@ def run_attention_torch(
                 "window_size": window_size,
                 "step": step,
                 "latency": latency,
+                "used_cuda_graph": results["used_cuda_graph"],
             }
         ],
         framework="VLLM",

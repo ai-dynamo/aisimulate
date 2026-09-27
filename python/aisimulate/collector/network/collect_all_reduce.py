@@ -668,7 +668,8 @@ def benchmark_vllm_allreduce(
 
                 # XPU: free the captured graph + pool before the next size.
                 if torch.xpu.is_available():
-                    del graph, input_tensors, outputs
+                    # inp/out are loop vars still holding the last tensors; drop them too.
+                    del graph, input_tensors, outputs, inp, out
                     gc.collect()
                     dev_mod.synchronize()
                     dev_mod.empty_cache()
