@@ -85,9 +85,9 @@ def test_representative_is_rendered_kv_framework_mode_and_fp8_variant_folds_in(d
     yaml = __import__("yaml")
     doc = yaml.safe_load(written[0].read_text())
     assert doc["_meta"]["summary"] == {"repos": 1, "repos_with_residue": 0, "residue_kernels": []}
-    # the committed file carries COUNTS, the evidence file carries the kernel names
-    assert doc["results"]["org/m"]["families"] == {"attention": {"fa3": 1}, "gemm": {"cublas": 1}}
-    assert "kv_variants" in doc["results"]["org/m"] and doc["results"]["org/m"]["kv_variants"]["fp8"]["added_kernels"] == 2
+    # the committed file carries record id + roles + residue only; the evidence file carries the kernel names
+    assert doc["results"]["org/m"] == {"record": "fw", "roles": ["attention", "gemm"], "residue": [],
+                                       "kv_variant_residue": ["mystery_fp8_kernel"]}
     full = yaml.safe_load((tmp_path / "evidence" / "vllm-0.29.0.yaml").read_text())
     assert full["results"]["org/m"]["families"]["attention"]["fa3"] == ["flash::FlashAttnFwdSm90"]
     assert full["_meta"]["kind"] == "evidence:kernels" and doc["_meta"]["kind"] == "summary"

@@ -404,7 +404,7 @@ def pred_family_observed(p):
         if not f.exists():
             continue
         for repo, entry in ((yaml.safe_load(f.read_text()) or {}).get("results") or {}).items():
-            if role in (entry.get("families") or {}):
+            if role in (entry.get("roles") or entry.get("families") or {}):
                 hits.append(f"{fw}:{repo}")
     if not hits:
         return False, f"no decomposition shows role '{role}' for family '{fam}' (decompose first, or the family is unobserved)"

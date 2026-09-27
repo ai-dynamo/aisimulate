@@ -9,11 +9,7 @@ through the SM's kernel taxonomy (the SAME file the path_diff gate uses) into
 
     results/<sm>/decompose/<framework>-<version>.yaml            (committed SUMMARY)
       results:
-        <repo>:
-          record: <id>  variant: <dummy cut>  kv: <rendered|fp8...>
-          families: {<role>: {<label>: <kernel count>}}   # covered execution
-          residue:  [kernels no taxonomy rule labels]     # NOT covered
-          ops_observed: [<api-span ops>]
+        <repo>: {record: <id>, roles: [<taxonomy roles covered>], residue: [<kernels no rule labels>]}
     <workspace>/archive/evidence/decompose/<sm>/<framework>-<version>.yaml
       the same, with the kernel NAMES per role/label (evidence, not committed)
 
@@ -144,19 +140,15 @@ def decompose(records_path: Path, sm: str, repo_filter: str | None, rules) -> di
 
 
 def summarize(entry: dict) -> dict:
-    """The committed view of a decomposition: role -> backend -> kernel COUNT,
-    the residue list (the decision input), the ops seen and the record id.
-    Kernel names live in the evidence file next to the archive; the summary
-    is what the workflow predicates and reviewers read (owner decision
-    2026-09-26: the repo carries conclusions, evidence stays out)."""
-    out = {k: entry[k] for k in ("record", "variant", "kv", "probe_eager") if k in entry}
-    out["families"] = {role: {b: len(ks) for b, ks in labels.items()} for role, labels in entry["families"].items()}
-    out["residue"] = list(entry.get("residue") or [])
-    out["ops_observed"] = list(entry.get("ops_observed") or [])
-    out["coverage"] = entry.get("coverage")
-    if entry.get("kv_variants"):
-        out["kv_variants"] = {kv: {"record": v["record"], "added_kernels": len(v["added_kernels"]),
-                                   "added_residue": list(v["added_residue"])} for kv, v in entry["kv_variants"].items()}
+    """The committed view of a decomposition (owner decision 2026-09-27: residue
+    and record id only): which record the decision rests on, the roles it
+    covered, and the residue — the kernels no family names, i.e. the owner's
+    granularity input. Kernel names and per-backend counts live in the
+    evidence file next to the archive."""
+    out = {"record": entry["record"], "roles": sorted(entry["families"]), "residue": list(entry.get("residue") or [])}
+    added = sorted({k for v in (entry.get("kv_variants") or {}).values() for k in v.get("added_residue") or []})
+    if added:
+        out["kv_variant_residue"] = added
     return out
 
 
