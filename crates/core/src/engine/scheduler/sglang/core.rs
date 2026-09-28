@@ -416,14 +416,11 @@ impl SglangCore {
                     )
                     .saturating_add(reserve)
             });
-        let active_count = self.running.len()
-            + self.prebuilt_ready.len()
-            + self.destination_holds.len()
-            + self
-                .waiting
-                .iter()
-                .filter(|req| req.output_len() == 0)
-                .count();
+        // Native decode waiting requests already own KV; those correspond to
+        // `prebuilt_ready`, not fresh prefills in our `waiting` queue. Charging
+        // fresh prefills would deadlock them against the pending handoff.
+        let active_count =
+            self.running.len() + self.prebuilt_ready.len() + self.destination_holds.len();
         let withheld = reserve
             .saturating_mul(active_count)
             .max(completion_guard)

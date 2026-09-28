@@ -386,6 +386,7 @@ def _role_search_space(
         sequences_name = f"{legacy_role}_max_num_seqs"
         tokens, tokens_log_range = _integer_domain(scheduler.get("max_batched_tokens"), default=tokens_default)
         sequences, sequences_log_range = _integer_domain(scheduler.get("max_sequences"), default=sequences_default)
+        result[f"{legacy_role}_reserved_decode_tokens"] = scheduler["reserved_decode_tokens"]
         result[tokens_name] = tokens
         result[sequences_name] = sequences
         if tokens_log_range is not None:
@@ -910,6 +911,7 @@ def _candidate_prediction(
             "scheduler": {
                 "max_batched_tokens": sample[f"{role}_max_num_batched_tokens"],
                 "max_sequences": sample[f"{role}_max_num_seqs"],
+                "reserved_decode_tokens": sample[f"{role}_reserved_decode_tokens"],
             },
             "kv_cache": kv_cache,
             "timing": timing,

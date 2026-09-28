@@ -986,6 +986,25 @@ mod destination_lifecycle {
         );
     }
 
+    #[test]
+    fn fresh_waiting_prefill_does_not_reserve_decode_headroom() {
+        let mut core = admission_core(16, 8, false);
+        core.receive(request(Uuid::from_u128(80_500), vec![1; 4], 1));
+        // The incoming prompt plus its own reserve fits exactly. A fresh
+        // waiting prefill owns no decode slot and must not block this handoff.
+        let events = reserve(&mut core, 80_501, vec![2; 8], 1);
+        assert_eq!(events.len(), 1);
+        assert_eq!(occupied_tokens(&core), 8);
+        core.apply_command(SchedulerCommand::ActivateDestination {
+            handoff_id: HandoffId::from(Uuid::from_u128(80_501)),
+        })
+        .unwrap();
+        for step in 0..4 {
+            execute(&mut core, step as f64);
+        }
+        assert!(core.is_drained());
+    }
+
     fn args(worker_type: WorkerType) -> MockEngineArgs {
         MockEngineArgs::builder()
             .engine_type(EngineType::Sglang)

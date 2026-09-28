@@ -114,6 +114,12 @@ across versions or configurations.
 `EngineConfig.sglang.reserved_decode_tokens` defaults to 512 logical tokens per
 admitted decode request. Disaggregated decode admission combines that reserve
 with a single-request completion guard, capped by `sglang.clip_max_new_tokens`.
+Python and CLI prediction/recommendation YAML expose the same scalar as
+`engine.workers.<role>.scheduler.reserved_decode_tokens`, with the same default
+for aggregated, prefill, and decode roles. Recommendation preserves it in each
+candidate and its exported prediction configuration. Non-default values require
+SGLang; mixed-backend recommendations retain the neutral default.
+
 Setting the fixed reserve to zero keeps the completion guard enabled. Small
 synthetic KV pools may require an explicitly smaller reserve.
 
