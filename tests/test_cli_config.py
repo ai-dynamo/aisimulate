@@ -1618,6 +1618,7 @@ def test_execution_options_reject_mixed_worker_timing(custom_role):
 @pytest.mark.parametrize("reserve", [None, 0, 384])
 def test_sglang_reserved_decode_tokens_public_roundtrip_and_lowering(tmp_path, mode, reserve):
     import yaml
+
     from aisimulate.compiler import prediction_to_replay_spec
 
     roles = ["aggregated"] if mode == "aggregated" else ["prefill", "decode"]

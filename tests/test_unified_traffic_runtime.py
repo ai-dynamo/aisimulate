@@ -1122,6 +1122,7 @@ def test_native_dynamo_agentic_snapshot_retains_recorded_intervals_and_executes_
         assert first["admission_history"][0]["reused_input_tokens"] == 0
         assert first["dispatched_at_ms"] == pytest.approx((starts[first["request_id"]] - cut) / speedup)
 
+
 @pytest.mark.parametrize("reserve,initial_admissions", [(None, 1), (0, 3), (384, 2)])
 def test_sglang_reserved_decode_tokens_reaches_native_admission(tmp_path, reserve, initial_admissions):
     trace = tmp_path / "headroom.jsonl"
