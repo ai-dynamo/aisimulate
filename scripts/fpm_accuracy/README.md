@@ -35,6 +35,19 @@ configuration and measurement manifests, and FPM sidecars share the strict
 public-contract JSON parser: duplicate keys (including nested keys) and
 non-finite constants fail even when the pinned bytes match their hashes.
 
+Daily campaigns load only current configuration snapshots, including all their
+eligible FPM variants and hash-verified measurement evidence. Unrelated archived
+snapshots do not gate the current overview. Explicit history reads still require
+the recorded manifest hashes and validate all historical snapshots; their cache
+is separate from current campaign membership. Optional override files retain
+full-catalog selector validation, including historical bindings.
+
+Schema v7 FPM pairs retain hash, row-count, configuration, and execution-selector
+validation. The current Gym worker adapter cannot represent their full execution
+identity, so native staging reports them as unsupported instead of treating them
+as v6 or aborting the campaign. Their measurements still participate in coverage
+and worker regression. Unknown schema versions and corrupt pairs fail closed.
+
 Decode context parallelism (`dcp`) is a separate identity dimension from `cp`.
 Legacy manifests, sidecars, and parquet files without `dcp` mean `dcp=1`;
 non-default values must agree across all three. Native FPM currently has no
