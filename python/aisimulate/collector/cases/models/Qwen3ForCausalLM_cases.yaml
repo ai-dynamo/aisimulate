@@ -16,13 +16,10 @@ model_specific_base_ops:
   Qwen/Qwen3-32B-FP8-Static-PerTensor:
     sglang:
       - compute_scale
-      - scale_matrix
     trtllm:
       - compute_scale
-      - scale_matrix
     vllm:
       - compute_scale
-      - scale_matrix
 description: >
   Qwen3 dense-family model-centric collection plan.
 

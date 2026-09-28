@@ -3,11 +3,11 @@
 
 """Measure SGLang FP8 activation quantization overhead for static-FP8 GEMM.
 
-Two registry ops share this module and its case grid, one table each
-(the executor's finalize binds every staged table to exactly one checkpoint
-producer — a single op writing two tables cannot be finalized):
-  compute_scale -> computescale_perf.txt  (dynamic per-token quant minus static quant)
-  scale_matrix  -> scale_matrix_perf.txt  (the static per-tensor quant alone)
+One measurement, two tables — the registry entry declares the second one as
+``extra_perf_filenames`` and the executor hands both names in, so finalize
+binds both to this producer's checkpoint:
+  perf_filename            -> computescale_perf.txt  (dynamic per-token quant minus static quant)
+  extra_perf_filenames[0]  -> scale_matrix_perf.txt  (the static per-tensor quant alone)
 """
 
 __compat__ = "sglang==0.5.14"
@@ -68,10 +68,11 @@ def _bench_static(device, x):
     return results["latency_ms"] / _OUTSIDE_LOOP_COUNT, results["power_stats"]
 
 
-def run_computescale(m, k, *, perf_filename, device="cuda:0"):
+def run_computescale(m, k, *, perf_filename, extra_perf_filenames, device="cuda:0"):
+    (scale_matrix_filename,) = extra_perf_filenames
     device, x = _setup(m, k, device)
     dynamic_latency, dynamic_power = _bench_dynamic(device, x)
-    static_latency, _ = _bench_static(device, x)
+    static_latency, static_power = _bench_static(device, x)
     compute_scale_latency = max(0.0, dynamic_latency - static_latency)
     version = pkg_resources.get_distribution("sglang").version
 
@@ -87,12 +88,6 @@ def run_computescale(m, k, *, perf_filename, device="cuda:0"):
     ):
         raise RuntimeError(f"Failed to persist SGLang compute scale performance row to {perf_filename}")
 
-
-def run_scale_matrix(m, k, *, perf_filename, device="cuda:0"):
-    device, x = _setup(m, k, device)
-    static_latency, static_power = _bench_static(device, x)
-    version = pkg_resources.get_distribution("sglang").version
-
     if not log_perf(
         item_list=[{"m": m, "k": k, "quant_dtype": "fp8", "latency": static_latency}],
         framework="SGLang",
@@ -100,7 +95,7 @@ def run_scale_matrix(m, k, *, perf_filename, device="cuda:0"):
         device_name=torch.cuda.get_device_name(device),
         op_name="scale_matrix",
         kernel_source="sglang",
-        perf_filename=perf_filename,
+        perf_filename=scale_matrix_filename,
         power_stats=static_power,
     ):
-        raise RuntimeError(f"Failed to persist SGLang scale matrix performance row to {perf_filename}")
+        raise RuntimeError(f"Failed to persist SGLang scale matrix performance row to {scale_matrix_filename}")

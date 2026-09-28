@@ -24,17 +24,9 @@ REGISTRY: list[OpEntry] = [
         get_func="get_computescale_test_cases",
         run_func="run_computescale",
         perf_filename=PerfFile.COMPUTESCALE,
-    ),
-    # compute_scale's second table gets its own producer: finalize accepts a
-    # staged table only from registry entries that declare it, and a producer's
-    # checkpoint owns exactly one table (2026-09-27, the first full vllm
-    # compute_scale finalize rejected scale_matrix_perf.txt as ownerless).
-    OpEntry(
-        op="scale_matrix",
-        module="collector.sglang.collect_computescale",
-        get_func="get_computescale_test_cases",
-        run_func="run_scale_matrix",
-        perf_filename=PerfFile.SCALE_MATRIX,
+        # one measurement, two tables: the static quant row goes to
+        # scale_matrix_perf; finalize binds both to this producer
+        extra_perf_filenames=(PerfFile.SCALE_MATRIX,),
     ),
     OpEntry(
         op="mla_context",

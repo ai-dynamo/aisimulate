@@ -124,9 +124,22 @@ class OpEntry:
     #   unverified_sms=(120,)  — debugged elsewhere, not validated on these SMs
     unverified: bool = False
     unverified_sms: tuple[int, ...] = ()
+    # Further tables the SAME run_func writes from one measurement (passed to
+    # it as ``extra_perf_filenames``); finalize binds every one of them to
+    # this producer's checkpoint. compute_scale is the only user so far
+    # (computescale_perf + scale_matrix_perf; owner decision 2026-09-28).
+    extra_perf_filenames: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if not self.module and not self.versions:
             raise ValueError(f"OpEntry '{self.op}': must specify 'module' or 'versions'")
         if self.module and self.versions:
             raise ValueError(f"OpEntry '{self.op}': cannot specify both 'module' and 'versions'")
+        names = [str(name) for name in self.perf_filenames]
+        if len(names) != len(set(names)):
+            raise ValueError(f"OpEntry '{self.op}': duplicate perf tables {names}")
+
+    @property
+    def perf_filenames(self) -> tuple[str, ...]:
+        """Every table this producer writes, primary first."""
+        return (self.perf_filename, *self.extra_perf_filenames)

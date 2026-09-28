@@ -1539,16 +1539,24 @@ findings:
       every staged table to the registry entries declaring it and a producer
       checkpoint owns exactly one table, while the compute_scale collectors
       hard-coded a second table (PerfFile.SCALE_MATRIX registered 2026-09-21
-      never fixed that). Fixed in the declaration layers, not the executor:
-      a `scale_matrix` registry op (all three backends; same module + case
-      grid, run_func run_scale_matrix, static quant measured on its own) with
-      activation in base_ops/compute_scale.yaml and the Qwen3 static-FP8
-      artifact; the executor alternative (multi-table producers) is a
-      mechanism change and stays an owner call; (c) the vllm image ships no
-      pyarrow — the launchers pip-install it before finalize. Final full
-      smoke: 24 ops, 95/96 cases pass (the one failure is the classified
-      kernel-limit raise for msa_generation_module at 6 indexer heads), 23
-      tables finalized as parquet with a provenance sidecar, exit 0.
+      never fixed that). First fix (863bfc75) split the op into a
+      `scale_matrix` registry producer; OWNER DECISION 2026-09-28 ("做兼容
+      多表"): the executor supports MULTI-TABLE PRODUCERS instead —
+      OpEntry.extra_perf_filenames declares every further table one run_func
+      writes, the executor hands them in (run_computescale(...,
+      extra_perf_filenames)), provenance collections carry them, and every
+      finalize/transaction binding (_registered_checkpoint_tables,
+      producer plan, perf-transaction journal `tables`, sidecar table
+      ownership, collection_meta) treats a checkpoint as owning a SET of
+      tables. compute_scale is back to one op writing both tables from one
+      measurement; the split op and its YAML activations are gone. Verified:
+      mini smoke — one checkpoint vllm.compute_scale.json, computescale_perf
+      + scale_matrix_perf finalized with the same case_plan_hash, exit 0;
+      (c) the vllm image ships no pyarrow — the launchers pip-install it
+      before finalize. Full smoke (24 ops incl. the interim split op): 95/96
+      cases pass (the one failure is the classified kernel-limit raise for
+      msa_generation_module at 6 indexer heads), 23 tables finalized as
+      parquet with a provenance sidecar, exit 0.
       DATA: the collector default is 0.30.0 now and the collector finalizes
       end to end on 0.30, but no 0.30 perf data campaign has run — the SDK
       still ships vllm 0.24.0 rows; the campaign is the next (collector-side)

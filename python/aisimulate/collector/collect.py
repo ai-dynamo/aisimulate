@@ -165,7 +165,7 @@ FPM_INPUT_ERRORS = (TypeError, ValueError, subprocess.CalledProcessError, FileNo
 @dataclass(frozen=True)
 class _ProducerCheckpointPlan:
     attestation: "_FileAttestation"
-    table: str
+    tables: tuple[str, ...]  # every registry-declared table this producer owns (sorted)
     identity: tuple[tuple[str, object], ...]
     done: frozenset[str]
     attempted: frozenset[str]
@@ -194,7 +194,7 @@ class _FileAttestation:
 @dataclass(frozen=True)
 class _ValidatedCheckpoint:
     attestation: _FileAttestation
-    table: str
+    tables: tuple[str, ...]
     attempted: frozenset[str]
     document: dict
 
@@ -2177,6 +2177,10 @@ def collect_ops(
             get_func = getattr(get_module, collection["get_func"])
             run_func = getattr(run_module, collection["run_func"])
             run_func = functools.partial(run_func, perf_filename=collection["perf_filename"])
+            if collection.get("extra_perf_filenames"):
+                # a multi-table producer (registry OpEntry.extra_perf_filenames) receives
+                # every table it must write; finalize binds all of them to its checkpoint
+                run_func = functools.partial(run_func, extra_perf_filenames=tuple(collection["extra_perf_filenames"]))
 
             def get_func_with_limit(get_func=get_func, op=collection["type"]):
                 from collector.capabilities import filter_cases
@@ -2727,8 +2731,24 @@ def _resume_tracker_for_collection(
     )
 
 
-def _registered_checkpoint_table(identity: dict, *, backend: str) -> str:
-    """Resolve a checkpoint producer to its registry-owned table."""
+def _collection_perf_filenames(collection: dict) -> list[str]:
+    """Every staged table a provenance collection entry declares (primary first)."""
+    return [str(collection["perf_filename"]), *(str(name) for name in collection.get("extra_perf_filenames") or ())]
+
+
+def _collection_tables(collection: dict) -> tuple[str, ...]:
+    return tuple(sorted(Path(name).stem for name in _collection_perf_filenames(collection)))
+
+
+def _registered_checkpoint_tables(identity: dict, *, backend: str) -> frozenset[str]:
+    """Resolve a checkpoint producer to the set of registry-owned tables it writes.
+
+    One producer (module + run_func) owns one or more tables — the primary
+    ``perf_filename`` plus any ``extra_perf_filenames`` its OpEntry declares
+    (owner decision 2026-09-28: compute_scale writes computescale_perf and
+    scale_matrix_perf from one measurement, so the executor binds both to the
+    same checkpoint instead of splitting the op).
+    """
     from collector.version_resolver import resolve_module
 
     if set(identity) != set(_CHECKPOINT_IDENTITY_FIELDS) or identity.get("backend") != backend:
@@ -2752,16 +2772,16 @@ def _registered_checkpoint_table(identity: dict, *, backend: str) -> str:
         registry = list(registry_module.REGISTRY_XPU)
     else:
         registry = [*registry_module.REGISTRY, *_wideep_registry_for_backend(backend)]
-    owned_tables = {
-        Path(str(entry.perf_filename)).stem
+    owned_table_sets = {
+        frozenset(Path(str(name)).stem for name in entry.perf_filenames)
         for entry in registry
         if identity["module"] == f"{backend}.{entry.op}"
         and identity["run_func"] == entry.run_func
         and resolve_module(entry, framework_version) is not None
     }
-    if len(owned_tables) != 1:
-        raise RuntimeError(f"checkpoint producer has no unambiguous registered table: {identity!r}")
-    return owned_tables.pop()
+    if len(owned_table_sets) != 1:
+        raise RuntimeError(f"checkpoint producer has no unambiguous registered table set: {identity!r}")
+    return owned_table_sets.pop()
 
 
 def _load_selected_producer_checkpoint(
@@ -2792,14 +2812,14 @@ def _load_selected_producer_checkpoint(
             f"{context}: staged table {staging_path} has no checkpoint for selected producer "
             f"{resume_tracker.module_name} at {checkpoint_path}"
         )
-    if _registered_checkpoint_table(resume_tracker._metadata, backend=backend) != staging_path.stem:
+    if staging_path.stem not in _registered_checkpoint_tables(resume_tracker._metadata, backend=backend):
         raise RuntimeError(
             f"{context}: checkpoint producer {resume_tracker.module_name} does not own staged table {staging_path}"
         )
     return resume_tracker
 
 
-def _producer_checkpoint_plan(resume_tracker: ResumeCheckpoint, table: str) -> _ProducerCheckpointPlan:
+def _producer_checkpoint_plan(resume_tracker: ResumeCheckpoint, tables: Iterable[str]) -> _ProducerCheckpointPlan:
     if (
         resume_tracker._source_digest is None
         or resume_tracker._source_device is None
@@ -2813,7 +2833,7 @@ def _producer_checkpoint_plan(resume_tracker: ResumeCheckpoint, table: str) -> _
             device=resume_tracker._source_device,
             inode=resume_tracker._source_inode,
         ),
-        table=table,
+        tables=tuple(sorted(tables)),
         identity=tuple((field, resume_tracker._metadata[field]) for field in _CHECKPOINT_IDENTITY_FIELDS),
         done=frozenset(resume_tracker._done),
         attempted=frozenset(resume_tracker._attempted),
@@ -2843,7 +2863,7 @@ def _revalidate_producer_plan(producer_plan: dict[Path, _ProducerCheckpointPlan]
                 identity = {field: checkpoint.get(field) for field in _CHECKPOINT_IDENTITY_FIELDS}
                 if (
                     identity != plan.identity_dict()
-                    or _registered_checkpoint_table(identity, backend=identity["backend"]) != plan.table
+                    or _registered_checkpoint_tables(identity, backend=identity["backend"]) != frozenset(plan.tables)
                 ):
                     raise RuntimeError("checkpoint producer identity changed after preflight")
                 if (
@@ -2877,11 +2897,12 @@ def _pending_resume_perf_outputs(
     """
     producers_by_output: dict[Path, list[dict]] = {}
     for collection in provenance_ctx.get("collections") or []:
-        perf_path = Path(str(collection["perf_filename"]))
-        if not perf_path.is_absolute():
-            perf_path = output_root / perf_path
-        if perf_path.name.endswith("_perf.txt"):
-            producers_by_output.setdefault(perf_path, []).append(collection)
+        for perf_filename in _collection_perf_filenames(collection):
+            perf_path = Path(perf_filename)
+            if not perf_path.is_absolute():
+                perf_path = output_root / perf_path
+            if perf_path.name.endswith("_perf.txt"):
+                producers_by_output.setdefault(perf_path, []).append(collection)
 
     pending_outputs: set[Path] = set()
     for perf_path, producers in producers_by_output.items():
@@ -3038,10 +3059,11 @@ def _preflight_collector_finalization_inputs(
     }
     producers_by_path: dict[Path, list[dict]] = {}
     for collection in provenance_ctx.get("collections") or []:
-        staging_path = Path(str(collection["perf_filename"]))
-        if not staging_path.is_absolute():
-            staging_path = output_root / staging_path
-        producers_by_path.setdefault(staging_path, []).append(collection)
+        for perf_filename in _collection_perf_filenames(collection):
+            staging_path = Path(perf_filename)
+            if not staging_path.is_absolute():
+                staging_path = output_root / staging_path
+            producers_by_path.setdefault(staging_path, []).append(collection)
 
     producer_plan: dict[Path, _ProducerCheckpointPlan] = {}
     seen_attempted_case_ids: set[str] = set()
@@ -3063,7 +3085,7 @@ def _preflight_collector_finalization_inputs(
             )
             if resume_tracker is not None:
                 checkpoint_path = resume_tracker._path
-                checkpoint_plan = _producer_checkpoint_plan(resume_tracker, staging_path.stem)
+                checkpoint_plan = _producer_checkpoint_plan(resume_tracker, _collection_tables(collection))
                 prior_plan = producer_plan.get(checkpoint_path)
                 if prior_plan is None:
                     duplicate_case_ids = set(checkpoint_plan.attempted) & seen_attempted_case_ids
@@ -3230,7 +3252,7 @@ def _perf_checkpoint_record(record: _ProducerCheckpointPlan) -> dict:
         "digest": record.attestation.digest,
         "device": record.attestation.device,
         "inode": record.attestation.inode,
-        "table": record.table,
+        "tables": list(record.tables),
         "done": sorted(record.done),
         "failed": sorted(record.failed),
         "attempted": sorted(record.attempted),
@@ -3287,7 +3309,7 @@ def _validate_perf_transaction_document(
             "digest",
             "device",
             "inode",
-            "table",
+            "tables",
             "done",
             "failed",
             "attempted",
@@ -3295,6 +3317,14 @@ def _validate_perf_transaction_document(
         }
         if not isinstance(checkpoint, dict) or set(checkpoint) != expected_fields:
             raise RuntimeError(f"Invalid collector perf checkpoint record in {journal_path}")
+        recorded_tables = checkpoint["tables"]
+        if (
+            not isinstance(recorded_tables, list)
+            or not recorded_tables
+            or any(not isinstance(table, str) or not table for table in recorded_tables)
+            or len(recorded_tables) != len(set(recorded_tables))
+        ):
+            raise RuntimeError(f"Invalid collector perf checkpoint tables in {journal_path}")
         attestation = _attestation_from_record(
             {field: checkpoint[field] for field in ("path", "digest", "device", "inode")},
             None,
@@ -3305,8 +3335,8 @@ def _validate_perf_transaction_document(
         if not isinstance(identity, dict) or set(identity) != set(_CHECKPOINT_IDENTITY_FIELDS):
             raise RuntimeError(f"Invalid collector perf checkpoint identity in {journal_path}")
         expected_path = _checkpoint_path(checkpoint_root, identity["module"])
-        table = _registered_checkpoint_table(identity, backend=backend)
-        if attestation.path != expected_path or checkpoint["table"] != table or table not in tables:
+        owned_tables = _registered_checkpoint_tables(identity, backend=backend)
+        if attestation.path != expected_path or set(recorded_tables) != owned_tables or not owned_tables <= tables:
             raise RuntimeError(f"Unowned collector perf checkpoint in {journal_path}: {attestation.path}")
         if attestation.path in seen_checkpoint_paths:
             raise RuntimeError(f"Duplicate collector perf checkpoint in {journal_path}: {attestation.path}")
@@ -3323,7 +3353,7 @@ def _validate_perf_transaction_document(
             raise RuntimeError(f"Invalid collector perf checkpoint attempts in {journal_path}")
         seen_checkpoint_paths.add(attestation.path)
         seen_attempted.update(attempted)
-    if {checkpoint["table"] for checkpoint in checkpoint_records} != tables:
+    if {table for checkpoint in checkpoint_records for table in checkpoint["tables"]} != tables:
         raise RuntimeError(f"Collector perf transaction tables lack checkpoint owners in {journal_path}")
 
     previous_record = transaction["previous_sidecar"]
@@ -3956,7 +3986,7 @@ def _validated_transaction_checkpoints(
                 raise ValueError("attempted case IDs must be unique across checkpoint participants")
             if not isinstance(identity, dict) or set(identity) != set(_CHECKPOINT_IDENTITY_FIELDS):
                 raise TypeError(f"checkpoint identity must contain exactly {_CHECKPOINT_IDENTITY_FIELDS!r}")
-            table = _registered_checkpoint_table(identity, backend=backend)
+            tables = tuple(sorted(_registered_checkpoint_tables(identity, backend=backend)))
             checkpoint_path = Path(path_text)
             expected_path = _checkpoint_path(checkpoint_root, identity["module"])
             if path_text != str(expected_path) or checkpoint_path in seen_checkpoint_paths:
@@ -3965,12 +3995,12 @@ def _validated_transaction_checkpoints(
             raise RuntimeError(f"Invalid checkpoint participant in {journal_path}: {error}") from error
         seen_checkpoint_paths.add(checkpoint_path)
         seen_attempted_case_ids.update(attempted_case_ids)
-        parsed_participants.append((checkpoint_path, identity, recorded_ledgers, attempted_case_ids, table))
+        parsed_participants.append((checkpoint_path, identity, recorded_ledgers, attempted_case_ids, tables))
 
     validated_participants: list[_ValidatedCheckpoint] = []
     with _locked_checkpoint_root(checkpoint_root) as locked:
         preflight_participants = []
-        for checkpoint_path, identity, recorded_ledgers, attempted_case_ids, table in parsed_participants:
+        for checkpoint_path, identity, recorded_ledgers, attempted_case_ids, tables in parsed_participants:
             try:
                 canonical_path = _checkpoint_path_in_locked_directory(checkpoint_path, locked)
                 effective_state = _effective_checkpoint_state_at(
@@ -3997,14 +4027,14 @@ def _validated_transaction_checkpoints(
             preflight_participants.append(
                 (
                     checkpoint_path,
-                    table,
+                    tables,
                     attempted_case_ids,
                     checkpoint,
                     effective_state,
                 )
             )
 
-        for checkpoint_path, table, attempted_case_ids, checkpoint, effective_state in preflight_participants:
+        for checkpoint_path, tables, attempted_case_ids, checkpoint, effective_state in preflight_participants:
             canonical_path = _checkpoint_path_in_locked_directory(checkpoint_path, locked)
             _require_effective_checkpoint_state_at(
                 locked.file_descriptor,
@@ -4024,7 +4054,7 @@ def _validated_transaction_checkpoints(
             validated_participants.append(
                 _ValidatedCheckpoint(
                     attestation=snapshot.attest(checkpoint_path),
-                    table=table,
+                    tables=tables,
                     attempted=frozenset(attempted_case_ids),
                     document=checkpoint,
                 )
@@ -4056,7 +4086,8 @@ def _validate_transaction_table_ownership(
     allowed_staging_by_table = {Path(str(perf_file)).stem: output_root / str(perf_file) for perf_file in PerfFile}
     checkpoints_by_table: dict[str, list[_ValidatedCheckpoint]] = {}
     for checkpoint in checkpoints:
-        checkpoints_by_table.setdefault(checkpoint.table, []).append(checkpoint)
+        for table in checkpoint.tables:
+            checkpoints_by_table.setdefault(table, []).append(checkpoint)
     if any(table not in allowed_staging_by_table for table in checkpoints_by_table):
         raise RuntimeError(f"Invalid table in collector sidecar transaction {journal_path}")
     expected_staging_paths = {allowed_staging_by_table[table] for table in checkpoints_by_table}
@@ -5467,15 +5498,16 @@ def _write_collector_provenance(
     module_by_table: dict[str, str] = {}
     staging_by_table: dict[str, Path] = {}
     for collection in collections:
-        table = Path(str(collection["perf_filename"])).stem
         full_name = f"{collection['name']}.{collection['type']}"
-        ops_by_table.setdefault(table, []).append(full_name)
         collection_by_full_name[full_name] = collection
-        module_by_table.setdefault(table, collection["module"])
-        staging_path = Path(str(collection["perf_filename"]))
-        if not staging_path.is_absolute():
-            staging_path = output_root / staging_path
-        staging_by_table.setdefault(table, staging_path)
+        for perf_filename in _collection_perf_filenames(collection):
+            table = Path(perf_filename).stem
+            ops_by_table.setdefault(table, []).append(full_name)
+            module_by_table.setdefault(table, collection["module"])
+            staging_path = Path(perf_filename)
+            if not staging_path.is_absolute():
+                staging_path = output_root / staging_path
+            staging_by_table.setdefault(table, staging_path)
 
     module_failure_names = {e["module"] for e in run_errors if e.get("error_type") == "ModuleCollectionFailure"}
     checkpoint_root = _checkpoint_backend_root(checkpoint_dir, backend)
@@ -5533,7 +5565,7 @@ def _write_collector_provenance(
                 )
                 if resume_tracker is None:
                     continue
-                checkpoint_plan = _producer_checkpoint_plan(resume_tracker, table)
+                checkpoint_plan = _producer_checkpoint_plan(resume_tracker, _collection_tables(collection))
             else:
                 resume_tracker = _resume_tracker_for_collection(
                     collection,
@@ -5545,7 +5577,7 @@ def _write_collector_provenance(
                 checkpoint_plan = producer_plan.get(resume_tracker._path)
                 if (
                     checkpoint_plan is None
-                    or checkpoint_plan.table != table
+                    or table not in checkpoint_plan.tables
                     or checkpoint_plan.identity_dict() != resume_tracker._metadata
                 ):
                     raise RuntimeError(
