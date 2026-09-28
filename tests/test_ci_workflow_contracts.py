@@ -185,6 +185,41 @@ def test_forward_perf_controller_change_detection(tmp_path, path, expected):
     assert forward_perf.matches_path(path) is expected
 
 
+@pytest.mark.parametrize("base_protocol", [1, 2])
+def test_forward_perf_skips_incompatible_data_policies(tmp_path, base_protocol):
+    steps = _workflow("performance.yml")["jobs"]["compare"]["steps"]
+    revisions = next(step for step in steps if step.get("id") == "revisions")["run"]
+    protocol_check = revisions.split('if [[ -z "${skip_reason}" ]]; then', 1)[1]
+    protocol_check = 'if [[ -z "${skip_reason}" ]]; then' + protocol_check.split("controller_changes=", 1)[0]
+    gate_path = "python/aisimulate/tools/forward_perf_gate"
+    _git(tmp_path, "init", "--quiet")
+    (tmp_path / gate_path).mkdir(parents=True)
+    base = _commit_file(tmp_path, f"{gate_path}/__init__.py", f"PROTOCOL_VERSION = {base_protocol}\n")
+    head = _commit_file(tmp_path, f"{gate_path}/__init__.py", "# Shared-layer reuse enabled.\nPROTOCOL_VERSION = 2\n")
+    output = tmp_path / "output"
+    summary = tmp_path / "summary"
+    subprocess.run(
+        ["bash", "-euc", protocol_check],
+        cwd=tmp_path,
+        env={
+            **os.environ,
+            "base_sha": base,
+            "PR_HEAD_SHA": head,
+            "gate_path": gate_path,
+            "skip_reason": "",
+            "GITHUB_OUTPUT": str(output),
+            "GITHUB_STEP_SUMMARY": str(summary),
+        },
+        check=True,
+    )
+    if base_protocol == 1:
+        assert output.read_text() == "run_comparison=false\n"
+        assert "protocol versions differ: base is 1, head is 2" in summary.read_text()
+    else:
+        assert not output.exists()
+        assert not summary.exists()
+
+
 def _forward_api(pages, *, count=None, after=None, canonical="a" * 40):
     pull = {
         "head": {"sha": "a" * 40},
@@ -1052,7 +1087,6 @@ def test_prediction_gate_resolves_base_for_push_and_manual_callers(tmp_path: Pat
     [
         ("push", "refs/heads/main", "a" * 40, True),
         ("push", "refs/heads/release/0.12.0", "b" * 40, True),
-        ("push", "refs/heads/pull-request/96", "a" * 40, False),
         ("workflow_dispatch", "refs/heads/main", "a" * 40, False),
         ("workflow_dispatch", "refs/heads/codex/restore-migrated-ci", "", False),
         ("push", "refs/heads/release/0.12.0", "0" * 40, False),
@@ -1075,7 +1109,7 @@ def test_full_ci_comparison_base_fails_closed(tmp_path: Path, before: str, api_s
 
 
 def _run_comparison_base(
-    tmp_path: Path, event: str, ref: str, before: str, api_sha: str = "c" * 40, api_status: int = 0
+    tmp_path: Path, event: str, ref: str, before: str, api_sha: str = "c" * 40, api_status: int = 0, pr_base: str = ""
 ) -> tuple[subprocess.CompletedProcess, dict[str, str]]:
     jobs = _workflow("ci.yml")["jobs"]
     assert jobs["verify-target"]["outputs"]["comparison-base"] == "${{ steps.comparison-base.outputs.sha }}"
@@ -1083,6 +1117,7 @@ def _run_comparison_base(
         assert "verify-target" in jobs[name]["needs"]
         assert jobs[name]["with"][argument] == "${{ needs.verify-target.outputs.comparison-base }}"
     step = next(step for step in jobs["verify-target"]["steps"] if step.get("id") == "comparison-base")
+    assert step["env"]["PR_BASE_SHA"] == "${{ steps.pr-target.outputs.base }}"
     gh = tmp_path / "gh"
     gh.write_text(
         '#!/bin/bash\n[[ "$*" == "api -X GET repos/ai-dynamo/aisimulate/commits/main --jq .sha" ]] || exit 9\n'
@@ -1098,6 +1133,7 @@ def _run_comparison_base(
             "GITHUB_EVENT_NAME": event,
             "GITHUB_REF": ref,
             "BEFORE_SHA": before,
+            "PR_BASE_SHA": pr_base,
             "REPOSITORY": "ai-dynamo/aisimulate",
             "GITHUB_OUTPUT": str(output_path),
             "GH_CALLED": str(tmp_path / "gh-called"),
@@ -1224,7 +1260,19 @@ def _run_pr_target(
 def test_full_ci_trusted_copy_validates_the_stacked_pr_base(tmp_path: Path) -> None:
     result, output = _run_pr_target(tmp_path, "a" * 40, "d" * 40)
     assert result.returncode == 0, result.stderr
-    assert output == {}
+    assert output == {"base": "d" * 40}
+
+
+@pytest.mark.parametrize("pr_base", ["d" * 40, "", "main", "d" * 39])
+def test_full_ci_stacked_comparison_uses_only_the_validated_pr_base(tmp_path: Path, pr_base: str) -> None:
+    result, output = _run_comparison_base(tmp_path, "push", "refs/heads/pull-request/235", "a" * 40, pr_base=pr_base)
+    if pr_base == "d" * 40:
+        assert result.returncode == 0, result.stderr
+        assert output == {"sha": pr_base}
+    else:
+        assert result.returncode != 0
+        assert output == {}
+    assert not (tmp_path / "gh-called").exists()
 
 
 @pytest.mark.parametrize(
@@ -2123,6 +2171,34 @@ def test_release_artifact_handoffs_cannot_mix_versions():
                 .replace("${{ matrix.shard.backend }}", "vllm")
             )
             assert fnmatch.fnmatchcase(name, selected_pattern) == (version == selected)
+
+
+@pytest.mark.parametrize("manifest_version", ["0.13.0", "0.13.0.dev20260918"])
+@pytest.mark.parametrize("installed_matches", [True, False])
+def test_release_smoke_checks_manifest_version(tmp_path, monkeypatch, manifest_version, installed_matches):
+    import importlib.metadata
+
+    manifest = tmp_path / "python/aisimulate/pyproject.toml"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text(f'[project]\nversion = "{manifest_version}"\n')
+    monkeypatch.chdir(tmp_path)
+    installed_version = manifest_version if installed_matches else "0.12.0"
+    for name in ("aisimulate", "aisimulate_core"):
+        monkeypatch.setitem(sys.modules, name, SimpleNamespace(__version__=installed_version))
+    monkeypatch.setattr(importlib.metadata, "version", lambda name: installed_version)
+    monkeypatch.setattr(importlib.metadata, "distributions", lambda: [])
+    smoke = next(
+        step["run"]
+        for step in _workflow("ci.yml")["jobs"]["release-artifact-contract"]["steps"]
+        if "import importlib.metadata" in step.get("run", "")
+    )
+    command = shlex.split(smoke)
+    assert command[:2] == ["release-smoke/bin/python", "-c"]
+    if installed_matches:
+        exec(command[2], {})
+    else:
+        with pytest.raises(AssertionError):
+            exec(command[2], {})
 
 
 def _nightly_condition(job: str, *, cancelled: bool = False, **overrides) -> bool:

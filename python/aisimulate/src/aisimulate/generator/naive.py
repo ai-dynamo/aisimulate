@@ -609,6 +609,7 @@ def build_naive_generator_params(
             sla=sla,
             bench=bench_config,
             sflow=sflow_config,
+            slurm=_section_override(overrides, "SlurmConfig"),
             dyn_config=dyn_config,
             backend=backend_name,
             generator_dynamo_version=effective_dynamo_version,
@@ -635,12 +636,15 @@ def build_naive_generator_params(
             sla=sla,
             bench=bench_config,
             sflow=sflow_config,
+            slurm=_section_override(overrides, "SlurmConfig"),
             dyn_config=dyn_config,
             backend=backend_name,
             generator_dynamo_version=effective_dynamo_version,
         )
 
     params["ModelConfig"] = model_config
+    if overrides.get("rule"):
+        params["rule"] = overrides["rule"]
     # collect_generator_params rebuilds NodeConfig with only num_gpus_per_node,
     # dropping system_name (and any NodeConfig override). Merge the full
     # node_config back so the system identity survives; run.sh reads

@@ -315,11 +315,21 @@ def test_single_output_token_completes_at_prefill_without_decode(phase, companio
         assert record["tpot_ms"] == 0.0
 
 
-def test_default_companion_model_consumes_fixed_timing_without_aic_lookup():
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {},
+        {"moe_kernel_source": None},
+        {"aic_moe_kernel_source": None},
+        {"attention_backend": "fa3", "enable_eplb": True},
+    ],
+)
+def test_default_companion_model_consumes_fixed_timing_without_aic_lookup(overrides):
     spec = _spec(
         _topology(phase="prefill", combined_with_pd=True),
         companion_role="decode",
     )
+    spec.backend_deployment.decode_engine_args.update(overrides)
 
     timing = AICAFDCompanionPerformanceModel().measure(spec)
 
@@ -327,6 +337,58 @@ def test_default_companion_model_consumes_fixed_timing_without_aic_lookup():
     assert timing.latency_ms == 2.0
     assert timing.total_batch_capacity == 2
     assert timing.provenance["provider"] == "fixed"
+
+
+@pytest.mark.parametrize(("phase", "companion_role"), [("decode", "prefill"), ("prefill", "decode")])
+@pytest.mark.parametrize("field", ["moe_kernel_source", "aic_moe_kernel_source"])
+@pytest.mark.parametrize("custom_timing", [False, True])
+def test_aic_companion_legacy_estimator_rejects_an_explicit_moe_source(phase, companion_role, field, custom_timing):
+    spec = _spec(_topology(phase=phase, combined_with_pd=True), companion_role=companion_role)
+    engine_args = getattr(spec.backend_deployment, f"{companion_role}_engine_args")
+    engine_args.pop("timing_model")
+    if custom_timing:
+        engine_args["timing_model"] = {"type": "polynomial"}
+    engine_args.update(aic_model_path="Qwen/Qwen3-30B-A3B", aic_system="b200_sxm")
+    engine_args[field] = "sglang_flashinfer_trtllm_moe"
+
+    def estimator(*args, **kwargs):
+        pytest.fail("an explicit source must not reach an estimator that cannot consume it")
+
+    with pytest.raises(InvalidRunnerError, match="moe_kernel_source.*not supported.*AFD companion"):
+        AICAFDCompanionPerformanceModel(estimator).measure(spec)
+
+
+@pytest.mark.parametrize(("phase", "companion_role"), [("decode", "prefill"), ("prefill", "decode")])
+@pytest.mark.parametrize("field", ["moe_kernel_source", "aic_moe_kernel_source"])
+def test_aic_companion_external_fpm_preserves_source_for_canonical_rejection(phase, companion_role, field, tmp_path):
+    spec = _spec(_topology(phase=phase, combined_with_pd=True), companion_role=companion_role)
+    spec = replace(
+        spec, backend_deployment=replace(spec.backend_deployment, backend="sglang", backend_version="0.5.17")
+    )
+    spec.backend_deployment.parallel_config[f"{companion_role}_tp"] = 1
+    engine_args = getattr(spec.backend_deployment, f"{companion_role}_engine_args")
+    engine_args.pop("timing_model")
+    engine_args.update(
+        aic_model_path="Qwen/Qwen3-30B-A3B",
+        aic_system="b200_sxm",
+        aic_forward_model="fpm",
+        aic_fpm_parquet_path=str(tmp_path / "not-read.parquet"),
+    )
+    engine_args[field] = "sglang_flashinfer_trtllm_moe"
+
+    with pytest.raises(InvalidRunnerError, match="fpm_interpolation.*moe_kernel_source overrides"):
+        AICAFDCompanionPerformanceModel().measure(spec)
+
+
+@pytest.mark.parametrize(("phase", "companion_role"), [("decode", "prefill"), ("prefill", "decode")])
+@pytest.mark.parametrize("field", ["moe_kernel_source", "aic_moe_kernel_source"])
+def test_aic_companion_fixed_timing_rejects_an_explicit_moe_source(phase, companion_role, field):
+    spec = _spec(_topology(phase=phase, combined_with_pd=True), companion_role=companion_role)
+    engine_args = getattr(spec.backend_deployment, f"{companion_role}_engine_args")
+    engine_args[field] = "sglang_flashinfer_trtllm_moe"
+
+    with pytest.raises(ValueError, match="moe_kernel_source.*not supported.*fixed AFD companion timing"):
+        AICAFDCompanionPerformanceModel().measure(spec)
 
 
 @pytest.mark.parametrize(("phase", "companion_role"), [("decode", "prefill"), ("prefill", "decode")])

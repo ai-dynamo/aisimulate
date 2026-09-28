@@ -116,7 +116,9 @@ spec:
                   "${input_file_args[@]}" \
                   {% endif %}
                   --extra-inputs ignore_eos:true \
+                  {% if bench_legacy_nvext_ignore_eos | default(true) %}
                   --extra-inputs "{\"nvext\":{\"ignore_eos\":true}}" \
+                  {% endif %}
                   --concurrency ${concurrency} \
                   --num-requests $(($concurrency*50)) \
                   --warmup-request-count $(($concurrency*2)) \

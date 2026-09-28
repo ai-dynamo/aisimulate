@@ -392,6 +392,8 @@ def task_config_to_generator_config(
         params["rule"] = rule_name
     if "preserve_engine_limits" in overrides:
         params["preserve_engine_limits"] = bool(overrides["preserve_engine_limits"])
+    if overrides.get("SlurmConfig"):
+        params["SlurmConfig"] = copy.deepcopy(overrides["SlurmConfig"])
     params["ModelConfig"] = model_cfg
     # Preserve LlmdConfig overrides (e.g. vllm_image, kustomize_base_path) so the
     # llm-d artifacts honor them. The bridge handles the other config sections

@@ -121,6 +121,29 @@ claim that AIConfigurator is owned by an unaffiliated third party.
 
 ## vLLM
 
+The repository-root files `crates/core/src/engine/scheduler/vllm/core.rs`,
+`crates/core/src/engine/kv_manager/{state_cache_manager,vllm_backend}.rs`,
+`crates/core/src/engine/cache/vllm_block_pool.rs`,
+`crates/core/src/engine/kv_manager/g1_manager.rs`,
+and `crates/core/src/engine/kv_manager/state_cache_tests.rs` adapt the align-mode
+prefill split, state-slot turnover/copy lifetimes and default checkpoint-retention
+behavior from vLLM v0.29.0,
+immutable commit `98dff2a81d747d1dba01a47f939f48c3526d4206`:
+
+- https://github.com/vllm-project/vllm/blob/98dff2a81d747d1dba01a47f939f48c3526d4206/vllm/v1/core/sched/scheduler.py
+- https://github.com/vllm-project/vllm/blob/98dff2a81d747d1dba01a47f939f48c3526d4206/vllm/v1/core/single_type_kv_cache_manager.py
+- https://github.com/vllm-project/vllm/blob/98dff2a81d747d1dba01a47f939f48c3526d4206/vllm/v1/core/kv_cache_manager.py
+- https://github.com/vllm-project/vllm/blob/98dff2a81d747d1dba01a47f939f48c3526d4206/vllm/v1/worker/mamba_utils.py
+
+Copyright contributors to the vLLM project. Licensed under Apache-2.0:
+https://github.com/vllm-project/vllm/blob/98dff2a81d747d1dba01a47f939f48c3526d4206/LICENSE
+
+These are modified Rust simulation adaptations, restricted to no internal
+prefill checkpoints, no speculative decoding and no periodic retention.
+The identified upstream revision has no root NOTICE file. The repository's
+Apache-2.0 LICENSE supplies the license text; no upstream source file is vendored.
+
+
 The inference-mode scope and MSA query-position metadata integration in
 `collector/vllm/collect_mla_module.py` and
 `collector/vllm/collect_msa_module.py` are adapted (modified) from serving

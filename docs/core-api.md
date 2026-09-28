@@ -208,18 +208,15 @@ The parquet identity must match the requested model, hardware, backend version, 
 
 ### Engine identity controls
 
-The canonical configuration also carries quantization overrides and
-`attention_backend`, `moe_backend`, `enable_eplb` (default `false`), and
-`wideep_num_slots` (default absent). These controls reach model construction,
-KV memory sizing, and replay provenance. EPLB/slots and nondefault MoE backend
-selection require an MoE model. Collected FPM interpolation cannot represent
-EPLB, slots, or MoE backend overrides; it rejects an explicit incompatible
-request and is skipped during automatic selection for those identities.
+The canonical configuration also carries quantization overrides and `attention_backend`, `moe_backend`, `moe_kernel_source` (default absent), `enable_eplb` (default `false`), and `wideep_num_slots` (default absent). These controls reach model construction, KV memory sizing, and replay provenance. EPLB/slots and nondefault MoE backend or kernel-source selection require an MoE model. Collected FPM interpolation cannot represent EPLB, slots, MoE backend, or kernel-source overrides; it rejects an explicit incompatible request and is skipped during automatic selection for those identities.
 
-Rust callers using exhaustive `ForwardPassPerfModelConfig` literals must add
-`moe_backend: None`, `enable_eplb: false`, and `wideep_num_slots: None`.
-`ForwardPassPerfModelConfig::new(...)` supplies these defaults. This extends
-the canonical configuration introduced by #242.
+`moe_kernel_source` selects an exact, nonblank collected `kernel_source` label for fused MoE compute. It is distinct from the existing `moe_backend` graph/backend control; source labels are not backend aliases and are preserved without trimming. `None` keeps the existing default source-selection policy, including eligible low-latency NVFP4 selection. `SILICON` reads only the requested source's table; `EMPIRICAL` derives its estimate from that same source; `HYBRID` may fall back to empirical estimation within that source, but does not substitute a different source. Missing source data remains an error. An explicit `moe_torch_flow_min_latency` requires gated NVFP4 and at most 128 tokens after attention-DP gathering. Pure-roofline `SOL` remains table-independent and does not claim measured support for the requested source.
+
+An explicit source is rejected for dense graphs, MegaMoE modules, large-EP expert-compute graphs, and any constructed timing phase with no compatible fused MoE operator. It is also incompatible with whole-forward FPM, including the legacy Task `forward_model='fpm'` rewrite. Invalid graph/source combinations fail as invalid configuration rather than triggering estimator fallback. An untrained `fpm_regression` model remains not-ready; retaining a source in its configuration is not evidence of source-specific prediction support.
+
+AFD regular companions currently reject exact-source requests through their legacy estimator and fixed timing paths. The external-FPM companion forwards the source to canonical validation, which rejects the incompatible FPM request. These controls describe standalone AISimulate behavior, not downstream Dynamo planner integration.
+
+Rust callers using exhaustive `ForwardPassPerfModelConfig` literals must add `moe_backend: None`, `moe_kernel_source: None`, `enable_eplb: false`, and `wideep_num_slots: None`. Direct `EngineConfig` and `MoeOp` literals likewise require the new `moe_kernel_source` field. `ForwardPassPerfModelConfig::new(...)` supplies its default. This extends the canonical configuration introduced by #242.
 
 Rust callers constructing `SyntheticTraceSpec` must also add
 `cached_prefix_tokens: 0` to preserve existing prefix-sharing behavior. A positive
@@ -409,6 +406,21 @@ latency-only and return `None` from `evidence_summary()`. Consumers must keep
 that distinction when producing power metrics: absence of evidence is not a
 zero-watt prediction. FPM decode timing continues to query the exact total
 past-KV coordinate rather than the op-level mean-context coordinate.
+
+## Agentic report source migration (0.13)
+
+The replay report additions require the coordinated 0.13.0 wheel/crate version,
+aligned with main's release preparation in PR #268. They must not be released
+as a 0.12 patch. Downstream exhaustive Rust `ReplayReport` literals must supply
+`agentic_phases: None` for a cold run (or its prepared phase evidence).
+Exhaustive `PerRequestRecord` literals must supply `agentic_phase: None` for
+cold replay, or `Some(AgenticReplayPhase::Profile)` for measured warmed requests.
+Exhaustive destructuring must name these fields or use `..`.
+
+The external-consumer compile fixture `rebuild_replay_report_literals` constructs
+both public structs exhaustively against this boundary. JSON consumers retain
+the existing cold shape: absent optional phase evidence is not serialized.
+This source migration does not change the engine-config/spec or FPM wire schemas.
 
 ## Compatibility rules
 

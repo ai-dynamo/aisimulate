@@ -55,6 +55,17 @@ impl EngineFactory {
         self
     }
 
+    pub(crate) fn reset_timing_evidence(&self) -> Result<()> {
+        self.timing.reset_evidence()
+    }
+
+    /// Whether any rank built by this factory can produce internal deadlines.
+    /// This is a configuration capability, not whether work is currently pending.
+    pub(crate) fn can_have_internal_deadlines(&self) -> bool {
+        // G3 also uses the native host-offload adapter and requires it during validation.
+        self.config.native_host_offload.is_some()
+    }
+
     /// Build one scheduler/KV/timing rank with an explicit identity.
     pub fn build_rank(&self, identity: RankIdentity) -> Result<SchedulerRank> {
         let seed_offset = engine_seed_offset(identity)?;

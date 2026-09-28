@@ -129,7 +129,7 @@ def materialize_aic_num_gpu_blocks(
             ):
                 if resolved[source] is not None:
                     lowered[target] = resolved[source]
-            for name in ("moe_backend", "attention_backend", "enable_eplb", "wideep_num_slots"):
+            for name in ("moe_backend", "moe_kernel_source", "attention_backend", "enable_eplb", "wideep_num_slots"):
                 if resolved.get(name) is not None and not (name == "enable_eplb" and resolved[name] is False):
                     lowered[f"aic_{name}"] = resolved[name]
             if resolved["systems_paths"]:
@@ -208,7 +208,7 @@ def materialize_aic_num_gpu_blocks(
         comm_dtype=lowered.get("aic_comm_dtype"),
         **{
             name: lowered[f"aic_{name}"]
-            for name in ("moe_backend", "attention_backend", "enable_eplb", "wideep_num_slots")
+            for name in ("moe_backend", "moe_kernel_source", "attention_backend", "enable_eplb", "wideep_num_slots")
             if lowered.get(f"aic_{name}") is not None
         },
         systems_path=capacity_systems_path,
@@ -241,6 +241,7 @@ def estimate_num_gpu_blocks(
     kv_cache_dtype: str | None = None,
     comm_dtype: str | None = None,
     moe_backend: str | None = None,
+    moe_kernel_source: str | None = None,
     attention_backend: str | None = None,
     enable_eplb: bool = False,
     wideep_num_slots: int | None = None,
@@ -315,6 +316,7 @@ def estimate_num_gpu_blocks(
                 name: value
                 for name, value in (
                     ("moe_backend", moe_backend),
+                    ("moe_kernel_source", moe_kernel_source),
                     ("attention_backend", attention_backend),
                     ("enable_eplb", enable_eplb),
                     ("wideep_num_slots", wideep_num_slots),

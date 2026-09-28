@@ -11,9 +11,9 @@ use crate::engine::{Backend, EngineConfig, KvEventData, TimingModelConfig};
 use crate::replay::loadgen::{
     AGENTIC_MOONCAKE_SCHEMA, AGENTIC_MOONCAKE_VERSION, AgenticDependency,
     AgenticDependencyRelation, AgenticDependencyTrigger, AgenticHashIdScope, AgenticMooncakeHeader,
-    AgenticMooncakeRow, AgenticPlayStatus, AgenticSnapshotOptions, AgenticSourceProvenance,
-    PreparedAgenticSnapshots, ReplayRequestHashes, ValidatedAgenticGraph, WorkloadDriver,
-    load_weka_agentic_graph,
+    AgenticMooncakeRow, AgenticPlayStatus, AgenticReplayPhase, AgenticSnapshotOptions,
+    AgenticSourceProvenance, PreparedAgenticSnapshots, ReplayRequestHashes, ValidatedAgenticGraph,
+    WorkloadDriver, load_weka_agentic_graph,
 };
 use crate::replay::{
     AgenticRuntimeIdentity, DirectRequest, ReplayAdapters, ReplayArtifactKvEventVisibility,
@@ -239,8 +239,8 @@ fn qualify_prefix(case: PrefixCase) {
                     "{} backend={backend:?} block_size={block_size} caching={caching}",
                     case.name
                 );
-                // Qualification-only explicit warmup: production snapshot
-                // execution does not submit primers until AIC-1812.
+                // Independent explicit requests check prepared identity across
+                // play incarnations, separately from the phase driver below.
                 let requests = VecDeque::from([
                     request(
                         1,
@@ -268,6 +268,93 @@ fn qualify_prefix(case: PrefixCase) {
                     caching,
                     1.0,
                 );
+                // Exercise the production primer/warmup barrier against the
+                // same independently calculated source-prefix reuse bound.
+                let driver = WorkloadDriver::new_agentic_warmup(
+                    PreparedAgenticSnapshots::from_plays(vec![play.clone()]).unwrap(),
+                    block_size,
+                    true,
+                    1.0,
+                )
+                .unwrap();
+                let (warm, warm_artifacts) = run(
+                    ReplayRuntimeInput::Workload(driver),
+                    backend,
+                    block_size,
+                    caching,
+                    1.0,
+                );
+                assert_eq!(warm.request_counts.completed_requests, 1, "{context}");
+                assert_eq!(warm.per_request.len(), 1, "{context}");
+                let phases = warm.agentic_phases.as_ref().unwrap();
+                assert_eq!(phases.phase, AgenticReplayPhase::Profile, "{context}");
+                assert_eq!(phases.requests.len(), 11, "{context}");
+                assert_eq!(phases.lanes[0].primers_completed, 1, "{context}");
+                assert_eq!(phases.lanes[0].warmup_completed, 10, "{context}");
+                let start = phases.profile_start_ms.unwrap();
+                assert!(start > 0.0, "{context}");
+                for (index, request) in phases.requests.iter().enumerate() {
+                    assert_eq!(
+                        request.phase,
+                        if index == 0 {
+                            AgenticReplayPhase::Primer
+                        } else {
+                            AgenticReplayPhase::Warmup
+                        }
+                    );
+                    assert_eq!(request.source_request_id, primer_id, "{context}");
+                    assert_eq!(
+                        request.identity.cache_id.as_deref(),
+                        Some(play.evidence().cache_id.as_str()),
+                        "{context}"
+                    );
+                    assert_eq!(request.observed_output_tokens, 1, "{context}");
+                    assert_eq!(
+                        request.terminal_status,
+                        Some(ReplayTerminalStatus::Completed),
+                        "{context}"
+                    );
+                    assert!(request.quiescent_at_ms.unwrap() <= start, "{context}");
+                    let expected = if caching && index > 0 {
+                        (case.input_length - 1) / block_size * block_size
+                    } else {
+                        0
+                    };
+                    assert_eq!(
+                        request.first_admission_reused_input_tokens,
+                        Some(expected),
+                        "{context}"
+                    );
+                }
+                let expected_profile = if caching {
+                    case.shared_input_tokens.min(case.input_length - 1) / block_size * block_size
+                } else {
+                    0
+                };
+                assert_eq!(
+                    warm.per_request[0].admission_history[0].reused_input_tokens, expected_profile,
+                    "{context}"
+                );
+                assert_eq!(
+                    warm.first_admission_prefix_cache_reused_ratio,
+                    expected_profile as f64 / case.input_length as f64,
+                    "{context}"
+                );
+                assert_eq!(
+                    warm.per_request[0].agentic_phase,
+                    Some(AgenticReplayPhase::Profile)
+                );
+                assert!(warm.per_request[0].arrival_time_ms >= 0.0);
+                assert_eq!(warm_artifacts.requests.len(), 12, "{context}");
+                if caching {
+                    assert_native_prompt_hashes(
+                        &warm_artifacts,
+                        &primer_hashes,
+                        &primer_tokens,
+                        block_size,
+                        &context,
+                    );
+                }
                 assert_eq!(report.request_counts.completed_requests, 3, "{context}");
                 assert_eq!(report.per_request.len(), 3, "{context}");
                 let expected_warm = if caching {
@@ -891,5 +978,104 @@ fn snapshot_new_incarnation_can_finish_before_old_incarnation_without_identity_o
             assert_eq!(record.admission_history[0].reused_input_tokens, 0);
         }
         assert_eq!(report.first_admission_prefix_cache_reused_ratio, 0.0);
+    }
+}
+
+#[test]
+fn warmup_preserves_snapshot_spawn_join_timers_at_nonunit_speedup() {
+    for backend in [Backend::Vllm, Backend::Sglang] {
+        let prepared = frontier_graph()
+            .prepare_snapshots(1, AgenticSnapshotOptions { seed: 42 })
+            .unwrap();
+        let play = prepared.context().prepare_play(0, 0, Some(500.0)).unwrap();
+        let make = || PreparedAgenticSnapshots::from_plays(vec![play.clone()]).unwrap();
+        let cold_driver = WorkloadDriver::new_agentic_snapshots(make(), 64, true, 2.0).unwrap();
+        let warm_driver = WorkloadDriver::new_agentic_warmup(make(), 64, true, 2.0).unwrap();
+        // Disable caching to isolate timer/clock equivalence from service changes.
+        let (cold, _) = run(
+            ReplayRuntimeInput::Workload(cold_driver),
+            backend,
+            64,
+            false,
+            500.0,
+        );
+        let (warm, _) = run(
+            ReplayRuntimeInput::Workload(warm_driver),
+            backend,
+            64,
+            false,
+            500.0,
+        );
+        assert_eq!(warm.request_counts.completed_requests, 2);
+        assert_eq!(cold.throughput.duration_ms, warm.throughput.duration_ms);
+        assert_eq!(
+            cold.trajectories.as_ref().unwrap().e2e.mean_ms,
+            warm.trajectories.as_ref().unwrap().e2e.mean_ms
+        );
+        for (left, right) in cold.per_request.iter().zip(&warm.per_request) {
+            assert_eq!(left.request_id, right.request_id);
+            assert_eq!(left.agentic, right.agentic);
+            assert_eq!(left.arrival_time_ms, right.arrival_time_ms);
+            assert_eq!(left.terminal_time_ms, right.terminal_time_ms);
+            assert_eq!(left.e2e_latency_ms, right.e2e_latency_ms);
+        }
+        let child = warm
+            .per_request
+            .iter()
+            .find(|r| r.request_id.as_deref() == Some("child"))
+            .unwrap();
+        let join = warm
+            .per_request
+            .iter()
+            .find(|r| r.request_id.as_deref() == Some("join"))
+            .unwrap();
+        assert_eq!(child.arrival_time_ms, 150.0);
+        assert_eq!(join.arrival_time_ms, child.terminal_time_ms + 50.0);
+    }
+}
+
+#[test]
+fn warmup_initial_lanes_keep_native_cache_identities_separate() {
+    for backend in [Backend::Vllm, Backend::Sglang] {
+        let prepared = frontier_graph()
+            .prepare_snapshots(2, AgenticSnapshotOptions { seed: 42 })
+            .unwrap();
+        let context = prepared.context();
+        let plays = (0..2)
+            .map(|lane| context.prepare_play(lane, 0, Some(500.0)).unwrap())
+            .collect();
+        let driver = WorkloadDriver::new_agentic_warmup(
+            PreparedAgenticSnapshots::from_plays(plays).unwrap(),
+            64,
+            true,
+            1.0,
+        )
+        .unwrap();
+        let (report, _) = run(ReplayRuntimeInput::Workload(driver), backend, 64, true, 1.0);
+        assert_eq!(report.request_counts.completed_requests, 4);
+        let phases = report.agentic_phases.unwrap();
+        assert_eq!(phases.lanes.len(), 2);
+        assert_ne!(phases.lanes[0].play_id, phases.lanes[1].play_id);
+        for primer in phases
+            .requests
+            .iter()
+            .filter(|request| request.phase == AgenticReplayPhase::Primer)
+        {
+            assert_eq!(
+                primer.first_admission_reused_input_tokens,
+                Some(0),
+                "another lane's primer cannot supply KV"
+            );
+        }
+        for profile in report
+            .per_request
+            .iter()
+            .filter(|request| request.request_id.as_deref() == Some("child"))
+        {
+            assert_eq!(
+                profile.admission_history[0].reused_input_tokens, 128,
+                "each profile sees its own primer KV"
+            );
+        }
     }
 }
