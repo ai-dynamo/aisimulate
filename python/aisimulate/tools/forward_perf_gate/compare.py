@@ -447,10 +447,13 @@ def write_outputs(comparison: dict, output_dir: Path) -> None:
             "head_median_us",
             "median_delta_us",
             "median_ratio",
+            "invalid_reasons",
         ]
         writer = csv.DictWriter(stream, fieldnames=fields, extrasaction="ignore", lineterminator="\n")
         writer.writeheader()
-        writer.writerows(comparison["points"])
+        writer.writerows(
+            {**point, "invalid_reasons": "; ".join(point.get("invalid_reasons", []))} for point in comparison["points"]
+        )
     annotations = [f"INVALID_RUN: {error}" for error in comparison["run_errors"]]
     for point in comparison["points"]:
         if point["classification"] in {"REGRESSION", "INVALID_COMPARISON"}:

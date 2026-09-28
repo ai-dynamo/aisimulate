@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import csv
 import json
 from pathlib import Path
 
@@ -200,7 +201,7 @@ def test_data_miss_error_includes_priming_failure() -> None:
     assert "PRIMING_FAILED head prime missing" in reason
 
 
-def test_data_miss_preserves_each_round_error() -> None:
+def test_data_miss_preserves_each_round_error(tmp_path: Path) -> None:
     raw = _raw([1.0, 1.0])
     case = raw["cases"][0]["case"]
     for index, paired in enumerate(raw["cases"][0]["rounds"]):
@@ -209,6 +210,10 @@ def test_data_miss_preserves_each_round_error() -> None:
         paired["base"]["error"]["message"] = f"reason {index}"
         paired["head"]["error"]["message"] = f"reason {index}"
     result = compare.compare_raw(raw)
+    compare.write_outputs(result, tmp_path)
+    with (tmp_path / "comparison.csv").open(newline="") as stream:
+        rows = {row["metric"]: row for row in csv.DictReader(stream)}
+    assert set(rows) == {"cold", "warm"}
     for metric in ("cold", "warm"):
         point = _point(result, metric)
         assert point["classification"] == "INVALID_COMPARISON"
@@ -217,15 +222,21 @@ def test_data_miss_preserves_each_round_error() -> None:
             f"head status is DATA_MISS: DATA_MISS reason {index}"
             for index in range(2)
         ]
+        assert rows[metric]["invalid_reasons"] == "; ".join(point["invalid_reasons"])
 
 
-def test_recorded_skip_is_blocking() -> None:
+def test_recorded_skip_is_blocking(tmp_path: Path) -> None:
     raw = _raw([])
     raw["cases"][0]["skip_reason"] = "DATA_MISS on base and head"
     result = compare.compare_raw(raw)
     assert result["blocking"] is True
     assert {point["classification"] for point in result["points"]} == {"INVALID_COMPARISON"}
     assert "DATA_MISS on base and head" in compare.render_markdown(result)
+    compare.write_outputs(result, tmp_path)
+    with (tmp_path / "comparison.csv").open(newline="") as stream:
+        rows = list(csv.DictReader(stream))
+    assert {row["metric"] for row in rows} == {"cold", "warm"}
+    assert all(row["invalid_reasons"] == "case was skipped: DATA_MISS on base and head" for row in rows)
 
 
 def test_missing_metric_is_invalid_instead_of_crashing() -> None:
@@ -307,6 +318,10 @@ def test_reports_write_json_csv_markdown_and_annotations(tmp_path: Path) -> None
     compare.write_outputs(result, tmp_path)
     assert json.loads((tmp_path / "comparison.json").read_text())["blocking"] is True
     assert "qwen3-32b" in (tmp_path / "comparison.csv").read_text()
+    with (tmp_path / "comparison.csv").open(newline="") as stream:
+        rows = list(csv.DictReader(stream))
+    assert {row["metric"] for row in rows} == {"cold", "warm"}
+    assert all(row["invalid_reasons"] == "" and row["skip_reason"] == "" for row in rows)
     assert "Confirmed regressions" in (tmp_path / "summary.md").read_text()
     assert "REGRESSION" in (tmp_path / "annotations.txt").read_text()
 
