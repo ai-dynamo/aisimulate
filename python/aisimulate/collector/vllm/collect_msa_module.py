@@ -299,6 +299,30 @@ _ATTN_LAYER_NAME = "model.layers.0.self_attn.attn"
 _INDEX_CACHE_LAYER_NAME = "model.layers.0.self_attn.attn.index_cache"
 
 
+def msa_decode_scorer_kernel_limit(
+    num_idx_heads: int, num_heads: int, *, is_context: bool, query_len: int | None
+) -> str | None:
+    """Classified kernel-limit message when the M3 DECODE indexer scorer
+    cannot tile this index-head count, else None.
+
+    The scorer tiles BLOCK_SIZE_HQ = num_idx_heads * BLOCK_SIZE_Q through
+    tl.arange (power of 2 required). It runs for every generation cell and
+    for a one-token context query only; prefill queries take the other
+    kernel, which the 0.29 full-grid sweep collected at 48/96 heads
+    (904/976 rows per head, the 72 misses being exactly the isl=1 cells).
+    """
+    decode_scorer_runs = (not is_context) or (query_len is not None and query_len <= 1)
+    if decode_scorer_runs and num_idx_heads & (num_idx_heads - 1):
+        return (
+            f"kernel-limit: num_idx_heads={num_idx_heads} (from num_heads={num_heads}) "
+            "is not a power of 2; MiniMax-M3 sparse decode indexer Triton kernel requires "
+            "power-of-2 tl.arange tiles (models/minimax_m3/common/ops/"
+            "sparse_attn.py@0.29.0) and serving tp shards can never produce "
+            "this count"
+        )
+    return None
+
+
 def _create_msa_attention_module(
     model_path: str,
     num_heads: int,
@@ -308,9 +332,14 @@ def _create_msa_attention_module(
     max_batch_size: int,
     is_context: bool,
     device: str = "cuda:0",
+    query_len: int | None = None,
 ):
     """Create a ``MiniMaxM3SparseAttention`` module from vLLM's own modeling
     code.
+
+    ``query_len`` is the per-request query length of the case (context
+    ``seq_len``; ``1`` for generation) — it decides whether the decode-path
+    kernel-limit guard below applies.
 
     Loads the real HF config from model_path, applies the TP-shard head
     emulation in-memory, and constructs the exact module serving builds for
@@ -409,23 +438,26 @@ def _create_msa_attention_module(
     sparse_cfg["sparse_num_index_heads"] = num_kv_heads
 
     # KERNEL LIMIT GUARD (verified on the 0.29 full-grid sweep, 2026-09-21):
-    # the M3 indexer/attend Triton kernels tile BLOCK_SIZE_HQ =
+    # the M3 DECODE indexer-score Triton kernel tiles BLOCK_SIZE_HQ =
     # num_idx_heads * BLOCK_SIZE_Q through tl.arange, whose range must be a
     # power of 2 (models/minimax_m3/common/ops/sparse_attn.py — the sweep's
     # heads 48/96 shard to idx_heads 3/6 and fail compilation
-    # deterministically, 1616/1616 across two shards). Serving cannot reach
-    # these points either: real tp in {1,2,4,8} on the native 4 index heads
-    # yields idx_heads in {4,2,1}, always a power of 2. Raise the classified
-    # error up front instead of burning a Triton compile per case.
-    _idx_heads = int(sparse_cfg["sparse_num_index_heads"])
-    if _idx_heads & (_idx_heads - 1):
-        raise ValueError(
-            f"kernel-limit: num_idx_heads={_idx_heads} (from num_heads={num_heads}) "
-            "is not a power of 2; MiniMax-M3 sparse Triton kernels require "
-            "power-of-2 tl.arange tiles (models/minimax_m3/common/ops/"
-            "sparse_attn.py@0.29.0) and serving tp shards can never produce "
-            "this count"
-        )
+    # deterministically). Serving cannot reach these points either: real tp
+    # in {1,2,4,8} on the native 4 index heads yields idx_heads in {4,2,1},
+    # always a power of 2. Raise the classified error up front instead of
+    # burning a Triton compile per case.
+    # SCOPE (0.30 full-grid sweep, 2026-09-28): the limit is the decode
+    # path's. On 0.29 the 48/96-head failures were every generation cell and
+    # ONLY the isl=1 context cells (the single-query-token context case runs
+    # the decode scorer): 736/736 generation, 72/976 context per head, while
+    # context isl >= 16 collected 904/904 rows per head. A guard on the head
+    # count alone dropped those 1808 prefill rows on 0.30 — so it now fires
+    # only where the decode scorer runs (generation, or a one-token query).
+    _limit = msa_decode_scorer_kernel_limit(
+        int(sparse_cfg["sparse_num_index_heads"]), num_heads, is_context=is_context, query_len=query_len
+    )
+    if _limit:
+        raise ValueError(_limit)
     hf_config.sparse_attention_config = sparse_cfg
 
     # Reserved top-k indices buffer shared by the indexer and the attend —
@@ -714,6 +746,7 @@ def run_msa_module(
         max_batch_size=batch_size,
         is_context=is_context,
         device=device,
+        query_len=seq_len if is_context else 1,
     )
 
     # 2. Create KV caches + metadata via the framework's builders.
