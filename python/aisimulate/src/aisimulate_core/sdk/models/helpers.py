@@ -715,6 +715,17 @@ def resolve_vllm_moe_execution_mode(
     return moe_quant_mode
 
 
+_MLA_ARCHITECTURES = frozenset({
+    "DeepSeekForCausalLM",
+    "DeepseekV3ForCausalLM",
+    "DeepseekV32ForCausalLM",
+    "GlmMoeDsaForCausalLM",
+    "DeepseekV4ForCausalLM",
+    "KimiK25ForConditionalGeneration",
+    "KimiK3ForConditionalGeneration",
+})
+
+
 def _apply_model_quant_defaults(
     model_config: config.ModelConfig,
     raw_config: dict,
@@ -724,10 +735,26 @@ def _apply_model_quant_defaults(
 ) -> None:
     # Clone original model_config to track if any modifications were made
     original_config = dataclasses.replace(model_config)
+    kvcache_was_unset = model_config.kvcache_quant_mode is None
     fmha_was_unset = model_config.fmha_quant_mode is None
     moe_was_unset = model_config.moe_quant_mode is None
 
     inferred = _infer_quant_modes_from_raw_config(raw_config, architecture)
+
+    # vLLM/SGLang KV cache dtype guard: for standard multi-head attention
+    # models, these backends resolve KV dtype from torch_dtype (almost always
+    # bfloat16), NOT from checkpoint quant metadata.  Drop the inferred
+    # kvcache_quant_mode so the bfloat16 fallback fires, matching runtime
+    # behavior.  MLA (Multi-head Latent Attention) architectures are exempted:
+    # their compressed-latent KV genuinely uses FP8 across all backends.
+    if (
+        kvcache_was_unset
+        and backend_name in ("vllm", "sglang")
+        and "kvcache_quant_mode" in inferred
+        and architecture not in _MLA_ARCHITECTURES
+    ):
+        del inferred["kvcache_quant_mode"]
+
     applied: list[str] = []
     for key, value in inferred.items():
         if getattr(model_config, key, None) is None:
