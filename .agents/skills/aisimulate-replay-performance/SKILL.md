@@ -65,10 +65,14 @@ to AISimulate-owned engine replay; route Dynamo-owned runtime work to its own wo
   speed differences. Missing data, skipped coverage, and incomplete execution are
   missing evidence. Explain intended changes in work separately from implementation
   overhead; passing behavior checks does not establish efficient execution.
-- Use `wall_time_ms` for native preparation, replay execution, and report aggregation.
-  It excludes Python startup, trace loading, and output serialization. Distinguish it
-  from loop-only timing, full CLI time, and simulated serving latency. A narrower timer
-  cannot qualify costs outside its boundary.
+- For native replay, `wall_time_ms` measures the interval from timer start in
+  `Replayer::run_inner` through collector finalization, including runtime setup and replay
+  execution. It excludes timing-model construction in `resolve_role_timing` before replay
+  and final timing-evidence and power aggregation after replay, plus Python startup, trace
+  loading, and output serialization. When measurements must cover changed work outside
+  this interval, require a timer around the complete native call or full CLI command.
+  An unchanged `wall_time_ms` does not establish unchanged cost for excluded phases.
+  Distinguish this metric from loop-only timing, full CLI time, and simulated serving latency.
 - Investigate material costs and correct avoidable overhead before completion. Passing
   tests or documenting a slowdown is not sufficient. Distinguish necessary feature
   cost from implementation waste; explain material necessary costs, measured impact,
