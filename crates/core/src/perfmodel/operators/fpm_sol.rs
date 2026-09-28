@@ -131,7 +131,13 @@ pub(crate) fn op_sol_latency_ms(
         Op::Glm53Ffn(o) => {
             o.validate()?;
             o.children.iter().try_fold(0.0, |sum, child| {
-                Ok(sum + op_sol_latency_ms(child, db, x, batch, s, prefix)?)
+                Ok(sum
+                    + match child {
+                        Op::Moe(m) => {
+                            crate::operators::glm53flash::routed_moe_sol(m, spec, x)?.latency_ms
+                        }
+                        _ => op_sol_latency_ms(child, db, x, batch, s, prefix)?,
+                    })
             })
         }
         Op::Glm53Attention(o) => Ok(o.sol(spec, batch, s, prefix)?.latency_ms),
