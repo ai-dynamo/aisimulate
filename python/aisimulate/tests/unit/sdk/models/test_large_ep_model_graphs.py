@@ -666,7 +666,9 @@ class TestGLMSharedExpertQuantMode:
 class TestMOEModelLargeEP:
     # RECORDED from SGLangEPMOEModel @ 8372e60 under the A6 mapping. The legacy
     # large-EP graph replicates the embedding (no vocab//tp shard) and ends at
-    # the logits gemm — no ``{p}_embedding_ar``, no P2P.
+    # the logits gemm — no ``{p}_embedding_ar``, no P2P. The legacy context
+    # graph also lacked the prefill logits gemm (inherited from the fused
+    # MOEModel); prefill now projects its last token to the vocabulary too.
     CONTEXT: ClassVar[list[str]] = [
         "context_embedding",
         "context_add_norm_1",
@@ -678,6 +680,7 @@ class TestMOEModelLargeEP:
         "context_moe_dispatch",
         "context_moe",
         "context_moe_combine",
+        "context_logits_gemm",
     ]
     GENERATION: ClassVar[list[str]] = [
         "generation_embedding",
@@ -915,6 +918,9 @@ class TestFusedGraphsUnchanged:
             "context_moe_pre_dispatch",
             "context_moe",
             "context_moe_post_dispatch",
+            # Not in the 8372e60 recording: the family had dropped its
+            # prefill logits gemm; every other family emits one.
+            "context_logits_gemm",
             "context_embedding_ar",
             "context_p2p",
         ]

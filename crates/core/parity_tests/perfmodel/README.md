@@ -121,6 +121,23 @@ using `pin_goldens.py --refresh`. Each refreshed record retains its source
 commit in `post_freeze_pins`; test matrices and tolerances are unchanged.
 These are prediction-regression baselines, not whole-model silicon validation.
 
+### MoE-family prefill logits GEMM
+
+`MOEModel` (Mixtral, GPT-OSS, Qwen2/Qwen3-MoE, MiniMax-M2) now emits
+`context_logits_gemm`, the prefill LM-head projection every other family
+already had. The selective refresh from
+`fdd84a8e9377dab2547e171f9ff126769fd51b1f` covers 21 engine-step records and
+six per-op cases. No compiled-engine reference moved outside its tolerance.
+
+Each per-op case gains exactly one `context_logits_gemm` entry of 0.0265 to
+0.0275 ms. All other per-op latencies, energies, and source labels are
+unchanged. The engine-step records are the Qwen3-235B-A22B and MiniMax-M2.5
+hybrid, empirical, and SOL cases, which use a 1e-4 relative tolerance. Their
+prefill-bearing metrics increase by 0.020 to 0.084 ms. Decode-only metrics are
+unchanged. MoE records compared at the 1% tolerance still pass and were not
+refreshed. The refreshed records are exactly the `post_freeze_pins` entries
+that name the commit above, each passed to `pin_goldens.py --refresh`.
+
 ## Engine-Step Benchmark
 
 Historical Python-vs-Rust speedup numbers (dated + commit-stamped) live in

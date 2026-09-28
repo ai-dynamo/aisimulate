@@ -316,6 +316,18 @@ class MOEModel(BaseModel):
             )
         )
         # logits gemm
+        self.context_ops.extend(
+            [
+                ops.GEMM(
+                    "context_logits_gemm",
+                    1,
+                    self._vocab_size // tp_size,
+                    h,
+                    common.GEMMQuantMode.bfloat16,
+                    seq_split=cp,
+                )
+            ]
+        )
         self.generation_ops.extend(
             [
                 ops.GEMM(
