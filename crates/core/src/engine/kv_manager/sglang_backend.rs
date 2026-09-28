@@ -639,10 +639,24 @@ impl SglangKvManager {
         Some(DecodeTokenReservation { pages, next: 0 })
     }
 
+    #[cfg(test)]
     pub(crate) fn reserve_destination_lease(
         &mut self,
         page_hashes: &[LocalBlockHash],
         token_count: usize,
+    ) -> Option<SglangDestinationReservation> {
+        self.reserve_destination_lease_with_admission(page_hashes, token_count, |_, _, _| true)
+    }
+
+    /// Check logical admission after locking the matched prefix, before any
+    /// physical eviction or allocation. The predicate receives matched-prefix
+    /// tokens, page-rounded fresh tokens, and free plus evictable tokens after
+    /// the lock. A denied request retains no prefix lock.
+    pub(crate) fn reserve_destination_lease_with_admission(
+        &mut self,
+        page_hashes: &[LocalBlockHash],
+        token_count: usize,
+        admits: impl FnOnce(usize, usize, usize) -> bool,
     ) -> Option<SglangDestinationReservation> {
         let (prefix_len, last_node) = self.match_prefix_hashes_and_lock(page_hashes);
         let prefix_pages = self.collect_path_pages_through(last_node, prefix_len);
@@ -655,7 +669,7 @@ impl SglangKvManager {
         let fresh_tokens = allocated_tokens.saturating_sub(prefix_len);
         let fresh_pages = fresh_tokens / self.cache.page_size();
         let reservable = self.cache.available_tokens() + self.cache.evictable_size;
-        if fresh_tokens > reservable {
+        if fresh_tokens > reservable || !admits(prefix_len, fresh_tokens, reservable) {
             self.cache.dec_lock_ref(last_node);
             return None;
         }

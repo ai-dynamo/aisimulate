@@ -462,7 +462,13 @@ mod tests {
         let args = MockEngineArgs::builder()
             .engine_type(engine_type)
             .block_size(4)
-            .num_gpu_blocks(blocks)
+            // Leave one extra page for SGLang's completion guard in these tiny
+            // lifecycle fixtures; its fixed per-request headroom is zero here.
+            .num_gpu_blocks(blocks + usize::from(engine_type == EngineType::Sglang))
+            .sglang(Some(crate::engine::common::protocols::SglangArgs {
+                reserved_decode_tokens: Some(0),
+                ..Default::default()
+            }))
             .max_num_batched_tokens(Some(16))
             .max_num_seqs(Some(1))
             .enable_prefix_caching(true)

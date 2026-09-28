@@ -710,6 +710,282 @@ mod destination_lifecycle {
     use super::*;
     use crate::engine::common::protocols::WorkerType;
 
+    // Independent cold requests held in transfer, with no running requests
+    // whose KV could be reclaimed. Native reserve=512 admits two short-output
+    // requests; prompt+2048 completion protection admits only one long output.
+    // Reference methods and immutable source revision are documented in core.rs.
+    #[rstest::rstest]
+    #[case::short_output(1, 2)]
+    #[case::long_output(2048, 1)]
+    fn destination_admission_reserves_native_decode_headroom(
+        #[case] output_tokens: usize,
+        #[case] expected_reserved: usize,
+    ) {
+        let args = MockEngineArgs::builder()
+            .engine_type(EngineType::Sglang)
+            .num_gpu_blocks(1024)
+            .block_size(4)
+            .max_num_seqs(Some(16))
+            .enable_prefix_caching(false)
+            .worker_type(WorkerType::Decode)
+            .speedup_ratio(0.0)
+            .build()
+            .unwrap();
+        let mut core = SglangCore::new(args);
+        let mut reserved = 0;
+        for i in 0..3u128 {
+            let effects = core
+                .apply_command_effects(
+                    SchedulerCommand::ReserveDestination {
+                        handoff_id: HandoffId::from(Uuid::from_u128(90_000 + i)),
+                        request: request(
+                            Uuid::from_u128(91_000 + i),
+                            vec![i as u32; 1024],
+                            output_tokens,
+                        ),
+                    },
+                    true,
+                )
+                .unwrap();
+            reserved += effects
+                .lifecycle_events
+                .iter()
+                .filter(|event| {
+                    matches!(event, SchedulerLifecycleEvent::DestinationReserved { .. })
+                })
+                .count();
+        }
+        assert_eq!(reserved, expected_reserved);
+    }
+
+    fn admission_core(tokens: usize, reserve: usize, caching: bool) -> SglangCore {
+        let args = MockEngineArgs::builder()
+            .engine_type(EngineType::Sglang)
+            .num_gpu_blocks(tokens / 4)
+            .block_size(4)
+            .max_num_seqs(Some(16))
+            .enable_prefix_caching(caching)
+            .worker_type(WorkerType::Decode)
+            .speedup_ratio(0.0)
+            .sglang(Some(SglangArgs {
+                reserved_decode_tokens: Some(reserve),
+                ..Default::default()
+            }))
+            .build()
+            .unwrap();
+        SglangCore::new_with_kv_capture(args, 0)
+    }
+
+    fn reserve(
+        core: &mut SglangCore,
+        id: u128,
+        tokens: Vec<u32>,
+        output: usize,
+    ) -> Vec<SchedulerLifecycleEvent> {
+        core.apply_command_effects(
+            SchedulerCommand::ReserveDestination {
+                handoff_id: HandoffId::from(Uuid::from_u128(id)),
+                request: request(Uuid::from_u128(id + 1000), tokens, output),
+            },
+            true,
+        )
+        .unwrap()
+        .lifecycle_events
+    }
+
+    #[rstest::rstest]
+    #[case(12, 4, 5, 1, true)] // Rounded prompt 8 + fixed reserve 4, exact fit.
+    #[case(8, 4, 5, 1, false)]
+    #[case(12, 0, 5, 7, true)] // Zero fixed reserve still preserves completion.
+    #[case(12, 0, 5, 8, false)]
+    fn destination_admission_page_and_completion_boundaries(
+        #[case] capacity: usize,
+        #[case] headroom: usize,
+        #[case] prompt: usize,
+        #[case] output: usize,
+        #[case] fits: bool,
+    ) {
+        let mut core = admission_core(capacity, headroom, false);
+        let events = reserve(&mut core, 80_001, vec![1; prompt], output);
+        assert_eq!(!events.is_empty(), fits);
+        assert_eq!(
+            occupied_tokens(&core),
+            if fits { prompt.div_ceil(4) * 4 } else { 0 }
+        );
+        assert!(core.drain_kv_events().is_empty());
+    }
+
+    #[test]
+    fn destination_completion_guard_honors_configured_clip() {
+        let mut core = admission_core(16, 4, false);
+        core.config.clip_max_new_tokens = 8;
+        let events = reserve(&mut core, 80_010, vec![1; 8], 100);
+        assert_eq!(events.len(), 1);
+        assert_eq!(occupied_tokens(&core), 8);
+    }
+
+    #[test]
+    fn shared_prefix_denial_releases_lock_and_activation_counts_once() {
+        let mut core = admission_core(16, 8, true);
+        core.receive(request(Uuid::from_u128(80_100), (0..8).collect(), 1));
+        execute(&mut core, 0.0);
+        assert!(core.is_empty());
+        core.drain_kv_events();
+        let before = occupied_tokens(&core);
+        let first = reserve(&mut core, 80_101, (0..8).collect(), 1);
+        assert!(matches!(
+            first.as_slice(),
+            [SchedulerLifecycleEvent::DestinationReserved {
+                transferable_prompt_tokens: 0,
+                ..
+            }]
+        ));
+        assert_eq!(occupied_tokens(&core), before);
+        assert!(reserve(&mut core, 80_102, (0..8).collect(), 1).is_empty());
+        assert_eq!(core.kv_manager.cache().protected_size, 8);
+        assert!(core.drain_kv_events().is_empty());
+        core.apply_command(SchedulerCommand::ActivateDestination {
+            handoff_id: HandoffId::from(Uuid::from_u128(80_101)),
+        })
+        .unwrap();
+        // Moving from the transfer hold to prebuilt-ready keeps exactly one reserve.
+        assert!(
+            core.destination_pages(HandoffId::from(Uuid::from_u128(80_102)))
+                .is_empty()
+        );
+        core.apply_command(SchedulerCommand::CancelDestination {
+            handoff_id: HandoffId::from(Uuid::from_u128(80_101)),
+        })
+        .unwrap();
+        assert!(
+            !core
+                .destination_pages(HandoffId::from(Uuid::from_u128(80_102)))
+                .is_empty()
+        );
+        core.apply_command(SchedulerCommand::CancelDestination {
+            handoff_id: HandoffId::from(Uuid::from_u128(80_102)),
+        })
+        .unwrap();
+        assert_eq!(core.kv_manager.cache().protected_size, 0);
+        assert_eq!(occupied_tokens(&core), before);
+        assert!(core.is_drained());
+    }
+
+    #[test]
+    fn decode_progress_retries_pending_without_releasing_a_page() {
+        let mut core = admission_core(16, 0, false);
+        assert_eq!(reserve(&mut core, 80_201, vec![1; 4], 8).len(), 1);
+        core.apply_command(SchedulerCommand::ActivateDestination {
+            handoff_id: HandoffId::from(Uuid::from_u128(80_201)),
+        })
+        .unwrap();
+        execute(&mut core, 0.0);
+        assert!(reserve(&mut core, 80_202, vec![2; 4], 8).is_empty());
+        let attempts = core.destination_reservation_attempts();
+        assert!(core.retry_pending_destinations().is_empty());
+        assert_eq!(core.destination_reservation_attempts(), attempts);
+        let mut admitted = false;
+        for step in 1..8 {
+            let before = occupied_tokens(&core);
+            let pass = execute(&mut core, step as f64);
+            let after_pass = occupied_tokens(&core);
+            let events = core.retry_pending_destinations();
+            if !events.is_empty() {
+                assert_eq!(
+                    after_pass, before,
+                    "retry must not depend on a page release"
+                );
+                assert!(!pass.output_signals.iter().any(|s| s.completed));
+                admitted = true;
+                break;
+            }
+        }
+        assert!(
+            admitted,
+            "logical completion headroom must wake the pending request"
+        );
+    }
+
+    #[test]
+    fn cancelling_shared_owner_retries_without_changing_physical_capacity() {
+        let mut core = admission_core(24, 8, true);
+        core.receive(request(Uuid::from_u128(80_300), (0..8).collect(), 1));
+        execute(&mut core, 0.0);
+        core.drain_kv_events();
+        assert_eq!(reserve(&mut core, 80_301, (0..8).collect(), 1).len(), 1);
+        assert_eq!(reserve(&mut core, 80_302, (0..8).collect(), 1).len(), 1);
+        core.apply_command(SchedulerCommand::ActivateDestination {
+            handoff_id: HandoffId::from(Uuid::from_u128(80_301)),
+        })
+        .unwrap();
+        assert!(reserve(&mut core, 80_303, (0..8).collect(), 1).is_empty());
+        let before = (
+            occupied_tokens(&core),
+            core.kv_manager.cache().protected_size,
+        );
+        let cancelled = core
+            .apply_command_effects(
+                SchedulerCommand::CancelDestination {
+                    handoff_id: HandoffId::from(Uuid::from_u128(80_301)),
+                },
+                true,
+            )
+            .unwrap();
+        assert!(
+            matches!(cancelled.lifecycle_events.as_slice(), [SchedulerLifecycleEvent::DestinationReserved { handoff_id, .. }]
+            if *handoff_id == HandoffId::from(Uuid::from_u128(80_303)))
+        );
+        assert_eq!(
+            (
+                occupied_tokens(&core),
+                core.kv_manager.cache().protected_size
+            ),
+            before
+        );
+        for id in [80_302, 80_303] {
+            core.apply_command(SchedulerCommand::CancelDestination {
+                handoff_id: HandoffId::from(Uuid::from_u128(id)),
+            })
+            .unwrap();
+        }
+        assert_eq!(core.kv_manager.cache().protected_size, 0);
+    }
+
+    #[test]
+    fn retracted_request_restarts_before_a_blocked_destination() {
+        let mut core = admission_core(24, 8, false);
+        let id = Uuid::from_u128(80_400);
+        core.receive(request(id, vec![1; 8], 4));
+        execute(&mut core, 0.0);
+        // Build the state produced by decode retraction using the real lease
+        // release/reset operations; the rest is driven by scheduler passes.
+        let mut retracted = core.running.pop().unwrap();
+        core.kv_manager.retract_in_place(&mut retracted.kv_lease);
+        retracted.reset_for_retract();
+        core.waiting.push_back(retracted);
+        let fresh_id = Uuid::from_u128(80_401);
+        core.receive(request(fresh_id, vec![3; 4], 1));
+        assert!(reserve(&mut core, 80_402, vec![2; 4], 4).is_empty());
+        let mut completed = false;
+        let mut reserved = false;
+        for step in 1..8 {
+            let pass = execute(&mut core, step as f64);
+            assert!(!pass.admissions.iter().any(|a| a.uuid == fresh_id));
+            completed |= pass
+                .output_signals
+                .iter()
+                .any(|s| s.uuid == id && s.completed);
+            if !core.retry_pending_destinations().is_empty() {
+                reserved = true;
+                break;
+            }
+        }
+        assert!(
+            completed && reserved,
+            "a pending handoff must not deadlock retracted decode"
+        );
+    }
+
     fn args(worker_type: WorkerType) -> MockEngineArgs {
         MockEngineArgs::builder()
             .engine_type(EngineType::Sglang)
@@ -719,6 +995,8 @@ mod destination_lifecycle {
             .worker_type(worker_type)
             .speedup_ratio(0.0)
             .sglang(Some(SglangArgs {
+                // Small synthetic pools use zero fixed headroom; completion protection stays enabled.
+                reserved_decode_tokens: Some(0),
                 page_size: Some(4),
                 chunked_prefill_size: Some(16),
                 ..Default::default()
@@ -747,6 +1025,8 @@ mod destination_lifecycle {
             .worker_type(WorkerType::Decode)
             .speedup_ratio(0.0)
             .sglang(Some(SglangArgs {
+                // Small synthetic pools use zero fixed headroom; completion protection stays enabled.
+                reserved_decode_tokens: Some(0),
                 page_size: Some(4),
                 chunked_prefill_size: Some(32),
                 ..Default::default()
@@ -848,7 +1128,7 @@ mod destination_lifecycle {
         };
 
         assert_eq!(footprint(1), 12);
-        assert_eq!(footprint(128), 12);
+        assert_eq!(footprint(32), 12);
     }
 
     fn execute(core: &mut SglangCore, now_ms: f64) -> crate::engine::scheduler::EnginePassResult {
@@ -1081,6 +1361,8 @@ mod destination_lifecycle {
             .worker_type(WorkerType::Decode)
             .speedup_ratio(0.0)
             .sglang(Some(SglangArgs {
+                // Small synthetic pools use zero fixed headroom; completion protection stays enabled.
+                reserved_decode_tokens: Some(0),
                 page_size: Some(4),
                 chunked_prefill_size: Some(16),
                 ..Default::default()
@@ -2957,7 +3239,9 @@ mod admission_validation_rollback {
 
     #[test]
     fn failed_validation_restores_promoted_destination_without_duplicate_admission() {
-        let mut core = SglangCore::new_with_kv_capture(test_args(32, 4, 32), 0);
+        let mut args = test_args(32, 4, 32);
+        args.sglang.as_mut().unwrap().reserved_decode_tokens = Some(0);
+        let mut core = SglangCore::new_with_kv_capture(args, 0);
         let mut collector = crate::engine::trace::TraceCollector::default();
         let destination = Uuid::from_u128(90_101);
         let handoff_id = HandoffId::from(Uuid::from_u128(90_102));

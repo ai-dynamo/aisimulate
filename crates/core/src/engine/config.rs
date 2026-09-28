@@ -155,9 +155,17 @@ pub struct SglangConfig {
     /// Output reservation cap used by SGLang admission control.
     #[serde(default = "default_clip_max_new_tokens")]
     pub clip_max_new_tokens: usize,
+    /// Logical token headroom per admitted PD decode request. Zero removes only
+    /// the fixed reserve; the single-request completion guard remains active.
+    #[serde(default = "default_reserved_decode_tokens")]
+    pub reserved_decode_tokens: usize,
     /// Multiplier applied to SGLang's adaptive output-reservation ratio.
     #[serde(default = "default_schedule_conservativeness")]
     pub schedule_conservativeness: f64,
+}
+
+fn default_reserved_decode_tokens() -> usize {
+    512
 }
 
 impl Default for SglangConfig {
@@ -167,6 +175,7 @@ impl Default for SglangConfig {
             max_prefill_tokens: default_max_prefill_tokens(),
             chunked_prefill_size: default_chunked_prefill_size(),
             clip_max_new_tokens: default_clip_max_new_tokens(),
+            reserved_decode_tokens: default_reserved_decode_tokens(),
             schedule_conservativeness: default_schedule_conservativeness(),
         }
     }
@@ -1319,6 +1328,22 @@ mod tests {
         ];
         for &(mutate, expected) in cases {
             assert_invalid_host_config(mutate, expected);
+        }
+    }
+
+    #[test]
+    fn sglang_pd_headroom_defaults_and_round_trips() {
+        let default: SglangConfig = serde_json::from_str("{}").unwrap();
+        assert_eq!(default.reserved_decode_tokens, 512);
+        for reserve in [0, 32, 512] {
+            let config: EngineConfig = serde_json::from_value(serde_json::json!({
+                "backend": "sglang", "sglang": {"reserved_decode_tokens": reserve}
+            }))
+            .unwrap();
+            assert_eq!(config.sglang.reserved_decode_tokens, reserve);
+            let decoded: EngineConfig =
+                serde_json::from_str(&serde_json::to_string(&config).unwrap()).unwrap();
+            assert_eq!(decoded, config);
         }
     }
 

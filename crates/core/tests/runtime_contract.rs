@@ -47,6 +47,11 @@ fn aggregated_spec(
 ) -> ReplaySpec {
     let rank = EngineConfig {
         num_gpu_blocks: 64,
+        // Small replay fixtures use explicit fixed headroom below the pool size.
+        sglang: aisimulate_core::engine::SglangConfig {
+            reserved_decode_tokens: 8,
+            ..Default::default()
+        },
         block_size: 4,
         max_num_seqs: 4,
         max_num_batched_tokens: 64,

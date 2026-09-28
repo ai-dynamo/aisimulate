@@ -229,6 +229,11 @@ fn role_config(backend: Backend, timing_model: TimingModelConfig) -> ReplayRoleC
         tensor_parallel_size: 1,
         rank: EngineConfig {
             num_gpu_blocks: 32,
+            // These tiny geometry tests do not model the native 512-token reserve.
+            sglang: SglangConfig {
+                reserved_decode_tokens: 0,
+                ..Default::default()
+            },
             max_num_seqs: 4,
             max_num_batched_tokens: 64,
             timing_model,
@@ -1861,4 +1866,44 @@ fn native_trtllm_disaggregated_replay_completes() {
     assert_eq!(report.request_counts.completed_requests, 1);
     assert_eq!(report.request_counts.total_input_tokens, 4);
     assert_eq!(report.request_counts.total_output_tokens, 2);
+}
+
+#[test]
+fn sglang_pd_headroom_defers_transfer_and_replay_finishes() {
+    let timing = TimingModelConfig::Fixed {
+        prefill_ms: 1.0,
+        decode_ms: 1.0,
+    };
+    let mut spec = disaggregated_spec(Backend::Sglang, timing.clone(), timing);
+    spec.requests = (0..3)
+        .map(|i| request_with_tokens(&format!("pd-{i}"), 0.0, vec![i as u32; 16], 32))
+        .collect();
+    spec.max_sim_time_ms = Some(1000.0);
+    spec.topology = ReplayTopology::Disaggregated {
+        prefill: WorkerPoolSpec::default(),
+        decode: WorkerPoolSpec::default(),
+        handoff_latency_ms: 10.0,
+    };
+    let mut config: ReplayEngineConfig = serde_json::from_value(spec.engine.clone()).unwrap();
+    let decode = &mut config.decode.as_mut().unwrap().rank;
+    decode.num_gpu_blocks = 16;
+    decode.block_size = 4;
+    decode.enable_prefix_caching = false;
+    decode.sglang.reserved_decode_tokens = 8;
+    spec.engine = serde_json::to_value(config).unwrap();
+    let report = run_engine_replay(spec).unwrap();
+    assert_eq!(report.request_counts.completed_requests, 3);
+    assert_eq!(report.request_counts.total_output_tokens, 96);
+    let mut requests = report.per_request.iter().collect::<Vec<_>>();
+    requests.sort_by(|a, b| {
+        a.destination_reserved_ms
+            .partial_cmp(&b.destination_reserved_ms)
+            .unwrap()
+    });
+    let first_activation = requests[0].destination_activated_ms.unwrap();
+    assert!(
+        requests[1].destination_reserved_ms.unwrap() >= first_activation,
+        "the second prompt fits physically, but must wait for decode completion headroom"
+    );
+    assert!(requests.iter().all(|r| r.source_released_ms.is_some()));
 }
