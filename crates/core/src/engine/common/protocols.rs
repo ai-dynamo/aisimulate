@@ -160,6 +160,7 @@ pub(crate) struct SglangArgs {
     pub max_prefill_tokens: Option<usize>,
     pub chunked_prefill_size: Option<usize>,
     pub clip_max_new_tokens: Option<usize>,
+    pub reserved_decode_tokens: Option<usize>,
     pub schedule_conservativeness: Option<f64>,
 }
 

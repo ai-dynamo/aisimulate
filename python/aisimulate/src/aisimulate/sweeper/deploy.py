@@ -99,6 +99,8 @@ def _engine_args_payload(
         memory_fraction_field: float(memory_fraction),
         "enable_prefix_caching": bool(sample[f"{role}_enable_prefix_caching"]),
     }
+    if backend == "sglang":
+        payload["sglang"] = {"reserved_decode_tokens": sample[f"{role}_reserved_decode_tokens"]}
     if sample.get("context_length") is not None:
         payload["max_model_len"] = int(sample["context_length"])
     if moe_tp * moe_ep > 1:

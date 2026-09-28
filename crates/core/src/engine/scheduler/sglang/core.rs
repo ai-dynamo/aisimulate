@@ -1,6 +1,12 @@
 // SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+//! PD decode admission analytically adapts SGLang's full-attention admission
+//! contract at https://github.com/sgl-project/sglang/blob/32290dda2cea4bb95274b3d08e43d4dad74e9676/python/sglang/srt/disaggregation/decode.py
+//! (`_required_admission_tokens`, `_allocatable_token_budgets`). Modified Rust
+//! model; Copyright 2023-2024 SGLang Team and contributors, Apache-2.0.
+//! See THIRD_PARTY_NOTICES.md for provenance and scope.
+//!
 //! Behavioral model of the SGLang scheduler loop (`Scheduler.get_next_batch_to_run`,
 //! `update_running_batch`, `ScheduleBatch.retract_decode`) as of sgl-project/sglang v0.5.6.post2
 //! (`5c8bd8b5`, `python/sglang/srt/managers/scheduler.py`, `schedule_batch.py`). Re-implemented in
@@ -375,21 +381,73 @@ impl SglangCore {
     }
 
     pub(crate) fn retry_pending_destinations(&mut self) -> Vec<SchedulerLifecycleEvent> {
+        // Do not scan active requests when there is no destination work.
         let generation = self.capacity_generation;
         let Some((_, _, request)) = self.pending_destinations.front_due(generation) else {
             return Vec::new();
         };
-        // TODO(disagg): Real SGLang also preserves logical decode headroom
-        // (`num_reserved_decode_tokens`, default 512, plus a one-request
-        // completion guard). This foundation physically reserves only the
-        // page-rounded incoming prompt footprint.
+        let reserve = self.config.reserved_decode_tokens;
+        let retractable = self.running.iter().fold(0usize, |total, req| {
+            total.saturating_add(req.current_sequence_len())
+        });
+        let completion_guard = self
+            .running
+            .iter()
+            .map(|req| {
+                req.prompt_len()
+                    .saturating_add(req.max_output_tokens.min(self.config.clip_max_new_tokens))
+                    .saturating_sub(retractable)
+            })
+            .max()
+            .unwrap_or(0);
+        // Retracted requests are modeled in `waiting`; unlike prebuilt-ready
+        // requests they need physical storage again before they can resume.
+        let retracted = |req: &&SglangRequest| req.output_len() > 0;
+        let retracted_budget = self
+            .waiting
+            .iter()
+            .filter(retracted)
+            .fold(0usize, |total, req| {
+                let tokens = req.current_sequence_len().saturating_sub(1);
+                total
+                    .saturating_add(
+                        super::config::ceil_to_block(tokens, self.config.block_size)
+                            .saturating_sub(req.allocated_tokens),
+                    )
+                    .saturating_add(reserve)
+            });
+        // Native decode waiting requests already own KV; those correspond to
+        // `prebuilt_ready`, not fresh prefills in our `waiting` queue. Charging
+        // fresh prefills would deadlock them against the pending handoff.
+        let active_count =
+            self.running.len() + self.prebuilt_ready.len() + self.destination_holds.len();
+        let withheld = reserve
+            .saturating_mul(active_count)
+            .max(completion_guard)
+            .saturating_add(retracted_budget);
+        let clip = self.config.clip_max_new_tokens;
         #[cfg(test)]
         {
             self.destination_reservation_attempts += 1;
         }
-        let reservation = self
-            .kv_manager
-            .reserve_destination_lease(request.kv_lease.page_hashes(), request.prompt_len());
+        let prompt_len = request.prompt_len();
+        let output = request.max_output_tokens.min(clip);
+        let reservation = self.kv_manager.reserve_destination_lease_with_admission(
+            request.kv_lease.page_hashes(),
+            prompt_len,
+            |prefix_len, fresh_tokens, reservable| {
+                let completion = prompt_len
+                    .saturating_sub(prefix_len)
+                    .saturating_add(output)
+                    .saturating_sub(retractable);
+                let required = fresh_tokens.saturating_add(reserve).max(completion);
+                // Do not saturate the available budget: a deficit must also
+                // reject zero-physical-footprint prefix hits.
+                reservable
+                    .checked_sub(withheld)
+                    .is_some_and(|budget| required <= budget)
+            },
+        );
         self.pending_destinations.mark_front_attempted(generation);
         let Some(kv) = reservation else {
             return Vec::new();
@@ -551,12 +609,12 @@ impl SglangCore {
         if let Some(oracle) = &self.belady {
             oracle.retire_requests([request_id]);
         }
-        let capacity_improved = self.kv_manager.abort(std::mem::take(&mut request.kv_lease));
+        self.kv_manager.abort(std::mem::take(&mut request.kv_lease));
         self.source_holds.remove_request(request_id);
         self.active_destination_handoffs.remove_request(request_id);
-        if capacity_improved {
-            self.bump_capacity_generation();
-        }
+        // Cancellation releases logical headroom even when shared pages remain
+        // pinned by another owner and physical/evictable capacity is unchanged.
+        self.bump_capacity_generation();
         true
     }
 
@@ -805,6 +863,23 @@ impl SglangCore {
 
         let admission = AdmissionInvariant::new(self.pending_destinations.has_pending());
         let mut admit = match admission.stage_for(materialized_waiting) {
+            AdmissionStage::PendingDestinationHead if !defer_prefill => {
+                // A deferred handoff must not block the retracted requests whose
+                // restart space we withheld in its admission budget. Fresh
+                // requests still cannot overtake that pending destination.
+                let (mut retracted, fresh): (VecDeque<_>, VecDeque<_>) =
+                    self.waiting.drain(..).partition(|req| req.output_len() > 0);
+                let result = get_new_batch_prefill(
+                    &mut retracted,
+                    &mut self.kv_manager,
+                    &self.config,
+                    self.new_token_ratio,
+                    &self.running,
+                );
+                self.waiting = retracted;
+                self.waiting.extend(fresh);
+                result
+            }
             AdmissionStage::Materialized | AdmissionStage::PendingDestinationHead => {
                 Default::default()
             }
@@ -1004,6 +1079,12 @@ impl SglangCore {
                 .max(self.config.min_new_token_ratio);
         }
 
+        // A token or a held-to-running transition changes completion headroom
+        // even without releasing a physical page. Retry at the pass boundary.
+        if self.model_work_in_pass && !self.pending_destinations.is_empty() {
+            self.bump_capacity_generation();
+        }
+
         // Build FPM snapshot now that all state has settled.
         // Radix-cache reuse: admission matches over prompt tokens processed this pass. A chunked
         // request's own earlier chunks are KV context for the forward but not cache hits.
@@ -1123,6 +1204,9 @@ impl SglangCore {
                 cache_tier_attribution: None,
             });
             self.running.push(request);
+        }
+        if !admissions.is_empty() {
+            self.bump_capacity_generation();
         }
         admissions
     }

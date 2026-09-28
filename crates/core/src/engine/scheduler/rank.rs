@@ -453,6 +453,7 @@ fn core_args(config: &EngineConfig, timing: Arc<dyn TimingModel>) -> MockEngineA
             max_prefill_tokens: Some(config.sglang.max_prefill_tokens),
             chunked_prefill_size: Some(config.sglang.chunked_prefill_size),
             clip_max_new_tokens: Some(config.sglang.clip_max_new_tokens),
+            reserved_decode_tokens: Some(config.sglang.reserved_decode_tokens),
             schedule_conservativeness: Some(config.sglang.schedule_conservativeness),
         }),
         emit_kv_events: config.emit_kv_events,

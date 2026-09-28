@@ -81,6 +81,10 @@ class ParallelismPredictionConfig(StrictModel):
 
 
 class SchedulerPredictionConfig(StrictModel):
+    reserved_decode_tokens: NonNegativeInt = Field(
+        default=512,
+        description="SGLang PD logical headroom per admitted decode request; zero keeps completion protection.",
+    )
     max_batched_tokens: PositiveInt = 8192
     max_sequences: PositiveInt = 256
     prefill_schedule_interval: PositiveInt = Field(
@@ -558,6 +562,7 @@ class ParallelismRecommendationConfig(StrictModel):
 
 
 class SchedulerRecommendationConfig(StrictModel):
+    reserved_decode_tokens: NonNegativeInt = 512
     max_batched_tokens: PositiveInt | Choices[PositiveInt] | IntegerRange | None = None
     max_sequences: PositiveInt | Choices[PositiveInt] | IntegerRange | None = None
 
@@ -670,6 +675,12 @@ class EngineRecommendationConfig(EstimatorPolicyConfig):
             unknown = sorted(set(self.backend_version) - backends)
             if unknown:
                 raise ValueError(f"backend_version contains unconfigured backend(s): {unknown}")
+        for role in ("aggregated", "prefill", "decode"):
+            worker = getattr(self.workers, role)
+            if worker is not None and worker.scheduler.reserved_decode_tokens != 512 and backends != {"sglang"}:
+                raise ValueError(
+                    f"workers.{role}.scheduler.reserved_decode_tokens is supported only for backend=sglang"
+                )
         _validate_recommendation_host_offload(self)
         _validate_speculation(self, modes=modes, backends=backends)
         _validate_backend_block_sizes(backends=backends, modes=modes, workers=self.workers)
@@ -725,6 +736,7 @@ def _validate_prediction_scheduler_backend(engine: EnginePredictionConfig) -> No
         for field, backend, default in (
             ("prefill_schedule_interval", "vllm", 1),
             ("prefill_decode_interval", "sglang", 0),
+            ("reserved_decode_tokens", "sglang", 512),
         ):
             if engine.backend != backend and getattr(worker.scheduler, field) != default:
                 raise ValueError(f"workers.{role}.scheduler.{field} is supported only for backend={backend}")

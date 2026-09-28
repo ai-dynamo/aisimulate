@@ -109,6 +109,27 @@ See the [SGLang GPU parity observations](https://github.com/ai-dynamo/aisimulate
 for stricter boundary behavior; they do not establish a fixed token offset
 across versions or configurations.
 
+## SGLang PD decode admission
+
+`EngineConfig.sglang.reserved_decode_tokens` defaults to 512 logical tokens per
+admitted decode request. Disaggregated decode admission combines that reserve
+with a single-request completion guard, capped by `sglang.clip_max_new_tokens`.
+Python and CLI prediction/recommendation YAML expose the same scalar as
+`engine.workers.<role>.scheduler.reserved_decode_tokens`, with the same default
+for aggregated, prefill, and decode roles. Recommendation preserves it in each
+candidate and its exported prediction configuration. Non-default values require
+SGLang; mixed-backend recommendations retain the neutral default.
+
+Setting the fixed reserve to zero keeps the completion guard enabled. Small
+synthetic KV pools may require an explicitly smaller reserve.
+
+Headroom does not allocate physical pages or increase KV transfer bytes. The
+budget includes matched-prefix locks and is retried as running requests make
+progress, finish, or are cancelled. Ordinary aggregated admission is unchanged.
+The modeled contract is full-attention PD, based on
+[SGLang's pinned admission implementation](https://github.com/sgl-project/sglang/blob/32290dda2cea4bb95274b3d08e43d4dad74e9676/python/sglang/srt/disaggregation/decode.py).
+SWA, HiSparse, and host-staged receive admission are outside this contract.
+
 ## KV-cache capacity reservation
 
 SGLang's native estimator treats `mem_fraction_static` as a static weights/KV

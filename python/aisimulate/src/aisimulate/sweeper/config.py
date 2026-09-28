@@ -576,6 +576,7 @@ class SearchSpace(BaseModel):
     prefill_enable_prefix_caching: bool = True
     prefill_kv_bytes_per_token: int | str = "auto"
     prefill_native_host_offload: dict[str, Any] | None = None
+    prefill_reserved_decode_tokens: int = Field(default=512, ge=0)
     prefill_num_gpu_blocks: int | None = None
     prefill_timing_model: dict[str, Any] | None = None
     prefill_forward_model: str = "op_level"  # AIC forward-pass model: op_level | fpm
@@ -591,6 +592,7 @@ class SearchSpace(BaseModel):
     decode_enable_prefix_caching: bool = False  # forced off for decode workers
     decode_kv_bytes_per_token: int | str = "auto"
     decode_native_host_offload: dict[str, Any] | None = None
+    decode_reserved_decode_tokens: int = Field(default=512, ge=0)
     decode_num_gpu_blocks: int | None = None
     decode_timing_model: dict[str, Any] | None = None
     decode_forward_model: str = "op_level"  # AIC forward-pass model: op_level | fpm
@@ -606,6 +608,7 @@ class SearchSpace(BaseModel):
     agg_enable_prefix_caching: bool = True
     agg_kv_bytes_per_token: int | str = "auto"
     agg_native_host_offload: dict[str, Any] | None = None
+    agg_reserved_decode_tokens: int = Field(default=512, ge=0)
     agg_num_gpu_blocks: int | None = None
     agg_timing_model: dict[str, Any] | None = None
     agg_forward_model: str = "op_level"  # AIC forward-pass model: op_level | fpm

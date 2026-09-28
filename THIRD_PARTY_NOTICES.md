@@ -987,3 +987,22 @@ Copyright 2018- The Hugging Face team. All rights reserved.
 - Modified: development-only two-predictor evaluation, public overview export,
   GitHub Pages presentation, local import paths, and canonical estimator API
   adaptation with older-wheel compatibility. No Plotly assets included.
+
+## SGLang PD decode admission
+
+The PD destination admission calculations in repository-root
+`crates/core/src/engine/scheduler/sglang/core.rs` analytically adapt the
+full-attention admission contract in SGLang's
+`python/sglang/srt/disaggregation/decode.py` at immutable commit
+`32290dda2cea4bb95274b3d08e43d4dad74e9676`.
+
+Source: https://github.com/sgl-project/sglang/blob/32290dda2cea4bb95274b3d08e43d4dad74e9676/python/sglang/srt/disaggregation/decode.py
+
+Copyright 2023-2024 SGLang Team and SGLang contributors. Licensed under
+Apache-2.0, whose terms are reproduced in the repository `LICENSE`.
+Upstream license: https://github.com/sgl-project/sglang/blob/32290dda2cea4bb95274b3d08e43d4dad74e9676/LICENSE
+
+The calculations are modified for AISimulate's Rust queues and page ownership;
+no upstream runtime is bundled. Associated configuration, KV admission callback,
+and regression cases are independently written. SWA, HiSparse and host-staged
+receive are outside this modeled contract.

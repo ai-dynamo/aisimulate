@@ -1612,3 +1612,102 @@ def test_execution_options_reject_mixed_worker_timing(custom_role):
     engine["workers"][custom_role] = {"timing": {"type": "polynomial"}}
     with pytest.raises(ValidationError, match="default timing in every role"):
         CorePredictionConfig.model_validate({"engine": engine})
+
+
+@pytest.mark.parametrize("mode", ["aggregated", "disaggregated"])
+@pytest.mark.parametrize("reserve", [None, 0, 384])
+def test_sglang_reserved_decode_tokens_public_roundtrip_and_lowering(tmp_path, mode, reserve):
+    import yaml
+
+    from aisimulate.compiler import prediction_to_replay_spec
+
+    roles = ["aggregated"] if mode == "aggregated" else ["prefill", "decode"]
+    engine = {**_engine(), "backend": "sglang", "mode": mode, "context_length": 1024}
+    engine["workers"] = {
+        role: {
+            "scheduler": {} if reserve is None else {"reserved_decode_tokens": reserve},
+            "timing": {"type": "fixed", "prefill_ms": 1, "decode_ms": 1},
+            "kv_cache": {"capacity": {"type": "fixed", "blocks": 1024}},
+        }
+        for role in roles
+    }
+    path = tmp_path / "prediction.yaml"
+    path.write_text(yaml.safe_dump({"engine": engine}), encoding="utf-8")
+    config = CorePredictionConfig.from_yaml(path)
+    config = CorePredictionConfig.model_validate_json(config.model_dump_json())
+    deployment = prediction_to_replay_spec(config).backend_deployment
+    for role in roles:
+        worker = getattr(config.engine.workers, role)
+        assert worker.scheduler.reserved_decode_tokens == (512 if reserve is None else reserve)
+        args = getattr(deployment, f"{'agg' if role == 'aggregated' else role}_engine_args")
+        assert args["sglang"]["reserved_decode_tokens"] == worker.scheduler.reserved_decode_tokens
+
+
+@pytest.mark.parametrize("schema", [CorePredictionConfig, CoreRecommendationConfig])
+@pytest.mark.parametrize("value", [-1, True, 1.5])
+def test_reserved_decode_tokens_rejects_invalid_values(schema, value):
+    engine = {**_engine(), "backend": "sglang"}
+    engine["workers"]["aggregated"] = {"scheduler": {"reserved_decode_tokens": value}}
+    with pytest.raises(ValidationError, match="reserved_decode_tokens"):
+        schema.model_validate({"engine": engine})
+
+
+@pytest.mark.parametrize("schema", [CorePredictionConfig, CoreRecommendationConfig])
+@pytest.mark.parametrize("backend", ["vllm", "trtllm"])
+def test_reserved_decode_tokens_requires_sglang_for_nondefault(schema, backend):
+    engine = {**_engine(), "backend": backend, "mode": "aggregated"}
+    extra = {"optimization": {"constraints": {"max_candidate_gpus": 8}}} if schema is CoreRecommendationConfig else {}
+    schema.model_validate({"engine": engine, **extra})  # Neutral 512 default remains valid.
+    engine["workers"]["aggregated"] = {"scheduler": {"reserved_decode_tokens": 0}}
+    with pytest.raises(ValidationError, match="reserved_decode_tokens.*backend=sglang"):
+        schema.model_validate({"engine": engine, **extra})
+
+
+@pytest.mark.parametrize("mode", ["aggregated", "disaggregated"])
+@pytest.mark.parametrize("reserve", [512, 0, 384])
+def test_recommendation_preserves_reserved_decode_tokens_in_candidate(mode, reserve):
+    roles = {"aggregated": "agg"} if mode == "aggregated" else {"prefill": "prefill", "decode": "decode"}
+    config = CoreRecommendationConfig.model_validate(
+        {
+            "optimization": {"constraints": {"max_candidate_gpus": 8}},
+            "engine": {
+                **_engine(),
+                "backend": "sglang",
+                "mode": mode,
+                "context_length": 1024,
+                "workers": {
+                    role: {
+                        "scheduler": {"reserved_decode_tokens": reserve},
+                        "timing": {"type": "fixed", "prefill_ms": 1, "decode_ms": 1},
+                        "kv_cache": {"capacity": {"type": "fixed", "blocks": 1024}},
+                    }
+                    for role in roles
+                },
+            },
+        }
+    )
+    smart = recommendation_to_sweeper(config)
+    replica = ReplicaParallelConfig(ParallelShape(tp=1, dp=1, moe_tp=1, moe_ep=1), replicas=1)
+    selection = {
+        "deployment_mode": "agg" if mode == "aggregated" else "disagg",
+        "backend": "sglang",
+    }
+    for role in roles.values():
+        selection[f"{role}_max_num_batched_tokens"] = 8192
+        selection[f"{role}_max_num_seqs"] = 256
+    sample = unroll_sample(
+        search_space=smart.search_space,
+        selection=selection,
+        parallel_config=replica if mode == "aggregated" else DisaggParallelConfig(replica, replica),
+    )
+    deployment = build_backend_deployment(sample, backend_version="test")
+    candidate = _candidate_prediction(
+        config,
+        sample,
+        ReplaySpec(backend_deployment=deployment, workload={}, goal={}),
+        adapter_sections={},
+    )
+    reloaded = CorePredictionConfig.model_validate(candidate)
+    for public_role, role in roles.items():
+        assert getattr(reloaded.engine.workers, public_role).scheduler.reserved_decode_tokens == reserve
+        assert getattr(deployment, f"{role}_engine_args")["sglang"]["reserved_decode_tokens"] == reserve
