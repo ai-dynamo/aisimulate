@@ -1492,6 +1492,49 @@ def test_v7_execution_identity_must_match_parquet(tmp_path):
         dataset.measurement_case(CONFIGURATION_PATH)
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("model_config_sha256", []),
+        ("model_config_sha256", "not-a-hash"),
+        ("model_config_sha256", "A" * 64),
+        ("model_config_sha256", "a" * 63),
+        ("enable_wideep", 1),
+        ("enable_eplb", "false"),
+        ("execution_profile", []),
+        ("execution_profile", " "),
+        ("input_modality", None),
+        ("engram_residency", ""),
+        ("fmha_resolution", False),
+        ("gemm_quant_mode", []),
+        ("moe_quant_mode", 1),
+        ("fmha_quant_mode", ""),
+        ("comm_quant_mode", []),
+        ("moe_backend", " "),
+        ("attention_backend", []),
+    ],
+)
+def test_malformed_v7_selector_fails_even_when_parquet_agrees(tmp_path, field, value):
+    _build_dataset(tmp_path, protocol_id="forward-pass-record-v1", files=[], fpm_schema_version=7)
+    fpm_path = tmp_path / CONFIGURATION_PATH / "fpm/fpm.parquet"
+    table = pq.read_table(fpm_path)
+    table = table.set_column(table.schema.get_field_index(field), field, pa.array([value]))
+    pq.write_table(table, fpm_path)
+    metadata_path = tmp_path / CONFIGURATION_PATH / "fpm/fpm.metadata.json"
+    metadata = json.loads(metadata_path.read_text())
+    metadata["configuration_selector"][field] = value
+    metadata["parquet_sha256"] = _sha256(fpm_path)
+    _write_json(metadata_path, metadata)
+    manifest_path = tmp_path / CONFIGURATION_PATH / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["fpm"][0]["sha256"] = _sha256(fpm_path)
+    _write_json(manifest_path, manifest)
+
+    dataset = HfDataset.from_local(tmp_path, revision=REVISION)
+    with pytest.raises(DataError, match=f"invalid v7 selector field '{field}'"):
+        dataset.measurement_case(CONFIGURATION_PATH)
+
+
 @pytest.mark.parametrize("version", [8, "7", 7.0, {"version": 7}])
 def test_unknown_or_malformed_fpm_schema_fails_closed(tmp_path, version):
     dataset = _build_dataset(tmp_path, protocol_id="forward-pass-record-v1", files=[])

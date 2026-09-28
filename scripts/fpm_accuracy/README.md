@@ -42,11 +42,16 @@ the recorded manifest hashes and validate all historical snapshots; their cache
 is separate from current campaign membership. Optional override files retain
 full-catalog selector validation, including historical bindings.
 
-Schema v7 FPM pairs retain hash, row-count, configuration, and execution-selector
-validation. The current Gym worker adapter cannot represent their full execution
-identity, so native staging reports them as unsupported instead of treating them
-as v6 or aborting the campaign. Their measurements still participate in coverage
-and worker regression. Unknown schema versions and corrupt pairs fail closed.
+Schema v7 FPM pairs retain hash, row-count, base-configuration, and internal
+sidecar/Parquet consistency validation. Selector flags must be booleans, the
+model-config hash must be a lowercase SHA-256 (or the producer's empty legacy
+identity), and other execution fields must be nonblank strings. This does not
+establish a binding to an authoritative execution identity in the selected
+configuration. Every v7 pair is therefore rejected by native staging, even if
+its sidecar and rows agree. Supporting v7 prediction requires that binding and
+an adapter that carries the full identity; this change does not add either.
+Measurements still participate in coverage and worker regression, which does
+not consume FPM pairs. Unknown schema versions and corrupt pairs fail closed.
 
 Decode context parallelism (`dcp`) is a separate identity dimension from `cp`.
 Legacy manifests, sidecars, and parquet files without `dcp` mean `dcp=1`;

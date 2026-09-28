@@ -720,10 +720,23 @@ class HfDataset:
         }
         if mismatches:
             raise DataError(f"FPM sidecar {artifact.metadata_path} selects a different configuration: {mismatches}")
+        parquet_identity = dict(expected_identity)
         if metadata["schema_version"] == 7:
-            # Retain the full v7 identity and verify it against every physical row.
-            # Native staging refuses v7 until the worker adapter can represent it.
-            expected_identity.update({field: selector[field] for field in _FPM_V7_SELECTOR_FIELDS})
+            for field in _FPM_V7_SELECTOR_FIELDS:
+                value = selector[field]
+                if field in {"enable_wideep", "enable_eplb"}:
+                    valid = type(value) is bool
+                elif field == "model_config_sha256":
+                    # Empty is the producer's legacy model-config identity.
+                    valid = isinstance(value, str) and (value == "" or _SHA256.fullmatch(value) is not None)
+                else:
+                    valid = isinstance(value, str) and bool(value.strip())
+                if not valid:
+                    raise DataError(f"FPM sidecar {artifact.metadata_path} has invalid v7 selector field {field!r}")
+            # Check pair consistency only: these values are not an authoritative
+            # configuration-to-execution binding. Native staging rejects every
+            # v7 pair, even if all rows agree, until that binding is available.
+            parquet_identity.update({field: selector[field] for field in _FPM_V7_SELECTOR_FIELDS})
         try:
             parquet = pq.ParquetFile(artifact.local_path)
             physical_rows = parquet.metadata.num_rows
@@ -734,7 +747,6 @@ class HfDataset:
                 f"selected FPM Parquet {artifact.path} has {physical_rows} rows; expected {artifact.row_count}"
             )
         parquet_fields = set(parquet.schema_arrow.names)
-        parquet_identity = dict(expected_identity)
         if "dcp" not in parquet_fields and expected_identity["dcp"] == 1:
             parquet_identity.pop("dcp")
         missing_identity_fields = sorted(set(parquet_identity) - parquet_fields)
