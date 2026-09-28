@@ -250,7 +250,7 @@ def benchmark_with_power(
     """
     import torch
 
-    dev_mod = get_device_module()
+    dev_mod = get_device_module(device)
 
     # Auto-detect configuration from environment if not explicitly provided
     if measure_power is None:
@@ -3691,16 +3691,32 @@ def get_vllm_version() -> str:
 
 
 def xpu_graph_measure_enabled() -> bool:
-    # Central gate for measuring ops under XPU graph (XPU graph is experimental;
-    # keep this so graph mode can be conditionally disabled per scenario).
+    # Measure under XPU graph only when the platform supports it AND vLLM's own
+    # graph flag is on, so collected latency matches the serving mode. vLLM 0.28
+    # defaults VLLM_XPU_ENABLE_XPU_GRAPH off (eager); the graph recipe sets it to 1.
     import torch
 
-    return torch.xpu.is_available()
+    if not torch.xpu.is_available():
+        return False
+    try:
+        import vllm.envs as vllm_envs
+
+        return bool(vllm_envs.VLLM_XPU_ENABLE_XPU_GRAPH)
+    except Exception:
+        return False
 
 
-def get_device_module():
+def get_device_module(device=None):
     import torch
 
+    # Resolve the module from the requested device so a mixed CUDA+XPU host
+    # targets the caller's device, not just the first available accelerator.
+    if device is not None:
+        dev = str(device)
+        if dev.startswith("cuda"):
+            return torch.cuda
+        if dev.startswith("xpu"):
+            return torch.xpu
     if torch.cuda.is_available():
         return torch.cuda
     elif torch.xpu.is_available():

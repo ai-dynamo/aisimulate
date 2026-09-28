@@ -52,9 +52,10 @@ class VLLMXPUBackend(VLLMBackend):
         genonly_step_latency_ms: float,
         encoder_latency_ms: float,
         steps_to_finish_ctx: float,
+        decode_iterations: float,
     ) -> float:
         """encoder + own_prefill, x burst factor (eff_bs==b) or + admission wait (eff_bs<b); raw for b<=1."""
-        d = 0 if b <= 1 else self._mix_step_gen_tokens(b, ctx_tokens, isl, osl)
+        d = 0 if b <= 1 else self._mix_step_gen_tokens(b, ctx_tokens, isl, decode_iterations)
         # a batch of b provides at most b*isl prefill tokens, so it can't fill more of the ctx
         # budget than that; using the raw ctx over-prices the step and the factor when b*isl < ctx.
         prefill_ctx = min(ctx_tokens, max(1, b) * isl)
@@ -63,10 +64,10 @@ class VLLMXPUBackend(VLLMBackend):
         )
         own_prefill_ms = self._own_prefill_ms(step, model, isl)
         if b <= 1:
+            logger.debug(f"ttft(xpu): own_prefill={own_prefill_ms:.2f}ms b<=1 (no queuing)")
             return encoder_latency_ms + own_prefill_ms
 
         eff_bs = self._effective_decode_bs(model, database, runtime_config, b, ctx_tokens)
-        self._agg_eff_bs = eff_bs  # handed to _compute_tpot (base signature has no eff_bs)
         if eff_bs < b:
             # admission-limited: b-eff_bs requests queue for a slot (Little's law).
             tpot = self._decode_tpot_ms(
@@ -81,6 +82,8 @@ class VLLMXPUBackend(VLLMBackend):
 
             factor = 1.0 + BURST_A * math.log2(b) ** BURST_BS_EXP * ((prefill_ctx / isl) * growth) ** BURST_CTX_EXP
             ttft = own_prefill_ms * min(factor, float(b))
+        regime = "admission" if eff_bs < b else "burst"
+        logger.debug(f"ttft(xpu): own_prefill={own_prefill_ms:.2f}ms eff_bs={eff_bs} {regime} ttft={ttft:.2f}ms")
         return encoder_latency_ms + ttft
 
     def _own_prefill_ms(self, step: StepEstimate, model: BaseModel, isl: int) -> float:
@@ -167,6 +170,9 @@ class VLLMXPUBackend(VLLMBackend):
         num_mix_steps_for_tpot_calc,
         mix_step_latency_ms,
         genonly_step_latency_ms,
+        model=None,
+        database=None,
+        runtime_config=None,
     ):
         """Per-request TPOT: a request sees (eff_bs - prefillers)/eff_bs of the mix steps; base for b<=1."""
         if osl <= 1 or b <= 1:
@@ -182,7 +188,8 @@ class VLLMXPUBackend(VLLMBackend):
                 genonly_step_latency_ms=genonly_step_latency_ms,
             )
 
-        eff_bs = self.__dict__.pop("_agg_eff_bs", None) or b  # running batch, set by _compute_ttft
+        # recomputed here (not handed via instance state) so a reused backend can't leak a stale value
+        eff_bs = self._effective_decode_bs(model, database, runtime_config, b, ctx_tokens)
         prefillers_per_step = max(1.0, ctx_tokens / isl)
         # cap at osl: a request decodes in at most osl steps, so ngen_eff stays >= 0
         nmix_eff = min(num_mix_steps * max(0.0, eff_bs - prefillers_per_step) / eff_bs, float(osl))

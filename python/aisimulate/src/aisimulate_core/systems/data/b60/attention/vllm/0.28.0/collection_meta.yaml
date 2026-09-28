@@ -9,13 +9,13 @@ runtime:
   image_digest: sha256:4756b66a077627133cee653b551f6f5eaa1b9a981b5eea13edd33fcd3b0d3ca3
 tables:
   context_attention_perf:
-    collector_ref: unknown
+    collector_ref: 747379f0a54a0977013beac72bbeb9ea6b623236
     collector_hash: sha256:c332a70d4bc458abf41cf19e6735c8e986bf829b359d1a926812d96f4994bfac
     case_plan_hash: sha256:b22eccc0141802b79294482a72d1c43f5b524a0d3cf92402c7a7af164b74f118
     rows: 13758
     status: complete
   generation_attention_perf:
-    collector_ref: unknown
+    collector_ref: 747379f0a54a0977013beac72bbeb9ea6b623236
     collector_hash: sha256:c332a70d4bc458abf41cf19e6735c8e986bf829b359d1a926812d96f4994bfac
     case_plan_hash: sha256:c9504149523deb347cf473db62a0ab56e1ec197838f7f4bea6576564b66daa87
     rows: 23788

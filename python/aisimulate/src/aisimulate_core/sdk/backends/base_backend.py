@@ -217,12 +217,15 @@ class BaseBackend:
         genonly_step_latency_ms: float,
         encoder_latency_ms: float,
         steps_to_finish_ctx: float,
+        decode_iterations: float,
     ) -> float:
         """TTFT (ms) for an agg point. Default: per-request prefill time
         (chunk count x mix step) x queuing factor + dispatch + encoder. Subclasses
         with a different queue model override this whole computation."""
+        qf = self._ttft_queuing_factor(b, steps_to_finish_ctx)
+        logger.debug(f"ttft: prefill_step={prefill_step_ms:.2f}ms qf={qf:.2f}")
         ttft_per_request = prefill_step_ms * np.ceil(isl / ctx_tokens) + self._prefill_dispatch_overhead_ms(model)
-        return encoder_latency_ms + ttft_per_request * self._ttft_queuing_factor(b, steps_to_finish_ctx)
+        return encoder_latency_ms + ttft_per_request * qf
 
     def _compute_tpot(
         self,
@@ -236,6 +239,9 @@ class BaseBackend:
         num_mix_steps_for_tpot_calc: float,
         mix_step_latency_ms: float,
         genonly_step_latency_ms: float,
+        model: "BaseModel | None" = None,
+        database: "PerfDatabase | None" = None,
+        runtime_config: "RuntimeConfig | None" = None,
     ) -> float:
         """Per-step TPOT (ms) for an agg point, before the speculative
         per-iteration division applied by the caller. Default: step-weighted
@@ -1859,9 +1865,7 @@ class BaseBackend:
             genonly_step_latency_ms=genonly_step_latency_ms,
             encoder_latency_ms=encoder_latency_ms,
             steps_to_finish_ctx=steps_to_finish_ctx,
-        )
-        logger.debug(
-            f"ttft: prefill_step={_prefill_step_ms:.2f}ms qf={self._ttft_queuing_factor(b, steps_to_finish_ctx):.2f}"
+            decode_iterations=decode_iterations,
         )
 
         # Guard against osl == 1 (no-decode), which makes both denominators zero.
@@ -1876,6 +1880,9 @@ class BaseBackend:
                 num_mix_steps_for_tpot_calc=num_mix_steps_for_tpot_calc,
                 mix_step_latency_ms=mix_step_latency_ms,
                 genonly_step_latency_ms=genonly_step_latency_ms,
+                model=model,
+                database=database,
+                runtime_config=runtime_config,
             )
             / decode_tokens_per_iteration
         )
