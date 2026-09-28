@@ -1564,6 +1564,52 @@ findings:
     applies_to: ['framework:vllm-0.30.0', 'instrument:probe_driver', 'instrument:path_diff',
       'instrument:workflow_check', 'collector:vllm', 'platform:sm90', deepseek-ai/DeepSeek-V4.1-Flash,
       nvidia/Qwen3.8-2.4T-A95B-NVFP4, moonshotai/Kimi-K3, deepseek-ai/DeepSeek-V4-Flash, nvidia/Nemotron-H-56B-Base-8K]
+  vllm_0300_full_op_sweep_2026_09_28:
+    statement: |
+      Owner request 2026-09-28: sweep every vllm op except gemm on 0.30.0
+      (H20, SM90) and look for new large-scale failures. Code frozen at
+      863bfc75 (workspace staging_0300), one container per GPU, ops split
+      by --case-filter as GPUs freed; ~22 h wall, ~48 GPU-hours, 23 tables
+      finalized (evidence: workspace facts/opsweep_full_0300/{TRIAGE.md,
+      SUMMARY.txt,PARTITION.txt,logs/}, parquet under staging_0300/runs/).
+      VERDICT: no deterministic 0.29.0 -> 0.30.0 regression. Row parity with
+      the 0.29 sweep on every table except where 0.30 is BETTER:
+      context/generation attention +697/+928 rows (the fp8-KV x head512
+      Gemma-4 cells now run vllm_triton_attn, the head_dim>256 + fp8 fix
+      verified at full grid); dsa_generation +406 rows and 0/17664 failures
+      (the 0.29 sparse-MLA decode IMA race is gone); moe +27 rows (the
+      Llama-4 fp8 128E power_law_1.01 OOM seen in the sweep reproduced
+      clean 3/3 on an idle GPU -> worker-history transient, not a
+      regression). Every other failure cluster matched 0.29 cell by cell:
+      msa_generation 1472 (heads 48/96 kernel-limit), gdn 5 (grid-y guard +
+      one OOM cell empty on 0.29 too), moe 40 (fp8_block block_n / K3 mxfp4
+      tp32, no 0.29 rows either), dsv4 csa_context 16 + hca_context 4 (the
+      0.29 residual IMA family and the same aten::new_empty cells at 262144
+      tokens per forward on fp8 DSV4-Pro). NEW on 0.30 with no baseline:
+      kda full grid 12 tasks, 4 failed on Kimi-K3 TP1 shapes — decode
+      bs1024 hits the CUDA grid-y limit (fused_recurrent.py:645 grid =
+      (cdiv(V,BV), B*H); the kda collector lacks gdn's classified guard),
+      three context OOMs on the batch x heads = 1536 boundary at isl 32768
+      (no generation-time memory filter in the kda context grid).
+      COLLECTOR DEFECT FOUND (mine): the msa index-head kernel-limit guard
+      of 2026-09-22 keyed on the head count alone and rejected 1808
+      msa_context prefill rows the 0.29 sweep had collected — the limit is
+      the DECODE scorer's (0.29 evidence: context failed only at isl=1,
+      904/976 rows per head otherwise). Fixed in c7269391
+      (msa_decode_scorer_kernel_limit, query_len-scoped) and re-run: 904 +
+      904 rows recovered, exactly 144 isl=1 cells classified. dsa_context
+      grew from 22640 to 169512 rows (the 2026-09-22 chunked-prefill prefix
+      axis: 2 models x 4 combos x 12 heads x 1816 tuples = 174336 cases);
+      4827 tasks failed, 2.7% deterministic ModelConfig rejects (prefix
+      262144+ over DeepSeek-V3.2's 163840 context) plus ~20 largest-shape
+      OOMs. OWNER DECISION 2026-09-28: the dsa grid stays as declared
+      (over-collection + classified failures). Lessons: split large-grid
+      ops by (model x precision combo) from the start; the case order is
+      model-major; a producer's checkpoint can be finalized after an early
+      stop by a zero-work --resume with the slice's own filters.
+    applies_to: ['framework:vllm-0.30.0', 'collector:vllm', 'platform:sm90', 'instrument:opsweep',
+      meta-llama/Llama-4-Maverick-17B-128E-Instruct, moonshotai/Kimi-K3, MiniMaxAI/MiniMax-M3,
+      deepseek-ai/DeepSeek-V3.2, zai-org/GLM-5, sgl-project/DeepSeek-V4-Pro-FP8, google/gemma-4-26B-A4B]
   taxonomy_dsa_nsa_family_covers_m3:
     statement: 'RESOLVED 2026-09-23: M3 sparse-attention kernels now label `triton` (the vocabulary name of
       MiniMaxM3SparseTritonImpl), dsa_nsa is DeepSeek-DSA only; see probe_prefill_prefix_cache_contamination.
