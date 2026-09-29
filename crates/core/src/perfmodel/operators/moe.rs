@@ -93,6 +93,7 @@ const ALL_MOE_QUANTS: &[MoeQuantMode] = &[
     MoeQuantMode::W4a8Mxfp4Mxfp8Trtllm,
     MoeQuantMode::W4a16Mxfp4Cutlass,
     MoeQuantMode::W4a16Nvfp4,
+    MoeQuantMode::W4a16Mxfp4Humming,
 ];
 
 fn moe_quant_from_name(name: &str) -> Option<MoeQuantMode> {

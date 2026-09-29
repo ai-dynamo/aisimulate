@@ -672,6 +672,8 @@ _COLLECTION_EVENT_REQUIRED_KEYS = (
 )
 _COLLECTION_EVENT_OPTIONAL_KEYS = ("source_campaign_rows", "source_campaign_status", "runtime")
 _COLLECTION_STATUSES = frozenset({"complete", "partial"})
+# Mirror the authored collection_meta runtime contract in collector.provenance
+# without making the installed core depend on the GPU collector package.
 _COLLECTION_RUNTIME_STRING_KEYS = ("image", "image_variant", "image_digest", "source_commit")
 _COLLECTION_RUNTIME_MAPPING_KEYS = (
     "abi",
@@ -681,7 +683,12 @@ _COLLECTION_RUNTIME_MAPPING_KEYS = (
     "backend_abis",
     "backend_capabilities",
 )
-_COLLECTION_RUNTIME_KEYS = ("framework", "version", *_COLLECTION_RUNTIME_STRING_KEYS, *_COLLECTION_RUNTIME_MAPPING_KEYS)
+_COLLECTION_RUNTIME_KEYS = (
+    "framework",
+    "version",
+    *_COLLECTION_RUNTIME_STRING_KEYS,
+    *_COLLECTION_RUNTIME_MAPPING_KEYS,
+)
 
 
 def _validate_non_negative_row_count(value: object, *, field: str, path: str) -> None:

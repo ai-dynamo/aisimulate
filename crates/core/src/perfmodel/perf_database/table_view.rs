@@ -912,12 +912,22 @@ pub fn view_kda(sources: &[PerfSource]) -> Result<Option<ViewNode>, AicError> {
 /// `operations/moe.py::load_moe_data` — 9-level
 /// `[moe_dtype][distribution][topk][num_experts][hidden][inter][moe_tp][moe_ep][num_tokens]`,
 /// with `kernel_source == "moe_torch_flow_min_latency"` rows routed to the
-/// low-latency twin table. Returns (default, low_latency).
+/// low-latency twin table. Only default-eligible rows enter these automatic
+/// coverage views; raw parquet enumeration retains every measured row.
+/// Returns (default, low_latency).
 pub fn view_moe(sources: &[PerfSource]) -> Result<Option<(ViewNode, ViewNode)>, AicError> {
     let mut default = ViewNode::branch();
     let mut low_latency = ViewNode::branch();
     let found = fold_sources(sources, |ctx| {
         let r = ctx.reader;
+        if !crate::perf_database::moe::moe_default_eligible(
+            r,
+            ctx.row,
+            r.col_optional("default_eligible"),
+            ctx.ks_col,
+        )? {
+            return Ok(());
+        }
         let num_tokens = ctx.row.u32(r.col("num_tokens")?)?;
         let hidden = ctx.row.u32(r.col("hidden_size")?)?;
         let inter = ctx.row.u32(r.col("inter_size")?)?;
