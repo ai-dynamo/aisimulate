@@ -281,6 +281,27 @@ def _predict(raw):
         runner.close()
 
 
+@pytest.mark.parametrize("mode", ["aggregated", "disaggregated"])
+@pytest.mark.parametrize("engine_roots", [False, True])
+def test_worker_timing_roots_match_runtime_and_metadata(local_profiles, mode, engine_roots):
+    fast, slow = local_profiles
+    raw = _local_request(fast, mode)
+    if not engine_roots:
+        raw["engine"].pop("systems_path")
+    for worker in raw["engine"]["workers"].values():
+        worker["timing"]["systems_paths"] = [str(slow)]
+
+    config = CorePredictionConfig.model_validate(raw)
+    saved = config.model_dump(mode="json", exclude_none=True)
+    deployment = prediction_to_replay_spec(CorePredictionConfig.model_validate(saved)).backend_deployment
+    for metadata in deployment.performance_model_metadata.values():
+        assert metadata["config"]["systems_paths"] == [str(slow)]
+    report = _predict(saved)
+    assert report.metrics["completed_requests"] == 1
+    assert report.metrics["mean_ttft_ms"] == pytest.approx(200.0 if mode == "aggregated" else 400.0)
+    assert report.metrics["mean_itl_ms"] == pytest.approx(200.0)
+
+
 @pytest.mark.parametrize("root_key", ["systems_path", "systems_paths"])
 def test_reloaded_prediction_consumes_relative_systems_roots(local_profiles, root_key, tmp_path, monkeypatch):
     fast, slow = local_profiles

@@ -420,8 +420,9 @@ def _worker_performance_model_metadata(
         if value is not None:
             config[field] = value
     config["database_mode"] = worker.timing.database_mode or engine.database_mode
-    if engine.systems_paths is not None:
-        config["systems_paths"] = engine.systems_paths
+    systems_paths = worker.timing.systems_paths or engine.systems_paths
+    if systems_paths is not None:
+        config["systems_paths"] = systems_paths
     if engine.speculation is not None:
         config["speculation"] = engine.speculation.cost_config()
     if worker.timing.fpm_parquet_path is not None:
