@@ -223,6 +223,37 @@ impl ForwardPassPerfModelConfig {
     }
 
     pub(crate) fn validate(&self) -> Result<(), AicError> {
+        self.validate_prefill_graph_profile()?;
+        if let Some(distribution) = &self.estimator_config.op_level.decode_workload_distribution {
+            let selected =
+                crate::perfmodel::observed_moe_profile::DecodeProfile::from_distribution(
+                    distribution,
+                )?;
+            if self.moe_kernel_source.is_some() {
+                return Err(
+                    selected.error("moe_kernel_source cannot override an observed decode profile")
+                );
+            }
+            if self.estimation_mode != EstimationMode::OpLevel
+                || self.fallback_policy != ForwardPassFallbackPolicy::Deny
+                || self
+                    .estimator_config
+                    .op_level
+                    .prefill_graph_profile
+                    .is_some()
+            {
+                return Err(selected.error(
+                    "requires explicit op_level and fallback deny without a prefill graph profile",
+                ));
+            }
+            crate::perfmodel::observed_moe_profile::validate_runtime(
+                selected,
+                &self.system,
+                self.backend.as_str(),
+                self.backend_version.as_deref().unwrap_or(""),
+                self.database_mode,
+            )?;
+        }
         if self.model.trim().is_empty() {
             return Err(invalid_config("model cannot be empty"));
         }
@@ -345,6 +376,57 @@ impl ForwardPassPerfModelConfig {
             }
         }
         self.estimator_config.validate()
+    }
+
+    pub(crate) fn resolve_prefill_graph_profile(&mut self) -> Result<(), AicError> {
+        self.validate_prefill_graph_profile()?;
+        if self
+            .estimator_config
+            .op_level
+            .prefill_graph_profile
+            .is_some()
+        {
+            self.estimator_config.op_level.prefill_graph_profile_id =
+                Some(crate::perf_database::prefill_graph::PROFILE_ID.to_owned());
+        }
+        Ok(())
+    }
+
+    fn validate_prefill_graph_profile(&self) -> Result<(), AicError> {
+        use crate::perf_database::prefill_graph;
+        let config = &self.estimator_config.op_level;
+        match (
+            &config.prefill_graph_profile,
+            &config.prefill_graph_profile_id,
+        ) {
+            (None, None) => return Ok(()),
+            (Some(name), id) if name == prefill_graph::PROFILE_NAME => {
+                if let Some(id) = id {
+                    prefill_graph::validate_id(id)?;
+                }
+            }
+            _ => {
+                return Err(prefill_graph::error(
+                    "invalid profile name or orphan profile identity",
+                ));
+            }
+        }
+        if self.moe_kernel_source.is_some() {
+            return Err(prefill_graph::error(
+                "moe_kernel_source cannot override a prefill graph profile",
+            ));
+        }
+        if self.estimation_mode != EstimationMode::OpLevel
+            || self.fallback_policy != ForwardPassFallbackPolicy::Deny
+            || self.database_mode != DatabaseMode::Silicon
+            || self.worker_type != ForwardPassWorkerType::Prefill
+            || self.estimator_config.correction.enabled
+        {
+            return Err(prefill_graph::error(
+                "requires explicit op_level, fallback deny, SILICON, prefill worker and disabled correction",
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -577,6 +659,79 @@ mod tests {
                 serde_json::json!({"fpm_regression": {"unknown": 1}})
             )
             .is_err()
+        );
+    }
+
+    #[test]
+    fn graph_profile_pins_identity_and_rejects_unqualified_selection() {
+        use crate::perf_database::prefill_graph;
+        let mut cfg = config(serde_json::json!({
+            "worker_type": "prefill", "estimation_mode": "op_level",
+            "estimator_config": {
+                "op_level": {"prefill_graph_profile": prefill_graph::PROFILE_NAME},
+                "correction": {"enabled": false}
+            }
+        }));
+        cfg.resolve_prefill_graph_profile().unwrap();
+        cfg.validate().unwrap();
+        assert_eq!(
+            cfg.estimator_config
+                .op_level
+                .prefill_graph_profile_id
+                .as_deref(),
+            Some(prefill_graph::PROFILE_ID)
+        );
+        let saved = serde_json::to_string(&cfg).unwrap();
+        let reloaded: ForwardPassPerfModelConfig = serde_json::from_str(&saved).unwrap();
+        assert_eq!(cfg, reloaded);
+        reloaded.validate().unwrap();
+        let mut cases = Vec::new();
+        for mode in [
+            EstimationMode::Auto,
+            EstimationMode::FpmInterpolation,
+            EstimationMode::FpmRegression,
+        ] {
+            let mut invalid = cfg.clone();
+            invalid.estimation_mode = mode;
+            cases.push(invalid);
+        }
+        for role in [
+            ForwardPassWorkerType::Decode,
+            ForwardPassWorkerType::Aggregated,
+        ] {
+            let mut invalid = cfg.clone();
+            invalid.worker_type = role;
+            cases.push(invalid);
+        }
+        for mode in [
+            DatabaseMode::Hybrid,
+            DatabaseMode::Empirical,
+            DatabaseMode::Sol,
+            DatabaseMode::SolFull,
+        ] {
+            let mut invalid = cfg.clone();
+            invalid.database_mode = mode;
+            cases.push(invalid);
+        }
+        let mut invalid = cfg.clone();
+        invalid.fallback_policy = ForwardPassFallbackPolicy::Allow;
+        cases.push(invalid);
+        let mut invalid = cfg.clone();
+        invalid.estimator_config.correction.enabled = true;
+        cases.push(invalid);
+        let mut invalid = cfg.clone();
+        invalid.estimator_config.op_level.prefill_graph_profile_id = Some("0".repeat(64));
+        cases.push(invalid);
+        let mut invalid = cfg.clone();
+        invalid.estimator_config.op_level.prefill_graph_profile = None;
+        cases.push(invalid);
+        for invalid in cases {
+            assert!(invalid.validate().is_err(), "accepted {invalid:?}");
+            assert!(crate::ForwardPassPerfModel::best_available(invalid).is_err());
+        }
+        assert_eq!(
+            serde_json::to_value(EstimatorConfig::default()).unwrap()["op_level"],
+            serde_json::json!({})
         );
     }
 }

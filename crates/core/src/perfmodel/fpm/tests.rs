@@ -109,6 +109,8 @@ fn fixture_engine_config() -> EngineConfig {
         forward_model: None,
         fpm_parquet_path: None,
         decoder_replay: false,
+        prefill_graph_profile: None,
+        prefill_graph_profile_id: None,
         moe_kernel_source: None,
         kv_block_size: None,
         parallel: ParallelMapping {

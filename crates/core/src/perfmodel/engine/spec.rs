@@ -317,6 +317,7 @@ mod tests {
             attention_dp_size: 1,
             quant_mode: MoeQuantMode::Fp8Block,
             workload_distribution: "power_law_1.2".into(),
+            require_exact_workload_distribution: false,
             is_gated: true,
             moe_backend: None,
             moe_kernel_source: Some("sglang_flashinfer_trtllm_moe".into()),
@@ -765,6 +766,20 @@ mod tests {
                 k: 5120,
                 quant_mode: GemmQuantMode::Fp8Block,
             }),
+            OpSpec::SglangPrefillAttentionSequence(
+                crate::operators::prefill_graph::SglangPrefillAttentionSequenceOp {
+                    name: "context_attention_sequence".into(),
+                    profile_id: crate::perf_database::prefill_graph::PROFILE_ID.into(),
+                    weight_bytes: 123456.0,
+                },
+            ),
+            OpSpec::SglangPrefillCommNormBoundary(
+                crate::operators::prefill_graph::SglangPrefillCommNormBoundaryOp {
+                    name: "context_post_attention_boundary".into(),
+                    profile_id: crate::perf_database::prefill_graph::PROFILE_ID.into(),
+                    boundary_role: "post_attention".into(),
+                },
+            ),
         ];
 
         // Exhaustiveness guard: if a variant is added to `Op`, this match
@@ -811,7 +826,9 @@ mod tests {
                 | OpSpec::Dsv41Engram(_)
                 | OpSpec::Dsv41Stage(_)
                 | OpSpec::Dsv41Linear(_)
-                | OpSpec::TokenScale(_) => {}
+                | OpSpec::TokenScale(_)
+                | OpSpec::SglangPrefillAttentionSequence(_)
+                | OpSpec::SglangPrefillCommNormBoundary(_) => {}
             }
         }
         ops
@@ -828,6 +845,8 @@ mod tests {
             forward_model: None,
             fpm_parquet_path: None,
             decoder_replay: false,
+            prefill_graph_profile: None,
+            prefill_graph_profile_id: None,
             moe_kernel_source: None,
             kv_block_size: Some(64),
             parallel: ParallelMapping {
@@ -871,6 +890,8 @@ mod tests {
         const MOE_ALL_TO_ALL_INDEX: u32 = 33;
         const MOE_EXPERT_COMPUTE_INDEX: u32 = 34;
         const TOKEN_SCALE_INDEX: u32 = 35;
+        const PREFILL_ATTENTION_INDEX: u32 = 41;
+        const PREFILL_BOUNDARY_INDEX: u32 = 42;
 
         let index_of = |op: &OpSpec| -> u32 {
             let bytes = bincode::serialize(op).expect("serialize op");
@@ -902,18 +923,45 @@ mod tests {
             TOKEN_SCALE_INDEX,
             "TokenScale index moved"
         );
+        assert_eq!(
+            index_of(&OpSpec::SglangPrefillAttentionSequence(
+                crate::operators::prefill_graph::SglangPrefillAttentionSequenceOp {
+                    name: "context_attention_sequence".into(),
+                    profile_id: crate::perf_database::prefill_graph::PROFILE_ID.into(),
+                    weight_bytes: 123456.0,
+                },
+            )),
+            PREFILL_ATTENTION_INDEX,
+            "SglangPrefillAttentionSequence index moved"
+        );
+        assert_eq!(
+            index_of(&OpSpec::SglangPrefillCommNormBoundary(
+                crate::operators::prefill_graph::SglangPrefillCommNormBoundaryOp {
+                    name: "context_post_attention_boundary".into(),
+                    profile_id: crate::perf_database::prefill_graph::PROFILE_ID.into(),
+                    boundary_role: "post_attention".into(),
+                },
+            )),
+            PREFILL_BOUNDARY_INDEX,
+            "SglangPrefillCommNormBoundary index moved"
+        );
         // Appending is the only safe growth direction.
         assert_eq!(MOE_EXPERT_COMPUTE_INDEX, MOE_ALL_TO_ALL_INDEX + 1);
         assert_eq!(TOKEN_SCALE_INDEX, MOE_EXPERT_COMPUTE_INDEX + 1);
         // Keep the main-branch TokenScale index; V41 variants append after it.
-        let appended: Vec<_> = all_op_variants().iter().skip(36).map(index_of).collect();
+        let appended: Vec<_> = all_op_variants()
+            .iter()
+            .skip(36)
+            .take(5)
+            .map(index_of)
+            .collect();
         assert_eq!(
             appended,
             vec![36, 37, 38, 39, 40],
             "V41 appended indices moved"
         );
         assert_eq!(
-            TOKEN_SCALE_INDEX as usize + 6,
+            PREFILL_BOUNDARY_INDEX as usize + 1,
             all_op_variants().len(),
             "all_op_variants() must cover exactly the pinned variant count"
         );
@@ -997,7 +1045,7 @@ mod tests {
             vec![OpSpec::FpmForward(fpm_forward())],
             vec![OpSpec::Moe(moe())],
         );
-        assert_eq!(spec.schema_version, 21);
+        assert_eq!(spec.schema_version, 22);
         let mut bytes = spec.to_bincode().unwrap();
         assert_eq!(EngineSpec::from_bincode(&bytes).unwrap(), spec);
 
@@ -1298,6 +1346,54 @@ mod tests {
             })
         ));
     }
+    #[test]
+    fn merged_schema_preserves_fpm_selectors_and_pilot_payloads() {
+        let mut fpm_config = sample_engine_config();
+        fpm_config.forward_model = Some("fpm".into());
+        fpm_config.quantization.fpm_fmha_dtype = Some(DataType::Fp8);
+        let fpm_spec = EngineSpec::new(fpm_config, vec![OpSpec::FpmForward(fpm_forward())], vec![]);
+
+        let mut pilot_config = sample_engine_config();
+        pilot_config.prefill_graph_profile =
+            Some(crate::perf_database::prefill_graph::PROFILE_NAME.into());
+        pilot_config.prefill_graph_profile_id =
+            Some(crate::perf_database::prefill_graph::PROFILE_ID.into());
+        let mut observed_moe = moe();
+        observed_moe.require_exact_workload_distribution = true;
+        let pilot_ops = all_op_variants()
+            .into_iter()
+            .filter(|op| {
+                matches!(
+                    op,
+                    OpSpec::SglangPrefillAttentionSequence(_)
+                        | OpSpec::SglangPrefillCommNormBoundary(_)
+                )
+            })
+            .collect();
+        let pilot_spec = EngineSpec::new(pilot_config, pilot_ops, vec![OpSpec::Moe(observed_moe)]);
+
+        for spec in [fpm_spec, pilot_spec] {
+            let bytes = spec.to_bincode().unwrap();
+            assert_eq!(EngineSpec::from_bincode(&bytes).unwrap(), spec);
+            for previous_version in [20u32, 21] {
+                let mut stale = bytes.clone();
+                stale[..4].copy_from_slice(&previous_version.to_le_bytes());
+                // Both branches claimed 21 after distinct schema-20 layouts.
+                // Reject either version before decoding even a missing payload.
+                for input in [stale.as_slice(), &stale[..4]] {
+                    assert!(matches!(
+                        EngineSpec::from_bincode(input),
+                        Err(AicError::UnsupportedSchemaVersion {
+                            kind: "EngineSpec",
+                            got,
+                            expected: 22,
+                        }) if got == previous_version
+                    ));
+                }
+            }
+        }
+    }
+
     #[test]
     fn fpm_selector_json_default_and_schema19_rejection() {
         let selected = fpm_forward();

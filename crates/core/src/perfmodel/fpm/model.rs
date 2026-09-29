@@ -312,6 +312,7 @@ impl ForwardPassPerfModel {
     /// fallback is denied; explicit modes use the requested fallback policy.
     /// A regression model may be constructed before it has enough observations.
     pub fn best_available(mut config: ForwardPassPerfModelConfig) -> Result<Self, AicError> {
+        config.resolve_prefill_graph_profile()?;
         config.validate()?;
         if let Some(path) = config
             .estimator_config
@@ -411,6 +412,7 @@ impl ForwardPassPerfModel {
         &self,
         metrics_by_rank: &[ForwardPassMetrics],
     ) -> Result<Option<f64>, AicError> {
+        self.require_general_forward_api()?;
         match &self.mode {
             ForwardPassPerfMode::Native {
                 engine,
@@ -477,6 +479,7 @@ impl ForwardPassPerfModel {
         &mut self,
         iterations: &[Vec<ForwardPassMetrics>],
     ) -> Result<(), AicError> {
+        self.require_general_forward_api()?;
         let Self {
             mode,
             options,
@@ -640,6 +643,7 @@ impl ForwardPassPerfModel {
         output_tokens: u32,
         prefill: bool,
     ) -> Result<f64, AicError> {
+        self.require_general_forward_api()?;
         let engine = self.native_engine().ok_or_else(|| {
             AicError::InvalidEngineConfig("static phase latency requires a native estimator".into())
         })?;
@@ -661,6 +665,7 @@ impl ForwardPassPerfModel {
         prefill: bool,
     ) -> Result<Vec<crate::perfmodel::engine::diagnostics::StaticOperationDiagnostics>, AicError>
     {
+        self.require_general_forward_api()?;
         if self
             .provenance
             .as_ref()
@@ -677,6 +682,43 @@ impl ForwardPassPerfModel {
                 )
             })?
             .static_phase_diagnostics(batch_size, context_length, prefix, prefill)
+    }
+
+    /// Latency in milliseconds for an exact homogeneous measured prefill shape.
+    /// `isl` includes the cached prefix; the engine subtracts it exactly once.
+    /// This latency-only surface is currently qualified only for the selected
+    /// SGLang GLM-5.2 NVFP4 VR200 graph profile.
+    pub fn predict_prefill_latency(
+        &self,
+        batch_size: u32,
+        isl: u32,
+        prefix: u32,
+    ) -> Result<f64, AicError> {
+        let engine = self
+            .native_engine()
+            .filter(|engine| engine.has_prefill_graph_profile())
+            .ok_or_else(|| {
+                crate::perf_database::prefill_graph::error(
+                    "direct prefill latency requires the qualified graph profile",
+                )
+            })?;
+        engine.predict_prefill_latency(batch_size, isl, prefix)
+    }
+
+    pub(crate) fn has_prefill_graph_profile(&self) -> bool {
+        match &self.mode {
+            ForwardPassPerfMode::Native { engine, .. } => engine.has_prefill_graph_profile(),
+            ForwardPassPerfMode::Regression { .. } => false,
+        }
+    }
+
+    fn require_general_forward_api(&self) -> Result<(), AicError> {
+        if self.has_prefill_graph_profile() {
+            return Err(crate::perf_database::prefill_graph::error(
+                "selected profile supports only direct predict_prefill_latency; telemetry, tuning, scheduler, energy and SOL routes are unqualified",
+            ));
+        }
+        Ok(())
     }
 
     pub(crate) fn native_engine(&self) -> Option<Arc<Engine>> {

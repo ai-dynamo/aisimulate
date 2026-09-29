@@ -34,6 +34,7 @@ pub mod engine;
 pub(crate) mod fpm;
 pub(crate) mod kd_tree;
 pub mod memory;
+pub(crate) mod observed_moe_profile;
 pub(crate) mod operators;
 pub(crate) mod perf_database;
 pub(crate) mod session;

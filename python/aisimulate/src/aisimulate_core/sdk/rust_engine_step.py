@@ -282,6 +282,15 @@ class RustForwardPassPerfModel:
             payload["estimator_config"] = {**estimator_config, "features": features}
         return cls(aisimulate_core.RustForwardPassPerfModel.best_available(_json_dumps(payload)))
 
+    def predict_prefill_latency(self, bs: int, isl: int, prefix: int = 0) -> float:
+        """Return latency in ms for a qualified homogeneous graph-prefill shape.
+
+        ``isl`` is the total sequence length including ``prefix``. The selected
+        profile admits only its measured integer shapes; Rust owns validation
+        and prediction. This method returns no scheduler or energy estimate.
+        """
+        return self._inner.predict_prefill_latency(bs, isl, prefix)
+
     def estimate_forward_pass_time_ms(self, metrics: dict[str, Any] | list[dict[str, Any]]) -> float | None:
         """API: ``model.estimate_forward_pass_time_ms(metrics) -> float | None``.
 
@@ -1233,6 +1242,8 @@ def _engine_config_json(model: Any, database: Any) -> str:
                         "decoder_replay": bool(getattr(model_config, "decoder_replay", False)),
                         "cp_style": getattr(model_config, "cp_style", None),
                         "workload_distribution": getattr(model_config, "workload_distribution", None),
+                        "decode_workload_distribution": getattr(model_config, "decode_workload_distribution", None),
+                        "prefill_graph_profile": getattr(model_config, "prefill_graph_profile", None),
                         "overwrite_num_layers": getattr(model_config, "overwrite_num_layers", None),
                         "sms": getattr(model_config, "sms", None),
                         "moe_backend": getattr(model_config, "moe_backend", None),

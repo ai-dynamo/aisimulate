@@ -1349,7 +1349,7 @@ groups:
     tier: shared
     systems: [b200_sxm, b300_sxm, gb200, gb300]
     frameworks: [sglang]
-    total_raw_rows: 642145
+    total_raw_rows: 645304
     within_framework_dedup_rows: 0
   - op_file: moe_perf.parquet
     kernel_source: 'sglang_fused_moe_triton'
