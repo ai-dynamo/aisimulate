@@ -24,6 +24,15 @@ pub(crate) trait StoreStats {
     fn is_ready(&self) -> bool;
 }
 
+/// The accepted sample may immediately evict an observation from a full store.
+/// Returning the actual value keeps incremental consumers in sync with the
+/// sampler's retention policy, including ties between equally full buckets.
+#[derive(Debug, PartialEq)]
+pub(crate) enum SampleInsertion<T> {
+    Accepted { evicted: Option<T> },
+    Rejected,
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct BucketedSamples<T> {
     pub(crate) buckets: HashMap<Vec<usize>, Vec<(Vec<f64>, T)>>,
@@ -83,13 +92,20 @@ impl<T: Clone> BucketedSamples<T> {
     }
 
     pub(crate) fn add(&mut self, x: Vec<f64>, y: T) -> bool {
+        matches!(
+            self.add_with_eviction(x, y),
+            SampleInsertion::Accepted { .. }
+        )
+    }
+
+    pub(crate) fn add_with_eviction(&mut self, x: Vec<f64>, y: T) -> SampleInsertion<T> {
         if x.len() != self.axis_min.len() || !x.iter().all(|value| value.is_finite()) {
-            return false;
+            return SampleInsertion::Rejected;
         }
 
         if self.fixed_bounds {
             if !self.is_in_bounds(&x) {
-                return false;
+                return SampleInsertion::Rejected;
             }
         } else {
             let bounds_changed = self.update_axis_bounds(&x);
@@ -102,10 +118,12 @@ impl<T: Clone> BucketedSamples<T> {
         self.buckets.entry(key).or_default().push((x, y));
         self.total_observations += 1;
 
-        if self.total_observations > self.max_observations {
-            self.retire_from_fattest_bucket();
-        }
-        true
+        let evicted = if self.total_observations > self.max_observations {
+            self.retire_from_fattest_bucket()
+        } else {
+            None
+        };
+        SampleInsertion::Accepted { evicted }
     }
 
     pub(crate) fn observations(&self) -> Vec<(Vec<f64>, T)> {
@@ -200,28 +218,27 @@ impl<T: Clone> BucketedSamples<T> {
         }
     }
 
-    fn retire_from_fattest_bucket(&mut self) {
+    fn retire_from_fattest_bucket(&mut self) -> Option<T> {
         // Eviction removes samples only. Dynamic regression bounds remain
         // monotonic; fixed correction-grid workload ranges are configured at
         // model creation.
-        let Some(key) = self
+        let key = self
             .buckets
             .iter()
             .max_by_key(|(_, bucket)| bucket.len())
-            .map(|(key, _)| key.clone())
-        else {
-            return;
-        };
+            .map(|(key, _)| key.clone())?;
 
+        let mut evicted = None;
         if let Some(bucket) = self.buckets.get_mut(&key) {
             if !bucket.is_empty() {
-                bucket.remove(0);
+                evicted = Some(bucket.remove(0).1);
                 self.total_observations -= 1;
             }
             if bucket.is_empty() {
                 self.buckets.remove(&key);
             }
         }
+        evicted
     }
 }
 
@@ -243,4 +260,119 @@ pub(crate) fn median_ratio(values: impl Iterator<Item = f64>) -> Option<f64> {
 
 pub(crate) fn integer_sqrt(value: usize) -> usize {
     (value as f64).sqrt() as usize
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn insertion_returns_the_actual_fattest_bucket_eviction() {
+        let options = ForwardPassPerfOptions {
+            max_observations: 4,
+            bucket_shape: Some([2, 3]),
+            ..ForwardPassPerfOptions::default()
+        };
+        let ranges = [AxisRange::from_zero_to(10); 2];
+        let mut samples = BucketedSamples::new_fixed(&options, &ranges);
+        for (index, x) in [[0.0, 0.0], [10.0, 10.0], [7.0, 7.0], [8.0, 8.0]]
+            .into_iter()
+            .enumerate()
+        {
+            assert_eq!(
+                samples.add_with_eviction(x.to_vec(), index),
+                SampleInsertion::Accepted { evicted: None }
+            );
+        }
+        // The upper bucket is uniquely fattest (three rows). Its oldest row
+        // is [10,10], whereas the global oldest row [0,0] must be retained.
+        assert_eq!(
+            samples.add_with_eviction(vec![2.0, 0.0], 4),
+            SampleInsertion::Accepted { evicted: Some(1) }
+        );
+        let mut retained = samples
+            .observations()
+            .into_iter()
+            .map(|(_, value)| value)
+            .collect::<Vec<_>>();
+        retained.sort_unstable();
+        assert_eq!(retained, [0, 2, 3, 4]);
+        assert_eq!(samples.total_observations, 4);
+        assert_eq!(samples.axis_max, [10.0, 10.0]);
+    }
+
+    #[test]
+    fn rejected_insertions_do_not_change_samples_or_bounds() {
+        let options = ForwardPassPerfOptions {
+            max_observations: 2,
+            ..ForwardPassPerfOptions::default()
+        };
+        let mut samples = BucketedSamples::new_fixed(&options, &[AxisRange::from_zero_to(10); 2]);
+        assert!(samples.add(vec![2.0, 3.0], 1));
+        let before = samples.clone();
+        for x in [
+            vec![4.0],
+            vec![f64::NAN, 3.0],
+            vec![2.0, f64::INFINITY],
+            vec![11.0, 3.0],
+        ] {
+            assert_eq!(samples.add_with_eviction(x, 2), SampleInsertion::Rejected);
+            assert_eq!(samples.buckets, before.buckets);
+            assert_eq!(samples.axis_min, before.axis_min);
+            assert_eq!(samples.axis_max, before.axis_max);
+            assert_eq!(samples.total_observations, before.total_observations);
+        }
+        assert_eq!(
+            samples.add_with_eviction(vec![3.0, 4.0], 2),
+            SampleInsertion::Accepted { evicted: None }
+        );
+    }
+
+    #[test]
+    fn dynamic_rebucketing_preserves_rows_and_rectangular_geometry() {
+        let options = ForwardPassPerfOptions {
+            max_observations: 8,
+            bucket_shape: Some([2, 3]),
+            ..ForwardPassPerfOptions::default()
+        };
+        let mut samples = BucketedSamples::new_dynamic(&options, 2);
+        for (index, x) in [[0.0, 0.0], [1.0, 1.0], [15.0, 15.0]]
+            .into_iter()
+            .enumerate()
+        {
+            assert_eq!(
+                samples.add_with_eviction(x.to_vec(), index),
+                SampleInsertion::Accepted { evicted: None }
+            );
+        }
+        assert_eq!(samples.total_observations, 3);
+        assert_eq!(samples.buckets[&vec![0, 0]].len(), 2);
+        assert_eq!(samples.buckets[&vec![1, 2]], vec![(vec![15.0, 15.0], 2)]);
+        assert!(samples.buckets[&vec![0, 0]].contains(&(vec![1.0, 1.0], 1)));
+    }
+
+    #[test]
+    fn boolean_add_preserves_retention_including_bucket_ties() {
+        let options = ForwardPassPerfOptions {
+            max_observations: 16,
+            bucket_shape: Some([2, 3]),
+            ..ForwardPassPerfOptions::default()
+        };
+        let mut with_events = BucketedSamples::new_dynamic(&options, 2);
+        // Clone the initial hasher so tied bucket choices are comparable.
+        let mut boolean_only = with_events.clone();
+        for i in 0..100 {
+            let x = vec![(i % 17) as f64, ((i * 7) % 23) as f64];
+            assert!(boolean_only.add(x.clone(), i));
+            let SampleInsertion::Accepted { evicted } = with_events.add_with_eviction(x, i) else {
+                panic!("valid sample rejected");
+            };
+            assert_eq!(evicted.is_some(), i >= 16);
+            assert_eq!(with_events.buckets, boolean_only.buckets);
+            assert_eq!(
+                with_events.total_observations,
+                boolean_only.total_observations
+            );
+        }
+    }
 }
