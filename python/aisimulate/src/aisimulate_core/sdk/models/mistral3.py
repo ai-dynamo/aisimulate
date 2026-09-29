@@ -54,5 +54,10 @@ class Mistral3Model(LLAMAModel):
         # extend the LLM context) but never host the ViT ops.
         if not self.config.language_only:
             self.encoder_ops.extend(
-                build_encoder_ops(encoder_config, self.config.tp_size, self.config.enable_encoder_dp)
+                build_encoder_ops(
+                    encoder_config,
+                    self.config.tp_size,
+                    self.config.enable_encoder_dp,
+                    projector_activation_indices=(1,),
+                )
             )
