@@ -10,6 +10,7 @@ import os
 import subprocess
 import sys
 import sysconfig
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -106,7 +107,8 @@ def test_built_application_wheel_runs_installed_fpm_plan_and_resolves_runtime_as
         env=env,
     )
 
-    assert "Verified installed AISimulate 0.12.0 FPM workflow" in completed.stdout
-    assert "installed:aisimulate==0.12.0:record-sha256:" in completed.stdout
+    expected_version = tomllib.loads((APP_ROOT / "pyproject.toml").read_text())["project"]["version"]
+    assert f"Verified installed AISimulate {expected_version} FPM workflow" in completed.stdout
+    assert f"installed:aisimulate=={expected_version}:record-sha256:" in completed.stdout
     assert unrelated_head not in completed.stdout
     assert str(unrelated_repository) not in completed.stdout

@@ -8,7 +8,7 @@ argument -- a PEP 440 suffix like '.dev20260827' -- and rewrites:
   - [project].version in python/aisimulate/pyproject.toml (PEP 440 form)
   - [package].version in crates/core/Cargo.toml and
     [workspace.package].version in Cargo.toml (SemVer form: dash instead of
-    dot, so '0.12.0-dev.20260827' -- cargo rejects the PEP 440 spelling)
+    dot, so '0.12.1-dev.20260827' -- cargo rejects the PEP 440 spelling)
 
 The wheel form mirrors the ai-dynamo/dynamo nightly convention. The crate
 form keeps the date as a dotted numeric identifier so SemVer pre-release

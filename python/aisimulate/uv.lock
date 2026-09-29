@@ -24,13 +24,14 @@ wheels = [
 
 [[package]]
 name = "aisimulate"
-version = "0.12.0"
+version = "0.12.1"
 source = { editable = "." }
 dependencies = [
     { name = "bokeh" },
     { name = "chex" },
     { name = "flax" },
     { name = "google-vizier", extra = ["jax"] },
+    { name = "googleapis-common-protos" },
     { name = "jax" },
     { name = "jaxlib" },
     { name = "jinja2" },
@@ -82,6 +83,7 @@ requires-dist = [
     { name = "fastapi", marker = "extra == 'service'", specifier = ">=0.115.12" },
     { name = "flax", specifier = "==0.10.0" },
     { name = "google-vizier", extras = ["jax"], specifier = "==0.1.21" },
+    { name = "googleapis-common-protos", specifier = "==1.75.1" },
     { name = "import-ipynb", marker = "extra == 'dev'", specifier = "==0.2" },
     { name = "jax", specifier = "==0.4.38" },
     { name = "jaxlib", specifier = "==0.4.38" },
