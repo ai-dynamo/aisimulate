@@ -397,6 +397,12 @@ FPE qualification, and security requirements continue to apply. Publish the nigh
 validate and merge the downstream migration against that wheel, then complete the
 migration checklist before a stable release.
 
+Toolchain downloads (`uv` and `rustup-init`) retry transient failures up to five
+times with a 10-second delay. Each attempt has a 30-second connection timeout
+and a 120-second transfer timeout. The retry window is 300 seconds; an attempt
+started within that window may finish afterward. Checksum verification remains
+mandatory, and checksum, build, and test failures are not automatically retried.
+
 Python dependency licenses are checked in isolated jobs on both architectures
 before building or staging. Artifacts are then staged directly to internal
 Artifactory through the protected `automated-release` environment. Each wheel

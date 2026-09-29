@@ -397,7 +397,9 @@ jobs:
           archive="${TOOLS_DIR}/uv.tar.gz"
           # -q must be curl's first argument: HOME is the workspace, so this
           # ignores any repo-root .curlrc.
-          curl -q --fail --location --silent --show-error --retry 3 \
+          curl -q --fail --location --silent --show-error \
+            --retry 5 --retry-delay 10 --retry-max-time 300 \
+            --connect-timeout 30 --max-time 120 \
             --output "${archive}" \
             "https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/uv-${UV_TARGET}.tar.gz"
           echo "${UV_SHA256}  ${archive}" | sha256sum --check
@@ -413,7 +415,9 @@ jobs:
         run: |
           set -euo pipefail
           rustup_init="${TOOLS_DIR}/rustup-init"
-          curl -q --fail --location --silent --show-error --retry 3 \
+          curl -q --fail --location --silent --show-error \
+            --retry 5 --retry-delay 10 --retry-max-time 300 \
+            --connect-timeout 30 --max-time 120 \
             --output "${rustup_init}" \
             "https://static.rust-lang.org/rustup/archive/${RUSTUP_VERSION}/${RUST_TARGET}/rustup-init"
           echo "${RUSTUP_INIT_SHA256}  ${rustup_init}" | sha256sum --check
