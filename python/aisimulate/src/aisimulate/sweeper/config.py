@@ -542,6 +542,7 @@ class SearchSpace(BaseModel):
     enable_eplb: bool = Field(default=False, strict=True)
     wideep_num_slots: int | None = Field(default=None, strict=True, gt=0)
     moe_backend: str | None = None
+    moe_kernel_source: str | None = None
     attention_backend: str | None = None
     gemm_quant_mode: str | None = None
     moe_quant_mode: str | None = None
@@ -822,6 +823,13 @@ class SearchSpace(BaseModel):
     @classmethod
     def _normalize_estimator_database_mode(cls, value):
         return value.upper() if isinstance(value, str) else value
+
+    @field_validator("moe_kernel_source", mode="before")
+    @classmethod
+    def _validate_moe_kernel_source(cls, value):
+        from aisimulate_core.sdk.config import normalize_kernel_source
+
+        return normalize_kernel_source(value, "moe_kernel_source")
 
     @field_validator("systems_paths")
     @classmethod

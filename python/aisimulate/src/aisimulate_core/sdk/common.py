@@ -1345,6 +1345,8 @@ class PerfDataFilename(Enum):
     mla_context_module = "mla_context_module_perf.parquet"
     mla_generation_module = "mla_generation_module_perf.parquet"
     dsa_context_module = "dsa_context_module_perf.parquet"
+    sglang_prefill_attention_sequence = "sglang_prefill_attention_sequence_perf.parquet"
+    sglang_prefill_comm_norm_boundary = "sglang_prefill_comm_norm_boundary_perf.parquet"
     dsa_generation_module = "dsa_generation_module_perf.parquet"
     # NOTE: GLM-5.2 skip-indexer (reuse-layer) rows live in the SAME
     # dsa_*_module file, tagged by the op_name column; the loader splits them
@@ -1443,6 +1445,8 @@ class MoEQuantMode(Enum):
     # GPT-OSS's triton_kernels mxfp4 path. (DSV4 Hopper silicon data pending.)
     w4a16_nvfp4 = QuantMapping(9 / 16, 1, "w4a16_nvfp4", "bfloat16")
     # Scale-aware NVFP4 weights dequantized into the BF16 MoE compute lane.
+    w4a16_mxfp4_humming = QuantMapping(0.5, 1, "w4a16_mxfp4_humming", "bfloat16")
+    # Native Humming E2M1/E8M0 block-32 experts with unquantized BF16 inputs.
 
 
 class FMHAQuantMode(Enum):

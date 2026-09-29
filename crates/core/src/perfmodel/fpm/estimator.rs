@@ -21,15 +21,63 @@ pub struct EstimatorConfig {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct OpLevelConfig {}
+#[serde(default, deny_unknown_fields)]
+pub struct OpLevelConfig {
+    /// Existing measured generation-MoE distribution; context is unchanged.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub decode_workload_distribution: Option<String>,
+    /// Opt-in measured graph composition; only qualified direct prefill shapes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prefill_graph_profile: Option<String>,
+    /// Resolved immutable publication identity, retained in saved configurations.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prefill_graph_profile_id: Option<String>,
+}
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct FpmInterpolationConfig {
+    /// The profile covers text prefill/decode; encoder weights remain resident.
+    #[serde(skip_serializing_if = "is_false")]
+    pub text_only: bool,
     /// External parquet and its same-stem metadata sidecar.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fpm_parquet_path: Option<PathBuf>,
+    /// Match null profile identities only for these unspecified quant modes.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub unrecorded_quant_modes: Vec<UnrecordedFpmQuantMode>,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UnrecordedFpmQuantMode {
+    Fmha,
+    Comm,
+}
+
+impl FpmInterpolationConfig {
+    pub(crate) fn validate_quant_modes(
+        &self,
+        fmha: Option<&str>,
+        comm: Option<&str>,
+    ) -> Result<(), AicError> {
+        for mode in &self.unrecorded_quant_modes {
+            let explicit = match mode {
+                UnrecordedFpmQuantMode::Fmha => fmha,
+                UnrecordedFpmQuantMode::Comm => comm,
+            };
+            if explicit.is_some() {
+                return Err(super::config::invalid_config(
+                    "an unrecorded FPM quant mode cannot have an explicit quantization override",
+                ));
+            }
+        }
+        Ok(())
+    }
 }
 
 /// These weights currently affect regression. Native correction keeps its

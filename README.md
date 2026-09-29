@@ -265,7 +265,7 @@ APIs:
 
 - [Estimator/FPE Python and Rust SDK](docs/core-api.md)
 - [AIC-compatible modeled-power contract (semantics only)](docs/power-model.md)
-- [FPM collection-to-prediction workflow](python/aisimulate/docs/fpm/end-to-end-workflow.md)
+- [Self-benchmarking and FPM onboarding guide](python/aisimulate/docs/fpm/self-benchmarking-and-onboarding.md)
 - [Replay SDK and artifact contract](crates/core/src/replay/README.md)
 - [Sweeper SDK](docs/sweeper/overview.md)
 - [Legacy CLI reference](docs/cli/legacy-aic-user-guide.md)

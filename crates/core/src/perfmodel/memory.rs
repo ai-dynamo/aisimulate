@@ -435,6 +435,7 @@ fn dtype_str(dt: &crate::DataType) -> &'static str {
         W4a8Mxfp4Mxfp8 => "w4a8_mxfp4_mxfp8",
         W4a8Mxfp4Mxfp8Trtllm => "w4a8_mxfp4_mxfp8_trtllm",
         W4a16Mxfp4Cutlass => "w4a16_mxfp4_cutlass",
+        W4a16Mxfp4Humming => "w4a16_mxfp4_humming",
         W4a16Nvfp4 => "w4a16_nvfp4",
     }
 }
@@ -509,8 +510,12 @@ mod tests {
                 forward_model: None,
                 fpm_parquet_path: None,
                 decoder_replay: false,
+                prefill_graph_profile: None,
+                prefill_graph_profile_id: None,
+                moe_kernel_source: None,
                 kv_block_size: None,
                 parallel: ParallelMapping {
+                    dcp_size: None,
                     tp_size: 1,
                     pp_size: 1,
                     attention_dp_size: Some(1),

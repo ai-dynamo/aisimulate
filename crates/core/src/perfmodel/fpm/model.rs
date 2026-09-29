@@ -312,6 +312,7 @@ impl ForwardPassPerfModel {
     /// fallback is denied; explicit modes use the requested fallback policy.
     /// A regression model may be constructed before it has enough observations.
     pub fn best_available(mut config: ForwardPassPerfModelConfig) -> Result<Self, AicError> {
+        config.resolve_prefill_graph_profile()?;
         config.validate()?;
         if let Some(path) = config
             .estimator_config
@@ -327,6 +328,17 @@ impl ForwardPassPerfModel {
         let mut failures = Vec::new();
         let mut last_error = None;
         for mode in config.candidate_modes() {
+            if config.dcp.is_some_and(|dcp| dcp > 1)
+                && (mode != EstimationMode::FpmInterpolation
+                    || config.backend != crate::BackendKind::Vllm)
+            {
+                let error = AicError::UnsupportedModel(
+                    "DCP timing requires measured vLLM FPM interpolation".into(),
+                );
+                failures.push(format!("{mode:?}: {error}"));
+                last_error = Some(error);
+                continue;
+            }
             if config.speculation.is_some() && mode != EstimationMode::OpLevel {
                 let error =
                     AicError::UnsupportedModel("ngram speculation requires op_level timing".into());
@@ -411,6 +423,7 @@ impl ForwardPassPerfModel {
         &self,
         metrics_by_rank: &[ForwardPassMetrics],
     ) -> Result<Option<f64>, AicError> {
+        self.require_general_forward_api()?;
         match &self.mode {
             ForwardPassPerfMode::Native {
                 engine,
@@ -477,6 +490,7 @@ impl ForwardPassPerfModel {
         &mut self,
         iterations: &[Vec<ForwardPassMetrics>],
     ) -> Result<(), AicError> {
+        self.require_general_forward_api()?;
         let Self {
             mode,
             options,
@@ -640,6 +654,7 @@ impl ForwardPassPerfModel {
         output_tokens: u32,
         prefill: bool,
     ) -> Result<f64, AicError> {
+        self.require_general_forward_api()?;
         let engine = self.native_engine().ok_or_else(|| {
             AicError::InvalidEngineConfig("static phase latency requires a native estimator".into())
         })?;
@@ -661,6 +676,7 @@ impl ForwardPassPerfModel {
         prefill: bool,
     ) -> Result<Vec<crate::perfmodel::engine::diagnostics::StaticOperationDiagnostics>, AicError>
     {
+        self.require_general_forward_api()?;
         if self
             .provenance
             .as_ref()
@@ -677,6 +693,43 @@ impl ForwardPassPerfModel {
                 )
             })?
             .static_phase_diagnostics(batch_size, context_length, prefix, prefill)
+    }
+
+    /// Latency in milliseconds for an exact homogeneous measured prefill shape.
+    /// `isl` includes the cached prefix; the engine subtracts it exactly once.
+    /// This latency-only surface is currently qualified only for the selected
+    /// SGLang GLM-5.2 NVFP4 VR200 graph profile.
+    pub fn predict_prefill_latency(
+        &self,
+        batch_size: u32,
+        isl: u32,
+        prefix: u32,
+    ) -> Result<f64, AicError> {
+        let engine = self
+            .native_engine()
+            .filter(|engine| engine.has_prefill_graph_profile())
+            .ok_or_else(|| {
+                crate::perf_database::prefill_graph::error(
+                    "direct prefill latency requires the qualified graph profile",
+                )
+            })?;
+        engine.predict_prefill_latency(batch_size, isl, prefix)
+    }
+
+    pub(crate) fn has_prefill_graph_profile(&self) -> bool {
+        match &self.mode {
+            ForwardPassPerfMode::Native { engine, .. } => engine.has_prefill_graph_profile(),
+            ForwardPassPerfMode::Regression { .. } => false,
+        }
+    }
+
+    fn require_general_forward_api(&self) -> Result<(), AicError> {
+        if self.has_prefill_graph_profile() {
+            return Err(crate::perf_database::prefill_graph::error(
+                "selected profile supports only direct predict_prefill_latency; telemetry, tuning, scheduler, energy and SOL routes are unqualified",
+            ));
+        }
+        Ok(())
     }
 
     pub(crate) fn native_engine(&self) -> Option<Arc<Engine>> {
@@ -705,6 +758,7 @@ fn build_native_candidate(
 ) -> Result<(Engine, PathBuf), AicError> {
     if config.estimation_mode == EstimationMode::FpmInterpolation
         && (config.enable_eplb
+            || config.moe_kernel_source.is_some()
             || config.wideep_num_slots.is_some()
             || config
                 .moe_backend
@@ -712,7 +766,7 @@ fn build_native_candidate(
                 .is_some_and(|value| value != "default"))
     {
         return Err(AicError::UnsupportedModel(
-            "FPM interpolation does not support EPLB, slots or moe_backend overrides".into(),
+            "FPM interpolation does not support EPLB, slots, moe_backend or moe_kernel_source overrides".into(),
         ));
     }
     if config.estimation_mode == EstimationMode::FpmInterpolation && config.nextn != 0 {
@@ -1114,6 +1168,21 @@ fn can_fallback_to_regression(err: &AicError) -> bool {
 #[cfg(test)]
 mod fallback_errors {
     use super::*;
+
+    #[cfg(feature = "python")]
+    #[test]
+    fn interpolation_candidate_does_not_discard_exact_moe_source() {
+        let mut config = ForwardPassPerfModelConfig::new(
+            "model",
+            "system",
+            crate::BackendKind::Sglang,
+            crate::ForwardPassWorkerType::Decode,
+        );
+        config.moe_kernel_source = Some("source_that_does_not_exist".into());
+        config.estimation_mode = EstimationMode::FpmInterpolation;
+        let error = build_native_candidate(&config).err().unwrap();
+        assert!(error.to_string().contains("moe_kernel_source overrides"));
+    }
 
     #[test]
     fn corruption_is_not_a_coverage_gap() {
