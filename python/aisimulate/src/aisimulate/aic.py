@@ -31,6 +31,16 @@ def materialize_aic_num_gpu_blocks(raw: dict[str, Any]) -> dict[str, Any]:
     """Return engine arguments with rank-local AIC KV capacity materialized."""
 
     lowered = dict(raw)
+    timing = lowered.get("timing_model")
+    timing_systems_path = None
+    if (
+        isinstance(timing, dict)
+        and timing.get("type") == "external"
+        and timing.get("provider") == "aic"
+        and isinstance(timing.get("config"), dict)
+    ):
+        timing_systems_path = timing["config"].get("systems_path")
+
     attention_dp = lowered.get("aic_attention_dp_size")
     dp = attention_dp or 1
     configured_dp = lowered.get("dp_size") or 1
@@ -57,6 +67,11 @@ def materialize_aic_num_gpu_blocks(raw: dict[str, Any]) -> dict[str, Any]:
     if not model:
         raise ValueError("AIC KV cache capacity estimation requires aic_model_path in engine args")
 
+    capacity_systems_path = lowered.get("systems_path")
+    if timing_systems_path is not None:
+        # Keep capacity on the same database root as the authored AIC timing.
+        capacity_systems_path = timing_systems_path
+
     lowered["num_gpu_blocks"] = estimate_num_gpu_blocks(
         backend_name=backend,
         system=lowered.get("aic_system") or _DEFAULT_AIC_SYSTEM,
@@ -74,7 +89,11 @@ def materialize_aic_num_gpu_blocks(raw: dict[str, Any]) -> dict[str, Any]:
         gpu_memory_utilization=lowered.get("gpu_memory_utilization"),
         mem_fraction_static=lowered.get("mem_fraction_static"),
         free_gpu_memory_fraction=lowered.get("free_gpu_memory_fraction"),
-        backend_version=lowered.get("aic_backend_version"),
+        backend_version=(
+            lowered.get("aic_backend_version")
+            if lowered.get("aic_backend_version") is not None
+            else lowered.get("backend_version")
+        ),
         pp_size=(lowered.get("aic_pp_size") if lowered.get("aic_pp_size") is not None else 1),
         moe_tp_size=lowered.get("aic_moe_tp_size"),
         moe_ep_size=lowered.get("aic_moe_ep_size"),
@@ -84,7 +103,7 @@ def materialize_aic_num_gpu_blocks(raw: dict[str, Any]) -> dict[str, Any]:
         fmha_dtype=lowered.get("aic_fmha_dtype"),
         kv_cache_dtype=lowered.get("aic_kv_cache_dtype"),
         comm_dtype=lowered.get("aic_comm_dtype"),
-        systems_path=lowered.get("systems_path"),
+        systems_path=capacity_systems_path,
     )
     return lowered
 
@@ -129,6 +148,15 @@ def estimate_num_gpu_blocks(
         estimate_num_gpu_blocks as aic_estimate_num_gpu_blocks,
     )
 
+    if backend_version is None:
+        from aiconfigurator_core.sdk.perf_database import get_latest_database_version
+
+        # Use the maintained current slot (or the latest version in a custom
+        # legacy root), matching the database used for this capacity estimate.
+        backend_version = get_latest_database_version(system, backend_name, systems_paths=systems_path)
+        if backend_version is None:
+            raise ValueError(f"no perf database for system={system!r}, backend={backend_name!r}")
+
     if backend_name == "trtllm":
         memory_fraction_kind = "of_free"
         memory_fraction_value = (
@@ -148,9 +176,7 @@ def estimate_num_gpu_blocks(
             model_path,
             system,
             backend_name,
-            backend_version=(
-                backend_version if backend_version is not None else DEFAULT_BACKEND_VERSIONS[backend_name]
-            ),
+            backend_version=backend_version,
             scheduler_block_size=block_size,
             max_num_tokens=max_num_batched_tokens,
             max_batch_size=max_num_sequences,
