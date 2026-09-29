@@ -111,7 +111,10 @@ pub const ENGINE_CONFIG_SCHEMA_VERSION: u32 = 1;
 // - 21 (AIC-1781): EngineConfig and MoeOp gained exact `moe_kernel_source`
 //   identity. Renumbered from the branch's concurrent v20 claim after the
 //   DeepSeek-V4.1 FPM layout landed first.
-pub const ENGINE_SPEC_SCHEMA_VERSION: u32 = 21;
+// - 22 (GLM-5.2 VR200 pilot): exact observed-MoE selection, prefill graph
+//   identity and two appended composite operators extend the schema-21 layout.
+//   The pilot and AIC-1781 concurrently claimed 21; reject both older layouts.
+pub const ENGINE_SPEC_SCHEMA_VERSION: u32 = 22;
 
 /// Static engine identity and setup information carried by an
 /// [`crate::perfmodel::engine::spec::EngineSpec`].
@@ -155,6 +158,11 @@ pub struct EngineConfig {
     /// Use the backend-verified bounded DeepSeek-V4.1 decoder execution profile.
     #[serde(default)]
     pub decoder_replay: bool,
+    /// Explicit direct-prefill-only measured profile and its immutable identity.
+    #[serde(default)]
+    pub prefill_graph_profile: Option<String>,
+    #[serde(default)]
+    pub prefill_graph_profile_id: Option<String>,
     /// Exact collected MoE compute kernel-source lane.  Unlike
     /// `moe_backend`, this selects one measured MoE table lane.
     #[serde(default)]

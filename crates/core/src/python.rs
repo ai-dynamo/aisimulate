@@ -205,6 +205,9 @@ struct AicTimingConfig {
     systems_path: Option<String>,
     #[serde(default)]
     forward_model: Option<String>,
+    /// Saved pilot input alias; lowered into the canonical op-level controls.
+    #[serde(default)]
+    decode_workload_distribution: Option<String>,
     #[serde(default)]
     fpm_parquet_path: Option<String>,
     #[serde(default)]
@@ -279,6 +282,17 @@ impl AicTimingConfig {
             self.systems_paths.clone()
         };
         let mut estimator_config = self.estimator_config.clone();
+        if let Some(selected) = &self.decode_workload_distribution {
+            ensure!(
+                estimator_config
+                    .op_level
+                    .decode_workload_distribution
+                    .as_ref()
+                    .is_none_or(|value| value == selected),
+                "decode_workload_distribution conflicts with estimator_config.op_level"
+            );
+            estimator_config.op_level.decode_workload_distribution = Some(selected.clone());
+        }
         if let Some(path) = &self.fpm_parquet_path {
             crate::config::validate_fpm_parquet_path(
                 Some(std::path::Path::new(path)),
@@ -444,6 +458,21 @@ struct AicTimingModel {
 
 impl AicTimingModel {
     fn build(config: &mut AicTimingConfig, worker_type: ForwardPassWorkerType) -> Result<Self> {
+        if config
+            .estimator_config
+            .op_level
+            .prefill_graph_profile
+            .is_some()
+            || config
+                .estimator_config
+                .op_level
+                .prefill_graph_profile_id
+                .is_some()
+        {
+            anyhow::bail!(
+                "graph prefill profile supports only direct predict_prefill_latency; replay/scheduler timing is unqualified"
+            );
+        }
         config.validate_parallel_shape()?;
         config.resolved_memory_fraction()?;
         let model = ForwardPassPerfModel::best_available(config.estimator_request(worker_type)?)
@@ -2824,6 +2853,7 @@ mod tests {
             strict_provenance: false,
             systems_path: None,
             forward_model: None,
+            decode_workload_distribution: None,
             fpm_parquet_path: None,
             decoder_replay: false,
         }
@@ -2881,6 +2911,25 @@ mod tests {
         )
         .unwrap();
         assert_eq!(role.rank.num_gpu_blocks, 17);
+    }
+
+    #[test]
+    fn replay_provider_rejects_graph_profile_before_native_construction() {
+        let mut config = aic_config();
+        config.estimator_config.op_level.prefill_graph_profile =
+            Some(crate::perf_database::prefill_graph::PROFILE_NAME.to_owned());
+        for role in [
+            ForwardPassWorkerType::Prefill,
+            ForwardPassWorkerType::Decode,
+            ForwardPassWorkerType::Aggregated,
+        ] {
+            let error = AicTimingModel::build(&mut config, role).err().unwrap();
+            assert!(
+                error
+                    .to_string()
+                    .contains("replay/scheduler timing is unqualified")
+            );
+        }
     }
 
     #[test]

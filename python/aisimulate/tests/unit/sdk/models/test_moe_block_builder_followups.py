@@ -19,6 +19,8 @@ The behavior-frozen hardening batch (none of these may move a number):
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 import aisimulate_core.sdk.operations as ops
@@ -57,6 +59,18 @@ def _build(cfg, **overrides):
 
 def _dispatches(op_list):
     return [op for op in op_list if isinstance(op, ops.MoEDispatch)]
+
+
+def test_fused_builder_accepts_config_without_optional_kernel_source():
+    cfg = SimpleNamespace(
+        moe_tp_size=1,
+        moe_ep_size=8,
+        attention_dp_size=8,
+        moe_quant_mode=common.MoEQuantMode.bfloat16,
+    )
+    built = _build(cfg)
+    expected = _build(_cfg())
+    assert [op._spec_json() for op in built] == [op._spec_json() for op in expected]
 
 
 class TestGpusPerNodeGuard:

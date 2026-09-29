@@ -1,4 +1,6 @@
 // SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+// SPDX-FileCopyrightText: Copyright 2023-2024 SGLang Team
 // SPDX-License-Identifier: Apache-2.0
 // Includes changes adapted from:
 // https://github.com/ai-dynamo/aiconfigurator/blob/6290c161a354da5250c391bd43372b2e9c6f4a51/aic-core/rust/aiconfigurator-core/src/engine/runtime.rs
@@ -308,6 +310,7 @@ pub struct Engine {
     /// `(nextn + 1)` exactly as Python `_run_generation_phase:200`
     /// (`batch_size = batch_size * (model._nextn + 1)`). 0 disables scaling.
     nextn: u32,
+    prefill_graph_profile: bool,
 }
 
 impl std::fmt::Debug for Engine {
@@ -321,6 +324,62 @@ impl std::fmt::Debug for Engine {
 }
 
 impl Engine {
+    fn decode_profile_spec(
+        spec: &EngineSpec,
+    ) -> Result<Option<&crate::operators::MoeOp>, AicError> {
+        fn selected_profiles<'a>(ops: &'a [Op], selected: &mut Vec<&'a crate::operators::MoeOp>) {
+            for op in ops {
+                match op {
+                    Op::Moe(op) if op.require_exact_workload_distribution => selected.push(op),
+                    Op::Overlap(op) => {
+                        selected_profiles(&op.group_a, selected);
+                        selected_profiles(&op.group_b, selected);
+                    }
+                    Op::Fallback(op) => {
+                        selected_profiles(std::slice::from_ref(&op.primary), selected);
+                        selected_profiles(&op.fallback, selected);
+                    }
+                    Op::TokenScale(op) => selected_profiles(std::slice::from_ref(&op.op), selected),
+                    Op::Dsv41Stage(op) => selected_profiles(&op.children, selected),
+                    _ => {}
+                }
+            }
+        }
+        let mut context_profiles = Vec::new();
+        let mut generation_profiles = Vec::new();
+        selected_profiles(&spec.context_ops, &mut context_profiles);
+        selected_profiles(&spec.generation_ops, &mut generation_profiles);
+        if !context_profiles.is_empty() {
+            return Err(crate::perfmodel::observed_moe_profile::error(
+                &context_profiles[0].workload_distribution,
+                "decode profile in context ops",
+            ));
+        }
+        if !generation_profiles.is_empty() {
+            let selected =
+                crate::perfmodel::observed_moe_profile::DecodeProfile::from_distribution(
+                    &generation_profiles[0].workload_distribution,
+                )?;
+            crate::perfmodel::observed_moe_profile::validate_engine(selected, &spec.engine)?;
+            crate::perfmodel::observed_moe_profile::validate_communication(
+                selected,
+                &spec.context_ops,
+            )?;
+            crate::perfmodel::observed_moe_profile::validate_communication(
+                selected,
+                &spec.generation_ops,
+            )?;
+            if generation_profiles.len() != 1 || generation_profiles[0].name != "generation_moe" {
+                return Err(crate::perfmodel::observed_moe_profile::error(
+                    selected.distribution(),
+                    "expected one native generation_moe op",
+                ));
+            }
+            return Ok(Some(generation_profiles[0]));
+        }
+        Ok(None)
+    }
+
     /// Build an `Engine` from a spec and a pre-loaded database.
     ///
     /// Extracts the op lists and the `nextn` scalar from `spec.engine`. The
@@ -334,6 +393,7 @@ impl Engine {
                 "fpm_fmha_dtype requires forward_model='fpm'".into(),
             ));
         }
+        let prefill_graph_profile = crate::perf_database::prefill_graph::validate_spec(&spec)?;
         Self::validate_engine_database_mode(spec.engine.database_mode)?;
         Self::validate_engine_database_mode(db.database_mode)?;
         if spec.engine.database_mode != db.database_mode {
@@ -342,6 +402,27 @@ impl Engine {
                 spec.engine.database_mode, db.database_mode
             )));
         }
+        if let Some(op) = Self::decode_profile_spec(&spec)? {
+            op.validate_decode_profile(&db)?;
+        }
+        let db = if prefill_graph_profile {
+            if db.system != spec.engine.system_name
+                || db.backend != spec.engine.backend.as_str()
+                || Some(db.version.as_str()) != spec.engine.backend_version.as_deref()
+                || db.system_spec.gpu.sm_version != Some(107)
+            {
+                return Err(crate::perf_database::prefill_graph::error(
+                    "loaded database does not match measured runtime",
+                ));
+            }
+            // Admission binds actual reader storage, not only current source
+            // hashes: the supplied DB may already contain stale shared tables.
+            // Put this in build so direct callers get the same isolation as
+            // from_spec_bytes, without rewriting the caller's saved identity.
+            Arc::new(db.snapshot_prefill_graph()?)
+        } else {
+            db
+        };
         let nextn = spec
             .engine
             .speculative
@@ -354,6 +435,7 @@ impl Engine {
             generation_ops: spec.generation_ops,
             db,
             nextn,
+            prefill_graph_profile,
         })
     }
 
@@ -476,6 +558,9 @@ impl Engine {
         systems_root: &std::path::Path,
     ) -> Result<Engine, AicError> {
         let spec = EngineSpec::from_bincode(bytes)?;
+        crate::perf_database::prefill_graph::validate_spec(&spec)?;
+        let explicit_profile =
+            Self::decode_profile_spec(&spec)?.map(|op| op.workload_distribution.as_str());
         Self::validate_fpm_spec(&spec)?;
         Self::validate_engine_database_mode(spec.engine.database_mode)?;
         let version = spec.engine.backend_version.as_deref().ok_or_else(|| {
@@ -520,7 +605,17 @@ impl Engine {
                 DatabaseMode::Empirical | DatabaseMode::Sol
             ) || spec.engine.tolerate_dirless_version,
             spec.engine.fpm_parquet_path.as_deref(),
-        )?
+        )
+        .map_err(|error| {
+            if let Some(distribution) = explicit_profile {
+                crate::perfmodel::observed_moe_profile::error(
+                    distribution,
+                    format!("cannot load resolved profile database: {error}"),
+                )
+            } else {
+                error
+            }
+        })?
         .with_mode(spec.engine.database_mode, transfer_policy);
         Engine::build(spec, Arc::new(db))
     }
@@ -536,10 +631,37 @@ impl Engine {
     }
 
     pub(crate) fn validate_forward_pass_readiness(&self) -> Result<(), AicError> {
+        if self.prefill_graph_profile {
+            self.db.prefill_graph.validate()?;
+            self.db.prefill_graph.validate_sources(&self.db)?;
+            return super::readiness::validate(&self.db, self.context_ops.iter());
+        }
         super::readiness::validate(
             &self.db,
             self.context_ops.iter().chain(&self.generation_ops),
         )
+    }
+
+    /// Immutable provenance is read-only; selected profiles expose only direct prefill latency.
+    pub fn prefill_graph_profile_json(&self) -> Result<Option<&str>, AicError> {
+        if self.prefill_graph_profile {
+            self.db.prefill_graph.profile_json().map(Some)
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub(crate) fn has_prefill_graph_profile(&self) -> bool {
+        self.prefill_graph_profile
+    }
+
+    fn require_general_engine(&self) -> Result<(), AicError> {
+        if self.prefill_graph_profile {
+            return Err(crate::perf_database::prefill_graph::error(
+                "selected profile supports only direct predict_prefill_latency; scheduler, decode, mixed, per-op energy and SOL routes are unqualified",
+            ));
+        }
+        Ok(())
     }
 
     /// Shared perf database handle.
@@ -592,6 +714,7 @@ impl Engine {
         mode: StaticMode,
         stride: u32,
     ) -> Result<StaticResult, AicError> {
+        self.require_general_engine()?;
         let context_ms = match mode {
             StaticMode::Context | StaticMode::Both => self.run_context_phase(runtime)?,
             StaticMode::Generation => 0.0,
@@ -722,9 +845,14 @@ impl Engine {
             prefix,
             ..Default::default()
         };
-        Ok(self
-            .run_static(&rt, StaticMode::Context, DEFAULT_STATIC_STRIDE)?
-            .total_ms)
+        if self.prefill_graph_profile {
+            crate::perf_database::prefill_graph::public_shape(bs, isl, prefix)?;
+            self.run_context_phase(&rt)
+        } else {
+            Ok(self
+                .run_static(&rt, StaticMode::Context, DEFAULT_STATIC_STRIDE)?
+                .total_ms)
+        }
     }
 
     /// Mocker H2: decode-step latency in ms. Pure-Rust inherent method (no
@@ -732,6 +860,7 @@ impl Engine {
     /// `mode=Generation`. Mocker passes `osl=2` (one decode step at
     /// `s = isl + 1`).
     pub fn predict_decode_latency(&self, bs: u32, isl: u32, osl: u32) -> Result<f64, AicError> {
+        self.require_general_engine()?;
         let rt = RuntimeConfig {
             batch_size: bs,
             isl,
@@ -752,6 +881,7 @@ impl Engine {
         batch_size: u32,
         total_past_kv_tokens: u32,
     ) -> Result<f64, AicError> {
+        self.require_general_engine()?;
         self.forward_pass_time_ms(&[ForwardPassMetrics {
             scheduled_requests: crate::ScheduledRequestMetrics {
                 num_decode_requests: batch_size,
@@ -765,6 +895,7 @@ impl Engine {
     /// Highest decode KV-read total covered by a compiled FPM engine.
     /// Op-level engines return `None`.
     pub fn fpm_decode_kv_ceiling(&self) -> Result<Option<u32>, AicError> {
+        self.require_general_engine()?;
         let Some((_prefill, decode)) = self.fpm_ops() else {
             return Ok(None);
         };
@@ -814,6 +945,7 @@ impl Engine {
         seq_imbalance_correction_scale: f64,
         gen_seq_imbalance_correction_scale: f64,
     ) -> Result<f64, AicError> {
+        self.require_general_engine()?;
         Ok(self.mixed_step_breakdown(
             ctx_tokens,
             gen_tokens,
@@ -842,6 +974,7 @@ impl Engine {
         seq_imbalance_correction_scale: f64,
         gen_seq_imbalance_correction_scale: f64,
     ) -> Result<[f64; 4], AicError> {
+        self.require_general_engine()?;
         self.mixed_step_breakdown_with(
             ctx_tokens,
             gen_tokens,
@@ -1194,6 +1327,7 @@ impl Engine {
         osl: u32,
         gen_seq_imbalance_correction_scale: f64,
     ) -> Result<f64, AicError> {
+        self.require_general_engine()?;
         if gen_tokens == 0 {
             return Ok(0.0);
         }
@@ -1370,6 +1504,7 @@ impl Engine {
         prefix: u32,
         prefill: bool,
     ) -> Result<Vec<super::diagnostics::StaticOperationDiagnostics>, AicError> {
+        self.require_general_engine()?;
         use super::diagnostics::{
             ExecutedFallback, OperationDetails, SolDiagnostics, StaticOperationDiagnostics,
         };
@@ -1521,6 +1656,7 @@ impl Engine {
         mode: StaticMode,
         stride: u32,
     ) -> Result<(Vec<PerOpValue>, Vec<PerOpValue>), AicError> {
+        self.require_general_engine()?;
         let (context, generation) = self.run_static_per_op_impl(runtime, mode, stride)?;
         Ok((
             strip_per_op_metadata(context),
@@ -1537,6 +1673,7 @@ impl Engine {
         mode: StaticMode,
         stride: u32,
     ) -> Result<(Vec<PerOpValueWithMetadata>, Vec<PerOpValueWithMetadata>), AicError> {
+        self.require_general_engine()?;
         self.run_static_per_op_impl(runtime, mode, stride)
     }
 
@@ -1587,6 +1724,7 @@ impl Engine {
         seq_imbalance_correction_scale: f64,
         gen_seq_imbalance_correction_scale: f64,
     ) -> Result<(Vec<PerOpValue>, Vec<PerOpValue>, Vec<PerOpValue>), AicError> {
+        self.require_general_engine()?;
         let (shared, context_attention, decode_attention) = self.mixed_step_breakdown_per_op_impl(
             ctx_tokens,
             gen_tokens,
@@ -1616,6 +1754,7 @@ impl Engine {
         seq_imbalance_correction_scale: f64,
         gen_seq_imbalance_correction_scale: f64,
     ) -> Result<MixedStepPerOpValuesWithMetadata, AicError> {
+        self.require_general_engine()?;
         self.mixed_step_breakdown_per_op_impl(
             ctx_tokens,
             gen_tokens,
@@ -1716,6 +1855,7 @@ impl Engine {
         osl: u32,
         gen_seq_imbalance_correction_scale: f64,
     ) -> Result<Vec<PerOpValue>, AicError> {
+        self.require_general_engine()?;
         self.decode_step_per_op_impl(gen_tokens, isl, osl, gen_seq_imbalance_correction_scale)
             .map(strip_per_op_metadata)
     }
@@ -1729,6 +1869,7 @@ impl Engine {
         osl: u32,
         gen_seq_imbalance_correction_scale: f64,
     ) -> Result<Vec<PerOpValueWithMetadata>, AicError> {
+        self.require_general_engine()?;
         self.decode_step_per_op_impl(gen_tokens, isl, osl, gen_seq_imbalance_correction_scale)
     }
 
@@ -1772,6 +1913,7 @@ impl Engine {
         seq_imbalance_correction_scale: f64,
         x_override: Option<u32>,
     ) -> Result<Vec<PerOpValue>, AicError> {
+        self.require_general_engine()?;
         let mut out = PerOpFold::new("context");
         for &i in indices {
             let op = self.context_ops.get(i).ok_or_else(|| {
@@ -1806,6 +1948,7 @@ impl Engine {
         prefix: u32,
         x_override: Option<u32>,
     ) -> Result<Vec<PerOpValue>, AicError> {
+        self.require_general_engine()?;
         let mut out = PerOpFold::new("generation");
         for &i in indices {
             let op = self.generation_ops.get(i).ok_or_else(|| {
@@ -1844,9 +1987,15 @@ impl Engine {
         imbalance_correction_scale: f64,
         x_override: Option<u32>,
     ) -> Result<Vec<PerOpValue>, AicError> {
+        self.require_general_engine()?;
         let ops: Vec<Op> = serde_json::from_str(ops_json).map_err(|e| {
             AicError::InvalidEngineConfig(format!("evaluate_ops_json: invalid op list JSON: {e}"))
         })?;
+        if crate::perf_database::prefill_graph::contains_profile_ops(&ops) {
+            return Err(crate::perf_database::prefill_graph::error(
+                "ad-hoc composite queries are unsupported; select the direct prefill profile",
+            ));
+        }
         let mut out = PerOpFold::new(if is_context { "context" } else { "generation" });
         for op in &ops {
             let r = if is_context {
@@ -1891,6 +2040,7 @@ impl Engine {
         imbalance_correction_scale: f64,
         visual_block_upper_triangle: bool,
     ) -> Result<Vec<PerOpValue>, AicError> {
+        self.require_general_engine()?;
         if visual_block_upper_triangle && prefix != 0 {
             return Err(AicError::InvalidEngineConfig(
                 "visual-block attention kernel evaluation requires prefix=0".into(),
@@ -1945,12 +2095,18 @@ impl Engine {
         imbalance_correction_scale: f64,
         x_override: Option<u32>,
     ) -> Result<Vec<PerOpSolValue>, AicError> {
+        self.require_general_engine()?;
         let ops: Vec<Op> = serde_json::from_str(ops_json).map_err(|e| {
             AicError::InvalidEngineConfig(format!(
                 "evaluate_ops_sol_json: invalid op list JSON: {e}"
             ))
         })?;
         let sol_db = self.db.sol_full_view();
+        if crate::perf_database::prefill_graph::contains_profile_ops(&ops) {
+            return Err(crate::perf_database::prefill_graph::error(
+                "prefill composite SOL/energy is unmeasured",
+            ));
+        }
         let mut out = PerOpSolFold::default();
         for op in &ops {
             let r = if is_context {
@@ -1999,6 +2155,7 @@ impl Engine {
         &self,
         metrics_by_rank: &[ForwardPassMetrics],
     ) -> Result<f64, AicError> {
+        self.require_general_engine()?;
         if metrics_by_rank.is_empty() {
             return Err(AicError::InvalidForwardPassMetrics(
                 "at least one attention-DP rank metric required".to_string(),
@@ -2323,6 +2480,8 @@ mod tests {
             forward_model: None,
             fpm_parquet_path: None,
             decoder_replay: false,
+            prefill_graph_profile: None,
+            prefill_graph_profile_id: None,
             moe_kernel_source: None,
             kv_block_size: None,
             parallel: ParallelMapping {
@@ -2378,6 +2537,117 @@ mod tests {
             isl,
             osl,
             ..Default::default()
+        }
+    }
+
+    #[test]
+    fn glm52_rubin_decode_outer_terms_match_source_inventory_oracle() {
+        use crate::DataType;
+        use crate::operators::CustomAllReduceOp;
+
+        // Modified analytical inventory derived from SGLang's embedding reduce,
+        // post-join routed/shared add and terminal residual RMSNorm at:
+        // https://gitlab-master.nvidia.com/dl/sglang/sglang/-/tree/02c5a855aceb968c310e6fbc6632270e26edc84b/python/sglang/srt
+        // Exact paths and the deferred-finalize=0 scope are in THIRD_PARTY_NOTICES.md.
+        let mut config = fixture_engine_config(None);
+        config.model_name = "nvidia/GLM-5.2-NVFP4".into();
+        config.system_name = "vr200_hecate".into();
+        config.backend = BackendKind::Sglang;
+        config.backend_version = Some("0.5.18+nvinternal.rubin.0.8full.66997102".into());
+        config.parallel = ParallelMapping {
+            tp_size: 4,
+            pp_size: 1,
+            attention_dp_size: Some(1),
+            moe_tp_size: Some(4),
+            moe_ep_size: Some(1),
+            cp_size: Some(1),
+        };
+        config.quantization = QuantizationConfig {
+            weight_dtype: Some(DataType::Bfloat16),
+            moe_dtype: Some(DataType::Nvfp4),
+            activation_dtype: Some(DataType::Bfloat16),
+            fpm_fmha_dtype: None,
+            kv_cache_dtype: Some(DataType::Fp8),
+        };
+        config.enable_shared_layer = Some(false);
+        config.strict_provenance = true;
+        let db = Arc::new(
+            PerfDatabase::load_resolved(
+                &systems_root(),
+                "vr200_hecate",
+                "sglang",
+                config.backend_version.as_deref().unwrap(),
+                false,
+                true,
+                false,
+            )
+            .unwrap(),
+        );
+        let mut add = ElementwiseOp::new("generation_routed_shared_add", 36_864.0);
+        add.scale_factor = 75.0;
+        let mut spec = EngineSpec::new(
+            config,
+            vec![],
+            vec![
+                Op::CustomAllReduce(CustomAllReduceOp::new(
+                    "generation_embedding_ar",
+                    1.0,
+                    6144,
+                    4,
+                )),
+                Op::Elementwise(add),
+                Op::Elementwise(ElementwiseOp::new("generation_final_add_norm", 49_152.0)),
+            ],
+        );
+        // Independent decimal calculation from vr200_hecate.yaml: bandwidth
+        // 19160064000000 B/s, efficiency 0.5227797525079052 and constant
+        // 1.6518125736605135e-6 s. BF16 add moves 3*6144*2 bytes per token;
+        // norm follows the existing 4*6144*2-byte analytical convention.
+        // AR: exact half/TP4/message6144 row = 0.005369920134544372 ms.
+        // B3 linearly interpolates 2/7 towards the message49152 row at
+        // 0.004964160025119782 ms in this version's custom_all_reduce table.
+        // These are existing estimates, not measurements of the native terms.
+        for _ in 0..3 {
+            let engine = Engine::build(spec.clone(), db.clone()).unwrap();
+            for (batch, expected) in [
+                (
+                    1,
+                    [
+                        0.005369920134544372,
+                        0.12416196776269622,
+                        0.0016567196801166505,
+                    ],
+                ),
+                (
+                    3,
+                    [
+                        0.005253988674708775,
+                        0.12471401723901163,
+                        0.0016665338930289244,
+                    ],
+                ),
+            ] {
+                let (context, generation) = engine
+                    .run_static_per_op(
+                        &runtime(batch, 1024, 2),
+                        StaticMode::Generation,
+                        DEFAULT_STATIC_STRIDE,
+                    )
+                    .unwrap();
+                assert!(context.is_empty());
+                assert_eq!(generation.len(), 3);
+                for (value, expected) in generation.iter().zip(expected) {
+                    assert!(
+                        (value.1 - expected).abs() < 1e-12,
+                        "{}: {} != {expected}",
+                        value.0,
+                        value.1
+                    );
+                }
+                let total = engine.predict_decode_latency(batch, 1024, 2).unwrap();
+                assert!((total - expected.iter().sum::<f64>()).abs() < 1e-12);
+            }
+            spec = EngineSpec::from_bincode(&spec.to_bincode().unwrap()).unwrap();
         }
     }
 
