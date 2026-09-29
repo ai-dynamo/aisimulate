@@ -327,6 +327,15 @@ class PrefillSamplingProfile:
         return payload
 
 
+def collection_phases(worker_type: str | None) -> tuple[str, ...]:
+    """Preserve historical phase pairs unless an exact serving role is selected."""
+    if worker_type in (None, "aggregated"):
+        return ("prefill", "decode")
+    if worker_type in ("prefill", "decode"):
+        return (worker_type,)
+    raise ValueError("worker_type must be prefill, decode or aggregated")
+
+
 @dataclass(frozen=True, slots=True)
 class FPMCollectionOptions:
     """Resolved FPM case-space controls.
@@ -366,6 +375,10 @@ class FPMCollectionOptions:
     max_prefill_batch_size: int | None = None
     max_prefill_cudagraph_size: int | None = None
     prefill_cudagraph_policy: str = "explicit"
+    worker_type: str | None = None
+    cudagraph_mode: str | None = None
+    cudagraph_capture_sizes: tuple[int, ...] | None = None
+    max_cudagraph_capture_size: int | None = None
     gpu_memory_utilization: float | None = None
 
     max_decode_batch_size: int | None = None
@@ -381,6 +394,45 @@ class FPMCollectionOptions:
     slurm_cpu_bind: str | None = None
 
     def __post_init__(self) -> None:
+        collection_phases(self.worker_type)
+        graph_fields = (self.cudagraph_mode, self.cudagraph_capture_sizes, self.max_cudagraph_capture_size)
+        if any(value is not None for value in graph_fields) and self.worker_type is None:
+            raise ValueError("CUDA graph settings require an explicit --fpm-worker-type")
+        if self.cudagraph_mode is not None and self.cudagraph_mode not in {
+            "NONE",
+            "PIECEWISE",
+            "FULL",
+            "FULL_DECODE_ONLY",
+            "FULL_AND_PIECEWISE",
+        }:
+            raise ValueError("unsupported --fpm-cudagraph-mode")
+        if self.cudagraph_capture_sizes is not None:
+            sizes = self.cudagraph_capture_sizes
+            if (
+                not sizes
+                or any(type(value) is not int or value < 1 for value in sizes)
+                or tuple(sorted(set(sizes))) != sizes
+            ):
+                raise ValueError("--fpm-cudagraph-capture-sizes must be sorted unique positive integers")
+            if self.max_cudagraph_capture_size is not None and self.max_cudagraph_capture_size != max(sizes):
+                raise ValueError("--fpm-max-cudagraph-capture-size must equal the largest capture size")
+        if self.max_cudagraph_capture_size is not None and (
+            type(self.max_cudagraph_capture_size) is not int or self.max_cudagraph_capture_size < 1
+        ):
+            raise ValueError("--fpm-max-cudagraph-capture-size must be positive")
+        if (self.cudagraph_capture_sizes is not None or self.max_cudagraph_capture_size is not None) and (
+            self.prefill_cudagraph_policy != "runtime" or self.max_prefill_cudagraph_size is not None
+        ):
+            raise ValueError("generic CUDA graph captures require --fpm-prefill-cudagraph-policy runtime")
+        if self.cudagraph_mode == "NONE" and (
+            self.cudagraph_capture_sizes is not None
+            or self.max_cudagraph_capture_size is not None
+            or self.prefill_cudagraph_policy != "runtime"
+        ):
+            raise ValueError("CUDA graph mode NONE cannot declare capture sizes")
+        maximum = self.max_cudagraph_capture_size or max(self.cudagraph_capture_sizes or (0,))
+        if self.max_num_batched_tokens is not None and maximum > self.max_num_batched_tokens:
+            raise ValueError("CUDA graph capture size exceeds max_num_batched_tokens")
         if (self.slurm_cpus_per_task is None) != (self.slurm_cpu_bind is None):
             raise ValueError("Slurm CPU policy requires both cpus-per-task and cpu-bind")
         if self.slurm_cpus_per_task is not None:
@@ -440,6 +492,17 @@ class FPMCollectionOptions:
         """Check known effective phase limits without inventing runtime defaults."""
         shared_tokens = self.max_num_batched_tokens or profile_max_num_tokens
         shared_sequences = self.max_num_seqs or profile_max_batch_size
+        if self.worker_type == "aggregated" and (
+            (shared_tokens is not None and self.max_prefill_isl not in (None, shared_tokens))
+            or (
+                shared_sequences is not None
+                and (
+                    self.max_prefill_batch_size not in (None, shared_sequences)
+                    or self.max_decode_batch_size not in (None, shared_sequences)
+                )
+            )
+        ):
+            raise ValueError("aggregated serving requires shared prefill and decode scheduler limits")
         for phase, tokens, sequences in (
             ("decode", shared_tokens, self.max_decode_batch_size or shared_sequences),
             (
@@ -455,6 +518,23 @@ class FPMCollectionOptions:
                     f"FPM {phase} max_num_batched_tokens ({tokens}) must be at least max_num_seqs ({sequences}); "
                     "edit the shared/prefill limits or profile bounds"
                 )
+
+    @property
+    def workload_kinds(self) -> tuple[str, ...]:
+        return collection_phases(self.worker_type)
+
+    @property
+    def compilation_config(self) -> dict[str, object]:
+        result = {}
+        if self.cudagraph_mode is not None:
+            result["cudagraph_mode"] = self.cudagraph_mode
+        if self.cudagraph_capture_sizes is not None:
+            result["cudagraph_capture_sizes"] = list(self.cudagraph_capture_sizes)
+        if self.max_cudagraph_capture_size is not None:
+            result["max_cudagraph_capture_size"] = self.max_cudagraph_capture_size
+        elif self.cudagraph_capture_sizes is not None:
+            result["max_cudagraph_capture_size"] = max(self.cudagraph_capture_sizes)
+        return result
 
     @property
     def prefill_sampling(self) -> PrefillSamplingProfile:
@@ -573,6 +653,14 @@ class FPMCollectionOptions:
             max_prefill_batch_size=getattr(args, "fpm_max_prefill_batch_size", None),
             max_prefill_cudagraph_size=getattr(args, "fpm_max_prefill_cudagraph_size", None),
             prefill_cudagraph_policy=getattr(args, "fpm_prefill_cudagraph_policy", None) or "explicit",
+            worker_type=getattr(args, "fpm_worker_type", None),
+            cudagraph_mode=getattr(args, "fpm_cudagraph_mode", None),
+            cudagraph_capture_sizes=(
+                tuple(args.fpm_cudagraph_capture_sizes)
+                if getattr(args, "fpm_cudagraph_capture_sizes", None) is not None
+                else None
+            ),
+            max_cudagraph_capture_size=getattr(args, "fpm_max_cudagraph_capture_size", None),
             gpu_memory_utilization=getattr(args, "fpm_gpu_memory_utilization", None),
             decoder_replay=bool(getattr(args, "fpm_decoder_replay", False)),
             enforce_eager=bool(getattr(args, "fpm_enforce_eager", False)),
@@ -615,6 +703,14 @@ class FPMCollectionOptions:
         }
         # Preserve the existing frozen-plan representation when the new shared
         # runtime limits are absent.
+        if self.worker_type is not None:
+            result["worker_type"] = self.worker_type
+        if self.cudagraph_mode is not None:
+            result["cudagraph_mode"] = self.cudagraph_mode
+        if self.cudagraph_capture_sizes is not None:
+            result["cudagraph_capture_sizes"] = list(self.cudagraph_capture_sizes)
+        if self.max_cudagraph_capture_size is not None:
+            result["max_cudagraph_capture_size"] = self.max_cudagraph_capture_size
         if self.slurm_cpus_per_task is not None:
             result["slurm_cpus_per_task"] = self.slurm_cpus_per_task
             result["slurm_cpu_bind"] = self.slurm_cpu_bind
@@ -641,6 +737,19 @@ def add_fpm_arguments(parser: argparse.ArgumentParser) -> None:
         "FPM forward collection",
         "Whole-model forward-pass planning, execution, and publication.",
     )
+    group.add_argument(
+        "--fpm-worker-type",
+        choices=("prefill", "decode", "aggregated"),
+        default=None,
+        help="Collect one serving role, or both phases of an aggregated engine.",
+    )
+    group.add_argument(
+        "--fpm-cudagraph-mode",
+        choices=("NONE", "PIECEWISE", "FULL", "FULL_DECODE_ONLY", "FULL_AND_PIECEWISE"),
+        default=None,
+    )
+    group.add_argument("--fpm-cudagraph-capture-sizes", type=int, nargs="+", default=None)
+    group.add_argument("--fpm-max-cudagraph-capture-size", type=int, default=None)
     group.add_argument(
         "--fpm-model-profile",
         default=None,
@@ -958,6 +1067,10 @@ def reject_fpm_arguments_without_fpm(args: argparse.Namespace) -> None:
         "fpm_runtime_instrumentation",
         "fpm_runtime_launch",
         "fpm_runtime_configuration",
+        "fpm_worker_type",
+        "fpm_cudagraph_mode",
+        "fpm_cudagraph_capture_sizes",
+        "fpm_max_cudagraph_capture_size",
         "fpm_tp_sizes",
         "fpm_pp_sizes",
         "fpm_dp_sizes",

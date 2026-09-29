@@ -1222,6 +1222,7 @@ def derive_profile(
             "fields": {key: {"value": values[key], "source": sources[key]} for key in sorted(values)},
             "deployment_identity": request.identity.model_dump(mode="json"),
             "parallelism": request.parallelism(),
+            **({"worker_type": request.worker_type} if request.worker_type is not None else {}),
         },
         sort_keys=True,
     )
@@ -1235,6 +1236,7 @@ def derive_profile(
             "provenance": provenance,
             "deployments": [
                 {
+                    **({"worker_type": request.worker_type} if request.worker_type is not None else {}),
                     "system": request.identity.gpu,
                     "backend": request.identity.framework,
                     "backend_version": request.identity.framework_version,
@@ -1319,6 +1321,7 @@ def profile_from_observations(
             ),
             "deployments": [
                 {
+                    **({"worker_type": request.worker_type} if request.worker_type is not None else {}),
                     "system": request.identity.gpu,
                     "backend": request.identity.framework,
                     "backend_version": request.identity.framework_version,

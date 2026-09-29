@@ -46,6 +46,7 @@ def _per_rank_capacity_tokens(
     memory_fraction: float,
     nextn: int,
     fpm_profile_json: str | None = None,
+    worker_type: str = "aggregated",
     context_length: int | None = None,
     model_controls: tuple[tuple[str, str | int | bool], ...] = (),
 ) -> int:
@@ -61,7 +62,11 @@ def _per_rank_capacity_tokens(
         memory_fraction=memory_fraction,
         nextn=nextn,
         **({"context_length": context_length} if context_length is not None else {}),
-        **({"fpm_profile": json.loads(fpm_profile_json)} if fpm_profile_json is not None else {}),
+        **(
+            {"fpm_profile": json.loads(fpm_profile_json), "worker_type": worker_type}
+            if fpm_profile_json is not None
+            else {}
+        ),
         **({"model_controls": dict(model_controls)} if model_controls else {}),
     )
     if tokens is None:
@@ -113,6 +118,7 @@ def _role_capacity_tokens(
             max_batch_size=int(sample[f"{role}_max_num_seqs"]),
             memory_fraction=float(sample[f"{role}_gpu_memory_utilization"]),
             fpm_profile_json=json.dumps(profile, sort_keys=True) if profile is not None else None,
+            worker_type="aggregated" if role == "agg" else role,
             context_length=sample.get("context_length"),
             nextn=int(resolved.get("nextn", sample.get("aic_nextn")) or 0),
             model_controls=tuple(
@@ -160,6 +166,7 @@ def _role_grouped_capacity(
     }
     deployment = load_fpm_profile(profile).select(
         **identity,
+        worker_type="aggregated" if role == "agg" else role,
         tp_size=shape.tp,
         pp_size=shape.pp,
         attention_dp_size=shape.dp,
@@ -187,6 +194,7 @@ def _role_grouped_capacity(
             backend=identity["backend"],
             backend_version=identity["backend_version"],
             fpm_profile=profile,
+            worker_type="aggregated" if role == "agg" else role,
             context_length=sample.get("context_length"),
             request_occupancy_tokens=request_occupancy_tokens,
             max_num_tokens=int(sample[f"{role}_max_num_batched_tokens"]),

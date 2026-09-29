@@ -337,6 +337,22 @@ def _validate_no_offload(payload: dict[str, Any], config: dict[str, Any]) -> Non
         raise ValueError("runtime memory requires the supported automatic HBM-only no-offload policy")
 
 
+def validate_requested_graph(payload: dict[str, Any], config: dict[str, Any], expected: dict[str, Any]) -> None:
+    """Compare accepted engine settings before independently checked backend downgrades."""
+    if not expected:
+        return
+    initial = _validate_graph(
+        payload.get("initial_compilation_config", config["compilation_config"])
+        if payload.get("kind") == "worker"
+        else config["compilation_config"],
+        eager=config["model_config"]["enforce_eager"],
+        tokens=config["scheduler_config"]["max_num_batched_tokens"],
+    )
+    for name, value in expected.items():
+        if initial.get(name) != value:
+            raise ValueError(f"initialized {name} differs from the reviewed serving role")
+
+
 def _validate_scheduler_config(worker: dict[str, Any], scheduler: dict[str, Any]) -> None:
     actual, scheduled = (copy.deepcopy(item["resolved_config"]) for item in (worker, scheduler))
     for config, is_worker in ((actual, True), (scheduled, False)):
@@ -560,6 +576,7 @@ def resolve_runtime_resources(
     expected_max_batch_size: int,
     expected_gpu_memory_utilization: float,
     expected_model_revision: str | None = None,
+    expected_compilation_config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Require complete matching native timings and initialized rank/pool evidence.
 
@@ -632,6 +649,7 @@ def resolve_runtime_resources(
             fraction=float(fraction),
         )
         _validate_revision(config, expected_model_revision)
+        validate_requested_graph(payload, config, expected_compilation_config or {})
         dp = payload.get("dp_rank")
         if type(dp) is not int or not 0 <= dp < cell.topology.dp:
             raise ValueError(f"runtime memory has an invalid DP rank: {path}")

@@ -5,7 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::{ForwardPassPerfModel, ForwardPassPerfModelConfig};
+use super::{ForwardPassPerfModel, ForwardPassPerfModelConfig, ForwardPassWorkerType};
 use crate::{AicError, BackendKind, MemoryBreakdown};
 
 const MAX_EXACT_BYTES: u64 = 1 << 53;
@@ -351,28 +351,55 @@ impl ForwardPassPerfModelConfig {
             .get("deployments")
             .and_then(serde_json::Value::as_array)
             .ok_or_else(|| invalid("fpm_profile requires deployments"))?;
-        let mut matching = deployments.iter().filter(|d| {
-            d.get("system").and_then(serde_json::Value::as_str) == Some(self.system.as_str())
-                && d.get("backend").and_then(serde_json::Value::as_str)
-                    == Some(self.backend.as_str())
-                && d.get("backend_version").and_then(serde_json::Value::as_str)
-                    == self.backend_version.as_deref()
-                && [
-                    ("tp", self.tp),
-                    ("pp", self.pp),
-                    ("dp", self.attention_dp),
-                    ("moe_tp", self.moe_tp_size.unwrap_or(1)),
-                    ("moe_ep", self.moe_ep_size.unwrap_or(1)),
-                    ("cp", 1),
-                ]
+        let matching_identity: Vec<_> = deployments
+            .iter()
+            .filter(|d| {
+                d.get("system").and_then(serde_json::Value::as_str) == Some(self.system.as_str())
+                    && d.get("backend").and_then(serde_json::Value::as_str)
+                        == Some(self.backend.as_str())
+                    && d.get("backend_version").and_then(serde_json::Value::as_str)
+                        == self.backend_version.as_deref()
+                    && [
+                        ("tp", self.tp),
+                        ("pp", self.pp),
+                        ("dp", self.attention_dp),
+                        ("moe_tp", self.moe_tp_size.unwrap_or(1)),
+                        ("moe_ep", self.moe_ep_size.unwrap_or(1)),
+                        ("cp", 1),
+                    ]
+                    .into_iter()
+                    .all(|(key, expected)| {
+                        d.get(key)
+                            .and_then(serde_json::Value::as_u64)
+                            .unwrap_or(if key == "pp" || key == "cp" { 1 } else { 0 })
+                            == u64::from(expected)
+                    })
+            })
+            .collect();
+        let roles = matching_identity
+            .iter()
+            .map(|d| {
+                d.get("worker_type")
+                    .filter(|role| !role.is_null())
+                    .cloned()
+                    .map(serde_json::from_value::<ForwardPassWorkerType>)
+                    .transpose()
+                    .map_err(|error| invalid(format!("FPM deployment worker_type: {error}")))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        if roles.iter().any(Option::is_none) && roles.iter().any(Option::is_some) {
+            return Err(invalid(
+                "ambiguous FPM deployment identity: cannot mix legacy shared and role-specific profiles",
+            ));
+        }
+        let mut matching =
+            matching_identity
                 .into_iter()
-                .all(|(key, expected)| {
-                    d.get(key)
-                        .and_then(serde_json::Value::as_u64)
-                        .unwrap_or(if key == "pp" || key == "cp" { 1 } else { 0 })
-                        == u64::from(expected)
-                })
-        });
+                .zip(roles)
+                .filter_map(|(deployment, role)| {
+                    role.is_none_or(|role| role == self.worker_type)
+                        .then_some(deployment)
+                });
         let deployment = matching
             .next()
             .ok_or_else(|| invalid("no matching FPM deployment resources"))?;
@@ -608,6 +635,107 @@ mod tests {
             }),
             ..resources()
         }
+    }
+
+    fn role_config() -> ForwardPassPerfModelConfig {
+        let mut config = ForwardPassPerfModelConfig::new(
+            "test/model",
+            "test_gpu",
+            BackendKind::Vllm,
+            ForwardPassWorkerType::Prefill,
+        );
+        config.backend_version = Some("0.27.0".into());
+        let deployment = serde_json::json!({
+            "system": "test_gpu", "backend": "vllm", "backend_version": "0.27.0",
+            "tp": 1, "dp": 1, "moe_tp": 1, "moe_ep": 1,
+            "worker_type": "prefill", "resources": runtime_resources(),
+        });
+        let mut decode = deployment.clone();
+        decode["worker_type"] = "decode".into();
+        decode["resources"]["runtime_memory"]["kv_cache_bytes"] = 700.into();
+        decode["resources"]["max_batch_size"] = 4.into();
+        config.fpm_profile = Some(
+            serde_json::json!({
+                "model": "test/model", "deployments": [deployment, decode],
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+        );
+        config
+    }
+
+    #[test]
+    fn profile_resources_select_independent_roles_after_round_trip() {
+        let config = role_config();
+        let mut reloaded: ForwardPassPerfModelConfig =
+            serde_json::from_str(&serde_json::to_string(&config).unwrap()).unwrap();
+        let prefill = reloaded.fpm_resources().unwrap().unwrap();
+        assert_eq!(prefill.runtime_memory.unwrap().kv_cache_bytes, 600);
+        assert_eq!(prefill.max_batch_size, 8);
+        reloaded.worker_type = ForwardPassWorkerType::Decode;
+        let decode = reloaded.fpm_resources().unwrap().unwrap();
+        assert_eq!(decode.runtime_memory.unwrap().kv_cache_bytes, 700);
+        assert_eq!(decode.max_batch_size, 4);
+        reloaded.worker_type = ForwardPassWorkerType::Aggregated;
+        assert!(
+            reloaded
+                .fpm_resources()
+                .unwrap_err()
+                .to_string()
+                .contains("no matching")
+        );
+    }
+
+    #[test]
+    fn legacy_shared_resources_are_preserved_without_role_inference() {
+        let mut config = role_config();
+        let deployments = config.fpm_profile.as_mut().unwrap()["deployments"]
+            .as_array_mut()
+            .unwrap();
+        deployments.truncate(1);
+        deployments[0]
+            .as_object_mut()
+            .unwrap()
+            .remove("worker_type");
+        for role in [
+            ForwardPassWorkerType::Prefill,
+            ForwardPassWorkerType::Decode,
+            ForwardPassWorkerType::Aggregated,
+        ] {
+            config.worker_type = role;
+            assert_eq!(
+                config
+                    .fpm_resources()
+                    .unwrap()
+                    .unwrap()
+                    .runtime_memory
+                    .unwrap()
+                    .kv_cache_bytes,
+                600
+            );
+        }
+        assert!(
+            config.fpm_profile.as_ref().unwrap()["deployments"][0]
+                .get("worker_type")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn resource_selection_rejects_ambiguous_shared_and_role_specific_profiles() {
+        let mut config = role_config();
+        config.fpm_profile.as_mut().unwrap()["deployments"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("worker_type");
+        assert!(
+            config
+                .fpm_resources()
+                .unwrap_err()
+                .to_string()
+                .contains("cannot mix legacy")
+        );
     }
 
     #[test]

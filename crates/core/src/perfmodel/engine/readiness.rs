@@ -346,7 +346,7 @@ mod tests {
             (vec![op], vec![])
         };
         Engine::build(EngineSpec::new(config, context, generation), Arc::new(db))?
-            .validate_forward_pass_readiness()
+            .validate_forward_pass_readiness(crate::ForwardPassWorkerType::Aggregated)
     }
 
     fn dsv4_op(kind: &str, context: bool, cp: u32) -> Op {

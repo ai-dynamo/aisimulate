@@ -62,7 +62,9 @@ def add_runtime_parsers(actions: Any) -> None:
     probe.add_argument(
         "--instrumentation", help="Campaign-local YAML/JSON manifest; otherwise use a compatible bundled observer."
     )
-    probe.add_argument("--execute", action="store_true", help="Execute both phases for every selected configuration.")
+    probe.add_argument(
+        "--execute", action="store_true", help="Execute the serving role's phases for every selected configuration."
+    )
     probe.add_argument("--resume", action="store_true")
     add_deployment_arguments(probe, default_executor=None)
     imported.add_argument(
@@ -105,6 +107,10 @@ def checkpoint_launch(
     config = state.configurations[name]
     inputs = _inputs(state, config)
     payload = deepcopy(config.draft_request)
+    if "worker_type" in inputs:
+        if "worker_type" in payload and payload["worker_type"] != inputs["worker_type"]:
+            raise ValueError("inputs.worker_type conflicts with draft_request.worker_type")
+        payload["worker_type"] = inputs["worker_type"]
     for section, model in (("identity", SupportIdentity), ("search", SearchProfile), ("collection", CollectionSpec)):
         values = dict(_object(payload.get(section, {}), f"draft_request.{section}"))
         for field in model.model_fields:
@@ -147,6 +153,7 @@ def checkpoint_launch(
             attention_dp_size=topology["dp"],
             moe_tp_size=topology["moe_tp"],
             moe_ep_size=topology["moe_ep"],
+            worker_type=payload.get("worker_type") or "aggregated",
         )
         if profile is not None
         else None
@@ -206,6 +213,7 @@ def checkpoint_launch(
         raise ValueError("resolved collection max_num_tokens must be at least max_batch_size")
     launch = normalize_probe_launch(
         {
+            **({"worker_type": payload["worker_type"]} if payload.get("worker_type") is not None else {}),
             "identity": identity.model_dump(mode="json", exclude_none=True),
             "topology": topology,
             "precision": precision,
@@ -216,6 +224,11 @@ def checkpoint_launch(
                 "gpu_memory_utilization": collection.memory_fraction,
                 "prefill_cudagraph_policy": collection.prefill_cudagraph_policy,
                 "max_prefill_cudagraph_size": collection.max_prefill_cudagraph_size,
+                **{
+                    field: getattr(collection, field)
+                    for field in ("cudagraph_mode", "cudagraph_capture_sizes", "max_cudagraph_capture_size")
+                    if getattr(collection, field) is not None
+                },
             },
             "model_config": {
                 "path": str(path),
@@ -326,6 +339,10 @@ def _resource_values(resources: dict[str, Any]) -> dict[str, Any]:
 
 def _request_launch(request: SupportRequest, launch: dict[str, Any]) -> dict[str, Any]:
     result = deepcopy(launch)
+    if request.worker_type is None:
+        result.pop("worker_type", None)
+    else:
+        result["worker_type"] = request.worker_type
     result["identity"] = request.identity.model_dump(mode="json", exclude_none=True)
     parallel = request.parallelism()
     result["topology"].update(
@@ -348,6 +365,12 @@ def _request_launch(request: SupportRequest, launch: dict[str, Any]) -> dict[str
         max_prefill_cudagraph_size=request.collection.max_prefill_cudagraph_size
         or (2048 if request.collection.prefill_cudagraph_policy == "explicit" else None),
     )
+    for field in ("cudagraph_mode", "cudagraph_capture_sizes", "max_cudagraph_capture_size"):
+        value = getattr(request.collection, field)
+        if value is None:
+            result["collection"].pop(field, None)
+        else:
+            result["collection"][field] = value
     return result
 
 

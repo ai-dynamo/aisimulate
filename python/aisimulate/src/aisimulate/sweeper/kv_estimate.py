@@ -60,6 +60,7 @@ def estimate_grouped_cache_budget(
     backend: str,
     backend_version: str,
     fpm_profile: dict[str, Any],
+    worker_type: str = "aggregated",
     context_length: int | None,
     max_num_tokens: int,
     max_batch_size: int,
@@ -90,6 +91,7 @@ def estimate_grouped_cache_budget(
         **(model_controls or {}),
         systems_path=list(resolve_systems_paths(systems_paths)) if systems_paths is not None else None,
         fpm_profile=fpm_profile,
+        worker_type=worker_type,
     )
 
 
@@ -139,6 +141,7 @@ def estimate_kv_tokens(
     memory_fraction: float = DEFAULT_MEMORY_FRACTION,
     nextn: int = 0,
     fpm_profile: dict[str, Any] | None = None,
+    worker_type: str = "aggregated",
     model_controls: dict[str, str | int | bool] | None = None,
     context_length: int | None = None,
 ) -> int | None:
@@ -166,7 +169,7 @@ def estimate_kv_tokens(
             **(model_controls or {}),
             systems_path=(list(resolve_systems_paths(systems_paths)) if systems_paths is not None else None),
             allow_naive_fallback=False,
-            **({"fpm_profile": fpm_profile} if fpm_profile is not None else {}),
+            **({"fpm_profile": fpm_profile, "worker_type": worker_type} if fpm_profile is not None else {}),
             **({"context_length": context_length} if context_length is not None else {}),
         )
     except ValueError as exc:
@@ -196,6 +199,7 @@ def feasible_shape_tokens(
     max_batch_size: int = DEFAULT_MAX_BATCH_SIZE,
     memory_fraction: float = DEFAULT_MEMORY_FRACTION,
     fpm_profile: dict[str, Any] | None = None,
+    worker_type: str = "aggregated",
     model_controls: dict[str, str | int | bool] | None = None,
     nextn: int = 0,
 ) -> dict[ParallelShape, int]:
@@ -219,7 +223,7 @@ def feasible_shape_tokens(
             max_num_tokens=max_num_tokens,
             max_batch_size=max_batch_size,
             memory_fraction=memory_fraction,
-            **({"fpm_profile": fpm_profile} if fpm_profile is not None else {}),
+            **({"fpm_profile": fpm_profile, "worker_type": worker_type} if fpm_profile is not None else {}),
             **({"context_length": max_seq_len} if fpm_profile is not None else {}),
             **({"model_controls": model_controls} if model_controls else {}),
             **({"nextn": nextn} if nextn else {}),

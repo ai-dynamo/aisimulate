@@ -98,6 +98,36 @@ def _resume(path, capsys, expected=0):
     return json.loads(capsys.readouterr().out)
 
 
+def test_role_graph_edit_invalidates_only_its_accepted_configuration(tmp_path, capsys, monkeypatch, request_payload):
+    path = tmp_path / "checkpoint.json"
+    configurations = {}
+    for role, mode in (("prefill", "PIECEWISE"), ("decode", "FULL_DECODE_ONLY")):
+        payload = deepcopy(request_payload)
+        payload["worker_type"] = role
+        payload["collection"]["cudagraph_mode"] = mode
+        payload["fpm_profile"]["deployments"][0]["worker_type"] = role
+        configurations[role] = {"draft_request": payload}
+    first = _save(path, capsys, monkeypatch, {"configurations": configurations}, accept=("prefill", "decode"))
+    assert all(value["profile_accepted"] for value in first["configurations"].values())
+    original_decode = first["state"]["configurations"]["decode"]
+    changed = _save(
+        path,
+        capsys,
+        monkeypatch,
+        {"configurations": {"prefill": {"draft_request": {"collection": {"max_cudagraph_capture_size": 512}}}}},
+        revision=first["state"]["revision"],
+    )
+    assert not changed["configurations"]["prefill"]["profile_accepted"]
+    assert changed["configurations"]["decode"]["profile_accepted"]
+    assert changed["state"]["configurations"]["decode"] == original_decode
+    resumed = _resume(path, capsys)
+    assert resumed["state"]["configurations"]["prefill"]["draft_request"]["worker_type"] == "prefill"
+    assert (
+        resumed["state"]["configurations"]["prefill"]["draft_request"]["collection"]["max_cudagraph_capture_size"]
+        == 512
+    )
+
+
 def _subprocess(*args, cwd, stdin=None):
     # The installed public console entry point bypasses supervision for onboarding.
     return subprocess.run(

@@ -109,17 +109,23 @@ def _cell_report(plan, cell, campaign: Path, entry: Any) -> dict[str, Any]:
                 "an unchanged full collection is not justified"
             )
         captures = plan.options.prefill_sampling.cudagraph_capture_sizes
-        if cell.workload_kind == "prefill" and captures is not None and not plan.options.enforce_eager:
+        expected = dict(plan.options.compilation_config)
+        if captures is not None and (cell.workload_kind == "prefill" or plan.options.worker_type is not None):
+            expected.update(
+                cudagraph_capture_sizes=list(captures),
+                max_cudagraph_capture_size=plan.options.prefill_sampling.max_cudagraph_capture_size,
+            )
+        if expected and not plan.options.enforce_eager:
             flags = _effective_launch(plan, directory)
             configured = json.loads(flags.get("--compilation-config", "{}"))
-            expected = {
-                "cudagraph_capture_sizes": list(captures),
-                "max_cudagraph_capture_size": plan.options.prefill_sampling.max_cudagraph_capture_size,
-            }
             if not isinstance(configured, dict) or any(configured.get(key) != value for key, value in expected.items()):
                 result["blockers"].append(
-                    "saved prefill launch does not preserve the reviewed explicit graph configuration"
+                    "saved serving launch does not preserve the reviewed explicit graph configuration"
                 )
+            # Effective modes may downgrade for the initialized backend. Full
+            # memory import verifies initial settings and those downgrades;
+            # the graph size fields must still match here when reported.
+            expected.pop("cudagraph_mode", None)
             for worker in result["execution"]["observed_workers"]:
                 graph = worker.get("graph_config")
                 if isinstance(graph, dict) and any(
@@ -131,8 +137,12 @@ def _cell_report(plan, cell, campaign: Path, entry: Any) -> dict[str, Any]:
             # Dynamo b83b1d9304ebfc624709ac46db32b1b6f1ff1615 instrumented_scheduler.py:2302-2350,6223-6236:
             # Full native captures reflect compilation_config; phase lists may be filtered.
             native_expected = {
-                "capture_sizes": expected["cudagraph_capture_sizes"],
-                "max_capture_size": expected["max_cudagraph_capture_size"],
+                native: expected[configured]
+                for configured, native in (
+                    ("cudagraph_capture_sizes", "capture_sizes"),
+                    ("max_cudagraph_capture_size", "max_capture_size"),
+                )
+                if configured in expected
             }
             for native in result["execution"]["native_graph_config"]:
                 graph = native["config"]
@@ -185,6 +195,15 @@ def _matches_request(request: SupportRequest, plan) -> bool:
         and plan.options.max_num_seqs == scheduler["max_sequences"]
         and plan.options.prefill_cudagraph_policy == request.collection.prefill_cudagraph_policy
         and plan.options.max_prefill_cudagraph_size == request.collection.max_prefill_cudagraph_size
+        and plan.options.worker_type == request.worker_type
+        and plan.options.cudagraph_mode == request.collection.cudagraph_mode
+        and plan.options.cudagraph_capture_sizes
+        == (
+            tuple(request.collection.cudagraph_capture_sizes)
+            if request.collection.cudagraph_capture_sizes is not None
+            else None
+        )
+        and plan.options.max_cudagraph_capture_size == request.collection.max_cudagraph_capture_size
         and (plan.options.gpu_memory_utilization or 0.9) == request.collection.memory_fraction
         and all(
             cell.topology.tp == parallel["tensor"]
@@ -276,8 +295,8 @@ def assess_readiness(
         blockers.append("selected phase evidence belongs to different frozen runtime/launch plans")
     if expected_plan is not None and set(selected) != {cell.cell_id for cell in expected_plan.cells}:
         blockers.append("not every current planned cell has saved readiness evidence")
-    if {item["cell"]["workload_kind"] for item in selected.values()} != {"prefill", "decode"}:
-        blockers.append("readiness requires both prefill and decode for every selected configuration")
+    if {item["cell"]["workload_kind"] for item in selected.values()} != set(request.collection_phases):
+        blockers.append("readiness requires every phase of the selected serving role")
     for item in selected.values():
         blockers.extend(
             f"{item['cell']['workload_kind']} {item['cell']['cell_id']}: {reason}" for reason in item["blockers"]

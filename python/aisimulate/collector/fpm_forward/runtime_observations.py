@@ -21,7 +21,7 @@ from aisimulate_core.fpm_profile import FpmResourceProfile
 from aisimulate_core.sdk.perf_database import load_system_spec
 
 from . import runtime_memory
-from .config import PrefillSamplingProfile
+from .config import PrefillSamplingProfile, collection_phases
 from .planner import BackendPolicy, FPMCell
 from .runtime_instrumentation import (
     OBSERVATION_SCHEMA,
@@ -274,7 +274,7 @@ def _validate_record(
     if model.get("enforce_eager") is not collection.get("enforce_eager", False):
         raise ValueError("runtime graph eager setting differs from the reviewed launch")
     if (
-        binding["phase"] == "prefill"
+        (binding["phase"] == "prefill" or launch.get("worker_type") is not None)
         and collection["prefill_cudagraph_policy"] == "explicit"
         and not model["enforce_eager"]
     ):
@@ -283,7 +283,9 @@ def _validate_record(
             max_batch_size=collection["max_num_seqs"],
             max_cudagraph_capture_size=collection["max_prefill_cudagraph_size"],
         )
-        # The runner applies this override to prefill only. Backend-dependent
+        # Historical launches apply this to prefill only; explicit serving
+        # roles apply their accepted configuration to every exercised phase.
+        # Backend-dependent
         # worker mode downgrades are checked against the scheduler separately;
         # they do not authorize a different initial capture list or maximum.
         initial = runtime_memory._validate_graph(
@@ -298,6 +300,17 @@ def _validate_record(
             or initial["max_cudagraph_capture_size"] != sampling.max_cudagraph_capture_size
         ):
             raise ValueError("initialized explicit prefill graph captures differ from the reviewed launch")
+    graph_settings = {
+        name: collection[name]
+        for name in ("cudagraph_mode", "cudagraph_capture_sizes", "max_cudagraph_capture_size")
+        if collection.get(name) is not None
+    }
+    if graph_settings:
+        if launch.get("worker_type") is None:
+            raise ValueError("reviewed CUDA graph settings require an explicit serving role")
+        if "cudagraph_capture_sizes" in graph_settings:
+            graph_settings.setdefault("max_cudagraph_capture_size", max(graph_settings["cudagraph_capture_sizes"]))
+        runtime_memory.validate_requested_graph(record, config, graph_settings)
     requested_backend = launch["precision"].get("attention_backend", "auto")
     if requested_backend not in (None, "auto") and record.get("attention_backend") != requested_backend:
         raise ValueError("runtime observation lacks the selected attention backend evidence")
@@ -571,12 +584,13 @@ def _configuration(root: Path, label: str, saved: dict[str, Any], launch: dict[s
     if not bundle.manifest.get("source_notes") or not bundle.manifest["runtime"].get("source_files"):
         raise ValueError("runtime source mapping requires hashed source_notes and runtime.source_files")
     phases = attempt.get("phases", {})
-    if set(phases) != {"prefill", "decode"}:
-        raise ValueError("runtime evidence requires both prefill and decode phases")
+    required_phases = collection_phases(launch.get("worker_type"))
+    if set(phases) != set(required_phases):
+        raise ValueError("runtime evidence requires every phase of the selected serving role")
     canonical_settings, canonical_geometry, canonical_hardware, normalized = None, None, None, None
     capacities, artifacts, launch_artifacts, runtime_artifacts, import_bindings = [], [], [], [], []
     used_paths: set[str] = set()
-    for phase in ("prefill", "decode"):
+    for phase in required_phases:
         result = phases[phase]
         binding = {"attempt_id": active, "configuration": label, "phase": phase, "bundle_sha256": bundle.sha256}
         launch_path, digest = _artifact(root, result["launch_manifest"])
@@ -634,8 +648,7 @@ def _configuration(root: Path, label: str, saved: dict[str, Any], launch: dict[s
                         raise ValueError(
                             "effective runtime/graph settings across phases/ranks differ: a shared memory "
                             "profile requires matching observed compilation and CUDA-graph captures. "
-                            "Explicit prefill captures do not configure decode; use runtime policy, "
-                            "verified matching explicit captures, or eager execution matching the serving target"
+                            "use separate prefill/decode serving-role configurations when the intended engines differ"
                         )
                     _same(settings, canonical_settings, "effective runtime/graph settings across phases/ranks")
             else:

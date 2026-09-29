@@ -386,6 +386,112 @@ def test_disaggregated_transfer_uses_profile_cache_geometry(profile):
     assert spec.backend_deployment.decode_engine_args["kv_transfer_bytes_per_token"] == 1024
 
 
+def test_disaggregated_profile_selects_same_topology_resources_by_role(profile, timing_systems):
+    prefill = deepcopy(profile["deployments"][0])
+    decode = deepcopy(prefill)
+    prefill["worker_type"] = "prefill"
+    prefill["resources"]["weights_bytes"] += 10 * 1024**3
+    decode["worker_type"] = "decode"
+    profile["deployments"] = [prefill, decode]
+    config = CorePredictionConfig.model_validate(
+        {
+            "engine": {
+                **_engine(profile),
+                "mode": "disaggregated",
+                "systems_paths": [timing_systems],
+                "workers": {"prefill": _worker(), "decode": _worker()},
+            }
+        }
+    )
+    reloaded = CorePredictionConfig.model_validate_json(config.model_dump_json())
+    deployment = prediction_to_replay_spec(reloaded).backend_deployment
+    blocks = {}
+    for role in ("prefill", "decode"):
+        args = getattr(deployment, f"{role}_engine_args")
+        assert args["timing_model"]["config"]["worker_type"] == role
+        diagnostics = {}
+        lowered = materialize_aic_num_gpu_blocks(args, memory_diagnostics=diagnostics)
+        blocks[role] = lowered["num_gpu_blocks"]
+        expected = prefill if role == "prefill" else decode
+        assert diagnostics["memory_breakdown"]["weights_bytes"] == expected["resources"]["weights_bytes"]
+    assert blocks["prefill"] < blocks["decode"]
+    conflicting = deepcopy(deployment.decode_engine_args)
+    conflicting["worker_type"] = "prefill"
+    with pytest.raises(ValueError, match="worker_type conflicts"):
+        materialize_aic_num_gpu_blocks(conflicting)
+
+
+def test_disaggregated_profile_candidates_do_not_swap_roles(profile):
+    profile["deployments"][0]["worker_type"] = "decode"
+    profile["deployments"][1]["worker_type"] = "prefill"
+    candidates = parallel_configs_for(
+        profile["model"],
+        "h200_sxm",
+        backend="vllm",
+        backend_version="0.25.1",
+        deployment_mode="disagg",
+        gpu_budget=4,
+        max_num_tokens=1024,
+        max_batch_size=4,
+        fpm_profile=profile,
+    )
+    assert len(candidates) == 1
+    assert candidates[0].prefill.shape.strategy == "dep"
+    assert candidates[0].decode.shape.strategy == "tp"
+    with pytest.raises(ValueError, match="worker_type=aggregated"):
+        parallel_configs_for(
+            profile["model"],
+            "h200_sxm",
+            backend="vllm",
+            backend_version="0.25.1",
+            deployment_mode="agg",
+            gpu_budget=4,
+            max_num_tokens=1024,
+            max_batch_size=4,
+            fpm_profile=profile,
+        )
+
+
+def test_native_disaggregated_capacity_keeps_canonical_worker_role(profile, timing_systems, monkeypatch):
+    from aisimulate.runner import EngineReplayRunnerFactory
+    from aisimulate_core.sdk import memory
+
+    prefill = deepcopy(profile["deployments"][0])
+    decode = deepcopy(prefill)
+    prefill["worker_type"] = "prefill"
+    decode["worker_type"] = "decode"
+    profile["deployments"] = [prefill, decode]
+    worker = _worker()
+    worker["kv_cache"] = {"prefix_caching": False}
+    config = CorePredictionConfig.model_validate(
+        {
+            "engine": {
+                **_engine(profile),
+                "mode": "disaggregated",
+                "systems_paths": [timing_systems],
+                "workers": {"prefill": worker, "decode": worker},
+            },
+            "traffic": {
+                "source": {"type": "synthetic", "input_tokens": 1, "output_tokens": 2},
+                "load": {"type": "concurrency", "concurrency": 1},
+                "stop": {"requests": 1},
+            },
+        }
+    )
+    roles = []
+    original = memory.estimate_num_gpu_blocks
+
+    def observe(*args, **kwargs):
+        roles.append(kwargs.get("worker_type"))
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(memory, "estimate_num_gpu_blocks", observe)
+    result = EngineReplayRunnerFactory().create(0).run(prediction_to_replay_spec(config))
+    assert result.metrics["completed_requests"] == 1
+    assert "prefill" in roles and "decode" in roles
+    assert set(roles) == {"prefill", "decode"}
+
+
 @pytest.mark.parametrize("mode,budget,expected", [("agg", 2, 2), ("disagg", 4, 4)])
 def test_profile_candidates_use_only_declared_topologies(profile, mode, budget, expected, monkeypatch):
     from aisimulate_core.sdk import RustForwardPassPerfModel

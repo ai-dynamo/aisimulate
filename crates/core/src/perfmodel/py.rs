@@ -1057,6 +1057,7 @@ struct EngineBuildRequest {
     systems_path: Option<String>,
     forward_model: Option<String>,
     fpm_profile: Option<String>,
+    worker_type: Option<String>,
     fpm_interpolation: Option<String>,
     cp_size: u32,
     fpm_parquet_path: Option<String>,
@@ -1111,6 +1112,7 @@ impl AicEngineBuilder {
                 systems_path: None,
                 forward_model: None,
                 fpm_profile: None,
+                worker_type: None,
                 fpm_interpolation: None,
                 cp_size: 1,
                 fpm_parquet_path: None,
@@ -1483,6 +1485,9 @@ fn compile_engine_from_request(request: EngineBuildRequest) -> Result<Engine, Ai
         kwargs.set_item("wideep_num_slots", request.wideep_num_slots)?;
         kwargs.set_item("forward_model", request.forward_model.as_deref())?;
         kwargs.set_item("fpm_profile", request.fpm_profile.as_deref())?;
+        if let Some(worker_type) = request.worker_type.as_deref() {
+            kwargs.set_item("worker_type", worker_type)?;
+        }
         kwargs.set_item("fpm_interpolation", request.fpm_interpolation.as_deref())?;
         kwargs.set_item("cp_size", request.cp_size)?;
         kwargs.set_item("fpm_parquet_path", request.fpm_parquet_path.as_deref())?;
@@ -1613,6 +1618,14 @@ pub(crate) fn compile_forward_pass_model_to_engine(
         kv_block_size: config.kv_block_size,
         systems_path: Some(systems_path.to_owned()),
         forward_model: Some(forward_model.to_owned()),
+        worker_type: Some(
+            match config.worker_type {
+                crate::ForwardPassWorkerType::Prefill => "prefill",
+                crate::ForwardPassWorkerType::Decode => "decode",
+                crate::ForwardPassWorkerType::Aggregated => "aggregated",
+            }
+            .to_owned(),
+        ),
         fpm_profile: config
             .fpm_profile
             .as_ref()
@@ -1749,6 +1762,7 @@ fn engine_build_request(
         systems_path: systems_path.map(str::to_owned),
         forward_model: config.forward_model.clone(),
         fpm_profile: config.extra.get("fpm_profile").cloned(),
+        worker_type: config.extra.get("worker_type").cloned(),
         fpm_interpolation: config.extra.get("fpm_interpolation").cloned(),
         cp_size: config.parallel.cp_size.unwrap_or(1),
         fpm_parquet_path: crate::config::validate_fpm_parquet_path(
@@ -1910,8 +1924,20 @@ impl PyForwardPassPerfModel {
         options_json: Option<&str>,
         allow_regression: bool,
     ) -> PyResult<String> {
-        let legacy: EngineConfig =
+        let mut legacy: EngineConfig =
             serde_json::from_str(config_json).map_err(|e| PyValueError::new_err(e.to_string()))?;
+        if legacy
+            .extra
+            .get("worker_type")
+            .is_some_and(|saved| saved != worker_type)
+        {
+            return Err(PyValueError::new_err(
+                "saved FPM worker_type conflicts with requested worker_type",
+            ));
+        }
+        legacy
+            .extra
+            .insert("worker_type".into(), worker_type.to_owned());
         let mut request = engine_build_request(
             &legacy,
             legacy.systems_path.as_ref().and_then(|path| path.to_str()),

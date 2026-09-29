@@ -23,7 +23,7 @@ from typing import Any
 from aisimulate.fpm_advisory import prefill_graph_advisory
 
 from . import runner
-from .config import FPM_WARMUP_ITERATIONS, FPMCollectionOptions
+from .config import FPM_WARMUP_ITERATIONS, FPMCollectionOptions, collection_phases
 from .entry import _load_generator_overrides
 from .model_capability import ResolvedModelConfig, load_model_config
 from .planner import FPMCell, _backend_policies, _canonical_hash
@@ -100,6 +100,7 @@ def normalize_probe_launch(value: dict[str, Any]) -> dict[str, Any]:
     """Freeze explicit stage-2 launch facts and documented sampling defaults."""
 
     launch = json.loads(json.dumps(value, allow_nan=False))
+    collection_phases(launch.get("worker_type"))
     identity = _required_mapping(launch, "identity")
     for name in ("model", "model_revision", "model_kind", "framework", "framework_version", "gpu", "interconnect"):
         item = identity.get(name)
@@ -279,6 +280,14 @@ def build_runtime_probe_plan(configuration: str, facts: dict[str, Any], bundle: 
         max_num_batched_tokens=collection["max_num_batched_tokens"],
         max_num_seqs=collection["max_num_seqs"],
         prefill_cudagraph_policy=collection["prefill_cudagraph_policy"],
+        worker_type=launch.get("worker_type"),
+        cudagraph_mode=collection.get("cudagraph_mode"),
+        cudagraph_capture_sizes=(
+            tuple(collection["cudagraph_capture_sizes"])
+            if collection.get("cudagraph_capture_sizes") is not None
+            else None
+        ),
+        max_cudagraph_capture_size=collection.get("max_cudagraph_capture_size"),
         max_prefill_cudagraph_size=collection["max_prefill_cudagraph_size"],
         gpu_memory_utilization=collection["gpu_memory_utilization"],
         enforce_eager=collection["enforce_eager"],
@@ -308,7 +317,7 @@ def build_runtime_probe_plan(configuration: str, facts: dict[str, Any], bundle: 
             parallel_strategy=strategy,
             fmha_resolution="runtime_probe_requested",
         )
-        for phase in PHASES
+        for phase in options.workload_kinds
     )
     return RuntimeProbePlan(
         configuration,
@@ -338,6 +347,8 @@ def validate_collection_probe_launch(
     if profile is None or profile.model_revision != identity["model_revision"]:
         raise ValueError("formal collection model revision differs from the accepted runtime probe")
     expected_cell = expected.cells[0]
+    if {cell.workload_kind for cell in cells} != set(expected.options.workload_kinds):
+        raise ValueError("formal collection phases differ from the accepted serving role")
     for cell in cells:
         fields = (
             "topology",
@@ -365,6 +376,10 @@ def validate_collection_probe_launch(
         "slurm_container_mounts",
         "slurm_cpus_per_task",
         "slurm_cpu_bind",
+        "worker_type",
+        "cudagraph_mode",
+        "cudagraph_capture_sizes",
+        "max_cudagraph_capture_size",
     ):
         if getattr(options, name) != getattr(expected_options, name):
             raise ValueError(f"formal collection {name} differs from the accepted runtime probe")
@@ -379,6 +394,7 @@ def validate_collection_probe_launch(
         moe_tp_size=expected_cell.topology.moe_tp,
         moe_ep_size=expected_cell.topology.moe_ep,
         cp_size=expected_cell.topology.cp,
+        worker_type=options.worker_type or "aggregated",
     )
     limits = {
         "decode": (
@@ -391,7 +407,7 @@ def validate_collection_probe_launch(
         ),
     }
     required_limits = (launch["collection"]["max_num_batched_tokens"], launch["collection"]["max_num_seqs"])
-    if any(actual != required_limits for actual in limits.values()):
+    if any(limits[phase] != required_limits for phase in options.workload_kinds):
         raise ValueError("formal phase scheduler limits differ from the accepted runtime probe")
     wanted = probe_generator_overrides(launch)
     actual = copy.deepcopy(generator_overrides)
@@ -514,7 +530,7 @@ def record_collection_observations(
     attempt["phases"][cell.workload_kind] = phase
     attempt["status"] = (
         "captured"
-        if set(attempt["phases"]) == set(PHASES)
+        if set(attempt["phases"]) == set(collection_phases(plan.runtime_launch.get("worker_type")))
         and all(item["status"] == "passed" for item in attempt["phases"].values())
         else "incomplete"
     )
@@ -641,13 +657,13 @@ def _snapshot_probe_artifacts(root: Path, phase_dir: Path) -> list[dict[str, Any
     return artifacts
 
 
-def _recorded_attempt_valid(root: Path, attempt: dict[str, Any], bundle) -> bool:
+def _recorded_attempt_valid(root: Path, attempt: dict[str, Any], bundle, phases: tuple[str, ...] = PHASES) -> bool:
     from .runtime_instrumentation import load_instrumentation
 
     if attempt.get("status") != "completed" or attempt.get("bundle", {}).get("sha256") != bundle.sha256:
         return False
     frozen = load_instrumentation(root / attempt["bundle"]["manifest"])
-    if frozen.sha256 != bundle.sha256 or set(attempt.get("phases", {})) != set(PHASES):
+    if frozen.sha256 != bundle.sha256 or set(attempt.get("phases", {})) != set(phases):
         raise ValueError("saved probe attempt does not match its frozen instrumentation")
     for phase in attempt["phases"].values():
         for artifact in [phase["launch_manifest"], *phase["artifacts"]]:
@@ -878,8 +894,12 @@ def probe_runtime(
                 "diagnostics": [],
             }
             collection = plan.launch["collection"]
-            advisory = prefill_graph_advisory(
-                collection["prefill_cudagraph_policy"], enforce_eager=collection["enforce_eager"]
+            advisory = (
+                prefill_graph_advisory(
+                    collection["prefill_cudagraph_policy"], enforce_eager=collection["enforce_eager"]
+                )
+                if plan.launch.get("worker_type") is None
+                else None
             )
             if advisory:
                 result["diagnostics"].append(advisory)
@@ -887,7 +907,7 @@ def probe_runtime(
             previous = entry["attempts"][-1] if entry["attempts"] else None
             if execute and resume and previous is not None:
                 try:
-                    if _recorded_attempt_valid(root, previous, bundle):
+                    if _recorded_attempt_valid(root, previous, bundle, plan.options.workload_kinds):
                         result.update(
                             status="completed",
                             resumed=True,

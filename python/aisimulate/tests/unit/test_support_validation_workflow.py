@@ -54,12 +54,17 @@ def _synthetic_campaign(root, checkpoint, plan, *, attempt_id, generator_overrid
 
 @pytest.fixture
 def quality_case(validation_case, tmp_path, monkeypatch, materialized_workload, request):  # noqa: F811
-    instrumented = getattr(request, "param", False)
+    selection = getattr(request, "param", False)
+    instrumented = selection if isinstance(selection, bool) else False
+    worker_type = selection if isinstance(selection, str) else None
     replay_args, request, root, trace, replay_output = validation_case
     payload = request.model_dump(mode="json")
     payload["identity"]["framework_version"] = "0.27.0"
     payload["fpm_profile"]["deployments"][0].update(backend_version="0.27.0", fmha_quant_mode="fp8")
     payload["collection"]["prefill_cudagraph_policy"] = "runtime"
+    if worker_type is not None:
+        payload["worker_type"] = worker_type
+        payload["fpm_profile"]["deployments"][0]["worker_type"] = worker_type
     request = SupportRequest.model_validate(payload)
     old_root = root
     root = tmp_path / "native-collection"
@@ -247,6 +252,21 @@ def test_public_prepare_then_repeat_and_holdout_preserve_originals(quality_case)
             saved = json.loads(path.read_text())
             validate_saved_plan(saved)
             assert saved["runtime_observation"] == case["plan"].to_dict()["runtime_observation"]
+
+
+@pytest.mark.parametrize("quality_case", ["prefill", "decode"], indirect=True)
+def test_public_role_quality_prepares_and_qualifies_without_the_other_phase(quality_case):
+    case = quality_case
+    role = case["request"].worker_type
+    assert {cell.workload_kind for cell in case["plan"].cells} == {role}
+    assert cli.main(case["args"]) == 0
+    holdout = json.loads((case["output"] / "holdout/interpolation-validation.json").read_text())
+    assert set(holdout["phases"]) == {role}
+    assert holdout["status"] == "passed"
+    assert cli.main([*case["args"], "--resume", "--execute"]) == 0
+    report, _, _, _ = workflow.check_collection_report(case["output"] / "collection-validation.json")
+    assert report["status"] == "passed"
+    assert len(case["calls"]) == 5
 
 
 def test_holdout_uses_full_native_grid_not_repeat_subset(quality_case, tmp_path):

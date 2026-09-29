@@ -37,6 +37,7 @@ from .fpm import run_fpm
 from .plan import create_plan, request_id
 from .schema import (
     AGENTX_REFERENCE_CONTEXT,
+    CUDAGRAPH_MODES,
     CollectionSpec,
     FPMDeployment,
     SearchProfile,
@@ -92,6 +93,12 @@ def add_support_parser(subparsers: Any) -> None:
     init.add_argument("--framework-version", help="Pinned vLLM version in the collection environment.")
     init.add_argument("--gpu", help="Target GPU system name, for example h200_sxm.")
     init.add_argument("--interconnect", help="Interconnect, for example nvswitch, pcie, or none.")
+    init.add_argument(
+        "--worker-type",
+        choices=("aggregated", "prefill", "decode"),
+        help="Serving role: prefill/decode collect independently for P/D disaggregation; "
+        "aggregated probes both phases.",
+    )
     init.add_argument("--sm", type=int, help="GPU SM version override.")
     init.add_argument("--tokenizer-revision")
     init.add_argument("--chat-template-revision")
@@ -121,7 +128,7 @@ def add_support_parser(subparsers: Any) -> None:
     init.add_argument(
         "--parallel-configs",
         metavar="PATH",
-        help="JSON/YAML list of explicit parallel configurations with optional per-entry resource_overrides; "
+        help="JSON/YAML list of parallel configurations with optional worker_type, collection and resource_overrides; "
         "requires --model-config and --output-dir; conflicts with topology flags and --suggest-parallel.",
     )
     init.add_argument("--input-tokens", type=int, help="Synthetic validation input tokens (default: 1024).")
@@ -157,6 +164,22 @@ def add_support_parser(subparsers: Any) -> None:
         "--gpu-memory-utilization",
         type=float,
         help="Fraction of total GPU memory for collection and simulation, in (0, 1] (initial policy: 0.90).",
+    )
+    init.add_argument(
+        "--cudagraph-mode", choices=CUDAGRAPH_MODES, help="vLLM graph policy for this explicit worker role."
+    )
+    init.add_argument(
+        "--cudagraph-capture-sizes",
+        type=int,
+        nargs="+",
+        metavar="TOKENS",
+        help="Increasing, distinct vLLM capture sizes for this role; requires runtime prefill policy.",
+    )
+    init.add_argument(
+        "--max-cudagraph-capture-size",
+        type=int,
+        help="vLLM capture limit for this role; aggregated applies it to both launches. "
+        "Requires runtime prefill policy.",
     )
     init.add_argument("--ttft-ms", type=float, help="Synthetic validation TTFT target in ms (default: 1000).")
     init.add_argument("--tpot-ms", type=float, help="Synthetic validation TPOT target in ms (default: 100).")
@@ -273,6 +296,7 @@ def _request_from_args(args: argparse.Namespace) -> SupportRequest:
         "workload": {**_values(args, WorkloadSpec), "slo": _values(args, SloSpec)},
         "search": _values(args, SearchProfile),
         "collection": collection,
+        **({"worker_type": args.worker_type} if getattr(args, "worker_type", None) is not None else {}),
         **({"fpm_profile": load_yaml(args.fpm_profile)} if getattr(args, "fpm_profile", None) else {}),
     }
     request = SupportRequest.model_validate(payload)
@@ -355,6 +379,13 @@ _CORRECTION_PROMPTS = {
     "max_prefill_cudagraph_size": ("Prefill CUDA graph capture limit", int),
     "prefill_cudagraph_policy": ("Prefill CUDA graph policy (runtime/explicit)", str),
     "gpu_memory_utilization": ("Fraction of total GPU memory (0 < value <= 1)", float),
+    "worker_type": ("Serving role (aggregated/prefill/decode)", str),
+    "cudagraph_mode": ("vLLM CUDA graph mode", str),
+    "cudagraph_capture_sizes": (
+        "CUDA graph capture sizes (space-separated integers)",
+        lambda value: [int(x) for x in value.split()],
+    ),
+    "max_cudagraph_capture_size": ("CUDA graph capture limit for this role", int),
     "framework": ("Runtime (vllm)", str),
     "tokenizer_revision": ("Pinned tokenizer revision", str),
     "chat_template_revision": ("Pinned chat-template revision", str),
@@ -563,6 +594,11 @@ def _review_config_profile(
             f"{identity.gpu}; {identity.interconnect}"
         )
         print(f"  Parallelism: {request.parallelism()}")
+        if request.worker_type is not None:
+            print(f"  Serving role: {request.worker_type}; collection phases: {', '.join(request.collection_phases)}.")
+            if request.worker_type != "aggregated":
+                print("  P/D disaggregation: this role has its own accepted settings, memory and collection evidence.")
+                print("  The other role is onboarded independently; collection does not require actual P/D transfer.")
         print(f"  Collection GPUs required: {request.worker_gpus} for one selected worker; availability is unchecked.")
         settings = request.collection_settings()
         print(f"  Runtime context limit: {request.search.context_length} tokens per request.")
@@ -573,8 +609,15 @@ def _review_config_profile(
         print(
             "  Dynamo combines them with image sampling defaults and runtime feasibility checks to generate the grid."
         )
-        if request.collection.prefill_cudagraph_policy == "runtime":
+        if any(
+            getattr(request.collection, name) is not None
+            for name in ("cudagraph_mode", "cudagraph_capture_sizes", "max_cudagraph_capture_size")
+        ):
+            print("  Reviewed role CUDA graph settings configure the selected launch; verify the resolved runtime.")
+        elif request.collection.prefill_cudagraph_policy == "runtime":
             print("  CUDA graph sizes resolve in the initialized runtime; no explicit capture override is proposed.")
+        elif request.worker_type == "aggregated":
+            print("  The reviewed capture override configures both aggregated probe launches.")
         else:
             print("  Prefill capture overrides configure the engine; match the serving target.")
         print("  The sequence bound does not request every prefill batch; total KV capacity resolves at runtime.")
@@ -635,6 +678,10 @@ def _review_config_profile(
             "max_prefill_cudagraph_size",
             "prefill_cudagraph_policy",
             "gpu_memory_utilization",
+            "worker_type",
+            "cudagraph_mode",
+            "cudagraph_capture_sizes",
+            "max_cudagraph_capture_size",
         }
         print("Editable fields: " + ", ".join(sorted(OVERRIDE_FIELDS | collection_fields)))
         while True:
@@ -647,7 +694,26 @@ def _review_config_profile(
         staged = deepcopy(overrides)
         payload = request.model_dump(exclude={"fpm_profile"})
         if name in collection_fields:
-            if name == "prefill_cudagraph_policy":
+            if name in {"worker_type", "cudagraph_mode"}:
+                choices = ("aggregated", "prefill", "decode") if name == "worker_type" else (*CUDAGRAPH_MODES, "clear")
+                while (value := input(f"{name} ({'/'.join(choices)}): ").strip()) not in choices:
+                    print("Enter one of: " + ", ".join(choices))
+                if value == "clear":
+                    value = None
+            elif name == "cudagraph_capture_sizes":
+                while True:
+                    try:
+                        answer = input(f"{name} (space-separated positive integers, or clear): ").strip()
+                        if answer == "clear":
+                            value = None
+                            break
+                        value = [int(item) for item in answer.split()]
+                        if not value or min(value) <= 0 or value != sorted(set(value)):
+                            raise ValueError
+                        break
+                    except ValueError:
+                        print("Enter increasing, distinct positive integers.")
+            elif name == "prefill_cudagraph_policy":
                 while (value := input(f"{name} (runtime/explicit): ").strip()) not in {"runtime", "explicit"}:
                     print("Enter runtime or explicit.")
                 if value == "runtime":
@@ -664,7 +730,12 @@ def _review_config_profile(
             else:
                 while True:
                     try:
-                        value = int(input(f"{name} (positive integer): ").strip())
+                        clear = ", or clear" if name == "max_cudagraph_capture_size" else ""
+                        answer = input(f"{name} (positive integer{clear}): ").strip()
+                        if clear and answer == "clear":
+                            value = None
+                            break
+                        value = int(answer)
                         if value <= 0:
                             raise ValueError
                         break
@@ -672,6 +743,8 @@ def _review_config_profile(
                         print("Enter a positive integer.")
             if name == "runtime_context_length":
                 payload["search"]["context_length"] = value
+            elif name == "worker_type":
+                payload["worker_type"] = value
             else:
                 payload["collection"][name] = value
                 if name == "max_prefill_cudagraph_size":
@@ -935,7 +1008,7 @@ def _load_parallel_configs(path: str) -> list[dict[str, Any]]:
     for number, entry in enumerate(entries, 1):
         if not isinstance(entry, dict):
             raise ValueError(f"parallel configuration {number} must be an object")
-        unknown = entry.keys() - {*_TOPOLOGY_OPTIONS, "resource_overrides"}
+        unknown = entry.keys() - {*_TOPOLOGY_OPTIONS, "resource_overrides", "worker_type", "collection"}
         if unknown:
             raise ValueError(f"parallel configuration {number} has unknown fields: {', '.join(sorted(unknown))}")
         if "tensor_parallel" not in entry:
@@ -947,6 +1020,10 @@ def _load_parallel_configs(path: str) -> list[dict[str, Any]]:
         if not isinstance(overrides, dict):
             raise ValueError(f"parallel configuration {number}: resource_overrides must be a mapping")
         entry["resource_overrides"] = validate_overrides(overrides)
+        if "worker_type" in entry and entry["worker_type"] not in {"aggregated", "prefill", "decode"}:
+            raise ValueError(f"parallel configuration {number}: worker_type must be aggregated, prefill or decode")
+        if "collection" in entry and not isinstance(entry["collection"], dict):
+            raise ValueError(f"parallel configuration {number}: collection must be a mapping")
     return entries
 
 
@@ -954,7 +1031,7 @@ def _check_unique_topologies(requests: list[SupportRequest]) -> None:
     seen = set()
     for request in requests:
         topology = _topology_values(request)
-        key = tuple(topology.values())
+        key = (request.worker_type, *topology.values())
         if key in seen:
             raise ValueError(f"duplicate resolved parallel configuration: {topology}")
         seen.add(key)
@@ -964,12 +1041,25 @@ def _config_requests(args: argparse.Namespace) -> list[SupportRequest]:
     entries = _load_parallel_configs(args.parallel_configs) if args.parallel_configs is not None else None
     automatic = not _explicit_topology(args) and entries is None
     implicit_context = args.context_length is None
+    shared_graph_settings = {}
+    if entries is not None:
+        # Validate generic graph settings with each entry's role and overrides.
+        args = deepcopy(args)
+        for name in ("cudagraph_mode", "cudagraph_capture_sizes", "max_cudagraph_capture_size"):
+            value = getattr(args, name)
+            if value is not None:
+                shared_graph_settings[name] = value
+                setattr(args, name, None)
     config, shared, request = _config_inputs(args)
     if entries is not None:
         selected = []
         for entry in entries:
             payload = request.model_dump()
             payload["search"].update({name: entry[name] for name in _TOPOLOGY_OPTIONS if name in entry})
+            if "worker_type" in entry:
+                payload["worker_type"] = entry["worker_type"]
+            payload["collection"].update(shared_graph_settings)
+            payload["collection"].update(entry.get("collection", {}))
             selected.append(SupportRequest.model_validate(payload))
     else:
         selected = _select_topologies(args, config, shared, request, multiple=True) if automatic else [request]
@@ -992,6 +1082,9 @@ def _config_requests(args: argparse.Namespace) -> list[SupportRequest]:
         # this tuple. Start every profile from the original shared intake.
         candidate_args = deepcopy(args)
         candidate = candidate.model_copy(deep=True)
+        candidate_args.worker_type = candidate.worker_type
+        for name in CollectionSpec.model_fields:
+            setattr(candidate_args, name, getattr(candidate.collection, name))
         for name, value in _topology_values(candidate).items():
             setattr(candidate_args, name, value)
         overrides = deepcopy(shared)
@@ -1040,6 +1133,8 @@ def _write_onboarding(requests: list[SupportRequest], root: Path) -> dict[str, A
             topology = _topology_values(request)
             tp, dp, mtp, ep = topology.values()
             name = f"tp{tp}-dp{dp}-moe-tp{mtp}-moe-ep{ep}"
+            if request.worker_type is not None:
+                name = f"{request.worker_type}-{name}"
             final = root / name
             _write_request(request, staged / name / "request.yaml", overwrite=False)
             profile = request.fpm_profile
@@ -1047,6 +1142,7 @@ def _write_onboarding(requests: list[SupportRequest], root: Path) -> dict[str, A
             (staged / name / "fpm-profile.json").write_text(profile.model_dump_json(indent=2) + "\n", encoding="utf-8")
             index["configurations"].append(
                 {
+                    **({"worker_type": request.worker_type} if request.worker_type is not None else {}),
                     "topology": topology,
                     "collection_gpus_required": request.worker_gpus,
                     "request_id": request_id(request),

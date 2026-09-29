@@ -17,6 +17,7 @@ from aisimulate.config.common import PositiveFiniteFloat, PositiveStrictInt, Str
 from aisimulate.fpm_profile import FpmModelProfile
 
 AGENTX_REFERENCE_CONTEXT = 256000
+CUDAGRAPH_MODES = ("NONE", "PIECEWISE", "FULL", "FULL_DECODE_ONLY", "FULL_AND_PIECEWISE")
 
 
 class SupportIdentity(StrictModel):
@@ -120,6 +121,9 @@ class CollectionSpec(StrictModel):
     prefill_cudagraph_policy: Literal["runtime", "explicit"] = "explicit"
     max_prefill_cudagraph_size: PositiveStrictInt | None = None
     gpu_memory_utilization: float | None = Field(default=None, strict=True, gt=0, le=1, allow_inf_nan=False)
+    cudagraph_mode: Literal["NONE", "PIECEWISE", "FULL", "FULL_DECODE_ONLY", "FULL_AND_PIECEWISE"] | None = None
+    cudagraph_capture_sizes: list[PositiveStrictInt] | None = None
+    max_cudagraph_capture_size: PositiveStrictInt | None = None
 
     @model_serializer(mode="wrap")
     def _serialize(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
@@ -128,12 +132,31 @@ class CollectionSpec(StrictModel):
         # explicitly reviewed policy is always serialized, including explicit.
         if "prefill_cudagraph_policy" not in self.model_fields_set:
             values.pop("prefill_cudagraph_policy", None)
+        for name in ("cudagraph_mode", "cudagraph_capture_sizes", "max_cudagraph_capture_size"):
+            if getattr(self, name) is None:
+                values.pop(name, None)
         return values
 
     @model_validator(mode="after")
     def _capture_policy(self) -> CollectionSpec:
         if self.prefill_cudagraph_policy == "runtime" and self.max_prefill_cudagraph_size is not None:
             raise ValueError("runtime prefill_cudagraph_policy rejects max_prefill_cudagraph_size; use explicit")
+        sizes = self.cudagraph_capture_sizes
+        if sizes is not None:
+            if not sizes or sizes != sorted(set(sizes)):
+                raise ValueError("cudagraph_capture_sizes must be a nonempty, increasing list of distinct sizes")
+            if self.max_cudagraph_capture_size is not None and sizes[-1] != self.max_cudagraph_capture_size:
+                raise ValueError("max_cudagraph_capture_size must equal the largest cudagraph_capture_sizes value")
+        if self.cudagraph_mode == "NONE" and (
+            sizes is not None
+            or self.max_cudagraph_capture_size is not None
+            or self.prefill_cudagraph_policy == "explicit"
+        ):
+            raise ValueError("cudagraph_mode=NONE rejects CUDA graph capture settings")
+        if (sizes is not None or self.max_cudagraph_capture_size is not None) and (
+            self.prefill_cudagraph_policy == "explicit" or self.max_prefill_cudagraph_size is not None
+        ):
+            raise ValueError("generic CUDA graph capture settings require prefill_cudagraph_policy=runtime")
         return self
 
     @property
@@ -224,6 +247,18 @@ class SupportRequest(StrictModel):
     search: SearchProfile = Field(default_factory=SearchProfile)
     collection: CollectionSpec = Field(default_factory=CollectionSpec)
     fpm_profile: FpmModelProfile | None = None
+    worker_type: Literal["aggregated", "prefill", "decode"] | None = None
+
+    @model_serializer(mode="wrap")
+    def _serialize(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        values = handler(self)
+        if self.worker_type is None:
+            values.pop("worker_type", None)
+        return values
+
+    @property
+    def collection_phases(self) -> tuple[str, ...]:
+        return (self.worker_type,) if self.worker_type in {"prefill", "decode"} else ("prefill", "decode")
 
     @model_validator(mode="before")
     @classmethod
@@ -305,6 +340,7 @@ class SupportRequest(StrictModel):
             attention_dp_size=parallel["attention_data"],
             moe_tp_size=parallel["moe_tensor"],
             moe_ep_size=parallel["moe_expert"],
+            worker_type=self.worker_type or "aggregated",
         )
 
     def scheduler_limits(self) -> dict[str, int]:
@@ -351,6 +387,11 @@ class SupportRequest(StrictModel):
                 else "collector default (2048); review against the target runtime CUDA graph configuration",
             },
         }
+        for name in ("cudagraph_mode", "cudagraph_capture_sizes", "max_cudagraph_capture_size"):
+            value = getattr(self.collection, name)
+            if value is not None:
+                settings[name] = value
+                settings["sources"][name] = "reviewed serving configuration for this worker role"
         if "prefill_cudagraph_policy" in self.collection.model_fields_set:
             policy = self.collection.prefill_cudagraph_policy
             settings["prefill_cudagraph_policy"] = policy
@@ -382,6 +423,11 @@ class SupportRequest(StrictModel):
 
     @model_validator(mode="after")
     def _shape(self) -> SupportRequest:
+        if self.worker_type is None and any(
+            getattr(self.collection, name) is not None
+            for name in ("cudagraph_mode", "cudagraph_capture_sizes", "max_cudagraph_capture_size")
+        ):
+            raise ValueError("generic CUDA graph settings require an explicit worker_type")
         parallel = self.parallelism()
         tp, dp, mtp, ep = (parallel[name] for name in ("tensor", "attention_data", "moe_tensor", "moe_expert"))
         if self.identity.model_kind == "dense":
@@ -396,6 +442,11 @@ class SupportRequest(StrictModel):
             raise ValueError("search.context_length must cover the input and output tokens")
         if self.fpm_profile is not None:
             deployment = self.profile_deployment()
+            if self.worker_type is not None and deployment.worker_type != self.worker_type:
+                raise ValueError(
+                    "an explicit worker_type requires a matching role-tagged FPM deployment; "
+                    "do not relabel a legacy shared profile as independent role evidence"
+                )
             scheduler = self.scheduler_limits()
             deployment.resources.validate_envelope(
                 max_num_tokens=scheduler["max_batched_tokens"], max_batch_size=scheduler["max_sequences"]

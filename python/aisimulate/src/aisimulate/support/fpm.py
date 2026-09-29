@@ -87,6 +87,14 @@ def fpm_cli_args(
         str(root / "systems/data"),
     ]
     command.extend(runtime_arguments)
+    if request.worker_type is not None:
+        command.extend(("--fpm-worker-type", request.worker_type))
+    if request.collection.cudagraph_mode is not None:
+        command.extend(("--fpm-cudagraph-mode", request.collection.cudagraph_mode))
+    if request.collection.cudagraph_capture_sizes is not None:
+        command.extend(("--fpm-cudagraph-capture-sizes", *map(str, request.collection.cudagraph_capture_sizes)))
+    if request.collection.max_cudagraph_capture_size is not None:
+        command.extend(("--fpm-max-cudagraph-capture-size", str(request.collection.max_cudagraph_capture_size)))
     if "prefill_cudagraph_policy" in request.collection.model_fields_set:
         command.extend(("--fpm-prefill-cudagraph-policy", request.collection.prefill_cudagraph_policy))
     if request.collection.max_prefill_cudagraph_size is not None:
@@ -247,8 +255,12 @@ def run_fpm(
         checkpoint_dir=checkpoint_dir,
         deployment=deployment,
     )
-    advisory = prefill_graph_advisory(
-        request.collection.prefill_cudagraph_policy, enforce_eager="--fpm-enforce-eager" in command
+    advisory = (
+        prefill_graph_advisory(
+            request.collection.prefill_cudagraph_policy, enforce_eager="--fpm-enforce-eager" in command
+        )
+        if request.worker_type is None
+        else None
     )
     if advisory:
         print(advisory, file=sys.stderr)

@@ -310,6 +310,14 @@ fn estimate_kwargs<'py>(
     let (fraction_kind, fraction_value) = req.kv_cache_memory_fraction.to_wire();
     let kwargs = PyDict::new(py);
     kwargs.set_item("backend_version", engine.backend_version.as_deref())?;
+    kwargs.set_item(
+        "worker_type",
+        engine
+            .extra
+            .get("worker_type")
+            .map(String::as_str)
+            .unwrap_or("aggregated"),
+    )?;
     kwargs.set_item("max_num_tokens", req.max_num_tokens)?;
     kwargs.set_item("max_batch_size", req.max_batch_size)?;
     kwargs.set_item("memory_fraction_kind", fraction_kind)?;

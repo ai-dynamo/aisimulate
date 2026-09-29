@@ -328,6 +328,7 @@ def _heterogeneous_disagg_configs(
                 hardware,
                 gpu_budget=search_space.gpu_budget,
                 deployment_mode="agg",
+                worker_type=role,
                 backend=backend,
                 backend_version=backend_version,
                 min_gpu_budget=None,

@@ -106,6 +106,8 @@ def materialize_aic_num_gpu_blocks(
                 raise ValueError("regression estimator is not ready; replay requires training observations")
             canonical_result = dict(raw)
             resolved = diagnostics["provenance"]["config"]
+            if "worker_type" in lowered and lowered["worker_type"] != resolved["worker_type"]:
+                raise ValueError("worker_type conflicts with canonical timing configuration")
             lowered["timing_model"] = {**timing, "config": {**resolved, **memory_fields}}
             for names, expected in (
                 (("tensor_parallel_size", "aic_tp_size"), resolved["tp"]),
@@ -128,6 +130,7 @@ def materialize_aic_num_gpu_blocks(
                         "aic_moe_tp_size": resolved["moe_tp_size"],
                         "aic_moe_ep_size": resolved["moe_ep_size"],
                         "aic_fpm_profile": resolved.get("fpm_profile"),
+                        "worker_type": resolved["worker_type"],
                     }.items()
                     if value is not None
                 }
@@ -227,7 +230,11 @@ def materialize_aic_num_gpu_blocks(
         },
         systems_path=capacity_systems_path,
         cuda_graph_reserved_bytes=lowered.get("cuda_graph_reserved_bytes", 0),
-        **({"fpm_profile": lowered["aic_fpm_profile"]} if lowered.get("aic_fpm_profile") is not None else {}),
+        **(
+            {"fpm_profile": lowered["aic_fpm_profile"], "worker_type": lowered.get("worker_type", "aggregated")}
+            if lowered.get("aic_fpm_profile") is not None
+            else {}
+        ),
         **({"context_length": lowered.get("max_model_len")} if lowered.get("aic_fpm_profile") is not None else {}),
         **({"diagnostics": memory_diagnostics} if memory_diagnostics is not None else {}),
     )
@@ -244,6 +251,7 @@ def _materialize_profile_cache_groups(raw: dict[str, Any], diagnostics: dict[str
 
     identity = {
         "model": raw.get("aic_model_path"),
+        "worker_type": raw.get("worker_type", "aggregated"),
         "system": raw.get("aic_system"),
         "backend": raw.get("aic_backend"),
         "backend_version": raw.get("aic_backend_version", raw.get("backend_version")),
@@ -332,6 +340,7 @@ def estimate_num_gpu_blocks(
     cuda_graph_reserved_bytes: int = 0,
     diagnostics: dict[str, Any] | None = None,
     fpm_profile: dict[str, Any] | None = None,
+    worker_type: str = "aggregated",
     context_length: int | None = None,
 ) -> int:
     """Estimate per-rank KV blocks using the replay-wide AIC contract.
@@ -409,7 +418,7 @@ def estimate_num_gpu_blocks(
             },
             systems_path=systems_path,
             cuda_graph_reserved_bytes=cuda_graph_reserved_bytes,
-            **({"fpm_profile": fpm_profile} if fpm_profile is not None else {}),
+            **({"fpm_profile": fpm_profile, "worker_type": worker_type} if fpm_profile is not None else {}),
             **({"context_length": context_length} if context_length is not None else {}),
             **({"diagnostics": diagnostics} if diagnostics is not None else {}),
         )
@@ -425,6 +434,7 @@ def estimate_kv_bytes_per_token(
     moe_ep_size: int = 1,
     kvcache_quant_mode: str | None = None,
     fpm_profile: dict[str, Any] | None = None,
+    worker_type: str = "aggregated",
     system: str | None = None,
     backend: str = "vllm",
     backend_version: str | None = None,
@@ -437,6 +447,7 @@ def estimate_kv_bytes_per_token(
 
         deployment = load_fpm_profile(fpm_profile).select(
             model=model_name,
+            worker_type=worker_type,
             system=system,
             backend=backend,
             backend_version=backend_version,

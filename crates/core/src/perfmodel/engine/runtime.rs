@@ -537,10 +537,20 @@ impl Engine {
         Ok(())
     }
 
-    pub(crate) fn validate_forward_pass_readiness(&self) -> Result<(), AicError> {
+    pub(crate) fn validate_forward_pass_readiness(
+        &self,
+        worker_type: crate::ForwardPassWorkerType,
+    ) -> Result<(), AicError> {
         super::readiness::validate(
             &self.db,
-            self.context_ops.iter().chain(&self.generation_ops),
+            self.context_ops
+                .iter()
+                .filter(|_| worker_type != crate::ForwardPassWorkerType::Decode)
+                .chain(
+                    self.generation_ops
+                        .iter()
+                        .filter(|_| worker_type != crate::ForwardPassWorkerType::Prefill),
+                ),
         )
     }
 
@@ -4655,7 +4665,8 @@ mod tests {
                 "0.25.1",
             ));
             let engine = Engine::build(spec, Arc::new(db)).unwrap();
-            let result = engine.validate_forward_pass_readiness();
+            let result =
+                engine.validate_forward_pass_readiness(crate::ForwardPassWorkerType::Aggregated);
             if missing_gemm {
                 assert!(
                     result

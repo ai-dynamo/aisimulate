@@ -1234,6 +1234,7 @@ def _cell_generator_overrides(
         scheduler_args.extend(["--benchmark-points-file", f"{REMOTE_WORKDIR}/{POINTS_FILENAME}"])
     max_num_tokens = getattr(plan.options, "max_num_batched_tokens", None)
     max_num_seqs = getattr(plan.options, "max_num_seqs", None)
+    compilation_config = dict(getattr(plan.options, "compilation_config", {}))
     if getattr(plan, "fpm_profile", None) is not None:
         deployment_profile = plan.deployment_profile(cell)
         assert deployment_profile is not None
@@ -1248,14 +1249,20 @@ def _cell_generator_overrides(
             max_num_tokens = profile.max_total_prefill_tokens
         if profile.max_batch_size is not None:
             max_num_seqs = profile.max_batch_size
-        if profile.cudagraph_capture_sizes is not None and not enforce_eager:
-            compilation_config = {
-                "cudagraph_capture_sizes": list(profile.cudagraph_capture_sizes),
-                "max_cudagraph_capture_size": profile.max_cudagraph_capture_size,
-            }
-            scheduler_args.extend(
-                ["--compilation-config", json.dumps(compilation_config, sort_keys=True, separators=(",", ":"))]
+    # A declared serving role owns one engine configuration. Aggregated probes
+    # exercise both workloads without changing that configuration. Untagged
+    # historical plans retain their original prefill-only override.
+    if cell.workload_kind == "prefill" or getattr(plan.options, "worker_type", None) is not None:
+        captures = plan.options.prefill_sampling
+        if captures.cudagraph_capture_sizes is not None and not enforce_eager:
+            compilation_config.update(
+                cudagraph_capture_sizes=list(captures.cudagraph_capture_sizes),
+                max_cudagraph_capture_size=captures.max_cudagraph_capture_size,
             )
+    if compilation_config and not enforce_eager:
+        scheduler_args.extend(
+            ["--compilation-config", json.dumps(compilation_config, sort_keys=True, separators=(",", ":"))]
+        )
     if cell.workload_kind == "prefill" and not smoke:
         if profile.cudagraph_capture_sizes is not None:
             scheduler_args.extend(["--prefill-max-new-token-samples", str(profile.max_new_token_samples)])

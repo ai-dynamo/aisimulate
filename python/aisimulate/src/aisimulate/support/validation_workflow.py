@@ -207,11 +207,22 @@ def _collection_source(request: SupportRequest, root: Path) -> tuple[Any, Path, 
         != request.collection.memory_fraction
         or plan.options.prefill_cudagraph_policy != request.collection.prefill_cudagraph_policy
         or plan.options.prefill_sampling != sampling
+        or plan.options.worker_type != request.worker_type
+        or plan.options.cudagraph_mode != request.collection.cudagraph_mode
+        or plan.options.cudagraph_capture_sizes
+        != (
+            tuple(request.collection.cudagraph_capture_sizes)
+            if request.collection.cudagraph_capture_sizes is not None
+            else None
+        )
+        or plan.options.max_cudagraph_capture_size != request.collection.max_cudagraph_capture_size
     ):
         raise ValueError("source collection runtime limits differ from the reviewed onboarding settings")
     deployment = request.profile_deployment()
-    if {cell.workload_kind for cell in plan.cells} != {"prefill", "decode"}:
-        raise ValueError("collection validation requires complete prefill and decode cells")
+    if {cell.workload_kind for cell in plan.cells} != set(request.collection_phases):
+        raise ValueError(
+            "collection validation requires exactly the accepted role's phases: " + ", ".join(request.collection_phases)
+        )
     database = checkpoint.get("database", {})
     if (
         database.get("status") != "passed"
@@ -500,7 +511,16 @@ def validate_collection(args: argparse.Namespace) -> int:
 
 
 def _compare_holdout(saved: dict[str, Any], current: dict[str, Any]) -> None:
-    for key in ("status", "policy", "capture_boundaries", "phases", "predictions", "native_query_coverage"):
+    for key in (
+        "status",
+        "policy",
+        "capture_boundaries",
+        "phases",
+        "predictions",
+        "native_query_coverage",
+        "worker_type",
+        "collection_phases",
+    ):
         if saved.get(key) != current.get(key):
             raise ValueError(
                 f"saved holdout {key} differs from native reassessment; "

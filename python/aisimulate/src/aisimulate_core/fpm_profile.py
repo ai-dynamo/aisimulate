@@ -162,7 +162,7 @@ class FpmResourceProfile(_ProfileModel):
 
 
 class FpmDeploymentProfile(_ProfileModel):
-    """One exact hardware, runtime, topology, precision and resource identity."""
+    """One hardware, runtime, topology, precision and optional serving-role identity."""
 
     system: _Nonempty
     backend: Literal["vllm"]
@@ -182,7 +182,16 @@ class FpmDeploymentProfile(_ProfileModel):
     attention_backend: _Nonempty = "auto"
     enable_wideep: Literal[False] = False
     enable_eplb: Literal[False] = False
+    # Absent in historical shared profiles; never infer role-specific evidence.
+    worker_type: Literal["prefill", "decode", "aggregated"] | None = None
     resources: FpmResourceProfile
+
+    @model_serializer(mode="wrap")
+    def _preserve_legacy_identity(self, handler):
+        result = handler(self)
+        if self.worker_type is None:
+            result.pop("worker_type", None)
+        return result
 
     @field_validator("pp", "cp", mode="before")
     @classmethod
@@ -292,7 +301,7 @@ class FpmModelProfile(_ProfileModel):
 
     @model_validator(mode="after")
     def _unique_deployments(self) -> FpmModelProfile:
-        identities = set()
+        identities: dict[tuple, set[str | None]] = {}
         for deployment in self.deployments:
             tp = deployment.dp == 1 and deployment.moe_ep == 1 and deployment.moe_tp == deployment.tp
             dep = deployment.tp == 1 and deployment.moe_tp == 1 and deployment.moe_ep == deployment.dp
@@ -308,11 +317,16 @@ class FpmModelProfile(_ProfileModel):
                 deployment.backend_version,
                 deployment.parallel_tuple,
             )
-            if identity in identities:
+            roles = identities.setdefault(identity, set())
+            if deployment.worker_type in roles:
                 raise ValueError(
-                    "duplicate FPM deployment identity; specify one precision/resource profile per topology"
+                    "duplicate FPM deployment identity; specify one precision/resource profile per topology and role"
                 )
-            identities.add(identity)
+            if roles and (None in roles or deployment.worker_type is None):
+                raise ValueError(
+                    "ambiguous FPM deployment identity: cannot mix legacy shared and role-specific profiles"
+                )
+            roles.add(deployment.worker_type)
             if deployment.moe_ep > 1 and (self.num_experts == 0 or self.num_experts % deployment.moe_ep):
                 raise ValueError("num_experts must be positive and divisible by moe_ep for expert parallelism")
         return self
@@ -330,7 +344,10 @@ class FpmModelProfile(_ProfileModel):
         moe_tp_size: int | None = None,
         moe_ep_size: int | None = None,
         cp_size: int = 1,
+        worker_type: str = "aggregated",
     ) -> FpmDeploymentProfile:
+        if worker_type not in ("prefill", "decode", "aggregated"):
+            raise ValueError("worker_type must be prefill, decode, or aggregated")
         if model != self.model:
             raise ValueError(f"FPM profile model identity mismatch: requested {model!r}, profile={self.model!r}")
         shape = (
@@ -349,11 +366,13 @@ class FpmModelProfile(_ProfileModel):
                 and deployment.backend == backend
                 and deployment.backend_version == backend_version
                 and deployment.parallel_tuple == shape
+                and deployment.worker_type in (None, worker_type)
             ):
                 return deployment
         raise ValueError(
             f"no matching FPM deployment profile for {model!r}, {system}/{backend}/{backend_version}, "
-            f"(tp,pp,dp,moe_tp,moe_ep,cp)={shape}; provide explicit resources and precision for that deployment"
+            f"(tp,pp,dp,moe_tp,moe_ep,cp)={shape}, worker_type={worker_type}; "
+            "provide explicit resources and precision for that deployment"
         )
 
 

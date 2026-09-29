@@ -451,6 +451,7 @@ def compile_engine(
     forward_model: str | None = None,
     decoder_replay: bool = False,
     fpm_profile: dict | str | FpmModelProfile | None = None,
+    worker_type: str = "aggregated",
     fpm_interpolation: str | None = None,
     cp_size: int = 1,
     database_mode: str | None = None,
@@ -503,6 +504,7 @@ def compile_engine(
             system=system,
             backend=backend,
             backend_version=literal_version,
+            worker_type=worker_type,
             tp_size=tp_size,
             pp_size=pp_size,
             attention_dp_size=attention_dp_size,
@@ -533,6 +535,7 @@ def compile_engine(
                 strict_provenance=strict_provenance,
                 fpm_parquet_path=fpm_parquet_path,
                 fpm_fmha_quant_mode=fpm_fmha_quant_mode,
+                worker_type=worker_type,
             )
             return bytes(aisimulate_core.engine_spec_bincode_from_json(spec_json))
         gemm_quant_mode = deployment.gemm_quant_mode
@@ -642,6 +645,8 @@ def compile_engine(
             fpm_profile=profile.model_dump_json(),
             estimator_config=json.dumps({"fpm_interpolation": {"method": interpolation}}),
         )
+        if deployment.worker_type is not None:
+            spec["engine"]["extra"]["worker_type"] = worker_type
         spec_json = json.dumps(spec)
 
     return bytes(aisimulate_core.engine_spec_bincode_from_json(spec_json))
@@ -659,6 +664,7 @@ def _direct_fpm_spec_json(
     strict_provenance: bool | None,
     fpm_parquet_path: str | None = None,
     fpm_fmha_quant_mode: str | None = None,
+    worker_type: str = "aggregated",
 ) -> str:
     """Build whole-forward timing operations from metadata, without a graph."""
     if _database_mode_name(None, database_mode) != "SILICON":
@@ -698,6 +704,7 @@ def _direct_fpm_spec_json(
         "transfer_policy": _transfer_policy_tokens(None, transfer_policy),
         "extra": {
             "fpm_profile": profile.model_dump_json(),
+            **({"worker_type": worker_type} if deployment.worker_type is not None else {}),
             "estimator_config": json.dumps({"fpm_interpolation": controls}),
         },
     }

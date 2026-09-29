@@ -81,6 +81,25 @@ def _configs(
         worker["timing"]["estimator_config"] = {"fpm_interpolation": {"method": "direct"}}
         if request.profile_deployment().resources.cache_layout == "grouped":
             worker.setdefault("kv_cache", {})["prefix_caching"] = False
+    if request.worker_type in {"prefill", "decode"}:
+        # A role is independently collectable. A complete P/D serving config
+        # also needs the independently accepted counterpart and runtime support.
+        worker["timing"]["systems_paths"] = [str(root / "systems")]
+        return (
+            {
+                "schema_version": "aisimulate-onboarding-worker/v1",
+                "worker_type": request.worker_type,
+                "serving_mode": "disaggregated",
+                "engine": {
+                    **engine,
+                    "mode": "disaggregated",
+                    "workers": {request.worker_type: {**worker, "parallelism": preset}},
+                },
+                "collection": request.collection_settings(),
+            },
+            {},
+            [preset],
+        )
     prediction = {
         **common,
         "engine": {**engine, "workers": {"aggregated": {**worker, "parallelism": preset}}},
@@ -140,6 +159,9 @@ def _commands(request: SupportRequest, root: Path, recommendation_names: list[st
             for name in recommendation_names
         ],
     }
+    if request.worker_type in {"prefill", "decode"}:
+        commands["predict"] = []
+        commands["recommend"] = []
     from .runtime import runtime_collection_inputs, runtime_probe_manifest
 
     if runtime_probe_manifest(request) is not None:
@@ -261,7 +283,7 @@ def _plan_documents(request: SupportRequest, root: Path) -> tuple[dict[str, Any]
         from aisimulate_core.sdk.memory import estimate_kv_cache
 
         deployment = request.profile_deployment()
-        scheduler = prediction["engine"]["workers"]["aggregated"]["scheduler"]
+        scheduler = request.scheduler_limits()
         estimate = (
             estimate_kv_cache(
                 request.identity.model,
@@ -279,6 +301,7 @@ def _plan_documents(request: SupportRequest, root: Path) -> tuple[dict[str, Any]
                 moe_ep_size=deployment.moe_ep,
                 fpm_profile=request.fpm_profile,
                 context_length=request.search.context_length,
+                **({"worker_type": request.worker_type} if request.worker_type is not None else {}),
             )
             if deployment.resources.memory_ready
             else {"memory_source": "pending", "simulation_ready": False}
@@ -345,9 +368,39 @@ def _plan_documents(request: SupportRequest, root: Path) -> tuple[dict[str, Any]
                 ),
             )
         plan["outputs"]["fpm_model_profile"] = str(root / "fpm-model-profile.json")
+    role_only = request.worker_type in {"prefill", "decode"}
+    if request.worker_type is not None:
+        plan["fpm"]["worker_type"] = request.worker_type
+        plan["fpm"]["collection_phases"] = list(request.collection_phases)
+        plan["fpm"]["serving_mode"] = "disaggregated" if role_only else "aggregated"
+    if role_only:
+        plan["outputs"]["prediction_configs"] = []
+        plan["outputs"]["worker_config"] = str(root / "worker.yaml")
+        plan["search"]["detail"] = (
+            "This plan collects one independently accepted P/D serving role. worker.yaml is a role configuration "
+            "artifact, not an executable prediction or recommendation config. Combine compatible, independently "
+            "accepted prefill and decode profiles in an ordinary serving configuration before simulation."
+        )
+        plan["fpm"]["sampling"] = (
+            f"Dynamo self-benchmark generates only the {request.worker_type} grid for this accepted role. "
+            "The other role is collected independently. Decode initializes representative state locally; actual "
+            "P/D transfer is not required. Timing collection and qualification do not establish replay readiness."
+        )
+        plan["prerequisites"][2]["detail"] = (
+            f"Collect and qualify matching {request.worker_type} timings in this role's systems tree. "
+            "Do not merge or replace another role's timing or memory evidence."
+        )
+        plan["replay"] = {
+            "status": "not_assessed",
+            "detail": (
+                "An independently accepted counterpart and supported P/D replay configuration are required. "
+                "The guided validate-fpm path currently handles aggregated serving only; grouped-cache P/D "
+                "handoff support is outside collection qualification."
+            ),
+        }
     yaml_documents = {
         Path("request.yaml"): request.model_dump(mode="json", exclude_none=True),
-        Path("predict/pilot.yaml"): prediction,
+        Path("worker.yaml" if role_only else "predict/pilot.yaml"): prediction,
         **{Path(f"recommend/{name}.yaml"): config for name, config in recommendations.items()},
     }
     documents = {path: yaml.safe_dump(data, sort_keys=False).encode() for path, data in yaml_documents.items()}
@@ -393,6 +446,7 @@ def _check_paths(root: Path) -> None:
         "support-plan.json",
         "fpm-model-profile.json",
         "commands.json",
+        "worker.yaml",
         "predict",
         "predict/pilot.yaml",
         "recommend",

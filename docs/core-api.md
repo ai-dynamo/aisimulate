@@ -418,6 +418,17 @@ slot aliases and omitted versions are rejected. Profile/schema and precision
 conflicts fail before estimator fallback. Omitted precision fields are filled
 from the profile and preserved in the resolved canonical configuration.
 
+Each deployment may declare `worker_type: prefill`, `decode`, or `aggregated`.
+The canonical construction request selects only the matching role's precision,
+scheduler envelope, cache geometry and memory evidence. Separate P/D deployments
+may share hardware and topology while retaining different resources. Historical
+deployments without this field keep their shared-resource behavior and omit the
+field on serialization; they cannot coexist with role-specific deployments at
+the same hardware/runtime/topology identity. The Python memory adapters accept
+`worker_type` to select the same role, defaulting to `aggregated` for existing
+callers. An absent or different explicit role is an error, not a fallback to
+another role's capacity.
+
 Runtime normalization and construction verify the profile architecture against
 checkpoint `config.json` from the local model path or pinned remote revision
 before interpolation selection. Missing or malformed architecture metadata and
@@ -434,8 +445,9 @@ whole-forward native operations without SOL operations, and never constructs
 an analytical graph. Profile resource estimates and memory planning do not
 require timing data or a native timing model.
 
-Direct readiness requires genuine measurements for each operation's phase;
-prefill-only operations do not require decode rows, and vice versa. Construction
+Direct readiness requires genuine measurements for the request's `worker_type`:
+prefill requires prefill rows, decode requires decode rows, and aggregated
+requires both phases. Querying an absent phase still fails explicitly. Construction
 continues to later systems roots when a required phase is unavailable. Query
 coverage still needs an exact point or supported interpolation. Cross-KV prefill
 uses the nearest same-batch lower and upper KV curves that both cover the

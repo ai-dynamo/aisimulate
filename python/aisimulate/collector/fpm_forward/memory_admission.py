@@ -98,6 +98,7 @@ def _estimate_dtype(
     fpm_profile: FpmModelProfile | None = None,
     max_batch_size: int | None = None,
     gpu_memory_utilization: float | None = None,
+    worker_type: str | None = None,
 ) -> DTypeMemoryEstimate:
     # Planner-owned capability data fails closed: resolve_model_capability
     # guarantees an fmha mapping for every resolved KV dtype, so a missing
@@ -121,6 +122,7 @@ def _estimate_dtype(
             moe_tp_size=topology.moe_tp,
             moe_ep_size=topology.moe_ep,
             cp_size=topology.cp,
+            worker_type=worker_type or "aggregated",
         )
         resources = deployment.resources
         resources.validate_envelope(
@@ -262,6 +264,7 @@ def filter_memory_infeasible_topologies(
     fpm_profile: FpmModelProfile | None = None,
     max_batch_size: int | None = None,
     gpu_memory_utilization: float | None = None,
+    worker_type: str | None = None,
 ) -> tuple[tuple[ParallelTopology, ...], tuple[TopologyMemoryDecision, ...]]:
     """Drop topologies that cannot fit the configured max-new-token envelope.
 
@@ -292,6 +295,7 @@ def filter_memory_infeasible_topologies(
                 moe_tp_size=topology.moe_tp,
                 moe_ep_size=topology.moe_ep,
                 cp_size=topology.cp,
+                worker_type=worker_type or "aggregated",
             ).resources
             if fpm_profile is not None
             else None
@@ -308,6 +312,7 @@ def filter_memory_infeasible_topologies(
                 fpm_profile=fpm_profile,
                 max_batch_size=max_batch_size,
                 gpu_memory_utilization=gpu_memory_utilization,
+                worker_type=worker_type,
             )
             for kv_cache_dtype in capability.dtype.kv_cache_dtypes
         )

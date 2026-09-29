@@ -140,6 +140,89 @@ class _SyntheticExecutor:
         pass
 
 
+@pytest.mark.parametrize("worker_type", ["prefill", "decode", "aggregated"])
+@pytest.mark.parametrize("graph_policy", ["runtime", "explicit"])
+def test_serving_role_probe_preserves_engine_settings_and_only_exercises_its_phases(
+    tmp_path, monkeypatch, worker_type, graph_policy
+):
+    from collector.fpm_forward import runner, runtime_probe
+
+    launch, manifest, _ = _inputs(tmp_path, graph_policy=graph_policy)
+    launch["worker_type"] = worker_type
+    mode = {"prefill": "PIECEWISE", "decode": "FULL_DECODE_ONLY", "aggregated": "FULL_AND_PIECEWISE"}[worker_type]
+    launch["collection"]["cudagraph_mode"] = mode
+    if graph_policy == "runtime":
+        launch["collection"]["cudagraph_capture_sizes"] = [1, 2, 4, 8, 16, 32, 64]
+    monkeypatch.setattr(runner, "_cell_runner", lambda *_args: pytest.fail("preview launched an executor"))
+    result = runtime_probe.probe_runtime({"selected": launch}, instrumentation=manifest, output_dir=tmp_path / "probe")
+    assert result["status"] == "preview", result
+    expected = {"prefill", "decode"} if worker_type == "aggregated" else {worker_type}
+    phases = result["configurations"]["selected"]["phases"]
+    assert set(phases) == expected
+    configs = []
+    for phase in phases.values():
+        request = json.loads(Path(phase["generator_request"]).read_text())
+        args = request["params"]["agg"]["extra_cli_args"]
+        configs.append(json.loads(args[args.index("--compilation-config") + 1]))
+        assert args[args.index("--max-num-batched-tokens") + 1] == "1024"
+        assert args[args.index("--max-num-seqs") + 1] == "64"
+    assert all(config == configs[0] for config in configs)
+    assert configs[0]["cudagraph_mode"] == mode
+    assert configs[0]["max_cudagraph_capture_size"] == (512 if graph_policy == "explicit" else 64)
+
+
+def test_disaggregated_probe_failure_keeps_other_role_resumable(tmp_path, monkeypatch):
+    from collector.fpm_forward import runner, runtime_probe
+
+    launch, manifest, _ = _inputs(tmp_path)
+    configurations = {role: {**copy.deepcopy(launch), "worker_type": role} for role in ("prefill", "decode")}
+    executions = []
+    monkeypatch.setattr(
+        runner,
+        "_cell_runner",
+        lambda plan, cell, _manifest, directory: _SyntheticExecutor(
+            plan, cell, directory, executions, fail_configuration="prefill"
+        ),
+    )
+    output = tmp_path / "probe"
+    result = runtime_probe.probe_runtime(configurations, instrumentation=manifest, output_dir=output, execute=True)
+    assert result["status"] == "partial"
+    assert result["configurations"]["prefill"]["status"] == "failed"
+    assert result["configurations"]["decode"]["status"] == "completed"
+    assert executions == [("prefill", "prefill"), ("decode", "decode")]
+    monkeypatch.setattr(runner, "_cell_runner", lambda *_args: pytest.fail("completed role launched again"))
+    resumed = runtime_probe.probe_runtime(
+        {"decode": configurations["decode"]}, instrumentation=manifest, output_dir=output, execute=True, resume=True
+    )
+    assert resumed["configurations"]["decode"]["resumed"] is True
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"cudagraph_capture_sizes": [8, 4]},
+        {"cudagraph_capture_sizes": [4, 8], "max_cudagraph_capture_size": 16},
+        {"max_cudagraph_capture_size": 2048},
+        {"cudagraph_mode": "NONE", "cudagraph_capture_sizes": [4]},
+        {"cudagraph_mode": "UNKNOWN"},
+    ],
+)
+def test_invalid_role_graph_settings_fail_before_execution_without_blocking_other_role(tmp_path, monkeypatch, changes):
+    from collector.fpm_forward import runner, runtime_probe
+
+    launch, manifest, _ = _inputs(tmp_path)
+    invalid = {**copy.deepcopy(launch), "worker_type": "prefill"}
+    invalid["collection"].update(changes)
+    valid = {**copy.deepcopy(launch), "worker_type": "decode"}
+    monkeypatch.setattr(runner, "_cell_runner", lambda *_args: pytest.fail("preview launched an executor"))
+    result = runtime_probe.probe_runtime(
+        {"prefill": invalid, "decode": valid}, instrumentation=manifest, output_dir=tmp_path / "probe"
+    )
+    assert result["status"] == "partial"
+    assert result["configurations"]["prefill"]["status"] == "failed"
+    assert result["configurations"]["decode"]["status"] == "preview"
+
+
 @pytest.mark.parametrize("graph_policy", ["runtime", "explicit"])
 def test_preview_requires_no_cache_geometry_and_never_imports_bundle(tmp_path, monkeypatch, graph_policy):
     from collector.fpm_forward import runner, runtime_probe

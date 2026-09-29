@@ -29,7 +29,7 @@ def _write(path, value):
     path.write_text(json.dumps(value))
 
 
-def _campaign(tmp_path, *, capacity_multiplier=1, context_length=4096, tp=2, cpu_policy=True):
+def _campaign(tmp_path, *, capacity_multiplier=1, context_length=4096, tp=2, cpu_policy=True, worker_type=None):
     index, launches = observation_fixture(tmp_path / "probe", dense=True, tp=tp)
     launch = launches["tp2"]
     if cpu_policy:
@@ -58,9 +58,20 @@ def _campaign(tmp_path, *, capacity_multiplier=1, context_length=4096, tp=2, cpu
     launch["identity"]["model"] = str(checkpoint_model)
     launch["model_config"]["sha256"] = hashlib.sha256(model_path.read_bytes()).hexdigest()
     launch["collection"]["max_model_len"] = context_length
+    if worker_type is not None:
+        launch["worker_type"] = worker_type
+        launch["collection"]["cudagraph_mode"] = {
+            "prefill": "PIECEWISE",
+            "decode": "FULL_DECODE_ONLY",
+            "aggregated": "FULL_AND_PIECEWISE",
+        }[worker_type]
     launch = normalize_probe_launch(launch)
     document = json.loads(index.read_text())
     document["configurations"]["tp2"]["launch"] = launch
+    if worker_type in {"prefill", "decode"}:
+        document["configurations"]["tp2"]["attempts"][0]["phases"].pop(
+            "decode" if worker_type == "prefill" else "prefill"
+        )
     for phase in document["configurations"]["tp2"]["attempts"][0]["phases"].values():
         for ref in [phase["launch_manifest"], *phase["artifacts"]]:
             path = index.parent / ref["path"]
@@ -71,6 +82,10 @@ def _campaign(tmp_path, *, capacity_multiplier=1, context_length=4096, tp=2, cpu
                 value["resolved_config"]["model_config"]["model"] = str(checkpoint_model)
                 value["model_config_sha256"] = launch["model_config"]["sha256"]
                 value["resolved_config"]["model_config"]["max_model_len"] = context_length
+                if worker_type is not None:
+                    value["resolved_config"]["compilation_config"]["cudagraph_mode"] = launch["collection"][
+                        "cudagraph_mode"
+                    ]
                 cache = value["cache"]
                 cache["num_blocks"] *= capacity_multiplier
                 if value["kind"] == "worker":
@@ -90,6 +105,7 @@ def _campaign(tmp_path, *, capacity_multiplier=1, context_length=4096, tp=2, cpu
     precision = dict(launch["precision"])
     precision["kv_cache_dtype"] = precision.pop("kvcache_quant_mode")
     draft = {
+        **({"worker_type": worker_type} if worker_type is not None else {}),
         "identity": launch["identity"],
         "workload": {"input_tokens": 64, "output_tokens": 16, "concurrency": 1, "request_count": 1},
         "search": {
@@ -104,6 +120,7 @@ def _campaign(tmp_path, *, capacity_multiplier=1, context_length=4096, tp=2, cpu
             "max_batch_size": 64,
             "gpu_memory_utilization": 0.9,
             "prefill_cudagraph_policy": "runtime",
+            **({"cudagraph_mode": launch["collection"]["cudagraph_mode"]} if worker_type is not None else {}),
         },
     }
     checkpoint = tmp_path / "checkpoint.json"
@@ -644,8 +661,8 @@ def test_unknown_geometry_does_not_mask_missing_explicit_topology(tmp_path, caps
     assert "tensor_parallel" in str(result["configurations"]["tp2"]["diagnostics"])
 
 
-def _imported(tmp_path, capsys, *, capacity_multiplier=1, tp=2):
-    checkpoint, index, _ = _campaign(tmp_path, capacity_multiplier=capacity_multiplier, tp=tp)
+def _imported(tmp_path, capsys, *, capacity_multiplier=1, tp=2, worker_type=None):
+    checkpoint, index, _ = _campaign(tmp_path, capacity_multiplier=capacity_multiplier, tp=tp, worker_type=worker_type)
     assert _import(checkpoint, index, tmp_path / "drafts", configurations=["tp2"]) == 0
     result = json.loads(capsys.readouterr().out)
     state = _load(checkpoint)
@@ -768,7 +785,7 @@ def _formal_bindings(index, cells=None):
     return {"runtime_observation_attempt_id": "formal-parent", "cells": entries}
 
 
-def _completed_runtime_collection(tmp_path, capsys, *, tp=2):
+def _completed_runtime_collection(tmp_path, capsys, *, tp=2, worker_type=None):
     from collector.fpm_forward.cli import _parser
     from collector.fpm_forward.config import FPMCollectionOptions
     from collector.fpm_forward.database import aggregate_cell, write_formal_database
@@ -780,7 +797,7 @@ def _completed_runtime_collection(tmp_path, capsys, *, tp=2):
 
     from .test_onboard_finalization import _native
 
-    checkpoint, _, request, files = _imported(tmp_path, capsys, capacity_multiplier=10, tp=tp)
+    checkpoint, _, request, files = _imported(tmp_path, capsys, capacity_multiplier=10, tp=tp, worker_type=worker_type)
     state = _load(checkpoint)
     save_checkpoint(checkpoint, patch={}, expected_revision=state.revision, accept=["tp2"])
     root = tmp_path / "collection"
@@ -898,6 +915,40 @@ def test_formal_finalize_validates_new_observations_and_preserves_verified_timin
     assert state.configurations["tp2"].acceptance is None
     state, _ = save_checkpoint(checkpoint, patch={}, expected_revision=state.revision, accept=["tp2"])
     assert report(state, checkpoint)["configurations"]["tp2"]["profile_accepted"]
+
+
+@pytest.mark.parametrize("worker_type", ["prefill", "decode", "aggregated"])
+def test_serving_role_round_trip_import_collection_and_finalization(tmp_path, capsys, worker_type):
+    import pyarrow.parquet as pq
+    from collector.fpm_forward.repeatability import load_repeatability_source
+
+    from aisimulate.support.finalization import finalization_manifest, finalize
+    from aisimulate.support.plan import check_plan
+    from aisimulate.support.runtime import verify_runtime_profile
+
+    checkpoint, request, _, root = _completed_runtime_collection(tmp_path, capsys, worker_type=worker_type)
+    assert request.worker_type == request.profile_deployment().worker_type == worker_type
+    assert report(_load(checkpoint), checkpoint)["configurations"]["tp2"]["profile_accepted"]
+    plan_path = next((root / "fpm-artifacts").glob("*/collection-plan.json"))
+    frozen = load_repeatability_source(plan_path.parent)
+    assert frozen.options.worker_type == worker_type
+    assert {cell.workload_kind for cell in frozen.cells} == set(request.collection_phases)
+    target = tmp_path / "finalized"
+    finalize(request, root, target)
+    resolved = SupportRequest.from_yaml(target / "request.yaml")
+    assert resolved.worker_type == resolved.profile_deployment().worker_type == worker_type
+    assert resolved.collection.cudagraph_mode == request.collection.cudagraph_mode
+    assert (
+        resolved.profile_deployment().resources.runtime_memory.kv_cache_bytes
+        == request.profile_deployment().resources.runtime_memory.kv_cache_bytes
+    )
+    evidence = finalization_manifest(resolved)
+    assert evidence["runtime_compatibility"]["status"] == "compatible"
+    assert len(evidence["formal_data"]) == 2
+    parquet = next((target / "systems/data").rglob("fpm_forward_perf.parquet"))
+    assert set(pq.read_table(parquet).column("workload_kind").to_pylist()) == set(request.collection_phases)
+    verify_runtime_profile(resolved)
+    check_plan(resolved, target)
 
 
 def _reviewed_capacity_revision(tmp_path, capsys):

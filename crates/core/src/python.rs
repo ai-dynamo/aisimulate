@@ -815,6 +815,17 @@ fn aic_capacity_kwargs<'py>(
     kwargs.set_item("max_batch_size", role.rank.max_num_seqs)?;
     if config.fpm_profile.is_some() {
         kwargs.set_item("context_length", role.rank.max_model_len)?;
+        kwargs.set_item(
+            "worker_type",
+            match config
+                .worker_type
+                .unwrap_or(ForwardPassWorkerType::Aggregated)
+            {
+                ForwardPassWorkerType::Prefill => "prefill",
+                ForwardPassWorkerType::Decode => "decode",
+                ForwardPassWorkerType::Aggregated => "aggregated",
+            },
+        )?;
     }
     kwargs.set_item("memory_fraction_kind", memory_fraction_kind)?;
     kwargs.set_item("memory_fraction_value", memory_fraction_value)?;

@@ -892,7 +892,7 @@ fn build_native_candidate(
     let mut last_error = None;
     for root in resolve_systems_roots(config)? {
         match build_engine_via_python(config, &root).and_then(|engine| {
-            engine.validate_forward_pass_readiness()?;
+            engine.validate_forward_pass_readiness(config.worker_type)?;
             Ok(engine)
         }) {
             Ok(engine) => return Ok((engine, root)),

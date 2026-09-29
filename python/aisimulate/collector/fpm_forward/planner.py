@@ -570,6 +570,7 @@ class FPMCollectionPlan:
             moe_tp_size=cell.topology.moe_tp,
             moe_ep_size=cell.topology.moe_ep,
             cp_size=cell.topology.cp,
+            worker_type=self.options.worker_type or "aggregated",
         )
 
     def to_dict(self) -> dict[str, object]:
@@ -760,7 +761,14 @@ def build_collection_plan(
     policies = _backend_policies(options, collector_config, backend=backend)
     if profile is not None:
         deployments = _validate_profile_identities(
-            profile, capability, candidate_topologies, policies, model_path, system, backend
+            profile,
+            capability,
+            candidate_topologies,
+            policies,
+            model_path,
+            system,
+            backend,
+            worker_type=options.worker_type,
         )
         if options.vllm_max_model_len > profile.context_length:
             raise ValueError(
@@ -807,6 +815,7 @@ def build_collection_plan(
         fpm_profile=profile,
         max_batch_size=options.prefill_sampling.max_batch_size,
         gpu_memory_utilization=options.gpu_memory_utilization,
+        worker_type=options.worker_type,
     )
     weight_quantization = capability.dtype.gemm_quant_mode
     runnable_dtype_pairs = {
@@ -863,7 +872,7 @@ def build_collection_plan(
             comm_quant_mode=capability.dtype.comm_quant_mode,
             fmha_resolution=capability.dtype.fmha_resolution_by_kv_dtype[kv_cache_dtype],
         )
-        for phase in ("prefill", "decode")
+        for phase in options.workload_kinds
         for topology in topologies
         for kv_cache_dtype in capability.dtype.kv_cache_dtypes
         if (topology, kv_cache_dtype) in runnable_dtype_pairs
@@ -955,6 +964,8 @@ def _validate_profile_identities(
     model_path: str,
     system: str,
     backend: str,
+    *,
+    worker_type: str | None = None,
 ) -> tuple[FpmDeploymentProfile, ...]:
     """Require a resource declaration for every requested cell, before admission."""
     if profile.architecture != capability.architecture:
@@ -987,6 +998,7 @@ def _validate_profile_identities(
             moe_tp_size=topology.moe_tp,
             moe_ep_size=topology.moe_ep,
             cp_size=topology.cp,
+            worker_type=worker_type or "aggregated",
         )
         deployments.append(deployment)
         for kv_dtype in capability.dtype.kv_cache_dtypes:

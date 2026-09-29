@@ -93,6 +93,323 @@ def test_validation_changes_preserve_profile_and_collection_command(tmp_path, ca
     assert first.scheduler_limits() == {"max_batched_tokens": 4096, "max_sequences": 8}
 
 
+@pytest.mark.parametrize("role,graph", [("prefill", "PIECEWISE"), ("decode", "FULL_DECODE_ONLY")])
+def test_role_init_exports_independent_collection_config_without_claiming_replay(tmp_path, role, graph):
+    source, resources = _files(tmp_path)
+    output = tmp_path / "request.yaml"
+    args = _args(output, source, resources, worker_type=role, cudagraph_mode=graph)
+    args += ["--cudagraph-capture-sizes", "1", "2", "4", "8", "--max-cudagraph-capture-size", "8"]
+    assert cli.main(args) == 0
+    request = SupportRequest.from_yaml(output)
+    assert request.worker_type == request.profile_deployment().worker_type == role
+    assert request.collection_phases == (role,)
+    assert request.collection.cudagraph_capture_sizes == [1, 2, 4, 8]
+    root = tmp_path / "plan"
+    assert cli.main(["onboard", "plan", "--config", str(output), "--output-dir", str(root)]) == 0
+    saved = SupportRequest.from_yaml(root / "request.yaml")
+    assert saved.model_dump(mode="json") == request.model_dump(mode="json")
+    artifact = yaml.safe_load((root / "worker.yaml").read_text())
+    assert artifact["worker_type"] == role
+    assert artifact["serving_mode"] == artifact["engine"]["mode"] == "disaggregated"
+    assert set(artifact["engine"]["workers"]) == {role}
+    worker = artifact["engine"]["workers"][role]
+    from aisimulate.config.engine import WorkerPredictionConfig
+
+    parsed_worker = WorkerPredictionConfig.model_validate(worker)
+    assert parsed_worker.timing.systems_paths == [str(root / "systems")]
+    assert worker["timing"]["estimation_mode"] == "fpm_interpolation"
+    assert worker["timing"]["fallback_policy"] == "deny"
+    assert artifact["engine"]["systems_paths"] == [str(root / "systems")]
+    assert artifact["engine"]["fpm_profile"] == request.fpm_profile.model_dump(mode="json")
+    assert artifact["collection"]["cudagraph_mode"] == graph
+    commands = json.loads((root / "commands.json").read_text())
+    assert commands["predict"] == commands["recommend"] == []
+    assert not (root / "predict/pilot.yaml").exists()
+    command = commands["fpm_plan_local"]
+    assert command[command.index("--fpm-worker-type") + 1] == role
+    assert command[command.index("--fpm-cudagraph-mode") + 1] == graph
+    plan = json.loads((root / "support-plan.json").read_text())
+    assert plan["fpm"]["collection_phases"] == [role]
+    assert plan["replay"]["status"] == "not_assessed"
+    from aisimulate.support.validation import _prediction_config
+
+    with pytest.raises(ValueError, match="aggregated replay only"):
+        _prediction_config(request, root, tmp_path / "trace.json")
+
+
+def test_explicit_aggregated_role_retains_executable_prediction_and_recommendation(tmp_path):
+    source, resources = _files(tmp_path)
+    output = tmp_path / "request.yaml"
+    assert (
+        cli.main(_args(output, source, resources, worker_type="aggregated", cudagraph_mode="FULL_AND_PIECEWISE")) == 0
+    )
+    request = SupportRequest.from_yaml(output)
+    assert request.collection_phases == ("prefill", "decode")
+    root = tmp_path / "plan"
+    assert cli.main(["onboard", "plan", "--config", str(output), "--output-dir", str(root)]) == 0
+    prediction = CorePredictionConfig.model_validate(yaml.safe_load((root / "predict/pilot.yaml").read_text()))
+    recommendation = CoreRecommendationConfig.model_validate(
+        yaml.safe_load((root / "recommend/pilot.yaml").read_text())
+    )
+    assert prediction.engine.mode == recommendation.engine.mode == "aggregated"
+    assert prediction.engine.fpm_profile.deployments[0].worker_type == "aggregated"
+    assert not (root / "worker.yaml").exists()
+
+
+def test_explicit_role_does_not_relabel_a_legacy_shared_profile(tmp_path):
+    source, resources = _files(tmp_path)
+    output = tmp_path / "legacy.yaml"
+    assert cli.main(_args(output, source, resources)) == 0
+    legacy = SupportRequest.from_yaml(output)
+    payload = legacy.model_dump(mode="json")
+    assert "worker_type" not in payload
+    assert "worker_type" not in payload["fpm_profile"]["deployments"][0]
+    with pytest.raises(ValueError, match="do not relabel a legacy shared profile"):
+        SupportRequest.model_validate({**payload, "worker_type": "decode"})
+    assert SupportRequest.model_validate(payload).model_dump(mode="json") == payload
+
+
+def test_guided_role_and_graph_review_edits_are_saved(tmp_path, monkeypatch):
+    source, resources = _files(tmp_path)
+    output = tmp_path / "request.yaml"
+    _terminal(
+        monkeypatch,
+        [
+            "edit",
+            "worker_type",
+            "decode",
+            "edit",
+            "cudagraph_mode",
+            "FULL_DECODE_ONLY",
+            "edit",
+            "cudagraph_capture_sizes",
+            "1 2 4 8",
+            "accept",
+        ],
+    )
+    assert (
+        cli.main(
+            _args(output, source, resources, worker_type="prefill", cudagraph_mode="PIECEWISE") + ["--interactive"]
+        )
+        == 0
+    )
+    request = SupportRequest.from_yaml(output)
+    assert request.worker_type == request.profile_deployment().worker_type == "decode"
+    assert request.collection.cudagraph_mode == "FULL_DECODE_ONLY"
+    assert request.collection.cudagraph_capture_sizes == [1, 2, 4, 8]
+
+
+def test_guided_graph_overrides_can_be_cleared_before_changing_to_none(tmp_path, monkeypatch):
+    source, resources = _files(tmp_path)
+    output = tmp_path / "request.yaml"
+    _terminal(monkeypatch, ["edit", "max_cudagraph_capture_size", "clear", "edit", "cudagraph_mode", "NONE", "accept"])
+    args = _args(output, source, resources, worker_type="decode", cudagraph_mode="FULL", max_cudagraph_capture_size=8)
+    assert cli.main([*args, "--interactive"]) == 0
+    request = SupportRequest.from_yaml(output)
+    assert request.collection.cudagraph_mode == "NONE"
+    assert "max_cudagraph_capture_size" not in request.collection.model_dump(mode="json")
+
+
+def test_multiple_roles_on_same_topology_keep_distinct_requests_and_collection_limits(tmp_path):
+    source, _ = _files(tmp_path)
+    selections = tmp_path / "roles.yaml"
+    selections.write_text(
+        yaml.safe_dump(
+            [
+                {
+                    "worker_type": "prefill",
+                    "tensor_parallel": 1,
+                    "resource_overrides": _OVERRIDES,
+                    "collection": {"cudagraph_mode": "PIECEWISE", "max_num_tokens": 4096, "max_batch_size": 8},
+                },
+                {
+                    "worker_type": "decode",
+                    "tensor_parallel": 1,
+                    "resource_overrides": {**_OVERRIDES, "max_num_tokens": 2048, "max_batch_size": 4},
+                    "collection": {
+                        "cudagraph_mode": "FULL_DECODE_ONLY",
+                        "max_num_tokens": 2048,
+                        "max_batch_size": 4,
+                        "gpu_memory_utilization": 0.92,
+                    },
+                },
+            ]
+        )
+    )
+    root = tmp_path / "onboarding"
+    args = _args(root, source, tensor_parallel=None)
+    args[args.index("--output")] = "--output-dir"
+    assert cli.main([*args, "--parallel-configs", str(selections)]) == 0
+    index = json.loads((root / "onboarding.json").read_text())
+    assert [entry["worker_type"] for entry in index["configurations"]] == ["prefill", "decode"]
+    requests = [SupportRequest.from_yaml(entry["request"]) for entry in index["configurations"]]
+    assert requests[0].parallelism() == requests[1].parallelism()
+    assert request_id(requests[0]) != request_id(requests[1])
+    assert requests[0].scheduler_limits() == {"max_batched_tokens": 4096, "max_sequences": 8}
+    assert requests[1].scheduler_limits() == {"max_batched_tokens": 2048, "max_sequences": 4}
+    assert requests[1].collection.memory_fraction == 0.92
+    assert [Path(entry["request"]).parent.name.split("-")[0] for entry in index["configurations"]] == [
+        "prefill",
+        "decode",
+    ]
+
+
+@pytest.mark.parametrize("interactive", [False, True])
+@pytest.mark.parametrize(
+    "shared",
+    [
+        {"cudagraph_mode": "FULL_AND_PIECEWISE"},
+        {"cudagraph_capture_sizes": [1, 2, 4]},
+        {"max_cudagraph_capture_size": 4},
+        {
+            "cudagraph_mode": "FULL_AND_PIECEWISE",
+            "cudagraph_capture_sizes": [1, 2, 4],
+            "max_cudagraph_capture_size": 4,
+        },
+    ],
+)
+def test_parallel_roles_accept_shared_graph_settings_without_a_global_role(tmp_path, monkeypatch, shared, interactive):
+    source, _ = _files(tmp_path)
+    selections = tmp_path / "roles.yaml"
+    selections.write_text(
+        yaml.safe_dump(
+            [
+                {"worker_type": "prefill", "tensor_parallel": 1, "resource_overrides": _OVERRIDES},
+                {
+                    "worker_type": "decode",
+                    "tensor_parallel": 1,
+                    "resource_overrides": _OVERRIDES,
+                    "collection": {"cudagraph_mode": "FULL_DECODE_ONLY"},
+                },
+            ]
+        )
+    )
+    root = tmp_path / "onboarding"
+    args = _args(root, source, tensor_parallel=None)
+    args[args.index("--output")] = "--output-dir"
+    for name, value in shared.items():
+        args += ["--" + name.replace("_", "-"), *map(str, value if isinstance(value, list) else [value])]
+    if interactive:
+        _terminal(monkeypatch, ["accept", "accept"])
+        args.append("--interactive")
+    assert cli.main([*args, "--parallel-configs", str(selections)]) == 0
+    index = json.loads((root / "onboarding.json").read_text())
+    requests = [SupportRequest.from_yaml(entry["request"]) for entry in index["configurations"]]
+    assert [request.worker_type for request in requests] == ["prefill", "decode"]
+    assert [request.profile_deployment().worker_type for request in requests] == ["prefill", "decode"]
+    for name, value in shared.items():
+        assert getattr(requests[0].collection, name) == value
+        assert getattr(requests[1].collection, name) == ("FULL_DECODE_ONLY" if name == "cudagraph_mode" else value)
+    assert requests[1].collection.cudagraph_mode == "FULL_DECODE_ONLY"
+
+
+@pytest.mark.parametrize("roleless_position", [0, 1])
+@pytest.mark.parametrize(
+    "graph_flags",
+    [
+        ["--cudagraph-mode", "FULL_AND_PIECEWISE"],
+        ["--cudagraph-capture-sizes", "1", "2", "4"],
+        ["--max-cudagraph-capture-size", "4"],
+    ],
+)
+def test_shared_graph_settings_reject_any_roleless_parallel_entry(tmp_path, capsys, roleless_position, graph_flags):
+    source, _ = _files(tmp_path)
+    entries = [
+        {"worker_type": role, "tensor_parallel": 1, "resource_overrides": _OVERRIDES} for role in ("prefill", "decode")
+    ]
+    entries[roleless_position].pop("worker_type")
+    selections = tmp_path / "roles.yaml"
+    selections.write_text(yaml.safe_dump(entries))
+    root = tmp_path / "onboarding"
+    args = _args(root, source, tensor_parallel=None)
+    args[args.index("--output")] = "--output-dir"
+    with pytest.raises(SystemExit) as error:
+        cli.main([*args, "--parallel-configs", str(selections), *graph_flags])
+    assert error.value.code == 2
+    assert "generic CUDA graph settings require an explicit worker_type" in capsys.readouterr().err
+    assert not root.exists()
+
+
+@pytest.mark.parametrize(
+    "graph_flags,collection,error_message",
+    [
+        (
+            ["--cudagraph-mode", "NONE", "--max-cudagraph-capture-size", "4"],
+            {},
+            "cudagraph_mode=NONE rejects CUDA graph capture settings",
+        ),
+        (
+            ["--cudagraph-capture-sizes", "4", "2"],
+            {},
+            "cudagraph_capture_sizes must be a nonempty, increasing list of distinct sizes",
+        ),
+        (
+            ["--max-cudagraph-capture-size", "4"],
+            {"prefill_cudagraph_policy": "explicit"},
+            "generic CUDA graph capture settings require prefill_cudagraph_policy=runtime",
+        ),
+    ],
+)
+def test_parallel_entries_validate_merged_graph_settings(tmp_path, capsys, graph_flags, collection, error_message):
+    source, resources = _files(tmp_path)
+    selections = tmp_path / "roles.yaml"
+    selections.write_text(yaml.safe_dump([{"worker_type": "decode", "tensor_parallel": 1, "collection": collection}]))
+    root = tmp_path / "onboarding"
+    args = _args(root, source, resources, tensor_parallel=None)
+    args[args.index("--output")] = "--output-dir"
+    with pytest.raises(SystemExit) as error:
+        cli.main([*args, "--parallel-configs", str(selections), *graph_flags])
+    assert error.value.code == 2
+    assert error_message in capsys.readouterr().err
+    assert not root.exists()
+
+
+def test_legacy_parallel_entry_preserves_single_request_serialization_and_hash(tmp_path):
+    source, resources = _files(tmp_path)
+    output = tmp_path / "request.yaml"
+    assert cli.main(_args(output, source, resources)) == 0
+    original = SupportRequest.from_yaml(output)
+    selections = tmp_path / "parallel.yaml"
+    selections.write_text(yaml.safe_dump([{"tensor_parallel": 1, "resource_overrides": _OVERRIDES}]))
+    root = tmp_path / "onboarding"
+    args = _args(root, source, tensor_parallel=None)
+    args[args.index("--output")] = "--output-dir"
+    assert cli.main([*args, "--parallel-configs", str(selections)]) == 0
+    index = json.loads((root / "onboarding.json").read_text())
+    request = SupportRequest.from_yaml(index["configurations"][0]["request"])
+    assert request.model_dump(mode="json") == original.model_dump(mode="json")
+    assert request_id(request) == request_id(original)
+    payload = request.model_dump(mode="json")
+    assert "worker_type" not in payload
+    assert "worker_type" not in payload["fpm_profile"]["deployments"][0]
+    assert (
+        not {"cudagraph_mode", "cudagraph_capture_sizes", "max_cudagraph_capture_size"} & payload["collection"].keys()
+    )
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"cudagraph_mode": "PIECEWISE"},
+        {"worker_type": "decode", "cudagraph_capture_sizes": [4, 2]},
+        {"worker_type": "decode", "cudagraph_capture_sizes": [2, 2]},
+        {"worker_type": "decode", "cudagraph_capture_sizes": [1, 2], "max_cudagraph_capture_size": 4},
+        {"worker_type": "decode", "cudagraph_capture_sizes": [1, 2], "prefill_cudagraph_policy": "explicit"},
+        {"worker_type": "decode", "max_cudagraph_capture_size": 2, "cudagraph_mode": "NONE"},
+    ],
+)
+def test_invalid_role_graph_settings_fail_before_saving(tmp_path, changes):
+    source, resources = _files(tmp_path)
+    output = tmp_path / "request.yaml"
+    sizes = changes.get("cudagraph_capture_sizes")
+    args = _args(output, source, resources, **{k: v for k, v in changes.items() if k != "cudagraph_capture_sizes"})
+    if sizes is not None:
+        args += ["--cudagraph-capture-sizes", *map(str, sizes)]
+    with pytest.raises(SystemExit):
+        cli.main(args)
+    assert not output.exists()
+
+
 @pytest.mark.parametrize("model_context,expected", [(32768, 32768), (262144, 256000)])
 def test_model_context_and_reference_cap_define_initial_runtime_context(tmp_path, model_context, expected):
     source, resources = _files(tmp_path, config={**_CONFIG, "max_position_embeddings": model_context})

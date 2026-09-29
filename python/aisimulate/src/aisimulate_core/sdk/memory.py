@@ -1036,6 +1036,7 @@ def estimate_kv_cache(
     allow_naive_fallback: bool = False,
     allow_hf_config_download: bool = False,
     fpm_profile: dict | str | FpmModelProfile | None = None,
+    worker_type: str = "aggregated",
     cp_size: int = 1,
     context_length: int | None = None,
     request_occupancy_tokens: int | None = None,
@@ -1084,6 +1085,7 @@ def estimate_kv_cache(
             requires its exact scheduler settings and memory fraction. This
             route never constructs an analytical model or uses naive fallback.
             Separate CUDA graph bytes apply only to declared profile overheads.
+        worker_type: canonical serving role selecting this deployment's resources.
         cp_size: profile context-parallel identity; currently only CP1 is supported.
         context_length: optional context bound for a grouped profile's per-request
             cache peak, also checked against runtime memory's ``max_model_len``.
@@ -1128,6 +1130,7 @@ def estimate_kv_cache(
             system=system,
             backend=backend,
             backend_version=backend_version,
+            worker_type=worker_type,
             tp_size=tp_size,
             pp_size=pp_size,
             attention_dp_size=attention_dp_size,
@@ -1170,7 +1173,7 @@ def estimate_kv_cache(
                     "system": system,
                     "backend": backend,
                     "backend_version": backend_version,
-                    "worker_type": "aggregated",
+                    "worker_type": worker_type,
                     "tp": tp_size,
                     "pp": pp_size,
                     "attention_dp": attention_dp_size,
@@ -1317,6 +1320,7 @@ def estimate_num_gpu_blocks(
     allow_hf_config_download: bool = False,
     diagnostics: dict[str, Any] | None = None,
     fpm_profile: dict | str | FpmModelProfile | None = None,
+    worker_type: str = "aggregated",
     cp_size: int = 1,
     context_length: int | None = None,
 ) -> int:
@@ -1381,6 +1385,7 @@ def estimate_num_gpu_blocks(
         allow_naive_fallback=allow_naive_fallback,
         allow_hf_config_download=allow_hf_config_download,
         fpm_profile=fpm_profile,
+        worker_type=worker_type,
         cp_size=cp_size,
         context_length=context_length,
     )

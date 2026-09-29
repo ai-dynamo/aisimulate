@@ -56,6 +56,12 @@ def _fpm_artifacts(plan: Path) -> list[dict[str, Any]]:
 def _prediction_config(request: SupportRequest, plan: Path, trace: Path) -> dict[str, Any]:
     """Retain the reviewed deployment and replace only evaluation inputs."""
 
+    if request.worker_type in {"prefill", "decode"}:
+        raise ValueError(
+            "validate-fpm currently supports aggregated replay only. This independent P/D role can run "
+            "validate-collection; full replay requires a separately accepted counterpart and a supported "
+            "P/D serving configuration. Collection does not require actual P/D handoff."
+        )
     prediction = load_yaml(plan / "predict/pilot.yaml")
     prediction["traffic"] = {
         "source": {
@@ -126,9 +132,9 @@ def run_validation(args: argparse.Namespace) -> int:
             raise ValueError(f"validation output must not contain the input file {source}")
     with plan_lock(plan):
         check_plan(request, plan)
+        prediction = _prediction_config(request, plan, trace)
         if request.fpm_profile is not None:
             request.profile_deployment().resources.require_memory()
-        prediction = _prediction_config(request, plan, trace)
         collection = json.loads((plan / "support-plan.json").read_text(encoding="utf-8"))
     for relative in ("predict.yaml", "validation.json", "prediction"):
         if (output / relative).is_symlink():

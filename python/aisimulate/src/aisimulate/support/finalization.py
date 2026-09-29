@@ -263,7 +263,7 @@ def _verify_collection(
     request: SupportRequest, root: Path, *, memory_revision: dict[str, Any] | None = None
 ) -> tuple[list[dict[str, Any]], dict[str, Any], dict[Path, bytes], dict[Path, str]]:
     from collector.fpm_forward.cli import _parser
-    from collector.fpm_forward.config import FPMCollectionOptions
+    from collector.fpm_forward.config import FPMCollectionOptions, collection_phases
     from collector.fpm_forward.database import (
         aggregate_cell,
         published_dense_synthetic_cells,
@@ -331,7 +331,7 @@ def _verify_collection(
         collection_deployment = FPMDeployment.model_validate(
             source_index["configurations"][probe_manifest["configuration"]]["launch"]["deployment"]
         )
-    reviewed_options = FPMCollectionOptions.from_args(
+    reviewed_collection = FPMCollectionOptions.from_args(
         _parser().parse_args(
             fpm_cli_args(
                 request,
@@ -342,14 +342,22 @@ def _verify_collection(
                 deployment=collection_deployment,
             )[3:]
         )
-    ).to_dict()
+    )
+    reviewed_options = reviewed_collection.to_dict()
     for options in (reviewed_options, saved_options):
         options.setdefault("gpu_memory_utilization", request.collection.memory_fraction)
     if saved_options != reviewed_options:
         raise ValueError("saved collection options differ from the reviewed runtime and collection settings")
+    expected_graph = reviewed_collection.compilation_config
+    if request.worker_type is not None and reviewed_collection.prefill_cudagraph_policy == "explicit":
+        sampling = reviewed_collection.prefill_sampling
+        expected_graph.update(
+            cudagraph_capture_sizes=list(sampling.cudagraph_capture_sizes),
+            max_cudagraph_capture_size=sampling.max_cudagraph_capture_size,
+        )
     cells = [cell_from_dict(value) for value in payload["cells"]]
-    if not cells or {cell.workload_kind for cell in cells} != {"prefill", "decode"}:
-        raise ValueError("finalization requires complete prefill and decode collection")
+    if not cells or {cell.workload_kind for cell in cells} != set(collection_phases(request.worker_type)):
+        raise ValueError("finalization requires complete collection for the selected serving role")
     if len({cell.cell_id for cell in cells}) != len(cells):
         raise ValueError("saved collection has duplicate cell identities")
     database = checkpoint.get("database", {})
@@ -426,6 +434,7 @@ def _verify_collection(
                     expected_max_batch_size=scheduler["max_sequences"],
                     expected_gpu_memory_utilization=request.collection.memory_fraction,
                     expected_model_revision=request.identity.model_revision,
+                    expected_compilation_config=expected_graph,
                 )
             )
     runtime_compatibility = None

@@ -303,6 +303,58 @@ def _replace_launch(index_path, launches):
     _mutate(index_path, lambda r: r.update(launch=launch, identity=launch["identity"]))
 
 
+@pytest.mark.parametrize("worker_type,mode", [("prefill", "PIECEWISE"), ("decode", "FULL_DECODE_ONLY")])
+def test_role_observations_keep_their_own_graph_settings_and_capacity(tmp_path, worker_type, mode):
+    path, launches = observation_fixture(tmp_path)
+    launch = launches["tp2"]
+    launch["worker_type"] = worker_type
+    launch["collection"]["cudagraph_mode"] = mode
+    _replace_launch(path, launches)
+    index = json.loads(path.read_text())
+    phases = index["configurations"]["tp2"]["attempts"][0]["phases"]
+    phases.pop("decode" if worker_type == "prefill" else "prefill")
+    path.write_text(json.dumps(index))
+    _mutate(path, lambda record: record["resolved_config"]["compilation_config"].update(cudagraph_mode=mode))
+    result = validate_observations(path, launches)["tp2"]
+    assert result["status"] == "complete", result
+    assert result["resources"]["runtime_memory"]["kv_cache_bytes"] == (88 if worker_type == "prefill" else 83) * 128
+    assert {value["phase"] for value in result["provenance"]["rank_capacities"]} == {worker_type}
+    # A correctly hashed worker record still cannot contradict its role's
+    # accepted engine settings. Other roles are not substitutes for evidence.
+    _mutate(path, lambda record: record["resolved_config"]["compilation_config"].update(cudagraph_mode="FULL"))
+    result = validate_observations(path, launches)["tp2"]
+    assert result["status"] == "incomplete"
+    assert "reviewed serving role" in str(result["diagnostics"])
+
+
+def test_aggregated_generic_graph_settings_are_checked_in_both_phases(tmp_path):
+    path, launches = observation_fixture(tmp_path)
+    launch = launches["tp2"]
+    launch["worker_type"] = "aggregated"
+    launch["collection"].update(cudagraph_mode="FULL_AND_PIECEWISE", cudagraph_capture_sizes=[1, 2, 4, 8, 16, 32, 64])
+    _replace_launch(path, launches)
+    _mutate(
+        path,
+        lambda record: record["resolved_config"]["compilation_config"].update(
+            cudagraph_mode="FULL_AND_PIECEWISE",
+            cudagraph_capture_sizes=[1, 2, 4, 8, 16, 32, 64],
+            max_cudagraph_capture_size=64,
+        ),
+    )
+    assert validate_observations(path, launches)["tp2"]["status"] == "complete"
+    _mutate(
+        path,
+        lambda record: record["resolved_config"]["compilation_config"].update(
+            cudagraph_capture_sizes=[1, 2, 4, 8, 16, 32], max_cudagraph_capture_size=32
+        )
+        if record["phase"] == "decode"
+        else None,
+    )
+    result = validate_observations(path, launches)["tp2"]
+    assert result["status"] == "incomplete"
+    assert "reviewed serving role" in str(result["diagnostics"])
+
+
 @pytest.mark.parametrize("packed,planar", [(False, False), (True, False), (False, True)])
 def test_import_recomputes_storage_and_pool_capacity_and_keeps_every_rank(tmp_path, packed, planar):
     path, launch = observation_fixture(tmp_path, packed=packed, planar=planar)

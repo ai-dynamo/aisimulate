@@ -1125,6 +1125,7 @@ class SearchSpace(BaseModel):
                 for shape in {_parallel_role(config, role).shape for config in configs}:
                     deployment = profile.select(
                         model=self.model_name,
+                        worker_type="aggregated" if role == "agg" else role,
                         system=self.hardware_sku_for(role),
                         backend="vllm",
                         backend_version=self.requested_backend_version("vllm"),

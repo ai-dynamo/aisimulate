@@ -726,6 +726,7 @@ def _validate_fpm_profile(engine, modes: set[str], backends: set[str]) -> None:
                 system=worker.hardware or engine.hardware,
                 backend=engine.backend,
                 backend_version=backend_version,
+                worker_type=role,
                 tp_size=parallel.tensor,
                 pp_size=parallel.pipeline,
                 attention_dp_size=parallel.attention_data,

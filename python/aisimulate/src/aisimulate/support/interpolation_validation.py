@@ -42,7 +42,7 @@ def _config(request: SupportRequest, root: Path) -> ForwardPassPerfModelConfig:
         system=request.identity.gpu,
         backend=request.identity.framework,
         backend_version=request.identity.framework_version,
-        worker_type="aggregated",
+        worker_type=request.worker_type or "aggregated",
         tp=deployment.tp,
         pp=deployment.pp,
         attention_dp=deployment.dp,
@@ -57,9 +57,10 @@ def _config(request: SupportRequest, root: Path) -> ForwardPassPerfModelConfig:
 
 
 def _matches(row: dict[str, Any], request: SupportRequest) -> bool:
-    deployment = request.profile_deployment().model_dump(mode="json", exclude={"resources"})
+    deployment = request.profile_deployment().model_dump(mode="json", exclude={"resources", "worker_type"})
     return (
         row["model_path"] == request.identity.model
+        and row["workload_kind"] in request.collection_phases
         and all(row.get(name) == value for name, value in deployment.items())
         and all(
             row.get(name, default) == default
@@ -424,7 +425,7 @@ def evaluate_interpolation_holdout(
     eligible = [row for row in matching if row.get("kv_seed_regime") != "fake_fallback"]
     execution_anchors, boundaries = _execution_boundaries(matching, execution_evidence)
     selected = []
-    for phase in _PHASES:
+    for phase in request.collection_phases:
         phase_rows = [row for row in eligible if row["workload_kind"] == phase]
         selected.extend(
             {**row, "boundary_axes": _boundary_axes(row, phase_rows)}
@@ -460,11 +461,14 @@ def evaluate_interpolation_holdout(
         "training_row_count": len(retained_indices),
         "retained_envelope_anchors": [
             _point(coordinate)
-            for phase in _PHASES
+            for phase in request.collection_phases
             for coordinate in sorted(_anchors([row for row in eligible if row["workload_kind"] == phase]))
         ],
         "selected_points": selected,
     }
+    if request.worker_type is not None:
+        plan["worker_type"] = request.worker_type
+        plan["collection_phases"] = list(request.collection_phases)
     plan_path = output / "holdout-plan.json"
     plan_path.write_bytes(_json_bytes(plan))
     training = output / "systems"
@@ -519,7 +523,7 @@ def evaluate_interpolation_holdout(
             max_p95_relative_error=max_p95_relative_error,
             max_unsupported_fraction=max_unsupported_fraction,
         )
-        for phase in _PHASES
+        for phase in request.collection_phases
     }
     unchanged = all(_identity(Path(identity["path"])) == identity for identity in inputs.values())
     unchanged &= all(
@@ -566,5 +570,8 @@ def evaluate_interpolation_holdout(
         },
         "issues": [] if unchanged else ["source FPM artifacts changed during validation"],
     }
+    if request.worker_type is not None:
+        report["worker_type"] = request.worker_type
+        report["collection_phases"] = list(request.collection_phases)
     (output / "interpolation-validation.json").write_bytes(_json_bytes(report))
     return report

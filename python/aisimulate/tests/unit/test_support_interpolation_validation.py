@@ -233,6 +233,30 @@ def test_native_holdout_is_graph_independent_and_removes_all_coordinates(holdout
     assert json.loads((output / "interpolation-validation.json").read_text()) == report
 
 
+@pytest.mark.parametrize("role", ["prefill", "decode"])
+def test_role_holdout_qualifies_only_its_phase_without_counterpart_data(holdout_case, tmp_path, role):
+    request, source, parquet, rows = holdout_case
+    payload = request.model_dump(mode="json")
+    payload["worker_type"] = role
+    payload["fpm_profile"]["deployments"][0]["worker_type"] = role
+    request = SupportRequest.model_validate(payload)
+    selected_rows = [row for row in rows if row["workload_kind"] == role]
+    _write_pair(parquet, selected_rows)
+    output = tmp_path / f"{role}-assessment"
+    report = evaluate_interpolation_holdout(request, systems_root=source, output_dir=output)
+    assert report["status"] == "passed"
+    assert report["worker_type"] == role
+    assert report["collection_phases"] == [role]
+    assert set(report["phases"]) == {role}
+    assert report["phases"][role]["selected_count"] > 0
+    assert all(point["phase"] == role for point in report["predictions"])
+    config = json.loads((output / "perfmodel-config.json").read_text())
+    assert config["worker_type"] == role
+    assert report["native_query_coverage"]["queries"]["measured"] == 0
+    assert report["native_query_coverage"]["queries"]["unsupported"] == 0
+    assert pq.read_table(parquet).num_rows == len(selected_rows)
+
+
 def test_selection_is_deterministic_and_input_order_independent(holdout_case, tmp_path):
     request, source, parquet, rows = holdout_case
     reports = []

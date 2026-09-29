@@ -183,7 +183,7 @@ def _evidence(tmp_path, monkeypatch):
     return cell
 
 
-def _resolve(cell, root):
+def _resolve(cell, root, **kwargs):
     return runtime_memory.resolve_runtime_resources(
         cell,
         root,
@@ -194,6 +194,7 @@ def _resolve(cell, root):
         expected_max_num_tokens=1024,
         expected_max_batch_size=64,
         expected_gpu_memory_utilization=0.9,
+        **kwargs,
     )
 
 
@@ -373,6 +374,28 @@ def test_audited_worker_graph_downgrade_preserves_scheduler_snapshot(tmp_path, m
     result = _resolve(cell, tmp_path)
     provenance = json.loads(result["runtime_memory"]["provenance"])
     assert provenance["runtime_settings"]["compilation_config"]["cudagraph_mode"] == "PIECEWISE"
+
+
+@pytest.mark.parametrize("declared_mode", ["FULL_AND_PIECEWISE", "FULL_DECODE_ONLY"])
+def test_formal_memory_checks_reviewed_initial_graph_before_validated_worker_downgrade(
+    tmp_path, monkeypatch, declared_mode
+):
+    cell = _evidence(tmp_path, monkeypatch)
+
+    def downgrade(record):
+        if record["kind"] == "worker":
+            graph = record["resolved_config"]["compilation_config"]
+            record["initial_compilation_config"] = dict(graph)
+            graph["cudagraph_mode"] = "PIECEWISE"
+
+    _edit_memory(tmp_path, downgrade)
+    expected = {"cudagraph_mode": declared_mode, "max_cudagraph_capture_size": 64}
+    if declared_mode == "FULL_AND_PIECEWISE":
+        result = _resolve(cell, tmp_path, expected_compilation_config=expected)
+        assert result["runtime_memory"]["kv_cache_bytes"] == 88 * 128
+    else:
+        with pytest.raises(ValueError, match="reviewed serving role"):
+            _resolve(cell, tmp_path, expected_compilation_config=expected)
 
 
 @pytest.mark.parametrize("resolved_mode", ["PIECEWISE", "NONE"])

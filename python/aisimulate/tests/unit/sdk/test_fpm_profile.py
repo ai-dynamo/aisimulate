@@ -471,6 +471,70 @@ def test_dense_tp_does_not_require_expert_tensor_parallelism(profile_dict):
     assert load_fpm_profile(profile_dict).deployments[0].parallel_tuple == (2, 1, 1, 1, 1, 1)
 
 
+def test_role_profiles_preserve_separate_resources_and_legacy_wire_identity(profile_dict):
+    legacy = load_fpm_profile(profile_dict).model_dump_json()
+    assert "worker_type" not in legacy
+    assert load_fpm_profile(legacy).model_dump_json() == legacy
+    prefill = profile_dict["deployments"][0]
+    prefill["worker_type"] = "prefill"
+    decode = copy.deepcopy(prefill)
+    decode["worker_type"] = "decode"
+    decode["resources"].update(weights_bytes=180, max_batch_size=128)
+    profile_dict["deployments"].append(decode)
+    profile = load_fpm_profile(load_fpm_profile(profile_dict).model_dump_json())
+    identity = dict(
+        model=profile.model, system="test_gpu", backend="vllm", backend_version="0.25.1", tp_size=2, moe_tp_size=2
+    )
+    assert profile.select(**identity, worker_type="prefill").resources.weights_bytes == 100
+    selected = profile.select(**identity, worker_type="decode")
+    assert selected.resources.weights_bytes == 180
+    assert selected.resources.max_batch_size == 128
+    with pytest.raises(ValueError, match="worker_type=aggregated"):
+        profile.select(**identity)
+    for role in ("prefill", "decode", "aggregated"):
+        assert load_fpm_profile(legacy).select(**identity, worker_type=role).worker_type is None
+
+
+@pytest.mark.parametrize("other_role", [None, "prefill"])
+def test_role_profiles_reject_ambiguous_or_duplicate_identity(profile_dict, other_role):
+    prefill = profile_dict["deployments"][0]
+    prefill["worker_type"] = "prefill"
+    other = copy.deepcopy(prefill)
+    other["worker_type"] = other_role
+    profile_dict["deployments"].append(other)
+    with pytest.raises(ValidationError, match="ambiguous|duplicate"):
+        load_fpm_profile(profile_dict)
+
+
+@pytest.mark.parametrize("worker_type", ["prefill", "decode", "aggregated"])
+def test_direct_profile_compilation_and_saved_config_preserve_role(profile_dict, direct_compile, worker_type):
+    profile_dict["deployments"][0]["worker_type"] = worker_type
+    spec = direct_compile(profile_dict, worker_type=worker_type)
+    assert spec["engine"]["extra"]["worker_type"] == worker_type
+    migrated = ForwardPassPerfModelConfig.from_legacy_engine_config(spec["engine"], worker_type).to_dict()
+    assert migrated["worker_type"] == worker_type
+    assert migrated["fpm_profile"]["deployments"][0]["worker_type"] == worker_type
+    different_role = "decode" if worker_type == "prefill" else "prefill"
+    with pytest.raises(ValueError, match="worker_type conflicts"):
+        ForwardPassPerfModelConfig.from_legacy_engine_config(spec["engine"], different_role)
+
+
+def test_same_topology_role_profiles_preserve_distinct_precision_in_native_bridge(profile_dict, direct_compile):
+    prefill = profile_dict["deployments"][0]
+    prefill["worker_type"] = "prefill"
+    decode = copy.deepcopy(prefill)
+    decode.update(
+        worker_type="decode", gemm_quant_mode="fp8_block", fmha_quant_mode="bfloat16", kv_cache_dtype="bfloat16"
+    )
+    profile_dict["deployments"].append(decode)
+    for role, expected in (("prefill", prefill), ("decode", decode)):
+        spec = direct_compile(profile_dict, worker_type=role)
+        restored = ForwardPassPerfModelConfig.from_legacy_engine_config(spec["engine"], role).to_dict()
+        assert restored["gemm_quant_mode"] == expected["gemm_quant_mode"]
+        assert restored["fmha_quant_mode"] == expected["fmha_quant_mode"]
+        assert restored["kvcache_quant_mode"] == expected["kv_cache_dtype"]
+
+
 @pytest.mark.parametrize("kwargs", [{"moe_tp_size": 0}, {"moe_ep_size": False}, {"cp_size": True}])
 def test_select_rejects_zero_or_boolean_dimensions(profile_dict, kwargs):
     profile = load_fpm_profile(profile_dict)
@@ -634,6 +698,22 @@ def runtime_profile(profile_dict):
         "provenance": "Synthetic worker initialization observation; not a silicon qualification.",
     }
     return profile_dict
+
+
+def test_runtime_memory_selects_exact_role_capacity_and_scheduler(runtime_profile, profile_memory):
+    prefill = runtime_profile["deployments"][0]
+    prefill["worker_type"] = "prefill"
+    decode = copy.deepcopy(prefill)
+    decode["worker_type"] = "decode"
+    decode["resources"]["max_batch_size"] = 128
+    decode["resources"]["runtime_memory"]["kv_cache_bytes"] = 720
+    runtime_profile["deployments"].append(decode)
+    assert profile_memory(worker_type="prefill", context_length=1024)["total_kv_size_bytes"] == 600
+    assert profile_memory(worker_type="decode", max_batch_size=128, context_length=1024)["total_kv_size_bytes"] == 720
+    with pytest.raises(ValueError, match="exact recorded"):
+        profile_memory(worker_type="decode", context_length=1024)
+    with pytest.raises(ValueError, match="worker_type=aggregated"):
+        profile_memory(context_length=1024)
 
 
 @pytest.mark.parametrize("keep_weights", [False, True])
@@ -1341,6 +1421,31 @@ def test_direct_timings_work_without_declared_memory(profile_dict, measured_prof
         model.close()
     with pytest.raises(ValueError, match="registered"):
         _normalize(_request(profile_dict, "sol"))
+
+
+@pytest.mark.parametrize("worker_type", ["prefill", "decode", "aggregated"])
+def test_native_profile_role_survives_compilation_and_saved_canonical_config(
+    profile_dict, measured_profile_roots, worker_type
+):
+    root = measured_profile_roots(worker_type, "genuine")
+    profile_dict["deployments"][0]["worker_type"] = worker_type
+    request = _request(profile_dict, "direct", worker_type=worker_type, systems_paths=[root])
+    for config in (request, json.loads(json.dumps(_normalize(request)))):
+        model = RustForwardPassPerfModel.best_available(config)
+        try:
+            workload = (
+                {"num_decode_requests": 1, "sum_decode_kv_tokens": 1}
+                if worker_type == "decode"
+                else {"num_prefill_requests": 1, "sum_prefill_tokens": 1}
+            )
+            assert model.estimate_forward_pass_time_ms({"scheduled_requests": workload}) == (
+                3.0 if worker_type == "decode" else 2.0
+            )
+            saved = model.diagnostics()["provenance"]["config"]
+            assert saved["worker_type"] == worker_type
+            assert saved["fpm_profile"]["deployments"][0]["worker_type"] == worker_type
+        finally:
+            model.close()
 
 
 def test_direct_coverage_is_native_persists_errors_and_round_trips(profile_dict, measured_profile_roots):
