@@ -39,4 +39,7 @@ run dsv4_hca_ctx           dsv4_hca_ctx_DeepSeek-V4-Flash-FP8      $M fp8 "$DSV4
 run dsv4_hca_gen           dsv4_hca_gen_DeepSeek-V4-Flash-FP8      $M fp8 "$DSV4"
 run dsv4_hca_attn          dsv4_hca_attn_DeepSeek-V4-Flash-FP8     $M fp8 "$DSV4"
 run dsv4_paged_mqa_logits  dsv4_paged_mqa_logits_DeepSeek-V4-Flash-FP8 $M fp8 "$DSV4"
+MSA='attn|sparse|msa|topk|index|score|merge'
+run msa_ctx                msa_ctx_MiniMax-M3                      MiniMaxAI/MiniMax-M3 auto "$MSA"
+run msa_gen                msa_gen_MiniMax-M3                      MiniMaxAI/MiniMax-M3 auto "$MSA"
 run kda_ctx                kda_ctx_Kimi-K3                         moonshotai/Kimi-K3 auto "$KDA"
