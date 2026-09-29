@@ -1620,6 +1620,39 @@ findings:
     applies_to: ['framework:vllm-0.30.0', 'collector:vllm', 'platform:sm90', 'instrument:opsweep',
       meta-llama/Llama-4-Maverick-17B-128E-Instruct, moonshotai/Kimi-K3, MiniMaxAI/MiniMax-M3,
       deepseek-ai/DeepSeek-V3.2, zai-org/GLM-5, sgl-project/DeepSeek-V4-Pro-FP8, google/gemma-4-26B-A4B]
+  vllm_0300_gate_set_restored_2026_09_29:
+    statement: |
+      Owner question 2026-09-29 ("msa 的 kernel 和 probe 的 align 吗") exposed
+      that the vllm 0.30.0 gate set I rebuilt kept only 19 of the 32 gates
+      the 0.29.0 set had — attention ctx/gen (Llama-3.1-8B), encoder_attn
+      (Qwen3-VL-2B), dsa ctx x4 + gen (DeepSeek-V3.2), gemm m=1 x2, msa
+      ctx/gen (MiniMax-M3) and kda decode were silently missing, and
+      path_verdicts_aligned reported 19/19. Restored: every family
+      re-captured in the 0.30 image with the current collectors and graded;
+      RESULT 32 declared gates, 32 ALIGNED (msa ctx 3/3 and gen 5/5 attention
+      kernels matched; dsa fp8 isl-512 graded against a dedicated isl-512
+      serving raw of the same record as on 0.29, because isl 512 is below the
+      sparse threshold and runs dense FA3). Two deviations are EXPLAINED, not
+      gates: mhc (collector measures the no-norm mhc_pre variant by
+      producer/consumer contract — the SDK bills attn_norm separately,
+      collect_mhc_module._mhc_pre — while 0.30 serving selects the
+      with_norm big_fuse variant via MhcPreBigFuseTileLangKernel.CompileKey
+      .use_norm_weight) and compute_scale (governed approximation). kda
+      decode: the collector measures both the fused non-spec kernel and the
+      packed conv-update + recurrence pair (serving's spec-decode path); the
+      gate captures a non-spec probe, so the capture sets
+      AIS_KDA_DECODE_PATHS=fused (collect_kda._decode_paths, recorded in
+      capture_env) and the fused path is ALIGNED with
+      kda_decode_fusion_many_heads_kernel. MECHANISM: workflow_check gained
+      gates_cover_registry_ops (upgrade_op step gates_declared before
+      path_aligned): every backend registry op must map to a declared gate
+      family (_OP_GATE_FAMILIES) or be listed gate-free with a reason; an
+      unmapped op is a finding. It flagged mhc_module immediately (now
+      explained-by-contract). Lesson: a gate set is checked against the
+      registry, never against what the script happens to declare.
+    applies_to: ['framework:vllm-0.30.0', 'instrument:workflow_check', 'instrument:path_diff', 'platform:sm90',
+      MiniMaxAI/MiniMax-M3, deepseek-ai/DeepSeek-V3.2, moonshotai/Kimi-K3, sgl-project/DeepSeek-V4-Flash-FP8,
+      meta-llama/Meta-Llama-3.1-8B, Qwen/Qwen3-VL-2B-Instruct]
   taxonomy_dsa_nsa_family_covers_m3:
     statement: 'RESOLVED 2026-09-23: M3 sparse-attention kernels now label `triton` (the vocabulary name of
       MiniMaxM3SparseTritonImpl), dsa_nsa is DeepSeek-DSA only; see probe_prefill_prefix_cache_contamination.

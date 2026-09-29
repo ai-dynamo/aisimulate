@@ -211,10 +211,85 @@ def declared_gates(fw: str, version: str) -> set:
         if f"--framework {fw} " not in text or f"--version {version} " not in text:
             continue
         for line in text.splitlines():
-            m = re.match(r"^run\s+(\S+)\s+(\S+)", line)
+            # a leading SERVING_RAW=<raw> (gate graded against a dedicated serving raw) still declares a gate;
+            # OUT=$OUT_EXPLAINED lines are explained deviations, not gates
+            m = re.match(r"^(?:SERVING_RAW=\S+\s+)?run\s+(\S+)\s+(\S+)", line)
             if m:
                 gates.add(m.group(2))
     return gates
+
+
+# Which gate-name families must exist for a backend registry op before the
+# op's serving alignment can be called verified. A registry op with no
+# mapping is a finding (the table must grow with the registry), an op mapped
+# to None is deliberately gate-free with the reason recorded here. Review
+# 2026-09-29: rebuilding the vllm gate set for 0.30.0 silently dropped 11 of
+# the 32 gates (attention, dsa, encoder, gemm m=1, msa, kda decode) and
+# path_verdicts_aligned happily reported 19/19 — coverage is now checked
+# against the registry, not against whatever the script happens to declare.
+_OP_GATE_FAMILIES = {
+    "gemm": [r"^gemm_"],
+    "compute_scale": None,  # governed approximation (collector/evidence_exceptions.yaml), no serving instance to gate
+    "attention_context": [r"^attn\w*_ctx"],
+    "attention_generation": [r"^attn\w*_gen"],
+    "encoder_attention": [r"^encoder_attn"],
+    "moe": [r"^moe_"],
+    "mla_bmm_gen_pre": [r"^mla_bmm"],
+    "mla_bmm_gen_post": [r"^mla_bmm"],
+    "mla_context": [r"^mla_ctx"], "mla_context_module": [r"^mla_ctx"],
+    "mla_generation": [r"^mla_gen"], "mla_generation_module": [r"^mla_gen"],
+    "dsa_context_module": [r"^dsa_ctx"], "dsa_context_module_skip_indexer": None,  # sglang variant of the same path
+    "dsa_generation_module": [r"^dsa_gen"], "dsa_generation_module_skip_indexer": None,
+    "msa_context_module": [r"^msa\w*_ctx"],
+    "msa_generation_module": [r"^msa\w*_gen"],
+    "dsv4_csa_context_module": [r"^dsv4_csa_ctx"], "dsv4_csa_generation_module": [r"^dsv4_csa_gen"],
+    "dsv4_csa_attn_module": [r"^dsv4_csa_attn"], "dsv4_csa_topk_calib": None,  # calibration helper, not a serving op
+    "dsv4_hca_context_module": [r"^dsv4_hca_ctx"], "dsv4_hca_generation_module": [r"^dsv4_hca_gen"],
+    "dsv4_hca_attn_module": [r"^dsv4_hca_attn"], "dsv4_paged_mqa_logits_module": [r"^dsv4_paged_mqa"],
+    "glm5_dsa_attn_module": [r"^glm5_dsa"], "glm5_mqa_logits_module": [r"^glm5_mqa"], "glm5_topk_module": [r"^glm5_topk"],
+    "mhc_module": None,  # collector measures the no-norm mhc_pre by producer/consumer contract (SDK bills attn_norm separately); serving fuses the norm -> explained deviation, kept under facts/pathdiff/explained
+    "gdn": [r"^gdn_ctx", r"^gdn_gen"],
+    "kda": [r"^kda_ctx", r"^kda_gen"],
+    "mamba2": [r"^mamba2"],
+}
+
+
+def registry_ops(fw: str) -> list:
+    """Op names the backend's collector registry declares (text-parsed: the
+    harness never imports collector machinery). Wide-EP registries are the
+    multi-node plane and are not gated here."""
+    reg = HARNESS.parent / fw / "registry.py"
+    if not reg.exists():
+        return []
+    return sorted(set(re.findall(r'op="([a-z0-9_]+)"', reg.read_text())))
+
+
+def pred_gates_cover_registry_ops(p):
+    """Every op the backend registry declares has at least one gate of each
+    of its gate families declared for (fw, version) — or is listed gate-free
+    with a reason in _OP_GATE_FAMILIES. Catches a rebuilt gate set that
+    quietly lost families (the 0.30.0 rebuild kept 19 of 32)."""
+    fw, version = p["fw"], p["version"]
+    ops = registry_ops(fw)
+    if not ops:
+        return False, f"no collector registry found for {fw}"
+    gates = declared_gates(fw, version)
+    unmapped, uncovered = [], []
+    for op in ops:
+        if op not in _OP_GATE_FAMILIES:
+            unmapped.append(op)
+            continue
+        fams = _OP_GATE_FAMILIES[op]
+        if fams is None:
+            continue
+        for rx in fams:
+            if not any(re.match(rx, g) for g in gates):
+                uncovered.append(f"{op}:{rx}")
+    if unmapped:
+        return False, f"registry ops without a gate-family mapping: {unmapped[:4]} (extend _OP_GATE_FAMILIES)"
+    if uncovered:
+        return False, f"{len(uncovered)} gate families undeclared for {fw} {version}: {uncovered[:4]}"
+    return True, f"{len(gates)} gates cover all {len(ops)} registry ops"
 
 
 def pred_path_verdicts_aligned(p):
@@ -459,7 +534,7 @@ def pred_model_gates_aligned(p):
 
 
 PREDICATES = {fn.__name__[5:]: fn for fn in [
-    pred_component_pending, pred_pin_is, pred_plan_has_version, pred_path_verdicts_aligned,
+    pred_component_pending, pred_pin_is, pred_plan_has_version, pred_gates_cover_registry_ops, pred_path_verdicts_aligned,
     pred_matrix_complete, pred_fails_root_caused, pred_customizations_retested,
     pred_model_inputs_ready, pred_dummies_built, pred_model_probed,
     pred_model_fails_dispositioned, pred_model_decomposed, pred_residue_dispositioned, pred_e2e_admitted,

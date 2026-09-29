@@ -41,13 +41,11 @@ Output:
     kda_perf.txt — same column layout as the sglang kda collector.
 """
 
-# Serve-parity `metadata=` argument validated on the 0.27.0 release image
-# (Kimi-K3 landed upstream there). The manifest kda family pin stays on the
-# kimi-k3 preview build until the SDK consumer routes 0.27.0's split decode
-# (see collector/framework_manifest.yaml), so this module exactly pins the
-# preview version; it runs on either image — the DS-layout probe
-# (is_fused_kda_decode_supported) yields fused_kda_decode rows on the
-# preview and the packed conv-update + recurrence pair on 0.27.0.
+# Pinned to the manifest default (0.30.0) since the kda family pin on the
+# kimi-k3 preview image was retired 2026-09-28: 0.30's DS-layout probe
+# (is_fused_kda_decode_supported, now with recurrent_state_dtype) selects
+# fused_kda_decode for the non-spec decode, and the packed conv-update +
+# recurrence pair is measured alongside as the spec-decode serving path.
 __compat__ = "vllm>=0.30.0,<=0.30.0"
 
 import gc
@@ -81,6 +79,17 @@ aic_debug = int(os.getenv("aic_kda_debug", "0"))  # noqa: SIM112
 # KDA safe-gate lower bound: fixed model constant for Kimi-K3
 # (config.json linear_attn_config.gate_lower_bound).
 KDA_LOWER_BOUND = -5.0
+
+
+def _decode_paths() -> set[str]:
+    """Which decode paths the generation benchmark measures. Default: both the
+    fused CUDA decode kernel (serving's non-spec path) and the packed
+    conv-update + Triton recurrence pair (serving's path under speculative
+    decoding). The opharness kda decode gate captures serving WITHOUT spec
+    decoding, so it sets AIS_KDA_DECODE_PATHS=fused to compare like with like
+    (recorded in the capture's env). Collection runs never set it."""
+    return {p.strip() for p in os.environ.get("AIS_KDA_DECODE_PATHS", "fused,packed").split(",") if p.strip()}
+
 
 NUM_WARMUPS = 3
 NUM_RUNS = 10
@@ -468,6 +477,7 @@ def run_kda_generation_benchmark(
     # :665-680@v0.30.0, resolve_kda_decode_backend -> is_fused_kda_decode_supported
     # :157-178), float32 for the default mamba_ssm_cache_dtype "auto" — the dtype
     # of this collector's recurrent state below.
+    decode_paths = _decode_paths()
     fused_ok = is_fused_kda_decode_supported(
         nh, hd, cw, num_spec=0, input_dtype=dtype, conv_state_dtype=dtype, recurrent_state_dtype=torch.float32
     )
@@ -506,7 +516,7 @@ def run_kda_generation_benchmark(
                 "model_name": model_name,
             }
 
-            if fused_ok:
+            if fused_ok and "fused" in decode_paths:
 
                 def run_fused_decode():
                     ops.fused_kda_decode(
@@ -543,55 +553,56 @@ def run_kda_generation_benchmark(
                         results["power_stats"],
                     )
 
-            def run_conv_update():
-                causal_conv1d_update(
-                    x,
-                    conv_state,
-                    conv_weight,
-                    None,
-                    activation="silu",
-                    conv_state_indices=idx,
-                    validate_data=True,
-                    out=conv_out,
-                )
+            if "packed" in decode_paths:
+                def run_conv_update():
+                    causal_conv1d_update(
+                        x,
+                        conv_state,
+                        conv_weight,
+                        None,
+                        activation="silu",
+                        conv_state_indices=idx,
+                        validate_data=True,
+                        out=conv_out,
+                    )
 
-            with benchmark_with_power(
-                device=device, kernel_func=run_conv_update, num_warmups=NUM_WARMUPS, num_runs=NUM_RUNS, repeat_n=1
-            ) as results:
-                _log(
-                    common,
-                    results["latency_ms"],
-                    "causal_conv1d_update",
-                    perf_filename,
-                    vllm_version,
-                    device,
-                    results["power_stats"],
-                )
+                with benchmark_with_power(
+                    device=device, kernel_func=run_conv_update, num_warmups=NUM_WARMUPS, num_runs=NUM_RUNS, repeat_n=1
+                ) as results:
+                    _log(
+                        common,
+                        results["latency_ms"],
+                        "causal_conv1d_update",
+                        perf_filename,
+                        vllm_version,
+                        device,
+                        results["power_stats"],
+                    )
 
-            def run_packed_decode():
-                fused_recurrent_kda_packed_decode(
-                    mixed_qkv=x,
-                    raw_g=raw_g,
-                    raw_beta=raw_beta,
-                    A_log=a_log,
-                    dt_bias=dt_bias_hd,
-                    lower_bound=KDA_LOWER_BOUND,
-                    initial_state=state,
-                    state_indices=idx,
-                )
+                def run_packed_decode():
+                    fused_recurrent_kda_packed_decode(
+                        mixed_qkv=x,
+                        raw_g=raw_g,
+                        raw_beta=raw_beta,
+                        A_log=a_log,
+                        dt_bias=dt_bias_hd,
+                        lower_bound=KDA_LOWER_BOUND,
+                        initial_state=state,
+                        state_indices=idx,
+                    )
 
-            with benchmark_with_power(
-                device=device, kernel_func=run_packed_decode, num_warmups=NUM_WARMUPS, num_runs=NUM_RUNS, repeat_n=1
-            ) as results:
-                _log(
-                    common,
-                    results["latency_ms"],
-                    "fused_recurrent_kda_packed_decode",
-                    perf_filename,
-                    vllm_version,
-                    device,
-                    results["power_stats"],
-                )
+                with benchmark_with_power(
+                    device=device, kernel_func=run_packed_decode, num_warmups=NUM_WARMUPS, num_runs=NUM_RUNS, repeat_n=1
+                ) as results:
+                    _log(
+                        common,
+                        results["latency_ms"],
+                        "fused_recurrent_kda_packed_decode",
+                        perf_filename,
+                        vllm_version,
+                        device,
+                        results["power_stats"],
+                    )
             ok += 1
         except Exception as e:
             err += 1

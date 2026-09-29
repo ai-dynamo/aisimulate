@@ -124,3 +124,25 @@ def test_review_nonexistent_family_shows_nothing_done(wc):
     for pred in ("family_observed", "family_unit_defined", "family_collector_exists", "family_gates_aligned"):
         ok, _ = wc.PREDICATES[pred]({"family": "nonexistent-review-op", "sm": "sm90"})
         assert ok is False, pred
+
+
+def test_gate_coverage_is_checked_against_the_registry_not_the_script(wc, tmp_path):
+    """Review 2026-09-29: the 0.30 gate rebuild kept 19 of 32 gates and
+    path_verdicts_aligned reported 19/19. gates_cover_registry_ops requires a
+    declared gate family for every registry op (or a recorded gate-free reason)."""
+    (wc.HARNESS.parent / "vllm").mkdir(parents=True)
+    (wc.HARNESS.parent / "vllm" / "registry.py").write_text(
+        'REGISTRY = [OpEntry(op="gemm"), OpEntry(op="gdn"), OpEntry(op="compute_scale"), OpEntry(op="msa_context_module")]\n')
+    sh = wc.HARNESS / "components" / "captures" / "verdicts_vllm_0300.sh"
+    sh.write_text("python3 $PD --diff --framework vllm --version 0.30.0 \n"
+                  "run gemm_bf16 gemm_bf16_Llama meta-llama/Llama auto ''\n"
+                  "run gdn_ctx gdn_ctx_Qwen Qwen/Q auto ''\n")
+    ok, reason = wc.pred_gates_cover_registry_ops({"fw": "vllm", "version": "0.30.0"})
+    assert not ok and "gdn:^gdn_gen" in reason and "msa_context_module" in reason
+    sh.write_text(sh.read_text() + "run gdn_gen gdn_gen_Qwen Qwen/Q auto ''\nrun msa_ctx msa_ctx_M3 MiniMaxAI/M3 auto ''\n")
+    ok, reason = wc.pred_gates_cover_registry_ops({"fw": "vllm", "version": "0.30.0"})
+    assert ok, reason
+    # an op the table does not know is a finding, never silently gate-free
+    (wc.HARNESS.parent / "vllm" / "registry.py").write_text('REGISTRY = [OpEntry(op="brand_new_op")]\n')
+    ok, reason = wc.pred_gates_cover_registry_ops({"fw": "vllm", "version": "0.30.0"})
+    assert not ok and "brand_new_op" in reason
