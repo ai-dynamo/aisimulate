@@ -1,14 +1,12 @@
 // SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
-
 use uuid::Uuid;
 
 #[cfg(test)]
 use crate::engine::cache::radix_cache::KvPageId;
 use crate::engine::common::protocols::DirectRequest;
+use crate::engine::common::sequence::synthetic_output_token;
 use crate::engine::kv_manager::sglang_backend::RadixRequestLease;
 
 #[derive(Debug)]
@@ -120,10 +118,7 @@ impl SglangRequest {
             return *token_id;
         }
 
-        let mut hasher = DefaultHasher::new();
-        self.uuid.hash(&mut hasher);
-        self.output_len().hash(&mut hasher);
-        hasher.finish() as u32
+        synthetic_output_token(self.uuid, self.output_len())
     }
 
     pub(super) fn append_output_token(&mut self, token: u32, block_size: usize) {

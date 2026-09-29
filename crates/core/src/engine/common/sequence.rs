@@ -15,7 +15,7 @@ use xxhash_rust::xxh3::xxh3_64;
 /// request under the same ID reproduces its output tokens and KV block hashes,
 /// while distinct requests receive independent streams. Hashing a fixed
 /// little-endian encoding keeps values stable across platforms and toolchains.
-fn synthetic_output_token(request_id: Uuid, output_ordinal: usize) -> u32 {
+pub(crate) fn synthetic_output_token(request_id: Uuid, output_ordinal: usize) -> u32 {
     let mut bytes = [0; 24];
     bytes[..16].copy_from_slice(request_id.as_bytes());
     bytes[16..].copy_from_slice(&(output_ordinal as u64).to_le_bytes());
