@@ -143,6 +143,67 @@ def test_real_cli_default_uses_model_geometry_and_hardware_then_embeds_exact_pro
     assert list(output.parent.iterdir()) == [output]
 
 
+@pytest.mark.parametrize("role", [None, "aggregated", "prefill", "decode"])
+@pytest.mark.parametrize("preview", [False, True])
+def test_real_cli_grouped_topology_uses_native_role_estimate_and_preserves_saved_role(tmp_path, role, preview):
+    source, resources = _inputs(
+        tmp_path,
+        {**_SMALL, "sliding_window": 128},
+        {**_PRECISION, "cache_block_sizes": {"sliding_attention": 16}, "max_num_tokens": 256, "max_batch_size": 8},
+    )
+    output = tmp_path / "new" / "request.yaml"
+    command = _args(source, resources, output, model=str(tmp_path), worker_type=role)
+    result = _real_cli(command + (["--suggest-parallel"] if preview else []))
+    assert result.returncode == 0, result.stderr
+    if preview:
+        report = json.loads(result.stdout)
+        candidate = report["default"]
+        assert candidate["status"] == "estimated_fit"
+        assert candidate["required_gpus"] == 1
+        fields = candidate["resolved_profile_fields"]
+        assert fields["cache_layout"] == "grouped"
+        non_kv = sum(
+            fields[name]
+            for name in ("weights_bytes", "activations_bytes", "runtime_overhead_bytes", "comm_overhead_bytes")
+        )
+        assert non_kv < candidate["estimated_required_bytes"] < candidate["memory_budget_bytes"]
+        assert not output.parent.exists()
+        return
+
+    request = SupportRequest.from_yaml(output)
+    assert request.worker_type == request.profile_deployment().worker_type == role
+    assert request.worker_gpus == 1
+    assert request.profile_deployment().resources.cache_layout == "grouped"
+    assert request.profile_deployment().resources.memory_source == "pending"
+    plan_root = tmp_path / "plan"
+    result = _real_cli(["onboard", "plan", "--config", str(output), "--output-dir", str(plan_root)])
+    assert result.returncode == 0, result.stderr
+    assert SupportRequest.from_yaml(plan_root / "request.yaml") == request
+    assert load_fpm_profile((plan_root / "fpm-model-profile.json").read_text()) == request.fpm_profile
+    plan = json.loads((plan_root / "support-plan.json").read_text())
+    command = plan["fpm"]["plan_command"]
+    if role is not None:
+        assert plan["fpm"]["worker_type"] == role
+        assert plan["fpm"]["collection_phases"] == list(request.collection_phases)
+        assert command[command.index("--fpm-worker-type") + 1] == role
+    else:
+        assert "worker_type" not in request.model_dump(mode="json")
+        assert "worker_type" not in request.profile_deployment().model_dump(mode="json")
+        assert "--fpm-worker-type" not in command
+    if role in {"prefill", "decode"}:
+        artifact = yaml.safe_load((plan_root / "worker.yaml").read_text())
+        assert artifact["worker_type"] == role
+        assert set(artifact["engine"]["workers"]) == {role}
+        assert artifact["engine"]["fpm_profile"] == request.fpm_profile.model_dump(mode="json")
+        assert not (plan_root / "predict/pilot.yaml").exists()
+    else:
+        prediction = CorePredictionConfig.from_yaml(plan_root / "predict/pilot.yaml")
+        recommendation = CoreRecommendationConfig.from_yaml(plan_root / "recommend/pilot.yaml")
+        assert prediction.engine.mode == recommendation.engine.mode == "aggregated"
+        assert prediction.engine.fpm_profile == recommendation.engine.fpm_profile == request.fpm_profile
+        assert not (plan_root / "worker.yaml").exists()
+
+
 @pytest.mark.parametrize("output_kind", ["existing", "directory", "missing", "file_parent"])
 def test_real_cli_preview_is_json_and_never_validates_or_writes_output_target(tmp_path, output_kind):
     source, resources = _inputs(tmp_path, _LARGE)

@@ -261,7 +261,7 @@ def _assess(
                     "system": selected.identity.gpu,
                     "backend": selected.identity.framework,
                     "backend_version": selected.identity.framework_version,
-                    "worker_type": "aggregated",
+                    "worker_type": selected.worker_type or "aggregated",
                     "tp": sizes[0],
                     "pp": 1,
                     "attention_dp": sizes[1],
