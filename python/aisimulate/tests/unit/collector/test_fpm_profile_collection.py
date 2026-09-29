@@ -945,26 +945,55 @@ def test_cli_rejects_profile_limit_overshoots_before_execution(tmp_path, monkeyp
     assert message in capsys.readouterr().err
 
 
-@pytest.mark.parametrize("actual_version", ["0.25.1", "0.24.0"])
-def test_profile_runtime_version_is_observed_before_execution(tmp_path, monkeypatch, actual_version):
+@pytest.mark.parametrize(
+    ("expected_version", "actual_version"),
+    [
+        ("0.25.1", "0.25.1"),
+        ("0.25.1+custom", "0.25.1+custom"),
+        ("0.25.2.dev3", "0.25.2.dev3"),
+        ("0.25.2.dev3+custom", "0.25.2.dev3+custom"),
+        ("0.25.1", "0.24.0"),
+        ("0.25.1", "0.25.1+custom"),
+        ("0.25.1+custom", "0.25.1"),
+        ("0.25.1+custom", "0.25.1+other"),
+        ("0.25.2.dev3", "0.25.2.dev4"),
+        ("0.25.2", "0.25.2.dev3"),
+    ],
+)
+def test_profile_runtime_version_is_observed_before_execution(tmp_path, monkeypatch, expected_version, actual_version):
     resource = object.__new__(runner.KubernetesCellRunner)
     monkeypatch.setattr(runner, "FPM_RESULTS_DIR", str(tmp_path))
     monkeypatch.setattr(importlib.metadata, "version", lambda _: actual_version)
 
     def execute(_pod, command, timeout):
         if command[:2] == ["python3", "-c"]:
-            monkeypatch.setattr(sys, "argv", ["-c", *command[3:]])
-            exec(command[2], {})
+            with monkeypatch.context() as patch:
+                patch.setattr(sys, "argv", ["-c", *command[3:]])
+                exec(command[2], {})
 
     resource._exec_checked = execute
-    arguments = dict(cell_id="cell", plan_sha256="plan", attempt_id="attempt", expected_backend_version="0.25.1")
-    if actual_version != "0.25.1":
-        with pytest.raises(RuntimeError, match="profile runtime mismatch"):
+    arguments = dict(
+        cell_id="cell", plan_sha256="plan", attempt_id="attempt", expected_backend_version=expected_version
+    )
+    if actual_version != expected_version:
+        with pytest.raises(RuntimeError, match="profile runtime mismatch") as failure:
             resource.prepare_attempt(["pod-0"], **arguments)
+        message = str(failure.value)
+        assert f"actual={actual_version!r}, expected={expected_version!r}" in message
+        assert "Use the pinned runtime" in message
+        assert f"create a new collection profile with backend_version={actual_version!r}" in message
+        assert "regenerate the collection plan in a new output directory" in message
     else:
         resource.prepare_attempt(["pod-0"], **arguments)
     provenance = json.loads((tmp_path / "collector-provenance.json").read_text())
-    assert provenance["runtime"]["backend_version"] == actual_version
+    assert provenance == {
+        "schema_name": "aic_fpm_collector_provenance",
+        "schema_version": 1,
+        "cell_id": "cell",
+        "plan_sha256": "plan",
+        "attempt_id": "attempt",
+        "runtime": {"backend": "vllm", "backend_version": actual_version},
+    }
 
 
 def test_profile_input_is_not_valid_for_op_collection():

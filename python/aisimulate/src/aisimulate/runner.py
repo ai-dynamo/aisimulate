@@ -1962,6 +1962,7 @@ def _normalize_engine_replay_report(report: Mapping[str, JSONValue], *, include_
             "agentic_phases",
             "agentic_model_projection",
             "weka_nested_timestamp_basis",
+            "fpm_query_evidence",
         )
         if key in payload
     }

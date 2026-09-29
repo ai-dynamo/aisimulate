@@ -104,9 +104,12 @@ def holdout_case(tmp_path, monkeypatch, request):
     monkeypatch.setattr(engine, "build_model_config", reject_graph)
     topology = getattr(request, "param", "tp")
     is_moe = topology != "tp"
+    checkpoint = tmp_path / "checkpoint"
+    checkpoint.mkdir()
+    (checkpoint / "config.json").write_text(json.dumps({"architectures": ["UnregisteredDecoderForCausalLM"]}))
     profile = {
         "schema_version": 1,
-        "model": "test/unregistered-holdout-model",
+        "model": str(checkpoint),
         "model_revision": "synthetic-immutable-v1",
         "architecture": "UnregisteredDecoderForCausalLM",
         "context_length": 8192,

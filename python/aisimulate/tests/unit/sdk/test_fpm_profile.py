@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from aisimulate_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel, engine, memory
+from aisimulate_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel, engine, fpm_profile, memory, utils
 from aisimulate_core.sdk.errors import PerfDataNotAvailableError
 from aisimulate_core.sdk.fpm_profile import FpmModelProfile, load_fpm_profile
 
@@ -21,7 +21,26 @@ pytestmark = pytest.mark.unit
 
 
 @pytest.fixture
-def profile_dict():
+def checkpoint_configs(monkeypatch):
+    fpm_profile._load_pinned_checkpoint_config.cache_clear()
+    configs = {
+        "test/unknown-decoder": {"architectures": ["UnregisteredDecoderForCausalLM"]},
+        "nvidia/GLM-5.2-NVFP4": {"architectures": ["GlmMoeDsaForCausalLM"]},
+        "MiniMaxAI/MiniMax-M2.7": {"architectures": ["MiniMaxM2ForCausalLM"]},
+    }
+
+    def download(model, filename, *, revision):
+        assert filename == "config.json"
+        assert revision == "profile-test-fixture-v1"
+        return copy.deepcopy(configs[model])
+
+    monkeypatch.setattr(utils, "_download_hf_json", download)
+    yield configs
+    fpm_profile._load_pinned_checkpoint_config.cache_clear()
+
+
+@pytest.fixture
+def profile_dict(checkpoint_configs):
     return {
         "schema_version": 1,
         "model": "test/unknown-decoder",
@@ -87,7 +106,135 @@ def _request(profile, method="auto", **overrides):
 
 
 def _normalize(config):
-    return json.loads(engine.aisimulate_core.RustForwardPassPerfModel.normalize_config(json.dumps(config)))
+    return RustForwardPassPerfModel.normalize_config(config)
+
+
+@pytest.mark.parametrize(
+    "entry_point", [RustForwardPassPerfModel.normalize_config, RustForwardPassPerfModel.best_available]
+)
+@pytest.mark.parametrize("method", ["auto", "direct"])
+@pytest.mark.parametrize("architecture", ["LlamaForCausalLm", "Qwen2ForCausalLM"])
+def test_profile_architecture_mismatch_fails_before_selection(
+    profile_dict, checkpoint_configs, monkeypatch, entry_point, method, architecture
+):
+    checkpoint_configs[profile_dict["model"]] = {"architectures": ["LlamaForCausalLM"]}
+    profile_dict["architecture"] = architecture
+    monkeypatch.setattr(engine, "compile_engine", _fail_graph)
+    with pytest.raises(ValueError, match="FPM profile architecture mismatch") as error:
+        entry_point(_request(profile_dict, method, estimation_mode="auto", fallback_policy="allow"))
+    assert "LlamaForCausalLM" in str(error.value)
+    assert architecture in str(error.value)
+    assert profile_dict["model_revision"] in str(error.value)
+
+
+@pytest.mark.parametrize(
+    "entry_point", [RustForwardPassPerfModel.normalize_config, RustForwardPassPerfModel.best_available]
+)
+@pytest.mark.parametrize(
+    "metadata",
+    [
+        None,
+        [],
+        {},
+        {"model_type": "llama"},
+        {"architectures": []},
+        {"architectures": "LlamaForCausalLM"},
+        {"architectures": [None]},
+        {"architectures": [" "]},
+    ],
+)
+def test_profile_missing_architecture_is_not_unregistered(
+    profile_dict, checkpoint_configs, monkeypatch, entry_point, metadata
+):
+    checkpoint_configs[profile_dict["model"]] = metadata
+    monkeypatch.setattr(engine, "compile_engine", _fail_graph)
+    with pytest.raises(ValueError, match="checkpoint config.json must"):
+        entry_point(_request(profile_dict, estimation_mode="auto", fallback_policy="allow"))
+
+
+@pytest.mark.parametrize(
+    "entry_point", [RustForwardPassPerfModel.normalize_config, RustForwardPassPerfModel.best_available]
+)
+def test_profile_unresolvable_checkpoint_is_not_unregistered(profile_dict, monkeypatch, entry_point):
+    def unavailable(*_args, **_kwargs):
+        raise utils.HuggingFaceDownloadError("pinned revision is unavailable")
+
+    monkeypatch.setattr(utils, "_download_hf_json", unavailable)
+    monkeypatch.setattr(engine, "compile_engine", _fail_graph)
+    with pytest.raises(ValueError, match="cannot verify FPM profile architecture") as error:
+        entry_point(_request(profile_dict, estimation_mode="auto", fallback_policy="allow"))
+    assert profile_dict["model_revision"] in str(error.value)
+    assert "pinned revision is unavailable" in str(error.value)
+
+
+@pytest.mark.parametrize(
+    "model,architecture,method",
+    [
+        ("test/unknown-decoder", "UnregisteredDecoderForCausalLM", "direct"),
+        ("nvidia/GLM-5.2-NVFP4", "GlmMoeDsaForCausalLM", "sol"),
+    ],
+)
+def test_profile_architecture_metadata_uses_pinned_revision(profile_dict, monkeypatch, model, architecture, method):
+    calls = []
+    profile_dict.update(model=model, architecture=architecture, model_revision="a" * 40)
+
+    def download(model, filename, *, revision):
+        calls.append((model, filename, revision))
+        return {"architectures": [architecture]}
+
+    monkeypatch.setattr(utils, "_download_hf_json", download)
+    monkeypatch.setattr(utils, "_load_pre_downloaded_hf_config", _fail_graph)
+    monkeypatch.setattr(utils, "_parse_hf_config_json", _fail_graph)
+    resolved = RustForwardPassPerfModel.normalize_config(_request(profile_dict))
+    assert RustForwardPassPerfModel.normalize_config(_request(profile_dict)) == resolved
+    assert calls == [(profile_dict["model"], "config.json", "a" * 40)]
+    assert resolved["estimator_config"]["fpm_interpolation"]["method"] == method
+
+
+def test_profile_metadata_cache_separates_checkpoint_revisions(profile_dict, monkeypatch):
+    calls = []
+    architectures = {"a" * 40: "UnregisteredDecoderForCausalLM", "b" * 40: "LlamaForCausalLM"}
+
+    def download(model, filename, *, revision):
+        calls.append((model, filename, revision))
+        return {"architectures": [architectures[revision]]}
+
+    monkeypatch.setattr(utils, "_download_hf_json", download)
+    for revision, method in (("a" * 40, "direct"), ("b" * 40, "sol"), ("a" * 40, "direct")):
+        profile_dict.update(model_revision=revision, architecture=architectures[revision])
+        assert _normalize(_request(profile_dict))["estimator_config"]["fpm_interpolation"]["method"] == method
+    assert calls == [(profile_dict["model"], "config.json", revision) for revision in architectures]
+
+
+def test_profile_architecture_matches_collector_text_config_view(profile_dict, checkpoint_configs):
+    checkpoint_configs[profile_dict["model"]] = {
+        "architectures": ["UnknownForConditionalGeneration"],
+        "text_config": {"architectures": [profile_dict["architecture"]]},
+    }
+    assert _normalize(_request(profile_dict))["estimator_config"]["fpm_interpolation"]["method"] == "direct"
+
+
+@pytest.mark.parametrize("metadata", [None, "not JSON"])
+def test_local_checkpoint_missing_or_invalid_config_fails_without_download(
+    profile_dict, monkeypatch, tmp_path, metadata
+):
+    profile_dict["model"] = str(tmp_path)
+    if metadata is not None:
+        (tmp_path / "config.json").write_text(metadata)
+    monkeypatch.setattr(utils, "_download_hf_json", _fail_graph)
+    with pytest.raises(ValueError, match="cannot verify FPM profile architecture"):
+        RustForwardPassPerfModel.best_available(_request(profile_dict, fallback_policy="allow"))
+
+
+def test_local_checkpoint_architecture_is_revalidated(profile_dict, monkeypatch, tmp_path):
+    profile_dict["model"] = str(tmp_path)
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps({"architectures": [profile_dict["architecture"]]}))
+    monkeypatch.setattr(utils, "_download_hf_json", _fail_graph)
+    assert _normalize(_request(profile_dict))["estimator_config"]["fpm_interpolation"]["method"] == "direct"
+    config_path.write_text(json.dumps({"architectures": ["LlamaForCausalLM"]}))
+    with pytest.raises(ValueError, match="FPM profile architecture mismatch"):
+        RustForwardPassPerfModel.best_available(_request(profile_dict, fallback_policy="allow"))
 
 
 @pytest.fixture
@@ -734,7 +881,7 @@ def native_profile_config(profile_dict, monkeypatch):
     # Use a bundled system/version for native engine construction. Resource and
     # precision variants below are transport fixtures, not measured timing cells.
     monkeypatch.setenv("AIC_ALLOW_UNLISTED_VERSIONS", "1")
-    profile_dict.update(model="MiniMaxAI/MiniMax-M2.7")
+    profile_dict.update(model="MiniMaxAI/MiniMax-M2.7", architecture="MiniMaxM2ForCausalLM")
     profile_dict["deployments"][0].update(system="h200_sxm")
     monkeypatch.setattr(engine, "get_model", _fail_graph)
     specs = []
@@ -829,6 +976,24 @@ def test_legacy_selector_migrates_to_nested_control(native_profile_config):
     assert isinstance(canonical["fpm_profile"], dict)
 
 
+def test_saved_profile_compiler_controls_merge_with_caller_options(native_profile_config):
+    compile_config, _ = native_profile_config
+    saved = json.loads(json.dumps(compile_config()))
+    assert json.loads(saved["extra"]["estimator_config"]) == {"fpm_interpolation": {"method": "direct"}}
+    canonical = ForwardPassPerfModelConfig.from_legacy_engine_config(
+        saved,
+        "prefill",
+        {"max_observations": 128, "min_faster_correction_factor": 0.9, "regression_attention_kv_weight": 7},
+    )
+    reloaded = ForwardPassPerfModelConfig(**json.loads(json.dumps(canonical.to_dict())))
+    controls = RustForwardPassPerfModel.normalize_config(reloaded)["estimator_config"]
+    assert controls["fpm_interpolation"]["method"] == "direct"
+    assert controls["correction"]["sampling"]["max_observations"] == 128
+    assert controls["fpm_regression"]["sampling"]["max_observations"] == 128
+    assert controls["correction"]["factor_bounds"]["min"] == 0.9
+    assert controls["features"]["attention_kv_weight"] == 7
+
+
 def _write_external_profile_pair(profile, directory):
     """Generate routing/identity evidence; these 2/3 ms rows are not silicon data."""
     import pyarrow as pa
@@ -873,21 +1038,63 @@ def _write_external_profile_pair(profile, directory):
 
 
 @pytest.mark.parametrize(
-    ("model", "system", "tp", "dp", "moe_tp", "moe_ep", "gemm", "fmha"),
+    "architecture,method",
+    [("UnregisteredDecoderForCausalLM", "auto"), ("LlamaForCausalLM", "direct")],
+)
+def test_verified_local_checkpoint_queries_without_analytical_model(
+    profile_dict, monkeypatch, tmp_path, architecture, method
+):
+    checkpoint = tmp_path / "checkpoint"
+    checkpoint.mkdir()
+    # A config-only checkpoint cannot supply weights or a model graph. Remote
+    # code declarations stay inert; direct timing needs just verified identity.
+    (checkpoint / "config.json").write_text(
+        json.dumps({"architectures": [architecture], "auto_map": {"AutoConfig": "untrusted.Configuration"}})
+    )
+    (checkpoint / "untrusted.py").write_text("raise AssertionError('remote model code was executed')\n")
+    profile_dict.update(model=str(checkpoint), architecture=architecture)
+    profile_dict["deployments"][0]["system"] = "h200_sxm"
+    monkeypatch.setenv("AIC_ALLOW_UNLISTED_VERSIONS", "1")
+    monkeypatch.setattr(utils, "_download_hf_json", _fail_graph)
+    monkeypatch.setattr(utils, "_parse_hf_config_json", _fail_graph)
+    monkeypatch.setattr(engine, "get_model", _fail_graph)
+    monkeypatch.setattr(engine, "build_model_config", _fail_graph)
+    monkeypatch.setattr(engine, "_maybe_load_database", _fail_graph)
+    path = _write_external_profile_pair(profile_dict, tmp_path)
+    config = _request(
+        profile_dict,
+        estimator_config={"fpm_interpolation": {"method": method, "fpm_parquet_path": str(path)}},
+    )
+    resolved = RustForwardPassPerfModel.normalize_config(config)
+    assert resolved["estimator_config"]["fpm_interpolation"]["method"] == "direct"
+    forward = RustForwardPassPerfModel.best_available(config)
+    constructed = forward.diagnostics()["provenance"]["config"]
+    assert constructed["fpm_profile"] == resolved["fpm_profile"]
+    assert constructed["estimator_config"] == resolved["estimator_config"]
+    assert forward.estimate_forward_pass_time_ms(
+        {"scheduled_requests": {"num_prefill_requests": 1, "sum_prefill_tokens": 1}}
+    ) == pytest.approx(2.0)
+    assert forward.estimate_forward_pass_time_ms(
+        {"scheduled_requests": {"num_decode_requests": 1, "sum_decode_kv_tokens": 1}}
+    ) == pytest.approx(3.0)
+
+
+@pytest.mark.parametrize(
+    ("model", "architecture", "system", "tp", "dp", "moe_tp", "moe_ep", "gemm", "fmha"),
     [
-        ("MiniMaxAI/MiniMax-M2.7", "h200_sxm", 4, 1, 4, 1, "fp8_block", "bfloat16"),
-        ("nvidia/GLM-5.2-NVFP4", "b200_sxm", 1, 8, 1, 8, "nvfp4", "fp8"),
-        ("nvidia/GLM-5.2-NVFP4", "b200_sxm", 8, 1, 1, 8, "nvfp4", "fp8"),
+        ("MiniMaxAI/MiniMax-M2.7", "MiniMaxM2ForCausalLM", "h200_sxm", 4, 1, 4, 1, "fp8_block", "bfloat16"),
+        ("nvidia/GLM-5.2-NVFP4", "GlmMoeDsaForCausalLM", "b200_sxm", 1, 8, 1, 8, "nvfp4", "fp8"),
+        ("nvidia/GLM-5.2-NVFP4", "GlmMoeDsaForCausalLM", "b200_sxm", 8, 1, 1, 8, "nvfp4", "fp8"),
     ],
 )
 def test_external_fpm_cells_query_with_model_construction_disabled(
-    profile_dict, monkeypatch, tmp_path, model, system, tp, dp, moe_tp, moe_ep, gemm, fmha
+    profile_dict, monkeypatch, tmp_path, model, architecture, system, tp, dp, moe_tp, moe_ep, gemm, fmha
 ):
     # Synthetic timing and resource declarations test the real checkpoint
     # identities through external storage with all graph constructors disabled.
     # Accuracy against retained silicon measurements is separate validation.
     monkeypatch.setenv("AIC_ALLOW_UNLISTED_VERSIONS", "1")
-    profile_dict.update(model=model)
+    profile_dict.update(model=model, architecture=architecture)
     profile_dict["deployments"][0].update(
         system=system,
         tp=tp,
@@ -1196,7 +1403,10 @@ def test_coverage_wrappers_preserve_existing_engine_queries_on_external_cells(
 
     # Synthetic external timings exercise TP/DEP/TEP routing parity, not model
     # accuracy or GPU memory qualification. No bundled FPM data is required.
-    profile_dict["model"] = model_id
+    profile_dict.update(
+        model=model_id,
+        architecture="MiniMaxM2ForCausalLM" if model_id == "MiniMaxAI/MiniMax-M2.7" else "GlmMoeDsaForCausalLM",
+    )
     profile_dict["deployments"][0].update(
         system=system,
         tp=tp,

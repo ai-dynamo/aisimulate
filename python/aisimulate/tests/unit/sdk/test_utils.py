@@ -7,12 +7,14 @@ Unit tests for SDK utility functions.
 Tests HuggingFace config parsing and model config retrieval.
 """
 
+import io
+import json
 from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 
-from aisimulate.sdk import common, config
+from aisimulate.sdk import common, config, utils
 from aisimulate.sdk.backends.base_backend import BaseBackend
 from aisimulate.sdk.models import Gemma4MixModel, HybridMoEModel
 from aisimulate.sdk.utils import (
@@ -23,6 +25,26 @@ from aisimulate.sdk.utils import (
 )
 
 pytestmark = pytest.mark.unit
+
+
+@pytest.mark.parametrize(
+    "revision,path_revision",
+    [(None, "main"), ("a" * 40, "a" * 40), ("release/v1", "release%2Fv1")],
+)
+def test_download_hf_config_json_revision(monkeypatch, revision, path_revision):
+    requests = []
+    metadata = {"architectures": ["UnregisteredDecoderForCausalLM"]}
+
+    def fetch(request, *, timeout):
+        requests.append(request.full_url)
+        assert timeout == 30
+        return io.BytesIO(json.dumps(metadata).encode())
+
+    monkeypatch.setattr(utils, "_get_hf_auth_headers", lambda: {})
+    monkeypatch.setattr(utils.urllib.request, "urlopen", fetch)
+    kwargs = {} if revision is None else {"revision": revision}
+    assert utils._download_hf_json("test/model", "config.json", **kwargs) == metadata
+    assert requests == [f"https://huggingface.co/test/model/raw/{path_revision}/config.json"]
 
 
 class TestParseHFConfig:

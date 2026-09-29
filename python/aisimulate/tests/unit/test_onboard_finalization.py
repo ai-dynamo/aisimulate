@@ -214,6 +214,10 @@ def _prepare_collection(tmp_path: Path, extra_init_args: tuple[str, ...] = ()) -
             "torch_dtype": "bfloat16",
         },
     )
+    # Keep checkpoint metadata independently available after the onboarding
+    # input is removed; native profile construction verifies its architecture.
+    checkpoint = tmp_path / "checkpoint"
+    _write(checkpoint / "config.json", json.loads(source.read_text()))
     overrides = tmp_path / "overrides.json"
     _write(
         overrides,
@@ -233,6 +237,8 @@ def _prepare_collection(tmp_path: Path, extra_init_args: tuple[str, ...] = ()) -
                 "init",
                 "--model-config",
                 str(source),
+                "--model",
+                str(checkpoint),
                 "--resource-overrides",
                 str(overrides),
                 "--model-revision",
@@ -347,7 +353,8 @@ def build_completed_collection(
             },
         },
     )
-    # Finalization must use immutable saved inputs, never refetch/rederive config.
+    # Finalization reuses saved onboarding inputs; the separate checkpoint
+    # config remains available for the canonical architecture check.
     source.unlink()
     (tmp_path / "overrides.json").unlink()
     return request, root
@@ -431,7 +438,7 @@ def test_public_slurm_collect_to_finalize_preserves_frozen_deployment(tmp_path, 
 
     from .collector.test_fpm_cpu_affinity import _snapshot as cpu_snapshot
 
-    request, root = _prepare_collection(tmp_path, ("--model", str(tmp_path)))
+    request, root = _prepare_collection(tmp_path)
     image = "registry.example/fpm@sha256:" + "a" * 64
     commands = []
 

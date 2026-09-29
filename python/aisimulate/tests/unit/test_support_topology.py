@@ -63,11 +63,11 @@ def _large_config(tmp_path, **updates):
     )
 
 
-def _request(kind="dense", gpu="h200_sxm", concurrency=2, interconnect="NVLink", **search):
+def _request(kind="dense", gpu="h200_sxm", concurrency=2, interconnect="NVLink", model="example/synthetic", **search):
     return SupportRequest.model_validate(
         {
             "identity": {
-                "model": "example/synthetic",
+                "model": model,
                 "model_revision": "checkpoint-123",
                 "model_kind": kind,
                 "framework_version": "0.25.1",
@@ -122,7 +122,7 @@ def test_grouped_fit_uses_windowed_native_peak_instead_of_linear_context_rate(tm
     non_kv = 13472 + 70 * 1024**2
     capacity = ((non_kv + 100_000) * 10 + 8) // 9
     _hardware(tmp_path, monkeypatch, gpu={"mem_capacity": capacity})
-    request = _request(context_length=2048)
+    request = _request(context_length=2048, model=str(tmp_path))
     runtime = _runtime(max_num_tokens=256, max_batch_size=8)
     linear = suggest_topologies(_config(tmp_path), request, runtime)
     windowed = suggest_topologies(
@@ -150,7 +150,7 @@ def test_grouped_non_kv_budget_equality_does_not_admit_a_worker(tmp_path, monkey
     _hardware(tmp_path, monkeypatch, gpu={"mem_capacity": (non_kv * 10 + 8) // 9})
     report = suggest_topologies(
         _config(tmp_path, sliding_window=128),
-        _request(),
+        _request(model=str(tmp_path)),
         _runtime(cache_block_sizes={"sliding_attention": 16}),
     )
     candidate = next(candidate for candidate in report.rejected_candidates if candidate.required_gpus == 1)

@@ -471,6 +471,57 @@ impl ForwardPassPerfModel {
         }
     }
 
+    /// Estimate the same iteration with executed direct-FPM support. The
+    /// native rank maximum and online correction are explicit; measurement
+    /// weights describe raw lookup values only. Detailed query state is returned;
+    /// bounded coverage is retained only when explicitly enabled.
+    pub fn estimate_forward_pass_detailed(
+        &self,
+        metrics_by_rank: &[ForwardPassMetrics],
+    ) -> Result<crate::ForwardPassEstimate, AicError> {
+        if let ForwardPassPerfMode::Native {
+            engine,
+            corrections,
+        } = &self.mode
+        {
+            let Some(feature) = IterationFeatures::from_metrics(metrics_by_rank)? else {
+                return Ok(crate::ForwardPassEstimate {
+                    latency_ms: Some(0.0),
+                    native_latency_ms: Some(0.0),
+                    correction_factor: Some(1.0),
+                    max_rank: None,
+                    ranks: Vec::new(),
+                });
+            };
+            let mut coverage = self
+                .query_coverage
+                .as_ref()
+                .map(FpmCoverageState::lock)
+                .transpose()?;
+            let mut estimate =
+                engine.forward_pass_estimate(metrics_by_rank, true, coverage.as_deref_mut())?;
+            let factor =
+                Some(feature)
+                    .filter(|_| self.is_correction_enabled)
+                    .map_or(1.0, |feature| {
+                        corrections
+                            .store(feature.workload_kind)
+                            .correction_factor_for(&feature.x)
+                    });
+            estimate.correction_factor = Some(factor);
+            estimate.latency_ms = estimate.native_latency_ms.map(|native| native * factor);
+            Ok(estimate)
+        } else {
+            Ok(crate::ForwardPassEstimate {
+                latency_ms: self.estimate_forward_pass_time_ms(metrics_by_rank)?,
+                native_latency_ms: None,
+                correction_factor: None,
+                max_rank: None,
+                ranks: Vec::new(),
+            })
+        }
+    }
+
     /// API:
     /// `model.tune_with_fpms(iterations) -> Result<(), AicError>`
     ///
@@ -749,6 +800,23 @@ impl ForwardPassPerfModel {
         } else {
             engine.predict_decode_latency(batch_size, input_tokens, output_tokens)
         }
+    }
+
+    pub(crate) fn static_prefill_detailed(
+        &self,
+        batch_size: u32,
+        input_tokens: u32,
+        prefix: u32,
+    ) -> Result<crate::ForwardPassEstimate, AicError> {
+        let engine = self.native_engine().ok_or_else(|| {
+            AicError::InvalidEngineConfig("static prefill requires a native estimator".into())
+        })?;
+        let mut coverage = self
+            .query_coverage
+            .as_ref()
+            .map(FpmCoverageState::lock)
+            .transpose()?;
+        engine.predict_prefill_detailed(batch_size, input_tokens, prefix, coverage.as_deref_mut())
     }
 
     /// Native operation evidence for one static prefill or decode step. Values

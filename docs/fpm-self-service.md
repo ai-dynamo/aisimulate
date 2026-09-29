@@ -11,7 +11,7 @@ Collection limits and validation traffic are separate inputs. AISimulate sets ru
 
 Planning works before the model has an AISimulate model class or measured FPM timings. With a supplied FPM profile, planning validates the declared deployment identity. Fresh config-derived profiles leave memory pending until a runtime probe or runtime initialization during collection; no activation or non-KV memory bound is required. Runtime compatibility and data readiness remain **unchecked**, and accuracy is **not assessed**. This setup does not provision GPUs or run target preflight checks.
 
-Ordinary FPM `predict` and `recommend` accept an inline `engine.fpm_profile` with model identity, cache geometry and resolved rank-local memory evidence. Direct interpolation uses measured timings without constructing an op-level model. Registered models retain SOL interpolation. See [Choose the model execution route](#choose-the-model-execution-route) for selection and coverage rules.
+Ordinary FPM `predict` and `recommend` accept an inline `engine.fpm_profile` with model identity, cache geometry and resolved rank-local memory evidence. Direct interpolation uses measured timings without constructing an op-level model. Automatic interpolation selection retains SOL for registered architectures. See [Choose the model execution route](#choose-the-model-execution-route) for selection and coverage rules.
 
 ## Onboard with an agent
 
@@ -587,7 +587,7 @@ For a model without an analytical class, create a JSON or YAML FPM profile and p
 | Profile fields | Required meaning |
 | --- | --- |
 | `schema_version` | Integer `1`. |
-| `model`, `model_revision`, `architecture` | Exact timing model identity, pinned checkpoint revision, and architecture identifier. An unknown architecture is valid for direct interpolation. |
+| `model`, `model_revision`, `architecture` | Exact timing model identity, pinned checkpoint revision, and architecture identifier matching the checkpoint configuration. An analytical model class is optional for direct interpolation. |
 | `context_length`, `num_experts`, `provenance` | Declared context limit, routed expert count (`0` for dense), and how the metadata was obtained. |
 | `deployments` | One or more exact deployment records, with one precision/resource identity per hardware/runtime/full parallel tuple. |
 | Deployment `system`, `backend`, `backend_version` | GPU system, `vllm`, and literal runtime version. |
@@ -603,6 +603,8 @@ All resource bytes are **per rank**, and must bound every rank. Scheduler envelo
 For complete legacy declarations, automatic KV admission subtracts these non-KV bounds and CUDA graph reservation from the configured fraction of GPU memory. Linear cache divides the remainder by its declared bytes per token; grouped cache passes the shared byte budget and group pages to the native allocator. `context_length: max` uses the profile limit. Keep `bytes_per_token: auto` for profile resources; grouped profiles reject explicit scalar rates and block-count capacities. These operations need a hardware specification and profile, but no FPM timing files or model graph. The [canonical cache-budget API](core-api.md#fpm-profile-cache-groups-and-byte-budgets) returns grouped `total_kv_size_bytes` and `request_peak_cache_bytes`; scalar `total_kv_size_tokens` and `kv_size_per_token_bytes` are null. `estimate_num_gpu_blocks` rejects grouped profiles.
 
 The declared checkpoint revision is preserved for review and replay. Existing FPM tables may not pin a checkpoint revision; supplying one in a profile does not prove that the historical measurements came from that exact revision. Record that limitation in `provenance` when validating existing data.
+
+Ordinary FPM model construction reads `config.json` from the local checkpoint or the declared remote `model_revision` and verifies the profile's architecture against the checkpoint's text-model architecture before selecting interpolation. Missing or malformed architecture metadata and mismatched names fail explicitly. This verification loads no weights and constructs no analytical model graph. A verified architecture without a registered analytical class remains valid for direct interpolation. Schema-only parsing and onboarding request creation do not require this runtime metadata check.
 
 ## Plan, preview, and explicitly execute
 
@@ -646,7 +648,15 @@ aisimulate onboard collect-fpm \
   --output-dir ./aisimulate-support --execute
 ```
 
-Execution requires a matching saved plan. Creating the initial plan records model and runtime revisions without downloading a pinned checkpoint or inspecting the running runtime. During profile-based collection execution, the collector checks the initialized worker's vLLM version against the profile's literal backend version before benchmarking. Keep the actual checkpoint consistent with the declared model revision.
+Execution requires a matching saved plan. Creating the initial plan records model and runtime revisions without downloading a pinned checkpoint or inspecting the running runtime. During profile-based collection execution, the collector records the observed container's vLLM version before checking it against the profile's literal backend version and before benchmarking. Keep the actual checkpoint consistent with the declared model revision.
+
+Custom and development builds are supported with an exact full-version pin. Local and development suffixes are part of the identity: `0.25.1+custom` must match `0.25.1+custom`, and `0.25.2.dev3` must match `0.25.2.dev3`. Inspect the version **inside the collection container**:
+
+```bash
+python3 -c "import importlib.metadata; print(importlib.metadata.version('vllm'))"
+```
+
+Use that complete string for both the request's `--framework-version` and the collection profile's deployment `backend_version`. On a mismatch, the error reports the expected and observed strings, and the observed version remains in `collector-provenance.json`. Recover by using the pinned runtime, or by creating a new collection profile pinned to the observed full version and regenerating the request and collection plan in a new output directory.
 
 For a profile-based campaign, the collector validates its resolved topology and precision against the supplied profile before execution. It does not relabel an FP8 cell as BF16 or change checkpoint quantization to satisfy the profile. A mismatch reports the conflicting field and requires a matching profile/runtime or a supported collector configuration. Pending profiles defer memory admission to the initialized runtime; complete declared profiles retain CPU admission without constructing an analytical model. Profile contents participate in the collector's frozen-plan identity.
 
@@ -1286,8 +1296,16 @@ timing:
       method: direct
 ```
 
-Within `estimator_config.fpm_interpolation`, `method: auto` retains SOL for a registered architecture and chooses direct for an unregistered architecture with a profile. Explicit `sol` requires a registered class; explicit `direct` requires a profile. Rust validates and selects the method through `RustForwardPassPerfModel.best_available(ForwardPassPerfModelConfig)`, then pins it for queries and exported configurations. A model-construction error does not trigger a silent change of method. The engine's top-level `estimation_mode: auto` retains the normal priority of operation-level estimation, FPM interpolation, then FPM regression; providing a profile does not change that priority.
+Within `estimator_config.fpm_interpolation`, `method: auto` retains SOL for a registered architecture and chooses direct for a verified architecture without a registered class when a profile is supplied. Explicit `sol` requires a registered class; explicit `direct` requires a profile and is also valid for registered architectures. Rust validates and selects the method through `RustForwardPassPerfModel.best_available(ForwardPassPerfModelConfig)`, then pins it for queries and exported configurations. A model-construction error does not trigger a silent change of method. The engine's top-level `estimation_mode: auto` retains the normal priority of operation-level estimation, FPM interpolation, then FPM regression; providing a profile does not change that priority.
 
-Direct timing first uses an exact point or interpolation within a measured curve. Prefill interpolation stays at the same batch size, with two measured KV neighbors whose prompt curves both cover the requested token count. Wider KV bracketing removes the old distance limit only when the narrower direct bracket is unavailable. Decode interpolation respects the measured batch/capture domain. Both phases exclude synthetic `fake_fallback` rows, including healed/extrapolated values. Missing two-sided support, unmeasured batches and out-of-domain queries fail explicitly. The direct route does not apply SOL-dependent prefill batch clamping or general extrapolation; 2D interpolation remains experimental.
+Direct readiness requires genuine measurements for each operation's phase. Prefill rows cannot make an operation with no genuine decode rows ready, and vice versa. Construction tries later configured systems roots when a root lacks a required phase; if none is usable, it reports the missing phase. An operation that needs only prefill does not require decode measurements, and vice versa. Readiness does not guarantee coverage of every subsequent query.
+
+Direct timing first uses an exact point or interpolation within a measured curve. For cross-KV prefill interpolation, it selects the nearest measured KV curve on each side at the same batch size, considering only curves that cover the requested total new-token count. This direct bracket has no KV distance limit; SOL's site-distance guard is separate. Decode interpolation respects the measured batch/capture domain. Both phases exclude synthetic `fake_fallback` rows, including healed/extrapolated values. Missing two-sided support, unmeasured prefill batches and out-of-domain queries fail explicitly. The direct route does not apply SOL-dependent prefill batch clamping or general extrapolation; 2D interpolation remains experimental.
+
+Use `predict --detail source --format json` to inspect executed direct lookups and their measured support, or inspect the saved `prediction.json` after requesting source details. The default text output shows operation sources and fallbacks. The canonical model's `estimate_forward_pass_detailed(metrics)` provides the same lookup evidence with rank reduction, mixed-pass baseline and online-correction context. Replay and recommendation APIs accept `ReplayOutputRequirements(capture_performance_diagnostics=True)` to retain counted query records in their returned metadata. Ordinary runs keep no query history; requested capture retains every distinct query without truncation. See [Direct FPM query evidence](core-api.md#direct-fpm-query-evidence) for the result fields and recommendation API. Exact and interpolated values keep the existing `silicon` source tag. Provenance alone does not qualify interpolation accuracy or prove which CUDA graph a measured forward used; accuracy gates and graph-aware interpolation remain deferred until new measurements establish the relevant behavior.
+
+Saved legacy interpolation controls merge with explicitly supplied correction, regression, and sampling controls. Disjoint settings and agreeing overlapping values are retained; conflicting explicit values fail with the setting's name. Defaults apply after these explicit inputs merge. See [Migrating saved configuration](core-api.md#migrating-saved-configuration) for the public migration API.
 
 Per-operation silicon profiling described in the model guide is not required by either FPM route. The workflow collects whole-forward timings, then verifies prediction and recommendation for the exact target deployment. Report timing coverage and interpolation error separately; successful simulation alone does not establish measured accuracy.
+
+Accuracy gates and interpolation corrections remain deferred until new measurements are collected with the provenance from [Dynamo #15110](https://github.com/ai-dynamo/dynamo/pull/15110). Those records support investigation; they do not by themselves establish the cause of earlier interpolation errors. If a reproducible CUDA graph boundary causes the discrepancy, interpolation must respect that boundary. No graph-aware partitioning or accuracy policy is introduced here.

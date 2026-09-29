@@ -218,7 +218,7 @@ struct AicTimingConfig {
     #[serde(default)]
     fallback_policy: ForwardPassFallbackPolicy,
     #[serde(default)]
-    estimator_config: EstimatorConfig,
+    estimator_config: serde_json::Map<String, serde_json::Value>,
     #[serde(default)]
     database_mode: crate::DatabaseMode,
     #[serde(default)]
@@ -278,29 +278,18 @@ impl AicTimingConfig {
         } else {
             self.systems_paths.clone()
         };
-        let mut estimator_config = self.estimator_config.clone();
-        if let Some(legacy) = self.fpm_interpolation {
-            let method = &mut estimator_config.fpm_interpolation.method;
-            ensure!(
-                *method == crate::FpmInterpolationMethod::Auto || *method == legacy,
-                "fpm_interpolation conflicts with estimator_config.fpm_interpolation.method"
-            );
-            *method = legacy;
-        }
         if let Some(path) = &self.fpm_parquet_path {
             crate::config::validate_fpm_parquet_path(
                 Some(std::path::Path::new(path)),
                 mode == EstimationMode::FpmInterpolation,
             )?;
-            let configured = &mut estimator_config.fpm_interpolation.fpm_parquet_path;
-            ensure!(
-                configured
-                    .as_ref()
-                    .is_none_or(|existing| existing == std::path::Path::new(path)),
-                "conflicting fpm_parquet_path and estimator_config.fpm_interpolation.fpm_parquet_path"
-            );
-            *configured = Some(path.into());
         }
+        let estimator_config = EstimatorConfig::migrate_legacy_inputs(
+            Some(&serde_json::to_string(&self.estimator_config)?),
+            None,
+            self.fpm_interpolation.map(|method| method.as_str()),
+            self.fpm_parquet_path.as_deref(),
+        )?;
         Ok(ForwardPassPerfModelConfig {
             model: self.model.clone(),
             system: self.system.clone(),
@@ -435,6 +424,10 @@ struct AicTimingModel {
     use_fpm_decode_totals: bool,
     fpm_decode_kv_ceiling: Option<u32>,
     evidence: Mutex<TimingEvidenceSummary>,
+    // Capture-only history. Keyed by phase and exact iteration totals, so
+    // repeated invocations increment a count without cloning prior history.
+    fpm_evidence:
+        Mutex<std::collections::BTreeMap<(bool, u32, u32, u32), crate::FpmEstimateEvidence>>,
     phase_cache: quick_cache::sync::Cache<PhaseEvidenceKey, TimingPhaseEvidence>,
 }
 
@@ -462,7 +455,8 @@ impl AicTimingModel {
         config.forward_model = None;
         config.fpm_parquet_path = None;
         config.fallback_policy = ForwardPassFallbackPolicy::Deny;
-        config.estimator_config = provenance.config.estimator_config.clone();
+        config.estimator_config =
+            serde_json::from_value(serde_json::to_value(&provenance.config.estimator_config)?)?;
         config.fpm_profile = provenance.config.fpm_profile.clone();
         config.fpm_interpolation = None;
         config.gemm_dtype = provenance.config.gemm_quant_mode.clone();
@@ -492,6 +486,7 @@ impl AicTimingModel {
             use_fpm_decode_totals,
             fpm_decode_kv_ceiling,
             evidence: Mutex::new(TimingEvidenceSummary::default()),
+            fpm_evidence: Mutex::default(),
             phase_cache: quick_cache::sync::Cache::new(128),
         })
     }
@@ -577,6 +572,32 @@ impl AicTimingModel {
         }
         Ok(())
     }
+
+    fn record_fpm_estimate(
+        &self,
+        key: (bool, u32, u32, u32),
+        estimate: crate::ForwardPassEstimate,
+    ) -> Result<f64> {
+        let latency_ms = estimate
+            .latency_ms
+            .context("native FPM returned no estimate")?;
+        if latency_ms > 0.0 {
+            let mut evidence = self
+                .fpm_evidence
+                .lock()
+                .map_err(|_| anyhow!("FPM evidence accumulator was poisoned"))?;
+            let entry = evidence.entry(key).or_insert(crate::FpmEstimateEvidence {
+                estimate,
+                count: 0,
+                latency_scale: 1.0,
+            });
+            entry.count = entry
+                .count
+                .checked_add(1)
+                .context("FPM evidence invocation count overflow")?;
+        }
+        Ok(latency_ms)
+    }
 }
 
 fn phase_evidence_from_python(
@@ -632,6 +653,12 @@ impl TimingModel for AicTimingModel {
             self.record_evidence(evidence, true)?;
             return Ok(latency_ms);
         }
+        if let Some(model) = &self.diagnostic_model {
+            return self.record_fpm_estimate(
+                (true, batch_size, mean_isl, mean_prefix),
+                model.static_prefill_detailed(batch_size, mean_isl, mean_prefix)?,
+            );
+        }
         if let Some(model) = &self.fpm_model {
             return model
                 .predict_prefill_latency(batch_size, mean_isl, mean_prefix)
@@ -663,6 +690,19 @@ impl TimingModel for AicTimingModel {
                 .min(total_kv_tokens);
             let batch_size = checked_u32(batch_size, "decode batch size")?;
             let total_past_kv_tokens = checked_u32(total_past_kv_tokens, "total past KV tokens")?;
+            if let Some(model) = &self.diagnostic_model {
+                let estimate =
+                    model.estimate_forward_pass_detailed(&[crate::ForwardPassMetrics {
+                        scheduled_requests: crate::ScheduledRequestMetrics {
+                            num_decode_requests: batch_size,
+                            sum_decode_kv_tokens: total_past_kv_tokens,
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    }])?;
+                return self
+                    .record_fpm_estimate((false, batch_size, 0, total_past_kv_tokens), estimate);
+            }
             if let Some(model) = &self.fpm_model {
                 return model
                     .predict_decode_latency_total(batch_size, total_past_kv_tokens)
@@ -701,7 +741,52 @@ impl TimingModel for AicTimingModel {
         self.evidence.lock().ok().map(|evidence| evidence.clone())
     }
 
+    fn fpm_evidence_summary(&self) -> Option<TimingEvidenceSummary> {
+        if !self.use_fpm_decode_totals || self.diagnostic_model.is_none() {
+            return None;
+        }
+        let history = self.fpm_evidence.lock().ok()?;
+        let phase = |prefill: bool| {
+            let fpm_estimates: Vec<_> = history
+                .iter()
+                .filter(|(key, _)| key.0 == prefill)
+                .map(|(_, evidence)| evidence.clone())
+                .collect();
+            if fpm_estimates.is_empty() {
+                return TimingPhaseEvidence::default();
+            }
+            let latency_ms = fpm_estimates
+                .iter()
+                .map(|record| record.estimate.latency_ms.unwrap_or(0.0) * record.count as f64)
+                .sum();
+            let mut operation = TimingOperationEvidence::new(
+                if prefill { "fpm_prefill" } else { "fpm_decode" },
+                latency_ms,
+                None,
+                TimingEvidenceSource::Silicon,
+            )
+            .expect("finite native FPM evidence");
+            operation.details = Some(crate::perfmodel::engine::diagnostics::OperationDetails {
+                sol: None,
+                sol_unavailable_reason: Some(
+                    "whole-model FPM does not export an operation SOL decomposition".into(),
+                ),
+                fallbacks: Vec::new(),
+                fpm_estimates,
+            });
+            TimingPhaseEvidence::from_operations(vec![operation])
+        };
+        Some(TimingEvidenceSummary {
+            prefill: phase(true),
+            decode: phase(false),
+        })
+    }
+
     fn reset_evidence(&self) -> Result<()> {
+        self.fpm_evidence
+            .lock()
+            .map_err(|_| anyhow!("FPM evidence accumulator was poisoned"))?
+            .clear();
         *self
             .evidence
             .lock()
@@ -1457,9 +1542,20 @@ impl TimingPowerSource {
 }
 
 fn replay_timing_evidence(sources: &[TimingPowerSource]) -> Result<Option<TimingEvidenceSummary>> {
+    replay_timing_evidence_with_fpm(sources, false)
+}
+
+fn replay_timing_evidence_with_fpm(
+    sources: &[TimingPowerSource],
+    include_fpm: bool,
+) -> Result<Option<TimingEvidenceSummary>> {
     let mut combined = TimingEvidenceSummary::default();
     for source in sources {
-        let Some(summary) = source.timing.evidence_summary() else {
+        let Some(summary) = source.timing.evidence_summary().or_else(|| {
+            include_fpm
+                .then(|| source.timing.fpm_evidence_summary())
+                .flatten()
+        }) else {
             return Ok(None);
         };
         combined.prefill.try_accumulate(scale_power_phase(
@@ -1472,6 +1568,42 @@ fn replay_timing_evidence(sources: &[TimingPowerSource]) -> Result<Option<Timing
         )?)?;
     }
     Ok(Some(combined))
+}
+
+fn replay_fpm_query_evidence(sources: &[TimingPowerSource]) -> Result<Option<serde_json::Value>> {
+    let mut providers = Vec::new();
+    for (provider_index, source) in sources.iter().enumerate() {
+        let Some(summary) = source.timing.fpm_evidence_summary() else {
+            continue;
+        };
+        let mut phases = Vec::new();
+        for (name, phase, speedup) in [
+            ("prefill", summary.prefill, source.prefill_speedup_ratio),
+            ("decode", summary.decode, source.decode_speedup_ratio),
+        ] {
+            let phase = scale_power_phase(phase, speedup)?;
+            let operations = phase
+                .operations
+                .into_iter()
+                .filter_map(|operation| {
+                    let details = operation.details?;
+                    (!details.fpm_estimates.is_empty()).then(|| {
+                        serde_json::json!({
+                            "name": operation.name, "fpm_estimates": details.fpm_estimates,
+                        })
+                    })
+                })
+                .collect::<Vec<_>>();
+            phases.push(serde_json::json!({"name": name, "operations": operations}));
+        }
+        providers.push(serde_json::json!({"provider_index": provider_index, "phases": phases}));
+    }
+    Ok((!providers.is_empty()).then(|| {
+        serde_json::json!({
+            "schema_version": "1.0", "aggregation": "identical_estimates_with_invocation_counts",
+            "providers": providers,
+        })
+    }))
 }
 
 fn replay_power_stats(summary: &TimingEvidenceSummary) -> Result<TracePowerStats> {
@@ -1519,12 +1651,12 @@ fn replay_performance_diagnostics(summary: Option<&TimingEvidenceSummary>) -> se
     let scope = "accumulated_active_forward_pass_per_gpu";
     let Some(summary) = summary else {
         return serde_json::json!({"status": "unavailable", "scope": scope, "latency_unit": "ms", "phases": [],
-            "unavailable_reason": "selected timing provider does not export operation diagnostics (whole-model FPM and latency-only providers are unsupported)"});
+            "unavailable_reason": "selected timing provider does not export operation diagnostics"});
     };
     let phases = [("prefill", &summary.prefill), ("decode", &summary.decode)].into_iter().map(|(name, phase)| {
         let mut operations = phase.operations.iter().map(|op| {
             let sol = op.details.as_ref().and_then(|d| d.sol.as_ref());
-            serde_json::json!({"name": op.name, "latency_ms": op.latency_ms,
+            let mut record = serde_json::json!({"name": op.name, "latency_ms": op.latency_ms,
                 "source": op.source.as_str(),
                 "sol": sol,
                 "sol_unavailable_reason": if sol.is_some() { None } else {
@@ -1532,7 +1664,11 @@ fn replay_performance_diagnostics(summary: Option<&TimingEvidenceSummary>) -> se
                 },
                 "latency_to_sol_ratio": sol.filter(|s| s.latency_ms > 0.0).map(|s| op.latency_ms / s.latency_ms).filter(|r| r.is_finite()),
                 "fallbacks": op.details.as_ref().map(|d| &d.fallbacks),
-            })
+            });
+            if let Some(details) = &op.details && !details.fpm_estimates.is_empty() {
+                record["fpm_estimates"] = serde_json::to_value(&details.fpm_estimates).expect("finite native FPM evidence");
+            }
+            record
         }).collect::<Vec<_>>();
         operations.sort_by(|a,b| a["name"].as_str().cmp(&b["name"].as_str()));
         let sol = phase.operations.iter().map(|op| op.details.as_ref()?.sol.as_ref()).collect::<Option<Vec<_>>>()
@@ -1728,6 +1864,11 @@ fn scale_power_phase(
         operation.energy_wms = operation.energy_wms.map(|energy| energy * scale);
         operation.latency_ms *= scale;
         operation.covered_latency_ms *= scale;
+        if let Some(details) = &mut operation.details {
+            for evidence in &mut details.fpm_estimates {
+                evidence.latency_scale *= scale;
+            }
+        }
         // SOL compares the same scheduled work, before synthetic speedup; it
         // remains an unscaled physical baseline.
     }
@@ -2101,8 +2242,12 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
         report_json["fpm_query_coverage"] = coverage;
     }
     if capture_performance_diagnostics {
+        let performance_evidence = replay_timing_evidence_with_fpm(&power_sources, true)?;
         report_json["performance_diagnostics"] =
-            replay_performance_diagnostics(timing_evidence.as_ref());
+            replay_performance_diagnostics(performance_evidence.as_ref());
+    }
+    if let Some(evidence) = replay_fpm_query_evidence(&power_sources)? {
+        report_json["fpm_query_evidence"] = evidence;
     }
     if report.agentic_graph.is_some()
         && let Some((input_format, agentic_lanes, execution_model)) = agentic_input
@@ -2681,6 +2826,7 @@ mod tests {
             use_fpm_decode_totals,
             fpm_decode_kv_ceiling: None,
             evidence: Mutex::new(TimingEvidenceSummary::default()),
+            fpm_evidence: Mutex::default(),
             phase_cache: quick_cache::sync::Cache::new(128),
         }
     }
@@ -2721,6 +2867,34 @@ mod tests {
         );
     }
 
+    #[test]
+    fn replay_interpolation_migration_preserves_explicit_method_presence() {
+        for canonical in [None, Some("direct"), Some("auto"), Some("sol")] {
+            let mut config = aic_config();
+            config.fpm_interpolation = Some(crate::FpmInterpolationMethod::Direct);
+            config.estimator_config = serde_json::from_value(serde_json::json!({
+                "correction": {"enabled": false},
+                "fpm_interpolation": canonical
+                    .map(|method| serde_json::json!({"method": method}))
+                    .unwrap_or_else(|| serde_json::json!({}))
+            }))
+            .unwrap();
+            let request = config.estimator_request(ForwardPassWorkerType::Aggregated);
+            if canonical.is_none() || canonical == Some("direct") {
+                let controls = request.unwrap().estimator_config;
+                assert_eq!(
+                    controls.fpm_interpolation.method,
+                    crate::FpmInterpolationMethod::Direct
+                );
+                assert!(!controls.correction.enabled);
+            } else {
+                assert!(request.unwrap_err().to_string().contains(
+                    "conflicting explicit values for estimator_config.fpm_interpolation.method"
+                ));
+            }
+        }
+    }
+
     fn aic_config() -> AicTimingConfig {
         AicTimingConfig {
             model: "test-model".into(),
@@ -2748,7 +2922,7 @@ mod tests {
             worker_type: None,
             estimation_mode: None,
             fallback_policy: ForwardPassFallbackPolicy::Deny,
-            estimator_config: EstimatorConfig::default(),
+            estimator_config: serde_json::Map::new(),
             database_mode: crate::DatabaseMode::default(),
             transfer_policy: None,
             systems_paths: Vec::new(),
@@ -3249,6 +3423,7 @@ mod tests {
             TimingOperationEvidence::new("dispatch", 10.0, None, TimingEvidenceSource::Estimated)
                 .unwrap();
         op.details = Some(OperationDetails {
+            fpm_estimates: Vec::new(),
             sol: Some(SolDiagnostics {
                 latency_ms: 2.0,
                 math_ms: 0.0,
@@ -3413,6 +3588,13 @@ mod tests {
 
         assert_eq!(latency, 546_046.0);
         assert_eq!(timing.evidence_summary(), None);
+        assert_eq!(timing.fpm_evidence_summary(), None);
+        // Capture is disabled: even a long sequence of distinct total-KV
+        // queries cannot allocate a growing evidence history.
+        for kv in 546_100..547_100 {
+            timing.predict_decode_ms(35, kv, 15_602, 1_000_000).unwrap();
+        }
+        assert!(timing.fpm_evidence.lock().unwrap().is_empty());
     }
 
     #[test]

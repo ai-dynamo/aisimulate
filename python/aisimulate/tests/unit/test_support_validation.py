@@ -33,9 +33,12 @@ def validation_case(tmp_path, monkeypatch, request):
 
     monkeypatch.setattr(engine, "get_model", reject_graph)
     monkeypatch.setattr(engine, "build_model_config", reject_graph)
+    checkpoint = tmp_path / "checkpoint"
+    checkpoint.mkdir()
+    (checkpoint / "config.json").write_text(json.dumps({"architectures": ["UnregisteredDecoderForCausalLM"]}))
     profile = {
         "schema_version": 1,
-        "model": "test/onboarding-coverage",
+        "model": str(checkpoint),
         "model_revision": "synthetic-v1",
         "architecture": "UnregisteredDecoderForCausalLM",
         "context_length": 512,

@@ -52,6 +52,10 @@ def _campaign(tmp_path, *, capacity_multiplier=1, context_length=4096, tp=2, cpu
             "quantization_config": {"quant_method": "modelopt", "quant_algo": "NVFP4", "kv_cache_quant_algo": "none"},
         },
     )
+    checkpoint_model = tmp_path / "model-checkpoint"
+    checkpoint_model.mkdir()
+    (checkpoint_model / "config.json").write_bytes(model_path.read_bytes())
+    launch["identity"]["model"] = str(checkpoint_model)
     launch["model_config"]["sha256"] = hashlib.sha256(model_path.read_bytes()).hexdigest()
     launch["collection"]["max_model_len"] = context_length
     launch = normalize_probe_launch(launch)
@@ -63,6 +67,8 @@ def _campaign(tmp_path, *, capacity_multiplier=1, context_length=4096, tp=2, cpu
             value = json.loads(path.read_text())
             value["launch"] = launch
             if ref.get("kind") == "observation":
+                value["identity"] = launch["identity"]
+                value["resolved_config"]["model_config"]["model"] = str(checkpoint_model)
                 value["model_config_sha256"] = launch["model_config"]["sha256"]
                 value["resolved_config"]["model_config"]["max_model_len"] = context_length
                 cache = value["cache"]

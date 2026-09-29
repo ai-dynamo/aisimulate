@@ -35,7 +35,9 @@ pytestmark = pytest.mark.unit
 
 
 @pytest.fixture
-def profile():
+def profile(tmp_path_factory):
+    checkpoint = tmp_path_factory.mktemp("workflow-checkpoint")
+    (checkpoint / "config.json").write_text(json.dumps({"architectures": ["UnregisteredMoeForCausalLM"]}))
     # Deliberately fictional metadata, with declared byte bounds, proves the
     # workflow cannot recover resources through an existing model registration.
     common = {
@@ -61,7 +63,7 @@ def profile():
     }
     return {
         "schema_version": 1,
-        "model": "test-only/UnregisteredMoe",
+        "model": str(checkpoint),
         "model_revision": "workflow-fixture-v1",
         "architecture": "UnregisteredMoeForCausalLM",
         "context_length": 4096,

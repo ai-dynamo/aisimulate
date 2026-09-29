@@ -247,7 +247,7 @@ def test_memory_fraction_survives_plan_compilation_and_replay_validation(tmp_pat
     )
     output = tmp_path / "request.yaml"
     fraction = 0.73
-    assert cli.main(_args(output, source, resources, gpu_memory_utilization=fraction)) == 0
+    assert cli.main(_args(output, source, resources, model=str(tmp_path), gpu_memory_utilization=fraction)) == 0
     request = SupportRequest.from_yaml(output)
     root = tmp_path / "plan"
     assert cli.main(["onboard", "plan", "--config", str(output), "--output-dir", str(root)]) == 0
@@ -383,6 +383,9 @@ def test_grouped_review_collects_runtime_blocks_then_edits_pages_before_save(tmp
     config = {**_CONFIG, "sliding_window": 128, "layer_types": ["full_attention", "sliding_attention"]}
     overrides = {key: value for key, value in _OVERRIDES.items() if key not in {"kv_bytes_per_token", "cache_layout"}}
     source, resources = _files(tmp_path, config=config, overrides=overrides)
+    checkpoint = tmp_path / "checkpoint"
+    checkpoint.mkdir()
+    (checkpoint / "config.json").write_bytes(source.read_bytes())
     output = tmp_path / "new" / "request.yaml"
     edited_groups = [
         {
@@ -420,7 +423,7 @@ def test_grouped_review_collects_runtime_blocks_then_edits_pages_before_save(tmp
         return next(answers)
 
     monkeypatch.setattr(builtins, "input", answer)
-    assert cli.main(_args(output, source, resources) + ["--interactive"]) == 0
+    assert cli.main(_args(output, source, resources, model=str(checkpoint)) + ["--interactive"]) == 0
     saved = SupportRequest.from_yaml(output)
     cache = saved.profile_deployment().resources
     assert cache.cache_layout == "grouped"

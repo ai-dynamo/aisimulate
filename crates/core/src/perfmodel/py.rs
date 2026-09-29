@@ -1670,11 +1670,18 @@ pub(crate) fn compile_engine_to_engine(
         ));
     }
     let mut request = engine_build_request(config, systems_path)?;
-    if let Some(value) = config.extra.get("estimator_config") {
-        let controls: crate::EstimatorConfig = serde_json::from_str(value)
-            .map_err(|error| AicError::InvalidEngineConfig(format!("estimator_config: {error}")))?;
-        controls.validate()?;
+    if config.extra.contains_key("estimator_config") || request.fpm_interpolation.is_some() {
+        let controls = crate::EstimatorConfig::migrate_legacy_inputs(
+            config.extra.get("estimator_config").map(String::as_str),
+            None,
+            request.fpm_interpolation.as_deref(),
+            request.fpm_parquet_path.as_deref(),
+        )?;
         request.fpm_interpolation = Some(controls.fpm_interpolation.method.as_str().to_owned());
+        request.fpm_parquet_path = controls
+            .fpm_interpolation
+            .fpm_parquet_path
+            .map(|path| path.to_str().expect("validated UTF-8 path").to_owned());
     }
     if config.extra.contains_key("fpm_profile") {
         let mut modes = Python::with_gil(|py| fpm_profile_quantization(py, config))
@@ -1905,11 +1912,6 @@ impl PyForwardPassPerfModel {
     ) -> PyResult<String> {
         let legacy: EngineConfig =
             serde_json::from_str(config_json).map_err(|e| PyValueError::new_err(e.to_string()))?;
-        let options = options_json
-            .map(serde_json::from_str::<crate::ForwardPassPerfOptions>)
-            .transpose()
-            .map_err(|e| PyValueError::new_err(e.to_string()))?
-            .unwrap_or_default();
         let mut request = engine_build_request(
             &legacy,
             legacy.systems_path.as_ref().and_then(|path| path.to_str()),
@@ -1928,38 +1930,13 @@ impl PyForwardPassPerfModel {
                 "cp_size must be the integer 1; this SDK entry point does not support context parallelism",
             ));
         }
-        let mut estimator_config =
-            crate::EstimatorConfig::from_legacy(options).map_err(aic_to_py)?;
-        if let Some(value) = legacy.extra.get("estimator_config") {
-            estimator_config = serde_json::from_str(value)
-                .map_err(|e| PyValueError::new_err(format!("invalid estimator_config: {e}")))?;
-        }
-        if let Some(value) = request.fpm_interpolation.as_ref() {
-            let method =
-                serde_json::from_value(serde_json::Value::String(value.clone())).map_err(|e| {
-                    PyValueError::new_err(format!("invalid FPM interpolation method: {e}"))
-                })?;
-            if estimator_config.fpm_interpolation.method != crate::FpmInterpolationMethod::Auto
-                && estimator_config.fpm_interpolation.method != method
-            {
-                return Err(PyValueError::new_err(
-                    "fpm_interpolation conflicts with estimator_config.fpm_interpolation.method",
-                ));
-            }
-            estimator_config.fpm_interpolation.method = method;
-        }
-        if let Some(path) = request.fpm_parquet_path.as_ref() {
-            let configured = &mut estimator_config.fpm_interpolation.fpm_parquet_path;
-            if configured
-                .as_ref()
-                .is_some_and(|existing| existing != Path::new(path))
-            {
-                return Err(PyValueError::new_err(
-                    "conflicting fpm_parquet_path and estimator_config.fpm_interpolation.fpm_parquet_path",
-                ));
-            }
-            *configured = Some(PathBuf::from(path));
-        }
+        let estimator_config = crate::EstimatorConfig::migrate_legacy_inputs(
+            legacy.extra.get("estimator_config").map(String::as_str),
+            options_json,
+            request.fpm_interpolation.as_deref(),
+            request.fpm_parquet_path.as_deref(),
+        )
+        .map_err(aic_to_py)?;
         let worker_type = serde_json::from_value(serde_json::Value::String(worker_type.to_owned()))
             .map_err(|e| PyValueError::new_err(format!("invalid worker_type: {e}")))?;
         let estimation_mode = match request.forward_model.as_deref().unwrap_or("op_level") {
@@ -2029,6 +2006,14 @@ impl PyForwardPassPerfModel {
         let metrics = parse_fpm_iteration(fpm_json)?;
         py.allow_threads(|| self.inner.estimate_forward_pass_time_ms(&metrics))
             .map_err(aic_to_py)
+    }
+
+    fn estimate_forward_pass_detailed(&self, py: Python<'_>, fpm_json: &str) -> PyResult<String> {
+        let metrics = parse_fpm_iteration(fpm_json)?;
+        let result = py
+            .allow_threads(|| self.inner.estimate_forward_pass_detailed(&metrics))
+            .map_err(aic_to_py)?;
+        serde_json::to_string(&result).map_err(|error| PyValueError::new_err(error.to_string()))
     }
 
     /// Tune from observed FPM iterations. `iterations_json` is the nested list
@@ -2327,6 +2312,29 @@ mod tests {
             let result = compile_engine_to_engine(&config, None);
             assert!(
                 matches!(result, Err(AicError::InvalidEngineConfig(message)) if message.contains("fpm_parquet_path"))
+            );
+        }
+    }
+
+    #[test]
+    fn legacy_compilation_rejects_conflicting_interpolation_before_entering_python() {
+        for (canonical, legacy) in [("auto", "direct"), ("direct", "auto"), ("sol", "direct")] {
+            let mut config = fixture_engine_config();
+            config.extra.insert(
+                "estimator_config".into(),
+                format!(r#"{{"fpm_interpolation": {{"method": "{canonical}"}}}}"#),
+            );
+            config
+                .extra
+                .insert("fpm_interpolation".into(), legacy.into());
+            let error = compile_engine_to_engine(&config, None)
+                .err()
+                .expect("conflicting interpolation methods");
+            assert!(
+                error.to_string().contains(
+                    "conflicting explicit values for estimator_config.fpm_interpolation.method"
+                ),
+                "{error}"
             );
         }
     }

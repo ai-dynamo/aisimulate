@@ -508,7 +508,10 @@ def _attempt_provenance_command(
         script += (
             "\nactual = payload['runtime']['backend_version']\n"
             "if actual != sys.argv[3]:\n"
-            "    raise RuntimeError(f'FPM profile runtime mismatch: actual={actual!r}, expected={sys.argv[3]!r}')\n"
+            "    raise RuntimeError("
+            "f'FPM profile runtime mismatch: actual={actual!r}, expected={sys.argv[3]!r}. '"
+            "'Use the pinned runtime, or create a new collection profile with '"
+            "f'backend_version={actual!r} and regenerate the collection plan in a new output directory.')\n"
         )
         version_args.append(expected_backend_version)
     return ["python3", "-c", script, payload, COLLECTOR_PROVENANCE_FILENAME, *version_args]

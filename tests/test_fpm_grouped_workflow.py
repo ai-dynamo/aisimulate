@@ -86,9 +86,12 @@ def grouped_case(tmp_path, monkeypatch):
         "kv_cache_dtype": "fp8",
         "resources": resources,
     }
+    checkpoint = tmp_path / "checkpoint"
+    checkpoint.mkdir()
+    (checkpoint / "config.json").write_text(json.dumps({"architectures": ["UnregisteredWindowMoeForCausalLM"]}))
     profile = {
         "schema_version": 1,
-        "model": "test-only/UnregisteredWindowMoe",
+        "model": str(checkpoint),
         "model_revision": "synthetic-v1",
         "architecture": "UnregisteredWindowMoeForCausalLM",
         "context_length": 2048,

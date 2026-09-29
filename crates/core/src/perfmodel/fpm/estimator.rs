@@ -209,6 +209,128 @@ impl Default for CorrectionConfig {
 }
 
 impl EstimatorConfig {
+    /// Merge explicit migration inputs before applying canonical defaults.
+    /// Serialized defaults from parsing one input must not become choices that
+    /// conflict with a setting supplied by another input.
+    #[cfg(any(feature = "python", test))]
+    pub(crate) fn migrate_legacy_inputs(
+        estimator_json: Option<&str>,
+        options_json: Option<&str>,
+        interpolation_method: Option<&str>,
+        fpm_parquet_path: Option<&str>,
+    ) -> Result<Self, AicError> {
+        let mut explicit = serde_json::json!({});
+        if let Some(json) = estimator_json {
+            let supplied: serde_json::Value = serde_json::from_str(json)
+                .map_err(|error| invalid_migration("estimator_config", error))?;
+            let typed: Self = serde_json::from_str(json)
+                .map_err(|error| invalid_migration("estimator_config", error))?;
+            // Normalize scalar representations (for example 1 and 1.0) while
+            // retaining only fields that were actually supplied.
+            let normalized = serde_json::to_value(typed)
+                .map_err(|error| invalid_migration("estimator_config", error))?;
+            explicit = explicit_fields(&supplied, &normalized);
+        }
+        if let Some(json) = options_json {
+            let supplied: serde_json::Value = serde_json::from_str(json)
+                .map_err(|error| invalid_migration("legacy options", error))?;
+            let options: ForwardPassPerfOptions = serde_json::from_str(json)
+                .map_err(|error| invalid_migration("legacy options", error))?;
+            let normalized = serde_json::to_value(&options)
+                .map_err(|error| invalid_migration("legacy options", error))?;
+            let mut migrated = serde_json::json!({});
+            for (legacy, paths) in [
+                (
+                    "max_observations",
+                    &[
+                        "fpm_regression.sampling.max_observations",
+                        "correction.sampling.max_observations",
+                    ][..],
+                ),
+                (
+                    "min_observations",
+                    &[
+                        "fpm_regression.min_observations",
+                        "correction.min_observations",
+                    ],
+                ),
+                (
+                    "min_faster_correction_factor",
+                    &["correction.factor_bounds.min"],
+                ),
+                (
+                    "max_slower_correction_factor",
+                    &["correction.factor_bounds.max"],
+                ),
+                ("max_num_tokens", &["correction.max_num_tokens"]),
+                ("max_batch_size", &["correction.max_batch_size"]),
+                ("max_kv_tokens", &["correction.max_kv_tokens"]),
+                (
+                    "regression_attention_kv_weight",
+                    &["features.attention_kv_weight"],
+                ),
+                (
+                    "regression_prefill_attention_pair_weight",
+                    &["features.prefill_attention_pair_weight"],
+                ),
+                (
+                    "regression_ffn_token_weight",
+                    &["features.ffn_token_weight"],
+                ),
+                (
+                    "regression_ridge_scale",
+                    &["fpm_regression.fit.singular_ridge_scale"],
+                ),
+            ] {
+                if supplied.get(legacy).is_some() {
+                    for path in paths {
+                        insert_explicit(&mut migrated, path, normalized[legacy].clone());
+                    }
+                }
+            }
+            if supplied.get("bucket_count").is_some() || supplied.get("bucket_shape").is_some() {
+                // Bucket shape overrides count in the legacy schema. Validate
+                // those controls here because count is absent from the new schema.
+                validate_options(&ForwardPassPerfOptions {
+                    bucket_count: options.bucket_count,
+                    bucket_shape: options.bucket_shape,
+                    ..ForwardPassPerfOptions::default()
+                })?;
+                let bins = options.bucket_shape.unwrap_or_else(|| {
+                    let n = super::samples::integer_sqrt(options.bucket_count);
+                    [n, n]
+                });
+                for path in [
+                    "fpm_regression.sampling.bins_per_axis",
+                    "correction.sampling.bins_per_axis",
+                ] {
+                    insert_explicit(&mut migrated, path, serde_json::json!(bins));
+                }
+            }
+            merge_explicit(&mut explicit, migrated, "estimator_config")?;
+        }
+        let mut interpolation = serde_json::json!({});
+        if let Some(method) = interpolation_method {
+            insert_explicit(
+                &mut interpolation,
+                "fpm_interpolation.method",
+                serde_json::json!(method),
+            );
+        }
+        if let Some(path) = fpm_parquet_path {
+            insert_explicit(
+                &mut interpolation,
+                "fpm_interpolation.fpm_parquet_path",
+                serde_json::json!(path),
+            );
+        }
+        merge_explicit(&mut explicit, interpolation, "estimator_config")?;
+        let config: Self = serde_json::from_value(explicit)
+            .map_err(|error| invalid_migration("estimator_config", error))?;
+        config.validate()?;
+        Ok(config)
+    }
+
     pub(crate) fn correction_options(&self) -> ForwardPassPerfOptions {
         let config = &self.correction;
         ForwardPassPerfOptions {
@@ -294,5 +416,198 @@ impl EstimatorConfig {
             },
             ..Self::default()
         })
+    }
+}
+
+#[cfg(any(feature = "python", test))]
+fn invalid_migration(field: &str, error: serde_json::Error) -> AicError {
+    AicError::InvalidEngineConfig(format!("invalid {field}: {error}"))
+}
+
+#[cfg(any(feature = "python", test))]
+fn explicit_fields(
+    supplied: &serde_json::Value,
+    normalized: &serde_json::Value,
+) -> serde_json::Value {
+    match supplied {
+        serde_json::Value::Object(fields) => serde_json::Value::Object(
+            fields
+                .iter()
+                .map(|(key, value)| {
+                    // Defaults omitted by serialization remain explicit input,
+                    // such as collect_coverage=false. The typed parse above has
+                    // already validated every supplied value.
+                    (
+                        key.clone(),
+                        explicit_fields(value, normalized.get(key).unwrap_or(value)),
+                    )
+                })
+                .collect(),
+        ),
+        _ => normalized.clone(),
+    }
+}
+
+#[cfg(any(feature = "python", test))]
+fn insert_explicit(root: &mut serde_json::Value, path: &str, value: serde_json::Value) {
+    if let Some((field, rest)) = path.split_once('.') {
+        if root.get(field).is_none() {
+            root[field] = serde_json::json!({});
+        }
+        insert_explicit(&mut root[field], rest, value);
+    } else {
+        root[path] = value;
+    }
+}
+
+#[cfg(any(feature = "python", test))]
+fn merge_explicit(
+    target: &mut serde_json::Value,
+    incoming: serde_json::Value,
+    path: &str,
+) -> Result<(), AicError> {
+    if let (Some(target_fields), Some(incoming_fields)) =
+        (target.as_object_mut(), incoming.as_object())
+    {
+        for (key, value) in incoming_fields {
+            if let Some(existing) = target_fields.get_mut(key) {
+                merge_explicit(existing, value.clone(), &format!("{path}.{key}"))?;
+            } else {
+                target_fields.insert(key.clone(), value.clone());
+            }
+        }
+    } else if *target != incoming {
+        if path == "estimator_config.fpm_interpolation.fpm_parquet_path"
+            && target
+                .as_str()
+                .zip(incoming.as_str())
+                .is_some_and(|(saved, supplied)| {
+                    std::path::Path::new(saved) == std::path::Path::new(supplied)
+                })
+        {
+            return Ok(());
+        }
+        return Err(AicError::InvalidEngineConfig(format!(
+            "conflicting explicit values for {path}"
+        )));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod migration_tests {
+    use super::{EstimatorConfig, FpmInterpolationMethod};
+
+    #[test]
+    fn migration_defaults_are_applied_after_explicit_inputs_merge() {
+        let saved = r#"{
+            "fpm_interpolation": {"method": "direct"},
+            "correction": {"enabled": false, "sampling": {"max_observations": 128}},
+            "fpm_regression": {"sampling": {"max_observations": 128}}
+        }"#;
+        let options = r#"{"min_observations": 80, "regression_ridge_scale": 0}"#;
+        let config =
+            EstimatorConfig::migrate_legacy_inputs(Some(saved), Some(options), None, None).unwrap();
+        assert_eq!(
+            config.fpm_interpolation.method,
+            FpmInterpolationMethod::Direct
+        );
+        assert!(!config.correction.enabled);
+        assert_eq!(config.correction.min_observations, 80);
+        assert_eq!(config.fpm_regression.min_observations, 80);
+        assert_eq!(config.fpm_regression.fit.singular_ridge_scale, 0.0);
+        assert_eq!(config.features.attention_kv_weight, 1.0);
+        let reloaded: EstimatorConfig =
+            serde_json::from_str(&serde_json::to_string(&config).unwrap()).unwrap();
+        assert_eq!(reloaded, config);
+    }
+
+    #[test]
+    fn migration_preserves_explicit_coverage_defaults() {
+        for collect_coverage in [false, true] {
+            let saved = format!(
+                r#"{{"fpm_interpolation": {{"method": "direct", "collect_coverage": {collect_coverage}, "fpm_parquet_path": null}}}}"#
+            );
+            let config =
+                EstimatorConfig::migrate_legacy_inputs(Some(&saved), None, None, None).unwrap();
+            assert_eq!(config.fpm_interpolation.collect_coverage, collect_coverage);
+            assert_eq!(config.fpm_interpolation.fpm_parquet_path, None);
+        }
+    }
+
+    #[test]
+    fn migration_accepts_equal_numeric_array_and_null_controls() {
+        let saved = r#"{
+            "features": {"attention_kv_weight": 1},
+            "correction": {"factor_bounds": {"min": null}},
+            "fpm_regression": {"sampling": {"bins_per_axis": [4, 16]}}
+        }"#;
+        let options = r#"{
+            "regression_attention_kv_weight": 1.0,
+            "min_faster_correction_factor": null,
+            "bucket_shape": [4, 16]
+        }"#;
+        let config =
+            EstimatorConfig::migrate_legacy_inputs(Some(saved), Some(options), None, None).unwrap();
+        assert_eq!(config.features.attention_kv_weight, 1.0);
+        assert_eq!(config.correction.factor_bounds.min, None);
+        assert_eq!(config.correction.sampling.bins_per_axis, [4, 16]);
+        assert_eq!(config.fpm_regression.sampling.bins_per_axis, [4, 16]);
+    }
+
+    #[test]
+    fn migration_compares_parquet_paths_without_filesystem_resolution() {
+        let saved = r#"{"fpm_interpolation":{"fpm_parquet_path":"/tmp/fpm.parquet"}}"#;
+        for legacy in [
+            "/tmp/fpm.parquet",
+            "/tmp/./fpm.parquet",
+            "/tmp//fpm.parquet",
+        ] {
+            let config =
+                EstimatorConfig::migrate_legacy_inputs(Some(saved), None, None, Some(legacy))
+                    .unwrap();
+            assert_eq!(
+                config.fpm_interpolation.fpm_parquet_path.unwrap().to_str(),
+                Some("/tmp/fpm.parquet")
+            );
+        }
+        for legacy in ["/tmp/different.parquet", "/tmp/subdir/../fpm.parquet"] {
+            let error =
+                EstimatorConfig::migrate_legacy_inputs(Some(saved), None, None, Some(legacy))
+                    .unwrap_err();
+            assert!(
+                error.to_string().contains(
+                    "conflicting explicit values for estimator_config.fpm_interpolation.fpm_parquet_path"
+                ),
+                "{error}"
+            );
+        }
+    }
+
+    #[test]
+    fn interpolation_conflicts_include_explicit_auto_but_not_omission() {
+        let config = EstimatorConfig::migrate_legacy_inputs(
+            Some(r#"{"fpm_interpolation": {}}"#),
+            None,
+            Some("direct"),
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            config.fpm_interpolation.method,
+            FpmInterpolationMethod::Direct
+        );
+        for (canonical, legacy) in [("auto", "direct"), ("direct", "auto"), ("sol", "direct")] {
+            let saved = format!(r#"{{"fpm_interpolation": {{"method": "{canonical}"}}}}"#);
+            let error =
+                EstimatorConfig::migrate_legacy_inputs(Some(&saved), None, Some(legacy), None)
+                    .unwrap_err();
+            assert!(
+                error.to_string().contains(
+                    "conflicting explicit values for estimator_config.fpm_interpolation.method"
+                ),
+                "{error}"
+            );
+        }
     }
 }

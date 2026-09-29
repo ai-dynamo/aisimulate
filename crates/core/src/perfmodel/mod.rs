@@ -108,3 +108,8 @@ pub(crate) fn repo_relative(rel: &str) -> Option<PathBuf> {
 pub fn register_python(module: &pyo3::Bound<'_, pyo3::types::PyModule>) -> pyo3::PyResult<()> {
     py::register(module)
 }
+
+pub use fpm::{
+    DirectFpmQueryEvidence, ForwardPassEstimate, FpmCoordinates, FpmEstimateEvidence,
+    FpmMeasurementSupport, FpmQueryResolution, FpmRankEstimate,
+};

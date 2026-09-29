@@ -199,6 +199,11 @@ impl TimingOperationEvidence {
                         left.fallbacks.push(fallback);
                     }
                 }
+                crate::perfmodel::fpm::accumulate_fpm_estimates(
+                    &mut left.fpm_estimates,
+                    right.fpm_estimates,
+                )
+                .map_err(anyhow::Error::msg)?;
                 Some(left)
             }
             (Some(mut details), None) | (None, Some(mut details)) => {
@@ -488,6 +493,12 @@ pub trait TimingModel: Send + Sync {
         None
     }
 
+    /// Latency-only whole-model FPM evidence is separate from energy evidence.
+    /// It must not change the provider's existing power publication contract.
+    fn fpm_evidence_summary(&self) -> Option<TimingEvidenceSummary> {
+        None
+    }
+
     /// Start a new measurement epoch without changing timing predictions or
     /// provider caches. Called only after preparation work has settled.
     ///
@@ -708,6 +719,7 @@ mod tests {
                 TimingOperationEvidence::new("test", 2.0, None, TimingEvidenceSource::Estimated)
                     .unwrap();
             op.details = Some(OperationDetails {
+                fpm_estimates: Vec::new(),
                 sol: has_sol.then_some(SolDiagnostics {
                     latency_ms: 1.0,
                     math_ms: 0.0,
@@ -766,6 +778,7 @@ mod tests {
             )
             .unwrap();
             operation.details = Some(OperationDetails {
+                fpm_estimates: Vec::new(),
                 sol: None,
                 sol_unavailable_reason: Some("unsupported operation".into()),
                 fallbacks: vec![valid.clone(), fallback],
@@ -787,6 +800,7 @@ mod tests {
                 .unwrap();
         let mut detailed = plain.clone();
         detailed.details = Some(OperationDetails {
+            fpm_estimates: Vec::new(),
             sol: Some(SolDiagnostics {
                 latency_ms: 1.0,
                 math_ms: 0.0,

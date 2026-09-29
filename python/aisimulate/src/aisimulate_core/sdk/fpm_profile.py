@@ -6,6 +6,8 @@
 from __future__ import annotations
 
 import json
+from functools import cache
+from pathlib import Path
 
 from aisimulate_core.fpm_profile import _MUTABLE_REFERENCES
 from aisimulate_core.fpm_profile import FpmCacheGroup as FpmCacheGroup
@@ -81,15 +83,61 @@ def _quantization_from_engine_config(config_json: str) -> dict[str, str]:
     return modes
 
 
+@cache
+def _load_pinned_checkpoint_config(model: str, revision: str) -> dict | None:
+    """Reuse immutable remote metadata across candidate normalization and replay."""
+    from aisimulate_core.sdk.utils import _download_hf_json
+
+    return _download_hf_json(model, "config.json", revision=revision)
+
+
+def _validate_checkpoint_architecture(profile: FpmModelProfile) -> None:
+    """Verify raw checkpoint metadata without loading weights or remote code."""
+    from aisimulate_core.sdk.utils import HuggingFaceDownloadError, _load_local_config
+
+    checkpoint = Path(profile.model).expanduser()
+    identity = f"{profile.model!r} at model_revision={profile.model_revision!r}"
+    try:
+        if checkpoint.exists() or checkpoint.is_absolute() or profile.model.startswith(("./", "../", "~")):
+            metadata = _load_local_config(str(checkpoint))
+        else:
+            # Bundled configs do not record their revision and cannot establish
+            # the architecture of this pinned checkpoint.
+            metadata = _load_pinned_checkpoint_config(profile.model, profile.model_revision)
+    except (HuggingFaceDownloadError, OSError, ValueError) as error:
+        raise ValueError(
+            f"cannot verify FPM profile architecture: config.json metadata for {identity} "
+            f"could not be resolved; make the pinned checkpoint configuration available: {error}"
+        ) from error
+    if not isinstance(metadata, dict):
+        raise ValueError(f"FPM profile checkpoint config.json must be a mapping for {identity}")
+    # Match the collector's text-model view of checkpoint metadata.
+    text_config = metadata.get("text_config")
+    if isinstance(text_config, dict):
+        metadata = {**metadata, **text_config}
+    architectures = metadata.get("architectures")
+    if (
+        not isinstance(architectures, list)
+        or not architectures
+        or not isinstance(architectures[0], str)
+        or not architectures[0].strip()
+    ):
+        raise ValueError(
+            f"FPM profile checkpoint config.json must declare a nonempty architectures list for {identity}"
+        )
+    if profile.architecture != architectures[0]:
+        raise ValueError(
+            f"FPM profile architecture mismatch for {identity}: "
+            f"checkpoint={architectures[0]!r}, profile={profile.architecture!r}"
+        )
+
+
 def _validate_forward_pass_profile(config_json: str) -> str:
-    """Validate schema/identity and return registration facts to the Rust owner.
+    """Validate identity against checkpoint metadata and return registration facts.
 
     This path reads no timing data and does not construct an analytical model.
     Estimator defaults and interpolation selection belong to Rust.
     """
-    from aisimulate_core.sdk import common
-    from aisimulate_core.sdk.models.base import _MODEL_REGISTRY
-
     config = json.loads(config_json)
     profile = load_fpm_profile(config["fpm_profile"])
     version = config.get("backend_version")
@@ -107,6 +155,11 @@ def _validate_forward_pass_profile(config_json: str) -> str:
         moe_ep_size=config.get("moe_ep_size"),
     )
     deployment.validate_overrides(**{key: config.get(key) for key in deployment.quantization_kwargs()})
+    _validate_checkpoint_architecture(profile)
+
+    from aisimulate_core.sdk import common
+    from aisimulate_core.sdk.models.base import _MODEL_REGISTRY
+
     family = common.ARCHITECTURE_TO_MODEL_FAMILY.get(profile.architecture, profile.architecture)
     return json.dumps(
         {

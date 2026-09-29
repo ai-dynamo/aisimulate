@@ -22,7 +22,7 @@ import os
 import threading
 from collections import OrderedDict
 from collections.abc import Mapping
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, fields
 from dataclasses import field as dataclass_field
 from importlib import resources as pkg_resources
 from pathlib import Path
@@ -167,7 +167,12 @@ class ForwardPassPerfModelConfig:
 
 @dataclass(frozen=True)
 class ForwardPassPerfOptions:
-    """Runtime observation, regression, correction, and capacity controls."""
+    """Legacy controls; serialization retains only explicit constructor arguments.
+
+    Use ``ForwardPassPerfOptions(**(options.to_dict() | changes))`` to retain
+    omitted fields when modifying options. ``dataclasses.replace`` supplies
+    every field to the constructor, making all of its values explicit.
+    """
 
     max_observations: int = 64
     min_observations: int = 5
@@ -183,8 +188,25 @@ class ForwardPassPerfOptions:
     bucket_shape: tuple[int, int] | None = None
     regression_ridge_scale: float = 1e-9
 
+    def __new__(cls, *args: Any, **kwargs: Any) -> ForwardPassPerfOptions:
+        instance = super().__new__(cls)
+        # Capture presence before the dataclass initializer supplies defaults.
+        # Comparing values against defaults would discard explicit user choices.
+        positional = tuple(field.name for field in fields(cls))[: len(args)]
+        object.__setattr__(instance, "_explicit_fields", frozenset((*positional, *kwargs)))
+        return instance
+
+    def __setstate__(self, state: dict[str, Any]) -> None:
+        for name, value in state.items():
+            object.__setattr__(self, name, value)
+        if "_explicit_fields" not in state:
+            # Older pickles have saved values but no constructor-presence metadata.
+            object.__setattr__(
+                self, "_explicit_fields", frozenset(field.name for field in fields(self) if field.name in state)
+            )
+
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        return {name: value for name, value in asdict(self).items() if name in self._explicit_fields}
 
 
 class RustForwardPassPerfModel:
@@ -309,6 +331,15 @@ class RustForwardPassPerfModel:
         scheduled work returns ``0.0``.
         """
         return self._inner.estimate_forward_pass_time_ms(_json_dumps(metrics))
+
+    def estimate_forward_pass_detailed(self, metrics: dict[str, Any] | list[dict[str, Any]]) -> dict[str, Any]:
+        """Return timing with direct-FPM support, rank composition and correction.
+
+        Measurement weights explain raw lookups. ``ranks`` records mixed-pass
+        subtraction and ``max_rank`` identifies the native rank maximum, before
+        ``correction_factor``. Other estimators have no direct lookup evidence.
+        """
+        return json.loads(self._inner.estimate_forward_pass_detailed(_json_dumps(metrics)))
 
     def tune_with_fpms(self, iterations: dict[str, Any] | list[Any]) -> None:
         """API: ``model.tune_with_fpms(iterations) -> None``.

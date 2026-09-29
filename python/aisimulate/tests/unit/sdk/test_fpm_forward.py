@@ -1029,9 +1029,13 @@ def test_fpm_detail_distinguishes_memory_budget_from_runtime_capacity(external_f
     assert memory["estimated_num_gpu_blocks"] > 0
     assert "num_gpu_blocks" not in memory
     assert set(sections) == {"summary", "memory", "time", "energy", "source"}
-    assert sections["time"]["diagnostics"]["status"] == "unavailable"
-    assert sections["source"]["status"] == "unavailable"
-    assert "whole-model FPM" in sections["source"]["unavailable_reason"]
+    assert sections["time"]["diagnostics"]["status"] == "available"
+    assert sections["source"]["status"] == "available"
+    operations = [op for phase in sections["source"]["phases"] for op in phase["operations"]]
+    assert operations and all(op["fpm_estimates"] for op in operations)
+    assert sections["energy"]["status"] == "unsupported"
+    assert sections["energy"]["diagnostics"]["power_w"] is None
+    assert sections["energy"]["diagnostics"]["power_coverage"] is None
     assert sections["time"]["serving_metrics"]["mean_ttft_ms"] > 0
 
 

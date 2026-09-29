@@ -70,7 +70,8 @@ import sys
 from pathlib import Path
 
 blocked = ('aisimulate._runtime', 'aisimulate.sweeper', 'numpy', 'pandas', 'aiconfigurator',
-           'aiconfigurator_core', 'aisimulate_core._native', 'aisimulate_core.sdk')
+           'aiconfigurator_core', 'aisimulate_core._native', 'aisimulate_core.sdk',
+           'urllib.request', 'huggingface_hub', 'transformers')
 
 def assert_lightweight():
     loaded = [name for name in sys.modules if any(name == item or name.startswith(item + '.') for item in blocked)]
