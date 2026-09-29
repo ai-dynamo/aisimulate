@@ -1,7 +1,10 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""KV-cache capacity estimation.
+"""KV-cache capacity and per-request state memory estimation.
+
+``estimate_state_cache`` re-exports the shared config-driven state-footprint
+API. It is independent of the pool-capacity algorithms below.
 
 The single source of truth for the rank-local KV-cache capacity estimate. The
 Rust ``aisimulate_core::memory::estimate_kv_cache`` is a pure forwarder that
@@ -51,6 +54,8 @@ from aisimulate_core.sdk.utils import (
     _load_pre_downloaded_hf_config,
     _parse_hf_config_json,
 )
+
+from .state_memory import estimate_state_cache as estimate_state_cache
 
 _ONE_GIB = 1 << 30
 _MAX_EXACT_BYTE_COUNT = 1 << 53

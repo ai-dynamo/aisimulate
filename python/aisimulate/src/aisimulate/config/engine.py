@@ -1,4 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 # SPDX-License-Identifier: Apache-2.0
 
 """Typed engine input for prediction and recommendation."""
@@ -157,6 +158,23 @@ class StateCacheConfig(StrictModel):
         return (self.bytes_per_request - 1) // block_bytes + 1
 
 
+# Accepted overrides adapted from vLLM's MambaDType (Apache-2.0); modified for this schema.
+# https://github.com/vllm-project/vllm/blob/a474da28131f61684849b31e29af0eebaaedc383/vllm/config/cache.py
+MambaCacheDtype = Literal["auto", "float16", "float32"]
+
+
+class StateCachePredictionConfig(StrictModel):
+    """Sizing input; only resolved bytes cross the native engine boundary."""
+
+    bytes_per_request: PositiveU64 | None = None
+    mamba_cache_dtype: MambaCacheDtype = "auto"
+
+    def state_blocks(self, block_size: int, bytes_per_token: int) -> int:
+        if self.bytes_per_request is None:
+            raise ValueError("state_cache size must be resolved before block rounding")
+        return StateCacheConfig(bytes_per_request=self.bytes_per_request).state_blocks(block_size, bytes_per_token)
+
+
 class KvCachePredictionConfig(StrictModel):
     block_size: PositiveInt | None = None
     prefix_match_unit: PositiveU64 | None = None
@@ -165,7 +183,14 @@ class KvCachePredictionConfig(StrictModel):
     capacity: KvCapacityPredictionConfig = Field(default_factory=KvCapacityPredictionConfig)
     host_offload: HostOffloadConfig | None = None
     g3_offload: G3OffloadConfig | None = None
-    state_cache: StateCacheConfig | None = None
+    state_cache: StateCachePredictionConfig | None = None
+
+    @field_validator("state_cache", mode="before")
+    @classmethod
+    def _accept_resolved_state_config(cls, value: Any) -> Any:
+        if isinstance(value, StateCacheConfig):
+            return value.model_dump()
+        return value
 
     @model_validator(mode="after")
     def _validate_g3(self):
@@ -175,25 +200,32 @@ class KvCachePredictionConfig(StrictModel):
 
     @model_validator(mode="after")
     def _validate_manual_geometry(self) -> KvCachePredictionConfig:
+        infer_state = self.state_cache is not None and self.state_cache.bytes_per_request is None
         if self.prefix_match_unit is not None:
             if self.state_cache is None:
                 raise ValueError("prefix_match_unit currently requires state_cache")
-            if self.block_size is None or self.block_size % self.prefix_match_unit:
+            if not infer_state and (self.block_size is None or self.block_size % self.prefix_match_unit):
                 raise ValueError("prefix_match_unit must be a positive divisor of block_size")
-        if self.capacity.bytes is not None or self.state_cache is not None:
-            block_bytes = manual_block_bytes(self.block_size, self.bytes_per_token)
+        if self.state_cache is not None:
             if self.capacity.type != "fixed":
                 raise ValueError("state_cache requires fixed capacity (blocks or bytes)")
+            if self.host_offload is not None:
+                raise ValueError("state_cache supports G1 only; host_offload is not supported")
+            if self.g3_offload is not None:
+                raise ValueError("state_cache supports G1 only; g3_offload is not supported")
+        if infer_state:
+            # Capacity and prefix alignment use the backend's resolved block size.
+            return self
+        if self.capacity.bytes is not None or self.state_cache is not None:
+            block_bytes = manual_block_bytes(self.block_size, self.bytes_per_token)
             blocks = self.capacity.blocks if self.capacity.blocks is not None else self.capacity.bytes // block_bytes
             if not 0 < blocks <= (1 << 64) - 1:
                 raise ValueError("fixed KV capacity must fit at least one block within u64")
             if self.state_cache is not None:
+                if self.block_size < 2:
+                    raise ValueError("state_cache requires block_size at least two for vLLM")
                 if blocks < self.state_cache.state_blocks(self.block_size, self.bytes_per_token) + 1:
                     raise ValueError("state_cache capacity must fit one token block and one request state")
-                if self.host_offload is not None:
-                    raise ValueError("state_cache supports G1 only; host_offload is not supported")
-                if self.g3_offload is not None:
-                    raise ValueError("state_cache supports G1 only; g3_offload is not supported")
         return self
 
 
