@@ -243,11 +243,11 @@ def _route_lane_density_through_the_stub(monkeypatch):
     monkeypatch.setattr(_etv, "fetch_attention_lane_density", _fetch)
 
 
-def test_engine_spec_schema_version_is_twenty_two():
-    """Recorded DCP extends the payload after the schema-21 MoE source."""
+def test_engine_spec_schema_version_is_twenty_three():
+    """DCP and the pilot layouts require a combined wire version."""
     from aisimulate.sdk import engine
 
-    assert engine.ENGINE_SPEC_SCHEMA_VERSION == 22
+    assert engine.ENGINE_SPEC_SCHEMA_VERSION == 23
 
 
 def test_lanes_outside_the_known_vocabulary_stay_reachable():

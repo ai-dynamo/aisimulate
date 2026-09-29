@@ -48,6 +48,8 @@ def build_model_config(
     moe_kernel_source: str | None = None,
     fpm_fmha_quant_mode: str | None = None,
     dcp_size: int | None = None,
+    decode_workload_distribution: str | None = None,
+    prefill_graph_profile: str | None = None,
 ) -> ModelConfig:
     """Build a ModelConfig with optional quant mode overrides."""
     validate_moe_controls(
@@ -77,6 +79,8 @@ def build_model_config(
         wideep_num_slots=wideep_num_slots,
         moe_kernel_source=moe_kernel_source,
         speculation=speculation,
+        decode_workload_distribution=decode_workload_distribution,
+        prefill_graph_profile=prefill_graph_profile,
     )
 
 
