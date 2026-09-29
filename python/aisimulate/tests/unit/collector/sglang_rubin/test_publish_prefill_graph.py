@@ -107,9 +107,17 @@ def test_attention_retains_every_sample_and_excludes_control_cost(identity):
 
 
 @pytest.mark.parametrize(
-    "mutation", ["missing_primary", "missing_control", "duplicate_sample", "nan", "heterogeneous", "wrong_prefix"]
+    "mutation, match",
+    [
+        ("missing_primary", "Incomplete attention fixture/window/sample matrix"),
+        ("missing_control", "Missing required attention control arm"),
+        ("duplicate_sample", "Incomplete attention fixture/window/sample matrix"),
+        ("nan", "Expected all 30 positive finite timing samples"),
+        ("heterogeneous", "Heterogeneous context"),
+        ("wrong_prefix", "Attention contexts differ from the seven approved keys"),
+    ],
 )
-def test_attention_rejects_incomplete_or_mislabelled_matrix(identity, mutation):
+def test_attention_rejects_incomplete_or_mislabelled_matrix(identity, mutation, match):
     data = attention_data(identity)
     case = data["contexts"][0]
     samples = case["arms"]["joint_attention_sequence"]["timing"]["samples"]
@@ -126,7 +134,7 @@ def test_attention_rejects_incomplete_or_mislabelled_matrix(identity, mutation):
         case["shape"]["past_kv"].append(0)
     else:
         case["shape"]["past_kv"][0] = 1024
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match=match):
         publisher._attention_rows(data, identity)
 
 
@@ -147,19 +155,19 @@ def test_communication_uses_aligned_max_then_normalization_then_all_sample_mean(
 
 
 @pytest.mark.parametrize(
-    "mutation",
+    "mutation, match",
     [
-        "missing_rank",
-        "wrong_max",
-        "wrong_count",
-        "missing_sample",
-        "duplicate_boundary",
-        "wrong_role",
-        "wrong_kernel",
-        "zero",
+        ("missing_rank", "Incomplete or invalid TP4 rank timings"),
+        ("wrong_max", "Incorrect aligned rank maximum or per-call normalization"),
+        ("wrong_count", "Communication role, path, timing protocol or sample matrix changed"),
+        ("missing_sample", "Communication role, path, timing protocol or sample matrix changed"),
+        ("duplicate_boundary", "Incomplete communication matrix"),
+        ("wrong_role", "Incomplete communication matrix"),
+        ("wrong_kernel", "Communication role, path, timing protocol or sample matrix changed"),
+        ("zero", "Incomplete or invalid TP4 rank timings"),
     ],
 )
-def test_communication_rejects_incomplete_or_wrong_reduction(identity, mutation):
+def test_communication_rejects_incomplete_or_wrong_reduction(identity, mutation, match):
     data = communication_data(identity)
     boundary = data["boundaries"][1]
     sample = boundary["timing"]["samples"][0]
@@ -179,7 +187,7 @@ def test_communication_rejects_incomplete_or_wrong_reduction(identity, mutation)
         boundary["path"] = "native_allreduce_then_rmsnorm"
     else:
         sample["rank_cuda_ms"][0] = 0
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match=match):
         publisher._communication_rows(data, identity)
 
 

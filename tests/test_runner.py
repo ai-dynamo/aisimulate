@@ -2118,18 +2118,17 @@ def test_runner_preserves_non_aic_timing_with_no_decode_profile(alias, timing):
 
 
 @pytest.mark.parametrize(
-    "extras",
+    "extras, match",
     [
-        {
-            "decode_workload_distribution": "",
-        },
-        {
-            "decode_workload_distribution": 7,
-        },
-        {"decode_workload_distribution": "one", "aic_decode_workload_distribution": "two"},
+        ({"decode_workload_distribution": ""}, "decode_workload_distribution must be a string"),
+        ({"decode_workload_distribution": 7}, "decode_workload_distribution must be a string"),
+        (
+            {"decode_workload_distribution": "one", "aic_decode_workload_distribution": "two"},
+            "config duplicates AIC field decode_workload_distribution",
+        ),
     ],
 )
-def test_runner_rejects_invalid_or_duplicate_decode_profile_alias(extras):
+def test_runner_rejects_invalid_or_duplicate_decode_profile_alias(extras, match):
     engine_args = _engine_args()
     engine_args.pop("timing_model")
     engine_args.update(extras)
@@ -2140,5 +2139,5 @@ def test_runner_rejects_invalid_or_duplicate_decode_profile_alias(extras):
         agg_engine_args=engine_args,
         num_workers=2,
     )
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match=match):
         EngineReplayRunnerFactory(runtime=RecordingRuntime()).create(0).run(_spec(deployment=deployment))

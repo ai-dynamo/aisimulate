@@ -120,9 +120,12 @@ def test_rubin_op_collectors_require_source_checkout_but_predictions_are_package
     assert not source_files & payload
     assert "aisimulate_core/systems/vr200_hecate.yaml" in payload
     assert "aisimulate_core/sdk/operations/prefill_graph.py" in payload
-    assert any(
-        name.startswith("aisimulate_core/systems/data/vr200_hecate/") and name.endswith(".parquet") for name in payload
-    )
+    assert {
+        "aisimulate_core/systems/data/vr200_hecate/comm/sglang/"
+        "0.5.18+nvinternal.rubin.0.8full.66997102/sglang_prefill_comm_norm_boundary_perf.parquet",
+        "aisimulate_core/systems/data/vr200_hecate/sparse_attention/sglang/"
+        "0.5.18+nvinternal.rubin.0.8full.66997102/sglang_prefill_attention_sequence_perf.parquet",
+    }.issubset(payload)
 
 
 def test_release_verifier_checks_packaged_legal_files(verifier, monkeypatch, tmp_path):

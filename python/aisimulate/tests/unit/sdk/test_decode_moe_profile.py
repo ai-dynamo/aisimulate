@@ -446,7 +446,7 @@ def test_model_selector_changes_only_generation_moe_and_survives_clone_pickle():
         {"forward_model": "fpm"},
         {"overwrite_num_layers": 4},
         {"pp_size": 2},
-        {"cp_size": 2, "moe_tp_size": 8},
+        {"cp_size": 2, "tp_size": 1, "moe_tp_size": 2},
         {"tp_size": 2, "moe_tp_size": 2},
         {"attention_dp_size": 2, "moe_tp_size": 8},
         {"moe_ep_size": 2, "moe_tp_size": 2},
@@ -460,7 +460,7 @@ def test_model_selector_changes_only_generation_moe_and_survives_clone_pickle():
 def test_direct_model_config_cannot_silently_ignore_selector(changes):
     cfg = dataclasses.replace(build_model_config(**KWARGS), decode_workload_distribution=PROFILE)
     cfg = dataclasses.replace(cfg, **changes)
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="decode_workload_distribution"):
         get_model(MODEL, cfg, "sglang")
 
 
