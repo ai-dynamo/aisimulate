@@ -298,6 +298,16 @@ OPERATIONS_DEF_INVENTORY = {
             "_infer_phase",
         }
     ),
+    # Exact-profile raw loading and cache lifecycle only; all admission and
+    # performance values remain in the compiled engine.
+    "prefill_graph.py": frozenset(
+        {
+            "SglangPrefillAttentionSequence.clear_cache",
+            "SglangPrefillAttentionSequence.load_data",
+            "SglangPrefillCommNormBoundary.clear_cache",
+            "SglangPrefillCommNormBoundary.load_data",
+        }
+    ),
     "util_empirical.py": frozenset(
         {
             "capture_provenance",

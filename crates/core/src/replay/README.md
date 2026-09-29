@@ -148,32 +148,36 @@ precede client lane release while already-dispatched siblings finish.
 
 ### Public AgentX replay qualification
 
-The built-in Python/CLI engine stack qualifies aggregated vLLM and SGLang with
-HBM-only KV cache and speculative decoding disabled. Use a Weka or Agentic
-Mooncake v2 trace with `trace_timestamps` and `agentic_lanes: 1`; the functional
-qualification starts at turn zero and runs the play to settlement. The public
-engine boundary rejects agentic TensorRT-LLM, host offload, and speculative decoding configurations.
-Generic native runtime conformance, including P/D, has a broader scope than
-this public qualification.
+The built-in offline Python/CLI engine stack qualifies aggregated and separate
+prefill/decode vLLM and SGLang with HBM-only KV cache and speculative decoding
+disabled. Weka, Agentic Mooncake, and agentic Dynamo traces use the shared
+agentic driver with `trace_timestamps`; explicit lanes, seeded snapshots, and
+optional warmup use the same controls in both topologies. P/D workers must share
+one target model. The public engine boundary rejects agentic TensorRT-LLM,
+host offload, speculative decoding, and online P/D configurations.
 
 Default Python results retain `agentic_qualification: functional_only` in
 `ReplayReport.metadata`. CLI JSON/artifacts retain the same marker, and table
 output explicitly identifies functional replay. Fixed timing in the gates
 below checks lifecycle semantics; it does not measure prediction accuracy or
-AgentX benchmark fidelity. Warmup, profiling barriers, fixed-duration lane
-recycling, and public P/D qualification belong to later milestones.
+AgentX benchmark fidelity. The initial P/D boundary covers public native/Python/CLI
+execution and typed request identity through the native handshake, including
+the preparation/profile barrier. Fixed-duration recycling, cutoff, and late
+events from recycled plays still require joint qualification under AIC-1813,
+AIC-1896, and AIC-1818; this does not complete all AIC-1895 acceptance work.
 
 After the development setup in [`DEVELOPMENT.md`](../../../../DEVELOPMENT.md),
 run these commands from the repository root:
 
 ```sh
 cargo test --locked -p aisimulate-core --test agentx_qualification --example qualify_weka
-python/aisimulate/.venv/bin/pytest -q tests/test_unified_traffic_runtime.py tests/e2e/test_unified_cli_engine.py -k 'weka or agentx_replay'
+cargo test --locked -p aisimulate-core --lib agentic_pd_qualification
+python/aisimulate/.venv/bin/pytest -q tests/test_unified_traffic_runtime.py tests/e2e/test_unified_cli_engine.py -k 'weka or agentx_replay or agentic_snapshot or agentic_warmup'
 python/aisimulate/.venv/bin/python scripts/qualify_agentx_replay.py --output /tmp/agentx-replay.json
 ```
 
-The last command is an opt-in network gate. It verifies the revision-pinned
-published samples used by `qualify_weka_samples.py`, selects the first play,
+The last command is an aggregated, turn-zero opt-in network gate. It verifies
+the revision-pinned published samples used by `qualify_weka_samples.py`, selects the first play,
 and freshly materializes its v2 counterpart through `WekaImporter`. For each
 backend and each input format, it runs the public Python runner twice and the
 CLI once. Graph identity, lifecycle digest/event count, play outcomes, and
@@ -194,10 +198,13 @@ The native integration tests additionally compare full lifecycle transcript
 bytes and normalized reports, cover overlapping children, blocking joins,
 parent resumption, client lane reuse across two plays, and context rejection
 that skips the undispatched parent continuation. Python tests exercise the
-default public runner while rejecting any attempted Dynamo import.
+default public runner while rejecting any attempted Dynamo import. The Python
+snapshot matrix also covers both topologies/backends with warmup enabled or
+disabled and prefix caching enabled or disabled. CLI prediction and
+recommendation tests check P/D preparation evidence and profile artifact parity.
 
-These gates cover the AISimulate portion of AIC-1815. Dynamo compatibility
-qualification remains in [Dynamo PR #14355](https://github.com/ai-dynamo/dynamo/pull/14355)
+The aggregated turn-zero gates cover the AISimulate portion of AIC-1815. Dynamo
+compatibility qualification remains in [Dynamo PR #14355](https://github.com/ai-dynamo/dynamo/pull/14355)
 and must be rerun against matching AISimulate artifacts before declaring the
 cross-repository Milestone 1 complete.
 
@@ -260,12 +267,17 @@ request-instance identities; primer and profile prefix views share their play's
 mapping. Identity capacity exhaustion fails instead of reusing an old range.
 These APIs reuse the existing dependency executor and runtime feedback contract.
 
-Public snapshot execution currently runs the remaining requests against a cold
-engine. Primer descriptions are evidence for AIC-1812; they are not submitted as
-hidden warmup requests. Physical warmup and its profile barrier belong to
-AIC-1812, fixed-duration lane recycling to AIC-1813, and Dynamo placement policy
-to AIC-1817. Aggregated vLLM/SGLang, HBM-only, non-speculative public qualification
-continues to apply; snapshot output remains `functional_only`.
+Public snapshot execution runs the remaining requests against a cold engine by
+default. Set `agentic_warmup: true`, or use
+`WorkloadDriver::new_agentic_warmup`, to submit full-input one-token primers and
+ten one-token warmup requests per lane before opening the profile barrier.
+Both aggregated and offline P/D replay preserve the prepared identity context,
+saved frontier, and native cache across that barrier. Preparation is reported
+separately from measured profile work. See the
+[warmup input/output and barrier contract](../../../../docs/agentic-warmup.md).
+Fixed-duration lane recycling belongs to AIC-1813 and Dynamo placement policy
+to AIC-1817. The vLLM/SGLang, HBM-only, non-speculative public boundary continues
+to apply; snapshot output remains `functional_only`.
 
 The native report's `agentic_snapshots` collection records source/graph identity,
 seed, lane/play/cache identity, sampled cut, recorded request intervals, retained

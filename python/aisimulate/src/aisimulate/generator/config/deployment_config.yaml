@@ -171,6 +171,44 @@ inputs:
     required: false
     default: 8
 
+  # SlurmConfig: single-node Dynamo jobs, independent of Kubernetes.
+  - key: SlurmConfig.account
+    required: false
+  - key: SlurmConfig.partition
+    required: false
+  - key: SlurmConfig.job_name
+    required: false
+    default: '"aic-dynamo"'
+  - key: SlurmConfig.time
+    required: false
+    default: '"01:00:00"'
+  - key: SlurmConfig.cpus_per_task
+    required: false
+    default: 16
+  - key: SlurmConfig.memory
+    required: false
+    default: '"64G"'
+  - key: SlurmConfig.container_image
+    required: false
+  - key: SlurmConfig.container_mounts
+    required: false
+    default: []
+  - key: SlurmConfig.env
+    required: false
+    default: {}
+  - key: SlurmConfig.startup_timeout
+    required: false
+    default: 1800
+  - key: SlurmConfig.benchmark_timeout
+    required: false
+    default: 1800
+  - key: SlurmConfig.benchmark_concurrency
+    required: false
+    default: [1, 2, 4, 8]
+  - key: SlurmConfig.benchmark_rounds
+    required: false
+    default: 20
+
   # SflowConfig
   - key: SflowConfig.slurm_account
     required: false

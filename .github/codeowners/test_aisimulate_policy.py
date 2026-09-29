@@ -484,7 +484,7 @@ def test_full_ci_trusted_copy_verification(tmp_path: Path) -> None:
     }
 
     assert _run_readiness_script(copy_script, tmp_path, matching).returncode == 0
-    assert not (tmp_path / "output.txt").exists()
+    assert (tmp_path / "output.txt").read_text() == f"base={base_sha}\n"
 
     mismatched = {**matching, "FAKE_PR_HEAD": "fedcba9876543210"}
     assert _run_readiness_script(copy_script, tmp_path, mismatched).returncode != 0

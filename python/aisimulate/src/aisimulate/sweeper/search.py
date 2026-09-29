@@ -904,6 +904,17 @@ def _score_prepared(
             reason_category=ReasonCategory.RUNNER_CONTRACT,
             runner_metadata=replay_result.metadata,
         )
+    phases = replay_result.metadata.get("agentic_phases")
+    if isinstance(phases, Mapping) and phases.get("phase") == "aborted":
+        return _EvalResult(
+            candidate=None,
+            observe_metrics=None,
+            outcome="failed",
+            reason=f"agentic preparation aborted: {phases.get('failure_reason') or 'preparation did not complete'}",
+            reason_category=ReasonCategory.REPLAY_RUNTIME,
+            runner_metadata=replay_result.metadata,
+            report_metrics=report,
+        )
     effective_targets = set(goal.resolved_pareto_objectives) if goal.is_pareto else {goal.target}
     if (
         effective_targets.intersection({OptimizationTarget.GOODPUT, OptimizationTarget.GOODPUT_PER_GPU})

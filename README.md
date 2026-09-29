@@ -135,6 +135,10 @@ report to `<output-dir>/prediction.json`. Add `--capture-per-request` to also
 write `requests.jsonl`, or use `--format json` for machine-readable standard
 output.
 
+For agentic trace replay, follow the [AgentX simulation quickstart](docs/agentx-quickstart.md).
+It includes a Weka workload, a complete eight-GPU prefill/decode configuration,
+KV cache warmup, and commands for running and inspecting the simulation.
+
 ## Recommend a deployment
 
 `recommend` searches the prediction schema plus search domains and an
@@ -261,7 +265,7 @@ APIs:
 
 - [Estimator/FPE Python and Rust SDK](docs/core-api.md)
 - [AIC-compatible modeled-power contract (semantics only)](docs/power-model.md)
-- [FPM collection-to-prediction workflow](python/aisimulate/docs/fpm/end-to-end-workflow.md)
+- [Self-benchmarking and FPM onboarding guide](python/aisimulate/docs/fpm/self-benchmarking-and-onboarding.md)
 - [Replay SDK and artifact contract](crates/core/src/replay/README.md)
 - [Sweeper SDK](docs/sweeper/overview.md)
 - [Legacy CLI reference](docs/cli/legacy-aic-user-guide.md)

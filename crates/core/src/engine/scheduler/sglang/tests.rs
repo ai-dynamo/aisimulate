@@ -2703,6 +2703,100 @@ mod admission_validation_rollback {
         )
     }
 
+    #[test]
+    fn failed_prefill_validation_restores_queue_when_no_request_fits() {
+        let mut core = SglangCore::new_with_kv_capture(test_args(32, 4, 32), 0);
+        core.receive(direct_request((0..8).collect(), 0));
+        core.try_execute_hidden_pass(0.0).unwrap();
+        core.config.max_running_requests = 1;
+        let running = core.receive(direct_request((20..24).collect(), 4));
+        core.try_execute_hidden_pass(1.0).unwrap();
+        let cold = core.receive(direct_request((100..112).collect(), 1));
+        let warm = core.receive(direct_request((0..12).collect(), 1));
+        core.config.schedule_policy = SchedulePolicy::Lpm;
+        core.drain_kv_events();
+
+        let waiting_before = format!("{:?}", core.waiting);
+        let capacity_before = capacity(&core);
+        let fail = Arc::new(AtomicBool::new(true));
+        install_timing(&mut core, &fail, false);
+        // LPM changes queue order and computes lease hashes, but the running
+        // request fills the batch, so admission never changes the cache.
+        for now_ms in [2.0, 3.0] {
+            assert!(core.try_execute_hidden_pass(now_ms).is_err());
+            assert_eq!(format!("{:?}", core.waiting), waiting_before);
+            assert_eq!(capacity(&core), capacity_before);
+            assert_eq!(core.running[0].uuid, running);
+            assert!(core.drain_kv_events().is_empty());
+        }
+
+        fail.store(false, Ordering::Relaxed);
+        let pass = core.try_execute_hidden_pass(4.0).unwrap();
+        assert!(pass.admissions.is_empty());
+        assert_eq!(core.waiting[0].uuid, warm);
+        assert_eq!(core.waiting[1].uuid, cold);
+        assert_eq!(pass.output_signals.len(), 1);
+        assert_eq!(pass.output_signals[0].uuid, running);
+    }
+
+    #[test]
+    fn failed_partial_prefix_match_restores_radix_state_and_eviction_order() {
+        let mut core = SglangCore::new_with_kv_capture(test_args(32, 4, 32), 0);
+        core.receive(direct_request((0..8).collect(), 0));
+        core.try_execute_hidden_pass(0.0).unwrap();
+        core.receive(direct_request((100..108).collect(), 0));
+        core.try_execute_hidden_pass(1.0).unwrap();
+        let request = core.receive(direct_request((0..4).chain(50..58).collect(), 1));
+        core.drain_kv_events();
+
+        // Own the saved arrays so the assertion does not share the live cache's
+        // copy-on-write buffers. Compare topology and timestamps as well as counts.
+        let radix_state = |core: &SglangCore| {
+            let cache = core.kv_manager.cache();
+            let mut nodes = rustc_hash::FxHashMap::default();
+            let mut pending = vec![cache.root()];
+            while let Some(id) = pending.pop() {
+                let node = cache.node(id);
+                pending.extend(node.children.values().copied());
+                nodes.insert(
+                    id,
+                    (
+                        node.parent,
+                        node.children.clone(),
+                        node.key.to_vec(),
+                        node.value.to_vec(),
+                        node.lock_ref,
+                        node.last_access_time,
+                    ),
+                );
+            }
+            let mut probe = cache.admission_checkpoint();
+            let eviction_order = probe.evict(probe.evictable_size).1;
+            (nodes, eviction_order)
+        };
+        let state_before = radix_state(&core);
+        let waiting_before = format!("{:?}", core.waiting);
+        let capacity_before = capacity(&core);
+        let fail = Arc::new(AtomicBool::new(true));
+        install_timing(&mut core, &fail, false);
+        for now_ms in [2.0, 3.0] {
+            assert!(core.try_execute_hidden_pass(now_ms).is_err());
+            assert_eq!(radix_state(&core), state_before);
+            assert_eq!(capacity(&core), capacity_before);
+            assert_eq!(format!("{:?}", core.waiting), waiting_before);
+            assert!(core.running.is_empty());
+            assert!(core.drain_kv_events().is_empty());
+        }
+
+        fail.store(false, Ordering::Relaxed);
+        let pass = core.try_execute_hidden_pass(4.0).unwrap();
+        assert_eq!(pass.admissions.len(), 1);
+        assert_eq!(pass.admissions[0].uuid, request);
+        assert_eq!(pass.admissions[0].reused_input_tokens, 4);
+        assert_eq!(pass.completed_requests, 1);
+        assert!(core.is_empty());
+    }
+
     #[rstest::rstest]
     fn overlength_rejections_survive_failed_prefill_passes(
         #[values(false, true)] fail_in_prediction: bool,

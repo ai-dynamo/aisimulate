@@ -122,7 +122,10 @@ def test_native_replay_samples_conditional_progress_per_verification(mode):
     ordinary = _run(baseline)
     assert accepted.metrics["completed_requests"] == rejected.metrics["completed_requests"] == 1
     assert accepted.metrics["mean_e2e_latency_ms"] < rejected.metrics["mean_e2e_latency_ms"]
-    assert rejected.metrics["mean_e2e_latency_ms"] == ordinary.metrics["mean_e2e_latency_ms"]
+    # Ordinary aggregated prefill supplies the first token; speculative
+    # verification and disaggregated timing retain their existing forward count.
+    first_token_decode_ms = 1.0 if mode == "aggregated" else 0.0
+    assert rejected.metrics["mean_e2e_latency_ms"] == ordinary.metrics["mean_e2e_latency_ms"] + first_token_decode_ms
     assert accepted.metrics["mean_ttft_ms"] == rejected.metrics["mean_ttft_ms"]
 
 

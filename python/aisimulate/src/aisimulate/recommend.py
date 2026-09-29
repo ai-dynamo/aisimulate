@@ -660,6 +660,8 @@ def _recommendation_workload(raw: dict[str, Any] | None) -> dict[str, Any]:
                 result["agentic_lanes"] = load["agentic_lanes"]
             if load.get("agentic_snapshot") is not None:
                 result["agentic_snapshot"] = deepcopy(load["agentic_snapshot"])
+            if load.get("agentic_warmup"):
+                result["agentic_warmup"] = True
         if isinstance(stop, dict) and stop.get("max_virtual_time_seconds") is not None:
             result["max_sim_time_ms"] = 1_000.0 * float(stop["max_virtual_time_seconds"])
         return result
@@ -879,6 +881,20 @@ def _candidate_prediction(
             timing["database_mode"] = resolved["database_mode"]
             policy = resolved["transfer_policy"]
             timing["transfer_policy"] = list(policy) if policy is not None else None
+            timing.update(
+                {
+                    field: resolved[field]
+                    for field in (
+                        "gemm_quant_mode",
+                        "moe_quant_mode",
+                        "fmha_quant_mode",
+                        "kvcache_quant_mode",
+                        "comm_quant_mode",
+                        "attention_backend",
+                    )
+                    if resolved.get(field) is not None
+                }
+            )
         kv_cache = {
             "block_size": block_size,
             "prefix_caching": sample[f"{role}_enable_prefix_caching"],
@@ -904,6 +920,11 @@ def _candidate_prediction(
                 "attention_data": sample[f"{prefix}attention_dp"],
                 "moe_tensor": sample[f"{prefix}moe_tp"],
                 "moe_expert": sample[f"{prefix}moe_ep"],
+                **(
+                    {"decode_context": estimator.config["dcp"]}
+                    if estimator is not None and estimator.config.get("dcp") is not None
+                    else {}
+                ),
             },
             "scheduler": {
                 "max_batched_tokens": sample[f"{role}_max_num_batched_tokens"],

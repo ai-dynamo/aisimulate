@@ -183,6 +183,40 @@ model = RustForwardPassPerfModel.best_available(config)
 print(model.diagnostics()["provenance"])
 ```
 
+### Vera Rubin GLM-5.2 graph-prefill pilot
+
+The opt-in `sglang_glm52_nvfp4_vr200_tp4_graph_v1` profile uses the same canonical constructor and a latency-only direct method. It is qualified for seven homogeneous prefill shapes on the pinned SGLang runtime, TP4/EP1, NVFP4 experts, BF16 projections and FP8 KV. The profile preserves its immutable SHA-256 in `diagnostics()["provenance"]["config"]["estimator_config"]["op_level"]`; save that complete configuration when reproducing a prediction.
+
+```python
+from aisimulate_core.sdk import RustForwardPassPerfModel
+
+model = RustForwardPassPerfModel.best_available({
+    "model": "nvidia/GLM-5.2-NVFP4",
+    "system": "vr200_hecate",
+    "backend": "sglang",
+    "backend_version": "0.5.18+nvinternal.rubin.0.8full.66997102",
+    "worker_type": "prefill",
+    "tp": 4, "pp": 1, "attention_dp": 1,
+    "moe_tp_size": 4, "moe_ep_size": 1,
+    "gemm_quant_mode": "bfloat16", "moe_quant_mode": "nvfp4",
+    "fmha_quant_mode": "bfloat16", "kvcache_quant_mode": "fp8",
+    "comm_quant_mode": "half",
+    "estimation_mode": "op_level", "fallback_policy": "deny",
+    "database_mode": "SILICON", "enable_shared_layer": False,
+    "estimator_config": {
+        "op_level": {"prefill_graph_profile": "sglang_glm52_nvfp4_vr200_tp4_graph_v1"},
+        "correction": {"enabled": False},
+    },
+})
+milliseconds = model.predict_prefill_latency(bs=1, isl=2048, prefix=1024)
+```
+
+`isl` is the total input length, including cached tokens. That call processes 1,024 new tokens after a 1,024-token prefix. The admitted `(batch, isl, prefix)` calls are `(1,1024,0)`, `(2,1024,0)`, `(1,2048,1024)`, `(1,8192,0)`, `(2,8192,0)`, `(1,16384,0)` and `(1,32768,16384)`. Arguments must be ordinary Python integers in the unsigned 32-bit range; the Rust API uses `u32`. Other shapes and batch-token products that overflow fail before lookup. The tables have exact keys and do not interpolate or inherit another profile's data.
+
+The independent forward-step comparison passes all seven shapes within 15%, with worst absolute relative error 5.2333%. This is a measured mean forward-time comparison for the exact runtime. Scheduler TTFT, model quality and general Vera Rubin coverage remain unqualified by this prefill comparison. Aggregate telemetry cannot establish each request's exact new/past lengths, so this selected profile rejects `estimate_forward_pass_time_ms`, tuning, static energy/SOL diagnostics and replay-provider construction. Use the direct scalar method; no CLI scheduler selection is supported. Other profiles retain their existing behavior. See the [dedicated collector](../python/aisimulate/collector/sglang_rubin/README.md) and [packaged data provenance](../python/aisimulate/src/aisimulate_core/systems/data/vr200_hecate/README.md).
+
+Decode is validated separately through the default op-level estimator with `worker_type="decode"`, no `prefill_graph_profile`, and correction disabled. Use `static_phase_latency(batch_size=B, input_tokens=K, output_tokens=2, prefill=False)` for one decode step with `K` past KV tokens and attention length `K + 1`; `output_tokens=1` requests zero decode iterations. The [combined accuracy report](vr200-glm52-accuracy.md) lists all seven prefill and 18 decode cases, the exact configuration and measurement boundary. Decode meets the original ±15% criterion in 17/18 cases; the pilot accepts the remaining observed −17.09% batch-1 residual. This does not extend the opt-in prefill profile to decode or qualify scheduler TTFT.
+
 ### External whole-forward FPM data
 
 Set `estimator_config.fpm_interpolation.fpm_parquet_path` on the canonical configuration to use an external parquet and its required same-stem `.metadata.json` sidecar:
@@ -204,22 +238,23 @@ model = RustForwardPassPerfModel.best_available(config)
 
 The parquet identity must match the requested model, hardware, backend version, topology, and quantization. The systems YAML is still required, but a backend timing-data directory is unnecessary. Relative paths bind to the working directory when the model is constructed; resolved provenance stores the absolute path. The control applies when FPM interpolation is selected; other estimators retain it in provenance without opening the file. Saved legacy `timing.forward_model: fpm` and `timing.fpm_parquet_path` inputs migrate to the same canonical control, which is preserved in replay and per-role recommendation output.
 
-`model.static_phase_latency(batch_size=1, input_tokens=512, output_tokens=4, prefill=False)` exposes the native engine's existing static integration before online correction. Prefill returns one prefill latency; decode returns total decode latency for the output sequence. This method requires a native estimator. AFD+PD uses it for an external-FPM regular companion, dividing total decode latency by `max(1, output_tokens - 1)` for TPOT. AFD attention and FFN workers retain their existing timing provider.
+`model.static_phase_latency(batch_size=1, input_tokens=512, output_tokens=4, prefill=False)` exposes the native engine's existing static integration before online correction. Prefill returns one prefill latency; decode returns total decode latency for the output sequence. This method requires a native estimator. The graph-prefill pilot requires `predict_prefill_latency` and rejects this generic static API. AFD+PD uses it for an external-FPM regular companion, dividing total decode latency by `max(1, output_tokens - 1)` for TPOT. AFD attention and FFN workers retain their existing timing provider.
 
 ### Engine identity controls
 
-The canonical configuration also carries quantization overrides and
-`attention_backend`, `moe_backend`, `enable_eplb` (default `false`), and
-`wideep_num_slots` (default absent). These controls reach model construction,
-KV memory sizing, and replay provenance. EPLB/slots and nondefault MoE backend
-selection require an MoE model. Collected FPM interpolation cannot represent
-EPLB, slots, or MoE backend overrides; it rejects an explicit incompatible
-request and is skipped during automatic selection for those identities.
+The canonical configuration also carries quantization overrides and `attention_backend`, `moe_backend`, `moe_kernel_source` (default absent), `enable_eplb` (default `false`), and `wideep_num_slots` (default absent). These controls reach model construction, KV memory sizing, and replay provenance. EPLB/slots and nondefault MoE backend or kernel-source selection require an MoE model. Collected FPM interpolation cannot represent EPLB, slots, MoE backend, or kernel-source overrides; it rejects an explicit incompatible request and is skipped during automatic selection for those identities.
 
-Rust callers using exhaustive `ForwardPassPerfModelConfig` literals must add
-`moe_backend: None`, `enable_eplb: false`, and `wideep_num_slots: None`.
-`ForwardPassPerfModelConfig::new(...)` supplies these defaults. This extends
-the canonical configuration introduced by #242.
+`moe_kernel_source` selects an exact, nonblank collected `kernel_source` label for fused MoE compute. It is distinct from the existing `moe_backend` graph/backend control; source labels are not backend aliases and are preserved without trimming. `None` keeps the existing default source-selection policy, including eligible low-latency NVFP4 selection. `SILICON` reads only the requested source's table; `EMPIRICAL` derives its estimate from that same source; `HYBRID` may fall back to empirical estimation within that source, but does not substitute a different source. Missing source data remains an error. An explicit `moe_torch_flow_min_latency` requires gated NVFP4 and at most 128 tokens after attention-DP gathering. Pure-roofline `SOL` remains table-independent and does not claim measured support for the requested source.
+
+Selected `prefill_graph_profile` and observed `decode_workload_distribution` profiles require `moe_kernel_source=None`. Their qualified composition and source identity are fixed; an explicit source override is rejected even when its label matches the measured kernel. An absent or null source preserves the approved profile identity and predictions.
+
+`moe_perf.parquet` may include Boolean selection metadata `default_eligible`. An absent column preserves legacy automatic selection; when present, every value must be a non-null Boolean. A `false` row requires a nonblank string `kernel_source`, preserved exactly, and is available only through that named source. It cannot enter automatic standard or low-latency grids, including empirical cross-shape and cross-quant reference selection. Among eligible rows, existing source priority and first-row precedence remain unchanged. Default table views, coverage, and readiness use those same eligible grids; raw Parquet enumeration retains all measured rows. Malformed eligibility metadata is an invalid-data error, never a missing-data fallback. The flag is not a measurement identity dimension. Collector finalization preserves it during merges, including existing annotations when a legacy recollection omits the column; genuinely new legacy keys remain eligible.
+
+An explicit source is rejected for dense graphs, MegaMoE modules, large-EP expert-compute graphs, and any constructed timing phase with no compatible fused MoE operator. It is also incompatible with whole-forward FPM, including the legacy Task `forward_model='fpm'` rewrite. Invalid graph/source combinations fail as invalid configuration rather than triggering estimator fallback. An untrained `fpm_regression` model remains not-ready; retaining a source in its configuration is not evidence of source-specific prediction support.
+
+AFD regular companions currently reject exact-source requests through their legacy estimator and fixed timing paths. The external-FPM companion forwards the source to canonical validation, which rejects the incompatible FPM request. These controls describe standalone AISimulate behavior, not downstream Dynamo planner integration.
+
+Rust callers using exhaustive `ForwardPassPerfModelConfig` literals must add `moe_backend: None`, `moe_kernel_source: None`, `enable_eplb: false`, and `wideep_num_slots: None`. Direct `EngineConfig` and `MoeOp` literals likewise require the new `moe_kernel_source` field. `ForwardPassPerfModelConfig::new(...)` supplies its default. This extends the canonical configuration introduced by #242.
 
 Rust callers constructing `SyntheticTraceSpec` must also add
 `cached_prefix_tokens: 0` to preserve existing prefix-sharing behavior. A positive
@@ -282,8 +317,17 @@ nested paths. The supported namespaces are:
 - `correction`: `enabled` (true), independent `sampling`, `min_observations`
   (5), `factor_bounds` (min 0.5, max 2.0), and the existing `max_num_tokens`
   (8192), `max_batch_size` (512), and `max_kv_tokens` (2000000) ranges.
-- `op_level` and `fpm_interpolation`: reserved typed namespaces with no
-  additional knobs yet; unknown fields are rejected.
+- `op_level`: optional `decode_workload_distribution` selects a measured decode-MoE distribution, and `prefill_graph_profile` selects a qualified direct-prefill graph composition. Saved configurations retain the resolved immutable `prefill_graph_profile_id`, which is validated on reload. Unknown fields are rejected.
+- `fpm_interpolation`: `text_only` (false) permits text prefill/decode profiles
+  for multimodal architectures while retaining encoder weights. It does not
+  supply encoder timing. `unrecorded_quant_modes` (empty) may contain `fmha`
+  and/or `comm` to match an explicitly unrecorded precision field in a profile.
+  The corresponding top-level quant mode must remain unset. This selects null
+  profile values exactly; it does not make precision matching a wildcard.
+  `fpm_parquet_path` selects an external FPM parquet with its same-stem metadata
+  sidecar. Unknown fields are rejected.
+
+Engine replay rank arguments accept `decode_workload_distribution` (alias `aic_decode_workload_distribution`) only with AIC timing. An active selector paired with a non-AIC timing model, including fixed or polynomial timing, is rejected. The AFD companion's fixed timing and legacy estimator paths also reject active selectors because they cannot apply the profile. `None` preserves ordinary timing in these paths.
 
 Sampling defaults to `bins_per_axis: [4, 4]` and `max_observations: 64` per
 logical store. Rectangular grids are supported. Regression uses dynamic
@@ -303,6 +347,75 @@ return `None`. `tune_with_fpms()` preserves the established FPM observation
 contract. Native construction still uses Python model compilation; estimator
 selection, regression, correction, and latency computation are owned by Rust.
 
+### DCP self-benchmark profiles
+
+`dcp` is an optional recorded decode-context-parallel dimension within TP.
+It must be positive and divide `tp`; it does not multiply GPU or MoE group
+counts. Missing DCP and explicit DCP1 remain distinct FPM identities. An
+explicit DCP8 request cannot consume ordinary TP8 or unrecorded-DCP data.
+DCP greater than one currently supports measured vLLM `fpm_interpolation`
+timing; op-level DCP and SOL-dependent transfer paths report unsupported.
+
+FPM v6 accepts optional `dcp` in the Parquet identity and sidecar selector.
+The loader also accepts `per_row_single_sample_or_median_of_3` sidecars when
+every row declares a consistent `measurement_policy`/`measurement_repeats`
+pair: `dynamo_native_single_sample_v1`/1 or `kvwarm_median_of_3`/3. Values are
+already aggregated by the producer; the loader preserves their latency.
+
+For a Kimi K3 text profile, an explicit configuration can be:
+
+```python
+config = ForwardPassPerfModelConfig(
+    model="moonshotai/Kimi-K3", system="gb300", backend="vllm",
+    backend_version="0.29.0", worker_type="aggregated",
+    tp=8, pp=1, attention_dp=1, moe_tp_size=8, moe_ep_size=1, dcp=8,
+    gemm_quant_mode="bfloat16", moe_quant_mode="w4a16_mxfp4",
+    kvcache_quant_mode="fp8", attention_backend="FLASHINFER_MLA",
+    estimation_mode="fpm_interpolation", fallback_policy="deny",
+    systems_paths=("/absolute/profile/systems",),
+    estimator_config={
+        "fpm_interpolation": {
+            "text_only": True,
+            "unrecorded_quant_modes": ["fmha", "comm"],
+        },
+        "correction": {"enabled": False},
+    },
+)
+model = RustForwardPassPerfModel.best_available(config)
+```
+
+Only use `unrecorded_quant_modes` for fields that the selected profile actually
+leaves unrecorded. The runtime `FLASHINFER_MLA` label is retained for exact FPM
+matching while the compiler uses its internal FlashInfer backend description.
+The model architecture remains registered once; adding a parallel configuration
+does not require another model class.
+
+Place the reviewed primary pair at
+`systems/data/gb300/vllm/0.29.0/fpm_forward_perf.{parquet,metadata.json}` and copy
+the matching hardware YAML into the systems root. Keep source hashes and the
+pinned dataset revision with the profile. Do not combine synthetic-attention
+boundary points or nonuniform layouts with a balanced primary profile.
+
+Replay YAML passes recorded DCP through
+`engine.workers.<role>.parallelism.decode_context`. Per-worker `timing` accepts
+the canonical quant-mode fields and `attention_backend`, alongside estimator
+selection and controls. DCP FPM replay requires explicit fixed KV block capacity;
+automatic DCP/hybrid capacity sizing is not implemented. Host offload or P/D
+transfer also requires explicit KV bytes per token with DCP.
+`decode_context` is currently supported by AISimulate's `--stack engine` only.
+Dynamo Replay and Planner do not yet support this field; their configuration
+propagation, cache identity, and dependency version need a downstream update.
+These timing precision/backend overrides are prediction-only; recommendation
+rejects them until its feasibility preflight supports the same identity.
+Supplying a fixed pool does not add KDA checkpoint, eviction, or chunk-alignment
+fidelity to the generic Replay cache/scheduler. This API change enables timing
+consumption, not full hybrid-cache simulation or multimodal prediction from
+text-only measurements.
+
+The positional engine-spec wire version remains unchanged: the engine identity
+is JSON-encoded and the FPM match identity is already variable-length. Legacy
+configuration and profiles without DCP remain accepted as unrecorded DCP.
+
 ### Migrating saved configuration
 
 Use `ForwardPassPerfModelConfig.from_legacy_engine_config(old_config,
@@ -313,6 +426,8 @@ allowed direct regression fallback; the migration preserves that two-mode
 order rather than adding interpolation. Legacy `forward_model: fpm` maps to
 `fpm_interpolation`, and `fallback_policy: error` maps to deny. The deprecated
 `regression` policy remains readable for these saved direct-fallback requests.
+
+The migration adapter rejects any non-null `prefill_graph_profile`, `prefill_graph_profile_id`, or `decode_workload_distribution` field, including an orphan profile ID. These selectors require the canonical `ForwardPassPerfModelConfig.estimator_config.op_level` configuration; pass a saved canonical configuration directly to `RustForwardPassPerfModel.best_available` to preserve its profile identity and supported API restrictions. Profile-free legacy configurations continue to migrate normally.
 
 Previously saved CLI timing with `forward_model` retains explicit selection
 and deny. Newly authored requests without a selection use auto. `ForwardPassPerfOptions`
@@ -409,6 +524,21 @@ latency-only and return `None` from `evidence_summary()`. Consumers must keep
 that distinction when producing power metrics: absence of evidence is not a
 zero-watt prediction. FPM decode timing continues to query the exact total
 past-KV coordinate rather than the op-level mean-context coordinate.
+
+## Agentic report source migration (0.13)
+
+The replay report additions require the coordinated 0.13.0 wheel/crate version,
+aligned with main's release preparation in PR #268. They must not be released
+as a 0.12 patch. Downstream exhaustive Rust `ReplayReport` literals must supply
+`agentic_phases: None` for a cold run (or its prepared phase evidence).
+Exhaustive `PerRequestRecord` literals must supply `agentic_phase: None` for
+cold replay, or `Some(AgenticReplayPhase::Profile)` for measured warmed requests.
+Exhaustive destructuring must name these fields or use `..`.
+
+The external-consumer compile fixture `rebuild_replay_report_literals` constructs
+both public structs exhaustively against this boundary. JSON consumers retain
+the existing cold shape: absent optional phase evidence is not serialized.
+This source migration does not change the engine-config/spec or FPM wire schemas.
 
 ## Compatibility rules
 

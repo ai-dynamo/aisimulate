@@ -19,7 +19,7 @@ import aisimulate_core.sdk as sdk
 from aisimulate_core.sdk.common import AttentionBackend, MoEBackend
 from aisimulate_core.sdk.config import ModelConfig, RuntimeConfig
 from aisimulate_core.sdk.engine import EngineHandle, compile_engine
-from aisimulate_core.sdk.memory import estimate_kv_cache, estimate_num_gpu_blocks
+from aisimulate_core.sdk.memory import estimate_kv_cache, estimate_num_gpu_blocks, estimate_state_cache
 from aisimulate_core.sdk.operations import ElementWise, Embedding, MoEDispatch
 from aisimulate_core.sdk.rust_engine_step import RustForwardPassPerfModel
 
@@ -34,6 +34,7 @@ EXPECTED_FACADE = {
     "RustForwardPassPerfModel",
     "compile_engine",
     "estimate_kv_cache",
+    "estimate_state_cache",
     "estimate_num_gpu_blocks",
 }
 
@@ -79,6 +80,7 @@ def test_sdk_facade_exports_the_canonical_objects() -> None:
     assert sdk.RustForwardPassPerfModel is RustForwardPassPerfModel
     assert sdk.compile_engine is compile_engine
     assert sdk.estimate_kv_cache is estimate_kv_cache
+    assert sdk.estimate_state_cache is estimate_state_cache
     assert sdk.estimate_num_gpu_blocks is estimate_num_gpu_blocks
 
 
@@ -91,11 +93,13 @@ def test_stable_function_signatures() -> None:
     assert str(inspect.signature(compile_engine)) == (
         "(model_path: 'str', system: 'str', backend: 'str', backend_version: 'str | None' = None, *, "
         "tp_size: 'int' = 1, pp_size: 'int' = 1, attention_dp_size: 'int' = 1, "
+        "dcp_size: 'int | None' = None, fpm_options: 'dict | None' = None, "
         "moe_tp_size: 'int | None' = None, moe_ep_size: 'int | None' = None, "
         "gemm_quant_mode: 'str | None' = None, moe_quant_mode: 'str | None' = None, "
         "kvcache_quant_mode: 'str | None' = None, fmha_quant_mode: 'str | None' = None, "
         "fpm_fmha_quant_mode: 'str | None' = None, "
         "comm_quant_mode: 'str | None' = None, attention_backend: 'str | None' = None, "
+        "moe_kernel_source: 'str | None' = None, "
         "moe_backend: 'str | None' = None, enable_eplb: 'bool' = False, wideep_num_slots: 'int | None' = None, "
         "nextn: 'int' = 0, "
         "speculation: 'dict | None' = None, "
@@ -105,10 +109,16 @@ def test_stable_function_signatures() -> None:
         "decoder_replay: 'bool' = False, "
         "database_mode: 'str | None' = None, shared_layer: 'bool | None' = None, "
         "transfer_policy: 'str | list[str] | None' = None, "
-        "strict_provenance: 'bool | None' = None, fpm_parquet_path: 'str | None' = None) -> 'bytes'"
+        "strict_provenance: 'bool | None' = None, "
+        "decode_workload_distribution: 'str | None' = None, "
+        "prefill_graph_profile: 'str | None' = None, "
+        "fpm_parquet_path: 'str | None' = None) -> 'bytes'"
     )
     assert "scheduler_block_size" in inspect.signature(estimate_num_gpu_blocks).parameters
     assert "memory_fraction_kind" in inspect.signature(estimate_kv_cache).parameters
+    assert {"model_path", "backend", "tp_size", "pp_size", "kv_bytes_per_token"}.issubset(
+        inspect.signature(estimate_state_cache).parameters
+    )
     assert list(inspect.signature(RustForwardPassPerfModel.best_available).parameters) == ["config"]
     assert not hasattr(RustForwardPassPerfModel, "from_regression")
     assert not hasattr(RustForwardPassPerfModel, "from_native")
@@ -289,6 +299,37 @@ def test_distribution_carries_typing_contract() -> None:
 
 
 @pytest.mark.unit
+def test_prefill_graph_identity_stub_matches_native_contract() -> None:
+    native = importlib.import_module("aisimulate_core._native")
+    root = importlib.resources.files("aisimulate_core")
+    stub = ast.parse((root / "_native.pyi").read_text(encoding="utf-8"))
+    function = next(
+        (
+            node
+            for node in stub.body
+            if isinstance(node, ast.FunctionDef) and node.name == "prefill_graph_profile_identity"
+        ),
+        None,
+    )
+    assert function is not None, "The shipped native stub omits prefill_graph_profile_identity"
+    assert function.args.args == function.args.posonlyargs == function.args.kwonlyargs == []
+    assert not inspect.signature(native.prefill_graph_profile_identity).parameters
+    assert ast.unparse(function.returns) == "tuple[str, str]"
+    identity = native.prefill_graph_profile_identity()
+    assert isinstance(identity, tuple) and len(identity) == 2
+    assert all(isinstance(value, str) for value in identity)
+
+    engine = next(node for node in stub.body if isinstance(node, ast.ClassDef) and node.name == "AicEngine")
+    for name in ("prefill_graph_profile_id", "prefill_graph_profile_json"):
+        prop = next((node for node in engine.body if isinstance(node, ast.FunctionDef) and node.name == name), None)
+        assert prop is not None, f"The shipped AicEngine stub omits {name}"
+        assert [ast.unparse(decorator) for decorator in prop.decorator_list] == ["property"]
+        assert [argument.arg for argument in prop.args.args] == ["self"]
+        assert ast.unparse(prop.returns) == "str | None"
+        assert inspect.isdatadescriptor(getattr(native.AicEngine, name))
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize("namespace", ["aisimulate_core", "aisimulate_core"])
 def test_regression_bucket_diagnostics_stub_matches_native_contract(namespace: str) -> None:
     root = importlib.resources.files("aisimulate_core")
@@ -388,3 +429,22 @@ def test_static_phase_diagnostics_stub_matches_native_contract() -> None:
     result = model.static_phase_diagnostics(0, 128, 0, True)
     assert isinstance(result, str)
     assert json.loads(result) == []
+
+
+def test_state_memory_api_is_standalone_in_a_fresh_interpreter() -> None:
+    script = """
+import sys
+from aisimulate_core.sdk import estimate_state_cache
+result = estimate_state_cache("moonshotai/Kimi-K3", tp_size=8)
+assert result["bytes_per_request"] == 61046784
+assert not {"aisimulate.config.engine", "vllm"}.intersection(sys.modules)
+"""
+    subprocess.run([sys.executable, "-c", script], check=True)
+
+
+def test_state_memory_public_paths_share_one_implementation() -> None:
+    from aisimulate import capacity
+    from aisimulate.sdk.memory import estimate_state_cache as legacy
+    from aisimulate_core.sdk.state_memory import estimate_state_cache as canonical
+
+    assert sdk.estimate_state_cache is estimate_state_cache is legacy is capacity.estimate_state_cache is canonical

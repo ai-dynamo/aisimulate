@@ -58,6 +58,7 @@ areas:
       - tests/test_unified_traffic_runtime.py
       - tests/test_power_contract.py
       - tests/fixtures/power-contract-v1.json
+      - tests/test_state_cache_config.py
       - tests/test_host_offload_cli.py
       - tests/test_afd_*.py
       - tests/golden/afd-*
@@ -101,6 +102,14 @@ areas:
 # stays visible on subsystem changes without requiring every listed team to
 # approve: any listed code owner can satisfy GitHub's code-owner gate.
 shared:
+  - glob: .agents/skills/aisimulate-fpe-performance/
+    owners: [forward-pass-engine, maintainers]
+  - glob: .claude/skills/aisimulate-fpe-performance
+    owners: [forward-pass-engine, maintainers]
+  - glob: .agents/skills/aisimulate-replay-performance/
+    owners: [replay, mocker, maintainers]
+  - glob: .claude/skills/aisimulate-replay-performance
+    owners: [replay, mocker, maintainers]
   - glob: pages/
     owners: [forward-pass-engine, infra, maintainers]
   - glob: tests/fpm_accuracy/
@@ -205,6 +214,8 @@ shared:
     owners: [replay, sweeper, forward-pass-engine, maintainers]
   - glob: tests/fixtures/power-contract-v1.json
     owners: [replay, sweeper, forward-pass-engine, maintainers]
+  - glob: tests/test_state_cache_config.py
+    owners: [replay, mocker, maintainers]
   - glob: tests/test_host_offload_cli.py
     owners: [replay, maintainers]
   - glob: tests/test_afd_*.py

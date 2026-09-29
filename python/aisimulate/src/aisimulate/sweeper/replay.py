@@ -255,9 +255,11 @@ class RunnerCapabilities:
     supports_agentic_host_offload: bool = True
     supports_agentic_speculative_decoding: bool = True
     supports_agentic_snapshots: bool = False
+    supports_agentic_warmup: bool = False
     supports_cached_prefix_tokens: bool = False
     supported_engine_model_controls: tuple[str, ...] = ()
     supports_mtp_expected_acceptance: bool = False
+    supports_state_cache: bool = False
 
     def supports_backend_topology(self, backend: str, topology: str) -> bool:
         """Return whether a backend/topology pair is supported.
@@ -349,6 +351,15 @@ class RunnerCapabilities:
                     raise ValueError("runner does not support explicit MTP expected acceptance; use --stack engine")
             if is_afd and rank.get("enable_chunked_prefill") is not None:
                 raise ValueError("enable_chunked_prefill is unsupported for AFD")
+        if not self.supports_state_cache:
+            for args in (deployment.agg_engine_args, deployment.prefill_engine_args, deployment.decode_engine_args):
+                if not args:
+                    continue
+                rank = args.get("rank", args)
+                if isinstance(rank, Mapping) and rank.get("state_cache") is not None:
+                    raise ValueError(
+                        "runner does not support state_cache; select a stack that advertises this capability"
+                    )
         if deployment.encoder is not None and deployment.deployment_mode not in {"agg", "disagg"}:
             raise ValueError("analytical EPD supports only agg/disagg language deployments; AFD is unsupported")
         if deployment.encoder is not None and not self.supports_analytical_epd:
@@ -375,6 +386,14 @@ class RunnerCapabilities:
             if not self.supports_agentic_lanes:
                 raise ValueError("runner does not support agentic_lanes")
         agentic_snapshot = spec.workload.get("agentic_snapshot")
+        agentic_warmup = spec.workload.get("agentic_warmup", False)
+        if type(agentic_warmup) is not bool:
+            raise ValueError("agentic_warmup must be a boolean")
+        if agentic_warmup:
+            if agentic_snapshot is None:
+                raise ValueError("agentic_warmup requires agentic_snapshot")
+            if not self.supports_agentic_warmup:
+                raise ValueError("runner does not support agentic warmup")
         if agentic_snapshot is not None:
             if (
                 not isinstance(agentic_snapshot, Mapping)

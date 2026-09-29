@@ -69,6 +69,7 @@ Every `Workload` field:
 | `arrival_speedup_ratio` | `float` | `1.0` | Scales the trace's inter-arrival times (open-loop trace only). `>1` speeds arrivals up. |
 | `agentic_lanes` | `int \| None` | `None` | Positive number of client play lanes for `weka`, `agentic_mooncake`, or agentic `dynamo` timestamp replay; does not cap concurrent child requests. Requires `source_type: trace`, `trace_path`, and `load_type: trace_timestamps`, with no `replay_concurrency`. |
 | `agentic_snapshot` | `AgenticSnapshotOptions \| None` | `None` (unset) | Optional object `{seed: u64}`; required `seed` is an unsigned 64-bit integer (`0` through `2^64 - 1`). Requires positive `agentic_lanes`, `source_type: trace`, `trace_path`, and `load_type: trace_timestamps`, with no `replay_concurrency`; supported formats are `weka`, `agentic_mooncake`, and agentic `dynamo`. Unset preserves turn-zero execution. |
+| `agentic_warmup` | `bool` | `False` | Requires `agentic_snapshot` and positive lanes when enabled. Runs primers and ten warmup requests per lane before measured replay, preserving native cache state; see [warmup behavior](../agentic-warmup.md). Failed preparation is retained as candidate evidence and excluded from ranking. |
 | `replay_concurrency` | `int \| None` | `None` | Closed-loop in-flight cap **for a trace** (shape 1c); when set, trace timestamps are ignored. For synthetic closed-loop use `concurrency` instead. |
 
 The synthetic fields are `isl`, `osl`, `request_rate`, `concurrency`, `kv_load_ratio`,

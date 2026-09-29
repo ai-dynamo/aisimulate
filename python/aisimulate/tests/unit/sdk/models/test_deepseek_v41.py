@@ -138,6 +138,36 @@ def _build_model(*, replay=False, backend="sglang", tp=4):
     )
 
 
+@pytest.mark.parametrize("replay", [False, True])
+@pytest.mark.parametrize("source", [None, "sglang_flashinfer_trtllm_moe"])
+def test_moe_kernel_source_reaches_every_stage_child(replay, source):
+    import json
+
+    from aisimulate_core.sdk.config import ModelConfig
+    from aisimulate_core.sdk.models import get_model
+
+    model = get_model(
+        MODEL_PATH,
+        ModelConfig(tp_size=4, moe_tp_size=1, moe_ep_size=4, decoder_replay=replay, moe_kernel_source=source),
+        "sglang",
+    )
+
+    def moe_specs(value):
+        if isinstance(value, dict):
+            if "Moe" in value:
+                yield value["Moe"]
+            for child in value.values():
+                yield from moe_specs(child)
+        elif isinstance(value, list):
+            for child in value:
+                yield from moe_specs(child)
+
+    for phase in (model.context_ops, model.generation_ops):
+        moes = [moe for op in phase for moe in moe_specs(json.loads(op._spec_json()))]
+        assert len(moes) == 40
+        assert all(moe.get("moe_kernel_source") == source for moe in moes)
+
+
 @pytest.mark.parametrize("backend", ["sglang", "vllm", "trtllm"])
 def test_v41_text_graph_full_profile_all_backends(backend):
     import json
