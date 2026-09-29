@@ -367,6 +367,18 @@ impl RequestSequence {
 mod tests {
     use super::*;
 
+    #[test]
+    fn synthetic_output_tokens_match_independent_xxh3_values() {
+        // xxh3_64(request UUID bytes ‖ ordinal as u64 LE) truncated to u32, computed
+        // with an independent XXH3 implementation (Python `xxhash`). Pinning the
+        // values keeps them stable across processes, toolchains, and platforms.
+        let tokens: Vec<u32> = (0..4)
+            .map(|ordinal| synthetic_output_token(Uuid::from_u128(1), ordinal))
+            .collect();
+        assert_eq!(tokens, [2515880452, 3600266899, 2716793611, 2249174135]);
+        assert_eq!(synthetic_output_token(Uuid::from_u128(2), 0), 1927195132);
+    }
+
     fn sequence(
         tokens: Vec<u32>,
         max_output_tokens: usize,

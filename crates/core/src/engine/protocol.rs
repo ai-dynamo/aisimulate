@@ -18,6 +18,8 @@ pub struct Request {
     /// Requested output length.
     pub max_output_tokens: usize,
     /// Optional exact output IDs. Its length overrides `max_output_tokens`.
+    /// When absent, each output token is derived from `request_id` and its
+    /// output position, so reusing a request ID reproduces the same stream.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_token_ids: Option<Vec<u32>>,
 }

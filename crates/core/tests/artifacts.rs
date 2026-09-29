@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use aisimulate_core::engine::{
-    Backend, EngineConfig, KvEvent, NativeHostOffloadConfig, TimingModelConfig,
+    Backend, EngineConfig, KvEvent, KvEventData, NativeHostOffloadConfig, TimingModelConfig,
 };
 use aisimulate_core::replay::loadgen::{SessionTrace, Trace, TurnTrace, WorkloadDriver};
 use aisimulate_core::replay::{
@@ -272,9 +272,15 @@ fn canonical_replay_reproduces_unplanned_output_tokens_and_kv_hashes() {
             .filter_map(|output| output.token_id)
             .collect()
     };
+    let mut first_request_streams = Vec::new();
     for backend in [Backend::Vllm, Backend::Trtllm, Backend::Sglang] {
         let run = || {
             let mut replay_spec = spec(backend, 1, 1);
+            let mut config: ReplayEngineConfig =
+                serde_json::from_value(replay_spec.engine.clone()).unwrap();
+            config.rank.emit_kv_events = true;
+            config.rank.emit_kv_token_ids = true;
+            replay_spec.engine = serde_json::to_value(config).unwrap();
             // Identical length-only requests carry no output plan, so every
             // generated token and output-block hash is engine-synthesized.
             replay_spec.requests = (0..2)
@@ -311,9 +317,40 @@ fn canonical_replay_reproduces_unplanned_output_tokens_and_kv_hashes() {
             output_tokens(&first, 1),
             "{backend:?}: distinct requests must not share synthetic output blocks"
         );
-        assert!(!first.kv_events.is_empty(), "{backend:?}");
         assert_eq!(kv_parts(&first), kv_parts(&second), "{backend:?}");
+
+        // Block 2 of request 0 (block_size 4, 6 prompt tokens) holds only generated
+        // tokens; it must be published with a hash derived from those tokens.
+        let request_tokens: Vec<u32> = (0..6).chain(output_tokens(&first, 0)).collect();
+        let output_block = &request_tokens[8..12];
+        let stored = first
+            .kv_events
+            .iter()
+            .filter_map(|event| match &event.event.data {
+                KvEventData::Stored(stored) => Some(&stored.blocks),
+                KvEventData::Removed { .. } => None,
+            })
+            .flatten()
+            .find(|block| block.token_ids.as_deref() == Some(output_block))
+            .unwrap_or_else(|| panic!("{backend:?}: no stored block holds generated tokens"));
+        let bytes: Vec<u8> = output_block
+            .iter()
+            .flat_map(|token| token.to_le_bytes())
+            .collect();
+        assert_eq!(
+            stored.tokens_hash,
+            xxhash_rust::xxh3::xxh3_64_with_seed(&bytes, 1337),
+            "{backend:?}"
+        );
+        first_request_streams.push(output_tokens(&first, 0));
     }
+    // Every engine derives unplanned tokens from the same request identity.
+    assert!(
+        first_request_streams
+            .windows(2)
+            .all(|pair| pair[0] == pair[1]),
+        "engines diverged: {first_request_streams:?}"
+    );
 }
 
 #[test]
