@@ -1510,8 +1510,10 @@ def test_run_agg_caps_prefilling_requests_at_the_batch(
     assert result["ctx_tokens"] == _CTX
     assert result["num_tokens"] == b * isl_new
     assert steps[0].context_tokens == b * isl_new
-    # Every request prefills in this step: no decode request rides along.
+    # Every request prefills in this step: no decode request rides along,
+    # and the step does not enter the TPOT average (decode steps cost 1 ms).
     assert steps[0].num_decode_requests == 0
+    assert result["tpot"] == pytest.approx(1.0)
     assert summary.get_step_estimates()["scheduling"]["num_mix_steps"] == 1
     assert memory_calls[0]["num_tokens"] == b * isl_new
     assert memory_calls[0]["mtp_scaled_tokens"] == 0
@@ -1575,6 +1577,9 @@ def test_run_agg_caps_the_budget_for_every_batch_size(
     result = summary.get_result_dict()
     assert steps[0].context_tokens == capped
     assert steps[0].num_decode_requests == 0
+    if b > 1 and osl > 2:
+        # The prefill-only step belongs to TTFT; TPOT is the decode step (1 ms).
+        assert result["tpot"] == pytest.approx(1.0)
     assert result["ctx_tokens"] == ctx_tokens
     assert result["num_tokens"] == capped
     assert memory_calls[0]["num_tokens"] == capped
@@ -1586,6 +1591,61 @@ def test_run_agg_caps_the_budget_for_every_batch_size(
     assert result["ttft"] / backend._ttft_queuing_factor(
         b, summary.get_step_estimates()["scheduling"]["num_mix_steps"]
     ) == pytest.approx(10.0)
+
+
+@pytest.mark.parametrize(
+    ("ctx_tokens", "prefilling", "decoding", "expected_tpot"),
+    [
+        # One complete request (1920 new tokens) plus a 128-token partial one:
+        # both requests are prefilling in the first of ceil(3840/2048) = 2
+        # mixed steps, which leaves TPOT; the second one (the partial request
+        # finishing while the other decodes) stays: (10 + 62 * 1) / 63.
+        (2048, 2, 0, (10.0 + 62 * 1.0) / 63),
+        # Exactly one request: the other one decodes alongside it, and both of
+        # the ceil(3840/1920) = 2 mixed steps count: (2 * 10 + 62 * 1) / 64.
+        (1920, 1, 1, (2 * 10.0 + 62 * 1.0) / 64),
+    ],
+)
+def test_run_agg_partial_last_request_prefills_the_whole_batch(
+    monkeypatch,
+    backend: BaseBackend,
+    model,
+    database,
+    ctx_tokens: int,
+    prefilling: int,
+    decoding: int,
+    expected_tpot: float,
+) -> None:
+    """bs 2, isl 2048, prefix 128: once the budget reaches into the last
+    request, every request of the batch is prefilling, so the mixed step
+    prices no decode request (never b + 1 requests), and only the decode-free
+    first mixed step stays out of the TPOT average (mixed step 10 ms, decode
+    step 1 ms, 64 decode iterations)."""
+    steps: list[MixedStepInput] = []
+
+    def _run_mixed(model_arg, database_arg, runtime_config_arg, step):
+        steps.append(step)
+        return StepEstimate(latency_ms=10.0, energy_wms=1.0)
+
+    monkeypatch.setattr(backend, "run_mixed", _run_mixed)
+    monkeypatch.setattr(
+        backend,
+        "_get_genonly_step_estimate",
+        lambda *args, **kwargs: _decode_step(1.0, 1.0, {"decode": 1.0}, {"decode": "silicon"}, ()),
+    )
+
+    summary = backend.run_agg(
+        model,
+        database,
+        RuntimeConfig(batch_size=2, beam_width=1, isl=2048, osl=64, prefix=128, engine_step_backend="rust"),
+        ctx_tokens=ctx_tokens,
+    )
+
+    result = summary.get_result_dict()
+    assert (result["num_ctx_reqs"], result["num_gen_reqs"]) == (prefilling, decoding)
+    assert steps[0].num_decode_requests == decoding
+    assert steps[0].context_tokens == ctx_tokens
+    assert result["tpot"] == pytest.approx(expected_tpot)
 
 
 def test_run_agg_budget_cap_is_inert_when_the_batch_owns_more_tokens(

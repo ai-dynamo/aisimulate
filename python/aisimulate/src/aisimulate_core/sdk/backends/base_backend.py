@@ -1698,8 +1698,9 @@ class BaseBackend:
         # large prefix), which would publish negative decode-request counts;
         # the old full-isl schedule already did so for an explicit
         # ctx_tokens > b * isl, and for b == 1 priced phantom requests.
-        # ``ctx_tokens`` stays the published engine knob. With prefix 0 this
-        # only differs from the old schedule when ctx_tokens >= b * isl.
+        # ``ctx_tokens`` stays the published engine knob. With prefix 0 the
+        # schedule only differs from the old one when ctx_tokens > (b - 1) * isl,
+        # where the step's prefilling requests cover the whole batch.
         ctx_budget = min(ctx_tokens, b * isl_new)
         # None (or an omitted kwarg) means the caller did not model speculative
         # progress here; the summary then stays eligible for the upper-layer
@@ -1786,9 +1787,11 @@ class BaseBackend:
         num_mix_steps = num_genonly_steps = 0
         num_mix_steps_for_tpot_calc = 0  # correction for tpot calc only
         if b > 1:
-            if ctx_budget >= b * isl_new:
-                # The whole batch prefills in the single mixed step, so no
-                # decode request rides along with it.
+            # The step's prefilling requests (complete ones plus a partial last
+            # one) already cover the whole batch: no decode request rides
+            # along with them.
+            whole_batch_prefills = np.ceil(ctx_budget / isl_new) >= b
+            if whole_batch_prefills:
                 num_mix_gen_tokens = 0
             else:
                 num_mix_gen_tokens = self._mix_step_gen_tokens(b, ctx_budget, isl_new, decode_iterations)
@@ -1806,7 +1809,15 @@ class BaseBackend:
                 num_mix_steps = steps_to_finish_ctx
                 num_genonly_steps = decode_iterations - num_mix_steps
                 num_genonly_tokens = b
-                num_mix_steps_for_tpot_calc = self._tpot_mix_steps(num_mix_steps)
+                # When the whole batch prefills, the first mixed step has no
+                # decoding request and produces no output token, so it leaves
+                # the TPOT average. A second mixed step (a partial last request
+                # finishing its prefill) is shared with the b - 1 requests
+                # already decoding, so it stays.
+                if whole_batch_prefills:
+                    num_mix_steps_for_tpot_calc = self._tpot_mix_steps(num_mix_steps - 1) if num_mix_steps > 1 else 0
+                else:
+                    num_mix_steps_for_tpot_calc = self._tpot_mix_steps(num_mix_steps)
         elif b == 1:
             # special case for b=1
             num_mix_steps = 1
