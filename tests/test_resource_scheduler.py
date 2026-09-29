@@ -10,7 +10,13 @@ import pytest
 
 from aisimulate.config.common import ResourceConfig
 from aisimulate.resource_scheduler import InterruptedEvaluation, evaluate_waves
-from aisimulate.resources import GB, GuardedRunnerFactory, HostResources, ResourceEstimate, ResourceLimitError
+from aisimulate.resources import (
+    GB,
+    GuardedRunnerFactory,
+    HostResources,
+    ResourceEstimate,
+    ResourceLimitError,
+)
 
 
 @dataclass
@@ -41,7 +47,16 @@ def _evaluate(spec):
 def test_admission_splits_waves_and_skips_only_oversized_candidates():
     factory = _BudgetFactory()
     specs = [{"id": i, "cost": cost} for i, cost in enumerate([1, 1, 3, 1])]
-    results = dict(evaluate_waves(specs, factory=factory, initializer=_init, evaluate=_evaluate, workers=4, timeout=10))
+    results = dict(
+        evaluate_waves(
+            specs,
+            factory=factory,
+            initializer=_init,
+            evaluate=_evaluate,
+            workers=4,
+            timeout=10,
+        )
+    )
     assert results[0] == {"id": 0}
     assert results[1] == {"id": 1}
     assert isinstance(results[2], InterruptedEvaluation)
@@ -50,11 +65,15 @@ def test_admission_splits_waves_and_skips_only_oversized_candidates():
     assert factory.admitted == [[0, 1], [3]]
 
 
-def test_checkpoint_failure_stops_before_workers_without_reclassifying_candidates(monkeypatch):
+def test_checkpoint_failure_stops_before_workers_without_reclassifying_candidates(
+    monkeypatch,
+):
     from aisimulate import resource_scheduler as scheduler
 
     factory = _BudgetFactory()
-    failure = ResourceLimitError("execution evidence exceeds the bounded checkpoint budget")
+    failure = ResourceLimitError(
+        "execution evidence exceeds the bounded checkpoint budget"
+    )
 
     def fail_checkpoint(event, plan):
         raise failure
@@ -66,7 +85,16 @@ def test_checkpoint_failure_stops_before_workers_without_reclassifying_candidate
     monkeypatch.setattr(scheduler, "ProcessPoolExecutor", unexpected_pool)
     specs = [{"id": i, "cost": 1} for i in range(2)]
     with pytest.raises(ResourceLimitError) as caught:
-        next(evaluate_waves(specs, factory=factory, initializer=_init, evaluate=_evaluate, workers=2, timeout=10))
+        next(
+            evaluate_waves(
+                specs,
+                factory=factory,
+                initializer=_init,
+                evaluate=_evaluate,
+                workers=2,
+                timeout=10,
+            )
+        )
     assert caught.value is failure
     assert factory.admitted == [[0, 1]]
 
@@ -74,7 +102,16 @@ def test_checkpoint_failure_stops_before_workers_without_reclassifying_candidate
 def test_resource_retries_are_bounded_and_preserve_completed_work():
     factory = _BudgetFactory()
     specs = [{"id": 0, "cost": 1}, {"id": 1, "cost": 1, "refuse": True}]
-    results = list(evaluate_waves(specs, factory=factory, initializer=_init, evaluate=_evaluate, workers=2, timeout=10))
+    results = list(
+        evaluate_waves(
+            specs,
+            factory=factory,
+            initializer=_init,
+            evaluate=_evaluate,
+            workers=2,
+            timeout=10,
+        )
+    )
     assert dict(results)[0] == {"id": 0}
     assert dict(results)[1].resource_limited
     assert len(results) == 2
@@ -90,7 +127,9 @@ class _EstimateFactory:
 def test_whole_wave_reserves_sum_against_one_live_snapshot(monkeypatch):
     from aisimulate import resources
 
-    monkeypatch.setattr(resources, "discover_host", lambda: HostResources(16 * GB, 9 * GB, 8))
+    monkeypatch.setattr(
+        resources, "discover_host", lambda: HostResources(16 * GB, 9 * GB, 8)
+    )
     factory = GuardedRunnerFactory(_EstimateFactory(), "custom", ResourceConfig())
     spec = SimpleNamespace(workload={}, concurrency=1)
     assert factory.admit_wave([spec])["status"] == "admitted"
@@ -98,7 +137,9 @@ def test_whole_wave_reserves_sum_against_one_live_snapshot(monkeypatch):
         factory.admit_wave([spec, spec])
     assert caught.value.plan["required_bytes"] == 12 * GB
     assert caught.value.plan["available_bytes"] < 8 * GB
-    monkeypatch.setattr(resources, "discover_host", lambda: HostResources(16 * GB, 6 * GB, 8))
+    monkeypatch.setattr(
+        resources, "discover_host", lambda: HostResources(16 * GB, 6 * GB, 8)
+    )
     with pytest.raises(ResourceLimitError):
         factory.admit_wave([spec])
 
@@ -139,7 +180,14 @@ def test_live_pressure_retries_only_unfinished_work_after_cleanup(monkeypatch):
     monkeypatch.setattr(scheduler, "close_pool", stop)
     specs = [{"id": i, "cost": 1} for i in range(2)]
     results = list(
-        evaluate_waves(specs, factory=Factory(), initializer=_init, evaluate=_evaluate, workers=2, timeout=2)
+        evaluate_waves(
+            specs,
+            factory=Factory(),
+            initializer=_init,
+            evaluate=_evaluate,
+            workers=2,
+            timeout=2,
+        )
     )
     assert results == [(0, {"id": 0}), (1, {"id": 1})]
     assert waves == [[0, 1], [1]]
@@ -204,5 +252,93 @@ def test_readiness_counts_actual_workers_when_the_pool_reuses_one(monkeypatch):
     monkeypatch.setattr(scheduler, "wait", advance)
     monkeypatch.setattr(scheduler.time, "monotonic", lambda: elapsed[0])
     specs = [{"id": i, "cost": 1} for i in range(2)]
-    results = dict(evaluate_waves(specs, factory=factory, initializer=_init, evaluate=_evaluate, workers=2, timeout=2))
+    results = dict(
+        evaluate_waves(
+            specs,
+            factory=factory,
+            initializer=_init,
+            evaluate=_evaluate,
+            workers=2,
+            timeout=2,
+        )
+    )
     assert results == {0: {"id": 0}, 1: {"id": 1}}
+
+
+def test_sibling_finished_during_a_yield_pause_is_not_reported_timed_out(monkeypatch):
+    """Regression test: evaluate_waves() suspends at each ``yield index, result``
+    while the caller (Sweeper._record's on_candidate callback) runs. If a
+    sibling future completes during that pause, it must still be reported as
+    its real outcome, not misclassified as timed out just because the
+    deadline was crossed while the callback for an earlier candidate was
+    running. Uses a controlled fake ``wait()``/clock, not a real sleeping
+    callback, so the regression is deterministic rather than timing-sensitive.
+    """
+    from concurrent.futures import Future
+    from pathlib import Path
+
+    from aisimulate import resource_scheduler as scheduler
+
+    future0 = Future()
+    future0.set_result({"id": 0})
+    future1 = Future()
+    future1.set_result({"id": 1})
+
+    class Pool:
+        def __init__(self, **kwargs):
+            self._processes = {123: object()}
+            Path(kwargs["initargs"][2], "123").touch()
+
+        def submit(self, evaluate, spec):
+            return future0 if spec["id"] == 0 else future1
+
+    elapsed = [0.0]
+    calls = [0]
+
+    def fake_wait(futures, *, timeout, return_when):
+        calls[0] += 1
+        if calls[0] == 1:
+            # Initial poll: only candidate 0 has finished so far.
+            return {future0}, {future1}
+        if calls[0] == 2:
+            # The drain called immediately after resuming from the yield for
+            # candidate 0 -- this is the regression target. Candidate 1
+            # finished while the (simulated) on_candidate callback for
+            # candidate 0 was running, represented below by advancing the
+            # fake clock past the deadline before this call happens.
+            return {future1}, set()
+        raise AssertionError(
+            "no further wait() calls expected once both futures are drained"
+        )
+
+    factory = _BudgetFactory()
+    monkeypatch.setattr(scheduler, "ProcessPoolExecutor", Pool)
+    monkeypatch.setattr(scheduler, "close_pool", lambda pool: None)
+    monkeypatch.setattr(scheduler, "terminate_pool", lambda pool: None)
+    monkeypatch.setattr(scheduler, "wait", fake_wait)
+    monkeypatch.setattr(scheduler.time, "monotonic", lambda: elapsed[0])
+    specs = [{"id": 0, "cost": 1}, {"id": 1, "cost": 1}]
+    gen = evaluate_waves(
+        specs,
+        factory=factory,
+        initializer=_init,
+        evaluate=_evaluate,
+        workers=2,
+        timeout=1.0,
+    )
+
+    assert next(gen) == (0, {"id": 0})
+
+    # Simulate on_candidate for candidate 0 running long enough to cross the
+    # deadline -- candidate 1 has already finished by the time it returns.
+    elapsed[0] = 1.5
+
+    assert next(gen) == (1, {"id": 1}), (
+        "candidate 1 finished before the callback for candidate 0 returned and "
+        "must be reported as feasible, not swept into the deadline-exceeded "
+        "InterruptedEvaluation just because the clock advanced while that "
+        "callback was running"
+    )
+
+    with pytest.raises(StopIteration):
+        next(gen)
