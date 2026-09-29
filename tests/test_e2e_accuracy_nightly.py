@@ -596,10 +596,8 @@ def test_nightly_accuracy_is_independent_from_release_staging_and_has_no_public_
     wheel_upload = next(s for s in workflow["jobs"]["wheel"]["steps"] if "upload-artifact@" in s.get("uses", ""))
     assert wheel_upload["with"]["overwrite"] == "true"
     assert wheel_upload["with"]["name"] == "e2e-accuracy-wheel-${{ inputs.artifact_key }}"
-    assert set(uploads[0]["with"]["path"].splitlines()) == {
-        "${{ runner.temp }}/accuracy-public/summary.json",
-        "${{ runner.temp }}/accuracy-public/qualification.json",
-    }
+    # The container hook remaps one directory, not multiline absolute paths.
+    assert uploads[0]["with"]["path"] == "${{ runner.temp }}/accuracy-public/"
     assert "actions: write" not in (ROOT / ".github/workflows/e2e-accuracy.yml").read_text()
     pages_workflow = yaml.load((ROOT / ".github/workflows/pages.yml").read_text(), Loader=yaml.BaseLoader)
     assert set(pages_workflow["on"]["workflow_run"]["workflows"]) == {
