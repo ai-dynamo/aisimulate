@@ -1597,7 +1597,17 @@ findings:
       the DECODE scorer's (0.29 evidence: context failed only at isl=1,
       904/976 rows per head otherwise). Fixed in c7269391
       (msa_decode_scorer_kernel_limit, query_len-scoped) and re-run: 904 +
-      904 rows recovered, exactly 144 isl=1 cells classified. dsa_context
+      904 rows recovered, exactly 144 isl=1 cells classified. FOLLOW-UP
+      (owner 2026-09-29): MSA is one fixed geometry (M3 64q/4kv/4idx,
+      GQA-style sharding, index heads = kv heads per rank), so the shared
+      12-value head grid was replaced by the model row's declared shards —
+      tensor_parallel_sizes [1,2,4,8,16] -> heads 64/32/16/8/4
+      (a22e4553; case_generator.get_msa_head_counts). msa_context 11712 ->
+      4880 cases, msa_generation 8826 -> 3680; the 128/96/48/24/12-head
+      rows were unreachable points and, per the owner ("数据别放这种临时
+      的了"), the 0.30 msa tables were re-collected on the new axis:
+      4880 + 3680 rows, zero failures; the sweep's shared-grid msa tables
+      are superseded (workspace staging_0300/superseded/). dsa_context
       grew from 22640 to 169512 rows (the 2026-09-22 chunked-prefill prefix
       axis: 2 models x 4 combos x 12 heads x 1816 tuples = 174336 cases);
       4827 tasks failed, 2.7% deterministic ModelConfig rejects (prefix
