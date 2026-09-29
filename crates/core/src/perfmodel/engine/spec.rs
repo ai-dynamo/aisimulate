@@ -625,6 +625,7 @@ mod tests {
         // Recursive like Overlap/Fallback: sol_ops carries the model's
         // original granular list, so the round-trip must preserve nesting.
         crate::operators::FpmForwardOp {
+            dcp_size: None,
             name: "fpm_forward_prefill".into(),
             phase: crate::operators::FpmPhase::Prefill,
             model_path: "org/model-a".into(),
@@ -850,6 +851,7 @@ mod tests {
             moe_kernel_source: None,
             kv_block_size: Some(64),
             parallel: ParallelMapping {
+                dcp_size: None,
                 tp_size: 8,
                 pp_size: 1,
                 attention_dp_size: Some(8),
@@ -1045,7 +1047,7 @@ mod tests {
             vec![OpSpec::FpmForward(fpm_forward())],
             vec![OpSpec::Moe(moe())],
         );
-        assert_eq!(spec.schema_version, 22);
+        assert_eq!(spec.schema_version, 24);
         let mut bytes = spec.to_bincode().unwrap();
         assert_eq!(EngineSpec::from_bincode(&bytes).unwrap(), spec);
 
@@ -1350,8 +1352,11 @@ mod tests {
     fn merged_schema_preserves_fpm_selectors_and_pilot_payloads() {
         let mut fpm_config = sample_engine_config();
         fpm_config.forward_model = Some("fpm".into());
+        fpm_config.parallel.dcp_size = Some(2);
         fpm_config.quantization.fpm_fmha_dtype = Some(DataType::Fp8);
-        let fpm_spec = EngineSpec::new(fpm_config, vec![OpSpec::FpmForward(fpm_forward())], vec![]);
+        let mut fpm_op = fpm_forward();
+        fpm_op.dcp_size = Some(2);
+        let fpm_spec = EngineSpec::new(fpm_config, vec![OpSpec::FpmForward(fpm_op)], vec![]);
 
         let mut pilot_config = sample_engine_config();
         pilot_config.prefill_graph_profile =
@@ -1375,18 +1380,18 @@ mod tests {
         for spec in [fpm_spec, pilot_spec] {
             let bytes = spec.to_bincode().unwrap();
             assert_eq!(EngineSpec::from_bincode(&bytes).unwrap(), spec);
-            for previous_version in [20u32, 21] {
+            for previous_version in [20u32, 21, 22, 23] {
                 let mut stale = bytes.clone();
                 stale[..4].copy_from_slice(&previous_version.to_le_bytes());
-                // Both branches claimed 21 after distinct schema-20 layouts.
-                // Reject either version before decoding even a missing payload.
+                // DCP and the pilot claimed 22 for different layouts.
+                // Reject all older versions before decoding even a missing payload.
                 for input in [stale.as_slice(), &stale[..4]] {
                     assert!(matches!(
                         EngineSpec::from_bincode(input),
                         Err(AicError::UnsupportedSchemaVersion {
                             kind: "EngineSpec",
                             got,
-                            expected: 22,
+                            expected: 24,
                         }) if got == previous_version
                     ));
                 }
@@ -1412,9 +1417,25 @@ mod tests {
             Err(AicError::UnsupportedSchemaVersion {
                 got: 19,
                 expected: ENGINE_SPEC_SCHEMA_VERSION,
-
                 ..
             })
+        ));
+    }
+    #[test]
+    fn recorded_dcp_and_legacy_absence_round_trip() {
+        let mut spec = handshake_spec();
+        spec.engine.parallel.dcp_size = Some(2);
+        let decoded = EngineSpec::from_bincode(&spec.to_bincode().unwrap()).unwrap();
+        assert_eq!(decoded.engine.parallel.dcp_size, Some(2));
+        let mut legacy = serde_json::to_value(&spec.engine).unwrap();
+        legacy.as_object_mut().unwrap().remove("dcp_size");
+        let legacy: EngineConfig = serde_json::from_value(legacy).unwrap();
+        assert_eq!(legacy.parallel.dcp_size, None);
+        let mut previous = spec.to_bincode().unwrap();
+        previous[..4].copy_from_slice(&23u32.to_le_bytes());
+        assert!(matches!(
+            EngineSpec::from_bincode(&previous),
+            Err(AicError::UnsupportedSchemaVersion { got: 23, .. })
         ));
     }
 }

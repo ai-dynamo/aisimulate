@@ -119,6 +119,7 @@ class ForwardPassPerfModelConfig:
     tp: int = 1
     pp: int = 1
     attention_dp: int = 1
+    dcp: int | None = dataclass_field(default=None, kw_only=True)
     moe_tp_size: int | None = None
     moe_ep_size: int | None = None
     gemm_quant_mode: str | None = None
@@ -1192,6 +1193,7 @@ def _speculation_identity(model_config: Any) -> str | None:
 
 def _engine_config_json(model: Any, database: Any) -> str:
     model_config = model.config
+    fpm_config = getattr(model_config, "fpm_config", None)
     # Forward only the MTP draft length. The aic-core layer models iteration compute cost;
     # accepted-token progress belongs to the upper prediction layer.
     nextn = getattr(model, "_nextn", None)
@@ -1209,6 +1211,7 @@ def _engine_config_json(model: Any, database: Any) -> str:
         "attention_dp_size": _optional_int(getattr(model_config, "attention_dp_size", None)),
         # Part of the engine identity so cp variants get distinct cached handles.
         "cp_size": _optional_int(getattr(model_config, "cp_size", None)),
+        "dcp_size": _optional_int(getattr(model_config, "dcp_size", None)),
         "weight_dtype": _quant_to_dtype(getattr(model_config, "gemm_quant_mode", None)),
         "moe_dtype": _moe_quant_to_dtype(getattr(model_config, "moe_quant_mode", None)),
         "activation_dtype": _quant_to_dtype(getattr(model_config, "fmha_quant_mode", None)),
@@ -1257,6 +1260,7 @@ def _engine_config_json(model: Any, database: Any) -> str:
                         "comm": _raw_quant_name(getattr(model_config, "comm_quant_mode", None)),
                     },
                     "model_config": {
+                        "fpm_config": fpm_config.cache_identity() if fpm_config is not None else None,
                         "decoder_replay": bool(getattr(model_config, "decoder_replay", False)),
                         "cp_style": getattr(model_config, "cp_style", None),
                         "workload_distribution": getattr(model_config, "workload_distribution", None),

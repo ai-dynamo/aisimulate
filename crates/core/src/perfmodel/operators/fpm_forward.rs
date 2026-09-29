@@ -59,11 +59,12 @@ impl FpmPhase {
 
 /// One whole-model forward pass for a single phase.
 ///
-/// `match_identity` is the 19-string cell identity (legacy schema-6 requests use 15) in
+/// `match_identity` is the 19-string base cell identity (legacy schema-6 requests use 15) in
 /// [`FPM_CELL_MATCH_COLUMNS`](crate::perf_database::fpm_forward::FPM_CELL_MATCH_COLUMNS)
 /// order, computed by the PYTHON producer via `_norm_identity` (None -> "",
 /// Enum -> `.name`) so Rust compares strings verbatim with no re-normalization
-/// drift. `sol_ops` is the model's original op-level list for this phase —
+/// drift. Recorded DCP is carried separately in `dcp_size`. `sol_ops` is the
+/// model's original op-level list for this phase —
 /// the roofline source, serialized recursively like `Overlap`/`Fallback`
 /// children.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -95,6 +96,9 @@ pub struct FpmForwardOp {
     /// before match_identity[2] was selected; it is NOT observed runtime precision.
     #[serde(default)]
     pub original_fmha_quant_mode: Option<String>,
+    /// Recorded DCP selects the measured cell and gates unmodeled SOL transfer.
+    #[serde(default)]
+    pub dcp_size: Option<u32>,
 }
 
 fn default_verify_width() -> u32 {
@@ -106,12 +110,21 @@ fn data_err(msg: String) -> AicError {
 }
 
 impl FpmForwardOp {
+    fn sol_at(&self, db: &PerfDatabase, coords: &[f64]) -> Result<f64, AicError> {
+        if self.dcp_size.is_some_and(|dcp| dcp > 1) {
+            return Err(AicError::UnsupportedModel(
+                "DCP FPM supports measured interpolation, not op-level SOL transfer".into(),
+            ));
+        }
+        sol_total(&self.sol_ops, self.phase, db, coords)
+    }
+
     fn select_cell<'a>(&self, db: &'a PerfDatabase) -> Result<&'a FpmForwardCell, AicError> {
         // Exact matching remains authoritative, including the recorded FMHA label.
         // A different precision cell is a miss; the selector never rewrites it.
-        let cell = db
-            .fpm_forward
-            .select_cell(&self.match_identity, &self.model_path)?;
+        let cell =
+            db.fpm_forward
+                .select_cell(&self.match_identity, &self.model_path, self.dcp_size)?;
         if let Some(original) = &self.original_fmha_quant_mode {
             if let Some(warning) = cell.fmha_selector_warning(original) {
                 // The perfmodel has no installed logging facade. Emit a visible,
@@ -353,8 +366,8 @@ impl FpmForwardOp {
                     let candidate: Vec<f64> = std::iter::once(max as f64)
                         .chain(coords[1..].iter().copied())
                         .collect();
-                    let true_sol = sol_total(&self.sol_ops, self.phase, db, coords);
-                    let ceiling_sol = sol_total(&self.sol_ops, self.phase, db, &candidate);
+                    let true_sol = self.sol_at(db, coords);
+                    let ceiling_sol = self.sol_at(db, &candidate);
                     if let (Ok(t), Ok(c)) = (true_sol, ceiling_sol) {
                         if t.is_finite() && c.is_finite() && t > 0.0 && c > 0.0 {
                             // True shape is never costlier than the clamped
@@ -415,7 +428,7 @@ impl FpmForwardOp {
         // and the error names the op.
         let sol_failure: std::cell::RefCell<Option<AicError>> = std::cell::RefCell::new(None);
         let sol = |sol_coords: &[f64]| -> f64 {
-            match sol_total(&self.sol_ops, self.phase, db, sol_coords) {
+            match self.sol_at(db, sol_coords) {
                 Ok(v) => v,
                 Err(err) => {
                     let mut slot = sol_failure.borrow_mut();
@@ -666,6 +679,7 @@ mod tests {
 
     fn op(phase: FpmPhase) -> FpmForwardOp {
         FpmForwardOp {
+            dcp_size: None,
             name: format!("fpm_forward_{}", phase.as_str()),
             phase,
             model_path: "org/model-a".to_string(),
@@ -676,6 +690,17 @@ mod tests {
             // Empty sol_ops: exact hits and in-curve lerps never call SOL.
             sol_ops: vec![],
         }
+    }
+
+    #[test]
+    fn recorded_dcp_disables_unmodeled_sol_transfer() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_pair(tmp.path(), &default_rows());
+        let db = db_with_pair(tmp.path());
+        let mut measured = op(FpmPhase::Prefill);
+        measured.dcp_size = Some(4);
+        let error = measured.sol_at(&db, &[1.0, 1024.0, 0.0]).unwrap_err();
+        assert!(error.to_string().contains("not op-level SOL transfer"));
     }
 
     fn ctx(batch_size: u32, s: u32, prefix: u32) -> RuntimeContext {
@@ -1451,7 +1476,11 @@ mod tests {
         selected.original_fmha_quant_mode = Some("fp8".into());
         let cell = db
             .fpm_forward
-            .select_cell(&selected.match_identity, &selected.model_path)
+            .select_cell(
+                &selected.match_identity,
+                &selected.model_path,
+                selected.dcp_size,
+            )
             .unwrap();
         let message = cell.fmha_selector_warning("fp8").unwrap();
         assert!(message.contains("original_model_mode=\"fp8\""));

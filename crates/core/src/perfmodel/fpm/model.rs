@@ -331,6 +331,17 @@ impl ForwardPassPerfModel {
         let mut failures = Vec::new();
         let mut last_error = None;
         for mode in config.candidate_modes() {
+            if config.dcp.is_some_and(|dcp| dcp > 1)
+                && (mode != EstimationMode::FpmInterpolation
+                    || config.backend != crate::BackendKind::Vllm)
+            {
+                let error = AicError::UnsupportedModel(
+                    "DCP timing requires measured vLLM FPM interpolation".into(),
+                );
+                failures.push(format!("{mode:?}: {error}"));
+                last_error = Some(error);
+                continue;
+            }
             if config.speculation.is_some() && mode != EstimationMode::OpLevel {
                 let error =
                     AicError::UnsupportedModel("ngram speculation requires op_level timing".into());

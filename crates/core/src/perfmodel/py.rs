@@ -1100,6 +1100,8 @@ struct EngineBuildRequest {
     tp_size: u32,
     pp_size: u32,
     attention_dp_size: u32,
+    dcp_size: Option<u32>,
+    fpm_options: crate::FpmInterpolationConfig,
     moe_tp_size: Option<u32>,
     moe_ep_size: Option<u32>,
     gemm_quant_mode: Option<String>,
@@ -1154,6 +1156,8 @@ impl AicEngineBuilder {
                 tp_size: 1,
                 pp_size: 1,
                 attention_dp_size: 1,
+                dcp_size: None,
+                fpm_options: crate::FpmInterpolationConfig::default(),
                 moe_tp_size: None,
                 moe_ep_size: None,
                 gemm_quant_mode: None,
@@ -1530,6 +1534,15 @@ fn compile_engine_from_request(request: EngineBuildRequest) -> Result<Engine, Ai
         kwargs.set_item("tp_size", request.tp_size)?;
         kwargs.set_item("pp_size", request.pp_size)?;
         kwargs.set_item("attention_dp_size", request.attention_dp_size)?;
+        if let Some(dcp) = request.dcp_size {
+            kwargs.set_item("dcp_size", dcp)?;
+        }
+        if request.fpm_options != crate::FpmInterpolationConfig::default() {
+            let encoded = serde_json::to_string(&request.fpm_options)
+                .map_err(|e| PyValueError::new_err(e.to_string()))?;
+            let options = PyModule::import(py, "json")?.call_method1("loads", (encoded,))?;
+            kwargs.set_item("fpm_options", options)?;
+        }
         kwargs.set_item("moe_tp_size", request.moe_tp_size)?;
         kwargs.set_item("moe_ep_size", request.moe_ep_size)?;
         kwargs.set_item("gemm_quant_mode", request.gemm_quant_mode.as_deref())?;
@@ -1634,6 +1647,8 @@ pub(crate) fn compile_forward_pass_model_to_engine(
         tp_size: config.tp,
         pp_size: config.pp,
         attention_dp_size: config.attention_dp,
+        dcp_size: config.dcp,
+        fpm_options: config.estimator_config.fpm_interpolation.clone(),
         moe_tp_size: config.moe_tp_size,
         moe_ep_size: config.moe_ep_size,
         gemm_quant_mode: config.gemm_quant_mode.clone(),
@@ -1734,6 +1749,8 @@ fn engine_build_request(
         tp_size: config.parallel.tp_size,
         pp_size: config.parallel.pp_size,
         attention_dp_size: config.parallel.attention_dp_size.unwrap_or(1),
+        dcp_size: config.parallel.dcp_size,
+        fpm_options: crate::FpmInterpolationConfig::default(),
         moe_tp_size: config.parallel.moe_tp_size,
         moe_ep_size: config.parallel.moe_ep_size,
         gemm_quant_mode: gemm_quant_name(config.quantization.weight_dtype.as_ref())
@@ -1890,6 +1907,31 @@ impl PyForwardPassPerfModel {
         serde_json::to_string(&config).map_err(|e| PyValueError::new_err(e.to_string()))
     }
 
+    /// Share typed FPM option validation with the compilation adapter.
+    #[staticmethod]
+    #[pyo3(signature = (options_json, fmha_quant_mode=None, comm_quant_mode=None))]
+    fn _normalize_fpm_options(
+        options_json: &str,
+        fmha_quant_mode: Option<&str>,
+        comm_quant_mode: Option<&str>,
+    ) -> PyResult<String> {
+        let options: crate::FpmInterpolationConfig =
+            serde_json::from_str(options_json).map_err(|e| {
+                PyValueError::new_err(format!("invalid FPM interpolation options: {e}"))
+            })?;
+        options
+            .validate_quant_modes(fmha_quant_mode, comm_quant_mode)
+            .map_err(aic_to_py)?;
+        // The compilation adapter needs resolved values, not the compact public
+        // serialization that omits defaults. Python never supplies these defaults.
+        Ok(serde_json::json!({
+            "text_only": options.text_only,
+            "fpm_parquet_path": options.fpm_parquet_path,
+            "unrecorded_quant_modes": options.unrecorded_quant_modes,
+        })
+        .to_string())
+    }
+
     /// Migration adapter for previously saved flat tuning options.
     #[staticmethod]
     fn legacy_estimator_config(options_json: &str) -> PyResult<String> {
@@ -1965,6 +2007,7 @@ impl PyForwardPassPerfModel {
             tp: request.tp_size,
             pp: request.pp_size,
             attention_dp: request.attention_dp_size,
+            dcp: request.dcp_size,
             moe_tp_size: request.moe_tp_size,
             moe_ep_size: request.moe_ep_size,
             gemm_quant_mode: request.gemm_quant_mode,
@@ -1995,6 +2038,7 @@ impl PyForwardPassPerfModel {
             enable_shared_layer: request.shared_layer,
             strict_provenance: legacy.strict_provenance,
         };
+        config.validate().map_err(aic_to_py)?;
         serde_json::to_string(&config).map_err(|e| PyValueError::new_err(e.to_string()))
     }
 
@@ -2264,6 +2308,7 @@ mod tests {
             moe_kernel_source: None,
             kv_block_size: None,
             parallel: ParallelMapping {
+                dcp_size: None,
                 tp_size: 8,
                 pp_size: 1,
                 attention_dp_size: Some(1),

@@ -114,7 +114,12 @@ pub const ENGINE_CONFIG_SCHEMA_VERSION: u32 = 1;
 // - 22 (GLM-5.2 VR200 pilot): exact observed-MoE selection, prefill graph
 //   identity and two appended composite operators extend the schema-21 layout.
 //   The pilot and AIC-1781 concurrently claimed 21; reject both older layouts.
-pub const ENGINE_SPEC_SCHEMA_VERSION: u32 = 22;
+// - 23 (DCP identity): ParallelMapping gained optional recorded dcp_size.
+//   DCP and the pilot concurrently claimed 22; reject both older layouts.
+//   JSON defaults preserve unrecorded DCP.
+// - 24 (typed FPM DCP): FpmForwardOp carries dcp_size separately from the
+//   base matching identity, so control flow never parses the string tuple.
+pub const ENGINE_SPEC_SCHEMA_VERSION: u32 = 24;
 
 /// Static engine identity and setup information carried by an
 /// [`crate::perfmodel::engine::spec::EngineSpec`].
@@ -261,6 +266,8 @@ pub struct ParallelMapping {
     /// re-derived from this field.
     #[serde(default)]
     pub cp_size: Option<u32>,
+    #[serde(default)]
+    pub dcp_size: Option<u32>,
 }
 
 /// Precision/quantization dtypes. Flattened into [`EngineConfig`]. Field

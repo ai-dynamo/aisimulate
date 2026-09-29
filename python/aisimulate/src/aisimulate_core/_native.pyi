@@ -173,6 +173,10 @@ class RustForwardPassPerfModel:
     @staticmethod
     def normalize_config(config_json: str) -> str: ...
     @staticmethod
+    def _normalize_fpm_options(
+        options_json: str, fmha_quant_mode: str | None = None, comm_quant_mode: str | None = None
+    ) -> str: ...
+    @staticmethod
     def legacy_estimator_config(options_json: str) -> str: ...
     @staticmethod
     def migrate_legacy_config(

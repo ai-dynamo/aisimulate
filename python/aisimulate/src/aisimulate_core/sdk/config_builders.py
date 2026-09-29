@@ -47,6 +47,7 @@ def build_model_config(
     *,
     moe_kernel_source: str | None = None,
     fpm_fmha_quant_mode: str | None = None,
+    dcp_size: int | None = None,
     decode_workload_distribution: str | None = None,
     prefill_graph_profile: str | None = None,
 ) -> ModelConfig:
@@ -59,6 +60,7 @@ def build_model_config(
     )
     return ModelConfig(
         tp_size=tp_size,
+        dcp_size=dcp_size,
         pp_size=pp_size,
         attention_dp_size=attention_dp_size,
         moe_tp_size=moe_tp_size,

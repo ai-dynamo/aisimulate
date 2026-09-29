@@ -81,6 +81,7 @@ def _apply_forward_model_fpm(model: BaseModel, backend_name: str = "vllm") -> Ba
     """Centralized fpm rewrite: each phase list becomes exactly one whole-model
     op. No model class rewrites its own lists; metadata, parallelism, and the
     public model type are unchanged."""
+    from aisimulate_core.sdk.fpm_config import resolve_fpm_config
     from aisimulate_core.sdk.operations.fpm_forward import _CELL_MATCH_COLUMNS, FPMForwardOp
 
     if getattr(model.config, "decoder_replay", False) and "execution_profile" not in _CELL_MATCH_COLUMNS:
@@ -89,7 +90,7 @@ def _apply_forward_model_fpm(model: BaseModel, backend_name: str = "vllm") -> Ba
         # bounded decoder tail from a full forward at the same coordinates.
         raise NotImplementedError("decoder_replay requires FPM tables with execution_profile identity")
 
-    if model.encoder_ops:
+    if model.encoder_ops and not resolve_fpm_config(model.config).options["text_only"]:
         raise NotImplementedError(
             f"forward_model='fpm' does not support encoder/multimodal models "
             f"(model_family={model.model_family!r} has encoder ops). Use forward_model='op_level'."
@@ -124,27 +125,32 @@ def _apply_forward_model_fpm(model: BaseModel, backend_name: str = "vllm") -> Ba
     draft_context_ops = [op for op in model.context_ops if op._name.startswith("draft_")]
     draft_generation_ops = [op for op in model.generation_ops if op._name.startswith("draft_")]
     weight_bytes = model.get_resident_weights_bytes()
-    prefill_op = FPMForwardOp("prefill", model.config, model.model_path, sol_ops=context_ops, weight_bytes=weight_bytes)
-    decode_op = FPMForwardOp(
-        "decode", model.config, model.model_path, sol_ops=generation_ops, weight_bytes=weight_bytes
-    )
-    if has_draft_scheme:
-        decode_op._verify_width = int(model.verify_width)
-    model.context_ops = [prefill_op, *draft_context_ops]
-    model.generation_ops = [decode_op, *draft_generation_ops]
     from aisimulate_core.sdk.fpm_identity import execution_identity
 
     identity = execution_identity(
         getattr(model, "raw_config", {}),
         decoder_replay=getattr(model.config, "decoder_replay", False),
         backend=backend_name,
-        # The SDK supports this prediction contract; the producer separately
+        # These are the SDK prediction assumptions; the producer separately
         # verifies actual runtime residency and token-only requests.
         engram_cpu_offload=False,
         input_modality="text",
     )
-    for op in (prefill_op, decode_op):
-        op._match_identity = (*op._match_identity[:15], *identity)
+    prefill_op = FPMForwardOp(
+        "prefill", model.config, model.model_path, sol_ops=context_ops, weight_bytes=weight_bytes, execution=identity
+    )
+    decode_op = FPMForwardOp(
+        "decode", model.config, model.model_path, sol_ops=generation_ops, weight_bytes=weight_bytes, execution=identity
+    )
+    # Compiled text specs omit encoder ops; retain their resident weights there.
+    # Python memory accounting still sums encoder_ops separately.
+    resident_weights = weight_bytes + float(sum(op.get_weights() for op in model.encoder_ops))
+    prefill_op._resident_weight_bytes = resident_weights
+    decode_op._resident_weight_bytes = resident_weights
+    if has_draft_scheme:
+        decode_op._verify_width = int(model.verify_width)
+    model.context_ops = [prefill_op, *draft_context_ops]
+    model.generation_ops = [decode_op, *draft_generation_ops]
     model.forward_model = "fpm"
     return model
 
@@ -167,6 +173,8 @@ def get_model(
     rewrites each phase list to a single whole-model ``FPMForwardOp``.
     """
     forward_model = getattr(model_config, "forward_model", "op_level") or "op_level"
+    if (model_config.dcp_size or 1) > 1 and (forward_model != "fpm" or backend_name != "vllm"):
+        raise NotImplementedError("DCP timing requires measured vLLM FPM interpolation")
     if forward_model not in _FORWARD_MODELS:
         raise InvalidEngineConfigurationError(
             f"Unknown forward_model: {forward_model!r}. Valid values: {', '.join(_FORWARD_MODELS)}"

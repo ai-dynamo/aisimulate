@@ -144,7 +144,9 @@ mod tests {
         // v20: FpmForwardOp gained original_fmha_quant_mode for selector diagnostics.
         // v21: EngineConfig and MoeOp gained exact moe_kernel_source identity.
         // v22: observed MoE selection and exact prefill graph composites.
-        assert_eq!(ENGINE_SPEC_SCHEMA_VERSION, 22);
+        // v23: ParallelMapping gained optional recorded DCP identity.
+        // v24: FpmForwardOp carries typed DCP separately from matching strings.
+        assert_eq!(ENGINE_SPEC_SCHEMA_VERSION, 24);
         assert_eq!(FPM_VERSION, 1);
         assert_eq!(ForwardPassMetrics::default().version, FPM_VERSION);
     }

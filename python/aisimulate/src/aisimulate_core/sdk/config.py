@@ -8,6 +8,7 @@ from enum import StrEnum
 from typing import TypeVar, Union
 
 from aisimulate_core.sdk import common
+from aisimulate_core.sdk.fpm_config import FpmCompileConfig
 from aisimulate_core.sdk.speculation.base import SpeculationConfig
 
 KernelBackendT = TypeVar("KernelBackendT", bound=StrEnum)
@@ -69,6 +70,8 @@ class ModelConfig:
     Model configuration.
     """
 
+    dcp_size: int | None = field(default=None, kw_only=True)
+    fpm_config: FpmCompileConfig | None = field(default=None, kw_only=True)
     tp_size: int = 1
     pp_size: int = 1
     gemm_quant_mode: common.GEMMQuantMode | None = None
@@ -156,6 +159,10 @@ class ModelConfig:
     fpm_fmha_quant_mode: common.FMHAQuantMode | None = field(default=None, kw_only=True)
 
     def __post_init__(self) -> None:
+        if self.dcp_size is not None and (
+            type(self.dcp_size) is not int or self.dcp_size <= 0 or self.tp_size % self.dcp_size
+        ):
+            raise ValueError("dcp_size must be positive and divide tp_size")
         self.moe_backend = normalize_kernel_backend(self.moe_backend, common.MoEBackend, "moe_backend")
         self.attention_backend = normalize_kernel_backend(
             self.attention_backend,

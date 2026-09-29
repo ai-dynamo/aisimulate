@@ -515,6 +515,7 @@ mod tests {
                 moe_kernel_source: None,
                 kv_block_size: None,
                 parallel: ParallelMapping {
+                    dcp_size: None,
                     tp_size: 1,
                     pp_size: 1,
                     attention_dp_size: Some(1),
