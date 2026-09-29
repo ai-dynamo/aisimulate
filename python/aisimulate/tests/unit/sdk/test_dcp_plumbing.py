@@ -25,7 +25,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from aisimulate_core.sdk import config
+from aisimulate_core.sdk import common, config
 from aisimulate_core.sdk.config_builders import build_model_config
 from aisimulate_core.sdk.models.base import BaseModel
 
@@ -183,12 +183,52 @@ def test_dcp_comm_override_selects_the_merge_collective():
 def test_dsa_dcp_rewrites_the_sparse_decode_module():
     from aisimulate_core.sdk.models import get_model
 
-    model_config = config.ModelConfig(tp_size=8, moe_tp_size=8, moe_ep_size=1, dcp_size=4)
-    model = get_model("deepseek-ai/DeepSeek-V3.2", model_config, "sglang")
+    model_config = config.ModelConfig(
+        tp_size=8, moe_tp_size=8, moe_ep_size=1, dcp_size=4, kvcache_quant_mode=common.KVCacheQuantMode.fp8
+    )
+    model = get_model("deepseek-ai/DeepSeek-V3.2", model_config, "vllm")
     attention = _decode_attention_ops(model)
     assert attention
     assert all(op._dcp_size == 4 for _, op in attention)
-    assert any(name.endswith("_dcp_q_all_gather") for name in _generation_op_names(model))
+    names = _generation_op_names(model)
+    assert any(name.endswith("_dcp_q_all_gather") for name in names)
+    # The indexer's per-rank top-k candidates are gathered and merged across the
+    # DCP group before the sparse attention (vLLM `_merge_dcp_topk_global`).
+    assert any(name.endswith("_dcp_topk_all_gather") for name in names)
+    assert any(name.endswith("_dcp_topk_merge") for name in names)
+
+
+def test_dsa_dcp_is_not_claimed_on_sglang():
+    from aisimulate_core.sdk.models import get_model
+
+    with pytest.raises(NotImplementedError, match="not supported for model_family='DEEPSEEKV32' on backend='sglang'"):
+        get_model(
+            "deepseek-ai/DeepSeek-V3.2",
+            config.ModelConfig(tp_size=8, moe_tp_size=8, moe_ep_size=1, dcp_size=4),
+            "sglang",
+        )
+
+
+@pytest.mark.parametrize(
+    ("overrides", "needle"),
+    [
+        ({"dcp_comm": "a2a"}, "only runs with dcp_comm='ag_rs'"),
+        ({"kvcache_quant_mode": common.KVCacheQuantMode.bfloat16}, "requires an fp8 KV cache"),
+    ],
+)
+def test_dsa_dcp_on_vllm_flashmla_sparse_rejects_what_vllm_refuses(overrides, needle):
+    from aisimulate_core.sdk.models import get_model
+
+    kwargs = dict(tp_size=8, moe_tp_size=8, moe_ep_size=1, dcp_size=4, kvcache_quant_mode=common.KVCacheQuantMode.fp8)
+    kwargs.update(overrides)
+    with pytest.raises(ValueError, match=needle):
+        get_model("deepseek-ai/DeepSeek-V3.2", config.ModelConfig(**kwargs), "vllm")
+    # The FlashInfer sparse backend has no such restriction.
+    get_model(
+        "deepseek-ai/DeepSeek-V3.2",
+        config.ModelConfig(**kwargs, attention_backend="flashinfer"),
+        "vllm",
+    )
 
 
 def test_gqa_dcp_is_bounded_by_kv_head_replication():
@@ -275,3 +315,111 @@ def test_engine_identity_includes_dcp_size():
     assert make(1) != make(8)
     assert json.loads(make(8))["dcp_size"] == 8
     assert json.loads(make(None))["dcp_size"] is None
+
+
+def test_fi_a2a_prices_as_the_packed_all_to_all():
+    from aisimulate_core.sdk.models import get_model
+
+    model_config = config.ModelConfig(tp_size=8, moe_tp_size=8, moe_ep_size=1, dcp_size=4, dcp_comm="fi_a2a")
+    names = _generation_op_names(get_model("deepseek-ai/DeepSeek-V3", model_config, "sglang"))
+    assert any(name.endswith("_dcp_out_all_to_all") for name in names)
+    assert not any(name.endswith("_dcp_out_reduce_scatter") for name in names)
+
+
+def test_query_all_gather_follows_the_attention_dtype():
+    from aisimulate_core.sdk.models import get_model
+
+    def q_gather_mode(fmha):
+        model_config = config.ModelConfig(tp_size=8, moe_tp_size=8, moe_ep_size=1, dcp_size=4, fmha_quant_mode=fmha)
+        model = get_model("deepseek-ai/DeepSeek-V3", model_config, "vllm")
+        gathers = [op for op in model.generation_ops if op._name.endswith("_dcp_q_all_gather")]
+        assert gathers
+        return {str(op._comm_quant_mode).rsplit(".", 1)[-1] for op in gathers}
+
+    # vLLM quantizes the MQA query to fp8 before the DCP gather when the
+    # attention runs in fp8; otherwise the buffer follows comm_quant_mode.
+    assert q_gather_mode(common.FMHAQuantMode.fp8) == {"fp8"}
+    assert q_gather_mode(common.FMHAQuantMode.bfloat16) == {"half"}
+
+
+def test_query_replication_drops_the_gather_and_widens_the_q_projection():
+    from aisimulate_core.sdk.models import get_model
+
+    base_config = config.ModelConfig(tp_size=8, moe_tp_size=8, moe_ep_size=1, dcp_size=4, dcp_comm="a2a")
+    base = get_model("deepseek-ai/DeepSeek-V3", base_config, "vllm")
+    replicated = get_model(
+        "deepseek-ai/DeepSeek-V3",
+        config.ModelConfig(tp_size=8, moe_tp_size=8, moe_ep_size=1, dcp_size=4, dcp_comm="a2a", dcp_q_replicate=True),
+        "vllm",
+    )
+    assert any(name.endswith("_dcp_q_all_gather") for name in _generation_op_names(base))
+    assert not any(name.endswith("_dcp_q_all_gather") for name in _generation_op_names(replicated))
+
+    def q_side_scale(model):
+        found = {}
+
+        def walk(op):
+            import aisimulate_core._native as core
+
+            if isinstance(op, core.FallbackOp):
+                walk(op._primary)
+                for inner in op._fallback:
+                    walk(inner)
+            elif isinstance(op, core.OverlapOp):
+                for inner in (*op._group_a, *op._group_b):
+                    walk(inner)
+            elif "q_b" in op._name or "bmm_pre" in op._name:
+                found[op._name] = float(op._scale_factor)
+
+        for op in model.generation_ops:
+            walk(op)
+        return found
+
+    base_scales, replicated_scales = q_side_scale(base), q_side_scale(replicated)
+    assert base_scales
+    assert set(replicated_scales) == set(base_scales)
+    for name, scale in base_scales.items():
+        assert replicated_scales[name] == pytest.approx(scale * 4), name
+
+
+def test_query_replication_requires_an_a2a_merge():
+    from aisimulate_core.sdk.models import get_model
+
+    model_config = config.ModelConfig(tp_size=8, moe_tp_size=8, moe_ep_size=1, dcp_size=4, dcp_q_replicate=True)
+    with pytest.raises(ValueError, match="dcp_q_replicate requires the a2a"):
+        get_model("deepseek-ai/DeepSeek-V3", model_config, "vllm")
+
+
+def test_kimi_k3_dcp_is_modeled_on_sglang_with_replicated_q_by_default():
+    from aisimulate_core.sdk.models import get_model
+
+    model_config = config.ModelConfig(tp_size=8, attention_dp_size=1, moe_tp_size=8, moe_ep_size=1, dcp_size=4)
+    model = get_model("moonshotai/Kimi-K3", model_config, "sglang")
+    attention = _decode_attention_ops(model)
+    assert attention, "K3 exposes its MLA decode attention to the DCP rewrite"
+    assert all(op._dcp_size == 4 for _, op in attention)
+    names = _generation_op_names(model)
+    # SGLang's K3 override: a2a merge with dcp_replicate_q_proj=True, so no
+    # per-layer query all-gather; the KDA layers carry no KV and stay untouched.
+    assert any(name.endswith("_dcp_out_all_to_all") for name in names)
+    assert not any(name.endswith("_dcp_q_all_gather") for name in names)
+    assert not any("kda" in name and "_dcp_" in name for name in names)
+    with pytest.raises(NotImplementedError, match="not supported for model_family='KIMIK3' on backend='vllm'"):
+        get_model("moonshotai/Kimi-K3", model_config, "vllm")
+
+
+def test_striped_context_dsa_module_survives_a_deepcopy():
+    import copy
+
+    from aisimulate_core.sdk.models import get_model
+
+    model_config = config.ModelConfig(
+        tp_size=8, moe_tp_size=8, moe_ep_size=1, dcp_size=4, kvcache_quant_mode=common.KVCacheQuantMode.fp8
+    )
+    model = get_model("deepseek-ai/DeepSeek-V3.2", model_config, "vllm")
+    before = [op._dcp_size for op in _context_attention_ops(model)]
+    assert before and all(value == 4 for value in before)
+    # ProcessPoolExecutor / copy.deepcopy rebuild ops from __getnewargs_ex__;
+    # the striped-KV context gather must not silently drop to dcp=1.
+    copied = copy.deepcopy(model)
+    assert [op._dcp_size for op in _context_attention_ops(copied)] == before

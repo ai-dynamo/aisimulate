@@ -3701,7 +3701,7 @@ impl PyContextDSAModule {
     const _ENGINE_QUERY_SHAPE: &'static str = "context";
 
     #[new]
-    #[pyo3(signature = (name, scale_factor, num_heads, kvcache_quant_mode, fmha_quant_mode, gemm_quant_mode, architecture="DeepseekV32ForCausalLM", cp_size=1, index_topk_freq=1, dsa_full_layer_fraction=None, attn_projection_quant_modes=None))]
+    #[pyo3(signature = (name, scale_factor, num_heads, kvcache_quant_mode, fmha_quant_mode, gemm_quant_mode, architecture="DeepseekV32ForCausalLM", cp_size=1, index_topk_freq=1, dsa_full_layer_fraction=None, attn_projection_quant_modes=None, dcp_size=1))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         name: String,
@@ -3715,7 +3715,13 @@ impl PyContextDSAModule {
         index_topk_freq: i64,
         dsa_full_layer_fraction: Option<f64>,
         attn_projection_quant_modes: Option<&Bound<'_, PyDict>>,
+        dcp_size: u32,
     ) -> PyResult<(Self, PyOperation)> {
+        if dcp_size == 0 {
+            return Err(PyValueError::new_err(
+                "ContextDSAModule dcp_size must be positive",
+            ));
+        }
         let gemm = gemm_quant(gemm_quant_mode)?;
         let freq = index_topk_freq.max(1) as f64;
         let inner = Op::DsaContext(crate::operators::DsaModuleOp {
@@ -3733,7 +3739,7 @@ impl PyContextDSAModule {
                 attn_projection_quant_modes,
                 gemm,
             )?),
-            dcp_size: 1,
+            dcp_size,
         });
         Ok((PyContextDSAModule, PyOperation { inner }))
     }
@@ -3780,6 +3786,7 @@ impl PyContextDSAModule {
                 dsa_projection_dict(py, quants)?,
             )?;
         }
+        kwargs.set_item("dcp_size", o.dcp_size)?;
         Ok((args, kwargs))
     }
 

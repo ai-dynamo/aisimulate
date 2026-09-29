@@ -399,19 +399,21 @@ impl ContextAttentionOp {
         // (the mem-op extras carry zero energy) and the sources merge.
         result = result.plus(extra.scaled(1.1));
 
+        if seq_imbalance_correction_scale != 1.0 {
+            // Python `result * scale` scales latency AND energy.
+            result = result.scaled(seq_imbalance_correction_scale);
+        }
+
         // Decode CP on the same engine: gather the cached context stripes
-        // (per-rank K+V of `prefix` tokens, in comm half-elements).
+        // (per-rank K+V of `prefix` tokens, in comm half-elements). Added after
+        // the zigzag imbalance scaling, like the MLA and DSA context ops: the
+        // collective's latency does not grow with the prefill imbalance.
         let kv_elems =
             2.0 * (self.n_kv * self.head_size) as f64 * self.kv_cache_dtype.mapping().memory / 2.0;
         if let Some(gather) =
             dcp_context_gather(db, &self.name, kv_elems, self.dcp_size, batch_size, prefix)?
         {
             result = result.plus(gather);
-        }
-
-        if seq_imbalance_correction_scale != 1.0 {
-            // Python `result * scale` scales latency AND energy.
-            result = result.scaled(seq_imbalance_correction_scale);
         }
 
         Ok(result.clamp_non_negative().scaled(self.scale_factor))
@@ -530,6 +532,13 @@ impl GenerationAttentionOp {
         // Decode CP: the kernel sees the whole DCP group's query heads over
         // this rank's 1/dcp KV stripe (see the `dcp_size` field docs).
         let (n_kernel, kv_local) = dcp_geometry(self.n, kv_seq_tokens, self.dcp_size);
+        // The stripe holds every dcp-th position, so a sliding window of `w`
+        // occupies ~`w / dcp` local tokens.
+        let window_local = if self.window_size > 0 && self.dcp_size > 1 {
+            self.window_size.div_ceil(self.dcp_size)
+        } else {
+            self.window_size
+        };
         let mut result = query_generation_attention_table(
             db,
             &self.lane_order,
@@ -538,7 +547,7 @@ impl GenerationAttentionOp {
             n_kernel,
             self.n_kv,
             self.head_size,
-            self.window_size,
+            window_local,
             self.kv_cache_dtype,
         )?;
         if self.verify_query_tokens > 1 {
@@ -550,7 +559,7 @@ impl GenerationAttentionOp {
                     &db.system_spec,
                     self.n_kv,
                     self.head_size,
-                    self.window_size,
+                    window_local,
                     self.kv_cache_dtype,
                     n_kernel as f64,
                     seq_batch as f64,

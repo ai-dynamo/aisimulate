@@ -642,6 +642,49 @@ fn query_generation_table(
     dsa_backend: &str,
     skip_indexer: bool,
 ) -> Result<PerformanceResult, AicError> {
+    let result = query_generation_table_raw(db, op, b, s, dsa_backend, skip_indexer)?;
+    if op.dcp_size <= 1 || matches!(db.database_mode, DatabaseMode::Sol | DatabaseMode::SolFull) {
+        return Ok(result);
+    }
+    // The module tables are measured with the whole top-k. Under DCP the
+    // global top-k is filtered to this rank's owned slots (vLLM
+    // `triton_filter_and_convert_dcp_index` + compact), so the sparse
+    // attention reads ~`topk / dcp` tokens while the indexer still scores the
+    // full local stripe. Apportion the measured module time with the analytic
+    // roofline ratio of the two geometries (the SOL leaf already carries it).
+    let spec = &db.system_spec;
+    let dims = dsa_dims(&op.architecture);
+    let flops = dsa_generation_sol_flops(spec, op.gemm_quant_mode)?;
+    let sol = |topk_divisor: i64| {
+        dsa_generation_sol_ms(
+            spec,
+            dims,
+            op.kv_cache_dtype,
+            op.gemm_quant_mode,
+            b as i64,
+            s as i64,
+            op.num_heads as i64,
+            topk_divisor,
+            flops,
+        )
+    };
+    let (full, striped) = (sol(1), sol(op.dcp_size as i64));
+    let ratio = if full > 0.0 {
+        (striped / full).clamp(0.0, 1.0)
+    } else {
+        1.0
+    };
+    Ok(result.scaled(ratio))
+}
+
+fn query_generation_table_raw(
+    db: &PerfDatabase,
+    op: &DsaModuleOp,
+    b: u32,
+    s: u32,
+    dsa_backend: &str,
+    skip_indexer: bool,
+) -> Result<PerformanceResult, AicError> {
     let silicon = || {
         db.dsa
             .query_generation(
@@ -674,6 +717,7 @@ fn query_generation_table(
                 b as i64,
                 s as i64,
                 op.num_heads as i64,
+                op.dcp_size.max(1) as i64,
                 flops,
             )))
         }
@@ -1006,6 +1050,7 @@ fn generation_empirical(
             b as i64,
             s as i64,
             num_heads as i64,
+            op.dcp_size.max(1) as i64,
             flops,
         )
     };
@@ -1761,6 +1806,7 @@ mod tests {
             8,
             4096,
             op.num_heads as i64,
+            1,
             flops,
         );
         assert_eq!(result.latency_ms, expected);

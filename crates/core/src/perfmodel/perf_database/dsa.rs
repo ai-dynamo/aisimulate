@@ -473,6 +473,7 @@ impl DsaTable {
                 c[1] as i64, // b
                 c[2] as i64, // s
                 c[0] as i64, // num_heads
+                1,           // tables are measured at the full top-k
                 flops,
             )
         };
@@ -912,9 +913,14 @@ pub(crate) fn dsa_generation_sol(
     b: i64,
     s: i64,
     num_heads: i64,
+    topk_divisor: i64,
     flops: DsaSolFlops,
 ) -> SolComponents {
     let (b, s, num_heads) = (b as i128, s as i128, num_heads as i128);
+    // Decode CP: the global top-k is filtered to this rank's owned slots
+    // (vLLM `triton_filter_and_convert_dcp_index` + compact), so the sparse
+    // attention reads ~`topk / dcp` tokens; the indexer still scores `s`.
+    let topk_divisor = topk_divisor.max(1) as i128;
     let (hidden, q_lora, kv_lora) = (
         dims.hidden_size as i128,
         dims.q_lora_rank as i128,
@@ -935,7 +941,7 @@ pub(crate) fn dsa_generation_sol(
 
     let tokens = b;
     let proj_out = q_lora + kv_lora + qk_rope + ihd;
-    let effective_kv = s.min(topk);
+    let effective_kv = s.min((topk + topk_divisor - 1) / topk_divisor);
 
     let gemm_group_ops = 2 * tokens * hidden * proj_out
         + 2 * tokens * q_lora * num_heads * qk_head_dim
@@ -982,9 +988,21 @@ pub(crate) fn dsa_generation_sol_ms(
     b: i64,
     s: i64,
     num_heads: i64,
+    topk_divisor: i64,
     flops: DsaSolFlops,
 ) -> f64 {
-    dsa_generation_sol(spec, dims, kv_quant, gemm_quant, b, s, num_heads, flops).time_ms()
+    dsa_generation_sol(
+        spec,
+        dims,
+        kv_quant,
+        gemm_quant,
+        b,
+        s,
+        num_heads,
+        topk_divisor,
+        flops,
+    )
+    .time_ms()
 }
 
 /// Load a DSA module table from an ordered, priority-sorted source list, with

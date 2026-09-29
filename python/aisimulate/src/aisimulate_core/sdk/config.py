@@ -109,6 +109,12 @@ class ModelConfig:
     # all-gather + one packed all-to-all; SGLang default on CUDA). None picks
     # the backend default in BaseModel._dcp_comm_style.
     dcp_comm: str | None = None
+    # Replicated query projection under DCP (vLLM ``dcp_q_replicate`` / SGLang
+    # ``--dcp-replicate-q-proj``): every rank runs the Q up-projection for the
+    # whole DCP group's heads and skips the per-layer query all-gather. Only
+    # meaningful with the a2a-style merges. None picks the backend/model default
+    # in BaseModel._dcp_q_replicate.
+    dcp_q_replicate: bool | None = None
     workload_distribution: str = "power_law"
     # EPD: this worker hosts only the language model -- the vision encoder
     # is served elsewhere (mirrors SGLang --language-only).  Like tp_size,

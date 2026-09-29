@@ -318,8 +318,10 @@ fn generation_attention_sol(op: &GenerationAttentionOp, spec: &SystemSpec, b: f6
         op.window_size as f64,
     );
     let s_local = if dcp > 1.0 { ceil_div(s, dcp) } else { s };
+    // The stripe holds every dcp-th position, so a sliding window of `w`
+    // occupies ~`w / dcp` local tokens.
     let kv_len = if op.window_size > 0 {
-        (s_local - 1.0).min(w)
+        (s_local - 1.0).min(ceil_div(w, dcp))
     } else {
         s_local - 1.0
     };
@@ -446,7 +448,8 @@ fn dsa_generation_module_sol(
     let dims = dsa_dims(&op.architecture);
     let flops = dsa_generation_sol_flops(spec, op.gemm_quant_mode)?;
     // Decode CP geometry mirrors `DsaModuleOp::query_generation`: gathered
-    // heads over this rank's KV stripe (top-k kept whole; upper bound).
+    // heads over this rank's KV stripe, sparse attention over the rank's
+    // `ceil(topk / dcp)` owned slots.
     let dcp = op.dcp_size.max(1) as f64;
     let s_local = if dcp > 1.0 { ceil_div(s, dcp) } else { s };
     let ms = dsa_generation_sol_ms(
@@ -457,6 +460,7 @@ fn dsa_generation_module_sol(
         b.round().max(1.0) as i64,
         s_local.round().max(1.0) as i64,
         (op.num_heads as f64 * dcp) as i64,
+        dcp as i64,
         flops,
     );
     Ok(ms.max(0.0) * op.scale_factor)
@@ -1135,6 +1139,76 @@ mod tests {
         );
     }
 
+    /// A sliding window of `w` occupies ~`w / dcp` positions of the stripe, so a
+    /// striped windowed op prices like the gathered op over a `w / dcp` window.
+    #[test]
+    fn generation_attention_fpm_sol_stripes_the_sliding_window() {
+        let d = db();
+        let mut striped =
+            GenerationAttentionOp::new("generation_attention", 12, 1, 128, KvCacheQuantMode::Fp8);
+        striped.window_size = 4096;
+        striped.dcp_size = 4;
+        let mut gathered =
+            GenerationAttentionOp::new("generation_attention", 48, 1, 128, KvCacheQuantMode::Fp8);
+        gathered.window_size = 1024;
+        let mut unstriped_window =
+            GenerationAttentionOp::new("generation_attention", 48, 1, 128, KvCacheQuantMode::Fp8);
+        unstriped_window.window_size = 4096;
+        let a = op_sol_latency_ms(
+            &Op::GenerationAttention(striped),
+            &d,
+            256.0,
+            256.0,
+            32768.0,
+            0.0,
+        )
+        .unwrap();
+        let b = op_sol_latency_ms(
+            &Op::GenerationAttention(gathered),
+            &d,
+            256.0,
+            256.0,
+            8192.0,
+            0.0,
+        )
+        .unwrap();
+        let c = op_sol_latency_ms(
+            &Op::GenerationAttention(unstriped_window),
+            &d,
+            256.0,
+            256.0,
+            8192.0,
+            0.0,
+        )
+        .unwrap();
+        assert!(
+            (a - b).abs() < 1e-9,
+            "striped window {a} vs gathered w/dcp {b}"
+        );
+        assert!(a < c, "the window must shrink with the stripe: {a} vs {c}");
+    }
+
+    /// DSA decode under DCP: the sparse attention reads ~`topk / dcp` owned
+    /// slots, so the striped leaf must undercut the gathered-heads op that keeps
+    /// the whole top-k (the previous upper bound).
+    #[test]
+    fn dsa_generation_fpm_sol_stripes_the_top_k() {
+        let d = db();
+        let mut striped = glm_dsa_op("generation_attention");
+        striped.dcp_size = 4;
+        let mut gathered = glm_dsa_op("generation_attention");
+        gathered.num_heads = 256;
+        let a =
+            op_sol_latency_ms(&Op::DsaGeneration(striped), &d, 8.0, 8.0, 100000.0, 0.0).unwrap();
+        let b =
+            op_sol_latency_ms(&Op::DsaGeneration(gathered), &d, 8.0, 8.0, 25000.0, 0.0).unwrap();
+        assert!(a.is_finite() && a > 0.0, "{a}");
+        assert!(
+            a < b,
+            "striped top-k must undercut the whole-top-k bound: {a} vs {b}"
+        );
+    }
+
     fn glm_dsa_op(name: &str) -> DsaModuleOp {
         // nvidia/GLM-5.2-NVFP4: 64 heads, fp8 KV cache, bf16 context FMHA, nvfp4 GEMMs, index_topk 2048
         DsaModuleOp::new(
@@ -1221,6 +1295,7 @@ mod tests {
             8,
             100000,
             64,
+            1,
             flops,
         );
         assert!(got.is_finite() && got > 0.0, "{got}");

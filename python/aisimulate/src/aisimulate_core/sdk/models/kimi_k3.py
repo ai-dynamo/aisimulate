@@ -64,6 +64,24 @@ class KimiK3Model(BaseModel):
     KDA_STATE_SLOTS_PER_REQUEST = 5
 
     @classmethod
+    def supports_dcp(cls, backend_name: str) -> bool:
+        # SGLang ships Kimi-K3 decode CP (`arg_groups/model_overrides/kimi_k3.py`:
+        # cutedsl_mla / tokenspeed_mla / aiter with `enable_dcp`,
+        # `models/kimi_k3.py::prepare_context_parallel_metadata_for_dcp`). DCP
+        # stripes the KV of the MLA layers only; the KDA layers keep no KV and
+        # ignore it, which is exactly what the op-type rewrite does. vLLM has no
+        # K3 DCP path (the hybrid KV manager rejects dcp > 1).
+        return backend_name == "sglang"
+
+    def _dcp_q_replicate(self) -> bool:
+        # SGLang's K3 override defaults `dcp_replicate_q_proj=True` under the
+        # a2a / fi_a2a merges (its DCP defaults), dropping the per-layer query
+        # all-gather in favour of a replicated Q projection.
+        if getattr(self.config, "dcp_q_replicate", None) is None and self._backend_name == "sglang":
+            return self._dcp_comm_style() == "a2a"
+        return super()._dcp_q_replicate()
+
+    @classmethod
     def create(cls, model_info: dict, model_config, backend_name: str) -> BaseModel:
         return cls(
             backend_name,

@@ -258,12 +258,33 @@ class BaseModel:
     # ------------------------------------------------------------------
 
     def _dcp_comm_style(self) -> str:
+        """``"ag_rs"`` or ``"a2a"``. SGLang's ``fi_a2a`` (FlashInfer MNNVL all-to-all,
+        its default where the DCP group sits in one MNNVL domain) moves the same
+        packed buffer as ``a2a`` and is priced as such."""
         style = getattr(self.config, "dcp_comm", None)
         if style is None:
             style = "a2a" if getattr(self, "_backend_name", None) == "sglang" else "ag_rs"
+        if style == "fi_a2a":
+            style = "a2a"
         if style not in ("ag_rs", "a2a"):
-            raise ValueError(f"dcp_comm must be 'ag_rs' or 'a2a', got {style!r}")
+            raise ValueError(f"dcp_comm must be 'ag_rs', 'a2a' or 'fi_a2a', got {style!r}")
         return style
+
+    def _dcp_q_replicate(self) -> bool:
+        """Whether every rank runs the Q up-projection for the whole DCP group.
+
+        vLLM ``dcp_q_replicate`` / SGLang ``--dcp-replicate-q-proj``: the
+        per-layer query all-gather disappears and the Q-side ops (``q_b``
+        projection, absorb BMM) run on ``n_local * dcp`` heads instead. Only
+        defined for the a2a-style merges. ``None`` means the backend/model
+        default, which is off unless a model class says otherwise.
+        """
+        explicit = getattr(self.config, "dcp_q_replicate", None)
+        if explicit is None:
+            return False
+        if explicit and self._dcp_comm_style() != "a2a":
+            raise ValueError("dcp_q_replicate requires the a2a / fi_a2a DCP merge (it removes the query all-gather)")
+        return bool(explicit)
 
     def _mla_latent_dims(self) -> tuple[int, int]:
         """(q dim gathered per head, output dim merged per head) for absorbed MLA decode."""
@@ -311,6 +332,18 @@ class BaseModel:
         import aisimulate_core._native as _core
         import aisimulate_core.sdk.operations as ops
 
+        if isinstance(op, _core.OverlapOp):
+            groups, hit = [], None
+            for group in (op._group_a, op._group_b):
+                rebuilt = []
+                for inner in group:
+                    inner, inner_hit = BaseModel._through_fallback(inner, leaf)
+                    rebuilt.append(inner)
+                    hit = hit or inner_hit
+                groups.append(rebuilt)
+            if not hit:
+                return op, hit
+            return ops.OverlapOp(op._name, groups[0], groups[1], seq_split=int(getattr(op, "_seq_split", 1) or 1)), hit
         if not isinstance(op, _core.FallbackOp):
             return leaf(op)
         primary, hit = BaseModel._through_fallback(op._primary, leaf)
@@ -327,24 +360,50 @@ class BaseModel:
         """Return ``(op with dcp applied, (dims, scale) | None)``; the collectives
         are then priced once for the whole (possibly rebuilt) block."""
 
+        import aisimulate_core._native as _core
+
         def leaf(inner):
             dims = self._decode_attention_dcp_dims(inner)
             if dims is None:
                 return inner, None
             inner._dcp_size = dcp
-            return inner, (dims, float(inner._scale_factor))
+            # DSA: the indexer's per-rank top-k candidates are merged across the
+            # DCP group before the sparse attention (priced in _dcp_attn_comm_ops).
+            topk = 0
+            if isinstance(inner, _core.GenerationDSAModule):
+                from aisimulate_core.sdk.operations.dsa import DSA_MODEL_DIMS
+
+                topk = int(DSA_MODEL_DIMS.get(str(inner._architecture), {}).get("index_topk", 0) or 0)
+            return inner, (dims, float(inner._scale_factor), topk)
 
         return self._through_fallback(op, leaf)
 
-    def _dcp_attn_comm_ops(self, name: str, scale: float, *, n_local: int, q_dim: int, v_dim: int) -> list:
+    def _replicate_q_side_for_dcp(self, op, dcp: int):
+        """``dcp_q_replicate``: the Q up-projection and the absorb BMM ahead of the
+        decode attention run for the whole group's ``n_local * dcp`` heads on every
+        rank (weights included), so their per-layer cost scales by ``dcp``."""
+
+        def leaf(inner):
+            name = str(inner._name)
+            if "q_b" in name or "bmm_pre" in name:
+                inner._scale_factor = float(inner._scale_factor) * dcp
+                return inner, True
+            return inner, False
+
+        return self._through_fallback(op, leaf)
+
+    def _dcp_attn_comm_ops(
+        self, name: str, scale: float, *, n_local: int, q_dim: int, v_dim: int, dsa_topk: int = 0
+    ) -> list:
         """The per-layer DCP collectives that accompany one decode attention op."""
         import aisimulate_core.sdk.operations as ops
+        from aisimulate_core.sdk import common
 
         dcp = int(self.config.dcp_size)
         comm_quant_mode = self.config.comm_quant_mode
         gathered_heads = n_local * dcp
 
-        def nccl(suffix: str, kind: str, elements_per_token: int):
+        def nccl(suffix: str, kind: str, elements_per_token: int, dtype=comm_quant_mode):
             # The NCCL table is keyed by the collective's whole buffer (nccl-tests
             # `size`: the all-gather receive buffer, the reduce-scatter input, the
             # all-to-all per-rank buffer), matching `context_cp_all_gather`.
@@ -354,12 +413,26 @@ class BaseModel:
                 kind,
                 num_elements_per_token=elements_per_token,
                 num_gpus=dcp,
-                comm_quant_mode=comm_quant_mode,
+                comm_quant_mode=dtype,
             )
 
-        # Every rank contributes its n_local query heads; the gathered buffer
-        # holds all of them.
-        collectives = [nccl("q_all_gather", "all_gather", gathered_heads * q_dim)]
+        collectives = []
+        if not self._dcp_q_replicate():
+            # Every rank contributes its n_local query heads; the gathered buffer
+            # holds all of them. With fp8 attention the MQA query is quantized
+            # BEFORE the gather (vLLM `_decode_concat_quant_fp8_op` ->
+            # `dcp_manager.query_gather`), so the buffer follows fmha_quant_mode.
+            fmha = self.config.fmha_quant_mode
+            q_dtype = common.CommQuantMode.fp8 if fmha is not None and fmha.value.memory == 1 else comm_quant_mode
+            collectives.append(nccl("q_all_gather", "all_gather", gathered_heads * q_dim, q_dtype))
+        if dsa_topk > 0:
+            # DSA indexer under DCP (vLLM `_merge_dcp_topk_global`): each rank
+            # packs its (score, id) fp32 candidates, one all-gather over the
+            # group, then a stable top-k over the dcp * topk merged entries.
+            packed = dsa_topk * 4  # (fp32 score, int32 id) per candidate, in half-elements
+            collectives.append(ops.ElementWise(f"{name}_dcp_topk_pack", scale, dsa_topk * 4, packed))
+            collectives.append(nccl("topk_all_gather", "all_gather", packed * dcp))
+            collectives.append(ops.ElementWise(f"{name}_dcp_topk_merge", scale, packed * dcp, dsa_topk * 2))
         # Partial-output merge (vllm/v1/attention/ops/dcp.py). Both styles pay
         # the collectives AND the elementwise passes around them; the latter
         # are launch/latency-bound at decode batch sizes but add up over the
@@ -438,6 +511,7 @@ class BaseModel:
         """
         dcp = int(self.config.dcp_size)
         self._validate_dcp_topology()
+        q_replicate = self._dcp_q_replicate()
         rewritten: list = []
         touched = 0
         for op in self.generation_ops:
@@ -445,11 +519,15 @@ class BaseModel:
                 rewritten.append(op)
                 continue
             op, found = self._rewrite_op_for_dcp(op, dcp)
+            if q_replicate:
+                op, _ = self._replicate_q_side_for_dcp(op, dcp)
             rewritten.append(op)
             if found is None:
                 continue
-            (n_local, q_dim, v_dim), scale = found
-            rewritten.extend(self._dcp_attn_comm_ops(op._name, scale, n_local=n_local, q_dim=q_dim, v_dim=v_dim))
+            (n_local, q_dim, v_dim), scale, dsa_topk = found
+            rewritten.extend(
+                self._dcp_attn_comm_ops(op._name, scale, n_local=n_local, q_dim=q_dim, v_dim=v_dim, dsa_topk=dsa_topk)
+            )
             touched += 1
         if touched == 0:
             raise NotImplementedError(

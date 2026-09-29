@@ -382,6 +382,27 @@ def _sglang_rule_params(*, is_moe: bool, rule: str | None = None, **agg) -> dict
     return payload
 
 
+def test_vllm_moe_fold_keeps_prefill_cp_ranks_out_of_tp():
+    from aisimulate.generator.rendering.rule_engine import apply_rule_plugins
+
+    # Sweeper candidate tp=8, dp=1, cp=2 with moe_tp=1 x moe_ep=16: the attention
+    # width tp*dp*cp == moe_tp*moe_ep is 16 GPUs. vLLM's -pcp ranks are separate
+    # from --tp, so the fold must yield --tp 8 and a 16-GPU worker, not --tp 16
+    # with 32 GPUs.
+    moe = apply_rule_plugins(
+        _sglang_rule_params(
+            is_moe=True,
+            tensor_parallel_size=8,
+            context_parallel_size=2,
+            moe_tensor_parallel_size=1,
+            moe_expert_parallel_size=16,
+        ),
+        "vllm",
+    )["params"]["agg"]
+    assert moe["tensor_parallel_size"] == 8
+    assert moe["gpus_per_worker"] == 16
+
+
 @pytest.mark.parametrize("rule", [None, "benchmark"])
 def test_sglang_moe_fold_does_not_count_attention_dp_twice(rule):
     from aisimulate.generator.rendering.rule_engine import apply_rule_plugins
