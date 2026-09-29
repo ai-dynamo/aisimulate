@@ -1028,9 +1028,9 @@ engine:
 | `engine.workers.<role>.kv_cache.capacity.type` | `default` | `x` | `-` | `default` or `fixed`. |
 | `engine.workers.<role>.kv_cache.capacity.memory_fraction` | vLLM/TensorRT-LLM `0.9`; SGLang `0.88` | `-` | `-` | `(0, 1]`; `default` capacity only. |
 | `engine.workers.<role>.kv_cache.capacity.blocks` | `null` | `x` | `-` | Positive; `fixed` capacity only. Required unless `predict` supplies `capacity.bytes`. |
-| `engine.workers.<role>.kv_cache.capacity.bytes` | `null` | `-` | `-` | `predict` only. Positive per-rank G1 byte budget; `fixed` capacity only, mutually exclusive with `blocks`. Requires explicit `block_size` and numeric `bytes_per_token`. |
-| `engine.workers.<role>.kv_cache.state_cache.bytes_per_request` | Disabled | `-` | `-` | `predict --stack engine` only, aggregated vLLM without host or G3 offload. Positive recurrent-state bytes per request per rank; requires fixed capacity and explicit block geometry. See [manual state-cache sizing](#manual-state-cache-sizing). |
-| `engine.workers.<role>.kv_cache.prefix_match_unit` | Omitted | `-` | `-` | `predict --stack engine` only. Positive divisor of `block_size`; requires manually sized aggregated vLLM G1 `state_cache`. Rejects `engine.speculation`, `engine.nextn > 0`, KV event export, and Belady eviction. See [manual state-cache sizing](#manual-state-cache-sizing). |
+| `engine.workers.<role>.kv_cache.capacity.bytes` | `null` | `-` | `-` | `predict` only. Positive per-rank G1 byte budget; `fixed` capacity only, mutually exclusive with `blocks`. Requires explicit `block_size` and numeric `bytes_per_token`, or automatic K3 state sizing. |
+| `engine.workers.<role>.kv_cache.state_cache.bytes_per_request` | Disabled | `-` | `-` | `predict --stack engine` only, aggregated vLLM without host or G3 offload. Positive recurrent-state bytes per request per rank; requires fixed capacity. Omit the byte count to resolve K3 state and token geometry; see [state-cache sizing](#manual-state-cache-sizing). |
+| `engine.workers.<role>.kv_cache.prefix_match_unit` | Omitted | `-` | `-` | `predict --stack engine` only. Positive divisor of the resolved `block_size`; requires aggregated vLLM G1 `state_cache`. Rejects `engine.speculation`, `engine.nextn > 0`, KV event export, and Belady eviction. See [manual state-cache sizing](#manual-state-cache-sizing). |
 | `engine.workers.<role>.kv_cache.capacity.cuda_graph_reserved_bytes` | `0` | `-` | `-` | `predict` only. Integer from `0` through `2**53`; `default` capacity only. |
 | `engine.workers.<role>.kv_cache.host_offload.num_host_blocks` | Required when `host_offload` is present | `x` | `-` | Positive; fixed descriptor, aggregated vLLM only. |
 | `engine.workers.<role>.kv_cache.host_offload.d2h_bandwidth_gbps` | `32.0` | `x` | `-` | Finite and nonnegative. |
@@ -1136,8 +1136,10 @@ decode-KV ceiling. FPM pairs are external runtime inputs. If a pair was collecte
 version outside the queryable slots, set `AIC_ALLOW_UNLISTED_VERSIONS=1` explicitly.
 
 `kv_cache.capacity.type: fixed` requires `blocks`, or alternatively `bytes` in `predict`.
-Byte capacity requires explicit `block_size` and numeric `bytes_per_token`; the block count is
-`floor(bytes / (block_size * bytes_per_token))`. Specify exactly one of `blocks` and `bytes`.
+Manual byte capacity requires explicit `block_size` and numeric `bytes_per_token`.
+For Kimi K3 with `state_cache: {}`, these values are resolved automatically. In both cases,
+the block count is `floor(bytes / (resolved_block_size * resolved_bytes_per_token))`.
+Specify exactly one of `blocks` and `bytes`.
 Fixed capacity rejects `memory_fraction` and nonzero `cuda_graph_reserved_bytes`.
 Conversely, `type: default` rejects `blocks` and `bytes` and derives block count from model,
 hardware, parallelism, block size, backend, memory fraction, and the caller-provided CUDA graph
@@ -1161,7 +1163,7 @@ differ from each worker role's physical `kv_cache.bytes_per_token`.
 
 <a id="manual-state-cache-sizing"></a>
 
-#### 12.1.1 Manual state-cache sizing
+#### 12.1.1 State-cache sizing
 
 For recurrent-state models, set `state_cache.bytes_per_request` under
 `engine.workers.aggregated.kv_cache`. It is disabled by default. Supply the total state size
@@ -1176,19 +1178,57 @@ kv_cache:
 ```
 
 This gives eight 1024-byte blocks. Each request's state uses two blocks, rounded up, in
-addition to its token KV. `capacity: {type: fixed, blocks: 8}` is equivalent. The simulator
-does not infer state size or adjust block size automatically.
+addition to its token KV. `capacity: {type: fixed, blocks: 8}` is equivalent. Explicit
+state bytes preserve the authored block geometry without loading model configuration.
 
-State caching currently supports `predict --stack engine` with aggregated vLLM and fixed G1 capacity.
-Other runner stacks must explicitly advertise state-cache support; unsupported stacks reject it before execution.
-It cannot be combined with host/G3 offload or disaggregated mode, and is not available in
-`recommend`. `block_size` must be explicitly set to at least two and `bytes_per_token`
-must be a positive integer, not `auto`.
+Use `state_cache: {}` to resolve Kimi K3 cache geometry automatically. The existing
+K3 model supplies target MLA KV bytes/token using `engine.kvcache_quant_mode`;
+`kv_cache.bytes_per_token: auto` is the default. `block_size` is a requested
+page granularity (default 64), enlarged to fit one KDA state per layer. Both the
+resolved token geometry and state size are passed to the worker before capacity
+checks. With TP8, BF16 KV resolves to block 768 / 27648 bytes per token; FP8 with
+requested block 128 resolves to block 1536 / 13824 bytes per token.
+
+The allocation rule follows vLLM KDA none/align mode at commit
+`a474da28131f61684849b31e29af0eebaaedc383`, verified with Triton MLA. Requested
+blocks must be multiples of 16 and satisfy the selected kernel's minimum alignment;
+use 128 for a kernel requiring 128. This is independent of the performance database
+version. TP must divide KDA heads; PP must be 1.
+
+Each layer has three convolution buffers and one FP32 recurrent matrix. Optional
+`state_cache.mamba_cache_dtype` accepts `auto`, `float16` or `float32`; auto uses the
+model dtype. The estimate includes page padding for one state copy. Additional
+speculative slots are outside this estimate; checkpoint copies are managed by the runtime.
+Fixed G1 capacity remains required; physical blocks are charged after rounding
+state bytes up to whole pool blocks. Results record resolved block size, token
+bytes, state bytes and calculation provenance in `prediction.json`.
+
+The same resolver is available through the SDK:
+
+```python
+from aisimulate_core.sdk import estimate_state_cache
+
+state = estimate_state_cache(
+    "moonshotai/Kimi-K3", tp_size=8, kvcache_quant_mode="fp8", block_size=128,
+)
+# block_size=1536, kv_bytes_per_token=13824, bytes_per_request=61046784
+```
+
+An explicit `state_cache.bytes_per_request` bypasses inference and requires
+explicit block size and token bytes; omit `state_cache` or set it to `null` to
+disable state caching. Automatic sizing also accepts an explicit token byte rate.
+It reuses the SDK model loader rather than maintaining a separate config parser.
+State caching supports aggregated vLLM with fixed G1 capacity on `predict --stack
+engine`; other runner stacks must advertise support. Host/G3 offload,
+disaggregated mode and `recommend` remain outside this interface.
 
 With state caching enabled, `prefix_match_unit` controls prefix-matching
 granularity while `block_size` still controls physical KV allocation. The match
 unit must be positive and divide `block_size`. Omitting it preserves existing
-state-cache behavior.
+state-cache behavior. It works with both inferred (`state_cache: {}`) and explicit
+state sizes. Changing the match unit does not change the bytes in one state copy
+or the physical block size; the state manager accounts for retained checkpoints
+and temporary restore copies separately.
 
 For example, this aggregated-worker configuration allocates 1536-token KV blocks
 and allows prefix matches at 128-token boundaries. The byte sizes are

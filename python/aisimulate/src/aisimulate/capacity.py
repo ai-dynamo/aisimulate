@@ -1,16 +1,19 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""AISimulate-owned AIC KV-capacity materialization.
+"""AISimulate memory estimation and AIC KV-capacity materialization.
 
 Both the engine-only and Dynamo replay compositions use this module so their
 rank-local KV capacity is derived from the same defaults and AIC argument set.
+State sizing is re-exported from the shared estimator SDK.
 """
 
 from __future__ import annotations
 
 from functools import cache
 from typing import Any
+
+from aisimulate_core.sdk.state_memory import estimate_state_cache as estimate_state_cache
 
 DEFAULT_BACKEND_VERSIONS = {
     "vllm": "0.19.0",
