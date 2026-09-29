@@ -20,6 +20,7 @@ Usage:
 """
 
 import os
+import re
 import subprocess
 import sys
 from argparse import ArgumentParser
@@ -168,6 +169,14 @@ def oneccl_benchmark(
     if result.returncode != 0:
         raise RuntimeError(f"oneCCL {oneccl_op} failed (exit {result.returncode}): {result.stderr[:500]}")
 
+    # Reject untraceable data: confirm the benchmark actually ran with num_gpus
+    # ranks. It prints "# procs: N x threads: .. x gpus: ..". A single-rank run
+    # (broken launcher) would log local no-op latency as a multi-GPU row.
+    procs_match = re.search(r"^#\s*procs:\s*(\d+)", result.stdout, re.MULTILINE)
+    procs = int(procs_match.group(1)) if procs_match else None
+    if procs != num_gpus:
+        raise RuntimeError(f"oneCCL {oneccl_op} ran with {procs} ranks, expected {num_gpus}")
+
     items = []
     for line in result.stdout.split("\n"):
         toks = line.split()
@@ -175,10 +184,10 @@ def oneccl_benchmark(
             continue
         try:
             latency_ms = float(toks[5]) * 1e-3
-            if oneccl_op == "all_gather":
-                msg_elements = int(toks[1])
-            else:
-                msg_elements = int(toks[0]) // bytes_per_elem
+            # message_size = total buffer elements (col0), uniform across all
+            # collectives, matching NV collect_nccl.py and the model's total-
+            # volume NCCL query. (col1 is the per-rank count; do not use it.)
+            msg_elements = int(toks[0]) // bytes_per_elem
         except (ValueError, IndexError):
             continue
         print(f"    {oneccl_op}: {msg_elements} elems, latency={latency_ms:.6f} ms")

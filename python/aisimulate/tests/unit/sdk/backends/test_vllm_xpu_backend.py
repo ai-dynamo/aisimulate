@@ -57,7 +57,20 @@ def test_get_backend_vllm_on_nvidia_uses_base_backend() -> None:
 
 def test_get_backend_vllm_without_system_uses_base_backend() -> None:
     # No system name (disagg/AFD/encoder paths) → generic backend, never XPU.
-    assert not isinstance(get_backend("vllm"), VLLMXPUBackend)
+    assert type(get_backend("vllm")) is VLLMBackend
+
+
+@pytest.mark.parametrize("system_name", [None, "h200_sxm"])
+def test_disagg_afd_backend_selection_is_base_vllm(system_name) -> None:
+    # The disagg (prefill/decode) and AFD/encoder paths select backends via
+    # get_backend(name) with no system (or an NVIDIA system). Both must resolve
+    # to the exact base VLLMBackend — the XPU subclass only overrides the agg
+    # surface for now (_compute_ttft/_compute_tpot/run_mixed), which the
+    # run_static-driven disagg/AFD workers never invoke. Exact-type (not
+    # isinstance) so an accidental XPU subclass routing here is caught.
+    for name in ("prefill", "decode", "encoder"):
+        backend = get_backend("vllm", system_name)
+        assert type(backend) is VLLMBackend, f"{name} worker (system={system_name})"
 
 
 def test_vllm_xpu_backend_is_a_vllm_backend() -> None:
