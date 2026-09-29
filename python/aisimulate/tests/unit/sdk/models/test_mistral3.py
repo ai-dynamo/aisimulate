@@ -136,6 +136,13 @@ class TestGatedViTBuilder:
         assert "encoder_gate_gemm" not in names
         assert "encoder_ffn1_gemm" in names
 
+    def test_projector_activation_selection_skips_patch_merger(self):
+        names = [
+            op._name for op in build_encoder_ops(self._cfg(gated=True), tp_size=1, projector_activation_indices=(1,))
+        ]
+        assert "encoder_projector_fc0_act" not in names
+        assert "encoder_projector_fc1_act" in names
+
 
 class TestMistral3ModelGraph:
     def test_builds_as_mistral3_model_with_encoder(self):
@@ -155,6 +162,8 @@ class TestMistral3ModelGraph:
         assert "encoder_attention" in enc
         assert "encoder_gate_gemm" in enc
         assert "encoder_projector_fc0_gemm" in enc
+        assert "encoder_projector_fc0_act" not in enc
+        assert "encoder_projector_fc1_act" in enc
         assert "encoder_projector_fc2_gemm" in enc
 
     def test_fp8_static_text_gemm_from_checkpoint(self):
