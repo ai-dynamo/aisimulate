@@ -1,7 +1,7 @@
 {
   "format_version": 1,
   "repo_id": "nvidia/aisimulate-fpm-dataset",
-  "revision": "73fdad29e619c00b29407702adb918fb100e519b",
+  "revision": "38f41571121b215834ecd4d79b447a6af8dec511",
   "profiles": {
     "gb200-tp4-full": {
       "admission": "serving",
