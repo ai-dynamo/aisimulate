@@ -271,8 +271,10 @@ def test_sibling_finished_during_a_yield_pause_is_not_reported_timed_out(monkeyp
     sibling future completes during that pause, it must still be reported as
     its real outcome, not misclassified as timed out just because the
     deadline was crossed while the callback for an earlier candidate was
-    running. Uses a controlled fake ``wait()``/clock, not a real sleeping
-    callback, so the regression is deterministic rather than timing-sensitive.
+    running. ``fake_wait`` mirrors real ``wait()`` semantics by checking
+    ``Future.done()`` directly rather than hardcoding which call returns
+    what, so the fakes can't quietly assert a timeline a real ``Future``
+    couldn't produce.
     """
     from concurrent.futures import Future
     from pathlib import Path
@@ -280,9 +282,7 @@ def test_sibling_finished_during_a_yield_pause_is_not_reported_timed_out(monkeyp
     from aisimulate import resource_scheduler as scheduler
 
     future0 = Future()
-    future0.set_result({"id": 0})
     future1 = Future()
-    future1.set_result({"id": 1})
 
     class Pool:
         def __init__(self, **kwargs):
@@ -292,25 +292,11 @@ def test_sibling_finished_during_a_yield_pause_is_not_reported_timed_out(monkeyp
         def submit(self, evaluate, spec):
             return future0 if spec["id"] == 0 else future1
 
-    elapsed = [0.0]
-    calls = [0]
-
     def fake_wait(futures, *, timeout, return_when):
-        calls[0] += 1
-        if calls[0] == 1:
-            # Initial poll: only candidate 0 has finished so far.
-            return {future0}, {future1}
-        if calls[0] == 2:
-            # The drain called immediately after resuming from the yield for
-            # candidate 0 -- this is the regression target. Candidate 1
-            # finished while the (simulated) on_candidate callback for
-            # candidate 0 was running, represented below by advancing the
-            # fake clock past the deadline before this call happens.
-            return {future1}, set()
-        raise AssertionError(
-            "no further wait() calls expected once both futures are drained"
-        )
+        done = {future for future in futures if future.done()}
+        return done, set(futures) - done
 
+    elapsed = [0.0]
     factory = _BudgetFactory()
     monkeypatch.setattr(scheduler, "ProcessPoolExecutor", Pool)
     monkeypatch.setattr(scheduler, "close_pool", lambda pool: None)
@@ -327,10 +313,13 @@ def test_sibling_finished_during_a_yield_pause_is_not_reported_timed_out(monkeyp
         timeout=1.0,
     )
 
+    future0.set_result({"id": 0})
     assert next(gen) == (0, {"id": 0})
 
-    # Simulate on_candidate for candidate 0 running long enough to cross the
-    # deadline -- candidate 1 has already finished by the time it returns.
+    # Simulate candidate 1 finishing, and the deadline being crossed, while
+    # the (simulated) on_candidate callback for candidate 0 is running --
+    # i.e. during the pause at the yield above.
+    future1.set_result({"id": 1})
     elapsed[0] = 1.5
 
     assert next(gen) == (1, {"id": 1}), (
@@ -338,6 +327,81 @@ def test_sibling_finished_during_a_yield_pause_is_not_reported_timed_out(monkeyp
         "must be reported as feasible, not swept into the deadline-exceeded "
         "InterruptedEvaluation just because the clock advanced while that "
         "callback was running"
+    )
+
+    with pytest.raises(StopIteration):
+        next(gen)
+
+
+def test_multiple_siblings_finishing_across_successive_yield_pauses_are_drained(
+    monkeypatch,
+):
+    """Follow-up regression: a single extra non-blocking drain after the first
+    wait only catches one sibling completing during one pause. With three or
+    more active futures, a second sibling can finish while the caller is
+    still handling the *first* extra-drained yield, so the drain has to
+    repeat until a poll comes back empty rather than run once and move on to
+    checking pressure/the deadline. Candidate 1's completion here is
+    discovered during the pause after candidate 0's yield, and candidate 2's
+    is discovered during the pause after candidate 1's yield -- both before
+    evaluate_waves ever reaches the deadline check, even though the clock has
+    already crossed it by the time candidate 2 is drained.
+    """
+    from concurrent.futures import Future
+    from pathlib import Path
+
+    from aisimulate import resource_scheduler as scheduler
+
+    future0, future1, future2 = Future(), Future(), Future()
+
+    class Pool:
+        def __init__(self, **kwargs):
+            self._processes = {123: object()}
+            Path(kwargs["initargs"][2], "123").touch()
+
+        def submit(self, evaluate, spec):
+            return {0: future0, 1: future1, 2: future2}[spec["id"]]
+
+    def fake_wait(futures, *, timeout, return_when):
+        done = {future for future in futures if future.done()}
+        return done, set(futures) - done
+
+    elapsed = [0.0]
+    factory = _BudgetFactory(capacity=3)
+    monkeypatch.setattr(scheduler, "ProcessPoolExecutor", Pool)
+    monkeypatch.setattr(scheduler, "close_pool", lambda pool: None)
+    monkeypatch.setattr(scheduler, "terminate_pool", lambda pool: None)
+    monkeypatch.setattr(scheduler, "wait", fake_wait)
+    monkeypatch.setattr(scheduler.time, "monotonic", lambda: elapsed[0])
+    specs = [{"id": i, "cost": 1} for i in range(3)]
+    gen = evaluate_waves(
+        specs,
+        factory=factory,
+        initializer=_init,
+        evaluate=_evaluate,
+        workers=3,
+        timeout=1.0,
+    )
+
+    future0.set_result({"id": 0})
+    assert next(gen) == (0, {"id": 0})
+
+    # Candidate 1 finishes during the pause for candidate 0's yield.
+    future1.set_result({"id": 1})
+    assert next(gen) == (1, {"id": 1})
+
+    # Candidate 2 finishes during the pause for candidate 1's yield -- the
+    # *second* extra pause -- with the deadline already crossed by the time
+    # evaluate_waves resumes. Draining it here, without the test making an
+    # extra explicit call, is exactly what the repeat-until-empty loop is for.
+    future2.set_result({"id": 2})
+    elapsed[0] = 1.5
+
+    assert next(gen) == (2, {"id": 2}), (
+        "candidate 2 finished during the pause for candidate 1's yield and "
+        "must be drained in the same non-blocking pass, not reported as "
+        "timed out because the deadline was already crossed by the time "
+        "evaluate_waves got back to checking it"
     )
 
     with pytest.raises(StopIteration):

@@ -107,12 +107,20 @@ def evaluate_waves(specs, *, factory, initializer, evaluate, workers: int, timeo
                     break
                 # Each yield above can suspend this generator for an arbitrary
                 # duration -- the caller's on_candidate callback runs while
-                # paused there. Drain anything that finished during that pause
-                # before judging the deadline below, so a sibling that
-                # completed while the callback was running is reported as its
-                # real outcome instead of being misclassified as timed out.
-                still_done, _ = wait(active, timeout=0, return_when=FIRST_COMPLETED)
-                yield from _drain(still_done)
+                # paused there. A sibling can finish during ANY such pause,
+                # not just the one right after the first wait -- with three or
+                # more active futures, a later sibling can complete while the
+                # caller is still handling an earlier yield from this same
+                # non-blocking drain. So keep polling and draining until a
+                # poll comes back empty, rather than doing it once, before
+                # judging pressure or the deadline below.
+                while True:
+                    still_done, _ = wait(active, timeout=0, return_when=FIRST_COMPLETED)
+                    if not still_done:
+                        break
+                    yield from _drain(still_done)
+                    if interrupted or not active:
+                        break
                 if interrupted:
                     break
                 if not active:
