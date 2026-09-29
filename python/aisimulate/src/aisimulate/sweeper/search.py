@@ -1117,10 +1117,12 @@ class Sweeper:
         run-wide counts always describe the complete run.
 
         ``on_candidate``, when provided, is invoked once per recorded candidate
-        outcome (feasible, infeasible, unsupported, timed-out, or failed) with the
-        same ``CandidateRecord`` appended to the run's candidate ledger, in
-        evaluation order. It complements ``on_round``, which only reports the
-        cumulative feasible-candidate list at round boundaries.
+        outcome (feasible, infeasible, unsupported, resource-limited, timed-out, or
+        failed) with a deep copy of the ``CandidateRecord`` appended to the run's
+        candidate ledger, in evaluation order. The copy is detached: mutating it
+        has no effect on the ledger used to build ``SweepResult``. It complements
+        ``on_round``, which only reports the cumulative feasible-candidate list at
+        round boundaries.
         """
         if top_n is not None and top_n < 1:
             raise ValueError(f"top_n must be positive or None, got {top_n}")
@@ -1458,7 +1460,9 @@ class Sweeper:
                 )
                 candidate_records.append(record)
                 if on_candidate is not None:
-                    on_candidate(record)
+                    # Detach: on_candidate must not be able to mutate the ledger
+                    # entry that SweepResult is built from.
+                    on_candidate(record.model_copy(deep=True))
                 if resource_aware:
                     from ..supervision import checkpoint
 
