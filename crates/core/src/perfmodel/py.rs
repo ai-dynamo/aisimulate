@@ -1922,7 +1922,14 @@ impl PyForwardPassPerfModel {
         options
             .validate_quant_modes(fmha_quant_mode, comm_quant_mode)
             .map_err(aic_to_py)?;
-        serde_json::to_string(&options).map_err(|e| PyValueError::new_err(e.to_string()))
+        // The compilation adapter needs resolved values, not the compact public
+        // serialization that omits defaults. Python never supplies these defaults.
+        Ok(serde_json::json!({
+            "text_only": options.text_only,
+            "fpm_parquet_path": options.fpm_parquet_path,
+            "unrecorded_quant_modes": options.unrecorded_quant_modes,
+        })
+        .to_string())
     }
 
     /// Migration adapter for previously saved flat tuning options.

@@ -163,9 +163,11 @@ impl Availability<'_> {
             }
             TokenScale(scale) => return self.op(&scale.op),
             FpmForward(fpm) => {
-                self.db
-                    .fpm_forward
-                    .select_cell(&fpm.match_identity, &fpm.model_path)?;
+                self.db.fpm_forward.select_cell(
+                    &fpm.match_identity,
+                    &fpm.model_path,
+                    fpm.dcp_size,
+                )?;
                 return Ok(());
             }
             // These families have no analytic/empirical implementation.

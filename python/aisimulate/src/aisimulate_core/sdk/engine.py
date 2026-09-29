@@ -141,6 +141,8 @@ from aisimulate_core.sdk.rust_engine_step import (
 # - 22 (GLM-5.2 VR200 pilot): exact observed-MoE selection, prefill graph
 #   identity and two appended composite operators extend the schema-21 layout.
 #   The pilot and AIC-1781 concurrently claimed 21; reject both older layouts.
+# - 23 (DCP identity): optional recorded dcp_size in ParallelMapping.
+# - 24 (typed FPM DCP): dcp_size moves out of the op matching tuple.
 # Single owner: the Rust crate constant. Python re-exports it for
 # diagnostics/tests instead of declaring a twin to keep in sync.
 ENGINE_SPEC_SCHEMA_VERSION = aisimulate_core.engine_spec_schema_version()
@@ -172,6 +174,7 @@ def _fpm_spec_dict(op: FPMForwardOp) -> dict:
             "phase": op._phase,
             "model_path": op._model_path,
             "match_identity": list(op._match_identity),
+            "dcp_size": op._dcp_size,
             "original_fmha_quant_mode": op._original_fmha_quant_mode,
             "weight_bytes": op._resident_weight_bytes,
             # Speculative verify width for the equivalent-AR decode mapping
@@ -486,7 +489,7 @@ def compile_engine(
     logical batches are exploratory and queries outside 1..32 fail. Missing or
     mismatched approved profile data raises ``DecodeMoeProfileError``.
 
-    Engine schema 23 persists the exact-profile policy on MoE operators. Default
+    Engine schema 24 persists the exact-profile policy on MoE operators. Default
     OpSpec JSON includes that new false field, and older binary specs require
     recompilation; default representations are therefore not byte-identical.
     """
@@ -510,6 +513,7 @@ def compile_engine(
         if shared_layer:
             raise PrefillGraphProfileError("prefill_graph_profile does not allow shared-source inheritance")
         shared_layer = False
+    from aisimulate_core.sdk.fpm_config import FpmCompileConfig
     from aisimulate_core.sdk.speculation import SpeculationConfig
 
     recorded_attention_backend = attention_backend
@@ -518,14 +522,13 @@ def compile_engine(
     resolved_moe_tp = moe_tp_size if moe_tp_size is not None else 1
     resolved_moe_ep = moe_ep_size if moe_ep_size is not None else 1
     try:
-        fpm_options = json.loads(
-            aisimulate_core.RustForwardPassPerfModel._normalize_fpm_options(
-                json.dumps({} if fpm_options is None else fpm_options),
-                fmha_quant_mode if fmha_quant_mode is not None else fpm_fmha_quant_mode,
-                comm_quant_mode,
-            )
+        fpm_config = FpmCompileConfig(
+            fpm_options,
+            attention_backend=recorded_attention_backend,
+            fmha_quant_mode=fmha_quant_mode if fmha_quant_mode is not None else fpm_fmha_quant_mode,
+            comm_quant_mode=comm_quant_mode,
         )
-        options_path = fpm_options.get("fpm_parquet_path")
+        options_path = fpm_config.options["fpm_parquet_path"]
         if options_path is not None:
             if fpm_parquet_path is not None and fpm_parquet_path != options_path:
                 raise ValueError("conflicting fpm_parquet_path and fpm_options.fpm_parquet_path")
@@ -563,9 +566,7 @@ def compile_engine(
             wideep_num_slots=wideep_num_slots,
             speculation=resolved_speculation,
         )
-        model_config.fpm_text_only = fpm_options.get("text_only", False)
-        model_config.fpm_unrecorded_quant_modes = tuple(fpm_options.get("unrecorded_quant_modes", ()))
-        model_config.fpm_attention_backend = recorded_attention_backend
+        model_config.fpm_config = fpm_config
         # Apply MTP BEFORE get_model so the walked op lists carry the
         # (L+nextn)/L compute scale; accepted-token progress is applied above core.
         apply_nextn(model_config, nextn)

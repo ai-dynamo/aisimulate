@@ -117,7 +117,9 @@ pub const ENGINE_CONFIG_SCHEMA_VERSION: u32 = 1;
 // - 23 (DCP identity): ParallelMapping gained optional recorded dcp_size.
 //   DCP and the pilot concurrently claimed 22; reject both older layouts.
 //   JSON defaults preserve unrecorded DCP.
-pub const ENGINE_SPEC_SCHEMA_VERSION: u32 = 23;
+// - 24 (typed FPM DCP): FpmForwardOp carries dcp_size separately from the
+//   base matching identity, so control flow never parses the string tuple.
+pub const ENGINE_SPEC_SCHEMA_VERSION: u32 = 24;
 
 /// Static engine identity and setup information carried by an
 /// [`crate::perfmodel::engine::spec::EngineSpec`].

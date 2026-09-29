@@ -329,14 +329,21 @@ impl FpmForwardTable {
         Ok(self.loaded()?.kept_fake_fallback)
     }
 
-    /// Cell selection, mirroring Python `FPMForwardOp._select_cell` exactly:
-    /// strict equality on the 15-column identity and `model_path` (no
-    /// fallback), then a hard ambiguity guard.
+    /// Exact base identity, recorded DCP and model-path matching, followed by
+    /// an ambiguity guard. DCP remains typed until composing the lookup key.
     pub fn select_cell(
         &self,
         match_identity: &[String],
         model_path: &str,
+        dcp_size: Option<u32>,
     ) -> Result<&FpmForwardCell, AicError> {
+        if match_identity.len() != 15 && match_identity.len() != FPM_CELL_MATCH_COLUMNS.len() {
+            return Err(structural(
+                "FPM match_identity must contain only base identity fields; supply DCP through dcp_size".into(),
+            ));
+        }
+        let dcp_label = dcp_size.map(|value| value.to_string());
+        let requested = || match_identity.iter().chain(dcp_label.iter());
         let cells = self.cells()?;
         // Exact matching on every identity dimension (D1 resolved: the match
         // identity carries no architecture fingerprint, so borrowing the sole
@@ -344,13 +351,15 @@ impl FpmForwardTable {
         let matches: Vec<&FpmForwardCell> = cells
             .iter()
             .filter(|cell| {
-                let legacy = match_identity.len() == 15
+                let legacy = dcp_size.is_none()
+                    && match_identity.len() == 15
                     && cell.match_identity[..15] == *match_identity
                     && cell.match_identity[15..]
                         .iter()
                         .map(String::as_str)
                         .eq(LEGACY_EXECUTION_IDENTITY);
-                (cell.match_identity == match_identity || legacy) && cell.model_path == model_path
+                (cell.match_identity.iter().eq(requested()) || legacy)
+                    && cell.model_path == model_path
             })
             .collect();
         if matches.is_empty() {
@@ -364,7 +373,7 @@ impl FpmForwardTable {
             let identity: Vec<String> = FPM_CELL_MATCH_COLUMNS
                 .iter()
                 .chain(std::iter::once(&"dcp"))
-                .zip(match_identity)
+                .zip(requested())
                 .map(|(c, v)| format!("{c}={v:?}"))
                 .collect();
             return Err(structural(format!(
@@ -1669,7 +1678,7 @@ pub(crate) mod tests {
         assert_eq!(table.parquet_path(), external);
         assert!(
             table
-                .select_cell(&default_identity(4), "org/model-a")
+                .select_cell(&default_identity(4), "org/model-a", None)
                 .is_ok()
         );
     }
@@ -1697,14 +1706,14 @@ pub(crate) mod tests {
         let table = loaded_table(tmp.path());
         let mut identity = default_identity(4);
         identity[15..].clone_from_slice(&execution.map(str::to_string));
-        assert!(table.select_cell(&identity, "org/model-a").is_ok());
+        assert!(table.select_cell(&identity, "org/model-a", None).is_ok());
         assert!(
             table
-                .select_cell(&default_identity(4), "org/model-a")
+                .select_cell(&default_identity(4), "org/model-a", None)
                 .is_err()
         );
         identity[16] = "decoder_bounded".to_string();
-        assert!(table.select_cell(&identity, "org/model-a").is_err());
+        assert!(table.select_cell(&identity, "org/model-a", None).is_err());
         let prefill_rows: Vec<RowSpec> = default_rows()
             .into_iter()
             .filter(|r| r.workload_kind == "prefill")
@@ -1776,7 +1785,7 @@ pub(crate) mod tests {
         write_pair(tmp.path(), &default_rows());
         assert!(
             loaded_table(tmp.path())
-                .select_cell(&default_identity(4)[..15], "org/model-a")
+                .select_cell(&default_identity(4)[..15], "org/model-a", None)
                 .is_ok()
         );
         write_pair_with(tmp.path(), &default_rows(), |m| {
@@ -1806,13 +1815,25 @@ pub(crate) mod tests {
         assert_eq!(table.cells().unwrap().len(), 2);
         assert!(
             table
-                .select_cell(&default_identity(4), "org/model-a")
+                .select_cell(&default_identity(4), "org/model-a", None)
                 .is_err()
         );
         for dcp in [1, 4] {
+            assert!(
+                table
+                    .select_cell(&default_identity(4), "org/model-a", Some(dcp))
+                    .is_ok()
+            );
+            // A string tail cannot hide DCP from the typed SOL/admission guards.
             let mut identity = default_identity(4);
             identity.push(dcp.to_string());
-            assert!(table.select_cell(&identity, "org/model-a").is_ok());
+            assert!(
+                table
+                    .select_cell(&identity, "org/model-a", None)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("supply DCP through dcp_size")
+            );
         }
         write_pair_with(tmp.path(), &rows[..1], |meta| {
             meta.insert(
@@ -2410,14 +2431,16 @@ pub(crate) mod tests {
         let identity = default_identity(4);
 
         // Exact path selects its own cell.
-        let cell = table.select_cell(&identity, "org/model-a").expect("select");
+        let cell = table
+            .select_cell(&identity, "org/model-a", None)
+            .expect("select");
         assert_eq!(cell.model_path, "org/model-a");
         // Unknown path: never borrows a collected cell (D1 exact-only).
-        let err = table.select_cell(&identity, "org/other").unwrap_err();
+        let err = table.select_cell(&identity, "org/other", None).unwrap_err();
         assert!(err.to_string().contains("never substitutes"), "{err}");
         // Unknown identity: the no-match error listing what was collected.
         let err = table
-            .select_cell(&default_identity(8), "org/model-a")
+            .select_cell(&default_identity(8), "org/model-a", None)
             .unwrap_err();
         assert!(err.to_string().contains("No FPM cell matches"), "{err}");
     }
@@ -2429,7 +2452,7 @@ pub(crate) mod tests {
         let tmp = tempfile::tempdir().expect("tmpdir");
         write_pair(tmp.path(), &default_rows());
         let err = loaded_table(tmp.path())
-            .select_cell(&default_identity(4), "some/other-model")
+            .select_cell(&default_identity(4), "some/other-model", None)
             .unwrap_err();
         assert!(err.to_string().contains("never substitutes"), "{err}");
     }
@@ -2481,7 +2504,7 @@ pub(crate) mod tests {
         let tmp = tempfile::tempdir().expect("tmpdir");
         write_pair(tmp.path(), &flat_prefill_rows());
         let cell_max = loaded_table(tmp.path())
-            .select_cell(&default_identity(4), "org/model-a")
+            .select_cell(&default_identity(4), "org/model-a", None)
             .expect("select")
             .prefill_batch_clamp_max;
         assert_eq!(cell_max, Some(4));
@@ -2489,7 +2512,7 @@ pub(crate) mod tests {
         let tmp = tempfile::tempdir().expect("tmpdir");
         write_pair(tmp.path(), &default_rows());
         let cell_max = loaded_table(tmp.path())
-            .select_cell(&default_identity(4), "org/model-a")
+            .select_cell(&default_identity(4), "org/model-a", None)
             .expect("select")
             .prefill_batch_clamp_max;
         assert_eq!(cell_max, None);
@@ -2501,7 +2524,7 @@ pub(crate) mod tests {
         let tmp = tempfile::tempdir().expect("tmpdir");
         write_pair(tmp.path(), &bumpy);
         let cell_max = loaded_table(tmp.path())
-            .select_cell(&default_identity(4), "org/model-a")
+            .select_cell(&default_identity(4), "org/model-a", None)
             .expect("select")
             .prefill_batch_clamp_max;
         assert_eq!(cell_max, None);
@@ -2513,7 +2536,7 @@ pub(crate) mod tests {
         write_pair(tmp.path(), &cliff_decode_rows());
         let table = loaded_table(tmp.path());
         let cell = table
-            .select_cell(&default_identity(4), "org/model-a")
+            .select_cell(&default_identity(4), "org/model-a", None)
             .expect("select");
         // Rungs = batches whose (x, x+1) pair was collected.
         assert_eq!(cell.decode_rungs, vec![496, 512]);
@@ -2529,7 +2552,7 @@ pub(crate) mod tests {
         write_pair(tmp.path(), &default_rows());
         let table = loaded_table(tmp.path());
         let cell = table
-            .select_cell(&default_identity(4), "org/model-a")
+            .select_cell(&default_identity(4), "org/model-a", None)
             .expect("select");
         assert!(cell.decode_rungs.is_empty());
         assert_eq!(cell.decode_batches, vec![8, 16]);
@@ -2549,7 +2572,7 @@ pub(crate) mod tests {
             .collect();
         write_pair(tmp.path(), &rows);
         let err = loaded_table(tmp.path())
-            .select_cell(&default_identity(4), "org/model-a")
+            .select_cell(&default_identity(4), "org/model-a", None)
             .unwrap_err();
         assert!(err.to_string().contains("No FPM cell matches"), "{err}");
     }
@@ -2572,11 +2595,11 @@ pub(crate) mod tests {
         let mut wideep_identity = default_identity(4);
         wideep_identity[13] = "True".to_string();
         let cell = table
-            .select_cell(&wideep_identity, "org/model-a")
+            .select_cell(&wideep_identity, "org/model-a", None)
             .expect("select");
         assert_eq!(cell.match_identity[13], "True");
         let err = table
-            .select_cell(&default_identity(4), "org/model-a")
+            .select_cell(&default_identity(4), "org/model-a", None)
             .unwrap_err();
         assert!(err.to_string().contains("No FPM cell matches"), "{err}");
     }

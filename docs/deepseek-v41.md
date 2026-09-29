@@ -94,7 +94,7 @@ The `logical_fp4` layout (288-byte compressed main, 68-byte index, FP8 window,
 890-byte global slope) remains the explicit theoretical estimate for vLLM and
 TRT-LLM; their runtime storage is unqualified. Both inventories exclude allocator
 page padding and spare pages. See [source proof and limits](deepseek-v41-storage.md)
-for full-context scoring, cache read/write accounting, and schema 23 compatibility.
+for full-context scoring, cache read/write accounting, and schema 24 compatibility.
 
 Engram's two GPU-resident hash tables include FP8 block scales and TP row
 sharding. Their full resident size is independent of tokens accessed. Lookup
@@ -132,5 +132,6 @@ FPM selector diagnostics append a positional field to `FpmForwardOp` in schema 2
 Exact MoE kernel-source identity extends the layout in schema 21, and the Rubin
 pilot adds observed-MoE selection and prefill graph composites in schema 22.
 DCP identity extends the combined layout in schema 23.
-Schema-22 and earlier bincode inputs are rejected before decoding; legacy JSON
+Typed FPM DCP extends the operator payload in schema 24.
+Schema-23 and earlier bincode inputs are rejected before decoding; legacy JSON
 may still use the documented field defaults.

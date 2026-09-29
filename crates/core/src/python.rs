@@ -2717,6 +2717,7 @@ mod tests {
         // test engine is synthetic; the production constructor is unchanged.
         let missing_op = |phase| {
             Op::FpmForward(FpmForwardOp {
+                dcp_size: None,
                 name: "missing".into(),
                 phase,
                 model_path: "missing-test-model".into(),

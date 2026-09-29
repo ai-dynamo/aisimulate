@@ -1175,6 +1175,7 @@ def _speculation_identity(model_config: Any) -> str | None:
 
 def _engine_config_json(model: Any, database: Any) -> str:
     model_config = model.config
+    fpm_config = getattr(model_config, "fpm_config", None)
     # Forward only the MTP draft length. The aic-core layer models iteration compute cost;
     # accepted-token progress belongs to the upper prediction layer.
     nextn = getattr(model, "_nextn", None)
@@ -1241,9 +1242,7 @@ def _engine_config_json(model: Any, database: Any) -> str:
                         "comm": _raw_quant_name(getattr(model_config, "comm_quant_mode", None)),
                     },
                     "model_config": {
-                        "fpm_text_only": getattr(model_config, "fpm_text_only", False),
-                        "fpm_unrecorded_quant_modes": getattr(model_config, "fpm_unrecorded_quant_modes", ()),
-                        "fpm_attention_backend": getattr(model_config, "fpm_attention_backend", None),
+                        "fpm_config": fpm_config.cache_identity() if fpm_config is not None else None,
                         "decoder_replay": bool(getattr(model_config, "decoder_replay", False)),
                         "cp_style": getattr(model_config, "cp_style", None),
                         "workload_distribution": getattr(model_config, "workload_distribution", None),

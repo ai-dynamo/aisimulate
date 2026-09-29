@@ -42,6 +42,7 @@ from aisimulate.sweeper.replay import ReplayOutputRequirements
 from aisimulate_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
 from aisimulate_core.sdk.engine import EngineHandle, compile_engine
 from aisimulate_core.sdk.errors import DecodeMoeProfileError
+from aisimulate_core.sdk.fpm_config import FpmCompileConfig
 from aisimulate_core.sdk.operations.fpm_forward import _CELL_MATCH_COLUMNS
 
 pytestmark = pytest.mark.unit
@@ -54,6 +55,50 @@ MODEL_PATH = "test-org/test-model"
 import aisimulate_core
 
 _CORE_SYSTEMS = os.path.join(os.path.dirname(aisimulate_core.__file__), "systems")
+
+
+def test_fpm_compile_context_uses_rust_defaults_without_python_fallbacks(monkeypatch):
+    resolved = {"text_only": True, "unrecorded_quant_modes": ["fmha"], "fpm_parquet_path": "/profile.parquet"}
+    calls = []
+
+    class RustOptions:
+        @staticmethod
+        def _normalize_fpm_options(payload, fmha, comm):
+            calls.append((json.loads(payload), fmha, comm))
+            return json.dumps(resolved)
+
+    monkeypatch.setattr(aisimulate_core, "RustForwardPassPerfModel", RustOptions)
+    context = FpmCompileConfig(attention_backend="FLASHINFER_MLA")
+    assert calls == [({}, None, None)]
+    assert context.options == resolved
+    assert context.cache_identity() == {"options": resolved, "attention_backend": "FLASHINFER_MLA"}
+
+
+def test_fpm_compile_context_survives_model_copy_and_cannot_be_mutated():
+    import copy
+    import pickle
+    from dataclasses import FrozenInstanceError, replace
+
+    context = FpmCompileConfig({"text_only": True, "unrecorded_quant_modes": ["fmha", "comm"]})
+    model_config = _model_config(forward_model="fpm", fpm_config=context)
+    expected = context.cache_identity()
+    context.options["unrecorded_quant_modes"].clear()
+    with pytest.raises(FrozenInstanceError):
+        context.attention_backend = "other"
+    for copied in (copy.deepcopy(model_config), pickle.loads(pickle.dumps(model_config)), replace(model_config)):
+        assert copied.fpm_config.cache_identity() == expected
+
+
+def test_fpm_execution_identity_and_dcp_are_independent_fields():
+    from aisimulate_core.sdk.engine import _fpm_spec_dict
+    from aisimulate_core.sdk.fpm_identity import EXECUTION_COLUMNS
+
+    execution = ("checkpoint-digest", "decoder_bounded", "hbm_tp_sharded", "text")
+    op = FPMForwardOp("prefill", _model_config(tp_size=4, dcp_size=4), MODEL_PATH, sol_ops=[], execution=execution)
+    identity = dict(zip(_CELL_MATCH_COLUMNS, op._match_identity, strict=True))
+    assert tuple(identity[field] for field in EXECUTION_COLUMNS) == execution
+    assert "dcp" not in identity
+    assert _fpm_spec_dict(op)["FpmForward"]["dcp_size"] == 4
 
 
 def _row(
@@ -702,9 +747,9 @@ def test_text_only_kimi_profile_preserves_encoder_weights_and_dcp_identity():
         moe_tp_size=8,
         moe_ep_size=1,
         dcp_size=8,
-        fpm_text_only=True,
-        fpm_unrecorded_quant_modes=("fmha", "comm"),
-        fpm_attention_backend="FLASHINFER_MLA",
+        fpm_config=FpmCompileConfig(
+            {"text_only": True, "unrecorded_quant_modes": ["fmha", "comm"]}, attention_backend="FLASHINFER_MLA"
+        ),
     )
     model = models.get_model("moonshotai/Kimi-K3", cfg, "vllm")
     assert model.encoder_ops
@@ -713,11 +758,13 @@ def test_text_only_kimi_profile_preserves_encoder_weights_and_dcp_identity():
     identity = model.context_ops[0]._match_identity
     assert identity[2:4] == ("", "")
     assert identity[12] == "FLASHINFER_MLA"
-    assert identity[-1] == "8"
+    assert len(identity) == len(_CELL_MATCH_COLUMNS)
+    assert model.context_ops[0]._dcp_size == 8
     assert cfg.total_gpus_per_worker == 8
     from aisimulate_core.sdk.engine import _fpm_spec_dict
 
     prefill = model.context_ops[0]
+    assert _fpm_spec_dict(prefill)["FpmForward"]["dcp_size"] == 8
     resident = _fpm_spec_dict(prefill)["FpmForward"]["weight_bytes"]
     assert resident == prefill.get_weights() + sum(op.get_weights() for op in model.encoder_ops)
 
@@ -841,9 +888,9 @@ def test_session_cache_preserves_fpm_identity(kimi_fpm_profile):
         moe_ep_size=1,
         dcp_size=8,
         forward_model="fpm",
-        fpm_text_only=True,
-        fpm_unrecorded_quant_modes=("fmha", "comm"),
-        fpm_attention_backend="FLASHINFER_MLA",
+        fpm_config=FpmCompileConfig(
+            {"text_only": True, "unrecorded_quant_modes": ["fmha", "comm"]}, attention_backend="FLASHINFER_MLA"
+        ),
         kvcache_quant_mode=common.KVCacheQuantMode.fp8,
         moe_quant_mode=common.MoEQuantMode.w4a16_mxfp4,
     )
@@ -859,13 +906,13 @@ def test_session_cache_preserves_fpm_identity(kimi_fpm_profile):
         assert prefill(config) == pytest.approx(7.0)  # synthetic measured prefill row
         for different in (
             replace(config, dcp_size=1),
-            replace(config, fpm_unrecorded_quant_modes=()),
-            replace(config, fpm_attention_backend="auto"),
+            replace(config, fpm_config=FpmCompileConfig({"text_only": True}, attention_backend="FLASHINFER_MLA")),
+            replace(config, fpm_config=FpmCompileConfig(config.fpm_config.options, attention_backend="auto")),
         ):
             with pytest.raises(PerfDataNotAvailableError, match="No FPM cell matches"):
                 prefill(different)
         with pytest.raises(NotImplementedError, match="encoder/multimodal"):
-            prefill(replace(config, fpm_text_only=False))
+            prefill(replace(config, fpm_config=FpmCompileConfig()))
         assert prefill(config) == pytest.approx(7.0)
     finally:
         _engine_handle_cache_clear()
@@ -877,7 +924,9 @@ def test_session_cache_separates_text_only_mode(fpm_session):
     from aisimulate_core.sdk.rust_engine_step import _cached_engine_handle, _engine_handle_cache_clear
 
     plain, database, _, isl, _ = fpm_session
-    text_only = models.get_model(plain.model_path, replace(plain.config, fpm_text_only=True), BACKEND)
+    text_only = models.get_model(
+        plain.model_path, replace(plain.config, fpm_config=FpmCompileConfig({"text_only": True})), BACKEND
+    )
     _engine_handle_cache_clear()
     try:
         plain_handle = _cached_engine_handle(plain, database)

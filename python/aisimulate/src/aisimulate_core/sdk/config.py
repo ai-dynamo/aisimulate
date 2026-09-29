@@ -8,6 +8,7 @@ from enum import StrEnum
 from typing import TypeVar, Union
 
 from aisimulate_core.sdk import common
+from aisimulate_core.sdk.fpm_config import FpmCompileConfig
 from aisimulate_core.sdk.speculation.base import SpeculationConfig
 
 KernelBackendT = TypeVar("KernelBackendT", bound=StrEnum)
@@ -70,9 +71,7 @@ class ModelConfig:
     """
 
     dcp_size: int | None = field(default=None, kw_only=True)
-    fpm_text_only: bool = field(default=False, kw_only=True)
-    fpm_unrecorded_quant_modes: tuple[str, ...] = field(default=(), kw_only=True)
-    fpm_attention_backend: str | None = field(default=None, kw_only=True)
+    fpm_config: FpmCompileConfig | None = field(default=None, kw_only=True)
     tp_size: int = 1
     pp_size: int = 1
     gemm_quant_mode: common.GEMMQuantMode | None = None
