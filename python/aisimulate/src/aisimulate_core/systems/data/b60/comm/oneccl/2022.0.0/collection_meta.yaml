@@ -9,6 +9,6 @@ runtime:
   image_digest: sha256:4756b66a077627133cee653b551f6f5eaa1b9a981b5eea13edd33fcd3b0d3ca3
 tables:
   oneccl_perf:
-    collector_ref: 747379f0a54a0977013beac72bbeb9ea6b623236
+    collector_ref: 227bbc7c1cf0b1b3ecb0149afaa1c26f93fb6e9e
     rows: 251
     status: complete
