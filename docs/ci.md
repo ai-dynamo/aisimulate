@@ -740,3 +740,6 @@ on CPU. Branch results remain in Actions artifacts for 90 days. Pages validates
 and publishes successful branch results independently; failed refreshes retain
 the prior qualified result. Accuracy is advisory, outside PR prediction campaigns
 and release staging gates. See [FPM details](../pages/fpm-accuracy/README.md).
+
+<!-- Temporary PR #346 validation: manual E2E dispatch is also enabled on
+simonec/fix-e2e-campaign-environment; remove after the campaign. -->

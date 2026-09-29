@@ -30,7 +30,12 @@ concurrency:
 jobs:
   resolve:
     name: Resolve exact accuracy source
-    if: github.repository == 'ai-dynamo/aisimulate' && github.ref == 'refs/heads/main'
+    # Temporary PR #346 validation; remove after the manual campaign.
+    if: >-
+      github.repository == 'ai-dynamo/aisimulate' &&
+      (github.ref == 'refs/heads/main' ||
+       (github.event_name == 'workflow_dispatch' &&
+        github.ref == 'refs/heads/simonec/fix-e2e-campaign-environment'))
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
