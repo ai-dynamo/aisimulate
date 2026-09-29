@@ -294,7 +294,7 @@ impl PrefillGraphTable {
             &self.systems_root,
             &Self::table_relative("sparse_attention", PROFILE_FILE),
         )?;
-        let bytes = std::fs::read(&profile_path).map_err(|e| error(e))?;
+        let bytes = std::fs::read(&profile_path).map_err(error)?;
         validate_id(&sha256(&bytes))?;
         let other = regular_path(
             &self.systems_root,

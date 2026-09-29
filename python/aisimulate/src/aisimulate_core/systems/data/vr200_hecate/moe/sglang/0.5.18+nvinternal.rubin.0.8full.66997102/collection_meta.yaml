@@ -12,7 +12,7 @@ tables:
     rows: 88
     status: complete
     collections:
-    - collector_ref: unknown
+    - collector_ref: https://gitlab-master.nvidia.com/dl/jet/ci/-/jobs/445770918/artifacts/file/workspace/logs/basic/aisim-vr-compute-dispatch-recollect/jet_log.zip
       collector_hash: sha256:714de1d8cd8622ab7262471f39882012c94ec9cca676588ec26e0a5a43a690f4
       case_plan_hash: sha256:5671a5e665ed4e6068615f1bd1efca6af63f728a6f6f70507adb2c424c387738
       collected_at: '2026-09-18'

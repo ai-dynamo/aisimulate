@@ -17,7 +17,7 @@ from pathlib import Path
 import pytest
 
 import aisimulate_core._native as core
-from aisimulate_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel, rust_engine_step
+from aisimulate_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel, engine, rust_engine_step
 from aisimulate_core.sdk.config_builders import build_model_config
 from aisimulate_core.sdk.engine import EngineHandle, build_engine_spec_json, build_ops_json
 from aisimulate_core.sdk.errors import PrefillGraphProfileError
@@ -73,9 +73,8 @@ def model(selected=True, **overrides):
     return get_model("nvidia/GLM-5.2-NVFP4", build_model_config(**kwargs), "sglang")
 
 
-def spec_json(selected=True, root=None):
-    return build_engine_spec_json(
-        model(selected),
+def spec_json(selected=True, root=None, **overrides):
+    kwargs = dict(
         model_path="nvidia/GLM-5.2-NVFP4",
         system="vr200_hecate",
         backend="sglang",
@@ -86,10 +85,80 @@ def spec_json(selected=True, root=None):
         database_mode="SILICON",
         shared_layer=False,
     )
+    kwargs.update(overrides)
+    return build_engine_spec_json(model(selected), **kwargs)
 
 
 def handle(selected=True, root=None):
     return EngineHandle(core.engine_spec_bincode_from_json(spec_json(selected, root)))
+
+
+@pytest.mark.parametrize("shared_layer", [None, False, 0, True, 1])
+@pytest.mark.parametrize("database_shared_layer", [None, False, True])
+def test_direct_profile_shared_policy_matches_the_python_view_before_lane_resolution(
+    monkeypatch, shared_layer, database_shared_layer
+):
+    database = (
+        None
+        if database_shared_layer is None
+        else PerfDatabase("vr200_hecate", "sglang", VERSION, str(systems_root()), shared_layer=database_shared_layer)
+    )
+    resolved_views = []
+    resolve = engine._resolve_attention_lane_orders
+
+    def record_resolution(ops, view, override, architecture):
+        resolved_views.append(view)
+        return resolve(ops, view, override, architecture)
+
+    monkeypatch.setattr(engine, "_resolve_attention_lane_orders", record_resolution)
+    if shared_layer or database_shared_layer:
+        with pytest.raises(PrefillGraphProfileError, match="does not allow shared-source inheritance"):
+            spec_json(shared_layer=shared_layer, database=database)
+        assert resolved_views == []
+        return
+
+    spec = spec_json(shared_layer=shared_layer, database=database)
+    assert json.loads(spec)["engine"]["enable_shared_layer"] is False
+    assert resolved_views == [database, database]
+    assert all(view is None or view.enable_shared_layer is False for view in resolved_views)
+    reloaded = EngineHandle(core.engine_spec_bincode_from_json(spec))
+    assert reloaded.predict_prefill_latency(*PUBLIC_CALLS[0]) == pytest.approx(PREDICTED_MS[0], rel=1e-12)
+
+
+@pytest.mark.parametrize("shared_layer", [None, False, 0, True, 1])
+def test_compile_profile_shared_policy_matches_direct_builder(shared_layer):
+    kwargs = dict(
+        model_path="nvidia/GLM-5.2-NVFP4",
+        system="vr200_hecate",
+        backend="sglang",
+        backend_version=VERSION,
+        systems_path=str(systems_root()),
+        tp_size=4,
+        pp_size=1,
+        attention_dp_size=1,
+        moe_tp_size=4,
+        moe_ep_size=1,
+        gemm_quant_mode="bfloat16",
+        moe_quant_mode="nvfp4",
+        kvcache_quant_mode="fp8",
+        fmha_quant_mode="bfloat16",
+        comm_quant_mode="half",
+        prefill_graph_profile=PROFILE,
+        shared_layer=shared_layer,
+    )
+    if shared_layer:
+        with pytest.raises(PrefillGraphProfileError, match="does not allow shared-source inheritance"):
+            engine.compile_engine(**kwargs)
+        return
+    reloaded = EngineHandle(engine.compile_engine(**kwargs))
+    assert reloaded.predict_prefill_latency(*PUBLIC_CALLS[0]) == pytest.approx(PREDICTED_MS[0], rel=1e-12)
+
+
+@pytest.mark.parametrize("shared_layer,expected", [(None, None), (False, False), (0, False), (True, True), (1, True)])
+def test_unselected_builder_preserves_existing_shared_policy(shared_layer, expected):
+    spec = json.loads(spec_json(False, shared_layer=shared_layer))
+    assert spec["engine"]["enable_shared_layer"] is expected
+    assert "prefill_graph_profile" not in spec["engine"]
 
 
 @pytest.mark.parametrize("source", ["sglang_flashinfer_trtllm_moe", "unavailable_kernel_source"])

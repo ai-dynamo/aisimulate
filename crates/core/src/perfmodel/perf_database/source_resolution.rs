@@ -237,7 +237,7 @@ fn version_dir_data_stems(version_path: &Path) -> std::io::Result<BTreeSet<Strin
                     | COLLECTION_META_MARKER
                     | INCOMPLETE_MARKER
                     | SHARED_LAYER_REUSE_MARKER
-                    | "sglang_glm52_nvfp4_vr200_tp4_graph_v1.profile.json"
+                    | super::prefill_graph::PROFILE_FILE
             )
             || !entry.path().is_file()
         {

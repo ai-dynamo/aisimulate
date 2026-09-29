@@ -375,8 +375,9 @@ def _engine_config_dict(
         engine["prefill_graph_profile"] = selected
         engine["prefill_graph_profile_id"] = prefill_graph_profile_identity()[1]
         engine["forward_model"] = cfg.forward_model
-        # Also covers callers of build_engine_spec_json that bypass compile_engine.
-        if shared_layer is True:
+        # A supplied Python view must agree with the disabled Rust policy;
+        # an override cannot undo shared rows already loaded into that view.
+        if engine["enable_shared_layer"] or _shared_layer_flag(database):
             from aisimulate_core.sdk.errors import PrefillGraphProfileError
 
             raise PrefillGraphProfileError("prefill_graph_profile does not allow shared-source inheritance")
@@ -503,7 +504,7 @@ def compile_engine(
     if prefill_graph_profile is not None:
         from aisimulate_core.sdk.errors import PrefillGraphProfileError
 
-        if shared_layer is not None and shared_layer is not False:
+        if shared_layer:
             raise PrefillGraphProfileError("prefill_graph_profile does not allow shared-source inheritance")
         shared_layer = False
     from aisimulate_core.sdk.speculation import SpeculationConfig
@@ -672,16 +673,6 @@ def build_engine_spec_json(
     Separated from ``compile_engine`` so the op-transfer round-trip test can
     inspect the JSON (and the decoded ops) without going through bincode.
     """
-    # AIC-1715/1716: resolve each attention op's kernel-lane walk now that a
-    # database is in hand (see `_resolve_attention_lane_orders`). The
-    # `attention_backend` override is a model-level knob (`ModelConfig`, not
-    # per-op) — every model family gets a valid, table-aware lane order this
-    # way, whether or not it exposes the override.
-    override = getattr(getattr(model, "config", None), "attention_backend", None)
-    architecture = getattr(model, "architecture", None)
-    _resolve_attention_lane_orders(model.context_ops, database, override, architecture)
-    _resolve_attention_lane_orders(model.generation_ops, database, override, architecture)
-
     # Vision encoder ops are intentionally NOT emitted into the spec.
     #
     # The compile path threads no image configuration (num_images_per_request,
@@ -710,6 +701,16 @@ def build_engine_spec_json(
         strict_provenance=strict_provenance,
         fpm_parquet_path=fpm_parquet_path,
     )
+    # AIC-1715/1716: resolve each attention op's kernel-lane walk now that a
+    # database is in hand (see `_resolve_attention_lane_orders`). The
+    # `attention_backend` override is a model-level knob (`ModelConfig`, not
+    # per-op) — every model family gets a valid, table-aware lane order this
+    # way, whether or not it exposes the override. Validate policy first so a
+    # rejected shared view cannot mutate the model's lane order.
+    override = getattr(getattr(model, "config", None), "attention_backend", None)
+    architecture = getattr(model, "architecture", None)
+    _resolve_attention_lane_orders(model.context_ops, database, override, architecture)
+    _resolve_attention_lane_orders(model.generation_ops, database, override, architecture)
     context_ops = json.loads(_ops_json(model.context_ops))
     generation_ops = json.loads(_ops_json(_generation_ops_for_engine(model, identity)))
 
