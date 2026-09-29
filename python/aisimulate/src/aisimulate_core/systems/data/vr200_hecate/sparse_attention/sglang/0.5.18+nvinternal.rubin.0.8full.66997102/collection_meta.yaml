@@ -1,0 +1,46 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+schema_version: 2
+runtime:
+  framework: sglang
+  version: 0.5.18+nvinternal.rubin.0.8full.66997102
+  image: gitlab-master.nvidia.com:5005/dl/ai-dynamo/dynamo-ci
+  image_digest: sha256:53299500a280c8de34bd484507a45b2f83b4d5e7c999b77284fa31930f7e63ab
+  source_commit: 02c5a855aceb968c310e6fbc6632270e26edc84b
+tables:
+  dsa_context_module_perf:
+    rows: 304
+    status: complete
+    collections:
+    - collector_ref: https://gitlab-master.nvidia.com/dl/jet/ci/-/jobs/445688753/artifacts/file/workspace/logs/basic/aisim-vr-dsa-projection-recollect/jet_log.zip
+      collector_hash: sha256:95fde0cd25cd058a03572855c2f0795683b3c225d47b0a729d49a28065a506ec
+      case_plan_hash: sha256:7fc717fc3059a1ca956b6e7b7cbdba722626cb76e09d16cf88aa928e121ebc5c
+      collected_at: '2026-09-18'
+      rows: 304
+      status: complete
+  dsa_generation_module_perf:
+    rows: 84
+    status: complete
+    collections:
+    - collector_ref: https://gitlab-master.nvidia.com/dl/jet/ci/-/jobs/445688753/artifacts/file/workspace/logs/basic/aisim-vr-dsa-projection-recollect/jet_log.zip
+      collector_hash: sha256:95fde0cd25cd058a03572855c2f0795683b3c225d47b0a729d49a28065a506ec
+      case_plan_hash: sha256:adfef72106217c90ca1fb1a40bd0b83694d6a8c3ca6c25591266aaaf16688b2d
+      collected_at: '2026-09-18'
+      rows: 84
+      status: complete
+  sglang_prefill_attention_sequence_perf:
+    rows: 7
+    status: complete
+    collections:
+    - collector_ref: collector.sglang_rubin.publish_prefill_graph
+      collector_hash: sha256:5290e9ed76217cc617369fdc913f084f21a4e5ad4f2a3bc2d390d0b8850ebd2f
+      case_plan_hash: sha256:2b8fb212bca7d16bbe165ef553e9fe0c2718f19d64e1a08496115807b3760397
+      collected_at: '2026-09-20'
+      rows: 7
+      status: complete
+      runtime:
+        framework: sglang
+        version: 0.5.18+nvinternal.rubin.0.8full.66997102
+        image: gitlab-master.nvidia.com:5005/dl/ai-dynamo/dynamo-ci
+        image_digest: sha256:53299500a280c8de34bd484507a45b2f83b4d5e7c999b77284fa31930f7e63ab

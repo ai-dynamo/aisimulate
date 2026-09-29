@@ -775,3 +775,480 @@ fn manager_decode_requirements_distinguish_sampled_tail_from_state_write() {
         clear_reclaimable_and_assert_empty(&mut manager);
     }
 }
+
+// Modified behavioral fixtures for vLLM v0.29.0 align/default retention.
+// Copyright contributors to the vLLM project. Apache-2.0.
+// https://github.com/vllm-project/vllm/blob/98dff2a81d747d1dba01a47f939f48c3526d4206/vllm/v1/core/single_type_kv_cache_manager.py
+fn fine_request(
+    owner: Uuid,
+    tokens: usize,
+    block: usize,
+    unit: usize,
+    output: usize,
+) -> (RequestSequence, BlockRequestLease) {
+    let (sequence, mut lease) = request(owner, tokens, block, true, output);
+    lease.configure_prefix_hashes(&(0..tokens as u32).collect::<Vec<_>>(), unit);
+    (sequence, lease)
+}
+
+fn fine_checkpoint(manager: &VllmKvManager, lease: &BlockRequestLease, tokens: usize) -> bool {
+    lease
+        .state_hash(tokens, manager.block_size)
+        .is_some_and(|h| {
+            manager
+                .state_cache
+                .as_ref()
+                .unwrap()
+                .has_snapshot(&manager.pool, h)
+        })
+}
+
+#[test]
+fn kda_physical_pages_retain_and_restore_both_real_checkpoints() {
+    // A=16; each physical KV page and each full state occupies 1536*A bytes.
+    let mut manager = manager(64, 1536, 1, true);
+    manager.configure_prefix_match_unit(Some(128));
+    let owner = Uuid::from_u128(601);
+    let (mut sequence, mut lease) = fine_request(owner, 24300, 1536, 128, 400);
+    let mut before = 0;
+    for end in [7680, 15360, 23040, 24192, 24300] {
+        allocated(manager.allocate_lease(owner, &mut lease, end, 0));
+        manager.finalize_lease_computed_prefix(owner, &mut sequence, &mut lease, before, end);
+        manager.begin_step();
+        let active_states = match end {
+            7680 | 24300 => 1,
+            15360 | 23040 | 24192 => 2,
+            _ => unreachable!(),
+        };
+        assert_eq!(
+            manager.num_active_blocks(),
+            end.div_ceil(1536) + active_states
+        );
+        assert!(!fine_checkpoint(&manager, &lease, 7680));
+        assert!(!fine_checkpoint(&manager, &lease, 15360));
+        assert!(!fine_checkpoint(&manager, &lease, 1536));
+        if end >= 24192 {
+            assert!(fine_checkpoint(&manager, &lease, 23040));
+            assert!(fine_checkpoint(&manager, &lease, 24192));
+        }
+        before = end;
+    }
+    assert_eq!(manager.num_active_blocks(), 17); // 16 KV pages + one working state
+    assert_eq!(manager.num_inactive_blocks(), 2); // two distinct state snapshots
+    for _ in 0..400 {
+        let (_, opened) = sequence.generate_token();
+        if opened {
+            lease.append_partial();
+        }
+        let end = sequence.len();
+        allocated(manager.allocate_lease(owner, &mut lease, end, 0));
+        manager.finalize_lease_computed_prefix(owner, &mut sequence, &mut lease, before, end);
+        before = end;
+        manager.begin_step();
+        match end {
+            24576 => assert_eq!(
+                manager.num_active_blocks() + manager.num_inactive_blocks(),
+                16 + 3
+            ),
+            24577 => assert_eq!(
+                manager.num_active_blocks() + manager.num_inactive_blocks(),
+                17 + 4
+            ),
+            24578 => assert_eq!(
+                manager.num_active_blocks() + manager.num_inactive_blocks(),
+                17 + 3
+            ),
+            _ => {}
+        }
+    }
+    assert_eq!(manager.num_inactive_blocks(), 2);
+    assert!(!fine_checkpoint(&manager, &lease, 24576));
+    manager.finish_lease(owner, lease);
+    for (length, expected) in [(23700, 23040), (24300, 24192)] {
+        let owner = Uuid::from_u128(length as u128);
+        let (query, mut reader) = fine_request(owner, length, 1536, 128, 0);
+        let cost = manager.get_lease_prefill_cost(&query, &reader);
+        assert_eq!(cost.cached_tokens, expected);
+        allocated(manager.allocate_lease(owner, &mut reader, length, expected / 128));
+        assert_eq!(reader.computed_state_tokens(), Some(expected));
+        assert_eq!(reader.state.as_ref().unwrap().working.len(), 1);
+        assert_eq!(reader.resident_block_count(), length.div_ceil(1536));
+        manager.finish_lease(owner, reader);
+    }
+    clear_reclaimable_and_assert_empty(&mut manager);
+}
+
+#[test]
+fn kda_partial_page_can_match_when_tokens_after_the_hit_diverge() {
+    let mut manager = manager(16, 6, 1, true);
+    manager.configure_prefix_match_unit(Some(2));
+    let owner = Uuid::from_u128(602);
+    let (mut sequence, mut lease) = fine_request(owner, 17, 6, 2, 0);
+    let mut before = 0;
+    for end in [6, 12, 16, 17] {
+        allocated(manager.allocate_lease(owner, &mut lease, end, 0));
+        manager.finalize_lease_computed_prefix(owner, &mut sequence, &mut lease, before, end);
+        manager.begin_step();
+        before = end;
+    }
+    let source = lease.entries[2].copy.unwrap();
+    manager.finish_lease(owner, lease);
+    let mut tokens: Vec<u32> = (0..19).collect();
+    tokens[16] = 999;
+    let (mut query, ids) = RequestSequence::new(tokens.clone(), 0, 0, 6, true, true, false, None);
+    let owner = Uuid::from_u128(603);
+    let mut reader = BlockRequestLease::new(owner, ids);
+    reader.configure_prefix_hashes(&tokens, 2);
+    assert_eq!(
+        manager
+            .get_lease_prefill_cost(&query, &reader)
+            .cached_tokens,
+        16
+    );
+    allocated(manager.allocate_lease(owner, &mut reader, 18, 8));
+    assert_ne!(
+        reader.entries[2].copy.unwrap(),
+        source,
+        "partial-page extension needs its own physical page"
+    );
+    manager.finalize_lease_computed_prefix(owner, &mut query, &mut reader, 16, 18);
+    manager.begin_step();
+    manager.finish_lease(owner, reader);
+    let (original, reader) = fine_request(Uuid::from_u128(604), 17, 6, 2, 0);
+    assert_eq!(
+        manager
+            .get_lease_prefill_cost(&original, &reader)
+            .cached_tokens,
+        16
+    );
+    clear_reclaimable_and_assert_empty(&mut manager);
+}
+
+#[test]
+fn kda_tail_preemption_retracts_new_state_and_keeps_full_checkpoint() {
+    for preempt_at in [16, 17] {
+        let mut manager = manager(16, 6, 1, true);
+        manager.configure_prefix_match_unit(Some(2));
+        let owner = Uuid::from_u128(605);
+        let (mut sequence, mut lease) = fine_request(owner, 17, 6, 2, 0);
+        let mut before = 0;
+        for end in [6, 12, 16, 17] {
+            allocated(manager.allocate_lease(owner, &mut lease, end, 0));
+            manager.finalize_lease_computed_prefix(owner, &mut sequence, &mut lease, before, end);
+            if end == preempt_at {
+                break;
+            }
+            manager.begin_step();
+            before = end;
+        }
+        manager.preempt_lease(owner, &mut lease);
+        manager.begin_step();
+        assert!(fine_checkpoint(&manager, &lease, 12));
+        assert!(!fine_checkpoint(&manager, &lease, 16));
+        assert_eq!(manager.num_active_blocks(), 0);
+        let (q, r) = fine_request(Uuid::from_u128(606), 17, 6, 2, 0);
+        assert_eq!(manager.get_lease_prefill_cost(&q, &r).cached_tokens, 12);
+        manager.finish_lease(owner, lease);
+        clear_reclaimable_and_assert_empty(&mut manager);
+    }
+}
+
+#[test]
+fn kda_pool_pressure_reclaims_state_and_all_partial_token_aliases() {
+    let mut manager = manager(6, 6, 1, true);
+    manager.configure_prefix_match_unit(Some(2));
+    let owner = Uuid::from_u128(607);
+    let (mut sequence, mut lease) = fine_request(owner, 17, 6, 2, 0);
+    let mut before = 0;
+    for end in [6, 12, 16, 17] {
+        allocated(manager.allocate_lease(owner, &mut lease, end, 0));
+        manager.finalize_lease_computed_prefix(owner, &mut sequence, &mut lease, before, end);
+        manager.begin_step();
+        before = end;
+    }
+    assert_eq!(manager.num_active_blocks(), 4);
+    assert_eq!(manager.num_inactive_blocks(), 2);
+    let pressure = manager.pool.reserve(&[], 1).unwrap();
+    assert!(!fine_checkpoint(&manager, &lease, 12));
+    assert!(fine_checkpoint(&manager, &lease, 16));
+    manager.pool.cancel(pressure.reservation);
+    manager.finish_lease(owner, lease);
+    clear_reclaimable_and_assert_empty(&mut manager);
+    let (q, r) = fine_request(Uuid::from_u128(608), 17, 6, 2, 0);
+    assert_eq!(manager.get_lease_prefill_cost(&q, &r).cached_tokens, 0);
+}
+
+#[test]
+fn kda_exact_full_prompt_requires_an_actually_executed_replay_boundary() {
+    for ends in [vec![6, 12, 18, 24], vec![12, 24]] {
+        let mut manager = manager(16, 6, 1, true);
+        manager.configure_prefix_match_unit(Some(2));
+        let owner = Uuid::from_u128(609);
+        let (mut sequence, mut lease) = fine_request(owner, 24, 6, 2, 0);
+        let mut before = 0;
+        for &end in &ends {
+            allocated(manager.allocate_lease(owner, &mut lease, end, 0));
+            manager.finalize_lease_computed_prefix(owner, &mut sequence, &mut lease, before, end);
+            manager.begin_step();
+            before = end;
+        }
+        let (q, r) = fine_request(Uuid::from_u128(610), 24, 6, 2, 1);
+        assert_eq!(
+            manager.get_lease_prefill_cost(&q, &r).cached_tokens,
+            if ends.contains(&18) { 18 } else { 0 }
+        );
+        manager.finish_lease(owner, lease);
+        clear_reclaimable_and_assert_empty(&mut manager);
+    }
+}
+
+#[test]
+fn kda_partial_restore_accounts_for_source_page_and_private_copy_atomically() {
+    let mut manager = manager(5, 6, 1, true);
+    manager.configure_prefix_match_unit(Some(2));
+    let owner = Uuid::from_u128(611);
+    let (mut sequence, mut lease) = fine_request(owner, 17, 6, 2, 0);
+    let mut before = 0;
+    for end in [6, 12, 16, 17] {
+        allocated(manager.allocate_lease(owner, &mut lease, end, 0));
+        manager.finalize_lease_computed_prefix(owner, &mut sequence, &mut lease, before, end);
+        manager.begin_step();
+        before = end;
+    }
+    manager.finish_lease(owner, lease);
+    let owner = Uuid::from_u128(612);
+    let (query, mut reader) = fine_request(owner, 17, 6, 2, 0);
+    let cost = manager.get_lease_prefill_cost(&query, &reader);
+    assert_eq!(cost.cached_tokens, 16);
+    assert_eq!(
+        manager.admission_requirement(&reader, 17, &cost, 0),
+        AllocationRequirement::Impossible
+    );
+    let before = (manager.num_active_blocks(), manager.num_inactive_blocks());
+    assert!(matches!(
+        manager.allocate_lease(owner, &mut reader, 17, 8),
+        NativeAllocation::CapacityExhausted
+    ));
+    assert_eq!(
+        (manager.num_active_blocks(), manager.num_inactive_blocks()),
+        before
+    );
+    assert_eq!(reader.allocated_tokens(), 0);
+    assert!(reader.state.is_none());
+    assert_eq!(
+        manager
+            .get_lease_prefill_cost(&query, &reader)
+            .cached_tokens,
+        16
+    );
+    clear_reclaimable_and_assert_empty(&mut manager);
+}
+
+#[test]
+fn kda_unpublished_turnover_source_survives_until_the_next_request_allocation() {
+    let mut manager = manager(16, 6, 1, true);
+    manager.configure_prefix_match_unit(Some(2));
+    let owner = Uuid::from_u128(620);
+    let (mut sequence, mut lease) = fine_request(owner, 25, 6, 2, 0);
+    allocated(manager.allocate_lease(owner, &mut lease, 6, 0));
+    manager.finalize_lease_computed_prefix(owner, &mut sequence, &mut lease, 0, 6);
+    let first = lease.state.as_ref().unwrap().working[0];
+    manager.begin_step();
+    allocated(manager.allocate_lease(owner, &mut lease, 12, 0));
+    let second = lease.state.as_ref().unwrap().working[0];
+    assert_ne!(first, second);
+    assert!(manager.pool.is_private(first));
+    manager.finalize_lease_computed_prefix(owner, &mut sequence, &mut lease, 6, 12);
+    assert_eq!(manager.num_active_blocks(), 2 + 2);
+    assert!(!fine_checkpoint(&manager, &lease, 6));
+    assert!(!fine_checkpoint(&manager, &lease, 12));
+    manager.begin_step();
+    // A global pass boundary alone does not release the previous state slot.
+    assert!(manager.pool.is_private(first));
+    assert_eq!(manager.num_active_blocks(), 4);
+    allocated(manager.allocate_lease(owner, &mut lease, 18, 0));
+    assert!(!manager.pool.is_private(first));
+    assert!(manager.pool.is_private(second));
+    assert_ne!(second, lease.state.as_ref().unwrap().working[0]);
+    manager.finalize_lease_computed_prefix(owner, &mut sequence, &mut lease, 12, 18);
+    assert_eq!(manager.num_active_blocks(), 3 + 2);
+    manager.preempt_lease(owner, &mut lease);
+    manager.begin_step();
+    clear_reclaimable_and_assert_empty(&mut manager);
+}
+
+#[test]
+fn kda_turnover_pressure_does_not_overwrite_current_state_or_invent_a_checkpoint() {
+    let mut manager = manager(4, 6, 1, true);
+    manager.configure_prefix_match_unit(Some(2));
+    let owner = Uuid::from_u128(621);
+    let (mut sequence, mut lease) = fine_request(owner, 18, 6, 2, 0);
+    allocated(manager.allocate_lease(owner, &mut lease, 6, 0));
+    manager.finalize_lease_computed_prefix(owner, &mut sequence, &mut lease, 0, 6);
+    manager.begin_step();
+    allocated(manager.allocate_lease(owner, &mut lease, 12, 0));
+    manager.finalize_lease_computed_prefix(owner, &mut sequence, &mut lease, 6, 12);
+    assert_eq!(manager.num_active_blocks(), 4);
+    assert!(
+        manager.pool.reserve(&[], 1).is_none(),
+        "old source is still needed this pass"
+    );
+    manager.begin_step();
+    let work = lease.state.as_ref().unwrap().working.clone();
+    assert!(!manager.can_compute(&lease, 18, 18)); // KV3 + source1 + dest1 > capacity4
+    assert!(matches!(
+        manager.allocate_lease(owner, &mut lease, 18, 0),
+        NativeAllocation::CapacityExhausted
+    ));
+    assert_eq!(lease.state.as_ref().unwrap().working, work);
+    assert_eq!(lease.computed_state_tokens(), Some(12));
+    assert_eq!(lease.allocated_tokens(), 12);
+    assert!(fine_checkpoint(&manager, &lease, 12));
+    assert!(!fine_checkpoint(&manager, &lease, 18));
+    // Native-style cleanup may release a dead older source even if growth fails.
+    assert_eq!(manager.num_active_blocks(), 3);
+    manager.finish_lease(owner, lease);
+    manager.begin_step();
+    clear_reclaimable_and_assert_empty(&mut manager);
+}
+
+#[test]
+fn kda_full_restore_source_is_owned_until_that_request_advances() {
+    let mut manager = manager(16, 6, 1, true);
+    manager.configure_prefix_match_unit(Some(2));
+    let seed = Uuid::from_u128(622);
+    let (mut sequence, mut lease) = fine_request(seed, 17, 6, 2, 0);
+    allocated(manager.allocate_lease(seed, &mut lease, 12, 0));
+    manager.finalize_lease_computed_prefix(seed, &mut sequence, &mut lease, 0, 12);
+    manager.begin_step();
+    let hash = lease.state_hash(12, 6).unwrap();
+    manager.finish_lease(seed, lease);
+    let owner = Uuid::from_u128(623);
+    let (mut query, mut reader) = fine_request(owner, 25, 6, 2, 0);
+    assert_eq!(
+        manager
+            .get_lease_prefill_cost(&query, &reader)
+            .cached_tokens,
+        12
+    );
+    allocated(manager.allocate_lease(owner, &mut reader, 18, 6));
+    manager.finalize_lease_computed_prefix(owner, &mut query, &mut reader, 12, 18);
+    assert!(
+        manager
+            .pool
+            .key_hit(CacheKey::State {
+                prefix: hash,
+                slot: 0
+            })
+            .unwrap()
+            .is_active
+    );
+    manager.begin_step();
+    assert!(
+        manager
+            .pool
+            .key_hit(CacheKey::State {
+                prefix: hash,
+                slot: 0
+            })
+            .unwrap()
+            .is_active
+    );
+    allocated(manager.allocate_lease(owner, &mut reader, 24, 0));
+    assert!(
+        !manager
+            .pool
+            .key_hit(CacheKey::State {
+                prefix: hash,
+                slot: 0
+            })
+            .unwrap()
+            .is_active
+    );
+    manager.finalize_lease_computed_prefix(owner, &mut query, &mut reader, 18, 24);
+    manager.finish_lease(owner, reader);
+    manager.begin_step();
+    clear_reclaimable_and_assert_empty(&mut manager);
+}
+
+#[test]
+fn kda_partial_restore_copy_refs_protect_both_kv_and_state_until_step_completion() {
+    let mut manager = manager(16, 6, 1, true);
+    manager.configure_prefix_match_unit(Some(2));
+    let seed = Uuid::from_u128(624);
+    let (mut sequence, mut lease) = fine_request(seed, 17, 6, 2, 0);
+    let mut before = 0;
+    for end in [6, 12, 16, 17] {
+        allocated(manager.allocate_lease(seed, &mut lease, end, 0));
+        manager.finalize_lease_computed_prefix(seed, &mut sequence, &mut lease, before, end);
+        manager.begin_step();
+        before = end;
+    }
+    let hash = lease.state_hash(16, 6).unwrap();
+    manager.finish_lease(seed, lease);
+    let mut readers = Vec::new();
+    for owner in [Uuid::from_u128(625), Uuid::from_u128(626)] {
+        let (query, mut reader) = fine_request(owner, 17, 6, 2, 0);
+        assert_eq!(
+            manager
+                .get_lease_prefill_cost(&query, &reader)
+                .cached_tokens,
+            16
+        );
+        allocated(manager.allocate_lease(owner, &mut reader, 17, 8));
+        readers.push(reader);
+    }
+    let mut cancelled = readers.pop().unwrap();
+    manager.preempt_lease(cancelled.owner(), &mut cancelled);
+    assert!(manager.pool.prefix_hit(hash).unwrap().is_active);
+    assert!(
+        manager
+            .pool
+            .key_hit(CacheKey::State {
+                prefix: hash,
+                slot: 0
+            })
+            .unwrap()
+            .is_active
+    );
+    manager.begin_step();
+    assert!(!manager.pool.prefix_hit(hash).unwrap().is_active);
+    assert!(
+        !manager
+            .pool
+            .key_hit(CacheKey::State {
+                prefix: hash,
+                slot: 0
+            })
+            .unwrap()
+            .is_active
+    );
+    manager.finish_lease(cancelled.owner(), cancelled);
+    for reader in readers {
+        manager.finish_lease(reader.owner(), reader);
+    }
+    manager.begin_step();
+    clear_reclaimable_and_assert_empty(&mut manager);
+}
+
+#[test]
+fn kda_alignment_does_not_rotate_state_when_prefix_caching_is_disabled() {
+    let mut manager = manager(8, 6, 1, false);
+    manager.configure_prefix_match_unit(Some(2));
+    let owner = Uuid::from_u128(627);
+    let (mut sequence, mut lease) = request(owner, 17, 6, false, 0);
+    let mut before = 0;
+    let mut working = None;
+    for end in [6, 12, 17] {
+        allocated(manager.allocate_lease(owner, &mut lease, end, 0));
+        manager.finalize_lease_computed_prefix(owner, &mut sequence, &mut lease, before, end);
+        let id = lease.state.as_ref().unwrap().working[0];
+        assert_eq!(*working.get_or_insert(id), id);
+        assert_eq!(manager.num_active_blocks(), end.div_ceil(6) + 1);
+        assert_eq!(manager.num_inactive_blocks(), 0);
+        manager.begin_step();
+        before = end;
+    }
+    manager.finish_lease(owner, lease);
+    clear_reclaimable_and_assert_empty(&mut manager);
+}

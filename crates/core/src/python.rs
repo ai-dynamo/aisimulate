@@ -172,6 +172,8 @@ struct AicTimingConfig {
     #[serde(default = "one")]
     attention_dp: u32,
     #[serde(default)]
+    dcp: Option<u32>,
+    #[serde(default)]
     moe_tp_size: Option<u32>,
     #[serde(default)]
     moe_ep_size: Option<u32>,
@@ -205,6 +207,9 @@ struct AicTimingConfig {
     systems_path: Option<String>,
     #[serde(default)]
     forward_model: Option<String>,
+    /// Saved pilot input alias; lowered into the canonical op-level controls.
+    #[serde(default)]
+    decode_workload_distribution: Option<String>,
     #[serde(default)]
     fpm_parquet_path: Option<String>,
     #[serde(default)]
@@ -225,6 +230,8 @@ struct AicTimingConfig {
     systems_paths: Vec<PathBuf>,
     #[serde(default)]
     attention_backend: Option<String>,
+    #[serde(default)]
+    moe_kernel_source: Option<String>,
     #[serde(default)]
     moe_backend: Option<String>,
     #[serde(default)]
@@ -277,6 +284,17 @@ impl AicTimingConfig {
             self.systems_paths.clone()
         };
         let mut estimator_config = self.estimator_config.clone();
+        if let Some(selected) = &self.decode_workload_distribution {
+            ensure!(
+                estimator_config
+                    .op_level
+                    .decode_workload_distribution
+                    .as_ref()
+                    .is_none_or(|value| value == selected),
+                "decode_workload_distribution conflicts with estimator_config.op_level"
+            );
+            estimator_config.op_level.decode_workload_distribution = Some(selected.clone());
+        }
         if let Some(path) = &self.fpm_parquet_path {
             crate::config::validate_fpm_parquet_path(
                 Some(std::path::Path::new(path)),
@@ -300,6 +318,7 @@ impl AicTimingConfig {
             tp: self.tp,
             pp: self.pp,
             attention_dp: self.attention_dp,
+            dcp: self.dcp,
             moe_tp_size: self.moe_tp_size,
             moe_ep_size: self.moe_ep_size,
             gemm_quant_mode: self.gemm_dtype.clone(),
@@ -322,6 +341,7 @@ impl AicTimingConfig {
             moe_backend: self.moe_backend.clone(),
             enable_eplb: self.enable_eplb,
             wideep_num_slots: self.wideep_num_slots,
+            moe_kernel_source: self.moe_kernel_source.clone(),
             enable_shared_layer: self.enable_shared_layer,
             strict_provenance: self.strict_provenance,
         })
@@ -441,6 +461,21 @@ struct AicTimingModel {
 
 impl AicTimingModel {
     fn build(config: &mut AicTimingConfig, worker_type: ForwardPassWorkerType) -> Result<Self> {
+        if config
+            .estimator_config
+            .op_level
+            .prefill_graph_profile
+            .is_some()
+            || config
+                .estimator_config
+                .op_level
+                .prefill_graph_profile_id
+                .is_some()
+        {
+            anyhow::bail!(
+                "graph prefill profile supports only direct predict_prefill_latency; replay/scheduler timing is unqualified"
+            );
+        }
         config.validate_parallel_shape()?;
         config.resolved_memory_fraction()?;
         let model = ForwardPassPerfModel::best_available(config.estimator_request(worker_type)?)
@@ -868,6 +903,10 @@ fn materialize_aic_capacity(
     if capacity_is_explicit || role.rank.state_cache.is_some() {
         return Ok(());
     }
+    ensure!(
+        config.dcp.is_none_or(|dcp| dcp == 1),
+        "DCP FPM replay requires explicit KV block capacity; automatic DCP/hybrid sizing is unsupported"
+    );
     let blocks = estimate(config, role)?;
     ensure!(blocks > 0, "AIC estimated zero KV-cache blocks");
     role.rank.num_gpu_blocks = blocks;
@@ -2678,6 +2717,7 @@ mod tests {
         // test engine is synthetic; the production constructor is unchanged.
         let missing_op = |phase| {
             Op::FpmForward(FpmForwardOp {
+                dcp_size: None,
                 name: "missing".into(),
                 phase,
                 model_path: "missing-test-model".into(),
@@ -2766,6 +2806,21 @@ mod tests {
         );
     }
 
+    #[test]
+    fn canonical_timing_config_preserves_moe_kernel_source() {
+        let mut config = aic_config();
+        config.moe_kernel_source = Some("sglang_flashinfer_trtllm_moe".into());
+
+        assert_eq!(
+            config
+                .estimator_request(ForwardPassWorkerType::Aggregated)
+                .unwrap()
+                .moe_kernel_source
+                .as_deref(),
+            Some("sglang_flashinfer_trtllm_moe")
+        );
+    }
+
     fn aic_config() -> AicTimingConfig {
         AicTimingConfig {
             model: "test-model".into(),
@@ -2775,6 +2830,7 @@ mod tests {
             backend_version: None,
             pp: 1,
             attention_dp: 1,
+            dcp: None,
             moe_tp_size: None,
             moe_ep_size: None,
             gemm_dtype: None,
@@ -2801,10 +2857,12 @@ mod tests {
             moe_backend: None,
             enable_eplb: false,
             wideep_num_slots: None,
+            moe_kernel_source: None,
             enable_shared_layer: None,
             strict_provenance: false,
             systems_path: None,
             forward_model: None,
+            decode_workload_distribution: None,
             fpm_parquet_path: None,
             decoder_replay: false,
         }
@@ -2862,6 +2920,52 @@ mod tests {
         )
         .unwrap();
         assert_eq!(role.rank.num_gpu_blocks, 17);
+    }
+
+    #[test]
+    fn dcp_capacity_requires_explicit_blocks() {
+        let mut config = aic_config();
+        config.tp = 4;
+        config.dcp = Some(4);
+        let mut role = aggregated_role(&ReplayEngineConfig::default());
+        role.tensor_parallel_size = 4;
+        role.rank.num_gpu_blocks = 17;
+
+        let error = materialize_aic_capacity(&config, &mut role, false, |_, _| {
+            panic!("DCP must be rejected before estimating capacity")
+        })
+        .unwrap_err();
+        assert!(error.to_string().contains("explicit KV block capacity"));
+        assert_eq!(role.rank.num_gpu_blocks, 17);
+
+        materialize_aic_capacity(&config, &mut role, true, |_, _| {
+            panic!("explicit DCP capacity must not invoke the estimator")
+        })
+        .unwrap();
+        assert_eq!(role.rank.num_gpu_blocks, 17);
+
+        config.dcp = Some(1);
+        materialize_aic_capacity(&config, &mut role, false, |_, _| Ok(321)).unwrap();
+        assert_eq!(role.rank.num_gpu_blocks, 321);
+    }
+
+    #[test]
+    fn replay_provider_rejects_graph_profile_before_native_construction() {
+        let mut config = aic_config();
+        config.estimator_config.op_level.prefill_graph_profile =
+            Some(crate::perf_database::prefill_graph::PROFILE_NAME.to_owned());
+        for role in [
+            ForwardPassWorkerType::Prefill,
+            ForwardPassWorkerType::Decode,
+            ForwardPassWorkerType::Aggregated,
+        ] {
+            let error = AicTimingModel::build(&mut config, role).err().unwrap();
+            assert!(
+                error
+                    .to_string()
+                    .contains("replay/scheduler timing is unqualified")
+            );
+        }
     }
 
     #[test]

@@ -214,6 +214,8 @@ pub(crate) struct MockEngineArgs {
     #[builder(default = "None")]
     pub state_cache: Option<StateCacheConfig>,
     #[builder(default = "None")]
+    pub prefix_match_unit: Option<usize>,
+    #[builder(default = "None")]
     pub kv_transfer_bandwidth: Option<f64>,
     #[builder(default = "KvTransferTimingMode::FullPrompt")]
     pub kv_transfer_timing_mode: KvTransferTimingMode,
