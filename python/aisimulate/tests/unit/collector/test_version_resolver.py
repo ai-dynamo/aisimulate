@@ -443,9 +443,11 @@ class TestBuildCollections:
             "get_func",
             "run_func",
             "perf_filename",
+            "extra_perf_filenames",
             "unverified",
             "unverified_sms",
         }
+        assert c["extra_perf_filenames"] == ()
         assert c["name"] == "vllm"
         assert c["unverified"] is False
         assert c["unverified_sms"] == ()

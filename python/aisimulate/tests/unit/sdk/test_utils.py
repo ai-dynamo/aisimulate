@@ -435,6 +435,51 @@ class TestParseHFConfig:
         with pytest.raises(ValueError, match="layer_types length"):
             _parse_hf_config_json(config)
 
+    def test_parse_qwen35_dense_causal_lm_flat_config(self):
+        """Text-only dense Qwen3.5 checkpoints (Altworld/Hemmingway-1,
+        TokenRhythm/NeoHorse-1-9B) ship Qwen3_5ForCausalLM with a FLAT config
+        and no vision_config; they must build the same Qwen35Config the VLM
+        class does (shape values from Altworld/Hemmingway-1)."""
+        layer_types = (["linear_attention"] * 3 + ["full_attention"]) * 16  # 64 layers
+        config = {
+            "architectures": ["Qwen3_5ForCausalLM"],
+            "hidden_size": 5120,
+            "num_hidden_layers": 64,
+            "layer_types": layer_types,
+            "num_attention_heads": 24,
+            "num_key_value_heads": 4,
+            "head_dim": 256,
+            "intermediate_size": 17408,
+            "linear_num_key_heads": 16,
+            "linear_key_head_dim": 128,
+            "linear_num_value_heads": 48,
+            "linear_value_head_dim": 128,
+            "linear_conv_kernel_dim": 4,
+            "full_attention_interval": 4,
+            "vocab_size": 248320,
+            "max_position_embeddings": 262144,
+            "rms_norm_eps": 1e-6,
+            "hidden_act": "silu",
+            "dtype": "bfloat16",
+            "tie_word_embeddings": False,
+        }
+
+        result = _parse_hf_config_json(config)
+
+        assert result["architecture"] == "Qwen3_5ForCausalLM"
+        assert result["layers"] == 64
+        assert result["hidden_size"] == 5120
+        assert result["n"] == 24
+        assert result["n_kv"] == 4
+        assert result["d"] == 256
+        extra_params = result["extra_params"]
+        assert isinstance(extra_params, common.Qwen35Config)
+        assert extra_params.layer_types.count("linear_attention") == 48
+        assert extra_params.layer_types.count("full_attention") == 16
+        assert extra_params.linear_num_value_heads == 48
+        assert extra_params.num_experts == 0
+        assert extra_params.vision_config is None
+
     def test_parse_qwen38_max_flat_config(self):
         """Test parsing Qwen3.8-Max (Qwen/Qwen3.8-2.4T-A95B) → Qwen35Config from a FLAT config.
 

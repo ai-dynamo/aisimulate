@@ -109,13 +109,17 @@ def create_common_attn_metadata(
     # Calculate max query length
     max_query_len = max(batch_spec.query_lens)
 
+    # Serving population site: vllm/v1/worker/gpu/attn_utils.py:456-475@v0.30.0
+    # passes seq_lens + seq_lens_cpu_upper_bound (no private *_cpu fields — the
+    # 0.29 `_seq_lens_cpu` / `_num_computed_tokens_cpu` were removed in 0.30;
+    # computed-token counts derive from seq_lens and query_start_loc inside the
+    # dataclass). Version bump 2026-09-27 (opharness upgrade_op vllm 0.30.0).
+    del num_computed_tokens_cpu
     return CommonAttentionMetadata(
         query_start_loc=query_start_loc,
         query_start_loc_cpu=query_start_loc_cpu,
         seq_lens=seq_lens,
         seq_lens_cpu_upper_bound=seq_lens_cpu,
-        _seq_lens_cpu=seq_lens_cpu,
-        _num_computed_tokens_cpu=num_computed_tokens_cpu,
         num_reqs=batch_spec.batch_size,
         num_actual_tokens=num_tokens,
         max_query_len=max_query_len,
@@ -333,9 +337,11 @@ def create_and_prepopulate_kv_cache_mla(
         MLA KV cache tensor
     """
     batch_size = len(kv_c_contexts)
-    seq_lens = common_attn_metadata.seq_lens_cpu
+    # 0.30 removed the seq_lens_cpu property; the CPU view serving carries is
+    # seq_lens_cpu_upper_bound (vllm/v1/worker/gpu/attn_utils.py:460@v0.30.0)
+    seq_lens = common_attn_metadata.seq_lens_cpu_upper_bound
     query_lens = common_attn_metadata.query_start_loc_cpu[1:] - common_attn_metadata.query_start_loc_cpu[:-1]
-    context_lens = common_attn_metadata.num_computed_tokens_cpu
+    context_lens = common_attn_metadata.compute_num_computed_tokens().cpu()  # 0.30: property removed; seq_lens - query_lens on device (utils.py CommonAttentionMetadata.compute_num_computed_tokens@v0.30.0)
     block_table = common_attn_metadata.block_table_tensor
     slot_mapping = common_attn_metadata.slot_mapping
 
@@ -445,9 +451,11 @@ def create_kv_cache_and_block_mappings(
         Tuple of the empty KV cache and flattened history slot mapping
     """
     batch_size = common_attn_metadata.num_reqs
-    seq_lens = common_attn_metadata.seq_lens_cpu
+    # 0.30 removed the seq_lens_cpu property; the CPU view serving carries is
+    # seq_lens_cpu_upper_bound (vllm/v1/worker/gpu/attn_utils.py:460@v0.30.0)
+    seq_lens = common_attn_metadata.seq_lens_cpu_upper_bound
     query_lens = common_attn_metadata.query_start_loc_cpu[1:] - common_attn_metadata.query_start_loc_cpu[:-1]
-    context_lens = common_attn_metadata.num_computed_tokens_cpu
+    context_lens = common_attn_metadata.compute_num_computed_tokens().cpu()  # 0.30: property removed; seq_lens - query_lens on device (utils.py CommonAttentionMetadata.compute_num_computed_tokens@v0.30.0)
     block_table = common_attn_metadata.block_table_tensor
     slot_mapping = common_attn_metadata.slot_mapping
 

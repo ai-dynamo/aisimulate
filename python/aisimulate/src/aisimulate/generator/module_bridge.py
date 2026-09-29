@@ -27,6 +27,24 @@ def _msa_sparse_implementation(task_config) -> str | None:
     )
 
 
+def _model_has_kda(model_path: str) -> bool:
+    from .utils import model_has_kda
+
+    return model_has_kda(model_path)
+
+
+def _vllm_dsa_kv_cache_dtype(task_config, gemm_quant_mode) -> str | None:
+    """Optimized-path wrapper over utils.vllm_dsa_kv_cache_dtype: NVFP4 DSA
+    checkpoints on vLLM must render an explicit fp8 kv-cache dtype."""
+    from .utils import vllm_dsa_kv_cache_dtype
+
+    return vllm_dsa_kv_cache_dtype(
+        getattr(task_config, "primary_backend_name", None) or "",
+        task_config.primary_model_path,
+        gemm_quant_mode,
+    )
+
+
 def _deep_merge(target: dict, extra: dict | None) -> dict:
     """
     Recursively merge the contents of the 'extra' dictionary into 'target',
@@ -176,6 +194,11 @@ def task_config_to_generator_config(
             worker_payload["memory"] = memory
         if quant.get("kvcache_quant_mode"):
             worker_payload["kv_cache_dtype"] = quant["kvcache_quant_mode"]
+        # NVFP4 DSA checkpoints pin the KV cache to FP8; vLLM's `auto`
+        # spelling of it is rejected by the sparse-MLA selector (utils docstring)
+        _dsa_kv = _vllm_dsa_kv_cache_dtype(task_config, quant.get("gemm_quant_mode"))
+        if _dsa_kv is not None:
+            worker_payload["kv_cache_dtype"] = _dsa_kv
         if encoder_dp is not None:
             worker_payload["enable_encoder_dp"] = encoder_dp
         if attention_backend is not None:
@@ -230,6 +253,8 @@ def task_config_to_generator_config(
         "nextn": task_config.nextn,
         "nextn_accepted": task_config.nextn_accepted if task_config.nextn else None,
         "msa_sparse_implementation": _msa_sparse_implementation(task_config),
+        # KDA linear-attention layers: vllm.rule caps the decode batch (see there)
+        "has_kda": _model_has_kda(task_config.primary_model_path),
     }
     model_cfg = {k: v for k, v in model_cfg.items() if v is not None}
     model_cfg = _deep_merge(model_cfg, overrides.get("ModelConfig"))

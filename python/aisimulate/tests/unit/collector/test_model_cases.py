@@ -515,10 +515,11 @@ def test_moe_model_quantization_policy_is_yaml_backed():
     assert not moe_model_allows_quantization("sglang", "nvidia/GLM-5.2-NVFP4", "bfloat16")
     assert moe_model_allows_quantization("sglang", "zai-org/GLM-5-FP8", "fp8_block")
     assert not moe_model_allows_quantization("sglang", "zai-org/GLM-5-FP8", "nvfp4")
-    assert moe_model_allows_quantization("sglang", "zai-org/GLM-5.3-FP8", "fp8_block")
-    assert not moe_model_allows_quantization("sglang", "zai-org/GLM-5.3-FP8", "nvfp4")
-    assert moe_model_allows_quantization("sglang", "zai-org/GLM-5.3", "bfloat16")
-    assert not moe_model_allows_quantization("sglang", "zai-org/GLM-5.3", "fp8_block")
+    # zai-org/GLM-5.3 is the FP8 artifact, GLM-5.3-BF16 the bf16 one (Hub facts, 2026-09-24)
+    assert moe_model_allows_quantization("sglang", "zai-org/GLM-5.3", "fp8_block")
+    assert not moe_model_allows_quantization("sglang", "zai-org/GLM-5.3", "nvfp4")
+    assert moe_model_allows_quantization("sglang", "zai-org/GLM-5.3-BF16", "bfloat16")
+    assert not moe_model_allows_quantization("sglang", "zai-org/GLM-5.3-BF16", "fp8_block")
 
     assert moe_model_allows_quantization("sglang", "openai/gpt-oss-120b", "w4a16_mxfp4")
     assert moe_model_allows_quantization("sglang", "openai/gpt-oss-120b", "w4a8_mxfp4_mxfp8")
@@ -1403,8 +1404,8 @@ def test_mla_module_metadata_and_micro_sweeps_are_yaml_backed():
         "zai-org/GLM-5.2",
         "zai-org/GLM-5.2-FP8",
         "nvidia/GLM-5.2-NVFP4",
+        "zai-org/GLM-5.3-BF16",
         "zai-org/GLM-5.3",
-        "zai-org/GLM-5.3-FP8",
         "nvidia/GLM-5.3-NVFP4",
     }
     assert {spec.native_num_heads for spec in dsa_specs if spec.architecture == "GlmMoeDsaForCausalLM"} == {64}
@@ -2178,3 +2179,19 @@ def test_nvfp4_checkpoint_targets_msa_module_specs(monkeypatch):
         assert all(s.model_path == "MiniMaxAI/MiniMax-M3" for s in specs), (
             "alias rows must stay keyed to the canonical model path"
         )
+
+
+def test_msa_head_axis_derives_from_declared_shards():
+    """MSA is one fixed geometry (MiniMax-M3 64q/4kv/4idx): the collectors sweep
+    native // tp for the model row's tensor_parallel_sizes, never the shared
+    GQA-style head grid (owner decision 2026-09-29; TP 16 is the ceiling)."""
+    from collector.case_generator import get_mla_module_model_specs, get_msa_head_counts
+
+    (spec,) = [s for s in get_mla_module_model_specs(attention_type="msa", apply_model_filter=False)
+               if s.model_path == "MiniMaxAI/MiniMax-M3"]
+    assert spec.tensor_parallel_sizes == (1, 2, 4, 8, 16)
+    for backend in ("vllm", "trtllm", "sglang"):
+        heads = get_msa_head_counts(backend)
+        assert heads == [64, 32, 16, 8, 4], (backend, heads)
+        # every derived shard keeps the index-head count a power of two
+        assert all((max(1, h // 16) & (max(1, h // 16) - 1)) == 0 for h in heads)

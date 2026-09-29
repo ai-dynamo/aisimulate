@@ -7,6 +7,15 @@ when not (preserve_engine_limits or false):
     agg_decode max_batch_size = (512 if (max_batch_size or 0) < 512 else (max_batch_size * 2))
     prefill max_batch_size = (max_batch_size if max_batch_size else 1)
 
+# KDA (Kimi Delta Attention) models on vLLM: the 512-batch decode CUDA graph
+# faults at replay right after capture (vLLM 0.29.0 / SM90, Kimi-K3: 64, 256,
+# 384, 448, 480, 496 pass; 512 fails; graphs off at 512 passes — opharness
+# findings followups_after_full_reprobe_2026_09_24 + k3 bisection). Owner
+# decision 2026-09-25: cap the decode batch at 256 for KDA models. Applied
+# BEFORE the token budgets below so max_num_tokens follows the capped batch.
+when (ModelConfig.has_kda or false) and not (preserve_engine_limits or false):
+    agg_decode max_batch_size = (256 if (max_batch_size or 0) > 256 else max_batch_size)
+
 # Enforce vLLM MoE parallelism: vLLM uses unified TP for both attention and MoE,
 # so tensor_parallel_size must account for moe_tp × moe_ep.
 # Without this, MoE models get tp=1 and the full model is replicated per GPU, causing OOM.
@@ -18,6 +27,9 @@ agg_prefill_decode gpus_per_worker = (tensor_parallel_size or 1) * (pipeline_par
 agg_prefill_decode enable_expert_parallel = ((moe_expert_parallel_size or 1) > 1)
 
 when not (preserve_engine_limits or false):
+    # plain budgets; the 64-alignment every backend needs is applied ONCE in
+    # backend_config_mapping.yaml (max_num_tokens / max_prefill_tokens /
+    # chunked-prefill-size), not per formula
     prefill max_num_tokens = (SlaConfig.isl or 0) + 1500
     decode max_num_tokens = max_batch_size
     agg max_num_tokens = (max_batch_size or 0) + (SlaConfig.isl or 0) + 1500

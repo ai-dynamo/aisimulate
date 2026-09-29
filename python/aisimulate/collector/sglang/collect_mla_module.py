@@ -1164,18 +1164,31 @@ def load_model_runner(
     if native_quant == "fp8_block":
         _ensure_fp8_block_quant_config(model_config.hf_config)
 
+    # sglang 0.5.16 moved the rank/size arguments into one ``ps: ParallelState``
+    # (model_executor/model_runner.py:237-251, distributed/parallel_state_wrapper.py
+    # :6-24 @0.5.16); the old keyword form raised TypeError on every DSA/MLA
+    # module cell. Dispatch on the wrapper's presence (same pattern as
+    # collect_msa_module.py:659,752) so older pins keep their signature.
+    try:
+        from sglang.srt.distributed.parallel_state_wrapper import ParallelState
+
+        _runner_parallel_kwargs = {"ps": ParallelState.trivial(gpu_id=gpu_id)}
+    except ImportError:
+        _runner_parallel_kwargs = {
+            "tp_rank": gpu_id,
+            "tp_size": server_args.tp_size,
+            "pp_rank": 0,
+            "pp_size": 1,
+            "moe_ep_rank": 0,
+            "moe_ep_size": 1,
+        }
     model_runner = ModelRunner(
         model_config=model_config,
         mem_fraction_static=server_args.mem_fraction_static,
         gpu_id=gpu_id,
-        tp_rank=gpu_id,
-        tp_size=server_args.tp_size,
-        pp_rank=0,
-        pp_size=1,
-        moe_ep_rank=0,
-        moe_ep_size=1,
         nccl_port=nccl_port,
         server_args=server_args,
+        **_runner_parallel_kwargs,
     )
 
     model_runner.alloc_memory_pool()
@@ -1411,7 +1424,15 @@ def _run_prefill(
             req.prefix_indices = prefix_indices[i]
             req.full_untruncated_fill_ids = array("q", req.origin_input_ids)
             req.fill_len = full_length
-            req.set_extend_input_len(seq_length if prefix_len else full_length)
+            # sglang 0.5.16 replaced Req.set_extend_input_len(n) with
+            # set_extend_range(start, end) (schedule_batch.py:1153: the extend
+            # window is the last n of fill_len tokens); keep the old call on
+            # pins that still have it.
+            _n = seq_length if prefix_len else full_length
+            if hasattr(req, "set_extend_input_len"):
+                req.set_extend_input_len(_n)
+            else:
+                req.set_extend_range(full_length - _n, full_length)
             req.logprob_start_len = 0
             reqs.append(req)
 
@@ -1434,7 +1455,15 @@ def _run_prefill(
         )
         with _temporarily_chunked_alloc_extend(model_runner, batch_size * seq_length):
             batch.prepare_for_extend()
-        forward_batch = ForwardBatch.init_new(batch, model_runner)
+        # sglang 0.5.16 made return_hidden_states_before_norm a required
+        # keyword (ForwardBatch.init_new); older pins do not accept it —
+        # same dispatch collect_msa_module.py:1015 uses.
+        import inspect as _inspect
+
+        _fb_kw = ({"return_hidden_states_before_norm": False}
+                  if "return_hidden_states_before_norm" in _inspect.signature(ForwardBatch.init_new).parameters
+                  else {})
+        forward_batch = ForwardBatch.init_new(batch, model_runner, **_fb_kw)
         model_runner.attn_backend.init_forward_metadata(forward_batch)
 
         hidden_states = torch.randn(
@@ -2111,7 +2140,10 @@ def _run_decode(
             req.prefix_indices = torch.empty((0,), dtype=torch.int64)
             req.full_untruncated_fill_ids = array("q", req.origin_input_ids)
             req.fill_len = len(req.origin_input_ids)
-            req.set_extend_input_len(req.fill_len)
+            if hasattr(req, "set_extend_input_len"):
+                req.set_extend_input_len(req.fill_len)
+            else:  # sglang 0.5.16: schedule_batch.py:1153 set_extend_range(start, end)
+                req.set_extend_range(0, req.fill_len)
             req.logprob_start_len = 0
             req.cached_tokens = 0
             req.already_computed = 0
@@ -2139,7 +2171,12 @@ def _run_decode(
         for req in batch.reqs:
             req.output_ids.append(0)
         batch.prepare_for_decode()
-        forward_batch_decode = ForwardBatch.init_new(batch, model_runner)
+        import inspect as _inspect
+
+        _fb_kw = ({"return_hidden_states_before_norm": False}
+                  if "return_hidden_states_before_norm" in _inspect.signature(ForwardBatch.init_new).parameters
+                  else {})  # sglang 0.5.16 required keyword (see the context path above)
+        forward_batch_decode = ForwardBatch.init_new(batch, model_runner, **_fb_kw)
         model_runner.attn_backend.init_forward_metadata(forward_batch_decode)
 
         decode_hidden = torch.randn(
