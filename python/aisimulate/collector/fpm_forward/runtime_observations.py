@@ -184,6 +184,31 @@ def _deployed_model_path(launch: dict[str, Any]) -> str:
     return str(PurePosixPath(mount) / relative)
 
 
+def _matches_model_path(observed: Any, launch: dict[str, Any]) -> bool:
+    expected = _deployed_model_path(launch)
+    if observed == expected:
+        return True
+    revision = launch["identity"]["model_revision"]
+    # vLLM 0.27.0 engine/arg_utils.py:EngineArgs.__post_init__ resolves HF
+    # identifiers to local snapshots in offline mode. Bind that spelling to
+    # the exact repo and immutable revision; never alias explicit local paths.
+    if (
+        not isinstance(observed, str)
+        or expected != launch["identity"]["model"]
+        or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*(?:/[A-Za-z0-9][A-Za-z0-9_.-]*)?", expected) is None
+        or "--" in expected
+        or ".." in expected
+        or re.fullmatch(r"[0-9a-fA-F]{40}", revision) is None
+    ):
+        return False
+    path = PurePosixPath(observed)
+    return (
+        path.is_absolute()
+        and ".." not in path.parts
+        and path.parts[-3:] == ("models--" + expected.replace("/", "--"), "snapshots", revision)
+    )
+
+
 def _validate_record(
     record: dict[str, Any],
     *,
@@ -259,7 +284,7 @@ def _validate_record(
     if config.get("speculative_config") is not None or config.get("kv_transfer_config") is not None:
         raise ValueError("speculative or transferred cache semantics are unsupported")
     model = config["model_config"]
-    if model.get("model") != _deployed_model_path(launch):
+    if not _matches_model_path(model.get("model"), launch):
         raise ValueError("observed model path differs from the selected deployment")
     revision = launch["identity"]["model_revision"]
     if revision not in (model.get("revision"), model.get("loaded_config_commit_hash")):

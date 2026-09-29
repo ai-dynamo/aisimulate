@@ -511,6 +511,101 @@ def test_deployed_checkpoint_path_keeps_public_identity_and_loaded_config_bindin
     assert result["provenance"]["runtime_settings"]["model_config"]["model"] == "/cache/checkpoint"
 
 
+@pytest.mark.parametrize(
+    "executor,model_cache,cache_root",
+    [
+        ("slurm", None, "/root/.cache/huggingface/hub"),
+        ("slurm", None, "/custom/cache"),
+        ("kubernetes", "models", "/cache"),
+    ],
+)
+def test_cached_hf_snapshot_keeps_public_identity_and_loaded_config_binding(
+    tmp_path, executor, model_cache, cache_root
+):
+    path, launches = observation_fixture(tmp_path)
+    launch = launches["tp2"]
+    revision = "a" * 40
+    launch["identity"]["model_revision"] = revision
+    launch["deployment"].update(executor=executor, model_cache=model_cache)
+    _replace_launch(path, launches)
+    snapshot = f"{cache_root}/models--example--model/snapshots/{revision}"
+    _mutate(
+        path,
+        lambda record: record["resolved_config"]["model_config"].update(
+            model=snapshot, revision=revision, loaded_config_commit_hash=revision
+        ),
+    )
+    result = validate_observations(path, launches)["tp2"]
+    assert result["status"] == "complete", result["diagnostics"]
+    assert result["provenance"]["launch"]["identity"]["model"] == "example/model"
+    assert result["provenance"]["runtime_settings"]["model_config"]["model"] == snapshot
+
+
+@pytest.mark.parametrize(
+    "corruption",
+    [
+        "repo",
+        "snapshot_revision",
+        "symbolic_revision",
+        "local_path",
+        "relative_path",
+        "nested_path",
+        "parent_path",
+        "blob_path",
+        "explicit_checkpoint",
+        "hash",
+        "sidecar",
+        "revision",
+        "loaded_revision",
+        "identity",
+    ],
+)
+def test_cached_hf_snapshot_does_not_weaken_model_identity(tmp_path, corruption):
+    path, launches = observation_fixture(tmp_path)
+    launch = launches["tp2"]
+    revision = "main" if corruption == "symbolic_revision" else "a" * 40
+    launch["identity"]["model_revision"] = revision
+    launch["model_config"]["source_files"] = {"hf_quant_config.json": "b" * 64}
+    if corruption == "explicit_checkpoint":
+        launch["deployment"].update(executor="kubernetes", model_cache="models:/cache:checkpoint")
+    _replace_launch(path, launches)
+
+    def mismatch(record):
+        model = record["resolved_config"]["model_config"]
+        snapshot = f"/cache/models--example--model/snapshots/{revision}"
+        if corruption == "repo":
+            snapshot = snapshot.replace("models--example--model", "models--another--model")
+        elif corruption == "snapshot_revision":
+            snapshot = snapshot.replace(revision, "c" * 40)
+        elif corruption == "local_path":
+            snapshot = "/unexpected/checkpoint"
+        elif corruption == "relative_path":
+            snapshot = snapshot.lstrip("/")
+        elif corruption == "nested_path":
+            snapshot += "/checkpoint"
+        elif corruption == "parent_path":
+            snapshot = "/cache/../" + snapshot.lstrip("/")
+        elif corruption == "blob_path":
+            snapshot = snapshot.replace("/snapshots/", "/blobs/")
+        model.update(model=snapshot, revision=revision, loaded_config_commit_hash=revision)
+        record["model_config_source_files"] = {"hf_quant_config.json": "b" * 64}
+        if corruption == "hash":
+            record["model_config_sha256"] = "f" * 64
+        elif corruption == "sidecar":
+            record["model_config_source_files"]["hf_quant_config.json"] = "f" * 64
+        elif corruption == "revision":
+            model["revision"] = "f" * 40
+        elif corruption == "loaded_revision":
+            model["loaded_config_commit_hash"] = "f" * 40
+        elif corruption == "identity":
+            record["identity"]["model"] = "another/model"
+
+    _mutate(path, mismatch)
+    result = validate_observations(path, launches)["tp2"]
+    assert result["status"] == "incomplete"
+    assert result["resources"] is None
+
+
 @pytest.mark.parametrize("corruption", ["path", "hash", "revision", "missing_mount", "parent_subpath", "slurm"])
 def test_deployed_checkpoint_mapping_does_not_weaken_model_identity(tmp_path, corruption):
     path, launch = observation_fixture(tmp_path)
