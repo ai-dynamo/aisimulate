@@ -42,6 +42,8 @@ try:
 except ImportError:
     from vllm.utils.import_utils import resolve_obj_by_qualname  # type: ignore
 
+from vllm.config import set_current_vllm_config
+
 from collector.case_generator import (
     get_attention_context_shape_sweeps,
     get_attention_generation_shape_sweeps,
@@ -57,7 +59,6 @@ from collector.vllm.utils_xpu import (
     get_attention_backend,
     with_exit_stack,
 )
-from vllm.config import set_current_vllm_config
 
 
 class MockAttentionLayer:
@@ -148,7 +149,7 @@ def run_attention_torch(
             kv_cache_dtype="fp8" if use_fp8_kv_cache else None,
             block_size=block_size,
             use_mla=False,
-            has_sink=False,
+            has_sink=has_sink,
             use_sparse=False,
             use_mm_prefix=False,
         )
@@ -161,7 +162,7 @@ def run_attention_torch(
                 kv_cache_dtype="fp8" if use_fp8_kv_cache else None,
                 block_size=block_size,
                 use_mla=False,
-                has_sink=False,
+                has_sink=has_sink,
                 use_sparse=False,
             )
         except TypeError:
@@ -173,7 +174,7 @@ def run_attention_torch(
                     kv_cache_dtype="fp8" if use_fp8_kv_cache else None,
                     block_size=block_size,
                     use_mla=False,
-                    has_sink=False,
+                    has_sink=has_sink,
                     use_sparse=False,
                     use_v1=True,
                 )
@@ -187,7 +188,7 @@ def run_attention_torch(
                         kv_cache_dtype="fp8" if use_fp8_kv_cache else None,
                         block_size=block_size,
                         use_mla=False,
-                        has_sink=False,
+                        has_sink=has_sink,
                         use_sparse=False,
                     )
                     backend = current_platform.get_attn_backend_cls(None, attn_selector_config)
@@ -199,7 +200,7 @@ def run_attention_torch(
                         kv_cache_dtype="fp8" if use_fp8_kv_cache else None,
                         block_size=block_size,
                         use_mla=False,
-                        has_sink=False,
+                        has_sink=has_sink,
                         use_v1=True,
                     )
 

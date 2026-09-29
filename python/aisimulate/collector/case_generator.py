@@ -19,6 +19,16 @@ from typing import Optional
 
 import yaml
 
+
+def _xpu_available() -> bool:
+    try:
+        import torch
+
+        return hasattr(torch, "xpu") and torch.xpu.is_available()
+    except Exception:
+        return False
+
+
 COLLECTOR_ROOT = Path(__file__).resolve().parent
 BASE_OP_CASES_DIR = COLLECTOR_ROOT / "cases" / "base_ops"
 MODEL_CASES_DIR = COLLECTOR_ROOT / "cases" / "models"
@@ -314,8 +324,10 @@ def get_attention_head_configs(
                 f"current={current_signature}"
             )
 
-        # Declared sink contract wins over the no-sink grid entry for the same key.
-        if config.has_attention_sink and not previous.has_attention_sink:
+        # XPU-only: a non-None sinks selects a distinct kernel there, so the sink
+        # case wins the shared key. On CUDA sink is a same-kernel runtime arg, so
+        # NV/TRT-LLM keep the upstream first-seen behavior (this branch excluded).
+        if _xpu_available() and config.has_attention_sink and not previous.has_attention_sink:
             seen[population_key] = config
             configs[configs.index(previous)] = config
 
