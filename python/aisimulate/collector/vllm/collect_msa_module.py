@@ -77,6 +77,7 @@ from collector.case_generator import (
     get_mla_module_model_specs,
     get_mla_module_precision_specs,
     get_mla_module_sweep_spec,
+    get_msa_head_counts,
 )
 from collector.helper import _resolve_local_model_path, benchmark_with_power, get_sm_version, log_perf
 from collector.registry_types import PerfFile
@@ -163,8 +164,9 @@ def get_context_test_cases():
     """
     cases = []
     sweep = get_mla_module_sweep_spec("vllm")
+    head_counts = get_msa_head_counts("vllm")  # native // tp of the declared shards, not the shared head grid
     for compute_dtype, kv_dtype, gemm_type in _get_precision_combos("context"):
-        for num_heads in sweep.inner_sweep_head_counts:
+        for num_heads in head_counts:
             for b in sweep.context_batch_sizes:
                 for s in sweep.context_sequence_lengths:
                     if b * s > sweep.context_max_tokens:
@@ -196,8 +198,9 @@ def get_generation_test_cases():
     budget = None if total_memory is None else int(total_memory * _MEMORY_BUDGET_SAFETY_FACTOR)
     considered = 0
     dropped = 0
+    head_counts = get_msa_head_counts("vllm")
     for compute_dtype, kv_dtype, gemm_type in _get_precision_combos("generation"):
-        for num_heads in sweep.inner_sweep_head_counts:
+        for num_heads in head_counts:
             for b in sweep.generation_batch_sizes:
                 for s in sweep.generation_sequence_lengths:
                     if b * s > sweep.generation_max_tokens:

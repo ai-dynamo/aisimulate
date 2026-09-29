@@ -400,11 +400,12 @@ def _build_module_test_cases(mode: str):
     empty_groups = 0
     for model_spec in model_specs:
         for compute_dtype, kv_dtype, gemm_type in _get_precision_combos(mode):
-            for target_tp in sweep.module_tp_sizes:
+            # the model row's declared shards win over the sweep's module_tp_sizes
+            for target_tp in model_spec.tensor_parallel_sizes or sweep.module_tp_sizes:
                 if model_spec.native_num_heads % target_tp != 0:
                     continue
                 num_heads = model_spec.native_num_heads // target_tp
-                if num_heads not in sweep.inner_sweep_head_counts:
+                if model_spec.tensor_parallel_sizes is None and num_heads not in sweep.inner_sweep_head_counts:
                     continue
                 batch_sizes = sweep.context_batch_sizes if mode == "context" else [0]
                 for batch_size in batch_sizes:
