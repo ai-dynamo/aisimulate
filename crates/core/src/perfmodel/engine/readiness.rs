@@ -7,9 +7,10 @@
 use std::collections::HashMap;
 
 use crate::AicError;
-use crate::common::enums::{DatabaseMode, GemmQuantMode, TransferKind};
+use crate::common::enums::{DatabaseMode, GemmQuantMode, MoeQuantMode, TransferKind};
 use crate::config::PerfSource;
 use crate::operators::Op;
+use crate::perf_database::moe::MoeKernel;
 use crate::perf_database::{PerfDatabase, kernel_source_ok, parquet_loader::PerfReader};
 
 pub(super) fn validate<'a>(
@@ -35,6 +36,15 @@ impl Availability<'_> {
     fn has(&mut self, name: &str) -> Result<bool, AicError> {
         if let Some(found) = self.tables.get(name) {
             return Ok(*found);
+        }
+        if name == "moe_perf.parquet" {
+            let found = match self.db.moe.available_quants(MoeKernel::Standard) {
+                Ok(quants) => !quants.is_empty(),
+                Err(error) if error.is_missing_perf_data() => false,
+                Err(error) => return Err(error),
+            };
+            self.tables.insert(name.to_owned(), found);
+            return Ok(found);
         }
         let sources = match name {
             "nccl_perf.parquet" => self
@@ -184,7 +194,30 @@ impl Availability<'_> {
             MlaModuleContext(_) => self.any(&["mla_context_module_perf.parquet"]),
             MlaModuleGeneration(_) => self.any(&["mla_generation_module_perf.parquet"]),
             MlaBmm(_) => self.any(&["mla_bmm_perf.parquet"]),
-            Moe(_) => self.any(&["moe_perf.parquet"]),
+            Moe(moe) => {
+                let found = match moe.moe_kernel_source.as_deref() {
+                    Some(source) => !self
+                        .db
+                        .moe
+                        .available_quants_for_kernel_source(source)?
+                        .is_empty(),
+                    None => {
+                        self.has("moe_perf.parquet")?
+                            || (moe.is_gated
+                                && moe.quant_mode == MoeQuantMode::Nvfp4
+                                && self.db.moe.low_latency_available()?)
+                    }
+                };
+                if found {
+                    Ok(())
+                } else {
+                    Err(AicError::PerfDatabase(format!(
+                        "required MoE data unavailable for kernel_source={:?} at {}",
+                        moe.moe_kernel_source,
+                        self.db.data_root.display()
+                    )))
+                }
+            }
             // State-space kernels explicitly fall back to their analytic SOL
             // on missing tables in every database mode.
             Mamba2(_) | Gdn(_) | Kda(_) => Ok(()),
@@ -568,6 +601,53 @@ mod tests {
                     validate(&db, [&gemm].into_iter()).is_ok(),
                     !rows.is_empty() && filter == "allowed"
                 );
+            }
+        }
+    }
+
+    #[test]
+    fn moe_readiness_requires_eligible_or_exact_source_rows() {
+        use crate::common::enums::MoeQuantMode;
+        use crate::operators::MoeOp;
+
+        let root = systems();
+        let data = root
+            .path()
+            .join("data/b200_sxm/vllm/0.24.0/moe_perf.parquet");
+        for eligibility in [None, Some(true), Some(false)] {
+            let mut columns = vec![
+                Col::Str("moe_dtype", vec!["fp8_block"]),
+                Col::I64("num_tokens", vec![32]),
+                Col::I64("hidden_size", vec![8192]),
+                Col::I64("inter_size", vec![2048]),
+                Col::I64("topk", vec![8]),
+                Col::I64("num_experts", vec![256]),
+                Col::I64("moe_tp_size", vec![1]),
+                Col::I64("moe_ep_size", vec![1]),
+                Col::Str("distribution", vec!["uniform"]),
+                Col::Str("kernel_source", vec!["exact"]),
+                Col::F64("latency", vec![0.25]),
+            ];
+            if let Some(eligible) = eligibility {
+                columns.push(Col::Bool("default_eligible", vec![eligible]));
+            }
+            write_parquet(&data, &columns);
+            for source in [None, Some("exact")] {
+                let db = PerfDatabase::load(root.path(), "b200_sxm", "vllm", "0.24.0").unwrap();
+                let mut op = MoeOp::new(
+                    "moe",
+                    8192,
+                    2048,
+                    8,
+                    256,
+                    1,
+                    1,
+                    MoeQuantMode::Fp8Block,
+                    "uniform",
+                );
+                op.moe_kernel_source = source.map(str::to_owned);
+                let expected = source.is_some() || eligibility != Some(false);
+                assert_eq!(engine_readiness(db, Op::Moe(op)).is_ok(), expected);
             }
         }
     }

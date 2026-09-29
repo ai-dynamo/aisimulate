@@ -340,9 +340,40 @@ def test_default_companion_model_consumes_fixed_timing_without_aic_lookup(overri
 
 
 @pytest.mark.parametrize(("phase", "companion_role"), [("decode", "prefill"), ("prefill", "decode")])
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"moe_kernel_source": None},
+        {"aic_moe_kernel_source": None},
+        {"moe_kernel_source": None, "aic_moe_kernel_source": None},
+    ],
+)
+def test_aic_companion_treats_null_moe_source_as_unset(phase, companion_role, overrides):
+    spec = _spec(_topology(phase=phase, combined_with_pd=True), companion_role=companion_role)
+    engine_args = getattr(spec.backend_deployment, f"{companion_role}_engine_args")
+    engine_args.pop("timing_model")
+    engine_args.update(aic_model_path="test-model", aic_system="test-system")
+
+    def estimator(*args, **kwargs):
+        # Synthetic timing isolates optional-input handling, not prediction accuracy.
+        return SimpleNamespace(raw={"ttft": 2.0, "tpot": 3.0})
+
+    companion = AICAFDCompanionPerformanceModel(estimator)
+    baseline = companion.measure(spec)
+    runner = EngineReplayRunnerFactory(afd_companion_model=companion).create(0)
+    baseline_report = runner.run(spec)
+    engine_args.update(overrides)
+
+    assert companion.measure(spec) == baseline
+    assert runner.run(spec).metrics == baseline_report.metrics
+
+
+@pytest.mark.parametrize(("phase", "companion_role"), [("decode", "prefill"), ("prefill", "decode")])
 @pytest.mark.parametrize("field", ["moe_kernel_source", "aic_moe_kernel_source"])
-@pytest.mark.parametrize("custom_timing", [False, True])
-def test_aic_companion_legacy_estimator_rejects_an_explicit_moe_source(phase, companion_role, field, custom_timing):
+@pytest.mark.parametrize(("custom_timing", "null_other_alias"), [(False, False), (True, False), (False, True)])
+def test_aic_companion_legacy_estimator_rejects_an_explicit_moe_source(
+    phase, companion_role, field, custom_timing, null_other_alias
+):
     spec = _spec(_topology(phase=phase, combined_with_pd=True), companion_role=companion_role)
     engine_args = getattr(spec.backend_deployment, f"{companion_role}_engine_args")
     engine_args.pop("timing_model")
@@ -350,6 +381,9 @@ def test_aic_companion_legacy_estimator_rejects_an_explicit_moe_source(phase, co
         engine_args["timing_model"] = {"type": "polynomial"}
     engine_args.update(aic_model_path="Qwen/Qwen3-30B-A3B", aic_system="b200_sxm")
     engine_args[field] = "sglang_flashinfer_trtllm_moe"
+    if null_other_alias:
+        other_field = "aic_moe_kernel_source" if field == "moe_kernel_source" else "moe_kernel_source"
+        engine_args[other_field] = None
 
     def estimator(*args, **kwargs):
         pytest.fail("an explicit source must not reach an estimator that cannot consume it")
@@ -436,19 +470,43 @@ def test_aic_companion_rejects_invalid_forward_model_before_estimation(phase, co
 
 
 @pytest.mark.parametrize(("phase", "companion_role"), [("decode", "prefill"), ("prefill", "decode")])
-@pytest.mark.parametrize("field", ["forward_model", "fpm_parquet_path"])
-def test_aic_companion_rejects_duplicate_selection_aliases(phase, companion_role, field):
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("forward_model", "fpm"),
+        ("fpm_parquet_path", "/data/reviewed-fpm.parquet"),
+        ("moe_kernel_source", "sglang_flashinfer_trtllm_moe"),
+    ],
+)
+def test_aic_companion_rejects_duplicate_selection_aliases(phase, companion_role, field, value):
     spec = _spec(_topology(phase=phase, combined_with_pd=True), companion_role=companion_role)
     engine_args = getattr(spec.backend_deployment, f"{companion_role}_engine_args")
     engine_args.pop("timing_model")
     engine_args.update(aic_model_path="test-model", aic_system="test-system")
-    value = "fpm" if field == "forward_model" else "/data/reviewed-fpm.parquet"
     engine_args.update({field: value, f"aic_{field}": value})
 
     def estimator(*args, **kwargs):
         pytest.fail("duplicate selection aliases must not reach estimation")
 
     with pytest.raises(ValueError, match=f"{companion_role}.*duplicates AIC field {field}"):
+        AICAFDCompanionPerformanceModel(estimator).measure(spec)
+
+
+@pytest.mark.parametrize("field", ["moe_kernel_source", "aic_moe_kernel_source"])
+@pytest.mark.parametrize("value", ["", False, 0, {}])
+def test_aic_companion_rejects_malformed_moe_source_with_null_alias(field, value):
+    spec = _spec(_topology(phase="prefill", combined_with_pd=True), companion_role="decode")
+    engine_args = spec.backend_deployment.decode_engine_args
+    engine_args.pop("timing_model")
+    engine_args.update(
+        aic_model_path="test-model", aic_system="test-system", moe_kernel_source=None, aic_moe_kernel_source=None
+    )
+    engine_args[field] = value
+
+    def estimator(*args, **kwargs):
+        pytest.fail("a malformed source must not reach estimation")
+
+    with pytest.raises(ValueError, match="moe_kernel_source must be a string"):
         AICAFDCompanionPerformanceModel(estimator).measure(spec)
 
 

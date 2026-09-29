@@ -1324,6 +1324,48 @@ def test_runner_rejects_nested_backend_that_conflicts_with_deployment():
         EngineReplayRunnerFactory(runtime=RecordingRuntime()).create(0).run(_spec(deployment=deployment))
 
 
+@pytest.mark.parametrize(
+    ("overrides", "expected_source"),
+    [
+        ({}, None),
+        ({"moe_kernel_source": None}, None),
+        ({"aic_moe_kernel_source": None}, None),
+        ({"moe_kernel_source": None, "aic_moe_kernel_source": None}, None),
+        (
+            {"moe_kernel_source": None, "aic_moe_kernel_source": "sglang_flashinfer_trtllm_moe"},
+            "sglang_flashinfer_trtllm_moe",
+        ),
+        (
+            {"moe_kernel_source": " sglang_flashinfer_trtllm_moe ", "aic_moe_kernel_source": None},
+            " sglang_flashinfer_trtllm_moe ",
+        ),
+    ],
+)
+def test_runner_normalizes_optional_moe_source_aliases(overrides, expected_source):
+    # The recording runtime verifies exact configuration transport, not prediction accuracy.
+    runtime = RecordingRuntime()
+    engine_args = _engine_args(backend="sglang")
+    engine_args.pop("timing_model")
+    engine_args.update(overrides)
+    deployment = BackendDeploymentSpec(
+        deployment_mode="agg",
+        backend="sglang",
+        backend_version="0.5.17",
+        agg_engine_args=engine_args,
+        num_workers=2,
+    )
+
+    EngineReplayRunnerFactory(runtime=runtime).create(0).run(_spec(deployment=deployment))
+
+    rank = runtime.execution_spec["engine"]["rank"]
+    config = rank["timing_model"]["config"]
+    assert config.get("moe_kernel_source") == expected_source
+    assert ("moe_kernel_source" in config) == (expected_source is not None)
+    assert "moe_kernel_source" not in rank
+    assert "aic_moe_kernel_source" not in rank
+    assert "aic_moe_kernel_source" not in config
+
+
 def test_runner_threads_forward_model_alias_into_aic_timing():
     runtime = RecordingRuntime()
     engine_args = _engine_args()

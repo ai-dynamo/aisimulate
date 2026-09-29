@@ -17,6 +17,17 @@ key reads, or the materialized score array at contexts 16384/131072. Selection
 still respects `index_topk`. No runtime-specific pre-GEMM optimization is assumed
 for the other backends' theoretical analytical graph.
 
+For the pinned SGLang SM90 path, FP4 index **storage** is separate from
+BF16 score arithmetic. Prefill calls the BF16 `scores` einsum in
+`dsv4/dsv41_sparse.py`; decode uses the BF16 `tl.dot` operations in
+[`sm90_fp4_indexer.py`](https://github.com/sgl-project/sglang/blob/1aa0e962b206102b7c439a4a0c4981cfec6e87bc/python/sglang/kernels/ops/attention/dsv4/sm90_fp4_indexer.py).
+SOL therefore uses the system's BF16 tensor-core throughput and two-byte query
+elements, retaining the packed 68-byte index-K rows. This also supplies the
+roofline needed for FPM interpolation between collected sites on H100/H200.
+It does not add an FP4 capability to either system or change measured latencies.
+Other SM versions and the theoretical `logical_fp4` contract keep their existing
+FP4 throughput requirement; a missing throughput field remains an error.
+
 ## Persistent layout and ownership
 
 [`deepseek_v4_memory_pool.py`](https://github.com/sgl-project/sglang/blob/1aa0e962b206102b7c439a4a0c4981cfec6e87bc/python/sglang/srt/mem_cache/deepseek_v4_memory_pool.py)
@@ -48,6 +59,8 @@ one compressed main/index record per completed group; no extra persistent
 FP4 main record or extra fused main store is counted. Low-ratio incomplete-group
 or padding writes in fallback kernels and intermediate traffic are not measured;
 these remain SOL lower bounds, not an exact kernel traffic trace.
+SM90 prefill's temporary BF16 K and per-head score materializations are likewise
+outside this ideal traffic model; SM90 decode unpacks K within its score kernel.
 
 Other backends retain the explicitly unqualified `logical_fp4` inventory and
 traffic, avoiding a guessed physical cache precision. The operator serializes

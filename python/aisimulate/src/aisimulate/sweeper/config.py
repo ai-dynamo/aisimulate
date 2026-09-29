@@ -824,6 +824,13 @@ class SearchSpace(BaseModel):
     def _normalize_estimator_database_mode(cls, value):
         return value.upper() if isinstance(value, str) else value
 
+    @field_validator("moe_kernel_source", mode="before")
+    @classmethod
+    def _validate_moe_kernel_source(cls, value):
+        from aisimulate_core.sdk.config import normalize_kernel_source
+
+        return normalize_kernel_source(value, "moe_kernel_source")
+
     @field_validator("systems_paths")
     @classmethod
     def _validate_estimator_roots(cls, value):

@@ -21,6 +21,10 @@ publication check instead of bypassing the prior-snapshot comparison.
 FPE qualification uploads the `fpe-nightly-web` data bundle produced by
 `scripts/run_release_fpe.py`. Pages combines its qualified data with the HTML
 and assets in `pages/fpe-support-matrix/`.
+Retained qualified bundles may use the former `aiconfigurator_core` package
+path or the current `aisimulate_core` path. Pages requires exactly one indexed
+layout and validates its qualification and CSV identities before serving the
+same public URLs. It never combines files from both layouts.
 
 Build an empty output directory and serve it locally:
 

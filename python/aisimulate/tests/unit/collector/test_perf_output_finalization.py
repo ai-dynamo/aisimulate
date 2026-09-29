@@ -794,6 +794,56 @@ def test_finalize_merge_replaces_same_key_with_newest_measurement(tmp_path):
     assert sorted(shapes) == ["s1", "s2", "s3"]
 
 
+def test_moe_eligibility_is_metadata_when_merging_measurements(tmp_path):
+    perf = tmp_path / "moe_perf.txt"
+    perf.write_text("kernel_source,shape,latency,default_eligible\nexact,s1,1.0,true\nexact,s2,2.0,false\n")
+    [parquet] = finalize_perf_files([perf])
+    perf.write_text("kernel_source,shape,latency,default_eligible\nexact,s1,3.0,false\n")
+    finalize_perf_files([perf])
+
+    assert pq.read_table(parquet).to_pylist() == [
+        {"kernel_source": "exact", "shape": "s2", "latency": 2.0, "default_eligible": False},
+        {"kernel_source": "exact", "shape": "s1", "latency": 3.0, "default_eligible": False},
+    ]
+
+
+@pytest.mark.parametrize("existing_annotated", [False, True])
+def test_moe_eligibility_survives_merges_with_legacy_schemas(tmp_path, existing_annotated):
+    perf = tmp_path / "moe_perf.txt"
+    if existing_annotated:
+        perf.write_text("kernel_source,shape,latency,default_eligible\nexact,s1,1.0,false\nexact,s2,2.0,false\n")
+    else:
+        perf.write_text("kernel_source,shape,latency\nexact,s1,1.0\nexact,s2,2.0\n")
+    [parquet] = finalize_perf_files([perf])
+    if existing_annotated:
+        perf.write_text("kernel_source,shape,latency\nexact,s1,3.0\nexact,s3,4.0\n")
+    else:
+        perf.write_text("kernel_source,shape,latency,default_eligible\nexact,s1,3.0,false\nexact,s3,4.0,true\n")
+    finalize_perf_files([perf])
+
+    rows = {row["shape"]: row for row in pq.read_table(parquet).to_pylist()}
+    assert set(rows) == {"s1", "s2", "s3"}
+    assert rows["s1"]["latency"] == 3.0
+    assert rows["s1"]["default_eligible"] is False
+    assert rows["s2"]["latency"] == 2.0
+    assert rows["s2"]["default_eligible"] is (not existing_annotated)
+    assert rows["s3"]["default_eligible"] is True
+
+
+@pytest.mark.parametrize("row", ["exact,s1,1.0,0", "exact,s1,1.0,", "exact,s1,1.0,invalid", ",s1,1.0,false"])
+def test_moe_eligibility_validation_precedes_publication(tmp_path, row):
+    perf = tmp_path / "moe_perf.txt"
+    perf.write_text("kernel_source,shape,latency,default_eligible\nexact,s1,2.0,true\n")
+    [parquet] = finalize_perf_files([perf])
+    previous = parquet.read_bytes()
+    perf.write_text(f"kernel_source,shape,latency,default_eligible\n{row}\n")
+
+    with pytest.raises(ValueError, match="default_eligible"):
+        finalize_perf_files([perf])
+    assert parquet.read_bytes() == previous
+    assert perf.is_file()
+
+
 def test_finalize_merge_attests_deduplicated_current_identity_count(tmp_path):
     perf = tmp_path / "gemm_perf.txt"
     parquet = perf.with_suffix(".parquet")

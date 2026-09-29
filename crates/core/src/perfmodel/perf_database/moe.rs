@@ -39,7 +39,7 @@ use super::{SourceResolver, kernel_source_ok};
 use crate::common::enums::MoeQuantMode;
 use crate::common::error::AicError;
 use crate::config::{PerfDbSources, PerfSource};
-use crate::perf_database::parquet_loader::PerfReader;
+use crate::perf_database::parquet_loader::{PerfReader, PerfRow};
 
 pub struct MoeTable {
     data_root: PathBuf,
@@ -75,8 +75,9 @@ pub struct MoeSiblingSlice {
 }
 
 /// Parallel grids split by `kernel_source`. `default` and `low_latency`
-/// preserve the legacy automatic lookup behavior, while `by_kernel_source`
-/// retains every named lane for an exact user-selected lookup.
+/// contain default-eligible rows (all legacy rows when the metadata column is
+/// absent), while `by_kernel_source` retains every named lane for an exact
+/// user-selected lookup.
 struct LoadedMoeGrids {
     default: MoeGrids,
     low_latency: MoeGrids,
@@ -607,8 +608,40 @@ pub(crate) fn moe_kernel_quant_rewrite(raw_quant: String, kernel_source: &str) -
             "w4a8_mxfp4_mxfp8_trtllm".to_string()
         }
         ("w4a16_mxfp4", "sglang_flashinfer_cutlass_moe") => "w4a16_mxfp4_cutlass".to_string(),
+        ("w4a16_mxfp4", "sglang_mxfp4_humming_moe") => "w4a16_mxfp4_humming".to_string(),
         _ => raw_quant,
     }
+}
+
+/// Optional selection metadata shared by the query loader and coverage view.
+/// An absent column preserves legacy automatic selection; malformed metadata
+/// is not a coverage miss and must never trigger an estimator fallback.
+pub(crate) fn moe_default_eligible(
+    reader: &PerfReader,
+    row: &PerfRow,
+    column: Option<usize>,
+    kernel_source_column: Option<usize>,
+) -> Result<bool, AicError> {
+    let Some(column) = column else {
+        return Ok(true);
+    };
+    let eligible = row.bool_strict(column).map_err(|_| {
+        AicError::InvalidPerfData(format!(
+            "default_eligible must be a non-null Boolean at {}",
+            reader.path().display()
+        ))
+    })?;
+    if !eligible
+        && row
+            .str_optional(kernel_source_column)?
+            .is_none_or(|source| source.trim().is_empty())
+    {
+        return Err(AicError::InvalidPerfData(format!(
+            "default_eligible=false requires a nonblank string kernel_source at {}",
+            reader.path().display()
+        )));
+    }
+    Ok(eligible)
 }
 
 fn load_moe_parquet(sources: &[PerfSource]) -> Result<LoadedMoeGrids, AicError> {
@@ -645,11 +678,14 @@ fn load_moe_parquet(sources: &[PerfSource]) -> Result<LoadedMoeGrids, AicError> 
         // the `default` grid (matching the pre-split behavior). The same column
         // gates the per-source shared-layer `kernel_source` allowlist.
         let kernel_source_col = reader.col_optional("kernel_source");
+        let default_eligible_col = reader.col_optional("default_eligible");
         for row in reader.rows()? {
             let row = row?;
             if !kernel_source_ok(source.kernel_sources(), kernel_source_col, &row)? {
                 continue;
             }
+            let default_eligible =
+                moe_default_eligible(&reader, &row, default_eligible_col, kernel_source_col)?;
             let kernel_source = row
                 .str_optional(kernel_source_col)?
                 .unwrap_or("")
@@ -683,15 +719,17 @@ fn load_moe_parquet(sources: &[PerfSource]) -> Result<LoadedMoeGrids, AicError> 
             let power = row.f64_optional(power_col)?.unwrap_or(0.0);
             let value = LeafValue::with_power(latency, power);
             let num_tokens = row.u32(num_tokens_col)?;
-            insert_moe_row(
-                target,
-                target_quants,
-                &quant,
-                &distribution,
-                shape,
-                num_tokens,
-                value,
-            );
+            if default_eligible {
+                insert_moe_row(
+                    target,
+                    target_quants,
+                    &quant,
+                    &distribution,
+                    shape,
+                    num_tokens,
+                    value,
+                );
+            }
             if !kernel_source.is_empty() {
                 let source_index = kernel_source_indices
                     .entry(kernel_source.clone())
@@ -709,7 +747,11 @@ fn load_moe_parquet(sources: &[PerfSource]) -> Result<LoadedMoeGrids, AicError> 
             }
         }
     }
-    if !any_source || (default_index.is_empty() && low_latency_index.is_empty()) {
+    if !any_source
+        || (default_index.is_empty()
+            && low_latency_index.is_empty()
+            && kernel_source_indices.is_empty())
+    {
         return Err(AicError::PerfDatabase(format!(
             "no rows loaded from {} source(s) (first: {})",
             sources.len(),
@@ -749,7 +791,10 @@ fn load_moe_parquet(sources: &[PerfSource]) -> Result<LoadedMoeGrids, AicError> 
 }
 
 fn clone_err(err: &AicError) -> AicError {
-    AicError::PerfDatabase(err.to_string())
+    match err {
+        AicError::InvalidPerfData(message) => AicError::InvalidPerfData(message.clone()),
+        _ => AicError::PerfDatabase(err.to_string()),
+    }
 }
 
 #[cfg(test)]
@@ -762,6 +807,48 @@ mod tests {
         PathBuf::from(REPO_ROOT_HINT)
             .join("../..")
             .join("python/aisimulate/src/aisimulate_core/systems/data/b200_sxm/vllm/0.19.0")
+    }
+
+    #[test]
+    fn humming_rows_remain_distinct_from_triton_and_cutlass() {
+        use crate::perf_database::energy_test_fixtures::{Col, write_parquet};
+        let tmp = tempfile::tempdir().unwrap();
+        // Distinct fixture values are row-selection witnesses, not performance
+        // predictions: all three implementations share the physical shape.
+        write_parquet(
+            &tmp.path().join("moe_perf.parquet"),
+            &[
+                Col::Str("moe_dtype", vec!["w4a16_mxfp4"; 3]),
+                Col::I64("num_tokens", vec![1; 3]),
+                Col::I64("hidden_size", vec![5120; 3]),
+                Col::I64("inter_size", vec![2304; 3]),
+                Col::I64("topk", vec![6; 3]),
+                Col::I64("num_experts", vec![384; 3]),
+                Col::I64("moe_tp_size", vec![4; 3]),
+                Col::I64("moe_ep_size", vec![1; 3]),
+                Col::Str("distribution", vec!["uniform"; 3]),
+                Col::Str(
+                    "kernel_source",
+                    vec![
+                        "sglang_triton_kernels_moe",
+                        "sglang_flashinfer_cutlass_moe",
+                        "sglang_mxfp4_humming_moe",
+                    ],
+                ),
+                Col::F64("latency", vec![1.0, 2.0, 3.0]),
+            ],
+        );
+        let table = MoeTable::new(tmp.path().to_path_buf());
+        for (mode, expected) in [
+            (MoeQuantMode::W4a16Mxfp4, 1.0),
+            (MoeQuantMode::W4a16Mxfp4Cutlass, 2.0),
+            (MoeQuantMode::W4a16Mxfp4Humming, 3.0),
+        ] {
+            let value = table
+                .query(1, 5120, 2304, 6, 384, 4, 1, mode, "uniform", &proxy_sol)
+                .unwrap();
+            assert_eq!(value.latency, expected);
+        }
     }
 
     #[test]
