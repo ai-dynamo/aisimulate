@@ -157,10 +157,14 @@ jobs:
           echo "${WHEEL_SHA256}  $(echo "${RUNNER_TEMP}"/accuracy-wheel/*.whl)" | sha256sum --check --strict
           python -m pip install "${RUNNER_TEMP}"/accuracy-wheel/*.whl
           python -m pip check
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: e2e-accuracy-dataset
+          path: ${{ runner.temp }}/accuracy-dataset
       - name: Fetch checksum-pinned public measurements
         run: |
           python scripts/fetch_accuracy_measurements.py \
-            --manifest .github/e2e-accuracy-dataset.json --output "${RUNNER_TEMP}/accuracy-measurements"
+            --manifest "${RUNNER_TEMP}/accuracy-dataset/e2e-accuracy-dataset.json" --output "${RUNNER_TEMP}/accuracy-measurements"
       - name: Run both predictors with bounded CPU workers and qualify the complete cohort
         env:
           EXPECTED_SHA: ${{ inputs.sha }}
@@ -168,7 +172,7 @@ jobs:
         run: |
           python scripts/run_e2e_accuracy.py \
             --tables "${RUNNER_TEMP}/accuracy-measurements/tables.json" \
-            --manifest .github/e2e-accuracy-dataset.json \
+            --manifest "${RUNNER_TEMP}/accuracy-dataset/e2e-accuracy-dataset.json" \
             --wheel "${RUNNER_TEMP}"/accuracy-wheel/*.whl \
             --commit "${EXPECTED_SHA}" --branch "${EVALUATED_BRANCH}" \
             --run-id "${GITHUB_RUN_ID}" --run-attempt "${GITHUB_RUN_ATTEMPT}" \

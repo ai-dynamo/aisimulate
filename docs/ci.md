@@ -510,7 +510,9 @@ completed; inspect its wheel and crate publish jobs.
 
 The independent [E2E Accuracy Matrix](../.github/workflows/e2e-accuracy.yml)
 evaluates the scheduled main SHA and every discovered `release/*` head against
-checksum-pinned public measurements. A branch matrix runs at most two campaigns
+the latest published InferenceX database dump. The resolver freezes one manifest
+with verified part checksums for all branches and retains it as a 90-day artifact.
+A branch matrix runs at most two campaigns
 at once, with separate wheels, artifacts, and provenance. Main reuses a qualified
 amd64 wheel for its exact SHA when available, even while nightly staging waits for
 approval; otherwise it builds one. Each release builds its own wheel. Both the
