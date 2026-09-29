@@ -296,7 +296,8 @@ def test_reloaded_prediction_consumes_relative_systems_roots(local_profiles, roo
     report = _predict(saved)
 
     assert report.metrics["completed_requests"] == 1
-    assert report.metrics["mean_ttft_ms"] == pytest.approx(40.0)
+    # The first token is emitted by prefill; only later tokens need decode.
+    assert report.metrics["mean_ttft_ms"] == pytest.approx(20.0)
     assert report.metrics["mean_itl_ms"] == pytest.approx(20.0)
     deployment = prediction_to_replay_spec(CorePredictionConfig.model_validate(saved)).backend_deployment
     expected = [str(fast)] if root_key == "systems_path" else [str(fast), str(slow)]

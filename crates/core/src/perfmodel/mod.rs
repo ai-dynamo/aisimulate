@@ -34,6 +34,7 @@ pub mod engine;
 pub(crate) mod fpm;
 pub(crate) mod kd_tree;
 pub mod memory;
+pub(crate) mod observed_moe_profile;
 pub(crate) mod operators;
 pub(crate) mod perf_database;
 pub(crate) mod session;
@@ -54,7 +55,7 @@ pub use fpm::{
 };
 pub use fpm::{
     CorrectionFactorBounds, CorrectionFeatureSpace, FpmInterpolationConfig, OpLevelConfig,
-    RegressionFitConfig, RegressionFitKind,
+    RegressionFitConfig, RegressionFitKind, UnrecordedFpmQuantMode,
 };
 // Forward-pass metrics telemetry types and schema version, plus the
 // crate-internal validation helper. Re-exported at the crate root so existing

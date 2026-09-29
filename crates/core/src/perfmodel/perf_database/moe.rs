@@ -39,7 +39,8 @@ use super::{SourceResolver, kernel_source_ok};
 use crate::common::enums::MoeQuantMode;
 use crate::common::error::AicError;
 use crate::config::{PerfDbSources, PerfSource};
-use crate::perf_database::parquet_loader::PerfReader;
+use crate::perf_database::parquet_loader::{PerfReader, PerfRow};
+use crate::perfmodel::observed_moe_profile::{self as profile, DecodeProfile};
 
 pub struct MoeTable {
     data_root: PathBuf,
@@ -48,6 +49,7 @@ pub struct MoeTable {
     /// (`MoeTable::new`).
     moe_sources: Vec<PerfSource>,
     moe: OnceLock<Result<LoadedMoeGrids, AicError>>,
+    decode_profiles: [OnceLock<Result<LeafAxisCurve, String>>; 2],
 }
 
 /// Which kernel grid a MoE accessor addresses: the default table or the
@@ -74,14 +76,14 @@ pub struct MoeSiblingSlice {
     pub points: Vec<(u32, f64)>,
 }
 
-/// Two parallel grids split by `kernel_source`. Mirrors Python's split in
-/// `aisimulate.sdk.operations.moe.MoE.load_data`, where rows tagged
-/// `kernel_source == "moe_torch_flow_min_latency"` route to a separate
-/// accumulator that the TRT-LLM SILICON path probes first for small-token
-/// nvfp4 gated MoE queries.
+/// Parallel grids split by `kernel_source`. `default` and `low_latency`
+/// contain default-eligible rows (all legacy rows when the metadata column is
+/// absent), while `by_kernel_source` retains every named lane for an exact
+/// user-selected lookup.
 struct LoadedMoeGrids {
     default: MoeGrids,
     low_latency: MoeGrids,
+    by_kernel_source: BTreeMap<String, MoeGrids>,
 }
 
 struct MoeGrids {
@@ -92,6 +94,29 @@ struct MoeGrids {
     /// order — live on shards whose file order differs from sorted order
     /// (e.g. b200/vllm/0.24.0 lists `fp8_block` before `fp8`).
     quants_in_load_order: Vec<String>,
+}
+
+fn insert_moe_row(
+    index: &mut MoeIndex<MoeShapeKey, BTreeMap<u32, LeafValue>>,
+    quants_in_load_order: &mut Vec<String>,
+    quant: &str,
+    distribution: &str,
+    shape: MoeShapeKey,
+    num_tokens: u32,
+    value: LeafValue,
+) {
+    if !quants_in_load_order
+        .iter()
+        .any(|existing| existing == quant)
+    {
+        quants_in_load_order.push(quant.to_owned());
+    }
+    // First-seen value wins within both the legacy merged grid and an exact
+    // lane, including across priority-ordered shared-layer sources.
+    index
+        .entry(quant.to_owned(), distribution.to_owned(), shape)
+        .entry(num_tokens)
+        .or_insert(value);
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -140,7 +165,44 @@ impl MoeTable {
             data_root,
             moe_sources,
             moe: OnceLock::new(),
+            decode_profiles: [OnceLock::new(), OnceLock::new()],
         })
+    }
+
+    fn decode_profile(&self, selected: DecodeProfile) -> Result<&LeafAxisCurve, AicError> {
+        self.decode_profiles[selected.cache_index()]
+            .get_or_init(|| {
+                load_decode_profile(selected, &self.moe_sources).map_err(|error| error.to_string())
+            })
+            .as_ref()
+            .map_err(|message| AicError::DecodeMoeProfile(message.clone()))
+    }
+
+    pub(crate) fn validate_decode_profile(&self, selected: DecodeProfile) -> Result<(), AicError> {
+        self.decode_profile(selected).map(|_| ())
+    }
+
+    pub(crate) fn query_decode_profile(
+        &self,
+        selected: DecodeProfile,
+        num_tokens: u32,
+        sol: &dyn Fn(f64) -> f64,
+    ) -> Result<LeafValue, AicError> {
+        if selected == DecodeProfile::V2 {
+            let physical = profile::v2_physical_node(num_tokens)?;
+            // Exact physical access cannot interpolate, extrapolate or invoke SOL.
+            return self.decode_profile(selected)?.get(physical).ok_or_else(|| {
+                selected.error(format!("required physical node N{physical} is absent"))
+            });
+        }
+        if !(1..=32).contains(&num_tokens) {
+            return Err(selected
+                .error("query tokens must be within 1..=32; measured physical nodes are N1/8/32"));
+        }
+        // V1 retains its existing in-range interpolation and no-tail policy.
+        self.decode_profile(selected)?
+            .query(num_tokens as f64, sol)
+            .map_err(|error| AicError::DecodeMoeProfile(error.to_string()))
     }
 
     /// Raw MoE value (latency ms + power/energy) via the perf_interp v2
@@ -167,8 +229,70 @@ impl MoeTable {
         workload_distribution: &str,
         sol: &dyn Fn(f64) -> f64,
     ) -> Result<LeafValue, AicError> {
-        let loaded = self.load()?;
-        let grids = &loaded.default;
+        self.query_for_kernel_source(
+            None,
+            num_tokens,
+            hidden_size,
+            inter_size,
+            topk,
+            num_experts,
+            moe_tp_size,
+            moe_ep_size,
+            quant,
+            workload_distribution,
+            sol,
+        )
+    }
+
+    /// Query one exact collected kernel-source lane. The requested lane is
+    /// never merged with or substituted by another lane: an unavailable lane
+    /// is a typed missing-data error instead of a silent fallback.
+    #[allow(clippy::too_many_arguments)]
+    pub fn query_kernel_source(
+        &self,
+        kernel_source: &str,
+        num_tokens: u32,
+        hidden_size: u32,
+        inter_size: u32,
+        topk: u32,
+        num_experts: u32,
+        moe_tp_size: u32,
+        moe_ep_size: u32,
+        quant: MoeQuantMode,
+        workload_distribution: &str,
+        sol: &dyn Fn(f64) -> f64,
+    ) -> Result<LeafValue, AicError> {
+        self.query_for_kernel_source(
+            Some(kernel_source),
+            num_tokens,
+            hidden_size,
+            inter_size,
+            topk,
+            num_experts,
+            moe_tp_size,
+            moe_ep_size,
+            quant,
+            workload_distribution,
+            sol,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn query_for_kernel_source(
+        &self,
+        kernel_source: Option<&str>,
+        num_tokens: u32,
+        hidden_size: u32,
+        inter_size: u32,
+        topk: u32,
+        num_experts: u32,
+        moe_tp_size: u32,
+        moe_ep_size: u32,
+        quant: MoeQuantMode,
+        workload_distribution: &str,
+        sol: &dyn Fn(f64) -> f64,
+    ) -> Result<LeafValue, AicError> {
+        let grids = self.grids_for_kernel_source(kernel_source)?;
         let quant_name = quant.name();
 
         let shape = MoeShapeKey {
@@ -301,6 +425,63 @@ impl MoeTable {
         moe_ep_size: u32,
     ) -> Result<Vec<(u32, f64)>, AicError> {
         let grids = self.grids_for(kernel)?;
+        self.slice_points_in_grids(
+            grids,
+            format!("{kernel:?}"),
+            quant_name,
+            workload_distribution,
+            topk,
+            num_experts,
+            hidden_size,
+            inter_size,
+            moe_tp_size,
+            moe_ep_size,
+        )
+    }
+
+    /// Own-slice token curve from an exact collected kernel-source lane.
+    #[allow(clippy::too_many_arguments)]
+    pub fn slice_points_for_kernel_source(
+        &self,
+        kernel_source: &str,
+        quant_name: &str,
+        workload_distribution: &str,
+        topk: u32,
+        num_experts: u32,
+        hidden_size: u32,
+        inter_size: u32,
+        moe_tp_size: u32,
+        moe_ep_size: u32,
+    ) -> Result<Vec<(u32, f64)>, AicError> {
+        let grids = self.grids_for_kernel_source(Some(kernel_source))?;
+        self.slice_points_in_grids(
+            grids,
+            format!("kernel_source={kernel_source:?}"),
+            quant_name,
+            workload_distribution,
+            topk,
+            num_experts,
+            hidden_size,
+            inter_size,
+            moe_tp_size,
+            moe_ep_size,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn slice_points_in_grids(
+        &self,
+        grids: &MoeGrids,
+        grid_label: String,
+        quant_name: &str,
+        workload_distribution: &str,
+        topk: u32,
+        num_experts: u32,
+        hidden_size: u32,
+        inter_size: u32,
+        moe_tp_size: u32,
+        moe_ep_size: u32,
+    ) -> Result<Vec<(u32, f64)>, AicError> {
         let shape = MoeShapeKey {
             topk,
             num_experts,
@@ -316,7 +497,7 @@ impl MoeTable {
         let by_tokens = by_tokens.filter(|curve| !curve.is_empty()).ok_or_else(|| {
             let key = MoeKey::from_shape(quant_name, dist, shape);
             AicError::PerfDatabase(format!(
-                "MoE data missing for {key:?} ({kernel:?}) at {}",
+                "MoE data missing for {key:?} ({grid_label}) at {}",
                 self.data_root.display()
             ))
         })?;
@@ -343,12 +524,47 @@ impl MoeTable {
         moe_ep_size: u32,
     ) -> Result<Vec<MoeSiblingSlice>, AicError> {
         let grids = self.grids_for(kernel)?;
+        Ok(Self::sibling_slices_in_grids(
+            grids,
+            quant_name,
+            workload_distribution,
+            moe_tp_size,
+            moe_ep_size,
+        ))
+    }
+
+    /// Collected sibling slices from an exact kernel-source lane.
+    pub fn sibling_slices_for_kernel_source(
+        &self,
+        kernel_source: &str,
+        quant_name: &str,
+        workload_distribution: &str,
+        moe_tp_size: u32,
+        moe_ep_size: u32,
+    ) -> Result<Vec<MoeSiblingSlice>, AicError> {
+        let grids = self.grids_for_kernel_source(Some(kernel_source))?;
+        Ok(Self::sibling_slices_in_grids(
+            grids,
+            quant_name,
+            workload_distribution,
+            moe_tp_size,
+            moe_ep_size,
+        ))
+    }
+
+    fn sibling_slices_in_grids(
+        grids: &MoeGrids,
+        quant_name: &str,
+        workload_distribution: &str,
+        moe_tp_size: u32,
+        moe_ep_size: u32,
+    ) -> Vec<MoeSiblingSlice> {
         let (_, by_shape) = grids
             .index
             .resolve_uniform_shapes(quant_name, workload_distribution);
         let mut slices = Vec::new();
         let Some(by_shape) = by_shape else {
-            return Ok(slices);
+            return slices;
         };
         for (shape, curve) in by_shape {
             if shape.moe_tp_size != moe_tp_size
@@ -365,7 +581,7 @@ impl MoeTable {
                 points: curve.iter().map(|(t, leaf)| (t, leaf.latency)).collect(),
             });
         }
-        Ok(slices)
+        slices
     }
 
     /// Distinct quant names present in the kernel grid, in first-seen
@@ -376,12 +592,36 @@ impl MoeTable {
         Ok(self.grids_for(kernel)?.quants_in_load_order.clone())
     }
 
+    /// Distinct quant names in an exact collected kernel-source lane.
+    pub fn available_quants_for_kernel_source(
+        &self,
+        kernel_source: &str,
+    ) -> Result<Vec<String>, AicError> {
+        Ok(self
+            .grids_for_kernel_source(Some(kernel_source))?
+            .quants_in_load_order
+            .clone())
+    }
+
     fn grids_for(&self, kernel: MoeKernel) -> Result<&MoeGrids, AicError> {
         let loaded = self.load()?;
         Ok(match kernel {
             MoeKernel::Standard => &loaded.default,
             MoeKernel::LowLatency => &loaded.low_latency,
         })
+    }
+
+    fn grids_for_kernel_source(&self, kernel_source: Option<&str>) -> Result<&MoeGrids, AicError> {
+        let loaded = self.load()?;
+        match kernel_source {
+            None => Ok(&loaded.default),
+            Some(kernel_source) => loaded.by_kernel_source.get(kernel_source).ok_or_else(|| {
+                AicError::PerfDatabase(format!(
+                    "MoE kernel_source {kernel_source:?} is unavailable at {}",
+                    self.data_root.display()
+                ))
+            }),
+        }
     }
 
     fn load(&self) -> Result<&LoadedMoeGrids, AicError> {
@@ -407,8 +647,40 @@ pub(crate) fn moe_kernel_quant_rewrite(raw_quant: String, kernel_source: &str) -
             "w4a8_mxfp4_mxfp8_trtllm".to_string()
         }
         ("w4a16_mxfp4", "sglang_flashinfer_cutlass_moe") => "w4a16_mxfp4_cutlass".to_string(),
+        ("w4a16_mxfp4", "sglang_mxfp4_humming_moe") => "w4a16_mxfp4_humming".to_string(),
         _ => raw_quant,
     }
+}
+
+/// Optional selection metadata shared by the query loader and coverage view.
+/// An absent column preserves legacy automatic selection; malformed metadata
+/// is not a coverage miss and must never trigger an estimator fallback.
+pub(crate) fn moe_default_eligible(
+    reader: &PerfReader,
+    row: &PerfRow,
+    column: Option<usize>,
+    kernel_source_column: Option<usize>,
+) -> Result<bool, AicError> {
+    let Some(column) = column else {
+        return Ok(true);
+    };
+    let eligible = row.bool_strict(column).map_err(|_| {
+        AicError::InvalidPerfData(format!(
+            "default_eligible must be a non-null Boolean at {}",
+            reader.path().display()
+        ))
+    })?;
+    if !eligible
+        && row
+            .str_optional(kernel_source_column)?
+            .is_none_or(|source| source.trim().is_empty())
+    {
+        return Err(AicError::InvalidPerfData(format!(
+            "default_eligible=false requires a nonblank string kernel_source at {}",
+            reader.path().display()
+        )));
+    }
+    Ok(eligible)
 }
 
 fn load_moe_parquet(sources: &[PerfSource]) -> Result<LoadedMoeGrids, AicError> {
@@ -417,6 +689,11 @@ fn load_moe_parquet(sources: &[PerfSource]) -> Result<LoadedMoeGrids, AicError> 
         MoeIndex::default();
     let mut default_quants: Vec<String> = Vec::new();
     let mut low_latency_quants: Vec<String> = Vec::new();
+    let mut kernel_source_indices: BTreeMap<
+        String,
+        MoeIndex<MoeShapeKey, BTreeMap<u32, LeafValue>>,
+    > = BTreeMap::new();
+    let mut kernel_source_quants: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let mut any_source = false;
     for source in sources {
         let path = source.path();
@@ -440,11 +717,14 @@ fn load_moe_parquet(sources: &[PerfSource]) -> Result<LoadedMoeGrids, AicError> 
         // the `default` grid (matching the pre-split behavior). The same column
         // gates the per-source shared-layer `kernel_source` allowlist.
         let kernel_source_col = reader.col_optional("kernel_source");
+        let default_eligible_col = reader.col_optional("default_eligible");
         for row in reader.rows()? {
             let row = row?;
             if !kernel_source_ok(source.kernel_sources(), kernel_source_col, &row)? {
                 continue;
             }
+            let default_eligible =
+                moe_default_eligible(&reader, &row, default_eligible_col, kernel_source_col)?;
             let kernel_source = row
                 .str_optional(kernel_source_col)?
                 .unwrap_or("")
@@ -474,25 +754,43 @@ fn load_moe_parquet(sources: &[PerfSource]) -> Result<LoadedMoeGrids, AicError> 
             } else {
                 (&mut default_index, &mut default_quants)
             };
-            // First-seen (file row) quant order — Python's dict insertion
-            // order, consumed by `available_quants`.
-            if !target_quants.iter().any(|q| q == &quant) {
-                target_quants.push(quant.clone());
-            }
             let latency = row.f64(latency_col)?;
             let power = row.f64_optional(power_col)?.unwrap_or(0.0);
-            // Python's `load_moe_data` wraps the leaf insert in a try/except KeyError
-            // and skips on conflict, i.e. it keeps the FIRST occurrence of each
-            // (shape, num_tokens) tuple. Some perf files contain duplicate rows
-            // (same kernel_source, same shape) — preserving first-wins parity here,
-            // extended across shared-layer sources (earlier source wins).
-            target
-                .entry(quant, distribution, shape)
-                .entry(row.u32(num_tokens_col)?)
-                .or_insert(LeafValue::with_power(latency, power));
+            let value = LeafValue::with_power(latency, power);
+            let num_tokens = row.u32(num_tokens_col)?;
+            if default_eligible {
+                insert_moe_row(
+                    target,
+                    target_quants,
+                    &quant,
+                    &distribution,
+                    shape,
+                    num_tokens,
+                    value,
+                );
+            }
+            if !kernel_source.is_empty() {
+                let source_index = kernel_source_indices
+                    .entry(kernel_source.clone())
+                    .or_default();
+                let source_quants = kernel_source_quants.entry(kernel_source).or_default();
+                insert_moe_row(
+                    source_index,
+                    source_quants,
+                    &quant,
+                    &distribution,
+                    shape,
+                    num_tokens,
+                    value,
+                );
+            }
         }
     }
-    if !any_source || (default_index.is_empty() && low_latency_index.is_empty()) {
+    if !any_source
+        || (default_index.is_empty()
+            && low_latency_index.is_empty()
+            && kernel_source_indices.is_empty())
+    {
         return Err(AicError::PerfDatabase(format!(
             "no rows loaded from {} source(s) (first: {})",
             sources.len(),
@@ -502,6 +800,21 @@ fn load_moe_parquet(sources: &[PerfSource]) -> Result<LoadedMoeGrids, AicError> 
                 .unwrap_or_default()
         )));
     }
+    let by_kernel_source = kernel_source_indices
+        .into_iter()
+        .map(|(kernel_source, index)| {
+            let quants_in_load_order = kernel_source_quants
+                .remove(&kernel_source)
+                .expect("kernel-source quant order is inserted with its index");
+            (
+                kernel_source,
+                MoeGrids {
+                    index: index.map_values(|curve| LeafAxisCurve::from_map("num_tokens", curve)),
+                    quants_in_load_order,
+                },
+            )
+        })
+        .collect();
     Ok(LoadedMoeGrids {
         default: MoeGrids {
             index: default_index.map_values(|curve| LeafAxisCurve::from_map("num_tokens", curve)),
@@ -512,11 +825,114 @@ fn load_moe_parquet(sources: &[PerfSource]) -> Result<LoadedMoeGrids, AicError> 
                 .map_values(|curve| LeafAxisCurve::from_map("num_tokens", curve)),
             quants_in_load_order: low_latency_quants,
         },
+        by_kernel_source,
     })
 }
 
 fn clone_err(err: &AicError) -> AicError {
-    AicError::PerfDatabase(err.to_string())
+    match err {
+        AicError::InvalidPerfData(message) => AicError::InvalidPerfData(message.clone()),
+        _ => AicError::PerfDatabase(err.to_string()),
+    }
+}
+
+/// Resolve one complete approved profile using the existing ordered sources.
+/// A partial higher-priority profile is an error, never a union of campaigns.
+fn load_decode_profile(
+    selected: DecodeProfile,
+    sources: &[PerfSource],
+) -> Result<LeafAxisCurve, AicError> {
+    for source in sources {
+        let path = source.path();
+        if !path.exists() {
+            continue;
+        }
+        let reader = PerfReader::open(path)?;
+        let distribution = reader.col("distribution")?;
+        let kernel = reader.col_optional("kernel_source");
+        let mut points = BTreeMap::new();
+        for row in reader.rows()? {
+            let row = row?;
+            if row.str_owned(distribution)? != selected.distribution()
+                || !kernel_source_ok(source.kernel_sources(), kernel, &row)?
+            {
+                continue;
+            }
+            for (key, expected) in [
+                ("framework", "SGLang"),
+                ("version", profile::VERSION),
+                ("device", "NVIDIA Graphics Device"),
+                ("op_name", "moe"),
+                ("kernel_source", profile::KERNEL),
+                ("moe_dtype", "nvfp4"),
+            ] {
+                if row.str_owned(reader.col(key)?)? != expected {
+                    return Err(
+                        selected.error(format!("{}: profile row {key} mismatch", path.display()))
+                    );
+                }
+            }
+            for (key, expected) in [
+                ("hidden_size", 6144),
+                ("inter_size", 2048),
+                ("topk", 8),
+                ("num_experts", 256),
+                ("moe_tp_size", 4),
+                ("moe_ep_size", 1),
+            ] {
+                if row.u32(reader.col(key)?)? != expected {
+                    return Err(
+                        selected.error(format!("{}: profile row {key} mismatch", path.display()))
+                    );
+                }
+            }
+            let tokens = row.u32(reader.col("num_tokens")?)?;
+            let latency = row.f64(reader.col("latency")?)?;
+            if !selected.physical_nodes().contains(&tokens)
+                || !latency.is_finite()
+                || latency <= 0.0
+            {
+                return Err(
+                    selected.error(format!("{}: invalid physical node/latency", path.display()))
+                );
+            }
+            let power = row
+                .f64_optional(reader.col_optional("power"))?
+                .unwrap_or(0.0);
+            if !power.is_finite() || power < 0.0 {
+                return Err(selected.error(format!(
+                    "{}: invalid profile power at node {tokens}",
+                    path.display()
+                )));
+            }
+            if points
+                .insert(tokens, LeafValue::with_power(latency, power))
+                .is_some()
+            {
+                return Err(selected.error(format!(
+                    "{}: duplicate profile node {tokens}",
+                    path.display()
+                )));
+            }
+        }
+        if !points.is_empty() {
+            if points.keys().copied().collect::<Vec<_>>() != selected.physical_nodes() {
+                return Err(selected.error(format!(
+                    "{}: required physical nodes N{} are incomplete",
+                    path.display(),
+                    selected
+                        .physical_nodes()
+                        .iter()
+                        .map(u32::to_string)
+                        .collect::<Vec<_>>()
+                        .join("/")
+                )));
+            }
+            profile::validate_metadata(selected, path)?;
+            return Ok(LeafAxisCurve::from_map("num_tokens", points));
+        }
+    }
+    Err(selected.error("exact selected distribution is absent from resolved sources"))
 }
 
 #[cfg(test)]
@@ -525,10 +941,178 @@ mod tests {
 
     const REPO_ROOT_HINT: &str = env!("CARGO_MANIFEST_DIR");
 
+    #[test]
+    fn observed_decode_curve_has_no_tail_and_preserves_in_range_interpolation() {
+        // Synthetic independent oracle: the middle of the [8,32] interval
+        // with endpoint latencies [2,3] is 2.5. These are not measured values.
+        // Real parquet/source selection is also covered through the native FFI.
+        let table = MoeTable::new(PathBuf::new());
+        let points = BTreeMap::from([
+            (1, LeafValue::latency_only(1.0)),
+            (8, LeafValue::latency_only(2.0)),
+            (32, LeafValue::latency_only(3.0)),
+        ]);
+        assert!(
+            table.decode_profiles[DecodeProfile::V1.cache_index()]
+                .set(Ok(LeafAxisCurve::from_map("num_tokens", points)))
+                .is_ok()
+        );
+        let forbidden_sol = |_: f64| panic!("the observed profile must not extrapolate");
+        for (tokens, expected) in [(1, 1.0), (8, 2.0), (20, 2.5), (32, 3.0)] {
+            assert_eq!(
+                table
+                    .query_decode_profile(DecodeProfile::V1, tokens, &forbidden_sol)
+                    .unwrap()
+                    .latency,
+                expected
+            );
+        }
+        for tokens in [0, 33, 128, u32::MAX] {
+            assert!(matches!(
+                table.query_decode_profile(DecodeProfile::V1, tokens, &forbidden_sol),
+                Err(AicError::DecodeMoeProfile(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn composite_profile_uses_exact_nonmonotonic_nodes_and_isolated_caches() {
+        // Hand-picked oracle: N4=30 exceeds N8=20. Ceiling padding maps L3
+        // to N4, not to the interpolation value between N1=10 and N4=30.
+        // V1 has a separate cache and retains 20 -> 2.5 interpolation.
+        let table = MoeTable::new(PathBuf::new());
+        for (selected, points) in [
+            (DecodeProfile::V1, vec![(1, 1.0), (8, 2.0), (32, 3.0)]),
+            (
+                DecodeProfile::V2,
+                vec![(1, 10.0), (4, 30.0), (8, 20.0), (32, 40.0)],
+            ),
+        ] {
+            assert!(
+                table.decode_profiles[selected.cache_index()]
+                    .set(Ok(LeafAxisCurve::from_map(
+                        "num_tokens",
+                        points
+                            .into_iter()
+                            .map(|(n, value)| (n, LeafValue::latency_only(value)))
+                            .collect(),
+                    )))
+                    .is_ok()
+            );
+        }
+        let forbidden_sol = |_: f64| panic!("no observed query may extrapolate");
+        for _ in 0..2 {
+            for (logical, latency) in [
+                (1, 10.0),
+                (3, 30.0),
+                (8, 20.0),
+                (29, 40.0),
+                (31, 40.0),
+                (32, 40.0),
+            ] {
+                assert_eq!(
+                    table
+                        .query_decode_profile(DecodeProfile::V2, logical, &forbidden_sol)
+                        .unwrap()
+                        .latency,
+                    latency
+                );
+            }
+            assert_eq!(
+                table
+                    .query_decode_profile(DecodeProfile::V1, 20, &forbidden_sol)
+                    .unwrap()
+                    .latency,
+                2.5
+            );
+        }
+        for tokens in (0..=33).chain([128, u32::MAX]) {
+            if ![1, 3, 8, 29, 31, 32].contains(&tokens) {
+                assert!(matches!(
+                    table.query_decode_profile(DecodeProfile::V2, tokens, &forbidden_sol),
+                    Err(AicError::DecodeMoeProfile(_))
+                ));
+            }
+        }
+    }
+
+    #[test]
+    fn failed_profile_does_not_poison_the_other_cache() {
+        for failed in [DecodeProfile::V1, DecodeProfile::V2] {
+            let table = MoeTable::new(PathBuf::new());
+            // Cache a real missing-source load failure in one profile first.
+            assert!(table.validate_decode_profile(failed).is_err());
+            let other = if failed == DecodeProfile::V1 {
+                DecodeProfile::V2
+            } else {
+                DecodeProfile::V1
+            };
+            assert!(table.decode_profiles[other.cache_index()].get().is_none());
+            assert!(
+                table.decode_profiles[other.cache_index()]
+                    .set(Ok(LeafAxisCurve::from_map(
+                        "num_tokens",
+                        BTreeMap::from([(1, LeafValue::latency_only(7.0))]),
+                    )))
+                    .is_ok()
+            );
+            assert_eq!(
+                table
+                    .query_decode_profile(other, 1, &|_| panic!("exact only"))
+                    .unwrap()
+                    .latency,
+                7.0
+            );
+            assert!(table.validate_decode_profile(failed).is_err());
+        }
+    }
+
     fn b200_vllm_data_root() -> PathBuf {
         PathBuf::from(REPO_ROOT_HINT)
             .join("../..")
             .join("python/aisimulate/src/aisimulate_core/systems/data/b200_sxm/vllm/0.19.0")
+    }
+
+    #[test]
+    fn humming_rows_remain_distinct_from_triton_and_cutlass() {
+        use crate::perf_database::energy_test_fixtures::{Col, write_parquet};
+        let tmp = tempfile::tempdir().unwrap();
+        // Distinct fixture values are row-selection witnesses, not performance
+        // predictions: all three implementations share the physical shape.
+        write_parquet(
+            &tmp.path().join("moe_perf.parquet"),
+            &[
+                Col::Str("moe_dtype", vec!["w4a16_mxfp4"; 3]),
+                Col::I64("num_tokens", vec![1; 3]),
+                Col::I64("hidden_size", vec![5120; 3]),
+                Col::I64("inter_size", vec![2304; 3]),
+                Col::I64("topk", vec![6; 3]),
+                Col::I64("num_experts", vec![384; 3]),
+                Col::I64("moe_tp_size", vec![4; 3]),
+                Col::I64("moe_ep_size", vec![1; 3]),
+                Col::Str("distribution", vec!["uniform"; 3]),
+                Col::Str(
+                    "kernel_source",
+                    vec![
+                        "sglang_triton_kernels_moe",
+                        "sglang_flashinfer_cutlass_moe",
+                        "sglang_mxfp4_humming_moe",
+                    ],
+                ),
+                Col::F64("latency", vec![1.0, 2.0, 3.0]),
+            ],
+        );
+        let table = MoeTable::new(tmp.path().to_path_buf());
+        for (mode, expected) in [
+            (MoeQuantMode::W4a16Mxfp4, 1.0),
+            (MoeQuantMode::W4a16Mxfp4Cutlass, 2.0),
+            (MoeQuantMode::W4a16Mxfp4Humming, 3.0),
+        ] {
+            let value = table
+                .query(1, 5120, 2304, 6, 384, 4, 1, mode, "uniform", &proxy_sol)
+                .unwrap();
+            assert_eq!(value.latency, expected);
+        }
     }
 
     #[test]
@@ -676,6 +1260,85 @@ mod tests {
                 .low_latency_available()
                 .expect("moe_perf.parquet must load")
         );
+    }
+
+    #[test]
+    fn moe_exact_kernel_source_selects_the_requested_sglang_lane() {
+        // Both lanes cover the same FP8 MoE shape. Unset retains the legacy
+        // first-row/default result; an exact selector must use only its lane.
+        use crate::perf_database::energy_test_fixtures::{Col, write_parquet};
+
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        write_parquet(
+            &tmp.path().join("moe_perf.parquet"),
+            &[
+                Col::Str("moe_dtype", vec!["fp8_block", "fp8_block"]),
+                Col::I64("num_tokens", vec![1024, 1024]),
+                Col::I64("hidden_size", vec![8192, 8192]),
+                Col::I64("inter_size", vec![2048, 2048]),
+                Col::I64("topk", vec![10, 10]),
+                Col::I64("num_experts", vec![512, 512]),
+                Col::I64("moe_tp_size", vec![1, 1]),
+                Col::I64("moe_ep_size", vec![8, 8]),
+                Col::Str("distribution", vec!["power_law_1.2", "power_law_1.2"]),
+                Col::Str(
+                    "kernel_source",
+                    vec!["sglang_fused_moe_triton", "sglang_flashinfer_trtllm_moe"],
+                ),
+                Col::F64("latency", vec![1.0, 0.25]),
+            ],
+        );
+        let table = MoeTable::new(tmp.path().to_path_buf());
+
+        let legacy = table
+            .query(
+                1024,
+                8192,
+                2048,
+                10,
+                512,
+                1,
+                8,
+                MoeQuantMode::Fp8Block,
+                "power_law_1.2",
+                &proxy_sol,
+            )
+            .expect("default lane resolves");
+        let flashinfer = table
+            .query_kernel_source(
+                "sglang_flashinfer_trtllm_moe",
+                1024,
+                8192,
+                2048,
+                10,
+                512,
+                1,
+                8,
+                MoeQuantMode::Fp8Block,
+                "power_law_1.2",
+                &proxy_sol,
+            )
+            .expect("requested FlashInfer lane resolves");
+
+        assert_eq!(legacy.latency, 1.0);
+        assert_eq!(flashinfer.latency, 0.25);
+
+        let error = table
+            .query_kernel_source(
+                "sglang_missing_moe",
+                1024,
+                8192,
+                2048,
+                10,
+                512,
+                1,
+                8,
+                MoeQuantMode::Fp8Block,
+                "power_law_1.2",
+                &proxy_sol,
+            )
+            .expect_err("an unavailable exact lane must not fall back to the default");
+        assert!(error.to_string().contains("sglang_missing_moe"));
     }
 
     /// ENERGY oracle on a synthetic power-carrying fixture. Python twin
