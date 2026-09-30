@@ -98,6 +98,45 @@ archive/ (raw evidence + records.jsonl), and fetched configs; this directory
 holds the instruments and the durable inputs/outputs. See probe_driver's
 docstring for the invocation set.
 
+## Per-SM runs (sm90 / sm100 / sm103 / sm120)
+
+Every verdict-plane artifact is keyed by SM and nothing is shared across SMs:
+`components/kernel_taxonomy_<sm>.yaml` (vocabulary — a new SM starts with its
+own file, seeded from the closest SM and then labelled from THAT box's raws;
+probe_driver refuses to run without it), `results/<sm>/<fw>-<ver>.yaml`
+(matrix), `results/pathdiff/<sm>/<fw>-<ver>/` (gate verdicts),
+`results/retests/<sm>/` (customization retests).
+
+Which SM a command works on:
+
+1. `targets.yaml` `platform.sm` is the source of truth — it names the box this
+   checkout is pinned to (`h20_sm90` here). `probe_driver.current_sm()`,
+   `workflow_check` (`--param sm=` default) and the `captures/verdicts_*.sh`
+   scripts all read it.
+2. `export AIS_SM=<sm>` OVERRIDES it, and is only for grading another SM's
+   evidence from this box (e.g. re-running `verdicts_vllm_0300.sh` over an
+   imported sm120 workspace). Never leave it exported by accident: until
+   2026-09-30 the default was a hard-coded sm90, and an sm120 box that forgot
+   the export labelled its records with the sm90 vocabulary silently.
+3. On a new box: set `platform` in targets.yaml (name, sm, SDK `system` used
+   for the golden render), add `kernel_taxonomy_<sm>.yaml`, then run the
+   workflow exactly as on sm90; `workflow_check upgrade_op --param fw=... --param
+   version=...` shows honest todos for the new SM until its own evidence exists.
+
+Gate declarations are SM-aware: a `run ...` line in `captures/verdicts_*.sh`
+declares the gate for every SM; prefix `FLOOR_SM=<sm> FLOOR_NOTE="<framework
+fact>"` when the gate has no serving instance on that SM by framework fact
+(sm120: fp8-KV dense MLA, TRITON_MLA smem). On that SM the script writes a
+`platform-floor` verdict file and `path_aligned` does not wait for it;
+`gates_declared` still counts it as coverage. Explained deviations
+(`OUT=$OUT_EXPLAINED run ...`) are not gates on any SM.
+
+Run captures inside the framework image with the checkout mounted and
+`PYTHONPATH=<checkout>/python/aisimulate`; every declared gate has its script
+under `components/captures/` (kda_gen sets `AIS_KDA_DECODE_PATHS=fused` itself).
+The workspace may live outside the checkout (`AIS_PROBE_WORKSPACE`); the golden
+render runs with the workspace as cwd for that reason.
+
 ## Structural policy (owner decisions, 2026-09-20)
 
 1. **Mechanism freeze.** Components are capped at the current set. New

@@ -3,7 +3,8 @@
 # paths resolve from this script's location, not from a checkout inside the workspace.
 HARNESS="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd ${AIS_PROBE_WORKSPACE:-.}
-export AIS_PROBE_WORKSPACE=${AIS_PROBE_WORKSPACE:-.} AIS_SM=${AIS_SM:-sm90}
+# AIS_SM: default = targets.yaml platform.sm (this checkout's box); export AIS_SM=<sm> only to grade another SM's evidence
+export AIS_PROBE_WORKSPACE=${AIS_PROBE_WORKSPACE:-.} AIS_SM=${AIS_SM:-$(python3 -c "import yaml;print('sm%d'%yaml.safe_load(open('$HARNESS/targets.yaml'))['platform']['sm'])")}
 PD=$HARNESS/components/path_diff.py
 OUT=$HARNESS/results/pathdiff/$AIS_SM/vllm-0.30.0; mkdir -p $OUT
 OUT_EXPLAINED=facts/pathdiff/explained_0300; mkdir -p $OUT_EXPLAINED

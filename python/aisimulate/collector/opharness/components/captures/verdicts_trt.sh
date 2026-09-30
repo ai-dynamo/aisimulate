@@ -1,6 +1,7 @@
 #!/bin/bash
 cd ${AIS_PROBE_WORKSPACE:-.}
-export AIS_PROBE_WORKSPACE=${AIS_PROBE_WORKSPACE:-.} AIS_SM=sm90
+HARNESS="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+export AIS_PROBE_WORKSPACE=${AIS_PROBE_WORKSPACE:-.} AIS_SM=${AIS_SM:-$(python3 -c "import yaml;print('sm%d'%yaml.safe_load(open('$HARNESS/targets.yaml'))['platform']['sm'])")}
 PD=ais/python/aisimulate/collector/opharness/components/path_diff.py
 OUT=ais/python/aisimulate/collector/opharness/results/pathdiff/sm90/trtllm-1.3.0rc23
 mkdir -p $OUT

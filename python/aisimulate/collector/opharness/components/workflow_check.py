@@ -554,7 +554,24 @@ PREDICATES = {fn.__name__[5:]: fn for fn in [
 
 # --------------------------------------------------------------------------
 
+def default_sm() -> str:
+    """AIS_SM if exported, else targets.yaml platform.sm, else sm90 — the same
+    rule as probe_driver.current_sm (a forgotten export must not silently
+    read another SM's results)."""
+    env = os.environ.get("AIS_SM")
+    if env:
+        return env
+    try:
+        plat = _load_targets().get("platform") or {}
+        if plat.get("sm"):
+            return f"sm{int(plat['sm'])}"
+    except Exception:
+        pass
+    return "sm90"
+
+
 def evaluate(workflow: str, params: dict) -> dict:
+    params = {"sm": default_sm(), **{k: v for k, v in params.items() if v is not None}}
     manifest = yaml.safe_load((HARNESS / "workflows" / f"{workflow}.yaml").read_text())
     steps = []
     for step in manifest["steps"]:

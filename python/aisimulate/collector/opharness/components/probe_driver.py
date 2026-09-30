@@ -696,6 +696,27 @@ def clean_path(path: str) -> str:
     return " <- ".join(kept[:5])
 
 
+def current_sm() -> str:
+    """The SM every per-SM artifact is keyed by (kernel_taxonomy_<sm>.yaml,
+    results/pathdiff/<sm>/, results/retests/<sm>/, results/<sm>/). Source of
+    truth is targets.yaml `platform.sm` (the box this checkout is pinned to);
+    AIS_SM only overrides it (grading another SM's evidence from here). Until
+    2026-09-30 the default was a hard-coded sm90, so a forgotten export on an
+    sm120 box labelled its records with the sm90 vocabulary without a word
+    (RTX 5000 handoff §1.2 A)."""
+    env = os.environ.get("AIS_SM")
+    if env:
+        return env
+    try:
+        import yaml
+        plat = yaml.safe_load((Path(__file__).resolve().parents[1] / "targets.yaml").read_text()).get("platform") or {}
+        if plat.get("sm"):
+            return f"sm{int(plat['sm'])}"
+    except Exception:
+        pass
+    return "sm90"
+
+
 def load_taxonomy():
     import yaml
     # Per-SM vocabulary files (owner decision 2026-09-20: the verdict plane
@@ -703,7 +724,7 @@ def load_taxonomy():
     # separate files delete the cross-arch audit discipline a shared file
     # demanded). Discoverability rule: kernel_taxonomy_<sm>.yaml, enumerable
     # by glob; a session working sm103 never touches the sm90 file.
-    sm = os.environ.get("AIS_SM", "sm90")
+    sm = current_sm()
     path = Path(__file__).parent / f"kernel_taxonomy_{sm}.yaml"
     rules = yaml.safe_load(path.read_text())["rules"]
     return [(re.compile(r["match"]), r["backend"], r["role"]) for r in rules]

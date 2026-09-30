@@ -160,3 +160,16 @@ def test_platform_floor_gates_are_declared_coverage_but_not_expected_on_that_sm(
     assert wc.declared_gates("vllm", "0.30.0") == {"mla_ctx_bf16_DeepSeek-V3", "mla_ctx_fp8_DeepSeek-R1", "dsa_ctx_fp8_s512"}
     assert wc.declared_gates("vllm", "0.30.0", "sm120") == {"mla_ctx_bf16_DeepSeek-V3", "dsa_ctx_fp8_s512"}
     assert wc.declared_gates("vllm", "0.30.0", "sm90") == wc.declared_gates("vllm", "0.30.0")
+
+
+def test_sm_defaults_to_the_targets_platform_and_ais_sm_overrides(wc, monkeypatch):
+    """RTX 5000 handoff §1.2 A: a hard-coded sm90 default let a forgotten export
+    read/label another SM's data silently. Source of truth is targets.platform.sm."""
+    monkeypatch.delenv("AIS_SM", raising=False)
+    assert wc.default_sm() == "sm90"  # fixture targets have no platform block
+    (wc.HARNESS / "targets.yaml").write_text(yaml.safe_dump(
+        {"backends": {"vllm": {"versions": ["0.30.0"]}}, "families": {}, "topologies": [],
+         "platform": {"name": "rtx5000_sm120", "sm": 120, "system": "rtx_pro_6000_server"}}))
+    assert wc.default_sm() == "sm120"
+    monkeypatch.setenv("AIS_SM", "sm103")
+    assert wc.default_sm() == "sm103"

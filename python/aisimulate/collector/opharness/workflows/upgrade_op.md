@@ -53,3 +53,10 @@ AI never: re-derives comparison baselines, renames labels outside
 Progress is derived, not self-reported: `components/workflow_check.py upgrade_op --param ...` evaluates the sibling `upgrade_op.yaml` manifest against artifacts and names the first actionable step.
 
 Steps 8-9 (recollect sanity, e2e spot check) were removed 2026-09-20 (owner decision): they had been permanent stubs. Row-level sanity is collect.py's executor + classified-failure machinery; an e2e-alignment component gets built the day a workflow actually needs it.
+
+## SM of a run
+
+The SM is `targets.yaml` `platform.sm` (see README "Per-SM runs"); `AIS_SM` only
+overrides it. `workflow_check upgrade_op --param sm=<sm>` selects which SM's
+results/ are judged; gates a framework cannot serve on an SM are declared
+`FLOOR_SM=<sm>` in `captures/verdicts_*.sh` instead of being dropped.
