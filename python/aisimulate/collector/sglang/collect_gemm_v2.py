@@ -36,8 +36,9 @@ selection; kernel_source records the branch the framework took.
 #   76-84) and runs Fp8ScaledMMOp (kernels/ops/gemm/__init__.py:27-162: AOT
 #   sgl_kernel, or torch._scaled_mm on SM90 for large M), a tuned Triton
 #   tile when get_w8a8_channelwise_fp8_config has one, or triton_scaled_mm
-#   when N or K is not a multiple of 16. The fused-op trace records which
-#   backend ran.
+#   when N or K is not a multiple of 16. Fp8ScaledMMOp picks its backend
+#   per call (kernels/fused_op.py:569-575); the collector observes that
+#   choice during the eager dry run.
 # fp8_block: Fp8LinearMethod (quantization/fp8.py) with the auto runner
 #   deepgemm_w8a8_block_fp8_linear_with_fallback when JIT DeepGEMM is on
 #   (fp8_utils.py:799-810); shapes with N%64 or K%128 fall back to Triton
@@ -128,7 +129,11 @@ def _quant_config(gemm_type: str):
     if gemm_type == "nvfp4":
         from sglang.srt.layers.quantization.modelopt_quant import ModelOptFp4Config
 
-        return ModelOptFp4Config(is_checkpoint_nvfp4_serialized=True, group_size=16, exclude_modules=[])
+        # packed_modules_mapping must be a mapping: get_quant_method's
+        # is_layer_skipped iterates it (quantization/utils.py:84 @v0.5.20).
+        return ModelOptFp4Config(
+            is_checkpoint_nvfp4_serialized=True, group_size=16, exclude_modules=[], packed_modules_mapping={}
+        )
     raise ValueError(f"no serving quant config for {gemm_type!r}")
 
 
@@ -195,41 +200,55 @@ def _nvfp4_kernel_source() -> str:
     return f"sglang_flashinfer_{str(backend).replace('-', '')}_nvfp4"
 
 
-_FP8_SCALED_MM_TRACE_LABELS = {
+_FP8_SCALED_MM_BACKEND_LABELS = {
     # Fp8ScaledMMOp backends (kernels/ops/gemm/__init__.py:75-162).
-    "gemm.fp8_scaled_mm:aot": "sglang_sgl_kernel_fp8_scaled_mm",
-    "gemm.fp8_scaled_mm:torch": "sglang_torch_scaled_mm",
+    "aot": "sglang_sgl_kernel_fp8_scaled_mm",
+    "torch": "sglang_torch_scaled_mm",
 }
 
 
-def _fp8_kernel_source(traced: str) -> str:
-    """Label apply_fp8_linear's GEMM from the fused-op trace.
+def _fp8_kernel_source(chosen_backends: list[str]) -> str:
+    """Label apply_fp8_linear's GEMM from the Fp8ScaledMMOp backend(s) that ran.
 
-    Fp8ScaledMMOp is the only fused op on this path; when it is absent the
-    GEMM ran through triton_scaled_mm (misaligned N/K, or a tuned Triton tile,
-    fp8_utils.py:2025-2053), which is not a fused op.
+    No Fp8ScaledMMOp call means the GEMM ran through triton_scaled_mm
+    (misaligned N/K, or a tuned Triton tile, fp8_utils.py:2025-2053).
     """
-    if not traced:
+    if not chosen_backends:
         return "sglang_triton_scaled_mm"
-    if traced not in _FP8_SCALED_MM_TRACE_LABELS:
-        raise RuntimeError(f"SGLang fp8 GEMM ran unexpected fused ops: {traced}")
-    return _FP8_SCALED_MM_TRACE_LABELS[traced]
+    labels = {_FP8_SCALED_MM_BACKEND_LABELS.get(backend) for backend in chosen_backends}
+    if len(labels) != 1 or None in labels:
+        raise RuntimeError(f"SGLang fp8 GEMM ran unexpected Fp8ScaledMMOp backends: {sorted(set(chosen_backends))}")
+    return labels.pop()
 
 
-def _traced_fused_op_backends(func) -> str:
-    """Run ``func`` once eagerly and report the fused-op backends that executed."""
-    from sglang.kernels import fused_op
+def _run_observing_fp8_scaled_mm_backend(func) -> list[str]:
+    """Run ``func`` once eagerly and return the Fp8ScaledMMOp backends selected.
 
-    fused_op.clear_fused_op_trace()
-    fused_op.enable_fused_op_trace()
+    Fp8ScaledMMOp dispatches per call (fused_op.py:569-575,
+    _forward_backend_dynamic): the first backend whose backend_eligible() is
+    true runs. Observing backend_eligible's first True per call records that
+    choice without changing it (the fused-op trace only reports the dynamic
+    dispatcher's own name).
+    """
+    from sglang.kernels.ops import gemm as gemm_ops
+
+    op = gemm_ops._FP8_SCALED_MM
+    chosen: list[str] = []
+    original = op.backend_eligible
+
+    def observe(backend, *args, **kwargs):
+        eligible = original(backend, *args, **kwargs)
+        if eligible:
+            chosen.append(getattr(backend, "value", str(backend)))
+        return eligible
+
+    op.backend_eligible = observe
     try:
         func()
         torch.cuda.synchronize()
     finally:
-        fused_op.disable_fused_op_trace()
-    records = sorted({f"{record.op}:{record.backend}" for record in fused_op.get_fused_op_trace()})
-    fused_op.clear_fused_op_trace()
-    return "+".join(records)
+        del op.backend_eligible
+    return chosen
 
 
 def run_gemm(gemm_type, batch_size, N, K, *, perf_filename, device="cuda:0"):  # noqa: N803
@@ -290,9 +309,9 @@ def run_gemm(gemm_type, batch_size, N, K, *, perf_filename, device="cuda:0"):  #
         for _ in range(outside_loop_count):
             op_list.append(create_gemm())
 
-        # Eager dry run: JIT-compiles outside graph capture and records the
-        # fused-op backends that actually executed.
-        traced = _traced_fused_op_backends(op_list[0])
+        # Eager dry run: JIT-compiles outside graph capture and, for fp8,
+        # records the Fp8ScaledMMOp backend that actually executed.
+        chosen_backends = _run_observing_fp8_scaled_mm_backend(op_list[0])
         if gemm_type == "bfloat16":
             kernel_source = _bf16_kernel_source(M, N, K)
         elif gemm_type == "fp8_block":
@@ -300,7 +319,7 @@ def run_gemm(gemm_type, batch_size, N, K, *, perf_filename, device="cuda:0"):  #
         elif gemm_type == "nvfp4":
             kernel_source = _nvfp4_kernel_source()
         else:
-            kernel_source = _fp8_kernel_source(traced)
+            kernel_source = _fp8_kernel_source(chosen_backends)
 
         def kernel_func():
             for op in op_list:

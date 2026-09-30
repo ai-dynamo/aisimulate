@@ -199,22 +199,23 @@ def test_sglang_v2_queues_small_shapes_the_v1_fixme_skipped(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "traced,label",
+    "chosen,label",
     [
-        ("gemm.fp8_scaled_mm:aot", "sglang_sgl_kernel_fp8_scaled_mm"),
-        ("gemm.fp8_scaled_mm:torch", "sglang_torch_scaled_mm"),
-        ("", "sglang_triton_scaled_mm"),
+        (["aot"], "sglang_sgl_kernel_fp8_scaled_mm"),
+        (["torch", "torch"], "sglang_torch_scaled_mm"),
+        ([], "sglang_triton_scaled_mm"),
     ],
 )
-def test_sglang_v2_fp8_label_comes_from_the_executed_fused_op(monkeypatch, traced, label):
+def test_sglang_v2_fp8_label_comes_from_the_executed_backend(monkeypatch, chosen, label):
     module = _load_sglang_gemm_v2(monkeypatch)
-    assert module._fp8_kernel_source(traced) == label
+    assert module._fp8_kernel_source(chosen) == label
 
 
-def test_sglang_v2_fp8_label_rejects_unknown_fused_ops(monkeypatch):
+@pytest.mark.parametrize("chosen", [["aot", "torch"], ["jit"]])
+def test_sglang_v2_fp8_label_rejects_mixed_or_unknown_backends(monkeypatch, chosen):
     module = _load_sglang_gemm_v2(monkeypatch)
-    with pytest.raises(RuntimeError, match="unexpected fused ops"):
-        module._fp8_kernel_source("gemm.fp8_scaled_mm:aot+gemm.other:jit")
+    with pytest.raises(RuntimeError, match="unexpected Fp8ScaledMMOp backends"):
+        module._fp8_kernel_source(chosen)
 
 
 def test_sglang_nvfp4_allowlist_admits_glm53flash_nvfp4_only():

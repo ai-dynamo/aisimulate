@@ -516,6 +516,18 @@ def setup_sglang_distributed(world_size, rank, use_slurm):
     return sglang_mods, local_rank
 
 
+def _vllm_graph_pool():
+    """Serving's CUDA graph pool, registered with vLLM's NCCL allocator when present."""
+    try:
+        from vllm.distributed.device_communicators.pynccl_allocator import set_graph_pool_id
+        from vllm.platforms import current_platform
+    except ImportError:
+        return None
+    pool = current_platform.graph_pool_handle()
+    set_graph_pool_id(pool)
+    return pool
+
+
 def benchmark_vllm_allreduce(
     dtype: str,
     test_range: str,
@@ -568,6 +580,12 @@ def benchmark_vllm_allreduce(
                 _ = vllm_mods["tensor_model_parallel_all_reduce"](warm)
                 torch.cuda.synchronize()
                 del warm
+                # Serving captures into the platform graph pool and publishes
+                # it to the NCCL symmetric-memory allocator first
+                # (compilation/cuda_graph.py:305-318 @v0.30.0); the symm-mem
+                # all-reduce asserts it under capture
+                # (pynccl_allocator.py:168-173). Older vLLM has no such hook.
+                graph_pool = _vllm_graph_pool()
                 # Graph capture mode
                 with vllm_mods["graph_capture"](device=torch.cuda.current_device()) as graph_capture_context:
                     # Create input tensors
@@ -579,7 +597,7 @@ def benchmark_vllm_allreduce(
                     torch.cuda.synchronize()
                     graph = torch.cuda.CUDAGraph()
 
-                    with torch.cuda.graph(graph, stream=graph_capture_context.stream):
+                    with torch.cuda.graph(graph, pool=graph_pool, stream=graph_capture_context.stream):
                         outputs = []
                         for inp in input_tensors:
                             out = vllm_mods["tensor_model_parallel_all_reduce"](inp)
