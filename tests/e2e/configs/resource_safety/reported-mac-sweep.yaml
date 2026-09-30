@@ -1,0 +1,40 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+# Behavioral configuration transcribed from the September 10, 2026 report.
+traffic:
+  source: {type: synthetic, input_tokens: 10240, output_tokens: 1024}
+  load:
+    type: concurrency
+    concurrency: {choices: [8, 35, 544, 2048, 12800, 22528, 64512]}
+  stop: {requests_per_load_unit: 100}
+engine:
+  mode: aggregated
+  model: openai/gpt-oss-120b
+  hardware: gb300
+  backend: vllm
+  context_length: 16384
+  workers:
+    aggregated:
+      parallelism: {preset: default}
+      scheduler:
+        max_batched_tokens: {choices: [16384, 32768, 65536]}
+        max_sequences: {choices: [64, 256, 512, 2048, 8192, 32768, 65536]}
+      kv_cache:
+        block_size: 64
+        prefix_caching: false
+        capacity:
+          type: default
+          memory_fraction: {choices: [0.85, 0.90]}
+      timing: {type: default}
+router:
+  policy: round_robin
+  prefill_load_model: {type: none}
+optimization:
+  target: pareto
+  constraints: {min_candidate_gpus: 72, max_candidate_gpus: 72}
+optimizer:
+  algorithm: bayesian
+  max_trials: 256
+  parallelism: 8
+  candidate_timeout_seconds: 120
+  seed: 42
