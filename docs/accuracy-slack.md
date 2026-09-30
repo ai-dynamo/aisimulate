@@ -30,6 +30,7 @@ attempt, overview links, and any short alert/recovery summaries.
   on retry, restore it and send only missing thread parts. Rechecks at 30-minute
   intervals through 18:30 UTC can resume an interrupted delivery. Do not delete
   the bot's messages or its retained report artifacts; they are delivery records.
+- History/thread reads use GET query parameters and omit empty pagination cursors.
 - Slack timeouts and `ok:false` fail the notification job. An uncertain POST is
   not blindly retried: the next run checks Slack history/thread metadata first.
   An extended Slack/GitHub outage may prevent delivery; no system can guarantee

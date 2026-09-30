@@ -21,6 +21,7 @@ import zipfile
 import zlib
 from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
+from urllib.parse import urlencode
 from zoneinfo import ZoneInfo
 
 from accuracy_digest import compare, decode_points, e2e_snapshot, fpm_snapshot, messages
@@ -365,9 +366,19 @@ class Slack:
         self.token, self.channel = token, channel
 
     def call(self, method, **payload):
+        url = "https://slack.com/api/" + method
+        data = json.dumps(payload).encode()
+        if method in {"conversations.history", "conversations.replies"}:
+            query = {
+                key: str(value).lower() if isinstance(value, bool) else value
+                for key, value in payload.items()
+                if value != ""
+            }
+            url += "?" + urlencode(query)
+            data = None
         request = urllib.request.Request(
-            "https://slack.com/api/" + method,
-            data=json.dumps(payload).encode(),
+            url,
+            data=data,
             headers={
                 "Authorization": "Bearer " + self.token,
                 "Content-Type": "application/json; charset=utf-8",

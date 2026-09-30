@@ -9,6 +9,7 @@ import sys
 import zipfile
 from datetime import UTC, date, datetime
 from pathlib import Path
+from urllib.parse import parse_qs, urlsplit
 
 import accuracy_digest as digest
 import notify_accuracy as notify
@@ -395,3 +396,18 @@ def test_artifact_pagination_preserves_name_filter(monkeypatch):
     monkeypatch.setattr(pages, "api", fake_api)
     assert len(pages.api_items("actions/artifacts?name=accuracy-attempt-2026-09-29", "artifacts")) == 100
     assert paths == [f"actions/artifacts?name=accuracy-attempt-2026-09-29&per_page=100&page={page}" for page in (1, 2)]
+
+
+@pytest.mark.parametrize("method", ["conversations.history", "conversations.replies"])
+def test_slack_reads_use_query_parameters_without_empty_cursor(monkeypatch, method):
+    calls = []
+
+    def respond(request, **kwargs):
+        calls.append(request)
+        return io.BytesIO(b'{"ok":true,"messages":[]}')
+
+    monkeypatch.setattr(notify.urllib.request, "urlopen", respond)
+    notify.Slack("fake", "C123").call(method, channel="C123", cursor="", include_all_metadata=True)
+    assert calls[0].get_method() == "GET"
+    assert calls[0].data is None
+    assert parse_qs(urlsplit(calls[0].full_url).query) == {"channel": ["C123"], "include_all_metadata": ["true"]}
