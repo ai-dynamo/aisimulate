@@ -282,4 +282,8 @@ def rpc_status(worker) -> dict:
 
 
 def rpc_measure_decode(worker, target: dict, replays_before: int) -> dict:
-    return STATE.probe.measure_decode(target, replays_before)
+    import torch
+
+    # The framework executes and captures its model under inference mode.
+    with torch.inference_mode():
+        return STATE.probe.measure_decode(target, replays_before)
