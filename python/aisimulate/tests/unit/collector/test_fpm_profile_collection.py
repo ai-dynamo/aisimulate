@@ -354,3 +354,17 @@ def test_multiple_profile_runtime_versions_fail_explicitly(no_models_or_timing_d
     profile["deployments"].append(other)
     with pytest.raises(ValueError, match="must identify one runtime version"):
         _plan(profile)
+
+
+@pytest.mark.parametrize("decode_batch", [1024, 1025])
+def test_decode_collection_respects_profile_scheduler_envelope(no_models_or_timing_data, decode_batch):
+    profile = _profile()
+    options = replace(
+        FPMCollectionOptions.from_args(cli._parser().parse_args(_argv(profile))),
+        max_decode_batch_size=decode_batch,
+    )
+    if decode_batch > profile["deployments"][0]["resources"]["max_batch_size"]:
+        with pytest.raises(ValueError, match="max_batch_size"):
+            _plan(profile, options=options)
+    else:
+        assert _plan(profile, options=options).cells
