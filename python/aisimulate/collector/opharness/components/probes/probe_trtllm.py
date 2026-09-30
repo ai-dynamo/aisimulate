@@ -35,14 +35,29 @@ class _CutlassWalkGuard(importlib.abc.MetaPathFinder):
     and any legitimate later import of this module would have crashed anyway."""
 
     # only the never-legitimately-imported duplicate-caster module is blocked;
-    # blocking wider cutlass._mlir broke legit cute-dsl runner imports
+    # blocking wider cutlass._mlir broke legit cute-dsl runner imports.
+    # SCOPE (2026-09-30, TensorRT-LLM 1.3.0rc29): the block is active only
+    # while a pkgutil.walk_packages walk is running (_safe_walk below). On
+    # rc29 flashinfer 0.6.18 imports cutlass._mlir_helpers LEGITIMATELY at
+    # import time (and it no longer double-registers there); a global block
+    # made `import flashinfer` fail silently inside
+    # tensorrt_llm._torch.attention.backends, so FlashInferAttentionMetadata
+    # was never exported and every model load died with an ImportError —
+    # while the plain image imported fine. The warmup walk is the only place
+    # the duplicate-caster import ever happened, so that is the only place
+    # to block it.
     BLOCK = ("cutlass._mlir_helpers",)
 
     def find_spec(self, name, path=None, target=None):
+        if not _WALKING:
+            return None
         for b in self.BLOCK:
             if name == b or name.startswith(b + "."):
                 raise ImportError(f"blocked by AIC probe walk-guard: {name}")
         return None
+
+
+_WALKING = False
 
 
 sys.meta_path.insert(0, _CutlassWalkGuard())
@@ -58,14 +73,19 @@ _orig_walk = pkgutil.walk_packages
 
 
 def _safe_walk(*a, **k):
+    global _WALKING
     it = _orig_walk(*a, **k)
-    while True:
-        try:
-            yield next(it)
-        except StopIteration:
-            return
-        except Exception:
-            return
+    _WALKING = True  # the cutlass walk-guard blocks only inside a walk
+    try:
+        while True:
+            try:
+                yield next(it)
+            except StopIteration:
+                return
+            except Exception:
+                return
+    finally:
+        _WALKING = False
 
 
 pkgutil.walk_packages = _safe_walk
