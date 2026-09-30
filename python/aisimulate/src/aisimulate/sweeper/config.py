@@ -32,6 +32,7 @@ from aisimulate.config.traffic import AgenticSnapshotOptions
 from ..config.common import (
     ENGINE_MODEL_CONTROL_FIELDS,
     SystemsPath,
+    SystemsRoot,
     is_active_engine_model_control,
     requested_backend_version,
 )
@@ -531,7 +532,7 @@ class SearchSpace(BaseModel):
     fpm_profile: dict[str, Any] | None = None
     database_mode: Literal["SILICON", "HYBRID", "EMPIRICAL", "SOL"] = "SILICON"
     transfer_policy: str | list[str] | None = None
-    systems_paths: list[str] | None = Field(default=None, min_length=1)
+    systems_paths: list[SystemsRoot] | None = Field(default=None, min_length=1)
     systems_path: SystemsPath | None = Field(default=None, exclude=True)
     estimation_mode: Literal["auto", "op_level", "fpm_interpolation", "fpm_regression"] = "auto"
     fallback_policy: Literal["deny", "allow"] = "deny"
@@ -549,6 +550,7 @@ class SearchSpace(BaseModel):
     enable_eplb: bool = Field(default=False, strict=True)
     wideep_num_slots: int | None = Field(default=None, strict=True, gt=0)
     moe_backend: str | None = None
+    moe_kernel_source: str | None = None
     attention_backend: str | None = None
     gemm_quant_mode: str | None = None
     moe_quant_mode: str | None = None
@@ -847,14 +849,12 @@ class SearchSpace(BaseModel):
     def _normalize_estimator_database_mode(cls, value):
         return value.upper() if isinstance(value, str) else value
 
-    @field_validator("systems_paths")
+    @field_validator("moe_kernel_source", mode="before")
     @classmethod
-    def _validate_estimator_roots(cls, value):
-        if value is None:
-            return value
-        if any(not path.strip() for path in value):
-            raise ValueError("systems_paths entries must be nonempty")
-        return value
+    def _validate_moe_kernel_source(cls, value):
+        from aisimulate_core.sdk.config import normalize_kernel_source
+
+        return normalize_kernel_source(value, "moe_kernel_source")
 
     @model_validator(mode="after")
     def _validate_estimator_controls(self):

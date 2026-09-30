@@ -35,10 +35,12 @@ CORE_SDK_LEAF_MODULES = [
     "engine_table_view",
     "errors",
     "fpm_profile",
+    "fpm_config",
     "fpm_dataset",
     "fpm_identity",
     "inference_summary",
     "memory",
+    "state_memory",
     "models.base",
     "models.blocks.moe",
     "models.blocks.vit",
@@ -77,6 +79,7 @@ CORE_SDK_LEAF_MODULES = [
     "operations.moe_comm",
     "operations.msa",
     "operations.overlap",
+    "operations.prefill_graph",
     "operations.util_empirical",
     "perf_database",
     # perf_interp.* retired with the Python per-call query stack (#1357 PR-5):
@@ -350,8 +353,10 @@ def test_fpm_forward_op_keeps_legacy_constructor_layout() -> None:
 
     from aisimulate.sdk.operations import FPMForwardOp
 
-    params = list(inspect.signature(FPMForwardOp.__init__).parameters)
-    assert params == ["self", "phase", "model_config", "model_path", "sol_fn", "weight_bytes", "sol_ops"]
+    signature = inspect.signature(FPMForwardOp.__init__)
+    positional = [name for name, param in signature.parameters.items() if param.kind != inspect.Parameter.KEYWORD_ONLY]
+    assert positional == ["self", "phase", "model_config", "model_path", "sol_fn", "weight_bytes", "sol_ops"]
+    assert signature.parameters["execution"].kind == inspect.Parameter.KEYWORD_ONLY
 
 
 def test_representative_from_imports_return_canonical_objects() -> None:

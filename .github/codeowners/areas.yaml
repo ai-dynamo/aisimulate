@@ -34,6 +34,7 @@ areas:
       - python/aisimulate/src/aisimulate/capacity.py
       - tests/test_aic.py
       - tests/test_fpm_profile_workflow.py
+      - tests/test_fpm_query_evidence.py
   - label: sweeper
     github_team: "@ai-dynamo/aisimulate-sweeper-codeowners"
     path_globs:
@@ -103,6 +104,14 @@ areas:
 # stays visible on subsystem changes without requiring every listed team to
 # approve: any listed code owner can satisfy GitHub's code-owner gate.
 shared:
+  - glob: .agents/skills/aisimulate-fpe-performance/
+    owners: [forward-pass-engine, maintainers]
+  - glob: .claude/skills/aisimulate-fpe-performance
+    owners: [forward-pass-engine, maintainers]
+  - glob: .agents/skills/aisimulate-replay-performance/
+    owners: [replay, mocker, maintainers]
+  - glob: .claude/skills/aisimulate-replay-performance
+    owners: [replay, mocker, maintainers]
   - glob: pages/
     owners: [forward-pass-engine, infra, maintainers]
   - glob: tests/fpm_accuracy/
@@ -153,6 +162,8 @@ shared:
     owners: [forward-pass-engine, maintainers]
   - glob: tests/test_fpm_profile_workflow.py
     owners: [forward-pass-engine, maintainers]
+  - glob: tests/test_fpm_query_evidence.py
+    owners: [replay, forward-pass-engine, maintainers]
   - glob: python/aisimulate/src/aisimulate/sweeper/
     owners: [sweeper, maintainers]
   - glob: docs/sweeper/

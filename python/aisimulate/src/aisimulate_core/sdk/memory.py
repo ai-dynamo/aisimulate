@@ -1,7 +1,10 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""KV-cache capacity estimation.
+"""KV-cache capacity and per-request state memory estimation.
+
+``estimate_state_cache`` re-exports the shared config-driven state-footprint
+API. It is independent of the pool-capacity algorithms below.
 
 The single source of truth for the rank-local KV-cache capacity estimate. The
 Rust ``aisimulate_core::memory::estimate_kv_cache`` is a pure forwarder that
@@ -56,6 +59,8 @@ from aisimulate_core.sdk.utils import (
     _load_pre_downloaded_hf_config,
     _parse_hf_config_json,
 )
+
+from .state_memory import estimate_state_cache as estimate_state_cache
 
 _ONE_GIB = 1 << 30
 _MAX_EXACT_BYTE_COUNT = 1 << 53
@@ -284,6 +289,7 @@ class KVCacheEstimator:
         fmha_quant_mode: str | None = None,
         comm_quant_mode: str | None = None,
         moe_backend: str | None = None,
+        moe_kernel_source: str | None = None,
         attention_backend: str | None = None,
         enable_eplb: bool = False,
         wideep_num_slots: int | None = None,
@@ -314,7 +320,11 @@ class KVCacheEstimator:
         resolved_moe_tp = moe_tp_size if moe_tp_size is not None else 1
         resolved_moe_ep = moe_ep_size if moe_ep_size is not None else 1
         validate_moe_controls(
-            model_path=model_path, enable_eplb=enable_eplb, wideep_num_slots=wideep_num_slots, moe_backend=moe_backend
+            model_path=model_path,
+            enable_eplb=enable_eplb,
+            wideep_num_slots=wideep_num_slots,
+            moe_backend=moe_backend,
+            moe_kernel_source=moe_kernel_source,
         )
         model_config = build_model_config(
             tp_size=tp_size,
@@ -328,6 +338,7 @@ class KVCacheEstimator:
             moe_quant_mode=moe_quant_mode,
             comm_quant_mode=comm_quant_mode,
             moe_backend=moe_backend,
+            moe_kernel_source=moe_kernel_source,
             attention_backend=attention_backend,
             enable_eplb=enable_eplb,
             wideep_num_slots=wideep_num_slots,
@@ -1022,6 +1033,7 @@ def estimate_kv_cache(
     fmha_quant_mode: str | None = None,
     comm_quant_mode: str | None = None,
     moe_backend: str | None = None,
+    moe_kernel_source: str | None = None,
     attention_backend: str | None = None,
     enable_eplb: bool = False,
     wideep_num_slots: int | None = None,
@@ -1161,7 +1173,11 @@ def estimate_kv_cache(
         return estimate
 
     validate_moe_controls(
-        model_path=model_path, enable_eplb=enable_eplb, wideep_num_slots=wideep_num_slots, moe_backend=moe_backend
+        model_path=model_path,
+        enable_eplb=enable_eplb,
+        wideep_num_slots=wideep_num_slots,
+        moe_backend=moe_backend,
+        moe_kernel_source=moe_kernel_source,
     )
     try:
         native = KVCacheEstimator.from_request(
@@ -1182,6 +1198,7 @@ def estimate_kv_cache(
             fmha_quant_mode=fmha_quant_mode,
             comm_quant_mode=comm_quant_mode,
             moe_backend=moe_backend,
+            moe_kernel_source=moe_kernel_source,
             attention_backend=attention_backend,
             enable_eplb=enable_eplb,
             wideep_num_slots=wideep_num_slots,
@@ -1194,6 +1211,7 @@ def estimate_kv_cache(
             or enable_eplb
             or wideep_num_slots is not None
             or moe_backend not in (None, "default")
+            or moe_kernel_source is not None
             or attention_backend is not None
         ):
             raise ValueError(
@@ -1253,6 +1271,7 @@ def estimate_num_gpu_blocks(
     fmha_quant_mode: str | None = None,
     comm_quant_mode: str | None = None,
     moe_backend: str | None = None,
+    moe_kernel_source: str | None = None,
     attention_backend: str | None = None,
     enable_eplb: bool = False,
     wideep_num_slots: int | None = None,
@@ -1317,6 +1336,7 @@ def estimate_num_gpu_blocks(
         fmha_quant_mode=fmha_quant_mode,
         comm_quant_mode=comm_quant_mode,
         moe_backend=moe_backend,
+        moe_kernel_source=moe_kernel_source,
         attention_backend=attention_backend,
         enable_eplb=enable_eplb,
         wideep_num_slots=wideep_num_slots,

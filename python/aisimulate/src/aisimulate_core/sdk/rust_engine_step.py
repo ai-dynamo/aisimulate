@@ -101,7 +101,15 @@ class RustEngineUnsupportedError(RuntimeError):
 
 @dataclass(frozen=True)
 class ForwardPassPerfModelConfig:
-    """Canonical immutable identity and selection policy for the estimator."""
+    """Canonical immutable identity and selection policy for the estimator.
+
+    Estimator controls pass through to Rust unchanged. For regression,
+    ``estimator_config["fpm_regression"]["fit"]["rebuild_interval"]`` accepts
+    a positive integer mutation count or ``None`` to disable periodic
+    statistics rebuilding. Omitting it uses the Rust default of ``None``;
+    numerical recovery and batch fallbacks remain enabled. An explicit
+    positive interval, such as 4096, opts into periodic rebuilding.
+    """
 
     model: str
     system: str
@@ -112,6 +120,7 @@ class ForwardPassPerfModelConfig:
     tp: int = 1
     pp: int = 1
     attention_dp: int = 1
+    dcp: int | None = dataclass_field(default=None, kw_only=True)
     moe_tp_size: int | None = None
     moe_ep_size: int | None = None
     gemm_quant_mode: str | None = None
@@ -131,6 +140,7 @@ class ForwardPassPerfModelConfig:
     fallback_policy: str = "deny"
     estimator_config: dict[str, Any] = dataclass_field(default_factory=dict)
     attention_backend: str | None = None
+    moe_kernel_source: str | None = dataclass_field(default=None, kw_only=True)
     enable_shared_layer: bool | None = None
     strict_provenance: bool = False
     moe_backend: str | None = None
@@ -243,6 +253,14 @@ class RustForwardPassPerfModel:
     own fit and retention state. ``max_observations`` (default ``64``) and
     ``min_observations`` (default ``5``) apply independently to each store.
 
+    Regression updates centered sufficient statistics as retained samples are
+    inserted or evicted. The canonical ``fpm_regression.fit.rebuild_interval``
+    control counts one mutation per insertion and one per eviction. A scheduled
+    rebuild occurs after the complete update transaction, then resets its
+    counter to zero. The Rust default is ``None``, which disables only scheduled
+    rebuilds, preserving numerical recovery and batch fallbacks. Set a positive
+    interval, such as 4096 mutations, to enable scheduled rebuilds.
+
     Queued request fields are accepted for schema compatibility but ignored by
     this AIC forward-pass model. ``estimate_forward_pass_time_ms()`` treats FPM
     as a workload descriptor: scheduled request fields are used, while
@@ -286,6 +304,8 @@ class RustForwardPassPerfModel:
         Auto searches op_level, fpm_interpolation, then fpm_regression even
         with fallback_policy=deny. Explicit modes default to strict selection.
         Native correction retains its existing workload feature space.
+        Nested estimator controls, including an explicit ``None`` rebuild
+        interval, are preserved in resolved configuration and provenance.
         """
         import aisimulate_core
 
@@ -297,6 +317,15 @@ class RustForwardPassPerfModel:
         import aisimulate_core
 
         return json.loads(aisimulate_core.RustForwardPassPerfModel.normalize_config(_forward_pass_config_json(config)))
+
+    def predict_prefill_latency(self, bs: int, isl: int, prefix: int = 0) -> float:
+        """Return latency in ms for a qualified homogeneous graph-prefill shape.
+
+        ``isl`` is the total sequence length including ``prefix``. The selected
+        profile admits only its measured integer shapes; Rust owns validation
+        and prediction. This method returns no scheduler or energy estimate.
+        """
+        return self._inner.predict_prefill_latency(bs, isl, prefix)
 
     def estimate_forward_pass_time_ms(self, metrics: dict[str, Any] | list[dict[str, Any]]) -> float | None:
         """API: ``model.estimate_forward_pass_time_ms(metrics) -> float | None``.
@@ -1207,6 +1236,7 @@ def _speculation_identity(model_config: Any) -> str | None:
 
 def _engine_config_json(model: Any, database: Any) -> str:
     model_config = model.config
+    fpm_config = getattr(model_config, "fpm_config", None)
     # Forward only the MTP draft length. The aic-core layer models iteration compute cost;
     # accepted-token progress belongs to the upper prediction layer.
     nextn = getattr(model, "_nextn", None)
@@ -1224,6 +1254,7 @@ def _engine_config_json(model: Any, database: Any) -> str:
         "attention_dp_size": _optional_int(getattr(model_config, "attention_dp_size", None)),
         # Part of the engine identity so cp variants get distinct cached handles.
         "cp_size": _optional_int(getattr(model_config, "cp_size", None)),
+        "dcp_size": _optional_int(getattr(model_config, "dcp_size", None)),
         "weight_dtype": _quant_to_dtype(getattr(model_config, "gemm_quant_mode", None)),
         "moe_dtype": _moe_quant_to_dtype(getattr(model_config, "moe_quant_mode", None)),
         "activation_dtype": _quant_to_dtype(getattr(model_config, "fmha_quant_mode", None)),
@@ -1240,6 +1271,7 @@ def _engine_config_json(model: Any, database: Any) -> str:
         # per phase); without this key they would share a cached handle and
         # silently answer with the other mode's engine.
         "forward_model": getattr(model, "forward_model", "op_level"),
+        "moe_kernel_source": getattr(model_config, "moe_kernel_source", None),
         # Same identity built against different systems roots reads different
         # perf trees; the root is part of the engine identity.
         "systems_root": str(getattr(database, "systems_root", "") or ""),
@@ -1271,13 +1303,17 @@ def _engine_config_json(model: Any, database: Any) -> str:
                         "comm": _raw_quant_name(getattr(model_config, "comm_quant_mode", None)),
                     },
                     "model_config": {
+                        "fpm_config": fpm_config.cache_identity() if fpm_config is not None else None,
                         "decoder_replay": bool(getattr(model_config, "decoder_replay", False)),
                         "cp_style": getattr(model_config, "cp_style", None),
                         "workload_distribution": getattr(model_config, "workload_distribution", None),
+                        "decode_workload_distribution": getattr(model_config, "decode_workload_distribution", None),
+                        "prefill_graph_profile": getattr(model_config, "prefill_graph_profile", None),
                         "overwrite_num_layers": getattr(model_config, "overwrite_num_layers", None),
                         "sms": getattr(model_config, "sms", None),
                         "moe_backend": getattr(model_config, "moe_backend", None),
                         "attention_backend": getattr(model_config, "attention_backend", None),
+                        "moe_kernel_source": getattr(model_config, "moe_kernel_source", None),
                         # enable_wideep is gone from the identity: the deprecated
                         # flag is constant False on every Task-built ModelConfig;
                         # moe_comm_backend + num_gpus_per_node below carry the
@@ -1391,6 +1427,7 @@ def _moe_quant_to_dtype(value: Any) -> str | None:
         "w4a8_mxfp4_mxfp8",
         "w4a8_mxfp4_mxfp8_trtllm",
         "w4a16_mxfp4_cutlass",
+        "w4a16_mxfp4_humming",
     }:
         return name
     return _quant_to_dtype(value)

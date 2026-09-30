@@ -364,6 +364,7 @@ def test_recommendation_preserves_profile_in_exported_prediction(
         "comm_quant_mode": "half",
         "attention_backend": "auto",
         "moe_backend": None,
+        "moe_kernel_source": None,
         "enable_eplb": False,
         "wideep_num_slots": None,
     }

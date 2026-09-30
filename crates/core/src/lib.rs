@@ -49,7 +49,7 @@ pub use perfmodel::{
 };
 pub use perfmodel::{
     CorrectionFactorBounds, CorrectionFeatureSpace, FpmInterpolationConfig, FpmInterpolationMethod,
-    OpLevelConfig, RegressionFitConfig, RegressionFitKind,
+    OpLevelConfig, RegressionFitConfig, RegressionFitKind, UnrecordedFpmQuantMode,
 };
 
 #[cfg(feature = "python")]

@@ -12,6 +12,8 @@ import os
 import stat
 from collections.abc import Iterator
 from contextlib import contextmanager
+from importlib.resources import files
+from importlib.util import find_spec, module_from_spec
 from pathlib import Path
 from typing import Any
 
@@ -136,7 +138,11 @@ def _commands(request: SupportRequest, root: Path, recommendation_names: list[st
 
 
 def _plan_documents(request: SupportRequest, root: Path) -> tuple[dict[str, Any], dict[Path, bytes]]:
-    source_spec = Path(__file__).resolve().parents[2] / "aisimulate_core/systems" / f"{request.identity.gpu}.yaml"
+    package_spec = find_spec("aisimulate_core")
+    if package_spec is None:
+        raise ValueError("aisimulate_core package resources are required for packaged system specifications")
+    # Consult the resource loader without executing the package's native imports.
+    source_spec = files(module_from_spec(package_spec)) / "systems" / f"{request.identity.gpu}.yaml"
     if not source_spec.is_file():
         raise ValueError(
             f"GPU {request.identity.gpu!r} has no packaged system specification; "
@@ -339,6 +345,10 @@ def check_plan(request: SupportRequest, root: Path) -> None:
         ) from exc
     if not isinstance(prior, dict) or prior.get("request_id") != request_id(request):
         raise ValueError(f"refusing to mix a different request identity in {root}; choose a new output directory")
+    _check_saved_request(request, root)
+
+
+def _check_saved_request(request: SupportRequest, root: Path) -> None:
     try:
         saved = SupportRequest.from_yaml(root / "request.yaml")
     except ValueError as exc:
@@ -368,7 +378,12 @@ def create_plan(request: SupportRequest, output_dir: str | Path, *, overwrite: b
         if nonempty:
             if not overwrite:
                 raise ValueError(f"output directory {root} is nonempty; use overwrite only for the same request")
-            check_plan(request, root)
+            if (root / "support-plan.json").exists():
+                check_plan(request, root)
+            else:
+                # request.yaml is written first, so it can establish identity
+                # after an interruption before the completed plan was saved.
+                _check_saved_request(request, root)
         # Inspect every generated file before writing any file. Existing data,
         # checkpoints, results, and edited inputs are never replaced or deleted.
         pending: dict[Path, bytes] = {}
@@ -380,10 +395,10 @@ def create_plan(request: SupportRequest, output_dir: str | Path, *, overwrite: b
                 pending[relative] = content
             elif destination.read_bytes() != content:
                 raise ValueError(f"generated plan input {destination} was modified; choose a new output directory")
-        (root / "systems/data").mkdir(parents=True, exist_ok=True)
         for relative, content in pending.items():
             destination = root / relative
             destination.parent.mkdir(parents=True, exist_ok=True)
             with destination.open("xb") as handle:
                 handle.write(content)
+        (root / "systems/data").mkdir(parents=True, exist_ok=True)
     return plan

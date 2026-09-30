@@ -253,9 +253,10 @@ def test_native_prediction_replay_and_source_detail_roundtrip(profile, evidence_
     evidence = report.metadata["fpm_query_evidence"]
     assert evidence["aggregation"] == "identical_estimates_with_invocation_counts"
     estimates = records(evidence)
-    assert len(estimates) == 4  # prefill at 1 token; three decode steps read past KV=0,1,2
+    # Prefill produces the first output token; only two decode forwards remain.
+    assert len(estimates) == 3
     assert all(record["count"] == 3 for record in estimates)
-    assert sum(record["count"] for record in estimates) == 12
+    assert sum(record["count"] for record in estimates) == 9
     assert all(record["latency_scale"] == 1.0 for record in estimates)
     assert {q["resolution"] for r in estimates for rank in r["estimate"]["ranks"] for q in rank["queries"]} == {
         "exact_lookup",

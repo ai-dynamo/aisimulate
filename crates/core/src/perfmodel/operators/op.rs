@@ -18,6 +18,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use super::prefill_graph::{SglangPrefillAttentionSequenceOp, SglangPrefillCommNormBoundaryOp};
 use crate::common::error::AicError;
 use crate::operators::{
     ContextAttentionOp, ContextMlaOp, CustomAllReduceOp, DsaModuleOp, Dsv4MegaMoeOp, Dsv4ModuleOp,
@@ -183,6 +184,9 @@ pub enum Op {
     Dsv41Engram(Dsv41EngramOp),
     Dsv41Stage(Dsv41StageOp),
     Dsv41Linear(Dsv41LinearOp),
+    // Append-only: the fixed prefill composite scopes (EngineSpec schema 22).
+    SglangPrefillAttentionSequence(SglangPrefillAttentionSequenceOp),
+    SglangPrefillCommNormBoundary(SglangPrefillCommNormBoundaryOp),
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -287,6 +291,8 @@ impl Op {
             Op::DsaContext(o) | Op::DsaGeneration(o) => o.weight_bytes(),
             Op::Dsv4Context(o) | Op::Dsv4Generation(o) => o.weight_bytes(),
             Op::FpmForward(o) => o.weight_bytes,
+            Op::SglangPrefillAttentionSequence(o) => o.weight_bytes,
+            Op::SglangPrefillCommNormBoundary(_) => 0.0,
             // Python FallbackOp.get_weights: primary wins when positive,
             // else the granular fallback chain sums.
             Op::Fallback(o) => {
@@ -367,6 +373,8 @@ impl Op {
             Op::WideEpContextMla(o) => &o.name,
             Op::WideEpGenerationMla(o) => &o.name,
             Op::FpmForward(o) => &o.name,
+            Op::SglangPrefillAttentionSequence(o) => &o.name,
+            Op::SglangPrefillCommNormBoundary(o) => &o.name,
             Op::Overlap(o) => &o.name,
             Op::Fallback(o) => &o.name,
             Op::Dsv4MegaMoe(o) => &o.name,
@@ -416,6 +424,8 @@ impl Op {
             Op::WideEpContextMla(o) => o.name = name,
             Op::WideEpGenerationMla(o) => o.name = name,
             Op::FpmForward(o) => o.name = name,
+            Op::SglangPrefillAttentionSequence(o) => o.name = name,
+            Op::SglangPrefillCommNormBoundary(o) => o.name = name,
             Op::Overlap(o) => o.name = name,
             Op::Fallback(o) => o.name = name,
             Op::Dsv4MegaMoe(o) => o.name = name,
@@ -457,6 +467,7 @@ impl Op {
             Op::Gdn(o) => o.scale_factor = scale_factor,
             Op::WideEpContextMla(o) => o.scale_factor = scale_factor,
             Op::WideEpGenerationMla(o) => o.scale_factor = scale_factor,
+            Op::SglangPrefillAttentionSequence(_) | Op::SglangPrefillCommNormBoundary(_) => {}
             Op::FpmForward(_) => {} // no scale_factor on this family (composite/whole-model)
             Op::Overlap(_) => {}    // no scale_factor on this family (composite/whole-model)
             Op::Fallback(_) => {}   // no scale_factor on this family (composite/whole-model)
@@ -533,6 +544,8 @@ impl Op {
             Op::Dsv41Engram(op) => op.query(db, ctx.num_tokens),
             Op::Dsv41Stage(op) => op.query(db, ctx),
             Op::Dsv41Linear(op) => op.query(db, ctx.num_tokens),
+            Op::SglangPrefillAttentionSequence(op) => op.query(db, ctx),
+            Op::SglangPrefillCommNormBoundary(op) => op.query(db, ctx),
             Op::TokenScale(op) => {
                 let scaled = RuntimeContext {
                     batch_size: op.scale_tokens(ctx.batch_size)?,

@@ -334,6 +334,8 @@ pub(crate) struct VllmBlockPool {
     // Preserve the compact token-only index. State keys are allocated lazily;
     // adding state support must not widen every ordinary token-cache bucket.
     by_hash: FxHashMap<SequenceHash, HashCopies>,
+    // Fine token keys share a physical page; removed together at page eviction.
+    token_aliases: Option<Box<FxHashMap<BlockCopyId, Vec<SequenceHash>>>>,
     state_index: Option<Box<StateIndex>>,
     /// Intrusive ordinary LRU: head is evicted first, tail was released last.
     inactive_head: Option<BlockCopyId>,
@@ -354,6 +356,7 @@ impl VllmBlockPool {
             capacity,
             copies: SlotMap::with_key(),
             by_hash: FxHashMap::default(),
+            token_aliases: None,
             state_index: None,
             inactive_head: None,
             inactive_tail: None,
@@ -640,6 +643,38 @@ impl VllmBlockPool {
     /// Returns whether this is the first resident physical copy of `hash`.
     pub(crate) fn cache_private(&mut self, id: BlockCopyId, hash: SequenceHash) -> bool {
         self.cache_private_key(id, CacheKey::Token(hash))
+    }
+
+    /// Register a computed prefix inside a token page without allocating a
+    /// second page. Consumers copy a partial page before extending it.
+    pub(crate) fn cache_token_prefix(&mut self, id: BlockCopyId, hash: SequenceHash) -> bool {
+        if self.is_private(id) {
+            return self.cache_private(id, hash);
+        }
+        assert!(self.state_key(id).is_none());
+        let CopyState::Cached { hash: primary, .. } = self.copies[id].state else {
+            unreachable!()
+        };
+        if primary == hash {
+            return false;
+        }
+        let aliases = self
+            .token_aliases
+            .get_or_insert_with(Default::default)
+            .entry(id)
+            .or_default();
+        if aliases.contains(&hash) {
+            return false;
+        }
+        aliases.push(hash);
+        Self::index_copy(&mut self.by_hash, hash, id).0
+    }
+
+    fn is_token_alias(&self, id: BlockCopyId, hash: SequenceHash) -> bool {
+        self.token_aliases
+            .as_ref()
+            .and_then(|m| m.get(&id))
+            .is_some_and(|v| v.contains(&hash))
     }
 
     /// Publish a private copy under a token or state key.
@@ -1035,7 +1070,14 @@ impl VllmBlockPool {
     /// Remove one indexed copy, returning whether its key lost all visibility.
     fn remove_indexed_copy(&mut self, hash: CacheKey, id: BlockCopyId) -> bool {
         let removed = match hash {
-            CacheKey::Token(hash) => Self::remove_from_index(&mut self.by_hash, hash, id),
+            CacheKey::Token(hash) => {
+                if let Some(aliases) = self.token_aliases.as_mut().and_then(|m| m.remove(&id)) {
+                    for alias in aliases {
+                        Self::remove_from_index(&mut self.by_hash, alias, id);
+                    }
+                }
+                Self::remove_from_index(&mut self.by_hash, hash, id)
+            }
             CacheKey::State { prefix, slot } => {
                 let index = self.state_index.as_mut().expect("cached state index");
                 assert_eq!(
@@ -1117,13 +1159,17 @@ impl VllmBlockPool {
     }
 
     fn activate_pin(&mut self, id: BlockCopyId, expected_hash: SequenceHash) {
+        let alias = self.is_token_alias(id, expected_hash);
         let CopyState::Cached {
             hash, refs, pins, ..
         } = &mut self.copies[id].state
         else {
             panic!("prefix reservation points to a private copy")
         };
-        assert_eq!(*hash, expected_hash, "reserved prefix hash changed");
+        assert!(
+            *hash == expected_hash || alias,
+            "reserved prefix hash changed"
+        );
         assert!(*pins > 0, "prefix pin underflow");
         *pins -= 1;
         *refs = refs
@@ -1132,6 +1178,7 @@ impl VllmBlockPool {
     }
 
     fn unpin(&mut self, id: BlockCopyId, expected_hash: SequenceHash) {
+        let alias = self.is_token_alias(id, expected_hash);
         let should_deactivate = {
             let CopyState::Cached {
                 hash, refs, pins, ..
@@ -1139,7 +1186,10 @@ impl VllmBlockPool {
             else {
                 panic!("prefix reservation points to a private copy")
             };
-            assert_eq!(*hash, expected_hash, "reserved prefix hash changed");
+            assert!(
+                *hash == expected_hash || alias,
+                "reserved prefix hash changed"
+            );
             assert!(*pins > 0, "prefix pin underflow");
             *pins -= 1;
             *pins == 0 && *refs == 0
@@ -1435,16 +1485,16 @@ impl VllmBlockPool {
             );
         for (expected_hash, copies) in entries {
             for id in copies.iter() {
-                assert!(indexed.insert(id), "copy is indexed by multiple hashes");
+                indexed.insert(id);
                 let Some(copy) = self.copies.get(id) else {
                     panic!("hash index points to a missing copy")
                 };
                 let CopyState::Cached { hash, .. } = &copy.state else {
                     panic!("hash index points to a private copy")
                 };
-                assert_eq!(
-                    self.copy_key(id, *hash),
-                    expected_hash,
+                assert!(
+                    self.copy_key(id, *hash) == expected_hash
+                        || matches!(expected_hash, CacheKey::Token(alias) if self.is_token_alias(id, alias)),
                     "copy is indexed under the wrong hash"
                 );
             }
@@ -2306,5 +2356,40 @@ mod tests {
         let (previous, _) = pool.inactive_links_mut(id);
         *previous = Some(id);
         let _ = pool.evict_one();
+    }
+    #[test]
+    fn partial_token_aliases_share_capacity_and_disappear_with_the_page() {
+        let mut pool = VllmBlockPool::new(2);
+        let mut reservation = pool.reserve(&[], 1).unwrap().reservation;
+        let id = pool.allocate_private(&mut reservation);
+        pool.cache_token_prefix(id, 100);
+        pool.cache_token_prefix(id, 200);
+        pool.cache_token_prefix(id, 300);
+        pool.cancel(reservation);
+        assert_eq!(pool.num_active(), 1);
+        pool.assert_hash_index_consistent();
+        pool.release(id);
+        let mut reservation = pool
+            .reserve_keys([CacheKey::Token(200)].into_iter(), 1)
+            .unwrap()
+            .reservation;
+        let (key, restored) = pool.activate_keys(&mut reservation).next().unwrap();
+        assert_eq!(key, CacheKey::Token(200));
+        assert_eq!(restored, id);
+        pool.cancel(reservation);
+        pool.release(restored);
+        let reservation = pool
+            .reserve_keys([CacheKey::Token(300)].into_iter(), 1)
+            .unwrap()
+            .reservation;
+        // Cancel exercises alias-aware unpin without activating the hit.
+        pool.cancel(reservation);
+        pool.assert_hash_index_consistent();
+        let pressure = pool.reserve(&[], 2).unwrap();
+        for hash in [100, 200, 300] {
+            assert!(pool.prefix_hit(hash).is_none());
+        }
+        pool.cancel(pressure.reservation);
+        pool.assert_hash_index_consistent();
     }
 }

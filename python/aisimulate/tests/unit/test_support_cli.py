@@ -5,9 +5,11 @@
 
 from __future__ import annotations
 
+import builtins
 import json
 import os
 import shlex
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -429,7 +431,7 @@ def test_explicit_execute_forwards_diagnostic_options_and_exit_status(tmp_path, 
     assert calls[0][calls[0].index("--limit") + 1] == "1"
 
 
-def _local_collection_command(tmp_path):
+def _local_collection_command(tmp_path, **changes):
     model = tmp_path / "model with spaces"
     model.mkdir()
     (model / "config.json").write_text(
@@ -450,9 +452,187 @@ def _local_collection_command(tmp_path):
     )
     request_path = tmp_path / "request.yaml"
     root = tmp_path / "plan"
-    assert cli.main(_init_args(request_path, model=model)) == 0
+    assert cli.main(_init_args(request_path, model=model, **changes)) == 0
     assert cli.main(["onboard", "plan", "-c", str(request_path), "--output-dir", str(root)]) == 0
     return ["onboard", "collect-fpm", "-c", str(request_path), "--output-dir", str(root), "--execute"]
+
+
+def _synthetic_collector(monkeypatch, version):
+    """Exercise real collection, provenance validation, and publication without GPUs."""
+    from collector.fpm_forward import planner, runner
+
+    executions = []
+
+    def render_cell(_plan, _cell, cell_dir, _overrides, **_kwargs):
+        (cell_dir / "k8s_deploy.yaml").write_text("apiVersion: v1\nkind: Pod\nmetadata:\n  name: test-cell\n")
+        for name in ("run.sh", "fpm_env.sh", "collector-runtime-env.sh"):
+            (cell_dir / name).write_text("#!/bin/sh\n")
+
+    class LocalResource:
+        def __init__(self, _manifest, cell_dir):
+            self.cell = json.loads((cell_dir / "cell.json").read_text())
+            self.raw = cell_dir / "raw/pod-0"
+
+        def apply(self):
+            self.raw.mkdir(parents=True)
+
+        def wait_ready(self, _expected_nodes):
+            return ["pod-0"]
+
+        def stage(self, _pods, _files):
+            pass
+
+        def prepare_attempt(self, _pods, **identity):
+            (self.raw / "collector-provenance.json").write_text(
+                json.dumps(
+                    {
+                        "schema_name": "aic_fpm_collector_provenance",
+                        "schema_version": 1,
+                        **identity,
+                        "runtime": {"backend": "vllm", "backend_version": version},
+                    }
+                )
+            )
+
+        def execute(self, _pods):
+            executions.append(self.cell["cell_id"])
+            phase = self.cell["workload_kind"]
+            prefill = int(phase == "prefill")
+            point = {
+                "point_type": phase,
+                "benchmark_id": 1,
+                "batch_size": 1,
+                "total_prefill_tokens": prefill,
+                "total_kv_read_tokens": 1,
+            }
+            fpm = {
+                "counter_id": 1,
+                "dp_rank": 0,
+                "wall_time": 0.01,
+                "scheduled_requests": {
+                    "num_prefill_requests": prefill,
+                    "sum_prefill_tokens": prefill,
+                    "sum_prefill_kv_tokens": prefill,
+                    "num_decode_requests": 1 - prefill,
+                    "sum_decode_kv_tokens": 1 - prefill,
+                },
+            }
+            (self.raw / "benchmark.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": 2,
+                        "artifact_type": "rank",
+                        "status": "complete",
+                        "valid": True,
+                        "usable": True,
+                        "timing_valid": True,
+                        "run_id": "synthetic-run",
+                        "grid_digest": "synthetic-grid",
+                        "config": {"mode": phase},
+                        "coverage": {"expected_points": 1, "completed_points": 1, "skipped_points": 0},
+                        "dp": {"rank": 0, "size": 1},
+                        "results": [{"point": point, "fpms": [fpm]}],
+                        "iteration_groups": [
+                            {
+                                "benchmark_id": 1,
+                                "point": point,
+                                "expected_dp_ranks": [0],
+                                "complete": True,
+                                "wall_time": 0.01,
+                                "rank_results": [{"dp_rank": 0, "fpms": [fpm]}],
+                            }
+                        ],
+                        "skipped_points": [],
+                        "missing_phases": [],
+                        "timing": {"benchmark_elapsed_seconds": 1.0, "measured_iteration_seconds": 0.01},
+                        "kvwarm": {"enabled": True, "warm_eligible": True, "skip_reason": None},
+                    }
+                )
+            )
+
+        def collect(self, _pods, *, require_benchmark=True):
+            pass
+
+        def cleanup(self):
+            pass
+
+    monkeypatch.setattr(planner, "_git_revision", lambda: "test-source-revision")
+    monkeypatch.setattr(runner, "_render_cell", render_cell)
+    monkeypatch.setattr(runner, "KubernetesCellRunner", LocalResource)
+    return executions
+
+
+@pytest.mark.parametrize("smoke", [False, True])
+@pytest.mark.parametrize(
+    "declared,observed",
+    [
+        ("0.25.1", "0.25.1"),
+        ("0.25.1", "0.25.1+cu128"),
+        ("0.25.1", "0.26.0"),
+        ("0.25.1+cu128", "0.25.1+cu128"),
+    ],
+)
+def test_formal_collection_checks_published_version_and_preserves_evidence_on_resume(
+    tmp_path, monkeypatch, capsys, smoke, declared, observed
+):
+    executions = _synthetic_collector(monkeypatch, observed)
+    command = _local_collection_command(tmp_path, framework_version=declared)
+    root = tmp_path / "plan"
+    if declared != observed:
+        command += ["--checkpoint-dir", str(root / "fpm-checkpoint/custom")]
+    if smoke:
+        command += ["--smoke", "--limit", "1"]
+    capsys.readouterr()
+    expected = int(not smoke and declared != observed)
+
+    assert cli.main(command) == expected
+
+    stderr = capsys.readouterr().err
+    if expected:
+        assert f"pod-reported vllm version {observed!r}" in stderr
+        assert f"framework_version {declared!r}" in stderr
+        assert "preserved" in stderr
+        assert "new plan" in stderr
+        assert "Traceback" not in stderr
+    provenance = list((root / "fpm-artifacts").rglob("collector-provenance.json"))
+    assert provenance
+    assert {json.loads(path.read_text())["runtime"]["backend_version"] for path in provenance} == {observed}
+    metadata = root / "systems/data/h200_sxm/vllm" / observed / "fpm_forward_perf.metadata.json"
+    if smoke:
+        assert not list((root / "systems/data").iterdir())
+    else:
+        assert json.loads(metadata.read_text())["backend_version"] == observed
+        if declared != observed:
+            # A stale matching directory must not hide this campaign's different runtime.
+            (root / "systems/data/h200_sxm/vllm" / declared).mkdir()
+    preserved = {
+        path: path.read_bytes() for path in root.rglob("*") if path.is_file() and path.name not in {"run-manifest.json"}
+    }
+    initial_executions = executions.copy()
+
+    assert cli.main([*command, "--resume"]) == expected
+    assert executions == initial_executions
+    assert all(path.read_bytes() == contents for path, contents in preserved.items())
+    if not smoke:
+        # A completed formal checkpoint remains resumable after raw-artifact reclamation.
+        for path in provenance:
+            shutil.rmtree(path.parent.parent)
+        assert cli.main([*command, "--resume"]) == expected
+        assert executions == initial_executions
+        assert metadata.read_bytes() == preserved[metadata]
+
+
+def test_formal_collection_requires_publication_evidence(tmp_path, monkeypatch, capsys):
+    from collector.fpm_forward import runner
+
+    command = _local_collection_command(tmp_path)
+    monkeypatch.setattr(runner, "run_collection", lambda *args, **kwargs: [])
+    capsys.readouterr()
+
+    assert cli.main(command) == 1
+    stderr = capsys.readouterr().err
+    assert "aisimulate onboard collect-fpm failed:" in stderr
+    assert "Traceback" not in stderr
 
 
 def test_deployment_options_reach_frozen_collector_plan(tmp_path, monkeypatch):
@@ -462,6 +642,7 @@ def test_deployment_options_reach_frozen_collector_plan(tmp_path, monkeypatch):
     monkeypatch.setattr(runner, "run_collection", lambda plan, **kwargs: calls.append((plan, kwargs)) or [])
     command = _local_collection_command(tmp_path)
     command += [
+        "--smoke",
         "--dynamo-version",
         "1.2.0",
         "--image",
@@ -539,8 +720,8 @@ def test_deployment_options_reject_invalid_or_unrestricted_inputs(tmp_path, caps
 def test_deployment_resume_requires_the_same_frozen_identity(tmp_path, monkeypatch, capsys, option, first, changed):
     from collector.fpm_forward import planner, runner
 
-    command = [*_local_collection_command(tmp_path), option, first]
-    checkpoint = tmp_path / "plan/fpm-checkpoint/fpm_forward.json"
+    command = [*_local_collection_command(tmp_path), "--smoke", option, first]
+    checkpoint = tmp_path / "plan/fpm-checkpoint/fpm_forward_smoke.json"
     plans = []
     actual_run = runner.run_collection
 
@@ -604,6 +785,26 @@ def test_collector_failures_keep_public_cli_exit_codes(tmp_path, monkeypatch, ca
     assert "Traceback" not in stderr
     if stage == "execution" and error_type is not KeyboardInterrupt:
         assert "aisimulate onboard collect-fpm failed: test collection failure" in stderr
+
+
+@pytest.mark.parametrize("error_type", [ImportError, KeyboardInterrupt])
+def test_collector_import_failures_keep_public_cli_exit_codes(tmp_path, monkeypatch, capsys, error_type):
+    command = _local_collection_command(tmp_path)
+    real_import = builtins.__import__
+
+    def fail_collector_import(name, *args, **kwargs):
+        if name == "collector.fpm_forward.cli":
+            raise error_type("collector dependency unavailable")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fail_collector_import)
+    capsys.readouterr()
+
+    assert cli.main(command) == (130 if error_type is KeyboardInterrupt else 1)
+    stderr = capsys.readouterr().err
+    assert "Traceback" not in stderr
+    if error_type is ImportError:
+        assert "aisimulate onboard collect-fpm failed: collector dependency unavailable" in stderr
 
 
 def test_malformed_resumed_checkpoint_fails_cleanly_without_launching_collection(tmp_path, capsys):

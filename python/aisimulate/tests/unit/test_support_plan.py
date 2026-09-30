@@ -14,7 +14,10 @@ import select
 import shlex
 import subprocess
 import sys
+import zipfile
 from contextlib import contextmanager
+from importlib.machinery import PathFinder
+from importlib.resources import files
 from pathlib import Path
 from typing import ClassVar
 
@@ -177,6 +180,7 @@ def test_plan_does_not_resolve_unknown_model_and_reloads_public_configs(tmp_path
         "attention_data": 1,
         "moe_tensor": 4,
         "moe_expert": 1,
+        "decode_context": None,
     }
     assert recommendation.engine.workers.aggregated.timing.estimation_mode == "fpm_interpolation"
     assert recommendation.engine.workers.aggregated.timing.fallback_policy == "deny"
@@ -209,6 +213,8 @@ blocked = ("aisimulate._runtime", "aisimulate_core._native", "aisimulate_core.sd
 
 class NoEstimatorRuntime(importlib.abc.MetaPathFinder):
     def find_spec(self, fullname, path=None, target=None):
+        if fullname == "aisimulate_core":
+            return None  # Resource lookup may inspect the package spec without importing it.
         assert not any(fullname == name or fullname.startswith(name + ".") for name in blocked), fullname
 
 sys.meta_path.insert(0, NoEstimatorRuntime())
@@ -474,9 +480,12 @@ def test_prefill_bounds_follow_concurrent_workload_and_collector_minimum(tmp_pat
         {"identity": {"tokenizer_revision": "tokenizer-v2"}},
     ],
 )
-def test_overwrite_rejects_different_requests_without_touching_data(tmp_path, updates):
+@pytest.mark.parametrize("complete", [False, True])
+def test_overwrite_rejects_different_requests_without_touching_data(tmp_path, updates, complete):
     request = _request()
     create_plan(request, tmp_path)
+    if not complete:
+        (tmp_path / "support-plan.json").unlink()
     data = tmp_path / "systems/data/collected.parquet"
     data.write_bytes(b"timings")
     before = {str(p.relative_to(tmp_path)): p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
@@ -504,9 +513,12 @@ def test_same_request_overwrite_preserves_timings_and_rejects_modified_inputs(tm
 
 
 @pytest.mark.parametrize("modification", ["retired_command", "missing_execute", "formatting"])
-def test_overwrite_rejects_modified_commands_before_repairing_missing_files(tmp_path, modification):
+@pytest.mark.parametrize("complete", [False, True])
+def test_overwrite_rejects_modified_commands_before_repairing_missing_files(tmp_path, modification, complete):
     request = _request()
     create_plan(request, tmp_path)
+    if not complete:
+        (tmp_path / "support-plan.json").unlink()
     command_file = tmp_path / "commands.json"
     commands = json.loads(command_file.read_text())
     if modification == "retired_command":
@@ -524,6 +536,51 @@ def test_overwrite_rejects_modified_commands_before_repairing_missing_files(tmp_
     with pytest.raises(ValueError, match="generated plan input .*commands.json was modified"):
         create_plan(request, tmp_path, overwrite=True)
     assert _file_contents(tmp_path) == before_repair
+
+
+@pytest.mark.parametrize("layout", ["directory", "zip"])
+def test_plan_copies_system_specification_from_core_package_resources(tmp_path, monkeypatch, layout):
+    from aisimulate.support import plan
+
+    system_spec = files("aisimulate_core").joinpath("systems", "h200_sxm.yaml").read_bytes()
+    system_spec += b"\n# Packaged separately from the onboarding module.\n"
+    package_init = "raise AssertionError('reading system resources must not execute the core package')\n"
+    if layout == "directory":
+        distribution = tmp_path / "separate-core-package"
+        package = distribution / "aisimulate_core"
+        (package / "systems").mkdir(parents=True)
+        (package / "__init__.py").write_text(package_init)
+        (package / "systems/h200_sxm.yaml").write_bytes(system_spec)
+    else:
+        distribution = tmp_path / "core.zip"
+        with zipfile.ZipFile(distribution, "w") as handle:
+            handle.writestr("aisimulate_core/__init__.py", package_init)
+            handle.writestr("aisimulate_core/systems/h200_sxm.yaml", system_spec)
+    package_spec = PathFinder.find_spec("aisimulate_core", [str(distribution)])
+    assert package_spec is not None
+
+    def core_spec(name):
+        assert name == "aisimulate_core"
+        return package_spec
+
+    monkeypatch.setattr(plan, "find_spec", core_spec)
+    root = tmp_path / "plan"
+
+    create_plan(_request(), root)
+
+    assert (root / "systems/h200_sxm.yaml").read_bytes() == system_spec
+
+
+def test_missing_core_package_is_rejected_before_creating_outputs(tmp_path, monkeypatch):
+    from aisimulate.support import plan
+
+    monkeypatch.setattr(plan, "find_spec", lambda name: None)
+    root = tmp_path / "plan"
+
+    with pytest.raises(ValueError, match="aisimulate_core package resources"):
+        create_plan(_request(), root)
+
+    assert not root.exists()
 
 
 def test_new_gpu_is_rejected_before_creating_outputs(tmp_path):
@@ -753,13 +810,16 @@ def test_invalid_limited_collection_fails_before_preview_or_execution(tmp_path, 
         run_fpm(_request(), output_dir=tmp_path, smoke=smoke, limit=limit)
 
 
-def test_plan_rejects_symlinked_output_without_touching_target(tmp_path):
+@pytest.mark.parametrize("complete", [False, True])
+def test_plan_rejects_symlinked_output_without_touching_target(tmp_path, complete):
     external = tmp_path / "external"
     external.mkdir()
     data = external / "collected.parquet"
     data.write_bytes(b"timings")
     root = tmp_path / "plan"
     create_plan(_request(), root)
+    if not complete:
+        (root / "support-plan.json").unlink()
     (root / "systems/data").rmdir()
     (root / "systems/data").symlink_to(external, target_is_directory=True)
     with pytest.raises(ValueError, match="symlink"):
@@ -898,3 +958,104 @@ def test_racing_writer_cannot_be_overwritten_or_reported_as_success(tmp_path, mo
     assert not (tmp_path / "support-plan.json").exists()
     with plan_lock(tmp_path):
         pass
+
+    before_repair = _file_contents(tmp_path)
+    with pytest.raises(ValueError, match="generated plan input .*pilot.yaml was modified"):
+        create_plan(_request(), tmp_path, overwrite=True)
+    assert _file_contents(tmp_path) == before_repair
+
+    monkeypatch.setattr(Path, "open", original_open)
+    destination.unlink()
+    create_plan(_request(), tmp_path, overwrite=True)
+    assert CorePredictionConfig.from_yaml(destination).engine.model == _request().identity.model
+
+
+@pytest.mark.parametrize(
+    "interrupted_file",
+    ["predict/pilot.yaml", "recommend/pilot.yaml", "systems/h200_sxm.yaml", "commands.json", "support-plan.json"],
+)
+def test_overwrite_repairs_interrupted_plan_and_preserves_existing_outputs(tmp_path, monkeypatch, interrupted_file):
+    request = _request()
+    original_open = Path.open
+
+    def interrupted_open(path, mode="r", *args, **kwargs):
+        if path == tmp_path / interrupted_file and mode == "xb":
+            raise InterruptedError("interrupted plan generation")
+        return original_open(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", interrupted_open)
+    with pytest.raises(InterruptedError):
+        create_plan(request, tmp_path)
+    monkeypatch.setattr(Path, "open", original_open)
+    assert SupportRequest.from_yaml(tmp_path / "request.yaml") == request
+    assert not (tmp_path / "support-plan.json").exists()
+    (tmp_path / "systems/data").mkdir(parents=True, exist_ok=True)
+    _seed_campaign(tmp_path)
+    before_repair = _file_contents(tmp_path)
+
+    with pytest.raises(ValueError, match="nonempty"):
+        create_plan(request, tmp_path)
+    _reject_collector_import(monkeypatch)
+    with pytest.raises(ValueError, match="readable onboarding plan"):
+        run_fpm(request, execute=True, resume=True, output_dir=tmp_path)
+    assert _file_contents(tmp_path) == before_repair
+
+    repaired = create_plan(request, tmp_path, overwrite=True)
+
+    assert json.loads((tmp_path / "support-plan.json").read_text()) == repaired
+    assert repaired["request_id"] == request_id(request)
+    assert CorePredictionConfig.from_yaml(tmp_path / "predict/pilot.yaml").engine.model == request.identity.model
+    assert CoreRecommendationConfig.from_yaml(tmp_path / "recommend/pilot.yaml").engine.model == request.identity.model
+    assert json.loads((tmp_path / "commands.json").read_text())["fpm_run_local"][1:3] == ["onboard", "collect-fpm"]
+    assert (tmp_path / "systems/h200_sxm.yaml").is_file()
+    assert {name: (tmp_path / name).read_bytes() for name in before_repair} == before_repair
+    assert create_plan(request, tmp_path, overwrite=True) == repaired
+
+
+def test_plan_can_restart_after_interruption_before_saved_request(tmp_path, monkeypatch):
+    original_open = Path.open
+
+    def interrupted_open(path, mode="r", *args, **kwargs):
+        if path == tmp_path / "request.yaml" and mode == "xb":
+            raise InterruptedError("interrupted plan generation")
+        return original_open(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", interrupted_open)
+    with pytest.raises(InterruptedError):
+        create_plan(_request(), tmp_path)
+    monkeypatch.setattr(Path, "open", original_open)
+
+    assert [path.name for path in tmp_path.iterdir()] == [".support.lock"]
+    assert create_plan(_request(), tmp_path)["request_id"] == request_id(_request())
+
+
+@pytest.mark.parametrize("metadata", ["invalid JSON", "{}", '{"request_id": "another-request"}'])
+def test_overwrite_rejects_existing_invalid_metadata_before_repair(tmp_path, metadata):
+    request = _request()
+    create_plan(request, tmp_path)
+    (tmp_path / "support-plan.json").write_text(metadata)
+    (tmp_path / "predict/pilot.yaml").unlink()
+    before_repair = _file_contents(tmp_path)
+
+    with pytest.raises(ValueError, match="readable onboarding plan|request identity"):
+        create_plan(request, tmp_path, overwrite=True)
+
+    assert _file_contents(tmp_path) == before_repair
+
+
+@pytest.mark.parametrize("saved_request", [None, "identity: broken\n"])
+def test_overwrite_requires_frozen_request_for_interrupted_plan(tmp_path, saved_request):
+    request = _request()
+    create_plan(request, tmp_path)
+    (tmp_path / "support-plan.json").unlink()
+    request_path = tmp_path / "request.yaml"
+    if saved_request is None:
+        request_path.unlink()
+    else:
+        request_path.write_text(saved_request)
+    before_repair = _file_contents(tmp_path)
+
+    with pytest.raises(ValueError, match="saved request"):
+        create_plan(request, tmp_path, overwrite=True)
+
+    assert _file_contents(tmp_path) == before_repair
