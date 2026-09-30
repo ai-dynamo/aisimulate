@@ -171,8 +171,11 @@ class Driver:
             before = [r.num_computed_tokens for r in self._requests(prefix)]
             if before != [length - 1] * batch:
                 raise RuntimeError(f"decode seed computed {before}, planned {length - 1}")
+            replays = {s["full_replays"] for s in self.rpc("rpc_status")}
+            if len(replays) != 1:
+                raise RuntimeError(f"workers disagree on FULL replay counts {replays}")
             self.engine.step()
-            result = self.rpc("rpc_measure_decode", target)
+            result = self.rpc("rpc_measure_decode", target, replays.pop())
             if self.engine.has_unfinished_requests():
                 raise RuntimeError("decode request set did not finish after its measured step")
             progress(
