@@ -1017,6 +1017,7 @@ def test_recommendation_invokes_selected_output_adapter(tmp_path, monkeypatch, c
             entry_points=[],
         ),
     )
+
     def run_recommendation(*args, **kwargs):
         del args
         recommendation_kwargs.update(kwargs)

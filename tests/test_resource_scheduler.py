@@ -71,9 +71,7 @@ def test_checkpoint_failure_stops_before_workers_without_reclassifying_candidate
     from aisimulate import resource_scheduler as scheduler
 
     factory = _BudgetFactory()
-    failure = ResourceLimitError(
-        "execution evidence exceeds the bounded checkpoint budget"
-    )
+    failure = ResourceLimitError("execution evidence exceeds the bounded checkpoint budget")
 
     def fail_checkpoint(event, plan):
         raise failure
@@ -127,9 +125,7 @@ class _EstimateFactory:
 def test_whole_wave_reserves_sum_against_one_live_snapshot(monkeypatch):
     from aisimulate import resources
 
-    monkeypatch.setattr(
-        resources, "discover_host", lambda: HostResources(16 * GB, 9 * GB, 8)
-    )
+    monkeypatch.setattr(resources, "discover_host", lambda: HostResources(16 * GB, 9 * GB, 8))
     factory = GuardedRunnerFactory(_EstimateFactory(), "custom", ResourceConfig())
     spec = SimpleNamespace(workload={}, concurrency=1)
     assert factory.admit_wave([spec])["status"] == "admitted"
@@ -137,9 +133,7 @@ def test_whole_wave_reserves_sum_against_one_live_snapshot(monkeypatch):
         factory.admit_wave([spec, spec])
     assert caught.value.plan["required_bytes"] == 12 * GB
     assert caught.value.plan["available_bytes"] < 8 * GB
-    monkeypatch.setattr(
-        resources, "discover_host", lambda: HostResources(16 * GB, 6 * GB, 8)
-    )
+    monkeypatch.setattr(resources, "discover_host", lambda: HostResources(16 * GB, 6 * GB, 8))
     with pytest.raises(ResourceLimitError):
         factory.admit_wave([spec])
 
