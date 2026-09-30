@@ -756,7 +756,9 @@ def test_plan_carries_explicit_formal_observer_flags_and_execution_requires_acce
         return 0
 
     monkeypatch.setattr(entry, "run_resolved", lambda *_: fake_collect(commands[-1]) or [])
-    assert cli.main(execute) == 0
+    # The observer mock supplies memory evidence but no published timing pair.
+    assert cli.main(execute) == 1
+    assert "completed FPM database publication" in capsys.readouterr().err
     comparison = json.loads((root / "runtime-compatibility.json").read_text())
     assert comparison["compatibility"]["status"] == "compatible"
     assert comparison["compatibility"]["accepted_capacity_bytes"] == 948 * 128

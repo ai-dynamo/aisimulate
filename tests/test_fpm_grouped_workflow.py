@@ -456,9 +456,9 @@ def test_public_predict_uses_group_bytes_with_tp_and_dep(grouped_case, tmp_path,
 
 def test_public_predict_does_not_clamp_logical_context_to_window(grouped_case, tmp_path):
     profile, root = grouped_case
-    # Window-only allocation is bounded, but a decode at context 1152 must ask
-    # for 1151 past KV tokens plus its current input. A table ending at 512 must fail, not return a
-    # plausible short-context result or shrink the physical byte budget.
+    # Window-only allocation is bounded, but the first decode after the
+    # prefill-emitted token must read all 1152 prompt KV tokens. A table ending
+    # at 512 must fail, not shrink the logical context or physical byte budget.
     for deployment in profile["deployments"]:
         deployment["resources"]["cache_groups"] = deployment["resources"]["cache_groups"][1:]
     _write_timings(root, profile, decode_ceiling=512)
@@ -471,7 +471,7 @@ def test_public_predict_does_not_clamp_logical_context_to_window(grouped_case, t
     assert cli.main(["predict", "-c", str(path), "--output-dir", str(output)]) != 0
     coverage = json.loads((output / "fpm-coverage.json").read_text())
     gaps = coverage["roles"][0]["coverage"]["gaps"]
-    assert any(gap["coordinates"]["total_kv_read_tokens"] == 1151 for gap in gaps)
+    assert any(gap["coordinates"]["total_kv_read_tokens"] == 1152 for gap in gaps)
 
 
 @pytest.mark.parametrize("relative_load", [False, True])
