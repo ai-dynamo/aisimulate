@@ -28,6 +28,7 @@ from accuracy_digest import compare, decode_points, e2e_snapshot, fpm_snapshot, 
 from prepare_e2e_accuracy_pages import (
     api,
     api_items,
+    artifact_key,
     strict_json,
     unpack_artifact,
     validate_artifact,
@@ -94,7 +95,7 @@ def rules_digest(kind, sha):
             "scripts/fetch_accuracy_measurements.py",
         ]
         if kind == "e2e"
-        else ["scripts/run_fpm_accuracy.py", "scripts/fpm_accuracy"]
+        else ["scripts/run_fpm_accuracy.py", "scripts/fpm_accuracy", "scripts/accuracy_digest.py"]
     )
     paths += [f".github/workflows/{kind}-accuracy-branch.yml"]
     exists = subprocess.run(["git", "cat-file", "-e", sha], capture_output=True)
@@ -145,7 +146,7 @@ def fpm_points(archive, summary, public_archive):
     return data["points"]
 
 
-def load_snapshots(kind, run, *, allow_manual_branch=False):
+def load_snapshots(kind, run, *, allow_manual_branch=False, only_branch=None):
     """Validate each artifact against its original attempt, including preserved retry successes."""
     if not run or run["status"] != "completed":
         return {}, []
@@ -153,7 +154,10 @@ def load_snapshots(kind, run, *, allow_manual_branch=False):
     artifacts = api_items(f"actions/runs/{run['id']}/artifacts", "artifacts")
     companions = {a["name"]: a for a in artifacts if not a["expired"]}
     snapshots, warnings, attempts = {}, [], {}
+    wanted = None if only_branch is None else f"{kind}-accuracy-web-{artifact_key(only_branch)}"
     for artifact in artifacts:
+        if wanted is not None and artifact["name"] != wanted:
+            continue
         if not re.fullmatch(kind + r"-accuracy-web-[0-9a-f]{16}", artifact["name"]):
             continue
         try:
@@ -283,7 +287,7 @@ def initial_baseline(kind, branch, day):
         if report_day(listed) >= day or listed["status"] != "completed":
             continue
         run = api(f"actions/runs/{listed['id']}")
-        found, _ = load_snapshots(kind, run)
+        found, _ = load_snapshots(kind, run, only_branch=branch)
         if branch in found:
             return found[branch]
     return None

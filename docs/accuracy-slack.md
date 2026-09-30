@@ -54,10 +54,13 @@ alert details in the thread. Every numerical MAPE value includes `%`.
 For each branch:
 
 - Start with the most recent earlier qualified scheduled campaign in the retained
-  90-day history. Without one, explicitly report an initial baseline.
+  90-day history. Download only the requested branch's artifact and comparison
+  evidence during this search. Without one, explicitly report an initial baseline.
 - Require identical measurement revision/content and evaluation-rule fingerprints.
   The rule fingerprint covers evaluator source and its branch workflow at the
-  producer revision, not the evaluated AISimulate package revision. A change
+  producer revision, not the evaluated AISimulate package revision. The FPM
+  fingerprint includes `scripts/accuracy_digest.py`, which supplies its point
+  codec. A change
   establishes a new baseline and reports comparison unavailable, not recovery.
 - Compare each E2E topology/configuration and FPM configuration/predictor on the
   intersection of successfully predicted points. Alert when MAPE increases by
@@ -76,7 +79,8 @@ FPM previously retained only aggregates, which cannot detect exchanged successfu
 and failed points. The producer now writes a separate
 `fpm-accuracy-comparison-<branch-key>` artifact containing a hash of observation order
 and compressed little-endian float64 percentage-error sequences (-1 for unsuccessful predictions). It binds
-to the public summary checksum and exact producer snapshot. The notifier verifies
+to the public summary checksum and exact producer snapshot. Reruns overwrite
+both public and comparison artifacts so their attempt identities stay aligned. The notifier verifies
 counts and means against that qualified summary. No raw measured/predicted
 latencies are exported. Existing Pages artifacts remain unchanged. Old FPM runs
 without point evidence can be displayed, but point regression checks are explicitly

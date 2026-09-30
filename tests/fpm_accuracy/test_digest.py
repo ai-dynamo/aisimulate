@@ -411,3 +411,113 @@ def test_slack_reads_use_query_parameters_without_empty_cursor(monkeypatch, meth
     assert calls[0].get_method() == "GET"
     assert calls[0].data is None
     assert parse_qs(urlsplit(calls[0].full_url).query) == {"channel": ["C123"], "include_all_metadata": ["true"]}
+
+
+@pytest.mark.parametrize("kind", ["e2e", "fpm"])
+@pytest.mark.parametrize("has_target", [False, True])
+def test_baseline_branch_filter_skips_unrelated_downloads(monkeypatch, kind, has_target):
+    target = f"{kind}-accuracy-web-{pages.artifact_key('main')}"
+    artifacts = [{"id": 1, "name": f"{kind}-accuracy-web-{pages.artifact_key('release/0.12.0')}", "expired": False}]
+    if has_target:
+        artifacts.append({"id": 2, "name": target, "expired": False})
+    downloads = []
+    monkeypatch.setattr(notify, "validate_run", lambda *args, **kwargs: None)
+    monkeypatch.setattr(notify, "api_items", lambda *args: artifacts)
+
+    def download(path, **kwargs):
+        downloads.append(path)
+        raise ValueError("target artifact validation failed")
+
+    monkeypatch.setattr(notify, "api", download)
+    found, warnings = notify.load_snapshots(kind, {"id": 7, "status": "completed"}, only_branch="main")
+    assert not found
+    assert downloads == (["actions/artifacts/2/zip"] if has_target else [])
+    assert bool(warnings) is has_target
+
+
+def test_initial_baseline_filters_branch_and_stops_at_newest_match(monkeypatch):
+    runs = [
+        {"id": 3, "status": "completed", "created_at": "2026-09-28T10:00:00Z"},
+        {"id": 2, "status": "completed", "created_at": "2026-09-27T10:00:00Z"},
+        {"id": 1, "status": "completed", "created_at": "2026-09-26T10:00:00Z"},
+    ]
+    calls = []
+    monkeypatch.setattr(notify, "scheduled_runs", lambda *args: iter(runs))
+    monkeypatch.setattr(notify, "api", lambda path: next(r for r in runs if path.endswith(str(r["id"]))))
+
+    def snapshots(kind, run, *, only_branch):
+        calls.append((run["id"], only_branch))
+        return ({"main": "latest qualified"} if run["id"] == 2 else {}), []
+
+    monkeypatch.setattr(notify, "load_snapshots", snapshots)
+    assert notify.initial_baseline("e2e", "main", date(2026, 9, 29)) == "latest qualified"
+    assert calls == [(3, "main"), (2, "main")]
+
+
+def test_slack_history_follows_populated_cursor(monkeypatch):
+    queries = []
+
+    def respond(request, **kwargs):
+        assert request.get_method() == "GET"
+        queries.append(parse_qs(urlsplit(request.full_url).query))
+        result = {"ok": True, "messages": [{"ts": str(len(queries))}]}
+        if len(queries) == 1:
+            result["response_metadata"] = {"next_cursor": "history+cursor="}
+        return io.BytesIO(json.dumps(result).encode())
+
+    monkeypatch.setattr(notify.urllib.request, "urlopen", respond)
+    messages = list(notify.Slack("fake", "C123").history(date(2026, 9, 29)))
+    assert [message["ts"] for message in messages] == ["1", "2"]
+    assert "cursor" not in queries[0]
+    assert queries[1]["cursor"] == ["history+cursor="]
+    assert queries[0]["oldest"] == queries[1]["oldest"]
+
+
+def test_slack_resume_reads_all_reply_pages_before_posting(monkeypatch):
+    queries = []
+    slack = notify.Slack("fake", "C123")
+    monkeypatch.setattr(slack, "existing", lambda day: {"ts": "1"})
+
+    def respond(request, **kwargs):
+        assert request.get_method() == "GET", "both existing replies must be discovered without reposting"
+        assert urlsplit(request.full_url).path.endswith("conversations.replies")
+        queries.append(parse_qs(urlsplit(request.full_url).query))
+        part = str(len(queries) - 1)
+        result = {
+            "ok": True,
+            "messages": [{"metadata": {"event_type": "aisim_accuracy_detail", "event_payload": {"part": part}}}],
+        }
+        if len(queries) == 1:
+            result["response_metadata"] = {"next_cursor": "reply+cursor="}
+        return io.BytesIO(json.dumps(result).encode())
+
+    monkeypatch.setattr(notify.urllib.request, "urlopen", respond)
+    assert slack.send({"day": "2026-09-29", "root": "Daily", "replies": ["first", "second"]})
+    assert len(queries) == 2
+    assert "cursor" not in queries[0]
+    assert queries[1]["cursor"] == ["reply+cursor="]
+    assert queries[1]["ts"] == ["1"]
+
+
+def test_actual_reusable_job_names_discover_missing_branch(monkeypatch):
+    # Names observed on runs 36643620072 and 36558333115 include the called job suffix.
+    monkeypatch.setattr(
+        notify, "pipeline_status", lambda *args, **kwargs: ({"url": "https://example.com", "status": "success"}, [])
+    )
+    monkeypatch.setattr(notify, "load_snapshots", lambda *args, **kwargs: ({"main": snapshot({"a": [1, 1]})}, []))
+    monkeypatch.setattr(
+        notify,
+        "api_items",
+        lambda *args: [
+            {"name": "E2E accuracy (main) / Prepare exact accuracy wheel"},
+            {"name": "E2E accuracy (release/0.12.0) / Qualify E2E accuracy (cb21c32489602c02)"},
+        ],
+    )
+    report = notify.build_report(
+        date(2026, 9, 29),
+        {"e2e": {"id": 1, "status": "completed", "conclusion": "success"}},
+        {},
+        datetime.now(UTC),
+        historical=False,
+    )
+    assert report["alerts"] == ["E2E release/0.12.0: no qualified result in today's run."]
