@@ -775,6 +775,7 @@ mod tests {
                 hidden_size: 4096,
                 hc_mult: 4,
                 sinkhorn_iters: 20,
+                measured: vec![],
             }),
             OpSpec::Glm53Router(crate::operators::Glm53RouterOp {
                 name: "router_3".into(),
@@ -806,6 +807,7 @@ mod tests {
                 shared_quant_mode: GemmQuantMode::Bfloat16,
                 moe_quant_mode: MoeQuantMode::Nvfp4,
                 children: vec![OpSpec::Gemm(gemm())],
+                measured: vec![],
             }),
             OpSpec::Glm53Primitive(crate::operators::Glm53PrimitiveOp {
                 name: "embedding".into(),
@@ -820,6 +822,7 @@ mod tests {
                 output_dtype: "bfloat16".into(),
                 collective: "none".into(),
                 children: vec![],
+                measured: vec![],
             }),
         ];
 
