@@ -17,7 +17,7 @@
  "capture_env": null,
  "capture_run_error": null,
  "serving_record": {
-  "id": "a2ce5a1afc2a",
+  "id": "275d2df413f2",
   "tp": 1,
   "kv_cache_dtype": "fp8",
   "isl": 4096,

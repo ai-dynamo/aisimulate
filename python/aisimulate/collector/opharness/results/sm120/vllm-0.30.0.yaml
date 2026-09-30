@@ -4,28 +4,28 @@ _meta:
   version: 0.30.0
   verdicts: pass = plain `cli generate` output boots+runs; pass+custom = boots with facts-derived extra generate args; fail = root-caused (see results/findings.yaml)
   summary:
-    pass: 100
-    pass+custom: 1
-    fail: 23
+    pass: 98
+    pass+custom: 7
+    fail: 19
 results:
   MiniMaxAI/MiniMax-M2:
     verdict: pass
     evidence: current
-    attention: flash::flash_fwd_splitkv_kernel
+    attention: fa2
     moe: Fp8MoE->deepgemm
     kv_allocated: auto
     topology: tp1
   MiniMaxAI/MiniMax-M2.5:
     verdict: pass
     evidence: current
-    attention: flash::flash_fwd_splitkv_kernel
+    attention: fa2
     moe: Fp8MoE->deepgemm
     kv_allocated: auto
     topology: tp1
   MiniMaxAI/MiniMax-M2.7:
     verdict: pass
     evidence: current
-    attention: flash::flash_fwd_splitkv_kernel
+    attention: fa2
     moe: Fp8MoE->deepgemm
     kv_allocated: auto
     topology: tp1
@@ -46,181 +46,181 @@ results:
   Qwen/Qwen1.5-MoE-A2.7B:
     verdict: pass
     evidence: current
-    attention: flash::flash_fwd_splitkv_kernel
+    attention: fa2
     moe: UnquantizedFusedMoE->flashinfer_cutlass
     kv_allocated: auto
     topology: tp1
   Qwen/Qwen3-0.6B:
     verdict: pass
     evidence: current
-    attention: flash::flash_fwd_splitkv_kernel
+    attention: fa2
     kv_allocated: auto
     topology: tp1
   Qwen/Qwen3-1.7B:
     verdict: pass
     evidence: current
-    attention: flash::flash_fwd_splitkv_kernel
+    attention: fa2
     kv_allocated: auto
     topology: tp1
   Qwen/Qwen3-235B-A22B:
     verdict: pass
     evidence: current
-    attention: flash::flash_fwd_splitkv_kernel
+    attention: fa2
     moe: UnquantizedFusedMoE->flashinfer_cutlass
     kv_allocated: auto
     topology: tp1
   Qwen/Qwen3-235B-A22B-FP8:
     verdict: pass
     evidence: current
-    attention: flash::flash_fwd_splitkv_kernel
+    attention: fa2
     moe: Fp8MoE->deepgemm
     kv_allocated: auto
     topology: tp1
   Qwen/Qwen3-235B-A22B-Instruct-2507:
     verdict: pass
     evidence: current
-    attention: flash::flash_fwd_splitkv_kernel
+    attention: fa2
     moe: UnquantizedFusedMoE->flashinfer_cutlass
     kv_allocated: auto
     topology: tp1
   Qwen/Qwen3-30B-A3B:
     verdict: pass
     evidence: current
-    attention: flash::flash_fwd_splitkv_kernel
+    attention: fa2
     moe: UnquantizedFusedMoE->flashinfer_cutlass
     kv_allocated: auto
     topology: tp1
   Qwen/Qwen3-30B-A3B-FP8:
     verdict: pass
     evidence: current
-    attention: flash::flash_fwd_splitkv_kernel
+    attention: fa2
     moe: Fp8MoE->deepgemm
     kv_allocated: auto
     topology: tp1
   Qwen/Qwen3-32B:
     verdict: pass
     evidence: current
-    attention: flash::flash_fwd_splitkv_kernel
+    attention: fa2
     kv_allocated: auto
     topology: tp1
   Qwen/Qwen3-32B-FP8:
     verdict: pass
     evidence: current
-    attention: flash::flash_fwd_splitkv_kernel
+    attention: fa2
     kv_allocated: auto
     topology: tp1
   Qwen/Qwen3-32B-FP8-Static-PerTensor:
     verdict: pass
     evidence: current
-    attention: flash::flash_fwd_splitkv_kernel
+    attention: fa2
     kv_allocated: auto
     topology: tp1
   Qwen/Qwen3-8B:
     verdict: pass
     evidence: current
-    attention: flash::flash_fwd_splitkv_kernel
+    attention: fa2
     kv_allocated: auto
     topology: tp1
   Qwen/Qwen3-Coder-480B-A35B-Instruct:
     verdict: pass
     evidence: current
-    attention: flash::flash_fwd_splitkv_kernel
+    attention: fa2
     moe: UnquantizedFusedMoE->flashinfer_cutlass
     kv_allocated: auto
     topology: tp1
   Qwen/Qwen3-VL-235B-A22B-Instruct:
     verdict: pass
     evidence: current
-    attention: flash::flash_fwd_splitkv_kernel
+    attention: fa2
     moe: UnquantizedFusedMoE->flashinfer_cutlass
     kv_allocated: auto
     topology: tp1
   Qwen/Qwen3-VL-2B-Instruct:
     verdict: pass
     evidence: current
-    attention: flash::flash_fwd_splitkv_kernel
+    attention: fa2
     kv_allocated: auto
     topology: tp1
   Qwen/Qwen3-VL-30B-A3B-Instruct:
     verdict: pass
     evidence: current
-    attention: flash::flash_fwd_splitkv_kernel
+    attention: fa2
     moe: UnquantizedFusedMoE->flashinfer_cutlass
     kv_allocated: auto
     topology: tp1
   Qwen/Qwen3-VL-32B-Instruct:
     verdict: pass
     evidence: current
-    attention: flash::flash_fwd_splitkv_kernel
+    attention: fa2
     kv_allocated: auto
     topology: tp1
   Qwen/Qwen3-VL-32B-Thinking:
     verdict: pass
     evidence: current
-    attention: flash::flash_fwd_splitkv_kernel
+    attention: fa2
     kv_allocated: auto
     topology: tp1
   Qwen/Qwen3-VL-4B-Instruct:
     verdict: pass
     evidence: current
-    attention: flash::flash_fwd_splitkv_kernel
+    attention: fa2
     kv_allocated: auto
     topology: tp1
   Qwen/Qwen3-VL-8B-Instruct:
     verdict: pass
     evidence: current
-    attention: flash::flash_fwd_splitkv_kernel
+    attention: fa2
     kv_allocated: auto
     topology: tp1
   Qwen/Qwen3.5-0.8B:
     verdict: pass
     evidence: current
-    attention: flash::flash_fwd_splitkv_combine_kernel + fused_recurrent_gated_delta_rule_packed_decode_kernel
+    attention: fa2 + fused_recurrent_gated_delta_rule_packed_decode_kernel
     kv_allocated: auto
     topology: tp1
   Qwen/Qwen3.5-122B-A10B:
     verdict: pass
     evidence: current
-    attention: flash::flash_fwd_splitkv_combine_kernel + fused_recurrent_gated_delta_rule_packed_decode_kernel
+    attention: fa2 + fused_recurrent_gated_delta_rule_packed_decode_kernel
     moe: UnquantizedFusedMoE->flashinfer_cutlass
     kv_allocated: auto
     topology: tp1
   Qwen/Qwen3.5-27B:
     verdict: pass
     evidence: current
-    attention: flash::flash_fwd_splitkv_kernel + fused_recurrent_gated_delta_rule_packed_decode_kernel
+    attention: fa2 + fused_recurrent_gated_delta_rule_packed_decode_kernel
     kv_allocated: auto
     topology: tp1
   Qwen/Qwen3.5-2B:
     verdict: pass
     evidence: current
-    attention: flash::flash_fwd_splitkv_combine_kernel + fused_recurrent_gated_delta_rule_packed_decode_kernel
+    attention: fa2 + fused_recurrent_gated_delta_rule_packed_decode_kernel
     kv_allocated: auto
     topology: tp1
   Qwen/Qwen3.5-35B-A3B:
     verdict: pass
     evidence: current
-    attention: flash::flash_fwd_splitkv_combine_kernel + fused_recurrent_gated_delta_rule_packed_decode_kernel
+    attention: fa2 + fused_recurrent_gated_delta_rule_packed_decode_kernel
     moe: UnquantizedFusedMoE->flashinfer_cutlass
     kv_allocated: auto
     topology: tp1
   Qwen/Qwen3.5-397B-A17B:
     verdict: pass
     evidence: current
-    attention: flash::flash_fwd_splitkv_combine_kernel + fused_recurrent_gated_delta_rule_packed_decode_kernel
+    attention: fa2 + fused_recurrent_gated_delta_rule_packed_decode_kernel
     moe: UnquantizedFusedMoE->flashinfer_cutlass
     kv_allocated: auto
     topology: tp1
   Qwen/Qwen3.5-4B:
     verdict: pass
     evidence: current
-    attention: flash::flash_fwd_splitkv_kernel + fused_recurrent_gated_delta_rule_packed_decode_kernel
+    attention: fa2 + fused_recurrent_gated_delta_rule_packed_decode_kernel
     kv_allocated: auto
     topology: tp1
   Qwen/Qwen3.5-9B:
     verdict: pass
     evidence: current
-    attention: flash::flash_fwd_splitkv_kernel + fused_recurrent_gated_delta_rule_packed_decode_kernel
+    attention: fa2 + fused_recurrent_gated_delta_rule_packed_decode_kernel
     kv_allocated: auto
     topology: tp1
   Qwen/Qwen3.8-2.4T-A95B:
@@ -236,13 +236,13 @@ results:
   Qwen/Qwen3.8-27B:
     verdict: pass
     evidence: current
-    attention: flash::flash_fwd_splitkv_kernel + fused_recurrent_gated_delta_rule_packed_decode_kernel
+    attention: fa2 + fused_recurrent_gated_delta_rule_packed_decode_kernel
     kv_allocated: auto
     topology: tp1
   Qwen/Qwen3.8-27B-FP8:
     verdict: pass
     evidence: current
-    attention: flash::flash_fwd_splitkv_kernel + fused_recurrent_gated_delta_rule_packed_decode_kernel
+    attention: fa2 + fused_recurrent_gated_delta_rule_packed_decode_kernel
     kv_allocated: auto
     topology: tp1
   Qwen/Qwen3.8-Flash-Next:
@@ -256,19 +256,19 @@ results:
   TokenRhythm/NeoHorse-1-9B:
     verdict: pass
     evidence: current
-    attention: flash::flash_fwd_splitkv_kernel + fused_recurrent_gated_delta_rule_packed_decode_kernel
+    attention: fa2 + fused_recurrent_gated_delta_rule_packed_decode_kernel
     kv_allocated: auto
     topology: tp1
   XiaomiMiMo/MiMo-7B-Base:
     verdict: pass
     evidence: current
-    attention: flash::flash_fwd_splitkv_kernel
+    attention: fa2
     kv_allocated: auto
     topology: tp1
   XiaomiMiMo/MiMo-V2-Flash:
     verdict: pass
     evidence: current
-    attention: kernel_unified_attention_diffkv
+    attention: triton
     moe: Fp8MoE->deepgemm
     kv_allocated: auto
     topology: tp1
@@ -299,14 +299,14 @@ results:
   deepseek-ai/DeepSeek-R1:
     verdict: pass
     evidence: current
-    attention: _fwd_grouped_kernel_stage1
+    attention: triton
     moe: Fp8MoE->deepgemm/triton
     kv_allocated: auto
     topology: tp1
   deepseek-ai/DeepSeek-V3:
     verdict: pass
     evidence: current
-    attention: _fwd_grouped_kernel_stage1
+    attention: triton
     moe: Fp8MoE->deepgemm/triton
     kv_allocated: auto
     topology: tp1
@@ -353,7 +353,7 @@ results:
   google/gemma-4-26B-A4B:
     verdict: pass
     evidence: current
-    attention: kernel_unified_attention
+    attention: triton
     moe: UnquantizedFusedMoE->flashinfer_cutlass
     kv_allocated: auto
     topology: tp1
@@ -365,59 +365,59 @@ results:
   meta-llama/Llama-4-Scout-17B-16E-Instruct:
     verdict: pass
     evidence: current
-    attention: flash::flash_fwd_splitkv_kernel
+    attention: fa2
     moe: UnquantizedFusedMoE->flashinfer_cutlass
     kv_allocated: auto
     topology: tp1
   meta-llama/Meta-Llama-3.1-405B:
     verdict: pass
     evidence: current
-    attention: flash::flash_fwd_splitkv_kernel
+    attention: fa2
     kv_allocated: auto
     topology: tp1
   meta-llama/Meta-Llama-3.1-70B:
     verdict: pass
     evidence: current
-    attention: flash::flash_fwd_splitkv_kernel
+    attention: fa2
     kv_allocated: auto
     topology: tp1
   meta-llama/Meta-Llama-3.1-8B:
     verdict: pass
     evidence: current
-    attention: flash::flash_fwd_splitkv_kernel
+    attention: fa2
     kv_allocated: auto
     topology: tp1
   meta-models/Muse-Glimmer-30B:
     verdict: pass
     evidence: current
-    attention: flash::flash_fwd_splitkv_kernel
+    attention: fa2
     kv_allocated: auto
     topology: tp1
   mistralai/Mixtral-8x22B-v0.1:
     verdict: pass
     evidence: current
-    attention: flash::flash_fwd_splitkv_kernel
+    attention: fa2
     moe: UnquantizedFusedMoE->flashinfer_cutlass
     kv_allocated: auto
     topology: tp1
   mistralai/Mixtral-8x7B-v0.1:
     verdict: pass
     evidence: current
-    attention: flash::flash_fwd_splitkv_kernel
+    attention: fa2
     moe: UnquantizedFusedMoE->flashinfer_cutlass
     kv_allocated: auto
     topology: tp1
   moonshotai/Kimi-K2-Instruct:
     verdict: pass
     evidence: current
-    attention: _fwd_grouped_kernel_stage1
+    attention: triton
     moe: Fp8MoE->deepgemm/triton
     kv_allocated: auto
     topology: tp1
   moonshotai/Kimi-K2.5:
     verdict: pass
     evidence: current
-    attention: _fwd_grouped_kernel_stage1
+    attention: triton
     moe: CompressedTensorsWNA16MoE->marlin/triton
     kv_allocated: auto
     topology: tp1
@@ -429,9 +429,13 @@ results:
     kv_allocated: auto
     topology: tp1
   nvidia/DeepSeek-V3.1-NVFP4:
-    verdict: fail
-    cause: 'platform limit (sm120 smem: TRITON_MLA fp8-KV decode)'
-    error: 'triton.runtime.errors.OutOfResources: out of resource: shared memory, Required: 102400, Hardware limit: 101376. Reducing block sizes or `num_stages` may help.'
+    verdict: pass+custom
+    extra_args: --generator-set params.agg.extra_cli_args=["--benchmark-mode","agg","--kv-cache-dtype","bfloat16"]
+    evidence: current
+    attention: triton
+    moe: ModelOptNvFp4FusedMoE->triton
+    kv_allocated: bfloat16
+    topology: tp1
   nvidia/DeepSeek-V3.2-NVFP4:
     verdict: pass
     evidence: current
@@ -493,28 +497,40 @@ results:
   nvidia/Gemma-4-26B-A4B-NVFP4:
     verdict: pass
     evidence: current
-    attention: kernel_unified_attention
+    attention: triton
     moe: ModelOptNvFp4FusedMoE
     kv_allocated: auto
     topology: tp1
   nvidia/Gemma-4-31B-IT-NVFP4:
     verdict: pass
     evidence: current
-    attention: kernel_unified_attention
+    attention: triton
     kv_allocated: auto
     topology: tp1
   nvidia/Kimi-K2.5-NVFP4:
-    verdict: fail
-    cause: 'platform limit (sm120 smem: TRITON_MLA fp8-KV decode)'
-    error: 'triton.runtime.errors.OutOfResources: out of resource: shared memory, Required: 102400, Hardware limit: 101376. Reducing block sizes or `num_stages` may help.'
+    verdict: pass+custom
+    extra_args: --generator-set params.agg.extra_cli_args=["--benchmark-mode","agg","--kv-cache-dtype","bfloat16"]
+    evidence: current
+    attention: triton
+    moe: ModelOptNvFp4FusedMoE->triton
+    kv_allocated: bfloat16
+    topology: tp1
   nvidia/Kimi-K2.6-NVFP4:
-    verdict: fail
-    cause: 'platform limit (sm120 smem: TRITON_MLA fp8-KV decode)'
-    error: 'triton.runtime.errors.OutOfResources: out of resource: shared memory, Required: 102400, Hardware limit: 101376. Reducing block sizes or `num_stages` may help.'
+    verdict: pass+custom
+    extra_args: --generator-set params.agg.extra_cli_args=["--benchmark-mode","agg","--kv-cache-dtype","bfloat16"]
+    evidence: current
+    attention: triton
+    moe: ModelOptNvFp4FusedMoE->triton
+    kv_allocated: bfloat16
+    topology: tp1
   nvidia/Kimi-K2.7-Code-NVFP4:
-    verdict: fail
-    cause: 'platform limit (sm120 smem: TRITON_MLA fp8-KV decode)'
-    error: 'triton.runtime.errors.OutOfResources: out of resource: shared memory, Required: 102400, Hardware limit: 101376. Reducing block sizes or `num_stages` may help.'
+    verdict: pass+custom
+    extra_args: --generator-set params.agg.extra_cli_args=["--benchmark-mode","agg","--kv-cache-dtype","bfloat16"]
+    evidence: current
+    attention: triton
+    moe: ModelOptNvFp4FusedMoE->triton
+    kv_allocated: bfloat16
+    topology: tp1
   nvidia/Kimi-K3-NVFP4:
     verdict: pass
     evidence: current
@@ -531,7 +547,7 @@ results:
   nvidia/Llama-3_3-Nemotron-Super-49B-v1:
     verdict: pass
     evidence: current
-    attention: flash::flash_fwd_splitkv_kernel
+    attention: fa2
     kv_allocated: auto
     topology: tp1
   nvidia/MiniMax-M2.5-NVFP4:
@@ -558,13 +574,13 @@ results:
   nvidia/Muse-Glimmer-30B-NVFP4:
     verdict: pass
     evidence: current
-    attention: flash::flash_fwd_splitkv_kernel
+    attention: fa2
     kv_allocated: auto
     topology: tp1
   nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16:
     verdict: pass
     evidence: current
-    attention: flash::flash_fwd_splitkv_combine_kernel + _chunk_scan_fwd_kernel
+    attention: fa2 + _chunk_scan_fwd_kernel
     moe: UnquantizedFusedMoE
     kv_allocated: auto
     topology: tp1
@@ -590,15 +606,19 @@ results:
     kv_allocated: auto
     topology: tp1
   nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16:
-    verdict: pass
+    verdict: pass+custom
+    extra_args: --generator-set params.agg.extra_cli_args=["--benchmark-mode","agg","--gpu-memory-utilization","0.8"]
     evidence: current
-    attention: flash::flash_fwd_splitkv_combine_kernel
+    attention: fa2 + _chunk_scan_fwd_kernel
+    moe: UnquantizedFusedMoE
     kv_allocated: auto
     topology: tp1
   nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-FP8:
-    verdict: pass
+    verdict: pass+custom
+    extra_args: --generator-set params.agg.extra_cli_args=["--benchmark-mode","agg","--gpu-memory-utilization","0.8"]
     evidence: current
-    attention: flash::flash_fwd_splitkv_combine_kernel
+    attention: fa2 + _chunk_scan_fwd_kernel
+    moe: UnquantizedFusedMoE
     kv_allocated: auto
     topology: tp1
   nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-NVFP4:
@@ -608,7 +628,7 @@ results:
   nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16:
     verdict: pass
     evidence: current
-    attention: flash::flash_fwd_splitkv_combine_kernel + _chunk_scan_fwd_kernel
+    attention: fa2 + _chunk_scan_fwd_kernel
     moe: UnquantizedFusedMoE
     kv_allocated: auto
     topology: tp1
@@ -623,7 +643,7 @@ results:
     verdict: pass+custom
     extra_args: --generator-set params.agg.extra_cli_args=["--benchmark-mode","agg","--gpu-memory-utilization","0.6"]
     evidence: current
-    attention: flash::flash_fwd_splitkv_kernel + _state_passing_fwd_kernel
+    attention: fa2 + _state_passing_fwd_kernel
     kv_allocated: auto
     topology: tp1
   nvidia/Qwen3-235B-A22B-NVFP4:
@@ -656,7 +676,7 @@ results:
   nvidia/Qwen3.6-35B-A3B-NVFP4:
     verdict: pass
     evidence: current
-    attention: flash::flash_fwd_splitkv_combine_kernel + fused_recurrent_gated_delta_rule_packed_decode_kernel
+    attention: fa2 + fused_recurrent_gated_delta_rule_packed_decode_kernel
     moe: ModelOptNvFp4FusedMoE->marlin
     kv_allocated: auto
     topology: tp1
@@ -668,7 +688,7 @@ results:
   nvidia/Qwen3.8-27B-NVFP4:
     verdict: pass
     evidence: current
-    attention: flash::flash_fwd_splitkv_kernel + fused_recurrent_gated_delta_rule_packed_decode_kernel
+    attention: fa2 + fused_recurrent_gated_delta_rule_packed_decode_kernel
     kv_allocated: auto
     topology: tp1
   nvidia/Qwen3.8-Flash-Next-NVFP4:
@@ -692,13 +712,13 @@ results:
   openbmb/MiniCPM5-2B:
     verdict: pass
     evidence: current
-    attention: flash::flash_fwd_splitkv_combine_kernel
+    attention: fa2
     kv_allocated: auto
     topology: tp1
   ornith-ai/Ornith-1.5-35B-A3B:
     verdict: pass
     evidence: current
-    attention: flash::flash_fwd_splitkv_combine_kernel + fused_recurrent_gated_delta_rule_packed_decode_kernel
+    attention: fa2 + fused_recurrent_gated_delta_rule_packed_decode_kernel
     moe: UnquantizedFusedMoE->flashinfer_cutlass
     kv_allocated: auto
     topology: tp1
