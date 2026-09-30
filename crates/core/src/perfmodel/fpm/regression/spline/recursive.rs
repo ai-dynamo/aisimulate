@@ -4,6 +4,8 @@
 //!
 //! Adapted from the locally authored research implementation in
 //! work/spline_regression_period_20260921/rust/recursive.rs. No external code.
+//! That private research artifact is not published in this repository; the path
+//! records provenance and is not a reproducible validation input.
 //! This solves nonnegative least squares after each rank-one moment update;
 //! it does not clip unconstrained inverse-RLS coefficients.
 use super::fit::{Model, P, Row, features, fit as batch_fit, kkt_valid, nnls};

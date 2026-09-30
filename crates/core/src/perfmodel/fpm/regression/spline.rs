@@ -4,7 +4,9 @@
 //! Learned-knot spline and linear fallback sharing one production sampler.
 //!
 //! Search and monitor semantics originate in this repository's locally authored
-//! work/spline_regression_period_20260921/rust/{replay,triggered}.rs. The sampler
+//! work/spline_regression_period_20260921/rust/{replay,triggered}.rs. Those private
+//! research artifacts are not published in this repository; the paths record
+//! provenance and are not reproducible validation inputs. The sampler
 //! and linear fallback here are the production implementations, not the research
 //! replay approximations. No external source was incorporated.
 

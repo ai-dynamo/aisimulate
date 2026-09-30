@@ -338,8 +338,10 @@ class RustForwardPassPerfModel:
         feature extraction use only ``scheduled_requests``; queued fields and
         ``wall_time`` are ignored for estimation. Regression models return
         ``None`` until the selected store has a ready fit. A different store's
-        readiness does not supply a fallback prediction. Empty
-        scheduled work returns ``0.0``.
+        readiness does not supply a fallback prediction. A ready spline store
+        can also return ``None`` outside its retained raw-feature bounds when
+        its linear fallback is unavailable. Empty scheduled work returns
+        ``0.0``.
         """
         return self._inner.estimate_forward_pass_time_ms(_json_dumps(metrics))
 
@@ -382,6 +384,8 @@ class RustForwardPassPerfModel:
         fallback warning. Regression retained count is summed across stores;
         ``ready`` means at least one store has a ready fit. Consult
         ``regression_store_diagnostics()`` for individual store readiness.
+        Readiness does not guarantee query coverage: a ready spline store can
+        return ``None`` outside retained bounds without a usable linear fallback.
         """
         return json.loads(self._inner.diagnostics())
 
@@ -399,6 +403,9 @@ class RustForwardPassPerfModel:
         ``last_search_observation``, ``numerical_rebuilds``, and
         ``batch_fallbacks``. Store readiness includes the shared linear fit;
         spline readiness can therefore be false while the store is ready.
+        Conversely, the spline can be ready while its linear fallback is
+        unavailable; such a store returns ``None`` outside retained raw-feature
+        bounds despite reporting ``ready``.
         The search clock counts accepted observations, separately from the
         insertion/eviction mutation clock for statistics rebuilding.
         ``numerical_rebuilds`` includes scheduled and recovery rebuilds within

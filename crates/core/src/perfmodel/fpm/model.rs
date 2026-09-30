@@ -32,8 +32,10 @@ pub struct ForwardPassPerfDiagnostics {
     pub source: ForwardPassPerfSource,
     /// Whether the active model can currently produce estimates, or why it
     /// cannot. Native models are immediately ready; regression is ready when
-    /// any logical store has a fit. A query for another store can still return
-    /// `None`; see `regression_store_diagnostics` for individual readiness.
+    /// any logical store has a usable fit. Readiness does not guarantee query
+    /// coverage: another store may be cold, and a ready spline store can return
+    /// `None` outside retained bounds when its linear fallback is unavailable.
+    /// See `regression_store_diagnostics` for individual readiness.
     pub readiness: ForwardPassPerfReadiness,
     /// Number of retained tuning observations. This is the total across the
     /// three inferred workload kinds for Native and all logical stores for
@@ -118,7 +120,9 @@ pub enum ForwardPassRegressionWorkloadKind {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ForwardPassRegressionStoreDiagnostics {
     pub workload_kind: ForwardPassRegressionWorkloadKind,
-    /// Whether this store has a usable fit, not merely enough samples.
+    /// Whether this store has a usable linear or spline fit, not merely enough
+    /// samples. A ready spline store can still return `None` outside retained
+    /// raw-feature bounds when its linear fallback is unavailable.
     pub ready: bool,
     pub retained_observations: usize,
     /// Spline component state; overall readiness may come from its linear arm.
@@ -428,8 +432,10 @@ impl ForwardPassPerfModel {
     /// `min_observations` total samples, empty regions, and queries outside the
     /// configured correction-grid workload ranges in
     /// `ForwardPassPerfOptions`. Regression models return `Ok(None)` until
-    /// the selected logical store has a ready fit. Empty scheduled work
-    /// returns `Ok(Some(0.0))`.
+    /// the selected logical store has a ready fit. A ready spline store can
+    /// also return `Ok(None)` outside its retained raw-feature bounds if its
+    /// linear fallback is unavailable. Empty scheduled work returns
+    /// `Ok(Some(0.0))`.
     ///
     /// Pure Rust over the `Engine` — no Python re-entry.
     pub fn estimate_forward_pass_time_ms(
@@ -596,8 +602,9 @@ impl ForwardPassPerfModel {
     ///
     /// Dedicated roles return one entry. Aggregated returns four entries in
     /// pure-decode, locally-mixed, cross-rank, pure-prefill order, including
-    /// empty stores. Native models return an empty list. Readiness of the
-    /// selected store determines whether a non-empty query has an estimate.
+    /// empty stores. Native models return an empty list. Readiness means a
+    /// usable fit exists; a ready spline store can still return `None` outside
+    /// retained raw-feature bounds when its linear fallback is unavailable.
     pub fn regression_store_diagnostics(&self) -> Vec<ForwardPassRegressionStoreDiagnostics> {
         match &self.mode {
             ForwardPassPerfMode::Native { .. } => Vec::new(),

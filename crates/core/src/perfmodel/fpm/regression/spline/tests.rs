@@ -220,6 +220,39 @@ fn constant_initialization_does_not_repeat_search_or_claim_readiness() {
 }
 
 #[test]
+fn spline_only_readiness_has_retained_domain_coverage() {
+    let mut store = BucketedSpline::new(&options(64), periodic(64), None);
+    // The high first target makes the overall linear covariance negative,
+    // but a monotone spline can still fit the rising tail with a positive slope.
+    for x in 0..32 {
+        let observed_ms = match x {
+            0 => 100.0,
+            1..=23 => 1.0,
+            _ => 10.0,
+        };
+        add(&mut store, [x as f64, 1.0, observed_ms]);
+    }
+    assert!(store.linear_fit.is_none());
+    assert!(store.is_ready());
+    let diagnostics = store.diagnostics();
+    assert!(diagnostics.initialized);
+    assert!(diagnostics.ready);
+    assert_eq!(diagnostics.accepted_observations, 32);
+    assert_eq!(diagnostics.knot_searches, 1);
+
+    for x in [[0.0, 1.0], [15.5, 1.0], [31.0, 1.0]] {
+        let prediction = store.predict(&x).unwrap();
+        assert!(prediction.is_finite() && prediction > 0.0);
+    }
+    // Readiness describes a usable fit, not coverage outside its retained box.
+    for x in [[32.0, 1.0], [15.5, 0.0], [15.5, 2.0]] {
+        assert_eq!(store.predict(&x), None);
+    }
+    assert_eq!(store.diagnostics(), diagnostics);
+    assert!(store.is_ready());
+}
+
+#[test]
 fn rolling_monitor_evicts_clears_and_does_not_require_current_error() {
     let mut monitor = ErrorMonitor::default();
     for bad in [true, true, false, false, true] {

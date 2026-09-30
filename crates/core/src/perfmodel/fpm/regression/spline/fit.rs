@@ -5,6 +5,8 @@
 //!
 //! Adapted from this repository's original research implementation in
 //! work/spline_regression_period_20260921/rust/{main,replay}.rs.
+//! Those private research artifacts are not published in this repository; the
+//! paths record provenance and are not reproducible validation inputs.
 //! No external code was incorporated. There is no penalty on the free intercept
 //! or slopes; the bounded face enumeration is a constrained-solver recovery.
 

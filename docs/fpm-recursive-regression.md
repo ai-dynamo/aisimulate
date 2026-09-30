@@ -549,8 +549,12 @@ chronological adaptation or held-out prediction accuracy.
 
 ## Production spline validation (2026-09-25)
 
-A fresh release replay used the production regression and retention code on all
-15 previously tested local dataset prefixes: 163,540 incoming observations.
+A release replay on 2026-09-25 used the production regression and retention code
+later committed as `69210d4eca2f1f6ff558d830ea3a9edeace1a46f`, with linear baseline
+`2bd9966d282f252a147a19cef3b0da34dbc8855e`. The recorded source hashes match that
+commit's measured regression, retention, and configuration implementation.
+The replay covered all 15 previously tested local dataset prefixes: 163,540
+incoming observations.
 Each workload store retained at most 64 samples in a 4-by-4 log-coordinate grid,
 with minimum observation count 5 and periodic statistics rebuilding disabled.
 Spline searches started at observation 32. Periodic used step 64; adaptive used
@@ -616,6 +620,12 @@ and numerical traversal variation, not a changed linear objective. These results
 also differ from the earlier research harness, which used different retention
 and linear-update behavior.
 
+These accuracy and timing measurements predate the move onto `main` at
+`a4a59dce4fcfce1ec223008831f3328b77b1a3ce`. They were not rerun for the integrated
+commit `ba4826ce8fe39771277c9e4ab91e2fbf184c5394`; the measured numerical kernels
+and sampler were unchanged by that integration. The tables report the original
+measurement, not a new benchmark of the integrated branch.
+
 Release timing used Rust 1.97.1 on macOS 26.6.2/arm64. Seven alternating
 measured pairs per case followed a warmup pair, with at least 30 ms per side.
 Each number below is an input-row-weighted mean of per-case trial medians.
@@ -639,8 +649,12 @@ end-to-end serving latency.
 
 The local `work/spline_production_20260925/` artifacts record the input/source/
 binary hashes, exact forecasts, MAPE/RMSE and coverage by dataset and interval,
-search/recovery diagnostics, and the release timing protocol. Research artifacts
-are intentionally excluded from the source commit.
+search/recovery diagnostics, and the release timing protocol. These are private,
+unpublished local artifacts, intentionally excluded from the source commit;
+there is no published immutable artifact bundle. The reported MAPE and timing
+tables therefore cannot be independently reproduced from this repository alone.
+The checked-in numerical and scheduling tests validate implementation behavior,
+not these measured accuracy or timing results.
 
 ## Source map and validation anchors
 
