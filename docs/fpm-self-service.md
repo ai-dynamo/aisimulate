@@ -1367,7 +1367,9 @@ selected deployments have different limits, supply a shared
 `--fpm-max-num-batched-tokens` within every deployment's envelope.
 
 Grouped-cache replay requires a runner that advertises grouped-cache support;
-use `--stack engine`. Recommendation skips deployment modes for which the
+use `--stack engine`. The guard selects the requested deployment for both canonical
+and flat engine arguments, so unrelated grouped entries do not block linear replay.
+Recommendation skips deployment modes for which the
 profile has no matching role deployments. Finalized collection quality remains
 verified when checking a plan; rendering collection arguments without a runtime
 probe does not repeat that verification.

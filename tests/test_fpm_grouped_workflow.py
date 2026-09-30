@@ -852,7 +852,8 @@ def test_onboard_validation_replays_windowed_weka_with_full_context(grouped_case
     assert saved.engine.fpm_profile.deployments[0].resources.cache_layout == "grouped"
 
 
-def test_grouped_runner_capability_rejects_unsupported_stack(grouped_case):
+@pytest.mark.parametrize("profile_field", ["aic_fpm_profile", "fpm_profile"])
+def test_grouped_runner_capability_rejects_unsupported_stack(grouped_case, profile_field):
     from aisimulate.runner import EngineReplayRunnerFactory
     from aisimulate.sweeper.replay import RunnerCapabilities
 
@@ -865,6 +866,27 @@ def test_grouped_runner_capability_rejects_unsupported_stack(grouped_case):
         CorePredictionConfig.model_validate(_prediction(_mixed_profile(profile), root))
     )
     RunnerCapabilities(supported_backend_topologies=(("vllm", "agg"),)).require_compatible(linear_spec)
+
+    from dataclasses import replace
+
+    for profile_variant, grouped in ((profile, True), (_mixed_profile(profile), False)):
+        selected = profile_variant["deployments"][0]
+        flat = {
+            "aic_model_path": profile_variant["model"],
+            "aic_system": selected["system"],
+            profile_field: profile_variant,
+            "aic_tp_size": selected["tp"],
+            "aic_attention_dp_size": selected["dp"],
+            "aic_moe_tp_size": selected["moe_tp"],
+            "aic_moe_ep_size": selected["moe_ep"],
+        }
+        flat_spec = replace(spec, backend_deployment=replace(spec.backend_deployment, agg_engine_args=flat))
+        capabilities = RunnerCapabilities(supported_backend_topologies=(("vllm", "agg"),))
+        if grouped:
+            with pytest.raises(ValueError, match="grouped FPM caches"):
+                capabilities.require_compatible(flat_spec)
+        else:
+            capabilities.require_compatible(flat_spec)
 
 
 def test_aggregated_only_grouped_profile_skips_unavailable_disagg(grouped_case):

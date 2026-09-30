@@ -438,7 +438,7 @@ def test_disaggregated_profile_candidates_do_not_swap_roles(profile):
     assert len(candidates) == 1
     assert candidates[0].prefill.shape.strategy == "dep"
     assert candidates[0].decode.shape.strategy == "tp"
-    with pytest.raises(ValueError, match="worker_type=aggregated"):
+    with pytest.raises(ValueError, match="no parallel config"):
         parallel_configs_for(
             profile["model"],
             "h200_sxm",
