@@ -1128,6 +1128,7 @@ class Sweeper:
         top_n: int | None = 5,
         candidate_retention: CandidateRetention | str = CandidateRetention.ALL,
         on_round: Callable[[int, list[Candidate]], None] | None = None,
+        on_candidate: Callable[[CandidateRecord], None] | None = None,
     ) -> SweepResult:
         """Run the sweep and return the canonical schema-versioned result.
 
@@ -1141,6 +1142,14 @@ class Sweeper:
         unsupported, timed-out, and failed candidate. ``"feasible"`` retains only
         feasible rows and ``"views"`` retains only the scalar top-N or Pareto front;
         run-wide counts always describe the complete run.
+
+        ``on_candidate``, when provided, is invoked once per recorded candidate
+        outcome (feasible, infeasible, unsupported, resource-limited, timed-out, or
+        failed) with a deep copy of the ``CandidateRecord`` appended to the run's
+        candidate ledger, in evaluation order. The copy is detached: mutating it
+        has no effect on the ledger used to build ``SweepResult``. It complements
+        ``on_round``, which only reports the cumulative feasible-candidate list at
+        round boundaries.
         """
         if top_n is not None and top_n < 1:
             raise ValueError(f"top_n must be positive or None, got {top_n}")
@@ -1480,6 +1489,10 @@ class Sweeper:
                     ),
                 )
                 candidate_records.append(record)
+                if on_candidate is not None:
+                    # Detach: on_candidate must not be able to mutate the ledger
+                    # entry that SweepResult is built from.
+                    on_candidate(record.model_copy(deep=True))
                 if resource_aware:
                     from ..supervision import checkpoint
 
