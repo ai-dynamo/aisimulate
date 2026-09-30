@@ -3,6 +3,7 @@
 
 """Core Sweeper orchestration parity through the RunnerFactory/ReplaySpec boundary."""
 
+from copy import deepcopy
 from pathlib import Path
 
 import pytest
@@ -1316,7 +1317,7 @@ def test_on_candidate_fires_once_per_feasible_outcome_in_evaluation_order(monkey
     factory = _FakeRunnerFactory()
     seen: list[CandidateRecord] = []
 
-    Sweeper(
+    result = Sweeper(
         runner_factory=factory,
         sampler_factory=_FakeSampler,
         show_progress=False,
@@ -1325,6 +1326,17 @@ def test_on_candidate_fires_once_per_feasible_outcome_in_evaluation_order(monkey
     assert [record.status for record in seen] == [CandidateStatus.FEASIBLE] * 3
     # Evaluation order (increasing max_num_seqs), not the best-first ranked order.
     assert [record.score for record in seen] == [256.0, 512.0, 768.0]
+
+    # on_candidate must receive a detached copy: mutating it must not reach the
+    # ledger record returned in the SweepResult. A shallow copy (or handing out
+    # the ledger record itself) would let this mutation leak through.
+    mutated = seen[0]
+    original_config = deepcopy(mutated.config)
+    mutated.config["max_num_seqs"] = "mutated-by-callback"
+
+    ledger_record = next(r for r in result.candidates if r.candidate_id == mutated.candidate_id)
+    assert ledger_record.config == original_config
+    assert ledger_record.config is not mutated.config
 
 
 def test_on_candidate_reports_infeasible_outcomes_too(monkeypatch):
