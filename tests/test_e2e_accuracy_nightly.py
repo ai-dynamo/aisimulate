@@ -1201,3 +1201,21 @@ def test_publication_rejects_unknown_baseline_entry_point(artifact):
     summary["snapshot"]["aic_source"]["cli_entry_point"] = "foreign.main:main"
     with pytest.raises(ValueError, match="baseline entry point"):
         publish.validate_artifact(archive(summary), run)
+
+
+@pytest.mark.parametrize(
+    "entry", ["aiconfigurator.main:main", "aisimulate.legacy_cli.entrypoint:main", None, "foreign.main:main", 42]
+)
+def test_site_builder_validates_baseline_entry_point(artifact, tmp_path, entry):
+    summary, _ = artifact
+    summary["snapshot"]["aic_source"]["cli_entry_point"] = entry
+    path = tmp_path / "summary.json"
+    path.write_text(json.dumps(summary))
+    if entry in ("aiconfigurator.main:main", "aisimulate.legacy_cli.entrypoint:main"):
+        pages._accuracy_summary(path.read_text())
+    else:
+        with pytest.raises(pages.PagesBuildError, match="legacy AIC CLI source"):
+            pages._accuracy_summary(path.read_text())
+    del summary["snapshot"]["aic_source"]["cli_entry_point"]
+    path.write_text(json.dumps(summary))
+    pages._accuracy_summary(path.read_text())
