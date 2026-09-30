@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::engine::common::hashing::{
-    BlockHash, SequenceHash, XXH3_SEED, compute_block_hash_for_tokens, compute_next_sequence_hash,
+    BlockHash, SequenceHash, XXH3_SEED, block_hashes, compute_block_hash_for_tokens,
+    compute_next_sequence_hash,
 };
 use rand::random;
 use uuid::Uuid;
@@ -155,22 +156,23 @@ impl RequestSequence {
         let retain_local_hashes = retain_local_hashes && enable_prefix_caching;
 
         let mut identities = Vec::with_capacity(completion_blocks);
-        let mut parent_hash = None;
-        for block in tokens.chunks_exact(block_size) {
-            let (sequence_hash, local_hash) = if enable_prefix_caching {
-                let local_hash = compute_block_hash_for_tokens(block, XXH3_SEED);
+        if enable_prefix_caching {
+            let mut parent_hash = None;
+            for local_hash in block_hashes(&tokens, block_size) {
                 let sequence_hash = parent_hash
                     .map(|parent| compute_next_sequence_hash(parent, local_hash))
                     .unwrap_or(local_hash);
-                (sequence_hash, retain_local_hashes.then_some(local_hash))
-            } else {
-                (random::<u64>(), None)
-            };
-            identities.push(BlockIdentity {
-                sequence_hash: Some(sequence_hash),
-                local_hash,
-            });
-            parent_hash = Some(sequence_hash);
+                identities.push(BlockIdentity {
+                    sequence_hash: Some(sequence_hash),
+                    local_hash: retain_local_hashes.then_some(local_hash),
+                });
+                parent_hash = Some(sequence_hash);
+            }
+        } else {
+            identities.extend((0..num_input_tokens / block_size).map(|_| BlockIdentity {
+                sequence_hash: Some(random::<u64>()),
+                local_hash: None,
+            }));
         }
         if !tokens.len().is_multiple_of(block_size) {
             identities.push(BlockIdentity::partial());

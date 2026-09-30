@@ -18,7 +18,7 @@ use crate::engine::cache::vllm_block_pool::{
     BlockCopyId, BlockReservation, CacheKey, ReserveOutcome, VllmBlockPool,
 };
 use crate::engine::common::hashing::{
-    BlockHash, SequenceHash, XXH3_SEED, compute_block_hash_for_tokens, compute_next_sequence_hash,
+    BlockHash, SequenceHash, block_hashes, compute_next_sequence_hash,
 };
 use crate::engine::common::kv_cache_trace;
 use crate::engine::common::protocols::{KvEventPublishers, PrefillCost, SchedulingPolicy};
@@ -159,10 +159,8 @@ impl BlockRequestLease {
 
     pub(crate) fn configure_prefix_hashes(&mut self, tokens: &[u32], unit: usize) {
         let mut parent = None;
-        let hashes = tokens
-            .chunks_exact(unit)
-            .map(|chunk| {
-                let local = compute_block_hash_for_tokens(chunk, XXH3_SEED);
+        let hashes = block_hashes(tokens, unit)
+            .map(|local| {
                 let hash = parent
                     .map(|p| compute_next_sequence_hash(p, local))
                     .unwrap_or(local);
