@@ -1,0 +1,38 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+schema_version: 1
+architecture: Glm5NextForConditionalGeneration
+model_path: zai-org/GLM-5.3-Flash
+model_paths:
+  - zai-org/GLM-5.3-Flash
+  - nvidia/GLM-5.3-Flash-NVFP4
+include_base: false
+description: >
+  GLM-5.3-Flash (Glm5Next: KDA + NoPE sparse-MLA hybrid with mHC) standalone
+  per-op collection plan. Only the mHC section is declared here (workstream
+  W3); the owning workstream (W1) merges the remaining op sections.
+
+model_case_values:
+  mhc:
+    # mHC runs in BF16 activations with FP32 hc parameters in both the FP8
+    # and the NVFP4 checkpoint (neither quantizes hc_* or the layer norms), and
+    # both configs carry the same hidden_size=4096, hc_mult=4,
+    # hc_sinkhorn_iters=20, hc_eps=1e-6, rms_norm_eps=1e-5. The artifact
+    # therefore cannot change the invoked kernel or the persisted
+    # (op_name, hc_mult, hidden_size) key: one physical case, aliased.
+    - model_path: zai-org/GLM-5.3-Flash
+      model_aliases:
+        - nvidia/GLM-5.3-Flash-NVFP4
+      hidden_size: 4096
+      hc_mult: 4
+
+framework_specific_op_cases:
+  # vLLM 0.30.0 and SGLang 0.5.20 are the audited GLM mHC runtimes
+  # (collector/{vllm,sglang}/collect_mhc_module.py _ARCHITECTURE_COMPAT).
+  vllm:
+    mhc_module:
+      cases: all
+  sglang:
+    mhc_module:
+      cases: all
