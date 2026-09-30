@@ -226,7 +226,14 @@ class VLLMXPUBackend(VLLMBackend):
         if corr is None:
             return lat, energy, per_ops, per_src, moe_fallbacks
         delta, target = corr
-        return lat + delta, energy, {**per_ops, "generation_moe": target}, per_src, moe_fallbacks
+        # Python-fitted value, not the collected silicon measurement: mark provenance.
+        return (
+            lat + delta,
+            energy,
+            {**per_ops, "generation_moe": target},
+            {**per_src, "generation_moe": "estimated"},
+            moe_fallbacks,
+        )
 
     def _get_genonly_step_estimate(self, model, database, runtime_config, gen_tokens, isl, osl):
         # run_agg's decode/TPOT seam (StepEstimate); mirror the _get_genonly_step_latency correction.
@@ -241,6 +248,7 @@ class VLLMXPUBackend(VLLMBackend):
             est,
             latency_ms=est.latency_ms + delta,
             per_op_latency_ms={**est.per_op_latency_ms, "generation_moe": target},
+            per_op_source={**est.per_op_source, "generation_moe": "estimated"},
         )
 
     # ==================== MIX-STEP LATENCY (shared) ====================
