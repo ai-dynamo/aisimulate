@@ -11,11 +11,31 @@ from pathlib import Path
 from typing import Annotated, Any, Generic, Literal, TypeVar
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
+
+
+def _absolute_systems_path(value: str) -> str:
+    if not value.strip() or "," in value:
+        raise ValueError("systems_path must name one nonempty local directory, not a comma-separated list")
+    return str(Path(value).expanduser().resolve())
+
+
+SystemsPath = Annotated[str, Field(strict=True, min_length=1), AfterValidator(_absolute_systems_path)]
+
+
+def _normalize_systems_root(value: str) -> str:
+    if not value.strip():
+        raise ValueError("systems_paths entries must be nonempty")
+    if value.lower() == "default":
+        return "default"
+    return str(Path(value).expanduser().resolve())
+
+
+SystemsRoot = Annotated[str, Field(strict=True, min_length=1), AfterValidator(_normalize_systems_root)]
 
 
 T = TypeVar("T")

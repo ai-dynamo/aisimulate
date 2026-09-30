@@ -1,7 +1,11 @@
 // SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+use std::collections::VecDeque;
 use std::collections::hash_map::DefaultHasher;
+use std::ops::{Deref, RangeFull};
+
+use crate::engine::scheduler::queue_metrics::{QueueStats, QueuedLength};
 use std::hash::{Hash, Hasher};
 
 use uuid::Uuid;
@@ -14,6 +18,7 @@ use crate::engine::kv_manager::sglang_backend::RadixRequestLease;
 #[derive(Debug)]
 pub(super) struct SglangRequest {
     pub(super) uuid: Uuid,
+    pub(super) is_decode_handoff: bool,
     pub(super) sequence_tokens: Vec<u32>,
     pub(super) prompt_len: usize,
     pub(super) max_output_tokens: usize,
@@ -41,6 +46,7 @@ impl SglangRequest {
 
         Self {
             uuid: req.uuid.unwrap_or_else(Uuid::new_v4),
+            is_decode_handoff: false,
             sequence_tokens,
             prompt_len,
             max_output_tokens,
@@ -222,5 +228,97 @@ impl SglangRequest {
         debug_assert!(!self.kv_lease.is_active());
         self.materialized_tokens = 0;
         self.allocated_tokens = 0;
+    }
+}
+
+/// Queue ownership makes each mutable request leave the statistics before its
+/// length can change, then accounts for its new length on re-insertion.
+#[derive(Default)]
+pub(super) struct WaitingQueue {
+    requests: VecDeque<SglangRequest>,
+    pub(super) stats: QueueStats,
+}
+
+impl SglangRequest {
+    fn queued_length(&self) -> QueuedLength {
+        if self.output_len() == 0 && !self.is_decode_handoff {
+            QueuedLength::Prefill(self.prompt_len() as u64)
+        } else {
+            QueuedLength::Decode(self.current_sequence_len() as u64)
+        }
+    }
+}
+
+impl WaitingQueue {
+    pub(super) fn push_back(&mut self, request: SglangRequest) {
+        self.stats.add(request.queued_length());
+        self.requests.push_back(request);
+    }
+
+    pub(super) fn push_front(&mut self, request: SglangRequest) {
+        self.stats.add(request.queued_length());
+        self.requests.push_front(request);
+    }
+
+    pub(super) fn pop_front(&mut self) -> Option<SglangRequest> {
+        let request = self.requests.pop_front()?;
+        self.stats.remove(request.queued_length());
+        Some(request)
+    }
+
+    pub(super) fn insert(&mut self, index: usize, request: SglangRequest) {
+        self.stats.add(request.queued_length());
+        self.requests.insert(index, request);
+    }
+
+    pub(super) fn remove(&mut self, index: usize) -> Option<SglangRequest> {
+        let request = self.requests.remove(index)?;
+        self.stats.remove(request.queued_length());
+        Some(request)
+    }
+
+    pub(super) fn drain(
+        &mut self,
+        range: RangeFull,
+    ) -> std::collections::vec_deque::Drain<'_, SglangRequest> {
+        self.stats = QueueStats::default();
+        self.requests.drain(range)
+    }
+
+    #[cfg(test)]
+    pub(super) fn swap(&mut self, a: usize, b: usize) {
+        self.requests.swap(a, b);
+    }
+}
+
+impl Deref for WaitingQueue {
+    type Target = VecDeque<SglangRequest>;
+    fn deref(&self) -> &Self::Target {
+        &self.requests
+    }
+}
+
+impl<'a> IntoIterator for &'a WaitingQueue {
+    type Item = &'a SglangRequest;
+    type IntoIter = std::collections::vec_deque::Iter<'a, SglangRequest>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.requests.iter()
+    }
+}
+
+#[cfg(test)]
+impl<const N: usize> From<[SglangRequest; N]> for WaitingQueue {
+    fn from(requests: [SglangRequest; N]) -> Self {
+        let mut queue = Self::default();
+        for request in requests {
+            queue.push_back(request);
+        }
+        queue
+    }
+}
+
+impl std::fmt::Debug for WaitingQueue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.requests.fmt(f)
     }
 }
