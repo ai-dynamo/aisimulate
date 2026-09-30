@@ -23,11 +23,12 @@ class FpmCompileConfig:
         attention_backend: str | None = None,
         fmha_quant_mode: str | None = None,
         comm_quant_mode: str | None = None,
+        has_profile: bool = False,
     ) -> None:
         import aisimulate_core
 
         normalized = aisimulate_core.RustForwardPassPerfModel._normalize_fpm_options(
-            json.dumps({} if options is None else options), fmha_quant_mode, comm_quant_mode
+            json.dumps({} if options is None else options), fmha_quant_mode, comm_quant_mode, has_profile
         )
         object.__setattr__(self, "_options_json", normalized)
         object.__setattr__(self, "attention_backend", attention_backend)

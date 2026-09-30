@@ -475,6 +475,7 @@ impl ForwardPassPerfModel {
         &self,
         metrics_by_rank: &[ForwardPassMetrics],
     ) -> Result<crate::ForwardPassEstimate, AicError> {
+        self.require_general_forward_api()?;
         if let ForwardPassPerfMode::Native {
             engine,
             corrections,
@@ -716,6 +717,7 @@ impl ForwardPassPerfModel {
         input_tokens: u32,
         prefix: u32,
     ) -> Result<crate::ForwardPassEstimate, AicError> {
+        self.require_general_forward_api()?;
         self.native_engine()
             .ok_or_else(|| {
                 AicError::InvalidEngineConfig("static prefill requires a native estimator".into())

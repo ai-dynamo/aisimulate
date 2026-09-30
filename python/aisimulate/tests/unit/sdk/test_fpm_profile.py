@@ -290,7 +290,7 @@ def test_profile_precision_cannot_be_selected_as_unrecorded(profile_dict, monkey
     monkeypatch.setattr(engine, "compile_engine", _fail_graph)
     request = _request(profile_dict, estimation_mode="auto", fallback_policy="allow")
     request["estimator_config"]["fpm_interpolation"]["unrecorded_quant_modes"] = [mode]
-    with pytest.raises(ValueError, match="explicit quantization override"):
+    with pytest.raises(ValueError, match="fpm_profile does not support"):
         entry_point(request)
 
 
@@ -302,8 +302,8 @@ def test_profile_rejects_unrepresented_recorded_dcp(profile_dict, monkeypatch, d
         entry_point(_request(profile_dict, dcp=dcp, estimation_mode="auto", fallback_policy="allow"))
 
 
-def test_direct_compilation_preserves_text_only_and_external_data_controls(profile_dict, direct_compile):
-    options = {"text_only": True, "fpm_parquet_path": "/external/profile.parquet"}
+def test_direct_compilation_preserves_external_data_controls(profile_dict, direct_compile):
+    options = {"text_only": False, "fpm_parquet_path": "/external/profile.parquet"}
     spec = json.loads(
         engine.compile_engine(
             "test/unknown-decoder",
@@ -321,7 +321,7 @@ def test_direct_compilation_preserves_text_only_and_external_data_controls(profi
     )
     controls = json.loads(spec["engine"]["extra"]["estimator_config"])["fpm_interpolation"]
     assert controls["method"] == "direct"
-    assert controls["text_only"] is True
+    assert controls.get("text_only", False) is False
     assert controls["fpm_parquet_path"] == spec["engine"]["fpm_parquet_path"] == options["fpm_parquet_path"]
     assert spec["context_ops"][0]["FpmForward"]["sol_ops"] == []
 
@@ -329,8 +329,8 @@ def test_direct_compilation_preserves_text_only_and_external_data_controls(profi
 @pytest.mark.parametrize(
     "options,overrides,error",
     [
-        ({"unrecorded_quant_modes": ["fmha"]}, {}, "explicit quantization override"),
-        ({"unrecorded_quant_modes": ["comm"]}, {}, "explicit quantization override"),
+        ({"unrecorded_quant_modes": ["fmha"]}, {}, "fpm_profile does not support"),
+        ({"unrecorded_quant_modes": ["comm"]}, {}, "fpm_profile does not support"),
         ({}, {"dcp_size": 2}, "does not describe recorded DCP identity"),
         ({"method": "sol"}, {}, "conflicting fpm_interpolation and fpm_options.method"),
     ],
@@ -1210,3 +1210,24 @@ def test_registered_profile_outer_auto_keeps_op_level_priority_with_inner_direct
     assert provenance["selected_estimation_mode"] == "op_level"
     assert provenance["selection_failures"] == []
     assert provenance["config"]["estimator_config"]["fpm_interpolation"]["method"] == "direct"
+
+
+@pytest.mark.parametrize("options", [{"text_only": True}, {"unrecorded_quant_modes": ["fmha"]}])
+def test_profile_rejects_unsupported_fpm_options_at_canonical_and_compile_boundaries(profile_dict, options):
+    config = _request(profile_dict, "direct")
+    config["estimator_config"] = {"fpm_interpolation": {"method": "direct", **options}}
+    with pytest.raises(ValueError, match="fpm_profile does not support"):
+        _normalize(config)
+    with pytest.raises(ValueError, match="fpm_profile does not support"):
+        engine.compile_engine(
+            "test/unknown-decoder",
+            "test_gpu",
+            "vllm",
+            "0.25.1",
+            tp_size=2,
+            moe_tp_size=2,
+            forward_model="fpm",
+            fpm_profile=profile_dict,
+            fpm_interpolation="direct",
+            fpm_options=options,
+        )

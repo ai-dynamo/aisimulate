@@ -539,6 +539,7 @@ def compile_engine(
             attention_backend=attention_backend,
             fmha_quant_mode=fmha_quant_mode if fmha_quant_mode is not None else fpm_fmha_quant_mode,
             comm_quant_mode=comm_quant_mode,
+            has_profile=fpm_profile is not None,
         )
         options_path = fpm_config.options["fpm_parquet_path"]
         if options_path is not None:
@@ -602,6 +603,7 @@ def compile_engine(
                 attention_backend=deployment.attention_backend,
                 fmha_quant_mode=deployment.fmha_quant_mode,
                 comm_quant_mode=deployment.comm_quant_mode,
+                has_profile=True,
             )
         except (ValueError, TypeError, KeyError) as exc:
             raise InvalidEngineConfigurationError(str(exc)) from exc
