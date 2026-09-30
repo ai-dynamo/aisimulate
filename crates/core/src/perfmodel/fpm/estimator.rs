@@ -493,7 +493,9 @@ fn explicit_fields(
             fields
                 .iter()
                 .map(|(key, value)| {
-                    // Compact serde output may omit an explicit default; keep it supplied.
+                    // Defaults omitted by serialization remain explicit input,
+                    // such as collect_coverage=false. The typed parse above has
+                    // already validated every supplied value.
                     (
                         key.clone(),
                         explicit_fields(value, normalized.get(key).unwrap_or(value)),

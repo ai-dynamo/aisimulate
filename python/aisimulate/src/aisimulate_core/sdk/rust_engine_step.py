@@ -336,6 +336,15 @@ class RustForwardPassPerfModel:
             )
         )
 
+    def predict_prefill_latency(self, bs: int, isl: int, prefix: int = 0) -> float:
+        """Return uncorrected native prefill latency in milliseconds.
+
+        ``isl`` is the total sequence length including ``prefix``. A selected graph
+        profile admits only its measured integer shapes; Rust owns validation
+        and prediction. This method returns no scheduler or energy estimate.
+        """
+        return self._inner.predict_prefill_latency(bs, isl, prefix)
+
     def estimate_forward_pass_time_ms(self, metrics: dict[str, Any] | list[dict[str, Any]]) -> float | None:
         """API: ``model.estimate_forward_pass_time_ms(metrics) -> float | None``.
 
@@ -411,10 +420,6 @@ class RustForwardPassPerfModel:
         does not establish replay completion or prediction accuracy.
         """
         return json.loads(self._inner.fpm_query_coverage())
-
-    def predict_prefill_latency(self, batch_size: int, isl: int, prefix: int = 0) -> float:
-        """Uncorrected native prefill timing at full input and cached-prefix lengths."""
-        return self._inner.predict_prefill_latency(batch_size, isl, prefix)
 
     def predict_decode_latency_total(self, batch_size: int, total_past_kv_tokens: int) -> float:
         """Uncorrected native decode timing at the exact past-KV batch total."""

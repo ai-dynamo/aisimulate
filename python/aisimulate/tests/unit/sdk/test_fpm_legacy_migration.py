@@ -256,7 +256,7 @@ def test_migration_rejects_unknown_and_invalid_controls(saved, options, reason):
         ForwardPassPerfModelConfig.from_legacy_engine_config(_legacy_config(saved), "prefill", options)
 
 
-@pytest.mark.parametrize("options", [{"text_only": False}, {"unrecorded_quant_modes": []}])
+@pytest.mark.parametrize("options", [{"text_only": False}, {"unrecorded_quant_modes": []}, {"collect_coverage": False}])
 def test_explicit_skipped_defaults_migrate_without_becoming_null(options):
     config = ForwardPassPerfModelConfig.from_legacy_engine_config(
         _legacy_config({"fpm_interpolation": options}), "prefill"

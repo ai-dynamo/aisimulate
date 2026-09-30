@@ -477,6 +477,10 @@ def check_plan(request: SupportRequest, root: Path, *, allow_missing: bool = Fal
     """Verify saved identity before collecting or reusing any local output."""
 
     _check_paths(root)
+    if allow_missing and not (root / "support-plan.json").exists():
+        _, documents = _plan_documents(request, root)
+        _check_interrupted_plan(request, root, documents)
+        return
     try:
         prior = json.loads((root / "support-plan.json").read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
@@ -523,7 +527,7 @@ def _check_interrupted_plan(request: SupportRequest, root: Path, documents: dict
 
     try:
         saved = SupportRequest.from_yaml(root / "request.yaml")
-    except ValueError as exc:
+    except (OSError, ValueError) as exc:
         raise ValueError(f"saved request in {root} was modified or cannot be read") from exc
     if saved != request:
         raise ValueError(f"saved request identity in {root} differs from the requested plan")
@@ -545,10 +549,7 @@ def create_plan(request: SupportRequest, output_dir: str | Path, *, overwrite: b
         if nonempty:
             if not overwrite:
                 raise ValueError(f"output directory {root} is nonempty; use overwrite only for the same collection")
-            if (root / "support-plan.json").exists():
-                check_plan(request, root, allow_missing=True)
-            else:
-                _check_interrupted_plan(request, root, documents)
+            check_plan(request, root, allow_missing=True)
         # Inspect every generated file before writing any file. Existing data,
         # checkpoints and results are never replaced or deleted. Only verified
         # generated inputs may change after an evaluation-only request edit.

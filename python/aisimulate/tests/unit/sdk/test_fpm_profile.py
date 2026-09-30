@@ -1573,7 +1573,7 @@ def test_direct_coverage_is_native_persists_errors_and_round_trips(profile_dict,
     )
     config["estimator_config"]["fpm_interpolation"]["collect_coverage"] = True
     model = RustForwardPassPerfModel.best_available(config)
-    assert model.predict_prefill_latency(1, 1, 0) == plain.predict_prefill_latency(1, 1, 0) == 2.0
+    assert model.predict_prefill_latency(bs=1, isl=1, prefix=0) == plain.predict_prefill_latency(1, 1, 0) == 2.0
     assert model.predict_decode_latency_total(1, 1) == plain.predict_decode_latency_total(1, 1) == 3.0
     assert model.fpm_decode_kv_ceiling() == 1  # The fake KV=64 row is not coverage.
     for _ in range(2):

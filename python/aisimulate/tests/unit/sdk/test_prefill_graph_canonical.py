@@ -74,7 +74,7 @@ def graph_model():
 
 @pytest.mark.parametrize("call,expected,native", CASES)
 def test_canonical_direct_prefill_matches_frozen_operator_and_native_evidence(graph_model, call, expected, native):
-    result = graph_model.predict_prefill_latency(*call)
+    result = graph_model.predict_prefill_latency(bs=call[0], isl=call[1], prefix=call[2])
     assert result == pytest.approx(expected, rel=1e-12, abs=1e-10)
     assert abs(result / native - 1.0) <= 0.15
     assert graph_model.predict_prefill_latency(*call) == result

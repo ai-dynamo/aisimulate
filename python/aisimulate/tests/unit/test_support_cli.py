@@ -1135,26 +1135,46 @@ def test_collector_failures_keep_public_cli_exit_codes(tmp_path, monkeypatch, ca
     assert "Traceback" not in stderr
     if stage == "execution" and error_type is not KeyboardInterrupt:
         assert "aisimulate onboard collect-fpm failed: test collection failure" in stderr
+        report = json.loads((root / "fpm-readiness.json").read_text())
+        assert report["execution_error"] == "test collection failure"
+        assert report["collector_exit_status"] is None
 
 
+@pytest.mark.parametrize(
+    "module", ["collector.fpm_forward.cli", "collector.fpm_forward.entry", "collector.fpm_forward.runner"]
+)
 @pytest.mark.parametrize("error_type", [ImportError, KeyboardInterrupt])
-def test_collector_import_failures_keep_public_cli_exit_codes(tmp_path, monkeypatch, capsys, error_type):
+def test_collector_import_failures_keep_public_cli_exit_codes(tmp_path, monkeypatch, capsys, error_type, module):
+    from collector.fpm_forward import entry
+
     command = _local_collection_command(tmp_path)
     real_import = builtins.__import__
+    failures = []
+
+    def unexpected_launch(*args, **kwargs):
+        pytest.fail("a collector import failure must not launch GPU work")
 
     def fail_collector_import(name, *args, **kwargs):
-        if name == "collector.fpm_forward.cli":
+        if name == module:
+            failures.append(name)
             raise error_type("collector dependency unavailable")
         return real_import(name, *args, **kwargs)
 
+    monkeypatch.setattr(entry, "run_resolved", unexpected_launch)
     monkeypatch.setattr(builtins, "__import__", fail_collector_import)
     capsys.readouterr()
 
     assert cli.main(command) == (130 if error_type is KeyboardInterrupt else 1)
+    assert failures == [module]
     stderr = capsys.readouterr().err
     assert "Traceback" not in stderr
     if error_type is ImportError:
         assert "aisimulate onboard collect-fpm failed: collector dependency unavailable" in stderr
+    report = tmp_path / "plan/fpm-readiness.json"
+    if error_type is KeyboardInterrupt or module != "collector.fpm_forward.cli":
+        assert not report.exists()
+    else:
+        assert json.loads(report.read_text())["execution_error"] == "collector dependency unavailable"
 
 
 def test_malformed_resumed_checkpoint_fails_cleanly_without_launching_collection(tmp_path, capsys):

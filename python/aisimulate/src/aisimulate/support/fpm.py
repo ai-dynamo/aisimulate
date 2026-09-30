@@ -276,16 +276,18 @@ def run_fpm(
     with plan_lock(root):
         check_plan(request, root)
         _check_campaign_outputs(root, smoke=smoke, resume=resume, checkpoint_dir=checkpoint_dir)
-        from collector.fpm_forward.entry import run_resolved
-        from collector.fpm_forward.runner import _atomic_json
-
         from .collection_readiness import REPORT_FILENAME, assess_readiness, resume_without_workers
 
         frozen = None
         collector_status = None
         execution_error = None
         recovery_only = False
+        collector_available = False
         try:
+            from collector.fpm_forward.entry import run_resolved
+            from collector.fpm_forward.runner import _atomic_json
+
+            collector_available = True
             args, resolved = _resolve_execution(command)
             frozen = resolved[0]
             if not smoke:
@@ -300,6 +302,13 @@ def run_fpm(
             status = collector_status = 1 if errors else 0
             if errors:
                 print(json.dumps(errors, indent=2, sort_keys=True), file=sys.stderr)
+            if status == 0 and not smoke and runtime_probe_manifest(request) is not None:
+                payload = json.loads((selected_checkpoint / "fpm_forward.json").read_text(encoding="utf-8"))
+                index = Path(payload["runtime_observations"])
+                if not index.resolve().is_relative_to(root):
+                    raise ValueError("formal runtime observation index must stay inside the collection directory")
+                observed = verify_collection_runtime(request, index, collection_checkpoint=payload)
+                (root / "runtime-compatibility.json").write_text(json.dumps(observed, indent=2, sort_keys=True) + "\n")
             if status == 0 and not smoke:
                 checkpoint = json.loads((selected_checkpoint / "fpm_forward.json").read_text(encoding="utf-8"))
                 publication = checkpoint.get("database")
@@ -318,17 +327,14 @@ def run_fpm(
                         "Collected artifacts are preserved. Create a new plan in a new output directory "
                         "using a matching runtime or the observed framework_version."
                     )
-            if status == 0 and not smoke and runtime_probe_manifest(request) is not None:
-                payload = json.loads((selected_checkpoint / "fpm_forward.json").read_text(encoding="utf-8"))
-                index = Path(payload["runtime_observations"])
-                if not index.resolve().is_relative_to(root):
-                    raise ValueError("formal runtime observation index must stay inside the collection directory")
-                observed = verify_collection_runtime(request, index, collection_checkpoint=payload)
-                (root / "runtime-compatibility.json").write_text(json.dumps(observed, indent=2, sort_keys=True) + "\n")
         except Exception as exc:
             print(f"aisimulate onboard collect-fpm failed: {exc}", file=sys.stderr)
             execution_error = str(exc)
             status = 1
+        if not collector_available:
+            # Readiness reporting also imports the collector; do not retry an
+            # unavailable dependency while handling its initialization failure.
+            return status
         report = assess_readiness(request, root, selected_checkpoint, expected_plan=frozen)
         report.update(collector_exit_status=collector_status, recovery_only=recovery_only)
         if execution_error is not None:
