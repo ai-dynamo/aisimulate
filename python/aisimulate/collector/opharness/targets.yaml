@@ -272,6 +272,46 @@ families:
             layers_block_type_attention (alphabetical first single-kind cut), whose config has no quantized
             layers left -> vllm rejects MIXED_PRECISION with an empty quantized_layers map (dummy artifact,
             not a framework fact). The MoE cut keeps the NVFP4 experts, which are this checkpoint''s identity.'
+      nvidia/DeepSeek-V3.1-NVFP4:
+        cli_extra_args:
+          vllm:
+            sms: [sm120]
+            args:
+            - --generator-set
+            - params.agg.extra_cli_args=["--benchmark-mode","agg","--kv-cache-dtype","bfloat16"]
+            fact: 'sm120 (RTX PRO 6000 / 5000, 2026-09-29/30): the render has no kv dtype and vLLM resolves modelopt NVFP4 MLA checkpoints to fp8 KV, whose TRITON_MLA decode needs 102400 B smem > 101376 B on CC 12.0 (findings sm120_triton_mla_fp8kv_smem); A/B --kv-cache-dtype bfloat16 boots and runs (facts/ab_sm120). Owner decision 2026-09-30: harness special case scoped to sm120 (the opposite of the sm90/sm100 fp8-KV prescription), the generator is not changed; --generator-set params.agg.kv_cache_dtype is silently ignored, hence extra_cli_args.'
+      nvidia/Kimi-K2.5-NVFP4:
+        cli_extra_args:
+          vllm:
+            sms: [sm120]
+            args:
+            - --generator-set
+            - params.agg.extra_cli_args=["--benchmark-mode","agg","--kv-cache-dtype","bfloat16"]
+            fact: 'sm120 (RTX PRO 6000 / 5000, 2026-09-29/30): the render has no kv dtype and vLLM resolves modelopt NVFP4 MLA checkpoints to fp8 KV, whose TRITON_MLA decode needs 102400 B smem > 101376 B on CC 12.0 (findings sm120_triton_mla_fp8kv_smem); A/B --kv-cache-dtype bfloat16 boots and runs (facts/ab_sm120). Owner decision 2026-09-30: harness special case scoped to sm120 (the opposite of the sm90/sm100 fp8-KV prescription), the generator is not changed; --generator-set params.agg.kv_cache_dtype is silently ignored, hence extra_cli_args.'
+      nvidia/Kimi-K2.6-NVFP4:
+        cli_extra_args:
+          vllm:
+            sms: [sm120]
+            args:
+            - --generator-set
+            - params.agg.extra_cli_args=["--benchmark-mode","agg","--kv-cache-dtype","bfloat16"]
+            fact: 'sm120 (RTX PRO 6000 / 5000, 2026-09-29/30): the render has no kv dtype and vLLM resolves modelopt NVFP4 MLA checkpoints to fp8 KV, whose TRITON_MLA decode needs 102400 B smem > 101376 B on CC 12.0 (findings sm120_triton_mla_fp8kv_smem); A/B --kv-cache-dtype bfloat16 boots and runs (facts/ab_sm120). Owner decision 2026-09-30: harness special case scoped to sm120 (the opposite of the sm90/sm100 fp8-KV prescription), the generator is not changed; --generator-set params.agg.kv_cache_dtype is silently ignored, hence extra_cli_args.'
+      nvidia/Kimi-K2.7-Code-NVFP4:
+        cli_extra_args:
+          vllm:
+            sms: [sm120]
+            args:
+            - --generator-set
+            - params.agg.extra_cli_args=["--benchmark-mode","agg","--kv-cache-dtype","bfloat16"]
+            fact: 'sm120 (RTX PRO 6000 / 5000, 2026-09-29/30): the render has no kv dtype and vLLM resolves modelopt NVFP4 MLA checkpoints to fp8 KV, whose TRITON_MLA decode needs 102400 B smem > 101376 B on CC 12.0 (findings sm120_triton_mla_fp8kv_smem); A/B --kv-cache-dtype bfloat16 boots and runs (facts/ab_sm120). Owner decision 2026-09-30: harness special case scoped to sm120 (the opposite of the sm90/sm100 fp8-KV prescription), the generator is not changed; --generator-set params.agg.kv_cache_dtype is silently ignored, hence extra_cli_args.'
+      nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16:
+        cli_extra_args:
+          vllm:
+            sms: [sm120]
+            args:
+            - --generator-set
+            - params.agg.extra_cli_args=["--benchmark-mode","agg","--gpu-memory-utilization","0.8"]
+            fact: 'sm120 (2026-09-29/30): the mamba profile run OOMs at gpu-memory-utilization 0.9 (_state_passing_fwd, 4 GiB with 3.4 GiB free); 0.8 passes (facts/ab_sm120). Same class as Nemotron-H-56B on SM90 (generator floors max_batch_size at 512). Scoped to sm120.'
       nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-FP8:
         dummy_overrides:
           hfquant_exclude_from_sibling: nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-NVFP4
@@ -279,6 +319,13 @@ families:
           fact: gated repo ships condensed hf_quant (no exclude_modules) + unobtainable custom code; sibling NVFP4
             artifact carries the structural exclusion set and resolves natively. Moved from gen_dummy_models.py
             hardcoded tables 2026-08-24.
+        cli_extra_args:
+          vllm:
+            sms: [sm120]
+            args:
+            - --generator-set
+            - params.agg.extra_cli_args=["--benchmark-mode","agg","--gpu-memory-utilization","0.8"]
+            fact: 'sm120 (2026-09-29/30): the mamba profile run OOMs at gpu-memory-utilization 0.9 (_state_passing_fwd, 4 GiB with 3.4 GiB free); 0.8 passes (facts/ab_sm120). Same class as Nemotron-H-56B on SM90 (generator floors max_batch_size at 512). Scoped to sm120.'
       deepseek-ai/DeepSeek-V4-Flash:
         dummy_overrides:
           family: dsv4

@@ -28,6 +28,7 @@ from collector.case_generator import (
     get_attention_head_configs,
 )
 from collector.helper import benchmark_with_power, get_sm_version, log_perf
+from collector.vllm.utils import kv_block_size
 from collector.vllm.utils import (
     BatchSpec,
     create_common_attn_metadata,
@@ -98,7 +99,7 @@ def run_attention_torch(
 
     dtype = torch.bfloat16
     model = os.path.join(os.path.dirname(__file__), "fake_hf_model")
-    block_size = 64
+    block_size = kv_block_size(get_sm_version(), "attention")  # per-SM page size (utils.kv_block_size)
 
     if is_context_phase:
         batch_spec = BatchSpec(

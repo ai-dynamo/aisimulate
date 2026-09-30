@@ -72,6 +72,7 @@ from collector.case_generator import (
 from collector.helper import benchmark_with_power, get_sm_version, log_perf
 from collector.registry_types import PerfFile
 from collector.vllm.utils import (
+    kv_block_size,
     BatchSpec,
     create_and_prepopulate_kv_cache_mla,
     create_common_attn_metadata,
@@ -402,7 +403,7 @@ def _create_attention_module(
 
     local_model_path = _resolve_model_path(model_path)
 
-    block_size = 64
+    block_size = kv_block_size(get_sm_version(), "mla")  # per-SM page size (utils.kv_block_size)
     # seq_len includes the current token; generation caches only seq_len - 1.
     # Keep exact-limit models such as Kimi-K2-Instruct at their declared limit.
     max_model_len = max(max_seq_len, 4096)

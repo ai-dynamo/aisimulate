@@ -18,7 +18,7 @@
  },
  "capture_run_error": null,
  "serving_record": {
-  "id": "cfdfb051ee62",
+  "id": "4c2c183f2cfb",
   "tp": 1,
   "kv_cache_dtype": "auto",
   "isl": 4096,

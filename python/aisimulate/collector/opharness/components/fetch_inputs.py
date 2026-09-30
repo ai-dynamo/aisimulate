@@ -38,12 +38,55 @@ def _get(url: str, token: str | None, binary: bool = False):
     return data if binary else data.decode("utf-8")
 
 
+_SDK_CONFIGS = Path(__file__).resolve().parents[3] / "src" / "aisimulate_core" / "model_configs"
+
+
+def _bundled_fallback(repo: str, configs: Path, reason: str) -> dict | None:
+    """Gated or vanished repos: this checkout ships the SDK's copy of the HF
+    config (src/aisimulate_core/model_configs/<org>--<name>_config.json, plus
+    the hf_quant config when the artifact has one). Use it, say so in
+    configs/aux_files/<tag>/PROVENANCE.json, and leave the tokenizer to
+    dummies.py (targets `tokenizer_from` / a sibling artifact) — every
+    Blackwell box without an HF token staged meta-llama by hand from exactly
+    these files (B200 / RTX 6000 / RTX 5000 handoffs, 2026-09-30)."""
+    tag = repo.replace("/", "_")
+    src = _SDK_CONFIGS / f"{repo.replace('/', '--')}_config.json"
+    if not src.exists():
+        return None
+    (configs / f"{tag}.json").write_text(src.read_text())
+    got = {"config": True, "hf_quant": False, "aux": [], "source": f"bundled SDK model_configs ({reason})"}
+    q = _SDK_CONFIGS / f"{repo.replace('/', '--')}_hf_quant_config.json"
+    if q.exists():
+        (configs / f"{tag}_hfquant.json").write_text(q.read_text())
+        got["hf_quant"] = True
+    aux = configs / "aux_files" / tag
+    aux.mkdir(parents=True, exist_ok=True)
+    (aux / "PROVENANCE.json").write_text(json.dumps(
+        {"repo": repo, "reason": reason, "config_source": str(src.relative_to(_SDK_CONFIGS.parents[2])),
+         "hf_quant_source": str(q.relative_to(_SDK_CONFIGS.parents[2])) if q.exists() else None,
+         "tokenizer": "not fetched — dummies.py provisions from targets tokenizer_from / a sibling artifact"}, indent=1))
+    print(f"{repo}: {reason} — config taken from the bundled SDK copy (aux_files/{tag}/PROVENANCE.json); tokenizer NOT fetched")
+    return got
+
+
 def fetch(repo: str, configs: Path, token: str | None) -> dict:
-    info = json.loads(_get(f"https://huggingface.co/api/models/{repo}", token))
-    if info.get("gated"):
-        raise SystemExit(f"{repo}: gated — OWNER DECISION (accept the license with this token, or exclude in targets.yaml)")
+    try:
+        info = json.loads(_get(f"https://huggingface.co/api/models/{repo}", token))
+    except Exception as e:  # 401/403/404/offline: fall back to the bundled config if there is one
+        got = _bundled_fallback(repo, configs, f"hub api failed: {type(e).__name__}")
+        if got:
+            return got
+        raise SystemExit(f"{repo}: Hub API failed ({e}) and no bundled SDK config — OWNER DECISION")
+    if info.get("gated") and not token:
+        got = _bundled_fallback(repo, configs, "gated, no token")
+        if got:
+            return got
+        raise SystemExit(f"{repo}: gated — OWNER DECISION (accept the license with a token, or exclude in targets.yaml)")
     files = [s["rfilename"] for s in info.get("siblings", [])]
     if "config.json" not in files:
+        got = _bundled_fallback(repo, configs, "no config.json on the Hub")
+        if got:
+            return got
         raise SystemExit(f"{repo}: no config.json on the Hub — OWNER DECISION")
     tag = repo.replace("/", "_")
     base = f"https://huggingface.co/{repo}/resolve/main/"

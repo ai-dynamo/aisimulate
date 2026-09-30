@@ -136,12 +136,20 @@ def extract_sglang_cli_from_run_sh(run_sh: Path) -> str:
     return " ".join(out)
 
 
-def _cea(v):
-    """cli_extra_args entry: plain list, or {args: [...], fact: "<evidence>"} —
-    the fact field cites the probe evidence this generator input derives from."""
+def _cea(v, sm: str | None = None):
+    """cli_extra_args entry: plain list, or {args: [...], fact: "<evidence>",
+    sms: [sm120, ...]} — the fact field cites the probe evidence this generator
+    input derives from; ``sms`` (optional) limits the customization to those
+    SMs (RTX 6000 / 5000 handoffs 2026-09-30: an entry keyed (repo, fw) rode
+    along to every SM; sm120 needs bf16 KV for NVFP4 MLA checkpoints, which
+    sm90/sm100 must not inherit). No ``sms`` = every SM."""
     if not v:
         return []
-    return list(v["args"]) if isinstance(v, dict) else list(v)
+    if isinstance(v, dict):
+        if v.get("sms") and (sm or current_sm()) not in [str(x) for x in v["sms"]]:
+            return []
+        return list(v["args"])
+    return list(v)
 
 
 
@@ -207,10 +215,72 @@ def derive_roster_checkpoints(fam: dict, targets: dict) -> list[dict]:
     return out
 
 
-def _run_id(ck: dict, variant: str, backend: str, version: str, tp: int, kv) -> str:
-    return hashlib.sha1(
-        f"{ck['repo']}|{variant}|{backend}|{version}|{ck['profile']}|tp{tp}|kv{kv or 'rendered'}".encode()
-    ).hexdigest()[:12]
+def _run_id(ck: dict, variant: str, backend: str, version: str, tp: int, kv, platform: str | None = None) -> str:
+    """Run id = sha1 of the case identity. ``platform`` (targets platform.name,
+    e.g. h20_sm90) is part of it since 2026-09-30 (owner decision after the
+    B200 / sm120 campaigns produced the SAME id as the H20 for the same case,
+    so a shared workspace or evidence bundle would overwrite raws). Passing
+    platform=None yields the pre-2026-09-30 id (used only by the migration)."""
+    key = f"{ck['repo']}|{variant}|{backend}|{version}|{ck['profile']}|tp{tp}|kv{kv or 'rendered'}"
+    if platform:
+        key += f"|{platform}"
+    return hashlib.sha1(key.encode()).hexdigest()[:12]
+
+
+def migrate_run_ids(root: Path, platform: str, apply: bool = False) -> dict:
+    """Rename every pre-2026-09-30 artifact of this workspace to the
+    platform-bearing run id: archive/raw/<id>.json + .fp, run_sh/<id>.sh,
+    golden/<id>/, and the id fields in plan*.json, records.jsonl,
+    archive.jsonl. Idempotent; dry-run unless apply=True."""
+    import shutil
+    mapping: dict[str, str] = {}
+    for pf in sorted((root / "archive").glob("plan*.json")):
+        try:
+            runs = json.loads(pf.read_text())
+        except Exception:
+            continue
+        for r in runs:
+            if not isinstance(r, dict) or r.get("skip") or "repo" not in r:
+                continue
+            ck = {"repo": r["repo"], "profile": r.get("profile")}
+            plat = r.get("platform") or platform
+            old = _run_id(ck, r["variant"], r["backend"], r["version"], r["tp"], r.get("kv_dtype"))
+            new = _run_id(ck, r["variant"], r["backend"], r["version"], r["tp"], r.get("kv_dtype"), plat)
+            if r["id"] == old:
+                mapping[old] = new
+    stats = {"runs": len(mapping), "renamed": 0, "rewritten_lines": 0, "files": 0}
+    if not apply:
+        return stats | {"dry_run": True}
+    for old, new in mapping.items():
+        for rel in (f"raw/{old}.json", f"raw/{old}.fp", f"run_sh/{old}.sh", f"golden/{old}"):
+            src, dst = root / "archive" / rel, root / "archive" / rel.replace(old, new)
+            if src.exists() and not dst.exists():
+                shutil.move(str(src), str(dst)); stats["renamed"] += 1
+        raw = root / "archive" / "raw" / f"{new}.json"
+        if raw.exists():  # the raw carries its own id (provenance.id): --records rebuilds from it
+            text = raw.read_text()
+            if f'"id": "{old}"' in text:
+                raw.write_text(text.replace(f'"id": "{old}"', f'"id": "{new}"')); stats["rewritten_lines"] += 1
+    for pf in sorted((root / "archive").glob("plan*.json")):
+        text = pf.read_text(); n = 0
+        for old, new in mapping.items():
+            if f'"id": "{old}"' in text:
+                text = text.replace(f'"id": "{old}"', f'"id": "{new}"'); n += 1
+        if n:
+            pf.write_text(text); stats["files"] += 1
+    for name in ("records.jsonl", "archive.jsonl"):
+        jp = root / "archive" / name
+        if not jp.exists():
+            continue
+        out = []
+        for line in jp.read_text().splitlines():
+            for old, new in mapping.items():
+                if f'"id": "{old}"' in line:
+                    line = line.replace(f'"id": "{old}"', f'"id": "{new}"'); stats["rewritten_lines"] += 1
+                    break
+            out.append(line)
+        jp.write_text("\n".join(out) + "\n"); stats["files"] += 1
+    return stats
 
 
 def _oom_at_load(rid: str) -> bool:
@@ -385,7 +455,8 @@ def enumerate_runs(targets: dict, full: bool, backends: list[str]) -> list[dict]
                     chosen = ck_variants[0]
                     for i, v in enumerate(ck_variants):
                         chosen = v
-                        rid0 = _run_id(ck, v, backend, versions[-1], topos[0]["tp"], None)
+                        rid0 = _run_id(ck, v, backend, versions[-1], topos[0]["tp"], None,
+                                       (targets.get("platform") or {"name": "h20_sm90"})["name"])  # same default as the run ids below
                         if _oom_at_load(rid0) and i + 1 < len(ck_variants):
                             fallback_from = v
                             continue
@@ -418,8 +489,8 @@ def enumerate_runs(targets: dict, full: bool, backends: list[str]) -> list[dict]
                             kv_variants = {"vllm": [None, "fp8"], "sglang": [None, "fp8_e4m3"],
                                            "trtllm": [None, "fp8"]}.get(backend, [None])
                             for kv in kv_variants:
-                                rid = _run_id(ck, variant, backend, version, topo["tp"], kv)
                                 plat = targets.get("platform") or {"name": "h20_sm90", "sm": 90, "system": "h200_sxm"}
+                                rid = _run_id(ck, variant, backend, version, topo["tp"], kv, plat["name"])
                                 runs.append({
                                     "id": rid, "family": fam_name, "repo": ck["repo"], "profile": ck["profile"],
                                     "platform": plat["name"], "sm": plat["sm"], "system": plat["system"],
@@ -732,6 +803,22 @@ def load_taxonomy():
 
 _TAXONOMY = load_taxonomy()
 
+
+def attn_identity_label(kernel: str) -> str:
+    """Identity-column label for an attention kernel: the taxonomy BACKEND
+    label (fa3, trtllm_fmha, triton_mla, flashmla_sparse, ...) when the
+    vocabulary knows the kernel, else the normalized kernel name. Raw names
+    are fine on SM90 (FlashAttnFwdSm90) but on Blackwell the FMHA cubin name
+    is an 80-char shape blob (B200 handoff 2026-09-29: fmhaSm100fKernel_Qkv
+    Bfloat16...P16MultiCtasKvVarSeqQ8Kv25) — unreadable and never equal
+    across models, so the column was noise. The raw kernel stays in the
+    record's kernel tables; only the column changes."""
+    name = normalize_kernel(kernel)
+    for rx, backend, role in _TAXONOMY:
+        if role in ("attention", "dsa_indexer", "linear_attention") and rx.search(name):
+            return backend
+    return name
+
 # Orphan keep-rule (build_ops): labels that carry no path identity — a kernel
 # whose ONLY labels are these is noise for path_diff and may be capped.
 _ORPHAN_REST_CAP = 24  # unlabeled orphans kept per record, by device time
@@ -972,7 +1059,7 @@ def build_records() -> None:
                                      # Python spans (framework-mode probes,
                                      # 2026-09-24): the attention kernel family
                                      # in the device-stream tables is the identity
-                                     or next((normalize_kernel(k["kernel"])
+                                     or next((attn_identity_label(k["kernel"])
                                               for k in ((f.get("kernels") or [])
                                                         + (f.get("decode_kernels") or [])
                                                         + (f.get("prefill_kernels") or []))
@@ -1103,14 +1190,16 @@ def build_matrix(targets: dict) -> None:
     # pass+custom means PER-CHECKPOINT facts-derived args (backend-level
     # generator-sets like --benchmark-mode apply to every run and are not
     # a customization of this model)
-    custom: dict = {}
+    custom: dict = {}  # entries scoped with `sms:` count only on this SM (_cea)
     for fam in targets["families"].values():
         for ck in fam.get("checkpoints") or []:
             for be2, v2 in (ck.get("cli_extra_args") or {}).items():
-                custom[(ck["repo"], be2)] = " ".join(v2["args"] if isinstance(v2, dict) else v2)
+                if _cea(v2):
+                    custom[(ck["repo"], be2)] = " ".join(_cea(v2))
         for repo2, o2 in (fam.get("checkpoint_overrides") or {}).items():
             for be2, v2 in ((o2 or {}).get("cli_extra_args") or {}).items():
-                custom[(repo2, be2)] = " ".join(v2["args"] if isinstance(v2, dict) else v2)
+                if _cea(v2):
+                    custom[(repo2, be2)] = " ".join(_cea(v2))
     # records by id: a cell reads the record of ITS run, never a sibling's
     # (review 2026-09-25: (repo, backend) indexing let an older version's
     # record lend its identity to the new version's matrix)
@@ -1253,9 +1342,19 @@ def main() -> None:
                     help="comma list of repo substrings — plan/queues cover only matching checkpoints")
     ap.add_argument("--plan-name", default="plan.json")
     ap.add_argument("--records", action="store_true", help="raw probe JSONs -> archive/records.jsonl")
+    ap.add_argument("--migrate-run-ids", action="store_true",
+                    help="rename pre-2026-09-30 artifacts (raw/.fp/run_sh/golden, plan/records/archive ids) to platform-bearing run ids; add --apply to write")
+    ap.add_argument("--apply", action="store_true", help="with --migrate-run-ids: perform the renames (default dry-run)")
     ap.add_argument("--matrix", action="store_true", help="consolidated results: matrix.yaml (verdict + deployed identity per model x backend)")
     args = ap.parse_args()
 
+    if args.migrate_run_ids:
+        plat = (yaml.safe_load(args.targets.read_text()).get("platform") or {}).get("name") or "h20_sm90"
+        st = migrate_run_ids(ROOT, plat, apply=args.apply)
+        print(json.dumps({"platform": plat, **st}))
+        if not args.apply:
+            print("dry run — add --apply to rename")
+        return
     if args.records:
         build_records()
         return

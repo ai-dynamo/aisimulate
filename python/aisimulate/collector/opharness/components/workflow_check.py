@@ -162,11 +162,16 @@ def pred_fails_root_caused(p):
     if prev:
         old = yaml.safe_load(prev[-1].read_text())["results"]
         newly = [r for r in fails if (old.get(r) or {}).get("verdict") not in (None, "fail")]
-        blob = json.dumps(_load_findings(), ensure_ascii=False)
-        missing = [r for r in newly if r not in blob]
-        if missing:
-            return False, f"{len(missing)} newly-failing repos absent from findings (e.g. {missing[0]})"
-    return True, f"{len(fails)} fails, all caused; new fails covered in findings"
+    else:
+        # first campaign on this SM (no baseline matrix): every fail that is not a
+        # generator reject is new here and must be explained in findings (RTX 6000
+        # handoff 2026-09-30: the check used to go green on 24 unexplained fails)
+        newly = [r for r, c in fails.items() if "generator" not in str(c.get("cause") or "")]
+    blob = json.dumps(_load_findings(), ensure_ascii=False)
+    missing = [r for r in newly if r not in blob]
+    if missing:
+        return False, f"{len(missing)} newly-failing repos absent from findings (e.g. {missing[0]})"
+    return True, f"{len(fails)} fails, all caused; {len(newly)} new fails covered in findings"
 
 
 def pred_customizations_retested(p):
@@ -174,16 +179,24 @@ def pred_customizations_retested(p):
     at the new version: results/retests/<sm>/<fw>-<version>.yaml maps each repo to
     still_needed|dropped. Produced by the AI step; this checks completeness."""
     t = _load_targets()
+    sm = p.get("sm", "sm90")
+
+    def _active(entry) -> bool:  # an entry scoped with `sms:` counts only on those SMs
+        e = (entry or {}).get(p["fw"])
+        if e is None:
+            return False
+        return not (isinstance(e, dict) and e.get("sms")) or sm in [str(x) for x in e["sms"]]
+
     custom = set()
     for fam in t["families"].values():
         for ck in fam.get("checkpoints") or []:
-            if p["fw"] in (ck.get("cli_extra_args") or {}):
+            if _active(ck.get("cli_extra_args")):
                 custom.add(ck["repo"])
         for repo, o in (fam.get("checkpoint_overrides") or {}).items():
-            if p["fw"] in ((o or {}).get("cli_extra_args") or {}):
+            if _active((o or {}).get("cli_extra_args")):
                 custom.add(repo)
     if not custom:
-        return True, "no per-checkpoint customizations for this framework"
+        return True, "no per-checkpoint customizations for this framework on this SM"
     # SM is a gate dimension (B300 finding 2026-09-20: (fw, version)-keyed
     # evidence let a fresh arch inherit another arch's green checks and let
     # new verdicts overwrite the old arch's files).

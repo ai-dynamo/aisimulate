@@ -3,6 +3,7 @@
 """probe_driver record rules: kernel-name normalization, the taxonomy
 contract, and the orphan keep rule that framework-mode probes depend on."""
 import importlib.util
+import json
 import sys
 from pathlib import Path
 
@@ -175,3 +176,50 @@ def test_capacity_fallback_stops_at_the_smallest_cut(pd, tmp_path, monkeypatch):
             if "skip" not in r]
     assert {r["variant"] for r in runs} == {"depth4"}
     assert {r["capacity_fallback_from"] for r in runs} == {"depth8"}
+
+
+def test_customization_sms_scope(pd, monkeypatch):
+    """`sms:` on a cli_extra_args entry limits it to those SMs (sm120 needs bf16 KV
+    for NVFP4 MLA checkpoints; sm90/sm100 must not inherit it)."""
+    entry = {"args": ["--generator-set", "x=1"], "fact": "f", "sms": ["sm120"]}
+    assert pd._cea(entry, "sm120") == ["--generator-set", "x=1"]
+    assert pd._cea(entry, "sm90") == []
+    assert pd._cea({"args": ["-a"], "fact": "f"}, "sm90") == ["-a"]
+    assert pd._cea(["-b"], "sm120") == ["-b"]
+
+
+def test_run_id_carries_the_platform(pd):
+    ck = {"repo": "org/m", "profile": "fp8"}
+    legacy = pd._run_id(ck, "v", "vllm", "0.30.0", 1, None)
+    h20 = pd._run_id(ck, "v", "vllm", "0.30.0", 1, None, "h20_sm90")
+    b200 = pd._run_id(ck, "v", "vllm", "0.30.0", 1, None, "b200_sm100")
+    assert len({legacy, h20, b200}) == 3 and len(h20) == 12
+
+
+def test_migrate_run_ids_renames_artifacts_and_rewrites_ids(pd, tmp_path):
+    ws = tmp_path / "ws"; (ws / "archive" / "raw").mkdir(parents=True); (ws / "archive" / "run_sh").mkdir()
+    ck = {"repo": "org/m", "profile": "fp8"}
+    old = pd._run_id(ck, "v", "vllm", "0.30.0", 1, None)
+    new = pd._run_id(ck, "v", "vllm", "0.30.0", 1, None, "h20_sm90")
+    run = {"id": old, "repo": "org/m", "profile": "fp8", "variant": "v", "backend": "vllm", "version": "0.30.0",
+           "tp": 1, "kv_dtype": None, "platform": "h20_sm90"}
+    (ws / "archive" / "plan_vllm.json").write_text(json.dumps([run]))
+    (ws / "archive" / "raw" / f"{old}.json").write_text(json.dumps({"provenance": {"id": old}, "ok": True}))
+    (ws / "archive" / "raw" / f"{old}.fp").write_text("deadbeef")
+    (ws / "archive" / "run_sh" / f"{old}.sh").write_text("#!/bin/bash\n")
+    (ws / "archive" / "records.jsonl").write_text(json.dumps({"id": old, "target": {"repo": "org/m"}}) + "\n")
+    assert pd.migrate_run_ids(ws, "h20_sm90", apply=False)["runs"] == 1
+    st = pd.migrate_run_ids(ws, "h20_sm90", apply=True)
+    assert st["renamed"] == 3
+    assert (ws / "archive" / "raw" / f"{new}.json").exists() and not (ws / "archive" / "raw" / f"{old}.json").exists()
+    assert json.loads((ws / "archive" / "raw" / f"{new}.json").read_text())["provenance"]["id"] == new
+    assert json.loads((ws / "archive" / "plan_vllm.json").read_text())[0]["id"] == new
+    assert json.loads((ws / "archive" / "records.jsonl").read_text().strip())["id"] == new
+    assert pd.migrate_run_ids(ws, "h20_sm90", apply=False)["runs"] == 0  # idempotent
+
+
+def test_attention_identity_uses_taxonomy_backend_labels(pd):
+    """The identity column shows the backend label, not an 80-char cubin name."""
+    assert pd.attn_identity_label("flash::FlashAttnFwdSm90<...>") == "fa3"
+    unknown = "some_totally_unknown_kernel_name"
+    assert pd.attn_identity_label(unknown) == pd.normalize_kernel(unknown)
