@@ -21,6 +21,7 @@ use crate::engine::common::utils::{
 };
 use crate::engine::kv_manager::{AllocationRequirement, G1Manager};
 use crate::engine::kv_manager::{DestinationReservation, G1Acquire, NativeAllocation};
+use crate::engine::scheduler::queue_metrics::{QueueStats, QueuedLength};
 use crate::engine::scheduler::vllm::host_offload::{
     CompletedLoad, HostLookup, StartLoad, VllmHostOffloadAdapter, VllmHostRequestState,
 };
@@ -57,6 +58,7 @@ pub(crate) struct VllmRequestState {
     /// `pending_destinations`, outside the physical waiting queues, so
     /// activation restores this ordinal. It is not activation priority.
     waiting_order: u64,
+    is_decode_handoff: bool,
     pub(crate) num_computed_tokens: usize,
     pub(crate) num_preemptions: usize,
     /// Prefix tokens found cached at first admission (set once: a preempted
@@ -140,6 +142,8 @@ pub(crate) struct SchedulerState {
     running_members: FxHashSet<Uuid>,
     pub(crate) requests: FxHashMap<Uuid, VllmRequestState>,
     pub(crate) preemptions_total: u64,
+    queued_stats: QueueStats,
+    queued_lengths: FxHashMap<Uuid, QueuedLength>,
     #[cfg(test)]
     connector_waiting_selections: usize,
 }
@@ -188,6 +192,37 @@ impl SchedulerState {
         self.requests.is_empty()
     }
 
+    fn record_queued_length(&mut self, uuid: Uuid) {
+        let Some(request) = self.requests.get(&uuid) else {
+            return;
+        };
+        let length = if request.is_decode_handoff {
+            Some(QueuedLength::Decode(
+                request.sequence.num_input_tokens() as u64
+            ))
+        } else {
+            match request.status {
+                RequestStatus::Waiting => Some(QueuedLength::Prefill(
+                    request.sequence.num_input_tokens() as u64,
+                )),
+                RequestStatus::Preempted => {
+                    Some(QueuedLength::Decode(request.sequence.len() as u64))
+                }
+                RequestStatus::WaitingForRemoteKv | RequestStatus::Running => None,
+            }
+        };
+        if let Some(length) = length {
+            assert!(self.queued_lengths.insert(uuid, length).is_none());
+            self.queued_stats.add(length);
+        }
+    }
+
+    fn forget_queued_length(&mut self, uuid: Uuid) {
+        if let Some(length) = self.queued_lengths.remove(&uuid) {
+            self.queued_stats.remove(length);
+        }
+    }
+
     fn request_sequence_len(&self, uuid: Uuid) -> usize {
         self.requests
             .get(&uuid)
@@ -200,6 +235,7 @@ impl SchedulerState {
         if !self.waiting_members.insert(uuid) {
             return;
         }
+        self.record_queued_length(uuid);
         self.waiting.push_back(uuid);
         if self
             .requests
@@ -247,6 +283,7 @@ impl SchedulerState {
         if !self.waiting_members.insert(uuid) {
             return;
         }
+        self.record_queued_length(uuid);
         let waiting_index =
             self.insertion_index_for_waiting_order(&self.waiting, waiting_order, false);
         self.waiting.insert(waiting_index, uuid);
@@ -269,6 +306,7 @@ impl SchedulerState {
         if !self.waiting_members.insert(uuid) {
             return;
         }
+        self.record_queued_length(uuid);
         self.waiting.push_front(uuid);
         if self
             .requests
@@ -284,6 +322,7 @@ impl SchedulerState {
     /// Auxiliary/stale entries are discarded lazily. No caller searches or
     /// shifts the middle of either queue.
     fn remove_from_waiting(&mut self, uuid: Uuid) {
+        self.forget_queued_length(uuid);
         let ordinary = self.waiting_members.remove(&uuid);
         let connector = self.connector_waiting_members.remove(&uuid);
         self.connector_deadline_waiting_members.remove(&uuid);
@@ -302,6 +341,7 @@ impl SchedulerState {
     fn restore_connector_waiting_front(&mut self, uuid: Uuid, deadline_only: bool) {
         debug_assert!(!self.waiting_members.contains(&uuid));
         if self.connector_waiting_members.insert(uuid) {
+            self.record_queued_length(uuid);
             self.connector_waiting.push_front(uuid);
         }
         if deadline_only {
@@ -323,6 +363,7 @@ impl SchedulerState {
         if !self.connector_waiting_members.contains(&uuid) {
             self.remove_from_waiting(uuid);
             self.connector_waiting_members.insert(uuid);
+            self.record_queued_length(uuid);
             self.connector_waiting.push_back(uuid);
         }
         self.connector_deadline_waiting_members.insert(uuid);
@@ -421,6 +462,7 @@ impl SchedulerState {
         self.connector_waiting_selections
     }
 
+    #[cfg(test)]
     fn waiting_request_ids(&self) -> impl Iterator<Item = Uuid> + '_ {
         self.waiting_members
             .iter()
@@ -456,6 +498,7 @@ impl SchedulerState {
     }
 
     pub(crate) fn take_completed(&mut self, uuid: &Uuid) -> Option<VllmRequestState> {
+        self.forget_queued_length(*uuid);
         self.waiting_members.remove(uuid);
         self.connector_waiting_members.remove(uuid);
         self.connector_deadline_waiting_members.remove(uuid);
@@ -633,6 +676,7 @@ impl ReservedVllmDecode {
         );
         request.num_computed_tokens = prompt_len;
         request.status = RequestStatus::Waiting;
+        request.is_decode_handoff = true;
         request
     }
 
@@ -666,6 +710,44 @@ impl VllmCore {
         if let Some(adapter) = &mut self.native_host_offload {
             adapter.set_observer(observer);
         }
+    }
+
+    #[cfg(test)]
+    fn reference_queued_fpm(&self) -> crate::engine::common::protocols::ForwardPassSnapshot {
+        let queued_prefills = self.state.waiting_request_ids().filter_map(|uuid| {
+            let request = self.state.requests.get(&uuid)?;
+            (matches!(request.status, RequestStatus::Waiting)
+                && !self.active_destination_handoffs.contains_request(uuid))
+            .then_some(request.sequence.num_input_tokens() as u64)
+        });
+
+        let ordinary_queued_decodes = self.state.waiting_request_ids().filter_map(|uuid| {
+            let request = self.state.requests.get(&uuid)?;
+            if self.active_destination_handoffs.contains_request(uuid) {
+                return Some(request.sequence.num_input_tokens() as u64);
+            }
+            matches!(request.status, RequestStatus::Preempted).then_some(
+                (request.sequence.num_input_tokens() + request.sequence.generated_tokens()) as u64,
+            )
+        });
+        let preactivation_decodes = self
+            .pending_destinations
+            .payloads()
+            .map(|request| request.sequence.num_input_tokens() as u64)
+            .chain(
+                self.destination_holds
+                    .payloads()
+                    .map(|reservation| reservation.request.sequence.num_input_tokens() as u64),
+            );
+        let queued_decodes = ordinary_queued_decodes.chain(preactivation_decodes);
+
+        build_fpm_snapshot(
+            std::iter::empty(),
+            std::iter::empty(),
+            queued_prefills,
+            queued_decodes,
+            0.0,
+        )
     }
 
     #[cfg(test)]
@@ -1259,6 +1341,7 @@ impl VllmCore {
             sequence,
             status,
             waiting_order,
+            is_decode_handoff: false,
             num_computed_tokens: 0,
             num_preemptions: 0,
             cached_prefix_tokens: None,
@@ -2311,22 +2394,7 @@ impl VllmCore {
                 .then_some(work.sequence_len as u64)
         });
 
-        let queued_prefills = self.state.waiting_request_ids().filter_map(|uuid| {
-            let request = self.state.requests.get(&uuid)?;
-            (matches!(request.status, RequestStatus::Waiting)
-                && !self.active_destination_handoffs.contains_request(uuid))
-            .then_some(request.sequence.num_input_tokens() as u64)
-        });
-
-        let ordinary_queued_decodes = self.state.waiting_request_ids().filter_map(|uuid| {
-            let request = self.state.requests.get(&uuid)?;
-            if self.active_destination_handoffs.contains_request(uuid) {
-                return Some(request.sequence.num_input_tokens() as u64);
-            }
-            matches!(request.status, RequestStatus::Preempted).then_some(
-                (request.sequence.num_input_tokens() + request.sequence.generated_tokens()) as u64,
-            )
-        });
+        let mut queued = self.state.queued_stats.snapshot();
         let preactivation_decodes = self
             .pending_destinations
             .payloads()
@@ -2336,15 +2404,24 @@ impl VllmCore {
                     .payloads()
                     .map(|reservation| reservation.request.sequence.num_input_tokens() as u64),
             );
-        let queued_decodes = ordinary_queued_decodes.chain(preactivation_decodes);
+        for length in preactivation_decodes {
+            queued.add_decode(length);
+        }
 
-        build_fpm_snapshot(
+        let mut snapshot = build_fpm_snapshot(
             scheduled_prefills,
             scheduled_decodes,
-            queued_prefills,
-            queued_decodes,
+            std::iter::empty(),
+            std::iter::empty(),
             wall_time_secs,
-        )
+        );
+        queued.apply(&mut snapshot);
+        #[cfg(test)]
+        crate::engine::scheduler::queue_metrics::assert_queue_metrics(
+            &snapshot,
+            &self.reference_queued_fpm(),
+        );
+        snapshot
     }
 
     /// Modified simulation of vLLM v0.29.0's align split without internal

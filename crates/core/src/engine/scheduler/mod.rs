@@ -4,6 +4,7 @@
 //! Engine-specific scheduling implementations.
 
 mod kv_event_sink;
+mod queue_metrics;
 mod rank;
 #[path = "sglang/mod.rs"]
 pub mod sglang;

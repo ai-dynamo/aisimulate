@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-use std::collections::VecDeque;
+use super::request::WaitingQueue;
 
 use uuid::Uuid;
 
@@ -380,6 +380,7 @@ fn zero_output_completion_survives_decode_reservation_failure() {
     let normal_uuid = Uuid::from_u128(90_005);
     let mut running = vec![
         SglangRequest {
+            is_decode_handoff: false,
             uuid: zero_uuid,
             sequence_tokens: vec![1, 2, 3, 4],
             prompt_len: 4,
@@ -390,6 +391,7 @@ fn zero_output_completion_survives_decode_reservation_failure() {
             allocated_tokens: 4,
         },
         SglangRequest {
+            is_decode_handoff: false,
             uuid: normal_uuid,
             sequence_tokens: vec![5, 6, 7, 8],
             prompt_len: 4,
@@ -441,6 +443,7 @@ fn retraction_ratio_is_estimated_from_survivors_before_the_forward() {
     let r2_alloc = kv_manager.allocate_for_request(&[5, 6, 7, 8]).unwrap();
     let mut running = vec![
         SglangRequest {
+            is_decode_handoff: false,
             uuid: Uuid::from_u128(90_010),
             sequence_tokens: vec![1, 2, 3, 10],
             prompt_len: 3,
@@ -451,6 +454,7 @@ fn retraction_ratio_is_estimated_from_survivors_before_the_forward() {
             allocated_tokens: 4,
         },
         SglangRequest {
+            is_decode_handoff: false,
             uuid: Uuid::from_u128(90_011),
             sequence_tokens: vec![5, 6, 7, 8],
             prompt_len: 4,
@@ -481,7 +485,8 @@ fn fresh_prefill_tracks_cache_owned_prefix_pages_and_pressure_event() {
     let cached = kv_manager.allocate_for_request(&prompt).unwrap();
     let cached_pages = cached.lease.pages().to_vec();
     kv_manager.finish(&prompt, cached.lease);
-    let mut waiting = VecDeque::from([SglangRequest {
+    let mut waiting = WaitingQueue::from([SglangRequest {
+        is_decode_handoff: false,
         uuid: Uuid::from_u128(90_002),
         sequence_tokens: prompt.clone(),
         prompt_len: prompt.len(),
@@ -506,6 +511,7 @@ fn fresh_prefill_tracks_cache_owned_prefix_pages_and_pressure_event() {
     let blocker_tokens = vec![9, 10, 11];
     let blocker_alloc = kv_manager.allocate_for_request(&blocker_tokens).unwrap();
     let blocker = SglangRequest {
+        is_decode_handoff: false,
         uuid: Uuid::from_u128(90_003),
         sequence_tokens: blocker_tokens,
         prompt_len: 3,
@@ -1170,8 +1176,9 @@ mod scheduling {
 
         let no_match_uuid = Uuid::new_v4();
         let match_uuid = Uuid::new_v4();
-        let mut waiting = VecDeque::from([
+        let mut waiting = WaitingQueue::from([
             SglangRequest {
+                is_decode_handoff: false,
                 uuid: no_match_uuid,
                 sequence_tokens: vec![9, 8, 7],
                 prompt_len: 3,
@@ -1182,6 +1189,7 @@ mod scheduling {
                 allocated_tokens: 0,
             },
             SglangRequest {
+                is_decode_handoff: false,
                 uuid: match_uuid,
                 sequence_tokens: vec![1, 2, 3, 4, 5, 6, 7],
                 prompt_len: 5,
@@ -1212,9 +1220,10 @@ mod scheduling {
         };
         let kv_manager = SglangKvManager::new(1000, 1, KvEventPublishers::default(), 0);
         let duplicate_prefix = (0..32).collect::<Vec<_>>();
-        let mut waiting = VecDeque::new();
+        let mut waiting = WaitingQueue::default();
         for _ in 0..33 {
             waiting.push_back(SglangRequest {
+                is_decode_handoff: false,
                 uuid: Uuid::new_v4(),
                 sequence_tokens: duplicate_prefix.clone(),
                 prompt_len: duplicate_prefix.len(),
@@ -1227,6 +1236,7 @@ mod scheduling {
         }
         let unique_uuid = Uuid::new_v4();
         waiting.push_back(SglangRequest {
+            is_decode_handoff: false,
             uuid: unique_uuid,
             sequence_tokens: (100..132).collect(),
             prompt_len: 32,
@@ -1318,7 +1328,8 @@ mod core_behavior {
             )
         };
         let mut kv_manager = SglangKvManager::new(12, 4, KvEventPublishers::default(), 0);
-        let mut waiting = VecDeque::from([SglangRequest {
+        let mut waiting = WaitingQueue::from([SglangRequest {
+            is_decode_handoff: false,
             uuid: Uuid::new_v4(),
             sequence_tokens: vec![1; 16],
             prompt_len: 16,
@@ -1350,6 +1361,7 @@ mod core_behavior {
             .unwrap();
         kv_manager.extend_cached_prefix(&[1, 2, 3, 4], &mut alloc.lease);
         let mut running = vec![SglangRequest {
+            is_decode_handoff: false,
             uuid: Uuid::new_v4(),
             sequence_tokens: vec![1, 2, 3, 4, 5, 6],
             prompt_len: 6,
@@ -1394,6 +1406,7 @@ mod core_behavior {
         let mut base_kv_manager = SglangKvManager::new(64, 4, KvEventPublishers::default(), 0);
         let base_alloc = base_kv_manager.allocate_for_request(&[1, 2, 3, 4]).unwrap();
         let mut base_running = vec![SglangRequest {
+            is_decode_handoff: false,
             uuid: Uuid::new_v4(),
             sequence_tokens: vec![1, 2, 3, 4],
             prompt_len: 4,
@@ -1407,6 +1420,7 @@ mod core_behavior {
         let mut fast_kv_manager = SglangKvManager::new(64, 4, KvEventPublishers::default(), 0);
         let fast_alloc = fast_kv_manager.allocate_for_request(&[1, 2, 3, 4]).unwrap();
         let mut fast_running = vec![SglangRequest {
+            is_decode_handoff: false,
             uuid: Uuid::new_v4(),
             sequence_tokens: vec![1, 2, 3, 4],
             prompt_len: 4,
@@ -1456,6 +1470,7 @@ mod core_behavior {
 
         let mut running = vec![
             SglangRequest {
+                is_decode_handoff: false,
                 uuid: Uuid::new_v4(),
                 sequence_tokens: vec![1, 2, 3, 4, 11, 12, 13, 14],
                 prompt_len: 4,
@@ -1466,6 +1481,7 @@ mod core_behavior {
                 allocated_tokens: 8,
             },
             SglangRequest {
+                is_decode_handoff: false,
                 uuid: Uuid::new_v4(),
                 sequence_tokens: vec![9, 8, 7, 6, 21],
                 prompt_len: 4,
@@ -1497,6 +1513,7 @@ mod core_behavior {
         let mut kv_manager = SglangKvManager::new(64, 4, KvEventPublishers::default(), 0);
         let alloc = kv_manager.allocate_for_request(&[1, 2, 3, 4]).unwrap();
         let mut running = vec![SglangRequest {
+            is_decode_handoff: false,
             uuid: Uuid::new_v4(),
             sequence_tokens: vec![1, 2, 3, 4],
             prompt_len: 4,
@@ -2704,6 +2721,132 @@ mod admission_validation_rollback {
     }
 
     #[test]
+    fn bounded_checkpoint_restores_untouched_fifo_tail() {
+        for fail_in_prediction in [false, true] {
+            let mut args = test_args(128, 4, 4);
+            args.max_num_seqs = Some(2);
+            args.max_model_len = Some(64);
+            let mut core = SglangCore::new(args);
+            let ids: Vec<_> = (0..200)
+                .map(|n| core.receive(direct_request(vec![n; 8 + n as usize % 8], 2)))
+                .collect();
+            let before = format!("{:?}", core.waiting);
+            let capacity_before = capacity(&core);
+            let fail = Arc::new(AtomicBool::new(true));
+            install_timing(&mut core, &fail, fail_in_prediction);
+            for _ in 0..3 {
+                assert!(core.try_execute_hidden_pass(0.0).is_err());
+                assert_eq!(format!("{:?}", core.waiting), before);
+                assert_eq!(capacity(&core), capacity_before);
+                assert_eq!(core.waiting.iter().map(|r| r.uuid).collect::<Vec<_>>(), ids);
+            }
+            fail.store(false, Ordering::Relaxed);
+            // Successful passes run the maintained-statistics and active-ID
+            // oracles, including the untouched tail after repeated rollback.
+            let mut now = 0.0;
+            for _ in 0..10 {
+                let pass = core.try_execute_hidden_pass(now).unwrap();
+                now = pass.end_ms;
+            }
+        }
+    }
+
+    #[test]
+    fn lpm_threshold_after_rejection_keeps_complete_rollback_order() {
+        let mut args = test_args(256, 4, 4);
+        args.max_num_seqs = Some(1);
+        args.max_model_len = Some(64);
+        args.enable_prefix_caching = true;
+        args.sglang.as_mut().unwrap().schedule_policy = Some("lpm".into());
+        let mut core = SglangCore::new(args);
+        core.receive(direct_request(vec![128; 8], 0));
+        let mut warm_now = 0.0;
+        while !core.is_empty() {
+            warm_now = core.try_execute_hidden_pass(warm_now).unwrap().end_ms;
+        }
+        for index in 0..129 {
+            let length = if index == 17 { 64 } else { 8 + index % 8 };
+            core.receive(direct_request(vec![index as u32; length], 2));
+        }
+        let preferred = core.waiting.back().unwrap().uuid;
+        let before = format!("{:?}", core.waiting);
+        let capacity_before = capacity(&core);
+        let fail = Arc::new(AtomicBool::new(true));
+        install_timing(&mut core, &fail, false);
+        assert!(core.try_execute_hidden_pass(0.0).is_err());
+        assert_eq!(format!("{:?}", core.waiting), before);
+        assert_eq!(capacity(&core), capacity_before);
+        fail.store(false, Ordering::Relaxed);
+        let pass = core.try_execute_hidden_pass(0.0).unwrap();
+        assert_eq!(pass.admissions[0].uuid, preferred);
+        assert_eq!(
+            pass.output_signals
+                .iter()
+                .filter(|signal| signal.rejected)
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn decode_failure_after_retraction_keeps_id_index_in_sync() {
+        struct DecodeFailure(Arc<AtomicBool>);
+        impl crate::engine::TimingModel for DecodeFailure {
+            fn predict_prefill_ms(&self, _: usize, _: usize, _: usize) -> anyhow::Result<f64> {
+                Ok(0.1)
+            }
+            fn predict_decode_ms(
+                &self,
+                _: usize,
+                _: usize,
+                _: usize,
+                _: usize,
+            ) -> anyhow::Result<f64> {
+                anyhow::ensure!(!self.0.load(Ordering::Relaxed), "decode failed");
+                Ok(0.1)
+            }
+        }
+        let mut args = test_args(4, 4, 32);
+        args.max_num_seqs = Some(2);
+        args.sglang.as_mut().unwrap().clip_max_new_tokens = Some(1);
+        let mut core = SglangCore::new(args);
+        let ids = [
+            core.receive(direct_request(vec![11; 4], 8)),
+            core.receive(direct_request(vec![22; 4], 8)),
+        ];
+        let fail = Arc::new(AtomicBool::new(false));
+        core.config.perf_model = crate::engine::common::perf_model::PerfModel::External {
+            timing: Arc::new(DecodeFailure(Arc::clone(&fail))),
+        }
+        .into();
+        let mut now = core.try_execute_hidden_pass(0.0).unwrap().end_ms;
+        assert_eq!(core.running.len(), 2);
+        for _ in 0..3 {
+            now = core.try_execute_hidden_pass(now).unwrap().end_ms;
+        }
+        assert!(
+            core.running
+                .iter()
+                .all(|request| request.current_sequence_len() == 8)
+        );
+        fail.store(true, Ordering::Relaxed);
+        assert!(core.try_execute_hidden_pass(now).is_err());
+        // The existing fallible-decode path drops its local retraction vector.
+        // The derived index must reflect surviving ownership, not retain a ghost.
+        assert_eq!(core.running.len(), 1);
+        let removed = ids
+            .into_iter()
+            .find(|id| !core.running.iter().any(|request| request.uuid == *id))
+            .unwrap();
+        let mut request = direct_request(vec![33; 4], 1);
+        request.uuid = Some(removed);
+        core.apply_command(SchedulerCommand::Submit(request))
+            .unwrap();
+        fail.store(false, Ordering::Relaxed);
+        core.try_execute_hidden_pass(now).unwrap();
+    }
+
+    #[test]
     fn failed_prefill_validation_restores_queue_when_no_request_fits() {
         let mut core = SglangCore::new_with_kv_capture(test_args(32, 4, 32), 0);
         core.receive(direct_request((0..8).collect(), 0));
@@ -3115,4 +3258,42 @@ mod admission_validation_rollback {
         assert_eq!(admitted.admissions.len(), 1);
         assert_eq!(admitted.completed_requests, 1);
     }
+}
+
+#[test]
+fn indexed_ids_follow_chunk_cancel_completion_and_reuse() {
+    let mut core = SglangCore::new(test_args(128, 4, 4));
+    let id = Uuid::from_u128(700_001);
+    let request = || {
+        let mut request = direct_request((0..12).collect(), 2);
+        request.uuid = Some(id);
+        request
+    };
+    core.apply_command(SchedulerCommand::Submit(request()))
+        .unwrap();
+    assert!(
+        core.apply_command(SchedulerCommand::Submit(request()))
+            .is_err()
+    );
+    let first = core.try_execute_hidden_pass(0.0).unwrap();
+    assert!(first.output_signals.is_empty()); // still a partial prefill
+    assert!(
+        core.apply_command(SchedulerCommand::Submit(request()))
+            .is_err()
+    );
+    core.apply_command(SchedulerCommand::CancelRequest { request_id: id })
+        .unwrap();
+    core.apply_command(SchedulerCommand::Submit(request()))
+        .unwrap();
+    let mut now = first.end_ms;
+    for _ in 0..20 {
+        let pass = core.try_execute_hidden_pass(now).unwrap();
+        now = pass.end_ms;
+        if core.is_empty() {
+            break;
+        }
+    }
+    assert!(core.is_empty());
+    core.apply_command(SchedulerCommand::Submit(request()))
+        .unwrap();
 }
