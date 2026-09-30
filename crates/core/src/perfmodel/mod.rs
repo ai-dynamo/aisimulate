@@ -50,12 +50,18 @@ pub use fpm::{
     ForwardPassPerfDiagnostics, ForwardPassPerfModel, ForwardPassPerfModelConfig,
     ForwardPassPerfOptions, ForwardPassPerfProvenance, ForwardPassPerfReadiness,
     ForwardPassPerfSource, ForwardPassRegressionStoreDiagnostics,
-    ForwardPassRegressionWorkloadKind, ForwardPassSpeculationConfig, ForwardPassWorkerType,
-    FpmRegressionConfig, RegressionFeatureWeights, SamplingConfig,
+    ForwardPassRegressionWorkloadKind, ForwardPassSpeculationConfig, ForwardPassSplineDiagnostics,
+    ForwardPassWorkerType, FpmRegressionConfig, RegressionFeatureWeights, SamplingConfig,
 };
 pub use fpm::{
-    CorrectionFactorBounds, CorrectionFeatureSpace, FpmInterpolationConfig, OpLevelConfig,
-    RegressionFitConfig, RegressionFitKind, UnrecordedFpmQuantMode,
+    CorrectionFactorBounds, CorrectionFeatureSpace, FpmInterpolationConfig, FpmInterpolationMethod,
+    FpmQueryCoverage, FpmQueryCoverageCounts, FpmQueryGap, FpmQueryPurpose, OpLevelConfig,
+    RegressionFitConfig, RegressionFitKind, SplineFitConfig, SplineSearchConfig,
+    UnrecordedFpmQuantMode,
+};
+pub use fpm::{
+    FpmCacheBudget, FpmCacheBudgetAdjusted, FpmCacheBudgetRequest, FpmCacheGroup, FpmCacheKind,
+    FpmCacheLayout, FpmResourceConfig, FpmRuntimeMemoryConfig,
 };
 // Forward-pass metrics telemetry types and schema version, plus the
 // crate-internal validation helper. Re-exported at the crate root so existing
@@ -104,3 +110,8 @@ pub(crate) fn repo_relative(rel: &str) -> Option<PathBuf> {
 pub fn register_python(module: &pyo3::Bound<'_, pyo3::types::PyModule>) -> pyo3::PyResult<()> {
     py::register(module)
 }
+
+pub use fpm::{
+    DirectFpmQueryEvidence, ForwardPassEstimate, FpmCoordinates, FpmEstimateEvidence,
+    FpmMeasurementSupport, FpmQueryResolution, FpmRankEstimate,
+};

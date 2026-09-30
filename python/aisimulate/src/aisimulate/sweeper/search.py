@@ -66,6 +66,7 @@ from .provider import (
 )
 from .replay import (
     REPLAY_SPEC_API_VERSION,
+    ReplayOutputRequirements,
     ReplayReport,
     ReplaySpec,
     Runner,
@@ -680,7 +681,11 @@ def _materialize_one(
             sample["kv_load_ratio"] = resolution.ratio
             sample["kv_load_concurrency_capacity"] = resolution.concurrency_capacity
             load_role = "decode" if sample["deployment_mode"] == "disagg" else "agg"
-            sample["kv_load_capacity_tokens"] = resolution.role_capacity_tokens[load_role]
+            if load_role in resolution.role_capacity_tokens:
+                sample["kv_load_capacity_tokens"] = resolution.role_capacity_tokens[load_role]
+            if load_role in resolution.role_capacity_bytes:
+                sample["kv_load_capacity_bytes"] = resolution.role_capacity_bytes[load_role]
+                sample["kv_load_request_cache_bytes"] = resolution.role_request_cache_bytes[load_role]
             for role, tokens in resolution.role_capacity_tokens.items():
                 sample[f"{role}_kv_capacity_tokens"] = tokens
         if concurrency is not None:
@@ -777,12 +782,18 @@ def _materialize_one(
     ), None
 
 
-def _run_replay_detailed(spec: ReplaySpec, runner: Runner) -> _ReplayEvaluation:
+def _run_replay_detailed(
+    spec: ReplaySpec, runner: Runner, output_requirements: ReplayOutputRequirements | None = None
+) -> _ReplayEvaluation:
     """Run one replay while retaining validated runner provenance metadata."""
 
     try:
         try:
-            report = runner.run(spec)
+            report = (
+                runner.run(spec)
+                if output_requirements is None
+                else runner.run(spec, output_requirements=output_requirements)
+            )
         except ResourceLimitError:
             raise
         except Exception as exc:
@@ -1066,6 +1077,8 @@ _WORKER_CTX: dict[str, Any] = {}
 
 def _init_worker(
     runner_factory: RunnerFactory,
+    *,
+    output_requirements: ReplayOutputRequirements | None = None,
 ) -> None:
     identity = getattr(mp.current_process(), "_identity", ())
     worker_id = int(identity[0]) if identity else 0
@@ -1074,11 +1087,11 @@ def _init_worker(
     # shutdown.  Unlike a plain atexit handler, this matches the ProcessPool
     # worker lifecycle and lets a runtime release worker-local resources.
     Finalize(None, runner.close, exitpriority=0)
-    _WORKER_CTX.update(runner=runner)
+    _WORKER_CTX.update(runner=runner, output_requirements=output_requirements)
 
 
 def _worker_eval(spec: ReplaySpec) -> _ReplayEvaluation:
-    return _run_replay_detailed(spec, _WORKER_CTX["runner"])
+    return _run_replay_detailed(spec, _WORKER_CTX["runner"], _WORKER_CTX.get("output_requirements"))
 
 
 class Sweeper:
@@ -1098,8 +1111,10 @@ class Sweeper:
         show_progress: bool = True,
         prediction_config_factory: Callable[[dict[str, Any], ReplaySpec], dict[str, Any]] | None = None,
         afd_performance_model: AFDPerformanceModel | None = None,
+        output_requirements: ReplayOutputRequirements | None = None,
     ) -> None:
         self._runner_factory = runner_factory
+        self._output_requirements = output_requirements
         self._providers = dict(providers or {})
         self._sampler_factory = sampler_factory
         self._show_progress = show_progress
@@ -1140,6 +1155,9 @@ class Sweeper:
             raise ValueError(f"top_n must be positive or None, got {top_n}")
         retention = CandidateRetention(candidate_retention)
         runner_factory = self._runner_factory
+        from functools import partial
+
+        worker_initializer = partial(_init_worker, output_requirements=self._output_requirements)
         providers = self._providers
         sampler_factory = self._sampler_factory
         show_progress = self._show_progress
@@ -1242,7 +1260,7 @@ class Sweeper:
             return ProcessPoolExecutor(
                 max_workers=worker_count,
                 mp_context=mp.get_context("spawn"),
-                initializer=_init_worker,
+                initializer=worker_initializer,
                 initargs=(runner_factory,),
             )
 
@@ -1305,7 +1323,7 @@ class Sweeper:
                 for index, result in evaluate_waves(
                     [prepared.replay_spec for _, prepared in todo],
                     factory=runner_factory,
-                    initializer=_init_worker,
+                    initializer=worker_initializer,
                     evaluate=_worker_eval,
                     workers=worker_count,
                     timeout=max_eval_seconds,
@@ -1336,7 +1354,7 @@ class Sweeper:
                         suggestion,
                         _score_prepared(
                             prepared,
-                            _run_replay_detailed(prepared.replay_spec, sequential_runner),
+                            _run_replay_detailed(prepared.replay_spec, sequential_runner, self._output_requirements),
                             config=config,
                             goal=goal,
                         ),

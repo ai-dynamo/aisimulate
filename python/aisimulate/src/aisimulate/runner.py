@@ -99,6 +99,7 @@ _AIC_TIMING_FIELD_ALIASES = {
     "comm_dtype": ("comm_dtype", "aic_comm_dtype"),
     "systems_path": ("systems_path",),
     "forward_model": ("forward_model", "aic_forward_model"),
+    "fpm_profile": ("fpm_profile", "aic_fpm_profile"),
     "fpm_parquet_path": ("fpm_parquet_path", "aic_fpm_parquet_path"),
     "moe_backend": ("aic_moe_backend",),
     "moe_kernel_source": ("moe_kernel_source", "aic_moe_kernel_source"),
@@ -389,6 +390,7 @@ class EngineReplayRunnerFactory:
             supports_mtp_expected_acceptance=True,
             supported_engine_model_controls=ENGINE_MODEL_CONTROL_FIELDS,
             supports_state_cache=True,
+            supports_grouped_kv_cache=True,
             supported_trace_formats=(
                 "mooncake",
                 "mooncake-delta",
@@ -552,7 +554,10 @@ class EngineReplayRunner:
                 from .resources import ResourceLimitError
             except ImportError:
                 raise error from None
-            raise ResourceLimitError(str(error)) from error
+            failure = ResourceLimitError(str(error))
+            if hasattr(error, "fpm_query_coverage"):
+                failure.fpm_query_coverage = error.fpm_query_coverage
+            raise failure from error
         if not isinstance(report_json, str):
             raise InvalidRunnerError("AISimulate engine replay runtime report must be a JSON string")
         try:
@@ -1188,6 +1193,10 @@ def _pop_aic_timing_overrides(rank: dict[str, JSONValue], role: str) -> dict[str
             continue
         if target in {"pp", "moe_tp_size", "moe_ep_size", "wideep_num_slots"}:
             value = _positive_int(value, f"engine provider {role} {target}")
+        elif target == "fpm_profile":
+            from aisimulate_core.sdk.fpm_profile import load_fpm_profile
+
+            value = load_fpm_profile(value).model_dump(mode="json")
         elif target in {"enable_eplb", "decoder_replay", "enable_shared_layer", "strict_provenance"}:
             if not isinstance(value, bool):
                 raise ValueError(f"engine provider {role} {target} must be a boolean")
@@ -1415,9 +1424,12 @@ def _materialize_engine_role(
             )
             if role_memory is not None and "total_gpu_capacity_bytes" in role_memory:
                 role_memory["status"] = "available"
-                role_memory["estimated_num_gpu_blocks"] = role_memory.pop("num_gpu_blocks")
+                if "num_gpu_blocks" in role_memory:
+                    role_memory["estimated_num_gpu_blocks"] = role_memory.pop("num_gpu_blocks")
                 role_memory.pop("unavailable_reason", None)
-            capacity_materialized = role_config.get("num_gpu_blocks") is not None
+            capacity_materialized = (
+                role_config.get("num_gpu_blocks") is not None or role_config.get("kv_cache_capacity_bytes") is not None
+            )
     for name in ("engine_type", "aic_backend"):
         configured = role_config.pop(name, None)
         if configured is not None and configured != deployment_backend:
@@ -1987,6 +1999,7 @@ def _normalize_engine_replay_report(report: Mapping[str, JSONValue], *, include_
             "agentic_phases",
             "agentic_model_projection",
             "weka_nested_timestamp_basis",
+            "fpm_query_evidence",
         )
         if key in payload
     }

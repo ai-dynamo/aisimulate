@@ -591,12 +591,18 @@ def test_supervisor_argument_and_output_setup_do_not_import_runtime():
         [
             sys.executable,
             "-c",
-            (
-                "import sys; import aisimulate.supervision, aisimulate.cli_args, aisimulate.output; "
-                "aisimulate.cli_args._extract_output_configs({'artifact': {}}, ['artifact'], stack='engine'); "
-                "assert not any(name in sys.modules for name in "
-                "('aisimulate._runtime', 'aisimulate.sweeper', 'numpy', 'pandas', 'aisimulate_core'))"
-            ),
+            """
+import sys
+import aisimulate.supervision, aisimulate.cli_args, aisimulate.output
+aisimulate.cli_args._extract_output_configs({'artifact': {}}, ['artifact'], stack='engine')
+
+runtime = ('aisimulate._runtime', 'aisimulate.sweeper', 'numpy', 'pandas')
+assert not any(name == root or name.startswith(root + '.') for name in sys.modules for root in runtime)
+# Profile validation needs only lightweight metadata before resource admission.
+allowed_core = {'aisimulate_core', 'aisimulate_core.fpm_profile', 'aisimulate_core.quantization'}
+loaded_core = {name for name in sys.modules if name == 'aisimulate_core' or name.startswith('aisimulate_core.')}
+assert loaded_core <= allowed_core, loaded_core - allowed_core
+""",
         ],
         check=True,
         timeout=15,
