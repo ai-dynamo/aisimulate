@@ -687,7 +687,16 @@ def build_collection_plan(
     )
     policies = _backend_policies(options, collector_config, backend=backend)
     if profile is not None:
-        _validate_profile_identities(profile, capability, candidate_topologies, policies, model_path, system, backend)
+        _validate_profile_identities(
+            profile,
+            capability,
+            candidate_topologies,
+            policies,
+            model_path,
+            system,
+            backend,
+            max_decode_batch_size=options.max_decode_batch_size,
+        )
     topologies, topology_memory_admission = filter_memory_infeasible_topologies(
         backend=backend,
         model_path=model_path,
@@ -805,6 +814,8 @@ def _validate_profile_identities(
     model_path: str,
     system: str,
     backend: str,
+    *,
+    max_decode_batch_size: int | None = None,
 ) -> None:
     """Require a resource declaration for every requested cell, before admission."""
     if profile.architecture != capability.architecture:
@@ -837,6 +848,8 @@ def _validate_profile_identities(
             moe_ep_size=topology.moe_ep,
             cp_size=topology.cp,
         )
+        if max_decode_batch_size is not None:
+            deployment.resources.validate_envelope(max_num_tokens=1, max_batch_size=max_decode_batch_size)
         for kv_dtype in capability.dtype.kv_cache_dtypes:
             for policy in policies:
                 resolved = [
