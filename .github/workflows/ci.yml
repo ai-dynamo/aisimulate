@@ -846,7 +846,7 @@ jobs:
 
   license-evidence:
     name: License compliance evidence
-    needs: [verify-target, python-compliance, license-crate-inventory]
+    needs: [fast-ci, verify-target, python-compliance, license-crate-inventory]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

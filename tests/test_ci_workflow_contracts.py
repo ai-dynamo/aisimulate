@@ -2579,7 +2579,7 @@ def test_full_ci_evidence_runs_independently_of_build_scope_and_uses_shared_gene
             for step in jobs[job_name]["steps"]
         )
     evidence = jobs["license-evidence"]
-    assert set(evidence["needs"]) == {"verify-target", "python-compliance", "license-crate-inventory"}
+    assert set(evidence["needs"]) == {"fast-ci", "verify-target", "python-compliance", "license-crate-inventory"}
     commands = _run_commands(evidence)
     assert "--base-dir" in commands and "--previous-nightly" not in commands
     assert "pip install" not in commands and "cargo " not in commands
