@@ -12,7 +12,7 @@
 use crate::common::enums::{DatabaseMode, GemmQuantMode, KvCacheQuantMode, MoeQuantMode};
 use crate::common::error::AicError;
 use crate::common::system_spec::{SystemSpec, quant_tc_flops};
-use crate::operators::base::{PerformanceResult, SolComponents};
+use crate::operators::base::{PerformanceResult, SolComponents, Source};
 use crate::operators::moe::MoeOp;
 use crate::operators::op::{Op, RuntimeContext};
 use crate::perf_database::PerfDatabase;
@@ -43,8 +43,8 @@ fn identity(backend: &str, checkpoint: &str) -> Result<(), AicError> {
     }
     Ok(())
 }
-// The Ops PR supplies the measured table. Until then explicit SILICON must
-// fail; HYBRID reports Source::Sol rather than relabelling an analytical value.
+// Without a measured composition explicit SILICON must fail; HYBRID reports
+// Source::Sol rather than relabelling an analytical value.
 fn analytical_only(db: &PerfDatabase, component: &str) -> Result<(), AicError> {
     match db.database_mode {
         DatabaseMode::Silicon => Err(AicError::PerfDatabase(format!(
@@ -56,6 +56,86 @@ fn analytical_only(db: &PerfDatabase, component: &str) -> Result<(), AicError> {
         _ => Ok(()),
     }
 }
+/// Generic families that price a GLM boundary in SILICON/HYBRID. Their SOL
+/// view is never used here: SOL stays on the GLM formulas so op-level SOL and
+/// the FPM roofline are unchanged by the measured composition.
+fn allowed_measured(component: &str, op: &Op) -> bool {
+    match component {
+        "attention" => matches!(op, Op::Gemm(_) | Op::Kda(_) | Op::Elementwise(_)),
+        "mhc" => matches!(op, Op::Mhc(_) | Op::Elementwise(_)),
+        "ffn" => matches!(op, Op::Gemm(_) | Op::Elementwise(_) | Op::Moe(_)),
+        "primitive" => matches!(
+            op,
+            Op::Embedding(_)
+                | Op::Elementwise(_)
+                | Op::Gemm(_)
+                | Op::CustomAllReduce(_)
+                | Op::Nccl(_)
+        ),
+        _ => false,
+    }
+}
+
+fn validate_measured(component: &str, measured: &[Op]) -> Result<(), AicError> {
+    if let Some(op) = measured.iter().find(|op| !allowed_measured(component, op)) {
+        return Err(AicError::ModelConfig(format!(
+            "GLM-5.3-Flash {component} measured composition cannot contain {}",
+            op.name()
+        )));
+    }
+    Ok(())
+}
+
+/// True when a generic child answers from an analytical formula in every
+/// database mode (no table exists for these families); such children stay
+/// admissible in SILICON, exactly as for every other model.
+fn analytic_family(op: &Op) -> bool {
+    matches!(op, Op::Elementwise(_) | Op::Embedding(_))
+}
+
+/// SILICON/HYBRID price of a GLM boundary: the sum of its generic children
+/// queried against the generic tables. SILICON fails closed when a child
+/// cannot be answered from silicon data (including families such as KDA that
+/// would otherwise return their SOL on a miss). HYBRID keeps each child's own
+/// labelled fallback; a missing table falls back to the GLM SOL (`Source::Sol`).
+fn measured_query(
+    db: &PerfDatabase,
+    ctx: &RuntimeContext,
+    component: &str,
+    measured: &[Op],
+    sol: impl FnOnce() -> Result<PerformanceResult, AicError>,
+) -> Result<PerformanceResult, AicError> {
+    if db.database_mode == DatabaseMode::Empirical {
+        analytical_only(db, component)?;
+    }
+    let hybrid = db.database_mode == DatabaseMode::Hybrid;
+    if measured.is_empty() {
+        analytical_only(db, component)?;
+        return sol();
+    }
+    let mut total = zero();
+    for child in measured {
+        let result = match child.query(db, ctx) {
+            Ok(result) => result,
+            Err(err) if hybrid && err.is_missing_perf_data() => return sol(),
+            Err(err) => return Err(err),
+        };
+        if db.database_mode == DatabaseMode::Silicon
+            && result.latency_ms > 0.0
+            && !analytic_family(child)
+            && result.source != Source::Silicon
+        {
+            return Err(AicError::PerfDatabase(format!(
+                "GLM-5.3-Flash {component} child {} has no SILICON data (source {})",
+                child.name(),
+                result.source.as_str()
+            )));
+        }
+        total = total.plus(result);
+    }
+    Ok(total)
+}
+
 fn weight_size(q: GemmQuantMode) -> f64 {
     q.mapping().memory
         + if q == GemmQuantMode::Fp8Block {
@@ -131,6 +211,11 @@ pub struct Glm53AttentionOp {
     pub gate_lower_bound: f64,
     pub projection_quant_mode: GemmQuantMode,
     pub kv_cache_dtype: KvCacheQuantMode,
+    /// SILICON/HYBRID generic composition (KDA only). Sparse MLA is priced by
+    /// the GLM attention module table and must leave this empty. Not part of
+    /// the measured table key.
+    #[serde(default)]
+    pub measured: Vec<Op>,
 }
 impl Glm53AttentionOp {
     pub fn validate(&self) -> Result<(), AicError> {
@@ -165,7 +250,13 @@ impl Glm53AttentionOp {
                 "GLM-5.3-Flash sparse MLA requires FP8 latent cache and IndexPool4/topk2048".into(),
             ));
         }
-        Ok(())
+        if self.layer_kind == "sparse_mla" && !self.measured.is_empty() {
+            return Err(AicError::ModelConfig(
+                "GLM-5.3-Flash sparse MLA is priced by its module table, not generic children"
+                    .into(),
+            ));
+        }
+        validate_measured("attention", &self.measured)
     }
     /// One active sequence's persistent payload; no allocator pages, prefix
     /// snapshots or speculative states. Cache precision is independent of weights.
@@ -374,13 +465,46 @@ impl Glm53AttentionOp {
         db: &PerfDatabase,
         ctx: &RuntimeContext,
     ) -> Result<PerformanceResult, AicError> {
-        analytical_only(db, "attention")?;
-        self.sol(
-            &db.system_spec,
-            ctx.batch_size as f64,
-            ctx.s as f64,
-            ctx.prefix as f64,
-        )
+        self.validate()?;
+        let sol = || {
+            self.sol(
+                &db.system_spec,
+                ctx.batch_size as f64,
+                ctx.s as f64,
+                ctx.prefix as f64,
+            )
+        };
+        match db.database_mode {
+            DatabaseMode::Sol | DatabaseMode::SolFull => sol(),
+            DatabaseMode::Empirical => {
+                analytical_only(db, "attention")?;
+                sol()
+            }
+            _ if self.layer_kind == "kda" => {
+                measured_query(db, ctx, "attention", &self.measured, sol)
+            }
+            _ => {
+                // Context: per-request query length over a cached prefix.
+                // Decode: absolute per-request KV length with prefix 0.
+                let prefix = if self.is_context { ctx.prefix } else { 0 };
+                let measured = db.glm53_attention.query(
+                    self,
+                    ctx.batch_size,
+                    prefix,
+                    ctx.s,
+                    &|batch, prefix, x| Ok(self.sol(&db.system_spec, batch, x, prefix)?.latency_ms),
+                )?;
+                match measured {
+                    Some(latency) => Ok(PerformanceResult::new(latency, Source::Silicon)),
+                    None if db.database_mode == DatabaseMode::Hybrid => sol(),
+                    None => Err(AicError::PerfDatabase(format!(
+                        "GLM-5.3-Flash sparse attention has no {} measurement for this geometry at {}",
+                        crate::perf_database::glm53flash::BASENAME,
+                        db.data_root.display()
+                    ))),
+                }
+            }
+        }
     }
 }
 
@@ -396,6 +520,10 @@ pub struct Glm53MhcOp {
     pub hidden_size: u32,
     pub hc_mult: u32,
     pub sinkhorn_iters: u32,
+    /// SILICON/HYBRID generic composition (mHC module rows plus analytic
+    /// norm/elementwise). SOL keeps the GLM formula above.
+    #[serde(default)]
+    pub measured: Vec<Op>,
 }
 impl Glm53MhcOp {
     pub fn weight_bytes(&self) -> f64 {
@@ -438,9 +566,17 @@ impl Glm53MhcOp {
             scalar_rate(spec)?,
         ))
     }
-    pub fn query(&self, db: &PerfDatabase, tokens: u32) -> Result<PerformanceResult, AicError> {
-        analytical_only(db, "mhc")?;
-        self.sol(&db.system_spec, tokens as f64)
+    pub fn query(
+        &self,
+        db: &PerfDatabase,
+        ctx: &RuntimeContext,
+    ) -> Result<PerformanceResult, AicError> {
+        validate_measured("mhc", &self.measured)?;
+        let sol = || self.sol(&db.system_spec, ctx.num_tokens as f64);
+        match db.database_mode {
+            DatabaseMode::Sol | DatabaseMode::SolFull => sol(),
+            _ => measured_query(db, ctx, "mhc", &self.measured, sol),
+        }
     }
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -556,6 +692,10 @@ pub struct Glm53FfnOp {
     /// uses the explicit physical fields above. Child display names vary by layer.
     #[serde(default)]
     pub children: Vec<Op>,
+    /// SILICON/HYBRID generic composition: dense/shared GEMMs, BF16 router
+    /// GEMM, routed MoE and analytic activation. Never used for SOL.
+    #[serde(default)]
+    pub measured: Vec<Op>,
 }
 impl Glm53FfnOp {
     pub fn validate(&self) -> Result<(), AicError> {
@@ -634,7 +774,7 @@ impl Glm53FfnOp {
                 "GLM FFN analytical children disagree with its measured geometry".into(),
             ));
         }
-        Ok(())
+        validate_measured("ffn", &self.measured)
     }
     pub fn weight_bytes(&self) -> f64 {
         self.children.iter().map(Op::weight_bytes).sum()
@@ -662,8 +802,10 @@ impl Glm53FfnOp {
         ctx: &RuntimeContext,
     ) -> Result<PerformanceResult, AicError> {
         self.validate()?;
-        analytical_only(db, "ffn")?;
-        self.sol(db, ctx)
+        match db.database_mode {
+            DatabaseMode::Sol | DatabaseMode::SolFull => self.sol(db, ctx),
+            _ => measured_query(db, ctx, "ffn", &self.measured, || self.sol(db, ctx)),
+        }
     }
 }
 
@@ -684,6 +826,10 @@ pub struct Glm53PrimitiveOp {
     pub collective: String,
     #[serde(default)]
     pub children: Vec<Op>,
+    /// SILICON/HYBRID generic composition (embedding, custom all-reduce,
+    /// logits GEMM/gather, analytic norm/cast). Never used for SOL.
+    #[serde(default)]
+    pub measured: Vec<Op>,
 }
 impl Glm53PrimitiveOp {
     pub fn validate_physical(&self) -> Result<(), AicError> {
@@ -760,7 +906,7 @@ impl Glm53PrimitiveOp {
                 "GLM primitive analytical children disagree with native boundary".into(),
             ));
         }
-        Ok(())
+        validate_measured("primitive", &self.measured)
     }
     pub fn weight_bytes(&self) -> f64 {
         self.children.iter().map(Op::weight_bytes).sum()
@@ -786,8 +932,18 @@ impl Glm53PrimitiveOp {
         ctx: &RuntimeContext,
     ) -> Result<PerformanceResult, AicError> {
         self.validate()?;
-        analytical_only(db, "primitive")?;
-        self.sol(db, ctx)
+        match db.database_mode {
+            DatabaseMode::Sol | DatabaseMode::SolFull => self.sol(db, ctx),
+            _ => {
+                let mut child_ctx = *ctx;
+                if self.token_selection == "last_per_request" {
+                    child_ctx.num_tokens = ctx.batch_size;
+                }
+                measured_query(db, &child_ctx, "primitive", &self.measured, || {
+                    self.sol(db, ctx)
+                })
+            }
+        }
     }
 }
 
@@ -819,6 +975,7 @@ pub(crate) mod tests {
             gate_lower_bound: -5.0,
             projection_quant_mode: GemmQuantMode::Bfloat16,
             kv_cache_dtype: KvCacheQuantMode::Fp8,
+            measured: vec![],
         }
     }
     fn db(mode: DatabaseMode) -> PerfDatabase {
@@ -903,6 +1060,7 @@ pub(crate) mod tests {
                 Op::Gemm(GemmOp::new("head", 77440, 4096, GemmQuantMode::Bfloat16)),
                 Op::Nccl(NcclOp::new("vocab", 1.0, 154880.0, 2, "all_gather")),
             ],
+            measured: vec![],
         };
         let short = RuntimeContext {
             batch_size: 2,
@@ -1036,6 +1194,7 @@ pub(crate) mod tests {
                 }),
                 Op::Moe(moe.clone()),
             ],
+            measured: vec![],
         };
         for t in [1u32, 32, 4096] {
             let ctx = RuntimeContext {
@@ -1073,5 +1232,203 @@ pub(crate) mod tests {
             analytical_only(&db(DatabaseMode::Silicon), "attention"),
             Err(AicError::PerfDatabase(_))
         ));
+    }
+
+    fn kda_kernel(kernel: &str, phase: &str) -> Op {
+        Op::Kda(
+            serde_json::from_value(serde_json::json!({
+                "name": format!("{phase}_kda_0_{kernel}"), "scale_factor": 1.0,
+                "kernel_source": kernel, "phase": phase, "d_model": 4096, "d_conv": 4,
+                "num_k_heads": 32, "head_k_dim": 128, "num_v_heads": 32, "head_v_dim": 128,
+                "draft_tokens": 0,
+            }))
+            .unwrap(),
+        )
+    }
+
+    fn mhc_site(role: &str) -> Glm53MhcOp {
+        use crate::operators::{elementwise::ElementwiseOp, mhc::MhcModuleOp};
+        let mut half = MhcModuleOp::new(
+            "mhc_half",
+            role,
+            4,
+            4096,
+            "Glm5NextForConditionalGeneration",
+        );
+        half.scale_factor = 0.5;
+        Glm53MhcOp {
+            name: "mhc_pre_attn_1".into(),
+            role: role.into(),
+            backend: "sglang".into(),
+            checkpoint_format: "fp8".into(),
+            tp_size: 2,
+            is_context: false,
+            hidden_size: 4096,
+            hc_mult: 4,
+            sinkhorn_iters: 20,
+            measured: vec![
+                Op::Mhc(half),
+                Op::Elementwise(ElementwiseOp::new("norm", 4.0 * 4096.0)),
+            ],
+        }
+    }
+
+    fn ctx(batch: u32, s: u32, prefix: u32, is_context: bool) -> RuntimeContext {
+        RuntimeContext {
+            batch_size: batch,
+            s,
+            prefix,
+            num_tokens: if is_context { batch * s } else { batch },
+            ..RuntimeContext::default()
+        }
+    }
+
+    #[test]
+    fn sol_mode_keeps_glm_formulas_regardless_of_measured_children() {
+        let db = db(DatabaseMode::Sol);
+        let mut kda = attention("kda");
+        let c = ctx(2, 512, 0, true);
+        let bare = kda.query(&db, &c).unwrap();
+        kda.measured = vec![kda_kernel("chunk_kda", "context")];
+        let with = kda.query(&db, &c).unwrap();
+        assert_eq!(bare.latency_ms, with.latency_ms);
+        assert_eq!(
+            bare.latency_ms,
+            kda.sol(&db.system_spec, 2.0, 512.0, 0.0)
+                .unwrap()
+                .latency_ms
+        );
+        let mhc = mhc_site("pre");
+        let expected = mhc.sol(&db.system_spec, 8.0).unwrap().latency_ms;
+        assert_eq!(
+            mhc.query(&db, &ctx(8, 1, 0, false)).unwrap().latency_ms,
+            expected
+        );
+    }
+
+    #[test]
+    fn silicon_prices_generic_children_and_fails_closed_on_sol_children() {
+        // gb300/sglang/0.5.14 carries DeepSeek-V4-Flash mHC rows (hc4, hidden 4096)
+        // but no KDA rows for GLM's 32-head TP2 shard.
+        let silicon = db(DatabaseMode::Silicon);
+        let mhc = mhc_site("pre");
+        let c = ctx(8, 1, 0, false);
+        let got = mhc.query(&silicon, &c).unwrap();
+        let expected: f64 = mhc
+            .measured
+            .iter()
+            .map(|op| op.query(&silicon, &c).unwrap().latency_ms)
+            .sum();
+        assert!((got.latency_ms - expected).abs() < 1e-12 && got.latency_ms > 0.0);
+        assert_ne!(got.source, Source::Sol);
+
+        let mut kda = attention("kda");
+        kda.backend = "sglang".into();
+        kda.measured = vec![kda_kernel(
+            "fused_recurrent_kda_packed_decode",
+            "generation",
+        )];
+        kda.is_context = false;
+        let err = kda.query(&silicon, &ctx(4, 1024, 0, false)).unwrap_err();
+        assert!(err.to_string().contains("no SILICON data"), "{err}");
+        // HYBRID keeps the child's labelled SOL fallback instead of failing.
+        let hybrid = db(DatabaseMode::Hybrid);
+        let result = kda.query(&hybrid, &ctx(4, 1024, 0, false)).unwrap();
+        assert_eq!(result.source, Source::Sol);
+        // Without a measured composition SILICON fails and HYBRID reports SOL.
+        kda.measured.clear();
+        assert!(kda.query(&silicon, &ctx(4, 1024, 0, false)).is_err());
+        assert_eq!(
+            kda.query(&hybrid, &ctx(4, 1024, 0, false)).unwrap().source,
+            Source::Sol
+        );
+        // A GLM analytical op can never be smuggled in as a measured child.
+        let mut bad = mhc_site("pre");
+        bad.measured.push(Op::Glm53Router(Glm53RouterOp {
+            name: "router".into(),
+            backend: "sglang".into(),
+            checkpoint_format: "fp8".into(),
+            hidden_size: 4096,
+            num_experts: 288,
+            topk: 8,
+        }));
+        assert!(bad.query(&silicon, &c).is_err());
+        let mut sparse = attention("sparse_mla");
+        sparse.measured = vec![kda_kernel("chunk_kda", "context")];
+        assert!(sparse.validate().is_err());
+    }
+
+    fn sparse_tree(version: &str) -> tempfile::TempDir {
+        use crate::perf_database::energy_test_fixtures::{Col, write_parquet};
+        let root = tempfile::tempdir().unwrap();
+        let systems = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../python/aisimulate/src/aisimulate_core/systems");
+        std::fs::copy(systems.join("gb300.yaml"), root.path().join("gb300.yaml")).unwrap();
+        let dir = root
+            .path()
+            .join("data/gb300/glm53_attention/vllm")
+            .join(version);
+        std::fs::create_dir_all(&dir).unwrap();
+        let geometry: &'static str =
+            crate::perf_database::glm53flash::geometry(&attention("sparse_mla"))
+                .unwrap()
+                .leak();
+        let sha: &'static str = "a".repeat(64).leak();
+        let digest: &'static str = format!("sha256:{sha}").leak();
+        write_parquet(
+            &dir.join(crate::perf_database::glm53flash::BASENAME),
+            &[
+                Col::Str("component", vec!["attention"; 2]),
+                Col::Str("geometry", vec![geometry; 2]),
+                Col::I64("batch_size", vec![2; 2]),
+                Col::I64("prefix", vec![0; 2]),
+                Col::I64("x", vec![512, 4096]),
+                Col::F64("latency", vec![1.5, 9.0]),
+                Col::Str("kernel_source", vec!["glm53_sparse_mla"; 2]),
+                Col::Str("measurement_scope", vec!["local_compute"; 2]),
+                Col::Str("source_sha256", vec![sha; 2]),
+                Col::Str("config_sha256", vec![sha; 2]),
+                Col::Str("runtime_digest", vec![digest; 2]),
+                Col::Bool("used_cuda_graph", vec![false; 2]),
+                Col::I64("sample_count", vec![5; 2]),
+                Col::Str("kv_seed_regime", vec!["n/a"; 2]),
+                Col::Str("execution_profile", vec!["full"; 2]),
+            ],
+        );
+        root
+    }
+
+    #[test]
+    fn sparse_attention_uses_only_the_exact_runtime_glm_table() {
+        const TAIL: &str = "0.30.0+glm53tail.eb4704514fdf";
+        let root = sparse_tree(TAIL);
+        let op = attention("sparse_mla");
+        let load = |version: &str, mode| {
+            PerfDatabase::load_resolved(root.path(), "gb300", "vllm", version, true, false, false)
+                .unwrap()
+                .with_mode(mode, TransferPolicy::ALL)
+        };
+        let c = ctx(2, 512, 0, true);
+        let hit = op.query(&load(TAIL, DatabaseMode::Silicon), &c).unwrap();
+        assert_eq!((hit.latency_ms, hit.source), (1.5, Source::Silicon));
+        // Another geometry: SILICON fails closed, HYBRID reports labelled SOL.
+        let mut tp4 = op.clone();
+        tp4.tp_size = 4;
+        tp4.num_heads = 16;
+        assert!(tp4.query(&load(TAIL, DatabaseMode::Silicon), &c).is_err());
+        let fallback = tp4.query(&load(TAIL, DatabaseMode::Hybrid), &c).unwrap();
+        assert_eq!(fallback.source, Source::Sol);
+        // A later runtime never borrows the earlier runtime's GLM table.
+        let later = root.path().join("data/gb300/glm53_attention/vllm/0.31.0");
+        std::fs::create_dir_all(&later).unwrap();
+        std::fs::write(later.join("reuse.yaml"), "schema_version: 1\nreuse: []\n").unwrap();
+        let err = op
+            .query(&load("0.31.0", DatabaseMode::Silicon), &c)
+            .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("no glm53_attention_module_perf.parquet"),
+            "{err}"
+        );
     }
 }
