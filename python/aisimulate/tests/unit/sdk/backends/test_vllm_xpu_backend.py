@@ -153,6 +153,8 @@ def test_get_genonly_step_estimate_applies_gpt_oss_correction(monkeypatch) -> No
     target = backend._gpt_oss_moe_ms(4, 4, 32)
     assert est.per_op_latency_ms["generation_moe"] == pytest.approx(target)
     assert est.latency_ms == pytest.approx(100.0 + (target - _FAKE_MOE_MS))
+    # Fitted value, not the collected measurement: provenance must say so.
+    assert est.per_op_source["generation_moe"] == "estimated"
 
 
 def test_get_genonly_step_estimate_untouched_for_sharded(monkeypatch) -> None:
