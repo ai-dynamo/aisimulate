@@ -127,11 +127,20 @@ fails without replacing its published evidence.
 
 ### Measurement and prediction policy
 
-- `.github/e2e-accuracy-dataset.json` pins the InferenceX release, every compressed
-  dump part's size and SHA-256, and selection policy. Refresh it in a reviewed PR
-  when adopting new measurements. A nightly reruns predictions against this fixed
-  silicon dataset; it does not collect new GPU measurements.
-- The downloader verifies every part, decompresses the public PostgreSQL archive,
+- Each pipeline resolves the newest published `db-dump/YYYY-MM-DD` release once,
+  excluding drafts, prereleases, and unrelated releases. It verifies `SHA256SUMS`
+  against GitHub's asset digest and requires every dump part to match the checksum
+  list. Missing or inconsistent assets fail the run instead of using older data.
+- All branches download the same resolved `e2e-accuracy-dataset` manifest artifact,
+  retained for 90 days. The campaign records its release tag and manifest hash.
+  Rerunning only failed jobs reuses that manifest; rerunning the whole workflow
+  resolves latest again. No new GPU measurements are collected.
+- `.github/e2e-accuracy-dataset.json` remains a pinned local reproduction fixture
+  and supplies the selection policy, maximum measurement age, and minimum disk
+  space. CI replaces its release and parts with the resolved snapshot and requires
+  at least the compressed dump size plus 10 GB of free disk space.
+- The downloader verifies every part and retries a failed part up to three total
+  attempts without redownloading verified parts. It decompresses the public PostgreSQL archive,
   and reads only `configs`, `benchmark_results`, and `workflow_runs` via COPY text.
   It never executes SQL from the dump. The September 14 release downloads about
   25 GB and requires at least 35 GB of free temporary disk. Decompression streams

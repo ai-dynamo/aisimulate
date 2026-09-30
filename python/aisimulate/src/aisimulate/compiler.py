@@ -49,6 +49,27 @@ def prediction_to_replay_spec(
         afd_performance_model=afd_performance_model,
     )
     deployment = _pin_estimator_version_aliases(deployment)
+    metadata = dict(deployment.performance_model_metadata)
+    for role, field in (
+        ("aggregated", "agg_engine_args"),
+        ("prefill", "prefill_engine_args"),
+        ("decode", "decode_engine_args"),
+    ):
+        timing = (getattr(deployment, field) or {}).get("timing_model", {})
+        if timing.get("provider") == "aic" and "estimation_mode" in timing.get("config", {}):
+            identity = {
+                key: value
+                for key, value in timing["config"].items()
+                if key
+                not in {
+                    "gpu_memory_utilization",
+                    "mem_fraction_static",
+                    "free_gpu_memory_fraction",
+                    "cuda_graph_reserved_bytes",
+                }
+            }
+            metadata[role] = {**metadata.get(role, {}), "provider": "aic", "config": identity}
+    deployment = replace(deployment, performance_model_metadata=metadata)
     if config.engine.mode == "disaggregated":
         assert config.engine.workers.prefill is not None
         for adapter in (adapter_specs or {}).values():
@@ -244,6 +265,7 @@ def _deployment(
             engine,
             prefill,
             engine.kv_transfer.bytes_per_token,
+            role="prefill",
         )
     parallel = {
         **_parallel_mapping(prefill, prefix="prefill_"),
@@ -374,6 +396,7 @@ def _parallel_mapping(worker: WorkerPredictionConfig, *, prefix: str) -> dict[st
         f"{prefix}attention_dp": parallel.attention_data,
         f"{prefix}moe_tp": parallel.moe_tensor,
         f"{prefix}moe_ep": parallel.moe_expert,
+        **({f"{prefix}dcp": parallel.decode_context} if parallel.decode_context is not None else {}),
     }
 
 
@@ -405,7 +428,23 @@ def _worker_performance_model_metadata(
             if getattr(engine, field) is not None
         },
     }
+    if parallel.decode_context is not None:
+        config["dcp"] = parallel.decode_context
+    for field in (
+        "gemm_quant_mode",
+        "moe_quant_mode",
+        "fmha_quant_mode",
+        "kvcache_quant_mode",
+        "comm_quant_mode",
+        "attention_backend",
+    ):
+        value = getattr(worker.timing, field)
+        if value is not None:
+            config[field] = value
     config["database_mode"] = worker.timing.database_mode or engine.database_mode
+    systems_paths = worker.timing.systems_paths or engine.systems_paths
+    if systems_paths is not None:
+        config["systems_paths"] = systems_paths
     if engine.speculation is not None:
         config["speculation"] = engine.speculation.cost_config()
     if worker.timing.fpm_parquet_path is not None:
@@ -428,6 +467,27 @@ def _worker_engine_args(
     cache = worker.kv_cache
     capacity = cache.capacity
     memory_fraction = capacity.memory_fraction
+    identity_fields = (
+        "gemm_quant_mode",
+        "moe_quant_mode",
+        "fmha_quant_mode",
+        "kvcache_quant_mode",
+        "comm_quant_mode",
+        "attention_backend",
+    )
+    if (engine.mode == "afd" or engine.workers.encoder is not None) and any(
+        getattr(worker.timing, field) is not None for field in identity_fields
+    ):
+        raise ValueError("explicit timing identity requires the canonical forward-pass provider")
+    if parallel.decode_context is not None:
+        if parallel.tensor % parallel.decode_context:
+            raise ValueError("decode_context must divide tensor parallelism")
+        if worker.timing.type != "default" or engine.mode == "afd" or engine.workers.encoder is not None:
+            raise ValueError("DCP requires the canonical forward-pass timing provider")
+        if parallel.decode_context > 1 and capacity.type != "fixed":
+            raise ValueError(
+                "DCP FPM replay requires explicit KV block capacity; automatic DCP/hybrid sizing is unsupported"
+            )
     if capacity.type == "default" and memory_fraction is None:
         memory_fraction = 0.88 if backend == "sglang" else 0.9
     block_size = cache.block_size
@@ -453,6 +513,10 @@ def _worker_engine_args(
         payload["speculation"] = engine.speculation.model_dump(mode="json")
     if engine.backend_version is not None:
         payload["aic_backend_version"] = engine.backend_version
+    if engine.systems_paths is not None and worker.timing.type != "default":
+        from .sweeper.forward_pass_estimator import resolve_systems_paths
+
+        payload["systems_path"] = list(resolve_systems_paths(engine.systems_paths))
     if engine.decoder_replay:
         payload["aic_decoder_replay"] = True
     for field in ("database_mode", "enable_shared_layer", "strict_provenance"):
@@ -473,6 +537,8 @@ def _worker_engine_args(
         payload["max_model_len"] = (
             engine.context_length
             if isinstance(engine.context_length, int)
+            else engine.fpm_profile.context_length
+            if engine.fpm_profile is not None
             else resolve_model_context_length(engine.model)
         )
     if cache.prefix_match_unit is not None:
@@ -508,6 +574,7 @@ def _worker_engine_args(
         if capacity.type == "default" and cache.state_cache is None:
             payload = materialize_aic_num_gpu_blocks(payload)
         for name in (
+            "systems_path",
             "aic_backend_version",
             "aic_system",
             "aic_model_path",
@@ -524,6 +591,7 @@ def _worker_engine_args(
         sharded_moe = parallel.moe_tensor * parallel.moe_expert > 1
         canonical = ForwardPassPerfModelConfig(
             model=engine.model,
+            fpm_profile=engine.fpm_profile.model_dump(mode="json") if engine.fpm_profile is not None else None,
             system=worker.hardware or engine.hardware,
             backend=backend,
             backend_version=engine.backend_version,
@@ -534,11 +602,15 @@ def _worker_engine_args(
             tp=parallel.tensor,
             pp=parallel.pipeline,
             attention_dp=parallel.attention_data,
+            dcp=parallel.decode_context,
             moe_tp_size=parallel.moe_tensor if sharded_moe else None,
             moe_ep_size=parallel.moe_expert if sharded_moe else None,
             kv_block_size=block_size,
             nextn=engine.nextn,
-            **{name: getattr(engine, name) for name in ENGINE_MODEL_CONTROL_FIELDS},
+            **{
+                name: getattr(timing, name, None) if getattr(timing, name, None) is not None else getattr(engine, name)
+                for name in ENGINE_MODEL_CONTROL_FIELDS
+            },
             speculation=engine.speculation.cost_config() if engine.speculation is not None else None,
             estimation_mode=timing.estimation_mode or engine.estimation_mode,
             fallback_policy=timing.fallback_policy or engine.fallback_policy,
@@ -580,6 +652,7 @@ def _worker_engine_args(
             engine,
             worker,
             cache.bytes_per_token,
+            role=role,
         )
     if transfer_bytes_per_token is not None:
         payload["kv_transfer_bytes_per_token"] = transfer_bytes_per_token
@@ -599,17 +672,33 @@ def _resolve_kv_bytes_per_token(
     engine: EnginePredictionConfig,
     worker: WorkerPredictionConfig,
     configured: int | str,
+    *,
+    role: str,
 ) -> int:
     if configured != "auto":
         return configured
     parallel = worker.parallelism
+    if (parallel.decode_context or 1) > 1:
+        raise ValueError("DCP KV transfer sizing requires explicit bytes_per_token")
     return estimate_kv_bytes_per_token(
         engine.model,
         tp_size=parallel.tensor,
         pp_size=parallel.pipeline,
         moe_tp_size=parallel.moe_tensor,
         moe_ep_size=parallel.moe_expert,
-        **({"kvcache_quant_mode": engine.kvcache_quant_mode} if engine.kvcache_quant_mode else {}),
+        **(
+            {
+                "fpm_profile": engine.fpm_profile.model_dump(mode="json"),
+                "worker_type": role,
+                "system": worker.hardware or engine.hardware,
+                "backend": engine.backend,
+                "backend_version": engine.backend_version,
+                "attention_dp_size": parallel.attention_data,
+            }
+            if engine.fpm_profile is not None
+            else {}
+        ),
+        kvcache_quant_mode=worker.timing.kvcache_quant_mode or engine.kvcache_quant_mode,
     )
 
 

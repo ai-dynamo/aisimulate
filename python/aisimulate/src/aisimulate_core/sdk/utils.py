@@ -17,6 +17,7 @@ import tempfile
 import urllib.request
 from functools import cache
 from pathlib import Path
+from urllib.parse import quote
 
 import yaml
 
@@ -431,9 +432,9 @@ def _get_hf_auth_headers() -> dict[str, str]:
     return headers
 
 
-def _download_hf_json(hf_id: str, filename: str, *, raise_on_404: bool = True) -> dict | None:
+def _download_hf_json(hf_id: str, filename: str, *, raise_on_404: bool = True, revision: str = "main") -> dict | None:
     """Download and parse a JSON file from a HuggingFace model repo."""
-    url = f"https://huggingface.co/{hf_id}/raw/main/{filename}"
+    url = f"https://huggingface.co/{hf_id}/raw/{quote(revision, safe='')}/{filename}"
     try:
         req = urllib.request.Request(url, headers=_get_hf_auth_headers())
         with urllib.request.urlopen(req, timeout=30) as response:

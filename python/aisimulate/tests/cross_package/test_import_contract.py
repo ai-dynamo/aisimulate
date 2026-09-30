@@ -9,7 +9,10 @@ from __future__ import annotations
 
 import importlib
 import importlib.resources
+import json
+import pickle
 import sys
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -31,8 +34,11 @@ CORE_SDK_LEAF_MODULES = [
     "engine",
     "engine_table_view",
     "errors",
+    "fpm_profile",
+    "fpm_config",
     "fpm_dataset",
     "fpm_identity",
+    "fpm_model_metadata",
     "inference_summary",
     "memory",
     "state_memory",
@@ -132,6 +138,134 @@ def test_legacy_leaf_module_is_canonical_module(module_suffix: str) -> None:
     assert sys.modules[legacy_name] is sys.modules[canonical_name]
 
 
+@pytest.mark.parametrize("namespace", ["aisimulate.sdk", "aisimulate_core.sdk"])
+def test_fpm_profile_alias_preserves_module_and_type_identity(namespace: str) -> None:
+    """All public profile imports must share the canonical classes and state."""
+    alias_name = f"{namespace}.fpm_profile"
+    alias = importlib.import_module(alias_name)
+    canonical = importlib.import_module("aisimulate_core.sdk.fpm_profile")
+    lightweight = importlib.import_module("aisimulate.fpm_profile")
+    core_types = importlib.import_module("aisimulate_core.fpm_profile")
+
+    assert alias is canonical
+    assert sys.modules[alias_name] is canonical
+    for name in ("FpmModelProfile", "FpmDeploymentProfile", "FpmResourceProfile"):
+        assert getattr(alias, name) is getattr(canonical, name)
+        assert getattr(canonical, name) is getattr(lightweight, name)
+        assert getattr(canonical, name) is getattr(core_types, name)
+        legacy_global = f"c{namespace}.fpm_profile\n{name}\n.".encode()
+        assert pickle.loads(legacy_global) is getattr(lightweight, name)
+        assert pickle.loads(f"caisimulate.fpm_profile\n{name}\n.".encode()) is getattr(core_types, name)
+    assert alias.load_fpm_profile is lightweight.load_fpm_profile
+
+
+@pytest.mark.parametrize("namespace", ["aisimulate.sdk", "aisimulate_core.sdk"])
+@pytest.mark.parametrize(
+    "name", ["GEMMQuantMode", "MoEQuantMode", "FMHAQuantMode", "KVCacheQuantMode", "CommQuantMode", "QuantMapping"]
+)
+def test_quantization_exports_preserve_shared_types_and_pickles(namespace: str, name: str) -> None:
+    from aisimulate import quantization
+    from aisimulate_core import quantization as core_quantization
+
+    alias = importlib.import_module(f"{namespace}.common")
+    shared = getattr(quantization, name)
+    assert getattr(alias, name) is shared
+    assert getattr(core_quantization, name) is shared
+    # Historic pickle GLOBAL references resolve through the SDK re-exports.
+    assert pickle.loads(f"c{namespace}.common\n{name}\n.".encode()) is shared
+    assert pickle.loads(f"caisimulate.quantization\n{name}\n.".encode()) is shared
+    if name != "QuantMapping":
+        for member in shared:
+            assert pickle.loads(pickle.dumps(member)) is member
+            value = pickle.loads(pickle.dumps(member.value))
+            assert type(value) is quantization.QuantMapping
+            assert value == member.value
+
+
+@pytest.mark.parametrize("namespace", ["aisimulate.sdk", "aisimulate_core.sdk"])
+def test_fpm_profile_alias_instances_load_and_compile(namespace: str, tmp_path: Path) -> None:
+    """Profiles created through either facade must reach native compilation."""
+    from aisimulate_core.sdk import engine
+    from aisimulate_core.sdk.fpm_profile import FpmModelProfile, load_fpm_profile
+
+    checkpoint = tmp_path / "checkpoint"
+    checkpoint.mkdir()
+    (checkpoint / "config.json").write_text(json.dumps({"architectures": ["ImportContractDecoderForCausalLM"]}))
+    alias = importlib.import_module(f"{namespace}.fpm_profile")
+    profile = alias.FpmModelProfile.model_validate(
+        {
+            "schema_version": 1,
+            "model": str(checkpoint),
+            "model_revision": "import-contract-fixture-v1",
+            "architecture": "ImportContractDecoderForCausalLM",
+            "context_length": 4096,
+            "num_experts": 0,
+            "provenance": "Synthetic metadata for import compatibility; not a GPU measurement.",
+            "deployments": [
+                {
+                    "system": "test_gpu",
+                    "backend": "vllm",
+                    "backend_version": "0.25.1",
+                    "tp": 1,
+                    "dp": 1,
+                    "moe_tp": 1,
+                    "moe_ep": 1,
+                    "gemm_quant_mode": "fp8",
+                    "moe_quant_mode": "fp8",
+                    "fmha_quant_mode": "fp8",
+                    "comm_quant_mode": "half",
+                    "kv_cache_dtype": "fp8",
+                    "resources": {
+                        "weights_bytes": 100,
+                        "activations_bytes": 20,
+                        "runtime_overhead_bytes": 30,
+                        "comm_overhead_bytes": 50,
+                        "kv_bytes_per_token": 10,
+                        "cache_layout": "linear",
+                        "max_num_tokens": 8192,
+                        "max_batch_size": 256,
+                        "provenance": "Synthetic rank-local resource bounds; excludes CUDA graphs.",
+                    },
+                }
+            ],
+        }
+    )
+
+    loaded = load_fpm_profile(profile)
+    assert type(loaded) is FpmModelProfile
+    assert loaded.model_dump() == profile.model_dump()
+
+    canonical = json.loads(
+        engine.aisimulate_core.RustForwardPassPerfModel.normalize_config(
+            json.dumps(
+                {
+                    "model": profile.model,
+                    "system": "test_gpu",
+                    "backend": "vllm",
+                    "backend_version": "0.25.1",
+                    "worker_type": "aggregated",
+                    "estimation_mode": "fpm_interpolation",
+                    "fpm_profile": profile.model_dump(mode="json"),
+                }
+            )
+        )
+    )
+    assert canonical["fpm_profile"] == loaded.model_dump(mode="json")
+    assert canonical["estimator_config"]["fpm_interpolation"]["method"] == "direct"
+    compiled = engine.compile_engine(
+        profile.model,
+        "test_gpu",
+        "vllm",
+        "0.25.1",
+        systems_path=str(tmp_path),
+        forward_model="fpm",
+        fpm_profile=profile,
+        fpm_interpolation=canonical["estimator_config"]["fpm_interpolation"]["method"],
+    )
+    assert isinstance(compiled, bytes)
+    assert compiled
+
+
 @pytest.mark.parametrize("package_suffix", ["models", "operations", "speculation"])
 def test_legacy_package_reexports_canonical_public_surface(package_suffix: str) -> None:
     """Package facades preserve child wrappers and export canonical objects."""
@@ -220,8 +354,10 @@ def test_fpm_forward_op_keeps_legacy_constructor_layout() -> None:
 
     from aisimulate.sdk.operations import FPMForwardOp
 
-    params = list(inspect.signature(FPMForwardOp.__init__).parameters)
-    assert params == ["self", "phase", "model_config", "model_path", "sol_fn", "weight_bytes", "sol_ops"]
+    signature = inspect.signature(FPMForwardOp.__init__)
+    positional = [name for name, param in signature.parameters.items() if param.kind != inspect.Parameter.KEYWORD_ONLY]
+    assert positional == ["self", "phase", "model_config", "model_path", "sol_fn", "weight_bytes", "sol_ops"]
+    assert signature.parameters["execution"].kind == inspect.Parameter.KEYWORD_ONLY
 
 
 def test_representative_from_imports_return_canonical_objects() -> None:

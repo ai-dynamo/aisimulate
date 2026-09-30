@@ -42,6 +42,7 @@ from aisimulate.sweeper.replay import ReplayOutputRequirements
 from aisimulate_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
 from aisimulate_core.sdk.engine import EngineHandle, compile_engine
 from aisimulate_core.sdk.errors import DecodeMoeProfileError
+from aisimulate_core.sdk.fpm_config import FpmCompileConfig
 from aisimulate_core.sdk.operations.fpm_forward import _CELL_MATCH_COLUMNS
 
 pytestmark = pytest.mark.unit
@@ -54,6 +55,50 @@ MODEL_PATH = "test-org/test-model"
 import aisimulate_core
 
 _CORE_SYSTEMS = os.path.join(os.path.dirname(aisimulate_core.__file__), "systems")
+
+
+def test_fpm_compile_context_uses_rust_defaults_without_python_fallbacks(monkeypatch):
+    resolved = {"text_only": True, "unrecorded_quant_modes": ["fmha"], "fpm_parquet_path": "/profile.parquet"}
+    calls = []
+
+    class RustOptions:
+        @staticmethod
+        def _normalize_fpm_options(payload, fmha, comm, has_profile):
+            calls.append((json.loads(payload), fmha, comm, has_profile))
+            return json.dumps(resolved)
+
+    monkeypatch.setattr(aisimulate_core, "RustForwardPassPerfModel", RustOptions)
+    context = FpmCompileConfig(attention_backend="FLASHINFER_MLA")
+    assert calls == [({}, None, None, False)]
+    assert context.options == resolved
+    assert context.cache_identity() == {"options": resolved, "attention_backend": "FLASHINFER_MLA"}
+
+
+def test_fpm_compile_context_survives_model_copy_and_cannot_be_mutated():
+    import copy
+    import pickle
+    from dataclasses import FrozenInstanceError, replace
+
+    context = FpmCompileConfig({"text_only": True, "unrecorded_quant_modes": ["fmha", "comm"]})
+    model_config = _model_config(forward_model="fpm", fpm_config=context)
+    expected = context.cache_identity()
+    context.options["unrecorded_quant_modes"].clear()
+    with pytest.raises(FrozenInstanceError):
+        context.attention_backend = "other"
+    for copied in (copy.deepcopy(model_config), pickle.loads(pickle.dumps(model_config)), replace(model_config)):
+        assert copied.fpm_config.cache_identity() == expected
+
+
+def test_fpm_execution_identity_and_dcp_are_independent_fields():
+    from aisimulate_core.sdk.engine import _fpm_spec_dict
+    from aisimulate_core.sdk.fpm_identity import EXECUTION_COLUMNS
+
+    execution = ("checkpoint-digest", "decoder_bounded", "hbm_tp_sharded", "text")
+    op = FPMForwardOp("prefill", _model_config(tp_size=4, dcp_size=4), MODEL_PATH, sol_ops=[], execution=execution)
+    identity = dict(zip(_CELL_MATCH_COLUMNS, op._match_identity, strict=True))
+    assert tuple(identity[field] for field in EXECUTION_COLUMNS) == execution
+    assert "dcp" not in identity
+    assert _fpm_spec_dict(op)["FpmForward"]["dcp_size"] == 4
 
 
 def _row(
@@ -695,6 +740,242 @@ class TestFPMStaticAndMixed:
         assert total == pytest.approx(7.0)
 
 
+def test_text_only_kimi_profile_preserves_encoder_weights_and_dcp_identity():
+    cfg = _model_config(
+        forward_model="fpm",
+        tp_size=8,
+        moe_tp_size=8,
+        moe_ep_size=1,
+        dcp_size=8,
+        fpm_config=FpmCompileConfig(
+            {"text_only": True, "unrecorded_quant_modes": ["fmha", "comm"]}, attention_backend="FLASHINFER_MLA"
+        ),
+    )
+    model = models.get_model("moonshotai/Kimi-K3", cfg, "vllm")
+    assert model.encoder_ops
+    assert sum(op.get_weights() for op in model.encoder_ops) > 0
+    assert all(isinstance(op, FPMForwardOp) for op in (*model.context_ops, *model.generation_ops))
+    identity = model.context_ops[0]._match_identity
+    assert identity[2:4] == ("", "")
+    assert identity[12] == "FLASHINFER_MLA"
+    assert len(identity) == len(_CELL_MATCH_COLUMNS)
+    assert model.context_ops[0]._dcp_size == 8
+    assert cfg.total_gpus_per_worker == 8
+    from aisimulate_core.sdk.engine import _fpm_spec_dict
+
+    prefill = model.context_ops[0]
+    assert _fpm_spec_dict(prefill)["FpmForward"]["dcp_size"] == 8
+    resident = _fpm_spec_dict(prefill)["FpmForward"]["weight_bytes"]
+    assert resident == prefill.get_weights() + sum(op.get_weights() for op in model.encoder_ops)
+
+
+@pytest.fixture
+def kimi_fpm_profile(tmp_path, request):
+    from aisimulate_core.sdk import ForwardPassPerfModelConfig
+
+    recorded_dcp = getattr(request, "param", 8)
+
+    systems = tmp_path / "systems"
+    systems.mkdir()
+    shutil.copyfile(os.path.join(_CORE_SYSTEMS, "h200_sxm.yaml"), systems / "h200_sxm.yaml")
+    data = systems / "data" / SYSTEM / BACKEND / VERSION
+    identity = {
+        "tp": "8",
+        "moe_tp": "8",
+        "moe_ep": "1",
+        "fmha_quant_mode": "",
+        "comm_quant_mode": "",
+        "moe_quant_mode": "w4a16_mxfp4",
+        "kv_cache_dtype": "fp8",
+        "attention_backend": "FLASHINFER_MLA",
+    }
+    rows = [
+        _row("prefill", 1, 128, 0, 7.0, model_path="moonshotai/Kimi-K3", identity=identity),
+        _row("decode", 1, 0, 128, 3.0, model_path="moonshotai/Kimi-K3", identity=identity),
+    ]
+    for row in rows:
+        row.update(measurement_policy="kvwarm_median_of_3", measurement_repeats=3)
+        if recorded_dcp is not None:
+            row["dcp"] = recorded_dcp
+    # Independent oracle: the synthetic measured records above define 7 ms
+    # prefill and 3 ms decode, irrespective of the model's operator estimates.
+    _write_pair(
+        str(data),
+        rows,
+        sidecar_overrides={
+            "measurement_policy": "per_row_single_sample_or_median_of_3",
+            "configuration_selector": {"dcp": recorded_dcp} if recorded_dcp is not None else {},
+        },
+    )
+    return ForwardPassPerfModelConfig(
+        model="moonshotai/Kimi-K3",
+        system=SYSTEM,
+        backend=BACKEND,
+        backend_version=VERSION,
+        worker_type="aggregated",
+        tp=8,
+        moe_tp_size=8,
+        moe_ep_size=1,
+        dcp=recorded_dcp,
+        kvcache_quant_mode="fp8",
+        attention_backend="FLASHINFER_MLA",
+        estimation_mode="fpm_interpolation",
+        systems_paths=(str(systems),),
+        estimator_config={
+            "fpm_interpolation": {"text_only": True, "unrecorded_quant_modes": ["fmha", "comm"]},
+            "correction": {"enabled": False},
+        },
+    )
+
+
+@pytest.mark.parametrize("kimi_fpm_profile", [None, 1, 8], indirect=True)
+def test_canonical_kimi_dcp_profile_queries_measured_points(kimi_fpm_profile):
+    from aisimulate_core.sdk import RustForwardPassPerfModel
+
+    config = kimi_fpm_profile
+    model = RustForwardPassPerfModel.best_available(config)
+    try:
+        assert model.estimate_forward_pass_time_ms(
+            {
+                "version": 1,
+                "scheduled_requests": {
+                    "num_prefill_requests": 1,
+                    "sum_prefill_tokens": 128,
+                },
+            }
+        ) == pytest.approx(7.0)
+        assert model.estimate_forward_pass_time_ms(
+            {
+                "version": 1,
+                "scheduled_requests": {
+                    "num_decode_requests": 1,
+                    "sum_decode_kv_tokens": 128,
+                },
+            }
+        ) == pytest.approx(3.0)
+        assert model.diagnostics()["provenance"]["config"]["dcp"] == config.dcp
+    finally:
+        model.close()
+    from dataclasses import replace
+
+    from aisimulate_core.sdk.errors import PerfDataNotAvailableError
+
+    for dcp in (None, 1, 8):
+        if dcp == config.dcp:
+            continue
+        with pytest.raises(PerfDataNotAvailableError, match="No FPM cell matches"):
+            RustForwardPassPerfModel.best_available(replace(config, dcp=dcp))
+    automatic = RustForwardPassPerfModel.best_available(replace(config, estimation_mode="auto"))
+    try:
+        provenance = automatic.diagnostics()["provenance"]
+        assert provenance["selected_estimation_mode"] == "fpm_interpolation"
+        assert provenance["config"]["dcp"] == config.dcp
+    finally:
+        automatic.close()
+
+
+def test_session_cache_preserves_fpm_identity(kimi_fpm_profile):
+    from dataclasses import replace
+
+    from aisimulate.sdk.inference_session import InferenceSession
+    from aisimulate_core.sdk.config import RuntimeConfig
+    from aisimulate_core.sdk.errors import PerfDataNotAvailableError
+    from aisimulate_core.sdk.rust_engine_step import _engine_handle_cache_clear
+
+    config = _model_config(
+        tp_size=8,
+        moe_tp_size=8,
+        moe_ep_size=1,
+        dcp_size=8,
+        forward_model="fpm",
+        fpm_config=FpmCompileConfig(
+            {"text_only": True, "unrecorded_quant_modes": ["fmha", "comm"]}, attention_backend="FLASHINFER_MLA"
+        ),
+        kvcache_quant_mode=common.KVCacheQuantMode.fp8,
+        moe_quant_mode=common.MoEQuantMode.w4a16_mxfp4,
+    )
+    database = PerfDatabase(SYSTEM, BACKEND, VERSION, systems_root=kimi_fpm_profile.systems_paths[0])
+    runtime = RuntimeConfig(batch_size=1, isl=128, osl=2)
+
+    def prefill(model_config):
+        model = models.get_model(kimi_fpm_profile.model, model_config, BACKEND)
+        return InferenceSession(model, database, get_backend(BACKEND)).run_static_latency_only(runtime, "static_ctx")
+
+    _engine_handle_cache_clear()
+    try:
+        assert prefill(config) == pytest.approx(7.0)  # synthetic measured prefill row
+        for different in (
+            replace(config, dcp_size=1),
+            replace(config, fpm_config=FpmCompileConfig({"text_only": True}, attention_backend="FLASHINFER_MLA")),
+            replace(config, fpm_config=FpmCompileConfig(config.fpm_config.options, attention_backend="auto")),
+        ):
+            with pytest.raises(PerfDataNotAvailableError, match="No FPM cell matches"):
+                prefill(different)
+        with pytest.raises(NotImplementedError, match="encoder/multimodal"):
+            prefill(replace(config, fpm_config=FpmCompileConfig()))
+        assert prefill(config) == pytest.approx(7.0)
+    finally:
+        _engine_handle_cache_clear()
+
+
+def test_session_cache_separates_text_only_mode(fpm_session):
+    from dataclasses import replace
+
+    from aisimulate_core.sdk.rust_engine_step import _cached_engine_handle, _engine_handle_cache_clear
+
+    plain, database, _, isl, _ = fpm_session
+    text_only = models.get_model(
+        plain.model_path, replace(plain.config, fpm_config=FpmCompileConfig({"text_only": True})), BACKEND
+    )
+    _engine_handle_cache_clear()
+    try:
+        plain_handle = _cached_engine_handle(plain, database)
+        text_handle = _cached_engine_handle(text_only, database)
+        assert text_handle is not plain_handle
+        # Both valid modes query the fixture's measured 40 ms prefill row.
+        for handle in (plain_handle, text_handle):
+            assert handle.predict_prefill_latency(bs=2, isl=isl, prefix=0) == pytest.approx(40.0)
+        assert _cached_engine_handle(plain, database) is plain_handle
+    finally:
+        _engine_handle_cache_clear()
+
+
+def test_dcp_cannot_select_regression_without_a_profile(kimi_fpm_profile):
+    from dataclasses import replace
+    from pathlib import Path
+
+    from aisimulate_core.sdk import RustForwardPassPerfModel
+
+    config = kimi_fpm_profile
+    data = Path(config.systems_paths[0]) / "data" / SYSTEM / BACKEND / VERSION
+    for name in ("fpm_forward_perf.parquet", "fpm_forward_perf.metadata.json"):
+        (data / name).unlink()
+    for mode, fallback in (("fpm_regression", "deny"), ("auto", "deny"), ("fpm_interpolation", "allow")):
+        with pytest.raises(ValueError, match="DCP timing requires measured vLLM FPM interpolation"):
+            RustForwardPassPerfModel.best_available(replace(config, estimation_mode=mode, fallback_policy=fallback))
+
+
+@pytest.mark.parametrize(
+    "options,overrides,error",
+    [
+        ({"unrecorded_quant_modes": ["fmha"]}, {"fmha_quant_mode": "bfloat16"}, "explicit quantization override"),
+        ({"unrecorded_quant_modes": ["fmha"]}, {"fpm_fmha_quant_mode": "fp8"}, "explicit quantization override"),
+        ({"unrecorded_quant_modes": ["comm"]}, {"comm_quant_mode": "half"}, "explicit quantization override"),
+        ({"unrecorded_quant_modes": ["unknown_mode"]}, {}, "unknown variant"),
+        (False, {}, "invalid FPM interpolation options"),
+    ],
+)
+def test_direct_compile_validates_fpm_options(options, overrides, error, monkeypatch):
+    from aisimulate_core.sdk import compile_engine
+
+    def unexpected_model_build(*args, **kwargs):
+        pytest.fail("invalid options must be rejected before model construction")
+
+    monkeypatch.setattr("aisimulate_core.sdk.engine.get_model", unexpected_model_build)
+    with pytest.raises(ValueError, match=error):
+        compile_engine(MODEL_PATH, SYSTEM, BACKEND, forward_model="fpm", fpm_options=options, **overrides)
+
+
 def test_explicit_selector_emits_matched_cell_warning_once(fpm_session, capfd):
     from aisimulate_core.sdk.rust_engine_step import _cached_engine_handle
 
@@ -1094,9 +1375,13 @@ def test_fpm_detail_distinguishes_memory_budget_from_runtime_capacity(external_f
     assert memory["estimated_num_gpu_blocks"] > 0
     assert "num_gpu_blocks" not in memory
     assert set(sections) == {"summary", "memory", "time", "energy", "source"}
-    assert sections["time"]["diagnostics"]["status"] == "unavailable"
-    assert sections["source"]["status"] == "unavailable"
-    assert "whole-model FPM" in sections["source"]["unavailable_reason"]
+    assert sections["time"]["diagnostics"]["status"] == "available"
+    assert sections["source"]["status"] == "available"
+    operations = [op for phase in sections["source"]["phases"] for op in phase["operations"]]
+    assert operations and all(op["fpm_estimates"] for op in operations)
+    assert sections["energy"]["status"] == "unsupported"
+    assert sections["energy"]["diagnostics"]["power_w"] is None
+    assert sections["energy"]["diagnostics"]["power_coverage"] is None
     assert sections["time"]["serving_metrics"]["mean_ttft_ms"] > 0
 
 

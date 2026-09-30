@@ -101,6 +101,73 @@ impl ReplayTelemetryObserver for FailingTelemetryObserver {
 }
 
 #[test]
+fn grouped_cache_replay_emits_physical_bytes_without_scalar_block_capacity() {
+    let samples = Arc::new(Mutex::new(Vec::new()));
+    let mut req = request("windowed", 10.0, 1152, 4);
+    req.dp_rank = Some(0);
+    let mut spec = aggregated_spec(Backend::Vllm, 1, 0.0, vec![req]);
+    spec.engine["dp_size"] = serde_json::json!(2);
+    let rank = &mut spec.engine["rank"];
+    rank["enable_prefix_caching"] = false.into();
+    rank["max_num_batched_tokens"] = 128.into();
+    rank["kv_cache_capacity_bytes"] = 4000.into();
+    rank["kv_cache_groups"] = serde_json::json!([
+        {"name":"full", "kind":"attention", "num_layers":1, "block_size_tokens":64, "page_size_bytes":64},
+        {"name":"window", "kind":"attention", "num_layers":2, "block_size_tokens":16, "page_size_bytes":16, "sliding_window":512},
+        {"name":"conv", "kind":"convolution", "num_layers":3, "block_size_tokens":4, "page_size_bytes":8, "sliding_window":4}
+    ]);
+    let plain = Replayer::new(spec.clone(), ReplayEngineFactory::new())
+        .unwrap()
+        .run()
+        .unwrap();
+    let report = Replayer::new(spec, ReplayEngineFactory::new())
+        .unwrap()
+        .with_telemetry_observer(
+            1.0,
+            Box::new(RecordingTelemetryObserver {
+                samples: Arc::clone(&samples),
+            }),
+        )
+        .unwrap()
+        .run()
+        .unwrap();
+    assert_eq!(report.request_counts.completed_requests, 1);
+    assert_eq!(
+        report.request_counts.total_output_tokens,
+        plain.request_counts.total_output_tokens
+    );
+    let samples = samples.lock().unwrap();
+    let mut saw_resident_pages = false;
+    for sample in samples.iter() {
+        assert_eq!(sample.decode_scheduler_metrics.len(), 2);
+        for row in &sample.decode_scheduler_metrics {
+            assert_eq!((row.total_blocks, row.inactive_blocks), (0, 0));
+            assert_eq!(row.kv_cache_capacity_bytes, Some(4000));
+            let used = row.kv_cache_used_bytes.unwrap();
+            assert_eq!(row.active_blocks > 0, used > 0);
+            assert!(used <= 4000);
+            assert_eq!(row.physical_cache_usage, used as f64 / 4000.0);
+            if row.dp_rank == 1 {
+                assert_eq!(used, 0);
+            }
+            saw_resident_pages |= used > 0;
+            let emitted = serde_json::to_value(row).unwrap();
+            assert_eq!(emitted["kv_cache_used_bytes"], used);
+            assert_eq!(emitted["kv_cache_capacity_bytes"], 4000);
+        }
+    }
+    assert!(saw_resident_pages);
+    assert!(
+        samples
+            .last()
+            .unwrap()
+            .decode_scheduler_metrics
+            .iter()
+            .all(|row| row.kv_cache_used_bytes == Some(0))
+    );
+}
+
+#[test]
 fn replay_accept_length_counts_decode_work_before_output_truncation() {
     for backend in [Backend::Vllm, Backend::Sglang] {
         for (rates, lengths, forwards, expected_average) in [

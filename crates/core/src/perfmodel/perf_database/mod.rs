@@ -1144,7 +1144,7 @@ mod tests {
 
         assert!(
             db.fpm_forward
-                .select_cell(&default_identity(4), "org/model-a")
+                .select_cell(&default_identity(4), "org/model-a", None)
                 .is_ok()
         );
     }

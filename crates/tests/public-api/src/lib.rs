@@ -10,7 +10,8 @@ use std::path::Path;
 use aisimulate_core::{
     AicEngine, AicEngineBuilder, AicError, BackendKind, DatabaseMode, EstimationMode,
     EstimatorConfig, ForwardPassPerfModel, ForwardPassPerfModelConfig,
-    ForwardPassRegressionStoreDiagnostics, ForwardPassWorkerType, KvCacheEstimateRequest,
+    ForwardPassRegressionStoreDiagnostics, ForwardPassWorkerType, FpmInterpolationMethod,
+    FpmQueryCoverage, KvCacheEstimateRequest,
 };
 
 /// Compile the ergonomic engine builder without starting embedded Python.
@@ -69,6 +70,27 @@ pub fn regression_options() -> EstimatorConfig {
     config.features.prefill_attention_pair_weight = 3.0;
     config.features.ffn_token_weight = 4.0;
     config
+}
+
+/// Independent profile and interpolation method use the one construction API.
+pub fn profile_model(
+    mut config: ForwardPassPerfModelConfig,
+) -> Result<ForwardPassPerfModel, AicError> {
+    config.estimator_config.fpm_interpolation.method = FpmInterpolationMethod::Direct;
+    ForwardPassPerfModel::best_available(config)
+}
+
+/// Coverage is owned by the model returned by the one construction API.
+pub fn fpm_coverage(model: &ForwardPassPerfModel) -> Result<Option<FpmQueryCoverage>, AicError> {
+    model.fpm_query_coverage()
+}
+
+pub fn covered_prefill(model: &ForwardPassPerfModel) -> Result<f64, AicError> {
+    model.predict_prefill_latency(1, 128, 0)
+}
+
+pub fn covered_decode(model: &ForwardPassPerfModel) -> Result<f64, AicError> {
+    model.predict_decode_latency_total(1, 128)
 }
 
 pub fn best_available_model(
@@ -144,7 +166,10 @@ mod tests {
         // v20: FpmForwardOp gained original_fmha_quant_mode for selector diagnostics.
         // v21: EngineConfig and MoeOp gained exact moe_kernel_source identity.
         // v22: observed MoE selection and exact prefill graph composites.
-        assert_eq!(ENGINE_SPEC_SCHEMA_VERSION, 22);
+        // v23: ParallelMapping gained optional recorded DCP identity.
+        // v24: FpmForwardOp carries typed DCP separately from matching strings.
+        // v25: SOL/direct interpolation selector combined with typed DCP.
+        assert_eq!(ENGINE_SPEC_SCHEMA_VERSION, 25);
         assert_eq!(FPM_VERSION, 1);
         assert_eq!(ForwardPassMetrics::default().version, FPM_VERSION);
     }
@@ -244,6 +269,17 @@ mod tests {
     #[test]
     fn regression_constructor_is_environment_independent() {
         let model = regression_model().expect("construct regression model");
+        assert_eq!(
+            model
+                .provenance()
+                .unwrap()
+                .config
+                .estimator_config
+                .fpm_regression
+                .fit
+                .rebuild_interval,
+            None
+        );
         let stores = regression_stores(&model);
         assert_eq!(stores.len(), 4);
         assert_eq!(
@@ -266,6 +302,206 @@ mod tests {
         assert_eq!(options.features.attention_kv_weight, 2.0);
         assert_eq!(options.features.prefill_attention_pair_weight, 3.0);
         assert_eq!(options.features.ffn_token_weight, 4.0);
+    }
+
+    #[test]
+    fn regression_rebuild_interval_is_public_and_preserved_by_canonical_reload() {
+        use aisimulate_core::RegressionFitConfig;
+
+        assert_eq!(RegressionFitConfig::default().rebuild_interval, None);
+        for interval in [Some(1), Some(17), Some(4096), None] {
+            let mut config = ForwardPassPerfModelConfig::new(
+                "test/model",
+                "test-system",
+                BackendKind::Vllm,
+                ForwardPassWorkerType::Decode,
+            );
+            config.estimation_mode = EstimationMode::FpmRegression;
+            config.estimator_config.fpm_regression.fit = RegressionFitConfig {
+                rebuild_interval: interval,
+                ..RegressionFitConfig::default()
+            };
+            let model = ForwardPassPerfModel::best_available(config).unwrap();
+            let resolved = &model.provenance().unwrap().config;
+            assert_eq!(
+                resolved
+                    .estimator_config
+                    .fpm_regression
+                    .fit
+                    .rebuild_interval,
+                interval
+            );
+            let reloaded = ForwardPassPerfModel::best_available(resolved.clone()).unwrap();
+            assert_eq!(&reloaded.provenance().unwrap().config, resolved);
+            assert_eq!(reloaded.regression_store_diagnostics().len(), 1);
+            assert!(!reloaded.regression_store_diagnostics()[0].ready);
+        }
+    }
+
+    #[test]
+    fn zero_regression_rebuild_interval_is_invalid_before_fallback() {
+        use aisimulate_core::ForwardPassFallbackPolicy;
+
+        for mode in [EstimationMode::Auto, EstimationMode::FpmRegression] {
+            let mut config = ForwardPassPerfModelConfig::new(
+                "test/model",
+                "test-system",
+                BackendKind::Vllm,
+                ForwardPassWorkerType::Decode,
+            );
+            config.estimation_mode = mode;
+            config.fallback_policy = ForwardPassFallbackPolicy::Allow;
+            config.estimator_config.fpm_regression.fit.rebuild_interval = Some(0);
+            let error = ForwardPassPerfModel::best_available(config)
+                .err()
+                .expect("zero interval must fail");
+            assert!(matches!(error, AicError::InvalidEngineConfig(_)));
+            assert!(error
+                .to_string()
+                .contains("estimator_config.fpm_regression.fit.rebuild_interval"));
+        }
+    }
+
+    #[test]
+    fn legacy_regression_options_keep_rust_owned_fit_defaults() {
+        use aisimulate_core::ForwardPassPerfOptions;
+
+        let migrated = EstimatorConfig::from_legacy(ForwardPassPerfOptions::default()).unwrap();
+        assert_eq!(migrated.fpm_regression.fit.rebuild_interval, None);
+        assert_eq!(migrated.fpm_regression.sampling.max_observations, 64);
+        assert_eq!(migrated.fpm_regression.sampling.bins_per_axis, [4, 4]);
+    }
+
+    #[test]
+    fn spline_types_defaults_and_custom_policies_survive_canonical_reload() {
+        use aisimulate_core::{
+            ForwardPassSplineDiagnostics, RegressionFitKind, SplineFitConfig, SplineSearchConfig,
+        };
+
+        const PERIODIC: SplineSearchConfig = SplineSearchConfig::periodic(17);
+        const ADAPTIVE: SplineSearchConfig = SplineSearchConfig::adaptive(9, 3, 0.125, 0.25, 11);
+
+        for spline in [
+            None,
+            Some(SplineFitConfig {
+                knots_per_axis: 3,
+                search: PERIODIC,
+            }),
+            Some(SplineFitConfig {
+                knots_per_axis: 2,
+                search: ADAPTIVE,
+            }),
+        ] {
+            let mut config = ForwardPassPerfModelConfig::new(
+                "test/model",
+                "test-system",
+                BackendKind::Vllm,
+                ForwardPassWorkerType::Aggregated,
+            );
+            config.estimation_mode = EstimationMode::FpmRegression;
+            config.estimator_config.fpm_regression.fit.kind = RegressionFitKind::Spline;
+            config.estimator_config.fpm_regression.fit.spline = spline.clone();
+            let model = ForwardPassPerfModel::best_available(config).unwrap();
+            let resolved = &model.provenance().unwrap().config;
+            assert_eq!(
+                resolved.estimator_config.fpm_regression.fit.spline,
+                Some(spline.unwrap_or_default())
+            );
+            let search = &resolved
+                .estimator_config
+                .fpm_regression
+                .fit
+                .spline
+                .as_ref()
+                .unwrap()
+                .search;
+            // External callers allow both future policies and extra controls.
+            match search {
+                SplineSearchConfig::Periodic { step, .. } => assert_eq!(*step, 17),
+                SplineSearchConfig::Adaptive {
+                    window,
+                    trigger,
+                    tolerance,
+                    absolute_tolerance_ms,
+                    cooldown,
+                    ..
+                } => {
+                    let controls = (
+                        *window,
+                        *trigger,
+                        *tolerance,
+                        *absolute_tolerance_ms,
+                        *cooldown,
+                    );
+                    assert!([(16, 8, 0.05, 1.0, 64), (9, 3, 0.125, 0.25, 11)].contains(&controls));
+                }
+                _ => panic!("unexpected policy in this fixture"),
+            }
+            let reloaded = ForwardPassPerfModel::best_available(resolved.clone()).unwrap();
+            assert_eq!(&reloaded.provenance().unwrap().config, resolved);
+            let stores = reloaded.regression_store_diagnostics();
+            assert_eq!(stores.len(), 4);
+            for store in stores {
+                assert!(!store.ready);
+                assert_eq!(store.retained_observations, 0);
+                let diagnostics = store.spline.expect("selected spline store diagnostics");
+                let ForwardPassSplineDiagnostics {
+                    initialized, ready, ..
+                } = diagnostics;
+                assert!(!initialized && !ready);
+                assert_eq!(diagnostics.accepted_observations, 0);
+                assert_eq!(diagnostics.knot_searches, 0);
+                assert_eq!(diagnostics.last_search_observation, None);
+            }
+        }
+    }
+
+    #[test]
+    fn invalid_spline_controls_fail_before_auto_or_allowed_fallback() {
+        use aisimulate_core::{
+            ForwardPassFallbackPolicy, RegressionFitKind, SplineFitConfig, SplineSearchConfig,
+        };
+        for mode in [EstimationMode::Auto, EstimationMode::FpmRegression] {
+            for (search, path) in [
+                (SplineSearchConfig::periodic(0), "step"),
+                (SplineSearchConfig::adaptive(0, 1, 0.05, 1.0, 64), "window"),
+                (
+                    SplineSearchConfig::adaptive(16, 17, 0.05, 1.0, 64),
+                    "trigger",
+                ),
+                (
+                    SplineSearchConfig::adaptive(16, 8, f64::NAN, 1.0, 64),
+                    "tolerance",
+                ),
+                (
+                    SplineSearchConfig::adaptive(16, 8, 0.05, -1.0, 64),
+                    "absolute_tolerance_ms",
+                ),
+                (
+                    SplineSearchConfig::adaptive(16, 8, 0.05, 1.0, 0),
+                    "cooldown",
+                ),
+            ] {
+                let mut config = ForwardPassPerfModelConfig::new(
+                    "test/model",
+                    "test-system",
+                    BackendKind::Vllm,
+                    ForwardPassWorkerType::Decode,
+                );
+                config.estimation_mode = mode;
+                config.fallback_policy = ForwardPassFallbackPolicy::Allow;
+                config.estimator_config.fpm_regression.fit.kind = RegressionFitKind::Spline;
+                config.estimator_config.fpm_regression.fit.spline = Some(SplineFitConfig {
+                    search,
+                    ..SplineFitConfig::default()
+                });
+                let error = ForwardPassPerfModel::best_available(config).err().unwrap();
+                assert!(matches!(error, AicError::InvalidEngineConfig(_)));
+                assert!(error
+                    .to_string()
+                    .contains(&format!("fit.spline.search.{path}")));
+            }
+        }
     }
 
     #[test]
@@ -490,6 +726,11 @@ pub fn rebuild_replay_report_literals(
 }
 
 /// Detailed phase evidence is reachable through the canonical model.
-pub fn operation_diagnostics(model: &ForwardPassPerfModel) -> Result<Vec<aisimulate_core::perfmodel::engine::diagnostics::StaticOperationDiagnostics>, AicError> {
+pub fn operation_diagnostics(
+    model: &ForwardPassPerfModel,
+) -> Result<
+    Vec<aisimulate_core::perfmodel::engine::diagnostics::StaticOperationDiagnostics>,
+    AicError,
+> {
     model.static_phase_diagnostics(1, 128, 0, true)
 }
