@@ -157,6 +157,14 @@ jobs:
           echo "${WHEEL_SHA256}  $(echo "${RUNNER_TEMP}"/accuracy-wheel/*.whl)" | sha256sum --check --strict
           python -m pip install "${RUNNER_TEMP}"/accuracy-wheel/*.whl
           python -m pip check
+          python - <<'PYCODE'
+          import os, sys
+          from pathlib import Path
+          sys.path.insert(0, 'scripts')
+          from run_e2e_accuracy import wheel_identity
+          wheel = next((Path(os.environ['RUNNER_TEMP']) / 'accuracy-wheel').glob('*.whl'))
+          print(wheel_identity(wheel))
+          PYCODE
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: e2e-accuracy-dataset

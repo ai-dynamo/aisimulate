@@ -523,6 +523,9 @@ Campaign jobs use the configured `CI_JOB_CONTAINER_IMAGE`, Python 3.12, and
 `sudo` to install the PostgreSQL 18 client from the official PGDG repository,
 plus `zstd` and `libgomp1`. The runner executes container steps as a non-root
 user, so a bare PostgreSQL image cannot install these dependencies with `apt-get`.
+The evaluated wheel's baseline CLI and config adapter are selected from its own
+package layout: `aiconfigurator.*` on 0.12 releases or `aisimulate.*` after the
+namespace migration. Wheel byte checks and imports run before downloading measurements.
 The client reads the dump without starting a database server. Artifact upload
 uses the output directory so the runner container hook remaps the full path.
 

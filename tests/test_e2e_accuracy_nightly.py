@@ -1091,3 +1091,50 @@ def test_dump_part_retry_fails_closed_after_three_attempts(monkeypatch):
         fetch.download_part("https://example.invalid/part", {"name": "part00", "size": 7, "sha256": "a" * 64}, target)
     assert len(calls) == 3
     assert target.getvalue() == b"previous part"
+
+
+@pytest.mark.parametrize(
+    "api,adapter",
+    [
+        ("aisimulate.legacy_cli.api", "aisimulate.sdk.config_adapter"),
+        ("aiconfigurator.cli.api", "aiconfigurator.sdk.config_adapter"),
+    ],
+)
+def test_wheel_identity_accepts_both_packaged_predictor_layouts(tmp_path, monkeypatch, api, adapter):
+    members = {
+        "aisimulate/_runtime.py": b"runtime",
+        "aisimulate/runner.py": b"runner",
+        api.replace(".", "/") + ".py": b"baseline",
+        adapter.replace(".", "/") + "/__init__.py": b"adapter",
+    }
+    wheel = tmp_path / "test.whl"
+    with zipfile.ZipFile(wheel, "w") as archive:
+        for name, content in members.items():
+            archive.writestr(name, content)
+            path = tmp_path / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(content)
+    dist = SimpleNamespace(locate_file=lambda name: tmp_path / name, version="test", files=list(members))
+    monkeypatch.setattr(campaign.importlib.metadata, "distribution", lambda _: dist)
+    imported = []
+
+    def load(name):
+        imported.append(name)
+        path = name.replace(".", "/") + ("/__init__.py" if name == adapter else ".py")
+        return SimpleNamespace(__file__=str(tmp_path / path))
+
+    monkeypatch.setattr(campaign.importlib, "import_module", load)
+    assert campaign.wheel_identity(wheel)["packages"] == {"aisimulate": "test"}
+    assert imported == ["aisimulate._runtime", "aisimulate.runner", api, adapter]
+    (tmp_path / (api.replace(".", "/") + ".py")).write_bytes(b"tampered")
+    with pytest.raises(ValueError, match="differs from qualified wheel"):
+        campaign.wheel_identity(wheel)
+
+
+def test_predictor_layout_rejects_missing_or_mixed_namespaces():
+    with pytest.raises(ValueError, match="no supported baseline"):
+        campaign.predictor_module_names([])
+    with pytest.raises(ValueError, match="matching config adapter"):
+        campaign.predictor_module_names(
+            ["aisimulate/legacy_cli/api.py", "aiconfigurator/sdk/config_adapter/__init__.py"]
+        )
