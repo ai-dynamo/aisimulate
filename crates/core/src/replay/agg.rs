@@ -42,6 +42,9 @@ use rustc_hash::FxHashMap;
 use std::collections::BinaryHeap;
 use uuid::Uuid;
 
+/// Simulated start instant of every replay.
+pub(crate) const REPLAY_EPOCH_MS: f64 = 0.0;
+
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub(crate) struct AggRuntimeStats {
     #[cfg(test)]
@@ -2708,11 +2711,17 @@ where
     /// correlates the request with later measurements.
     pub(crate) fn submit_dynamic(&mut self, request: DirectRequest) -> anyhow::Result<Uuid> {
         let arrival_time_ms = self.now_ms;
+        // Forward the caller's session id to placement, as trace-driven
+        // admission does, so session-aware policies see it through the seam.
+        let session_id = request
+            .replay_context
+            .as_ref()
+            .and_then(|context| context.session_id.clone());
         let uuid = self.assign_request(
             ReplayRequestPayload::materialized(request),
             arrival_time_ms,
             Metadata::from_hashes(None),
-            None,
+            session_id,
         )?;
         if self.defer_drive {
             self.drive_pending = true;
