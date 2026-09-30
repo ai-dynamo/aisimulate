@@ -265,6 +265,13 @@ families:
       nvidia/GLM-5.3-NVFP4:
         dummy_overrides:
           family: glm
+      nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-NVFP4:
+        variant_overrides:
+          vllm: layers_block_type_moe
+          fact: 'sm120/72GB (2026-09-30): all_kinds (3 layers) OOMs at load; the capacity fallback picked
+            layers_block_type_attention (alphabetical first single-kind cut), whose config has no quantized
+            layers left -> vllm rejects MIXED_PRECISION with an empty quantized_layers map (dummy artifact,
+            not a framework fact). The MoE cut keeps the NVFP4 experts, which are this checkpoint''s identity.'
       nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-FP8:
         dummy_overrides:
           hfquant_exclude_from_sibling: nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-NVFP4

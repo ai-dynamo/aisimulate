@@ -11,7 +11,7 @@
  "phase": "decode",
  "phase_scoped": true,
  "kv_dtype": "fp8",
- "op_hint": "mla|attn|flash|bmm|proj|indexer|rope|concat|gemm|deepgemm|quant",
+ "op_hint": "mla|attn|flash|bmm|proj|indexer|rope|concat|gemm|gemvx|cutlass|deepgemm|quant",
  "capture_file": "facts/pathdiff/opcov_mla_gen_fp8@0.30.0.json",
  "capture_sha256": "19144fa6d0c747c8",
  "capture_env": null,

@@ -1653,6 +1653,42 @@ findings:
     applies_to: ['framework:vllm-0.30.0', 'instrument:workflow_check', 'instrument:path_diff', 'platform:sm90',
       MiniMaxAI/MiniMax-M3, deepseek-ai/DeepSeek-V3.2, moonshotai/Kimi-K3, sgl-project/DeepSeek-V4-Flash-FP8,
       meta-llama/Meta-Llama-3.1-8B, Qwen/Qwen3-VL-2B-Instruct]
+  blackwell_handoffs_absorbed_2026_09_30:
+    statement: |
+      Three off-box campaigns handed back to the H20 harness owner on
+      2026-09-30 — B300/sm103 (0.29.0, 2026-09-20), B200/sm100 (0.30.0,
+      2026-09-29, 109/1/14, 32 gates 27 aligned) and two sm120 boxes (RTX PRO
+      6000 96GB: 101/7/16, 30 gates 29 aligned; RTX PRO 5000 72GB: 100/1/23,
+      31 gates 29 aligned + 2 platform floors). ABSORBED into pr-228 here:
+      the RTX 5000 bundle as delivered (patch + captures + sm120 results,
+      taxonomy_sm120, 8 sm120 findings, gemm_fp8 fp8_static governed
+      exception per the owner's 2026-09-30 decision, verdict script
+      parametrized by AIS_SM, --matrix single-backend + writes to the harness
+      results dir, sm120 fail causes, kv 'auto' declared on bf16 gates,
+      gemvx/cutlass hints); plus, re-implemented from the B200 / RTX 6000
+      notes whose patches are not on this box: render_golden runs the
+      generator with cwd = workspace (aic-core safe_mkdir; a workspace on
+      another mount rendered 124/124 as generator rejects on B300 and B200),
+      path_diff prefers the RENDERED (kv None/auto) record when no
+      --kv-dtype is asked, and per-SM platform-floor gate markers
+      (FLOOR_SM= / FLOOR_NOTE= on a verdict line -> platform-floor verdict
+      file, excluded from path_aligned on that SM, still declared coverage):
+      sm120's two fp8-KV dense-MLA gates are floors (TRITON_MLA smem), so the
+      sm120 upgrade_op view is all done honestly and the sm90 view stays
+      32/32. The 5000 bundle's platform pin (rtx5000_sm120) was NOT taken —
+      targets.platform stays the H20. NOT YET ABSORBED (need the patches or
+      real work): B200's collector fix for the block_size = 64 literal in
+      collect_attn.py / collect_mla_module.py (ask the framework per case;
+      re-grade attn/mla gates on sm90 AND sm100), kernel_taxonomy_sm100.yaml
+      seed and the b200-opharness-fixes.patch (on umb-b200-238), RTX 6000's
+      platform-scoped cli_extra_args and no-baseline fails_root_caused
+      semantics (sm120-opharness-fixes.patch on the 6000 box),
+      fetch_inputs gated-repo mirror fallback (both), identity.attention
+      column via taxonomy backend labels, platform-blind run ids, the sm120
+      generator rule (bf16 KV for NVFP4 MLA on CC 12.0) and the silently
+      ignored --generator-set kv_cache_dtype (generator module, separate PR).
+    applies_to: ['platform:sm120', 'platform:sm100', 'platform:sm103', 'framework:vllm-0.30.0',
+      'instrument:probe_driver', 'instrument:path_diff', 'instrument:workflow_check']
   taxonomy_dsa_nsa_family_covers_m3:
     statement: 'RESOLVED 2026-09-23: M3 sparse-attention kernels now label `triton` (the vocabulary name of
       MiniMaxM3SparseTritonImpl), dsa_nsa is DeepSeek-DSA only; see probe_prefill_prefix_cache_contamination.
@@ -1741,3 +1777,194 @@ findings:
     - framework:vllm-0.29.0
     - platform:sm90
     - instrument:collect.py
+  sm120_vllm_0300_campaign:
+    statement: 'FIRST SM120 CAMPAIGN (RTX PRO 5000 Blackwell 72GB x8, compute capability 12.0, 2026-09-30; vllm 0.30.0,
+      golden renders with --system rtx_pro_6000_server as the 5000 proxy — no SDK entry for the 5000). 124 roster cells:
+      100 pass / 1 pass+custom / 23 fail (12 generator rejects = the same SDK-gap repos as sm90; 4 platform limit;
+      2 platform gap; 5 capacity). Deployed identity on sm120 differs from sm90 in every family: dense attention
+      = FA2 (flash::flash_fwd_splitkv_kernel; FA3 is sm90-only) with FlashInfer paged prefill + XQA decode under
+      fp8 KV; MLA = TRITON_MLA (prefill FA2 hd192, decode _fwd_grouped_kernel_stage1); sparse MLA (DSV3.2/GLM-5.2/DSV4)
+      = FLASHINFER_MLA_SPARSE_SM120 / DeepseekV4FlashInferSM120Attention (flashinfer::sparse_mla_sm120::*,
+      sparse_mla_prefill_mg*); fp8 linears AND fp8 MoE = DeepGEMM sm120 lane (deep_gemm::sm120_fp8_fp4_gemm_1d1d_impl
+      + ep_scatter/gather glue) instead of cutlass/triton_fused_moe; bf16 MoE (GLM-5.2, MiniMax-M3, Qwen1.5-MoE) =
+      FlashInfer CUTLASS fused MoE (fused_moe::run_global / MoeFCGemm) instead of triton fused_moe_kernel; M=1
+      GEMMs = cuBLAS gemvx instead of nvjet; per-tensor fp8 (ModelOpt) decode GEMMs = cuBLAS sm89_xmma_gemm_e4m3.
+      kernel_taxonomy_sm120.yaml was seeded from sm90 and grew 25 evidence-based rules (every rule names a kernel
+      recorded on this box); decompose residue = 1 kernel (the DSV4 cute-DSL kernel_cutlass_device_kernel, same
+      owner-decided residue as sm90). Gates: 29 aligned, 1 explained, 2 ungradable; the 2 DeepSeek-R1 fp8-KV MLA gates have no serving
+      record (see sm120_triton_mla_fp8kv_smem); gemm_fp8 (dynamic-activation row, no faithful serving reference) is an explained deviation under an owner exception (sm120_collector_gemm_fp8_static_row);
+      compute_scale and mhc stay explained deviations as on sm90. Evidence bundle 2026-09-30_sm120_vllm-0.30.0
+      (results/evidence_index.yaml).'
+    applies_to:
+    - platform:sm120
+    - framework:vllm-0.30.0
+  sm120_triton_mla_fp8kv_smem:
+    statement: 'PLATFORM LIMIT (vllm 0.30.0 on sm120): every MLA checkpoint that resolves an fp8 KV cache dies at
+      CUDA-graph capture with triton OutOfResources "shared memory, Required: 102400, Hardware limit: 101376" in
+      TRITON_MLA decode (_decode_grouped_att_m_fwd, v1/attention/ops/triton_decode_attention.py:534; BLOCK_DMODEL 512
+      + BLOCK_DPE 64, num_stages 2 — the guard at :524-532 only drops num_stages for BLOCK_DMODEL >= 1024). The sm120
+      opt-in smem/block is 101376 B (torch.cuda.get_device_properties inside the image), 102400 B/SM. Hit by the fp8-KV
+      probe sweep of DeepSeek-V3, DeepSeek-R1, Kimi-K2-Instruct, Kimi-K2.5 (bf16-KV cells of the same repos PASS,
+      identity TRITON_MLA) AND by the RENDERED config of the NVFP4 artifacts whose hf_quant pins fp8 KV
+      (nvidia/DeepSeek-V3.1-NVFP4, Kimi-K2.5/K2.6/K2.7-Code-NVFP4: matrix fail cells). The collector''s mla_gen_fp8
+      capture crashes identically (observe-don''t-predict: same dispatch, same limit), so the mla_ctx_fp8 / mla_gen_fp8
+      DeepSeek-R1 gates have no serving record on this SM and cannot be graded. Not a generator defect: `cli generate`
+      renders no kv dtype; the crash is the framework''s only MLA decode backend on major==12 (platforms/cuda.py:132-135
+      lists TRITON_MLA + FLASHINFER_MLA_SPARSE_SM120). A deployment of those NVFP4 checkpoints on RTX PRO 5000/6000
+      with vllm 0.30.0 does not boot; upstream-report candidate (reduce num_stages/BLOCK for fp8 K on sm12x).
+      Evidence: archive/raw/{175d26fcbb87,c78550b69fb3,c73c64978344,f6e846bb5051,f157c1c39890,691d6cce3327,
+      9c912acc9024,c91c53ea605c}.json, facts/pathdiff/opcov_mla_gen_fp8@0.30.0.json (RUN ERROR).'
+    applies_to:
+    - platform:sm120
+    - framework:vllm-0.30.0
+    - deepseek-ai/DeepSeek-V3
+    - deepseek-ai/DeepSeek-R1
+    - moonshotai/Kimi-K2-Instruct
+    - moonshotai/Kimi-K2.5
+    - nvidia/DeepSeek-V3.1-NVFP4
+    - nvidia/Kimi-K2.5-NVFP4
+    - nvidia/Kimi-K2.6-NVFP4
+    - nvidia/Kimi-K2.7-Code-NVFP4
+  sm120_dsv41_sparse_mla_no_decode_shape:
+    statement: 'PLATFORM GAP (vllm 0.30.0 on sm120): DeepSeek-V4.1-Flash and nvidia/DeepSeek-V4.1-Flash-NVFP4 fail
+      at load (both KV variants) with ValueError "SM120 sparse-MLA has no decode kernel for this shape: num_tokens=64,
+      num_heads=64, topk=128, d_qk=512, page_block_size=32, model_type=1, extra_topk=0" — the sm120 sparse-MLA decode
+      dispatch (vllm/utils/flashinfer.py _DECODE_DSV4_DISPATCH, an enumerated shape table) has no entry for the
+      V4.1-Flash head/topk geometry, while DeepSeek-V4-Flash/Pro (same backend, different topk/heads) PASS. Rendered
+      config is not involved (the shape comes from the checkpoint). sm90 runs both V4.1 repos.'
+    applies_to:
+    - platform:sm120
+    - framework:vllm-0.30.0
+    - deepseek-ai/DeepSeek-V4.1-Flash
+    - nvidia/DeepSeek-V4.1-Flash-NVFP4
+  sm120_capacity_72gb:
+    statement: 'CAPACITY (72GB probe GPU vs 143GB H20): Qwen/Qwen3.8-2.4T-A95B{,-FP8} and nvidia/Qwen3.8-2.4T-A95B-NVFP4
+      OOM at load even on the depth4 cut (one MoE layer of the 2.4T model exceeds the card: 32 GiB single allocation
+      bf16), meta-llama/Llama-4-Maverick-17B-128E-Instruct OOMs on its smallest cut (depth4, 20 GiB expert tensor) —
+      "no faithful cut fits one probe GPU"; Qwen3.5-397B-A17B needed the depth8 -> depth4 fallback and passes. The
+      capacity fallback (probe_driver enumerate_runs) worked as designed but needs a second --emit-queues after the
+      first sweep (the OOM must be observed first) — documented, not automatic. Nemotron-3-Ultra-550B: all_kinds (3
+      layers) OOMs; the fallback ranks single-kind cuts ALPHABETICALLY and picked layers_block_type_attention, which
+      passes for BF16/FP8 (identity: attention + no MoE column) but for the NVFP4 artifact strips every quantized layer
+      -> vllm rejects MIXED_PRECISION with an empty quantized_layers map (dummy artifact). Owner-side variant_override
+      to the MoE cut then fails the probe''s attention hook (no attention module in a MoE-only cut). Both are recorded
+      as capacity cells, not framework facts. Lesson: single-kind cuts are not identity probes; a 72GB box needs a
+      2-layer mixed cut (attention+moe) variant for Nemotron-H-class models.'
+    applies_to:
+    - platform:sm120
+    - Qwen/Qwen3.8-2.4T-A95B
+    - Qwen/Qwen3.8-2.4T-A95B-FP8
+    - nvidia/Qwen3.8-2.4T-A95B-NVFP4
+    - meta-llama/Llama-4-Maverick-17B-128E-Instruct
+    - nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-NVFP4
+  sm120_gemm_fp8_kernel_level_drift:
+    statement: 'gemm_fp8 gate DIVERGED on sm120 (GEMM-class gates are graded on kernel-name overlap; the collector''s
+      one GEMM kernel is not among serving''s 14): the collector''s per-tensor fp8 case (Fp8LinearMethod -> CutlassFP8ScaledMMLinearKernel, op_smoke confirms the
+      selection) runs cutlass MainloopSm120TmaWarpSpecialized, while serving Llama-3.1-70B-Instruct-FP8
+      (ModelOptLinearMethod, fp8 per-tensor weights) runs MainloopSm120TmaWarpSpecializedBlockwiseScaling for the
+      prefill GEMMs and cuBLAS sm89_xmma_gemm_e4m3 (torch._scaled_mm) for the M=1 decode GEMMs. Same sm90 pairing was
+      kernel-identical. The vllm gemm fp8 perf rows on sm120 therefore measure a different mainloop than the ModelOpt
+      checkpoints deploy; whether ModelOpt''s sm120 blockwise mainloop is a vllm dispatch quirk or the intended path
+      for per-tensor scales needs a collector-side serving-parity audit before the sm120 gemm data is trusted.
+      Evidence facts/pathdiff/opcov_gemm_fp8@0.30.0.json vs archive/raw/da1900656836.json.'
+    applies_to:
+    - platform:sm120
+    - framework:vllm-0.30.0
+    - nvidia/Llama-3.1-70B-Instruct-FP8
+  harness_generalization_sm120:
+    statement: 'HARNESS LESSONS from the first campaign on a fresh SM + fresh workspace (2026-09-30), each fixed in
+      this checkout unless noted: (1) build_matrix aborted when ANY targets backend lacked a plan (single-backend
+      campaign impossible) -> now skips backends without a plan; (2) build_matrix wrote results/<sm>/ under the
+      WORKSPACE, so workflow_check (which reads the checkout) never saw the matrix -> now writes the harness results/;
+      (3) the taxonomy SM comes from the AIS_SM env var, not targets.platform (forgot once = sm90 vocabulary graded
+      sm120 records) — NOT fixed, documented; (4) verdicts_vllm_0300.sh hardcoded AIS_SM=sm90, the sm90 output dir
+      and a checkout-inside-workspace path -> SM-parametric + script-relative; (5) 9 of the 32 vllm gates (attn_ctx/gen,
+      dsa_ctx_*, dsa_gen_fp8, msa_ctx/gen) had NO committed capture recipe (produced ad hoc via op_smoke on sm90) ->
+      capture scripts added; kda_gen needed AIS_KDA_DECODE_PATHS=fused that only lived in a shell history -> now set
+      in the script; compute_scale capture had drifted from the registry signature (extra_perf_filenames) -> fixed;
+      (6) gates for bf16-KV models declared kv "" and path_diff then admitted the fp8-KV record of the same repo (newest
+      wins) -> attn/gemm_bf16 gates declare kv auto; op hints lacked gemvx (the M=1 cuBLAS gemv on sm120), which hid
+      serving GEMM evidence; (7) the matrix attention-identity heuristic matched the kv-cache glue
+      vllm::concat_and_cache_mla_kernel on TRITON_MLA records -> excluded, _fwd_grouped_kernel_stage1 added; (8)
+      fetch_inputs hard-stops on gated repos with no mirror fallback: meta-llama x5 and the gated Nemotron-3-Ultra-FP8
+      were provisioned by hand from unsloth mirrors / SDK model_configs (configs/GATED_SOURCES.md in the workspace);
+      (9) the generator vllm.rule has no SM branch — sm90 and sm120 render byte-identical engine args, so every sm120
+      fail above is a framework/platform fact, none a rendering fact. Data plane grew: kernel_taxonomy_sm120.yaml,
+      results/sm120/{vllm-0.30.0.yaml,decompose/}, results/pathdiff/sm120/vllm-0.30.0/ (30 verdicts),
+      results/retests/sm120/vllm-0.30.0.yaml, _fail_cause vocabulary for the sm120 causes.'
+    applies_to:
+    - platform:sm120
+    - instrument:probe_driver
+    - instrument:path_diff
+    - instrument:workflow_check
+  sm120_config_ab_2026_09_30:
+    statement: 'CONFIG-OR-FRAMEWORK A/B for every non-SDK-gap fail cell on sm120 (owner question: is the rendered config
+      wrong, and does the framework hint at a backend/flag that makes it boot). Method: the rendered run.sh with ONE
+      extra engine arg appended, same dummy, same image, same probe (facts/ab_sm120/<id>_<suffix>.{sh,json}).
+      RESULTS. (a) NVFP4 MLA checkpoints (nvidia/Kimi-K2.5-NVFP4 691d6cce3327, nvidia/DeepSeek-V3.1-NVFP4 f157c1c39890, nvidia/Kimi-K2.6-NVFP4 9c912acc9024, nvidia/Kimi-K2.7-Code-NVFP4 c91c53ea605c):
+      + --kv-cache-dtype bfloat16 -> PASS on all four (identity TRITON_MLA bf16 KV, DeepGEMM sm120 linears). So the cell IS
+      config-rescuable: the checkpoint''s hf_quant pins fp8 KV, and on cc 12.0 the only non-sparse MLA backend that
+      declares support is TRITON_MLA (enumerated: FLASHINFER_MLA / CUTLASS_MLA / FLASHMLA / FLASH_ATTN_MLA /
+      TOKENSPEED_MLA all report cc12=False), whose fp8-KV decode kernel overflows smem — bf16 KV is the only route.
+      GENERATOR GAP: params.agg.kv_cache_dtype=bfloat16 renders `--kv-cache-dtype auto` (backend_config_mapping.yaml
+      kv_cache_dtype guard "vLLM doesn''t accept bfloat16") and auto re-resolves to the checkpoint''s fp8 -> the
+      rescue cannot be expressed through the generator today; vllm 0.30.0 accepts the literal bfloat16 (this A/B).
+      Bucket-1 candidate: drop/condition the guard, and an SM120 rule "MLA + quantized KV -> kv_cache_dtype bfloat16".
+      (b) DeepSeek-V3 / R1 / Kimi-K2 fp8-KV probe variants: + --max-num-seqs 64 --max-num-batched-tokens 4608 -> same
+      smem failure (kernel tile config, not batch); no alternative backend exists (see a). Not a config issue; the
+      rendered default (bf16 KV) passes.
+      (c) DeepSeek-V4.1-Flash (both repos): + --attention-backend FLASHINFER_MLA_SPARSE_DSV41 / TRITON_MLA, + --max-num-seqs
+      32, + --block-size 64 / 128 / 256 -> all FAIL with the same "no decode kernel ... page_block_size=32". Root: the DSV41 sm120
+      backend pins kernel block size [128] (models/deepseek_v41/nvidia/flashinfer_sparse.py:112) and computes the
+      compressed-layer page as block_size // compress_ratio = 128 // 4 = 32 (:759, :839), while FlashInfer''s sm120 DSV4
+      decode requires page 64 (_DECODE_DSV4_PAGE_BLOCK_SIZE = 64; (64,128) IS in _DECODE_DSV4_DISPATCH). No engine flag
+      reaches that arithmetic -> framework gap, upstream-report candidate (vllm/flashinfer sm120 DSV4.1 decode).
+      (d) Kimi-K3 fp8-KV variant: + --attention-config {"use_prefill_query_quantization": true} (the flag vLLM''s own
+      assertion names) -> same AssertionError: on sm120 the prefill backend is FA2, which cannot consume fp8 queries
+      (mla_attention.py determine_prefill_query_data_type -> backend_supports_prefill_query_quantization False), so the
+      flag is silently ignored and the K3 assert fires. fp8 KV for Kimi-K3 is not reachable on sm120 by any flag; bf16 KV
+      (the rendered default) passes. Arch-neutral half of this is already in findings (0.29 K3 followups).
+      (e) nvidia/Nemotron-H-56B-Base-8K: bare render OOMs on 72GB too; + --max-num-seqs 64 (no gpu-memory-utilization)
+      -> PASS, confirming the root knob is max_num_seqs on sm120 as on sm90; the generator still floors max_batch_size
+      at 512 (vllm.rule) so the expressible rescue stays extra_cli_args gpu-memory-utilization 0.6 (retest: still_needed).
+      (f) capacity cells (Qwen3.8-2.4T x3, Llama-4-Maverick, Nemotron-Ultra-NVFP4 single-kind cut): dummy weights do not
+      fit 72GB — not a config question; no A/B.'
+    applies_to:
+    - platform:sm120
+    - framework:vllm-0.30.0
+    - nvidia/Kimi-K2.5-NVFP4
+    - nvidia/Kimi-K2.6-NVFP4
+    - nvidia/Kimi-K2.7-Code-NVFP4
+    - nvidia/DeepSeek-V3.1-NVFP4
+    - deepseek-ai/DeepSeek-V4.1-Flash
+    - nvidia/DeepSeek-V4.1-Flash-NVFP4
+    - moonshotai/Kimi-K3
+    - nvidia/Nemotron-H-56B-Base-8K
+  sm120_collector_gemm_fp8_static_row:
+    statement: 'COLLECTOR-SIDE DISPOSITION of the gemm_fp8 divergence (serving-parity audit + owner decision, 2026-09-30).
+      Audit: vLLM 0.30.0 selects the fp8 scaled-mm kernel by activation scheme — FlashInferFP8ScaledMMLinearKernel is
+      first in _POSSIBLE_FP8_KERNELS (kernels/linear/__init__.py:421-430), is_supported needs CC >= 100
+      (scaled_mm/flashinfer.py:50-51), can_implement needs per-tensor activation AND weight scales (:56-63). ModelOpt
+      FP8 checkpoints (quant_algo FP8, static input_scale; modelopt.py:2333) satisfy it -> serving log "Selected
+      FlashInferFP8ScaledMMLinearKernel for QKVParallelLinear/RowParallelLinear/MergedColumnParallelLinear"
+      (facts/ab_sm120/da1900656836_baseline_log.log) -> cutlass MainloopSm120TmaWarpSpecializedBlockwiseScaling +
+      cuBLAS sm89_xmma at M=1. The collector''s `fp8` row is Fp8Config(activation_scheme="dynamic") -> can_implement
+      False -> CutlassFP8ScaledMMLinearKernel (op_smoke confirms). Reproduced in isolation: static vs dynamic Fp8Config
+      on one shape selects FlashInfer vs Cutlass (facts/ab_sm120/opcov_gemm_fp8_static_probe.json). fp8_static was NEVER
+      a collected row: the SDK derives it from the dynamic fp8 row + compute_scale + scale_matrix
+      (perf_database._gemm_key_names), which presumes one shared GEMM kernel — true below CC 100, false on SM100/103/120.
+      Every per-tensor FP8 checkpoint in the roster is ModelOpt static, so the gemm_fp8 gate never had a faithful
+      serving reference (sm90 aligned by coincidence). OWNER DECISION (tianhaox): do NOT add a collected fp8_static row
+      (a trial implementation was validated — op_smoke kernel_source=FlashInferFP8ScaledMMLinearKernel, gate aligned —
+      and then reverted); handle it as a governed approximation: collector/evidence_exceptions.yaml standards_exceptions
+      entry "fp8_static derived ... CC>=100" (scope gemm_perf / vllm 0.30.0 / CC>=100 systems, expires 2026-12-31),
+      gemm_fp8_Llama-3.1-70B-FP8 stays an explained deviation (facts/pathdiff/explained_0300). MLA fp8-KV on sm120
+      (mla_gen_fp8 capture crashes like serving) is a framework-version gap with no YAML home (failure_handling.md): the
+      case fails classified and re-tests on the next pin bump; no registry unverified_sms mark since the bf16-KV rows
+      of the same op are validated.'
+    applies_to:
+    - platform:sm120
+    - platform:sm100
+    - platform:sm103
+    - framework:vllm-0.30.0
+    - instrument:collect_gemm

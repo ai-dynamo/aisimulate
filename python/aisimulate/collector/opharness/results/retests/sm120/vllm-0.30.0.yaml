@@ -1,0 +1,6 @@
+# Customization retest record for vllm 0.30.0 on sm120 (RTX PRO 5000 72GB probe box, 2026-09-30).
+# Verdict per repo: still_needed | dropped. Evidence: bare-default A/B in facts/retest_vllm030_sm120/
+# (the rendered run.sh minus the per-checkpoint extra arg, same dummy, same image, same probe).
+# targets.yaml carries only one per-checkpoint vllm customization at this pin (the DSV4 marlin
+# prescriptions were dropped on sm90 for 0.30.0 and are gone from targets.yaml).
+nvidia/Nemotron-H-56B-Base-8K: still_needed  # bare default OOMs in the mamba profile run on 72GB as well (d1ae196be9b1_bare.json: torch.OutOfMemoryError 8 GiB with 6.58 GiB free); with gpu-memory-utilization 0.6 the run passes (matrix cell pass+custom)

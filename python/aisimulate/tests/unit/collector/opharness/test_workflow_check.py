@@ -146,3 +146,17 @@ def test_gate_coverage_is_checked_against_the_registry_not_the_script(wc, tmp_pa
     (wc.HARNESS.parent / "vllm" / "registry.py").write_text('REGISTRY = [OpEntry(op="brand_new_op")]\n')
     ok, reason = wc.pred_gates_cover_registry_ops({"fw": "vllm", "version": "0.30.0"})
     assert not ok and "brand_new_op" in reason
+
+
+def test_platform_floor_gates_are_declared_coverage_but_not_expected_on_that_sm(wc):
+    """A gate marked FLOOR_SM=<sm> has no serving instance on that SM by framework
+    fact (sm120 fp8-KV dense MLA): coverage still counts it, path_aligned on that
+    SM does not wait for a verdict, other SMs grade it normally."""
+    sh = wc.HARNESS / "components" / "captures" / "verdicts_vllm_0300.sh"
+    sh.write_text('python3 $PD --diff --framework vllm --version 0.30.0 \n'
+                  'run mla_ctx_bf16 mla_ctx_bf16_DeepSeek-V3 deepseek-ai/DeepSeek-V3 auto "$MLA"\n'
+                  'FLOOR_SM=sm120 FLOOR_NOTE="TRITON_MLA fp8-KV smem" run mla_ctx_fp8 mla_ctx_fp8_DeepSeek-R1 deepseek-ai/DeepSeek-R1 fp8 "$MLA"\n'
+                  'SERVING_RAW=facts/x.json run dsa_ctx_fp8 dsa_ctx_fp8_s512 deepseek-ai/DeepSeek-V3.2 fp8 "$DSA"\n')
+    assert wc.declared_gates("vllm", "0.30.0") == {"mla_ctx_bf16_DeepSeek-V3", "mla_ctx_fp8_DeepSeek-R1", "dsa_ctx_fp8_s512"}
+    assert wc.declared_gates("vllm", "0.30.0", "sm120") == {"mla_ctx_bf16_DeepSeek-V3", "dsa_ctx_fp8_s512"}
+    assert wc.declared_gates("vllm", "0.30.0", "sm90") == wc.declared_gates("vllm", "0.30.0")

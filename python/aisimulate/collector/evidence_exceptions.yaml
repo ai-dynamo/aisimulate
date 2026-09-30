@@ -103,6 +103,35 @@ standards_exceptions:
   approved_by: tianhaox
   expires: 2026-12-31
 
+# --- fp8_static GEMM is DERIVED, and on CC>=100 serving runs a different kernel ---
+# Owner decision (tianhaox, 2026-09-30): keep fp8_static as an APPROXIMATION,
+# not a collected row — models needing it (ModelOpt static per-tensor FP8
+# checkpoints) will stay few. The SDK derives fp8_static from the dynamic
+# per-token `fp8` gemm row plus compute_scale/scale_matrix
+# (perf_database._gemm_key_names), which assumes both activation schemes run
+# the SAME GEMM kernel. vLLM 0.30.0 breaks that on CC>=100: the static
+# per-tensor scheme selects FlashInferFP8ScaledMMLinearKernel
+# (model_executor/kernels/linear/__init__.py:421-430 priority; scaled_mm/
+# flashinfer.py:50-63 is_supported CC>=100 + per-tensor act/weight) while the
+# dynamic scheme falls to CutlassFP8ScaledMMLinearKernel. Observed on the SM120
+# probe box: serving Llama-3.1-70B-Instruct-FP8 logs "Selected
+# FlashInferFP8ScaledMMLinearKernel" and runs cutlass
+# MainloopSm120TmaWarpSpecializedBlockwiseScaling + cuBLAS sm89_xmma at M=1;
+# the `fp8` row runs the per-tensor Cutlass mainloop (opharness finding
+# sm120_collector_gemm_fp8_static_row; gate gemm_fp8_Llama-3.1-70B-FP8 is an
+# explained deviation, not a gate). Direction: unknown sign (different kernel,
+# not a superset) — treat fp8_static predictions on these systems as
+# approximate. Below CC 100 both schemes select Cutlass and the derivation holds.
+- rule: serving-dispatch parity (layer_permissions.md) — fp8_static derived from the dynamic fp8 gemm row while CC>=100 serving selects a different scaled-mm kernel
+  scope:
+    tables: [gemm_perf]
+    backend: vllm
+    versions: ["0.30.0"]
+    systems: [rtx_pro_6000_server, b200_sxm, b300_sxm, gb200, gb300]  # every CC>=100 system; only rtx_pro_6000_server-class (SM120) hardware-observed so far
+  retirement: "collect a static per-tensor fp8 gemm row (Fp8Config activation_scheme=static) on CC>=100 systems and let perf_database prefer the measured fp8_static row, or drop fp8_static support for ModelOpt FP8 checkpoints on those systems"
+  approved_by: tianhaox
+  expires: 2026-12-31
+
 # --- PR #1486: Blackwell mHC fused_hc serving-dispatch parity -------------
 # Owner decision (tianhaox, 2026-08-19/20): the fused_hc collection on
 # SM100/103 is REJECTED for now. Default rc23 Blackwell mHC predictions

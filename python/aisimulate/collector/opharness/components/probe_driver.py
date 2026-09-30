@@ -96,7 +96,10 @@ def render_golden(run: dict) -> Path | None:
     gdir.mkdir(parents=True)
     env = dict(os.environ)
     env["PYTHONPATH"] = AIS_SRC
-    r = subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=900)
+    # cwd = the WORKSPACE: aic-core's safe_mkdir accepts paths under cwd / $HOME / tmp only, so with the
+    # harness checkout as cwd a workspace on another mount (B200 /raid, B300 NFS) rendered 124/124 as
+    # silent 'generator rejects' (B300 2026-09-20, B200 2026-09-29 handoffs).
+    r = subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=900, cwd=str(ROOT))
     stamp.write_text(cmd_txt + f"\n# generator={gen_commit}\n# exit={r.returncode}\n")
     (gdir / "render.log").write_text((r.stdout or "")[-8000:] + (r.stderr or "")[-8000:])
     if r.returncode != 0:
@@ -954,9 +957,15 @@ def build_records() -> None:
                                                         + (f.get("prefill_kernels") or []))
                                               if re.search(r"fmha|flash_?attn|flash_fwd|"
                                                            r"mla_|attention_kernel|paged_kv|"
-                                                           r"sparse_attn_fwd|mqa_logits|unified_attention",
+                                                           r"sparse_attn_fwd|mqa_logits|unified_attention|"
+                                                           # vllm TRITON_MLA decode (the only MLA decode
+                                                           # backend on sm120): _fwd_grouped_kernel_stage1
+                                                           r"^_fwd_grouped_kernel_stage1",
                                                            k["kernel"], re.I)
-                                              and "norm" not in k["kernel"].lower()), None)),
+                                              and "norm" not in k["kernel"].lower()
+                                              # kv-cache insert glue matched `mla_` and posed as the
+                                              # attention identity on sm120 TRITON_MLA records
+                                              and "concat_and_cache" not in k["kernel"]), None)),
                     # hybrids (GDN / KDA / mamba + attention): the linear-attention
                     # kernel family is part of the identity too; recorded separately
                     # so the attention column can show "fa3 + chunk_gated_delta_rule"
@@ -1018,6 +1027,17 @@ def _fail_cause(note: str) -> str:
         ("NotImplementedError", "tied-embedding quant gap"),
         ("Only gated SiLU", "NVFP4 x gelu-MoE: no kernel path"),
         ("pre-blackwell|Arch unsupported|use Blackwell|TllmGenFmhaRunner|Minimum ca|COMPRESS pool|No supported MoE GEMM tactic|mxfp8 is not supported|NVFP4 quantization with the selected", "platform floor (needs Blackwell)"),
+        # sm120 (consumer Blackwell, 101376 B opt-in smem/block): vllm 0.30 TRITON_MLA
+        # fp8-KV decode asks for 102400 B -> every MLA checkpoint that resolves fp8 KV
+        # (probe --kv-cache-dtype fp8, or NVFP4 artifacts whose hf_quant pins fp8 KV)
+        # dies at CUDA-graph capture; sparse-MLA sm120 decode has an enumerated shape table
+        ("out of resource: shared memory", "platform limit (sm120 smem: TRITON_MLA fp8-KV decode)"),
+        ("SM120 sparse-MLA has no decode kernel", "platform gap (sm120 sparse-MLA decode shape table)"),
+        ("requires an fp8 prefill query", "config gap (needs --attention-config use_prefill_query_quantization)"),
+        # single-kind dummy cuts forced by capacity (72GB box): a cut with no attention
+        # layer, or one that stripped every quantized layer, is a dummy artifact
+        ("no attention-ish module classes|MIXED_PRECISION quant_algo requires a non-empty",
+         "capacity (single-kind cut is not a faithful identity probe)"),
         ("Mismatched Tensor", "flake (flashinfer; env workaround exists)"),
         ("sparse forward|KVCacheManagerV2", "rc23 M3-sparse not wired"),
         ("frame #|No valid attention backend", "ckpt-forced fp8-KV"),
@@ -1051,8 +1071,14 @@ def build_matrix(targets: dict) -> None:
                 # 18-cell matrix stamped with another backend's version)
                 plans.setdefault(be, []).append(pf.name)
     missing = sorted(set(pins) - set(plans))
-    if missing:
+    if missing and not plans:
         raise SystemExit(f"--matrix: no plan file matches the pinned version for {missing} — emit queues first")
+    if missing:
+        # a single-backend campaign (an sm120 box probing only vllm) is a legal
+        # workspace: backends without a plan get no matrix file, not an abort
+        # (found 2026-09-30 on the first non-sm90 campaign; the H20 workspace
+        # always carried all three backends so the abort never fired)
+        print(f"--matrix: no plan for {missing} at the pinned version — skipped (matrix only for {sorted(plans)})")
     # pass+custom means PER-CHECKPOINT facts-derived args (backend-level
     # generator-sets like --benchmark-mode apply to every run and are not
     # a customization of this model)
@@ -1169,7 +1195,12 @@ def build_matrix(targets: dict) -> None:
     # bumps — git diff of a re-run IS the upgrade audit. Future SMs are
     # sibling dirs (results/sm100/...).
     sm = (targets.get("platform") or {}).get("name", "sm90").split("_")[-1]
-    outdir = ROOT / "results" / sm
+    # results/ is the HARNESS's committed output (README layout; workflow_check
+    # reads results/<sm>/ from the checkout) — not workspace data. Writing under
+    # ROOT only coincided with the checkout when the two were the same dir
+    # (found 2026-09-30: an external workspace produced a matrix workflow_check
+    # could not see).
+    outdir = _HERE.parent / "results" / sm
     outdir.mkdir(parents=True, exist_ok=True)
     for be in plans:
         rows = {repo: cells[be] for repo, cells in sorted(out.items()) if be in cells}

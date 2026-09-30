@@ -10,7 +10,7 @@
  "phase": null,
  "phase_scoped": false,
  "kv_dtype": "fp8",
- "op_hint": "gemm|linear|proj|nvjet|cublas|cutlass|skinny",
+ "op_hint": "gemm|linear|proj|nvjet|gemvx|cublas|cutlass|skinny",
  "capture_file": "facts/pathdiff/opcov_gemm_fp8block_m1@0.30.0.json",
  "capture_sha256": "7081bef5d20a1a62",
  "capture_env": null,

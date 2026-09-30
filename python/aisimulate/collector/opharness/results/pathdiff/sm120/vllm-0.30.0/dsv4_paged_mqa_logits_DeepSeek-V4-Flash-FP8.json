@@ -1,0 +1,52 @@
+{
+ "verdict": "aligned",
+ "repo": "sgl-project/DeepSeek-V4-Flash-FP8",
+ "framework": "vllm",
+ "version": "0.30.0",
+ "gate_name": "dsv4_paged_mqa_logits_DeepSeek-V4-Flash-FP8",
+ "target_roles": [
+  "attention",
+  "dsa_indexer"
+ ],
+ "phase": null,
+ "phase_scoped": false,
+ "kv_dtype": "fp8",
+ "op_hint": "dsv4|dsa|csa|hca|compress|indexer|mqa|sparse|flash|attn|mla|topk|gemm|deepgemm|quant",
+ "capture_file": "facts/pathdiff/opcov_dsv4_paged_mqa_logits@0.30.0.json",
+ "capture_sha256": "a54de057fcdfe017",
+ "capture_env": null,
+ "capture_run_error": null,
+ "serving_record": {
+  "id": "a2ce5a1afc2a",
+  "tp": 1,
+  "kv_cache_dtype": "fp8",
+  "isl": 4096,
+  "prefix_caching": false,
+  "raw_file": null,
+  "candidates": 1,
+  "exec_fingerprint": "f5cf586b6577",
+  "evidence_status": "current"
+ },
+ "collector_backends": [
+  "dsa_nsa"
+ ],
+ "serving_backends": [
+  "deepgemm",
+  "dsa_nsa",
+  "flashinfer",
+  "sgl_kernel",
+  "tilelang",
+  "torch",
+  "vllm_kernel"
+ ],
+ "missing_roles": [],
+ "aux_collector_only_roles": [],
+ "role_counts": {
+  "dsa_indexer": {
+   "collector": 2,
+   "serving": 7,
+   "matched": 2
+  }
+ },
+ "evidence": "archive/evidence/pathdiff/<framework-version>/<gate>.json in the probe workspace (full kernel lists)"
+}

@@ -17,3 +17,18 @@ bundles:
     rendered_engine_configs: 804
     full_reports: 53
     captures: 62
+- campaign: 2026-09-30_sm120_vllm-0.30.0
+  created: '2026-09-30T13:08:31'
+  harness_commit: 629a74de
+  bundle: 2026-09-30_sm120_vllm-0.30.0.708567c23dbe.tar.gz
+  sha256: 708567c23dbe907692c1607ea2f480c9d8650eb032fceaa00cc94a2e0fb48371
+  size_bytes: 2610418
+  location: /root/tianhao/debug/opharness_ws/archive/bundles (RTX PRO 5000 probe box)
+  counts:
+    records: 1
+    plans: 3
+    raw: 240
+    fingerprints: 240
+    rendered_engine_configs: 240
+    full_reports: 36
+    captures: 36

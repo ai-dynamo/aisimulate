@@ -200,22 +200,31 @@ def pred_customizations_retested(p):
     return True, f"all {len(custom)} customizations retested"
 
 
-def declared_gates(fw: str, version: str) -> set:
+_GATE_LINE = re.compile(r'^(?:(?:SERVING_RAW|FLOOR_SM|FLOOR_NOTE)=(?:"[^"]*"|\S+)\s+)*run\s+(\S+)\s+(\S+)')
+
+
+def declared_gates(fw: str, version: str, sm: str | None = None) -> set:
     """Gate names the verdict scripts (components/captures/verdicts_*.sh)
     declare for this (fw, version): every `run <capture> <gate> ...` line whose
     script grades --framework fw --version version and whose output dir is the
-    gate dir (explained deviations write elsewhere and are not gates)."""
+    gate dir (explained deviations write elsewhere and are not gates). Leading
+    SERVING_RAW= / FLOOR_SM= / FLOOR_NOTE= assignments still declare a gate;
+    with ``sm`` given, gates declared as a platform floor FOR THAT SM are left
+    out (they have no serving instance there by framework fact and carry a
+    platform-floor verdict file instead) — coverage checks pass sm=None."""
     gates = set()
     for sh in sorted((HARNESS / "components" / "captures").glob("verdicts_*.sh")):
         text = sh.read_text()
         if f"--framework {fw} " not in text or f"--version {version} " not in text:
             continue
         for line in text.splitlines():
-            # a leading SERVING_RAW=<raw> (gate graded against a dedicated serving raw) still declares a gate;
-            # OUT=$OUT_EXPLAINED lines are explained deviations, not gates
-            m = re.match(r"^(?:SERVING_RAW=\S+\s+)?run\s+(\S+)\s+(\S+)", line)
-            if m:
-                gates.add(m.group(2))
+            m = _GATE_LINE.match(line)
+            if not m:
+                continue
+            floor = re.match(r"^FLOOR_SM=(\S+)", line)
+            if sm is not None and floor and floor.group(1) == sm:
+                continue
+            gates.add(m.group(2))
     return gates
 
 
@@ -298,7 +307,7 @@ def pred_path_verdicts_aligned(p):
     do not count; a missing gate, or a verdict for another (fw, version), is
     incomplete (review 2026-09-25: one identity-free file used to pass)."""
     sm = p.get("sm", "sm90")
-    expected = declared_gates(p["fw"], p["version"])
+    expected = declared_gates(p["fw"], p["version"], sm)
     if not expected:
         return False, f"no gates declared for {p['fw']} {p['version']} in components/captures/verdicts_*.sh"
     vd = HARNESS / "results" / "pathdiff" / sm / f"{p['fw']}-{p['version']}"

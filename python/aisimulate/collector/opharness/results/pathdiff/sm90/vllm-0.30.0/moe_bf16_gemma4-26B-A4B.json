@@ -10,21 +10,21 @@
  ],
  "phase": null,
  "phase_scoped": false,
- "kv_dtype": null,
+ "kv_dtype": "auto",
  "op_hint": "moe|expert|grouped|fused_moe|deepgemm|topk|marlin|routing",
  "capture_file": "facts/pathdiff/opcov_moe_bf16_gemma4@0.30.0.json",
  "capture_sha256": "fda3adfd8996c83b",
  "capture_env": null,
  "capture_run_error": null,
  "serving_record": {
-  "id": "e21ef89970e6",
+  "id": "499100a3a6aa",
   "tp": 1,
-  "kv_cache_dtype": "fp8",
+  "kv_cache_dtype": "auto",
   "isl": 4096,
   "prefix_caching": false,
   "raw_file": null,
-  "candidates": 2,
-  "exec_fingerprint": "b0f31d17ad01",
+  "candidates": 1,
+  "exec_fingerprint": "09c3195fc6b1",
   "evidence_status": "current"
  },
  "collector_backends": [
@@ -34,8 +34,8 @@
  ],
  "serving_backends": [
   "cublas",
+  "fa3",
   "torch",
-  "triton",
   "triton_fused_moe",
   "vllm_kernel"
  ],

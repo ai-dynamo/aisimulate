@@ -1,0 +1,47 @@
+{
+ "verdict": "aligned",
+ "repo": "meta-llama/Meta-Llama-3.1-8B",
+ "framework": "vllm",
+ "version": "0.30.0",
+ "gate_name": "attn_ctx_Llama-3.1-8B",
+ "target_roles": [
+  "attention",
+  "dsa_indexer"
+ ],
+ "phase": "prefill",
+ "phase_scoped": true,
+ "kv_dtype": "auto",
+ "op_hint": "attn|attention|flash|fwd|unified",
+ "capture_file": "facts/pathdiff/opcov_attn_ctx@0.30.0.json",
+ "capture_sha256": "7b9172e281d4f83a",
+ "capture_env": null,
+ "capture_run_error": null,
+ "serving_record": {
+  "id": "462e172d2667",
+  "tp": 1,
+  "kv_cache_dtype": "auto",
+  "isl": 4096,
+  "prefix_caching": false,
+  "raw_file": null,
+  "candidates": 1,
+  "exec_fingerprint": "812a5cbc8b34",
+  "evidence_status": "current"
+ },
+ "collector_backends": [
+  "fa2"
+ ],
+ "serving_backends": [
+  "fa2",
+  "torch"
+ ],
+ "missing_roles": [],
+ "aux_collector_only_roles": [],
+ "role_counts": {
+  "attention": {
+   "collector": 1,
+   "serving": 1,
+   "matched": 1
+  }
+ },
+ "evidence": "archive/evidence/pathdiff/<framework-version>/<gate>.json in the probe workspace (full kernel lists)"
+}

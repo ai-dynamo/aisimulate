@@ -10,7 +10,7 @@
  ],
  "phase": "prefill",
  "phase_scoped": true,
- "kv_dtype": null,
+ "kv_dtype": "auto",
  "op_hint": "attn|attention|flash|fwd|unified",
  "capture_file": "facts/pathdiff/opcov_attn_ctx@0.30.0.json",
  "capture_sha256": "743d786779443ae6",

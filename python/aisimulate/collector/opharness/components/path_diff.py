@@ -371,6 +371,10 @@ def diff(capture_file: str, repo: str, framework: str, version: str,
     def _quality(r):
         rt = r["runtime"]
         return (rt.get("prefix_caching") is False,
+                # no --kv-dtype asked: the RENDERED configuration (kv None/auto) is the serving truth;
+                # a variant record (probe --kv-cache-dtype fp8) only wins when asked for. Found on the
+                # B200 and sm120 campaigns (2026-09-29): the bf16 attention gate graded the fp8-KV Llama record.
+                kv_dtype is not None or rt.get("kv_cache_dtype") in (None, "auto"),
                 # framework-mode probe (CUDA graphs / compile = serving truth,
                 # owner decision 2026-09-24) beats an eager or pre-flag record
                 rt.get("probe_eager") is False,

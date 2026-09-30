@@ -1,0 +1,51 @@
+{
+ "verdict": "aligned",
+ "repo": "deepseek-ai/DeepSeek-V3.2",
+ "framework": "vllm",
+ "version": "0.30.0",
+ "gate_name": "gemm_fp8block_DeepSeek-V3.2",
+ "target_roles": [
+  "gemm"
+ ],
+ "phase": null,
+ "phase_scoped": false,
+ "kv_dtype": "fp8",
+ "op_hint": "gemm|linear|proj|nvjet|gemvx|cublas|deepgemm|scaled_mm|quant|cutlass",
+ "capture_file": "facts/pathdiff/opcov_gemm_fp8block@0.30.0.json",
+ "capture_sha256": "fe17fcf6020fe3e5",
+ "capture_env": null,
+ "capture_run_error": null,
+ "serving_record": {
+  "id": "04cea4da0eff",
+  "tp": 1,
+  "kv_cache_dtype": "fp8",
+  "isl": 4096,
+  "prefix_caching": false,
+  "raw_file": null,
+  "candidates": 1,
+  "exec_fingerprint": "caa3c868dc24",
+  "evidence_status": "current"
+ },
+ "collector_backends": [
+  "deepgemm"
+ ],
+ "serving_backends": [
+  "cublas",
+  "deepgemm",
+  "dsa_nsa",
+  "flashinfer",
+  "sgl_kernel",
+  "torch",
+  "vllm_kernel"
+ ],
+ "missing_roles": [],
+ "aux_collector_only_roles": [],
+ "role_counts": {
+  "gemm": {
+   "collector": 2,
+   "serving": 6,
+   "matched": 2
+  }
+ },
+ "evidence": "archive/evidence/pathdiff/<framework-version>/<gate>.json in the probe workspace (full kernel lists)"
+}

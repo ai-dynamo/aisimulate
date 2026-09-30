@@ -10,7 +10,7 @@
  "phase": null,
  "phase_scoped": false,
  "kv_dtype": "auto",
- "op_hint": "mla|attn|flash|bmm|proj|indexer|rope|concat|gemm|deepgemm|quant",
+ "op_hint": "mla|attn|flash|bmm|proj|indexer|rope|concat|gemm|gemvx|cutlass|deepgemm|quant",
  "capture_file": "facts/pathdiff/opcov_mla_bmm@0.30.0.json",
  "capture_sha256": "fbc7f40434239318",
  "capture_env": null,

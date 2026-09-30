@@ -10,7 +10,7 @@
  ],
  "phase": "decode",
  "phase_scoped": true,
- "kv_dtype": null,
+ "kv_dtype": "auto",
  "op_hint": "attn|attention|flash|fwd|unified",
  "capture_file": "facts/pathdiff/opcov_attn_gen@0.30.0.json",
  "capture_sha256": "34592dc900f461ee",
