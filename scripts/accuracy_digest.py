@@ -182,16 +182,17 @@ def compare(current, previous):
 def reduce_e2e(groups):
     points = [point for group in groups for point in group["points"].values()]
     success = [point for point in points if point is not None]
-    pair = " / ".join(f"{mean(p[i] for p in success):.2f}" for i in (0, 1)) if success else "N/A"
+    pair = "/".join(f"{mean(p[i] for p in success):.2f}%" for i in (0, 1)) if success else "N/A"
     return pair, f"{len(success)}/{len(points)}"
 
 
-def reduce_fpm(groups):
+def reduce_fpm(groups, *, coverage=True):
     metrics = [group["metric"] for group in groups]
     count = sum(m["predicted_count"] for m in metrics)
     measured = sum(m["measured_count"] for m in metrics)
     mape = sum((m["mape_pct"] or 0) * m["predicted_count"] for m in metrics) / count if count else None
-    return f"{mape:.2f}% ({count}/{measured})" if mape is not None else f"N/A (0/{measured})"
+    value = f"{mape:.2f}%" if mape is not None else "N/A"
+    return f"{value} ({count}/{measured})" if coverage else value
 
 
 def table(headers, rows):
@@ -215,7 +216,7 @@ def escape(text):
 def messages(day, pipelines, snapshots, alerts, notes, recovered=()):
     links = " · ".join(f"<{p['url']}|{kind.upper()} run>" for kind, p in pipelines.items())
     statuses = " · ".join(f"{kind.upper()}: {p['status']}" for kind, p in pipelines.items())
-    lines = [f"*AISimulate Accuracy Daily · {day} (Los Angeles)*", statuses, links]
+    lines = [f"*Accuracy Daily · {day} (LA)*", statuses]
     rows = []
     for branch, snapshot in sorted(snapshots.get("e2e", {}).items()):
         groups = list(snapshot["groups"].values())
@@ -224,7 +225,7 @@ def messages(day, pipelines, snapshots, alerts, notes, recovered=()):
         row.extend(reduce_e2e([g for g in groups if g["framework"] == f])[0] for f in ("vllm", "sglang", "trtllm"))
         rows.append([*row, coverage])
     lines += [
-        "*E2E · TPOT / TTFT MAPE (%)*",
+        "*E2E · TPOT/TTFT MAPE*",
         escape(table(["Branch", "Overall", "vLLM", "SGLang", "TRT-LLM", "Coverage"], rows))
         if rows
         else "No qualified E2E results.",
@@ -234,26 +235,25 @@ def messages(day, pipelines, snapshots, alerts, notes, recovered=()):
         rows.append(
             [
                 branch,
-                *[reduce_fpm([g for g in snapshot["groups"].values() if g["method"] == m]) for m in METHODS],
+                *[
+                    reduce_fpm([g for g in snapshot["groups"].values() if g["method"] == m], coverage=False)
+                    for m in METHODS
+                ],
             ]
         )
     lines += [
-        "*FPM · MAPE % (predicted/measured)*",
-        escape(table(["Branch", "KV warmup on", "KV warmup off", "Online regression"], rows))
-        if rows
-        else "No qualified FPM results.",
+        "*FPM · MAPE*",
+        escape(table(["Branch", "KV on", "KV off", "Regression"], rows)) if rows else "No qualified FPM results.",
     ]
-    lines.append(f"*Attention: {len(alerts)} alert(s)*")
-    lines.extend(escape("• " + alert) for alert in alerts[:8])
-    if len(alerts) > 8:
-        lines.append(f"{len(alerts) - 8} additional alerts in thread.")
-    lines.extend(escape("• " + note) for note in notes[:8])
+    lines.append(f"*{len(alerts)} alert(s)*" + (f" · {len(notes)} comparison note(s) in thread" if notes else ""))
+    lines.extend(escape("• " + (alert if len(alert) <= 240 else alert[:237] + "...")) for alert in alerts[:3])
+    if len(alerts) > 3:
+        lines.append(f"{len(alerts) - 3} additional alerts in thread.")
     lines.extend(escape("• Recovered: " + item) for item in recovered)
-    lines += [
-        "<https://ai-dynamo.org/aisimulate/e2e-accuracy/|E2E Overview> · "
-        "<https://ai-dynamo.org/aisimulate/fpm-accuracy/|FPM Overview>",
-        "Coverage counts eligible points. Pages may still show an older snapshot; run artifacts are authoritative.",
-    ]
+    lines.append(
+        links + " · <https://ai-dynamo.org/aisimulate/e2e-accuracy/|E2E overview>"
+        " · <https://ai-dynamo.org/aisimulate/fpm-accuracy/|FPM overview>"
+    )
     replies = []
     for branch, snapshot in sorted(snapshots.get("e2e", {}).items()):
         for dimension in ("model", "gpu"):
@@ -267,11 +267,26 @@ def messages(day, pipelines, snapshots, alerts, notes, recovered=()):
                     f"*E2E · {escape(branch)} · per {dimension}*\n<{snapshot['url']}|Pipeline>\n"
                     + escape(
                         table(
-                            [dimension.title(), "TPOT / TTFT MAPE (%)", "Coverage"],
+                            [dimension.title(), "TPOT/TTFT MAPE", "Coverage"],
                             entries[offset : offset + 12],
                         )
                     )
                 )
+    coverage_rows = []
+    for branch, snapshot in sorted(snapshots.get("fpm", {}).items()):
+        cells = []
+        for method in METHODS:
+            metrics = [g["metric"] for g in snapshot["groups"].values() if g["method"] == method]
+            cells.append(f"{sum(m['predicted_count'] for m in metrics)}/{sum(m['measured_count'] for m in metrics)}")
+        coverage_rows.append([branch, *cells])
+    if coverage_rows:
+        replies.append(
+            "*FPM coverage · predicted/eligible*\n"
+            + links
+            + "\n"
+            + escape(table(["Branch", "KV on", "KV off", "Regression"], coverage_rows))
+            + "\nCoverage counts eligible points. Run artifacts are authoritative; Pages may lag."
+        )
     for offset in range(0, len(alerts) + len(notes), 8):
         replies.append(
             "*Comparison details*\n"
@@ -279,7 +294,7 @@ def messages(day, pipelines, snapshots, alerts, notes, recovered=()):
             + "\n"
             + "\n".join(escape("• " + line) for line in (alerts + notes)[offset : offset + 8])
         )
-    root = "\n\n".join(lines)
+    root = "\n".join(lines)
     # Slack hard limit is 40k; refuse instead of silently losing branches or evidence.
     if any(len(message) > 35000 for message in [root, *replies]):
         raise ValueError("Slack message too large; reduce the table chunk size")

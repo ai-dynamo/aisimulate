@@ -33,12 +33,16 @@ sent. The bot does not accept commands or start evaluations.
 ## Report contents and comparison
 
 The E2E table has six columns: Branch, Overall, vLLM, SGLang, TRT-LLM, Coverage.
-Each accuracy cell is **TPOT / TTFT MAPE (%)** for AISimulate, not legacy AIC.
+Each accuracy cell is **TPOT%/TTFT% MAPE** (for example `24.32%/43.67%`)
+for AISimulate, not legacy AIC.
 Thread tables independently group by model and by GPU, within each branch,
 combining frameworks. They average successful point errors directly; they do
 not average already-aggregated MAPEs. Coverage is predicted / eligible points,
 not all original source measurements. FPM shows KV-warmup on/off and online
-regression MAPE, weighted by successful prediction counts, with coverage.
+regression MAPE, weighted by successful prediction counts. FPM coverage is in a
+thread reply to keep the main table narrow. The parent uses single-line spacing,
+shows at most three short alert summaries, and puts comparison notes and full
+alert details in the thread. Every numerical MAPE value includes `%`.
 
 For each branch:
 
