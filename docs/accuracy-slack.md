@@ -6,7 +6,9 @@ E2E per-model and per-GPU tables are included in the main message. No mentions a
 sent. The bot does not accept commands or start evaluations.
 
 The message title is `:rainbow: *Accuracy Daily · YYYY-MM-DD*`, with a rainbow
-emoji and bold text, without a timezone suffix.
+emoji and bold text, without a timezone suffix. Immediately below it, a quote
+block groups the alert count, comparison-note count, run links with duration and
+attempt, overview links, and any short alert/recovery summaries.
 
 ## Delivery policy
 

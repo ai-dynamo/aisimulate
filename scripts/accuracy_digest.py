@@ -214,9 +214,25 @@ def escape(text):
 
 
 def messages(day, pipelines, snapshots, alerts, notes, recovered=()):
-    links = " · ".join(f"<{p['url']}|{kind.upper()} run>" for kind, p in pipelines.items())
-    statuses = " · ".join(f"{kind.upper()}: {p['status']}" for kind, p in pipelines.items())
-    lines = [f":rainbow: *Accuracy Daily · {day}*", statuses]
+    run_links = []
+    for kind, pipeline in pipelines.items():
+        status = pipeline["status"]
+        detail = status.removeprefix("success").strip() if status.startswith("success") else f"({status})"
+        run_links.append(f"<{pipeline['url']}|{kind.upper()} run>{escape(detail)}")
+    links = " · ".join(run_links)
+    summary = f"> *:alert: {len(alerts)} alert(s)*"
+    if notes:
+        summary += f" · {len(notes)} comparison note(s) in thread"
+    lines = [
+        f":rainbow: *Accuracy Daily · {day}*",
+        summary,
+        "> " + links + " · <https://ai-dynamo.org/aisimulate/e2e-accuracy/|E2E overview>"
+        " · <https://ai-dynamo.org/aisimulate/fpm-accuracy/|FPM overview>",
+    ]
+    lines.extend("> " + escape("• " + (alert if len(alert) <= 240 else alert[:237] + "...")) for alert in alerts[:3])
+    if len(alerts) > 3:
+        lines.append(f"> {len(alerts) - 3} additional alerts in thread.")
+    lines.extend("> " + escape("• Recovered: " + item) for item in recovered)
     rows = []
     for branch, snapshot in sorted(snapshots.get("e2e", {}).items()):
         groups = list(snapshot["groups"].values())
@@ -257,15 +273,6 @@ def messages(day, pipelines, snapshots, alerts, notes, recovered=()):
         "*FPM · MAPE*",
         escape(table(["Branch", "KV on", "KV off", "Regression"], rows)) if rows else "No qualified FPM results.",
     ]
-    lines.append(f"*{len(alerts)} alert(s)*" + (f" · {len(notes)} comparison note(s) in thread" if notes else ""))
-    lines.extend(escape("• " + (alert if len(alert) <= 240 else alert[:237] + "...")) for alert in alerts[:3])
-    if len(alerts) > 3:
-        lines.append(f"{len(alerts) - 3} additional alerts in thread.")
-    lines.extend(escape("• Recovered: " + item) for item in recovered)
-    lines.append(
-        links + " · <https://ai-dynamo.org/aisimulate/e2e-accuracy/|E2E overview>"
-        " · <https://ai-dynamo.org/aisimulate/fpm-accuracy/|FPM overview>"
-    )
     replies = []
     coverage_rows = []
     for branch, snapshot in sorted(snapshots.get("fpm", {}).items()):
