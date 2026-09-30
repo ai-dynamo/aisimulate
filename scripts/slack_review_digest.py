@@ -68,10 +68,9 @@ def messages(repository, open_prs, recent_prs, now):
     opened = sum(today(pr["created_at"]) for pr in recent_prs)
     lines = [
         f"*AISimulate PR digest — {local:%Y-%m-%d, %I:%M %p %Z}*",
-        f":merged-2472: Merged today: *{merged}*",
-        f":eyes: New PRs opened today: *{opened}*",
-        "",
-        f":pr-opened: Open and ready for review: *{len(ready)}*",
+        f":merged-2472: PRs merged today: *{merged}*",
+        f":pr-opened: PRs opened today: *{opened}*",
+        f":reminder-alarm: PRs waiting for review: *{len(ready)}*",
         "",
         f"*Open non-draft PRs older than 5 days — {len(stale)}*",
     ]

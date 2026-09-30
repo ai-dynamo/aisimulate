@@ -35,9 +35,9 @@ class DigestTests(unittest.TestCase):
             self.pr(4, age=10, draft=True),
         ]
         text = "".join(messages("ai-dynamo/aisimulate", opened, [], self.now))
-        self.assertIn(":pr-opened: Open and ready for review: *3*", text)
-        self.assertLess(text.index(":merged-2472:"), text.index(":eyes:"))
-        self.assertLess(text.index(":eyes:"), text.index(":pr-opened:"))
+        self.assertIn(":reminder-alarm: PRs waiting for review: *3*", text)
+        self.assertLess(text.index(":merged-2472:"), text.index(":pr-opened:"))
+        self.assertLess(text.index(":pr-opened:"), text.index(":reminder-alarm:"))
         self.assertIn("older than 5 days — 2", text)
         self.assertLess(text.index("|#3>"), text.index("|#2>"))
         self.assertNotIn("|#1>", text)
@@ -56,8 +56,8 @@ class DigestTests(unittest.TestCase):
             self.pr(created_at="2026-09-30T01:00:00Z"),
         ]
         text = "".join(messages("ai-dynamo/aisimulate", [], recent, self.now))
-        self.assertIn(":merged-2472: Merged today: *1*", text)
-        self.assertIn(":eyes: New PRs opened today: *2*", text)
+        self.assertIn(":merged-2472: PRs merged today: *1*", text)
+        self.assertIn(":pr-opened: PRs opened today: *2*", text)
         self.assertIn("2026-09-29, 05:07 PM PDT", text)
 
     def test_dst_day_uses_midnight_offset(self):
@@ -68,7 +68,7 @@ class DigestTests(unittest.TestCase):
         )
         recent = [self.pr(created_at="2026-11-01T07:30:00Z")]
         text = "".join(messages("ai-dynamo/aisimulate", [], recent, now))
-        self.assertIn(":eyes: New PRs opened today: *1*", text)
+        self.assertIn(":pr-opened: PRs opened today: *1*", text)
         self.assertIn("05:07 PM PST", text)
 
     def test_large_queue_retains_all_prs(self):

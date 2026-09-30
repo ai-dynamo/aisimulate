@@ -189,9 +189,9 @@ The `Slack review digest` workflow runs every day at 17:07
   its link, title, author, and age. Age measures creation time, not inactivity
   or time since leaving draft. Large lists span multiple Slack messages.
 
-The summary shows merged PRs (`:merged-2472:`), new PRs (`:eyes:`), then
-open PRs (`:pr-opened:`). The destination workspace must have the custom
-`merged-2472` and `pr-opened` emoji for those names to render as icons.
+The summary shows merged PRs (`:merged-2472:`), new PRs (`:pr-opened:`), then
+open non-draft PRs labeled "PRs waiting for review" (`:reminder-alarm:`). The destination workspace must have the custom
+`merged-2472`, `pr-opened`, and `reminder-alarm` emoji for those names to render as icons.
 
 To enable delivery:
 
