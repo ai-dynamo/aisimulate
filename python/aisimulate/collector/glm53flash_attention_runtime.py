@@ -18,8 +18,9 @@ import os
 from pathlib import Path
 
 from collector.glm53flash_attention_contract import (
-    MEASUREMENT_SCOPE,
     TIMING_METHODS,
+    attention_body,
+    geometry_key,
     indexer_regime,
     sha256_json,
 )
@@ -93,12 +94,11 @@ class RawWriter:
         phase = target["phase"]
         timing_method, used_graph = TIMING_METHODS[phase]
         key = {
-            **self.key_base,
-            "phase": phase,
-            "indexer_regime": indexer_regime(phase, target["prefix"], target["x"], self.key_base["index_topk"]),
+            "geometry": geometry_key(attention_body(self.key_base, phase == "context")),
             "batch_size": target["batch_size"],
             "prefix": target["prefix"],
             "x": target["x"],
+            "indexer_regime": indexer_regime(phase, target["prefix"], target["x"], self.key_base["index_topk"]),
         }
         with self.path.open("a") as stream:
             for repetition, latency in enumerate(latencies):
@@ -113,11 +113,7 @@ class RawWriter:
                             "repetition": repetition - warmup,
                             "latency_ms": latency,
                             "key": key,
-                            "provenance": {
-                                **self.provenance,
-                                "measurement_scope": MEASUREMENT_SCOPE,
-                                "kv_seed_regime": "real_kv",
-                            },
+                            "provenance": self.provenance,
                             "kernel_source": kernel_source,
                             "timing_method": timing_method,
                             "used_cuda_graph": used_graph,

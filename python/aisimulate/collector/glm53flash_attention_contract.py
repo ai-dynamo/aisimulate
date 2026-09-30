@@ -9,6 +9,11 @@ everything that does not need a GPU: the physical key derived from the
 checkpoint configuration, the workload plan, raw-row validation, per-sample
 rank reduction and the strict Parquet writer that rejects duplicate keys and
 mixed provenance. See ``collector/README.glm53flash_attention.md``.
+
+The published table is the one consumed by the Rust reader
+``crates/core/src/perfmodel/perf_database/glm53flash.rs`` (DeepSeek-V4.1 module
+schema): ``geometry`` is the canonical sorted compact JSON of the model's
+``Glm53Attention`` operator body without ``name``/``measured``.
 """
 
 from __future__ import annotations
@@ -22,10 +27,10 @@ import statistics
 from collections import defaultdict
 from pathlib import Path
 
-BASENAME = "glm53flash_attention_module_perf.parquet"
-FAMILY_DIR = "glm53flash"
+BASENAME = "glm53_attention_module_perf.parquet"
+FAMILY_DIR = "glm53_attention"
 OP_NAME = "glm53flash_attention"
-MEASUREMENT_SCOPE = "attention_local_excluding_output_allreduce"
+MEASUREMENT_SCOPE = "local_compute"
 BACKENDS = ("vllm", "sglang")
 CHECKPOINTS = {
     # checkpoint_format -> (HF model id, immutable revision)
@@ -44,70 +49,47 @@ RUNTIME_IMAGES = {
     "sglang": "sha256:b0d8718a4424bb22e448e04407ab3ce5f7399a4c5fc702d6fbe36c3772ec8862",
 }
 PHASES = ("context", "generation")
-REGIMES = ("short", "pooled")
-GEOMETRY_FIELDS = (
-    "hidden_size",
-    "num_heads",
-    "head_dim",
-    "q_lora_rank",
-    "kv_lora_rank",
-    "value_head_dim",
-    "index_n_heads",
-    "index_head_dim",
-    "index_topk",
-    "index_pool",
-)
-KEY_COLUMNS = (
-    "backend",
-    "checkpoint_format",
-    "projection_quant_mode",
-    "kv_cache_dtype",
-    "tp_size",
-    *GEOMETRY_FIELDS,
-    "phase",
-    "indexer_regime",
+# Published columns, exactly the Rust reader's schema.
+COLUMNS = (
+    "component",
+    "geometry",
     "batch_size",
     "prefix",
     "x",
-)
-INTEGER_COLUMNS = (
-    "tp_size",
-    *GEOMETRY_FIELDS,
-    "batch_size",
-    "prefix",
-    "x",
-    "sample_count",
-    "layer_id",
-)
-FLOAT_COLUMNS = ("latency", "latency_min", "latency_max")
-BOOL_COLUMNS = ("used_cuda_graph",)
-STRING_COLUMNS = (
-    "backend",
-    "checkpoint_format",
-    "projection_quant_mode",
-    "kv_cache_dtype",
-    "phase",
-    "indexer_regime",
-    "framework_version",
+    "latency",
     "kernel_source",
     "measurement_scope",
-    "kv_seed_regime",
-    "timing_method",
     "source_sha256",
     "config_sha256",
-    "checkpoint_revision",
     "runtime_digest",
+    "used_cuda_graph",
+    "sample_count",
+    "kv_seed_regime",
+    "execution_profile",
 )
-COLUMNS = KEY_COLUMNS + tuple(
-    c for c in (*FLOAT_COLUMNS, *BOOL_COLUMNS, *INTEGER_COLUMNS, *STRING_COLUMNS) if c not in KEY_COLUMNS
+INTEGER_COLUMNS = ("batch_size", "prefix", "x", "sample_count")
+KEY_COLUMNS = ("geometry", "batch_size", "prefix", "x")
+BODY_FIELDS = (
+    "backend",
+    "checkpoint_format",
+    "conv_kernel",
+    "gate_lower_bound",
+    "head_dim",
+    "hidden_size",
+    "index_head_dim",
+    "index_n_heads",
+    "index_pool",
+    "index_topk",
+    "is_context",
+    "kv_cache_dtype",
+    "kv_lora_rank",
+    "layer_kind",
+    "num_heads",
+    "projection_quant_mode",
+    "q_lora_rank",
+    "tp_size",
+    "value_head_dim",
 )
-# Provenance that must be homogeneous inside one physical table. The table
-# lives in one <backend>/<version> directory, so backend/runtime/source are
-# global; the checkpoint config is homogeneous per checkpoint; the timing
-# method (eager vs framework-graph replay) is homogeneous per phase.
-TABLE_PROVENANCE = ("backend", "framework_version", "source_sha256", "runtime_digest", "layer_id")
-CHECKPOINT_PROVENANCE = ("config_sha256", "checkpoint_revision")
-PHASE_PROVENANCE = ("used_cuda_graph", "timing_method")
 TIMING_METHODS = {
     # Prefill runs eagerly in both pinned serving configurations: SGLang's
     # prefill graph backend is "disabled" and vLLM only captures <=64-token
@@ -205,7 +187,44 @@ def geometry(config: dict, backend: str, checkpoint_format: str, tp_size: int) -
         "index_head_dim": text["index_head_dim"],
         "index_topk": text["index_topk"],
         "index_pool": text["index_kpool"],
+        "conv_kernel": text["linear_attn_config"]["short_conv_kernel_size"],
+        "gate_lower_bound": float(text["linear_attn_config"]["gate_lower_bound"]),
     }
+
+
+def attention_body(flat: dict, is_context: bool) -> dict:
+    """The model's ``Glm53Attention`` body without ``name``/``measured``.
+
+    Matches PR #323 ``sdk/models/glm53flash.py`` ``attention()`` for a sparse
+    MLA layer (KDA-only fields carry the checkpoint's values), which is the
+    measured key of the Rust reader.
+    """
+    return {
+        "backend": flat["backend"],
+        "checkpoint_format": flat["checkpoint_format"],
+        "conv_kernel": flat["conv_kernel"],
+        "gate_lower_bound": flat["gate_lower_bound"],
+        "head_dim": flat["head_dim"],
+        "hidden_size": flat["hidden_size"],
+        "index_head_dim": flat["index_head_dim"],
+        "index_n_heads": flat["index_n_heads"],
+        "index_pool": flat["index_pool"],
+        "index_topk": flat["index_topk"],
+        "is_context": bool(is_context),
+        "kv_cache_dtype": flat["kv_cache_dtype"],
+        "kv_lora_rank": flat["kv_lora_rank"],
+        "layer_kind": "sparse_mla",
+        "num_heads": flat["num_heads"],
+        "projection_quant_mode": flat["projection_quant_mode"],
+        "q_lora_rank": flat["q_lora_rank"],
+        "tp_size": flat["tp_size"],
+        "value_head_dim": flat["value_head_dim"],
+    }
+
+
+def geometry_key(body: dict) -> str:
+    """serde_json of a sorted map: identical to the Rust ``geometry()``."""
+    return json.dumps(body, sort_keys=True, separators=(",", ":"))
 
 
 def indexer_regime(phase: str, prefix: int, x: int, index_topk: int) -> str:
@@ -328,109 +347,136 @@ def _is_uint32(value) -> bool:
     return not isinstance(value, bool) and isinstance(value, int) and 0 <= value <= 2**32 - 1
 
 
-def validate_row(row: dict) -> None:
-    """Reject a row the Rust reader would reject, before it reaches a table."""
-    missing = [c for c in COLUMNS if c not in row]
-    if missing:
-        raise ValueError(f"missing columns {missing}")
-    extra = sorted(set(row) - set(COLUMNS))
-    if extra:
-        raise ValueError(f"unknown columns {extra}")
+def validate_row(row: dict) -> dict:
+    """Reject a row the Rust reader would reject; return its parsed body."""
+    if tuple(row) != COLUMNS:
+        raise ValueError(f"row columns {tuple(row)} differ from the published schema {COLUMNS}")
     for key in INTEGER_COLUMNS:
         if not _is_uint32(row[key]):
             raise ValueError(f"{key} must be an exact uint32")
-    for key in ("tp_size", *GEOMETRY_FIELDS, "batch_size", "x", "sample_count"):
-        if row[key] == 0:
-            raise ValueError(f"{key} must be positive")
-    for key in FLOAT_COLUMNS:
-        if isinstance(row[key], bool) or not isinstance(row[key], float) or not math.isfinite(row[key]):
-            raise ValueError(f"{key} must be finite float milliseconds")
-    if not 0 < row["latency_min"] <= row["latency"] <= row["latency_max"]:
-        raise ValueError("latency must be a positive median inside its sample range")
+    if row["component"] != "attention":
+        raise ValueError("component must be attention")
+    body = json.loads(row["geometry"])
+    if geometry_key(body) != row["geometry"]:
+        raise ValueError("geometry must be canonical sorted compact JSON")
+    if set(body) != set(BODY_FIELDS) or body["layer_kind"] != "sparse_mla":
+        raise ValueError("geometry must be a sparse_mla Glm53Attention body without name/measured")
+    if body["backend"] not in BACKENDS or body["checkpoint_format"] not in CHECKPOINTS:
+        raise ValueError("unknown backend or checkpoint")
+    if body["projection_quant_mode"] != projection_quant_mode(body["backend"], body["checkpoint_format"]):
+        raise ValueError("projection precision contradicts the pinned framework model builder")
+    if body["kv_cache_dtype"] != "fp8" or body["tp_size"] * body["num_heads"] != 64:
+        raise ValueError("GLM attention rows require FP8 KV and TP-sharded 64 MLA heads")
+    if not row["batch_size"] or not row["x"] or not row["sample_count"]:
+        raise ValueError("empty measurement")
+    latency = row["latency"]
+    if isinstance(latency, bool) or not isinstance(latency, float) or not math.isfinite(latency) or latency <= 0:
+        raise ValueError("latency must be positive finite milliseconds")
     if not isinstance(row["used_cuda_graph"], bool):
         raise ValueError("used_cuda_graph must be boolean")
-    for key in STRING_COLUMNS:
-        if not isinstance(row[key], str) or not row[key]:
-            raise ValueError(f"{key} must be a nonempty string")
-    if row["backend"] not in BACKENDS or row["checkpoint_format"] not in CHECKPOINTS:
-        raise ValueError("unknown backend or checkpoint")
-    if row["projection_quant_mode"] != projection_quant_mode(row["backend"], row["checkpoint_format"]):
-        raise ValueError("projection precision contradicts the pinned framework model builder")
-    if row["kv_cache_dtype"] != "fp8":
-        raise ValueError("GLM attention rows require FP8 KV cache")
-    if row["phase"] not in PHASES:
-        raise ValueError("unknown phase")
-    if row["indexer_regime"] != indexer_regime(row["phase"], row["prefix"], row["x"], row["index_topk"]):
-        raise ValueError("indexer regime contradicts prefix/x/topk")
-    if row["tp_size"] * row["num_heads"] != 64:
-        raise ValueError("local heads must shard GLM-5.3-Flash's 64 MLA heads")
-    if row["framework_version"] != RUNTIME_VERSIONS[row["backend"]]:
-        raise ValueError("framework version is not the pinned runtime identity")
-    if row["runtime_digest"] != RUNTIME_IMAGES[row["backend"]]:
-        raise ValueError("runtime digest is not the pinned immutable image")
-    if row["checkpoint_revision"] != CHECKPOINTS[row["checkpoint_format"]][1]:
-        raise ValueError("checkpoint revision is not the pinned artifact")
+    phase = "context" if body["is_context"] else "generation"
+    if row["used_cuda_graph"] != TIMING_METHODS[phase][1]:
+        raise ValueError("CUDA graph use does not match the serving execution mode of this phase")
+    if not body["is_context"] and row["prefix"]:
+        raise ValueError("decode uses absolute sequence length x with prefix=0")
+    if row["measurement_scope"] != MEASUREMENT_SCOPE or not row["kernel_source"].strip():
+        raise ValueError("rows need a dispatch witness and local_compute scope (output all-reduce excluded)")
+    if row["kv_seed_regime"] != "real_kv" or row["execution_profile"] != "full":
+        raise ValueError("every GLM attention row uses real KV/IndexPool state and the full profile")
     for key in ("source_sha256", "config_sha256"):
         if not re.fullmatch(r"[0-9a-f]{64}", row[key]):
             raise ValueError(f"invalid {key}")
-    if row["measurement_scope"] != MEASUREMENT_SCOPE:
-        raise ValueError("rows must measure local attention excluding the output all-reduce")
-    if row["kv_seed_regime"] != "real_kv":
-        raise ValueError("every attention row requires real KV/IndexPool state")
-    if (row["timing_method"], row["used_cuda_graph"]) != TIMING_METHODS[row["phase"]]:
-        raise ValueError("timing method does not match the serving execution mode of this phase")
+    if row["runtime_digest"] != RUNTIME_IMAGES[body["backend"]]:
+        raise ValueError("runtime digest is not the pinned immutable image")
+    return body
 
 
 def physical_key(row: dict) -> tuple:
     return tuple(row[c] for c in KEY_COLUMNS)
 
 
-def aggregate_rank_samples(records: list[dict], tp_size: int) -> list[dict]:
+def aggregate_rank_samples(records: list[dict], tp_size: int) -> tuple[list[dict], list[dict]]:
     """Median over repetitions of the per-repetition maximum across TP ranks.
 
     Each raw record is one rank's timing of one repetition of one target. A
     target is admitted only when every rank reported the same repetition set
     with identical invocation identity; duplicate ranks/repetitions fail.
+    Returns the published rows and adjacent per-row evidence.
     """
     groups = defaultdict(list)
     for record in records:
         groups[record["target_id"]].append(record)
-    rows = []
-    for target_id, items in sorted(groups.items()):
+    rows, evidence = [], []
+    for target, items in sorted(groups.items()):
         identity_fields = ("key", "provenance", "kernel_source", "timing_method", "used_cuda_graph")
         identities = {canonical_json({k: item[k] for k in identity_fields}) for item in items}
         if len(identities) != 1:
-            raise ValueError(f"target {target_id} mixes invocation identities across ranks")
+            raise ValueError(f"target {target} mixes invocation identities across ranks")
         samples: dict[int, dict[int, float]] = defaultdict(dict)
         for item in items:
             rank, repetition = item["tp_rank"], item["repetition"]
             latency = item["latency_ms"]
             if not isinstance(latency, float) or not math.isfinite(latency) or latency <= 0:
-                raise ValueError(f"target {target_id} has an invalid latency")
+                raise ValueError(f"target {target} has an invalid latency")
             if rank in samples[repetition]:
-                raise ValueError(f"target {target_id} repeats rank {rank} repetition {repetition}")
+                raise ValueError(f"target {target} repeats rank {rank} repetition {repetition}")
             samples[repetition][rank] = latency
         if any(set(ranks) != set(range(tp_size)) for ranks in samples.values()):
-            raise ValueError(f"target {target_id} is missing a TP rank")
+            raise ValueError(f"target {target} is missing a TP rank")
         maxima = [max(ranks.values()) for _, ranks in sorted(samples.items())]
         first = items[0]
+        key, provenance = first["key"], first["provenance"]
         row = {
-            **first["key"],
-            **first["provenance"],
-            "kernel_source": first["kernel_source"],
-            "timing_method": first["timing_method"],
-            "used_cuda_graph": first["used_cuda_graph"],
+            "component": "attention",
+            "geometry": key["geometry"],
+            "batch_size": key["batch_size"],
+            "prefix": key["prefix"],
+            "x": key["x"],
             "latency": float(statistics.median(maxima)),
-            "latency_min": float(min(maxima)),
-            "latency_max": float(max(maxima)),
+            "kernel_source": first["kernel_source"],
+            "measurement_scope": MEASUREMENT_SCOPE,
+            "source_sha256": provenance["source_sha256"],
+            "config_sha256": provenance["config_sha256"],
+            "runtime_digest": provenance["runtime_digest"],
+            "used_cuda_graph": first["used_cuda_graph"],
             "sample_count": len(maxima),
+            "kv_seed_regime": "real_kv",
+            "execution_profile": "full",
         }
-        validate_row(row)
+        body = validate_row(row)
+        if not all(item["extra"].get("finite", False) for item in items):
+            raise ValueError(f"target {target} produced nonfinite attention output")
+        phase = "context" if body["is_context"] else "generation"
+        if first["timing_method"] != TIMING_METHODS[phase][0]:
+            raise ValueError(f"target {target} used an unexpected timing method")
         rows.append(row)
-    return rows
+        evidence.append(
+            {
+                "target_id": target,
+                "geometry": row["geometry"],
+                "batch_size": row["batch_size"],
+                "prefix": row["prefix"],
+                "x": row["x"],
+                "indexer_regime": indexer_regime(phase, row["prefix"], row["x"], body["index_topk"]),
+                "latency_min": float(min(maxima)),
+                "latency_max": float(max(maxima)),
+                "rank_max_ms": maxima,
+                "timing_method": first["timing_method"],
+                **{k: provenance[k] for k in ("framework_version", "checkpoint_revision", "layer_id")},
+                "extra": sorted({canonical_json(item["extra"]) for item in items}),
+            }
+        )
+    return rows, evidence
 
 
 def validate_table(rows: list[dict]) -> None:
+    """Duplicate keys and mixed provenance fail.
+
+    ``source_sha256``/``runtime_digest`` are table-wide (one runtime per
+    <backend>/<version> directory); ``config_sha256`` is uniform per
+    checkpoint; ``used_cuda_graph`` and the kernel witness per (checkpoint, TP,
+    phase), because serving runs prefill eagerly and decode under CUDA graphs.
+    """
     if not rows:
         raise ValueError("an empty GLM attention table cannot be published")
     keys = set()
@@ -438,20 +484,21 @@ def validate_table(rows: list[dict]) -> None:
     by_checkpoint = defaultdict(set)
     by_phase = defaultdict(set)
     for row in rows:
-        validate_row(row)
+        body = validate_row(row)
         key = physical_key(row)
         if key in keys:
             raise ValueError(f"duplicate physical GLM attention key {key}")
         keys.add(key)
-        table.add(tuple(row[c] for c in TABLE_PROVENANCE))
-        by_checkpoint[row["checkpoint_format"]].add(tuple(row[c] for c in CHECKPOINT_PROVENANCE))
-        by_phase[row["phase"]].add(tuple(row[c] for c in PHASE_PROVENANCE))
+        table.add((body["backend"], row["source_sha256"], row["runtime_digest"]))
+        by_checkpoint[body["checkpoint_format"]].add(row["config_sha256"])
+        phase = (body["checkpoint_format"], body["tp_size"], body["is_context"])
+        by_phase[phase].add((row["used_cuda_graph"], row["kernel_source"]))
     if len(table) != 1:
-        raise ValueError("a table needs one backend/runtime/source/representative-layer identity")
+        raise ValueError("a table needs one backend/runtime/source identity")
     if any(len(v) != 1 for v in by_checkpoint.values()):
-        raise ValueError("a checkpoint's rows mix configuration or revision identities")
+        raise ValueError("a checkpoint's rows mix configuration identities")
     if any(len(v) != 1 for v in by_phase.values()):
-        raise ValueError("a phase mixes timing methods or CUDA graph identities")
+        raise ValueError("one deployment phase mixes CUDA graph or kernel identities")
 
 
 def write_parquet(rows: list[dict], path: Path) -> None:
@@ -463,9 +510,9 @@ def write_parquet(rows: list[dict], path: Path) -> None:
     for column in COLUMNS:
         if column in INTEGER_COLUMNS:
             kind = pa.int64()
-        elif column in FLOAT_COLUMNS:
+        elif column == "latency":
             kind = pa.float64()
-        elif column in BOOL_COLUMNS:
+        elif column == "used_cuda_graph":
             kind = pa.bool_()
         else:
             kind = pa.string()
@@ -479,7 +526,7 @@ def write_parquet(rows: list[dict], path: Path) -> None:
     temporary.replace(path)
 
 
-def load_attempt(attempt: Path) -> tuple[dict, list[dict]]:
+def load_attempt(attempt: Path) -> tuple[dict, list[dict], list[dict]]:
     """Admit one runner attempt: completion receipt, plan closure, every target.
 
     ``attempt`` holds the frozen ``manifest.json``; the runner's per-rank
@@ -504,19 +551,20 @@ def load_attempt(attempt: Path) -> tuple[dict, list[dict]]:
         raise ValueError(f"{attempt} is missing TP rank files")
     records = [json.loads(line) for path in paths for line in path.read_text().splitlines() if line.strip()]
     records = [r for r in records if r.get("record") == "sample"]
+    bodies = {geometry_key(attention_body(manifest["geometry"], phase == "context")): phase for phase in PHASES}
     for record in records:
-        if any(record["key"][k] != v for k, v in manifest["geometry"].items()):
-            raise ValueError(f"{attempt} sample key differs from its deployment geometry")
+        if record["key"]["geometry"] not in bodies:
+            raise ValueError(f"{attempt} sample geometry differs from its deployment")
         if record["provenance"]["layer_id"] != manifest["layer_id"]:
             raise ValueError(f"{attempt} sample layer differs from the manifest")
-    rows = aggregate_rank_samples(records, tp_size)
-    measured = {(r["phase"], r["batch_size"], r["prefix"], r["x"]) for r in rows}
+    rows, evidence = aggregate_rank_samples(records, tp_size)
+    measured = {(bodies[r["geometry"]], r["batch_size"], r["prefix"], r["x"]) for r in rows}
     expected = set(target_keys(plan))
     if measured != expected:
         missing = sorted(expected - measured)[:4]
         extra = sorted(measured - expected)[:4]
         raise ValueError(f"{attempt} measured keys differ from its plan: missing {missing}, unplanned {extra}")
-    return manifest, rows
+    return manifest, rows, evidence
 
 
 def main() -> None:
@@ -527,6 +575,7 @@ def main() -> None:
     finalize = sub.add_parser("finalize", help="merge admitted attempts into one backend/version table")
     finalize.add_argument("attempts", type=Path, nargs="+")
     finalize.add_argument("--output", type=Path, required=True)
+    finalize.add_argument("--evidence", type=Path, required=True, help="per-row sample evidence JSON")
     args = parser.parse_args()
     if args.command == "plan":
         import yaml
@@ -535,10 +584,14 @@ def main() -> None:
         plan = build_plan(sweep)
         print(json.dumps({"plan_sha256": plan["plan_sha256"], "targets": len(target_keys(plan))}))
         return
-    rows = []
+    rows, evidence, manifests = [], [], []
     for attempt in args.attempts:
-        rows += load_attempt(attempt)[1]
+        manifest, attempt_rows, attempt_evidence = load_attempt(attempt)
+        rows += attempt_rows
+        evidence += [{**e, "attempt": str(attempt)} for e in attempt_evidence]
+        manifests.append({"attempt": str(attempt), "manifest_sha256": manifest["manifest_sha256"]})
     write_parquet(rows, args.output)
+    Path(args.evidence).write_text(json.dumps({"attempts": manifests, "rows": evidence}, indent=1) + "\n")
     print(json.dumps({"rows": len(rows), "output": str(args.output)}))
 
 
