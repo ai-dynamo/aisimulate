@@ -44,10 +44,6 @@ def pull_requests(repository, token, state, since=None):
         page += 1
 
 
-def escape(value):
-    return value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-
-
 def messages(repository, open_prs, recent_prs, now):
     local = now.astimezone(PACIFIC)
     start = local.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -67,20 +63,20 @@ def messages(repository, open_prs, recent_prs, now):
     merged = sum(today(pr["merged_at"]) for pr in recent_prs)
     opened = sum(today(pr["created_at"]) for pr in recent_prs)
     lines = [
-        f"*AISimulate PR digest — {local:%Y-%m-%d, %I:%M %p %Z}*",
-        f":merged-2472: PRs merged today: *{merged}*",
-        f":pr-opened: PRs opened today: *{opened}*",
-        f":reminder-alarm: PRs waiting for review: *{len(ready)}*",
+        f"AISimulate PR digest — {local:%Y-%m-%d, %I:%M %p %Z}",
+        f":merged-2472: PRs merged today: {merged}",
+        f":pr-opened: PRs opened today: {opened}",
+        f":reminder-alarm: PRs waiting for review: {len(ready)}",
         "",
-        f"*Open non-draft PRs older than 5 days — {len(stale)}*",
+        f"Open non-draft PRs older than 5 days — {len(stale)}",
     ]
     for pr in stale:
         age = (now - timestamp(pr["created_at"])).total_seconds() / 86400
-        title = escape(" ".join(pr["title"].split())[:200])
-        author = escape((pr.get("user") or {}).get("login", "deleted-user"))
+        title = " ".join(pr["title"].split())[:200]
+        author = (pr.get("user") or {}).get("login", "deleted-user")
         lines.append(
-            f"• <https://github.com/{repository}/pull/{pr['number']}|#{pr['number']}> "
-            f"{title} — {author} · {age:.1f} days"
+            f"• #{pr['number']} {title} — {author} · {age:.1f} days\n"
+            f"  https://github.com/{repository}/pull/{pr['number']}"
         )
     if not stale:
         lines.append("None.")
@@ -89,9 +85,22 @@ def messages(repository, open_prs, recent_prs, now):
     for line in lines:
         if len(chunk) + len(line) + 1 > 3500:
             yield chunk
-            chunk = "*AISimulate PR digest — continued*\n"
+            chunk = "AISimulate PR digest — continued\n"
         chunk += line + "\n"
     yield chunk
+
+
+def send_message(webhook, message):
+    """Trigger Workflow Builder; its message variable is plain text."""
+    request = Request(
+        webhook,
+        data=json.dumps({"message": message}).encode(),
+        headers={"Content-Type": "application/json"},
+    )
+    with urlopen(request, timeout=30) as response:
+        result = json.load(response)
+    if not isinstance(result, dict) or result.get("ok") is not True:
+        raise ValueError("Slack did not acknowledge the workflow trigger")
 
 
 def main():
@@ -113,16 +122,7 @@ def main():
         if args.dry_run:
             print(message)
             continue
-        request = Request(
-            webhook,
-            data=json.dumps(
-                {"text": message, "unfurl_links": False, "unfurl_media": False}
-            ).encode(),
-            headers={"Content-Type": "application/json"},
-        )
-        with urlopen(request, timeout=30) as response:
-            if response.read().strip() != b"ok":
-                raise ValueError("Slack did not acknowledge the digest")
+        send_message(webhook, message)
 
 
 if __name__ == "__main__":

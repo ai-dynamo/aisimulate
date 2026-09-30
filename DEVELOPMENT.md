@@ -193,11 +193,19 @@ The summary shows merged PRs (`:merged-2472:`), new PRs (`:pr-opened:`), then
 open non-draft PRs labeled "PRs waiting for review" (`:reminder-alarm:`). The destination workspace must have the custom
 `merged-2472`, `pr-opened`, and `reminder-alarm` emoji for those names to render as icons.
 
+The Workflow Builder Text variable does not parse Slack markup. Messages use
+plain text, emoji, and full clickable PR URLs on separate lines; bold and
+named hyperlinks are not supported by this template. An acknowledged trigger
+means Slack accepted the request; check Slack workflow activity for delivery
+failures in subsequent steps.
+
 To enable delivery:
 
-1. Create a Slack app, enable Incoming Webhooks, and add a webhook for the
-   destination channel (workspace admin approval may be required).
-2. Save its URL under repository **Settings → Secrets and variables → Actions**
+1. In Slack Workflow Builder, create a **From a webhook** workflow. Add a
+   Text variable named `message`. Add **Send a message to a channel**, select
+   the destination, and insert the `message` variable into the message body.
+   Publish the Slack workflow.
+2. Save its Web request URL (`https://hooks.slack.com/triggers/...`) under repository **Settings → Secrets and variables → Actions**
    as `SLACK_REVIEW_DIGEST_WEBHOOK_URL`. Never commit the URL.
 3. Merge the workflow into the default branch. In **Actions → Slack review
    digest → Run workflow**, leave `dry_run` enabled to preview; disable it

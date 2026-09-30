@@ -8,7 +8,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
-from slack_review_digest import PACIFIC, messages, pull_requests
+from slack_review_digest import PACIFIC, messages, pull_requests, send_message
 
 
 class DigestTests(unittest.TestCase):
@@ -35,14 +35,14 @@ class DigestTests(unittest.TestCase):
             self.pr(4, age=10, draft=True),
         ]
         text = "".join(messages("ai-dynamo/aisimulate", opened, [], self.now))
-        self.assertIn(":reminder-alarm: PRs waiting for review: *3*", text)
+        self.assertIn(":reminder-alarm: PRs waiting for review: 3", text)
         self.assertLess(text.index(":merged-2472:"), text.index(":pr-opened:"))
         self.assertLess(text.index(":pr-opened:"), text.index(":reminder-alarm:"))
         self.assertIn("older than 5 days — 2", text)
-        self.assertLess(text.index("|#3>"), text.index("|#2>"))
-        self.assertNotIn("|#1>", text)
-        self.assertNotIn("|#4>", text)
-        self.assertIn("&lt;queue&gt; &amp; counters", text)
+        self.assertLess(text.index("• #3 "), text.index("• #2 "))
+        self.assertNotIn("• #1 ", text)
+        self.assertNotIn("• #4 ", text)
+        self.assertIn("<queue> & counters", text)
 
     def test_pacific_day_includes_closed_and_draft_new_prs(self):
         recent = [
@@ -56,8 +56,8 @@ class DigestTests(unittest.TestCase):
             self.pr(created_at="2026-09-30T01:00:00Z"),
         ]
         text = "".join(messages("ai-dynamo/aisimulate", [], recent, self.now))
-        self.assertIn(":merged-2472: PRs merged today: *1*", text)
-        self.assertIn(":pr-opened: PRs opened today: *2*", text)
+        self.assertIn(":merged-2472: PRs merged today: 1", text)
+        self.assertIn(":pr-opened: PRs opened today: 2", text)
         self.assertIn("2026-09-29, 05:07 PM PDT", text)
 
     def test_dst_day_uses_midnight_offset(self):
@@ -68,7 +68,7 @@ class DigestTests(unittest.TestCase):
         )
         recent = [self.pr(created_at="2026-11-01T07:30:00Z")]
         text = "".join(messages("ai-dynamo/aisimulate", [], recent, now))
-        self.assertIn(":pr-opened: PRs opened today: *1*", text)
+        self.assertIn(":pr-opened: PRs opened today: 1", text)
         self.assertIn("05:07 PM PST", text)
 
     def test_large_queue_retains_all_prs(self):
@@ -77,7 +77,17 @@ class DigestTests(unittest.TestCase):
         self.assertGreater(len(chunks), 1)
         self.assertTrue(all(len(chunk) <= 3500 for chunk in chunks))
         for i in range(100):
-            self.assertEqual("".join(chunks).count(f"|#{i}>"), 1)
+            self.assertEqual("".join(chunks).count(f"• #{i} "), 1)
+
+    @patch("slack_review_digest.urlopen")
+    def test_workflow_payload_and_acknowledgement(self, urlopen):
+        urlopen.return_value = io.BytesIO(b'{"ok":true}')
+        send_message("https://hooks.slack.com/triggers/test", "Digest")
+        request = urlopen.call_args.args[0]
+        self.assertEqual(json.loads(request.data), {"message": "Digest"})
+        urlopen.return_value = io.BytesIO(b'{"ok":false}')
+        with self.assertRaises(ValueError):
+            send_message("https://hooks.slack.com/triggers/test", "Digest")
 
     @patch("slack_review_digest.urlopen")
     def test_pagination_and_updated_cutoff(self, urlopen):
