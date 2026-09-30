@@ -23,7 +23,8 @@ only the dynamic per-token quant kernel differs, because serving changed it.
 # side at either version.
 __compat__ = "sglang==0.5.20"
 
-import pkg_resources
+from importlib.metadata import version as _dist_version
+
 import torch
 from collector.case_generator import get_compute_scale_case_specs
 from collector.helper import benchmark_with_power, get_sm_version, log_perf
@@ -72,7 +73,7 @@ def run_computescale(m, k, *, perf_filename, device="cuda:0"):
 
     static_latency = static_results["latency_ms"] / outside_loop_count
     compute_scale_latency = max(0.0, dynamic_latency - static_latency)
-    version = pkg_resources.get_distribution("sglang").version
+    version = _dist_version("sglang")
 
     if not log_perf(
         item_list=[{"m": m, "k": k, "quant_dtype": "fp8", "latency": compute_scale_latency}],

@@ -179,7 +179,6 @@ def test_sglang_moe_admits_0_5_20_but_not_unaudited_releases():
 
 def _load_sglang_gemm_v2(monkeypatch):
     _stub_module(monkeypatch, "torch", bfloat16="bfloat16", float32="float32")
-    _stub_module(monkeypatch, "pkg_resources", get_distribution=lambda _name: types.SimpleNamespace(version="0.5.20"))
     helper = types.ModuleType("collector.helper")
     helper.benchmark_with_power = None
     helper.log_perf = None

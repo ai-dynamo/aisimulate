@@ -511,7 +511,7 @@ def test_quantized_moe_uses_framework_path_and_fails_closed(
             "_fmoe_kernels_mod": SimpleNamespace(_B_DESC_CACHE=SimpleNamespace(clear=lambda: None)),
             "gc": SimpleNamespace(collect=lambda: None),
             "log_perf": lambda **kwargs: logged.append(kwargs) or persisted,
-            "pkg_resources": SimpleNamespace(get_distribution=lambda _name: SimpleNamespace(version="0.5.14")),
+            "_dist_version": lambda _name: "0.5.14",
             "EXIT_CODE_RESTART": 10,
         },
     )["run_moe_torch"]
@@ -580,7 +580,7 @@ def test_raw_moe_case_cleans_gpu_state_and_fails_closed():
             "gc": SimpleNamespace(collect=lambda: collected.append(True)),
             "get_sm_version": lambda: 90,
             "log_perf": lambda **_kwargs: False,
-            "pkg_resources": SimpleNamespace(get_distribution=lambda _name: SimpleNamespace(version="0.5.14")),
+            "_dist_version": lambda _name: "0.5.14",
             "EXIT_CODE_RESTART": 10,
         },
     )["run_moe_torch"]
