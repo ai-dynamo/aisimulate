@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
+from accuracy_digest import decode_points
 from fpm_accuracy.evaluate import Metric, choose_variant, evaluate_case
 from fpm_accuracy.exceptions import ConfigurationError, DependencyError
 from fpm_accuracy.models import aic_predictors
@@ -465,3 +466,26 @@ def test_micro_mape_and_variant_order():
 def test_bad_measurement_fails_campaign(case):
     with pytest.raises(ValueError, match="unique IDs"):
         evaluate_case(replace(case, observations=(case.observations[0], case.observations[0])))
+
+
+def test_notification_evidence_keeps_point_failures_without_changing_public_result(case):
+    """The notification sidecar is opt-in and must not change prediction/tuning order."""
+
+    def factory(method, context):
+        return Predictor(method, context, [])
+
+    expected = evaluate_case(case, factory=factory)
+    evidence = {}
+    actual = evaluate_case(case, factory=factory, comparison=evidence)
+    assert actual == expected
+    points = evidence[case.configuration_id + "/" + case.configuration.snapshot_id]["methods"]
+    assert set(points) == {"warmup", "nowarmup", "regression"}
+    for method, packed in points.items():
+        samples = decode_points(packed)
+        metric = actual["results"][method]["metrics"]["all"]
+        assert len(samples) == metric["measured_count"]
+        values = [v for v in samples if v >= 0]
+        assert len(values) == metric["predicted_count"]
+        if values:
+            assert sum(values) / len(values) == pytest.approx(metric["mape_pct"])
+    assert "_points" not in json.dumps(actual)

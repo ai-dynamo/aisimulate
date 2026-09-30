@@ -281,10 +281,10 @@ class UnqualifiedBranch(ValueError):
     """A branch without a successful qualification job cannot publish."""
 
 
-def trusted_run(run: dict) -> bool:
+def trusted_run(run: dict, *, allow_manual_branch=False) -> bool:
     return (
         run.get("event") in {"schedule", "workflow_dispatch"}
-        and run.get("head_branch") == "main"
+        and (run.get("head_branch") == "main" or (allow_manual_branch and run.get("event") == "workflow_dispatch"))
         and run.get("path") == WORKFLOW
         and run.get("conclusion") in {"success", "failure"}
         and run.get("repository", {}).get("full_name") == REPO
@@ -292,8 +292,15 @@ def trusted_run(run: dict) -> bool:
     )
 
 
-def validate_artifact(archive: bytes, run: dict, *, artifact_name="e2e-accuracy-web", jobs=None) -> dict:
-    if not trusted_run(run):
+def validate_artifact(
+    archive: bytes,
+    run: dict,
+    *,
+    artifact_name="e2e-accuracy-web",
+    jobs=None,
+    allow_manual_branch=False,
+) -> dict:
+    if not trusted_run(run, allow_manual_branch=allow_manual_branch):
         raise ValueError("untrusted accuracy workflow run")
     summary = unpack_artifact(archive)
     q = summary["snapshot"]["campaign"]

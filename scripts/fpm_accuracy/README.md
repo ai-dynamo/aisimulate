@@ -14,7 +14,9 @@ removed. Unused presentation metadata and its conversion helpers are omitted;
 the worker schema and MoE mapping required for evaluation are retained.
 Unsupported measurement protocols remain visible as unsupported
 configurations; missing protocol identities and corrupt inputs still fail closed. `evaluate.py` reduces each shared measurement stream directly into
-overview aggregates, without local reports, raw result exports, or history.
+overview aggregates. Optional notification evidence retains observation-order hashes
+and compressed percentage-error sequences separately from public Pages artifacts; it does not retain
+raw measured or predicted latencies. See [daily reporting](../../docs/accuracy-slack.md).
 The public `skipped_count` combines excluded and unavailable source observations;
 the Overview labels this count “excluded or unavailable.” It does not mean
 that all of these observations were deliberately filtered out.
