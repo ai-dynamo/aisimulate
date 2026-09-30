@@ -170,7 +170,7 @@ def test_capacity_fallback_stops_at_the_smallest_cut(pd, tmp_path, monkeypatch):
     # both OOM phrasings count: torch's and the trtllm executor's
     for v, msg in (("depth8", "CUDA out of memory"),
                    ("depth4", "RuntimeError: Executor creation failed due to insufficient GPU memory.")):
-        rid = pd._run_id(ck, v, "vllm", "0.29.0", 1, None)
+        rid = pd._run_id(ck, v, "vllm", "0.29.0", 1, None, "h20_sm90")  # ids carry the platform (default h20_sm90 without a targets platform)
         (tmp_path / "archive" / "raw" / f"{rid}.json").write_text(json.dumps({"errors": {"load": msg}}))
     runs = [r for r in pd.enumerate_runs(_targets_for("org/Big", ["depth8", "depth4"]), full=False, backends=["vllm"])
             if "skip" not in r]
