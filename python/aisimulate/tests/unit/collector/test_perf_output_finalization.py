@@ -8,11 +8,12 @@ import stat
 from contextlib import contextmanager
 from pathlib import Path
 
-import collector.helper as helper_mod
 import pyarrow as pa
 import pyarrow.csv as pc_csv
 import pyarrow.parquet as pq
 import pytest
+
+import collector.helper as helper_mod
 from collector.helper import (
     PerfFinalizationInfo,
     convert_perf_csv_to_parquet,
@@ -828,6 +829,28 @@ def test_convert_without_merge_overwrites(tmp_path):
     _write_keyed_perf_csv(perf, [("s2", 2.0)])
     convert_perf_csv_to_parquet(perf, merge_existing=False)
     assert _rows_by_key(parquet) == {"s2": 2.0}  # legacy overwrite preserved when opted out
+
+
+def test_finalize_third_merge_survives_large_string_round_trip(tmp_path):
+    """run -> resume -> retry-failed: the second merge writes string columns back as
+    `large_string` (pandas round trip); the third finalize must still merge, not
+    overwrite (sm120 attention_generation fp8kv lost 27,303 rows this way, 2026-10-01)."""
+    import pyarrow as pa
+
+    perf = tmp_path / "gemm_perf.txt"
+    parquet = perf.with_suffix(".parquet")
+    _write_keyed_perf_csv(perf, [("s1", 1.0)])
+    finalize_perf_files([perf])
+    _write_keyed_perf_csv(perf, [("s2", 2.0)])
+    finalize_perf_files([perf])
+    # force the state the pandas round trip produces: identity column stored as large_string
+    t = pq.read_table(parquet)
+    idx = t.schema.get_field_index("shape")
+    pq.write_table(t.set_column(idx, "shape", t.column("shape").cast(pa.large_string())), parquet)
+    assert str(pq.read_table(parquet).schema.field("shape").type) == "large_string"
+    _write_keyed_perf_csv(perf, [("s3", 3.0)])
+    finalize_perf_files([perf])
+    assert _rows_by_key(parquet) == {"s1": 1.0, "s2": 2.0, "s3": 3.0}
 
 
 def test_finalize_merge_falls_back_to_overwrite_on_schema_mismatch(tmp_path):
