@@ -218,6 +218,8 @@ def test_profile_rejects_telemetry_tuning_and_energy_routes_including_empty_inpu
     for payload in [[], {}, [{"scheduled_requests": []}]]:
         with pytest.raises((PrefillGraphProfileError, ValueError)):
             graph_model.estimate_forward_pass_time_ms(payload)
+        with pytest.raises((PrefillGraphProfileError, ValueError)):
+            graph_model.estimate_forward_pass_detailed(payload)
     with pytest.raises(PrefillGraphProfileError, match="only direct"):
         graph_model.tune_with_fpms([])
     for prefill in [False, True]:

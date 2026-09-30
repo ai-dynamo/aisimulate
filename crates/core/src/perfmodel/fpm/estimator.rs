@@ -65,6 +65,15 @@ pub enum UnrecordedFpmQuantMode {
 }
 
 impl FpmInterpolationConfig {
+    pub(crate) fn validate_profile_options(&self) -> Result<(), AicError> {
+        if self.text_only || !self.unrecorded_quant_modes.is_empty() {
+            return Err(super::config::invalid_config(
+                "fpm_profile does not support text_only or unrecorded_quant_modes overrides",
+            ));
+        }
+        Ok(())
+    }
+
     pub(crate) fn validate_quant_modes(
         &self,
         fmha: Option<&str>,
