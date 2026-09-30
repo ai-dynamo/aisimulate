@@ -34,6 +34,8 @@ areas:
       - python/aisimulate/src/aisimulate/capacity.py
       - tests/test_aic.py
       - tests/test_spline_estimator_config.py
+      - tests/test_fpm_profile_workflow.py
+      - tests/test_fpm_query_evidence.py
   - label: sweeper
     github_team: "@ai-dynamo/aisimulate-sweeper-codeowners"
     path_globs:
@@ -159,6 +161,10 @@ shared:
     owners: [forward-pass-engine, maintainers]
   - glob: tests/test_aic.py
     owners: [forward-pass-engine, maintainers]
+  - glob: tests/test_fpm_profile_workflow.py
+    owners: [forward-pass-engine, maintainers]
+  - glob: tests/test_fpm_query_evidence.py
+    owners: [forward-pass-engine, replay, maintainers]
   - glob: python/aisimulate/src/aisimulate/sweeper/
     owners: [sweeper, maintainers]
   - glob: docs/sweeper/

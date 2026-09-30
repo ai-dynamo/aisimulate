@@ -325,10 +325,8 @@ impl ForwardPassPerfModel {
     /// Construct and pin one estimator. Auto searches all modes even when
     /// fallback is denied; explicit modes use the requested fallback policy.
     /// A regression model may be constructed before it has enough observations.
-    pub fn best_available(mut config: ForwardPassPerfModelConfig) -> Result<Self, AicError> {
-        config.resolve_prefill_graph_profile()?;
-        config.estimator_config.resolve_defaults();
-        config.validate()?;
+    pub fn best_available(config: ForwardPassPerfModelConfig) -> Result<Self, AicError> {
+        let (mut config, registered) = config.resolve_with_registration()?;
         if let Some(path) = config
             .estimator_config
             .fpm_interpolation
@@ -343,6 +341,15 @@ impl ForwardPassPerfModel {
         let mut failures = Vec::new();
         let mut last_error = None;
         for mode in config.candidate_modes() {
+            if mode == EstimationMode::OpLevel && registered == Some(false) {
+                let error = AicError::UnsupportedModel(format!(
+                    "op-level timing requires a registered architecture for {:?}",
+                    config.model,
+                ));
+                failures.push(format!("{mode:?}: {error}"));
+                last_error = Some(error);
+                continue;
+            }
             if config.dcp.is_some_and(|dcp| dcp > 1)
                 && (mode != EstimationMode::FpmInterpolation
                     || config.backend != crate::BackendKind::Vllm)
@@ -454,14 +461,7 @@ impl ForwardPassPerfModel {
                     return Ok(Some(0.0));
                 };
                 let native = engine.forward_pass_time_ms(metrics_by_rank)?;
-                let corrected = native
-                    * if self.is_correction_enabled {
-                        corrections
-                            .store(feature.workload_kind)
-                            .correction_factor_for(&feature.x)
-                    } else {
-                        1.0
-                    };
+                let corrected = native * self.correction_factor(corrections, &feature);
                 Ok(Some(corrected))
             }
             ForwardPassPerfMode::Regression {
@@ -478,6 +478,44 @@ impl ForwardPassPerfModel {
                 };
                 Ok(regression.store(feature.workload_kind).predict(&feature.x))
             }
+        }
+    }
+
+    /// Estimate the same iteration with executed direct-FPM support. The
+    /// native rank maximum and online correction are explicit; measurement
+    /// weights describe raw lookup values only. No query state is retained.
+    pub fn estimate_forward_pass_detailed(
+        &self,
+        metrics_by_rank: &[ForwardPassMetrics],
+    ) -> Result<crate::ForwardPassEstimate, AicError> {
+        self.require_general_forward_api()?;
+        if let ForwardPassPerfMode::Native {
+            engine,
+            corrections,
+        } = &self.mode
+        {
+            let Some(feature) = IterationFeatures::from_metrics(metrics_by_rank)? else {
+                return Ok(crate::ForwardPassEstimate {
+                    latency_ms: Some(0.0),
+                    native_latency_ms: Some(0.0),
+                    correction_factor: Some(1.0),
+                    max_rank: None,
+                    ranks: Vec::new(),
+                });
+            };
+            let mut estimate = engine.forward_pass_estimate(metrics_by_rank, true)?;
+            let factor = self.correction_factor(corrections, &feature);
+            estimate.correction_factor = Some(factor);
+            estimate.latency_ms = estimate.native_latency_ms.map(|native| native * factor);
+            Ok(estimate)
+        } else {
+            Ok(crate::ForwardPassEstimate {
+                latency_ms: self.estimate_forward_pass_time_ms(metrics_by_rank)?,
+                native_latency_ms: None,
+                correction_factor: None,
+                max_rank: None,
+                ranks: Vec::new(),
+            })
         }
     }
 
@@ -687,6 +725,20 @@ impl ForwardPassPerfModel {
         }
     }
 
+    pub(crate) fn static_prefill_detailed(
+        &self,
+        batch_size: u32,
+        input_tokens: u32,
+        prefix: u32,
+    ) -> Result<crate::ForwardPassEstimate, AicError> {
+        self.require_general_forward_api()?;
+        self.native_engine()
+            .ok_or_else(|| {
+                AicError::InvalidEngineConfig("static prefill requires a native estimator".into())
+            })?
+            .predict_prefill_detailed(batch_size, input_tokens, prefix)
+    }
+
     /// Native operation evidence for one static prefill or decode step. Values
     /// precede learned online correction; SOL is a comparison only. Whole-model
     /// estimators cannot provide an operation decomposition and fail explicitly.
@@ -764,6 +816,20 @@ impl ForwardPassPerfModel {
     /// Exact immutable construction identity and selected systems root.
     pub fn provenance(&self) -> Option<&ForwardPassPerfProvenance> {
         self.provenance.as_ref()
+    }
+
+    fn correction_factor(
+        &self,
+        corrections: &WorkloadStores<CorrectionBuckets>,
+        feature: &IterationFeatures,
+    ) -> f64 {
+        if self.is_correction_enabled {
+            corrections
+                .store(feature.workload_kind)
+                .correction_factor_for(&feature.x)
+        } else {
+            1.0
+        }
     }
 
     fn correction_factors(&self) -> Vec<f64> {

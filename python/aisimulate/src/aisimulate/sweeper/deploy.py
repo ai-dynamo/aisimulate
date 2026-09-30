@@ -172,6 +172,7 @@ def _engine_args_payload(
                 pp_size=int(sample[f"{prefix}pp"]),
                 moe_tp_size=moe_tp,
                 moe_ep_size=moe_ep,
+                **_profile_kv_args(sample, role, backend_version),
                 **({"kvcache_quant_mode": sample["kvcache_quant_mode"]} if sample.get("kvcache_quant_mode") else {}),
             )
             if configured_bytes == "auto"
@@ -186,6 +187,7 @@ def _engine_args_payload(
                 pp_size=int(sample["prefill_pp"]),
                 moe_tp_size=int(sample["prefill_moe_tp"]),
                 moe_ep_size=int(sample["prefill_moe_ep"]),
+                **_profile_kv_args(sample, "prefill", backend_version),
                 **({"kvcache_quant_mode": sample["kvcache_quant_mode"]} if sample.get("kvcache_quant_mode") else {}),
             )
             if transfer_geometry == "auto"
@@ -199,6 +201,19 @@ def _engine_args_payload(
         if sample.get("kv_transfer_timing_mode") is not None:
             payload["kv_transfer_timing_mode"] = sample["kv_transfer_timing_mode"]
     return payload
+
+
+def _profile_kv_args(sample: dict[str, Any], role: str, backend_version: str) -> dict[str, Any]:
+    if sample.get("fpm_profile") is None:
+        return {}
+    prefix = _role_prefix(role)
+    return {
+        "fpm_profile": sample["fpm_profile"],
+        "system": _role_hardware_sku(sample, role),
+        "backend": sample["backend"],
+        "backend_version": backend_version,
+        "attention_dp_size": int(sample[f"{prefix}attention_dp"]),
+    }
 
 
 def build_backend_deployment(

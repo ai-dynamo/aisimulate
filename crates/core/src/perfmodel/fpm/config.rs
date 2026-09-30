@@ -87,6 +87,9 @@ pub struct ForwardPassPerfModelConfig {
     pub worker_type: ForwardPassWorkerType,
     #[serde(default)]
     pub backend_version: Option<String>,
+    /// Full independent model identity, precision and resource profile.
+    #[serde(default)]
+    pub fpm_profile: Option<serde_json::Map<String, serde_json::Value>>,
 
     #[serde(default = "one", alias = "tp_size")]
     pub tp: u32,
@@ -171,6 +174,7 @@ impl ForwardPassPerfModelConfig {
             backend,
             worker_type,
             backend_version: None,
+            fpm_profile: None,
             tp: 1,
             pp: 1,
             attention_dp: 1,
@@ -224,6 +228,73 @@ impl ForwardPassPerfModelConfig {
             _ => {}
         }
         candidates
+    }
+
+    /// Validate profile metadata and pin interpolation without constructing a
+    /// graph or opening performance data. This also serves configuration-only
+    /// consumers such as memory planning.
+    pub(crate) fn resolve(self) -> Result<Self, AicError> {
+        self.resolve_with_registration().map(|(config, _)| config)
+    }
+
+    /// Retain registry availability for native candidate selection without
+    /// adding transient registry facts to the serialized request.
+    pub(crate) fn resolve_with_registration(mut self) -> Result<(Self, Option<bool>), AicError> {
+        self.resolve_prefill_graph_profile()?;
+        self.estimator_config.resolve_defaults();
+        self.validate()?;
+        let registered = if self.fpm_profile.is_some() {
+            self.estimator_config
+                .fpm_interpolation
+                .validate_profile_options()?;
+            if self.dcp.is_some() {
+                return Err(invalid_config(
+                    "fpm_profile does not describe recorded DCP identity",
+                ));
+            }
+            if self.backend_version.is_none() {
+                return Err(invalid_config(
+                    "fpm_profile requires a literal backend_version",
+                ));
+            }
+            if self.nextn != 0 || self.speculation.is_some() {
+                return Err(invalid_config(
+                    "FPM profiles support plain autoregressive decoder-only execution",
+                ));
+            }
+            #[cfg(feature = "python")]
+            {
+                let facts = crate::py::validate_forward_pass_profile(&self)?;
+                self.fpm_profile = Some(facts.profile);
+                self.gemm_quant_mode = Some(facts.gemm_quant_mode);
+                self.moe_quant_mode = Some(facts.moe_quant_mode);
+                self.fmha_quant_mode = Some(facts.fmha_quant_mode);
+                self.kvcache_quant_mode = Some(facts.kvcache_quant_mode);
+                self.comm_quant_mode = Some(facts.comm_quant_mode);
+                self.attention_backend = Some(facts.attention_backend);
+                Some(facts.registered)
+            }
+            #[cfg(not(feature = "python"))]
+            return Err(invalid_config(
+                "FPM profile validation requires the python feature",
+            ));
+        } else {
+            None
+        };
+        self.estimator_config.fpm_interpolation.method = self
+            .estimator_config
+            .fpm_interpolation
+            .method
+            .resolve(registered)?;
+        if self.estimator_config.fpm_interpolation.method == super::FpmInterpolationMethod::Direct
+            && self.database_mode != DatabaseMode::Silicon
+        {
+            return Err(invalid_config(
+                "direct FPM interpolation requires database_mode='SILICON'; it has no analytical SOL model",
+            ));
+        }
+        self.validate()?;
+        Ok((self, registered))
     }
 
     pub(crate) fn validate(&self) -> Result<(), AicError> {
@@ -303,8 +374,11 @@ impl ForwardPassPerfModelConfig {
                     "moe_tp_size and moe_ep_size must be positive",
                 ));
             }
-            if u64::from(self.tp) * u64::from(self.attention_dp)
-                != u64::from(moe_tp) * u64::from(moe_ep)
+            // Profile schema also admits dense TP with unused MoE dimensions
+            // equal to one, and checks the exact requested deployment below.
+            if self.fpm_profile.is_none()
+                && u64::from(self.tp) * u64::from(self.attention_dp)
+                    != u64::from(moe_tp) * u64::from(moe_ep)
             {
                 return Err(invalid_config(
                     "topology requires tp * attention_dp == moe_tp_size * moe_ep_size",
@@ -324,7 +398,7 @@ impl ForwardPassPerfModelConfig {
                 ));
             }
         }
-        if self.estimation_mode == EstimationMode::FpmInterpolation
+        if (self.estimation_mode == EstimationMode::FpmInterpolation || self.fpm_profile.is_some())
             && (self.enable_eplb
                 || self.moe_kernel_source.is_some()
                 || self.wideep_num_slots.is_some()
@@ -468,6 +542,76 @@ mod tests {
     }
 
     #[test]
+    fn config_resolution_preserves_spline_defaults_and_registration_contract() {
+        use super::super::estimator::{SplineFitConfig, SplineSearchConfig};
+
+        for (fit, expected) in [
+            (
+                serde_json::json!({"kind": "spline"}),
+                SplineFitConfig::default(),
+            ),
+            (
+                serde_json::json!({"kind": "spline", "spline": {
+                    "search": {"kind": "periodic", "step": 17}
+                }}),
+                SplineFitConfig {
+                    knots_per_axis: 2,
+                    search: SplineSearchConfig::periodic(17),
+                },
+            ),
+        ] {
+            let cfg = config(serde_json::json!({
+                "estimation_mode": "fpm_regression", "estimator_config": {"fpm_regression": {"fit": fit}}
+            }));
+            let normalized = cfg.clone().resolve().unwrap();
+            let (with_registration, registered) = cfg.resolve_with_registration().unwrap();
+            assert_eq!(normalized, with_registration);
+            assert_eq!(registered, None);
+            assert_eq!(
+                normalized.estimator_config.fpm_regression.fit.spline,
+                Some(expected)
+            );
+            let reloaded: ForwardPassPerfModelConfig =
+                serde_json::from_str(&serde_json::to_string(&normalized).unwrap()).unwrap();
+            assert_eq!(reloaded.resolve().unwrap(), normalized);
+        }
+        let linear = config(serde_json::json!({})).resolve().unwrap();
+        assert!(linear.estimator_config.fpm_regression.fit.spline.is_none());
+    }
+
+    #[test]
+    fn interpolation_controls_are_typed_and_resolved_before_candidates() {
+        use super::super::FpmInterpolationMethod::{Auto, Direct, Sol};
+        for (requested, registered, expected) in [
+            (Auto, None, Sol),
+            (Auto, Some(true), Sol),
+            (Auto, Some(false), Direct),
+            (Sol, None, Sol),
+            (Sol, Some(true), Sol),
+            (Direct, Some(true), Direct),
+            (Direct, Some(false), Direct),
+        ] {
+            assert_eq!(requested.resolve(registered).unwrap(), expected);
+        }
+        assert!(Direct.resolve(None).is_err());
+        assert!(Sol.resolve(Some(false)).is_err());
+        let cfg = config(serde_json::json!({})).resolve().unwrap();
+        assert_eq!(cfg.estimator_config.fpm_interpolation.method, Sol);
+        assert_eq!(cfg.estimation_mode, EstimationMode::Auto);
+        let cfg = config(serde_json::json!({
+            "estimation_mode": "fpm_regression", "fallback_policy": "allow",
+            "estimator_config": {"fpm_interpolation": {"method": "direct"}}
+        }));
+        assert!(cfg.resolve().is_err());
+        assert!(
+            serde_json::from_value::<EstimatorConfig>(serde_json::json!({
+                "fpm_interpolation": {"method": "dierct"}
+            }))
+            .is_err()
+        );
+    }
+
+    #[test]
     fn fpm_selector_is_validated_and_preserved_in_canonical_identity() {
         let cfg = config(serde_json::json!({
             "estimation_mode": "fpm_interpolation", "fpm_fmha_quant_mode": "fp8"
@@ -509,6 +653,24 @@ mod tests {
         assert_eq!(decoded.wideep_num_slots, Some(256));
         assert_eq!(decoded.moe_backend.as_deref(), Some("deepep_moe"));
         assert_eq!(decoded.fallback_policy, ForwardPassFallbackPolicy::Deny);
+    }
+
+    #[test]
+    fn profile_auto_selection_does_not_drop_unsupported_engine_controls() {
+        for controls in [
+            serde_json::json!({"enable_eplb": true}),
+            serde_json::json!({"wideep_num_slots": 256}),
+            serde_json::json!({"moe_backend": "deepep_moe", "backend": "sglang"}),
+        ] {
+            let mut cfg = config(controls);
+            cfg.fpm_profile = Some(Default::default());
+            assert!(
+                cfg.validate()
+                    .unwrap_err()
+                    .to_string()
+                    .contains("does not support EPLB")
+            );
+        }
     }
 
     #[test]

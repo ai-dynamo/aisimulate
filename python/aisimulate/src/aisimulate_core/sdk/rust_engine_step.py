@@ -22,7 +22,7 @@ import os
 import threading
 from collections import OrderedDict
 from collections.abc import Mapping
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, fields
 from dataclasses import field as dataclass_field
 from importlib import resources as pkg_resources
 from pathlib import Path
@@ -126,6 +126,7 @@ class ForwardPassPerfModelConfig:
     backend: str
     worker_type: str
     backend_version: str | None = None
+    fpm_profile: dict[str, Any] | None = dataclass_field(default=None, kw_only=True)
     tp: int = 1
     pp: int = 1
     attention_dp: int = 1
@@ -186,7 +187,12 @@ class ForwardPassPerfModelConfig:
 
 @dataclass(frozen=True)
 class ForwardPassPerfOptions:
-    """Runtime observation, regression, correction, and capacity controls."""
+    """Legacy controls; serialization retains only explicit constructor arguments.
+
+    Use ``ForwardPassPerfOptions(**(options.to_dict() | changes))`` to retain
+    omitted fields when modifying options. ``dataclasses.replace`` supplies
+    every field to the constructor, making all of its values explicit.
+    """
 
     max_observations: int = 64
     min_observations: int = 5
@@ -202,8 +208,25 @@ class ForwardPassPerfOptions:
     bucket_shape: tuple[int, int] | None = None
     regression_ridge_scale: float = 1e-9
 
+    def __new__(cls, *args: Any, **kwargs: Any) -> ForwardPassPerfOptions:
+        instance = super().__new__(cls)
+        # Capture presence before the dataclass initializer supplies defaults.
+        # Comparing values against defaults would discard explicit user choices.
+        positional = tuple(field.name for field in fields(cls))[: len(args)]
+        object.__setattr__(instance, "_explicit_fields", frozenset((*positional, *kwargs)))
+        return instance
+
+    def __setstate__(self, state: dict[str, Any]) -> None:
+        for name, value in state.items():
+            object.__setattr__(self, name, value)
+        if "_explicit_fields" not in state:
+            # Older pickles have saved values but no constructor-presence metadata.
+            object.__setattr__(
+                self, "_explicit_fields", frozenset(field.name for field in fields(self) if field.name in state)
+            )
+
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        return {name: value for name, value in asdict(self).items() if name in self._explicit_fields}
 
 
 class RustForwardPassPerfModel:
@@ -305,20 +328,14 @@ class RustForwardPassPerfModel:
         """
         import aisimulate_core
 
-        payload = config.to_dict() if isinstance(config, ForwardPassPerfModelConfig) else dict(config)
-        if payload.get("estimation_mode") != "fpm_regression" or payload.get("systems_paths"):
-            payload["systems_paths"] = _resolve_forward_pass_systems_paths(tuple(payload.get("systems_paths") or ()))
-        if "transfer_policy" in payload:
-            payload["transfer_policy"] = _resolve_forward_pass_transfer_policy(payload["transfer_policy"])
-        estimator_config = payload.get("estimator_config")
-        if isinstance(estimator_config, Mapping) and isinstance(estimator_config.get("features"), Mapping):
-            features = dict(estimator_config["features"])
-            for name in ("attention_kv_weight", "prefill_attention_pair_weight", "ffn_token_weight"):
-                weight = features.get(name)
-                if isinstance(weight, float) and not math.isfinite(weight):
-                    features[name] = "NaN" if math.isnan(weight) else "Infinity" if weight > 0 else "-Infinity"
-            payload["estimator_config"] = {**estimator_config, "features": features}
-        return cls(aisimulate_core.RustForwardPassPerfModel.best_available(_json_dumps(payload)))
+        return cls(aisimulate_core.RustForwardPassPerfModel.best_available(_forward_pass_config_json(config)))
+
+    @staticmethod
+    def normalize_config(config: ForwardPassPerfModelConfig | Mapping[str, Any]) -> dict[str, Any]:
+        """Expand and validate the Rust-owned configuration without constructing a model."""
+        import aisimulate_core
+
+        return json.loads(aisimulate_core.RustForwardPassPerfModel.normalize_config(_forward_pass_config_json(config)))
 
     def predict_prefill_latency(self, bs: int, isl: int, prefix: int = 0) -> float:
         """Return latency in ms for a qualified homogeneous graph-prefill shape.
@@ -346,6 +363,15 @@ class RustForwardPassPerfModel:
         Empty scheduled work returns ``0.0``.
         """
         return self._inner.estimate_forward_pass_time_ms(_json_dumps(metrics))
+
+    def estimate_forward_pass_detailed(self, metrics: dict[str, Any] | list[dict[str, Any]]) -> dict[str, Any]:
+        """Return timing with direct-FPM support, rank composition and correction.
+
+        Measurement weights explain raw lookups. ``ranks`` records mixed-pass
+        subtraction and ``max_rank`` identifies the native rank maximum, before
+        ``correction_factor``. Other estimators have no direct lookup evidence.
+        """
+        return json.loads(self._inner.estimate_forward_pass_detailed(_json_dumps(metrics)))
 
     def tune_with_fpms(self, iterations: dict[str, Any] | list[Any]) -> None:
         """API: ``model.tune_with_fpms(iterations) -> None``.
@@ -447,6 +473,23 @@ class RustForwardPassPerfModel:
 
 def _json_dumps(value: Any) -> str:
     return json.dumps(value, separators=(",", ":"), sort_keys=True)
+
+
+def _forward_pass_config_json(config: ForwardPassPerfModelConfig | Mapping[str, Any]) -> str:
+    payload = config.to_dict() if isinstance(config, ForwardPassPerfModelConfig) else dict(config)
+    if payload.get("estimation_mode") != "fpm_regression" or payload.get("systems_paths"):
+        payload["systems_paths"] = _resolve_forward_pass_systems_paths(tuple(payload.get("systems_paths") or ()))
+    if "transfer_policy" in payload:
+        payload["transfer_policy"] = _resolve_forward_pass_transfer_policy(payload["transfer_policy"])
+    estimator_config = payload.get("estimator_config")
+    if isinstance(estimator_config, Mapping) and isinstance(estimator_config.get("features"), Mapping):
+        features = dict(estimator_config["features"])
+        for name in ("attention_kv_weight", "prefill_attention_pair_weight", "ffn_token_weight"):
+            weight = features.get(name)
+            if isinstance(weight, float) and not math.isfinite(weight):
+                features[name] = "NaN" if math.isnan(weight) else "Infinity" if weight > 0 else "-Infinity"
+        payload["estimator_config"] = {**estimator_config, "features": features}
+    return _json_dumps(payload)
 
 
 def _optional_json_dumps(value: Mapping[str, Any] | None) -> str | None:

@@ -54,8 +54,8 @@ pub use fpm::{
     ForwardPassWorkerType, FpmRegressionConfig, RegressionFeatureWeights, SamplingConfig,
 };
 pub use fpm::{
-    CorrectionFactorBounds, CorrectionFeatureSpace, FpmInterpolationConfig, OpLevelConfig,
-    RegressionFitConfig, RegressionFitKind, SplineFitConfig, SplineSearchConfig,
+    CorrectionFactorBounds, CorrectionFeatureSpace, FpmInterpolationConfig, FpmInterpolationMethod,
+    OpLevelConfig, RegressionFitConfig, RegressionFitKind, SplineFitConfig, SplineSearchConfig,
     UnrecordedFpmQuantMode,
 };
 // Forward-pass metrics telemetry types and schema version, plus the
@@ -105,3 +105,8 @@ pub(crate) fn repo_relative(rel: &str) -> Option<PathBuf> {
 pub fn register_python(module: &pyo3::Bound<'_, pyo3::types::PyModule>) -> pyo3::PyResult<()> {
     py::register(module)
 }
+
+pub use fpm::{
+    DirectFpmQueryEvidence, ForwardPassEstimate, FpmCoordinates, FpmEstimateEvidence,
+    FpmMeasurementSupport, FpmQueryResolution, FpmRankEstimate,
+};

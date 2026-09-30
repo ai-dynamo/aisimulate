@@ -10,6 +10,7 @@ use crate::AicError;
 use crate::common::enums::{DatabaseMode, GemmQuantMode, MoeQuantMode, TransferKind};
 use crate::config::PerfSource;
 use crate::operators::Op;
+use crate::operators::fpm_forward::{FpmForwardOp, FpmInterpolation, FpmPhase};
 use crate::perf_database::moe::MoeKernel;
 use crate::perf_database::{PerfDatabase, kernel_source_ok, parquet_loader::PerfReader};
 
@@ -23,6 +24,28 @@ pub(super) fn validate<'a>(
     };
     for op in ops {
         check.op(op)?;
+    }
+    Ok(())
+}
+
+pub(super) fn validate_fpm(db: &PerfDatabase, fpm: &FpmForwardOp) -> Result<(), AicError> {
+    let cell = db
+        .fpm_forward
+        .select_cell(&fpm.match_identity, &fpm.model_path, fpm.dcp_size)?;
+    if fpm.interpolation == FpmInterpolation::Direct
+        && match fpm.phase {
+            FpmPhase::Prefill => cell.direct_prefill.is_empty(),
+            FpmPhase::Decode => cell.direct_decode.is_empty(),
+        }
+    {
+        let phase = fpm.phase.as_str();
+        return Err(AicError::PerfDatabase(format!(
+            "direct FPM {phase} interpolation has no genuine measurements for {:?} at {}. \
+             Collect genuine {phase} FPM rows for this model and identity, or provide a \
+             systems root containing them.",
+            fpm.model_path,
+            db.data_root.display(),
+        )));
     }
     Ok(())
 }
@@ -162,14 +185,7 @@ impl Availability<'_> {
                 }
             }
             TokenScale(scale) => return self.op(&scale.op),
-            FpmForward(fpm) => {
-                self.db.fpm_forward.select_cell(
-                    &fpm.match_identity,
-                    &fpm.model_path,
-                    fpm.dcp_size,
-                )?;
-                return Ok(());
-            }
+            FpmForward(fpm) => return validate_fpm(self.db, fpm),
             // These families have no analytic/empirical implementation.
             MoeAllToAll(_) | MoeExpertCompute(_) | Dsv4MegaMoe(_)
                 if !matches!(
@@ -444,6 +460,62 @@ mod tests {
     fn table(path: &std::path::Path) {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         write_parquet(path, &[Col::Str("kernel_source", vec!["fixture"])]);
+    }
+
+    #[test]
+    fn direct_fpm_readiness_requires_genuine_rows_only_for_requested_phases() {
+        use crate::perf_database::fpm_forward::tests::{RowSpec, default_identity, write_pair};
+
+        for missing_phase in [FpmPhase::Prefill, FpmPhase::Decode] {
+            for fake_only in [false, true] {
+                let root = systems();
+                let data = root.path().join("data/b200_sxm/vllm/0.25.1");
+                std::fs::create_dir_all(&data).unwrap();
+                let present_phase = match missing_phase {
+                    FpmPhase::Prefill => FpmPhase::Decode,
+                    FpmPhase::Decode => FpmPhase::Prefill,
+                };
+                let row = |phase: FpmPhase, regime| RowSpec {
+                    workload_kind: phase.as_str(),
+                    total_prefill_tokens: if phase == FpmPhase::Prefill { 8 } else { 0 },
+                    kv_seed_regime: Some(regime),
+                    ..RowSpec::default()
+                };
+                let mut rows = vec![row(present_phase, "real_kv")];
+                if fake_only {
+                    rows.push(row(missing_phase, "fake_fallback"));
+                }
+                write_pair(&data, &rows);
+                let db = PerfDatabase::load(root.path(), "b200_sxm", "vllm", "0.25.1").unwrap();
+                let op = |phase: FpmPhase| {
+                    Op::FpmForward(FpmForwardOp {
+                        dcp_size: None,
+                        name: format!("fpm_forward_{}", phase.as_str()),
+                        phase,
+                        model_path: "org/model-a".into(),
+                        match_identity: default_identity(4),
+                        weight_bytes: 0.0,
+                        verify_width: 1,
+                        interpolation: FpmInterpolation::Direct,
+                        sol_ops: vec![],
+                        original_fmha_quant_mode: None,
+                    })
+                };
+                let present = op(present_phase);
+                let missing = op(missing_phase);
+                // A single-phase operation requires only its own measurements.
+                validate(&db, [&present].into_iter()).unwrap();
+                for requested in [vec![&missing], vec![&present, &missing]] {
+                    let error = validate(&db, requested.into_iter())
+                        .unwrap_err()
+                        .to_string();
+                    assert!(error.contains(missing_phase.as_str()), "{error}");
+                    assert!(error.contains("no genuine measurements"), "{error}");
+                    assert!(error.contains("Collect genuine"), "{error}");
+                    assert!(error.contains(data.to_str().unwrap()), "{error}");
+                }
+            }
+        }
     }
 
     #[test]

@@ -510,12 +510,21 @@ completed; inspect its wheel and crate publish jobs.
 
 The independent [E2E Accuracy Matrix](../.github/workflows/e2e-accuracy.yml)
 evaluates the scheduled main SHA and every discovered `release/*` head against
-checksum-pinned public measurements. A branch matrix runs at most two campaigns
+the latest published InferenceX database dump. The resolver freezes one manifest
+with verified part checksums for all branches and retains it as a 90-day artifact.
+A branch matrix runs at most two campaigns
 at once, with separate wheels, artifacts, and provenance. Main reuses a qualified
 amd64 wheel for its exact SHA when available, even while nightly staging waits for
 approval; otherwise it builds one. Each release builds its own wheel. Both the
 AISimulate replay and bundled legacy AIC baseline use their branch's wheel. Manual
 runs evaluate one explicit `main` or `release/*` SHA from the trusted main workflow.
+
+Campaign jobs use the configured `CI_JOB_CONTAINER_IMAGE`, Python 3.12, and
+`sudo` to install the PostgreSQL 18 client from the official PGDG repository,
+plus `zstd` and `libgomp1`. The runner executes container steps as a non-root
+user, so a bare PostgreSQL image cannot install these dependencies with `apt-get`.
+The client reads the dump without starting a database server. Artifact upload
+uses the output directory so the runner container hook remaps the full path.
 
 Complete campaigns upload sanitized `e2e-accuracy-web-<branch-key>` artifacts.
 Pages validates the branch's successful qualification job in the artifact's exact

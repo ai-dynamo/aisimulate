@@ -323,6 +323,53 @@ nested paths. The supported namespaces are:
 - `correction`: `enabled` (true), independent `sampling`, `min_observations`
   (5), `factor_bounds` (min 0.5, max 2.0), and the existing `max_num_tokens`
   (8192), `max_batch_size` (512), and `max_kv_tokens` (2000000) ranges.
+- `fpm_interpolation.method`: `auto` (default), `sol`, or `direct`. Rust selects
+  SOL for a registered architecture, or direct interpolation for a verified
+  architecture without a registered class when a profile is supplied. Without
+  a profile, auto retains SOL. Explicit SOL requires a registered analytical
+  model; direct requires a profile and also supports registered architectures.
+
+The top-level `fpm_profile` contains the complete profile dictionary: pinned
+model revision, architecture, context length, expert count, deployment precision
+and topology, conservative resource bounds, and provenance. A profile requires
+an explicit literal `backend_version` that matches its selected deployment;
+slot aliases and omitted versions are rejected. This profile schema does not
+declare recorded DCP, so combining `fpm_profile` with an explicit `dcp` is
+rejected; measured DCP profiles without `fpm_profile` retain their existing route.
+Profile/schema and precision conflicts fail before estimator fallback. Omitted precision fields are filled
+from the profile and preserved in the resolved canonical configuration.
+
+Runtime normalization and construction verify the profile architecture against
+checkpoint `config.json` from the local model path or pinned remote revision
+before interpolation selection. Missing or malformed architecture metadata and
+mismatched declarations fail explicitly. This check reads configuration only:
+no weights or analytical graph are required. An architecture with verified
+metadata remains valid for direct interpolation without a registered analytical
+class. Schema-only profile and application configuration parsing remain lightweight.
+
+For measured-only timing, pass `estimation_mode="fpm_interpolation"`,
+`fallback_policy="deny"`, and
+`estimator_config={"fpm_interpolation": {"method": "direct"}}` together with
+`fpm_profile`. Direct interpolation requires `database_mode="SILICON"`, emits
+whole-forward native operations without SOL operations, and never constructs
+an analytical graph. Profile resource estimates and memory planning do not
+require timing data or a native timing model.
+
+Direct readiness requires genuine measurements for each operation's phase;
+prefill-only operations do not require decode rows, and vice versa. Construction
+continues to later systems roots when a required phase is unavailable. Query
+coverage still needs an exact point or supported interpolation. Cross-KV prefill
+uses the nearest same-batch lower and upper KV curves that both cover the
+requested token count, without a KV distance limit. SOL's site-distance guard
+does not apply to this direct bracket. See the [self-service coverage rules](fpm-self-service.md#choose-the-model-execution-route).
+
+The returned provenance pins both the selected estimation mode and interpolation
+method, alongside the complete normalized profile. Reusing its `config` keeps
+that selection across serialization and replay. Later timing coverage errors
+never switch estimator or interpolation method. A registered model's graph
+construction failure does not change SOL to direct; top-level fallback still
+follows the configured estimator ordering and policy.
+
 - `op_level`: optional `decode_workload_distribution` selects a measured decode-MoE distribution, and `prefill_graph_profile` selects a qualified direct-prefill graph composition. Saved configurations retain the resolved immutable `prefill_graph_profile_id`, which is validated on reload. Unknown fields are rejected.
 - `fpm_interpolation`: `text_only` (false) permits text prefill/decode profiles
   for multimodal architectures while retaining encoder weights. It does not
@@ -650,9 +697,10 @@ fidelity to the generic Replay cache/scheduler. This API change enables timing
 consumption, not full hybrid-cache simulation or multimodal prediction from
 text-only measurements.
 
-The positional engine-spec wire version remains unchanged: the engine identity
-is JSON-encoded and the FPM match identity is already variable-length. Legacy
-configuration and profiles without DCP remain accepted as unrecorded DCP.
+The positional engine-spec wire format is version 25, including the new FPM
+interpolation field. Recompile older binary EngineSpecs: schema 24 and other
+incompatible versions are rejected before payload decoding. Legacy configuration
+and profiles without DCP remain accepted as unrecorded DCP.
 
 ### Migrating saved configuration
 
@@ -664,6 +712,17 @@ allowed direct regression fallback; the migration preserves that two-mode
 order rather than adding interpolation. Legacy `forward_model: fpm` maps to
 `fpm_interpolation`, and `fallback_policy: error` maps to deny. The deprecated
 `regression` policy remains readable for these saved direct-fallback requests.
+Legacy `extra.fpm_profile` and `extra.fpm_interpolation` migrate to the full
+canonical profile and nested interpolation method; newly exported configuration
+uses only the canonical fields.
+
+Migration merges saved estimator controls with explicitly supplied legacy
+options before applying ordinary defaults. It preserves disjoint settings and
+accepts agreeing overlaps; contradictory explicit values report the canonical
+setting's path. The same rule applies to legacy and canonical interpolation
+methods, including an explicit `auto`. An omitted field does not override a
+saved value. `ForwardPassPerfOptions.to_dict()` serializes only arguments
+explicitly supplied to that legacy options object, including explicit defaults.
 
 The migration adapter rejects any non-null `prefill_graph_profile`, `prefill_graph_profile_id`, or `decode_workload_distribution` field, including an orphan profile ID. These selectors require the canonical `ForwardPassPerfModelConfig.estimator_config.op_level` configuration; pass a saved canonical configuration directly to `RustForwardPassPerfModel.best_available` to preserve its profile identity and supported API restrictions. Profile-free legacy configurations continue to migrate normally.
 
@@ -720,6 +779,31 @@ missing-data sentinel, not evidence of a zero-power operation. See the
 [modeled-power contract](power-model.md) for the latency-weighted coverage gate,
 aggregation rules, and public output boundary. Typed per-op energy alone does
 not make unified replay power available.
+
+## Direct FPM query evidence
+
+The same model returned by `RustForwardPassPerfModel.best_available(config)` exposes `estimate_forward_pass_detailed(metrics)` (also available on the Rust `ForwardPassPerfModel`). Its `latency_ms` equals `estimate_forward_pass_time_ms(metrics)`; the scalar API and four-element per-operation tuple APIs are unchanged.
+
+```python
+result = model.estimate_forward_pass_detailed({
+    "scheduled_requests": {
+        "num_prefill_requests": 1,
+        "sum_prefill_tokens": 512,
+        "sum_prefill_kv_tokens": 256,
+    },
+})
+for rank in result["ranks"]:
+    for query in rank["queries"]:
+        print(query["resolution"], query["query"], query["support"])
+```
+
+Each direct lookup records `exact_lookup`, `within_curve_interpolation`, `cross_kv_interpolation`, or `cross_batch_interpolation`, its phase and model, requested coordinates, raw latency, and supporting measured coordinates, latencies and weights. Coordinates are iteration totals: `batch_size`, `total_prefill_tokens` (null for decode), and `total_kv_read_tokens`. Nested interpolation weights are multiplied for each supporting measurement. This evidence preserves `source="silicon"`, whose meaning includes interpolation; it does not establish accuracy or observed CUDA graph dispatch.
+
+Weights describe a raw lookup, before later composition. Each rank records prefill, decode and mixed-pass baseline latencies, plus `marginal_decode_ms = max(decode_ms - decode_baseline_ms, 0)`. A baseline lookup has `decode_baseline=true`: its query is the paired decode request, but its support contains each selected row's actual measured minimum-KV point. `max_rank` is the first zero-based input index attaining the positive native maximum. The result separately records `native_latency_ms`, `correction_factor`, and final `latency_ms`. Empty work has no query evidence. Other estimators also have no direct lookup evidence; an unready regression retains `latency_ms=null`.
+
+Replay and prediction capture this evidence with `ReplayOutputRequirements(capture_performance_diagnostics=True)`; CLI prediction enables it with `--detail source` or `--detail time`. Use `--format json` or inspect the saved `prediction.json` for the query records and measured support; the default source text output shows operation sources and fallbacks. Public `run_recommendation(..., output_requirements=ReplayOutputRequirements(capture_performance_diagnostics=True))` and `Sweeper(..., output_requirements=...)` forward the same request to each candidate's replay. Evidence survives saved results under `ReplayReport.metadata["fpm_query_evidence"]` and each candidate's `provenance.runner_metadata["fpm_query_evidence"]`. The native replay report carries the same top-level key; source details include `fpm_estimates` on whole-model operations. FPM power remains unavailable and SOL comparison has an explicit unavailable reason.
+
+Captured replay records are grouped by timing provider and phase. Each `fpm_estimates` entry holds an `estimate`, an invocation `count`, and `latency_scale` for any synthetic replay speedup; raw support is never rescaled. Identical query coordinates within an immutable replay provider share one counted record. Counts describe timing invocations in the measurement epoch, not independent silicon observations or served requests. Distinct queries are retained without truncation, so capture memory grows with distinct coordinates; ordinary runs do not retain query histories. Aggregated topology has provider index 0; disaggregated topology orders prefill before decode.
 
 ## Static phase diagnostics
 

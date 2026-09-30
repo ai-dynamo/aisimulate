@@ -24,7 +24,7 @@ from .resources import GuardedRunnerFactory, discover_host, resolve_budget
 from .sweeper.afd_perfmodel import AFDPerformanceModel
 from .sweeper.config import SmartSearchConfig
 from .sweeper.provider import InfeasibleCandidate, SweepContext
-from .sweeper.replay import ReplaySpec, RunnerFactory
+from .sweeper.replay import ReplayOutputRequirements, ReplaySpec, RunnerFactory
 from .sweeper.result import SweepResult
 
 
@@ -37,6 +37,7 @@ def run_recommendation(
     providers: Mapping[str, SimulationConfigAdapter] | None = None,
     afd_performance_model: AFDPerformanceModel | None = None,
     show_progress: bool = True,
+    output_requirements: ReplayOutputRequirements | None = None,
 ) -> SweepResult:
     """Run a public recommendation through the existing Sweeper core."""
 
@@ -49,6 +50,7 @@ def run_recommendation(
         providers=providers,
         afd_performance_model=afd_performance_model,
         show_progress=show_progress,
+        output_requirements=output_requirements,
     )
     if not in_supervised_process():
         return supervised_recommendation(config, kwargs)
@@ -64,6 +66,7 @@ def _run_recommendation(
     providers: Mapping[str, SimulationConfigAdapter] | None = None,
     afd_performance_model: AFDPerformanceModel | None = None,
     show_progress: bool = True,
+    output_requirements: ReplayOutputRequirements | None = None,
 ) -> SweepResult:
     from .supervision import checkpoint
 
@@ -102,6 +105,7 @@ def _run_recommendation(
     adapter_sections = {name: provider.section for name, provider in (providers or {}).items()}
     sweeper = Sweeper(
         runner_factory=runner_factory,
+        output_requirements=output_requirements,
         providers=compiled_providers,
         show_progress=show_progress,
         prediction_config_factory=lambda sample, spec: _candidate_prediction(
@@ -151,8 +155,16 @@ def recommendation_to_sweeper(
         "hardware_sku": hardware,
         "gpu_budget": optimization.constraints.max_candidate_gpus,
         "min_gpu_budget": optimization.constraints.min_candidate_gpus,
-        "context_length": (resolve_model_context_length(model) if context == "max" else context),
+        "context_length": (
+            config.engine.fpm_profile.context_length
+            if context == "max" and config.engine.fpm_profile is not None
+            else resolve_model_context_length(model)
+            if context == "max"
+            else context
+        ),
     }
+    if engine.get("fpm_profile") is not None:
+        search_space["fpm_profile"] = engine["fpm_profile"]
     for name in (
         "database_mode",
         "transfer_policy",
@@ -798,6 +810,8 @@ def _candidate_prediction(
     }
     if sample.get("systems_paths") is not None:
         engine["systems_paths"] = sample["systems_paths"]
+    if sample.get("fpm_profile") is not None:
+        engine["fpm_profile"] = deepcopy(sample["fpm_profile"])
     for name in (*ENGINE_MODEL_CONTROL_FIELDS, "enable_chunked_prefill", "nextn_accepted"):
         if sample.get(name) is not None:
             engine[name] = sample[name]

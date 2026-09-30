@@ -10,7 +10,8 @@ use std::path::Path;
 use aisimulate_core::{
     AicEngine, AicEngineBuilder, AicError, BackendKind, DatabaseMode, EstimationMode,
     EstimatorConfig, ForwardPassPerfModel, ForwardPassPerfModelConfig,
-    ForwardPassRegressionStoreDiagnostics, ForwardPassWorkerType, KvCacheEstimateRequest,
+    ForwardPassRegressionStoreDiagnostics, ForwardPassWorkerType, FpmInterpolationMethod,
+    KvCacheEstimateRequest,
 };
 
 /// Compile the ergonomic engine builder without starting embedded Python.
@@ -69,6 +70,14 @@ pub fn regression_options() -> EstimatorConfig {
     config.features.prefill_attention_pair_weight = 3.0;
     config.features.ffn_token_weight = 4.0;
     config
+}
+
+/// Independent profile and interpolation method use the one construction API.
+pub fn profile_model(
+    mut config: ForwardPassPerfModelConfig,
+) -> Result<ForwardPassPerfModel, AicError> {
+    config.estimator_config.fpm_interpolation.method = FpmInterpolationMethod::Direct;
+    ForwardPassPerfModel::best_available(config)
 }
 
 pub fn best_available_model(
@@ -146,7 +155,8 @@ mod tests {
         // v22: observed MoE selection and exact prefill graph composites.
         // v23: ParallelMapping gained optional recorded DCP identity.
         // v24: FpmForwardOp carries typed DCP separately from matching strings.
-        assert_eq!(ENGINE_SPEC_SCHEMA_VERSION, 24);
+        // v25: SOL/direct interpolation selector combined with typed DCP.
+        assert_eq!(ENGINE_SPEC_SCHEMA_VERSION, 25);
         assert_eq!(FPM_VERSION, 1);
         assert_eq!(ForwardPassMetrics::default().version, FPM_VERSION);
     }

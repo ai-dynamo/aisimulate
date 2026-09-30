@@ -10,7 +10,13 @@ import pytest
 
 from aisimulate.config.common import ResourceConfig
 from aisimulate.resource_scheduler import InterruptedEvaluation, evaluate_waves
-from aisimulate.resources import GB, GuardedRunnerFactory, HostResources, ResourceEstimate, ResourceLimitError
+from aisimulate.resources import (
+    GB,
+    GuardedRunnerFactory,
+    HostResources,
+    ResourceEstimate,
+    ResourceLimitError,
+)
 
 
 @dataclass
@@ -41,7 +47,16 @@ def _evaluate(spec):
 def test_admission_splits_waves_and_skips_only_oversized_candidates():
     factory = _BudgetFactory()
     specs = [{"id": i, "cost": cost} for i, cost in enumerate([1, 1, 3, 1])]
-    results = dict(evaluate_waves(specs, factory=factory, initializer=_init, evaluate=_evaluate, workers=4, timeout=10))
+    results = dict(
+        evaluate_waves(
+            specs,
+            factory=factory,
+            initializer=_init,
+            evaluate=_evaluate,
+            workers=4,
+            timeout=10,
+        )
+    )
     assert results[0] == {"id": 0}
     assert results[1] == {"id": 1}
     assert isinstance(results[2], InterruptedEvaluation)
@@ -50,7 +65,9 @@ def test_admission_splits_waves_and_skips_only_oversized_candidates():
     assert factory.admitted == [[0, 1], [3]]
 
 
-def test_checkpoint_failure_stops_before_workers_without_reclassifying_candidates(monkeypatch):
+def test_checkpoint_failure_stops_before_workers_without_reclassifying_candidates(
+    monkeypatch,
+):
     from aisimulate import resource_scheduler as scheduler
 
     factory = _BudgetFactory()
@@ -66,7 +83,16 @@ def test_checkpoint_failure_stops_before_workers_without_reclassifying_candidate
     monkeypatch.setattr(scheduler, "ProcessPoolExecutor", unexpected_pool)
     specs = [{"id": i, "cost": 1} for i in range(2)]
     with pytest.raises(ResourceLimitError) as caught:
-        next(evaluate_waves(specs, factory=factory, initializer=_init, evaluate=_evaluate, workers=2, timeout=10))
+        next(
+            evaluate_waves(
+                specs,
+                factory=factory,
+                initializer=_init,
+                evaluate=_evaluate,
+                workers=2,
+                timeout=10,
+            )
+        )
     assert caught.value is failure
     assert factory.admitted == [[0, 1]]
 
@@ -74,7 +100,16 @@ def test_checkpoint_failure_stops_before_workers_without_reclassifying_candidate
 def test_resource_retries_are_bounded_and_preserve_completed_work():
     factory = _BudgetFactory()
     specs = [{"id": 0, "cost": 1}, {"id": 1, "cost": 1, "refuse": True}]
-    results = list(evaluate_waves(specs, factory=factory, initializer=_init, evaluate=_evaluate, workers=2, timeout=10))
+    results = list(
+        evaluate_waves(
+            specs,
+            factory=factory,
+            initializer=_init,
+            evaluate=_evaluate,
+            workers=2,
+            timeout=10,
+        )
+    )
     assert dict(results)[0] == {"id": 0}
     assert dict(results)[1].resource_limited
     assert len(results) == 2
@@ -139,7 +174,14 @@ def test_live_pressure_retries_only_unfinished_work_after_cleanup(monkeypatch):
     monkeypatch.setattr(scheduler, "close_pool", stop)
     specs = [{"id": i, "cost": 1} for i in range(2)]
     results = list(
-        evaluate_waves(specs, factory=Factory(), initializer=_init, evaluate=_evaluate, workers=2, timeout=2)
+        evaluate_waves(
+            specs,
+            factory=Factory(),
+            initializer=_init,
+            evaluate=_evaluate,
+            workers=2,
+            timeout=2,
+        )
     )
     assert results == [(0, {"id": 0}), (1, {"id": 1})]
     assert waves == [[0, 1], [1]]
@@ -204,5 +246,157 @@ def test_readiness_counts_actual_workers_when_the_pool_reuses_one(monkeypatch):
     monkeypatch.setattr(scheduler, "wait", advance)
     monkeypatch.setattr(scheduler.time, "monotonic", lambda: elapsed[0])
     specs = [{"id": i, "cost": 1} for i in range(2)]
-    results = dict(evaluate_waves(specs, factory=factory, initializer=_init, evaluate=_evaluate, workers=2, timeout=2))
+    results = dict(
+        evaluate_waves(
+            specs,
+            factory=factory,
+            initializer=_init,
+            evaluate=_evaluate,
+            workers=2,
+            timeout=2,
+        )
+    )
     assert results == {0: {"id": 0}, 1: {"id": 1}}
+
+
+def test_sibling_finished_during_a_yield_pause_is_not_reported_timed_out(monkeypatch):
+    """Regression test: evaluate_waves() suspends at each ``yield index, result``
+    while the caller (Sweeper._record's on_candidate callback) runs. If a
+    sibling future completes during that pause, it must still be reported as
+    its real outcome, not misclassified as timed out just because the
+    deadline was crossed while the callback for an earlier candidate was
+    running. ``fake_wait`` mirrors real ``wait()`` semantics by checking
+    ``Future.done()`` directly rather than hardcoding which call returns
+    what, so the fakes can't quietly assert a timeline a real ``Future``
+    couldn't produce.
+    """
+    from concurrent.futures import Future
+    from pathlib import Path
+
+    from aisimulate import resource_scheduler as scheduler
+
+    future0 = Future()
+    future1 = Future()
+
+    class Pool:
+        def __init__(self, **kwargs):
+            self._processes = {123: object()}
+            Path(kwargs["initargs"][2], "123").touch()
+
+        def submit(self, evaluate, spec):
+            return future0 if spec["id"] == 0 else future1
+
+    def fake_wait(futures, *, timeout, return_when):
+        done = {future for future in futures if future.done()}
+        return done, set(futures) - done
+
+    elapsed = [0.0]
+    factory = _BudgetFactory()
+    monkeypatch.setattr(scheduler, "ProcessPoolExecutor", Pool)
+    monkeypatch.setattr(scheduler, "close_pool", lambda pool: None)
+    monkeypatch.setattr(scheduler, "terminate_pool", lambda pool: None)
+    monkeypatch.setattr(scheduler, "wait", fake_wait)
+    monkeypatch.setattr(scheduler.time, "monotonic", lambda: elapsed[0])
+    specs = [{"id": 0, "cost": 1}, {"id": 1, "cost": 1}]
+    gen = evaluate_waves(
+        specs,
+        factory=factory,
+        initializer=_init,
+        evaluate=_evaluate,
+        workers=2,
+        timeout=1.0,
+    )
+
+    future0.set_result({"id": 0})
+    assert next(gen) == (0, {"id": 0})
+
+    # Simulate candidate 1 finishing, and the deadline being crossed, while
+    # the (simulated) on_candidate callback for candidate 0 is running --
+    # i.e. during the pause at the yield above.
+    future1.set_result({"id": 1})
+    elapsed[0] = 1.5
+
+    assert next(gen) == (1, {"id": 1}), (
+        "candidate 1 finished before the callback for candidate 0 returned and "
+        "must be reported as feasible, not swept into the deadline-exceeded "
+        "InterruptedEvaluation just because the clock advanced while that "
+        "callback was running"
+    )
+
+    with pytest.raises(StopIteration):
+        next(gen)
+
+
+def test_multiple_siblings_finishing_across_successive_yield_pauses_are_drained(
+    monkeypatch,
+):
+    """Follow-up regression: a single extra non-blocking drain after the first
+    wait only catches one sibling completing during one pause. With three or
+    more active futures, a second sibling can finish while the caller is
+    still handling the *first* extra-drained yield, so the drain has to
+    repeat until a poll comes back empty rather than run once and move on to
+    checking pressure/the deadline. Candidate 1's completion here is
+    discovered during the pause after candidate 0's yield, and candidate 2's
+    is discovered during the pause after candidate 1's yield -- both before
+    evaluate_waves ever reaches the deadline check, even though the clock has
+    already crossed it by the time candidate 2 is drained.
+    """
+    from concurrent.futures import Future
+    from pathlib import Path
+
+    from aisimulate import resource_scheduler as scheduler
+
+    future0, future1, future2 = Future(), Future(), Future()
+
+    class Pool:
+        def __init__(self, **kwargs):
+            self._processes = {123: object()}
+            Path(kwargs["initargs"][2], "123").touch()
+
+        def submit(self, evaluate, spec):
+            return {0: future0, 1: future1, 2: future2}[spec["id"]]
+
+    def fake_wait(futures, *, timeout, return_when):
+        done = {future for future in futures if future.done()}
+        return done, set(futures) - done
+
+    elapsed = [0.0]
+    factory = _BudgetFactory(capacity=3)
+    monkeypatch.setattr(scheduler, "ProcessPoolExecutor", Pool)
+    monkeypatch.setattr(scheduler, "close_pool", lambda pool: None)
+    monkeypatch.setattr(scheduler, "terminate_pool", lambda pool: None)
+    monkeypatch.setattr(scheduler, "wait", fake_wait)
+    monkeypatch.setattr(scheduler.time, "monotonic", lambda: elapsed[0])
+    specs = [{"id": i, "cost": 1} for i in range(3)]
+    gen = evaluate_waves(
+        specs,
+        factory=factory,
+        initializer=_init,
+        evaluate=_evaluate,
+        workers=3,
+        timeout=1.0,
+    )
+
+    future0.set_result({"id": 0})
+    assert next(gen) == (0, {"id": 0})
+
+    # Candidate 1 finishes during the pause for candidate 0's yield.
+    future1.set_result({"id": 1})
+    assert next(gen) == (1, {"id": 1})
+
+    # Candidate 2 finishes during the pause for candidate 1's yield -- the
+    # *second* extra pause -- with the deadline already crossed by the time
+    # evaluate_waves resumes. Draining it here, without the test making an
+    # extra explicit call, is exactly what the repeat-until-empty loop is for.
+    future2.set_result({"id": 2})
+    elapsed[0] = 1.5
+
+    assert next(gen) == (2, {"id": 2}), (
+        "candidate 2 finished during the pause for candidate 1's yield and "
+        "must be drained in the same non-blocking pass, not reported as "
+        "timed out because the deadline was already crossed by the time "
+        "evaluate_waves got back to checking it"
+    )
+
+    with pytest.raises(StopIteration):
+        next(gen)

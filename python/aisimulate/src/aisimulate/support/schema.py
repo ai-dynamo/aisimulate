@@ -13,6 +13,7 @@ from packaging.version import Version
 from pydantic import Field, field_validator, model_validator
 
 from aisimulate.config.common import PositiveFiniteFloat, PositiveStrictInt, StrictModel, load_yaml
+from aisimulate.fpm_profile import FpmModelProfile
 
 
 class SupportIdentity(StrictModel):
@@ -96,6 +97,9 @@ class WorkloadSpec(StrictModel):
 
 class SearchProfile(StrictModel):
     tensor_parallel: PositiveStrictInt = 1
+    attention_data_parallel: PositiveStrictInt | None = None
+    moe_tensor_parallel: PositiveStrictInt | None = None
+    moe_expert_parallel: PositiveStrictInt | None = None
     context_length: PositiveStrictInt = 16384
     max_candidates: int = Field(default=1, strict=True, ge=1, le=2)
     objective: Literal[
@@ -152,13 +156,84 @@ class SupportRequest(StrictModel):
     identity: SupportIdentity
     workload: WorkloadSpec = Field(default_factory=WorkloadSpec)
     search: SearchProfile = Field(default_factory=SearchProfile)
+    fpm_profile: FpmModelProfile | None = None
+
+    def parallelism(self, replicas: int = 1) -> dict[str, int]:
+        search = self.search
+        return {
+            "replicas": replicas,
+            "tensor": search.tensor_parallel,
+            "pipeline": 1,
+            "attention_data": search.attention_data_parallel or 1,
+            "moe_tensor": search.moe_tensor_parallel
+            or (search.tensor_parallel if self.identity.model_kind == "moe" else 1),
+            "moe_expert": search.moe_expert_parallel or 1,
+        }
+
+    @property
+    def worker_gpus(self) -> int:
+        parallel = self.parallelism()
+        return parallel["tensor"] * parallel["attention_data"]
+
+    @property
+    def parallel_preset(self) -> str:
+        parallel = self.parallelism()
+        if self.identity.model_kind == "dense":
+            return "tp"
+        if parallel["attention_data"] > 1:
+            return "dep"
+        return "tep" if parallel["moe_expert"] > 1 else "pure_tp"
+
+    def profile_deployment(self):
+        if self.fpm_profile is None:
+            return None
+        parallel = self.parallelism()
+        return self.fpm_profile.select(
+            model=self.identity.model,
+            system=self.identity.gpu,
+            backend=self.identity.framework,
+            backend_version=self.identity.framework_version,
+            tp_size=parallel["tensor"],
+            pp_size=parallel["pipeline"],
+            attention_dp_size=parallel["attention_data"],
+            moe_tp_size=parallel["moe_tensor"],
+            moe_ep_size=parallel["moe_expert"],
+        )
+
+    def scheduler_limits(self) -> dict[str, int]:
+        """Rank-local limits shared by generated configs and collection bounds."""
+        deployment = self.profile_deployment()
+        if deployment is None:
+            return {"max_batched_tokens": 8192, "max_sequences": 256}
+        return {
+            "max_batched_tokens": min(8192, deployment.resources.max_num_tokens),
+            "max_sequences": min(self.workload.concurrency, deployment.resources.max_batch_size),
+        }
 
     @model_validator(mode="after")
     def _shape(self) -> SupportRequest:
-        if self.search.tensor_parallel > self.identity.gpus_per_node:
-            raise ValueError("search.tensor_parallel must fit within gpus_per_node")
+        parallel = self.parallelism()
+        tp, dp, mtp, ep = (parallel[name] for name in ("tensor", "attention_data", "moe_tensor", "moe_expert"))
+        if self.identity.model_kind == "dense":
+            valid = dp == mtp == ep == 1
+        else:
+            valid = (
+                (dp == 1 and mtp == tp and ep == 1) or (tp == mtp == 1 and ep == dp) or (dp == mtp == 1 and ep == tp)
+            )
+        if not valid:
+            raise ValueError("onboarding requires a complete TP, DEP, or TEP topology; set the attention and MoE sizes")
+        if self.worker_gpus > self.identity.gpus_per_node:
+            raise ValueError("search.tensor_parallel * attention_data_parallel must fit within gpus_per_node")
         if self.workload.input_tokens + self.workload.output_tokens > self.search.context_length:
             raise ValueError("search.context_length must cover the input and output tokens")
+        if self.fpm_profile is not None:
+            self.profile_deployment()
+            if self.identity.model_revision != self.fpm_profile.model_revision:
+                raise ValueError("identity.model_revision must match fpm_profile.model_revision")
+            if (self.fpm_profile.num_experts > 0) != (self.identity.model_kind == "moe"):
+                raise ValueError("identity.model_kind must match fpm_profile.num_experts")
+            if self.search.context_length > self.fpm_profile.context_length:
+                raise ValueError("search.context_length exceeds fpm_profile.context_length")
         return self
 
     @classmethod
