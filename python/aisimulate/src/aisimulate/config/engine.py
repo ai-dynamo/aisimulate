@@ -16,6 +16,8 @@ from .common import (
     IntegerRange,
     NumericRange,
     StrictModel,
+    SystemsPath,
+    SystemsRoot,
     is_active_engine_model_control,
 )
 
@@ -72,7 +74,7 @@ class AFDSearchRecommendationConfig(StrictModel):
     max_candidates: PositiveInt = 10_000
 
 
-class ParallelismPredictionConfig(StrictModel):
+class ParallelismPresetConfig(StrictModel):
     replicas: PositiveInt = 1
     tensor: PositiveInt = 1
     pipeline: PositiveInt = 1
@@ -83,10 +85,15 @@ class ParallelismPredictionConfig(StrictModel):
     # splits prefill tokens across extra attention ranks; decode stays replicated
     # on them. Widens the worker like attention_data does.
     prefill_context: PositiveInt = 1
+
+
+class ParallelismPredictionConfig(ParallelismPresetConfig):
     # Decode context parallelism (vLLM ``-dcp`` / SGLang ``--dcp-size``): stripes the
     # decode KV cache across ranks that already belong to the attention group, so it
-    # adds no GPUs. Aggregated workers accept at most one of the two knobs above 1.
-    decode_context: PositiveInt = 1
+    # adds no GPUs. ``None`` (not requested) is priced as 1 but keeps the FPM cell
+    # identity on unrecorded-DCP profiles; an explicit 1 selects recorded-DCP1
+    # profiles. Aggregated workers accept at most one of the two knobs above 1.
+    decode_context: Annotated[int, Field(strict=True, gt=0)] | None = None
 
 
 class SchedulerPredictionConfig(StrictModel):
@@ -256,13 +263,19 @@ class NgramSpeculationConfig(StrictModel):
 
 
 class TimingConfig(StrictModel):
+    gemm_quant_mode: str | None = None
+    moe_quant_mode: str | None = None
+    fmha_quant_mode: str | None = None
+    kvcache_quant_mode: str | None = None
+    comm_quant_mode: str | None = None
+    attention_backend: str | None = None
     type: Literal["default", "fixed", "polynomial"] = "default"
     forward_model: Literal["op_level", "fpm"] = Field(default="op_level", exclude=True)
     fpm_parquet_path: str | None = None
     estimation_mode: Literal["auto", "op_level", "fpm_interpolation", "fpm_regression"] | None = None
     fallback_policy: Literal["deny", "allow"] | None = None
     estimator_config: dict[str, Any] | None = None
-    systems_paths: list[str] | None = Field(default=None, min_length=1)
+    systems_paths: list[SystemsRoot] | None = Field(default=None, min_length=1)
     database_mode: Literal["SILICON", "HYBRID", "EMPIRICAL", "SOL"] | None = None
     transfer_policy: str | list[str] | None = None
 
@@ -287,6 +300,18 @@ class TimingConfig(StrictModel):
 
     @model_validator(mode="after")
     def _validate_timing(self) -> TimingConfig:
+        if self.type != "default" and any(
+            getattr(self, field) is not None
+            for field in (
+                "gemm_quant_mode",
+                "moe_quant_mode",
+                "fmha_quant_mode",
+                "kvcache_quant_mode",
+                "comm_quant_mode",
+                "attention_backend",
+            )
+        ):
+            raise ValueError("quantization and backend identity require default timing")
         if self.estimation_mode == "fpm_interpolation":
             self.forward_model = "fpm"
         elif self.estimation_mode == "op_level":
@@ -398,24 +423,24 @@ class EstimatorPolicyConfig(StrictModel):
 
     database_mode: Literal["SILICON", "HYBRID", "EMPIRICAL", "SOL"] = "SILICON"
     transfer_policy: str | list[str] | None = None
-    systems_paths: list[str] | None = None
+    systems_paths: list[SystemsRoot] | None = Field(default=None, min_length=1)
+    systems_path: SystemsPath | None = Field(default=None, exclude=True)
     estimation_mode: Literal["auto", "op_level", "fpm_interpolation", "fpm_regression"] = "auto"
     fallback_policy: Literal["deny", "allow"] = "deny"
     estimator_config: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _migrate_systems_path(self):
+        if self.systems_path is not None:
+            if self.systems_paths is not None and self.systems_paths != [self.systems_path]:
+                raise ValueError("systems_path conflicts with systems_paths")
+            self.systems_paths = [self.systems_path]
+        return self
 
     @field_validator("database_mode", mode="before")
     @classmethod
     def _normalize_database_mode(cls, value):
         return value.upper() if isinstance(value, str) else value
-
-    @field_validator("systems_paths")
-    @classmethod
-    def _nonempty_system_roots(cls, value):
-        if value is None:
-            return value
-        if not value or any(not path.strip() for path in value):
-            raise ValueError("systems_paths must contain at least one nonempty root")
-        return value
 
     @model_validator(mode="after")
     def _supported_estimator_policies(self):
@@ -425,7 +450,6 @@ class EstimatorPolicyConfig(StrictModel):
         custom_policy = (
             self.database_mode != "SILICON"
             or self.transfer_policy is not None
-            or self.systems_paths not in (None, ["default"])
             or self.estimation_mode != "auto"
             or self.fallback_policy != "deny"
             or bool(self.estimator_config)
@@ -435,6 +459,9 @@ class EstimatorPolicyConfig(StrictModel):
         )
         roles = [getattr(workers, role, None) for role in ("aggregated", "prefill", "decode")]
         unsupported_provider = "afd" in modes or getattr(workers, "encoder", None) is not None
+        if self.systems_paths not in (None, ["default"]) and unsupported_provider:
+            unsupported = "AFD" if "afd" in modes else "analytical encoder pools"
+            raise ValueError(f"engine.systems_paths does not support {unsupported}")
         if unsupported_provider and any(
             worker is not None
             and (
@@ -536,7 +563,7 @@ ParallelDomain = PositiveInt | Choices[PositiveInt] | IntegerRange
 
 
 class ParallelismRecommendationConfig(StrictModel):
-    preset: Literal["default", False] | list[ParallelismPredictionConfig] | dict[str, Any] = "default"
+    preset: Literal["default", False] | list[ParallelismPresetConfig] | dict[str, Any] = "default"
     replicas: ParallelDomain | None = None
     tensor: ParallelDomain | None = None
     pipeline: ParallelDomain | None = None
@@ -649,6 +676,25 @@ class WorkerRecommendationConfig(StrictModel):
     kv_cache: KvCacheRecommendationConfig = Field(default_factory=KvCacheRecommendationConfig)
     timing: TimingConfig = Field(default_factory=TimingConfig)
     startup_seconds: float = Field(default=0.0, ge=0.0)
+
+    @model_validator(mode="after")
+    def _reject_timing_identity_overrides(self):
+        if any(
+            getattr(self.timing, field) is not None
+            for field in (
+                "gemm_quant_mode",
+                "moe_quant_mode",
+                "fmha_quant_mode",
+                "kvcache_quant_mode",
+                "comm_quant_mode",
+                "attention_backend",
+            )
+        ):
+            raise ValueError(
+                "explicit timing quantization/backend identity is prediction-only; "
+                "recommendation preflight does not support these overrides"
+            )
+        return self
 
 
 class EncoderRecommendationConfig(StrictModel):

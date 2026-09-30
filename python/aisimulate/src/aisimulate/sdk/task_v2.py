@@ -593,7 +593,7 @@ class Task:
     # (tp, pp, dp, moe_tp, moe_ep, cp) tuple is unpacked positionally by the
     # sweep/pareto code, so widening it is a separate change. Combining it with
     # a prefill-CP candidate above 1 is rejected in ``iter_parallel("agg")``.
-    dcp_size: int = 1
+    dcp_size: int | None = None
 
     # ====== 3. Agg search space ======
     agg_num_gpu_candidates: list[int] | None = None
@@ -613,7 +613,7 @@ class Task:
     prefill_enable_chunked_prefill: bool = False
     prefill_enable_eplb: bool = False
     # Decode CP on a prefill worker is allowed but pointless; carried for symmetry.
-    prefill_dcp_size: int = 1
+    prefill_dcp_size: int | None = None
     prefill_gemm_quant_mode: common.GEMMQuantMode | None = None
     prefill_moe_quant_mode: common.MoEQuantMode | None = None
     prefill_kvcache_quant_mode: common.KVCacheQuantMode | None = None
@@ -635,7 +635,7 @@ class Task:
     decode_backend_name: str = "trtllm"
     decode_backend_version: str | None = None
     # Decode context parallelism for the decode worker (its natural home).
-    decode_dcp_size: int = 1
+    decode_dcp_size: int | None = None
     decode_enable_wideep: bool = False
     decode_enable_eplb: bool = False
     decode_gemm_quant_mode: common.GEMMQuantMode | None = None
@@ -2111,7 +2111,9 @@ class Task:
         """
         num_gpus_per_node = self._num_gpus_per_node(role)
         model_config = config.ModelConfig(
-            tp_size=parallel[0] if parallel is not None else 1,
+            # The template config's TP is a placeholder; ModelConfig requires it to
+            # be divisible by the role's dcp_size, so the placeholder is the dcp.
+            tp_size=parallel[0] if parallel is not None else (self._role_attr(role, "dcp_size") or 1),
             pp_size=parallel[1] if parallel is not None else 1,
             attention_dp_size=parallel[2] if parallel is not None else 1,
             moe_tp_size=parallel[3] if parallel is not None else 1,
@@ -2238,7 +2240,9 @@ class Task:
         # refuses a replicated-PCP prefill next to a DCP-sharded decode and
         # needs the two DCP sizes to divide one another. Fail loud instead of
         # silently dropping the user's prefill-CP candidates.
-        dcp_size = self._role_attr(role, "dcp_size")
+        # None means "not requested" (priced as 1); it stays None on the ModelConfig
+        # so the FPM cell identity can tell unrecorded DCP from recorded DCP=1.
+        dcp_size = self._role_attr(role, "dcp_size") or 1
         if role == "agg" and dcp_size > 1 and any(c > 1 for c in cp_list):
             raise ValueError(
                 f"aggregated workers support at most one of prefill CP and decode CP above 1; got "
@@ -2253,7 +2257,7 @@ class Task:
                     f"prefill_cp_candidates=[{dcp_size}] (got {cp_list}); a prefill engine gains nothing "
                     "from striping its KV on its own"
                 )
-            decode_dcp = self.decode_dcp_size
+            decode_dcp = self.decode_dcp_size or 1
             if self.prefill_backend_name == "vllm" and decode_dcp > 1:
                 if dcp_size == 1 and any(c > 1 for c in cp_list):
                     raise ValueError(

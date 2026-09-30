@@ -94,6 +94,9 @@ pub struct ForwardPassPerfModelConfig {
     pub pp: u32,
     #[serde(default = "one", alias = "attention_dp_size")]
     pub attention_dp: u32,
+    /// Recorded decode context parallelism within the TP group.
+    #[serde(default)]
+    pub dcp: Option<u32>,
     #[serde(default)]
     pub moe_tp_size: Option<u32>,
     #[serde(default)]
@@ -103,11 +106,6 @@ pub struct ForwardPassPerfModelConfig {
     /// (`tp * attention_dp * cp_size == moe_tp_size * moe_ep_size`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cp_size: Option<u32>,
-    /// Decode context parallelism (vLLM `-dcp`, SGLang `--dcp-size`): stripes the
-    /// decode KV cache across ranks already in the attention group; adds no GPUs
-    /// and never enters the width identity.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub dcp_size: Option<u32>,
 
     #[serde(default, alias = "gemm_dtype")]
     pub gemm_quant_mode: Option<String>,
@@ -181,10 +179,10 @@ impl ForwardPassPerfModelConfig {
             tp: 1,
             pp: 1,
             attention_dp: 1,
+            dcp: None,
             moe_tp_size: None,
             moe_ep_size: None,
             cp_size: None,
-            dcp_size: None,
             gemm_quant_mode: None,
             moe_quant_mode: None,
             fmha_quant_mode: None,
@@ -235,6 +233,37 @@ impl ForwardPassPerfModelConfig {
     }
 
     pub(crate) fn validate(&self) -> Result<(), AicError> {
+        self.validate_prefill_graph_profile()?;
+        if let Some(distribution) = &self.estimator_config.op_level.decode_workload_distribution {
+            let selected =
+                crate::perfmodel::observed_moe_profile::DecodeProfile::from_distribution(
+                    distribution,
+                )?;
+            if self.moe_kernel_source.is_some() {
+                return Err(
+                    selected.error("moe_kernel_source cannot override an observed decode profile")
+                );
+            }
+            if self.estimation_mode != EstimationMode::OpLevel
+                || self.fallback_policy != ForwardPassFallbackPolicy::Deny
+                || self
+                    .estimator_config
+                    .op_level
+                    .prefill_graph_profile
+                    .is_some()
+            {
+                return Err(selected.error(
+                    "requires explicit op_level and fallback deny without a prefill graph profile",
+                ));
+            }
+            crate::perfmodel::observed_moe_profile::validate_runtime(
+                selected,
+                &self.system,
+                self.backend.as_str(),
+                self.backend_version.as_deref().unwrap_or(""),
+                self.database_mode,
+            )?;
+        }
         if self.model.trim().is_empty() {
             return Err(invalid_config("model cannot be empty"));
         }
@@ -258,9 +287,22 @@ impl ForwardPassPerfModelConfig {
         if self.tp == 0 || self.pp == 0 || self.attention_dp == 0 {
             return Err(invalid_config("tp, pp, and attention_dp must be positive"));
         }
-        if self.cp_size == Some(0) || self.dcp_size == Some(0) {
-            return Err(invalid_config("cp_size and dcp_size must be positive"));
+        if self.cp_size == Some(0) {
+            return Err(invalid_config("cp_size must be positive"));
         }
+        // Decode CP stripes the KV inside the TP group: it must divide tp and
+        // never enters the width identity below.
+        if self.dcp.is_some_and(|dcp| dcp == 0 || self.tp % dcp != 0) {
+            return Err(invalid_config("dcp must be positive and divide tp"));
+        }
+        self.estimator_config
+            .fpm_interpolation
+            .validate_quant_modes(
+                self.fmha_quant_mode
+                    .as_deref()
+                    .or(self.fpm_fmha_quant_mode.as_deref()),
+                self.comm_quant_mode.as_deref(),
+            )?;
         if self.moe_tp_size.is_some() != self.moe_ep_size.is_some() {
             return Err(invalid_config(
                 "moe_tp_size and moe_ep_size must be configured together",
@@ -365,9 +407,60 @@ impl ForwardPassPerfModelConfig {
         }
         self.estimator_config.validate()
     }
+
+    pub(crate) fn resolve_prefill_graph_profile(&mut self) -> Result<(), AicError> {
+        self.validate_prefill_graph_profile()?;
+        if self
+            .estimator_config
+            .op_level
+            .prefill_graph_profile
+            .is_some()
+        {
+            self.estimator_config.op_level.prefill_graph_profile_id =
+                Some(crate::perf_database::prefill_graph::PROFILE_ID.to_owned());
+        }
+        Ok(())
+    }
+
+    fn validate_prefill_graph_profile(&self) -> Result<(), AicError> {
+        use crate::perf_database::prefill_graph;
+        let config = &self.estimator_config.op_level;
+        match (
+            &config.prefill_graph_profile,
+            &config.prefill_graph_profile_id,
+        ) {
+            (None, None) => return Ok(()),
+            (Some(name), id) if name == prefill_graph::PROFILE_NAME => {
+                if let Some(id) = id {
+                    prefill_graph::validate_id(id)?;
+                }
+            }
+            _ => {
+                return Err(prefill_graph::error(
+                    "invalid profile name or orphan profile identity",
+                ));
+            }
+        }
+        if self.moe_kernel_source.is_some() {
+            return Err(prefill_graph::error(
+                "moe_kernel_source cannot override a prefill graph profile",
+            ));
+        }
+        if self.estimation_mode != EstimationMode::OpLevel
+            || self.fallback_policy != ForwardPassFallbackPolicy::Deny
+            || self.database_mode != DatabaseMode::Silicon
+            || self.worker_type != ForwardPassWorkerType::Prefill
+            || self.estimator_config.correction.enabled
+        {
+            return Err(prefill_graph::error(
+                "requires explicit op_level, fallback deny, SILICON, prefill worker and disabled correction",
+            ));
+        }
+        Ok(())
+    }
 }
 
-fn invalid_config(message: impl Into<String>) -> AicError {
+pub(super) fn invalid_config(message: impl Into<String>) -> AicError {
     AicError::InvalidEngineConfig(format!(
         "invalid forward pass perf model config: {}",
         message.into()
@@ -583,11 +676,11 @@ mod tests {
 
         // Prefill CP widens the attention side to match the MoE width ...
         let mut cfg = config(serde_json::json!({
-            "moe_tp_size": 1, "moe_ep_size": 8, "cp_size": 8, "dcp_size": 8
+            "moe_tp_size": 1, "moe_ep_size": 8, "cp_size": 8, "dcp": 1
         }));
         cfg.validate().unwrap();
         let json = serde_json::to_string(&cfg).unwrap();
-        assert!(json.contains("\"cp_size\":8") && json.contains("\"dcp_size\":8"));
+        assert!(json.contains("\"cp_size\":8") && json.contains("\"dcp\":1"));
         assert_eq!(
             serde_json::from_str::<ForwardPassPerfModelConfig>(&json).unwrap(),
             cfg
@@ -597,7 +690,7 @@ mod tests {
         assert!(cfg.validate().is_err());
         // Zero is rejected like every other parallel size.
         cfg.cp_size = Some(8);
-        cfg.dcp_size = Some(0);
+        cfg.dcp = Some(0);
         assert!(cfg.validate().is_err());
     }
 
@@ -628,6 +721,105 @@ mod tests {
                 serde_json::json!({"fpm_regression": {"unknown": 1}})
             )
             .is_err()
+        );
+    }
+    #[test]
+    fn recorded_dcp_is_validated_and_survives_round_trip() {
+        let cfg =
+            config(serde_json::json!({"tp": 8, "dcp": 8, "moe_tp_size": 8, "moe_ep_size": 1}));
+        cfg.validate().unwrap();
+        let restored: ForwardPassPerfModelConfig =
+            serde_json::from_str(&serde_json::to_string(&cfg).unwrap()).unwrap();
+        assert_eq!(restored.dcp, Some(8));
+        assert_eq!(config(serde_json::json!({})).dcp, None);
+        for value in [0, 3, 16] {
+            assert!(
+                config(serde_json::json!({"tp": 8, "dcp": value}))
+                    .validate()
+                    .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn unrecorded_profile_quantization_rejects_explicit_overrides() {
+        let mut cfg = config(serde_json::json!({"estimation_mode": "fpm_interpolation",
+            "estimator_config": {"fpm_interpolation": {"text_only": true, "unrecorded_quant_modes": ["fmha", "comm"]}}}));
+        cfg.validate().unwrap();
+        cfg.fmha_quant_mode = Some("bfloat16".into());
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn graph_profile_pins_identity_and_rejects_unqualified_selection() {
+        use crate::perf_database::prefill_graph;
+        let mut cfg = config(serde_json::json!({
+            "worker_type": "prefill", "estimation_mode": "op_level",
+            "estimator_config": {
+                "op_level": {"prefill_graph_profile": prefill_graph::PROFILE_NAME},
+                "correction": {"enabled": false}
+            }
+        }));
+        cfg.resolve_prefill_graph_profile().unwrap();
+        cfg.validate().unwrap();
+        assert_eq!(
+            cfg.estimator_config
+                .op_level
+                .prefill_graph_profile_id
+                .as_deref(),
+            Some(prefill_graph::PROFILE_ID)
+        );
+        let saved = serde_json::to_string(&cfg).unwrap();
+        let reloaded: ForwardPassPerfModelConfig = serde_json::from_str(&saved).unwrap();
+        assert_eq!(cfg, reloaded);
+        reloaded.validate().unwrap();
+        let mut cases = Vec::new();
+        for mode in [
+            EstimationMode::Auto,
+            EstimationMode::FpmInterpolation,
+            EstimationMode::FpmRegression,
+        ] {
+            let mut invalid = cfg.clone();
+            invalid.estimation_mode = mode;
+            cases.push(invalid);
+        }
+        for role in [
+            ForwardPassWorkerType::Decode,
+            ForwardPassWorkerType::Aggregated,
+        ] {
+            let mut invalid = cfg.clone();
+            invalid.worker_type = role;
+            cases.push(invalid);
+        }
+        for mode in [
+            DatabaseMode::Hybrid,
+            DatabaseMode::Empirical,
+            DatabaseMode::Sol,
+            DatabaseMode::SolFull,
+        ] {
+            let mut invalid = cfg.clone();
+            invalid.database_mode = mode;
+            cases.push(invalid);
+        }
+        let mut invalid = cfg.clone();
+        invalid.fallback_policy = ForwardPassFallbackPolicy::Allow;
+        cases.push(invalid);
+        let mut invalid = cfg.clone();
+        invalid.estimator_config.correction.enabled = true;
+        cases.push(invalid);
+        let mut invalid = cfg.clone();
+        invalid.estimator_config.op_level.prefill_graph_profile_id = Some("0".repeat(64));
+        cases.push(invalid);
+        let mut invalid = cfg.clone();
+        invalid.estimator_config.op_level.prefill_graph_profile = None;
+        cases.push(invalid);
+        for invalid in cases {
+            assert!(invalid.validate().is_err(), "accepted {invalid:?}");
+            assert!(crate::ForwardPassPerfModel::best_available(invalid).is_err());
+        }
+        assert_eq!(
+            serde_json::to_value(EstimatorConfig::default()).unwrap()["op_level"],
+            serde_json::json!({})
         );
     }
 }

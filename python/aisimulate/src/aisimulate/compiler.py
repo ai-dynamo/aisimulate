@@ -294,7 +294,7 @@ def _afd_deployment(
         # The AFD companion's ParallelShape, GPU accounting and provenance carry
         # tp/pp/attention_dp/moe only; a CP knob here would price a wider worker
         # than the topology reports. Fail closed until AFD models CP explicitly.
-        if parallel.prefill_context != 1 or parallel.decode_context != 1:
+        if parallel.prefill_context != 1 or _decode_cp(parallel) != 1:
             raise ValueError(
                 f"AFD companion ({companion_role}) workers do not support context parallelism: got "
                 f"parallelism.prefill_context={parallel.prefill_context}, "
@@ -388,7 +388,7 @@ def _require_exclusive_context_parallelism(worker: WorkerPredictionConfig) -> No
     prices them one at a time.
     """
     parallel = worker.parallelism
-    if parallel.prefill_context > 1 and parallel.decode_context > 1:
+    if parallel.prefill_context > 1 and _decode_cp(parallel) > 1:
         raise ValueError(
             "aggregated workers support at most one of parallelism.prefill_context and "
             f"parallelism.decode_context above 1 (got prefill_context={parallel.prefill_context}, "
@@ -411,21 +411,22 @@ def _require_disaggregated_context_parallelism(
     DCP rank on the prefill side and has no such pairing rule.
     """
     p, d = prefill.parallelism, decode.parallelism
-    if p.decode_context not in (1, p.prefill_context):
+    p_dcp, d_dcp = _decode_cp(p), _decode_cp(d)
+    if p_dcp not in (1, p.prefill_context):
         raise ValueError(
             f"prefill workers accept parallelism.decode_context only as 1 or equal to prefill_context "
             f"(got decode_context={p.decode_context}, prefill_context={p.prefill_context}); a prefill "
             "engine only stripes its KV to match a PCP+DCP layout"
         )
-    if backend != "vllm" or d.decode_context == 1:
+    if backend != "vllm" or d_dcp == 1:
         return
-    if p.prefill_context > 1 and p.decode_context == 1:
+    if p.prefill_context > 1 and p_dcp == 1:
         raise ValueError(
             f"vLLM cannot pair a replicated-PCP prefill worker (prefill_context={p.prefill_context}, "
             f"decode_context=1) with a DCP-sharded decode worker (decode_context={d.decode_context}); "
             "set the prefill worker's decode_context equal to its prefill_context or drop one knob"
         )
-    if d.decode_context % p.decode_context and p.decode_context % d.decode_context:
+    if d_dcp % p_dcp and p_dcp % d_dcp:
         raise ValueError(
             f"vLLM requires the prefill and decode DCP sizes to divide one another (got prefill "
             f"decode_context={p.decode_context}, decode decode_context={d.decode_context})"
@@ -441,24 +442,23 @@ def _parallel_mapping(worker: WorkerPredictionConfig, *, prefix: str) -> dict[st
         f"{prefix}attention_dp": parallel.attention_data,
         f"{prefix}moe_tp": parallel.moe_tensor,
         f"{prefix}moe_ep": parallel.moe_expert,
+        **({f"{prefix}dcp": parallel.decode_context} if parallel.decode_context is not None else {}),
+        **_prefill_cp_knob(parallel, f"{prefix}cp"),
     }
-    mapping.update(_context_parallel_knobs(parallel, f"{prefix}cp", f"{prefix}dcp"))
     return mapping
 
 
-def _context_parallel_knobs(parallel: Any, cp_key: str, dcp_key: str) -> dict[str, int]:
-    """The two context-parallel knobs, spelled out only when set.
+def _prefill_cp_knob(parallel: Any, cp_key: str) -> dict[str, int]:
+    """Prefill CP, spelled out only when above one so cp=1 deployments, engine
+    args and estimator identities stay byte-identical to pre-CP outputs. Decode
+    CP is carried by ``decode_context`` itself: ``None`` (not requested) is
+    distinct from an explicit 1 for the FPM cell identity."""
+    return {cp_key: parallel.prefill_context} if parallel.prefill_context != 1 else {}
 
-    cp=dcp=1 deployments, engine args, perf-model metadata and estimator
-    identities stay byte-identical to pre-CP outputs (and comparable with the
-    sweeper's parallel_config, which never carries the knobs).
-    """
-    knobs: dict[str, int] = {}
-    if parallel.prefill_context != 1:
-        knobs[cp_key] = parallel.prefill_context
-    if parallel.decode_context != 1:
-        knobs[dcp_key] = parallel.decode_context
-    return knobs
+
+def _decode_cp(parallel: Any) -> int:
+    """The priced decode-CP size: unrecorded (``None``) means one."""
+    return parallel.decode_context or 1
 
 
 def _worker_performance_model_metadata(
@@ -489,12 +489,28 @@ def _worker_performance_model_metadata(
             if getattr(engine, field) is not None
         },
     }
+    if parallel.decode_context is not None:
+        config["dcp"] = parallel.decode_context
+    for field in (
+        "gemm_quant_mode",
+        "moe_quant_mode",
+        "fmha_quant_mode",
+        "kvcache_quant_mode",
+        "comm_quant_mode",
+        "attention_backend",
+    ):
+        value = getattr(worker.timing, field)
+        if value is not None:
+            config[field] = value
     config["database_mode"] = worker.timing.database_mode or engine.database_mode
+    systems_paths = worker.timing.systems_paths or engine.systems_paths
+    if systems_paths is not None:
+        config["systems_paths"] = systems_paths
     if engine.speculation is not None:
         config["speculation"] = engine.speculation.cost_config()
     if worker.timing.fpm_parquet_path is not None:
         config["fpm_parquet_path"] = worker.timing.fpm_parquet_path
-    config.update(_context_parallel_knobs(parallel, "cp_size", "dcp_size"))
+    config.update(_prefill_cp_knob(parallel, "cp_size"))
     return {
         "provider": "aic",
         "config": config,
@@ -513,6 +529,23 @@ def _worker_engine_args(
     cache = worker.kv_cache
     capacity = cache.capacity
     memory_fraction = capacity.memory_fraction
+    identity_fields = (
+        "gemm_quant_mode",
+        "moe_quant_mode",
+        "fmha_quant_mode",
+        "kvcache_quant_mode",
+        "comm_quant_mode",
+        "attention_backend",
+    )
+    if (engine.mode == "afd" or engine.workers.encoder is not None) and any(
+        getattr(worker.timing, field) is not None for field in identity_fields
+    ):
+        raise ValueError("explicit timing identity requires the canonical forward-pass provider")
+    if parallel.decode_context is not None:
+        if parallel.tensor % parallel.decode_context:
+            raise ValueError("decode_context must divide tensor parallelism")
+        if worker.timing.type != "default" or engine.mode == "afd" or engine.workers.encoder is not None:
+            raise ValueError("DCP requires the canonical forward-pass timing provider")
     if capacity.type == "default" and memory_fraction is None:
         memory_fraction = 0.88 if backend == "sglang" else 0.9
     block_size = cache.block_size
@@ -538,6 +571,10 @@ def _worker_engine_args(
         payload["speculation"] = engine.speculation.model_dump(mode="json")
     if engine.backend_version is not None:
         payload["aic_backend_version"] = engine.backend_version
+    if engine.systems_paths is not None and worker.timing.type != "default":
+        from .sweeper.forward_pass_estimator import resolve_systems_paths
+
+        payload["systems_path"] = list(resolve_systems_paths(engine.systems_paths))
     if engine.decoder_replay:
         payload["aic_decoder_replay"] = True
     for field in ("database_mode", "enable_shared_layer", "strict_provenance"):
@@ -546,7 +583,9 @@ def _worker_engine_args(
             payload[f"aic_{field}"] = value
     if parallel.pipeline != 1:
         payload["aic_pp_size"] = parallel.pipeline
-    payload.update(_context_parallel_knobs(parallel, "aic_cp_size", "aic_dcp_size"))
+    payload.update(_prefill_cp_knob(parallel, "aic_cp_size"))
+    if _decode_cp(parallel) != 1:
+        payload["aic_dcp_size"] = parallel.decode_context
     if parallel.moe_tensor * parallel.moe_expert > 1:
         payload["aic_moe_tp_size"] = parallel.moe_tensor
         payload["aic_moe_ep_size"] = parallel.moe_expert
@@ -594,6 +633,7 @@ def _worker_engine_args(
         if capacity.type == "default" and cache.state_cache is None:
             payload = materialize_aic_num_gpu_blocks(payload)
         for name in (
+            "systems_path",
             "aic_backend_version",
             "aic_system",
             "aic_model_path",
@@ -622,12 +662,16 @@ def _worker_engine_args(
             tp=parallel.tensor,
             pp=parallel.pipeline,
             attention_dp=parallel.attention_data,
+            dcp=parallel.decode_context,
             moe_tp_size=parallel.moe_tensor if sharded_moe else None,
             moe_ep_size=parallel.moe_expert if sharded_moe else None,
-            **_context_parallel_knobs(parallel, "cp_size", "dcp_size"),
+            **_prefill_cp_knob(parallel, "cp_size"),
             kv_block_size=block_size,
             nextn=engine.nextn,
-            **{name: getattr(engine, name) for name in ENGINE_MODEL_CONTROL_FIELDS},
+            **{
+                name: getattr(timing, name, None) if getattr(timing, name, None) is not None else getattr(engine, name)
+                for name in ENGINE_MODEL_CONTROL_FIELDS
+            },
             speculation=engine.speculation.cost_config() if engine.speculation is not None else None,
             estimation_mode=timing.estimation_mode or engine.estimation_mode,
             fallback_policy=timing.fallback_policy or engine.fallback_policy,
@@ -698,7 +742,7 @@ def _resolve_kv_bytes_per_token(
         pp_size=parallel.pipeline,
         moe_tp_size=parallel.moe_tensor,
         moe_ep_size=parallel.moe_expert,
-        **({"kvcache_quant_mode": engine.kvcache_quant_mode} if engine.kvcache_quant_mode else {}),
+        kvcache_quant_mode=worker.timing.kvcache_quant_mode or engine.kvcache_quant_mode,
     )
 
 

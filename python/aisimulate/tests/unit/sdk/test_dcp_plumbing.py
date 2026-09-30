@@ -34,8 +34,8 @@ pytestmark = pytest.mark.unit
 
 def test_model_config_dcp_defaults_to_one_and_does_not_widen_attention():
     cfg = config.ModelConfig(
-        tp_size=2,
-        attention_dp_size=2,
+        tp_size=4,
+        attention_dp_size=1,
         cp_size=2,
         dcp_size=4,
         moe_tp_size=1,
@@ -46,29 +46,29 @@ def test_model_config_dcp_defaults_to_one_and_does_not_widen_attention():
     assert cfg.attn_width == 8
     assert cfg.total_gpus_per_worker == 8
     assert cfg.resolve_moe_parallelism() == (1, 8)
-    assert config.ModelConfig().dcp_size == 1
+    assert config.ModelConfig().dcp_size is None
 
 
 @pytest.mark.parametrize("knob", ["cp_size", "dcp_size"])
 @pytest.mark.parametrize("bad", [0, 1.5, True])
 def test_model_config_rejects_malformed_context_parallel_sizes(knob, bad):
-    with pytest.raises(ValueError, match=f"{knob} must be a positive integer"):
+    with pytest.raises(ValueError, match=f"{knob} must be (a )?positive"):
         config.ModelConfig(**{knob: bad})
 
 
 def test_build_model_config_carries_both_context_parallel_knobs():
     cfg = build_model_config(
-        tp_size=1,
+        tp_size=8,
         pp_size=1,
         attention_dp_size=1,
-        moe_tp_size=1,
+        moe_tp_size=16,
         moe_ep_size=1,
         cp_size=2,
         dcp_size=8,
     )
     assert (cfg.cp_size, cfg.dcp_size) == (2, 8)
     defaults = build_model_config(tp_size=1, pp_size=1, attention_dp_size=1, moe_tp_size=1, moe_ep_size=1)
-    assert (defaults.cp_size, defaults.dcp_size) == (1, 1)
+    assert (defaults.cp_size, defaults.dcp_size) == (1, None)
 
 
 def test_base_model_does_not_claim_dcp_support_by_default():
@@ -247,7 +247,7 @@ def test_gqa_dcp_is_bounded_by_kv_head_replication():
             config.ModelConfig(tp_size=16, moe_tp_size=16, moe_ep_size=1, dcp_size=4),
             "vllm",
         )
-    with pytest.raises(ValueError, match="must divide the attention TP size"):
+    with pytest.raises(ValueError, match="must be positive and divide tp_size"):
         get_model(
             "meta-llama/Meta-Llama-3.1-70B",
             config.ModelConfig(tp_size=16, moe_tp_size=16, moe_ep_size=1, dcp_size=3),
@@ -255,12 +255,18 @@ def test_gqa_dcp_is_bounded_by_kv_head_replication():
         )
 
 
-def test_fpm_forward_model_refuses_dcp_until_tables_carry_it():
+def test_fpm_forward_model_prices_dcp_from_recorded_cells_on_vllm_only():
     from aisimulate_core.sdk.models import get_model
 
+    # Whole-forward DCP timing comes from the recorded-DCP FPM cell identity
+    # (upstream #284), so the op-level rewrite and supports_dcp gate are skipped
+    # on that path; off vLLM there are no such cells.
     model_config = config.ModelConfig(tp_size=8, moe_tp_size=8, moe_ep_size=1, dcp_size=8, forward_model="fpm")
-    with pytest.raises(NotImplementedError, match="forward_model='fpm' has no decode-context-parallel cells"):
-        get_model("deepseek-ai/DeepSeek-V3", model_config, "vllm")
+    model = get_model("deepseek-ai/DeepSeek-V3", model_config, "vllm")
+    assert not any("_dcp_" in op._name for op in model.generation_ops)
+    assert model._cp_kv_memory_divisor() == 8
+    with pytest.raises(NotImplementedError, match="DCP timing requires measured vLLM FPM interpolation"):
+        get_model("deepseek-ai/DeepSeek-V3", model_config, "sglang")
 
 
 def test_get_model_records_the_backend_for_families_that_do_not():

@@ -81,6 +81,7 @@ def _apply_forward_model_fpm(model: BaseModel, backend_name: str = "vllm") -> Ba
     """Centralized fpm rewrite: each phase list becomes exactly one whole-model
     op. No model class rewrites its own lists; metadata, parallelism, and the
     public model type are unchanged."""
+    from aisimulate_core.sdk.fpm_config import resolve_fpm_config
     from aisimulate_core.sdk.operations.fpm_forward import _CELL_MATCH_COLUMNS, FPMForwardOp
 
     if getattr(model.config, "decoder_replay", False) and "execution_profile" not in _CELL_MATCH_COLUMNS:
@@ -89,16 +90,7 @@ def _apply_forward_model_fpm(model: BaseModel, backend_name: str = "vllm") -> Ba
         # bounded decoder tail from a full forward at the same coordinates.
         raise NotImplementedError("decoder_replay requires FPM tables with execution_profile identity")
 
-    if model.config.dcp_size > 1:
-        # The whole-forward tables are keyed WITHOUT dcp (their `cp` column is
-        # prefill CP and every shipped cell is cp=1), so a dcp>1 request would
-        # silently reuse dcp=1 measurements. Fail loud until the collector
-        # records dcp cells and the cell identity carries the column.
-        raise NotImplementedError(
-            f"forward_model='fpm' has no decode-context-parallel cells (dcp_size={model.config.dcp_size}); "
-            "the whole-forward table identity does not carry dcp. Use forward_model='op_level'."
-        )
-    if model.encoder_ops:
+    if model.encoder_ops and not resolve_fpm_config(model.config).options["text_only"]:
         raise NotImplementedError(
             f"forward_model='fpm' does not support encoder/multimodal models "
             f"(model_family={model.model_family!r} has encoder ops). Use forward_model='op_level'."
@@ -133,27 +125,32 @@ def _apply_forward_model_fpm(model: BaseModel, backend_name: str = "vllm") -> Ba
     draft_context_ops = [op for op in model.context_ops if op._name.startswith("draft_")]
     draft_generation_ops = [op for op in model.generation_ops if op._name.startswith("draft_")]
     weight_bytes = model.get_resident_weights_bytes()
-    prefill_op = FPMForwardOp("prefill", model.config, model.model_path, sol_ops=context_ops, weight_bytes=weight_bytes)
-    decode_op = FPMForwardOp(
-        "decode", model.config, model.model_path, sol_ops=generation_ops, weight_bytes=weight_bytes
-    )
-    if has_draft_scheme:
-        decode_op._verify_width = int(model.verify_width)
-    model.context_ops = [prefill_op, *draft_context_ops]
-    model.generation_ops = [decode_op, *draft_generation_ops]
     from aisimulate_core.sdk.fpm_identity import execution_identity
 
     identity = execution_identity(
         getattr(model, "raw_config", {}),
         decoder_replay=getattr(model.config, "decoder_replay", False),
         backend=backend_name,
-        # The SDK supports this prediction contract; the producer separately
+        # These are the SDK prediction assumptions; the producer separately
         # verifies actual runtime residency and token-only requests.
         engram_cpu_offload=False,
         input_modality="text",
     )
-    for op in (prefill_op, decode_op):
-        op._match_identity = (*op._match_identity[:15], *identity)
+    prefill_op = FPMForwardOp(
+        "prefill", model.config, model.model_path, sol_ops=context_ops, weight_bytes=weight_bytes, execution=identity
+    )
+    decode_op = FPMForwardOp(
+        "decode", model.config, model.model_path, sol_ops=generation_ops, weight_bytes=weight_bytes, execution=identity
+    )
+    # Compiled text specs omit encoder ops; retain their resident weights there.
+    # Python memory accounting still sums encoder_ops separately.
+    resident_weights = weight_bytes + float(sum(op.get_weights() for op in model.encoder_ops))
+    prefill_op._resident_weight_bytes = resident_weights
+    decode_op._resident_weight_bytes = resident_weights
+    if has_draft_scheme:
+        decode_op._verify_width = int(model.verify_width)
+    model.context_ops = [prefill_op, *draft_context_ops]
+    model.generation_ops = [decode_op, *draft_generation_ops]
     model.forward_model = "fpm"
     return model
 
@@ -176,6 +173,11 @@ def get_model(
     rewrites each phase list to a single whole-model ``FPMForwardOp``.
     """
     forward_model = getattr(model_config, "forward_model", "op_level") or "op_level"
+    # Whole-forward DCP timing needs a measured vLLM cell (the recorded-DCP FPM
+    # identity); the op-level path prices the sharded attention itself and is
+    # gated per model class by ``supports_dcp`` below.
+    if (model_config.dcp_size or 1) > 1 and forward_model == "fpm" and backend_name != "vllm":
+        raise NotImplementedError("DCP timing requires measured vLLM FPM interpolation")
     if forward_model not in _FORWARD_MODELS:
         raise InvalidEngineConfigurationError(
             f"Unknown forward_model: {forward_model!r}. Valid values: {', '.join(_FORWARD_MODELS)}"
@@ -254,7 +256,7 @@ def get_model(
     # dcp>1 can be estimated. Deployment policy (whether a role may combine
     # prefill CP with DCP) is decided by the topology layer, not here; this only
     # guards against silently wrong numbers.
-    if model_config.dcp_size > 1 and not cls.supports_dcp(backend_name):
+    if (model_config.dcp_size or 1) > 1 and forward_model != "fpm" and not cls.supports_dcp(backend_name):
         raise NotImplementedError(
             f"Decode context parallelism (dcp_size={model_config.dcp_size}) is not supported for "
             f"model_family={model_family!r} on backend={backend_name!r}. The model class "
@@ -274,6 +276,8 @@ def get_model(
         model_config = copy.copy(model_config)
         model_config.speculation = copy.deepcopy(model_config.speculation)
     spec_config = resolve_speculation(model_config)
+    _validate_decode_moe_profile(model_path, model_config, backend_name)
+    _validate_prefill_graph_profile(model_path, model_config, backend_name)
     model = cls.create(model_info, model_config, backend_name)
     # Backend-specific defaults below construction (e.g. the DCP merge
     # collective: a2a on sglang, ag_rs elsewhere) read the backend identity off
@@ -283,11 +287,14 @@ def get_model(
     model.spec_scheme = build_spec_scheme(model_config, spec_config)
     model.spec_scheme.validate(model, backend_name)
     materialize_spec_scheme(model)
-    # Decode CP rewrite runs after speculation materialized the draft ops (so
-    # they can be skipped by name) and before the FPM fold (so the whole-model
-    # SOL roofline carries the sharded decode attention + merge collectives).
-    if model_config.dcp_size > 1:
+    # Op-level decode CP: rewrite the decode attention (sharded KV stripe +
+    # merge collectives) after speculation materialized the draft ops. The
+    # whole-forward path prices DCP from the recorded-DCP measured cell instead
+    # (the per-rank KV stripe still enters memory via _cp_kv_memory_divisor).
+    if (model_config.dcp_size or 1) > 1 and forward_model != "fpm":
         model._apply_decode_context_parallel()
+    if model_config.prefill_graph_profile is not None:
+        model.apply_prefill_graph_profile()
     if model_config.moe_kernel_source is not None:
         for phase, phase_ops in (("context", model.context_ops), ("generation", model.generation_ops)):
             if not any(
@@ -299,6 +306,92 @@ def get_model(
     if forward_model == "fpm":
         model = _apply_forward_model_fpm(model, backend_name)
     return model
+
+
+def _validate_prefill_graph_profile(model_path, model_config, backend_name):
+    if model_config.prefill_graph_profile is None:
+        return
+    import aisimulate_core._native as core
+    from aisimulate_core.sdk.common import (
+        CommQuantMode,
+        FMHAQuantMode,
+        GEMMQuantMode,
+        KVCacheQuantMode,
+        MoEQuantMode,
+    )
+    from aisimulate_core.sdk.errors import PrefillGraphProfileError
+
+    if model_config.moe_kernel_source is not None:
+        raise PrefillGraphProfileError("moe_kernel_source cannot override a prefill graph profile")
+    name, _ = core.prefill_graph_profile_identity()
+    if (
+        model_config.prefill_graph_profile != name
+        or model_path != "nvidia/GLM-5.2-NVFP4"
+        or backend_name != "sglang"
+        or model_config.moe_quant_mode != MoEQuantMode.nvfp4
+        or model_config.gemm_quant_mode != GEMMQuantMode.bfloat16
+        or model_config.fmha_quant_mode != FMHAQuantMode.bfloat16
+        or model_config.kvcache_quant_mode != KVCacheQuantMode.fp8
+        or model_config.comm_quant_mode != CommQuantMode.half
+        or (model_config.tp_size, model_config.moe_tp_size, model_config.moe_ep_size) != (4, 4, 1)
+        or (model_config.pp_size, model_config.attention_dp_size, model_config.cp_size) != (1, 1, 1)
+        or model_config.nextn != 0
+        or model_config.speculation is not None
+        or model_config.enable_eplb
+        or model_config.overwrite_num_layers != 0
+        or model_config.forward_model != "op_level"
+        or model_config.moe_backend is not None
+        or model_config.attention_backend is not None
+        or model_config.decode_workload_distribution is not None
+        or model_config.workload_distribution != "power_law"
+    ):
+        raise PrefillGraphProfileError(
+            "prefill_graph_profile requires the exact GLM-5.2-NVFP4 SGLang TP4/MoETP4/EP1/PP1/DP1/CP1, "
+            "BF16 GEMM/FMHA, FP8 KV, NVFP4 MoE, half communication, power_law routing and op_level; "
+            "alternate profiles, overrides and speculation are unsupported"
+        )
+
+
+def _validate_decode_moe_profile(model_path, model_config, backend_name):
+    """Reject an explicit pilot profile before an unsupported graph can ignore it."""
+    selected = model_config.decode_workload_distribution
+    if selected is None:
+        return
+    from aisimulate_core.sdk.common import (
+        CommQuantMode,
+        FMHAQuantMode,
+        GEMMQuantMode,
+        KVCacheQuantMode,
+        MoEQuantMode,
+    )
+    from aisimulate_core.sdk.errors import DecodeMoeProfileError
+
+    if model_config.moe_kernel_source is not None:
+        raise DecodeMoeProfileError("moe_kernel_source cannot override an observed decode profile")
+    if not isinstance(selected, str) or not selected.strip() or selected != selected.strip():
+        raise DecodeMoeProfileError("decode_workload_distribution must be a nonempty literal string")
+    if (
+        model_path != "nvidia/GLM-5.2-NVFP4"
+        or backend_name != "sglang"
+        or model_config.moe_quant_mode != MoEQuantMode.nvfp4
+        or model_config.gemm_quant_mode != GEMMQuantMode.bfloat16
+        or model_config.fmha_quant_mode != FMHAQuantMode.bfloat16
+        or model_config.kvcache_quant_mode != KVCacheQuantMode.fp8
+        or model_config.comm_quant_mode != CommQuantMode.half
+        or (model_config.tp_size, model_config.moe_tp_size, model_config.moe_ep_size) != (4, 4, 1)
+        or (model_config.pp_size, model_config.attention_dp_size, model_config.cp_size) != (1, 1, 1)
+        or model_config.nextn != 0
+        or model_config.speculation is not None
+        or model_config.enable_eplb
+        or model_config.overwrite_num_layers != 0
+        or model_config.forward_model != "op_level"
+        or model_config.moe_backend is not None
+    ):
+        raise DecodeMoeProfileError(
+            "decode_workload_distribution requires GLM-5.2-NVFP4 SGLang TP4/MoETP4/EP1/PP1/DP1/CP1, "
+            "BF16 GEMM/FMHA, FP8 KV, NVFP4 MoE, half communication, op_level and no speculation, "
+            "EPLB, layer override or alternate MoE backend"
+        )
 
 
 # Re-export concrete model classes for backward compatibility. Auto-discovery

@@ -92,7 +92,7 @@ _AIC_TIMING_FIELD_ALIASES = {
     "moe_tp_size": ("moe_tp_size", "aic_moe_tp_size"),
     "moe_ep_size": ("moe_ep_size", "aic_moe_ep_size"),
     "cp_size": ("cp_size", "aic_cp_size"),
-    "dcp_size": ("dcp_size", "aic_dcp_size"),
+    "dcp": ("dcp", "dcp_size", "aic_dcp_size"),
     "gemm_dtype": ("gemm_dtype", "aic_gemm_dtype"),
     "moe_dtype": ("moe_dtype", "aic_moe_dtype"),
     "fmha_dtype": ("fmha_dtype", "aic_fmha_dtype"),
@@ -111,6 +111,7 @@ _AIC_TIMING_FIELD_ALIASES = {
     "database_mode": ("database_mode", "aic_database_mode"),
     "enable_shared_layer": ("enable_shared_layer", "shared_layer", "aic_enable_shared_layer"),
     "strict_provenance": ("strict_provenance", "aic_strict_provenance"),
+    "decode_workload_distribution": ("decode_workload_distribution", "aic_decode_workload_distribution"),
 }
 
 _AIC_FORWARD_MODELS = frozenset({"op_level", "fpm"})
@@ -193,6 +194,8 @@ class AICAFDCompanionPerformanceModel:
 
         timing_model = args.get("timing_model")
         if isinstance(timing_model, Mapping) and timing_model.get("type") == "fixed":
+            if any(args.get(alias) is not None for alias in _AIC_TIMING_FIELD_ALIASES["decode_workload_distribution"]):
+                raise ValueError("decode_workload_distribution is not supported by fixed AFD companion timing")
             if any(args.get(alias) is not None for alias in _AIC_TIMING_FIELD_ALIASES["moe_kernel_source"]):
                 raise ValueError("moe_kernel_source is not supported by fixed AFD companion timing")
             key = "prefill_ms" if role == "prefill" else "decode_ms"
@@ -275,6 +278,15 @@ class AICAFDCompanionPerformanceModel:
                     if field in timing_overrides:
                         quantization[parameter] = timing_overrides[field]
                 sharded_moe = kwargs.get("moe_tp_size", 1) * kwargs.get("moe_ep_size", 1) > 1
+                estimator_config = (
+                    {"fpm_interpolation": {"fpm_parquet_path": fpm_parquet_path}}
+                    if fpm_parquet_path is not None
+                    else {}
+                )
+                if "decode_workload_distribution" in timing_overrides:
+                    estimator_config["op_level"] = {
+                        "decode_workload_distribution": timing_overrides["decode_workload_distribution"]
+                    }
                 config = ForwardPassPerfModelConfig(
                     model=model_name,
                     system=hardware,
@@ -289,11 +301,7 @@ class AICAFDCompanionPerformanceModel:
                     nextn=kwargs.get("nextn", 0),
                     kv_block_size=args.get("block_size"),
                     estimation_mode="fpm_interpolation",
-                    estimator_config=(
-                        {"fpm_interpolation": {"fpm_parquet_path": fpm_parquet_path}}
-                        if fpm_parquet_path is not None
-                        else {}
-                    ),
+                    estimator_config=estimator_config,
                     systems_paths=(timing_overrides["systems_path"],) if "systems_path" in timing_overrides else (),
                     **quantization,
                     **{
@@ -324,6 +332,10 @@ class AICAFDCompanionPerformanceModel:
                 raw = {metric: latency}
                 source = "aisimulate_core.sdk.rust_engine_step.RustForwardPassPerfModel"
             else:
+                if "decode_workload_distribution" in timing_overrides:
+                    raise ValueError(
+                        "decode_workload_distribution is not supported by the AFD companion legacy estimator"
+                    )
                 if timing_overrides.get("moe_kernel_source") is not None:
                     raise ValueError("moe_kernel_source is not supported by the AFD companion legacy estimator")
                 result = estimator(model_name, hardware, **kwargs)
@@ -1163,6 +1175,10 @@ def _configured_in_flight_cap(spec: ReplaySpec) -> int | None:
 def _pop_aic_timing_overrides(rank: dict[str, JSONValue], role: str) -> dict[str, JSONValue]:
     aic_timing_overrides: dict[str, JSONValue] = {}
     for target, aliases in _AIC_TIMING_FIELD_ALIASES.items():
+        if target == "moe_kernel_source":
+            for alias in aliases:
+                if rank.get(alias) is None:
+                    rank.pop(alias, None)
         configured = [alias for alias in aliases if alias in rank]
         if len(configured) > 1:
             names = ", ".join(configured)
@@ -1170,7 +1186,9 @@ def _pop_aic_timing_overrides(rank: dict[str, JSONValue], role: str) -> dict[str
         if not configured:
             continue
         value = rank.pop(configured[0])
-        if target in {"pp", "moe_tp_size", "moe_ep_size", "wideep_num_slots", "cp_size", "dcp_size"}:
+        if target == "decode_workload_distribution" and value is None:
+            continue
+        if target in {"pp", "moe_tp_size", "moe_ep_size", "wideep_num_slots", "cp_size", "dcp"}:
             value = _positive_int(value, f"engine provider {role} {target}")
         elif target in {"enable_eplb", "decoder_replay", "enable_shared_layer", "strict_provenance"}:
             if not isinstance(value, bool):
@@ -1540,7 +1558,7 @@ def _materialize_engine_role(
             memory_fraction_overrides[memory_field] = float(value)
 
     aic_timing_overrides = _pop_aic_timing_overrides(rank, role)
-    for target in ("cp_size", "dcp_size"):
+    for target in ("cp_size", "dcp"):
         if target in aic_timing_overrides:
             # Same contract as tp / attention_dp: a directly supplied deployment
             # must not price one CP topology while parallel_config reports another.
@@ -1618,6 +1636,8 @@ def _materialize_engine_role(
     # model. They have already served their non-timing purposes and must not be
     # interpreted as an attempt to override that concrete timing model.
     if not uses_aic_timing:
+        if "decode_workload_distribution" in aic_timing_overrides:
+            raise ValueError(f"engine provider {role} decode_workload_distribution requires an AIC timing model")
         if any(
             is_active_engine_model_control(name, aic_timing_overrides.get(name)) for name in ENGINE_MODEL_CONTROL_FIELDS
         ):
@@ -1880,7 +1900,7 @@ def _require_nested_context_parallel_match(
     parallel_config: Mapping[str, JSONValue],
     role: str,
 ) -> None:
-    """Reject ``timing_model.config.cp_size/dcp_size`` that disagree with ``parallel_config``.
+    """Reject ``timing_model.config.cp_size/dcp`` that disagree with ``parallel_config``.
 
     The timing model may sit at the top level (flat CLI/Sweeper form) or under
     the nested ``rank`` descriptor (execution-level input); both are checked.
@@ -1894,7 +1914,7 @@ def _require_nested_context_parallel_match(
     if not isinstance(nested, dict):
         return
     prefix = "" if role == "aggregated" else f"{role}_"
-    for target, parallel_field in (("cp_size", "cp"), ("dcp_size", "dcp")):
+    for target, parallel_field in (("cp_size", "cp"), ("dcp", "dcp")):
         value = nested.get(target)
         if value is None:
             continue

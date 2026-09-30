@@ -128,7 +128,11 @@ struct RegressionStores {
 }
 
 impl RegressionStores {
-    fn new(worker_type: ForwardPassWorkerType, options: &ForwardPassPerfOptions) -> Self {
+    fn new(
+        worker_type: ForwardPassWorkerType,
+        options: &ForwardPassPerfOptions,
+        rebuild_interval: Option<usize>,
+    ) -> Self {
         use ForwardPassRegressionWorkloadKind::*;
         let kinds: &[ForwardPassRegressionWorkloadKind] = match worker_type {
             ForwardPassWorkerType::Prefill => &[PurePrefill],
@@ -143,7 +147,7 @@ impl RegressionStores {
         Self {
             stores: kinds
                 .iter()
-                .map(|kind| (*kind, BucketedRegression::new(options)))
+                .map(|kind| (*kind, BucketedRegression::new(options, rebuild_interval)))
                 .collect(),
         }
     }
@@ -281,10 +285,7 @@ impl ForwardPassPerfModel {
         }
     }
 
-    /// API:
-    /// `ForwardPassPerfModel::from_regression(worker_type, options) -> Result<Self, AicError>`
-    ///
-    /// Description: create a regression-only forward-pass model.
+    /// Create a regression-only forward-pass model after resolving configuration.
     ///
     /// This mode is for native-AIC-unsupported models. It returns `None` from
     /// `estimate_forward_pass_time_ms` for non-empty iterations until the
@@ -294,12 +295,14 @@ impl ForwardPassPerfModel {
     pub(crate) fn from_regression(
         worker_type: ForwardPassWorkerType,
         options: ForwardPassPerfOptions,
+        rebuild_interval: Option<usize>,
     ) -> Result<Self, AicError> {
         validate_regression_options(&options)?;
+        super::estimator::validate_rebuild_interval(rebuild_interval)?;
         Ok(Self {
             mode: ForwardPassPerfMode::Regression {
                 worker_type,
-                regression: RegressionStores::new(worker_type, &options),
+                regression: RegressionStores::new(worker_type, &options, rebuild_interval),
             },
             options,
             last_warning: None,
@@ -312,6 +315,7 @@ impl ForwardPassPerfModel {
     /// fallback is denied; explicit modes use the requested fallback policy.
     /// A regression model may be constructed before it has enough observations.
     pub fn best_available(mut config: ForwardPassPerfModelConfig) -> Result<Self, AicError> {
+        config.resolve_prefill_graph_profile()?;
         config.validate()?;
         if let Some(path) = config
             .estimator_config
@@ -327,6 +331,21 @@ impl ForwardPassPerfModel {
         let mut failures = Vec::new();
         let mut last_error = None;
         for mode in config.candidate_modes() {
+            // Op-level DCP is priced by the sharded attention ops and their
+            // collectives; the whole-forward paths need a measured vLLM cell
+            // (the regression tables carry no DCP column).
+            if config.dcp.is_some_and(|dcp| dcp > 1)
+                && (mode == EstimationMode::FpmRegression
+                    || (mode == EstimationMode::FpmInterpolation
+                        && config.backend != crate::BackendKind::Vllm))
+            {
+                let error = AicError::UnsupportedModel(
+                    "DCP timing requires measured vLLM FPM interpolation".into(),
+                );
+                failures.push(format!("{mode:?}: {error}"));
+                last_error = Some(error);
+                continue;
+            }
             if config.speculation.is_some() && mode != EstimationMode::OpLevel {
                 let error =
                     AicError::UnsupportedModel("ngram speculation requires op_level timing".into());
@@ -336,7 +355,11 @@ impl ForwardPassPerfModel {
             }
             if mode == EstimationMode::FpmRegression {
                 let options = config.estimator_config.regression_options();
-                let mut model = Self::from_regression(config.worker_type, options)?;
+                let mut model = Self::from_regression(
+                    config.worker_type,
+                    options,
+                    config.estimator_config.fpm_regression.fit.rebuild_interval,
+                )?;
                 let mut resolved = config.clone();
                 resolved.estimation_mode = mode;
                 resolved.fallback_policy = ForwardPassFallbackPolicy::Deny;
@@ -411,6 +434,7 @@ impl ForwardPassPerfModel {
         &self,
         metrics_by_rank: &[ForwardPassMetrics],
     ) -> Result<Option<f64>, AicError> {
+        self.require_general_forward_api()?;
         match &self.mode {
             ForwardPassPerfMode::Native {
                 engine,
@@ -477,6 +501,7 @@ impl ForwardPassPerfModel {
         &mut self,
         iterations: &[Vec<ForwardPassMetrics>],
     ) -> Result<(), AicError> {
+        self.require_general_forward_api()?;
         let Self {
             mode,
             options,
@@ -640,6 +665,7 @@ impl ForwardPassPerfModel {
         output_tokens: u32,
         prefill: bool,
     ) -> Result<f64, AicError> {
+        self.require_general_forward_api()?;
         let engine = self.native_engine().ok_or_else(|| {
             AicError::InvalidEngineConfig("static phase latency requires a native estimator".into())
         })?;
@@ -661,6 +687,7 @@ impl ForwardPassPerfModel {
         prefill: bool,
     ) -> Result<Vec<crate::perfmodel::engine::diagnostics::StaticOperationDiagnostics>, AicError>
     {
+        self.require_general_forward_api()?;
         if self
             .provenance
             .as_ref()
@@ -677,6 +704,43 @@ impl ForwardPassPerfModel {
                 )
             })?
             .static_phase_diagnostics(batch_size, context_length, prefix, prefill)
+    }
+
+    /// Latency in milliseconds for an exact homogeneous measured prefill shape.
+    /// `isl` includes the cached prefix; the engine subtracts it exactly once.
+    /// This latency-only surface is currently qualified only for the selected
+    /// SGLang GLM-5.2 NVFP4 VR200 graph profile.
+    pub fn predict_prefill_latency(
+        &self,
+        batch_size: u32,
+        isl: u32,
+        prefix: u32,
+    ) -> Result<f64, AicError> {
+        let engine = self
+            .native_engine()
+            .filter(|engine| engine.has_prefill_graph_profile())
+            .ok_or_else(|| {
+                crate::perf_database::prefill_graph::error(
+                    "direct prefill latency requires the qualified graph profile",
+                )
+            })?;
+        engine.predict_prefill_latency(batch_size, isl, prefix)
+    }
+
+    pub(crate) fn has_prefill_graph_profile(&self) -> bool {
+        match &self.mode {
+            ForwardPassPerfMode::Native { engine, .. } => engine.has_prefill_graph_profile(),
+            ForwardPassPerfMode::Regression { .. } => false,
+        }
+    }
+
+    fn require_general_forward_api(&self) -> Result<(), AicError> {
+        if self.has_prefill_graph_profile() {
+            return Err(crate::perf_database::prefill_graph::error(
+                "selected profile supports only direct predict_prefill_latency; telemetry, tuning, scheduler, energy and SOL routes are unqualified",
+            ));
+        }
+        Ok(())
     }
 
     pub(crate) fn native_engine(&self) -> Option<Arc<Engine>> {
@@ -1110,6 +1174,72 @@ fn can_fallback_to_regression(err: &AicError) -> bool {
             | AicError::PerfDatabase(_)
             | AicError::Io { .. }
     )
+}
+
+#[cfg(test)]
+mod rebuild_tests {
+    use super::*;
+    use ForwardPassRegressionWorkloadKind::*;
+
+    #[test]
+    fn workload_stores_and_clones_have_independent_rebuild_clocks() {
+        let options = ForwardPassPerfOptions::default();
+        let mut stores =
+            RegressionStores::new(ForwardPassWorkerType::Aggregated, &options, Some(3));
+        assert!(
+            stores
+                .store_mut(PurePrefill)
+                .add_observation([1.0, 2.0], 3.0)
+        );
+        for i in 1..=2 {
+            assert!(
+                stores
+                    .store_mut(PureDecode)
+                    .add_observation([i as f64, 1.0], 4.0)
+            );
+        }
+        let mut cloned = stores.clone();
+        assert!(
+            stores
+                .store_mut(PureDecode)
+                .add_observation([3.0, 4.0], 5.0)
+        );
+        assert_eq!(stores.store(PureDecode).mutations_since_rebuild(), 0);
+        assert_eq!(stores.store(PurePrefill).mutations_since_rebuild(), 1);
+        assert_eq!(
+            stores.store(ContainsLocallyMixed).mutations_since_rebuild(),
+            0
+        );
+        assert_eq!(
+            stores.store(CrossRankAggregated).mutations_since_rebuild(),
+            0
+        );
+        assert_eq!(cloned.store(PureDecode).mutations_since_rebuild(), 2);
+        assert!(
+            cloned
+                .store_mut(PurePrefill)
+                .add_observation([2.0, 3.0], 4.0)
+        );
+        assert_eq!(cloned.store(PurePrefill).mutations_since_rebuild(), 2);
+        assert_eq!(stores.store(PurePrefill).mutations_since_rebuild(), 1);
+    }
+
+    #[test]
+    fn default_rebuild_interval_disables_periodic_refresh_for_every_workload_store() {
+        let mut stores = RegressionStores::new(
+            ForwardPassWorkerType::Aggregated,
+            &ForwardPassPerfOptions::default(),
+            super::super::estimator::RegressionFitConfig::default().rebuild_interval,
+        );
+        // Constant features avoid fit work without numerical damage. A change
+        // back to a 4096-operation default would reset each clock at 4096.
+        for (_, store) in &mut stores.stores {
+            for _ in 0..2081 {
+                assert!(store.add_observation([1.0, 2.0], 3.0));
+            }
+            assert_eq!(store.mutations_since_rebuild(), 4098);
+        }
+    }
 }
 
 #[cfg(test)]

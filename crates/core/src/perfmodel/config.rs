@@ -111,12 +111,21 @@ pub const ENGINE_CONFIG_SCHEMA_VERSION: u32 = 1;
 // - 21 (AIC-1781): EngineConfig and MoeOp gained exact `moe_kernel_source`
 //   identity. Renumbered from the branch's concurrent v20 claim after the
 //   DeepSeek-V4.1 FPM layout landed first.
-// - 22 (decode context parallelism): the context/generation attention, MLA,
+// - 22 (GLM-5.2 VR200 pilot): exact observed-MoE selection, prefill graph
+//   identity and two appended composite operators extend the schema-21 layout.
+//   The pilot and AIC-1781 concurrently claimed 21; reject both older layouts.
+// - 23 (DCP identity): ParallelMapping gained optional recorded dcp_size.
+//   DCP and the pilot concurrently claimed 22; reject both older layouts.
+//   JSON defaults preserve unrecorded DCP.
+// - 24 (typed FPM DCP): FpmForwardOp carries dcp_size separately from the
+//   base matching identity, so control flow never parses the string tuple.
+// - 25 (decode context parallelism): the context/generation attention, MLA,
 //   MLA-module, wide-EP MLA and DSA ops gained a tail-appended `dcp_size`
 //   (gathered query heads over a 1/dcp KV stripe; striped-context gather).
-//   Claimed 19, 20 and 21 on its own branch while the DeepSeek-V4.1 and MoE
-//   kernel-source changes landed; renumbered at each merge (precedent: 15, 18).
-pub const ENGINE_SPEC_SCHEMA_VERSION: u32 = 22;
+//   Claimed 19 through 22 on its own branch while the DeepSeek-V4.1, MoE
+//   kernel-source, VR200 pilot and FPM DCP changes landed; renumbered at each
+//   merge (precedent: 15, 18).
+pub const ENGINE_SPEC_SCHEMA_VERSION: u32 = 25;
 
 /// Static engine identity and setup information carried by an
 /// [`crate::perfmodel::engine::spec::EngineSpec`].
@@ -160,6 +169,11 @@ pub struct EngineConfig {
     /// Use the backend-verified bounded DeepSeek-V4.1 decoder execution profile.
     #[serde(default)]
     pub decoder_replay: bool,
+    /// Explicit direct-prefill-only measured profile and its immutable identity.
+    #[serde(default)]
+    pub prefill_graph_profile: Option<String>,
+    #[serde(default)]
+    pub prefill_graph_profile_id: Option<String>,
     /// Exact collected MoE compute kernel-source lane.  Unlike
     /// `moe_backend`, this selects one measured MoE table lane.
     #[serde(default)]

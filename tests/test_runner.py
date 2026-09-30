@@ -111,6 +111,32 @@ def _spec(*, deployment=None, workload=None, goal=None, concurrency=None, adapte
     )
 
 
+def test_native_replay_provider_rejects_direct_only_graph_profile_before_compilation():
+    from aisimulate import _runtime
+
+    # The model and system deliberately do not exist: the replay provider must
+    # reject this selector before constructing or extracting a native engine.
+    timing = {
+        "type": "external",
+        "provider": "aic",
+        "config": {
+            "model": "missing-graph-model",
+            "system": "missing-graph-system",
+            "backend": "sglang",
+            "estimator_config": {"op_level": {"prefill_graph_profile": "sglang_glm52_nvfp4_vr200_tp4_graph_v1"}},
+        },
+    }
+    args = {"worker_type": "aggregated", "block_size": 4, "num_gpu_blocks": 16, "timing_model": timing}
+    # Nested native rank configuration reaches the provider without Python's
+    # canonical capacity preflight, which independently rejects graph replay.
+    args = {"rank": args}
+    deployment = BackendDeploymentSpec(
+        deployment_mode="agg", backend="sglang", backend_version="test", agg_engine_args=args, num_workers=1
+    )
+    with pytest.raises(RuntimeError, match="replay/scheduler timing is unqualified"):
+        EngineReplayRunnerFactory(runtime=_runtime).create(0).run(_spec(deployment=deployment))
+
+
 def test_public_namespace_exports_engine_runner_contract():
     assert aisimulate.EngineReplayRunner is EngineReplayRunner
     assert aisimulate.EngineReplayRunnerFactory is EngineReplayRunnerFactory
@@ -1252,7 +1278,7 @@ def test_runner_rejects_parallel_config_that_conflicts_with_context_parallel_arg
 
 
 @pytest.mark.parametrize("nested_rank", [False, True])
-@pytest.mark.parametrize(("field", "target"), [("dcp", "dcp_size"), ("cp", "cp_size")])
+@pytest.mark.parametrize(("field", "target"), [("dcp", "dcp"), ("cp", "cp_size")])
 def test_runner_rejects_nested_timing_context_parallel_that_conflicts_with_parallel_config(field, target, nested_rank):
     # The canonical timing config nests the knobs under timing_model.config
     # (flat form or under the execution-level `rank` descriptor); they are
@@ -1378,6 +1404,48 @@ def test_runner_rejects_nested_backend_that_conflicts_with_deployment():
 
     with pytest.raises(ValueError, match="rank backend conflicts"):
         EngineReplayRunnerFactory(runtime=RecordingRuntime()).create(0).run(_spec(deployment=deployment))
+
+
+@pytest.mark.parametrize(
+    ("overrides", "expected_source"),
+    [
+        ({}, None),
+        ({"moe_kernel_source": None}, None),
+        ({"aic_moe_kernel_source": None}, None),
+        ({"moe_kernel_source": None, "aic_moe_kernel_source": None}, None),
+        (
+            {"moe_kernel_source": None, "aic_moe_kernel_source": "sglang_flashinfer_trtllm_moe"},
+            "sglang_flashinfer_trtllm_moe",
+        ),
+        (
+            {"moe_kernel_source": " sglang_flashinfer_trtllm_moe ", "aic_moe_kernel_source": None},
+            " sglang_flashinfer_trtllm_moe ",
+        ),
+    ],
+)
+def test_runner_normalizes_optional_moe_source_aliases(overrides, expected_source):
+    # The recording runtime verifies exact configuration transport, not prediction accuracy.
+    runtime = RecordingRuntime()
+    engine_args = _engine_args(backend="sglang")
+    engine_args.pop("timing_model")
+    engine_args.update(overrides)
+    deployment = BackendDeploymentSpec(
+        deployment_mode="agg",
+        backend="sglang",
+        backend_version="0.5.17",
+        agg_engine_args=engine_args,
+        num_workers=2,
+    )
+
+    EngineReplayRunnerFactory(runtime=runtime).create(0).run(_spec(deployment=deployment))
+
+    rank = runtime.execution_spec["engine"]["rank"]
+    config = rank["timing_model"]["config"]
+    assert config.get("moe_kernel_source") == expected_source
+    assert ("moe_kernel_source" in config) == (expected_source is not None)
+    assert "moe_kernel_source" not in rank
+    assert "aic_moe_kernel_source" not in rank
+    assert "aic_moe_kernel_source" not in config
 
 
 def test_runner_threads_forward_model_alias_into_aic_timing():
@@ -1622,7 +1690,7 @@ def test_runner_forwards_decode_cp_to_aic_timing_and_capacity(monkeypatch):
     EngineReplayRunnerFactory(runtime=runtime).create(0).run(_spec(deployment=deployment))
 
     timing_config = runtime.execution_spec["engine"]["rank"]["timing_model"]["config"]
-    assert timing_config["dcp_size"] == 4
+    assert timing_config["dcp"] == 4
     assert "cp_size" not in timing_config
     assert calls[0]["dcp_size"] == 4
     assert calls[0]["cp_size"] == 1
@@ -1681,7 +1749,7 @@ engine:
     monkeypatch.setattr(RustForwardPassPerfModel, "best_available", Estimator)
     public = CorePredictionConfig.from_yaml(path)
     spec = prediction_to_replay_spec(public)
-    assert spec.backend_deployment.agg_engine_args["timing_model"]["config"]["dcp_size"] == 4
+    assert spec.backend_deployment.agg_engine_args["timing_model"]["config"]["dcp"] == 4
     assert "aic_dcp_size" not in spec.backend_deployment.agg_engine_args
 
     runtime = RecordingRuntime()
@@ -1689,9 +1757,9 @@ engine:
 
     # The Python request carries the dataclass fields (unset -> None); the Rust
     # provenance drops unset knobs, which is what lands on the rank below.
-    assert requested and requested[0]["dcp_size"] == 4 and requested[0]["cp_size"] is None
+    assert requested and requested[0]["dcp"] == 4 and requested[0]["cp_size"] is None
     rank = runtime.execution_spec["spec"]["engine"]["rank"]
-    assert rank["timing_model"]["config"]["dcp_size"] == 4
+    assert rank["timing_model"]["config"]["dcp"] == 4
     assert "cp_size" not in rank["timing_model"]["config"]
     assert rank["num_gpu_blocks"] == 321
     assert calls[0]["dcp_size"] == 4
@@ -2182,3 +2250,94 @@ def test_flat_active_controls_reject_fixed_timing():
                 )
             )
         )
+
+
+@pytest.mark.parametrize("alias", ["decode_workload_distribution", "aic_decode_workload_distribution"])
+@pytest.mark.parametrize("selected", [None, "observed_glm52_nvfp4_decode_1ab2c747975e_v1"])
+def test_runner_threads_optional_decode_profile_alias(alias, selected):
+    runtime = RecordingRuntime()
+    engine_args = _engine_args()
+    engine_args.pop("timing_model")
+    engine_args[alias] = selected
+    deployment = BackendDeploymentSpec(
+        deployment_mode="agg",
+        backend="vllm",
+        backend_version="test",
+        agg_engine_args=engine_args,
+        num_workers=2,
+    )
+    EngineReplayRunnerFactory(runtime=runtime).create(0).run(_spec(deployment=deployment))
+    timing = runtime.execution_spec["engine"]["rank"]["timing_model"]["config"]
+    if selected is None:
+        assert "decode_workload_distribution" not in timing
+    else:
+        assert timing["decode_workload_distribution"] == selected
+
+
+@pytest.mark.parametrize("alias", ["decode_workload_distribution", "aic_decode_workload_distribution"])
+@pytest.mark.parametrize(
+    "timing",
+    [{"type": "fixed", "prefill_ms": 2.0, "decode_ms": 1.0}, {"type": "polynomial"}],
+)
+def test_runner_rejects_active_decode_profile_with_non_aic_timing(alias, timing):
+    runtime = RecordingRuntime()
+    engine_args = _engine_args(timing=timing)
+    engine_args[alias] = "observed_glm52_nvfp4_decode_1ab2c747975e_v1"
+    deployment = BackendDeploymentSpec(
+        deployment_mode="agg",
+        backend="vllm",
+        backend_version="test",
+        agg_engine_args=engine_args,
+        num_workers=2,
+    )
+    with pytest.raises(ValueError, match="decode_workload_distribution requires an AIC timing model"):
+        EngineReplayRunnerFactory(runtime=runtime).create(0).run(_spec(deployment=deployment))
+    assert runtime.execution_spec is None
+
+
+@pytest.mark.parametrize("alias", ["decode_workload_distribution", "aic_decode_workload_distribution"])
+@pytest.mark.parametrize(
+    "timing",
+    [{"type": "fixed", "prefill_ms": 2.0, "decode_ms": 1.0}, {"type": "polynomial"}],
+)
+def test_runner_preserves_non_aic_timing_with_no_decode_profile(alias, timing):
+    runtime = RecordingRuntime()
+    engine_args = _engine_args(timing=timing)
+    engine_args[alias] = None
+    deployment = BackendDeploymentSpec(
+        deployment_mode="agg",
+        backend="vllm",
+        backend_version="test",
+        agg_engine_args=engine_args,
+        num_workers=2,
+    )
+    EngineReplayRunnerFactory(runtime=runtime).create(0).run(_spec(deployment=deployment))
+    rank = runtime.execution_spec["engine"]["rank"]
+    assert rank["timing_model"] == timing
+    assert alias not in rank
+
+
+@pytest.mark.parametrize(
+    "extras, match",
+    [
+        ({"decode_workload_distribution": ""}, "decode_workload_distribution must be a string"),
+        ({"decode_workload_distribution": 7}, "decode_workload_distribution must be a string"),
+        (
+            {"decode_workload_distribution": "one", "aic_decode_workload_distribution": "two"},
+            "config duplicates AIC field decode_workload_distribution",
+        ),
+    ],
+)
+def test_runner_rejects_invalid_or_duplicate_decode_profile_alias(extras, match):
+    engine_args = _engine_args()
+    engine_args.pop("timing_model")
+    engine_args.update(extras)
+    deployment = BackendDeploymentSpec(
+        deployment_mode="agg",
+        backend="vllm",
+        backend_version="test",
+        agg_engine_args=engine_args,
+        num_workers=2,
+    )
+    with pytest.raises(ValueError, match=match):
+        EngineReplayRunnerFactory(runtime=RecordingRuntime()).create(0).run(_spec(deployment=deployment))

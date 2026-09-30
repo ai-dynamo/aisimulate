@@ -63,6 +63,18 @@ class UnsupportedAttentionBackendError(ValueError):
     """
 
 
+class PrefillGraphProfileError(ValueError):
+    """The explicitly selected prefill profile has unsupported scope or invalid data."""
+
+
+class DecodeMoeProfileError(ValueError):
+    """An explicit decode MoE profile has unsupported scope or missing provenance/data.
+
+    This is not a generic missing-performance fallback: another distribution
+    or an estimated latency cannot satisfy the explicit profile selection.
+    """
+
+
 class MissingSystemFlopsError(ValueError):
     """Raised when a quant mode's compute dtype has no ``*_tc_flops`` entry in the system YAML.
 

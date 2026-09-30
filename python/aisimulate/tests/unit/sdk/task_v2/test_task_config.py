@@ -2588,14 +2588,16 @@ def test_decode_prefill_cp_defaults_to_one():
 
 
 def test_role_dcp_size_reaches_model_config():
-    t = _disagg_task(decode_dcp_size=8)
+    # ModelConfig requires dcp_size to divide tp_size, so pin the decode TP.
+    t = _disagg_task(decode_dcp_size=8, decode_tp_candidates=[8])
     assert t.build_model_config(role="decode").dcp_size == 8
-    assert t.build_model_config(role="prefill").dcp_size == 1
+    # Not requested stays None (priced as 1; keeps the unrecorded FPM identity).
+    assert t.build_model_config(role="prefill").dcp_size is None
 
 
 def test_malformed_role_dcp_size_is_rejected_not_defaulted():
     t = _disagg_task(decode_dcp_size=0)
-    with pytest.raises(ValueError, match="dcp_size must be a positive integer"):
+    with pytest.raises(ValueError, match="dcp_size must be positive"):
         t.build_model_config(role="decode")
 
 
@@ -2624,7 +2626,7 @@ def test_disagg_prefill_context_parallel_layout_rules(overrides, needle):
 
 def test_disagg_allows_prefill_cp_and_decode_dcp_on_different_workers():
     """SGLang re-lays the KV out per decode DCP rank on the prefill side: no pairing rule."""
-    t = _disagg_task(prefill_cp_candidates=[1, 2], decode_dcp_size=8)
+    t = _disagg_task(prefill_cp_candidates=[1, 2], decode_dcp_size=8, decode_tp_candidates=[8])
     assert list(t.iter_parallel("prefill"))
     assert list(t.iter_parallel("decode"))
     assert t.build_model_config(role="decode").dcp_size == 8
@@ -2654,6 +2656,7 @@ def test_agg_dcp_with_pinned_prefill_cp_enumerates_and_reaches_model_config():
         total_gpus=8,
         dcp_size=8,
         agg_cp_candidates=[1],
+        agg_tp_candidates=[8],
     )
     assert list(t.iter_parallel("agg"))
     assert t.build_model_config(role="agg").dcp_size == 8

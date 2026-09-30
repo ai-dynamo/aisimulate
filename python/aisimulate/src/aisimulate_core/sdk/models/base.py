@@ -399,7 +399,7 @@ class BaseModel:
         import aisimulate_core.sdk.operations as ops
         from aisimulate_core.sdk import common
 
-        dcp = int(self.config.dcp_size)
+        dcp = int(self.config.dcp_size or 1)
         comm_quant_mode = self.config.comm_quant_mode
         gathered_heads = n_local * dcp
 
@@ -465,13 +465,8 @@ class BaseModel:
         return None
 
     def _validate_dcp_topology(self) -> None:
-        dcp = int(self.config.dcp_size)
-        tp = int(self.config.tp_size)
-        if tp % dcp != 0:
-            raise ValueError(
-                f"dcp_size={dcp} must divide the attention TP size ({tp}): DCP stripes the KV "
-                "across ranks that already belong to the attention group."
-            )
+        # ModelConfig already requires dcp_size to divide tp_size.
+        dcp = int(self.config.dcp_size or 1)
         limit = self._dcp_kv_head_replication()
         if limit is not None and dcp > limit:
             raise ValueError(
@@ -509,7 +504,7 @@ class BaseModel:
         ``supports_dcp`` but exposes no rewritable decode attention op fails
         loud instead of silently pricing decode as unsharded.
         """
-        dcp = int(self.config.dcp_size)
+        dcp = int(self.config.dcp_size or 1)
         self._validate_dcp_topology()
         q_replicate = self._dcp_q_replicate()
         rewritten: list = []
@@ -566,7 +561,7 @@ class BaseModel:
         sequence. Both frameworks widen the logical page by ``dcp`` so the
         per-rank stripe stays balanced to within one token.
         """
-        return int(self.config.dcp_size)
+        return int(self.config.dcp_size or 1)
 
     def get_kvcache_elements_per_token(self) -> int:
         """KV cache size per token (per GPU) summed over all layers, in elements.

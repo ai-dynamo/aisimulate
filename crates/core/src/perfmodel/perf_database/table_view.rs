@@ -912,12 +912,22 @@ pub fn view_kda(sources: &[PerfSource]) -> Result<Option<ViewNode>, AicError> {
 /// `operations/moe.py::load_moe_data` — 9-level
 /// `[moe_dtype][distribution][topk][num_experts][hidden][inter][moe_tp][moe_ep][num_tokens]`,
 /// with `kernel_source == "moe_torch_flow_min_latency"` rows routed to the
-/// low-latency twin table. Returns (default, low_latency).
+/// low-latency twin table. Only default-eligible rows enter these automatic
+/// coverage views; raw parquet enumeration retains every measured row.
+/// Returns (default, low_latency).
 pub fn view_moe(sources: &[PerfSource]) -> Result<Option<(ViewNode, ViewNode)>, AicError> {
     let mut default = ViewNode::branch();
     let mut low_latency = ViewNode::branch();
     let found = fold_sources(sources, |ctx| {
         let r = ctx.reader;
+        if !crate::perf_database::moe::moe_default_eligible(
+            r,
+            ctx.row,
+            r.col_optional("default_eligible"),
+            ctx.ks_col,
+        )? {
+            return Ok(());
+        }
         let num_tokens = ctx.row.u32(r.col("num_tokens")?)?;
         let hidden = ctx.row.u32(r.col("hidden_size")?)?;
         let inter = ctx.row.u32(r.col("inter_size")?)?;
@@ -2316,6 +2326,14 @@ fn merge_dsv4_split(parts: Vec<Option<ViewNode>>) -> Option<ViewNode> {
 /// machines missing that family's data).
 pub const TABLE_VIEW_ATTRIBUTES: &[(&str, &[&str])] = &[
     ("_gemm_data", &["gemm_perf.parquet"]),
+    (
+        "_sglang_prefill_attention_sequence_data",
+        &["sglang_prefill_attention_sequence_perf.parquet"],
+    ),
+    (
+        "_sglang_prefill_comm_norm_boundary_data",
+        &["sglang_prefill_comm_norm_boundary_perf.parquet"],
+    ),
     ("_compute_scale_data", &["computescale_perf.parquet"]),
     ("_scale_matrix_data", &["scale_matrix_perf.parquet"]),
     (
@@ -2442,6 +2460,20 @@ pub const TABLE_VIEW_ATTRIBUTES: &[(&str, &[&str])] = &[
 /// sparse sub-tables are addressed as
 /// `"_dsv4_sparse_kernel_data.<paged_mqa_logits|hca_attn|csa_attn>"`.
 pub fn table_view_json(tables: &PerfTables, attribute: &str) -> Result<Option<String>, AicError> {
+    if matches!(
+        attribute,
+        "_sglang_prefill_attention_sequence_data" | "_sglang_prefill_comm_norm_boundary_data"
+    ) {
+        if tables.system != "vr200_hecate"
+            || tables.backend != "sglang"
+            || tables.version != super::prefill_graph::VERSION
+        {
+            return Ok(None);
+        }
+        return tables
+            .prefill_graph
+            .raw_view(attribute == "_sglang_prefill_attention_sequence_data");
+    }
     let src = |basename: &str| {
         tables
             .source_resolver

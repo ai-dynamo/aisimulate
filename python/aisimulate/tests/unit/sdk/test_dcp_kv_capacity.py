@@ -49,6 +49,9 @@ def _estimate(monkeypatch, model) -> dict:
         "vllm",
         max_num_tokens=8192,
         max_batch_size=256,
+        tp_size=8,
+        moe_tp_size=8,
+        moe_ep_size=1,
         dcp_size=getattr(model, "_dcp", 1),
     )
     return estimator.estimate(is_of_free=False, fraction=0.9, gpu_memory_capacity_bytes_override=None)

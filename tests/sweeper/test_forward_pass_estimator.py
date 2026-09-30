@@ -490,15 +490,15 @@ def test_resolver_carries_context_parallel_columns_into_the_estimator_identity(m
     plain = resolver.resolve_candidate(sample)["agg"]
     striped = resolver.resolve_candidate({**sample, "dcp": 8})["agg"]
     assert len(seen) == 2
-    assert (seen[0].cp_size, seen[0].dcp_size) == (None, None)
-    assert (seen[1].cp_size, seen[1].dcp_size) == (None, 8)
+    assert (seen[0].cp_size, seen[0].dcp) == (None, None)
+    assert (seen[1].cp_size, seen[1].dcp) == (None, 8)
     # Unit knobs stay out of the serialized identity; a set knob is carried.
-    assert "dcp_size" not in plain.config and "cp_size" not in plain.config
-    assert striped.config["dcp_size"] == 8
+    assert plain.config.get("dcp") is None and "cp_size" not in plain.config
+    assert striped.config["dcp"] == 8
 
     # Prefill CP folds into the width identity; the sample carries the wider MoE side.
     resolver.resolve_candidate({**sample, "tp": 1, "moe_ep": 8, "cp": 8})
-    assert (seen[-1].tp, seen[-1].cp_size, seen[-1].dcp_size) == (1, 8, None)
+    assert (seen[-1].tp, seen[-1].cp_size, seen[-1].dcp) == (1, 8, None)
 
 
 def test_search_rejects_unknown_controls_and_policies_on_custom_timing():
@@ -653,6 +653,25 @@ def test_mixed_timing_still_enforces_cold_regression_on_default_role():
     }
     with pytest.raises(ForwardPassEstimatorResolutionError, match="prefill is not ready"):
         ForwardPassEstimatorResolver(space).resolve_candidate(sample)
+
+
+def test_legacy_migration_validates_recorded_dcp():
+    legacy = {
+        "schema_version": 1,
+        "model_name": "Qwen/Qwen3-32B",
+        "system_name": "h200_sxm",
+        "backend": "vllm",
+        "tp_size": 8,
+        "pp_size": 1,
+        "forward_model": "fpm",
+    }
+    for dcp in (None, 1, 8):
+        payload = legacy if dcp is None else {**legacy, "dcp_size": dcp}
+        config = ForwardPassPerfModelConfig.from_legacy_engine_config(payload, "decode")
+        assert config.tp == 8 and config.dcp == dcp
+    for dcp in (0, 3):
+        with pytest.raises(ValueError, match="dcp must be positive and divide tp"):
+            ForwardPassPerfModelConfig.from_legacy_engine_config({**legacy, "dcp_size": dcp}, "decode")
 
 
 def test_canonical_operation_diagnostics_include_native_sol_and_provenance():

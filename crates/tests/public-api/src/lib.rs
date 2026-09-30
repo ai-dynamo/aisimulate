@@ -77,6 +77,16 @@ pub fn best_available_model(
     ForwardPassPerfModel::best_available(config)
 }
 
+/// The qualified direct-prefill method is on the canonical returned model.
+pub fn predict_graph_prefill(
+    model: &ForwardPassPerfModel,
+    bs: u32,
+    isl: u32,
+    prefix: u32,
+) -> Result<f64, AicError> {
+    model.predict_prefill_latency(bs, isl, prefix)
+}
+
 pub fn best_available_model_with_roots(
     mut config: ForwardPassPerfModelConfig,
     systems_root: impl AsRef<Path>,
@@ -133,9 +143,38 @@ mod tests {
         // v19: Dsv41AttentionOp gained kv_cache_layout.
         // v20: FpmForwardOp gained original_fmha_quant_mode for selector diagnostics.
         // v21: EngineConfig and MoeOp gained exact moe_kernel_source identity.
-        assert_eq!(ENGINE_SPEC_SCHEMA_VERSION, 21);
+        // v22: observed MoE selection and exact prefill graph composites.
+        // v23: ParallelMapping gained optional recorded DCP identity.
+        // v24: FpmForwardOp carries typed DCP separately from matching strings.
+        assert_eq!(ENGINE_SPEC_SCHEMA_VERSION, 24);
         assert_eq!(FPM_VERSION, 1);
         assert_eq!(ForwardPassMetrics::default().version, FPM_VERSION);
+    }
+
+    #[test]
+    fn direct_graph_api_rejects_an_unselected_regression_model() {
+        let model = regression_model().unwrap();
+        assert!(predict_graph_prefill(&model, 1, 1024, 0).is_err());
+        let mut controls = EstimatorConfig::default();
+        controls.op_level.prefill_graph_profile =
+            Some("sglang_glm52_nvfp4_vr200_tp4_graph_v1".into());
+        controls.op_level.prefill_graph_profile_id =
+            Some("829a83e1629ba546dd4bd90e75a2e2496b7fb24ddc8b60dfbf076ba02312cbce".into());
+        assert!(controls.op_level.decode_workload_distribution.is_none());
+        let mut config = ForwardPassPerfModelConfig::new(
+            "missing-model",
+            "missing-system",
+            BackendKind::Sglang,
+            ForwardPassWorkerType::Prefill,
+        );
+        config.estimator_config = controls;
+        // Auto/default correction cannot admit a direct-only graph profile.
+        // This fails before Python/model/system lookup despite nonexistent data.
+        assert!(ForwardPassPerfModel::best_available(config)
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("requires explicit"));
     }
 
     struct LatencyOnlyProvider;
@@ -207,6 +246,17 @@ mod tests {
     #[test]
     fn regression_constructor_is_environment_independent() {
         let model = regression_model().expect("construct regression model");
+        assert_eq!(
+            model
+                .provenance()
+                .unwrap()
+                .config
+                .estimator_config
+                .fpm_regression
+                .fit
+                .rebuild_interval,
+            None
+        );
         let stores = regression_stores(&model);
         assert_eq!(stores.len(), 4);
         assert_eq!(
@@ -229,6 +279,74 @@ mod tests {
         assert_eq!(options.features.attention_kv_weight, 2.0);
         assert_eq!(options.features.prefill_attention_pair_weight, 3.0);
         assert_eq!(options.features.ffn_token_weight, 4.0);
+    }
+
+    #[test]
+    fn regression_rebuild_interval_is_public_and_preserved_by_canonical_reload() {
+        use aisimulate_core::RegressionFitConfig;
+
+        assert_eq!(RegressionFitConfig::default().rebuild_interval, None);
+        for interval in [Some(1), Some(17), Some(4096), None] {
+            let mut config = ForwardPassPerfModelConfig::new(
+                "test/model",
+                "test-system",
+                BackendKind::Vllm,
+                ForwardPassWorkerType::Decode,
+            );
+            config.estimation_mode = EstimationMode::FpmRegression;
+            config.estimator_config.fpm_regression.fit = RegressionFitConfig {
+                rebuild_interval: interval,
+                ..RegressionFitConfig::default()
+            };
+            let model = ForwardPassPerfModel::best_available(config).unwrap();
+            let resolved = &model.provenance().unwrap().config;
+            assert_eq!(
+                resolved
+                    .estimator_config
+                    .fpm_regression
+                    .fit
+                    .rebuild_interval,
+                interval
+            );
+            let reloaded = ForwardPassPerfModel::best_available(resolved.clone()).unwrap();
+            assert_eq!(&reloaded.provenance().unwrap().config, resolved);
+            assert_eq!(reloaded.regression_store_diagnostics().len(), 1);
+            assert!(!reloaded.regression_store_diagnostics()[0].ready);
+        }
+    }
+
+    #[test]
+    fn zero_regression_rebuild_interval_is_invalid_before_fallback() {
+        use aisimulate_core::ForwardPassFallbackPolicy;
+
+        for mode in [EstimationMode::Auto, EstimationMode::FpmRegression] {
+            let mut config = ForwardPassPerfModelConfig::new(
+                "test/model",
+                "test-system",
+                BackendKind::Vllm,
+                ForwardPassWorkerType::Decode,
+            );
+            config.estimation_mode = mode;
+            config.fallback_policy = ForwardPassFallbackPolicy::Allow;
+            config.estimator_config.fpm_regression.fit.rebuild_interval = Some(0);
+            let error = ForwardPassPerfModel::best_available(config)
+                .err()
+                .expect("zero interval must fail");
+            assert!(matches!(error, AicError::InvalidEngineConfig(_)));
+            assert!(error
+                .to_string()
+                .contains("estimator_config.fpm_regression.fit.rebuild_interval"));
+        }
+    }
+
+    #[test]
+    fn legacy_regression_options_keep_rust_owned_fit_defaults() {
+        use aisimulate_core::ForwardPassPerfOptions;
+
+        let migrated = EstimatorConfig::from_legacy(ForwardPassPerfOptions::default()).unwrap();
+        assert_eq!(migrated.fpm_regression.fit.rebuild_interval, None);
+        assert_eq!(migrated.fpm_regression.sampling.max_observations, 64);
+        assert_eq!(migrated.fpm_regression.sampling.bins_per_axis, [4, 4]);
     }
 
     #[test]

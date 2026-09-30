@@ -122,7 +122,7 @@ def materialize_aic_num_gpu_blocks(
                         # Rust serializes the context-parallel knobs only when set;
                         # decode CP must reach the KV-capacity estimate (1/dcp per rank).
                         "aic_cp_size": resolved.get("cp_size"),
-                        "aic_dcp_size": resolved.get("dcp_size"),
+                        "aic_dcp_size": resolved.get("dcp"),
                     }.items()
                     if value is not None
                 }
@@ -256,7 +256,7 @@ def estimate_num_gpu_blocks(
     attention_backend: str | None = None,
     enable_eplb: bool = False,
     wideep_num_slots: int | None = None,
-    systems_path: str | None = None,
+    systems_path: str | list[str] | None = None,
     cuda_graph_reserved_bytes: int = 0,
     diagnostics: dict[str, Any] | None = None,
 ) -> int:

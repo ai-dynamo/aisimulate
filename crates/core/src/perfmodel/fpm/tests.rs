@@ -33,6 +33,26 @@ fn systems_root() -> PathBuf {
 
 const TEST_MODEL: &str = "MiniMaxAI/MiniMax-M2.5";
 
+#[test]
+fn dcp_cannot_construct_explicit_regression() {
+    let mut config = crate::ForwardPassPerfModelConfig::new(
+        TEST_MODEL,
+        "b200_sxm",
+        BackendKind::Vllm,
+        ForwardPassWorkerType::Aggregated,
+    );
+    config.tp = 8;
+    config.dcp = Some(8);
+    config.estimation_mode = crate::EstimationMode::FpmRegression;
+    let error = ForwardPassPerfModel::best_available(config).unwrap_err();
+    assert!(matches!(error, AicError::UnsupportedModel(_)));
+    assert!(
+        error
+            .to_string()
+            .contains("measured vLLM FPM interpolation")
+    );
+}
+
 /// Hand-built context op list against the b200_sxm/vllm/0.24.0 perf tables
 /// (same fixture pattern as `engine/runtime.rs` and `py.rs` tests).
 fn context_ops() -> Vec<Op> {
@@ -111,6 +131,8 @@ fn fixture_engine_config() -> EngineConfig {
         forward_model: None,
         fpm_parquet_path: None,
         decoder_replay: false,
+        prefill_graph_profile: None,
+        prefill_graph_profile_id: None,
         moe_kernel_source: None,
         kv_block_size: None,
         parallel: ParallelMapping {
@@ -150,7 +172,11 @@ fn regression_model(
     worker_type: ForwardPassWorkerType,
     options: ForwardPassPerfOptions,
 ) -> Result<ForwardPassPerfModel, AicError> {
-    ForwardPassPerfModel::from_regression(worker_type, options)
+    ForwardPassPerfModel::from_regression(
+        worker_type,
+        options,
+        super::estimator::RegressionFitConfig::default().rebuild_interval,
+    )
 }
 
 fn fixture_engine() -> Arc<Engine> {
