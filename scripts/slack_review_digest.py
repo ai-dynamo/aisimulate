@@ -53,7 +53,11 @@ def messages(repository, open_prs, recent_prs, now):
     start = local.replace(hour=0, minute=0, second=0, microsecond=0)
     ready = [pr for pr in open_prs if not pr["draft"]]
     stale = sorted(
-        (pr for pr in ready if timestamp(pr["created_at"]) < now - timedelta(hours=72)),
+        (
+            pr
+            for pr in ready
+            if timestamp(pr["created_at"]) < now - timedelta(hours=120)
+        ),
         key=lambda pr: pr["created_at"],
     )
 
@@ -74,9 +78,10 @@ def messages(repository, open_prs, recent_prs, now):
 
     lines = [
         f"*AISimulate PR digest — {local:%Y-%m-%d, %I:%M %p %Z}*",
-        f"• Open and ready for review: *{len(ready)}*",
-        f"• Merged today: *{merged}*",
-        f"• Opened today: *{opened}*",
+        f":merged-2472: Merged today: *{merged}*",
+        f":eyes: New PRs opened today: *{opened}*",
+        "",
+        f":pr-opened: Open and ready for review: *{len(ready)}*",
         "Today: Pacific midnight through the time shown above.",
         " · ".join(
             [
@@ -86,7 +91,7 @@ def messages(repository, open_prs, recent_prs, now):
             ]
         ),
         "",
-        f"*Open non-draft PRs older than 72 hours — {len(stale)}*",
+        f"*Open non-draft PRs older than 120 hours — {len(stale)}*",
     ]
     for pr in stale:
         age = (now - timestamp(pr["created_at"])).total_seconds() / 86400

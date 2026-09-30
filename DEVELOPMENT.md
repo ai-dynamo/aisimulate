@@ -185,9 +185,13 @@ The `Slack review digest` workflow runs every day at 17:07
 - Open non-draft PRs, including approved PRs.
 - PRs merged or created since Pacific midnight, through the run's start time.
   Created PRs count even if subsequently closed or merged, including drafts.
-- Every open non-draft PR created more than 72 hours ago, oldest first, with
+- Every open non-draft PR created more than 120 hours (5 days) ago, oldest first, with
   its link, title, author, and age. Age measures creation time, not inactivity
   or time since leaving draft. Large lists span multiple Slack messages.
+
+The summary shows merged PRs (`:merged-2472:`), new PRs (`:eyes:`), then
+open PRs (`:pr-opened:`). The destination workspace must have the custom
+`merged-2472` and `pr-opened` emoji for those names to render as icons.
 
 To enable delivery:
 

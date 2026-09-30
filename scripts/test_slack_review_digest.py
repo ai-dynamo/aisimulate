@@ -14,7 +14,7 @@ from slack_review_digest import PACIFIC, messages, pull_requests
 class DigestTests(unittest.TestCase):
     now = datetime(2026, 9, 30, 0, 7, tzinfo=timezone.utc)
 
-    def pr(self, number=1, age=4, **changes):
+    def pr(self, number=1, age=6, **changes):
         pr = dict(
             number=number,
             title="Fix <queue> & counters",
@@ -29,14 +29,16 @@ class DigestTests(unittest.TestCase):
 
     def test_stale_boundary_drafts_and_oldest_first(self):
         opened = [
-            self.pr(1, age=3),
-            self.pr(2, age=4),
-            self.pr(3, age=6),
+            self.pr(1, age=5),
+            self.pr(2, age=6),
+            self.pr(3, age=8),
             self.pr(4, age=10, draft=True),
         ]
         text = "".join(messages("ai-dynamo/aisimulate", opened, [], self.now))
-        self.assertIn("ready for review: *3*", text)
-        self.assertIn("older than 72 hours — 2", text)
+        self.assertIn(":pr-opened: Open and ready for review: *3*", text)
+        self.assertLess(text.index(":merged-2472:"), text.index(":eyes:"))
+        self.assertLess(text.index(":eyes:"), text.index(":pr-opened:"))
+        self.assertIn("older than 120 hours — 2", text)
         self.assertLess(text.index("|#3>"), text.index("|#2>"))
         self.assertNotIn("|#1>", text)
         self.assertNotIn("|#4>", text)
@@ -54,8 +56,8 @@ class DigestTests(unittest.TestCase):
             self.pr(created_at="2026-09-30T01:00:00Z"),
         ]
         text = "".join(messages("ai-dynamo/aisimulate", [], recent, self.now))
-        self.assertIn("Merged today: *1*", text)
-        self.assertIn("Opened today: *2*", text)
+        self.assertIn(":merged-2472: Merged today: *1*", text)
+        self.assertIn(":eyes: New PRs opened today: *2*", text)
         self.assertIn("2026-09-29, 05:07 PM PDT", text)
 
     def test_dst_day_uses_midnight_offset(self):
@@ -66,7 +68,7 @@ class DigestTests(unittest.TestCase):
         )
         recent = [self.pr(created_at="2026-11-01T07:30:00Z")]
         text = "".join(messages("ai-dynamo/aisimulate", [], recent, now))
-        self.assertIn("Opened today: *1*", text)
+        self.assertIn(":eyes: New PRs opened today: *1*", text)
         self.assertIn("05:07 PM PST", text)
 
     def test_large_queue_retains_all_prs(self):
