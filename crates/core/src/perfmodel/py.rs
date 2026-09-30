@@ -1809,8 +1809,11 @@ pub(crate) fn compile_engine_to_engine(
             request.fpm_interpolation.as_deref(),
             request.fpm_parquet_path.as_deref(),
         )?;
-        request.fpm_interpolation = Some(controls.fpm_interpolation.method.as_str().to_owned());
         request.fpm_options = controls.fpm_interpolation.clone();
+        request.fpm_interpolation = match controls.fpm_interpolation.method {
+            crate::FpmInterpolationMethod::Auto => None,
+            method => Some(method.as_str().to_owned()),
+        };
         request.fpm_parquet_path = controls
             .fpm_interpolation
             .fpm_parquet_path
@@ -2033,16 +2036,20 @@ impl PyForwardPassPerfModel {
 
     /// Share typed FPM option validation with the compilation adapter.
     #[staticmethod]
-    #[pyo3(signature = (options_json, fmha_quant_mode=None, comm_quant_mode=None))]
+    #[pyo3(signature = (options_json, fmha_quant_mode=None, comm_quant_mode=None, has_profile=false))]
     fn _normalize_fpm_options(
         options_json: &str,
         fmha_quant_mode: Option<&str>,
         comm_quant_mode: Option<&str>,
+        has_profile: bool,
     ) -> PyResult<String> {
         let options: crate::FpmInterpolationConfig =
             serde_json::from_str(options_json).map_err(|e| {
                 PyValueError::new_err(format!("invalid FPM interpolation options: {e}"))
             })?;
+        if has_profile {
+            options.validate_profile_options().map_err(aic_to_py)?;
+        }
         options
             .validate_quant_modes(fmha_quant_mode, comm_quant_mode)
             .map_err(aic_to_py)?;
@@ -2516,6 +2523,20 @@ mod tests {
             database_mode: Default::default(),
             transfer_policy: None,
             extra: BTreeMap::new(),
+        }
+    }
+
+    #[test]
+    fn legacy_compilation_with_only_correction_controls_keeps_default_method() {
+        py_init();
+        let mut config = fixture_engine_config();
+        config.extra.insert(
+            "estimator_config".into(),
+            r#"{"correction":{"enabled":false},"fpm_interpolation":{"text_only":false,"unrecorded_quant_modes":[]}}"#.into(),
+        );
+        for forward_model in [None, Some("fpm".to_owned())] {
+            config.forward_model = forward_model;
+            compile_engine_to_engine(&config, systems_root().to_str()).unwrap();
         }
     }
 

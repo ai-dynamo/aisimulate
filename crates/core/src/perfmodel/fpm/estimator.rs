@@ -65,6 +65,15 @@ pub enum UnrecordedFpmQuantMode {
 }
 
 impl FpmInterpolationConfig {
+    pub(crate) fn validate_profile_options(&self) -> Result<(), AicError> {
+        if self.text_only || !self.unrecorded_quant_modes.is_empty() {
+            return Err(super::config::invalid_config(
+                "fpm_profile does not support text_only or unrecorded_quant_modes overrides",
+            ));
+        }
+        Ok(())
+    }
+
     pub(crate) fn validate_quant_modes(
         &self,
         fmha: Option<&str>,
@@ -484,13 +493,11 @@ fn explicit_fields(
             fields
                 .iter()
                 .map(|(key, value)| {
-                    // Compact serde output may omit an explicitly supplied
-                    // default (false, empty, or None). Preserve its presence.
-                    let value = normalized
-                        .get(key)
-                        .map(|normalized| explicit_fields(value, normalized))
-                        .unwrap_or_else(|| value.clone());
-                    (key.clone(), value)
+                    // Compact serde output may omit an explicit default; keep it supplied.
+                    (
+                        key.clone(),
+                        explicit_fields(value, normalized.get(key).unwrap_or(value)),
+                    )
                 })
                 .collect(),
         ),

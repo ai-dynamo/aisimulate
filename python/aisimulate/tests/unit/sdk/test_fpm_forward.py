@@ -63,13 +63,13 @@ def test_fpm_compile_context_uses_rust_defaults_without_python_fallbacks(monkeyp
 
     class RustOptions:
         @staticmethod
-        def _normalize_fpm_options(payload, fmha, comm):
-            calls.append((json.loads(payload), fmha, comm))
+        def _normalize_fpm_options(payload, fmha, comm, has_profile):
+            calls.append((json.loads(payload), fmha, comm, has_profile))
             return json.dumps(resolved)
 
     monkeypatch.setattr(aisimulate_core, "RustForwardPassPerfModel", RustOptions)
     context = FpmCompileConfig(attention_backend="FLASHINFER_MLA")
-    assert calls == [({}, None, None)]
+    assert calls == [({}, None, None, False)]
     assert context.options == resolved
     assert context.cache_identity() == {"options": resolved, "attention_backend": "FLASHINFER_MLA"}
 

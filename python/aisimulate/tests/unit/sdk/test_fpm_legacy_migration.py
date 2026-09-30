@@ -254,3 +254,12 @@ def test_different_parquet_paths_conflict_without_filesystem_resolution(legacy_p
 def test_migration_rejects_unknown_and_invalid_controls(saved, options, reason):
     with pytest.raises(ValueError, match=reason):
         ForwardPassPerfModelConfig.from_legacy_engine_config(_legacy_config(saved), "prefill", options)
+
+
+@pytest.mark.parametrize("options", [{"text_only": False}, {"unrecorded_quant_modes": []}])
+def test_explicit_skipped_defaults_migrate_without_becoming_null(options):
+    config = ForwardPassPerfModelConfig.from_legacy_engine_config(
+        _legacy_config({"fpm_interpolation": options}), "prefill"
+    )
+    normalized = RustForwardPassPerfModel.normalize_config(_reload(config))
+    assert normalized["estimator_config"]["fpm_interpolation"]["method"] == "sol"
