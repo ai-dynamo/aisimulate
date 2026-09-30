@@ -245,7 +245,7 @@ impl ForwardPassPerfModelConfig {
         let registered = if self.fpm_profile.is_some() {
             if self.dcp.is_some() {
                 return Err(invalid_config(
-                    "fpm_profile does not yet declare recorded DCP identity",
+                    "fpm_profile does not describe recorded DCP identity",
                 ));
             }
             if self.backend_version.is_none() {

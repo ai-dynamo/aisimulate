@@ -569,7 +569,7 @@ def compile_engine(
                 "FPM profiles do not support moe_kernel_source, decode_workload_distribution or prefill_graph_profile"
             )
         if dcp_size is not None:
-            raise InvalidEngineConfigurationError("fpm_profile does not yet declare recorded DCP identity")
+            raise InvalidEngineConfigurationError("fpm_profile does not describe recorded DCP identity")
         if nextn or speculation is not None:
             raise InvalidEngineConfigurationError("FPM profiles support plain autoregressive decoder-only execution")
         literal_version = _literal_backend_version(system, backend, backend_version, systems_path, None)

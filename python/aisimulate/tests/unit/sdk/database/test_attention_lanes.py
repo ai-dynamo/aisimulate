@@ -244,7 +244,7 @@ def _route_lane_density_through_the_stub(monkeypatch):
 
 
 def test_engine_spec_schema_version_is_twenty_five():
-    """Combined direct interpolation and typed DCP need a distinct binary layout."""
+    """Direct interpolation with typed FPM DCP changes the positional operator payload."""
     from aisimulate.sdk import engine
 
     assert engine.ENGINE_SPEC_SCHEMA_VERSION == 25

@@ -298,7 +298,7 @@ def test_profile_precision_cannot_be_selected_as_unrecorded(profile_dict, monkey
 @pytest.mark.parametrize("entry_point", [_normalize, RustForwardPassPerfModel.best_available])
 def test_profile_rejects_unrepresented_recorded_dcp(profile_dict, monkeypatch, dcp, entry_point):
     monkeypatch.setattr(engine, "compile_engine", _fail_graph)
-    with pytest.raises(ValueError, match="does not yet declare recorded DCP identity"):
+    with pytest.raises(ValueError, match="does not describe recorded DCP identity"):
         entry_point(_request(profile_dict, dcp=dcp, estimation_mode="auto", fallback_policy="allow"))
 
 
@@ -331,7 +331,7 @@ def test_direct_compilation_preserves_text_only_and_external_data_controls(profi
     [
         ({"unrecorded_quant_modes": ["fmha"]}, {}, "explicit quantization override"),
         ({"unrecorded_quant_modes": ["comm"]}, {}, "explicit quantization override"),
-        ({}, {"dcp_size": 2}, "does not yet declare recorded DCP identity"),
+        ({}, {"dcp_size": 2}, "does not describe recorded DCP identity"),
         ({"method": "sol"}, {}, "conflicting fpm_interpolation and fpm_options.method"),
     ],
 )
@@ -450,6 +450,25 @@ def test_sdk_entry_points_reject_unsupported_cp_before_construction(profile_dict
 def test_direct_rejects_unsupported_execution(profile_dict, direct_compile, kwargs):
     with pytest.raises(ValueError):
         direct_compile(profile_dict, **kwargs)
+
+
+@pytest.mark.parametrize("dcp", [1, 2])
+def test_profile_rejects_unrepresented_dcp_identity(profile_dict, dcp):
+    with pytest.raises(ValueError, match="does not describe recorded DCP identity"):
+        _normalize(_request(profile_dict, "direct", dcp=dcp))
+    with pytest.raises(ValueError, match="does not describe recorded DCP identity"):
+        engine.compile_engine(
+            "test/unknown-decoder",
+            "test_gpu",
+            "vllm",
+            "0.25.1",
+            tp_size=2,
+            moe_tp_size=2,
+            forward_model="fpm",
+            fpm_profile=profile_dict,
+            fpm_interpolation="direct",
+            dcp_size=dcp,
+        )
 
 
 def test_direct_requires_explicit_resources(direct_compile):
