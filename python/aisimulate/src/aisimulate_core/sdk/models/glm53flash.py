@@ -22,6 +22,34 @@ def _native(kind: str, **values):
     return core.op_from_spec_json(json.dumps({kind: values}))
 
 
+def _specs(operations) -> list[dict]:
+    return [json.loads(op._spec_json()) for op in operations]
+
+
+# SILICON/HYBRID generic composition. Every GLM boundary keeps its analytical
+# SOL formula (so op-level SOL and the FPM roofline are unchanged); outside SOL
+# mode it is priced as the sum of these generic ops against the generic tables
+# (gemm/moe/kda/mhc_module/custom_allreduce/nccl). Only the NoPE sparse-MLA +
+# IndexPool attention has a GLM table (glm53_attention_module_perf.parquet).
+#
+# KDA kda_perf kernel_source per (backend, phase): (short conv, delta rule).
+# Pinned runtimes: vLLM 0.30.0+glm53tail glm5next/nvidia/kda.py (one
+# causal_conv1d_fn over concatenated q/k/v, FlashKDA prefill on SM100,
+# causal_conv1d_update + fused_recurrent_kda decode); SGLang 0.5.20
+# glm5_next.py RadixLinearAttention (chunk_kda prefill, packed recurrent
+# decode). These names are the Ops KDA collector contract.
+KDA_KERNELS = {
+    ("vllm", "context"): ("causal_conv1d_fn_qkv3", "flashkda_fwd"),
+    ("vllm", "generation"): ("causal_conv1d_update", "fused_recurrent_kda"),
+    ("sglang", "context"): ("causal_conv1d_fn_qkv3", "chunk_kda"),
+    ("sglang", "generation"): ("causal_conv1d_update", "fused_recurrent_kda_packed_decode"),
+}
+# One generic mhc_module_perf row covers one decoder layer's two mHC sites
+# (attention + FFN), the DeepSeek-V4 collector convention; a single GLM site
+# is therefore half of that row.
+MHC_SITE_SCALE = 0.5
+
+
 @register_model("GLM53FLASH")
 class Glm53FlashModel(BaseModel):
     """34 KDA + 11 NoPE sparse MLA layers; MTP and vision are outside this graph."""
@@ -87,6 +115,41 @@ class Glm53FlashModel(BaseModel):
         h = d.hidden_size
         self._cache_specs = []
         identity = dict(backend=backend_name, checkpoint_format=self.checkpoint_format)
+        bf16 = common.GEMMQuantMode.bfloat16
+
+        def mhc_measured(name, role):
+            def module(half):
+                return ops.DeepSeekV4MHCModule(
+                    f"{name}_{half}",
+                    MHC_SITE_SCALE,
+                    half,
+                    h,
+                    d.hc_mult,
+                    d.hc_sinkhorn_iters,
+                    bf16,
+                    architecture=self.architecture,
+                )
+
+            def bytes_op(label, bytes_per_token):
+                return _native(
+                    "Elementwise",
+                    name=f"{name}_{label}",
+                    scale_factor=1.0,
+                    bytes_per_token=float(bytes_per_token),
+                    scale_num_tokens=1,
+                    seq_split=1,
+                )
+
+            # mHC pre includes the block input RMSNorm (native contract).
+            norm = ops.ElementWise(f"{name}_rmsnorm", 1, h, h, 0.8)
+            streams = (d.hc_mult + 1) * h * 2
+            return {
+                "pre": [module("pre"), norm],
+                "post": [module("post")],
+                "fused_post_pre": [module("post"), module("pre"), norm],
+                "expand": [bytes_op("expand", streams)],
+                "contract": [bytes_op("contract", streams)],
+            }[role]
 
         def mhc(name, role):
             return _native(
@@ -98,8 +161,40 @@ class Glm53FlashModel(BaseModel):
                 hidden_size=h,
                 hc_mult=d.hc_mult,
                 sinkhorn_iters=d.hc_sinkhorn_iters,
+                measured=_specs(mhc_measured(name, role)),
                 **identity,
             )
+
+        def kda_measured(layer, context):
+            phase = "context" if context else "generation"
+            heads = d.linear_num_heads // tp
+            hd = d.linear_head_dim
+            p = heads * hd
+            conv, core_kernel = KDA_KERNELS[(backend_name, phase)]
+            label = f"{phase}_kda_{layer}"
+            if backend_name == "vllm":
+                # Fused q/k/v + beta + low-rank f_a/g_a projection.
+                projections = [ops.GEMM(f"{label}_in_proj", 1, 3 * p + heads + 2 * hd, h, bf16)]
+            else:
+                # SGLang keeps separate q/k/v/b/f_a/g_a linears (no fuse).
+                projections = [
+                    ops.GEMM(f"{label}_{part}_proj", 1, width, h, bf16)
+                    for part, width in (("q", p), ("k", p), ("v", p), ("b", heads), ("f_a", hd), ("g_a", hd))
+                ]
+
+            def kernel(suffix, source):
+                return ops.KDAKernel(f"{label}_{suffix}", 1, source, phase, h, heads, hd, heads, hd, d.conv_kernel)
+
+            return [
+                *projections,
+                ops.GEMM(f"{label}_f_b_proj", 1, p, hd, bf16),
+                ops.GEMM(f"{label}_g_b_proj", 1, p, hd, bf16),
+                kernel("conv1d", conv),
+                kernel("delta_rule", core_kernel),
+                # Bounded-gate output RMSNorm on the attention output.
+                ops.ElementWise(f"{label}_onorm", 1, 2 * p, p, 0.8),
+                ops.GEMM(f"{label}_o_proj", 1, h, p, bf16),
+            ]
 
         def attention(layer, context):
             kda = d.layer_types[layer] == "linear_attention"
@@ -128,9 +223,11 @@ class Glm53FlashModel(BaseModel):
             )
             if context:
                 self._cache_specs.append(json.dumps(spec))
-            return _native("Glm53Attention", **spec)
+            # Sparse MLA is the one GLM-table op; KDA is generic GEMM + KDA kernels.
+            measured = _specs(kda_measured(layer, context)) if kda else []
+            return _native("Glm53Attention", measured=measured, **spec)
 
-        def primitive(name, role, context, children):
+        def primitive(name, role, context, children, measured):
             return _native(
                 "Glm53Primitive",
                 name=name,
@@ -143,12 +240,19 @@ class Glm53FlashModel(BaseModel):
                 output_dtype="float32" if role == "logits" and backend_name == "sglang" else "bfloat16",
                 collective={"allreduce": "all_reduce", "logits": "all_gather"}.get(role, "none"),
                 children=[json.loads(op._spec_json()) for op in children],
+                measured=_specs(measured),
                 **identity,
             )
 
         def allreduce(name, context):
+            # SOL keeps the NCCL ring child; measured TP all-reduce is the
+            # framework custom all-reduce, as for every other TP model.
             return primitive(
-                name, "allreduce", context, [ops.NCCL(name, 1, "all_reduce", h, tp, common.CommQuantMode.half)]
+                name,
+                "allreduce",
+                context,
+                [ops.NCCL(name, 1, "all_reduce", h, tp, common.CommQuantMode.half)],
+                [ops.CustomAllReduce(f"{name}_custom", 1, h, tp)],
             )
 
         def mlp(layer, phase):
@@ -167,7 +271,28 @@ class Glm53FlashModel(BaseModel):
                 ops.ElementWise(f"{phase}_{label}_swiglu_clamp10_{layer}", 1, 2 * width, width, 0.8),
                 ops.GEMM(f"{phase}_{label}_down_{layer}", 1, h, width, q),
             ]
+            measured = list(result)
             if not dense:
+                # Generic path: BF16 router GEMM (as other models; the native
+                # FP32 GateLinear has no generic FP32 GEMM table) and the
+                # routed-expert MoE row. Pure TP dispatch/combine are the
+                # explicit attention/FFN all-reduces, so no MoEDispatch.
+                moe = ops.MoE(
+                    f"{phase}_moe_{layer}",
+                    1,
+                    h,
+                    d.moe_intermediate_size,
+                    d.num_experts_per_tok,
+                    d.n_routed_experts,
+                    tp,
+                    1,
+                    model_config.moe_quant_mode,
+                    "power_law_1.01"
+                    if model_config.workload_distribution == "power_law"
+                    else model_config.workload_distribution,
+                    1,
+                )
+                measured += [ops.GEMM(f"{phase}_router_{layer}", 1, d.n_routed_experts, h, bf16), moe]
                 result += [
                     _native(
                         "Glm53Router",
@@ -216,6 +341,7 @@ class Glm53FlashModel(BaseModel):
                 ).name,
                 moe_quant_mode=model_config.moe_quant_mode.name,
                 children=[json.loads(op._spec_json()) for op in result],
+                measured=_specs(measured),
                 **identity,
             )
             return [module, allreduce(f"ffn_allreduce_{layer}", phase == "context")]
@@ -223,13 +349,9 @@ class Glm53FlashModel(BaseModel):
         for context in (True, False):
             phase = "context" if context else "generation"
             target = self.context_ops if context else self.generation_ops
+            embedding = [ops.Embedding("embedding_local", 1, self._vocab_size // tp, h, 0.3)]
             target += [
-                primitive(
-                    "embedding",
-                    "embedding",
-                    context,
-                    [ops.Embedding("embedding_local", 1, self._vocab_size // tp, h, 0.3)],
-                ),
+                primitive("embedding", "embedding", context, embedding, embedding),
                 allreduce("embedding_allreduce", context),
                 mhc("mhc_expand", "expand"),
             ]
@@ -267,10 +389,11 @@ class Glm53FlashModel(BaseModel):
                         seq_split=1,
                     )
                 )
+            final_norm = [ops.ElementWise("final_norm_local", 1, h, h, 0.8)]
             target += [
                 mhc("mhc_contract", "contract"),
-                primitive("final_norm", "final_norm", context, [ops.ElementWise("final_norm_local", 1, h, h, 0.8)]),
-                primitive("logits", "logits", context, logits),
+                primitive("final_norm", "final_norm", context, final_norm, final_norm),
+                primitive("logits", "logits", context, logits, logits),
             ]
         self._resident_weight_bytes = float(sum(op.get_weights() for op in self.context_ops))
         # Generic GEMM/MoE FP8 weight inventory omits block scales; NVFP4's
