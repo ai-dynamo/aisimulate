@@ -176,3 +176,44 @@ Explore the automation helpers under `python/aisimulate/tools/automation/`.
 ## License
 
 This project is licensed under Apache 2.0. All contributions must include SPDX license headers and DCO sign-off.
+
+## Daily Slack review digest
+
+The `Slack review digest` workflow runs every day at 17:07
+`America/Los_Angeles` (including daylight saving changes). It reports:
+
+- Open non-draft PRs, including approved PRs.
+- PRs merged or created since Pacific midnight, through the run's start time.
+  Created PRs count even if subsequently closed or merged, including drafts.
+- Every open non-draft PR created more than 72 hours ago, oldest first, with
+  its link, title, author, and age. Age measures creation time, not inactivity
+  or time since leaving draft. Large lists span multiple Slack messages.
+
+To enable delivery:
+
+1. Create a Slack app, enable Incoming Webhooks, and add a webhook for the
+   destination channel (workspace admin approval may be required).
+2. Save its URL under repository **Settings → Secrets and variables → Actions**
+   as `SLACK_REVIEW_DIGEST_WEBHOOK_URL`. Never commit the URL.
+3. Merge the workflow into the default branch. In **Actions → Slack review
+   digest → Run workflow**, leave `dry_run` enabled to preview; disable it
+   to send a test message.
+
+No personal GitHub token or Python packages are needed in Actions. The job
+uses its read-only repository token. Missing secrets and API errors fail the
+job. Runs are not automatically retried; rerunning a sent or partially sent
+job can duplicate messages. GitHub schedules may be delayed, so the digest
+shows the actual reporting time. Activity after that time is outside the
+same-day report.
+
+Local preview (requires an authenticated GitHub CLI and Python 3.9+):
+
+```bash
+GH_TOKEN="$(gh auth token)" python3 scripts/slack_review_digest.py --dry-run
+```
+
+Run the focused offline checks with:
+
+```bash
+python3 scripts/test_slack_review_digest.py
+```
