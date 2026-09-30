@@ -37,6 +37,13 @@ The in_proj/out_proj/gate GEMMs are standard linear layers modeled by the
 existing GEMM infrastructure. Tensor constructions mirror the branch's own
 tests (tests/models/kimi_k3/test_kda.py).
 
+GLM-5.3-Flash (Glm5NextForConditionalGeneration, vLLM 0.30.0) rows are
+routed by model path to the glm5next layer's own dispatch (see the GLM
+section): one merged q|k|v conv ("causal_conv1d_fn" / "causal_conv1d_update"),
+the prefill core ("flashkda_fwd" = state gather + FlashKDA + state scatter,
+or the Triton "chunk_kda_with_fused_gate") and the decode recurrence
+("fused_recurrent_kda", in-kernel bounded gate).
+
 Output:
     kda_perf.txt — same column layout as the sglang kda collector.
 """
@@ -48,7 +55,12 @@ Output:
 # preview version; it runs on either image — the DS-layout probe
 # (is_fused_kda_decode_supported) yields fused_kda_decode rows on the
 # preview and the packed conv-update + recurrence pair on 0.27.0.
-__compat__ = "vllm==0.1.dev19262"
+# 0.30.0 adds GLM-5.3-Flash (glm5next) KDA, audited against the GB300 0.30.0
+# image (installed 0.30.0+glm53tail.eb4704514fdf; see the GLM section below).
+# PEP 440 clauses here are conjunctive, so the range also admits the
+# releases in between; the manifest pins the one runtime each run uses, and
+# only 0.1.dev19262 (Kimi-K3) and 0.30.0 (GLM-5.3-Flash) are verified.
+__compat__ = "vllm>=0.1.dev19262,<=0.30.0"
 
 import gc
 import os
@@ -720,6 +732,462 @@ def run_kda_verify_benchmark(
         )
 
 
+# ---------------------------------------------------------------------------
+# GLM-5.3-Flash (Glm5NextForConditionalGeneration) KDA — vLLM 0.30.0.
+#
+# vLLM serves GLM-5.3-Flash KDA through its own layer,
+# vllm/models/glm5next/nvidia/kda.py::Glm5NextLinearAttention (a
+# GatedDeltaNetAttention subclass driven by GDNAttentionMetadata), NOT the
+# Kimi-K3 layer above: one merged q|k|v causal conv instead of three, the
+# glm5next FLA fork of fused_recurrent_kda (in-kernel bounded gate) for
+# decode, and gather/scatter of the recurrent state around the prefill core.
+# Source audit (GB300 image vllm/vllm-openai@sha256:4864d466..., installed
+# 0.30.0+glm53tail.eb4704514fdf; glm5next/nvidia/kda.py sha256 37745b45...
+# is byte-identical in the stock 0.30.0 image and the glm53tail overlay):
+#   - kda.py:127-150  _resolve_kda_prefill_backend: FlashKDA on CUDA SM9x/10x/12x
+#                     for bf16 + head_dim 128 + bounded gate, else Triton
+#                     chunk_kda_with_fused_gate ("auto" is the serving default,
+#                     kda.py:321-329). The collector asks this same function.
+#   - kda.py:247-273,505-515  q/k/v conv weights are fp32 params merged once
+#                     into one [3P, d_conv] weight; bias is None (bias=False).
+#   - kda.py:493-497  conv state is (…, dim, width-1); SD layout is a
+#                     transposed view of the pool (is_conv_state_dim_first).
+#   - kda.py:569-582  prefill: ONE causal_conv1d_fn over q|k|v with the
+#                     step GDNAttentionMetadata (metadata=...).
+#   - kda.py:644-692  prefill core: gather_initial_states -> FlashKDA fwd
+#                     (kda.py:355-398, .contiguous() copies of q/k/v/g, raw
+#                     bf16 beta) or chunk_kda_with_fused_gate -> scatter_states.
+#   - kda.py:583-596,693-720  decode: ONE causal_conv1d_update over q|k|v, then
+#                     glm5next fused_recurrent_kda(compute_gate=True,
+#                     sigmoid_beta=True, lower_bound) writing into the layer
+#                     output buffer.
+#   - gdn_attn.py:250-252  split_decodes_and_prefills(decode_threshold=1):
+#                     one-token non-spec requests are decodes.
+#   - gdn_attn.py:399-417  has_initial_state = num_computed_tokens > 0 and the
+#                     causal-conv metadata from the CPU query_start_loc.
+#   - mamba_utils.py:133-149,298-321  conv state bf16 (model dtype),
+#                     recurrent state fp32 (mamba_ssm_cache_dtype auto),
+#                     shapes (3P, d_conv-1) / (H, D, D).
+#
+# Row boundary: each row times the kernels between the projections and the
+# output norm. The fused
+# in_proj_qkvbfg_a, f_b_proj, g_b_proj and o_proj GEMMs, the gated output
+# RMSNorm (o_norm, a vLLM CustomOp) and the TP all-reduce are NOT in any
+# kda row.
+# ---------------------------------------------------------------------------
+
+# Serving architecture of these model paths is Glm5NextForConditionalGeneration
+# (config.json "architectures"); vLLM routes it to glm5next/nvidia/kda.py.
+GLM5_NEXT_KDA_MODEL_PATHS = frozenset({"zai-org/GLM-5.3-Flash", "nvidia/GLM-5.3-Flash-NVFP4"})
+# config.json text_config.linear_attn_config.gate_lower_bound (both checkpoints).
+GLM5_NEXT_KDA_LOWER_BOUND = -5.0
+
+
+def _is_glm5_next_kda(model_name: str) -> bool:
+    return model_name in GLM5_NEXT_KDA_MODEL_PATHS
+
+
+def _glm5_next_common(phase, batch_size, seq_len, d_model, d_conv, nh, hd, model_name):
+    return {
+        "phase": phase,
+        "batch_size": batch_size,
+        "seq_len": seq_len,
+        "num_tokens": batch_size * seq_len,
+        "d_model": d_model,
+        "d_conv": d_conv,
+        "num_k_heads": nh,
+        "head_k_dim": hd,
+        "num_v_heads": nh,
+        "head_v_dim": hd,
+        "model_name": model_name,
+    }
+
+
+def _glm5_next_state_pool(num_slots, nh, hd, d_conv, device):
+    """Allocate the per-layer KDA pool exactly like serving: shapes/dtypes from
+    the framework's own calculators (mamba_utils.py:133-149,298-321) and the
+    conv-state orientation from is_conv_state_dim_first (kda.py:493-497).
+    Both states are filled with non-zero values: rows model requests whose
+    prefix is already cached (has_initial_state=True)."""
+    from vllm.model_executor.layers.mamba.mamba_utils import (
+        MambaStateDtypeCalculator,
+        MambaStateShapeCalculator,
+        is_conv_state_dim_first,
+    )
+
+    conv_dtype, state_dtype = MambaStateDtypeCalculator.kda_state_dtype(torch.bfloat16, "auto")
+    conv_shape, state_shape = MambaStateShapeCalculator.kda_state_shape(1, nh, hd, conv_kernel_size=d_conv)
+    conv_pool = 0.1 * torch.randn(num_slots, *conv_shape, device=device).to(conv_dtype)
+    conv_state = conv_pool if is_conv_state_dim_first() else conv_pool.transpose(-1, -2)
+    recurrent_state = 0.01 * torch.randn(num_slots, *state_shape, dtype=state_dtype, device=device)
+    return conv_state, recurrent_state
+
+
+def _glm5_next_layer_params(nh, hd, d_conv, device):
+    """fp32 merged conv weight [3P, d_conv] (kda.py:247-273,505-515), A_log
+    [1,1,H,1] and dt_bias [P] fp32 (kda.py:241-243,279-282)."""
+    proj = nh * hd
+    conv_weight = torch.randn(3 * proj, d_conv, dtype=torch.float32, device=device).contiguous()
+    a_log = torch.zeros(1, 1, nh, 1, dtype=torch.float32, device=device)
+    dt_bias = 0.1 * torch.randn(proj, dtype=torch.float32, device=device)
+    return conv_weight, a_log, dt_bias
+
+
+def _glm5_next_projected(num_tokens, nh, hd, device):
+    """in_proj_qkvbfg_a output [T, 3P + H + 2D] (kda.py:214-232) and its
+    serving splits (kda.py:407-423): qkv [T, 3P] and raw bf16 beta [1, T, H]
+    are strided column views of the one GEMM output."""
+    proj = nh * hd
+    projected = torch.randn(num_tokens, 3 * proj + nh + 2 * hd, dtype=torch.bfloat16, device=device)
+    qkv, beta_raw, _f_a, _g_a = projected.split([3 * proj, nh, hd, hd], dim=-1)
+    return qkv, beta_raw.unsqueeze(0)
+
+
+def run_glm5_next_kda_context(
+    d_model,
+    d_conv,
+    nh,
+    hd,
+    batch_size_list,
+    seq_len_list,
+    model_name,
+    perf_filename,
+    vllm_version,
+    device="cuda:0",
+):
+    """GLM-5.3-Flash prefill (every request has a cached prefix): merged q|k|v
+    causal_conv1d_fn row, then the prefill-core row (state gather + FlashKDA
+    or Triton chunk + state scatter), dispatched by the framework's resolver."""
+    if any(seq_len <= 1 for seq_len in seq_len_list):
+        raise ValueError("GLM-5.3-Flash KDA context collection requires seq_len > 1 (seq_len=1 is a decode)")
+
+    from vllm.model_executor.layers.mamba.ops.causal_conv1d import causal_conv1d_fn
+    from vllm.model_executor.layers.mamba.ops.gather_initial_states import gather_initial_states
+    from vllm.model_executor.layers.mamba.ops.scatter_states import scatter_states
+    from vllm.models.glm5next.nvidia.kda import _cast_sigmoid, _resolve_kda_prefill_backend
+    from vllm.models.glm5next.nvidia.ops.third_party.kda import chunk_kda_with_fused_gate
+    from vllm.v1.attention.backends.gdn_attn import GDNAttentionMetadata
+    from vllm.v1.attention.backends.utils import compute_causal_conv1d_metadata
+
+    device = torch.device(device)
+    torch.cuda.set_device(device)
+    dtype = torch.bfloat16
+    proj = nh * hd
+    # Serving selection (kda.py:321-329 -> :127-150) with the default "auto".
+    prefill_backend = _resolve_kda_prefill_backend("auto", hd, dtype, GLM5_NEXT_KDA_LOWER_BOUND)
+    prefill_source = {"flashkda": "flashkda_fwd", "triton": "chunk_kda_with_fused_gate"}[prefill_backend]
+    if prefill_backend == "flashkda":
+        import vllm._flashkda_C  # noqa: F401  (kda.py:333-334 imports it at layer init)
+    conv_weight, a_log, dt_bias = _glm5_next_layer_params(nh, hd, d_conv, device)
+    ok = err = 0
+    failures: list[str] = []
+
+    for batch_size in batch_size_list:
+        for seq_len in seq_len_list:
+            nt = batch_size * seq_len
+            conv_state = recurrent_state = qkv = beta = g1 = conv_out = None
+            q = k = v = core_out = final_state = workspace = conv_metadata = None
+            try:
+                cu_cpu = torch.arange(0, nt + 1, seq_len, dtype=torch.int32)
+                cu = cu_cpu.to(device)
+                idx = torch.arange(batch_size, dtype=torch.int32, device=device)
+                has_init = torch.ones(batch_size, dtype=torch.bool, device=device)
+                conv_state, recurrent_state = _glm5_next_state_pool(batch_size, nh, hd, d_conv, device)
+                qkv, beta = _glm5_next_projected(nt, nh, hd, device)
+                # f_b_proj output reshaped to [1, T, H, D] (kda.py:424-425).
+                g1 = torch.randn(1, nt, nh, hd, dtype=dtype, device=device)
+                # Pure-prefill GDNAttentionMetadata as populated by
+                # gdn_attn.py:250-260 (no spec) and :399-417 (prefill fields).
+                nums_dict, batch_ptr, token_chunk_offset_ptr = compute_causal_conv1d_metadata(cu_cpu, device=device)
+                conv_metadata = GDNAttentionMetadata(
+                    num_prefills=batch_size,
+                    num_prefill_tokens=nt,
+                    num_decodes=0,
+                    num_decode_tokens=0,
+                    num_spec_decodes=0,
+                    num_spec_decode_tokens=0,
+                    num_actual_tokens=nt,
+                    has_initial_state=has_init,
+                    non_spec_query_start_loc=cu,
+                    non_spec_state_indices_tensor=idx,
+                    nums_dict=nums_dict,
+                    batch_ptr=batch_ptr,
+                    token_chunk_offset_ptr=token_chunk_offset_ptr,
+                )
+                common = _glm5_next_common("context", batch_size, seq_len, d_model, d_conv, nh, hd, model_name)
+
+                def run_conv():
+                    # kda.py:571-581
+                    return causal_conv1d_fn(
+                        qkv.transpose(0, 1),
+                        conv_weight,
+                        None,
+                        activation="silu",
+                        conv_states=conv_state,
+                        has_initial_state=has_init,
+                        cache_indices=idx,
+                        query_start_loc=cu,
+                        metadata=conv_metadata,
+                    ).transpose(0, 1)
+
+                with benchmark_with_power(
+                    device=device, kernel_func=run_conv, num_warmups=NUM_WARMUPS, num_runs=NUM_RUNS, repeat_n=10
+                ) as results:
+                    _log(
+                        common,
+                        results["latency_ms"],
+                        "causal_conv1d_fn",
+                        perf_filename,
+                        vllm_version,
+                        device,
+                        results["power_stats"],
+                    )
+
+                conv_out = run_conv()
+                q, k, v = (x.reshape(1, -1, nh, hd) for x in conv_out.split(proj, dim=-1))
+                core_out = torch.empty(1, nt, nh, hd, dtype=dtype, device=device)
+
+                if prefill_backend == "flashkda":
+                    # kda.py:336-353 workspace sizing; :372-398 the fwd call.
+                    workspace = torch.empty(
+                        torch.ops._flashkda_C.get_workspace_size(nt, nh, batch_size), dtype=torch.uint8, device=device
+                    )
+                    final_state = torch.empty_like(recurrent_state)
+
+                    def run_prefill_core():
+                        initial_state = gather_initial_states(recurrent_state, idx, has_init)
+                        torch.ops._flashkda_C.fwd(
+                            q.contiguous(),
+                            k.contiguous(),
+                            v.contiguous(),
+                            g1.contiguous(),
+                            beta,
+                            hd**-0.5,
+                            core_out,
+                            workspace,
+                            a_log.view(-1),
+                            dt_bias.view(-1, hd),
+                            GLM5_NEXT_KDA_LOWER_BOUND,
+                            initial_state.contiguous(),
+                            final_state,
+                            cu.contiguous(),
+                            None,
+                            None,
+                        )
+                        scatter_states(recurrent_state, final_state, idx)
+
+                else:
+
+                    def run_prefill_core():
+                        initial_state = gather_initial_states(recurrent_state, idx, has_init)
+                        _, last_state = chunk_kda_with_fused_gate(
+                            q=q,
+                            k=k,
+                            v=v,
+                            raw_g=g1,
+                            beta=_cast_sigmoid(beta.squeeze(0)).unsqueeze(0),
+                            A_log=a_log,
+                            g_bias=dt_bias,
+                            initial_state=initial_state,
+                            output_final_state=True,
+                            use_qk_l2norm_in_kernel=True,
+                            cu_seqlens=cu,
+                            safe_gate=True,
+                            lower_bound=GLM5_NEXT_KDA_LOWER_BOUND,
+                        )
+                        scatter_states(recurrent_state, last_state, idx)
+
+                with benchmark_with_power(
+                    device=device,
+                    kernel_func=run_prefill_core,
+                    num_warmups=NUM_WARMUPS,
+                    num_runs=NUM_RUNS,
+                    repeat_n=1,
+                ) as results:
+                    _log(
+                        common,
+                        results["latency_ms"],
+                        prefill_source,
+                        perf_filename,
+                        vllm_version,
+                        device,
+                        results["power_stats"],
+                    )
+                ok += 1
+            except Exception as e:
+                err += 1
+                failures.append(f"batch_size={batch_size} seq_len={seq_len}: {type(e).__name__}: {e}")
+                print(f"  Error at batch_size={batch_size}, seq_len={seq_len}: {e}")
+                continue
+            finally:
+                conv_state = recurrent_state = qkv = beta = g1 = conv_out = None
+                q = k = v = core_out = final_state = workspace = conv_metadata = None
+                _cleanup("glm5_next context")
+
+    summary = f"ok={ok} error={err} skip=0"
+    print(f"GLM-5.3-Flash KDA context summary: {summary}")
+    if err or ok == 0:
+        raise RuntimeError(
+            f"vLLM GLM-5.3-Flash KDA context collection failed strict completeness: {summary}; "
+            f"failed cells: {_format_failures(failures)}"
+        )
+
+
+def run_glm5_next_kda_decode(
+    d_model,
+    d_conv,
+    nh,
+    hd,
+    batch_size_list,
+    model_name,
+    perf_filename,
+    vllm_version,
+    row_phase="generation",
+    device="cuda:0",
+):
+    """GLM-5.3-Flash non-spec decode: merged q|k|v causal_conv1d_update row and
+    the glm5next fused_recurrent_kda row (kda.py:583-596,693-720).
+
+    ``row_phase`` stays ``context`` for seq_len=1 cells of the shared context
+    grid; vLLM classifies them as decodes (gdn_attn.py:250-252)."""
+    if row_phase not in {"context", "generation"}:
+        raise ValueError(f"Unsupported GLM-5.3-Flash KDA decode row phase: {row_phase}")
+
+    from vllm.model_executor.layers.mamba.ops.causal_conv1d import causal_conv1d_update
+    from vllm.models.glm5next.nvidia.ops.third_party.kda import fused_recurrent_kda
+
+    device = torch.device(device)
+    torch.cuda.set_device(device)
+    dtype = torch.bfloat16
+    proj = nh * hd
+    conv_weight, a_log, dt_bias = _glm5_next_layer_params(nh, hd, d_conv, device)
+    ok = err = 0
+    failures: list[str] = []
+
+    for batch_size in batch_size_list:
+        conv_state = recurrent_state = qkv = beta = g1 = conv_out = core_out = None
+        try:
+            nb = batch_size
+            cu = torch.arange(0, nb + 1, dtype=torch.int32, device=device)
+            idx = torch.arange(nb, dtype=torch.int32, device=device)
+            conv_state, recurrent_state = _glm5_next_state_pool(nb, nh, hd, d_conv, device)
+            qkv, beta = _glm5_next_projected(nb, nh, hd, device)
+            g1 = torch.randn(1, nb, nh, hd, dtype=dtype, device=device)
+            # Layer output buffer [1, T, H, D] the decode kernel writes into
+            # (kda.py:431-435,607-611,700-701).
+            core_out = torch.empty(1, nb, nh, hd, dtype=dtype, device=device)
+            common = _glm5_next_common(row_phase, nb, 1, d_model, d_conv, nh, hd, model_name)
+
+            def run_conv_update():
+                # kda.py:588-595
+                return causal_conv1d_update(
+                    qkv,
+                    conv_state,
+                    conv_weight,
+                    None,
+                    activation="silu",
+                    conv_state_indices=idx,
+                )
+
+            with benchmark_with_power(
+                device=device, kernel_func=run_conv_update, num_warmups=NUM_WARMUPS, num_runs=NUM_RUNS, repeat_n=10
+            ) as results:
+                _log(
+                    common,
+                    results["latency_ms"],
+                    "causal_conv1d_update",
+                    perf_filename,
+                    vllm_version,
+                    device,
+                    results["power_stats"],
+                )
+
+            conv_out = run_conv_update()
+            q, k, v = (x.reshape(1, -1, nh, hd) for x in conv_out.split(proj, dim=-1))
+
+            def run_recurrent():
+                # kda.py:702-720
+                fused_recurrent_kda(
+                    q=q,
+                    k=k,
+                    v=v,
+                    g=g1,
+                    beta=beta,
+                    initial_state=recurrent_state,
+                    use_qk_l2norm_in_kernel=True,
+                    cu_seqlens=cu,
+                    ssm_state_indices=idx,
+                    out=core_out,
+                    sigmoid_beta=True,
+                    a_log=a_log,
+                    g_bias=dt_bias,
+                    compute_gate=True,
+                    lower_bound=GLM5_NEXT_KDA_LOWER_BOUND,
+                )
+
+            with benchmark_with_power(
+                device=device, kernel_func=run_recurrent, num_warmups=NUM_WARMUPS, num_runs=NUM_RUNS, repeat_n=10
+            ) as results:
+                _log(
+                    common,
+                    results["latency_ms"],
+                    "fused_recurrent_kda",
+                    perf_filename,
+                    vllm_version,
+                    device,
+                    results["power_stats"],
+                )
+            ok += 1
+        except Exception as e:
+            err += 1
+            failures.append(f"batch_size={batch_size}: {type(e).__name__}: {e}")
+            print(f"  Error at batch_size={batch_size}: {e}")
+            continue
+        finally:
+            conv_state = recurrent_state = qkv = beta = g1 = conv_out = core_out = None
+            _cleanup("glm5_next decode")
+
+    summary = f"ok={ok} error={err} skip=0"
+    print(f"GLM-5.3-Flash KDA {row_phase} decode-path summary: {summary}")
+    if err or ok == 0:
+        raise RuntimeError(
+            f"vLLM GLM-5.3-Flash KDA {row_phase} decode-path collection failed strict completeness: {summary}; "
+            f"failed cells: {_format_failures(failures)}"
+        )
+
+
+def run_glm5_next_kda_torch(
+    phase, d_model, d_conv, num_k_heads, head_k_dim, num_v_heads, head_v_dim, batch_size_list, seq_len_list, **kwargs
+):
+    """Phase router for GLM-5.3-Flash KDA rows (called from run_kda_torch)."""
+    if num_k_heads != num_v_heads or head_k_dim != head_v_dim:
+        raise ValueError("GLM-5.3-Flash KDA has symmetric q/k/v heads (kda.py:196-203)")
+    shape = dict(d_model=d_model, d_conv=d_conv, nh=num_v_heads, hd=head_v_dim)
+    if phase == "context":
+        if not seq_len_list:
+            raise ValueError("vLLM KDA context collection requires at least one sequence length")
+        if any(seq_len < 1 for seq_len in seq_len_list):
+            raise ValueError(f"vLLM KDA context sequence lengths must be positive: {seq_len_list}")
+        if 1 in seq_len_list:
+            run_glm5_next_kda_decode(batch_size_list=batch_size_list, row_phase="context", **shape, **kwargs)
+        prefill_seq_len_list = [seq_len for seq_len in seq_len_list if seq_len > 1]
+        if prefill_seq_len_list:
+            run_glm5_next_kda_context(
+                batch_size_list=batch_size_list, seq_len_list=prefill_seq_len_list, **shape, **kwargs
+            )
+    elif phase == "generation":
+        run_glm5_next_kda_decode(batch_size_list=batch_size_list, **shape, **kwargs)
+    elif phase == "verify":
+        # GLM-5.3-Flash is modeled with nextn=0 (MTP off); its spec-decode
+        # path (kda.py:549-565,612-636) has not been audited for collection.
+        raise NotImplementedError(
+            "GLM-5.3-Flash KDA verify (MTP target-verify) is not collected: the GLM "
+            "baseline runs without speculative decoding"
+        )
+    else:
+        raise ValueError(f"Unknown phase: {phase}")
+
+
 def run_kda_torch(
     phase,
     d_model,
@@ -737,6 +1205,24 @@ def run_kda_torch(
 ):
     """Main entry point: routes phases and reports the installed vLLM version."""
     from vllm.version import __version__ as vllm_version
+
+    if _is_glm5_next_kda(model_name):
+        run_glm5_next_kda_torch(
+            phase,
+            d_model,
+            d_conv,
+            num_k_heads,
+            head_k_dim,
+            num_v_heads,
+            head_v_dim,
+            batch_size_list,
+            seq_len_list,
+            model_name=model_name,
+            perf_filename=perf_filename,
+            vllm_version=vllm_version,
+            device=device,
+        )
+        return WORKER_RESTART
 
     kwargs = dict(
         d_model=d_model,

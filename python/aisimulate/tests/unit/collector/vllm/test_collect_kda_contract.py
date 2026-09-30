@@ -75,6 +75,7 @@ def test_kda_context_seq_len_one_routes_through_decode_kernels(monkeypatch):
 
     namespace = {
         "WORKER_RESTART": 23,
+        "_is_glm5_next_kda": lambda model_name: False,
         "run_kda_context_benchmark": record("context"),
         "run_kda_generation_benchmark": record("decode"),
         "run_kda_verify_benchmark": record("verify"),
@@ -126,3 +127,154 @@ def test_kda_dispatch_mirrors_serving():
     referenced = {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)}
     assert "is_flashkda_supported" in referenced
     assert "is_fused_kda_decode_supported" in referenced
+
+
+def _exec_functions(names, namespace):
+    tree = ast.parse(SOURCE_PATH.read_text(encoding="utf-8"), filename=str(SOURCE_PATH))
+    body = [
+        node
+        for node in tree.body
+        if (isinstance(node, ast.FunctionDef) and node.name in names)
+        or (isinstance(node, ast.Assign) and any(getattr(t, "id", None) in names for t in node.targets))
+    ]
+    exec(compile(ast.Module(body=body, type_ignores=[]), str(SOURCE_PATH), "exec"), namespace)
+    return namespace
+
+
+def _fake_vllm_version(monkeypatch, version="0.30.0+glm53tail.eb4704514fdf"):
+    vllm_module = ModuleType("vllm")
+    vllm_module.__path__ = []
+    version_module = ModuleType("vllm.version")
+    version_module.__version__ = version
+    monkeypatch.setitem(sys.modules, "vllm", vllm_module)
+    monkeypatch.setitem(sys.modules, "vllm.version", version_module)
+
+
+GLM_SHAPE = {
+    "d_model": 4096,
+    "d_conv": 4,
+    "num_k_heads": 32,
+    "head_k_dim": 128,
+    "num_v_heads": 32,
+    "head_v_dim": 128,
+}
+
+
+@pytest.mark.parametrize(
+    ("model_name", "expected"),
+    [
+        ("zai-org/GLM-5.3-Flash", "glm"),
+        ("nvidia/GLM-5.3-Flash-NVFP4", "glm"),
+        ("moonshotai/Kimi-K3", "kimi"),
+    ],
+)
+def test_glm5_next_rows_route_to_the_glm5next_dispatch(monkeypatch, model_name, expected):
+    # GLM-5.3-Flash is served by vllm/models/glm5next/nvidia/kda.py, not the
+    # Kimi-K3 layer; the entry point must hand its rows to the GLM router and
+    # leave every other model on the unchanged Kimi path.
+    calls = []
+    namespace = {
+        "WORKER_RESTART": 23,
+        "run_glm5_next_kda_torch": lambda *args, **kwargs: calls.append(("glm", kwargs["vllm_version"])),
+        "run_kda_generation_benchmark": lambda **kwargs: calls.append(("kimi", kwargs["vllm_version"])),
+    }
+    _exec_functions({"GLM5_NEXT_KDA_MODEL_PATHS", "_is_glm5_next_kda", "run_kda_torch"}, namespace)
+    _fake_vllm_version(monkeypatch)
+    result = namespace["run_kda_torch"](
+        phase="generation",
+        batch_size_list=[1],
+        seq_len_list=None,
+        model_name=model_name,
+        perf_filename="unused.txt",
+        **GLM_SHAPE,
+    )
+    assert result == 23
+    assert calls == [(expected, "0.30.0+glm53tail.eb4704514fdf")]
+
+
+def test_glm5_next_phase_router_matches_serving_decode_threshold():
+    # gdn_attn.py split_decodes_and_prefills(decode_threshold=1): one-token
+    # cells of the context grid are decodes (row phase stays "context");
+    # verify is not collected for the nextn=0 GLM baseline.
+    calls = []
+    namespace = {
+        "run_glm5_next_kda_decode": lambda **kwargs: calls.append(
+            ("decode", kwargs.get("row_phase", "generation"), None)
+        ),
+        "run_glm5_next_kda_context": lambda **kwargs: calls.append(("context", None, kwargs["seq_len_list"])),
+    }
+    _exec_functions({"run_glm5_next_kda_torch"}, namespace)
+    router = namespace["run_glm5_next_kda_torch"]
+    args = (4096, 4, 16, 128, 16, 128, [1, 2])
+    router("context", *args, [1, 2, 131072], model_name="m")
+    router("generation", *args, None, model_name="m")
+    assert calls == [
+        ("decode", "context", None),
+        ("context", None, [2, 131072]),
+        ("decode", "generation", None),
+    ]
+    with pytest.raises(NotImplementedError, match="verify"):
+        router("verify", *args, [2, 4], model_name="m")
+    with pytest.raises(ValueError, match="symmetric"):
+        router("context", 4096, 4, 16, 128, 8, 128, [1], [2], model_name="m")
+
+
+def _function(name):
+    tree = ast.parse(SOURCE_PATH.read_text(encoding="utf-8"), filename=str(SOURCE_PATH))
+    return next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == name)
+
+
+def _calls(node, name):
+    return [
+        call
+        for call in ast.walk(node)
+        if isinstance(call, ast.Call)
+        and (
+            (isinstance(call.func, ast.Name) and call.func.id == name)
+            or (isinstance(call.func, ast.Attribute) and call.func.attr == name)
+        )
+    ]
+
+
+def test_glm5_next_context_mirrors_serving_prefill():
+    # kda.py:569-582 runs ONE merged q|k|v causal_conv1d_fn with the step
+    # metadata; the prefill core is picked by the framework's own resolver and
+    # wrapped by the state gather/scatter (kda.py:644-692).
+    context = _function("run_glm5_next_kda_context")
+    conv_calls = _calls(context, "causal_conv1d_fn")
+    assert len(conv_calls) == 1
+    assert {kw.arg for kw in conv_calls[0].keywords} >= {"metadata", "has_initial_state", "cache_indices"}
+    resolver_calls = _calls(context, "_resolve_kda_prefill_backend")
+    assert len(resolver_calls) == 1 and isinstance(resolver_calls[0].args[0], ast.Constant)
+    assert resolver_calls[0].args[0].value == "auto"
+    assert len(_calls(context, "gather_initial_states")) == 2
+    assert len(_calls(context, "scatter_states")) == 2
+    assert len(_calls(context, "fwd")) == 1
+    assert len(_calls(context, "chunk_kda_with_fused_gate")) == 1
+
+
+def test_glm5_next_decode_mirrors_serving_decode():
+    # kda.py:583-596,693-720: merged conv update, then the glm5next
+    # fused_recurrent_kda with the in-kernel bounded gate.
+    decode = _function("run_glm5_next_kda_decode")
+    assert len(_calls(decode, "causal_conv1d_update")) == 1
+    (recurrent,) = _calls(decode, "fused_recurrent_kda")
+    keywords = {kw.arg: kw.value for kw in recurrent.keywords}
+    assert isinstance(keywords["compute_gate"], ast.Constant) and keywords["compute_gate"].value is True
+    assert isinstance(keywords["sigmoid_beta"], ast.Constant) and keywords["sigmoid_beta"].value is True
+    assert ast.unparse(keywords["lower_bound"]) == "GLM5_NEXT_KDA_LOWER_BOUND"
+
+
+@pytest.mark.parametrize(
+    ("version", "accepted"),
+    [("0.1.dev19262+gb6bbf29dd", True), ("0.30.0+glm53tail.eb4704514fdf", True), ("0.30.1", False)],
+)
+def test_kda_compat_admits_kimi_preview_and_glm_runtime(version, accepted):
+    from collector.version_resolver import _check_compat
+
+    declaration = next(
+        node.value.value
+        for node in ast.parse(SOURCE_PATH.read_text(encoding="utf-8")).body
+        if isinstance(node, ast.Assign) and any(getattr(t, "id", None) == "__compat__" for t in node.targets)
+    )
+    assert _check_compat(declaration, version) is accepted
