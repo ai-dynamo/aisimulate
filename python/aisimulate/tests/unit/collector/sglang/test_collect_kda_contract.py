@@ -113,3 +113,13 @@ def test_kda_compat_admits_kimi_branch_and_glm_runtime(version, accepted):
         if isinstance(node, ast.Assign) and any(getattr(t, "id", None) == "__compat__" for t in node.targets)
     )
     assert _check_compat(declaration, version) is accepted
+
+
+def test_glm5_next_chunk_kda_int32_offset_guard_precedes_the_scan():
+    # chunk_kda's Triton kernels use int32 (bos * H + i_h) * K offsets
+    # (fla/kda.py:265-268 @v0.5.20); an overflowing launch is an illegal
+    # address that poisons the worker for every later cell.
+    source = SOURCE_PATH.read_text(encoding="utf-8")
+    context = source[source.index("def run_glm5_next_kda_context") : source.index("def run_glm5_next_kda_generation")]
+    assert "if nt * proj >= 2**31:" in context
+    assert context.index("if nt * proj >= 2**31:") < context.index("def run_chunk():")

@@ -1045,6 +1045,22 @@ def run_glm5_next_kda_context(
                 ) as results:
                     _glm5_next_log(common, results, "causal_conv1d_fn", perf_filename, sglang_version, device)
 
+                # Kernel limit verified in source: the chunk_kda Triton kernels
+                # address q/k/g/v with int32 `(bos * H + i_h) * K` offsets
+                # (bos loaded from the int32 cu_seqlens that serving also
+                # passes; kernels/ops/attention/fla/kda.py:265-268,377-393,
+                # 556-607,804-850 @v0.5.20), so a step with
+                # tokens * heads * head_dim >= 2**31 overflows. GB300 silicon
+                # (job 723221): (32 heads, batch 64, seq 32768) raised
+                # cudaErrorIllegalAddress, poisoning the worker's CUDA context
+                # for every later cell. Raise before launching instead; the
+                # conv row above is unaffected (int64 token offsets).
+                if nt * proj >= 2**31:
+                    raise ValueError(
+                        "SGLang chunk_kda int32 token-offset overflow: "
+                        f"tokens={nt} * heads*head_dim={proj} >= 2**31 "
+                        "(kernels/ops/attention/fla/kda.py:265-268 @v0.5.20)"
+                    )
                 conv_out = run_conv()
                 q, k, v = (x.unflatten(-1, (-1, hd)).unsqueeze(0) for x in conv_out.split(proj, dim=-1))
                 g = a.unflatten(-1, (-1, hd))  # kda_backend.py:860-862
