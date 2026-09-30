@@ -5,6 +5,8 @@
 E2E per-model and per-GPU tables are included in the main message. No mentions are
 sent. The bot does not accept commands or start evaluations.
 
+The message title shows only the report date, without a timezone suffix.
+
 ## Delivery policy
 
 - Select today's scheduled E2E and FPM runs by their creation date in
