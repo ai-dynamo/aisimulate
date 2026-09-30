@@ -474,8 +474,9 @@ def validate_table(rows: list[dict]) -> None:
 
     ``source_sha256``/``runtime_digest`` are table-wide (one runtime per
     <backend>/<version> directory); ``config_sha256`` is uniform per
-    checkpoint; ``used_cuda_graph`` and the kernel witness per (checkpoint, TP,
-    phase), because serving runs prefill eagerly and decode under CUDA graphs.
+    checkpoint; ``used_cuda_graph`` per (checkpoint, TP, phase), because serving
+    runs prefill eagerly and decode under CUDA graphs. ``kernel_source`` is a
+    per-row witness: the dispatched method changes with the IndexPool regime.
     """
     if not rows:
         raise ValueError("an empty GLM attention table cannot be published")
@@ -492,13 +493,13 @@ def validate_table(rows: list[dict]) -> None:
         table.add((body["backend"], row["source_sha256"], row["runtime_digest"]))
         by_checkpoint[body["checkpoint_format"]].add(row["config_sha256"])
         phase = (body["checkpoint_format"], body["tp_size"], body["is_context"])
-        by_phase[phase].add((row["used_cuda_graph"], row["kernel_source"]))
+        by_phase[phase].add(row["used_cuda_graph"])
     if len(table) != 1:
         raise ValueError("a table needs one backend/runtime/source identity")
     if any(len(v) != 1 for v in by_checkpoint.values()):
         raise ValueError("a checkpoint's rows mix configuration identities")
     if any(len(v) != 1 for v in by_phase.values()):
-        raise ValueError("one deployment phase mixes CUDA graph or kernel identities")
+        raise ValueError("one deployment phase mixes CUDA graph identities")
 
 
 def write_parquet(rows: list[dict], path: Path) -> None:
