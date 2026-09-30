@@ -187,7 +187,8 @@ The `Slack review digest` workflow runs every day at 17:07
   Created PRs count even if subsequently closed or merged, including drafts.
 - Every open non-draft PR created more than 5 days (120 hours) ago, oldest first, with
   its link, title, author, and age. Age measures creation time, not inactivity
-  or time since leaving draft. Large lists span multiple Slack messages.
+  or time since leaving draft. PR details appear in a thread reply beneath the summary.
+  Lists over 35,000 characters fail before delivery to avoid losing entries.
 
 The summary shows merged PRs (`:merged-2472:`), new PRs (`:pr-opened:`), then
 open non-draft PRs labeled "PRs waiting for review" (`:reminder-alarm:`). The destination workspace must have the custom
@@ -202,9 +203,12 @@ failures in subsequent steps.
 To enable delivery:
 
 1. In Slack Workflow Builder, create a **From a webhook** workflow. Add a
-   Text variable named `message`. Add **Send a message to a channel**, select
-   the destination, and insert the `message` variable into the message body.
-   Publish the Slack workflow.
+   Text variables named `message` and `pr_details`. Add **Send a message to a
+   channel**, select the destination, and insert `message` into its body.
+   Then add **Reply to a message in thread**. For the message to reply to,
+   select the message output from the preceding send step; insert `pr_details`
+   into the reply body. Leave any option to broadcast the reply to the channel
+   disabled. Publish the Slack workflow (republish after changing variables).
 2. Save its Web request URL (`https://hooks.slack.com/triggers/...`) under repository **Settings → Secrets and variables → Actions**
    as `SLACK_REVIEW_DIGEST_WEBHOOK_URL`. Never commit the URL.
 3. Merge the workflow into the default branch. In **Actions → Slack review

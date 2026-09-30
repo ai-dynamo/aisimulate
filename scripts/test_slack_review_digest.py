@@ -34,7 +34,7 @@ class DigestTests(unittest.TestCase):
             self.pr(3, age=8),
             self.pr(4, age=10, draft=True),
         ]
-        text = "".join(messages("ai-dynamo/aisimulate", opened, [], self.now))
+        text = "".join(messages("ai-dynamo/aisimulate", opened, [], self.now).values())
         self.assertIn(":reminder-alarm: PRs waiting for review: 3", text)
         self.assertLess(text.index(":merged-2472:"), text.index(":pr-opened:"))
         self.assertLess(text.index(":pr-opened:"), text.index(":reminder-alarm:"))
@@ -55,7 +55,7 @@ class DigestTests(unittest.TestCase):
             self.pr(created_at="2026-09-29T12:00:00Z", draft=True, state="closed"),
             self.pr(created_at="2026-09-30T01:00:00Z"),
         ]
-        text = "".join(messages("ai-dynamo/aisimulate", [], recent, self.now))
+        text = "".join(messages("ai-dynamo/aisimulate", [], recent, self.now).values())
         self.assertIn(":merged-2472: PRs merged today: 1", text)
         self.assertIn(":pr-opened: PRs opened today: 2", text)
         self.assertIn("2026-09-29, 05:07 PM PDT", text)
@@ -67,27 +67,42 @@ class DigestTests(unittest.TestCase):
             timedelta(hours=-7),
         )
         recent = [self.pr(created_at="2026-11-01T07:30:00Z")]
-        text = "".join(messages("ai-dynamo/aisimulate", [], recent, now))
+        text = "".join(messages("ai-dynamo/aisimulate", [], recent, now).values())
         self.assertIn(":pr-opened: PRs opened today: 1", text)
         self.assertIn("05:07 PM PST", text)
 
     def test_large_queue_retains_all_prs(self):
         prs = [self.pr(i, title="x" * 200) for i in range(100)]
-        chunks = list(messages("ai-dynamo/aisimulate", prs, [], self.now))
-        self.assertGreater(len(chunks), 1)
-        self.assertTrue(all(len(chunk) <= 3500 for chunk in chunks))
+        payload = messages("ai-dynamo/aisimulate", prs, [], self.now)
+        self.assertNotIn("https://", payload["message"])
+        self.assertNotIn("• #", payload["message"])
+        self.assertIn("older than 5 days — 100", payload["message"])
         for i in range(100):
-            self.assertEqual("".join(chunks).count(f"• #{i} "), 1)
+            self.assertEqual(payload["pr_details"].count(f"• #{i} "), 1)
+        with self.assertRaises(ValueError):
+            messages("ai-dynamo/aisimulate", prs * 2, [], self.now)
+
+    def test_empty_queue_thread_reply(self):
+        payload = messages("ai-dynamo/aisimulate", [], [], self.now)
+        self.assertEqual(payload["pr_details"], "None.")
 
     @patch("slack_review_digest.urlopen")
     def test_workflow_payload_and_acknowledgement(self, urlopen):
         urlopen.return_value = io.BytesIO(b'{"ok":true}')
-        send_message("https://hooks.slack.com/triggers/test", "Digest")
+        send_message(
+            "https://hooks.slack.com/triggers/test",
+            {"message": "Digest", "pr_details": "PRs"},
+        )
         request = urlopen.call_args.args[0]
-        self.assertEqual(json.loads(request.data), {"message": "Digest"})
+        self.assertEqual(
+            json.loads(request.data), {"message": "Digest", "pr_details": "PRs"}
+        )
         urlopen.return_value = io.BytesIO(b'{"ok":false}')
         with self.assertRaises(ValueError):
-            send_message("https://hooks.slack.com/triggers/test", "Digest")
+            send_message(
+                "https://hooks.slack.com/triggers/test",
+                {"message": "Digest", "pr_details": "PRs"},
+            )
 
     @patch("slack_review_digest.urlopen")
     def test_pagination_and_updated_cutoff(self, urlopen):

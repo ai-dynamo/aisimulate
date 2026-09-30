@@ -70,6 +70,8 @@ def messages(repository, open_prs, recent_prs, now):
         "",
         f"Open non-draft PRs older than 5 days — {len(stale)}",
     ]
+    summary = "\n".join(lines)
+    lines = []
     for pr in stale:
         age = (now - timestamp(pr["created_at"])).total_seconds() / 86400
         title = " ".join(pr["title"].split())[:200]
@@ -80,21 +82,20 @@ def messages(repository, open_prs, recent_prs, now):
         )
     if not stale:
         lines.append("None.")
-    # Keep every stale PR, splitting large queues into comfortably sized messages.
-    chunk = ""
-    for line in lines:
-        if len(chunk) + len(line) + 1 > 3500:
-            yield chunk
-            chunk = "AISimulate PR digest — continued\n"
-        chunk += line + "\n"
-    yield chunk
+    details = "\n".join(lines)
+    # Fail before triggering instead of silently dropping PRs in a large queue.
+    if len(details) > 35000:
+        raise ValueError(
+            "PR details exceed the single thread reply budget (35000 characters)"
+        )
+    return {"message": summary, "pr_details": details}
 
 
-def send_message(webhook, message):
-    """Trigger Workflow Builder; its message variable is plain text."""
+def send_message(webhook, payload):
+    """Trigger one workflow: channel summary followed by a thread reply."""
     request = Request(
         webhook,
-        data=json.dumps({"message": message}).encode(),
+        data=json.dumps(payload).encode(),
         headers={"Content-Type": "application/json"},
     )
     with urlopen(request, timeout=30) as response:
@@ -118,11 +119,12 @@ def main():
     start = now.astimezone(PACIFIC).replace(hour=0, minute=0, second=0, microsecond=0)
     open_prs = list(pull_requests(repository, token, "open"))
     recent_prs = list(pull_requests(repository, token, "all", since=start))
-    for message in messages(repository, open_prs, recent_prs, now):
-        if args.dry_run:
-            print(message)
-            continue
-        send_message(webhook, message)
+    payload = messages(repository, open_prs, recent_prs, now)
+    if args.dry_run:
+        print("CHANNEL MESSAGE:\n" + payload["message"])
+        print("\nTHREAD REPLY:\n" + payload["pr_details"])
+    else:
+        send_message(webhook, payload)
 
 
 if __name__ == "__main__":
