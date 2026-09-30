@@ -260,6 +260,7 @@ class RunnerCapabilities:
     supported_engine_model_controls: tuple[str, ...] = ()
     supports_mtp_expected_acceptance: bool = False
     supports_state_cache: bool = False
+    supports_grouped_kv_cache: bool = False
 
     def supports_backend_topology(self, backend: str, topology: str) -> bool:
         """Return whether a backend/topology pair is supported.
@@ -327,6 +328,42 @@ class RunnerCapabilities:
             if not isinstance(identity, Mapping):
                 # The timing validator handles malformed identities; still inspect flat controls.
                 identity = {}
+            profile = identity.get("fpm_profile") or rank.get("aic_fpm_profile")
+            grouped_profile = (
+                not self.supports_grouped_kv_cache
+                and isinstance(profile, Mapping)
+                and any(
+                    item.get("resources", {}).get("cache_layout") == "grouped"
+                    for item in profile.get("deployments", ())
+                    if isinstance(item, Mapping)
+                    and all(
+                        item.get(field, 1 if field in {"tp", "pp", "dp"} else None) == identity[key]
+                        for field, key in (
+                            ("system", "system"),
+                            ("backend", "backend"),
+                            ("backend_version", "backend_version"),
+                            ("tp", "tp"),
+                            ("pp", "pp"),
+                            ("dp", "attention_dp"),
+                            ("moe_tp", "moe_tp_size"),
+                            ("moe_ep", "moe_ep_size"),
+                            ("gemm_quant_mode", "gemm_quant_mode"),
+                            ("moe_quant_mode", "moe_quant_mode"),
+                            ("fmha_quant_mode", "fmha_quant_mode"),
+                            ("kv_cache_dtype", "kvcache_quant_mode"),
+                            ("comm_quant_mode", "comm_quant_mode"),
+                        )
+                        if identity.get(key) is not None
+                    )
+                    and item.get("worker_type") in (None, identity.get("worker_type"))
+                )
+            )
+            if not self.supports_grouped_kv_cache and (
+                grouped_profile
+                or rank.get("kv_cache_groups") is not None
+                or rank.get("kv_cache_capacity_bytes") is not None
+            ):
+                raise ValueError("runner does not support grouped FPM caches; use --stack engine")
             active_controls = [
                 name
                 for name in ENGINE_MODEL_CONTROL_FIELDS

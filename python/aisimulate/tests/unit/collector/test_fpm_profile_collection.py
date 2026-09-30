@@ -1024,3 +1024,25 @@ def test_decode_collection_respects_profile_scheduler_envelope(no_models_or_timi
             _plan(profile, options=options)
     else:
         assert _plan(profile, options=options).cells
+
+
+def test_aggregated_profile_defaults_to_shared_token_limit(no_models_or_timing_data):
+    profile = _profile()
+    profile["context_length"] = 32768
+    for deployment in profile["deployments"]:
+        deployment["resources"]["max_num_tokens"] = 16384
+    options = replace(
+        FPMCollectionOptions.from_args(cli._parser().parse_args(_argv(profile))), worker_type="aggregated"
+    )
+    plan = _plan(profile, options=options)
+    assert plan.options.max_prefill_isl == 16384
+
+
+def test_aggregated_profile_requires_shared_limit_for_different_bounds(no_models_or_timing_data):
+    profile = _profile()
+    profile["deployments"][0]["resources"]["max_num_tokens"] = 16384
+    options = replace(
+        FPMCollectionOptions.from_args(cli._parser().parse_args(_argv(profile))), worker_type="aggregated"
+    )
+    with pytest.raises(ValueError, match="explicit shared --fpm-max-num-batched-tokens"):
+        _plan(profile, options=options)

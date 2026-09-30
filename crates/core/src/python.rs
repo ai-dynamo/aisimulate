@@ -1075,13 +1075,17 @@ fn materialize_aic_capacity(
         timing_depth as usize == engine_nextn,
         "AIC speculative depth={timing_depth} does not match engine aic_nextn={engine_nextn}"
     );
-    let resources = config
-        .estimator_request(
-            config
-                .worker_type
-                .unwrap_or(ForwardPassWorkerType::Aggregated),
-        )?
-        .fpm_resources()?;
+    let resources = if config.backend == "vllm" && config.pp == 1 {
+        config
+            .estimator_request(
+                config
+                    .worker_type
+                    .unwrap_or(ForwardPassWorkerType::Aggregated),
+            )?
+            .fpm_resources()?
+    } else {
+        None
+    };
     if let Some(resources) = &resources {
         resources.require_memory()?;
         ensure!(
@@ -1199,7 +1203,11 @@ fn resolve_role_timing(
     );
     let mut config: AicTimingConfig =
         serde_json::from_value(config).context("invalid AIC timing provider configuration")?;
-    let resources = config.estimator_request(worker_type)?.fpm_resources()?;
+    let resources = if config.backend == "vllm" && config.pp == 1 {
+        config.estimator_request(worker_type)?.fpm_resources()?
+    } else {
+        None
+    };
     if let Some(resources) = &resources {
         resources.require_memory()?;
     }
@@ -2064,7 +2072,20 @@ impl std::fmt::Display for ReplayCoverageFailure {
 
 impl std::error::Error for ReplayCoverageFailure {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        Some(self.error.as_ref())
+        self.error.source()
+    }
+}
+
+fn replay_failure(
+    error: anyhow::Error,
+    coverage: Result<Option<serde_json::Value>>,
+) -> anyhow::Error {
+    match coverage {
+        Ok(Some(coverage)) => ReplayCoverageFailure { error, coverage }.into(),
+        Ok(None) => error,
+        Err(coverage_error) => error.context(format!(
+            "FPM coverage diagnostics failed: {coverage_error:#}"
+        )),
     }
 }
 
@@ -2353,10 +2374,10 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
     let (mut report, artifacts, resolved_weka_timestamp_basis) = match replay_result {
         Ok(result) => result,
         Err(error) => {
-            if let Some(coverage) = replay_fpm_coverage(&coverage_sources, None)? {
-                return Err(ReplayCoverageFailure { error, coverage }.into());
-            }
-            return Err(error);
+            return Err(replay_failure(
+                error,
+                replay_fpm_coverage(&coverage_sources, None),
+            ));
         }
     };
     let (timing_evidence, unavailable_reason) = if power_sources.len() == expected_power_sources {
@@ -2512,6 +2533,21 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn replay_coverage_errors_preserve_the_original_chain() {
+        let original = || anyhow::anyhow!("original failure").context("AISimulate replay failed");
+        let wrapped = replay_failure(original(), Ok(Some(serde_json::json!({}))));
+        assert_eq!(
+            format!("{wrapped:#}"),
+            "AISimulate replay failed: original failure"
+        );
+        let missing = replay_failure(original(), Err(anyhow::anyhow!("coverage unavailable")));
+        assert_eq!(
+            format!("{missing:#}"),
+            "FPM coverage diagnostics failed: coverage unavailable: AISimulate replay failed: original failure"
+        );
+    }
 
     #[test]
     fn replay_python_error_preserves_contextual_resource_failure() {
@@ -3312,6 +3348,23 @@ mod tests {
             decode_workload_distribution: None,
             fpm_parquet_path: None,
             decoder_replay: false,
+        }
+    }
+
+    #[test]
+    fn fixed_capacity_does_not_require_vllm_pp1_profile_resources() {
+        for (backend, pp) in [("sglang", 1), ("vllm", 2)] {
+            let mut config = aic_config();
+            config.backend = backend.into();
+            config.pp = pp;
+            config.fpm_profile = Some(serde_json::Map::new());
+            let mut role = aggregated_role(&ReplayEngineConfig::default());
+            role.rank.backend = if backend == "sglang" {
+                Backend::Sglang
+            } else {
+                Backend::Vllm
+            };
+            materialize_aic_capacity(&config, &mut role, true, |_, _| unreachable!()).unwrap();
         }
     }
 

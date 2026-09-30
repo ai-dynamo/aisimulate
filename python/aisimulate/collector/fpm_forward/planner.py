@@ -779,9 +779,16 @@ def build_collection_plan(
         if max_prefill_isl is None:
             max_prefill_isl = options.max_num_batched_tokens
             if max_prefill_isl is None:
-                max_prefill_isl = min(
-                    [FPM_MAX_PREFILL_ISL, *(deployment.resources.max_num_tokens for deployment in deployments)]
-                )
+                token_limits = {deployment.resources.max_num_tokens for deployment in deployments}
+                if options.worker_type == "aggregated":
+                    if len(token_limits) != 1:
+                        raise ValueError(
+                            "aggregated deployments have different token limits; "
+                            "set an explicit shared --fpm-max-num-batched-tokens"
+                        )
+                    max_prefill_isl = next(iter(token_limits))
+                else:
+                    max_prefill_isl = min(FPM_MAX_PREFILL_ISL, *token_limits)
         options = replace(
             options,
             vllm_max_model_len=(

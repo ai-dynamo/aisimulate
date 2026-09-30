@@ -329,8 +329,6 @@ def _profile_parallel_configs(
             and deployment.backend_version == backend_version
             and deployment.worker_type in (None, role)
         ]
-        if not deployments:
-            raise ValueError(f"no FPM deployment profile for {system}/{backend}/{backend_version}, worker_type={role}")
         replicas = []
         for deployment in deployments:
             shape = ParallelShape(

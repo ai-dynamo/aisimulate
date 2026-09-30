@@ -44,7 +44,7 @@ _PILOT = {
 
 
 def _init_args(output: Path, *, full: bool = False, **changes) -> list[str]:
-    options = {**_REQUIRED, **(_PILOT if full else {}), **changes}
+    options = {**_REQUIRED, "context_length": 16384, **(_PILOT if full else {}), **changes}
     return ["onboard", "init", "--output", str(output)] + [
         part
         for name, value in options.items()
@@ -214,14 +214,20 @@ def test_guided_and_scripted_setup_produce_the_same_request(tmp_path, monkeypatc
     scripted = tmp_path / "scripted.yaml"
     prompts = _terminal(
         monkeypatch,
-        ["example/unintegrated-model", "revision-123", "dense", "0.24.0", "h200_sxm", "nvswitch", "2"] + [""] * 6,
+        ["example/unintegrated-model", "revision-123", "dense", "0.24.0", "h200_sxm", "nvswitch", "2"]
+        + ["16384"]
+        + [""] * 6,
     )
 
     assert cli.main(["onboard", "init", "--interactive", "--output", str(guided)]) == 0
-    assert cli.main(_init_args(scripted, tensor_parallel=2)) == 0
+    assert cli.main(_init_args(scripted, tensor_parallel=2, context_length=16384)) == 0
 
     assert SupportRequest.from_yaml(guided) == SupportRequest.from_yaml(scripted)
-    assert not any("tokens" in prompt.lower() or "concurrent" in prompt.lower() for prompt in prompts)
+    assert any("Runtime per-request context limit" in prompt for prompt in prompts)
+    assert not any(
+        "input tokens" in prompt.lower() or "output tokens" in prompt.lower() or "concurrent" in prompt.lower()
+        for prompt in prompts
+    )
     assert not any(
         "time to first token" in prompt.lower() or "time per output token" in prompt.lower() for prompt in prompts
     )
@@ -1323,3 +1329,10 @@ def test_installed_module_scripted_init_works_without_a_terminal(tmp_path) -> No
     assert result.returncode == 0, result.stderr
     assert SupportRequest.from_yaml(output).identity.model == _REQUIRED["model"]
     assert "next:" in result.stdout
+
+
+def test_scripted_init_requires_context_evidence(tmp_path, capsys):
+    with pytest.raises(SystemExit) as error:
+        cli.main(_init_args(tmp_path / "request.yaml", context_length=None))
+    assert error.value.code == 2
+    assert "--context-length is required" in capsys.readouterr().err

@@ -300,6 +300,8 @@ def _request_from_args(args: argparse.Namespace) -> SupportRequest:
         **({"fpm_profile": load_yaml(args.fpm_profile)} if getattr(args, "fpm_profile", None) else {}),
     }
     request = SupportRequest.model_validate(payload)
+    if getattr(args, "context_length", None) is None and not getattr(args, "fpm_profile", None):
+        raise ValueError("--context-length is required when no model config or FPM profile provides a context limit")
     deployment = request.profile_deployment()
     runtime = deployment.resources.runtime_memory if deployment is not None else None
     if runtime is not None:
@@ -403,7 +405,7 @@ _CORRECTION_PROMPTS = {
 def _prompt(args: argparse.Namespace, name: str) -> None:
     label, convert = _CORRECTION_PROMPTS[name]
     default = getattr(args, name)
-    if default is None:
+    if default is None and name != "context_length":
         for model in (SupportIdentity, WorkloadSpec, SloSpec, SearchProfile, CollectionSpec):
             field = model.model_fields.get(name)
             if field is not None and not field.is_required():
@@ -446,6 +448,8 @@ def _guided_request(args: argparse.Namespace, *, skip_topology: bool = False) ->
             continue
         if getattr(args, name) is None:
             _prompt(args, name)
+    if args.context_length is None and not args.fpm_profile:
+        _prompt(args, "context_length")
     return _validate_guided_request(args)
 
 

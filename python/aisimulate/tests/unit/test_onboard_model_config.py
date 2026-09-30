@@ -624,6 +624,8 @@ def test_invalid_resolved_scheduler_cannot_be_saved_or_planned(tmp_path, capsys,
         command = _args(output, source, None, model=_CONFIG["_name_or_path"], model_kind="dense", **limits)
         command.remove(str(source))
         command.remove("--model-config")
+        if route == "identifier":
+            command.extend(["--context-length", "4096"])
         if route == "profile":
             if not limits:
                 profile["deployments"][0]["resources"]["max_num_tokens"] = 128

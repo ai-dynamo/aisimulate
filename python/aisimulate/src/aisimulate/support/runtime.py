@@ -550,10 +550,12 @@ def runtime_collection_inputs(
     request: SupportRequest, deployment: FPMDeployment | None
 ) -> tuple[list[str], FPMDeployment | None]:
     """Supply the collector's explicit opt-in flags from verified source evidence."""
+    manifest = runtime_probe_manifest(request)
+    if manifest is None:
+        return [], deployment
     result = verify_runtime_profile(request)
     if result is None:
         return [], deployment
-    manifest = runtime_probe_manifest(request)
     root = Path(manifest["observations_index"]).parent
     observed_deployment = FPMDeployment.model_validate(result["provenance"]["launch"]["deployment"])
     if deployment is not None and deployment != observed_deployment:

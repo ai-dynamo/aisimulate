@@ -1308,3 +1308,11 @@ def test_import_optimistic_lock_keeps_concurrent_checkpoint_update(tmp_path, cap
     assert "checkpoint revision" in capsys.readouterr().err
     assert _load(checkpoint).research["concurrent"] == "preserved"
     assert not _load(checkpoint).configurations["tp2"].draft_request.get("fpm_profile")
+
+
+def test_collection_inputs_without_probe_do_not_reverify_finalized_quality(monkeypatch):
+    from aisimulate.support import runtime
+
+    monkeypatch.setattr(runtime, "runtime_probe_manifest", lambda request: None)
+    monkeypatch.setattr(runtime, "verify_runtime_profile", lambda request: pytest.fail("unnecessary full verification"))
+    assert runtime.runtime_collection_inputs(None, None) == ([], None)

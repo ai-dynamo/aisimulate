@@ -131,6 +131,7 @@ def _zero_kv_prefill_sample(measurements: list[NativePointMeasurement]) -> Nativ
     if sample.point["point_type"] != "prefill" or sample.point["total_kv_read_tokens"] != 0:
         return None
     expected = {key: value for key, value in sample.point.items() if key != "benchmark_id"}
+    expected["sample_reasons"] = list(expected.get("sample_reasons") or [])
     for measurement in measurements:
         if measurement is sample:
             continue
@@ -138,7 +139,7 @@ def _zero_kv_prefill_sample(measurements: list[NativePointMeasurement]) -> Nativ
             return None
         point = {key: value for key, value in measurement.point.items() if key != "benchmark_id"}
         point["sample_reasons"] = [
-            reason for reason in point.get("sample_reasons", []) if reason != "prefill_real_seed"
+            reason for reason in (point.get("sample_reasons") or []) if reason != "prefill_real_seed"
         ]
         if point != expected:
             return None

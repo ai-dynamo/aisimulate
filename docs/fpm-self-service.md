@@ -335,7 +335,7 @@ aisimulate onboard init \
   --model-kind dense \
   --framework-version YOUR_PINNED_VLLM_VERSION \
   --gpu h200_sxm --interconnect nvswitch \
-  --tensor-parallel 2 \
+  --tensor-parallel 2 --context-length YOUR_MODEL_CONTEXT_LIMIT \
   --output support-request.yaml
 ```
 
@@ -1357,3 +1357,17 @@ Saved legacy interpolation controls merge with explicitly supplied correction, r
 Per-operation silicon profiling described in the model guide is not required by either FPM route. The workflow collects whole-forward timings, then verifies prediction and recommendation for the exact target deployment. Report timing coverage and interpolation error separately; successful simulation alone does not establish measured accuracy.
 
 Accuracy gates and interpolation corrections remain deferred until new measurements are collected with the provenance from [Dynamo #15110](https://github.com/ai-dynamo/dynamo/pull/15110). Those records support investigation; they do not by themselves establish the cause of earlier interpolation errors. If a reproducible CUDA graph boundary causes the discrepancy, interpolation must respect that boundary. No graph-aware partitioning or accuracy policy is introduced here.
+
+### Profile boundary checks
+
+Scripted onboarding requires `--context-length` unless a model config or FPM
+profile supplies the context limit; 256000 is a cap, not an assumed model limit.
+Aggregated collection inherits the profile's shared scheduler token limit. If
+selected deployments have different limits, supply a shared
+`--fpm-max-num-batched-tokens` within every deployment's envelope.
+
+Grouped-cache replay requires a runner that advertises grouped-cache support;
+use `--stack engine`. Recommendation skips deployment modes for which the
+profile has no matching role deployments. Finalized collection quality remains
+verified when checking a plan; rendering collection arguments without a runtime
+probe does not repeat that verification.

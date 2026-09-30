@@ -850,3 +850,34 @@ def test_onboard_validation_replays_windowed_weka_with_full_context(grouped_case
     saved = CorePredictionConfig.from_yaml(output / "predict.yaml")
     assert saved.engine.workers.aggregated.kv_cache.prefix_caching is False
     assert saved.engine.fpm_profile.deployments[0].resources.cache_layout == "grouped"
+
+
+def test_grouped_runner_capability_rejects_unsupported_stack(grouped_case):
+    from aisimulate.runner import EngineReplayRunnerFactory
+    from aisimulate.sweeper.replay import RunnerCapabilities
+
+    profile, root = grouped_case
+    spec = prediction_to_replay_spec(CorePredictionConfig.model_validate(_prediction(profile, root)))
+    with pytest.raises(ValueError, match="grouped FPM caches; use --stack engine"):
+        RunnerCapabilities(supported_backend_topologies=(("vllm", "agg"),)).require_compatible(spec)
+    EngineReplayRunnerFactory().capabilities().require_compatible(spec)
+    linear_spec = prediction_to_replay_spec(
+        CorePredictionConfig.model_validate(_prediction(_mixed_profile(profile), root))
+    )
+    RunnerCapabilities(supported_backend_topologies=(("vllm", "agg"),)).require_compatible(linear_spec)
+
+
+def test_aggregated_only_grouped_profile_skips_unavailable_disagg(grouped_case):
+    from aisimulate.sweeper.config import SmartSearchConfig
+    from aisimulate.sweeper.search_space import enumerate_branches
+
+    profile, root = grouped_case
+    for deployment in profile["deployments"]:
+        deployment["worker_type"] = "aggregated"
+    raw = _mixed_search(profile, root)
+    raw.update(fpm_profile=profile, agg_enable_prefix_caching=False)
+    raw.pop("deployment_mode")
+    config = SmartSearchConfig(search_space=raw, workload=Workload(isl=1152, osl=4, concurrency=1, request_count=2))
+    with pytest.warns(UserWarning, match="disagg.*skipped"):
+        branches = enumerate_branches(config, max_seq_len=2048)
+    assert [branch.deployment_mode for branch in branches] == ["agg"]

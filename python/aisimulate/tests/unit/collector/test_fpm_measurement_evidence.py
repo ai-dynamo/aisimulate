@@ -466,3 +466,15 @@ def test_extraction_requires_same_native_samples_and_run(tmp_path):
     collection = _artifacts(tmp_path)
     with pytest.raises(ValueError, match="run/grid identity"):
         extract_measurement_evidence(tmp_path, replace(collection, runtime_run_id="different"))
+
+
+@pytest.mark.parametrize("reasons", [None, []])
+def test_zero_kv_duplicates_normalize_optional_reasons(reasons):
+    from collector.fpm_forward.native_artifact import _zero_kv_prefill_sample
+
+    point = {"point_type": "prefill", "total_kv_read_tokens": 0}
+    ordinary = NativePointMeasurement(point, ((0, 0.01),), "not_applicable")
+    duplicate = NativePointMeasurement({**point, "sample_reasons": reasons}, ((0, 0.02),), "real_prefix")
+    assert _zero_kv_prefill_sample([ordinary, duplicate]) is ordinary
+    point["sample_reasons"] = None
+    assert _zero_kv_prefill_sample([ordinary, duplicate]) is ordinary
