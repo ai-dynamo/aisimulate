@@ -237,6 +237,12 @@ class _DGDOutputAdapter:
         return [path.relative_to(output_dir)]
 
 
+class _MissingArtifactOutputAdapter(_DGDOutputAdapter):
+    def write(self, config, *, result, output_dir):
+        self.calls.append((config, result, output_dir))
+        return ["missing.yaml"]
+
+
 def test_predict_is_the_single_concrete_cli(tmp_path, monkeypatch, capsys) -> None:
     config_path = tmp_path / "prediction.yaml"
     config_path.write_text(
@@ -1061,6 +1067,115 @@ def test_recommendation_invokes_selected_output_adapter(tmp_path, monkeypatch, c
     assert (output / "qwen.yaml").read_text() == "kind: DynamoGraphDeployment\n"
     assert "dgd" not in yaml.safe_load((output / "recommendations" / "0001.yaml").read_text())
     assert json.loads(capsys.readouterr().out)[0]["score"] == 1.0
+
+
+def test_output_adapter_failure_preserves_canonical_recommendation_files(tmp_path, monkeypatch, capsys) -> None:
+    prediction = {
+        "engine": {
+            "mode": "aggregated",
+            "model": "example/model",
+            "hardware": "h200_sxm",
+            "context_length": 4096,
+            "workers": {"aggregated": {}},
+        }
+    }
+    config_path = tmp_path / "recommend.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                **prediction,
+                "optimization": {
+                    "target": "throughput",
+                    "constraints": {"max_candidate_gpus": 1},
+                },
+                "dgd": {"name": "qwen"},
+            }
+        )
+    )
+    result = _RecommendationResult(
+        [
+            Candidate(
+                config={"backend": "vllm"},
+                used_gpus=1,
+                score=1.0,
+                metrics={},
+                prediction_config=prediction,
+            )
+        ]
+    )
+    adapter = _MissingArtifactOutputAdapter()
+    monkeypatch.setattr(cli, "resolve_runner_factory", lambda stack: _Factory(_Runner()))
+    monkeypatch.setattr(
+        cli,
+        "resolve_output_adapters",
+        lambda names: resolve_output_adapters(names, injected={"dgd": adapter}, entry_points=[]),
+    )
+    monkeypatch.setattr("aisimulate.recommend.run_recommendation", lambda *args, **kwargs: result)
+
+    output = tmp_path / "out"
+    assert (
+        cli.main(
+            [
+                "recommend",
+                "--config",
+                str(config_path),
+                "--output",
+                "dgd",
+                "--output-dir",
+                str(output),
+            ]
+        )
+        == 1
+    )
+
+    assert (output / "recommendation.json").is_file()
+    assert (output / "recommendation.csv").is_file()
+    assert (output / "recommendations" / "0001.yaml").is_file()
+    assert "reported missing artifact" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("name", "config_adapter_names"),
+    [
+        ("traffic", []),
+        ("placement", ["engine.placement"]),
+    ],
+)
+def test_output_adapter_name_must_not_collide_with_input_section(
+    tmp_path, monkeypatch, capsys, name, config_adapter_names
+) -> None:
+    config_path = tmp_path / "recommend.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "engine": {
+                    "model": "example/model",
+                    "hardware": "h200_sxm",
+                    "context_length": 4096,
+                    "workers": {"aggregated": {}},
+                },
+                name: {},
+            }
+        )
+    )
+    entry_points = SimpleNamespace(
+        select=lambda **kwargs: [SimpleNamespace(name=entry_name) for entry_name in config_adapter_names]
+    )
+    monkeypatch.setattr(cli.importlib.metadata, "entry_points", lambda: entry_points)
+    monkeypatch.setattr(cli, "resolve_runner_factory", lambda stack: _Factory(_Runner()))
+
+    with pytest.raises(SystemExit, match="2"):
+        cli.main(
+            [
+                "recommend",
+                "--config",
+                str(config_path),
+                "--output",
+                name,
+            ]
+        )
+
+    assert f"output adapter name '{name}' collides" in capsys.readouterr().err
 
 
 def test_selected_output_requires_matching_configuration_section(tmp_path, monkeypatch, capsys) -> None:

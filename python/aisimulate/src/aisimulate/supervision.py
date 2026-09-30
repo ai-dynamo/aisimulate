@@ -367,7 +367,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             from .config.cli import CorePredictionConfig, CoreRecommendationConfig
             from .config.common import split_config_sections
 
-            core_raw, adapter_raw = split_config_sections(raw, command=args.command)
+            validation_raw = dict(raw)
+            if args.command == "recommend":
+                for name in dict.fromkeys(args.outputs):
+                    validation_raw.pop(name, None)
+            core_raw, adapter_raw = split_config_sections(validation_raw, command=args.command)
             config_type = CorePredictionConfig if args.command == "predict" else CoreRecommendationConfig
             config = config_type.model_validate(core_raw)
             if config.engine.workers.encoder is not None:

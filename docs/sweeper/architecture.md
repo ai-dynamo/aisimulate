@@ -70,12 +70,13 @@ adapter.write(config, result=result, output_dir=output_dir)
 
 Adapters are loaded only when selected. Names must be unique, implementations must declare the
 supported output-adapter API version, and reported paths must be relative to the supplied output
-directory and exist after the call. A final `write()` failure leaves canonical recommendation output
-intact and makes the command fail. `subscribe()` runs in the supervised recommendation worker and
-may return `on_candidate` and `on_round` callbacks. These callbacks execute synchronously on the
-search path, must return promptly, and abort the recommendation if they fail. The worker and final
-writer may use separate adapter instances, so plugins must not depend on shared in-memory state
-between callbacks and `write()`.
+directory and exist after the call. AISimulate writes canonical recommendation output before calling
+`write()`, and a writer failure makes the command fail. Adapters share that output directory and must
+not modify canonical files. `subscribe()` runs in the supervised recommendation worker and may
+return `on_candidate` and `on_round` callbacks. These callbacks execute synchronously on the search
+path, must return promptly, and abort the recommendation if they fail. The worker and final writer
+may use separate adapter instances, so plugins must not depend on shared in-memory state between
+callbacks and `write()`.
 
 See [Sweep Configuration Providers](sweep-config-provider.md) for the SDK provider contract.
 

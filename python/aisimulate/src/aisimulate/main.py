@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib.metadata
 import json
 import sys
 from collections.abc import Sequence
@@ -21,8 +22,9 @@ from .config.cli import (
     CoreRecommendationConfig,
     prediction_mapping,
 )
-from .config.common import split_config_sections
+from .config.common import RECOMMENDATION_CORE_SECTIONS, split_config_sections
 from .config_adapter import (
+    CONFIG_ADAPTER_ENTRY_POINT_GROUP,
     ConfigAdapterResolutionError,
     PredictionAdapterContext,
     SimulationConfigAdapter,
@@ -97,15 +99,20 @@ def _compile_prediction_adapters(
 
 
 def _extract_output_configs(
-    raw: dict[str, Any], outputs: Sequence[str]
+    raw: dict[str, Any], outputs: Sequence[str], *, stack: str
 ) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
     """Remove explicitly selected output sections from recommendation input."""
 
     remaining = dict(raw)
     configs: dict[str, dict[str, Any]] = {}
+    config_adapter_names = {
+        entry.name for entry in importlib.metadata.entry_points().select(group=CONFIG_ADAPTER_ENTRY_POINT_GROUP)
+    }
     for name in dict.fromkeys(outputs):
         if not name or "." in name:
             raise _CliConfigError(f"invalid --output name {name!r}")
+        if name in RECOMMENDATION_CORE_SECTIONS or f"{stack}.{name}" in config_adapter_names:
+            raise _CliConfigError(f"output adapter name {name!r} collides with a recommendation input section")
         value = remaining.pop(name, None)
         if value is None:
             raise _CliConfigError(f"--output {name!r} requires a top-level {name!r} configuration section")
@@ -235,7 +242,7 @@ def _predict(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
 def _recommend(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
     from .recommend import run_recommendation
 
-    raw, output_configs = _extract_output_configs(raw, getattr(args, "outputs", []))
+    raw, output_configs = _extract_output_configs(raw, getattr(args, "outputs", []), stack=args.stack)
     output_adapters = resolve_output_adapters(output_configs)
     core_raw, adapter_raw = split_config_sections(raw, command="recommend")
     config = CoreRecommendationConfig.model_validate(core_raw)
