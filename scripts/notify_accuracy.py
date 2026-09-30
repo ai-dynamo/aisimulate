@@ -16,11 +16,11 @@ import re
 import subprocess
 import urllib.error
 import urllib.request
-import uuid
 import zipfile
 import zlib
-from datetime import UTC, date, datetime, time, timedelta
+from datetime import UTC, datetime, time, timedelta
 from pathlib import Path
+from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
 from accuracy_digest import compare, decode_points, e2e_snapshot, fpm_snapshot, messages
@@ -243,7 +243,7 @@ def pipeline_status(kind, run, now, *, allow_manual_branch=False):
 
 
 def prior_state(day):
-    # Successful scheduled deliveries only. Dry runs and test-channel sends cannot change production baselines.
+    # Successful scheduled deliveries only. Dry runs and test sends cannot change production baselines.
     page = 1
     while page <= 10:
         try:
@@ -266,7 +266,7 @@ def prior_state(day):
                 )
                 if (
                     state.get("schema_version") == 1
-                    and state.get("production_sent") is True
+                    and state.get("trigger_accepted") is True
                     and state["day"] < str(day)
                 ):
                     return state
@@ -351,126 +351,75 @@ def build_report(day, runs, state, now, historical=True, allow_manual_branch=Fal
         "state": {
             "schema_version": 1,
             "day": str(day),
-            "production_sent": False,
+            "trigger_accepted": False,
             "baselines": baselines,
             "active": active,
         },
     }
 
 
-class Slack:
-    def __init__(self, token, channel):
-        if not token or not re.fullmatch(r"[CG][A-Z0-9]+", channel):
-            raise ValueError("configure a Slack bot token and channel ID")
-        self.token, self.channel = token, channel
+def webhook_payload(report, *, test=False):
+    payload = {
+        "message": ("[TEST] " if test else "") + report["root"],
+        "accuracy_details": "\n\n".join(report["replies"]) or "No additional details.",
+    }
+    if any(len(text) > 35000 for text in payload.values()):
+        raise ValueError("Workflow message exceeds 35000 characters; inspect the report artifact")
+    return payload
 
-    def call(self, method, **payload):
-        request = urllib.request.Request(
-            "https://slack.com/api/" + method,
-            data=json.dumps(payload).encode(),
-            headers={
-                "Authorization": "Bearer " + self.token,
-                "Content-Type": "application/json; charset=utf-8",
-            },
-        )
-        # Do not blindly retry POST: a timeout can occur after Slack accepted the message.
+
+def webhook_url():
+    url = os.environ.get("SLACK_ACCURACY_WEBHOOK_URL", "")
+    parsed = urlsplit(url)
+    if parsed.scheme != "https" or parsed.netloc != "hooks.slack.com" or not parsed.path.startswith("/triggers/"):
+        raise ValueError("Set SLACK_ACCURACY_WEBHOOK_URL to the Slack Workflow Builder web request URL")
+    return url
+
+
+def send_webhook(url, payload):
+    request = urllib.request.Request(
+        url, data=json.dumps(payload).encode(), headers={"Content-Type": "application/json"}
+    )
+    # An uncertain POST must not be retried: Slack may already have accepted it.
+    try:
         with urllib.request.urlopen(request, timeout=30) as response:
             result = json.load(response)
-        if not result.get("ok"):
-            raise RuntimeError(f"Slack {method}: {result.get('error', 'unknown error')}")
-        return result
+    except urllib.error.HTTPError as exc:
+        raise RuntimeError(
+            f"Slack workflow returned HTTP {exc.code}; inspect workflow activity before retrying"
+        ) from None
+    except (urllib.error.URLError, TimeoutError, OSError, ValueError):
+        raise RuntimeError("Slack trigger outcome unknown; inspect workflow activity before retrying") from None
+    if not isinstance(result, dict) or result.get("ok") is not True:
+        raise RuntimeError("Slack did not acknowledge the workflow trigger; inspect workflow activity")
 
-    def history(self, day):
-        cursor = ""
-        oldest = str(datetime.combine(day, time(), LA).timestamp())
-        latest = str(datetime.combine(day + timedelta(days=1), time(), LA).timestamp())
-        while True:
-            result = self.call(
-                "conversations.history",
-                channel=self.channel,
-                oldest=oldest,
-                latest=latest,
-                limit=100,
-                cursor=cursor,
-                include_all_metadata=True,
-            )
-            yield from result["messages"]
-            cursor = result.get("response_metadata", {}).get("next_cursor", "")
-            if not cursor:
-                return
 
-    def existing(self, day):
-        for message in self.history(day):
-            meta = message.get("metadata", {})
-            if (
-                meta.get("event_type") == "aisim_accuracy_daily"
-                and meta.get("event_payload", {}).get("day") == str(day)
-                and meta.get("event_payload", {}).get("repo") == REPO
-            ):
-                return message
-        return None
+def delivery_attempt(day):
+    """A pre-POST Actions artifact reserves the day, including failed/uncertain sends."""
+    name = f"accuracy-attempt-{day}"
+    artifacts = api_items(f"actions/artifacts?name={name}", "artifacts")
+    for item in artifacts:
+        if item["name"] != name:
+            continue
+        run = api(f"actions/runs/{item['workflow_run']['id']}")
+        if (
+            run["path"] != REPORT_WORKFLOW
+            or run["head_branch"] != "main"
+            or run["event"] not in {"schedule", "workflow_run"}
+            or run["head_repository"]["full_name"] != REPO
+        ):
+            continue
+        if item["expired"]:
+            raise ValueError("Daily delivery reservation expired; refusing an uncertain resend")
+        claim = json_zip(api(f"actions/artifacts/{item['id']}/zip", binary=True), "attempt.json")
+        if claim["day"] != str(day) or claim["run_id"] != str(run["id"]):
+            raise ValueError("Daily delivery reservation identity mismatch")
+        return claim
+    return None
 
-    def send(self, report, test=False):
-        day = report["day"]
-        existing = None if test else self.existing(date.fromisoformat(day))
-        key = f"{REPO}:{self.channel}:{day}" + (
-            ":" + os.environ.get("GITHUB_RUN_ID", str(uuid.uuid4())) if test else ""
-        )
-        payload = {
-            "channel": self.channel,
-            "text": ("[TEST] " if test else "") + report["root"],
-            "unfurl_links": False,
-            "unfurl_media": False,
-            "parse": "none",
-            "link_names": False,
-            "client_msg_id": str(uuid.uuid5(uuid.NAMESPACE_URL, key)),
-            "metadata": {
-                "event_type": "aisim_accuracy_test" if test else "aisim_accuracy_daily",
-                "event_payload": {
-                    "day": day,
-                    "repo": REPO,
-                    "report_run": os.environ.get("GITHUB_RUN_ID", "local"),
-                },
-            },
-        }
-        root = existing or self.call("chat.postMessage", **payload)
-        sent, cursor = set(), ""
-        if existing:
-            while True:
-                result = self.call(
-                    "conversations.replies",
-                    channel=self.channel,
-                    ts=root["ts"],
-                    cursor=cursor,
-                    limit=100,
-                    include_all_metadata=True,
-                )
-                for message in result["messages"]:
-                    meta = message.get("metadata", {})
-                    if meta.get("event_type") == "aisim_accuracy_detail":
-                        sent.add(meta.get("event_payload", {}).get("part"))
-                cursor = result.get("response_metadata", {}).get("next_cursor", "")
-                if not cursor:
-                    break
-        for index, reply in enumerate(report["replies"]):
-            if str(index) in sent:
-                continue
-            self.call(
-                "chat.postMessage",
-                channel=self.channel,
-                thread_ts=root["ts"],
-                text=reply,
-                metadata={
-                    "event_type": "aisim_accuracy_detail",
-                    "event_payload": {"part": str(index)},
-                },
-                unfurl_links=False,
-                unfurl_media=False,
-                parse="none",
-                link_names=False,
-                client_msg_id=str(uuid.uuid5(uuid.NAMESPACE_URL, f"{key}:{index}")),
-            )
-        return True
+
+def report_hash(report):
+    return hashlib.sha256(json.dumps(report, sort_keys=True, allow_nan=False).encode()).hexdigest()
 
 
 def main():
@@ -486,35 +435,32 @@ def main():
     day = now.astimezone(LA).date()
     if args.mode == "daily" and (args.e2e_run_id or args.fpm_run_id):
         parser.error("daily mode accepts scheduled runs only")
+    if args.mode == "daily" and not (args.prepare_only or args.deliver):
+        parser.error("daily delivery requires prepare, upload reservation, then deliver")
     if not args.deliver and args.mode != "daily" and not (args.e2e_run_id and args.fpm_run_id):
         parser.error("dry-run/test requires both explicit run IDs")
-    slack = None
-    if args.mode != "dry-run":
-        channel = os.environ.get("SLACK_ACCURACY_CHANNEL_ID", "")
-        slack = Slack(os.environ.get("SLACK_ACCURACY_BOT_TOKEN", ""), channel)
-    existing = slack.existing(day) if slack and args.mode == "daily" else None
+    url = webhook_url() if args.mode != "dry-run" else None
+    claim = delivery_attempt(day) if args.mode == "daily" else None
+    if claim and not args.deliver:
+        print(
+            "Daily trigger already reserved/attempted; no resend. Check the original run and Slack workflow activity."
+        )
+        return
     if args.deliver:
         report = strict_json(args.deliver.read_text())
         if report["day"] != str(day):
             raise ValueError("do not send a report for a previous local day")
-    elif existing:
-        # Resume the original frozen thread, never recompute after late pipeline results.
-        producer = existing["metadata"]["event_payload"]["report_run"]
-        if not str(producer).isdigit():
-            raise ValueError("cannot resume report without Actions provenance")
-        run = api(f"actions/runs/{producer}")
-        if (
-            run["path"] != REPORT_WORKFLOW
-            or run["head_branch"] != "main"
-            or run["event"] not in {"schedule", "workflow_run"}
-            or run["head_repository"]["full_name"] != REPO
+        if args.mode == "daily" and (
+            not claim
+            or claim
+            != {
+                "day": str(day),
+                "run_id": os.environ.get("GITHUB_RUN_ID"),
+                "run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT"),
+                "report_sha256": report_hash(report),
+            }
         ):
-            raise ValueError("untrusted notification producer")
-        artifacts = api_items(f"actions/runs/{producer}/artifacts", "artifacts")
-        artifact = next(a for a in artifacts if a["name"] == "accuracy-report" and not a["expired"])
-        report = json_zip(api(f"actions/artifacts/{artifact['id']}/zip", binary=True), "report.json")
-        if report["day"] != str(day):
-            raise ValueError("restored report date mismatch")
+            raise ValueError("daily delivery requires this run attempt's persisted reservation and exact report")
     else:
         runs = {
             kind: api(f"actions/runs/{run_id}") if run_id else select_run(kind, day)
@@ -524,19 +470,41 @@ def main():
             print("Waiting for both scheduled pipelines; no message sent.")
             return
         report = build_report(day, runs, prior_state(day), now, allow_manual_branch=args.mode != "daily")
+    payload = webhook_payload(report, test=args.mode == "test")
     args.output.mkdir(parents=True, exist_ok=True)
     (args.output / "report.json").write_text(json.dumps(report, allow_nan=False, indent=2) + "\n")
-    preview = report["root"] + "\n\n" + "\n\n--- Thread reply ---\n\n".join(report["replies"])
+    (args.output / "payload.json").write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
+    preview = payload["message"] + "\n\n--- Thread reply ---\n\n" + payload["accuracy_details"]
     (args.output / "preview.md").write_text(preview + "\n")
     summary = os.environ.get("GITHUB_STEP_SUMMARY")
     if summary:
         with open(summary, "a") as stream:
             stream.write(preview[:900000] + "\n")
-    if slack and not args.prepare_only and slack.send(report, test=args.mode == "test") and args.mode == "daily":
-        report["state"]["production_sent"] = True
-        state_dir = args.output / "delivery"
-        state_dir.mkdir(exist_ok=True)
-        (state_dir / "state.json").write_text(json.dumps(report["state"], allow_nan=False) + "\n")
+    if args.mode == "daily" and args.prepare_only:
+        run_id, attempt = os.environ.get("GITHUB_RUN_ID"), os.environ.get("GITHUB_RUN_ATTEMPT")
+        if not run_id or not attempt:
+            raise ValueError("prepare production delivery inside GitHub Actions")
+        (args.output / "attempt.json").write_text(
+            json.dumps(
+                {
+                    "day": str(day),
+                    "run_id": run_id,
+                    "run_attempt": attempt,
+                    "report_sha256": report_hash(report),
+                }
+            )
+            + "\n"
+        )
+        with open(os.environ["GITHUB_OUTPUT"], "a") as stream:
+            stream.write(f"day={day}\n")
+    if url and not args.prepare_only:
+        send_webhook(url, payload)
+        if args.mode == "daily":
+            report["state"]["trigger_accepted"] = True
+            state_dir = args.output / "delivery"
+            state_dir.mkdir(exist_ok=True)
+            (state_dir / "state.json").write_text(json.dumps(report["state"], allow_nan=False) + "\n")
+        print("Slack accepted the workflow trigger; check Slack workflow activity for message delivery.")
     print(f"{args.mode}: {len(report['alerts'])} alert(s); preview: {args.output / 'preview.md'}")
 
 

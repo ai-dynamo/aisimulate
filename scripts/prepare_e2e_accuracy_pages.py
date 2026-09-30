@@ -363,7 +363,8 @@ def api_items(path: str, key: str) -> list:
     items = []
     page = 1
     while True:
-        batch = api(f"{path}?per_page=100&page={page}")[key]
+        separator = "&" if "?" in path else "?"
+        batch = api(f"{path}{separator}per_page=100&page={page}")[key]
         items.extend(batch)
         if len(batch) < 100:
             return items
