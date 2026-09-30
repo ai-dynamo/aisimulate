@@ -179,6 +179,43 @@ fn numerical_rebuild_and_configured_mutation_clocks_are_independent() {
 }
 
 #[test]
+fn store_diagnostics_accumulate_rebuilds_across_knot_searches() {
+    // No evictions: each accepted observation advances the rebuild clock once.
+    let mut store = BucketedSpline::new(&options(64), periodic(4), Some(2));
+    for i in 1..=32 {
+        add(&mut store, row(i));
+    }
+    let initialized = store.diagnostics();
+    assert!(initialized.initialized);
+    assert_eq!(initialized.knot_searches, 1);
+    assert_eq!(initialized.numerical_rebuilds, 0);
+
+    for epoch in 0..2 {
+        let start = 32 + epoch * 4;
+        let completed = 2 * epoch as u64;
+        add(&mut store, row(start + 1));
+        assert_eq!(store.diagnostics().numerical_rebuilds, completed);
+
+        // The second insertion triggers a scheduled statistics rebuild.
+        add(&mut store, row(start + 2));
+        assert_eq!(store.diagnostics().numerical_rebuilds, completed + 1);
+
+        // Recovery also counts, before the next two-insertion interval elapses.
+        store.recursive.as_mut().unwrap().damage_for_test();
+        add(&mut store, row(start + 3));
+        assert_eq!(store.diagnostics().numerical_rebuilds, completed + 2);
+
+        // A knot search starts a new epoch without counting its initialization
+        // as a rebuild or losing the prior epochs' scheduled/recovery counts.
+        add(&mut store, row(start + 4));
+        let searched = store.diagnostics();
+        assert_eq!(searched.knot_searches, epoch as u64 + 2);
+        assert_eq!(searched.last_search_observation, Some((start + 4) as u64));
+        assert_eq!(searched.numerical_rebuilds, completed + 2);
+    }
+}
+
+#[test]
 fn startup_periods_and_minimum_use_accepted_count_not_retained_count() {
     for step in [8, 16, 32, 64, 128] {
         let mut store = BucketedSpline::new(&options(32), periodic(step), None);
