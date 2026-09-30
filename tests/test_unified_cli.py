@@ -970,7 +970,8 @@ def test_recommendation_outputs_each_concrete_prediction_once(tmp_path, monkeypa
 
 
 @pytest.mark.parametrize("stack", ["engine", "dynamo"])
-def test_recommendation_invokes_selected_output_adapter(tmp_path, monkeypatch, capsys, stack) -> None:
+@pytest.mark.parametrize("missing_artifact", [False, True])
+def test_recommendation_invokes_selected_output_adapter(tmp_path, monkeypatch, capsys, stack, missing_artifact) -> None:
     prediction = {
         "engine": {
             "mode": "aggregated",
@@ -1007,7 +1008,7 @@ def test_recommendation_invokes_selected_output_adapter(tmp_path, monkeypatch, c
     result = _RecommendationResult([candidate])
     selected_stack = []
     recommendation_kwargs = {}
-    adapter = _DGDOutputAdapter()
+    adapter = _MissingArtifactOutputAdapter() if missing_artifact else _DGDOutputAdapter()
 
     def resolve_stack(name):
         selected_stack.append(name)
@@ -1032,27 +1033,25 @@ def test_recommendation_invokes_selected_output_adapter(tmp_path, monkeypatch, c
     monkeypatch.setattr("aisimulate.recommend.run_recommendation", run_recommendation)
 
     output = tmp_path / "out"
-    assert (
-        cli.main(
-            [
-                "recommend",
-                "--stack",
-                stack,
-                "--config",
-                str(config_path),
-                "--set",
-                "dgd.name=qwen",
-                "--output",
-                "dgd",
-                "--output-dir",
-                str(output),
-                "--format",
-                "json",
-            ]
-        )
-        == 0
-    )
+    assert cli.main(
+        [
+            "recommend",
+            "--stack",
+            stack,
+            "--config",
+            str(config_path),
+            "--set",
+            "dgd.name=qwen",
+            "--output",
+            "dgd",
+            "--output-dir",
+            str(output),
+            "--format",
+            "json",
+        ]
+    ) == (1 if missing_artifact else 0)
 
+    captured = capsys.readouterr()
     assert selected_stack == [stack]
     assert len(adapter.calls) == 1
     output_config, received_result, received_dir = adapter.calls[0]
@@ -1064,148 +1063,14 @@ def test_recommendation_invokes_selected_output_adapter(tmp_path, monkeypatch, c
     assert recommendation_kwargs["output_configs"] == {"dgd": output_config}
     assert received_result is result
     assert received_dir == output
-    assert (output / "qwen.yaml").read_text() == "kind: DynamoGraphDeployment\n"
+    for filename in ("recommendation.json", "recommendation.csv", "recommendations/0001.yaml"):
+        assert (output / filename).is_file()
     assert "dgd" not in yaml.safe_load((output / "recommendations" / "0001.yaml").read_text())
-    assert json.loads(capsys.readouterr().out)[0]["score"] == 1.0
-
-
-def test_output_adapter_failure_preserves_canonical_recommendation_files(tmp_path, monkeypatch, capsys) -> None:
-    prediction = {
-        "engine": {
-            "mode": "aggregated",
-            "model": "example/model",
-            "hardware": "h200_sxm",
-            "context_length": 4096,
-            "workers": {"aggregated": {}},
-        }
-    }
-    config_path = tmp_path / "recommend.yaml"
-    config_path.write_text(
-        yaml.safe_dump(
-            {
-                **prediction,
-                "optimization": {
-                    "target": "throughput",
-                    "constraints": {"max_candidate_gpus": 1},
-                },
-                "dgd": {"name": "qwen"},
-            }
-        )
-    )
-    result = _RecommendationResult(
-        [
-            Candidate(
-                config={"backend": "vllm"},
-                used_gpus=1,
-                score=1.0,
-                metrics={},
-                prediction_config=prediction,
-            )
-        ]
-    )
-    adapter = _MissingArtifactOutputAdapter()
-    monkeypatch.setattr(cli, "resolve_runner_factory", lambda stack: _Factory(_Runner()))
-    monkeypatch.setattr(
-        cli,
-        "resolve_output_adapters",
-        lambda names: resolve_output_adapters(names, injected={"dgd": adapter}, entry_points=[]),
-    )
-    monkeypatch.setattr("aisimulate.recommend.run_recommendation", lambda *args, **kwargs: result)
-
-    output = tmp_path / "out"
-    assert (
-        cli.main(
-            [
-                "recommend",
-                "--config",
-                str(config_path),
-                "--output",
-                "dgd",
-                "--output-dir",
-                str(output),
-            ]
-        )
-        == 1
-    )
-
-    assert (output / "recommendation.json").is_file()
-    assert (output / "recommendation.csv").is_file()
-    assert (output / "recommendations" / "0001.yaml").is_file()
-    assert "reported missing artifact" in capsys.readouterr().err
-
-
-@pytest.mark.parametrize(
-    ("name", "config_adapter_names"),
-    [
-        ("traffic", []),
-        ("placement", ["engine.placement"]),
-    ],
-)
-def test_output_adapter_name_must_not_collide_with_input_section(
-    tmp_path, monkeypatch, capsys, name, config_adapter_names
-) -> None:
-    config_path = tmp_path / "recommend.yaml"
-    config_path.write_text(
-        yaml.safe_dump(
-            {
-                "engine": {
-                    "model": "example/model",
-                    "hardware": "h200_sxm",
-                    "context_length": 4096,
-                    "workers": {"aggregated": {}},
-                },
-                name: {},
-            }
-        )
-    )
-    entry_points = SimpleNamespace(
-        select=lambda **kwargs: [SimpleNamespace(name=entry_name) for entry_name in config_adapter_names]
-    )
-    monkeypatch.setattr("importlib.metadata.entry_points", lambda: entry_points)
-    monkeypatch.setattr(cli, "resolve_runner_factory", lambda stack: _Factory(_Runner()))
-
-    with pytest.raises(SystemExit, match="2"):
-        cli.main(
-            [
-                "recommend",
-                "--config",
-                str(config_path),
-                "--output",
-                name,
-            ]
-        )
-
-    assert f"output adapter name '{name}' collides" in capsys.readouterr().err
-
-
-def test_selected_output_requires_matching_configuration_section(tmp_path, monkeypatch, capsys) -> None:
-    config_path = tmp_path / "recommend.yaml"
-    config_path.write_text(
-        yaml.safe_dump(
-            {
-                "engine": {
-                    "model": "example/model",
-                    "hardware": "h200_sxm",
-                    "context_length": 4096,
-                    "workers": {"aggregated": {}},
-                }
-            }
-        )
-    )
-    monkeypatch.setattr(cli, "resolve_runner_factory", lambda stack: _Factory(_Runner()))
-
-    with pytest.raises(SystemExit, match="2"):
-        cli.main(
-            [
-                "recommend",
-                "--config",
-                str(config_path),
-                "--output",
-                "dgd",
-            ]
-        )
-
-    assert "requires a top-level 'dgd' configuration section" in capsys.readouterr().err
+    if missing_artifact:
+        assert "reported missing artifact" in captured.err
+    else:
+        assert (output / "qwen.yaml").read_text() == "kind: DynamoGraphDeployment\n"
+        assert json.loads(captured.out)[0]["score"] == 1.0
 
 
 def test_overwrite_only_removes_known_outputs(tmp_path) -> None:

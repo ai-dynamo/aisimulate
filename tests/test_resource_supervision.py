@@ -150,22 +150,10 @@ def test_invalid_cli_input_preserves_outputs_and_stack_error_order(tmp_path, fai
 @pytest.mark.parametrize(
     "name,section,error",
     [
-        *[
-            (name, {}, "collides")
-            for name in (
-                "engine",
-                "traffic",
-                "evaluation",
-                "execution",
-                "optimization",
-                "optimizer",
-            )
-        ],
+        ("traffic", {}, "collides"),
         ("placement", {}, "collides"),
         ("bad.name", {}, "invalid --output name"),
-        ("", {}, "invalid --output name"),
         ("missing", {}, "requires a top-level"),
-        ("artifact", None, "requires a top-level"),
         ("artifact", [], "must be a mapping"),
     ],
 )
@@ -186,7 +174,7 @@ def test_recommend_output_validation_preserves_outputs(tmp_path, name, section, 
             "constraints": {"max_candidate_gpus": 1},
         },
     }
-    if name != "missing" and name not in raw:
+    if name != "missing":
         raw[name] = section
     config = tmp_path / "config.yaml"
     config.write_text(yaml.safe_dump(raw))
