@@ -1988,3 +1988,40 @@ findings:
     - platform:sm120
     - framework:vllm-0.30.0
     - instrument:collect_mla_module
+  sm120_vllm_0300_collection_2026_10_01:
+    statement: 'FULL PERF-DATA COLLECTION on the RTX PRO 5000 (sm120) box, vllm 0.30.0, --model-cases-full --sm 120:
+      20 ops / 634,878 planned cases / 41 case-filter shards on 8 GPUs, ~12 h wall time incl. clean-GPU retries;
+      launcher = tools/perf_database/collect_campaign.py (written during this run, see aic-auto-collect skill).
+      DATA (rows, after retries): gemm 144,142 (bf16 37,472 / fp8 37,518 / fp8_block 31,598 / nvfp4 37,518);
+      attention_context bf16 27,218; attention_generation bf16 33,785; dsa_context 106,020 (12 x 8,835);
+      dsa_generation 10,862; mla_context 8,487; mla_generation 7,059; msa 7,320 + 5,511; dsv4 csa/hca ctx 5,718 /
+      5,789, gen 1,544 / 1,544; encoder_attention 7,679; moe 76,947; compute_scale 3,256 (2 tables); mla_bmm 300 +
+      336; gdn 10,284; kda 1,247. attention fp8-KV ctx/gen re-collected from scratch after the collector fix below.
+      FAILURE GROUPS, all classified, none hidden: (1) dsa heads 96/48/24/12/4/2/1 + prefix >= 262144 — owner
+      decision sm120_dsa_head_axis_failures_accepted (~60% of dsa_context cases, fail at metadata build);
+      (2) TRITON_MLA fp8-KV smem 102400 > 101376 (mla_generation 6,036; the platform limit from the probe campaign);
+      (3) fp8 prefill query on FA2 (mla_context compute=fp8 4,392: FA2 cannot take fp8 Q, collector refuses to
+      mislabel — declared min_sm 100 but SM120 is >= 100 by number while lacking the SM100 path: the combo axis
+      needs a family gate, not a floor); (4) sparse-MLA sm120 decode shape table (dsa_generation 9,996);
+      (5) gemm fp8_block: cutlass c3x "Invalid status" 4,491 (documented SM120 gap) + triton_scaled_mm scale-shape
+      assert 546 at N in {4, 8}; (6) XQA JIT static_assert isPowerOf2 for MQA group size 48/24 (attention fp8-KV,
+      n_kv=1, ~1,450 cases; the same shapes IMA under bf16 FA2 decode: 3 cases); (7) large-shape CUDA faults —
+      dsv4_csa_context b*s = 262144 fp8-KV (IMA / capture "unjoined work" / aten::new_empty ~50), mla_generation
+      b*s = 16.7M tokens (3 IMA per gemm type; int32-index class); (8) moe: NVFP4 w1/w3 intermediate padding
+      unsupported 69, gate/up not divisible by block 128: 36, inter_size % alignment 3; (9) gdn packed recurrent
+      grid-y limit 4, kda strict-completeness 1; (10) residual OOMs: 30 -> 19 (attention_generation bf16), 16 -> 5
+      (attention_context bf16), 46 -> 10 (gemm bf16 32768 x 65536 x 51200-class, 6 weight copies ~40 GB) after
+      a clean-GPU --resume-retry-failed pass; the ones that reproduce are genuine 72 GB capacity limits.
+      COLLECTOR FIXES that came out of it (branch tianhaox/aisimulate:sm120-collect-campaign): collect_attn lays
+      the paged KV cache out in the framework-resolved kv_cache_layout (NHD on FlashInfer outside SM100; the fixed
+      HND memory failed every fp8-KV GQA decode on sm120, 20,458 + 1,354 cases, while serving passed) and the
+      FlashInfer decode kernel_source names the kernel (…trtllmapidecode_xqa / _trtllm_gen; 0.30 merged both into
+      one metadata class); collector/helper _merge_perf_rows treats string/large_string as one type (the third
+      finalize of a table used to OVERWRITE it — 27,303 rows silently replaced by 5,067; mechanism change flagged
+      for owner review). DELIVERY BLOCKER: no SDK system definition for the RTX PRO 5000 (playbook §8 forbids the
+      rtx_pro_6000_server relabel); data stays in the workspace until systems/<name>.yaml exists.'
+    applies_to:
+    - platform:sm120
+    - framework:vllm-0.30.0
+    - instrument:collect.py
+    - instrument:collect_campaign
