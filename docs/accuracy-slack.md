@@ -7,8 +7,9 @@ sent. The bot does not accept commands or start evaluations.
 
 The message title is `:rainbow: *Accuracy Daily · YYYY-MM-DD*`, with a rainbow
 emoji and bold text, without a timezone suffix. Immediately below it, a quote
-block shows run links with duration and attempt plus overview links first,
-followed by the alert count, comparison-note count, and short alert/recovery summaries.
+block shows run links with duration and attempt, overview links, and short
+alert/recovery summaries. The alert count and comparison-note count appear at
+the end of the main message.
 
 ## Delivery policy
 

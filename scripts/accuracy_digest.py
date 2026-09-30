@@ -227,7 +227,6 @@ def messages(day, pipelines, snapshots, alerts, notes, recovered=()):
         f":rainbow: *Accuracy Daily · {day}*",
         "> " + links + " · <https://ai-dynamo.org/aisimulate/e2e-accuracy/|E2E overview>"
         " · <https://ai-dynamo.org/aisimulate/fpm-accuracy/|FPM overview>",
-        summary,
     ]
     lines.extend("> " + escape("• " + (alert if len(alert) <= 240 else alert[:237] + "...")) for alert in alerts[:3])
     if len(alerts) > 3:
@@ -273,6 +272,7 @@ def messages(day, pipelines, snapshots, alerts, notes, recovered=()):
         "*FPM · MAPE*",
         escape(table(["Branch", "KV on", "KV off", "Regression"], rows)) if rows else "No qualified FPM results.",
     ]
+    lines.append(summary)
     replies = []
     coverage_rows = []
     for branch, snapshot in sorted(snapshots.get("fpm", {}).items()):
