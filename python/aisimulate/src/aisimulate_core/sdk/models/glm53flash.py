@@ -32,17 +32,18 @@ def _specs(operations) -> list[dict]:
 # (gemm/moe/kda/mhc_module/custom_allreduce/nccl). Only the NoPE sparse-MLA +
 # IndexPool attention has a GLM table (glm53_attention_module_perf.parquet).
 #
-# KDA kda_perf kernel_source per (backend, phase): (short conv, delta rule).
-# Pinned runtimes: vLLM 0.30.0+glm53tail glm5next/nvidia/kda.py (one
-# causal_conv1d_fn over concatenated q/k/v, FlashKDA prefill on SM100,
-# causal_conv1d_update + fused_recurrent_kda decode); SGLang 0.5.20
-# glm5_next.py RadixLinearAttention (chunk_kda prefill, packed recurrent
-# decode). These names are the Ops KDA collector contract.
+# KDA kda_perf kernel_source per (backend, phase): (short conv, delta rule),
+# as collected by Ops W2. Both backends run ONE merged q|k|v conv
+# (causal_conv1d_fn, not Kimi's three-call _qkv3). vLLM 0.30.0+glm53tail
+# glm5next/nvidia/kda.py: FlashKDA prefill on SM100, fused_recurrent_kda
+# decode. SGLang 0.5.20 kda_backend.py: chunk_kda prefill; decode skips the
+# packed T=1 kernel because GLM sets lower_bound (-5), so it runs
+# fused_sigmoid_gating_delta_rule_update. One row = one layer on one TP rank.
 KDA_KERNELS = {
-    ("vllm", "context"): ("causal_conv1d_fn_qkv3", "flashkda_fwd"),
+    ("vllm", "context"): ("causal_conv1d_fn", "flashkda_fwd"),
     ("vllm", "generation"): ("causal_conv1d_update", "fused_recurrent_kda"),
-    ("sglang", "context"): ("causal_conv1d_fn_qkv3", "chunk_kda"),
-    ("sglang", "generation"): ("causal_conv1d_update", "fused_recurrent_kda_packed_decode"),
+    ("sglang", "context"): ("causal_conv1d_fn", "chunk_kda"),
+    ("sglang", "generation"): ("causal_conv1d_update", "fused_sigmoid_gating_delta_rule_update"),
 }
 # mHC boundaries read mhc_module_perf directly in Rust (Glm53Mhc): pre/post/
 # fused_post_pre rows cover a layer's two sites (RMSNorm inside pre and
