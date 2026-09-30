@@ -124,6 +124,9 @@ Then, for a pending profile, [finalize runtime memory](#finalize-runtime-memory)
 
 ### 6. Validate replay and run predict/recommend
 
+For heterogeneous P/D recommendation, candidate enumeration uses each role’s
+hardware and explicit `prefill` or `decode` worker identity.
+
 For an independent prefill or decode request, stop the collection workflow at that role's verified quality and memory results. Its plan exports `worker.yaml`, the role-tagged FPM profile and an isolated systems directory; it does not create an executable full P/D prediction or recommendation. The other role must be accepted and qualified independently before composing an ordinary serving configuration. `onboard validate-fpm` currently handles aggregated replay only. Existing grouped-cache P/D handoff limitations concern subsequent replay, not collection: decode collection initializes representative state locally and does not require an actual P/D transfer. Keep this replay limitation in the checkpoint without blocking collection qualification.
 
 [Validate a local AgentX trace](#validate-fpm-query-coverage-with-agentx-replay) through `onboard validate-fpm`. It writes an inspectable ordinary prediction config, runs cold aggregated replay, and saves coverage evidence separately from the collection plan. Use the selected complete local corpus or one complete play for a first check, and state that selection. Keep `engine.systems_paths`, the target model projection and the direct-FPM profile intact. Report the command's exit status and exact missing coordinates. Missing timing stops replay; a partial report does not audit the rest of the trace.
