@@ -43,6 +43,10 @@ AIS_SM=<sm> bash components/captures/verdicts_vllm_0300.sh                      
 python3 components/evidence_bundle.py --campaign <date>_<sm>                            # pack evidence, index in results/
 ```
 
+Full perf-data collection after a campaign is NOT an opharness component: use
+`tools/perf_database/collect_campaign.py` (build-image / run / status / finalize) as
+described in the `aic-auto-collect` skill — never a hand-written docker loop.
+
 Captures run inside the framework image with the checkout mounted and
 `PYTHONPATH=<checkout>/python/aisimulate`; one script per gate under
 `components/captures/`. Probes and captures must not share a GPU.
