@@ -119,6 +119,28 @@ Apache-2.0 license text is reproduced in `LICENSE`. This section records
 cross-repository provenance for NVIDIA-authored predecessor code; it is not a
 claim that AIConfigurator is owned by an unaffiliated third party.
 
+## NVIDIA Dynamo Weka regression provenance
+
+The `weka_seam_rekey_never_uses_a_future_parent` regression in repository-root
+`crates/core/src/replay/loadgen/weka.rs` is adapted and modified from NVIDIA
+Dynamo's `lib/mocker/src/loadgen/tests.rs` at immutable commit
+`b113ceae74da3f6754429ade750b0f5b0c8de5d6`. The adaptation uses AISimulate's public
+graph loader and adds assertions that the later continuation was selected while
+the earlier fork retains its original parent.
+
+Upstream source:
+https://github.com/ai-dynamo/dynamo/blob/b113ceae74da3f6754429ade750b0f5b0c8de5d6/lib/mocker/src/loadgen/tests.rs
+
+Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+This material is licensed under the Apache License, Version 2.0. The upstream
+license at the identified revision is available at:
+https://github.com/ai-dynamo/dynamo/blob/b113ceae74da3f6754429ade750b0f5b0c8de5d6/LICENSE
+
+The full Apache-2.0 license text is reproduced in `LICENSE`. This section
+records provenance for NVIDIA-authored predecessor code; it is not a claim
+that Dynamo is owned by an unaffiliated third party.
+
 ## SGLang feed-forward/decode composition and quantization exclusions
 
 The dense-prefix composition and exclusion resolver in `src/aisimulate_core/sdk/models/deepseek_v32.py` and their regression fixtures in `tests/unit/sdk/models/test_deepseek_v32_dense.py` and `tests/unit/sdk/models/test_large_ep_model_graphs.py` adapt and modify the tensor-parallel communication and packed-linear selection behavior from SGLang revision `02c5a855aceb968c310e6fbc6632270e26edc84b`. Original source paths are `python/sglang/srt/models/deepseek_v2.py`, `python/sglang/srt/layers/communicator.py`, `python/sglang/srt/layers/quantization/modelopt_quant.py`, and `python/sglang/srt/layers/quantization/utils.py`. The adaptation models operator composition and projection precision without importing the serving runtime or its GPU dependencies.
