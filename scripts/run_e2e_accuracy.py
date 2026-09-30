@@ -157,15 +157,22 @@ def select_points(tables: dict, max_age_days: int) -> tuple[list[dict], dict]:
 def predictor_module_names(files) -> tuple[str, str]:
     """Select the namespace shipped by the evaluated wheel, not the evaluator."""
     members = {str(path) for path in files}
-    for api, adapter in (
-        ("aisimulate.legacy_cli.api", "aisimulate.sdk.config_adapter"),
-        ("aiconfigurator.cli.api", "aiconfigurator.sdk.config_adapter"),
-    ):
-        if api.replace(".", "/") + ".py" in members:
-            if adapter.replace(".", "/") + "/__init__.py" not in members:
-                raise ValueError("wheel is missing its matching config adapter")
-            return api, adapter
-    raise ValueError("wheel has no supported baseline CLI layout")
+    layouts = [
+        (api, adapter)
+        for api, adapter in (
+            ("aisimulate.legacy_cli.api", "aisimulate.sdk.config_adapter"),
+            ("aiconfigurator.cli.api", "aiconfigurator.sdk.config_adapter"),
+        )
+        if api.replace(".", "/") + ".py" in members
+    ]
+    if not layouts:
+        raise ValueError("wheel has no supported baseline CLI layout")
+    if len(layouts) != 1:
+        raise ValueError("wheel contains ambiguous baseline CLI layouts")
+    api, adapter = layouts[0]
+    if adapter.replace(".", "/") + "/__init__.py" not in members:
+        raise ValueError("wheel is missing its matching config adapter")
+    return api, adapter
 
 
 def wheel_identity(wheel: Path) -> dict:
@@ -187,7 +194,15 @@ def wheel_identity(wheel: Path) -> dict:
         module = importlib.import_module(name)
         if not Path(module.__file__).resolve().is_relative_to(Path(dist.locate_file("")).resolve()):
             raise ValueError("import resolved outside installed wheel")
-    return {"wheel_sha256": digest(wheel), "packages": {"aisimulate": dist.version}}
+    return {
+        "wheel_sha256": digest(wheel),
+        "packages": {"aisimulate": dist.version},
+        "baseline_api": api,
+        "config_adapter": adapter,
+        "cli_entry_point": "aiconfigurator.main:main"
+        if api.startswith("aiconfigurator.")
+        else "aisimulate.legacy_cli.entrypoint:main",
+    }
 
 
 def replay_spec(request, backend_version: str):
@@ -417,7 +432,6 @@ def campaign(args) -> None:
         "runtime": {
             **identity,
             "source_checkout": {**source, "repository": REPOSITORY},
-            "cli_entry_point": "aisimulate.legacy_cli.entrypoint:main",
         },
     }
     common = {

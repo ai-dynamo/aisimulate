@@ -525,7 +525,9 @@ plus `zstd` and `libgomp1`. The runner executes container steps as a non-root
 user, so a bare PostgreSQL image cannot install these dependencies with `apt-get`.
 The evaluated wheel's baseline CLI and config adapter are selected from its own
 package layout: `aiconfigurator.*` on 0.12 releases or `aisimulate.*` after the
-namespace migration. Wheel byte checks and imports run before downloading measurements.
+namespace migration. Ambiguous wheels with both baseline APIs are rejected.
+Baseline provenance records the selected API, adapter, and actual console entry point;
+the public summary retains that entry point. Wheel byte checks and imports run before downloading measurements.
 The client reads the dump without starting a database server. Artifact upload
 uses the output directory so the runner container hook remaps the full path.
 

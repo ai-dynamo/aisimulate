@@ -337,8 +337,8 @@ def test_point_timeout_remains_an_explicit_incomplete_campaign(monkeypatch):
     }
 
 
-@pytest.fixture
-def artifact(tmp_path, monkeypatch):
+@pytest.fixture(params=["aisimulate", "aiconfigurator"])
+def artifact(tmp_path, monkeypatch, request):
     source = tmp_path / "tables.json"
     source.write_text(json.dumps(tables()))
     manifest = tmp_path / "manifest.json"
@@ -346,7 +346,17 @@ def artifact(tmp_path, monkeypatch):
     monkeypatch.setattr(
         campaign,
         "wheel_identity",
-        lambda path: {"wheel_sha256": "a" * 64, "packages": {"aisimulate": "0.12.0"}},
+        lambda path: {
+            "wheel_sha256": "a" * 64,
+            "packages": {"aisimulate": "0.12.0"},
+            "baseline_api": "aiconfigurator.cli.api"
+            if request.param == "aiconfigurator"
+            else "aisimulate.legacy_cli.api",
+            "config_adapter": request.param + ".sdk.config_adapter",
+            "cli_entry_point": "aiconfigurator.main:main"
+            if request.param == "aiconfigurator"
+            else "aisimulate.legacy_cli.entrypoint:main",
+        },
     )
 
     def predictor(point, timeout):
@@ -1138,3 +1148,56 @@ def test_predictor_layout_rejects_missing_or_mixed_namespaces():
         campaign.predictor_module_names(
             ["aisimulate/legacy_cli/api.py", "aiconfigurator/sdk/config_adapter/__init__.py"]
         )
+
+
+@pytest.mark.parametrize("adapters", [[], ["aisimulate"], ["aiconfigurator"], ["aisimulate", "aiconfigurator"]])
+def test_predictor_layout_rejects_multiple_baseline_apis(adapters):
+    files = ["aisimulate/legacy_cli/api.py", "aiconfigurator/cli/api.py"]
+    files += [name + "/sdk/config_adapter/__init__.py" for name in adapters]
+    with pytest.raises(ValueError, match="ambiguous"):
+        campaign.predictor_module_names(files)
+
+
+@pytest.mark.parametrize(
+    "api,adapter_name",
+    [
+        ("aisimulate.legacy_cli.api", "aisimulate.sdk.config_adapter"),
+        ("aiconfigurator.cli.api", "aiconfigurator.sdk.config_adapter"),
+    ],
+)
+def test_predict_point_calls_selected_api_and_adapter(monkeypatch, api, adapter_name):
+    files = [api.replace(".", "/") + ".py", adapter_name.replace(".", "/") + "/__init__.py"]
+    monkeypatch.setattr(campaign.importlib.metadata, "distribution", lambda _: SimpleNamespace(files=files))
+    monkeypatch.setitem(sys.modules, "aisimulate.runner", SimpleNamespace(EngineReplayRunnerFactory=object))
+    calls = []
+    request = object()
+
+    def adapt(source):
+        calls.append(("adapt", source))
+        return SimpleNamespace(requests=[request])
+
+    def kwargs(value):
+        assert value is request
+        return {"test_input": 42}
+
+    def estimate(**values):
+        calls.append(("estimate", values))
+        raise ValueError("test baseline failure")
+
+    modules = {
+        api: SimpleNamespace(cli_estimate=estimate),
+        adapter_name: SimpleNamespace(
+            InferenceXSource=lambda **values: values, adapt_config=adapt, to_cli_estimate_kwargs=kwargs
+        ),
+    }
+    monkeypatch.setattr(campaign.importlib, "import_module", modules.__getitem__)
+    result = campaign.predict_point({"id": "point", "config": {}, "benchmark": {}})
+    assert result["outcome"] == "baseline_failed"
+    assert calls == [("adapt", {"config": {}, "benchmark": {}}), ("estimate", {"test_input": 42})]
+
+
+def test_publication_rejects_unknown_baseline_entry_point(artifact):
+    summary, run = artifact
+    summary["snapshot"]["aic_source"]["cli_entry_point"] = "foreign.main:main"
+    with pytest.raises(ValueError, match="baseline entry point"):
+        publish.validate_artifact(archive(summary), run)

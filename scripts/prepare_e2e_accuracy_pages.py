@@ -114,7 +114,12 @@ def public_contract(summary):
         },
     )
     keys(snapshot["evaluated_revision"], {"branch", "commit_sha"})
-    keys(snapshot["aic_source"], {"repository", "branch", "commit_sha"})
+    keys(snapshot["aic_source"], {"repository", "branch", "commit_sha", "cli_entry_point"})
+    if "cli_entry_point" in snapshot["aic_source"] and snapshot["aic_source"]["cli_entry_point"] not in {
+        "aiconfigurator.main:main",
+        "aisimulate.legacy_cli.entrypoint:main",
+    }:
+        raise ValueError("unsupported baseline entry point")
     keys(snapshot["aisimulate_packages"], {"aisimulate"})
     if snapshot["corrections"] != []:
         raise ValueError("nightly campaign cannot contain unreviewed corrections")

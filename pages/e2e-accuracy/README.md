@@ -242,7 +242,10 @@ metadata, and a coverage report. For a branch-qualified snapshot, both
 All three producer documents must also carry the same completed `aic_run`.
 Its `runtime.source_checkout` records the same branch, full commit SHA, and
 `clean: true`, plus `repository: "https://github.com/ai-dynamo/aisimulate"`.
-Its `runtime.cli_entry_point` is `"aisimulate.legacy_cli.entrypoint:main"`, and its `status`
+Its `runtime.cli_entry_point` is `"aisimulate.legacy_cli.entrypoint:main"` or
+`"aiconfigurator.main:main"` for 0.12 wheels. New producer records include the
+matching `baseline_api` and `config_adapter`; the public `aic_source` retains
+`cli_entry_point`. Historical summaries without this field remain readable. Its `status`
 is `"complete"`. The producer's `aic_commit_sha` identifies that AISimulate
 commit. Branch publication rejects a baseline from another repository or
 revision, an incomplete baseline, or inconsistent producer documents.
