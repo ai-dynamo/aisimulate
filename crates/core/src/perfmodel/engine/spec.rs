@@ -775,7 +775,6 @@ mod tests {
                 hidden_size: 4096,
                 hc_mult: 4,
                 sinkhorn_iters: 20,
-                measured: vec![],
             }),
             OpSpec::Glm53Router(crate::operators::Glm53RouterOp {
                 name: "router_3".into(),

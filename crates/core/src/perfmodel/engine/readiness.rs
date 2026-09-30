@@ -168,8 +168,9 @@ impl Availability<'_> {
                     Err(self.exact_miss(crate::perf_database::glm53flash::BASENAME))
                 };
             }
+            // mHC reads mhc_module_perf rows directly (GLM role semantics).
+            Glm53Mhc(_) => return self.exact("mhc_module_perf.parquet"),
             Glm53Attention(o) => (&o.name, &o.measured),
-            Glm53Mhc(o) => (&o.name, &o.measured),
             Glm53Ffn(o) => (&o.name, &o.measured),
             Glm53Primitive(o) => (&o.name, &o.measured),
             _ => {
@@ -478,8 +479,6 @@ mod tests {
             "name": "mhc_pre_attn_1", "role": "pre", "backend": "vllm",
             "checkpoint_format": "fp8", "tp_size": 2, "is_context": true,
             "hidden_size": 4096, "hc_mult": 4, "sinkhorn_iters": 20,
-            "measured": [{"Mhc": {"name": "half", "scale_factor": 0.5, "op": "pre",
-                "hc_mult": 4, "hidden_size": 4096, "architecture": "glm"}}],
         }}))
         .unwrap();
         let mut sparse = crate::operators::glm53flash::tests::attention("sparse_mla");
@@ -503,15 +502,8 @@ mod tests {
         )));
         validate(&load(DatabaseMode::Silicon), [&mhc, &sparse].into_iter()).unwrap();
         // A GLM boundary without a generic composition cannot be SILICON.
-        let Op::Glm53Mhc(mut bare) = mhc.clone() else {
-            unreachable!()
-        };
-        bare.measured.clear();
-        let error = validate(
-            &load(DatabaseMode::Silicon),
-            [&Op::Glm53Mhc(bare)].into_iter(),
-        )
-        .unwrap_err();
+        let bare = Op::Glm53Attention(crate::operators::glm53flash::tests::attention("kda"));
+        let error = validate(&load(DatabaseMode::Silicon), [&bare].into_iter()).unwrap_err();
         assert!(
             error
                 .to_string()

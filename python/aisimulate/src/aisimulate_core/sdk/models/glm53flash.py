@@ -44,10 +44,9 @@ KDA_KERNELS = {
     ("sglang", "context"): ("causal_conv1d_fn_qkv3", "chunk_kda"),
     ("sglang", "generation"): ("causal_conv1d_update", "fused_recurrent_kda_packed_decode"),
 }
-# One generic mhc_module_perf row covers one decoder layer's two mHC sites
-# (attention + FFN), the DeepSeek-V4 collector convention; a single GLM site
-# is therefore half of that row.
-MHC_SITE_SCALE = 0.5
+# mHC boundaries read mhc_module_perf directly in Rust (Glm53Mhc): pre/post/
+# fused_post_pre rows cover a layer's two sites (RMSNorm inside pre and
+# fused_post_pre); expand/contract rows are one call. No generic children.
 
 
 @register_model("GLM53FLASH")
@@ -117,40 +116,6 @@ class Glm53FlashModel(BaseModel):
         identity = dict(backend=backend_name, checkpoint_format=self.checkpoint_format)
         bf16 = common.GEMMQuantMode.bfloat16
 
-        def mhc_measured(name, role):
-            def module(half):
-                return ops.DeepSeekV4MHCModule(
-                    f"{name}_{half}",
-                    MHC_SITE_SCALE,
-                    half,
-                    h,
-                    d.hc_mult,
-                    d.hc_sinkhorn_iters,
-                    bf16,
-                    architecture=self.architecture,
-                )
-
-            def bytes_op(label, bytes_per_token):
-                return _native(
-                    "Elementwise",
-                    name=f"{name}_{label}",
-                    scale_factor=1.0,
-                    bytes_per_token=float(bytes_per_token),
-                    scale_num_tokens=1,
-                    seq_split=1,
-                )
-
-            # mHC pre includes the block input RMSNorm (native contract).
-            norm = ops.ElementWise(f"{name}_rmsnorm", 1, h, h, 0.8)
-            streams = (d.hc_mult + 1) * h * 2
-            return {
-                "pre": [module("pre"), norm],
-                "post": [module("post")],
-                "fused_post_pre": [module("post"), module("pre"), norm],
-                "expand": [bytes_op("expand", streams)],
-                "contract": [bytes_op("contract", streams)],
-            }[role]
-
         def mhc(name, role):
             return _native(
                 "Glm53Mhc",
@@ -161,7 +126,6 @@ class Glm53FlashModel(BaseModel):
                 hidden_size=h,
                 hc_mult=d.hc_mult,
                 sinkhorn_iters=d.hc_sinkhorn_iters,
-                measured=_specs(mhc_measured(name, role)),
                 **identity,
             )
 
