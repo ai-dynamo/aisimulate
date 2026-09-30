@@ -62,7 +62,6 @@ fn analytical_only(db: &PerfDatabase, component: &str) -> Result<(), AicError> {
 fn allowed_measured(component: &str, op: &Op) -> bool {
     match component {
         "attention" => matches!(op, Op::Gemm(_) | Op::Kda(_) | Op::Elementwise(_)),
-        "mhc" => matches!(op, Op::Mhc(_) | Op::Elementwise(_)),
         "ffn" => matches!(op, Op::Gemm(_) | Op::Elementwise(_) | Op::Moe(_)),
         "primitive" => matches!(
             op,
@@ -117,7 +116,15 @@ fn measured_query(
     for child in measured {
         let result = match child.query(db, ctx) {
             Ok(result) => result,
-            Err(err) if hybrid && err.is_missing_perf_data() => return sol(),
+            // A child with no table and no empirical anchor is a coverage gap
+            // in HYBRID: report the whole boundary's GLM SOL (Source::Sol).
+            Err(err)
+                if hybrid
+                    && (err.is_missing_perf_data()
+                        || matches!(err, AicError::EmpiricalNotImplemented(_))) =>
+            {
+                return sol();
+            }
             Err(err) => return Err(err),
         };
         if db.database_mode == DatabaseMode::Silicon
@@ -520,12 +527,21 @@ pub struct Glm53MhcOp {
     pub hidden_size: u32,
     pub hc_mult: u32,
     pub sinkhorn_iters: u32,
-    /// SILICON/HYBRID generic composition (mHC module rows plus analytic
-    /// norm/elementwise). SOL keeps the GLM formula above.
-    #[serde(default)]
-    pub measured: Vec<Op>,
 }
 impl Glm53MhcOp {
+    /// Call sites covered by one `mhc_module_perf` row for this role. GLM
+    /// rows (Ops W3, vLLM 0.30.0+glm53tail / SGLang 0.5.20) follow the
+    /// DeepSeek-V4 convention: `pre`, `post` and `fused_post_pre` time a
+    /// layer's attention and FFN sites together (`num_sites=2`); `expand`
+    /// and `contract` time one call. RMSNorm is inside `pre` and
+    /// `fused_post_pre` on both backends.
+    pub fn row_sites(&self) -> f64 {
+        if matches!(self.role.as_str(), "pre" | "post" | "fused_post_pre") {
+            2.0
+        } else {
+            1.0
+        }
+    }
     pub fn weight_bytes(&self) -> f64 {
         let (h, c) = (self.hidden_size as f64, self.hc_mult as f64);
         if matches!(self.role.as_str(), "pre" | "fused_post_pre") {
@@ -571,11 +587,41 @@ impl Glm53MhcOp {
         db: &PerfDatabase,
         ctx: &RuntimeContext,
     ) -> Result<PerformanceResult, AicError> {
-        validate_measured("mhc", &self.measured)?;
         let sol = || self.sol(&db.system_spec, ctx.num_tokens as f64);
+        // Validates identity/geometry in every mode.
+        let analytical = sol()?;
         match db.database_mode {
-            DatabaseMode::Sol | DatabaseMode::SolFull => sol(),
-            _ => measured_query(db, ctx, "mhc", &self.measured, sol),
+            DatabaseMode::Sol | DatabaseMode::SolFull => return Ok(analytical),
+            DatabaseMode::Empirical => analytical_only(db, "mhc")?,
+            _ => {}
+        }
+        if ctx.num_tokens == 0 {
+            return Ok(zero());
+        }
+        // Pure TP (EP=DP=1): vLLM sequence-parallel MoE is off, so mHC runs on
+        // all scheduled tokens of the rank. One site is 1/row_sites of a row;
+        // the row's util-hold anchor is row_sites x the per-site GLM SOL.
+        let sites = self.row_sites();
+        let anchor = |_: &str, tokens: f64| {
+            self.sol(&db.system_spec, tokens)
+                .map_or(f64::NAN, |r| r.latency_ms * sites)
+        };
+        match db.mhc.query_module(
+            &self.role,
+            ctx.num_tokens,
+            self.hc_mult,
+            self.hidden_size,
+            &anchor,
+        ) {
+            Ok(row) => Ok(PerformanceResult::with_energy(
+                row.latency / sites,
+                row.energy / sites,
+                Source::Silicon,
+            )),
+            Err(err) if db.database_mode == DatabaseMode::Hybrid && err.is_missing_perf_data() => {
+                Ok(analytical)
+            }
+            Err(err) => Err(err),
         }
     }
 }
@@ -1247,15 +1293,6 @@ pub(crate) mod tests {
     }
 
     fn mhc_site(role: &str) -> Glm53MhcOp {
-        use crate::operators::{elementwise::ElementwiseOp, mhc::MhcModuleOp};
-        let mut half = MhcModuleOp::new(
-            "mhc_half",
-            role,
-            4,
-            4096,
-            "Glm5NextForConditionalGeneration",
-        );
-        half.scale_factor = 0.5;
         Glm53MhcOp {
             name: "mhc_pre_attn_1".into(),
             role: role.into(),
@@ -1266,10 +1303,6 @@ pub(crate) mod tests {
             hidden_size: 4096,
             hc_mult: 4,
             sinkhorn_iters: 20,
-            measured: vec![
-                Op::Mhc(half),
-                Op::Elementwise(ElementwiseOp::new("norm", 4.0 * 4096.0)),
-            ],
         }
     }
 
@@ -1311,16 +1344,25 @@ pub(crate) mod tests {
         // gb300/sglang/0.5.14 carries DeepSeek-V4-Flash mHC rows (hc4, hidden 4096)
         // but no KDA rows for GLM's 32-head TP2 shard.
         let silicon = db(DatabaseMode::Silicon);
+        // One GLM pre site is half of a two-site row (RMSNorm inside the row).
         let mhc = mhc_site("pre");
         let c = ctx(8, 1, 0, false);
         let got = mhc.query(&silicon, &c).unwrap();
-        let expected: f64 = mhc
-            .measured
-            .iter()
-            .map(|op| op.query(&silicon, &c).unwrap().latency_ms)
-            .sum();
-        assert!((got.latency_ms - expected).abs() < 1e-12 && got.latency_ms > 0.0);
-        assert_ne!(got.source, Source::Sol);
+        let row = silicon
+            .mhc
+            .query_module("pre", 8, 4, 4096, &|_, _| f64::NAN)
+            .unwrap();
+        assert!((got.latency_ms - 0.5 * row.latency).abs() < 1e-15 && got.latency_ms > 0.0);
+        assert_eq!(got.source, Source::Silicon);
+        // No fused_post_pre rows in this runtime: SILICON fails, HYBRID is SOL.
+        let fused = mhc_site("fused_post_pre");
+        assert!(fused.query(&silicon, &c).is_err());
+        let hybrid_fused = fused.query(&db(DatabaseMode::Hybrid), &c).unwrap();
+        assert_eq!(hybrid_fused.source, Source::Sol);
+        assert_eq!(
+            hybrid_fused.latency_ms,
+            fused.sol(&silicon.system_spec, 8.0).unwrap().latency_ms
+        );
 
         let mut kda = attention("kda");
         kda.backend = "sglang".into();
@@ -1343,15 +1385,15 @@ pub(crate) mod tests {
             Source::Sol
         );
         // A GLM analytical op can never be smuggled in as a measured child.
-        let mut bad = mhc_site("pre");
-        bad.measured.push(Op::Glm53Router(Glm53RouterOp {
+        let mut bad = attention("kda");
+        bad.measured = vec![Op::Glm53Router(Glm53RouterOp {
             name: "router".into(),
             backend: "sglang".into(),
             checkpoint_format: "fp8".into(),
             hidden_size: 4096,
             num_experts: 288,
             topk: 8,
-        }));
+        })];
         assert!(bad.query(&silicon, &c).is_err());
         let mut sparse = attention("sparse_mla");
         sparse.measured = vec![kda_kernel("chunk_kda", "context")];
@@ -1429,6 +1471,73 @@ pub(crate) mod tests {
             err.to_string()
                 .contains("no glm53_attention_module_perf.parquet"),
             "{err}"
+        );
+    }
+
+    #[test]
+    fn mhc_reads_glm_rows_with_w3_site_semantics_from_exact_runtime() {
+        use crate::perf_database::energy_test_fixtures::{Col, write_parquet};
+        const TAIL: &str = "0.30.0+glm53tail.eb4704514fdf";
+        let root = tempfile::tempdir().unwrap();
+        let systems = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../python/aisimulate/src/aisimulate_core/systems");
+        std::fs::copy(systems.join("gb300.yaml"), root.path().join("gb300.yaml")).unwrap();
+        let dir = root.path().join("data/gb300/mhc/vllm").join(TAIL);
+        std::fs::create_dir_all(&dir).unwrap();
+        let ops = ["pre", "post", "fused_post_pre", "expand", "contract"];
+        let op_names: Vec<&str> = ops.iter().flat_map(|op| [*op, *op]).collect();
+        write_parquet(
+            &dir.join("mhc_module_perf.parquet"),
+            &[
+                Col::Str("op_name", op_names),
+                Col::I64("num_tokens", [16, 1024].repeat(5)),
+                Col::I64("hc_mult", vec![4; 10]),
+                Col::I64("hidden_size", vec![4096; 10]),
+                Col::F64(
+                    "latency",
+                    vec![0.02, 0.04, 0.01, 0.03, 0.03, 0.07, 0.01, 0.03, 0.005, 0.017],
+                ),
+                Col::Str("kernel_source", vec!["fixture"; 10]),
+            ],
+        );
+        let load = |mode| {
+            PerfDatabase::load_resolved(root.path(), "gb300", "vllm", TAIL, false, false, false)
+                .unwrap()
+                .with_mode(mode, TransferPolicy::ALL)
+        };
+        let silicon = load(DatabaseMode::Silicon);
+        let c = ctx(1024, 1, 0, false);
+        let site = |role: &str| {
+            let mut op = mhc_site(role);
+            op.backend = "vllm".into();
+            op.query(&silicon, &c).unwrap()
+        };
+        // Two-site rows: one site = 0.5 x row; expand/contract: one call = row.
+        for (role, row, sites) in [
+            ("pre", 0.04, 2.0),
+            ("post", 0.03, 2.0),
+            ("fused_post_pre", 0.07, 2.0),
+            ("expand", 0.03, 1.0),
+            ("contract", 0.017, 1.0),
+        ] {
+            let got = site(role);
+            assert!((got.latency_ms - row / sites).abs() < 1e-15, "{role}");
+            assert_eq!(got.source, Source::Silicon);
+        }
+        // vLLM forward: pre + 89 fused + post sites + expand + contract
+        // = 0.5 + 44.5 + 0.5 rows + 1 + 1.
+        let forward = site("pre").latency_ms
+            + 89.0 * site("fused_post_pre").latency_ms
+            + site("post").latency_ms
+            + site("expand").latency_ms
+            + site("contract").latency_ms;
+        let rows = 0.5 * 0.04 + 44.5 * 0.07 + 0.5 * 0.03 + 0.03 + 0.017;
+        assert!((forward - rows).abs() < 1e-12);
+        // SOL mode never reads the table.
+        let op = mhc_site("fused_post_pre");
+        assert_eq!(
+            op.query(&load(DatabaseMode::Sol), &c).unwrap().latency_ms,
+            op.sol(&silicon.system_spec, 1024.0).unwrap().latency_ms
         );
     }
 }

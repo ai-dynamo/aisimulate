@@ -185,7 +185,7 @@ def test_hybrid_is_constructible_and_labels_analytical_fallbacks(backend):
 @pytest.mark.parametrize("backend", ["vllm", "sglang"])
 @pytest.mark.parametrize("tp", [2, 4])
 def test_measured_composition_uses_generic_ops_and_one_glm_attention_table(path, backend, tp):
-    from aisimulate_core.sdk.models.glm53flash import KDA_KERNELS, MHC_SITE_SCALE
+    from aisimulate_core.sdk.models.glm53flash import KDA_KERNELS
 
     model = build(path, backend, tp)
     nvfp4 = "NVFP4" in path
@@ -193,7 +193,7 @@ def test_measured_composition_uses_generic_ops_and_one_glm_attention_table(path,
         native = [json.loads(op._spec_json()) for op in ops]
         for body in native:
             kind, op = next(iter(body.items()))
-            measured = op["measured"]
+            measured = op.get("measured", [])
             kinds = Counter(next(iter(child)) for child in measured)
             assert not any(k.startswith("Glm53") for k in kinds), (kind, kinds)
             if kind == "Glm53Attention" and op["layer_kind"] == "sparse_mla":
@@ -211,12 +211,8 @@ def test_measured_composition_uses_generic_ops_and_one_glm_attention_table(path,
                 inputs = [g for g in gemms if g["k"] == 4096 and not g["name"].endswith("_o_proj")]
                 assert sum(g["n"] for g in inputs) == 3 * p + heads + 256
             elif kind == "Glm53Mhc":
-                halves = [child["Mhc"] for child in measured if "Mhc" in child]
-                assert {(h["scale_factor"], h["hc_mult"], h["hidden_size"]) for h in halves} <= {
-                    (MHC_SITE_SCALE, 4, 4096)
-                }
-                expected = {"pre": ["pre"], "post": ["post"], "fused_post_pre": ["post", "pre"]}.get(op["role"], [])
-                assert [h["op"] for h in halves] == expected
+                # Read directly from mhc_module_perf by role in Rust.
+                assert "measured" not in op
             elif kind == "Glm53Ffn":
                 gemms = [child["Gemm"] for child in measured if "Gemm" in child]
                 if op["is_dense"]:
