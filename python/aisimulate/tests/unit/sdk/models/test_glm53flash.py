@@ -144,20 +144,113 @@ def test_canonical_sol_constructor_and_saved_identity(path, backend):
         model.close()
 
 
-def test_formal_glm_ops_do_not_accept_generic_moe_tables():
-    # The shipped GB300 generic operator dataset exists, but it cannot attest
-    # GLM's whole FFN routing/clamp or hybrid attention execution boundary.
-    config = ForwardPassPerfModelConfig(
+def _config(database_mode, backend="vllm", **kwargs):
+    return ForwardPassPerfModelConfig(
         model="zai-org/GLM-5.3-Flash",
         system="gb300",
-        backend="vllm",
+        backend=backend,
         worker_type="aggregated",
         tp=2,
         moe_tp_size=2,
         moe_ep_size=1,
-        database_mode="SILICON",
+        database_mode=database_mode,
         estimation_mode="op_level",
         fallback_policy="deny",
+        **kwargs,
     )
-    with pytest.raises(PerfDataNotAvailableError, match="GLM-5.3-Flash measured module tables are unavailable"):
-        RustForwardPassPerfModel.best_available(config)
+
+
+def test_silicon_requires_exact_runtime_glm_tables():
+    # Shipped GB300 generic tables predate the pinned GLM runtimes and carry no
+    # GLM KDA/MoE/attention geometry: SILICON must fail closed, never use SOL
+    # and never borrow earlier-version rows for the GLM-specific families.
+    with pytest.raises(PerfDataNotAvailableError, match="exact runtime"):
+        RustForwardPassPerfModel.best_available(_config("SILICON"))
+
+
+@pytest.mark.parametrize("backend", ["vllm", "sglang"])
+def test_hybrid_is_constructible_and_labels_analytical_fallbacks(backend):
+    model = RustForwardPassPerfModel.best_available(_config("HYBRID", backend))
+    try:
+        ops = model.static_phase_diagnostics(batch_size=2, context_length=4096, prefix=0, prefill=True)
+        sources = {op["name"]: op["source"] for op in ops}
+        # No GLM attention table ships yet: the sparse layers report SOL.
+        assert {sources[f"attention_{layer}"] for layer in range(3, 45, 4)} == {"sol"}
+        assert all(op["latency_ms"] > 0 for op in ops if op["name"].startswith("attention_"))
+    finally:
+        model.close()
+
+
+@pytest.mark.parametrize("path", MODEL_REVISIONS)
+@pytest.mark.parametrize("backend", ["vllm", "sglang"])
+@pytest.mark.parametrize("tp", [2, 4])
+def test_measured_composition_uses_generic_ops_and_one_glm_attention_table(path, backend, tp):
+    from aisimulate_core.sdk.models.glm53flash import KDA_KERNELS, MHC_SITE_SCALE
+
+    model = build(path, backend, tp)
+    nvfp4 = "NVFP4" in path
+    for phase, ops in (("context", model.context_ops), ("generation", model.generation_ops)):
+        native = [json.loads(op._spec_json()) for op in ops]
+        for body in native:
+            kind, op = next(iter(body.items()))
+            measured = op["measured"]
+            kinds = Counter(next(iter(child)) for child in measured)
+            assert not any(k.startswith("Glm53") for k in kinds), (kind, kinds)
+            if kind == "Glm53Attention" and op["layer_kind"] == "sparse_mla":
+                assert measured == []  # the only GLM table op
+            elif kind == "Glm53Attention":
+                heads, p = 64 // tp, 64 // tp * 128
+                kernels = [child["Kda"] for child in measured if "Kda" in child]
+                assert [k["kernel_source"] for k in kernels] == list(KDA_KERNELS[(backend, phase)])
+                assert {(k["phase"], k["d_model"], k["num_k_heads"], k["num_v_heads"]) for k in kernels} == {
+                    (phase, 4096, heads, heads)
+                }
+                gemms = [child["Gemm"] for child in measured if "Gemm" in child]
+                assert {g["quant_mode"] for g in gemms} == {"bfloat16"}
+                assert len(gemms) == (4 if backend == "vllm" else 9)
+                inputs = [g for g in gemms if g["k"] == 4096 and not g["name"].endswith("_o_proj")]
+                assert sum(g["n"] for g in inputs) == 3 * p + heads + 256
+            elif kind == "Glm53Mhc":
+                halves = [child["Mhc"] for child in measured if "Mhc" in child]
+                assert {(h["scale_factor"], h["hc_mult"], h["hidden_size"]) for h in halves} <= {
+                    (MHC_SITE_SCALE, 4, 4096)
+                }
+                expected = {"pre": ["pre"], "post": ["post"], "fused_post_pre": ["post", "pre"]}.get(op["role"], [])
+                assert [h["op"] for h in halves] == expected
+            elif kind == "Glm53Ffn":
+                gemms = [child["Gemm"] for child in measured if "Gemm" in child]
+                if op["is_dense"]:
+                    assert kinds == {"Gemm": 2, "Elementwise": 1}
+                    assert {g["quant_mode"] for g in gemms} == {"nvfp4" if nvfp4 else "fp8_block"}
+                else:
+                    assert kinds == {"Gemm": 3, "Elementwise": 1, "Moe": 1}
+                    router = [g for g in gemms if g["n"] == 288]
+                    assert len(router) == 1 and router[0]["quant_mode"] == "bfloat16"
+                    moe = next(child["Moe"] for child in measured if "Moe" in child)
+                    assert (moe["num_experts"], moe["topk"], moe["inter_size"], moe["moe_tp_size"]) == (
+                        288,
+                        8,
+                        2048,
+                        tp,
+                    )
+            elif kind == "Glm53Primitive" and op["role"] == "allreduce":
+                assert kinds == {"CustomAllReduce": 1}
+                assert measured[0]["CustomAllReduce"]["tp_size"] == tp
+            else:
+                assert measured and op["role"] in {"embedding", "final_norm", "logits"}
+
+
+@pytest.mark.parametrize(
+    ("backend", "prefill_ms", "decode_ms"),
+    [("vllm", 334.87059419292984, 13.066380602915983), ("sglang", 350.4071011642707, 13.012015546915993)],
+)
+def test_sol_is_unchanged_by_measured_composition(backend, prefill_ms, decode_ms):
+    # Pinned from the SOL-only graph at PR #323 f317d2bc: GLM boundaries keep
+    # their analytical formulas in SOL mode, so op-level SOL (and the FPM
+    # roofline built from it) is bit-identical after adding generic children.
+    model = RustForwardPassPerfModel.best_available(_config("SOL", backend))
+    try:
+        assert model.static_phase_latency(batch_size=4, input_tokens=8192, output_tokens=2, prefill=True) == prefill_ms
+        assert model.static_phase_latency(batch_size=32, input_tokens=4096, output_tokens=2, prefill=False) == decode_ms
+    finally:
+        model.close()
