@@ -66,32 +66,14 @@ def messages(repository, open_prs, recent_prs, now):
 
     merged = sum(today(pr["merged_at"]) for pr in recent_prs)
     opened = sum(today(pr["created_at"]) for pr in recent_prs)
-    date_range = (
-        f"{start.isoformat(timespec='seconds')}..{now.isoformat(timespec='seconds')}"
-    )
-
-    def link(query, label):
-        url = "https://github.com/pulls?" + urlencode(
-            {"q": f"repo:{repository} is:pr {query}"}
-        )
-        return f"<{url}|{label}>"
-
     lines = [
         f"*AISimulate PR digest — {local:%Y-%m-%d, %I:%M %p %Z}*",
         f":merged-2472: Merged today: *{merged}*",
         f":eyes: New PRs opened today: *{opened}*",
         "",
         f":pr-opened: Open and ready for review: *{len(ready)}*",
-        "Today: Pacific midnight through the time shown above.",
-        " · ".join(
-            [
-                link("is:open draft:false", "View review queue"),
-                link(f"is:merged merged:{date_range}", "View merged PRs"),
-                link(f"created:{date_range}", "View new PRs"),
-            ]
-        ),
         "",
-        f"*Open non-draft PRs older than 120 hours — {len(stale)}*",
+        f"*Open non-draft PRs older than 5 days — {len(stale)}*",
     ]
     for pr in stale:
         age = (now - timestamp(pr["created_at"])).total_seconds() / 86400

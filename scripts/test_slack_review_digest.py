@@ -38,7 +38,7 @@ class DigestTests(unittest.TestCase):
         self.assertIn(":pr-opened: Open and ready for review: *3*", text)
         self.assertLess(text.index(":merged-2472:"), text.index(":eyes:"))
         self.assertLess(text.index(":eyes:"), text.index(":pr-opened:"))
-        self.assertIn("older than 120 hours — 2", text)
+        self.assertIn("older than 5 days — 2", text)
         self.assertLess(text.index("|#3>"), text.index("|#2>"))
         self.assertNotIn("|#1>", text)
         self.assertNotIn("|#4>", text)
