@@ -250,3 +250,16 @@ def test_sol_is_unchanged_by_measured_composition(backend, prefill_ms, decode_ms
         assert model.static_phase_latency(batch_size=32, input_tokens=4096, output_tokens=2, prefill=False) == decode_ms
     finally:
         model.close()
+
+
+def test_kda_kernels_match_collected_kda_rows():
+    # Ops W2 collection contract: merged-qkv conv on both backends; SGLang
+    # decode avoids the packed kernel because GLM sets a gate lower bound.
+    from aisimulate_core.sdk.models.glm53flash import KDA_KERNELS
+
+    assert KDA_KERNELS == {
+        ("vllm", "context"): ("causal_conv1d_fn", "flashkda_fwd"),
+        ("vllm", "generation"): ("causal_conv1d_update", "fused_recurrent_kda"),
+        ("sglang", "context"): ("causal_conv1d_fn", "chunk_kda"),
+        ("sglang", "generation"): ("causal_conv1d_update", "fused_sigmoid_gating_delta_rule_update"),
+    }

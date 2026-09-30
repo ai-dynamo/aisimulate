@@ -38,14 +38,17 @@ like Kimi-K3 and DeepSeek-V4:
 |---|---|
 | KDA attention | BF16 `Gemm` projections (vLLM one fused q/k/v/b/f_a/g_a; SGLang six), `f_b`/`g_b` and `o_proj` `Gemm`, `Kda` conv and delta-rule kernels, analytic gated-norm `Elementwise` |
 | Sparse MLA attention | none; the one GLM table `glm53_attention_module_perf.parquet` |
-| mHC `pre`/`post`/`fused_post_pre` | generic `Mhc` module rows at scale 0.5 per site (one row covers a layer's two sites), plus the analytic input RMSNorm for `pre` |
-| mHC `expand`/`contract` | analytic `Elementwise` |
+| mHC `pre`/`post`/`fused_post_pre` | `mhc_module_perf` row for the same `op_name`, read directly by `Glm53Mhc`; one site is 0.5 x row (a row covers a layer's attention and FFN sites; RMSNorm is inside `pre` and `fused_post_pre`). Per forward vLLM uses 0.5 `pre` + 44.5 `fused_post_pre` + 0.5 `post` rows; SGLang 45 `pre` + 45 `post` rows |
+| mHC `expand`/`contract` | `mhc_module_perf` row, one call each |
 | FFN | dense/shared `Gemm` in checkpoint precision, analytic SwiGLU `Elementwise`, BF16 router `Gemm` and routed `Moe` |
 | All-reduce | `CustomAllReduce` |
 | Embedding, final norm, logits | `Embedding`, `Elementwise`, BF16 `Gemm` plus NCCL vocab gather (and SGLang FP32 cast) |
 
 KDA `kernel_source` names per backend and phase are listed in
-`sdk/models/glm53flash.py::KDA_KERNELS`. The router is priced as a BF16 GEMM
+`sdk/models/glm53flash.py::KDA_KERNELS` (merged-qkv `causal_conv1d_fn`;
+vLLM `flashkda_fwd`/`fused_recurrent_kda`; SGLang
+`chunk_kda`/`fused_sigmoid_gating_delta_rule_update`). mHC runs on all of a
+rank's scheduled tokens: vLLM sequence-parallel MoE requires EP and DP>1. The router is priced as a BF16 GEMM
 because no generic FP32 GEMM table exists; pure-TP MoE dispatch and combine
 are the explicit all-reduces, so no `MoEDispatch` op is emitted.
 
