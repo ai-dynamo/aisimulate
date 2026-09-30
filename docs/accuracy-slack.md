@@ -2,7 +2,7 @@
 
 `Accuracy Slack Daily` posts one daily top-level message to
 **#swdl-dynamo-aisim-daily** (`C0BULBSTXJ6`). Alerts and results share that message;
-E2E per-model and per-GPU tables are replies in the same thread. No mentions are
+E2E per-model and per-GPU tables are included in the main message. No mentions are
 sent. The bot does not accept commands or start evaluations.
 
 ## Delivery policy
@@ -35,7 +35,7 @@ sent. The bot does not accept commands or start evaluations.
 The E2E table has six columns: Branch, Overall, vLLM, SGLang, TRT-LLM, Coverage.
 Each accuracy cell is **TPOT%/TTFT% MAPE** (for example `24.32%/43.67%`)
 for AISimulate, not legacy AIC.
-Thread tables independently group by model and by GPU, within each branch,
+Main-message detail tables independently group by model and by GPU, within each branch,
 combining frameworks. They average successful point errors directly; they do
 not average already-aggregated MAPEs. Coverage is predicted / eligible points,
 not all original source measurements. FPM shows KV-warmup on/off and online
@@ -149,7 +149,7 @@ gh workflow run accuracy-digest.yml --ref main \
 
 This sends a real `[TEST]` parent message plus its detail thread to the daily
 channel. Check desktop/mobile table readability, links, and per-model/per-GPU
-replies, then set `SLACK_ACCURACY_ENABLED=true`. Test sending is restricted to
+sections, then set `SLACK_ACCURACY_ENABLED=true`. Test sending is restricted to
 `main`; a branch dry run receives no Slack token. No manual mode sends a
 production daily report.
 

@@ -116,7 +116,7 @@ def test_reduction_uses_points_not_mean_of_means():
     )
 
 
-def test_two_separate_thread_dimensions_and_framework_columns():
+def test_two_separate_main_message_dimensions_and_framework_columns():
     current = snapshot({"a": [24, 43]})
     current["groups"]["config2"] = {
         **current["groups"]["config"],
@@ -127,9 +127,10 @@ def test_two_separate_thread_dimensions_and_framework_columns():
     root, replies = digest.messages("2026-09-29", pipelines, {"e2e": {"main": current}}, [], [])
     assert all(name in root for name in ("Overall", "vLLM", "SGLang", "TRT-LLM", "Coverage"))
     assert "https://example.com/e2e" in root and "https://example.com/fpm" in root
-    assert len(replies) == 2
-    assert "per model" in replies[0] and "25.00%/44.00%" in replies[0]
-    assert "per gpu" in replies[1] and "GPU2" in replies[1]
+    assert not replies
+    assert "per model" in root and "25.00%/44.00%" in root
+    assert "per gpu" in root and "GPU2" in root
+    assert root.index("per model") < root.index("per gpu") < root.index("*FPM")
 
 
 @pytest.mark.parametrize(

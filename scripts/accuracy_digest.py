@@ -230,6 +230,18 @@ def messages(day, pipelines, snapshots, alerts, notes, recovered=()):
         if rows
         else "No qualified E2E results.",
     ]
+    for branch, snapshot in sorted(snapshots.get("e2e", {}).items()):
+        for dimension in ("model", "gpu"):
+            buckets = defaultdict(list)
+            for group in snapshot["groups"].values():
+                buckets[group[dimension]].append(group)
+            entries = [[label, *reduce_e2e(groups)] for label, groups in sorted(buckets.items())]
+            lines.extend(
+                [
+                    f"*E2E · {escape(branch)} · per {dimension}*",
+                    escape(table([dimension.title(), "TPOT/TTFT MAPE", "Coverage"], entries)),
+                ]
+            )
     rows = []
     for branch, snapshot in sorted(snapshots.get("fpm", {}).items()):
         rows.append(
@@ -255,23 +267,6 @@ def messages(day, pipelines, snapshots, alerts, notes, recovered=()):
         " · <https://ai-dynamo.org/aisimulate/fpm-accuracy/|FPM overview>"
     )
     replies = []
-    for branch, snapshot in sorted(snapshots.get("e2e", {}).items()):
-        for dimension in ("model", "gpu"):
-            buckets = defaultdict(list)
-            for group in snapshot["groups"].values():
-                buckets[group[dimension]].append(group)
-            # Split at rows, preserving a complete code fence in every reply.
-            entries = [[label, *reduce_e2e(groups)] for label, groups in sorted(buckets.items())]
-            for offset in range(0, len(entries), 12):
-                replies.append(
-                    f"*E2E · {escape(branch)} · per {dimension}*\n<{snapshot['url']}|Pipeline>\n"
-                    + escape(
-                        table(
-                            [dimension.title(), "TPOT/TTFT MAPE", "Coverage"],
-                            entries[offset : offset + 12],
-                        )
-                    )
-                )
     coverage_rows = []
     for branch, snapshot in sorted(snapshots.get("fpm", {}).items()):
         cells = []
@@ -297,5 +292,5 @@ def messages(day, pipelines, snapshots, alerts, notes, recovered=()):
     root = "\n".join(lines)
     # Slack hard limit is 40k; refuse instead of silently losing branches or evidence.
     if any(len(message) > 35000 for message in [root, *replies]):
-        raise ValueError("Slack message too large; reduce the table chunk size")
+        raise ValueError("Slack message too large; review report size before delivery")
     return root, replies
