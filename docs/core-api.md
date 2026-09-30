@@ -730,9 +730,10 @@ fidelity to the generic Replay cache/scheduler. This API change enables timing
 consumption, not full hybrid-cache simulation or multimodal prediction from
 text-only measurements.
 
-The positional engine-spec wire version remains unchanged: the engine identity
-is JSON-encoded and the FPM match identity is already variable-length. Legacy
-configuration and profiles without DCP remain accepted as unrecorded DCP.
+The positional engine-spec wire format is version 25, including the new FPM
+interpolation field. Recompile older binary EngineSpecs: schema 24 and other
+incompatible versions are rejected before payload decoding. Legacy configuration
+and profiles without DCP remain accepted as unrecorded DCP.
 
 ### Migrating saved configuration
 
