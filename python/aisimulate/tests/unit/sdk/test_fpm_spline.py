@@ -159,6 +159,41 @@ def test_spline_initial_search_respects_larger_minimum_observation_count():
     assert store["spline"]["last_search_observation"] == 40
 
 
+def test_spline_component_cannot_make_store_ready_without_linear_fit():
+    model = RustForwardPassPerfModel.best_available(
+        _config(
+            {"kind": "spline", "spline": {"search": {"kind": "periodic", "step": 64}}},
+            sampling={"bins_per_axis": [1, 1], "max_observations": 64},
+        )
+    )
+    # Negative overall covariance makes linear NNLS abstain, while the rising
+    # tail still permits a positive spline segment slope.
+    for kv in range(32):
+        latency_ms = 100.0 if kv == 0 else 1.0 if kv < 24 else 10.0
+        model.tune_with_fpms(
+            {
+                "version": 1,
+                "wall_time": latency_ms / 1000,
+                "scheduled_requests": {"num_decode_requests": 1, "sum_decode_kv_tokens": kv},
+            }
+        )
+    store = model.regression_store_diagnostics()[0]
+    assert store["spline"]["ready"]
+    assert not store["ready"]
+    assert model.diagnostics()["readiness"] == "insufficient_data"
+    for kv in (0, 15, 31, 32):
+        assert (
+            model.estimate_forward_pass_time_ms(
+                {
+                    "version": 1,
+                    "scheduled_requests": {"num_decode_requests": 1, "sum_decode_kv_tokens": kv},
+                }
+            )
+            is None
+        )
+    assert model.regression_store_diagnostics()[0] == store
+
+
 def test_linear_alias_and_omitted_kind_preserve_predictions_and_diagnostics():
     models = [
         RustForwardPassPerfModel.best_available(

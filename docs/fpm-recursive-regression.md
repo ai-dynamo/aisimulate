@@ -67,13 +67,18 @@ from the search policy. A full window is not required, and the observation that
 satisfies the cooldown need not itself have an excessive error if the rolling
 count still meets the trigger.
 
-Serving uses the spline within the current retained raw-feature bounding box
-and the shared linear fit outside it. An unready spline also falls back to that
-linear fit. Neither path borrows another workload store's training data. Both
-paths retain the positive latency floor. Per-store diagnostics expose spline
-initialization, readiness, accepted count, knot searches, last search count,
-numerical rebuilds, and batch fallbacks; the linear-only diagnostic shape is
-unchanged. Configuration serialization records controls, not trained state.
+Serving first requires an available prediction from the shared linear fit for
+the query. It then uses the spline within the current retained raw-feature
+bounding box and the linear fit outside it. An unready spline also falls back
+to that linear prediction. If the linear prediction is unavailable, neither
+path serves a prediction, including inside retained bounds. The store's `ready`
+flag requires a usable linear fit; `spline.ready` describes only the spline
+component and can be true while the store is unready. Neither path borrows
+another workload store's training data. Both paths retain the positive latency
+floor. Per-store diagnostics expose spline initialization, readiness, accepted
+count, knot searches, last search count, numerical rebuilds, and batch fallbacks;
+the linear-only diagnostic shape is unchanged. Configuration serialization
+records controls, not trained state.
 
 ## What one store learns
 
@@ -549,6 +554,13 @@ chronological adaptation or held-out prediction accuracy.
 
 ## Production spline validation (2026-09-25)
 
+These historical measurements predate the serving guard that requires an
+available shared linear prediction before serving a spline prediction. They
+include additional spline-only forecasts that the current guard suppresses.
+The accuracy, coverage, and timing values below are the original measurements
+and must not be read as measurements of the current behavior. A separate
+[coverage-guard check](#linear-coverage-guard-validation) follows this report.
+
 A release replay on 2026-09-25 used the production regression and retention code
 later committed as `69210d4eca2f1f6ff558d830ea3a9edeace1a46f`, with linear baseline
 `2bd9966d282f252a147a19cef3b0da34dbc8855e`. The recorded source hashes match that
@@ -586,8 +598,9 @@ or silently treated as correct. Coverage is reported separately below.
 | Equal-dataset mean | 11.5684% | 5.9619% | 5.7634% | 5.4490% | 6.1364% | 15 datasets |
 | Observation-weighted MAPE | 5.4900% | 3.5771% | 3.2405% | 3.0530% | 3.6627% | 151,600 rows |
 
-On each method's **own available rows**, errors can be much larger. The table
-below includes those forecasts and coverage; its error columns use different
+On each method's **own available rows**, errors were much larger in some cases.
+The historical table below includes those forecasts and coverage, including
+spline-only forecasts before the serving guard; its error columns use different
 cohorts and are not paired accuracy comparisons.
 
 | Method | Available / 161,223 eligible | Own-row mean dataset MAPE | Own-row pooled MAPE |
@@ -599,13 +612,17 @@ cohorts and are not paired accuracy comparisons.
 | Periodic, 3 knots | 158,519 | 51.1936% | 65.5719% |
 | Adaptive, 3 knots | 159,036 | 57.6445% | 76.5480% |
 
-The B200 MiniMax-M2.7 TEP4 case is a serious failure regime: periodic and adaptive
-two-knot fits have **770.8220% and 780.1663% MAPE** on their own available rows,
-respectively. Linear has 68.6163% MAPE on its smaller available cohort. Only
-7,492 of this case's 15,862 eligible rows are common to all methods. The lower
-common-row errors therefore do not establish accurate predictions on the extra
-rows served by spline. A retained-feature bounding box cannot guarantee accuracy
-for every workload inside it.
+The B200 MiniMax-M2.7 TEP4 case exposed a serious failure regime in that replay:
+periodic and adaptive two-knot fits had **770.8220% and 780.1663% MAPE** on their
+own available rows, respectively. Linear had 68.6163% MAPE on its smaller
+available cohort. Only 7,492 of this case's 15,862 eligible rows were common to
+all methods. The lower common-row errors therefore do not establish accurate
+predictions on the extra rows then served by spline. The current guard prevents
+a spline store from serving when its shared linear prediction is unavailable;
+these historical own-row errors and coverage counts do not describe that
+guarded behavior.
+A retained-feature bounding box cannot guarantee accuracy for every workload
+inside it.
 
 Gains also vary on fully covered cases: the H200 MiniMax-M2.7 TP4 prefix favors
 linear over either two-knot policy. These previously inspected prefixes are
@@ -623,8 +640,10 @@ and linear-update behavior.
 These accuracy and timing measurements predate the move onto `main` at
 `a4a59dce4fcfce1ec223008831f3328b77b1a3ce`. They were not rerun for the integrated
 commit `ba4826ce8fe39771277c9e4ab91e2fbf184c5394`; the measured numerical kernels
-and sampler were unchanged by that integration. The tables report the original
-measurement, not a new benchmark of the integrated branch.
+and sampler were unchanged by that integration. Subsequent serving and readiness
+changes added the guard requiring a shared linear prediction. The tables
+report the original measurement, not a new benchmark of the integrated branch
+or the guarded behavior.
 
 Release timing used Rust 1.97.1 on macOS 26.6.2/arm64. Seven alternating
 measured pairs per case followed a warmup pair, with at least 30 ms per side.
@@ -655,6 +674,41 @@ there is no published immutable artifact bundle. The reported MAPE and timing
 tables therefore cannot be independently reproduced from this repository alone.
 The checked-in numerical and scheduling tests validate implementation behavior,
 not these measured accuracy or timing results.
+
+## Linear coverage guard validation
+
+A separate release replay compared the serving method at
+`d3f92e59ebd6a75477e06e9f68b9ba8ba2868f73` with the linear-availability guard on
+the same 15 prefixes: 163,540 input rows for each of periodic step 64 and
+adaptive 16/8/5%, using two knots per axis and retention capacity 64. Before
+each update, it evaluated the old prediction, guarded prediction, and shared
+linear prediction on the **same trained store state**.
+
+Every guarded query had exactly the same availability as its shared linear arm,
+and all remaining forecasts were bit-for-bit identical to the old serving path.
+The guard removed 7,043 periodic forecasts and 7,013 adaptive forecasts, leaving
+154,149 and 153,994 available forecasts, respectively. This reduces coverage;
+it does not change numerical predictions on the retained coverage. Each policy
+used its own sampler realization, so the two policies' available-row counts are
+not paired cohorts. These checks qualify the coverage guard, not prediction
+accuracy on an untouched holdout.
+
+Five paired release trials over all 15 prefixes measured raw-feature prediction
+plus update on cloned identical states, alternating old/new order. Input-weighted
+means of per-case trial medians were 8.3105 to 8.3142 µs/input for periodic
+(+0.045%) and 3.9408 to 3.9458 µs/input for adaptive (+0.129%). Aggregate trial cost ratios ranged
+0.999646–1.000726 and 0.999983–1.001280, respectively. These small differences
+are within local timing variation. The instrumented timings include per-update
+timer overhead and exclude cloning, destruction, parsing/feature extraction,
+Python/FFI, and full-engine costs. They do not replace the earlier benchmark's
+timing scope or establish an end-to-end speedup.
+
+The harness, input/source/binary hashes, and per-dataset results are private local
+artifacts under `work/spline_coverage_guard_20260930/`, outside the source commit.
+As with the earlier replay, these measurements cannot be independently reproduced
+from the repository alone. Checked-in Rust and Python regression tests cover
+spline-only abstention, component versus store readiness, and restoration of
+linear availability.
 
 ## Source map and validation anchors
 

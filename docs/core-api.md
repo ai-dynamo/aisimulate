@@ -348,12 +348,13 @@ default settings. A shared role-based correction space requires separate
 accuracy validation and is not accepted as a configuration value in this release.
 
 Use `regression_store_diagnostics()` for per-store counts/readiness. Summary
-readiness means at least one store has a usable fit; another cold store can still
-return `None`. Readiness does not guarantee coverage for every query: a ready
-spline store can return `None` outside retained bounds if its linear fallback
-is unavailable. `tune_with_fpms()` preserves the established FPM observation
-contract. Native construction still uses Python model compilation; estimator
-selection, regression, correction, and latency computation are owned by Rust.
+readiness means at least one store has a usable linear fit, including when
+spline fitting is selected; another cold store can still return `None`.
+Readiness does not guarantee coverage for every query: spline predictions require
+an available linear prediction for the same query. `tune_with_fpms()` preserves
+the established FPM observation contract. Native construction still uses Python
+model compilation; estimator selection, regression, correction, and latency
+computation are owned by Rust.
 
 ### Selecting linear or spline regression
 
@@ -463,21 +464,25 @@ excessive error once the rolling count and cooldown conditions are satisfied.
 Prediction queries and rejected observations do not advance the search clock. Coefficients
 continue updating between searches as retained samples are inserted or evicted.
 
-The spline is used only within the current retained samples' raw-feature bounds.
-Outside that box, or while the spline is unready, the model uses the linear fit
-trained on the same retained observations. Both paths keep the positive prediction
-floor. If the linear fit is unavailable, an out-of-bounds query returns `None`,
-even when the store is ready through its spline fit. This guard limits
-extrapolation; it does not guarantee accuracy on unseen
-workloads. The fit is additive across the two axes, without interaction terms.
+The spline is used only within the current retained samples' raw-feature bounds
+and only when the linear fit can predict the same query. Outside that box, or
+while the spline is unready, the model uses the linear fit trained on the same
+retained observations. Both paths keep the positive prediction floor. If the
+linear prediction is unavailable, the query returns `None`, even if a spline
+prediction is available inside retained bounds. This guard preserves the shared
+linear fit's prediction coverage and limits extrapolation; it does not guarantee
+accuracy on unseen workloads. The fit is additive across the two axes, without
+interaction terms.
 
 `regression_store_diagnostics()` adds a `spline` object only for spline stores:
 `initialized`, `ready`, `accepted_observations`, `knot_searches`,
 `last_search_observation`, `numerical_rebuilds`, and `batch_fallbacks`.
-The enclosing store is ready if either its linear or spline fit is usable.
-It can be ready through its linear fit while `spline.ready` is false, or ready
-through its spline while the linear fallback is unavailable. Readiness therefore
-does not promise predictions outside the spline's retained domain.
+The enclosing store is ready only when its shared linear fit is usable.
+It can be ready while `spline.ready` is false, using linear predictions during
+spline warmup or numerical unavailability. Conversely, `spline.ready` can be
+true while the enclosing store reports `ready: false`; no predictions are served
+until the shared linear fit is usable again. Spline component readiness describes
+its fit, independently of the guard applied to serving.
 `initialized` records that an initial search has run, even if its fit
 is unready. Search counts are separate from statistics rebuild/fallback counts.
 `numerical_rebuilds` includes configured periodic rebuilds and numerical recovery
