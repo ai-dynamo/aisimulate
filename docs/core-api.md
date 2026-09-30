@@ -360,7 +360,12 @@ computation are owned by Rust.
 
 Select the fit within `estimator_config.fpm_regression.fit`. The default remains
 the existing linear model. The alias `linear` normalizes to `standardized_nnls`
-in provenance and saved configuration. To select spline regression explicitly:
+in provenance and saved configuration. Evaluate spline for each deployment before
+enabling it: the MiniMax-M2.7 / H200 / vLLM / TP4 prefix in the
+[2026-09-25 comparison](fpm-recursive-regression.md#production-spline-validation-2026-09-25)
+had 0.87% MAPE with linear, 5.31% with periodic spline, and 1.63% with adaptive
+spline, so improved accuracy on other workloads does not imply a universal gain.
+To select spline regression explicitly:
 
 ```python
 config = ForwardPassPerfModelConfig(
@@ -390,7 +395,7 @@ config.estimation_mode = EstimationMode::FpmRegression;
 config.estimator_config.fpm_regression.fit.kind = RegressionFitKind::Spline;
 config.estimator_config.fpm_regression.fit.spline = Some(SplineFitConfig {
     knots_per_axis: 2,
-    search: SplineSearchConfig::Periodic { step: 64 },
+    search: SplineSearchConfig::periodic(64),
 });
 let model = ForwardPassPerfModel::best_available(config)?;
 ```
@@ -403,6 +408,19 @@ are appropriate. Full `ForwardPassRegressionStoreDiagnostics` literals must
 likewise provide the new `spline` field (`None` for linear stores). That
 diagnostics type does not implement `Default`. Existing serialized linear
 configurations and diagnostics continue to omit `spline` when it is `None`.
+
+The new `SplineSearchConfig` enum, its policy variants, and
+`ForwardPassSplineDiagnostics` are `#[non_exhaustive]` so additional policies or
+fields can be introduced without breaking callers that follow the supported
+construction and matching patterns. Construct search policies with
+`SplineSearchConfig::periodic(step)` or
+`SplineSearchConfig::adaptive(window, trigger, tolerance, absolute_tolerance_ms, cooldown)`.
+These constructors retain the supplied values; the canonical model constructor
+resolves and validates the configuration. External matches need a wildcard arm
+for future policies and `..` when destructuring variant fields. Read spline
+diagnostics returned by the model instead of constructing diagnostic literals;
+destructuring them also requires `..`. JSON/YAML representation and defaults are
+unchanged.
 
 Rust expands omitted spline controls to:
 

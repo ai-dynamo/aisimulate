@@ -19,6 +19,8 @@ use recursive::RecursiveFit;
 
 /// Per-store spline state. Readiness describes the spline component; a store
 /// can already serve its linear fallback while this component is warming up.
+/// Fields may be added; downstream destructuring must include `..`.
+#[non_exhaustive]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ForwardPassSplineDiagnostics {
     pub initialized: bool,

@@ -150,13 +150,34 @@ impl Default for SplineFitConfig {
 
 /// Counts are per workload store and advance on accepted observations, not
 /// prediction calls or insert/evict mutations. Tolerance is a fraction (0.05=5%).
+/// Use [`Self::periodic`] or [`Self::adaptive`] to construct a policy. Policies
+/// and their controls may grow; downstream matches must allow new variants
+/// and fields.
+///
+/// ```compile_fail
+/// use aisimulate_core::SplineSearchConfig;
+/// // Construct policies through their methods, leaving room for new controls.
+/// let search = SplineSearchConfig::Periodic { step: 64 };
+/// ```
+///
+/// ```compile_fail
+/// use aisimulate_core::SplineSearchConfig;
+/// // A wildcard arm is required for future search policies.
+/// match SplineSearchConfig::default() {
+///     SplineSearchConfig::Periodic { .. } => (),
+///     SplineSearchConfig::Adaptive { .. } => (),
+/// }
+/// ```
+#[non_exhaustive]
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum SplineSearchConfig {
+    #[non_exhaustive]
     Periodic {
         #[serde(default = "default_spline_step")]
         step: usize,
     },
+    #[non_exhaustive]
     Adaptive {
         #[serde(default = "default_spline_window")]
         window: usize,
@@ -169,6 +190,46 @@ pub enum SplineSearchConfig {
         #[serde(default = "default_spline_step")]
         cooldown: usize,
     },
+}
+
+impl SplineSearchConfig {
+    /// Search at accepted-observation counts divisible by `step`, after the
+    /// initial fit. The default period is 64 accepted observations per store.
+    ///
+    /// This only constructs configuration. `step` must be positive; the
+    /// canonical [`ForwardPassPerfModel::best_available`](crate::ForwardPassPerfModel::best_available)
+    /// constructor validates it before selecting an estimator.
+    pub const fn periodic(step: usize) -> Self {
+        Self::Periodic { step }
+    }
+
+    /// Search when `trigger` bad observations occur among the last `window`
+    /// monitored observations and `cooldown` accepted observations have elapsed
+    /// since the last search. Counts are per workload store. An error is bad
+    /// when it exceeds both `tolerance * actual_latency` and
+    /// `absolute_tolerance_ms`. `tolerance` is a fraction (0.05 means 5%); the
+    /// absolute floor is in milliseconds. A search clears the monitored window.
+    ///
+    /// This only constructs configuration. The canonical
+    /// [`ForwardPassPerfModel::best_available`](crate::ForwardPassPerfModel::best_available)
+    /// constructor requires positive `window`, `trigger`, and `cooldown`,
+    /// `trigger <= window`, finite positive `tolerance`, and finite nonnegative
+    /// `absolute_tolerance_ms`, before selecting an estimator.
+    pub const fn adaptive(
+        window: usize,
+        trigger: usize,
+        tolerance: f64,
+        absolute_tolerance_ms: f64,
+        cooldown: usize,
+    ) -> Self {
+        Self::Adaptive {
+            window,
+            trigger,
+            tolerance,
+            absolute_tolerance_ms,
+            cooldown,
+        }
+    }
 }
 
 const fn default_spline_step() -> usize {
