@@ -29,40 +29,36 @@ STATE = SimpleNamespace(
     options=None,
     armed=None,
     done=None,
-    executions=0,
-    last_mode=None,
-    last_descriptor=None,
+    full_replays=0,
+    last_full_tokens=None,
     error=None,
 )
 
 
 def register() -> None:
-    """vLLM general-plugin entry point (runs in every vLLM process)."""
+    """vLLM general-plugin entry point (runs in every vLLM process).
+
+    vLLM 0.30.0 workers use the V2 model runner (v1/worker/gpu_worker.py
+    ``use_v2_model_runner``; v1/worker/gpu/model_runner.py). Its
+    ``capture_model`` drives ``ModelCudaGraphManager.capture`` (FULL decode
+    graphs), so the probe is installed immediately before it.
+    """
     if not os.environ.get("GLM53_W4_MANIFEST"):
         return
-    from vllm.v1.worker import gpu_model_runner as runner_module
+    from vllm.v1.worker.gpu import model_runner as runner_module
 
     runner_class = runner_module.GPUModelRunner
     if getattr(runner_class, "_glm53_w4_patched", False):
         return
     original_capture = runner_class.capture_model
 
-    def capture_model(self):
-        # Install before the framework captures its decode graphs so the
-        # module's capture-time arguments and forward context are recorded.
+    def capture_model(self, *args, **kwargs):
+        if kwargs.get("profile_only"):
+            return original_capture(self, *args, **kwargs)
         install_probe(self)
-        return original_capture(self)
+        return original_capture(self, *args, **kwargs)
 
     runner_class.capture_model = capture_model
-    original_context = runner_module.set_forward_context
-
-    def set_forward_context(*args, **kwargs):
-        STATE.executions += 1
-        STATE.last_mode = kwargs.get("cudagraph_runtime_mode")
-        STATE.last_descriptor = kwargs.get("batch_descriptor")
-        return original_context(*args, **kwargs)
-
-    runner_module.set_forward_context = set_forward_context
     runner_class._glm53_w4_patched = True
 
 
@@ -80,7 +76,18 @@ def install_probe(model_runner) -> None:
     layer = _layer(model_runner, manifest["layer_id"])
     attention = layer.self_attn
     validate_attention(attention, manifest, model_runner)
-    STATE.probe = Probe(torch, attention, model_runner, manifest)
+    if STATE.probe is None:
+        STATE.probe = Probe(torch, attention, model_runner, manifest)
+        manager = model_runner.cudagraph_manager
+        replay = manager.run_fullgraph
+
+        def run_fullgraph(desc, *args, **kwargs):
+            # Witness of the framework's own FULL decode replay.
+            STATE.full_replays += 1
+            STATE.last_full_tokens = int(desc.num_tokens)
+            return replay(desc, *args, **kwargs)
+
+        manager.run_fullgraph = run_fullgraph
 
 
 def validate_attention(attention, manifest, model_runner) -> None:
@@ -101,8 +108,8 @@ def validate_attention(attention, manifest, model_runner) -> None:
         "index_kpool": (indexer.index_kpool, expected["index_pool"]),
         "o_proj.reduce_results": (bool(attention.o_proj.reduce_results), expected["tp_size"] > 1),
         "cudagraph_mode": (
-            str(model_runner.compilation_config.cudagraph_mode),
-            "CUDAGraphMode.FULL_DECODE_ONLY",
+            model_runner.vllm_config.compilation_config.cudagraph_mode.name,
+            "FULL_DECODE_ONLY",
         ),
     }
     for name, (actual, wanted) in checks.items():
@@ -148,15 +155,14 @@ class Probe:
 
     def forward(self, hidden_states, positions):
         torch = self.torch
-        from vllm.config import CUDAGraphMode
         from vllm.forward_context import get_forward_context, is_forward_context_available
 
         if torch.cuda.is_current_stream_capturing() and is_forward_context_available():
-            context = get_forward_context()
-            if context.cudagraph_runtime_mode == CUDAGraphMode.FULL:
-                self.captured[int(hidden_states.shape[0])] = SimpleNamespace(
-                    hidden_states=hidden_states, positions=positions, context=context
-                )
+            # ModelCudaGraphManager.capture runs the FULL-graph forward under
+            # torch.cuda.graph with the capture-time attention metadata.
+            self.captured[int(hidden_states.shape[0])] = SimpleNamespace(
+                hidden_states=hidden_states, positions=positions, context=get_forward_context()
+            )
             return self.original(hidden_states, positions)
         target = STATE.armed
         if target is None or target["phase"] != "context" or not isinstance(get_forward_context().attn_metadata, dict):
@@ -208,23 +214,16 @@ class Probe:
         STATE.done = target["target_id"]
         return self.original(hidden_states, positions)
 
-    def measure_decode(self, target: dict) -> dict:
+    def measure_decode(self, target: dict, replays_before: int) -> dict:
         torch = self.torch
-        from vllm.config import CUDAGraphMode
         from vllm.forward_context import override_forward_context
 
         batch = target["batch_size"]
-        sizes = sorted(self.model_runner.compilation_config.cudagraph_capture_sizes)
-        padded = min(size for size in sizes if size >= batch)
-        descriptor = STATE.last_descriptor
-        if (
-            STATE.last_mode != CUDAGraphMode.FULL
-            or descriptor is None
-            or descriptor.num_tokens != padded
-            or not descriptor.uniform
-        ):
+        padded = STATE.last_full_tokens
+        if STATE.full_replays != replays_before + 1 or padded is None or padded < batch:
             raise RuntimeError(
-                f"real decode ran {STATE.last_mode}/{descriptor}, not the FULL graph for {padded} tokens"
+                f"real decode did not replay one FULL graph for batch {batch}: "
+                f"{STATE.full_replays - replays_before} replays, last {padded} tokens"
             )
         record = self.captured.get(padded)
         if record is None:
@@ -279,8 +278,8 @@ def rpc_arm(worker, target: dict | None) -> None:
 
 
 def rpc_status(worker) -> dict:
-    return {"done": STATE.done, "error": STATE.error, "executions": STATE.executions}
+    return {"done": STATE.done, "error": STATE.error, "full_replays": STATE.full_replays}
 
 
-def rpc_measure_decode(worker, target: dict) -> dict:
-    return STATE.probe.measure_decode(target)
+def rpc_measure_decode(worker, target: dict, replays_before: int) -> dict:
+    return STATE.probe.measure_decode(target, replays_before)
