@@ -114,7 +114,13 @@ Existing Kimi-K3 KDA rows (12/24/48/96 heads) never cover GLM's 16/32/64-head
 shards.
 
 The pinned runtimes are data coordinates `vllm/0.30.0+glm53tail.eb4704514fdf`
-and `sglang/0.5.20` under `data/gb300/<family>/<backend>/<version>/`. The GLM
+and `sglang/0.5.20`. Like the DeepSeek-V4.1 databases, GLM Ops data lives in a
+separate systems root, `systems/profiles/glm53flash/` (its own `gb300.yaml`
+and `data/gb300/<family>/<backend>/<version>/`), selected by passing that
+root as `systems_paths` with the explicit `backend_version`. It is not placed
+in the general `systems/data` tree, so the fleet `current`/`previous`/`next`
+version slots, backward fill, support matrices and every other model's
+defaults are unchanged. The GLM
 attention table uses the DeepSeek-V4.1 module schema (`component=attention`,
 canonical sorted `geometry` JSON of the `Glm53Attention` body without
 `name`/`measured`, `batch_size`, `prefix`, `x` = new tokens for prefill or
