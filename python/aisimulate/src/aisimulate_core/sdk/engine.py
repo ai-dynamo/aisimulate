@@ -539,6 +539,21 @@ def compile_engine(
     interpolation = fpm_interpolation
     deployment = None
     if profile is not None:
+        options = json.loads(
+            aisimulate_core.RustForwardPassPerfModel._normalize_fpm_options(
+                json.dumps({} if fpm_options is None else fpm_options),
+                fmha_quant_mode,
+                comm_quant_mode,
+                True,
+            )
+        )
+        options_path = options["fpm_parquet_path"]
+        if options_path is not None:
+            if fpm_parquet_path is not None and fpm_parquet_path != options_path:
+                raise InvalidEngineConfigurationError("conflicting fpm_parquet_path and fpm_options.fpm_parquet_path")
+            if forward_model != "fpm":
+                raise InvalidEngineConfigurationError("fpm_parquet_path requires forward_model='fpm'")
+            fpm_parquet_path = options_path
         if dcp_size is not None:
             raise InvalidEngineConfigurationError("fpm_profile does not describe recorded DCP identity")
         if nextn or speculation is not None:

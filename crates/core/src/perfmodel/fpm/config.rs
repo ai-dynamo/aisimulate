@@ -243,6 +243,9 @@ impl ForwardPassPerfModelConfig {
         self.resolve_prefill_graph_profile()?;
         self.validate()?;
         let registered = if self.fpm_profile.is_some() {
+            self.estimator_config
+                .fpm_interpolation
+                .validate_profile_options()?;
             if self.dcp.is_some() {
                 return Err(invalid_config(
                     "fpm_profile does not describe recorded DCP identity",

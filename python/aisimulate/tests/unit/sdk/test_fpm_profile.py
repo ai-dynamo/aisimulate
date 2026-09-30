@@ -1114,3 +1114,24 @@ def test_registered_profile_outer_auto_keeps_op_level_priority_with_inner_direct
     assert provenance["selected_estimation_mode"] == "op_level"
     assert provenance["selection_failures"] == []
     assert provenance["config"]["estimator_config"]["fpm_interpolation"]["method"] == "direct"
+
+
+@pytest.mark.parametrize("options", [{"text_only": True}, {"unrecorded_quant_modes": ["fmha"]}])
+def test_profile_rejects_unsupported_fpm_options_at_canonical_and_compile_boundaries(profile_dict, options):
+    config = _request(profile_dict, "direct")
+    config["estimator_config"] = {"fpm_interpolation": {"method": "direct", **options}}
+    with pytest.raises(ValueError, match="fpm_profile does not support"):
+        _normalize(config)
+    with pytest.raises(ValueError, match="fpm_profile does not support"):
+        engine.compile_engine(
+            "test/unknown-decoder",
+            "test_gpu",
+            "vllm",
+            "0.25.1",
+            tp_size=2,
+            moe_tp_size=2,
+            forward_model="fpm",
+            fpm_profile=profile_dict,
+            fpm_interpolation="direct",
+            fpm_options=options,
+        )
