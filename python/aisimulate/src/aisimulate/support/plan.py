@@ -13,6 +13,8 @@ import stat
 import tempfile
 from collections.abc import Iterator
 from contextlib import contextmanager
+from importlib.resources import files
+from importlib.util import find_spec, module_from_spec
 from pathlib import Path
 from typing import Any
 
@@ -187,7 +189,11 @@ def _commands(request: SupportRequest, root: Path, recommendation_names: list[st
 
 
 def _plan_documents(request: SupportRequest, root: Path) -> tuple[dict[str, Any], dict[Path, bytes]]:
-    source_spec = Path(__file__).resolve().parents[2] / "aisimulate_core/systems" / f"{request.identity.gpu}.yaml"
+    package_spec = find_spec("aisimulate_core")
+    if package_spec is None:
+        raise ValueError("aisimulate_core package resources are required for packaged system specifications")
+    # Consult the resource loader without executing the package's native imports.
+    source_spec = files(module_from_spec(package_spec)) / "systems" / f"{request.identity.gpu}.yaml"
     if not source_spec.is_file():
         raise ValueError(
             f"GPU {request.identity.gpu!r} has no packaged system specification; "
@@ -512,6 +518,21 @@ def check_plan(request: SupportRequest, root: Path, *, allow_missing: bool = Fal
     verify_finalized_data(saved, root)
 
 
+def _check_interrupted_plan(request: SupportRequest, root: Path, documents: dict[Path, bytes]) -> None:
+    """Require intact inputs before completing a plan whose manifest was never written."""
+
+    try:
+        saved = SupportRequest.from_yaml(root / "request.yaml")
+    except ValueError as exc:
+        raise ValueError(f"saved request in {root} was modified or cannot be read") from exc
+    if saved != request:
+        raise ValueError(f"saved request identity in {root} differs from the requested plan")
+    for relative, content in documents.items():
+        destination = root / relative
+        if destination.exists() and (not destination.is_file() or destination.read_bytes() != content):
+            raise ValueError(f"generated plan input {destination} was modified; choose a new output directory")
+
+
 def create_plan(request: SupportRequest, output_dir: str | Path, *, overwrite: bool = False) -> dict[str, Any]:
     """Write a plan or safely refresh validation inputs for the same collection."""
 
@@ -524,7 +545,10 @@ def create_plan(request: SupportRequest, output_dir: str | Path, *, overwrite: b
         if nonempty:
             if not overwrite:
                 raise ValueError(f"output directory {root} is nonempty; use overwrite only for the same collection")
-            check_plan(request, root, allow_missing=True)
+            if (root / "support-plan.json").exists():
+                check_plan(request, root, allow_missing=True)
+            else:
+                _check_interrupted_plan(request, root, documents)
         # Inspect every generated file before writing any file. Existing data,
         # checkpoints and results are never replaced or deleted. Only verified
         # generated inputs may change after an evaluation-only request edit.
@@ -535,7 +559,6 @@ def create_plan(request: SupportRequest, output_dir: str | Path, *, overwrite: b
                 raise ValueError(f"refusing symlinked plan output {destination}")
             if not destination.exists() or destination.read_bytes() != content:
                 pending[relative] = content
-        (root / "systems/data").mkdir(parents=True, exist_ok=True)
         for relative, content in pending.items():
             destination = root / relative
             destination.parent.mkdir(parents=True, exist_ok=True)
@@ -552,4 +575,5 @@ def create_plan(request: SupportRequest, output_dir: str | Path, *, overwrite: b
                 finally:
                     if temporary is not None:
                         temporary.unlink(missing_ok=True)
+        (root / "systems/data").mkdir(parents=True, exist_ok=True)
     return plan

@@ -975,7 +975,9 @@ def test_serving_error_limits_survive_preparation_assessment_and_recheck(quality
         (1.5, 0.2, 0.5, "ttft"),
         (1.000001, 0.0, 0.00001, "ttft"),
         (0.48, 1.0, 1.1, "ttft"),
-        (3.4, 1.0, 1.1, "output_throughput"),
+        # Two 30 ms requests plus 100 ms idle give 160 ms baseline; at
+        # 3.8x request duration, (2 * 30 * 3.8 + 100) / 160 - 1 = 1.05.
+        (3.8, 1.0, 1.1, "output_throughput"),
     ],
 )
 def test_serving_threshold_reassessment_preserves_measurements(

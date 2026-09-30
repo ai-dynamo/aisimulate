@@ -284,6 +284,95 @@ def test_unknown_profile_auto_compiles_without_operations(profile_dict, direct_c
         assert op["weight_bytes"] == 100
 
 
+@pytest.mark.parametrize("entry_point", [_normalize, RustForwardPassPerfModel.best_available])
+@pytest.mark.parametrize("mode", ["fmha", "comm"])
+def test_profile_precision_cannot_be_selected_as_unrecorded(profile_dict, monkeypatch, entry_point, mode):
+    monkeypatch.setattr(engine, "compile_engine", _fail_graph)
+    request = _request(profile_dict, estimation_mode="auto", fallback_policy="allow")
+    request["estimator_config"]["fpm_interpolation"]["unrecorded_quant_modes"] = [mode]
+    with pytest.raises(ValueError, match="explicit quantization override"):
+        entry_point(request)
+
+
+@pytest.mark.parametrize("dcp", [1, 2])
+@pytest.mark.parametrize("entry_point", [_normalize, RustForwardPassPerfModel.best_available])
+def test_profile_rejects_unrepresented_recorded_dcp(profile_dict, monkeypatch, dcp, entry_point):
+    monkeypatch.setattr(engine, "compile_engine", _fail_graph)
+    with pytest.raises(ValueError, match="does not yet declare recorded DCP identity"):
+        entry_point(_request(profile_dict, dcp=dcp, estimation_mode="auto", fallback_policy="allow"))
+
+
+def test_direct_compilation_preserves_text_only_and_external_data_controls(profile_dict, direct_compile):
+    options = {"text_only": True, "fpm_parquet_path": "/external/profile.parquet"}
+    spec = json.loads(
+        engine.compile_engine(
+            "test/unknown-decoder",
+            "test_gpu",
+            "vllm",
+            "0.25.1",
+            tp_size=2,
+            moe_tp_size=2,
+            moe_ep_size=1,
+            forward_model="fpm",
+            fpm_profile=profile_dict,
+            fpm_interpolation="direct",
+            fpm_options=options,
+        )
+    )
+    controls = json.loads(spec["engine"]["extra"]["estimator_config"])["fpm_interpolation"]
+    assert controls["method"] == "direct"
+    assert controls["text_only"] is True
+    assert controls["fpm_parquet_path"] == spec["engine"]["fpm_parquet_path"] == options["fpm_parquet_path"]
+    assert spec["context_ops"][0]["FpmForward"]["sol_ops"] == []
+
+
+@pytest.mark.parametrize(
+    "options,overrides,error",
+    [
+        ({"unrecorded_quant_modes": ["fmha"]}, {}, "explicit quantization override"),
+        ({"unrecorded_quant_modes": ["comm"]}, {}, "explicit quantization override"),
+        ({}, {"dcp_size": 2}, "does not yet declare recorded DCP identity"),
+        ({"method": "sol"}, {}, "conflicting fpm_interpolation and fpm_options.method"),
+    ],
+)
+def test_direct_compilation_validates_options_before_short_circuit(
+    profile_dict, direct_compile, options, overrides, error
+):
+    with pytest.raises(ValueError, match=error):
+        engine.compile_engine(
+            "test/unknown-decoder",
+            "test_gpu",
+            "vllm",
+            "0.25.1",
+            tp_size=2,
+            moe_tp_size=2,
+            moe_ep_size=1,
+            forward_model="fpm",
+            fpm_profile=profile_dict,
+            fpm_interpolation="direct",
+            fpm_options=options,
+            **overrides,
+        )
+
+
+@pytest.mark.parametrize("control", ["moe_kernel_source", "decode_workload_distribution", "prefill_graph_profile"])
+def test_profile_compilation_rejects_op_level_controls_before_graph_construction(profile_dict, direct_compile, control):
+    with pytest.raises(ValueError, match="FPM profiles do not support"):
+        engine.compile_engine(
+            "test/unknown-decoder",
+            "test_gpu",
+            "vllm",
+            "0.25.1",
+            tp_size=2,
+            moe_tp_size=2,
+            moe_ep_size=1,
+            forward_model="fpm",
+            fpm_profile=profile_dict,
+            fpm_interpolation="direct",
+            **{control: "explicit-selection"},
+        )
+
+
 def test_direct_json_transport_preserves_all_identity_fields(profile_dict, direct_compile):
     profile_dict["deployments"][0].update(moe_backend="pinned_moe", attention_backend="pinned_attention")
     spec = direct_compile(json.dumps(profile_dict), fpm_interpolation="direct")
@@ -1059,7 +1148,14 @@ def test_legacy_selector_migrates_to_nested_control(native_profile_config):
 def test_saved_profile_compiler_controls_merge_with_caller_options(native_profile_config):
     compile_config, _ = native_profile_config
     saved = json.loads(json.dumps(compile_config()))
-    assert json.loads(saved["extra"]["estimator_config"]) == {"fpm_interpolation": {"method": "direct"}}
+    assert json.loads(saved["extra"]["estimator_config"]) == {
+        "fpm_interpolation": {
+            "method": "direct",
+            "text_only": False,
+            "unrecorded_quant_modes": [],
+            "fpm_parquet_path": None,
+        }
+    }
     canonical = ForwardPassPerfModelConfig.from_legacy_engine_config(
         saved,
         "prefill",

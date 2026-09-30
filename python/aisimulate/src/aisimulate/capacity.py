@@ -1,16 +1,19 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""AISimulate-owned AIC KV-capacity materialization.
+"""AISimulate memory estimation and AIC KV-capacity materialization.
 
 Both the engine-only and Dynamo replay compositions use this module so their
 rank-local KV capacity is derived from the same defaults and AIC argument set.
+State sizing is re-exported from the shared estimator SDK.
 """
 
 from __future__ import annotations
 
 from functools import cache
 from typing import Any
+
+from aisimulate_core.sdk.state_memory import estimate_state_cache as estimate_state_cache
 
 DEFAULT_BACKEND_VERSIONS = {
     "vllm": "0.19.0",
@@ -144,7 +147,7 @@ def materialize_aic_num_gpu_blocks(
             ):
                 if resolved[source] is not None:
                     lowered[target] = resolved[source]
-            for name in ("moe_backend", "attention_backend", "enable_eplb", "wideep_num_slots"):
+            for name in ("moe_backend", "moe_kernel_source", "attention_backend", "enable_eplb", "wideep_num_slots"):
                 if resolved.get(name) is not None and not (name == "enable_eplb" and resolved[name] is False):
                     lowered[f"aic_{name}"] = resolved[name]
             if resolved["systems_paths"]:
@@ -170,6 +173,10 @@ def materialize_aic_num_gpu_blocks(
         return finish_lowering(lowered)
     if lowered.get("num_gpu_blocks") is not None:
         return finish_lowering(lowered)
+    if canonical_result is not None and (resolved.get("dcp") or 1) > 1:
+        raise ValueError(
+            "DCP FPM replay requires explicit KV block capacity; automatic DCP/hybrid sizing is unsupported"
+        )
     backend = lowered.get("aic_backend")
     if backend is None:
         return finish_lowering(lowered)
@@ -225,7 +232,7 @@ def materialize_aic_num_gpu_blocks(
         comm_dtype=lowered.get("aic_comm_dtype"),
         **{
             name: lowered[f"aic_{name}"]
-            for name in ("moe_backend", "attention_backend", "enable_eplb", "wideep_num_slots")
+            for name in ("moe_backend", "moe_kernel_source", "attention_backend", "enable_eplb", "wideep_num_slots")
             if lowered.get(f"aic_{name}") is not None
         },
         systems_path=capacity_systems_path,
@@ -333,6 +340,7 @@ def estimate_num_gpu_blocks(
     kv_cache_dtype: str | None = None,
     comm_dtype: str | None = None,
     moe_backend: str | None = None,
+    moe_kernel_source: str | None = None,
     attention_backend: str | None = None,
     enable_eplb: bool = False,
     wideep_num_slots: int | None = None,
@@ -410,6 +418,7 @@ def estimate_num_gpu_blocks(
                 name: value
                 for name, value in (
                     ("moe_backend", moe_backend),
+                    ("moe_kernel_source", moe_kernel_source),
                     ("attention_backend", attention_backend),
                     ("enable_eplb", enable_eplb),
                     ("wideep_num_slots", wideep_num_slots),

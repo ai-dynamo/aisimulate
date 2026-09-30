@@ -749,6 +749,9 @@ def test_plan_carries_explicit_formal_observer_flags_and_execution_requires_acce
         shutil.copytree(Path(manifest["observations_index"]).parent, target)
         (root / "fpm-checkpoint").mkdir(exist_ok=True)
         bindings = _formal_bindings(target / "observations.json")
+        metadata = root / "synthetic-publication.metadata.json"
+        _write(metadata, {"backend_version": request.identity.framework_version})
+        bindings["database"] = {"status": "passed", "metadata": str(metadata)}
         _write(
             root / "fpm-checkpoint" / "fpm_forward.json",
             {"runtime_observations": str(target / "observations.json"), **bindings},

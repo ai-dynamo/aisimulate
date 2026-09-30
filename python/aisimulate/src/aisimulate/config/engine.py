@@ -1,4 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 # SPDX-License-Identifier: Apache-2.0
 
 """Typed engine input for prediction and recommendation."""
@@ -18,6 +19,7 @@ from .common import (
     NumericRange,
     StrictModel,
     SystemsPath,
+    SystemsRoot,
     is_active_engine_model_control,
     requested_backend_version,
 )
@@ -75,13 +77,17 @@ class AFDSearchRecommendationConfig(StrictModel):
     max_candidates: PositiveInt = 10_000
 
 
-class ParallelismPredictionConfig(StrictModel):
+class ParallelismPresetConfig(StrictModel):
     replicas: PositiveInt = 1
     tensor: PositiveInt = 1
     pipeline: PositiveInt = 1
     attention_data: PositiveInt = 1
     moe_tensor: PositiveInt = 1
     moe_expert: PositiveInt = 1
+
+
+class ParallelismPredictionConfig(ParallelismPresetConfig):
+    decode_context: Annotated[int, Field(strict=True, gt=0)] | None = None
 
 
 class SchedulerPredictionConfig(StrictModel):
@@ -150,7 +156,7 @@ def manual_block_bytes(block_size: int | None, bytes_per_token: int | str) -> in
 
 
 class StateCacheConfig(StrictModel):
-    """Only recurrent-state storage belongs here; token geometry lives on kv_cache."""
+    """One complete state copy per rank; token pool geometry lives on kv_cache."""
 
     bytes_per_request: PositiveU64
 
@@ -161,14 +167,39 @@ class StateCacheConfig(StrictModel):
         return (self.bytes_per_request - 1) // block_bytes + 1
 
 
+# Accepted overrides adapted from vLLM's MambaDType (Apache-2.0); modified for this schema.
+# https://github.com/vllm-project/vllm/blob/a474da28131f61684849b31e29af0eebaaedc383/vllm/config/cache.py
+MambaCacheDtype = Literal["auto", "float16", "float32"]
+
+
+class StateCachePredictionConfig(StrictModel):
+    """Sizing input; only resolved bytes cross the native engine boundary."""
+
+    bytes_per_request: PositiveU64 | None = None
+    mamba_cache_dtype: MambaCacheDtype = "auto"
+
+    def state_blocks(self, block_size: int, bytes_per_token: int) -> int:
+        if self.bytes_per_request is None:
+            raise ValueError("state_cache size must be resolved before block rounding")
+        return StateCacheConfig(bytes_per_request=self.bytes_per_request).state_blocks(block_size, bytes_per_token)
+
+
 class KvCachePredictionConfig(StrictModel):
     block_size: PositiveInt | None = None
+    prefix_match_unit: PositiveU64 | None = None
     prefix_caching: bool = True
     bytes_per_token: KvBytesPerToken = "auto"
     capacity: KvCapacityPredictionConfig = Field(default_factory=KvCapacityPredictionConfig)
     host_offload: HostOffloadConfig | None = None
     g3_offload: G3OffloadConfig | None = None
-    state_cache: StateCacheConfig | None = None
+    state_cache: StateCachePredictionConfig | None = None
+
+    @field_validator("state_cache", mode="before")
+    @classmethod
+    def _accept_resolved_state_config(cls, value: Any) -> Any:
+        if isinstance(value, StateCacheConfig):
+            return value.model_dump()
+        return value
 
     @model_validator(mode="after")
     def _validate_g3(self):
@@ -178,20 +209,32 @@ class KvCachePredictionConfig(StrictModel):
 
     @model_validator(mode="after")
     def _validate_manual_geometry(self) -> KvCachePredictionConfig:
-        if self.capacity.bytes is not None or self.state_cache is not None:
-            block_bytes = manual_block_bytes(self.block_size, self.bytes_per_token)
+        infer_state = self.state_cache is not None and self.state_cache.bytes_per_request is None
+        if self.prefix_match_unit is not None:
+            if self.state_cache is None:
+                raise ValueError("prefix_match_unit currently requires state_cache")
+            if not infer_state and (self.block_size is None or self.block_size % self.prefix_match_unit):
+                raise ValueError("prefix_match_unit must be a positive divisor of block_size")
+        if self.state_cache is not None:
             if self.capacity.type != "fixed":
                 raise ValueError("state_cache requires fixed capacity (blocks or bytes)")
+            if self.host_offload is not None:
+                raise ValueError("state_cache supports G1 only; host_offload is not supported")
+            if self.g3_offload is not None:
+                raise ValueError("state_cache supports G1 only; g3_offload is not supported")
+        if infer_state:
+            # Capacity and prefix alignment use the backend's resolved block size.
+            return self
+        if self.capacity.bytes is not None or self.state_cache is not None:
+            block_bytes = manual_block_bytes(self.block_size, self.bytes_per_token)
             blocks = self.capacity.blocks if self.capacity.blocks is not None else self.capacity.bytes // block_bytes
             if not 0 < blocks <= (1 << 64) - 1:
                 raise ValueError("fixed KV capacity must fit at least one block within u64")
             if self.state_cache is not None:
+                if self.block_size < 2:
+                    raise ValueError("state_cache requires block_size at least two for vLLM")
                 if blocks < self.state_cache.state_blocks(self.block_size, self.bytes_per_token) + 1:
                     raise ValueError("state_cache capacity must fit one token block and one request state")
-                if self.host_offload is not None:
-                    raise ValueError("state_cache supports G1 only; host_offload is not supported")
-                if self.g3_offload is not None:
-                    raise ValueError("state_cache supports G1 only; g3_offload is not supported")
         return self
 
 
@@ -214,13 +257,19 @@ class NgramSpeculationConfig(StrictModel):
 
 
 class TimingConfig(StrictModel):
+    gemm_quant_mode: str | None = None
+    moe_quant_mode: str | None = None
+    fmha_quant_mode: str | None = None
+    kvcache_quant_mode: str | None = None
+    comm_quant_mode: str | None = None
+    attention_backend: str | None = None
     type: Literal["default", "fixed", "polynomial"] = "default"
     forward_model: Literal["op_level", "fpm"] = Field(default="op_level", exclude=True)
     fpm_parquet_path: str | None = None
     estimation_mode: Literal["auto", "op_level", "fpm_interpolation", "fpm_regression"] | None = None
     fallback_policy: Literal["deny", "allow"] | None = None
     estimator_config: dict[str, Any] | None = None
-    systems_paths: list[str] | None = Field(default=None, min_length=1)
+    systems_paths: list[SystemsRoot] | None = Field(default=None, min_length=1)
     database_mode: Literal["SILICON", "HYBRID", "EMPIRICAL", "SOL"] | None = None
     transfer_policy: str | list[str] | None = None
 
@@ -245,6 +294,18 @@ class TimingConfig(StrictModel):
 
     @model_validator(mode="after")
     def _validate_timing(self) -> TimingConfig:
+        if self.type != "default" and any(
+            getattr(self, field) is not None
+            for field in (
+                "gemm_quant_mode",
+                "moe_quant_mode",
+                "fmha_quant_mode",
+                "kvcache_quant_mode",
+                "comm_quant_mode",
+                "attention_backend",
+            )
+        ):
+            raise ValueError("quantization and backend identity require default timing")
         if self.estimation_mode == "fpm_interpolation":
             self.forward_model = "fpm"
         elif self.estimation_mode == "op_level":
@@ -323,6 +384,7 @@ class EstimatorPolicyConfig(StrictModel):
     enable_eplb: bool = Field(default=False, strict=True)
     wideep_num_slots: PositiveInt | None = None
     moe_backend: str | None = None
+    moe_kernel_source: str | None = None
     attention_backend: str | None = None
     gemm_quant_mode: str | None = None
     moe_quant_mode: str | None = None
@@ -355,7 +417,7 @@ class EstimatorPolicyConfig(StrictModel):
 
     database_mode: Literal["SILICON", "HYBRID", "EMPIRICAL", "SOL"] = "SILICON"
     transfer_policy: str | list[str] | None = None
-    systems_paths: list[str] | None = None
+    systems_paths: list[SystemsRoot] | None = Field(default=None, min_length=1)
     systems_path: SystemsPath | None = Field(default=None, exclude=True)
     estimation_mode: Literal["auto", "op_level", "fpm_interpolation", "fpm_regression"] = "auto"
     fallback_policy: Literal["deny", "allow"] = "deny"
@@ -373,15 +435,6 @@ class EstimatorPolicyConfig(StrictModel):
     @classmethod
     def _normalize_database_mode(cls, value):
         return value.upper() if isinstance(value, str) else value
-
-    @field_validator("systems_paths")
-    @classmethod
-    def _nonempty_system_roots(cls, value):
-        if value is None:
-            return value
-        if not value or any(not path.strip() for path in value):
-            raise ValueError("systems_paths must contain at least one nonempty root")
-        return value
 
     @model_validator(mode="after")
     def _supported_estimator_policies(self):
@@ -506,7 +559,7 @@ ParallelDomain = PositiveInt | Choices[PositiveInt] | IntegerRange
 
 
 class ParallelismRecommendationConfig(StrictModel):
-    preset: Literal["default", False] | list[ParallelismPredictionConfig] | dict[str, Any] = "default"
+    preset: Literal["default", False] | list[ParallelismPresetConfig] | dict[str, Any] = "default"
     replicas: ParallelDomain | None = None
     tensor: ParallelDomain | None = None
     pipeline: ParallelDomain | None = None
@@ -615,6 +668,25 @@ class WorkerRecommendationConfig(StrictModel):
     kv_cache: KvCacheRecommendationConfig = Field(default_factory=KvCacheRecommendationConfig)
     timing: TimingConfig = Field(default_factory=TimingConfig)
     startup_seconds: float = Field(default=0.0, ge=0.0)
+
+    @model_validator(mode="after")
+    def _reject_timing_identity_overrides(self):
+        if any(
+            getattr(self.timing, field) is not None
+            for field in (
+                "gemm_quant_mode",
+                "moe_quant_mode",
+                "fmha_quant_mode",
+                "kvcache_quant_mode",
+                "comm_quant_mode",
+                "attention_backend",
+            )
+        ):
+            raise ValueError(
+                "explicit timing quantization/backend identity is prediction-only; "
+                "recommendation preflight does not support these overrides"
+            )
+        return self
 
 
 class EncoderRecommendationConfig(StrictModel):
@@ -872,6 +944,8 @@ def _validate_prediction_state_cache(engine: EnginePredictionConfig) -> None:
         worker = getattr(engine.workers, role)
         if worker is None or worker.kv_cache.state_cache is None:
             continue
+        if worker.kv_cache.prefix_match_unit is not None and (engine.speculation is not None or engine.nextn > 0):
+            raise ValueError("prefix_match_unit does not support speculative decoding (speculation or nextn > 0)")
         if engine.backend != "vllm" or engine.mode != "aggregated" or role != "aggregated":
             raise ValueError("state_cache requires backend=vllm and mode=aggregated (G1 only)")
 

@@ -106,6 +106,14 @@ areas:
 # stays visible on subsystem changes without requiring every listed team to
 # approve: any listed code owner can satisfy GitHub's code-owner gate.
 shared:
+  - glob: .agents/skills/aisimulate-fpe-performance/
+    owners: [forward-pass-engine, maintainers]
+  - glob: .claude/skills/aisimulate-fpe-performance
+    owners: [forward-pass-engine, maintainers]
+  - glob: .agents/skills/aisimulate-replay-performance/
+    owners: [replay, mocker, maintainers]
+  - glob: .claude/skills/aisimulate-replay-performance
+    owners: [replay, mocker, maintainers]
   - glob: pages/
     owners: [forward-pass-engine, infra, maintainers]
   - glob: tests/fpm_accuracy/
@@ -159,7 +167,7 @@ shared:
   - glob: tests/test_fpm_grouped_workflow.py
     owners: [forward-pass-engine, maintainers]
   - glob: tests/test_fpm_query_evidence.py
-    owners: [forward-pass-engine, maintainers]
+    owners: [replay, forward-pass-engine, maintainers]
   - glob: python/aisimulate/src/aisimulate/sweeper/
     owners: [sweeper, maintainers]
   - glob: docs/sweeper/

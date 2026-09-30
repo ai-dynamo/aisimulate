@@ -8,6 +8,7 @@ from enum import StrEnum
 from typing import TypeVar, Union
 
 from aisimulate_core.sdk import common
+from aisimulate_core.sdk.fpm_config import FpmCompileConfig
 from aisimulate_core.sdk.speculation.base import SpeculationConfig
 
 KernelBackendT = TypeVar("KernelBackendT", bound=StrEnum)
@@ -26,6 +27,15 @@ def normalize_kernel_backend(
     except (TypeError, ValueError) as exc:
         choices = ", ".join(repr(item.value) for item in enum_type)
         raise ValueError(f"{field_name} must be one of {choices}, got {value!r}.") from exc
+
+
+def normalize_kernel_source(value: str | None, field_name: str) -> str | None:
+    """Validate an optional exact collected kernel-source label."""
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{field_name} must be a non-empty string or None, got {value!r}.")
+    return value
 
 
 def has_video_input(
@@ -60,6 +70,8 @@ class ModelConfig:
     Model configuration.
     """
 
+    dcp_size: int | None = field(default=None, kw_only=True)
+    fpm_config: FpmCompileConfig | None = field(default=None, kw_only=True)
     tp_size: int = 1
     pp_size: int = 1
     gemm_quant_mode: common.GEMMQuantMode | None = None
@@ -82,6 +94,10 @@ class ModelConfig:
     # this in their op pipeline; GLM-5 DSA ignores it (handled in ContextDSAModule).
     cp_style: str = "none"
     workload_distribution: str = "power_law"
+    # Explicit decode-only profile. Context retains workload_distribution.
+    decode_workload_distribution: str | None = field(default=None, kw_only=True)
+    # Exact seven-shape, direct-prefill-only pilot; never propagated to scheduler configuration.
+    prefill_graph_profile: str | None = field(default=None, kw_only=True)
     # EPD: this worker hosts only the language model -- the vision encoder
     # is served elsewhere (mirrors SGLang --language-only).  Like tp_size,
     # this describes the deployed worker, not the model: vision tokens still
@@ -108,6 +124,11 @@ class ModelConfig:
     # (backend, version, sm_version) wins. Do NOT default this to a lane name —
     # that would silently pin every model to that lane.
     attention_backend: common.AttentionBackend | None = None
+    # Exact collected MoE kernel-source lane. This is intentionally separate
+    # from ``moe_backend``, which describes topology/runtime behavior rather
+    # than a single measured compute-kernel lane. ``None`` preserves the
+    # existing framework/default lookup.
+    moe_kernel_source: str | None = field(default=None, kw_only=True)
     # DEPRECATED and ignored (large-EP is selected per tuple via
     # moe_comm_backend); kept for a compatibility window because ModelConfig
     # is exported through the supported core SDK facade and removal breaks
@@ -138,12 +159,17 @@ class ModelConfig:
     fpm_fmha_quant_mode: common.FMHAQuantMode | None = field(default=None, kw_only=True)
 
     def __post_init__(self) -> None:
+        if self.dcp_size is not None and (
+            type(self.dcp_size) is not int or self.dcp_size <= 0 or self.tp_size % self.dcp_size
+        ):
+            raise ValueError("dcp_size must be positive and divide tp_size")
         self.moe_backend = normalize_kernel_backend(self.moe_backend, common.MoEBackend, "moe_backend")
         self.attention_backend = normalize_kernel_backend(
             self.attention_backend,
             common.AttentionBackend,
             "attention_backend",
         )
+        self.moe_kernel_source = normalize_kernel_source(self.moe_kernel_source, "moe_kernel_source")
 
     def resolve_moe_parallelism(self) -> tuple[int, int]:
         """Resolve and validate MoE parallelism dimensions in-place.

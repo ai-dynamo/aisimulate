@@ -35,6 +35,24 @@ configuration and measurement manifests, and FPM sidecars share the strict
 public-contract JSON parser: duplicate keys (including nested keys) and
 non-finite constants fail even when the pinned bytes match their hashes.
 
+Daily campaigns load only current configuration snapshots, including all their
+eligible FPM variants and hash-verified measurement evidence. Unrelated archived
+snapshots do not gate the current overview. Explicit history reads still require
+the recorded manifest hashes and validate all historical snapshots; their cache
+is separate from current campaign membership. Optional override files retain
+full-catalog selector validation, including historical bindings.
+
+Schema v7 FPM pairs retain hash, row-count, base-configuration, and internal
+sidecar/Parquet consistency validation. Selector flags must be booleans, the
+model-config hash must be a lowercase SHA-256 (or the producer's empty legacy
+identity), and other execution fields must be nonblank strings. This does not
+establish a binding to an authoritative execution identity in the selected
+configuration. Every v7 pair is therefore rejected by native staging, even if
+its sidecar and rows agree. Supporting v7 prediction requires that binding and
+an adapter that carries the full identity; this change does not add either.
+Measurements still participate in coverage and worker regression, which does
+not consume FPM pairs. Unknown schema versions and corrupt pairs fail closed.
+
 Decode context parallelism (`dcp`) is a separate identity dimension from `cp`.
 Legacy manifests, sidecars, and parquet files without `dcp` mean `dcp=1`;
 non-default values must agree across all three. Native FPM currently has no

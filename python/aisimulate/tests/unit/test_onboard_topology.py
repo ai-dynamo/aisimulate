@@ -458,7 +458,7 @@ def test_selected_moe_tuple_reaches_plan_collector_and_ordinary_runtime_configs(
         assert worker.timing.estimation_mode == "fpm_interpolation"
         assert worker.timing.fallback_policy == "deny"
         assert worker.timing.estimator_config["fpm_interpolation"]["method"] == "direct"
-    assert prediction.engine.workers.aggregated.parallelism.model_dump() == request.parallelism()
+    assert prediction.engine.workers.aggregated.parallelism.model_dump(exclude_none=True) == request.parallelism()
     assert recommendation.engine.workers.aggregated.parallelism.preset[0].model_dump() == request.parallelism()
     assert recommendation.optimization.constraints.max_candidate_gpus == 2
     assert not (plan_root / "fpm-checkpoint").exists()
@@ -632,7 +632,7 @@ def _consume_configurations(root):
             assert worker.kv_cache.capacity.memory_fraction == request.collection.memory_fraction
             if request.profile_deployment().resources.cache_layout == "grouped":
                 assert not worker.kv_cache.prefix_caching
-        assert prediction.engine.workers.aggregated.parallelism.model_dump() == request.parallelism()
+        assert prediction.engine.workers.aggregated.parallelism.model_dump(exclude_none=True) == request.parallelism()
         assert recommendation.engine.workers.aggregated.parallelism.preset[0].model_dump() == request.parallelism()
         assert recommendation.optimization.constraints.max_candidate_gpus == request.worker_gpus
         assert not (plan_root / "fpm-checkpoint").exists()

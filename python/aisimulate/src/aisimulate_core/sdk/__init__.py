@@ -29,6 +29,7 @@ __all__ = [
     "compile_engine",
     "estimate_kv_cache",
     "estimate_num_gpu_blocks",
+    "estimate_state_cache",
 ]
 
 _PUBLIC_EXPORTS = {
@@ -51,6 +52,7 @@ _PUBLIC_EXPORTS = {
     ),
     "compile_engine": ("aisimulate_core.sdk.engine", "compile_engine"),
     "estimate_kv_cache": ("aisimulate_core.sdk.memory", "estimate_kv_cache"),
+    "estimate_state_cache": ("aisimulate_core.sdk.state_memory", "estimate_state_cache"),
     "estimate_num_gpu_blocks": (
         "aisimulate_core.sdk.memory",
         "estimate_num_gpu_blocks",
@@ -83,3 +85,4 @@ if TYPE_CHECKING:
         ForwardPassPerfOptions,
         RustForwardPassPerfModel,
     )
+    from aisimulate_core.sdk.state_memory import estimate_state_cache

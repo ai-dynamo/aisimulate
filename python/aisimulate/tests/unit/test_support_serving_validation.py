@@ -357,7 +357,9 @@ def test_reassessment_rejects_forged_status_and_changed_source(serving_case):
         serving.check_serving_validation_report(path)
 
 
-@pytest.mark.parametrize("api_time,expected_arrival", [(0.0, 308.6875), (0.3, 300.0)])
+# First request: 2.5 ms prefill produces token one, then decode at KV64/65
+# costs 2 + 64/1024 and 2 + 65/1024 ms. Add the trace's 300 ms idle gap.
+@pytest.mark.parametrize("api_time,expected_arrival", [(0.0, 306.6259765625), (0.3, 300.0)])
 def test_native_single_stream_matches_supported_timing_subsets(request, api_time, expected_arrival):
     args, _request, _plan, trace, output = request.getfixturevalue("_replay_validation_case")
     play = json.loads(trace.read_text())

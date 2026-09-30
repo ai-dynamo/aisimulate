@@ -300,6 +300,24 @@ def run_fpm(
             status = collector_status = 1 if errors else 0
             if errors:
                 print(json.dumps(errors, indent=2, sort_keys=True), file=sys.stderr)
+            if status == 0 and not smoke:
+                checkpoint = json.loads((selected_checkpoint / "fpm_forward.json").read_text(encoding="utf-8"))
+                publication = checkpoint.get("database")
+                if not isinstance(publication, dict) or publication.get("status") != "passed":
+                    raise RuntimeError("collector did not record a completed FPM database publication")
+                # The collector validates this commit record, including on resume
+                # after raw-artifact reclamation. Check its actual runtime version,
+                # not an unrelated directory left by an earlier collection.
+                metadata = json.loads(Path(publication["metadata"]).read_text(encoding="utf-8"))
+                observed = metadata.get("backend_version")
+                expected = request.identity.framework_version
+                if observed != expected:
+                    raise RuntimeError(
+                        f"pod-reported {request.identity.framework} version {observed!r} does not match "
+                        f"framework_version {expected!r}; generated configs cannot use this publication. "
+                        "Collected artifacts are preserved. Create a new plan in a new output directory "
+                        "using a matching runtime or the observed framework_version."
+                    )
             if status == 0 and not smoke and runtime_probe_manifest(request) is not None:
                 payload = json.loads((selected_checkpoint / "fpm_forward.json").read_text(encoding="utf-8"))
                 index = Path(payload["runtime_observations"])

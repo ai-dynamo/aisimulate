@@ -65,7 +65,11 @@ def test_migration_merges_saved_and_caller_controls_before_round_trip():
     for store in ("correction", "fpm_regression"):
         assert controls[store]["sampling"] == {"bins_per_axis": [4, 16], "max_observations": 128}
         assert controls[store]["min_observations"] == 8
-    assert controls["fpm_regression"]["fit"] == {"kind": "standardized_nnls", "singular_ridge_scale": 0}
+    assert controls["fpm_regression"]["fit"] == {
+        "kind": "standardized_nnls",
+        "singular_ridge_scale": 0,
+        "rebuild_interval": None,
+    }
 
 
 @pytest.mark.parametrize("options", [None, {}, ForwardPassPerfOptions()])
