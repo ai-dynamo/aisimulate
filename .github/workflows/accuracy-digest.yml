@@ -8,8 +8,8 @@ on:
     types: [completed]
   schedule:
     # 09:00 Los Angeles is 16:00 UTC in summer, 17:00 in winter.
-    # The script checks the actual local deadline.
-    - cron: "0 16,17 * * *"
+    # The script checks the actual local deadline. Rechecks resume interrupted delivery.
+    - cron: "0,30 16-18 * * *"
   workflow_dispatch:
     inputs:
       mode:
@@ -62,9 +62,9 @@ jobs:
         with:
           python-version: '3.13'
       - name: Prepare report and preview
-        id: prepare
         env:
-          SLACK_ACCURACY_WEBHOOK_URL: ${{ env.MODE != 'dry-run' && secrets.SLACK_ACCURACY_WEBHOOK_URL || '' }}
+          SLACK_ACCURACY_BOT_TOKEN: ${{ env.MODE != 'dry-run' && secrets.SLACK_ACCURACY_BOT_TOKEN || '' }}
+          SLACK_ACCURACY_CHANNEL_ID: ${{ vars.SLACK_ACCURACY_CHANNEL_ID }}
         run: |
           args=(--mode "$MODE" --prepare-only)
           if [[ "$MODE" != daily ]]; then
@@ -84,25 +84,16 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: accuracy-preview
-          path: |
-            accuracy-preview/preview.md
-            accuracy-preview/payload.json
+          path: accuracy-preview/preview.md
           overwrite: true
           retention-days: 30
-      - name: Reserve the daily trigger before posting
-        if: env.MODE == 'daily' && hashFiles('accuracy-preview/attempt.json') != ''
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        with:
-          name: accuracy-attempt-${{ steps.prepare.outputs.day }}
-          path: accuracy-preview/attempt.json
-          if-no-files-found: error
-          retention-days: 90
-      - name: Trigger Slack workflow for main message and detail thread
+      - name: Deliver main message and detail thread
         if: env.MODE != 'dry-run' && hashFiles('accuracy-preview/report.json') != ''
         env:
-          SLACK_ACCURACY_WEBHOOK_URL: ${{ secrets.SLACK_ACCURACY_WEBHOOK_URL }}
+          SLACK_ACCURACY_BOT_TOKEN: ${{ secrets.SLACK_ACCURACY_BOT_TOKEN }}
+          SLACK_ACCURACY_CHANNEL_ID: ${{ vars.SLACK_ACCURACY_CHANNEL_ID }}
         run: python scripts/notify_accuracy.py --mode "$MODE" --deliver accuracy-preview/report.json
-      - name: Preserve accepted-trigger baseline and recovery state
+      - name: Preserve delivered baseline and recovery state
         if: hashFiles('accuracy-preview/delivery/state.json') != ''
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:

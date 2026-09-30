@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import html
 import json
 import sys
 import zlib
@@ -194,18 +195,27 @@ def reduce_fpm(groups):
 
 
 def table(headers, rows):
-    # Keep every table cell on one line.
+    # Keep arbitrary artifact strings from breaking code fences or generating mentions.
     def clean(value):
         return str(value).replace("`", "'").replace("\n", " ").replace("\r", " ")
 
     rows = [[clean(c) for c in row] for row in [headers, *rows]]
-    return "\n".join(" | ".join(row) for row in rows)
+    widths = [max(len(row[i]) for row in rows) for i in range(len(headers))]
+    return (
+        "```\n"
+        + "\n".join("  ".join(cell.ljust(width) for cell, width in zip(row, widths, strict=True)) for row in rows)
+        + "\n```"
+    )
+
+
+def escape(text):
+    return html.escape(str(text), quote=False)
 
 
 def messages(day, pipelines, snapshots, alerts, notes, recovered=()):
-    links = " · ".join(f"{kind.upper()} run: {p['url']}" for kind, p in pipelines.items())
+    links = " · ".join(f"<{p['url']}|{kind.upper()} run>" for kind, p in pipelines.items())
     statuses = " · ".join(f"{kind.upper()}: {p['status']}" for kind, p in pipelines.items())
-    lines = [f"AISimulate Accuracy Daily · {day} (Los Angeles)", statuses, links]
+    lines = [f"*AISimulate Accuracy Daily · {day} (Los Angeles)*", statuses, links]
     rows = []
     for branch, snapshot in sorted(snapshots.get("e2e", {}).items()):
         groups = list(snapshot["groups"].values())
@@ -214,8 +224,8 @@ def messages(day, pipelines, snapshots, alerts, notes, recovered=()):
         row.extend(reduce_e2e([g for g in groups if g["framework"] == f])[0] for f in ("vllm", "sglang", "trtllm"))
         rows.append([*row, coverage])
     lines += [
-        "E2E · TPOT / TTFT MAPE (%)",
-        str(table(["Branch", "Overall", "vLLM", "SGLang", "TRT-LLM", "Coverage"], rows))
+        "*E2E · TPOT / TTFT MAPE (%)*",
+        escape(table(["Branch", "Overall", "vLLM", "SGLang", "TRT-LLM", "Coverage"], rows))
         if rows
         else "No qualified E2E results.",
     ]
@@ -228,20 +238,20 @@ def messages(day, pipelines, snapshots, alerts, notes, recovered=()):
             ]
         )
     lines += [
-        "FPM · MAPE % (predicted/measured)",
-        str(table(["Branch", "KV warmup on", "KV warmup off", "Online regression"], rows))
+        "*FPM · MAPE % (predicted/measured)*",
+        escape(table(["Branch", "KV warmup on", "KV warmup off", "Online regression"], rows))
         if rows
         else "No qualified FPM results.",
     ]
-    lines.append(f"Attention: {len(alerts)} alert(s)")
-    lines.extend(str("• " + alert) for alert in alerts[:8])
+    lines.append(f"*Attention: {len(alerts)} alert(s)*")
+    lines.extend(escape("• " + alert) for alert in alerts[:8])
     if len(alerts) > 8:
         lines.append(f"{len(alerts) - 8} additional alerts in thread.")
-    lines.extend(str("• " + note) for note in notes[:8])
-    lines.extend(str("• Recovered: " + item) for item in recovered)
+    lines.extend(escape("• " + note) for note in notes[:8])
+    lines.extend(escape("• Recovered: " + item) for item in recovered)
     lines += [
-        "E2E Overview: https://ai-dynamo.org/aisimulate/e2e-accuracy/\n"
-        "FPM Overview: https://ai-dynamo.org/aisimulate/fpm-accuracy/",
+        "<https://ai-dynamo.org/aisimulate/e2e-accuracy/|E2E Overview> · "
+        "<https://ai-dynamo.org/aisimulate/fpm-accuracy/|FPM Overview>",
         "Coverage counts eligible points. Pages may still show an older snapshot; run artifacts are authoritative.",
     ]
     replies = []
@@ -250,12 +260,12 @@ def messages(day, pipelines, snapshots, alerts, notes, recovered=()):
             buckets = defaultdict(list)
             for group in snapshot["groups"].values():
                 buckets[group[dimension]].append(group)
-            # Keep preview sections small; the webhook combines them in one thread reply.
+            # Split at rows, preserving a complete code fence in every reply.
             entries = [[label, *reduce_e2e(groups)] for label, groups in sorted(buckets.items())]
             for offset in range(0, len(entries), 12):
                 replies.append(
-                    f"E2E · {branch!s} · per {dimension}\nPipeline: {snapshot['url']}\n"
-                    + str(
+                    f"*E2E · {escape(branch)} · per {dimension}*\n<{snapshot['url']}|Pipeline>\n"
+                    + escape(
                         table(
                             [dimension.title(), "TPOT / TTFT MAPE (%)", "Coverage"],
                             entries[offset : offset + 12],
@@ -264,10 +274,10 @@ def messages(day, pipelines, snapshots, alerts, notes, recovered=()):
                 )
     for offset in range(0, len(alerts) + len(notes), 8):
         replies.append(
-            "Comparison details\n"
+            "*Comparison details*\n"
             + links
             + "\n"
-            + "\n".join(str("• " + line) for line in (alerts + notes)[offset : offset + 8])
+            + "\n".join(escape("• " + line) for line in (alerts + notes)[offset : offset + 8])
         )
     root = "\n\n".join(lines)
     # Slack hard limit is 40k; refuse instead of silently losing branches or evidence.

@@ -6,7 +6,6 @@ import hashlib
 import io
 import json
 import sys
-import urllib.error
 import zipfile
 from datetime import UTC, date, datetime
 from pathlib import Path
@@ -242,93 +241,52 @@ def test_new_dataset_is_not_announced_as_recovery(monkeypatch):
     assert "Recovered" not in report["root"] and report["notes"]
 
 
-def test_workflow_payload_has_one_parent_and_one_detail_reply():
-    report = {"root": "Daily", "replies": ["per model", "per gpu"]}
-    assert notify.webhook_payload(report) == {"message": "Daily", "accuracy_details": "per model\n\nper gpu"}
-    assert notify.webhook_payload(report, test=True)["message"] == "[TEST] Daily"
-    with pytest.raises(ValueError, match="35000"):
-        notify.webhook_payload({"root": "Daily", "replies": ["x" * 20000, "y" * 20000]})
+class FakeSlack(notify.Slack):
+    def __init__(self):
+        super().__init__("fake", "C123")
+        self.posts = []
+        self.fail_part = None
+
+    def call(self, method, **payload):
+        if method == "conversations.history":
+            return {"messages": [p for p in self.posts if "thread_ts" not in p]}
+        if method == "conversations.replies":
+            return {"messages": self.posts}
+        assert method == "chat.postMessage"
+        self.posts.append({**payload, "ts": str(len(self.posts) + 1)})
+        part = payload.get("metadata", {}).get("event_payload", {}).get("part")
+        if part is not None and part == self.fail_part:
+            self.fail_part = None
+            raise TimeoutError("response lost after acceptance")
+        return {"ts": self.posts[-1]["ts"]}
 
 
-@pytest.mark.parametrize("response", [b'{"ok":false}', b"{}", b"[]", b"not json"])
-def test_webhook_rejects_unacknowledged_or_invalid_response(monkeypatch, response):
-    monkeypatch.setattr(notify.urllib.request, "urlopen", lambda *args, **kwargs: io.BytesIO(response))
-    with pytest.raises(RuntimeError):
-        notify.send_webhook("https://hooks.slack.com/triggers/test", {"message": "test"})
+def test_one_root_and_resume_partial_thread_after_ambiguous_timeout():
+    slack = FakeSlack()
+    slack.fail_part = "0"
+    report = {"day": "2026-09-29", "root": "Daily", "replies": ["models", "GPUs"]}
+    with pytest.raises(TimeoutError):
+        slack.send(report)
+    slack.send(report)
+    slack.send(report)
+    assert len(slack.posts) == 3
+    assert sum("thread_ts" not in p for p in slack.posts) == 1
+    assert all(p.get("link_names") is False and p["parse"] == "none" and p["mrkdwn"] is True for p in slack.posts)
 
 
-def test_webhook_posts_once_and_accepts_ok_true(monkeypatch):
-    requests = []
-
-    def respond(request, **kwargs):
-        requests.append(request)
-        return io.BytesIO(b'{"ok":true}')
-
-    monkeypatch.setattr(notify.urllib.request, "urlopen", respond)
-    payload = {"message": "Daily", "accuracy_details": "Details"}
-    notify.send_webhook("https://hooks.slack.com/triggers/test", payload)
-    assert len(requests) == 1 and json.loads(requests[0].data) == payload
+def test_test_message_not_production_dedup():
+    slack = FakeSlack()
+    report = {"day": "2026-09-29", "root": "Daily", "replies": []}
+    slack.send(report, test=True)
+    slack.send(report)
+    assert len(slack.posts) == 2 and slack.posts[0]["text"].startswith("[TEST]")
 
 
-@pytest.mark.parametrize("http", [False, True])
-def test_webhook_never_retries_or_exposes_secret_in_errors(monkeypatch, http):
-    url = "https://hooks.slack.com/triggers/secret-value"
-    calls = []
-
-    def fail(*args, **kwargs):
-        calls.append(1)
-        if http:
-            raise urllib.error.HTTPError(url, 400, url, {}, None)
-        raise urllib.error.URLError(url)
-
-    monkeypatch.setattr(notify.urllib.request, "urlopen", fail)
-    with pytest.raises(RuntimeError) as error:
-        notify.send_webhook(url, {})
-    assert len(calls) == 1 and "secret-value" not in str(error.value)
-
-
-def test_reservation_from_failed_production_run_blocks_resend_but_manual_does_not(monkeypatch):
-    day = date(2026, 9, 29)
-    artifact = {"id": 10, "name": f"accuracy-attempt-{day}", "expired": False, "workflow_run": {"id": 8}}
-    run = {
-        "id": 8,
-        "path": notify.REPORT_WORKFLOW,
-        "head_branch": "main",
-        "event": "workflow_run",
-        "head_repository": {"full_name": notify.REPO},
-        "conclusion": "failure",
-    }
-    claim = {"day": str(day), "run_id": "8", "run_attempt": "1", "report_sha256": "hash"}
-    monkeypatch.setattr(notify, "api_items", lambda *args: [artifact])
-    monkeypatch.setattr(notify, "api", lambda path, **kwargs: archive("attempt.json", claim) if kwargs else run)
-    assert notify.delivery_attempt(day) == claim
-    run["event"] = "workflow_dispatch"
-    assert notify.delivery_attempt(day) is None
-
-
-def test_daily_prepare_skips_reserved_day_without_webhook_post(monkeypatch, tmp_path):
-    monkeypatch.setattr(
-        sys, "argv", ["notify_accuracy.py", "--mode", "daily", "--prepare-only", "--output", str(tmp_path)]
-    )
-    monkeypatch.setattr(notify, "webhook_url", lambda: "https://hooks.slack.com/triggers/test")
-    monkeypatch.setattr(notify, "delivery_attempt", lambda day: {"day": str(day)})
-    monkeypatch.setattr(notify, "send_webhook", lambda *args: pytest.fail("must not resend"))
-    notify.main()
-    assert not (tmp_path / "report.json").exists()
-
-
-def test_daily_deliver_requires_matching_persisted_reservation(monkeypatch, tmp_path):
-    report = {"day": str(datetime.now(notify.LA).date()), "root": "Daily", "replies": [], "alerts": [], "state": {}}
-    frozen = tmp_path / "frozen.json"
-    frozen.write_text(json.dumps(report))
-    monkeypatch.setattr(
-        sys, "argv", ["notify_accuracy.py", "--mode", "daily", "--deliver", str(frozen), "--output", str(tmp_path)]
-    )
-    monkeypatch.setattr(notify, "webhook_url", lambda: "https://hooks.slack.com/triggers/test")
-    monkeypatch.setattr(notify, "delivery_attempt", lambda day: None)
-    monkeypatch.setattr(notify, "send_webhook", lambda *args: pytest.fail("must not send without reservation"))
-    with pytest.raises(ValueError, match="persisted reservation"):
-        notify.main()
+def test_slack_api_ok_false_is_failure(monkeypatch):
+    response = io.BytesIO(b'{"ok": false, "error": "not_in_channel"}')
+    monkeypatch.setattr(notify.urllib.request, "urlopen", lambda *args, **kwargs: response)
+    with pytest.raises(RuntimeError, match="not_in_channel"):
+        notify.Slack("fake", "C123").call("chat.postMessage", text="test")
 
 
 def archive(name, data):
@@ -371,14 +329,7 @@ def test_read_only_dry_run_and_guarded_secret_scope():
     steps = workflow["jobs"]["report"]["steps"]
     assert "workflow_run.head_sha" not in json.dumps(steps)
     prepare = next(s for s in steps if s.get("name") == "Prepare report and preview")
-    assert "env.MODE != 'dry-run'" in prepare["env"]["SLACK_ACCURACY_WEBHOOK_URL"]
-    reservation = next(
-        i for i, step in enumerate(steps) if step.get("name") == "Reserve the daily trigger before posting"
-    )
-    delivery = next(i for i, step in enumerate(steps) if step.get("name", "").startswith("Trigger Slack workflow"))
-    assert reservation < delivery
-    assert steps[reservation]["with"].get("overwrite", False) is False
-    assert "SLACK_ACCURACY_BOT_TOKEN" not in json.dumps(workflow)
+    assert "env.MODE != 'dry-run'" in prepare["env"]["SLACK_ACCURACY_BOT_TOKEN"]
 
 
 def test_corrupt_or_oversized_compressed_points_rejected():
@@ -415,8 +366,8 @@ def test_explicit_manual_branch_only_allowed_for_preview_and_test():
         notify.validate_run(run, "e2e", allow_manual_branch=True)
 
 
-def test_dry_run_never_reads_webhook_or_writes_delivery_state(monkeypatch, tmp_path):
-    report = {"root": "preview", "replies": [], "alerts": [], "state": {"trigger_accepted": False}}
+def test_dry_run_never_instantiates_slack_or_writes_delivery_state(monkeypatch, tmp_path):
+    report = {"root": "preview", "replies": [], "alerts": [], "state": {"production_sent": False}}
     monkeypatch.setattr(
         sys, "argv", ["notify_accuracy.py", "--e2e-run-id", "1", "--fpm-run-id", "2", "--output", str(tmp_path)]
     )
@@ -425,58 +376,12 @@ def test_dry_run_never_reads_webhook_or_writes_delivery_state(monkeypatch, tmp_p
     monkeypatch.setattr(notify, "build_report", lambda *args, **kwargs: report)
 
     def no_slack(*args, **kwargs):
-        pytest.fail("dry run must not read webhook credentials")
+        pytest.fail("dry run must not instantiate Slack")
 
-    monkeypatch.setattr(notify, "webhook_url", no_slack)
+    monkeypatch.setattr(notify, "Slack", no_slack)
     notify.main()
     assert (tmp_path / "report.json").exists()
     assert not (tmp_path / "delivery").exists()
-
-
-@pytest.mark.parametrize("failure", [False, True])
-def test_reserved_delivery_persists_baseline_only_after_acceptance(monkeypatch, tmp_path, failure):
-    day = str(datetime.now(notify.LA).date())
-    report = {"day": day, "root": "Daily", "replies": ["Details"], "alerts": [], "state": {"trigger_accepted": False}}
-    frozen = tmp_path / "frozen.json"
-    frozen.write_text(json.dumps(report))
-    monkeypatch.setattr(
-        sys, "argv", ["notify_accuracy.py", "--mode", "daily", "--deliver", str(frozen), "--output", str(tmp_path)]
-    )
-    monkeypatch.setenv("GITHUB_RUN_ID", "123")
-    monkeypatch.setenv("GITHUB_RUN_ATTEMPT", "1")
-    monkeypatch.setattr(notify, "webhook_url", lambda: "https://hooks.slack.com/triggers/test")
-    claim = {"day": day, "run_id": "123", "run_attempt": "1", "report_sha256": notify.report_hash(report)}
-    monkeypatch.setattr(notify, "delivery_attempt", lambda day: claim)
-    calls = []
-
-    def send(*args):
-        calls.append(args)
-        if failure:
-            raise RuntimeError("outcome unknown")
-
-    monkeypatch.setattr(notify, "send_webhook", send)
-    if failure:
-        with pytest.raises(RuntimeError):
-            notify.main()
-        assert not (tmp_path / "delivery").exists()
-    else:
-        notify.main()
-        assert json.loads((tmp_path / "delivery/state.json").read_text())["trigger_accepted"] is True
-    assert len(calls) == 1
-
-
-def test_webhook_message_uses_plain_text_and_complete_links():
-    root, replies = digest.messages(
-        "2026-09-29",
-        {"e2e": {"url": "https://example.com/run", "status": "success"}},
-        {"e2e": {"main": snapshot({"a": [1, 2]})}},
-        [],
-        [],
-    )
-    payload = notify.webhook_payload({"root": root, "replies": replies})
-    assert "E2E run: https://example.com/run" in payload["message"]
-    assert "Overall | vLLM | SGLang | TRT-LLM" in payload["message"]
-    assert all("```" not in value and "<https://" not in value and "*E2E" not in value for value in payload.values())
 
 
 def test_artifact_pagination_preserves_name_filter(monkeypatch):

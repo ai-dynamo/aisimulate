@@ -533,8 +533,7 @@ for pinned scheduler settings, measurement selection, and provenance.
 [Accuracy Slack Daily](../.github/workflows/accuracy-digest.yml) combines the day's
 scheduled E2E and FPM results in one message in **#swdl-dynamo-aisim-daily**.
 Failures and comparable regressions appear in that message; separate per-model
-and per-GPU E2E tables appear in its thread through Slack Workflow Builder (no
-separate Slack app). Delivery waits for both pipelines,
+and per-GPU E2E tables appear in its thread. Delivery waits for both pipelines,
 with a 09:00 America/Los_Angeles fallback. It is opt-in and has a default dry-run
 mode plus an explicit test-send mode. See [setup, comparisons, and testing](accuracy-slack.md).
 
