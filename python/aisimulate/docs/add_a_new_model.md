@@ -109,7 +109,7 @@ python/aisimulate/src/aisimulate_core/systems/data/<system>/<family>/<backend>/<
 Do not relabel another backend version's data as newly measured. Update query
 version/support metadata only when the new cell meets its collection and
 consumer contracts. For whole-forward profiles, use the separate
-[FPM collection-to-prediction workflow](fpm/end-to-end-workflow.md).
+[FPM self-benchmarking and onboarding guide](fpm/self-benchmarking-and-onboarding.md).
 
 ## 4. Validate the intended public path
 

@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0
 
 # Forward-pass models
 
-Start with the [end-to-end FPM workflow](end-to-end-workflow.md) to collect
+Start with the [FPM self-benchmarking and onboarding guide](self-benchmarking-and-onboarding.md) to collect
 whole-forward measurements, publish a performance-data pair, load it through
 the SDK, and run an AISimulate prediction. The guide includes prerequisites,
 commands, expected artifacts, acceptance checks, and recovery steps.

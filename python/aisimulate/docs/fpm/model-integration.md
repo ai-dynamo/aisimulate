@@ -326,8 +326,8 @@ mounted in the collection runtime; a temporary local path is not a portable
 replacement for the canonical identity in the published pair.
 
 For the config/profile route, continue the [self-service workflow](../../../../docs/fpm-self-service.md#plan-preview-and-explicitly-execute)
-with the accepted profile. The [collection campaign example](end-to-end-workflow.md#3-freeze-and-inspect-the-plan)
-also illustrates formal pair publication for a registered model. Only
+with the accepted profile. The [collection campaign example](self-benchmarking-and-onboarding.md#b2-freeze-and-inspect-the-plan-step-2)
+illustrates guided collection and formal pair publication without requiring an analytical class. Only
 whole-forward silicon timings are collected for FPM. Exercise ordinary `predict`
 and `recommend` on covered candidates and retain the matching inputs, data
 provenance, reports and reproduction commands. CPU integration checks,
