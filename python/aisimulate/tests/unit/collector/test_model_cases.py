@@ -870,12 +870,15 @@ def test_gemm_common_cases_expand_from_base_op_yaml_shape_specs():
     # adds two output widths across the base token-count grid. DeepSeek-V4 Pro
     # adds (n, k) = (7168, 384) for all 74 standard / 21 XPU token counts;
     # its other shared-expert projections overlap the existing base shapes.
-    assert len(cases) == 37518
+    # GLM-5.3-Flash adds nine off-grid output widths at k=4096 (16, 160, 288,
+    # 6416, 12576, 24576, 24896, 38720, 77440, 154880 minus one already
+    # declared elsewhere) across the 74 standard / 21 XPU token counts.
+    assert len(cases) == 38184
     assert cases[0] == GemmCommonTestCase(x=32768, n=65536, k=51200)
     assert cases[-1] == GemmCommonTestCase(x=1, n=1, k=4096)
     assert not any(case.n == 65536 and case.k == 65536 for case in cases)
 
-    assert len(xpu_cases) == 9681
+    assert len(xpu_cases) == 9870
     assert xpu_cases[0] == GemmCommonTestCase(x=8192, n=65536, k=12288)
     assert xpu_cases[-1] == GemmCommonTestCase(x=1, n=1, k=4096)
     assert get_gemm_type_specs("vllm_xpu") == ["bfloat16", "fp8"]
@@ -938,8 +941,9 @@ def test_cross_model_common_cases_expand_from_base_op_yaml_sweeps(monkeypatch):
     # test_qwen35_397b_nvfp4_moe_row_is_nvfp4_only_on_every_backend, the
     # actual regression); the row's own count (117, pinned separately below)
     # is unaffected either way. Qwen3.8-Max contributes one 117-case base
-    # row and one 117-case RadixArk NVFP4 row.
-    assert len(moe_cases) == 6954
+    # row and one 117-case RadixArk NVFP4 row. GLM-5.3-Flash adds two 99-case
+    # rows (zai-org FP8 and nvidia NVFP4 checkpoints, 288 experts x 4096/2048).
+    assert len(moe_cases) == 7152
 
     assert any(
         case.model_name == "nvidia/DeepSeek-V4-Flash-NVFP4"
