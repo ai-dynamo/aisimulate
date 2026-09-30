@@ -21,9 +21,23 @@ from collections import Counter, defaultdict
 INTERESTING = ("backend", "quant", "page", "kv_cache", "attention", "moe", "mamba", "dsa_", "gemm")
 
 
+
+def _server_arg_fields(cls_or_obj) -> list:
+    """Field names of ServerArgs across sglang generations: a dataclass up to
+    0.5.20 (__dataclass_fields__), a msgspec Struct on main from 2026-09
+    (__struct_fields__; nightly-dev-20260930), pydantic if it ever moves there."""
+    cls = cls_or_obj if isinstance(cls_or_obj, type) else type(cls_or_obj)
+    if hasattr(cls, "__dataclass_fields__"):
+        return list(cls.__dataclass_fields__)
+    if hasattr(cls, "__struct_fields__"):
+        return list(cls.__struct_fields__)
+    if getattr(cls, "model_fields", None):
+        return list(cls.model_fields)
+    raise TypeError(f"cannot enumerate fields of {cls!r}")
+
 def dump_server_args(sa) -> dict:
     out = {}
-    for f in type(sa).__dataclass_fields__:
+    for f in _server_arg_fields(sa):
         if any(k in f for k in INTERESTING):
             v = getattr(sa, f)
             if isinstance(v, (str, int, float, bool, type(None))) or (
@@ -91,7 +105,7 @@ def main() -> None:
     # graphs / torch.compile as the rendered config resolves them). --eager
     # is the A/B escape hatch; --cuda-graph is kept as a no-op alias.
     graph_off = {} if not args.eager else {
-        f: True for f in ServerArgs.__dataclass_fields__
+        f: True for f in _server_arg_fields(ServerArgs)
         if "cuda_graph" in f and f.startswith("disable")
     }
     if args.engine_cli:
@@ -165,7 +179,10 @@ def main() -> None:
 
     if args.stage >= 2 and not rec["errors"]:
         try:
-            from sglang.bench_one_batch import load_model
+            try:
+                from sglang.bench_one_batch import load_model
+            except ModuleNotFoundError:  # main (2026-09) moved it to sglang.benchmark.one_batch
+                from sglang.benchmark.one_batch import load_model
             # Replicate serving's global initialization sequence (scheduler.py
             # does exactly this before building the model). Skipping it made the
             # probe take a DIFFERENT dispatch path than a real deployment:
@@ -173,7 +190,17 @@ def main() -> None:
             # so DSV4-NVFP4 silently fell back to marlin here while serving
             # rejects the config outright.
             from sglang.srt.layers.moe import initialize_moe_config
-            initialize_moe_config(sa)
+            import inspect as _inspect
+            if _inspect.signature(initialize_moe_config).parameters:
+                initialize_moe_config(sa)  # <= 0.5.20: seeded from ServerArgs directly
+            else:
+                # main (2026-09, runtime_context "bags"): the process must PUBLISH the
+                # resolved server args first, exactly as benchmark/one_batch.load_model and
+                # scheduler.py:979 do; initialize_* then read the published bags.
+                from sglang.srt.runtime_context import SpawnRanks, publish, spawn_world_rank
+                publish(sa, role="scheduler",
+                        ranks=SpawnRanks(world_rank=spawn_world_rank(sa, tp_rank=0, pp_rank=0), gpu_id=0))
+                initialize_moe_config()
             # scheduler.py:726 — mamba/linear-attention models need this before
             # any forward; bench_one_batch does NOT call it, so hybrid models
             # fail there in ways real serving does not.
@@ -181,13 +208,17 @@ def main() -> None:
                 from sglang.srt.managers.scheduler import (
                     initialize_mamba_selective_state_update_backend,
                 )
-                initialize_mamba_selective_state_update_backend(sa)
+                if _inspect.signature(initialize_mamba_selective_state_update_backend).parameters:
+                    initialize_mamba_selective_state_update_backend(sa)
+                else:
+                    initialize_mamba_selective_state_update_backend()
             except Exception as _e:
                 rec.setdefault("init_warnings", []).append(
                     f"mamba_ssu_backend: {type(_e).__name__}")
             for _fn in ("initialize_fp8_gemm_config", "initialize_fp4_gemm_config"):
                 try:
-                    getattr(__import__("sglang.benchmark.one_batch", fromlist=[_fn]), _fn)(sa)
+                    _f = getattr(__import__("sglang.benchmark.one_batch", fromlist=[_fn]), _fn)
+                    _f(sa) if _inspect.signature(_f).parameters else _f()
                 except Exception as _e:
                     rec.setdefault("init_warnings", []).append(f"{_fn}: {type(_e).__name__}")
             rec["serving_init_applied"] = True
