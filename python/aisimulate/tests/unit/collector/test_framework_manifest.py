@@ -81,9 +81,10 @@ def test_active_cuda_vllm_collectors_are_exactly_pinned_to_manifest_version():
     ["collector.vllm.collect_moe", "collector.vllm.collect_gdn", "collector.vllm.collect_gemm"],
 )
 def test_vllm_target_lane_collectors_declare_the_exact_bumped_compat_range(module):
-    expected = '__compat__ = "vllm>=0.24.0,<=0.27.1,!=0.25.0,!=0.25.1,!=0.26.0,!=0.27.0"'
-    if module in {"collector.vllm.collect_gemm", "collector.vllm.collect_moe", "collector.vllm.collect_gdn"}:
-        expected = '__compat__ = "vllm>=0.24.0,<=0.27.1,!=0.25.1,!=0.26.0,!=0.27.0"'
+    expected = '__compat__ = "vllm>=0.24.0,<=0.27.1,!=0.25.1,!=0.26.0,!=0.27.0"'
+    if module in {"collector.vllm.collect_gemm", "collector.vllm.collect_moe"}:
+        # GLM-5.3-Flash model pin: 0.30.0 audited; 0.28.0/0.29.0 are not.
+        expected = '__compat__ = "vllm>=0.24.0,<=0.30.0,!=0.25.1,!=0.26.0,!=0.27.0,!=0.28.0,!=0.29.0"'
     source = (REPO_ROOT / f"{module.replace('.', '/')}.py").read_text(encoding="utf-8")
     declarations = [line.strip() for line in source.splitlines() if line.startswith("__compat__")]
     assert declarations == [expected], module
@@ -788,7 +789,19 @@ frameworks:
 
 @pytest.mark.parametrize(
     "version,accepted",
-    [("0.24.0", True), ("0.25.0", True), ("0.25.1", False), ("0.26.0", False), ("0.27.0", False), ("0.27.1", True)],
+    [
+        ("0.24.0", True),
+        ("0.25.0", True),
+        ("0.25.1", False),
+        ("0.26.0", False),
+        ("0.27.0", False),
+        ("0.27.1", True),
+        ("0.28.0", False),
+        ("0.29.0", False),
+        ("0.30.0", True),
+        ("0.30.0+glm53tail.eb4704514fdf", True),
+        ("0.30.1", False),
+    ],
 )
 def test_gemm_025_qualification_preserves_other_release_gaps(version, accepted):
     import ast

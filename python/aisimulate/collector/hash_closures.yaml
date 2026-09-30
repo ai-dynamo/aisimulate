@@ -36,10 +36,15 @@ collector.sglang.collect_attn:
 collector.sglang.collect_attn_encoder:
   - collector/cases/base_ops/attention_encoder.yaml
   - __model_cases__
-collector.sglang.collect_computescale:
+collector.sglang.collect_computescale_v1:
   # get_compute_scale_case_specs() reads the "trtllm" section of
   # compute_scale.yaml unconditionally and falls back to gemm.yaml-derived
   # shapes (via get_gemm_case_specs) when that section is empty.
+  - collector/cases/base_ops/compute_scale.yaml
+  - collector/cases/base_ops/gemm.yaml
+  - __model_cases__
+collector.sglang.collect_computescale_v2:
+  # Same case reads as collector.sglang.collect_computescale_v1.
   - collector/cases/base_ops/compute_scale.yaml
   - collector/cases/base_ops/gemm.yaml
   - __model_cases__
@@ -81,7 +86,10 @@ collector.sglang.collect_gdn:
 collector.sglang.collect_kda:
   - collector/cases/base_ops/kda.yaml
   - __model_cases__
-collector.sglang.collect_gemm:
+collector.sglang.collect_gemm_v1:
+  - collector/cases/base_ops/gemm.yaml
+  - __model_cases__
+collector.sglang.collect_gemm_v2:
   - collector/cases/base_ops/gemm.yaml
   - __model_cases__
 collector.sglang.collect_mhc_module:

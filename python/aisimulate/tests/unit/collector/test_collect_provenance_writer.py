@@ -61,7 +61,7 @@ collect_mod.logger = logging.getLogger("test_collect_provenance_writer")
 # A real, already-hash_closures.yaml-covered module — using it lets the writer's
 # real load_closures()/collector_hash() calls run unmocked against the real repo
 # tree, instead of needing to fabricate a fake repo layout.
-REAL_MODULE = "collector.sglang.collect_gemm"
+REAL_MODULE = "collector.sglang.collect_gemm_v1"
 MLA_MODULE = "collector.sglang.collect_mla_bmm"
 BACKEND = "sglang"
 OP_TYPE = "gemm"

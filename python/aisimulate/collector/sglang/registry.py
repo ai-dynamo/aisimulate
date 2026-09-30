@@ -4,11 +4,11 @@
 """
 Declarative registry mapping ops to collector modules for SGLang.
 
-No version forks exist yet. When SGLang API changes require a fork,
-add a ``versions`` tuple following the trtllm registry pattern.
+Version forks use a ``versions`` tuple (trtllm registry pattern); the
+resolver picks the first route whose min_version <= the runtime version.
 """
 
-from collector.registry_types import OpEntry, PerfFile
+from collector.registry_types import OpEntry, PerfFile, VersionRoute
 
 REGISTRY: list[OpEntry] = [
     OpEntry(
@@ -19,19 +19,30 @@ REGISTRY: list[OpEntry] = [
         perf_filename=PerfFile.DSV41_MODULE,
         unverified=True,
     ),
+    # 0.5.20 forks (GLM-5.3-Flash model-pinned runtime): serving changed WHICH
+    # kernels the legacy collectors' raw calls map to (bf16 CuTe DSL/split-K
+    # dispatch, JIT per-token fp8 quant, Fp8ScaledMMOp, fp8_block Triton
+    # fallback, NVFP4 padding/cute-dsl quant), so 0.5.20 builds serving's own
+    # linear layers instead -- see the fork module headers.
     OpEntry(
         op="gemm",
-        module="collector.sglang.collect_gemm",
         get_func="get_gemm_test_cases",
         run_func="run_gemm",
         perf_filename=PerfFile.GEMM,
+        versions=(
+            VersionRoute("0.5.20", "collector.sglang.collect_gemm_v2"),
+            VersionRoute("0.0.0", "collector.sglang.collect_gemm_v1"),
+        ),
     ),
     OpEntry(
         op="compute_scale",
-        module="collector.sglang.collect_computescale",
         get_func="get_computescale_test_cases",
         run_func="run_computescale",
         perf_filename=PerfFile.COMPUTESCALE,
+        versions=(
+            VersionRoute("0.5.20", "collector.sglang.collect_computescale_v2"),
+            VersionRoute("0.0.0", "collector.sglang.collect_computescale_v1"),
+        ),
     ),
     OpEntry(
         op="mla_context",
