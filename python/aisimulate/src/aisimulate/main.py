@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 import argparse
-import importlib.metadata
 import json
 import sys
 from collections.abc import Sequence
@@ -15,16 +14,15 @@ from typing import Any
 from pydantic import ValidationError
 
 from .afd_artifacts import write_afd_qualification_artifacts
-from .cli_args import _apply_overrides, _CliConfigError, _load_mapping, build_parser
+from .cli_args import _apply_overrides, _CliConfigError, _extract_output_configs, _load_mapping, build_parser
 from .compiler import prediction_to_replay_spec
 from .config.cli import (
     CorePredictionConfig,
     CoreRecommendationConfig,
     prediction_mapping,
 )
-from .config.common import RECOMMENDATION_CORE_SECTIONS, split_config_sections
+from .config.common import split_config_sections
 from .config_adapter import (
-    CONFIG_ADAPTER_ENTRY_POINT_GROUP,
     ConfigAdapterResolutionError,
     PredictionAdapterContext,
     SimulationConfigAdapter,
@@ -96,30 +94,6 @@ def _compile_prediction_adapters(
         adapter = adapters[name]
         compiled[name] = adapter.compile_prediction(raw, context)
     return compiled
-
-
-def _extract_output_configs(
-    raw: dict[str, Any], outputs: Sequence[str], *, stack: str
-) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
-    """Remove explicitly selected output sections from recommendation input."""
-
-    remaining = dict(raw)
-    configs: dict[str, dict[str, Any]] = {}
-    config_adapter_names = {
-        entry.name for entry in importlib.metadata.entry_points().select(group=CONFIG_ADAPTER_ENTRY_POINT_GROUP)
-    }
-    for name in dict.fromkeys(outputs):
-        if not name or "." in name:
-            raise _CliConfigError(f"invalid --output name {name!r}")
-        if name in RECOMMENDATION_CORE_SECTIONS or f"{stack}.{name}" in config_adapter_names:
-            raise _CliConfigError(f"output adapter name {name!r} collides with a recommendation input section")
-        value = remaining.pop(name, None)
-        if value is None:
-            raise _CliConfigError(f"--output {name!r} requires a top-level {name!r} configuration section")
-        if not isinstance(value, dict):
-            raise _CliConfigError(f"output section {name!r} must be a mapping")
-        configs[name] = value
-    return remaining, configs
 
 
 def _predict(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:

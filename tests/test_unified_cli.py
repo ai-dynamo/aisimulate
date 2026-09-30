@@ -1161,7 +1161,7 @@ def test_output_adapter_name_must_not_collide_with_input_section(
     entry_points = SimpleNamespace(
         select=lambda **kwargs: [SimpleNamespace(name=entry_name) for entry_name in config_adapter_names]
     )
-    monkeypatch.setattr(cli.importlib.metadata, "entry_points", lambda: entry_points)
+    monkeypatch.setattr("importlib.metadata.entry_points", lambda: entry_points)
     monkeypatch.setattr(cli, "resolve_runner_factory", lambda stack: _Factory(_Runner()))
 
     with pytest.raises(SystemExit, match="2"):
