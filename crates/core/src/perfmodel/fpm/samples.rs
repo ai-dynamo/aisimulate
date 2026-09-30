@@ -14,6 +14,7 @@
 use std::collections::HashMap;
 
 use super::options::ForwardPassPerfOptions;
+use crate::AicError;
 
 pub(crate) trait WithOptions {
     fn with_options(options: &ForwardPassPerfOptions, axis_ranges: &[AxisRange]) -> Self;
@@ -60,6 +61,25 @@ impl AxisRange {
 }
 
 impl<T: Clone> BucketedSamples<T> {
+    /// Construct the explicitly dimensioned regression grid. Canonical config
+    /// validation uses the same checks before model selection; retaining them
+    /// here prevents a malformed internal shape from reaching bucket indexing.
+    pub(crate) fn new_regression(
+        axes_shape: &[usize],
+        max_observations: usize,
+    ) -> Result<Self, AicError> {
+        validate_regression_shape(axes_shape, max_observations)?;
+        Ok(Self {
+            buckets: HashMap::new(),
+            total_observations: 0,
+            axis_min: vec![f64::INFINITY; axes_shape.len()],
+            axis_max: vec![f64::NEG_INFINITY; axes_shape.len()],
+            fixed_bounds: false,
+            buckets_per_axis: axes_shape.to_vec(),
+            max_observations,
+        })
+    }
+
     pub(crate) fn new_dynamic(options: &ForwardPassPerfOptions, ndim: usize) -> Self {
         let buckets_per_axis = if let Some(shape) = options.bucket_shape {
             if ndim == 1 {
@@ -242,6 +262,37 @@ impl<T: Clone> BucketedSamples<T> {
     }
 }
 
+pub(super) fn validate_regression_shape(
+    axes_shape: &[usize],
+    max_observations: usize,
+) -> Result<(), AicError> {
+    let invalid = |field: &str, reason: &str| {
+        AicError::InvalidEngineConfig(format!(
+            "estimator_config.fpm_regression.sampling.{field} {reason}"
+        ))
+    };
+    if !(1..=6).contains(&axes_shape.len()) {
+        return Err(invalid("bins_per_axis", "must contain 1 to 6 bin counts"));
+    }
+    let product = axes_shape.iter().try_fold(1_usize, |count, &bins| {
+        if bins == 0 {
+            None
+        } else {
+            count.checked_mul(bins)
+        }
+    });
+    if product.is_none_or(|count| count > isize::MAX as usize) {
+        return Err(invalid(
+            "bins_per_axis",
+            "must be positive and have a representable product",
+        ));
+    }
+    if max_observations == 0 {
+        return Err(invalid("max_observations", "must be positive"));
+    }
+    Ok(())
+}
+
 pub(crate) fn median_ratio(values: impl Iterator<Item = f64>) -> Option<f64> {
     let mut values = values
         .filter(|value| value.is_finite() && *value > 0.0)
@@ -265,6 +316,63 @@ pub(crate) fn integer_sqrt(value: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn explicit_regression_dimensions_rebucket_and_return_actual_eviction() {
+        let mut samples = BucketedSamples::new_regression(&[2, 3, 4], 4).unwrap();
+        for (index, x) in [
+            [0.0, 0.0, 0.0],
+            [10.0, 10.0, 10.0],
+            [7.0, 7.0, 8.0],
+            [8.0, 8.0, 9.0],
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            assert_eq!(
+                samples.add_with_eviction(x.to_vec(), index),
+                SampleInsertion::Accepted { evicted: None }
+            );
+        }
+        // The [1,2,3] bucket has three samples; retire its oldest (index 1),
+        // retaining the global oldest in the less populated [0,0,0] bucket.
+        assert_eq!(samples.buckets[&vec![1, 2, 3]].len(), 3);
+        assert_eq!(
+            samples.add_with_eviction(vec![2.0, 0.0, 0.0], 4),
+            SampleInsertion::Accepted { evicted: Some(1) }
+        );
+        assert_eq!(samples.total_observations, 4);
+        assert_eq!(samples.axis_max, [10.0, 10.0, 10.0]);
+        let before = samples.clone();
+        for invalid in [vec![0.0, 0.0], vec![0.0, 0.0, f64::NAN]] {
+            assert_eq!(
+                samples.add_with_eviction(invalid, 5),
+                SampleInsertion::Rejected
+            );
+            assert_eq!(samples.buckets, before.buckets);
+            assert_eq!(samples.axis_max, before.axis_max);
+        }
+        // Bounds expansion rebuckets retained observations without inventing
+        // or losing rows before enforcing capacity.
+        assert!(samples.add(vec![20.0, 20.0, 20.0], 5));
+        assert_eq!(samples.total_observations, 4);
+        assert_eq!(samples.buckets[&vec![1, 2, 3]], vec![(vec![20.0; 3], 5)]);
+
+        let mut one_axis = BucketedSamples::new_regression(&[3], 2).unwrap();
+        assert!(one_axis.add(vec![0.0], 0));
+        assert!(one_axis.add(vec![9.0], 1));
+        assert_eq!(one_axis.buckets[&vec![2]], vec![(vec![9.0], 1)]);
+        for shape in [
+            vec![],
+            vec![0],
+            vec![usize::MAX],
+            vec![usize::MAX, 2],
+            vec![1; 7],
+        ] {
+            assert!(BucketedSamples::<usize>::new_regression(&shape, 4).is_err());
+        }
+        assert!(BucketedSamples::<usize>::new_regression(&[1], 0).is_err());
+    }
 
     #[test]
     fn insertion_returns_the_actual_fattest_bucket_eviction() {

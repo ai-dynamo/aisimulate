@@ -298,6 +298,31 @@ mod tests {
                 rebuild_interval: interval,
                 ..RegressionFitConfig::default()
             };
+            use aisimulate_core::{
+                LinearFitConfig, RegressionFeatureAxis, RegressionSamplingConfig,
+                RegressionUpdatePolicy,
+            };
+            config.estimator_config.fpm_regression.sampling = RegressionSamplingConfig {
+                axes: vec![RegressionFeatureAxis::Count],
+                bins_per_axis: vec![8],
+                max_observations: 64,
+            };
+            config.estimator_config.fpm_regression.fit.linear = Some(LinearFitConfig {
+                feature_axes: vec![
+                    RegressionFeatureAxis::Attention,
+                    RegressionFeatureAxis::Moe,
+                    RegressionFeatureAxis::Count,
+                ],
+                non_negative: false,
+                update_policy: RegressionUpdatePolicy::ErrorThreshold {
+                    relative_tolerance: 0.05,
+                    absolute_tolerance_ms: 0.1,
+                    window: 8,
+                    trigger: 2,
+                    cooldown: 4,
+                    startup_observations: 10,
+                },
+            });
             let model = ForwardPassPerfModel::best_available(config).unwrap();
             let resolved = &model.provenance().unwrap().config;
             assert_eq!(

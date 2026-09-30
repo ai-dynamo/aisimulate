@@ -316,6 +316,8 @@ nested paths. The supported namespaces are:
   The default fit kind is `standardized_nnls` (also accepted as `linear`),
   with a free intercept and nonnegative slopes. `spline` selects an additive
   piecewise-linear fit with learned knots and nonnegative segment slopes.
+  Optional `fit.linear` controls fitted axes, signed slopes, and lazy updates;
+  omission preserves the existing linear behavior and serialized defaults.
   `singular_ridge_scale` defaults to `1e-9` and applies to the shared linear
   fit only when retrying a singular equation. `rebuild_interval` defaults to JSON `null` / Python
   `None`, disabling periodic rebuilding. A positive integer opts into
@@ -336,8 +338,12 @@ nested paths. The supported namespaces are:
 Engine replay rank arguments accept `decode_workload_distribution` (alias `aic_decode_workload_distribution`) only with AIC timing. An active selector paired with a non-AIC timing model, including fixed or polynomial timing, is rejected. The AFD companion's fixed timing and legacy estimator paths also reject active selectors because they cannot apply the profile. `None` preserves ordinary timing in these paths.
 
 Sampling defaults to `bins_per_axis: [4, 4]` and `max_observations: 64` per
-logical store. Rectangular grids are supported. Regression uses dynamic
-`log1p` retention coordinates and fits standardized raw features. Correction
+logical store. Rectangular grids were already supported. Regression's
+`sampling.axes` now selects one to six distinct coordinates, defaulting to
+`[attention, moe]`; `bins_per_axis` must have the same length, contain positive
+integers, and have a representable product. The dimension is the number of
+selected axes, independent of how many features the fit uses. Regression uses
+dynamic `log1p` retention coordinates and fits standardized feature values. Correction
 uses fixed raw workload coordinates; its one-dimensional prefill grid uses
 the product of the two axis counts. Retention evicts the oldest sample from
 the most populated cell when the store exceeds its budget.
@@ -354,6 +360,78 @@ spline store can return `None` outside retained bounds if its linear fallback
 is unavailable. `tune_with_fpms()` preserves the established FPM observation
 contract. Native construction still uses Python model compilation; estimator
 selection, regression, correction, and latency computation are owned by Rust.
+
+### Linear features and lazy coefficient updates
+
+Configure linear fits under `estimator_config.fpm_regression.fit.linear`.
+`feature_axes` defaults to `[attention, moe]`, `non_negative` defaults to `true`,
+and `update_policy` defaults to `{kind: always}`. Setting `non_negative: false`
+allows signed slopes; the intercept is always unconstrained. Fitting and
+retention may select different ordered lists of one to six distinct axes.
+The supported names are `attention`, `moe`, `n`, `E`, `P`, `maxE`, `maxP`,
+`minP`, `P2`, `F`, `nE`, `logF`, `meanE`, `meanP`, `cvE2`, `cvP2`, `logN`,
+`n2`, and `logP`. Features use scheduled work only. Request-list features require
+the corresponding aligned request lengths; unavailable input is rejected, not
+reconstructed from aggregate counts. These controls do not change the workload
+store selected from all active attention-DP ranks.
+
+`attention`, `moe`, `n`, `logN`, and `n2` need only the existing scheduled scalar
+counters. Other axes require both optional `scheduled_requests.extend_lengths`
+and `scheduled_requests.past_kv_lengths`, each an array of unsigned 64-bit
+integers. Both arrays must have one entry per scheduled request and identical
+lengths. Their sums must equal `sum_prefill_tokens + num_decode_requests` and
+`sum_prefill_kv_tokens + sum_decode_kv_tokens`, respectively. Omitted arrays do
+not add null fields to existing serialized metrics. Existing Gym inputs without
+these lists can evaluate the scalar axes; they cannot qualify list-derived ones.
+Prediction needs the request lists only when fitted axes use them. Tuning also
+requires them when retention axes use request-level features.
+
+This example uses three retention dimensions and a different three-feature fit:
+
+```yaml
+estimator_config:
+  fpm_regression:
+    sampling:
+      axes: [attention, moe, n]
+      bins_per_axis: [2, 4, 2]
+      max_observations: 128
+    fit:
+      linear:
+        feature_axes: [attention, moe, logN]
+        non_negative: false
+        update_policy:
+          kind: error_threshold
+          relative_tolerance: 0.05
+          absolute_tolerance_ms: 0.1
+          window: 8
+          trigger: 2
+          cooldown: 4
+          startup_observations: 10
+```
+
+Lazy updating is opt-in. Every accepted observation still updates retention and
+centered statistics. Before admitting it, the model compares its **raw, unclipped
+prior prediction** with the positive measured latency `y`. An error is excessive
+only when `abs(prediction - y) > max(absolute_tolerance_ms, relative_tolerance * y)`;
+equality does not trigger. The rolling monitor counts the latest `window`
+accepted observations with finite prior predictions. A fit is requested when at least `trigger` flags are
+excessive and at least `cooldown` accepted observations have passed since the
+last successful fit. A full window is unnecessary, and an observation with a
+small error can satisfy the cooldown while earlier excessive flags remain.
+
+The first `startup_observations` accepted rows are eager (default 10). An unready
+or unusable model keeps trying to fit. A successful fit clears the monitor;
+a failed fit does not. Periodic full rebuilds and numerical recovery override
+lazy deferral. Between fits, coefficients and the feature means/scales used
+with them remain one prediction snapshot. Eager defaults do not collect this
+monitor or compute its extra prediction. Lazy thresholds are not a guarantee
+on future prediction error.
+
+Both tolerances must be finite and nonnegative. Window, trigger, cooldown, and
+startup count must be positive integers, with `trigger <= window`. Unknown axes,
+duplicate axes, invalid grid shapes, and incompatible policy fields fail before
+estimator selection. `fit.linear` is rejected with `fit.kind: spline`;
+the spline fit and retention axes remain `[attention, moe]`.
 
 ### Selecting linear or spline regression
 
@@ -396,12 +474,20 @@ let model = ForwardPassPerfModel::best_available(config)?;
 
 Rust source compatibility: exhaustive matches on `RegressionFitKind` must now
 handle `RegressionFitKind::Spline`. Existing full `RegressionFitConfig` literals
-for linear fits must add `spline: None`; this type implements `Default`, so
+for linear fits must include the optional `linear` and `spline` fields; this type implements `Default`, so
 `..RegressionFitConfig::default()` is also available when its other defaults
 are appropriate. Full `ForwardPassRegressionStoreDiagnostics` literals must
 likewise provide the new `spline` field (`None` for linear stores). That
 diagnostics type does not implement `Default`. Existing serialized linear
 configurations and diagnostics continue to omit `spline` when it is `None`.
+Likewise, absent `fit.linear` and default regression sampling axes remain omitted.
+`FpmRegressionConfig.sampling` uses the public `RegressionSamplingConfig` with
+vector-valued axes and bin counts. Correction retains `SamplingConfig` and its
+two-element bin array. `LinearFitConfig`, `RegressionFeatureAxis`, and
+`RegressionUpdatePolicy` are public Rust types; legacy flat options still migrate
+to the unchanged two-axis default. Full `ScheduledRequestMetrics` literals must
+initialize `extend_lengths` and `past_kv_lengths` to `None`, or use
+`..ScheduledRequestMetrics::default()` when appropriate.
 
 Rust expands omitted spline controls to:
 
@@ -492,8 +578,8 @@ estimator priority; use `estimation_mode: fpm_regression` to require regression.
 ### Recursive regression and statistics rebuilding
 
 Linear regression maintains centered sufficient statistics for the retained
-samples and applies the existing standardized nonnegative least-squares fit. The
-objective and readiness rules stay the same. The retention grid still controls
+samples and applies the selected standardized linear fit. The default objective
+and readiness rules stay the same. The retention grid still controls
 which samples are kept; it does not create separate fitted planes within a
 workload store. Spline regression maintains statistics in its current basis and
 rebuilds them when knot positions change. Its knot-search policy and
@@ -514,7 +600,7 @@ saved configuration and reload. No flat legacy option is added.
 When enabled, the interval counts **one insertion and one eviction as separate
 mutations**. A rebuild runs after the complete retained-sample update transaction
 and resets the mutation counter to zero. With an explicit interval of 4096, a
-capacity of 64, an initially empty store, and no earlier recovery rebuild, the
+capacity of 64, an initially empty store, and no earlier recovery or batch fallback, the
 first rebuild occurs after 2,080 accepted observations: 64 initial insertions,
 then 2,016 insert/evict pairs. Further rebuilds occur every 2,048 accepted
 observations while the store stays full. This counts accepted observations per
@@ -523,9 +609,12 @@ store, not prediction queries or wall-clock time.
 There is at most one periodic rebuild after an update transaction. A full-store
 insert/evict pair can cross an odd interval by one mutation; it still produces
 one rebuild and a reset to zero. Rejected observations and spatial rebucketing
-do not advance the counter. A batch-fit fallback alone does not reset it;
-rebuilding the statistics does. The setting is fixed for each store when the
-model is constructed.
+do not advance the counter. For linear fits, periodic rebuilding, numerical
+recovery, and a conservative batch fallback all use one full-rebuild operation:
+reaccumulate statistics and recompute batch coefficients from the same retained
+rows, then reset the mutation clock. A failed batch fit leaves the model unready.
+There is no fixed 256-observation gap or separate batch-fallback interval.
+The setting is fixed for each store when the model is constructed.
 
 The default and explicit Python `None` both disable only the periodic schedule.
 Numerical recovery rebuilds and conservative batch fallbacks remain enabled:

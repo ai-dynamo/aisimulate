@@ -54,8 +54,9 @@ pub use fpm::{
     ForwardPassWorkerType, FpmRegressionConfig, RegressionFeatureWeights, SamplingConfig,
 };
 pub use fpm::{
-    CorrectionFactorBounds, CorrectionFeatureSpace, FpmInterpolationConfig, OpLevelConfig,
-    RegressionFitConfig, RegressionFitKind, SplineFitConfig, SplineSearchConfig,
+    CorrectionFactorBounds, CorrectionFeatureSpace, FpmInterpolationConfig, LinearFitConfig,
+    OpLevelConfig, RegressionFeatureAxis, RegressionFitConfig, RegressionFitKind,
+    RegressionSamplingConfig, RegressionUpdatePolicy, SplineFitConfig, SplineSearchConfig,
     UnrecordedFpmQuantMode,
 };
 // Forward-pass metrics telemetry types and schema version, plus the

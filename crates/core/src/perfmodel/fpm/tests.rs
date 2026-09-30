@@ -539,6 +539,73 @@ fn invalid_schema_rejected() {
     assert!(model.estimate_forward_pass_time_ms(&[bad]).is_err());
 }
 
+#[test]
+fn optional_request_lists_validate_at_public_prediction_and_tuning_boundaries() {
+    use super::{LinearFitConfig, RegressionFeatureAxis};
+
+    let legacy = serde_json::to_value(ScheduledRequestMetrics::default()).unwrap();
+    assert!(legacy.get("extend_lengths").is_none());
+    assert!(legacy.get("past_kv_lengths").is_none());
+
+    let mut config = crate::ForwardPassPerfModelConfig::new(
+        "test/model",
+        "test-system",
+        BackendKind::Vllm,
+        ForwardPassWorkerType::Decode,
+    );
+    config.estimation_mode = crate::EstimationMode::FpmRegression;
+    config.estimator_config.fpm_regression.fit.linear = Some(LinearFitConfig {
+        feature_axes: vec![RegressionFeatureAxis::MaxPast],
+        ..Default::default()
+    });
+    let mut model = ForwardPassPerfModel::best_available(config).unwrap();
+    let sample = |i: u32| {
+        // Independent oracle: y = 3 + 0.5 * max(past), with past = [i, 2i].
+        let mut row = decode_fpm(2, 3 * i, (3.0 + f64::from(i)) / 1000.0);
+        row.scheduled_requests.extend_lengths = Some(vec![1, 1]);
+        row.scheduled_requests.past_kv_lengths = Some(vec![u64::from(i), 2 * u64::from(i)]);
+        row
+    };
+    for i in 1..=8 {
+        model.tune_with_fpms(&[vec![sample(i)]]).unwrap();
+    }
+    let query = sample(9);
+    let before = model
+        .estimate_forward_pass_time_ms(std::slice::from_ref(&query))
+        .unwrap();
+    assert_close(before.unwrap(), 12.0);
+    let retained = model.regression_store_diagnostics()[0].retained_observations;
+
+    let mut lone_array = query.clone();
+    lone_array.scheduled_requests.past_kv_lengths = None;
+    let mut wrong_count = query.clone();
+    wrong_count.scheduled_requests.past_kv_lengths = Some(vec![27]);
+    let mut wrong_sum = query.clone();
+    wrong_sum.scheduled_requests.past_kv_lengths = Some(vec![9, 19]);
+    let mut overflow = query.clone();
+    overflow.scheduled_requests.extend_lengths = Some(vec![u64::MAX, 1]);
+    for invalid in [lone_array, wrong_count, wrong_sum, overflow] {
+        assert!(matches!(
+            model.estimate_forward_pass_time_ms(std::slice::from_ref(&invalid)),
+            Err(AicError::InvalidForwardPassMetrics(_))
+        ));
+        assert!(matches!(
+            model.tune_with_fpms(&[vec![invalid]]),
+            Err(AicError::InvalidForwardPassMetrics(_))
+        ));
+        assert_eq!(
+            model.regression_store_diagnostics()[0].retained_observations,
+            retained
+        );
+        assert_eq!(
+            model
+                .estimate_forward_pass_time_ms(std::slice::from_ref(&query))
+                .unwrap(),
+            before
+        );
+    }
+}
+
 // ---- options validation ----
 
 #[test]

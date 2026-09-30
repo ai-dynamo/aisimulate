@@ -943,8 +943,22 @@ def test_forward_pass_constructor_passes_complete_typed_request(monkeypatch, reb
         "estimator_config": {
             "features": {"attention_kv_weight": 2.0, "prefill_attention_pair_weight": 3.0, "ffn_token_weight": 4.0},
             "fpm_regression": {
-                "sampling": {"bins_per_axis": [4, 16], "max_observations": 128},
-                "fit": {"rebuild_interval": rebuild_interval},
+                "sampling": {"axes": ["attention", "moe", "n"], "bins_per_axis": [2, 4, 2], "max_observations": 128},
+                "fit": {
+                    "rebuild_interval": rebuild_interval,
+                    "linear": {
+                        "feature_axes": ["attention", "moe", "logN"],
+                        "non_negative": False,
+                        "update_policy": {
+                            "kind": "error_threshold",
+                            "relative_tolerance": 0.05,
+                            "absolute_tolerance_ms": 0.1,
+                            "window": 8,
+                            "trigger": 2,
+                            "cooldown": 4,
+                        },
+                    },
+                },
             },
             "correction": {"enabled": False},
         },
@@ -1066,6 +1080,56 @@ def test_canonical_regression_rebuild_interval_survives_saved_config(as_mapping,
     assert restored.regression_store_diagnostics() == [
         {"workload_kind": "pure_decode", "ready": False, "retained_observations": 0}
     ]
+
+
+@pytest.mark.parametrize("as_mapping", [False, True])
+def test_canonical_linear_axes_and_lazy_policy_survive_saved_config(as_mapping):
+    from copy import deepcopy
+
+    from aisimulate_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
+
+    controls = {
+        "sampling": {"axes": ["n", "attention", "moe"], "bins_per_axis": [2, 3, 4], "max_observations": 128},
+        "fit": {
+            "linear": {
+                "feature_axes": ["attention", "moe", "logN"],
+                "non_negative": False,
+                "update_policy": {
+                    "kind": "error_threshold",
+                    "relative_tolerance": 0.05,
+                    "absolute_tolerance_ms": 0.1,
+                    "window": 8,
+                    "trigger": 2,
+                    "cooldown": 4,
+                },
+            }
+        },
+    }
+    config = ForwardPassPerfModelConfig(
+        model="test/model",
+        system="test",
+        backend="vllm",
+        worker_type="decode",
+        estimation_mode="fpm_regression",
+        estimator_config={"fpm_regression": deepcopy(controls)},
+    )
+    model = RustForwardPassPerfModel.best_available(config.to_dict() if as_mapping else config)
+    resolved = model.diagnostics()["provenance"]["config"]
+    expected = deepcopy(controls)
+    expected["fit"]["linear"]["update_policy"]["startup_observations"] = 10
+    regression = resolved["estimator_config"]["fpm_regression"]
+    assert regression["sampling"] == expected["sampling"]
+    assert regression["fit"]["linear"] == expected["fit"]["linear"]
+    assert regression["fit"]["rebuild_interval"] is None
+    assert resolved["estimator_config"]["correction"]["sampling"] == {
+        "bins_per_axis": [4, 4],
+        "max_observations": 64,
+    }
+    assert config.estimator_config == {"fpm_regression": controls}
+    restored = RustForwardPassPerfModel.best_available(json.loads(json.dumps(resolved)))
+    assert restored.diagnostics()["provenance"]["config"] == resolved
+    assert not restored.regression_store_diagnostics()[0]["ready"]
+    assert restored.regression_store_diagnostics()[0]["retained_observations"] == 0
 
 
 @pytest.mark.parametrize("invalid", [0, -1, True, False, 1.5, 4096.0, "4096", [], {}, float("nan"), float("inf")])

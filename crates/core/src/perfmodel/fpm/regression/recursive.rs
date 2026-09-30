@@ -3,46 +3,59 @@
 
 //! Centered sufficient statistics for the existing constrained regression fit.
 //!
-//! Insertions and evictions update the mean and scatter of `(x0, x1, y)`.
+//! Insertions and evictions update the mean and scatter of the features and target.
 //! Standardization and the small nonnegative slope search are then recomputed
-//! from those statistics. Numerically ambiguous cases use the original batch
-//! fitter on the exact retained observations.
+//! from those statistics. Scheduled rebuilds and numerically ambiguous cases
+//! refresh both statistics and the batch fit from the exact retained observations.
 
 use super::{
-    FEATURE_DIMENSION, INACTIVE_SCALE_RELATIVE_TOLERANCE, LinearFit, RegressionObservation,
-    Standardization, fit_regression_with_ridge, solve_linear_system,
-    solve_regularized_linear_system,
+    INACTIVE_SCALE_RELATIVE_TOLERANCE, LinearFit, RegressionObservation, Standardization,
+    fit_regression_with_constraints, solve_linear_system, solve_regularized_linear_system,
 };
 const SCORE_RELATIVE_TOLERANCE: f64 = 1e-10;
 const MIN_COVARIANCE_DETERMINANT_RATIO: f64 = 1e-8;
 
 #[derive(Clone, Debug)]
-pub(super) struct RecursiveFit {
+pub(super) struct RecursiveFit<const D: usize = 2, const S: usize = 3> {
     count: usize,
-    means: [f64; 3],
-    scatter: [[f64; 3]; 3],
+    means: [f64; S],
+    scatter: [[f64; S]; S],
     mutations_since_rebuild: usize,
     damaged_downdate: bool,
     ridge_scale: f64,
     rebuild_interval: Option<usize>,
+    non_negative: bool,
 }
 
-struct Candidate {
-    fit: LinearFit,
+struct Candidate<const D: usize> {
+    fit: LinearFit<D>,
     squared_error: f64,
     error_tolerance: f64,
 }
 
-impl RecursiveFit {
+impl RecursiveFit<2, 3> {
     pub(super) fn new(ridge_scale: f64, rebuild_interval: Option<usize>) -> Self {
+        Self::new_with_constraints(ridge_scale, rebuild_interval, true)
+    }
+}
+
+impl<const D: usize, const S: usize> RecursiveFit<D, S> {
+    pub(super) fn new_with_constraints(
+        ridge_scale: f64,
+        rebuild_interval: Option<usize>,
+        non_negative: bool,
+    ) -> Self {
+        assert_eq!(S, D + 1, "statistics include every feature and the target");
+        assert!(D > 0 && D < usize::BITS as usize);
         Self {
             count: 0,
-            means: [0.0; 3],
-            scatter: [[0.0; 3]; 3],
+            means: [0.0; S],
+            scatter: [[0.0; S]; S],
             mutations_since_rebuild: 0,
             damaged_downdate: false,
             ridge_scale,
             rebuild_interval,
+            non_negative,
         }
     }
 
@@ -56,31 +69,33 @@ impl RecursiveFit {
     }
 
     // The caller supplies validated samples and accounts for each eviction.
-    pub(super) fn add(&mut self, observation: RegressionObservation) {
+    pub(super) fn add(&mut self, observation: RegressionObservation<D>) {
         self.insert_statistics(observation);
         self.mutations_since_rebuild = self.mutations_since_rebuild.saturating_add(1);
     }
 
-    fn insert_statistics(&mut self, observation: RegressionObservation) {
-        let z = [
-            observation.raw_x[0],
-            observation.raw_x[1],
-            observation.observed_ms,
-        ];
+    fn insert_statistics(&mut self, observation: RegressionObservation<D>) {
+        let z: [f64; S] = std::array::from_fn(|i| {
+            if i < D {
+                observation.raw_x[i]
+            } else {
+                observation.observed_ms
+            }
+        });
         if self.count == 0 {
             self.count = 1;
             self.means = z;
-            self.scatter = [[0.0; 3]; 3];
+            self.scatter = [[0.0; S]; S];
             return;
         }
-        let delta = std::array::from_fn::<_, 3, _>(|i| z[i] - self.means[i]);
+        let delta = std::array::from_fn::<_, S, _>(|i| z[i] - self.means[i]);
         self.count += 1;
         for (mean, difference) in self.means.iter_mut().zip(delta) {
             *mean += difference / self.count as f64;
         }
-        let remaining = std::array::from_fn::<_, 3, _>(|i| z[i] - self.means[i]);
-        for i in 0..3 {
-            for j in i..3 {
+        let remaining = std::array::from_fn::<_, S, _>(|i| z[i] - self.means[i]);
+        for i in 0..S {
+            for j in i..S {
                 // The diagonal matches production's Welford operation. The
                 // symmetric cross term avoids privileging either coordinate.
                 let increment = if i == j {
@@ -94,7 +109,7 @@ impl RecursiveFit {
         }
     }
 
-    pub(super) fn remove(&mut self, observation: RegressionObservation) {
+    pub(super) fn remove(&mut self, observation: RegressionObservation<D>) {
         self.mutations_since_rebuild = self.mutations_since_rebuild.saturating_add(1);
         if self.count == 0 {
             self.damaged_downdate = true;
@@ -102,23 +117,25 @@ impl RecursiveFit {
         }
         if self.count == 1 {
             self.count = 0;
-            self.means = [0.0; 3];
-            self.scatter = [[0.0; 3]; 3];
+            self.means = [0.0; S];
+            self.scatter = [[0.0; S]; S];
             return;
         }
-        let z = [
-            observation.raw_x[0],
-            observation.raw_x[1],
-            observation.observed_ms,
-        ];
-        let delta = std::array::from_fn::<_, 3, _>(|i| z[i] - self.means[i]);
+        let z: [f64; S] = std::array::from_fn(|i| {
+            if i < D {
+                observation.raw_x[i]
+            } else {
+                observation.observed_ms
+            }
+        });
+        let delta = std::array::from_fn::<_, S, _>(|i| z[i] - self.means[i]);
         self.count -= 1;
         for (mean, difference) in self.means.iter_mut().zip(delta) {
             *mean -= difference / self.count as f64;
         }
-        let remaining = std::array::from_fn::<_, 3, _>(|i| z[i] - self.means[i]);
-        for i in 0..3 {
-            for j in i..3 {
+        let remaining = std::array::from_fn::<_, S, _>(|i| z[i] - self.means[i]);
+        for i in 0..S {
+            for j in i..S {
                 let previous = self.scatter[i][j];
                 let decrement = if i == j {
                     delta[i] * remaining[i]
@@ -139,10 +156,10 @@ impl RecursiveFit {
         }
     }
 
-    fn rebuild(&mut self, retained: &[RegressionObservation]) {
+    fn rebuild(&mut self, retained: &[RegressionObservation<D>]) {
         self.count = 0;
-        self.means = [0.0; 3];
-        self.scatter = [[0.0; 3]; 3];
+        self.means = [0.0; S];
+        self.scatter = [[0.0; S]; S];
         for &observation in retained {
             self.insert_statistics(observation);
         }
@@ -153,26 +170,94 @@ impl RecursiveFit {
     fn statistics_are_finite(&self) -> bool {
         self.means.iter().all(|value| value.is_finite())
             && self.scatter.iter().flatten().all(|value| value.is_finite())
-            && (0..3).all(|i| self.scatter[i][i] >= 0.0)
+            && (0..S).all(|i| self.scatter[i][i] >= 0.0)
+    }
+
+    fn covariance_rank_deficient(
+        &self,
+        standardization: &Standardization<D>,
+        varying_axes: &[usize],
+    ) -> bool {
+        let n = varying_axes.len();
+        let mut covariance = [[0.0; D]; D];
+        for (i, &a) in varying_axes.iter().enumerate() {
+            for (j, &b) in varying_axes.iter().enumerate() {
+                let value = (self.scatter[a][b] / standardization.scales[a])
+                    / standardization.scales[b]
+                    / self.count as f64;
+                if !value.is_finite() {
+                    return true;
+                }
+                covariance[i][j] = value;
+            }
+        }
+        // Pairwise correlations miss collective dependence such as z=x+y.
+        // Symmetric diagonal pivoting checks the remaining normalized variance
+        // without choosing a coefficient solution for an ambiguous system.
+        for i in 0..n {
+            let pivot = (i..n)
+                .max_by(|&a, &b| covariance[a][a].total_cmp(&covariance[b][b]))
+                .unwrap();
+            if covariance[pivot][pivot] <= MIN_COVARIANCE_DETERMINANT_RATIO {
+                return true;
+            }
+            covariance.swap(i, pivot);
+            for row in covariance.iter_mut().take(n) {
+                row.swap(i, pivot);
+            }
+            for j in i + 1..n {
+                for k in j..n {
+                    covariance[j][k] -= covariance[j][i] * covariance[k][i] / covariance[i][i];
+                    covariance[k][j] = covariance[j][k];
+                }
+            }
+        }
+        false
+    }
+
+    /// Must be checked after admission and eviction, before skipping a lazy fit.
+    /// Scheduled rebuilding and numerical recovery both refresh coefficients.
+    pub(super) fn rebuild_required(&self) -> bool {
+        self.damaged_downdate
+            || !self.statistics_are_finite()
+            || self
+                .rebuild_interval
+                .is_some_and(|interval| self.mutations_since_rebuild >= interval)
+    }
+
+    fn rebuild_and_fit(
+        &mut self,
+        retained: &[RegressionObservation<D>],
+        min_observations: usize,
+    ) -> Option<LinearFit<D>> {
+        self.rebuild(retained);
+        // Publish the returned fit as a whole, including its standardization.
+        // An unusable batch result remains None; it must not reuse an older fit.
+        fit_regression_with_constraints(
+            retained,
+            min_observations,
+            self.ridge_scale,
+            self.non_negative,
+        )
     }
 
     fn fallback(
-        &self,
-        retained: &mut impl FnMut() -> Vec<RegressionObservation>,
+        &mut self,
+        retained: &mut impl FnMut() -> Vec<RegressionObservation<D>>,
         min_observations: usize,
-    ) -> Option<LinearFit> {
-        // A batch fallback does not reset the statistics or rebuild clock.
-        fit_regression_with_ridge(&retained(), min_observations, self.ridge_scale)
+    ) -> Option<LinearFit<D>> {
+        // All full rebuild reasons share one snapshot and reset the same clock.
+        self.rebuild_and_fit(&retained(), min_observations)
     }
 
     #[cfg(test)]
     pub(super) fn fit(
         &mut self,
-        retained: &[RegressionObservation],
+        retained: &[RegressionObservation<D>],
         min_observations: usize,
-    ) -> Option<LinearFit> {
+    ) -> Option<LinearFit<D>> {
         if self.count != retained.len() {
-            self.rebuild(retained);
+            return self.rebuild_and_fit(retained, min_observations);
         }
         self.fit_lazy(min_observations, || retained.to_vec())
     }
@@ -181,35 +266,41 @@ impl RecursiveFit {
     /// and one eviction count as two mutations; rebucketing counts as none.
     /// The interval is checked once here, so an odd threshold can be exceeded
     /// by one mutation before a rebuild resets the clock. Disabling periodic
-    /// rebuilds leaves numerical recovery and batch fallbacks enabled.
+    /// rebuilds leaves numerical recovery enabled. Every full rebuild refreshes
+    /// both centered statistics and batch coefficients and resets this clock.
     ///
     /// The healthy path does not materialize or inspect retained samples.
     /// The caller must account for every insertion and actual eviction.
     pub(super) fn fit_lazy(
         &mut self,
         min_observations: usize,
-        mut retained: impl FnMut() -> Vec<RegressionObservation>,
-    ) -> Option<LinearFit> {
-        let periodic = self
-            .rebuild_interval
-            .is_some_and(|interval| self.mutations_since_rebuild >= interval);
-        if self.damaged_downdate || periodic || !self.statistics_are_finite() {
-            self.rebuild(&retained());
+        retained: impl FnMut() -> Vec<RegressionObservation<D>>,
+    ) -> Option<LinearFit<D>> {
+        if self.non_negative {
+            self.fit_lazy_with_constraints::<true>(min_observations, retained)
+        } else {
+            self.fit_lazy_with_constraints::<false>(min_observations, retained)
+        }
+    }
+
+    fn fit_lazy_with_constraints<const NON_NEGATIVE: bool>(
+        &mut self,
+        min_observations: usize,
+        mut retained: impl FnMut() -> Vec<RegressionObservation<D>>,
+    ) -> Option<LinearFit<D>> {
+        if self.rebuild_required() {
+            return self.fallback(&mut retained, min_observations);
         }
         if self.count < min_observations || self.count == 0 {
             return None;
         }
-        if !self.statistics_are_finite() {
-            return self.fallback(&mut retained, min_observations);
-        }
-
-        let mut standardization = Standardization {
-            means: [self.means[0], self.means[1]],
-            scales: [0.0; FEATURE_DIMENSION],
-            active: [false; FEATURE_DIMENSION],
+        let mut standardization = Standardization::<D> {
+            means: std::array::from_fn(|i| self.means[i]),
+            scales: [0.0; D],
+            active: [false; D],
         };
-        let mut varying_axes = Vec::with_capacity(FEATURE_DIMENSION);
-        for axis in 0..FEATURE_DIMENSION {
+        let mut varying_axes = Vec::with_capacity(D);
+        for axis in 0..D {
             let scale = (self.scatter[axis][axis] / self.count as f64)
                 .max(0.0)
                 .sqrt();
@@ -229,23 +320,46 @@ impl RecursiveFit {
             return None;
         }
 
-        if varying_axes.len() == 2 {
-            let correlation = (self.scatter[0][1] / standardization.scales[0])
-                / standardization.scales[1]
-                / self.count as f64;
-            if !correlation.is_finite()
-                || 1.0 - correlation * correlation <= MIN_COVARIANCE_DETERMINANT_RATIO
+        if D == 2 {
+            // Preserve the direct default-path guard without iterating axis pairs.
+            if varying_axes.len() == 2 {
+                let correlation = (self.scatter[0][1] / standardization.scales[0])
+                    / standardization.scales[1]
+                    / self.count as f64;
+                if !correlation.is_finite()
+                    || 1.0 - correlation * correlation <= MIN_COVARIANCE_DETERMINANT_RATIO
+                {
+                    return self.fallback(&mut retained, min_observations);
+                }
+            }
+        } else {
+            for (index, &a) in varying_axes.iter().enumerate() {
+                for &b in &varying_axes[index + 1..] {
+                    let correlation = (self.scatter[a][b] / standardization.scales[a])
+                        / standardization.scales[b]
+                        / self.count as f64;
+                    if !correlation.is_finite()
+                        || 1.0 - correlation * correlation <= MIN_COVARIANCE_DETERMINANT_RATIO
+                    {
+                        // Matching only retained-point predictions is unsafe
+                        // when the slope solution is numerically ambiguous.
+                        return self.fallback(&mut retained, min_observations);
+                    }
+                }
+            }
+            if varying_axes.len() > 2
+                && self.covariance_rank_deficient(&standardization, &varying_axes)
             {
-                // Production can pick a different face under near-perfect
-                // collinearity; matching only in-sample predictions is unsafe.
                 return self.fallback(&mut retained, min_observations);
             }
         }
 
-        let target_scale = (self.scatter[2][2] / self.count as f64).sqrt();
-        let slope_tolerance = target_scale * 1e-10 + self.means[2].abs() * f64::EPSILON * 32.0;
-        let mut candidates = Vec::with_capacity(1 << varying_axes.len());
-        for mask in 0..(1usize << varying_axes.len()) {
+        let target_scale = (self.scatter[D][D] / self.count as f64).sqrt();
+        let slope_tolerance = target_scale * 1e-10 + self.means[D].abs() * f64::EPSILON * 32.0;
+        let mask_count = 1usize << varying_axes.len();
+        let first_mask = if NON_NEGATIVE { 0 } else { mask_count - 1 };
+        let mut candidates = Vec::with_capacity(mask_count - first_mask);
+        for mask in first_mask..mask_count {
             let fitted_axes = varying_axes
                 .iter()
                 .enumerate()
@@ -255,9 +369,9 @@ impl RecursiveFit {
             let mut lhs = vec![vec![0.0; size]; size];
             let mut rhs = vec![0.0; size];
             lhs[0][0] = self.count as f64;
-            rhs[0] = self.count as f64 * self.means[2];
+            rhs[0] = self.count as f64 * self.means[D];
             for (i, &axis_i) in fitted_axes.iter().enumerate() {
-                rhs[i + 1] = self.scatter[axis_i][2] / standardization.scales[axis_i];
+                rhs[i + 1] = self.scatter[axis_i][D] / standardization.scales[axis_i];
                 for (j, &axis_j) in fitted_axes.iter().enumerate() {
                     lhs[i + 1][j + 1] = (self.scatter[axis_i][axis_j]
                         / standardization.scales[axis_i])
@@ -279,14 +393,14 @@ impl RecursiveFit {
             {
                 return self.fallback(&mut retained, min_observations);
             }
-            if solution[1..].iter().any(|value| *value < 0.0) {
+            if NON_NEGATIVE && solution[1..].iter().any(|value| *value < 0.0) {
                 continue;
             }
 
-            let mut coefficients = [0.0; FEATURE_DIMENSION];
+            let mut coefficients = [0.0; D];
             let mut linear_term = 0.0;
             let mut quadratic_term = 0.0;
-            let mut magnitude = self.scatter[2][2].abs();
+            let mut magnitude = self.scatter[D][D].abs();
             for (i, &axis) in fitted_axes.iter().enumerate() {
                 coefficients[axis] = solution[i + 1];
                 let term = 2.0 * solution[i + 1] * rhs[i + 1];
@@ -298,11 +412,11 @@ impl RecursiveFit {
                     magnitude += term.abs();
                 }
             }
-            let intercept_error = solution[0] - self.means[2];
+            let intercept_error = solution[0] - self.means[D];
             // Score every face by unpenalized SSE, including ridge retries:
             // Cyy - 2 b' D^-1 Cxy + b' D^-1 Cxx D^-1 b + n(a - mean_y)^2.
             // Near ties require batch residuals because these terms can cancel.
-            let squared_error = self.scatter[2][2] - linear_term
+            let squared_error = self.scatter[D][D] - linear_term
                 + quadratic_term
                 + self.count as f64 * intercept_error * intercept_error;
             let error_tolerance = SCORE_RELATIVE_TOLERANCE * magnitude.max(1e-24);
@@ -336,7 +450,13 @@ impl RecursiveFit {
         }
         let best = candidates.swap_remove(best_index).fit;
         let is_underdetermined = self.count <= varying_axes.len();
-        let has_load_signal = best.coefficients.iter().any(|value| *value > 0.0);
+        let has_load_signal = best.coefficients.iter().any(|value| {
+            if NON_NEGATIVE {
+                *value > 0.0
+            } else {
+                *value != 0.0
+            }
+        });
         (is_underdetermined || has_load_signal).then_some(best)
     }
 }
@@ -346,7 +466,9 @@ mod tests {
     use super::*;
     use crate::RegressionFitConfig;
     use crate::fpm::options::ForwardPassPerfOptions;
-    use crate::fpm::regression::BucketedRegression;
+    use crate::fpm::regression::{
+        BucketedRegression, FEATURE_DIMENSION, fit_regression_with_ridge,
+    };
 
     fn observation(i: usize) -> RegressionObservation {
         let x = [(i % 43) as f64 + 1.0, ((i * 29) % 67) as f64 + 1.0];
@@ -532,7 +654,7 @@ mod tests {
     }
 
     #[test]
-    fn collinear_fallback_preserves_configured_ridge_and_rebuild_clock() {
+    fn collinear_fallback_preserves_configured_ridge_and_resets_rebuild_clock() {
         let mut recursive = RecursiveFit::new(0.25, None);
         let retained = (0..16)
             .map(|i| RegressionObservation {
@@ -551,7 +673,53 @@ mod tests {
         let batch = fit_regression_with_ridge(&retained, 5, 0.25);
         compare_fits(incremental.as_ref(), batch.as_ref(), &retained);
         assert_eq!(reads, 1);
-        assert_eq!(recursive.mutations_since_rebuild, retained.len());
+        assert_eq!(recursive.mutations_since_rebuild, 0);
+    }
+
+    #[test]
+    fn full_rebuild_repairs_statistics_and_publishes_batch_readiness_once() {
+        for usable in [true, false] {
+            // The grid has hand-derived mean latency 12.5 and predicts 34 at
+            // (7, 5). A constant target has no load signal and must be unready.
+            let retained = (0..16)
+                .map(|i| {
+                    let raw_x = [(i % 4) as f64, (i / 4) as f64];
+                    RegressionObservation {
+                        raw_x,
+                        observed_ms: if usable {
+                            5.0 + 2.0 * raw_x[0] + 3.0 * raw_x[1]
+                        } else {
+                            10.0
+                        },
+                    }
+                })
+                .collect::<Vec<_>>();
+            let mut recursive = RecursiveFit::new(0.25, Some(16));
+            for &sample in &retained {
+                recursive.add(sample);
+            }
+            let expected_means = recursive.means;
+            let expected_scatter = recursive.scatter;
+            // Coincident periodic and numerical triggers must share a snapshot.
+            recursive.means[2] += 100.0;
+            recursive.scatter[0][0] = f64::NAN;
+            assert!(recursive.rebuild_required());
+            let mut reads = 0;
+            let fit = recursive.fit_lazy(5, || {
+                reads += 1;
+                retained.clone()
+            });
+            assert_eq!(reads, 1);
+            assert_eq!(recursive.means, expected_means);
+            assert_eq!(recursive.scatter, expected_scatter);
+            assert_eq!(recursive.mutations_since_rebuild, 0);
+            assert!(!recursive.rebuild_required());
+            assert_eq!(fit.is_some(), usable);
+            if let Some(fit) = fit {
+                close(fit.predict(&[7.0, 5.0]).unwrap(), 34.0);
+                close(recursive.means[2], 12.5);
+            }
+        }
     }
 
     #[test]

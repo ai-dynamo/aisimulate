@@ -34,13 +34,13 @@ struct RetainedObservation {
 }
 
 #[derive(Clone, Debug, Default)]
-struct ErrorMonitor {
+pub(super) struct ErrorMonitor {
     errors: VecDeque<bool>,
-    bad: usize,
+    pub(super) bad: usize,
 }
 
 impl ErrorMonitor {
-    fn observe(&mut self, bad: bool, window: usize) {
+    pub(super) fn observe(&mut self, bad: bool, window: usize) {
         self.errors.push_back(bad);
         self.bad += usize::from(bad);
         if self.errors.len() > window {
@@ -48,7 +48,7 @@ impl ErrorMonitor {
         }
     }
 
-    fn clear(&mut self) {
+    pub(super) fn clear(&mut self) {
         self.errors.clear();
         self.bad = 0;
     }

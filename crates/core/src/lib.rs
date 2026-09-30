@@ -48,8 +48,9 @@ pub use perfmodel::{
     SamplingConfig, ScheduledRequestMetrics, SpeculativeConfig,
 };
 pub use perfmodel::{
-    CorrectionFactorBounds, CorrectionFeatureSpace, FpmInterpolationConfig, OpLevelConfig,
-    RegressionFitConfig, RegressionFitKind, SplineFitConfig, SplineSearchConfig,
+    CorrectionFactorBounds, CorrectionFeatureSpace, FpmInterpolationConfig, LinearFitConfig,
+    OpLevelConfig, RegressionFeatureAxis, RegressionFitConfig, RegressionFitKind,
+    RegressionSamplingConfig, RegressionUpdatePolicy, SplineFitConfig, SplineSearchConfig,
     UnrecordedFpmQuantMode,
 };
 
