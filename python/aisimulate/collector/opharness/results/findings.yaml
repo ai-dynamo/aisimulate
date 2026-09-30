@@ -1996,7 +1996,7 @@ findings:
       attention_context bf16 27,218; attention_generation bf16 33,785; dsa_context 106,020 (12 x 8,835);
       dsa_generation 10,862; mla_context 8,487; mla_generation 7,059; msa 7,320 + 5,511; dsv4 csa/hca ctx 5,718 /
       5,789, gen 1,544 / 1,544; encoder_attention 7,679; moe 76,947; compute_scale 3,256 (2 tables); mla_bmm 300 +
-      336; gdn 10,284; kda 1,247. attention fp8-KV ctx/gen re-collected from scratch after the collector fix below.
+      336; gdn 10,284; kda 1,247. attention fp8-KV ctx/gen re-collected from scratch after the collector fix below: context 27,144 / generation 32,370 rows (labels fiprefill / trtllmapidecode_xqa / triton_attn), 90 + 1,448 XQA power-of-2 failures left; campaign total 524,972 rows.
       FAILURE GROUPS, all classified, none hidden: (1) dsa heads 96/48/24/12/4/2/1 + prefix >= 262144 — owner
       decision sm120_dsa_head_axis_failures_accepted (~60% of dsa_context cases, fail at metadata build);
       (2) TRITON_MLA fp8-KV smem 102400 > 101376 (mla_generation 6,036; the platform limit from the probe campaign);
