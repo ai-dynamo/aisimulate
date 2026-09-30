@@ -65,7 +65,11 @@ def prepare(args) -> Path:
     attempt.mkdir(parents=True, exist_ok=True)
     config = json.loads(Path(args.config).read_text())
     if args.smoke:
-        sweep = SMOKE_SWEEP
+        sweep = dict(SMOKE_SWEEP)
+        if args.layer_id is not None:
+            # Smoke-only cross-check that another sparse-MLA layer times like
+            # the representative one; full attempts always use the YAML layer.
+            sweep["layer_id"] = args.layer_id
     else:
         sweep = yaml.safe_load(Path(args.sweep).read_text())["common_case_values"][OP_NAME]
     representative_layer_is_uniform(config, sweep["layer_id"], args.checkpoint)
@@ -85,7 +89,8 @@ def prepare(args) -> Path:
     }
     manifest = {**body, "manifest_sha256": sha256_json(body)}
     (attempt / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
-    job = f"glm53-sa-w4-{args.backend}-{args.checkpoint}-tp{args.tp}{'-smoke' if args.smoke else ''}"
+    suffix = ("-smoke" if args.smoke else "") + (f"-l{args.layer_id}" if args.layer_id is not None else "")
+    job = f"glm53-sa-w4-{args.backend}-{args.checkpoint}-tp{args.tp}{suffix}"
     container = f"{args.remote_attempt}"
     runner = f"collector.{args.backend}.glm53flash_attention_runner"
     common = "--manifest /results/manifest.json --output /results/raw --corpus /results/corpus.txt"
@@ -135,6 +140,7 @@ def main():
     parser.add_argument("--config", required=True, help="checkpoint config.json (pinned revision)")
     parser.add_argument("--sweep", default="collector/cases/base_ops/glm53flash_attention.yaml")
     parser.add_argument("--smoke", action="store_true")
+    parser.add_argument("--layer-id", type=int, help="smoke-only representative-layer cross-check")
     parser.add_argument("--attempt", required=True, help="local fresh attempt directory")
     parser.add_argument("--remote-attempt", required=True)
     parser.add_argument("--remote-source", required=True, help="shared-storage copy of python/aisimulate")
@@ -146,6 +152,8 @@ def main():
     parser.add_argument("--partition", default="batch")
     parser.add_argument("--time", default="04:00:00")
     args = parser.parse_args()
+    if args.layer_id is not None and not args.smoke:
+        parser.error("--layer-id is a smoke-only cross-check")
     if args.backend == "vllm" and not args.remote_tail:
         parser.error("vLLM requires the reviewed glm53tail overlay (--remote-tail)")
     print(prepare(args))

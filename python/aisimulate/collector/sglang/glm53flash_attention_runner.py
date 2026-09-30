@@ -64,7 +64,6 @@ class AttentionProbe:
         self.captured = {}
         self.armed = None
         self.done = None
-        self.kernel_source = {}
         self.pool = None
         attention.forward = self._forward
 
@@ -144,7 +143,8 @@ class AttentionProbe:
         attn_inputs = get_forward().attn_inputs
         zero_allocator = kwargs["zero_allocator"]
         pointer = zero_allocator._pointer
-        source = self.kernel_source.setdefault("context", self._source(forward_batch))
+        # The dispatched forward method differs by regime (dense MHA vs sparse MLA).
+        source = self._source(forward_batch)
         timer = EventTimer(torch)
         outputs = []
         for _ in range(self.options.warmup + self.options.iterations):
@@ -186,7 +186,7 @@ class AttentionProbe:
         if self.pool is None:
             self.pool = torch.cuda.graph_pool_handle()
         with forward_context(record.context), model_capture_mode():
-            source = self.kernel_source.setdefault("generation", self._source(forward_batch))
+            source = self._source(forward_batch)
             # The framework runs the captured callable eagerly before capture.
             for _ in range(2):
                 call()
