@@ -1,24 +1,35 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Discovery and invocation for post-recommendation output adapters."""
+"""Discovery and invocation for recommendation output adapters."""
 
 from __future__ import annotations
 
 import importlib.metadata
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
+from copy import deepcopy
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
-from .sweeper.result import SweepResult
+from .sweeper.config import Candidate
+from .sweeper.result import CandidateRecord, SweepResult
 
 OUTPUT_ADAPTER_API_VERSION = 1
 OUTPUT_ADAPTER_ENTRY_POINT_GROUP = "aisimulate.output_adapters"
 
 
+@dataclass(frozen=True)
+class RecommendationOutputCallbacks:
+    """Optional live recommendation callbacks requested by an output adapter."""
+
+    on_candidate: Callable[[CandidateRecord], None] | None = None
+    on_round: Callable[[int, list[Candidate]], None] | None = None
+
+
 @runtime_checkable
 class RecommendationOutputAdapter(Protocol):
-    """Write additional artifacts for a completed recommendation."""
+    """Observe a recommendation and write additional artifacts when it completes."""
 
     name: str
     api_version: int
@@ -38,7 +49,7 @@ class OutputAdapterResolutionError(RuntimeError):
 
 
 class OutputAdapterExecutionError(RuntimeError):
-    """A selected recommendation output adapter failed to write its artifacts."""
+    """A selected recommendation output adapter failed during execution."""
 
 
 def validate_output_adapter(adapter: Any, *, requested_name: str) -> RecommendationOutputAdapter:
@@ -56,6 +67,11 @@ def validate_output_adapter(adapter: Any, *, requested_name: str) -> Recommendat
         )
     if not callable(getattr(adapter, "write", None)):
         raise OutputAdapterResolutionError(f"output adapter {requested_name!r} is missing callable: write")
+    subscribe = getattr(adapter, "subscribe", None)
+    if subscribe is not None and not callable(subscribe):
+        raise OutputAdapterResolutionError(
+            f"output adapter {requested_name!r} has non-callable optional attribute: subscribe"
+        )
     return adapter
 
 
@@ -100,6 +116,65 @@ def resolve_output_adapters(
     return resolved
 
 
+def _dispatch_callback(name: str, event: str, callback: Callable[..., None], *args: Any) -> None:
+    try:
+        callback(*args)
+    except KeyboardInterrupt:
+        raise
+    except Exception as exc:
+        raise OutputAdapterExecutionError(
+            f"output adapter {name!r} {event} callback failed: {type(exc).__name__}: {exc}"
+        ) from exc
+
+
+def resolve_output_callbacks(
+    configs: Mapping[str, Mapping[str, Any]],
+    *,
+    injected: Mapping[str, RecommendationOutputAdapter] | None = None,
+    entry_points: Iterable[importlib.metadata.EntryPoint] | None = None,
+) -> RecommendationOutputCallbacks:
+    """Resolve live subscriptions from fresh worker-local adapter instances."""
+
+    adapters = resolve_output_adapters(configs, injected=injected, entry_points=entry_points)
+    candidate_callbacks: list[tuple[str, Callable[[CandidateRecord], None]]] = []
+    round_callbacks: list[tuple[str, Callable[[int, list[Candidate]], None]]] = []
+    for name, adapter in adapters.items():
+        subscribe = getattr(adapter, "subscribe", None)
+        if subscribe is None:
+            continue
+        try:
+            callbacks = subscribe(configs[name])
+        except KeyboardInterrupt:
+            raise
+        except Exception as exc:
+            raise OutputAdapterExecutionError(
+                f"output adapter {name!r} subscription failed: {type(exc).__name__}: {exc}"
+            ) from exc
+        if callbacks is None:
+            continue
+        if not isinstance(callbacks, RecommendationOutputCallbacks):
+            raise OutputAdapterExecutionError(
+                f"output adapter {name!r} subscribe() must return RecommendationOutputCallbacks or None"
+            )
+        if callbacks.on_candidate is not None:
+            candidate_callbacks.append((name, callbacks.on_candidate))
+        if callbacks.on_round is not None:
+            round_callbacks.append((name, callbacks.on_round))
+
+    def on_candidate(record: CandidateRecord) -> None:
+        for name, callback in candidate_callbacks:
+            _dispatch_callback(name, "on_candidate", callback, deepcopy(record))
+
+    def on_round(round_no: int, candidates: list[Candidate]) -> None:
+        for name, callback in round_callbacks:
+            _dispatch_callback(name, "on_round", callback, round_no, deepcopy(candidates))
+
+    return RecommendationOutputCallbacks(
+        on_candidate=on_candidate if candidate_callbacks else None,
+        on_round=on_round if round_callbacks else None,
+    )
+
+
 def write_output_adapters(
     adapters: Mapping[str, RecommendationOutputAdapter],
     configs: Mapping[str, Mapping[str, Any]],
@@ -137,7 +212,9 @@ __all__ = [
     "OutputAdapterExecutionError",
     "OutputAdapterResolutionError",
     "RecommendationOutputAdapter",
+    "RecommendationOutputCallbacks",
     "resolve_output_adapters",
+    "resolve_output_callbacks",
     "validate_output_adapter",
     "write_output_adapters",
 ]

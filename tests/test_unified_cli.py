@@ -1000,6 +1000,7 @@ def test_recommendation_invokes_selected_output_adapter(tmp_path, monkeypatch, c
     )
     result = _RecommendationResult([candidate])
     selected_stack = []
+    recommendation_kwargs = {}
     adapter = _DGDOutputAdapter()
 
     def resolve_stack(name):
@@ -1016,10 +1017,12 @@ def test_recommendation_invokes_selected_output_adapter(tmp_path, monkeypatch, c
             entry_points=[],
         ),
     )
-    monkeypatch.setattr(
-        "aisimulate.recommend.run_recommendation",
-        lambda *args, **kwargs: result,
-    )
+    def run_recommendation(*args, **kwargs):
+        del args
+        recommendation_kwargs.update(kwargs)
+        return result
+
+    monkeypatch.setattr("aisimulate.recommend.run_recommendation", run_recommendation)
 
     output = tmp_path / "out"
     assert (
@@ -1051,6 +1054,7 @@ def test_recommendation_invokes_selected_output_adapter(tmp_path, monkeypatch, c
         "renderer": "aic",
         "format": "manifest",
     }
+    assert recommendation_kwargs["output_configs"] == {"dgd": output_config}
     assert received_result is result
     assert received_dir == output
     assert (output / "qwen.yaml").read_text() == "kind: DynamoGraphDeployment\n"

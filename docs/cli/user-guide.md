@@ -85,7 +85,8 @@ warmup fields and retains both worker pools across the barrier. See
 | `recommend` | Search deployment and load choices for an optimization goal. | `aisimulate recommend -c recommendation.yaml --output-dir ./recommendation-output` | Ranked configurations, `recommendation.json`, and concrete YAML files under `recommendations/`. |
 
 `recommend` also accepts repeatable `--output NAME` options. Each selected output adapter requires
-a same-named top-level configuration section and writes additional artifacts after recommendation.
+a same-named top-level configuration section, may observe live candidate and round notifications,
+and writes additional artifacts after recommendation.
 
 Unless labeled as captured output, metric values in example results are hypothetical and
 illustrate the output format. Captured detail examples are simulation results, not hardware measurements.

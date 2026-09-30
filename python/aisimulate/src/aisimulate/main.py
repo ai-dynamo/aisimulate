@@ -246,6 +246,7 @@ def _recommend(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
         stack=args.stack,
         runner_factory=factory,
         providers=adapters,
+        output_configs=output_configs,
         show_progress=args.format == "table",
     )
     selected: list[tuple[str, Any, dict[str, Any]]] = []

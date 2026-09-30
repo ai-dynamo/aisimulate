@@ -12,9 +12,13 @@ from aisimulate.output_adapter import (
     OUTPUT_ADAPTER_API_VERSION,
     OutputAdapterExecutionError,
     OutputAdapterResolutionError,
+    RecommendationOutputCallbacks,
     resolve_output_adapters,
+    resolve_output_callbacks,
     write_output_adapters,
 )
+from aisimulate.sweeper.config import Candidate
+from aisimulate.sweeper.result import CandidateProvenance, CandidateRecord, CandidateStatus
 
 
 class _Adapter:
@@ -102,3 +106,110 @@ def test_output_adapter_writes_into_supplied_directory(tmp_path) -> None:
 
     assert artifacts == {"dgd": (Path("artifact.txt"),)}
     assert (tmp_path / "artifact.txt").read_text() == "artifact\n"
+
+
+def test_output_adapter_subscribes_to_live_recommendation_callbacks() -> None:
+    received = []
+
+    class SubscribedAdapter(_Adapter):
+        def subscribe(self, config):
+            assert config == {"channel": "private"}
+            return RecommendationOutputCallbacks(
+                on_candidate=lambda record: received.append(("candidate", record)),
+                on_round=lambda round_no, candidates: received.append(("round", round_no, candidates)),
+            )
+
+    callbacks = resolve_output_callbacks(
+        {"dgd": {"channel": "private"}},
+        injected={"dgd": SubscribedAdapter("dgd")},
+        entry_points=[],
+    )
+    record = CandidateRecord(
+        candidate_id="candidate-000001",
+        status=CandidateStatus.FEASIBLE,
+        config={"backend": "vllm"},
+        used_gpus=1,
+        score=1.0,
+        provenance=CandidateProvenance(model="example/model", hardware="h200_sxm"),
+    )
+    candidate = Candidate(config={"backend": "vllm"}, used_gpus=1, score=1.0, metrics={})
+
+    assert callbacks.on_candidate is not None
+    callbacks.on_candidate(record)
+    assert callbacks.on_round is not None
+    callbacks.on_round(2, [candidate])
+
+    assert received == [("candidate", record), ("round", 2, [candidate])]
+
+
+def test_output_adapter_callbacks_are_isolated_between_subscribers() -> None:
+    observed = []
+
+    class MutatingAdapter(_Adapter):
+        def subscribe(self, config):
+            del config
+
+            def mutate(record):
+                record.config["nested"]["value"] = 2
+
+            return RecommendationOutputCallbacks(on_candidate=mutate)
+
+    class ObservingAdapter(_Adapter):
+        def subscribe(self, config):
+            del config
+            return RecommendationOutputCallbacks(
+                on_candidate=lambda record: observed.append(record.config["nested"]["value"])
+            )
+
+    callbacks = resolve_output_callbacks(
+        {"mutating": {}, "observing": {}},
+        injected={
+            "mutating": MutatingAdapter("mutating"),
+            "observing": ObservingAdapter("observing"),
+        },
+        entry_points=[],
+    )
+    record = CandidateRecord(
+        candidate_id="candidate-000001",
+        status=CandidateStatus.FEASIBLE,
+        config={"nested": {"value": 1}},
+        used_gpus=1,
+        score=1.0,
+        provenance=CandidateProvenance(model="example/model", hardware="h200_sxm"),
+    )
+
+    assert callbacks.on_candidate is not None
+    callbacks.on_candidate(record)
+
+    assert observed == [1]
+    assert record.config["nested"]["value"] == 1
+
+
+def test_output_adapter_callback_failure_identifies_adapter_and_event() -> None:
+    class FailingAdapter(_Adapter):
+        def subscribe(self, config):
+            del config
+
+            def fail(record):
+                del record
+                raise ValueError("closed")
+
+            return RecommendationOutputCallbacks(on_candidate=fail)
+
+    callbacks = resolve_output_callbacks(
+        {"dgd": {}},
+        injected={"dgd": FailingAdapter("dgd")},
+        entry_points=[],
+    )
+    record = CandidateRecord(
+        candidate_id="candidate-000001",
+        status=CandidateStatus.FEASIBLE,
+        config={},
+        used_gpus=1,
+        score=1.0,
+        provenance=CandidateProvenance(model="example/model", hardware="h200_sxm"),
+    )
+
+    assert callbacks.on_candidate is not None
+    with pytest.raises(OutputAdapterExecutionError, match="dgd.*on_candidate.*ValueError: closed"):
+        callbacks.on_candidate(record)

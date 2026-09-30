@@ -20,6 +20,7 @@ from .config_adapter import (
     RecommendationAdapterContext,
     SimulationConfigAdapter,
 )
+from .output_adapter import RecommendationOutputAdapter, resolve_output_callbacks
 from .resources import GuardedRunnerFactory, discover_host, resolve_budget
 from .sweeper.afd_perfmodel import AFDPerformanceModel
 from .sweeper.config import SmartSearchConfig
@@ -35,6 +36,7 @@ def run_recommendation(
     stack: str,
     runner_factory: RunnerFactory,
     providers: Mapping[str, SimulationConfigAdapter] | None = None,
+    output_configs: Mapping[str, Mapping[str, Any]] | None = None,
     afd_performance_model: AFDPerformanceModel | None = None,
     show_progress: bool = True,
 ) -> SweepResult:
@@ -47,6 +49,7 @@ def run_recommendation(
         stack=stack,
         runner_factory=runner_factory,
         providers=providers,
+        output_configs=output_configs,
         afd_performance_model=afd_performance_model,
         show_progress=show_progress,
     )
@@ -62,6 +65,8 @@ def _run_recommendation(
     stack: str,
     runner_factory: RunnerFactory,
     providers: Mapping[str, SimulationConfigAdapter] | None = None,
+    output_configs: Mapping[str, Mapping[str, Any]] | None = None,
+    output_adapters: Mapping[str, RecommendationOutputAdapter] | None = None,
     afd_performance_model: AFDPerformanceModel | None = None,
     show_progress: bool = True,
 ) -> SweepResult:
@@ -109,7 +114,13 @@ def _run_recommendation(
         ),
         afd_performance_model=afd_performance_model,
     )
-    return sweeper.run(smart, top_n=None)
+    output_callbacks = resolve_output_callbacks(output_configs or {}, injected=output_adapters)
+    return sweeper.run(
+        smart,
+        top_n=None,
+        on_candidate=output_callbacks.on_candidate,
+        on_round=output_callbacks.on_round,
+    )
 
 
 def recommendation_to_sweeper(
