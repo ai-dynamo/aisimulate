@@ -81,3 +81,12 @@ def test_vllm_graph_mode_warms_each_shape_eagerly_before_capture():
     warm = source.index('vllm_mods["tensor_model_parallel_all_reduce"](warm)')
     capture = source.index('vllm_mods["graph_capture"](')
     assert warm < capture
+
+
+def test_vllm_graph_capture_uses_the_registered_serving_pool():
+    source = ast.get_source_segment(_COLLECTOR.read_text(encoding="utf-8"), _function("benchmark_vllm_allreduce"))
+    pool = source.index("graph_pool = _vllm_graph_pool()")
+    capture = source.index("torch.cuda.graph(graph, pool=graph_pool")
+    assert pool < capture
+    helper = ast.get_source_segment(_COLLECTOR.read_text(encoding="utf-8"), _function("_vllm_graph_pool"))
+    assert "set_graph_pool_id(pool)" in helper
