@@ -108,6 +108,7 @@ def test_stable_function_signatures() -> None:
         "forward_model: 'str | None' = None, "
         "decoder_replay: 'bool' = False, "
         "fpm_profile: 'dict | str | FpmModelProfile | None' = None, "
+        "worker_type: 'str' = 'aggregated', "
         "fpm_interpolation: 'str | None' = None, cp_size: 'int' = 1, "
         "database_mode: 'str | None' = None, shared_layer: 'bool | None' = None, "
         "transfer_policy: 'str | list[str] | None' = None, "

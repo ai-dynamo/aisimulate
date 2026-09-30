@@ -310,6 +310,14 @@ fn estimate_kwargs<'py>(
     let (fraction_kind, fraction_value) = req.kv_cache_memory_fraction.to_wire();
     let kwargs = PyDict::new(py);
     kwargs.set_item("backend_version", engine.backend_version.as_deref())?;
+    kwargs.set_item(
+        "worker_type",
+        engine
+            .extra
+            .get("worker_type")
+            .map(String::as_str)
+            .unwrap_or("aggregated"),
+    )?;
     kwargs.set_item("max_num_tokens", req.max_num_tokens)?;
     kwargs.set_item("max_batch_size", req.max_batch_size)?;
     kwargs.set_item("memory_fraction_kind", fraction_kind)?;
@@ -371,6 +379,12 @@ fn estimate_from_dict(
 ) -> pyo3::PyResult<KvCacheEstimate> {
     use pyo3::exceptions::PyValueError;
     use pyo3::types::PyAnyMethods;
+
+    if out.get_item("total_kv_size_tokens")?.is_none() {
+        return Err(PyValueError::new_err(
+            "grouped FPM caches have no scalar token capacity; use ForwardPassPerfModelConfig::estimate_cache_budget and a cache-group-aware allocator",
+        ));
+    }
 
     let u64_at = |k: &str| -> pyo3::PyResult<u64> { out.get_item(k)?.extract::<u64>() };
 
@@ -621,6 +635,21 @@ mod tests {
                 "{error}"
             );
         }
+    }
+
+    #[cfg(feature = "python")]
+    #[test]
+    fn scalar_memory_transport_rejects_grouped_capacity() {
+        use pyo3::prelude::*;
+        use pyo3::types::{PyDict, PyDictMethods};
+
+        pyo3::prepare_freethreaded_python();
+        Python::with_gil(|py| {
+            let out = PyDict::new(py);
+            out.set_item("total_kv_size_tokens", py.None()).unwrap();
+            let error = estimate_from_dict(out.as_any()).unwrap_err();
+            assert!(error.to_string().contains("no scalar token capacity"));
+        });
     }
 
     #[cfg(feature = "python")]

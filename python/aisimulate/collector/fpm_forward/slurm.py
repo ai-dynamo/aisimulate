@@ -26,7 +26,18 @@ from aisimulate.fpm_contract import FPM_BENCHMARK_RESULT_GLOB
 
 
 class SlurmCellRunner:
-    def __init__(self, manifest: Path, cell_dir: Path, *, image: str, mounts: tuple[str, ...], total_gpus: int):
+    def __init__(
+        self,
+        manifest: Path,
+        cell_dir: Path,
+        *,
+        image: str,
+        mounts: tuple[str, ...],
+        total_gpus: int,
+        cpus_per_task: int | None = None,
+        cpu_bind: str | None = None,
+        attention_tp: int = 1,
+    ):
         from .runner import _expected_nodes
 
         self.cell_dir = cell_dir.resolve()
@@ -41,6 +52,15 @@ class SlurmCellRunner:
         self.job_id = os.environ.get("SLURM_JOB_ID", "")
         if not re.fullmatch(r"[0-9]+", self.job_id):
             raise ValueError("Slurm FPM must run inside an existing sbatch/salloc allocation")
+        if (cpus_per_task is not None or cpu_bind is not None) and (
+            type(cpus_per_task) is not int or cpus_per_task < 1 or cpu_bind not in {"cores", "none"}
+        ):
+            raise ValueError("Slurm CPU policy requires positive cpus_per_task and cpu_bind cores or none")
+        local_dp = max(1, self.gpus_per_node // attention_tp)
+        if cpus_per_task is not None and cpus_per_task < local_dp:
+            raise ValueError(f"Slurm CPU pool {cpus_per_task} is smaller than {local_dp} local DP schedulers")
+        self.cpus_per_task = cpus_per_task
+        self.cpu_bind = cpu_bind
         self.step_name = f"fpm-{hashlib.sha256(str(self.cell_dir).encode()).hexdigest()[:20]}"
         # Keep ownership outside the replaceable cell payload so a fresh
         # invocation can tear down an abandoned allocation's named steps.
@@ -81,11 +101,19 @@ class SlurmCellRunner:
             raise
 
     def apply(self) -> None:
+        self._require_cpu_policy()
         for executable in ("srun", "scontrol", "squeue", "scancel"):
             if not shutil.which(executable):
                 raise RuntimeError(f"Slurm FPM requires {executable}")
         self.owner_path.parent.mkdir(parents=True, exist_ok=True)
         self.owner_path.write_text(json.dumps({"job_id": self.job_id, "step_name": self.step_name}) + "\n")
+
+    def _require_cpu_policy(self) -> None:
+        if self.cpus_per_task is None or self.cpu_bind is None:
+            raise ValueError(
+                "saved Slurm campaign has no frozen CPU policy; CPU-only recovery remains available, "
+                "but new workers require a fresh campaign and smoke with explicit CPU settings"
+            )
 
     def wait_ready(self, expected_nodes: int, timeout_seconds: float = 900) -> list[str]:
         if expected_nodes != self.node_count:
@@ -118,11 +146,87 @@ class SlurmCellRunner:
                 remaining()
                 if len(hosts) != self.node_count or len(set(hosts)) != self.node_count:
                     raise ValueError(f"FPM Slurm cell requires exactly {self.node_count} allocated nodes, got {hosts}")
+                self._qualify_cpu_allocation(hosts, timeout=remaining())
                 self.hosts = hosts
                 return self.pods()
             if last_state not in {"PENDING", "CONFIGURING", "SUSPENDED"}:
                 raise RuntimeError(f"Slurm allocation {self.job_id} cannot become ready from {last_state}")
             time.sleep(min(1.0, remaining()))
+
+    def _qualify_cpu_allocation(self, hosts: list[str], *, timeout: float) -> None:
+        """Use allocated CPU counts, never node-wide hardware capacity."""
+        self._require_cpu_policy()
+        counts = []
+        raw = os.environ.get("SLURM_JOB_CPUS_PER_NODE")
+        source = "SLURM_JOB_CPUS_PER_NODE"
+        if raw is not None:
+            for part in raw.split(","):
+                match = re.fullmatch(r"([1-9][0-9]*)(?:\(x([1-9][0-9]*)\))?", part)
+                if match is None:
+                    raise ValueError("invalid allocated CPU counts in SLURM_JOB_CPUS_PER_NODE")
+                repeats = int(match.group(2) or 1)
+                if repeats > len(hosts):
+                    raise ValueError("allocated CPU counts do not match Slurm nodes")
+                counts.extend([int(match.group(1))] * repeats)
+        else:
+            source = "scontrol show job --details CPU_IDs"
+            deadline = time.monotonic() + timeout
+
+            def remaining() -> float:
+                budget = deadline - time.monotonic()
+                if budget <= 0:
+                    raise TimeoutError("Slurm CPU allocation inspection exceeded the readiness deadline")
+                return budget
+
+            raw = self._command(
+                ["scontrol", "show", "job", self.job_id, "--details"],
+                timeout=remaining(),
+            ).stdout
+            if re.search(r"(?:^|\s)JobId=" + re.escape(self.job_id) + r"(?:\s|$)", raw) is None:
+                raise ValueError("Slurm CPU allocation response does not identify the owned job")
+            # Identically allocated nodes may share one Nodes=host[1-2] entry.
+            # Expand that node set and bind counts by name, never row position.
+            masks = re.findall(r"(?:^|\s)Nodes=(\S+)\s+CPU_IDs=([0-9,-]+)(?:\s|$)", raw)
+            allocated = {}
+            for nodelist, mask in masks:
+                ids = set()
+                for segment in mask.split(","):
+                    match = re.fullmatch(r"([0-9]+)(?:-([0-9]+))?", segment)
+                    if match is None:
+                        raise ValueError("invalid Slurm allocated CPU_IDs")
+                    start, end = int(match.group(1)), int(match.group(2) or match.group(1))
+                    if end < start or end - start > 1048576:
+                        raise ValueError("invalid Slurm allocated CPU_IDs range")
+                    ids.update(range(start, end + 1))
+                grouped_hosts = self._command(
+                    ["scontrol", "show", "hostnames", nodelist],
+                    timeout=remaining(),
+                ).stdout.split()
+                if not grouped_hosts or any(host in allocated or host not in hosts for host in grouped_hosts):
+                    raise ValueError(
+                        "Slurm allocated CPU node groups are missing, duplicated or outside the allocation"
+                    )
+                allocated.update({host: len(ids) for host in grouped_hosts})
+            if set(allocated) != set(hosts):
+                raise ValueError("could not establish allocated CPUs for every Slurm node")
+            counts = [allocated[host] for host in hosts]
+        if len(counts) != len(hosts):
+            raise ValueError("could not establish allocated CPUs for every Slurm node")
+        report = {
+            "job_id": self.job_id,
+            "cpus_per_task": self.cpus_per_task,
+            "cpu_bind": self.cpu_bind,
+            "source": source,
+            "allocated_cpus_per_node": dict(zip(hosts, counts, strict=True)),
+        }
+        from .runner import _atomic_json
+
+        _atomic_json(self.cell_dir / "slurm-cpu-allocation.json", report)
+        if any(count < self.cpus_per_task for count in counts):
+            raise ValueError(
+                f"Slurm allocation has insufficient CPUs for --cpus-per-task={self.cpus_per_task}: "
+                f"{report['allocated_cpus_per_node']}; request matching sbatch/salloc CPUs"
+            )
 
     def pods(self, *, include_terminating: bool = True) -> list[str]:
         del include_terminating
@@ -137,6 +241,7 @@ class SlurmCellRunner:
             (self.cell_dir / "raw" / unit).mkdir(parents=True, exist_ok=True)
 
     def _exec(self, unit: str, command: list[str], *, timeout: int):
+        self._require_cpu_policy()
         rank = self.pods().index(unit)
         mounts = [
             *self.mounts,
@@ -155,6 +260,9 @@ class SlurmCellRunner:
                 "--nodes=1",
                 "--ntasks=1",
                 "--ntasks-per-node=1",
+                f"--cpus-per-task={self.cpus_per_task}",
+                f"--cpu-bind={self.cpu_bind}",
+                "--immediate=10",
                 "--exclusive",
                 "--exact",
                 f"--nodelist={self.hosts[rank]}",
@@ -163,9 +271,13 @@ class SlurmCellRunner:
                 f"--container-mounts={','.join(mounts)}",
                 "--container-writable",
                 "--container-workdir=/tmp/fpm-bench",
-                "env",
+                # Avoid Slurm resolving a bare entrypoint through inaccessible PATH entries.
+                "/usr/bin/env",
                 f"FPM_NODE_RANK={rank}",
                 f"FPM_MASTER_ADDR={self.hosts[0]}",
+                f"FPM_SLURM_CPUS_PER_TASK={self.cpus_per_task}",
+                f"FPM_SLURM_CPU_BIND={self.cpu_bind}",
+                f"FPM_LOCAL_GPU_COUNT={self.gpus_per_node}",
                 *command,
             ],
             timeout=timeout,

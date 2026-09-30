@@ -38,6 +38,7 @@ CORE_SDK_LEAF_MODULES = [
     "fpm_config",
     "fpm_dataset",
     "fpm_identity",
+    "fpm_model_metadata",
     "inference_summary",
     "memory",
     "state_memory",

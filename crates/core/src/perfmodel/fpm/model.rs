@@ -18,6 +18,7 @@ use crate::{AicError, ForwardPassMetrics};
 
 use super::config::{EstimationMode, ForwardPassFallbackPolicy, ForwardPassPerfModelConfig};
 use super::correction::CorrectionBuckets;
+use super::coverage::{FpmCoverageState, FpmQueryCoverage};
 use super::estimator::RegressionFitConfig;
 use super::metrics::validate_forward_pass_metrics;
 use super::options::{ForwardPassPerfOptions, validate_regression_options};
@@ -259,6 +260,7 @@ pub struct ForwardPassPerfModel {
     last_warning: Option<String>,
     provenance: Option<ForwardPassPerfProvenance>,
     is_correction_enabled: bool,
+    pub(super) query_coverage: Option<FpmCoverageState>,
 }
 
 #[derive(Clone, Debug)]
@@ -293,6 +295,7 @@ impl ForwardPassPerfModel {
             last_warning: None,
             provenance: None,
             is_correction_enabled: true,
+            query_coverage: None,
         }
     }
 
@@ -319,6 +322,7 @@ impl ForwardPassPerfModel {
             last_warning: None,
             provenance: None,
             is_correction_enabled: true,
+            query_coverage: None,
         })
     }
 
@@ -403,6 +407,11 @@ impl ForwardPassPerfModel {
                         candidate.estimator_config.correction_options(),
                     );
                     model.is_correction_enabled = candidate.estimator_config.correction.enabled;
+                    model.query_coverage = candidate
+                        .estimator_config
+                        .fpm_interpolation
+                        .collect_coverage
+                        .then(FpmCoverageState::default);
                     model.last_warning = (!failures.is_empty()).then(|| failures.join("; "));
                     model.provenance = Some(ForwardPassPerfProvenance {
                         config: candidate,
@@ -460,7 +469,13 @@ impl ForwardPassPerfModel {
                 let Some(feature) = IterationFeatures::from_metrics(metrics_by_rank)? else {
                     return Ok(Some(0.0));
                 };
-                let native = engine.forward_pass_time_ms(metrics_by_rank)?;
+                let mut coverage = self
+                    .query_coverage
+                    .as_ref()
+                    .map(FpmCoverageState::lock)
+                    .transpose()?;
+                let native = engine
+                    .forward_pass_time_ms_with_coverage(metrics_by_rank, coverage.as_deref_mut())?;
                 let corrected = native * self.correction_factor(corrections, &feature);
                 Ok(Some(corrected))
             }
@@ -483,7 +498,8 @@ impl ForwardPassPerfModel {
 
     /// Estimate the same iteration with executed direct-FPM support. The
     /// native rank maximum and online correction are explicit; measurement
-    /// weights describe raw lookup values only. No query state is retained.
+    /// weights describe raw lookup values only. Detailed query state is returned;
+    /// bounded coverage is retained only when explicitly enabled.
     pub fn estimate_forward_pass_detailed(
         &self,
         metrics_by_rank: &[ForwardPassMetrics],
@@ -503,7 +519,13 @@ impl ForwardPassPerfModel {
                     ranks: Vec::new(),
                 });
             };
-            let mut estimate = engine.forward_pass_estimate(metrics_by_rank, true)?;
+            let mut coverage = self
+                .query_coverage
+                .as_ref()
+                .map(FpmCoverageState::lock)
+                .transpose()?;
+            let mut estimate =
+                engine.forward_pass_estimate(metrics_by_rank, true, coverage.as_deref_mut())?;
             let factor = self.correction_factor(corrections, &feature);
             estimate.correction_factor = Some(factor);
             estimate.latency_ms = estimate.native_latency_ms.map(|native| native * factor);
@@ -554,6 +576,7 @@ impl ForwardPassPerfModel {
             mode,
             options,
             is_correction_enabled,
+            query_coverage,
             ..
         } = self;
         for metrics_by_rank in iterations {
@@ -570,7 +593,14 @@ impl ForwardPassPerfModel {
                     else {
                         continue;
                     };
-                    let native = engine.forward_pass_time_ms(metrics_by_rank)?;
+                    let mut coverage = query_coverage
+                        .as_ref()
+                        .map(FpmCoverageState::lock)
+                        .transpose()?;
+                    let native = engine.forward_pass_time_ms_with_coverage(
+                        metrics_by_rank,
+                        coverage.as_deref_mut(),
+                    )?;
                     corrections
                         .store_mut(observation.feature.workload_kind)
                         .add_observation(observation.feature.x, observation.wall_time_ms, native);
@@ -705,6 +735,75 @@ impl ForwardPassPerfModel {
         &self.options
     }
 
+    /// Uncorrected static prefill latency, preserving the compiled engine's
+    /// existing `(batch, full input length, cached prefix)` contract. Unlike
+    /// telemetry estimation this does not apply learned online correction.
+    /// Enabled coverage records the actual native lookup on this model.
+    pub fn predict_prefill_latency(
+        &self,
+        batch_size: u32,
+        isl: u32,
+        prefix: u32,
+    ) -> Result<f64, AicError> {
+        let engine = self.require_native_engine()?;
+        let mut coverage = self
+            .query_coverage
+            .as_ref()
+            .map(FpmCoverageState::lock)
+            .transpose()?;
+        engine.predict_prefill_latency_with_coverage(
+            batch_size,
+            isl,
+            prefix,
+            coverage.as_deref_mut(),
+        )
+    }
+
+    /// Uncorrected decode latency using exact past-KV totals, excluding the
+    /// current input token per request. Shares the existing engine contract.
+    pub fn predict_decode_latency_total(
+        &self,
+        batch_size: u32,
+        total_past_kv_tokens: u32,
+    ) -> Result<f64, AicError> {
+        let engine = self.require_native_engine()?;
+        let mut coverage = self
+            .query_coverage
+            .as_ref()
+            .map(FpmCoverageState::lock)
+            .transpose()?;
+        engine.predict_decode_latency_total_with_coverage(
+            batch_size,
+            total_past_kv_tokens,
+            coverage.as_deref_mut(),
+        )
+    }
+
+    /// Largest collected decode KV total for the selected FPM cell. Reading
+    /// this bound is not a timing lookup and does not add coverage evidence.
+    pub fn fpm_decode_kv_ceiling(&self) -> Result<Option<u32>, AicError> {
+        self.require_native_engine()?.fpm_decode_kv_ceiling()
+    }
+
+    /// Snapshot of actual native direct-FPM lookup resolutions, including
+    /// failed lookups. `None` means collection was disabled. Counts do not
+    /// include timings reused by an external cache, or calls on a separate
+    /// low-level engine handle. Replay completion must be checked separately.
+    pub fn fpm_query_coverage(&self) -> Result<Option<FpmQueryCoverage>, AicError> {
+        self.query_coverage
+            .as_ref()
+            .map(|state| state.lock().map(|value| value.clone()))
+            .transpose()
+    }
+
+    fn require_native_engine(&self) -> Result<Arc<Engine>, AicError> {
+        self.native_engine().ok_or_else(|| {
+            AicError::InvalidEngineConfig(
+                "static timing requires a native forward-pass estimator".into(),
+            )
+        })
+    }
+
     /// Static phase latency before online correction, using the native engine's
     /// existing integration. Decode returns the total for all generated tokens.
     pub fn static_phase_latency(
@@ -732,11 +831,15 @@ impl ForwardPassPerfModel {
         prefix: u32,
     ) -> Result<crate::ForwardPassEstimate, AicError> {
         self.require_general_forward_api()?;
-        self.native_engine()
-            .ok_or_else(|| {
-                AicError::InvalidEngineConfig("static prefill requires a native estimator".into())
-            })?
-            .predict_prefill_detailed(batch_size, input_tokens, prefix)
+        let engine = self.native_engine().ok_or_else(|| {
+            AicError::InvalidEngineConfig("static prefill requires a native estimator".into())
+        })?;
+        let mut coverage = self
+            .query_coverage
+            .as_ref()
+            .map(FpmCoverageState::lock)
+            .transpose()?;
+        engine.predict_prefill_detailed(batch_size, input_tokens, prefix, coverage.as_deref_mut())
     }
 
     /// Native operation evidence for one static prefill or decode step. Values
@@ -767,27 +870,6 @@ impl ForwardPassPerfModel {
                 )
             })?
             .static_phase_diagnostics(batch_size, context_length, prefix, prefill)
-    }
-
-    /// Latency in milliseconds for an exact homogeneous measured prefill shape.
-    /// `isl` includes the cached prefix; the engine subtracts it exactly once.
-    /// This latency-only surface is currently qualified only for the selected
-    /// SGLang GLM-5.2 NVFP4 VR200 graph profile.
-    pub fn predict_prefill_latency(
-        &self,
-        batch_size: u32,
-        isl: u32,
-        prefix: u32,
-    ) -> Result<f64, AicError> {
-        let engine = self
-            .native_engine()
-            .filter(|engine| engine.has_prefill_graph_profile())
-            .ok_or_else(|| {
-                crate::perf_database::prefill_graph::error(
-                    "direct prefill latency requires the qualified graph profile",
-                )
-            })?;
-        engine.predict_prefill_latency(batch_size, isl, prefix)
     }
 
     pub(crate) fn has_prefill_graph_profile(&self) -> bool {
@@ -865,7 +947,7 @@ fn build_native_candidate(
     let mut last_error = None;
     for root in resolve_systems_roots(config)? {
         match build_engine_via_python(config, &root).and_then(|engine| {
-            engine.validate_forward_pass_readiness()?;
+            engine.validate_forward_pass_readiness(config.worker_type)?;
             Ok(engine)
         }) {
             Ok(engine) => return Ok((engine, root)),

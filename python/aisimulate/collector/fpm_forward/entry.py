@@ -150,6 +150,24 @@ def resolve_inputs(args: argparse.Namespace, case_plan) -> ResolvedFPMInputs:
         if not isinstance(payload, dict):
             raise ValueError("--fpm-model-profile must contain a JSON or YAML mapping")
         fpm_profile = load_fpm_profile(payload)
+    runtime_paths = tuple(
+        getattr(args, name, None)
+        for name in ("fpm_runtime_instrumentation", "fpm_runtime_launch", "fpm_runtime_configuration")
+    )
+    runtime_inputs = {}
+    if any(value is not None for value in runtime_paths):
+        if not all(isinstance(value, str) and value for value in runtime_paths):
+            raise ValueError(
+                "--fpm-runtime-instrumentation, --fpm-runtime-launch and "
+                "--fpm-runtime-configuration are required together"
+            )
+        from .runtime_instrumentation import read_json
+
+        runtime_inputs = {
+            "runtime_instrumentation": runtime_paths[0],
+            "runtime_launch": read_json(Path(runtime_paths[1]).expanduser()),
+            "runtime_configuration": runtime_paths[2],
+        }
     plan = build_collection_plan(
         backend=args.backend,
         model_path=case_plan.model_path,
@@ -162,6 +180,7 @@ def resolve_inputs(args: argparse.Namespace, case_plan) -> ResolvedFPMInputs:
         fpm_profile=fpm_profile,
         collector_config={},
         generator_overrides=generator_overrides,
+        **runtime_inputs,
     )
     return plan, generator_overrides
 

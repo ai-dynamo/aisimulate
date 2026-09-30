@@ -394,7 +394,7 @@ mod tests {
             (vec![op], vec![])
         };
         Engine::build(EngineSpec::new(config, context, generation), Arc::new(db))?
-            .validate_forward_pass_readiness()
+            .validate_forward_pass_readiness(crate::ForwardPassWorkerType::Aggregated)
     }
 
     #[test]

@@ -41,6 +41,7 @@ use serde::{Deserialize, Serialize};
 use crate::{DirectFpmQueryEvidence, FpmCoordinates, FpmMeasurementSupport, FpmQueryResolution};
 
 use crate::common::error::AicError;
+use crate::fpm::coverage::{DirectFpmResolution, FpmQueryCoverage, FpmQueryPurpose};
 use crate::operators::op::{Op, RuntimeContext};
 use crate::operators::{PerformanceResult, Source};
 use crate::perf_database::PerfDatabase;
@@ -162,6 +163,15 @@ impl FpmForwardOp {
         db: &PerfDatabase,
         ctx: &RuntimeContext,
     ) -> Result<PerformanceResult, AicError> {
+        self.query_with_coverage(db, ctx, None)
+    }
+
+    pub(crate) fn query_with_coverage(
+        &self,
+        db: &PerfDatabase,
+        ctx: &RuntimeContext,
+        coverage: Option<&mut FpmQueryCoverage>,
+    ) -> Result<PerformanceResult, AicError> {
         if self.verify_width == 0 || (self.phase == FpmPhase::Prefill && self.verify_width != 1) {
             return Err(data_err(format!(
                 "invalid FPM verify_width={} for {}",
@@ -189,7 +199,6 @@ impl FpmForwardOp {
                 ctx.beam_width
             )));
         }
-        let cell = self.select_cell(db)?;
         let b = batch_size as f64;
         let coords: Vec<f64> = match self.phase {
             FpmPhase::Prefill => {
@@ -208,7 +217,7 @@ impl FpmForwardOp {
                 vec![b, b / w * s as f64]
             }
         };
-        self.resolve(db, cell, &coords)
+        self.query_totals_with_coverage(db, &coords, coverage)
     }
 
     /// Resolve at RAW per-rank iteration totals — the table's native
@@ -222,6 +231,15 @@ impl FpmForwardOp {
         db: &PerfDatabase,
         coords: &[f64],
     ) -> Result<PerformanceResult, AicError> {
+        self.query_totals_with_coverage(db, coords, None)
+    }
+
+    pub(crate) fn query_totals_with_coverage(
+        &self,
+        db: &PerfDatabase,
+        coords: &[f64],
+        coverage: Option<&mut FpmQueryCoverage>,
+    ) -> Result<PerformanceResult, AicError> {
         let expected = match self.phase {
             FpmPhase::Prefill => 3,
             FpmPhase::Decode => 2,
@@ -232,6 +250,14 @@ impl FpmForwardOp {
                 self.phase.as_str(),
                 coords
             )));
+        }
+        if let Some(coverage) = coverage {
+            return self.query_direct_with_coverage(
+                db,
+                coords,
+                FpmQueryPurpose::ForwardPass,
+                coverage,
+            );
         }
         let cell = self.select_cell(db)?;
         self.resolve(db, cell, coords)
@@ -273,6 +299,16 @@ impl FpmForwardOp {
         batch_size: u32,
         total_kv: f64,
     ) -> Result<PerformanceResult, AicError> {
+        self.query_pass_baseline_with_coverage(db, batch_size, total_kv, None)
+    }
+
+    pub(crate) fn query_pass_baseline_with_coverage(
+        &self,
+        db: &PerfDatabase,
+        batch_size: u32,
+        total_kv: f64,
+        coverage: Option<&mut FpmQueryCoverage>,
+    ) -> Result<PerformanceResult, AicError> {
         if self.phase != FpmPhase::Decode {
             return Err(data_err(format!(
                 "query_pass_baseline is decode-only, called on phase {:?}",
@@ -284,9 +320,19 @@ impl FpmForwardOp {
                 "invalid FPM baseline query: batch_size={batch_size}"
             )));
         }
+        if let Some(coverage) = coverage {
+            return self.query_direct_with_coverage(
+                db,
+                &[batch_size as f64, total_kv],
+                FpmQueryPurpose::MixedDecodeBaseline,
+                coverage,
+            );
+        }
         let cell = self.select_cell(db)?;
         if self.interpolation == FpmInterpolation::Direct {
-            return self.resolve_direct_decode(cell, &[batch_size as f64, total_kv], true);
+            return self
+                .resolve_direct_decode(cell, &[batch_size as f64, total_kv], true)
+                .map(|(result, _)| result);
         }
         let Some(domain) = cell.decode_domain else {
             return Err(data_err(format!(
@@ -371,7 +417,8 @@ impl FpmForwardOp {
             return match self.phase {
                 FpmPhase::Prefill => self.resolve_direct_prefill(cell, coords),
                 FpmPhase::Decode => self.resolve_direct_decode(cell, coords, false),
-            };
+            }
+            .map(|(result, _)| result);
         }
         // Data-certified prefill batch clamp (mirrors Python _resolve): the
         // regime coordinate is the token TOTAL, which stays untouched — the
@@ -504,11 +551,46 @@ impl FpmForwardOp {
         Ok(PerformanceResult::new(latency, Source::Silicon))
     }
 
+    fn query_direct_with_coverage(
+        &self,
+        db: &PerfDatabase,
+        coords: &[f64],
+        purpose: FpmQueryPurpose,
+        coverage: &mut FpmQueryCoverage,
+    ) -> Result<PerformanceResult, AicError> {
+        let mut cell_ids = &[][..];
+        let result = (|| {
+            if self.interpolation != FpmInterpolation::Direct {
+                return Err(AicError::InvalidEngineConfig(
+                    "query coverage requires direct FPM interpolation".into(),
+                ));
+            }
+            let cell = self.select_cell(db)?;
+            cell_ids = cell.cell_ids.as_slice();
+            match self.phase {
+                FpmPhase::Prefill => self.resolve_direct_prefill(cell, coords),
+                FpmPhase::Decode => self.resolve_direct_decode(
+                    cell,
+                    coords,
+                    purpose == FpmQueryPurpose::MixedDecodeBaseline,
+                ),
+            }
+        })();
+        coverage.record(
+            self,
+            cell_ids,
+            coords,
+            purpose,
+            result.as_ref().map(|(_, kind)| *kind),
+        );
+        result.map(|(result, _)| result)
+    }
+
     fn resolve_direct_prefill(
         &self,
         cell: &FpmForwardCell,
         coords: &[f64],
-    ) -> Result<PerformanceResult, AicError> {
+    ) -> Result<(PerformanceResult, DirectFpmResolution), AicError> {
         let (batch, tokens, kv) = (coords[0], coords[1], coords[2]);
         if !batch.is_finite() || batch.fract() != 0.0 || batch < 1.0 || batch > u32::MAX as f64 {
             return Err(self.direct_coverage_err(
@@ -517,17 +599,15 @@ impl FpmForwardOp {
                 "batch_size must be a positive integer",
             ));
         }
-        if let Some(value) = cell
+        if let Some((curve, value)) = cell
             .direct_prefill
             .get(&(batch as u32, kv as u32))
             .filter(|_| kv == (kv as u32) as f64)
-            .and_then(|curve| direct_curve_value(curve, tokens))
+            .and_then(|curve| direct_curve_value(curve, tokens).map(|value| (curve, value)))
         {
-            let support = direct_curve_support(
-                &cell.direct_prefill[&(batch as u32, kv as u32)],
-                tokens,
-                |token| fpm_coordinates(self.phase, &[batch, token, kv]),
-            );
+            let support = direct_curve_support(curve, tokens, |token| {
+                fpm_coordinates(self.phase, &[batch, token, kv])
+            });
             let resolution = if support.len() == 1 {
                 FpmQueryResolution::ExactLookup
             } else {
@@ -591,7 +671,7 @@ impl FpmForwardOp {
         resolution: FpmQueryResolution,
         support: Vec<FpmMeasurementSupport>,
         decode_baseline: bool,
-    ) -> Result<PerformanceResult, AicError> {
+    ) -> Result<(PerformanceResult, DirectFpmResolution), AicError> {
         if !latency.is_finite() || latency <= 0.0 {
             return Err(self.direct_coverage_err(
                 cell,
@@ -599,6 +679,11 @@ impl FpmForwardOp {
                 &format!("interpolation produced an invalid latency ({latency})"),
             ));
         }
+        let coverage_resolution = if resolution == FpmQueryResolution::ExactLookup {
+            DirectFpmResolution::Measured
+        } else {
+            DirectFpmResolution::Interpolated
+        };
         let mut result = PerformanceResult::new(latency, Source::Silicon);
         result.fpm_queries = Some(Box::new(vec![DirectFpmQueryEvidence {
             phase: self.phase.as_str().into(),
@@ -609,7 +694,7 @@ impl FpmForwardOp {
             latency_ms: latency,
             support,
         }]));
-        Ok(result)
+        Ok((result, coverage_resolution))
     }
 
     fn direct_coverage_err(&self, cell: &FpmForwardCell, coords: &[f64], reason: &str) -> AicError {
@@ -636,7 +721,7 @@ impl FpmForwardOp {
         cell: &FpmForwardCell,
         coords: &[f64],
         baseline: bool,
-    ) -> Result<PerformanceResult, AicError> {
+    ) -> Result<(PerformanceResult, DirectFpmResolution), AicError> {
         let (lo_row, hi_row) = self.direct_decode_rows(cell, coords)?;
         let row_value = |row: u32| {
             let curve = &cell.direct_decode[&row];

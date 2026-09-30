@@ -33,6 +33,7 @@ from .output import (
     format_prediction_stdout,
     format_recommendation_stdout,
     prepare_output_directory,
+    write_fpm_coverage,
     write_prediction_report,
     write_recommendation_csv,
     write_recommendation_result,
@@ -131,9 +132,14 @@ def _predict(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
                     capture_performance_diagnostics=bool({"time", "source"}.intersection(args.detail)),
                 ),
             )
-        except (KeyboardInterrupt, ResourceLimitError):
-            raise
-        except Exception as exc:
+        except BaseException as exc:
+            coverage = getattr(exc, "fpm_query_coverage", None)
+            if isinstance(coverage, str):
+                coverage = json.loads(coverage)
+            if isinstance(coverage, dict):
+                write_fpm_coverage(root, {**coverage, "status": "incomplete", "error": str(exc)})
+            if isinstance(exc, (KeyboardInterrupt, ResourceLimitError)) or not isinstance(exc, Exception):
+                raise
             raise _CliExecutionError(f"{type(exc).__name__}: {exc}") from exc
     finally:
         mark_shutdown()
@@ -149,6 +155,8 @@ def _predict(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
         # JSON stdout, like prediction.json, must identify the approximation.
         native["summary"]["metric_semantics"] = report.metadata["metric_semantics"]
         native["summary"]["total_gpus"] = report.metadata["total_gpus"]
+    if isinstance(native.get("fpm_query_coverage"), dict):
+        write_fpm_coverage(root, native["fpm_query_coverage"])
     summary = prediction_summary(native)
     summary.update(normalize_power_summary(report.metrics))
     if "summary" in native:

@@ -1,12 +1,11 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Explicit identity and resource bounds for decoder-only FPM simulation.
+"""Explicit identity, cache geometry and memory evidence for FPM simulation.
 
 Profiles describe every rank of a deployment without constructing operations.
-Resource values are declarations supplied by the caller, not GPU measurements
-or automatically inferred checkpoint metadata. Their provenance must say how
-they were obtained; CUDA graph reservations are supplied separately at runtime.
+Memory may remain pending during collection or use complete declared non-KV
+bytes or a runtime cache allocation. Provenance records how values were obtained.
 """
 
 from __future__ import annotations
@@ -14,7 +13,7 @@ from __future__ import annotations
 import json
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_serializer, model_validator
 
 from . import quantization
 
@@ -28,39 +27,133 @@ class _ProfileModel(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
 
-class FpmResourceProfile(_ProfileModel):
-    """Conservative rank-local bounds at a declared scheduler envelope.
+class FpmCacheGroup(_ProfileModel):
+    """Rank-local physical cache pages for one attention or convolution group.
 
-    ``max_num_tokens`` and ``max_batch_size`` apply to each attention-DP rank,
-    not the summed worker iteration used to query FPM timings. Overheads must
-    exclude the separately configured CUDA graph reservation.
+    Page bytes include all group layers and runtime padding. The retention
+    window does not replace the logical context used for FPM timing queries.
     """
 
-    weights_bytes: _Bytes
-    activations_bytes: _Bytes
-    runtime_overhead_bytes: _Bytes
-    comm_overhead_bytes: _Bytes
-    kv_bytes_per_token: Annotated[int, Field(gt=0, le=2**53)]
-    cache_layout: Literal["linear"]
+    name: _Nonempty
+    kind: Literal["attention", "convolution"]
+    num_layers: Annotated[int, Field(gt=0, le=2**32 - 1)]
+    block_size_tokens: Annotated[int, Field(gt=0, le=2**32 - 1)]
+    page_size_bytes: Annotated[int, Field(gt=0, le=2**53)]
+    sliding_window: Annotated[int, Field(gt=0, le=2**32 - 1)] | None = None
+
+    @model_validator(mode="after")
+    def _window(self) -> FpmCacheGroup:
+        if self.kind == "convolution" and self.sliding_window is None:
+            raise ValueError("convolution cache groups require a sliding_window")
+        return self
+
+
+class FpmRuntimeMemoryProfile(_ProfileModel):
+    """Observed rank-local cache capacity for the exact runtime configuration.
+
+    This capacity already accounts for runtime graph and workspace reservations.
+    It is not a non-KV memory limit and must not be rescaled to another setting.
+    """
+
+    kv_cache_bytes: Annotated[int, Field(gt=0, le=2**53)]
+    gpu_memory_utilization: Annotated[float, Field(gt=0, le=1, allow_inf_nan=False)]
+    max_model_len: Annotated[int, Field(gt=0, le=2**64 - 1)]
+    provenance: _Nonempty
+
+
+class FpmResourceProfile(_ProfileModel):
+    """Rank-local cache geometry and optional memory evidence.
+
+    ``max_num_tokens`` and ``max_batch_size`` apply to each attention-DP rank,
+    not the summed worker iteration used to query FPM timings. Complete declared
+    non-KV bytes establish conservative bounds and exclude separate CUDA graph
+    reservations. Runtime capacity instead requires the exact recorded settings.
+    """
+
+    weights_bytes: _Bytes | None = None
+    activations_bytes: _Bytes | None = None
+    runtime_overhead_bytes: _Bytes | None = None
+    comm_overhead_bytes: _Bytes | None = None
+    runtime_memory: FpmRuntimeMemoryProfile | None = None
+    kv_bytes_per_token: Annotated[int, Field(gt=0, le=2**53)] | None = None
+    cache_layout: Literal["linear", "grouped"]
+    cache_groups: list[FpmCacheGroup] = Field(default_factory=list)
     max_num_tokens: _PositiveInt
     max_batch_size: _PositiveInt
     provenance: _Nonempty
 
     @model_validator(mode="after")
     def _exact_total(self) -> FpmResourceProfile:
-        if self.non_kv_bytes > 2**53:
+        declared = self._declared_bytes()
+        if sum(value for value in declared if value is not None) > 2**53:
             raise ValueError("total non-KV resource bytes must not exceed 2**53")
+        if self.runtime_memory is not None and any(value is not None for value in declared):
+            raise ValueError("runtime_memory cannot be combined with declared non-KV resource bytes")
+        if self.cache_layout == "linear":
+            if self.kv_bytes_per_token is None or self.cache_groups:
+                raise ValueError("linear cache requires kv_bytes_per_token and no cache_groups")
+        elif self.kv_bytes_per_token is not None or not self.cache_groups:
+            raise ValueError("grouped cache requires cache_groups without a scalar kv_bytes_per_token")
+        if len({group.name for group in self.cache_groups}) != len(self.cache_groups):
+            raise ValueError("cache group names must be unique")
         return self
+
+    @model_serializer(mode="wrap")
+    def _serialize_resources(self, handler):
+        # Do not add empty fields to saved linear profiles or change plan IDs.
+        result = handler(self)
+        if not self.cache_groups:
+            result.pop("cache_groups", None)
+        if self.kv_bytes_per_token is None:
+            result.pop("kv_bytes_per_token", None)
+        for name in (
+            "weights_bytes",
+            "activations_bytes",
+            "runtime_overhead_bytes",
+            "comm_overhead_bytes",
+            "runtime_memory",
+        ):
+            if getattr(self, name) is None:
+                result.pop(name, None)
+        return result
+
+    def _declared_bytes(self) -> tuple[int | None, ...]:
+        return self.weights_bytes, self.activations_bytes, self.runtime_overhead_bytes, self.comm_overhead_bytes
+
+    @property
+    def memory_source(self) -> Literal["pending", "declared", "runtime"]:
+        if self.runtime_memory is not None:
+            return "runtime"
+        return "declared" if all(value is not None for value in self._declared_bytes()) else "pending"
+
+    @property
+    def memory_ready(self) -> bool:
+        return self.memory_source != "pending"
+
+    def require_memory(self) -> None:
+        if not self.memory_ready:
+            raise ValueError(
+                "FPM memory is pending runtime profiling; collect and finalize runtime memory or provide "
+                "all four declared non-KV resource values before simulation"
+            )
 
     @property
     def non_kv_bytes(self) -> int:
-        return self.weights_bytes + self.activations_bytes + self.runtime_overhead_bytes + self.comm_overhead_bytes
+        self.require_memory()
+        if self.runtime_memory is not None:
+            raise ValueError("runtime memory records cache capacity, not a non-KV byte breakdown")
+        return sum(value for value in self._declared_bytes() if value is not None)
 
     def validate_envelope(self, *, max_num_tokens: int, max_batch_size: int) -> None:
         for name, requested in (("max_num_tokens", max_num_tokens), ("max_batch_size", max_batch_size)):
             if isinstance(requested, bool) or not isinstance(requested, int) or requested <= 0:
                 raise ValueError(f"{name} must be a positive integer, got {requested!r}")
             limit = getattr(self, name)
+            if self.runtime_memory is not None and requested != limit:
+                raise ValueError(
+                    f"runtime memory requires the exact recorded rank-local {name}={limit}; "
+                    "collect new runtime memory for changed scheduler settings"
+                )
             if requested > limit:
                 raise ValueError(
                     f"FPM resource envelope exceeded: requested rank-local {name}={requested}, "
@@ -69,7 +162,7 @@ class FpmResourceProfile(_ProfileModel):
 
 
 class FpmDeploymentProfile(_ProfileModel):
-    """One exact hardware, runtime, topology, precision and resource identity."""
+    """One hardware, runtime, topology, precision and optional serving-role identity."""
 
     system: _Nonempty
     backend: Literal["vllm"]
@@ -89,7 +182,16 @@ class FpmDeploymentProfile(_ProfileModel):
     attention_backend: _Nonempty = "auto"
     enable_wideep: Literal[False] = False
     enable_eplb: Literal[False] = False
+    # Absent in historical shared profiles; never infer role-specific evidence.
+    worker_type: Literal["prefill", "decode", "aggregated"] | None = None
     resources: FpmResourceProfile
+
+    @model_serializer(mode="wrap")
+    def _preserve_legacy_identity(self, handler):
+        result = handler(self)
+        if self.worker_type is None:
+            result.pop("worker_type", None)
+        return result
 
     @field_validator("pp", "cp", mode="before")
     @classmethod
@@ -199,7 +301,7 @@ class FpmModelProfile(_ProfileModel):
 
     @model_validator(mode="after")
     def _unique_deployments(self) -> FpmModelProfile:
-        identities = set()
+        identities: dict[tuple, set[str | None]] = {}
         for deployment in self.deployments:
             tp = deployment.dp == 1 and deployment.moe_ep == 1 and deployment.moe_tp == deployment.tp
             dep = deployment.tp == 1 and deployment.moe_tp == 1 and deployment.moe_ep == deployment.dp
@@ -215,11 +317,16 @@ class FpmModelProfile(_ProfileModel):
                 deployment.backend_version,
                 deployment.parallel_tuple,
             )
-            if identity in identities:
+            roles = identities.setdefault(identity, set())
+            if deployment.worker_type in roles:
                 raise ValueError(
-                    "duplicate FPM deployment identity; specify one precision/resource profile per topology"
+                    "duplicate FPM deployment identity; specify one precision/resource profile per topology and role"
                 )
-            identities.add(identity)
+            if roles and (None in roles or deployment.worker_type is None):
+                raise ValueError(
+                    "ambiguous FPM deployment identity: cannot mix legacy shared and role-specific profiles"
+                )
+            roles.add(deployment.worker_type)
             if deployment.moe_ep > 1 and (self.num_experts == 0 or self.num_experts % deployment.moe_ep):
                 raise ValueError("num_experts must be positive and divisible by moe_ep for expert parallelism")
         return self
@@ -237,7 +344,10 @@ class FpmModelProfile(_ProfileModel):
         moe_tp_size: int | None = None,
         moe_ep_size: int | None = None,
         cp_size: int = 1,
+        worker_type: str = "aggregated",
     ) -> FpmDeploymentProfile:
+        if worker_type not in ("prefill", "decode", "aggregated"):
+            raise ValueError("worker_type must be prefill, decode, or aggregated")
         if model != self.model:
             raise ValueError(f"FPM profile model identity mismatch: requested {model!r}, profile={self.model!r}")
         shape = (
@@ -256,11 +366,13 @@ class FpmModelProfile(_ProfileModel):
                 and deployment.backend == backend
                 and deployment.backend_version == backend_version
                 and deployment.parallel_tuple == shape
+                and deployment.worker_type in (None, worker_type)
             ):
                 return deployment
         raise ValueError(
             f"no matching FPM deployment profile for {model!r}, {system}/{backend}/{backend_version}, "
-            f"(tp,pp,dp,moe_tp,moe_ep,cp)={shape}; provide explicit resources and precision for that deployment"
+            f"(tp,pp,dp,moe_tp,moe_ep,cp)={shape}, worker_type={worker_type}; "
+            "provide explicit resources and precision for that deployment"
         )
 
 

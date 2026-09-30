@@ -268,13 +268,14 @@ def test_heterogeneous_disagg_enumerates_each_role_on_its_effective_hardware(mon
         gpu_budget,
         deployment_mode,
         backend,
+        worker_type,
         backend_version=None,
         min_gpu_budget=None,
         max_seq_len=None,
         role_runtime=None,
         systems_paths=None,
     ):
-        calls.append((hardware, deployment_mode, backend_version, role_runtime))
+        calls.append((hardware, deployment_mode, backend_version, role_runtime, worker_type))
         return [_AGG_CFG if hardware == "h200_sxm" else _DP8_CFG]
 
     monkeypatch.setattr("aisimulate.sweeper.search_space.parallel_configs_for", fake_parallel_configs)
@@ -293,6 +294,7 @@ def test_heterogeneous_disagg_enumerates_each_role_on_its_effective_hardware(mon
         ("gb200", "agg", "1.0"),
     ]
     assert all(set(call[3]) == {"agg"} for call in calls)
+    assert [call[4] for call in calls] == ["prefill", "decode"]
     expected = DisaggParallelConfig(prefill=_AGG_CFG, decode=_DP8_CFG)
     assert branch.parallel_configs == (expected,)
     assert branch.supported_backends[expected] == frozenset({"trtllm"})

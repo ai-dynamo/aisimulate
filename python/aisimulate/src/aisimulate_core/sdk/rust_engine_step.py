@@ -337,10 +337,28 @@ class RustForwardPassPerfModel:
 
         return json.loads(aisimulate_core.RustForwardPassPerfModel.normalize_config(_forward_pass_config_json(config)))
 
-    def predict_prefill_latency(self, bs: int, isl: int, prefix: int = 0) -> float:
-        """Return latency in ms for a qualified homogeneous graph-prefill shape.
+    @staticmethod
+    def estimate_cache_budget(
+        config: ForwardPassPerfModelConfig | Mapping[str, Any], budget: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        """Size explicit profile resources without a graph or timing data.
 
-        ``isl`` is the total sequence length including ``prefix``. The selected
+        Grouped caches expose a byte budget and per-request peak bound; their
+        scalar bytes-per-token and aggregate token capacities are unavailable.
+        Rust owns allocation rounding, retention windows and budget arithmetic.
+        """
+        import aisimulate_core
+
+        return json.loads(
+            aisimulate_core.RustForwardPassPerfModel.estimate_cache_budget(
+                _forward_pass_config_json(config), _json_dumps(dict(budget))
+            )
+        )
+
+    def predict_prefill_latency(self, bs: int, isl: int, prefix: int = 0) -> float:
+        """Return uncorrected native prefill latency in milliseconds.
+
+        ``isl`` is the total sequence length including ``prefix``. A selected graph
         profile admits only its measured integer shapes; Rust owns validation
         and prediction. This method returns no scheduler or energy estimate.
         """
@@ -418,6 +436,23 @@ class RustForwardPassPerfModel:
         same query.
         """
         return json.loads(self._inner.diagnostics())
+
+    def fpm_query_coverage(self) -> dict[str, Any] | None:
+        """Bounded direct-FPM lookup evidence, or None when collection is disabled.
+
+        Counts describe native lookups, including errors and mixed-pass
+        baselines. External timing-cache hits are not new lookups. A snapshot
+        does not establish replay completion or prediction accuracy.
+        """
+        return json.loads(self._inner.fpm_query_coverage())
+
+    def predict_decode_latency_total(self, batch_size: int, total_past_kv_tokens: int) -> float:
+        """Uncorrected native decode timing at the exact past-KV batch total."""
+        return self._inner.predict_decode_latency_total(batch_size, total_past_kv_tokens)
+
+    def fpm_decode_kv_ceiling(self) -> int | None:
+        """Largest collected decode KV total; reading it does not record a lookup."""
+        return self._inner.fpm_decode_kv_ceiling()
 
     def regression_store_diagnostics(self) -> list[dict[str, Any]]:
         """Return each regression store's label, readiness, and retained count.

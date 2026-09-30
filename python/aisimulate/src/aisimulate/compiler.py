@@ -265,6 +265,7 @@ def _deployment(
             engine,
             prefill,
             engine.kv_transfer.bytes_per_token,
+            role="prefill",
         )
     parallel = {
         **_parallel_mapping(prefill, prefix="prefill_"),
@@ -651,6 +652,7 @@ def _worker_engine_args(
             engine,
             worker,
             cache.bytes_per_token,
+            role=role,
         )
     if transfer_bytes_per_token is not None:
         payload["kv_transfer_bytes_per_token"] = transfer_bytes_per_token
@@ -670,6 +672,8 @@ def _resolve_kv_bytes_per_token(
     engine: EnginePredictionConfig,
     worker: WorkerPredictionConfig,
     configured: int | str,
+    *,
+    role: str,
 ) -> int:
     if configured != "auto":
         return configured
@@ -685,6 +689,7 @@ def _resolve_kv_bytes_per_token(
         **(
             {
                 "fpm_profile": engine.fpm_profile.model_dump(mode="json"),
+                "worker_type": role,
                 "system": worker.hardware or engine.hardware,
                 "backend": engine.backend,
                 "backend_version": engine.backend_version,

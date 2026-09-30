@@ -101,6 +101,7 @@ def decode(batch=3, kv=12):
     return {"scheduled_requests": {"num_decode_requests": batch, "sum_decode_kv_tokens": kv}}
 
 
+@pytest.mark.parametrize("collect_coverage", [False, True])
 @pytest.mark.parametrize(
     "metrics,latency,resolution,weights,measurements",
     [
@@ -125,9 +126,11 @@ def decode(batch=3, kv=12):
     ],
 )
 def test_canonical_detailed_query_support(
-    profile, evidence_systems, metrics, latency, resolution, weights, measurements
+    profile, evidence_systems, metrics, latency, resolution, weights, measurements, collect_coverage
 ):
-    model = RustForwardPassPerfModel.best_available(canonical(profile, evidence_systems))
+    config = canonical(profile, evidence_systems)
+    config["estimator_config"]["fpm_interpolation"]["collect_coverage"] = collect_coverage
+    model = RustForwardPassPerfModel.best_available(config)
     detailed = model.estimate_forward_pass_detailed(metrics)
     assert detailed["latency_ms"] == model.estimate_forward_pass_time_ms(metrics) == latency
     assert detailed["native_latency_ms"] == latency
@@ -148,6 +151,40 @@ def test_canonical_detailed_query_support(
         for point in evidence["support"]
     ] == measurements
     assert json.loads(json.dumps(detailed)) == detailed
+    coverage = model.fpm_query_coverage()
+    if collect_coverage:
+        assert coverage["queries"] == {
+            "measured": 2 if resolution == "exact_lookup" else 0,
+            "interpolated": 0 if resolution == "exact_lookup" else 2,
+            "unsupported": 0,
+        }
+    else:
+        assert coverage is None
+
+
+def test_detailed_coverage_retains_mixed_baseline_and_unsupported_queries(profile, evidence_systems):
+    config = canonical(profile, evidence_systems)
+    config["estimator_config"]["fpm_interpolation"]["collect_coverage"] = True
+    model = RustForwardPassPerfModel.best_available(config)
+    mixed = {"scheduled_requests": {**prefill()["scheduled_requests"], **decode()["scheduled_requests"]}}
+    # The measured 10 ms prefill plus interpolated decode 23 ms minus its
+    # 15 ms interpolated floor is 18 ms. All three native lookups count once.
+    detailed = model.estimate_forward_pass_detailed(mixed)
+    assert detailed["latency_ms"] == 18.0
+    assert len(detailed["ranks"][0]["queries"]) == 3
+    coverage = model.fpm_query_coverage()
+    assert coverage["queries"] == {"measured": 1, "interpolated": 2, "unsupported": 0}
+    assert coverage["mixed_decode_baseline"] == {"measured": 0, "interpolated": 1, "unsupported": 0}
+    with pytest.raises(Exception, match="unsupported|outside"):
+        model.estimate_forward_pass_detailed(prefill(20))
+    assert model.estimate_forward_pass_detailed({})["latency_ms"] == 0.0
+    coverage = model.fpm_query_coverage()
+    assert coverage["queries"] == {"measured": 1, "interpolated": 2, "unsupported": 1}
+    assert coverage["gaps"][0]["coordinates"] == {
+        "batch_size": 1.0,
+        "total_prefill_tokens": 20.0,
+        "total_kv_read_tokens": 0.0,
+    }
 
 
 def test_mixed_baseline_rank_max_correction_and_clamp(profile, evidence_systems):
@@ -230,20 +267,34 @@ def records(evidence):
     ]
 
 
-def test_native_prediction_replay_and_source_detail_roundtrip(profile, evidence_systems):
+@pytest.mark.parametrize("collect_coverage", [False, True])
+def test_native_prediction_replay_and_source_detail_roundtrip(profile, evidence_systems, collect_coverage):
     import jsonschema
 
-    config = CorePredictionConfig.model_validate(prediction(profile, evidence_systems))
+    raw = prediction(profile, evidence_systems)
+    raw["engine"]["workers"]["aggregated"]["timing"]["estimator_config"]["fpm_interpolation"]["collect_coverage"] = (
+        collect_coverage
+    )
+    config = CorePredictionConfig.model_validate(raw)
     # Round-trip the saved public config before lowering it to the real runner.
     config = CorePredictionConfig.model_validate_json(config.model_dump_json())
     spec = prediction_to_replay_spec(config)
     runner = EngineReplayRunnerFactory().create(0)
     try:
-        plain = runner.run(spec)
+        plain = runner.run(spec, output_requirements=ReplayOutputRequirements(include_raw_report=True))
         report = runner.run(spec, output_requirements=ReplayOutputRequirements(capture_performance_diagnostics=True))
     finally:
         runner.close()
     assert "fpm_query_evidence" not in plain.metadata
+    for replay in (plain, report):
+        native = replay.metadata["native_report"]
+        if collect_coverage:
+            assert native["fpm_query_coverage"]["status"] == "covered"
+            # Each request has one measured prefill, one measured decode and one
+            # interpolated decode; its first output token is produced by prefill.
+            assert native["fpm_query_coverage"]["queries"] == {"measured": 6, "interpolated": 3, "unsupported": 0}
+        else:
+            assert "fpm_query_coverage" not in native
     wall_clock_metrics = {"wall_time_ms", "processed_tokens_per_s", "processed_output_tokens_per_s"}
     assert {k: v for k, v in report.metrics.items() if k not in wall_clock_metrics} == {
         k: v for k, v in plain.metrics.items() if k not in wall_clock_metrics

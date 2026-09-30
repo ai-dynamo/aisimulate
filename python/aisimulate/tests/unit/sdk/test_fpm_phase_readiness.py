@@ -141,6 +141,65 @@ def test_direct_constructor_rejects_missing_genuine_phase(phase_roots, missing_p
     assert root in message
 
 
+@pytest.mark.parametrize("worker_type", ["prefill", "decode"])
+@pytest.mark.parametrize("missing_rows", ["absent", "fake"])
+def test_single_role_requires_only_its_own_genuine_phase(phase_roots, worker_type, missing_rows):
+    config, make_root = phase_roots
+    other = "decode" if worker_type == "prefill" else "prefill"
+    root = make_root("single-role", **{other: missing_rows})
+    config.update(worker_type=worker_type, systems_paths=[root])
+    config["fpm_profile"]["deployments"][0]["worker_type"] = worker_type
+    queries = {
+        "prefill": {"num_prefill_requests": 1, "sum_prefill_tokens": 1},
+        "decode": {"num_decode_requests": 1, "sum_decode_kv_tokens": 1},
+    }
+    for request in (config, json.loads(json.dumps(config))):
+        model = RustForwardPassPerfModel.best_available(request)
+        try:
+            assert model.diagnostics()["readiness"] == "ready"
+            assert model.estimate_forward_pass_time_ms({"scheduled_requests": queries[worker_type]}) == (
+                2.0 if worker_type == "prefill" else 3.0
+            )
+            with pytest.raises(PerfDataNotAvailableError):
+                model.estimate_forward_pass_time_ms({"scheduled_requests": queries[other]})
+        finally:
+            model.close()
+
+
+@pytest.mark.parametrize("worker_type", ["prefill", "decode"])
+def test_single_role_does_not_accept_other_roles_measurements(phase_roots, worker_type):
+    config, make_root = phase_roots
+    root = make_root("wrong-role", **{worker_type: "absent"})
+    config.update(worker_type=worker_type, systems_paths=[root])
+    config["fpm_profile"]["deployments"][0]["worker_type"] = worker_type
+    with pytest.raises(PerfDataNotAvailableError, match=f"direct FPM {worker_type}"):
+        RustForwardPassPerfModel.best_available(config)
+
+
+@pytest.mark.parametrize("worker_type", ["prefill", "decode"])
+def test_single_role_pins_root_with_its_phase_without_merging_other_root(phase_roots, worker_type):
+    config, make_root = phase_roots
+    other = "decode" if worker_type == "prefill" else "prefill"
+    wrong = make_root("wrong", **{worker_type: "absent"})
+    matching = make_root("matching", **{other: "absent"})
+    config.update(worker_type=worker_type, systems_paths=[wrong, matching])
+    config["fpm_profile"]["deployments"][0]["worker_type"] = worker_type
+    model = RustForwardPassPerfModel.best_available(config)
+    try:
+        provenance = model.diagnostics()["provenance"]
+        assert provenance["selected_systems_root"] == matching
+        assert provenance["config"]["systems_paths"] == [matching]
+        absent_workload = (
+            {"num_decode_requests": 1, "sum_decode_kv_tokens": 1}
+            if other == "decode"
+            else {"num_prefill_requests": 1, "sum_prefill_tokens": 1}
+        )
+        with pytest.raises(PerfDataNotAvailableError):
+            model.estimate_forward_pass_time_ms({"scheduled_requests": absent_workload})
+    finally:
+        model.close()
+
+
 @pytest.mark.parametrize("missing_phase", ["prefill", "decode"])
 @pytest.mark.parametrize("rows", ["absent", "fake"])
 @pytest.mark.parametrize("fallback", ["deny", "allow"])

@@ -22,8 +22,10 @@
 
 use std::sync::Arc;
 
+use crate::FpmQueryCoverage;
 use crate::common::enums::{DatabaseMode, TransferPolicy};
 use crate::common::error::AicError;
+use crate::operators::RuntimeContext;
 use crate::operators::base::PerformanceResult;
 use crate::operators::{FpmForwardOp, FpmPhase, Op};
 use crate::perf_database::PerfDatabase;
@@ -630,7 +632,10 @@ impl Engine {
         Ok(())
     }
 
-    pub(crate) fn validate_forward_pass_readiness(&self) -> Result<(), AicError> {
+    pub(crate) fn validate_forward_pass_readiness(
+        &self,
+        worker_type: crate::ForwardPassWorkerType,
+    ) -> Result<(), AicError> {
         if self.prefill_graph_profile {
             self.db.prefill_graph.validate()?;
             self.db.prefill_graph.validate_sources(&self.db)?;
@@ -638,7 +643,14 @@ impl Engine {
         }
         super::readiness::validate(
             &self.db,
-            self.context_ops.iter().chain(&self.generation_ops),
+            self.context_ops
+                .iter()
+                .filter(|_| worker_type != crate::ForwardPassWorkerType::Decode)
+                .chain(
+                    self.generation_ops
+                        .iter()
+                        .filter(|_| worker_type != crate::ForwardPassWorkerType::Prefill),
+                ),
         )
     }
 
@@ -735,13 +747,14 @@ impl Engine {
     /// Python `_run_context_phase` (`base_backend.py:144`): `effective_isl =
     /// isl - prefix`, validate `> 0`, then one full pass over `context_ops`.
     fn run_context_phase(&self, runtime: &RuntimeConfig) -> Result<f64, AicError> {
-        self.run_context_phase_with(runtime, |_, _| {})
+        self.run_context_phase_with(runtime, None, |_, _| {})
     }
 
     fn run_context_phase_with(
         &self,
         runtime: &RuntimeConfig,
-        on_op: impl FnMut(&Op, PerformanceResult),
+        coverage: Option<&mut FpmQueryCoverage>,
+        mut on_op: impl FnMut(&Op, PerformanceResult),
     ) -> Result<f64, AicError> {
         // Python raises `ValueError` when `effective_isl <= 0`; mirror that.
         if runtime.prefix >= runtime.isl {
@@ -751,6 +764,34 @@ impl Engine {
             )));
         }
         let effective_isl = runtime.isl - runtime.prefix;
+        if let Some(coverage) = coverage {
+            let Some((prefill, _, ctx_tail, gen_tail)) = self.fpm_split() else {
+                return Err(AicError::InvalidEngineConfig(
+                    "query coverage requires a direct FPM engine".into(),
+                ));
+            };
+            if !ctx_tail.is_empty() || !gen_tail.is_empty() || self.nextn > 0 {
+                return Err(AicError::InvalidEngineConfig(
+                    "query coverage does not support speculative FPM".into(),
+                ));
+            }
+            let result = prefill.query_with_coverage(
+                &self.db,
+                &RuntimeContext {
+                    batch_size: runtime.batch_size,
+                    beam_width: 1,
+                    s: effective_isl,
+                    prefix: runtime.prefix,
+                    num_tokens: runtime.batch_size * effective_isl,
+                    seq_imbalance_correction_scale: runtime.seq_imbalance_correction_scale,
+                    ..Default::default()
+                },
+                Some(coverage),
+            )?;
+            let latency_ms = result.latency_ms;
+            on_op(&self.context_ops[0], result);
+            return Ok(latency_ms);
+        }
         run_context_ops_with(
             &self.context_ops,
             &self.db,
@@ -847,6 +888,16 @@ impl Engine {
     /// Thin shim over [`Self::run_static`] with `mode=Context` (osl is
     /// irrelevant for the context phase, so it is fixed at 1).
     pub fn predict_prefill_latency(&self, bs: u32, isl: u32, prefix: u32) -> Result<f64, AicError> {
+        self.predict_prefill_latency_with_coverage(bs, isl, prefix, None)
+    }
+
+    pub(crate) fn predict_prefill_latency_with_coverage(
+        &self,
+        bs: u32,
+        isl: u32,
+        prefix: u32,
+        coverage: Option<&mut FpmQueryCoverage>,
+    ) -> Result<f64, AicError> {
         let rt = RuntimeConfig {
             batch_size: bs,
             isl,
@@ -856,12 +907,8 @@ impl Engine {
         };
         if self.prefill_graph_profile {
             crate::perf_database::prefill_graph::public_shape(bs, isl, prefix)?;
-            self.run_context_phase(&rt)
-        } else {
-            Ok(self
-                .run_static(&rt, StaticMode::Context, DEFAULT_STATIC_STRIDE)?
-                .total_ms)
         }
+        self.run_context_phase_with(&rt, coverage, |_, _| {})
     }
 
     /// Preserve static prefill geometry, including explicitly equal per-request
@@ -872,6 +919,7 @@ impl Engine {
         bs: u32,
         isl: u32,
         prefix: u32,
+        coverage: Option<&mut FpmQueryCoverage>,
     ) -> Result<crate::ForwardPassEstimate, AicError> {
         let runtime = RuntimeConfig {
             batch_size: bs,
@@ -881,7 +929,7 @@ impl Engine {
             ..Default::default()
         };
         let mut queries = Vec::new();
-        let prefill_ms = self.run_context_phase_with(&runtime, |_, result| {
+        let prefill_ms = self.run_context_phase_with(&runtime, coverage, |_, result| {
             queries.extend(result.fpm_queries.into_iter().flat_map(|queries| *queries));
         })?;
         let latency_ms = prefill_ms + 0.0; // same context + generation sum as run_static
@@ -926,15 +974,27 @@ impl Engine {
         batch_size: u32,
         total_past_kv_tokens: u32,
     ) -> Result<f64, AicError> {
+        self.predict_decode_latency_total_with_coverage(batch_size, total_past_kv_tokens, None)
+    }
+
+    pub(crate) fn predict_decode_latency_total_with_coverage(
+        &self,
+        batch_size: u32,
+        total_past_kv_tokens: u32,
+        coverage: Option<&mut FpmQueryCoverage>,
+    ) -> Result<f64, AicError> {
         self.require_general_engine()?;
-        self.forward_pass_time_ms(&[ForwardPassMetrics {
-            scheduled_requests: crate::ScheduledRequestMetrics {
-                num_decode_requests: batch_size,
-                sum_decode_kv_tokens: total_past_kv_tokens,
+        self.forward_pass_time_ms_with_coverage(
+            &[ForwardPassMetrics {
+                scheduled_requests: crate::ScheduledRequestMetrics {
+                    num_decode_requests: batch_size,
+                    sum_decode_kv_tokens: total_past_kv_tokens,
+                    ..Default::default()
+                },
                 ..Default::default()
-            },
-            ..Default::default()
-        }])
+            }],
+            coverage,
+        )
     }
 
     /// Highest decode KV-read total covered by a compiled FPM engine.
@@ -2201,7 +2261,15 @@ impl Engine {
         &self,
         metrics_by_rank: &[ForwardPassMetrics],
     ) -> Result<f64, AicError> {
-        self.forward_pass_estimate(metrics_by_rank, false)
+        self.forward_pass_time_ms_with_coverage(metrics_by_rank, None)
+    }
+
+    pub(crate) fn forward_pass_time_ms_with_coverage(
+        &self,
+        metrics_by_rank: &[ForwardPassMetrics],
+        coverage: Option<&mut FpmQueryCoverage>,
+    ) -> Result<f64, AicError> {
+        self.forward_pass_estimate(metrics_by_rank, false, coverage)
             .map(|estimate| estimate.native_latency_ms.unwrap())
     }
 
@@ -2209,6 +2277,7 @@ impl Engine {
         &self,
         metrics_by_rank: &[ForwardPassMetrics],
         capture: bool,
+        mut coverage: Option<&mut FpmQueryCoverage>,
     ) -> Result<crate::ForwardPassEstimate, AicError> {
         self.require_general_engine()?;
         if metrics_by_rank.is_empty() {
@@ -2227,7 +2296,11 @@ impl Engine {
                 rank,
                 ..Default::default()
             };
-            let rank_latency = self.rank_latency_ms(metrics, capture.then_some(&mut evidence))?;
+            let rank_latency = self.rank_latency_ms(
+                metrics,
+                capture.then_some(&mut evidence),
+                coverage.as_deref_mut(),
+            )?;
             if rank_latency > max_latency {
                 max_latency = rank_latency;
                 max_rank = Some(rank);
@@ -2256,6 +2329,7 @@ impl Engine {
         &self,
         metrics: &ForwardPassMetrics,
         mut evidence: Option<&mut crate::FpmRankEstimate>,
+        mut coverage: Option<&mut FpmQueryCoverage>,
     ) -> Result<f64, AicError> {
         let sched = &metrics.scheduled_requests;
         // Token-based dispatch, aligned with `IterationFeatures` (fpm/model.rs):
@@ -2321,13 +2395,14 @@ impl Engine {
             // division on each axis.
             let mut total = 0.0_f64;
             if has_prefill {
-                let result = prefill_op.query_totals(
+                let result = prefill_op.query_totals_with_coverage(
                     &self.db,
                     &[
                         sched.num_prefill_requests as f64,
                         sched.sum_prefill_tokens as f64,
                         sched.sum_prefill_kv_tokens as f64,
                     ],
+                    coverage.as_deref_mut(),
                 )?;
                 total += result.latency_ms;
                 if let Some(evidence) = evidence.as_deref_mut() {
@@ -2338,12 +2413,13 @@ impl Engine {
                 }
             }
             if has_decode {
-                let result = decode_op.query_totals(
+                let result = decode_op.query_totals_with_coverage(
                     &self.db,
                     &[
                         sched.num_decode_requests as f64,
                         sched.sum_decode_kv_tokens as f64,
                     ],
+                    coverage.as_deref_mut(),
                 )?;
                 let decode_ms = result.latency_ms;
                 if let Some(evidence) = evidence.as_deref_mut() {
@@ -2356,10 +2432,11 @@ impl Engine {
                     // Mixed rank: marginal-decode composition, mirroring
                     // `_get_fpm_mix_step_latency` (counts already packed, no
                     // `(nextn + 1)` — speculative FPM was rejected above).
-                    let baseline = decode_op.query_pass_baseline(
+                    let baseline = decode_op.query_pass_baseline_with_coverage(
                         &self.db,
                         sched.num_decode_requests,
                         sched.sum_decode_kv_tokens as f64,
+                        coverage.as_deref_mut(),
                     )?;
                     let baseline_ms = baseline.latency_ms;
                     total += (decode_ms - baseline_ms).max(0.0);
@@ -3992,7 +4069,7 @@ mod tests {
             43.0
         );
         let detailed = engine
-            .predict_prefill_detailed(input.batch_size, input.isl, input.prefix)
+            .predict_prefill_detailed(input.batch_size, input.isl, input.prefix, None)
             .unwrap();
         assert_eq!(detailed.latency_ms, Some(43.0));
         assert_eq!(
@@ -4005,12 +4082,16 @@ mod tests {
         // telemetry guard for multi-request bounded decoder replay.
         assert!(
             engine
-                .forward_pass_estimate(&[fpm_replay_guard_metrics(0.0)], true)
+                .forward_pass_estimate(&[fpm_replay_guard_metrics(0.0)], true, None)
                 .is_err()
         );
         for (isl, prefix) in [(0, 0), (512, 512)] {
             assert!(engine.predict_prefill_latency(2, isl, prefix).is_err());
-            assert!(engine.predict_prefill_detailed(2, isl, prefix).is_err());
+            assert!(
+                engine
+                    .predict_prefill_detailed(2, isl, prefix, None)
+                    .is_err()
+            );
         }
     }
 
@@ -4861,7 +4942,8 @@ mod tests {
                 "0.25.1",
             ));
             let engine = Engine::build(spec, Arc::new(db)).unwrap();
-            let result = engine.validate_forward_pass_readiness();
+            let result =
+                engine.validate_forward_pass_readiness(crate::ForwardPassWorkerType::Aggregated);
             if missing_gemm {
                 assert!(
                     result

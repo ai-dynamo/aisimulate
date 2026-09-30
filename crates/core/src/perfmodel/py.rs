@@ -1121,6 +1121,7 @@ struct EngineBuildRequest {
     systems_path: Option<String>,
     forward_model: Option<String>,
     fpm_profile: Option<String>,
+    worker_type: Option<String>,
     fpm_interpolation: Option<String>,
     cp_size: u32,
     decode_workload_distribution: Option<String>,
@@ -1180,6 +1181,7 @@ impl AicEngineBuilder {
                 systems_path: None,
                 forward_model: None,
                 fpm_profile: None,
+                worker_type: None,
                 fpm_interpolation: None,
                 cp_size: 1,
                 decode_workload_distribution: None,
@@ -1576,6 +1578,9 @@ fn compile_engine_from_request(request: EngineBuildRequest) -> Result<Engine, Ai
         kwargs.set_item("moe_kernel_source", request.moe_kernel_source.as_deref())?;
         kwargs.set_item("forward_model", request.forward_model.as_deref())?;
         kwargs.set_item("fpm_profile", request.fpm_profile.as_deref())?;
+        if let Some(worker_type) = request.worker_type.as_deref() {
+            kwargs.set_item("worker_type", worker_type)?;
+        }
         kwargs.set_item("fpm_interpolation", request.fpm_interpolation.as_deref())?;
         kwargs.set_item("cp_size", request.cp_size)?;
         kwargs.set_item(
@@ -1717,6 +1722,14 @@ pub(crate) fn compile_forward_pass_model_to_engine(
         kv_block_size: config.kv_block_size,
         systems_path: Some(systems_path.to_owned()),
         forward_model: Some(forward_model.to_owned()),
+        worker_type: Some(
+            match config.worker_type {
+                crate::ForwardPassWorkerType::Prefill => "prefill",
+                crate::ForwardPassWorkerType::Decode => "decode",
+                crate::ForwardPassWorkerType::Aggregated => "aggregated",
+            }
+            .to_owned(),
+        ),
         fpm_profile: config
             .fpm_profile
             .as_ref()
@@ -1875,6 +1888,7 @@ fn engine_build_request(
         systems_path: systems_path.map(str::to_owned),
         forward_model: config.forward_model.clone(),
         fpm_profile: config.extra.get("fpm_profile").cloned(),
+        worker_type: config.extra.get("worker_type").cloned(),
         fpm_interpolation: config.extra.get("fpm_interpolation").cloned(),
         cp_size: config.parallel.cp_size.unwrap_or(1),
         decode_workload_distribution: None,
@@ -2009,6 +2023,17 @@ impl PyForwardPassPerfModel {
         serde_json::to_string(&config).map_err(|e| PyValueError::new_err(e.to_string()))
     }
 
+    /// Size declarative resources using canonical configuration, without timing
+    /// data or analytical graph construction.
+    #[staticmethod]
+    fn estimate_cache_budget(config_json: &str, budget_json: &str) -> PyResult<String> {
+        let config = parse_forward_pass_config(config_json)?;
+        let request: crate::perfmodel::FpmCacheBudgetRequest = serde_json::from_str(budget_json)
+            .map_err(|e| PyValueError::new_err(format!("invalid cache budget: {e}")))?;
+        let estimate = config.estimate_cache_budget(&request).map_err(aic_to_py)?;
+        serde_json::to_string(&estimate).map_err(|e| PyValueError::new_err(e.to_string()))
+    }
+
     /// Share typed FPM option validation with the compilation adapter.
     #[staticmethod]
     #[pyo3(signature = (options_json, fmha_quant_mode=None, comm_quant_mode=None, has_profile=false))]
@@ -2077,8 +2102,20 @@ impl PyForwardPassPerfModel {
                 "decode_workload_distribution cannot be migrated from a legacy EngineConfig; use ForwardPassPerfModelConfig.estimator_config.op_level".into(),
             )));
         }
-        let legacy: EngineConfig =
+        let mut legacy: EngineConfig =
             serde_json::from_value(value).map_err(|e| PyValueError::new_err(e.to_string()))?;
+        if legacy
+            .extra
+            .get("worker_type")
+            .is_some_and(|saved| saved != worker_type)
+        {
+            return Err(PyValueError::new_err(
+                "saved FPM worker_type conflicts with requested worker_type",
+            ));
+        }
+        legacy
+            .extra
+            .insert("worker_type".into(), worker_type.to_owned());
         let mut request = engine_build_request(
             &legacy,
             legacy.systems_path.as_ref().and_then(|path| path.to_str()),
@@ -2165,7 +2202,7 @@ impl PyForwardPassPerfModel {
         serde_json::to_string(&config).map_err(|e| PyValueError::new_err(e.to_string()))
     }
 
-    /// Direct latency for the qualified homogeneous graph-prefill profile.
+    /// Uncorrected native prefill latency, including qualified graph-prefill shapes.
     #[pyo3(signature=(bs, isl, prefix=PrefillArgument::from(0)))]
     fn predict_prefill_latency(
         &self,
@@ -2174,7 +2211,7 @@ impl PyForwardPassPerfModel {
         isl: PrefillArgument,
         prefix: PrefillArgument,
     ) -> PyResult<f64> {
-        if !(bs.exact && isl.exact && prefix.exact) {
+        if self.inner.has_prefill_graph_profile() && !(bs.exact && isl.exact && prefix.exact) {
             return Err(aic_to_py(crate::perf_database::prefill_graph::error(
                 "arguments must be exact Python integers in the unsigned 32-bit range",
             )));
@@ -2255,6 +2292,31 @@ impl PyForwardPassPerfModel {
     fn diagnostics(&self) -> PyResult<String> {
         serde_json::to_string(&self.inner.diagnostics())
             .map_err(|e| PyValueError::new_err(format!("diagnostics serialize: {e}")))
+    }
+
+    /// Bounded direct-FPM native lookup evidence, or JSON null when disabled.
+    fn fpm_query_coverage(&self) -> PyResult<String> {
+        let coverage = self.inner.fpm_query_coverage().map_err(aic_to_py)?;
+        serde_json::to_string(&coverage)
+            .map_err(|error| PyValueError::new_err(format!("FPM coverage serialize: {error}")))
+    }
+
+    fn predict_decode_latency_total(
+        &self,
+        py: Python<'_>,
+        batch_size: u32,
+        total_past_kv_tokens: u32,
+    ) -> PyResult<f64> {
+        py.allow_threads(|| {
+            self.inner
+                .predict_decode_latency_total(batch_size, total_past_kv_tokens)
+        })
+        .map_err(aic_to_py)
+    }
+
+    fn fpm_decode_kv_ceiling(&self, py: Python<'_>) -> PyResult<Option<u32>> {
+        py.allow_threads(|| self.inner.fpm_decode_kv_ceiling())
+            .map_err(aic_to_py)
     }
 
     /// Regression store labels, readiness and retained counts as JSON.

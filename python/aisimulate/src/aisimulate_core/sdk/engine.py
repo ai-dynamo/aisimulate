@@ -482,6 +482,7 @@ def compile_engine(
     forward_model: str | None = None,
     decoder_replay: bool = False,
     fpm_profile: dict | str | FpmModelProfile | None = None,
+    worker_type: str = "aggregated",
     fpm_interpolation: str | None = None,
     cp_size: int = 1,
     database_mode: str | None = None,
@@ -579,6 +580,7 @@ def compile_engine(
             system=system,
             backend=backend,
             backend_version=literal_version,
+            worker_type=worker_type,
             tp_size=tp_size,
             pp_size=pp_size,
             attention_dp_size=attention_dp_size,
@@ -619,6 +621,7 @@ def compile_engine(
                 strict_provenance=strict_provenance,
                 fpm_parquet_path=fpm_parquet_path,
                 fpm_fmha_quant_mode=fpm_fmha_quant_mode,
+                worker_type=worker_type,
                 fpm_options=fpm_config.options,
             )
             return bytes(aisimulate_core.engine_spec_bincode_from_json(spec_json))
@@ -744,6 +747,8 @@ def compile_engine(
             fpm_profile=profile.model_dump_json(),
             estimator_config=json.dumps({"fpm_interpolation": {**fpm_config.options, "method": interpolation}}),
         )
+        if deployment.worker_type is not None:
+            spec["engine"]["extra"]["worker_type"] = worker_type
         spec_json = json.dumps(spec)
 
     return bytes(aisimulate_core.engine_spec_bincode_from_json(spec_json))
@@ -761,6 +766,7 @@ def _direct_fpm_spec_json(
     strict_provenance: bool | None,
     fpm_parquet_path: str | None = None,
     fpm_fmha_quant_mode: str | None = None,
+    worker_type: str = "aggregated",
     fpm_options: dict | None = None,
 ) -> str:
     """Build whole-forward timing operations from metadata, without a graph."""
@@ -801,6 +807,7 @@ def _direct_fpm_spec_json(
         "transfer_policy": _transfer_policy_tokens(None, transfer_policy),
         "extra": {
             "fpm_profile": profile.model_dump_json(),
+            **({"worker_type": worker_type} if deployment.worker_type is not None else {}),
             "estimator_config": json.dumps({"fpm_interpolation": controls}),
         },
     }
@@ -813,7 +820,9 @@ def _direct_fpm_spec_json(
                 "model_path": profile.model,
                 "match_identity": identity,
                 "original_fmha_quant_mode": deployment.fmha_quant_mode if fpm_fmha_quant_mode is not None else None,
-                "weight_bytes": deployment.resources.weights_bytes,
+                # Direct interpolation ignores this legacy operation field.
+                # Zero here is not an inferred resource or memory bound.
+                "weight_bytes": deployment.resources.weights_bytes or 0,
                 "verify_width": 1,
                 "sol_ops": [],
                 "interpolation": "direct",

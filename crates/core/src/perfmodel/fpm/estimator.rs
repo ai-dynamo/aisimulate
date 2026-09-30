@@ -44,6 +44,10 @@ pub struct FpmInterpolationConfig {
     /// External parquet and its same-stem metadata sidecar.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fpm_parquet_path: Option<PathBuf>,
+    /// Record bounded query coverage on the returned canonical model.
+    /// Requires explicit direct FPM with fallback denied.
+    #[serde(skip_serializing_if = "is_false")]
+    pub collect_coverage: bool,
     /// Match null profile identities only for these unspecified quant modes.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub unrecorded_quant_modes: Vec<UnrecordedFpmQuantMode>,
@@ -704,7 +708,9 @@ fn explicit_fields(
             fields
                 .iter()
                 .map(|(key, value)| {
-                    // Compact serde output may omit an explicit default; keep it supplied.
+                    // Defaults omitted by serialization remain explicit input,
+                    // such as collect_coverage=false. The typed parse above has
+                    // already validated every supplied value.
                     (
                         key.clone(),
                         explicit_fields(value, normalized.get(key).unwrap_or(value)),
@@ -861,6 +867,19 @@ mod migration_tests {
         let reloaded: EstimatorConfig =
             serde_json::from_str(&serde_json::to_string(&config).unwrap()).unwrap();
         assert_eq!(reloaded, config);
+    }
+
+    #[test]
+    fn migration_preserves_explicit_coverage_defaults() {
+        for collect_coverage in [false, true] {
+            let saved = format!(
+                r#"{{"fpm_interpolation": {{"method": "direct", "collect_coverage": {collect_coverage}, "fpm_parquet_path": null}}}}"#
+            );
+            let config =
+                EstimatorConfig::migrate_legacy_inputs(Some(&saved), None, None, None).unwrap();
+            assert_eq!(config.fpm_interpolation.collect_coverage, collect_coverage);
+            assert_eq!(config.fpm_interpolation.fpm_parquet_path, None);
+        }
     }
 
     #[test]

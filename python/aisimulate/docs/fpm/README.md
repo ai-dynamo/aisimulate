@@ -5,11 +5,10 @@ SPDX-License-Identifier: Apache-2.0
 
 # Forward-pass models
 
-Start with the [self-benchmark and FPM onboarding guide](self-benchmarking-and-onboarding.md).
-Its seven steps cover support checks, measurement planning, collection, profile
-validation, canonical model construction, Replay integration, and accuracy
-validation. It explains which engine-iteration differences self-collection can
-capture and which behaviors, including PP, need separate simulator support.
+Start with the [FPM self-benchmarking and onboarding guide](self-benchmarking-and-onboarding.md) to collect
+whole-forward measurements, publish a performance-data pair, load it through
+the SDK, and run an AISimulate prediction. The guide includes prerequisites,
+commands, expected artifacts, acceptance checks, and recovery steps.
 
 Self-benchmark collection currently supports vLLM configurations that pass
 model/runtime validation; new architectures can require benchmark adaptation.

@@ -209,6 +209,7 @@ def _profile_kv_args(sample: dict[str, Any], role: str, backend_version: str) ->
     prefix = _role_prefix(role)
     return {
         "fpm_profile": sample["fpm_profile"],
+        "worker_type": "aggregated" if role == "agg" else role,
         "system": _role_hardware_sku(sample, role),
         "backend": sample["backend"],
         "backend_version": backend_version,

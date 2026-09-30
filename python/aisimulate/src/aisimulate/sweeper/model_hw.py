@@ -133,8 +133,10 @@ def parallel_configs_for(
     role_runtime: dict[str, tuple[int, int, float] | tuple[int, int, float, int | None]] | None = None,
     systems_paths: list[str] | None = None,
     fpm_profile: dict[str, Any] | None = None,
+    worker_type: str = "aggregated",
     model_controls: dict[str, str | int | bool] | None = None,
     nextn: int = 0,
+    candidate_configs: list[ReplicaParallelConfig] | list[DisaggParallelConfig] | None = None,
 ) -> list[ReplicaParallelConfig] | list[DisaggParallelConfig]:
     """Resolve the model/hardware, then enumerate the parallel configs that fit
     the GPU budget and can hold a ``max_seq_len``-token sequence.
@@ -164,14 +166,19 @@ def parallel_configs_for(
         seq_len = max_seq_len if max_seq_len is not None else profile.context_length
         if seq_len > profile.context_length:
             raise ValueError("max_seq_len exceeds FPM profile context_length")
-        configs = _profile_parallel_configs(
-            profile,
-            hardware_sku=hardware_sku,
-            backend=backend,
-            backend_version=backend_version,
-            gpu_budget=gpu_budget,
-            min_gpu_budget=min_gpu_budget,
-            deployment_mode=deployment_mode,
+        configs = (
+            candidate_configs
+            if candidate_configs is not None
+            else _profile_parallel_configs(
+                profile,
+                hardware_sku=hardware_sku,
+                backend=backend,
+                backend_version=backend_version,
+                gpu_budget=gpu_budget,
+                min_gpu_budget=min_gpu_budget,
+                deployment_mode=deployment_mode,
+                worker_type=worker_type,
+            )
         )
     else:
         mh = resolve_model_hardware(model_name, hardware_sku, backend=backend, systems_paths=systems_paths)
@@ -201,6 +208,7 @@ def parallel_configs_for(
 
     # KV-cache validity: keep configs whose every role-shape holds a max_seq_len sequence.
     def feasible_for(role: str, shapes):
+        profile_role = worker_type if role == "agg" else role
         runtime = (role_runtime or {}).get(role, (max_num_tokens, max_batch_size, memory_fraction))
         if len(runtime) == 3:
             role_tokens, role_batch, role_memory = runtime
@@ -211,10 +219,12 @@ def parallel_configs_for(
             raise ValueError(
                 "role_runtime values must be (tokens, batch, memory) or (tokens, batch, memory, fixed_tokens)"
             )
+        grouped_shapes = set()
         if profile is not None:
             for shape in dict.fromkeys(shapes):
                 deployment = profile.select(
                     model=model_name,
+                    worker_type=profile_role,
                     system=hardware_sku,
                     backend=backend,
                     backend_version=backend_version,
@@ -224,10 +234,47 @@ def parallel_configs_for(
                     moe_tp_size=shape.moe_tp,
                     moe_ep_size=shape.moe_ep,
                 )
+                deployment.resources.require_memory()
                 deployment.resources.validate_envelope(max_num_tokens=role_tokens, max_batch_size=role_batch)
+                if deployment.resources.runtime_memory is not None and fixed_tokens is not None:
+                    raise ValueError("runtime FPM memory cannot use a fixed scalar token capacity")
+                if deployment.resources.cache_layout == "grouped":
+                    grouped_shapes.add(shape)
+        grouped_feasible = set()
+        if grouped_shapes:
+            from .kv_estimate import estimate_grouped_cache_budget
+
+            if deployment_mode != "agg" or nextn:
+                raise ValueError("grouped FPM cache requires aggregated replay without speculation")
+            if fixed_tokens is not None:
+                raise ValueError("grouped FPM cache cannot use a fixed scalar token capacity")
+            for shape in grouped_shapes:
+                try:
+                    budget = estimate_grouped_cache_budget(
+                        shape,
+                        model_name=model_name,
+                        hardware_sku=hardware_sku,
+                        backend=backend,
+                        backend_version=backend_version,
+                        systems_paths=systems_paths,
+                        fpm_profile=fpm_profile,
+                        worker_type=profile_role,
+                        context_length=seq_len,
+                        max_num_tokens=role_tokens,
+                        max_batch_size=role_batch,
+                        memory_fraction=role_memory,
+                        model_controls=model_controls,
+                    )
+                except ValueError as exc:
+                    if "no KV budget" in str(exc):
+                        continue
+                    raise
+                if budget["total_kv_size_bytes"] >= budget["request_peak_cache_bytes"]:
+                    grouped_feasible.add(shape)
+            shapes = [shape for shape in shapes if shape not in grouped_shapes]
         if fixed_tokens is not None:
             return {shape: fixed_tokens for shape in dict.fromkeys(shapes) if fixed_tokens > seq_len}
-        return feasible_shape_tokens(
+        linear_feasible = feasible_shape_tokens(
             shapes,
             model_name=model_name,
             hardware_sku=hardware_sku,
@@ -238,10 +285,11 @@ def parallel_configs_for(
             max_num_tokens=role_tokens,
             max_batch_size=role_batch,
             memory_fraction=role_memory,
-            **({"fpm_profile": fpm_profile} if fpm_profile is not None else {}),
+            **({"fpm_profile": fpm_profile, "worker_type": profile_role} if fpm_profile is not None else {}),
             **({"model_controls": model_controls} if model_controls else {}),
             **({"nextn": nextn} if nextn else {}),
         )
+        return set(linear_feasible) | grouped_feasible
 
     if deployment_mode == "agg":
         feasible = feasible_for("agg", [c.shape for c in configs])
@@ -267,37 +315,44 @@ def _profile_parallel_configs(
     gpu_budget: int,
     min_gpu_budget: int | None,
     deployment_mode: str,
+    decode_hardware_sku: str | None = None,
+    worker_type: str = "aggregated",
 ):
     """Enumerate only declared deployment shapes; replicas do not change a cell."""
-    deployments = [
-        deployment
-        for deployment in profile.deployments
-        if deployment.system == hardware_sku
-        and deployment.backend == backend
-        and deployment.backend_version == backend_version
-    ]
-    if not deployments:
-        raise ValueError(f"no FPM deployment profile for {hardware_sku}/{backend}/{backend_version}")
-    replicas = []
-    for deployment in deployments:
-        shape = ParallelShape(
-            tp=deployment.tp,
-            pp=deployment.pp,
-            dp=deployment.dp,
-            moe_tp=deployment.moe_tp,
-            moe_ep=deployment.moe_ep,
-        )
-        replicas.extend(
-            ReplicaParallelConfig(shape=shape, replicas=count)
-            for count in range(1, gpu_budget // shape.gpus_per_worker + 1)
-        )
+
+    def replicas_for(system, role):
+        deployments = [
+            deployment
+            for deployment in profile.deployments
+            if deployment.system == system
+            and deployment.backend == backend
+            and deployment.backend_version == backend_version
+            and deployment.worker_type in (None, role)
+        ]
+        replicas = []
+        for deployment in deployments:
+            shape = ParallelShape(
+                tp=deployment.tp,
+                pp=deployment.pp,
+                dp=deployment.dp,
+                moe_tp=deployment.moe_tp,
+                moe_ep=deployment.moe_ep,
+            )
+            replicas.extend(
+                ReplicaParallelConfig(shape=shape, replicas=count)
+                for count in range(1, gpu_budget // shape.gpus_per_worker + 1)
+            )
+        return replicas
+
+    replicas = replicas_for(hardware_sku, worker_type if deployment_mode == "agg" else "prefill")
     if deployment_mode == "agg":
         configs = replicas
     elif deployment_mode == "disagg":
+        decode_replicas = replicas_for(decode_hardware_sku or hardware_sku, "decode")
         configs = [
             DisaggParallelConfig(prefill=prefill, decode=decode)
             for prefill in replicas
-            for decode in replicas
+            for decode in decode_replicas
             if prefill.total_gpus + decode.total_gpus <= gpu_budget
         ]
     else:
