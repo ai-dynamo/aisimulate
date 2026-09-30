@@ -28,7 +28,6 @@ from collector.case_generator import (
     get_attention_head_configs,
 )
 from collector.helper import benchmark_with_power, get_sm_version, log_perf
-from collector.vllm.utils import kv_block_size
 from collector.vllm.utils import (
     BatchSpec,
     create_common_attn_metadata,
@@ -36,6 +35,7 @@ from collector.vllm.utils import (
     create_standard_kv_cache_spec,
     create_vllm_config,
     get_attention_backend,
+    kv_block_size,
     with_exit_stack,
 )
 
@@ -57,6 +57,19 @@ class MockAttentionLayer:
 # support MHA GQA MQA bfloat16 tensor and bfloat16/fp8 kv cache
 
 
+def kv_cache_in_resolved_layout(kv_cache: torch.Tensor, layer_view_order: tuple[int, ...]) -> torch.Tensor:
+    """Return a tensor with the SAME logical [B, H, N, C] view as ``kv_cache``
+    whose memory follows the resolved physical axis order ``layer_view_order``
+    (vllm.v1.kv_cache_layout.KVCacheLayout.layer_view_order), i.e. exactly what
+    ``kv_cache.permute(*layer_view_order)`` in the backends expects to be
+    contiguous. Identity layout -> the input itself."""
+    order = tuple(int(i) for i in layer_view_order)
+    if order == tuple(range(kv_cache.dim())):
+        return kv_cache.contiguous()
+    inverse = [order.index(i) for i in range(len(order))]
+    return kv_cache.permute(*order).contiguous().permute(*inverse)
+
+
 def _dense_kernel_source(backend_name_str, impl, attn_metadata):
     """Ground-truth kernel_source for the dense attention row."""
     if backend_name_str == "FLASH_ATTN":
@@ -76,7 +89,17 @@ def _dense_kernel_source(backend_name_str, impl, attn_metadata):
             phase_metadata = attn_metadata.decode
         if phase_metadata is None:
             raise RuntimeError("vLLM FlashInfer metadata has neither a prefill nor a decode portion")
-        return f"vllm_flashinfer_{type(phase_metadata).__name__}".lower()
+        label = f"vllm_flashinfer_{type(phase_metadata).__name__}".lower()
+        # 0.30 folds XQA and trtllm-gen decode into ONE metadata class,
+        # FlashInferTrtllmAPIDecode, and names the kernel in its `kernel` field
+        # (flashinfer.py:568-572 FlashInferDecodeKernel, :608-611 @v0.30.0;
+        # decode_with_xqa / decode_with_trtllm_gen at :1997-1998). The class
+        # name alone would label SM120's XQA row and SM100's trtllm-gen row
+        # identically — kernel_source must name the kernel that ran.
+        kernel = getattr(phase_metadata, "kernel", None)
+        if kernel is not None:
+            label += "_" + str(getattr(kernel, "value", kernel)).lower().replace("-", "_")
+        return label
     return f"vllm_{backend_name_str}".lower()
 
 
@@ -223,19 +246,29 @@ def run_attention_torch(
     # (utils.py:240-307@v0.29.0); reset cache_config after the case so the
     # next backend re-resolves instead of inheriting ("existing wins outright")
     _supported = get_supported_kv_cache_layouts([backend_cls])
-    resolve_kv_cache_layout(
-        vllm_config, [[m.name for m in _supported]], [kv_cache_spec])
-    exit_stack.callback(
-        lambda: setattr(vllm_config.cache_config, "kv_cache_layout", None))
+    resolve_kv_cache_layout(vllm_config, [[m.name for m in _supported]], [kv_cache_spec])
+    exit_stack.callback(lambda: setattr(vllm_config.cache_config, "kv_cache_layout", None))
     # 0.29 impls consume ONE merged tensor [num_blocks, H, block, 2*D] with
     # K/V split on the last dim (flash_attn.py:1013-1014 "(B,H,N,2*D) ->
     # ((B,N,H,D),(B,N,H,D))"); the 0.24-era per-backend stride permutation
     # (get_kv_cache_stride_order) no longer exists. Convert the populated
     # helper layout [2, B, N, H, D] once, value-equivalent.
-    _k, _v = kv_cache[0], kv_cache[1]                    # [B, N, H, D]
-    kv_cache = torch.cat(
-        (_k.permute(0, 2, 1, 3), _v.permute(0, 2, 1, 3)), dim=-1
-    ).contiguous()                                        # [B, H, N, 2*D]
+    _k, _v = kv_cache[0], kv_cache[1]  # [B, N, H, D]
+    kv_cache = torch.cat((_k.permute(0, 2, 1, 3), _v.permute(0, 2, 1, 3)), dim=-1).contiguous()  # [B, H, N, 2*D]
+    # Serving allocates the per-layer cache in the RESOLVED physical layout and
+    # backends read it through kv_cache.permute(*layout.layer_view_order)
+    # (v1/kv_cache_layout.py KVCacheLayout.layer_view_order; flashinfer.py:2091
+    # "kv_cache_permute = kv_cache.permute(*stride_order)  # HND and contiguous"
+    # @v0.30.0). A contiguous [B, H, N, 2*D] tensor is only right for the LBHNC
+    # family (HND) that FLASH_ATTN and the SM100 trtllm-gen FlashInfer path
+    # resolve (flashinfer.py:543-549); FlashInfer elsewhere resolves the NHD
+    # default, whose XQA decode asserts "KV cache inner dims (block_size,
+    # head_size) must be contiguous" on this HND memory (flashinfer.py:2448) —
+    # every fp8-KV GQA generation case on SM120, 2026-10-01. Lay the memory out
+    # per the resolved layout and hand the backend the same logical view.
+    kv_cache = kv_cache_in_resolved_layout(
+        kv_cache, vllm_config.cache_config.get_resolved_kv_cache_layout().layer_view_order
+    )
 
     builder_cls, impl_cls = get_attention_backend(backend_name)
     layer_names = ["placeholder"]
