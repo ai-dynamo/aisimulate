@@ -307,6 +307,24 @@ def run_fpm(
                     raise ValueError("formal runtime observation index must stay inside the collection directory")
                 observed = verify_collection_runtime(request, index, collection_checkpoint=payload)
                 (root / "runtime-compatibility.json").write_text(json.dumps(observed, indent=2, sort_keys=True) + "\n")
+            if status == 0 and not smoke:
+                checkpoint = json.loads((selected_checkpoint / "fpm_forward.json").read_text(encoding="utf-8"))
+                publication = checkpoint.get("database")
+                if not isinstance(publication, dict) or publication.get("status") != "passed":
+                    raise RuntimeError("collector did not record a completed FPM database publication")
+                # The collector validates this commit record, including on resume
+                # after raw-artifact reclamation. Check its actual runtime version,
+                # not an unrelated directory left by an earlier collection.
+                metadata = json.loads(Path(publication["metadata"]).read_text(encoding="utf-8"))
+                observed = metadata.get("backend_version")
+                expected = request.identity.framework_version
+                if observed != expected:
+                    raise RuntimeError(
+                        f"pod-reported {request.identity.framework} version {observed!r} does not match "
+                        f"framework_version {expected!r}; generated configs cannot use this publication. "
+                        "Collected artifacts are preserved. Create a new plan in a new output directory "
+                        "using a matching runtime or the observed framework_version."
+                    )
         except Exception as exc:
             print(f"aisimulate onboard collect-fpm failed: {exc}", file=sys.stderr)
             execution_error = str(exc)

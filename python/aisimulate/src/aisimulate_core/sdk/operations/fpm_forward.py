@@ -37,6 +37,7 @@ from __future__ import annotations
 
 from enum import Enum
 
+from aisimulate_core.sdk.fpm_config import resolve_fpm_config
 from aisimulate_core.sdk.fpm_identity import EXECUTION_COLUMNS, LEGACY_EXECUTION_IDENTITY
 from aisimulate_core.sdk.operations.base import PythonOperation
 
@@ -108,6 +109,8 @@ class FPMForwardOp(PythonOperation):
         sol_fn=None,
         weight_bytes: float = 0.0,
         sol_ops: list | None = None,
+        *,
+        execution: tuple[str, ...] = LEGACY_EXECUTION_IDENTITY,
     ) -> None:
         """``sol_ops`` — the model's ORIGINAL op-level list for this phase —
         rides the compiled spec so the Rust FPM SOL roofline derives from the
@@ -135,28 +138,37 @@ class FPMForwardOp(PythonOperation):
         self._phase = phase
         self._model_path = str(model_path)
         self._weight_bytes = float(weight_bytes)
+        self._resident_weight_bytes = self._weight_bytes
+        fpm_config = resolve_fpm_config(model_config)
+        unrecorded = fpm_config.options["unrecorded_quant_modes"]
         fmha_selector = getattr(model_config, "fpm_fmha_quant_mode", None)
         self._original_fmha_quant_mode = None if fmha_selector is None else _norm_identity(model_config.fmha_quant_mode)
-        self._match_identity = (
-            _norm_identity(model_config.gemm_quant_mode),
-            _norm_identity(model_config.moe_quant_mode),
-            _norm_identity(model_config.fmha_quant_mode if fmha_selector is None else fmha_selector),
-            _norm_identity(model_config.comm_quant_mode),
-            _norm_identity(model_config.kvcache_quant_mode),
-            _norm_identity(model_config.tp_size),
-            _norm_identity(model_config.pp_size),
-            _norm_identity(model_config.attention_dp_size),
-            _norm_identity(model_config.moe_tp_size if model_config.moe_tp_size is not None else 1),
-            _norm_identity(model_config.moe_ep_size if model_config.moe_ep_size is not None else 1),
-            _norm_identity(model_config.cp_size),
-            _norm_backend_request(getattr(model_config, "moe_backend", None)),
+        identity = {
+            "gemm_quant_mode": model_config.gemm_quant_mode,
+            "moe_quant_mode": model_config.moe_quant_mode,
+            "fmha_quant_mode": None
+            if "fmha" in unrecorded
+            else (model_config.fmha_quant_mode if fmha_selector is None else fmha_selector),
+            "comm_quant_mode": None if "comm" in unrecorded else model_config.comm_quant_mode,
+            "kv_cache_dtype": model_config.kvcache_quant_mode,
+            "tp": model_config.tp_size,
+            "pp": model_config.pp_size,
+            "dp": model_config.attention_dp_size,
+            "moe_tp": model_config.moe_tp_size if model_config.moe_tp_size is not None else 1,
+            "moe_ep": model_config.moe_ep_size if model_config.moe_ep_size is not None else 1,
+            "cp": model_config.cp_size,
+            "moe_backend": _norm_backend_request(getattr(model_config, "moe_backend", None)),
             # ModelConfig spells the engine default out ("flashinfer"); the
             # collector records engine-decided knobs as "auto".
-            _norm_backend_request(getattr(model_config, "attention_backend", None), engine_default="flashinfer"),
-            _norm_identity(bool(getattr(model_config, "enable_wideep", False))),
-            _norm_identity(bool(getattr(model_config, "enable_eplb", False))),
-        )
-        self._match_identity += LEGACY_EXECUTION_IDENTITY
+            "attention_backend": _norm_backend_request(
+                fpm_config.attention_backend or model_config.attention_backend, engine_default="flashinfer"
+            ),
+            "enable_wideep": bool(getattr(model_config, "enable_wideep", False)),
+            "enable_eplb": bool(getattr(model_config, "enable_eplb", False)),
+            **dict(zip(EXECUTION_COLUMNS, execution, strict=True)),
+        }
+        self._match_identity = tuple(_norm_identity(identity[name]) for name in _CELL_MATCH_COLUMNS)
+        self._dcp_size = model_config.dcp_size
         self._sol_ops = list(sol_ops)
         # Speculative verify width for the equivalent-AR decode mapping
         # (1 = plain AR). Set post-construction by the fpm model rewrite for

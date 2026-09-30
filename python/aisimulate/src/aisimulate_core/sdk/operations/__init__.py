@@ -56,6 +56,10 @@ from aisimulate_core.sdk.operations.moe import MoE, MoEDispatch
 from aisimulate_core.sdk.operations.moe_comm import MoEAllToAll, MoEExpertCompute
 from aisimulate_core.sdk.operations.msa import ContextMSAModule, GenerationMSAModule
 from aisimulate_core.sdk.operations.overlap import FallbackOp, OverlapOp
+from aisimulate_core.sdk.operations.prefill_graph import (
+    SglangPrefillAttentionSequence,
+    SglangPrefillCommNormBoundary,
+)
 
 # Re-export commonly-imported names that the prior monolithic operations.py
 # exposed at module level. Some test files and external callers do
@@ -102,6 +106,8 @@ __all__ = [
     "OverlapOp",
     "PerformanceResult",
     "PythonOperation",
+    "SglangPrefillAttentionSequence",
+    "SglangPrefillCommNormBoundary",
     "WideEPContextMLA",
     "WideEPGenerationMLA",
     "_afd_send_prob",

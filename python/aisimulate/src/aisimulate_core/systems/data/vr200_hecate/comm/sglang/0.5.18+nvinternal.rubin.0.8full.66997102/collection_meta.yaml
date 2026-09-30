@@ -1,0 +1,45 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+schema_version: 2
+runtime:
+  framework: sglang
+  version: 0.5.18+nvinternal.rubin.0.8full.66997102
+  image: gitlab-master.nvidia.com:5005/dl/ai-dynamo/dynamo-ci@sha256:53299500a280c8de34bd484507a45b2f83b4d5e7c999b77284fa31930f7e63ab
+  source_commit: 02c5a855aceb968c310e6fbc6632270e26edc84b
+  abi:
+    torch: 2.14.0a0+4fdf77b940.nvinternal.rubin.0.8full
+    cuda: '13.5'
+  transport:
+    scope: single_node
+    tensor_parallel_size: 4
+    expert_parallel_size: 1
+  backend_capability:
+    operation: plain_all_reduce
+    fused_residual_rmsnorm_measured: false
+tables:
+  custom_allreduce_perf:
+    rows: 14
+    status: complete
+    collections:
+    - collector_ref: collector.sglang_rubin.collect_all_reduce
+      collector_hash: sha256:1d5cc64f60742f50013286cdedb2a63f81c822f6408bcc5cf134847971aaefe2
+      case_plan_hash: sha256:ebbd80501bc7b96fc5c2fb2a9a0ac2733d86ff7a295c186e4627320f813d82b1
+      collected_at: '2026-09-17'
+      rows: 14
+      status: complete
+  sglang_prefill_comm_norm_boundary_perf:
+    rows: 8
+    status: complete
+    collections:
+    - collector_ref: collector.sglang_rubin.publish_prefill_graph
+      collector_hash: sha256:5290e9ed76217cc617369fdc913f084f21a4e5ad4f2a3bc2d390d0b8850ebd2f
+      case_plan_hash: sha256:2b8fb212bca7d16bbe165ef553e9fe0c2718f19d64e1a08496115807b3760397
+      collected_at: '2026-09-20'
+      rows: 8
+      status: complete
+      runtime:
+        framework: sglang
+        version: 0.5.18+nvinternal.rubin.0.8full.66997102
+        image: gitlab-master.nvidia.com:5005/dl/ai-dynamo/dynamo-ci
+        image_digest: sha256:53299500a280c8de34bd484507a45b2f83b4d5e7c999b77284fa31930f7e63ab

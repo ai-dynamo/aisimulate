@@ -17,6 +17,7 @@ from .config.cli import CorePredictionConfig
 from .config.common import ENGINE_MODEL_CONTROL_FIELDS, omit_inactive_moe_controls
 from .config.engine import EnginePredictionConfig, WorkerPredictionConfig
 from .config.traffic import SyntheticSessionSource, SyntheticSource, TraceSource
+from .state_size import resolve_state_size
 from .sweeper.afd_parallel import AFDParallelConfig, AFDTopology
 from .sweeper.afd_perfmodel import (
     AFDPerformanceModel,
@@ -131,7 +132,7 @@ def _pin_estimator_version_aliases(deployment: BackendDeploymentSpec) -> Backend
         resolved = diagnostics["provenance"]["config"]
         versions.add(resolved["backend_version"])
         updates[field] = {**args, "timing_model": {**timing, "config": {**resolved, **memory}}}
-        metadata[role] = {"provider": "aic", "config": resolved, "selection": diagnostics}
+        metadata[role] = {**metadata.get(role, {}), "provider": "aic", "config": resolved, "selection": diagnostics}
     if len(versions) > 1:
         raise ValueError(
             f"estimator version alias resolves to different backend versions across roles: {sorted(versions)}"
@@ -229,9 +230,28 @@ def _deployment(
         assert engine.workers.aggregated is not None
         worker = engine.workers.aggregated
         parallel = _parallel_mapping(worker, prefix="")
+        state_size = resolve_state_size(engine, worker)
+        if worker.kv_cache.state_cache is not None:
+            resolved_state = worker.kv_cache.state_cache.model_copy(
+                update={"bytes_per_request": state_size["bytes_per_request"]}
+            )
+            worker = worker.model_copy(
+                update={
+                    "kv_cache": worker.kv_cache.model_copy(
+                        update={
+                            "state_cache": resolved_state,
+                            "block_size": state_size["block_size"],
+                            "bytes_per_token": state_size["kv_bytes_per_token"],
+                        }
+                    )
+                }
+            )
+        metadata = _worker_performance_model_metadata(engine, worker)
+        if worker.kv_cache.state_cache is not None:
+            metadata["state_cache"] = state_size
         return BackendDeploymentSpec(
             parallel_config=parallel,
-            performance_model_metadata={"aggregated": _worker_performance_model_metadata(engine, worker)},
+            performance_model_metadata={"aggregated": metadata},
             agg_engine_args=_worker_engine_args(engine, worker, "aggregated", transfer_bytes_per_token=None),
             num_workers=worker.parallelism.replicas,
             **common,
@@ -376,6 +396,7 @@ def _parallel_mapping(worker: WorkerPredictionConfig, *, prefix: str) -> dict[st
         f"{prefix}attention_dp": parallel.attention_data,
         f"{prefix}moe_tp": parallel.moe_tensor,
         f"{prefix}moe_ep": parallel.moe_expert,
+        **({f"{prefix}dcp": parallel.decode_context} if parallel.decode_context is not None else {}),
     }
 
 
@@ -407,9 +428,23 @@ def _worker_performance_model_metadata(
             if getattr(engine, field) is not None
         },
     }
+    if parallel.decode_context is not None:
+        config["dcp"] = parallel.decode_context
+    for field in (
+        "gemm_quant_mode",
+        "moe_quant_mode",
+        "fmha_quant_mode",
+        "kvcache_quant_mode",
+        "comm_quant_mode",
+        "attention_backend",
+    ):
+        value = getattr(worker.timing, field)
+        if value is not None:
+            config[field] = value
     config["database_mode"] = worker.timing.database_mode or engine.database_mode
-    if engine.systems_paths is not None:
-        config["systems_paths"] = engine.systems_paths
+    systems_paths = worker.timing.systems_paths or engine.systems_paths
+    if systems_paths is not None:
+        config["systems_paths"] = systems_paths
     if engine.speculation is not None:
         config["speculation"] = engine.speculation.cost_config()
     if worker.timing.fpm_parquet_path is not None:
@@ -432,6 +467,27 @@ def _worker_engine_args(
     cache = worker.kv_cache
     capacity = cache.capacity
     memory_fraction = capacity.memory_fraction
+    identity_fields = (
+        "gemm_quant_mode",
+        "moe_quant_mode",
+        "fmha_quant_mode",
+        "kvcache_quant_mode",
+        "comm_quant_mode",
+        "attention_backend",
+    )
+    if (engine.mode == "afd" or engine.workers.encoder is not None) and any(
+        getattr(worker.timing, field) is not None for field in identity_fields
+    ):
+        raise ValueError("explicit timing identity requires the canonical forward-pass provider")
+    if parallel.decode_context is not None:
+        if parallel.tensor % parallel.decode_context:
+            raise ValueError("decode_context must divide tensor parallelism")
+        if worker.timing.type != "default" or engine.mode == "afd" or engine.workers.encoder is not None:
+            raise ValueError("DCP requires the canonical forward-pass timing provider")
+        if parallel.decode_context > 1 and capacity.type != "fixed":
+            raise ValueError(
+                "DCP FPM replay requires explicit KV block capacity; automatic DCP/hybrid sizing is unsupported"
+            )
     if capacity.type == "default" and memory_fraction is None:
         memory_fraction = 0.88 if backend == "sglang" else 0.9
     block_size = cache.block_size
@@ -485,8 +541,10 @@ def _worker_engine_args(
             if engine.fpm_profile is not None
             else resolve_model_context_length(engine.model)
         )
+    if cache.prefix_match_unit is not None:
+        payload["prefix_match_unit"] = cache.prefix_match_unit
     if cache.state_cache is not None:
-        payload["state_cache"] = cache.state_cache.model_dump(mode="json")
+        payload["state_cache"] = {"bytes_per_request": cache.state_cache.bytes_per_request}
         payload["kv_cache_bytes_per_token"] = cache.bytes_per_token
     if capacity.type == "fixed":
         if capacity.blocks is not None:
@@ -544,11 +602,15 @@ def _worker_engine_args(
             tp=parallel.tensor,
             pp=parallel.pipeline,
             attention_dp=parallel.attention_data,
+            dcp=parallel.decode_context,
             moe_tp_size=parallel.moe_tensor if sharded_moe else None,
             moe_ep_size=parallel.moe_expert if sharded_moe else None,
             kv_block_size=block_size,
             nextn=engine.nextn,
-            **{name: getattr(engine, name) for name in ENGINE_MODEL_CONTROL_FIELDS},
+            **{
+                name: getattr(timing, name, None) if getattr(timing, name, None) is not None else getattr(engine, name)
+                for name in ENGINE_MODEL_CONTROL_FIELDS
+            },
             speculation=engine.speculation.cost_config() if engine.speculation is not None else None,
             estimation_mode=timing.estimation_mode or engine.estimation_mode,
             fallback_policy=timing.fallback_policy or engine.fallback_policy,
@@ -616,6 +678,8 @@ def _resolve_kv_bytes_per_token(
     if configured != "auto":
         return configured
     parallel = worker.parallelism
+    if (parallel.decode_context or 1) > 1:
+        raise ValueError("DCP KV transfer sizing requires explicit bytes_per_token")
     return estimate_kv_bytes_per_token(
         engine.model,
         tp_size=parallel.tensor,
@@ -634,7 +698,7 @@ def _resolve_kv_bytes_per_token(
             if engine.fpm_profile is not None
             else {}
         ),
-        **({"kvcache_quant_mode": engine.kvcache_quant_mode} if engine.kvcache_quant_mode else {}),
+        kvcache_quant_mode=worker.timing.kvcache_quant_mode or engine.kvcache_quant_mode,
     )
 
 

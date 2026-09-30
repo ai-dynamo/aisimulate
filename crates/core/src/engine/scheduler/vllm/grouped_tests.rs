@@ -121,7 +121,6 @@ fn grouped_window_replays_long_context_with_bounded_storage_and_logical_fpm_leng
     assert_eq!(
         *captured.0.lock().unwrap(),
         vec![
-            (32, 32, 32),
             (33, 33, 33),
             (34, 34, 34),
             (35, 35, 35),

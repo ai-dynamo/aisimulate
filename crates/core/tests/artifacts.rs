@@ -186,8 +186,8 @@ fn common_agg_runtime_captures_requests_outputs_and_the_same_report() {
             })
             .collect::<Vec<_>>(),
         vec![
-            (12.0, true, true, false, false, Some(0)),
-            (14.0, true, true, true, false, None),
+            (10.0, true, true, false, false, Some(0)),
+            (12.0, true, true, true, false, None),
         ]
     );
     assert!(artifacts.host_offload_events.is_empty());

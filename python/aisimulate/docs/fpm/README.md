@@ -14,7 +14,7 @@ There are two distinct workflows:
 
 | Workflow | Input | Consumer |
 | --- | --- | --- |
-| Offline whole-forward FPM | Collector-produced `fpm_forward_perf.parquet` and its metadata sidecar | `forward_model="fpm"`: lookup, interpolation, and supported SOL transfer |
+| Offline whole-forward FPM | Validated `fpm_forward_perf.parquet` and its metadata sidecar | `best_available` with `estimation_mode="fpm_interpolation"`: lookup, interpolation, and supported SOL transfer |
 | Online regression | Observed per-iteration, per-rank telemetry | A role-bound model updated with `tune_with_fpms` |
 
 Offline FPM does not require an additional regression-training step. Predicting
