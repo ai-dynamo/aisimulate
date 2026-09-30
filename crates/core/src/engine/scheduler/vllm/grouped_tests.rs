@@ -120,12 +120,7 @@ fn grouped_window_replays_long_context_with_bounded_storage_and_logical_fpm_leng
     assert_eq!(decode_contexts, vec![33, 34, 35, 36]);
     assert_eq!(
         *captured.0.lock().unwrap(),
-        vec![
-            (33, 33, 33),
-            (34, 34, 34),
-            (35, 35, 35),
-            (36, 36, 36)
-        ]
+        vec![(33, 33, 33), (34, 34, 34), (35, 35, 35), (36, 36, 36)]
     );
     assert_eq!(&bytes[..4], &[16, 24, 24, 24]);
     assert_eq!(core.mocker_metrics().kv_cache_used_bytes, Some(0));

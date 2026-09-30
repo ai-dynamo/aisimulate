@@ -975,7 +975,7 @@ def test_serving_error_limits_survive_preparation_assessment_and_recheck(quality
         (1.5, 0.2, 0.5, "ttft"),
         (1.000001, 0.0, 0.00001, "ttft"),
         (0.48, 1.0, 1.1, "ttft"),
-        (3.4, 1.0, 1.1, "output_throughput"),
+        (3.8, 1.0, 1.1, "output_throughput"),
     ],
 )
 def test_serving_threshold_reassessment_preserves_measurements(

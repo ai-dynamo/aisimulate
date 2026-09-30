@@ -167,7 +167,7 @@ shared:
   - glob: tests/test_fpm_grouped_workflow.py
     owners: [forward-pass-engine, maintainers]
   - glob: tests/test_fpm_query_evidence.py
-    owners: [forward-pass-engine, maintainers]
+    owners: [forward-pass-engine, replay, maintainers]
   - glob: python/aisimulate/src/aisimulate/sweeper/
     owners: [sweeper, maintainers]
   - glob: docs/sweeper/

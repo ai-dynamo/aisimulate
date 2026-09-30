@@ -430,6 +430,16 @@ def test_public_smoke_covers_both_phases_then_matching_full_collection_can_start
     def synthetic_collection(args, resolved):
         calls.append((args.smoke, args.limit))
         _write_bounded_native(resolved[0], root, resolved[1], smoke=args.smoke)
+        if not args.smoke:
+            return runner.run_collection(
+                resolved[0],
+                generator_overrides=resolved[1],
+                checkpoint_dir=str(root / "fpm-checkpoint"),
+                artifact_root=str(root / "fpm-artifacts"),
+                database_root=str(root / "systems/data"),
+                resume=True,
+                retry_failed=False,
+            )
         return []
 
     monkeypatch.setattr(entry, "run_resolved", synthetic_collection)
