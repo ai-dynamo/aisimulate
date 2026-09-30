@@ -27,11 +27,6 @@ def _absolute_systems_path(value: str) -> str:
 SystemsPath = Annotated[str, Field(strict=True, min_length=1), AfterValidator(_absolute_systems_path)]
 
 
-def requested_backend_version(versions: str | dict[str, str] | None, backend: str) -> str | None:
-    """Return the version pin for one backend; ``None`` means resolve latest."""
-    return versions.get(backend) if isinstance(versions, dict) else versions
-
-
 def _normalize_systems_root(value: str) -> str:
     if not value.strip():
         raise ValueError("systems_paths entries must be nonempty")
@@ -41,6 +36,11 @@ def _normalize_systems_root(value: str) -> str:
 
 
 SystemsRoot = Annotated[str, Field(strict=True, min_length=1), AfterValidator(_normalize_systems_root)]
+
+
+def requested_backend_version(versions: str | dict[str, str] | None, backend: str) -> str | None:
+    """Return the version pin for one backend; ``None`` means resolve latest."""
+    return versions.get(backend) if isinstance(versions, dict) else versions
 
 
 T = TypeVar("T")

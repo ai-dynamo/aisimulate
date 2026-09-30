@@ -500,6 +500,7 @@ that selection across serialization and replay. Later timing coverage errors
 never switch estimator or interpolation method. A registered model's graph
 construction failure does not change SOL to direct; top-level fallback still
 follows the configured estimator ordering and policy.
+
 - `op_level`: optional `decode_workload_distribution` selects a measured decode-MoE distribution, and `prefill_graph_profile` selects a qualified direct-prefill graph composition. Saved configurations retain the resolved immutable `prefill_graph_profile_id`, which is validated on reload. Unknown fields are rejected.
 - `fpm_interpolation`: `text_only` (false) permits text prefill/decode profiles
   for multimodal architectures while retaining encoder weights. It does not
