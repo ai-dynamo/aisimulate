@@ -27,6 +27,17 @@ def _absolute_systems_path(value: str) -> str:
 SystemsPath = Annotated[str, Field(strict=True, min_length=1), AfterValidator(_absolute_systems_path)]
 
 
+def _normalize_systems_root(value: str) -> str:
+    if not value.strip():
+        raise ValueError("systems_paths entries must be nonempty")
+    if value.lower() == "default":
+        return "default"
+    return str(Path(value).expanduser().resolve())
+
+
+SystemsRoot = Annotated[str, Field(strict=True, min_length=1), AfterValidator(_normalize_systems_root)]
+
+
 def requested_backend_version(versions: str | dict[str, str] | None, backend: str) -> str | None:
     """Return the version pin for one backend; ``None`` means resolve latest."""
     return versions.get(backend) if isinstance(versions, dict) else versions
@@ -238,6 +249,7 @@ ENGINE_MODEL_CONTROL_FIELDS = (
     "enable_eplb",
     "wideep_num_slots",
     "moe_backend",
+    "moe_kernel_source",
     "attention_backend",
     "gemm_quant_mode",
     "moe_quant_mode",
@@ -261,7 +273,7 @@ def is_active_engine_model_control(name: str, value: Any) -> bool:
 def omit_inactive_moe_controls(config: dict[str, Any]) -> dict[str, Any]:
     """Keep additive defaults out of timing payloads parsed by older runners."""
     result = dict(config)
-    for name in ("moe_backend", "wideep_num_slots", "enable_eplb"):
+    for name in ("moe_backend", "moe_kernel_source", "wideep_num_slots", "enable_eplb"):
         if not is_active_engine_model_control(name, result.get(name)):
             result.pop(name, None)
     return result

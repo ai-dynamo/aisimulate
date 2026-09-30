@@ -363,6 +363,25 @@ def test_direct_rejects_unsupported_execution(profile_dict, direct_compile, kwar
         direct_compile(profile_dict, **kwargs)
 
 
+@pytest.mark.parametrize("dcp", [1, 2])
+def test_profile_rejects_unrepresented_dcp_identity(profile_dict, dcp):
+    with pytest.raises(ValueError, match="does not describe recorded DCP identity"):
+        _normalize(_request(profile_dict, "direct", dcp=dcp))
+    with pytest.raises(ValueError, match="does not describe recorded DCP identity"):
+        engine.compile_engine(
+            "test/unknown-decoder",
+            "test_gpu",
+            "vllm",
+            "0.25.1",
+            tp_size=2,
+            moe_tp_size=2,
+            forward_model="fpm",
+            fpm_profile=profile_dict,
+            fpm_interpolation="direct",
+            dcp_size=dcp,
+        )
+
+
 def test_direct_requires_explicit_resources(direct_compile):
     with pytest.raises(ValueError, match="requires an fpm_profile"):
         direct_compile(None, fpm_interpolation="direct")

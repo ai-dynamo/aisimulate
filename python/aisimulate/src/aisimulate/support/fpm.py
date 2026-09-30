@@ -178,12 +178,32 @@ def run_fpm(
     with plan_lock(root):
         check_plan(request, root)
         _check_campaign_outputs(root, smoke=smoke, resume=resume, checkpoint_dir=checkpoint_dir)
-        from collector.fpm_forward.cli import main as fpm_main
-
         # The collector reports input/plan failures through argparse before
-        # entering run_resolved; only execution failures escape this call.
+        # entering run_resolved; imports and execution failures return exit 1.
         try:
-            return fpm_main(command[3:])
+            from collector.fpm_forward.cli import main as fpm_main
+
+            result = fpm_main(command[3:])
+            if result == 0 and not smoke:
+                selected = Path(checkpoint_dir).expanduser().resolve() if checkpoint_dir else root / "fpm-checkpoint"
+                checkpoint = json.loads((selected / "fpm_forward.json").read_text(encoding="utf-8"))
+                publication = checkpoint.get("database")
+                if not isinstance(publication, dict) or publication.get("status") != "passed":
+                    raise RuntimeError("collector did not record a completed FPM database publication")
+                # The collector validates this commit record, including on resume
+                # after raw-artifact reclamation. Check its actual runtime version,
+                # not an unrelated directory left by an earlier collection.
+                metadata = json.loads(Path(publication["metadata"]).read_text(encoding="utf-8"))
+                observed = metadata.get("backend_version")
+                expected = request.identity.framework_version
+                if observed != expected:
+                    raise RuntimeError(
+                        f"pod-reported {request.identity.framework} version {observed!r} does not match "
+                        f"framework_version {expected!r}; generated configs cannot use this publication. "
+                        "Collected artifacts are preserved. Create a new plan in a new output directory "
+                        "using a matching runtime or the observed framework_version."
+                    )
+            return result
         except Exception as exc:
             print(f"aisimulate onboard collect-fpm failed: {exc}", file=sys.stderr)
             return 1

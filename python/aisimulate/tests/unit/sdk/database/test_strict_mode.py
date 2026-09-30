@@ -207,6 +207,16 @@ def test_strict_raises_on_uncovered_table(systems_root: Path) -> None:
         _get_db(systems_root, strict_provenance=True)
 
 
+def test_only_the_known_graph_contract_is_exempt_from_table_coverage(tmp_path: Path) -> None:
+    from aisimulate_core.sdk.perf_database import _check_strict_provenance_coverage
+
+    (tmp_path / "sglang_glm52_nvfp4_vr200_tp4_graph_v1.profile.json").write_text("{}")
+    _check_strict_provenance_coverage(str(tmp_path), strict=True)
+    (tmp_path / "another.profile.json").write_text("{}")
+    with pytest.raises(ValueError, match="another.profile"):
+        _check_strict_provenance_coverage(str(tmp_path), strict=True)
+
+
 def test_non_strict_warns_on_uncovered_table(systems_root: Path, caplog: pytest.LogCaptureFixture) -> None:
     _write(systems_root, "data/h100_sxm/attention/trtllm/1.0.0/context_attention_perf.parquet")
     _write(systems_root, "data/h100_sxm/attention/trtllm/1.0.0/generation_attention_perf.parquet")

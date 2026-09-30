@@ -11,6 +11,7 @@ import subprocess
 import sys
 from copy import deepcopy
 from importlib.resources import files
+from pathlib import Path
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -21,8 +22,9 @@ from pydantic import ValidationError
 from aisimulate.compiler import prediction_to_replay_spec
 from aisimulate.config import CorePredictionConfig, CoreRecommendationConfig
 from aisimulate.output import write_recommendations
-from aisimulate.recommend import run_recommendation
+from aisimulate.recommend import recommendation_to_sweeper, run_recommendation
 from aisimulate.runner import EngineReplayRunnerFactory
+from aisimulate.sweeper.config import SearchSpace
 from aisimulate_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel, models, perf_database
 from aisimulate_core.sdk.config import ModelConfig
 from aisimulate_core.sdk.errors import PerfDataNotAvailableError
@@ -48,10 +50,11 @@ def _request() -> dict:
 
 
 @pytest.mark.parametrize("config_type", [CorePredictionConfig, CoreRecommendationConfig])
-def test_systems_root_is_absolute_and_reloadable_before_collection(config_type, tmp_path, monkeypatch):
+@pytest.mark.parametrize("root_key", ["systems_path", "systems_paths"])
+def test_systems_root_is_absolute_and_reloadable_before_collection(config_type, root_key, tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     raw = _request()
-    raw["engine"]["systems_path"] = "local profiles"
+    raw["engine"][root_key] = "local profiles" if root_key == "systems_path" else ["local profiles"]
     if config_type is CoreRecommendationConfig:
         raw["optimization"] = {"target": "throughput"}
 
@@ -62,6 +65,66 @@ def test_systems_root_is_absolute_and_reloadable_before_collection(config_type, 
     assert "systems_path" not in saved["engine"]
     assert saved["engine"]["systems_paths"] == [str(tmp_path / "local profiles")]
     assert config_type.model_validate(saved).engine.systems_paths == config.engine.systems_paths
+
+
+@pytest.mark.parametrize("config_type", [CorePredictionConfig, CoreRecommendationConfig])
+@pytest.mark.parametrize("scope", ["engine", "worker"])
+def test_canonical_systems_roots_preserve_order_and_default_on_reload(config_type, scope, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    raw = _request()
+    controls = raw["engine"] if scope == "engine" else raw["engine"]["workers"]["aggregated"].setdefault("timing", {})
+    controls["systems_paths"] = ["second root", "DEFAULT", "~/first root", "with,comma", "second root"]
+    if config_type is CoreRecommendationConfig:
+        raw["optimization"] = {"target": "throughput"}
+    expected = [
+        str(tmp_path / "second root"),
+        "default",
+        str(Path.home() / "first root"),
+        str(tmp_path / "with,comma"),
+        str(tmp_path / "second root"),
+    ]
+    config = config_type.model_validate(raw)
+    saved = config.model_dump(mode="json", exclude_none=True)
+    monkeypatch.chdir(tmp_path.parent)
+
+    reloaded = config_type.model_validate(saved)
+    controls = reloaded.engine if scope == "engine" else reloaded.engine.workers.aggregated.timing
+    assert controls.systems_paths == expected
+    if config_type is CoreRecommendationConfig:
+        assert recommendation_to_sweeper(reloaded).search_space.systems_paths_for("agg") == expected
+
+
+@pytest.mark.parametrize("config_type", [CorePredictionConfig, CoreRecommendationConfig])
+def test_systems_root_alias_accepts_equivalent_canonical_roots(config_type, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    raw = _request()
+    raw["engine"].update(systems_path="local profiles", systems_paths=["./local profiles"])
+    if config_type is CoreRecommendationConfig:
+        raw["optimization"] = {"target": "throughput"}
+
+    assert config_type.model_validate(raw).engine.systems_paths == [str(tmp_path / "local profiles")]
+
+
+@pytest.mark.parametrize("root_key", ["systems_path", "systems_paths"])
+def test_search_space_roots_are_normalized_before_reload(root_key, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    roots = {root_key: "shared" if root_key == "systems_path" else ["shared", "default", "other"]}
+    space = SearchSpace(
+        model_name="model",
+        hardware_sku="system",
+        role_estimator_controls={"prefill": {"systems_paths": ["worker", "default"]}},
+        **roots,
+    )
+    saved = space.model_dump(mode="json", exclude_none=True)
+    monkeypatch.chdir(tmp_path.parent)
+
+    reloaded = SearchSpace.model_validate(saved)
+    expected = [str(tmp_path / "shared")]
+    if root_key == "systems_paths":
+        expected.extend(["default", str(tmp_path / "other")])
+    assert "systems_path" not in saved
+    assert reloaded.systems_paths_for("decode") == expected
+    assert reloaded.systems_paths_for("prefill") == [str(tmp_path / "worker"), "default"]
 
 
 @pytest.mark.parametrize("config_type", [CorePredictionConfig, CoreRecommendationConfig])
@@ -216,6 +279,50 @@ def _predict(raw):
         return runner.run(spec)
     finally:
         runner.close()
+
+
+@pytest.mark.parametrize("mode", ["aggregated", "disaggregated"])
+@pytest.mark.parametrize("engine_roots", [False, True])
+def test_worker_timing_roots_match_runtime_and_metadata(local_profiles, mode, engine_roots):
+    fast, slow = local_profiles
+    raw = _local_request(fast, mode)
+    if not engine_roots:
+        raw["engine"].pop("systems_path")
+    for worker in raw["engine"]["workers"].values():
+        worker["timing"]["systems_paths"] = [str(slow)]
+
+    config = CorePredictionConfig.model_validate(raw)
+    saved = config.model_dump(mode="json", exclude_none=True)
+    deployment = prediction_to_replay_spec(CorePredictionConfig.model_validate(saved)).backend_deployment
+    for metadata in deployment.performance_model_metadata.values():
+        assert metadata["config"]["systems_paths"] == [str(slow)]
+    report = _predict(saved)
+    assert report.metrics["completed_requests"] == 1
+    assert report.metrics["mean_ttft_ms"] == pytest.approx(200.0 if mode == "aggregated" else 400.0)
+    assert report.metrics["mean_itl_ms"] == pytest.approx(200.0)
+
+
+@pytest.mark.parametrize("root_key", ["systems_path", "systems_paths"])
+def test_reloaded_prediction_consumes_relative_systems_roots(local_profiles, root_key, tmp_path, monkeypatch):
+    fast, slow = local_profiles
+    monkeypatch.chdir(fast.parent)
+    raw = _local_request(fast)
+    raw["engine"].pop("systems_path")
+    raw["engine"][root_key] = fast.name if root_key == "systems_path" else [fast.name, slow.name]
+    saved = CorePredictionConfig.model_validate(raw).model_dump(mode="json", exclude_none=True)
+    other_directory = tmp_path / "other"
+    other_directory.mkdir()
+    monkeypatch.chdir(other_directory)
+
+    report = _predict(saved)
+
+    assert report.metrics["completed_requests"] == 1
+    # The first token is emitted by prefill; only later tokens need decode.
+    assert report.metrics["mean_ttft_ms"] == pytest.approx(20.0)
+    assert report.metrics["mean_itl_ms"] == pytest.approx(20.0)
+    deployment = prediction_to_replay_spec(CorePredictionConfig.model_validate(saved)).backend_deployment
+    expected = [str(fast)] if root_key == "systems_path" else [str(fast), str(slow)]
+    assert deployment.performance_model_metadata["aggregated"]["config"]["systems_paths"] == expected
 
 
 @pytest.mark.parametrize("mode", ["aggregated", "disaggregated"])

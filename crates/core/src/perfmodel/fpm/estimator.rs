@@ -21,16 +21,64 @@ pub struct EstimatorConfig {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct OpLevelConfig {}
+#[serde(default, deny_unknown_fields)]
+pub struct OpLevelConfig {
+    /// Existing measured generation-MoE distribution; context is unchanged.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub decode_workload_distribution: Option<String>,
+    /// Opt-in measured graph composition; only qualified direct prefill shapes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prefill_graph_profile: Option<String>,
+    /// Resolved immutable publication identity, retained in saved configurations.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prefill_graph_profile_id: Option<String>,
+}
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct FpmInterpolationConfig {
     pub method: FpmInterpolationMethod,
+    /// The profile covers text prefill/decode; encoder weights remain resident.
+    #[serde(skip_serializing_if = "is_false")]
+    pub text_only: bool,
     /// External parquet and its same-stem metadata sidecar.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fpm_parquet_path: Option<PathBuf>,
+    /// Match null profile identities only for these unspecified quant modes.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub unrecorded_quant_modes: Vec<UnrecordedFpmQuantMode>,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UnrecordedFpmQuantMode {
+    Fmha,
+    Comm,
+}
+
+impl FpmInterpolationConfig {
+    pub(crate) fn validate_quant_modes(
+        &self,
+        fmha: Option<&str>,
+        comm: Option<&str>,
+    ) -> Result<(), AicError> {
+        for mode in &self.unrecorded_quant_modes {
+            let explicit = match mode {
+                UnrecordedFpmQuantMode::Fmha => fmha,
+                UnrecordedFpmQuantMode::Comm => comm,
+            };
+            if explicit.is_some() {
+                return Err(super::config::invalid_config(
+                    "an unrecorded FPM quant mode cannot have an explicit quantization override",
+                ));
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Construction-time interpolation selection. Native operators receive only
@@ -120,6 +168,10 @@ pub enum RegressionFitKind {
 pub struct RegressionFitConfig {
     pub kind: RegressionFitKind,
     pub singular_ridge_scale: f64,
+    /// Refresh centered statistics after this many accepted insertions and
+    /// actual evictions per workload store. The default `None` disables periodic
+    /// refreshes; numerical recovery and batch-fit fallbacks remain enabled.
+    pub rebuild_interval: Option<usize>,
 }
 
 impl Default for RegressionFitConfig {
@@ -127,6 +179,7 @@ impl Default for RegressionFitConfig {
         Self {
             kind: RegressionFitKind::StandardizedNnls,
             singular_ridge_scale: 1e-9,
+            rebuild_interval: None,
         }
     }
 }
@@ -353,6 +406,7 @@ impl EstimatorConfig {
     }
 
     pub(crate) fn validate(&self) -> Result<(), AicError> {
+        validate_rebuild_interval(self.fpm_regression.fit.rebuild_interval)?;
         crate::config::validate_fpm_parquet_path(
             self.fpm_interpolation.fpm_parquet_path.as_deref(),
             true,
@@ -580,5 +634,58 @@ mod migration_tests {
                 "{error}"
             );
         }
+    }
+}
+
+pub(super) fn validate_rebuild_interval(interval: Option<usize>) -> Result<(), AicError> {
+    if interval == Some(0) {
+        return Err(AicError::InvalidEngineConfig(
+            "estimator_config.fpm_regression.fit.rebuild_interval must be positive or null".into(),
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rebuild_interval_defaults_and_explicit_null_survive_serde() {
+        for (json, expected) in [
+            ("{}", None),
+            (r#"{"rebuild_interval":7}"#, Some(7)),
+            (r#"{"rebuild_interval":4096}"#, Some(4096)),
+            (r#"{"rebuild_interval":null}"#, None),
+        ] {
+            let fit: RegressionFitConfig = serde_json::from_str(json).unwrap();
+            assert_eq!(fit.rebuild_interval, expected);
+            let encoded = serde_json::to_value(&fit).unwrap();
+            assert_eq!(encoded["rebuild_interval"], serde_json::json!(expected));
+            let decoded: RegressionFitConfig = serde_json::from_value(encoded).unwrap();
+            assert_eq!(decoded, fit);
+        }
+    }
+
+    #[test]
+    fn rebuild_interval_is_validated_before_estimator_selection() {
+        let mut config = EstimatorConfig::default();
+        for interval in [Some(1), Some(4096), Some(usize::MAX), None] {
+            config.fpm_regression.fit.rebuild_interval = interval;
+            config.validate().unwrap();
+        }
+        config.fpm_regression.fit.rebuild_interval = Some(0);
+        assert!(config.validate().unwrap_err().to_string().contains(
+            "estimator_config.fpm_regression.fit.rebuild_interval must be positive or null"
+        ));
+    }
+
+    #[test]
+    fn legacy_conversion_uses_the_canonical_rebuild_default() {
+        let config = EstimatorConfig::from_legacy(ForwardPassPerfOptions::default()).unwrap();
+        assert_eq!(
+            config.fpm_regression.fit.rebuild_interval,
+            RegressionFitConfig::default().rebuild_interval
+        );
     }
 }

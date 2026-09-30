@@ -1,0 +1,19 @@
+# Experimental Hecate GLM-5.2 NVFP4 / pinned SGLang image only.
+# Scope: TP4, MoE EP1, PP1, CP1, attention DP1; no broader qualification.
+# Read profile-evidence.json for measured inputs, assumptions and required sensitivity checks.
+# TC FLOPS are published reference peaks; HBM peak and network rates are inferences.
+# Empirical memory parameters fit seven native graph RMSNorm points, with about 33% maximum residual.
+data_dir: data/vr200_hecate
+gpu:
+  mem_bw: 19160064000000.0
+  mem_bw_empirical_scaling_factor: 0.5227797525079052
+  mem_empirical_constant_latency: 1.6518125736605135e-06
+  mem_capacity: 299083431936
+  bfloat16_tc_flops: 4000000000000000.0
+  fp8_tc_flops: 1.75e+16
+  fp4_tc_flops: 3.5e+16
+  sm_version: 107
+node:
+  num_gpus_per_node: 4
+  intra_node_bw: 1476000000000.0
+  inter_node_bw: 200000000000.0
