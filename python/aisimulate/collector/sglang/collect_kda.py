@@ -54,8 +54,10 @@ Output:
 
 # The kimi-k3 branch build (https://github.com/sgl-project/sglang/tree/kimi-k3)
 # reports 0.5.16. 0.5.20 adds GLM-5.3-Flash (glm5_next) KDA, audited against
-# the GB300 0.5.20 image (see the GLM section below). The unverified releases
-# in between stay excluded.
+# the GB300 0.5.20 image (see the GLM section below). The file-level range
+# spans both; each KDA architecture is additionally gated at runtime to its
+# own audited release by _KDA_ARCHITECTURE_COMPAT (Kimi-K3 0.5.16, GLM-5.3-
+# Flash 0.5.20), raising KdaRuntimeNotAuditedError otherwise.
 __compat__ = "sglang>=0.5.16,<=0.5.20,!=0.5.17,!=0.5.18,!=0.5.19"
 
 import gc
@@ -82,11 +84,13 @@ try:
         get_sm_version,
         log_perf,
     )
+    from collector.version_resolver import _check_compat
 except ModuleNotFoundError:
     import sys
 
     sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     from case_generator import get_common_kda_test_cases
+    from version_resolver import _check_compat
 
     from helper import (
         WORKER_RESTART,
@@ -941,6 +945,36 @@ def _is_glm5_next_kda(model_name: str) -> bool:
     return model_name in GLM5_NEXT_KDA_MODEL_PATHS
 
 
+KIMI_K3_KDA_ARCHITECTURE = "KimiK3ForConditionalGeneration"
+GLM5_NEXT_KDA_ARCHITECTURE = "Glm5NextForConditionalGeneration"
+# Per-architecture audited sglang releases for the KDA dispatch this module
+# replicates; any other installed release raises KdaRuntimeNotAuditedError (a
+# classified failure) instead of timing a possibly different kernel path.
+_KDA_ARCHITECTURE_COMPAT = {
+    KIMI_K3_KDA_ARCHITECTURE: "sglang==0.5.16",
+    GLM5_NEXT_KDA_ARCHITECTURE: "sglang==0.5.20",
+}
+
+
+class KdaRuntimeNotAuditedError(RuntimeError):
+    """The installed sglang release is not audited for this architecture's KDA dispatch."""
+
+
+def _kda_architecture(model_name: str) -> str:
+    """GLM-5.3-Flash paths run the glm5next layer; every other KDA row runs the
+    (unchanged) Kimi-K3 layer path of this module."""
+    return GLM5_NEXT_KDA_ARCHITECTURE if _is_glm5_next_kda(model_name) else KIMI_K3_KDA_ARCHITECTURE
+
+
+def _require_audited_runtime(model_name: str, runtime_version: str) -> None:
+    architecture = _kda_architecture(model_name)
+    compat = _KDA_ARCHITECTURE_COMPAT[architecture]
+    if not _check_compat(compat, runtime_version):
+        raise KdaRuntimeNotAuditedError(
+            f"sglang {runtime_version} is not an audited KDA runtime for {architecture} (audited: {compat})"
+        )
+
+
 def _glm5_next_common(phase, batch_size, seq_len, d_model, d_conv, nh, hd, model_name):
     return {
         "phase": phase,
@@ -1267,6 +1301,7 @@ def run_kda_torch(
     import contextlib
     from importlib.metadata import version as _get_version
 
+    _require_audited_runtime(model_name, _get_version("sglang"))
     if _is_glm5_next_kda(model_name):
         run_glm5_next_kda_torch(
             phase,

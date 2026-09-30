@@ -76,6 +76,7 @@ def test_kda_context_seq_len_one_routes_through_decode_kernels(monkeypatch):
     namespace = {
         "WORKER_RESTART": 23,
         "_is_glm5_next_kda": lambda model_name: False,
+        "_require_audited_runtime": lambda model_name, version: None,
         "run_kda_context_benchmark": record("context"),
         "run_kda_generation_benchmark": record("decode"),
         "run_kda_verify_benchmark": record("verify"),
@@ -175,6 +176,7 @@ def test_glm5_next_rows_route_to_the_glm5next_dispatch(monkeypatch, model_name, 
     calls = []
     namespace = {
         "WORKER_RESTART": 23,
+        "_require_audited_runtime": lambda model_name, version: None,
         "run_glm5_next_kda_torch": lambda *args, **kwargs: calls.append(("glm", kwargs["vllm_version"])),
         "run_kda_generation_benchmark": lambda **kwargs: calls.append(("kimi", kwargs["vllm_version"])),
     }
@@ -278,3 +280,61 @@ def test_kda_compat_admits_kimi_preview_and_glm_runtime(version, accepted):
         if isinstance(node, ast.Assign) and any(getattr(t, "id", None) == "__compat__" for t in node.targets)
     )
     assert _check_compat(declaration, version) is accepted
+
+
+_GATE_NAMES = {
+    "GLM5_NEXT_KDA_MODEL_PATHS",
+    "_is_glm5_next_kda",
+    "KIMI_K3_KDA_ARCHITECTURE",
+    "GLM5_NEXT_KDA_ARCHITECTURE",
+    "_KDA_ARCHITECTURE_COMPAT",
+    "KdaRuntimeNotAuditedError",
+    "_kda_architecture",
+    "_require_audited_runtime",
+}
+
+
+def _gate_namespace():
+    from collector.version_resolver import _check_compat
+
+    tree = ast.parse(SOURCE_PATH.read_text(encoding="utf-8"), filename=str(SOURCE_PATH))
+    body = [
+        node
+        for node in tree.body
+        if (isinstance(node, (ast.FunctionDef, ast.ClassDef)) and node.name in _GATE_NAMES)
+        or (isinstance(node, ast.Assign) and any(getattr(t, "id", None) in _GATE_NAMES for t in node.targets))
+    ]
+    namespace = {"_check_compat": _check_compat}
+    exec(compile(ast.Module(body=body, type_ignores=[]), str(SOURCE_PATH), "exec"), namespace)
+    return namespace
+
+
+def test_kda_audited_release_sets_do_not_overlap():
+    from collector.version_resolver import _check_compat
+
+    compat = _gate_namespace()["_KDA_ARCHITECTURE_COMPAT"]
+    audited = {arch: spec.split("==", 1)[1] for arch, spec in compat.items()}
+    assert set(audited) == {"KimiK3ForConditionalGeneration", "Glm5NextForConditionalGeneration"}
+    for arch, version in audited.items():
+        for other, spec in compat.items():
+            assert _check_compat(spec, version) is (other == arch), (arch, other)
+
+
+@pytest.mark.parametrize(
+    ("model_name", "version", "audited"),
+    [
+        ("moonshotai/Kimi-K3", "0.1.dev19262+gb6bbf29dd", True),
+        ("moonshotai/Kimi-K3", "0.27.0", False),
+        ("moonshotai/Kimi-K3", "0.30.0+glm53tail.eb4704514fdf", False),
+        ("zai-org/GLM-5.3-Flash", "0.30.0+glm53tail.eb4704514fdf", True),
+        ("zai-org/GLM-5.3-Flash", "0.29.0", False),
+        ("nvidia/GLM-5.3-Flash-NVFP4", "0.1.dev19262", False),
+    ],
+)
+def test_kda_runtime_gate_rejects_unaudited_releases(model_name, version, audited):
+    namespace = _gate_namespace()
+    if audited:
+        namespace["_require_audited_runtime"](model_name, version)
+    else:
+        with pytest.raises(namespace["KdaRuntimeNotAuditedError"], match="not an audited KDA runtime"):
+            namespace["_require_audited_runtime"](model_name, version)

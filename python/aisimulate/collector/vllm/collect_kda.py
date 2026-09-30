@@ -55,11 +55,12 @@ Output:
 # preview version; it runs on either image — the DS-layout probe
 # (is_fused_kda_decode_supported) yields fused_kda_decode rows on the
 # preview and the packed conv-update + recurrence pair on 0.27.0.
-# 0.30.0 adds GLM-5.3-Flash (glm5next) KDA, audited against the GB300 0.30.0
-# image (installed 0.30.0+glm53tail.eb4704514fdf; see the GLM section below).
-# PEP 440 clauses here are conjunctive, so the range also admits the
-# releases in between; the manifest pins the one runtime each run uses, and
-# only 0.1.dev19262 (Kimi-K3) and 0.30.0 (GLM-5.3-Flash) are verified.
+# The file-level range spans the two audited routes (PEP 440 clauses are
+# conjunctive, so it cannot name the two releases alone). Each KDA
+# architecture is additionally gated at runtime to its own audited release by
+# _KDA_ARCHITECTURE_COMPAT: Kimi-K3 only on the 0.1.dev19262 preview, GLM-5.3-
+# Flash only on 0.30.0 (installed 0.30.0+glm53tail.eb4704514fdf); every
+# release in between raises KdaRuntimeNotAuditedError.
 __compat__ = "vllm>=0.1.dev19262,<=0.30.0"
 
 import gc
@@ -75,11 +76,13 @@ try:
         get_sm_version,
         log_perf,
     )
+    from collector.version_resolver import _check_compat
 except ModuleNotFoundError:
     import sys
 
     sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     from case_generator import get_common_kda_test_cases
+    from version_resolver import _check_compat
 
     from helper import (
         WORKER_RESTART,
@@ -787,6 +790,36 @@ def _is_glm5_next_kda(model_name: str) -> bool:
     return model_name in GLM5_NEXT_KDA_MODEL_PATHS
 
 
+KIMI_K3_KDA_ARCHITECTURE = "KimiK3ForConditionalGeneration"
+GLM5_NEXT_KDA_ARCHITECTURE = "Glm5NextForConditionalGeneration"
+# Per-architecture audited vllm releases for the KDA dispatch this module
+# replicates; any other installed release raises KdaRuntimeNotAuditedError (a
+# classified failure) instead of timing a possibly different kernel path.
+_KDA_ARCHITECTURE_COMPAT = {
+    KIMI_K3_KDA_ARCHITECTURE: "vllm==0.1.dev19262",
+    GLM5_NEXT_KDA_ARCHITECTURE: "vllm==0.30.0",
+}
+
+
+class KdaRuntimeNotAuditedError(RuntimeError):
+    """The installed vllm release is not audited for this architecture's KDA dispatch."""
+
+
+def _kda_architecture(model_name: str) -> str:
+    """GLM-5.3-Flash paths run the glm5next layer; every other KDA row runs the
+    (unchanged) Kimi-K3 layer path of this module."""
+    return GLM5_NEXT_KDA_ARCHITECTURE if _is_glm5_next_kda(model_name) else KIMI_K3_KDA_ARCHITECTURE
+
+
+def _require_audited_runtime(model_name: str, runtime_version: str) -> None:
+    architecture = _kda_architecture(model_name)
+    compat = _KDA_ARCHITECTURE_COMPAT[architecture]
+    if not _check_compat(compat, runtime_version):
+        raise KdaRuntimeNotAuditedError(
+            f"vllm {runtime_version} is not an audited KDA runtime for {architecture} (audited: {compat})"
+        )
+
+
 def _glm5_next_common(phase, batch_size, seq_len, d_model, d_conv, nh, hd, model_name):
     return {
         "phase": phase,
@@ -1206,6 +1239,7 @@ def run_kda_torch(
     """Main entry point: routes phases and reports the installed vLLM version."""
     from vllm.version import __version__ as vllm_version
 
+    _require_audited_runtime(model_name, vllm_version)
     if _is_glm5_next_kda(model_name):
         run_glm5_next_kda_torch(
             phase,

@@ -123,3 +123,59 @@ def test_glm5_next_chunk_kda_int32_offset_guard_precedes_the_scan():
     context = source[source.index("def run_glm5_next_kda_context") : source.index("def run_glm5_next_kda_generation")]
     assert "if nt * proj >= 2**31:" in context
     assert context.index("if nt * proj >= 2**31:") < context.index("def run_chunk():")
+
+
+_GATE_NAMES = {
+    "GLM5_NEXT_KDA_MODEL_PATHS",
+    "_is_glm5_next_kda",
+    "KIMI_K3_KDA_ARCHITECTURE",
+    "GLM5_NEXT_KDA_ARCHITECTURE",
+    "_KDA_ARCHITECTURE_COMPAT",
+    "KdaRuntimeNotAuditedError",
+    "_kda_architecture",
+    "_require_audited_runtime",
+}
+
+
+def _gate_namespace():
+    from collector.version_resolver import _check_compat
+
+    tree = ast.parse(SOURCE_PATH.read_text(encoding="utf-8"), filename=str(SOURCE_PATH))
+    body = [
+        node
+        for node in tree.body
+        if (isinstance(node, (ast.FunctionDef, ast.ClassDef)) and node.name in _GATE_NAMES)
+        or (isinstance(node, ast.Assign) and any(getattr(t, "id", None) in _GATE_NAMES for t in node.targets))
+    ]
+    namespace = {"_check_compat": _check_compat}
+    exec(compile(ast.Module(body=body, type_ignores=[]), str(SOURCE_PATH), "exec"), namespace)
+    return namespace
+
+
+def test_kda_audited_release_sets_do_not_overlap():
+    from collector.version_resolver import _check_compat
+
+    compat = _gate_namespace()["_KDA_ARCHITECTURE_COMPAT"]
+    audited = {arch: spec.split("==", 1)[1] for arch, spec in compat.items()}
+    assert set(audited) == {"KimiK3ForConditionalGeneration", "Glm5NextForConditionalGeneration"}
+    for arch, version in audited.items():
+        for other, spec in compat.items():
+            assert _check_compat(spec, version) is (other == arch), (arch, other)
+
+
+@pytest.mark.parametrize(
+    ("model_name", "version", "audited"),
+    [
+        ("moonshotai/Kimi-K3", "0.5.16", True),
+        ("moonshotai/Kimi-K3", "0.5.20", False),
+        ("zai-org/GLM-5.3-Flash", "0.5.20", True),
+        ("zai-org/GLM-5.3-Flash", "0.5.16", False),
+    ],
+)
+def test_kda_runtime_gate_rejects_unaudited_releases(model_name, version, audited):
+    namespace = _gate_namespace()
+    if audited:
+        namespace["_require_audited_runtime"](model_name, version)
+    else:
+        with pytest.raises(namespace["KdaRuntimeNotAuditedError"], match="not an audited KDA runtime"):
+            namespace["_require_audited_runtime"](model_name, version)
