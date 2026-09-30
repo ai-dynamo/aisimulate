@@ -216,7 +216,7 @@ def escape(text):
 def messages(day, pipelines, snapshots, alerts, notes, recovered=()):
     links = " · ".join(f"<{p['url']}|{kind.upper()} run>" for kind, p in pipelines.items())
     statuses = " · ".join(f"{kind.upper()}: {p['status']}" for kind, p in pipelines.items())
-    lines = [f"*Accuracy Daily · {day}*", statuses]
+    lines = [f":rainbow: *Accuracy Daily · {day}*", statuses]
     rows = []
     for branch, snapshot in sorted(snapshots.get("e2e", {}).items()):
         groups = list(snapshot["groups"].values())
