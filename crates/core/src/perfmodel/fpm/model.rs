@@ -463,14 +463,7 @@ impl ForwardPassPerfModel {
                     .transpose()?;
                 let native = engine
                     .forward_pass_time_ms_with_coverage(metrics_by_rank, coverage.as_deref_mut())?;
-                let corrected = native
-                    * if self.is_correction_enabled {
-                        corrections
-                            .store(feature.workload_kind)
-                            .correction_factor_for(&feature.x)
-                    } else {
-                        1.0
-                    };
+                let corrected = native * self.correction_factor(corrections, &feature);
                 Ok(Some(corrected))
             }
             ForwardPassPerfMode::Regression {
@@ -519,14 +512,7 @@ impl ForwardPassPerfModel {
                 .transpose()?;
             let mut estimate =
                 engine.forward_pass_estimate(metrics_by_rank, true, coverage.as_deref_mut())?;
-            let factor =
-                Some(feature)
-                    .filter(|_| self.is_correction_enabled)
-                    .map_or(1.0, |feature| {
-                        corrections
-                            .store(feature.workload_kind)
-                            .correction_factor_for(&feature.x)
-                    });
+            let factor = self.correction_factor(corrections, &feature);
             estimate.correction_factor = Some(factor);
             estimate.latency_ms = estimate.native_latency_ms.map(|native| native * factor);
             Ok(estimate)
@@ -896,6 +882,20 @@ impl ForwardPassPerfModel {
     /// Exact immutable construction identity and selected systems root.
     pub fn provenance(&self) -> Option<&ForwardPassPerfProvenance> {
         self.provenance.as_ref()
+    }
+
+    fn correction_factor(
+        &self,
+        corrections: &WorkloadStores<CorrectionBuckets>,
+        feature: &IterationFeatures,
+    ) -> f64 {
+        if self.is_correction_enabled {
+            corrections
+                .store(feature.workload_kind)
+                .correction_factor_for(&feature.x)
+        } else {
+            1.0
+        }
     }
 
     fn correction_factors(&self) -> Vec<f64> {
