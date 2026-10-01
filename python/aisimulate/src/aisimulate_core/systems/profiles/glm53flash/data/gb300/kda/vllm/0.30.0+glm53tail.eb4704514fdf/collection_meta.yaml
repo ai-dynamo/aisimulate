@@ -1,0 +1,28 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+schema_version: 1
+runtime:
+  framework: vllm
+  version: 0.30.0
+  image: vllm/vllm-openai:v0.30.0
+  image_digest: sha256:4864d46625cbc3307623e29ac742030655e27249feba7b97ec925ce4cc4dfb56
+# Installed package: vllm 0.30.0+glm53tail.eb4704514fdf (the glm53tail overlay
+# on PYTHONPATH over this image; vllm/models/glm5next/nvidia/kda.py is
+# byte-identical in both, sha256 37745b45...).
+tables:
+  # GLM-5.3-Flash KDA (Glm5NextForConditionalGeneration, TP2 32-head and TP4
+  # 16-head shards) on GB300, Slurm job 723411, collector commit 8a8da1f1
+  # (collector_ref below; the staged tree had no .git so collect.py recorded
+  # 'unknown'). Prefill core = state gather + FlashKDA fwd + state scatter
+  # (the framework resolver picks flashkda on SM103); every context row
+  # carries a cached prefix. Context seq_len=1 cells use the decode kernels
+  # (vLLM classifies one-token requests as decodes). No verify rows (GLM
+  # baseline is nextn=0; verify raises by design).
+  kda_perf:
+    collector_ref: 8a8da1f15e4228235c1fa255a67f428f2736abac
+    collector_hash: sha256:df85eaeb85cb8ba40f7b10e2e1f3f096bdc299dbf02f05fa5b090087736d7dcb
+    case_plan_hash: sha256:fdfb7e46be4b67e076d075cbef2095b37f45c997b3149d63f17f6b2a4d444086
+    collected_at: '2026-09-30'
+    rows: 508
+    status: complete
