@@ -5,11 +5,12 @@ SPDX-License-Identifier: Apache-2.0
 
 # NVOpt: three RAGPulse search-space designs
 
-This is a **review-stage experiment design**, frozen against Dynamo
+These experiment configurations are frozen against Dynamo
 `c7241c2f153efba10b57c38c2144b70d82194a4d` and AISimulate nightly
 `0.13.0.dev202609300000000061`. The local broad sweep was stopped by request;
 these files do not resume it or launch another local sweep. The environment
-image is separate from the experiment data and execution harness.
+image is separate from the experiment data and execution harness. The
+subsequently authorized remote harness lives under [runtime/](runtime/).
 
 Published environment: `nvcr.io/nvidian/dynamo-dev/aisimulate:hzhou-0930-02`.
 Use the immutable digest in [container/push-result.json](container/push-result.json).
@@ -155,11 +156,10 @@ predictor instance bootstrapped with its matching-cadence historical data.
 
 ## Execution boundary and review checks
 
-The YAML files are valid public recommendation **search-space declarations**;
-they are not a complete portable replacement for the experiment runner.
-**Do not launch them with plain `aisimulate recommend` and treat that as the
-specified protocol.** [experiment-contract.yaml](experiment-contract.yaml)
-records the additional execution requirements:
+The YAML files are public recommendation **search-space declarations**. Use the
+experiment harness rather than plain `aisimulate recommend` to enforce the
+fixed-day and history protocol. [experiment-contract.yaml](experiment-contract.yaml)
+records these execution requirements, implemented under [runtime/](runtime/):
 
 1. Preserve the local baseline's fixed-day scoring and precision/canonical
    lowering bridge. The pinned stock Dynamo factory does not advertise the
@@ -178,9 +178,33 @@ records the additional execution requirements:
    receipts. The 7,200-second deadline applies to native worker waves and can
    replace the pool; it does not guarantee every candidate finishes.
 
-These integration requirements are explicit before launch. This branch
-designs the spaces and publishes the environment; it does not claim that the
-three full campaigns or this execution bridge have been run or implemented.
+The native replay/optimizer implementation is unchanged. The bridge retains
+lightweight native summaries during search, records requested/effective specs
+and timings, and checks the frozen native binary and AIS package identity.
+Planner predictor evaluations are independent tasks dispatched to eight spawn
+workers using the native history aggregation, common warmup and forecast-loss
+functions. An all-11-preset, two-cadence fixture matched serial losses and
+winner selection exactly; fallback and tie ordering were also checked. This
+changes preparation scheduling, not the predictor search menu.
+
+Example command **inside a compute allocation**, with immutable source, data,
+and writable results/temp mounts:
+
+```bash
+python /workspace/bundle/runtime/run_sweep.py \
+  --scenario 1 \
+  --config /workspace/bundle/01-static.yaml \
+  --output /results/formal-v1 --memory-limit-gib 320
+```
+
+Use scenario 2/3 and their matching YAML for the other studies. The output
+directory must be new. `--parallelism` and `--candidate-timeout` are explicit
+resource overrides, recorded in run metadata; they do not reduce the trial
+budget or workload. Archive each interrupted run before changing these limits.
+`--replay-spec /path/to/requested-spec.json` independently reruns a selected
+native candidate without compiling a new optimizer study. Resource supervision
+records RSS/headroom, process exits and termination. A successful launch or a
+passing fixture is not evidence that the full campaign has completed.
 
 Run the lightweight checker **inside the pinned environment**:
 

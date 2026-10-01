@@ -3,7 +3,7 @@
 
 # Experiment protocol, NOT an AISimulate CLI configuration.
 schema: nvopt-ragpulse-experiment-design-v1
-stage: design_for_review
+stage: remote_execution
 local_sweeps: stopped_by_user
 runtime:
   image: nvcr.io/nvidian/dynamo-dev/aisimulate:hzhou-0930-02
@@ -47,6 +47,7 @@ traffic:
     max_input_plus_output_tokens: 7599
   planner_history:
     path: /data/ragpulse/warmup-session-512x.jsonl
+    sha256: 21eebb38837ea85ebe06d85ef5f5a1fbb644c411c927142b337c1ce61eb44205
     source_window_seconds: [0, 345600]
     requests: 2024448
     input_tokens: 5786392576
