@@ -206,6 +206,16 @@ native candidate without compiling a new optimizer study. Resource supervision
 records RSS/headroom, process exits and termination. A successful launch or a
 passing fixture is not evidence that the full campaign has completed.
 
+The custom harness calls Sweeper directly to retain audited optimizer receipts.
+Its effective resource policy is recorded in `supervisor.json`: the initial
+remote runs enforce a 320 GiB process-tree RSS guard, 16 GiB host-available
+headroom and 96 GiB per-worker virtual-address limit, inside externally limited
+40-CPU / 384-GiB containers. It does **not** invoke the stock CLI resource
+supervisor, so the YAML's `reserve_memory_gb` and initialization timeout must
+not be reported as additional enforced limits. Predictor preparation is timed
+separately and is outside the per-evaluation deadline. Running immutable
+bundles are never edited to change these settings retrospectively.
+
 Run the lightweight checker **inside the pinned environment**:
 
 ```bash
