@@ -3,6 +3,25 @@ SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES.
 SPDX-License-Identifier: Apache-2.0
 -->
 
+<!--
+Maintainers and agents: CI executes the bash/yaml examples in this README.
+- Keep each existing readme-check marker directly above its opening code fence,
+  with no blank line between them. Keep IDs stable and unique.
+- Use unindented triple-backtick fences labeled exactly bash or yaml. Do not
+  change fence labels or formatting to bypass command coverage.
+- When adding a block, copy an existing marker's format and use a new ID made
+  of lowercase letters, digits, and hyphens. Add the matching entry to
+  scripts/readme_commands.json; remove both together when deleting a block.
+- The manifest contains profiles, dependencies, timeouts, output assertions,
+  and YAML filenames, not copies of commands. README blocks are the source.
+- Keep dependencies before their consumers (source-install is bootstrapped
+  first). Update manifest paths/assertions when changing outputs or examples.
+- Validate structure before committing (requires psutil and PyYAML):
+  python scripts/check_readme_commands.py --validate
+  This checks parsing/manifest consistency; CI also executes the commands.
+See docs/ci.md and scripts/check_readme_commands.py for execution details.
+-->
+
 # AISimulate
 
 AISimulate predicts LLM serving behavior and searches for strong deployment
