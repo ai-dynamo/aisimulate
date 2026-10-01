@@ -151,6 +151,9 @@ readiness for every required phase, then run formal collection with `--execute`.
 Smoke retains diagnostics but publishes no formal timing pair. The collector
 launches benchmark workers; it does not need a prestarted HTTP serving endpoint.
 
+Benchmarking typically takes about one hour, depending on the model, hardware
+and sampling range.
+
 Inspect the Parquet/metadata pair and run `onboard validate-collection` for native
 campaign quality. If memory is pending, `onboard finalize` uses verified runtime
 observations to write a fresh resolved plan, whose resource profile is reviewed
