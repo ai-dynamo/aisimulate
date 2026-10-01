@@ -369,6 +369,30 @@ def _fused_decode_module():
     return kda_fused_decode
 
 
+def _serving_decode_lane_for_lower_bound() -> str:
+    """Which recurrence kernel serving runs for a KDA layer that carries a
+    ``lower_bound`` (Kimi-K3: KDA_LOWER_BOUND).
+
+    sglang>=0.5.21 kda_backend.KDAAttnBackend.forward_decode:737-741 takes the
+    packed Triton kernel only when ``supports_packed_decode`` AND the layer has
+    no lower_bound; a lower-bound layer goes through kernel_dispatcher.decode
+    (:771-786) = TritonKDAKernel.decode -> fused_sigmoid_gating_delta_rule_update
+    with lower_bound (kernels/kda_triton.py:125-157). The kimi-k3 branch build
+    (0.5.16) packed every T=1 decode. Probed from the backend source rather than
+    the version string so a backport is followed too. H20 serving golden
+    2026-10-01 (archive raw 7ef3a64cae10 decode_kernels) carries
+    fused_sigmoid_gating_delta_rule_update_kernel, not the packed kernel.
+    """
+    try:
+        import inspect
+
+        from sglang.srt.layers.attention.linear.kda_backend import KDAAttnBackend
+    except ImportError:
+        return "packed"
+    src = inspect.getsource(KDAAttnBackend.forward_decode)
+    return "plain" if 'getattr(layer, "lower_bound", None) is None' in src else "packed"
+
+
 def run_kda_generation_benchmark(
     d_model: int,
     d_conv: int,
@@ -542,20 +566,55 @@ def run_kda_generation_benchmark(
                 ):
                     raise RuntimeError(f"failed to persist SGLang KDA generation row to {perf_filename}")
 
-            def run_kda_packed_decode():
-                fused_recurrent_kda_packed_decode(
-                    mixed_qkv=mixed_qkv,
-                    a=a,
-                    b=b,
-                    A_log=a_log,
-                    dt_bias=dt_bias,
-                    scale=head_k_dim**-0.5,
-                    initial_state=recurrent_state,
-                    out=output,
-                    ssm_state_indices=state_indices,
-                    use_qk_l2norm_in_kernel=True,
-                    lower_bound=KDA_LOWER_BOUND,
+            if _serving_decode_lane_for_lower_bound() == "plain" and KDA_LOWER_BOUND is not None:
+                # kda_backend.py:771-786 @0.5.21: after the conv update, q/k/v are the
+                # [Q|K|V] split viewed as 1 x n x h x d, and the plain Triton decode runs
+                # fused_sigmoid_gating_delta_rule_update over cu_seqlens with lower_bound.
+                recurrence_kernel_source = "fused_sigmoid_gating_delta_rule_update"
+                plain_q, plain_k, plain_v = (
+                    t.unflatten(-1, (-1, dim)).unsqueeze(0)
+                    for t, dim in zip(mixed_qkv.split([proj_size] * 3, dim=-1), (head_k_dim, head_k_dim, head_v_dim))
                 )
+                plain_a = a.view(1, batch_size, num_v_heads, head_k_dim)
+                plain_b = b.view(1, batch_size, num_v_heads)
+                plain_cu_seqlens = torch.arange(0, batch_size + 1, dtype=torch.int32, device=device)
+
+                def run_kda_packed_decode():
+                    fused_sigmoid_gating_delta_rule_update(
+                        A_log=a_log,
+                        dt_bias=dt_bias,
+                        q=plain_q,
+                        k=plain_k,
+                        v=plain_v,
+                        a=plain_a,
+                        b=plain_b,
+                        initial_state_source=recurrent_state,
+                        initial_state_indices=state_indices,
+                        cu_seqlens=plain_cu_seqlens,
+                        use_qk_l2norm_in_kernel=True,
+                        softplus_beta=1.0,
+                        softplus_threshold=20.0,
+                        is_kda=True,
+                        lower_bound=KDA_LOWER_BOUND,
+                    )
+
+            else:
+                recurrence_kernel_source = "fused_recurrent_kda_packed_decode"
+
+                def run_kda_packed_decode():
+                    fused_recurrent_kda_packed_decode(
+                        mixed_qkv=mixed_qkv,
+                        a=a,
+                        b=b,
+                        A_log=a_log,
+                        dt_bias=dt_bias,
+                        scale=head_k_dim**-0.5,
+                        initial_state=recurrent_state,
+                        out=output,
+                        ssm_state_indices=state_indices,
+                        use_qk_l2norm_in_kernel=True,
+                        lower_bound=KDA_LOWER_BOUND,
+                    )
 
             with benchmark_with_power(
                 device=device,
@@ -570,7 +629,7 @@ def run_kda_generation_benchmark(
                     version=sglang_version,
                     device_name=torch.cuda.get_device_name(device),
                     op_name="kda",
-                    kernel_source="fused_recurrent_kda_packed_decode",
+                    kernel_source=recurrence_kernel_source,
                     perf_filename=perf_filename,
                     power_stats=results["power_stats"],
                 ):

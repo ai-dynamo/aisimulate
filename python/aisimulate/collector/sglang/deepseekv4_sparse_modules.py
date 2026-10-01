@@ -441,7 +441,19 @@ def _bench_paged_mqa_logits(
     to ``batch_dim`` with ``next_n=1``. Per-request causal lengths remain
     distinct even though those token rows share one physical KV cache.
     """
-    from deep_gemm import fp8_paged_mqa_logits, get_paged_mqa_logits_metadata
+    from deep_gemm import fp8_paged_mqa_logits
+
+    try:
+        # sglang>=0.5.21 builds the paged-MQA schedule with its own JIT kernel
+        # (sglang::paged_mqa_metadata_tiny_kernel) whenever SGLANG_OPT_USE_JIT_INDEXER_METADATA
+        # is set (default True, environ.py:1570) or the query row count exceeds 11673
+        # (dsv4/metadata.py:213-224, force_deep_gemm_metadata defaults False :184); the
+        # DeepGEMM sched kernel is only the opt-out path. Same (seq_lens, page_size, num_sm)
+        # contract (kernels/ops/attention/dsv4/attn.py:57). H20 gate 2026-10-01: the serving
+        # decode trace carries the tiny kernel, never deep_gemm::sched::sm90_paged_mqa_logits_metadata.
+        from sglang.kernels.ops.attention.dsv4.attn import get_paged_mqa_logits_metadata
+    except ImportError:
+        from deep_gemm import get_paged_mqa_logits_metadata
 
     if batch_size <= 0 or M % batch_size:
         raise ValueError(f"M={M} must be divisible by positive batch_size={batch_size}")

@@ -47,3 +47,12 @@ run trt_mla_gen_fp8kv  mla_gen_fp8_DeepSeek-V3    deepseek-ai/DeepSeek-V3     fp
 # names match is the gate entry above — see findings trtllm_kv_variants
 # FLA fused_recurrent row is the deliberate fallback lane; FlashInfer decode row matches — explained, not a gate verdict
 # run trt_gdn_gen       gdn_gen_Qwen3.5-0.8B        Qwen/Qwen3.5-0.8B           ""   "$GDN"
+
+# --- 2026-10-01 gate backfill: DSV4 families (owner decision 3). Serving = the rc29
+# plan records (isl 4096, kv auto; Hopper DSV4 runs on the fp8_ds_mla pool customization).
+DSV4='dsv4|dsa|csa|hca|compress|indexer|mqa|sparse|flash|attn|mla|topk|gemm|deepgemm|quant|fmha'
+M=sgl-project/DeepSeek-V4-Flash-FP8
+run trt_dsv4_csa_ctx  dsv4_csa_ctx_DeepSeek-V4-Flash-FP8  $M auto "$DSV4"
+run trt_dsv4_csa_gen  dsv4_csa_gen_DeepSeek-V4-Flash-FP8  $M auto "$DSV4"
+run trt_dsv4_hca_ctx  dsv4_hca_ctx_DeepSeek-V4-Flash-FP8  $M auto "$DSV4"
+run trt_dsv4_hca_gen  dsv4_hca_gen_DeepSeek-V4-Flash-FP8  $M auto "$DSV4"

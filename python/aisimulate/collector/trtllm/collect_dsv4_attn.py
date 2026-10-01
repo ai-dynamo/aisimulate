@@ -57,12 +57,12 @@ import torch
 try:
     from registry_types import PerfFile
 
-    from helper import benchmark_with_power, log_perf
+    from helper import benchmark_with_power, get_sm_version, log_perf
 except ModuleNotFoundError:
     sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     from registry_types import PerfFile
 
-    from helper import benchmark_with_power, log_perf
+    from helper import benchmark_with_power, get_sm_version, log_perf
 
 
 ARCHITECTURE = "DeepseekV4ForCausalLM"
@@ -406,11 +406,30 @@ def create_dsv4_attention_module(
     )
 
     aux_stream = torch.cuda.Stream(device=device)
-    attn_module = DeepseekV4Attention(
-        model_config=model_config,
-        layer_idx=0,
-        aux_stream=aux_stream,
-    )
+    import inspect
+
+    _ctor_params = inspect.signature(DeepseekV4Attention.__init__).parameters
+    if "aux_stream_dict" in _ctor_params:
+        # 1.3.0rc29: DeepseekV4Attention takes the model's per-purpose stream dict
+        # (modeling_deepseekv4.py:1371-1376, built by DeepseekV4ForCausalLM :1521-1570),
+        # as collect_mla_module already does for the MLA module.
+        from tensorrt_llm._torch.utils import AuxStreamType
+
+        attn_module = DeepseekV4Attention(
+            model_config=model_config,
+            layer_idx=0,
+            aux_stream_dict={
+                AuxStreamType.Attention: aux_stream,
+                AuxStreamType.MoeShared: aux_stream,
+                AuxStreamType.MoeChunkingOverlap: torch.cuda.Stream(device=device),
+            },
+        )
+    else:
+        attn_module = DeepseekV4Attention(
+            model_config=model_config,
+            layer_idx=0,
+            aux_stream=aux_stream,
+        )
 
     # Serving applies QuantConfig.exclude_modules before weight creation
     # (apply_quant_config_exclude_modules, modeling_utils.py @runtime version);
@@ -551,11 +570,25 @@ def create_dsv4_kv_cache_and_metadata(
     # fail dummy-request allocation ("Request ID not found in IndexMapper",
     # B200 smoke round 1 2026-08-06).
     free_bytes, _ = torch.cuda.mem_get_info(torch.device(device))
-    kv_cache_config = KvCacheConfig(
+    kv_cache_kwargs = dict(
         tokens_per_block=tokens_per_block,
         max_gpu_total_bytes=int(free_bytes * 0.5),
         enable_block_reuse=False,
     )
+    if get_sm_version() == 90:
+        # 1.3.0rc29 on Hopper: DeepseekV4CacheManager refuses any pool but the packed
+        # FP8 sparse-MLA cache (attention/backends/sparse/deepseek_v4/cache_manager.py:
+        # 343-349 "DeepSeek-V4 on Hopper requires kv_cache_config.dtype='fp8_ds_mla'"),
+        # the option llm_args.py:4256-4262 documents for SM90/SM120/SM121; serving
+        # deployments on H20 carry kv_cache_config.dtype=fp8_ds_mla (harness targets
+        # customization, matrix pass+custom). Earlier rc KvCacheConfig has no such
+        # literal and used the plain FP8 pool — keep that path for them.
+        try:
+            kv_cache_config = KvCacheConfig(dtype="fp8_ds_mla", **kv_cache_kwargs)
+        except (ValueError, TypeError):
+            kv_cache_config = KvCacheConfig(**kv_cache_kwargs)
+    else:
+        kv_cache_config = KvCacheConfig(**kv_cache_kwargs)
     kv_cache_manager_cls = get_kv_cache_manager_cls(model_config, kv_cache_config)
     # fp8 KV rows -> DataType.FP8, matching serving's kv_cache_dtype
     # resolution from kv_cache_quant_algo (set by _apply_gemm_type_quant).
