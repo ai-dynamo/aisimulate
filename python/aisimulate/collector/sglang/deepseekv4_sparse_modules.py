@@ -561,7 +561,10 @@ def _bench_flash_mla_sparse(
          ``tp_slice`` is filled from ``q_local``; other heads are zeros.
       3. FlashMLA always receives the full native head count.
     """
-    from flash_mla import flash_mla_with_kvcache, get_mla_metadata
+    try:  # sglang>=0.5.21: sgl_kernel.flash_mla (layers/attention/flashmla_backend.py:13); older images: the flash_mla wheel
+        from sgl_kernel.flash_mla import flash_mla_with_kvcache, get_mla_metadata
+    except ImportError:
+        from flash_mla import flash_mla_with_kvcache, get_mla_metadata
 
     # rank-local head count (what the upstream projection actually produces)
     n_local_heads = max(1, native_heads // tp_size)
@@ -843,7 +846,11 @@ def _sglang_chunked_prefill_size():
     if _CHUNKED_PREFILL is None:
         try:
             from sglang.srt.model_executor.cuda_graph_config import default_cuda_graph_config
-            from sglang.srt.server_args import ServerArgs, get_device_memory_capacity
+            from sglang.srt.server_args import ServerArgs
+            try:  # 0.5.21: moved to utils/common.py:904 (server_args no longer re-exports it)
+                from sglang.srt.utils.common import get_device_memory_capacity
+            except ImportError:
+                from sglang.srt.server_args import get_device_memory_capacity
         except ModuleNotFoundError:
             from srt.model_executor.cuda_graph_config import default_cuda_graph_config
             from srt.server_args import ServerArgs, get_device_memory_capacity
@@ -852,16 +859,23 @@ def _sglang_chunked_prefill_size():
             gpu_mem = get_device_memory_capacity("cuda")
         except Exception:
             pass
-        sa = ServerArgs.__new__(ServerArgs)
-        sa.chunked_prefill_size = None
-        sa.cuda_graph_config = default_cuda_graph_config()
-        sa.tp_size = 1
-        sa.device = "cuda"
+        chunked = None
         try:
-            sa._handle_gpu_memory_settings(gpu_mem)
-        except Exception:
-            pass  # chunked_prefill_size is set first, before any model-dependent step
-        chunked = sa.chunked_prefill_size
+            sa = ServerArgs.__new__(ServerArgs)
+        except TypeError:
+            # sglang>=0.5.20: ServerArgs is a msgspec Struct (no bare __new__); the
+            # GPU-memory tiering below is sglang's own and needs no instance.
+            sa = None
+        if sa is not None:
+            sa.chunked_prefill_size = None
+            sa.cuda_graph_config = default_cuda_graph_config()
+            sa.tp_size = 1
+            sa.device = "cuda"
+            try:
+                sa._handle_gpu_memory_settings(gpu_mem)
+            except Exception:
+                pass  # chunked_prefill_size is set first, before any model-dependent step
+            chunked = sa.chunked_prefill_size
         if chunked is None and gpu_mem is not None:
             # Newer sglang (0.0.0.dev / >=0.5.x) refactored cuda_graph_max_bs/_bs
             # into a cuda_graph_config object that _handle_gpu_memory_settings
@@ -1131,11 +1145,23 @@ def _bench_topk_512(
     uses planned v2. Both execute inside production CUDA graphs, so capture is
     mandatory here too.
     """
-    from sglang.jit_kernel.dsv4.topk import (
-        plan_topk_v2,
-        topk_transform_512,
-        topk_transform_512_v2,
-    )
+    try:
+        from sglang.jit_kernel.dsv4.topk import (
+            plan_topk_v2,
+            topk_transform_512,
+            topk_transform_512_v2,
+        )
+    except ImportError:
+        # sglang>=0.5.21 moved the JIT ops to sglang.kernels.ops.attention.dsv4.topk
+        # (metadata.py:278 imports plan_topk_v2 from there). The 0.5.14 entry
+        # points topk_transform_512{,_v2} are not re-exported — the serving topk
+        # dispatch at 0.5.21 is topk_transform_{paged,ragged,packed}_v2 and must
+        # be re-audited before this calib row is collected on that pin.
+        from sglang.kernels.ops.attention.dsv4.topk import (  # noqa: F401
+            plan_topk_v2,
+            topk_transform_512,
+            topk_transform_512_v2,
+        )
 
     if variant not in ("v1", "v2"):
         raise ValueError(f"unknown topk variant: {variant}")

@@ -165,6 +165,31 @@ def msa_sparse_implementation(backend_name: str, model_path: str, system_name: s
     return None
 
 
+_MSA_ARCHITECTURES = ("MiniMaxM3ForCausalLM", "MiniMaxM3SparseForConditionalGeneration")
+
+
+def msa_sparse_algorithm(backend_name: str, model_path: str) -> str | None:
+    """MiniMax-M3 x TRT-LLM: the ``sparse_attention_config.algorithm`` key.
+
+    TRT-LLM >= 1.3.0rc29 refuses to build the M3 KV-cache manager without
+    ``sparse_attention_config.algorithm='minimax_m3'`` (modeling_minimaxm3.py:337
+    ``_validate_sparse_attention_runtime_config`` @1.3.0rc29) on every SM — unlike
+    the ``implementation`` knob above, which is an SM100-family performance
+    prescription. Keyed on the checkpoint ARCHITECTURE; None for every other
+    model/backend so the field is dropped. Rendered by the >= rc29 engine
+    template only (older templates never emitted the key and rc23 did not read it).
+    """
+    if backend_name != "trtllm":
+        return None
+    from aisimulate.sdk.utils import get_model_config_from_model_path
+
+    try:
+        architecture = get_model_config_from_model_path(model_path).get("architecture")
+    except Exception:  # FileNotFound / KeyError / ValueError / HuggingFaceDownloadError
+        return None
+    return "minimax_m3" if architecture in _MSA_ARCHITECTURES else None
+
+
 def _model_architecture(model_path: str, model_config: dict | None = None) -> str | None:
     """Architecture of a checkpoint config, None when unresolvable (a
     user-local or unreachable checkpoint the SDK cannot load — the render

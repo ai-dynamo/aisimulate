@@ -657,7 +657,6 @@ def load_model_runner(
     (server_args.py _handle_gpu_memory_settings) and would go negative.
     """
     from sglang.srt.configs.model_config import ModelConfig
-    from sglang.srt.distributed.parallel_state_wrapper import ParallelState
     from sglang.srt.entrypoints.engine import _set_envs_and_config
     from sglang.srt.layers.moe import initialize_moe_config
     from sglang.srt.layers.quantization.fp4_utils import initialize_fp4_gemm_config
@@ -726,9 +725,6 @@ def load_model_runner(
     )
 
     _set_envs_and_config(server_args)
-    initialize_moe_config(server_args)
-    initialize_fp8_gemm_config(server_args)
-    initialize_fp4_gemm_config(server_args)
 
     model_config = ModelConfig.from_server_args(server_args)
     actual_architecture = (model_config.hf_config.architectures or [None])[0]
@@ -746,12 +742,15 @@ def load_model_runner(
         _sock.bind(("127.0.0.1", 0))
         nccl_port = _sock.getsockname()[1]
 
+    from collector.sglang.runtime_compat import init_runtime_config
+
+    _runner_parallel_kwargs = init_runtime_config(server_args, gpu_id, nccl_port=nccl_port, model_config=model_config)
     model_runner = ModelRunner(
         model_config=model_config,
         mem_fraction_static=server_args.mem_fraction_static,
         gpu_id=gpu_id,
-        ps=ParallelState.trivial(gpu_id=gpu_id),
         nccl_port=nccl_port,
+        **_runner_parallel_kwargs,
         server_args=server_args,
     )
     model_runner.alloc_memory_pool()

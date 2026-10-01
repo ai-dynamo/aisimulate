@@ -109,9 +109,17 @@ def main() -> int:
                   else cases[: args.cases])
     print(f"[op_smoke] {args.op}: module={module_name} run={entry.run_func} "
           f"perf={perf_path} — {len(picked)}/{len(cases)} case(s)")
+    import inspect
+    extra = {}
+    if getattr(entry, "extra_perf_filenames", None) and "extra_perf_filenames" in inspect.signature(run_func).parameters:
+        # multi-table producers (compute_scale -> computescale + scale_matrix): same kwarg collect.py binds
+        extra["extra_perf_filenames"] = tuple(str(Path(args.out_dir) / str(p)) for p in entry.extra_perf_filenames)
     for i, case in enumerate(picked):
         print(f"[op_smoke] case {i}: {case}")
-        run_func(*case, perf_filename=perf_path, device=args.device)
+        if isinstance(case, dict):  # dict-shaped cases (mhc_module) bind by name, as collect.py does
+            run_func(**case, perf_filename=perf_path, device=args.device, **extra)
+        else:
+            run_func(*case, perf_filename=perf_path, device=args.device, **extra)
     print(f"[op_smoke] OK: {len(picked)} case(s) ran; rows appended to {perf_path}")
     return 0
 

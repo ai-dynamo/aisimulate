@@ -1140,9 +1140,6 @@ def load_model_runner(
         server_args.json_model_override_args = json.dumps(override_args)
 
     _set_envs_and_config(server_args)
-    initialize_moe_config(server_args)
-    initialize_fp8_gemm_config(server_args)
-    initialize_fp4_gemm_config(server_args)
 
     nccl_port = 29500 + random.randint(0, 10000) + gpu_id * 100
 
@@ -1164,24 +1161,11 @@ def load_model_runner(
     if native_quant == "fp8_block":
         _ensure_fp8_block_quant_config(model_config.hf_config)
 
-    # sglang 0.5.16 moved the rank/size arguments into one ``ps: ParallelState``
-    # (model_executor/model_runner.py:237-251, distributed/parallel_state_wrapper.py
-    # :6-24 @0.5.16); the old keyword form raised TypeError on every DSA/MLA
-    # module cell. Dispatch on the wrapper's presence (same pattern as
-    # collect_msa_module.py:659,752) so older pins keep their signature.
-    try:
-        from sglang.srt.distributed.parallel_state_wrapper import ParallelState
+    # parallel geometry / config publish / distributed bootstrap: one helper per sglang generation
+    from collector.sglang.runtime_compat import init_runtime_config
 
-        _runner_parallel_kwargs = {"ps": ParallelState.trivial(gpu_id=gpu_id)}
-    except ImportError:
-        _runner_parallel_kwargs = {
-            "tp_rank": gpu_id,
-            "tp_size": server_args.tp_size,
-            "pp_rank": 0,
-            "pp_size": 1,
-            "moe_ep_rank": 0,
-            "moe_ep_size": 1,
-        }
+    _runner_parallel_kwargs = init_runtime_config(server_args, gpu_id, nccl_port=nccl_port, model_config=model_config,
+                                                  tp_rank=gpu_id, tp_size=server_args.tp_size)
     model_runner = ModelRunner(
         model_config=model_config,
         mem_fraction_static=server_args.mem_fraction_static,
@@ -1393,7 +1377,10 @@ def _run_prefill(
     from array import array
 
     is_wideep_mla = attn_type == "mla" and not ordinary_mla
-    from sglang.srt.layers.communicator import AttentionInputs, get_attn_tp_context
+    try:  # sglang>=0.5.21: layers/layer_boundary/adapters/attention.py:45,167
+        from sglang.srt.layers.layer_boundary.adapters.attention import AttentionInputs, get_attn_tp_context
+    except ImportError:
+        from sglang.srt.layers.communicator import AttentionInputs, get_attn_tp_context
     from sglang.srt.managers.schedule_batch import Req, ScheduleBatch
     from sglang.srt.mem_cache.cache_init_params import CacheInitParams
     from sglang.srt.mem_cache.chunk_cache import ChunkCache
@@ -2111,7 +2098,10 @@ def _run_decode(
     from array import array
 
     is_wideep_mla = attn_type == "mla"
-    from sglang.srt.layers.communicator import AttentionInputs, get_attn_tp_context
+    try:  # sglang>=0.5.21: layers/layer_boundary/adapters/attention.py:45,167
+        from sglang.srt.layers.layer_boundary.adapters.attention import AttentionInputs, get_attn_tp_context
+    except ImportError:
+        from sglang.srt.layers.communicator import AttentionInputs, get_attn_tp_context
     from sglang.srt.managers.schedule_batch import Req, ScheduleBatch
     from sglang.srt.mem_cache.cache_init_params import CacheInitParams
     from sglang.srt.mem_cache.chunk_cache import ChunkCache

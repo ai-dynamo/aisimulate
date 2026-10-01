@@ -305,18 +305,22 @@ def run_moe_torch(
         print("MOE Allocated GDRAM:", torch.cuda.memory_allocated(device.index) / 1024**2, "MB")
         print("MOE Reserved GDRAM:", torch.cuda.memory_reserved(device) / 1024**2, "MB")
     # moe type support bfloat16, fp8_qdq, fp8_block, w4a8, nvfp4(not implemented yet)
+    # ``dtype`` is the MODEL/activation dtype serving hands to create_moe
+    # (modeling_deepseekv3.py:798 ``dtype=config.torch_dtype`` -> DeepseekV3MoE
+    # -> create_moe(dtype=dtype) @1.3.0rc29; identical at rc23). Quantization
+    # travels in quant_config only. Passing float8 here (pre-rc29 habit) is
+    # rejected by rc29's MoE resolution ("CutlassFusedMoE FP8_BLOCK_SCALES
+    # requires torch.bfloat16, got torch.float8_e4m3fn") and never matched
+    # serving, where activations are bf16 and quantized inside the kernel path.
     dtype = torch.bfloat16
     quant_group_size = 128
     quant_algo = None
     if moe_type == "fp8_block":
         quant_algo = QuantAlgo.FP8_BLOCK_SCALES
-        dtype = torch.float8_e4m3fn
     elif moe_type == "w4afp8":
         quant_algo = QuantAlgo.W4A8_AWQ
-        dtype = torch.float8_e4m3fn
     elif moe_type == "fp8":
         quant_algo = QuantAlgo.FP8
-        dtype = torch.float8_e4m3fn
     elif moe_type == "int4_wo":
         quant_algo = QuantAlgo.W4A16
         int4_config = get_moe_quantization_module_config("trtllm", moe_type, model_name=model_name)

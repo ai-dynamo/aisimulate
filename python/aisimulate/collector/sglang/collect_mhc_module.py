@@ -205,18 +205,17 @@ def _load_one_layer_runner(
 
     _set_envs_and_config(server_args)
     model_config = ModelConfig.from_server_args(server_args)
+    nccl_port = 29500 + random.randint(0, 10000)
+    from collector.sglang.runtime_compat import init_runtime_config
+
+    _runner_parallel_kwargs = init_runtime_config(server_args, gpu_id, nccl_port=nccl_port, model_config=model_config)
     return ModelRunner(
         model_config=model_config,
         mem_fraction_static=mem_fraction_static,
         gpu_id=gpu_id,
-        tp_rank=0,
-        tp_size=1,
-        pp_rank=0,
-        pp_size=1,
-        moe_ep_rank=0,
-        moe_ep_size=1,
-        nccl_port=29500 + random.randint(0, 10000),
+        nccl_port=nccl_port,
         server_args=server_args,
+        **_runner_parallel_kwargs,
     )
 
 

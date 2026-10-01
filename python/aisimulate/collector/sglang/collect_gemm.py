@@ -59,7 +59,7 @@ import random
 # Set it before any SGLang imports so a task compiles only its requested M.
 os.environ.setdefault("SGLANG_JIT_DEEPGEMM_PRECOMPILE", "0")
 
-import pkg_resources
+from importlib.metadata import version as _dist_version  # setuptools/pkg_resources is absent from recent framework images
 import torch
 import torch.nn.functional as F
 from collector.case_generator import get_gemm_case_specs
@@ -451,7 +451,7 @@ def run_gemm(gemm_type, batch_size, N, K, *, perf_filename, device="cuda:0"):  #
                 {"gemm_dtype": gemm_type, "m": M, "n": N, "k": K, "latency": results["latency_ms"] / len(op_list)}
             ],
             framework="SGLang",
-            version=pkg_resources.get_distribution("sglang").version,
+            version=_dist_version("sglang"),
             device_name=torch.cuda.get_device_name(device),
             op_name="gemm",
             kernel_source=kernel_source,

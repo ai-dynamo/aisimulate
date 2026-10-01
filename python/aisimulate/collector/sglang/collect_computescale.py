@@ -12,7 +12,7 @@ binds both to this producer's checkpoint:
 
 __compat__ = "sglang==0.5.14"
 
-import pkg_resources
+from importlib.metadata import version as _dist_version  # setuptools/pkg_resources is absent from sglang>=0.5.21 images
 import torch
 from collector.case_generator import get_compute_scale_case_specs
 from collector.helper import benchmark_with_power, get_sm_version, log_perf
@@ -74,7 +74,7 @@ def run_computescale(m, k, *, perf_filename, extra_perf_filenames, device="cuda:
     dynamic_latency, dynamic_power = _bench_dynamic(device, x)
     static_latency, static_power = _bench_static(device, x)
     compute_scale_latency = max(0.0, dynamic_latency - static_latency)
-    version = pkg_resources.get_distribution("sglang").version
+    version = _dist_version("sglang")
 
     if not log_perf(
         item_list=[{"m": m, "k": k, "quant_dtype": "fp8", "latency": compute_scale_latency}],

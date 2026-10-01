@@ -45,4 +45,5 @@ boundary from v0.5.20 server_args.py (Struct form, no alias).
 {%- if sglang['speculative-num-draft-tokens'] is defined and sglang['speculative-num-draft-tokens'] is not none -%}{%- set _ = args.append('--speculative-num-draft-tokens "' ~ sglang['speculative-num-draft-tokens'] ~ '"') -%}{%- endif -%}
 {%- if sglang['disable-overlap-schedule'] -%}{%- set _ = args.append('--disable-overlap-schedule') -%}{%- endif -%}
 {%- if sglang['load-balance-method'] is defined and sglang['load-balance-method'] is not none -%}{%- set _ = args.append('--load-balance-method "' ~ sglang['load-balance-method'] ~ '"') -%}{%- endif -%}
+{%- if sglang['cuda-graph-backend-prefill'] is defined and sglang['cuda-graph-backend-prefill'] is not none -%}{%- set _ = args.append('--cuda-graph-backend-prefill "' ~ sglang['cuda-graph-backend-prefill'] ~ '"') -%}{%- endif -%}
 {{ args | join(' ') }}

@@ -68,7 +68,7 @@ from types import SimpleNamespace
 from typing import TypedDict
 from unittest.mock import MagicMock
 
-import pkg_resources
+from importlib.metadata import version as _dist_version  # setuptools/pkg_resources is absent from recent framework images
 
 # Mock global server args before importing MOE modules (required by SGLang 0.5.5+)
 # The fused_moe_triton_config module now requires get_global_server_args() to be set
@@ -1254,7 +1254,7 @@ def _raise_if_unverified_moe_lane(moe_type: str) -> str:
     reject the unverified 0.5.15/0.5.16 series even though the module-level
     compatibility grammar cannot express a two-interval union.
     """
-    installed_version = pkg_resources.get_distribution("sglang").version
+    installed_version = _dist_version("sglang")
     if moe_type not in ("int4_wo", "w4a16_mxfp4", "w4a8_mxfp4_mxfp8"):
         return installed_version
     verified = any(

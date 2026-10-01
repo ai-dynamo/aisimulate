@@ -63,3 +63,15 @@ def test_old_versions_keep_old_spelling(version):
     args = _worker_args(version)
     assert "--cuda-graph-bs " in args
     assert "--cuda-graph-bs-decode" not in args
+
+
+def test_prefill_graph_backend_param_renders_only_on_new_versions():
+    """params.agg.cuda_graph_backend_prefill -> --cuda-graph-backend-prefill (sglang >= 0.5.20 template)."""
+    params = copy.deepcopy(_PARAMS)
+    params["params"]["agg"]["cuda_graph_backend_prefill"] = "breakable"
+    new = generate_backend_artifacts(params, "sglang", backend_version="0.5.21", deployment_target="dynamo-j2")
+    k8s = yaml.safe_load(new["k8s_deploy.yaml"]); worker = next(s for n, s in k8s["spec"]["services"].items() if n != "Frontend")
+    assert '--cuda-graph-backend-prefill "breakable"' in " ".join(worker["extraPodSpec"]["mainContainer"]["args"])
+    old = generate_backend_artifacts(copy.deepcopy(params), "sglang", backend_version="0.5.16", deployment_target="dynamo-j2")
+    k8s = yaml.safe_load(old["k8s_deploy.yaml"]); worker = next(s for n, s in k8s["spec"]["services"].items() if n != "Frontend")
+    assert "--cuda-graph-backend-prefill" not in " ".join(worker["extraPodSpec"]["mainContainer"]["args"])

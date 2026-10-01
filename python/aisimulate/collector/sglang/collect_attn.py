@@ -16,7 +16,7 @@ import os
 from types import SimpleNamespace
 from typing import NamedTuple
 
-import pkg_resources
+from importlib.metadata import version as _dist_version  # setuptools/pkg_resources is absent from sglang>=0.5.21 images
 import torch
 from collector.case_generator import (
     get_attention_context_shape_sweeps,
@@ -417,6 +417,9 @@ def run_attention_torch(
     device="cuda:0",
     page_size: int | None = None,
 ):
+    from collector.sglang.runtime_compat import ensure_offline_runtime_published
+
+    ensure_offline_runtime_published()  # sglang>=0.5.20 backends read get_exec()/get_parallel()
     if use_fp8_context_fmha:
         assert use_fp8_kv_cache, "If you want to use fp8 context fmha, kv cache must be fp8"
     kvtype = torch.float8_e4m3fn if use_fp8_kv_cache else torch.bfloat16
@@ -507,6 +510,9 @@ def run_attention_torch(
         page_size=model_runner.page_size,
         get_kvcache=lambda: model_runner.token_to_kv_pool,
     )
+    from collector.sglang.runtime_compat import attach_kv_index_translator
+
+    attach_kv_index_translator(model_runner)
 
     if attn_backend_name == "flashinfer":
         from sglang.srt.layers.attention.flashinfer_backend import FlashInferAttnBackend
@@ -740,7 +746,7 @@ def run_attention_torch(
             }
         ],
         framework="SGLang",
-        version=pkg_resources.get_distribution("sglang").version,
+        version=_dist_version("sglang"),
         device_name=torch.cuda.get_device_name(device),
         op_name=op_name,
         kernel_source=attn_backend_name,

@@ -15,7 +15,7 @@ import math
 import os
 import random
 
-import pkg_resources
+from importlib.metadata import version as _dist_version  # setuptools/pkg_resources is absent from sglang>=0.5.21 images
 import sglang.srt.layers.dp_attention
 import sglang.srt.server_args
 import torch
@@ -367,6 +367,9 @@ def run_mla(
     perf_filename,
     device="cuda:0",
 ):
+    from collector.sglang.runtime_compat import ensure_offline_runtime_published
+
+    ensure_offline_runtime_published()  # sglang>=0.5.20 backends read get_exec()/get_parallel()
     torch.cuda.set_device(device)
     torch_device = torch.device(device)
     random.seed(0)
@@ -450,6 +453,9 @@ def run_mla(
         enable_memory_saver=False,
     )
     model_runner.token_to_kv_pool = kv_pool
+    from collector.sglang.runtime_compat import attach_kv_index_translator
+
+    attach_kv_index_translator(model_runner)
 
     if selected_backend == "trtllm_mla":
         # TRTLLMMLABackend inherits FlashInferMLAAttnBackend which creates
@@ -646,7 +652,7 @@ def run_mla(
             }
         ],
         framework="SGLang",
-        version=pkg_resources.get_distribution("sglang").version,
+        version=_dist_version("sglang"),
         device_name=torch.cuda.get_device_name(device),
         op_name=f"mla_{'context' if is_context_phase else 'generation'}",
         kernel_source=kernel_source,

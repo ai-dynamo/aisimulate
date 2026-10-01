@@ -177,6 +177,16 @@ def required_prefill_extend_tokens(batch_size: int, seq_len: int) -> int:
 def runtime_chunk_size(model_runner) -> int:
     server_args = getattr(model_runner, "server_args", None)
     sglang_chunk = getattr(server_args, "chunked_prefill_size", None) if server_args else None
+    if not (isinstance(sglang_chunk, int) and sglang_chunk > 0) and server_args is not None:
+        # sglang>=0.5.21: derived values are read through the resolving view
+        # (arg_groups/model_override_base.py:120 resolving_view; one_batch.load_model
+        # reads cfg.mem_fraction_static the same way), not off the raw record.
+        try:
+            from sglang.srt.arg_groups.model_override_base import resolving_view
+
+            sglang_chunk = getattr(resolving_view(server_args), "chunked_prefill_size", None)
+        except ImportError:
+            pass
     if isinstance(sglang_chunk, int) and sglang_chunk > 0:
         return sglang_chunk
     raise RuntimeError("SGLang did not initialize server_args.chunked_prefill_size")

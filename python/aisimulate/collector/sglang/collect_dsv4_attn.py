@@ -908,20 +908,18 @@ def _load_model_runner(
 
     _set_envs_and_config(server_args)
     model_config = ModelConfig.from_server_args(server_args)
+    from collector.sglang.runtime_compat import init_runtime_config
+
+    _runner_parallel_kwargs = init_runtime_config(server_args, gpu_id, nccl_port=nccl_port, model_config=model_config)
     with _tp_load_model_patch(tp_size):
         model_runner = ModelRunner(
             model_config=model_config,
             # Use sglang's own __post_init__-derived value, not a collector knob.
             mem_fraction_static=server_args.mem_fraction_static,
             gpu_id=gpu_id,
-            tp_rank=0,
-            tp_size=1,
-            pp_rank=0,
-            pp_size=1,
-            moe_ep_rank=0,
-            moe_ep_size=1,
             nccl_port=nccl_port,
             server_args=server_args,
+            **_runner_parallel_kwargs,
         )
     derived_requirements = None
     if csa_context_shapes is not None:

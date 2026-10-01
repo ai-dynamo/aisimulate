@@ -16,7 +16,7 @@ __compat__ = "sglang==0.5.14"
 
 from typing import NamedTuple
 
-import pkg_resources
+from importlib.metadata import version as _dist_version  # setuptools/pkg_resources is absent from recent framework images
 import torch
 from collector.case_generator import get_attention_encoder_head_configs, get_attention_encoder_shape_sweeps
 from collector.helper import benchmark_with_power, get_sm_version, log_perf
@@ -84,7 +84,10 @@ def _build_kernel_runner(
 
     if sm == 90:
         # Matches VisionFlash3Attention.forward.
-        from sglang.jit_kernel.flash_attention import flash_attn_varlen_func
+        try:  # sglang>=0.5.21 (layers/attention/vision.py:55)
+            from sglang.kernels.ops.attention.flash_attention import flash_attn_varlen_func
+        except ImportError:
+            from sglang.jit_kernel.flash_attention import flash_attn_varlen_func
 
         def run_iter():
             flash_attn_varlen_func(
@@ -103,7 +106,10 @@ def _build_kernel_runner(
 
     if sm == 100:
         # Matches VisionFlash4Attention.forward.
-        from sglang.jit_kernel.flash_attention import flash_attn_varlen_func
+        try:  # sglang>=0.5.21 (layers/attention/vision.py:55)
+            from sglang.kernels.ops.attention.flash_attention import flash_attn_varlen_func
+        except ImportError:
+            from sglang.jit_kernel.flash_attention import flash_attn_varlen_func
 
         def run_iter():
             flash_attn_varlen_func(
@@ -158,6 +164,9 @@ def run_encoder_attention_torch(
     perf_filename,
     device="cuda:0",
 ):
+    from collector.sglang.runtime_compat import ensure_offline_runtime_published
+
+    ensure_offline_runtime_published()  # sglang>=0.5.20 backends read get_exec()/get_parallel()
     torch_device = torch.device(device)
     torch.cuda.set_device(device)
 
@@ -193,7 +202,7 @@ def run_encoder_attention_torch(
             }
         ],
         framework="SGLang",
-        version=pkg_resources.get_distribution("sglang").version,
+        version=_dist_version("sglang"),
         device_name=torch.cuda.get_device_name(device),
         op_name="encoder_attention",
         kernel_source=backend_tag,
