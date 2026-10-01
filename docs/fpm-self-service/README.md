@@ -35,20 +35,18 @@ artifacts: the table alone does not establish serving memory capacity. The
 [examples](examples.md) cover both importing an existing Kimi profile and
 collecting a new MiniMax profile.
 
-### Parallelism within an iteration
+### Performance within an iteration
 
-Self-service is intended to cover parallelism whose computation and communication
-fit inside the measured forward iteration while preserving Replay's iteration-level
-execution contract. Whole-forward measurements include those costs without needing
-an analytical model for every internal operation. DCP is already supported by the
-measured-FPM consumer and engine Replay, as demonstrated by the
-[Kimi TP8+DCP8 example](examples.md#example-a-onboard-the-collected-kimi-k3-tp8dcp8-profile).
+Self-service captures performance changes within a forward iteration, including
+changes to kernels, quantization, CUDA Graph execution and parallel computation
+or communication, while preserving Replay's iteration-level execution contract.
+Whole-forward measurements include their combined cost without needing an
+analytical model for every internal operation.
 
 Timing is only part of that contract. Keep the actual per-rank work, topology,
-cache geometry and usable capacity consistent with the measured deployment;
-DCP changes KV sharding and therefore cannot reuse TP-only resource assumptions.
-The supported timing paths and the configurations exposed by the guided CLI
-are tracked separately in the [parallelism implementation details](implementation.md#parallelism-support-and-guided-cli-coverage).
+KV cache geometry and usable capacity consistent with the measured deployment.
+The configurations currently exposed by the guided CLI are described in the
+[parallelism implementation details](implementation.md#parallelism-support-and-guided-cli-coverage).
 
 ### When this workflow does not apply
 
@@ -56,7 +54,7 @@ Self-service supplies customized **engine step times** for a measured identity
 and supported query shapes. It does not implement new serving behavior. Layer-wise
 KV transfer, a custom scheduler or overlap policy, and unsupported recurrent-cache
 semantics need corresponding Replay support; more timing samples cannot add it.
-If a parallel execution scheme changes scheduling or dependencies across
+If an execution change alters scheduling or dependencies across
 iterations, such as an overlapping pipeline, one measured forward time alone
 cannot represent those changes.
 

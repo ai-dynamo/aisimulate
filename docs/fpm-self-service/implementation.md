@@ -415,7 +415,7 @@ The profile route supports vLLM text decoders, including the text portion of mul
 
 ### Parallelism support and guided CLI coverage
 
-The [modeling boundary](README.md#parallelism-within-an-iteration) is the measured
+The [modeling boundary](README.md#performance-within-an-iteration) is the measured
 iteration and Replay's execution/resource contract. The guided CLI's preset list
 is not a general limit on which intra-iteration parallelism FPM can represent.
 
