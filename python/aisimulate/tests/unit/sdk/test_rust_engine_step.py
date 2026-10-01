@@ -2359,3 +2359,36 @@ def test_canonical_native_selection_retries_roots_and_pins_effective_configurati
     assert resolved["transfer_policy"] == ["xshape"]
     assert resolved["estimator_config"]["correction"]["enabled"] is False
     assert config.systems_paths == (str(tmp_path), packaged)
+
+
+@pytest.mark.parametrize(
+    ("variant_a", "variant_b"),
+    [
+        ({"dcp_comm": "ag_rs"}, {"dcp_comm": "a2a"}),
+        ({"dcp_comm": "a2a", "dcp_q_replicate": False}, {"dcp_comm": "a2a", "dcp_q_replicate": True}),
+        ({}, {"dcp_comm": "a2a"}),
+    ],
+)
+def test_engine_config_json_separates_dcp_op_shaping_overrides(variant_a, variant_b) -> None:
+    """``dcp_comm`` / ``dcp_q_replicate`` select different DCP op graphs for one
+    (tp, dcp) identity; the cache key must not let a warm ``ag_rs`` handle answer
+    an ``a2a`` request (or vice versa, whichever compiled first)."""
+
+    def _model(**dcp_overrides):
+        return SimpleNamespace(
+            model_path="deepseek-ai/DeepSeek-V3",
+            architecture="DeepseekV3ForCausalLM",
+            config=ModelConfig(
+                tp_size=8, pp_size=1, attention_dp_size=1, moe_tp_size=8, moe_ep_size=1, dcp_size=4, **dcp_overrides
+            ),
+        )
+
+    database = SimpleNamespace(system="b200_sxm", backend="vllm", version="0.24.0")
+    key_a = rust_engine_step._engine_config_json(_model(**variant_a), database)
+    key_b = rust_engine_step._engine_config_json(_model(**variant_b), database)
+    assert key_a != key_b
+    identity = json.loads(json.loads(key_b)["extra"]["identity"])["model_config"]
+    assert identity["dcp_comm"] == variant_b.get("dcp_comm")
+    assert identity["dcp_q_replicate"] == variant_b.get("dcp_q_replicate")
+    # Same overrides -> same key (the memo still hits).
+    assert rust_engine_step._engine_config_json(_model(**variant_b), database) == key_b

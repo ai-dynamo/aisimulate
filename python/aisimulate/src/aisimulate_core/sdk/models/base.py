@@ -618,6 +618,23 @@ class BaseModel:
         """Total-token capacity; models with per-request state may reserve it here."""
         return self.get_kvcache_max_tokens(kv_budget_bytes)
 
+    def get_kvcache_rank_bytes_per_sequence(self, seq_len: int) -> float:
+        """Per-RANK persistent KV for one sequence: the full KV under prefill CP,
+        the ``1/dcp`` stripe under decode CP (see :meth:`_cp_kv_memory_divisor`).
+
+        Hybrid models whose per-request state is rank-local and never striped
+        (Kimi-K3's KDA state) override this and
+        :meth:`get_kvcache_rank_batch_capacity` so the divisor touches only the
+        token-linear KV.
+        """
+        return self.get_kvcache_bytes_per_sequence(seq_len) / self._cp_kv_memory_divisor()
+
+    def get_kvcache_rank_batch_capacity(self, kv_budget_bytes: float, max_batch_size: int) -> int:
+        """Token capacity of a RANK-LOCAL byte budget: the inverse of
+        :meth:`get_kvcache_rank_bytes_per_sequence`. Under decode CP a budget of
+        ``B`` bytes holds the tokens whose full KV is ``B * dcp`` bytes."""
+        return self.get_kvcache_batch_capacity(float(kv_budget_bytes) * self._cp_kv_memory_divisor(), max_batch_size)
+
     def _binary_search_kvcache_max_tokens(self, kv_budget_bytes: float) -> int:
         """Monotonic-search inverse of :meth:`get_kvcache_bytes_per_sequence`.
 

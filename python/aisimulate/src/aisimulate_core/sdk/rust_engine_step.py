@@ -1267,6 +1267,11 @@ def _engine_config_json(model: Any, database: Any) -> str:
                         "fpm_config": fpm_config.cache_identity() if fpm_config is not None else None,
                         "decoder_replay": bool(getattr(model_config, "decoder_replay", False)),
                         "cp_style": getattr(model_config, "cp_style", None),
+                        # DCP op-shaping overrides: the merge collective
+                        # (ag_rs vs a2a) and the replicated-Q variant compile
+                        # different op graphs for one (tp, dcp) identity.
+                        "dcp_comm": getattr(model_config, "dcp_comm", None),
+                        "dcp_q_replicate": getattr(model_config, "dcp_q_replicate", None),
                         "workload_distribution": getattr(model_config, "workload_distribution", None),
                         "decode_workload_distribution": getattr(model_config, "decode_workload_distribution", None),
                         "prefill_graph_profile": getattr(model_config, "prefill_graph_profile", None),

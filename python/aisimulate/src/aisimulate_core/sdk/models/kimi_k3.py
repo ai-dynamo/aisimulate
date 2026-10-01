@@ -842,3 +842,20 @@ class KimiK3Model(BaseModel):
         if budget <= 0 or per_token <= 0:
             return 0
         return int(budget // per_token)
+
+    # Decode CP stripes only the MLA layers' token-linear KV; the KDA state is
+    # per-request and rank-local (every rank runs the full recurrence on its
+    # own KDA head shard), so it must be reserved whole BEFORE the stripe.
+    def get_kvcache_rank_bytes_per_sequence(self, seq_len: int) -> float:
+        token_bytes = (
+            max(0, seq_len) * self.config.kvcache_quant_mode.value.memory * self.get_kvcache_elements_per_token()
+        )
+        return token_bytes / self._cp_kv_memory_divisor() + self._kda_state_bytes_per_request()
+
+    def get_kvcache_rank_batch_capacity(self, kv_budget_bytes: float, max_batch_size: int) -> int:
+        token_budget = float(kv_budget_bytes) - self._kda_state_bytes_per_request()
+        if token_budget <= 0:
+            return 0
+        return self.get_kvcache_batch_capacity(
+            token_budget * self._cp_kv_memory_divisor() + self._kda_state_bytes_per_request(), max_batch_size
+        )

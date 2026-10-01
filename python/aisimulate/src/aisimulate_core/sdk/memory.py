@@ -404,18 +404,21 @@ class KVCacheEstimator:
         if backend != "sglang":
             non_kv_bytes += activations_bytes
 
-        # Per-RANK persistent KV. Prefill CP keeps the full KV on every rank
-        # (divisor 1); decode CP stripes it, so each rank holds 1/dcp of every
-        # token (see BaseModel._cp_kv_memory_divisor). Duck-typed model doubles
-        # without the hook keep the full KV.
-        kv_divisor = float(getattr(model, "_cp_kv_memory_divisor", lambda: 1)())
+        # Per-RANK persistent KV. Prefill CP keeps the full KV on every rank;
+        # decode CP stripes the token-linear KV so each rank holds 1/dcp of every
+        # token, while rank-local per-request state (Kimi-K3 KDA) stays whole
+        # (BaseModel.get_kvcache_rank_*). The per-token figure and the
+        # byte-budget -> token-count inverse must see the same striping.
+        # Duck-typed model doubles without the rank hooks keep the full KV.
+        rank_bytes_per_sequence = getattr(
+            model, "get_kvcache_rank_bytes_per_sequence", model.get_kvcache_bytes_per_sequence
+        )
 
-        # Model's byte-budget -> token-count inverse (KV-curve aware). Under DCP a
-        # rank-local budget of B bytes holds the tokens whose FULL KV is B * dcp
-        # bytes, because every token's KV is spread over the dcp ranks; the
-        # inverse must see the same striping as the per-token figure below.
         def tokens_from_kv_bytes(kv_budget_bytes: float) -> int:
-            return int(model.get_kvcache_batch_capacity(float(kv_budget_bytes) * kv_divisor, max_batch_size))
+            # Resolved lazily: some callers never invert (stubs without the
+            # capacity method).
+            capacity = getattr(model, "get_kvcache_rank_batch_capacity", None) or model.get_kvcache_batch_capacity
+            return int(capacity(float(kv_budget_bytes), max_batch_size))
 
         return cls(
             {
@@ -429,7 +432,7 @@ class KVCacheEstimator:
                 "pre_model_load_overhead_bytes": (
                     runtime_overhead_bytes + comm_overhead_bytes if backend == "sglang" else 0.0
                 ),
-                "kv_size_per_token_bytes": float(model.get_kvcache_bytes_per_sequence(1)) / kv_divisor,
+                "kv_size_per_token_bytes": float(rank_bytes_per_sequence(1)),
                 "gpu_memory_capacity_bytes": float(database.system_spec["gpu"]["mem_capacity"]),
                 "tokens_from_kv_bytes": tokens_from_kv_bytes,
             }

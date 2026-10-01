@@ -74,7 +74,7 @@ def test_decode_cp_alone_renders_only_its_own_knob():
         ("vllm", "0.14.1", {"decode_context_parallel_size": 4}, {"decode_context_parallel_size": 4}),
         (
             "vllm",
-            "0.18.0",
+            "0.19.0",
             {"decode_context_parallel_size": 4, "dcp_comm_backend": "a2a"},
             {"decode_context_parallel_size": 4, "dcp_comm_backend": "a2a"},
         ),
@@ -102,7 +102,9 @@ def test_minimum_versions_are_inclusive(backend, version, kwargs, expected):
     [
         ("vllm", "0.13.0", {"context_parallel_size": 2}, ">= 0.14.1"),
         ("vllm", "0.12.0", {"decode_context_parallel_size": 2}, ">= 0.14.1"),
-        ("vllm", "0.17.0", {"decode_context_parallel_size": 2, "dcp_comm_backend": "a2a"}, ">= 0.18.0"),
+        # 0.18.0 has the flag upstream but floor-matches the 0.16.0 template, which
+        # does not render it; the floor is the first template that does.
+        ("vllm", "0.18.0", {"decode_context_parallel_size": 2, "dcp_comm_backend": "a2a"}, ">= 0.19.0"),
         ("sglang", "0.5.14", {"context_parallel_size": 2}, ">= 0.5.15"),
         ("sglang", "0.5.11", {"decode_context_parallel_size": 2}, ">= 0.5.15"),
         ("sglang", "0.5.16", {"decode_context_parallel_size": 2, "dcp_comm_backend": "a2a"}, ">= 0.5.17"),
@@ -159,7 +161,7 @@ def test_vllm_templates_render_both_cp_flags(version):
 
 
 @pytest.mark.parametrize(("version", "rendered"), [("0.16.0", False), ("0.19.0", True), ("0.20.1", True)])
-def test_vllm_dcp_comm_backend_only_from_0_18(version, rendered):
+def test_vllm_dcp_comm_backend_only_from_0_19_template(version, rendered):
     out = _render_template(
         "vllm",
         f"cli_args.{version}.j2",
@@ -503,6 +505,31 @@ def test_bridge_reads_decode_cp_from_task():
     assert _cli_flag_value(cli, "--tensor-parallel-size") == "4"
     assert _cli_flag_value(cli, "--dcp-size") == "4"
     assert _cli_flag_value(cli, "--dcp-comm-backend") == "a2a"
+
+
+def test_vllm_bridge_renders_dcp_comm_backend_at_its_minimum_version():
+    """Complete path at the floor: the accepted minimum for ``dcp_comm_backend``
+    must select a template that renders it. 0.18.0 has the flag upstream but
+    floor-matches cli_args.0.16.0.j2, which has no line for it, so the floor is
+    0.19.0 and an 0.18.0 request is rejected rather than silently launched on
+    the backend-default merge."""
+    row = pd.Series({"workers": 1, "tp": 8, "pp": 1, "dp": 1, "bs": 64})
+
+    task = _task(primary_backend_name="vllm", primary_backend_version="0.19.0", dcp_size=4, dcp_comm="a2a")
+    result = task_config_to_generator_config(task, row, num_gpus_per_node=8)
+    assert result["params"]["agg"]["dcp_comm_backend"] == "a2a"
+    cli = generate_backend_artifacts(result, "vllm", backend_version="0.19.0", deployment_target="dynamo-j2")[
+        "cli_args_agg"
+    ]
+    assert _cli_flag_value(cli, "--decode-context-parallel-size") == "4"
+    assert _cli_flag_value(cli, "--dcp-comm-backend") == "a2a"
+
+    with pytest.raises(ContextParallelUnsupportedError, match=">= 0.19.0"):
+        task_config_to_generator_config(
+            _task(primary_backend_name="vllm", primary_backend_version="0.18.0", dcp_size=4, dcp_comm="a2a"),
+            row,
+            num_gpus_per_node=8,
+        )
 
 
 def test_bridge_disagg_uses_per_role_decode_cp_and_prefill_cp_column():

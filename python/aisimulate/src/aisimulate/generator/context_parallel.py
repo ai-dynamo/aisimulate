@@ -46,10 +46,12 @@ _MIN_VERSIONS: dict[tuple[str, str], Version] = {
     # template selection is a floor match. The floor is therefore the first
     # template that emits the flags, not the framework release, so a request
     # can never resolve to a template that silently drops the knob. The DCP
-    # communication backend selector arrived in v0.18.0 (#34883).
+    # communication backend selector arrived in v0.18.0 (#34883), but the first
+    # template that renders --dcp-comm-backend is cli_args.0.19.0.j2 (0.18.x
+    # would floor-match the 0.16.0 template and drop the flag).
     ("vllm", "decode_context_parallel_size"): Version("0.14.1"),
     ("vllm", "context_parallel_size"): Version("0.14.1"),
-    ("vllm", "dcp_comm_backend"): Version("0.18.0"),
+    ("vllm", "dcp_comm_backend"): Version("0.19.0"),
     # SGLang: --enable-prefill-cp/--cp-strategy in v0.5.14 (#27312) and
     # --dcp-size in v0.5.15 (#25090); the generator renders both from the
     # cli_args.0.5.15 template, so the floor is 0.5.15 for either knob.
