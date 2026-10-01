@@ -1,0 +1,45 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+schema_version: 1
+op: glm53flash_attention
+description: >-
+  GLM-5.3-Flash NoPE sparse-MLA + IndexPool attention, one real checkpoint layer
+  timed standalone over real KV/IndexPool state. Prefill (x = new tokens per
+  request, exact prefix grid) and decode (x = absolute sequence length) up to
+  131072 context and batch 1-32, both IndexPool regimes (prefix+x <= 2048 short,
+  otherwise pooled + retained tail). Every step stays inside the pinned serving
+  chunked-prefill budget of 8192 scheduled tokens.
+common_case_values:
+  glm53flash_attention:
+    # All 11 NoPE sparse-MLA layers (3, 7, ..., 43) are identical modules with
+    # their own indexer (indexer_types == "full") and identical quantization
+    # exclusions; layer 3 is the first. Checked by
+    # glm53flash_attention_contract.representative_layer_is_uniform.
+    layer_id: 3
+    warmup: 3
+    iterations: 10
+    max_step_tokens: 8192
+    max_context: 131072
+    prefill:
+      batch_sizes: [1, 2, 4, 8, 16, 32]
+      query_lengths:
+        "1": [16, 64, 256, 1024, 2048, 2052, 4096, 8192]
+        "2": [16, 64, 256, 1024, 2048, 2052, 4096]
+        "4": [16, 64, 256, 512, 1024, 2048]
+        "8": [16, 64, 256, 512, 1024]
+        "16": [16, 64, 256, 512]
+        "32": [8, 32, 64, 128, 256]
+      prefix_lengths: [0, 128, 1024, 2048, 4096, 8192, 16384, 32768, 65536, 98304]
+    decode:
+      batch_sizes: [1, 2, 3, 4, 6, 8, 12, 16, 24, 32]
+      sequence_lengths:
+        "1": &decode_full [64, 512, 1024, 2048, 2052, 4096, 8192, 16384, 32768, 65536, 98304, 131072]
+        "2": *decode_full
+        "3": &decode_short [64, 512, 1024, 2048, 2052, 4096, 8192, 16384]
+        "4": *decode_full
+        "6": *decode_short
+        "8": *decode_full
+        "12": *decode_short
+        "16": *decode_full
+        "24": *decode_short
+        "32": *decode_full
