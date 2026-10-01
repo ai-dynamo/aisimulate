@@ -72,21 +72,6 @@ Keep one session checkpoint and track every selected configuration independently
 An existing profile still needs identity, resource and coverage review; it can
 skip new GPU collection when matching evidence is available.
 
-```mermaid
-flowchart TD
-    A["1. Inspect model and target"] --> B["2. Choose worker and collection limits"]
-    B --> C["3. Derive and review profile"]
-    C --> D["4. Plan collection or verify existing data"]
-    D --> E{"Matching measured profile available?"}
-    E -->|No| F["5. Smoke, collect and verify"]
-    E -->|Yes| G["5. Validate imported pair and resource evidence"]
-    F --> H["Resolve and review runtime memory when pending"]
-    G --> H
-    H --> I["6. Check queries and Replay coverage"]
-    I --> J["Run predict / recommend"]
-    I --> K["Assess matched serving accuracy separately"]
-```
-
 ### 1. Inspect the model and target
 
 Identify the pinned checkpoint, accessible local model config, GPU system and
