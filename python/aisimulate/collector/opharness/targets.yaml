@@ -2,9 +2,9 @@ schema: aic-probe-targets/v1
 backends:
   sglang:
     versions:
-    - 0.5.16
+    - 0.5.21
     images:
-      0.5.16: lmsysorg/sglang:v0.5.16
+      0.5.21: lmsysorg/sglang:v0.5.21
   vllm:
     versions:
     - 0.30.0
@@ -21,9 +21,9 @@ backends:
       meanwhile.'
   trtllm:
     versions:
-    - 1.3.0rc23
+    - 1.3.0rc29
     images:
-      1.3.0rc23: nvcr.io/nvidia/tensorrt-llm/release:1.3.0rc23
+      1.3.0rc29: nvcr.io/nvidia/tensorrt-llm/release:1.3.0rc29
 families:
   dsv4:
     architecture: DeepseekV4ForCausalLM
