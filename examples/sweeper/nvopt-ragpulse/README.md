@@ -37,51 +37,6 @@ Native early projection-stall termination must be reported with the actual
 budget consumed. Engine parameters remain searchable in experiments 2 and 3;
 the winner of an earlier experiment is not fixed as their engine configuration.
 
-## Replacing Vizier with other optimizers
-
-Vizier selects candidates; the replay simulator does not depend on it. A new
-optimizer can reuse the same simulation and scoring through either route:
-
-1. **Keep AISimulate Sweeper.** Replace `AuditedSamplerFactory` in
-   [run_sweep.py](runtime/run_sweep.py), passed through
-   `Sweeper(..., sampler_factory=...)`. Implement the
-   [BranchSampler contract](../../../python/aisimulate/src/aisimulate/sweeper/sampler.py):
-   `branch`, `suggest(count)`, `observe(suggestion, metrics)` and
-   `observe_infeasible(suggestion, reason)`. Return `Suggestion` objects with
-   a concrete `parallel_config` and knob `selection`. Remove the
-   `SeededBayesianBranchSampler` class assertion and adapt the audit wrapper
-   to your trial handles, retaining unique IDs for accounting. This route
-   retains the compiled branch domains and supported-mapping checks; changing
-   only `optimizer.algorithm` in YAML is not a custom-optimizer plugin.
-2. **Own the search loop and search space.** Bypass recommendation/Sweeper
-   compilation and generate explicit engine, Router and Planner settings.
-   Use the canonical
-   [prediction compiler](../../../python/aisimulate/src/aisimulate/compiler.py)
-   and adapter materialization to build a concrete `ReplaySpec`, including
-   the required runtime hooks. Set its goal target to `goodput_per_gpu` and
-   preserve the scenario's trace, SLA and Planner history. Reuse
-   [ScenarioRunnerFactory](runtime/scenario_runner.py): create a runner per
-   worker with `factory.create(worker_id)`, evaluate via `runner.run(spec)`,
-   and close it when finished. Feed
-   `report.metadata["scenario"]["derived"]["fixed_day_goodput_per_gpu"]`
-   back to the optimizer. The existing `--replay-spec` path in `run_sweep.py`
-   is a working example of evaluation without a new optimizer study.
-
-**The current presets and parallelization search machinery are optional.**
-With your own driver, you can discard the preset menus, preset expansion,
-legal-mapping catalog, TP/DP/MoE feature encoding and nearest-mapping projection,
-and define your own variables and constraints. Planner predictor preset
-pre-search can also be replaced by an explicitly configured predictor or your
-own history-only selection. CPU evaluation batching/concurrency can be managed
-by the new driver as well. None of these search policies is required by replay;
-the final worker mappings must still be explicit and satisfy backend, memory
-and GPU-budget constraints.
-
-Keep the frozen evaluation/scoring contract for comparable results. An external
-driver owns trial budgets, deduplication, timeout/resource supervision and
-result logging; preserve failed/incomplete outcomes rather than assigning fake
-zero scores. The existing campaign helpers can be reused for those duties.
-
 ## Shared engine space and measurement
 
 - Model: `deepseek-ai/DeepSeek-V3`; hardware: `h200_sxm`.
@@ -356,3 +311,48 @@ latencies, allocated GPUs, cache reuse and Planner scale decisions; separately
 replay the selected configuration before calling it validated. Day 5 is also
 used for optimizer feedback: a fresh winner replay checks reproducibility, not
 generalization to another held-out day or accuracy on physical GPUs.
+
+## Replacing Vizier with other optimizers
+
+Vizier selects candidates; the replay simulator does not depend on it. A new
+optimizer can reuse the same simulation and scoring through either route:
+
+1. **Keep AISimulate Sweeper.** Replace `AuditedSamplerFactory` in
+   [run_sweep.py](runtime/run_sweep.py), passed through
+   `Sweeper(..., sampler_factory=...)`. Implement the
+   [BranchSampler contract](../../../python/aisimulate/src/aisimulate/sweeper/sampler.py):
+   `branch`, `suggest(count)`, `observe(suggestion, metrics)` and
+   `observe_infeasible(suggestion, reason)`. Return `Suggestion` objects with
+   a concrete `parallel_config` and knob `selection`. Remove the
+   `SeededBayesianBranchSampler` class assertion and adapt the audit wrapper
+   to your trial handles, retaining unique IDs for accounting. This route
+   retains the compiled branch domains and supported-mapping checks; changing
+   only `optimizer.algorithm` in YAML is not a custom-optimizer plugin.
+2. **Own the search loop and search space.** Bypass recommendation/Sweeper
+   compilation and generate explicit engine, Router and Planner settings.
+   Use the canonical
+   [prediction compiler](../../../python/aisimulate/src/aisimulate/compiler.py)
+   and adapter materialization to build a concrete `ReplaySpec`, including
+   the required runtime hooks. Set its goal target to `goodput_per_gpu` and
+   preserve the scenario's trace, SLA and Planner history. Reuse
+   [ScenarioRunnerFactory](runtime/scenario_runner.py): create a runner per
+   worker with `factory.create(worker_id)`, evaluate via `runner.run(spec)`,
+   and close it when finished. Feed
+   `report.metadata["scenario"]["derived"]["fixed_day_goodput_per_gpu"]`
+   back to the optimizer. The existing `--replay-spec` path in `run_sweep.py`
+   is a working example of evaluation without a new optimizer study.
+
+**The current presets and parallelization search machinery are optional.**
+With your own driver, you can discard the preset menus, preset expansion,
+legal-mapping catalog, TP/DP/MoE feature encoding and nearest-mapping projection,
+and define your own variables and constraints. Planner predictor preset
+pre-search can also be replaced by an explicitly configured predictor or your
+own history-only selection. CPU evaluation batching/concurrency can be managed
+by the new driver as well. None of these search policies is required by replay;
+the final worker mappings must still be explicit and satisfy backend, memory
+and GPU-budget constraints.
+
+Keep the frozen evaluation/scoring contract for comparable results. An external
+driver owns trial budgets, deduplication, timeout/resource supervision and
+result logging; preserve failed/incomplete outcomes rather than assigning fake
+zero scores. The existing campaign helpers can be reused for those duties.
