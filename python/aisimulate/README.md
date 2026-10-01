@@ -131,3 +131,5 @@ so that AISimulate owns the installed files:
 python3 -m pip uninstall -y aiconfigurator aiconfigurator-core
 python3 -m pip install --upgrade aisimulate
 ```
+
+<!-- Temporary simulation CI baseline: separate source and wheel metadata. -->
