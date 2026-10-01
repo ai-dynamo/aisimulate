@@ -121,6 +121,7 @@ jobs:
     timeout-minutes: 5
     outputs:
       run_all: ${{ steps.plan.outputs.run_all }}
+      readme_commands: ${{ steps.plan.outputs.readme_commands }}
       platform_wheels: ${{ steps.plan.outputs.platform_wheels }}
       collector_data: ${{ steps.plan.outputs.collector_data }}
       prediction_regression: ${{ steps.plan.outputs.prediction_regression }}
@@ -905,6 +906,11 @@ jobs:
       - run: release-smoke/bin/aisimulate --help
       - run: release-smoke/bin/aiconfigurator version
 
+  readme-commands:
+    needs: [verify-target, select-full-ci, fast-ci]
+    if: ${{ needs.select-full-ci.outputs.readme_commands == 'true' }}
+    uses: ./.github/workflows/readme-checks.yml
+
   readiness:
     name: Full CI Success
     if: ${{ always() }}
@@ -926,6 +932,7 @@ jobs:
       - python-compatibility
       - engine-golden-regression
       - release-artifact-contract
+      - readme-commands
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -941,6 +948,7 @@ jobs:
           needs = json.loads(os.environ["NEEDS_JSON"])
           plan = json.loads(os.environ["PLAN_JSON"])
           component_outputs = {
+              "readme-commands": "readme_commands",
               "platform-wheels": "platform_wheels",
               "collector-data": "collector_data",
               "prediction-regression": "prediction_regression",

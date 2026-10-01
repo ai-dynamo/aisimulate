@@ -38,8 +38,11 @@ on `main` can describe features newer than the latest published wheel.
 ### Engine-only
 
 Install AISimulate by itself to use the built-in simulation engine without a
-Dynamo dependency:
+Dynamo dependency. Use a fresh virtual environment for each installation profile.
+These commands install published releases; for the examples on `main`, use
+[Develop from source](#develop-from-source):
 
+<!-- readme-check: release-install -->
 ```bash
 python3 -m pip install aisimulate
 aisimulate --help
@@ -47,54 +50,37 @@ aisimulate --help
 
 ### With Dynamo
 
-Install compatible AISimulate and Dynamo releases to enable the `dynamo`
-runner and Dynamo-owned configuration adapters:
+The examples below require the modern Dynamo adapters. Published Dynamo 1.5.0
+uses removed AISimulate imports, and 1.4.2 does not register the `dynamo` stack.
+Use this pinned Linux/Python 3.12 nightly pair in a **separate environment**:
 
+<!-- readme-check: dynamo-install -->
 ```bash
-python3 -m pip install aisimulate ai-dynamo
+python3 -m pip install --extra-index-url https://pypi.nvidia.com \
+  "aisimulate==0.13.0.dev202609270000000058" "ai-dynamo==1.6.0.dev20260930"
+python3 -m pip check
 aisimulate predict --help
 ```
 
-AISimulate remains the CLI owner in both profiles. Select the integration at
-runtime with `--stack dynamo`; installing Dynamo does not add another
-simulation command.
+This pair exercises the nightly AISimulate wheel, not the current source checkout.
+The daily README workflow records installed versions and runs both Dynamo
+prediction and recommendation; `--help` alone does not validate the adapters.
+Do not upgrade AISimulate independently of Dynamo's declared dependency.
 
-**Planner needs additional dependencies.** The two-package installation above
-supports basic Dynamo prediction, but does not install the complete Planner
-environment. Before using a top-level `planner` section, install Dynamo's
-`container/deps/requirements.planner.txt` from the same release tag or commit
-as your Dynamo wheels. For example, after installing the Dynamo 1.5.0 RC9
-artifacts and their compatible AISimulate wheel:
-
-```bash
-# Example for Dynamo 1.5.0 RC9; change this to your installed build's revision.
-DYNAMO_REF=ffd7c1a90eb403c0d43911690c5c9b8457acd826
-python3 -m pip install "grpcio-tools<=1.76.0" -r \
-  "https://raw.githubusercontent.com/ai-dynamo/dynamo/${DYNAMO_REF}/container/deps/requirements.planner.txt"
-python3 -m pip check
-```
-
-The `grpcio-tools` cap matches RC9's
-[common requirements](https://github.com/ai-dynamo/dynamo/blob/ffd7c1a90eb403c0d43911690c5c9b8457acd826/container/deps/requirements.common.txt).
-It keeps the tooling compatible with Planner's `protobuf==6.33.6` pin.
-When selecting another Dynamo revision, check its common requirements and
-update this cap together with `DYNAMO_REF`.
-
-For release candidates, use the exact release artifacts; a package version
-alone may not identify the RC build. Alternatively, use the matching
-`dynamo-planner` image, which includes the Planner prerequisites. See the
-[Planner installation example](docs/cli/examples/dynamo-planner/README.md)
-for a complete CPU-only prediction that loads Planner. `predict --help`
-does not verify that optional adapters can load.
+**Planner needs additional dependencies.** Install the requirements from the
+same Dynamo revision as the wheels before using a top-level `planner` section.
+See the [Planner installation example](docs/cli/examples/dynamo-planner/README.md).
+The root README examples use the replay adapter without Planner.
 
 ### Upgrade from standalone AIConfigurator
 
-Remove the former standalone distributions first so that only AISimulate owns
-the installed package files and legacy command:
+In an engine-only environment, remove the former distributions before upgrading:
 
+<!-- readme-check: release-upgrade -->
 ```bash
 python3 -m pip uninstall -y aiconfigurator aiconfigurator-core
 python3 -m pip install --upgrade aisimulate
+python3 -m pip check
 ```
 
 ## Predict one deployment
@@ -102,6 +88,7 @@ python3 -m pip install --upgrade aisimulate
 `predict` evaluates one pinned deployment configuration. Save this example as
 `prediction.yaml`:
 
+<!-- readme-check: prediction-config -->
 ```yaml
 engine:
   mode: aggregated
@@ -114,6 +101,7 @@ engine:
 
 ### Engine-only prediction
 
+<!-- readme-check: engine-predict -->
 ```bash
 aisimulate predict \
   --stack engine \
@@ -123,6 +111,7 @@ aisimulate predict \
 
 ### Dynamo-integrated prediction
 
+<!-- readme-check: dynamo-predict -->
 ```bash
 aisimulate predict \
   --stack dynamo \
@@ -144,6 +133,7 @@ KV cache warmup, and commands for running and inspecting the simulation.
 `recommend` searches the prediction schema plus search domains and an
 optimization goal. Save this example as `recommendation.yaml`:
 
+<!-- readme-check: recommendation-config -->
 ```yaml
 engine:
   mode: aggregated
@@ -159,10 +149,17 @@ optimization:
   hardware: h200_sxm
   constraints:
     max_candidate_gpus: 8
+
+optimizer:
+  max_trials: 8
 ```
+
+This quickstart limits the search to eight trials. Remove `optimizer.max_trials`
+for the default 320-trial search, which can take substantially longer.
 
 ### Engine-only recommendation
 
+<!-- readme-check: engine-recommend -->
 ```bash
 aisimulate recommend \
   --stack engine \
@@ -172,6 +169,7 @@ aisimulate recommend \
 
 ### Dynamo-integrated recommendation
 
+<!-- readme-check: dynamo-recommend -->
 ```bash
 aisimulate recommend \
   --stack dynamo \
@@ -183,10 +181,21 @@ Each file under `<output-dir>/recommendations/` is a fully materialized,
 concrete configuration. It contains no search domains and can be passed
 directly back to `predict`:
 
+<!-- readme-check: engine-roundtrip -->
 ```bash
 aisimulate predict \
   --config ./aisimulate-recommendation/recommendations/0001.yaml \
   --output-dir ./aisimulate-best-prediction
+```
+
+For the Dynamo result, use the same stack on the round trip:
+
+<!-- readme-check: dynamo-roundtrip -->
+```bash
+aisimulate predict \
+  --stack dynamo \
+  --config ./aisimulate-dynamo-recommendation/recommendations/0001.yaml \
+  --output-dir ./aisimulate-dynamo-best-prediction
 ```
 
 Both commands support `--set PATH=YAML_VALUE`, `--output-dir`, `--overwrite`,
@@ -201,6 +210,7 @@ workflows that have not yet moved to the unified CLI. AISimulate 0.13.0 keeps
 this compatibility surface, while new prediction and search integrations
 should start with `aisimulate predict` and `aisimulate recommend`.
 
+<!-- readme-check: legacy-cli -->
 ```bash
 # Check whether a model/system combination is supported.
 aiconfigurator cli support \
@@ -313,8 +323,10 @@ disaggregated workflows by model, system, backend, and backend version:
 - [AIC support-matrix data](python/aisimulate/src/aisimulate_core/systems/support_matrix/)
 - [Curated model roster](python/aisimulate/docs/support-matrix/model-roster.md)
 
-Check one exact cell from the installed package with:
+Check one exact cell from the installed package with (this cell currently reports
+`NO`; exit status zero means the support query completed, not that it is supported):
 
+<!-- readme-check: support-negative -->
 ```bash
 aiconfigurator cli support \
   --model-path Qwen/Qwen3-32B-FP8 \
@@ -371,14 +383,26 @@ the complete packaging contract.
 
 ## Develop from source
 
+Install Python 3.12, `uv`, Rust/Cargo, and a C/C++ compiler first. From an empty
+working directory (set `AISIMULATE_REF` to an exact commit for reproducibility):
+
+<!-- readme-check: source-install -->
 ```bash
 git clone https://github.com/ai-dynamo/aisimulate.git
 cd aisimulate
+git checkout "${AISIMULATE_REF:-main}"
 
-uv venv .venv
+uv venv --python 3.12 --seed .venv
 source .venv/bin/activate
 uv pip install -e ./python/aisimulate
+python -m pip check
 ```
+
+After pulling native Rust changes, rebuild the editable installation with
+`uv pip install --reinstall-package aisimulate -e ./python/aisimulate`.
+A missing `_runtime` attribute such as `SglangPrefillAttentionSequence` usually
+means the Python source and compiled extension are from different revisions.
+Run the command in the environment that owns your `aiconfigurator` executable.
 
 Current performance profiles are checked-in Parquet files, so normal builds
 and usage do not require Git LFS. Install Git LFS and run `git lfs pull` only
@@ -400,12 +424,40 @@ that were measured. It is not a universal support or deployment-certification
 claim. Forward-pass accuracy and strict-native estimator coverage remain
 separate evidence lanes.
 
-For a quick local validation subset:
+For complete local validation, start in the repository root with the source
+virtual environment active. Keep this environment engine-only; Dynamo's pytest
+plugins and optional modules can interfere with isolated package tests.
 
+<!-- readme-check: test-install -->
+```bash
+uv pip install -e './python/aisimulate[dev]' 'maturin>=1.12,<2' 'pip-licenses==5.5.5'
+uv pip install -r scripts/fpm_accuracy/requirements.txt
+python -m pip check
+git fetch origin d066e918705b98e2d55eed55743ce8d225f129ea
+```
+
+These tests need network access for model metadata. Use valid Hugging Face
+credentials, or anonymous access to public models. The per-process Git settings
+below disable signing only for temporary test repositories. On macOS, append
+`-p no:timeout` to pytest to avoid SIGALRM crash dialogs.
+
+<!-- readme-check: rust-tests -->
 ```bash
 cargo test --workspace
-python -m pytest -c pytest.ini tests
-python -m pytest -c python/aisimulate/pytest.ini python/aisimulate/tests -m "unit or build"
+```
+
+<!-- readme-check: root-tests -->
+```bash
+GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=commit.gpgsign GIT_CONFIG_VALUE_0=false \
+  PYTHONPATH="$PWD/python/aisimulate/src${PYTHONPATH:+:$PYTHONPATH}" \
+  python -m pytest -c pytest.ini tests
+```
+
+<!-- readme-check: package-tests -->
+```bash
+(cd python/aisimulate && \
+  GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=commit.gpgsign GIT_CONFIG_VALUE_0=false \
+  python -m pytest -c pytest.ini tests -m "unit or build")
 ```
 
 See the [CI guide](docs/ci.md) for the Fast/Full/Nightly hierarchy, code review,

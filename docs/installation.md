@@ -132,20 +132,25 @@ The [artifact contract](artifact-contract.md) describes wheel/crate versioning.
 
 The engine stack does not require Dynamo. For `--stack dynamo`, install a
 Dynamo distribution that supplies the required runner and adapters into the
-same environment. The verified **source** pairing on September 14, 2026 is:
+same environment. The root [README](../README.md#with-dynamo) pins the pair
+validated on October 1, 2026: `ai-dynamo==1.6.0.dev20260930` and
+`aisimulate==0.13.0.dev202609270000000058`, from the NVIDIA prerelease index.
+Installation, `pip check`, CPU prediction, an eight-trial recommendation, and
+prediction of the best candidate pass with Python 3.12 on Linux.
 
-| Dynamo source | Declared AISimulate dependency | Integration registration |
-|---|---|---|
-| [`cf944aebb23aafd758ffa2c3fa0ecfdd8804926b`](https://github.com/ai-dynamo/dynamo/blob/cf944aebb23aafd758ffa2c3fa0ecfdd8804926b/pyproject.toml), manifest version `1.5.0` | `aisimulate==0.12.0.dev1` on Python 3.11–3.13 | `aisimulate.runner_factories`, `aisimulate.config_adapters`, and `aisimulate.sweep_config_providers` |
+The AISimulate wheel corresponds to source
+[`9f140b71b75e43147e88ac76a8c72371077c2bee`](https://github.com/ai-dynamo/aisimulate/commit/9f140b71b75e43147e88ac76a8c72371077c2bee)
+and [nightly run 36305697606](https://github.com/ai-dynamo/aisimulate/actions/runs/36305697606).
+Dynamo's September 30 build source is
+[`777977d5ee0e70128c3dbe83c27fd22a74120874`](https://github.com/ai-dynamo/dynamo/commit/777977d5ee0e70128c3dbe83c27fd22a74120874).
+This is a README simulation qualification, not a claim that Dynamo's entire
+nightly pipeline passed. The daily README lane retests the installed artifacts.
 
-This source manifest does not establish a published or runtime-qualified
-package pair. At that date, PyPI's latest `ai-dynamo` release is `1.4.2`, and
-`1.5.0` is not published there. For source integration, follow the build and
-integration instructions at the matching Dynamo revision; for published
-packages, check the selected wheel's dependency and entry-point metadata.
-Do not assume an unpinned `pip install ai-dynamo` contains the source pairing
-above. Record both package versions and source/build identities; successful
-dependency installation alone does not establish adapter compatibility.
+Keep this environment separate from a current AISimulate source checkout.
+Dynamo pins an exact AISimulate nightly; substituting TOT violates that package
+contract. Public Dynamo 1.4.2 lacks the modern stack registration, and 1.5.0 uses
+removed AISimulate imports when forced alongside TOT. Do not bypass dependency
+resolution with `--no-deps` or independently upgrade AISimulate in this pair.
 
 The [Dynamo deployment guide](../python/aisimulate/docs/dynamo_deployment_guide.md)
 separately explains generated serving artifacts and runtime version pins.

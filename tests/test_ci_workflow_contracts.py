@@ -1885,12 +1885,13 @@ def test_full_ci_selector_skips_heavy_jobs_for_documentation() -> None:
     plan = select_components(["README.md", "docs/architecture.md"])
 
     assert plan["run_all"] is False
-    assert not any(plan["components"].values())
+    assert {name for name, value in plan["components"].items() if value} == {"readme_commands"}
 
 
 def test_full_ci_selector_maps_python_rust_and_data_boundaries() -> None:
     python_plan = select_components(["python/aisimulate/src/aisimulate/traffic.py"])
     assert {component for component, selected in python_plan["components"].items() if selected} == {
+        "readme_commands",
         "platform_wheels",
         "application_wheel",
         "application_tests",

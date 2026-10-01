@@ -1,0 +1,41 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: Daily README report
+on:
+  workflow_run:
+    workflows: [Daily README validation]
+    types: [completed]
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: readme-report
+  cancel-in-progress: false
+jobs:
+  report:
+    if: >-
+      github.repository == 'ai-dynamo/aisimulate' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      (github.event.workflow_run.event == 'schedule' || github.event.workflow_run.event == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # Execute only trusted default-branch code, never the producer's checkout.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: main
+          persist-credentials: false
+      - name: Compose and deliver failure/recovery event
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PRODUCER_RUN_ID: ${{ github.event.workflow_run.id }}
+          SLACK_README_ENABLED: ${{ vars.SLACK_README_ENABLED }}
+          SLACK_README_WEBHOOK_URL: ${{ secrets.SLACK_README_WEBHOOK_URL }}
+        run: python3 scripts/readme_report.py --run-id "$PRODUCER_RUN_ID"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: readme-report-state
+          path: readme-report/
+          retention-days: 90
+          if-no-files-found: error

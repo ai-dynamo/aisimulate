@@ -757,3 +757,58 @@ on CPU. Branch results remain in Actions artifacts for 90 days. Pages validates
 and publishes successful branch results independently; failed refreshes retain
 the prior qualified result. Accuracy is advisory, outside PR prediction campaigns
 and release staging gates. See [FPM details](../pages/fpm-accuracy/README.md).
+
+## README command guardrails
+
+`Full CI Success` includes the root README's source examples and pinned Dynamo
+nightly examples when README, Python, Rust, or CI changes. Fast CI is unchanged.
+The Dynamo lane tests the exact published nightly pair in README; it does not
+substitute current source under Dynamo's exact AISimulate dependency pin.
+
+`Daily README validation` runs at 17:17 America/Los_Angeles and supports manual
+runs from main. Every run executes fresh Linux installation profiles, all root
+README examples, the complete documented Rust/Python suites, and a macOS ARM64
+source smoke run. It does not reuse prior Full CI results or skip unchanged SHAs.
+
+`scripts/check_readme_commands.py` reads executable text from README. Every Bash
+and YAML fence needs a unique `readme-check` comment and an entry in
+`scripts/readme_commands.json`. The manifest supplies profiles, dependencies,
+timeouts, and output assertions; it contains no copied commands. Add new blocks
+to both files. Prediction must complete requests, recommendations must contain
+concrete candidates, and the best candidate must predict successfully.
+
+Each lane uploads `readme-<profile>` with per-block logs, timings, source SHA,
+installed versions, and `report.json`. A timeout, missing prerequisite, canceled
+run, or missing report fails qualification. Shell failures stop their block;
+dependent blocks become blocked while independent checks continue. The runner
+kills descendants, including workers that created separate sessions.
+
+### Slack workflow setup
+
+Delivery is disabled by default. Create a webhook-triggered Slack workflow for
+`#swdl-dynamo-aisim-daily`, then configure repository secret
+`SLACK_README_WEBHOOK_URL` and variable `SLACK_README_ENABLED=true`.
+The webhook accepts four string fields: `event`, `incident_id`, `message`, and
+`details`. It must acknowledge receipt with JSON `{"ok": true}`.
+
+- `failure`: post `message` as a root message and `details` as its thread reply.
+  Persist the resulting channel and message timestamp under `incident_id`.
+- `update`: resolve the same incident and reply with the changed failures.
+- `recovery`: resolve the same incident and reply with the successful run link.
+- Deduplicate repeated deliveries of the same event payload. Do not blindly
+  retry a failed HTTP delivery: a lost acknowledgement may already have posted.
+
+**Cross-run storage is required.** A basic webhook that always creates a new
+message cannot provide recovery replies. Configure the incident lookup in your
+Slack workflow before enabling delivery; otherwise use a bot integration that
+returns message timestamps. The repository sends an incident ID, not a Slack
+message timestamp, and cannot perform that lookup on behalf of a plain webhook.
+
+The separate `Daily README report` workflow executes trusted main-branch code
+with read-only GitHub permissions. It reads evidence rather than executing
+producer artifacts. Healthy runs are quiet; unchanged failures are suppressed.
+Recovery is emitted only after all profiles and full suites pass in a later
+complete daily/manual run. A PR merge, partial run, or canceled run cannot recover
+an incident. Preview payloads and the delivery ledger are saved in
+`readme-report-state` for 90 days. After ledger expiry, the next failure opens a
+new incident; recovery cannot reference an expired incident automatically.
