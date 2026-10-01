@@ -716,7 +716,10 @@ def _derive_csa_context_pool_cap(
     if not chunk_eligible_shapes:
         raise RuntimeError(f"DSV4 CSA context pool derivation has no shape within effective_chunk={effective_chunk}")
 
-    profiled_bytes = int(model_runner._profile_available_bytes(model_runner.pre_model_load_memory))
+    # sglang>=0.5.21 moved the pool profiling off ModelRunner onto the KV-cache configurator
+    # (mem_cache/kv_cache_configurator.py:2177 _profile_available_bytes); same arithmetic.
+    _profile = getattr(model_runner, "_profile_available_bytes", None) or configurator._profile_available_bytes
+    profiled_bytes = int(_profile(model_runner.pre_model_load_memory))
     profiled_config = configurator.calculate_pool_sizes(profiled_bytes, page_size)
     compress_ratio = ATTN_KIND_TO_COMPRESS_RATIO["csa"]
     if page_size % compress_ratio != 0:

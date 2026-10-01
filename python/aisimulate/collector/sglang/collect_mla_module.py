@@ -220,7 +220,7 @@ def _generation_cuda_graph_enabled_for_tokens(model_runner, num_tokens: int) -> 
     that coverage using sglang's own settings -- no AIC env override -- so the
     decode benchmark uses graph timing exactly where serve would.
     """
-    decode_config = model_runner.resolved_arg(server_args, "cuda_graph_config").decode
+    decode_config = resolved_arg(model_runner.server_args, "cuda_graph_config").decode
     if decode_config.backend == "disabled":
         return False
     capture_bs = decode_config.bs

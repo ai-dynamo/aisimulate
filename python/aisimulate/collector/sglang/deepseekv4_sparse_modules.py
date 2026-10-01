@@ -604,9 +604,13 @@ def _bench_flash_mla_sparse(
     extra_indices = _expand_indices(extra_K, batch_size, M_per_req, device)
     extra_topk_lengths = torch.full((batch_size,), K_per_query, dtype=torch.int32, device=device)
 
-    import inspect as _inspect
+    try:  # the "newer FlashMLA Python API" (sgl_kernel >= the 0.5.21 image) exposes FlashMLASchedMeta
+        from sgl_kernel.flash_mla import FlashMLASchedMeta as _SchedMeta  # noqa: F401
 
-    if not _inspect.signature(get_mla_metadata).parameters:
+        _new_sched_api = True
+    except ImportError:
+        _new_sched_api = False
+    if _new_sched_api:
         # sglang>=0.5.21 (sgl_kernel FlashMLA "newer Python API"): serving creates an
         # empty FlashMLASchedMeta via get_mla_metadata()[0] and hands it to
         # flash_mla_with_kvcache as tile_scheduler_metadata, which schedules itself

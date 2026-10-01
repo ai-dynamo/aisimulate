@@ -146,7 +146,13 @@ def _patched_model_dir(model_id: str) -> str:
     # Match collect_dsv4_attn.py: current Transformers does not know a
     # native deepseek_v4 config, while SGLang selects the V4 model class from
     # the architectures field.
-    config["model_type"] = "deepseek_v3"
+    try:
+        # sglang>=0.5.21: native DeepseekV4Config (V4-only fields such as hc_pre_from_prev_sublayer)
+        import sglang.srt.configs.deepseek_v4  # noqa: F401
+
+        config["model_type"] = "deepseek_v4"
+    except ImportError:
+        config["model_type"] = "deepseek_v3"
 
     tmp_dir = os.path.join(
         tempfile.gettempdir(),

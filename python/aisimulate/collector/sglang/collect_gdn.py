@@ -244,9 +244,12 @@ def run_gdn_context_benchmark(
                 # DSA-FUSED-KS-4G-OFFSET row. Raise instead of launching the
                 # corrupting kernel: the async illegal access otherwise poisons
                 # the CUDA context and aborts every remaining sweep cell.
-                from collector.sglang.runtime_compat import causal_conv1d_uses_int64_offsets
-
-                if total_tokens * conv_channels >= 2**31 and not causal_conv1d_uses_int64_offsets():
+                # NOT relaxed for sglang 0.5.21: its causal_conv1d_triton casts the sequence
+                # offsets to tl.int64 (:95,:185), yet the >=2**31 cells still fault with
+                # cudaErrorIllegalAddress on H20 (0.5.21 smoke 2026-10-01, facts/upgrade_rc29/
+                # sgl_smoke_r6) — silicon evidence keeps the guard; the int32 arithmetic is
+                # elsewhere in the kernel's per-block view strides.
+                if total_tokens * conv_channels >= 2**31:
                     raise ValueError(
                         "SGLang 0.5.14 causal_conv1d Triton kernel int32 token-offset overflow: "
                         f"total_tokens={total_tokens} * conv_channels={conv_channels} >= 2**31 "
