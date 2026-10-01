@@ -18,6 +18,10 @@ The [container source bundle](container/README.md) includes the Dockerfile,
 144 hashed dependency wheels' metadata, build provenance and validation evidence.
 It runs on CPUs with `JAX_ENABLE_X64=true`; no physical GPU is needed.
 
+The [2026-10-01 result snapshot](results/2026-10-01/README.md) contains completed
+Static and Planner results, fresh validation, timing/serving figures, and the
+still-running Router study's progress. Numerical runtime pins remain unchanged.
+
 | Experiment | Configuration | Search scope |
 |---|---|---|
 | 1. Static engine | [01-static.yaml](01-static.yaml) | Aggregated/disaggregated engine mapping and scheduler; round-robin placement, no Planner |
