@@ -5,8 +5,8 @@ _meta:
   verdicts: pass = plain `cli generate` output boots+runs; pass+custom = boots with facts-derived extra generate args; fail = root-caused (see results/findings.yaml)
   summary:
     pass: 99
-    pass+custom: 3
-    fail: 22
+    pass+custom: 4
+    fail: 21
 results:
   MiniMaxAI/MiniMax-M2:
     verdict: pass
@@ -30,9 +30,13 @@ results:
     kv_allocated: auto
     topology: tp1
   MiniMaxAI/MiniMax-M3:
-    verdict: fail
-    cause: framework gap
-    error: 'AssertionError: Mixed chunk prefill requires the breakable prefill CUDA graph backend; got ''tc_piecewise''.'
+    verdict: pass+custom
+    extra_args: --generator-set params.agg.cuda_graph_backend_prefill=breakable
+    evidence: current
+    attention: MiniMaxHybridAttnBackend
+    moe: UnquantizedFusedMoE->triton_fused_moe
+    kv_allocated: auto
+    topology: tp1
   MiniMaxAI/MiniMax-M3-MXFP8:
     verdict: fail
     cause: platform floor (needs Blackwell)

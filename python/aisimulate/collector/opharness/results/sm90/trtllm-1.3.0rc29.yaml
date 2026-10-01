@@ -32,11 +32,12 @@ results:
   MiniMaxAI/MiniMax-M3:
     verdict: fail
     cause: framework gap
-    error: '  algorithm: minimax_m3'
+    error: 'ValueError: MiniMaxM3SparseRuntimeBackend.forward requires k, v, k_cache, v_cache, idx_k_cache, and out_cache_loc to be supplied alongside idx_q / idx_k / m3_metadata.'
   MiniMaxAI/MiniMax-M3-MXFP8:
     verdict: fail
     cause: framework gap
-    error: '  algorithm: minimax_m3'
+    error: 'ValueError: no MoE implementation can serve this layer. MoE resolution: none (via failed, requested CUTLASS, env 10b662634587b455); turned down: CutlassFusedMoE=sm_unsupported Each candidate''s
+      reason:'
   Qwen/Qwen1.5-MoE-A2.7B:
     verdict: pass
     evidence: current
@@ -512,7 +513,8 @@ results:
   nvidia/MiniMax-M3-NVFP4:
     verdict: fail
     cause: framework gap
-    error: '  algorithm: minimax_m3'
+    error: 'ValueError: no MoE implementation can serve this layer. MoE resolution: none (via failed, requested CUTLASS, env 10b662634587b455); turned down: CutlassFusedMoE=sm_unsupported Each candidate''s
+      reason:'
   nvidia/Muse-Glimmer-30B-NVFP4:
     verdict: fail
     cause: framework gap

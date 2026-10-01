@@ -1,5 +1,5 @@
 {
- "verdict": "invalid-capture",
+ "verdict": "diverged",
  "repo": "deepseek-ai/DeepSeek-V3",
  "framework": "trtllm",
  "version": "1.3.0rc29",
@@ -13,9 +13,9 @@
  "kv_dtype": "auto",
  "op_hint": "moe|expert|grouped|fused_moe|deepgemm|topk|routing|cutlass",
  "capture_file": "facts/pathdiff/opcov_trt_moe_fp8block@1.3.0rc29.json",
- "capture_sha256": "a3f4a195fc2830c6",
+ "capture_sha256": "03e1ce1a8f8af243",
  "capture_env": null,
- "capture_run_error": "ValueError: no MoE implementation can serve this layer. MoE resolution: none (via failed, requested cutlass, env 10b662634587b455); turned down: CutlassFusedMoE=dtype_unsupported Each candidate's reason: CutlassFusedMoE: dtype_unsupported (CutlassFusedMoE FP8_BLOCK_SCALES requires torch.bfloat16, got torch.float8_e4m3fn)",
+ "capture_run_error": null,
  "serving_record": {
   "id": "c20f9e200c18",
   "tp": 1,
@@ -27,7 +27,11 @@
   "exec_fingerprint": "4463260e6443",
   "evidence_status": "current"
  },
- "collector_backends": [],
+ "collector_backends": [
+  "deepgemm",
+  "torch",
+  "trtllm_internal"
+ ],
  "serving_backends": [
   "cublas",
   "cutlass",
@@ -38,8 +42,24 @@
  ],
  "missing_roles": [],
  "aux_collector_only_roles": [],
- "role_counts": {},
+ "role_counts": {
+  "routing": {
+   "collector": 1,
+   "serving": 2,
+   "matched": 0
+  }
+ },
  "collector_only_signal": [],
- "kernel_drift": null,
+ "kernel_drift": {
+  "routing": {
+   "collector_only_kernels": [
+    "tensorrt_llm::_v1::kernels::customMoeRoutingKernel"
+   ],
+   "serving_kernels": [
+    "tensorrt_llm::_v1::kernels::deepseek_v3_topk_kernel",
+    "tensorrt_llm::_v1::kernels::dsv3MinLatencyKernels::router_gemm_kernel"
+   ]
+  }
+ },
  "evidence": "archive/evidence/pathdiff/<framework-version>/<gate>.json in the probe workspace (full kernel lists)"
 }

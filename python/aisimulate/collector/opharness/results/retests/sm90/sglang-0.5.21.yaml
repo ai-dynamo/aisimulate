@@ -9,3 +9,8 @@ deepseek-ai/DeepSeek-V4.1-Flash: dropped  # bare default loads; identity CHANGES
 nvidia/DeepSeek-V4.1-Flash-NVFP4: still_needed  # bare default fails: ValueError: Current platform does not support NVFP4 quantization with the selected MoE backend. Please use Bla (raw retest_bare_sgl_6504450d80a2)
 deepseek-ai/DeepSeek-V4-Flash: dropped  # bare default loads; identity CHANGES: runner=auto selects FLASHINFER_MXFP4 (trtllm cutlass MoE kernels) instead of marlin_moe — targets.yaml customization removed, cells re-probed bare (raw retest_bare_sgl_e258699b5333)
 deepseek-ai/DeepSeek-V4-Pro: dropped  # bare default loads; identity CHANGES: runner=auto selects FLASHINFER_MXFP4 (trtllm cutlass MoE kernels) instead of marlin_moe — targets.yaml customization removed, cells re-probed bare (raw retest_bare_sgl_baa50c917d53)
+# Added 2026-10-01 after the upgrade: M3 prefill cuda-graph backend (params.agg.cuda_graph_backend_prefill=breakable).
+# Bare evidence = the first 0.5.21 wave itself (archive/raw, "Mixed chunk prefill requires the breakable prefill CUDA graph backend").
+MiniMaxAI/MiniMax-M3: still_needed  # bare default fails the breakable-prefill assert (prefill_cuda_graph_runner.py:293); customized run passes (MiniMaxHybridAttnBackend)
+MiniMaxAI/MiniMax-M3-MXFP8: still_needed  # both fail earlier: mxfp8 needs capability 100 (SM90 floor)
+nvidia/MiniMax-M3-NVFP4: still_needed  # both fail earlier: deep_gemm "Unknown SF transformation" (layout.hpp:57)
