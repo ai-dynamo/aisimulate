@@ -2210,7 +2210,8 @@ def get_common_kda_test_cases() -> list[KdaCommonTestCase]:
 
     Structural shapes come exclusively from per-model ``model_case_values.kda``
     rows (one row per attention-TP shard of the model's head count). Phases:
-    context (chunked prefill kernels), generation (fused recurrent decode) and
+    context (chunked prefill kernels; the full batch x length sweep plus a
+    small-batch long-prefill sweep), generation (fused recurrent decode) and
     verify (speculative-decode target-verify at several draft-token widths).
     """
     test_cases: list[KdaCommonTestCase] = []
@@ -2235,6 +2236,20 @@ def get_common_kda_test_cases() -> list[KdaCommonTestCase]:
         kda_sweep.get("verify_draft_token_nums"),
         field_name="kda.verify_draft_token_nums",
     )
+    # Small-batch long-prefill extension (up to 131072 tokens per request);
+    # kept as a separate case so the long lengths never cross the full
+    # context batch sweep.
+    context_long_batch_sizes = _as_int_list(
+        kda_sweep.get("context_long_batch_sizes"),
+        field_name="kda.context_long_batch_sizes",
+    )
+    context_long_seq_lens = _as_int_list(
+        kda_sweep.get("context_long_sequence_lengths"),
+        field_name="kda.context_long_sequence_lengths",
+    )
+    overlap = sorted(set(context_long_seq_lens) & set(context_seq_lens))
+    if overlap:
+        raise ValueError(f"kda.context_long_sequence_lengths overlaps context_sequence_lengths: {overlap}")
 
     model_config_list = _model_case_values("kda")
 
@@ -2258,6 +2273,21 @@ def get_common_kda_test_cases() -> list[KdaCommonTestCase]:
                 head_v_dim=head_v_dim,
                 batch_size_list=context_batch_sizes,
                 seq_len_list=context_seq_lens,
+                model_name=model_name,
+            )
+        )
+
+        test_cases.append(
+            KdaCommonTestCase(
+                phase="context",
+                d_model=d_model,
+                d_conv=d_conv,
+                num_k_heads=num_k_heads,
+                head_k_dim=head_k_dim,
+                num_v_heads=num_v_heads,
+                head_v_dim=head_v_dim,
+                batch_size_list=context_long_batch_sizes,
+                seq_len_list=context_long_seq_lens,
                 model_name=model_name,
             )
         )
