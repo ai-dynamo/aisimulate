@@ -125,6 +125,12 @@ mappings:
   - {framework: sglang, kernel_source: sglang_sgl_kernel_bmm_fp8, backend: cublas, source: "PR#1342 collect_mla_bmm.py (sgl_kernel bmm_fp8 = cublasLt)"}
   - {framework: sglang, kernel_source: sglang_sgl_kernel_fp8_scaled_mm, backend: cutlass, source: "PR#1342 collect_gemm.py (sgl_kernel fp8_scaled_mm)"}
   - {framework: sglang, kernel_source: sglang_deepgemm_gemm_nt_f8f8bf16, backend: deepgemm, source: "PR#1342 collect_gemm.py"}
+  - {framework: sglang, kernel_source: sglang_triton_w8a8_block_fp8, backend: triton, source: "sglang/collect_gemm_0520.py (fp8_utils.py:1094-1107 @v0.5.20 N%64/K%128 fallback)"}
+  - {framework: sglang, kernel_source: sglang_triton_scaled_mm, backend: triton, source: "sglang/collect_gemm_0520.py (apply_fp8_linear triton_scaled_mm @v0.5.20)"}
+  - {framework: sglang, kernel_source: sglang_torch_scaled_mm, backend: torch, source: "sglang/collect_gemm_0520.py (Fp8ScaledMMOp TORCH backend, SM90 @v0.5.20)"}
+  - {framework: sglang, kernel_source: sglang_cutedsl_tgv_bf16, backend: cutlass, source: "sglang/collect_gemm_0520.py (CuTe DSL TGV bf16, cutedsl_bf16_gemm.py @v0.5.20)"}
+  - {framework: sglang, kernel_source: sglang_flashinfer_bf16_splitk, backend: flashinfer, source: "sglang/collect_gemm_0520.py (unquant.py split-K @v0.5.20)"}
+  - {framework: sglang, kernel_source: sglang_flashinfer_bf16_direct, backend: flashinfer, source: "sglang/collect_gemm_0520.py (unquant.py direct @v0.5.20)"}
   - {framework: sglang, kernel_source: sglang_flashinfer_cutlass_nvfp4, backend: flashinfer_cutlass, source: "PR#1342 collect_gemm.py (flashinfer mm_fp4 cutlass)"}
   # MoE labels name the constructed serving method + runner.
   - {framework: sglang, kernel_source: sglang_flashinfer_trtllm_moe, backend: flashinfer_trtllm_gen, source: "PR#1342 collect_moe.py"}
@@ -287,6 +293,7 @@ mappings:
   - {framework: vllm, kernel_source: vllm_compressedtensorsw4a4nvfp4moe_flashinfer_cutlass_flashinferexperts, backend: flashinfer_cutlass, source: "PR#1344 collect_moe.py"}
   - {framework: vllm, kernel_source: vllm_compressedtensorsw4a4nvfp4moe_flashinfer_trtllm_trtllmnvfp4expertsmodular, backend: flashinfer_trtllm_gen, source: "PR#1344 collect_moe.py"}
   - {framework: vllm, kernel_source: vllm_compressedtensorsw4a4nvfp4moe_flashinfer_trtllm_trtllmnvfp4expertsmonolithic, backend: flashinfer_trtllm_gen, source: "PR#1344 collect_moe.py"}
+  - {framework: vllm, kernel_source: vllm_modeloptnvfp4fusedmoe_flashinfer_trtllm_trtllmnvfp4expertsmonolithic, backend: flashinfer_trtllm_gen, source: "vllm/collect_moe.py GLM-5.3-Flash ModelOptNvFp4Config lane (trtllm_nvfp4_moe.py:486-508 @v0.30.0)"}
   - {framework: vllm, kernel_source: vllm_compressedtensorswna16marlinmoe_marlin_marlinexperts, backend: marlin, source: "PR#1344 collect_moe.py"}
   - {framework: vllm, kernel_source: vllm_gptossmxfp4moe_marlin_marlinexperts, backend: marlin, source: "PR#1344 collect_moe.py"}
   - {framework: vllm, kernel_source: vllm_gptossmxfp4moe_triton_oaitritonmxfp4expertsmonolithic, backend: triton_fused_moe, source: "PR#1344 collect_moe.py (OAI triton mxfp4 experts)"}

@@ -404,8 +404,10 @@ def test_vllm_sm90_repository_moe_getter_excludes_unconsumable_dsv4_cases(monkey
     # 42 phantom "fp8" cases (one per already-counted bf16/fp8_block case),
     # re-derived by running this exact getter before and after the fix, not
     # assumed.
-    assert len(cases) == 2190
-    assert sum(len(case[1]) for case in cases) == 59130
+    # +33 GLM-5.3-Flash fp8_block cases (288 experts/top-8/4096/2048, TP 1-32
+    # or EP 2-256; its nvfp4 row needs SM100 and is absent here).
+    assert len(cases) == 2223
+    assert sum(len(case[1]) for case in cases) == 60021
     # MiniMax-M3's declared MoE geometry must be present as its own rows —
     # a generator defect could drop it while unrelated cases preserve the
     # aggregate counts above. (case[:8] = moe_type, num_tokens, hidden,

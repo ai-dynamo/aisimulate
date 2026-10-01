@@ -516,6 +516,18 @@ def setup_sglang_distributed(world_size, rank, use_slurm):
     return sglang_mods, local_rank
 
 
+def _vllm_graph_pool():
+    """Serving's CUDA graph pool, registered with vLLM's NCCL allocator when present."""
+    try:
+        from vllm.distributed.device_communicators.pynccl_allocator import set_graph_pool_id
+        from vllm.platforms import current_platform
+    except ImportError:
+        return None
+    pool = current_platform.graph_pool_handle()
+    set_graph_pool_id(pool)
+    return pool
+
+
 def benchmark_vllm_allreduce(
     dtype: str,
     test_range: str,
@@ -556,6 +568,24 @@ def benchmark_vllm_allreduce(
             mode_str = "graph" if use_graph else "eager"
 
             if use_graph:
+                # Serving warms every captured shape eagerly before CUDA graph
+                # capture. vLLM 0.30.0 creates the FlashInfer all-reduce
+                # workspace lazily on the first eligible 2-D call
+                # (flashinfer_all_reduce.py:403-452 via cuda_communicator.py:
+                # 327-361); doing that inside capture fails with
+                # CUDA_ERROR_STREAM_CAPTURE_UNSUPPORTED. One eager call per
+                # shape reproduces serving's order; it changes when state is
+                # initialized, not which all-reduce implementation runs.
+                warm = torch.ones(input_shape, dtype=torch_dtype, device="cuda")
+                _ = vllm_mods["tensor_model_parallel_all_reduce"](warm)
+                torch.cuda.synchronize()
+                del warm
+                # Serving captures into the platform graph pool and publishes
+                # it to the NCCL symmetric-memory allocator first
+                # (compilation/cuda_graph.py:305-318 @v0.30.0); the symm-mem
+                # all-reduce asserts it under capture
+                # (pynccl_allocator.py:168-173). Older vLLM has no such hook.
+                graph_pool = _vllm_graph_pool()
                 # Graph capture mode
                 with vllm_mods["graph_capture"](device=torch.cuda.current_device()) as graph_capture_context:
                     # Create input tensors
@@ -567,7 +597,7 @@ def benchmark_vllm_allreduce(
                     torch.cuda.synchronize()
                     graph = torch.cuda.CUDAGraph()
 
-                    with torch.cuda.graph(graph, stream=graph_capture_context.stream):
+                    with torch.cuda.graph(graph, pool=graph_pool, stream=graph_capture_context.stream):
                         outputs = []
                         for inp in input_tensors:
                             out = vllm_mods["tensor_model_parallel_all_reduce"](inp)
@@ -755,9 +785,16 @@ def benchmark_sglang_allreduce(
         def __init__(self):
             self.enable_symm_mem = False
 
-    from sglang.srt.server_args import set_global_server_args_for_scheduler
+    from sglang.srt.server_args import ServerArgs, set_global_server_args_for_scheduler
 
-    set_global_server_args_for_scheduler(MockServerArgs())
+    if hasattr(ServerArgs, "resolve_once"):
+        # SGLang 0.5.20 publishes through runtime_context, which resolves the
+        # real ServerArgs (publish -> resolve_once); a bare mock is rejected.
+        # model_path="dummy" returns early from resolution
+        # (arg_groups/pipeline.py:121 @v0.5.20); enable_symm_mem stays False.
+        set_global_server_args_for_scheduler(ServerArgs(model_path="dummy", enable_symm_mem=False))
+    else:
+        set_global_server_args_for_scheduler(MockServerArgs())
 
     """Benchmark SGLang custom AllReduce implementation"""
     sglang_mods, local_rank = setup_sglang_distributed(world_size, rank, use_slurm)

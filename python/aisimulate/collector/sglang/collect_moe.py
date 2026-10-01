@@ -55,7 +55,40 @@ rank-local workload construction, quantized weight setup, and perf logging.
 # framework_manifest digest-pinned gate is the true version enforcement
 # upstream and only ever supplies exactly 0.5.14 or 0.5.17 in a sanctioned
 # run, so the leak is unreachable there.
-__compat__ = "sglang>=0.5.14,<=0.5.17,!=0.5.15,!=0.5.16"
+# 0.5.20 audit (2026-09-30; source tag v0.5.20 == 94602c9c2b7c vs v0.5.17,
+# runtime smoke on GB300 in the GLM-5.3-Flash W1 campaign). 0.5.18/0.5.19
+# were never verified and are carved out with != (same caveat as above).
+# Unchanged vs 0.5.17: ServerArgs/set_global_server_args_for_scheduler
+# (server_args.py:195,635; publish() now runs resolve_once(), which returns
+# early for model_path="dummy", arg_groups/pipeline.py:121); get_server_args
+# raises ValueError when unset (runtime_context.py:1031-1037); MoeFlags
+# override (runtime_context.py:489-507,532) read by get_moe_runner_backend
+# (layers/moe/utils.py:472-476); _B_DESC_CACHE (sglang/kernels/ops/moe/
+# fused_moe_triton_kernels.py); FusedMoE.__init__ kwargs (fused_moe_triton/
+# layer.py:302-330, swiglu_limit -> MoeRunnerConfig :436); TopK.__init__
+# (topk.py:518, BYPASSED for flashinfer_trtllm :655-658); get_parallel()
+# reads identical in the patched layer/dispatch/topk/fp8/modelopt modules.
+# GLM-5.3-Flash dispatch: Glm5NextMoE is DeepseekV2MoE (models/glm5_next.py:
+# 88): routing_method_type defaults to DeepSeekV3 and swiglu_limit comes from
+# the config (deepseek_v2.py:631-645); grouped noaux_tc TopK with
+# n_group=topk_group=1, sigmoid, correction bias, renormalize (:659-676).
+# SM100/103 runner: Glm5Next is in the DeepSeek-family override list
+# (arg_groups/overrides.py:806); with moe_runner_backend auto and
+# quantization fp8 (FP8 checkpoint) or modelopt_fp4 (the NVFP4 serving
+# launch passes --quantization modelopt_fp4) it resolves to
+# flashinfer_trtllm (:866-879), which disables shared-expert fusion
+# (:1586-1590) -> 288 experts / top-8 as collected. GLM NVFP4 serving
+# resolved-args dumps on this runtime record moe_runner_backend
+# 'flashinfer_trtllm'. swiglu_limit: FP8 -> per-expert gemm1_clamp_limit
+# (quantization/fp8.py:2310-2331 -> moe_runner/flashinfer_trtllm.py:885-888,
+# new at 0.5.20); NVFP4 -> gemm1_clamp_limit / g1_alphas
+# (modelopt_quant.py:2673-2686,3024,3044). The case rows carry it via
+# sglang_moe_swiglu_limit. Known gap, not fixed here (no GLM lane uses it):
+# since 0.5.17 the flashinfer_cutlass runner calls get_tp_group()
+# (moe_runner/flashinfer_cutlass.py:17,208-209), which the single-rank
+# parallel patch below does not replace, so flashinfer_cutlass lanes (the
+# SM120 nvfp4 map) are expected to fail until that module is added.
+__compat__ = "sglang>=0.5.14,<=0.5.20,!=0.5.15,!=0.5.16,!=0.5.18,!=0.5.19"
 
 import gc
 import importlib
@@ -63,12 +96,14 @@ import itertools
 import os
 import tempfile
 from contextlib import contextmanager
+
+# The SGLang 0.5.20 image ships setuptools without pkg_resources; the
+# stdlib reads the same installed distribution metadata.
+from importlib.metadata import version as _dist_version
 from pathlib import Path
 from types import SimpleNamespace
 from typing import TypedDict
 from unittest.mock import MagicMock
-
-import pkg_resources
 
 # Mock global server args before importing MOE modules (required by SGLang 0.5.5+)
 # The fused_moe_triton_config module now requires get_global_server_args() to be set
@@ -1254,7 +1289,7 @@ def _raise_if_unverified_moe_lane(moe_type: str) -> str:
     reject the unverified 0.5.15/0.5.16 series even though the module-level
     compatibility grammar cannot express a two-interval union.
     """
-    installed_version = pkg_resources.get_distribution("sglang").version
+    installed_version = _dist_version("sglang")
     if moe_type not in ("int4_wo", "w4a16_mxfp4", "w4a8_mxfp4_mxfp8"):
         return installed_version
     verified = any(

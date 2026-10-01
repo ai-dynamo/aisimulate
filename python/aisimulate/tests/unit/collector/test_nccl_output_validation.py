@@ -68,6 +68,7 @@ def test_nccl_failure_always_stops_sampling_and_preserves_process_error(cleanup_
 
     namespace = {
         "torch": SimpleNamespace(cuda=SimpleNamespace(nccl=SimpleNamespace(version=lambda: (2, 28, 9)))),
+        "runtime_nccl_version": lambda: "2.28.9",
         "PowerMonitor": Monitor,
         "subprocess": SimpleNamespace(run=run),
         "os": os,
@@ -78,3 +79,36 @@ def test_nccl_failure_always_stops_sampling_and_preserves_process_error(cleanup_
         namespace[fn.name]("half", test_range="512,1024,2", measure_power=True)
     assert result.value is failure
     assert calls == ["start", "stop"]
+
+
+def _runtime_version_fn(cdll, torch_version=(2, 29, 7)):
+    from types import SimpleNamespace
+
+    source = Path(__file__).resolve().parents[3] / "collector/network/collect_nccl.py"
+    tree = ast.parse(source.read_text())
+    fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "runtime_nccl_version")
+    namespace = {"torch": SimpleNamespace(cuda=SimpleNamespace(nccl=SimpleNamespace(version=lambda: torch_version)))}
+    exec(compile(ast.Module(body=[fn], type_ignores=[]), str(source), "exec"), namespace)
+    return namespace[fn.name]
+
+
+def test_runtime_nccl_version_prefers_the_loaded_shared_library(monkeypatch):
+    import ctypes
+
+    class Library:
+        def ncclGetVersion(self, pointer):  # noqa: N802 - NCCL C symbol
+            pointer._obj.value = 23007
+            return 0
+
+    monkeypatch.setattr(ctypes, "CDLL", lambda _name: Library())
+    assert _runtime_version_fn(ctypes.CDLL)() == "2.30.7"
+
+
+def test_runtime_nccl_version_falls_back_to_torch(monkeypatch):
+    import ctypes
+
+    def missing(_name):
+        raise OSError("no libnccl")
+
+    monkeypatch.setattr(ctypes, "CDLL", missing)
+    assert _runtime_version_fn(ctypes.CDLL)() == "2.29.7"

@@ -1,0 +1,154 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+schema_version: 1
+architecture: Glm5NextForConditionalGeneration
+model_path: zai-org/GLM-5.3-Flash
+model_paths:
+  - zai-org/GLM-5.3-Flash
+  - nvidia/GLM-5.3-Flash-NVFP4
+include_base: true
+base_ops:
+  - gemm
+description: >
+  GLM-5.3-Flash standalone per-op collection plan (text AR only). 45 layers
+  = 34 KDA linear attention + 11 NoPE sparse-MLA/IndexPool attention
+  (layers 3,7,...,43); layers 0-2 dense MLP (intermediate 12288), 42 MoE
+  layers (288 routed experts, top-8, moe_intermediate 2048, one shared
+  expert, sigmoid noaux_tc, n_group 1, routed scale 2.5, swiglu clamp 10,
+  FP32 router); hidden 4096, vocab 154880; mHC hc_mult 4. Serving topology
+  is pure TP in {2, 4} (TP1 optional), EP=PP=CP=DP=1, FP8 KV cache.
+  Checkpoints: zai-org/GLM-5.3-Flash (FP8 e4m3 128x128 block for dense MLP,
+  shared + routed experts and MLA q_a/q_b/kv_a/o; BF16 elsewhere) and
+  nvidia/GLM-5.3-Flash-NVFP4 (NVFP4 routed experts + dense MLP; everything
+  else, including the shared expert, BF16). Runtimes are model-pinned in
+  framework_manifest.yaml (vLLM 0.30.0 + glm53tail overlay, SGLang 0.5.20).
+  Generic ops land in the generic tables (gemm_perf, moe_perf, kda_perf,
+  mhc_module_perf, comm); only the GLM attention layer gets a GLM-specific
+  module table (DeepSeek-V4.1 precedent).
+
+model_case_values:
+  # Shape-only GEMM widths below the shared feature grid. The generator
+  # crosses output_feature_sizes x input_feature_sizes of one row with the
+  # base token sweep, so rows keep (n, k) correlated. Every other GLM GEMM
+  # (dense/shared/MLA/KDA-o projections at TP1/2/4: n or k in
+  # {512, 1024, 1536, 2048, 3072, 4096, 6144, 8192, 12288, 16384}) is already
+  # on the base grid pulled in by base_ops: [gemm]. gemm_perf has no model
+  # column, so both checkpoints share one physical case (model_aliases).
+  gemm:
+    # hidden(4096)-input projections with off-grid output widths, per rank:
+    #   KDA fused q/k/v/b/f_a/g_a in-proj 3*8192/tp + 64/tp + 2*128:
+    #     24896 (tp1), 12576 (tp2), 6416 (tp4)
+    #   KDA b_proj 64/tp: 32 (tp2), 16 (tp4) (SGLang unfused path)
+    #   indexer wk (128) + weights_proj (32 heads) fused as SGLang's
+    #     wk_weights_proj: 160 (replicated; dsa_indexer.py:276 @v0.5.20)
+    #   router gate 288 (FP32 router; see the FP32 note below)
+    #   lm_head 154880/tp: 154880 (tp1), 77440 (tp2), 38720 (tp4)
+    #   dense MLP gate_up 2*12288/tp: 24576 (tp1)
+    - id: glm53flash_hidden_input_offgrid_widths
+      model_path: zai-org/GLM-5.3-Flash
+      model_aliases:
+        - nvidia/GLM-5.3-Flash-NVFP4
+      output_feature_sizes: [16, 32, 160, 288, 6416, 12576, 24576, 24896, 38720, 77440, 154880]
+      input_feature_sizes: [4096]
+
+  # Routed experts only (gate, shared expert and the TP all-reduce are
+  # separate GEMM/comm ops). Pure TP: the base moe grid supplies the
+  # moe_tp_size/moe_ep_size expansion; serving needs tp 2/4, ep 1.
+  # Checkpoint quantization is artifact-distinct, so one row per path.
+  moe:
+    - model_path: zai-org/GLM-5.3-Flash
+      hidden_size: 4096
+      inter_size: 2048
+      topk: 8
+      num_experts: 288
+      sglang_moe_scoring_func: sigmoid
+      sglang_moe_routing_method_type: DeepSeekV3
+      sglang_moe_routed_scaling_factor: 2.5
+      sglang_moe_renormalize: true
+      sglang_moe_has_correction_bias: true
+      sglang_moe_num_expert_group: 1
+      sglang_moe_topk_group: 1
+      sglang_moe_swiglu_limit: 10.0
+      # SGLang 0.5.20 auto -> flashinfer_trtllm for quant_method fp8 on SM10x
+      # (arg_groups/overrides.py:806,866-879 @v0.5.20).
+      sglang_moe_backends:
+        fp8_block: {100: flashinfer_trtllm, 103: flashinfer_trtllm}
+      framework_quantization:
+        sglang:
+          allowed_modes: [fp8_block]
+        vllm:
+          allowed_modes: [fp8_block]
+        trtllm:
+          allowed_modes: []
+    - model_path: nvidia/GLM-5.3-Flash-NVFP4
+      hidden_size: 4096
+      inter_size: 2048
+      topk: 8
+      num_experts: 288
+      sglang_moe_scoring_func: sigmoid
+      sglang_moe_routing_method_type: DeepSeekV3
+      sglang_moe_routed_scaling_factor: 2.5
+      sglang_moe_renormalize: true
+      sglang_moe_has_correction_bias: true
+      sglang_moe_num_expert_group: 1
+      sglang_moe_topk_group: 1
+      sglang_moe_swiglu_limit: 10.0
+      # Serving launches --quantization modelopt_fp4 --moe-runner-backend
+      # auto, which resolves to flashinfer_trtllm on SM10x
+      # (arg_groups/overrides.py:866-879 @v0.5.20; GLM NVFP4 serving
+      # resolved args record moe_runner_backend 'flashinfer_trtllm').
+      sglang_moe_backends:
+        nvfp4: {100: flashinfer_trtllm, 103: flashinfer_trtllm}
+      framework_quantization:
+        sglang:
+          allowed_modes: [nvfp4]
+        vllm:
+          allowed_modes: [nvfp4]
+        trtllm:
+          allowed_modes: []
+
+  # ---------------------------------------------------------------------
+  # PLACEHOLDER (workstream W2, KDA) -- owned by W2; W1 merges W2's commit.
+  # kda rows: d_model 4096, d_conv 4, 64 heads x 128 sharded per TP
+  # (64/32/16 local heads at TP1/2/4), gate lower bound -5. Activate `kda`
+  # under framework_specific_op_cases below once the kda collectors'
+  # __compat__ admits vLLM 0.30.0 / SGLang 0.5.20.
+  # kda: []
+  # ---------------------------------------------------------------------
+  # PLACEHOLDER (workstream W3, mHC) -- owned by W3; W1 merges W3's commit.
+  # mhc rows: hidden 4096, hc_mult 4, sinkhorn 20, eps 1e-6, TP 1/2/4.
+  # Activate `mhc_module` below once its collectors admit these runtimes.
+  # mhc: []
+  # ---------------------------------------------------------------------
+
+# ---------------------------------------------------------------------
+# PLACEHOLDER (workstream W4, GLM NoPE sparse-MLA + IndexPool attention
+# module) -- owned by W4 (DSV4.1 precedent: framework_specific_model_case_values
+# + one GLM-specific op/table). Its op name must exist in the backend
+# registries before it can be activated here (model_cases.py rejects ops
+# unknown to the registry).
+# framework_specific_model_case_values:
+#   vllm:
+#     <glm_attention_op>: [...]
+#   sglang:
+#     <glm_attention_op>: [...]
+# ---------------------------------------------------------------------
+
+# moe/compute_scale are activated per framework: GLM-5.3-Flash has no
+# TRT-LLM serving lane. compute_scale is not a GLM consumer input (GLM runs
+# no static-FP8 GEMM); it is collected so the pinned-runtime quantize table
+# for these versions is complete.
+framework_specific_op_cases:
+  vllm:
+    moe:
+      cases: all
+    compute_scale:
+      cases: all
+    # kda (W2), mhc_module (W3), <glm_attention_op> (W4): add here.
+  sglang:
+    moe:
+      cases: all
+    compute_scale:
+      cases: all
+    # kda (W2), mhc_module (W3), <glm_attention_op> (W4): add here.

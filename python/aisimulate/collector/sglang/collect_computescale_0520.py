@@ -1,22 +1,34 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Measure SGLang FP8 activation quantization overhead for static-FP8 GEMM."""
+"""Measure SGLang 0.5.20 FP8 activation quantization overhead for static-FP8 GEMM.
 
-# SGLang 0.5.20 (GLM-5.3-Flash model pin; audited 2026-09-30): serving's
-# dynamic per-token FP8 quant moved from the sgl_kernel AOT op to a JIT
-# kernel, so 0.5.20 runs delegate to collect_computescale_0520.py (a
-# whole-implementation version fork selected at the bottom of this module;
-# see collect_gemm.py for why it is not a registry VersionRoute). 0.5.15-
-# 0.5.19 are not audited for this op.
-__compat__ = "sglang>=0.5.14,<=0.5.20,!=0.5.15,!=0.5.16,!=0.5.17,!=0.5.18,!=0.5.19"
+0.5.20 fork of collect_computescale.py (selected there): identical cases, timing and rows;
+only the dynamic per-token quant kernel differs, because serving changed it.
+"""
+
+# Audited 2026-09-30 against sglang v0.5.20 (tag commit 94602c9c2b7c) vs
+# v0.5.14; runtime smoke on GB300 in the GLM-5.3-Flash W1 campaign. Serving's
+# dynamic per-token FP8 activation quant (apply_fp8_linear,
+# quantization/fp8_utils.py:2004-2005 -> kernels/ops/quantization/
+# fp8_kernel.py:804-820 -> sgl_per_token_quant_fp8) resolves at 0.5.20 to the
+# JIT per_token_quant_fp8 kernel registered in kernels/ops/quantization/
+# __init__.py:21-34,76-84 -- not the sgl_kernel AOT op collect_computescale.py
+# times at 0.5.14 (fp8_kernel.py:58 @0.5.14). That is a WHICH-kernel change,
+# so it lives in this whole-implementation fork instead of an import shim.
+# Known gap carried over unchanged (not fixed here): serving's static
+# per-tensor path is the Triton static_quant_fp8 (fp8_utils.py:1997), while
+# _static_quantize_e4m3_per_tensor times eager torch ops, so scale_matrix rows
+# and compute_scale (= dynamic - static) are not serving truth for the static
+# side at either version.
+__compat__ = "sglang==0.5.20"
 
 from importlib.metadata import version as _dist_version
 
 import torch
 from collector.case_generator import get_compute_scale_case_specs
 from collector.helper import benchmark_with_power, get_sm_version, log_perf
-from sgl_kernel import sgl_per_token_quant_fp8
+from sglang.kernels.ops.quantization import sgl_per_token_quant_fp8
 
 
 def get_computescale_test_cases():
@@ -85,28 +97,3 @@ def run_computescale(m, k, *, perf_filename, device="cuda:0"):
         power_stats=static_results["power_stats"],
     ):
         raise RuntimeError("Failed to persist SGLang scale matrix performance row to scale_matrix_perf.txt")
-
-
-def _sglang_release() -> tuple[int, ...]:
-    """Installed SGLang release as an int tuple (local/pre-release tags dropped).
-
-    Collection always runs with SGLang installed (collect.py resolves the
-    pinned runtime from the installed version first); without the
-    distribution metadata (offline import tests) the legacy path is kept.
-    """
-    from importlib.metadata import PackageNotFoundError
-
-    from packaging.version import Version
-
-    try:
-        return Version(_dist_version("sglang")).release
-    except PackageNotFoundError:
-        return (0,)
-
-
-# Whole-implementation version fork (see the __compat__ comment).
-if _sglang_release() >= (0, 5, 20):
-    from collector.sglang import collect_computescale_0520 as _fork_0520
-
-    get_computescale_test_cases = _fork_0520.get_computescale_test_cases
-    run_computescale = _fork_0520.run_computescale
