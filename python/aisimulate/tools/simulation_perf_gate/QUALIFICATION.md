@@ -5,7 +5,8 @@ v2 review checks are recorded at the end; they do not replace CI qualification.
 
 All 12 cases passed three complete same-revision comparisons using separate
 release-wheel installations. These are local results, not acceptance on the
-`prod-aisimulate-default-amd64-v1` CI runner. Automatic CI remains disabled.
+`prod-aisimulate-default-amd64-v1` CI runner. Automatic selection follows the
+trusted PR workflow; these measurements do not establish CI runner acceptance.
 
 Host: Intel(R) Core(TM) Ultra 9 285K; CPU 0; Python 3.12.12;
 rustc 1.96.1 (31fca3adb 2026-06-26). Each worker used the pinned single-thread environment.
@@ -80,9 +81,9 @@ Validation: 686 affected Python/native and workflow tests passed. Ruff lint
 and format, Rust format, actionlint, strict CODEOWNERS coverage and generated
 file checks, packaged legal-file checks, and diff whitespace checks passed.
 
-Before enabling `SIMULATION_PERF_ENABLED`, repeat qualification and controls
-on the CI runner. See [README.md](README.md) for the protocol, commands, and
-manual workflow dispatch. The local pass does not remove this rollout gate.
+Repeat qualification and controls on the CI runner. See [README.md](README.md)
+for the protocol, commands, and manual workflow dispatch. The local pass does
+not establish CI runner acceptance.
 
 ## Protocol v2 review validation
 
@@ -102,5 +103,5 @@ five-round full-suite qualification or CI runner acceptance.
 Validation: 324 focused benchmark and workflow tests passed. Ruff lint/format,
 actionlint, and diff whitespace checks passed. Evidence remains under
 `build/simulation-perf/review-{tests.log,recheck.json,recheck.log,smoke/}`.
-Automatic comparisons remain disabled pending qualification on the CI runner
-with the final implementation and unchanged workloads and thresholds.
+Qualification on the CI runner remains pending for the final implementation
+with unchanged workloads and thresholds.

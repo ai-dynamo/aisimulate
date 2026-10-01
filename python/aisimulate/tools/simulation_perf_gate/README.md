@@ -77,7 +77,7 @@ AgentX request and the complete play must finish; no virtual-time cutoff is used
 Request/session counts were calibrated by doubling from 256 requests or 64
 four-turn sessions until native replay reached two seconds. `WORKLOAD_COUNTS`
 contains the frozen values. CI never resizes a case. The real AgentX play is intact.
-These counts need qualification on the CI runner before automatic rollout.
+CI runner qualification checks the runtime and stability of these counts.
 
 ## Results
 
@@ -137,10 +137,15 @@ are excluded). The default per-process timeout is 120 seconds.
 
 ## CI and rollout
 
-`.github/workflows/simulation-performance.yml` is disabled for automatic runs
-unless the repository variable `SIMULATION_PERF_ENABLED` is exactly `true`.
-Manual dispatch takes `pr_number` and optional `self_compare=true`. The selector
-verifies that the trusted `pull-request/<N>` copy matches the current PR head.
+`.github/workflows/simulation-performance.yml` starts on every update to a
+trusted `pull-request/<N>` branch, like the forward-performance workflow. Its
+selector runs the benchmark when the complete PR change set affects simulation,
+including the runtime, model data, dependencies, or benchmark itself. It skips
+unrelated changes, including documentation-only changes. No repository enable
+variable is required. The selector verifies that the trusted copy matches the
+current PR head.
+
+Manual dispatch takes `pr_number` and optional `self_compare=true`.
 Self-comparison builds/installs that head twice and runs three full qualifications.
 It does not use an older merge base that lacks the benchmark adapter.
 
@@ -154,12 +159,14 @@ fail with `INVALID_COMPARISON` before builds.
 The workflow has its own concurrency group and does not
 cancel the forward-performance workflow.
 
-Land the adapter, fixtures, and protocol before enabling automatic comparisons.
-Enable only after three clean same-revision qualifications on the actual CI
-runner, plus a detected controlled slowdown and correctly classified behavior
-change. Do not remove cases, weaken thresholds, or enable automatic runs to hide
-a qualification failure. Hosted qualification remains required even if local
-qualification passes.
+The PR that introduces the benchmark needs a manual `self_compare=true` run
+because its merge base lacks the adapter. Later PRs compare against their merge
+base once it contains the adapter. Record three clean same-revision
+qualifications on the actual CI runner, plus a detected controlled slowdown and
+correctly classified behavior change. Qualification results establish runner
+stability and runtime; they do not control the automatic trigger. Do not remove
+cases or weaken thresholds to hide a qualification failure. Local qualification
+does not establish CI runner acceptance.
 CPU affinity selects the same CPU for both sides; it does not establish exclusive
 CPU ownership. Runner isolation remains a qualification requirement.
 

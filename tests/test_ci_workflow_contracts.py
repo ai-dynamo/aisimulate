@@ -3021,15 +3021,16 @@ def test_manual_fpe_uses_current_harness_and_selected_inventory_for_every_job():
 
 
 def test_simulation_performance_rollout_and_revision_contract():
-    path = WORKFLOW_ROOT / "simulation-performance.yml"
-    workflow = yaml.safe_load(path.read_text())
+    workflow = _workflow("simulation-performance.yml")
     selector = workflow["jobs"]["select"]
-    assert "vars.SIMULATION_PERF_ENABLED == 'true'" in selector["if"]
-    assert "workflow_dispatch" in selector["if"]
+    assert workflow["on"]["push"] == _workflow("performance.yml")["on"]["push"]
+    assert "workflow_dispatch" in workflow["on"]
+    assert "if" not in selector
     assert workflow["concurrency"]["group"].startswith("simulation-performance-")
     assert selector["runs-on"] == "ubuntu-latest"
     assert "python scripts/select_simulation_perf.py" in _run_commands(selector)
     comparison = workflow["jobs"]["compare"]
+    assert comparison["if"] == "needs.select.outputs.run_comparison == 'true'"
     commands = _run_commands(comparison)
     assert 'git merge-base "${PR_HEAD_SHA}" "${base_tip}"' in commands
     assert 'base_sha="${PR_HEAD_SHA}"' in commands

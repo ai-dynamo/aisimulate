@@ -32,8 +32,6 @@ concurrency:
 jobs:
   select:
     name: Select Simulation Performance
-    # Enable only after qualification on this runner; manual runs remain available.
-    if: github.event_name == 'workflow_dispatch' || vars.SIMULATION_PERF_ENABLED == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
