@@ -1,0 +1,14 @@
+# Customization retest record for trtllm 1.3.0rc29 (Hopper upgrade 2026-10-01). Verdict per repo: still_needed | dropped.
+# Evidence: bare-default A/B in the 1.3.0rc29 image (facts/upgrade_rc29/targets_bare_trtllm.yaml = targets.yaml minus the trtllm
+# cli_extra_args; same dummies, same render path), raws facts/upgrade_rc29/retest_bare_<id>.json, compared with the customized plan raw.
+deepseek-ai/DeepSeek-V4-Pro-0813: still_needed  # bare default fails: AssertionError: DeepseekV4CacheManager requires tokens_per_block in [128, 256], got 32. Set kv_cache_config.to (raw retest_bare_f29559d658b1)
+deepseek-ai/DeepSeek-V4-Flash-0731: still_needed  # bare default fails: AssertionError: DeepseekV4CacheManager requires tokens_per_block in [128, 256], got 32. Set kv_cache_config.to (raw retest_bare_ccd7ce86d246)
+nvidia/DeepSeek-V4-Pro-NVFP4: still_needed  # both fail; bare: ValueError: no MoE implementation can serve this layer. MoE resolution: none (vi | customized: ValueError: no MoE implementation can serve this layer. MoE resolution: none (vi (same wall before the customized component)
+nvidia/DeepSeek-V4-Flash-NVFP4: still_needed  # both fail; bare: ValueError: no MoE implementation can serve this layer. MoE resolution: none (vi | customized: ValueError: no MoE implementation can serve this layer. MoE resolution: none (vi (same wall before the customized component)
+MiniMaxAI/MiniMax-M3: still_needed  # both fail; bare:   algorithm: minimax_m3 | customized:   algorithm: minimax_m3 (same wall before the customized component)
+MiniMaxAI/MiniMax-M3-MXFP8: still_needed  # both fail; bare:   algorithm: minimax_m3 | customized:   algorithm: minimax_m3 (same wall before the customized component)
+nvidia/MiniMax-M3-NVFP4: still_needed  # both fail; bare:   algorithm: minimax_m3 | customized:   algorithm: minimax_m3 (same wall before the customized component)
+deepseek-ai/DeepSeek-V4-Flash: still_needed  # bare default fails: AssertionError: DeepseekV4CacheManager requires tokens_per_block in [128, 256], got 32. Set kv_cache_config.to (raw retest_bare_a42845621a0d)
+deepseek-ai/DeepSeek-V4-Pro: still_needed  # bare default fails: AssertionError: DeepseekV4CacheManager requires tokens_per_block in [128, 256], got 32. Set kv_cache_config.to (raw retest_bare_e32333abf778)
+sgl-project/DeepSeek-V4-Flash-FP8: still_needed  # bare default fails: AssertionError: DeepseekV4CacheManager requires tokens_per_block in [128, 256], got 32. Set kv_cache_config.to (raw retest_bare_ed6aa95d4ff9)
+sgl-project/DeepSeek-V4-Pro-FP8: still_needed  # bare default fails: AssertionError: DeepseekV4CacheManager requires tokens_per_block in [128, 256], got 32. Set kv_cache_config.to (raw retest_bare_9a697473977d)

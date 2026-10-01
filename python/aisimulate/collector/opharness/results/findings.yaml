@@ -2115,3 +2115,54 @@ findings:
     - module:generator
     - framework:vllm-0.30.0
     - platform:sm90
+  hopper_trtllm_upgrade_rc23_to_rc29_2026_10_01:
+    statement: 'HOPPER UPGRADE trtllm 1.3.0rc23 -> 1.3.0rc29 (H20/sm90, 2026-10-01; latest nvcr tag, no 1.3.0 GA / 1.4 rc yet).
+      IDENTITY: 224 runs (112 repos x rendered + fp8-KV), matrix results/sm90/trtllm-1.3.0rc29.yaml 70 pass / 6 pass+custom / 48
+      fail vs rc23 69/0/55. Verdict flips: nvidia/Qwen3.6-27B-NVFP4 and nvidia/Qwen3.6-35B-A3B-NVFP4 fail->pass (rc29 serves them
+      through the W4A16 NVFP4 lane on SM90: W4A16NVFP4CutlassFusedMoE); nvidia/Qwen3.8-27B-NVFP4 pass->fail ("CutlassFp4GemmRunner
+      Arch unsupported for CUTLASS FP4 GEMM": rc29 routes its dense FP4 GEMM to the W4A4 runner, SM100+ only — the two Qwen artifacts
+      swapped lanes between rcs; platform floor on Hopper). DeepSeek-V4 family UNLOCKED on Hopper: rc29 drops the "not supported on
+      pre-blackwell" assert and instead requires kv_cache_config.dtype=fp8_ds_mla (attention/backends/sparse/deepseek_v4/
+      cache_manager.py:346); the generator renders auto, so the dsv4 family trtllm customization gained params.agg.kv_cache_dtype=
+      fp8_ds_mla next to tokens_per_block=128 (A/B facts/upgrade_rc29/ab_dsv4_kv_*.json) -> 6 pass+custom (V4-Pro/Flash/-0813/-0731,
+      sgl-project FP8 x2), attention DeepseekV4 sparse (dsa_nsa). The harness fp8-KV variant (--kv-dtype fp8) cannot spell
+      fp8_ds_mla and stays a recorded fail for DSV4 on trtllm. NVFP4 DSV4 (and every other NVFP4 MoE artifact) now fails uniformly
+      at MoE resolution ("CutlassFusedMoE NVFP4 only supports SM100/103/107/120/121") — the same Hopper floor rc23 reported as
+      per-model GEMM/tactic errors. Other cause changes: moonshotai/Kimi-K3 + Kimi-K3-NVFP4 "No module named fla" (the rc29 image
+      ships kimi_kda importing the external fla package; rc23 failed earlier on quant parsing); google/gemma-4-26B-A4B hard-aborts
+      before the probe can dump ("Assertion failed: Head size 512 is not supported by MMHA", attentionOp.cpp:2954,
+      facts/upgrade_rc29/gemma4_bf16_repro.log) — Hopper floor for head_dim 512 decode; MiniMax-M3 x3 now fail with "requires
+      sparse_attention_config.algorithm=minimax_m3": the generator never rendered that key (rc23 template emits only
+      sparse_attention_config.implementation from msa_sparse_implementation; the targets customization params.agg.
+      sparse_attention_config={...} is an unknown params.agg key and is silently dropped — rc23 masked this with an earlier
+      "M3-sparse not wired" error). A/B with the key hand-added to the engine yaml (facts/upgrade_rc29/ab_m3/) gets past the
+      KV-cache manager and fails in MiniMaxM3SparseRuntimeBackend.forward ("requires k, v, k_cache, v_cache, idx_k_cache and
+      out_cache_loc") -> framework gap on Hopper either way; the generator-side key is still a gap to close when M3 works.
+      Identity on pass->pass rows unchanged except Qwen3-Coder-480B-A35B moe label gaining its full backend set (richer trace).
+      COLLECTOR ON rc29 (the audit the harness exists for): (1) tensorrt_llm._torch.attention_backend.* moved to
+      _torch.attention.backends.* and _torch.modules.fused_moe to _torch.moe.fused_moe (old root is a deprecation shim without
+      submodules) -> seven collectors import-shimmed (path only, same classes/kernels; commit f49e76c3); (2) collect_gdn''s extra FLA
+      row fused_recurrent_gated_delta_rule no longer exists (fla/fused_recurrent.py keeps only *_update; serving''s decode is
+      fused_sigmoid_gating_delta_rule_update at rc23:670 / rc29:706, never the removed kernel) -> the row is omitted with a printed
+      note, serving-dispatch rows unchanged; (3) collect_moe fp8_block passes dtype=torch.float8_e4m3fn to create_moe and rc29''s
+      MoE resolution now refuses it ("CutlassFusedMoE FP8_BLOCK_SCALES requires torch.bfloat16") — the moe gate was already DIVERGED
+      at rc23 (routing kernel drift) and is now INVALID-CAPTURE; serving passes the bf16 model dtype with the quant config, so the
+      collector''s fp8_block construction needs a serving-parity fix (collect_moe.py:313-319) — OPEN. GATES (captures re-taken in the
+      rc29 image as facts/pathdiff/opcov_trt_*@1.3.0rc29.json, components/captures/verdicts_trt_rc29.sh): 12/13 ALIGNED
+      (attn ctx/gen bf16+fp8-KV, dsa ctx/gen, mla ctx/gen bf16+fp8-KV, gemm fp8_block, gdn ctx), moe_fp8block invalid-capture. Lesson
+      recorded in the launcher: re-take captures from the opcov json `cmd` (exact --case-prefix cells); the first pass reused an older
+      --case-filter launcher and the rc29 plan order handed it head_dim-64 / sliding-window cells that looked like divergences.
+      11 gate families remain undeclared for trtllm (8 dsv4_* now gradable since DSV4 loads on Hopper, msa x2, encoder/mla_bmm/mhc/
+      compute_scale per workflow_check) — backfill scope is the owner''s call. RETESTS: all 11 trtllm customizations still_needed
+      (results/retests/sm90/trtllm-1.3.0rc29.yaml; bare DSV4 renders fail on tokens_per_block 32, NVFP4/M3 fail identically with or
+      without). Collector pins (framework_manifest trtllm default 1.3.0rc20) untouched — owner decision.'
+    applies_to:
+    - framework:trtllm-1.3.0rc29
+    - platform:sm90
+    - deepseek-ai/DeepSeek-V4-Flash
+    - deepseek-ai/DeepSeek-V4-Pro
+    - nvidia/Qwen3.8-27B-NVFP4
+    - MiniMaxAI/MiniMax-M3
+    - google/gemma-4-26B-A4B
+    - instrument:collect_moe
+    - instrument:collect_gdn
