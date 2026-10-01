@@ -2396,7 +2396,9 @@ def test_nightly_dependency_execution_cannot_modify_staged_artifacts_or_inherit_
     assert set(evidence["needs"]) == {"build-artifacts", "python-compliance"}
 
 
-def _nightly_license_report(tmp_path, crates, prior=None, lookup_error=None, workspace_members=(), manual_prior=None):
+def _nightly_license_report(
+    tmp_path, crates, prior=None, lookup_error=None, workspace_members=(), manual_prior=None, artifact_pages=None
+):
     inventories = tmp_path / "python"
     inventories.mkdir(exist_ok=True)
     # Same runtime dependency in multiple Python/architecture inventories must
@@ -2431,6 +2433,7 @@ def _nightly_license_report(tmp_path, crates, prior=None, lookup_error=None, wor
 
     def urlopen(request, timeout):
         assert timeout == 30
+        assert request.get_header("Authorization") == "Bearer fixture"
         if lookup_error is not None:
             raise lookup_error
         if "/runs?" in request.full_url:
@@ -2441,13 +2444,28 @@ def _nightly_license_report(tmp_path, crates, prior=None, lookup_error=None, wor
                 # but its selected release source has unrelated dependencies.
                 runs.insert(0, {"id": 3, "artifacts_url": "https://fixture/manual-artifacts"})
             payload = {"workflow_runs": runs}
-        elif request.full_url == "https://fixture/artifacts":
-            payload = {"artifacts": [{"name": "license-artifacts", "archive_download_url": "https://fixture/archive"}]}
-        elif request.full_url == "https://fixture/manual-artifacts":
+        elif request.full_url.startswith("https://fixture/artifacts?"):
+            query = parse_qs(urlsplit(request.full_url).query)
+            assert query["per_page"] == ["100"]
+            if artifact_pages is not None:
+                payload = {"artifacts": artifact_pages[int(query["page"][0]) - 1]}
+            else:
+                payload = {
+                    "artifacts": [{"name": "license-artifacts", "archive_download_url": "https://fixture/archive"}]
+                }
+        elif request.full_url.startswith("https://fixture/manual-artifacts?"):
             payload = {
                 "artifacts": [{"name": "license-artifacts", "archive_download_url": "https://fixture/manual-archive"}]
             }
         elif request.full_url in archives:
+            # Exercise urllib's actual redirect handling, which used to carry
+            # the GitHub bearer token to the signed storage URL and cause 401.
+            from urllib.request import HTTPRedirectHandler
+
+            redirected = HTTPRedirectHandler().redirect_request(
+                request, None, 302, "Found", {}, "https://signed.fixture/archive"
+            )
+            assert redirected.get_header("Authorization") is None
             response = io.BytesIO(archives[request.full_url])
             responses.append(response)
             return response
@@ -2501,12 +2519,27 @@ def test_nightly_license_baseline_ignores_newer_manual_staging(tmp_path):
     assert difference == []
 
 
-@pytest.mark.parametrize("lookup_error", [None, OSError("baseline API unavailable")])
-def test_nightly_license_baseline_warns_only_on_lookup_failure(tmp_path, capsys, lookup_error):
-    inventory, difference = _nightly_license_report(tmp_path, [("0.2.17", "MIT")], lookup_error=lookup_error)
+def test_nightly_license_first_run_uses_empty_baseline(tmp_path, capsys):
+    inventory, difference = _nightly_license_report(tmp_path, [("0.2.17", "MIT")])
     assert len(inventory) == len(difference) == 2
     assert all(row["change"] == "added" for row in difference)
-    assert ("::warning::prior-artifact lookup failed" in capsys.readouterr().out) == (lookup_error is not None)
+    assert "No prior scheduled license evidence" in capsys.readouterr().out
+
+
+def test_nightly_license_baseline_lookup_failure_does_not_publish_diff(tmp_path):
+    with pytest.raises(OSError, match="baseline API unavailable"):
+        _nightly_license_report(tmp_path, [("0.2.17", "MIT")], lookup_error=OSError("baseline API unavailable"))
+    assert not (tmp_path / "deps-diff.csv").exists()
+
+
+@pytest.mark.parametrize("preceding_artifacts", [35, 100])
+def test_nightly_license_baseline_finds_evidence_after_matrix_artifacts(tmp_path, preceding_artifacts):
+    crates = [("0.2.17", "MIT")]
+    inventory, _ = _nightly_license_report(tmp_path, crates)
+    artifacts = [{"name": f"matrix-{i}"} for i in range(preceding_artifacts)]
+    artifacts.append({"name": "license-artifacts", "archive_download_url": "https://fixture/archive"})
+    pages = [artifacts[i : i + 100] for i in range(0, len(artifacts), 100)]
+    assert _nightly_license_report(tmp_path, crates, inventory, artifact_pages=pages)[1] == []
 
 
 def test_nightly_license_inventory_excludes_workspace_packages(tmp_path):
