@@ -77,6 +77,9 @@ two four-turn cache cases. Base and head always receive the same count. CI never
 resizes cases. Both AgentX cases use the complete play. Count reductions require
 a separate CI runner trial; retain a reduction only if the workload still
 exercises its intended path and both native medians remain at least two seconds.
+The CI trial retained half counts for dense vLLM, dense TRT-LLM, and P/D vLLM.
+The other seven synthetic counts remain unchanged. See `QUALIFICATION.md` for
+the trial results and normal CI measurements.
 
 ## Results
 

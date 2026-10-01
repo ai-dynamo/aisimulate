@@ -7,17 +7,17 @@ from copy import deepcopy
 VERSIONS = {"vllm": "0.24.0", "sglang": "0.5.14", "trtllm": "1.3.0rc20"}
 AGENTX_SHA256 = "d65b573413396bb689cf7e1d5c85c50ea970ad7ad5714c0a78d4f75102e5d86d"
 
-# Calibrated once on the qualification host; never adjusted during comparison.
+# Frozen after the CI runner size trial; never adjusted during comparison.
 WORKLOAD_COUNTS = {
-    "dense-vllm": 131072,
+    "dense-vllm": 65536,
     "dense-sglang": 16384,
-    "dense-trtllm": 131072,
+    "dense-trtllm": 65536,
     "moe-long-prefill": 16384,
     "moe-long-decode": 4096,
     "cache-pressure-vllm": 4096,
     "cache-pressure-sglang": 2048,
     "mla-multiworker-dp": 32768,
-    "pd-vllm": 65536,
+    "pd-vllm": 32768,
     "pd-sglang": 8192,
 }
 

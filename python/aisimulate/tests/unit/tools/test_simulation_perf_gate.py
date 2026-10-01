@@ -199,7 +199,9 @@ def test_worker_malformed_input_returns_structured_error(monkeypatch, capsys, pa
     assert result["error"]["message"]
 
 
-@pytest.mark.parametrize("protocol,phase", [(2, "measure"), (3, "measure"), (4, "availability"), (4, "equivalence")])
+@pytest.mark.parametrize(
+    "protocol,phase", [(2, "measure"), (3, "measure"), (4.0, "measure"), (4, "availability"), (4, "equivalence")]
+)
 def test_worker_rejects_old_protocol_and_phase(protocol, phase):
     from tools.simulation_perf_gate.worker import run
 

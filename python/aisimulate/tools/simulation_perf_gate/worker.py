@@ -28,7 +28,7 @@ def portable_model_identity(model: dict, systems_root: Path) -> dict:
 
 
 def run(request: dict) -> dict:
-    if request.get("protocol_version") != PROTOCOL_VERSION:
+    if type(request.get("protocol_version")) is not int or request["protocol_version"] != PROTOCOL_VERSION:
         raise ValueError("incompatible simulation-performance protocol")
     item = request["case"]
     if item.get("determinism") != "canonical_v1":
