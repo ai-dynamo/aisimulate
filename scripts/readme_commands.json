@@ -47,6 +47,21 @@
     "timeout": 180,
     "prediction": "aisimulate-dynamo-prediction/prediction.json"
   },
+  "engine-options": {
+    "profiles": [
+      "source",
+      "macos",
+      "development"
+    ],
+    "needs": [
+      "engine-predict"
+    ],
+    "timeout": 180,
+    "prediction": "aisimulate-prediction/prediction.json",
+    "completed_requests": 4,
+    "requests": "aisimulate-prediction/requests.jsonl",
+    "json_summary": "prediction-summary.json"
+  },
   "recommendation-config": {
     "file": "recommendation.yaml"
   },

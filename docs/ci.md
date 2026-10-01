@@ -775,7 +775,9 @@ and YAML fence needs a unique `readme-check` comment and an entry in
 `scripts/readme_commands.json`. The manifest supplies profiles, dependencies,
 timeouts, and output assertions; it contains no copied commands. Add new blocks
 to both files. Prediction must complete requests, recommendations must contain
-concrete candidates, and the best candidate must predict successfully.
+concrete candidates, and the best candidate must predict successfully. The option
+example also checks request-count overrides, overwrite, JSON stdout, and
+per-request capture.
 
 Each lane uploads `readme-<profile>` with per-block logs, timings, source SHA,
 installed versions, and `report.json`. A timeout, missing prerequisite, canceled

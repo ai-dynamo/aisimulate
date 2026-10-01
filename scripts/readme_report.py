@@ -85,7 +85,9 @@ def transition(previous: dict, failures: list[str], healthy: bool, run: dict) ->
     else:
         event = "failure"
         incident = {"id": f"readme-{run['id']}", "url": url}
-    incident = {**incident, "failures": failures}
+    required = set(incident.get("required_checks", []))
+    required.update(failure.split(":", 1)[0] for failure in failures if "/" in failure.split(":", 1)[0])
+    incident = {**incident, "failures": failures, "required_checks": sorted(required)}
     state["incident"] = incident
     payload = {
         "event": event,
@@ -140,11 +142,7 @@ def main() -> None:
             for check in report["checks"]
             if check["status"] == "passed"
         }
-        removed = [
-            failure.split(":", 1)[0]
-            for failure in previous["incident"]["failures"]
-            if "/" in failure.split(":", 1)[0] and failure.split(":", 1)[0] not in passed
-        ]
+        removed = sorted(set(previous["incident"].get("required_checks", [])) - passed)
         if removed:
             failures = [f"{name}: previous failing check was not rerun" for name in removed]
             healthy = False

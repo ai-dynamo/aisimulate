@@ -103,13 +103,23 @@ def assert_outputs(entry: dict, cwd: Path, log: Path) -> None:
         summary = report.get("summary", report)
         if summary.get("completed_requests", 0) <= 0:
             raise ValueError("Prediction completed no requests")
+        if "completed_requests" in entry and summary["completed_requests"] != entry["completed_requests"]:
+            raise ValueError("Prediction ignored the request-count override")
+    if (path := entry.get("json_summary")) and (
+        json.loads((cwd / path).read_text())["completed_requests"] != entry["completed_requests"]
+    ):
+        raise ValueError("JSON stdout disagrees with the requested count")
+    if path := entry.get("requests"):
+        requests = [json.loads(line) for line in (cwd / path).read_text().splitlines()]
+        if len(requests) != entry["completed_requests"]:
+            raise ValueError("Per-request capture is incomplete")
     if path := entry.get("recommendations"):
         candidates = sorted((cwd / path).glob("*.yaml"))
         if not candidates or candidates[0].name != "0001.yaml":
             raise ValueError("Recommendation produced no ranked candidate")
         for candidate in candidates:
             config = yaml.safe_load(candidate.read_text())
-            # Validate through the public schema and then predict 0001 in the next block.
+            # Check the saved shape; the round-trip command validates the public schema.
             if not isinstance(config, dict) or not isinstance(config.get("engine"), dict):
                 raise ValueError(f"Invalid candidate: {candidate.name}")
 

@@ -55,3 +55,9 @@ def test_missing_canceled_and_wrong_sha_cannot_recover():
     assert not summarize(reports(), "cancelled", "abc")[1]
     with pytest.raises(ValueError, match="wrong-SHA"):
         summarize(reports(), "success", "different")
+
+
+def test_incident_remembers_all_previously_failed_checks():
+    _, state = transition({}, ["development/root-tests: failed"], False, RUN)
+    _, state = transition(state, ["dynamo/dynamo-install: failed"], False, RUN)
+    assert state["incident"]["required_checks"] == ["development/root-tests", "dynamo/dynamo-install"]

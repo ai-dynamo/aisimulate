@@ -56,3 +56,9 @@ def test_timeout_kills_workers_in_new_sessions(tmp_path):
             break
         time.sleep(0.1)
     assert not psutil.pid_exists(pid) or psutil.Process(pid).status() == psutil.STATUS_ZOMBIE
+
+
+def test_request_capture_must_match_override(tmp_path):
+    (tmp_path / "requests.jsonl").write_text("{}\n")
+    with pytest.raises(ValueError, match="incomplete"):
+        assert_outputs({"requests": "requests.jsonl", "completed_requests": 4}, tmp_path, tmp_path / "log")
