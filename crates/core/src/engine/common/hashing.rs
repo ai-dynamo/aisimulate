@@ -59,6 +59,26 @@ pub(crate) fn compute_next_sequence_hash(
     xxh3_64_with_seed(bytes, XXH3_SEED)
 }
 
+/// Hash each complete `block_size` block of `tokens` with [`XXH3_SEED`].
+///
+/// Trace-synthesized prompts repeat one token across a trace block, so a block
+/// equal to its predecessor reuses the predecessor's hash instead of hashing
+/// the same bytes again.
+pub(crate) fn block_hashes(
+    tokens: &[Token],
+    block_size: usize,
+) -> impl Iterator<Item = BlockHash> + '_ {
+    let mut previous: Option<(&[Token], BlockHash)> = None;
+    tokens.chunks_exact(block_size).map(move |block| {
+        let hash = match previous {
+            Some((prior, hash)) if prior[0] == block[0] && prior == block => hash,
+            _ => compute_block_hash_for_tokens(block, XXH3_SEED),
+        };
+        previous = Some((block, hash));
+        hash
+    })
+}
+
 pub(crate) fn compute_block_hash_for_seq(
     tokens: &[Token],
     block_size: usize,
@@ -66,9 +86,8 @@ pub(crate) fn compute_block_hash_for_seq(
     if block_size == 0 {
         return Vec::new();
     }
-    tokens
-        .chunks_exact(block_size)
-        .map(|block| LocalBlockHash(compute_block_hash_for_tokens(block, XXH3_SEED)))
+    block_hashes(tokens, block_size)
+        .map(LocalBlockHash)
         .collect()
 }
 

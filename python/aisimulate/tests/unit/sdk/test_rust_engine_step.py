@@ -772,6 +772,31 @@ def test_engine_config_json_preserves_w4a16_nvfp4_weight_and_moe_profiles() -> N
     assert config["moe_dtype"] == "w4a16_nvfp4"
 
 
+def test_engine_config_preserves_distinct_humming_moe_identity():
+    model = SimpleNamespace(
+        model_path="deepseek-ai/DeepSeek-V4.1-Flash",
+        architecture="DeepseekV41ForCausalLM",
+        config=ModelConfig(
+            tp_size=4,
+            pp_size=1,
+            attention_dp_size=1,
+            moe_tp_size=4,
+            moe_ep_size=1,
+            gemm_quant_mode=common.GEMMQuantMode.fp8_block,
+            moe_quant_mode=common.MoEQuantMode.w4a16_mxfp4_humming,
+            kvcache_quant_mode=common.KVCacheQuantMode.fp8,
+            fmha_quant_mode=common.FMHAQuantMode.fp8,
+        ),
+    )
+    database = SimpleNamespace(system="h100_sxm", backend="sglang", version="dev1aa0e962")
+    humming = json.loads(rust_engine_step._engine_config_json(model, database))
+    model.config.moe_quant_mode = common.MoEQuantMode.w4a16_mxfp4_cutlass
+    cutlass = json.loads(rust_engine_step._engine_config_json(model, database))
+    assert humming["moe_dtype"] == "w4a16_mxfp4_humming"
+    assert cutlass["moe_dtype"] == "w4a16_mxfp4_cutlass"
+    assert humming != cutlass
+
+
 def test_configure_data_roots_passes_systems_path_through(tmp_path, monkeypatch) -> None:
     """Rust reads parquet directly, so the wrapper just hands its
     ``AICONFIGURATOR_SYSTEMS_PATH`` through unchanged to the Rust crate."""
@@ -895,7 +920,8 @@ def test_forward_pass_perf_model_regression_stores_end_to_end() -> None:
             assert model.estimate_forward_pass_time_ms(iteration(cold_kind, 3)) is None
 
 
-def test_forward_pass_constructor_passes_complete_typed_request(monkeypatch) -> None:
+@pytest.mark.parametrize("rebuild_interval", [23, 4096, None])
+def test_forward_pass_constructor_passes_complete_typed_request(monkeypatch, rebuild_interval) -> None:
     import aisimulate_core
 
     calls = []
@@ -916,7 +942,10 @@ def test_forward_pass_constructor_passes_complete_typed_request(monkeypatch) -> 
         "fallback_policy": "deny",
         "estimator_config": {
             "features": {"attention_kv_weight": 2.0, "prefill_attention_pair_weight": 3.0, "ffn_token_weight": 4.0},
-            "fpm_regression": {"sampling": {"bins_per_axis": [4, 16], "max_observations": 128}},
+            "fpm_regression": {
+                "sampling": {"bins_per_axis": [4, 16], "max_observations": 128},
+                "fit": {"rebuild_interval": rebuild_interval},
+            },
             "correction": {"enabled": False},
         },
     }
@@ -935,6 +964,179 @@ def test_forward_pass_config_requires_role_and_defaults_to_auto_deny() -> None:
     assert config.estimation_mode == "auto"
     assert config.fallback_policy == "deny"
     assert config.estimator_config == {}
+    assert config.moe_kernel_source is None
+
+    pinned = ForwardPassPerfModelConfig(
+        model="m",
+        system="s",
+        backend="vllm",
+        worker_type="decode",
+        moe_kernel_source="sglang_flashinfer_trtllm_moe",
+    )
+    assert pinned.to_dict()["moe_kernel_source"] == "sglang_flashinfer_trtllm_moe"
+
+
+def test_forward_pass_config_preserves_existing_positional_arguments(tmp_path: Path) -> None:
+    from aisimulate_core.sdk import ForwardPassPerfModelConfig
+
+    # Positional order frozen from main at e8828036e3d3, before moe_kernel_source was added.
+    legacy_fields = {
+        "model": "Qwen/Qwen3-30B-A3B",
+        "system": "b200_sxm",
+        "backend": "sglang",
+        "worker_type": "decode",
+        "backend_version": "0.5.17",
+        "tp": 4,
+        "pp": 2,
+        "attention_dp": 2,
+        "moe_tp_size": 1,
+        "moe_ep_size": 4,
+        "gemm_quant_mode": "fp8",
+        "moe_quant_mode": "fp8_block",
+        "fmha_quant_mode": "bfloat16",
+        "kvcache_quant_mode": "fp8",
+        "comm_quant_mode": "half",
+        "nextn": 2,
+        "speculation": {"kind": "mtp", "params": {"depth": 2}},
+        "kv_block_size": 64,
+        "decoder_replay": True,
+        "estimation_mode": "fpm_regression",
+        "database_mode": "EMPIRICAL",
+        "transfer_policy": ("gemm", "moe"),
+        "systems_paths": (str(tmp_path),),
+        "fallback_policy": "allow",
+        "estimator_config": {"correction": {"enabled": False}},
+        "attention_backend": "fa3",
+        "enable_shared_layer": False,
+        "strict_provenance": True,
+        "moe_backend": "megamoe",
+        "enable_eplb": True,
+        "wideep_num_slots": 64,
+    }
+    config = ForwardPassPerfModelConfig(*legacy_fields.values())
+    assert vars(config) == {
+        **legacy_fields,
+        "fpm_profile": None,
+        "dcp": None,
+        "fpm_fmha_quant_mode": None,
+        "moe_kernel_source": None,
+    }
+
+    source = " source_with_spaces "
+    pinned = ForwardPassPerfModelConfig(*legacy_fields.values(), moe_kernel_source=source)
+    assert vars(pinned) == {
+        **legacy_fields,
+        "fpm_profile": None,
+        "dcp": None,
+        "fpm_fmha_quant_mode": None,
+        "moe_kernel_source": source,
+    }
+    assert json.loads(json.dumps(pinned.to_dict()))["moe_kernel_source"] == source
+
+
+@pytest.mark.parametrize("as_mapping", [False, True])
+@pytest.mark.parametrize(
+    ("fit", "expected_interval"),
+    [
+        ({}, None),
+        ({"rebuild_interval": 17}, 17),
+        ({"rebuild_interval": 4096}, 4096),
+        ({"rebuild_interval": None}, None),
+    ],
+)
+def test_canonical_regression_rebuild_interval_survives_saved_config(as_mapping, fit, expected_interval):
+    from aisimulate_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
+
+    config = ForwardPassPerfModelConfig(
+        model="test/model",
+        system="test",
+        backend="vllm",
+        worker_type="decode",
+        estimation_mode="fpm_regression",
+        estimator_config={"fpm_regression": {"fit": fit}},
+    )
+    payload = config.to_dict() if as_mapping else config
+    model = RustForwardPassPerfModel.best_available(payload)
+    provenance = model.diagnostics()["provenance"]
+    resolved = provenance["config"]
+    assert resolved["estimator_config"]["fpm_regression"]["fit"]["rebuild_interval"] == expected_interval
+    assert resolved["estimator_config"]["fpm_regression"]["sampling"] == {
+        "bins_per_axis": [4, 4],
+        "max_observations": 64,
+    }
+    assert resolved["worker_type"] == "decode"
+    assert resolved["estimation_mode"] == "fpm_regression"
+    assert resolved["fallback_policy"] == "deny"
+    assert config.estimator_config == {"fpm_regression": {"fit": fit}}
+    if not fit:
+        # Default expansion belongs to Rust, not the Python request object.
+        assert "rebuild_interval" not in config.estimator_config["fpm_regression"]["fit"]
+
+    saved = json.loads(json.dumps(resolved))
+    restored = RustForwardPassPerfModel.best_available(saved)
+    assert restored.diagnostics()["provenance"]["config"] == resolved
+    assert restored.regression_store_diagnostics() == [
+        {"workload_kind": "pure_decode", "ready": False, "retained_observations": 0}
+    ]
+
+
+@pytest.mark.parametrize("invalid", [0, -1, True, False, 1.5, 4096.0, "4096", [], {}, float("nan"), float("inf")])
+def test_canonical_regression_rebuild_interval_rejects_invalid_facade_values_with_path(invalid):
+    from aisimulate_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
+
+    config = ForwardPassPerfModelConfig(
+        model="test/model",
+        system="test",
+        backend="vllm",
+        worker_type="decode",
+        estimation_mode="auto",
+        fallback_policy="allow",
+        estimator_config={"fpm_regression": {"fit": {"rebuild_interval": invalid}}},
+    )
+    # The dataclass facade must preserve invalid values for Rust to reject;
+    # neither Python defaults nor estimator fallback may hide the error.
+    with pytest.raises(ValueError, match=r"estimator_config\.fpm_regression\.fit\.rebuild_interval"):
+        RustForwardPassPerfModel.best_available(config)
+
+
+@pytest.mark.parametrize("fit", [{}, {"rebuild_interval": 1}, {"rebuild_interval": 7}, {"rebuild_interval": None}])
+def test_canonical_regression_updates_after_evictions_with_default_or_custom_rebuild_schedule(fit):
+    from aisimulate_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
+
+    config = ForwardPassPerfModelConfig(
+        model="test/model",
+        system="test",
+        backend="vllm",
+        worker_type="decode",
+        estimation_mode="fpm_regression",
+        estimator_config={
+            "fpm_regression": {
+                "sampling": {"bins_per_axis": [2, 2], "max_observations": 8},
+                "fit": fit,
+            }
+        },
+    )
+    model = RustForwardPassPerfModel.best_available(config)
+
+    def sample(index):
+        batch = index % 7 + 1
+        kv = index * index * 13 + 11
+        # Hand-specified affine surface in Decode's KV and batch features.
+        latency_ms = 2.0 + 0.001 * kv + 0.1 * batch
+        return {
+            "version": 1,
+            "wall_time": latency_ms / 1000,
+            "scheduled_requests": {"num_decode_requests": batch, "sum_decode_kv_tokens": kv},
+        }
+
+    query = sample(11)
+    assert model.estimate_forward_pass_time_ms(query) is None
+    for index in range(1, 81):
+        model.tune_with_fpms(sample(index))
+    assert model.regression_store_diagnostics() == [
+        {"workload_kind": "pure_decode", "ready": True, "retained_observations": 8}
+    ]
+    assert model.estimate_forward_pass_time_ms(query) == pytest.approx(query["wall_time"] * 1000, rel=1e-8)
 
 
 def _supported_fpm_config() -> dict[str, object]:
@@ -1343,14 +1545,14 @@ def test_sparse_cp_ops_emit_cp_fields_in_spec():
     assert spec["attn_kind"] == "Csa"
 
 
-def test_engine_config_json_identity_disambiguates_collapsed_quant_modes():
+def test_engine_config_json_identity_disambiguates_collapsed_quant_modes_and_moe_lanes():
     """Two models differing only in a wire-collapsed dtype (sq vs int8_wo both
     -> "int8") or an identity-omitted ModelConfig field (moe_backend) must get
     DISTINCT handle-cache keys — sharing one cached handle silently returns
     the other model's latencies."""
     from aisimulate.sdk import common
 
-    def _model(gemm_mode, moe_backend=None):
+    def _model(gemm_mode, moe_backend=None, moe_kernel_source=None):
         cfg = SimpleNamespace(
             tp_size=8,
             pp_size=1,
@@ -1365,6 +1567,7 @@ def test_engine_config_json_identity_disambiguates_collapsed_quant_modes():
             comm_quant_mode=None,
             moe_backend=moe_backend,
             attention_backend=None,
+            moe_kernel_source=moe_kernel_source,
             # enable_wideep dropped from the fixture: the deprecated flag left
             # the engine identity (constant False; moe_comm_backend +
             # num_gpus_per_node carry the regime).
@@ -1386,6 +1589,11 @@ def test_engine_config_json_identity_disambiguates_collapsed_quant_modes():
         _model(common.GEMMQuantMode.sq, moe_backend="deepep_moe"), database
     )
     assert key_sq != key_deepep, "moe_backend must participate in the cache identity"
+
+    key_flashinfer = rust_engine_step._engine_config_json(
+        _model(common.GEMMQuantMode.sq, moe_kernel_source="sglang_flashinfer_trtllm_moe"), database
+    )
+    assert key_sq != key_flashinfer, "a pinned MoE lane must not reuse the default handle"
 
 
 def test_engine_config_json_identity_includes_database_policy():
