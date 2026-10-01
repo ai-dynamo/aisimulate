@@ -1062,6 +1062,32 @@ both public structs exhaustively against this boundary. JSON consumers retain
 the existing cold shape: absent optional phase evidence is not serialized.
 This source migration does not change the engine-config/spec or FPM wire schemas.
 
+## Offload replay API migration
+
+Cluster-shared G2 ([G2 host-cache scope](g2-cache-scope.md)) extends the public
+Rust types without changing JSON that omits the new fields:
+
+- `engine::NativeHostOffloadConfig` adds `scope: G2Scope`,
+  `shared_d2h_bandwidth_gbps`, `shared_h2d_bandwidth_gbps`,
+  `latency_to_first_byte_ms` and `kv_layout_id: Option<String>`, and is no
+  longer `Copy`; clone it where it was copied. It stays `#[non_exhaustive]`:
+  build it with `new(..)`, `with_bandwidths(..)` and `cluster_shared(layout_id)`.
+  Fields at their defaults are not serialized, so existing descriptors keep
+  their shape. `G2Scope` is separate from `G3Scope`; G2 rejects `worker_local`.
+- `engine::KvEvent` adds `tier: KvEventTier` (`Device` or `HostPinned`).
+  Device events omit `tier` on output and a missing `tier` deserializes as
+  `Device`; exhaustive literals must add `tier: KvEventTier::Device`.
+  `HostPinned` `Stored` events set `start_position` to the prompt index of
+  their first block.
+- `ReplayReport` adds `g2_domains: Vec<replay::G2DomainStats>`; it is
+  serialized only when nonempty. Exhaustive literals must supply it.
+- `engine::G3Stats` adds `bypassed_restores: u64`, serialized only when
+  nonzero. Exhaustive literals must supply it or use `..Default::default()`.
+- A raw `cluster_shared` descriptor must set a
+  `native_host_offload.kv_layout_id` that is not empty or whitespace-only;
+  public YAML derives it. Engines built directly with `EngineFactory` cannot
+  join a shared pool and fail at construction; use `ReplaySpec`.
+
 ## Compatibility rules
 
 - The `aisimulate` wheel and `aisimulate-core` crate versions must match for

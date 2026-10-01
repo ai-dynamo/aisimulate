@@ -27,6 +27,15 @@ const DDSKETCH_MAX_BINS: usize = 32_768;
 /// Match AIC's fail-closed publication gate for modeled power.
 pub const POWER_DATA_COVERAGE_THRESHOLD: f64 = 0.9;
 
+/// Final gauges of one cluster-shared G2 pool.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct G2DomainStats {
+    pub capacity_blocks: usize,
+    pub resident_blocks: usize,
+    /// Resident blocks plus pending store/promotion destinations.
+    pub used_blocks: usize,
+}
+
 /// Canonical replay result returned by [`crate::replay::Replayer`].
 #[derive(Debug, Clone)]
 pub struct ReplayReport {
@@ -38,6 +47,8 @@ pub struct ReplayReport {
     /// from cache reuse ratios; an unfinished pass at a replay cutoff is excluded.
     pub committed_prefill_tokens: u64,
     pub g3_offload: Option<crate::engine::G3Stats>,
+    /// Cluster-shared G2 pools; private G2 caches are not listed.
+    pub g2_domains: Vec<G2DomainStats>,
     pub request_counts: TraceRequestCounts,
     pub throughput: TraceThroughputStats,
     pub prefix_cache_reused_ratio: f64,
@@ -414,6 +425,9 @@ impl Serialize for ReplayReport {
         map.serialize_entry("committed_prefill_tokens", &self.committed_prefill_tokens)?;
         if let Some(g3) = &self.g3_offload {
             map.serialize_entry("g3_offload", g3)?;
+        }
+        if !self.g2_domains.is_empty() {
+            map.serialize_entry("g2_domains", &self.g2_domains)?;
         }
         map.serialize_entry("num_requests", &self.request_counts.num_requests)?;
         map.serialize_entry(
@@ -964,6 +978,7 @@ impl SlaThresholds {
 #[derive(Debug, Default)]
 pub struct TraceCollector {
     pub(crate) g3_offload: Option<crate::engine::G3Stats>,
+    pub(crate) g2_domains: Vec<G2DomainStats>,
     committed_prefill_tokens: u64,
     requests: FxHashMap<Uuid, TraceRequestStats>,
     batch_reporting: bool,
@@ -1404,13 +1419,15 @@ impl TraceCollector {
         uuid: Uuid,
         admit_time_ms: f64,
         reused_input_tokens: usize,
+        attribution: Option<CacheTierAttribution>,
     ) {
-        self.on_admit(uuid, admit_time_ms, reused_input_tokens);
-        self.on_pool_admission(
+        self.on_admit_with_tier_attribution(uuid, admit_time_ms, reused_input_tokens, attribution);
+        self.on_pool_admission_with_tier_attribution(
             uuid,
             ReplayRequestPool::Prefill,
             admit_time_ms,
             reused_input_tokens,
+            attribution,
         );
         if let Some(detail) = self.detail_mut(uuid) {
             detail.prefill_admit_ms.get_or_insert(admit_time_ms);
@@ -1428,13 +1445,15 @@ impl TraceCollector {
         uuid: Uuid,
         admit_time_ms: f64,
         reused_input_tokens: usize,
+        attribution: Option<CacheTierAttribution>,
     ) {
-        self.on_admit(uuid, admit_time_ms, reused_input_tokens);
-        self.on_pool_admission(
+        self.on_admit_with_tier_attribution(uuid, admit_time_ms, reused_input_tokens, attribution);
+        self.on_pool_admission_with_tier_attribution(
             uuid,
             ReplayRequestPool::Decode,
             admit_time_ms,
             reused_input_tokens,
+            attribution,
         );
         if let Some(detail) = self.detail_mut(uuid) {
             detail.decode_admit_ms.get_or_insert(admit_time_ms);
@@ -1580,16 +1599,6 @@ impl TraceCollector {
                 .saturating_sub(sample.overlap_blocks)
         });
         route.placement_replica_id = placement_replica_id;
-    }
-
-    pub(crate) fn on_pool_admission(
-        &mut self,
-        uuid: Uuid,
-        pool: ReplayRequestPool,
-        at_ms: f64,
-        reused_input_tokens: usize,
-    ) {
-        self.on_pool_admission_with_tier_attribution(uuid, pool, at_ms, reused_input_tokens, None);
     }
 
     pub(crate) fn on_pool_admission_with_tier_attribution(
@@ -1899,6 +1908,7 @@ impl TraceCollector {
             g3_offload: self
                 .g3_offload
                 .map(|stats| g3_since(stats, self.g3_profile_baseline.as_ref())),
+            g2_domains: self.g2_domains.clone(),
             request_counts: TraceRequestCounts {
                 num_requests: request_count,
                 completed_requests,
@@ -2144,6 +2154,7 @@ fn g3_since(
         stats.lookup_pending -= base.lookup_pending;
         stats.evictions -= base.evictions;
         stats.cross_worker_read_blocks -= base.cross_worker_read_blocks;
+        stats.bypassed_restores -= base.bypassed_restores;
         for (current, previous) in [
             (&mut stats.read, &base.read),
             (&mut stats.write, &base.write),
@@ -2274,11 +2285,11 @@ mod tests {
         let profile = Uuid::from_u128(1);
         collector.on_arrival(profile, 110.0, 128, 2);
         collector.on_agentic_metadata(profile, "after".into(), "play".into(), 110.0);
-        collector.on_prefill_admit(profile, 115.0, 64);
+        collector.on_prefill_admit(profile, 115.0, 64, None);
         collector.on_source_held(profile, 120.0);
         collector.on_destination_reserved(profile, 122.0);
         collector.on_destination_activated(profile, 125.0);
-        collector.on_decode_admit(profile, 126.0, 64);
+        collector.on_decode_admit(profile, 126.0, 64, None);
         collector.on_source_released(profile, 127.0);
         collector.on_token(profile, 130.0);
         collector.on_token(profile, 140.0);
@@ -2774,13 +2785,13 @@ mod tests {
         let uuid = Uuid::from_u128(1);
         collector.on_arrival(uuid, 0.0, 100, 4);
         collector.on_prefill_route_overlap(uuid, 64);
-        collector.on_prefill_admit(uuid, 5.0, 30);
+        collector.on_prefill_admit(uuid, 5.0, 30, None);
         collector.on_source_held(uuid, 10.0);
         collector.on_destination_reserved(uuid, 12.0);
         collector.on_destination_activated(uuid, 20.0);
         collector.on_source_released(uuid, 21.0);
         collector.on_decode_route_overlap(uuid, 32);
-        collector.on_decode_admit(uuid, 25.0, 40);
+        collector.on_decode_admit(uuid, 25.0, 40, None);
         collector.on_prefill_assigned(uuid, 2);
         collector.on_decode_assigned(uuid, 7);
         collector.on_token(uuid, 50.0);

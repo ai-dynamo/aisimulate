@@ -1034,9 +1034,13 @@ engine:
 | `engine.workers.<role>.kv_cache.state_cache.bytes_per_request` | Disabled | `-` | `-` | `predict --stack engine` only, aggregated vLLM without host or G3 offload. Positive recurrent-state bytes per request per rank; requires fixed capacity. Omit the byte count to resolve K3 state and token geometry; see [state-cache sizing](#manual-state-cache-sizing). |
 | `engine.workers.<role>.kv_cache.prefix_match_unit` | Omitted | `-` | `-` | `predict --stack engine` only. Positive divisor of the resolved `block_size`; requires aggregated vLLM G1 `state_cache`. Rejects `engine.speculation`, `engine.nextn > 0`, KV event export, and Belady eviction. See [manual state-cache sizing](#manual-state-cache-sizing). |
 | `engine.workers.<role>.kv_cache.capacity.cuda_graph_reserved_bytes` | `0` | `-` | `-` | `predict` only. Integer from `0` through `2**53`; `default` capacity only. |
-| `engine.workers.<role>.kv_cache.host_offload.num_host_blocks` | Required when `host_offload` is present | `x` | `-` | Positive; fixed descriptor, aggregated vLLM only. |
-| `engine.workers.<role>.kv_cache.host_offload.d2h_bandwidth_gbps` | `32.0` | `x` | `-` | Finite and nonnegative. |
-| `engine.workers.<role>.kv_cache.host_offload.h2d_bandwidth_gbps` | `32.0` | `x` | `-` | Finite and nonnegative. |
+| `engine.workers.<role>.kv_cache.host_offload.scope` | `dp_rank_local` | `x` | `-` | `dp_rank_local` (one cache per DP rank) or `cluster_shared` (one deployment pool). See [G2 host-cache scope](../g2-cache-scope.md). |
+| `engine.workers.<role>.kv_cache.host_offload.num_host_blocks` | Required when `host_offload` is present | `x` | `-` | Positive; fixed descriptor. Per DP rank for `dp_rank_local`, pool total for `cluster_shared`. |
+| `engine.workers.<role>.kv_cache.host_offload.d2h_bandwidth_gbps` | `32.0` | `x` | `-` | Per DP rank; finite and nonnegative, `0` is unlimited. |
+| `engine.workers.<role>.kv_cache.host_offload.h2d_bandwidth_gbps` | `32.0` | `x` | `-` | Per DP rank; finite and nonnegative, `0` is unlimited. |
+| `engine.workers.<role>.kv_cache.host_offload.shared_d2h_bandwidth_gbps` | `80.0` | `x` | `-` | Pool-wide cap; `cluster_shared` only. |
+| `engine.workers.<role>.kv_cache.host_offload.shared_h2d_bandwidth_gbps` | `80.0` | `x` | `-` | Pool-wide cap; `cluster_shared` only. |
+| `engine.workers.<role>.kv_cache.host_offload.latency_to_first_byte_ms` | `0.0` | `x` | `-` | Delay before a transfer moves bytes; consumes no bandwidth. |
 | `engine.workers.<role>.timing.type` | `default` | `x` | `-` | `default`, `fixed`, or `polynomial`. |
 | `engine.workers.<role>.timing.prefill_ms` | `null` | `x` | `-` | Nonnegative and required for `fixed` timing. |
 | `engine.workers.<role>.timing.decode_ms` | `null` | `x` | `-` | Nonnegative and required for `fixed` timing. |
@@ -1326,11 +1330,13 @@ ngram runtime flags are supported.
 
 ### 12.2 Native vLLM host-offload prediction
 
-The initial public host-offload surface is deliberately fail-closed: it supports one aggregated
-vLLM worker role with prefix caching enabled, attention DP equal to one, and no native speculative
-decoding. The descriptor is fixed in both `predict` and `recommend`; host capacity and bandwidths
-are not search dimensions. `bytes_per_token` belongs to `kv_cache`, not `host_offload`, and is
-resolved for the worker role before lowering to the native rank.
+The public host-offload surface supports vLLM aggregated and token-only disaggregated workers with
+prefix caching enabled, any attention-DP size, and no native speculative decoding. The descriptor is
+fixed in both `predict` and `recommend`; host capacity and bandwidths are not search dimensions.
+`bytes_per_token` belongs to `kv_cache`, not `host_offload`, and is resolved for the worker role
+before lowering to the native rank; with `auto` it is one tensor-parallel shard's footprint. Each DP
+rank has its own G2 cache by default; `scope: cluster_shared` models one pool for the deployment.
+See [G2 host-cache scope](../g2-cache-scope.md) for ownership, bandwidth sharing and compatibility.
 
 ```yaml
 # host-offload-prediction.yaml
@@ -1451,6 +1457,15 @@ to cache-miss handling while the recoverable prefix cannot fit in G2. Capacity
 relief or time advancement permits retry. This simulator guard adds no pins or
 invented latency and does not model native CPU retry overhead.
 
+A restore can also thrash across time: when the recoverable prefix is larger
+than G2 can hold, each promotion evicts a block promoted earlier for the same
+request. After 1,024 restore rounds (lookups that submit G3 reads) in which its
+DP rank schedules no work and emits no output, a request stops restoring from
+G3 and computes what G1 and G2 do not hold, until it is admitted or
+preempted. Rank progress, admission or preemption starts the count over, so a
+request is never bypassed while its rank keeps working. Native vLLM has no such
+rule.
+
 The prediction summary includes `g3_offload` only when enabled, alongside the
 existing TTFT, TPOT, and throughput metrics:
 
@@ -1465,10 +1480,14 @@ For a reused runtime, G3 counters accumulate across reports and its cache remain
   `cross_worker_read_blocks` describe tier state and reuse. Cross-worker reuse
   counts completed reads of blocks first written by another worker, not lookup
   hits. `--capture-per-request` retains the existing `requests.jsonl` output.
+- `bypassed_restores` counts the times a request stopped restoring from G3
+  under the rule above. It is omitted when zero.
 
 G3 supports aggregated vLLM with fixed or dynamically scaled workers, prefix caching enabled,
 attention DP equal to one, and no native speculative decoding. It does not
-support `recommend`, disaggregated mode, or hardware integration.
+support `recommend`, disaggregated mode, or hardware integration. Either G2
+scope can be combined with G3; a completed G2 store stays pinned until it is
+handed to G3 write-through.
 Replay owns the deployment-wide tier; direct scheduler construction cannot
 provide it. Omit `g3_offload` to keep existing G1/G2 behavior.
 

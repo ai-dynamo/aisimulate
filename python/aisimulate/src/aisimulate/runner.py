@@ -1780,12 +1780,43 @@ def _materialize_engine_role(
             timing_model["config"] = timing_config
             rank["timing_model"] = timing_model
 
+    host_offload = rank.get("native_host_offload")
+    if (
+        nested_rank is None
+        and isinstance(host_offload, dict)
+        and host_offload.get("scope") == "cluster_shared"
+        and host_offload.get("kv_layout_id") is None
+    ):
+        rank["native_host_offload"] = {**host_offload, "kv_layout_id": _kv_layout_id(rank, model, tensor_parallel_size)}
+
     return {
         "dp_size": dp_size,
         "tensor_parallel_size": tensor_parallel_size,
         "num_gpu_blocks_is_explicit": num_gpu_blocks_is_explicit,
         "rank": rank,
     }
+
+
+def _kv_layout_id(rank: Mapping[str, JSONValue], model: JSONValue, tensor_parallel_size: int) -> str:
+    """Identity of stored KV bytes: ranks may share a G2 pool only when equal.
+
+    Uses the resolved timing identity, so per-worker quantization and attention
+    backend overrides, DCP and the canonical backend version all participate.
+    """
+    timing = rank.get("timing_model")
+    config = timing.get("config", {}) if isinstance(timing, dict) else {}
+    identity = {
+        "model": config.get("model", model),
+        "backend": rank["backend"],
+        "tp": config.get("tp", tensor_parallel_size),
+        "block_size": rank.get("block_size"),
+        "bytes_per_token": rank.get("kv_cache_bytes_per_token"),
+        **{
+            name: config.get(name)
+            for name in ("backend_version", "pp", "dcp", "kvcache_quant_mode", "attention_backend")
+        },
+    }
+    return json.dumps({k: v for k, v in identity.items() if v is not None}, sort_keys=True, separators=(",", ":"))
 
 
 def _manual_state_cache(rank: Mapping[str, JSONValue], backend: str, role: str) -> StateCacheConfig | None:

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Annotated, Any, Literal
 
-from pydantic import Field, StrictBool, field_validator, model_validator
+from pydantic import Field, StrictBool, field_validator, model_serializer, model_validator
 
 from aisimulate.fpm_profile import FpmModelProfile
 
@@ -129,9 +129,34 @@ class KvCapacityPredictionConfig(StrictModel):
 
 
 class HostOffloadConfig(StrictModel):
+    """Native G2. ``dp_rank_local`` gives each DP rank its own cache; ``cluster_shared``
+    is one deployment-wide pool whose ``num_host_blocks`` is the pool total."""
+
+    scope: Literal["dp_rank_local", "cluster_shared"] = "dp_rank_local"
     num_host_blocks: PositiveInt
     d2h_bandwidth_gbps: NonNegativeFloat = 32.0
     h2d_bandwidth_gbps: NonNegativeFloat = 32.0
+    shared_d2h_bandwidth_gbps: NonNegativeFloat = 80.0
+    shared_h2d_bandwidth_gbps: NonNegativeFloat = 80.0
+    latency_to_first_byte_ms: NonNegativeFloat = 0.0
+
+    @field_validator("scope", mode="before")
+    @classmethod
+    def _redirect_g3_scope(cls, value: Any) -> Any:
+        if value == "worker_local":
+            raise ValueError(
+                "host_offload.scope `worker_local` is a G3 scope; use `dp_rank_local` for per-DP-rank G2 caches"
+            )
+        return value
+
+    @model_serializer(mode="wrap")
+    def _omit_default_scope_controls(self, handler: Any) -> dict[str, Any]:
+        # Keep the pre-scope descriptor shape unless these controls are used.
+        payload = handler(self)
+        for name in ("scope", "shared_d2h_bandwidth_gbps", "shared_h2d_bandwidth_gbps", "latency_to_first_byte_ms"):
+            if payload.get(name) == type(self).model_fields[name].default:
+                payload.pop(name)
+        return payload
 
 
 class G3OffloadConfig(StrictModel):
@@ -928,15 +953,15 @@ def _validate_prediction_host_offload(engine: EnginePredictionConfig) -> None:
     configured = _workers_with_host_offload(engine.workers)
     if not configured:
         return
-    if engine.mode != "aggregated" or [role for role, _ in configured] != ["aggregated"]:
-        raise ValueError("host_offload is supported only for the aggregated worker")
+    if engine.mode == "afd" or engine.workers.encoder is not None:
+        raise ValueError("host_offload is supported only for aggregated or disaggregated language workers")
     if engine.backend != "vllm":
         raise ValueError("host_offload is supported only for backend=vllm")
-    worker = configured[0][1]
-    if not worker.kv_cache.prefix_caching:
-        raise ValueError("host_offload requires prefix_caching=true")
-    if worker.parallelism.attention_data != 1:
-        raise ValueError("host_offload requires attention_data=1")
+    for role, worker in configured:
+        if not worker.kv_cache.prefix_caching:
+            raise ValueError("host_offload requires prefix_caching=true")
+        if worker.kv_cache.g3_offload is not None and (role != "aggregated" or worker.parallelism.attention_data != 1):
+            raise ValueError("g3_offload is supported only for the aggregated worker with attention_data=1")
 
 
 def _validate_prediction_state_cache(engine: EnginePredictionConfig) -> None:
@@ -954,16 +979,58 @@ def _validate_recommendation_host_offload(engine: EngineRecommendationConfig) ->
     configured = _workers_with_host_offload(engine.workers)
     if not configured:
         return
-    if engine.mode != "aggregated" or [role for role, _ in configured] != ["aggregated"]:
-        raise ValueError("host_offload recommendation requires concrete mode=aggregated")
+    if engine.mode not in ("aggregated", "disaggregated"):
+        raise ValueError("host_offload recommendation requires concrete mode=aggregated or mode=disaggregated")
     if engine.backend != "vllm":
         raise ValueError("host_offload recommendation requires concrete backend=vllm")
-    worker = configured[0][1]
-    if not worker.kv_cache.prefix_caching:
-        raise ValueError("host_offload requires prefix_caching=true")
-    parallel = worker.parallelism
-    if parallel.preset not in (False, {}) or parallel.attention_data != 1:
-        raise ValueError("host_offload recommendation requires fixed parallelism with attention_data=1")
+    for _, worker in configured:
+        if not worker.kv_cache.prefix_caching:
+            raise ValueError("host_offload requires prefix_caching=true")
+    shared = [worker for _, worker in configured if worker.kv_cache.host_offload.scope == "cluster_shared"]
+    if len(shared) == 2:
+        # Both roles join one pool: its layout must not vary across candidates.
+        prefill, decode = shared
+
+        def layout(worker):
+            parallel, cache = worker.parallelism, worker.kv_cache
+            return (parallel.tensor, parallel.pipeline, cache.block_size, cache.bytes_per_token)
+
+        # An omitted tensor or pipeline is searched per role, so it is not fixed.
+        if any(worker.parallelism.preset not in (False, {}) for worker in shared) or any(
+            type(value) is not int
+            for worker in shared
+            for value in (worker.parallelism.tensor, worker.parallelism.pipeline)
+        ):
+            raise ValueError(
+                "cluster_shared host_offload on both roles requires explicit integer tensor and pipeline "
+                "with parallelism.preset: false"
+            )
+        if any(
+            not isinstance(value, (int, str, type(None)))
+            for worker in shared
+            for value in (worker.kv_cache.block_size, worker.kv_cache.bytes_per_token)
+        ):
+            raise ValueError("cluster_shared host_offload on both roles requires fixed KV block geometry")
+        if layout(prefill) != layout(decode):
+            raise ValueError(
+                "cluster_shared host_offload roles require matching tensor, pipeline and KV block geometry"
+            )
+        # Only default timing adds the model identity to the runtime kv_layout_id;
+        # fixed and polynomial timing derive the same geometry-only identity.
+        if (prefill.timing.type == "default") != (decode.timing.type == "default"):
+            raise ValueError(
+                "cluster_shared host_offload roles require default timing on both roles or neither: "
+                f"prefill={prefill.timing.type!r}, decode={decode.timing.type!r}"
+            )
+        # The pool's capacity and shared links are single deployment values.
+        for field in ("num_host_blocks", "shared_d2h_bandwidth_gbps", "shared_h2d_bandwidth_gbps"):
+            prefill_value = getattr(prefill.kv_cache.host_offload, field)
+            decode_value = getattr(decode.kv_cache.host_offload, field)
+            if prefill_value != decode_value:
+                raise ValueError(
+                    f"cluster_shared host_offload roles require matching host_offload.{field}: "
+                    f"prefill={prefill_value!r}, decode={decode_value!r}"
+                )
 
 
 def _validate_worker_roles(*, modes: set[str], workers, has_transfer: bool) -> None:

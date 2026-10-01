@@ -211,6 +211,10 @@ impl G1Manager {
             .allocate_lease(owner, lease, cumulative_tokens, reusable_prefix_blocks)
     }
 
+    pub(crate) fn retained_write_awaits_source(&self, lease: &BlockRequestLease) -> Option<bool> {
+        self.inner.retained_write_awaits_source(lease)
+    }
+
     pub(crate) fn authorize_native_compute_after_dependencies(
         &mut self,
         owner: Uuid,
@@ -321,6 +325,10 @@ impl G1Manager {
         debug_assert_eq!(lease.owner(), owner, "native lease owner mismatch");
         self.inner
             .attach_store_source_dependency(owner, snapshot.inner, dependency);
+    }
+
+    pub(crate) fn publish_host_pinned_event(&mut self, data: crate::engine::KvEventData) {
+        self.inner.publish_host_pinned_event(data);
     }
 
     pub(crate) fn satisfy_native_source_dependency(

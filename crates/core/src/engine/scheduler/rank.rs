@@ -15,6 +15,7 @@ use crate::engine::common::protocols::{
     PreemptionMode as CorePreemptionMode, SglangArgs, WorkerType as CoreWorkerType,
 };
 use crate::engine::generalized::{CommandContext, RankEngine, RankIdentity, RankPass};
+use crate::engine::host_offload::G2Binding;
 use crate::engine::{
     Admission, Backend, Command, CommandEffects, CommandResult, EngineConfig, ForwardPassMetrics,
     HandoffId, HostOffloadObserver, LifecycleEvent, Metrics, Output, PassCompletionEffects,
@@ -69,14 +70,21 @@ impl SchedulerRank {
         timing: Arc<dyn TimingModel>,
         seed_offset: u64,
     ) -> Result<Self> {
+        Self::new_with_g2(identity, config, timing, seed_offset, None)
+    }
+
+    /// `g2` binds a cluster-shared G2 configuration to its deployment pool.
+    pub(crate) fn new_with_g2(
+        identity: RankIdentity,
+        config: &EngineConfig,
+        timing: Arc<dyn TimingModel>,
+        seed_offset: u64,
+        g2: Option<&G2Binding>,
+    ) -> Result<Self> {
         config.validate()?;
         ensure!(
             config.g3_offload.is_none(),
             "g3_offload is Replay-owned; construct it through ReplaySpec"
-        );
-        ensure!(
-            config.native_host_offload.is_none() || identity.dp_size.get() == 1,
-            "native_host_offload supports only dp_size=1 in the initial implementation"
         );
         let mut args = core_args(config, timing);
         if config.backend == Backend::Sglang {
@@ -90,7 +98,8 @@ impl SchedulerRank {
                 identity.dp_rank,
                 seed_offset,
                 capture_kv_events,
-            )),
+                g2,
+            )?),
             Backend::Sglang => EngineCore::Sglang(SglangCore::new_with_worker_rank(
                 args,
                 identity.worker_id,
@@ -431,7 +440,7 @@ fn core_args(config: &EngineConfig, timing: Arc<dyn TimingModel>) -> MockEngineA
         kv_cache_bytes_per_token: config.kv_cache_bytes_per_token,
         kv_cache_groups: config.kv_cache_groups.clone(),
         kv_cache_capacity_bytes: config.kv_cache_capacity_bytes,
-        native_host_offload: config.native_host_offload,
+        native_host_offload: config.native_host_offload.clone(),
         state_cache: config.state_cache,
         prefix_match_unit: config.prefix_match_unit,
         kv_transfer_bandwidth: config.kv_transfer_bandwidth,

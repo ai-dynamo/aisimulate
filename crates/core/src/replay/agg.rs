@@ -17,7 +17,7 @@ use super::runtime_utils::{
     ReplayStepOutcome, next_non_telemetry_event_ms, next_timestamp as choose_next_timestamp,
     pop_ready_scaling_tick, pop_ready_telemetry_tick, pop_ready_worker_completions,
     pop_ready_worker_ready, push_scaling_tick, push_telemetry_tick, push_worker_completions,
-    push_worker_ready,
+    push_worker_ready, settle_internal_work,
 };
 use super::scaling::{LatestFpmBuffer, ReplayScalingPolicy, ReplayScalingSnapshot};
 use super::telemetry::{
@@ -41,8 +41,6 @@ use anyhow::{Context, bail};
 use rustc_hash::FxHashMap;
 use std::collections::BinaryHeap;
 use uuid::Uuid;
-
-const MAX_CONSECUTIVE_INTERNAL_STEPS: usize = 1024;
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub(crate) struct AggRuntimeStats {
@@ -729,20 +727,9 @@ where
         &mut self,
         consecutive_internal_steps: &mut usize,
     ) -> anyhow::Result<bool> {
-        let mut changed = false;
-        while self.apply_internal_work()? {
-            *consecutive_internal_steps = consecutive_internal_steps
-                .checked_add(1)
-                .context("internal-work convergence counter overflow")?;
-            if *consecutive_internal_steps >= MAX_CONSECUTIVE_INTERNAL_STEPS {
-                bail!(
-                    "offline replay detected non-converging engine internal work at {} ms",
-                    self.now_ms
-                );
-            }
-            changed = true;
-        }
-        Ok(changed)
+        settle_internal_work(self.now_ms, consecutive_internal_steps, || {
+            self.apply_internal_work()
+        })
     }
 
     fn handle_engine_effects(
@@ -1496,6 +1483,7 @@ where
             self.collector.set_agentic_graph(identity);
         }
         self.collector.g3_offload = self.engine.g3_stats();
+        self.collector.g2_domains = self.engine.g2_domains();
         if let Some(snapshots) = self.admission.agentic_snapshot_evidence() {
             self.collector.set_agentic_snapshots(snapshots);
         }
@@ -2601,6 +2589,7 @@ where
         self.collector
             .set_runtime_evidence(std::mem::replace(&mut self.evidence, next_evidence).finish());
         self.collector.g3_offload = self.engine.g3_stats();
+        self.collector.g2_domains = self.engine.g2_domains();
         if let Some(phases) = self.admission.agentic_phase_evidence() {
             self.collector.set_agentic_phases(phases);
         }

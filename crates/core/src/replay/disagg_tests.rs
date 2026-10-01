@@ -2449,6 +2449,109 @@ fn test_source_first_handoff_waits_for_decode_scale_up() {
 }
 
 #[test]
+fn shared_g2_outlives_a_prefill_role_scaled_to_zero_and_back() {
+    use crate::engine::{NativeHostOffloadConfig, TimingModelConfig};
+    let args = |worker_type| MockEngineArgs {
+        block_size: 4,
+        num_gpu_blocks: 16,
+        max_num_seqs: 4,
+        max_num_batched_tokens: 64,
+        enable_prefix_caching: true,
+        kv_cache_bytes_per_token: Some(250_000),
+        timing_model: TimingModelConfig::Fixed {
+            prefill_ms: 1.0,
+            decode_ms: 1.0,
+        },
+        worker_type,
+        ..Default::default()
+    };
+    // Two 1 MB prompt blocks: the D2H takes 2 ms at 1 GB/s.
+    let mut prefill_args = args(WorkerType::Prefill);
+    prefill_args.native_host_offload = Some(
+        NativeHostOffloadConfig::new(8)
+            .with_bandwidths(1.0, 1.0)
+            .cluster_shared("tp1"),
+    );
+    let config = TestDisaggConfig {
+        prefill_args,
+        decode_args: args(WorkerType::Decode),
+        prefill_dp_size: 1,
+        decode_dp_size: 1,
+        num_prefill_workers: 1,
+        num_decode_workers: 1,
+    };
+    let prompt = |id, arrival_ms| DirectRequest {
+        tokens: (1..=9).collect(),
+        max_output_tokens: 1,
+        uuid: Some(Uuid::from_u128(id)),
+        arrival_timestamp_ms: Some(arrival_ms),
+        ..Default::default()
+    };
+    let mut runtime = DisaggRuntime::from_requests(
+        &config,
+        None,
+        None,
+        VecDeque::from([prompt(1, 0.0), prompt(2, 100.0)]),
+        ReplayMode::Trace,
+    )
+    .unwrap()
+    .with_per_request_records(true);
+    let pool = |runtime: &RoundRobinDisaggRuntime| {
+        let [domain] = runtime.prefill_engine.g2_domains()[..] else {
+            panic!("one deployment pool")
+        };
+        (domain.resident_blocks, domain.used_blocks)
+    };
+    let step = |runtime: &mut RoundRobinDisaggRuntime| match runtime.step().unwrap() {
+        ReplayStepOutcome::Settled { now_ms } => now_ms,
+        outcome => panic!("unexpected {outcome:?}"),
+    };
+    let settled = (0..3).map(|_| step(&mut runtime)).collect::<Vec<_>>();
+    assert_eq!(settled, [0.0, 1.0, 2.0]);
+    // r1 finished decode at 2 ms; the prefill worker's D2H runs until 3 ms.
+    assert_eq!(
+        runtime.state(Uuid::from_u128(1)).unwrap().phase,
+        DisaggPhase::Done
+    );
+    assert_eq!(pool(&runtime), (0, 2));
+    runtime.apply_scaling(0, 1).unwrap();
+    assert_eq!(runtime.total_prefill_count(), 1);
+    assert_eq!(step(&mut runtime), 3.0);
+    assert_eq!(runtime.total_prefill_count(), 0);
+    assert_eq!(pool(&runtime), (2, 2));
+    // A fresh prefill worker joins the same deployment pool.
+    runtime.apply_scaling(1, 1).unwrap();
+    let (collector, _) = runtime.run().unwrap();
+    let report = collector.finish();
+    assert_eq!(report.request_counts.completed_requests, 2);
+    let reuse = report
+        .per_request
+        .iter()
+        .map(|record| {
+            (
+                record.uuid.clone(),
+                record.first_admission_host_reused_input_tokens,
+            )
+        })
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        reuse,
+        BTreeSet::from([
+            (Uuid::from_u128(1).to_string(), Some(0)),
+            (Uuid::from_u128(2).to_string(), Some(8)),
+        ])
+    );
+    assert_eq!(
+        report.g2_domains,
+        [crate::replay::G2DomainStats {
+            capacity_blocks: 8,
+            resident_blocks: 2,
+            used_blocks: 2,
+        }]
+    );
+}
+
+#[test]
 fn source_first_workload_stays_compact_until_prefill_worker_submission() {
     let mut config = disagg_config();
     config.num_prefill_workers = 1;
@@ -3526,4 +3629,172 @@ mod agentic_pd_qualification {
             }
         }
     }
+}
+
+/// Admission metadata that carries replay hashes through unchanged, so each
+/// placement call sees exactly what the runtime handed it.
+struct HashFlag(Option<crate::replay::loadgen::ReplayRequestHashes>);
+
+impl crate::replay::ReplayAdmissionMetadata for HashFlag {
+    fn from_hashes(hashes: Option<crate::replay::loadgen::ReplayRequestHashes>) -> Self {
+        Self(hashes)
+    }
+
+    fn for_prefill(self) -> Self {
+        self
+    }
+
+    fn max_output_tokens_override(&self) -> Option<usize> {
+        None
+    }
+
+    fn into_hashes(self) -> Option<crate::replay::loadgen::ReplayRequestHashes> {
+        self.0
+    }
+}
+
+/// Round-robin placement that records which stage saw hashes.
+struct HashRecordingPlacement {
+    stage: &'static str,
+    inner: PoolRoundRobinPlacement<()>,
+    seen: Rc<RefCell<Vec<(&'static str, bool)>>>,
+}
+
+impl PlacementPolicy<ReplayRequestPayload> for HashRecordingPlacement {
+    type Metadata = HashFlag;
+    type Observation = ();
+
+    fn place(
+        &mut self,
+        request: &ReplayRequestPayload,
+        metadata: HashFlag,
+        session_id: Option<String>,
+        now_ms: f64,
+    ) -> anyhow::Result<PlacementEffects> {
+        self.seen
+            .borrow_mut()
+            .push((self.stage, metadata.0.is_some()));
+        PlacementPolicy::<ReplayRequestPayload>::place(
+            &mut self.inner,
+            request,
+            (),
+            session_id,
+            now_ms,
+        )
+    }
+
+    fn observe(&mut self, events: (), now_ms: f64) -> anyhow::Result<Vec<Placement>> {
+        PlacementPolicy::<ReplayRequestPayload>::observe(&mut self.inner, events, now_ms)
+    }
+
+    fn cancel_pending(&mut self, request_id: Uuid) -> bool {
+        PlacementPolicy::<ReplayRequestPayload>::cancel_pending(&mut self.inner, request_id)
+    }
+
+    fn request_terminal(
+        &mut self,
+        request_id: Uuid,
+        now_ms: f64,
+    ) -> anyhow::Result<Vec<Placement>> {
+        PlacementPolicy::<ReplayRequestPayload>::request_terminal(
+            &mut self.inner,
+            request_id,
+            now_ms,
+        )
+    }
+
+    fn prefill_completed(
+        &mut self,
+        request_id: Uuid,
+        now_ms: f64,
+    ) -> anyhow::Result<Vec<Placement>> {
+        PlacementPolicy::<ReplayRequestPayload>::prefill_completed(
+            &mut self.inner,
+            request_id,
+            now_ms,
+        )
+    }
+
+    fn pending_count(&self) -> usize {
+        PlacementPolicy::<ReplayRequestPayload>::pending_count(&self.inner)
+    }
+
+    fn worker_ready(
+        &mut self,
+        worker: WorkerTopology,
+        now_ms: f64,
+    ) -> anyhow::Result<Vec<Placement>> {
+        PlacementPolicy::<ReplayRequestPayload>::worker_ready(&mut self.inner, worker, now_ms)
+    }
+
+    fn worker_draining(
+        &mut self,
+        worker: WorkerTopology,
+        now_ms: f64,
+    ) -> anyhow::Result<Vec<Placement>> {
+        PlacementPolicy::<ReplayRequestPayload>::worker_draining(&mut self.inner, worker, now_ms)
+    }
+
+    fn worker_removed(
+        &mut self,
+        worker: WorkerTopology,
+        now_ms: f64,
+    ) -> anyhow::Result<Vec<Placement>> {
+        PlacementPolicy::<ReplayRequestPayload>::worker_removed(&mut self.inner, worker, now_ms)
+    }
+
+    fn topology_settled(&mut self, now_ms: f64) -> anyhow::Result<Vec<Placement>> {
+        PlacementPolicy::<ReplayRequestPayload>::topology_settled(&mut self.inner, now_ms)
+    }
+}
+
+#[rstest::rstest]
+#[case(EngineType::Vllm, [("prefill", true), ("decode", false)])]
+#[case(EngineType::Sglang, [("decode", false), ("prefill", true)])]
+fn prefill_placement_receives_replay_hashes_in_both_handoff_orders(
+    #[case] engine_type: EngineType,
+    #[case] expected: [(&'static str, bool); 2],
+) {
+    let config = match engine_type {
+        EngineType::Sglang => sglang_disagg_config(),
+        _ => disagg_config(),
+    };
+    // One hashed trace turn: its replay hashes come from the workload, not
+    // from the metadata fixture.
+    let driver = Trace {
+        block_size: 64,
+        sessions: vec![SessionTrace {
+            session_id: "hashed".to_string(),
+            first_arrival_timestamp_ms: Some(0.0),
+            turns: vec![TurnTrace {
+                input_length: 64,
+                max_output_tokens: 2,
+                hash_ids: vec![11],
+                ..Default::default()
+            }],
+        }],
+    }
+    .into_trace_driver_with_block_size(config.prefill_args.block_size)
+    .unwrap();
+    let seen = Rc::new(RefCell::new(Vec::new()));
+    let placement = |stage, topology| HashRecordingPlacement {
+        stage,
+        inner: PoolRoundRobinPlacement::new(topology),
+        seen: Rc::clone(&seen),
+    };
+    DisaggRuntimeImpl::<HashRecordingPlacement, NoEngineEvents, HashFlag>::new_composed(
+        &config.runtime_config(false).unwrap(),
+        AdmissionQueue::new_workload(driver, ReplayMode::Trace),
+        false,
+        |_, prefill_topology, _, decode_topology| {
+            Ok((
+                placement("prefill", prefill_topology),
+                placement("decode", decode_topology),
+            ))
+        },
+    )
+    .unwrap()
+    .run()
+    .unwrap();
+    assert_eq!(*seen.borrow(), expected);
 }

@@ -23,7 +23,7 @@ use crate::engine::common::hashing::{
 use crate::engine::common::kv_cache_trace;
 use crate::engine::common::protocols::{KvEventPublishers, PrefillCost, SchedulingPolicy};
 use crate::engine::common::sequence::{BlockIdentity, RequestSequence};
-use crate::engine::{KvBlock, KvEvent, KvEventData, StoredBlocks};
+use crate::engine::{KvBlock, KvEvent, KvEventData, KvEventTier, StoredBlocks};
 
 /// Apply vLLM's EAGLE/MTP prefix-cache rule.
 ///
@@ -223,6 +223,12 @@ impl BlockRequestLease {
         self.entries
             .get(block_index)
             .and_then(|entry| entry.identity.sequence_hash)
+    }
+
+    pub(crate) fn local_hash(&self, block_index: usize) -> Option<BlockHash> {
+        self.entries
+            .get(block_index)
+            .and_then(|entry| entry.identity.local_hash)
     }
 
     #[cfg(test)]
@@ -826,6 +832,19 @@ impl VllmKvManager {
         }
     }
 
+    /// `Some(true)` while capacity retained by an unauthorized allocation still
+    /// waits for a source copy, `Some(false)` once every copy has finished, and
+    /// `None` without retained writes.
+    pub(crate) fn retained_write_awaits_source(&self, lease: &BlockRequestLease) -> Option<bool> {
+        let pending = lease.pending_capacity_writes.as_ref()?;
+        Some(
+            pending
+                .dependencies
+                .iter()
+                .any(|dependency| self.pool.is_source_reuse_dependency_pending(*dependency)),
+        )
+    }
+
     /// Record that the scheduler ordered every pending write behind its source
     /// dependencies. This authorizes writes without terminalizing the reads.
     pub(crate) fn authorize_lease_writes_after_dependencies(
@@ -1056,6 +1075,7 @@ impl VllmKvManager {
         #[cfg(debug_assertions)]
         sequence.debug_assert_finalized_range(
             lease.entries.len(),
+            computed_after,
             lease.entries[first_new_block..completed_blocks]
                 .iter()
                 .map(|entry| entry.identity),
@@ -1680,20 +1700,34 @@ impl VllmKvManager {
                 block_hashes: full_blocks,
             }
         };
+        self.publish_event(data, KvEventTier::Device, token_ids.as_deref());
+    }
+
+    /// Relay a cluster-shared G2 residency change in this rank's event order.
+    pub(crate) fn publish_host_pinned_event(&mut self, data: KvEventData) {
+        if !self.kv_event_publishers.is_empty() {
+            self.publish_event(data, KvEventTier::HostPinned, None);
+        }
+    }
+
+    fn publish_event(
+        &mut self,
+        data: KvEventData,
+        tier: KvEventTier,
+        token_ids: Option<&[Vec<u32>]>,
+    ) {
         let event = KvEvent {
             event_id: self.next_event_id,
             data,
             dp_rank: self.dp_rank,
+            tier,
         };
         self.next_event_id = self
             .next_event_id
             .checked_add(1)
             .unwrap_or_else(|| panic!("KV event ID overflow"));
-        if let Err(error) = self
-            .kv_event_publishers
-            .publish(event, token_ids.as_deref())
-        {
-            tracing::warn!(error = %error, "failed to publish native G1 KV event");
+        if let Err(error) = self.kv_event_publishers.publish(event, token_ids) {
+            tracing::warn!(error = %error, "failed to publish native KV event");
         }
     }
 

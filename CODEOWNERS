@@ -70,6 +70,7 @@
 /tests/test_ngram_cli.py                                 @ai-dynamo/aisimulate-replay-codeowners
 /tests/test_cli_config.py                                @ai-dynamo/aisimulate-replay-codeowners
 /tests/test_unified_cli.py                               @ai-dynamo/aisimulate-replay-codeowners
+/tests/test_shared_g2_cli.py                             @ai-dynamo/aisimulate-replay-codeowners
 /tests/test_g3_offload_cli.py                            @ai-dynamo/aisimulate-replay-codeowners
 /tests/test_power_contract.py                            @ai-dynamo/aisimulate-replay-codeowners
 /tests/test_stack_discovery.py                           @ai-dynamo/aisimulate-replay-codeowners
@@ -171,6 +172,7 @@
 /tests/test_unified_cli.py                               @ai-dynamo/aisimulate-replay-codeowners @ai-dynamo/aisimulate-sweeper-codeowners @ai-dynamo/aisimulate-forward-pass-engine-codeowners @ai-dynamo/access-aisimulate-maintain
 /crates/core/src/perfmodel/                              @ai-dynamo/aisimulate-forward-pass-engine-codeowners @ai-dynamo/access-aisimulate-maintain
 /python/aisimulate/.github/                              @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
+/tests/test_shared_g2_cli.py                             @ai-dynamo/aisimulate-replay-codeowners @ai-dynamo/access-aisimulate-maintain
 /crates/core/tests/perfmodel/                            @ai-dynamo/aisimulate-forward-pass-engine-codeowners @ai-dynamo/access-aisimulate-maintain
 /python/aisimulate/.gitignore                            @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
 /python/aisimulate/pytest.ini                            @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain

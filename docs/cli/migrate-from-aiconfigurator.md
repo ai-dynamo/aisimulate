@@ -381,11 +381,10 @@ configured GPU/host KV capacity. Whether offload is exercised depends on cache p
 reuse from the workload and cache state; the command above does not recreate that fixed hit count.
 The fixed-count option is [intentionally not migrated](#fixed-cached-prefix-counts).
 Host offload is an additional serving feature with no matching AIC CLI flag. This vLLM example uses
-prefix caching and attention DP=1, as required by the
+prefix caching, as required by the
 [host-offload contract](user-guide.md#native-vllm-host-offload-prediction). Host capacity and bandwidth
-stay fixed during recommendation. Recommendation requires concrete aggregated vLLM, a disabled
-parallelism preset (`preset: false`), and fixed `attention_data: 1`; other supported fields, such as
-`tensor` and `replicas`, may still be searched. Other `kv_cache` controls include block size, fixed
+stay fixed during recommendation, which requires a concrete mode and vLLM backend; parallelism,
+including attention DP, may still be searched. Other `kv_cache` controls include block size, fixed
 GPU capacity, and CUDA-graph memory reservation.
 
 <a id="fixed-cached-prefix-counts"></a>
@@ -1617,7 +1616,7 @@ feature's restrictions before migrating:
 | [Analytical EPD](#predict-and-search-analytical-epd) | Fixed synthetic images and concurrency; no event-level encoder queueing or embedding transfer. |
 | [AFD](#afd-translation) | Analytical fixed-length synthetic traffic; no native AFD deployment generation. |
 | [Heterogeneous P/D hardware](#migrate-heterogeneous-pd-hardware-with-sweeper) | Unified `predict` / `recommend` and Sweeper; P/D roles can override hardware but share one model, backend, and backend version. |
-| [Native host offload](#model-cache-capacity-and-host-offload) | Aggregated vLLM with attention DP=1 and prefix caching; recommendation requires `preset: false` and fixed `attention_data: 1`, while other supported parallelism fields may be searched. |
+| [Native host offload](#model-cache-capacity-and-host-offload) | vLLM aggregated or token-only P/D workers with prefix caching and any attention DP; per-DP-rank or [cluster-shared](../g2-cache-scope.md) G2. Recommendation keeps the descriptor fixed and may search parallelism, except that cluster-shared G2 on both P/D roles requires the same explicit integer `tensor` and `pipeline` on each role. |
 
 ## 6. Reference
 
