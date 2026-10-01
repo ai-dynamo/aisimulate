@@ -124,15 +124,15 @@ report to `<output-dir>/prediction.json`. Add `--capture-per-request` to also
 write `requests.jsonl`, or use `--format json` for machine-readable standard
 output.
 
-For example, capture four requests and replace the previous output with a JSON
-summary:
+For example, use two-way tensor parallelism, capture requests, and replace the
+previous output with a JSON summary:
 
 <!-- readme-check: engine-options -->
 ```bash
 aisimulate predict \
   --stack engine \
   --config prediction.yaml \
-  --set traffic.stop.requests=4 \
+  --set engine.workers.aggregated.parallelism.tensor=2 \
   --capture-per-request --format json --overwrite \
   --output-dir ./aisimulate-prediction > prediction-summary.json
 ```

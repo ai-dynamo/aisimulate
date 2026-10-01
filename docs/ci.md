@@ -776,14 +776,16 @@ and YAML fence needs a unique `readme-check` comment and an entry in
 timeouts, and output assertions; it contains no copied commands. Add new blocks
 to both files. Prediction must complete requests, recommendations must contain
 concrete candidates, and the best candidate must predict successfully. The option
-example also checks request-count overrides, overwrite, JSON stdout, and
+example also checks configuration overrides, overwrite, JSON stdout, and
 per-request capture.
 
 Each lane uploads `readme-<profile>` with per-block logs, timings, source SHA,
 installed versions, and `report.json`. A timeout, missing prerequisite, canceled
 run, or missing report fails qualification. Shell failures stop their block;
 dependent blocks become blocked while independent checks continue. The runner
-kills descendants, including workers that created separate sessions.
+kills descendants, including workers that created separate sessions. Each profile
+uses an isolated Hugging Face cache and anonymous public-model access so a stale
+host login cannot poison the checks. Existing credentials are not modified.
 
 ### Slack workflow setup
 

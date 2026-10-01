@@ -58,9 +58,12 @@
     ],
     "timeout": 180,
     "prediction": "aisimulate-prediction/prediction.json",
-    "completed_requests": 4,
+    "completed_requests": 100,
     "requests": "aisimulate-prediction/requests.jsonl",
-    "json_summary": "prediction-summary.json"
+    "json_summary": "prediction-summary.json",
+    "metrics": {
+      "decode_gpus_per_worker": 2
+    }
   },
   "recommendation-config": {
     "file": "recommendation.yaml"

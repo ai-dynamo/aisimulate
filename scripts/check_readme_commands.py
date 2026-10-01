@@ -104,7 +104,10 @@ def assert_outputs(entry: dict, cwd: Path, log: Path) -> None:
         if summary.get("completed_requests", 0) <= 0:
             raise ValueError("Prediction completed no requests")
         if "completed_requests" in entry and summary["completed_requests"] != entry["completed_requests"]:
-            raise ValueError("Prediction ignored the request-count override")
+            raise ValueError("Prediction completed an unexpected request count")
+        for metric, expected in entry.get("metrics", {}).items():
+            if summary.get(metric) != expected:
+                raise ValueError(f"Unexpected {metric}: {summary.get(metric)}")
     if (path := entry.get("json_summary")) and (
         json.loads((cwd / path).read_text())["completed_requests"] != entry["completed_requests"]
     ):
@@ -144,6 +147,13 @@ def run_profile(profile: str, workspace: Path, output: Path, blocks: dict, manif
     workspace.mkdir(parents=True, exist_ok=False)
     output.mkdir(parents=True, exist_ok=True)
     env = dict(os.environ)
+    # All examples use public models. Isolate host credentials and caches without
+    # changing the user's Hugging Face login or production authentication code.
+    env.pop("HF_TOKEN", None)
+    env.pop("HUGGING_FACE_HUB_TOKEN", None)
+    env["HF_HOME"] = str(workspace / ".huggingface")
+    env["HF_TOKEN_PATH"] = str(workspace / ".huggingface/token")
+    env["HF_HUB_DISABLE_IMPLICIT_TOKEN"] = "1"
     sha = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
     env["AISIMULATE_REF"] = sha
     # Clone exactly the checked-out tree, including commits on a not-yet-merged PR.
