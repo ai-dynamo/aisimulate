@@ -20,7 +20,11 @@
 //! Only the requested system/backend/version primary file is read: GLM
 //! attention measurements are never inherited from sibling versions, declared
 //! donors or other backends. A missing file or geometry is a coverage gap;
-//! every malformed present file is fatal. Within one geometry the reader
+//! every malformed present file is fatal. Provenance: one source/runtime
+//! identity per file, one `config_sha256` per checkpoint format (a version
+//! directory holds both checkpoints), and one `used_cuda_graph` value per
+//! geometry (serving runs prefill eagerly and decode under CUDA graphs).
+//! Within one geometry the reader
 //! interpolates utilization (`SOL / latency`) hierarchically over batch,
 //! prefix and work (`x`), holding the boundary utilization outside the
 //! measured range, and returns `SOL(query) / util`.
@@ -240,8 +244,15 @@ fn load(path: &Path) -> Result<BTreeMap<String, BatchCurves>, AicError> {
     let sample_count = reader.col("sample_count")?;
     let kv_seed_regime = reader.col("kv_seed_regime")?;
     let execution_profile = reader.col("execution_profile")?;
-    let mut identity: Option<(String, String, String, bool)> = None;
-    let mut validated: BTreeMap<String, bool> = BTreeMap::new();
+    // One runtime/source identity per file. One <backend>/<version> directory
+    // holds both checkpoints, so the configuration identity is homogeneous per
+    // checkpoint_format; the CUDA-graph mode is homogeneous per geometry
+    // (checkpoint, TP, phase), because serving runs prefill eagerly and decode
+    // under full CUDA graphs.
+    let mut runtime_identity: Option<(String, String)> = None;
+    let mut configs: BTreeMap<String, String> = BTreeMap::new();
+    let mut graphs: BTreeMap<String, bool> = BTreeMap::new();
+    let mut validated: BTreeMap<String, (bool, String)> = BTreeMap::new();
     let mut grids: BTreeMap<String, BatchCurves> = BTreeMap::new();
     for row in reader.rows()? {
         let row = row?;
@@ -251,13 +262,16 @@ fn load(path: &Path) -> Result<BTreeMap<String, BatchCurves>, AicError> {
         let encoded = row.str(geometry_col)?;
         if !validated.contains_key(encoded) {
             validate_geometry(encoded)?;
-            let is_context = serde_json::from_str::<Value>(encoded)
-                .map_err(|e| invalid(e.to_string()))?["is_context"]
-                .as_bool()
-                .unwrap_or(false);
-            validated.insert(encoded.to_owned(), is_context);
+            let body =
+                serde_json::from_str::<Value>(encoded).map_err(|e| invalid(e.to_string()))?;
+            let is_context = body["is_context"].as_bool().unwrap_or(false);
+            let checkpoint = body["checkpoint_format"]
+                .as_str()
+                .unwrap_or_default()
+                .to_owned();
+            validated.insert(encoded.to_owned(), (is_context, checkpoint));
         }
-        let is_context = validated[encoded];
+        let (is_context, checkpoint) = validated[encoded].clone();
         let (batch, prefix, x) = (row.u32(batch_size)?, row.u32(prefix_col)?, row.u32(x_col)?);
         let latency = row.f64(latency_col)?;
         if batch == 0
@@ -291,31 +305,28 @@ fn load(path: &Path) -> Result<BTreeMap<String, BatchCurves>, AicError> {
                 "GLM decode attention uses absolute KV length with prefix=0",
             ));
         }
-        let provenance = (
+        let runtime = (
             row.str_owned(source_sha256)?,
-            row.str_owned(config_sha256)?,
             row.str_owned(runtime_digest)?,
-            row.bool_strict(used_cuda_graph)?,
         );
-        if !valid_sha256(&provenance.0)
-            || !valid_sha256(&provenance.1)
-            || !provenance
-                .2
-                .strip_prefix("sha256:")
-                .is_some_and(valid_sha256)
+        let config = row.str_owned(config_sha256)?;
+        let graph = row.bool_strict(used_cuda_graph)?;
+        if !valid_sha256(&runtime.0)
+            || !valid_sha256(&config)
+            || !runtime.1.strip_prefix("sha256:").is_some_and(valid_sha256)
         {
             return Err(invalid(
                 "GLM attention provenance requires complete SHA256 identities",
             ));
         }
-        match &identity {
-            Some(expected) if expected != &provenance => {
-                return Err(invalid(
-                    "GLM attention table mixes runtime/source/config or CUDA graph identities",
-                ));
-            }
-            None => identity = Some(provenance),
-            _ => {}
+        if runtime_identity.get_or_insert_with(|| runtime.clone()) != &runtime
+            || configs.entry(checkpoint).or_insert_with(|| config.clone()) != &config
+            || *graphs.entry(encoded.to_owned()).or_insert(graph) != graph
+        {
+            return Err(invalid(
+                "GLM attention table mixes runtime/source identities, a checkpoint's config, \
+                 or one geometry's CUDA graph mode",
+            ));
         }
         if grids
             .entry(encoded.to_owned())
@@ -423,6 +434,101 @@ mod tests {
         let mut other = op.clone();
         other.backend = "sglang".into();
         assert!(table.query(&other, 1, 0, 10, &sol).unwrap().is_none());
+    }
+
+    fn with_provenance(mut columns: Vec<Col>, config: &'static str, graph: bool) -> Vec<Col> {
+        let n = match &columns[0] {
+            Col::Str(_, values) => values.len(),
+            _ => unreachable!(),
+        };
+        columns[9] = Col::Str("config_sha256", vec![config; n]);
+        columns[11] = Col::Bool("used_cuda_graph", vec![graph; n]);
+        columns
+    }
+
+    fn concat(parts: Vec<Vec<Col>>) -> Vec<Col> {
+        let mut parts = parts.into_iter();
+        let mut out = parts.next().unwrap();
+        for part in parts {
+            for (column, extra) in out.iter_mut().zip(part) {
+                match (column, extra) {
+                    (Col::Str(_, a), Col::Str(_, b)) => a.extend(b),
+                    (Col::I64(_, a), Col::I64(_, b)) => a.extend(b),
+                    (Col::F64(_, a), Col::F64(_, b)) => a.extend(b),
+                    (Col::Bool(_, a), Col::Bool(_, b)) => a.extend(b),
+                    _ => unreachable!(),
+                }
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn one_table_holds_both_checkpoints_and_phase_graph_modes() {
+        const FP8_CONFIG: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        let nvfp4_prefill = attention("sparse_mla");
+        let mut nvfp4_decode = nvfp4_prefill.clone();
+        nvfp4_decode.is_context = false;
+        let mut fp8_decode = nvfp4_decode.clone();
+        fp8_decode.checkpoint_format = "fp8".into();
+        let parts = || {
+            vec![
+                with_provenance(
+                    rows(&nvfp4_prefill, &[(1, 0, 10, 1.0)], "real_kv"),
+                    SHA,
+                    false,
+                ),
+                with_provenance(
+                    rows(&nvfp4_decode, &[(1, 0, 10, 0.5)], "real_kv"),
+                    SHA,
+                    true,
+                ),
+                with_provenance(
+                    rows(&fp8_decode, &[(1, 0, 10, 0.25)], "real_kv"),
+                    FP8_CONFIG,
+                    true,
+                ),
+            ]
+        };
+        let (_root, combined) = table(&concat(parts()));
+        let sol = |_b: f64, _p: f64, x: f64| Ok(x);
+        assert_eq!(
+            combined.query(&nvfp4_prefill, 1, 0, 10, &sol).unwrap(),
+            Some(1.0)
+        );
+        assert_eq!(
+            combined.query(&fp8_decode, 1, 0, 10, &sol).unwrap(),
+            Some(0.25)
+        );
+        // A checkpoint cannot mix configurations.
+        let mut mixed = parts();
+        mixed.push(with_provenance(
+            rows(&fp8_decode, &[(2, 0, 10, 0.5)], "real_kv"),
+            SHA,
+            true,
+        ));
+        let (_root, bad) = table(&concat(mixed));
+        assert!(bad.query(&fp8_decode, 1, 0, 10, &sol).is_err());
+        // One geometry cannot mix eager and graph timings.
+        let mut mixed = parts();
+        mixed.push(with_provenance(
+            rows(&nvfp4_decode, &[(2, 0, 10, 0.5)], "real_kv"),
+            SHA,
+            false,
+        ));
+        let (_root, bad) = table(&concat(mixed));
+        assert!(bad.query(&nvfp4_decode, 1, 0, 10, &sol).is_err());
+        // The runtime/source identity stays table-wide.
+        let mut mixed = parts();
+        let mut other = with_provenance(
+            rows(&nvfp4_prefill, &[(2, 0, 10, 1.0)], "real_kv"),
+            SHA,
+            false,
+        );
+        other[8] = Col::Str("source_sha256", vec![FP8_CONFIG]);
+        mixed.push(other);
+        let (_root, bad) = table(&concat(mixed));
+        assert!(bad.query(&nvfp4_prefill, 1, 0, 10, &sol).is_err());
     }
 
     #[test]
