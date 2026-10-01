@@ -464,7 +464,7 @@ cargo test --workspace
 <!-- readme-check: root-tests -->
 ```bash
 GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=commit.gpgsign GIT_CONFIG_VALUE_0=false \
-  PYTHONPATH="$PWD/python/aisimulate/src${PYTHONPATH:+:$PYTHONPATH}" \
+  PYTHONPATH="$PWD/python/aisimulate:$PWD/python/aisimulate/src${PYTHONPATH:+:$PYTHONPATH}" \
   python -m pytest -c pytest.ini tests
 ```
 
