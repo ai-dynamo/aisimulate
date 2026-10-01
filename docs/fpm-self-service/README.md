@@ -139,7 +139,8 @@ For existing data, compare its identity, provenance and coverage with the intend
 deployment before following the import path. The [Kimi example](examples.md#example-a-onboard-the-collected-kimi-k3-tp8dcp8-profile)
 demonstrates the supported SDK and engine Replay path for a measured DCP profile.
 
-Details: [plan and preview](implementation.md#plan-preview-and-explicitly-execute),
+Details: [how self-benchmarking works](implementation.md#how-self-benchmarking-works),
+[plan and preview](implementation.md#plan-preview-and-explicitly-execute),
 [executors](implementation.md#choose-the-collection-executor), and
 [sampling-grid ownership](implementation.md#how-the-collection-grid-is-determined).
 

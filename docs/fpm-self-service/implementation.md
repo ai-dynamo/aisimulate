@@ -20,6 +20,7 @@ covers metadata and the optional registered-model/SOL route.
 | Guide an onboarding session and retain decisions | [Agent stages](#onboard-with-an-agent), [checkpoint and resume](#checkpoint-and-resume-an-onboarding-session) |
 | Declare model, topology, precision and resource inputs | [Request](#create-the-request), [local config](#start-from-a-local-model-config), [resource metadata](#provide-identity-and-resource-metadata) |
 | Launch and resume GPU measurements | [Plan and collect](#plan-preview-and-explicitly-execute), [executors](#choose-the-collection-executor), [campaign orchestration](#orchestrate-independent-collection-campaigns) |
+| Understand what the benchmark measures | [Scheduler mechanics, sweep dimensions and timing](#how-self-benchmarking-works) |
 | Inspect timing data and resolve resources | [Published pair](#validate-and-install-the-fpm-profile), [runtime probe](#resolve-cache-geometry-with-a-runtime-probe), [finalization](#finalize-runtime-memory) |
 | Load timings and run simulation | [Canonical SDK](#construct-and-check-the-performance-model), [Replay configuration](#configure-replay), [ordinary configs](#run-the-generated-ordinary-configurations), [execution route](#choose-the-model-execution-route) |
 | Assess collection, coverage and serving accuracy | [Collection and serving validation](#validate-collection-and-serving-accuracy), [trace coverage](#validate-fpm-query-coverage-with-agentx-replay), [accuracy interpretation](#interpret-coverage-and-accuracy) |
@@ -929,6 +930,123 @@ When a campaign fails:
 4. If failed formal-collection cells need another GPU attempt, follow the lower-level collector's [recovery procedure](#recovery-and-cleanup), archive the old raw/log evidence and preserve the full emitted command's frozen arguments and paths. `--resume-retry-failed` belongs to `python -m collector.fpm_forward`, not `onboard collect-fpm`. After that retry, return through guided `collect-fpm --resume --execute` for its runtime-compatibility checks before finalization. If only memory finalization failed, retry `onboard finalize` with intact evidence and a fresh resolved output directory. Changes to reviewed runtime settings require a new reviewed campaign; never edit cell status or bypass ownership/artifact checks to declare success.
 
 If a probe/import fails at its checkpoint save because the revision changed, preserve its produced reports and observations. Reload and reconcile the latest checkpoint before following the [probe resume/import procedure](#preview-execute-import-and-review) under the writer rule above. Complete compatible observations can be imported into a fresh output directory without another GPU run. With unchanged inputs, probe `--resume --execute` reuses a verified complete attempt; incomplete or invalid evidence can still require GPU work. Do not repeat completed measurements merely to repair checkpoint bookkeeping.
+
+### How self-benchmarking works
+
+Dynamo self-benchmarking modifies the engine scheduler's behavior to construct
+controlled forward passes. It does not send an HTTP workload and wait for the
+normal serving scheduler to happen to form the desired batches. The model
+runner still executes the real model, kernels and collectives on the target GPUs.
+
+The source references below describe Dynamo at
+[`e00a35f9`](https://github.com/ai-dynamo/dynamo/tree/e00a35f9836675e59fa4f614956a7aef610a2894).
+Use the implementation and defaults in the pinned collection image when
+reproducing a campaign; benchmark adapters and sampling policies can change.
+
+#### Scheduler and request construction
+
+With benchmark mode enabled, vLLM's
+[`InstrumentedScheduler.schedule()`](https://github.com/ai-dynamo/dynamo/blob/e00a35f9836675e59fa4f614956a7aef610a2894/components/src/dynamo/vllm/instrumented_scheduler.py#L1830)
+enters a benchmark state machine. It injects requests, prepares their KV cache
+or recurrent state, and controls the scheduled token counts. Prefill requests
+still pass through the parent scheduler; decode benchmarking can construct a
+`SchedulerOutput` directly. Both reach the real model runner. The benchmark
+checks the work actually scheduled against the requested point and retains
+per-rank evidence, including failures and unsupported shapes.
+
+For prefill with an existing prefix, the real-seed path first computes the
+prefix KV outside the measured pass, then measures the new tokens attending to
+that prefix. A zero-prefix point needs no existing KV. For decode, the benchmark
+prepares the desired context, admits the requests, then runs steady decode steps
+through `scheduled_cached_reqs`. The admission step sets up the worker's request
+state and is excluded from the published timing. The
+[`steady-step implementation`](https://github.com/ai-dynamo/dynamo/blob/e00a35f9836675e59fa4f614956a7aef610a2894/components/src/dynamo/vllm/instrumented_scheduler.py#L6130)
+schedules one new token per active request, as ordinary autoregressive decode does.
+
+This state preparation is why a new KV cache or recurrent-state layout can need
+self-benchmarker changes even when the engine already serves the model. Inspect
+the recorded real/synthetic state and eligibility information; an allocated KV
+block is not evidence that its contents came from a real prefix. The
+[KV preparation policy](#how-the-collection-grid-is-determined) below describes
+the guided collector's defaults.
+
+#### Test cases and loop dimensions
+
+There are two levels of iteration. The AISimulate
+[collector plan](../../python/aisimulate/collector/fpm_forward/planner.py)
+selects deployment cells: phase, parallel topology, admitted KV dtype and backend
+policy. A guided request fixes one reviewed deployment; an aggregated request
+requires both prefill and decode cells. Model/checkpoint, image and other
+deployment changes belong to separate reviewed configurations and launches.
+
+Inside each initialized engine, the default balanced sweep varies workload
+coordinates while keeping that deployment fixed:
+
+| Test | Nested loop order | Work executed by the measured iteration |
+| --- | --- | --- |
+| Prefill without a cached prefix | Total new tokens `N`, then request count `B`, then `K=0` on the KV-read axis | Process `N` new tokens across `B` requests with no previously computed prefix. |
+| Prefill with a cached prefix | Total new tokens `N`, then request count `B`, then total existing KV tokens `K>0` | Process the new tokens while attending to prepared prefix KV. Prefix preparation is outside the measured pass. |
+| Decode | Request count `B`, then total existing KV tokens `K` | Read the prepared contexts and generate one token per request in a steady decode step. |
+
+`N` and `K` are sums over requests in one attention-DP rank's scheduled batch,
+not per-request input lengths. The default sweep distributes these totals as
+evenly as possible, respecting KV block alignment. For example, a feasible
+prefill point with `B=4`, `N=1024` and `K=8192` represents four requests with
+256 new tokens and 2048 cached tokens each. Attention-DP ranks coordinate their
+points; the consumer must use the published rank/workload aggregation.
+
+The nested loops are implemented in
+[`_bench_generate_prefill_grid()`](https://github.com/ai-dynamo/dynamo/blob/e00a35f9836675e59fa4f614956a7aef610a2894/components/src/dynamo/vllm/instrumented_scheduler.py#L2947)
+and [`_bench_generate_decode_grid()`](https://github.com/ai-dynamo/dynamo/blob/e00a35f9836675e59fa4f614956a7aef610a2894/components/src/dynamo/vllm/instrumented_scheduler.py#L3521).
+These are separate prefill and decode tests; `agg` runs both phases, rather than
+creating mixed prefill/decode batches. They are not a sweep over HTTP concurrency,
+request output length or end-to-end request latency.
+
+#### How individual points are selected
+
+The loops sample their axes rather than visiting every integer combination:
+
+- Prefill's new-token axis and decode's batch-size axis use CUDA Graph capture
+  boundaries `C` and `C+1`, an eager tail beyond the capture range, and the engine
+  limit. Without captures, they use powers of two plus the limit. Sample caps
+  can thin the candidate set; hybrid block-aligned prefill can add block-multiple
+  candidates.
+- Prefill batch sizes come from feasible powers of two and the feasible maximum,
+  limited by the configured batch-sample count. A high `max_num_seqs` does not
+  imply that every batch size is measured.
+- The KV-read axes sample valid prefix/context totals within the model and KV
+  capacity bounds. Feasibility also checks token budgets, request limits, block
+  alignment and the space needed for state preparation and measured steps.
+  Decode labels use the context actually read by the steady step, after any
+  admission adjustment.
+
+The runtime controls include `prefill_max_new_token_samples`,
+`prefix_max_batch_size_samples`, `prefill_max_kv_read_token_samples`,
+`decode_max_batch_size_samples` and `decode_max_kv_read_token_samples`.
+The deployed image and collector overrides determine their effective values.
+An explicit `--benchmark-points-file` can supply points instead of the default
+grid; nonuniform prefill batches use explicit per-request rows or partitions
+and the runtime's imbalance option. Do not infer their collection or consumer
+support from completion of a balanced sweep.
+
+#### Timing and retained samples
+
+Engine startup, global warm-up, prefix/KV preparation and decode admission are
+separate from the retained measurements. Prefill retains its measured forward;
+decode retains the steady sample, or the configured median of multiple steady
+samples together with its repeat count. See the
+[`sample-selection code`](https://github.com/ai-dynamo/dynamo/blob/e00a35f9836675e59fa4f614956a7aef610a2894/components/src/dynamo/vllm/instrumented_scheduler.py#L6387).
+Those adjacent steady samples do not replace the independent collection-quality
+repetitions described in [collection validation](#stage-5-collection-quality).
+
+The native FPM records iteration **wall time**, not a CUDA-kernel-only duration.
+The scheduler records the prefill schedule-to-output interval; steady decode
+uses consecutive output-arrival times to avoid attributing the preceding admission
+step's remaining GPU work to the steady step. Attention-DP synchronization aligns the benchmark point;
+the initial rendezvous wait is outside the timed interval, although launch skew
+can remain. The collector verifies the retained per-rank samples and uses their
+maximum as the synchronized iteration duration. Preserve this timing boundary,
+rank reduction and state-preparation provenance when comparing measurements.
 
 ### How the collection grid is determined
 
