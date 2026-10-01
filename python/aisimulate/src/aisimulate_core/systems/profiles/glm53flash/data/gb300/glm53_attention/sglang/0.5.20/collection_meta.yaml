@@ -1,0 +1,36 @@
+schema_version: 1
+runtime:
+  framework: sglang
+  version: 0.5.20
+  image: lmsysorg/sglang
+  image_digest: sha256:b0d8718a4424bb22e448e04407ab3ce5f7399a4c5fc702d6fbe36c3772ec8862
+tables:
+  glm53_attention_module_perf:
+    status: complete
+    rows: 1816
+    data_sha256: f481daa8e4d1c6ba7f96982c961ce210c19c77c5dac2863faf4c07fe60d5b83b
+    collector: collector.sglang.glm53flash_attention_runner
+    measurement: one real sparse-MLA layer (3); prefill eager repeated module call,
+      decode module CUDA graph from the framework decode capture; output all-reduce
+      excluded
+    attempts:
+    - attempt: full-sglang-fp8-tp2-5b97dde253ae-09301743
+      manifest_sha256: cf25d699cbf351990aac54594aae57f426e545ec06c47077727fe176ea60777a
+      plan_sha256: 7aa5582c70a9e03d601cdd19e3dc7792a2bb39834b68ac8d1091857959020b9c
+      deployment: fp8-tp2
+      source_commit: 5b97dde253aeafb381f34be5e1c525d1a3aed051
+    - attempt: full-sglang-fp8-tp4-5b97dde253ae-09301746
+      manifest_sha256: 313b89f30fdb92a09e9eb2b05ebe229a13eb53d536511bd0b19c03a61b804238
+      plan_sha256: 7aa5582c70a9e03d601cdd19e3dc7792a2bb39834b68ac8d1091857959020b9c
+      deployment: fp8-tp4
+      source_commit: 5b97dde253aeafb381f34be5e1c525d1a3aed051
+    - attempt: full-sglang-nvfp4-tp2-5b97dde253ae-09301743
+      manifest_sha256: 8bca8eaf57b8eed27a7d6902f18519cbceeba7145785dc88703f3ca671192938
+      plan_sha256: 7aa5582c70a9e03d601cdd19e3dc7792a2bb39834b68ac8d1091857959020b9c
+      deployment: nvfp4-tp2
+      source_commit: 5b97dde253aeafb381f34be5e1c525d1a3aed051
+    - attempt: full-sglang-nvfp4-tp4-5b97dde253ae-09301744
+      manifest_sha256: 5247069d0fb8b4f790ba4d4da511f83ab7e2be9c3c31ce61c6b7781794e9e1a5
+      plan_sha256: 7aa5582c70a9e03d601cdd19e3dc7792a2bb39834b68ac8d1091857959020b9c
+      deployment: nvfp4-tp4
+      source_commit: 5b97dde253aeafb381f34be5e1c525d1a3aed051
