@@ -2025,3 +2025,17 @@ findings:
     - framework:vllm-0.30.0
     - instrument:collect.py
     - instrument:collect_campaign
+  sm120_dsa_kv_dtype_axis_collapses:
+    statement: 'DSA module rows on sm120 carry kv_cache_dtype=fp8 for BOTH declared KV variants: vLLM 0.30.0''s
+      FLASHINFER_MLA_SPARSE_SM120 path resolves the cache to fp8_ds_mla regardless of the requested dtype (opharness
+      serving probes of DeepSeek-V3.2 and GLM-5.2: kv None and kv fp8 both -> cache_config_dtype fp8_ds_mla), and the
+      collector records the RESOLVED dtype (serving truth). Consequence: the bf16-KV and fp8-KV shards of dsa_context /
+      dsa_generation produce identical identity keys (8,835 of 8,835 per shard pair, latency ratio 1.01), so half of
+      the sm120 DSA collection (~4 h x 8 GPUs) re-measured the same physical configuration; the merged tables hold
+      53,010 + 5,432 unique rows (106,020 + 10,862 collected). Not a data defect — the rows are truthful — but the
+      case plan''s kv axis is not a real axis for DSA on this SM. Candidate: dedup DSA cases on the resolved kv dtype at
+      plan time (the collector already collapses physical keys for mla specs), or declare the DSA kv axis per SM.'
+    applies_to:
+    - platform:sm120
+    - framework:vllm-0.30.0
+    - instrument:collect_mla_module
