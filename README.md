@@ -264,9 +264,10 @@ Use the focused SDK documentation instead of treating CLI internals as public
 APIs:
 
 - [Estimator/FPE Python and Rust SDK](docs/core-api.md)
-- [FPM self-service: onboard a model on target hardware](docs/fpm-self-service.md)
+- [FPM self-service: onboard a model on target hardware](docs/fpm-self-service/README.md)
+- [FPM self-service implementation and CLI reference](docs/fpm-self-service/implementation.md)
+- [FPM self-service examples](docs/fpm-self-service/examples.md)
 - [AIC-compatible modeled-power contract (semantics only)](docs/power-model.md)
-- [FPM self-benchmarking and onboarding guide](python/aisimulate/docs/fpm/self-benchmarking-and-onboarding.md)
 - [Replay SDK and artifact contract](crates/core/src/replay/README.md)
 - [Sweeper SDK](docs/sweeper/overview.md)
 - [Legacy CLI reference](docs/cli/legacy-aic-user-guide.md)

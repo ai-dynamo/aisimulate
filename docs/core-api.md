@@ -195,7 +195,7 @@ groups require a window. `page_size_bytes` is the **rank-local aggregate for all
 layers in the group**, including runtime padding. Do not multiply it by
 `num_layers` again. Runtime block sizes and padding are deployment inputs; model
 geometry alone does not establish them. See the
-[grouped-profile review workflow](fpm-self-service.md#review-grouped-cache-resources).
+[grouped-profile review workflow](fpm-self-service/implementation.md#review-grouped-cache-resources).
 
 Use `RustForwardPassPerfModel.estimate_cache_budget(config, budget)` with the
 same canonical `ForwardPassPerfModelConfig` used for timing. Rust exposes
@@ -494,7 +494,7 @@ continues to later systems roots when a required phase is unavailable. Query
 coverage still needs an exact point or supported interpolation. Cross-KV prefill
 uses the nearest same-batch lower and upper KV curves that both cover the
 requested token count, without a KV distance limit. SOL's site-distance guard
-does not apply to this direct bracket. See the [self-service coverage rules](fpm-self-service.md#choose-the-model-execution-route).
+does not apply to this direct bracket. See the [self-service coverage rules](fpm-self-service/implementation.md#choose-the-model-execution-route).
 
 The returned provenance pins both the selected estimation mode and interpolation
 method, alongside the complete normalized profile. Reusing its `config` keeps
@@ -753,7 +753,7 @@ replay; the Python exception retains a `fpm_query_coverage` attribute for that
 failure path. A passing replay coverage status requires completed requests,
 nonempty resolved queries and no unsupported lookup. It is distinct from
 operation/energy evidence, which whole-model FPM does not provide. See
-[FPM replay validation](fpm-self-service.md#validate-fpm-query-coverage-with-agentx-replay)
+[FPM replay validation](fpm-self-service/implementation.md#validate-fpm-query-coverage-with-agentx-replay)
 for the stricter whole-corpus completion checks and saved onboarding artifacts.
 
 ### Recursive regression and statistics rebuilding

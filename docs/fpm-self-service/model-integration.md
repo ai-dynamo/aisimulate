@@ -11,7 +11,7 @@ config/profile route supports ordinary FPM `predict` and `recommend` without
 an op-level model class. Registered models can also use analytical SOL estimates
 for timing transfer. Neither route requires per-operation GPU timing collection.
 
-Start with the [FPM self-service workflow](../../../../docs/fpm-self-service.md#onboard-with-an-agent)
+Start with the [FPM self-service workflow](implementation.md#onboard-with-an-agent)
 to inspect a model, choose a worker, derive and review its resource profile,
 plan and collect timings, and validate replay. This guide records the metadata
 shared by both routes, then describes the **optional registered-model/SOL
@@ -24,14 +24,14 @@ Supply a local model config to `aisimulate onboard init --model-config`, or
 provide an existing `--fpm-profile`. Config-based setup derives supported
 resource estimates and identifies missing bounds; review and edit the exact
 values, effective precisions and provenance before accepting the profile.
-Follow the self-service guide's [terminal or headless review flow](../../../../docs/fpm-self-service.md#3-derive-review-and-save-the-profile).
+Follow the self-service guide's [terminal or headless review flow](implementation.md#3-derive-review-and-save-the-profile).
 Profile resources must bound every rank of the selected topology. A profile is
 a declaration, not proof of runtime compatibility or measured memory fit.
 For full/sliding attention and supported convolution state, follow
-[grouped cache review](../../../../docs/fpm-self-service.md#review-grouped-cache-resources):
+[grouped cache review](implementation.md#review-grouped-cache-resources):
 runtime block sizes remain explicit inputs, and each group page includes every
 group layer plus runtime padding on one rank. Use the
-[canonical byte-budget API](../../../../docs/core-api.md#fpm-profile-cache-groups-and-byte-budgets)
+[canonical byte-budget API](../core-api.md#fpm-profile-cache-groups-and-byte-budgets)
 for grouped resources; a scalar token capacity cannot represent window eviction
 or transient prefill pages.
 
@@ -48,17 +48,17 @@ The saved request embeds the profile, and generated ordinary configurations use
 `estimator_config.fpm_interpolation.method: direct`, and `fallback_policy: deny`.
 Direct interpolation uses measured whole-forward timings without constructing
 an operation graph for timing or resources. Unsupported metadata and uncovered
-queries fail explicitly. See [execution-route selection and interpolation rules](../../../../docs/fpm-self-service.md#choose-the-model-execution-route)
+queries fail explicitly. See [execution-route selection and interpolation rules](implementation.md#choose-the-model-execution-route)
 for exact-point, curve and two-sided interpolation coverage.
 
 Each generated profile and plan selects one exact TP, DEP or TEP worker. To onboard
 several configurations in one session, use the self-service guide's
-[directory output](../../../../docs/fpm-self-service.md#onboard-multiple-parallel-configurations).
+[directory output](implementation.md#onboard-multiple-parallel-configurations).
 It reuses shared intake and creates a separate reviewed profile and request
 for each tuple; rank-local byte bounds and cache groups are never transferred
 between configurations. Follow each emitted plan command and collect or resume
 each configuration independently. Follow the
-[shared collection policy](../../../../docs/fpm-self-service.md#how-the-collection-grid-is-determined):
+[shared collection policy](implementation.md#how-the-collection-grid-is-determined):
 AISimulate sets runtime limits and the reviewed capture policy. New onboarding
 uses `--prefill-cudagraph-policy runtime`, which leaves prefill compilation to
 the pinned engine; explicit capture extension remains available. The collector
@@ -68,7 +68,7 @@ Capture sizes and exact counts remain unresolved before engine initialization
 in runtime mode. A complete generated grid does
 not establish direct-FPM query coverage. Validation traffic is supplied
 separately after a formal timing pair is verified. The
-current [AgentX coverage check](../../../../docs/fpm-self-service.md#validate-fpm-query-coverage-with-agentx-replay)
+current [AgentX coverage check](implementation.md#validate-fpm-query-coverage-with-agentx-replay)
 uses cold aggregated replay, one client lane, HBM-only cache and no speculative
 decoding. Missing timing stops replay and retains partial evidence; that evidence
 cannot certify the rest of the trace. Coverage and measured accuracy are
@@ -91,7 +91,7 @@ Keep these inputs with the integration issue and eventual collection artifacts:
 For example, MoE TP4 is `(4, 1, 1, 4, 1, 1)`, DEP8 is
 `(1, 1, 8, 1, 8, 1)`, and TEP8 is `(8, 1, 1, 1, 8, 1)`. Equal GPU counts do
 not make their resource bounds or timing cells interchangeable. Use the
-[topology flags and collection limits](../../../../docs/fpm-self-service.md#create-the-request)
+[topology flags and collection limits](implementation.md#create-the-request)
 for the intended worker, and verify actual collection resources before execution.
 The sequence limit does not reserve maximum context for every sequence.
 
@@ -111,21 +111,21 @@ intended FPM deployment.
 
 ## 2. Registered-model route: reuse or implement the model description
 
-Follow [How to add a new model](../add_a_new_model.md) for the registry and native
+Follow [How to add a new model](../../python/aisimulate/docs/add_a_new_model.md) for the registry and native
 operation contracts. For this registered-model/SOL route, review these concrete responsibilities:
 
 | Responsibility | Source and required result |
 | --- | --- |
-| Parse the checkpoint | [`sdk/utils.py`](../../src/aisimulate_core/sdk/utils.py), especially `get_model_config_from_model_path()`. Confirm the parsed geometry and architecture-specific `extra_params`; add parsing only for fields the existing parser cannot represent correctly. |
-| Select a family | [`sdk/common.py`](../../src/aisimulate_core/sdk/common.py), `ARCHITECTURE_TO_MODEL_FAMILY`. Reuse a family only when its operation pipeline, precision handling, and cache behavior match the model. A new architecture name alone does not require a dedicated class. |
-| Construct a new family when needed | The [registry examples](../../src/aisimulate_core/sdk/models/README.md#adding-a-new-model) show `@register_model`, `create()`, and reusable blocks. Implement the actual `context_ops` and `generation_ops`; an empty placeholder class is insufficient. |
+| Parse the checkpoint | [`sdk/utils.py`](../../python/aisimulate/src/aisimulate_core/sdk/utils.py), especially `get_model_config_from_model_path()`. Confirm the parsed geometry and architecture-specific `extra_params`; add parsing only for fields the existing parser cannot represent correctly. |
+| Select a family | [`sdk/common.py`](../../python/aisimulate/src/aisimulate_core/sdk/common.py), `ARCHITECTURE_TO_MODEL_FAMILY`. Reuse a family only when its operation pipeline, precision handling, and cache behavior match the model. A new architecture name alone does not require a dedicated class. |
+| Construct a new family when needed | The [registry examples](../../python/aisimulate/src/aisimulate_core/sdk/models/README.md#adding-a-new-model) show `@register_model`, `create()`, and reusable blocks. Implement the actual `context_ops` and `generation_ops`; an empty placeholder class is insufficient. |
 | Describe analytical work | Each operation needs correct dimensions, quantization, layer/repetition scaling, and per-rank parallelism. Preserve the context/generation attention and `logits_gemm` naming contracts. Inspect communication, overlap, and phase-specific behavior as well as GEMMs. |
 | Describe memory | Operation `get_weights()` values provide the weight inventory. Model `get_kvcache_bytes_per_sequence()` and its inverse `get_kvcache_max_tokens()` must represent the real cache curve. Override both for non-linear/windowed/compressed layouts; do not extrapolate a one-token slope across a window boundary. |
-| Support FPM analytical execution | Every retained operation must be supported by the Rust [`fpm_sol` evaluator](../../../../crates/core/src/perfmodel/operators/fpm_sol.rs) for the proposed deployment and shapes. Adding an ordinary native operation or a `SOL_FULL` diagnostic does not automatically add this support. |
+| Support FPM analytical execution | Every retained operation must be supported by the Rust [`fpm_sol` evaluator](../../crates/core/src/perfmodel/operators/fpm_sol.rs) for the proposed deployment and shapes. Adding an ordinary native operation or a `SOL_FULL` diagnostic does not automatically add this support. |
 
 Construct performance models through
 `RustForwardPassPerfModel.best_available(ForwardPassPerfModelConfig)` and query
-the returned model, as specified by the [canonical API](../../../../docs/core-api.md#choosing-a-forward-pass-api).
+the returned model, as specified by the [canonical API](../core-api.md#choosing-a-forward-pass-api).
 For registered FPM interpolation, select `estimation_mode: fpm_interpolation`,
 `estimator_config.fpm_interpolation.method: sol`, and `fallback_policy: deny`.
 The constructor requires a compatible registered class and a matching FPM pair.
@@ -136,7 +136,7 @@ this phase replacement or implement a Python latency/SOL formula.
 
 ## 3. Run CPU checks before collecting timings
 
-From the repository root, activate the installed [development environment](../../../../DEVELOPMENT.md)
+From the repository root, activate the installed [development environment](../../DEVELOPMENT.md)
 and choose a fresh evidence directory:
 
 ```bash
@@ -149,7 +149,7 @@ uses bundled model metadata and the H200 system/backend catalog. The memory
 entry point still requires a resolvable catalog/database layout, even though
 memory sizing does not query measured operation latencies. The example pins a
 queryable backend version; select a version allowed by your installed
-[`query_versions.yaml`](../../src/aisimulate_core/systems/query_versions.yaml)
+[`query_versions.yaml`](../../python/aisimulate/src/aisimulate_core/systems/query_versions.yaml)
 when adapting it.
 
 ```bash
@@ -254,22 +254,22 @@ Compare the emitted operation dimensions and scale factors with the serving
 architecture, and add independent expected-value tests for those facts. Exercise
 each supported topology/precision and the relevant cache/window boundaries;
 three positive sequence lengths and a successful import are not sufficient
-model-specific evidence. See the existing [model configuration and memory tests](../../tests/unit/sdk/models/test_model_config.py)
+model-specific evidence. See the existing [model configuration and memory tests](../../python/aisimulate/tests/unit/sdk/models/test_model_config.py)
 for patterns. Include an unsupported architecture/topology case that must fail
 explicitly, rather than falling back to another family or memory estimator.
 
 ## 4. Verify the FPM execution contract
 
 For a registered-model integration, run its focused CPU tests together with the
-existing [FPM graph and routing](../../tests/unit/sdk/test_fpm_forward.py),
-[profile and canonical constructor](../../tests/unit/sdk/test_fpm_profile.py),
-[operation serialization](../../tests/unit/sdk/test_opspec_coverage.py) and
-[single-oracle](../../tests/cross_package/test_single_oracle_contract.py)
-contract suites. Native [FPM SOL](../../../../crates/core/src/perfmodel/operators/fpm_sol.rs)
-and [FPM forward](../../../../crates/core/src/perfmodel/operators/fpm_forward.rs)
+existing [FPM graph and routing](../../python/aisimulate/tests/unit/sdk/test_fpm_forward.py),
+[profile and canonical constructor](../../python/aisimulate/tests/unit/sdk/test_fpm_profile.py),
+[operation serialization](../../python/aisimulate/tests/unit/sdk/test_opspec_coverage.py) and
+[single-oracle](../../python/aisimulate/tests/cross_package/test_single_oracle_contract.py)
+contract suites. Native [FPM SOL](../../crates/core/src/perfmodel/operators/fpm_sol.rs)
+and [FPM forward](../../crates/core/src/perfmodel/operators/fpm_forward.rs)
 tests cover analytical and transfer behavior. Follow the repository's
-[test instructions](../../../../DEVELOPMENT.md#running-tests); on macOS, use
-`-p no:timeout` as noted in the [repository guidance](../../../../AGENTS.md#cursor-cloud-specific-instructions).
+[test instructions](../../DEVELOPMENT.md#running-tests); on macOS, use
+`-p no:timeout` as noted in the [repository guidance](../../AGENTS.md#cursor-cloud-specific-instructions).
 Existing fixtures do not automatically cover a new model's operations or
 demonstrate predictive accuracy.
 
@@ -285,12 +285,12 @@ regression that constructs the model through `best_available` with explicit
 `fpm_interpolation`/`sol` and denied fallback, then queries deliberately synthetic
 FPM cells at an off-site coordinate requiring SOL transfer. Cover both phases
 and any relevant fractional coordinates. Use the synthetic pair layout in
-[`test_fpm_forward.py`](../../tests/unit/sdk/test_fpm_forward.py), the canonical
-constructor/query examples in [`test_fpm_profile.py`](../../tests/unit/sdk/test_fpm_profile.py), and the native
+[`test_fpm_forward.py`](../../python/aisimulate/tests/unit/sdk/test_fpm_forward.py), the canonical
+constructor/query examples in [`test_fpm_profile.py`](../../python/aisimulate/tests/unit/sdk/test_fpm_profile.py), and the native
 tests `prefill_off_site_kv_resolves_through_the_dsa_sol_transfer`,
 `decode_pairless_batch_resolves_through_the_dsa_sol_transfer`, and
 `unsupported_sol_family_is_lazy` in
-[`fpm_forward.rs`](../../../../crates/core/src/perfmodel/operators/fpm_forward.rs)
+[`fpm_forward.rs`](../../crates/core/src/perfmodel/operators/fpm_forward.rs)
 as contract examples. Assert an independently justified result and a clear
 failure for an unsupported shape or identity; an exact-hit-only fixture misses
 this dependency. Keep synthetic timings in test fixtures, never publish them as
@@ -301,8 +301,8 @@ its Rust FPM SOL path before relying on sparse collection.
 
 Submit the model/parser/operation changes with the focused model tests, CPU
 reports, resolved deployment inputs, and any explicit unsupported cases. Follow
-the repository [review contract](../../../../REVIEW.md). After review, install
-the approved AISimulate revision using the [development setup](../../../../DEVELOPMENT.md)
+the repository [review contract](../../REVIEW.md). After review, install
+the approved AISimulate revision using the [development setup](../../DEVELOPMENT.md)
 in the environment that will plan collection and run prediction. From that
 checkout with its environment active:
 
@@ -325,8 +325,8 @@ The metadata used for local construction must describe the same checkpoint
 mounted in the collection runtime; a temporary local path is not a portable
 replacement for the canonical identity in the published pair.
 
-For the config/profile route, continue the [self-service workflow](../../../../docs/fpm-self-service.md#plan-preview-and-explicitly-execute)
-with the accepted profile. The [collection campaign example](self-benchmarking-and-onboarding.md#b2-freeze-and-inspect-the-plan-step-2)
+For the config/profile route, continue the [self-service workflow](implementation.md#plan-preview-and-explicitly-execute)
+with the accepted profile. The [collection campaign example](examples.md#b2-freeze-and-inspect-the-plan)
 illustrates guided collection and formal pair publication without requiring an analytical class. Only
 whole-forward silicon timings are collected for FPM. Exercise ordinary `predict`
 and `recommend` on covered candidates and retain the matching inputs, data
