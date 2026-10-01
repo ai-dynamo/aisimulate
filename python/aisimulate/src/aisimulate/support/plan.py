@@ -10,6 +10,7 @@ import hashlib
 import json
 import os
 import stat
+import tempfile
 from collections.abc import Iterator
 from contextlib import contextmanager
 from importlib.resources import files
@@ -28,29 +29,26 @@ _LOCK_NAME = ".support.lock"
 
 
 def request_id(request: SupportRequest) -> str:
-    """Bind the entire declared request, including workload and search settings."""
+    """Identify reusable collection inputs, independent of evaluation traffic."""
 
-    payload = json.dumps(request.model_dump(mode="json", exclude_none=True), sort_keys=True, separators=(",", ":"))
+    collection = request.model_dump(mode="json", exclude_none=True)
+    collection.pop("workload")
+    for key in ("objective", "seed"):
+        collection["search"].pop(key)
+    payload = json.dumps(collection, sort_keys=True, separators=(",", ":"))
     return "onboarding-" + hashlib.sha256(payload.encode()).hexdigest()
 
 
-def _parallelism(request: SupportRequest, replicas: int) -> dict[str, int]:
-    return {
-        "replicas": replicas,
-        "tensor": request.search.tensor_parallel,
-        "pipeline": 1,
-        "attention_data": 1,
-        "moe_tensor": request.search.tensor_parallel if request.identity.model_kind == "moe" else 1,
-        "moe_expert": 1,
-    }
+def validation_id(request: SupportRequest) -> str:
+    """Bind generated validation examples to the complete saved request."""
+    payload = json.dumps(request.model_dump(mode="json", exclude_none=True), sort_keys=True, separators=(",", ":"))
+    return "validation-" + hashlib.sha256(payload.encode()).hexdigest()
 
 
 def _configs(
     request: SupportRequest, root: Path
 ) -> tuple[dict[str, Any], dict[str, dict[str, Any]], list[dict[str, int]]]:
-    max_replicas = request.identity.node_count * (request.identity.gpus_per_node // request.search.tensor_parallel)
-    replicas = list(dict.fromkeys((1, max_replicas)))[: request.search.max_candidates]
-    presets = [_parallelism(request, count) for count in replicas]
+    preset = request.parallelism()
     workload = request.workload
     common = {
         "traffic": {
@@ -75,33 +73,57 @@ def _configs(
     }
     # Recommendation otherwise expands scheduler defaults into extra domains.
     worker = {
-        "scheduler": {"max_batched_tokens": 8192, "max_sequences": 256},
+        "scheduler": request.scheduler_limits(),
         "timing": {"type": "default", "estimation_mode": "fpm_interpolation", "fallback_policy": "deny"},
     }
+    if request.collection.gpu_memory_utilization is not None:
+        worker["kv_cache"] = {"capacity": {"memory_fraction": request.collection.gpu_memory_utilization}}
+    if request.fpm_profile is not None:
+        engine["fpm_profile"] = request.fpm_profile.model_dump(mode="json")
+        worker["timing"]["estimator_config"] = {"fpm_interpolation": {"method": "direct"}}
+        if request.profile_deployment().resources.cache_layout == "grouped":
+            worker.setdefault("kv_cache", {})["prefix_caching"] = False
+    if request.worker_type in {"prefill", "decode"}:
+        # A role is independently collectable. A complete P/D serving config
+        # also needs the independently accepted counterpart and runtime support.
+        worker["timing"]["systems_paths"] = [str(root / "systems")]
+        return (
+            {
+                "schema_version": "aisimulate-onboarding-worker/v1",
+                "worker_type": request.worker_type,
+                "serving_mode": "disaggregated",
+                "engine": {
+                    **engine,
+                    "mode": "disaggregated",
+                    "workers": {request.worker_type: {**worker, "parallelism": preset}},
+                },
+                "collection": request.collection_settings(),
+            },
+            {},
+            [preset],
+        )
     prediction = {
         **common,
-        "engine": {**engine, "workers": {"aggregated": {**worker, "parallelism": presets[0]}}},
+        "engine": {**engine, "workers": {"aggregated": {**worker, "parallelism": preset}}},
     }
     CorePredictionConfig.model_validate(prediction)
-    recommendations = {}
-    for preset in presets:
-        recommendation = {
-            **common,
-            "engine": {**engine, "workers": {"aggregated": {**worker, "parallelism": {"preset": [preset]}}}},
-            "optimization": {
-                "target": request.search.objective,
-                "constraints": {"max_candidate_gpus": request.identity.gpu_count},
-            },
-            "optimizer": {"algorithm": "random", "max_trials": 1, "parallelism": 1, "seed": request.search.seed},
-        }
-        CoreRecommendationConfig.model_validate(recommendation)
-        name = "pilot" if preset["replicas"] == 1 else f"replicas-{preset['replicas']}"
-        recommendations[name] = recommendation
-    return prediction, recommendations, presets
+    recommendation = {
+        **common,
+        "engine": {**engine, "workers": {"aggregated": {**worker, "parallelism": {"preset": [preset]}}}},
+        "optimization": {
+            "target": request.search.objective,
+            # Match this validation worker even when it exceeds the runtime's default cap.
+            # This is derived scope, not a declaration of available deployment GPUs.
+            "constraints": {"max_candidate_gpus": request.worker_gpus},
+        },
+        "optimizer": {"algorithm": "random", "max_trials": 1, "parallelism": 1, "seed": request.search.seed},
+    }
+    CoreRecommendationConfig.model_validate(recommendation)
+    return prediction, {"pilot": recommendation}, [preset]
 
 
 def _commands(request: SupportRequest, root: Path, recommendation_names: list[str]) -> dict[str, Any]:
-    return {
+    commands = {
         "fpm_plan_local": fpm_cli_args(request, output_dir=root, plan_only=True),
         "fpm_run_local": [
             "aisimulate",
@@ -139,6 +161,31 @@ def _commands(request: SupportRequest, root: Path, recommendation_names: list[st
             for name in recommendation_names
         ],
     }
+    if request.worker_type in {"prefill", "decode"}:
+        commands["predict"] = []
+        commands["recommend"] = []
+    from .runtime import runtime_collection_inputs, runtime_probe_manifest
+
+    if runtime_probe_manifest(request) is not None:
+        _, deployment = runtime_collection_inputs(request, None)
+        for name, value in deployment.model_dump(exclude_none=True).items():
+            for item in value if name == "container_mount" else [value]:
+                commands["fpm_run_local"].extend(("--" + name.replace("_", "-"), str(item)))
+    if request.fpm_profile is not None and (
+        not request.profile_deployment().resources.memory_ready or runtime_probe_manifest(request) is not None
+    ):
+        commands["finalize"] = [
+            "aisimulate",
+            "onboard",
+            "finalize",
+            "--config",
+            str(root / "request.yaml"),
+            "--output-dir",
+            str(root),
+            "--resolved-output-dir",
+            str(root.with_name(root.name + "-resolved")),
+        ]
+    return commands
 
 
 def _plan_documents(request: SupportRequest, root: Path) -> tuple[dict[str, Any], dict[Path, bytes]]:
@@ -154,32 +201,42 @@ def _plan_documents(request: SupportRequest, root: Path) -> tuple[dict[str, Any]
         )
     prediction, recommendations, presets = _configs(request, root)
     commands = _commands(request, root, list(recommendations))
+    runtime_prerequisite = (
+        "Prepare and verify the declared model/tokenizer snapshots, visible GPUs, model access and compatible "
+        "Dynamo self-benchmark runtime. At collection, choose Kubernetes with the packaged Generator and "
+        "required deployment permissions, or a caller-owned sbatch/salloc Slurm allocation with Pyxis/Enroot, "
+        "an explicit --image and a campaign directory shared at the same absolute path across allocated nodes. "
+        "The Slurm allocation must match the collector plan's node count and provide the required GPUs per node. "
+        "This plan does not download a pinned checkpoint or inspect a running worker. "
+    )
     plan = {
-        "schema_version": "aisimulate-support-plan/v1",
+        "schema_version": "aisimulate-support-plan/v2",
         "request_id": request_id(request),
+        "validation_id": validation_id(request),
         "search": {
             "candidate_count": len(presets),
-            "max_candidates": request.search.max_candidates,
-            "candidates": [
-                {"parallelism": preset, "total_gpus": preset["replicas"] * preset["tensor"]} for preset in presets
-            ],
+            "candidates": [{"parallelism": preset, "required_gpus": request.worker_gpus} for preset in presets],
             "detail": (
-                "A single selected worker is planned; recommendation does not compare alternative configurations."
-                if len(presets) == 1
-                else "Run one independent one-trial recommendation for the selected worker and one for the maximum "
-                "same-worker replicas that fit within each node. Compare their separate results; no combined ranking "
-                "or additional topology search is generated."
+                "Prediction and recommendation are single-worker validation examples for the selected topology. "
+                "The recommendation GPU cap equals that worker's required GPUs; no available allocation is declared. "
+                "Set deployment replicas and optimization budgets in ordinary predict/recommend configs."
             ),
             "baseline_rule": "Selected single worker; model parallelism legality and memory fit remain unchecked.",
         },
         "fpm": {
             "status": "planned",
-            "worker_gpus": request.search.tensor_parallel,
+            "collection_gpus_required": request.worker_gpus,
+            "resource_requirement": (
+                "At least this many GPUs are required for one selected worker (attention TP times attention DP). "
+                "Actual available GPUs, placement and collector runtime resources remain unchecked."
+            ),
             "plan_command": commands["fpm_plan_local"],
+            "runtime_limits": request.collection_settings(),
             "sampling": (
-                "Prefill is bounded by max(2, input_tokens * concurrency) and concurrency. Decode sampling and "
-                "runtime context auto-fitting use the collector's existing profile. The synthetic request count "
-                "does not bound timing samples. Smoke and limited runs do not publish formal FPM data."
+                "Dynamo self-benchmark generates the prefill/decode grid from CUDA graph sizes and the reviewed "
+                "runtime limits. The new-token budget, per-request context, scheduler sequence bound and total KV "
+                "capacity are separate quantities. Exact points resolve at runtime; validation traffic and SLAs "
+                "do not change these collection settings. Smoke and limited runs do not publish formal FPM data."
             ),
         },
         "prerequisites": [
@@ -187,20 +244,19 @@ def _plan_documents(request: SupportRequest, root: Path) -> tuple[dict[str, Any]
                 "id": "model_integration",
                 "status": "not_checked",
                 "detail": (
-                    "Verify pinned model metadata, memory/cache accounting, and chosen parallelism. This revision's "
-                    "FPM predict/recommend uses registered analytical classes and SOL transfer; follow "
-                    "python/aisimulate/docs/add_a_new_model.md for that route. Class-independent FPM with direct "
-                    "timing interpolation is planned separately. Per-operation silicon data is not required."
+                    "Verify pinned model metadata, memory/cache accounting, and chosen parallelism. Without an "
+                    "FPM profile, predict/recommend uses a registered analytical class and SOL transfer; follow "
+                    "python/aisimulate/docs/add_a_new_model.md for that route. Supply an FPM identity/resource "
+                    "profile to use direct interpolation without a class. Per-operation silicon data is not required."
                 ),
             },
             {
                 "id": "runtime",
                 "status": "not_checked",
-                "detail": (
-                    "Prepare and verify the declared model/tokenizer revisions, vLLM version, visible GPUs, "
-                    "model access, and the packaged Dynamo/Kubernetes/Generator collector runtime. Local invocation "
-                    "uses that existing runtime. The collector does not apply revision/version declarations; "
-                    "use a pinned local model snapshot where needed."
+                "detail": runtime_prerequisite
+                + (
+                    "Without an FPM profile, the collector does not enforce model/tokenizer revision or "
+                    "vLLM version declarations; use and verify pinned local snapshots and a pinned runtime."
                 ),
             },
             {
@@ -223,14 +279,151 @@ def _plan_documents(request: SupportRequest, root: Path) -> tuple[dict[str, Any]
             "systems_root": str(root / "systems"),
         },
     }
+    if "prefill_cudagraph_policy" in request.collection.model_fields_set:
+        plan["fpm"]["launch"] = (
+            "AISimulate launches and manages benchmark workers when collection is executed; no separately "
+            "launched HTTP server is required. vLLM initializes the model, caches and CUDA graphs; Dynamo "
+            "self-benchmark generates and measures the feasible grid. Initialization and planning do not launch GPUs."
+        )
+    if request.fpm_profile is not None:
+        from aisimulate_core.sdk.memory import estimate_kv_cache
+
+        deployment = request.profile_deployment()
+        scheduler = request.scheduler_limits()
+        estimate = (
+            estimate_kv_cache(
+                request.identity.model,
+                request.identity.gpu,
+                request.identity.framework,
+                backend_version=request.identity.framework_version,
+                max_num_tokens=scheduler["max_batched_tokens"],
+                max_batch_size=scheduler["max_sequences"],
+                memory_fraction_kind="of_total",
+                memory_fraction_value=request.collection.memory_fraction,
+                tp_size=deployment.tp,
+                pp_size=deployment.pp,
+                attention_dp_size=deployment.dp,
+                moe_tp_size=deployment.moe_tp,
+                moe_ep_size=deployment.moe_ep,
+                fpm_profile=request.fpm_profile,
+                context_length=request.search.context_length,
+                **({"worker_type": request.worker_type} if request.worker_type is not None else {}),
+            )
+            if deployment.resources.memory_ready
+            else {"memory_source": "pending", "simulation_ready": False}
+        )
+        if not deployment.resources.memory_ready:
+            plan["fpm"]["scheduling_policy"] = (
+                "Synchronous scheduling in both phases; current collector prefill benchmarking requires it. "
+                "This is a collection policy, not the default for arbitrary vLLM serving."
+                if request.identity.framework_version == "0.27.0"
+                else "Native timing collection policy; runtime memory observation is unavailable for this vLLM version."
+            )
+        elif deployment.resources.cache_layout == "grouped":
+            if estimate["request_peak_cache_bytes"] > estimate["total_kv_size_bytes"]:
+                raise ValueError(
+                    "declared FPM resources leave insufficient rank-local bytes for grouped cache peak allocation"
+                )
+        elif estimate["total_kv_size_tokens"] <= request.search.context_length:
+            raise ValueError("declared FPM resources leave insufficient rank-local KV capacity for the runtime context")
+        plan["resources"] = estimate
+        plan["search"]["baseline_rule"] = (
+            "Selected profile deployment; declared topology and rank-local resource bounds pass CPU admission. "
+            "Serving-runtime compatibility and silicon accuracy remain unchecked."
+        )
+        plan["prerequisites"][0].update(
+            status="declared_profile_validated",
+            detail=(
+                "The pinned identity, declared deployment, scheduler envelope and resource budget validate without "
+                "an analytical model class. Verify the profile's resource provenance against the serving runtime. "
+                "Generated configs use direct interpolation; matching timing coverage is still required."
+            ),
+        )
+        plan["prerequisites"][1]["detail"] = runtime_prerequisite + (
+            "During collection execution, the collector checks the observed worker vLLM version against the "
+            "profile's literal backend version before benchmarking on either executor. Model/tokenizer "
+            "revision declarations and this version check do not verify the loaded checkpoint weights."
+        )
+        plan["prerequisites"][2]["detail"] = (
+            "Collect matching prefill/decode timings into the local systems tree before prediction or recommendation. "
+            "The profile resource estimate does not establish timing coverage or measured accuracy."
+        )
+        if not deployment.resources.memory_ready:
+            plan["search"]["baseline_rule"] = (
+                "Selected profile deployment; memory remains pending runtime initialization. "
+                "Collection is permitted; prediction, recommendation and replay require finalized memory."
+            )
+            plan["prerequisites"][0].update(
+                status="runtime_memory_pending",
+                detail=(
+                    "Identity, precision, topology and cache geometry are declared. Runtime memory is collected "
+                    "during worker initialization for supported vLLM 0.27.0 layouts; other versions can collect "
+                    "timings but leave memory unresolved. No activation or non-KV byte declaration is required. "
+                    "Run onboard finalize after successful collection, then review the resolved profile."
+                ),
+            )
+        elif deployment.resources.memory_source == "runtime":
+            plan["search"]["baseline_rule"] = (
+                "Selected deployment uses observed cache capacity for the exact recorded runtime settings. "
+                "Timing coverage and silicon accuracy require separate validation."
+            )
+            plan["prerequisites"][0].update(
+                status="runtime_memory_resolved",
+                detail=(
+                    "Observed cache capacity and grouped geometry are bound to this deployment and runtime envelope."
+                ),
+            )
+        plan["outputs"]["fpm_model_profile"] = str(root / "fpm-model-profile.json")
+    role_only = request.worker_type in {"prefill", "decode"}
+    if request.worker_type is not None:
+        plan["fpm"]["worker_type"] = request.worker_type
+        plan["fpm"]["collection_phases"] = list(request.collection_phases)
+        plan["fpm"]["serving_mode"] = "disaggregated" if role_only else "aggregated"
+    if role_only:
+        plan["outputs"]["prediction_configs"] = []
+        plan["outputs"]["worker_config"] = str(root / "worker.yaml")
+        plan["search"]["detail"] = (
+            "This plan collects one independently accepted P/D serving role. worker.yaml is a role configuration "
+            "artifact, not an executable prediction or recommendation config. Combine compatible, independently "
+            "accepted prefill and decode profiles in an ordinary serving configuration before simulation."
+        )
+        plan["fpm"]["sampling"] = (
+            f"Dynamo self-benchmark generates only the {request.worker_type} grid for this accepted role. "
+            "The other role is collected independently. Decode initializes representative state locally; actual "
+            "P/D transfer is not required. Timing collection and qualification do not establish replay readiness."
+        )
+        plan["prerequisites"][2]["detail"] = (
+            f"Collect and qualify matching {request.worker_type} timings in this role's systems tree. "
+            "Do not merge or replace another role's timing or memory evidence."
+        )
+        plan["replay"] = {
+            "status": "not_assessed",
+            "detail": (
+                "An independently accepted counterpart and supported P/D replay configuration are required. "
+                "The guided validate-fpm path currently handles aggregated serving only; grouped-cache P/D "
+                "handoff support is outside collection qualification."
+            ),
+        }
     yaml_documents = {
         Path("request.yaml"): request.model_dump(mode="json", exclude_none=True),
-        Path("predict/pilot.yaml"): prediction,
+        Path("worker.yaml" if role_only else "predict/pilot.yaml"): prediction,
         **{Path(f"recommend/{name}.yaml"): config for name, config in recommendations.items()},
     }
     documents = {path: yaml.safe_dump(data, sort_keys=False).encode() for path, data in yaml_documents.items()}
+    if request.fpm_profile is not None:
+        documents[Path("fpm-model-profile.json")] = (
+            json.dumps(request.fpm_profile.model_dump(mode="json"), indent=2, sort_keys=True) + "\n"
+        ).encode()
+        from .finalization import finalization_manifest
+
+        manifest = finalization_manifest(request)
+        if manifest is not None:
+            documents[Path("finalization.json")] = (json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode()
     documents[Path("systems") / source_spec.name] = source_spec.read_bytes()
     documents[Path("commands.json")] = (json.dumps(commands, indent=2, sort_keys=True) + "\n").encode()
+    plan["generated_files_sha256"] = {
+        path.as_posix(): hashlib.sha256(content).hexdigest() for path, content in documents.items()
+    }
     documents[Path("support-plan.json")] = (json.dumps(plan, indent=2, sort_keys=True) + "\n").encode()
     return plan, documents
 
@@ -257,7 +450,9 @@ def _check_paths(root: Path) -> None:
     for relative in (
         "request.yaml",
         "support-plan.json",
+        "fpm-model-profile.json",
         "commands.json",
+        "worker.yaml",
         "predict",
         "predict/pilot.yaml",
         "recommend",
@@ -278,32 +473,72 @@ def _check_paths(root: Path) -> None:
             pending.extend(path.iterdir())
 
 
-def check_plan(request: SupportRequest, root: Path) -> None:
+def check_plan(request: SupportRequest, root: Path, *, allow_missing: bool = False) -> None:
     """Verify saved identity before collecting or reusing any local output."""
 
     _check_paths(root)
+    if allow_missing and not (root / "support-plan.json").exists():
+        _, documents = _plan_documents(request, root)
+        _check_interrupted_plan(request, root, documents)
+        return
     try:
         prior = json.loads((root / "support-plan.json").read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
         raise ValueError(
             f"a readable onboarding plan is required in {root}; run aisimulate onboard plan first"
         ) from exc
-    if not isinstance(prior, dict) or prior.get("request_id") != request_id(request):
+    if not isinstance(prior, dict) or prior.get("schema_version") != "aisimulate-support-plan/v2":
+        raise ValueError(
+            f"legacy or invalid onboarding plan in {root}; regenerate in a new output directory. "
+            "Legacy plans used validation traffic to choose collection bounds and cannot be reused implicitly."
+        )
+    if prior.get("request_id") != request_id(request):
         raise ValueError(f"refusing to mix a different request identity in {root}; choose a new output directory")
-    _check_saved_request(request, root)
-
-
-def _check_saved_request(request: SupportRequest, root: Path) -> None:
     try:
         saved = SupportRequest.from_yaml(root / "request.yaml")
     except ValueError as exc:
         raise ValueError(f"saved request in {root} was modified or cannot be read") from exc
+    if request_id(saved) != prior["request_id"] or validation_id(saved) != prior.get("validation_id"):
+        raise ValueError(f"saved request identity in {root} was modified or differs from the requested plan")
+    expected, documents = _plan_documents(saved, root)
+    if prior != expected:
+        raise ValueError(
+            f"generated plan input {root / 'support-plan.json'} was modified; choose a new output directory"
+        )
+    # Recompute the manifest rather than trusting hashes in an edited plan. An
+    # evaluation-only refresh must never bless modified collector inputs.
+    for relative, content in documents.items():
+        destination = root / relative
+        if destination.is_symlink():
+            raise ValueError(f"refusing symlinked plan output {destination}")
+        if not destination.exists() and allow_missing:
+            continue
+        if not destination.is_file() or destination.read_bytes() != content:
+            raise ValueError(
+                f"generated plan input {destination} was modified or missing; choose a new output directory"
+            )
+    from .finalization import verify_finalized_data
+
+    verify_finalized_data(saved, root)
+
+
+def _check_interrupted_plan(request: SupportRequest, root: Path, documents: dict[Path, bytes]) -> None:
+    """Require intact inputs before completing a plan whose manifest was never written."""
+
+    try:
+        saved = SupportRequest.from_yaml(root / "request.yaml")
+    except (OSError, ValueError) as exc:
+        raise ValueError(f"saved request in {root} was modified or cannot be read") from exc
     if saved != request:
         raise ValueError(f"saved request identity in {root} differs from the requested plan")
+    for relative, content in documents.items():
+        destination = root / relative
+        if destination.exists() and (not destination.is_file() or destination.read_bytes() != content):
+            raise ValueError(f"generated plan input {destination} was modified; choose a new output directory")
 
 
 def create_plan(request: SupportRequest, output_dir: str | Path, *, overwrite: bool = False) -> dict[str, Any]:
-    """Write a new plan, or repair missing files for an identical saved request."""
+    """Write a plan or safely refresh validation inputs for the same collection."""
 
     root = Path(output_dir).expanduser().resolve()
     plan, documents = _plan_documents(request, root)
@@ -313,28 +548,33 @@ def create_plan(request: SupportRequest, output_dir: str | Path, *, overwrite: b
         nonempty = any(path.name != _LOCK_NAME for path in root.iterdir())
         if nonempty:
             if not overwrite:
-                raise ValueError(f"output directory {root} is nonempty; use overwrite only for the same request")
-            if (root / "support-plan.json").exists():
-                check_plan(request, root)
-            else:
-                # request.yaml is written first, so it can establish identity
-                # after an interruption before the completed plan was saved.
-                _check_saved_request(request, root)
+                raise ValueError(f"output directory {root} is nonempty; use overwrite only for the same collection")
+            check_plan(request, root, allow_missing=True)
         # Inspect every generated file before writing any file. Existing data,
-        # checkpoints, results, and edited inputs are never replaced or deleted.
+        # checkpoints and results are never replaced or deleted. Only verified
+        # generated inputs may change after an evaluation-only request edit.
         pending: dict[Path, bytes] = {}
         for relative, content in documents.items():
             destination = root / relative
             if destination.is_symlink():
                 raise ValueError(f"refusing symlinked plan output {destination}")
-            if not destination.exists():
+            if not destination.exists() or destination.read_bytes() != content:
                 pending[relative] = content
-            elif destination.read_bytes() != content:
-                raise ValueError(f"generated plan input {destination} was modified; choose a new output directory")
         for relative, content in pending.items():
             destination = root / relative
             destination.parent.mkdir(parents=True, exist_ok=True)
-            with destination.open("xb") as handle:
-                handle.write(content)
+            if not destination.exists():
+                with destination.open("xb") as handle:
+                    handle.write(content)
+            else:
+                temporary = None
+                try:
+                    with tempfile.NamedTemporaryFile(dir=destination.parent, delete=False) as handle:
+                        temporary = Path(handle.name)
+                        handle.write(content)
+                    os.replace(temporary, destination)
+                finally:
+                    if temporary is not None:
+                        temporary.unlink(missing_ok=True)
         (root / "systems/data").mkdir(parents=True, exist_ok=True)
     return plan

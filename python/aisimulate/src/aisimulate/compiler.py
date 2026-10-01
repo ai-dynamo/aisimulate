@@ -49,6 +49,27 @@ def prediction_to_replay_spec(
         afd_performance_model=afd_performance_model,
     )
     deployment = _pin_estimator_version_aliases(deployment)
+    metadata = dict(deployment.performance_model_metadata)
+    for role, field in (
+        ("aggregated", "agg_engine_args"),
+        ("prefill", "prefill_engine_args"),
+        ("decode", "decode_engine_args"),
+    ):
+        timing = (getattr(deployment, field) or {}).get("timing_model", {})
+        if timing.get("provider") == "aic" and "estimation_mode" in timing.get("config", {}):
+            identity = {
+                key: value
+                for key, value in timing["config"].items()
+                if key
+                not in {
+                    "gpu_memory_utilization",
+                    "mem_fraction_static",
+                    "free_gpu_memory_fraction",
+                    "cuda_graph_reserved_bytes",
+                }
+            }
+            metadata[role] = {**metadata.get(role, {}), "provider": "aic", "config": identity}
+    deployment = replace(deployment, performance_model_metadata=metadata)
     if config.engine.mode == "disaggregated":
         assert config.engine.workers.prefill is not None
         for adapter in (adapter_specs or {}).values():
@@ -246,6 +267,7 @@ def _deployment(
             engine,
             prefill,
             engine.kv_transfer.bytes_per_token,
+            role="prefill",
         )
     parallel = {
         **_parallel_mapping(prefill, prefix="prefill_"),
@@ -294,7 +316,7 @@ def _afd_deployment(
         # The AFD companion's ParallelShape, GPU accounting and provenance carry
         # tp/pp/attention_dp/moe only; a CP knob here would price a wider worker
         # than the topology reports. Fail closed until AFD models CP explicitly.
-        if parallel.prefill_context != 1 or _decode_cp(parallel) != 1:
+        if _prefill_cp(parallel) != 1 or _decode_cp(parallel) != 1:
             raise ValueError(
                 f"AFD companion ({companion_role}) workers do not support context parallelism: got "
                 f"parallelism.prefill_context={parallel.prefill_context}, "
@@ -388,7 +410,7 @@ def _require_exclusive_context_parallelism(worker: WorkerPredictionConfig) -> No
     prices them one at a time.
     """
     parallel = worker.parallelism
-    if parallel.prefill_context > 1 and _decode_cp(parallel) > 1:
+    if _prefill_cp(parallel) > 1 and _decode_cp(parallel) > 1:
         raise ValueError(
             "aggregated workers support at most one of parallelism.prefill_context and "
             f"parallelism.decode_context above 1 (got prefill_context={parallel.prefill_context}, "
@@ -412,7 +434,7 @@ def _require_disaggregated_context_parallelism(
     """
     p, d = prefill.parallelism, decode.parallelism
     p_dcp, d_dcp = _decode_cp(p), _decode_cp(d)
-    if p_dcp not in (1, p.prefill_context):
+    if p_dcp not in (1, _prefill_cp(p)):
         raise ValueError(
             f"prefill workers accept parallelism.decode_context only as 1 or equal to prefill_context "
             f"(got decode_context={p.decode_context}, prefill_context={p.prefill_context}); a prefill "
@@ -420,7 +442,7 @@ def _require_disaggregated_context_parallelism(
         )
     if backend != "vllm" or d_dcp == 1:
         return
-    if p.prefill_context > 1 and p_dcp == 1:
+    if _prefill_cp(p) > 1 and p_dcp == 1:
         raise ValueError(
             f"vLLM cannot pair a replicated-PCP prefill worker (prefill_context={p.prefill_context}, "
             f"decode_context=1) with a DCP-sharded decode worker (decode_context={d.decode_context}); "
@@ -453,7 +475,12 @@ def _prefill_cp_knob(parallel: Any, cp_key: str) -> dict[str, int]:
     args and estimator identities stay byte-identical to pre-CP outputs. Decode
     CP is carried by ``decode_context`` itself: ``None`` (not requested) is
     distinct from an explicit 1 for the FPM cell identity."""
-    return {cp_key: parallel.prefill_context} if parallel.prefill_context != 1 else {}
+    return {cp_key: _prefill_cp(parallel)} if _prefill_cp(parallel) != 1 else {}
+
+
+def _prefill_cp(parallel: Any) -> int:
+    """The priced prefill-CP size: unset (``None``) means one."""
+    return parallel.prefill_context or 1
 
 
 def _decode_cp(parallel: Any) -> int:
@@ -598,6 +625,8 @@ def _worker_engine_args(
         payload["max_model_len"] = (
             engine.context_length
             if isinstance(engine.context_length, int)
+            else engine.fpm_profile.context_length
+            if engine.fpm_profile is not None
             else resolve_model_context_length(engine.model)
         )
     if cache.prefix_match_unit is not None:
@@ -652,6 +681,7 @@ def _worker_engine_args(
         sharded_moe = parallel.moe_tensor * parallel.moe_expert > 1
         canonical = ForwardPassPerfModelConfig(
             model=engine.model,
+            fpm_profile=engine.fpm_profile.model_dump(mode="json") if engine.fpm_profile is not None else None,
             system=worker.hardware or engine.hardware,
             backend=backend,
             backend_version=engine.backend_version,
@@ -713,6 +743,7 @@ def _worker_engine_args(
             engine,
             worker,
             cache.bytes_per_token,
+            role=role,
         )
     if transfer_bytes_per_token is not None:
         payload["kv_transfer_bytes_per_token"] = transfer_bytes_per_token
@@ -732,6 +763,8 @@ def _resolve_kv_bytes_per_token(
     engine: EnginePredictionConfig,
     worker: WorkerPredictionConfig,
     configured: int | str,
+    *,
+    role: str,
 ) -> int:
     if configured != "auto":
         return configured
@@ -742,6 +775,18 @@ def _resolve_kv_bytes_per_token(
         pp_size=parallel.pipeline,
         moe_tp_size=parallel.moe_tensor,
         moe_ep_size=parallel.moe_expert,
+        **(
+            {
+                "fpm_profile": engine.fpm_profile.model_dump(mode="json"),
+                "worker_type": role,
+                "system": worker.hardware or engine.hardware,
+                "backend": engine.backend,
+                "backend_version": engine.backend_version,
+                "attention_dp_size": parallel.attention_data,
+            }
+            if engine.fpm_profile is not None
+            else {}
+        ),
         kvcache_quant_mode=worker.timing.kvcache_quant_mode or engine.kvcache_quant_mode,
     )
 

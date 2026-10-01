@@ -38,6 +38,11 @@ def _normalize_systems_root(value: str) -> str:
 SystemsRoot = Annotated[str, Field(strict=True, min_length=1), AfterValidator(_normalize_systems_root)]
 
 
+def requested_backend_version(versions: str | dict[str, str] | None, backend: str) -> str | None:
+    """Return the version pin for one backend; ``None`` means resolve latest."""
+    return versions.get(backend) if isinstance(versions, dict) else versions
+
+
 T = TypeVar("T")
 PositiveFiniteFloat = Annotated[float, Field(strict=True, gt=0, allow_inf_nan=False)]
 PositiveStrictInt = Annotated[int, Field(strict=True, gt=0)]
@@ -210,6 +215,7 @@ def load_yaml(path: str | Path) -> dict[str, Any]:
     return data
 
 
+CONFIG_ADAPTER_ENTRY_POINT_GROUP = "aisimulate.config_adapters"
 PREDICTION_CORE_SECTIONS = frozenset({"traffic", "engine", "evaluation", "execution"})
 RECOMMENDATION_CORE_SECTIONS = frozenset({*PREDICTION_CORE_SECTIONS, "optimization", "optimizer"})
 

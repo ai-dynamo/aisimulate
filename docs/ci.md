@@ -523,6 +523,11 @@ Campaign jobs use the configured `CI_JOB_CONTAINER_IMAGE`, Python 3.12, and
 `sudo` to install the PostgreSQL 18 client from the official PGDG repository,
 plus `zstd` and `libgomp1`. The runner executes container steps as a non-root
 user, so a bare PostgreSQL image cannot install these dependencies with `apt-get`.
+The evaluated wheel's baseline CLI and config adapter are selected from its own
+package layout: `aiconfigurator.*` on 0.12 releases or `aisimulate.*` after the
+namespace migration. Ambiguous wheels with both baseline APIs are rejected.
+Baseline provenance records the selected API, adapter, and actual console entry point;
+the public summary retains that entry point. Wheel byte checks and imports run before downloading measurements.
 The client reads the dump without starting a database server. Artifact upload
 uses the output directory so the runner container hook remaps the full path.
 
@@ -536,6 +541,16 @@ incomplete campaigns cannot publish. A release selector may still show a histori
 snapshot until that release has a qualified campaign. See the
 [accuracy campaign contract](../pages/e2e-accuracy/README.md)
 for pinned scheduler settings, measurement selection, and provenance.
+
+### Daily accuracy Slack report
+
+[Accuracy Slack Daily](../.github/workflows/accuracy-digest.yml) combines the day's
+scheduled E2E and FPM results in one message in **#swdl-dynamo-aisim-daily**.
+Failures and comparable regressions appear in that message; separate per-model
+and per-GPU E2E tables appear in the main message; FPM coverage and comparison
+details remain in its thread. Delivery waits for both pipelines,
+with a 09:00 America/Los_Angeles fallback. It is opt-in and has a default dry-run
+mode plus an explicit test-send mode. See [setup, comparisons, and testing](accuracy-slack.md).
 
 ## Reading results and troubleshooting
 

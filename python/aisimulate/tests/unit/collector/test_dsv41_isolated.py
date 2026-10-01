@@ -6,7 +6,6 @@ import shutil
 from pathlib import Path
 
 import pytest
-
 from collector.sglang.dsv41_contract import build_manifest, canonical_json
 from collector.sglang.dsv41_isolated_runner import (
     FRAMEWORK_COMMIT,

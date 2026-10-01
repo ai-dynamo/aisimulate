@@ -119,13 +119,16 @@ pub const ENGINE_CONFIG_SCHEMA_VERSION: u32 = 1;
 //   JSON defaults preserve unrecorded DCP.
 // - 24 (typed FPM DCP): FpmForwardOp carries dcp_size separately from the
 //   base matching identity, so control flow never parses the string tuple.
-// - 25 (decode context parallelism): the context/generation attention, MLA,
+// - 25 (FPM decoupling): FpmForwardOp also carries the SOL/direct interpolation
+//   selector. The decoupling branch independently used 21 for this positional
+//   field; the combined layout differs from every prior schema, including 24.
+// - 26 (decode context parallelism): the context/generation attention, MLA,
 //   MLA-module, wide-EP MLA and DSA ops gained a tail-appended `dcp_size`
 //   (gathered query heads over a 1/dcp KV stripe; striped-context gather).
-//   Claimed 19 through 22 on its own branch while the DeepSeek-V4.1, MoE
-//   kernel-source, VR200 pilot and FPM DCP changes landed; renumbered at each
-//   merge (precedent: 15, 18).
-pub const ENGINE_SPEC_SCHEMA_VERSION: u32 = 25;
+//   Claimed 19 through 25 on its own branch while the DeepSeek-V4.1, MoE
+//   kernel-source, VR200 pilot, FPM DCP and FPM decoupling changes landed;
+//   renumbered at each merge (precedent: 15, 18).
+pub const ENGINE_SPEC_SCHEMA_VERSION: u32 = 26;
 
 /// Static engine identity and setup information carried by an
 /// [`crate::perfmodel::engine::spec::EngineSpec`].

@@ -20,11 +20,12 @@ from .config_adapter import (
     RecommendationAdapterContext,
     SimulationConfigAdapter,
 )
+from .output_adapter import RecommendationOutputAdapter, resolve_output_callbacks
 from .resources import GuardedRunnerFactory, discover_host, resolve_budget
 from .sweeper.afd_perfmodel import AFDPerformanceModel
 from .sweeper.config import SmartSearchConfig
 from .sweeper.provider import InfeasibleCandidate, SweepContext
-from .sweeper.replay import ReplaySpec, RunnerFactory
+from .sweeper.replay import ReplayOutputRequirements, ReplaySpec, RunnerFactory
 from .sweeper.result import SweepResult
 
 
@@ -35,8 +36,10 @@ def run_recommendation(
     stack: str,
     runner_factory: RunnerFactory,
     providers: Mapping[str, SimulationConfigAdapter] | None = None,
+    output_configs: Mapping[str, Mapping[str, Any]] | None = None,
     afd_performance_model: AFDPerformanceModel | None = None,
     show_progress: bool = True,
+    output_requirements: ReplayOutputRequirements | None = None,
 ) -> SweepResult:
     """Run a public recommendation through the existing Sweeper core."""
 
@@ -47,8 +50,10 @@ def run_recommendation(
         stack=stack,
         runner_factory=runner_factory,
         providers=providers,
+        output_configs=output_configs,
         afd_performance_model=afd_performance_model,
         show_progress=show_progress,
+        output_requirements=output_requirements,
     )
     if not in_supervised_process():
         return supervised_recommendation(config, kwargs)
@@ -62,8 +67,11 @@ def _run_recommendation(
     stack: str,
     runner_factory: RunnerFactory,
     providers: Mapping[str, SimulationConfigAdapter] | None = None,
+    output_configs: Mapping[str, Mapping[str, Any]] | None = None,
+    output_adapters: Mapping[str, RecommendationOutputAdapter] | None = None,
     afd_performance_model: AFDPerformanceModel | None = None,
     show_progress: bool = True,
+    output_requirements: ReplayOutputRequirements | None = None,
 ) -> SweepResult:
     from .supervision import checkpoint
 
@@ -102,6 +110,7 @@ def _run_recommendation(
     adapter_sections = {name: provider.section for name, provider in (providers or {}).items()}
     sweeper = Sweeper(
         runner_factory=runner_factory,
+        output_requirements=output_requirements,
         providers=compiled_providers,
         show_progress=show_progress,
         prediction_config_factory=lambda sample, spec: _candidate_prediction(
@@ -109,7 +118,13 @@ def _run_recommendation(
         ),
         afd_performance_model=afd_performance_model,
     )
-    return sweeper.run(smart, top_n=None)
+    output_callbacks = resolve_output_callbacks(output_configs or {}, injected=output_adapters)
+    return sweeper.run(
+        smart,
+        top_n=None,
+        on_candidate=output_callbacks.on_candidate,
+        on_round=output_callbacks.on_round,
+    )
 
 
 def recommendation_to_sweeper(
@@ -151,8 +166,16 @@ def recommendation_to_sweeper(
         "hardware_sku": hardware,
         "gpu_budget": optimization.constraints.max_candidate_gpus,
         "min_gpu_budget": optimization.constraints.min_candidate_gpus,
-        "context_length": (resolve_model_context_length(model) if context == "max" else context),
+        "context_length": (
+            config.engine.fpm_profile.context_length
+            if context == "max" and config.engine.fpm_profile is not None
+            else resolve_model_context_length(model)
+            if context == "max"
+            else context
+        ),
     }
+    if engine.get("fpm_profile") is not None:
+        search_space["fpm_profile"] = engine["fpm_profile"]
     for name in (
         "database_mode",
         "transfer_policy",
@@ -504,13 +527,13 @@ def _parallel_mapping(value: Any, path: str) -> dict[str, int]:
     if not isinstance(value, dict):
         raise ValueError(f"{path} entries must be mappings")
     # Context parallelism is a predict-only knob: preset entries are full
-    # ParallelismPredictionConfig dumps, so they carry the two keys at their
-    # default of 1. The sweeper does not enumerate CP/DCP yet, so anything else
-    # is rejected explicitly instead of being silently dropped.
+    # ParallelismPredictionConfig dumps, so they may carry the two keys unset
+    # (None) or at 1. The sweeper does not enumerate CP/DCP yet, so anything
+    # else is rejected explicitly instead of being silently dropped.
     value = dict(value)
     for key in _CONTEXT_PARALLEL_KEYS:
-        leaf = value.pop(key, 1)
-        if leaf != 1:
+        leaf = value.pop(key, None)
+        if leaf not in (None, 1):
             raise ValueError(
                 f"{path}.{key}={leaf!r} is not supported by recommend; context parallelism "
                 "is a predict-only knob (use `aisimulate predict` with a fixed parallelism)"
@@ -813,6 +836,8 @@ def _candidate_prediction(
     }
     if sample.get("systems_paths") is not None:
         engine["systems_paths"] = sample["systems_paths"]
+    if sample.get("fpm_profile") is not None:
+        engine["fpm_profile"] = deepcopy(sample["fpm_profile"])
     for name in (*ENGINE_MODEL_CONTROL_FIELDS, "enable_chunked_prefill", "nextn_accepted"):
         if sample.get(name) is not None:
             engine[name] = sample[name]

@@ -82,6 +82,7 @@ class ForwardPassEstimatorResolver:
             interpolation["fpm_parquet_path"] = path
         return ForwardPassPerfModelConfig(
             model=self._search_space.model_name,
+            fpm_profile=self._search_space.fpm_profile,
             system=_role_hardware_sku(sample, role),
             backend=backend,
             worker_type="aggregated" if role == "agg" else role,
@@ -116,14 +117,17 @@ class ForwardPassEstimatorResolver:
             estimator_config = deepcopy(request.estimator_config)
             estimator_config["fpm_interpolation"]["fpm_parquet_path"] = str(Path(path).absolute())
             request = replace(request, estimator_config=estimator_config)
-        request_payload = vars(request)
-        cache_key = json.dumps(request.to_dict(), sort_keys=True)
-        cached = self._resolved.get(cache_key)
-        if cached is not None:
-            return deepcopy(cached)
-
         model: RustForwardPassPerfModel | None = None
         try:
+            request_payload = RustForwardPassPerfModel.normalize_config(request)
+            if request_payload.get("fpm_profile") is not None:
+                from aisimulate_core.sdk.fpm_profile import _require_forward_pass_profile_memory
+
+                _require_forward_pass_profile_memory(request_payload)
+            cache_key = json.dumps(request_payload, sort_keys=True)
+            cached = self._resolved.get(cache_key)
+            if cached is not None:
+                return deepcopy(cached)
             model = RustForwardPassPerfModel.best_available(request)
             diagnostics = model.diagnostics()
         except Exception as exc:
@@ -160,6 +164,7 @@ class ForwardPassEstimatorResolver:
             )
         for field in (
             "model",
+            "fpm_profile",
             "system",
             "backend",
             "tp",

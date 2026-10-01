@@ -200,7 +200,7 @@ pub struct ContextAttentionOp {
     /// / `dcp_manager.kv_gather`, SGLang `all_gather_kv_cache_for_*_extend`).
     /// The new-token attention itself is unchanged: every rank computes it for
     /// its own heads and only WRITES its stripe. Defaults to 1; tail-appended
-    /// (schema v25).
+    /// (schema v26).
     #[serde(
         default = "crate::operators::gemm::default_seq_split",
         deserialize_with = "crate::operators::gemm::deserialize_positive_split"
@@ -473,7 +473,7 @@ pub struct GenerationAttentionOp {
     /// the model class). So the kernel prices `n * dcp` query heads against a
     /// `1/dcp` KV read; `n_kv` (per-rank, TP-replicated) and the batch are
     /// unchanged. Defaults to 1 (no DCP). Appended at the struct tail because
-    /// bincode payloads are positional (schema v25).
+    /// bincode payloads are positional (schema v26).
     #[serde(
         default = "crate::operators::gemm::default_seq_split",
         deserialize_with = "crate::operators::gemm::deserialize_positive_split"

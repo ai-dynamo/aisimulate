@@ -337,8 +337,8 @@ def test_point_timeout_remains_an_explicit_incomplete_campaign(monkeypatch):
     }
 
 
-@pytest.fixture
-def artifact(tmp_path, monkeypatch):
+@pytest.fixture(params=["aisimulate", "aiconfigurator"])
+def artifact(tmp_path, monkeypatch, request):
     source = tmp_path / "tables.json"
     source.write_text(json.dumps(tables()))
     manifest = tmp_path / "manifest.json"
@@ -346,7 +346,17 @@ def artifact(tmp_path, monkeypatch):
     monkeypatch.setattr(
         campaign,
         "wheel_identity",
-        lambda path: {"wheel_sha256": "a" * 64, "packages": {"aisimulate": "0.12.0"}},
+        lambda path: {
+            "wheel_sha256": "a" * 64,
+            "packages": {"aisimulate": "0.12.0"},
+            "baseline_api": "aiconfigurator.cli.api"
+            if request.param == "aiconfigurator"
+            else "aisimulate.legacy_cli.api",
+            "config_adapter": request.param + ".sdk.config_adapter",
+            "cli_entry_point": "aiconfigurator.main:main"
+            if request.param == "aiconfigurator"
+            else "aisimulate.legacy_cli.entrypoint:main",
+        },
     )
 
     def predictor(point, timeout):
@@ -1091,3 +1101,121 @@ def test_dump_part_retry_fails_closed_after_three_attempts(monkeypatch):
         fetch.download_part("https://example.invalid/part", {"name": "part00", "size": 7, "sha256": "a" * 64}, target)
     assert len(calls) == 3
     assert target.getvalue() == b"previous part"
+
+
+@pytest.mark.parametrize(
+    "api,adapter",
+    [
+        ("aisimulate.legacy_cli.api", "aisimulate.sdk.config_adapter"),
+        ("aiconfigurator.cli.api", "aiconfigurator.sdk.config_adapter"),
+    ],
+)
+def test_wheel_identity_accepts_both_packaged_predictor_layouts(tmp_path, monkeypatch, api, adapter):
+    members = {
+        "aisimulate/_runtime.py": b"runtime",
+        "aisimulate/runner.py": b"runner",
+        api.replace(".", "/") + ".py": b"baseline",
+        adapter.replace(".", "/") + "/__init__.py": b"adapter",
+    }
+    wheel = tmp_path / "test.whl"
+    with zipfile.ZipFile(wheel, "w") as archive:
+        for name, content in members.items():
+            archive.writestr(name, content)
+            path = tmp_path / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(content)
+    dist = SimpleNamespace(locate_file=lambda name: tmp_path / name, version="test", files=list(members))
+    monkeypatch.setattr(campaign.importlib.metadata, "distribution", lambda _: dist)
+    imported = []
+
+    def load(name):
+        imported.append(name)
+        path = name.replace(".", "/") + ("/__init__.py" if name == adapter else ".py")
+        return SimpleNamespace(__file__=str(tmp_path / path))
+
+    monkeypatch.setattr(campaign.importlib, "import_module", load)
+    assert campaign.wheel_identity(wheel)["packages"] == {"aisimulate": "test"}
+    assert imported == ["aisimulate._runtime", "aisimulate.runner", api, adapter]
+    (tmp_path / (api.replace(".", "/") + ".py")).write_bytes(b"tampered")
+    with pytest.raises(ValueError, match="differs from qualified wheel"):
+        campaign.wheel_identity(wheel)
+
+
+def test_predictor_layout_rejects_missing_or_mixed_namespaces():
+    with pytest.raises(ValueError, match="no supported baseline"):
+        campaign.predictor_module_names([])
+    with pytest.raises(ValueError, match="matching config adapter"):
+        campaign.predictor_module_names(
+            ["aisimulate/legacy_cli/api.py", "aiconfigurator/sdk/config_adapter/__init__.py"]
+        )
+
+
+@pytest.mark.parametrize("adapters", [[], ["aisimulate"], ["aiconfigurator"], ["aisimulate", "aiconfigurator"]])
+def test_predictor_layout_rejects_multiple_baseline_apis(adapters):
+    files = ["aisimulate/legacy_cli/api.py", "aiconfigurator/cli/api.py"]
+    files += [name + "/sdk/config_adapter/__init__.py" for name in adapters]
+    with pytest.raises(ValueError, match="ambiguous"):
+        campaign.predictor_module_names(files)
+
+
+@pytest.mark.parametrize(
+    "api,adapter_name",
+    [
+        ("aisimulate.legacy_cli.api", "aisimulate.sdk.config_adapter"),
+        ("aiconfigurator.cli.api", "aiconfigurator.sdk.config_adapter"),
+    ],
+)
+def test_predict_point_calls_selected_api_and_adapter(monkeypatch, api, adapter_name):
+    files = [api.replace(".", "/") + ".py", adapter_name.replace(".", "/") + "/__init__.py"]
+    monkeypatch.setattr(campaign.importlib.metadata, "distribution", lambda _: SimpleNamespace(files=files))
+    monkeypatch.setitem(sys.modules, "aisimulate.runner", SimpleNamespace(EngineReplayRunnerFactory=object))
+    calls = []
+    request = object()
+
+    def adapt(source):
+        calls.append(("adapt", source))
+        return SimpleNamespace(requests=[request])
+
+    def kwargs(value):
+        assert value is request
+        return {"test_input": 42}
+
+    def estimate(**values):
+        calls.append(("estimate", values))
+        raise ValueError("test baseline failure")
+
+    modules = {
+        api: SimpleNamespace(cli_estimate=estimate),
+        adapter_name: SimpleNamespace(
+            InferenceXSource=lambda **values: values, adapt_config=adapt, to_cli_estimate_kwargs=kwargs
+        ),
+    }
+    monkeypatch.setattr(campaign.importlib, "import_module", modules.__getitem__)
+    result = campaign.predict_point({"id": "point", "config": {}, "benchmark": {}})
+    assert result["outcome"] == "baseline_failed"
+    assert calls == [("adapt", {"config": {}, "benchmark": {}}), ("estimate", {"test_input": 42})]
+
+
+def test_publication_rejects_unknown_baseline_entry_point(artifact):
+    summary, run = artifact
+    summary["snapshot"]["aic_source"]["cli_entry_point"] = "foreign.main:main"
+    with pytest.raises(ValueError, match="baseline entry point"):
+        publish.validate_artifact(archive(summary), run)
+
+
+@pytest.mark.parametrize(
+    "entry", ["aiconfigurator.main:main", "aisimulate.legacy_cli.entrypoint:main", None, "foreign.main:main", 42]
+)
+def test_site_builder_validates_baseline_entry_point(artifact, tmp_path, entry):
+    summary, _ = artifact
+    summary["snapshot"]["aic_source"]["cli_entry_point"] = entry
+    path = tmp_path / "summary.json"
+    path.write_text(json.dumps(summary))
+    if entry in ("aiconfigurator.main:main", "aisimulate.legacy_cli.entrypoint:main"):
+        pages._accuracy_summary(path.read_text())
+    else:
+        with pytest.raises(pages.PagesBuildError, match="legacy AIC CLI source"):
+            pages._accuracy_summary(path.read_text())
+    del summary["snapshot"]["aic_source"]["cli_entry_point"]
+    path.write_text(json.dumps(summary))
+    pages._accuracy_summary(path.read_text())

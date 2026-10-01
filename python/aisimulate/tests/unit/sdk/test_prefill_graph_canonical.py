@@ -74,7 +74,7 @@ def graph_model():
 
 @pytest.mark.parametrize("call,expected,native", CASES)
 def test_canonical_direct_prefill_matches_frozen_operator_and_native_evidence(graph_model, call, expected, native):
-    result = graph_model.predict_prefill_latency(*call)
+    result = graph_model.predict_prefill_latency(bs=call[0], isl=call[1], prefix=call[2])
     assert result == pytest.approx(expected, rel=1e-12, abs=1e-10)
     assert abs(result / native - 1.0) <= 0.15
     assert graph_model.predict_prefill_latency(*call) == result
@@ -218,6 +218,8 @@ def test_profile_rejects_telemetry_tuning_and_energy_routes_including_empty_inpu
     for payload in [[], {}, [{"scheduled_requests": []}]]:
         with pytest.raises((PrefillGraphProfileError, ValueError)):
             graph_model.estimate_forward_pass_time_ms(payload)
+        with pytest.raises((PrefillGraphProfileError, ValueError)):
+            graph_model.estimate_forward_pass_detailed(payload)
     with pytest.raises(PrefillGraphProfileError, match="only direct"):
         graph_model.tune_with_fpms([])
     for prefill in [False, True]:

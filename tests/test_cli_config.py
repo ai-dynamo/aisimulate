@@ -312,16 +312,16 @@ def test_recommendation_accepts_domains_and_parallel_preset() -> None:
 
 
 def test_parallel_preset_entries_round_trip_with_context_knobs() -> None:
-    # A preset entry dumped back to a mapping carries prefill_context (decode
-    # CP lives on the prediction config only); recommend must accept the knobs
-    # (at 1) so a config can be re-validated from model_dump, while unrelated
-    # keys stay rejected.
+    # A preset entry dumped back to a mapping carries prefill_context unset
+    # (decode CP lives on the prediction config only); recommend must accept the
+    # knobs (unset or at 1) so a config can be re-validated from model_dump,
+    # while unrelated keys stay rejected.
     from aisimulate.config.engine import ParallelismRecommendationConfig
 
     entry = {"replicas": 1, "tensor": 2, "pipeline": 1, "attention_data": 1, "moe_tensor": 1, "moe_expert": 1}
     parallelism = ParallelismRecommendationConfig.model_validate({"preset": [entry]})
     dumped = parallelism.model_dump()["preset"][0]
-    assert dumped["prefill_context"] == 1 and "decode_context" not in dumped
+    assert dumped["prefill_context"] is None and "decode_context" not in dumped
 
     again = ParallelismRecommendationConfig.model_validate({"preset": [dumped]})
     assert again.preset[0].tensor == 2
@@ -1388,7 +1388,7 @@ def test_prediction_parallelism_accepts_context_parallel_knobs() -> None:
     )
     assert config.engine.workers.aggregated is not None
     parallel = config.engine.workers.aggregated.parallelism
-    assert parallel.prefill_context == 1
+    assert parallel.prefill_context is None
     assert parallel.decode_context == 4
 
 

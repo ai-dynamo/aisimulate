@@ -84,6 +84,10 @@ warmup fields and retains both worker pools across the barrier. See
 | `predict` | Evaluate one concrete deployment under a workload. | `aisimulate predict -c prediction.yaml --output-dir ./prediction-output` | A metrics summary and `prediction-output/prediction.json`. |
 | `recommend` | Search deployment and load choices for an optimization goal. | `aisimulate recommend -c recommendation.yaml --output-dir ./recommendation-output` | Ranked configurations, `recommendation.json`, and concrete YAML files under `recommendations/`. |
 
+`recommend` also accepts repeatable `--output NAME` options. Each selected output adapter requires
+a same-named top-level configuration section, may observe live candidate and round notifications,
+and writes additional artifacts after recommendation.
+
 Unless labeled as captured output, metric values in example results are hypothetical and
 illustrate the output format. Captured detail examples are simulation results, not hardware measurements.
 
@@ -1885,7 +1889,10 @@ after adapter canonicalization and deduplication so it maps one-to-one to the nu
 Read [Understand your prediction](understand-your-prediction.md) for an annotated
 report, ITL/TPOT definitions, incomplete-request handling, and SLA interpretation.
 
-Output controls are CLI-only. They never appear in an input or recommended YAML file.
+Core output controls are CLI-only. A selected output adapter owns its same-named top-level input
+section; that section configures artifact generation and is excluded from recommended prediction
+YAML files. Output adapters receive the prepared output directory directly and must preserve
+unrelated files.
 
 Recommendation output uses the schema-versioned `SweepResult` contract documented in
 [`docs/sweeper/results.md`](../sweeper/results.md). It preserves run metadata, a candidate-attempt

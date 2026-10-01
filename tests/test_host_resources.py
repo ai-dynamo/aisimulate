@@ -223,6 +223,7 @@ def test_cli_blocks_before_runner_creation(tmp_path, monkeypatch, host, command)
 def test_recommendation_applies_slots_without_changing_suggestion_batches(monkeypatch):
     import aisimulate.recommend as recommendation
     import aisimulate.sweeper.search as search
+    from aisimulate.output_adapter import OUTPUT_ADAPTER_API_VERSION, RecommendationOutputCallbacks
 
     raw = _config()
     raw["traffic"]["load"]["concurrency"] = 8
@@ -230,19 +231,44 @@ def test_recommendation_applies_slots_without_changing_suggestion_batches(monkey
     monkeypatch.setattr(recommendation, "resolve_budget", lambda *a, **kw: {"cpu_limit": 2})
     seen = []
 
+    class SubscribedAdapter:
+        name = "dgd"
+        api_version = OUTPUT_ADAPTER_API_VERSION
+
+        def subscribe(self, config):
+            assert config == {"socket": "/tmp/events.sock"}
+            return RecommendationOutputCallbacks(on_candidate=lambda candidate: None)
+
+        def write(self, config, *, result, output_dir):
+            del config, result, output_dir
+            return []
+
     class CaptureSweeper:
         def __init__(self, **kwargs):
             pass
 
-        def run(self, smart, *, top_n):
-            seen.append(smart.sweep)
+        def run(self, smart, *, top_n, on_candidate=None, on_round=None):
+            del top_n
+            seen.append((smart.sweep, on_candidate, on_round))
             return "result"
 
     monkeypatch.setattr(search, "Sweeper", CaptureSweeper)
-    assert recommendation._run_recommendation(config, stack="engine", runner_factory=object()) == "result"
-    assert seen[0].parallel_evals == 2
-    assert seen[0].candidates_per_round == 8
-    assert seen[0].max_trials == 256
+    assert (
+        recommendation._run_recommendation(
+            config,
+            stack="engine",
+            runner_factory=object(),
+            output_configs={"dgd": {"socket": "/tmp/events.sock"}},
+            output_adapters={"dgd": SubscribedAdapter()},
+        )
+        == "result"
+    )
+    sweep, on_candidate, on_round = seen[0]
+    assert sweep.parallel_evals == 2
+    assert sweep.candidates_per_round == 8
+    assert sweep.max_trials == 256
+    assert on_candidate is not None
+    assert on_round is None
     assert config.optimizer.parallelism == 8
 
 
