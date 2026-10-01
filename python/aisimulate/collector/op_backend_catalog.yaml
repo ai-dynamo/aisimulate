@@ -131,6 +131,7 @@ families:
       - glm5_dsa_attn_module_perf
       - glm5_mqa_logits_module_perf
       - glm5_topk_module_perf
+      - sglang_prefill_attention_sequence_perf
 
   - family: moe
     op_files:
@@ -147,11 +148,12 @@ families:
         choices:
           - {backend: triton_fused_moe, framework_name: "triton / triton_kernel", constraints: "universal fallback; triton_kernel needs ep=1, segfaults Blackwell driver>=595 -> triton", source: "server_args.py:3922-3939"}
           - {backend: deepgemm, framework_name: deep_gemm, constraints: "fp8_block; Hopper/Blackwell; JIT", source: "layers/quantization/fp8.py:889-903"}
-          - {backend: flashinfer_trtllm_gen, framework_name: "flashinfer_trtllm / flashinfer_trtllm_routed / flashinfer_mxfp4(SM100)", constraints: "trtllm-gen kernels SM100-only; quant {bf16,fp8,mxfp8,nvfp4,mxfp4}", source: "server_args.py:5140-5167, mxfp4.py:344-360"}
+          - {backend: flashinfer_trtllm_gen, framework_name: "flashinfer_trtllm / flashinfer_trtllm_routed / flashinfer_mxfp4(SM100)", constraints: "trtllm-gen kernels SM100-only; quant {bf16,fp8,mxfp8,nvfp4,mxfp4}; fp8 includes block-scaled fp8_block rows", source: "server_args.py:5140-5167, mxfp4.py:344-360; SGLang v0.5.17: https://github.com/sgl-project/sglang/blob/29481685462732237d80d86076d6563e1f658102/python/sglang/srt/layers/quantization/fp8.py#L261-L282, https://github.com/sgl-project/sglang/blob/29481685462732237d80d86076d6563e1f658102/python/sglang/srt/layers/quantization/fp8.py#L2484-L2527, https://github.com/sgl-project/sglang/blob/29481685462732237d80d86076d6563e1f658102/python/sglang/srt/layers/moe/moe_runner/flashinfer_trtllm.py#L692-L799"}
           - {backend: flashinfer_cutlass, framework_name: "flashinfer_cutlass / flashinfer_mxfp4(SM90)", constraints: "quant {bf16,modelopt_fp4,modelopt_fp8}; ep in {1,tp}; SM90 mxfp4 needs FI>=0.6.11", source: "server_args.py:5107-5117, mxfp4.py:348-356"}
           - {backend: flashinfer_cutedsl, framework_name: flashinfer_cutedsl, constraints: "nvfp4 only; SM100; deepep a2a", source: "server_args.py:5119-5138"}
           - {backend: cutlass, framework_name: cutlass, constraints: "fp8_block SM90/100/120, mxfp8 SM100; ep=1", source: "layers/quantization/fp8.py:879-886, cutlass_moe.py:150"}
           - {backend: marlin, framework_name: marlin, constraints: "w4a16 (nvfp4 fallback SM80-90; mxfp4 SM90/SM120)", source: "modelopt_quant.py:1770-1778, mxfp4.py:520-521"}
+          - {backend: humming, framework_name: humming, constraints: "explicit DeepSeek V4.1 MXFP4/BF16 path at 1aa0e962; collector admits native unquantized w13/w2 inputs and native weight padding", source: "sglang@1aa0e962b206102b7c439a4a0c4981cfec6e87bc python/sglang/srt/layers/quantization/fp8.py:414-419; mxfp4_humming_moe.py:18-26"}
           - {backend: deepep, framework_name: "(wideep a2a: deepep)", constraints: "wide-EP dispatch/combine + DeepEP-MoE compute", source: "collector/wideep/sglang"}
       vllm:
         selector: "KernelConfig.moe_backend (default auto; per-quant oracle walks priority list; forcing raises on unsupported)"
@@ -214,3 +216,4 @@ families:
       - trtllm_alltoall_perf
       - wideep_deepep_ll_perf
       - wideep_deepep_normal_perf
+      - sglang_prefill_comm_norm_boundary_perf

@@ -1031,6 +1031,12 @@
               }
             }
           ]
+        },
+        "fpm_estimates": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/fpmEstimateRecord"
+          }
         }
       },
       "required": [
@@ -1094,6 +1100,12 @@
             "null"
           ],
           "minimum": 0
+        },
+        "fpm_estimates": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/fpmEstimateRecord"
+          }
         }
       },
       "required": [
@@ -1323,6 +1335,231 @@
           }
         }
       ]
+    },
+    "fpmCoordinates": {
+      "type": "object",
+      "properties": {
+        "batch_size": {
+          "type": "number",
+          "minimum": 0
+        },
+        "total_prefill_tokens": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "total_kv_read_tokens": {
+          "type": "number",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "batch_size",
+        "total_prefill_tokens",
+        "total_kv_read_tokens"
+      ],
+      "additionalProperties": false
+    },
+    "fpmMeasurementSupport": {
+      "type": "object",
+      "properties": {
+        "coordinates": {
+          "$ref": "#/$defs/fpmCoordinates"
+        },
+        "latency_ms": {
+          "type": "number",
+          "minimum": 0
+        },
+        "weight": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      },
+      "required": [
+        "coordinates",
+        "latency_ms",
+        "weight"
+      ],
+      "additionalProperties": false
+    },
+    "fpmQuery": {
+      "type": "object",
+      "properties": {
+        "phase": {
+          "enum": [
+            "prefill",
+            "decode"
+          ]
+        },
+        "model_path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "decode_baseline": {
+          "type": "boolean"
+        },
+        "query": {
+          "$ref": "#/$defs/fpmCoordinates"
+        },
+        "resolution": {
+          "enum": [
+            "exact_lookup",
+            "within_curve_interpolation",
+            "cross_kv_interpolation",
+            "cross_batch_interpolation"
+          ]
+        },
+        "latency_ms": {
+          "type": "number",
+          "minimum": 0
+        },
+        "support": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/fpmMeasurementSupport"
+          },
+          "minItems": 1
+        }
+      },
+      "required": [
+        "phase",
+        "model_path",
+        "decode_baseline",
+        "query",
+        "resolution",
+        "latency_ms",
+        "support"
+      ],
+      "additionalProperties": false
+    },
+    "fpmRankEstimate": {
+      "type": "object",
+      "properties": {
+        "rank": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "latency_ms": {
+          "type": "number",
+          "minimum": 0
+        },
+        "prefill_ms": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "decode_ms": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "decode_baseline_ms": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "marginal_decode_ms": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "queries": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/fpmQuery"
+          }
+        }
+      },
+      "required": [
+        "rank",
+        "latency_ms",
+        "prefill_ms",
+        "decode_ms",
+        "decode_baseline_ms",
+        "marginal_decode_ms",
+        "queries"
+      ],
+      "additionalProperties": false
+    },
+    "fpmEstimate": {
+      "type": "object",
+      "properties": {
+        "latency_ms": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "native_latency_ms": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "correction_factor": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "max_rank": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "ranks": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/fpmRankEstimate"
+          }
+        }
+      },
+      "required": [
+        "latency_ms",
+        "native_latency_ms",
+        "correction_factor",
+        "max_rank",
+        "ranks"
+      ],
+      "additionalProperties": false
+    },
+    "fpmEstimateRecord": {
+      "type": "object",
+      "properties": {
+        "estimate": {
+          "$ref": "#/$defs/fpmEstimate"
+        },
+        "count": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "latency_scale": {
+          "type": "number",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "estimate",
+        "count",
+        "latency_scale"
+      ],
+      "additionalProperties": false
     }
   },
   "$comment": "SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved. SPDX-License-Identifier: Apache-2.0",

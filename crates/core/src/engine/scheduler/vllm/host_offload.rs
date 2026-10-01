@@ -694,7 +694,7 @@ mod tests {
         tokens: Vec<u32>,
     ) -> (RequestSequence, BlockRequestLease, VllmHostRequestState) {
         let (sequence, identities) =
-            RequestSequence::new(tokens, 0, 0, 4, true, false, false, None);
+            RequestSequence::new(owner, tokens, 0, 0, 4, true, false, false, None);
         let lease = BlockRequestLease::new(owner, identities);
         let host = VllmHostRequestState::new(&sequence, &lease, 4);
         (sequence, lease, host)

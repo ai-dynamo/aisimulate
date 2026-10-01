@@ -29,7 +29,7 @@
 # observable from the label), triton_fused_moe, marlin, flashinfer_cutlass,
 # flashinfer_cutedsl, flashinfer_trtllm_gen, deepep, causal_conv1d,
 # fla_triton, tilelang, custom_allreduce, nccl, nvlink_one_sided,
-# nvlink_two_sided, dsa_nsa, unverified.
+# nvlink_two_sided, dsa_nsa, humming, unverified.
 
 schema_version: 1
 
@@ -100,6 +100,19 @@ mappings:
   - {framework: sglang, kernel_source: SGLang_CustomAllReduce_graph, backend: custom_allreduce, source: "collector/network/collect_all_reduce.py (CUDA-graph launch)"}
   - {framework: sglang, kernel_source: TRTLLM, backend: custom_allreduce, source: "collector/network/collect_all_reduce.py (trtllm AR rows stored under sglang dir)"}
 
+  # DeepSeek V4.1 at SGLang 1aa0e962b206102b7c439a4a0c4981cfec6e87bc.
+  # Composite module labels identify observed serving boundaries, not a single
+  # inner kernel library. Keep their unsplit backend identity explicit instead
+  # of assigning all SM/shape dispatches to one guessed implementation.
+  - {framework: sglang, kernel_source: sglang_mxfp4_humming_moe, backend: humming, source: "sglang@1aa0e962 python/sglang/srt/layers/quantization/fp8.py:414-419 + mxfp4_humming_moe.py:18-26; collector/sglang/dsv41_humming.py qualifies actual fused Humming w13/w2 BF16 calls"}
+  - {framework: sglang, kernel_source: sglang.srt.layers.engram.Engram.apply_gate+sglang.srt.layers.engram.EngramEmbedding._owned_rows+sglang.srt.layers.linear.ReplicatedLinear.forward/sglang.srt.layers.quantization.fp8.Fp8LinearMethod, backend: unverified, source: "sglang@1aa0e962 python/sglang/srt/layers/engram.py:923-942; collector/sglang/dsv41_native_runner.py observes lookup/projection/gate; compound label does not split internal kernel libraries"}
+  - {framework: sglang, kernel_source: sglang.srt.layers.linear.MergedColumnParallelLinear.forward/sglang.srt.layers.quantization.fp8.Fp8LinearMethod, backend: unverified, source: "collector/sglang/dsv41_isolated_runner.py collect_linear invokes native shared_experts at sglang@1aa0e962; Fp8LinearMethod identity does not distinguish its internal GEMM dispatch"}
+  - {framework: sglang, kernel_source: sglang.srt.layers.linear.RowParallelLinear.forward/sglang.srt.layers.quantization.fp8.Fp8LinearMethod, backend: unverified, source: "collector/sglang/dsv41_isolated_runner.py collect_linear invokes native shared_experts at sglang@1aa0e962; Fp8LinearMethod identity does not distinguish its internal GEMM dispatch"}
+  - {framework: sglang, kernel_source: sglang.srt.layers.vocab_parallel_embedding.ParallelLMHead.quant_method.apply/sglang.srt.layers.quantization.unquant.UnquantizedEmbeddingMethod, backend: unverified, source: "collector/sglang/dsv41_native_runner.py collect_baselines invokes the loaded native LM-head quant method at sglang@1aa0e962; method label does not attest the underlying BLAS provider"}
+  - {framework: sglang, kernel_source: sglang.srt.models.deepseek_v2.MoEGate.forward, backend: unverified, source: "sglang@1aa0e962 python/sglang/srt/models/deepseek_v2.py:519-568 dispatches tiny_gemm_bf16 or linear_bf16_fp32 by shape; unsplit module label cannot identify one backend"}
+  - {framework: sglang, kernel_source: sglang.srt.models.deepseek_v4.DeepseekV4DecoderLayer._hc_mix_and_combine+sglang.srt.models.deepseek_v4.DeepseekV4DecoderLayer.hc_post, backend: unverified, source: "sglang@1aa0e962 python/sglang/srt/models/deepseek_v4.py:2734-2785; collector/sglang/dsv41_isolated_runner.py collect_mhc measures both native mix/post sites; composite label does not split inner kernels"}
+  - {framework: sglang, kernel_source: sglang.srt.models.deepseek_v4.MQALayer.forward, backend: unverified, source: "sglang@1aa0e962 python/sglang/srt/models/deepseek_v4.py:957-1090,2078-2082; collector/sglang/dsv41_attention_runner.py retains projections/compressor/indexer/attention in the module boundary, including native SM-dependent inner dispatch"}
+
   # --- sglang 0.5.14 upgrade labels (PR #1342: serving-truth per-row labels;
   # constructions in the PR branch's collector/sglang/*). Pre-staged so the
   # 0.5.14 data lands with zero unmapped labels.
@@ -135,6 +148,24 @@ mappings:
   - {framework: sglang, kernel_source: sglang_flashinfer_cutlass_nvfp4, backend: flashinfer_cutlass, source: "PR#1342 collect_gemm.py (flashinfer mm_fp4 cutlass)"}
   # MoE labels name the constructed serving method + runner.
   - {framework: sglang, kernel_source: sglang_flashinfer_trtllm_moe, backend: flashinfer_trtllm_gen, source: "PR#1342 collect_moe.py"}
+  # Frozen SM107 native composites; labels describe whole measured intervals.
+  # These pilot leaves were observed at SGLang 02c5a855aceb968c310e6fbc6632270e26edc84b.
+  - {framework: sglang, kernel_source: sglang_cutedsl_bf16_gemm, backend: cutedsl, source: "collector/sglang_rubin/collect_gemm.py:_kernel_source; srt/layers/quantization/unquant.py:89-109,238-265 at 02c5a855 (native CuteDSL BF16 predicate)"}
+  - {framework: sglang, kernel_source: sglang_linear_bf16_fp32_cublas, backend: cublas, source: "collector/sglang_rubin/collect_gemm.py:_observe_router_source; kernels/ops/attention/dsv4/gemm.py:119-122 at 02c5a855 (torch.mm with FP32 output)"}
+  - {framework: sglang, kernel_source: sglang_dsv3_router_gemm, backend: unverified, source: "collector/sglang_rubin/collect_gemm.py:_observe_router_source proves kernels/ops/gemm/dsv3_router_gemm.py:65-97 at 02c5a855; JIT custom-op leaf observed, underlying kernel-library classification not independently established"}
+  - {framework: sglang, kernel_source: "sglang.srt.distributed.device_communicators.pynccl.PyNcclCommunicator.all_reduce_graph", backend: nccl, source: "collector/sglang_rubin/collect_all_reduce.py:_trace_dispatch at SGLang 02c5a855 (observed PyNccl all_reduce inside graph capture)"}
+  - {framework: sglang, kernel_source: "torch.distributed.all_reduce[nccl]_eager", backend: nccl, source: "collector/sglang_rubin/collect_all_reduce.py:_trace_dispatch at SGLang 02c5a855 (observed NCCL process-group fallback)"}
+  - {framework: sglang, kernel_source: "sglang.srt.layers.flashinfer_comm_fusion.flashinfer_allreduce[mnnvl]_graph", backend: flashinfer, source: "collector/sglang_rubin/collect_all_reduce.py:_trace_dispatch at SGLang 02c5a855 (observed FlashInfer MNNVL leaf inside graph capture)"}
+  - {framework: sglang, kernel_source: "sglang.srt.layers.flashinfer_comm_fusion.flashinfer_allreduce[mnnvl]_eager", backend: flashinfer, source: "collector/sglang_rubin/collect_all_reduce.py:_trace_dispatch at SGLang 02c5a855 (observed FlashInfer MNNVL eager leaf)"}
+  - {framework: sglang, kernel_source: sglang_dsa_indexer_trtllm_dense_eager, backend: sglang_composite, source: "collector/sglang_rubin/collect_mla_module.py:_measure_module at SGLang 02c5a855 (complete DSA module, native indexer and TRTLLM dense attention, eager)"}
+  - {framework: sglang, kernel_source: sglang_dsa_indexer_trtllm_sparse_eager, backend: sglang_composite, source: "collector/sglang_rubin/collect_mla_module.py:_measure_module at SGLang 02c5a855 (complete DSA module, native indexer and TRTLLM sparse attention, eager)"}
+  - {framework: sglang, kernel_source: sglang_dsa_indexer_trtllm_sparse_cuda_graph, backend: sglang_composite, source: "collector/sglang_rubin/collect_mla_module.py:_measure_module at SGLang 02c5a855 (complete DSA module, native indexer and TRTLLM sparse attention, graph)"}
+  - {framework: sglang, kernel_source: sglang_dsa_skip_indexer_trtllm_dense_eager, backend: sglang_composite, source: "collector/sglang_rubin/collect_mla_module.py:_measure_module at SGLang 02c5a855 (complete DSA module reusing producer indices, TRTLLM dense attention, eager)"}
+  - {framework: sglang, kernel_source: sglang_dsa_skip_indexer_trtllm_sparse_eager, backend: sglang_composite, source: "collector/sglang_rubin/collect_mla_module.py:_measure_module at SGLang 02c5a855 (complete DSA module reusing producer indices, TRTLLM sparse attention, eager)"}
+  - {framework: sglang, kernel_source: sglang_dsa_skip_indexer_trtllm_sparse_cuda_graph, backend: sglang_composite, source: "collector/sglang_rubin/collect_mla_module.py:_measure_module at SGLang 02c5a855 (complete DSA module reusing producer indices, TRTLLM sparse attention, graph)"}
+  - {framework: sglang, kernel_source: sglang_breakable_dsa_attention_sequence, backend: sglang_composite, source: "collector/sglang_rubin/prefill_graph_identity.json: attention candidate 36b061d5 at SGLang 02c5a855; 78 DSA calls with native eager breaks"}
+  - {framework: sglang, kernel_source: flashinfer_ar_residual_rmsnorm, backend: flashinfer, source: "collector/sglang_rubin/prefill_graph_identity.json: communication candidate dbb2c542 at SGLang 02c5a855; native MNNVL residual/RMSNorm pattern, N<=2048"}
+  - {framework: sglang, kernel_source: native_allreduce_then_rmsnorm, backend: sglang_composite, source: "collector/sglang_rubin/prefill_graph_identity.json: communication candidate dbb2c542 at SGLang 02c5a855; PyNccl all_reduce then fused_add_rmsnorm, N>2048"}
   - {framework: sglang, kernel_source: sglang_mxfp4_flashinfer_trtllm_moe, backend: flashinfer_trtllm_gen, source: "PR#1342 collect_moe.py (mxfp4 trtllm-gen)"}
   - {framework: sglang, kernel_source: sglang_flashinfer_cutlass_moe, backend: flashinfer_cutlass, source: "PR#1342 collect_moe.py"}
   - {framework: sglang, kernel_source: sglang_flashinfer_cutedsl_nvfp4, backend: flashinfer_cutedsl, source: "PR#1342 collect_moe.py"}

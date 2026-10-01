@@ -208,6 +208,11 @@ impl TimingOperationEvidence {
                         left.fallbacks.push(fallback);
                     }
                 }
+                crate::perfmodel::fpm::accumulate_fpm_estimates(
+                    &mut left.fpm_estimates,
+                    right.fpm_estimates,
+                )
+                .map_err(anyhow::Error::msg)?;
                 Some(left)
             }
             (Some(mut details), None) | (None, Some(mut details)) => {
@@ -701,6 +706,14 @@ pub trait TimingModel: Send + Sync {
         true
     }
 
+    /// Whether `predict_prefill_ms` may fail or return a non-finite duration
+    /// for a batch that validation accepted. Only a false return from both this
+    /// and `prefill_batch_validation_can_fail` lets admission skip its rollback
+    /// checkpoint, so injected providers keep this conservative default.
+    fn prefill_prediction_can_fail(&self) -> bool {
+        true
+    }
+
     /// Validate actual (new tokens, cached prefix) pairs before a scheduler
     /// reduces them to means. Providers with nonlinear per-request execution
     /// policies may reject batches that their aggregate API cannot represent.
@@ -734,6 +747,12 @@ pub trait TimingModel: Send + Sync {
         None
     }
 
+    /// Latency-only whole-model FPM evidence is separate from energy evidence.
+    /// It must not change the provider's existing power publication contract.
+    fn fpm_evidence_summary(&self) -> Option<TimingEvidenceSummary> {
+        None
+    }
+
     /// Start a new measurement epoch without changing timing predictions or
     /// provider caches. Called only after preparation work has settled.
     ///
@@ -752,6 +771,10 @@ struct PolynomialTimingModel;
 
 impl TimingModel for PolynomialTimingModel {
     fn prefill_batch_validation_can_fail(&self) -> bool {
+        false
+    }
+
+    fn prefill_prediction_can_fail(&self) -> bool {
         false
     }
 
@@ -788,6 +811,10 @@ struct FixedTimingModel {
 
 impl TimingModel for FixedTimingModel {
     fn prefill_batch_validation_can_fail(&self) -> bool {
+        false
+    }
+
+    fn prefill_prediction_can_fail(&self) -> bool {
         false
     }
 
@@ -912,6 +939,7 @@ mod tests {
                             sol: None,
                             sol_unavailable_reason: Some("unsupported".into()),
                             fallbacks: Vec::new(),
+                            fpm_estimates: Vec::new(),
                         })
                 }
             }
@@ -1021,6 +1049,7 @@ mod tests {
                 TimingOperationEvidence::new("test", 2.0, None, TimingEvidenceSource::Estimated)
                     .unwrap();
             op.details = Some(OperationDetails {
+                fpm_estimates: Vec::new(),
                 sol: has_sol.then_some(SolDiagnostics {
                     latency_ms: 1.0,
                     math_ms: 0.0,
@@ -1079,6 +1108,7 @@ mod tests {
             )
             .unwrap();
             operation.details = Some(OperationDetails {
+                fpm_estimates: Vec::new(),
                 sol: None,
                 sol_unavailable_reason: Some("unsupported operation".into()),
                 fallbacks: vec![valid.clone(), fallback],
@@ -1100,6 +1130,7 @@ mod tests {
                 .unwrap();
         let mut detailed = plain.clone();
         detailed.details = Some(OperationDetails {
+            fpm_estimates: Vec::new(),
             sol: Some(SolDiagnostics {
                 latency_ms: 1.0,
                 math_ms: 0.0,
@@ -1455,6 +1486,7 @@ mod tests {
                     }),
                     sol_unavailable_reason: None,
                     fallbacks: Vec::new(),
+                    fpm_estimates: Vec::new(),
                 });
             }
             let incoming = ValidatedTimingPhase::from_operations(vec![op]).unwrap();

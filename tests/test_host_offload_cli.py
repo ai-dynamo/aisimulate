@@ -185,6 +185,7 @@ def test_prediction_host_offload_auto_geometry_uses_aggregated_shape(
             "pp_size": 1,
             "moe_tp_size": 1,
             "moe_ep_size": 1,
+            "kvcache_quant_mode": None,
         }
     ]
 

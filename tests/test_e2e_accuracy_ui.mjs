@@ -689,3 +689,20 @@ test("evaluated snapshots require matching legacy CLI provenance", () => {
   app.set("historicalOnly", data);
   assert.doesNotThrow(() => app.run("validateSummary(historicalOnly)"));
 });
+
+test("baseline entry point is validated and displayed for both layouts", async () => {
+  for (const entry of ["aiconfigurator.main:main", "aisimulate.legacy_cli.entrypoint:main"]) {
+    const data = withEvaluation();
+    data.snapshot.aic_source.cli_entry_point = entry;
+    const app = setup(async () => response(data));
+    app.set("revisionFixture", data.snapshot.evaluated_revision);
+    app.run('Object.assign(state.catalog.branches[0], {status: "evaluated", evaluated_revision: revisionFixture})');
+    await app.run('loadBranch("main")');
+    assert.ok(app.element("provenance-content").innerHTML.includes(entry));
+    for (const invalid of ["foreign.main:main", "<script>alert(1)</script>", null, 42]) {
+      data.snapshot.aic_source.cli_entry_point = invalid;
+      app.set("invalid", data);
+      assert.throws(() => app.run("validateSummary(invalid)"), /legacy AIC CLI source/);
+    }
+  }
+});

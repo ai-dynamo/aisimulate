@@ -86,13 +86,14 @@ _TOP_PASSTHROUGH: frozenset[str] = frozenset(
         "nextn_accept_rates",
         "moe_backend",
         "attention_backend",
+        "moe_kernel_source",
         "wideep_num_slots",
     }
 )
 
 # Global scalars that may appear inside the V1 ``config:`` block.
 _CONFIG_SCALARS: frozenset[str] = frozenset(
-    {"moe_backend", "nextn", "nextn_accept_rates", "attention_backend", "wideep_num_slots"}
+    {"moe_backend", "nextn", "nextn_accept_rates", "attention_backend", "moe_kernel_source", "wideep_num_slots"}
 )
 
 # Keys that are part of the V1 format itself (handled structurally, never copied).

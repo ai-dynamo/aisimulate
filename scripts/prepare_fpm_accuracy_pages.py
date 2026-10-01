@@ -54,10 +54,10 @@ def unpack(archive: bytes) -> dict:
     return summary
 
 
-def trusted_run(run):
+def trusted_run(run, *, allow_manual_branch=False):
     return (
         run.get("event") in {"schedule", "workflow_dispatch"}
-        and run.get("head_branch") == "main"
+        and (run.get("head_branch") == "main" or (allow_manual_branch and run.get("event") == "workflow_dispatch"))
         and run.get("path") == WORKFLOW
         and run.get("status") == "completed"
         and run.get("conclusion") in {"success", "failure"}
@@ -66,8 +66,8 @@ def trusted_run(run):
     )
 
 
-def validate_artifact(archive, run, name, jobs):
-    require(trusted_run(run), "untrusted FPM campaign")
+def validate_artifact(archive, run, name, jobs, *, allow_manual_branch=False):
+    require(trusted_run(run, allow_manual_branch=allow_manual_branch), "untrusted FPM campaign")
     summary = unpack(archive)
     snapshot = summary["snapshot"]
     require(
