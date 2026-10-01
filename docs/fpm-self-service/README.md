@@ -187,5 +187,4 @@ Details: [SDK construction](implementation.md#construct-and-check-the-performanc
 and [serving validation](implementation.md#stage-6-matched-serving).
 
 Continue with the [worked examples](examples.md) or the
-[implementation and CLI reference](implementation.md). For analytical model
-registration and SOL transfer, see the optional [model-integration guide](model-integration.md).
+[implementation and CLI reference](implementation.md).

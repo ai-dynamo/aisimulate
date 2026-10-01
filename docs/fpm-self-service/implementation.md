@@ -9,8 +9,7 @@ Start with the [overview](README.md) for motivation, support and the six-stage
 workflow. This page is the canonical reference for the agent procedure, CLI
 commands, artifact contracts, execution, validation and recovery. The
 [worked examples](examples.md) apply the procedure to an imported Kimi profile
-and a new MiniMax collection campaign. [Model integration](model-integration.md)
-covers metadata and the optional registered-model/SOL route.
+and a new MiniMax collection campaign.
 
 ## Reference map
 
@@ -1682,7 +1681,7 @@ Ordinary `predict` and `recommend` retain their existing defaults when no profil
 
 Hand off the saved request, pinned model configuration, and plan. Both routes need a canonical checkpoint identity, effective precision and topology, correct weight and KV-cache accounting, and matching whole-forward FPM measurements. Collected timings alone do not establish memory fit.
 
-- **Registered-model/SOL route:** reuse a compatible analytical class or follow the optional [model-integration procedure and CPU checks](model-integration.md#2-registered-model-route-reuse-or-implement-the-model-description) when choosing to add one. Verify its operation graph, memory/cache accounting, and native FPM SOL execution.
+- **Registered-model/SOL route:** reuse a compatible analytical class or follow the optional developer guide, [Add a model architecture for SOL-assisted FPM](../../python/aisimulate/docs/fpm/sol-model-integration.md), when choosing to add one. Verify its operation graph, memory/cache accounting, and native FPM SOL execution.
 - **Class-independent direct route:** supply the identity/resource profile and configure the worker as shown below. The guided planner selects this route whenever a profile is supplied. No operation graph is constructed for resources, timing, or recommendation candidates.
 
 ```yaml

@@ -13,10 +13,9 @@ lives under `docs/fpm-self-service/`:
   commands, artifacts, validation, checkpointing and recovery.
 - [Worked examples](../../../../docs/fpm-self-service/examples.md): import a Kimi K3
   TP8+DCP8 profile or collect a MiniMax-M2.7 TP4 profile.
-- [Model integration](../../../../docs/fpm-self-service/model-integration.md):
-  metadata and the optional registered-model/SOL route.
 
-This directory retains FPM design background and model-specific profiles.
+This directory contains developer integration guidance, FPM design background
+and model-specific profiles.
 
 There are two distinct workflows:
 
@@ -33,6 +32,9 @@ AISimulate checkout; pass its path as `estimator_config.fpm_interpolation.fpm_pa
 
 ## References
 
+- [Add a model architecture for SOL-assisted FPM](sol-model-integration.md):
+  developer instructions for analytical model descriptions and SOL-path tests;
+  not required for direct-FPM self-service.
 - [Collector usage and publication contract](../../collector/README.md#whole-forward-fpm-campaign)
 - [Generator FPM target and runtime responsibilities](../generator_overview.md#fpm-v1-target)
 - [AISimulate CLI configuration](../../../../docs/cli/user-guide.md)

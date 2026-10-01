@@ -13,9 +13,9 @@ wheel; installing or rebuilding a separate AIConfigurator package is unnecessary
 
 For whole-forward FPM onboarding, start with the [self-service config/profile workflow](../../../docs/fpm-self-service/implementation.md#onboard-with-an-agent),
 which supports direct interpolation without an analytical model class. The
-[FPM model-integration guide](../../../docs/fpm-self-service/model-integration.md) records shared metadata
-requirements and the optional registered-model/SOL procedure to use alongside
-this guide. Neither FPM route requires per-operation GPU timing collection.
+[SOL-assisted FPM developer guide](fpm/sol-model-integration.md) describes the
+additional operation, memory and native SOL tests needed when adding an analytical
+model for `method: sol`. Neither FPM route requires per-operation GPU timing collection.
 
 ## Choose the smallest extension
 
