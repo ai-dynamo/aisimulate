@@ -3,7 +3,7 @@
 
 """Measure SGLang 0.5.20 FP8 activation quantization overhead for static-FP8 GEMM.
 
-Version fork of collect_computescale_v1.py: identical cases, timing and rows;
+0.5.20 fork of collect_computescale.py (selected there): identical cases, timing and rows;
 only the dynamic per-token quant kernel differs, because serving changed it.
 """
 
@@ -13,9 +13,9 @@ only the dynamic per-token quant kernel differs, because serving changed it.
 # quantization/fp8_utils.py:2004-2005 -> kernels/ops/quantization/
 # fp8_kernel.py:804-820 -> sgl_per_token_quant_fp8) resolves at 0.5.20 to the
 # JIT per_token_quant_fp8 kernel registered in kernels/ops/quantization/
-# __init__.py:21-34,76-84 -- not the sgl_kernel AOT op collect_computescale_v1.py
+# __init__.py:21-34,76-84 -- not the sgl_kernel AOT op collect_computescale.py
 # times at 0.5.14 (fp8_kernel.py:58 @0.5.14). That is a WHICH-kernel change,
-# so it lives in this registry version fork instead of an import shim.
+# so it lives in this whole-implementation fork instead of an import shim.
 # Known gap carried over unchanged (not fixed here): serving's static
 # per-tensor path is the Triton static_quant_fp8 (fp8_utils.py:1997), while
 # _static_quantize_e4m3_per_tensor times eager torch ops, so scale_matrix rows

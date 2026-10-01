@@ -3,7 +3,7 @@
 
 """Tests for the fp8_block GEMM weight/scale pre-packing (AIC-1744).
 
-``collector/sglang/collect_gemm_v1.py`` imports ``sglang``/``sgl_kernel`` (and
+``collector/sglang/collect_gemm.py`` imports ``sglang``/``sgl_kernel`` (and
 ``torch``) at module scope and only runs on a GPU node with those installed.
 This test loads ``_prepare_fp8_block_weights`` (plus the ``cdiv``/
 ``scale_shape`` helpers it calls) straight from the source AST and executes
@@ -33,7 +33,7 @@ import pytest
 pytestmark = pytest.mark.unit
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-SOURCE_PATH = REPO_ROOT / "collector" / "sglang" / "collect_gemm_v1.py"
+SOURCE_PATH = REPO_ROOT / "collector" / "sglang" / "collect_gemm.py"
 
 
 def _load_functions(*names: str, namespace: dict | None = None) -> dict:

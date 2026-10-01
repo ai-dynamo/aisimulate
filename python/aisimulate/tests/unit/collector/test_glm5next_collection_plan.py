@@ -13,7 +13,7 @@ import pytest
 from collector.case_generator import get_common_moe_test_cases, get_gemm_case_specs, moe_model_allows_quantization
 from collector.model_cases import build_collection_case_plan
 from collector.sglang.registry import REGISTRY as SGLANG_REGISTRY
-from collector.version_resolver import _check_compat, resolve_module
+from collector.version_resolver import _check_compat
 
 from .test_getter_deduplication import _install_vllm_stubs, _load_collector, _stub_module
 
@@ -147,22 +147,39 @@ def test_vllm_collectors_admit_exactly_the_audited_0_30_0(path, version, accepte
 
 
 @pytest.mark.parametrize(
-    "op,v2,v1",
+    "path,fork,names",
     [
-        ("gemm", "collector.sglang.collect_gemm_v2", "collector.sglang.collect_gemm_v1"),
-        ("compute_scale", "collector.sglang.collect_computescale_v2", "collector.sglang.collect_computescale_v1"),
+        ("collector/sglang/collect_gemm.py", "collect_gemm_0520", ("get_gemm_test_cases", "run_gemm")),
+        (
+            "collector/sglang/collect_computescale.py",
+            "collect_computescale_0520",
+            ("get_computescale_test_cases", "run_computescale"),
+        ),
     ],
 )
-def test_sglang_0_5_20_routes_to_the_serving_built_fork(op, v2, v1):
-    entry = next(e for e in SGLANG_REGISTRY if e.op == op)
-    assert resolve_module(entry, "0.5.20") == v2
-    assert resolve_module(entry, "0.5.17") == v1
-    assert resolve_module(entry, "0.5.14") == v1
-    v2_compat = _compat(v2.replace(".", "/") + ".py")
-    v1_compat = _compat(v1.replace(".", "/") + ".py")
-    assert _check_compat(v2_compat, "0.5.20")
-    assert not _check_compat(v2_compat, "0.5.17")
-    assert not _check_compat(v1_compat, "0.5.20")
+def test_sglang_0_5_20_runs_delegate_to_the_serving_built_fork(path, fork, names):
+    """The registry module stays unversioned (changed_ops rejects VersionRoute
+    entries) and swaps in the 0.5.20 implementation by installed release."""
+    tree = ast.parse((REPO_ROOT / path).read_text())
+    gate = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.If)
+        and "_sglang_release()" in ast.unparse(node.test)
+        and "(0, 5, 20)" in ast.unparse(node.test)
+    )
+    body = ast.unparse(gate)
+    assert f"from collector.sglang import {fork} as _fork_0520" in body
+    for name in names:
+        assert f"{name} = _fork_0520.{name}" in body
+    entry = next(e for e in SGLANG_REGISTRY if e.module == f"collector.sglang.{Path(path).stem}")
+    assert not entry.versions
+    compat = _compat(path)
+    assert _check_compat(compat, "0.5.20") and _check_compat(compat, "0.5.14")
+    for version in ("0.5.18", "0.5.19"):
+        assert not _check_compat(compat, version)
+    assert _check_compat(_compat(f"collector/sglang/{fork}.py"), "0.5.20")
+    assert not _check_compat(_compat(f"collector/sglang/{fork}.py"), "0.5.17")
 
 
 def test_sglang_moe_admits_0_5_20_but_not_unaudited_releases():
@@ -177,19 +194,19 @@ def test_sglang_moe_admits_0_5_20_but_not_unaudited_releases():
         assert _check_compat(compat, version) is accepted, version
 
 
-def _load_sglang_gemm_v2(monkeypatch):
+def _load_sglang_gemm_0520(monkeypatch):
     _stub_module(monkeypatch, "torch", bfloat16="bfloat16", float32="float32")
     helper = types.ModuleType("collector.helper")
     helper.benchmark_with_power = None
     helper.log_perf = None
     helper.get_sm_version = lambda: 103
     monkeypatch.setitem(sys.modules, "collector.helper", helper)
-    return _load_collector(monkeypatch, "collector.sglang.collect_gemm_v2", "collector/sglang/collect_gemm_v2.py")
+    return _load_collector(monkeypatch, "collector.sglang.collect_gemm_0520", "collector/sglang/collect_gemm_0520.py")
 
 
-def test_sglang_v2_queues_small_shapes_the_v1_fixme_skipped(monkeypatch):
+def test_sglang_0520_queues_small_shapes_the_v1_fixme_skipped(monkeypatch):
     monkeypatch.setenv("COLLECTOR_MODEL_PATH", FP8)
-    module = _load_sglang_gemm_v2(monkeypatch)
+    module = _load_sglang_gemm_0520(monkeypatch)
     cases = module.get_gemm_test_cases()
     types_by_shape = {}
     for gemm_type, x, n, k in cases:
@@ -206,14 +223,14 @@ def test_sglang_v2_queues_small_shapes_the_v1_fixme_skipped(monkeypatch):
         ([], "sglang_triton_scaled_mm"),
     ],
 )
-def test_sglang_v2_fp8_label_comes_from_the_executed_backend(monkeypatch, chosen, label):
-    module = _load_sglang_gemm_v2(monkeypatch)
+def test_sglang_0520_fp8_label_comes_from_the_executed_backend(monkeypatch, chosen, label):
+    module = _load_sglang_gemm_0520(monkeypatch)
     assert module._fp8_kernel_source(chosen) == label
 
 
 @pytest.mark.parametrize("chosen", [["aot", "torch"], ["jit"]])
-def test_sglang_v2_fp8_label_rejects_mixed_or_unknown_backends(monkeypatch, chosen):
-    module = _load_sglang_gemm_v2(monkeypatch)
+def test_sglang_0520_fp8_label_rejects_mixed_or_unknown_backends(monkeypatch, chosen):
+    module = _load_sglang_gemm_0520(monkeypatch)
     with pytest.raises(RuntimeError, match="unexpected Fp8ScaledMMOp backends"):
         module._fp8_kernel_source(chosen)
 
