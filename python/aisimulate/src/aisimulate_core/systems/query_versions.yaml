@@ -27,6 +27,9 @@ defaults:
   sglang: {current: "0.5.14", previous: null}      # next derives to 0.5.16 today
   vllm: {current: "0.24.0", previous: null}
 overrides:
+  vr200_hecate:
+    # This pinned pilot image is a separate runtime domain, not a fleet upgrade.
+    sglang: {current: "0.5.18+nvinternal.rubin.0.8full.66997102", previous: null}
   a100_sxm:
     trtllm: {current: "1.0.0", previous: null}
     sglang: {current: "0.5.10", previous: null}

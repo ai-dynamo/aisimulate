@@ -763,7 +763,10 @@ def _resource_documents(
         raise ValueError("FPM single-node workload must not require a ComputeDomain document")
     if compute_domain is None:
         raise ValueError("FPM multinode workload requires a ComputeDomain document")
-    return [compute_domain.to_dict(), workload]
+    document = compute_domain.to_dict()
+    metadata = document["metadata"]
+    metadata["labels"] = {**(metadata.get("labels") or {}), **workload["metadata"]["labels"]}
+    return [document, workload]
 
 
 def _resource_metadata(context: dict[str, Any]) -> dict[str, Any]:

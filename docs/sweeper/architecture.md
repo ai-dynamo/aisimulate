@@ -52,6 +52,32 @@ The config-adapter ABI has three operations: compile a concrete prediction secti
 recommendation section into a search plan, and materialize one candidate. The legacy Sweeper
 provider ABI remains a separate SDK compatibility surface.
 
+Recommendation outputs are discovered independently through
+`aisimulate.output_adapters`. An output adapter name is an accepted `--output` value and identifies
+the same-named top-level configuration section. AISimulate removes explicitly selected output
+sections before validating simulation configuration. A selected adapter may subscribe to live
+candidate and round notifications. After the recommendation completes, AISimulate passes the
+adapter's section, the final `SweepResult`, and the prepared `--output-dir` to its writer. The
+adapter returns the relative paths it wrote. Output adapters do not affect simulation, ranking, or
+recommended prediction configurations.
+
+The output-adapter ABI has one required operation and one optional operation:
+
+```python
+adapter.subscribe(config)  # optional: RecommendationOutputCallbacks or None
+adapter.write(config, result=result, output_dir=output_dir)
+```
+
+Adapters are loaded only when selected. Names must be unique, implementations must declare the
+supported output-adapter API version, and reported paths must be relative to the supplied output
+directory and exist after the call. AISimulate writes canonical recommendation output before calling
+`write()`, and a writer failure makes the command fail. Adapters share that output directory and must
+not modify canonical files. `subscribe()` runs in the supervised recommendation worker and may
+return `on_candidate` and `on_round` callbacks. These callbacks execute synchronously on the search
+path, must return promptly, and abort the recommendation if they fail. The worker and final writer
+may use separate adapter instances, so plugins must not depend on shared in-memory state between
+callbacks and `write()`.
+
 See [Sweep Configuration Providers](sweep-config-provider.md) for the SDK provider contract.
 
 ## Sweep Flow

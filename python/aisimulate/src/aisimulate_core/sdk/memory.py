@@ -1,15 +1,24 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""KV-cache capacity estimation.
+"""KV-cache capacity and per-request state memory estimation.
 
-The single source of truth for the rank-local KV-cache capacity estimate. The
-Rust ``aisimulate_core::memory::estimate_kv_cache`` is a pure forwarder that
-calls :func:`estimate_kv_cache` here and rebuilds its result, so all of the
-math -- fraction + tolerance validation, the native AIC memory model, the naive
-fallback, and the tolerance margin -- lives in this module.
+``estimate_state_cache`` re-exports the shared config-driven state-footprint
+API. It is independent of the pool-capacity algorithms below.
 
-Two estimators, each built then asked to ``estimate()``:
+This module implements scalar rank-local KV-cache capacity estimation. The
+legacy Rust ``aisimulate_core::memory::estimate_kv_cache`` forwards here and
+rebuilds the scalar result. Grouped FPM profiles delegate budget arithmetic,
+page rounding and retention footprints to the canonical Rust
+``ForwardPassPerfModelConfig::estimate_cache_budget`` API; they have no scalar
+token capacity.
+
+Resource sources:
+
+- **FPM profile**: caller-declared rank-local resource bounds bypass model
+  construction and timing data. Linear profiles use the scalar arithmetic below;
+  grouped profiles use the native cache-budget API. Both check the scheduler
+  against the declared resource envelope.
 
 - **Native** (:class:`KVCacheEstimator`): ``from_request`` reuses AIC's full
   backend memory model (``BaseBackend._get_memory_usage`` plus the model's
@@ -26,7 +35,7 @@ Two estimators, each built then asked to ``estimate()``:
   metadata to compute the weights or the per-token KV size (rather than guessing
   with a placeholder).
 
-The budget math is factored into :func:`kv_cache_budget_bytes` so the deferred
+The scalar budget math is factored into :func:`kv_cache_budget_bytes` so the deferred
 consolidation of ``InferenceSummary._check_and_set_kv_cache_oom`` onto a single
 formula is a small follow-up (tracked in #1208).
 """
@@ -43,6 +52,7 @@ from aisimulate_core.sdk import perf_database
 from aisimulate_core.sdk.backends.factory import get_backend
 from aisimulate_core.sdk.common import DefaultHFModels
 from aisimulate_core.sdk.config_builders import apply_nextn, build_model_config, validate_moe_controls, validate_nextn
+from aisimulate_core.sdk.fpm_profile import FpmModelProfile, load_fpm_profile
 from aisimulate_core.sdk.models import get_model
 from aisimulate_core.sdk.models.helpers import resolve_sglang_mla_compute
 from aisimulate_core.sdk.utils import (
@@ -52,10 +62,12 @@ from aisimulate_core.sdk.utils import (
     _parse_hf_config_json,
 )
 
+from .state_memory import estimate_state_cache as estimate_state_cache
+
 _ONE_GIB = 1 << 30
 _MAX_EXACT_BYTE_COUNT = 1 << 53
 
-# A KV byte-budget -> token-count inverse. Every estimation path produces one of
+# A KV byte-budget -> token-count inverse. Every scalar estimation path produces one of
 # these (native: the model's ``get_kvcache_max_tokens``; naive:
 # ``NaiveKVCacheEstimator.get_kvcache_max_tokens``; the linear
 # ``_linear_tokens_from_bytes`` is the default for constant-per-token growth), so
@@ -145,9 +157,9 @@ def _validate_cuda_graph_reservation(cuda_graph_reserved_bytes: int) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Shared budget math.
+# Shared scalar budget math.
 #
-# The single formula both the estimate and (in a follow-up PR) the sweep's
+# The scalar formula both the estimate and (in a follow-up PR) the sweep's
 # `InferenceSummary._check_and_set_kv_cache_oom` should use. The OOM check folds
 # `reserved` (block-allocator overhead) and `tolerance` into the fraction
 # multiplicatively; the estimate passes `reserved=tolerance=0` here and applies
@@ -279,6 +291,7 @@ class KVCacheEstimator:
         fmha_quant_mode: str | None = None,
         comm_quant_mode: str | None = None,
         moe_backend: str | None = None,
+        moe_kernel_source: str | None = None,
         attention_backend: str | None = None,
         enable_eplb: bool = False,
         wideep_num_slots: int | None = None,
@@ -309,7 +322,11 @@ class KVCacheEstimator:
         resolved_moe_tp = moe_tp_size if moe_tp_size is not None else 1
         resolved_moe_ep = moe_ep_size if moe_ep_size is not None else 1
         validate_moe_controls(
-            model_path=model_path, enable_eplb=enable_eplb, wideep_num_slots=wideep_num_slots, moe_backend=moe_backend
+            model_path=model_path,
+            enable_eplb=enable_eplb,
+            wideep_num_slots=wideep_num_slots,
+            moe_backend=moe_backend,
+            moe_kernel_source=moe_kernel_source,
         )
         model_config = build_model_config(
             tp_size=tp_size,
@@ -323,6 +340,7 @@ class KVCacheEstimator:
             moe_quant_mode=moe_quant_mode,
             comm_quant_mode=comm_quant_mode,
             moe_backend=moe_backend,
+            moe_kernel_source=moe_kernel_source,
             attention_backend=attention_backend,
             enable_eplb=enable_eplb,
             wideep_num_slots=wideep_num_slots,
@@ -1017,6 +1035,7 @@ def estimate_kv_cache(
     fmha_quant_mode: str | None = None,
     comm_quant_mode: str | None = None,
     moe_backend: str | None = None,
+    moe_kernel_source: str | None = None,
     attention_backend: str | None = None,
     enable_eplb: bool = False,
     wideep_num_slots: int | None = None,
@@ -1028,14 +1047,20 @@ def estimate_kv_cache(
     naive_kv_reservation: float = _DEFAULT_NAIVE_KV_RESERVATION,
     allow_naive_fallback: bool = False,
     allow_hf_config_download: bool = False,
+    fpm_profile: dict | str | FpmModelProfile | None = None,
+    worker_type: str = "aggregated",
+    cp_size: int = 1,
+    context_length: int | None = None,
+    request_occupancy_tokens: int | None = None,
 ) -> dict[str, Any]:
     """Compute the KV-cache memory estimate (raw + optional tolerance margin).
 
-    This is the complete implementation: fraction + tolerance validation, the
-    native/naive budget math, AND the tolerance margin. The Rust
-    ``aisimulate_core::memory::estimate_kv_cache`` is a pure forwarder that
-    calls this function and rebuilds its result, so this is the single source of
-    truth for the estimate.
+    This function validates inputs and implements scalar native/naive budget
+    math and tolerance margins. Grouped and runtime-memory FPM profiles delegate
+    budget arithmetic to ``RustForwardPassPerfModel.estimate_cache_budget``.
+    Grouped token-capacity and bytes-per-token fields are ``None``. The legacy Rust
+    ``aisimulate_core::memory::estimate_kv_cache`` transport calls this function
+    and rebuilds scalar results; it rejects grouped results.
 
     Native path: :meth:`KVCacheEstimator.from_request` builds AIC's full backend
     memory model and :meth:`KVCacheEstimator.estimate` does the OfFree (TRT-LLM) /
@@ -1066,12 +1091,26 @@ def estimate_kv_cache(
             model build is unsupported (default off -> the error propagates).
         allow_hf_config_download: allow the naive fallback to download a
             ``config.json`` from HuggingFace when it is not local / pre-cached.
+        fpm_profile: explicit FPM identity and rank-local memory evidence. Pending
+            memory fails before estimation. Complete declared bytes require the
+            requested scheduler envelope to fit the profile; runtime capacity
+            requires its exact scheduler settings and memory fraction. This
+            route never constructs an analytical model or uses naive fallback.
+            Separate CUDA graph bytes apply only to declared profile overheads.
+        worker_type: canonical serving role selecting this deployment's resources.
+        cp_size: profile context-parallel identity; currently only CP1 is supported.
+        context_length: optional context bound for a grouped profile's per-request
+            cache peak, also checked against runtime memory's ``max_model_len``.
+            Defaults to the profile context and does not change its byte budget.
+        request_occupancy_tokens: optional logical request length for a separate
+            native one-token decode occupancy estimate. Requires an FPM profile;
+            context and scheduler admission still use their original settings.
 
     Returns:
         A flat dict with ``total_gpu_capacity_bytes``, ``total_kv_size_bytes``,
         ``kv_size_per_token_bytes``, ``total_kv_size_tokens``, ``source``
-        (``"native"`` | ``"naive_fallback"``), ``memory_breakdown`` (dict on the
-        native path, ``None`` on the fallback), and ``tolerance_adjusted`` (a dict
+        (``"native"`` | ``"naive_fallback"`` | ``"profile"``), ``memory_breakdown`` (dict on the
+        native/declared paths, ``None`` for runtime capacity or naive fallback), and ``tolerance_adjusted`` (a dict
         when ``tolerance_fraction`` is set, else ``None``).
 
     Raises:
@@ -1079,6 +1118,8 @@ def estimate_kv_cache(
             tolerance, no KV budget, insufficient model metadata, or (with the
             fallback off) an unsupported model/backend.
     """
+    if type(cp_size) is not int or cp_size != 1:
+        raise ValueError("cp_size must be the integer 1; this SDK entry point does not support context parallelism")
     _validate_memory_fraction(backend, memory_fraction_kind, memory_fraction_value)
     _validate_tolerance(tolerance_fraction)
     _validate_naive_reservation(naive_kv_reservation)
@@ -1088,10 +1129,110 @@ def estimate_kv_cache(
 
     # Validate the compute-side MTP depth before any fallback path.
     validate_nextn(nextn)
-    validate_moe_controls(
-        model_path=model_path, enable_eplb=enable_eplb, wideep_num_slots=wideep_num_slots, moe_backend=moe_backend
-    )
+    if request_occupancy_tokens is not None and fpm_profile is None:
+        raise ValueError("request_occupancy_tokens requires an FPM profile")
+    if fpm_profile is not None:
+        if nextn:
+            raise ValueError("FPM profile resources support plain autoregressive execution; nextn must be 0")
+        profile = load_fpm_profile(fpm_profile)
+        if backend_version is None:
+            raise ValueError("FPM profile memory estimation requires the profile's literal backend_version")
+        deployment = profile.select(
+            model=model_path,
+            system=system,
+            backend=backend,
+            backend_version=backend_version,
+            worker_type=worker_type,
+            tp_size=tp_size,
+            pp_size=pp_size,
+            attention_dp_size=attention_dp_size,
+            moe_tp_size=moe_tp_size,
+            moe_ep_size=moe_ep_size,
+            cp_size=cp_size,
+        )
+        deployment.validate_overrides(
+            gemm_quant_mode=gemm_quant_mode,
+            moe_quant_mode=moe_quant_mode,
+            kvcache_quant_mode=kvcache_quant_mode,
+            fmha_quant_mode=fmha_quant_mode,
+            comm_quant_mode=comm_quant_mode,
+            attention_backend=attention_backend,
+            moe_backend=moe_backend,
+            enable_eplb=enable_eplb,
+            wideep_num_slots=wideep_num_slots,
+        )
+        resources = deployment.resources
+        resources.require_memory()
+        resources.validate_envelope(max_num_tokens=max_num_tokens, max_batch_size=max_batch_size)
+        if (
+            resources.runtime_memory is None
+            and resources.non_kv_bytes + cuda_graph_reserved_bytes > _MAX_EXACT_BYTE_COUNT
+        ):
+            raise ValueError("total FPM non-KV bytes including CUDA graphs must not exceed 2**53")
+        capacity = gpu_memory_capacity_bytes_override
+        if capacity is None:
+            capacity = perf_database.load_system_spec(system, systems_paths=systems_path)["gpu"]["mem_capacity"]
+        if (
+            resources.cache_layout == "grouped"
+            or resources.runtime_memory is not None
+            or request_occupancy_tokens is not None
+        ):
+            from aisimulate_core.sdk.rust_engine_step import RustForwardPassPerfModel
 
+            return RustForwardPassPerfModel.estimate_cache_budget(
+                {
+                    "model": model_path,
+                    "system": system,
+                    "backend": backend,
+                    "backend_version": backend_version,
+                    "worker_type": worker_type,
+                    "tp": tp_size,
+                    "pp": pp_size,
+                    "attention_dp": attention_dp_size,
+                    "moe_tp_size": deployment.moe_tp,
+                    "moe_ep_size": deployment.moe_ep,
+                    "fpm_profile": profile.model_dump(mode="json"),
+                },
+                {
+                    "total_gpu_capacity_bytes": capacity,
+                    "memory_fraction_kind": memory_fraction_kind,
+                    "memory_fraction_value": memory_fraction_value,
+                    "max_num_tokens": max_num_tokens,
+                    "max_batch_size": max_batch_size,
+                    "context_length": context_length,
+                    "request_occupancy_tokens": request_occupancy_tokens,
+                    "cuda_graph_reserved_bytes": cuda_graph_reserved_bytes,
+                    "tolerance_fraction": tolerance_fraction,
+                },
+            )
+        estimate = KVCacheEstimator._estimate_from_breakdown(
+            {
+                "weights_bytes": resources.weights_bytes,
+                "activations_bytes": resources.activations_bytes,
+                "runtime_overhead_bytes": resources.runtime_overhead_bytes,
+                "comm_overhead_bytes": resources.comm_overhead_bytes,
+                "non_kv_bytes": resources.non_kv_bytes,
+                "kv_size_per_token_bytes": resources.kv_bytes_per_token,
+                "gpu_memory_capacity_bytes": capacity,
+            },
+            is_of_free=is_of_free,
+            fraction=fraction,
+            gpu_memory_capacity_bytes_override=gpu_memory_capacity_bytes_override,
+            cuda_graph_reserved_bytes=cuda_graph_reserved_bytes,
+        )
+        estimate["source"] = "profile"
+        estimate["resource_provenance"] = resources.provenance
+        _apply_tolerance(estimate, tolerance_fraction)
+        estimate.pop("tokens_from_kv_bytes", None)
+        return estimate
+
+    validate_moe_controls(
+        model_path=model_path,
+        enable_eplb=enable_eplb,
+        wideep_num_slots=wideep_num_slots,
+        moe_backend=moe_backend,
+        moe_kernel_source=moe_kernel_source,
+    )
     try:
         native = KVCacheEstimator.from_request(
             model_path,
@@ -1111,6 +1252,7 @@ def estimate_kv_cache(
             fmha_quant_mode=fmha_quant_mode,
             comm_quant_mode=comm_quant_mode,
             moe_backend=moe_backend,
+            moe_kernel_source=moe_kernel_source,
             attention_backend=attention_backend,
             enable_eplb=enable_eplb,
             wideep_num_slots=wideep_num_slots,
@@ -1123,6 +1265,7 @@ def estimate_kv_cache(
             or enable_eplb
             or wideep_num_slots is not None
             or moe_backend not in (None, "default")
+            or moe_kernel_source is not None
             or attention_backend is not None
         ):
             raise ValueError(
@@ -1182,6 +1325,7 @@ def estimate_num_gpu_blocks(
     fmha_quant_mode: str | None = None,
     comm_quant_mode: str | None = None,
     moe_backend: str | None = None,
+    moe_kernel_source: str | None = None,
     attention_backend: str | None = None,
     enable_eplb: bool = False,
     wideep_num_slots: int | None = None,
@@ -1194,6 +1338,10 @@ def estimate_num_gpu_blocks(
     allow_naive_fallback: bool = False,
     allow_hf_config_download: bool = False,
     diagnostics: dict[str, Any] | None = None,
+    fpm_profile: dict | str | FpmModelProfile | None = None,
+    worker_type: str = "aggregated",
+    cp_size: int = 1,
+    context_length: int | None = None,
 ) -> int:
     """Convert the KV-cache token capacity to a scheduler block count.
 
@@ -1229,13 +1377,13 @@ def estimate_num_gpu_blocks(
         system,
         backend,
         backend_version=backend_version,
-        max_num_tokens=int(max_num_tokens),
-        max_batch_size=int(max_batch_size),
+        max_num_tokens=max_num_tokens if fpm_profile is not None else int(max_num_tokens),
+        max_batch_size=max_batch_size if fpm_profile is not None else int(max_batch_size),
         memory_fraction_kind=memory_fraction_kind,
         memory_fraction_value=float(memory_fraction_value),
-        tp_size=int(tp_size),
-        pp_size=int(pp_size),
-        attention_dp_size=int(attention_dp_size),
+        tp_size=tp_size if fpm_profile is not None else int(tp_size),
+        pp_size=pp_size if fpm_profile is not None else int(pp_size),
+        attention_dp_size=attention_dp_size if fpm_profile is not None else int(attention_dp_size),
         moe_tp_size=moe_tp_size,
         moe_ep_size=moe_ep_size,
         gemm_quant_mode=gemm_quant_mode,
@@ -1244,10 +1392,11 @@ def estimate_num_gpu_blocks(
         fmha_quant_mode=fmha_quant_mode,
         comm_quant_mode=comm_quant_mode,
         moe_backend=moe_backend,
+        moe_kernel_source=moe_kernel_source,
         attention_backend=attention_backend,
         enable_eplb=enable_eplb,
         wideep_num_slots=wideep_num_slots,
-        nextn=int(nextn),
+        nextn=nextn if fpm_profile is not None else int(nextn),
         systems_path=systems_path,
         gpu_memory_capacity_bytes_override=gpu_memory_capacity_bytes_override,
         cuda_graph_reserved_bytes=cuda_graph_reserved_bytes,
@@ -1255,8 +1404,17 @@ def estimate_num_gpu_blocks(
         naive_kv_reservation=float(naive_kv_reservation),
         allow_naive_fallback=allow_naive_fallback,
         allow_hf_config_download=allow_hf_config_download,
+        fpm_profile=fpm_profile,
+        worker_type=worker_type,
+        cp_size=cp_size,
+        context_length=context_length,
     )
 
+    if estimate.get("cache_layout") == "grouped":
+        raise ValueError(
+            "grouped FPM caches require cache_groups and the byte budget from estimate_kv_cache; "
+            "a scalar num_gpu_blocks or token capacity cannot represent windowed cache groups"
+        )
     adjusted = estimate.get("tolerance_adjusted")
     if adjusted is not None:
         tokens = int(adjusted["total_kv_size_tokens"])
