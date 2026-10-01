@@ -1,5 +1,5 @@
 {
- "verdict": "invalid-capture",
+ "verdict": "aligned",
  "repo": "meta-llama/Meta-Llama-3.1-8B",
  "framework": "sglang",
  "version": "0.5.21",
@@ -13,9 +13,9 @@
  "kv_dtype": "auto",
  "op_hint": "attn|attention|flash|fwd|triton",
  "capture_file": "facts/pathdiff/opcov_sgl_attn_ctx@0.5.21.json",
- "capture_sha256": "4675bb852f1f62a1",
+ "capture_sha256": "7bd27c3e21fdc41a",
  "capture_env": null,
- "capture_run_error": "ModuleNotFoundError: No module named 'pkg_resources'",
+ "capture_run_error": null,
  "serving_record": {
   "id": "04b270ea8bcb",
   "tp": 1,
@@ -27,15 +27,21 @@
   "exec_fingerprint": "894a6e47b8ad",
   "evidence_status": "current"
  },
- "collector_backends": [],
+ "collector_backends": [
+  "fa3"
+ ],
  "serving_backends": [
   "cublas",
   "fa3"
  ],
  "missing_roles": [],
  "aux_collector_only_roles": [],
- "role_counts": {},
- "collector_only_signal": [],
- "kernel_drift": null,
+ "role_counts": {
+  "attention": {
+   "collector": 2,
+   "serving": 2,
+   "matched": 2
+  }
+ },
  "evidence": "archive/evidence/pathdiff/<framework-version>/<gate>.json in the probe workspace (full kernel lists)"
 }

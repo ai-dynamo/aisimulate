@@ -1,5 +1,5 @@
 {
- "verdict": "invalid-capture",
+ "verdict": "aligned",
  "repo": "deepseek-ai/DeepSeek-V3",
  "framework": "sglang",
  "version": "0.5.21",
@@ -13,9 +13,9 @@
  "kv_dtype": "auto",
  "op_hint": "mla|dsa|nsa|attn|indexer|flash|mqa|sparse|gemm|deepgemm|quant|topk",
  "capture_file": "facts/pathdiff/opcov_sgl_mla_ctx@0.5.21.json",
- "capture_sha256": "49ddef332121e229",
+ "capture_sha256": "07c1a4b3952b35d1",
  "capture_env": null,
- "capture_run_error": "ModuleNotFoundError: No module named 'pkg_resources'",
+ "capture_run_error": null,
  "serving_record": {
   "id": "ce6877f422b7",
   "tp": 1,
@@ -27,7 +27,9 @@
   "exec_fingerprint": "e2573b47627f",
   "evidence_status": "current"
  },
- "collector_backends": [],
+ "collector_backends": [
+  "fa3"
+ ],
  "serving_backends": [
   "cublas",
   "deepgemm",
@@ -37,8 +39,12 @@
  ],
  "missing_roles": [],
  "aux_collector_only_roles": [],
- "role_counts": {},
- "collector_only_signal": [],
- "kernel_drift": null,
+ "role_counts": {
+  "attention": {
+   "collector": 2,
+   "serving": 2,
+   "matched": 2
+  }
+ },
  "evidence": "archive/evidence/pathdiff/<framework-version>/<gate>.json in the probe workspace (full kernel lists)"
 }

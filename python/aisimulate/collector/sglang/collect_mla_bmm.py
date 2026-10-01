@@ -8,7 +8,8 @@ generation pre/post processing. It consumes YAML-backed synthetic tensor
 shapes, selects SGLang kernel helpers, and logs the resulting MLA BMM perf rows.
 """
 
-__compat__ = "sglang==0.5.14"
+# 0.5.21 added 2026-10-01 (H20/sm90 collector port: op_smoke + path gates in the v0.5.21 image; findings hopper_sglang_collector_port_0514_to_0521_2026_10_01). Releases in between are unvalidated and excluded.
+__compat__ = "sglang>=0.5.14,<=0.5.21,!=0.5.15,!=0.5.16,!=0.5.17,!=0.5.18,!=0.5.19,!=0.5.20"
 
 from importlib.metadata import version as _dist_version  # setuptools/pkg_resources is absent from sglang>=0.5.21 images
 import torch
@@ -23,9 +24,12 @@ except ImportError:  # sglang>=0.5.21: sgl_kernel no longer exports bmm_fp8; ser
     from sglang.srt.layers.quantization.fp8_utils import bmm_fp8
 
     _BMM_FP8_SOURCE = "sglang_flashinfer_bmm_fp8"
-from sglang.srt.layers.quantization.fp8_kernel import (
-    per_tensor_quant_mla_fp8,
-)
+try:
+    from sglang.srt.layers.quantization.fp8_kernel import per_tensor_quant_mla_fp8
+except ModuleNotFoundError:  # sglang>=0.5.21: the Triton quant kernels moved to sglang.kernels.ops
+    # (kernels/ops/quantization/fp8_kernel.py:956 @0.5.21; same kernel, the serving MLA fp8 lane
+    # imports it from there — deepseek_common/attention_forward_methods/forward_mla_fused_rope_rocm.py:8)
+    from sglang.kernels.ops.quantization.fp8_kernel import per_tensor_quant_mla_fp8
 
 
 def _supported_dtypes() -> set[str]:

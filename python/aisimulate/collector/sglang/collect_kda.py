@@ -47,8 +47,14 @@ Output:
 """
 
 # The kimi-k3 branch build (https://github.com/sgl-project/sglang/tree/kimi-k3)
-# reports 0.5.16; KDA kernels do not exist in stock sglang releases yet.
-__compat__ = "sglang==0.5.16"
+# reports 0.5.16 and was the only KDA runtime until the kernels landed in the
+# official releases (0.5.21: models/kimi_linear.py, layers/attention/linear/
+# kda_backend.py with the same Triton lanes — chunk_kda, fused_recurrent_kda_
+# packed_decode / fused_sigmoid_gating_delta_rule_update, kda_fused_decode,
+# causal_conv1d_fn/update — kda_backend.py:6-34, kernels/kda_triton.py:109-237;
+# H20 smoke 2026-10-01, 91 cells ok, the remaining 21 are the >=2**31 conv
+# guard cells). Versions in between are unvalidated and excluded.
+__compat__ = "sglang>=0.5.16,<=0.5.21,!=0.5.17,!=0.5.18,!=0.5.19,!=0.5.20"
 
 import gc
 import os

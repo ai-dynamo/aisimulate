@@ -33,7 +33,8 @@ CSA(=4) / HCA(=128).
 # Requires stock SGLang 0.5.14 with its matching ``sgl-kernel`` package.
 from __future__ import annotations
 
-__compat__ = "sglang==0.5.14"
+# 0.5.21 added 2026-10-01 (H20/sm90 collector port: op_smoke + path gates in the v0.5.21 image; findings hopper_sglang_collector_port_0514_to_0521_2026_10_01). Releases in between are unvalidated and excluded.
+__compat__ = "sglang>=0.5.14,<=0.5.21,!=0.5.15,!=0.5.16,!=0.5.17,!=0.5.18,!=0.5.19,!=0.5.20"
 
 import functools
 import json
@@ -1166,15 +1167,18 @@ def _bench_topk_512(
             topk_transform_512_v2,
         )
     except ImportError:
-        # sglang>=0.5.21 moved the JIT ops to sglang.kernels.ops.attention.dsv4.topk
-        # (metadata.py:278 imports plan_topk_v2 from there). The 0.5.14 entry
-        # points topk_transform_512{,_v2} are not re-exported — the serving topk
-        # dispatch at 0.5.21 is topk_transform_{paged,ragged,packed}_v2 and must
-        # be re-audited before this calib row is collected on that pin.
-        from sglang.kernels.ops.attention.dsv4.topk import (  # noqa: F401
+        # sglang>=0.5.21 moved the JIT ops to sglang.kernels.ops.attention.dsv4.topk and
+        # renamed the entry points: topk_transform_512 -> topk_transform_paged (CUDA branch =
+        # the same _jit_topk_v1_module().topk_transform, topk.py:104-125; the ROCm branch is the
+        # deepseek_v4_topk_transform_512 AOT op) and topk_transform_512_v2 ->
+        # topk_transform_paged_v2 (topk.py:222, identical positional signature, out_raw_indices
+        # now optional). Serving DSV4 dispatches exactly these two from
+        # indexer.topk_transform_paged_from_metadata (srt/layers/attention/dsv4/indexer.py:446-486,
+        # v2 iff metadata.use_topk_v2), so the v1/v2 calib lanes keep their meaning.
+        from sglang.kernels.ops.attention.dsv4.topk import (
             plan_topk_v2,
-            topk_transform_512,
-            topk_transform_512_v2,
+            topk_transform_paged as topk_transform_512,
+            topk_transform_paged_v2 as topk_transform_512_v2,
         )
 
     if variant not in ("v1", "v2"):

@@ -10,7 +10,8 @@ binds both to this producer's checkpoint:
   extra_perf_filenames[0]  -> scale_matrix_perf.txt  (the static per-tensor quant alone)
 """
 
-__compat__ = "sglang==0.5.14"
+# 0.5.21 added 2026-10-01 (H20/sm90 collector port: op_smoke + path gates in the v0.5.21 image; findings hopper_sglang_collector_port_0514_to_0521_2026_10_01). Releases in between are unvalidated and excluded.
+__compat__ = "sglang>=0.5.14,<=0.5.21,!=0.5.15,!=0.5.16,!=0.5.17,!=0.5.18,!=0.5.19,!=0.5.20"
 
 from importlib.metadata import version as _dist_version  # setuptools/pkg_resources is absent from sglang>=0.5.21 images
 import torch

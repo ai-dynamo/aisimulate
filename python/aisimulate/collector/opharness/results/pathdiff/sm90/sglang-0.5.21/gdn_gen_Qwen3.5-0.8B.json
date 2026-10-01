@@ -1,5 +1,5 @@
 {
- "verdict": "diverged",
+ "verdict": "aligned",
  "repo": "Qwen/Qwen3.5-0.8B",
  "framework": "sglang",
  "version": "0.5.21",
@@ -12,7 +12,7 @@
  "kv_dtype": "auto",
  "op_hint": "gdn|delta|conv1d|linear|mamba|gated|recurr",
  "capture_file": "facts/pathdiff/opcov_sgl_gdn_gen@0.5.21.json",
- "capture_sha256": "1f5f8ce7cbd2d53e",
+ "capture_sha256": "95ebd2bb42a269b8",
  "capture_env": null,
  "capture_run_error": null,
  "serving_record": {
@@ -42,19 +42,7 @@
   "linear_attention": {
    "collector": 2,
    "serving": 2,
-   "matched": 1
-  }
- },
- "collector_only_signal": [],
- "kernel_drift": {
-  "linear_attention": {
-   "collector_only_kernels": [
-    "_causal_conv1d_update_kernel"
-   ],
-   "serving_kernels": [
-    "_fused_qkvzba_causal_conv1d_update_contiguous_kernel",
-    "fused_recurrent_gated_delta_rule_packed_decode_kernel"
-   ]
+   "matched": 2
   }
  },
  "evidence": "archive/evidence/pathdiff/<framework-version>/<gate>.json in the probe workspace (full kernel lists)"

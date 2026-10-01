@@ -33,9 +33,9 @@ def test_manifest_exposes_current_framework_versions_and_images():
     trtllm = get_collector_runtime("trtllm")
     vllm = get_collector_runtime("vllm")
 
-    assert sglang.version == "0.5.14"
-    assert sglang.image().startswith("lmsysorg/sglang:v0.5.14@sha256:")
-    assert sglang.image("cu130").startswith("lmsysorg/sglang:v0.5.14-cu130@sha256:")
+    assert sglang.version == "0.5.21"
+    assert sglang.image().startswith("lmsysorg/sglang:v0.5.21@sha256:")
+    assert sglang.image("cu130").startswith("lmsysorg/sglang:v0.5.21-cu130@sha256:")
     assert trtllm.version == "1.3.0rc20"
     assert trtllm.image().startswith("nvcr.io/nvidia/tensorrt-llm/release:1.3.0rc20@sha256:")
     assert vllm.version == "0.30.0"
@@ -302,11 +302,11 @@ WIDEEP_OPS = {entry.op for entry in WIDEEP_SGLANG_REGISTRY}
 @pytest.mark.parametrize(
     ("installed_version", "requested_ops", "workload", "version"),
     [
-        # "all ops" is no longer resolvable in one container for sglang — the
-        # kda family pins the kimi-k3 branch runtime (0.5.16), so the default
-        # expectation is asserted on an explicit default-family op instead.
-        ("0.5.14+cu130", {"gemm"}, "default", "0.5.14"),
-        ("0.5.16", {"kda"}, "default", "0.5.16"),
+        # Since the 0.5.21 default (2026-10-01) kda and msa resolve on the
+        # stock runtime again (the kimi-k3 / v0.5.16 family pins are retired).
+        ("0.5.21+cu130", {"gemm"}, "default", "0.5.21"),
+        ("0.5.21", {"kda"}, "default", "0.5.21"),
+        ("0.5.21", {"msa_context_module"}, "default", "0.5.21"),
         ("0.5.10", {"moe_ep"}, "wideep", "0.5.10"),
     ],
 )
@@ -331,14 +331,11 @@ def test_vllm_xpu_runtime_selection_rejects_version_mismatch():
 @pytest.mark.parametrize(
     ("installed_version", "requested_ops", "match"),
     [
-        ("0.5.13", {"gemm"}, r"stock collector requires exactly 0\.5\.14"),
-        ("0.5.14rc1", {"gemm"}, r"stock collector requires exactly 0\.5\.14"),
-        ("0.5.14.post1", {"gemm"}, r"stock collector requires exactly 0\.5\.14"),
-        ("0.5.14", {"moe_ep"}, r"WideEP collector requires exactly 0\.5\.10"),
-        ("0.5.14", {"gemm", "moe_ep"}, r"0\.5\.14 != 0\.5\.10.*separate containers"),
-        # kda runs only on the kimi-k3 branch runtime (families.kda pin):
-        # mixing it with a default-family op must fail closed.
-        ("0.5.14", {"gemm", "kda"}, r"multiple runtime versions"),
+        ("0.5.14", {"gemm"}, r"stock collector requires exactly 0\.5\.21"),
+        ("0.5.21rc1", {"gemm"}, r"stock collector requires exactly 0\.5\.21"),
+        ("0.5.21.post1", {"gemm"}, r"stock collector requires exactly 0\.5\.21"),
+        ("0.5.21", {"moe_ep"}, r"WideEP collector requires exactly 0\.5\.10"),
+        ("0.5.21", {"gemm", "moe_ep"}, r"0\.5\.21 != 0\.5\.10.*separate containers"),
     ],
 )
 def test_runtime_selection_rejects_mismatched_or_mixed_pins(installed_version, requested_ops, match):
@@ -352,8 +349,8 @@ def test_runtime_selection_rejects_mismatched_or_mixed_pins(installed_version, r
 @pytest.mark.parametrize(
     ("installed_version", "requested_ops", "workload", "version"),
     [
-        ("0.5.14+cu130", {"gemm"}, "default", "0.5.14"),
-        ("0.5.16", {"kda"}, "default", "0.5.16"),
+        ("0.5.21+cu130", {"gemm"}, "default", "0.5.21"),
+        ("0.5.21", {"kda"}, "default", "0.5.21"),
         ("0.5.10", {"moe_ep"}, "wideep", "0.5.10"),
     ],
 )
@@ -373,10 +370,10 @@ def test_no_model_identity_resolves_exactly_like_today(installed_version, reques
 
 
 def test_unknown_model_id_falls_back_to_default_resolution():
-    baseline = require_collector_runtime("sglang", "0.5.14", requested_ops={"gemm"}, wideep_ops=WIDEEP_OPS)
+    baseline = require_collector_runtime("sglang", "0.5.21", requested_ops={"gemm"}, wideep_ops=WIDEEP_OPS)
     unmatched = require_collector_runtime(
         "sglang",
-        "0.5.14",
+        "0.5.21",
         requested_ops={"gemm"},
         wideep_ops=WIDEEP_OPS,
         model_path="some-org/not-a-pinned-model",
@@ -409,7 +406,7 @@ def test_model_pin_mismatch_error_names_the_model_scoped_image():
     with pytest.raises(RuntimeError) as excinfo:
         require_collector_runtime(
             "sglang",
-            "0.5.14",
+            "0.5.21",
             requested_ops={"gemm"},
             wideep_ops=WIDEEP_OPS,
             model_path="Qwen/Qwen3.8-2.4T-A95B",
@@ -417,7 +414,7 @@ def test_model_pin_mismatch_error_names_the_model_scoped_image():
     message = str(excinfo.value)
     # Same template as the pre-4b guard ("~:249"), but naming the
     # model-scoped runtime/image instead of the framework default.
-    assert "sglang stock collector requires exactly 0.5.17, found 0.5.14" in message
+    assert "sglang stock collector requires exactly 0.5.17, found 0.5.21" in message
     assert "use lmsysorg/sglang:v0.5.17@sha256:" in message
 
 
@@ -475,7 +472,7 @@ def test_real_manifest_models_section_does_not_break_validate_resolution():
 
 def test_unknown_requested_op_fails_with_key_error():
     with pytest.raises(KeyError, match=r"has no op\(s\): \['not_a_real_op'\]"):
-        require_collector_runtime("sglang", "0.5.14", requested_ops={"not_a_real_op"}, wideep_ops=set())
+        require_collector_runtime("sglang", "0.5.21", requested_ops={"not_a_real_op"}, wideep_ops=set())
 
 
 def test_vllm_xpu_unknown_requested_op_fails_with_key_error():
@@ -486,7 +483,7 @@ def test_vllm_xpu_unknown_requested_op_fails_with_key_error():
 def test_typo_mixed_with_real_op_fails_closed():
     # A typo must not be silently dropped just because another requested op is valid.
     with pytest.raises(KeyError, match=r"has no op\(s\): \['not_a_real_op'\]"):
-        require_collector_runtime("sglang", "0.5.14", requested_ops={"gemm", "not_a_real_op"}, wideep_ops=set())
+        require_collector_runtime("sglang", "0.5.21", requested_ops={"gemm", "not_a_real_op"}, wideep_ops=set())
 
 
 def test_wideep_registry_entries_are_separate_from_stock_backend_registries():

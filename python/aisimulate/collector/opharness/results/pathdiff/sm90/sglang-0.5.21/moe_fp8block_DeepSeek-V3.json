@@ -1,5 +1,5 @@
 {
- "verdict": "invalid-capture",
+ "verdict": "aligned",
  "repo": "deepseek-ai/DeepSeek-V3",
  "framework": "sglang",
  "version": "0.5.21",
@@ -13,9 +13,9 @@
  "kv_dtype": "auto",
  "op_hint": "moe|expert|grouped|fused_moe|deepgemm|topk|marlin|routing|ep_",
  "capture_file": "facts/pathdiff/opcov_sgl_moe_fp8block@0.5.21.json",
- "capture_sha256": "ca1268d8338fba07",
+ "capture_sha256": "97b23ed43d9a5f3a",
  "capture_env": null,
- "capture_run_error": "ModuleNotFoundError: No module named 'pkg_resources'",
+ "capture_run_error": null,
  "serving_record": {
   "id": "ce6877f422b7",
   "tp": 1,
@@ -27,7 +27,11 @@
   "exec_fingerprint": "e2573b47627f",
   "evidence_status": "current"
  },
- "collector_backends": [],
+ "collector_backends": [
+  "sgl_kernel",
+  "torch",
+  "triton_fused_moe"
+ ],
  "serving_backends": [
   "cublas",
   "deepgemm",
@@ -37,8 +41,17 @@
  ],
  "missing_roles": [],
  "aux_collector_only_roles": [],
- "role_counts": {},
- "collector_only_signal": [],
- "kernel_drift": null,
+ "role_counts": {
+  "moe_gemm": {
+   "collector": 1,
+   "serving": 1,
+   "matched": 1
+  },
+  "routing": {
+   "collector": 1,
+   "serving": 1,
+   "matched": 1
+  }
+ },
  "evidence": "archive/evidence/pathdiff/<framework-version>/<gate>.json in the probe workspace (full kernel lists)"
 }

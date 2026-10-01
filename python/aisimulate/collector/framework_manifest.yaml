@@ -14,27 +14,18 @@ schema_version: 2
 frameworks:
   sglang:
     source_repo: "https://github.com/sgl-project/sglang.git"
+    # 2026-10-01 (H20/sm90 upgrade audit, results/findings.yaml
+    # hopper_sglang_collector_port_0514_to_0521_2026_10_01): default pin moved
+    # 0.5.14 -> 0.5.21 (newest release tag). Both tags resolve to the same
+    # multi-arch index digest, as the 0.5.17 model pins below do. The former
+    # kda (kimi-k3 branch build, 0.5.16) and msa (official v0.5.16) family pins
+    # are gone: 0.5.21 ships models/kimi_linear.py + the KDA Triton lanes and
+    # models/minimax_m3.py, and both op families were smoked/gated on it.
     default:
-      version: "0.5.14"
+      version: "0.5.21"
       images:
-        default: "lmsysorg/sglang:v0.5.14@sha256:5027e95bf6ec536856b1b52a91d1f35ff5c564ab83e8a94758a169ff09bb8df3"
-        cu130: "lmsysorg/sglang:v0.5.14-cu130@sha256:5027e95bf6ec536856b1b52a91d1f35ff5c564ab83e8a94758a169ff09bb8df3"
-    families:
-      # Kimi-K3 KDA kernels exist only on the sglang kimi-k3 branch
-      # (https://github.com/sgl-project/sglang/tree/kimi-k3), whose build
-      # reports 0.5.16. Pin the branch image for the kda family only.
-      kda:
-        version: "0.5.16"
-        images:
-          default: "lmsysorg/sglang@sha256:4b8a7542e00a4d82801d1276108438b024137c9a07f33215d03b04003e500f2b"
-      # MiniMax-M3 (minimax_m3.py + minimax_sparse_ops) landed in the official
-      # v0.5.16 release; the stock 0.5.14 default has no M3. Pin the official
-      # tag for the msa family only (NOT the kimi-k3 branch build above, which
-      # is a different container).
-      msa:
-        version: "0.5.16"
-        images:
-          default: "lmsysorg/sglang:v0.5.16@sha256:7b6a35df9839fd593a94a1eaee82d7777f472225d9f3ad1f8a2e0cb2bd1785d0"
+        default: "lmsysorg/sglang:v0.5.21@sha256:b1259f3ea3275f66237c498ea388919729018bc9f01c3d638391e06e2cf3f469"
+        cu130: "lmsysorg/sglang:v0.5.21-cu130@sha256:b1259f3ea3275f66237c498ea388919729018bc9f01c3d638391e06e2cf3f469"
     # Model-scoped collector runtime pins: when the resolved run model_path
     # exactly equals one of these keys, the pin overrides BOTH the family
     # pins above and the framework default for every op in the run — the
@@ -49,8 +40,12 @@ frameworks:
     # every other op's family/default resolution) unchanged.
     #
     # SGLang v0.5.17 registers Qwen3_5MoeForCausalLM /
-    # Qwen3_5ForCausalLM; v0.5.14 predates that model integration and cannot
-    # collect these cases. Both tags below resolve to the same multi-arch
+    # Qwen3_5ForCausalLM; v0.5.14 predated that model integration and could
+    # not collect these cases. The 0.5.21 default now covers the registration,
+    # but these model runs stay pinned to the runtime they were validated on
+    # until a Qwen3.8 collection is re-validated on 0.5.21 (the 0.5.21 serving
+    # matrix fails Qwen3.8-2.4T-A95B / -FP8 at boot, results/sm90/
+    # sglang-0.5.21.yaml). Both tags below resolve to the same multi-arch
     # index digest. These are collector-runtime declarations, not claims of
     # whole-checkpoint serving validation (in particular for the RadixArk
     # NVFP4 collection fixture).

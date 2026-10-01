@@ -49,3 +49,26 @@ run sgl_gemm_fp8block gemm_fp8block_DeepSeek-V3      deepseek-ai/DeepSeek-V3    
 run sgl_moe_fp8block  moe_fp8block_DeepSeek-V3       deepseek-ai/DeepSeek-V3     auto "$MOE"
 run sgl_gdn_ctx       gdn_ctx_Qwen3.5-0.8B           Qwen/Qwen3.5-0.8B           auto "$GDN"
 run sgl_gdn_gen       gdn_gen_Qwen3.5-0.8B           Qwen/Qwen3.5-0.8B           auto "$GDN"
+
+# --- 2026-10-01 gate backfill (collector pin -> 0.5.21): the 15 registry families
+# that had no gate on sglang. Serving records: the 0.5.21 plan (isl 4096, kv auto).
+DSV4='dsv4|dsa|csa|hca|compress|indexer|mqa|sparse|flash|attn|mla|topk|gemm|deepgemm|quant'
+KDA='kda|delta|conv1d|linear|attn_res|gated|recurr'
+ENC='vision|vit|patch|encoder|flash|attn'
+MLA='mla|attn|flash|bmm|proj|indexer|rope|concat|gemm|gemvx|cutlass|deepgemm|quant'
+GLM5='mla|dsa|nsa|attn|indexer|flash|mqa|sparse|gemm|deepgemm|quant|topk'
+M=sgl-project/DeepSeek-V4-Flash-FP8
+run sgl_dsv4_csa_ctx          dsv4_csa_ctx_DeepSeek-V4-Flash-FP8          $M auto "$DSV4"
+run sgl_dsv4_csa_gen          dsv4_csa_gen_DeepSeek-V4-Flash-FP8          $M auto "$DSV4"
+run sgl_dsv4_hca_ctx          dsv4_hca_ctx_DeepSeek-V4-Flash-FP8          $M auto "$DSV4"
+run sgl_dsv4_hca_gen          dsv4_hca_gen_DeepSeek-V4-Flash-FP8          $M auto "$DSV4"
+run sgl_dsv4_csa_attn         dsv4_csa_attn_DeepSeek-V4-Flash-FP8         $M auto "$DSV4"
+run sgl_dsv4_hca_attn         dsv4_hca_attn_DeepSeek-V4-Flash-FP8         $M auto "$DSV4"
+run sgl_dsv4_paged_mqa_logits dsv4_paged_mqa_logits_DeepSeek-V4-Flash-FP8 $M auto "$DSV4"
+run sgl_glm5_dsa_attn         glm5_dsa_attn_GLM-5                         zai-org/GLM-5 auto "$GLM5"
+run sgl_glm5_mqa_logits       glm5_mqa_logits_GLM-5                       zai-org/GLM-5 auto "$GLM5"
+run sgl_glm5_topk             glm5_topk_GLM-5                             zai-org/GLM-5 auto "$GLM5"
+run sgl_kda_ctx               kda_ctx_Kimi-K3                             moonshotai/Kimi-K3 auto "$KDA"
+run sgl_kda_gen               kda_gen_Kimi-K3                             moonshotai/Kimi-K3 auto "$KDA"
+run sgl_mla_bmm               mla_bmm_gen_DeepSeek-V3                     deepseek-ai/DeepSeek-V3 auto "$MLA"
+run sgl_encoder_attn_qwen3vl  encoder_attn_Qwen3-VL-2B                    Qwen/Qwen3-VL-2B-Instruct auto "$ENC"

@@ -26,7 +26,8 @@ Manual CLI use::
 # Requires stock SGLang 0.5.14 with its matching ``sgl-kernel`` package.
 from __future__ import annotations
 
-__compat__ = "sglang==0.5.14"
+# 0.5.21 added 2026-10-01 (H20/sm90 collector port: op_smoke + path gates in the v0.5.21 image; findings hopper_sglang_collector_port_0514_to_0521_2026_10_01). Releases in between are unvalidated and excluded.
+__compat__ = "sglang>=0.5.14,<=0.5.21,!=0.5.15,!=0.5.16,!=0.5.17,!=0.5.18,!=0.5.19,!=0.5.20"
 
 import argparse
 import contextlib
@@ -716,9 +717,16 @@ def _derive_csa_context_pool_cap(
     if not chunk_eligible_shapes:
         raise RuntimeError(f"DSV4 CSA context pool derivation has no shape within effective_chunk={effective_chunk}")
 
-    # sglang>=0.5.21 moved the pool profiling off ModelRunner onto the KV-cache configurator
-    # (mem_cache/kv_cache_configurator.py:2177 _profile_available_bytes); same arithmetic.
-    _profile = getattr(model_runner, "_profile_available_bytes", None) or configurator._profile_available_bytes
+    # sglang>=0.5.21 moved the pool profiling off ModelRunner onto the KV-cache
+    # configurator (mem_cache/kv_cache_configurator.py:2177 _profile_available_bytes,
+    # same free-memory-minus-slack arithmetic). Serving builds that object inside
+    # alloc_memory_pool (model_runner.py:885 init_kv_cache_configurator, then
+    # configure); build it the same way here, before the pool exists.
+    _profile = getattr(model_runner, "_profile_available_bytes", None)
+    if _profile is None:
+        if getattr(model_runner, "kv_cache_configurator", None) is None:
+            model_runner.init_kv_cache_configurator()
+        _profile = model_runner.kv_cache_configurator._profile_available_bytes
     profiled_bytes = int(_profile(model_runner.pre_model_load_memory))
     profiled_config = configurator.calculate_pool_sizes(profiled_bytes, page_size)
     compress_ratio = ATTN_KIND_TO_COMPRESS_RATIO["csa"]
@@ -943,7 +951,18 @@ def _load_model_runner(
             model_runner,
             csa_context_shapes,
         )
-        model_runner.server_args.max_total_tokens = derived_requirements[0]
+        try:
+            model_runner.server_args.max_total_tokens = derived_requirements[0]
+        except AttributeError:
+            # sglang>=0.5.21: ServerArgs is read-only once resolved (server_args.py:396);
+            # post-publish config changes go through the context's config bags
+            # (runtime_context.py:1080 override(source, **fields) — the same call
+            # serving uses for control-plane updates, tokenizer_manager.py:2204). The
+            # configurator reads the cap from get_schedule().max_total_tokens
+            # (kv_cache_configurator.py:2269 _apply_token_constraints).
+            from sglang.srt.runtime_context import get_context
+
+            get_context().override("collector-dsv4-csa-context", max_total_tokens=derived_requirements[0])
     # SGLang 0.5.14 separates model construction from serving-state setup.
     model_runner.alloc_memory_pool()
     if derived_requirements is not None:
@@ -1372,6 +1391,22 @@ def run_dsv4_mla_module(
     # SGLang derives compressed-pool sizes from max_total_tokens. Direct
     # probes with an explicit value must account for both the full pool and
     # the smaller page-rounded SWA tail pool before ModelRunner construction.
+    #
+    # HCA always takes this path since sglang 0.5.21: the ratio-128 stage prices a
+    # full token at ~1/128 of a paged slot (pool_configurator.py:1264-1283
+    # _compressed_bytes_per_full_token / _get_bytes_per_full_token), so the
+    # framework-derived pool on an otherwise empty 140 GB device reaches ~2e9 full
+    # tokens, and the hybrid allocator's int64 full_to_swa_index_mapping
+    # (mem_cache/allocator/swa.py:99-108, size + page_size entries, not priced by the
+    # configurator) then needs ~15 GiB that the sizing already handed to the pools
+    # (OOM in SWATokenToKVPoolAllocator.__init__, kv_cache_configurator.py:2080,
+    # H20 2026-10-01). Serving never meets this corner because weights leave far
+    # less free memory; the collector sizes the pool to what the planned shapes
+    # allocate instead. sglang treats the value as an upper bound only
+    # (kv_cache_configurator.py:2269-2277 _apply_token_constraints: min(profiled,
+    # user cap)), so no cell gains capacity it would not have in serving.
+    if max_total_tokens is None and attn_kind == "hca":
+        max_total_tokens = 0
     if max_total_tokens is not None:
         max_full_alloc = 0
         max_swa_alloc = 0
