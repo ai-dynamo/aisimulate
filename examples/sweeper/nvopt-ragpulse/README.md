@@ -18,7 +18,7 @@ The [container source bundle](container/README.md) includes the Dockerfile,
 144 hashed dependency wheels' metadata, build provenance and validation evidence.
 It runs on CPUs with `JAX_ENABLE_X64=true`; no physical GPU is needed.
 
-The [completed 2026-10-01 results](results/2026-10-01/README.md) contain all three
+The [completed results](results/README.md) contain all three
 full-budget studies, independent winner validation, timing and serving figures,
 and coverage references. Numerical runtime pins remain unchanged.
 

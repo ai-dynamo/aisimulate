@@ -1339,7 +1339,7 @@
     }
   ],
   "all_replay_timing_ledger": {
-    "path": "all-replay-timings.csv",
+    "path": "timings.csv",
     "rows": 816,
     "scope": "Six formal studies (three archived failed, three completed replacements) and seven agreed fresh validations. Censored wall durations retain bound labels; predictor prep and non-replay resource fixtures are separate."
   }
