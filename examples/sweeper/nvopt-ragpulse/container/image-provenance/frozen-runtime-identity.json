@@ -1,0 +1,17 @@
+{
+  "dynamo_commit": "c7241c2f153efba10b57c38c2144b70d82194a4d",
+  "dynamo_commit_time": "2026-09-30T15:55:28-07:00",
+  "aisimulate_python_version": "0.13.0.dev202609300000000061",
+  "aisimulate_rust_version": "0.13.0-dev.202609300000000061",
+  "aisimulate_crate_checksum": "ed49bec0f9d606037ed2bf95b88895382f6b94c8289f479c6ed0d4b26dad1452",
+  "cargo_lock_sha256": {
+    "Cargo.lock": "a4807994004633a57e8dd951ab46ce3ab588716e736156ff6aecc929aafadaa7",
+    "lib/bindings/python/Cargo.lock": "d9035e4c747a438df4dc4b7d0fc07ebd990f78a4eb5c8e9e4cc51be0f114b4c9",
+    "lib/bindings/kvbm/Cargo.lock": "e7ae0a4c216b04a0b073396b0eb35f3d0e9c2a981f4bcfb9875447a8fc8f51f0"
+  },
+  "build_features": [
+    "ais-forward-pass",
+    "replay-bench"
+  ],
+  "binding_sha256": "2f47cbb1def5e6b71af0271f0e189dd00e65ee739e801232928ce6dd2254277b"
+}

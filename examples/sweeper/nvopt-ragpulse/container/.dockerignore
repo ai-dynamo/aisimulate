@@ -1,0 +1,15 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+*
+!Dockerfile
+!requirements.lock
+!wheelhouse/
+!wheelhouse/**
+!hf-cache/
+!hf-cache/**
+!image-provenance/
+!image-provenance/**
+!smoke/
+!smoke/**
+**/__pycache__/
+**/.locks/

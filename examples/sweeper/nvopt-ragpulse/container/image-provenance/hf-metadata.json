@@ -1,0 +1,37 @@
+{
+  "repository": "deepseek-ai/DeepSeek-V3",
+  "revision": "e815299b0bcbac849fa540c768ef21845365c9eb",
+  "files": [
+    {
+      "name": "tokenizer_config.json",
+      "bytes": 3128,
+      "sha256": "637bcd1a08cf7c772ce6a383196b22930921c79c3c73223c5afc0c7f41545546"
+    },
+    {
+      "name": "LICENSE-MODEL",
+      "bytes": 13759,
+      "sha256": "ccfee4895df06bcab524151c278e8dde88bbe76165a24ecbcbcf9fafd71fd2b3"
+    },
+    {
+      "name": "config.json",
+      "bytes": 1660,
+      "sha256": "cbf0b95dc614de208a109bb5fd4e7eed11385e9c68411d2c17db5319443035d9"
+    },
+    {
+      "name": "configuration_deepseek.py",
+      "bytes": 9897,
+      "sha256": "d5126f7a82eaa5fe10c294af7a8f02d59e7145c2dc8837b83ae338c1b72001d2"
+    },
+    {
+      "name": "LICENSE-CODE",
+      "bytes": 1064,
+      "sha256": "1c8f573e830ca9b3ebfeb7ace1823146e22b66f99ee223840e7637c9e745e1c7"
+    },
+    {
+      "name": "tokenizer.json",
+      "bytes": 7847652,
+      "sha256": "621ac2e32d0dba658404412318818aaa8ce8cda492e59830109d8da6b517fb41"
+    }
+  ],
+  "excluded": "All model weights and tensor shards excluded"
+}

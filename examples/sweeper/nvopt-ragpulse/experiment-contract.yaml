@@ -6,6 +6,8 @@ schema: nvopt-ragpulse-experiment-design-v1
 stage: design_for_review
 local_sweeps: stopped_by_user
 runtime:
+  image: nvcr.io/nvidian/dynamo-dev/aisimulate:hzhou-0930-02
+  image_digest: sha256:3d38aa7e325da409c3a7b1d33298fbce5843fbc1c2f93b0643a69d6e907be670
   dynamo_commit: c7241c2f153efba10b57c38c2144b70d82194a4d
   aisimulate_python: 0.13.0.dev202609300000000061
   aisimulate_rust: 0.13.0-dev.202609300000000061
@@ -14,6 +16,7 @@ runtime:
   jax: 0.4.38
   jaxlib: 0.4.38
   jax_platforms: cpu
+  jax_enable_x64: true
   backend_versions: {vllm: 0.24.0, sglang: 0.5.14}
   fmha_quant_mode: bfloat16
   kvcache_quant_mode: fp8

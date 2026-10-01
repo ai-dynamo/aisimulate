@@ -1,0 +1,38 @@
+{
+  "status": "passed",
+  "qualification": "external_readonly_mounted_supplemental_evidence",
+  "designer": "VizierGPUCBPEBandit",
+  "versions": {
+    "google-vizier": "0.1.21",
+    "jax": "0.4.38",
+    "jaxlib": "0.4.38"
+  },
+  "seed": 42,
+  "jax_enable_x64": true,
+  "default_float_dtype": "float64",
+  "completed_observations": 4,
+  "num_seed_trials": 1,
+  "actual_gp_fit_and_acquisition": true,
+  "ard_random_restarts": 1,
+  "ard_max_iterations": 20,
+  "acquisition_max_evaluations": 100,
+  "parameters": {
+    "x": 0.2,
+    "y": 0.8
+  },
+  "acquisition": 0.9320727693644739,
+  "use_ucb": "True",
+  "seconds": 9.599,
+  "dynamo_replay_calls": 0,
+  "source_sha256": "521f6d7a199350ca0840162653ca8d5e4d968b36b638ab5031dae22f0d3e982b",
+  "boundary": "Tiny synthetic 2D functional check with reduced optimization budgets; no search-quality claim",
+  "image_reference": "nvcr.io/nvidian/dynamo-dev/aisimulate@sha256:3d38aa7e325da409c3a7b1d33298fbce5843fbc1c2f93b0643a69d6e907be670",
+  "execution": {
+    "network": "none",
+    "cpus": 2,
+    "memory": "4g",
+    "uid": "1000:1000",
+    "mount": "readonly supplemental source",
+    "wall_timeout_seconds": 120
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "status": "pushed_and_verified",
+  "verified_utc": "2026-10-01T02:46:51.049178+00:00",
+  "tag": "nvcr.io/nvidian/dynamo-dev/aisimulate:hzhou-0930-02",
+  "digest": "sha256:3d38aa7e325da409c3a7b1d33298fbce5843fbc1c2f93b0643a69d6e907be670",
+  "pull_reference": "nvcr.io/nvidian/dynamo-dev/aisimulate@sha256:3d38aa7e325da409c3a7b1d33298fbce5843fbc1c2f93b0643a69d6e907be670",
+  "config_digest": "sha256:67bf5ffbf2fd7f723e554a616f318f86f8fb0b670615e6bbcbdbcb03ca495f27",
+  "platform": "linux/amd64",
+  "uncompressed_image_bytes": 2275446593,
+  "compressed_layer_bytes": 736291307,
+  "registry_manifest_sha256_verified": true,
+  "registry_config_matches_local_image": true,
+  "pull_by_digest": "passed",
+  "JAX_ENABLE_X64": "true",
+  "gp_ucb_pe_actual_default_dtype": "float64",
+  "functional_smoke": "Historical package/native/Router/Planner smoke inherited with unchanged dependency layers; see image-provenance/smoke-results.json",
+  "design_schema_check": "Historical schema-only check with unchanged packages; zero predictor training and simulation",
+  "supplemental_gp_ucb_pe": "passed in 9.599 seconds: x64 True, float64, 4 completed observations, actual GP fit/acquisition, zero Dynamo replay",
+  "historical_image": {
+    "tag": "hzhou-0930-01",
+    "digest": "sha256:9946ac5d0ae07ff3f20d3a76e8245adeca97a6e4572beb2bbff0178bf96deb6f",
+    "status": "preserved immutable, superseded for final handoff"
+  }
+}

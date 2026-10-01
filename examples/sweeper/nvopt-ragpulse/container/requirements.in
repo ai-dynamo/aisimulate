@@ -1,0 +1,14 @@
+ai-dynamo==1.6.0
+ai-dynamo-runtime==1.6.0
+aisimulate==0.13.0.dev202609300000000061
+google-vizier[jax]==0.1.21
+jax==0.4.38
+jaxlib==0.4.38
+aiofiles==24.1.0
+filterpy==1.4.5
+kubernetes_asyncio==32.0.0
+pmdarima==2.1.1
+prometheus-api-client==0.6.0
+prophet==1.2.1
+protobuf==6.33.6
+scikit-learn==1.7.2

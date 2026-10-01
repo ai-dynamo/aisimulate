@@ -1,0 +1,31 @@
+{
+  "status": "PASS",
+  "qualification": "schema_and_design_only_not_end_to_end_execution",
+  "aisimulate": "0.13.0.dev202609300000000061",
+  "scenarios": [
+    "01-static.yaml",
+    "02-kv-router.yaml",
+    "03-kv-router-planner.yaml"
+  ],
+  "router_domains": {
+    "prefill_load_model_type": 2,
+    "overlap_score_credit": 6,
+    "prefill_load_scale": 12,
+    "temperature": 7
+  },
+  "planner_domains": {
+    "enabled_scaling_policies": 9,
+    "fpm_sampling": 6,
+    "load_sensitivity": 6,
+    "predictor_candidates_in_separate_presearch": 11
+  },
+  "history_intervals_seconds": [
+    60,
+    180,
+    300,
+    600,
+    900
+  ],
+  "predictor_training_calls": 0,
+  "simulation_calls": 0
+}

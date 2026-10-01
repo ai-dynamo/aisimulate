@@ -1,0 +1,11 @@
+{
+  "environment_changes": {
+    "JAX_ENABLE_X64": {
+      "old": null,
+      "new": "true"
+    }
+  },
+  "base_apt_requirements_python_dependencies_hf_layers_unchanged": true,
+  "old_image_config_digest": "sha256:7db4dd977dc611a99ea79c6e3595009edee576ca54e90a7d5abf6bbdd9f9a7be",
+  "new_image_config_digest": "sha256:67bf5ffbf2fd7f723e554a616f318f86f8fb0b670615e6bbcbdbcb03ca495f27"
+}

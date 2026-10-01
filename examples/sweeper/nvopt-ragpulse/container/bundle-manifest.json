@@ -1,0 +1,96 @@
+{
+  "files": [
+    {
+      "path": ".dockerignore",
+      "sha256": "b45e3dfb45c81639b25de297d87f5eee1d75c80cdfd1d8362e32351b3b7b0f8b",
+      "bytes": 307
+    },
+    {
+      "path": "Dockerfile",
+      "sha256": "2a88b53d5e5d51358cf4a66a5886c797900e58ab55c1fa8e365cab1a12732ff6",
+      "bytes": 2061
+    },
+    {
+      "path": "README.md",
+      "sha256": "f2523e8744e01839afcbd3d4439c448da88ee6013546735ee1fe2bb51583f870",
+      "bytes": 4230
+    },
+    {
+      "path": "context-validation.json",
+      "sha256": "98cc7cabb6ad6a1d053f7f66c2e13b7f565f21a9da9cd9fa400c2fa19e7fef67",
+      "bytes": 180
+    },
+    {
+      "path": "image-provenance/build-manifest.json",
+      "sha256": "3b312a5a562cd92f8d26e97dff7dd161c70bfb0997a1ef0907e86515a2217b60",
+      "bytes": 2363
+    },
+    {
+      "path": "image-provenance/design-validation.json",
+      "sha256": "8b3cd11fe901812a7e9a3792720bccfb20422e4640e8de8c389c4a47be6ef580",
+      "bytes": 690
+    },
+    {
+      "path": "image-provenance/frozen-runtime-identity.json",
+      "sha256": "dee979f9f46eea3932bdf597f8c7629cf5362cd082c7070d9a3cbb981bbaedfe",
+      "bytes": 826
+    },
+    {
+      "path": "image-provenance/hf-metadata.json",
+      "sha256": "66bd76ebabdc32719b645aeb103eeca723e7458c391b298f158fc5045e28603f",
+      "bytes": 1093
+    },
+    {
+      "path": "image-provenance/smoke-results.json",
+      "sha256": "1561e362d34f63f74d9758b2ddddc1acb6b99d57337a9424fd524b550875ae89",
+      "bytes": 3408
+    },
+    {
+      "path": "image-provenance/wheelhouse-manifest.json",
+      "sha256": "ef4c8282683b5f93eaaa25ab14067d649f7f017c97dbb53eee6c92408f31b835",
+      "bytes": 32961
+    },
+    {
+      "path": "push-result.json",
+      "sha256": "a5b459b99f8635fb27a4c489b6ca908408d118a117c47f141000ecd04feaed9d",
+      "bytes": 1413
+    },
+    {
+      "path": "requirements.in",
+      "sha256": "ce90f87db971d84bfb1e6e0ab75a8904e000d6b24b82b9dfd97331236b2b160d",
+      "bytes": 294
+    },
+    {
+      "path": "requirements.lock",
+      "sha256": "055c48b282628788b29487f175dfd3c5b63c2163ab987cf7281453159a9c5bcd",
+      "bytes": 13905
+    },
+    {
+      "path": "smoke/environment_smoke.py",
+      "sha256": "eb2c23325fe7019abfbf2f82aa0c5c6cf64963b27e23f86b528cd1e3c15e7916",
+      "bytes": 8406
+    },
+    {
+      "path": "stage_context.py",
+      "sha256": "1fef72ef07b27982455f78a86e3ae487d92eb67e033f65ff200c0feb5477808c",
+      "bytes": 2617
+    },
+    {
+      "path": "supplemental/gp-ucb-pe-result.json",
+      "sha256": "c199d39f20cdbd11539836c98771fe80aa2e21f4f101251e1ac5a5b7400fdce6",
+      "bytes": 1163
+    },
+    {
+      "path": "supplemental/gp_ucb_pe_smoke.py",
+      "sha256": "521f6d7a199350ca0840162653ca8d5e4d968b36b638ab5031dae22f0d3e982b",
+      "bytes": 3640
+    },
+    {
+      "path": "supplemental/x64-image-diff.json",
+      "sha256": "18b9c0d2e65870bf58fa63758c173b66237881b9d9f03773d4756284d11402cb",
+      "bytes": 385
+    }
+  ],
+  "final_image_reference": "nvcr.io/nvidian/dynamo-dev/aisimulate@sha256:3d38aa7e325da409c3a7b1d33298fbce5843fbc1c2f93b0643a69d6e907be670",
+  "scope": "Text-only source/provenance; no runtime artifacts, weights, trace data, credentials or host paths"
+}

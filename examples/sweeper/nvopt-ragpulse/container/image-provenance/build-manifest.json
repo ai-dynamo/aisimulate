@@ -1,0 +1,67 @@
+{
+  "image": "nvcr.io/nvidian/dynamo-dev/aisimulate:hzhou-0930-02",
+  "platform": "linux/amd64",
+  "base": "ubuntu:24.04@sha256:008173c23f95b170204355c12626cb5a965d779a7e1283b09e9cffbb1bf33ca3",
+  "dynamo_commit": "c7241c2f153efba10b57c38c2144b70d82194a4d",
+  "ais_python": "0.13.0.dev202609300000000061",
+  "ais_rust": "0.13.0-dev.202609300000000061",
+  "runtime_features": [
+    "ais-forward-pass",
+    "replay-bench"
+  ],
+  "runtime_wheel_sha256": "dddca2c2b1b3c95977cc822e5b43eeab03cd7a70388195e584a9dd16e25898cb",
+  "native_requirements": [
+    "GLIBC_2.39",
+    "libstdc++.so.6",
+    "libgcc_s.so.1",
+    "libm.so.6",
+    "libc.so.6"
+  ],
+  "core_pins": {
+    "google-vizier": "0.1.21",
+    "jax": "0.4.38",
+    "jaxlib": "0.4.38",
+    "numpy": "2.5.2",
+    "scipy": "1.17.1",
+    "pandas": "3.0.2"
+  },
+  "dependency_differences_from_borrowed_host": {
+    "aiohttp": {
+      "host": "3.13.5",
+      "container": "3.14.3",
+      "reason": "Satisfies exact Dynamo source requirement >=3.14.3"
+    },
+    "kubernetes-asyncio": {
+      "host": "32.3.2",
+      "container": "32.0.0",
+      "reason": "Matches exact Dynamo planner requirements"
+    }
+  },
+  "excluded": [
+    "model weights",
+    "trace datasets",
+    "CUDA",
+    "GPU backend engines",
+    "host credentials",
+    "frozen experiment outputs"
+  ],
+  "mounts": {
+    "workspace": "/workspace",
+    "data": "/data"
+  },
+  "functional_validation": "Inherited package/native/Router/Planner/predictor functional smoke from hzhou-0930-01; new x64 GP-UCB-PE evidence recorded separately after publication",
+  "build_command": "docker build --platform linux/amd64 --progress plain -t nvcr.io/nvidian/dynamo-dev/aisimulate:hzhou-0930-02 .",
+  "requirements_lock_sha256": "055c48b282628788b29487f175dfd3c5b63c2163ab987cf7281453159a9c5bcd",
+  "smoke_script_sha256": "eb2c23325fe7019abfbf2f82aa0c5c6cf64963b27e23f86b528cd1e3c15e7916",
+  "smoke_user": "1000:1000",
+  "numerical_environment": {
+    "JAX_ENABLE_X64": "true",
+    "JAX_PLATFORMS": "cpu",
+    "precision_source": "Frozen experiment scripts/run_broad.py:129"
+  },
+  "precision_revision": {
+    "previous_tag": "hzhou-0930-01",
+    "previous_digest": "sha256:9946ac5d0ae07ff3f20d3a76e8245adeca97a6e4572beb2bbff0178bf96deb6f",
+    "change": "Add explicit JAX_ENABLE_X64=true to match frozen experiment; package versions and wheels unchanged"
+  }
+}

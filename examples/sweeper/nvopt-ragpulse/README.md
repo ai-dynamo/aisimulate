@@ -11,6 +11,12 @@ This is a **review-stage experiment design**, frozen against Dynamo
 these files do not resume it or launch another local sweep. The environment
 image is separate from the experiment data and execution harness.
 
+Published environment: `nvcr.io/nvidian/dynamo-dev/aisimulate:hzhou-0930-02`.
+Use the immutable digest in [container/push-result.json](container/push-result.json).
+The [container source bundle](container/README.md) includes the Dockerfile,
+144 hashed dependency wheels' metadata, build provenance and validation evidence.
+It runs on CPUs with `JAX_ENABLE_X64=true`; no physical GPU is needed.
+
 | Experiment | Configuration | Search scope |
 |---|---|---|
 | 1. Static engine | [01-static.yaml](01-static.yaml) | Aggregated/disaggregated engine mapping and scheduler; round-robin placement, no Planner |
@@ -198,4 +204,6 @@ acceptance, simulation wall time, optimizer timing, goodput/GPU and SLA
 coverage. Plot cumulative best against elapsed wall time together with trial
 durations. For final winners also plot hourly offered traffic, goodput,
 latencies, allocated GPUs, cache reuse and Planner scale decisions; separately
-replay the selected configuration before calling it validated.
+replay the selected configuration before calling it validated. Day 5 is also
+used for optimizer feedback: a fresh winner replay checks reproducibility, not
+generalization to another held-out day or accuracy on physical GPUs.

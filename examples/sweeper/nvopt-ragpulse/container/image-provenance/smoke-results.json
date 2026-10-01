@@ -1,0 +1,105 @@
+{
+  "status": "passed",
+  "checked_utc": "2026-10-01T02:36:37.292830+00:00",
+  "network": "none",
+  "cpu_limit": 2,
+  "memory_limit": "4g",
+  "uid": 1000,
+  "source_script_sha256": "eb2c23325fe7019abfbf2f82aa0c5c6cf64963b27e23f86b528cd1e3c15e7916",
+  "cases": [
+    {
+      "phase": "versions",
+      "versions": {
+        "aisimulate": "0.13.0.dev202609300000000061",
+        "ai-dynamo": "1.6.0",
+        "ai-dynamo-runtime": "1.6.0",
+        "google-vizier": "0.1.21",
+        "jax": "0.4.38",
+        "jaxlib": "0.4.38"
+      },
+      "binding_sha256": "2f47cbb1def5e6b71af0271f0e189dd00e65ee739e801232928ce6dd2254277b",
+      "entry_points": {
+        "aisimulate.config_adapters": [
+          "dynamo.planner",
+          "dynamo.router"
+        ],
+        "aisimulate.runner_factories": [
+          "dynamo"
+        ]
+      }
+    },
+    {
+      "phase": "hf_metadata",
+      "model": "deepseek-ai/DeepSeek-V3",
+      "model_type": "deepseek_v3",
+      "tokenizer": "TokenizersBackend"
+    },
+    {
+      "phase": "load_predictors",
+      "forecasts": {
+        "constant_last": 14.0,
+        "arima_raw": 12.993443307547045,
+        "arima_log1p": 12.993443307547045,
+        "prophet_w20_raw": 16.285625000892185,
+        "prophet_w20_log1p": 16.613687358032728,
+        "prophet_w50_raw": 16.285625000892185,
+        "prophet_w50_log1p": 16.613687358032728,
+        "kalman_default_raw": 15.843761888415875,
+        "kalman_default_log1p": 15.98524928952223,
+        "kalman_reactive_raw": 14.849705127319528,
+        "kalman_reactive_log1p": 14.885687220717749
+      }
+    },
+    {
+      "phase": "replay",
+      "mode": "static",
+      "completed_requests": 8,
+      "mean_ttft_ms": 46.74482700000016,
+      "mean_tpot_ms": 12.240860857142897,
+      "history_bootstrap": false,
+      "planner": {}
+    },
+    {
+      "phase": "replay",
+      "mode": "router",
+      "completed_requests": 8,
+      "mean_ttft_ms": 46.74482700000016,
+      "mean_tpot_ms": 12.240860857142897,
+      "history_bootstrap": false,
+      "planner": {}
+    },
+    {
+      "phase": "replay",
+      "mode": "planner",
+      "completed_requests": 8,
+      "mean_ttft_ms": 46.74482700000016,
+      "mean_tpot_ms": 12.240860857142897,
+      "history_bootstrap": true,
+      "planner": {
+        "ticks": 7,
+        "bootstrap": {
+          "status": "installed",
+          "benchmark_granularity": 2,
+          "prefill_fpm_count": 3,
+          "decode_fpm_count": 6,
+          "fpm_sha256": "882f21145b7a255787049075faf71081d4219a33054abe20ce47387f3df53d31"
+        }
+      }
+    },
+    {
+      "phase": "vizier",
+      "algorithm": "GAUSSIAN_PROCESS_BANDIT",
+      "suggest_complete": "passed"
+    },
+    {
+      "status": "passed",
+      "scope": "CPU-only offline smoke, 24 synthetic requests, 11 predictor presets, no search or GPU workload"
+    }
+  ],
+  "boundary": "Functional smoke only; no fulltrace replay or optimization sweep",
+  "cli_help_exit_code": 0,
+  "native_libraries_resolved": true,
+  "design_validation": "PASS; schema only, zero predictor training/simulation",
+  "tested_image_reference": "nvcr.io/nvidian/dynamo-dev/aisimulate@sha256:9946ac5d0ae07ff3f20d3a76e8245adeca97a6e4572beb2bbff0178bf96deb6f",
+  "qualification": "Historical package/native/Router/Planner environment smoke, inherited by hzhou-0930-02 with unchanged packages; final x64 GP-UCB-PE qualification is supplemental external evidence"
+}
