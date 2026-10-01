@@ -106,7 +106,7 @@ class MockModelConfig:
         self.hf_text_config = self.hf_config
         self.dtype = torch.bfloat16
 
-    def get_num_kv_heads(self, tp_size):
+    def get_num_kv_heads(self, tp_size, dcp_size=1):  # model_config.py:1512 @0.5.21 adds dcp_size (DCP replicates KV)
         return self.num_key_value_heads // tp_size
 
 

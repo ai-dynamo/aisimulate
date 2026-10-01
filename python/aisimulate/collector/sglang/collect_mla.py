@@ -126,7 +126,7 @@ class MockModelConfig:
         self.scaling = scaling
         self.is_local_attention_model = False
 
-    def get_num_kv_heads(self, tp_size: int):
+    def get_num_kv_heads(self, tp_size: int, dcp_size: int = 1):  # model_config.py:1512 @0.5.21
         return 1
 
 
@@ -183,6 +183,8 @@ class MockModelRunner:
         self.gpu_id = device.index if device.index is not None else torch.cuda.current_device()
         self.tp_size = 1
         self.kv_cache_dtype = kv_cache_dtype
+        # sglang>=0.5.21 backends read the runner's server-arg spelling (model_runner.py:1481)
+        self.kv_cache_dtype_str = "fp8_e4m3" if kv_cache_dtype == torch.float8_e4m3fn else "auto"
         self.dtype = torch.bfloat16
         self.page_size = page_size
         self.req_to_token_pool = None

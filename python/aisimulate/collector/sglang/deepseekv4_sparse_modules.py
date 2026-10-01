@@ -604,14 +604,24 @@ def _bench_flash_mla_sparse(
     extra_indices = _expand_indices(extra_K, batch_size, M_per_req, device)
     extra_topk_lengths = torch.full((batch_size,), K_per_query, dtype=torch.int32, device=device)
 
-    sched_meta, _ = get_mla_metadata(
-        cache_seqlens=cache_seqlens,
-        num_q_tokens_per_head_k=M_per_req * n_local_heads,
-        num_heads_k=1,
-        num_heads_q=n_local_heads,
-        is_fp8_kvcache=True,
-        topk=swa_indices.size(-1),
-    )
+    import inspect as _inspect
+
+    if not _inspect.signature(get_mla_metadata).parameters:
+        # sglang>=0.5.21 (sgl_kernel FlashMLA "newer Python API"): serving creates an
+        # empty FlashMLASchedMeta via get_mla_metadata()[0] and hands it to
+        # flash_mla_with_kvcache as tile_scheduler_metadata, which schedules itself
+        # (deepseek_v4_backend.py:187-191, :3486-3500; the Blackwell-only
+        # _maybe_precompute_flashmla_sched_meta is a no-op on SM90).
+        sched_meta = get_mla_metadata()[0]
+    else:
+        sched_meta, _ = get_mla_metadata(
+            cache_seqlens=cache_seqlens,
+            num_q_tokens_per_head_k=M_per_req * n_local_heads,
+            num_heads_k=1,
+            num_heads_q=n_local_heads,
+            is_fp8_kvcache=True,
+            topk=swa_indices.size(-1),
+        )
 
     softmax_scale = 1.0 / (FMLA_D_QK**0.5)
     attn_sink = torch.zeros(n_local_heads, dtype=torch.float32, device=device)

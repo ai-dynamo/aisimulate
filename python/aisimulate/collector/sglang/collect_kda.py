@@ -201,7 +201,9 @@ def run_kda_context_benchmark(
                 # [2**31, 3*2**31) crash with cudaErrorIllegalAddress on both
                 # Hopper SM90 (2026-07 campaign coverage boundary) and SM100
                 # (B200, 2026-07-28), while every cell under this bound passes.
-                if total_tokens * conv_channels >= 2**31:
+                from collector.sglang.runtime_compat import causal_conv1d_uses_int64_offsets
+
+                if total_tokens * conv_channels >= 2**31 and not causal_conv1d_uses_int64_offsets():
                     raise ValueError(
                         "SGLang causal_conv1d Triton kernel int32 token-offset overflow: "
                         f"total_tokens={total_tokens} * conv_channels={conv_channels} >= 2**31 "

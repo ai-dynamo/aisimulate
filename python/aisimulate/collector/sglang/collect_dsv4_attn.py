@@ -698,7 +698,9 @@ def _derive_csa_context_pool_cap(
     if not isinstance(configurator, DSV4PoolConfigurator):
         raise TypeError(f"expected SGLang 0.5.14 DSV4PoolConfigurator, got {type(configurator).__name__}")
 
-    page_size = int(model_runner.server_args.page_size)
+    from collector.sglang.runtime_compat import resolved_arg
+
+    page_size = int(resolved_arg(model_runner.server_args, "page_size"))  # 0.5.21: derived, read through the resolving view
     if page_size != _DSV4_CUDA_PAGE_SIZE:
         raise RuntimeError(f"expected DSV4 CUDA page_size={_DSV4_CUDA_PAGE_SIZE}, got {page_size}")
     window_size = int(model_runner.model_config.window_size)

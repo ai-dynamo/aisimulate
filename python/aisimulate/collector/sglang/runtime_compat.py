@@ -122,3 +122,37 @@ def attach_kv_index_translator(mock_runner) -> None:
         print(f"[sglang-compat] KVIndexTranslator not constructible on the mock runner ({type(exc).__name__}: {exc}); "
               "using a non-translating stand-in")
         mock_runner.kv_index_translator = SimpleNamespace(is_translating=False, reads_are_translated=False)
+
+
+def resolved_arg(server_args, name: str, default=None):
+    """A ServerArgs field as serving resolves it: the raw record first, else the
+    sglang>=0.5.21 resolving view (arg_groups/model_override_base.py:120) where derived
+    values (page_size, chunked_prefill_size, cuda_graph_config, ...) live."""
+    value = getattr(server_args, name, None)
+    if value is not None:
+        return value
+    try:
+        from sglang.srt.arg_groups.model_override_base import resolving_view
+
+        value = getattr(resolving_view(server_args), name, None)
+    except ImportError:
+        value = None
+    return default if value is None else value
+
+
+def causal_conv1d_uses_int64_offsets() -> bool:
+    """Whether the installed causal_conv1d Triton kernel computes token offsets in
+    int64. The 0.5.14 kernel used int32 pointer arithmetic (causal_conv1d_triton.py:373-379,
+    collector guards at total_tokens*conv_channels >= 2**31); sglang>=0.5.21 casts the
+    sequence/token offsets to tl.int64 (kernels/ops/mamba/causal_conv1d_triton.py:95,185),
+    so that limit no longer exists there. Source-probed, never version-sniffed."""
+    import importlib
+    import inspect
+
+    for name in ("sglang.kernels.ops.mamba.causal_conv1d_triton", "sglang.srt.layers.attention.mamba.causal_conv1d_triton"):
+        try:
+            src = inspect.getsource(importlib.import_module(name))
+        except Exception:
+            continue
+        return "tl.int64" in src and "stride_x_token" in src
+    return False

@@ -116,7 +116,13 @@ def main() -> int:
         extra["extra_perf_filenames"] = tuple(str(Path(args.out_dir) / str(p)) for p in entry.extra_perf_filenames)
     for i, case in enumerate(picked):
         print(f"[op_smoke] case {i}: {case}")
-        if isinstance(case, dict):  # dict-shaped cases (mhc_module) bind by name, as collect.py does
+        if isinstance(case, dict) and "params" in case:  # collect.py task shape {"id", "params"} (collect.py:1696-1702)
+            params = case["params"]
+            if isinstance(params, dict):
+                run_func(**params, perf_filename=perf_path, device=args.device, **extra)
+            else:
+                run_func(*params, perf_filename=perf_path, device=args.device, **extra)
+        elif isinstance(case, dict):  # keyword-shaped cases bind by name
             run_func(**{k: v for k, v in case.items() if k != "id"}, perf_filename=perf_path, device=args.device, **extra)
         else:
             run_func(*case, perf_filename=perf_path, device=args.device, **extra)

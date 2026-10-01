@@ -244,7 +244,9 @@ def run_gdn_context_benchmark(
                 # DSA-FUSED-KS-4G-OFFSET row. Raise instead of launching the
                 # corrupting kernel: the async illegal access otherwise poisons
                 # the CUDA context and aborts every remaining sweep cell.
-                if total_tokens * conv_channels >= 2**31:
+                from collector.sglang.runtime_compat import causal_conv1d_uses_int64_offsets
+
+                if total_tokens * conv_channels >= 2**31 and not causal_conv1d_uses_int64_offsets():
                     raise ValueError(
                         "SGLang 0.5.14 causal_conv1d Triton kernel int32 token-offset overflow: "
                         f"total_tokens={total_tokens} * conv_channels={conv_channels} >= 2**31 "
