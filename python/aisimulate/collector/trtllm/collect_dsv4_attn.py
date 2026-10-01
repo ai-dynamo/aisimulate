@@ -405,6 +405,18 @@ def create_dsv4_attention_module(
         )
     )
 
+    if get_sm_version() == 90:
+        # Serving publishes the requested pool dtype to the attention modules through the
+        # model's extra attrs (pyexecutor/model_loader.py:1934 extra_attrs['kv_cache_dtype']
+        # = kv_cache_config.dtype; read by attention/mla.py:341). On Hopper that is
+        # 'fp8_ds_mla' (see the KvCacheConfig below) and it also switches the DSV4 module
+        # OFF the fused Q-FP8/KV-norm prologue (sparse/deepseek_v4/module.py:470-480
+        # _is_fused_q_fp8_quant_enabled: "fp8_ds_mla does not use the fused Q FP8 path").
+        # Without it the module takes the fused path, hands the footer-scale cache a
+        # strided raw latent and mla_rope_inplace rejects it ("data must be contiguous",
+        # H20 ctx capture 2026-10-01) — a path serving never runs on Hopper.
+        model_config.extra_attrs["kv_cache_dtype"] = "fp8_ds_mla"
+
     aux_stream = torch.cuda.Stream(device=device)
     import inspect
 
