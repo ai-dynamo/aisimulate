@@ -953,7 +953,7 @@ def _validate_prediction_host_offload(engine: EnginePredictionConfig) -> None:
     configured = _workers_with_host_offload(engine.workers)
     if not configured:
         return
-    if engine.mode == "afd" or engine.workers.encoder is not None:
+    if engine.mode == "afd":
         raise ValueError("host_offload is supported only for aggregated or disaggregated language workers")
     if engine.backend != "vllm":
         raise ValueError("host_offload is supported only for backend=vllm")
