@@ -44,9 +44,13 @@ aisimulate --help
 
 ### With Dynamo
 
-The examples below require the modern Dynamo adapters. Published Dynamo 1.5.0
-uses removed AISimulate imports, and 1.4.2 does not register the `dynamo` stack.
-Use this pinned Linux/Python 3.12 nightly pair in a **separate environment**:
+> **Compatibility warning:** Older Dynamo releases may be incompatible with
+> current AISimulate source. Dynamo 1.5.0 uses removed AISimulate imports, and
+> 1.4.2 does not register the `dynamo` stack. The pinned nightly pair below is
+> validated together; it does not establish compatibility with AISimulate tip
+> of tree. Do not upgrade AISimulate independently of Dynamo's declared dependency.
+
+Install this pair on Linux with Python 3.12 in a **separate environment**:
 
 <!-- readme-check: dynamo-install -->
 ```bash
@@ -59,7 +63,6 @@ aisimulate predict --help
 This pair exercises the nightly AISimulate wheel, not the current source checkout.
 The daily README workflow records installed versions and runs both Dynamo
 prediction and recommendation; `--help` alone does not validate the adapters.
-Do not upgrade AISimulate independently of Dynamo's declared dependency.
 
 **Planner needs additional dependencies.** Install the requirements from the
 same Dynamo revision as the wheels before using a top-level `planner` section.
