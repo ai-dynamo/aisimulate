@@ -1,7 +1,7 @@
 {
   "schema": "nvopt.published-results-snapshot.v1",
-  "captured_utc": "2026-10-01T16:49:18.026466+00:00",
-  "qualification": "Interim snapshot: Static and Planner fully validated; Router search still running. No all-three winner comparison yet.",
+  "captured_utc": "2026-10-01T17:34:43.430737+00:00",
+  "qualification": "All three native studies completed and independently validated; resource release state is recorded per scenario.",
   "runtime": {
     "dynamo_sha": "c7241c2f153efba10b57c38c2144b70d82194a4d",
     "aisimulate": "0.13.0.dev202609300000000061",
@@ -457,16 +457,15 @@
     },
     {
       "scenario": 2,
-      "status": "formal_optimizer_running",
-      "search_suggestions": 236,
-      "accepted_observations": 192,
+      "status": "completed_validated_archived_released",
+      "search_suggestions": 256,
+      "accepted_observations": 213,
       "actual_attempt_status_counts": {
-        "completed": 179,
+        "completed": 200,
         "failed": 26,
-        "censored": 5,
-        "running": 1
+        "censored": 5
       },
-      "search_best_goodput_per_gpu": 19.378611834492368,
+      "search_best_goodput_per_gpu": 23.210100147901038,
       "native_best_history": [
         {
           "elapsed_seconds": 112.39342999458313,
@@ -521,6 +520,36 @@
           "objective": 19.378611834492368,
           "branch": "agg",
           "trial_id": 89
+        },
+        {
+          "elapsed_seconds": 40066.61239719391,
+          "objective": 20.055668928879783,
+          "branch": "disagg",
+          "trial_id": 108
+        },
+        {
+          "elapsed_seconds": 40625.49066519737,
+          "objective": 20.926905381948757,
+          "branch": "disagg",
+          "trial_id": 111
+        },
+        {
+          "elapsed_seconds": 40656.65708899498,
+          "objective": 21.95041710071165,
+          "branch": "disagg",
+          "trial_id": 128
+        },
+        {
+          "elapsed_seconds": 40793.6217520237,
+          "objective": 23.1995915798763,
+          "branch": "disagg",
+          "trial_id": 117
+        },
+        {
+          "elapsed_seconds": 40803.76356911659,
+          "objective": 23.210100147901038,
+          "branch": "disagg",
+          "trial_id": 113
         }
       ],
       "suggestion_call_timings": [
@@ -601,9 +630,275 @@
           "seconds": 13.87270454497775,
           "count": 1,
           "branch": "disagg"
+        },
+        {
+          "elapsed_seconds": 40437.03127408028,
+          "seconds": 370.3117568480084,
+          "count": 20,
+          "branch": "disagg"
         }
       ],
-      "fresh_validation_complete": false
+      "fresh_validation_complete": true,
+      "candidate_id": "candidate-000228",
+      "counts": {
+        "evaluated": 231,
+        "feasible": 200,
+        "infeasible": 0,
+        "unsupported": 0,
+        "timed_out": 5,
+        "failed": 26,
+        "resource_limited": 0,
+        "cache_hits": 25
+      },
+      "termination": "native_suggestion_budget_exhausted",
+      "search_wall_seconds": 40951.79978225101,
+      "native_run_wall_seconds": 40918.543184412,
+      "peak_process_tree_rss_gib": 236.56067657470703,
+      "configuration": {
+        "engine": {
+          "nextn": 0,
+          "enable_chunked_prefill": true,
+          "kvcache_quant_mode": "fp8",
+          "fmha_quant_mode": "bfloat16",
+          "mode": "disaggregated",
+          "model": "deepseek-ai/DeepSeek-V3",
+          "hardware": "h200_sxm",
+          "backend": "sglang",
+          "backend_version": "0.5.14",
+          "context_length": 8192
+        },
+        "workers": {
+          "prefill": {
+            "parallelism": {
+              "replicas": 4,
+              "tensor": 8,
+              "pipeline": 1,
+              "attention_data": 1,
+              "moe_tensor": 8,
+              "moe_expert": 1
+            },
+            "scheduler": {
+              "max_batched_tokens": 32768,
+              "max_sequences": 1,
+              "prefill_schedule_interval": 1,
+              "prefill_decode_interval": 0
+            },
+            "kv_cache": {
+              "block_size": 64,
+              "prefix_caching": true,
+              "bytes_per_token": 35136,
+              "capacity": {
+                "type": "default",
+                "memory_fraction": 0.9,
+                "cuda_graph_reserved_bytes": 0
+              }
+            },
+            "startup_seconds": 0.0
+          },
+          "decode": {
+            "parallelism": {
+              "replicas": 5,
+              "tensor": 1,
+              "pipeline": 1,
+              "attention_data": 8,
+              "moe_tensor": 1,
+              "moe_expert": 8
+            },
+            "scheduler": {
+              "max_batched_tokens": 16384,
+              "max_sequences": 1024,
+              "prefill_schedule_interval": 1,
+              "prefill_decode_interval": 0
+            },
+            "kv_cache": {
+              "block_size": 64,
+              "prefix_caching": true,
+              "bytes_per_token": 35136,
+              "capacity": {
+                "type": "default",
+                "memory_fraction": 0.9,
+                "cuda_graph_reserved_bytes": 0
+              }
+            },
+            "startup_seconds": 0.0
+          }
+        },
+        "router": {
+          "policy": "kv_router",
+          "prefill_load_model": {
+            "type": "none"
+          },
+          "overlap_score_credit": 1.5,
+          "prefill_load_scale": 64.0,
+          "temperature": 0.0
+        },
+        "planner": null
+      },
+      "fresh_replays": [
+        {
+          "candidate_id": "candidate-000228",
+          "score": 23.219282568168992,
+          "derived": {
+            "total_gpus": 72,
+            "initial_gpus": 72,
+            "average_gpus": 71.99999999996727,
+            "observation_seconds": 86400.0,
+            "compliant_output_tokens_reconstructed": 144442513.0,
+            "fixed_day_goodput_tok_s": 1671.7883449074075,
+            "fixed_day_goodput_per_gpu": 23.219282568168992,
+            "request_sla_pass_fraction": 0.8939508928571429,
+            "normalized_day_gpu_hours": 1727.9999999992147
+          },
+          "native_gpu_hours": 1726.884185749341,
+          "modeled_metrics_match": false,
+          "wall_seconds": 441.85575191903627,
+          "native_wall_seconds": 384.766238174,
+          "detailed": true,
+          "validation_sha256": "e29dba9a898c4017ed99c6e3954d9403ec5967bf1856d551f4836f51007f29a3"
+        },
+        {
+          "candidate_id": "candidate-000228",
+          "score": 23.19973749357961,
+          "derived": {
+            "total_gpus": 72,
+            "initial_gpus": 72,
+            "average_gpus": 71.99999999997004,
+            "observation_seconds": 86400.0,
+            "compliant_output_tokens_reconstructed": 144320927.0,
+            "fixed_day_goodput_tok_s": 1670.381099537037,
+            "fixed_day_goodput_per_gpu": 23.19973749357961,
+            "request_sla_pass_fraction": 0.8933482142857143,
+            "normalized_day_gpu_hours": 1727.999999999281
+          },
+          "native_gpu_hours": 1726.8862535385288,
+          "modeled_metrics_match": false,
+          "wall_seconds": 366.76476707099937,
+          "native_wall_seconds": 354.69281676,
+          "detailed": false,
+          "validation_sha256": "80a50292f4192499531074d8fa8fffb00b27a2df7b02ebd21ab74c12902ade35"
+        },
+        {
+          "candidate_id": "candidate-000228",
+          "score": 23.221081050677945,
+          "derived": {
+            "total_gpus": 72,
+            "initial_gpus": 72,
+            "average_gpus": 71.99999999997141,
+            "observation_seconds": 86400.0,
+            "compliant_output_tokens_reconstructed": 144453701.0,
+            "fixed_day_goodput_tok_s": 1671.9178356481482,
+            "fixed_day_goodput_per_gpu": 23.221081050677945,
+            "request_sla_pass_fraction": 0.893999255952381,
+            "normalized_day_gpu_hours": 1727.9999999993136
+          },
+          "native_gpu_hours": 1726.881949685185,
+          "modeled_metrics_match": false,
+          "wall_seconds": 367.81452999502653,
+          "native_wall_seconds": 355.803622991,
+          "detailed": false,
+          "validation_sha256": "896708ef805ac85254da38e9977ee9d751fe5a93a6d2a37b696f0c389949c76d"
+        }
+      ],
+      "artifact_sha256": {
+        "completion.json": "eb3a9bcd63690e9aa0cf445099d52c0ee8fbd663684735809c65bc35755a6a88",
+        "supervisor.json": "01ad0e1ba3aa00fa1bf4fa08c08ce6c550ba51c85412c2040ec505fe1fe8f6f1",
+        "sweep-result.json": "440d3ca5fa2d5592c353d0c8164b1f56facaa0c425839ea26ba0b90fcc0a1244"
+      },
+      "first_detailed_replay": {
+        "initial_gpus": 72,
+        "average_gpus": 71.99999999996726,
+        "peak_allocated_gpus": 72,
+        "native_gpu_hours": 1726.884185749341,
+        "reconstructed_gpu_hours": 1726.8841857501263,
+        "compliant_output_tokens": 144442513,
+        "fixed_day_goodput_tok_s": 1671.7883449074075,
+        "fixed_day_goodput_per_gpu": 23.219282568168996,
+        "request_sla_pass_fraction": 0.8939508928571429,
+        "cache_reuse": {
+          "status": "verified_against_native",
+          "missing_history_requests": 0,
+          "totals": {
+            "first_admission_reused_input_tokens": 309615360,
+            "max_admission_reused_input_tokens": 309615360,
+            "prefill_max_reused_input_tokens": 309615360,
+            "decode_max_reused_input_tokens": 0,
+            "readmission_events": 0,
+            "requests_readmitted": 0
+          },
+          "native_first_admission_prefix_cache_reused_ratio": 0.20970769043504678,
+          "native_prefix_cache_reused_ratio": 0.20970769043504678,
+          "basis": "Input-token-weighted request arrival-hour cohorts. First admission is prefill for disagg and the sole pool for agg. Native prefix_cache_reused_ratio uses one maximum across ALL admissions per request; readmission and decode pool values are not added together.",
+          "decode_boundary": "Decode admission cache counters are shown separately, not counted again as prefill savings. KV transfer milestones are lifecycle evidence, not measured transferred-token volumes; transfer-token volume cannot be reconstructed from these records."
+        },
+        "source_report_sha256": "bc0768f49abd58c6bf6cb8f41a630a3cead61bf52b05937f51f405704dc8b236",
+        "analysis_script_sha256": "725deb9129e3d17e52e38d1305177874a3276ac3392c025d85dd0901c456b186"
+      },
+      "posthoc_coverage_references": [
+        {
+          "minimum_request_sla_fraction": 0.0,
+          "eligible_count": 200,
+          "selected": {
+            "candidate_id": "candidate-000228",
+            "score": 23.210100147901038,
+            "initial_gpus": 72,
+            "average_gpus": 71.9999999999687,
+            "sla_fraction": 0.893539806547619,
+            "total_goodput_tok_s": 1671.127210648148,
+            "backend": "sglang",
+            "deployment_mode": "disagg",
+            "requested_spec_sha256": "2376d3edf87c7d83170fee86202dec9b4f3b54462a56d3b7af674e77d4c6d107",
+            "effective_spec_sha256": "c0e651d4744db64db509e4d7c1b77056f74fe1fbc879250dc7e209a084896e0e"
+          }
+        },
+        {
+          "minimum_request_sla_fraction": 0.9,
+          "eligible_count": 76,
+          "selected": {
+            "candidate_id": "candidate-000227",
+            "score": 23.1995915798763,
+            "initial_gpus": 80,
+            "average_gpus": 79.99999999994762,
+            "sla_fraction": 0.9978087797619047,
+            "total_goodput_tok_s": 1855.967326388889,
+            "backend": "sglang",
+            "deployment_mode": "disagg",
+            "requested_spec_sha256": "49ae70b53b26bb1b23a3e54dbaf128084a3b2410506fe0f10edb07d634e23ed0",
+            "effective_spec_sha256": "3bb489a2995ffd66f7421dac1db983a7a74727be6c4149a3f4c6060ed0d52e3a"
+          }
+        },
+        {
+          "minimum_request_sla_fraction": 0.95,
+          "eligible_count": 59,
+          "selected": {
+            "candidate_id": "candidate-000227",
+            "score": 23.1995915798763,
+            "initial_gpus": 80,
+            "average_gpus": 79.99999999994762,
+            "sla_fraction": 0.9978087797619047,
+            "total_goodput_tok_s": 1855.967326388889,
+            "backend": "sglang",
+            "deployment_mode": "disagg",
+            "requested_spec_sha256": "49ae70b53b26bb1b23a3e54dbaf128084a3b2410506fe0f10edb07d634e23ed0",
+            "effective_spec_sha256": "3bb489a2995ffd66f7421dac1db983a7a74727be6c4149a3f4c6060ed0d52e3a"
+          }
+        },
+        {
+          "minimum_request_sla_fraction": 0.99,
+          "eligible_count": 42,
+          "selected": {
+            "candidate_id": "candidate-000227",
+            "score": 23.1995915798763,
+            "initial_gpus": 80,
+            "average_gpus": 79.99999999994762,
+            "sla_fraction": 0.9978087797619047,
+            "total_goodput_tok_s": 1855.967326388889,
+            "backend": "sglang",
+            "deployment_mode": "disagg",
+            "requested_spec_sha256": "49ae70b53b26bb1b23a3e54dbaf128084a3b2410506fe0f10edb07d634e23ed0",
+            "effective_spec_sha256": "3bb489a2995ffd66f7421dac1db983a7a74727be6c4149a3f4c6060ed0d52e3a"
+          }
+        }
+      ]
     },
     {
       "scenario": 3,
@@ -1019,5 +1314,33 @@
         }
       ]
     }
-  ]
+  ],
+  "formal_execution_window": {
+    "started_utc": "2026-10-01T03:25:27.056942+00:00",
+    "last_fresh_validation_finished_utc": "2026-10-01T17:29:00.155245+00:00",
+    "wall_seconds": 50613.098303,
+    "scope": "Includes failed formal studies and recovery gaps; excludes earlier image creation/initial staging and final archive/cleanup."
+  },
+  "archive_verification": [
+    {
+      "scenario": 1,
+      "files": 1587,
+      "bytes": 1523744763
+    },
+    {
+      "scenario": 2,
+      "files": 1867,
+      "bytes": 1534674981
+    },
+    {
+      "scenario": 3,
+      "files": 2008,
+      "bytes": 1635879947
+    }
+  ],
+  "all_replay_timing_ledger": {
+    "path": "all-replay-timings.csv",
+    "rows": 816,
+    "scope": "Six formal studies (three archived failed, three completed replacements) and seven agreed fresh validations. Censored wall durations retain bound labels; predictor prep and non-replay resource fixtures are separate."
+  }
 }
