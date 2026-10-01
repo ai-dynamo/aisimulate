@@ -1,0 +1,149 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+# Review-stage search-space design. Read README.md and experiment-contract.yaml
+# before execution; plain `aisimulate recommend` does not enforce this protocol.
+
+traffic:
+  source:
+    type: trace
+    paths:
+    - /data/ragpulse/eval-session-512x.jsonl
+    format: mooncake
+    block_size: 64
+  load:
+    type: trace_timestamps
+    speedup: 1.0
+  stop:
+    max_virtual_time_seconds: 90000.0
+engine:
+  mode:
+    choices:
+    - aggregated
+    - disaggregated
+  model: deepseek-ai/DeepSeek-V3
+  hardware: h200_sxm
+  backend:
+    choices:
+    - vllm
+    - sglang
+  context_length: 8192
+  workers:
+    aggregated:
+      parallelism:
+        preset: default
+      scheduler:
+        max_batched_tokens:
+          choices:
+          - 1024
+          - 2048
+          - 4096
+          - 8192
+          - 16384
+          - 32768
+        max_sequences:
+          choices:
+          - 64
+          - 128
+          - 256
+          - 512
+          - 1024
+      kv_cache:
+        block_size: 64
+        prefix_caching: true
+        bytes_per_token: 35136
+        capacity:
+          type: default
+          memory_fraction: 0.9
+      timing:
+        type: default
+    prefill:
+      parallelism:
+        preset: default
+      scheduler:
+        max_batched_tokens:
+          choices:
+          - 1024
+          - 2048
+          - 4096
+          - 8192
+          - 16384
+          - 32768
+        max_sequences:
+          choices:
+          - 1
+          - 2
+          - 4
+          - 8
+          - 16
+          - 32
+          - 64
+          - 128
+          - 256
+          - 512
+          - 1024
+      kv_cache:
+        block_size: 64
+        prefix_caching: true
+        bytes_per_token: 35136
+        capacity:
+          type: default
+          memory_fraction: 0.9
+      timing:
+        type: default
+    decode:
+      parallelism:
+        preset: default
+      scheduler:
+        max_batched_tokens:
+          choices:
+          - 2048
+          - 4096
+          - 8192
+          - 16384
+        max_sequences:
+          choices:
+          - 64
+          - 128
+          - 256
+          - 512
+          - 1024
+      kv_cache:
+        block_size: 64
+        prefix_caching: true
+        bytes_per_token: 35136
+        capacity:
+          type: default
+          memory_fraction: 0.9
+      timing:
+        type: default
+  kv_transfer:
+    bytes_per_token: 35136
+    bandwidth_gb_per_second: 64.0
+    timing_mode: full_prompt
+  fmha_quant_mode: bfloat16
+  kvcache_quant_mode: fp8
+  enable_chunked_prefill: true
+  estimation_mode: op_level
+  fallback_policy: deny
+evaluation:
+  sla:
+    ttft_ms: 1000.0
+    itl_ms: 50.0
+optimization:
+  target: goodput_per_gpu
+  strict_sla: false
+  constraints:
+    max_candidate_gpus: 256
+optimizer:
+  algorithm: bayesian
+  max_trials: 256
+  parallelism: 8
+  candidate_timeout_seconds: 7200.0
+  seed: 20260929
+execution:
+  resources:
+    cpu_limit: 8
+    memory_limit_gb: 96.0
+    reserve_memory_gb: 8.0
+    initialization_timeout_seconds: 7200.0
+    shutdown_timeout_seconds: 10.0

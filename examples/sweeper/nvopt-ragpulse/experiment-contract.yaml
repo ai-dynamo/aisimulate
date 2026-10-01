@@ -1,0 +1,111 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# Experiment protocol, NOT an AISimulate CLI configuration.
+schema: nvopt-ragpulse-experiment-design-v1
+stage: design_for_review
+local_sweeps: stopped_by_user
+runtime:
+  dynamo_commit: c7241c2f153efba10b57c38c2144b70d82194a4d
+  aisimulate_python: 0.13.0.dev202609300000000061
+  aisimulate_rust: 0.13.0-dev.202609300000000061
+  rust_profile: release
+  google_vizier: 0.1.21
+  jax: 0.4.38
+  jaxlib: 0.4.38
+  jax_platforms: cpu
+  backend_versions: {vllm: 0.24.0, sglang: 0.5.14}
+  fmha_quant_mode: bfloat16
+  kvcache_quant_mode: fp8
+traffic:
+  source_repository: https://github.com/flashserve/RAGPulse
+  source_revision: 7da286becf0f049b2bcb1e5a11d9ba8eb638eff4
+  source_trace_sha256: 017b54972ba3c6c4d52c6cc6967f4168630c381ac58a3b5625a45e795ffa13fa
+  format: mooncake
+  source_block_tokens: 64
+  copies: 512
+  arrival_seed: 20260928
+  phase_mode: session
+  jitter_seconds: 30.0
+  speedup: 1.0
+  independent_copy_hash_namespaces: true
+  namespace_stride: 153788
+  replay_session_ids: false
+  provenance: opaque_component_prefix_model_not_original_token_hashes
+  evaluation:
+    path: /data/ragpulse/eval-session-512x.jsonl
+    sha256: d659a8ec3263b00d4690b5a323771dfa5c7b8dc0b91cfdcefe0d6ccc7fb5d143
+    source_window_seconds: [345600, 432000]
+    relative_origin_seconds: 345600
+    duration_seconds: 86400
+    requests: 537600
+    input_tokens: 1476413952
+    output_tokens: 160730624
+    max_input_plus_output_tokens: 7599
+  planner_history:
+    path: /data/ragpulse/warmup-session-512x.jsonl
+    source_window_seconds: [0, 345600]
+    requests: 2024448
+    input_tokens: 5786392576
+    output_tokens: 619264000
+    uses: [predictor_selection, per_candidate_predictor_bootstrap]
+    does_not_initialize: [engine_kv_cache, router_cache, engine_requests]
+    evaluation_rows_allowed: 0
+    forecast_intervals_seconds: [60, 180, 300, 600, 900]
+    required_before_remote_execution:
+      - materialize_or_supply_the_separate_four_day_history_trace
+      - record_and_verify_its_sha256_and_source_window
+      - retain_zero_request_intervals
+      - never_use_the_180_second_observation_file_for_another_interval
+evaluation:
+  ttft_ms: 1000.0
+  request_mean_itl_ms: 50.0
+  observation_seconds: 86400
+  virtual_stop_seconds: 90000
+  require_full_request_and_token_completion: true
+  minimum_sla_pass_fraction: null
+  goodput_tokens_per_second: compliant_output_tokens / 86400
+  average_gpus: native_gpu_hours / (native_duration_ms / 3600000)
+  objective: goodput_tokens_per_second / average_gpus
+  static_equivalence: average_gpus_equals_fixed_deployment_gpu_count
+  dynamic_duration_scope: native_whole_replay_including_drain
+  score_invalid_or_incomplete_as: infeasible_not_zero
+search:
+  independent_studies: 3
+  suggestions_per_study: 256
+  algorithm: native_vizier_bayesian
+  seed: 20260929
+  parallel_evaluations: 8
+  native_evaluation_timeout_seconds: 7200
+  whole_study_timeout_seconds: null
+  stop: native_budget_or_native_projection_stall
+  scenario_2_engine_space: identical_to_scenario_1_not_its_winner
+  scenario_3_engine_and_router_space: identical_to_scenario_2_not_its_winner
+  dynamic_gpu_ceiling: 256
+remote_resources:
+  cpu_request: 8
+  cpu_limit: 16
+  memory_request_gib: 112
+  memory_limit_gib: 128
+  execution_memory_limit_gb: 96.0
+  gpu_request: 0
+  temporary_storage: disk_backed_not_memory_emptydir
+  concurrent_full_studies_per_pod: 1
+runner_requirements:
+  - preserve_native_suggestion_projection_feedback_and_timeout_logic
+  - advertise_and_forward_fixed_fmha_and_kv_precision_controls
+  - apply_the_frozen_sglang_argument_lowering_and_context_length_exception
+  - normalize_only_goodput_rates_to_the_fixed_day_leave_native_duration_and_gpu_hours_intact
+  - use_days_1_to_4_only_in_planner_predictor_presearch_context
+  - set_runtime_planner_config_load_predictor_warmup_trace_to_days_1_to_4
+  - require_planner_runtime_gpu_ceiling_256_not_candidate_initial_gpu_count
+  - reject_the_run_if_history_boundary_or_runtime_identity_is_not_enforced
+artifacts:
+  - requested_and_effective_configuration_per_actual_simulation
+  - per_simulation_preparation_native_and_outer_wall_seconds
+  - per_optimizer_initialization_suggest_observe_seconds
+  - native_acceptance_cache_timeout_and_virtual_cap_receipts
+  - best_so_far_goodput_per_gpu_and_sla_coverage_vs_elapsed_wall_time
+  - actual_or_time_averaged_gpus_gpu_hours_and_total_goodput
+  - selected_winner_fresh_full_day_replay
+  - hourly_offered_load_goodput_latency_and_planner_gpu_allocation
