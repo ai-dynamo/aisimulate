@@ -13,6 +13,13 @@ Rules (agreed 2026-08-16):
     (quantized_layers.layers.N, model.layers.N.* ignore/not-convert lists),
     which are filtered to the selected layers and renumbered.
   * MTP / next-N heads are zeroed for lean dummy loading.
+  * Layers that PUBLISH state for later layers (DSV4.1 kv/index sources,
+    the candidate source) are cut together with one consumer each — a
+    consumer without its source is an invalid model, a source without a
+    consumer never exercises the sharing path.
+  * Memory-only tables are shrunk, never dropped (DSV4.1 engram hash tables:
+    98 GB per layer at TP1; row count changes nothing about which kernels
+    run — see ``_cut_engram``). Owner decision 2026-09-30.
 
 Every variant records its provenance (source repo, original layer indices,
 edits applied, caveats) in variants_manifest.yaml. A post-check scans the
@@ -181,7 +188,8 @@ def _remap_layer_index_lists(cfg: dict, n_layers: int, sel: list[int], edits: li
     new_index = {orig: new for new, orig in enumerate(sel)}
 
     def _is_layer_list(key, val):
-        return (isinstance(val, list) and val and "layers" in key.lower()
+        return (isinstance(val, list) and val
+                and ("layers" in key.lower() or _LAYER_ID_KEY_RE.search(key.lower()))
                 and all(isinstance(x, int) and not isinstance(x, bool) for x in val)
                 and any(0 <= x <= n_layers for x in val))
     # Kimi-K3's lists are 1-BASED (configuration_kimi_k3.is_kda_layer:
@@ -249,33 +257,53 @@ def _remap_quant_layer_entries(cfg: dict, sel: list[int], edits: list[str]) -> N
         container[field] = kept
 
 
+_LAYER_ID_KEY_RE = re.compile(r"(?:^|_)layer_ids?$")
+
+
 def _check_no_stale_layer_refs(cfg: dict, max_layer: int) -> list[str]:
-    """Scan the final config for layer-index references outside [0, max_layer)."""
+    """Scan the final config for layer-index references outside [0, max_layer).
+
+    A nested sub-config that declares its own depth (vision_config
+    num_hidden_layers, Inkling mtp_config num_nextn_predict_layers) is checked
+    against THAT depth: its layer indices live on a different axis.
+    """
     stale = []
 
-    def walk(obj, path):
+    def walk(obj, path, max_layer):
         if isinstance(obj, dict):
+            if path != "$" and isinstance(obj.get("num_hidden_layers"), int):
+                max_layer = obj["num_hidden_layers"]
+            elif path != "$" and isinstance(obj.get("num_nextn_predict_layers"), int) \
+                    and obj["num_nextn_predict_layers"] > 0:
+                max_layer = obj["num_nextn_predict_layers"]
             for k, v in obj.items():
                 for m in _LAYER_REF_RE.finditer(str(k)):
                     if int(m.group(1)) >= max_layer:
                         stale.append(f"{path}.{k}")
-                walk(v, f"{path}.{k}")
+                # scalar layer pointers (DSV4.1 candidate_source_layer_id; -1 = none)
+                if _LAYER_ID_KEY_RE.search(str(k)) and isinstance(v, int) \
+                        and not isinstance(v, bool) and v >= max_layer:
+                    stale.append(f"{path}.{k} = {v}")
+                walk(v, f"{path}.{k}", max_layer)
         elif isinstance(obj, list):
-            # index lists under a *layers* key are layer references too
-            # (Kimi-K3 kda_layers / full_attn_layers)
-            if ("layers" in path.rsplit(".", 1)[-1].lower()
+            # index lists under a *layers* / *_layer_ids key are layer references
+            # too (Kimi-K3 kda_layers / full_attn_layers; DSV4.1
+            # kv_source_layer_ids / engram_layer_ids — the latter slipped
+            # through the generic adapter unremapped on 2026-09-27)
+            leaf = path.rsplit(".", 1)[-1]
+            if (("layers" in leaf.lower() or _LAYER_ID_KEY_RE.search(leaf))
                     and obj and all(isinstance(x, int) and not isinstance(x, bool) for x in obj)
                     # 0-based lists are stale at >= max_layer; 1-based ones (no 0) may reach max_layer
                     and (max(obj) >= max_layer if 0 in obj else max(obj) > max_layer)):
                 stale.append(f"{path} = {obj[:6]}...")
             for i, v in enumerate(obj):
-                walk(v, f"{path}[{i}]")
+                walk(v, f"{path}[{i}]", max_layer)
         elif isinstance(obj, str):
             for m in _LAYER_REF_RE.finditer(obj):
                 if int(m.group(1)) >= max_layer:
                     stale.append(f"{path} = {obj}")
 
-    walk(cfg, "$")
+    walk(cfg, "$", max_layer)
     return stale
 
 
@@ -343,6 +371,170 @@ def apply_dsv4(cfg: dict, var: dict, edits: list[str]) -> None:
             del cfg[k]
         if dropped:
             edits.append(f"dropped {dropped} (precedent: nvidia NVFP4 configs ship without dspark_*)")
+
+
+# ---- DeepSeek V4.1 (text_config-nested; sparse-attention topology by SOURCE layers)
+# compress_ratios per layer: 0 = sliding window, 2 = ratio-2 compressed,
+# 1 = full-length compressed. Compressors + compressed KV live only on
+# kv_source_layer_ids, indexers only on index_source_layer_ids; a consumer
+# reuses the most recent source <= its own index. candidate_source_layer_id
+# publishes candidate blocks that every LATER indexer masks with.
+#   vllm 0.30.0  models/deepseek_v41/attention.py:256-299, :1035-1050
+#   sglang main  models/deepseek_v4.py:1148-1165, layers/attention/dsv4/dsv41_sparse.py:189-191
+DSV41_RATIO_KIND = {0: "swa", 2: "c2", 1: "c1"}
+
+# Engram hash tables: rows = engram_num_embeddings[i], one row per hash
+# bucket, buckets are (max_ngram-1) x n_heads PRIMES drawn in one ascending
+# sequence above engram_vocab_size - 1 (vllm 0.30.0 models/deepseek_v41/common/
+# engram.py:186-199; sglang main layers/engram.py:158-175). Reproduces the
+# shipped config exactly: vocab 16000000 -> [384006168, 384016682]. A row is
+# 256 fp8 + e8m0 scales, so the real table is 98 GB per layer at TP1: vllm
+# allocates it on device, sglang main OOMs building a fp16 temp of it in
+# initialize_dummy_weights (183 GiB, 2026-09-30). Row count is memory only —
+# the hash/lookup/gate kernels and their per-token work are identical — so
+# the dummy keeps every kernel and shrinks the bucket space. 100000 keeps the
+# hashing regime (buckets per head > compressed vocab 99092).
+ENGRAM_DUMMY_VOCAB_SIZE = 100000
+
+
+def _is_prime(n: int) -> bool:
+    if n < 2:
+        return False
+    if n % 2 == 0:
+        return n == 2
+    i = 3
+    while i * i <= n:
+        if n % i == 0:
+            return False
+        i += 2
+    return True
+
+
+def engram_table_rows(vocab_size: int, n_layers: int, max_ngram_size: int, n_heads: int) -> list[int]:
+    """Rows per engram layer = sum of its primes (framework derivation above)."""
+    seen: set[int] = set()
+    rows = []
+    for _ in range(n_layers):
+        total = 0
+        for _ in range(max_ngram_size - 1):
+            current = vocab_size - 1
+            for _ in range(n_heads):
+                current += 1
+                while not _is_prime(current) or current in seen:
+                    current += 1
+                seen.add(current)
+                total += current
+        rows.append(total)
+    return rows
+
+
+def _cut_engram(tc: dict, remap: dict[int, int], edits: list[str]) -> None:
+    """Keep the engram layers inside the cut, renumber them, shrink the tables.
+
+    The shipped table sizes must match the prime-sum derivation first (a
+    mismatch means the frameworks' rule changed and shrinking would be blind).
+    Primes are drawn per kept layer IN ORDER, so a kept layer's rows are those
+    of its new position, not its original one.
+    """
+    eng = list(tc.get("engram_layer_ids") or [])
+    if not eng:
+        return
+    args = (tc["engram_max_ngram_size"], tc["engram_n_heads"])
+    real = engram_table_rows(tc["engram_vocab_size"], len(eng), *args)
+    if list(tc["engram_num_embeddings"]) != real:
+        raise SystemExit(f"engram_num_embeddings {tc['engram_num_embeddings']} != prime-sum derivation "
+                         f"{real}; the framework rule changed — re-verify before shrinking")
+    kept = [i for i in eng if i in remap]
+    tc["engram_layer_ids"] = [remap[i] for i in kept]
+    tc["engram_vocab_size"] = ENGRAM_DUMMY_VOCAB_SIZE
+    tc["engram_num_embeddings"] = engram_table_rows(ENGRAM_DUMMY_VOCAB_SIZE, len(kept), *args)
+    edits.append(f"engram_layer_ids -> {tc['engram_layer_ids']}; tables shrunk to vocab "
+                 f"{ENGRAM_DUMMY_VOCAB_SIZE} rows {tc['engram_num_embeddings']} "
+                 f"(real {real[:len(kept)]}; memory-only, kernels unchanged)")
+
+
+def variants_dsv41(cfg: dict) -> list[dict]:
+    tc = cfg["text_config"]
+    n = tc["num_hidden_layers"]
+    main = [int(r) for r in tc["compress_ratios"][:n]]
+    unknown = sorted(set(main) - set(DSV41_RATIO_KIND))
+    assert not unknown, f"compress_ratios has unsupported values {unknown} (frameworks accept 0/1/2)"
+    kv_src = set(tc.get("kv_source_layer_ids") or [])
+    idx_src = set(tc.get("index_source_layer_ids") or [])
+    cand = int(tc.get("candidate_source_layer_id", -1))
+    engram = list(tc.get("engram_layer_ids") or [])
+    sel: list[int] = []
+
+    def take(i: int | None) -> None:
+        if i is not None and 0 <= i < n and i not in sel:
+            sel.append(i)
+
+    def first(pred, start: int = 0) -> int | None:
+        return next((i for i in range(start, n) if pred(i)), None)
+
+    take(first(lambda i: main[i] == 0))                      # one sliding-window layer
+    take(engram[0] if engram else None)                      # one engram layer (any kind)
+    for r in (2, 1):                                         # each compressed kind: source + consumer
+        s = first(lambda i: main[i] == r and i in kv_src)
+        if s is None:
+            continue
+        take(s)
+        take(first(lambda i: main[i] == r and i not in kv_src, s + 1))
+    if cand >= 0:                                            # candidate source + a masked indexer after it
+        take(cand)
+        take(first(lambda i: main[i] == main[cand] and i not in kv_src, cand + 1))
+        take(first(lambda i: i in idx_src, cand + 1))
+    rep = sorted(sel)
+    out = [{"name": "rep", "sel": rep}]
+    # capacity fallback (observed by the driver, never predicted): drop the
+    # plain-SWA layer and the candidate-masked indexer, keep every source/consumer pair
+    keep = {engram[0] if engram else rep[0]} | kv_src | {cand}
+    small = sorted(i for i in rep if i in keep or (i - 1) in keep)
+    if len(small) < len(rep):
+        out.append({"name": "rep_min", "sel": small})
+    return out
+
+
+def apply_dsv41(cfg: dict, var: dict, edits: list[str]) -> None:
+    tc = cfg["text_config"]
+    n = tc["num_hidden_layers"]
+    sel = var["sel"]
+    remap = {o: i for i, o in enumerate(sel)}
+    ratios = [int(r) for r in tc["compress_ratios"]]
+    del tc["compress_ratios"]  # main + MTP tail; sliced explicitly (tail goes with the MTP heads)
+    _slice_layer_lists(tc, n, sel, edits)
+    tc["compress_ratios"] = [ratios[i] for i in sel]
+    edits.append(f"compress_ratios -> {tc['compress_ratios']} (MTP tail dropped with num_nextn_predict_layers)")
+    for key in ("kv_source_layer_ids", "index_source_layer_ids"):
+        kept = [remap[i] for i in tc.get(key) or [] if i in remap]
+        edits.append(f"{key} -> {kept}")
+        tc[key] = kept
+    cand = int(tc.get("candidate_source_layer_id", -1))
+    if cand >= 0:
+        tc["candidate_source_layer_id"] = remap.get(cand, -1)
+        edits.append(f"candidate_source_layer_id -> {tc['candidate_source_layer_id']}")
+    _cut_engram(tc, remap, edits)
+    tc["num_hidden_layers"] = len(sel)
+    # structural invariants the frameworks assert at load (cited above): every
+    # compressed layer has a kv source AND an index source at or below it, and
+    # nothing after the last kv source compresses on its own (sglang
+    # models/deepseek_v4.py:4316-4322 late_layer_start).
+    for new, r in enumerate(tc["compress_ratios"]):
+        if r > 0:
+            if not any(s <= new for s in tc["kv_source_layer_ids"]) or \
+                    not any(s <= new for s in tc["index_source_layer_ids"]):
+                raise SystemExit(f"dsv41 cut {sel}: layer {sel[new]} (ratio {r}) has no source in the cut")
+    dropped = [k for k in list(tc) if k.startswith("dspark_")]
+    for k in dropped:
+        del tc[k]
+    if dropped:
+        edits.append(f"dropped {dropped} (precedent: nvidia NVFP4 configs ship without dspark_*)")
+    if tc.get("num_nextn_predict_layers"):
+        tc["num_nextn_predict_layers"] = 0
+        edits.append("num_nextn_predict_layers -> 0")
+    if tc.get("first_k_dense_replace"):
+        tc["first_k_dense_replace"] = sum(1 for i in sel if i < tc["first_k_dense_replace"])
+        edits.append(f"first_k_dense_replace -> {tc['first_k_dense_replace']}")
 
 
 def variants_glm(cfg: dict) -> list[dict]:
@@ -463,6 +655,17 @@ def _layer_axis(cfg: dict) -> tuple[str | None, list]:
         values = ["kda" if i + base in kda else "full" if i + base in full else "dense" for i in range(n)]
         if len(set(values)) > 1:
             return "linear_attn_config", values
+    # Inkling declares its sliding-window layers as an index list
+    # (local_layer_ids, 55 of 66) with the rest global. Found 2026-10-01 by the
+    # extended stale-ref check: the 2-layer rep cut kept all 55 indices verbatim
+    # and never held a global layer.
+    for key, v in tc.items():
+        if (_LAYER_ID_KEY_RE.search(key) and isinstance(v, list) and n and v
+                and all(isinstance(x, int) and not isinstance(x, bool) for x in v)
+                and 0 <= min(v) and max(v) < n and 0 < len(set(v)) < n):
+            tag = key[:-len("_layer_ids")] if key.endswith("_layer_ids") else key
+            members = set(v)
+            return key, [tag if i in members else "other" for i in range(n)]
     for key in ("layer_types", "attn_type_list", "hybrid_layer_pattern",
                 "layers_block_type", "indexer_types", "mlp_layer_types", "moe_layer_freq"):
         v = tc.get(key)
@@ -546,6 +749,7 @@ def apply_generic(cfg: dict, var: dict, edits: list[str]) -> None:
 
 ADAPTERS = {
     "dsv4": (variants_dsv4, apply_dsv4),
+    "dsv41": (variants_dsv41, apply_dsv41),
     "glm": (variants_glm, apply_glm),
     "m3": (variants_m3, apply_m3),
     "gptoss": (variants_gptoss, apply_gptoss),

@@ -4,11 +4,12 @@ _meta:
   version: 0.30.0
   taxonomy: kernel_taxonomy_sm90.yaml
   kind: summary
-  generated: '2026-09-30T15:43:38'
+  generated: '2026-10-01T10:17:04'
   summary:
     repos: 111
     repos_with_residue: 10
-    residue_kernels: [_engram_lookup_kernel, _fused_engram_post_wkv_kernel, _hash_ids_kernel, kernel_cutlass_device_kernel]
+    residue_kernels: [_engram_lookup_kernel, _fused_engram_post_wkv_kernel, _fused_save_compress_norm_kernel, _hash_ids_kernel, _indexer_k_norm_rope_quant_store_kernel, _mask_candidates_kernel, _ring_slot_mapping_kernel,
+      _rope_quant_insert_kernel, kernel_cutlass_device_kernel]
 results:
   MiniMaxAI/MiniMax-M2:
     record: 619bb1874844
@@ -196,8 +197,9 @@ results:
     residue: [kernel_cutlass_device_kernel]
   deepseek-ai/DeepSeek-V4.1-Flash:
     record: 810e8e6e5f9c
-    roles: [activation, attention, dsa_indexer, gemm, infra, mhc, moe_gemm, moe_infra, norm_rope]
-    residue: [_engram_lookup_kernel, _fused_engram_post_wkv_kernel, _hash_ids_kernel]
+    roles: [activation, attention, dsa_indexer, gemm, infra, mhc, moe_gemm, moe_infra, norm_rope, routing]
+    residue: [_engram_lookup_kernel, _fused_engram_post_wkv_kernel, _fused_save_compress_norm_kernel, _hash_ids_kernel, _indexer_k_norm_rope_quant_store_kernel, _mask_candidates_kernel, _ring_slot_mapping_kernel,
+      _rope_quant_insert_kernel, kernel_cutlass_device_kernel]
   google/gemma-4-26B-A4B:
     record: 14618bd8a75c
     roles: [activation, attention, gemm, infra, kvcache, moe_gemm, moe_infra, norm_rope, routing]
@@ -264,8 +266,9 @@ results:
     residue: [kernel_cutlass_device_kernel]
   nvidia/DeepSeek-V4.1-Flash-NVFP4:
     record: 6eb5cabaf409
-    roles: [activation, attention, dsa_indexer, gemm, infra, mhc, moe_gemm, moe_infra, norm_rope]
-    residue: [_engram_lookup_kernel, _fused_engram_post_wkv_kernel, _hash_ids_kernel]
+    roles: [activation, attention, dsa_indexer, gemm, infra, mhc, moe_gemm, moe_infra, norm_rope, routing]
+    residue: [_engram_lookup_kernel, _fused_engram_post_wkv_kernel, _fused_save_compress_norm_kernel, _hash_ids_kernel, _indexer_k_norm_rope_quant_store_kernel, _mask_candidates_kernel, _ring_slot_mapping_kernel,
+      _rope_quant_insert_kernel, kernel_cutlass_device_kernel]
   nvidia/GLM-5-NVFP4:
     record: 1b12dbcb46bd
     roles: [activation, attention, dsa_indexer, gemm, infra, kvcache, moe_gemm, moe_infra, norm_rope, routing]

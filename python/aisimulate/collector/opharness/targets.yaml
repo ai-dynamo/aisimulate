@@ -243,6 +243,31 @@ families:
     - openbmb/MiniCPM5-2B
     - TokenRhythm/NeoHorse-1-9B
     checkpoint_overrides:
+      deepseek-ai/DeepSeek-V4.1-Flash:
+        dummy_overrides:
+          family: dsv41
+          fact: 'V4.1 layers publish state for later layers (kv/index sources, candidate source) and the generic
+            depth cut kept only layers 0-1 = two sliding-window layers with the source lists unremapped
+            (no compressor, indexer, compressed-KV or candidate path was ever probed, 2026-09-27). The dsv41
+            adapter cuts source+consumer pairs and shrinks the engram hash tables (98 GB/layer at TP1; memory
+            only). Owner decision 2026-09-30.'
+        cli_extra_args:
+          sglang:
+            args: *id001
+            fact: 'fp4 experts (expert_dtype fp4, same as V4) on SM90: sglang main 2026-09-30 refuses runner=auto
+              with "NVFP4 ... use moe_runner_backend=marlin on SM80+" (facts/dsv41_reprobe/sgl_gpu7_v5.log); same
+              customization as the dsv4 family.'
+          # vllm block-size: no override. The generator now carries a deepseek-v4.1
+          # profile (facts/models.yaml) rendering block-size 64; the 2026-10-01 A/B
+          # that found V4's 256 rejected on vllm 0.30.0 is in findings
+          # dsv41_dummy_cut_and_vllm_block_size_2026_10_01.
+      nvidia/DeepSeek-V4.1-Flash-NVFP4:
+        dummy_overrides:
+          family: dsv41
+        cli_extra_args:
+          sglang:
+            args: *id001
+            fact: 'NVFP4 experts on SM90: sglang refuses runner=auto (see deepseek-ai/DeepSeek-V4.1-Flash above).'
       nvidia/Nemotron-H-56B-Base-8K:
         cli_extra_args:
           vllm:

@@ -2039,3 +2039,79 @@ findings:
     - platform:sm120
     - framework:vllm-0.30.0
     - instrument:collect_mla_module
+  dsv41_dummy_cut_and_vllm_block_size_2026_10_01:
+    statement: 'CORRECTION of the DeepSeek-V4.1 rows in vllm_0300_upgrade_2026_09_27 and of the 09-30 support probe: the
+      V4.1 dummy those verdicts ran on was not V4.1. The generic depth cut kept original layers [0,1] — two sliding-window
+      layers (compress_ratio 0) — with kv_source_layer_ids / index_source_layer_ids / candidate_source_layer_id /
+      engram_layer_ids left verbatim (keys end in `_layer_ids`; the stale-ref post-check only knew `layers`), so no
+      compressor, indexer, compressed-KV attention or candidate path was ever exercised. FIX (owner request 2026-09-30,
+      "put the engram shrink in the dummy handling, no need for full size"): dummies.py `dsv41` adapter, routed by
+      targets.yaml dummy_overrides.family. Rep cut = original layers [0,1,2,3,20,21,24] (swa; engram swa; ratio-2 kv/index
+      source + consumer; candidate/ratio-1 source + consumer; candidate-masked indexer), rep_min = [1,2,3,20,21] as the
+      capacity fallback. Every pointer is renumbered (kv sources [2,4], index sources [2,4,6], candidate 4, engram [1]) and
+      the adapter raises if a compressed layer has no source at or below it (the frameworks assert exactly that:
+      vllm 0.30.0 models/deepseek_v41/attention.py:283-299, sglang main models/deepseek_v4.py:4316-4322). Engram hash
+      tables shrink by lowering engram_vocab_size 16000000 -> 100000 and recomputing engram_num_embeddings with the
+      frameworks'' prime-sum rule (vllm common/engram.py:186-199, sglang layers/engram.py:158-175; reproduces the
+      shipped 384006168/384016682 exactly): 2.4M rows = 0.6 GB per layer instead of 98 GB. Row count is memory only —
+      hash/gather/gate kernels and per-token work are unchanged; 100000 keeps buckets-per-head above the compressed
+      vocab (99092). The stale-ref check now covers `*_layer_id(s)` keys and checks nested sub-configs against their own
+      depth (vision_config, Inkling mtp_config). SIDE EFFECT: Inkling''s local_layer_ids (55 of 66) is a layer-kind
+      axis, so its generic variants became all_kinds [0,5] + single-kind with the list remapped (Inkling is a
+      generator reject on every backend, no record changed). RESULTS on the faithful cut (H20/sm90): vllm 0.30.0
+      deepseek-ai/DeepSeek-V4.1-Flash FAILS at load on its golden render — the generator''s deepseek_v4 fact
+      (facts/models.yaml, matched through the `deepseek-ai/DeepSeek-V4*` path glob) renders block-size 256, and V4.1''s
+      compressed layers use 64-token kernel blocks, so the 256-token manager block must split 4-way, which the BLHNC
+      layout cannot do once a KV tensor is shared by several layers ("block stride 275904 != page 74752",
+      kv_cache_interface.py:373). Depth-independent: the real 40-layer deployment fails the same way. Rescue as the
+      framework''s own message suggests: `--generator-set params.agg.tokens_per_block=64` -> PASS (rendered and fp8-KV;
+      A/B in facts/../archive/superseded_dummies/2026-10-01_dsv41_inkling/raws_block256). The nvidia NVFP4 sibling is
+      NOT matched by that fact (arch DeepseekV41 / model_type deepseek_v41 / nvidia path), renders no block-size and
+      passes at vllm''s default — an inconsistency between two artifacts of one model that is the generator''s to
+      resolve. Matrix vllm-0.30.0: 110/1/13 -> 109/2/13 (V4.1 fp8 pass -> pass+custom). Identity now includes
+      DeepseekCompressor, DeepseekV4Indexer (deep_gemm sm90_fp8_mqa_logits / paged + sched metadata,
+      cp_gather_indexer_k_quant_cache, topKPerRowPrefill, cooperative_topk) and the candidate filter
+      (_block_scores / _candidate_flags / _mask_candidates / _store_candidates). RESIDUE for the owner''s granularity
+      call (unlabeled by the sm90 taxonomy on purpose): compressor glue (_fused_save_compress_norm, _rope_quant_insert,
+      _ring_slot_mapping), indexer-K store (_indexer_k_norm_rope_quant_store), the candidate kernels, engram
+      (_hash_ids / _engram_lookup / _fused_engram_post_wkv / _gather_lookback) and the cute-DSL LL bf16 router-gate
+      GEMM. sglang main (nightly-dev-20260930-cae69be5, exploratory, not a pin): all four V4.1 runs PASS (fp8 rendered,
+      fp8_e4m3 KV, NVFP4 x2 with the dsv4 marlin customization — runner=auto refuses NVFP4 on SM90 as for V4): backend
+      DeepseekV4AttnBackend, pool DeepSeekV4TokenToKVPool fp8, sparse_prefill_fwd + FlashMLA sparse decode (same sm90
+      sparse kernels as vllm), but the indexer runs an fp4 index-K path (_quantize_fp4_indexer / _fp4_index_logits /
+      _store_fp4_index_k_cache) instead of vllm''s DeepGEMM fp8 mqa_logits, engram as _engram_hash/_gather/_gate. Before
+      the dummy fix the same run OOMed allocating the full engram table (183 GiB fp16 temp in initialize_dummy_weights).
+      sglang 0.5.20 (newest release) and trtllm 1.3.0rc29 do not support V4.1 (no model/config class), unchanged.
+      Probe-side compatibility for sglang main (probe_sglang.py): ServerArgs is a msgspec Struct, bench_one_batch moved
+      to sglang.benchmark.one_batch, config initializers take no args after publish(server_args); the generator still
+      renders `--cuda-graph-bs` which main splits into -decode/-prefill (one-off queue patch, argv stale vs plan by
+      design). COLLECTOR GAPS (unchanged): dsv4 case declarations for compress ratio 2/1 source/consumer layers and the
+      candidate filter; engram op; SDK composition by source/consumer layer counts.'
+    applies_to:
+    - deepseek-ai/DeepSeek-V4.1-Flash
+    - nvidia/DeepSeek-V4.1-Flash-NVFP4
+    - baerquant/Inkling
+    - framework:vllm-0.30.0
+    - framework:sglang-main-2026-09-30
+    - instrument:dummies
+    - platform:sm90
+  dsv41_generator_profile_block_size_2026_10_01:
+    statement: 'FOLLOW-UP to dsv41_dummy_cut_and_vllm_block_size_2026_10_01 (owner request: fix the generator default
+      instead of carrying a harness override). facts/models.yaml now has a `deepseek-v4.1` profile (match
+      deepseek-ai/DeepSeek-V4.1*, nvidia/DeepSeek-V4.1*; arch DeepseekV41ForCausalLM; model_type deepseek_v41) whose
+      vllm defaults are trust-remote-code + block-size 64 + no-enable-flashinfer-autotune and whose sglang defaults
+      equal V4''s; the `deepseek-v4` globs narrowed from `DeepSeek-V4*` to `DeepSeek-V4-*` so V4.1 no longer inherits
+      V4''s block-size 256. V4''s gb200-specific defaults (deep_gemm_mega_moe, compilation-config) were NOT copied —
+      they are validated for V4 only. Re-probed on H20 with the native render (block-size 64 for BOTH V4.1 artifacts,
+      no harness cli_extra_args): vllm 0.30.0 rendered + fp8-KV PASS x4; sglang main (nightly 0930) PASS x4 (the
+      nvidia artifact now also renders trust-remote-code / disable-flashinfer-autotune). Matrix vllm-0.30.0 back to
+      110/1/13 with deepseek-ai/DeepSeek-V4.1-Flash a plain pass. Unit test
+      tests/unit/generator/test_model_profile_deepseek_v41.py pins both the glob split and the 64/256 defaults.
+      Still open on the generator side: nvidia/DeepSeek-V4-*-NVFP4 artifacts of V4 itself are matched by no profile
+      (deliberately left alone — changing it would alter V4-NVFP4 golden renders that currently pass).'
+    applies_to:
+    - deepseek-ai/DeepSeek-V4.1-Flash
+    - nvidia/DeepSeek-V4.1-Flash-NVFP4
+    - module:generator
+    - framework:vllm-0.30.0
+    - platform:sm90
