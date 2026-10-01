@@ -11,11 +11,17 @@ configurations offline, without bringing up a GPU serving cluster.
 [Website](https://ai-dynamo.org/aisimulate/) ·
 [E2E Accuracy Overview](https://ai-dynamo.org/aisimulate/e2e-accuracy/) ·
 [FPM Accuracy Overview](https://ai-dynamo.org/aisimulate/fpm-accuracy/) ·
+[FPM Dataset](https://huggingface.co/datasets/nvidia/aisimulate-fpm-dataset) ·
 [FPE Support Matrix](https://ai-dynamo.org/aisimulate/fpe-support-matrix/) ·
 [Legacy AIC Support Matrix](https://ai-dynamo.org/aisimulate/support-matrix/)
 
 Whole-forward FPM data is supplied at runtime rather than shipped in this
-repository. Supply both the Parquet file and its adjacent, same-stem
+repository. Find versioned FPM libraries and measurement evidence in the
+[Hugging Face FPM dataset](https://huggingface.co/datasets/nvidia/aisimulate-fpm-dataset).
+Pin a full dataset commit SHA, select the matching runtime configuration, and
+verify the recorded file hashes. To contribute data, follow the dataset
+[developer guide and schema contracts](https://huggingface.co/datasets/nvidia/aisimulate-fpm-dataset#developer-guide-contribute-a-dataset).
+Supply both the Parquet file and its adjacent, same-stem
 `.metadata.json` sidecar (for example, `reviewed-fpm.parquet` and
 `reviewed-fpm.metadata.json`). Set `estimation_mode="fpm_interpolation"` and
 `estimator_config.fpm_interpolation.fpm_parquet_path` in the canonical Python or Rust configuration. Prediction/recommendation YAML also accepts the legacy `timing.forward_model: fpm` and `timing.fpm_parquet_path` fields; see the [core API guide](docs/core-api.md#external-whole-forward-fpm-data).
