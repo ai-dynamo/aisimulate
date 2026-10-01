@@ -23,6 +23,9 @@ pub(crate) use host_offload::{
 };
 
 pub use belady::KvEvictionPolicy;
+pub(crate) use common::hashing::{
+    XXH3_SEED, block_hashes, compute_block_hash_for_tokens, compute_next_sequence_hash,
+};
 pub use common::running_mean::RunningMean;
 pub use common::speculative::normalize_conditional_accept_rates;
 pub use config::{

@@ -5,16 +5,20 @@ import json
 from dataclasses import dataclass, replace
 from types import SimpleNamespace
 
+import pyarrow as pa
+import pyarrow.parquet as pq
 import pytest
+from accuracy_digest import decode_points
 from fpm_accuracy.evaluate import Metric, choose_variant, evaluate_case
 from fpm_accuracy.exceptions import ConfigurationError, DependencyError
 from fpm_accuracy.models import aic_predictors
 from fpm_accuracy.models.aic_config import map_worker_config_to_aic
+from fpm_accuracy.models.aic_fpm_database import prepare_aic_fpm_database
 from fpm_accuracy.models.fpt_predictor import ForwardPassTimePredictor, Prediction
 from fpm_accuracy.models.worker_regression import infer_worker_roles, regression_buckets
 from fpm_accuracy.types.forward_pass import ForwardPassIteration, RequestMetrics
 from fpm_accuracy.types.worker_config import WorkerConfig
-from test_hf_dataset import CONFIGURATION_PATH, _build_dataset, _fpm_payload
+from test_hf_dataset import CONFIGURATION_PATH, _build_dataset, _fpm_payload, _sha256, _write_json
 
 
 @pytest.fixture
@@ -86,6 +90,55 @@ def test_membership_cold_start_and_predict_before_tune(case):
     for offset in range(0, len(regression_events), 2):
         predict, tune = regression_events[offset : offset + 2]
         assert predict[0] == "predict" and tune == ("tune", predict[1])
+
+
+@pytest.mark.parametrize("execution_profile", ["full", "decoder_bounded"])
+def test_v7_keeps_measurements_and_regression_without_staging_incomplete_identity(
+    tmp_path, monkeypatch, execution_profile
+):
+    content = "\n".join(json.dumps(_fpm_payload(counter=index)) for index in range(12)).encode()
+    dataset = _build_dataset(
+        tmp_path,
+        protocol_id="forward-pass-measurement-v1",
+        files=[("truth", "traffic.jsonl", content)],
+        fpm_schema_version=7,
+    )
+    parquet = tmp_path / CONFIGURATION_PATH / "fpm/fpm.parquet"
+    table = pq.read_table(parquet)
+    table = table.set_column(
+        table.schema.get_field_index("execution_profile"), "execution_profile", pa.array([execution_profile])
+    )
+    pq.write_table(table, parquet)
+    metadata_path = tmp_path / CONFIGURATION_PATH / "fpm/fpm.metadata.json"
+    metadata = json.loads(metadata_path.read_text())
+    metadata["configuration_selector"]["execution_profile"] = execution_profile
+    metadata["parquet_sha256"] = _sha256(parquet)
+    _write_json(metadata_path, metadata)
+    manifest_path = tmp_path / CONFIGURATION_PATH / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    assert "model_config_sha256" not in manifest and "execution_profile" not in manifest
+    manifest["fpm"][0]["sha256"] = _sha256(parquet)
+    _write_json(manifest_path, manifest)
+    # Exercise the real FPM adapter and staging path without an installed SDK.
+    # Reaching native model construction would fail on this sentinel.
+    monkeypatch.setattr(aic_predictors, "_import_aisim_forward_pass_perf_model", lambda: SimpleNamespace())
+    case = dataset.measurement_case(CONFIGURATION_PATH)
+    with pytest.raises(DependencyError, match="schema v7"):
+        prepare_aic_fpm_database({}, case.fpm_artifacts[0])
+
+    def factory(method, context):
+        if method == "aic-fpm":
+            # No native dependency: the real staging boundary must refuse v7
+            # before dropping its execution identity or building an overlay.
+            return aic_predictors.AicFpmPredictor.create(context)
+        return Predictor(method, context, [])
+
+    result = evaluate_case(case, factory=factory)
+    warmup = result["results"]["warmup"]
+    assert warmup["status"] == "unsupported_predictor"
+    assert warmup["metrics"]["all"]["measured_count"] == warmup["metrics"]["all"]["unavailable_count"] == 12
+    assert warmup["metrics"]["all"]["error_count"] == 0
+    assert result["results"]["regression"]["metrics"]["all"]["predicted_count"] == 7
 
 
 def test_worker_state_is_isolated_and_full_rank_roles_are_used(case):
@@ -413,3 +466,26 @@ def test_micro_mape_and_variant_order():
 def test_bad_measurement_fails_campaign(case):
     with pytest.raises(ValueError, match="unique IDs"):
         evaluate_case(replace(case, observations=(case.observations[0], case.observations[0])))
+
+
+def test_notification_evidence_keeps_point_failures_without_changing_public_result(case):
+    """The notification sidecar is opt-in and must not change prediction/tuning order."""
+
+    def factory(method, context):
+        return Predictor(method, context, [])
+
+    expected = evaluate_case(case, factory=factory)
+    evidence = {}
+    actual = evaluate_case(case, factory=factory, comparison=evidence)
+    assert actual == expected
+    points = evidence[case.configuration_id + "/" + case.configuration.snapshot_id]["methods"]
+    assert set(points) == {"warmup", "nowarmup", "regression"}
+    for method, packed in points.items():
+        samples = decode_points(packed)
+        metric = actual["results"][method]["metrics"]["all"]
+        assert len(samples) == metric["measured_count"]
+        values = [v for v in samples if v >= 0]
+        assert len(values) == metric["predicted_count"]
+        if values:
+            assert sum(values) / len(values) == pytest.approx(metric["mape_pct"])
+    assert "_points" not in json.dumps(actual)

@@ -183,6 +183,8 @@ pub struct PerformanceResult {
     pub source: Source,
     pub sol: Option<SolComponents>,
     pub moe_comm_fallbacks: MoeCommFallbacks,
+    /// Raw direct-FPM leaves; composition never rewrites their measured support.
+    pub fpm_queries: Option<Box<Vec<crate::DirectFpmQueryEvidence>>>,
 }
 
 impl PerformanceResult {
@@ -193,6 +195,7 @@ impl PerformanceResult {
             source,
             sol: None,
             moe_comm_fallbacks: MoeCommFallbacks::default(),
+            fpm_queries: None,
         }
     }
 
@@ -203,6 +206,7 @@ impl PerformanceResult {
             source,
             sol: None,
             moe_comm_fallbacks: MoeCommFallbacks::default(),
+            fpm_queries: None,
         }
     }
 
@@ -215,6 +219,7 @@ impl PerformanceResult {
             source: Source::Sol,
             sol: Some(components),
             moe_comm_fallbacks: MoeCommFallbacks::default(),
+            fpm_queries: None,
         }
     }
 
@@ -261,6 +266,7 @@ impl PerformanceResult {
                 mem_ms: c.mem_ms * factor,
             }),
             moe_comm_fallbacks: self.moe_comm_fallbacks,
+            fpm_queries: self.fpm_queries,
         }
     }
 
@@ -269,6 +275,12 @@ impl PerformanceResult {
     /// AND energy both 0.0) is a source-neutral identity — the other
     /// side's tag survives, mirroring Python's zero-identity rule.
     pub fn plus(self, other: PerformanceResult) -> Self {
+        let mut fpm_queries = self.fpm_queries;
+        if let Some(other_queries) = other.fpm_queries {
+            fpm_queries
+                .get_or_insert_with(Default::default)
+                .extend(*other_queries);
+        }
         let mut moe_comm_fallbacks = self.moe_comm_fallbacks;
         moe_comm_fallbacks.extend(other.moe_comm_fallbacks);
         let (source, sol) = if self.latency_ms == 0.0 && self.energy_wms == 0.0 {
@@ -294,6 +306,7 @@ impl PerformanceResult {
             source,
             sol,
             moe_comm_fallbacks,
+            fpm_queries,
         }
     }
 
@@ -310,6 +323,7 @@ impl PerformanceResult {
                 mem_ms: c.mem_ms.max(0.0),
             }),
             moe_comm_fallbacks: self.moe_comm_fallbacks,
+            fpm_queries: self.fpm_queries,
         }
     }
 }

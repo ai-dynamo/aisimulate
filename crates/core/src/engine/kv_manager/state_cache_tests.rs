@@ -30,6 +30,7 @@ fn request(
     output: usize,
 ) -> (RequestSequence, BlockRequestLease) {
     let (sequence, identities) = RequestSequence::new(
+        owner,
         (0..tokens).map(|value| value as u32).collect(),
         output,
         output,
@@ -895,8 +896,9 @@ fn kda_partial_page_can_match_when_tokens_after_the_hit_diverge() {
     manager.finish_lease(owner, lease);
     let mut tokens: Vec<u32> = (0..19).collect();
     tokens[16] = 999;
-    let (mut query, ids) = RequestSequence::new(tokens.clone(), 0, 0, 6, true, true, false, None);
     let owner = Uuid::from_u128(603);
+    let (mut query, ids) =
+        RequestSequence::new(owner, tokens.clone(), 0, 0, 6, true, true, false, None);
     let mut reader = BlockRequestLease::new(owner, ids);
     reader.configure_prefix_hashes(&tokens, 2);
     assert_eq!(

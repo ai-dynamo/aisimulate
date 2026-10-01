@@ -114,7 +114,12 @@ def public_contract(summary):
         },
     )
     keys(snapshot["evaluated_revision"], {"branch", "commit_sha"})
-    keys(snapshot["aic_source"], {"repository", "branch", "commit_sha"})
+    keys(snapshot["aic_source"], {"repository", "branch", "commit_sha", "cli_entry_point"})
+    if "cli_entry_point" in snapshot["aic_source"] and snapshot["aic_source"]["cli_entry_point"] not in {
+        "aiconfigurator.main:main",
+        "aisimulate.legacy_cli.entrypoint:main",
+    }:
+        raise ValueError("unsupported baseline entry point")
     keys(snapshot["aisimulate_packages"], {"aisimulate"})
     if snapshot["corrections"] != []:
         raise ValueError("nightly campaign cannot contain unreviewed corrections")
@@ -281,10 +286,10 @@ class UnqualifiedBranch(ValueError):
     """A branch without a successful qualification job cannot publish."""
 
 
-def trusted_run(run: dict) -> bool:
+def trusted_run(run: dict, *, allow_manual_branch=False) -> bool:
     return (
         run.get("event") in {"schedule", "workflow_dispatch"}
-        and run.get("head_branch") == "main"
+        and (run.get("head_branch") == "main" or (allow_manual_branch and run.get("event") == "workflow_dispatch"))
         and run.get("path") == WORKFLOW
         and run.get("conclusion") in {"success", "failure"}
         and run.get("repository", {}).get("full_name") == REPO
@@ -292,8 +297,15 @@ def trusted_run(run: dict) -> bool:
     )
 
 
-def validate_artifact(archive: bytes, run: dict, *, artifact_name="e2e-accuracy-web", jobs=None) -> dict:
-    if not trusted_run(run):
+def validate_artifact(
+    archive: bytes,
+    run: dict,
+    *,
+    artifact_name="e2e-accuracy-web",
+    jobs=None,
+    allow_manual_branch=False,
+) -> dict:
+    if not trusted_run(run, allow_manual_branch=allow_manual_branch):
         raise ValueError("untrusted accuracy workflow run")
     summary = unpack_artifact(archive)
     q = summary["snapshot"]["campaign"]
@@ -356,7 +368,8 @@ def api_items(path: str, key: str) -> list:
     items = []
     page = 1
     while True:
-        batch = api(f"{path}?per_page=100&page={page}")[key]
+        separator = "&" if "?" in path else "?"
+        batch = api(f"{path}{separator}per_page=100&page={page}")[key]
         items.extend(batch)
         if len(batch) < 100:
             return items

@@ -12,7 +12,13 @@ import json
 from datetime import UTC, datetime
 from pathlib import Path
 
-from fpm_accuracy.contract import HF_REPO, METHODS, eligible_branch, sha, validate_summary
+from fpm_accuracy.contract import (
+    HF_REPO,
+    METHODS,
+    eligible_branch,
+    sha,
+    validate_summary,
+)
 from fpm_accuracy.evaluate import evaluate_case
 from fpm_accuracy.hf import HfDataset
 
@@ -28,6 +34,11 @@ def main():
     parser.add_argument("--run-attempt", required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--local-dataset", type=Path)
+    parser.add_argument(
+        "--comparison-output",
+        type=Path,
+        help="Separate notification evidence; not a Pages artifact",
+    )
     parser.add_argument(
         "--configuration",
         action="append",
@@ -58,11 +69,12 @@ def main():
         configurations = tuple(item for item in configurations if item.configuration_path in selected)
         if {item.configuration_path for item in configurations} != selected:
             raise ValueError("unknown smoke configuration")
+    comparison = {} if args.comparison_output else None
     rows = []
     for configuration in configurations:
         print(f"Evaluating {configuration.configuration_path}", flush=True)
         case = dataset.measurement_case(configuration.configuration_path, snapshot_id=configuration.snapshot_id)
-        rows.append(evaluate_case(case))
+        rows.append(evaluate_case(case, comparison=comparison))
     summary = {
         "schema_version": 1,
         "snapshot": {
@@ -96,6 +108,20 @@ def main():
             "summary_sha256": hashlib.sha256(data).hexdigest(),
         }
         (args.output / "qualification.json").write_text(json.dumps(qualification, allow_nan=False, indent=2) + "\n")
+        if args.comparison_output:
+            args.comparison_output.parent.mkdir(parents=True, exist_ok=True)
+            args.comparison_output.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "snapshot": summary["snapshot"],
+                        "summary_sha256": hashlib.sha256(data).hexdigest(),
+                        "points": comparison,
+                    },
+                    allow_nan=False,
+                )
+                + "\n"
+            )
     print(f"Completed {len(rows)} configurations; accuracy is advisory.", flush=True)
 
 

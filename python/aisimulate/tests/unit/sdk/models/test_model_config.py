@@ -16,6 +16,8 @@ import pytest
 
 import aisimulate.sdk.operations as ops
 from aisimulate.sdk import common, config, models
+from aisimulate.sdk.config_builders import build_model_config
+from aisimulate.sdk.errors import InvalidEngineConfigurationError
 from aisimulate.sdk.models import (
     LLAMAModel,
     Qwen3VLModel,
@@ -25,6 +27,7 @@ from aisimulate.sdk.models import (
     get_model_family,
 )
 from aisimulate.sdk.performance_result import PerformanceResult
+from aisimulate.sdk.speculation import SpeculationConfig
 from aisimulate.sdk.utils import get_model_config_from_model_path
 
 pytestmark = pytest.mark.unit
@@ -47,6 +50,91 @@ def test_model_config_normalizes_kernel_backend_enums():
 def test_model_config_rejects_unknown_kernel_backend(field, value):
     with pytest.raises(ValueError, match=field):
         config.ModelConfig(**{field: value})
+
+
+def test_build_model_config_preserves_existing_positional_arguments():
+    speculation = SpeculationConfig(kind="mtp", params={"depth": 2})
+    model_config = build_model_config(
+        4,
+        2,
+        2,
+        2,
+        4,
+        "fp8",
+        "fp8",
+        "bfloat16",
+        "fp8",
+        "half",
+        "fpm",
+        False,
+        "fa3",
+        speculation,
+        "megamoe",
+        True,
+        64,
+    )
+
+    assert (model_config.tp_size, model_config.pp_size, model_config.attention_dp_size) == (4, 2, 2)
+    assert (model_config.moe_tp_size, model_config.moe_ep_size) == (2, 4)
+    assert model_config.gemm_quant_mode is common.GEMMQuantMode.fp8
+    assert model_config.kvcache_quant_mode is common.KVCacheQuantMode.fp8
+    assert model_config.fmha_quant_mode is common.FMHAQuantMode.bfloat16
+    assert model_config.moe_quant_mode is common.MoEQuantMode.fp8
+    assert model_config.comm_quant_mode is common.CommQuantMode.half
+    assert model_config.forward_model == "fpm"
+    assert model_config.enable_encoder_dp is False
+    assert model_config.attention_backend is common.AttentionBackend.fa3
+    assert model_config.speculation is speculation
+    assert model_config.moe_backend is common.MoEBackend.megamoe
+    assert model_config.enable_eplb is True
+    assert model_config.wideep_num_slots == 64
+    assert model_config.moe_kernel_source is None
+
+
+@pytest.mark.parametrize("source", [None, "sglang_flashinfer_trtllm_moe", " source_with_spaces "])
+def test_build_model_config_preserves_exact_kernel_source_keyword(source):
+    model_config = build_model_config(4, 1, 1, 4, 1, moe_kernel_source=source)
+
+    assert model_config.moe_kernel_source == source
+
+
+@pytest.mark.parametrize("source", ["", " ", "\t\n", "\u2003", 1, False, []])
+def test_model_config_rejects_invalid_kernel_source(source):
+    with pytest.raises(ValueError, match="moe_kernel_source must be a non-empty string"):
+        config.ModelConfig(moe_kernel_source=source)
+
+
+@pytest.mark.parametrize(
+    ("model_path", "moe_backend", "message"),
+    [
+        ("Qwen/Qwen3-32B", None, "require an MoE model"),
+        ("deepseek-ai/DeepSeek-V4-Pro", "megamoe", "MegaMoE"),
+    ],
+)
+def test_model_graph_rejects_moe_kernel_source_without_a_compatible_operator(model_path, moe_backend, message):
+    model_config = config.ModelConfig(
+        tp_size=1,
+        attention_dp_size=8,
+        moe_tp_size=1,
+        moe_ep_size=8,
+        moe_backend=moe_backend,
+        moe_kernel_source="missing_source",
+    )
+
+    with pytest.raises(InvalidEngineConfigurationError, match=message):
+        get_model(model_path, model_config, "sglang")
+
+
+def test_model_graph_rejects_source_when_layer_override_removes_all_moe_operators():
+    # Kimi-K3 has a dense first layer; its checkpoint metadata still declares MoE.
+    model_path = "moonshotai/Kimi-K3"
+    assert check_is_moe(model_path)
+    model_config = config.ModelConfig(
+        overwrite_num_layers=1, moe_tp_size=1, moe_ep_size=1, moe_kernel_source="missing_source"
+    )
+
+    with pytest.raises(InvalidEngineConfigurationError, match="moe_kernel_source.*no compatible MoE"):
+        get_model(model_path, model_config, "sglang")
 
 
 class TestSupportedModels:
