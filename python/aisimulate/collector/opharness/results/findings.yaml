@@ -2044,3 +2044,23 @@ findings:
     - framework:sglang-main-2026-09-30
     - instrument:dummies
     - platform:sm90
+  dsv41_generator_profile_block_size_2026_10_01:
+    statement: 'FOLLOW-UP to dsv41_dummy_cut_and_vllm_block_size_2026_10_01 (owner request: fix the generator default
+      instead of carrying a harness override). facts/models.yaml now has a `deepseek-v4.1` profile (match
+      deepseek-ai/DeepSeek-V4.1*, nvidia/DeepSeek-V4.1*; arch DeepseekV41ForCausalLM; model_type deepseek_v41) whose
+      vllm defaults are trust-remote-code + block-size 64 + no-enable-flashinfer-autotune and whose sglang defaults
+      equal V4''s; the `deepseek-v4` globs narrowed from `DeepSeek-V4*` to `DeepSeek-V4-*` so V4.1 no longer inherits
+      V4''s block-size 256. V4''s gb200-specific defaults (deep_gemm_mega_moe, compilation-config) were NOT copied —
+      they are validated for V4 only. Re-probed on H20 with the native render (block-size 64 for BOTH V4.1 artifacts,
+      no harness cli_extra_args): vllm 0.30.0 rendered + fp8-KV PASS x4; sglang main (nightly 0930) PASS x4 (the
+      nvidia artifact now also renders trust-remote-code / disable-flashinfer-autotune). Matrix vllm-0.30.0 back to
+      110/1/13 with deepseek-ai/DeepSeek-V4.1-Flash a plain pass. Unit test
+      tests/unit/generator/test_model_profile_deepseek_v41.py pins both the glob split and the 64/256 defaults.
+      Still open on the generator side: nvidia/DeepSeek-V4-*-NVFP4 artifacts of V4 itself are matched by no profile
+      (deliberately left alone — changing it would alter V4-NVFP4 golden renders that currently pass).'
+    applies_to:
+    - deepseek-ai/DeepSeek-V4.1-Flash
+    - nvidia/DeepSeek-V4.1-Flash-NVFP4
+    - module:generator
+    - framework:vllm-0.30.0
+    - platform:sm90

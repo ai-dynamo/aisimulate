@@ -257,19 +257,10 @@ families:
             fact: 'fp4 experts (expert_dtype fp4, same as V4) on SM90: sglang main 2026-09-30 refuses runner=auto
               with "NVFP4 ... use moe_runner_backend=marlin on SM80+" (facts/dsv41_reprobe/sgl_gpu7_v5.log); same
               customization as the dsv4 family.'
-          vllm:
-            args:
-            - --generator-set
-            - params.agg.tokens_per_block=64
-            fact: 'vllm 0.30.0: the generator''s deepseek_v4 production default block-size 256 (facts/models.yaml) is
-              rejected at load for V4.1 — its compressed layers (ratio 1/2, fp8 sparse MLA) use 64-token kernel blocks,
-              so a 256-token manager block must split 4-way, which the BLHNC layout cannot do once a KV tensor is
-              shared by several layers ("block stride 275904 != page 74752", kv_cache_interface.py:373). Independent of
-              depth, so the real 40-layer deployment fails the same way. vllm''s own message names the fix: block-size
-              64 (or VLLM_KV_CACHE_LAYOUT=LBNHC, not expressible through generate). A/B 2026-10-01: 256 fails
-              (archive/superseded_dummies/2026-10-01_dsv41_inkling/raws_block256/), 64 passes. The nvidia NVFP4
-              sibling needs nothing: the generator fact does not match its config, so its golden render has no
-              block-size and vllm''s default loads (same A/B dir).'
+          # vllm block-size: no override. The generator now carries a deepseek-v4.1
+          # profile (facts/models.yaml) rendering block-size 64; the 2026-10-01 A/B
+          # that found V4's 256 rejected on vllm 0.30.0 is in findings
+          # dsv41_dummy_cut_and_vllm_block_size_2026_10_01.
       nvidia/DeepSeek-V4.1-Flash-NVFP4:
         dummy_overrides:
           family: dsv41

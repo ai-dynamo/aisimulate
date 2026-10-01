@@ -4,8 +4,8 @@ _meta:
   version: 0.30.0
   verdicts: pass = plain `cli generate` output boots+runs; pass+custom = boots with facts-derived extra generate args; fail = root-caused (see results/findings.yaml)
   summary:
-    pass: 109
-    pass+custom: 2
+    pass: 110
+    pass+custom: 1
     fail: 13
 results:
   MiniMaxAI/MiniMax-M2:
@@ -348,8 +348,7 @@ results:
     kv_allocated: auto
     topology: tp1
   deepseek-ai/DeepSeek-V4.1-Flash:
-    verdict: pass+custom
-    extra_args: --generator-set params.agg.tokens_per_block=64
+    verdict: pass
     evidence: current
     attention: DeepseekV4FlashMLAAttention
     moe: Mxfp4MoE->dsa_nsa/marlin
