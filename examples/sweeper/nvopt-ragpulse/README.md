@@ -24,7 +24,7 @@ It runs on CPUs with `JAX_ENABLE_X64=true`; no physical GPU is needed.
 | 3. Engine + KV Router + Planner | [03-kv-router-planner.yaml](03-kv-router-planner.yaml) | The entire experiment 2 space plus Planner knobs; four-day predictor history |
 
 These are three independent broad Bayesian searches, **256 native suggestions
-each**, seed `20260929`, eight concurrent evaluations, and a 7,200-second native
+each**, seed `20260929`, 32 concurrent evaluations, and a 7,200-second native
 evaluation deadline. There is no four-hour whole-study deadline. Failures,
 cache hits and projected duplicate configurations consume suggestions; 256
 suggestions do not mean 256 unique successful replays or exhaustive coverage.
@@ -193,11 +193,51 @@ cross-scenario nesting, and predictor cadence coverage. It never trains a
 predictor, builds an estimator, or launches a simulation. Runtime smoke-test
 evidence belongs to the separately published container manifest.
 
-Remote resource starting point: one study per CPU pod, 8 requested / 16
-limited CPU cores, 112 GiB requested / 128 GiB limited memory, eight evaluations,
-96 GB execution budget, disk-backed temporary/output volumes, and **zero
-physical GPUs**. Mount data read-only under `/data/ragpulse`. The source bundle
-and result volumes stay separate from the environment image.
+## Larger CPU execution profile
+
+The stopped workstation run used eight concurrent evaluations. The reviewed
+remote profile now uses **32**, with all model, traffic, Router/Planner domains,
+SLA, seed, 256-suggestion budget and per-evaluation timeout unchanged. The image
+already supports this; no runtime rebuild is required.
+
+| Profile | Concurrent evaluations | Application CPU limit | Requested job/container memory | AIS execution memory budget |
+|---|---:|---:|---:|---:|
+| Default remote | **32** | **40** | **384 GiB** | **320 GB** |
+| Optional larger-memory node | 64 | 72 | 640 GiB | 576 GB |
+
+Eight local workers together with the optimizer peaked near 59.4 GiB. Budget
+roughly 7–8 GiB per replay worker before extra Planner/optimizer overhead; CPU
+count alone is not enough to select parallelism. The larger profile requires
+changing `optimizer.parallelism`, `execution.resources.cpu_limit` and
+`execution.resources.memory_limit_gb` together in a separate copy of the three
+YAMLs and their experiment contract, then requesting the matching external
+memory allocation. Neither profile is a
+measured speedup or a guarantee that every configuration fits.
+
+Prefer one study per allocation with **48 hours requested**, subject to the
+scheduler's current QoS, partition, reboot and account restrictions. Three
+independent allocations can run the three studies concurrently if resources
+are actually granted. Slurm wall time is an external limit, separate from the
+native optimizer's suggestion budget; preserve partial results on termination.
+Do not assume preemption/requeue resumes the optimizer without an explicitly
+implemented resume path.
+
+On an oversubscribed CPU pool, the scheduler may expose the whole shared node
+even when fewer CPUs are requested. Keep the explicit application/container
+CPU and memory limits; shared CPU count does not imply dedicated cores.
+The published image is **linux/amd64**, so use x86 nodes; ARM/Grace nodes need
+a separately built and validated image.
+
+Larger batches reduce sequential optimizer feedback opportunities at a fixed
+256-suggestion budget. They also still wait for slow evaluations in each native
+wave. Use 32 as the speed/adaptivity compromise; 64 is an explicit alternate
+execution identity, not a promise of eightfold speedup over the local run.
+Record parallelism in each result because changing it can change suggestions
+even with the same seed.
+
+Use disk-backed temporary/output volumes and **zero physical GPUs**. Mount data
+read-only under `/data/ragpulse`. The source bundle and result volumes stay
+separate from the environment image.
 
 For each trial record the actual engine/Router/Planner configuration, native
 acceptance, simulation wall time, optimizer timing, goodput/GPU and SLA

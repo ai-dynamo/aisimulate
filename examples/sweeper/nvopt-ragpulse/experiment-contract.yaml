@@ -78,7 +78,7 @@ search:
   suggestions_per_study: 256
   algorithm: native_vizier_bayesian
   seed: 20260929
-  parallel_evaluations: 8
+  parallel_evaluations: 32
   native_evaluation_timeout_seconds: 7200
   whole_study_timeout_seconds: null
   stop: native_budget_or_native_projection_stall
@@ -86,14 +86,23 @@ search:
   scenario_3_engine_and_router_space: identical_to_scenario_2_not_its_winner
   dynamic_gpu_ceiling: 256
 remote_resources:
-  cpu_request: 8
-  cpu_limit: 16
-  memory_request_gib: 112
-  memory_limit_gib: 128
-  execution_memory_limit_gb: 96.0
+  cpu_request: 40
+  cpu_limit: 40
+  memory_request_gib: 384
+  memory_limit_gib: 384
+  execution_memory_limit_gb: 320.0
+  preferred_job_wall_hours: 48
   gpu_request: 0
   temporary_storage: disk_backed_not_memory_emptydir
   concurrent_full_studies_per_pod: 1
+  allocation_policy: one_study_per_allocation_recheck_scheduler_limits_before_submission
+  optional_large_memory_profile:
+    parallel_evaluations: 64
+    cpu_request: 72
+    execution_cpu_limit: 72
+    memory_request_gib: 640
+    execution_memory_limit_gb: 576.0
+    qualification: capacity_plan_only_not_measured_speedup
 runner_requirements:
   - preserve_native_suggestion_projection_feedback_and_timeout_logic
   - advertise_and_forward_fixed_fmha_and_kv_precision_controls

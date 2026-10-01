@@ -137,14 +137,14 @@ optimization:
 optimizer:
   algorithm: bayesian
   max_trials: 256
-  parallelism: 8
+  parallelism: 32
   candidate_timeout_seconds: 7200.0
   seed: 20260929
 execution:
   resources:
-    cpu_limit: 8
-    memory_limit_gb: 96.0
-    reserve_memory_gb: 8.0
+    cpu_limit: 40
+    memory_limit_gb: 320.0
+    reserve_memory_gb: 32.0
     initialization_timeout_seconds: 7200.0
     shutdown_timeout_seconds: 10.0
 router:

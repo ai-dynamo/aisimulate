@@ -76,8 +76,17 @@ def main() -> None:
     )
     for core in cores:
         require(
-            core.optimizer.max_trials == 256 and core.optimizer.parallelism == 8,
+            core.optimizer.max_trials == 256
+            and core.optimizer.parallelism
+            == contract["search"]["parallel_evaluations"],
             "Unexpected search budget",
+        )
+        require(
+            core.execution.resources.cpu_limit
+            == contract["remote_resources"]["cpu_limit"]
+            and core.execution.resources.memory_limit_gb
+            == contract["remote_resources"]["execution_memory_limit_gb"],
+            "Execution resource limits differ from the remote profile",
         )
         require(
             core.optimization.target == "goodput_per_gpu"
@@ -156,6 +165,11 @@ def main() -> None:
                 "status": "PASS",
                 "qualification": "schema_and_design_only_not_end_to_end_execution",
                 "aisimulate": version("aisimulate"),
+                "parallel_evaluations": cores[0].optimizer.parallelism,
+                "execution_cpu_limit": cores[0].execution.resources.cpu_limit,
+                "execution_memory_limit_gb": cores[
+                    0
+                ].execution.resources.memory_limit_gb,
                 "scenarios": [path.name for path in paths],
                 "router_domains": {
                     name: len(getattr(router_space, name))
