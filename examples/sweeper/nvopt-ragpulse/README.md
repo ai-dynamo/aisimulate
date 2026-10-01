@@ -135,6 +135,21 @@ do not establish accuracy for real model-loading/cold-start delays.
 
 ## Four-day history, fifth-day evaluation
 
+The exact input traces are available on shared **ComputeLab SC-01 scratch**:
+
+```text
+computelab-sc-01:/home/scratch.hongkuanz_gpu/nvopt-ragpulse/data/
+```
+
+ComputeLab users can read `/home/scratch.hongkuanz_gpu/nvopt-ragpulse/data/`
+from their cluster sessions. It contains `eval-session-512x.jsonl` (day 5,
+270 MB), `warmup-session-512x.jsonl` (days 1–4, 1.05 GB), `SHA256SUMS`, and
+`manifest.json`. From an allocated compute node, run `sha256sum -c SHA256SUMS`
+in that directory, then make the data available read-only at `/data/ragpulse`
+inside the simulation container; a job-local copy can be used for the mount.
+The files match the hashes in [experiment-contract.yaml](experiment-contract.yaml).
+Cluster access is required; the traces are not embedded in Git or the image.
+
 The source is [RAGPulse revision 7da286be](https://github.com/flashserve/RAGPulse/tree/7da286becf0f049b2bcb1e5a11d9ba8eb638eff4).
 Use source time `[0, 345600)` only as Planner history and `[345600, 432000)`
 only for evaluation. Both use the same 512-copy transform and seed
