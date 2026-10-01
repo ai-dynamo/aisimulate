@@ -111,13 +111,6 @@ impl VllmHostRequestState {
         }
     }
 
-    /// Drop an activated H2D prefix whose G1 blocks were returned to the cache.
-    pub(super) fn forget_activated_load(&mut self) {
-        if self.activated().is_some() {
-            self.load = None;
-        }
-    }
-
     pub(super) fn reserved_blocks(&self) -> usize {
         match &self.load {
             Some(LoadState::Loading(load)) => load.loaded_prefix_blocks,
@@ -356,19 +349,15 @@ impl VllmHostOffloadAdapter {
         };
 
         let mut tier = self.host.lock();
+        // Only a private lane hands out G1 capacity that is still being
+        // copied; a shared pool holds it until the copy completes.
         let dependencies = kv_manager.native_destination_pending_dependencies(&reservation);
         let mut not_before_ms = now_ms;
         for dependency in dependencies {
             assert!(kv_manager.is_native_source_dependency_pending(dependency));
-            // A shared D2H has no fixed deadline: wait for its actual completion.
-            let Some(deadline) = tier.transfer_deadline(transfer_id(dependency)) else {
-                assert!(
-                    tier.is_shared(),
-                    "pending source dependency must retain a submitted D2H"
-                );
-                kv_manager.cancel_destination(reservation);
-                return StartLoad::Deferred;
-            };
+            let deadline = tier
+                .transfer_deadline(transfer_id(dependency))
+                .expect("pending source dependency must retain a submitted D2H");
             not_before_ms = not_before_ms.max(deadline);
         }
 
@@ -631,36 +620,30 @@ impl VllmHostOffloadAdapter {
     }
 
     /// Fence and authorize newly acquired G1 capacity whose prior owner is
-    /// still being copied to host. A shared D2H has no fixed deadline, so the
-    /// write is refused until the copy actually completes; the allocation then
-    /// remains unauthorized and the request must not compute in this pass.
-    #[must_use]
+    /// still being copied to host by a private lane.
     pub(super) fn fence_allocation(
         &mut self,
         uuid: Uuid,
         lease: &mut BlockRequestLease,
         dependencies: &[SourceReuseDependency],
         kv_manager: &mut G1Manager,
-    ) -> bool {
+    ) {
         if dependencies.is_empty() {
-            return true;
+            return;
         }
         let tier = self.host.lock();
-        let mut not_before_ms = self.compute_not_before_ms;
         for dependency in dependencies {
-            match tier.transfer_deadline(transfer_id(*dependency)) {
-                Some(deadline) => not_before_ms = not_before_ms.max(deadline),
-                None if tier.is_shared() => return false,
-                None => panic!("pending dependency must retain a submitted D2H"),
-            }
+            let deadline = tier
+                .transfer_deadline(transfer_id(*dependency))
+                .expect("pending dependency must retain a submitted D2H");
+            self.compute_not_before_ms = self.compute_not_before_ms.max(deadline);
         }
-        self.compute_not_before_ms = not_before_ms;
         kv_manager.authorize_native_compute_after_dependencies(uuid, lease, dependencies);
-        true
     }
 
     /// vLLM flushes this request's prepared stores before releasing its G1
-    /// capacity. Shared-pool reuse is instead fenced by `fence_allocation`.
+    /// capacity. A shared pool instead holds the capacity until each copy
+    /// completes.
     pub(super) fn preempt_request(&mut self, request: &mut VllmHostRequestState) {
         request.g3_restore.reset();
         if let Some(transfer_id) = request.latest_store
@@ -1100,12 +1083,12 @@ mod tests {
             panic!("released source capacity must be reusable")
         };
         assert_eq!(dependencies, vec![source_dependency(store_id)]);
-        assert!(adapter.fence_allocation(
+        adapter.fence_allocation(
             destination_id,
             &mut destination_lease,
             &dependencies,
             &mut manager,
-        ));
+        );
         manager.finalize_native_computed_prefix(
             destination_id,
             0,
@@ -1119,7 +1102,7 @@ mod tests {
     }
 
     #[test]
-    fn shared_source_reuse_waits_for_actual_d2h_completion_not_a_projection() {
+    fn shared_store_holds_its_g1_source_until_the_actual_d2h_completes() {
         use crate::engine::host_offload::{G2Binding, G2Registry};
         let registry: Arc<G2Registry> = Arc::default();
         let join = || {
@@ -1135,6 +1118,7 @@ mod tests {
         };
         let (mut adapter, mut peer) = (join(), join());
         let mut manager = G1Manager::new_with_caching(1, 4, KvEventPublishers::default(), 0, true);
+        manager.hold_native_store_sources();
         let source_id = Uuid::from_u128(6);
         let (_, source_lease, source_host) =
             stored(&mut adapter, &mut manager, source_id, vec![1, 2, 3, 4], 0.0);
@@ -1155,26 +1139,14 @@ mod tests {
         peer.complete_engine_boundary(&mut peer_manager, 0.5);
 
         manager.finish_native(source_id, source_lease);
+        assert_eq!(manager.num_active_blocks(), 1, "the D2H still holds G1");
         let destination_id = Uuid::from_u128(8);
         let (_, mut destination_lease, _) = request(destination_id, vec![9, 10, 11, 12]);
-        let NativeAllocation::Ready { dependencies, .. } =
-            manager.allocate_native(destination_id, &mut destination_lease, 4, 0)
-        else {
-            panic!("released source capacity must be reusable")
-        };
-        assert_eq!(dependencies, vec![store]);
-        assert!(!adapter.fence_allocation(
-            destination_id,
-            &mut destination_lease,
-            &dependencies,
-            &mut manager,
-        ));
-        assert_eq!(
-            adapter.compute_not_before_ms(0.5),
-            0.5,
-            "no projected fence"
-        );
         for (now, pending) in [(1.0, true), (1.5, false)] {
+            assert!(matches!(
+                manager.allocate_native(destination_id, &mut destination_lease, 4, 0),
+                NativeAllocation::CapacityExhausted
+            ));
             adapter.advance(&mut manager, now);
             assert_eq!(
                 manager.is_native_source_dependency_pending(store),
@@ -1182,11 +1154,13 @@ mod tests {
                 "{now}"
             );
         }
-        // The retained, unauthorized allocation now reports no dependency.
+        // The completed copy returned the block, so its next owner neither
+        // inherits a dependency nor waits for a projected fence.
         assert!(matches!(
             manager.allocate_native(destination_id, &mut destination_lease, 4, 0),
             NativeAllocation::Ready { dependencies, .. } if dependencies.is_empty()
         ));
+        assert_eq!(adapter.compute_not_before_ms(1.5), 1.5);
     }
 
     #[test]

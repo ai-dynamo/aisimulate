@@ -82,6 +82,12 @@ impl G1Manager {
         self.inner.set_belady_oracle(oracle);
     }
 
+    /// Hold each G1 block a host store reads until its copy completes, instead
+    /// of letting a new owner write it behind a fence.
+    pub(crate) fn hold_native_store_sources(&mut self) {
+        self.inner.hold_store_sources();
+    }
+
     pub(crate) fn new_with_event_sink(
         max_capacity: usize,
         block_size: usize,
@@ -209,10 +215,6 @@ impl G1Manager {
     ) -> NativeAllocation<usize> {
         self.inner
             .allocate_lease(owner, lease, cumulative_tokens, reusable_prefix_blocks)
-    }
-
-    pub(crate) fn retained_write_awaits_source(&self, lease: &BlockRequestLease) -> Option<bool> {
-        self.inner.retained_write_awaits_source(lease)
     }
 
     pub(crate) fn authorize_native_compute_after_dependencies(

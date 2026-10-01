@@ -85,26 +85,16 @@ still be searched.
 
 - A store is visible to all ranks when it physically completes, whichever rank
   advances the shared clock; the owner still consumes its own completion.
-- A G1 block whose D2H is still in flight is not reused based on a projected
-  completion time. With private lanes the compute waits for the fixed
-  deadline. In a shared pool the request waits until the copy actually
-  finishes:
-  - a running request allocated such a block is skipped for that pass; other
-    running requests are still scheduled, but the rank admits no waiting
-    request until the skipped one resumes, so new prefills cannot overtake it.
-    Pausing all admissions is a modeling choice; native vLLM has no shared-pool
-    copy fence. Under attention DP the skipped request still counts as a running
-    decode, so `prefill_schedule_interval` keeps deferring prefills on
-    non-cadence steps;
-  - a waiting request releases the capacity it just acquired and keeps its
-    place in the queue. As native vLLM repeats the connector lookup for a
-    blocked request every step, the rank retries it on every scheduler pass
-    until the copy completes; each lookup keeps its G2 prefix recent and sees
-    stores by other ranks. Replay defers such effect-free passes instead of
-    spinning at one timestamp. A prefix it already loaded from G2 is released
-    into the G1 prefix cache, so if it is still cached at the retry, its reuse
-    is reported as G1, not G2. Under pressure `cluster_shared` can therefore
-    report part of its G2 reuse as G1.
+- A G1 block is never overwritten while its D2H is still in flight. With
+  private lanes the block can be reallocated, and the compute that reuses it
+  waits for the copy's fixed deadline. A shared pool instead holds the block
+  until the copy actually completes, as Mooncake Store and LMCache MP keep a
+  storing request's blocks allocated. A held block remains a G1 prefix hit but
+  cannot be evicted or reallocated, so a request short of G1 capacity waits or
+  preempts as usual. When the copy completes, its blocks return to the free
+  LRU tail first, so the shared prefix is evicted last. Those connectors hold
+  every block of the storing request; the simulator holds only the blocks
+  being copied.
 - With G3 write-through, a completed D2H source stays pinned until its owner
   hands it to G3, so no peer can evict it in between. Blocks G3 declines, for
   example because it already holds them, are released at that handoff and then

@@ -388,6 +388,12 @@ impl VllmKvManager {
         self.pool.set_belady_oracle(oracle);
     }
 
+    /// Hold store sources until their transfer completes instead of fencing
+    /// the next owner's write.
+    pub(crate) fn hold_store_sources(&mut self) {
+        self.pool.hold_pending_sources();
+    }
+
     pub(crate) fn new_with_event_sink(
         max_capacity: usize,
         block_size: usize,
@@ -830,19 +836,6 @@ impl VllmKvManager {
                 },
             dependencies: Vec::new(),
         }
-    }
-
-    /// `Some(true)` while capacity retained by an unauthorized allocation still
-    /// waits for a source copy, `Some(false)` once every copy has finished, and
-    /// `None` without retained writes.
-    pub(crate) fn retained_write_awaits_source(&self, lease: &BlockRequestLease) -> Option<bool> {
-        let pending = lease.pending_capacity_writes.as_ref()?;
-        Some(
-            pending
-                .dependencies
-                .iter()
-                .any(|dependency| self.pool.is_source_reuse_dependency_pending(*dependency)),
-        )
     }
 
     /// Record that the scheduler ordered every pending write behind its source

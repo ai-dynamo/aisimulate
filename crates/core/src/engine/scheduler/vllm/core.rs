@@ -175,9 +175,6 @@ enum ScheduleOutcome {
         admission: Option<AdmissionEvent>,
     },
     Blocked,
-    /// Retained shared-G2 capacity waits for its source D2H; only this request
-    /// is skipped.
-    AwaitingSource,
     /// This request cannot use the remaining budget; later running requests may.
     SkippedForAlignment,
     CurrentPreempted,
@@ -845,6 +842,14 @@ impl VllmCore {
             args.aic_nextn.is_some(),
         )
         .with_prefix_match_unit(args.prefix_match_unit);
+        if native_host_offload
+            .as_ref()
+            .is_some_and(VllmHostOffloadAdapter::is_shared)
+        {
+            // Like Mooncake Store and LMCache MP, a shared-pool store keeps a
+            // reference on the G1 blocks it copies until the copy completes.
+            kv_manager.hold_native_store_sources();
+        }
         if !args.kv_cache_groups.is_empty() {
             kv_manager.set_grouped_cache(GroupedKvPool::new(
                 args.kv_cache_groups.clone(),
@@ -1210,7 +1215,8 @@ impl VllmCore {
         );
         let kv = match reservation {
             // Never receive handoff KV into capacity whose previous contents
-            // are still being copied to G2; retry when that D2H completes.
+            // are still being copied to G2 (only a private lane hands such
+            // capacity out); retry when that D2H completes.
             G1Acquire::Ready(kv)
                 if !self
                     .kv_manager
@@ -1511,28 +1517,6 @@ impl VllmCore {
     }
 
     pub(crate) fn is_ready(&self) -> bool {
-        if self
-            .native_host_offload
-            .as_ref()
-            .is_some_and(VllmHostOffloadAdapter::is_shared)
-        {
-            // A pass would only skip requests waiting for a D2H source, and
-            // while any running request waits, no new request is admitted.
-            let (mut runnable, mut awaiting) = (false, false);
-            for uuid in &self.state.running_members {
-                let request = &self.state.requests[uuid];
-                match self
-                    .kv_manager
-                    .retained_write_awaits_source(&request.sequence.lease)
-                {
-                    Some(true) => awaiting = true,
-                    _ => runnable = true,
-                }
-            }
-            if awaiting {
-                return runnable || self.destination_retry_ready;
-            }
-        }
         !self.state.running_members.is_empty()
             || !self.state.waiting_members.is_empty()
             || self.state.has_ready_connector_waiter()
@@ -1838,9 +1822,6 @@ impl VllmCore {
         let mut batch_total_prefix = 0usize;
         let mut admissions = Vec::with_capacity(waiting_capacity_hint);
         let mut preempted_any = false;
-        // A running request waits for a shared-G2 D2H source: later running
-        // requests continue, but nothing new is admitted until it resumes.
-        let mut awaiting_source = false;
         let mut rejected_uuids: Vec<Uuid> = Vec::new();
 
         let mut req_index = 0usize;
@@ -1897,10 +1878,6 @@ impl VllmCore {
                     req_index += 1;
                 }
                 ScheduleOutcome::Blocked => break,
-                ScheduleOutcome::AwaitingSource => {
-                    awaiting_source = true;
-                    req_index += 1;
-                }
                 ScheduleOutcome::SkippedForAlignment => req_index += 1,
                 ScheduleOutcome::CurrentPreempted => {}
             }
@@ -1920,7 +1897,6 @@ impl VllmCore {
             0
         };
         while !preempted_any
-            && !awaiting_source
             && self.state.running.len() < max_num_running
             // vLLM does not call connector lookup after the current batch has
             // consumed its scheduling budget; lookup itself mutates G2 LRU.
@@ -2220,7 +2196,6 @@ impl VllmCore {
                     }
                 }
                 ScheduleOutcome::Blocked
-                | ScheduleOutcome::AwaitingSource
                 | ScheduleOutcome::SkippedForAlignment
                 | ScheduleOutcome::CurrentPreempted => break,
             }
@@ -2233,7 +2208,7 @@ impl VllmCore {
             }
         }
 
-        if !defer_prefills && !preempted_any && !awaiting_source {
+        if !defer_prefills && !preempted_any {
             self.prefill_capacity_bound = !self.state.waiting_members.is_empty();
         }
 
@@ -2620,29 +2595,8 @@ impl VllmCore {
         let request = self
             .state
             .requests
-            .get_mut(&uuid)
+            .get(&uuid)
             .unwrap_or_else(|| panic!("schedule_request: {uuid} missing from state.requests"));
-        // A shared-G2 fence can leave capacity retained without write
-        // authorization. Never grow past it while its source copy runs; once
-        // the copy finished, retire the fence before this attempt may grow.
-        match self
-            .kv_manager
-            .retained_write_awaits_source(&request.sequence.lease)
-        {
-            Some(true) => return Ok(ScheduleOutcome::AwaitingSource),
-            Some(false) => {
-                let held = request.sequence.num_allocated_tokens();
-                let retired =
-                    self.kv_manager
-                        .allocate_native(uuid, &mut request.sequence.lease, held, 0);
-                assert!(
-                    matches!(retired, NativeAllocation::Ready { dependencies, .. } if dependencies.is_empty()),
-                    "a finished source copy left a pending write fence"
-                );
-            }
-            None => {}
-        }
-        let request = &self.state.requests[&uuid];
         request.debug_assert_invariants(uuid);
         let cached_prefix_tokens = if request.num_computed_tokens == 0 {
             prefill_cost
@@ -2706,7 +2660,6 @@ impl VllmCore {
             );
         }
         let mut actual_computed_after = desired_computed_after;
-        let computed_before = request.num_computed_tokens;
         let host_offload_enabled = self.native_host_offload.is_some();
 
         loop {
@@ -2757,26 +2710,12 @@ impl VllmCore {
                             .requests
                             .get_mut(&uuid)
                             .expect("dependency owner disappeared after allocation");
-                        if !adapter.fence_allocation(
+                        adapter.fence_allocation(
                             uuid,
                             &mut request.sequence.lease,
                             &dependencies,
                             &mut self.kv_manager,
-                        ) {
-                            // Retry once the shared D2H source has actually
-                            // completed. A running request keeps its
-                            // unauthorized capacity; a waiting one must not
-                            // hold capacity while it waits, so it returns it.
-                            request.num_computed_tokens = computed_before;
-                            if from_waiting {
-                                self.kv_manager
-                                    .preempt_native(uuid, &mut request.sequence.lease);
-                                if let Some(host) = request.host_offload.as_deref_mut() {
-                                    host.forget_activated_load();
-                                }
-                            }
-                            return Ok(ScheduleOutcome::AwaitingSource);
-                        }
+                        );
                     }
                     break;
                 }
@@ -4163,15 +4102,16 @@ mod state_cache_tests {
 }
 
 #[cfg(test)]
-mod shared_g2_fence_tests {
-    //! A shared-G2 D2H has no fixed deadline, so G1 reuse of its source waits
-    //! for the actual copy instead of a projected compute fence.
+mod shared_g2_hold_tests {
+    //! A shared-G2 store holds the G1 blocks it copies until the copy
+    //! completes. Other requests see less free G1, never a pending copy.
 
     use super::*;
     use crate::engine::NativeHostOffloadConfig;
     use crate::engine::host_offload::{G2Binding, G2Registry};
 
-    /// One cluster-shared rank of 4-token blocks moving 1 MB per second to host.
+    /// One cluster-shared rank of 4-token blocks moving 1 MB per second to
+    /// host and 1 GB per second back.
     fn core(num_gpu_blocks: usize, budget: usize) -> VllmCore {
         let binding = G2Binding {
             registry: std::sync::Arc::<G2Registry>::default(),
@@ -4183,7 +4123,7 @@ mod shared_g2_fence_tests {
     /// A rank of `binding`'s deployment pool.
     fn core_in(binding: &G2Binding, num_gpu_blocks: usize, budget: usize) -> VllmCore {
         let mut host = NativeHostOffloadConfig::new(8)
-            .with_bandwidths(0.001, 0.0)
+            .with_bandwidths(0.001, 1.0)
             .cluster_shared("tp1");
         (
             host.shared_d2h_bandwidth_gbps,
@@ -4218,14 +4158,33 @@ mod shared_g2_fence_tests {
         })
     }
 
-    /// Run one pass and its boundary; return the requests it completed.
-    fn pass(core: &mut VllmCore, now_ms: f64) -> Vec<Uuid> {
+    /// Run one pass and its boundary.
+    fn run(core: &mut VllmCore, now_ms: f64) -> EnginePassResult {
         let pass = core.execute_pass(&mut TraceCollector::default(), now_ms);
         core.complete_engine_boundary(pass.end_ms);
-        pass.output_signals
+        pass
+    }
+
+    /// Run one pass; return the requests it completed.
+    fn pass(core: &mut VllmCore, now_ms: f64) -> Vec<Uuid> {
+        run(core, now_ms)
+            .output_signals
             .iter()
             .filter(|signal| signal.completed)
             .map(|signal| signal.uuid)
+            .collect()
+    }
+
+    fn admissions(pass: &EnginePassResult) -> Vec<(Uuid, usize, Option<CacheTierAttribution>)> {
+        pass.admissions
+            .iter()
+            .map(|admission| {
+                (
+                    admission.uuid,
+                    admission.reused_input_tokens,
+                    admission.cache_tier_attribution,
+                )
+            })
             .collect()
     }
 
@@ -4250,88 +4209,67 @@ mod shared_g2_fence_tests {
         now_ms
     }
 
-    fn lease(core: &VllmCore, uuid: Uuid) -> (usize, usize) {
-        let request = &core.state.requests[&uuid];
-        (
-            request.num_computed_tokens,
-            request.sequence.num_allocated_tokens(),
-        )
-    }
-
-    #[test]
-    fn retained_fence_blocks_growth_until_the_copy_finishes_then_retires() {
-        let mut core = core(4, 4);
-        with_uncopied_sources(&mut core);
-        let request = submit(&mut core, 3, 100, 16, 1);
-        for _ in 0..3 {
-            assert!(pass(&mut core, 0.0).is_empty());
+    /// Like replay, follow an effect-free pass with the next internal
+    /// deadline; return the first pass that admits a request and its time.
+    fn admit(core: &mut VllmCore, mut now_ms: f64) -> (f64, EnginePassResult) {
+        for _ in 0..8 {
+            let pass = run(core, now_ms);
+            if !pass.admissions.is_empty() {
+                return (now_ms, pass);
+            }
+            now_ms = core.next_internal_deadline_ms().unwrap();
+            core.process_internal_work(now_ms);
         }
-        assert_eq!(
-            lease(&core, request),
-            (8, 12),
-            "the third block reuses an uncopied source and keeps its capacity"
-        );
-        // A larger budget would grow the retained lease across a block boundary.
-        core.args.max_num_batched_tokens = Some(8);
-        assert!(pass(&mut core, 0.0).is_empty());
-        assert_eq!(lease(&core, request), (8, 12), "no growth while copying");
-        // The fence retires only when the copy really finished (several D2H
-        // jobs share the rank's bandwidth, so it is not a fixed deadline).
-        let now_ms = advance_until(&mut core, 0.0, |core| {
-            core.kv_manager
-                .retained_write_awaits_source(&core.state.requests[&request].sequence.lease)
-                != Some(true)
-        });
-        assert_eq!(now_ms, 4016.56216);
-        assert_eq!(
-            pass(&mut core, now_ms),
-            [request],
-            "grows to 16 tokens in one pass once copied"
-        );
+        panic!("no request was admitted")
     }
 
     #[test]
-    fn a_source_wait_skips_only_that_request_and_admits_nothing_new() {
+    fn a_waiting_request_waits_for_held_g1_until_the_copies_complete() {
+        let mut core = core(4, 16);
+        with_uncopied_sources(&mut core);
+        assert_eq!(
+            core.kv_manager.num_active_blocks(),
+            2,
+            "both copies hold G1"
+        );
+        // Three blocks fit only once the copies return their blocks. Both
+        // 1 MB copies start when the second pass ends, at 16.56 ms, and share
+        // the rank's 1 MB/s link.
+        let request = submit(&mut core, 3, 100, 12, 1);
+        let (now_ms, admitted) = admit(&mut core, 0.0);
+        assert_eq!(now_ms, 2016.56216);
+        assert_eq!(admitted.admissions[0].uuid, request);
+        assert_eq!(core.kv_manager.num_active_blocks(), 3);
+    }
+
+    #[test]
+    fn a_held_block_remains_a_g1_prefix_hit() {
+        let mut core = core(4, 16);
+        with_uncopied_sources(&mut core);
+        let request = submit(&mut core, 3, 1, 8, 1);
+        let g1 = CacheTierAttribution {
+            g1_reused_input_tokens: 4,
+            host_reused_input_tokens: 0,
+        };
+        assert_eq!(admissions(&run(&mut core, 0.0)), [(request, 4, Some(g1))]);
+    }
+
+    #[test]
+    fn a_running_request_short_of_g1_preempts_instead_of_waiting_on_a_copy() {
         let mut core = core(4, 8);
         with_uncopied_sources(&mut core);
-        // Admission order is running order: `grows` needs a second block for
-        // its second token, `decodes` fits three outputs into its one block.
+        // `grows` needs a second block for its second token; the only blocks
+        // not held by copies are its own and the later-admitted `decodes`.
         let grows = submit(&mut core, 3, 100, 4, 2);
         let decodes = submit(&mut core, 4, 200, 1, 3);
-        let tokens = |core: &mut VllmCore| {
-            let pass = core.execute_pass(&mut TraceCollector::default(), 0.0);
-            core.complete_engine_boundary(pass.end_ms);
-            let mut emitted = pass
-                .output_signals
-                .iter()
-                .map(|signal| (signal.uuid, signal.completed))
-                .collect::<Vec<_>>();
-            emitted.sort();
-            (emitted, pass.admissions.len())
-        };
-        assert_eq!(
-            tokens(&mut core),
-            (vec![(grows, false), (decodes, false)], 2)
-        );
-        // The second block of `grows` reuses an uncopied source; `decodes`
-        // behind it in the running queue still runs in the same pass.
-        assert_eq!(tokens(&mut core), (vec![(decodes, false)], 0));
-        assert_eq!(core.state.running.front(), Some(&grows));
-        assert_eq!(tokens(&mut core), (vec![(decodes, true)], 0));
-        // The finished request freed a block, but nothing new is admitted
-        // ahead of the request waiting for its source copy.
-        let waiting = submit(&mut core, 5, 300, 4, 1);
-        assert!(!core.is_ready());
-        assert_eq!(tokens(&mut core), (vec![], 0));
-        assert!(core.state.waiting_members.contains(&waiting));
-        let now_ms = advance_until(&mut core, 0.0, VllmCore::is_ready);
-        let pass = core.execute_pass(&mut TraceCollector::default(), now_ms);
-        let emitted = pass.output_signals.iter().map(|signal| signal.uuid);
-        assert_eq!(emitted.collect::<Vec<_>>(), [grows, waiting]);
+        assert_eq!(run(&mut core, 0.0).admissions.len(), 2);
+        assert_eq!(pass(&mut core, 0.0), [grows]);
+        assert_eq!(core.state.preemptions_total, 1);
+        assert!(core.state.waiting_members.contains(&decodes));
     }
 
     #[test]
-    fn a_waiting_restore_on_an_uncopied_source_returns_its_capacity_and_reuses_g1() {
+    fn a_restore_short_of_g1_waits_for_a_copy_and_still_reports_g2() {
         // A peer rank stores an 8-token prefix in the deployment pool.
         let binding = G2Binding {
             registry: std::sync::Arc::<G2Registry>::default(),
@@ -4343,63 +4281,31 @@ mod shared_g2_fence_tests {
         let stored_ms = advance_until(&mut peer, 0.0, |core| {
             core.next_internal_deadline_ms().is_none()
         });
-        // Here a two-block request finishes before a one-block one; sharing
-        // the link, the one-block copy completes a second earlier.
+        // A two-block and a one-block request finish together; sharing the
+        // link, the one-block copy completes a second earlier.
         let mut core = core_in(&binding, 5, 16);
         for (id, first, prompt) in [(1, 1, 8), (2, 20, 4)] {
             submit(&mut core, id, first, prompt, 1);
             assert_eq!(pass(&mut core, stored_ms), [Uuid::from_u128(id)]);
         }
-        // The restore loads the prefix into the two never-used blocks; its
-        // third block is the oldest free block, still being copied.
+        // Two free blocks cannot hold the three-block restore, so it holds no
+        // G1 and loads nothing until that copy returns its block.
         let waiting = submit(&mut core, 3, 100, 12, 1);
-        while core.is_ready() {
-            assert!(pass(&mut core, stored_ms).is_empty());
-        }
-        let loaded = |core: &VllmCore| {
-            let request = &core.state.requests[&waiting];
-            (
-                request.sequence.num_allocated_tokens(),
-                request.host_offload.as_deref().unwrap().reserved_blocks(),
-                core.kv_manager.num_active_blocks(),
-            )
-        };
-        let now_ms = advance_until(&mut core, stored_ms, VllmCore::is_ready);
-        assert_eq!(loaded(&core), (8, 2, 2), "the activated prefix holds G1");
-        let rollback = core.execute_pass(&mut TraceCollector::default(), now_ms);
-        core.complete_engine_boundary(rollback.end_ms);
-        assert!(rollback.admissions.is_empty());
+        assert!(run(&mut core, stored_ms).admissions.is_empty());
         assert_eq!(
-            loaded(&core),
-            (0, 0, 0),
-            "the waiting request returns its lease and forgets the load"
+            core.state.requests[&waiting]
+                .sequence
+                .num_allocated_tokens(),
+            0
         );
-        assert!(core.state.connector_waiting_members.contains(&waiting));
-        // As native vLLM re-runs its connector lookup every step, the head is
-        // retried on every pass: the lookup keeps its G2 prefix recent and sees
-        // peer stores, and replay defers such effect-free passes.
-        assert!(core.is_ready());
-        // Once copied, the prefix it loaded is an ordinary G1 hit.
-        let now_ms = advance_until(&mut core, now_ms, |core| {
-            core.next_internal_deadline_ms().is_none()
-        });
-        let admitted = core.execute_pass(&mut TraceCollector::default(), now_ms);
-        let admissions = admitted
-            .admissions
-            .iter()
-            .map(|admission| {
-                (
-                    admission.uuid,
-                    admission.reused_input_tokens,
-                    admission.cache_tier_attribution,
-                )
-            })
-            .collect::<Vec<_>>();
-        let g1_only = CacheTierAttribution {
-            g1_reused_input_tokens: 8,
-            host_reused_input_tokens: 0,
+        // It loads the 2 MB prefix in 2 ms once that copy completes.
+        let (now_ms, admitted) = admit(&mut core, stored_ms);
+        assert_eq!((stored_ms, now_ms), (2016.622914, 4035.245828));
+        let g2 = CacheTierAttribution {
+            g1_reused_input_tokens: 0,
+            host_reused_input_tokens: 8,
         };
-        assert_eq!(admissions, [(waiting, 8, Some(g1_only))]);
+        assert_eq!(admissions(&admitted), [(waiting, 8, Some(g2))]);
     }
 }
 
