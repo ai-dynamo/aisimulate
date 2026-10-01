@@ -200,7 +200,7 @@ groups:
     tier: shared_fallback
     systems: [a100_sxm, b200_sxm, b300_sxm, gb200, gb300, h100_sxm, h200_sxm, l40s, rtx_pro_6000_server]
     frameworks: [trtllm]
-    total_raw_rows: 17192
+    total_raw_rows: 19832
     within_framework_dedup_rows: 0
   - op_file: context_mla_perf.parquet
     kernel_source: 'flash_attention'
@@ -411,6 +411,41 @@ groups:
     systems: [b200_sxm, b300_sxm, gb200, gb300]
     frameworks: [sglang]
     total_raw_rows: 6120
+    within_framework_dedup_rows: 0
+  - op_file: dsv41_module_perf.parquet
+    kernel_source: 'sglang.srt.layers.engram.Engram.apply_gate+sglang.srt.layers.engram.EngramEmbedding._owned_rows+sglang.srt.layers.linear.ReplicatedLinear.forward/sglang.srt.layers.quantization.fp8.Fp8LinearMethod'
+    tier: shared
+    systems: [b200_sxm, gb200, h100_sxm, h200_sxm]
+    frameworks: [sglang]
+    total_raw_rows: 240
+    within_framework_dedup_rows: 0
+  - op_file: dsv41_module_perf.parquet
+    kernel_source: 'sglang.srt.layers.linear.MergedColumnParallelLinear.forward/sglang.srt.layers.quantization.fp8.Fp8LinearMethod'
+    tier: shared
+    systems: [b200_sxm, gb200, h100_sxm, h200_sxm]
+    frameworks: [sglang]
+    total_raw_rows: 120
+    within_framework_dedup_rows: 0
+  - op_file: dsv41_module_perf.parquet
+    kernel_source: 'sglang.srt.layers.linear.RowParallelLinear.forward/sglang.srt.layers.quantization.fp8.Fp8LinearMethod'
+    tier: shared
+    systems: [b200_sxm, gb200, h100_sxm, h200_sxm]
+    frameworks: [sglang]
+    total_raw_rows: 120
+    within_framework_dedup_rows: 0
+  - op_file: dsv41_module_perf.parquet
+    kernel_source: 'sglang.srt.models.deepseek_v4.DeepseekV4DecoderLayer._hc_mix_and_combine+sglang.srt.models.deepseek_v4.DeepseekV4DecoderLayer.hc_post'
+    tier: shared
+    systems: [b200_sxm, gb200, h100_sxm, h200_sxm]
+    frameworks: [sglang]
+    total_raw_rows: 60
+    within_framework_dedup_rows: 0
+  - op_file: dsv41_module_perf.parquet
+    kernel_source: 'sglang.srt.models.deepseek_v4.MQALayer.forward'
+    tier: shared
+    systems: [b200_sxm, gb200, h100_sxm, h200_sxm]
+    frameworks: [sglang]
+    total_raw_rows: 9040
     within_framework_dedup_rows: 0
   - op_file: dsv4_csa_context_module_perf.parquet
     kernel_source: 'DeepseekV4TrtllmAttention'
@@ -709,6 +744,20 @@ groups:
     systems: [a100_sxm, h100_sxm]
     frameworks: [sglang]
     total_raw_rows: 71022
+    within_framework_dedup_rows: 0
+  - op_file: gemm_perf.parquet
+    kernel_source: 'sglang.srt.layers.vocab_parallel_embedding.ParallelLMHead.quant_method.apply/sglang.srt.layers.quantization.unquant.UnquantizedEmbeddingMethod'
+    tier: shared
+    systems: [b200_sxm, gb200, h100_sxm, h200_sxm]
+    frameworks: [sglang]
+    total_raw_rows: 120
+    within_framework_dedup_rows: 0
+  - op_file: gemm_perf.parquet
+    kernel_source: 'sglang.srt.models.deepseek_v2.MoEGate.forward'
+    tier: shared
+    systems: [b200_sxm, gb200, h100_sxm, h200_sxm]
+    frameworks: [sglang]
+    total_raw_rows: 60
     within_framework_dedup_rows: 0
   - op_file: gemm_perf.parquet
     kernel_source: 'sglang_deepgemm_gemm_nt_f8f8bf16'
@@ -1258,7 +1307,7 @@ groups:
     tier: shared
     systems: [a100_sxm, b200_sxm, b300_sxm, gb200, gb300, h100_sxm, h200_sxm, l40s]
     frameworks: [trtllm]
-    total_raw_rows: 62657
+    total_raw_rows: 62819
     within_framework_dedup_rows: 21
   - op_file: moe_perf.parquet
     kernel_source: 'moe_torch_flow_cutlass'
@@ -1293,14 +1342,14 @@ groups:
     tier: shared
     systems: [h100_sxm, h200_sxm, rtx_pro_6000_server]
     frameworks: [sglang]
-    total_raw_rows: 52731
+    total_raw_rows: 52761
     within_framework_dedup_rows: 0
   - op_file: moe_perf.parquet
     kernel_source: 'sglang_flashinfer_trtllm_moe'
     tier: shared
     systems: [b200_sxm, b300_sxm, gb200, gb300]
     frameworks: [sglang]
-    total_raw_rows: 635827
+    total_raw_rows: 645304
     within_framework_dedup_rows: 0
   - op_file: moe_perf.parquet
     kernel_source: 'sglang_fused_moe_triton'
@@ -1335,7 +1384,14 @@ groups:
     tier: shared
     systems: [b200_sxm, b300_sxm, gb200, gb300]
     frameworks: [sglang]
-    total_raw_rows: 29970
+    total_raw_rows: 30030
+    within_framework_dedup_rows: 0
+  - op_file: moe_perf.parquet
+    kernel_source: 'sglang_mxfp4_humming_moe'
+    tier: shared
+    systems: [h100_sxm, h200_sxm]
+    frameworks: [sglang]
+    total_raw_rows: 30
     within_framework_dedup_rows: 0
   - op_file: moe_perf.parquet
     kernel_source: 'vllm_compressedtensorsw4a4mxfp4moe_marlin_marlinexperts'
