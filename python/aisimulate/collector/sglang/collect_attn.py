@@ -41,6 +41,9 @@ class Timing(NamedTuple):
 
 # Mock objects to satisfy RadixAttention dependencies
 class MockModelConfig:
+    def get_max_num_attention_heads(self) -> int:  # model_config.py:1504 @0.5.21 (triton_backend.py:255)
+        return int(self.num_attention_heads)
+
     def __init__(
         self,
         num_attention_heads,
@@ -139,6 +142,9 @@ class MockServerArgs:
 
 
 class MockModelRunner:
+    def decode_num_tokens_per_req(self, *, num_draft_tokens=None) -> int:
+        return 1
+
     def __init__(
         self,
         device,
@@ -177,6 +183,10 @@ class MockModelRunner:
                 moe_dp_rank=0, moe_dp_size=1, dcp_size=1, gpu_id=0,
             )
         self.is_draft_worker = False
+        # sglang>=0.5.21 backends ask the runner for logits rows per decode slot
+        # (model_runner.py:796 decode_num_tokens_per_req; triton_backend.py:218,222);
+        # the kernel collectors never run speculative decoding -> 1
+        self.spec_algorithm = None
         self.model_is_mrope = False
         self.sliding_window_size = attention_chunk_size
         if self.sliding_window_size is None and runtime_window_size >= 0:

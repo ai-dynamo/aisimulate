@@ -840,7 +840,13 @@ def _decode_graph_covered(model_runner, num_tokens: int) -> bool:
     graph: cuda_graph_config.decode coverage (backend != disabled; bs list
     or max_bs — resolved per GPU tier by server_args
     _handle_gpu_memory_settings, e.g. 256 on the SM90 validation node at tp<4)."""
-    decode_cfg = model_runner.server_args.cuda_graph_config.decode
+    cuda_graph_config = model_runner.server_args.cuda_graph_config
+    if cuda_graph_config is None:
+        # sglang>=0.5.21: derived config lives behind the resolving view (arg_groups/model_override_base.py:120)
+        from sglang.srt.arg_groups.model_override_base import resolving_view
+
+        cuda_graph_config = resolving_view(model_runner.server_args).cuda_graph_config
+    decode_cfg = cuda_graph_config.decode
     if decode_cfg.backend == "disabled":
         return False
     if decode_cfg.bs:

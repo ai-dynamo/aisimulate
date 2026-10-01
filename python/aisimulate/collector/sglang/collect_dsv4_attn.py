@@ -504,7 +504,16 @@ def _resolve_model_path(
     # model_type to "deepseek_v3" mirrors what sglang's
     # _load_deepseek_temp_model produces internally, so AutoConfig succeeds
     # and the V4 model class is still selected via the architectures field.
-    config["model_type"] = "deepseek_v3"
+    try:
+        # sglang>=0.5.21 ships a native DeepseekV4Config (configs/deepseek_v4.py, model_type
+        # "deepseek_v4") and its DSV4 model reads V4-only fields from it
+        # (hc_pre_from_prev_sublayer, models/deepseek_v4.py:2679); the v3 rewrite below
+        # would hand the model a DeepseekV3Config and fail there.
+        import sglang.srt.configs.deepseek_v4  # noqa: F401
+
+        config["model_type"] = "deepseek_v4"
+    except ImportError:
+        config["model_type"] = "deepseek_v3"
 
     # gemm_type "fp8_block" overrides disable_weight_quant: we MUST keep the
     # fp8 quantization_config so sglang dispatches projections to DeepGEMM.

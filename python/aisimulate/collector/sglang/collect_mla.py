@@ -93,6 +93,9 @@ def _mla_compute_dtype(backend: str, kv_cache_dtype: torch.dtype) -> str:
 
 
 class MockModelConfig:
+    def get_max_num_attention_heads(self) -> int:  # model_config.py:1504 @0.5.21 (triton_backend.py:255)
+        return int(self.num_attention_heads)
+
     def __init__(
         self,
         context_len: int = 32768,
@@ -165,6 +168,9 @@ class MockServerArgs:
 
 
 class MockModelRunner:
+    def decode_num_tokens_per_req(self, *, num_draft_tokens=None) -> int:
+        return 1
+
     def __init__(
         self,
         device: torch.device,
@@ -208,7 +214,11 @@ class MockModelRunner:
                 moe_dp_rank=0, moe_dp_size=1, dcp_size=1, gpu_id=0,
             )
         self.server_args = MockServerArgs(kv_cache_dtype, page_size)
-        self.is_draft_worker = False  # read by the 0.5.16 attention backends (draft-worker branches)
+        self.is_draft_worker = False
+        # sglang>=0.5.21 backends ask the runner for logits rows per decode slot
+        # (model_runner.py:796 decode_num_tokens_per_req; triton_backend.py:218,222);
+        # the kernel collectors never run speculative decoding -> 1
+        self.spec_algorithm = None  # read by the 0.5.16 attention backends (draft-worker branches)
         self.use_mla_backend = True
 
 
@@ -406,7 +416,12 @@ def run_mla(
     model_runner.server_args.prefill_attention_backend = selected_backend
     model_runner.server_args.decode_attention_backend = selected_backend
     # Set global args after potential overrides.
-    sglang.srt.server_args.set_global_server_args_for_scheduler(model_runner.server_args)
+    try:
+        from sglang.srt.runtime_context import publish as _publish  # noqa: F401
+    except ImportError:
+        sglang.srt.server_args.set_global_server_args_for_scheduler(model_runner.server_args)
+    # >=0.5.20: set_global_server_args_for_scheduler publishes (resolve_once on a real ServerArgs record);
+    # ensure_offline_runtime_published() already installed the process record, the mock drives the backends directly.
 
     # Define dimensions based on phase
     kv_lora_rank = KV_LORA_RANK

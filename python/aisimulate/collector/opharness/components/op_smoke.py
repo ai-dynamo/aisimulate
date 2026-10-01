@@ -117,7 +117,7 @@ def main() -> int:
     for i, case in enumerate(picked):
         print(f"[op_smoke] case {i}: {case}")
         if isinstance(case, dict):  # dict-shaped cases (mhc_module) bind by name, as collect.py does
-            run_func(**case, perf_filename=perf_path, device=args.device, **extra)
+            run_func(**{k: v for k, v in case.items() if k != "id"}, perf_filename=perf_path, device=args.device, **extra)
         else:
             run_func(*case, perf_filename=perf_path, device=args.device, **extra)
     print(f"[op_smoke] OK: {len(picked)} case(s) ran; rows appended to {perf_path}")

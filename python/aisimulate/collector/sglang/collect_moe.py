@@ -598,6 +598,7 @@ def _patch_framework_moe_parallel(*, moe_tp_size: int, moe_ep_size: int):
     parallel = SimpleNamespace(
         tp_size=moe_tp_size,
         tp_rank=0,
+        tp_group=None,  # 0.5.21 topk.py:720 use_symmetric_memory(get_parallel().tp_group, disabled=True) only reads it
         moe_tp_size=moe_tp_size,
         moe_tp_rank=0,
         moe_ep_size=moe_ep_size,

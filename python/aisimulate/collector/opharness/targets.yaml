@@ -130,36 +130,60 @@ families:
     - repo: MiniMaxAI/MiniMax-M3
       profile: bfloat16
       aic_registered: MiniMaxAI--MiniMax-M3
+      # trtllm: no customization since 2026-10-01 — the generator renders sparse_attention_config.algorithm=minimax_m3
+      # itself (rc29 engine template + utils.msa_sparse_algorithm, commit bf0ef7d2); the former
+      # params.agg.sparse_attention_config key was never a mapped parameter and was silently dropped
+      # (findings hopper_trtllm_upgrade_rc23_to_rc29_2026_10_01). M3 on trtllm rc29/SM90 still fails downstream
+      # (MiniMaxM3SparseRuntimeBackend.forward contract) — a framework gap, recorded there.
       cli_extra_args:
-        trtllm:
+        sglang:
           args:
           - --generator-set
-          - params.agg.sparse_attention_config={"algorithm":"minimax_m3"}
-          fact: MiniMax-M3 trtllm requires sparse_attention_config to get MiniMaxM3KVCacheManagerV2 (modeling_minimaxm3
-            RuntimeError without it; facts/trt_ab_m3_sparse.json). Passthrough added to extra_engine_args template
-            2026-08-23.
+          - params.agg.cuda_graph_backend_prefill=breakable
+          fact: 'sglang 0.5.21: the golden render enables mixed-chunk prefill and M3''s hybrid backend enables the
+            prefill CUDA graph, whose default tc_piecewise backend asserts "Mixed chunk prefill requires the breakable
+            prefill CUDA graph backend" (prefill_cuda_graph_runner.py:293). A/B 2026-10-01: --cuda-graph-backend-prefill
+            breakable loads (facts/upgrade_rc29/ab_m3_sgl/m3_A.json, MiniMaxHybridAttnBackend); dropping mixed chunk does
+            not. Parameter added to the generator (>=0.5.20 template). Verified on the bf16 artifact; the MXFP8 and NVFP4
+            artifacts fail earlier on SM90 (mxfp8 floor / deepgemm SF assert) and carry it for consistency.'
     - repo: MiniMaxAI/MiniMax-M3-MXFP8
       profile: mxfp8
       aic_registered: false
+      # trtllm: no customization since 2026-10-01 — the generator renders sparse_attention_config.algorithm=minimax_m3
+      # itself (rc29 engine template + utils.msa_sparse_algorithm, commit bf0ef7d2); the former
+      # params.agg.sparse_attention_config key was never a mapped parameter and was silently dropped
+      # (findings hopper_trtllm_upgrade_rc23_to_rc29_2026_10_01). M3 on trtllm rc29/SM90 still fails downstream
+      # (MiniMaxM3SparseRuntimeBackend.forward contract) — a framework gap, recorded there.
       cli_extra_args:
-        trtllm:
+        sglang:
           args:
           - --generator-set
-          - params.agg.sparse_attention_config={"algorithm":"minimax_m3"}
-          fact: MiniMax-M3 trtllm requires sparse_attention_config to get MiniMaxM3KVCacheManagerV2 (modeling_minimaxm3
-            RuntimeError without it; facts/trt_ab_m3_sparse.json). Passthrough added to extra_engine_args template
-            2026-08-23.
+          - params.agg.cuda_graph_backend_prefill=breakable
+          fact: 'sglang 0.5.21: the golden render enables mixed-chunk prefill and M3''s hybrid backend enables the
+            prefill CUDA graph, whose default tc_piecewise backend asserts "Mixed chunk prefill requires the breakable
+            prefill CUDA graph backend" (prefill_cuda_graph_runner.py:293). A/B 2026-10-01: --cuda-graph-backend-prefill
+            breakable loads (facts/upgrade_rc29/ab_m3_sgl/m3_A.json, MiniMaxHybridAttnBackend); dropping mixed chunk does
+            not. Parameter added to the generator (>=0.5.20 template). Verified on the bf16 artifact; the MXFP8 and NVFP4
+            artifacts fail earlier on SM90 (mxfp8 floor / deepgemm SF assert) and carry it for consistency.'
     - repo: nvidia/MiniMax-M3-NVFP4
       profile: nvfp4
       aic_registered: false
+      # trtllm: no customization since 2026-10-01 — the generator renders sparse_attention_config.algorithm=minimax_m3
+      # itself (rc29 engine template + utils.msa_sparse_algorithm, commit bf0ef7d2); the former
+      # params.agg.sparse_attention_config key was never a mapped parameter and was silently dropped
+      # (findings hopper_trtllm_upgrade_rc23_to_rc29_2026_10_01). M3 on trtllm rc29/SM90 still fails downstream
+      # (MiniMaxM3SparseRuntimeBackend.forward contract) — a framework gap, recorded there.
       cli_extra_args:
-        trtllm:
+        sglang:
           args:
           - --generator-set
-          - params.agg.sparse_attention_config={"algorithm":"minimax_m3"}
-          fact: MiniMax-M3 trtllm requires sparse_attention_config to get MiniMaxM3KVCacheManagerV2 (modeling_minimaxm3
-            RuntimeError without it; facts/trt_ab_m3_sparse.json). Passthrough added to extra_engine_args template
-            2026-08-23.
+          - params.agg.cuda_graph_backend_prefill=breakable
+          fact: 'sglang 0.5.21: the golden render enables mixed-chunk prefill and M3''s hybrid backend enables the
+            prefill CUDA graph, whose default tc_piecewise backend asserts "Mixed chunk prefill requires the breakable
+            prefill CUDA graph backend" (prefill_cuda_graph_runner.py:293). A/B 2026-10-01: --cuda-graph-backend-prefill
+            breakable loads (facts/upgrade_rc29/ab_m3_sgl/m3_A.json, MiniMaxHybridAttnBackend); dropping mixed chunk does
+            not. Parameter added to the generator (>=0.5.20 template). Verified on the bf16 artifact; the MXFP8 and NVFP4
+            artifacts fail earlier on SM90 (mxfp8 floor / deepgemm SF assert) and carry it for consistency.'
     dummy_variants:
     - moe_sparse_attn
     - dense_full_attn_head
