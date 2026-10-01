@@ -3,7 +3,7 @@
 
 """Run native AISimulate/Vizier with a frozen scenario runner and resource supervisor."""
 from __future__ import annotations
-import argparse,dataclasses,datetime,functools,hashlib,json,os,signal,subprocess,sys,time,traceback
+import argparse,dataclasses,datetime,functools,hashlib,json,math,os,signal,subprocess,sys,time,traceback
 from pathlib import Path
 
 ROOT=Path(__file__).resolve().parents[1]
@@ -85,6 +85,21 @@ def child(args):
         binary_hash=hashlib.file_digest(binary,'sha256').hexdigest()
     if binary_hash != '2f47cbb1def5e6b71af0271f0e189dd00e65ee739e801232928ce6dd2254277b':
         raise ValueError('Native Dynamo binary differs from frozen release build')
+    import aisimulate.supervision as native_supervision
+    native_cleanup_grace = native_supervision._GRACE_SECONDS
+    if args.pool_cleanup_grace_seconds is not None:
+        # Large retained worker heaps can take longer than the nightly's 2s
+        # manager joins to exit. Keep native ownership checks and escalation;
+        # this changes only cleanup waiting, never replay or candidate limits.
+        native_supervision._GRACE_SECONDS = args.pool_cleanup_grace_seconds
+    pool_cleanup_policy = {
+        'native_default_seconds': native_cleanup_grace,
+        'requested_seconds': args.pool_cleanup_grace_seconds,
+        'effective_seconds': native_supervision._GRACE_SECONDS,
+        'scope': 'native_executor_manager_and_worker_join_waits',
+        'terminate_processes_bound_default_seconds':
+            native_supervision.terminate_processes.__kwdefaults__['grace'],
+    }
     raw=yaml.safe_load(args.config.read_text())
     core,adapter_configs=split_config_sections(raw,command='recommend')
     if args.parallelism is not None:core['optimizer']['parallelism']=args.parallelism
@@ -104,7 +119,8 @@ def child(args):
         'mode':'fresh_winner_validation' if args.replay_spec else 'native_vizier_sweep',
         'scenario':args.scenario,'pid':os.getpid(),'binding_sha256':binary_hash,
         'code_sha256':{p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in Path(__file__).parent.glob('*.py')},
-        'history_sha256':args.history_sha256 if history else None})
+        'history_sha256':args.history_sha256 if history else None,
+        'pool_cleanup_policy':pool_cleanup_policy})
     try:
         if args.replay_spec:
             from deserialize import replay_spec_from_dict
@@ -166,12 +182,14 @@ def supervise(args):
     if args.output.exists() and any(args.output.iterdir()):raise ValueError(f'Refusing nonempty output directory {args.output}')
     args.output.mkdir(parents=True,exist_ok=True)
     policy={'max_process_tree_rss_gib':args.memory_limit_gib,'min_host_available_gib':16,
-        'log_limit_mib':512,'max_sweep_wall_seconds':None, 'candidate_wall_seconds':args.candidate_timeout or 7200}
+        'log_limit_mib':512,'max_sweep_wall_seconds':None, 'candidate_wall_seconds':args.candidate_timeout or 7200,
+        'pool_cleanup_grace_seconds_requested':args.pool_cleanup_grace_seconds}
     if args.max_wall_seconds is not None:policy={**policy,'max_sweep_wall_seconds':args.max_wall_seconds}
     logfile=args.output/'process.log';cmd=[sys.executable,str(Path(__file__).resolve()),'--child','--config',str(args.config),'--output',str(args.output),
         '--scenario',str(args.scenario),'--protocol',str(args.protocol),'--history-sha256',args.history_sha256]
     if args.parallelism is not None:cmd+=['--parallelism',str(args.parallelism)]
     if args.candidate_timeout is not None:cmd+=['--candidate-timeout',str(args.candidate_timeout)]
+    if args.pool_cleanup_grace_seconds is not None:cmd+=['--pool-cleanup-grace-seconds',str(args.pool_cleanup_grace_seconds)]
     if args.replay_spec:cmd+=['--replay-spec',str(args.replay_spec)]
     environment=dict(os.environ,OMP_NUM_THREADS='1',OPENBLAS_NUM_THREADS='1',MKL_NUM_THREADS='1',RUST_LOG='error',DYN_LOG='error',MALLOC_ARENA_MAX='2',TMPDIR=os.environ.get('TMPDIR','/tmp'),JAX_PLATFORMS='cpu',JAX_ENABLE_X64='true')
     t=time.monotonic();started=now();peak=0.0;reason=None;pending={};seen_exits=set();last=0;proc=None;rc=1;failure=None
@@ -242,7 +260,9 @@ def supervise(args):
         d=json.loads(path.read_text())
         if d.get('status')=='running' and not (path.parent/'supervisor-terminal.json').exists():
             stop=time.monotonic();write(path.parent/'supervisor-terminal.json',{'status':'process_exited_without_attempt_completion','wall_seconds_upper_bound':stop-d['started_monotonic'],'method':'supervisor_final_process_group_exit_observation','termination_reason':reason,'observed_utc':now()})
-    write(args.output/'supervisor.json',{'started_utc':started,'finished_utc':now(),'wall_seconds':time.monotonic()-t,'peak_process_tree_rss_gib':peak,'returncode':rc,'termination_reason':reason,'supervisor_error':failure,'policy':policy,'log_bytes':logfile.stat().st_size if logfile.exists() else 0})
+    try:cleanup_policy=json.loads((args.output/'run-start.json').read_text()).get('pool_cleanup_policy')
+    except (FileNotFoundError,json.JSONDecodeError):cleanup_policy=None
+    write(args.output/'supervisor.json',{'started_utc':started,'finished_utc':now(),'wall_seconds':time.monotonic()-t,'peak_process_tree_rss_gib':peak,'returncode':rc,'termination_reason':reason,'supervisor_error':failure,'policy':policy,'pool_cleanup_policy':cleanup_policy,'log_bytes':logfile.stat().st_size if logfile.exists() else 0})
     print(json.dumps({'output':str(args.output),'returncode':rc,'wall_s':time.monotonic()-t,'peak_tree_rss_gib':peak,'termination_reason':reason}))
     return rc
 
@@ -255,13 +275,17 @@ def main():
     p.add_argument('--history-sha256',default='21eebb38837ea85ebe06d85ef5f5a1fbb644c411c927142b337c1ce61eb44205')
     p.add_argument('--parallelism',type=int)
     p.add_argument('--candidate-timeout',type=float)
+    p.add_argument('--pool-cleanup-grace-seconds',type=float,default=None,
+        help='Override only native pool cleanup waits; omitted preserves the nightly default (2s).')
     p.add_argument('--memory-limit-gib',type=float,default=320)
     p.add_argument('--replay-spec',type=Path,help='Fresh validation of an archived requested ReplaySpec, not a new study')
     p.add_argument('--child',action='store_true')
     p.add_argument('--max-wall-seconds',type=float,default=None)
     args=p.parse_args()
-    for value in (args.parallelism,args.candidate_timeout,args.memory_limit_gib,args.max_wall_seconds):
+    for value in (args.parallelism,args.candidate_timeout,args.memory_limit_gib,args.max_wall_seconds,args.pool_cleanup_grace_seconds):
         if value is not None and value<=0:p.error('resource/deadline values must be positive')
+    if args.pool_cleanup_grace_seconds is not None and not math.isfinite(args.pool_cleanup_grace_seconds):
+        p.error('pool cleanup grace must be finite')
     args.config=args.config.resolve();args.output=args.output.resolve();args.protocol=args.protocol.resolve()
     if args.replay_spec:args.replay_spec=args.replay_spec.resolve()
     return child(args) if args.child else supervise(args)
