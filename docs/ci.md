@@ -785,7 +785,8 @@ run, or missing report fails qualification. Shell failures stop their block;
 dependent blocks become blocked while independent checks continue. The runner
 kills descendants, including workers that created separate sessions. Each profile
 uses an isolated Hugging Face cache and anonymous public-model access so a stale
-host login cannot poison the checks. Existing credentials are not modified.
+host login cannot poison the checks. Existing credentials are not modified. CI allows 60 seconds per pip network
+read to tolerate slow package mirrors; the per-command deadline still applies.
 
 ### Slack workflow setup
 

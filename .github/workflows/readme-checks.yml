@@ -22,6 +22,7 @@ jobs:
     env:
       HF_HUB_DISABLE_IMPLICIT_TOKEN: '1'
       HF_HUB_DISABLE_XET: '1'
+      PIP_DEFAULT_TIMEOUT: '60'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -33,6 +34,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
         with:
           toolchain: '1.98.0'
+      - name: Verify macOS ARM64 coverage
+        if: matrix.profile == 'macos'
+        run: python -c 'import platform; assert platform.machine() == "arm64"'
       - name: Fetch historical test baseline
         run: git fetch origin d066e918705b98e2d55eed55743ce8d225f129ea
       - name: Install harness dependencies
