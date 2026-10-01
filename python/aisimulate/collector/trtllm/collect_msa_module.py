@@ -55,8 +55,18 @@ import weakref
 import tensorrt_llm
 import torch
 import transformers
-from tensorrt_llm._torch.attention_backend.interface import AttentionRuntimeFeatures
-from tensorrt_llm._torch.attention_backend.utils import get_attention_backend
+# trtllm >=1.3.0rc29 moved _torch.attention_backend.* -> _torch.attention.backends.* and
+# _torch.modules.fused_moe -> _torch.moe.fused_moe (the old package root is a deprecation shim
+# without submodules). Path-only compat: same classes, same kernels (layer_permissions.md
+# 'API-compat shims may only change HOW the same kernel is constructed').
+try:
+    from tensorrt_llm._torch.attention.backends.interface import AttentionRuntimeFeatures
+except ModuleNotFoundError:  # < rc29 layout
+    from tensorrt_llm._torch.attention_backend.interface import AttentionRuntimeFeatures
+try:
+    from tensorrt_llm._torch.attention.backends.utils import get_attention_backend
+except ModuleNotFoundError:  # < rc29 layout
+    from tensorrt_llm._torch.attention_backend.utils import get_attention_backend
 from tensorrt_llm._torch.metadata import KVCacheParams
 from tensorrt_llm._torch.model_config import ModelConfig
 from tensorrt_llm._torch.models.modeling_minimaxm3 import MiniMaxM3DecoderLayer
@@ -512,9 +522,14 @@ def _resolve_msa_metadata_cls():
     instead of sniffing the version string.
     """
     try:
-        from tensorrt_llm._torch.attention_backend.sparse.minimax_m3.msa_backend import (
-            MiniMaxM3MsaSparseAttentionMetadata,
-        )
+        try:
+            from tensorrt_llm._torch.attention.backends.sparse.minimax_m3.msa_backend import (
+                MiniMaxM3MsaSparseAttentionMetadata,
+            )
+        except ModuleNotFoundError:  # < rc29 layout
+            from tensorrt_llm._torch.attention_backend.sparse.minimax_m3.msa_backend import (
+                MiniMaxM3MsaSparseAttentionMetadata,
+            )
     except ImportError:  # rc19/rc20 layout — Triton contract only
         return None
     return MiniMaxM3MsaSparseAttentionMetadata

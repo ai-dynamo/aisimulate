@@ -43,7 +43,13 @@ families:
           args:
           - --generator-set
           - params.agg.tokens_per_block=128
-          fact: DeepseekV4CacheManager requires tokens_per_block in [128,256]; naive renders 32 (facts/trt_ab_dsv4_tpb128.json)
+          - --generator-set
+          - params.agg.kv_cache_dtype=fp8_ds_mla
+          fact: 'DeepseekV4CacheManager requires tokens_per_block in [128,256]; naive renders 32 (facts/trt_ab_dsv4_tpb128.json).
+            1.3.0rc29 lifted the pre-Blackwell assert and now requires kv_cache_config.dtype=fp8_ds_mla on Hopper
+            (sparse/deepseek_v4/cache_manager.py:346; the generator renders auto). A/B 2026-10-01: auto fails, fp8_ds_mla
+            loads (facts/upgrade_rc29/ab_dsv4_kv_ccd7ce86d246.json). The harness fp8-KV variant (--kv-dtype fp8) cannot
+            express this spelling and stays a recorded fail; fp8_ds_mla IS the fp8-KV identity for DSV4.'
     - repo: deepseek-ai/DeepSeek-V4-Flash-0731
       profile: fp8
       aic_registered: deepseek-ai--DeepSeek-V4-Flash
@@ -55,7 +61,13 @@ families:
           args:
           - --generator-set
           - params.agg.tokens_per_block=128
-          fact: DeepseekV4CacheManager requires tokens_per_block in [128,256]; naive renders 32 (facts/trt_ab_dsv4_tpb128.json)
+          - --generator-set
+          - params.agg.kv_cache_dtype=fp8_ds_mla
+          fact: 'DeepseekV4CacheManager requires tokens_per_block in [128,256]; naive renders 32 (facts/trt_ab_dsv4_tpb128.json).
+            1.3.0rc29 lifted the pre-Blackwell assert and now requires kv_cache_config.dtype=fp8_ds_mla on Hopper
+            (sparse/deepseek_v4/cache_manager.py:346; the generator renders auto). A/B 2026-10-01: auto fails, fp8_ds_mla
+            loads (facts/upgrade_rc29/ab_dsv4_kv_ccd7ce86d246.json). The harness fp8-KV variant (--kv-dtype fp8) cannot
+            express this spelling and stays a recorded fail; fp8_ds_mla IS the fp8-KV identity for DSV4.'
     - repo: nvidia/DeepSeek-V4-Pro-NVFP4
       profile: nvfp4
       aic_registered: false
@@ -69,7 +81,11 @@ families:
           args:
           - --generator-set
           - params.agg.tokens_per_block=128
-          fact: DeepseekV4CacheManager requires tokens_per_block in [128,256]; naive renders 32 (facts/trt_ab_dsv4_tpb128.json)
+          - --generator-set
+          - params.agg.kv_cache_dtype=fp8_ds_mla
+          fact: 'tokens_per_block: DeepseekV4CacheManager requires [128,256]; naive renders 32 (facts/trt_ab_dsv4_tpb128.json).
+            kv_cache_dtype: rc29 Hopper requires fp8_ds_mla (A/B facts/upgrade_rc29/ab_dsv4_kv_ccd7ce86d246.json, 2026-10-01);
+            on SM90 this NVFP4 artifact still fails earlier (CutlassFusedMoE NVFP4 needs SM100+), kept for consistency.'
     - repo: nvidia/DeepSeek-V4-Flash-NVFP4
       profile: nvfp4
       aic_registered: false
@@ -81,7 +97,11 @@ families:
           args:
           - --generator-set
           - params.agg.tokens_per_block=128
-          fact: DeepseekV4CacheManager requires tokens_per_block in [128,256]; naive renders 32 (facts/trt_ab_dsv4_tpb128.json)
+          - --generator-set
+          - params.agg.kv_cache_dtype=fp8_ds_mla
+          fact: 'tokens_per_block: DeepseekV4CacheManager requires [128,256]; naive renders 32 (facts/trt_ab_dsv4_tpb128.json).
+            kv_cache_dtype: rc29 Hopper requires fp8_ds_mla (A/B facts/upgrade_rc29/ab_dsv4_kv_ccd7ce86d246.json, 2026-10-01);
+            on SM90 this NVFP4 artifact still fails earlier (CutlassFusedMoE NVFP4 needs SM100+), kept for consistency.'
     dummy_variants:
     - csa
     - hca
@@ -364,7 +384,10 @@ families:
             args: &id002
             - --generator-set
             - params.agg.tokens_per_block=128
-            fact: DeepseekV4CacheManager requires tokens_per_block in [128,256]; naive renders 32 (facts/trt_ab_dsv4_tpb128.json)
+            - --generator-set
+            - params.agg.kv_cache_dtype=fp8_ds_mla
+            fact: 'tokens_per_block: DeepseekV4CacheManager requires [128,256]; naive renders 32 (facts/trt_ab_dsv4_tpb128.json).
+              kv_cache_dtype: rc29 Hopper requires fp8_ds_mla (A/B facts/upgrade_rc29/ab_dsv4_kv_ccd7ce86d246.json, 2026-10-01).'
       deepseek-ai/DeepSeek-V4-Pro:
         dummy_overrides:
           family: dsv4
@@ -384,10 +407,9 @@ families:
           vllm: rep_mix
         cli_extra_args:
           trtllm:
-            args:
-            - --generator-set
-            - params.agg.tokens_per_block=128
-            fact: DeepseekV4CacheManager requires tokens_per_block in [128,256]; naive renders 32 (facts/trt_ab_dsv4_tpb128.json)
+            args: *id002
+            fact: 'tokens_per_block: DeepseekV4CacheManager requires [128,256]; naive renders 32 (facts/trt_ab_dsv4_tpb128.json).
+              kv_cache_dtype: rc29 Hopper requires fp8_ds_mla (A/B facts/upgrade_rc29/ab_dsv4_kv_ccd7ce86d246.json, 2026-10-01).'
       sgl-project/DeepSeek-V4-Pro-FP8:
         dummy_overrides:
           family: dsv4
@@ -395,10 +417,9 @@ families:
           vllm: interleave_pair
         cli_extra_args:
           trtllm:
-            args:
-            - --generator-set
-            - params.agg.tokens_per_block=128
-            fact: DeepseekV4CacheManager requires tokens_per_block in [128,256]; naive renders 32 (facts/trt_ab_dsv4_tpb128.json)
+            args: *id002
+            fact: 'tokens_per_block: DeepseekV4CacheManager requires [128,256]; naive renders 32 (facts/trt_ab_dsv4_tpb128.json).
+              kv_cache_dtype: rc29 Hopper requires fp8_ds_mla (A/B facts/upgrade_rc29/ab_dsv4_kv_ccd7ce86d246.json, 2026-10-01).'
       meta-llama/Llama-4-Maverick-17B-128E-Instruct:
         variant_overrides:
           sglang: depth4

@@ -1,8 +1,8 @@
 #!/bin/bash
 # trtllm 1.3.0rc29 gates (2026-10-01): captures re-taken in the rc29 image as opcov_<cap>@1.3.0rc29.json;
 # SM-parametric like verdicts_vllm_0300.sh. The rc23 script stays as the previous pin's record.
+HARNESS="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"   # resolve from this file BEFORE cd-ing into the workspace
 cd ${AIS_PROBE_WORKSPACE:-.}
-HARNESS="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 export AIS_PROBE_WORKSPACE=${AIS_PROBE_WORKSPACE:-.} AIS_SM=${AIS_SM:-$(python3 -c "import yaml;print('sm%d'%yaml.safe_load(open('$HARNESS/targets.yaml'))['platform']['sm'])")}
 PD=$HARNESS/components/path_diff.py
 OUT=$HARNESS/results/pathdiff/$AIS_SM/trtllm-1.3.0rc29

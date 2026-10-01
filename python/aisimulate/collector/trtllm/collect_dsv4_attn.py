@@ -474,11 +474,20 @@ def create_dsv4_kv_cache_and_metadata(
       (is_gen: req.prompt_len = token_num - 1; py_prompt_len = prompt_len),
       consumed at model_engine.py:4336
     """
-    from tensorrt_llm._torch.attention_backend.interface import (
-        AttentionRuntimeFeatures,
-        KVCacheParams,
-    )
-    from tensorrt_llm._torch.attention_backend.utils import get_attention_backend
+    try:
+        from tensorrt_llm._torch.attention.backends.interface import (
+            AttentionRuntimeFeatures,
+            KVCacheParams,
+        )
+    except ModuleNotFoundError:  # < rc29 layout
+        from tensorrt_llm._torch.attention_backend.interface import (
+            AttentionRuntimeFeatures,
+            KVCacheParams,
+        )
+    try:
+        from tensorrt_llm._torch.attention.backends.utils import get_attention_backend
+    except ModuleNotFoundError:  # < rc29 layout
+        from tensorrt_llm._torch.attention_backend.utils import get_attention_backend
     from tensorrt_llm.bindings import DataType
     from tensorrt_llm.bindings.internal.batch_manager import CacheType
 

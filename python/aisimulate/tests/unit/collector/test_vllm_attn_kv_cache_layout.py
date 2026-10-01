@@ -14,6 +14,8 @@ from pathlib import Path
 import pytest
 
 torch = pytest.importorskip("torch")
+if not isinstance(getattr(torch, "__version__", None), str):  # collector conftest stubs torch with a Mock
+    pytest.skip("real torch required (the helper is exercised on real tensors)", allow_module_level=True)
 pytestmark = pytest.mark.unit
 
 _SRC = Path(__file__).resolve().parents[3] / "collector" / "vllm" / "collect_attn.py"

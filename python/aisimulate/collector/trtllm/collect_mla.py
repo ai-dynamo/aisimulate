@@ -17,13 +17,28 @@ import tensorrt_llm
 import torch
 from collector.case_generator import get_context_mla_case_specs, get_generation_mla_case_specs
 from collector.helper import benchmark_with_power, get_sm_version, log_perf
-from tensorrt_llm._torch.attention_backend.interface import (
-    AttentionInputType,
-    MLAParams,
-    PositionalEmbeddingParams,
-    RopeParams,
-)
-from tensorrt_llm._torch.attention_backend.utils import get_attention_backend
+# trtllm >=1.3.0rc29 moved _torch.attention_backend.* -> _torch.attention.backends.* and
+# _torch.modules.fused_moe -> _torch.moe.fused_moe (the old package root is a deprecation shim
+# without submodules). Path-only compat: same classes, same kernels (layer_permissions.md
+# 'API-compat shims may only change HOW the same kernel is constructed').
+try:
+    from tensorrt_llm._torch.attention.backends.interface import (
+        AttentionInputType,
+        MLAParams,
+        PositionalEmbeddingParams,
+        RopeParams,
+    )
+except ModuleNotFoundError:  # < rc29 layout
+    from tensorrt_llm._torch.attention_backend.interface import (
+        AttentionInputType,
+        MLAParams,
+        PositionalEmbeddingParams,
+        RopeParams,
+    )
+try:
+    from tensorrt_llm._torch.attention.backends.utils import get_attention_backend
+except ModuleNotFoundError:  # < rc29 layout
+    from tensorrt_llm._torch.attention_backend.utils import get_attention_backend
 from tensorrt_llm._torch.metadata import KVCacheParams
 from tensorrt_llm._torch.pyexecutor.resource_manager import KVCacheManager
 from tensorrt_llm.bindings.executor import KvCacheConfig
