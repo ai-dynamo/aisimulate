@@ -290,8 +290,10 @@ APIs:
 
 ### Whole-forward FPM data
 
-Whole-forward FPM prediction requires an external Parquet dataset and its
-adjacent, same-stem `.metadata.json` sidecar. See the
+Open-source whole-forward FPM datasets are hosted on
+[Hugging Face](https://huggingface.co/datasets/nvidia/aisimulate-fpm-dataset).
+FPM prediction requires a Parquet dataset and its adjacent, same-stem
+`.metadata.json` sidecar. See the
 [core API guide](docs/core-api.md#external-whole-forward-fpm-data) for
 configuration and compatibility fields.
 
