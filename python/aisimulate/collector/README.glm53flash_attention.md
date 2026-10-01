@@ -96,6 +96,15 @@ are produced by the framework's own allocation and forward helpers:
   driver sets `max_num_scheduled_tokens` and `long_prefill_token_threshold`
   so B homogeneous requests advance in lockstep; this only decides batching.
 
+## Allocator policy
+
+At batch 32 and 98K–131K context the ragged IndexPool MQA-logits buffer of a
+seeding extend (`deep_gemm.fp8_mqa_logits`, ~24 GiB) failed on fragmentation
+(24 GiB reserved-but-unallocated) in all four SGLang deployments. The
+published SGLang attempts therefore set `PYTORCH_CUDA_ALLOC_CONF=
+max_split_size_mb:16384`, the split the qualified SGLang FP8 TP2 FPM campaign
+uses. It changes allocation only, not kernels; it is frozen in each manifest.
+
 ## Data contract
 
 `glm53_attention_module_perf.parquet` in
