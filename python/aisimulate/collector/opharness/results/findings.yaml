@@ -2245,11 +2245,13 @@ findings:
       -> the one remaining undeclared sglang family until the probe exercises the vision tower. GATES trtllm rc29 backfill
       (decision 3): dsv4 csa/hca gen ALIGNED after two collector ports — DeepseekV4Attention(aux_stream_dict=...) and the
       Hopper fp8_ds_mla pool (KvCacheConfig.dtype + extra_attrs[''kv_cache_dtype''], which also keeps the module off the fused
-      Q-FP8/KV-norm prologue serving never runs on SM90); dsv4 csa/hca ctx: see the trtllm DSV4 context sentence appended
-      below. Known gaps carried: trtllm moe fp8_block gate still DIVERGED on routing (RenormalizeMoeRoutingMethod vs DeepseekV3Gate);
-      trtllm collector manifest default still 1.3.0rc20 (only the harness targets pin moved to rc29); test_fullnode real_checkpoint
-      tests fail on HEAD before this work (logger None at collect.py:1279), unrelated. Evidence: facts/upgrade_rc29/sgl_smoke_r{1..9},
-      sgl_gates_0521.txt, trt_gates_rc29_backfill.txt, launch_sgl_caps_backfill.sh.'
+      Q-FP8/KV-norm prologue serving never runs on SM90); dsv4 csa/hca ctx ALIGNED once the module learned the pool dtype
+      (without extra_attrs[''kv_cache_dtype''] it took the fused prologue and mla_rope_inplace rejected the strided raw latent)
+      -> trtllm rc29 16/17 gates aligned, 4 DSV4 gates backfilled. Known gaps carried: trtllm moe fp8_block gate still DIVERGED
+      on routing (RenormalizeMoeRoutingMethod vs DeepseekV3Gate); trtllm collector manifest default still 1.3.0rc20 (only
+      the harness targets pin moved to rc29); test_fullnode real_checkpoint tests fail on HEAD before this work (logger None
+      at collect.py:1279), unrelated. Evidence: facts/upgrade_rc29/sgl_smoke_r{1..9}, sgl_gates_0521.txt, trt_gates_rc29_backfill.txt,
+      launch_sgl_caps_backfill.sh.'
     applies_to:
     - framework:sglang-0.5.21
     - framework:trtllm-1.3.0rc29
