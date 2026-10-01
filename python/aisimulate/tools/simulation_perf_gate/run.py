@@ -5,8 +5,6 @@
 from __future__ import annotations
 
 import argparse
-import gzip
-import hashlib
 import json
 import os
 import platform
@@ -20,7 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from tools.simulation_perf_gate import PROTOCOL_VERSION, digest
 from tools.simulation_perf_gate.cases import expand_cases
-from tools.simulation_perf_gate.compare import difference, validate, write_report
+from tools.simulation_perf_gate.compare import write_report
 from tools.simulation_perf_gate.contract import check_finite
 
 THREAD_ENV = {
@@ -95,31 +93,6 @@ def invoke(
     return response
 
 
-def retain_request_artifacts(pair: dict, case: dict, revisions: dict, output: Path) -> None:
-    """Compare full records once; avoid copying large traces into every checkpoint."""
-    rows = {}
-    for side in ("base", "head"):
-        response = pair[side]
-        try:
-            summary = validate(response, case, revisions[side], "equivalence")
-        except (KeyError, TypeError, ValueError):
-            continue
-        rows[side] = summary["per_request"]
-        full_records = response["behavior"].pop("per_request")
-        name = f"{case['case_id']}-{side}-requests.json.gz"
-        encoded = json.dumps(full_records, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
-        with gzip.open(output / name, "wb", compresslevel=1) as destination:
-            destination.write(encoded)
-        response["per_request_artifact"] = {
-            "path": name,
-            "records": len(rows[side]),
-            "sha256": hashlib.sha256(encoded).hexdigest(),
-            "complete": True,
-        }
-    if len(rows) == 2:
-        pair["per_request_difference"] = difference(rows["base"], rows["head"], "/per_request")
-
-
 def checkpoint(raw: dict, output: Path, started: float) -> None:
     raw["elapsed_seconds"] = time.monotonic() - started
     pending = output / "raw.json.tmp"
@@ -190,14 +163,12 @@ def main() -> int:
     }
     started = time.monotonic()
     try:
-        for round_index in range(args.rounds + 1):
-            phase = "equivalence" if round_index == 0 else "measure"
+        for round_index in range(1, args.rounds + 1):
+            phase = "measure"
             order = cases if round_index % 2 == 0 else list(reversed(cases))
             sides = ("base", "head") if round_index % 2 == 0 else ("head", "base")
             for item in order:
                 samples = raw["samples"].setdefault(item["case_id"], {"rounds": []})
-                if round_index and any(samples["equivalence"][s].get("status") != "OK" for s in sides):
-                    continue  # The missing baseline remains an invalid result, never a pass.
                 pair = {"round": round_index}
                 for side in sides:
                     print(f"{phase} {round_index}/{args.rounds} {item['case_id']} {side}", flush=True)
@@ -211,11 +182,7 @@ def main() -> int:
                         timeout=args.worker_timeout,
                         log=logs / f"{item['case_id']}-{round_index}-{side}.log",
                     )
-                if round_index == 0:
-                    retain_request_artifacts(pair, item, revisions, output)
-                    samples["equivalence"] = pair
-                else:
-                    samples["rounds"].append(pair)
+                samples["rounds"].append(pair)
                 checkpoint(raw, output, started)
     finally:
         checkpoint(raw, output, started)

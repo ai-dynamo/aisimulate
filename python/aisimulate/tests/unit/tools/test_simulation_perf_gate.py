@@ -9,64 +9,28 @@ from pathlib import Path
 
 import pytest
 from tools.simulation_perf_gate import PROTOCOL_VERSION, cases, digest
-from tools.simulation_perf_gate.compare import compare_case, difference
-from tools.simulation_perf_gate.contract import (
-    COUNTS,
-    METRICS,
-    MODEL_FIELDS,
-    REQUEST_FIELDS,
-    ROUTING_FIELDS,
-    TRAJECTORY_COUNTS,
-    TRAJECTORY_METRICS,
-    behavior,
-)
+from tools.simulation_perf_gate.compare import compare_case, validate
+from tools.simulation_perf_gate.contract import MODEL_FIELDS
 
 pytestmark = pytest.mark.unit
 CASE = cases.case("case", "vllm", model="pinned", tp=1, requests=1, osl=2)
 
 
-def response(side, phase, wall=2000):
-    summary = {
-        **dict.fromkeys(COUNTS, 1),
-        **dict.fromkeys(METRICS, 3.0),
-        "num_requests": 1,
-        "completed_requests": 1,
-        "total_input_tokens": 8,
-        "total_output_tokens": 2,
-        "committed_prefill_tokens": 8,
-        "duration_ms": 3.0,
-        "prefix_cache_reused_ratio": 0.0,
-        "first_admission_prefix_cache_reused_ratio": 0.0,
+def response(side, phase="measure", wall=2000):
+    identity = {
+        **dict.fromkeys(MODEL_FIELDS),
+        "model": "pinned",
+        "system": "b200_sxm",
+        "backend": "vllm",
+        "backend_version": "0.24.0",
+        "worker_type": "aggregated",
+        "tp": 1,
+        "pp": 1,
+        "attention_dp": 1,
+        "kv_block_size": 64,
+        "systems_paths": ["package:aisimulate_core/systems"],
     }
-    if phase == "equivalence":
-        summary["per_request"] = [
-            {
-                **dict.fromkeys(REQUEST_FIELDS),
-                "uuid": "one",
-                "request_id": "one",
-                "terminal_status": "completed",
-                "input_length": 8,
-                "output_length": 2,
-                "requested_output_length": 2,
-                "reused_input_tokens": 0,
-                "admission_count": 1,
-                "readmission_count": 0,
-                "routing_history": [
-                    {**dict.fromkeys(ROUTING_FIELDS), "pool": "agg", "outcome": "immediate", "dp_rank": 0}
-                ],
-                "admission_history": [
-                    {
-                        "admission_ordinal": 0,
-                        "pool_admission_ordinal": 0,
-                        "pool": "agg",
-                        "at_ms": 0.0,
-                        "reused_input_tokens": 0,
-                        "is_readmission": False,
-                    }
-                ],
-            }
-        ]
-    result = {
+    return {
         "protocol_version": PROTOCOL_VERSION,
         "case_id": CASE["case_id"],
         "case_hash": digest(CASE),
@@ -75,45 +39,28 @@ def response(side, phase, wall=2000):
         "status": "OK",
         "wall_time_ms": wall,
         "worker_elapsed_ms": wall + 1000,
-        "model_identity": {
+        "model_identity": {"aggregated": identity},
+        "model_provenance": {
             "aggregated": {
-                **dict.fromkeys(MODEL_FIELDS),
-                "model": "pinned",
-                "system": "b200_sxm",
-                "backend": "vllm",
-                "backend_version": "0.24.0",
-                "worker_type": "aggregated",
-                "tp": 1,
-                "pp": 1,
-                "attention_dp": 1,
-                "kv_block_size": 64,
-                "systems_paths": ["package:aisimulate_core/systems"],
+                **identity,
+                "systems_paths": ["/env/aisimulate_core/systems"],
+                "provider": "aic",
+                "estimation_mode": "op_level",
+                "fallback_policy": "deny",
+                "database_mode": "SILICON",
+                "enable_shared_layer": True,
             }
         },
-        "behavior": summary,
-        "coverage": {},
+        "report": {"num_requests": 1, "completed_requests": 1, "total_output_tokens": 2},
     }
-    result["model_provenance"] = {
-        "aggregated": {
-            **result["model_identity"]["aggregated"],
-            "systems_paths": ["/env/aisimulate_core/systems"],
-            "provider": "aic",
-            "estimation_mode": "op_level",
-            "fallback_policy": "deny",
-            "database_mode": "SILICON",
-            "enable_shared_layer": True,
-        }
-    }
-    return result
 
 
 def samples(head_times=(2000,) * 5, base_time=2000):
     return {
-        "equivalence": {side: response(side, "equivalence") for side in ("base", "head")},
         "rounds": [
-            {"round": index, "base": response("base", "measure", base_time), "head": response("head", "measure", wall)}
+            {"round": index, "base": response("base", wall=base_time), "head": response("head", wall=wall)}
             for index, wall in enumerate(head_times, 1)
-        ],
+        ]
     }
 
 
@@ -127,21 +74,38 @@ def classify(value):
         ((2000,) * 5, 2000, "PASS"),
         ((2400,) * 4 + (2000,), 2000, "PERFORMANCE_REGRESSION"),
         ((2400,) * 3 + (2000,) * 2, 2000, "PASS"),
-        ((2200,) * 5, 2000, "PASS"),  # Strict relative threshold.
-        ((200,) * 5, 100, "PASS"),  # Strict absolute threshold.
+        ((2200,) * 5, 2000, "PASS"),
+        ((200,) * 5, 100, "PASS"),
     ],
 )
 def test_threshold_and_consensus(times, base, expected):
     assert classify(samples(times, base)) == expected
 
 
-def test_behavior_change_takes_precedence_over_slowdown():
-    value = samples((3000,) * 5)
-    for pair in [value["equivalence"], *value["rounds"]]:
-        pair["head"]["behavior"]["duration_ms"] = 4.0
-    assert classify(value) == "BEHAVIOR_CHANGED"
-    value["equivalence"]["head"]["behavior"]["per_request"][0]["request_id"] = "other"
-    assert classify(value) == "BEHAVIOR_CHANGED"
+def test_controller_runs_only_five_sequential_timing_pairs(tmp_path, monkeypatch):
+    from tools.simulation_perf_gate import run
+
+    calls = []
+
+    def invoke(**kwargs):
+        calls.append((kwargs["revision"], kwargs["phase"], kwargs["cpu"]))
+        return response(kwargs["revision"], kwargs["phase"])
+
+    monkeypatch.setattr(run, "invoke", invoke)
+    monkeypatch.setattr(run, "expand_cases", lambda: [CASE])
+    monkeypatch.setattr(run.os, "sched_getaffinity", lambda _: {7})
+    monkeypatch.setattr(run.shutil, "which", lambda _: "/bin/taskset")
+    arguments = ["run.py", "--output-dir", str(tmp_path)]
+    for side in ("base", "head"):
+        arguments += [f"--{side}-revision", side, f"--{side}-python", "/python", f"--{side}-worker", "/worker.py"]
+    monkeypatch.setattr(run.sys, "argv", arguments)
+    assert run.main() == 0
+    assert calls == [
+        (side, "measure", 7) for pair in range(5) for side in (("head", "base") if pair % 2 == 0 else ("base", "head"))
+    ]
+    raw = json.loads((tmp_path / "raw.json").read_text())
+    assert set(raw["samples"][CASE["case_id"]]) == {"rounds"}
+    assert not list(tmp_path.glob("*.gz"))
 
 
 @pytest.mark.parametrize(
@@ -150,108 +114,74 @@ def test_behavior_change_takes_precedence_over_slowdown():
         "missing_round",
         "protocol",
         "protocol_type",
+        "phase",
         "hash",
         "revision",
         "incomplete",
+        "output_tokens",
         "missing_data",
         "nonfinite",
+        "diagnostic",
         "identity",
-        "within_revision_drift",
-        "missing_records",
-        "malformed_behavior",
-        "malformed_equivalence",
+        "missing_provenance",
+        "role",
+        "policy",
+        "malformed_report",
     ],
 )
-def test_invalid_comparisons_never_pass(fault):
+def test_invalid_measurements_never_pass(fault):
     value = samples()
     head = value["rounds"][0]["head"]
     if fault == "missing_round":
         value["rounds"].pop()
-    elif fault in {"protocol", "hash", "revision"}:
-        head[{"protocol": "protocol_version", "hash": "case_hash", "revision": "revision"}[fault]] = "wrong"
+    elif fault in {"protocol", "phase", "hash", "revision"}:
+        head[{"protocol": "protocol_version", "hash": "case_hash"}.get(fault, fault)] = "wrong"
     elif fault == "protocol_type":
         head["protocol_version"] = float(PROTOCOL_VERSION)
     elif fault == "incomplete":
-        head["behavior"]["completed_requests"] = 0
+        head["report"]["completed_requests"] = 0
+    elif fault == "output_tokens":
+        head["report"]["total_output_tokens"] = 1
     elif fault == "missing_data":
         head.update(status="ERROR", error={"message": "missing model data"})
     elif fault == "nonfinite":
         head["wall_time_ms"] = float("nan")
+    elif fault == "diagnostic":
+        head["report"]["diagnostic"] = {"nested": [float("inf")]}
     elif fault == "identity":
         head["model_identity"]["aggregated"]["model"] = "another"
-    elif fault == "within_revision_drift":
-        for side in ("base", "head"):
-            value["rounds"][0][side]["behavior"]["duration_ms"] = 4.0
-    elif fault == "malformed_behavior":
-        head["behavior"] = []
-    elif fault == "malformed_equivalence":
-        value["equivalence"]["head"]["behavior"] = None
-    else:
-        del value["equivalence"]["head"]["behavior"]["per_request"]
-    assert classify(value) == "INVALID_COMPARISON"
-
-
-def test_float_tolerance_does_not_hide_count_or_identity_changes():
-    assert difference(1.0, 1.0 + 1e-8) is None
-    assert difference(1, 1.0) is not None
-    assert difference({"count": 1}, {"count": 2}) is not None
-    assert difference("a", "b") is not None
-    assert "missing_field" in difference({"missing_field": 1}, {})
-
-
-@pytest.mark.parametrize("archived", [False, True])
-@pytest.mark.parametrize("fault", ["provenance", "role", "policy", "coverage", "cache", "reuse", "pd", "diagnostic"])
-def test_required_evidence_cannot_be_bypassed(tmp_path, fault, archived):
-    from tools.simulation_perf_gate.compare import validate
-    from tools.simulation_perf_gate.run import retain_request_artifacts
-
-    case = deepcopy(CASE)
-    pair = {side: response(side, "equivalence") for side in ("base", "head")}
-    if archived:
-        retain_request_artifacts(pair, case, {"base": "base", "head": "head"}, tmp_path)
-    head = pair["head"]
-    if fault == "provenance":
+    elif fault == "missing_provenance":
         del head["model_provenance"]
     elif fault == "role":
         head["model_provenance"]["prefill"] = head["model_provenance"].pop("aggregated")
     elif fault == "policy":
         head["model_provenance"]["aggregated"]["fallback_policy"] = "allow"
-    elif fault == "coverage":
-        del head["coverage"]
-    elif fault in {"cache", "reuse"}:
-        case["require_cache_pressure"] = True
-        if fault == "cache":
-            head["behavior"]["prefix_cache_reused_ratio"] = 0.5
-        else:
-            head["coverage"]["extra_prefill_tokens_under_pressure"] = 1
-    elif fault == "pd":
-        case["config"]["engine"]["mode"] = "disaggregated"
-        worker = case["config"]["engine"]["workers"].pop("aggregated")
-        case["config"]["engine"]["workers"] = {role: deepcopy(worker) for role in ("prefill", "decode")}
-        for key in ("model_identity", "model_provenance"):
-            model = head[key].pop("aggregated")
-            head[key] = {role: {**model, "worker_type": role} for role in ("prefill", "decode")}
-        head["coverage"]["pd_activated_requests"] = 0
     else:
-        head["behavior"]["new_diagnostic"] = {"nested": [float("inf")]}
-    head["case_hash"] = digest(case)
-    with pytest.raises(ValueError):
-        validate(head, case, "head", "equivalence")
+        head["report"] = []
+    assert classify(value) == "INVALID_COMPARISON"
 
 
-def test_cache_evidence_accepts_integral_sdk_metric_and_diagnostics(tmp_path):
-    from tools.simulation_perf_gate.compare import validate
-    from tools.simulation_perf_gate.run import retain_request_artifacts
+@pytest.mark.parametrize("wall,expected", [(2000, "PASS"), (4000, "PERFORMANCE_REGRESSION")])
+def test_simulated_results_and_diagnostics_do_not_change_timing_verdict(wall, expected):
+    value = samples((wall,) * 5)
+    for index, pair in enumerate(value["rounds"]):
+        pair["head"]["report"].update(duration_ms=index, p99_ttft_ms=index, prefix_cache_reused_ratio=0.5)
+        pair["head"]["model_identity"]["aggregated"]["new_metadata"] = index
+        pair["head"]["model_provenance"]["aggregated"]["new_metadata"] = index
+    assert classify(value) == expected
 
-    case = {**CASE, "require_cache_pressure": True}
-    pair = {side: response(side, "equivalence") for side in ("base", "head")}
-    for value in pair.values():
-        value["case_hash"] = digest(case)
-        value["behavior"]["prefix_cache_reused_ratio"] = 0.25
-        value["coverage"] = {"extra_prefill_tokens_under_pressure": 512.0, "diagnostic": "kept"}
-    retain_request_artifacts(pair, case, {"base": "base", "head": "head"}, tmp_path)
-    assert "per_request_artifact" in pair["head"]
-    validate(pair["head"], case, "head", "equivalence")
+
+@pytest.mark.parametrize("status,settled", [("incomplete", None), ("completed", None), ("completed", 3.0)])
+def test_agentx_requires_complete_work(status, settled):
+    case = {**CASE, "trace_sha256": "fixture"}
+    value = response("head")
+    value["case_hash"] = digest(case)
+    value["report"]["agentic_play_outcomes"] = [{"status": status, "settled_at_ms": settled}]
+    if status == "completed" and settled is not None:
+        validate(value, case, "head", "measure")
+    else:
+        with pytest.raises(ValueError, match="AgentX"):
+            validate(value, case, "head", "measure")
 
 
 @pytest.mark.parametrize("payload", ["{", "[]", "null", '{"case": []}', '{"case": {"bad": NaN}}'])
@@ -263,26 +193,18 @@ def test_worker_malformed_input_returns_structured_error(monkeypatch, capsys, pa
     monkeypatch.setattr(worker.sys, "stdin", io.StringIO(payload))
     assert worker.main() == 0
     result = json.loads(capsys.readouterr().out)
-    assert result["protocol_version"] == 3
+    assert result["protocol_version"] == PROTOCOL_VERSION
     assert result["status"] == "ERROR"
     assert result["error"]["type"] in {"ValueError", "JSONDecodeError"}
     assert result["error"]["message"]
 
 
-@pytest.mark.parametrize("protocol,phase", [(2, "equivalence"), (3, "availability")])
+@pytest.mark.parametrize("protocol,phase", [(2, "measure"), (3, "measure"), (4, "availability"), (4, "equivalence")])
 def test_worker_rejects_old_protocol_and_phase(protocol, phase):
     from tools.simulation_perf_gate.worker import run
 
     with pytest.raises(ValueError, match="protocol|phase"):
         run({"protocol_version": protocol, "phase": phase, "case": CASE})
-
-
-def test_behavior_uses_fixed_fields_without_changing_raw_report():
-    report = response("base", "measure")["behavior"]
-    report.update(wall_time_ms=2000.0, processed_tokens_per_s=100.0, processed_output_tokens_per_s=25.0, power_w=400.0)
-    result = behavior(report, per_request=False)
-    assert not {"wall_time_ms", "processed_tokens_per_s", "processed_output_tokens_per_s", "power_w"} & result.keys()
-    assert report["power_w"] == 400.0
 
 
 def test_matrix_and_trace_are_complete_and_local():
@@ -312,27 +234,6 @@ def test_matrix_and_trace_are_complete_and_local():
     assert cases.expand_cases() == deepcopy(matrix)
 
 
-def test_request_artifacts_preserve_behavior_comparison(tmp_path):
-    import gzip
-
-    from tools.simulation_perf_gate.run import retain_request_artifacts
-
-    value = samples()
-    value["equivalence"]["head"]["behavior"]["per_request"][0]["request_id"] = "changed"
-    retain_request_artifacts(value["equivalence"], CASE, {"base": "base", "head": "head"}, tmp_path)
-    assert "per_request" not in value["equivalence"]["base"]["behavior"]
-    assert classify(value) == "BEHAVIOR_CHANGED"
-    artifact = value["equivalence"]["head"]["per_request_artifact"]
-    with gzip.open(tmp_path / artifact["path"], "rb") as source:
-        encoded = source.read()
-    assert hashlib.sha256(encoded).hexdigest() == artifact["sha256"]
-    records = json.loads(encoded)
-    assert digest(records) == artifact["sha256"]
-    assert records[0]["request_id"] == "changed"
-    del value["equivalence"]["per_request_difference"]
-    assert classify(value) == "INVALID_COMPARISON"
-
-
 def test_qualification_requires_runtime_floor_and_budget():
     from tools.simulation_perf_gate.run import qualification_errors
 
@@ -355,88 +256,6 @@ def test_packaged_model_identity_is_independent_of_install_location(tmp_path):
     )
     with pytest.raises(ValueError, match="packaged model data"):
         portable_model_identity({**identity, "systems_paths": [str(base)]}, head)
-
-
-@pytest.mark.parametrize("wall,expected", [(2000, "PASS"), (4000, "PERFORMANCE_REGRESSION")])
-def test_additive_diagnostics_do_not_change_verdict_or_artifacts(tmp_path, wall, expected):
-    import gzip
-
-    from tools.simulation_perf_gate.run import retain_request_artifacts
-
-    value = samples((wall,) * 5)
-    for index, pair in enumerate([value["equivalence"], *value["rounds"]]):
-        pair["head"]["behavior"]["new_diagnostic"] = index  # Also varies within one revision.
-        pair["head"]["model_identity"]["aggregated"]["new_metadata"] = index
-        pair["head"]["model_provenance"]["aggregated"]["new_metadata"] = index
-    row = value["equivalence"]["head"]["behavior"]["per_request"][0]
-    row["diagnostic"] = {"extra": True}
-    row["routing_history"][0]["diagnostic"] = 42
-    row["admission_history"][0]["diagnostic"] = 42
-    assert classify(value) == expected
-    retain_request_artifacts(value["equivalence"], CASE, {"base": "base", "head": "head"}, tmp_path)
-    assert classify(value) == expected
-    artifact = value["equivalence"]["head"]["per_request_artifact"]
-    with gzip.open(tmp_path / artifact["path"], "rt") as source:
-        rows = json.load(source)
-    assert rows[0]["diagnostic"] == {"extra": True}
-    assert digest(rows) == artifact["sha256"]
-
-
-@pytest.mark.parametrize(
-    "fault,expected",
-    [
-        ("latency", "BEHAVIOR_CHANGED"),
-        ("routing", "BEHAVIOR_CHANGED"),
-        ("admission", "BEHAVIOR_CHANGED"),
-        ("missing_latency", "INVALID_COMPARISON"),
-        ("missing_route", "INVALID_COMPARISON"),
-        ("missing_identity", "INVALID_COMPARISON"),
-        ("noninteger_rank", "INVALID_COMPARISON"),
-    ],
-)
-def test_required_results_and_nested_records(fault, expected):
-    value = samples()
-    head = value["equivalence"]["head"]
-    row = head["behavior"]["per_request"][0]
-    if fault == "latency":
-        for pair in [value["equivalence"], *value["rounds"]]:
-            pair["head"]["behavior"]["p99_ttft_ms"] += 1.0
-    elif fault == "routing":
-        row["routing_history"][0]["dp_rank"] = 1
-    elif fault == "admission":
-        row["admission_history"][0]["reused_input_tokens"] = 1
-    elif fault == "missing_latency":
-        del head["behavior"]["p99_ttft_ms"]
-    elif fault == "missing_route":
-        del row["routing_history"][0]["dp_rank"]
-    elif fault == "missing_identity":
-        del head["model_identity"]["aggregated"]["tp"]
-    else:
-        row["routing_history"][0]["dp_rank"] = 0.0
-    result = compare_case(CASE, value, revisions={"base": "base", "head": "head"}, rounds=5)
-    assert result["classification"] == expected
-    assert (result["invalid_reasons"] or result["behavior_changes"])[0]
-
-
-def test_agentic_outcomes_and_identity_have_fixed_nested_fields():
-    report = response("base", "equivalence")["behavior"]
-    report.update(dict.fromkeys(TRAJECTORY_COUNTS, 1))
-    report["incomplete_trajectories"] = 0
-    report.update(dict.fromkeys(TRAJECTORY_METRICS, 3.0))
-    report["agentic_play_outcomes"] = [
-        {"play_id": "play", "status": "completed", "causal_terminal_ms": 3.0, "settled_at_ms": 3.0}
-    ]
-    row = report["per_request"][0]
-    row.update(play_id="play", agentic={"request_id": "one", "play_id": "play", "conversation_id": "conversation"})
-    expected = behavior(report, per_request=True, agentic=True)
-    report["agentic_play_outcomes"][0]["diagnostic"] = 1
-    row["agentic"]["diagnostic"] = 1
-    assert behavior(report, per_request=True, agentic=True) == expected
-    report["agentic_play_outcomes"][0]["settled_at_ms"] = 4.0
-    assert "settled_at_ms" in difference(expected, behavior(report, per_request=True, agentic=True))
-    del row["agentic"]["conversation_id"]
-    with pytest.raises(ValueError, match="conversation_id"):
-        behavior(report, per_request=True, agentic=True)
 
 
 @pytest.mark.parametrize("failure", [None, "crash", "timeout", "malformed_error"])

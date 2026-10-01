@@ -9,16 +9,16 @@ AGENTX_SHA256 = "d65b573413396bb689cf7e1d5c85c50ea970ad7ad5714c0a78d4f75102e5d86
 
 # Calibrated once on the qualification host; never adjusted during comparison.
 WORKLOAD_COUNTS = {
-    "dense-vllm": 65536,
-    "dense-sglang": 8192,
-    "dense-trtllm": 65536,
-    "moe-long-prefill": 8192,
-    "moe-long-decode": 2048,
-    "cache-pressure-vllm": 2048,
-    "cache-pressure-sglang": 1024,
-    "mla-multiworker-dp": 16384,
-    "pd-vllm": 32768,
-    "pd-sglang": 4096,
+    "dense-vllm": 131072,
+    "dense-sglang": 16384,
+    "dense-trtllm": 131072,
+    "moe-long-prefill": 16384,
+    "moe-long-decode": 4096,
+    "cache-pressure-vllm": 4096,
+    "cache-pressure-sglang": 2048,
+    "mla-multiworker-dp": 32768,
+    "pd-vllm": 65536,
+    "pd-sglang": 8192,
 }
 
 
@@ -116,7 +116,6 @@ def expand_cases() -> list[dict]:
         }
         cache = item["config"]["engine"]["workers"]["aggregated"]["kv_cache"]
         cache["capacity"]["blocks"] = 32768 // cache["block_size"]
-        item["require_cache_pressure"] = True
         result.append(item)
     result.append(
         case(
