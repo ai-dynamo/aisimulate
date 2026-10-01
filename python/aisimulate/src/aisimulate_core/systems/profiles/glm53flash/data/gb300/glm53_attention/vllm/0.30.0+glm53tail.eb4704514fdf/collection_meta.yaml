@@ -1,0 +1,36 @@
+schema_version: 1
+runtime:
+  framework: vllm
+  version: 0.30.0+glm53tail.eb4704514fdf
+  image: vllm/vllm-openai
+  image_digest: sha256:4864d46625cbc3307623e29ac742030655e27249feba7b97ec925ce4cc4dfb56
+tables:
+  glm53_attention_module_perf:
+    status: complete
+    rows: 1816
+    data_sha256: 744987a914fd0f3416e3c00090ce6a307a65d4c844a62dc540ba5f178e2d9839
+    collector: collector.vllm.glm53flash_attention_runner
+    measurement: one real sparse-MLA layer (3); prefill eager repeated module call,
+      decode module CUDA graph from the framework decode capture; output all-reduce
+      excluded
+    attempts:
+    - attempt: full-vllm-fp8-tp2-3638feb85c5d-09301719
+      manifest_sha256: cc0f2313994fbf7543e4d1219ebf19fe4d34047a98bbfc928a726fe40f9e175b
+      plan_sha256: 7aa5582c70a9e03d601cdd19e3dc7792a2bb39834b68ac8d1091857959020b9c
+      deployment: fp8-tp2
+      source_commit: 3638feb85c5d1dd9407d550c022f1839d0e25ff0
+    - attempt: full-vllm-fp8-tp4-3638feb85c5d-09301719
+      manifest_sha256: 78e20c977c579e517de6f9d8293fe8efe6c3a5bfe9556e43263510e53775bd2e
+      plan_sha256: 7aa5582c70a9e03d601cdd19e3dc7792a2bb39834b68ac8d1091857959020b9c
+      deployment: fp8-tp4
+      source_commit: 3638feb85c5d1dd9407d550c022f1839d0e25ff0
+    - attempt: full-vllm-nvfp4-tp2-3638feb85c5d-09301719
+      manifest_sha256: 9d11a955096ec6190094ecfa5546605fa68d0eb6831df46fb39abe193325120d
+      plan_sha256: 7aa5582c70a9e03d601cdd19e3dc7792a2bb39834b68ac8d1091857959020b9c
+      deployment: nvfp4-tp2
+      source_commit: 3638feb85c5d1dd9407d550c022f1839d0e25ff0
+    - attempt: full-vllm-nvfp4-tp4-3638feb85c5d-09301719
+      manifest_sha256: 4b26c39a16046d75fe7fd74aa8eeffe25daef0e47bf9ccc7f8bbfb1aca512401
+      plan_sha256: 7aa5582c70a9e03d601cdd19e3dc7792a2bb39834b68ac8d1091857959020b9c
+      deployment: nvfp4-tp4
+      source_commit: 3638feb85c5d1dd9407d550c022f1839d0e25ff0
