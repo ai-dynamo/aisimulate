@@ -27,9 +27,11 @@ changes from [#284](https://github.com/ai-dynamo/aisimulate/pull/284)
 (merged commit `982c18f4e8e33c124b5195945db269b83168ed3f`), including `dcp`,
 `text_only`, `unrecorded_quant_modes`, and engine-stack `decode_context`. Verify
 that build separately if your guided-onboarding checkout lacks these options.
-`onboard init` and its collection presets do not enumerate DCP, so this published
-profile uses the canonical SDK and ordinary prediction directly. Do not replace
-DCP8 with TP8-only to make a guided request pass.
+This is a supported measured-FPM and engine Replay path. The current
+[`onboard init` and resource-profile schema](implementation.md#parallelism-support-and-guided-cli-coverage)
+do not yet expose that DCP identity, so this published profile uses the canonical
+SDK and ordinary prediction directly. Do not replace DCP8 with TP8-only to make
+a guided request pass.
 
 This example imports a profile already collected through Dynamo self-benchmarking.
 First [prepare the environment](implementation.md#prepare-the-environment) and

@@ -35,12 +35,30 @@ artifacts: the table alone does not establish serving memory capacity. The
 [examples](examples.md) cover both importing an existing Kimi profile and
 collecting a new MiniMax profile.
 
+### Parallelism within an iteration
+
+Self-service is intended to cover parallelism whose computation and communication
+fit inside the measured forward iteration while preserving Replay's iteration-level
+execution contract. Whole-forward measurements include those costs without needing
+an analytical model for every internal operation. DCP is already supported by the
+measured-FPM consumer and engine Replay, as demonstrated by the
+[Kimi TP8+DCP8 example](examples.md#example-a-onboard-the-collected-kimi-k3-tp8dcp8-profile).
+
+Timing is only part of that contract. Keep the actual per-rank work, topology,
+cache geometry and usable capacity consistent with the measured deployment;
+DCP changes KV sharding and therefore cannot reuse TP-only resource assumptions.
+The supported timing paths and the configurations exposed by the guided CLI
+are tracked separately in the [parallelism implementation details](implementation.md#parallelism-support-and-guided-cli-coverage).
+
 ### When this workflow does not apply
 
 Self-service supplies customized **engine step times** for a measured identity
 and supported query shapes. It does not implement new serving behavior. Layer-wise
 KV transfer, a custom scheduler or overlap policy, and unsupported recurrent-cache
 semantics need corresponding Replay support; more timing samples cannot add it.
+If a parallel execution scheme changes scheduling or dependencies across
+iterations, such as an overlapping pipeline, one measured forward time alone
+cannot represent those changes.
 
 It also does not qualify end-to-end latency or throughput by itself. TTFT,
 ITL/TPOT and throughput depend on scheduling, traffic, cache behavior and transfers
@@ -54,7 +72,7 @@ For online learning from per-iteration telemetry, use the separate
 | --- | --- |
 | Self-benchmark backend | vLLM configurations that pass model/runtime qualification. SGLang and TensorRT-LLM are not supported by this guided collection workflow yet; this does not describe their broader AISimulate modeling support. |
 | Model metadata | A local pinned `config.json` or an existing FPM profile. Direct interpolation can use a verified architecture without a registered analytical class. New architectures may need benchmark state preparation, measurement hooks or an audited resource-observation adapter. |
-| Parallelism | Guided TP, DEP and TEP configurations with `PP=CP=1`. DCP is not a guided collection dimension; the [Kimi example](examples.md#example-a-onboard-the-collected-kimi-k3-tp8dcp8-profile) imports a separately collected DCP profile through its compatible consumer path. |
+| Parallelism | Whole-forward timing can capture intra-iteration computation and communication. DCP is supported through measured FPM and engine Replay. Exact topology/resource identity and query coverage remain required; see [current guided CLI coverage](implementation.md#parallelism-support-and-guided-cli-coverage) for collection automation limits. |
 | Serving roles | Aggregated workers collect both prefill and decode. Prefill and decode can also be collected independently with separate accepted configurations. Their role exports must be composed separately for serving; `onboard validate-fpm` currently validates aggregated replay. |
 | GPU execution | Kubernetes by default, or Slurm/Pyxis inside a caller-owned allocation. Both have multi-node launch paths; placement and GPU requirements come from the generated plan. The workflow does not provision the cluster or acquire a Slurm allocation. |
 | Cache and multimodal scope | The profile route covers supported linear/grouped cache layouts and text decoders. Grouped Replay currently requires cold aggregated execution, HBM-only cache, no speculation and no prefix caching. A multimodal checkpoint's text profile excludes encoder, projector and preprocessing latency. |
@@ -119,7 +137,7 @@ engine. A plan does not establish target readiness or measured coverage.
 
 For existing data, compare its identity, provenance and coverage with the intended
 deployment before following the import path. The [Kimi example](examples.md#example-a-onboard-the-collected-kimi-k3-tp8dcp8-profile)
-uses the SDK directly because its DCP identity is outside guided collection.
+demonstrates the supported SDK and engine Replay path for a measured DCP profile.
 
 Details: [plan and preview](implementation.md#plan-preview-and-explicitly-execute),
 [executors](implementation.md#choose-the-collection-executor), and

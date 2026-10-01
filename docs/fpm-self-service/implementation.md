@@ -411,7 +411,32 @@ Onboarding takes no GPU-pool or node-allocation inputs. The selected topology es
 | DEP8 | `--tensor-parallel 1 --attention-data-parallel 8 --moe-tensor-parallel 1 --moe-expert-parallel 8` | `(1, 1, 8, 1, 8, 1)` |
 | TEP8 | `--tensor-parallel 8 --attention-data-parallel 1 --moe-tensor-parallel 1 --moe-expert-parallel 8` | `(8, 1, 1, 1, 8, 1)` |
 
-The profile route supports vLLM text decoders, including the text portion of multimodal checkpoints, with PP1, CP1 and linear or grouped cache storage. Recorded DCP is not represented by this profile schema and is rejected; existing registered-model DCP profiles remain a separate supported path. Groups describe full attention, sliding-window attention and supported short-convolution state. Grouped execution currently requires cold aggregated workers, HBM-only cache, no speculative decoding and `prefix_caching: false`. Prefix reuse, host/G3 offload, disaggregation and scalar cache-capacity overrides are rejected for grouped profiles. AFD, encoder pools, unsupported recurrent state, wide EP and EPLB remain outside this route.
+The profile route supports vLLM text decoders, including the text portion of multimodal checkpoints, and linear or grouped cache storage. Its current parallelism constraints are listed below. Groups describe full attention, sliding-window attention and supported short-convolution state. Grouped execution currently requires cold aggregated workers, HBM-only cache, no speculative decoding and `prefix_caching: false`. Prefix reuse, host/G3 offload, disaggregation and scalar cache-capacity overrides are rejected for grouped profiles. AFD, encoder pools, unsupported recurrent state, wide EP and EPLB remain outside this route.
+
+### Parallelism support and guided CLI coverage
+
+The [modeling boundary](README.md#parallelism-within-an-iteration) is the measured
+iteration and Replay's execution/resource contract. The guided CLI's preset list
+is not a general limit on which intra-iteration parallelism FPM can represent.
+
+| Path | Current implementation |
+| --- | --- |
+| Measured DCP timing and engine Replay | Supported with exact recorded `dcp` identity. The [Kimi example](examples.md#example-a-onboard-the-collected-kimi-k3-tp8dcp8-profile) queries the measured pair and supplies the corresponding logical KV block size and usable capacity to `--stack engine` prediction. Preserve the topology and resource evidence; DCP is not an additional multiplier on TP GPU count. |
+| Guided request and collection | [`onboard init`](../../python/aisimulate/src/aisimulate/support/cli.py) exposes attention TP/DP and MoE TP/EP. Its [request schema](../../python/aisimulate/src/aisimulate/support/schema.py) has no DCP field, and the current collector presets fix `PP=CP=1`. |
+| Guided `fpm_profile` resource schema | [`FpmDeploymentProfile`](../../python/aisimulate/src/aisimulate_core/fpm_profile.py) fixes `pp` and `cp` to 1 and does not represent DCP. The [canonical constructor](../../crates/core/src/perfmodel/fpm/config.rs) explicitly rejects combining this profile with recorded `dcp`, rather than interpreting it as a TP-only resource profile. |
+
+The collector/profile `cp` field and recorded `dcp` are distinct fields. Do not
+read `CP=1` as evidence that the measured-FPM DCP consumer is unsupported.
+Connecting DCP to the guided path requires representing and forwarding its
+identity and matching cache/resource observations through request, collection
+and finalization. Adding a CLI flag or removing the profile guard alone is not
+enough. Until that integration exists, use the supported existing-profile path
+for DCP and retain the restrictions in [Replay configuration](#configure-replay).
+
+The same distinction applies to other parallel modes: measurements can include
+intra-iteration costs, but collectors must launch and measure the exact mode,
+and consumers must represent its resources. Scheduling, overlap or dependencies
+across iterations require explicit Replay support in addition to forward timings.
 
 ### Runtime and collection limits
 
