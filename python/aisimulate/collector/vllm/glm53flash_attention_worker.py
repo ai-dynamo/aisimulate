@@ -199,6 +199,7 @@ class Probe:
         finally:
             o_proj.reduce_results = reduce
         latencies = timer.read()
+        host = [round(v, 4) for v in timer.host_ms[STATE.options["warmup"] :]]
         finite = all(bool(torch.isfinite(o).all().item()) for o in outputs)
         drift = float((outputs[-1].float() - outputs[0].float()).abs().max().item())
         STATE.writer.samples(
@@ -206,7 +207,7 @@ class Probe:
             latencies,
             options["warmup"],
             self.source,
-            {"finite": finite, "repeat_max_abs_diff": drift, **classification},
+            {"finite": finite, "repeat_max_abs_diff": drift, "host_enqueue_ms": host, **classification},
         )
         if not finite:
             STATE.error = f"nonfinite attention output for {target['target_id']}"
@@ -250,9 +251,14 @@ class Probe:
         for _ in range(options["warmup"] + options["iterations"]):
             timer(graph.replay)
         latencies = timer.read()
+        host = [round(v, 4) for v in timer.host_ms[STATE.options["warmup"] :]]
         finite = bool(torch.isfinite(output[:batch]).all().item())
         STATE.writer.samples(
-            target, latencies, options["warmup"], self.source, {"finite": finite, "padded_tokens": padded}
+            target,
+            latencies,
+            options["warmup"],
+            self.source,
+            {"finite": finite, "padded_tokens": padded, "host_enqueue_ms": host},
         )
         del graph
         if not finite:
