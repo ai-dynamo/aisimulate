@@ -1826,17 +1826,42 @@ findings:
     - nvidia/Kimi-K2.6-NVFP4
     - nvidia/Kimi-K2.7-Code-NVFP4
   sm120_dsv41_sparse_mla_no_decode_shape:
-    statement: 'PLATFORM GAP (vllm 0.30.0 on sm120): DeepSeek-V4.1-Flash and nvidia/DeepSeek-V4.1-Flash-NVFP4 fail
-      at load (both KV variants) with ValueError "SM120 sparse-MLA has no decode kernel for this shape: num_tokens=64,
-      num_heads=64, topk=128, d_qk=512, page_block_size=32, model_type=1, extra_topk=0" — the sm120 sparse-MLA decode
-      dispatch (vllm/utils/flashinfer.py _DECODE_DSV4_DISPATCH, an enumerated shape table) has no entry for the
-      V4.1-Flash head/topk geometry, while DeepSeek-V4-Flash/Pro (same backend, different topk/heads) PASS. Rendered
-      config is not involved (the shape comes from the checkpoint). sm90 runs both V4.1 repos.'
+    statement: 'PLATFORM GAP (vllm 0.30.0 on sm120), re-verified 2026-10-01 on the faithful dsv41 dummy (7-layer source+consumer
+      cut, upstream a04c849c) after the first verdict ran on the unfaithful 2-layer cut: DeepSeek-V4.1-Flash and
+      nvidia/DeepSeek-V4.1-Flash-NVFP4 cannot boot on sm120 under ANY kv block size. The KV block size is pinned from two
+      sides that disagree off Hopper: DeepseekV41IndexerBackend.get_supported_kernel_block_sizes() returns [64] only on
+      capability family 90 and [128] everywhere else (vllm/v1/attention/backends/mla/indexer.py:262-263), while the sm120
+      sparse-MLA decode path (flashinfer 0.6.18 _sparse_mla_sm120.py: _DECODE_DSV4_PAGE_BLOCK_SIZE = 64; 0.7.0.post1
+      _sparse_mla_sm120_plan.py: _PAGE_BLOCK_SIZE = 64) accepts page 64 only. Observed: default block -> DeepGEMM
+      "block_kv == 32 or block_kv == 64" (attention.hpp:409) from the indexer metadata build; --block-size 64 (the V4.1 facts
+      value that rescues H20/sm90) -> "No common block size for 64" (worker/utils.py:386, select_common_block_size); the
+      original 2-layer run showed the third face of the same conflict ("no decode kernel for this shape ... page_block_size=32").
+      Not config-rescuable; needs a vllm change (indexer block 64 when the sm120 FlashInfer sparse backend is selected).
+      The latest vllm RELEASE is still 0.30.0 (PyPI 2026-10-01), so no released vllm runs V4.1 on RTX PRO / sm120; vllm main
+      not probed. DeepSeek-V4-Flash/Pro (indexer block 256, no V4.1 indexer class) PASS on sm120. A/B evidence:
+      facts/ab_sm120/{32100c75d1df,c78c20c47673}_bs64.json; stale goldens/dummies in archive/superseded_*/2026-10-01_*.'
     applies_to:
     - platform:sm120
     - framework:vllm-0.30.0
-    - deepseek-ai/DeepSeek-V4.1-Flash
-    - nvidia/DeepSeek-V4.1-Flash-NVFP4
+    - model:deepseek-ai/DeepSeek-V4.1-Flash
+    - model:nvidia/DeepSeek-V4.1-Flash-NVFP4
+  rtx_systems_have_no_generator_facts_hardware_profile:
+    statement: 'GENERATOR GAP (found while re-probing V4.1 on sm120, 2026-10-01): model-default cli args from
+      generator/facts/models.yaml (e.g. V4.1 block-size 64, trust-remote-code, no-enable-flashinfer-autotune; V4 block-size 256)
+      are NEVER applied when --system is an RTX PRO system. request_resolution.hardware_key_for_system() has no entry for
+      rtx_pro_6000_server (map covers h100/h200/h20/b200/b300/gb200/gb300 only) and falls back to the raw name; resolve_facts()
+      raises KeyError("Unknown hardware profile rtx_pro_6000_server ... [b200, b60, gb200, h100, h20, h200]") and
+      pipeline.run_pipeline swallows it ("Fact resolution failed; continuing without facts", facts=None), so apply_facts is a
+      no-op. Every sm120 golden render in this campaign (archive/golden/*/render.log carries the KeyError) therefore ran
+      without model defaults; the harness has been compensating with --generator-set params.agg.trust_remote_code=true in
+      targets.yaml. The upstream "drop the harness override" for V4.1 block-size (a04c849c) is correct on H20 and silently
+      inert on RTX. Candidate fix (generator, owner approval): add an rtx_pro hardware profile to facts/hardware.yaml and map
+      rtx_pro_6000_server (and the future RTX PRO 5000 system) in _SYSTEM_TO_HW; or make unknown hardware degrade to
+      model-only facts instead of none.'
+    applies_to:
+    - platform:sm120
+    - instrument:generator
+    - instrument:probe_driver
   sm120_capacity_72gb:
     statement: 'CAPACITY (72GB probe GPU vs 143GB H20): Qwen/Qwen3.8-2.4T-A95B{,-FP8} and nvidia/Qwen3.8-2.4T-A95B-NVFP4
       OOM at load even on the depth4 cut (one MoE layer of the 2.4T model exceeds the card: 32 GiB single allocation
