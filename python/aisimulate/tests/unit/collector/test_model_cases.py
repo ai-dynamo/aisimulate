@@ -1030,14 +1030,16 @@ def test_cross_model_common_cases_expand_from_base_op_yaml_sweeps(monkeypatch):
     # Qwen3.8-Max adds context/generation at TP 1/2/4/8/16.
     assert len(get_common_gdn_test_cases()) == 84
     mhc_cases = get_common_mhc_test_cases()
-    assert len(mhc_cases) == 8
-    assert {(case.model_name, case.phase, case.hidden_size, case.hc_mult) for case in mhc_cases} == {
-        (model_name, phase, hidden_size, 4)
-        for model_name, hidden_size in (
-            ("deepseek-ai/DeepSeek-V4-Flash", 4096),
-            ("sgl-project/DeepSeek-V4-Flash-FP8", 4096),
-            ("deepseek-ai/DeepSeek-V4-Pro", 7168),
-            ("sgl-project/DeepSeek-V4-Pro-FP8", 7168),
+    # GLM-5.3-Flash adds one aliased (FP8/NVFP4) mHC row.
+    assert len(mhc_cases) == 10
+    assert {(case.model_name, case.architecture, case.phase, case.hidden_size, case.hc_mult) for case in mhc_cases} == {
+        (model_name, architecture, phase, hidden_size, 4)
+        for model_name, architecture, hidden_size in (
+            ("deepseek-ai/DeepSeek-V4-Flash", "DeepseekV4ForCausalLM", 4096),
+            ("sgl-project/DeepSeek-V4-Flash-FP8", "DeepseekV4ForCausalLM", 4096),
+            ("deepseek-ai/DeepSeek-V4-Pro", "DeepseekV4ForCausalLM", 7168),
+            ("sgl-project/DeepSeek-V4-Pro-FP8", "DeepseekV4ForCausalLM", 7168),
+            ("zai-org/GLM-5.3-Flash", "Glm5NextForConditionalGeneration", 4096),
         )
         for phase in ("pre", "post")
     }
