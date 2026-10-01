@@ -1,8 +1,9 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Fixed protocol-v2 comparison fields, independent of native diagnostic schemas."""
+"""Fixed protocol-v3 comparison fields, independent of native diagnostic schemas."""
 
 import math
+from pathlib import Path
 
 MODEL_FIELDS = (
     "model",
@@ -94,6 +95,82 @@ ADMISSION_FIELDS = (
 )
 AGENT_FIELDS = ("request_id", "play_id", "conversation_id")
 PLAY_FIELDS = ("play_id", "status", "causal_terminal_ms", "settled_at_ms")
+
+
+def check_finite(value: object) -> None:
+    """Check every number, including diagnostics, without encoding another JSON copy."""
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise ValueError("non-finite number in worker data")
+    elif isinstance(value, dict):
+        for item in value.values():
+            check_finite(item)
+    elif isinstance(value, list):
+        for item in value:
+            check_finite(item)
+
+
+def check_evidence(response: dict, case: dict, phase: str, summary: dict) -> None:
+    """Require role-specific real models and coverage even after records are archived."""
+    engine = case["config"]["engine"]
+    roles = {"prefill", "decode"} if engine["mode"] == "disaggregated" else {"aggregated"}
+    identity = model_identity(response.get("model_identity"))
+    provenance = response.get("model_provenance")
+    if set(identity) != roles or not isinstance(provenance, dict) or set(provenance) != roles:
+        raise ValueError("missing role-specific model provenance or identity")
+    for role in roles:
+        model = provenance[role]
+        projected = fields(model, MODEL_FIELDS, f"/model_provenance/{role}")
+        if projected != {key: identity[role][key] for key in MODEL_FIELDS}:
+            raise ValueError(f"{role}: model provenance differs from identity")
+        worker = engine["workers"][role]
+        parallelism = worker["parallelism"]
+        expected = {
+            "provider": "aic",
+            "estimation_mode": "op_level",
+            "fallback_policy": "deny",
+            "database_mode": "SILICON",
+            "enable_shared_layer": True,
+            "worker_type": role,
+            "tp": parallelism["tensor"],
+            "pp": parallelism["pipeline"],
+            "attention_dp": parallelism["attention_data"],
+            "kv_block_size": worker["kv_cache"]["block_size"],
+            "model": engine["model"],
+            "system": engine["hardware"],
+            "backend": engine["backend"],
+            "backend_version": engine["backend_version"],
+        }
+        if any(type(model.get(key)) is not type(value) or model[key] != value for key, value in expected.items()):
+            raise ValueError(f"{role}: invalid real-model provenance")
+        paths = model.get("systems_paths")
+        if (
+            identity[role]["systems_paths"] != ["package:aisimulate_core/systems"]
+            or not isinstance(paths, list)
+            or not paths
+            or any(not isinstance(path, str) or not Path(path).is_absolute() for path in paths)
+        ):
+            raise ValueError(f"{role}: missing packaged model provenance")
+    coverage = response.get("coverage")
+    if not isinstance(coverage, dict):
+        raise ValueError("missing coverage evidence")
+    if phase != "equivalence":
+        return
+    if case.get("require_cache_pressure"):
+        extra = coverage.get("extra_prefill_tokens_under_pressure")
+        if (
+            type(extra) not in (int, float)
+            or extra <= 0
+            or int(extra) != extra
+            or summary["prefix_cache_reused_ratio"] <= 0
+        ):
+            raise ValueError("cache coverage requires reuse and additional prefill under pressure")
+    if engine["mode"] == "disaggregated":
+        activated = coverage.get("pd_activated_requests")
+        if type(activated) is not int or activated != case["expected_requests"]:
+            raise ValueError("P/D coverage requires every destination activation")
+        if "per_request" in summary and any(row["destination_activated_ms"] is None for row in summary["per_request"]):
+            raise ValueError("P/D records are missing a destination activation")
 
 
 def fields(value: dict, required: tuple[str, ...], path: str, optional: tuple[str, ...] = ()) -> dict:

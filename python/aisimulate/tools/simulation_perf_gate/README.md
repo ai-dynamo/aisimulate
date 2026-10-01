@@ -32,13 +32,15 @@ The versioned worker protocol hashes the full controller-supplied case. A worker
 checks its local trace hash and reports a fixed model identity for each role:
 model, system, backend/version, worker type, parallelism, attention backend,
 quantization, KV block size, and the installation-relative packaged data root.
-The complete configuration remains in `model_provenance`; additional configuration
-metadata does not affect equivalence. Every role requires real op-level timing, fallback denied, SILICON
-data, and shared-layer reuse. Missing data is an invalid comparison on either side.
+The complete configuration and timing provider remain in `model_provenance`.
+The controller requires the expected roles and real op-level timing, fallback
+denied, SILICON data, and shared-layer reuse. It also checks coverage before
+accepting references to saved request records. Additional finite diagnostics
+do not affect equivalence. Missing evidence is an invalid comparison on either side.
 
-Protocol v2 uses one JSON request on stdin and one JSON response on stdout. Logs
+Protocol v3 uses one JSON request on stdin and one JSON response on stdout. Logs
 go to stderr. The request contains `protocol_version`, `revision`, `case`, and
-`phase` (`availability` or `measure`). The response echoes the version, revision,
+`phase` (`equivalence` or `measure`). The response echoes the version, revision,
 phase, `case_id`, and SHA-256 `case_hash`, then adds `status`, elapsed times,
 `model_identity`, `model_provenance`, `behavior`, and `coverage`. An unsuccessful
 worker returns `status="ERROR"` and an `error` with its type and message. The
@@ -46,6 +48,8 @@ controller adds `worker_elapsed_ms` to the saved response. For errors, crashes,
 and timeouts it includes the log path and last 4 KiB of stderr; full logs remain
 in the artifact. Keep
 protocol changes explicit; each revision must adapt its own public APIs.
+Protocol v3 rejects v2 workers and saved results. Existing v1/v2 artifacts remain
+historical evidence and are not rewritten.
 
 ## Coverage
 
@@ -104,14 +108,15 @@ revision's equivalence-versus-measurement checks.
 Complete per-request records are retained, compared once using this projection,
 compressed into separate artifacts, and referenced from the small checkpoints.
 An artifact's `sha256` hashes the full records encoded as canonical JSON (sorted
-keys and compact separators), not the compressed file or its decompressed bytes.
+keys and compact separators). Those same bytes are compressed once, so the hash
+also matches the decompressed artifact.
 Model identity changes are
 invalid; results from different model configurations must not be timed as peers.
 
 Artifacts include input cases/hashes, raw paired results, separate worker/replay
 times, compressed request records, coverage evidence, and subprocess logs. The CI
-workflow also retains wheel hashes, dependency manifests, toolchain version, and
-model/data Git tree IDs. Checkpoints are written after every paired case. An
+workflow also retains wheel and requirements hashes, source SHAs, container and
+build settings, tool versions, installation time, and model/data Git tree IDs. Checkpoints are written after every paired case. An
 interrupted run cannot produce a successful comparison with missing rounds.
 
 ## Run locally
@@ -144,6 +149,16 @@ including the runtime, model data, dependencies, or benchmark itself. It skips
 unrelated changes, including documentation-only changes. No repository enable
 variable is required. The selector verifies that the trusted copy matches the
 current PR head.
+
+Revision and protocol checks run in the hosted selection job. A two-entry build
+matrix then builds base and head in parallel with the same container, Python,
+Rust, and release settings. Each job uploads its own wheel, locked requirements,
+and build provenance. The comparison job waits for both builds to succeed and
+downloads artifacts by exact side and SHA from the current workflow run. It checks
+revisions, hashes, and matching build settings before separate installations.
+There is no build work in the measurement job. Paired workers remain sequential
+on one CPU. Queue/setup and total times are available in the workflow job records;
+artifacts record build, installation, and benchmark elapsed times.
 
 Manual dispatch takes `pr_number` and optional `self_compare=true`.
 Self-comparison builds/installs that head twice and runs three full qualifications.

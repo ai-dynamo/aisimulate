@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import argparse
 import gzip
+import hashlib
 import json
 import os
 import platform
@@ -20,6 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from tools.simulation_perf_gate import PROTOCOL_VERSION, digest
 from tools.simulation_perf_gate.cases import expand_cases
 from tools.simulation_perf_gate.compare import difference, validate, write_report
+from tools.simulation_perf_gate.contract import check_finite
 
 THREAD_ENV = {
     "OMP_NUM_THREADS": "1",
@@ -75,7 +77,7 @@ def invoke(
         parsed = json.loads(completed.stdout)
         if not isinstance(parsed, dict):
             raise ValueError("worker response must be a JSON object")
-        json.dumps(parsed, allow_nan=False)
+        check_finite(parsed)
         response = parsed
     except (subprocess.SubprocessError, OSError, ValueError) as error:
         response["error"] = {"type": type(error).__name__, "message": str(error)}
@@ -99,19 +101,19 @@ def retain_request_artifacts(pair: dict, case: dict, revisions: dict, output: Pa
     for side in ("base", "head"):
         response = pair[side]
         try:
-            summary = validate(response, case, revisions[side], "availability")
+            summary = validate(response, case, revisions[side], "equivalence")
         except (KeyError, TypeError, ValueError):
             continue
         rows[side] = summary["per_request"]
         full_records = response["behavior"].pop("per_request")
         name = f"{case['case_id']}-{side}-requests.json.gz"
-        encoded = json.dumps(full_records, separators=(",", ":"), allow_nan=False).encode()
+        encoded = json.dumps(full_records, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
         with gzip.open(output / name, "wb", compresslevel=1) as destination:
             destination.write(encoded)
         response["per_request_artifact"] = {
             "path": name,
             "records": len(rows[side]),
-            "sha256": digest(full_records),
+            "sha256": hashlib.sha256(encoded).hexdigest(),
             "complete": True,
         }
     if len(rows) == 2:
@@ -189,12 +191,12 @@ def main() -> int:
     started = time.monotonic()
     try:
         for round_index in range(args.rounds + 1):
-            phase = "availability" if round_index == 0 else "measure"
+            phase = "equivalence" if round_index == 0 else "measure"
             order = cases if round_index % 2 == 0 else list(reversed(cases))
             sides = ("base", "head") if round_index % 2 == 0 else ("head", "base")
             for item in order:
                 samples = raw["samples"].setdefault(item["case_id"], {"rounds": []})
-                if round_index and any(samples["availability"][s].get("status") != "OK" for s in sides):
+                if round_index and any(samples["equivalence"][s].get("status") != "OK" for s in sides):
                     continue  # The missing baseline remains an invalid result, never a pass.
                 pair = {"round": round_index}
                 for side in sides:
@@ -211,7 +213,7 @@ def main() -> int:
                     )
                 if round_index == 0:
                     retain_request_artifacts(pair, item, revisions, output)
-                    samples["availability"] = pair
+                    samples["equivalence"] = pair
                 else:
                     samples["rounds"].append(pair)
                 checkpoint(raw, output, started)

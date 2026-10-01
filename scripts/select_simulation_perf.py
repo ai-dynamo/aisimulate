@@ -12,6 +12,7 @@ import select_forward_perf
 FILES = {
     ".github/workflows/simulation-performance.yml",
     "scripts/select_simulation_perf.py",
+    "scripts/simulation_perf_artifact.py",
     "scripts/select_forward_perf.py",
     "Cargo.toml",
     "Cargo.lock",

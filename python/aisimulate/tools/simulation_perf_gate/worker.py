@@ -15,7 +15,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from tools.simulation_perf_gate import PROTOCOL_VERSION, digest
-from tools.simulation_perf_gate.contract import MODEL_FIELDS, fields
+from tools.simulation_perf_gate.contract import MODEL_FIELDS, check_finite, fields
 
 HOST_FIELDS = {"wall_time_ms", "processed_tokens_per_s", "processed_output_tokens_per_s"}
 
@@ -28,19 +28,19 @@ def portable_model_identity(model: dict, systems_root: Path) -> dict:
 
 
 def run(request: dict) -> dict:
-    import aisimulate_core
-    from aisimulate import CorePredictionConfig, EngineReplayRunnerFactory, ReplayOutputRequirements
-    from aisimulate.compiler import prediction_to_replay_spec
-
     if request.get("protocol_version") != PROTOCOL_VERSION:
         raise ValueError("incompatible simulation-performance protocol")
     item = request["case"]
     if item.get("determinism") != "canonical_v1":
         raise ValueError("benchmark requires canonical_v1 determinism")
     config = deepcopy(item["config"])
-    availability = request["phase"] == "availability"
-    if request["phase"] not in {"availability", "measure"}:
+    equivalence = request["phase"] == "equivalence"
+    if request["phase"] not in {"equivalence", "measure"}:
         raise ValueError("unknown benchmark phase")
+    import aisimulate_core
+    from aisimulate import CorePredictionConfig, EngineReplayRunnerFactory, ReplayOutputRequirements
+    from aisimulate.compiler import prediction_to_replay_spec
+
     if item.get("trace_sha256"):
         trace = Path(__file__).parent / "fixtures/agentx.jsonl"
         if hashlib.sha256(trace.read_bytes()).hexdigest() != item["trace_sha256"]:
@@ -67,14 +67,14 @@ def run(request: dict) -> dict:
             ):
                 raise ValueError(f"{role} did not retain the pinned real-model policy")
             identity[role] = portable_model_identity(model, Path(aisimulate_core.__file__).parent / "systems")
-            provenance[role] = model
+            provenance[role] = {**model, "provider": timing["provider"]}
     if not identity:
         raise ValueError("replay has no real forward model")
     runner = EngineReplayRunnerFactory(determinism=item["determinism"]).create(0)
     try:
         result = runner.run(
             spec,
-            output_requirements=ReplayOutputRequirements(include_raw_report=True, capture_per_request=availability),
+            output_requirements=ReplayOutputRequirements(include_raw_report=True, capture_per_request=equivalence),
         )
     finally:
         runner.close()
@@ -90,7 +90,7 @@ def run(request: dict) -> dict:
     # Keep diagnostics in the artifact; the controller owns the comparison projection.
     normalized = {key: value for key, value in report.items() if key not in HOST_FIELDS}
     evidence = {}
-    if availability:
+    if equivalence:
         records = normalized["per_request"]
         if len(records) != expected or any(
             row["terminal_status"] != "completed" or row["output_length"] != row["requested_output_length"]
@@ -132,16 +132,21 @@ def run(request: dict) -> dict:
 
 
 def main() -> int:
-    request = json.load(sys.stdin)
-    item = request.get("case", {})
-    response = {
-        "protocol_version": PROTOCOL_VERSION,
-        "case_id": item.get("case_id"),
-        "case_hash": digest(item),
-        "revision": request.get("revision"),
-        "phase": request.get("phase"),
-    }
+    response = {"protocol_version": PROTOCOL_VERSION}
     try:
+        request = json.load(sys.stdin)
+        if not isinstance(request, dict):
+            raise ValueError("worker request must be a JSON object")
+        check_finite(request)
+        item = request.get("case", {})
+        if not isinstance(item, dict):
+            raise ValueError("worker case must be a JSON object")
+        response.update(
+            case_id=item.get("case_id"),
+            case_hash=digest(item),
+            revision=request.get("revision"),
+            phase=request.get("phase"),
+        )
         with contextlib.redirect_stdout(sys.stderr):
             response.update(run(request))
     except Exception as error:

@@ -22,7 +22,7 @@ from tools.simulation_perf_gate.contract import (
 )
 
 pytestmark = pytest.mark.unit
-CASE = {"case_id": "case", "expected_requests": 1, "expected_output_tokens": 2}
+CASE = cases.case("case", "vllm", model="pinned", tp=1, requests=1, osl=2)
 
 
 def response(side, phase, wall=2000):
@@ -38,7 +38,7 @@ def response(side, phase, wall=2000):
         "prefix_cache_reused_ratio": 0.0,
         "first_admission_prefix_cache_reused_ratio": 0.0,
     }
-    if phase == "availability":
+    if phase == "equivalence":
         summary["per_request"] = [
             {
                 **dict.fromkeys(REQUEST_FIELDS),
@@ -66,7 +66,7 @@ def response(side, phase, wall=2000):
                 ],
             }
         ]
-    return {
+    result = {
         "protocol_version": PROTOCOL_VERSION,
         "case_id": CASE["case_id"],
         "case_hash": digest(CASE),
@@ -91,12 +91,25 @@ def response(side, phase, wall=2000):
             }
         },
         "behavior": summary,
+        "coverage": {},
     }
+    result["model_provenance"] = {
+        "aggregated": {
+            **result["model_identity"]["aggregated"],
+            "systems_paths": ["/env/aisimulate_core/systems"],
+            "provider": "aic",
+            "estimation_mode": "op_level",
+            "fallback_policy": "deny",
+            "database_mode": "SILICON",
+            "enable_shared_layer": True,
+        }
+    }
+    return result
 
 
 def samples(head_times=(2000,) * 5, base_time=2000):
     return {
-        "availability": {side: response(side, "availability") for side in ("base", "head")},
+        "equivalence": {side: response(side, "equivalence") for side in ("base", "head")},
         "rounds": [
             {"round": index, "base": response("base", "measure", base_time), "head": response("head", "measure", wall)}
             for index, wall in enumerate(head_times, 1)
@@ -124,10 +137,10 @@ def test_threshold_and_consensus(times, base, expected):
 
 def test_behavior_change_takes_precedence_over_slowdown():
     value = samples((3000,) * 5)
-    for pair in [value["availability"], *value["rounds"]]:
+    for pair in [value["equivalence"], *value["rounds"]]:
         pair["head"]["behavior"]["duration_ms"] = 4.0
     assert classify(value) == "BEHAVIOR_CHANGED"
-    value["availability"]["head"]["behavior"]["per_request"][0]["request_id"] = "other"
+    value["equivalence"]["head"]["behavior"]["per_request"][0]["request_id"] = "other"
     assert classify(value) == "BEHAVIOR_CHANGED"
 
 
@@ -146,7 +159,7 @@ def test_behavior_change_takes_precedence_over_slowdown():
         "within_revision_drift",
         "missing_records",
         "malformed_behavior",
-        "malformed_availability",
+        "malformed_equivalence",
     ],
 )
 def test_invalid_comparisons_never_pass(fault):
@@ -171,10 +184,10 @@ def test_invalid_comparisons_never_pass(fault):
             value["rounds"][0][side]["behavior"]["duration_ms"] = 4.0
     elif fault == "malformed_behavior":
         head["behavior"] = []
-    elif fault == "malformed_availability":
-        value["availability"]["head"]["behavior"] = None
+    elif fault == "malformed_equivalence":
+        value["equivalence"]["head"]["behavior"] = None
     else:
-        del value["availability"]["head"]["behavior"]["per_request"]
+        del value["equivalence"]["head"]["behavior"]["per_request"]
     assert classify(value) == "INVALID_COMPARISON"
 
 
@@ -184,6 +197,84 @@ def test_float_tolerance_does_not_hide_count_or_identity_changes():
     assert difference({"count": 1}, {"count": 2}) is not None
     assert difference("a", "b") is not None
     assert "missing_field" in difference({"missing_field": 1}, {})
+
+
+@pytest.mark.parametrize("archived", [False, True])
+@pytest.mark.parametrize("fault", ["provenance", "role", "policy", "coverage", "cache", "reuse", "pd", "diagnostic"])
+def test_required_evidence_cannot_be_bypassed(tmp_path, fault, archived):
+    from tools.simulation_perf_gate.compare import validate
+    from tools.simulation_perf_gate.run import retain_request_artifacts
+
+    case = deepcopy(CASE)
+    pair = {side: response(side, "equivalence") for side in ("base", "head")}
+    if archived:
+        retain_request_artifacts(pair, case, {"base": "base", "head": "head"}, tmp_path)
+    head = pair["head"]
+    if fault == "provenance":
+        del head["model_provenance"]
+    elif fault == "role":
+        head["model_provenance"]["prefill"] = head["model_provenance"].pop("aggregated")
+    elif fault == "policy":
+        head["model_provenance"]["aggregated"]["fallback_policy"] = "allow"
+    elif fault == "coverage":
+        del head["coverage"]
+    elif fault in {"cache", "reuse"}:
+        case["require_cache_pressure"] = True
+        if fault == "cache":
+            head["behavior"]["prefix_cache_reused_ratio"] = 0.5
+        else:
+            head["coverage"]["extra_prefill_tokens_under_pressure"] = 1
+    elif fault == "pd":
+        case["config"]["engine"]["mode"] = "disaggregated"
+        worker = case["config"]["engine"]["workers"].pop("aggregated")
+        case["config"]["engine"]["workers"] = {role: deepcopy(worker) for role in ("prefill", "decode")}
+        for key in ("model_identity", "model_provenance"):
+            model = head[key].pop("aggregated")
+            head[key] = {role: {**model, "worker_type": role} for role in ("prefill", "decode")}
+        head["coverage"]["pd_activated_requests"] = 0
+    else:
+        head["behavior"]["new_diagnostic"] = {"nested": [float("inf")]}
+    head["case_hash"] = digest(case)
+    with pytest.raises(ValueError):
+        validate(head, case, "head", "equivalence")
+
+
+def test_cache_evidence_accepts_integral_sdk_metric_and_diagnostics(tmp_path):
+    from tools.simulation_perf_gate.compare import validate
+    from tools.simulation_perf_gate.run import retain_request_artifacts
+
+    case = {**CASE, "require_cache_pressure": True}
+    pair = {side: response(side, "equivalence") for side in ("base", "head")}
+    for value in pair.values():
+        value["case_hash"] = digest(case)
+        value["behavior"]["prefix_cache_reused_ratio"] = 0.25
+        value["coverage"] = {"extra_prefill_tokens_under_pressure": 512.0, "diagnostic": "kept"}
+    retain_request_artifacts(pair, case, {"base": "base", "head": "head"}, tmp_path)
+    assert "per_request_artifact" in pair["head"]
+    validate(pair["head"], case, "head", "equivalence")
+
+
+@pytest.mark.parametrize("payload", ["{", "[]", "null", '{"case": []}', '{"case": {"bad": NaN}}'])
+def test_worker_malformed_input_returns_structured_error(monkeypatch, capsys, payload):
+    import io
+
+    from tools.simulation_perf_gate import worker
+
+    monkeypatch.setattr(worker.sys, "stdin", io.StringIO(payload))
+    assert worker.main() == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["protocol_version"] == 3
+    assert result["status"] == "ERROR"
+    assert result["error"]["type"] in {"ValueError", "JSONDecodeError"}
+    assert result["error"]["message"]
+
+
+@pytest.mark.parametrize("protocol,phase", [(2, "equivalence"), (3, "availability")])
+def test_worker_rejects_old_protocol_and_phase(protocol, phase):
+    from tools.simulation_perf_gate.worker import run
+
+    with pytest.raises(ValueError, match="protocol|phase"):
+        run({"protocol_version": protocol, "phase": phase, "case": CASE})
 
 
 def test_behavior_uses_fixed_fields_without_changing_raw_report():
@@ -227,16 +318,18 @@ def test_request_artifacts_preserve_behavior_comparison(tmp_path):
     from tools.simulation_perf_gate.run import retain_request_artifacts
 
     value = samples()
-    value["availability"]["head"]["behavior"]["per_request"][0]["request_id"] = "changed"
-    retain_request_artifacts(value["availability"], CASE, {"base": "base", "head": "head"}, tmp_path)
-    assert "per_request" not in value["availability"]["base"]["behavior"]
+    value["equivalence"]["head"]["behavior"]["per_request"][0]["request_id"] = "changed"
+    retain_request_artifacts(value["equivalence"], CASE, {"base": "base", "head": "head"}, tmp_path)
+    assert "per_request" not in value["equivalence"]["base"]["behavior"]
     assert classify(value) == "BEHAVIOR_CHANGED"
-    artifact = value["availability"]["head"]["per_request_artifact"]
-    with gzip.open(tmp_path / artifact["path"], "rt") as source:
-        records = json.load(source)
+    artifact = value["equivalence"]["head"]["per_request_artifact"]
+    with gzip.open(tmp_path / artifact["path"], "rb") as source:
+        encoded = source.read()
+    assert hashlib.sha256(encoded).hexdigest() == artifact["sha256"]
+    records = json.loads(encoded)
     assert digest(records) == artifact["sha256"]
     assert records[0]["request_id"] == "changed"
-    del value["availability"]["per_request_difference"]
+    del value["equivalence"]["per_request_difference"]
     assert classify(value) == "INVALID_COMPARISON"
 
 
@@ -271,17 +364,18 @@ def test_additive_diagnostics_do_not_change_verdict_or_artifacts(tmp_path, wall,
     from tools.simulation_perf_gate.run import retain_request_artifacts
 
     value = samples((wall,) * 5)
-    for index, pair in enumerate([value["availability"], *value["rounds"]]):
+    for index, pair in enumerate([value["equivalence"], *value["rounds"]]):
         pair["head"]["behavior"]["new_diagnostic"] = index  # Also varies within one revision.
         pair["head"]["model_identity"]["aggregated"]["new_metadata"] = index
-    row = value["availability"]["head"]["behavior"]["per_request"][0]
+        pair["head"]["model_provenance"]["aggregated"]["new_metadata"] = index
+    row = value["equivalence"]["head"]["behavior"]["per_request"][0]
     row["diagnostic"] = {"extra": True}
     row["routing_history"][0]["diagnostic"] = 42
     row["admission_history"][0]["diagnostic"] = 42
     assert classify(value) == expected
-    retain_request_artifacts(value["availability"], CASE, {"base": "base", "head": "head"}, tmp_path)
+    retain_request_artifacts(value["equivalence"], CASE, {"base": "base", "head": "head"}, tmp_path)
     assert classify(value) == expected
-    artifact = value["availability"]["head"]["per_request_artifact"]
+    artifact = value["equivalence"]["head"]["per_request_artifact"]
     with gzip.open(tmp_path / artifact["path"], "rt") as source:
         rows = json.load(source)
     assert rows[0]["diagnostic"] == {"extra": True}
@@ -302,10 +396,10 @@ def test_additive_diagnostics_do_not_change_verdict_or_artifacts(tmp_path, wall,
 )
 def test_required_results_and_nested_records(fault, expected):
     value = samples()
-    head = value["availability"]["head"]
+    head = value["equivalence"]["head"]
     row = head["behavior"]["per_request"][0]
     if fault == "latency":
-        for pair in [value["availability"], *value["rounds"]]:
+        for pair in [value["equivalence"], *value["rounds"]]:
             pair["head"]["behavior"]["p99_ttft_ms"] += 1.0
     elif fault == "routing":
         row["routing_history"][0]["dp_rank"] = 1
@@ -325,7 +419,7 @@ def test_required_results_and_nested_records(fault, expected):
 
 
 def test_agentic_outcomes_and_identity_have_fixed_nested_fields():
-    report = response("base", "availability")["behavior"]
+    report = response("base", "equivalence")["behavior"]
     report.update(dict.fromkeys(TRAJECTORY_COUNTS, 1))
     report["incomplete_trajectories"] = 0
     report.update(dict.fromkeys(TRAJECTORY_METRICS, 3.0))

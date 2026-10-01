@@ -10,7 +10,7 @@ import statistics
 from pathlib import Path
 
 from tools.simulation_perf_gate import PROTOCOL_VERSION, digest
-from tools.simulation_perf_gate.contract import behavior, model_identity
+from tools.simulation_perf_gate.contract import behavior, check_evidence, check_finite, model_identity
 
 RELATIVE_THRESHOLD = 0.10
 ABSOLUTE_THRESHOLD_MS = 100.0
@@ -61,7 +61,7 @@ def validate(response: object, case: dict, revision: str, phase: str) -> dict:
     if response.get("status") != "OK":
         raise ValueError(f"{response.get('status')}: {response.get('error')}")
     # Reject NaN anywhere, including fields not used by the time comparator.
-    json.dumps(response, allow_nan=False)
+    check_finite(response)
     for name in ("wall_time_ms", "worker_elapsed_ms"):
         value = response.get(name)
         if type(value) not in (int, float) or not math.isfinite(value) or value <= 0:
@@ -70,7 +70,7 @@ def validate(response: object, case: dict, revision: str, phase: str) -> dict:
     artifact = response.get("per_request_artifact")
     summary = behavior(
         response["behavior"],
-        per_request=phase == "availability" and artifact is None,
+        per_request=phase == "equivalence" and artifact is None,
         agentic=bool(case.get("trace_sha256")),
     )
     if (
@@ -80,7 +80,8 @@ def validate(response: object, case: dict, revision: str, phase: str) -> dict:
         raise ValueError("incomplete request count")
     if summary["total_output_tokens"] != case["expected_output_tokens"]:
         raise ValueError("incomplete output token count")
-    if phase == "availability":
+    check_evidence(response, case, phase, summary)
+    if phase == "equivalence":
         if artifact is not None:
             if (
                 not isinstance(artifact, dict)
@@ -103,20 +104,20 @@ def validate(response: object, case: dict, revision: str, phase: str) -> dict:
 
 def compare_case(case: dict, samples: dict, *, revisions: dict, rounds: int) -> dict:
     invalid, changed, timings = [], [], []
-    valid_availability = set()
-    availability = samples.get("availability", {})
+    valid_equivalence = set()
+    equivalence = samples.get("equivalence", {})
     measured = samples.get("rounds", [])
     if len(measured) != rounds or [pair.get("round") for pair in measured] != list(range(1, rounds + 1)):
         invalid.append("missing, duplicate, or unordered measured rounds")
-    for label, pair in [("availability", availability), *[(str(p.get("round")), p) for p in measured]]:
-        phase = "availability" if label == "availability" else "measure"
+    for label, pair in [("equivalence", equivalence), *[(str(p.get("round")), p) for p in measured]]:
+        phase = "equivalence" if label == "equivalence" else "measure"
         valid = True
         summaries = {}
         for side in ("base", "head"):
             try:
                 summaries[side] = validate(pair.get(side), case, revisions[side], phase)
-                if phase == "availability":
-                    valid_availability.add(side)
+                if phase == "equivalence":
+                    valid_equivalence.add(side)
             except (ValueError, TypeError, KeyError) as error:
                 invalid.append(f"{label}/{side}: {error}")
                 valid = False
@@ -129,15 +130,15 @@ def compare_case(case: dict, samples: dict, *, revisions: dict, rounds: int) -> 
         result_diff = difference(summaries["base"], summaries["head"])
         if result_diff:
             changed.append(f"{label}: {result_diff}")
-        if phase == "availability" and (base.get("per_request_artifact") or head.get("per_request_artifact")):
+        if phase == "equivalence" and (base.get("per_request_artifact") or head.get("per_request_artifact")):
             if "per_request_difference" not in pair:
                 invalid.append("missing per-request artifact comparison")
             elif pair["per_request_difference"]:
                 changed.append(str(pair["per_request_difference"]))
         if phase == "measure":
             for side in ("base", "head"):
-                reference = availability.get(side, {})
-                if side in valid_availability:
+                reference = equivalence.get(side, {})
+                if side in valid_equivalence:
                     expected = behavior(
                         reference["behavior"], per_request=False, agentic=bool(case.get("trace_sha256"))
                     )
