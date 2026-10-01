@@ -1,0 +1,45 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+schema_version: 2
+provenance: collected
+# Runtime identity fields the schema-v2 reader does not admit:
+#   source_commit: 94602c9c2b7cbdb8efd5c52802dac6a1c180089e
+runtime:
+  framework: sglang
+  version: 0.5.20
+  image: lmsysorg/sglang:v0.5.20
+  image_digest: sha256:06e4f2ed21afde4ff513cda65070124e727ba23ccaeff7712b8c40e1097d611f
+tables:
+  gemm_perf:
+    # GLM-5.3-Flash W1: base GEMM grid + GLM off-grid widths at k=4096 (collect_gemm_v2 serving-built layers).
+    # fp8_block K in {32, 64} (< the 128 block) fails in the framework (3256 classified failures, recorded in the job's errors file).
+    # GB300 (SM103, ocijhb), 4 GPUs/node, image arm64 child sha256:b0d8718a4424bb22e448e04407ab3ce5f7399a4c5fc702d6fbe36c3772ec8862 run via pyxis; launcher audits/ops-standalone-w1/launcher; Slurm job(s) 724655, 724656, 724657, 724658.
+    # data_sha256: ad47492e74599176d51cd7946f2cb7e21e6d0123941de1045e366d7d46dcded8
+    rows: 142672
+    status: complete
+    collections:
+    - collector_ref: 6e9bcdf2d171b1a9cf98471dda4a461cc971b939
+      collector_hash: sha256:f89ccb5652d5c60eade0ebd575038d36d23bf5b804f890759089a508c0288d35
+      case_plan_hash: sha256:1f32220ef3f6672cee36bd08e7761e046a6f3345e5b7ea85f17b316300265d7b
+      collected_at: '2026-09-30'
+      rows: 36482
+      status: complete
+    - collector_ref: 6e9bcdf2d171b1a9cf98471dda4a461cc971b939
+      collector_hash: sha256:f89ccb5652d5c60eade0ebd575038d36d23bf5b804f890759089a508c0288d35
+      case_plan_hash: sha256:426c9a1394a4758fade7fac7656cf4593df368a484374c54c68ebf75f53e2fe1
+      collected_at: '2026-09-30'
+      rows: 36482
+      status: complete
+    - collector_ref: 6e9bcdf2d171b1a9cf98471dda4a461cc971b939
+      collector_hash: sha256:f89ccb5652d5c60eade0ebd575038d36d23bf5b804f890759089a508c0288d35
+      case_plan_hash: sha256:e11d9bb2374f11468aa517601594a4facc6be8d09ef4bc1170af10dc7b88fa89
+      collected_at: '2026-09-30'
+      rows: 33226
+      status: complete
+    - collector_ref: 6e9bcdf2d171b1a9cf98471dda4a461cc971b939
+      collector_hash: sha256:f89ccb5652d5c60eade0ebd575038d36d23bf5b804f890759089a508c0288d35
+      case_plan_hash: sha256:82c99159bde1a0fa66716be6320c4706bf1fb8768c5369868996122dbed05b7b
+      collected_at: '2026-09-30'
+      rows: 36482
+      status: complete
