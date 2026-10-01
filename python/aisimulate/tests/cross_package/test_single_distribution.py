@@ -5,11 +5,49 @@ from __future__ import annotations
 
 import importlib
 import importlib.metadata
+import subprocess
+import sys
 from pathlib import Path
 
 from packaging.requirements import Requirement
 
 APPLICATION_ROOT = Path(__file__).resolve().parents[2]
+
+
+def test_core_metadata_is_cold_and_lazy_native_exports_retain_identity() -> None:
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            """
+import sys
+import aisimulate_core as core
+from aisimulate_core import fpm_profile, quantization
+blocked = ('aisimulate._runtime', 'aisimulate_core._native', 'aisimulate_core.sdk')
+assert not any(name in sys.modules for name in blocked)
+assert set(core.__all__) <= set(dir(core))
+try:
+    core.unknown_export
+except AttributeError:
+    pass
+else:
+    raise AssertionError('unknown native export must fail')
+assert 'aisimulate._runtime' not in sys.modules
+core.AicEngine
+from aisimulate import _runtime
+namespace = {}
+exec('from aisimulate_core import *', namespace)
+for name in core.__all__:
+    assert namespace[name] is getattr(core, name)
+    if name != '__version__':
+        assert getattr(core, name) is getattr(_runtime, name)
+""",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 def test_canonical_core_exports_the_unified_native_types() -> None:

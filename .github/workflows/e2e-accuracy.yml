@@ -104,6 +104,24 @@ jobs:
             }
             core.setOutput('matrix', JSON.stringify({include: entries}));
 
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Resolve latest database dump once for all branches
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python3 scripts/fetch_accuracy_measurements.py \
+            --manifest .github/e2e-accuracy-dataset.json --resolve-latest \
+            --output "${RUNNER_TEMP}/e2e-accuracy-dataset.json"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: e2e-accuracy-dataset
+          path: ${{ runner.temp }}/e2e-accuracy-dataset.json
+          overwrite: true
+          if-no-files-found: error
+          retention-days: 90
+
   branches:
     name: E2E accuracy (${{ matrix.branch }})
     needs: resolve
