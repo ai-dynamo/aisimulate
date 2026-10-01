@@ -178,8 +178,8 @@ records these execution requirements, implemented under [runtime/](runtime/):
    receipts. The 7,200-second deadline applies to native worker waves and can
    replace the pool; it does not guarantee every candidate finishes.
 
-The native replay/optimizer implementation is unchanged. The bridge retains
-lightweight native summaries during search, records requested/effective specs
+The native replay calculations and optimizer selection are unchanged. The
+bridge retains lightweight native summaries during search, records requested/effective specs
 and timings, and checks the frozen native binary and AIS package identity.
 Planner predictor evaluations are independent tasks dispatched to eight spawn
 workers using the native history aggregation, common warmup and forecast-loss
@@ -194,7 +194,8 @@ and writable results/temp mounts:
 python /workspace/bundle/runtime/run_sweep.py \
   --scenario 1 \
   --config /workspace/bundle/01-static.yaml \
-  --output /results/formal-v1 --memory-limit-gib 320
+  --output /results/formal-v1 --memory-limit-gib 320 \
+  --pool-cleanup-grace-seconds 60
 ```
 
 Use scenario 2/3 and their matching YAML for the other studies. The output
@@ -215,6 +216,31 @@ supervisor, so the YAML's `reserve_memory_gb` and initialization timeout must
 not be reported as additional enforced limits. Predictor preparation is timed
 separately and is outside the per-evaluation deadline. Running immutable
 bundles are never edited to change these settings retrospectively.
+
+The 32-worker campaign exposed a native pool-cleanup limit: the pinned
+nightly waits only two consecutive 2-second joins for its executor manager.
+A controlled fixture with 32 workers retaining about 216.67 GiB reproduced
+`executor cleanup did not complete; refusing replacement`. Independent
+30- and 60-second join budgets completed cleanup in about 4.69 seconds;
+all owned worker identities disappeared, the manager stopped, and a new
+pool returned results. This measures retained worker memory, without
+attributing its contents to a particular cache or performance-data table.
+
+The execution-only recovery in commit `38a89d02` adds
+`--pool-cleanup-grace-seconds`. Use 60 for this campaign. Omitting the flag
+preserves the native default. It changes the native manager/worker join
+waits while retaining ownership checks and escalation; the separately bound
+descendant-process grace stays at 2 seconds. Requested and effective values
+are recorded in `run-start.json` and `supervisor.json`.
+
+Recovery bundles copy the original `71fbad95` Static/Router or `9ebfc7de`
+Planner bundle and replace only `runtime/run_sweep.py`; retain a complete
+file-hash comparison. The image and numerical engine remain frozen. Archive
+failed runs and restart a full 256-suggestion study in a new output directory.
+Do not silently reuse their optimizer observations or describe this as resume.
+Include failed-run and recovery time in campaign cost, even when plotting the
+new study separately. Fixture success and actual formal pool replacement
+are separate validation checkpoints.
 
 Run the lightweight checker **inside the pinned environment**:
 
