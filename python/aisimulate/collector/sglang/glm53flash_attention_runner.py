@@ -152,6 +152,7 @@ class AttentionProbe:
             result = timer(lambda: self.original(*args, **kwargs))
             outputs.append(result[0] if isinstance(result, tuple) else result)
         latencies = timer.read()
+        host = [round(v, 4) for v in timer.host_ms[self.options.warmup :]]
         finite = all(bool(torch.isfinite(o).all().item()) for o in outputs)
         drift = float((outputs[-1].float() - outputs[0].float()).abs().max().item())
         self.writer.samples(
@@ -159,7 +160,7 @@ class AttentionProbe:
             latencies,
             self.options.warmup,
             source,
-            {"finite": finite, "repeat_max_abs_diff": drift},
+            {"finite": finite, "repeat_max_abs_diff": drift, "host_enqueue_ms": host},
         )
         if not finite:
             raise RuntimeError(f"nonfinite attention output for {target['target_id']}")
@@ -198,9 +199,10 @@ class AttentionProbe:
         for _ in range(self.options.warmup + self.options.iterations):
             timer(graph.replay)
         latencies = timer.read()
+        host = [round(v, 4) for v in timer.host_ms[self.options.warmup :]]
         result = output[0] if isinstance(output, tuple) else output
         finite = bool(torch.isfinite(result[:batch]).all().item())
-        self.writer.samples(target, latencies, self.options.warmup, source, {"finite": finite})
+        self.writer.samples(target, latencies, self.options.warmup, source, {"finite": finite, "host_enqueue_ms": host})
         del graph
         from sglang.srt.layers.communicator import get_attn_tp_context
 

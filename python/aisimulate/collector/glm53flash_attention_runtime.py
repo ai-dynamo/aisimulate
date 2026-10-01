@@ -64,13 +64,19 @@ class EventTimer:
     def __init__(self, torch):
         self.torch = torch
         self.pairs = []
+        self.host_ms = []
 
     def __call__(self, fn):
+        import time
+
         start = self.torch.cuda.Event(enable_timing=True)
         end = self.torch.cuda.Event(enable_timing=True)
+        begin = time.perf_counter()
         start.record()
         result = fn()
         end.record()
+        # Host enqueue time of the same call: diagnoses launch-bound timings.
+        self.host_ms.append((time.perf_counter() - begin) * 1e3)
         self.pairs.append((start, end))
         return result
 
