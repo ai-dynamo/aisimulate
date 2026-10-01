@@ -59,6 +59,26 @@ GOLDEN_TARGET = {"sglang": "dynamo-python", "vllm": "fpm", "trtllm": "dynamo-pyt
 GEN_CLI = Path(os.environ.get("AIS_GENERATOR_CLI") or ROOT / "venv_ais" / "bin" / "aiconfigurator")
 
 
+_FACTS_FAIL_RX = re.compile(r"Fact resolution failed|Unknown hardware profile")
+
+
+def golden_facts_status(render_output: str) -> dict:
+    """Did the golden render apply the generator's MODEL facts (facts/models.yaml
+    defaults: block-size, trust-remote-code, autotune flags ...)?
+
+    generator/pipeline.run_pipeline swallows a facts-resolution failure ("Fact
+    resolution failed; continuing without facts.") and renders with facts=None,
+    so the engine args silently lack every model default. Found 2026-10-01: all
+    RTX PRO renders (no hardware profile for rtx_pro_6000_server) lost them, and
+    the V4.1 block-size fact that rescues H20 never reached sm120. The status is
+    recorded on the run, in records and in the matrix cell so a render without
+    facts is never mistaken for a golden one."""
+    if _FACTS_FAIL_RX.search(render_output or ""):
+        m = re.search(r"KeyError: [^\n]*", render_output) or re.search(r"Fact resolution failed[^\n]*", render_output)
+        return {"applied": False, "reason": (m.group(0) if m else "fact resolution failed").strip()[:200]}
+    return {"applied": True}
+
+
 def render_golden(run: dict) -> Path | None:
     """Invoke the REAL user-facing generator command and archive it verbatim.
 
@@ -90,6 +110,8 @@ def render_golden(run: dict) -> Path | None:
     if stamp.exists() and stamp.read_text().splitlines()[:2] == [cmd_txt, f"# generator={gen_commit}"]:
         sub = next((d for d in gdir.iterdir() if d.is_dir()), None)
         if sub is not None:
+            log = gdir / "render.log"
+            run["golden_facts"] = golden_facts_status(log.read_text() if log.exists() else "")
             return sub  # cached golden for the identical command
     if gdir.exists():
         shutil.rmtree(gdir)
@@ -102,8 +124,10 @@ def render_golden(run: dict) -> Path | None:
     r = subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=900, cwd=str(ROOT))
     stamp.write_text(cmd_txt + f"\n# generator={gen_commit}\n# exit={r.returncode}\n")
     (gdir / "render.log").write_text((r.stdout or "")[-8000:] + (r.stderr or "")[-8000:])
+    run["golden_facts"] = golden_facts_status((r.stdout or "") + (r.stderr or ""))
     if r.returncode != 0:
-        run["golden_error"] = (r.stderr or r.stdout or "").strip().splitlines()[-1][:200] if (r.stderr or r.stdout) else "no output"
+        run["golden_error"] = (r.stderr or r.stdout or "").strip().splitlines()[-1][:200] if
+        (r.stderr or r.stdout) else "no output"
         return None
     return next((d for d in gdir.iterdir() if d.is_dir()), None)
 
@@ -415,6 +439,36 @@ def evidence_status(run: dict, sidecar_fp: str | None, raw: dict | None) -> str:
     return "unverified"
 
 
+def select_dummy_dir(dummy_root: Path, repo_tag: str, variant: str, fam_name: str,
+                     fam: dict, ck: dict) -> tuple[Path | None, str | None]:
+    """(dummy dir, skip reason). Dummy dirs are keyed by ADAPTER family.
+
+    When targets declare ``dummy_overrides.family`` for the checkpoint (or its
+    family), ONLY that adapter's dir is this checkpoint's dummy: a dir built by
+    another adapter — typically the generic depth cut that predates the override
+    — is a different model (DeepSeek-V4.1 2026-10-01: the generic 2-layer cut, two
+    sliding-window layers with stale source pointers, was probed under a dsv41
+    override until the plan was rebuilt). Without an override: the targets family
+    dir, then generic, then any adapter dir (a roster repo may use a special one)."""
+    want = ((ck.get("dummy_overrides") or {}).get("family")) or ((fam.get("dummy_overrides") or {}).get("family"))
+    leaf = f"{repo_tag}__{variant}"
+    if want:
+        vdir = dummy_root / want / leaf
+        if vdir.exists():
+            return vdir, None
+        other = next((d.name for d in sorted(dummy_root.iterdir()) if d.is_dir() and (d / leaf).exists()), None)
+        if other:
+            return None, (f"dummy {leaf} was built by adapter '{other}' but targets declare "
+                          f"dummy_overrides.family '{want}' — rebuild with components/dummies.py")
+        return None, f"no dummy dir {want}/{leaf} (dummy_overrides.family '{want}'; run components/dummies.py)"
+    order = [fam.get("dummy_dir") or fam_name, "generic"] + sorted(d.name for d in dummy_root.iterdir() if d.is_dir())
+    for famdir in dict.fromkeys(order):
+        vdir = dummy_root / famdir / leaf
+        if vdir.exists():
+            return vdir, None
+    return None, f"no dummy dir {leaf}"
+
+
 def enumerate_runs(targets: dict, full: bool, backends: list[str]) -> list[dict]:
     runs = []
     topos = [t for t in targets["topologies"] if t["evidence"] == "real" and (full or t["tp"] == 1)]
@@ -466,14 +520,9 @@ def enumerate_runs(targets: dict, full: bool, backends: list[str]) -> list[dict]
                     # dummy dirs are keyed by ADAPTER family (a roster repo may
                     # still use a special adapter) — search every adapter dir,
                     # preferring the targets family, then generic, then the rest
-                    _adapter_dirs = [fam.get("dummy_dir") or fam_name, "generic"] + \
-                        sorted(d.name for d in (ROOT / "dummy_models").iterdir() if d.is_dir())
-                    for _famdir in dict.fromkeys(_adapter_dirs):
-                        vdir = ROOT / "dummy_models" / _famdir / f"{repo_tag}__{variant}"
-                        if vdir.exists():
-                            break
-                    if not vdir.exists():
-                        runs.append({"skip": f"no dummy dir {vdir.name}", "repo": ck["repo"], "variant": variant})
+                    vdir, _why = select_dummy_dir(ROOT / "dummy_models", repo_tag, variant, fam_name, fam, ck)
+                    if vdir is None:
+                        runs.append({"skip": _why, "repo": ck["repo"], "variant": variant})
                         continue
                     for version in versions:
                         for topo in topos:
@@ -618,6 +667,11 @@ def emit_queues(runs: list[dict], gpu_list: list[int], plan_name: str) -> None:
     (ROOT / "archive" / plan_name).write_text(json.dumps(runs, indent=1))
     print(f"plan: {ROOT / 'archive' / plan_name} ({sum(1 for r in runs if 'skip' not in r)} runs, "
           f"{sum(1 for r in runs if 'skip' in r)} skipped)")
+    _nofacts = [r for r in runs if "skip" not in r and (r.get("golden_facts") or {}).get("applied") is False]
+    if _nofacts:
+        print(f"WARNING: {len(_nofacts)} runs rendered WITHOUT generator model facts (golden_facts.applied=false; "
+              f"model defaults such as block-size / trust-remote-code are absent from their engine args) — "
+              f"e.g. {_nofacts[0]['id']}: {(_nofacts[0]['golden_facts'] or {}).get('reason')}", file=sys.stderr)
 
 
 def check_coverage(targets: dict) -> None:
@@ -1092,6 +1146,8 @@ def build_records() -> None:
                 # the plan (stale = the render/dummy/image changed since the probe)
                 "exec_fingerprint": (run.get("exec_fingerprint") or {}).get("fingerprint"),
                 "raw_fingerprint": _sidecar(rid),
+                # did the golden render apply generator model facts (golden_facts_status)
+                "golden_facts": run.get("golden_facts"),
                 "evidence_status": evidence_status(run, _sidecar(rid), f),
                 "ops": ops or None,
                 "orphan_kernels": orphans or None,
@@ -1243,7 +1299,8 @@ def build_matrix(targets: dict) -> None:
             cell: dict = {}
             raw = ROOT / "archive" / "raw" / f"{run.get('id','')}.json"
             if "skip" in run:
-                cell = {"verdict": "fail", "cause": "generator rejects", "error": run["skip"][:160]}
+                _skip_cause = "dummy not built" if run["skip"].startswith(("dummy ", "no dummy")) else "generator rejects"
+                cell = {"verdict": "fail", "cause": _skip_cause, "error": run["skip"][:160]}
             elif not raw.exists():
                 cell = {"verdict": "fail", "cause": "no raw (crashed before dump)"}
             elif evidence_status(run, _sidecar(run["id"]), json.loads(raw.read_text())) == "stale":
@@ -1293,6 +1350,10 @@ def build_matrix(targets: dict) -> None:
             # plan files (re-plans, id-formula changes): a run that passed
             # is the cell; a later run with no raw or a crash never
             # overwrites it
+            _gf = run.get("golden_facts")
+            if isinstance(_gf, dict) and _gf.get("applied") is False:
+                # the engine args this cell was probed with lack every model default
+                cell["golden_facts"] = "not_applied: " + str(_gf.get("reason", ""))[:120]
             prev = out.get(repo, {}).get(be)
             if prev and prev["verdict"] != "fail" and cell["verdict"] == "fail":
                 continue
@@ -1319,7 +1380,9 @@ def build_matrix(targets: dict) -> None:
                          "verdicts": "pass = plain `cli generate` output boots+runs; "
                                      "pass+custom = boots with facts-derived extra generate args; "
                                      "fail = root-caused (see results/findings.yaml)",
-                         "summary": counts.get(be)},
+                         "summary": counts.get(be),
+                         # cells whose golden render lost the generator model facts (see golden_facts_status)
+                         "golden_facts_not_applied": sum(1 for c in rows.values() if c.get("golden_facts"))},
                "results": rows}
         p = outdir / f"{be}-{versions.get(be)}.yaml"
         p.write_text(yaml.safe_dump(doc, width=200, sort_keys=False, allow_unicode=True))

@@ -223,3 +223,42 @@ def test_attention_identity_uses_taxonomy_backend_labels(pd):
     assert pd.attn_identity_label("flash::FlashAttnFwdSm90<...>") == "fa3"
     unknown = "some_totally_unknown_kernel_name"
     assert pd.attn_identity_label(unknown) == pd.normalize_kernel(unknown)
+
+
+# --- golden render facts status + dummy adapter guard (sm120 V4.1 re-probe, 2026-10-01) ---
+
+def test_golden_facts_status_flags_the_swallowed_resolution_failure(pd):
+    log = ('WARNING pipeline.py:75 Fact resolution failed; continuing without facts.\n'
+           'Traceback (most recent call last):\n  File "resolve.py", line 104\n'
+           'KeyError: "Unknown hardware profile \'rtx_pro_6000_server\'. Available profiles: [\'b200\', \'h200\']"\n'
+           'Generated 4 artifacts\n')
+    st = pd.golden_facts_status(log)
+    assert st["applied"] is False and "rtx_pro_6000_server" in st["reason"]
+    assert pd.golden_facts_status("Generated 4 artifacts\n") == {"applied": True}
+    assert pd.golden_facts_status("") == {"applied": True}
+
+
+def _dummy_tree(tmp_path, *leaves):
+    root = tmp_path / "dummy_models"
+    for fam, leaf in leaves:
+        (root / fam / leaf).mkdir(parents=True)
+    return root
+
+
+def test_select_dummy_dir_refuses_another_adapter_when_override_declared(pd, tmp_path):
+    root = _dummy_tree(tmp_path, ("generic", "DeepSeek-V4.1-Flash__rep"))
+    ck = {"dummy_overrides": {"family": "dsv41"}}
+    vdir, why = pd.select_dummy_dir(root, "DeepSeek-V4.1-Flash", "rep", "roster", {}, ck)
+    assert vdir is None and "generic" in why and "dsv41" in why and "dummies.py" in why
+    (root / "dsv41" / "DeepSeek-V4.1-Flash__rep").mkdir(parents=True)
+    vdir, why = pd.select_dummy_dir(root, "DeepSeek-V4.1-Flash", "rep", "roster", {}, ck)
+    assert why is None and vdir.parent.name == "dsv41"
+
+
+def test_select_dummy_dir_default_order_is_family_then_generic_then_any(pd, tmp_path):
+    root = _dummy_tree(tmp_path, ("generic", "M__rep"), ("glm", "M__rep"), ("zzz", "N__rep"))
+    assert pd.select_dummy_dir(root, "M", "rep", "glm", {}, {})[0].parent.name == "glm"
+    assert pd.select_dummy_dir(root, "M", "rep", "roster", {}, {})[0].parent.name == "generic"
+    assert pd.select_dummy_dir(root, "N", "rep", "roster", {}, {})[0].parent.name == "zzz"
+    vdir, why = pd.select_dummy_dir(root, "Q", "rep", "roster", {}, {})
+    assert vdir is None and why.startswith("no dummy dir")

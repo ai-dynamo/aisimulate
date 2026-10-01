@@ -7,6 +7,7 @@ _meta:
     pass: 98
     pass+custom: 7
     fail: 19
+  golden_facts_not_applied: 2
 results:
   MiniMaxAI/MiniMax-M2:
     verdict: pass
@@ -349,6 +350,7 @@ results:
     verdict: fail
     cause: framework gap
     error: 'RuntimeError: Assertion error (/workspace/.deps/deepgemm-src/csrc/apis/attention.hpp:409): block_kv == 32 or block_kv == 64'
+    golden_facts: 'not_applied: KeyError: "Unknown hardware profile ''rtx_pro_6000_server''. Available profiles: [''b200'', ''b60'', ''gb200'', ''h100'', ''h20'', '''
   google/gemma-4-26B-A4B:
     verdict: pass
     evidence: current
@@ -460,6 +462,7 @@ results:
     verdict: fail
     cause: framework gap
     error: 'RuntimeError: Assertion error (/workspace/.deps/deepgemm-src/csrc/apis/attention.hpp:409): block_kv == 32 or block_kv == 64'
+    golden_facts: 'not_applied: KeyError: "Unknown hardware profile ''rtx_pro_6000_server''. Available profiles: [''b200'', ''b60'', ''gb200'', ''h100'', ''h20'', '''
   nvidia/GLM-5-NVFP4:
     verdict: pass
     evidence: current

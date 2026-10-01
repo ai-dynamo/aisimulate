@@ -31,7 +31,7 @@ opharness/
 | Component | Question it answers |
 |---|---|
 | `dummies.py` | build depth-cut, width-true dummy checkpoints (quant/dispatch behave like the real model, load in minutes) |
-| `probe_driver.py` | the G1 driver: golden `cli generate` render -> per-GPU probe queues -> curated records -> results matrices (`--plan/--emit-queues/--records/--matrix/--check-coverage`, `--only` to scope) |
+| `probe_driver.py` | the G1 driver: golden `cli generate` render -> per-GPU probe queues -> curated records -> results matrices — records and matrix cells carry `golden_facts` (did the render apply the generator's model facts, or did the pipeline swallow a facts-resolution failure), and a checkpoint under `dummy_overrides.family` is probed only on that adapter's dummy (a dir built by another adapter is skipped as `dummy not built`) (`--plan/--emit-queues/--records/--matrix/--check-coverage`, `--only` to scope) |
 | `probes/` + `inject/` | in-container identity probes per framework; `inject/sitecustomize.py` is the multi-rank (tp/ep) leg — the filename is the mechanism |
 | `kernel_taxonomy_<sm>.yaml` | per-SM kernel-name -> canonical-backend vocabulary (both sides of a verdict translate through the SAME file; SMs never share one) |
 | `path_diff.py` | collector op path vs serving, same profiler, same vocabulary (stub) |
