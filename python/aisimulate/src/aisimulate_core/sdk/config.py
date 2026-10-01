@@ -157,6 +157,10 @@ class ModelConfig:
     # Selection emits a warning with the original model mode and matched cell IDs.
     # Exact table-label matching is not independent runtime-precision proof.
     fpm_fmha_quant_mode: common.FMHAQuantMode | None = field(default=None, kw_only=True)
+    # Maximum sequence length for the deployment (vLLM's --max-model-len).
+    # Set by the KV-cache estimator from the caller's max_num_tokens so
+    # sliding-window models can compute block-level reservation overhead.
+    max_model_len: int | None = field(default=None, kw_only=True)
 
     def __post_init__(self) -> None:
         if self.dcp_size is not None and (
