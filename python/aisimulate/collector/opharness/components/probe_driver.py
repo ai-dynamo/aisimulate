@@ -1298,7 +1298,8 @@ def build_matrix(targets: dict) -> None:
             cell: dict = {}
             raw = ROOT / "archive" / "raw" / f"{run.get('id','')}.json"
             if "skip" in run:
-                _skip_cause = "dummy not built" if run["skip"].startswith(("dummy ", "no dummy")) else "generator rejects"
+                _skip_cause = ("dummy not built" if run["skip"].startswith(("dummy ", "no dummy"))
+                               else "generator rejects")
                 cell = {"verdict": "fail", "cause": _skip_cause, "error": run["skip"][:160]}
             elif not raw.exists():
                 cell = {"verdict": "fail", "cause": "no raw (crashed before dump)"}
