@@ -210,7 +210,7 @@ jobs:
           git worktree add --detach "${head_src}" "${PR_HEAD_SHA}"
           echo "run_comparison=true" >> "${GITHUB_OUTPUT}"
 
-      - name: Build and install both revisions
+      - name: Build both revisions (serial baseline)
         id: build
         if: steps.revisions.outputs.run_comparison == 'true'
         run: |
@@ -226,6 +226,12 @@ jobs:
             CARGO_TARGET_DIR="${RUNNER_TEMP}/simulation-perf-head-target" \
               python -m maturin build --release --locked --out "${HEAD_DIST}"
           )
+
+      - name: Install both revisions
+        id: install
+        if: steps.revisions.outputs.run_comparison == 'true'
+        run: |
+          set -euo pipefail
           python -m venv "${BASE_VENV}"
           python -m venv "${HEAD_VENV}"
           uv export --project "${BASE_SRC}/python/aisimulate" --frozen --no-dev --no-emit-project \
@@ -277,7 +283,7 @@ jobs:
           exit "${status}"
 
       - name: Validate PR benchmark controller
-        if: ${{ !cancelled() && steps.build.outcome == 'success' && steps.revisions.outputs.validate_head_controller == 'true' }}
+        if: ${{ !cancelled() && steps.install.outcome == 'success' && steps.revisions.outputs.validate_head_controller == 'true' }}
         run: |
           set -euo pipefail
           "${HEAD_VENV}/bin/python" \
