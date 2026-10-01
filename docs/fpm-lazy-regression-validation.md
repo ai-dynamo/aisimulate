@@ -15,6 +15,10 @@ bounded implementation check on existing FPM Gym cases. It does not select a
 universal optimum, validate Linux CPU costs, or include the private
 AgentX/ShareGPT/LongBench sweep captures.
 
+These measurements predate the safeguard that preserves the previous linear
+serving model when an identifiable all-zero candidate is rejected. They have
+not been rerun for that behavior change.
+
 The dataset is the pinned cached `nvidia/aisimulate-fpm-dataset` revision
 `5487a4599a7fbc012c07bcd3699754bdf4a8bef7`. Its catalog contains 20
 configurations, including five without measurements. The unchanged

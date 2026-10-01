@@ -336,8 +336,12 @@ and a conservative batch fallback—use the same **full rebuild**. It
 reaccumulates the means and scatter and recomputes batch coefficients from the
 same retained rows, scores direct residuals using the configured ridge, and
 resets the mutation clock. It never publishes a fresh batch fit while retaining
-the old incremental statistics. An unusable batch result clears readiness;
-it does not preserve stale coefficients as a successful recovery.
+the old incremental statistics. For `fit.kind: linear`, a finite, identifiable
+candidate with all feature slopes zero is rejected while preserving the previous
+serving snapshot, including its coefficients and normalization. The statistics
+are still rebuilt and the mutation clock still resets. Without a previous fit,
+the store remains unready. Other unusable batch results clear readiness. This
+exception does not change spline fitting or its linear fallback.
 
 Recovery rebuilds run when the statistics become nonfinite, a scatter diagonal
 becomes negative, or a
@@ -345,12 +349,15 @@ downdate removes almost all previously represented variance. These guards
 remain active when periodic rebuilding is disabled. They reduce numerical
 risk but do not constitute a bound on roundoff for every possible stream.
 
-A store is ready only if it has enough retained observations (five by default)
+A new fit requires enough retained observations (five by default)
 and at least one varying feature. The default nonnegative fit also requires a
 positive slope, except for the existing low-observation case $n\le d$, where
 $d$ is the number of varying axes. This count is not the rank of the feature
-matrix. With the default minimum, an intercept-only solution is unready. A
-store can lose readiness after an eviction.
+matrix. With the default minimum, an intercept-only candidate cannot become the
+serving model, but rejection preserves any previous linear serving model. Signed
+fits allow negative slopes; identifiable all-zero candidates are still rejected.
+A store can still lose readiness after an eviction if another fit requirement
+fails, such as having no varying features.
 
 For a valid nonempty query, a ready store transforms features using its fit
 snapshot. If transformation and evaluation are finite, it returns the prediction
@@ -380,8 +387,10 @@ calls and rejected observations do not advance these counts.
 
 The first `startup_observations` accepted rows are eager, with a default of 10.
 An unready or numerically unusable model bypasses the lazy gate and retries.
-Successful fits clear the monitor; failed fits do not. A periodic rebuild or
-numerical recovery also overrides deferral. These operations do not have a
+Successful fits clear the monitor; failed or rejected fits do not. Retaining the
+previous snapshot after an all-zero candidate does not reset the error window or
+cooldown, so subsequent observations can trigger another attempt. A periodic
+rebuild or numerical recovery also overrides deferral. These operations do not have a
 fixed 256-row minimum gap, and there is no separate batch-fallback interval.
 
 Retention, actual evictions, and centered statistics advance on every accepted

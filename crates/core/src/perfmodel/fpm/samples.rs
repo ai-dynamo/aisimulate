@@ -11,7 +11,7 @@
 //! [`StoreStats`] provides the count/readiness view shared by native correction
 //! and the single role-bound regression store.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 
 use super::options::ForwardPassPerfOptions;
 use crate::AicError;
@@ -36,7 +36,7 @@ pub(crate) enum SampleInsertion<T> {
 
 #[derive(Clone, Debug)]
 pub(crate) struct BucketedSamples<T> {
-    pub(crate) buckets: HashMap<Vec<usize>, Vec<(Vec<f64>, T)>>,
+    pub(crate) buckets: HashMap<Vec<usize>, VecDeque<(Vec<f64>, T)>>,
     pub(crate) total_observations: usize,
     axis_min: Vec<f64>,
     axis_max: Vec<f64>,
@@ -135,7 +135,7 @@ impl<T: Clone> BucketedSamples<T> {
         }
 
         let key = self.bucket_key(&x);
-        self.buckets.entry(key).or_default().push((x, y));
+        self.buckets.entry(key).or_default().push_back((x, y));
         self.total_observations += 1;
 
         let evicted = if self.total_observations > self.max_observations {
@@ -234,7 +234,7 @@ impl<T: Clone> BucketedSamples<T> {
         self.buckets.clear();
         for (x, y) in observations {
             let key = self.bucket_key(&x);
-            self.buckets.entry(key).or_default().push((x, y));
+            self.buckets.entry(key).or_default().push_back((x, y));
         }
     }
 
@@ -250,8 +250,8 @@ impl<T: Clone> BucketedSamples<T> {
 
         let mut evicted = None;
         if let Some(bucket) = self.buckets.get_mut(&key) {
-            if !bucket.is_empty() {
-                evicted = Some(bucket.remove(0).1);
+            if let Some((_, value)) = bucket.pop_front() {
+                evicted = Some(value);
                 self.total_observations -= 1;
             }
             if bucket.is_empty() {
@@ -434,6 +434,34 @@ mod tests {
             samples.add_with_eviction(vec![3.0, 4.0], 2),
             SampleInsertion::Accepted { evicted: None }
         );
+    }
+
+    #[test]
+    fn repeated_fifo_eviction_preserves_order_through_rebucketing() {
+        let mut samples = BucketedSamples::new_regression(&[1], 3).unwrap();
+        for value in 0..6 {
+            assert_eq!(
+                samples.add_with_eviction(vec![0.0], value),
+                SampleInsertion::Accepted {
+                    evicted: (value >= 3).then(|| value - 3),
+                }
+            );
+        }
+        assert_eq!(
+            samples.observations(),
+            vec![(vec![0.0], 3), (vec![0.0], 4), (vec![0.0], 5)]
+        );
+        // Expand the bounds after repeated head removals. Rebuilding must
+        // retain FIFO order, including entries in a wrapped queue.
+        assert_eq!(
+            samples.add_with_eviction(vec![10.0], 6),
+            SampleInsertion::Accepted { evicted: Some(3) }
+        );
+        assert_eq!(
+            samples.observations(),
+            vec![(vec![0.0], 4), (vec![0.0], 5), (vec![10.0], 6)]
+        );
+        assert_eq!(samples.total_observations, 3);
     }
 
     #[test]

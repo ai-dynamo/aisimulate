@@ -263,14 +263,24 @@ impl<const D: usize, const S: usize> BucketedRegression<D, S> {
         {
             return true;
         }
-        self.fit = self.recursive.fit_lazy(self.min_observations, || {
-            self.samples
-                .observations()
-                .into_iter()
-                .map(|(_, observation)| observation)
-                .collect()
-        });
-        self.update.fitted(self.fit.is_some());
+        let candidate = self
+            .recursive
+            .fit_candidate_lazy(self.min_observations, || {
+                self.samples
+                    .observations()
+                    .into_iter()
+                    .map(|(_, observation)| observation)
+                    .collect()
+            });
+        let usable = candidate
+            .as_ref()
+            .is_some_and(|fit| fit.is_usable(self.samples.total_observations));
+        // A finite all-zero slope candidate must not replace a previously
+        // usable serving snapshot. Other failures still clear readiness.
+        if usable || candidate.is_none() {
+            self.fit = candidate;
+        }
+        self.update.fitted(usable);
         true
     }
 
@@ -367,6 +377,22 @@ struct LinearFit<const D: usize = 2> {
 }
 
 impl<const D: usize> LinearFit<D> {
+    fn is_usable(&self, observation_count: usize) -> bool {
+        let varying_axes = self
+            .standardization
+            .active
+            .iter()
+            .filter(|&&active| active)
+            .count();
+        // Preserve the existing low-observation exception. The solver already
+        // enforces nonnegative slopes unless signed fitting was requested.
+        observation_count <= varying_axes
+            || self
+                .coefficients
+                .iter()
+                .any(|coefficient| *coefficient != 0.0)
+    }
+
     fn predict(&self, raw_x: &[f64; D]) -> Option<f64> {
         let standardized = self.standardization.transform(raw_x)?;
         let prediction = self.predict_standardized(&standardized);
@@ -399,7 +425,18 @@ fn fit_regression_with_ridge<const D: usize>(
     fit_regression_with_constraints(observations, min_observations, ridge_scale, true)
 }
 
+#[cfg(test)]
 fn fit_regression_with_constraints<const D: usize>(
+    observations: &[RegressionObservation<D>],
+    min_observations: usize,
+    ridge_scale: f64,
+    non_negative: bool,
+) -> Option<LinearFit<D>> {
+    fit_regression_candidate(observations, min_observations, ridge_scale, non_negative)
+        .filter(|fit| fit.is_usable(observations.len()))
+}
+
+fn fit_regression_candidate<const D: usize>(
     observations: &[RegressionObservation<D>],
     min_observations: usize,
     ridge_scale: f64,
@@ -471,21 +508,7 @@ fn fit_regression_with_constraints<const D: usize>(
         }
     }
 
-    let fit = best.map(|(_, fit)| fit)?;
-    let effective_dimension = varying_axes.len();
-    let is_underdetermined = observations.len() <= effective_dimension;
-    let has_load_signal = fit.coefficients.iter().any(|coefficient| {
-        if non_negative {
-            *coefficient > 0.0
-        } else {
-            *coefficient != 0.0
-        }
-    });
-
-    // Preserve explicitly configured low-observation behavior while the fit
-    // is underdetermined. Once slopes are identifiable, an intercept-only
-    // boundary does not provide a usable load signal and must remain unready.
-    (is_underdetermined || has_load_signal).then_some(fit)
+    best.map(|(_, fit)| fit)
 }
 
 #[cfg(test)]

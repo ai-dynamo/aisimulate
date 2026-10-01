@@ -10,7 +10,7 @@
 
 use super::{
     INACTIVE_SCALE_RELATIVE_TOLERANCE, LinearFit, RegressionObservation, Standardization,
-    fit_regression_with_constraints, solve_linear_system, solve_regularized_linear_system,
+    fit_regression_candidate, solve_linear_system, solve_regularized_linear_system,
 };
 const SCORE_RELATIVE_TOLERANCE: f64 = 1e-10;
 const MIN_COVARIANCE_DETERMINANT_RATIO: f64 = 1e-8;
@@ -231,9 +231,9 @@ impl<const D: usize, const S: usize> RecursiveFit<D, S> {
         min_observations: usize,
     ) -> Option<LinearFit<D>> {
         self.rebuild(retained);
-        // Publish the returned fit as a whole, including its standardization.
-        // An unusable batch result remains None; it must not reuse an older fit.
-        fit_regression_with_constraints(
+        // Return the complete candidate. Serving code decides whether to keep
+        // its previous snapshot when an identifiable fit has all-zero slopes.
+        fit_regression_candidate(
             retained,
             min_observations,
             self.ridge_scale,
@@ -257,7 +257,9 @@ impl<const D: usize, const S: usize> RecursiveFit<D, S> {
         min_observations: usize,
     ) -> Option<LinearFit<D>> {
         if self.count != retained.len() {
-            return self.rebuild_and_fit(retained, min_observations);
+            return self
+                .rebuild_and_fit(retained, min_observations)
+                .filter(|fit| fit.is_usable(self.count));
         }
         self.fit_lazy(min_observations, || retained.to_vec())
     }
@@ -272,6 +274,17 @@ impl<const D: usize, const S: usize> RecursiveFit<D, S> {
     /// The healthy path does not materialize or inspect retained samples.
     /// The caller must account for every insertion and actual eviction.
     pub(super) fn fit_lazy(
+        &mut self,
+        min_observations: usize,
+        retained: impl FnMut() -> Vec<RegressionObservation<D>>,
+    ) -> Option<LinearFit<D>> {
+        self.fit_candidate_lazy(min_observations, retained)
+            .filter(|fit| fit.is_usable(self.count))
+    }
+
+    /// Return a finite candidate even when its slopes are all zero, so the
+    /// linear store can distinguish guard rejection from unavailable fitting.
+    pub(super) fn fit_candidate_lazy(
         &mut self,
         min_observations: usize,
         retained: impl FnMut() -> Vec<RegressionObservation<D>>,
@@ -448,16 +461,7 @@ impl<const D: usize, const S: usize> RecursiveFit<D, S> {
         }) {
             return self.fallback(&mut retained, min_observations);
         }
-        let best = candidates.swap_remove(best_index).fit;
-        let is_underdetermined = self.count <= varying_axes.len();
-        let has_load_signal = best.coefficients.iter().any(|value| {
-            if NON_NEGATIVE {
-                *value > 0.0
-            } else {
-                *value != 0.0
-            }
-        });
-        (is_underdetermined || has_load_signal).then_some(best)
+        Some(candidates.swap_remove(best_index).fit)
     }
 }
 

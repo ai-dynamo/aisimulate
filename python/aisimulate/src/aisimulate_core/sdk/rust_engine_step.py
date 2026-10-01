@@ -124,7 +124,8 @@ class ForwardPassPerfModelConfig:
     The existing scalar metrics support attention, MoE, request count ``n``,
     ``logN``, and ``n2``. Other axes require the optional aligned unsigned-integer
     arrays ``scheduled_requests.extend_lengths`` and ``past_kv_lengths``;
-    both lengths and their sums must agree with the scheduled counters.
+    both must have one entry per scheduled request. Their sums may differ from
+    aggregate token counters because backends use different counting conventions.
 
     ``fit.kind`` defaults to ``"standardized_nnls"`` (alias ``"linear"``).
     Set ``{"fpm_regression": {"fit": {"kind": "spline"}}}`` to use learned

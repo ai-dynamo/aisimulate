@@ -109,6 +109,89 @@ fn lazy_publication_freezes_normalization_and_yields_to_error_or_full_rebuild() 
     assert!(rebuilt, "periodic rebuilding must bypass the lazy gate");
 }
 
+#[test]
+fn zero_slope_rejection_preserves_serving_fit_without_resetting_lazy_errors() {
+    for lazy in [false, true] {
+        for interval in [None, Some(1)] {
+            let options = ForwardPassPerfOptions::default();
+            let fit = RegressionFitConfig {
+                rebuild_interval: interval,
+                linear: Some(LinearFitConfig {
+                    update_policy: if lazy {
+                        RegressionUpdatePolicy::ErrorThreshold {
+                            relative_tolerance: 0.0,
+                            absolute_tolerance_ms: 1.0,
+                            window: 2,
+                            trigger: 2,
+                            cooldown: 2,
+                            startup_observations: 10,
+                        }
+                    } else {
+                        RegressionUpdatePolicy::Always
+                    },
+                    ..Default::default()
+                }),
+                ..Default::default()
+            };
+            let mut store = BucketedRegression::<2, 3>::configured(
+                &options,
+                &fit,
+                &RegressionSamplingConfig::default(),
+            );
+            for i in 0..16 {
+                let x = [(i % 4 + 1) as f64, (i / 4 + 1) as f64];
+                store.add_observation(x, 5.0 + 2.0 * x[0] + 3.0 * x[1]);
+            }
+            let published = snapshot(store.fit.as_ref().unwrap());
+            let query = [7.0, 5.0];
+            close(store.predict(&query).unwrap(), 34.0);
+
+            // Large workloads with tiny targets make both covariances
+            // negative, so the constrained optimum has exactly zero slopes.
+            store.add_observation([100.0, 100.0], 1.0);
+            store.add_observation([101.0, 100.0], 2.0);
+            let candidate = fit_regression_candidate(&retained(&store), 5, 1e-9, true).unwrap();
+            assert_eq!(candidate.coefficients, [0.0, 0.0]);
+            assert!(!candidate.is_usable(store.observation_count()));
+            assert!(store.is_ready());
+            assert_eq!(snapshot(store.fit.as_ref().unwrap()), published);
+            close(store.predict(&query).unwrap(), 34.0);
+            assert_eq!(store.observation_count(), 18);
+            if interval.is_some() {
+                assert_eq!(store.mutations_since_rebuild(), 0);
+            }
+
+            // With no rebuild, this single new error can publish only if the
+            // rejected refit retained the prior error flags and cooldown age.
+            store.add_observation([102.0, 101.0], 1500.0);
+            assert_ne!(snapshot(store.fit.as_ref().unwrap()), published);
+            let batch = fit_regression_with_ridge(&retained(&store), 5, 1e-9).unwrap();
+            close(
+                store.predict(&query).unwrap(),
+                batch.predict(&query).unwrap(),
+            );
+
+            // An unrelated unavailable fit still clears readiness.
+            store.min_observations = usize::MAX;
+            store.add_observation([103.0, 101.0], 3000.0);
+            store.add_observation([104.0, 101.0], 4000.0);
+            assert!(!store.is_ready());
+
+            let mut cold = BucketedRegression::<2, 3>::configured(
+                &options,
+                &fit,
+                &RegressionSamplingConfig::default(),
+            );
+            for i in 0..16 {
+                let x = [(i % 4 + 1) as f64, (i / 4 + 1) as f64];
+                cold.add_observation(x, 30.0 - 2.0 * x[0] - 3.0 * x[1]);
+            }
+            assert!(!cold.is_ready());
+            assert_eq!(cold.predict(&query), None);
+        }
+    }
+}
+
 fn signed_grid<const D: usize, const S: usize>(sampling: RegressionSamplingConfig) {
     let options = ForwardPassPerfOptions::default();
     let axes = [Axis::Attention, Axis::Moe, Axis::Count, Axis::Past];

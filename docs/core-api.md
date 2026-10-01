@@ -379,9 +379,9 @@ store selected from all active attention-DP ranks.
 counters. Other axes require both optional `scheduled_requests.extend_lengths`
 and `scheduled_requests.past_kv_lengths`, each an array of unsigned 64-bit
 integers. Both arrays must have one entry per scheduled request and identical
-lengths. Their sums must equal `sum_prefill_tokens + num_decode_requests` and
-`sum_prefill_kv_tokens + sum_decode_kv_tokens`, respectively. Omitted arrays do
-not add null fields to existing serialized metrics. Existing Gym inputs without
+lengths. Their sums may differ from aggregate token counters because backends
+can use different counting conventions, such as padded prefill tokens. Omitted
+arrays do not add null fields to existing serialized metrics. Existing Gym inputs without
 these lists can evaluate the scalar axes; they cannot qualify list-derived ones.
 Prediction needs the request lists only when fitted axes use them. Tuning also
 requires them when retention axes use request-level features.
@@ -419,10 +419,20 @@ excessive and at least `cooldown` accepted observations have passed since the
 last successful fit. A full window is unnecessary, and an observation with a
 small error can satisfy the cooldown while earlier excessive flags remain.
 
+For `fit.kind: linear`, a finite, identifiable candidate whose feature weights
+are all zero is rejected without replacing the previous serving snapshot. Its
+coefficients and normalization remain together; a store with no previous fit
+stays unready. This safeguard applies to eager and lazy updates, including full
+rebuilds. Other failures, such as insufficient data or an unavailable numerical
+solution, still clear the serving fit. The default nonnegative constraint and
+its existing underdetermined-fit exception are unchanged. Signed fits may use
+negative weights, but an identifiable all-zero result is still rejected.
+Spline fitting and its linear fallback retain their existing behavior.
+
 The first `startup_observations` accepted rows are eager (default 10). An unready
 or unusable model keeps trying to fit. A successful fit clears the monitor;
-a failed fit does not. Periodic full rebuilds and numerical recovery override
-lazy deferral. Between fits, coefficients and the feature means/scales used
+a failed or rejected fit does not. Periodic full rebuilds and numerical recovery
+override lazy deferral. Between fits, coefficients and the feature means/scales used
 with them remain one prediction snapshot. Eager defaults do not collect this
 monitor or compute its extra prediction. Lazy thresholds are not a guarantee
 on future prediction error.
@@ -579,7 +589,7 @@ estimator priority; use `estimation_mode: fpm_regression` to require regression.
 
 Linear regression maintains centered sufficient statistics for the retained
 samples and applies the selected standardized linear fit. The default objective
-and readiness rules stay the same. The retention grid still controls
+is unchanged. The retention grid still controls
 which samples are kept; it does not create separate fitted planes within a
 workload store. Spline regression maintains statistics in its current basis and
 rebuilds them when knot positions change. Its knot-search policy and
@@ -612,7 +622,9 @@ one rebuild and a reset to zero. Rejected observations and spatial rebucketing
 do not advance the counter. For linear fits, periodic rebuilding, numerical
 recovery, and a conservative batch fallback all use one full-rebuild operation:
 reaccumulate statistics and recompute batch coefficients from the same retained
-rows, then reset the mutation clock. A failed batch fit leaves the model unready.
+rows, then reset the mutation clock. An identifiable all-zero linear candidate
+preserves the previous serving snapshot even though the rebuild refreshes the
+statistics and resets its clock. Other failed batch fits leave the model unready.
 There is no fixed 256-observation gap or separate batch-fallback interval.
 The setting is fixed for each store when the model is constructed.
 

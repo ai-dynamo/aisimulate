@@ -26,6 +26,7 @@ pub struct ScheduledRequestMetrics {
     /// Optional regression features: freshly computed tokens for each scheduled
     /// request (one for ordinary decode), aligned with `past_kv_lengths`.
     /// These additive fields are unnecessary for the default attention/MoE fit.
+    /// Their sums may differ from the backend's aggregate token counters.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extend_lengths: Option<Vec<u64>>,
     /// Past KV lengths before this iteration, in the same request order.
@@ -142,23 +143,11 @@ pub(crate) fn validate_forward_pass_metrics(metrics: &ForwardPassMetrics) -> Res
         (Some(extend), Some(past)) => {
             let count = u64::from(scheduled.num_prefill_requests)
                 + u64::from(scheduled.num_decode_requests);
-            let expected_extend =
-                u64::from(scheduled.sum_prefill_tokens) + u64::from(scheduled.num_decode_requests);
-            let expected_past = u64::from(scheduled.sum_prefill_kv_tokens)
-                + u64::from(scheduled.sum_decode_kv_tokens);
-            let sum = |values: &[u64]| {
-                values
-                    .iter()
-                    .try_fold(0u64, |total, value| total.checked_add(*value))
-            };
-            if extend.len() as u64 != count
-                || past.len() as u64 != count
-                || sum(extend) != Some(expected_extend)
-                || sum(past) != Some(expected_past)
-            {
+            // Request-level lengths and aggregate counters can use different
+            // backend conventions (for example padded prefill token counts).
+            if extend.len() as u64 != count || past.len() as u64 != count {
                 return Err(AicError::InvalidForwardPassMetrics(
-                    "request feature lists must match scheduled request counts and token sums"
-                        .into(),
+                    "request feature lists must match scheduled request counts".into(),
                 ));
             }
         }
