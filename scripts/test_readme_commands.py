@@ -62,3 +62,18 @@ def test_request_capture_must_match_override(tmp_path):
     (tmp_path / "requests.jsonl").write_text("{}\n")
     with pytest.raises(ValueError, match="incomplete"):
         assert_outputs({"requests": "requests.jsonl", "completed_requests": 4}, tmp_path, tmp_path / "log")
+
+
+@pytest.mark.parametrize("actual", [2, 1, None])
+def test_prediction_tensor_override_metric(tmp_path, actual):
+    # ReplayReport serializes this metric in crates/core/src/replay/report.rs.
+    summary = {"completed_requests": 100}
+    if actual is not None:
+        summary["decode_gpus_per_worker"] = actual
+    (tmp_path / "prediction.json").write_text(json.dumps({"summary": summary}))
+    entry = {"prediction": "prediction.json", "metrics": {"decode_gpus_per_worker": 2}}
+    if actual == 2:
+        assert_outputs(entry, tmp_path, tmp_path / "log")
+    else:
+        with pytest.raises(ValueError, match="Unexpected decode_gpus_per_worker"):
+            assert_outputs(entry, tmp_path, tmp_path / "log")

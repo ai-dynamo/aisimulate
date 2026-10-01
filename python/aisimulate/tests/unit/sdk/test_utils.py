@@ -47,14 +47,18 @@ def test_download_hf_config_json_revision(monkeypatch, revision, path_revision):
     assert requests == [f"https://huggingface.co/test/model/raw/{path_revision}/config.json"]
 
 
+@pytest.mark.parametrize("use_tilde", [False, True])
 @pytest.mark.parametrize("setting", ["HF_HOME", "HF_TOKEN_PATH", "XDG_CACHE_HOME"])
-def test_hf_metadata_uses_configured_token_location(monkeypatch, tmp_path, setting):
+def test_hf_metadata_uses_configured_token_location(monkeypatch, tmp_path, setting, use_tilde):
     for name in ("HF_TOKEN", "HUGGING_FACE_HUB_TOKEN", "HF_HOME", "HF_TOKEN_PATH", "HF_HUB_DISABLE_IMPLICIT_TOKEN"):
         monkeypatch.delenv(name, raising=False)
     token = tmp_path / "huggingface" / "token"
     token.parent.mkdir()
     token.write_text("test-token\n")
     location = {"HF_HOME": token.parent, "HF_TOKEN_PATH": token, "XDG_CACHE_HOME": tmp_path}[setting]
+    if use_tilde:
+        monkeypatch.setenv("HOME", str(tmp_path))
+        location = "~/" + str(location.relative_to(tmp_path))
     monkeypatch.setenv(setting, str(location))
     assert utils._get_hf_auth_headers() == {"Authorization": "Bearer test-token"}
 

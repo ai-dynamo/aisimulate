@@ -419,7 +419,7 @@ def _get_hf_auth_headers() -> dict[str, str]:
     if not hf_token:
         default_home = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "huggingface"
         hf_home = Path(os.environ.get("HF_HOME", default_home))
-        token_path = Path(os.environ.get("HF_TOKEN_PATH", hf_home / "token"))
+        token_path = Path(os.environ.get("HF_TOKEN_PATH", hf_home / "token")).expanduser()
         try:
             hf_token = token_path.read_text().strip()
         except FileNotFoundError:

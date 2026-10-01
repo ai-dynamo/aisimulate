@@ -477,7 +477,8 @@ git fetch origin d066e918705b98e2d55eed55743ce8d225f129ea
 These tests need network access for model metadata. Use valid Hugging Face
 credentials, or anonymous access to public models. For anonymous metadata access,
 set `HF_HUB_DISABLE_IMPLICIT_TOKEN=1`; custom token/cache locations use
-`HF_TOKEN_PATH`, `HF_HOME`, and `XDG_CACHE_HOME`. The per-process Git settings
+`HF_TOKEN_PATH`, `HF_HOME`, and `XDG_CACHE_HOME` (including `~/` paths).
+The per-process Git settings
 below disable signing only for temporary test repositories. On macOS, append
 `-p no:timeout` to pytest to avoid SIGALRM crash dialogs.
 
