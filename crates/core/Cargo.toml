@@ -38,6 +38,7 @@ serde_json = { workspace = true, features = ["raw_value"] }
 serde_path_to_error = "0.1"
 serde_yaml = "0.9"
 sha2 = "0.10"
+sglang-radix-tree = { git = "https://github.com/sgl-project/sglang.git", rev = "f0fda25fc95c357368b714f90a13a69c1b67f50a", default-features = false }
 slotmap = "1"
 thiserror = { workspace = true }
 tempfile = { workspace = true }
@@ -54,3 +55,4 @@ replay-bench = []
 
 [dev-dependencies]
 rstest = "0.18.2"
+sglang-radix-tree = { git = "https://github.com/sgl-project/sglang.git", rev = "f0fda25fc95c357368b714f90a13a69c1b67f50a", default-features = false, features = ["inspection"] }
