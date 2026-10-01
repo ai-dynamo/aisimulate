@@ -35,7 +35,7 @@ def artifact_json(repository: str, artifact: dict) -> list[dict]:
         return records
 
 
-def summarize(reports: list[dict], conclusion: str, sha: str) -> tuple[list[str], bool]:
+def summarize(reports: list[dict], conclusion: str, sha: str, attempt: int = 1) -> tuple[list[str], bool]:
     """Missing evidence never qualifies a recovery."""
     failures = []
     seen = set()
@@ -44,6 +44,11 @@ def summarize(reports: list[dict], conclusion: str, sha: str) -> tuple[list[str]
         if profile not in PROFILES or profile in seen or report["sha"] != sha:
             raise ValueError("Unexpected, duplicate, or wrong-SHA report")
         seen.add(profile)
+        expected_platform = "darwin" if profile == "macos" else "linux"
+        if report.get("platform") != expected_platform:
+            failures.append(f"{profile}: wrong platform")
+        if report.get("run_attempt") != attempt:
+            failures.append(f"{profile}: not rerun in this attempt")
         checks = {check["id"]: check["status"] for check in report["checks"]}
         if len(checks) != len(report["checks"]) or not report["expected"]:
             raise ValueError("Invalid command evidence")
@@ -133,7 +138,7 @@ def main() -> None:
     for artifact in artifacts:
         if artifact["name"] in {f"readme-{profile}" for profile in PROFILES} and not artifact["expired"]:
             reports.extend(artifact_json(repository, artifact))
-    failures, healthy = summarize(reports, run["conclusion"], run["head_sha"])
+    failures, healthy = summarize(reports, run["conclusion"], run["head_sha"], run["run_attempt"])
     previous = previous_state(repository, int(os.environ["GITHUB_RUN_ID"]))
     if healthy and previous.get("incident"):
         passed = {
@@ -147,7 +152,9 @@ def main() -> None:
             failures = [f"{name}: previous failing check was not rerun" for name in removed]
             healthy = False
     # workflow_run can be delivered out of order. Never recover from older evidence.
-    if previous.get("last_run", 0) >= run["id"]:
+    previous_run = (previous.get("last_run", 0), previous.get("last_attempt", 1))
+    current_run = (run["id"], run["run_attempt"])
+    if previous_run >= current_run:
         payload, state = None, previous
     else:
         payload, state = transition(previous, failures, healthy, run)
@@ -173,7 +180,7 @@ def main() -> None:
     elif payload:
         print("Delivery disabled; payload saved for preview")
         state = previous
-    state["last_run"] = max(previous.get("last_run", 0), run["id"])
+    state["last_run"], state["last_attempt"] = max(previous_run, current_run)
     (args.output / "state.json").write_text(json.dumps(state, indent=2) + "\n")
     print("No notification needed" if payload is None else payload["message"])
 

@@ -813,6 +813,8 @@ with read-only GitHub permissions. It reads evidence rather than executing
 producer artifacts. Healthy runs are quiet; unchanged failures are suppressed.
 Recovery is emitted only after all profiles and full suites pass in a later
 complete daily/manual run. A PR merge, partial run, or canceled run cannot recover
-an incident. Preview payloads and the delivery ledger are saved in
+an incident. Retrying a run qualifies recovery only when every profile ran in
+the new attempt; rerunning failed jobs alone cannot reuse older passing evidence.
+Preview payloads and the delivery ledger are saved in
 `readme-report-state` for 90 days. After ledger expiry, the next failure opens a
 new incident; recovery cannot reference an expired incident automatically.

@@ -222,11 +222,12 @@ def run_profile(profile: str, workspace: Path, output: Path, blocks: dict, manif
             "expected": selected,
             "complete": len(results) == len(selected),
             "platform": sys.platform,
+            "run_attempt": int(os.environ.get("GITHUB_RUN_ATTEMPT", "1")),
         }
         (output / "report.json").write_text(json.dumps(report, indent=2) + "\n")
     if environment.exists():
         run_shell(
-            "python -m pip freeze --all\npython -m pip check",
+            "python --version\npython -m pip freeze --all\npython -m pip check",
             cwd,
             env,
             output / "environment.log",

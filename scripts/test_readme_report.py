@@ -19,6 +19,8 @@ def reports():
             "checks": [{"id": "command", "status": "passed"}],
             "expected": ["command"],
             "complete": True,
+            "platform": "darwin" if p == "macos" else "linux",
+            "run_attempt": 1,
         }
         for p in PROFILES
     ]
@@ -61,3 +63,14 @@ def test_incident_remembers_all_previously_failed_checks():
     _, state = transition({}, ["development/root-tests: failed"], False, RUN)
     _, state = transition(state, ["dynamo/dynamo-install: failed"], False, RUN)
     assert state["incident"]["required_checks"] == ["development/root-tests", "dynamo/dynamo-install"]
+
+
+def test_recovery_requires_all_profiles_from_the_current_attempt():
+    evidence = reports()
+    evidence[0]["run_attempt"] = 2
+    assert not summarize(evidence, "success", "abc", attempt=2)[1]
+    for report in evidence:
+        report["run_attempt"] = 2
+    assert summarize(evidence, "success", "abc", attempt=2)[1]
+    next(report for report in evidence if report["profile"] == "macos")["platform"] = "linux"
+    assert not summarize(evidence, "success", "abc", attempt=2)[1]
