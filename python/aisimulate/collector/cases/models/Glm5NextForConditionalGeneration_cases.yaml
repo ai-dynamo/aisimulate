@@ -108,32 +108,51 @@ model_case_values:
         trtllm:
           allowed_modes: []
 
-  # ---------------------------------------------------------------------
-  # PLACEHOLDER (workstream W2, KDA) -- owned by W2; W1 merges W2's commit.
-  # kda rows: d_model 4096, d_conv 4, 64 heads x 128 sharded per TP
-  # (64/32/16 local heads at TP1/2/4), gate lower bound -5. Activate `kda`
-  # under framework_specific_op_cases below once the kda collectors'
-  # __compat__ admits vLLM 0.30.0 / SGLang 0.5.20.
-  # kda: []
-  # ---------------------------------------------------------------------
-  # PLACEHOLDER (workstream W3, mHC) -- owned by W3; W1 merges W3's commit.
-  # mhc rows: hidden 4096, hc_mult 4, sinkhorn 20, eps 1e-6, TP 1/2/4.
-  # Activate `mhc_module` below once its collectors admit these runtimes.
-  # mhc: []
-  # ---------------------------------------------------------------------
+  # KDA (workstream W2). GLM-5.3-Flash KDA structural tuple per attention-TP
+  # shard (text_config.linear_attn_config: 64 heads x head_dim 128,
+  # short_conv_kernel_size 4; hidden_size 4096). 64 heads shard to 32 / 16
+  # local heads at TP2 / TP4 (the served topologies). KDA projections, conv
+  # and state are BF16/FP32 in BOTH checkpoints (the NVFP4 and FP8
+  # quantization configs exclude linear_attn), so the NVFP4 artifact is a
+  # shape-only alias of the same physical case. num_k_heads == num_v_heads.
+  # The collectors route these model paths to the glm5next serving dispatch
+  # (collector/{vllm,sglang}/collect_kda.py GLM5_NEXT_KDA_MODEL_PATHS).
+  kda:
+    - model_path: zai-org/GLM-5.3-Flash
+      model_aliases: [nvidia/GLM-5.3-Flash-NVFP4]
+      d_model: 4096
+      d_conv: 4
+      num_k_heads: 32
+      head_k_dim: 128
+      num_v_heads: 32
+      head_v_dim: 128
+    - model_path: zai-org/GLM-5.3-Flash
+      model_aliases: [nvidia/GLM-5.3-Flash-NVFP4]
+      d_model: 4096
+      d_conv: 4
+      num_k_heads: 16
+      head_k_dim: 128
+      num_v_heads: 16
+      head_v_dim: 128
 
-# ---------------------------------------------------------------------
-# PLACEHOLDER (workstream W4, GLM NoPE sparse-MLA + IndexPool attention
-# module) -- owned by W4 (DSV4.1 precedent: framework_specific_model_case_values
-# + one GLM-specific op/table). Its op name must exist in the backend
-# registries before it can be activated here (model_cases.py rejects ops
-# unknown to the registry).
-# framework_specific_model_case_values:
-#   vllm:
-#     <glm_attention_op>: [...]
-#   sglang:
-#     <glm_attention_op>: [...]
-# ---------------------------------------------------------------------
+  # mHC (workstream W3). mHC runs in BF16 activations with FP32 hc parameters
+  # in both the FP8 and the NVFP4 checkpoint (neither quantizes hc_* or the
+  # layer norms), and both configs carry the same hidden_size=4096,
+  # hc_mult=4, hc_sinkhorn_iters=20, hc_eps=1e-6, rms_norm_eps=1e-5. The
+  # artifact therefore cannot change the invoked kernel or the persisted
+  # (op_name, hc_mult, hidden_size) key: one physical case, aliased. The
+  # table has no TP axis (mHC runs replicated on every TP rank).
+  mhc:
+    - model_path: zai-org/GLM-5.3-Flash
+      model_aliases:
+        - nvidia/GLM-5.3-Flash-NVFP4
+      hidden_size: 4096
+      hc_mult: 4
+
+# The GLM NoPE sparse-MLA + IndexPool attention module (workstream W4) is a
+# standalone Slurm collector (collector/glm53flash_attention_launch.py,
+# declared in collector.provenance.STANDALONE_COLLECTOR_MODULES) driven by
+# cases/base_ops/glm53flash_attention.yaml, so it has no section here.
 
 # moe/compute_scale are activated per framework: GLM-5.3-Flash has no
 # TRT-LLM serving lane. compute_scale is not a GLM consumer input (GLM runs
@@ -145,10 +164,20 @@ framework_specific_op_cases:
       cases: all
     compute_scale:
       cases: all
-    # kda (W2), mhc_module (W3), <glm_attention_op> (W4): add here.
+    # vLLM 0.30.0 is the audited GLM KDA / mHC runtime
+    # (collect_kda.py _KDA_ARCHITECTURE_COMPAT,
+    # collect_mhc_module.py _ARCHITECTURE_COMPAT).
+    kda:
+      cases: all
+    mhc_module:
+      cases: all
   sglang:
     moe:
       cases: all
     compute_scale:
       cases: all
-    # kda (W2), mhc_module (W3), <glm_attention_op> (W4): add here.
+    # SGLang 0.5.20 is the audited GLM KDA / mHC runtime.
+    kda:
+      cases: all
+    mhc_module:
+      cases: all

@@ -144,6 +144,12 @@ mappings:
   - {framework: sglang, kernel_source: sglang_tilelang_mhc_pre, backend: tilelang, source: "PR#1342 collect_mhc_module.py"}
   - {framework: sglang, kernel_source: sglang_tilelang_mhc_post, backend: tilelang, source: "PR#1342 collect_mhc_module.py"}
   - {framework: sglang, kernel_source: sglang_torch_mhc_pre, backend: torch, source: "PR#1342 collect_mhc_module.py (torch fallback leaf)"}
+  # GLM-5.3-Flash (Glm5Next) mHC labels at 0.5.20 (collector/sglang/collect_mhc_module.py
+  # _glm5next_kernel_source; mhc.py mhc_pre L1034-1044 DeepGEMM tf32_hc_prenorm_gemm + TileLang big_fuse_with_norm).
+  - {framework: sglang, kernel_source: "sglang.hc_pre[tilelang,prenorm_gemm=deepgemm,norm=fused]", backend: deepgemm, source: "collector/sglang/collect_mhc_module.py (GLM; observed norm_fused=True)"}
+  - {framework: sglang, kernel_source: "sglang.hc_post[tilelang]", backend: tilelang, source: "collector/sglang/collect_mhc_module.py (GLM; kernels/ops/layernorm/mhc.py mhc_post_tilelang)"}
+  - {framework: sglang, kernel_source: "sglang.kernels.ops.layernorm.mhc.hc_expand", backend: torch, source: "kernels/ops/layernorm/mhc.py:1762 x.repeat @v0.5.20"}
+  - {framework: sglang, kernel_source: "sglang.kernels.ops.layernorm.mhc.hc_contract", backend: torch, source: "kernels/ops/layernorm/mhc.py:1766 mean @v0.5.20"}
 
   # --- Kimi-K3 (#1435) labels: KDA module kernels (0.5.16) and MoE
   # situ-as-silu measurement variants (0.5.14; suffix marks the activation
@@ -307,6 +313,14 @@ mappings:
   - {framework: vllm, kernel_source: fused_recurrent_gated_delta_rule_packed_decode, backend: fla_triton, source: "PR#1344 collect_gdn.py"}
   - {framework: vllm, kernel_source: "vllm.model_executor.kernels.mhc.tilelang.mhc_pre_tilelang", backend: tilelang, source: "PR#1344 collect_mhc_module.py"}
   - {framework: vllm, kernel_source: "vllm.model_executor.kernels.mhc.tilelang.mhc_post_tilelang", backend: tilelang, source: "PR#1344 collect_mhc_module.py"}
+  # GLM-5.3-Flash (Glm5Next) mHC labels at 0.30.0 (collector/vllm/collect_mhc_module.py
+  # _glm5next_kernel_source; kernels/mhc/tilelang.py _hc_prenorm_gemm_outputs L22-60, fused split L812-981).
+  - {framework: vllm, kernel_source: "vllm.mhc_pre_tilelang[prenorm_gemm=deepgemm,norm=fused]", backend: deepgemm, source: "collector/vllm/collect_mhc_module.py (GLM)"}
+  - {framework: vllm, kernel_source: "vllm.mhc_post_tilelang", backend: tilelang, source: "collector/vllm/collect_mhc_module.py (GLM)"}
+  - {framework: vllm, kernel_source: "vllm.mhc_fused_post_pre_tilelang[fused_post_gemm,norm=fused]", backend: tilelang, source: "collector/vllm/collect_mhc_module.py (GLM; fused post+GEMM TileLang kernel, small token counts)"}
+  - {framework: vllm, kernel_source: "vllm.mhc_fused_post_pre_tilelang[post+prenorm_gemm=deepgemm,norm=fused]", backend: deepgemm, source: "collector/vllm/collect_mhc_module.py (GLM; post + DeepGEMM prenorm GEMM, large token counts)"}
+  - {framework: vllm, kernel_source: "vllm.model_executor.layers.mhc.hc_expand", backend: torch, source: "vllm/model_executor/layers/mhc.py:969 @0.30.0"}
+  - {framework: vllm, kernel_source: "vllm.model_executor.layers.mhc.hc_contract", backend: torch, source: "vllm/model_executor/layers/mhc.py:974 @0.30.0"}
   - {framework: vllm, kernel_source: "vllm.utils.deep_gemm.fp8_fp4_paged_mqa_logits", backend: deepgemm, source: "PR#1344 collect_dsv4_attn.py"}
 
   # --- Kimi-K3 (#1435) labels: KDA kernels from the vLLM kimi-k3 preview
