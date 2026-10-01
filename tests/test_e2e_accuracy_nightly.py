@@ -337,8 +337,8 @@ def test_point_timeout_remains_an_explicit_incomplete_campaign(monkeypatch):
     }
 
 
-@pytest.fixture
-def artifact(tmp_path, monkeypatch):
+@pytest.fixture(params=["aisimulate", "aiconfigurator"])
+def artifact(tmp_path, monkeypatch, request):
     source = tmp_path / "tables.json"
     source.write_text(json.dumps(tables()))
     manifest = tmp_path / "manifest.json"
@@ -346,7 +346,17 @@ def artifact(tmp_path, monkeypatch):
     monkeypatch.setattr(
         campaign,
         "wheel_identity",
-        lambda path: {"wheel_sha256": "a" * 64, "packages": {"aisimulate": "0.12.0"}},
+        lambda path: {
+            "wheel_sha256": "a" * 64,
+            "packages": {"aisimulate": "0.12.0"},
+            "baseline_api": "aiconfigurator.cli.api"
+            if request.param == "aiconfigurator"
+            else "aisimulate.legacy_cli.api",
+            "config_adapter": request.param + ".sdk.config_adapter",
+            "cli_entry_point": "aiconfigurator.main:main"
+            if request.param == "aiconfigurator"
+            else "aisimulate.legacy_cli.entrypoint:main",
+        },
     )
 
     def predictor(point, timeout):
@@ -596,10 +606,8 @@ def test_nightly_accuracy_is_independent_from_release_staging_and_has_no_public_
     wheel_upload = next(s for s in workflow["jobs"]["wheel"]["steps"] if "upload-artifact@" in s.get("uses", ""))
     assert wheel_upload["with"]["overwrite"] == "true"
     assert wheel_upload["with"]["name"] == "e2e-accuracy-wheel-${{ inputs.artifact_key }}"
-    assert set(uploads[0]["with"]["path"].splitlines()) == {
-        "${{ runner.temp }}/accuracy-public/summary.json",
-        "${{ runner.temp }}/accuracy-public/qualification.json",
-    }
+    # The container hook remaps one directory, not multiline absolute paths.
+    assert uploads[0]["with"]["path"] == "${{ runner.temp }}/accuracy-public/"
     assert "actions: write" not in (ROOT / ".github/workflows/e2e-accuracy.yml").read_text()
     pages_workflow = yaml.load((ROOT / ".github/workflows/pages.yml").read_text(), Loader=yaml.BaseLoader)
     assert set(pages_workflow["on"]["workflow_run"]["workflows"]) == {
@@ -952,3 +960,262 @@ def test_invalid_exclusion_counts_cannot_publish(artifact, counts):
     summary["snapshot"]["campaign"]["exclusion_reasons"] = counts
     with pytest.raises(ValueError):
         publish.validate_artifact(archive(summary), run)
+
+
+@pytest.fixture
+def latest_dump(monkeypatch):
+    template = json.loads((ROOT / ".github/e2e-accuracy-dataset.json").read_text())
+    tag = "db-dump/2026-09-28"
+    name = "inferencex-2026-09-28.dump.zst.part00"
+    checksum = "a" * 64
+    payload = f"{checksum}  {name}\n".encode()
+    releases = [
+        {"id": 1, "tag_name": template["release_tag"]},
+        {"id": 2, "tag_name": tag},
+        {"id": 3, "tag_name": "inferencex-skills-v1.0.0"},
+        {"id": 4, "tag_name": "db-dump/2026-09-30", "draft": True},
+        {"id": 5, "tag_name": "db-dump/2026-09-29", "prerelease": True},
+    ]
+    assets = [
+        {"name": name, "size": 40_000_000_000, "digest": "sha256:" + checksum, "state": "uploaded"},
+        {
+            "name": "SHA256SUMS",
+            "size": len(payload),
+            "digest": "sha256:" + hashlib.sha256(payload).hexdigest(),
+            "state": "uploaded",
+        },
+    ]
+
+    def items(path):
+        if path == "releases":
+            return releases
+        assert path == "releases/2/assets"
+        return assets
+
+    def download(url, timeout):
+        assert url == fetch.RELEASE_ROOT + tag + "/SHA256SUMS"
+        assert timeout == 120
+        return io.BytesIO(payload)
+
+    monkeypatch.setattr(fetch, "release_items", items)
+    monkeypatch.setattr(fetch.urllib.request, "urlopen", download)
+    return template, releases, assets
+
+
+def test_latest_dump_freezes_dated_release_checksums_and_disk_budget(latest_dump):
+    template, _, _ = latest_dump
+    original = deepcopy(template)
+    manifest = fetch.resolve_latest_manifest(template)
+    assert template == original
+    assert manifest["release_tag"] == "db-dump/2026-09-28"
+    assert manifest["parts"] == [
+        {"name": "inferencex-2026-09-28.dump.zst.part00", "size": 40_000_000_000, "sha256": "a" * 64}
+    ]
+    assert manifest["minimum_free_bytes"] == 50_000_000_000
+    assert manifest["selection_policy"] == template["selection_policy"]
+    assert manifest["max_age_days"] == template["max_age_days"]
+
+
+@pytest.mark.parametrize(
+    "damage",
+    ["missing_part", "missing_checksums", "digest", "checksum_digest", "uploading", "extra_part", "duplicate", "gap"],
+)
+def test_incomplete_latest_dump_fails_without_falling_back(latest_dump, damage):
+    template, _, assets = latest_dump
+    if damage == "missing_part":
+        assets.pop(0)
+    elif damage == "missing_checksums":
+        assets.pop()
+    elif damage == "digest":
+        assets[0]["digest"] = None
+    elif damage == "checksum_digest":
+        assets[1]["digest"] = "sha256:" + "b" * 64
+    elif damage == "uploading":
+        assets[0]["state"] = "new"
+    elif damage == "extra_part":
+        assets.append({**assets[0], "name": assets[0]["name"].replace("part00", "part01")})
+    elif damage == "duplicate":
+        assets.append(assets[0])
+    else:
+        assets[0]["name"] = assets[0]["name"].replace("part00", "part01")
+    with pytest.raises(ValueError):
+        fetch.resolve_latest_manifest(template)
+
+
+def test_latest_dump_requires_a_published_database_release(latest_dump):
+    template, releases, _ = latest_dump
+    releases[:] = [release for release in releases if release["id"] > 2]
+    with pytest.raises(ValueError, match="no published database dump"):
+        fetch.resolve_latest_manifest(template)
+
+
+def test_release_metadata_paginates_and_authenticates_only_api_requests(monkeypatch):
+    requests = []
+    monkeypatch.setenv("GITHUB_TOKEN", "test-token")
+
+    def download(request, timeout):
+        requests.append(request)
+        assert request.headers["Authorization"] == "Bearer test-token"
+        assert request.full_url.startswith("https://api.github.com/repos/SemiAnalysisAI/InferenceX-app/releases?")
+        assert timeout == 120
+        return io.BytesIO(json.dumps([{"id": 1}] * 100 if len(requests) == 1 else [{"id": 2}]).encode())
+
+    monkeypatch.setattr(fetch.urllib.request, "urlopen", download)
+    assert len(fetch.release_items("releases")) == 101
+    assert requests[0].full_url.endswith("page=1")
+    assert requests[1].full_url.endswith("page=2")
+
+
+@pytest.mark.parametrize("first", [b"short", b"broken", OSError("connection reset")])
+def test_dump_part_retry_preserves_previous_parts(monkeypatch, first):
+    payload = b"valid!"
+    part = {"name": "part00", "size": len(payload), "sha256": hashlib.sha256(payload).hexdigest()}
+    responses = iter([first, payload])
+
+    def download(url, timeout):
+        value = next(responses)
+        if isinstance(value, Exception):
+            raise value
+        return io.BytesIO(value)
+
+    monkeypatch.setattr(fetch.urllib.request, "urlopen", download)
+    monkeypatch.setattr(fetch.time, "sleep", lambda _: None)
+    target = io.BytesIO(b"previous part")
+    target.seek(0, 2)
+    fetch.download_part("https://example.invalid/part", part, target)
+    assert target.getvalue() == b"previous part" + payload
+
+
+def test_dump_part_retry_fails_closed_after_three_attempts(monkeypatch):
+    calls = []
+
+    def download(url, timeout):
+        calls.append(url)
+        return io.BytesIO(b"corrupt")
+
+    monkeypatch.setattr(fetch.urllib.request, "urlopen", download)
+    monkeypatch.setattr(fetch.time, "sleep", lambda _: None)
+    target = io.BytesIO(b"previous part")
+    target.seek(0, 2)
+    with pytest.raises(ValueError, match="received 7/7 bytes"):
+        fetch.download_part("https://example.invalid/part", {"name": "part00", "size": 7, "sha256": "a" * 64}, target)
+    assert len(calls) == 3
+    assert target.getvalue() == b"previous part"
+
+
+@pytest.mark.parametrize(
+    "api,adapter",
+    [
+        ("aisimulate.legacy_cli.api", "aisimulate.sdk.config_adapter"),
+        ("aiconfigurator.cli.api", "aiconfigurator.sdk.config_adapter"),
+    ],
+)
+def test_wheel_identity_accepts_both_packaged_predictor_layouts(tmp_path, monkeypatch, api, adapter):
+    members = {
+        "aisimulate/_runtime.py": b"runtime",
+        "aisimulate/runner.py": b"runner",
+        api.replace(".", "/") + ".py": b"baseline",
+        adapter.replace(".", "/") + "/__init__.py": b"adapter",
+    }
+    wheel = tmp_path / "test.whl"
+    with zipfile.ZipFile(wheel, "w") as archive:
+        for name, content in members.items():
+            archive.writestr(name, content)
+            path = tmp_path / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(content)
+    dist = SimpleNamespace(locate_file=lambda name: tmp_path / name, version="test", files=list(members))
+    monkeypatch.setattr(campaign.importlib.metadata, "distribution", lambda _: dist)
+    imported = []
+
+    def load(name):
+        imported.append(name)
+        path = name.replace(".", "/") + ("/__init__.py" if name == adapter else ".py")
+        return SimpleNamespace(__file__=str(tmp_path / path))
+
+    monkeypatch.setattr(campaign.importlib, "import_module", load)
+    assert campaign.wheel_identity(wheel)["packages"] == {"aisimulate": "test"}
+    assert imported == ["aisimulate._runtime", "aisimulate.runner", api, adapter]
+    (tmp_path / (api.replace(".", "/") + ".py")).write_bytes(b"tampered")
+    with pytest.raises(ValueError, match="differs from qualified wheel"):
+        campaign.wheel_identity(wheel)
+
+
+def test_predictor_layout_rejects_missing_or_mixed_namespaces():
+    with pytest.raises(ValueError, match="no supported baseline"):
+        campaign.predictor_module_names([])
+    with pytest.raises(ValueError, match="matching config adapter"):
+        campaign.predictor_module_names(
+            ["aisimulate/legacy_cli/api.py", "aiconfigurator/sdk/config_adapter/__init__.py"]
+        )
+
+
+@pytest.mark.parametrize("adapters", [[], ["aisimulate"], ["aiconfigurator"], ["aisimulate", "aiconfigurator"]])
+def test_predictor_layout_rejects_multiple_baseline_apis(adapters):
+    files = ["aisimulate/legacy_cli/api.py", "aiconfigurator/cli/api.py"]
+    files += [name + "/sdk/config_adapter/__init__.py" for name in adapters]
+    with pytest.raises(ValueError, match="ambiguous"):
+        campaign.predictor_module_names(files)
+
+
+@pytest.mark.parametrize(
+    "api,adapter_name",
+    [
+        ("aisimulate.legacy_cli.api", "aisimulate.sdk.config_adapter"),
+        ("aiconfigurator.cli.api", "aiconfigurator.sdk.config_adapter"),
+    ],
+)
+def test_predict_point_calls_selected_api_and_adapter(monkeypatch, api, adapter_name):
+    files = [api.replace(".", "/") + ".py", adapter_name.replace(".", "/") + "/__init__.py"]
+    monkeypatch.setattr(campaign.importlib.metadata, "distribution", lambda _: SimpleNamespace(files=files))
+    monkeypatch.setitem(sys.modules, "aisimulate.runner", SimpleNamespace(EngineReplayRunnerFactory=object))
+    calls = []
+    request = object()
+
+    def adapt(source):
+        calls.append(("adapt", source))
+        return SimpleNamespace(requests=[request])
+
+    def kwargs(value):
+        assert value is request
+        return {"test_input": 42}
+
+    def estimate(**values):
+        calls.append(("estimate", values))
+        raise ValueError("test baseline failure")
+
+    modules = {
+        api: SimpleNamespace(cli_estimate=estimate),
+        adapter_name: SimpleNamespace(
+            InferenceXSource=lambda **values: values, adapt_config=adapt, to_cli_estimate_kwargs=kwargs
+        ),
+    }
+    monkeypatch.setattr(campaign.importlib, "import_module", modules.__getitem__)
+    result = campaign.predict_point({"id": "point", "config": {}, "benchmark": {}})
+    assert result["outcome"] == "baseline_failed"
+    assert calls == [("adapt", {"config": {}, "benchmark": {}}), ("estimate", {"test_input": 42})]
+
+
+def test_publication_rejects_unknown_baseline_entry_point(artifact):
+    summary, run = artifact
+    summary["snapshot"]["aic_source"]["cli_entry_point"] = "foreign.main:main"
+    with pytest.raises(ValueError, match="baseline entry point"):
+        publish.validate_artifact(archive(summary), run)
+
+
+@pytest.mark.parametrize(
+    "entry", ["aiconfigurator.main:main", "aisimulate.legacy_cli.entrypoint:main", None, "foreign.main:main", 42]
+)
+def test_site_builder_validates_baseline_entry_point(artifact, tmp_path, entry):
+    summary, _ = artifact
+    summary["snapshot"]["aic_source"]["cli_entry_point"] = entry
+    path = tmp_path / "summary.json"
+    path.write_text(json.dumps(summary))
+    if entry in ("aiconfigurator.main:main", "aisimulate.legacy_cli.entrypoint:main"):
+        pages._accuracy_summary(path.read_text())
+    else:
+        with pytest.raises(pages.PagesBuildError, match="legacy AIC CLI source"):
+            pages._accuracy_summary(path.read_text())
+    del summary["snapshot"]["aic_source"]["cli_entry_point"]
+    path.write_text(json.dumps(summary))
+    pages._accuracy_summary(path.read_text())

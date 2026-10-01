@@ -133,15 +133,15 @@ impl BucketedSpline {
         if !valid_features(raw_x) {
             return None;
         }
+        // Spline refines the shared linear arm's predictions without widening
+        // coverage when that arm is unready or cannot answer this query.
+        let linear_prediction = self.linear_fit.as_ref()?.predict(raw_x)?;
         if self.inside(raw_x) && self.spline_fit.as_ref().is_some_and(Model::is_ready) {
             if let Some(value) = self.raw_spline_prediction(raw_x) {
                 return Some(value.max(MIN_POSITIVE_PREDICTION_MS));
             }
         }
-        self.linear_fit
-            .as_ref()?
-            .predict(raw_x)
-            .map(|v| v.max(MIN_POSITIVE_PREDICTION_MS))
+        Some(linear_prediction.max(MIN_POSITIVE_PREDICTION_MS))
     }
 
     fn search_due(&self) -> bool {
@@ -313,6 +313,6 @@ impl StoreStats for BucketedSpline {
         self.samples.total_observations
     }
     fn is_ready(&self) -> bool {
-        self.linear_fit.is_some() || self.spline_fit.as_ref().is_some_and(Model::is_ready)
+        self.linear_fit.is_some()
     }
 }

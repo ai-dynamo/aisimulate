@@ -10,7 +10,8 @@ use std::path::Path;
 use aisimulate_core::{
     AicEngine, AicEngineBuilder, AicError, BackendKind, DatabaseMode, EstimationMode,
     EstimatorConfig, ForwardPassPerfModel, ForwardPassPerfModelConfig,
-    ForwardPassRegressionStoreDiagnostics, ForwardPassWorkerType, KvCacheEstimateRequest,
+    ForwardPassRegressionStoreDiagnostics, ForwardPassWorkerType, FpmInterpolationMethod,
+    FpmQueryCoverage, KvCacheEstimateRequest,
 };
 
 /// Compile the ergonomic engine builder without starting embedded Python.
@@ -71,6 +72,27 @@ pub fn regression_options() -> EstimatorConfig {
     config
 }
 
+/// Independent profile and interpolation method use the one construction API.
+pub fn profile_model(
+    mut config: ForwardPassPerfModelConfig,
+) -> Result<ForwardPassPerfModel, AicError> {
+    config.estimator_config.fpm_interpolation.method = FpmInterpolationMethod::Direct;
+    ForwardPassPerfModel::best_available(config)
+}
+
+/// Coverage is owned by the model returned by the one construction API.
+pub fn fpm_coverage(model: &ForwardPassPerfModel) -> Result<Option<FpmQueryCoverage>, AicError> {
+    model.fpm_query_coverage()
+}
+
+pub fn covered_prefill(model: &ForwardPassPerfModel) -> Result<f64, AicError> {
+    model.predict_prefill_latency(1, 128, 0)
+}
+
+pub fn covered_decode(model: &ForwardPassPerfModel) -> Result<f64, AicError> {
+    model.predict_decode_latency_total(1, 128)
+}
+
 pub fn best_available_model(
     config: ForwardPassPerfModelConfig,
 ) -> Result<ForwardPassPerfModel, AicError> {
@@ -105,9 +127,9 @@ pub fn accept_kv_request(request: KvCacheEstimateRequest) -> KvCacheEstimateRequ
 mod tests {
     use super::*;
     use aisimulate_core::{
-        ForwardPassMetrics, ForwardPassRegressionWorkloadKind, TimingEvidenceSource,
-        TimingEvidenceSummary, TimingOperationEvidence, TimingPhaseEvidence,
-        ENGINE_CONFIG_SCHEMA_VERSION, ENGINE_SPEC_SCHEMA_VERSION, FPM_VERSION,
+        ENGINE_CONFIG_SCHEMA_VERSION, ENGINE_SPEC_SCHEMA_VERSION, FPM_VERSION, ForwardPassMetrics,
+        ForwardPassRegressionWorkloadKind, TimingEvidenceSource, TimingEvidenceSummary,
+        TimingOperationEvidence, TimingPhaseEvidence,
     };
 
     #[test]
@@ -146,7 +168,8 @@ mod tests {
         // v22: observed MoE selection and exact prefill graph composites.
         // v23: ParallelMapping gained optional recorded DCP identity.
         // v24: FpmForwardOp carries typed DCP separately from matching strings.
-        assert_eq!(ENGINE_SPEC_SCHEMA_VERSION, 24);
+        // v25: SOL/direct interpolation selector combined with typed DCP.
+        assert_eq!(ENGINE_SPEC_SCHEMA_VERSION, 25);
         assert_eq!(FPM_VERSION, 1);
         assert_eq!(ForwardPassMetrics::default().version, FPM_VERSION);
     }
@@ -170,11 +193,13 @@ mod tests {
         config.estimator_config = controls;
         // Auto/default correction cannot admit a direct-only graph profile.
         // This fails before Python/model/system lookup despite nonexistent data.
-        assert!(ForwardPassPerfModel::best_available(config)
-            .err()
-            .unwrap()
-            .to_string()
-            .contains("requires explicit"));
+        assert!(
+            ForwardPassPerfModel::best_available(config)
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("requires explicit")
+        );
     }
 
     struct LatencyOnlyProvider;
@@ -263,9 +288,11 @@ mod tests {
             stores[0].workload_kind,
             ForwardPassRegressionWorkloadKind::PureDecode
         );
-        assert!(stores
-            .iter()
-            .all(|store| !store.ready && store.retained_observations == 0));
+        assert!(
+            stores
+                .iter()
+                .all(|store| !store.ready && store.retained_observations == 0)
+        );
         let _roles = [
             ForwardPassWorkerType::Prefill,
             ForwardPassWorkerType::Decode,
@@ -358,9 +385,11 @@ mod tests {
                 .err()
                 .expect("zero interval must fail");
             assert!(matches!(error, AicError::InvalidEngineConfig(_)));
-            assert!(error
-                .to_string()
-                .contains("estimator_config.fpm_regression.fit.rebuild_interval"));
+            assert!(
+                error
+                    .to_string()
+                    .contains("estimator_config.fpm_regression.fit.rebuild_interval")
+            );
         }
     }
 
@@ -376,23 +405,22 @@ mod tests {
 
     #[test]
     fn spline_types_defaults_and_custom_policies_survive_canonical_reload() {
-        use aisimulate_core::{RegressionFitKind, SplineFitConfig, SplineSearchConfig};
+        use aisimulate_core::{
+            ForwardPassSplineDiagnostics, RegressionFitKind, SplineFitConfig, SplineSearchConfig,
+        };
+
+        const PERIODIC: SplineSearchConfig = SplineSearchConfig::periodic(17);
+        const ADAPTIVE: SplineSearchConfig = SplineSearchConfig::adaptive(9, 3, 0.125, 0.25, 11);
 
         for spline in [
             None,
             Some(SplineFitConfig {
                 knots_per_axis: 3,
-                search: SplineSearchConfig::Periodic { step: 17 },
+                search: PERIODIC,
             }),
             Some(SplineFitConfig {
                 knots_per_axis: 2,
-                search: SplineSearchConfig::Adaptive {
-                    window: 9,
-                    trigger: 3,
-                    tolerance: 0.125,
-                    absolute_tolerance_ms: 0.25,
-                    cooldown: 11,
-                },
+                search: ADAPTIVE,
             }),
         ] {
             let mut config = ForwardPassPerfModelConfig::new(
@@ -410,6 +438,36 @@ mod tests {
                 resolved.estimator_config.fpm_regression.fit.spline,
                 Some(spline.unwrap_or_default())
             );
+            let search = &resolved
+                .estimator_config
+                .fpm_regression
+                .fit
+                .spline
+                .as_ref()
+                .unwrap()
+                .search;
+            // External callers allow both future policies and extra controls.
+            match search {
+                SplineSearchConfig::Periodic { step, .. } => assert_eq!(*step, 17),
+                SplineSearchConfig::Adaptive {
+                    window,
+                    trigger,
+                    tolerance,
+                    absolute_tolerance_ms,
+                    cooldown,
+                    ..
+                } => {
+                    let controls = (
+                        *window,
+                        *trigger,
+                        *tolerance,
+                        *absolute_tolerance_ms,
+                        *cooldown,
+                    );
+                    assert!([(16, 8, 0.05, 1.0, 64), (9, 3, 0.125, 0.25, 11)].contains(&controls));
+                }
+                _ => panic!("unexpected policy in this fixture"),
+            }
             let reloaded = ForwardPassPerfModel::best_available(resolved.clone()).unwrap();
             assert_eq!(&reloaded.provenance().unwrap().config, resolved);
             let stores = reloaded.regression_store_diagnostics();
@@ -418,7 +476,10 @@ mod tests {
                 assert!(!store.ready);
                 assert_eq!(store.retained_observations, 0);
                 let diagnostics = store.spline.expect("selected spline store diagnostics");
-                assert!(!diagnostics.initialized && !diagnostics.ready);
+                let ForwardPassSplineDiagnostics {
+                    initialized, ready, ..
+                } = diagnostics;
+                assert!(!initialized && !ready);
                 assert_eq!(diagnostics.accepted_observations, 0);
                 assert_eq!(diagnostics.knot_searches, 0);
                 assert_eq!(diagnostics.last_search_observation, None);
@@ -432,31 +493,56 @@ mod tests {
             ForwardPassFallbackPolicy, RegressionFitKind, SplineFitConfig, SplineSearchConfig,
         };
         for mode in [EstimationMode::Auto, EstimationMode::FpmRegression] {
-            let mut config = ForwardPassPerfModelConfig::new(
-                "test/model",
-                "test-system",
-                BackendKind::Vllm,
-                ForwardPassWorkerType::Decode,
-            );
-            config.estimation_mode = mode;
-            config.fallback_policy = ForwardPassFallbackPolicy::Allow;
-            config.estimator_config.fpm_regression.fit.kind = RegressionFitKind::Spline;
-            config.estimator_config.fpm_regression.fit.spline = Some(SplineFitConfig {
-                search: SplineSearchConfig::Periodic { step: 0 },
-                ..SplineFitConfig::default()
-            });
-            let error = ForwardPassPerfModel::best_available(config).err().unwrap();
-            assert!(matches!(error, AicError::InvalidEngineConfig(_)));
-            assert!(error.to_string().contains("fit.spline.search.step"));
+            for (search, path) in [
+                (SplineSearchConfig::periodic(0), "step"),
+                (SplineSearchConfig::adaptive(0, 1, 0.05, 1.0, 64), "window"),
+                (
+                    SplineSearchConfig::adaptive(16, 17, 0.05, 1.0, 64),
+                    "trigger",
+                ),
+                (
+                    SplineSearchConfig::adaptive(16, 8, f64::NAN, 1.0, 64),
+                    "tolerance",
+                ),
+                (
+                    SplineSearchConfig::adaptive(16, 8, 0.05, -1.0, 64),
+                    "absolute_tolerance_ms",
+                ),
+                (
+                    SplineSearchConfig::adaptive(16, 8, 0.05, 1.0, 0),
+                    "cooldown",
+                ),
+            ] {
+                let mut config = ForwardPassPerfModelConfig::new(
+                    "test/model",
+                    "test-system",
+                    BackendKind::Vllm,
+                    ForwardPassWorkerType::Decode,
+                );
+                config.estimation_mode = mode;
+                config.fallback_policy = ForwardPassFallbackPolicy::Allow;
+                config.estimator_config.fpm_regression.fit.kind = RegressionFitKind::Spline;
+                config.estimator_config.fpm_regression.fit.spline = Some(SplineFitConfig {
+                    search,
+                    ..SplineFitConfig::default()
+                });
+                let error = ForwardPassPerfModel::best_available(config).err().unwrap();
+                assert!(matches!(error, AicError::InvalidEngineConfig(_)));
+                assert!(
+                    error
+                        .to_string()
+                        .contains(&format!("fit.spline.search.{path}"))
+                );
+            }
         }
     }
 
     #[test]
     fn agentic_snapshot_preparation_and_execution_are_public() {
         use aisimulate_core::replay::loadgen::{
-            AgenticGraphBuilder, AgenticHashIdScope, AgenticMooncakeHeader, AgenticMooncakeRow,
-            AgenticSnapshotOptions, AgenticSourceProvenance, PreparedAgenticSnapshots,
-            WorkloadDriver, AGENTIC_MOONCAKE_SCHEMA, AGENTIC_MOONCAKE_VERSION,
+            AGENTIC_MOONCAKE_SCHEMA, AGENTIC_MOONCAKE_VERSION, AgenticGraphBuilder,
+            AgenticHashIdScope, AgenticMooncakeHeader, AgenticMooncakeRow, AgenticSnapshotOptions,
+            AgenticSourceProvenance, PreparedAgenticSnapshots, WorkloadDriver,
         };
 
         let mut builder = AgenticGraphBuilder::new(AgenticMooncakeHeader {
@@ -499,11 +585,13 @@ mod tests {
         let first = context.prepare_play_from_start(0, 0).unwrap();
         let recycled = context.prepare_play_from_start(0, 1).unwrap();
         assert_eq!(first.evidence().t_star_ms, 1_000.0);
-        assert!(first
-            .evidence()
-            .requests
-            .iter()
-            .all(|request| !request.historical));
+        assert!(
+            first
+                .evidence()
+                .requests
+                .iter()
+                .all(|request| !request.historical)
+        );
         assert_ne!(first.evidence().cache_id, recycled.evidence().cache_id);
         assert_ne!(
             first.materialize_prefix("before", 128).unwrap(),
@@ -519,10 +607,12 @@ mod tests {
         assert_eq!(phases.lanes[0].primers_expected, 1);
         assert_eq!(phases.lanes[0].warmup_expected, 10);
         assert_eq!(phases.requests[0].source_request_id, "before");
-        assert!(phases
-            .requests
-            .iter()
-            .all(|request| request.max_output_tokens == 1));
+        assert!(
+            phases
+                .requests
+                .iter()
+                .all(|request| request.max_output_tokens == 1)
+        );
         assert_eq!(phases.profile_start_ms, None);
         // An external caller can run the same prepared context through the
         // public offline P/D executor without private runtime constructors.
@@ -600,7 +690,7 @@ pub fn rebuild_replay_report_literals(
     aisimulate_core::ReplayReport,
     aisimulate_core::replay::PerRequestRecord,
 ) {
-    use aisimulate_core::{replay::PerRequestRecord, ReplayReport};
+    use aisimulate_core::{ReplayReport, replay::PerRequestRecord};
     (
         ReplayReport {
             kv_eviction_policy: report.kv_eviction_policy,

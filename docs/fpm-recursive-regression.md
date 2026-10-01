@@ -73,13 +73,18 @@ from the search policy. A full window is not required, and the observation that
 satisfies the cooldown need not itself have an excessive error if the rolling
 count still meets the trigger.
 
-Serving uses the spline within the current retained raw-feature bounding box
-and the shared linear fit outside it. An unready spline also falls back to that
-linear fit. Neither path borrows another workload store's training data. Both
-paths retain the positive latency floor. Per-store diagnostics expose spline
-initialization, readiness, accepted count, knot searches, last search count,
-numerical rebuilds, and batch fallbacks; the linear-only diagnostic shape is
-unchanged. Configuration serialization records controls, not trained state.
+Serving first requires an available prediction from the shared linear fit for
+the query. It then uses the spline within the current retained raw-feature
+bounding box and the linear fit outside it. An unready spline also falls back
+to that linear prediction. If the linear prediction is unavailable, neither
+path serves a prediction, including inside retained bounds. The store's `ready`
+flag requires a usable linear fit; `spline.ready` describes only the spline
+component and can be true while the store is unready. Neither path borrows
+another workload store's training data. Both paths retain the positive latency
+floor. Per-store diagnostics expose spline initialization, readiness, accepted
+count, knot searches, last search count, numerical rebuilds, and batch fallbacks;
+the linear-only diagnostic shape is unchanged. Configuration serialization
+records controls, not trained state.
 
 ## What one store learns
 
@@ -484,14 +489,14 @@ has weight zero. This is spatially balanced retention, not a FIFO window or
 exponential forgetting.
 
 Let $M$ be retained capacity, $B$ the bucket-map storage scanned to select an
-eviction, and $k$ the population of the selected cell. With two fixed features:
+eviction. With two fixed features:
 
 | Work in a tuning update | Cost |
 |---|---|
 | Feature validation and reduction | Linear in the supplied rank count |
 | Centered insertion/removal and small constrained fit | Constant in $M$ on the healthy path |
 | Finding a fattest retention cell | Scan of the bucket map, $O(B)$ |
-| Removing the oldest row from that cell's vector | $O(k)$, up to $O(M)$ |
+| Removing the oldest row from that cell's `VecDeque` | $O(1)$ |
 | Rebucketing after dynamic bounds expand | $O(M)$ |
 | Full statistics and batch-coefficient rebuild | $O(M)$ |
 | Stored observations | $O(M)$, plus constant-sized fitting state |
@@ -618,7 +623,134 @@ Each case uses 9,216 unique source row IDs for warmup and its measured tail.
 The shuffle and repeated trials are a timing protocol; they do not measure
 chronological adaptation or held-out prediction accuracy.
 
+## Guarded production accuracy (2026-09-30 UTC)
+
+Exact source revision: `e5433b2ebf1a05bb1dfdfbdda1df4d74498e86d8`. Release
+numerical-store harness SHA-256:
+`f70b7116c64a2b338dffaecd85383c83df0a744d0b3fe18fead9c5ca07b4ed7b`.
+
+This is a fresh production-only replay after the shared-linear serving guard and
+public API changes. It does not use the previous inclusive diagnostic's
+intercept-only fills or bypass the spline guard. All production source functions
+are extracted verbatim from the stated commit. Harness accessors only inspect
+state and switch the adaptive policy on an empty clone.
+
+Three complete paired trials replay all 15 existing local prefixes in original
+order. Each trial trains on all 163,540 rows, including latency spikes, and has
+161,223 scoring-eligible rows after 64 prior accepted observations per workload
+store. Retention capacity is 64, minimum observations 5, knots per axis 2.
+Periodic uses step 64; adaptive uses window 16, trigger 8, relative tolerance
+0.05, absolute floor 1 ms, cooldown 64. Predictions are made before
+incorporating the current target.
+
+The linear baseline is each spline's production shared linear arm. Periodic and
+adaptive start from cloned empty stores, preserving the same randomized sampler
+within each trial. Identical retained sequence IDs and bit-identical linear
+predictions are checked after every update. A new process for each case/trial
+permits the production HashMap's unspecified iteration/tie order to vary; no
+fixed seed is substituted. All three methods have exactly the same available
+query cohort within each trial. Unavailable predictions remain abstentions: they
+reduce coverage and are not assigned an invented error. Thus MAPE is conditional
+prediction accuracy, not the accuracy of a complete policy that handles
+abstentions.
+
+### Per-dataset results
+
+All MAPE and coverage entries are three-trial mean [minimum–maximum], in
+percent. Each method has the listed coverage in every trial. These are
+previously examined development prefixes, not an untouched holdout.
+
+| Dataset / hardware / backend / parallelism | Eligible rows | Common coverage % | Linear MAPE % | Periodic 64 MAPE % | Adaptive 16/8/5% MAPE % |
+|---|---:|---:|---:|---:|---:|
+| MiniMaxAI/MiniMax-M2.7 / b200_sxm / vllm / tep4 | 15862 | 46.97 [46.24–47.36] | 70.1603 [68.5365–71.3027] | 30.7912 [30.1801–31.4476] | 30.9109 [30.3511–31.7778] |
+| MiniMaxAI/MiniMax-M2.7 / h200_sxm / vllm / pure_tp4 | 15819 | 100.00 [100.00–100.00] | 1.1691 [0.8490–1.3817] | 2.3735 [0.8577–5.3362] | 1.0359 [0.8649–1.1816] |
+| MiniMaxAI/MiniMax-M2.7 / h200_sxm / vllm / tep4 | 190 | 100.00 [100.00–100.00] | 18.3761 [17.5434–18.8129] | 11.2445 [9.8424–12.5421] | 11.8321 [11.3056–12.6634] |
+| deepseek-ai/DeepSeek-V4-Flash-0731 / b200_sxm / vllm / dep4 | 1100 | 100.00 [100.00–100.00] | 25.0882 [23.4759–27.5768] | 10.1687 [7.5254–15.2484] | 9.0171 [7.9855–10.8299] |
+| deepseek-ai/DeepSeek-V4-Flash-0731 / b200_sxm / vllm / tep4 | 1112 | 100.00 [100.00–100.00] | 20.3897 [15.9324–27.9276] | 7.0662 [6.0174–9.0171] | 8.4454 [7.4484–10.4383] |
+| deepseek-ai/DeepSeek-V4-Pro / b200_sxm / vllm / dep8 | 15808 | 99.49 [99.38–99.66] | 4.8195 [4.7531–4.8646] | 4.5362 [4.4797–4.5657] | 4.5604 [4.5229–4.5875] |
+| deepseek-ai/DeepSeek-V4-Pro / b300_sxm / sglang / dep8 | 15872 | 100.00 [100.00–100.00] | 2.6619 [2.6445–2.6826] | 2.0757 [2.0706–2.0790] | 2.1351 [2.1298–2.1405] |
+| deepseek-ai/DeepSeek-V4-Pro / gb300 / vllm / dep8 | 15936 | 96.07 [96.05–96.09] | 0.1619 [0.1599–0.1630] | 0.1615 [0.1595–0.1625] | 0.1612 [0.1592–0.1622] |
+| deepseek-ai/DeepSeek-V4-Pro / gb300 / vllm / tep8 | 15936 | 100.00 [100.00–100.00] | 0.1334 [0.1307–0.1349] | 0.1259 [0.1238–0.1280] | 0.1236 [0.1209–0.1251] |
+| moonshotai/Kimi-K3 / gb300 / vllm / tep8 | 15803 | 99.89 [99.89–99.89] | 2.3151 [2.3089–2.3249] | 1.4457 [1.4370–1.4617] | 1.5466 [1.5146–1.5725] |
+| nvidia/GLM-5.2-NVFP4 / b200_sxm / sglang / pure-tp8 | 15872 | 97.88 [97.05–99.47] | 0.6380 [0.6318–0.6413] | 0.6026 [0.5999–0.6051] | 0.6257 [0.6226–0.6283] |
+| nvidia/GLM-5.2-NVFP4 / b200_sxm / vllm / dep8 | 164 | 100.00 [100.00–100.00] | 10.9902 [10.6862–11.2539] | 7.0585 [7.0289–7.1060] | 6.2147 [5.3577–6.6970] |
+| nvidia/GLM-5.2-NVFP4 / b200_sxm / vllm / tep8 | 146 | 100.00 [100.00–100.00] | 15.2157 [14.2302–15.7469] | 6.7222 [6.3900–6.9987] | 7.2690 [6.7922–8.1471] |
+| nvidia/GLM-5.2-NVFP4 / gb200 / vllm / dep16 | 15747 | 99.81 [99.71–99.94] | 2.2767 [2.2641–2.2871] | 1.7268 [1.6912–1.7663] | 1.8642 [1.8489–1.8777] |
+| nvidia/MiniMax-M3-NVFP4 / b200_sxm / vllm / pure-tp4 | 15856 | 100.00 [100.00–100.00] | 4.1379 [4.0300–4.2104] | 3.8683 [3.8390–3.9172] | 4.0846 [4.0690–4.1011] |
+
+### Aggregate and limitations
+
+Each aggregate entry is the arithmetic mean of three per-trial metrics, with
+brackets showing their minimum and maximum. Within each trial, equal-dataset
+MAPE averages the 15 dataset MAPEs; observation-weighted MAPE averages absolute
+percentage error across available forecasts. Forecasts are not pooled across
+trials before computing these means.
+
+Equal-dataset mean MAPE: linear **11.9023 [11.4542–12.4378]%**; periodic
+**5.9978 [5.5365–6.5767]%**; adaptive **5.9884 [5.8028–6.1532]%**.
+
+Observation-weighted MAPE: linear **5.7308 [5.6537–5.8706]%**; periodic **3.4254
+[3.2209–3.7670]%**; adaptive **3.3518 [3.3039–3.3776]%**.
+
+Each method serves 151,484–152,032 of 161,223 mature rows per trial (mean
+151,720; common coverage **94.1057 [93.9593–94.2992]%**). Rows with actual
+latency above 1,000 ms and 5,000 ms remain in training and coverage accounting.
+On the problematic MiniMax/B200/TEP4 prefix, only **46.9697 [46.2426–47.3648]%**
+of mature rows receive a forecast. Each trial serves one of its four >5,000 ms
+rows; the other three are abstentions for every method.
+
+On per-dataset trial-mean MAPE, periodic improves 14/15 datasets and adaptive
+15/15. This is not a claim that every individual trial improves:
+MiniMax/H200/TP4 periodic is materially worse on average and varies widely;
+adaptive is also worse than linear in one of its three trials. Linear remains
+the default. Evaluate an opt-in spline model on representative deployment data.
+
+Across all mature forecasts, the maximum individual APE is 7,550.6300% for every
+method/trial: MiniMax-M3/B200/TP4 row 379, actual 10.6542 ms, prediction
+815.1140 ms. Spline uses the shared linear fallback on that query. Improved mean
+accuracy does not eliminate severe outliers.
+
+When warmup rows are also included in coverage accounting, all methods serve the
+same 153,423–153,971 of 163,540 rows per trial. Mean observation-weighted MAPE
+over available forecasts is linear 6.1141%, periodic 3.7735%, adaptive 3.7008%.
+
+Excluding the problematic MiniMax/B200/TEP4 prefix, mean observation-weighted
+mature MAPE is linear 2.4037%, periodic 2.0123%, adaptive 1.9289%, at identical
+within-trial coverage. Exclusion is a secondary breakdown, not the headline
+evaluation.
+
+### Validation and provenance
+
+Every input was accepted. Runtime assertions checked accepted-observation
+clocks, identical retained sequence IDs, bit-identical paired shared-linear
+forecasts, availability gating, and selection of the production spline or linear
+fallback. An independent Python audit reread every forecast, checked input row
+identity and eligibility, and reproduced the Rust counts and MAPE. The measured
+production sources match `e5433b2e`; the subsequent report-only commit changes
+none of those sources.
+
+This release harness isolates numerical-store prediction and update. It excludes
+feature extraction, Python/FFI, and the full engine. No timing was measured in
+this accuracy rerun. The previous timing sections retain their stated revisions
+and scopes.
+
+Private local artifacts under `work/spline_final_head_validation_20260930/`
+record source, input, harness, binary, and forecast hashes; build/run commands;
+all per-trial forecasts; and independent metric aggregation. They remain outside
+the source commit. These measurements cannot be independently reproduced from
+the repository alone, and the development prefixes are not a fresh holdout.
+
 ## Production spline validation (2026-09-25)
+
+These historical measurements predate the serving guard that requires an
+available shared linear prediction before serving a spline prediction. They
+include additional spline-only forecasts that the current guard suppresses.
+The accuracy, coverage, and timing values below are the original measurements
+and must not be read as measurements of the current behavior. The fresh
+[guarded production accuracy replay](#guarded-production-accuracy-2026-09-30-utc)
+above measures the current source. A separate
+[coverage-guard check](#linear-coverage-guard-validation) follows this historical
+report.
 
 A release replay on 2026-09-25 used the production regression and retention code
 later committed as `69210d4eca2f1f6ff558d830ea3a9edeace1a46f`, with linear baseline
@@ -657,8 +789,9 @@ or silently treated as correct. Coverage is reported separately below.
 | Equal-dataset mean | 11.5684% | 5.9619% | 5.7634% | 5.4490% | 6.1364% | 15 datasets |
 | Observation-weighted MAPE | 5.4900% | 3.5771% | 3.2405% | 3.0530% | 3.6627% | 151,600 rows |
 
-On each method's **own available rows**, errors can be much larger. The table
-below includes those forecasts and coverage; its error columns use different
+On each method's **own available rows**, errors were much larger in some cases.
+The historical table below includes those forecasts and coverage, including
+spline-only forecasts before the serving guard; its error columns use different
 cohorts and are not paired accuracy comparisons.
 
 | Method | Available / 161,223 eligible | Own-row mean dataset MAPE | Own-row pooled MAPE |
@@ -670,13 +803,17 @@ cohorts and are not paired accuracy comparisons.
 | Periodic, 3 knots | 158,519 | 51.1936% | 65.5719% |
 | Adaptive, 3 knots | 159,036 | 57.6445% | 76.5480% |
 
-The B200 MiniMax-M2.7 TEP4 case is a serious failure regime: periodic and adaptive
-two-knot fits have **770.8220% and 780.1663% MAPE** on their own available rows,
-respectively. Linear has 68.6163% MAPE on its smaller available cohort. Only
-7,492 of this case's 15,862 eligible rows are common to all methods. The lower
-common-row errors therefore do not establish accurate predictions on the extra
-rows served by spline. A retained-feature bounding box cannot guarantee accuracy
-for every workload inside it.
+The B200 MiniMax-M2.7 TEP4 case exposed a serious failure regime in that replay:
+periodic and adaptive two-knot fits had **770.8220% and 780.1663% MAPE** on their
+own available rows, respectively. Linear had 68.6163% MAPE on its smaller
+available cohort. Only 7,492 of this case's 15,862 eligible rows were common to
+all methods. The lower common-row errors therefore do not establish accurate
+predictions on the extra rows then served by spline. The current guard prevents
+a spline store from serving when its shared linear prediction is unavailable;
+these historical own-row errors and coverage counts do not describe that
+guarded behavior.
+A retained-feature bounding box cannot guarantee accuracy for every workload
+inside it.
 
 Gains also vary on fully covered cases: the H200 MiniMax-M2.7 TP4 prefix favors
 linear over either two-knot policy. These previously inspected prefixes are
@@ -694,8 +831,10 @@ and linear-update behavior.
 These accuracy and timing measurements predate the move onto `main` at
 `a4a59dce4fcfce1ec223008831f3328b77b1a3ce`. They were not rerun for the integrated
 commit `ba4826ce8fe39771277c9e4ab91e2fbf184c5394`; the measured numerical kernels
-and sampler were unchanged by that integration. The tables report the original
-measurement, not a new benchmark of the integrated branch.
+and sampler were unchanged by that integration. Subsequent serving and readiness
+changes added the guard requiring a shared linear prediction. The tables
+report the original measurement, not a new benchmark of the integrated branch
+or the guarded behavior.
 
 Release timing used Rust 1.97.1 on macOS 26.6.2/arm64. Seven alternating
 measured pairs per case followed a warmup pair, with at least 30 ms per side.
@@ -726,6 +865,41 @@ there is no published immutable artifact bundle. The reported MAPE and timing
 tables therefore cannot be independently reproduced from this repository alone.
 The checked-in numerical and scheduling tests validate implementation behavior,
 not these measured accuracy or timing results.
+
+## Linear coverage guard validation
+
+A separate release replay compared the serving method at
+`d3f92e59ebd6a75477e06e9f68b9ba8ba2868f73` with the linear-availability guard on
+the same 15 prefixes: 163,540 input rows for each of periodic step 64 and
+adaptive 16/8/5%, using two knots per axis and retention capacity 64. Before
+each update, it evaluated the old prediction, guarded prediction, and shared
+linear prediction on the **same trained store state**.
+
+Every guarded query had exactly the same availability as its shared linear arm,
+and all remaining forecasts were bit-for-bit identical to the old serving path.
+The guard removed 7,043 periodic forecasts and 7,013 adaptive forecasts, leaving
+154,149 and 153,994 available forecasts, respectively. This reduces coverage;
+it does not change numerical predictions on the retained coverage. Each policy
+used its own sampler realization, so the two policies' available-row counts are
+not paired cohorts. These checks qualify the coverage guard, not prediction
+accuracy on an untouched holdout.
+
+Five paired release trials over all 15 prefixes measured raw-feature prediction
+plus update on cloned identical states, alternating old/new order. Input-weighted
+means of per-case trial medians were 8.3105 to 8.3142 µs/input for periodic
+(+0.045%) and 3.9408 to 3.9458 µs/input for adaptive (+0.129%). Aggregate trial cost ratios ranged
+0.999646–1.000726 and 0.999983–1.001280, respectively. These small differences
+are within local timing variation. The instrumented timings include per-update
+timer overhead and exclude cloning, destruction, parsing/feature extraction,
+Python/FFI, and full-engine costs. They do not replace the earlier benchmark's
+timing scope or establish an end-to-end speedup.
+
+The harness, input/source/binary hashes, and per-dataset results are private local
+artifacts under `work/spline_coverage_guard_20260930/`, outside the source commit.
+As with the earlier replay, these measurements cannot be independently reproduced
+from the repository alone. Checked-in Rust and Python regression tests cover
+spline-only abstention, component versus store readiness, and restoration of
+linear availability.
 
 ## Source map and validation anchors
 

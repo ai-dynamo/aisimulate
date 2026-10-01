@@ -48,7 +48,8 @@ pub use perfmodel::{
     SamplingConfig, ScheduledRequestMetrics, SpeculativeConfig,
 };
 pub use perfmodel::{
-    CorrectionFactorBounds, CorrectionFeatureSpace, FpmInterpolationConfig, LinearFitConfig,
+    CorrectionFactorBounds, CorrectionFeatureSpace, FpmInterpolationConfig, FpmInterpolationMethod,
+    FpmQueryCoverage, FpmQueryCoverageCounts, FpmQueryGap, FpmQueryPurpose, LinearFitConfig,
     OpLevelConfig, RegressionFeatureAxis, RegressionFitConfig, RegressionFitKind,
     RegressionSamplingConfig, RegressionUpdatePolicy, SplineFitConfig, SplineSearchConfig,
     UnrecordedFpmQuantMode,
@@ -77,3 +78,8 @@ pub(crate) use perfmodel::{
 #[cfg(feature = "python")]
 #[allow(unused_imports)]
 pub(crate) use perfmodel::{py, py_ops};
+
+pub use perfmodel::{
+    DirectFpmQueryEvidence, ForwardPassEstimate, FpmCoordinates, FpmEstimateEvidence,
+    FpmMeasurementSupport, FpmQueryResolution, FpmRankEstimate,
+};

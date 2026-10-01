@@ -115,6 +115,65 @@ def _validate_performance_diagnostics(record: dict[str, Any]) -> None:
     def array(value: Any, path: str) -> None:
         require(isinstance(value, list), path, "a list")
 
+    def fpm_coordinates(value: Any, path: str) -> None:
+        fields(value, path, {"batch_size", "total_prefill_tokens", "total_kv_read_tokens"})
+        number(value["batch_size"], f"{path}.batch_size")
+        if value["total_prefill_tokens"] is not None:
+            number(value["total_prefill_tokens"], f"{path}.total_prefill_tokens")
+        number(value["total_kv_read_tokens"], f"{path}.total_kv_read_tokens")
+
+    def fpm_query(value: Any, path: str) -> None:
+        fields(value, path, {"phase", "model_path", "decode_baseline", "query", "resolution", "latency_ms", "support"})
+        require(value["phase"] in ("prefill", "decode"), f"{path}.phase", "prefill or decode")
+        require(
+            isinstance(value["model_path"], str) and bool(value["model_path"]),
+            f"{path}.model_path",
+            "a nonempty string",
+        )
+        require(type(value["decode_baseline"]) is bool, f"{path}.decode_baseline", "a boolean")
+        fpm_coordinates(value["query"], f"{path}.query")
+        require(
+            value["resolution"]
+            in ("exact_lookup", "within_curve_interpolation", "cross_kv_interpolation", "cross_batch_interpolation"),
+            f"{path}.resolution",
+            "a supported direct resolution",
+        )
+        number(value["latency_ms"], f"{path}.latency_ms")
+        array(value["support"], f"{path}.support")
+        require(bool(value["support"]), f"{path}.support", "nonempty")
+        for i, support in enumerate(value["support"]):
+            sp = f"{path}.support[{i}]"
+            fields(support, sp, {"coordinates", "latency_ms", "weight"})
+            fpm_coordinates(support["coordinates"], f"{sp}.coordinates")
+            number(support["latency_ms"], f"{sp}.latency_ms")
+            number(support["weight"], f"{sp}.weight")
+            require(support["weight"] <= 1, f"{sp}.weight", "at most 1")
+
+    def fpm_estimate(value: Any, path: str) -> None:
+        fields(value, path, {"latency_ms", "native_latency_ms", "correction_factor", "max_rank", "ranks"})
+        for key in ("latency_ms", "native_latency_ms", "correction_factor"):
+            if value[key] is not None:
+                number(value[key], f"{path}.{key}")
+        if value["max_rank"] is not None:
+            require(
+                type(value["max_rank"]) is int and value["max_rank"] >= 0,
+                f"{path}.max_rank",
+                "a nonnegative integer",
+            )
+        array(value["ranks"], f"{path}.ranks")
+        for i, rank in enumerate(value["ranks"]):
+            rp = f"{path}.ranks[{i}]"
+            durations = {"prefill_ms", "decode_ms", "decode_baseline_ms", "marginal_decode_ms"}
+            fields(rank, rp, {"rank", "latency_ms", "queries"} | durations)
+            require(type(rank["rank"]) is int and rank["rank"] >= 0, f"{rp}.rank", "a nonnegative integer")
+            number(rank["latency_ms"], f"{rp}.latency_ms")
+            for key in durations:
+                if rank[key] is not None:
+                    number(rank[key], f"{rp}.{key}")
+            array(rank["queries"], f"{rp}.queries")
+            for j, query in enumerate(rank["queries"]):
+                fpm_query(query, f"{rp}.queries[{j}]")
+
     def sol(value: dict[str, Any], path: str) -> None:
         if value["sol"] is None:
             string(value["sol_unavailable_reason"], f"{path}.sol_unavailable_reason")
@@ -150,10 +209,21 @@ def _validate_performance_diagnostics(record: dict[str, Any]) -> None:
                 operation,
                 op,
                 {"name", "latency_ms", "source", "fallbacks", "sol", "sol_unavailable_reason", "latency_to_sol_ratio"},
+                {"fpm_estimates"},
             )
             string(operation["name"], f"{op}.name")
             string(operation["source"], f"{op}.source")
             number(operation["latency_ms"], f"{op}.latency_ms")
+            if "fpm_estimates" in operation:
+                array(operation["fpm_estimates"], f"{op}.fpm_estimates")
+                for k, evidence in enumerate(operation["fpm_estimates"]):
+                    ep = f"{op}.fpm_estimates[{k}]"
+                    fields(evidence, ep, {"estimate", "count", "latency_scale"})
+                    require(
+                        type(evidence["count"]) is int and evidence["count"] > 0, f"{ep}.count", "a positive integer"
+                    )
+                    number(evidence["latency_scale"], f"{ep}.latency_scale")
+                    fpm_estimate(evidence["estimate"], f"{ep}.estimate")
             sol(operation, op)
             if operation["latency_to_sol_ratio"] is not None:
                 number(operation["latency_to_sol_ratio"], f"{op}.latency_to_sol_ratio")
@@ -244,7 +314,11 @@ def build_prediction_details(native: dict[str, Any], sections: tuple[str, ...]) 
                     {
                         "name": phase["name"],
                         "operations": [
-                            {key: op[key] for key in ("name", "latency_ms", "source", "fallbacks")}
+                            {
+                                key: op[key]
+                                for key in ("name", "latency_ms", "source", "fallbacks", "fpm_estimates")
+                                if key in op
+                            }
                             for op in phase["operations"]
                         ],
                     }

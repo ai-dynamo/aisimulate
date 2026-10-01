@@ -560,3 +560,22 @@ def test_page_explains_cli_migration_and_aic_deprecation() -> None:
     assert "confidence" in page
     assert "deprecate the AIC CLI" in page
     assert "different prediction coverage" in page
+
+
+@pytest.mark.parametrize(
+    "entry,api,adapter",
+    [
+        ("aisimulate.legacy_cli.entrypoint:main", "aisimulate.legacy_cli.api", "aisimulate.sdk.config_adapter"),
+        ("aiconfigurator.main:main", "aiconfigurator.cli.api", "aiconfigurator.sdk.config_adapter"),
+    ],
+)
+def test_baseline_provenance_matches_selected_modules(entry, api, adapter):
+    predictions, metadata, coverage = _qualified_inputs()
+    for document in (predictions, metadata, coverage):
+        document["aic_run"]["runtime"].update(cli_entry_point=entry, baseline_api=api, config_adapter=adapter)
+    source = OVERVIEW._aic_source(predictions, metadata, coverage, None)
+    assert source["cli_entry_point"] == entry
+    for document in (predictions, metadata, coverage):
+        document["aic_run"]["runtime"]["config_adapter"] = "foreign.adapter"
+    with pytest.raises(OVERVIEW.SnapshotError, match="modules disagree"):
+        OVERVIEW._aic_source(predictions, metadata, coverage, None)

@@ -2239,7 +2239,9 @@ def test_nightly_validation_survives_skipped_approval_but_requires_successful_in
             assert not _nightly_condition(job, **{f"needs.{dependency}.result": result})
 
 
-@pytest.mark.parametrize("job", ["python-compliance", "build-artifacts", "trigger-gitlab-security"])
+@pytest.mark.parametrize(
+    "job", ["python-compliance", "build-artifacts", "slack-thread-start", "trigger-gitlab-security"]
+)
 def test_nightly_retries_require_approval_from_the_current_attempt(job):
     assert _nightly_condition(job)
     for attempt in ("2", "3"):
@@ -2270,6 +2272,29 @@ def test_nightly_retries_require_approval_from_the_current_attempt(job):
             "needs.manual-approval.outputs.approved-attempt": "1",
         },
     ) == (job in {"python-compliance", "build-artifacts"})
+
+
+def test_nightly_slack_thread_mirrors_dynamo_and_forwards_the_root_ts():
+    jobs = _workflow("nightly-ci.yml")["jobs"]
+    start = jobs["slack-thread-start"]
+    assert start["environment"] == "automated-release"
+    assert start["outputs"]["thread-ts"] == "${{ steps.post.outputs.thread-ts }}"
+    assert not re.search(r"^\s*[^#\s].*::add-mask::", _run_commands(start), re.MULTILINE)
+    assert not _nightly_condition("slack-thread-start", **{"vars.GITLAB_SECURITY_TRIGGER_ENABLED": "false"})
+    assert not _nightly_condition("slack-thread-start", **{"needs.changes-guard.outputs.should-build": "false"})
+    thread = "${{ needs.slack-thread-start.outputs.thread-ts }}"
+    assert jobs["slack-staging-reply"]["steps"][0]["env"]["SLACK_THREAD_TS"] == thread
+    publish = jobs["trigger-gitlab-security"]
+    assert "slack-thread-start" in publish["needs"]
+    names = [step.get("name") for step in publish["steps"]]
+    assert "Start the Slack thread" not in names
+    trigger = publish["steps"][names.index("Trigger internal security scan")]
+    assert trigger["env"]["SLACK_THREAD_TS"] == thread
+    assert names.index("Trigger internal security scan") < names.index("Post GitLab trigger reply on Slack thread")
+    stopped = jobs["slack-thread-stopped"]
+    assert {"slack-thread-start", "trigger-gitlab-security"} <= set(stopped["needs"])
+    assert "needs.trigger-gitlab-security.result != 'success'" in stopped["if"]
+    assert {"slack-thread-start", "slack-staging-reply", "slack-thread-stopped"} <= set(jobs["notify-slack"]["needs"])
 
 
 @pytest.mark.parametrize("gate", ["build-artifacts", "fpe-support-matrix", "license-evidence"])
@@ -2820,6 +2845,8 @@ def test_gitlab_security_trigger_matches_the_verified_consumer_contract(tmp_path
             "GH_SHA": "a" * 40,
             "SLACK_THREAD_TS": "1234567890.123456",
             "SLACK_CHANNEL_ID": "fixture-channel",
+            "RUNNER_TEMP": str(tmp_path),
+            "GITHUB_OUTPUT": str(tmp_path / "output"),
         },
     )
     assert (result.returncode == 0) == (failure is None), result.stdout + result.stderr
@@ -2829,6 +2856,7 @@ def test_gitlab_security_trigger_matches_the_verified_consumer_contract(tmp_path
     args = json.loads(capture.read_text())
     assert args[-1] == endpoint
     assert "--fail" in args
+    assert args[args.index("--output") + 1] == str(tmp_path / "gitlab-trigger.json")
     fields = dict(args[i + 1].split("=", 1) for i, arg in enumerate(args) if arg == "-F")
     assert fields == {
         "token": "fixture-token",

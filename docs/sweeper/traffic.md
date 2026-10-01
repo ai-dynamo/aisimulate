@@ -108,8 +108,11 @@ temporary KV pressure or request retraction. Batching combinations that leave no
 are reported to Vizier as infeasible before replay.
 
 Every resulting candidate records `kv_load_ratio`, the derived `concurrency`,
-`kv_load_concurrency_capacity`, `kv_load_capacity_tokens`, and per-role
-`*_kv_capacity_tokens` for traceability.
+`kv_load_concurrency_capacity` for traceability. Linear caches also record
+`kv_load_capacity_tokens` and per-role `*_kv_capacity_tokens`. These token fields
+are absent for grouped caches, which instead record `kv_load_capacity_bytes`,
+`kv_load_request_cache_bytes`. Consumers must treat token-capacity fields as optional
+and use the byte-based fields for grouped layouts.
 
 ## `num_request_ratio` (synthetic length scales with the load)
 

@@ -63,13 +63,13 @@ def test_fpm_compile_context_uses_rust_defaults_without_python_fallbacks(monkeyp
 
     class RustOptions:
         @staticmethod
-        def _normalize_fpm_options(payload, fmha, comm):
-            calls.append((json.loads(payload), fmha, comm))
+        def _normalize_fpm_options(payload, fmha, comm, has_profile):
+            calls.append((json.loads(payload), fmha, comm, has_profile))
             return json.dumps(resolved)
 
     monkeypatch.setattr(aisimulate_core, "RustForwardPassPerfModel", RustOptions)
     context = FpmCompileConfig(attention_backend="FLASHINFER_MLA")
-    assert calls == [({}, None, None)]
+    assert calls == [({}, None, None, False)]
     assert context.options == resolved
     assert context.cache_identity() == {"options": resolved, "attention_backend": "FLASHINFER_MLA"}
 
@@ -1375,9 +1375,13 @@ def test_fpm_detail_distinguishes_memory_budget_from_runtime_capacity(external_f
     assert memory["estimated_num_gpu_blocks"] > 0
     assert "num_gpu_blocks" not in memory
     assert set(sections) == {"summary", "memory", "time", "energy", "source"}
-    assert sections["time"]["diagnostics"]["status"] == "unavailable"
-    assert sections["source"]["status"] == "unavailable"
-    assert "whole-model FPM" in sections["source"]["unavailable_reason"]
+    assert sections["time"]["diagnostics"]["status"] == "available"
+    assert sections["source"]["status"] == "available"
+    operations = [op for phase in sections["source"]["phases"] for op in phase["operations"]]
+    assert operations and all(op["fpm_estimates"] for op in operations)
+    assert sections["energy"]["status"] == "unsupported"
+    assert sections["energy"]["diagnostics"]["power_w"] is None
+    assert sections["energy"]["diagnostics"]["power_coverage"] is None
     assert sections["time"]["serving_metrics"]["mean_ttft_ms"] > 0
 
 

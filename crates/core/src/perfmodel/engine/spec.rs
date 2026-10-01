@@ -625,6 +625,7 @@ mod tests {
         // Recursive like Overlap/Fallback: sol_ops carries the model's
         // original granular list, so the round-trip must preserve nesting.
         crate::operators::FpmForwardOp {
+            interpolation: Default::default(),
             dcp_size: None,
             name: "fpm_forward_prefill".into(),
             phase: crate::operators::FpmPhase::Prefill,
@@ -1047,7 +1048,7 @@ mod tests {
             vec![OpSpec::FpmForward(fpm_forward())],
             vec![OpSpec::Moe(moe())],
         );
-        assert_eq!(spec.schema_version, 24);
+        assert_eq!(spec.schema_version, ENGINE_SPEC_SCHEMA_VERSION);
         let mut bytes = spec.to_bincode().unwrap();
         assert_eq!(EngineSpec::from_bincode(&bytes).unwrap(), spec);
 
@@ -1128,6 +1129,49 @@ mod tests {
             .expect("from_bincode");
         assert_eq!(decoded, spec);
         assert_eq!(decoded.schema_version, ENGINE_SPEC_SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn fpm_interpolation_and_dcp_round_trip_and_stale_layout_rejection() {
+        let mut op = fpm_forward();
+        op.interpolation = crate::operators::fpm_forward::FpmInterpolation::Direct;
+        op.sol_ops.clear();
+        op.original_fmha_quant_mode = None;
+        op.dcp_size = None;
+        let spec = EngineSpec::new(sample_engine_config(), vec![], vec![OpSpec::FpmForward(op)]);
+        let bytes = spec.to_bincode().unwrap();
+        assert_eq!(EngineSpec::from_bincode(&bytes).unwrap(), spec);
+        // The final op ends in interpolation (4 bytes), empty sol_ops (8),
+        // original-FMHA None (1), and recorded-DCP None (1).
+        let selector = bytes.len() - 14;
+        assert_eq!(&bytes[selector..selector + 4], &1u32.to_le_bytes());
+        // Recreate both branches' incompatible payloads, not just their stamps.
+        for version in [20u32, 21, 22, 23, 24] {
+            let mut stale = bytes.clone();
+            if version != 21 {
+                stale.drain(selector..selector + 4);
+            }
+            if version < 24 {
+                stale.pop();
+            }
+            stale[..4].copy_from_slice(&version.to_le_bytes());
+            assert!(matches!(
+                EngineSpec::from_bincode(&stale),
+                Err(AicError::UnsupportedSchemaVersion {
+                    kind: "EngineSpec",
+                    got,
+                    expected: ENGINE_SPEC_SCHEMA_VERSION,
+                }) if got == version
+            ));
+        }
+        let mut recorded = spec;
+        if let OpSpec::FpmForward(op) = &mut recorded.generation_ops[0] {
+            op.dcp_size = Some(8);
+        }
+        assert_eq!(
+            EngineSpec::from_bincode(&recorded.to_bincode().unwrap()).unwrap(),
+            recorded
+        );
     }
 
     /// A buffer too short to even hold the 4-byte version prefix must fail at the
@@ -1380,7 +1424,7 @@ mod tests {
         for spec in [fpm_spec, pilot_spec] {
             let bytes = spec.to_bincode().unwrap();
             assert_eq!(EngineSpec::from_bincode(&bytes).unwrap(), spec);
-            for previous_version in [20u32, 21, 22, 23] {
+            for previous_version in [20u32, 21, 22, 23, 24] {
                 let mut stale = bytes.clone();
                 stale[..4].copy_from_slice(&previous_version.to_le_bytes());
                 // DCP and the pilot claimed 22 for different layouts.
@@ -1391,7 +1435,7 @@ mod tests {
                         Err(AicError::UnsupportedSchemaVersion {
                             kind: "EngineSpec",
                             got,
-                            expected: 24,
+                            expected: ENGINE_SPEC_SCHEMA_VERSION,
                         }) if got == previous_version
                     ));
                 }
