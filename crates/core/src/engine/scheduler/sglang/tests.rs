@@ -290,6 +290,52 @@ fn request_storage_reservation_is_bounded_for_submit_and_destination() {
 }
 
 #[test]
+fn requested_max_new_tokens_budgets_admission_while_the_plan_ends_generation() {
+    // 40 pages of 4 tokens. Each request has an 8-token prompt and a 2-token
+    // planned output. SGLang budgets admission from the requested maximum
+    // (`max_new_tokens`), not from what a request will generate: requesting 100
+    // tokens leaves room to admit one request per pass, requesting only the plan
+    // admits both. Either way each request stops after its 2 planned tokens.
+    fn run(requested: usize) -> (usize, Vec<usize>) {
+        let mut core = SglangCore::new(test_args(40, 4, 64));
+        for k in 0..2u32 {
+            core.receive(DirectRequest {
+                tokens: (0..8).map(|i| 1000 * (k + 1) + i).collect(),
+                max_output_tokens: requested,
+                output_token_ids: Some(vec![7, 8]),
+                uuid: Some(Uuid::from_u128(k as u128 + 1)),
+                ..Default::default()
+            });
+        }
+        let first = core.execute_pass_internal(None, 0.0);
+        let admitted_first = first
+            .output_signals
+            .iter()
+            .filter(|signal| signal.token_id.is_some())
+            .count();
+        let mut generated = vec![0usize; 2];
+        for signal in &first.output_signals {
+            if signal.token_id.is_some() {
+                generated[signal.uuid.as_u128() as usize - 1] += 1;
+            }
+        }
+        let mut now = 0.0;
+        while !core.is_empty() {
+            now += 1.0;
+            for signal in core.execute_pass_internal(None, now).output_signals {
+                if signal.token_id.is_some() {
+                    generated[signal.uuid.as_u128() as usize - 1] += 1;
+                }
+            }
+            assert!(now < 1_000.0, "the requests never completed");
+        }
+        (admitted_first, generated)
+    }
+    assert_eq!(run(2), (2, vec![2, 2]), "only the plan requested: both admitted at once");
+    assert_eq!(run(100), (1, vec![2, 2]), "100 requested: one at a time, generation still stops at 2");
+}
+
+#[test]
 fn zero_output_request_completes_after_prefill() {
     let mut core = SglangCore::new(test_args(32, 4, 16));
     let uuid = core.receive(direct_request(vec![1, 2, 3, 4], 0));
@@ -413,6 +459,7 @@ fn zero_output_completion_survives_decode_reservation_failure() {
             sequence_tokens: vec![1, 2, 3, 4],
             prompt_len: 4,
             max_output_tokens: 0,
+            max_new_tokens: 0,
             planned_output_ids: None,
             kv_lease: zero_alloc.lease,
             materialized_tokens: 4,
@@ -424,6 +471,7 @@ fn zero_output_completion_survives_decode_reservation_failure() {
             sequence_tokens: vec![5, 6, 7, 8],
             prompt_len: 4,
             max_output_tokens: 1,
+            max_new_tokens: 1,
             planned_output_ids: None,
             kv_lease: normal_alloc.lease,
             materialized_tokens: 4,
@@ -476,6 +524,7 @@ fn retraction_ratio_is_estimated_from_survivors_before_the_forward() {
             sequence_tokens: vec![1, 2, 3, 10],
             prompt_len: 3,
             max_output_tokens: 2,
+            max_new_tokens: 2,
             planned_output_ids: None,
             kv_lease: r1_alloc.lease,
             materialized_tokens: 4,
@@ -487,6 +536,7 @@ fn retraction_ratio_is_estimated_from_survivors_before_the_forward() {
             sequence_tokens: vec![5, 6, 7, 8],
             prompt_len: 4,
             max_output_tokens: 5,
+            max_new_tokens: 5,
             planned_output_ids: None,
             kv_lease: r2_alloc.lease,
             materialized_tokens: 4,
@@ -523,6 +573,7 @@ fn committed_decode_membership_excludes_retracted_requests() {
             sequence_tokens: tokens,
             prompt_len,
             max_output_tokens,
+            max_new_tokens: max_output_tokens,
             planned_output_ids: None,
             kv_lease: allocation.lease,
             materialized_tokens: 4,
@@ -565,6 +616,7 @@ fn fresh_prefill_tracks_cache_owned_prefix_pages_and_pressure_event() {
         sequence_tokens: prompt.clone(),
         prompt_len: prompt.len(),
         max_output_tokens: 1,
+        max_new_tokens: 1,
         planned_output_ids: None,
         materialized_tokens: 0,
         kv_lease: RadixRequestLease::default(),
@@ -590,6 +642,7 @@ fn fresh_prefill_tracks_cache_owned_prefix_pages_and_pressure_event() {
         sequence_tokens: blocker_tokens,
         prompt_len: 3,
         max_output_tokens: 1,
+        max_new_tokens: 1,
         planned_output_ids: None,
         kv_lease: blocker_alloc.lease,
         materialized_tokens: 3,
@@ -1257,6 +1310,7 @@ mod scheduling {
                 sequence_tokens: vec![9, 8, 7],
                 prompt_len: 3,
                 max_output_tokens: 1,
+                max_new_tokens: 1,
                 planned_output_ids: None,
                 materialized_tokens: 0,
                 kv_lease: RadixRequestLease::default(),
@@ -1268,6 +1322,7 @@ mod scheduling {
                 sequence_tokens: vec![1, 2, 3, 4, 5, 6, 7],
                 prompt_len: 5,
                 max_output_tokens: 1,
+                max_new_tokens: 1,
                 planned_output_ids: None,
                 materialized_tokens: 0,
                 kv_lease: RadixRequestLease::default(),
@@ -1302,6 +1357,7 @@ mod scheduling {
                 sequence_tokens: duplicate_prefix.clone(),
                 prompt_len: duplicate_prefix.len(),
                 max_output_tokens: 1,
+                max_new_tokens: 1,
                 planned_output_ids: None,
                 materialized_tokens: 0,
                 kv_lease: RadixRequestLease::default(),
@@ -1315,6 +1371,7 @@ mod scheduling {
             sequence_tokens: (100..132).collect(),
             prompt_len: 32,
             max_output_tokens: 1,
+            max_new_tokens: 1,
             planned_output_ids: None,
             materialized_tokens: 0,
             kv_lease: RadixRequestLease::default(),
@@ -1408,6 +1465,7 @@ mod core_behavior {
             sequence_tokens: vec![1; 16],
             prompt_len: 16,
             max_output_tokens: 2,
+            max_new_tokens: 2,
             planned_output_ids: None,
             materialized_tokens: 0,
             kv_lease: RadixRequestLease::default(),
@@ -1440,6 +1498,7 @@ mod core_behavior {
             sequence_tokens: vec![1, 2, 3, 4, 5, 6],
             prompt_len: 6,
             max_output_tokens: 4,
+            max_new_tokens: 4,
             planned_output_ids: None,
             kv_lease: alloc.lease,
             materialized_tokens: 6,
@@ -1485,6 +1544,7 @@ mod core_behavior {
             sequence_tokens: vec![1, 2, 3, 4],
             prompt_len: 4,
             max_output_tokens: 4,
+            max_new_tokens: 4,
             planned_output_ids: None,
             kv_lease: base_alloc.lease,
             materialized_tokens: 4,
@@ -1499,6 +1559,7 @@ mod core_behavior {
             sequence_tokens: vec![1, 2, 3, 4],
             prompt_len: 4,
             max_output_tokens: 4,
+            max_new_tokens: 4,
             planned_output_ids: None,
             kv_lease: fast_alloc.lease,
             materialized_tokens: 4,
@@ -1549,6 +1610,7 @@ mod core_behavior {
                 sequence_tokens: vec![1, 2, 3, 4, 11, 12, 13, 14],
                 prompt_len: 4,
                 max_output_tokens: 10,
+                max_new_tokens: 10,
                 planned_output_ids: None,
                 kv_lease: RadixRequestLease::from_parts(first, 8, 4, kv_manager.cache().root()),
                 materialized_tokens: 8,
@@ -1560,6 +1622,7 @@ mod core_behavior {
                 sequence_tokens: vec![9, 8, 7, 6, 21],
                 prompt_len: 4,
                 max_output_tokens: 10,
+                max_new_tokens: 10,
                 planned_output_ids: None,
                 kv_lease: RadixRequestLease::from_parts(second, 5, 4, kv_manager.cache().root()),
                 materialized_tokens: 5,
@@ -1592,6 +1655,7 @@ mod core_behavior {
             sequence_tokens: vec![1, 2, 3, 4],
             prompt_len: 4,
             max_output_tokens: 4,
+            max_new_tokens: 4,
             planned_output_ids: None,
             kv_lease: alloc.lease,
             materialized_tokens: 4,

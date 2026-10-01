@@ -500,20 +500,22 @@ impl SglangCore {
         // Reproduce with a pinned version/config before
         // modeling these differences; they do not establish a fixed token offset.
         // https://github.com/ai-dynamo/aisimulate/pull/261#pullrequestreview-5250881045
-        let max_output_tokens = request.effective_max_output_tokens().min(
-            self.config
-                .max_model_len
-                .map(|limit| limit.saturating_sub(request.tokens.len()))
-                .unwrap_or(usize::MAX),
-        );
+        let context_limit = self
+            .config
+            .max_model_len
+            .map(|limit| limit.saturating_sub(request.tokens.len()))
+            .unwrap_or(usize::MAX);
+        let max_output_tokens = request.effective_max_output_tokens().min(context_limit);
         let output_storage_hint = self.config.output_storage_hint(
             request.tokens.len(),
             max_output_tokens,
             request.output_token_ids.is_some(),
         );
         let mut request = SglangRequest::new(request, self.config.block_size, output_storage_hint);
-        // Admission, retraction and speculative decode all consume this budget.
+        // Completion and speculative decode use the planned output; admission,
+        // decode reservation and retraction use the requested maximum.
         request.max_output_tokens = max_output_tokens;
+        request.max_new_tokens = request.max_new_tokens.min(context_limit).max(max_output_tokens);
         request
     }
 

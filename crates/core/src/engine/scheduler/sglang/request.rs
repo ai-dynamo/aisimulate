@@ -20,7 +20,13 @@ pub(super) struct SglangRequest {
     pub(super) is_decode_handoff: bool,
     pub(super) sequence_tokens: Vec<u32>,
     pub(super) prompt_len: usize,
+    /// Output tokens this request generates before it completes (its planned
+    /// output when one is authored).
     pub(super) max_output_tokens: usize,
+    /// The request's requested maximum (SGLang `max_new_tokens`), never below
+    /// `max_output_tokens`. SGLang budgets admission and decode reservation
+    /// from it, not from what the request will actually generate.
+    pub(super) max_new_tokens: usize,
     pub(super) planned_output_ids: Option<Vec<u32>>,
     pub(super) kv_lease: RadixRequestLease,
     pub(super) materialized_tokens: usize,
@@ -31,6 +37,9 @@ impl SglangRequest {
     pub(super) fn new(req: DirectRequest, block_size: usize, output_storage_hint: usize) -> Self {
         let prompt_len = req.tokens.len();
         let max_output_tokens = req.effective_max_output_tokens();
+        // With an authored output plan, `DirectRequest::max_output_tokens` above the
+        // plan's length is the caller's requested maximum.
+        let max_new_tokens = req.max_output_tokens.max(max_output_tokens);
         let output_capacity = output_storage_hint.min(max_output_tokens);
         let mut sequence_tokens = req.tokens;
         sequence_tokens.reserve_exact(output_capacity);
@@ -49,6 +58,7 @@ impl SglangRequest {
             sequence_tokens,
             prompt_len,
             max_output_tokens,
+            max_new_tokens,
             planned_output_ids: req.output_token_ids,
             kv_lease,
             materialized_tokens: 0,
@@ -70,6 +80,12 @@ impl SglangRequest {
 
     pub(super) fn remaining_output_tokens(&self) -> usize {
         self.max_output_tokens.saturating_sub(self.output_len())
+    }
+
+    /// Output tokens SGLang still budgets for: the requested maximum less what
+    /// has been generated (`max_new_tokens - len(output_ids)`).
+    pub(super) fn remaining_budget_tokens(&self) -> usize {
+        self.max_new_tokens.saturating_sub(self.output_len())
     }
 
     #[cfg(debug_assertions)]
