@@ -76,6 +76,16 @@ collector.sglang.collect_dsv4_megamoe:
   - collector/sglang/dsv4_megamoe/run_slurm_full_collection.sh
   - collector/sglang/dsv4_megamoe/run_torchrun.sh
   - collector/sglang/dsv4_megamoe/validate_perf.py
+collector.sglang.glm53flash_attention_runner:
+  # Standalone Slurm flow: plan/manifest, runner, rank reduction and the
+  # strict Parquet writer all shape the published GLM attention table.
+  - collector/cases/base_ops/glm53flash_attention.yaml
+  - collector/glm53flash_attention_contract.py
+  - collector/glm53flash_attention_runtime.py
+  - collector/glm53flash_attention_launch.py
+  - src/aisimulate_core/model_configs/zai-org--GLM-5.3-Flash_config.json
+  - src/aisimulate_core/model_configs/nvidia--GLM-5.3-Flash-NVFP4_config.json
+  - __model_cases__
 collector.sglang.collect_gdn:
   - collector/cases/base_ops/gdn.yaml
   - __model_cases__
@@ -190,6 +200,16 @@ collector.vllm.collect_kda:
   - collector/cases/base_ops/kda.yaml
   - __model_cases__
 collector.vllm.collect_dsv4_attn:
+  - __model_cases__
+collector.vllm.glm53flash_attention_runner:
+  # The worker probe is loaded through vLLM's general-plugin entry point.
+  - collector/vllm/glm53flash_attention_worker.py
+  - collector/cases/base_ops/glm53flash_attention.yaml
+  - collector/glm53flash_attention_contract.py
+  - collector/glm53flash_attention_runtime.py
+  - collector/glm53flash_attention_launch.py
+  - src/aisimulate_core/model_configs/zai-org--GLM-5.3-Flash_config.json
+  - src/aisimulate_core/model_configs/nvidia--GLM-5.3-Flash-NVFP4_config.json
   - __model_cases__
 collector.vllm.collect_gdn:
   - collector/cases/base_ops/gdn.yaml
