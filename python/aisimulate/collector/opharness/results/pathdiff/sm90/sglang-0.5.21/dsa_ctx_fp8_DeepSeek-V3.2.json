@@ -1,0 +1,45 @@
+{
+ "verdict": "invalid-capture",
+ "repo": "deepseek-ai/DeepSeek-V3.2",
+ "framework": "sglang",
+ "version": "0.5.21",
+ "gate_name": "dsa_ctx_fp8_DeepSeek-V3.2",
+ "target_roles": [
+  "attention",
+  "dsa_indexer"
+ ],
+ "phase": "prefill",
+ "phase_scoped": true,
+ "kv_dtype": "fp8",
+ "op_hint": "mla|dsa|nsa|attn|indexer|flash|mqa|sparse|gemm|deepgemm|quant|topk",
+ "capture_file": "facts/pathdiff/opcov_sgl_dsa_ctx_fp8_s4096@0.5.21.json",
+ "capture_sha256": "d423cfc16fe96707",
+ "capture_env": null,
+ "capture_run_error": "ImportError: cannot import name 'get_device_memory_capacity' from 'sglang.srt.server_args' (/sgl-workspace/sglang/python/sglang/srt/server_args.py)",
+ "serving_record": {
+  "id": "a6c60f103914",
+  "tp": 1,
+  "kv_cache_dtype": "fp8_e4m3",
+  "isl": 4096,
+  "prefix_caching": false,
+  "raw_file": null,
+  "candidates": 1,
+  "exec_fingerprint": "25f164c3ca79",
+  "evidence_status": "current"
+ },
+ "collector_backends": [],
+ "serving_backends": [
+  "cublas",
+  "deepgemm",
+  "dsa_nsa",
+  "flashmla",
+  "sgl_kernel",
+  "triton_fused_moe"
+ ],
+ "missing_roles": [],
+ "aux_collector_only_roles": [],
+ "role_counts": {},
+ "collector_only_signal": [],
+ "kernel_drift": null,
+ "evidence": "archive/evidence/pathdiff/<framework-version>/<gate>.json in the probe workspace (full kernel lists)"
+}

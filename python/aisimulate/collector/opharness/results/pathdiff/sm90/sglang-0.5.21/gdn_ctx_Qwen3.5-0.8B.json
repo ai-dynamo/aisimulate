@@ -1,0 +1,69 @@
+{
+ "verdict": "diverged",
+ "repo": "Qwen/Qwen3.5-0.8B",
+ "framework": "sglang",
+ "version": "0.5.21",
+ "gate_name": "gdn_ctx_Qwen3.5-0.8B",
+ "target_roles": [
+  "linear_attention"
+ ],
+ "phase": "prefill",
+ "phase_scoped": true,
+ "kv_dtype": "auto",
+ "op_hint": "gdn|delta|conv1d|linear|mamba|gated|recurr",
+ "capture_file": "facts/pathdiff/opcov_sgl_gdn_ctx@0.5.21.json",
+ "capture_sha256": "da50d6d0e41aa0b9",
+ "capture_env": null,
+ "capture_run_error": null,
+ "serving_record": {
+  "id": "3f932c3bbbd0",
+  "tp": 1,
+  "kv_cache_dtype": "auto",
+  "isl": 4096,
+  "prefix_caching": false,
+  "raw_file": null,
+  "candidates": 1,
+  "exec_fingerprint": "feccf40bfd37",
+  "evidence_status": "current"
+ },
+ "collector_backends": [
+  "causal_conv1d",
+  "fla_triton"
+ ],
+ "serving_backends": [
+  "causal_conv1d",
+  "cublas",
+  "fa3",
+  "fla_triton",
+  "flashinfer"
+ ],
+ "missing_roles": [],
+ "aux_collector_only_roles": [],
+ "role_counts": {
+  "linear_attention": {
+   "collector": 7,
+   "serving": 4,
+   "matched": 1
+  }
+ },
+ "collector_only_signal": [],
+ "kernel_drift": {
+  "linear_attention": {
+   "collector_only_kernels": [
+    "ChunkGatedDeltaRuleFunction",
+    "chunk_fwd_kernel_o",
+    "chunk_gated_delta_rule_fwd_kernel_h_blockdim64",
+    "chunk_gated_delta_rule_fwd_kkt_solve_kernel",
+    "chunk_local_cumsum_scalar_kernel",
+    "recompute_w_u_fwd_kernel"
+   ],
+   "serving_kernels": [
+    "_causal_conv1d_fwd_kernel",
+    "fused_gdn_gating_kernel",
+    "fused_qkv_split_gdn_prefill_kernel",
+    "kernel_cutlass_kernel_flashinfergdn_kernelsdelta_rule_dsldelta_rule_cp_sm90CPDel"
+   ]
+  }
+ },
+ "evidence": "archive/evidence/pathdiff/<framework-version>/<gate>.json in the probe workspace (full kernel lists)"
+}

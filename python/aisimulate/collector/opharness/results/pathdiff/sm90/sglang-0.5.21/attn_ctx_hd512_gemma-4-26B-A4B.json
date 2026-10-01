@@ -1,0 +1,43 @@
+{
+ "verdict": "invalid-capture",
+ "repo": "google/gemma-4-26B-A4B",
+ "framework": "sglang",
+ "version": "0.5.21",
+ "gate_name": "attn_ctx_hd512_gemma-4-26B-A4B",
+ "target_roles": [
+  "attention",
+  "dsa_indexer"
+ ],
+ "phase": "prefill",
+ "phase_scoped": true,
+ "kv_dtype": "auto",
+ "op_hint": "attn|attention|flash|fwd|triton",
+ "capture_file": "facts/pathdiff/opcov_sgl_attn_ctx_gemma4_hd512@0.5.21.json",
+ "capture_sha256": "50c863bf17709b26",
+ "capture_env": null,
+ "capture_run_error": "ModuleNotFoundError: No module named 'pkg_resources'",
+ "serving_record": {
+  "id": "62d12207b067",
+  "tp": 1,
+  "kv_cache_dtype": "auto",
+  "isl": 4096,
+  "prefix_caching": false,
+  "raw_file": null,
+  "candidates": 1,
+  "exec_fingerprint": "ff59539b775f",
+  "evidence_status": "current"
+ },
+ "collector_backends": [],
+ "serving_backends": [
+  "cublas",
+  "sgl_kernel",
+  "triton",
+  "triton_fused_moe"
+ ],
+ "missing_roles": [],
+ "aux_collector_only_roles": [],
+ "role_counts": {},
+ "collector_only_signal": [],
+ "kernel_drift": null,
+ "evidence": "archive/evidence/pathdiff/<framework-version>/<gate>.json in the probe workspace (full kernel lists)"
+}

@@ -2166,3 +2166,48 @@ findings:
     - google/gemma-4-26B-A4B
     - instrument:collect_moe
     - instrument:collect_gdn
+  hopper_sglang_upgrade_0516_to_0521_2026_10_01:
+    statement: 'HOPPER UPGRADE sglang 0.5.16 -> 0.5.21 (H20/sm90, 2026-10-01; v0.5.21 is the newest release tag). GENERATOR
+      FIRST: 0.5.20 turned ServerArgs into a msgspec Struct whose argparse flags derive from field names; the 0.5.16-0.5.19
+      aliases `--cuda-graph-bs` / `--cuda-graph-max-bs` are gone and 0.5.21 rejects the rendered `--cuda-graph-bs` as ambiguous,
+      so every golden boot failed in seconds. New versioned template cli_args.0.5.20.j2 renders the *-decode spellings (commit
+      4da917b7, boundary verified from the v0.5.20 server_args.py; prior templates untouched). IDENTITY: 224 runs, matrix
+      results/sm90/sglang-0.5.21.yaml 99 pass / 3 pass+custom / 22 fail vs 0.5.16 93/6/25. fail->pass: moonshotai/Kimi-K3,
+      meta-models/Muse-Glimmer-30B, nvidia/Muse-Glimmer-30B-NVFP4, TokenRhythm/NeoHorse-1-9B. pass->fail: MiniMaxAI/MiniMax-M3
+      ("Mixed chunk prefill requires the breakable prefill CUDA graph backend; got tc_piecewise" — the golden renders
+      --enable-mixed-chunk; A/B adding `--cuda-graph-backend-prefill breakable` PASSES on 0.5.21 (facts/upgrade_rc29/ab_m3_sgl/
+      m3_A.json, MiniMaxHybridAttnBackend), dropping --enable-mixed-chunk does not; the generator has no cuda_graph_backend_prefill
+      parameter and no sglang extra_cli_args passthrough, so this rescue is not expressible from targets — generator gap);
+      nvidia/MiniMax-M3-NVFP4 (deep_gemm fp8_fp4_gemm_nt "Unknown SF transformation", layout.hpp:57); nvidia/Qwen3.8-27B-NVFP4
+      (sglang::apply_fp4_marlin_linear receives a tuple for `input` — modelopt_quant.py:2055, framework bug on the SM90 NVFP4
+      dense path). Identity changes on passing rows: Qwen3-VL family attention label FlashAttentionBackend -> HybridAttnBackend
+      (fa3 prefill underneath, same role); DSA/GLM/DSV4 kv_allocated column now reads the server arg (auto) instead of the pool
+      dtype — label change only. CUSTOMIZATIONS: 0.5.21 runner=auto now loads fp4-expert DeepSeek-V4/V4.1 on SM90 and selects
+      FLASHINFER_MXFP4 (trtllm cutlass MoE kernels, Mxfp4FlashinferCutlassMoE) — a different identity from the marlin_moe the
+      0.5.16 rescue forced. Per the retest rule the five deepseek-ai V4/V4.1 marlin customizations are DROPPED and the cells
+      re-probed bare (results/retests/sm90/sglang-0.5.21.yaml; bare raws facts/upgrade_rc29/retest_bare_sgl_*); the three nvidia
+      NVFP4 artifacts still refuse auto ("Current platform does not support NVFP4 quantization with the selected MoE backend")
+      and keep marlin (pass+custom). Consequence for the collector: the sglang DSV4 moe row on SM90 must follow
+      flashinfer_mxfp4, not marlin, once the collector pin moves. GATES: captures re-taken in the v0.5.21 image
+      (facts/pathdiff/opcov_sgl_*@0.5.21.json, components/captures/verdicts_sgl_0521.sh) are the compat audit the collector
+      modules (`__compat__ sglang==0.5.14` / 0.5.16) never had: 13/15 INVALID-CAPTURE — pkg_resources absent from the 0.5.21
+      image (collect_attn/mla/mla_bmm/computescale import it for the version string; 8 captures), get_device_memory_capacity
+      moved out of sglang.srt.server_args (dsv4/dsa context modules), initialize_moe_config() now takes no args after
+      publish(server_args) (dsa generation module; probe_sglang already carries the publish-then-initialize pattern),
+      sglang.srt.distributed.parallel_state_wrapper gone (msa, mla, attn); gdn ctx/gen capture but DIVERGE (0.5.21 serving runs
+      chunk_gated_delta_rule_fwd_kernel_h_blockdim64 / ChunkGatedDeltaRuleFunction for prefill and _causal_conv1d_update_kernel
+      for decode where the collector lane differs). The short-isl DSA gate (s512) is parked: its serving side is a 0.5.16 raw.
+      15 gate families undeclared (dsv4 x5, msa, encoder, mla_bmm, mhc, compute_scale, kda, ...). OWNER DECISIONS: (1) move
+      the sglang collector pin to 0.5.21 (a full module audit: imports, moe init contract, gdn lanes, dsv4 moe backend) or keep
+      sglang path gates at 0.5.16; (2) M3 generator parameter for the prefill cuda-graph backend; (3) gate backfill scope.
+      framework_manifest sglang pins (0.5.14 default) untouched.'
+    applies_to:
+    - framework:sglang-0.5.21
+    - platform:sm90
+    - module:generator
+    - MiniMaxAI/MiniMax-M3
+    - nvidia/Qwen3.8-27B-NVFP4
+    - deepseek-ai/DeepSeek-V4-Flash
+    - deepseek-ai/DeepSeek-V4.1-Flash
+    - instrument:collect_attn
+    - instrument:collect_mla_module
