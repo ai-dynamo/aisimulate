@@ -238,8 +238,9 @@ class Glm53FlashModel(BaseModel):
             ]
             measured = list(result)
             if not dense:
-                # Generic path: BF16 router GEMM (as other models; the native
-                # FP32 GateLinear has no generic FP32 GEMM table) and the
+                # Generic path: BF16 router GEMM row (known approximation: the
+                # serving gate has BF16 weights and FP32 output, which no
+                # generic gemm_perf dtype captures; negligible here) and the
                 # routed-expert MoE row. Pure TP dispatch/combine are the
                 # explicit attention/FFN all-reduces, so no MoEDispatch.
                 moe = ops.MoE(

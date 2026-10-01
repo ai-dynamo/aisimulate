@@ -48,8 +48,10 @@ KDA `kernel_source` names per backend and phase are listed in
 `sdk/models/glm53flash.py::KDA_KERNELS` (merged-qkv `causal_conv1d_fn`;
 vLLM `flashkda_fwd`/`fused_recurrent_kda`; SGLang
 `chunk_kda`/`fused_sigmoid_gating_delta_rule_update`). mHC runs on all of a
-rank's scheduled tokens: vLLM sequence-parallel MoE requires EP and DP>1. The router is priced as a BF16 GEMM
-because no generic FP32 GEMM table exists; pure-TP MoE dispatch and combine
+rank's scheduled tokens: vLLM sequence-parallel MoE requires EP and DP>1. Known approximation: the router is priced by the BF16 (288 x 4096) GEMM row.
+The serving gate (vLLM `GateLinear`, SGLang `MoEGate`) uses BF16 weights with
+FP32 output; no generic `gemm_perf` dtype captures the FP32 output and the
+difference is negligible at this shape; pure-TP MoE dispatch and combine
 are the explicit all-reduces, so no `MoEDispatch` op is emitted.
 
 - Attention includes local projections, KDA gates/convolution/recurrence/output
