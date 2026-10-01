@@ -49,7 +49,42 @@ class CampaignAdapter:
             "event": "prepare_started", "adapter": self.name,
             "trace_paths": context.workload.get("trace_paths"),
         })
-        plan = self.adapter.compile_recommendation(self.public_config, adapter_context)
+        if self.name == "dynamo.planner":
+            from dynamo.planner.simulation.config import PlannerRecommendationConfig
+            from dynamo.planner.simulation import provider as native_provider
+            from planner_presearch import parallel_sweep_load_predictor
+
+            public = PlannerRecommendationConfig.model_validate(self.public_config)
+            space = native_provider.PlannerSearchSpace.model_validate(
+                public.model_dump(mode="python", exclude_none=True))
+            prepared = parallel_sweep_load_predictor(
+                policies=space.scaling_policy.preset,
+                candidates=space.load_predictor.preset,
+                trace_path=self.history_trace, trace_paths=[self.history_trace],
+                trace_format="mooncake", show_progress=True, max_workers=8,
+                output_dir=self.output / "planner-presearch")
+
+            def consume_prepared(**request):
+                # This is a transport bridge for the real native forecasts,
+                # not a substitute predictor or fabricated optimizer feedback.
+                if (request["policies"] != space.scaling_policy.preset
+                        or request["candidates"] != space.load_predictor.preset
+                        or request["trace_paths"] != [self.history_trace]
+                        or request["trace_path"] != self.history_trace
+                        or request["trace_format"] != "mooncake"):
+                    raise ValueError("Native Planner preparation differs from validated presearch inputs")
+                return deepcopy(prepared)
+
+            original = native_provider.sweep_load_predictor
+            try:
+                # Synchronous preparation before replay workers are started.
+                # Restore the module alias immediately; frozen source stays intact.
+                native_provider.sweep_load_predictor = consume_prepared
+                plan = self.adapter.compile_recommendation(self.public_config, adapter_context)
+            finally:
+                native_provider.sweep_load_predictor = original
+        else:
+            plan = self.adapter.compile_recommendation(self.public_config, adapter_context)
         elapsed = time.perf_counter() - start
         write(self.output / (self.section + "-search-plan.json"), asdict(plan))
         event(self.output / "adapter-events.jsonl", {
