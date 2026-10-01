@@ -589,10 +589,45 @@ def main() -> None:
     for attempt in args.attempts:
         manifest, attempt_rows, attempt_evidence = load_attempt(attempt)
         rows += attempt_rows
-        evidence += [{**e, "attempt": str(attempt)} for e in attempt_evidence]
-        manifests.append({"attempt": str(attempt), "manifest_sha256": manifest["manifest_sha256"]})
+        evidence += [{**e, "attempt": Path(attempt).name} for e in attempt_evidence]
+        manifests.append(
+            {
+                "attempt": Path(attempt).name,
+                "manifest_sha256": manifest["manifest_sha256"],
+                "plan_sha256": manifest["plan"]["plan_sha256"],
+                "deployment": f"{manifest['geometry']['checkpoint_format']}-tp{manifest['geometry']['tp_size']}",
+                "source_commit": manifest["source_commit"],
+            }
+        )
+    backends = {json.loads(r["geometry"])["backend"] for r in rows}
+    if len(backends) != 1:
+        raise ValueError("one table holds one backend")
+    backend = backends.pop()
     write_parquet(rows, args.output)
     Path(args.evidence).write_text(json.dumps({"attempts": manifests, "rows": evidence}, indent=1) + "\n")
+    import yaml
+
+    meta = {
+        "schema_version": 1,
+        "runtime": {
+            "framework": backend,
+            "version": RUNTIME_VERSIONS[backend],
+            "image": {"vllm": "vllm/vllm-openai", "sglang": "lmsysorg/sglang"}[backend],
+            "image_digest": RUNTIME_IMAGES[backend],
+        },
+        "tables": {
+            Path(BASENAME).stem: {
+                "status": "complete",
+                "rows": len(rows),
+                "data_sha256": hashlib.sha256(Path(args.output).read_bytes()).hexdigest(),
+                "collector": f"collector.{backend}.glm53flash_attention_runner",
+                "measurement": "one real sparse-MLA layer (3); prefill eager repeated module call, "
+                "decode module CUDA graph from the framework decode capture; output all-reduce excluded",
+                "attempts": manifests,
+            }
+        },
+    }
+    (Path(args.output).parent / "collection_meta.yaml").write_text(yaml.safe_dump(meta, sort_keys=False))
     print(json.dumps({"rows": len(rows), "output": str(args.output)}))
 
 

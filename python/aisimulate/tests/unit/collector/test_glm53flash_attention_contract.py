@@ -303,6 +303,7 @@ def _attempt(tmp_path, role="full"):
         "layer_id": 3,
         "sweep": SMOKE_SWEEP,
         "plan": build_plan(SMOKE_SWEEP),
+        "source_commit": "c" * 40,
     }
     attempt = tmp_path / role
     raw = attempt / "raw"
@@ -331,3 +332,21 @@ def test_attempt_admission_requires_every_planned_target(tmp_path):
     (attempt / "raw/rank-1.jsonl").write_text("\n".join(kept) + "\n")
     with pytest.raises(ValueError):
         load_attempt(attempt)
+
+
+def test_finalize_writes_table_evidence_and_collection_sidecar(tmp_path, monkeypatch):
+    from collector import glm53flash_attention_contract as contract
+
+    attempt, _ = _attempt(tmp_path)
+    output = tmp_path / "data/gb300/glm53_attention/vllm" / RUNTIME_VERSIONS["vllm"] / BASENAME
+    evidence = tmp_path / "evidence.json"
+    monkeypatch.setattr(
+        "sys.argv", ["x", "finalize", str(attempt), "--output", str(output), "--evidence", str(evidence)]
+    )
+    contract.main()
+    assert pq.read_table(output).num_rows == len(target_keys(build_plan(SMOKE_SWEEP)))
+    meta = yaml.safe_load((output.parent / "collection_meta.yaml").read_text())
+    table = meta["tables"]["glm53_attention_module_perf"]
+    assert meta["runtime"]["image_digest"] == RUNTIME_IMAGES["vllm"]
+    assert table["rows"] == pq.read_table(output).num_rows and len(table["data_sha256"]) == 64
+    assert json.loads(evidence.read_text())["attempts"][0]["deployment"] == "fp8-tp2"
