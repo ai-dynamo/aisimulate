@@ -47,6 +47,30 @@ def test_download_hf_config_json_revision(monkeypatch, revision, path_revision):
     assert requests == [f"https://huggingface.co/test/model/raw/{path_revision}/config.json"]
 
 
+@pytest.mark.parametrize("setting", ["HF_HOME", "HF_TOKEN_PATH", "XDG_CACHE_HOME"])
+def test_hf_metadata_uses_configured_token_location(monkeypatch, tmp_path, setting):
+    for name in ("HF_TOKEN", "HUGGING_FACE_HUB_TOKEN", "HF_HOME", "HF_TOKEN_PATH", "HF_HUB_DISABLE_IMPLICIT_TOKEN"):
+        monkeypatch.delenv(name, raising=False)
+    token = tmp_path / "huggingface" / "token"
+    token.parent.mkdir()
+    token.write_text("test-token\n")
+    location = {"HF_HOME": token.parent, "HF_TOKEN_PATH": token, "XDG_CACHE_HOME": tmp_path}[setting]
+    monkeypatch.setenv(setting, str(location))
+    assert utils._get_hf_auth_headers() == {"Authorization": "Bearer test-token"}
+
+
+def test_hf_metadata_can_disable_implicit_credentials(monkeypatch, tmp_path):
+    token = tmp_path / "token"
+    token.write_text("cached-token")
+    monkeypatch.setenv("HF_TOKEN_PATH", str(token))
+    monkeypatch.setenv("HF_TOKEN", "environment-token")
+    monkeypatch.setenv("HF_HUB_DISABLE_IMPLICIT_TOKEN", "true")
+    assert utils._get_hf_auth_headers() == {}
+    assert token.read_text() == "cached-token"
+    monkeypatch.delenv("HF_HUB_DISABLE_IMPLICIT_TOKEN")
+    assert utils._get_hf_auth_headers() == {"Authorization": "Bearer environment-token"}
+
+
 class TestParseHFConfig:
     """Test HuggingFace config parsing."""
 

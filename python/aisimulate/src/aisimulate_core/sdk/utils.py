@@ -412,20 +412,18 @@ class HuggingFaceDownloadError(Exception):
 
 
 def _get_hf_auth_headers() -> dict[str, str]:
-    """Return HTTP auth headers using the cached HuggingFace token, if available.
-
-    Token resolution order (first non-empty wins):
-    1. ``HF_TOKEN`` environment variable
-    2. ``HUGGING_FACE_HUB_TOKEN`` environment variable
-    3. ``~/.cache/huggingface/token`` file
-    """
+    """Respect Hugging Face token/cache settings for model metadata downloads."""
+    if os.environ.get("HF_HUB_DISABLE_IMPLICIT_TOKEN", "").upper() in ("1", "ON", "YES", "TRUE"):
+        return {}
     hf_token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")
     if not hf_token:
-        # Fall back to the token file written by `huggingface-cli login`
-        token_path = Path.home() / ".cache" / "huggingface" / "token"
-        if token_path.exists():
-            with open(token_path) as f:
-                hf_token = f.read().strip()
+        default_home = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "huggingface"
+        hf_home = Path(os.environ.get("HF_HOME", default_home))
+        token_path = Path(os.environ.get("HF_TOKEN_PATH", hf_home / "token"))
+        try:
+            hf_token = token_path.read_text().strip()
+        except FileNotFoundError:
+            hf_token = None
     headers: dict[str, str] = {}
     if hf_token:
         headers["Authorization"] = f"Bearer {hf_token}"
