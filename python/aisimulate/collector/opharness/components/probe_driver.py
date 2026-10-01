@@ -126,8 +126,7 @@ def render_golden(run: dict) -> Path | None:
     (gdir / "render.log").write_text((r.stdout or "")[-8000:] + (r.stderr or "")[-8000:])
     run["golden_facts"] = golden_facts_status((r.stdout or "") + (r.stderr or ""))
     if r.returncode != 0:
-        run["golden_error"] = (r.stderr or r.stdout or "").strip().splitlines()[-1][:200] if
-        (r.stderr or r.stdout) else "no output"
+        run["golden_error"] = (r.stderr or r.stdout or "").strip().splitlines()[-1][:200] if (r.stderr or r.stdout) else "no output"
         return None
     return next((d for d in gdir.iterdir() if d.is_dir()), None)
 
