@@ -304,7 +304,7 @@ class TestCollectMoeImportSurface:
 
 
 # ---------------------------------------------------------------------------
-# collect_gemm_v1.py
+# collect_gemm.py
 # ---------------------------------------------------------------------------
 _GEMM_COMMON_SURFACE = {
     "sglang.srt.layers.deep_gemm_wrapper": {"DEEPGEMM_SCALE_UE8M0": False, "gemm_nt_f8f8bf16": _dummy},
@@ -323,9 +323,9 @@ SGLANG_0517_GEMM_SURFACE = {
     "sglang.kernels.ops.quantization.fp8_kernel": {"sglang_per_token_group_quant_fp8": _dummy},
 }
 
-_COLLECT_GEMM_PATH = COLLECTOR_DIR / "sglang" / "collect_gemm_v1.py"
-_COLLECT_GEMM_DOTTED = "collector.sglang.collect_gemm_v1"
-# collect_gemm_v1.py does `import torch.nn.functional as F` -- needs real
+_COLLECT_GEMM_PATH = COLLECTOR_DIR / "sglang" / "collect_gemm.py"
+_COLLECT_GEMM_DOTTED = "collector.sglang.collect_gemm"
+# collect_gemm.py does `import torch.nn.functional as F` -- needs real
 # submodule entries in sys.modules, not just attribute access on a mocked
 # `torch`, plus the separate sgl_kernel package it unconditionally imports.
 _GEMM_LENIENT_EXTRAS = ("torch.nn", "torch.nn.functional", "sgl_kernel")

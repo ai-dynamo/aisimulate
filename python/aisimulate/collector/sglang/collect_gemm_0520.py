@@ -3,8 +3,8 @@
 
 """SGLang 0.5.20 GEMM collector (serving-built linear layers).
 
-At SGLang 0.5.20 the same raw kernel calls that collect_gemm_v1.py times no
-longer match serving for several dtypes, so this version fork builds each
+At SGLang 0.5.20 the same raw kernel calls that collect_gemm.py times no
+longer match serving for several dtypes, so this 0.5.20 fork (selected by collect_gemm.py) builds each
 GEMM the way serving does -- a ``ReplicatedLinear`` whose quant method is
 constructed from the checkpoint-style quant config -- and times
 ``layer.quant_method.apply`` after ``process_weights_after_loading``. The
@@ -17,7 +17,7 @@ selection; kernel_source records the branch the framework took.
 # (29481685); runtime smoke on GB300 in the GLM-5.3-Flash W1 campaign.
 # Dependency pins moved sglang-kernel 0.4.5->0.4.7, flashinfer
 # 0.6.15.post1->0.6.18, sgl-deep-gemm 0.1.5.post1->0.2.0, torch 2.11->2.13,
-# so rows are not cross-version comparable with collect_gemm_v1.py's.
+# so rows are not cross-version comparable with collect_gemm.py's.
 # Serving initialization: the scheduler calls initialize_fp8_gemm_config,
 # initialize_fp4_gemm_config and initialize_bf16_gemm_config
 # (managers/scheduler.py:999-1001); _ensure_serving_gemm_config() does the
@@ -28,7 +28,7 @@ selection; kernel_source records the branch the framework took.
 #   The dispatch order is FlashInfer split-K/direct for the tuned (m,n,k)
 #   table (:106-181,199-201,283-313, SGLANG_ENABLE_BF16_SPLITK_GEMM),
 #   CuTe DSL TGV when use_cutedsl_bf16_gemm(m,n,k) (cutedsl_bf16_gemm.py:
-#   1357-1387), else F.linear (unquant.py:315-350). collect_gemm_v1.py times
+#   1357-1387), else F.linear (unquant.py:315-350). collect_gemm.py times
 #   F.linear unconditionally, which is not serving truth on SM10x.
 # fp8 (per-channel weight, dynamic per-token activation): apply_fp8_linear
 #   (quantization/fp8_utils.py:1888-2060) quantizes with the 0.5.20 JIT
@@ -49,7 +49,7 @@ selection; kernel_source records the branch the framework took.
 #   fp4_utils.fp4_quantize (FlashInfer "cute-dsl" backend on SM10x,
 #   fp4_utils.py:26-49) and runs mm_fp4 with the auto fp4 runner
 #   (fp4_utils.py:145-158: cute-dsl on SM100/103).
-# The collect_gemm_v1.py FIXME(kernel-limit) "n<128 or k<128" is false at this
+# The collect_gemm.py FIXME(kernel-limit) "n<128 or k<128" is false at this
 # version (fp8_block falls back to Triton; nvfp4 pads to 32), so this fork
 # queues those shapes and lets the framework handle them.
 __compat__ = "sglang==0.5.20"
@@ -104,7 +104,7 @@ def get_gemm_test_cases():
         gemm_list = ["fp8_block", "bfloat16", "fp8", "nvfp4"]
     else:
         # SM120 dense fp8_block serving is CUTLASS (fp8_utils.py:832-833);
-        # not collected here, unchanged from collect_gemm_v1.py.
+        # not collected here, unchanged from collect_gemm.py.
         gemm_list = ["bfloat16", "fp8", "nvfp4"]
 
     requested_gemm_types = os.environ.get("AIC_COLLECT_GEMM_TYPES")
@@ -113,7 +113,7 @@ def get_gemm_test_cases():
         gemm_list = [gemm_type for gemm_type in gemm_list if gemm_type in requested]
 
     test_cases = [[gemm_type, case.x, case.n, case.k] for case in get_gemm_case_specs() for gemm_type in gemm_list]
-    # Group DeepGEMM JIT cache hits the same way collect_gemm_v1.py does.
+    # Group DeepGEMM JIT cache hits the same way collect_gemm.py does.
     random.seed(42)
     random.shuffle(test_cases)
     return test_cases

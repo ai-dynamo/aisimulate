@@ -72,7 +72,7 @@ Output:
 # package as part of a 0.5.17 kernel reorg (causal_conv1d_fn's path is
 # unaffected) -- cosmetic relocations (signatures independently re-diffed
 # byte-identical at both locations), fixed with version-conditional imports
-# mirroring sglang collect_gemm_v1.py's established try/except-import pattern (this
+# mirroring collect_gemm.py's established try/except-import pattern (this
 # file had none of its own before this bump). 0.5.15/0.5.16 stay excluded:
 # never verified, and version_resolver's __compat__ grammar (AND-of-
 # comparators only, no OR) has no way to express a true two-point set either

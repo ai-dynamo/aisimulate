@@ -35,7 +35,7 @@ rank-local workload construction, quantized weight setup, and perf logging.
 # sglang.kernels.ops.moe package as part of a 0.5.17 kernel reorg; the only
 # symbol this collector touches, _B_DESC_CACHE, is byte-identical (same
 # OrderedDict cache, same line numbers even) -- a cosmetic relocation, fixed
-# below with a version-conditional import mirroring sglang collect_gemm_v1.py's
+# below with a version-conditional import mirroring collect_gemm.py's
 # established try/except-import pattern. (2) sglang.srt.layers.moe.utils.
 # MOE_RUNNER_BACKEND -- the bare module global this collector pinned fused-
 # MoE backend selection through -- no longer exists at 0.5.17 (see

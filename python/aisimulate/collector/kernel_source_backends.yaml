@@ -51,14 +51,14 @@ mappings:
   - {framework: sglang, kernel_source: compressed_flashmla, backend: flashmla, source: "collector/sglang/collect_dsv4_attn.py (compressed KV path)"}
   - {framework: sglang, kernel_source: dsa_nsa, backend: dsa_nsa, source: "collector/sglang/collect_mla_module.py (NSA sparse-attention module; sub-backend per SM not split by the label)"}
 
-  # GEMM label "sglang" hides a dtype dispatch: sglang/collect_gemm_v1.py runs
+  # GEMM label "sglang" hides a dtype dispatch: collect_gemm.py runs
   # torch.matmul (bf16), sgl_kernel fp8_scaled_mm (fp8), DeepGEMM
   # gemm_nt_f8f8bf16 (fp8_block), flashinfer mm_fp4 backend="cutlass" (nvfp4).
-  - {framework: sglang, kernel_source: sglang, match: {op_file: gemm_perf, gemm_dtype: bfloat16}, backend: cublas, source: "collector/sglang/collect_gemm_v1.py (torch.matmul)"}
-  - {framework: sglang, kernel_source: sglang, match: {op_file: gemm_perf, gemm_dtype: fp8}, backend: cutlass, source: "collector/sglang/collect_gemm_v1.py (sgl_kernel fp8_scaled_mm)"}
-  - {framework: sglang, kernel_source: sglang, match: {op_file: gemm_perf, gemm_dtype: fp8_block}, backend: deepgemm, source: "collector/sglang/collect_gemm_v1.py (fp8_gemm_deepgemm)"}
-  - {framework: sglang, kernel_source: sglang, match: {op_file: gemm_perf, gemm_dtype: nvfp4}, backend: flashinfer_cutlass, source: "collector/sglang/collect_gemm_v1.py (flashinfer mm_fp4, backend=cutlass)"}
-  - {framework: sglang, kernel_source: sglang, backend: sgl_kernel, source: "collector/sglang/collect_computescale_v1.py (sgl_per_token_quant_fp8; scale_matrix idem)"}
+  - {framework: sglang, kernel_source: sglang, match: {op_file: gemm_perf, gemm_dtype: bfloat16}, backend: cublas, source: "collector/sglang/collect_gemm.py (torch.matmul)"}
+  - {framework: sglang, kernel_source: sglang, match: {op_file: gemm_perf, gemm_dtype: fp8}, backend: cutlass, source: "collector/sglang/collect_gemm.py (sgl_kernel fp8_scaled_mm)"}
+  - {framework: sglang, kernel_source: sglang, match: {op_file: gemm_perf, gemm_dtype: fp8_block}, backend: deepgemm, source: "collector/sglang/collect_gemm.py (fp8_gemm_deepgemm)"}
+  - {framework: sglang, kernel_source: sglang, match: {op_file: gemm_perf, gemm_dtype: nvfp4}, backend: flashinfer_cutlass, source: "collector/sglang/collect_gemm.py (flashinfer mm_fp4, backend=cutlass)"}
+  - {framework: sglang, kernel_source: sglang, backend: sgl_kernel, source: "collector/sglang/collect_computescale.py (sgl_per_token_quant_fp8; scale_matrix idem)"}
 
   # mla_bmm "default": torch.bmm for bf16, sgl_kernel bmm_fp8 (cublasLt) for fp8.
   - {framework: sglang, kernel_source: default, match: {op_file: mla_bmm_perf}, backend: cublas, source: "collector/sglang/collect_mla_bmm.py (torch.bmm / sgl_kernel bmm_fp8)"}
@@ -125,12 +125,12 @@ mappings:
   - {framework: sglang, kernel_source: sglang_sgl_kernel_bmm_fp8, backend: cublas, source: "PR#1342 collect_mla_bmm.py (sgl_kernel bmm_fp8 = cublasLt)"}
   - {framework: sglang, kernel_source: sglang_sgl_kernel_fp8_scaled_mm, backend: cutlass, source: "PR#1342 collect_gemm.py (sgl_kernel fp8_scaled_mm)"}
   - {framework: sglang, kernel_source: sglang_deepgemm_gemm_nt_f8f8bf16, backend: deepgemm, source: "PR#1342 collect_gemm.py"}
-  - {framework: sglang, kernel_source: sglang_triton_w8a8_block_fp8, backend: triton, source: "sglang/collect_gemm_v2.py (fp8_utils.py:1094-1107 @v0.5.20 N%64/K%128 fallback)"}
-  - {framework: sglang, kernel_source: sglang_triton_scaled_mm, backend: triton, source: "sglang/collect_gemm_v2.py (apply_fp8_linear triton_scaled_mm @v0.5.20)"}
-  - {framework: sglang, kernel_source: sglang_torch_scaled_mm, backend: torch, source: "sglang/collect_gemm_v2.py (Fp8ScaledMMOp TORCH backend, SM90 @v0.5.20)"}
-  - {framework: sglang, kernel_source: sglang_cutedsl_tgv_bf16, backend: cutlass, source: "sglang/collect_gemm_v2.py (CuTe DSL TGV bf16, cutedsl_bf16_gemm.py @v0.5.20)"}
-  - {framework: sglang, kernel_source: sglang_flashinfer_bf16_splitk, backend: flashinfer, source: "sglang/collect_gemm_v2.py (unquant.py split-K @v0.5.20)"}
-  - {framework: sglang, kernel_source: sglang_flashinfer_bf16_direct, backend: flashinfer, source: "sglang/collect_gemm_v2.py (unquant.py direct @v0.5.20)"}
+  - {framework: sglang, kernel_source: sglang_triton_w8a8_block_fp8, backend: triton, source: "sglang/collect_gemm_0520.py (fp8_utils.py:1094-1107 @v0.5.20 N%64/K%128 fallback)"}
+  - {framework: sglang, kernel_source: sglang_triton_scaled_mm, backend: triton, source: "sglang/collect_gemm_0520.py (apply_fp8_linear triton_scaled_mm @v0.5.20)"}
+  - {framework: sglang, kernel_source: sglang_torch_scaled_mm, backend: torch, source: "sglang/collect_gemm_0520.py (Fp8ScaledMMOp TORCH backend, SM90 @v0.5.20)"}
+  - {framework: sglang, kernel_source: sglang_cutedsl_tgv_bf16, backend: cutlass, source: "sglang/collect_gemm_0520.py (CuTe DSL TGV bf16, cutedsl_bf16_gemm.py @v0.5.20)"}
+  - {framework: sglang, kernel_source: sglang_flashinfer_bf16_splitk, backend: flashinfer, source: "sglang/collect_gemm_0520.py (unquant.py split-K @v0.5.20)"}
+  - {framework: sglang, kernel_source: sglang_flashinfer_bf16_direct, backend: flashinfer, source: "sglang/collect_gemm_0520.py (unquant.py direct @v0.5.20)"}
   - {framework: sglang, kernel_source: sglang_flashinfer_cutlass_nvfp4, backend: flashinfer_cutlass, source: "PR#1342 collect_gemm.py (flashinfer mm_fp4 cutlass)"}
   # MoE labels name the constructed serving method + runner.
   - {framework: sglang, kernel_source: sglang_flashinfer_trtllm_moe, backend: flashinfer_trtllm_gen, source: "PR#1342 collect_moe.py"}
