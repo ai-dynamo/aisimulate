@@ -86,6 +86,10 @@ def prepare(args) -> Path:
         "sweep": sweep,
         "plan": build_plan(sweep),
         "source_commit": args.source_commit,
+        # Allocator policy only (no kernel change): the same 16384 MiB split the
+        # qualified SGLang FP8 TP2 FPM campaign uses against fragmentation of
+        # the ragged IndexPool MQA-logits buffer at long batched context.
+        "allocator_max_split_size_mb": args.allocator_max_split_mb,
     }
     manifest = {**body, "manifest_sha256": sha256_json(body)}
     (attempt / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
@@ -101,6 +105,8 @@ def prepare(args) -> Path:
         f"{container}:/results",
     ]
     env = {"PYTHONPATH": "/workspace", "PYTHONUNBUFFERED": "1", "HF_HUB_OFFLINE": "1"}
+    if args.allocator_max_split_mb is not None:
+        env["PYTORCH_CUDA_ALLOC_CONF"] = f"max_split_size_mb:{args.allocator_max_split_mb}"
     if args.backend == "vllm":
         mounts.append(f"{args.remote_tail}:/opt/glm53flash-candidate:ro")
         env["PYTHONPATH"] = "/opt/glm53flash-candidate:/workspace"
@@ -151,6 +157,7 @@ def main():
     parser.add_argument("--account", default="coreai_comparch_inferencex")
     parser.add_argument("--partition", default="batch")
     parser.add_argument("--time", default="04:00:00")
+    parser.add_argument("--allocator-max-split-mb", type=int, default=None)
     args = parser.parse_args()
     if args.layer_id is not None and not args.smoke:
         parser.error("--layer-id is a smoke-only cross-check")
