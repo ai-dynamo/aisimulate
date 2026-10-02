@@ -3188,18 +3188,21 @@ def test_simulation_perf_revision_preparation(tmp_path, scenario):
 
 @pytest.mark.parametrize("self_compare,fail_first,count", [(False, False, 1), (True, False, 3), (True, True, 3)])
 def test_simulation_perf_invocations(tmp_path, self_compare, fail_first, count):
+    bash = shutil.which("bash")
+    if bash is None or subprocess.run([bash, "-uc", 'args=(); : "${args[@]}"'], capture_output=True).returncode:
+        pytest.skip("workflow invocation test requires Bash with empty-array support under set -u")
     steps = _workflow("simulation-performance.yml")["jobs"]["compare"]["steps"]
     script = next(step["run"] for step in steps if step.get("name") == "Run paired benchmark")
     python = tmp_path / "venv/bin/python"
     python.parent.mkdir(parents=True)
     python.write_text(
         '#!/bin/bash\nprintf "%s\\n" "$*" >> "$CALLS"\n'
-        'if [[ "$FAIL_FIRST" == true && $(wc -l < "$CALLS") == 1 ]]; then exit 1; fi\n'
+        'if [[ "$FAIL_FIRST" == true && $(wc -l < "$CALLS") -eq 1 ]]; then exit 1; fi\n'
     )
     python.chmod(0o755)
     calls = tmp_path / "calls"
     result = subprocess.run(
-        ["bash", "-euc", script],
+        [bash, "-euc", script],
         text=True,
         capture_output=True,
         env={

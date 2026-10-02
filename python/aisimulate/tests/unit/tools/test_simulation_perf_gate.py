@@ -93,7 +93,8 @@ def test_controller_runs_only_five_sequential_timing_pairs(tmp_path, monkeypatch
 
     monkeypatch.setattr(run, "invoke", invoke)
     monkeypatch.setattr(run, "expand_cases", lambda: [CASE])
-    monkeypatch.setattr(run.os, "sched_getaffinity", lambda _: {7})
+    monkeypatch.delattr(run.os, "sched_getaffinity", raising=False)
+    monkeypatch.setattr(run.os, "sched_getaffinity", lambda _: {7}, raising=False)
     monkeypatch.setattr(run.shutil, "which", lambda _: "/bin/taskset")
     arguments = ["run.py", "--output-dir", str(tmp_path)]
     for side in ("base", "head"):
