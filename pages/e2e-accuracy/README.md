@@ -23,6 +23,9 @@ CLI evaluation still need that evaluation before branch-qualified publication.
 - **Overview(op-based)** shows model/workload/GPU errors, serving/framework
   summaries, and topology drilldowns. Framework summaries group Agg before
   Disagg, with VLLM, SGLANG, then TRTLLM within each group.
+  The hardware table below combines Agg and Disagg across models and frameworks,
+  showing included AISim point counts and TPOT/TTFT MAPE per GPU SKU. It uses the
+  same exclusions and averages individual point errors, not group averages.
 - **Details(op-based)** shows one selected topology with model, ISL/OSL, GPU,
   precision, framework, serving mode, and parallelism selectors.
 - Each operating point's **InfX CI run** links to its measured silicon run in

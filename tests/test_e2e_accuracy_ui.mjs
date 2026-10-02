@@ -824,4 +824,30 @@ test("clearing a snapshot clears Details as well as Overview", async () => {
   app.run('state.tab = "details"; renderView(); clearSnapshot("Unavailable")');
   assert.match(app.element("details-view").innerHTML, /Unavailable/);
   assert.equal(app.element("detail-filters").innerHTML, "");
+  assert.equal(app.element("hardware-summary").innerHTML, "");
+});
+
+test("hardware MAPE weights individual points across models and respects exclusions", () => {
+  const data = withTopology();
+  const first = data.models[0];
+  first.workloads[0].gpus[0].gpu = "b200";
+  const second = structuredClone(first);
+  second.model = "Another model";
+  const topology = second.workloads[0].gpus[0].topologies[0];
+  topology.points = [topology.points[0]];
+  topology.points[0].aisimulate.tpot_error_pct = 60;
+  topology.points[0].aisimulate.ttft_error_pct = 160;
+  topology.is_multinode = true;
+  data.models.push(second);
+  const app = harness();
+  app.set("fixture", data);
+  app.run("state.data = fixture; renderSummary()");
+  const table = () => app.element("hardware-summary").innerHTML;
+  assert.match(table(), /B200<\/th><td>3<\/td><td>20.0%<\/td><td>60.0%<\/td>/);
+  app.run("state.excludeOutliers = true; state.data = filterSnapshot(fixture); renderSummary()");
+  assert.match(table(), /B200<\/th><td>3<\/td><td>20.0%<\/td><td>10.0%<\/td>/);
+  app.run("state.excludeMultinode = true; state.data = filterSnapshot(fixture); renderSummary()");
+  assert.match(table(), /B200<\/th><td>2<\/td><td>0.0%<\/td><td>10.0%<\/td>/);
+  app.run('state.tab = "details"; renderView()');
+  assert.equal(app.element("hardware-summary").hidden, true);
 });
