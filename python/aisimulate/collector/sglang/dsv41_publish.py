@@ -34,9 +34,12 @@ from pathlib import Path
 
 from .collect_dsv41_module import aggregate_baseline_records
 from .dsv41_contract import canonical_json, validate_row, write_parquet
-from .dsv41_isolated_runner import FRAMEWORK_COMMIT, FRAMEWORK_VERSION, aggregate_isolated_records
 
-BACKEND = "sglang"
+# backend -> producer module holding FRAMEWORK_COMMIT / FRAMEWORK_VERSION / aggregate_isolated_records
+PRODUCERS = {
+    "sglang": ("collector.sglang.dsv41_isolated_runner", "collector.sglang.dsv41_attention_runner"),
+    "vllm": ("collector.vllm.dsv41_isolated_runner", "collector.vllm.dsv41_attention_runner"),
+}
 IDENTITY = ("source_sha256", "config_sha256", "runtime_digest", "used_cuda_graph", "execution_profile")
 BASELINE_COLUMNS = {
     "gemm": ("gemm_dtype", "m", "n", "k"),
@@ -90,13 +93,13 @@ def pool_runs(per_run: list[dict], signature_keys: tuple[str, ...]) -> list[dict
     return rows
 
 
-def load_isolated_runs(raw_dirs: list[Path]):
+def load_isolated_runs(raw_dirs: list[Path], producer):
     """Validate every isolated run through the producer's own admission, then pool."""
     module_runs, baseline_runs, plans = [], [], []
     for raw in raw_dirs:
         plan_path, manifest_path = raw / "plan.json", raw / "manifest.json"
         plan = json.loads(plan_path.read_text())
-        aggregate_isolated_records(raw, plan_path, manifest_path)  # fail-closed admission per run
+        producer.aggregate_isolated_records(raw, plan_path, manifest_path)  # fail-closed admission per run
         aggregate_baseline_records([raw / f"baseline-rank-{r}.jsonl" for r in range(plan["tp_size"])], plan["tp_size"])
         tp = plan["tp_size"]
         strip = ("sample", "invocation", "tp_rank", "case_plan_sha256", "collection_purpose")
@@ -162,6 +165,7 @@ def main(argv=None):
 
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--system", required=True, help="systems entry, e.g. h20_3e")
+    parser.add_argument("--backend", default="sglang", choices=sorted(PRODUCERS), help="framework whose producers made the artifacts")
     parser.add_argument("--systems-root", required=True, type=Path, help="…/aisimulate_core/systems")
     parser.add_argument("--isolated", nargs="+", required=True, type=Path, help="isolated raw dirs (plan.json + manifest.json inside)")
     parser.add_argument("--attention", nargs="*", default=[], type=Path, help="attention raw dirs (plan.json + admitted.parquet inside)")
@@ -172,7 +176,12 @@ def main(argv=None):
     parser.add_argument("--repo-root", type=Path, default=Path(__file__).resolve().parents[2], help="python/aisimulate checkout")
     args = parser.parse_args(argv)
 
-    module_rows, baselines, isolated_runs = load_isolated_runs(args.isolated)
+    import importlib
+
+    producer = importlib.import_module(PRODUCERS[args.backend][0])
+    isolated_module, attention_module = PRODUCERS[args.backend]
+    framework_commit, framework_version = producer.FRAMEWORK_COMMIT, producer.FRAMEWORK_VERSION
+    module_rows, baselines, isolated_runs = load_isolated_runs(args.isolated, producer)
     attention_rows, attention_runs = load_attention_tables(args.attention)
     all_rows = [*attention_rows, *module_rows]
     if len({tuple(r[k] for k in IDENTITY) for r in all_rows}) != 1:
@@ -187,7 +196,7 @@ def main(argv=None):
         nccl=args.nccl,
         nccl_identity_evidence="ncclGetVersion audit of the libnccl.so.2 mapped by a torch.distributed all_reduce inside the pinned image",
     )
-    runtime = dict(framework=BACKEND, version=FRAMEWORK_VERSION, image=args.image, image_digest=runtime_digest, source_commit=FRAMEWORK_COMMIT, abi=abi)
+    runtime = dict(framework=args.backend, version=framework_version, image=args.image, image_digest=runtime_digest, source_commit=framework_commit, abi=abi)
 
     def event(module, run, rows, runtime_meta):
         raw, plan, _ = run
@@ -208,16 +217,16 @@ def main(argv=None):
         print(f"wrote {dest / table}.parquet rows={len(rows)}")
 
     data = args.systems_root / "data" / args.system
-    iso = "collector.sglang.dsv41_isolated_runner"
+    iso = isolated_module
     publish(
-        data / "dsv41" / BACKEND / FRAMEWORK_VERSION, "dsv41_module_perf", all_rows, write_parquet, runtime,
+        data / "dsv41" / args.backend / framework_version, "dsv41_module_perf", all_rows, write_parquet, runtime,
         [*(event(iso, run, run[2], runtime) for run in isolated_runs),
-         *(event("collector.sglang.dsv41_attention_runner", run, run[2], runtime) for run in attention_runs)],
+         *(event(attention_module, run, run[2], runtime) for run in attention_runs)],
     )
     for kind, table in (("gemm", "gemm_perf"), ("moe", "moe_perf")):
-        publish(data / kind / BACKEND / FRAMEWORK_VERSION, table, baselines[kind], write_baseline_parquet, runtime,
+        publish(data / kind / args.backend / framework_version, table, baselines[kind], write_baseline_parquet, runtime,
                 [event(iso, run, len(baselines[kind]), runtime) for run in isolated_runs])
-    nccl_runtime = dict(framework="nccl", version=args.nccl, image=args.image, image_digest=runtime_digest, source_commit=FRAMEWORK_COMMIT, abi=abi)
+    nccl_runtime = dict(framework="nccl", version=args.nccl, image=args.image, image_digest=runtime_digest, source_commit=framework_commit, abi=abi)
     publish(data / "comm" / "nccl" / args.nccl, "nccl_perf", baselines["nccl"], write_baseline_parquet, nccl_runtime,
             [event(iso, run, len(baselines["nccl"]), nccl_runtime) for run in isolated_runs])
 

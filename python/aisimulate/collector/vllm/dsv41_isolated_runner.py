@@ -114,7 +114,7 @@ def validate_plan(plan, manifest):
         raise ValueError("isolated plan contains unsupported or duplicate components")
     if plan["warmup"] < 2 or plan["iterations"] < 5:
         raise ValueError("isolated collection requires warmup and repeated measurements")
-    if plan["moe_backend"] not in MOE_DTYPE:
+    if plan["moe_backend"].upper() not in MOE_DTYPE:
         raise ValueError("explicit qualified native MoE backend required")
     if plan["expected_gpu"] not in EXPECTED_SM or plan["expected_sm"] != EXPECTED_SM[plan["expected_gpu"]]:
         raise ValueError("GPU and SM identity differ")
@@ -423,8 +423,8 @@ def collect_baselines(layer, lm_head, plan, rank, provenance, stream, receipt):
     )
     generator = torch.Generator().manual_seed(20260910)
     for tokens in plan["token_counts"]:
-        hidden = torch.randn(tokens, HIDDEN, generator=generator, dtype=torch.bfloat16).cuda()
-        logits = torch.rand(tokens, EXPERTS, generator=generator, dtype=torch.float32).cuda()
+        hidden = torch.randn(tokens, HIDDEN, generator=generator, dtype=torch.bfloat16, device="cpu").cuda()
+        logits = torch.rand(tokens, EXPERTS, generator=generator, dtype=torch.float32, device="cpu").cuda()
         ids = logits.topk(TOPK, dim=-1).indices.to(torch.int32)
         weights = torch.full((tokens, TOPK), 1 / TOPK, dtype=torch.float32, device=hidden.device)
         histogram = torch.bincount(ids.flatten().long(), minlength=EXPERTS).cpu().tolist()
@@ -496,7 +496,7 @@ def collect_linear(layer, manifest, plan, rank, provenance, stream, receipt):
         )
         for tokens in plan["token_counts"]:
             generator = torch.Generator().manual_seed(plan["seed"] + tokens)
-            hidden = torch.randn(tokens, HIDDEN, generator=generator, dtype=torch.bfloat16).cuda()
+            hidden = torch.randn(tokens, HIDDEN, generator=generator, dtype=torch.bfloat16, device="cpu").cuda()
             observer.measure(lambda: shared(hidden), tokens, plan, rank, provenance, stream, 2)
     finally:
         observer.restore()
@@ -559,7 +559,7 @@ def collect_engram(vllm_config, manifest, plan, rank, provenance, stream, token_
                     raise RuntimeError("native Engram hashes exceed their actual buckets")
                 receipt["engram_hash_inputs"].append(dict(layer=layer_id, tokens=tokens, ids_sha256=digest, shape=list(hashes.shape), unique_rows=int(hashes.unique().numel()), tp_input_agreement=True))
                 generator = torch.Generator().manual_seed(plan["seed"] + tokens)
-                hidden = torch.randn(tokens, config.hc_mult, config.hidden_size, generator=generator, dtype=torch.bfloat16).cuda()
+                hidden = torch.randn(tokens, config.hc_mult, config.hidden_size, generator=generator, dtype=torch.bfloat16, device="cpu").cuda()
 
                 def call(module=module, hidden=hidden, hashes=hashes):
                     # serving order (nvidia/model.py:677-682, common/engram.py:995-1004): lookup into the
@@ -604,9 +604,9 @@ def collect_mhc(layer, manifest, plan, rank, provenance, stream, receipt):
     try:
         for tokens in plan["token_counts"]:
             generator = torch.Generator().manual_seed(plan["seed"] + tokens)
-            residual = torch.randn(tokens, hc, hidden_size, generator=generator, dtype=torch.bfloat16).cuda()
-            attn_output = torch.randn(tokens, hidden_size, generator=generator, dtype=torch.bfloat16).cuda()
-            ffn_output = torch.randn(tokens, hidden_size, generator=generator, dtype=torch.bfloat16).cuda()
+            residual = torch.randn(tokens, hc, hidden_size, generator=generator, dtype=torch.bfloat16, device="cpu").cuda()
+            attn_output = torch.randn(tokens, hidden_size, generator=generator, dtype=torch.bfloat16, device="cpu").cuda()
+            ffn_output = torch.randn(tokens, hidden_size, generator=generator, dtype=torch.bfloat16, device="cpu").cuda()
             post_mix = torch.ones(tokens, hc, 1, dtype=torch.float32, device="cuda")
             res_mix = torch.eye(hc, dtype=torch.float32, device="cuda").expand(tokens, hc, hc).contiguous()
             seed_pre = torch.full((tokens, hc), 1.0 / hc, dtype=torch.float32, device="cuda")

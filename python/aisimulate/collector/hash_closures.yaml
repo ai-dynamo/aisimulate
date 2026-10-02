@@ -395,3 +395,17 @@ collector.wideep.trtllm.collect_moe_a2a:
   - collector/wideep/trtllm/slurm/run_trtllm_moe_a2a_job.sh
   - collector/wideep/trtllm/slurm/submit_trtllm_moe_a2a.sh
   - __model_cases__
+
+collector.vllm.dsv41_isolated_runner:
+  # vLLM DeepSeek-V4.1 module-only producer; shares the SGLang data contract and admission readers.
+  # The independently frozen plan pins token corpus, runtime and source files.
+  - collector/sglang/collect_dsv41_module.py
+  - collector/sglang/dsv41_contract.py
+  - collector/sglang/dsv41_publish.py
+  - src/aisimulate_core/sdk/deepseek_v41.py
+  - src/aisimulate_core/sdk/config.py
+  - src/aisimulate_core/sdk/common.py
+  - src/aisimulate_core/sdk/utils.py
+  - src/aisimulate_core/sdk/models/__init__.py
+  - src/aisimulate_core/sdk/models/deepseek_v41.py
+  - src/aisimulate_core/model_configs/deepseek-ai--DeepSeek-V4.1-Flash_config.json

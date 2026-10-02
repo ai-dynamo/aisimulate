@@ -51,6 +51,7 @@ STANDALONE_COLLECTOR_MODULES: frozenset[str] = frozenset(
         "collector.sglang.collect_dsv4_megamoe",
         "collector.sglang.dsv41_attention_runner",
         "collector.sglang.dsv41_isolated_runner",
+        "collector.vllm.dsv41_isolated_runner",
         "collector.sglang_rubin.collect_all_reduce",
         "collector.wideep.sglang.collect_moe_a2a",
         "collector.wideep.vllm.collect_moe_a2a",
