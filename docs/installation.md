@@ -39,8 +39,9 @@ aisimulate --help
 
 An exact version pin makes the choice explicit. To discover newer published
 prereleases, use `python -m pip index versions --pre aisimulate`.
-`python -m pip install aisimulate` selects a stable release; `--pre` allows prereleases. Neither command requests the
-latest repository source or an internal nightly automatically.
+`python -m pip install aisimulate` normally selects a stable release; `--pre`
+allows prereleases. Neither command requests the latest repository source or
+an internal nightly automatically.
 
 When replacing standalone AIConfigurator, first follow the
 [package migration instructions](../README.md#upgrade-from-standalone-aiconfigurator)
@@ -50,10 +51,10 @@ commands. Python imports use `aisimulate` and `aisimulate_core`; see
 
 ## Platform matrix
 
-| Host | Published `0.12.1` wheel | Current source wheel-build target |
+| Host | Published `0.12.0.dev1` wheel | Current source wheel-build target |
 |---|---|---|
-| Linux x86-64 | `manylinux_2_28_x86_64`: glibc 2.28 or newer | `manylinux_2_28_x86_64`: glibc 2.28 or newer |
-| Linux ARM64 | `manylinux_2_28_aarch64`: glibc 2.28 or newer | `manylinux_2_28_aarch64`: glibc 2.28 or newer |
+| Linux x86-64 | `manylinux_2_34_x86_64`: glibc 2.34 or newer | `manylinux_2_28_x86_64`: glibc 2.28 or newer |
+| Linux ARM64 | `manylinux_2_34_aarch64`: glibc 2.34 or newer | `manylinux_2_28_aarch64`: glibc 2.28 or newer |
 | macOS Apple Silicon | `macosx_11_0_arm64` | macOS ARM64, deployment target 11.0 |
 | macOS Intel, native Windows, musl-based Linux | No wheel in this release | No corresponding platform-wheel job |
 
@@ -63,16 +64,15 @@ evidence that an artifact was published or that every OS/dependency combination
 was tested. The
 [platform-wheel workflow](../.github/workflows/validate-platform-wheels.yml)
 defines build validation; the filenames in your selected release define what
-you can install. Stable releases use a wheel stub on PyPI to fetch prebuilt
-wheels from `https://pypi.nvidia.com`; installing them does not require Rust.
+you can install. In particular, the glibc 2.28 repair on `main` does **not**
+change the already-published `0.12.0.dev1` wheels.
 
 On Linux, check `uname -m` and `ldd --version`; on macOS, check `uname -m` and
 `sw_vers`. To check wheel availability without compiling AISimulate:
 
 ```bash
 python -m pip download --no-deps --only-binary=:all: \
-  --extra-index-url https://pypi.nvidia.com \
-  'aisimulate==0.12.1' --dest wheel-check
+  'aisimulate==0.12.0.dev1' --dest wheel-check
 ```
 
 This checks only AISimulate's wheel, not all transitive dependencies. A missing
