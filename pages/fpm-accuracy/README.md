@@ -13,6 +13,8 @@ compares forward-pass predictions with measurements from the public
   the series; MAPE is weighted by successful prediction count.
 - Slice Detail: retained branch evaluations, FPM variants, phase summaries,
   measurement-only workload distributions, and prediction-error heatmaps.
+  Heatmaps use compact cells and size independently, with scrolling only when
+  their contents exceed the available width.
 - 3D Visualization: independent panels, seven workload axes, stable samples,
   full gzip chunks, native rank provenance, camera controls, and PNG export.
   Diagnostic unsynchronized DP groups remain separate from accepted truth.
