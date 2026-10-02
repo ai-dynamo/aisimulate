@@ -323,8 +323,8 @@ def _measure_prefill(probe, target: dict, replays_before: int) -> dict:
     options = STATE.options
     o_proj = probe.attention.o_proj
     reduce = o_proj.reduce_results
-    if probe.pool is None:
-        probe.pool = torch.cuda.graph_pool_handle()
+    # A private pool per measurement (a released module graph frees its pool).
+    pool = torch.cuda.graph_pool_handle()
     o_proj.reduce_results = False
     try:
         with override_forward_context(witness.context):
@@ -332,7 +332,7 @@ def _measure_prefill(probe, target: dict, replays_before: int) -> dict:
             # framework's breakable capture of the module call on a capture stream.
             probe.original(record.hidden_states, record.positions)
             torch.cuda.synchronize()
-            capture = BreakableCUDAGraphCapture(pool=probe.pool)
+            capture = BreakableCUDAGraphCapture(pool=pool)
             with torch.cuda.stream(torch.cuda.Stream()), capture:
                 output = probe.original(record.hidden_states, record.positions)
             torch.cuda.synchronize()
