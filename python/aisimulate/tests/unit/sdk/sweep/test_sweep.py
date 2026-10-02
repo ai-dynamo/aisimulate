@@ -136,7 +136,7 @@ def test_sweep_agg_classifies_no_result_outcomes(monkeypatch, memory_states, exp
         summary.get_result_dict.return_value = {"ttft": 2.0, "tpot": 2.0}
         summaries.append(summary)
 
-    monkeypatch.setattr(sweep, "get_backend", lambda _backend_name: MagicMock())
+    monkeypatch.setattr(sweep, "get_backend", lambda _backend_name, *_: MagicMock())
     monkeypatch.setattr(sweep, "get_model", lambda **_kwargs: MagicMock())
     monkeypatch.setattr(sweep, "predict_agg_worker", MagicMock(side_effect=summaries))
 
@@ -155,7 +155,7 @@ def test_sweep_agg_classifies_no_result_outcomes(monkeypatch, memory_states, exp
 
 
 def test_sweep_agg_preserves_perf_miss_cause_when_every_point_is_unanswerable(monkeypatch):
-    monkeypatch.setattr(sweep, "get_backend", lambda _backend_name: MagicMock())
+    monkeypatch.setattr(sweep, "get_backend", lambda _backend_name, *_: MagicMock())
     monkeypatch.setattr(sweep, "get_model", lambda **_kwargs: MagicMock())
     monkeypatch.setattr(
         sweep,
@@ -179,7 +179,7 @@ def test_sweep_agg_preserves_perf_miss_cause_when_every_point_is_unanswerable(mo
 
 
 def test_sweep_disagg_preserves_perf_miss_cause_when_every_point_is_unanswerable(monkeypatch):
-    monkeypatch.setattr(sweep, "get_backend", lambda _backend_name: MagicMock())
+    monkeypatch.setattr(sweep, "get_backend", lambda _backend_name, *_: MagicMock())
     monkeypatch.setattr(sweep, "get_model", lambda **_kwargs: MagicMock())
     monkeypatch.setattr(
         sweep,
@@ -254,7 +254,7 @@ def test_sweep_agg_point_config_preserves_multimodal_fields(monkeypatch, visual_
         spatial_merge_size=2,
         out_hidden_size=5120,
     )
-    monkeypatch.setattr(sweep, "get_backend", lambda _backend_name: MagicMock())
+    monkeypatch.setattr(sweep, "get_backend", lambda _backend_name, *_: MagicMock())
     monkeypatch.setattr(sweep, "get_model", lambda **_kwargs: model)
     monkeypatch.setattr(sweep, "predict_agg_worker", _record)
 
@@ -316,7 +316,7 @@ def test_sweep_agg_retains_fallbacks_and_dedupes_on_visible_columns(monkeypatch)
     )
     assert point_df.iloc[0][MOE_COMM_FALLBACKS_COLUMN] == (fallback,)
 
-    monkeypatch.setattr(sweep, "get_backend", lambda _name: MagicMock())
+    monkeypatch.setattr(sweep, "get_backend", lambda _name, *_: MagicMock())
     monkeypatch.setattr(sweep, "get_model", lambda **_kwargs: MagicMock())
     monkeypatch.setattr(sweep, "_sweep_one_parallel_agg", lambda **_kwargs: (point_df.copy(), True, True, 0))
     result = sweep.sweep_agg(
@@ -528,7 +528,7 @@ def test_disagg_worker_candidates_stamp_canonical_fallback_provenance(monkeypatc
     summary.check_kv_cache_oom.return_value = False
     summary.get_summary_df.return_value = pd.DataFrame([_worker_row()])
     summary.get_moe_comm_fallbacks.return_value = (fallback, fallback)
-    monkeypatch.setattr(sweep, "get_backend", lambda _name: MagicMock())
+    monkeypatch.setattr(sweep, "get_backend", lambda _name, *_: MagicMock())
     monkeypatch.setattr(sweep, "get_model", lambda **_kwargs: MagicMock())
     monkeypatch.setattr(sweep, "predict_disagg_worker", lambda **_kwargs: summary)
 
@@ -755,7 +755,7 @@ def test_sweep_agg_epd_language_only_pin_survives_config_builder(monkeypatch):
         return MagicMock()
 
     monkeypatch.setattr(sweep, "get_model", _fake_get_model)
-    monkeypatch.setattr(sweep, "get_backend", lambda name: MagicMock())
+    monkeypatch.setattr(sweep, "get_backend", lambda name, *_: MagicMock())
     monkeypatch.setattr(
         sweep,
         "_sweep_one_parallel_agg",
@@ -846,7 +846,7 @@ def test_sweep_agg_epd_composes_encoder_stage(monkeypatch):
         return MagicMock()
 
     monkeypatch.setattr(sweep, "get_model", _fake_get_model)
-    monkeypatch.setattr(sweep, "get_backend", lambda name: MagicMock())
+    monkeypatch.setattr(sweep, "get_backend", lambda name, *_: MagicMock())
     monkeypatch.setattr(sweep, "_sweep_one_parallel_agg", lambda **_kwargs: (pd.DataFrame([agg_row]), True, True, 0))
     monkeypatch.setattr(
         sweep,
@@ -1012,7 +1012,7 @@ def test_encoder_worker_candidates_gated_by_gpu_memory(monkeypatch):
         {"total": memory_by_batch[b]},
         1.0,
     )
-    monkeypatch.setattr(sweep, "get_backend", lambda _name: backend)
+    monkeypatch.setattr(sweep, "get_backend", lambda _name, *_: backend)
 
     database = MagicMock()
     database.system_spec = {
@@ -1106,7 +1106,7 @@ def _encoder_candidates_env(monkeypatch, *, latency: float = 50.0):
         {"total": 1.0},
         1.0,
     )
-    monkeypatch.setattr(sweep, "get_backend", lambda _name: backend)
+    monkeypatch.setattr(sweep, "get_backend", lambda _name, *_: backend)
     database = MagicMock()
     database.system_spec = {
         "gpu": {"mem_capacity": 20 * (1 << 30)},
@@ -1301,7 +1301,7 @@ def test_sweep_agg_epd_top_k_defers_to_encoder_pairing(monkeypatch):
         return df, True, True, 0
 
     monkeypatch.setattr(sweep, "get_model", lambda **_kwargs: MagicMock())
-    monkeypatch.setattr(sweep, "get_backend", lambda name: MagicMock())
+    monkeypatch.setattr(sweep, "get_backend", lambda name, *_: MagicMock())
     monkeypatch.setattr(sweep, "_sweep_one_parallel_agg", _fake_sweep_one)
     monkeypatch.setattr(
         sweep,
