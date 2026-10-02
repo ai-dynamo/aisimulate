@@ -115,7 +115,7 @@ live contexts and replays it 3+10 times (`timing_method`
 Padding to the framework bucket is therefore included. The eager breaks keep
 their host launch cost, as in serving. Memory headroom for the per-target
 module graphs comes from a smaller static pool (SGLang
-`--mem-fraction-static 0.76`, vLLM `--gpu-memory-utilization 0.85`), a capacity
+`--mem-fraction-static 0.70`, vLLM `--gpu-memory-utilization 0.70`), a capacity
 change only.
 
 ## Workload and state
