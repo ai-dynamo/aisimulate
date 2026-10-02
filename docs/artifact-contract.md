@@ -38,6 +38,18 @@ do not create a separate licensing boundary. `scripts/check_packaged_legal_files
 fails CI if either packaging copy differs byte-for-byte from its root original,
 and the release-artifact validator checks the bytes installed in the wheel.
 
+Full CI uploads `license-artifacts` for trusted PR copies and post-merge pushes
+to `main` and `release/*`. It contains `deps.csv` (Python and Rust dependency
+versions and licenses), `deps-diff.csv`, and `evidence.json` with the source and
+comparison commit identities. PR evidence compares with the validated PR base;
+post-merge evidence compares with the push's previous commit. Missing baseline
+inputs fail CI. Python inventories resolve runtime requirements at collection
+time on amd64/Python 3.12; they are not a wheel payload or a frozen PyPI lock.
+An unchanged Python manifest reuses the same resolution for both commits.
+The report runs independently of wheel builds and tests, and Full CI Success
+requires it. Nightly CI uses the same report generator with its broader
+Python/architecture matrix and previous successful scheduled nightly baseline.
+
 Nightly builds stamp a dev suffix with `scripts/apply_dev_version.py` before
 building: the wheel becomes `0.13.0.devYYYYMMDD` (PEP 440) and the crate
 `0.13.0-dev.YYYYMMDD` (SemVer — cargo rejects the PEP 440 spelling, and the

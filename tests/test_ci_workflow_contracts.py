@@ -29,6 +29,7 @@ import yaml
 
 from scripts import build_manylinux_wheel as manylinux_builder
 from scripts import check_python_licenses as python_licenses
+from scripts import generate_license_evidence as license_evidence
 from scripts import select_forward_perf as forward_perf
 from scripts.build_manylinux_wheel import manylinux_platform
 from scripts.check_application_test_inventory import Inventory, assignment
@@ -1824,7 +1825,9 @@ def test_full_ci_aggregate_accepts_only_explicit_na_results() -> None:
         "verify-target": "success",
         "select-full-ci": "success",
         "fast-ci": "success",
-        "python-compliance": "skipped",
+        "python-compliance": "success",
+        "license-crate-inventory": "success",
+        "license-evidence": "success",
         **{
             component.replace("_", "-"): ("success" if plan[component] == "true" else "skipped")
             for component in COMPONENTS
@@ -1854,7 +1857,9 @@ def test_full_ci_aggregate_rejects_missing_selection_output() -> None:
         "verify-target": "success",
         "select-full-ci": "success",
         "fast-ci": "success",
-        "python-compliance": "skipped",
+        "python-compliance": "success",
+        "license-crate-inventory": "success",
+        "license-evidence": "success",
         **{component.replace("_", "-"): "skipped" for component in COMPONENTS},
         "application-test-wheel": "skipped",
     }
@@ -1870,7 +1875,9 @@ def test_full_ci_aggregate_rejects_missing_dependency() -> None:
         "verify-target": "success",
         "select-full-ci": "success",
         "fast-ci": "success",
-        "python-compliance": "skipped",
+        "python-compliance": "success",
+        "license-crate-inventory": "success",
+        "license-evidence": "success",
         **{component.replace("_", "-"): "skipped" for component in COMPONENTS},
         "application-test-wheel": "skipped",
     }
@@ -2458,18 +2465,11 @@ def _nightly_license_report(tmp_path, crates, prior=None, lookup_error=None, wor
         responses.append(response)
         return response
 
-    step = next(
-        s
-        for s in _workflow("nightly-ci.yml")["jobs"]["license-evidence"]["steps"]
-        if s.get("name") == "Generate license compliance evidence"
-    )
-    source = step["run"].split("<<'EOF'\n", 1)[1].rsplit("\nEOF", 1)[0]
     with (
-        patch.object(sys, "argv", ["nightly-evidence", str(tmp_path)]),
         patch.dict(os.environ, {"GH_API_TOKEN": "fixture", "GITHUB_REPOSITORY": "owner/repo", "GITHUB_RUN_ID": "2"}),
         patch("urllib.request.urlopen", side_effect=urlopen),
     ):
-        exec(compile(source, "nightly-ci-evidence", "exec"), {})
+        assert license_evidence.main([str(tmp_path), "--previous-nightly"]) == 0
     assert all(response.closed for response in responses)
     with (tmp_path / "deps.csv").open() as inventory, (tmp_path / "deps-diff.csv").open() as difference:
         return list(csv.DictReader(inventory)), list(csv.DictReader(difference))
@@ -2516,8 +2516,104 @@ def test_nightly_license_inventory_excludes_workspace_packages(tmp_path):
 
 
 def test_nightly_license_inventory_rejects_conflicting_metadata(tmp_path):
-    with pytest.raises(SystemExit, match="conflicting license metadata"):
+    with pytest.raises(ValueError, match="conflicting license metadata"):
         _nightly_license_report(tmp_path, [("0.2.17", "MIT"), ("0.2.17", "GPL-3.0-only")])
+
+
+def test_ci_license_diff_uses_exact_local_baseline_and_records_commit_identity(tmp_path):
+    head = tmp_path / "head"
+    base = tmp_path / "base"
+    head.mkdir()
+    base.mkdir()
+    _nightly_license_report(head, [("0.3.4", "MIT"), ("0.4.3", "Apache-2.0")])
+    _nightly_license_report(base, [("0.2.17", "MIT"), ("0.3.4", "MIT")])
+    with patch("urllib.request.urlopen", side_effect=AssertionError("CI must not select a nightly baseline")):
+        assert (
+            license_evidence.main(
+                [
+                    str(head),
+                    "--base-dir",
+                    str(base),
+                    "--source-sha",
+                    "a" * 40,
+                    "--base-sha",
+                    "b" * 40,
+                    "--source-ref",
+                    "refs/heads/pull-request/123",
+                ]
+            )
+            == 0
+        )
+    with (head / "deps-diff.csv").open() as stream:
+        changes = list(csv.DictReader(stream))
+    assert {(row["change"], row["version"], row["prior_version"]) for row in changes} == {
+        ("added", "0.4.3", ""),
+        ("removed", "", "0.2.17"),
+    }
+    evidence = json.loads((head / "evidence.json").read_text())
+    assert evidence["source_sha"] == "a" * 40
+    assert evidence["base_sha"] == "b" * 40
+    assert evidence["baseline_status"] == "exact_commit"
+
+
+def test_ci_license_evidence_requires_complete_baseline_inventories(tmp_path):
+    head = tmp_path / "head"
+    head.mkdir()
+    _nightly_license_report(head, [("0.2.17", "MIT")])
+    (head / "deps-diff.csv").unlink()
+    with pytest.raises(ValueError, match="missing Python dependency inventories"):
+        license_evidence.main([str(head), "--base-dir", str(tmp_path / "missing-base")])
+    assert not (head / "deps-diff.csv").exists()
+
+
+def test_full_ci_evidence_runs_independently_of_build_scope_and_uses_shared_generator():
+    jobs = _workflow("ci.yml")["jobs"]
+    python = jobs["python-compliance"]
+    assert "outputs.application_wheel" not in python["if"]
+    head = next(step for step in python["steps"] if step.get("name") == "Check Python dependency licenses")
+    assert "--inventory" in head["run"] and "--inventory-only" not in head["run"]
+    assert "--inventory-only" in _run_commands(python)
+    for job_name in ("python-compliance", "license-crate-inventory"):
+        assert "verify-target" in jobs[job_name]["needs"]
+        assert any(
+            step.get("with", {}).get("ref") == "${{ needs.verify-target.outputs.comparison-base }}"
+            for step in jobs[job_name]["steps"]
+        )
+    evidence = jobs["license-evidence"]
+    assert set(evidence["needs"]) == {"fast-ci", "verify-target", "python-compliance", "license-crate-inventory"}
+    commands = _run_commands(evidence)
+    assert "--base-dir" in commands and "--previous-nightly" not in commands
+    assert "pip install" not in commands and "cargo " not in commands
+    for job in (python, jobs["license-crate-inventory"], evidence):
+        assert "environment" not in job
+        assert "secrets." not in json.dumps(job)
+    for workflow in ("ci.yml", "nightly-ci.yml"):
+        steps = _workflow(workflow)["jobs"]["license-evidence"]["steps"]
+        assert "scripts/generate_license_evidence.py" in _run_commands({"steps": steps})
+        upload = next(step for step in steps if "upload-artifact@" in step.get("uses", ""))
+        assert upload["with"]["name"] == "license-artifacts"
+        assert upload["with"]["overwrite"] == "true"
+    nightly_checkout = next(
+        step
+        for step in _workflow("nightly-ci.yml")["jobs"]["license-evidence"]["steps"]
+        if "checkout@" in step.get("uses", "")
+    )
+    assert nightly_checkout["with"]["ref"] == "${{ github.workflow_sha }}"
+
+
+@pytest.mark.parametrize("job", ["python-compliance", "license-crate-inventory", "license-evidence"])
+def test_missing_license_evidence_blocks_even_documentation_only_full_ci(job):
+    jobs = _workflow("ci.yml")["jobs"]
+    plan = dict.fromkeys(COMPONENTS, "false")
+    results = dict.fromkeys(jobs["readiness"]["needs"], "success")
+    for component in COMPONENTS:
+        results[component.replace("_", "-")] = "skipped"
+    results["application-test-wheel"] = "skipped"
+    assert _run_full_ci_aggregate(results, plan).returncode == 0
+    results[job] = "skipped"
+    failed = _run_full_ci_aggregate(results, plan)
+    assert failed.returncode != 0
+    assert f"{job}=skipped, expected success" in failed.stdout
 
 
 @pytest.mark.parametrize(
@@ -2694,6 +2790,27 @@ def test_python_license_install_failure_blocks_check_and_export(tmp_path, monkey
         python_licenses.check_licenses("python", inventory)
     assert run.call_count == 1
     assert not inventory.exists()
+
+
+def test_comparison_inventory_can_record_a_license_removed_by_the_head(tmp_path, monkeypatch):
+    manifest = tmp_path / "pyproject.toml"
+    manifest.write_text('[project]\ndependencies = ["old-dependency"]\n')
+    output = tmp_path / "licenses.csv"
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append(command)
+        assert "--allow-only" not in command
+        if "--format=csv" in command:
+            kwargs["stdout"].write("Name,Version,License\nold-dependency,1.0,GPL-3.0-only\n")
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(python_licenses.subprocess, "run", run)
+    assert python_licenses.check_licenses("python", output, manifest, inventory_only=True) == 0
+    assert len(calls) == 2
+    assert "GPL-3.0-only" in output.read_text()
+    with pytest.raises(ValueError, match="output path"):
+        python_licenses.check_licenses("python", pyproject=manifest, inventory_only=True)
 
 
 def test_nightly_artifact_handoff_matches_fpe_and_accuracy_consumers():

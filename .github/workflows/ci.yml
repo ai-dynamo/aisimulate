@@ -752,19 +752,16 @@ jobs:
 
   python-compliance:
     name: Python Dependency Licenses
-    # SPDX headers are covered by the spdx-headers checks in fast-ci; this
-    # job is only the dependency-license gate, which is architecture-
-    # independent. Gated on the application-wheel scope (and listed in that
-    # job's needs) so a disallowed license blocks wheel builds and staging.
-    needs: [fast-ci, select-full-ci]
+    # Every PR and post-merge run needs evidence, including documentation-only
+    # changes. Dependency execution stays separate from the report job.
+    needs: [fast-ci, select-full-ci, verify-target]
     if: >-
       ${{
         always() &&
         !failure() &&
         !cancelled() &&
         needs.fast-ci.result == 'success' &&
-        needs.select-full-ci.result == 'success' &&
-        needs.select-full-ci.outputs.application_wheel == 'true'
+        needs.select-full-ci.result == 'success'
       }}
     runs-on: prod-aisimulate-default-amd64-v1
     timeout-minutes: 15
@@ -781,8 +778,108 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: "3.12"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.verify-target.outputs.comparison-base }}
+          path: license-baseline-source
+          persist-credentials: false
       - name: Check Python dependency licenses
-        run: python scripts/check_python_licenses.py
+        run: |
+          python -m venv "${RUNNER_TEMP}/license-head-venv"
+          python scripts/check_python_licenses.py \
+            --python "${RUNNER_TEMP}/license-head-venv/bin/python" \
+            --inventory "${RUNNER_TEMP}/license-inventories/head/python/amd64-3.12.csv"
+      - name: Collect the comparison Python inventory
+        run: |
+          mkdir -p "${RUNNER_TEMP}/license-inventories/base/python"
+          if cmp -s python/aisimulate/pyproject.toml license-baseline-source/python/aisimulate/pyproject.toml; then
+            cp "${RUNNER_TEMP}/license-inventories/head/python/amd64-3.12.csv" \
+              "${RUNNER_TEMP}/license-inventories/base/python/amd64-3.12.csv"
+          else
+            python -m venv "${RUNNER_TEMP}/license-base-venv"
+            python scripts/check_python_licenses.py \
+              --pyproject license-baseline-source/python/aisimulate/pyproject.toml \
+              --python "${RUNNER_TEMP}/license-base-venv/bin/python" \
+              --inventory "${RUNNER_TEMP}/license-inventories/base/python/amd64-3.12.csv" \
+              --inventory-only
+          fi
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ci-python-inventories
+          path: ${{ runner.temp }}/license-inventories/
+          if-no-files-found: error
+          retention-days: 30
+          overwrite: true
+
+  license-crate-inventory:
+    name: Cargo Dependency Inventories
+    # Metadata collection requires no wheel build or native compilation and
+    # remains available when the optional Cargo Deny scope is skipped.
+    needs: [fast-ci, select-full-ci, verify-target]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.verify-target.outputs.comparison-base }}
+          path: license-baseline-source
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+      - name: Capture locked head and comparison inventories
+        run: |
+          mkdir -p "${RUNNER_TEMP}/license-inventories/"{head,base}
+          cargo metadata --locked --all-features --format-version 1 \
+            > "${RUNNER_TEMP}/license-inventories/head/cargo-metadata.json"
+          cargo metadata --locked --all-features --format-version 1 \
+            --manifest-path license-baseline-source/Cargo.toml \
+            > "${RUNNER_TEMP}/license-inventories/base/cargo-metadata.json"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ci-crate-inventories
+          path: ${{ runner.temp }}/license-inventories/
+          if-no-files-found: error
+          retention-days: 30
+          overwrite: true
+
+  license-evidence:
+    name: License compliance evidence
+    needs: [fast-ci, verify-target, python-compliance, license-crate-inventory]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: ci-*-inventories
+          merge-multiple: true
+          path: ${{ runner.temp }}/license-inventories
+      - name: Generate license compliance evidence
+        env:
+          SOURCE_SHA: ${{ github.sha }}
+          BASE_SHA: ${{ needs.verify-target.outputs.comparison-base }}
+        run: |
+          python scripts/generate_license_evidence.py "${RUNNER_TEMP}/license-inventories/head" \
+            --base-dir "${RUNNER_TEMP}/license-inventories/base" \
+            --source-sha "${SOURCE_SHA}" --base-sha "${BASE_SHA}" --source-ref "${GITHUB_REF}"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: license-artifacts
+          path: |
+            ${{ runner.temp }}/license-inventories/head/deps*.csv
+            ${{ runner.temp }}/license-inventories/head/evidence.json
+          if-no-files-found: error
+          retention-days: 30
+          overwrite: true
 
   python-compatibility:
     name: Python ${{ matrix.python-version }} compatibility
@@ -929,6 +1026,8 @@ jobs:
       - application-test-wheel
       - application-tests
       - python-compliance
+      - license-crate-inventory
+      - license-evidence
       - python-compatibility
       - engine-golden-regression
       - release-artifact-contract
@@ -957,7 +1056,6 @@ jobs:
               "rust-feature-modes": "rust_feature_modes",
               "public-api-rust": "public_api_rust",
               "application-wheel": "application_wheel",
-              "python-compliance": "application_wheel",
               "application-test-wheel": "application_tests",
               "application-tests": "application_tests",
               "python-compatibility": "python_compatibility",
@@ -968,6 +1066,9 @@ jobs:
               "verify-target": "success",
               "select-full-ci": "success",
               "fast-ci": "success",
+              "python-compliance": "success",
+              "license-crate-inventory": "success",
+              "license-evidence": "success",
           }
           invalid_outputs = []
           for job, output in component_outputs.items():
