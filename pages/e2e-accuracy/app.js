@@ -439,7 +439,7 @@ function pointTable(topology) {
   return `<details class="point-details" open><summary>Operating points (${topology.points.length})</summary>
     <div class="table-scroll" tabindex="0" role="region" aria-label="Operating point details"><table class="point-table">
     <caption>${absolute ? "TTFT / TPOT in milliseconds and absolute percentage errors." : "Relative TTFT / TPOT and absolute percentage errors. Ratios use measured latency at the lowest concurrency as 1×."}</caption>
-    <thead><tr><th>Concurrency</th><th>Measured TTFT / TPOT</th><th>AISim TTFT / TPOT</th><th>AIC (legacy CLI) TTFT / TPOT</th><th>AISim TTFT / TPOT error</th><th>AIC (legacy CLI) TTFT / TPOT error</th><th>InfX CI run</th><th>Replay status</th><th>AISim prediction error</th></tr></thead>
+    <thead><tr><th>Concurrency</th><th>Measured TTFT / TPOT</th><th>AISim TTFT / TPOT</th><th>AISim TTFT / TPOT error</th><th>AIC (legacy CLI) TTFT / TPOT</th><th>AIC (legacy CLI) TTFT / TPOT error</th><th>InfX CI run</th><th>Replay status</th><th>AISim prediction error</th></tr></thead>
     <tbody>${topology.points.map((point) => {
       const ratios = (name) => ["ttft", "tpot"].map((metric) => {
         const value = point[name][`${metric}_${absolute ? "ms" : "relative"}`];
@@ -448,7 +448,7 @@ function pointTable(topology) {
       const errors = (name) => `${formatPercent(point[name].ttft_error_pct)} / ${formatPercent(point[name].tpot_error_pct)}`;
       const run = point.infx_run_id ? `<a href="https://github.com/SemiAnalysisAI/InferenceX/actions/runs/${escapeHtml(point.infx_run_id)}" target="_blank" rel="noopener noreferrer">${escapeHtml(point.infx_run_id)}</a>` : "—";
       const failure = point.status === "success" ? "—" : point.aisim_error || "Not recorded";
-      return `<tr><td>${point.concurrency}</td><td>${ratios("measured")}</td><td>${ratios("aisimulate")}</td><td>${ratios("aic")}</td><td>${errors("aisimulate")}</td><td>${errors("aic")}</td><td>${run}</td><td>${escapeHtml(point.status)}</td><td class="prediction-error">${escapeHtml(failure)}</td></tr>`;
+      return `<tr><td>${point.concurrency}</td><td>${ratios("measured")}</td><td>${ratios("aisimulate")}</td><td>${errors("aisimulate")}</td><td>${ratios("aic")}</td><td>${errors("aic")}</td><td>${run}</td><td>${escapeHtml(point.status)}</td><td class="prediction-error">${escapeHtml(failure)}</td></tr>`;
     }).join("")}</tbody></table></div></details>`;
 }
 
