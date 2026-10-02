@@ -32,6 +32,8 @@ overrides:
     # sglang v0.5.21 release pin (dsv41_module + gemm/moe/nccl baselines). No
     # older sglang data exists for this system, so 0.5.21 is current.
     sglang: {current: "0.5.21", previous: null}
+    # vLLM DeepSeek-V4.1 collected 2026-10-02 on the v0.30.0 release; no older vLLM data for h20_3e.
+    vllm: {current: "0.30.0", previous: null}
   vr200_hecate:
     # This pinned pilot image is a separate runtime domain, not a fleet upgrade.
     sglang: {current: "0.5.18+nvinternal.rubin.0.8full.66997102", previous: null}

@@ -32,8 +32,9 @@ Recorded in every receipt (`baseline_identity`, `linear_identity`, `engram_ident
   the FlashInfer/DeepGEMM MXFP8 kernels need SM100). `wo_a` (bmm) → `EmulationMxfp8LinearKernel`
   (dequantized BF16 `torch.bmm`).
 - Experts (`expert_dtype=fp4`) → `Mxfp4MoEMethod` backend `MARLIN` / `MarlinExperts` (W4A16);
-  the per-rank intermediate is rounded to 128 (TP4: 576 → 640). Baseline `moe_dtype` is
-  `w4a16_mxfp4_marlin`.
+  the per-rank intermediate is rounded to 128 (TP4: 576 → 640). Baseline `moe_dtype` is the SDK's
+  generic weight-only `w4a16_mxfp4` (the mode SGLang's collect_moe pins to Marlin); `kernel_source`
+  `vllm_marlin_mxfp4_moe/MarlinExperts` names the kernel.
 - Engram tables GPU-resident (`EngramConfig(cpu_offload=False)`; serving default is host-resident
   via `VLLM_PLE_CPU_OFFLOAD=1`), TP **head**-sharded with an all-gather (SGLang row-shards and
   all-reduces); the lookup is the Triton `_engram_lookup_kernel`, the gate

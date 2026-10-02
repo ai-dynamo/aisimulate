@@ -87,7 +87,9 @@ REQUIRED_SOURCES = {
 }
 CONFIG_SHA256 = "d7637228d27528f6bd259781b5a27258068f50bf637c9c83aab784d81579669d"
 HIDDEN, EXPERTS, TOPK, INTER = 5120, 384, 6, 2304
-MOE_DTYPE = {"MARLIN": "w4a16_mxfp4_marlin"}
+# SDK MoEQuantMode for each native backend: Marlin is the SDK's generic weight-only W4A16 MXFP4 mode
+# (collector/sglang/collect_moe.py:1334 pins marlin to w4a16_mxfp4; kernel_source names the kernel).
+MOE_DTYPE = {"MARLIN": "w4a16_mxfp4"}
 
 
 def sha(path):
