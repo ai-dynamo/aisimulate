@@ -173,6 +173,7 @@ def main(argv=None):
     parser.add_argument("--torch", required=True, help="torch version string inside the image")
     parser.add_argument("--nccl", required=True, help="runtime NCCL version from an ncclGetVersion audit, e.g. 2.30.7")
     parser.add_argument("--collected-at", default=date.today().isoformat())
+    parser.add_argument("--overwrite-nccl", action="store_true", help="replace an existing comm/nccl/<ver> table from this campaign")
     parser.add_argument("--repo-root", type=Path, default=Path(__file__).resolve().parents[2], help="python/aisimulate checkout")
     args = parser.parse_args(argv)
 
@@ -226,9 +227,15 @@ def main(argv=None):
     for kind, table in (("gemm", "gemm_perf"), ("moe", "moe_perf")):
         publish(data / kind / args.backend / framework_version, table, baselines[kind], write_baseline_parquet, runtime,
                 [event(iso, run, len(baselines[kind]), runtime) for run in isolated_runs])
-    nccl_runtime = dict(framework="nccl", version=args.nccl, image=args.image, image_digest=runtime_digest, source_commit=framework_commit, abi=abi)
-    publish(data / "comm" / "nccl" / args.nccl, "nccl_perf", baselines["nccl"], write_baseline_parquet, nccl_runtime,
-            [event(iso, run, len(baselines["nccl"]), nccl_runtime) for run in isolated_runs])
+    nccl_dest = data / "comm" / "nccl" / args.nccl
+    if (nccl_dest / "nccl_perf.parquet").exists() and not args.overwrite_nccl:
+        # comm/nccl is keyed by the NCCL library version, not by the framework image: a sibling
+        # campaign in another image (same ncclGetVersion) already published this table.
+        print(f"kept existing {nccl_dest / 'nccl_perf.parquet'} (same NCCL {args.nccl}; --overwrite-nccl to replace)")
+    else:
+        nccl_runtime = dict(framework="nccl", version=args.nccl, image=args.image, image_digest=runtime_digest, source_commit=framework_commit, abi=abi)
+        publish(nccl_dest, "nccl_perf", baselines["nccl"], write_baseline_parquet, nccl_runtime,
+                [event(iso, run, len(baselines["nccl"]), nccl_runtime) for run in isolated_runs])
 
 
 if __name__ == "__main__":
