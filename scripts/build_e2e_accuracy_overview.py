@@ -5,8 +5,8 @@
 
 The source ``predictions.json`` retains historical ``dynamo_*`` field names for
 frontend compatibility. Rows with ``aisimulate_runner`` provenance are emitted
-as AISimulate results. The public output contains aggregate errors and identity
-dimensions only; it deliberately omits raw measurements and internal run IDs.
+as AISimulate results. The public output contains aggregate errors, chart measurements and identity
+dimensions; it deliberately omits internal run IDs.
 """
 
 from __future__ import annotations
@@ -93,6 +93,9 @@ def _normalized_hardware(hardware: str) -> str:
 
 
 def _total_gpus(row: dict[str, Any]) -> int:
+    recorded = _finite(row.get("aisimulate_total_gpus"))
+    if recorded is not None and recorded > 0:
+        return int(recorded)
     if row.get("disagg"):
         for field in ("aisimulate_total_gpus", "dynamo_total_gpus"):
             value = _finite(row.get(field))
@@ -125,7 +128,7 @@ def _is_multinode(row: dict[str, Any]) -> bool:
         if not isinstance(is_multinode, bool):
             raise SnapshotError("row with unknown hardware family must provide boolean is_multinode")
         return is_multinode
-    return _total_gpus(row) > gpus_per_node
+    return row.get("is_multinode") is True or _total_gpus(row) > gpus_per_node
 
 
 def _topology_key(row: dict[str, Any]) -> tuple[Any, ...]:
@@ -247,7 +250,7 @@ def _workload_label(workload: str) -> str:
 
 
 def _topology_summaries(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Publish numeric errors and normalized curves, never raw latency or run IDs."""
+    """Publish chart measurements and normalized curves without internal run IDs."""
     groups: dict[tuple[Any, ...], list[dict[str, Any]]] = defaultdict(list)
     for row in rows:
         groups[_topology_key(row)].append(row)
@@ -260,11 +263,19 @@ def _topology_summaries(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         anchors = {metric: first[f"silicon_{metric}_ms"] for metric in ("ttft", "tpot")}
         points = []
         for row in topology_rows:
-            point: dict[str, Any] = {"concurrency": row["conc"], "status": row["aisimulate_status"]}
+            point: dict[str, Any] = {
+                "concurrency": row["conc"],
+                "status": row["aisimulate_status"],
+                "configuration": row.get("configuration", {}),
+            }
             for name, prefix in (("measured", "silicon"), ("aic", "aic"), ("aisimulate", "dynamo")):
-                point[name] = {}
+                point[name] = {
+                    field: _finite(row.get(f"{prefix}_{field}"))
+                    for field in ("e2e_ms", "output_per_gpu", "total_per_gpu")
+                }
                 for metric, anchor in anchors.items():
                     value = _finite(row.get(f"{prefix}_{metric}_ms"))
+                    point[name][f"{metric}_ms"] = value
                     point[name][f"{metric}_relative"] = round(value / anchor, 6) if value is not None else None
                     if name != "measured":
                         point[name][f"{metric}_error_pct"] = (
@@ -280,6 +291,8 @@ def _topology_summaries(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "precision": first["precision"],
                 "serving": "disaggregated" if first.get("disagg") else "aggregated",
                 "spec_method": first.get("spec_method") or "none",
+                "is_multinode": _is_multinode(first),
+                "total_gpus": first.get("aisimulate_total_gpus") or _total_gpus(first),
                 "parallelism": {
                     field: first.get(field)
                     for field in ("tp_size", "pp_size", "attention_dp_size", "moe_ep_size", "moe_tp_size")

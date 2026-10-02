@@ -169,8 +169,8 @@ test("branch switching updates the multi-node scope label, check, and tooltip", 
   included.scope.raw_rows = included.scope.published_rows;
   const app = setup(async (path) => response(path === `./${pathFor("b")}` ? included : historical));
   await app.run('loadBranch("main")');
-  assert.equal(app.element("scope-check").hidden, false);
-  assert.match(app.element("multinode-label").textContent, /Exclude multi-node predictions/);
+  assert.equal(app.element("scope-check").hidden, true);
+  assert.match(app.element("multinode-label").textContent, /Snapshot: single-node only/);
 
   await app.run('loadBranch("release/0.12.0")');
   assert.equal(app.element("scope-check").hidden, true);
@@ -178,8 +178,8 @@ test("branch switching updates the multi-node scope label, check, and tooltip", 
   assert.equal(app.element("scope-control").title, "This snapshot includes multi-node predictions.");
 
   await app.run('loadBranch("main")');
-  assert.equal(app.element("scope-check").hidden, false);
-  assert.match(app.element("multinode-label").textContent, /Exclude multi-node predictions.*hidden/);
+  assert.equal(app.element("scope-check").hidden, true);
+  assert.match(app.element("multinode-label").textContent, /Snapshot: single-node only.*not exported/);
   assert.equal(app.element("scope-control").title, "This snapshot includes single-node predictions only.");
 });
 
@@ -275,8 +275,8 @@ test("topology curves retain missing-point gaps and expose normalized numeric de
   const app = setup(async () => response(data)); await app.run('loadBranch("main")');
   app.run('state.selection = JSON.stringify([state.data.models[0].model, state.data.models[0].workloads[0].identity, state.data.models[0].workloads[0].gpus[0].gpu]); renderDrilldown()');
   const html = app.element("drilldown").innerHTML;
-  assert.match(html, /TPOT trend/);
-  assert.match(html, /TTFT trend/);
+  assert.match(html, /TPOT \(relative to measured anchor\)/);
+  assert.match(html, /TTFT \(relative to measured anchor\)/);
   assert.match(html, /Operating points \(3\)/);
   assert.match(html, /1\.200×/);
   assert.match(html, /<td>failed<\/td>/);
@@ -705,4 +705,54 @@ test("baseline entry point is validated and displayed for both layouts", async (
       assert.throws(() => app.run("validateSummary(invalid)"), /legacy AIC CLI source/);
     }
   }
+});
+
+
+test("tabs preserve selected topology and shareable exclusion settings", async () => {
+  const app = setup(async () => response(withTopology()));
+  await app.run('loadBranch("main")');
+  app.run('state.tab = "details"; renderView(); state.excludeOutliers = true; updateLocation()');
+  assert.equal(app.element("matrix-layout").hidden, true);
+  assert.equal(app.element("details-view").hidden, false);
+  assert.match(app.location.href, /tab=details/);
+  assert.match(app.location.href, /outliers=1/);
+  const selection = app.run('state.selection');
+  app.run('state.tab = "overview"; renderView()');
+  assert.equal(app.run('state.selection'), selection);
+  assert.equal(app.element("matrix-layout").hidden, false);
+  assert.match(app.element("details-view").innerHTML, /Measured silicon/);
+});
+
+test("outlier filtering is per predictor and metric and keeps points visible", () => {
+  const app = harness();
+  const t = withTopology().models[0].workloads[0].gpus[0].topologies[0];
+  t.points[0].aisimulate.ttft_error_pct = 150;
+  t.points[0].aisimulate.tpot_error_pct = 100;
+  app.set("topologyFixture", t);
+  app.run('state.excludeOutliers = true');
+  const stats = app.run('aggregateTopologies([topologyFixture])');
+  assert.equal(stats.aisimulate.ttft_mape_pct, t.points[2].aisimulate.ttft_error_pct);
+  assert.equal(stats.aisimulate.tpot_mape_pct, (100 + t.points[2].aisimulate.tpot_error_pct) / 2);
+  assert.equal(stats.aic.points, 3);
+  const chart = app.run('metricChart(topologyFixture, "ttft")');
+  assert.match(chart, /#ec4899/);
+  assert.match(chart, /data-point="0"/);
+});
+
+test("multi-node rows are included by default and can be excluded", () => {
+  const app = harness();
+  const data = withTopology();
+  data.models[0].workloads[0].gpus[0].topologies[0].is_multinode = true;
+  app.set("multiFixture", data);
+  assert.equal(app.run('filterSnapshot(multiFixture).totals.rows'), 3);
+  app.run('state.excludeMultinode = true');
+  assert.equal(app.run('filterSnapshot(multiFixture).totals.rows'), 0);
+});
+
+test("clearing a snapshot clears Details as well as Overview", async () => {
+  const app = setup(async () => response(withTopology()));
+  await app.run('loadBranch("main")');
+  app.run('state.tab = "details"; renderView(); clearSnapshot("Unavailable")');
+  assert.match(app.element("details-view").innerHTML, /Unavailable/);
+  assert.equal(app.element("detail-filters").innerHTML, "");
 });

@@ -579,3 +579,13 @@ def test_baseline_provenance_matches_selected_modules(entry, api, adapter):
         document["aic_run"]["runtime"]["config_adapter"] = "foreign.adapter"
     with pytest.raises(OVERVIEW.SnapshotError, match="modules disagree"):
         OVERVIEW._aic_source(predictions, metadata, coverage, None)
+
+
+def test_chart_export_keeps_predictors_distinct_and_absolute_units():
+    summary = _summary()
+    topologies = [t for m in summary["models"] for w in m["workloads"] for g in w["gpus"] for t in g["topologies"]]
+    assert all(type(t["is_multinode"]) is bool and t["total_gpus"] > 0 for t in topologies)
+    points = [p for t in topologies for p in t["points"]]
+    assert all(p["measured"]["ttft_ms"] > 0 for p in points)
+    assert any(p["aic"]["ttft_ms"] != p["aisimulate"]["ttft_ms"] for p in points if p["status"] == "success")
+    assert all(p["aisimulate"]["ttft_ms"] is None for p in points if p["status"] != "success")

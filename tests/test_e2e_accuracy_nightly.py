@@ -1219,3 +1219,23 @@ def test_site_builder_validates_baseline_entry_point(artifact, tmp_path, entry):
     del summary["snapshot"]["aic_source"]["cli_entry_point"]
     path.write_text(json.dumps(summary))
     pages._accuracy_summary(path.read_text())
+
+
+def test_campaign_can_select_multinode_without_changing_legacy_selection():
+    data = tables()
+    data["configs"][0]["is_multinode"] = True
+    points, metadata = campaign.select_points(data, 30, include_multinode=True)
+    assert points and "multinode" not in metadata["excluded"]
+    with pytest.raises(ValueError, match="empty"):
+        campaign.select_points(data, 30)
+
+
+def test_failed_campaign_without_artifact_keeps_failure_status(artifact, tmp_path, monkeypatch):
+    _, run = artifact
+    run["conclusion"] = "failure"
+    publication_api(monkeypatch, run, [], jobs={"1": [qualification_job(run, "main", conclusion="failure")]})
+    output = tmp_path / "prepared"
+    publish.prepare(ROOT, output)
+    assert prepared_snapshots(output) == {}
+    updates = json.loads((output / "status/updates.json").read_text())
+    assert updates["main"] == {"status": "failed", "run_id": str(run["id"])}

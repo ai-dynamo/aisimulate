@@ -230,6 +230,9 @@ def _accuracy_summary(text: str) -> dict:
             "topology dimensions",
         )
         require(isinstance(item.get("parallelism"), dict), "parallelism")
+        if "is_multinode" in item:
+            require(type(item["is_multinode"]) is bool, "multi-node flag")
+            require(type(item.get("total_gpus")) is int and item["total_gpus"] > 0, "GPU count")
         points = item.get("points")
         require(isinstance(points, list) and len(points) == item["rows"], "topology points")
         previous = 0
@@ -245,6 +248,11 @@ def _accuracy_summary(text: str) -> dict:
             for name in ("measured", "aic", "aisimulate"):
                 series = point.get(name)
                 require(isinstance(series, dict), "point series")
+                for key in ("ttft_ms", "tpot_ms", "e2e_ms", "output_per_gpu", "total_per_gpu"):
+                    if key in series:
+                        require(series[key] is None or (number(series[key]) and series[key] > 0), "chart metric")
+                        if name == "aisimulate" and status != "success":
+                            require(series[key] is None, "failed prediction chart metric")
                 for metric in ("ttft", "tpot"):
                     keys = [f"{metric}_relative"] + ([f"{metric}_error_pct"] if name != "measured" else [])
                     missing = name == "aisimulate" and status != "success"
@@ -426,6 +434,20 @@ def _build_accuracy_catalog(
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n")
         entries.append(entry)
+    status_path = artifacts / "status/updates.json" if artifacts else None
+    if status_path is not None and status_path.exists():
+        updates = json.loads(status_path.read_text())
+        for entry in entries:
+            update = updates.get(entry["branch"])
+            if update is not None:
+                if (
+                    not isinstance(update, dict)
+                    or set(update) != {"status", "run_id"}
+                    or update["status"] not in {"success", "failed"}
+                    or not re.fullmatch(r"[0-9]+", str(update["run_id"]))
+                ):
+                    raise PagesBuildError("invalid accuracy update status")
+                entry["last_update"] = update
     catalog = {"schema_version": 1, "default_branch": "main", "branches": entries}
     (output_dir / "e2e-accuracy" / "branches.json").write_text(json.dumps(catalog, indent=2, sort_keys=True) + "\n")
 

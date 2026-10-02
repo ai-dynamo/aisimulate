@@ -729,3 +729,34 @@ a[aria-disabled="true"] { color: var(--dim); pointer-events: none; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
 [data-theme="dark"] ::-webkit-scrollbar-thumb { background: #475569; }
+
+[hidden] { display: none !important; }
+.accuracy-tabs, .exclusions, .filter-toolbar, .chart-options, .chart-legend { display: flex; flex-wrap: wrap; gap: 16px; align-items: center; margin-bottom: 16px; }
+.accuracy-tabs { border-bottom: 1px solid var(--border); }
+.accuracy-tabs button { padding: 12px 18px; border: 0; border-bottom: 3px solid transparent; background: none; color: var(--muted); cursor: pointer; }
+.accuracy-tabs button[aria-pressed="true"] { color: var(--accent); border-color: var(--accent); }
+.filter-toolbar { padding: 16px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel); }
+.filter-toolbar label { display: flex; flex-direction: column; gap: 5px; }
+.filter-toolbar select { max-width: 460px; }
+select, .chart-legend button, dialog button { background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 6px; }
+.chart-legend button { cursor: pointer; }
+.chart-legend button[aria-pressed="false"] { opacity: .4; text-decoration: line-through; }
+.detail-cards, .latency-charts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; margin: 16px 0; }
+.metric-chart svg { width: 100%; font-size: 10px; }
+.metric-chart circle { cursor: pointer; }
+.metric-chart circle:focus { stroke: var(--text); stroke-width: 3px; outline: none; }
+.drilldown .latency-charts { grid-template-columns: 1fr; }
+#details-view { padding: 20px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel); }
+dialog { max-width: 95vw; background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 8px; overflow: auto; }
+dialog::backdrop { background: #0009; }
+@media (max-width: 700px) { .latency-charts, .detail-cards { grid-template-columns: 1fr; } .filter-toolbar select { max-width: 85vw; } }
+.framework-summary { margin: 20px 0; }
+.framework-summary h2 { font-size: 14px; }
+#details-view, .filter-toolbar, .detail-cards > *, .latency-charts > * { min-width: 0; }
+#details-view { overflow: hidden; }
+.metric-chart { max-width: 900px; margin: 0 auto; width: 100%; }
+.metric-chart .point { fill: inherit; }
+.metric-chart .point.measured { fill: #f59e0b; }
+.metric-chart .point.aisimulate { fill: #818cf8; }
+.metric-chart .point.aic { fill: #14b8a6; }
+.metric-chart .point[fill="#ec4899"] { fill: #ec4899; }
