@@ -83,8 +83,12 @@ def tables():
 
 
 def test_selection_keeps_one_complete_run_and_never_fills_missing_concurrency():
-    points, stats = campaign.select_points(tables(), 30)
+    data = tables()
+    data["workflow_runs"][0]["github_run_id"] = "11111"
+    data["workflow_runs"][1]["github_run_id"] = "22222"
+    points, stats = campaign.select_points(data, 30)
     assert {point["benchmark"]["id"] for point in points} == {2, 3}
+    assert {point["silicon_github_run_id"] for point in points} == {"22222"}
     assert stats["selected"] == 2
     assert stats["measurement_date_through"] == "2026-09-13"
 
@@ -468,6 +472,17 @@ def test_untrusted_wrong_attempt_or_failed_producer_rejected(artifact, field, va
     run[field] = value
     with pytest.raises(ValueError):
         publish.validate_artifact(archive(summary), run)
+
+
+def test_publisher_accepts_public_infx_run_ids_and_rejects_invalid_links(artifact):
+    summary, run = artifact
+    point = summary["models"][0]["workloads"][0]["gpus"][0]["topologies"][0]["points"][0]
+    point["infx_run_id"] = "26696231118"
+    assert publish.validate_artifact(archive(summary), run) == summary
+    for invalid in ("../123", "0", "<script>", 123):
+        point["infx_run_id"] = invalid
+        with pytest.raises(ValueError, match="InferenceX GitHub run ID"):
+            publish.validate_artifact(archive(summary), run)
 
 
 @pytest.mark.parametrize(

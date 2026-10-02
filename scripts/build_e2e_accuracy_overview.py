@@ -284,11 +284,17 @@ def _topology_summaries(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         anchors = {metric: first[f"silicon_{metric}_ms"] for metric in ("ttft", "tpot")}
         points = []
         for row in topology_rows:
+            run_id = row.get("silicon_github_run_id")
+            if run_id is not None and (
+                type(run_id) not in (str, int) or re.fullmatch(r"[1-9][0-9]*", str(run_id)) is None
+            ):
+                raise SnapshotError("invalid InferenceX GitHub run ID")
             point: dict[str, Any] = {
                 "concurrency": row["conc"],
                 "status": row["aisimulate_status"],
                 "aic_status": row.get("aic_status", "success"),
                 "configuration": row.get("configuration", {}),
+                "infx_run_id": str(run_id) if run_id is not None else None,
             }
             for name, prefix in (("measured", "silicon"), ("aic", "aic"), ("aisimulate", "dynamo")):
                 point[name] = _chart_metrics(row, prefix)

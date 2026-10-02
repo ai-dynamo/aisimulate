@@ -114,6 +114,27 @@ test("committed, historical, and topology snapshots pass validation and initiali
   }
 });
 
+test("operating points link public InfX runs and allow missing historical provenance", () => {
+  const data = withTopology();
+  const topology = data.models[0].workloads[0].gpus[0].topologies[0];
+  topology.points[0].infx_run_id = "26696231118";
+  topology.points[1].infx_run_id = null;
+  const app = harness(async () => response(data));
+  app.set("valid", data);
+  app.set("topology", topology);
+  assert.doesNotThrow(() => app.run("validateSummary(valid)"));
+  const html = app.run("pointTable(topology)");
+  assert.match(html, /<th>InfX CI run<\/th>/);
+  assert.match(html, /href="https:\/\/github.com\/SemiAnalysisAI\/InferenceX\/actions\/runs\/26696231118"/);
+  assert.equal((html.match(/actions\/runs\//g) || []).length, 1);
+  assert.match(html, /<td>—<\/td>/);
+  for (const id of ['123" onclick="bad', "../123", "0", 123]) {
+    topology.points[0].infx_run_id = id;
+    app.set("valid", data);
+    assert.throws(() => app.run("validateSummary(valid)"));
+  }
+});
+
 test("failed AIC predictions retain silicon and AISim chart values", () => {
   const data = withTopology();
   const topology = data.models[0].workloads[0].gpus[0].topologies[0];
@@ -344,14 +365,14 @@ test("changing topology updates the rendered points and shared selection in both
   const app = setup(async () => response(data)); await app.run('loadBranch("main")');
   app.run('state.selection = JSON.stringify([state.data.models[0].model, state.data.models[0].workloads[0].identity, state.data.models[0].workloads[0].gpus[0].gpu]); renderDrilldown(); updateLocation()');
   assert.equal(app.run("state.topologyId"), first.id);
-  assert.match(app.element("drilldown").innerHTML, /<tr><td>1<\/td><td>success<\/td>/);
+  assert.match(app.element("drilldown").innerHTML, /<tr><td>1<\/td><td>—<\/td><td>success<\/td>/);
 
   for (const topology of [second, first]) {
     app.element("topology-select").events.change({ target: { value: topology.id } });
     assert.equal(app.run("state.topologyId"), topology.id);
     const html = app.element("drilldown").innerHTML;
     assert.match(html, new RegExp(`<option value="${topology.id}" selected>TP ${topology.parallelism.tp_size}${topology.parallelism.pp_size > 1 ? ` · PP ${topology.parallelism.pp_size}` : ""}`));
-    assert.match(html, new RegExp(`<tr><td>${topology.points[0].concurrency}</td><td>success</td>`));
+    assert.match(html, new RegExp(`<tr><td>${topology.points[0].concurrency}</td><td>—</td><td>success</td>`));
     const other = topology === first ? second : first;
     assert.doesNotMatch(html, new RegExp(`<tr><td>${other.points[0].concurrency}</td>`));
     assert.equal(new URL(app.location.href).searchParams.get("topology"), topology.id);

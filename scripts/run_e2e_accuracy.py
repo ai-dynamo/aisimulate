@@ -142,6 +142,7 @@ def select_points(tables: dict, max_age_days: int, *, include_multinode: bool = 
                     "id": sha([bench["id"], bench["config_id"]]),
                     "config": configs[bench["config_id"]],
                     "benchmark": bench,
+                    "silicon_github_run_id": runs[bench["workflow_run_id"]].get("github_run_id"),
                 }
             )
     if not points:
@@ -322,6 +323,7 @@ def predict_point(point: dict) -> dict:
         "is_multinode": config["is_multinode"],
         "silicon_ttft_ms": bench["metrics"]["mean_ttft"] * 1000,
         "silicon_tpot_ms": bench["metrics"]["mean_tpot"] * 1000,
+        "silicon_github_run_id": point.get("silicon_github_run_id"),
         "aic_ttft_ms": float(baseline.ttft),
         "aic_tpot_ms": float(baseline.tpot),
         "aisimulate_total_gpus": config["num_decode_gpu"] + (config["num_prefill_gpu"] if config["disagg"] else 0),
