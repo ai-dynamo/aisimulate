@@ -1283,11 +1283,29 @@ def expert_parallel_point():
     }
 
 
+@pytest.fixture
+def source_config_adapter(monkeypatch):
+    # Pages installs only its pinned Python dependencies, not an AISim wheel.
+    # The adapter/replay contracts are pure Python; the runner is stubbed below.
+    existing_modules = set(sys.modules)
+    monkeypatch.syspath_prepend(str(ROOT / "python" / "aisimulate" / "src"))
+    try:
+        from aisimulate.sdk import config_adapter
+
+        yield config_adapter
+    finally:
+        # Do not make later Pages tests mistake source imports for an installed
+        # wheel with a native runtime, after monkeypatch restores sys.path.
+        for name in set(sys.modules) - existing_modules:
+            if name.split(".")[0] in {"aisimulate", "aisimulate_core"}:
+                sys.modules.pop(name, None)
+
+
 @pytest.mark.parametrize("replay_fails", [False, True])
 @pytest.mark.parametrize("framework", ["vllm", "sglang", "trt"])
-def test_ep_prediction_preserves_physical_gpus_through_publication(monkeypatch, replay_fails, framework):
-    from aisimulate.sdk import config_adapter
-
+def test_ep_prediction_preserves_physical_gpus_through_publication(
+    monkeypatch, source_config_adapter, replay_fails, framework
+):
     point = expert_parallel_point()
     point["config"]["framework"] = framework
     calls = []
@@ -1320,7 +1338,7 @@ def test_ep_prediction_preserves_physical_gpus_through_publication(monkeypatch, 
     )
     modules = {
         "aisimulate.legacy_cli.api": SimpleNamespace(cli_estimate=estimate),
-        "aisimulate.sdk.config_adapter": config_adapter,
+        "aisimulate.sdk.config_adapter": source_config_adapter,
     }
     files = ["aisimulate/legacy_cli/api.py", "aisimulate/sdk/config_adapter/__init__.py"]
     monkeypatch.setattr(campaign.importlib.metadata, "distribution", lambda _: SimpleNamespace(files=files))
