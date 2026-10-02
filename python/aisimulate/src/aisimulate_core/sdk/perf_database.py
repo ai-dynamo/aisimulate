@@ -384,16 +384,26 @@ def is_hopper_system(system_name: str | None) -> bool:
     return int(spec.get("gpu", {}).get("sm_version", -1)) == 90
 
 
+def _gpu_is_xpu(gpu: object, label: str) -> bool:
+    # XPU specs omit sm_version; NVIDIA specs carry it.
+    if not isinstance(gpu, dict):
+        raise ValueError(f"Cannot resolve GPU spec for {label}")
+    return "sm_version" not in gpu
+
+
 def is_xpu_system(system_name: str | None) -> bool:
-    """True for XPU systems. NVIDIA specs carry ``sm_version``; XPU specs do
-    not, so its absence marks an XPU system."""
+    """True for XPU systems. NVIDIA specs carry ``sm_version``; XPU specs do not."""
     if not system_name:
         return False
-    spec = load_system_spec(system_name)
-    gpu = spec.get("gpu")
-    if not isinstance(gpu, dict):
-        raise ValueError(f"Cannot resolve GPU spec for system {system_name!r}")
-    return "sm_version" not in gpu
+    return _gpu_is_xpu(load_system_spec(system_name).get("gpu"), f"system {system_name!r}")
+
+
+def is_xpu_system_spec(system_spec: object) -> bool:
+    """Classify an already-loaded spec — avoids re-loading with a different
+    systems_paths than the database used."""
+    if not system_spec:
+        return False
+    return _gpu_is_xpu(system_spec.get("gpu"), "the loaded system spec")
 
 
 def build_no_databases_message() -> str:

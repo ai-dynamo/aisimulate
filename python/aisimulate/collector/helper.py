@@ -296,7 +296,7 @@ def benchmark_with_power(
     # Device Graph Capture with Optional Fallback (CUDA: CUDAGraph, XPU: XPUGraph)
     # ═══════════════════════════════════════════════════════════════════
     g = None  # kept in scope so the finally block below can tear it down
-    is_cuda = torch.cuda.is_available()
+    is_cuda = dev_mod is torch.cuda  # match the requested device, not just host capability
     if use_cuda_graph and (is_cuda or torch.xpu.is_available()):
         use_graph = True
         graph_cls = torch.cuda.CUDAGraph if is_cuda else torch.xpu.XPUGraph
