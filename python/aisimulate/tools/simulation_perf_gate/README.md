@@ -37,8 +37,7 @@ go to stderr. The request contains `protocol_version`, `revision`, `case`, and
 `phase="measure"`. The response echoes the version, revision, phase, `case_id`, and
 SHA-256 `case_hash`, then adds `status`, `wall_time_ms`, `model_identity`,
 `model_provenance`, and the native summary `report`. The controller adds
-`worker_elapsed_ms`. Protocols v2 and the pre-removal v3 trial are incompatible; their artifacts remain
-historical evidence and are not rewritten.
+`worker_elapsed_ms`. Earlier protocol versions are incompatible.
 
 Valid timing requires the expected revision, input hash, complete request/output
 token counts, and finite positive elapsed times. AgentX must complete its play.
@@ -77,9 +76,6 @@ two four-turn cache cases. Base and head always receive the same count. CI never
 resizes cases. Both AgentX cases use the complete play. Count reductions require
 a separate CI runner trial; retain a reduction only if the workload still
 exercises its intended path and both native medians remain at least two seconds.
-The CI trial retained half counts for dense vLLM, dense TRT-LLM, and P/D vLLM.
-The other seven synthetic counts remain unchanged. See `QUALIFICATION.md` for
-the trial results and normal CI measurements.
 
 ## Results
 
@@ -147,6 +143,4 @@ normal CI timing evidence. Queue/setup and total times are in the workflow job
 records; artifacts record build, installation, and benchmark times.
 
 The workflow has its own concurrency group. CPU affinity selects one CPU for both
-sides; it does not establish exclusive CPU ownership. See
-[QUALIFICATION.md](QUALIFICATION.md) for historical measurements and current CI
-validation evidence.
+sides; it does not establish exclusive CPU ownership.
