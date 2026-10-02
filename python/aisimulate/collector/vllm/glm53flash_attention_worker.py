@@ -352,13 +352,21 @@ def _measure_prefill(probe, target: dict, replays_before: int) -> dict:
         {
             "finite": finite,
             "padded_tokens": witness.tokens,
+            "reserved_gib": round(torch.cuda.memory_reserved() / 2**30, 2),
             "segments": capture.num_graphs,
             "eager_breaks": capture.num_eager_breaks,
             "host_enqueue_ms": host,
         },
         timing_method=GRAPH_PREFILL,
     )
-    del capture
+    del capture, output
+    import gc
+
+    # Return the module graph's private pool; per-target pools would otherwise
+    # accumulate as reserved memory beside the serving KV pool.
+    gc.collect()
+    torch.cuda.synchronize()
+    torch.cuda.empty_cache()
     if not finite:
         raise RuntimeError(f"nonfinite prefill attention output for {target['target_id']}")
     return {"padded_tokens": witness.tokens}

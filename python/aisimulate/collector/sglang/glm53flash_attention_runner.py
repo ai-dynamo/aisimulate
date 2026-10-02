@@ -63,6 +63,19 @@ from collector.glm53flash_attention_runtime import (
 )
 
 
+def _release_graph_memory(torch) -> None:
+    """Return a measured module graph's private pool to the device.
+
+    The serving KV pool and framework graphs leave little headroom; without
+    this the per-target pools accumulate as reserved-but-unallocated memory.
+    """
+    import gc
+
+    gc.collect()
+    torch.cuda.synchronize()
+    torch.cuda.empty_cache()
+
+
 def _quant_name(module) -> str:
     method = getattr(module, "quant_method", None)
     return "none" if method is None else type(method).__name__
@@ -272,15 +285,17 @@ class AttentionProbe:
                 "finite": finite,
                 "host_enqueue_ms": host,
                 "padded_tokens": witness.size,
+                "reserved_gib": round(torch.cuda.memory_reserved() / 2**30, 2),
                 "segments": len(graph._segments),
                 "eager_breaks": len(graph._break_fns),
             },
             timing_method=GRAPH_PREFILL,
         )
-        del graph
+        del graph, output, result
         from sglang.srt.layers.communicator import get_attn_tp_context
 
         get_attn_tp_context().clear_attn_inputs()
+        _release_graph_memory(torch)
         if not finite:
             raise RuntimeError(f"nonfinite prefill attention output for {target['target_id']}")
 
