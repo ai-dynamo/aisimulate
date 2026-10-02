@@ -49,6 +49,33 @@ def positive(value) -> bool:
     return isinstance(value, Real) and not isinstance(value, bool) and math.isfinite(value) and value > 0
 
 
+def measurement_gpu_count(config: dict) -> int:
+    """Keep legacy TP*EP candidates for the adapter to validate before prediction.
+
+    This is a selection rule, not a substitute for the wheel's adapter. The
+    adapted deployment must confirm the physical count in ``predict_point``.
+    """
+    decode = config.get("num_decode_gpu", 0)
+    prefill = config.get("num_prefill_gpu", 0) if config.get("disagg") else 0
+    if any(type(count) is not int or count < 0 for count in (decode, prefill)):
+        raise ValueError("invalid GPU count")
+    tp, ep = config.get("decode_tp"), config.get("decode_ep")
+    if (
+        config.get("is_multinode") is False
+        and not config.get("disagg")
+        and type(config.get("decode_num_workers")) is int
+        and config["decode_num_workers"] in (0, 1)
+        and type(tp) is int
+        and type(ep) is int
+        and tp > 0
+        and ep > 1
+        and tp % ep == 0
+        and decode == tp * ep
+    ):
+        return tp
+    return decode + prefill
+
+
 def select_points(tables: dict, max_age_days: int) -> tuple[list[dict], dict]:
     configs = {row["id"]: row for row in tables["configs"]}
     runs = {row["id"]: row for row in tables["workflow_runs"]}
@@ -80,12 +107,11 @@ def select_points(tables: dict, max_age_days: int) -> tuple[list[dict], dict]:
             or bench.get("offload_mode", "off") != "off"
         ):
             return "nonstandard_or_error"
-        decode_gpus = config.get("num_decode_gpu", 0)
-        prefill_gpus = config.get("num_prefill_gpu", 0) if config.get("disagg") else 0
-        if any(type(count) is not int or count < 0 for count in (decode_gpus, prefill_gpus)):
+        try:
+            total_gpus = measurement_gpu_count(config)
+        except ValueError:
             return "invalid_gpu_count"
         per_node = GPUS_PER_NODE_BY_FAMILY.get(config.get("hardware"))
-        total_gpus = decode_gpus + prefill_gpus
         if config["is_multinode"] or (per_node is not None and total_gpus > per_node):
             return "multinode"
         if not all(positive(bench["metrics"].get(key)) for key in ("mean_ttft", "mean_tpot")):
@@ -125,9 +151,13 @@ def select_points(tables: dict, max_age_days: int) -> tuple[list[dict], dict]:
         rank = (bench["date"], run.get("run_started_at") or "", run["id"])
         previous = groups.get(key)
         if previous is None or rank > previous[0]:
+            if previous is not None:
+                excluded["superseded_curve"] += len(previous[1])
             groups[key] = (rank, [bench])
         elif rank == previous[0]:
             previous[1].append(bench)
+        else:
+            excluded["superseded_curve"] += 1
     points = []
     for _, benches in groups.values():
         if len({row.get("image") for row in benches}) != 1:
@@ -295,6 +325,19 @@ def predict_point(point: dict) -> dict:
             "reason": "adapter_unsupported",
         }
     request = adaptation.requests[0]
+    topology = request.topology
+    workers = (
+        (("decode", topology.worker),)
+        if topology.kind == "agg"
+        else (("prefill", topology.prefill), ("decode", topology.decode))
+    )
+    total_gpus = sum(worker.replicas * worker.gpus_per_replica for _, worker in workers)
+    if total_gpus != measurement_gpu_count(config) or any(
+        config.get(f"{role}_dp_attention") is True and worker.tp_size != 1 for role, worker in workers
+    ):
+        # Historical wheels may inflate TP*EP or ignore attention DP. Keep
+        # their unsupported coverage visible rather than publish wrong scores.
+        return {"id": point["id"], "outcome": "unsupported", "reason": "adapter_topology_mismatch"}
     try:
         baseline = cli_estimate(**adapter.to_cli_estimate_kwargs(request))
         if not all(positive(value) for value in (baseline.ttft, baseline.tpot)):
@@ -324,7 +367,7 @@ def predict_point(point: dict) -> dict:
         "silicon_tpot_ms": bench["metrics"]["mean_tpot"] * 1000,
         "aic_ttft_ms": float(baseline.ttft),
         "aic_tpot_ms": float(baseline.tpot),
-        "aisimulate_total_gpus": config["num_decode_gpu"] + (config["num_prefill_gpu"] if config["disagg"] else 0),
+        "aisimulate_total_gpus": total_gpus,
         **{
             name: getattr(worker, name)
             for name in (
@@ -338,7 +381,11 @@ def predict_point(point: dict) -> dict:
     }
     try:
         spec = replay_spec(request, baseline.backend_version)
-        metrics = EngineReplayRunnerFactory().create(0).run(spec).metrics
+        runner = EngineReplayRunnerFactory().create(0)
+        try:
+            metrics = runner.run(spec).metrics
+        finally:
+            runner.close()
         if metrics.get("completed_requests") != bench["conc"] * 10:
             raise ValueError("replay did not complete every request")
         ttft, tpot = metrics.get("mean_ttft_ms"), metrics.get("mean_tpot_ms")

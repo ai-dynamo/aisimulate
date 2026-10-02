@@ -155,6 +155,11 @@ fails without replacing its published evidence.
   Each topology/workload/recipe uses one latest run and
   a consistent image; missing concurrency points are never borrowed from older
   runs. Duplicate IDs or ambiguous curves fail validation.
+  Single-node TP × EP exports are retained for adapter validation; the adapted
+  physical GPU count controls publication. Historical wheels that disagree with
+  that count are excluded as `adapter_topology_mismatch`.
+  Every discarded input row is counted, including `superseded_curve`. Actions
+  summaries show both measurement-filter and prediction-exclusion counts.
 - The public InferenceX adapter supplies topology and quantization. Speculative
   configurations requiring acceptance-rate overrides and unresolved recipe
   fingerprints are excluded with counts. Both predictors use the bundled CLI's
@@ -288,3 +293,73 @@ wheels and current runners. It omits the newer `aic_forward_model` engine
 argument because release/0.12.0 and release/0.12.1 do not accept that field.
 Validate evaluator changes against actual release wheels as well as main;
 a successful main-only campaign does not establish release compatibility.
+
+## Adapter parity audit (2026-10-02)
+
+The adapter and public CI are **not equivalent to recipe-resolved e2e-gym**.
+This audit compared AISimulate PR #372 (`b78fb6bdadf87e013fc0a89f5277024ac888a294`)
+with e2e-gym main at `2ad1ec4287ad9fb5857680901eb65b4ff0cb4098`.
+The local September 28 dump contains 2,564 configs, 85,309 benchmark rows, and
+1,238 workflow runs. This is a mapping/selection audit, not a latency rerun.
+
+| Finding | Resolution |
+| --- | --- |
+| vLLM attention-DP was ignored outside the single-node EP special case, including P/D roles. | Honor the flag for every vLLM worker; preserve worker width and per-rank decode batch. |
+| MiniMax-M2.7, Kimi-K2.6, and Kimi-K3 aliases were missing. | Map existing registered models and preserve native FP4 quantization. |
+| DB exports use `id`, while provenance read only `config_id`. | Preserve either source ID. |
+| Selection and publication trusted the inflated TP × EP count. | Select candidates using the shared width and require the evaluated adapter to confirm it. |
+| Replaced/older curves disappeared without exclusion counts. | Count `superseded_curve`; retain every input row in the accounting. |
+
+On the same dump, selection increases from **4,130 to 4,838** points. Benchmark
+431553 / config 202 from AIC-2019 changes from excluded to selected and adapts to
+four physical GPUs. All 85,309 inputs now equal selected points plus exclusions:
+33,140 incomplete runs, 6,104 multinode, 2,261 nonstandard/error, 28,024 stale,
+and 10,942 superseded. Adding valid recent EP evidence also moves some families'
+freshness cutoff; the difference is not simply a union of the old cohort and EP rows.
+The [October 2 accuracy run](https://github.com/ai-dynamo/aisimulate/actions/runs/36995581041)
+independently confirms the old 4,130-point selection and the same filter counts.
+Its main artifact publishes 1,137 baseline-success points, with 2,468 adapter
+exclusions, 218 recipe-required exclusions, and 307 baseline failures. It evaluates
+`c62a88ea2ddfcf5a4b85902b1b2f8095f79f0954`, before these corrections.
+
+A differential check against gym's older `mapping.py` helper used its 180-day
+window and 2,209 retained points. Of those, 209 were rejected by that helper.
+Before these fixes, 507 accepted mappings differed and seven Kimi-K2.6 points
+were rejected only by AISimulate. Afterward, those seven adapt and 306 attention-DP
+mismatches disappear. The remaining 201 differences are non-vLLM single-node EP
+rows for which the older helper still trusts TP × EP. They must not be copied
+back into AISimulate. Gym's production `predict.py` instead requires
+`deployment.py::resolve_deployment` and immutable recipe evidence.
+
+Remaining parity gaps:
+
+- **Serving configuration:** CI fixes sequence limits, prefill tokens, and prefix
+  caching; gym resolves source settings, memory fraction, KV dtype, graph and
+  chunked-prefill controls. For example, config 202's
+  [pinned launcher](https://github.com/SemiAnalysisAI/InferenceX/blob/426b637eab648925a4374d3e578e356a3d88bade/benchmarks/single_node/fixed_seq_len/dsr1_fp4_b200.sh)
+  specifies FP8 KV, memory fraction 0.85, and 16,384 prefill tokens with attention
+  DP disabled. CI supplies 8,192 tokens and leaves KV/memory to predictor defaults.
+- **Model/quantization identity:** CI aliases can use architecture proxies and
+  broad precision labels. Gym resolves the source checkpoint, quantization
+  metadata, and kernel profile. Equal display names do not establish parity.
+- **Versions and workload:** CI uses the baseline's selected database version,
+  fixed 0.8 length ratio, and ten requests per slot. Gym tracks source framework
+  versions and resolves benchmark controls. Source image and database version
+  must remain separate identities.
+- **Cohort and coverage:** CI uses a 30-day family-relative window, successful
+  runs, single-node scope, and a complete latest curve. Gym uses a 180-day
+  reference-date window, row deduplication/image coherence, and includes P/D and
+  multinode evidence. CI also requires baseline success before scoring replay;
+  its error averages therefore do not describe every selected measurement.
+
+Before claiming parity, integrate immutable recipe resolution into the public
+pipeline, preserve unsupported/missing settings explicitly, and rerun both paths
+with the same measurement IDs, source settings, predictor/data revisions, and
+metric boundaries. A green PR test suite does not run the scheduled accuracy
+matrix or update the published accuracy snapshot.
+
+Input SHA-256 values for reproduction:
+
+- `configs.json`: `b6071d66377c4762bdac9661077205ac394538b71ce00d24e4761cb4b87223e0`
+- `benchmark_results.json`: `e363f2061efbea87ba0d2dd38f765ddd4aabf3aac30e5e0bf0fa6d8ac3df6c10`
+- `workflow_runs.json`: `6a86eb6b31e958a17a7a19c61889910cdd1e7808d8dbcc8fd612ab20a34e6310`

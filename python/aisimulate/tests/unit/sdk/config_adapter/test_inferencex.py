@@ -74,6 +74,59 @@ def test_agg_zero_worker_sentinel_is_normalized_before_worker_validation():
     )
 
 
+@pytest.mark.parametrize("disagg", [False, True])
+@pytest.mark.parametrize("ep", [1, 4])
+def test_vllm_attention_dp_flag_applies_to_every_worker(disagg, ep):
+    config = _config(
+        silicon_model="dsr1",
+        disagg=disagg,
+        is_multinode=disagg,
+        decode_ep=ep,
+        decode_dp_attention=True,
+        prefill_dp_attention=True,
+    )
+    request = adapt_config(InferenceXSource(config, _benchmark())).requests[0]
+    request = EstimateRequestV1.model_validate_json(request.model_dump_json())
+    workers = (request.topology.prefill, request.topology.decode) if disagg else (request.topology.worker,)
+    for worker in workers:
+        assert worker.tp_size == 1
+        assert worker.attention_dp_size == worker.gpus_per_replica
+        assert worker.moe_tp_size * worker.moe_ep_size == worker.gpus_per_replica
+    kwargs = to_cli_estimate_kwargs(request)
+    assert kwargs["decode_batch_size" if disagg else "batch_size"] == 4
+    assert kwargs["decode_attention_dp_size" if disagg else "attention_dp_size"] == 4
+    if disagg:
+        assert kwargs["prefill_attention_dp_size"] == 2
+        assert kwargs["prefill_batch_size"] == 1
+
+
+@pytest.mark.parametrize(
+    "model,precision,path",
+    [
+        ("minimaxm2.7", "bf16", "MiniMaxAI/MiniMax-M2.7"),
+        ("minimaxm2.7", "fp4", "nvidia/MiniMax-M2.7-NVFP4"),
+        ("kimik2.6", "fp4", "nvidia/Kimi-K2.6-NVFP4"),
+        ("kimik3", "fp4", "moonshotai/Kimi-K3"),
+    ],
+)
+def test_registered_model_aliases_preserve_native_quantization(model, precision, path):
+    config = _config(silicon_model=model, precision=precision)
+    request = adapt_config(InferenceXSource(config, _benchmark())).requests[0]
+    kwargs = to_cli_estimate_kwargs(EstimateRequestV1.model_validate_json(request.model_dump_json()))
+    assert kwargs["model_path"] == path
+    assert kwargs.get("gemm_quant_mode") is None
+    assert kwargs.get("moe_quant_mode") is None
+    assert kwargs["moe_tp_size"] == 4
+    assert kwargs["moe_ep_size"] == 1
+
+
+def test_db_export_id_is_retained_in_provenance():
+    config = _config()
+    config["id"] = config.pop("config_id")
+    request = adapt_config(InferenceXSource(config, _benchmark())).requests[0]
+    assert request.provenance.source_ids == {"config_id": 7, "benchmark_id": "bench-9"}
+
+
 def test_moe_disagg_backend_folding_and_worker_arithmetic():
     report = adapt_config(
         InferenceXSource(

@@ -87,6 +87,37 @@ def test_selection_keeps_one_complete_run_and_never_fills_missing_concurrency():
     assert {point["benchmark"]["id"] for point in points} == {2, 3}
     assert stats["selected"] == 2
     assert stats["measurement_date_through"] == "2026-09-13"
+    assert stats["excluded"] == {"superseded_curve": 1}
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_selection_accounts_for_every_input_row(reverse):
+    data = tables()
+    if reverse:
+        data["benchmark_results"].reverse()
+    points, stats = campaign.select_points(data, 30)
+    assert len(points) + sum(stats["excluded"].values()) == len(data["benchmark_results"])
+
+
+@pytest.mark.parametrize("tp", [2, 4, 8])
+def test_selection_preserves_single_node_expert_parallel_curves(tp):
+    data = tables()
+    data["configs"][0].update(hardware="b200", decode_tp=tp, decode_ep=tp, decode_num_workers=0, num_decode_gpu=tp * tp)
+    original = deepcopy(data)
+    points, stats = campaign.select_points(data, 30)
+    assert len(points) == 2
+    assert "multinode" not in stats["excluded"]
+    assert data == original
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [{"is_multinode": True}, {"disagg": True}, {"decode_num_workers": 2}, {"decode_ep": 3}],
+)
+def test_gpu_selection_does_not_guess_other_topologies(overrides):
+    config = dict(is_multinode=False, decode_tp=4, decode_ep=4, decode_num_workers=0, num_decode_gpu=16)
+    config.update(overrides)
+    assert campaign.measurement_gpu_count(config) == 16
 
 
 def test_family_without_recent_measurements_retains_its_latest_evidence():
@@ -575,6 +606,7 @@ def test_invalid_qualified_artifacts_use_pages_error_contract(artifact, tmp_path
 def test_invalid_gpu_count_exclusions_survive_publication_validation(artifact):
     summary, run = artifact
     summary["snapshot"]["campaign"]["measurement_filter_counts"]["invalid_gpu_count"] = 2
+    summary["snapshot"]["campaign"]["exclusion_reasons"]["adapter_topology_mismatch"] = 0
     assert publish.validate_artifact(archive(summary), run) == summary
 
 
@@ -1170,7 +1202,9 @@ def test_predict_point_calls_selected_api_and_adapter(monkeypatch, api, adapter_
     monkeypatch.setattr(campaign.importlib.metadata, "distribution", lambda _: SimpleNamespace(files=files))
     monkeypatch.setitem(sys.modules, "aisimulate.runner", SimpleNamespace(EngineReplayRunnerFactory=object))
     calls = []
-    request = object()
+    request = SimpleNamespace(
+        topology=SimpleNamespace(kind="agg", worker=SimpleNamespace(replicas=1, gpus_per_replica=0))
+    )
 
     def adapt(source):
         calls.append(("adapt", source))
@@ -1219,3 +1253,112 @@ def test_site_builder_validates_baseline_entry_point(artifact, tmp_path, entry):
     del summary["snapshot"]["aic_source"]["cli_entry_point"]
     path.write_text(json.dumps(summary))
     pages._accuracy_summary(path.read_text())
+
+
+def expert_parallel_point():
+    return {
+        "id": "ep-point",
+        "config": {
+            "id": 202,
+            "hardware": "b200",
+            "framework": "vllm",
+            "model": "dsr1",
+            "precision": "fp4",
+            "spec_method": "none",
+            "disagg": False,
+            "is_multinode": False,
+            "decode_tp": 4,
+            "decode_ep": 4,
+            "decode_dp_attention": False,
+            "decode_num_workers": 0,
+            "num_decode_gpu": 16,
+        },
+        "benchmark": {
+            "id": 1,
+            "isl": 1024,
+            "osl": 128,
+            "conc": 64,
+            "metrics": {"mean_ttft": 0.5, "mean_tpot": 0.02},
+        },
+    }
+
+
+@pytest.mark.parametrize("replay_fails", [False, True])
+@pytest.mark.parametrize("framework", ["vllm", "sglang", "trt"])
+def test_ep_prediction_preserves_physical_gpus_through_publication(monkeypatch, replay_fails, framework):
+    from aisimulate.sdk import config_adapter
+
+    point = expert_parallel_point()
+    point["config"]["framework"] = framework
+    calls = []
+
+    def estimate(**kwargs):
+        assert kwargs["tp_size"] == 4
+        assert kwargs["attention_dp_size"] == 1
+        assert kwargs["batch_size"] == 64
+        return SimpleNamespace(ttft=500.0, tpot=20.0, backend_version="0.25.0")
+
+    class Runner:
+        def run(self, spec):
+            args = spec.backend_deployment.agg_engine_args
+            assert args["aic_tp_size"] == 4
+            assert args["aic_attention_dp_size"] == 1
+            assert args["aic_moe_ep_size"] == 4
+            assert spec.concurrency == 64
+            calls.append("run")
+            if replay_fails:
+                raise ValueError("missing performance data")
+            return SimpleNamespace(metrics={"completed_requests": 640, "mean_ttft_ms": 600, "mean_tpot_ms": 22})
+
+        def close(self):
+            calls.append("close")
+
+    monkeypatch.setitem(
+        sys.modules,
+        "aisimulate.runner",
+        SimpleNamespace(EngineReplayRunnerFactory=lambda: SimpleNamespace(create=lambda _: Runner())),
+    )
+    modules = {
+        "aisimulate.legacy_cli.api": SimpleNamespace(cli_estimate=estimate),
+        "aisimulate.sdk.config_adapter": config_adapter,
+    }
+    files = ["aisimulate/legacy_cli/api.py", "aisimulate/sdk/config_adapter/__init__.py"]
+    monkeypatch.setattr(campaign.importlib.metadata, "distribution", lambda _: SimpleNamespace(files=files))
+    monkeypatch.setattr(campaign.importlib, "import_module", modules.__getitem__)
+    result = campaign.predict_point(point)
+    row = result["row"]
+    assert row["aisimulate_total_gpus"] == 4
+    assert row["silicon_ttft_ms"] == 500
+    assert row["silicon_tpot_ms"] == 20
+    assert row["aisimulate_status"] == ("failed" if replay_fails else "success")
+    assert calls == ["run", "close"]
+    from build_e2e_accuracy_overview import _is_multinode
+
+    assert not _is_multinode(row)
+    assert point["config"]["num_decode_gpu"] == 16
+
+
+@pytest.mark.parametrize("dp_attention", [False, True])
+def test_old_wheel_incorrect_topology_cannot_publish(monkeypatch, dp_attention):
+    point = expert_parallel_point()
+    if dp_attention:
+        point["config"].update(decode_ep=1, decode_dp_attention=True, num_decode_gpu=4)
+    worker = SimpleNamespace(replicas=1, gpus_per_replica=4 if dp_attention else 16, tp_size=4)
+    request = SimpleNamespace(topology=SimpleNamespace(kind="agg", worker=worker))
+    adapter = SimpleNamespace(
+        InferenceXSource=lambda **values: values,
+        adapt_config=lambda _: SimpleNamespace(requests=[request]),
+    )
+    modules = {
+        "aisimulate.legacy_cli.api": SimpleNamespace(cli_estimate=None),
+        "aisimulate.sdk.config_adapter": adapter,
+    }
+    files = ["aisimulate/legacy_cli/api.py", "aisimulate/sdk/config_adapter/__init__.py"]
+    monkeypatch.setattr(campaign.importlib.metadata, "distribution", lambda _: SimpleNamespace(files=files))
+    monkeypatch.setattr(campaign.importlib, "import_module", modules.__getitem__)
+    monkeypatch.setitem(sys.modules, "aisimulate.runner", SimpleNamespace(EngineReplayRunnerFactory=object))
+    assert campaign.predict_point(point) == {
+        "id": "ep-point",
+        "outcome": "unsupported",
+        "reason": "adapter_topology_mismatch",
+    }
