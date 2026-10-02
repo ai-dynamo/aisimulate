@@ -760,6 +760,10 @@ dialog::backdrop { background: #0009; }
 @media (max-width: 700px) { .detail-cards { grid-template-columns: 1fr; } .filter-toolbar select { max-width: 85vw; } }
 .framework-summary { margin: 20px 0; }
 .framework-summary h2 { font-size: 14px; }
+.framework-summary table { min-width: 760px; }
+.framework-summary tbody th { background: transparent; color: var(--text); font-weight: 400; }
+.framework-summary th[scope="rowgroup"] { vertical-align: top; }
+.framework-summary tbody + tbody tr:first-child > * { border-top: 1px solid var(--border); }
 #details-view, .filter-toolbar, .detail-cards > * { min-width: 0; }
 #details-view { overflow: hidden; }
 .metric-chart { width: 100%; }
