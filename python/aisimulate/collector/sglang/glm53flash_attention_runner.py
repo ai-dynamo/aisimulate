@@ -234,8 +234,10 @@ class AttentionProbe:
             self._fresh_inputs(record.attn_inputs, forward_batch, record.zero_allocator, record.zero_pointer)
             return self.original(*record.args, **record.kwargs)
 
-        if self.pool is None:
-            self.pool = torch.cuda.graph_pool_handle()
+        # A private pool per measurement: once the previous module graph is
+        # released its pool is freed, and a stale handle trips the caching
+        # allocator's use_count assertion on the next capture_begin.
+        pool = torch.cuda.graph_pool_handle()
         # BreakableCudaGraphBackend.replay_session/execute: the BCG flag, the
         # attention-backend forward context and the TcPiecewise context whose
         # forward_batch the eager breaks read (the real step's static batch).
@@ -249,7 +251,7 @@ class AttentionProbe:
                     call()
                 torch.cuda.synchronize()
                 graph = BreakableCUDAGraph()
-                with BreakableCUDAGraphCapture(cuda_graph=graph, pool=self.pool, stream=torch.cuda.Stream()):
+                with BreakableCUDAGraphCapture(cuda_graph=graph, pool=pool, stream=torch.cuda.Stream()):
                     output = call()
                 torch.cuda.synchronize()
                 timer = EventTimer(torch)
