@@ -215,6 +215,10 @@ EP must divide TP; vLLM additionally requires EP to equal TP for these
 single-node records. Conflicting counts and legacy TP × EP counts without an
 explicit boolean `is_multinode` are rejected. Disaggregated, multi-worker, and
 explicitly multi-node records retain the existing reported-GPU arithmetic.
+Regression tests cover these topologies for vLLM, SGLang, and TensorRT-LLM.
+With attention DP disabled, SGLang and TensorRT-LLM require TP to match the
+reported GPUs per worker and retain the configured EP; vLLM derives attention
+DP from worker GPUs divided by TP and uses the full worker width for enabled EP.
 The attention-DP flag also applies to vLLM workers without EP and to each role
 of a disaggregated deployment: enabled means attention TP1 and DP equal to the
 physical worker width. Decode batch size is concurrency divided by replicas and

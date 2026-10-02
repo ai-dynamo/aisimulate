@@ -303,6 +303,10 @@ def test_single_node_ep_rejects_ambiguous_counts(overrides, message):
 
 
 @pytest.mark.parametrize(
+    ("framework", "tp", "attention_dp", "moe_tp", "moe_ep"),
+    [("vllm", 4, 4, 1, 16), ("sglang", 16, 1, 4, 4), ("trtllm", 16, 1, 4, 4)],
+)
+@pytest.mark.parametrize(
     "overrides",
     [
         {"is_multinode": True},
@@ -310,8 +314,15 @@ def test_single_node_ep_rejects_ambiguous_counts(overrides, message):
         {"decode_num_workers": 2, "num_decode_gpu": 32},
     ],
 )
-def test_other_topologies_keep_reported_gpu_count(overrides):
-    config = _config(silicon_model="dsr1", is_multinode=False, decode_ep=4, num_decode_gpu=16)
+def test_other_topologies_keep_reported_gpu_count(framework, tp, attention_dp, moe_tp, moe_ep, overrides):
+    config = _config(
+        framework=framework,
+        silicon_model="dsr1",
+        is_multinode=False,
+        decode_tp=tp,
+        decode_ep=4,
+        num_decode_gpu=16,
+    )
     config.update(overrides)
     outcome = adapt_config(InferenceXSource(config, _benchmark())).outcomes[0]
 
@@ -319,6 +330,8 @@ def test_other_topologies_keep_reported_gpu_count(overrides):
     topology = outcome.request.topology
     worker = topology.decode if config["disagg"] else topology.worker
     assert worker.gpus_per_replica == 16
-    assert worker.attention_dp_size == 4
-    assert worker.moe_ep_size == 16
+    assert worker.tp_size == tp
+    assert worker.attention_dp_size == attention_dp
+    assert worker.moe_tp_size == moe_tp
+    assert worker.moe_ep_size == moe_ep
     assert all(d.code != "inferencex_gpu_count_normalized" for d in outcome.diagnostics)
