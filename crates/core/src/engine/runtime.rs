@@ -10,7 +10,7 @@ use anyhow::Result;
 
 use crate::engine::belady::BeladyOracle;
 use crate::engine::generalized::{EngineIdentity, GeneralizedMockerEngine, RankIdentity};
-use crate::engine::host_offload::G2Binding;
+use crate::engine::host_offload::{G2Binding, SharedG2Pool};
 use crate::engine::scheduler::{SchedulerRank, engine_seed_offset};
 use crate::engine::{EngineConfig, TimingModel};
 
@@ -63,6 +63,16 @@ impl EngineFactory {
     pub(crate) fn with_g2_binding(mut self, binding: G2Binding) -> Self {
         self.g2 = Some(binding);
         self
+    }
+
+    /// Join ranks configured with `host_offload.scope = cluster_shared` to
+    /// `pool`. `tensor_parallel_size` is part of the pool contract. Ranks with
+    /// private or no G2 ignore the pool.
+    pub fn with_shared_g2_pool(self, pool: &SharedG2Pool, tensor_parallel_size: u32) -> Self {
+        self.with_g2_binding(G2Binding {
+            registry: Arc::clone(&pool.0),
+            tensor_parallel_size,
+        })
     }
 
     pub(crate) fn reset_timing_evidence(&self) -> Result<()> {

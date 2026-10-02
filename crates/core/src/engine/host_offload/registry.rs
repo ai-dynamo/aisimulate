@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! G2 pool ownership: private per DP rank, or one cluster-shared pool per
-//! Replay deployment.
+//! Replay deployment or per [`SharedG2Pool`] handle.
 
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -73,6 +73,32 @@ impl G2Registry {
     }
 }
 
+/// One cluster-shared G2 pool that engines built by separate
+/// [`EngineFactory`](crate::engine::EngineFactory) instances can join.
+///
+/// Replay creates and binds its deployment pool itself. Drivers that run
+/// several engines outside Replay, such as live serving with multiple workers
+/// in one process, share one handle with
+/// [`EngineFactory::with_shared_g2_pool`](crate::engine::EngineFactory::with_shared_g2_pool).
+/// Participants must agree on the pool contract; the first engine to join
+/// fixes it. Transfer and residency completions are applied when any
+/// participant advances the pool, so a driver must re-query each engine's
+/// internal deadline after a peer advanced it.
+#[derive(Clone, Default)]
+pub struct SharedG2Pool(pub(crate) Arc<G2Registry>);
+
+impl SharedG2Pool {
+    /// A pool with no participants. Capacity is fixed by the first joiner.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// `(capacity, resident, used)` blocks, once an engine has joined.
+    pub fn occupancy(&self) -> Option<(usize, usize, usize)> {
+        self.0.occupancy()
+    }
+}
+
 /// Deployment binding for ranks whose role selects cluster-shared G2.
 #[derive(Clone)]
 pub(crate) struct G2Binding {
@@ -117,7 +143,7 @@ impl HostClient {
             G2Scope::ClusterShared => {
                 let binding = binding.ok_or_else(|| {
                     anyhow::anyhow!(
-                        "cluster_shared host_offload requires a Replay deployment; construct it through ReplaySpec"
+                        "cluster_shared host_offload requires a shared G2 pool; construct it through ReplaySpec or EngineFactory::with_shared_g2_pool"
                     )
                 })?;
                 binding.registry.join(
@@ -257,7 +283,7 @@ mod tests {
         assert_eq!(join(Some(&binding), GEOMETRY, |_| {}).unwrap().id(), 2);
         assert_eq!(
             join(None, GEOMETRY, |_| {}).err().unwrap().to_string(),
-            "cluster_shared host_offload requires a Replay deployment; construct it through ReplaySpec"
+            "cluster_shared host_offload requires a shared G2 pool; construct it through ReplaySpec or EngineFactory::with_shared_g2_pool"
         );
         // Private caches never join the deployment pool.
         let private = join(Some(&binding), GEOMETRY, |c| c.scope = G2Scope::DpRankLocal).unwrap();

@@ -303,7 +303,7 @@ pub(crate) struct HostTier {
     transfers: FxHashMap<TransferId, Transfer>,
     transport: Transport,
     clients: FxHashMap<u64, Client>,
-    /// Shared pools only: router identity.
+    /// Router identity of each block, retained while residency is published.
     meta: FxHashMap<HostBlockKey, HostBlockMeta>,
     completion_epoch: u64,
     next_transfer_id: u64,
@@ -396,7 +396,7 @@ impl HostTier {
         self.client(client).holds_completed_sources = true;
     }
 
-    /// Deliver `HostPinned` residency changes of a shared pool to `client`,
+    /// Deliver `HostPinned` residency changes of this pool to `client`,
     /// starting with a snapshot of current residency ordered by prompt
     /// position, so parents precede children whatever order they landed in.
     pub(crate) fn subscribe(&mut self, client: u64) {
@@ -1128,8 +1128,10 @@ impl HostTier {
         }
     }
 
+    /// A shared pool may gain subscribers at any time; a private cache keeps
+    /// router identities only while its owner publishes residency.
     fn meta_retained(&self) -> bool {
-        self.is_shared()
+        self.is_shared() || self.clients.values().any(|client| client.events.is_some())
     }
 
     fn mark_resident(&mut self, blocks: &[HostBlockKey]) {
