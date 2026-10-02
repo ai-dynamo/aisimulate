@@ -116,6 +116,8 @@ JS and CSS derive from `dashboard/3d-visualization.html` and
 `dashboard/assets/visualization.{js,css}` at that revision. They are modified
 for AISimulate navigation, styling and GitHub artifact data. Plotly.js v3.4.0
 is bundled unmodified, loaded only by the 3D page, with its MIT license.
+The repository copyright check pins the vendor bundle and MIT license bytes;
+updates must refresh those hashes together with the attribution.
 See the root THIRD_PARTY_NOTICES.md and LICENSE.
 
 ## Latest dataset and storage

@@ -11,6 +11,7 @@ gap.
 
 from __future__ import annotations
 
+import hashlib
 import re
 import subprocess
 import sys
@@ -43,6 +44,22 @@ COPYRIGHT_MARKER = re.compile(
     r"SPDX-FileCopyrightText: (?:Modifications )?Copyright \(c\) "
     r"\d{4}(?:-\d{4})? NVIDIA CORPORATION & AFFILIATES\. All rights reserved\."
 )
+
+
+# Unmodified MIT distribution and license; provenance is in THIRD_PARTY_NOTICES.md.
+# Pin bytes instead of falsely applying the repository's NVIDIA/Apache header.
+VENDORED_FILES = {
+    "pages/fpm-accuracy/assets/plotly.min.js": "28498fa2ea4ba45c8633218088eb223436ca0ca02fc57027fd6fa841ad1901f9",
+    "pages/fpm-accuracy/assets/PLOTLY-LICENSE.txt": "764f5e789cad7b339fa1dce1b88f8e316bc39433d265a5754738f31888ad8b2b",
+}
+
+
+def invalid_vendored_files(root: Path) -> list[str]:
+    return [
+        name
+        for name, digest in VENDORED_FILES.items()
+        if not (root / name).is_file() or hashlib.sha256((root / name).read_bytes()).hexdigest() != digest
+    ]
 
 
 def is_source(path: Path) -> bool:
@@ -78,7 +95,11 @@ def main() -> int:
         .stdout.decode(errors="surrogateescape")
         .split("\0")
     )
-    sources = [Path(name) for name in tracked if name and is_source(Path(name))]
+    invalid = invalid_vendored_files(Path.cwd())
+    if invalid:
+        print("Missing or modified pinned third-party files: " + ", ".join(invalid))
+        return 1
+    sources = [Path(name) for name in tracked if name and name not in VENDORED_FILES and is_source(Path(name))]
 
     missing: list[str] = []
     for path in sources:
