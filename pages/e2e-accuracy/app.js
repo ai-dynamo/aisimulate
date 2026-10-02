@@ -101,6 +101,7 @@ function accuracyCard(label, metrics, className) {
         ${accuracyMetric("TPOT", metrics.tpot_mape_pct, metrics.tpot_shape_error_pct)}
         ${accuracyMetric("TTFT", metrics.ttft_mape_pct, metrics.ttft_shape_error_pct)}
       </div>
+      ${metrics.points === 0 ? '<p class="detail-scope">No included predictions in this snapshot or filter selection. Missing results are excluded from accuracy metrics.</p>' : ''}
     </article>`;
 }
 
@@ -108,11 +109,11 @@ function renderSummary() {
   const totals = state.data.totals;
   summaryGrid.innerHTML = [
     basicCard("Models", String(totals.models), true),
-    basicCard("Points (AIC CLI)", totals.aic.points.toLocaleString()),
-    basicCard("Points (AISim CLI)", totals.aisimulate.points.toLocaleString()),
+    basicCard("AIC (legacy CLI) points", totals.aic.points.toLocaleString()),
+    basicCard("AISim points", totals.aisimulate.points.toLocaleString()),
     basicCard("GPU SKUs", String(totals.gpu_skus.length)),
-    accuracyCard("AISim CLI (new) Error", totals.aisimulate, "aisimulate"),
-    accuracyCard("AIC CLI (legacy) Error", totals.aic, "aic"),
+    accuracyCard("AISim Error", totals.aisimulate, "aisimulate"),
+    accuracyCard("AIC (legacy CLI) Error", totals.aic, "aic"),
   ].join("");
   const groups = new Map();
   for (const model of state.data.models) for (const workload of model.workloads) for (const gpu of workload.gpus) {
@@ -122,7 +123,7 @@ function renderSummary() {
       groups.get(key).push(topology);
     }
   }
-  document.getElementById("framework-summary").innerHTML = groups.size ? `<h2>AISim CLI error by serving mode and framework</h2><div class="table-scroll"><table><thead><tr><th>Serving · Framework</th><th>Points</th><th>TPOT MAPE</th><th>TPOT shape</th><th>TTFT MAPE</th><th>TTFT shape</th></tr></thead><tbody>${[...groups].map(([key, topologies]) => {
+  document.getElementById("framework-summary").innerHTML = groups.size ? `<h2>AISim error by serving mode and framework</h2><div class="table-scroll"><table><thead><tr><th>Serving · Framework</th><th>Points</th><th>TPOT MAPE</th><th>TPOT shape</th><th>TTFT MAPE</th><th>TTFT shape</th></tr></thead><tbody>${[...groups].map(([key, topologies]) => {
     const m = aggregateTopologies(topologies).aisimulate;
     return `<tr><th>${escapeHtml(key)}</th><td>${m.points}</td>${["tpot_mape_pct", "tpot_shape_error_pct", "ttft_mape_pct", "ttft_shape_error_pct"].map(f => `<td>${formatPercent(m[f])}</td>`).join("")}</tr>`;
   }).join("")}</tbody></table></div>` : "";
@@ -151,7 +152,7 @@ function renderSnapshot() {
         snapshot.measurement_source,
       )} ${escapeHtml(snapshot.release_tag)}</a><br />
       Measured through: ${escapeHtml(formatDate(snapshot.measurement_date_through))}<br />
-      AISimulate run completed: ${escapeHtml(formatDate(snapshot.aisimulate_completed_at))}<br />
+      AISim run completed: ${escapeHtml(formatDate(snapshot.aisimulate_completed_at))}<br />
       Packages: ${escapeHtml(
         Object.entries(snapshot.aisimulate_packages)
           .map(([name, version]) => `${name} ${version}`)
@@ -161,8 +162,8 @@ function renderSnapshot() {
     <p>Evaluated revision: ${snapshot.evaluated_revision
       ? `<a href="https://github.com/ai-dynamo/aisimulate/commit/${escapeHtml(snapshot.evaluated_revision.commit_sha)}">${escapeHtml(snapshot.evaluated_revision.branch)} @ ${escapeHtml(snapshot.evaluated_revision.commit_sha.slice(0, 12))}</a>`
       : "Not recorded in this historical snapshot"}</p>
-    <p>Legacy AIC CLI source: ${snapshot.aic_source
-      ? `<a href="${snapshot.aic_source.repository}/commit/${snapshot.aic_source.commit_sha}">AISimulate ${escapeHtml(snapshot.aic_source.branch)} @ ${snapshot.aic_source.commit_sha.slice(0, 12)}</a> (${escapeHtml(snapshot.aic_source.cli_entry_point ?? "bundled aiconfigurator CLI")})`
+    <p>AIC (legacy CLI) source: ${snapshot.aic_source
+      ? `<a href="${snapshot.aic_source.repository}/commit/${snapshot.aic_source.commit_sha}">AISim ${escapeHtml(snapshot.aic_source.branch)} @ ${snapshot.aic_source.commit_sha.slice(0, 12)}</a> (${escapeHtml(snapshot.aic_source.cli_entry_point ?? "bundled aiconfigurator CLI")})`
       : "Repository provenance was not recorded in this historical snapshot"}</p>
     ${snapshot.campaign ? `<p>Accuracy campaign: <a href="https://github.com/ai-dynamo/aisimulate/actions/runs/${escapeHtml(snapshot.campaign.run_id)}">GitHub Actions run</a> (advisory)<br />
       Selected operating points: ${escapeHtml(snapshot.campaign.selected)}; published comparison points: ${escapeHtml(snapshot.campaign.published)}.<br />
@@ -177,7 +178,7 @@ function renderSnapshot() {
         ? "Qualified e2e-accuracy-web artifact from the campaign above"
         : "Local preview; publication commit not recorded"}</p>
     <code>Predictions SHA-256: ${escapeHtml(snapshot.predictions_sha256)}</code>
-    <code>AISimulate evidence SHA-256: ${escapeHtml(snapshot.aisimulate_sot_sha256)}</code>`;
+    <code>AISim evidence SHA-256: ${escapeHtml(snapshot.aisimulate_sot_sha256)}</code>`;
 }
 
 function sortValue(model) {
@@ -399,10 +400,10 @@ function coverageText(item) {
 
 function errorBars(item) {
   const series = [
-    ["AISim CLI TPOT", item.aisimulate.tpot_mape_pct, "aisimulate"],
-    ["AIC CLI TPOT", item.aic.tpot_mape_pct, "aic"],
-    ["AISim CLI TTFT", item.aisimulate.ttft_mape_pct, "aisimulate"],
-    ["AIC CLI TTFT", item.aic.ttft_mape_pct, "aic"],
+    ["AISim TPOT", item.aisimulate.tpot_mape_pct, "aisimulate"],
+    ["AIC (legacy CLI) TPOT", item.aic.tpot_mape_pct, "aic"],
+    ["AISim TTFT", item.aisimulate.ttft_mape_pct, "aisimulate"],
+    ["AIC (legacy CLI) TTFT", item.aic.ttft_mape_pct, "aic"],
   ];
   const maximum = Math.max(1, ...series.map(([, value]) => value ?? 0));
   return `<div class="error-bars" aria-label="MAPE comparison">${series.map(([name, value, css]) => `
@@ -414,7 +415,7 @@ function pointTable(topology) {
   return `<details class="point-details" open><summary>Operating points (${topology.points.length})</summary>
     <div class="table-scroll" tabindex="0" role="region" aria-label="Operating point details"><table class="point-table">
     <caption>${absolute ? "TTFT / TPOT in milliseconds and absolute percentage errors." : "Relative TTFT / TPOT and absolute percentage errors. Ratios use measured latency at the lowest concurrency as 1×."}</caption>
-    <thead><tr><th>Concurrency</th><th>Replay status</th><th>Measured TTFT / TPOT</th><th>AISim CLI TTFT / TPOT</th><th>AIC CLI TTFT / TPOT</th><th>AISim CLI TTFT / TPOT error</th><th>AIC CLI TTFT / TPOT error</th></tr></thead>
+    <thead><tr><th>Concurrency</th><th>Replay status</th><th>Measured TTFT / TPOT</th><th>AISim TTFT / TPOT</th><th>AIC (legacy CLI) TTFT / TPOT</th><th>AISim TTFT / TPOT error</th><th>AIC (legacy CLI) TTFT / TPOT error</th></tr></thead>
     <tbody>${topology.points.map((point) => {
       const ratios = (name) => ["ttft", "tpot"].map((metric) => {
         const value = point[name][`${metric}_${absolute ? "ms" : "relative"}`];
@@ -442,7 +443,7 @@ function renderDrilldown() {
     <a id="detail-permalink" href="${escapeHtml(location.href)}" target="_blank" rel="noopener">Open this selection in a separate tab ↗</a>
     ${topologies.length ? `<div class="filter-toolbar">${["precision", "framework", "serving"].map(key => filterField(key, key, [...new Set(topologies.map(t => t[key]))].map(v => [v, v]), topology[key])).join("")}</div><label class="topology-control">Topology<select id="topology-select">${topologies.map((entry) => `<option value="${entry.id}"${entry.id === topology.id ? " selected" : ""}>${escapeHtml(topologyLabel(entry))}</option>`).join("")}</select></label>` : ""}
     <p class="coverage-text">${escapeHtml(coverageText(item))}</p>
-    <p class="detail-scope">AISim CLI errors cover successful replays. AIC CLI errors cover all selected points.</p>
+    <p class="detail-scope">AISim errors cover successful replays. AIC (legacy CLI) errors cover successful baseline predictions.</p>
     ${topology ? "" : errorBars(item)}
     ${topology ? topologyContent(topology) : `<p class="detail-empty">This historical snapshot contains GPU aggregates only. Topology and concurrency details appear after its evidence is regenerated with the updated publisher.</p>`}`;
   bindCharts(drilldown, topology);
@@ -566,7 +567,7 @@ function validateSummary(data) {
     (Object.hasOwn(aicSource, "cli_entry_point") &&
       !["aiconfigurator.main:main", "aisimulate.legacy_cli.entrypoint:main"].includes(aicSource.cli_entry_point)) ||
     (revision && (aicSource.branch !== revision.branch || aicSource.commit_sha !== revision.commit_sha)))) {
-    throw new Error("invalid legacy AIC CLI source");
+    throw new Error("invalid AIC (legacy CLI) source");
   }
   const campaign = data.snapshot.campaign;
   const exclusions = campaign?.exclusion_reasons;
@@ -759,7 +760,7 @@ async function initialize() {
 
 // The public dashboard operates on qualified snapshots, including historical ones.
 let legendTimer;
-const SERIES_NAMES = {measured: "Measured silicon", aisimulate: "AISim CLI", aic: "legacy AIC CLI"};
+const SERIES_NAMES = {measured: "Measured silicon", aisimulate: "AISim", aic: "AIC (legacy CLI)"};
 const SERIES_COLORS = {measured: "#f59e0b", aisimulate: "#818cf8", aic: "#14b8a6"};
 const average = values => values.length ? values.reduce((a, b) => a + b, 0) / values.length : null;
 const numeric = value => Number.isFinite(value) ? value.toFixed(2) : "—";
@@ -919,7 +920,7 @@ function topologyContent(topology) {
   const stats = aggregateTopologies([topology]);
   return `<p>${escapeHtml(topologyLabel(topology))} · ${topology.total_gpus ?? "unknown"} GPUs</p>
     <p class="coverage-text">${escapeHtml(coverageText({...stats, aisimulate: {...stats.aisimulate, points: stats.aisimulate.status_counts.success}}))}</p>
-    <div class="detail-cards">${accuracyCard("AISim CLI error", stats.aisimulate, "aisimulate")}${accuracyCard("legacy AIC CLI error", stats.aic, "aic")}</div>
+    <div class="detail-cards">${accuracyCard("AISim error", stats.aisimulate, "aisimulate")}${accuracyCard("AIC (legacy CLI) error", stats.aic, "aic")}</div>
     <div class="chart-legend">${Object.entries(SERIES_NAMES).map(([key, name]) => `<button data-series="${key}" aria-pressed="${!state.hiddenSeries.has(key)}" style="color:${SERIES_COLORS[key]}"><span class="legend-line ${key}" aria-hidden="true"></span> ${name}</button>`).join("")}</div>
     <p class="detail-scope">Click a legend to hide a series; double-click to isolate it. Click a point for its configuration and values.</p>
     <div class="detail-charts">
@@ -1007,5 +1008,5 @@ document.getElementById("close-point").addEventListener("click", () => document.
 function updateOutlierCounts(topologies) {
   const rows = topologies.flatMap(t => t.points);
   const count = name => rows.filter(p => ["ttft", "tpot"].some(m => p[name][`${m}_error_pct`] > 100)).length;
-  document.getElementById("outlier-count").textContent = `(AISim: ${count("aisimulate")}, AIC: ${count("aic")})`;
+  document.getElementById("outlier-count").textContent = `(AISim: ${count("aisimulate")}, AIC (legacy CLI): ${count("aic")})`;
 }

@@ -9,9 +9,9 @@ SPDX-License-Identifier: Apache-2.0
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta
       name="description"
-      content="Public snapshot of AISimulate end-to-end TTFT and TPOT accuracy against measured silicon operating points."
+      content="Public snapshot of AISim end-to-end TTFT and TPOT accuracy against measured silicon operating points."
     />
-    <title>AISimulate - E2E Accuracy Overview</title>
+    <title>AISim - E2E Accuracy Overview</title>
     <script>
       try {
         const savedTheme = localStorage.getItem("sm-theme") || localStorage.getItem("aisimulate-accuracy-theme");
@@ -33,10 +33,10 @@ SPDX-License-Identifier: Apache-2.0
     <header class="top-header">
       <div class="shell top-header-inner">
         <div class="brand">
-          <a href="../" aria-label="AISimulate documentation home">
+          <a href="../" aria-label="AISim documentation home">
             <img class="brand-logo" src="https://avatars.githubusercontent.com/u/201626793" alt="ai-dynamo" width="32" height="32" />
           </a>
-          <h1 id="page-title"><a href="../">AISimulate</a>
+          <h1 id="page-title"><a href="../">AISim</a>
             <span class="page-name">- E2E Accuracy Overview</span>
           </h1>
         </div>
@@ -110,7 +110,7 @@ SPDX-License-Identifier: Apache-2.0
       <div class="matrix-layout" id="matrix-layout">
       <section class="matrix-panel" aria-labelledby="matrix-heading">
         <h2 id="matrix-heading">
-          MAPE vs silicon — AISim CLI over successful replay points; AIC CLI over all points
+          MAPE vs silicon — AISim over successful replay points; AIC (legacy CLI) over successful baseline predictions
         </h2>
         <div class="table-scroll" role="region" aria-label="Accuracy matrix" tabindex="0">
           <table>
@@ -124,10 +124,10 @@ SPDX-License-Identifier: Apache-2.0
                   <button class="sort-button" data-sort="model">Model <span aria-hidden="true">▲</span></button>
                 </th>
                 <th scope="col" aria-sort="none">
-                  <button class="sort-button numeric" data-sort="aicPoints">AIC CLI points <span aria-hidden="true">▲</span></button>
+                  <button class="sort-button numeric" data-sort="aicPoints">AIC (legacy CLI) points <span aria-hidden="true">▲</span></button>
                 </th>
                 <th scope="col" aria-sort="none">
-                  <button class="sort-button numeric" data-sort="aisimulatePoints">AISim CLI points <span aria-hidden="true">▲</span></button>
+                  <button class="sort-button numeric" data-sort="aisimulatePoints">AISim points <span aria-hidden="true">▲</span></button>
                 </th>
                 <th scope="col" aria-sort="none">
                   <button class="sort-button numeric" data-sort="gpuSkus">GPU SKUs <span aria-hidden="true">▲</span></button>
@@ -139,16 +139,16 @@ SPDX-License-Identifier: Apache-2.0
                   <button class="sort-button" data-sort="precisions">Precisions <span aria-hidden="true">▲</span></button>
                 </th>
                 <th scope="col" aria-sort="none">
-                  <button class="sort-button numeric" data-sort="aisimulateTpot">AISim CLI TPOT MAPE <span aria-hidden="true">▲</span></button>
+                  <button class="sort-button numeric" data-sort="aisimulateTpot">AISim TPOT MAPE <span aria-hidden="true">▲</span></button>
                 </th>
                 <th scope="col" aria-sort="none">
-                  <button class="sort-button numeric" data-sort="aisimulateTtft">AISim CLI TTFT MAPE <span aria-hidden="true">▲</span></button>
+                  <button class="sort-button numeric" data-sort="aisimulateTtft">AISim TTFT MAPE <span aria-hidden="true">▲</span></button>
                 </th>
                 <th scope="col" aria-sort="none">
-                  <button class="sort-button numeric" data-sort="aicTpot">AIC CLI TPOT MAPE <span aria-hidden="true">▲</span></button>
+                  <button class="sort-button numeric" data-sort="aicTpot">AIC (legacy CLI) TPOT MAPE <span aria-hidden="true">▲</span></button>
                 </th>
                 <th scope="col" aria-sort="none">
-                  <button class="sort-button numeric" data-sort="aicTtft">AIC CLI TTFT MAPE <span aria-hidden="true">▲</span></button>
+                  <button class="sort-button numeric" data-sort="aicTtft">AIC (legacy CLI) TTFT MAPE <span aria-hidden="true">▲</span></button>
                 </th>
               </tr>
             </thead>
@@ -167,11 +167,11 @@ SPDX-License-Identifier: Apache-2.0
           <summary>About this comparison · methodology &amp; provenance</summary>
       <p id="filter-note" class="detail-scope"></p>
       <section class="migration-context" aria-label="CLI migration comparison">
-        <p><strong>Compare the new AISim CLI with the legacy AIC CLI.</strong>
+        <p><strong>Compare AISim with AIC (legacy CLI).</strong>
           We show both CLI results against measured silicon to help users build confidence
-          that the new AISim CLI is comparable to the old AIC CLI during migration.</p>
-        <p>AIC CLI results are temporary: we will remove this comparison series when we
-          deprecate the AIC CLI. Check successful-point counts alongside errors;
+          that AISim is comparable to AIC (legacy CLI) during migration.</p>
+        <p>AIC (legacy CLI) results are temporary: we will remove this comparison series when we
+          deprecate AIC (legacy CLI). Check successful-point counts alongside errors;
           the two CLIs can have different prediction coverage.</p>
       </section>
 

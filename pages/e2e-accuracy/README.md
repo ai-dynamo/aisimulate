@@ -3,22 +3,28 @@ SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All 
 SPDX-License-Identifier: Apache-2.0
 -->
 
-# AISimulate E2E Accuracy
+# AISim E2E Accuracy
 
 View the [E2E Accuracy Overview](https://ai-dynamo.org/aisimulate/e2e-accuracy/).
-It compares **AISim CLI (new)** and **AIC CLI (legacy)** against measured silicon
+It compares **AISim** and **AIC (legacy CLI)** against measured silicon
 so users can assess whether the new CLI is comparable during migration. The AIC
-comparison series is temporary and will be removed when the AIC CLI is deprecated.
+comparison series is temporary and will be removed when the AIC (legacy CLI) is deprecated.
 Successful-point counts matter: AISim errors cover successful engine replays,
 while AIC errors cover points with successful baseline predictions.
 
 ## Views and filters
 
+Display names are **AISim** and **AIC (legacy CLI)** throughout the E2E page.
+Internal predictor IDs and stored metric fields remain unchanged. Accuracy
+cards explain when a snapshot or filter selection has no included predictions;
+missing predictions never become zero errors. Research runs without a legacy
+CLI evaluation still need that evaluation before branch-qualified publication.
+
 - **Overview(op-based)** shows model/workload/GPU errors, serving/framework
   summaries, and topology drilldowns.
 - **Details(op-based)** shows one selected topology with model, ISL/OSL, GPU,
   precision, framework, serving mode, and parallelism selectors.
-- Both views retain Measured silicon, AISim CLI, and legacy AIC CLI series.
+- Both views retain Measured silicon, AISim, and AIC (legacy CLI) series.
   Click a legend to toggle a series; double-click to isolate it. Point markers
   open numeric values and the recorded prediction configuration.
 - Branch, topology, exclusions, chart axes, and hidden series are shareable in
@@ -37,7 +43,7 @@ relative curves, and aggregate-only snapshots explicitly disable point filters.
 Throughput can show output or total tokens per second per GPU against interactivity,
 E2E latency, or TTFT. Measured output throughput uses nominal
 `OSL / (ISL + OSL)` times reported total throughput when no output rate exists.
-Legacy AIC total throughput uses the inverse nominal ratio. Replay throughput
+AIC (legacy CLI) total throughput uses the inverse nominal ratio. Replay throughput
 uses its recorded token rates. Missing values stay unavailable. Prediction knobs
 are not proof that silicon used the same knobs; the point dialog states this.
 
@@ -89,22 +95,22 @@ are separate identities:
 The exporter, Pages validator, and browser restrict evaluated branch names to
 `main` or `release/[A-Za-z0-9][A-Za-z0-9._/-]*`, without a trailing slash, and
 commits to 40 lowercase hex characters. Nested release names such as
-`release/0.13.0/rc1` are allowed. Evaluated snapshots must include matching bundled AIC CLI provenance;
+`release/0.13.0/rc1` are allowed. Evaluated snapshots must include matching bundled AIC (legacy CLI) provenance;
 only historical snapshots may omit it. The browser checks catalog status and evaluated identity against the
 loaded summary before rendering. Contradictory evidence fails visibly rather
 than displaying another branch's results. A missing catalog permits direct
 source preview, whose label is derived from the loaded summary itself.
 
-The refreshed `summary.json` evaluates AISimulate main at
+The refreshed `summary.json` evaluates AISim main at
 [`e46be717175acf06bdbbdeadb7aaf9bb2afdae8d`](https://github.com/ai-dynamo/aisimulate/commit/e46be717175acf06bdbbdeadb7aaf9bb2afdae8d)
 against the public [InferenceX db-dump/2026-09-14 release](https://github.com/SemiAnalysisAI/InferenceX-app/releases/tag/db-dump/2026-09-14).
 Its legacy AIC baseline uses the `aiconfigurator` CLI bundled in the **same
-AISimulate wheel and revision**. The page records the baseline's AISimulate
+AISim wheel and revision**. The page records the baseline's AISim
 repository, branch, and commit alongside the replay provenance.
-The measurement release is shown separately from the AISimulate branch selector.
+The measurement release is shown separately from the AISim branch selector.
 Release branches continue to display the evidence committed on those branches.
 
-Both predictions run on remote CPU workers. The AISimulate wheel is built from
+Both predictions run on remote CPU workers. The AISim wheel is built from
 a clean source checkout, and the complete campaign records its evaluated branch,
 commit, runtime hashes, and input checksum. Replays use the recorded model,
 topology, backend version, and reviewed recipe settings where available, with
@@ -114,7 +120,7 @@ reviewed recipes, and runtime failures remain explicit outcomes.
 Replay settings use the public API available on the evaluated commit.
 
 The comparison cohort contains operating points with a successful AIC SILICON
-estimate. AISimulate attempts every point in that cohort; the published view
+estimate. AISim attempts every point in that cohort; the published view
 excludes multi-node points. A lower error on a refreshed snapshot does not by
 itself prove an improvement on the previous snapshot, because the measurement
 release, included points, and successful replay coverage can change.
@@ -243,7 +249,7 @@ dataset, exclusion counts, and prediction database versions.
 Expand a workload to see its GPU rows, then select a GPU to open details beside
 the matrix (below it on narrow screens). Details include:
 
-- separate AISim CLI and AIC CLI TTFT/TPOT MAPE bars;
+- separate AISim and AIC (legacy CLI) TTFT/TPOT MAPE bars;
 - successful replay counts, unsupported points, and failed points;
 - a topology selector identifying precision, framework, serving mode,
   speculative method, and parallelism, when exported with the updated builder;
@@ -285,7 +291,7 @@ matching `baseline_api` and `config_adapter`; the public `aic_source` retains
 `cli_entry_point`. Both the site builder and browser validate the supported
 entry points, and the provenance panel displays the recorded value. Historical
 summaries without this field remain readable. Its `status`
-is `"complete"`. The producer's `aic_commit_sha` identifies that AISimulate
+is `"complete"`. The producer's `aic_commit_sha` identifies that AISim
 commit. Branch publication rejects a baseline from another repository or
 revision, an incomplete baseline, or inconsistent producer documents.
 
@@ -336,6 +342,6 @@ notes, filter methodology, and provenance are under the collapsed **About this
 comparison** section below the charts.
 
 Detail charts use solid lines for measured silicon and dotted lines for both
-AISim CLI and legacy AIC CLI predictions. Legend samples match the chart lines.
+AISim and AIC (legacy CLI) predictions. Legend samples match the chart lines.
 The three charts share an aligned card grid on desktop and stack on smaller
 screens. Throughput controls stay inside their chart card.
