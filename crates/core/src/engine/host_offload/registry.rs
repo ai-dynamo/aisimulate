@@ -146,6 +146,12 @@ impl HostClient {
                         "cluster_shared host_offload requires a shared G2 pool; construct it through ReplaySpec or EngineFactory::with_shared_g2_pool"
                     )
                 })?;
+                // Replay validates this; a pool bound directly must not let an
+                // invalid participant fix the contract for later joiners.
+                ensure!(
+                    binding.tensor_parallel_size > 0,
+                    "native tensor_parallel_size must be positive"
+                );
                 binding.registry.join(
                     Contract {
                         kv_layout_id: config.kv_layout_id.clone().unwrap_or_default(),

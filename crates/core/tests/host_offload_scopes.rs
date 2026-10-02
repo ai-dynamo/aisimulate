@@ -528,6 +528,18 @@ fn engines_from_separate_factories_share_one_g2_pool() {
             .unwrap()
     };
     let pool = SharedG2Pool::new();
+    // An invalid participant must not fix the pool contract for later joiners.
+    let error = EngineFactory::new(config.clone())
+        .unwrap()
+        .with_shared_g2_pool(&pool, 0)
+        .build(EngineIdentity::new(0), NonZeroU32::MIN)
+        .err()
+        .expect("zero tensor parallelism is invalid");
+    assert!(
+        format!("{error:#}").contains("tensor_parallel_size must be positive"),
+        "{error:#}"
+    );
+    assert_eq!(pool.occupancy(), None);
     let (mut producer, mut consumer) = (build(Some(&pool)), build(Some(&pool)));
     let mut now_ms = 0.0;
     assert_eq!(serve_prompt(&mut producer, 1, &mut now_ms), 0);

@@ -409,9 +409,6 @@ impl VllmHostOffloadAdapter {
         let mut tier = self.host.lock();
         let client = self.host.id();
         let (completed, mut completed_any) = tier.tick(client, now_ms);
-        for event in tier.take_events(client) {
-            kv_manager.publish_host_pinned_event(event);
-        }
         self.load_epoch += completed.len() as u64;
         for transfer in &completed {
             let CompletedTransfer::Store {
@@ -430,6 +427,11 @@ impl VllmHostOffloadAdapter {
 
         if let Some(g3) = &mut self.g3 {
             completed_any |= g3.advance(&mut tier, now_ms);
+        }
+        // Drain after G3: a promotion landing in G2 above publishes residency
+        // that no later deadline would otherwise deliver.
+        for event in tier.take_events(client) {
+            kv_manager.publish_host_pinned_event(event);
         }
         let mut loads = Vec::new();
         for transfer in completed {
@@ -1562,6 +1564,84 @@ mod tests {
                 check_g3_cancellation(observed_at_ms, foreign_watermark);
             }
         }
+    }
+
+    #[test]
+    fn g3_promotion_into_private_g2_publishes_host_residency_in_the_same_advance() {
+        use crate::engine::g3_offload::{Direction, G3Tier};
+        use crate::engine::scheduler::capture_kv_event_sink;
+        use crate::engine::{G3OffloadConfig, G3Scope, KvEventData, KvEventTier};
+        // A rank that publishes KV events subscribes to its private G2.
+        let mut adapter = VllmHostOffloadAdapter::new(
+            &NativeHostOffloadConfig::new(2).with_bandwidths(1.0, 1.0),
+            4,
+            250_000,
+            None,
+            true,
+        )
+        .unwrap();
+        let owner = Uuid::from_u128(902);
+        let (sequence, identities) =
+            RequestSequence::new(owner, vec![1, 2, 3, 4, 5], 0, 0, 4, true, true, false, None);
+        let lease = BlockRequestLease::new(owner, identities);
+        let mut host = VllmHostRequestState::new(&sequence, &lease, 4, true);
+        let key = host.prompt_keys[0];
+        let registry = G3Tier::new(
+            G3OffloadConfig {
+                scope: G3Scope::ClusterShared,
+                num_g3_blocks: 4,
+                latency_to_first_byte_ms: 0.0,
+                read_bandwidth_gbps: 1.0,
+                write_bandwidth_gbps: 0.0,
+                shared_read_bandwidth_gbps: 1.0,
+                shared_write_bandwidth_gbps: 0.0,
+            },
+            2,
+            1_000_000,
+        )
+        .unwrap();
+        registry
+            .lock()
+            .unwrap()
+            .submit(0, Direction::Write, &[key], 0.0)
+            .unwrap();
+        registry.lock().unwrap().take_completed(0, 0.0);
+        adapter.set_g3(registry, 1);
+        let (buffer, sink) = capture_kv_event_sink();
+        let mut manager =
+            G1Manager::new_with_caching(4, 4, KvEventPublishers::new(Some(sink)), 0, true);
+        adapter.advance(&mut manager, 0.0);
+        assert!(matches!(
+            adapter.lookup(
+                &mut host,
+                &sequence,
+                &raw_cost(&manager, &sequence, &lease),
+                4,
+                adapter.current_time_ms(),
+            ),
+            HostLookup::Deferred
+        ));
+        // The requester leaves; its detached G3 promotion still lands in G2
+        // during the final advance, which leaves no later deadline.
+        assert!(adapter.cancel_request(&mut host, &mut manager, 0.0, 0.5));
+        buffer.drain();
+        adapter.advance(&mut manager, 4.0);
+        assert_eq!(adapter.host.lock().lookup(key), Lookup::Hit);
+        assert!(adapter.next_deadline().is_none());
+        let host_pinned = buffer
+            .drain()
+            .into_iter()
+            .filter(|event| event.tier == KvEventTier::HostPinned)
+            .map(|event| match event.data {
+                KvEventData::Stored(stored) => stored
+                    .blocks
+                    .iter()
+                    .map(|block| block.block_hash)
+                    .collect::<Vec<_>>(),
+                KvEventData::Removed { .. } => panic!("promotion evicts nothing"),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(host_pinned, vec![vec![key.sequence_hash()]]);
     }
 
     fn check_g3_cancellation(observed_at_ms: f64, foreign_watermark: Option<f64>) {
