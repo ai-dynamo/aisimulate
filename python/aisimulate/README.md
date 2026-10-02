@@ -84,7 +84,7 @@ The [CLI guide](https://github.com/ai-dynamo/aisimulate/blob/main/docs/cli/user-
 covers workload inputs, latency constraints, and detailed output. To create
 deployment manifests and launch scripts, use the bundled compatibility CLI or
 generator SDK; see the
-[deployment generation guide](https://github.com/ai-dynamo/aisimulate/blob/main/docs/cli/migrate-from-aiconfigurator.md#deployment-artifacts).
+[deployment generation guide](https://github.com/ai-dynamo/aisimulate/blob/main/docs/MIGRATION.md#compatibility-only-workflows).
 
 ## Documentation and coverage
 
@@ -114,14 +114,14 @@ The wheel provides the legacy `aiconfigurator` command through AISimulate 0.13.0
 Removal is targeted for AISimulate 0.14.0, after every remaining workflow has a
 verified replacement in the unified CLI. Use `aisimulate` for new prediction and
 recommendation workflows. The
-[migration guide](https://github.com/ai-dynamo/aisimulate/blob/main/docs/cli/migrate-from-aiconfigurator.md)
+[migration guide](https://github.com/ai-dynamo/aisimulate/blob/main/docs/MIGRATION.md)
 explains replacements and remaining differences; the
 [legacy CLI guide](https://github.com/ai-dynamo/aisimulate/blob/main/docs/cli/legacy-aic-user-guide.md)
 documents retained commands.
 
 The canonical Python imports are `aisimulate` and `aisimulate_core`. AISimulate
 0.13.0 removes the `aiconfigurator` and `aiconfigurator_core` import namespaces;
-see the [Python source migration guide](https://github.com/ai-dynamo/aisimulate/blob/main/docs/python-source-migration.md)
+see the [Python source migration guide](https://github.com/ai-dynamo/aisimulate/blob/main/docs/MIGRATION.md#python-imports-and-resources)
 for replacement imports. The legacy executable remains available as described above.
 
 When upgrading from standalone AIConfigurator, remove the old distributions first

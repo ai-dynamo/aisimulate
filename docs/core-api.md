@@ -11,7 +11,7 @@ and unified native PyO3 extension. It does not depend on another core
 distribution or on Dynamo. The crate owns the compiled engine, forward-pass
 model, Replay runtime, KV-cache request/response types, and the embedded
 Rust-to-Python construction path. Legacy Python import namespaces are removed
-in AISimulate 0.13.0; see the [Python migration guide](python-source-migration.md).
+in AISimulate 0.13.0; see the [Python migration guide](MIGRATION.md#python-imports-and-resources).
 
 ## Stable Python facade
 
@@ -145,11 +145,8 @@ does not estimate the reservation; callers must supply a value from a source
 they trust.
 
 Serialized Rust requests and estimates that omit the field remain compatible
-because deserialization defaults it to zero. Rust source that constructs
-`KvCacheEstimateRequest` with a struct literal must add
-`cuda_graph_reserved_bytes: 0`; exhaustive `MemoryBreakdown` literals and
-patterns must include the new field. This source migration is part of the next
-minor API update.
+because deserialization defaults it to zero. See [Rust literal migration](MIGRATION.md#rust-resource-and-memory-literals)
+for required source changes to request and memory-breakdown structs.
 
 ### FPM profile cache groups and byte budgets
 
@@ -185,8 +182,8 @@ cannot coexist with any of the four legacy non-KV fields. Python exposes
 `FpmRuntimeMemoryProfile` and resource properties `memory_source`
 (`pending`, `declared`, or `runtime`) and `memory_ready`; `require_memory()`
 rejects pending resources. Rust exposes `FpmRuntimeMemoryConfig` and
-`FpmResourceConfig::require_memory()`. Rust callers using resource struct literals
-must wrap legacy byte values in `Some(...)` and supply `runtime_memory: None`.
+`FpmResourceConfig::require_memory()`. See [Rust literal migration](MIGRATION.md#rust-resource-and-memory-literals)
+for resource construction changes.
 
 Each group has a unique `name`, `kind` (`attention` or `convolution`), positive
 `num_layers`, `block_size_tokens`, and `page_size_bytes`, and an optional positive
@@ -1010,36 +1007,7 @@ and profiles without DCP remain accepted as unrecorded DCP.
 
 ### Migrating saved configuration
 
-Use `ForwardPassPerfModelConfig.from_legacy_engine_config(old_config,
-worker_type, old_options, allow_regression=False)` to convert a saved flat
-EngineConfig and tuning options. It pins the old explicit native mode instead
-of changing it to auto. Set `allow_regression=True` only for an old caller that
-allowed direct regression fallback; the migration preserves that two-mode
-order rather than adding interpolation. Legacy `forward_model: fpm` maps to
-`fpm_interpolation`, and `fallback_policy: error` maps to deny. The deprecated
-`regression` policy remains readable for these saved direct-fallback requests.
-Legacy `extra.fpm_profile` and `extra.fpm_interpolation` migrate to the full
-canonical profile and nested interpolation method; newly exported configuration
-uses only the canonical fields.
-
-Migration merges saved estimator controls with explicitly supplied legacy
-options before applying ordinary defaults. It preserves disjoint settings and
-accepts agreeing overlaps; contradictory explicit values report the canonical
-setting's path. The same rule applies to legacy and canonical interpolation
-methods, including an explicit `auto`. An omitted field does not override a
-saved value. `ForwardPassPerfOptions.to_dict()` serializes only arguments
-explicitly supplied to that legacy options object, including explicit defaults.
-
-The migration adapter rejects any non-null `prefill_graph_profile`, `prefill_graph_profile_id`, or `decode_workload_distribution` field, including an orphan profile ID. These selectors require the canonical `ForwardPassPerfModelConfig.estimator_config.op_level` configuration; pass a saved canonical configuration directly to `RustForwardPassPerfModel.best_available` to preserve its profile identity and supported API restrictions. Profile-free legacy configurations continue to migrate normally.
-
-Previously saved CLI timing with `forward_model` retains explicit selection
-and deny. Newly authored requests without a selection use auto. `ForwardPassPerfOptions`
-is retained as a legacy migration value type; new construction has one complete
-config and no separate options argument. The raw PyO3 class also exposes
-`normalize_config` and migration helpers for JSON-oriented consumers.
-
-The [FPM regression design](../python/aisimulate/docs/fpm/aic-fpm-regression-design.md)
-explains the retained workload routing and feature mathematics.
+See the [migration guide](MIGRATION.md#saved-performance-model-configuration) for required caller changes.
 
 ## Stable Rust facade
 
@@ -1057,8 +1025,8 @@ auto-initialization. The matching `aisimulate` wheel must be importable for nati
 construction. Explicit `fpm_regression` construction works without the Python feature. See the
 [crate README](../crates/core/README.md) for setup and usage examples.
 
-The flat `build_aic_engine` adapter was removed from `main`; consumers must use
-`AicEngineBuilder`.
+See [SDK entry-point migration](MIGRATION.md#sdk-entry-points) for the removed
+flat engine adapter and constructor replacements.
 
 The supported `aisimulate_core::perfmodel` Rust surface is grouped as follows:
 
@@ -1158,44 +1126,11 @@ past-KV coordinate rather than the op-level mean-context coordinate.
 
 ## Agentic report source migration (0.13)
 
-The replay report additions require the coordinated 0.13.0 wheel/crate version,
-aligned with main's release preparation in PR #268. They must not be released
-as a 0.12 patch. Downstream exhaustive Rust `ReplayReport` literals must supply
-`agentic_phases: None` for a cold run (or its prepared phase evidence).
-Exhaustive `PerRequestRecord` literals must supply `agentic_phase: None` for
-cold replay, or `Some(AgenticReplayPhase::Profile)` for measured warmed requests.
-Exhaustive destructuring must name these fields or use `..`.
-
-The external-consumer compile fixture `rebuild_replay_report_literals` constructs
-both public structs exhaustively against this boundary. JSON consumers retain
-the existing cold shape: absent optional phase evidence is not serialized.
-This source migration does not change the engine-config/spec or FPM wire schemas.
+See the [migration guide](MIGRATION.md#agentic-report-source-migration) for required caller changes.
 
 ## Offload replay API migration
 
-Cluster-shared G2 ([G2 host-cache scope](g2-cache-scope.md)) extends the public
-Rust types without changing JSON that omits the new fields:
-
-- `engine::NativeHostOffloadConfig` adds `scope: G2Scope`,
-  `shared_d2h_bandwidth_gbps`, `shared_h2d_bandwidth_gbps`,
-  `latency_to_first_byte_ms` and `kv_layout_id: Option<String>`, and is no
-  longer `Copy`; clone it where it was copied. It stays `#[non_exhaustive]`:
-  build it with `new(..)`, `with_bandwidths(..)` and `cluster_shared(layout_id)`.
-  Fields at their defaults are not serialized, so existing descriptors keep
-  their shape. `G2Scope` is separate from `G3Scope`; G2 rejects `worker_local`.
-- `engine::KvEvent` adds `tier: KvEventTier` (`Device` or `HostPinned`).
-  Device events omit `tier` on output and a missing `tier` deserializes as
-  `Device`; exhaustive literals must add `tier: KvEventTier::Device`.
-  `HostPinned` `Stored` events set `start_position` to the prompt index of
-  their first block.
-- `ReplayReport` adds `g2_domains: Vec<replay::G2DomainStats>`; it is
-  serialized only when nonempty. Exhaustive literals must supply it.
-- `engine::G3Stats` adds `bypassed_restores: u64`, serialized only when
-  nonzero. Exhaustive literals must supply it or use `..Default::default()`.
-- A raw `cluster_shared` descriptor must set a
-  `native_host_offload.kv_layout_id` that is not empty or whitespace-only;
-  public YAML derives it. Engines built directly with `EngineFactory` cannot
-  join a shared pool and fail at construction; use `ReplaySpec`.
+See the [migration guide](MIGRATION.md#offload-replay-api-migration) for required caller changes.
 
 ## Compatibility rules
 
