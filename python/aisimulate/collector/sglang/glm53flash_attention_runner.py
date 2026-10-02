@@ -63,19 +63,6 @@ from collector.glm53flash_attention_runtime import (
 )
 
 
-def _release_graph_memory(torch) -> None:
-    """Return a measured module graph's private pool to the device.
-
-    The serving KV pool and framework graphs leave little headroom; without
-    this the per-target pools accumulate as reserved-but-unallocated memory.
-    """
-    import gc
-
-    gc.collect()
-    torch.cuda.synchronize()
-    torch.cuda.empty_cache()
-
-
 def _quant_name(module) -> str:
     method = getattr(module, "quant_method", None)
     return "none" if method is None else type(method).__name__
@@ -93,6 +80,7 @@ class AttentionProbe:
         self.original = attention.forward
         self.captured = {}
         self.prefill_captured = {}
+        self.keepalive = None
         self.replay_witness = None
         self.armed = None
         self.done = None
@@ -247,10 +235,15 @@ class AttentionProbe:
             self._fresh_inputs(record.attn_inputs, forward_batch, record.zero_allocator, record.zero_pointer)
             return self.original(*record.args, **record.kwargs)
 
-        # A private pool per measurement: once the previous module graph is
-        # released its pool is freed, and a stale handle trips the caching
-        # allocator's use_count assertion on the next capture_begin.
-        pool = torch.cuda.graph_pool_handle()
+        # One private pool for every module graph. The previous graph is kept
+        # alive until the next capture so the pool never drops to use_count 0
+        # (a dead pool handle trips the caching allocator's assertion), and its
+        # blocks are reused instead of accumulating. (A variant that called
+        # empty_cache after each target hit an illegal address in a later
+        # framework BCG replay; cause not isolated, so it is not used.)
+        if self.pool is None:
+            self.pool = torch.cuda.graph_pool_handle()
+        pool = self.pool
         # BreakableCudaGraphBackend.replay_session/execute: the BCG flag, the
         # attention-backend forward context and the TcPiecewise context whose
         # forward_batch the eager breaks read (the real step's static batch).
@@ -291,11 +284,11 @@ class AttentionProbe:
             },
             timing_method=GRAPH_PREFILL,
         )
+        self.keepalive = graph
         del graph, output, result
         from sglang.srt.layers.communicator import get_attn_tp_context
 
         get_attn_tp_context().clear_attn_inputs()
-        _release_graph_memory(torch)
         if not finite:
             raise RuntimeError(f"nonfinite prefill attention output for {target['target_id']}")
 

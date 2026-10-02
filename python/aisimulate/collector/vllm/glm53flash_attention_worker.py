@@ -175,6 +175,7 @@ class Probe:
         self.original = attention.forward
         self.captured = {}
         self.pw_captured = {}
+        self.keepalive = None
         self.pool = None
         self.source = kernel_source(attention)
         attention.forward = self.forward
@@ -323,8 +324,11 @@ def _measure_prefill(probe, target: dict, replays_before: int) -> dict:
     options = STATE.options
     o_proj = probe.attention.o_proj
     reduce = o_proj.reduce_results
-    # A private pool per measurement (a released module graph frees its pool).
-    pool = torch.cuda.graph_pool_handle()
+    # One private pool for every module graph; the previous capture stays alive
+    # until the next one so the pool never dies and its blocks are reused.
+    if probe.pool is None:
+        probe.pool = torch.cuda.graph_pool_handle()
+    pool = probe.pool
     o_proj.reduce_results = False
     try:
         with override_forward_context(witness.context):
@@ -359,14 +363,8 @@ def _measure_prefill(probe, target: dict, replays_before: int) -> dict:
         },
         timing_method=GRAPH_PREFILL,
     )
+    probe.keepalive = capture
     del capture, output
-    import gc
-
-    # Return the module graph's private pool; per-target pools would otherwise
-    # accumulate as reserved memory beside the serving KV pool.
-    gc.collect()
-    torch.cuda.synchronize()
-    torch.cuda.empty_cache()
     if not finite:
         raise RuntimeError(f"nonfinite prefill attention output for {target['target_id']}")
     return {"padded_tokens": witness.tokens}
