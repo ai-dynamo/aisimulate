@@ -19,10 +19,13 @@ The behavior-frozen hardening batch (none of these may move a number):
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 import aisimulate_core.sdk.operations as ops
 from aisimulate_core.sdk import common, config
+from aisimulate_core.sdk.errors import InvalidEngineConfigurationError
 from aisimulate_core.sdk.models import get_model
 from aisimulate_core.sdk.models.blocks.moe import MoEBlockShape, build_moe_block_ops
 
@@ -58,7 +61,24 @@ def _dispatches(op_list):
     return [op for op in op_list if isinstance(op, ops.MoEDispatch)]
 
 
+def test_fused_builder_accepts_config_without_optional_kernel_source():
+    cfg = SimpleNamespace(
+        moe_tp_size=1,
+        moe_ep_size=8,
+        attention_dp_size=8,
+        moe_quant_mode=common.MoEQuantMode.bfloat16,
+    )
+    built = _build(cfg)
+    expected = _build(_cfg())
+    assert [op._spec_json() for op in built] == [op._spec_json() for op in expected]
+
+
 class TestGpusPerNodeGuard:
+    def test_large_ep_rejects_an_explicit_moe_kernel_source(self):
+        cfg = _cfg(moe_comm_backend={"context": "deepep_ht"}, moe_kernel_source="pinned_source")
+        with pytest.raises(InvalidEngineConfigurationError, match="moe_kernel_source.*large-EP"):
+            _build(cfg, gpus_per_node=8)
+
     def test_large_ep_without_gpus_per_node_raises(self):
         cfg = _cfg(moe_comm_backend={"context": "deepep_ht"})
         with pytest.raises(ValueError, match="gpus_per_node"):

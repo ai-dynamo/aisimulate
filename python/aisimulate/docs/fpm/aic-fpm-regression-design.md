@@ -72,7 +72,7 @@ formulas and explain how each rank contributes.
 |---|---|
 | Gym caller | Infer each worker's offline role, create one predictor per `worker_id`, and preserve replay order |
 | AISim predictor | Validate the iteration, extract features, select the workload bucket, predict, and tune |
-| Workload bucket | Retain its own observations, rebuild its fit, and track its readiness |
+| Workload bucket | Retain its own observations, update its fit recursively, and track its readiness |
 
 For example, the caller could own the following predictors:
 
@@ -170,7 +170,8 @@ iteration:
    an error.
 4. Record the outcome and score an available estimate against observed latency.
 5. Tune the same worker's predictor with the observation. AISim uses the same
-   classifier, retains the sample in the selected bucket, and refits that bucket.
+   classifier, retains the sample in the selected bucket, and updates that
+   bucket's statistics and fit.
 
 The current iteration's latency is introduced at the tuning step. Prediction
 does not consume it. An unavailable prediction can still be followed by a
@@ -556,15 +557,27 @@ cap. With the default `sampling.bins_per_axis=[4, 4]`, the grid is $4\times4$. B
 choose which observations survive; they are not local predictors and are not
 queried during estimation.
 
-After insertion and eviction, the fit is rebuilt from the retained **raw**
-features. For each axis, population mean and standard deviation are computed
-with stable Welford accumulation:
+Each accepted insertion adds the **raw** features and observed latency to
+centered sufficient statistics; an actual eviction removes that observation's
+contribution. After both operations, the fitter derives population means and
+standard deviations from the updated statistics and solves the small
+nonnegative regression. Healthy fitting updates do not scan the retained
+observations. For each feature axis, the statistics represent:
 
 $$
 \mu_j=\frac1n\sum_i x_{ij},\qquad
 \sigma_j=\sqrt{\frac1n\sum_i(x_{ij}-\mu_j)^2},\qquad
 z_{ij}=\frac{x_{ij}-\mu_j}{\sigma_j}.
 $$
+
+The fitter reads retained observations only for a statistics rebuild or a
+batch-fit fallback. Periodic rebuilds are disabled by default
+(`estimator_config.fpm_regression.fit.rebuild_interval=None` in Python,
+`null` in JSON); a positive integer enables them. Numerical recovery rebuilds
+and batch fallbacks remain enabled regardless of that setting. Retention-grid
+rebucketing is separate from fitting and may still scan stored observations.
+See the [recursive regression walkthrough](../../../../docs/fpm-recursive-regression.md)
+for the update equations, rebuild-counter semantics, and numerical guards.
 
 An axis is inactive when
 
@@ -587,5 +600,5 @@ fit remains unready. The existing special handling for an explicitly configured
 lower minimum is preserved when there are too few observations to identify
 the active slopes.
 
-Each workload bucket runs this pipeline independently. Refitting one bucket
+Each workload bucket runs this pipeline independently. Updating one bucket
 leaves the other buckets and other predictor instances unchanged.

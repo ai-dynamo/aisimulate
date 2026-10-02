@@ -43,6 +43,8 @@ dependencies = [
     "chex==0.1.87",
     "flax==0.10.0",
     "google-vizier[jax]==0.1.21",
+    # Vizier 0.1.21 requires the pre-1.75.4 operations.proto descriptor name.
+    "googleapis-common-protos<1.75.4",
     "jinja2>=3.1.0",
     "jax==0.4.38",
     "jaxlib==0.4.38",
@@ -137,6 +139,8 @@ include = [
     { path = "collector/fpm_forward/README.glm53flash*.md", format = "wheel" },
     { path = "collector/fpm_forward/runtime/fpm_exec.sh", format = "wheel" },
     { path = "collector/fpm_forward/runtime/fpm_text.txt", format = "wheel" },
+    { path = "collector/fpm_forward/runtime/vllm-*.json", format = "wheel" },
+    { path = "collector/fpm_forward/runtime/instrumentation/*.md", format = "wheel" },
     { path = "collector/fpm_forward/runtime/dsv41/*.json", format = "wheel" },
     { path = "collector/fpm_forward/runtime/dsv41/README.md", format = "wheel" },
     { path = "collector/fpm_forward/runtime/dsv41/LICENSE", format = "wheel" },

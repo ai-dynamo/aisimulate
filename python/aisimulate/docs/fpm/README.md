@@ -5,16 +5,22 @@ SPDX-License-Identifier: Apache-2.0
 
 # Forward-pass models
 
-Start with the [end-to-end FPM workflow](end-to-end-workflow.md) to collect
+Start with the [FPM self-benchmarking and onboarding guide](self-benchmarking-and-onboarding.md) to collect
 whole-forward measurements, publish a performance-data pair, load it through
 the SDK, and run an AISimulate prediction. The guide includes prerequisites,
 commands, expected artifacts, acceptance checks, and recovery steps.
+
+Self-benchmark collection currently supports vLLM configurations that pass
+model/runtime validation; new architectures can require benchmark adaptation.
+SGLang and TensorRT-LLM support is coming soon. The guide includes the collected
+[Kimi K3 TP8+DCP8 profile](self-benchmarking-and-onboarding.md#example-a-onboard-the-collected-kimi-k3-tp8dcp8-profile)
+and a new MiniMax collection campaign as worked examples of the general procedure.
 
 There are two distinct workflows:
 
 | Workflow | Input | Consumer |
 | --- | --- | --- |
-| Offline whole-forward FPM | Collector-produced `fpm_forward_perf.parquet` and its metadata sidecar | `forward_model="fpm"`: lookup, interpolation, and supported SOL transfer |
+| Offline whole-forward FPM | Validated `fpm_forward_perf.parquet` and its metadata sidecar | `best_available` with `estimation_mode="fpm_interpolation"`: lookup, interpolation, and supported SOL transfer |
 | Online regression | Observed per-iteration, per-rank telemetry | A role-bound model updated with `tune_with_fpms` |
 
 Offline FPM does not require an additional regression-training step. Predicting

@@ -22,7 +22,7 @@ These are qualification candidates, not evidence of measured GB300 coverage. Pre
 
 ## Acceptance and data status
 
-The model registration, nested configuration parser, per-layer graph, native Rust SOL and persistent-state accounting are implemented. The public consumer constructs both checkpoints on both supported backends through 128K context. Independent Python/Rust contract checks and both parity suites passed: 419 checks, plus 21 focused Rust arithmetic/serialization checks. Existing parity records are unchanged; four GLM records were appended. See [the native contract](glm53flash-native-contract.md) for exact operation and precision boundaries.
+The model registration, nested configuration parser, per-layer graph, native Rust SOL and persistent-state accounting are implemented. The public consumer constructs both checkpoints on both supported backends through 128K context. Independent Python/Rust contract checks and both parity suites passed: 419 checks, plus 24 focused Rust arithmetic/serialization checks. Existing parity records are unchanged; four GLM records were appended. See [the native contract](glm53flash-native-contract.md) for exact operation and precision boundaries.
 
 SOL is theoretical cost and payload accounting. Native allocator qualification, FPM data, Ops data and independent error acceptance belong to the companion campaigns. They are not certified by these CPU tests. The initial native GB300 qualification has completed FP8 TP2 and TP4 real-request cases through 128K; it is not prediction accuracy evidence.
 

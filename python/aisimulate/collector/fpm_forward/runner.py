@@ -22,6 +22,7 @@ import threading
 import time
 import uuid
 import zlib
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager, suppress
 from dataclasses import replace
@@ -45,8 +46,11 @@ from aisimulate.fpm_contract import (
     fpm_workload_node_count,
 )
 
+from .config import FPM_KV_WARMUP_DEFAULTS, with_kv_warmup_defaults
 from .native_artifact import COLLECTOR_PROVENANCE_FILENAME, validate_native_collection
 from .planner import FPMCell, FPMCollectionPlan
+from .runtime.fpm_memory_observer import EXECUTION_SUPPORTED_VERSIONS
+from .runtime.fpm_memory_observer import SUPPORTED_VERSION as MEMORY_OBSERVER_VERSION
 from .types import KVWARM_STRATEGIES
 
 logger = logging.getLogger(__name__)
@@ -86,8 +90,10 @@ _FPM_VLLM_RUNTIME_ARGS = (
 # insensitive to both flags (measured 100-108 ms across all four combinations
 # at 8192 new tokens, M2.7 tp4+EP).
 _FPM_VLLM_PREFILL_ARGS = ("--no-async-scheduling",)
-# Decode always keeps async scheduling on (vLLM's default) -- the
-# steady-state second step models a production decode iteration, and
+# Ordinary decode leaves scheduling to the runtime default. Memory observation
+# explicitly requests synchronous scheduling in both phases to establish one
+# compatible memory profile; execution evidence records the effective choice.
+# The steady-state second step models a production decode iteration, and
 # production overlaps scheduler CPU work with the GPU. Against real traffic
 # at (256, 2.1M KV): async 26.5 ms (1.03x of the 25.8 ms measured), sync
 # 31.3 ms (1.21x).
@@ -119,6 +125,29 @@ _FPM_VLLM_DECODE_FAKE_KV_ARGS = ("--no-enable-prefix-caching",)
 REMOTE_EXIT_MARKER = "__FPM_REMOTE_EXIT_CODE__="
 REMOTE_FILES_MARKER = "__FPM_REMOTE_FILES__="
 REMOTE_WORKDIR = "/tmp/fpm-bench"
+_MEMORY_OBSERVER_FILES = ("fpm_memory_observer.py", "fpm_memory_worker.py", "fpm_memory_scheduler.py")
+
+
+def _observe_runtime_memory(plan: FPMCollectionPlan, cell: FPMCell) -> bool:
+    if getattr(plan, "runtime_instrumentation", None) is not None:
+        return True
+    if getattr(plan, "fpm_profile", None) is None:
+        return False
+    deployment = plan.deployment_profile(cell)
+    return (
+        deployment is not None
+        and deployment.resources.memory_source == "pending"
+        and deployment.backend_version == MEMORY_OBSERVER_VERSION
+    )
+
+
+def _observe_runtime_execution(plan: FPMCollectionPlan, cell: FPMCell) -> bool:
+    if getattr(plan, "runtime_instrumentation", None) is not None:
+        return False
+    return (
+        getattr(getattr(plan, "capability", None), "aic_database_version", None) in EXECUTION_SUPPORTED_VERSIONS
+        and not cell.execution_identity[0]
+    )
 
 
 def _utc_now() -> str:
@@ -464,6 +493,49 @@ def _run_command(
     return subprocess.CompletedProcess(args, process.returncode, stdout, stderr)
 
 
+def _attempt_provenance_command(
+    *,
+    cell_id: str,
+    plan_sha256: str,
+    attempt_id: str,
+    expected_backend_version: str | None = None,
+    backend: str = "vllm",
+) -> list[str]:
+    """Record the observed runtime before checking a profile's pinned version."""
+
+    payload = json.dumps(
+        {
+            "schema_name": "aic_fpm_collector_provenance",
+            "schema_version": 1,
+            "cell_id": cell_id,
+            "plan_sha256": plan_sha256,
+            "attempt_id": attempt_id,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    script = (
+        "import importlib.metadata, json, pathlib, sys; "
+        "payload = json.loads(sys.argv[1]); "
+        f"payload['runtime'] = {{'backend': {backend!r}, "
+        f"'backend_version': importlib.metadata.version({backend!r})}}; "
+        f"path = pathlib.Path('{FPM_RESULTS_DIR}') / sys.argv[2]; "
+        "path.write_text(json.dumps(payload, sort_keys=True) + '\\n')"
+    )
+    version_args = []
+    if expected_backend_version is not None:
+        script += (
+            "\nactual = payload['runtime']['backend_version']\n"
+            "if actual != sys.argv[3]:\n"
+            "    raise RuntimeError("
+            "f'FPM profile runtime mismatch: actual={actual!r}, expected={sys.argv[3]!r}. '"
+            "'Use the pinned runtime, or create a new collection profile with '"
+            "f'backend_version={actual!r} and regenerate the collection plan in a new output directory.')\n"
+        )
+        version_args.append(expected_backend_version)
+    return ["python3", "-c", script, payload, COLLECTOR_PROVENANCE_FILENAME, *version_args]
+
+
 class KubernetesCellRunner:
     """Own one generated Pod/LWS/PCS and auxiliary resources through deletion."""
 
@@ -684,27 +756,16 @@ class KubernetesCellRunner:
         cell_id: str,
         plan_sha256: str,
         attempt_id: str,
+        expected_backend_version: str | None = None,
     ) -> None:
         """Clear stale results and bind every Pod to this Collector attempt."""
 
-        payload = json.dumps(
-            {
-                "schema_name": "aic_fpm_collector_provenance",
-                "schema_version": 1,
-                "cell_id": cell_id,
-                "plan_sha256": plan_sha256,
-                "attempt_id": attempt_id,
-            },
-            sort_keys=True,
-            separators=(",", ":"),
-        )
-        script = (
-            "import importlib.metadata, json, pathlib, sys; "
-            "payload = json.loads(sys.argv[1]); "
-            f"payload['runtime'] = {{'backend': {self.backend!r}, "
-            f"'backend_version': importlib.metadata.version({self.backend!r})}}; "
-            f"path = pathlib.Path('{FPM_RESULTS_DIR}') / sys.argv[2]; "
-            "path.write_text(json.dumps(payload, sort_keys=True) + '\\n')"
+        command = _attempt_provenance_command(
+            cell_id=cell_id,
+            plan_sha256=plan_sha256,
+            attempt_id=attempt_id,
+            expected_backend_version=expected_backend_version,
+            backend=self.backend,
         )
         for pod in pods:
             self._exec_checked(
@@ -725,11 +786,7 @@ class KubernetesCellRunner:
                 ],
                 timeout=60,
             )
-            self._exec_checked(
-                pod,
-                ["python3", "-c", script, payload, COLLECTOR_PROVENANCE_FILENAME],
-                timeout=60,
-            )
+            self._exec_checked(pod, command, timeout=60)
 
     def _remote_result_manifest(self, pod: str) -> dict[str, dict[str, int | str]]:
         script = (
@@ -1320,30 +1377,53 @@ def _cell_generator_overrides(
         if not payload[cell.workload_kind]:
             raise ValueError(f"benchmark-points manifest has no {cell.workload_kind} points for this cell")
         scheduler_args.extend(["--benchmark-points-file", f"{REMOTE_WORKDIR}/{POINTS_FILENAME}"])
+    max_num_tokens = getattr(plan.options, "max_num_batched_tokens", None)
+    max_num_seqs = getattr(plan.options, "max_num_seqs", None)
+    compilation_config = dict(getattr(plan.options, "compilation_config", {}))
+    if getattr(plan, "fpm_profile", None) is not None:
+        deployment_profile = plan.deployment_profile(cell)
+        assert deployment_profile is not None
+        resources = deployment_profile.resources
+        max_num_tokens = resources.max_num_tokens if max_num_tokens is None else max_num_tokens
+        max_num_seqs = resources.max_batch_size if max_num_seqs is None else max_num_seqs
     if cell.workload_kind == "decode" and getattr(plan.options, "max_decode_batch_size", None):
-        scheduler_args.extend(["--max-num-seqs", str(plan.options.max_decode_batch_size)])
-    if cell.workload_kind == "prefill" and not smoke:
+        max_num_seqs = plan.options.max_decode_batch_size
+    if cell.workload_kind == "prefill":
         profile = plan.options.prefill_sampling
-        compilation_config = {
-            "cudagraph_capture_sizes": list(profile.cudagraph_capture_sizes),
-            "max_cudagraph_capture_size": profile.max_cudagraph_capture_size,
-        }
+        if not smoke or getattr(plan.options, "max_prefill_isl", None) is not None:
+            max_num_tokens = profile.max_total_prefill_tokens
+        if profile.max_batch_size is not None:
+            max_num_seqs = profile.max_batch_size
+    # A declared serving role owns one engine configuration. Aggregated probes
+    # exercise both workloads without changing that configuration. Untagged
+    # historical plans retain their original prefill-only override.
+    if cell.workload_kind == "prefill" or getattr(plan.options, "worker_type", None) is not None:
+        captures = plan.options.prefill_sampling
+        # GLM same-request real-hybrid cells retain the runtime's frozen graph policy.
+        if (
+            captures.cudagraph_capture_sizes is not None
+            and not enforce_eager
+            and not getattr(cell, "state_protocol", "")
+        ):
+            compilation_config.update(
+                cudagraph_capture_sizes=list(captures.cudagraph_capture_sizes),
+                max_cudagraph_capture_size=captures.max_cudagraph_capture_size,
+            )
+    if compilation_config and not enforce_eager:
+        scheduler_args.extend(
+            ["--compilation-config", json.dumps(compilation_config, sort_keys=True, separators=(",", ":"))]
+        )
+    if cell.workload_kind == "prefill" and not smoke:
+        if profile.cudagraph_capture_sizes is not None:
+            scheduler_args.extend(["--prefill-max-new-token-samples", str(profile.max_new_token_samples)])
+        # This cap depends only on scheduler bounds, not the runtime's graph
+        # choices. The new-token axis remains Dynamo-owned in runtime mode.
         scheduler_args.extend(
             [
-                "--max-num-batched-tokens",
-                str(profile.max_total_prefill_tokens),
-                "--prefill-max-new-token-samples",
-                str(profile.max_new_token_samples),
                 "--prefill-max-kv-read-token-samples",
                 str(profile.max_kv_read_token_samples),
             ]
         )
-        if not enforce_eager and not getattr(cell, "state_protocol", ""):
-            scheduler_args.extend(
-                ["--compilation-config", json.dumps(compilation_config, sort_keys=True, separators=(",", ":"))]
-            )
-        if profile.max_batch_size is not None:
-            scheduler_args.extend(["--max-num-seqs", str(profile.max_batch_size)])
     elif smoke:
         if cell.workload_kind == "prefill":
             scheduler_args.extend(
@@ -1365,6 +1445,31 @@ def _cell_generator_overrides(
                     "2",
                 ]
             )
+    probe_sampling = getattr(plan, "probe_sampling", None)
+    if probe_sampling is not None:
+        sampling_flags = (
+            {
+                "--prefill-max-new-token-samples": probe_sampling["max_new_token_samples"],
+                "--prefill-max-kv-read-token-samples": probe_sampling["max_kv_read_token_samples"],
+                "--prefix-max-batch-size-samples": probe_sampling["max_batch_size_samples"],
+            }
+            if cell.workload_kind == "prefill"
+            else {
+                "--decode-max-kv-read-token-samples": probe_sampling["max_kv_read_token_samples"],
+                "--decode-max-batch-size-samples": probe_sampling["max_batch_size_samples"],
+            }
+        )
+        for flag, value in sampling_flags.items():
+            if flag in scheduler_args:
+                scheduler_args[scheduler_args.index(flag) + 1] = str(value)
+            else:
+                scheduler_args.extend([flag, str(value)])
+    # Native point generation sees the runtime bounds before any cases are
+    # queued. Each flag is emitted once, after resolving the phase's bounds.
+    if max_num_tokens is not None:
+        scheduler_args.extend(["--max-num-batched-tokens", str(max_num_tokens)])
+    if max_num_seqs is not None:
+        scheduler_args.extend(["--max-num-seqs", str(max_num_seqs)])
     model_args = []
     architecture = getattr(getattr(plan, "capability", None), "architecture", None)
     if architecture == "Glm5NextForConditionalGeneration":
@@ -1385,9 +1490,9 @@ def _cell_generator_overrides(
         model_args.extend(
             ["--language-model-only", "--tokenizer-mode=deepseek_v41", '--engram-config={"cpu_offload":false}']
         )
-        if cell.workload_kind == "decode" or smoke:
-            model_args.extend(["--max-num-batched-tokens", str(plan.options.max_prefill_isl)])
-        if cell.workload_kind == "prefill" and smoke and plan.options.max_prefill_batch_size:
+        if (cell.workload_kind == "decode" or smoke) and max_num_tokens is None:
+            model_args.extend(["--max-num-batched-tokens", str(plan.options.prefill_sampling.max_total_prefill_tokens)])
+        if cell.workload_kind == "prefill" and smoke and plan.options.max_prefill_batch_size and max_num_seqs is None:
             model_args.extend(["--max-num-seqs", str(plan.options.max_prefill_batch_size)])
     if architecture == "GlmMoeDsaForCausalLM":
         # This is the serving path validated by the pinned GLM-5.2 vLLM image.
@@ -1398,6 +1503,50 @@ def _cell_generator_overrides(
         {"name": FPM_ENGINE_BENCHMARK_OUTPUT_ENV, "value": f"{FPM_RESULTS_DIR}/benchmark.json"},
         {"name": FPM_RUN_ID_ENV, "value": cell.cell_id},
     ]
+    observe_memory = _observe_runtime_memory(plan, cell)
+    observe_execution = _observe_runtime_execution(plan, cell)
+    instrumentation = getattr(plan, "runtime_instrumentation", None)
+    if instrumentation is not None:
+        # Pass the selected pin to native model construction for both probes and
+        # later formal collection. Local checkpoints otherwise resolve revision
+        # to None; loaded config bytes remain independently verified on import.
+        model_args.extend(["--revision", plan.runtime_launch["identity"]["model_revision"]])
+    if observe_memory:
+        if cell.workload_kind == "decode":
+            # Use the prefill collection requirement for both phases when
+            # deriving one serving memory profile. Existing declared profiles
+            # retain their established phase-specific scheduling policies.
+            model_args.append("--no-async-scheduling")
+        model_args.extend(
+            [
+                "--worker-cls",
+                "fpm_runtime_instrumentation.ObservedWorker"
+                if instrumentation is not None
+                else "fpm_memory_worker.FpmResourceWorker",
+                "--scheduler-cls",
+                "fpm_runtime_instrumentation.ObservedInstrumentedScheduler"
+                if instrumentation is not None
+                else "fpm_memory_scheduler.FpmResourceInstrumentedScheduler",
+            ]
+        )
+    elif observe_execution:
+        model_args.extend(
+            [
+                "--worker-cls",
+                "fpm_memory_worker.FpmExecutionWorker",
+                "--scheduler-cls",
+                "fpm_memory_scheduler.FpmExecutionInstrumentedScheduler",
+            ]
+        )
+    if instrumentation is not None:
+        env.extend(
+            {"name": name, "value": value}
+            for name, value in {
+                "AISIMULATE_RUNTIME_CONTEXT": f"{REMOTE_WORKDIR}/runtime-probe-context.json",
+                "AISIMULATE_RUNTIME_INSTRUMENTATION": f"{REMOTE_WORKDIR}/runtime-instrumentation/manifest.json",
+                "AISIMULATE_RUNTIME_OBSERVATION_DIR": FPM_RESULTS_DIR,
+            }.items()
+        )
     if architecture == "DeepseekV41ForCausalLM":
         from aisimulate_core.sdk.deepseek_v41 import MODEL_REVISION
 
@@ -1450,6 +1599,11 @@ def _cell_generator_overrides(
             }
         },
     }
+    gpu_memory_utilization = getattr(plan.options, "gpu_memory_utilization", None)
+    if gpu_memory_utilization is not None:
+        # Use the existing backend mapping to --gpu-memory-utilization. The
+        # Generator preserves explicitly supplied values of this common key.
+        generated["params"]["agg"]["kv_cache_free_gpu_memory_fraction"] = gpu_memory_utilization
     policy = cell.backend_policy.generator_overrides
     merged = _deep_merge(_deep_merge(base, generated), policy)
 
@@ -1498,8 +1652,30 @@ def _cell_generator_overrides(
         raise ValueError(f"{READINESS_TIMEOUT_ENV} must be an integer from 1 through 3600")
     resolved_env[READINESS_TIMEOUT_ENV] = {"name": READINESS_TIMEOUT_ENV, "value": str(readiness)}
     merged.setdefault("K8sConfig", {})["extra_env"] = list(resolved_env.values())
+    merged = with_kv_warmup_defaults(merged)
 
     policy_args = ((policy.get("params") or {}).get("agg") or {}).get("extra_cli_args") or []
+    policy_flags = {str(argument).split("=", 1)[0].split(" ", 1)[0] for argument in policy_args}
+    if instrumentation is not None and "--revision" in policy_flags:
+        raise ValueError("backend policy cannot override the runtime probe's selected model revision")
+    if (observe_memory or observe_execution) and "--worker-cls" in policy_flags:
+        raise ValueError("backend policy cannot replace the runtime execution/memory observer worker class")
+    if (observe_memory or observe_execution) and "--scheduler-cls" in policy_flags:
+        raise ValueError("backend policy cannot replace runtime execution/memory observer scheduler class")
+    if observe_memory and policy_flags & {"--kv-cache-memory-bytes", "--num-gpu-blocks-override"}:
+        raise ValueError("backend policy cannot replace runtime memory observer classes or automatic cache sizing")
+    if observe_memory and any(
+        str(argument).split("=", 1)[0].split(" ", 1)[0] == "--async-scheduling" for argument in policy_args
+    ):
+        raise ValueError("runtime memory collection requires synchronous scheduling in both phases")
+    if gpu_memory_utilization is not None and any(
+        str(argument).split("=", 1)[0].split(" ", 1)[0] == "--gpu-memory-utilization" for argument in policy_args
+    ):
+        raise ValueError("backend policy cannot override --fpm-gpu-memory-utilization with extra CLI arguments")
+    if cell.workload_kind == "prefill" and profile.cudagraph_policy == "runtime":
+        graph_options = ("--compilation-config", "--cudagraph-capture-sizes", "--max-cudagraph-capture-size")
+        if any(str(argument).split("=", 1)[0] in graph_options for argument in policy_args):
+            raise ValueError("runtime prefill CUDA-graph policy cannot use backend capture overrides")
     if any(str(arg).split("=", 1)[0] in {"--enforce-eager", "--no-enforce-eager"} for arg in policy_args):
         raise ValueError("eager execution must be supplied through --fpm-enforce-eager")
     if any(str(arg).split("=", 1)[0] == "--benchmark-points-file" for arg in policy_args):
@@ -1535,6 +1711,11 @@ def _cell_generator_overrides(
         resolved_args.extend(["--benchmark-timeout", str(DEFAULT_BENCHMARK_TIMEOUT_SECONDS)])
     resolved_args.extend(scheduler_args)
     merged_agg = merged.setdefault("params", {}).setdefault("agg", {})
+    if (
+        gpu_memory_utilization is not None
+        and merged_agg.get("kv_cache_free_gpu_memory_fraction") != gpu_memory_utilization
+    ):
+        raise ValueError("backend policy cannot change --fpm-gpu-memory-utilization")
     merged_agg.update({"extra_cli_args": resolved_args})
     return merged
 
@@ -1552,7 +1733,7 @@ def _configured_sampling_metadata(
     cell: FPMCell,
     *,
     smoke: bool,
-) -> dict[str, int | str]:
+) -> dict[str, int | str | None]:
     canonical = _frozen_points(plan)
     if canonical is not None:
         if smoke:
@@ -1567,13 +1748,23 @@ def _configured_sampling_metadata(
         # arguments that conflict with this resolved protocol.
         return {"decode_prefix_caching": _decode_prefix_caching_mode(cell)}
     if smoke:
-        return {"prefill_max_new_token_samples": 2}
+        payload: dict[str, int | str | None] = {"prefill_max_new_token_samples": 2}
+        if plan.options.prefill_sampling.cudagraph_policy == "runtime":
+            payload["prefill_cudagraph_policy"] = "runtime"
+        return payload
     profile = plan.options.prefill_sampling
-    return {
-        "prefill_cudagraph_capture_size_count": len(profile.cudagraph_capture_sizes),
-        "prefill_requested_new_token_axis_count": len(profile.new_token_axis_points),
+    payload = {
+        "prefill_cudagraph_capture_size_count": len(profile.cudagraph_capture_sizes)
+        if profile.cudagraph_capture_sizes is not None
+        else None,
+        "prefill_requested_new_token_axis_count": len(profile.new_token_axis_points)
+        if profile.new_token_axis_points is not None
+        else None,
         "prefill_max_new_token_samples": profile.max_new_token_samples,
     }
+    if profile.cudagraph_policy == "runtime":
+        payload["prefill_cudagraph_policy"] = "runtime"
+    return payload
 
 
 def _write_runtime_environment(cell_dir: Path, overrides: dict[str, Any]) -> None:
@@ -1581,6 +1772,7 @@ def _write_runtime_environment(cell_dir: Path, overrides: dict[str, Any]) -> Non
     # this Collector-owned file because Slurm does not start a Kubernetes Pod
     # with extra_env, and run.sh's exports happen after the preflight process.
     names = {
+        *FPM_KV_WARMUP_DEFAULTS,
         READINESS_TIMEOUT_ENV,
         "PYTHONPATH",
         "DYN_FPM_DSV41_REAL_KV",
@@ -1589,6 +1781,9 @@ def _write_runtime_environment(cell_dir: Path, overrides: dict[str, Any]) -> Non
         "DYN_FPM_TOKENIZER_REVISION",
         "DYN_FPM_DATASET_ROLE",
         "AISIM_FPM_BACKEND",
+        "AISIMULATE_RUNTIME_CONTEXT",
+        "AISIMULATE_RUNTIME_INSTRUMENTATION",
+        "AISIMULATE_RUNTIME_OBSERVATION_DIR",
     }
     lines = ["# Generated Collector startup environment; engine settings remain in run.sh."]
     for item in overrides["K8sConfig"]["extra_env"]:
@@ -1687,7 +1882,7 @@ def _runtime_collection_summary(
     expected_plan_sha256: str | None = None,
     expected_attempt_id: str | None = None,
     expected_backend_version: str | None = None,
-) -> dict[str, int]:
+) -> dict[str, Any]:
     """Return auditable unique-axis counts from a validated native grid."""
 
     collection = validate_native_collection(
@@ -1702,7 +1897,12 @@ def _runtime_collection_summary(
         "measured_point_count": len(points),
         "measured_batch_size_axis_count": len({int(point["batch_size"]) for point in points}),
         "measured_kv_read_axis_count": len({int(point["total_kv_read_tokens"]) for point in points}),
+        "native_kv_seed_regime_counts": dict(
+            Counter(measurement.kv_seed_regime or "unreported" for measurement in collection.points)
+        ),
     }
+    if collection.kvwarm_meta is not None:
+        summary["native_kvwarm"] = collection.kvwarm_meta
     if cell.workload_kind == "prefill":
         summary["measured_new_token_axis_count"] = len({int(point["total_prefill_tokens"]) for point in points})
     return summary
@@ -1763,6 +1963,9 @@ def _cell_runner(plan: FPMCollectionPlan, cell: FPMCell, manifest: Path, cell_di
             mounts=plan.options.slurm_container_mounts,
             total_gpus=cell.topology.total_gpus,
             backend=plan.backend,
+            cpus_per_task=plan.options.slurm_cpus_per_task,
+            cpu_bind=plan.options.slurm_cpu_bind,
+            attention_tp=cell.topology.tp,
         )
     if executor != "kubernetes":
         raise ValueError(f"unknown FPM executor {executor!r}")
@@ -1966,6 +2169,7 @@ def run_collection(
     database_root: str | None = None,
     publish_partial: bool = False,
     collect_only: bool = False,
+    publish_database: bool = True,
 ) -> list[dict[str, object]]:
     """Render and run every cell, always tearing down owned resources."""
 
@@ -1998,6 +2202,7 @@ def run_collection(
             database_root=database_root,
             publish_partial=publish_partial,
             collect_only=collect_only,
+            publish_database=publish_database,
         )
 
 
@@ -2014,6 +2219,7 @@ def _run_collection_impl(
     database_root: str | None = None,
     publish_partial: bool = False,
     collect_only: bool = False,
+    publish_database: bool = True,
 ) -> list[dict[str, object]]:
     if _frozen_points(plan) is not None and smoke:
         raise ValueError("--fpm-benchmark-points-file cannot be combined with --smoke")
@@ -2023,11 +2229,55 @@ def _run_collection_impl(
         root /= "smoke"
     root.mkdir(parents=True, exist_ok=True)
     _atomic_json(root / "collection-plan.json", plan.to_dict())
+    _atomic_json(root / "generator-overrides.json", with_kv_warmup_defaults(generator_overrides))
     checkpoint_name = "fpm_forward_smoke.json" if smoke else "fpm_forward.json"
     checkpoint_path = Path(checkpoint_dir).expanduser().resolve() / checkpoint_name
     checkpoint = _load_checkpoint(checkpoint_path, plan, resume)
+    instrumentation = getattr(plan, "runtime_instrumentation", None)
+    observation_attempt_id = None
+    if instrumentation is not None:
+        from .runtime_probe import prepare_collection_observations
+
+        observation_attempt_id = checkpoint.setdefault("runtime_observation_attempt_id", uuid.uuid4().hex)
+        instrumentation = prepare_collection_observations(plan, root, observation_attempt_id)
+        _atomic_json(checkpoint_path, checkpoint)
     errors: list[dict[str, object]] = []
     run_attempts: list[dict[str, Any]] = []
+    observation_archive_failed: set[str] = set()
+
+    def archive_observations(cell, record) -> bool:
+        if instrumentation is None:
+            return True
+        from .runtime_probe import record_collection_observations
+
+        try:
+            observation_index = record_collection_observations(
+                plan,
+                root,
+                observation_attempt_id,
+                cell,
+                record["attempt_id"],
+                root / "cells" / cell.cell_id,
+                record["status"],
+            )
+            checkpoint["runtime_observations"] = str(observation_index)
+            record.pop("observation_error", None)
+            return True
+        except Exception as error:
+            record["status"] = "failed"
+            record["observation_error"] = str(error)
+            observation_archive_failed.add(cell.cell_id)
+            errors.append(
+                {
+                    "module": "fpm_forward",
+                    "cell_id": cell.cell_id,
+                    "error_type": type(error).__name__,
+                    "error_message": str(error),
+                    "classification": "runtime_observation_archive_failed",
+                }
+            )
+            return False
+
     runtime_exec = Path(__file__).resolve().parent / "runtime" / "fpm_exec.sh"
     runtime_preflight = Path(__file__).resolve().parent / "runtime" / "preflight.py"
     target_cells = plan.cells[: (cell_limit or (1 if smoke else len(plan.cells)))]
@@ -2035,7 +2285,8 @@ def _run_collection_impl(
     formal_database_terminal = False
     database_entry = checkpoint.get("database")
     if (
-        resume
+        publish_database
+        and resume
         and not smoke
         and isinstance(database_entry, dict)
         and database_entry.get("status") == "passed"
@@ -2075,8 +2326,11 @@ def _run_collection_impl(
             recovered = _recover_completed_attempt(plan, cell, root, entry)
             if recovered is None:
                 continue
+            archived = archive_observations(cell, recovered)
             checkpoint["cells"][cell.cell_id] = recovered
             checkpoint_changed = True
+            if not archived:
+                continue
             logger.info(
                 "Recovered completed FPM cell %s from strictly validated artifacts for attempt %s",
                 cell.cell_id,
@@ -2090,6 +2344,12 @@ def _run_collection_impl(
         entry = checkpoint["cells"].get(cell.cell_id)
         if not isinstance(entry, dict) or entry.get("status") != "passed":
             continue
+        if instrumentation is not None:
+            # Native recovery and older checkpoints can precede observation
+            # archival. Repair the index before this passed cell is skipped.
+            checkpoint_changed = True
+            if not archive_observations(cell, entry):
+                continue
         # A validated terminal database no longer depends on retained raw
         # receipts. Unpublished cells still need them before publication.
         if not formal_database_terminal and _frozen_points(plan) is not None:
@@ -2134,10 +2394,20 @@ def _run_collection_impl(
 
     for cell in target_cells:
         previous = checkpoint["cells"].get(cell.cell_id, {})
+        if cell.cell_id in observation_archive_failed:
+            continue
         if resume and previous.get("status") == "passed":
             continue
         if resume and previous.get("status") in {"failed", "cleanup_failed"} and not retry_failed:
             continue
+
+        if getattr(plan.options, "executor", "kubernetes") == "slurm" and plan.options.slurm_cpus_per_task is None:
+            # Do not discard retained raw/log evidence on an old campaign in
+            # an attempt to launch with unrecorded CPU defaults.
+            raise ValueError(
+                "saved Slurm campaign has no frozen CPU policy; preserve its artifacts for CPU-only recovery "
+                "and use a fresh campaign and smoke for new workers"
+            )
 
         cell_dir = root / "cells" / cell.cell_id
         if getattr(plan.options, "executor", "kubernetes") == "slurm":
@@ -2170,6 +2440,10 @@ def _run_collection_impl(
         if cell_dir.exists() and not resume and not cell.state_protocol:
             shutil.rmtree(cell_dir)
         cell_dir.mkdir(parents=True, exist_ok=True)
+        # Preserve abruptly interrupted attempts before replacing raw files.
+        if instrumentation is not None and previous.get("attempt_id") and not archive_observations(cell, previous):
+            _atomic_json(checkpoint_path, checkpoint)
+            continue
         for stale_dir in (cell_dir / "raw", cell_dir / "logs"):
             if stale_dir.exists():
                 shutil.rmtree(stale_dir)
@@ -2228,6 +2502,16 @@ def _run_collection_impl(
             pods = resource.wait_ready(_expected_nodes(manifest))
             phase_marks["schedule_s"] = round(time.monotonic() - mark, 3)
             mark = time.monotonic()
+            instrumentation_files = []
+            if instrumentation is not None:
+                from .runtime_probe import launch_context, stage_runtime_instrumentation
+
+                context = launch_context(
+                    plan, cell, configuration=plan.runtime_configuration, attempt_id=observation_attempt_id
+                )
+                context["collector_attempt_id"] = attempt_id
+                context["cell_id"] = cell.cell_id
+                instrumentation_files = stage_runtime_instrumentation(instrumentation, cell_dir, context)
             resource.stage(
                 pods,
                 [
@@ -2236,6 +2520,19 @@ def _run_collection_impl(
                     runtime_env,
                     runtime_exec,
                     runtime_preflight,
+                    *[
+                        runtime_exec.parent / filename
+                        for filename in _MEMORY_OBSERVER_FILES
+                        if (
+                            instrumentation is None
+                            and (_observe_runtime_memory(plan, cell) or _observe_runtime_execution(plan, cell))
+                        )
+                        or (
+                            getattr(plan.options, "executor", "kubernetes") == "slurm"
+                            and filename == "fpm_memory_observer.py"
+                        )
+                    ],
+                    *instrumentation_files,
                     *_stage_points_file(plan, cell_dir),
                     *(
                         [
@@ -2253,11 +2550,17 @@ def _run_collection_impl(
                     ),
                 ],
             )
+            profile_version = (
+                {"expected_backend_version": plan.capability.aic_database_version}
+                if getattr(plan, "fpm_profile", None) is not None
+                else {}
+            )
             resource.prepare_attempt(
                 pods,
                 cell_id=cell.cell_id,
                 plan_sha256=plan.sha256,
                 attempt_id=attempt_id,
+                **profile_version,
             )
             _record_points_receipts(resource, pods, plan, cell, attempt_id, phase="before")
             phase_marks["stage_s"] = round(time.monotonic() - mark, 3)
@@ -2338,6 +2641,8 @@ def _run_collection_impl(
             record["collector_phase_seconds"] = dict(phase_marks)
             record["completed_at"] = _utc_now()
             record["duration_seconds"] = round(time.monotonic() - cell_started, 3)
+            if instrumentation is not None:
+                archive_observations(cell, record)
             run_attempts.append(_run_manifest_attempt(cell, record))
             _atomic_json(checkpoint_path, checkpoint)
     # R16 §3 run manifest: the machine-readable timing map for the speed-up
@@ -2385,6 +2690,17 @@ def _run_collection_impl(
         _atomic_json(checkpoint_path, checkpoint)
         return errors
     all_passed = all(checkpoint["cells"].get(cell.cell_id, {}).get("status") == "passed" for cell in target_cells)
+    if not publish_database:
+        if not all_passed and not errors:
+            errors.append(
+                {
+                    "module": "fpm_forward",
+                    "error_type": "IncompleteCampaign",
+                    "error_message": "validation collection has incomplete cells",
+                    "classification": "campaign_incomplete",
+                }
+            )
+        return errors
     # Formal publication eligibility must agree with completion: a deliberate
     # partial run (cell_limit below the frozen plan) can pass every targeted
     # cell yet cannot publish, and deserves the honest campaign_incomplete

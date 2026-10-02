@@ -112,6 +112,27 @@ def test_compile_engine_propagates_attention_backend_to_model_config(monkeypatch
     assert captured["model"].config.attention_backend == "fa3"
 
 
+def test_compile_engine_propagates_moe_kernel_source_to_model_config(monkeypatch):
+    captured = {}
+
+    def _capture_spec(model, **_kwargs):
+        captured["model"] = model
+        return "{}"
+
+    monkeypatch.setattr(engine, "build_engine_spec_json", _capture_spec)
+    monkeypatch.setattr(engine, "_maybe_load_database", lambda *a, **k: None)
+    monkeypatch.setattr(engine.aisimulate_core, "engine_spec_bincode_from_json", lambda s: b"")
+
+    engine.compile_engine(
+        "Qwen/Qwen3-30B-A3B",
+        "h200_sxm",
+        "trtllm",
+        moe_kernel_source="sglang_flashinfer_trtllm_moe",
+    )
+
+    assert captured["model"].config.moe_kernel_source == "sglang_flashinfer_trtllm_moe"
+
+
 def test_compile_engine_propagates_database_mode_to_database_view(monkeypatch):
     captured = {}
 

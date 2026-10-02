@@ -22,7 +22,7 @@ import os
 import threading
 from collections import OrderedDict
 from collections.abc import Mapping
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, fields
 from dataclasses import field as dataclass_field
 from importlib import resources as pkg_resources
 from pathlib import Path
@@ -101,16 +101,36 @@ class RustEngineUnsupportedError(RuntimeError):
 
 @dataclass(frozen=True)
 class ForwardPassPerfModelConfig:
-    """Canonical immutable identity and selection policy for the estimator."""
+    """Canonical immutable identity and selection policy for the estimator.
+
+    Estimator controls pass through to Rust unchanged. For regression,
+    ``estimator_config["fpm_regression"]["fit"]["rebuild_interval"]`` accepts
+    a positive integer mutation count or ``None`` to disable periodic
+    statistics rebuilding. Omitting it uses the Rust default of ``None``;
+    numerical recovery and batch fallbacks remain enabled. An explicit
+    positive interval, such as 4096, opts into periodic rebuilding.
+
+    ``fit.kind`` defaults to ``"standardized_nnls"`` (alias ``"linear"``).
+    Set ``{"fpm_regression": {"fit": {"kind": "spline"}}}`` to use learned
+    piecewise-linear fits. Rust fills ``fit.spline`` with two knots per axis
+    and adaptive search defaults: window 16, trigger 8, relative tolerance
+    0.05, absolute tolerance 1 ms, and cooldown 64 accepted observations.
+    For periodic searches, supply ``fit.spline.search`` as
+    ``{"kind": "periodic", "step": 64}``. These controls do not change
+    ``estimation_mode`` selection: request ``"fpm_regression"`` explicitly
+    to require regression.
+    """
 
     model: str
     system: str
     backend: str
     worker_type: str
     backend_version: str | None = None
+    fpm_profile: dict[str, Any] | None = dataclass_field(default=None, kw_only=True)
     tp: int = 1
     pp: int = 1
     attention_dp: int = 1
+    dcp: int | None = dataclass_field(default=None, kw_only=True)
     moe_tp_size: int | None = None
     moe_ep_size: int | None = None
     gemm_quant_mode: str | None = None
@@ -130,6 +150,7 @@ class ForwardPassPerfModelConfig:
     fallback_policy: str = "deny"
     estimator_config: dict[str, Any] = dataclass_field(default_factory=dict)
     attention_backend: str | None = None
+    moe_kernel_source: str | None = dataclass_field(default=None, kw_only=True)
     enable_shared_layer: bool | None = None
     strict_provenance: bool = False
     moe_backend: str | None = None
@@ -166,7 +187,12 @@ class ForwardPassPerfModelConfig:
 
 @dataclass(frozen=True)
 class ForwardPassPerfOptions:
-    """Runtime observation, regression, correction, and capacity controls."""
+    """Legacy controls; serialization retains only explicit constructor arguments.
+
+    Use ``ForwardPassPerfOptions(**(options.to_dict() | changes))`` to retain
+    omitted fields when modifying options. ``dataclasses.replace`` supplies
+    every field to the constructor, making all of its values explicit.
+    """
 
     max_observations: int = 64
     min_observations: int = 5
@@ -182,8 +208,25 @@ class ForwardPassPerfOptions:
     bucket_shape: tuple[int, int] | None = None
     regression_ridge_scale: float = 1e-9
 
+    def __new__(cls, *args: Any, **kwargs: Any) -> ForwardPassPerfOptions:
+        instance = super().__new__(cls)
+        # Capture presence before the dataclass initializer supplies defaults.
+        # Comparing values against defaults would discard explicit user choices.
+        positional = tuple(field.name for field in fields(cls))[: len(args)]
+        object.__setattr__(instance, "_explicit_fields", frozenset((*positional, *kwargs)))
+        return instance
+
+    def __setstate__(self, state: dict[str, Any]) -> None:
+        for name, value in state.items():
+            object.__setattr__(self, name, value)
+        if "_explicit_fields" not in state:
+            # Older pickles have saved values but no constructor-presence metadata.
+            object.__setattr__(
+                self, "_explicit_fields", frozenset(field.name for field in fields(self) if field.name in state)
+            )
+
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        return {name: value for name, value in asdict(self).items() if name in self._explicit_fields}
 
 
 class RustForwardPassPerfModel:
@@ -219,6 +262,23 @@ class RustForwardPassPerfModel:
     stores routed by the composition of all active ranks. Each store has its
     own fit and retention state. ``max_observations`` (default ``64``) and
     ``min_observations`` (default ``5``) apply independently to each store.
+
+    Regression updates centered sufficient statistics as retained samples are
+    inserted or evicted. The canonical ``fpm_regression.fit.rebuild_interval``
+    control counts one mutation per insertion and one per eviction. A scheduled
+    rebuild occurs after the complete update transaction, then resets its
+    counter to zero. The Rust default is ``None``, which disables only scheduled
+    rebuilds, preserving numerical recovery and batch fallbacks. Set a positive
+    interval, such as 4096 mutations, to enable scheduled rebuilds.
+
+    The default linear fit is unchanged. ``fit.kind="spline"`` adds learned
+    knots and a separate accepted-observation search clock per store. Spline
+    coefficients update between searches; a knot search rebuilds their basis.
+    The linear fit uses the same retained samples and supplies predictions
+    during spline startup or outside the retained feature bounds. Spline
+    predictions require an available linear prediction for the same query.
+    Saving the resolved configuration preserves settings, not samples or learned
+    state.
 
     Queued request fields are accepted for schema compatibility but ignored by
     this AIC forward-pass model. ``estimate_forward_pass_time_ms()`` treats FPM
@@ -263,23 +323,46 @@ class RustForwardPassPerfModel:
         Auto searches op_level, fpm_interpolation, then fpm_regression even
         with fallback_policy=deny. Explicit modes default to strict selection.
         Native correction retains its existing workload feature space.
+        Nested estimator controls, including an explicit ``None`` rebuild
+        interval, are preserved in resolved configuration and provenance.
         """
         import aisimulate_core
 
-        payload = config.to_dict() if isinstance(config, ForwardPassPerfModelConfig) else dict(config)
-        if payload.get("estimation_mode") != "fpm_regression" or payload.get("systems_paths"):
-            payload["systems_paths"] = _resolve_forward_pass_systems_paths(tuple(payload.get("systems_paths") or ()))
-        if "transfer_policy" in payload:
-            payload["transfer_policy"] = _resolve_forward_pass_transfer_policy(payload["transfer_policy"])
-        estimator_config = payload.get("estimator_config")
-        if isinstance(estimator_config, Mapping) and isinstance(estimator_config.get("features"), Mapping):
-            features = dict(estimator_config["features"])
-            for name in ("attention_kv_weight", "prefill_attention_pair_weight", "ffn_token_weight"):
-                weight = features.get(name)
-                if isinstance(weight, float) and not math.isfinite(weight):
-                    features[name] = "NaN" if math.isnan(weight) else "Infinity" if weight > 0 else "-Infinity"
-            payload["estimator_config"] = {**estimator_config, "features": features}
-        return cls(aisimulate_core.RustForwardPassPerfModel.best_available(_json_dumps(payload)))
+        return cls(aisimulate_core.RustForwardPassPerfModel.best_available(_forward_pass_config_json(config)))
+
+    @staticmethod
+    def normalize_config(config: ForwardPassPerfModelConfig | Mapping[str, Any]) -> dict[str, Any]:
+        """Expand and validate the Rust-owned configuration without constructing a model."""
+        import aisimulate_core
+
+        return json.loads(aisimulate_core.RustForwardPassPerfModel.normalize_config(_forward_pass_config_json(config)))
+
+    @staticmethod
+    def estimate_cache_budget(
+        config: ForwardPassPerfModelConfig | Mapping[str, Any], budget: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        """Size explicit profile resources without a graph or timing data.
+
+        Grouped caches expose a byte budget and per-request peak bound; their
+        scalar bytes-per-token and aggregate token capacities are unavailable.
+        Rust owns allocation rounding, retention windows and budget arithmetic.
+        """
+        import aisimulate_core
+
+        return json.loads(
+            aisimulate_core.RustForwardPassPerfModel.estimate_cache_budget(
+                _forward_pass_config_json(config), _json_dumps(dict(budget))
+            )
+        )
+
+    def predict_prefill_latency(self, bs: int, isl: int, prefix: int = 0) -> float:
+        """Return uncorrected native prefill latency in milliseconds.
+
+        ``isl`` is the total sequence length including ``prefix``. A selected graph
+        profile admits only its measured integer shapes; Rust owns validation
+        and prediction. This method returns no scheduler or energy estimate.
+        """
+        return self._inner.predict_prefill_latency(bs, isl, prefix)
 
     def estimate_forward_pass_time_ms(self, metrics: dict[str, Any] | list[dict[str, Any]]) -> float | None:
         """API: ``model.estimate_forward_pass_time_ms(metrics) -> float | None``.
@@ -291,11 +374,22 @@ class RustForwardPassPerfModel:
         convenience form. Native workload inference and role-bound regression
         feature extraction use only ``scheduled_requests``; queued fields and
         ``wall_time`` are ignored for estimation. Regression models return
-        ``None`` until the selected store has a ready fit. A different store's
-        readiness does not supply a fallback prediction. Empty
-        scheduled work returns ``0.0``.
+        ``None`` until the selected store has a ready linear fit. A different
+        store's readiness does not supply a fallback prediction. Spline
+        predictions also require an available linear prediction for the query;
+        otherwise they return ``None`` even inside retained raw-feature bounds.
+        Empty scheduled work returns ``0.0``.
         """
         return self._inner.estimate_forward_pass_time_ms(_json_dumps(metrics))
+
+    def estimate_forward_pass_detailed(self, metrics: dict[str, Any] | list[dict[str, Any]]) -> dict[str, Any]:
+        """Return timing with direct-FPM support, rank composition and correction.
+
+        Measurement weights explain raw lookups. ``ranks`` records mixed-pass
+        subtraction and ``max_rank`` identifies the native rank maximum, before
+        ``correction_factor``. Other estimators have no direct lookup evidence.
+        """
+        return json.loads(self._inner.estimate_forward_pass_detailed(_json_dumps(metrics)))
 
     def tune_with_fpms(self, iterations: dict[str, Any] | list[Any]) -> None:
         """API: ``model.tune_with_fpms(iterations) -> None``.
@@ -334,10 +428,31 @@ class RustForwardPassPerfModel:
 
         Description: return source, readiness, retained sample count, and
         fallback warning. Regression retained count is summed across stores;
-        ``ready`` means at least one store has a ready fit. Consult
+        ``ready`` means at least one store has a ready linear fit, including
+        when spline fitting is selected. Consult
         ``regression_store_diagnostics()`` for individual store readiness.
+        Readiness does not guarantee query coverage: another store may be cold,
+        and spline predictions require an available linear prediction for the
+        same query.
         """
         return json.loads(self._inner.diagnostics())
+
+    def fpm_query_coverage(self) -> dict[str, Any] | None:
+        """Bounded direct-FPM lookup evidence, or None when collection is disabled.
+
+        Counts describe native lookups, including errors and mixed-pass
+        baselines. External timing-cache hits are not new lookups. A snapshot
+        does not establish replay completion or prediction accuracy.
+        """
+        return json.loads(self._inner.fpm_query_coverage())
+
+    def predict_decode_latency_total(self, batch_size: int, total_past_kv_tokens: int) -> float:
+        """Uncorrected native decode timing at the exact past-KV batch total."""
+        return self._inner.predict_decode_latency_total(batch_size, total_past_kv_tokens)
+
+    def fpm_decode_kv_ceiling(self) -> int | None:
+        """Largest collected decode KV total; reading it does not record a lookup."""
+        return self._inner.fpm_decode_kv_ceiling()
 
     def regression_store_diagnostics(self) -> list[dict[str, Any]]:
         """Return each regression store's label, readiness, and retained count.
@@ -347,6 +462,19 @@ class RustForwardPassPerfModel:
         order: ``pure_decode``, ``contains_locally_mixed``,
         ``cross_rank_aggregated``, ``pure_prefill``. Dedicated models return
         their single store; native AIC models return an empty list.
+
+        Only spline stores add ``spline`` with ``initialized``, ``ready``,
+        ``accepted_observations``, ``knot_searches``,
+        ``last_search_observation``, ``numerical_rebuilds``, and
+        ``batch_fallbacks``. Store readiness requires the shared linear fit;
+        spline readiness can be false while the store is ready. Conversely,
+        ``spline.ready`` can be true while the shared linear fit is unavailable;
+        the enclosing store then reports ``ready=False`` and returns no
+        prediction, including inside retained raw-feature bounds.
+        The search clock counts accepted observations, separately from the
+        insertion/eviction mutation clock for statistics rebuilding.
+        ``numerical_rebuilds`` includes scheduled and recovery rebuilds within
+        fixed-knot epochs, excluding initialization at knot searches.
         """
         return json.loads(self._inner.regression_store_diagnostics())
 
@@ -380,6 +508,23 @@ class RustForwardPassPerfModel:
 
 def _json_dumps(value: Any) -> str:
     return json.dumps(value, separators=(",", ":"), sort_keys=True)
+
+
+def _forward_pass_config_json(config: ForwardPassPerfModelConfig | Mapping[str, Any]) -> str:
+    payload = config.to_dict() if isinstance(config, ForwardPassPerfModelConfig) else dict(config)
+    if payload.get("estimation_mode") != "fpm_regression" or payload.get("systems_paths"):
+        payload["systems_paths"] = _resolve_forward_pass_systems_paths(tuple(payload.get("systems_paths") or ()))
+    if "transfer_policy" in payload:
+        payload["transfer_policy"] = _resolve_forward_pass_transfer_policy(payload["transfer_policy"])
+    estimator_config = payload.get("estimator_config")
+    if isinstance(estimator_config, Mapping) and isinstance(estimator_config.get("features"), Mapping):
+        features = dict(estimator_config["features"])
+        for name in ("attention_kv_weight", "prefill_attention_pair_weight", "ffn_token_weight"):
+            weight = features.get(name)
+            if isinstance(weight, float) and not math.isfinite(weight):
+                features[name] = "NaN" if math.isnan(weight) else "Infinity" if weight > 0 else "-Infinity"
+        payload["estimator_config"] = {**estimator_config, "features": features}
+    return _json_dumps(payload)
 
 
 def _optional_json_dumps(value: Mapping[str, Any] | None) -> str | None:
@@ -1164,6 +1309,7 @@ def _speculation_identity(model_config: Any) -> str | None:
 
 def _engine_config_json(model: Any, database: Any) -> str:
     model_config = model.config
+    fpm_config = getattr(model_config, "fpm_config", None)
     # Forward only the MTP draft length. The aic-core layer models iteration compute cost;
     # accepted-token progress belongs to the upper prediction layer.
     nextn = getattr(model, "_nextn", None)
@@ -1181,6 +1327,7 @@ def _engine_config_json(model: Any, database: Any) -> str:
         "attention_dp_size": _optional_int(getattr(model_config, "attention_dp_size", None)),
         # Part of the engine identity so cp variants get distinct cached handles.
         "cp_size": _optional_int(getattr(model_config, "cp_size", None)),
+        "dcp_size": _optional_int(getattr(model_config, "dcp_size", None)),
         "weight_dtype": _quant_to_dtype(getattr(model_config, "gemm_quant_mode", None)),
         "moe_dtype": _moe_quant_to_dtype(getattr(model_config, "moe_quant_mode", None)),
         "activation_dtype": _quant_to_dtype(getattr(model_config, "fmha_quant_mode", None)),
@@ -1197,6 +1344,7 @@ def _engine_config_json(model: Any, database: Any) -> str:
         # per phase); without this key they would share a cached handle and
         # silently answer with the other mode's engine.
         "forward_model": getattr(model, "forward_model", "op_level"),
+        "moe_kernel_source": getattr(model_config, "moe_kernel_source", None),
         # Same identity built against different systems roots reads different
         # perf trees; the root is part of the engine identity.
         "systems_root": str(getattr(database, "systems_root", "") or ""),
@@ -1228,13 +1376,17 @@ def _engine_config_json(model: Any, database: Any) -> str:
                         "comm": _raw_quant_name(getattr(model_config, "comm_quant_mode", None)),
                     },
                     "model_config": {
+                        "fpm_config": fpm_config.cache_identity() if fpm_config is not None else None,
                         "decoder_replay": bool(getattr(model_config, "decoder_replay", False)),
                         "cp_style": getattr(model_config, "cp_style", None),
                         "workload_distribution": getattr(model_config, "workload_distribution", None),
+                        "decode_workload_distribution": getattr(model_config, "decode_workload_distribution", None),
+                        "prefill_graph_profile": getattr(model_config, "prefill_graph_profile", None),
                         "overwrite_num_layers": getattr(model_config, "overwrite_num_layers", None),
                         "sms": getattr(model_config, "sms", None),
                         "moe_backend": getattr(model_config, "moe_backend", None),
                         "attention_backend": getattr(model_config, "attention_backend", None),
+                        "moe_kernel_source": getattr(model_config, "moe_kernel_source", None),
                         # enable_wideep is gone from the identity: the deprecated
                         # flag is constant False on every Task-built ModelConfig;
                         # moe_comm_backend + num_gpus_per_node below carry the
@@ -1348,6 +1500,7 @@ def _moe_quant_to_dtype(value: Any) -> str | None:
         "w4a8_mxfp4_mxfp8",
         "w4a8_mxfp4_mxfp8_trtllm",
         "w4a16_mxfp4_cutlass",
+        "w4a16_mxfp4_humming",
     }:
         return name
     return _quant_to_dtype(value)

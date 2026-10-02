@@ -23,6 +23,7 @@ pytestmark = pytest.mark.unit
 def runner(tmp_path, monkeypatch):
     monkeypatch.setenv("SLURM_JOB_ID", "1234")
     monkeypatch.setenv("SLURM_JOB_NODELIST", "test-node")
+    monkeypatch.setenv("SLURM_JOB_CPUS_PER_NODE", "16")
     manifest = tmp_path / "manifest.yaml"
     manifest.write_text(
         json.dumps(
@@ -33,7 +34,16 @@ def runner(tmp_path, monkeypatch):
             }
         )
     )
-    return SlurmCellRunner(manifest, tmp_path, image="image@sha256:abc", mounts=("/cache:/cache",), total_gpus=4)
+    return SlurmCellRunner(
+        manifest,
+        tmp_path,
+        image="image@sha256:abc",
+        mounts=("/cache:/cache",),
+        total_gpus=4,
+        cpus_per_task=16,
+        cpu_bind="cores",
+        attention_tp=1,
+    )
 
 
 def test_slurm_requires_scheduler_allocation(runner, monkeypatch):
@@ -64,6 +74,7 @@ def test_slurm_stage_and_argv_keep_shared_result_unit_identity(runner, monkeypat
     assert (runner.cell_dir / "slurm-runtime" / source.name).read_text() == source.read_text()
     argv = commands[-1]
     assert "--jobid=1234" in argv and "--gpus-per-node=4" in argv
+    assert "--cpus-per-task=16" in argv and "--cpu-bind=cores" in argv
     assert "FPM_NODE_RANK=0" in argv and "FPM_MASTER_ADDR=test-node" in argv
     assert f"{runner.cell_dir}/raw/node0000:/results" in next(a for a in argv if a.startswith("--container-mounts="))
 
@@ -81,7 +92,7 @@ def test_slurm_native_exec_chain_can_create_session_and_preserves_argv(runner, m
 
     def run_actual_container_command(args, **kwargs):
         return subprocess.run(
-            args[args.index("env") :],
+            args[args.index("/usr/bin/env") :],
             start_new_session=True,
             capture_output=True,
             text=True,
@@ -102,6 +113,118 @@ def test_slurm_native_exec_chain_can_create_session_and_preserves_argv(runner, m
     assert len(set(receipt["after"])) == 1
     assert receipt["argv"] == [str(exit_code), literal]
     assert receipt["rank"] == "0"
+
+
+@pytest.mark.parametrize("allocation", ["1", "8", "16(x0)", "sixteen", "16,16"])
+def test_slurm_rejects_small_or_malformed_allocated_cpu_pool(runner, monkeypatch, allocation):
+    monkeypatch.setenv("SLURM_JOB_CPUS_PER_NODE", allocation)
+    monkeypatch.setattr(
+        runner,
+        "_command",
+        lambda args, **kwargs: SimpleNamespace(
+            stdout="JobId=1234 JobState=RUNNING NodeList=test-node" if "job" in args else "test-node"
+        ),
+    )
+    with pytest.raises(ValueError, match="CPU"):
+        runner.wait_ready(1)
+    assert runner.hosts == []
+
+
+def test_slurm_two_node_cpu_allocation_preserves_host_specific_pool(runner, monkeypatch):
+    runner.node_count = 2
+    monkeypatch.setenv("SLURM_JOB_CPUS_PER_NODE", "32,16")
+    monkeypatch.setattr(
+        runner,
+        "_command",
+        lambda args, **kwargs: SimpleNamespace(
+            stdout="JobId=1234 JobState=RUNNING NodeList=node-a,node-b" if "job" in args else "node-a node-b"
+        ),
+    )
+    assert runner.wait_ready(2) == ["node0000", "node0001"]
+    report = json.loads((runner.cell_dir / "slurm-cpu-allocation.json").read_text())
+    assert report["allocated_cpus_per_node"] == {"node-a": 32, "node-b": 16}
+
+
+def test_slurm_reads_allocated_cpu_ids_when_job_env_is_absent(runner, monkeypatch):
+    monkeypatch.delenv("SLURM_JOB_CPUS_PER_NODE")
+
+    def command(args, **kwargs):
+        if "--details" in args:
+            return SimpleNamespace(stdout="JobId=1234\n Nodes=test-node CPU_IDs=32-39,64-71 Mem=0")
+        return SimpleNamespace(
+            stdout="JobId=1234 JobState=RUNNING NodeList=test-node" if "job" in args else "test-node"
+        )
+
+    monkeypatch.setattr(runner, "_command", command)
+    assert runner.wait_ready(1) == ["node0000"]
+    report = json.loads((runner.cell_dir / "slurm-cpu-allocation.json").read_text())
+    assert report["allocated_cpus_per_node"] == {"test-node": 16}
+    assert "CPU_IDs" in report["source"]
+
+
+def test_slurm_expands_grouped_cpu_allocation_by_host(runner, monkeypatch):
+    runner.node_count = 3
+    monkeypatch.delenv("SLURM_JOB_CPUS_PER_NODE")
+
+    def command(args, **kwargs):
+        if "--details" in args:
+            return SimpleNamespace(
+                stdout=("JobId=1234\n Nodes=node3 CPU_IDs=64-95 Mem=0\n Nodes=node[1-2] CPU_IDs=0-15 Mem=0")
+            )
+        if "job" in args:
+            return SimpleNamespace(stdout="JobId=1234 JobState=RUNNING NodeList=node[1-3]")
+        return SimpleNamespace(
+            stdout={"node[1-3]": "node1 node2 node3", "node[1-2]": "node1 node2", "node3": "node3"}[args[-1]]
+        )
+
+    monkeypatch.setattr(runner, "_command", command)
+    assert runner.wait_ready(3) == ["node0000", "node0001", "node0002"]
+    report = json.loads((runner.cell_dir / "slurm-cpu-allocation.json").read_text())
+    assert report["allocated_cpus_per_node"] == {"node1": 16, "node2": 16, "node3": 32}
+
+
+@pytest.mark.parametrize("cpus,binding", [(0, "cores"), (True, "cores"), (16, "mask_cpu:1"), (1, "cores")])
+def test_slurm_rejects_invalid_policy_or_less_than_local_dp_schedulers(runner, cpus, binding):
+    with pytest.raises(ValueError, match="CPU|cpu"):
+        SlurmCellRunner(
+            runner.cell_dir / "manifest.yaml",
+            runner.cell_dir,
+            image=runner.image,
+            mounts=(),
+            total_gpus=4,
+            cpus_per_task=cpus,
+            cpu_bind=binding,
+            attention_tp=1,
+        )
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX container entrypoint")
+def test_slurm_container_entrypoint_ignores_shadowed_env_on_caller_path(runner, monkeypatch):
+    host_bin = runner.cell_dir / "host-bin"
+    host_bin.mkdir()
+    shadowed_env = host_bin / "env"
+    shadowed_env.write_text("#!/bin/sh\nexit 13\n")
+    shadowed_env.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{host_bin}:{os.environ['PATH']}")
+    runner.hosts = ["test-node"]
+
+    def command(args, *, timeout):
+        # Execute the emitted payload after the Slurm options so PATH lookup
+        # and environment injection remain real.
+        executable_index = next(index for index, arg in enumerate(args[1:], 1) if not arg.startswith("--"))
+        return subprocess.run(args[executable_index:], check=True, capture_output=True, text=True, timeout=timeout)
+
+    monkeypatch.setattr(runner, "_command", command)
+    result = runner._exec(
+        "node0000",
+        [
+            sys.executable,
+            "-c",
+            "import json, os; print(json.dumps([os.environ['FPM_NODE_RANK'], os.environ['FPM_MASTER_ADDR']]))",
+        ],
+        timeout=10,
+    )
+    assert json.loads(result.stdout) == ["0", "test-node"]
 
 
 def test_slurm_cleanup_cancels_only_receipted_steps_and_verifies_exit(runner, monkeypatch):
@@ -192,13 +315,16 @@ def test_preparation_measures_metadata_after_frozen_environment(runner, monkeypa
     destination = runner.cell_dir / "provenance.json"
     monkeypatch.setattr(campaign, "REMOTE_WORKDIR", str(startup))
     monkeypatch.setattr(native_artifact, "COLLECTOR_PROVENANCE_FILENAME", str(destination))
+    monkeypatch.setattr(campaign, "COLLECTOR_PROVENANCE_FILENAME", str(destination))
     runner.backend = backend
     runner.hosts = ["test-node"]
     commands = []
 
     def run_actual_container_command(args, **kwargs):
         commands.append(args)
-        return subprocess.run(args[args.index("env") :], capture_output=True, text=True, check=True, timeout=10)
+        return subprocess.run(
+            args[args.index("/usr/bin/env") :], capture_output=True, text=True, check=True, timeout=10
+        )
 
     monkeypatch.setattr(runner, "_command", run_actual_container_command)
     literal = 'spaces; $(not-a-command) "quoted"'
@@ -221,10 +347,13 @@ def test_preparation_rejects_missing_or_failed_frozen_environment(runner, monkey
     destination = runner.cell_dir / "provenance.json"
     monkeypatch.setattr(campaign, "REMOTE_WORKDIR", str(runner.cell_dir))
     monkeypatch.setattr(native_artifact, "COLLECTOR_PROVENANCE_FILENAME", str(destination))
+    monkeypatch.setattr(campaign, "COLLECTOR_PROVENANCE_FILENAME", str(destination))
     runner.hosts = ["test-node"]
 
     def run_actual_container_command(args, **kwargs):
-        return subprocess.run(args[args.index("env") :], capture_output=True, text=True, check=True, timeout=10)
+        return subprocess.run(
+            args[args.index("/usr/bin/env") :], capture_output=True, text=True, check=True, timeout=10
+        )
 
     monkeypatch.setattr(runner, "_command", run_actual_container_command)
     with pytest.raises(subprocess.CalledProcessError) as caught:
@@ -649,3 +778,107 @@ def test_darwin_cleanup_waits_for_communicate_owner_to_reap(monkeypatch):
     assert not failures
     assert results[0].returncode == -signal.SIGTERM
     assert denied[:2] == [signal.SIGTERM, 0]
+
+
+@pytest.mark.parametrize("actual_version", ["0.25.1", "0.24.0"])
+def test_profile_campaign_observes_slurm_version_before_native_collection(tmp_path, monkeypatch, actual_version):
+    """Run the real profile campaign; only external Slurm/container operations are faked."""
+    from dataclasses import replace
+    from pathlib import Path
+
+    from collector.fpm_forward import cli
+    from collector.fpm_forward import runner as campaign
+    from collector.fpm_forward.config import FPMCollectionOptions
+
+    from .test_fpm_profile_collection import _argv, _plan, _profile
+    from .test_fpm_runner import _native_payload
+
+    profile = _profile()
+    options = FPMCollectionOptions.from_args(
+        cli._parser().parse_args(
+            [
+                *_argv(profile),
+                "--fpm-executor",
+                "slurm",
+                "--fpm-slurm-container-image",
+                "image@sha256:synthetic",
+            ]
+        )
+    )
+    plan = _plan(profile, options=replace(options, parallel_presets=("tep",)))
+    commands = []
+    executed = []
+    monkeypatch.setenv("SLURM_JOB_ID", "1234")
+    monkeypatch.setenv("SLURM_JOB_CPUS_PER_NODE", "16")
+    monkeypatch.setattr("collector.fpm_forward.slurm.shutil.which", lambda name: f"/fake/{name}")
+    monkeypatch.setattr(campaign.time, "sleep", lambda _seconds: None)
+    import importlib.metadata
+
+    real_version = importlib.metadata.version
+    monkeypatch.setattr(
+        importlib.metadata, "version", lambda name: actual_version if name == "vllm" else real_version(name)
+    )
+
+    def command(args, **_kwargs):
+        commands.append(args)
+        stdout = ""
+        if args[0] == "scontrol":
+            stdout = "JobId=1234 JobState=RUNNING NodeList=test-node" if "job" in args else "test-node"
+        elif args[0] == "squeue":
+            pass
+        else:
+            assert args[0] == "srun", args
+            assert "--jobid=1234" in args and "--gpus-per-node=8" in args
+            assert "--container-image=image@sha256:synthetic" in args
+            mounts = next(value.split("=", 1)[1] for value in args if value.startswith("--container-mounts="))
+            raw = Path(
+                next(value.removesuffix(":/results") for value in mounts.split(",") if value.endswith(":/results"))
+            )
+            assert raw.name == "node0000"
+            program = args[args.index("fpm-slurm-command") + 1 :]
+            # Preparation runs through the frozen startup environment wrapper.
+            if "fpm-slurm-prepare" in program:
+                program = program[program.index("fpm-slurm-prepare") + 2 :]
+            if program[:2] == ["python3", "-c"]:
+                # Execute the emitted program with the container's result mount mapped to disk.
+                with monkeypatch.context() as patch:
+                    patch.setattr(sys, "argv", ["-c", *program[3:]])
+                    try:
+                        exec(program[2].replace("/results", str(raw)), {})
+                    except RuntimeError as error:
+                        raise subprocess.CalledProcessError(1, args, output="prepared", stderr=str(error)) from error
+            else:
+                assert program == ["bash", "/tmp/fpm-bench/fpm_exec.sh"]
+                cell = next(item for item in plan.cells if item.cell_id == raw.parent.parent.name)
+                executed.append(cell.cell_id)
+                (raw / "benchmark.json").write_text(json.dumps(_native_payload(phase=cell.workload_kind, rank=0, dp=1)))
+        return subprocess.CompletedProcess(args, 0, stdout=stdout, stderr="")
+
+    monkeypatch.setattr(campaign, "_run_command", command)
+    errors = campaign.run_collection(
+        plan,
+        generator_overrides={},
+        checkpoint_dir=str(tmp_path / "checkpoints"),
+        artifact_root=str(tmp_path / "artifacts"),
+        database_root=str(tmp_path / "data"),
+        resume=False,
+        retry_failed=False,
+    )
+    checkpoint = json.loads((tmp_path / "checkpoints/fpm_forward.json").read_text())
+    if actual_version == "0.25.1":
+        assert errors == []
+        assert executed == [cell.cell_id for cell in plan.cells]
+        assert checkpoint["database"]["status"] == "passed"
+        assert {entry["status"] for entry in checkpoint["cells"].values()} == {"passed"}
+    else:
+        assert len(errors) == 2 and all(error["classification"] == "campaign_cell_failed" for error in errors)
+        assert executed == [] and "database" not in checkpoint
+        for entry in checkpoint["cells"].values():
+            failures = list(Path(entry["artifact_dir"]).glob("logs/transport-failures/*/stderr.log"))
+            assert len(failures) == 1 and "FPM profile runtime mismatch" in failures[0].read_text()
+    for cell in plan.cells:
+        entry = checkpoint["cells"][cell.cell_id]
+        provenance = json.loads((Path(entry["artifact_dir"]) / "raw/node0000/collector-provenance.json").read_text())
+        assert provenance["runtime"] == {"backend": "vllm", "backend_version": actual_version}
+        assert provenance["plan_sha256"] == plan.sha256 and provenance["attempt_id"] == entry["attempt_id"]
+    assert all(args[0] in {"srun", "squeue", "scontrol"} for args in commands)

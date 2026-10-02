@@ -1,0 +1,192 @@
+{
+  "schema_version": 1,
+  "kind": "offline_publication_of_qualified_native_measurements",
+  "distribution": "observed_glm52_nvfp4_decode_1ab2c747975e_v1",
+  "module": "collector.sglang_rubin.publish_observed_moe",
+  "table_relative_path": "data/vr200_hecate/moe/sglang/0.5.18+nvinternal.rubin.0.8full.66997102",
+  "runtime": {
+    "framework": "sglang",
+    "version": "0.5.18+nvinternal.rubin.0.8full.66997102",
+    "image": "gitlab-master.nvidia.com:5005/dl/ai-dynamo/dynamo-ci",
+    "image_digest": "sha256:53299500a280c8de34bd484507a45b2f83b4d5e7c999b77284fa31930f7e63ab"
+  },
+  "row_fields": {
+    "framework": "SGLang",
+    "version": "0.5.18+nvinternal.rubin.0.8full.66997102",
+    "device": "NVIDIA Graphics Device",
+    "op_name": "moe",
+    "kernel_source": "sglang_flashinfer_trtllm_moe",
+    "moe_dtype": "nvfp4",
+    "hidden_size": 6144,
+    "inter_size": 2048,
+    "topk": 8,
+    "num_experts": 256,
+    "moe_tp_size": 4,
+    "moe_ep_size": 1
+  },
+  "physical_tokens": [
+    1,
+    8,
+    32
+  ],
+  "base": {
+    "moe_perf.parquet": {
+      "sha256": "997b858966a9d584ab771225d3348e82211821533c17b5b0dbfcce8c51c6ba5e",
+      "size_bytes": 5849
+    },
+    "collection_meta.yaml": {
+      "sha256": "c7ea9126f34117c64a00acdf3d5579f062a0ce51e894f150083439daa6de8d39",
+      "size_bytes": 741
+    },
+    "rows": 81
+  },
+  "native_archive": {
+    "sha256": "3b2cc95bb5b9127ffcb1bf49e12d5fe0bf93ba38e2b53af0622bc6072387e9ed",
+    "size_bytes": 21417199
+  },
+  "native_archive_root": "aisim-vr-observed-moe-610025",
+  "native_archive_members": 1216,
+  "native_archive_files": 1023,
+  "native_expanded_bytes": 147342848,
+  "native_file_manifest": {
+    "sha256": "b856bba6efa64ccf3e091a2c79438fdade02ebfc29adefe61cc0a9cd6bcd18a0",
+    "size_bytes": 174215
+  },
+  "actual_data_review": {
+    "sha256": "7d1ea64afbef5f71f5ec97c60614501b9d362582971290a2b6112bad8b4203b3",
+    "size_bytes": 35113
+  },
+  "actual_data_review_status": "PRIMARY_FIXED_MIXTURE_VALIDATED__INSTRUMENTED_DIAGNOSTICS_UNQUALIFIED",
+  "producer_source_manifest": {
+    "sha256": "5730ecff5edddeef4fb67a9965f301d7843b4ee9ce278dcf38d63c4573094794",
+    "size_bytes": 46981
+  },
+  "producer_source_files": {
+    "AISimulate-LICENSE": {
+      "sha256": "e7c584183cb18a44cd56f453e642164d388c4dcefb49aa6dbd0b03ea40a62878",
+      "size_bytes": 11956
+    },
+    "SGLang-LICENSE": {
+      "sha256": "1495e1e757ef4d0925a2350563cf5754bb23c51701a8ec4fb3c5cdcbedae6747",
+      "size_bytes": 11346
+    },
+    "attribution.json": {
+      "sha256": "9bf2e130e337b06433a7c308b9f2ca363e4a961c5bf048b5f5cda34f7722e024",
+      "size_bytes": 6683
+    },
+    "campaign.py": {
+      "sha256": "770036572bdd3f4efcfd86072bb113008652b58013aabaef7ab5bad26ec3f32b",
+      "size_bytes": 12583
+    },
+    "capture-source-review.json": {
+      "sha256": "c89620cd8cc22418030b4c46a81f84f81b9477e48e6228360ceb6be89e8b9375",
+      "size_bytes": 6894
+    },
+    "collector_package/collector/__init__.py": {
+      "sha256": "f38debac7a7f711f1b87f9f65dd751bcd391166b619ce4dcc13f2fc12d63e84e",
+      "size_bytes": 616
+    },
+    "collector_package/collector/helper.py": {
+      "sha256": "98ccf121783716fa96775adc418f598591d7bca1e6c211e4d59ec421ab0d100f",
+      "size_bytes": 152021
+    },
+    "contracts.py": {
+      "sha256": "b1156d17ffcd5f4b3ab286ae9c0f975af6963e54ac5759aa2d9bd0b585619c42",
+      "size_bytes": 8994
+    },
+    "design-addendum.json": {
+      "sha256": "21ca180ec0bbf6580f3d02a241014939f7b923871cc5b13c325443ba257a6343",
+      "size_bytes": 3559
+    },
+    "design.json": {
+      "sha256": "bb23b03db12c3be9491da11f49bf8c83df3809817801c9be3807e482ed0b94ec",
+      "size_bytes": 20845
+    },
+    "expected-native-sources.json": {
+      "sha256": "aaf99c9990a58f7949d90fc917140b4d27be6ecd4cd3859fee139a23ce30c24a",
+      "size_bytes": 3777
+    },
+    "expected-runtime.json": {
+      "sha256": "115ce05541ac63b4cb1ca45a9d40fc4d14dcdb93899ba5734c5a3a7d3f2a3314",
+      "size_bytes": 714
+    },
+    "frozen-launcher.json": {
+      "sha256": "c3fac53ce71481f8b9830b01164d82a7f1bf19e4a9b9a89058177a8ada0fd3a7",
+      "size_bytes": 1748
+    },
+    "frozen-server-info.json": {
+      "sha256": "b2859cad15764cf59c8a813642b8f0253162332437c04b7ccc5fe9a02f4b5585",
+      "size_bytes": 40692
+    },
+    "input-contract-design.json": {
+      "sha256": "6c0d23f894fe9b2971823063707a51cdad9e6717f19119aca2897f631f675c50",
+      "size_bytes": 4802
+    },
+    "measurement.py": {
+      "sha256": "565a9a3a7d18d306934951b80b571b7779ba6868722a1b9bd97538d569b552bd",
+      "size_bytes": 22943
+    },
+    "native_setup.py": {
+      "sha256": "8d2a87b673256e02b9c133f877930ed1d40031983481f52aeb8ff4a9a7a4a19c",
+      "size_bytes": 9724
+    },
+    "native_spawn.py": {
+      "sha256": "0a74879b8c62bd67e776f2432f49f504eca7782794609102e06217363440aced",
+      "size_bytes": 5531
+    },
+    "native_worker.py": {
+      "sha256": "5d798bf6a3d6cd8339c9e51911e061487696c4115c1b018a3189aa9d85afdc8b",
+      "size_bytes": 18360
+    },
+    "observed_inputs.py": {
+      "sha256": "056877bd5b222d4da58c1c8c946b501f4a0410d6dcc13c34c856f5813d6a473e",
+      "size_bytes": 25038
+    },
+    "ownership_helpers.py": {
+      "sha256": "6ea34bcf828ff52bfa916395ff96577281018883c1da64b5b96bcdb149d52d87",
+      "size_bytes": 23639
+    },
+    "process_helpers.py": {
+      "sha256": "9e275c368c11c5e6b59221286069a3e3abf114e30eb838b976dd77445419f217",
+      "size_bytes": 36382
+    },
+    "setup_diagnostics.py": {
+      "sha256": "65eed4a225cd6f42560a99da8aa26917a8a946cc1aecbeeb56a81324b65c829a",
+      "size_bytes": 5742
+    }
+  },
+  "producer_source_review": {
+    "sha256": "d8a73ab32a6cec479a81d9b4a8a2e7867550216b7e888e70f757f3bb04fa130d",
+    "size_bytes": 9891
+  },
+  "producer_package_review": {
+    "sha256": "5bc8a8d1f40d523aea0980edadb849e2e387b135663d95accfb03f78c2f41ad3",
+    "size_bytes": 14739
+  },
+  "producer_boundary": "BF16 quantization through routed finalization; no router/shared/TP reduction",
+  "capture": {
+    "source_manifest_sha256": "d0b087906f1e678ab39f894fb9bae8ed6fe8fea949f7e3975046b054ffa3075e",
+    "archive_sha256": "e248ceb75c7ad664cc545e2cc73269dd2a5460b36005933c5717737eb148ba68",
+    "review_sha256": "469ac154d6f6f825b626cbb01ccd82db47a8fddf5e06553fe3081f40fbffddba",
+    "manifest_sha256": "1ab2c747975ea415b94acf56aea199eee67e22afcc7d44e7c459d52a34bf2e7c"
+  },
+  "measurement_counts": {
+    "primary": 864,
+    "per_layer": 288,
+    "dual_stream": 72,
+    "subset": 192
+  },
+  "case_id_format": "observed_moe/rank={rank}/block={block}/isl={isl}/physical_tokens={batch}/ordinal={ordinal}/layers=3..77",
+  "case_plan_hash": "sha256:dd11934097a3bc664e82c7081af5ceac3161666eb689e736b47765d7ea955cde",
+  "aggregation": "statistics.fmean(T / 75) of all 288 primary raw.latency_ms values per physical token count; native helper already normalizes ten graph replays",
+  "collected_at": "2026-09-18",
+  "source_commit": "02c5a855aceb968c310e6fbc6632270e26edc84b",
+  "limitations": [
+    "Fixed captured mixture only; no TP4 critical-path, prefill or end-to-end serving interpretation.",
+    "All instrumented per-layer and dual-stream controls are unqualified; their intervals never contribute to rows.",
+    "Input-length and ordinal heterogeneity remains; no target-based sampling or fitting.",
+    "Prefix subsets do not qualify native padded-tail execution, graph padding or intermediate physical buckets.",
+    "Native tail, overlap and general applicability remain unqualified.",
+    "Publisher hash binds this offline derivation and exact producer identity; GPU timings were generated by the separately retained native source."
+  ]
+}

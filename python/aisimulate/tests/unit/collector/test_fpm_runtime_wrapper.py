@@ -144,6 +144,35 @@ def _run(staged: SimpleNamespace, *, timeout: int = 60, extra_env: dict[str, str
     )
 
 
+@pytest.mark.parametrize("status,mask", [("observed", [0]), ("unavailable", []), ("partial", list(range(16)))])
+def test_slurm_same_step_cpu_guard_preserves_failure_before_model_start(tmp_path, status, mask):
+    staged = _stage(tmp_path, run_script="touch model-started\n")
+    staged.script.write_text(staged.script.read_text().replace('Path("/results")', f"Path({str(staged.results)!r})"))
+    # The observer's Linux API is tested separately. This seam verifies the
+    # real wrapper enforces its result before etcd/preflight/model startup.
+    payload = {"status": status, "main_thread_allowed_cpus": mask}
+    (staged.workdir / "fpm_memory_observer.py").write_text(
+        "import json\ndef observe_cpu(kind, **kwargs):\n"
+        f"    payload = {payload!r}\n"
+        "    payload.update(kind=kind,requested=kwargs['requested_cpus_per_task'])\n"
+        "    (kwargs['directory']/'fpm-cpu-launcher.json').write_text(json.dumps(payload))\n"
+        "    return payload\n"
+    )
+    result = _run(
+        staged,
+        extra_env={
+            "FPM_SLURM_CPUS_PER_TASK": "16",
+            "FPM_SLURM_CPU_BIND": "cores",
+            "FPM_LOCAL_GPU_COUNT": "4",
+        },
+    )
+    assert result.returncode != 0
+    assert "CPU affinity" in result.stderr
+    assert json.loads((staged.results / "fpm-cpu-launcher.json").read_text())["requested"] == 16
+    assert not staged.etcd_trace.exists()
+    assert not (staged.workdir / "model-started").exists()
+
+
 def test_fpm_exec_starts_leader_etcd_before_preflight():
     """The follower readiness probe budget only covers pod-exec skew when the
     leader's etcd starts before the unbounded vLLM/torch preflight import."""
@@ -151,6 +180,26 @@ def test_fpm_exec_starts_leader_etcd_before_preflight():
     script = FPM_EXEC.read_text()
     assert script.index("etcd_pid=$!") < script.index('python3 "${workdir}/preflight.py"')
     assert "time.monotonic() + float(sys.argv[2])" in script
+
+
+@pytest.mark.parametrize("pending_memory", [False, True])
+@pytest.mark.parametrize("existing", [None, "", "/other/modules"])
+def test_memory_observer_pythonpath_is_available_before_engine_launch(tmp_path, pending_memory, existing):
+    staged = _stage(tmp_path, run_script="#!/bin/bash\n")
+    if pending_memory:
+        (staged.workdir / "fpm_memory_worker.py").write_text("# staged observer\n")
+    script = staged.script.read_text().split('etcd_endpoint="http://')[0]
+    script += '\nprintf "%s" "${PYTHONPATH:-}"\n'
+    env = dict(staged.env)
+    if existing is None:
+        env.pop("PYTHONPATH", None)
+    else:
+        env["PYTHONPATH"] = existing
+    result = subprocess.run(["bash", "-c", script], env=env, text=True, capture_output=True, check=True)
+    expected = existing or ""
+    if pending_memory:
+        expected = str(staged.workdir) + (":" + expected if expected else "")
+    assert result.stdout == expected
 
 
 def test_fpm_exec_leader_starts_etcd_and_cleanup_stops_it(tmp_path):
@@ -282,6 +331,62 @@ def test_preflight_rejects_runtime_without_kvwarm_capability(tmp_path, monkeypat
     audit = json.loads(audit_path.read_text())
     assert audit["status"] == "failed"
     assert audit["missing_methods"] == ["_kvwarm_warm_eligible"]
+
+
+@pytest.mark.parametrize(
+    ("phase", "setting", "native_capability", "adapter", "accepted"),
+    [
+        ("prefill", "on", False, False, False),
+        ("agg", "true", False, False, False),
+        ("prefill", "on", True, False, True),
+        ("prefill", "off", False, False, True),
+        ("prefill", "0", False, False, True),
+        ("decode", "on", False, False, True),
+        ("prefill", "on", False, True, True),
+    ],
+)
+def test_preflight_checks_requested_prefill_seeding_before_model_load(
+    tmp_path, monkeypatch, phase, setting, native_capability, adapter, accepted
+):
+    import sys
+    from types import ModuleType
+
+    from collector.fpm_forward.runtime import preflight
+
+    def no_initialization(*_args, **_kwargs):
+        pytest.fail("preflight must inspect capabilities without constructing the model or scheduler")
+
+    methods = {name: lambda self: None for name in preflight.GRAPH_AWARE_METHODS}
+    methods["__init__"] = no_initialization
+    if native_capability:
+        methods["_bench_realseed_on"] = lambda self: True
+    scheduler = type("InstrumentedScheduler", (), methods)
+    module = ModuleType("dynamo.vllm.instrumented_scheduler")
+    module.BenchmarkPoint = type(
+        "BenchmarkPoint", (), {"__dataclass_fields__": {name: object() for name in preflight.GRAPH_AWARE_FIELDS}}
+    )
+    module.InstrumentedScheduler = scheduler
+    monkeypatch.setitem(sys.modules, "dynamo.vllm.instrumented_scheduler", module)
+    monkeypatch.setenv("FPM_BENCHMARK_MODE", phase)
+    monkeypatch.setenv("DYN_BENCH_PREFILL_REAL_SEED", setting)
+    monkeypatch.delenv("DYN_FPM_DSV41_REAL_KV", raising=False)
+    if adapter:
+        adapter_module = ModuleType("dsv41_scheduler")
+        adapter_module.DeepseekV41RealKVScheduler = scheduler
+        monkeypatch.setitem(sys.modules, "dsv41_scheduler", adapter_module)
+        monkeypatch.setenv("DYN_FPM_DSV41_REAL_KV", "1")
+    audit_path = tmp_path / "runtime-preflight.json"
+    monkeypatch.setattr(preflight, "_AUDIT_PATH", audit_path)
+
+    if accepted:
+        preflight.main()
+    else:
+        with pytest.raises(RuntimeError, match="_bench_realseed_on"):
+            preflight.main()
+    audit = json.loads(audit_path.read_text())
+    assert audit["status"] == ("passed" if accepted else "failed")
+    assert audit["missing_methods"] == ([] if accepted else ["_bench_realseed_on"])
+    assert audit["prefill_real_seed_requested"] == (phase in {"prefill", "agg"} and setting in {"on", "true"})
 
 
 def test_fpm_exec_propagates_fail_closed_env_source(tmp_path):
