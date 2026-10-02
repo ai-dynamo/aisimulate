@@ -47,6 +47,7 @@ pub struct ValidatedAgenticGraph {
     pub(super) graph_digest: String,
     pub(super) nodes: Vec<AgenticNode>,
     pub(super) plays: Vec<AgenticPlay>,
+    pub(super) conversation_lineage: Vec<Option<crate::replay::AgenticConversationLineage>>,
 }
 
 pub type AgenticTrace = ValidatedAgenticGraph;

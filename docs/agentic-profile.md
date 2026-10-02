@@ -36,8 +36,10 @@ Sweeper workloads, and the native JSON execution boundary.
 
 The built-in engine supports offline vLLM and SGLang with aggregated or separate
 prefill/decode workers, HBM-only KV cache, and speculative decoding disabled.
-Weka, Agentic Mooncake, and agentic Dynamo traces share this path. Online execution,
-other backends, and Dynamo-owned routing need their own qualified integration.
+Weka, Agentic Mooncake, and agentic Dynamo traces share this path. Conversation
+routing uses the existing Dynamo adapter with the matching source pair in the
+[AgentX quickstart](agentx-quickstart.md). Online execution and other backends
+require separate qualification.
 
 ## Lanes and virtual time
 

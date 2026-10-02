@@ -105,6 +105,38 @@ pub trait PlacementPolicy<Request> {
         now_ms: f64,
     ) -> Result<PlacementEffects>;
     fn observe(&mut self, observation: Self::Observation, now_ms: f64) -> Result<Vec<Placement>>;
+    /// The selected engine accepted ownership (destination reservation for P/D
+    /// decode). Policies may commit a tentative binding only at this boundary.
+    /// If this fails, replay attempts to cancel the accepted engine request and
+    /// calls `dispatch_aborted`, then permanently fails the runtime. Callbacks
+    /// need not be transactional; replay cannot safely resume or report after a
+    /// potentially partial policy commit, even when engine cleanup succeeds.
+    fn dispatch_committed(&mut self, _request_id: Uuid, _now_ms: f64) -> Result<()> {
+        Ok(())
+    }
+    /// The selected engine rejected ownership, or rollback was attempted after
+    /// `dispatch_committed` failed. Discard tentative policy
+    /// state; tolerate partial commits. An abort error is reported together with
+    /// the original dispatch error and permanently fails the runtime.
+    fn dispatch_aborted(&mut self, _request_id: Uuid, _now_ms: f64) -> Result<()> {
+        Ok(())
+    }
+    /// Advance policy time using the replay clock and release any newly ready
+    /// placements. Wall time must not drive offline policy state.
+    fn advance_clock(&mut self, _now_ms: f64) -> Result<Vec<Placement>> {
+        Ok(Vec::new())
+    }
+    /// A concrete wakeup for policy-owned work, finite and no earlier than the
+    /// current replay time. A same-time wakeup is allowed while immediate work
+    /// is draining (for example, after `dispatch_committed`); `advance_clock`
+    /// must consume it or release work so the drain makes progress. Once the
+    /// timestamp is settled, any remaining wakeup must be strictly in the future.
+    /// Invalid or unconsumed same-time wakeups fail replay rather than advancing
+    /// its clock. Idle housekeeping that cannot release work should be performed
+    /// lazily in `advance_clock`.
+    fn next_wakeup_ms(&self) -> Option<f64> {
+        None
+    }
     fn cancel_pending(&mut self, request_id: Uuid) -> bool;
     fn request_terminal(&mut self, request_id: Uuid, now_ms: f64) -> Result<Vec<Placement>>;
     fn prefill_completed(&mut self, request_id: Uuid, now_ms: f64) -> Result<Vec<Placement>>;

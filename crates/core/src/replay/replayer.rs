@@ -121,6 +121,26 @@ where
         self.0.cancel_pending(request_id)
     }
 
+    fn dispatch_committed(&mut self, request_id: Uuid, now_ms: f64) -> AnyResult<()> {
+        self.0
+            .dispatch_committed(request_id, now_ms)
+            .map_err(placement_boundary)
+    }
+
+    fn dispatch_aborted(&mut self, request_id: Uuid, now_ms: f64) -> AnyResult<()> {
+        self.0
+            .dispatch_aborted(request_id, now_ms)
+            .map_err(placement_boundary)
+    }
+
+    fn advance_clock(&mut self, now_ms: f64) -> AnyResult<Vec<crate::replay::core::Placement>> {
+        self.0.advance_clock(now_ms).map_err(placement_boundary)
+    }
+
+    fn next_wakeup_ms(&self) -> Option<f64> {
+        self.0.next_wakeup_ms()
+    }
+
     fn request_terminal(
         &mut self,
         request_id: Uuid,
