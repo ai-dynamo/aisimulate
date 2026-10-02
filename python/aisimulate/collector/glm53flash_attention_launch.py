@@ -104,6 +104,8 @@ def prepare(args) -> Path:
         # the ragged IndexPool MQA-logits buffer at long batched context.
         "allocator_max_split_size_mb": args.allocator_max_split_mb,
     }
+    if args.sglang_mem_fraction is not None:
+        body["sglang_mem_fraction_static"] = args.sglang_mem_fraction
     if args.prefill_graph:
         # Revision 2: re-collect prefill only, under the serving prefill graphs.
         body["phases"] = ["context"]
@@ -137,7 +139,15 @@ def prepare(args) -> Path:
         command = f"python3 -m {runner} {common} --model-path {model}"
     else:
         graph_args = f" {SGLANG_PREFILL_GRAPH_ARGS}" if args.prefill_graph else ""
-        command = f"python3 -m {runner} {common} --model-path {model} --tp-size {args.tp} {SGLANG_ARGS}{graph_args}"
+        sglang_args = SGLANG_ARGS
+        if args.sglang_mem_fraction is not None:
+            # Capacity only: a smaller static KV pool leaves headroom for the
+            # per-target module graphs beside the framework's prefill graph
+            # pool; the KV still holds every planned request.
+            sglang_args = sglang_args.replace(
+                "--mem-fraction-static 0.82", f"--mem-fraction-static {args.sglang_mem_fraction}"
+            )
+        command = f"python3 -m {runner} {common} --model-path {model} --tp-size {args.tp} {sglang_args}{graph_args}"
     exports = " ".join(f"{k}={shlex.quote(v)}" for k, v in env.items())
     script = f"""#!/bin/bash
 #SBATCH --job-name={job}
@@ -202,6 +212,7 @@ def main():
     parser.add_argument("--time", default="04:00:00")
     parser.add_argument("--allocator-max-split-mb", type=int, default=None)
     parser.add_argument("--prefill-graph", action="store_true", help="revision 2: prefill under serving graphs")
+    parser.add_argument("--sglang-mem-fraction", type=float, default=None)
     args = parser.parse_args()
     if args.layer_id is not None and not args.smoke:
         parser.error("--layer-id is a smoke-only cross-check")
