@@ -80,7 +80,6 @@ class AttentionProbe:
         self.original = attention.forward
         self.captured = {}
         self.prefill_captured = {}
-        self.sentinel = self.sentinel_input = None
         self.replay_witness = None
         self.armed = None
         self.done = None
@@ -235,26 +234,14 @@ class AttentionProbe:
             self._fresh_inputs(record.attn_inputs, forward_batch, record.zero_allocator, record.zero_pointer)
             return self.original(*record.args, **record.kwargs)
 
-        # One private pool for every prefill module graph. A permanent sentinel
-        # graph holds the pool's use count above zero (a dead pool handle trips
-        # the caching allocator's assertion), so the previous module graph can
-        # be dropped before this capture and its blocks reused, instead of
-        # holding two long-context graphs at once. (Releasing cached blocks
-        # with empty_cache exposed an illegal address in a later framework BCG
-        # replay, so memory is never returned to the device.)
-        if self.pool is None:
-            self.pool = torch.cuda.graph_pool_handle()
-            self.sentinel_input = torch.zeros(1, device="cuda")
-            self.sentinel = torch.cuda.CUDAGraph()
-            # capture_begin/end directly: torch.cuda.graph() would empty_cache.
-            stream = torch.cuda.Stream()
-            stream.wait_stream(torch.cuda.current_stream())
-            with torch.cuda.stream(stream):
-                self.sentinel.capture_begin(pool=self.pool)
-                self.sentinel_input.add_(1)
-                self.sentinel.capture_end()
-            torch.cuda.current_stream().wait_stream(stream)
-        pool = self.pool
+        # A fresh torch.cuda.MemPool per target. Deleting it after the graph
+        # releases and empties only this pool (MemPool.__del__ -> releasePool +
+        # emptyCache(pool id)), so module graphs never accumulate and the
+        # default pool is never trimmed. (Trimming the default pool with
+        # torch.cuda.empty_cache exposed an illegal address in a later
+        # framework BCG replay, and a shared pool kept growing until OOM.)
+        mempool = torch.cuda.MemPool()
+        pool = mempool.id
         # BreakableCudaGraphBackend.replay_session/execute: the BCG flag, the
         # attention-backend forward context and the TcPiecewise context whose
         # forward_batch the eager breaks read (the real step's static batch).
@@ -296,6 +283,7 @@ class AttentionProbe:
             timing_method=GRAPH_PREFILL,
         )
         del graph, output, result
+        del mempool
         from sglang.srt.layers.communicator import get_attn_tp_context
 
         get_attn_tp_context().clear_attn_inputs()
