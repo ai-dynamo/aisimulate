@@ -143,12 +143,14 @@ def _verify_imports() -> None:
         "compile_engine",
         "estimate_kv_cache",
         "estimate_num_gpu_blocks",
+        "estimate_state_cache",
     }
     if set(sdk.__all__) != expected_facade:
         raise RuntimeError(f"unexpected aisimulate_core.sdk facade: {sdk.__all__!r}")
     for module_name, public_name in (
         ("engine", "EngineHandle"),
         ("memory", "estimate_kv_cache"),
+        ("state_memory", "estimate_state_cache"),
         ("rust_engine_step", "ForwardPassPerfModelConfig"),
         ("rust_engine_step", "ForwardPassPerfOptions"),
     ):

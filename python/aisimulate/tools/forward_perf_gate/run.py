@@ -291,7 +291,6 @@ def main() -> int:
         "base": (args.base_python, args.base_worker, args.base_revision),
         "head": (args.head_python, args.head_worker, args.head_revision),
     }
-    skipped_cases: dict[str, str] = {}
     if not args.skip_prewarm and not args.smoke:
         prewarm_responses = {}
         for side in ("base", "head"):
@@ -332,35 +331,20 @@ def main() -> int:
                     "reason": reason,
                 }
             )
-            if disposition == "SKIP":
-                skipped_cases[case["case_id"]] = reason or "no timing baseline"
-            elif disposition == "INVALID":
+            if disposition == "INVALID":
                 raw["run_errors"].append(f"prewarm failed for {case['case_id']}: {reason}")
                 _checkpoint(raw, args.output_dir)
                 return _finish(raw, args.output_dir)
         _checkpoint(raw, args.output_dir)
 
     entries = {}
-    measured_cases = []
     for case in selected_cases:
-        if case["case_id"] in skipped_cases:
-            raw["cases"].append(
-                {
-                    "case": case,
-                    "rounds": [],
-                    "skip_reason": skipped_cases[case["case_id"]],
-                }
-            )
-            continue
         entry = {"case": case, "rounds": []}
         raw["cases"].append(entry)
         entries[case["case_id"]] = entry
-        measured_cases.append(case)
 
     for round_index in range(rounds):
-        if not measured_cases:
-            break
-        ordered_cases = measured_cases if round_index % 2 == 0 else list(reversed(measured_cases))
+        ordered_cases = selected_cases if round_index % 2 == 0 else list(reversed(selected_cases))
         case_order = "forward" if round_index % 2 == 0 else "reverse"
         side_order = ("base", "head") if round_index % 2 == 0 else ("head", "base")
         round_responses = {}
@@ -387,7 +371,7 @@ def main() -> int:
                 return _finish(raw, args.output_dir)
             round_responses[side] = {result["case_id"]: result for result in results}
 
-        for case in measured_cases:
+        for case in selected_cases:
             case_id = case["case_id"]
             entries[case_id]["rounds"].append(
                 {

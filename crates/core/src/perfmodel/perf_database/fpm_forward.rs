@@ -25,6 +25,9 @@
 //! `[batch][total_prefill][total_kv]`, decode `[batch][total_kv]` — plus the
 //! per-phase axis-aligned domain bounding box and a prebuilt
 //! [`SiteIndex`](super::perf_interp::SiteIndex).
+//! Separate direct-timing curves omit every `fake_fallback` row, including
+//! healed rows, so measured-only interpolation never inherits extrapolated
+//! values or KV ceilings from the legacy SOL table.
 //!
 //! Contract notes, all mirrored from Python:
 //! - An ABSENT parquet is the soft "not collected" case: `cells()` errors only
@@ -55,13 +58,16 @@ pub const FPM_FORWARD_SCHEMA_NAME: &str = "aic_fpm_forward_perf";
 pub const FPM_FORWARD_SCHEMA_VERSION: u64 = 7;
 pub const FPM_FORWARD_COORDINATE_SYSTEM: &str = "iteration_totals_balanced_v1";
 pub const FPM_FORWARD_PARTITION_POLICY: &str = "balanced_v1";
-/// Legacy single-sample policy. Schema 7 also admits the backend-bound
-/// real-hybrid median contracts below; their stored latency is already reduced.
+/// Legacy single-sample policy. Schema 7 also admits the per-row self-benchmark
+/// contract and the backend-bound real-hybrid median contracts below; median
+/// latency is already reduced.
 pub const FPM_FORWARD_MEASUREMENT_POLICY: &str = "dynamo_native_single_sample_v1";
+const FPM_ROW_MEASUREMENT_POLICY: &str = "per_row_single_sample_or_median_of_3";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum MeasurementPolicy {
     SingleSample,
+    PerRow,
     VllmRealHybridMedian,
     SglangRealHybridMedian,
 }
@@ -70,6 +76,7 @@ impl MeasurementPolicy {
     fn name(self) -> &'static str {
         match self {
             Self::SingleSample => FPM_FORWARD_MEASUREMENT_POLICY,
+            Self::PerRow => FPM_ROW_MEASUREMENT_POLICY,
             Self::VllmRealHybridMedian => "vllm_native_real_hybrid_median_v1",
             Self::SglangRealHybridMedian => "sglang_native_real_hybrid_median_v1",
         }
@@ -77,7 +84,7 @@ impl MeasurementPolicy {
 
     fn timing_boundary(self) -> Option<&'static str> {
         match self {
-            Self::SingleSample => None,
+            Self::SingleSample | Self::PerRow => None,
             Self::VllmRealHybridMedian => Some("vllm_native_scheduler_output_interval"),
             Self::SglangRealHybridMedian => Some("sglang_native_forward_device_timer"),
         }
@@ -111,6 +118,7 @@ pub const FPM_FAKE_FALLBACK_RAW_ENV: &str = "AIC_FPM_FAKE_FALLBACK_RAW";
 
 /// Identity columns that select a cell, in row-column order (`model_path` is
 /// handled separately; `weight_quantization` is deliberately excluded).
+/// Recorded DCP is appended separately; legacy identities retain this base arity.
 /// The last four are the schema-v6 explicit backend identity: "auto" = the
 /// engine decided; the `enable_*` columns are real parquet booleans,
 /// normalized to "True"/"False" (Python `str(bool)`) for comparison.
@@ -174,6 +182,13 @@ pub struct FpmForwardCell {
     pub decode_batches: Vec<u32>,
     pub decode_rungs: Vec<u32>,
     pub decode_curve_bounds: BTreeMap<u32, (u32, u32)>,
+    /// Direct timing curves `(batch, KV) -> (prefill tokens -> latency)`.
+    /// Fake-fallback rows are excluded even when the legacy table heals them.
+    pub direct_prefill: BTreeMap<(u32, u32), BTreeMap<u32, f64>>,
+    /// Direct decode curves contain genuine measurements only; their bounds
+    /// do not inherit the fabricated rows' extrapolated KV ceilings.
+    pub direct_decode: BTreeMap<u32, BTreeMap<u32, f64>>,
+    pub direct_decode_rungs: Vec<u32>,
     /// Diagnostic state only; no change to table identity, values, or schema.
     warned_fmha_model_modes: Mutex<BTreeSet<String>>,
 }
@@ -353,14 +368,21 @@ impl FpmForwardTable {
         Ok(self.loaded()?.kept_fake_fallback)
     }
 
-    /// Cell selection, mirroring Python `FPMForwardOp._select_cell` exactly:
-    /// strict equality on the 15-column identity and `model_path` (no
-    /// fallback), then a hard ambiguity guard.
+    /// Exact base identity, recorded DCP and model-path matching, followed by
+    /// an ambiguity guard. DCP remains typed until composing the lookup key.
     pub fn select_cell(
         &self,
         match_identity: &[String],
         model_path: &str,
+        dcp_size: Option<u32>,
     ) -> Result<&FpmForwardCell, AicError> {
+        if match_identity.len() != 15 && match_identity.len() != FPM_CELL_MATCH_COLUMNS.len() {
+            return Err(structural(
+                "FPM match_identity must contain only base identity fields; supply DCP through dcp_size".into(),
+            ));
+        }
+        let dcp_label = dcp_size.map(|value| value.to_string());
+        let requested = || match_identity.iter().chain(dcp_label.iter());
         let cells = self.cells()?;
         // Exact matching on every identity dimension (D1 resolved: the match
         // identity carries no architecture fingerprint, so borrowing the sole
@@ -368,13 +390,15 @@ impl FpmForwardTable {
         let matches: Vec<&FpmForwardCell> = cells
             .iter()
             .filter(|cell| {
-                let legacy = match_identity.len() == 15
+                let legacy = dcp_size.is_none()
+                    && match_identity.len() == 15
                     && cell.match_identity[..15] == *match_identity
                     && cell.match_identity[15..]
                         .iter()
                         .map(String::as_str)
                         .eq(LEGACY_EXECUTION_IDENTITY);
-                (cell.match_identity == match_identity || legacy) && cell.model_path == model_path
+                (cell.match_identity.iter().eq(requested()) || legacy)
+                    && cell.model_path == model_path
             })
             .collect();
         if matches.is_empty() {
@@ -387,7 +411,8 @@ impl FpmForwardTable {
             available.truncate(8);
             let identity: Vec<String> = FPM_CELL_MATCH_COLUMNS
                 .iter()
-                .zip(match_identity)
+                .chain(std::iter::once(&"dcp"))
+                .zip(requested())
                 .map(|(c, v)| format!("{c}={v:?}"))
                 .collect();
             return Err(structural(format!(
@@ -429,15 +454,19 @@ fn sha256_file(path: &Path) -> Result<String, AicError> {
     Ok(format!("{:x}", hasher.finalize()))
 }
 
-/// Sidecar validation, mirroring `_validate_sidecar` check-for-check. Returns
-/// the sidecar's `row_count` for the post-read cross-check.
+struct SidecarContract {
+    schema_version: u64,
+    row_count: Option<u64>,
+    measurement_policy: MeasurementPolicy,
+    selector_dcp: Option<Option<u32>>,
+}
 fn validate_sidecar(
     metadata_path: &Path,
     parquet_path: &Path,
     system: &str,
     backend: &str,
     version: &str,
-) -> Result<(Option<u64>, u64, MeasurementPolicy), AicError> {
+) -> Result<SidecarContract, AicError> {
     if !metadata_path.exists() {
         return Err(structural(format!(
             "FPM database is missing its metadata sidecar: {}. \
@@ -491,6 +520,7 @@ fn validate_sidecar(
         backend,
     ) {
         (Some(FPM_FORWARD_MEASUREMENT_POLICY), _, _) => MeasurementPolicy::SingleSample,
+        (Some(FPM_ROW_MEASUREMENT_POLICY), _, _) => MeasurementPolicy::PerRow,
         (Some("vllm_native_real_hybrid_median_v1"), Some(7), "vllm") => {
             MeasurementPolicy::VllmRealHybridMedian
         }
@@ -540,11 +570,32 @@ fn validate_sidecar(
             parquet_path.parent().unwrap_or(parquet_path).display()
         )));
     }
-    Ok((
-        json_uint(metadata.get("row_count")),
-        schema_version.unwrap(),
+    let selector_dcp = metadata
+        .get("configuration_selector")
+        .map(|selector| {
+            let selector = selector
+                .as_object()
+                .ok_or_else(|| structural("FPM configuration_selector must be an object".into()))?;
+            selector
+                .get("dcp")
+                .map(|value| {
+                    value
+                        .as_u64()
+                        .and_then(|v| u32::try_from(v).ok())
+                        .filter(|v| *v > 0)
+                        .ok_or_else(|| {
+                            structural("FPM selector dcp must be a positive integer".into())
+                        })
+                })
+                .transpose()
+        })
+        .transpose()?;
+    Ok(SidecarContract {
+        schema_version: schema_version.unwrap(),
+        row_count: json_uint(metadata.get("row_count")),
         measurement_policy,
-    ))
+        selector_dcp,
+    })
 }
 
 /// Python `metadata.get(k) != n` compares by VALUE: a JSON `5.0` equals the
@@ -602,8 +653,8 @@ fn load_pair(
         return Ok(None);
     }
     let metadata_path = parquet_path.with_extension("metadata.json");
-    let (sidecar_row_count, schema_version, measurement_policy) =
-        validate_sidecar(&metadata_path, parquet_path, system, backend, version)?;
+    let sidecar = validate_sidecar(&metadata_path, parquet_path, system, backend, version)?;
+    let measurement_policy = sidecar.measurement_policy;
 
     let reader = PerfReader::open(parquet_path)?;
     // Physical row-key columns (collector contract), in order.
@@ -628,7 +679,7 @@ fn load_pair(
     for name in str_cols {
         str_idx.insert(name, reader.col(name)?);
     }
-    if schema_version >= 7 {
+    if sidecar.schema_version >= 7 {
         for name in &FPM_CELL_MATCH_COLUMNS[15..] {
             str_idx.insert(*name, reader.col(name)?);
         }
@@ -657,9 +708,16 @@ fn load_pair(
     // KV-seed provenance column (additive; absent in pairs that predate it).
     // Resolved once here; per-row reads treat null the same as absence.
     let kv_seed_col = reader.col_optional("kv_seed_regime");
+    let dcp_col = reader.col_optional("dcp");
+    let row_policy_col = reader.col_optional("measurement_policy");
+    let repeats_col = reader.col_optional("measurement_repeats");
+    if measurement_policy == MeasurementPolicy::PerRow
+        && (row_policy_col.is_none() || repeats_col.is_none())
+    {
+        return Err(structural("FPM per-row measurement policy requires measurement_policy and measurement_repeats columns".into()));
+    }
     // Legacy pairs may predate the row policy column. Median pairs must bind
     // every row to their sidecar and the producer's exact sampling contract.
-    let row_policy_col = reader.col_optional("measurement_policy");
     let median_columns = if measurement_policy.timing_boundary().is_some() {
         Some([
             reader.col("global_warmup_iterations")?,
@@ -677,7 +735,7 @@ fn load_pair(
     // empty -> per-row loop); mirror that error precedence with a cheap count
     // pass so a wrong-count pair reports the count, not the first bad row.
     let actual_row_count = reader.rows()?.count() as u64;
-    match sidecar_row_count {
+    match sidecar.row_count {
         Some(expected) if expected == actual_row_count => {}
         other => {
             return Err(structural(format!(
@@ -842,7 +900,7 @@ fn load_pair(
             )));
         }
 
-        let match_identity: Vec<String> = FPM_CELL_MATCH_COLUMNS
+        let mut match_identity: Vec<String> = FPM_CELL_MATCH_COLUMNS
             .iter()
             .map(|name| {
                 if str_idx.contains_key(name) {
@@ -859,6 +917,34 @@ fn load_pair(
                 }
             })
             .collect::<Result<_, _>>()?;
+        let dcp = dcp_col.map(|col| row.u32(col)).transpose()?;
+        if let Some(dcp) = dcp {
+            let tp = get_int("tp")?;
+            if dcp == 0 || tp == 0 || tp % dcp != 0 {
+                return Err(structural(format!(
+                    "FPM row {index} dcp must be positive and divide tp"
+                )));
+            }
+            match_identity.push(dcp.to_string());
+        }
+        if sidecar.selector_dcp.is_some_and(|declared| declared != dcp) {
+            return Err(structural(format!(
+                "FPM row {index} dcp disagrees with the sidecar selector"
+            )));
+        }
+        if measurement_policy == MeasurementPolicy::PerRow {
+            let policy = row.str_optional(row_policy_col)?;
+            let repeats = row.u32_optional(repeats_col)?;
+            if !matches!(
+                (policy, repeats),
+                (Some(FPM_FORWARD_MEASUREMENT_POLICY), Some(1))
+                    | (Some("kvwarm_median_of_3"), Some(3))
+            ) {
+                return Err(structural(format!(
+                    "FPM row {index} measurement policy/repeats are inconsistent"
+                )));
+            }
+        }
         // The string backend knobs must be present: "auto" or a pinned name.
         for (offset, name) in [(11usize, "moe_backend"), (12usize, "attention_backend")] {
             if match_identity[offset].is_empty() {
@@ -869,7 +955,7 @@ fn load_pair(
         }
         // Full physical row key (collector contract) for duplicate detection,
         // in Python's _ROW_KEY_COLUMNS order.
-        let row_key: Vec<String> = vec![
+        let mut row_key: Vec<String> = vec![
             get_str("cell_id")?,
             get_str("model_path")?,
             get_str("system")?,
@@ -902,12 +988,14 @@ fn load_pair(
             partition_policy,
         ];
 
+        row_key.push(dcp.map(|value| value.to_string()).unwrap_or_default());
+
         // Seed provenance: fake-fallback rows stay in the row set (their
         // coordinates, the grid, and the domain gate are untouched); only
         // their latency value is healed by the replacement pass below, after
         // the duplicate/collision checks.
         let kv_seed_regime = row.str_optional(kv_seed_col)?.unwrap_or("");
-        if !match_identity[15..]
+        if !match_identity[15..FPM_CELL_MATCH_COLUMNS.len()]
             .iter()
             .map(String::as_str)
             .eq(LEGACY_EXECUTION_IDENTITY)
@@ -1066,6 +1154,9 @@ fn load_pair(
                 decode_batches: Vec::new(),
                 decode_rungs: Vec::new(),
                 decode_curve_bounds: BTreeMap::new(),
+                direct_prefill: BTreeMap::new(),
+                direct_decode: BTreeMap::new(),
+                direct_decode_rungs: Vec::new(),
                 warned_fmha_model_modes: Mutex::new(BTreeSet::new()),
             },
         });
@@ -1073,6 +1164,14 @@ fn load_pair(
             building.cell.cell_ids.push(row.cell_id.clone());
         }
         if row.workload_kind == "prefill" {
+            if !row.fake_fallback {
+                building
+                    .cell
+                    .direct_prefill
+                    .entry((row.batch_size, row.total_kv_read_tokens))
+                    .or_default()
+                    .insert(row.total_prefill_tokens, row.latency_ms);
+            }
             building.cell.prefill.insert(
                 &[
                     row.batch_size,
@@ -1082,6 +1181,14 @@ fn load_pair(
                 row.latency_ms,
             );
         } else {
+            if !row.fake_fallback {
+                building
+                    .cell
+                    .direct_decode
+                    .entry(row.batch_size)
+                    .or_default()
+                    .insert(row.total_kv_read_tokens, row.latency_ms);
+            }
             building
                 .cell
                 .decode
@@ -1093,6 +1200,15 @@ fn load_pair(
         .into_values()
         .map(|b| {
             let mut cell = b.cell;
+            cell.direct_decode_rungs = cell
+                .direct_decode
+                .keys()
+                .copied()
+                .filter(|b| {
+                    b.checked_add(1)
+                        .is_some_and(|n| cell.direct_decode.contains_key(&n))
+                })
+                .collect();
             cell.prefill_domain = domain::<3>(&cell.prefill);
             cell.decode_domain = domain::<2>(&cell.decode);
             if cell.prefill_domain.is_some() {
@@ -1319,8 +1435,10 @@ pub(crate) mod tests {
         /// fixture sets it, omits the column entirely — the pre-column
         /// legacy layout).
         pub kv_seed_regime: Option<&'static str>,
+        pub dcp: Option<u32>,
+        pub measurement: Option<(&'static str, u32)>,
         pub execution: Option<[&'static str; 4]>,
-        pub measurement: Option<MeasurementSpec>,
+        pub median: Option<MeasurementSpec>,
     }
 
     pub(crate) struct MeasurementSpec {
@@ -1352,8 +1470,10 @@ pub(crate) mod tests {
                 system: "b200_sxm",
                 backend: "vllm",
                 kv_seed_regime: None,
-                execution: None,
+                dcp: None,
                 measurement: None,
+                execution: None,
+                median: None,
             }
         }
     }
@@ -1418,8 +1538,10 @@ pub(crate) mod tests {
         // The provenance column is written only when a fixture row sets it,
         // so default fixtures exercise the pre-column legacy layout.
         let has_kv_seed = rows.iter().any(|r| r.kv_seed_regime.is_some());
-        let has_execution = rows.iter().any(|r| r.execution.is_some());
+        let has_dcp = rows.iter().any(|r| r.dcp.is_some());
         let has_measurement = rows.iter().any(|r| r.measurement.is_some());
+        let has_execution = rows.iter().any(|r| r.execution.is_some());
+        let has_median = rows.iter().any(|r| r.median.is_some());
         let schema = "message schema {
             REQUIRED BINARY cell_id (UTF8);
             REQUIRED BINARY model_path (UTF8);
@@ -1457,6 +1579,16 @@ pub(crate) mod tests {
         } else {
             schema.to_string()
         };
+        let mut schema = schema;
+        if has_dcp {
+            schema.insert_str(schema.rfind('}').unwrap(), "REQUIRED INT64 dcp;\n");
+        }
+        if has_measurement {
+            schema.insert_str(
+                schema.rfind('}').unwrap(),
+                "REQUIRED BINARY measurement_policy (UTF8);\nREQUIRED INT64 measurement_repeats;\n",
+            );
+        }
         let schema = if has_execution {
             schema.replace(
                 "REQUIRED BINARY workload_kind (UTF8);",
@@ -1469,7 +1601,7 @@ pub(crate) mod tests {
         } else {
             schema
         };
-        let schema = if has_measurement {
+        let schema = if has_median {
             schema.replace(
                 '}',
                 "
@@ -1631,8 +1763,33 @@ pub(crate) mod tests {
                 .expect("write");
             col.close().expect("close");
         }
+        if has_dcp {
+            let values: Vec<i64> = rows.iter().map(|r| i64::from(r.dcp.unwrap_or(0))).collect();
+            let mut col = rg.next_column().unwrap().unwrap();
+            col.typed::<Int64Type>()
+                .write_batch(&values, None, None)
+                .unwrap();
+            col.close().unwrap();
+        }
         if has_measurement {
-            let values = str_col(&|r| r.measurement.as_ref().unwrap().policy.to_string());
+            let values = str_col(&|r| r.measurement.map(|m| m.0).unwrap_or("").to_owned());
+            let mut col = rg.next_column().unwrap().unwrap();
+            col.typed::<ByteArrayType>()
+                .write_batch(&values, None, None)
+                .unwrap();
+            col.close().unwrap();
+            let values: Vec<i64> = rows
+                .iter()
+                .map(|r| i64::from(r.measurement.map(|m| m.1).unwrap_or(0)))
+                .collect();
+            let mut col = rg.next_column().unwrap().unwrap();
+            col.typed::<Int64Type>()
+                .write_batch(&values, None, None)
+                .unwrap();
+            col.close().unwrap();
+        }
+        if has_median {
+            let values = str_col(&|r| r.median.as_ref().unwrap().policy.to_string());
             let mut col = rg.next_column().unwrap().unwrap();
             col.typed::<ByteArrayType>()
                 .write_batch(&values, None, None)
@@ -1642,7 +1799,7 @@ pub(crate) mod tests {
                 let values: Vec<i64> = rows
                     .iter()
                     .map(|r| {
-                        let m = r.measurement.as_ref().unwrap();
+                        let m = r.median.as_ref().unwrap();
                         [m.global, m.warmup, m.measured][field]
                     })
                     .collect();
@@ -1654,7 +1811,7 @@ pub(crate) mod tests {
             }
             for field in 0..2 {
                 let values = str_col(&|r| {
-                    let m = r.measurement.as_ref().unwrap();
+                    let m = r.median.as_ref().unwrap();
                     [m.protocol, m.boundary][field].to_string()
                 });
                 let mut col = rg.next_column().unwrap().unwrap();
@@ -1730,7 +1887,7 @@ pub(crate) mod tests {
         assert_eq!(table.parquet_path(), external);
         assert!(
             table
-                .select_cell(&default_identity(4), "org/model-a")
+                .select_cell(&default_identity(4), "org/model-a", None)
                 .is_ok()
         );
     }
@@ -1767,7 +1924,7 @@ pub(crate) mod tests {
                 } else {
                     "real_kv"
                 });
-                row.measurement = Some(MeasurementSpec {
+                row.median = Some(MeasurementSpec {
                     policy,
                     global: 0,
                     warmup: 5,
@@ -1785,7 +1942,7 @@ pub(crate) mod tests {
             m.insert("backend".into(), rows[0].backend.into());
             m.insert(
                 "measurement_policy".into(),
-                rows[0].measurement.as_ref().unwrap().policy.into(),
+                rows[0].median.as_ref().unwrap().policy.into(),
             );
             m.insert("warmup_repeats".into(), 5.into());
             m.insert("measurement_repeats".into(), 10.into());
@@ -1839,7 +1996,7 @@ pub(crate) mod tests {
             let tmp = tempfile::tempdir().unwrap();
             let mut rows = median_rows("vllm");
             let row = &mut rows[1];
-            let m = row.measurement.as_mut().unwrap();
+            let m = row.median.as_mut().unwrap();
             match mutation {
                 0 => m.policy = FPM_FORWARD_MEASUREMENT_POLICY,
                 1 => m.measured = 1,
@@ -1901,14 +2058,14 @@ pub(crate) mod tests {
         let table = loaded_table(tmp.path());
         let mut identity = default_identity(4);
         identity[15..].clone_from_slice(&execution.map(str::to_string));
-        assert!(table.select_cell(&identity, "org/model-a").is_ok());
+        assert!(table.select_cell(&identity, "org/model-a", None).is_ok());
         assert!(
             table
-                .select_cell(&default_identity(4), "org/model-a")
+                .select_cell(&default_identity(4), "org/model-a", None)
                 .is_err()
         );
         identity[16] = "decoder_bounded".to_string();
-        assert!(table.select_cell(&identity, "org/model-a").is_err());
+        assert!(table.select_cell(&identity, "org/model-a", None).is_err());
         let prefill_rows: Vec<RowSpec> = default_rows()
             .into_iter()
             .filter(|r| r.workload_kind == "prefill")
@@ -1980,13 +2137,113 @@ pub(crate) mod tests {
         write_pair(tmp.path(), &default_rows());
         assert!(
             loaded_table(tmp.path())
-                .select_cell(&default_identity(4)[..15], "org/model-a")
+                .select_cell(&default_identity(4)[..15], "org/model-a", None)
                 .is_ok()
         );
         write_pair_with(tmp.path(), &default_rows(), |m| {
             m.insert("schema_version".into(), 7.into());
         });
         assert!(loaded_table(tmp.path()).cells().is_err());
+    }
+
+    #[test]
+    fn dcp_cells_do_not_match_plain_tp_or_each_other() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Same coordinates and cell ID; recorded DCP must distinguish the cells.
+        let rows = [
+            RowSpec {
+                dcp: Some(1),
+                latency_ms: 7.0,
+                ..RowSpec::default()
+            },
+            RowSpec {
+                dcp: Some(4),
+                latency_ms: 3.0,
+                ..RowSpec::default()
+            },
+        ];
+        write_pair(tmp.path(), &rows);
+        let table = loaded_table(tmp.path());
+        assert_eq!(table.cells().unwrap().len(), 2);
+        assert!(
+            table
+                .select_cell(&default_identity(4), "org/model-a", None)
+                .is_err()
+        );
+        for dcp in [1, 4] {
+            assert!(
+                table
+                    .select_cell(&default_identity(4), "org/model-a", Some(dcp))
+                    .is_ok()
+            );
+            // A string tail cannot hide DCP from the typed SOL/admission guards.
+            let mut identity = default_identity(4);
+            identity.push(dcp.to_string());
+            assert!(
+                table
+                    .select_cell(&identity, "org/model-a", None)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("supply DCP through dcp_size")
+            );
+        }
+        write_pair_with(tmp.path(), &rows[..1], |meta| {
+            meta.insert(
+                "configuration_selector".into(),
+                serde_json::json!({"dcp": 4}),
+            );
+        });
+        assert!(
+            loaded_table(tmp.path())
+                .cells()
+                .unwrap_err()
+                .to_string()
+                .contains("sidecar selector")
+        );
+    }
+
+    #[test]
+    fn mixed_measurement_policy_validates_each_record() {
+        let tmp = tempfile::tempdir().unwrap();
+        let rows = [
+            RowSpec {
+                measurement: Some((FPM_FORWARD_MEASUREMENT_POLICY, 1)),
+                ..RowSpec::default()
+            },
+            RowSpec {
+                total_kv_read_tokens: 8192,
+                measurement: Some(("kvwarm_median_of_3", 3)),
+                ..RowSpec::default()
+            },
+        ];
+        let mixed_policy = |meta: &mut serde_json::Map<String, serde_json::Value>| {
+            meta.insert(
+                "measurement_policy".into(),
+                FPM_ROW_MEASUREMENT_POLICY.into(),
+            );
+        };
+        write_pair_with(tmp.path(), &rows, mixed_policy);
+        assert_eq!(loaded_table(tmp.path()).cells().unwrap().len(), 1);
+        let invalid = [RowSpec {
+            measurement: Some(("kvwarm_median_of_3", 1)),
+            ..RowSpec::default()
+        }];
+        write_pair_with(tmp.path(), &invalid, mixed_policy);
+        assert!(
+            loaded_table(tmp.path())
+                .cells()
+                .unwrap_err()
+                .to_string()
+                .contains("policy/repeats")
+        );
+        write_pair_with(tmp.path(), &default_rows(), mixed_policy);
+        assert!(
+            loaded_table(tmp.path())
+                .cells()
+                .unwrap_err()
+                .to_string()
+                .contains("requires measurement_policy")
+        );
     }
 
     #[test]
@@ -2526,14 +2783,16 @@ pub(crate) mod tests {
         let identity = default_identity(4);
 
         // Exact path selects its own cell.
-        let cell = table.select_cell(&identity, "org/model-a").expect("select");
+        let cell = table
+            .select_cell(&identity, "org/model-a", None)
+            .expect("select");
         assert_eq!(cell.model_path, "org/model-a");
         // Unknown path: never borrows a collected cell (D1 exact-only).
-        let err = table.select_cell(&identity, "org/other").unwrap_err();
+        let err = table.select_cell(&identity, "org/other", None).unwrap_err();
         assert!(err.to_string().contains("never substitutes"), "{err}");
         // Unknown identity: the no-match error listing what was collected.
         let err = table
-            .select_cell(&default_identity(8), "org/model-a")
+            .select_cell(&default_identity(8), "org/model-a", None)
             .unwrap_err();
         assert!(err.to_string().contains("No FPM cell matches"), "{err}");
     }
@@ -2545,7 +2804,7 @@ pub(crate) mod tests {
         let tmp = tempfile::tempdir().expect("tmpdir");
         write_pair(tmp.path(), &default_rows());
         let err = loaded_table(tmp.path())
-            .select_cell(&default_identity(4), "some/other-model")
+            .select_cell(&default_identity(4), "some/other-model", None)
             .unwrap_err();
         assert!(err.to_string().contains("never substitutes"), "{err}");
     }
@@ -2597,7 +2856,7 @@ pub(crate) mod tests {
         let tmp = tempfile::tempdir().expect("tmpdir");
         write_pair(tmp.path(), &flat_prefill_rows());
         let cell_max = loaded_table(tmp.path())
-            .select_cell(&default_identity(4), "org/model-a")
+            .select_cell(&default_identity(4), "org/model-a", None)
             .expect("select")
             .prefill_batch_clamp_max;
         assert_eq!(cell_max, Some(4));
@@ -2605,7 +2864,7 @@ pub(crate) mod tests {
         let tmp = tempfile::tempdir().expect("tmpdir");
         write_pair(tmp.path(), &default_rows());
         let cell_max = loaded_table(tmp.path())
-            .select_cell(&default_identity(4), "org/model-a")
+            .select_cell(&default_identity(4), "org/model-a", None)
             .expect("select")
             .prefill_batch_clamp_max;
         assert_eq!(cell_max, None);
@@ -2617,7 +2876,7 @@ pub(crate) mod tests {
         let tmp = tempfile::tempdir().expect("tmpdir");
         write_pair(tmp.path(), &bumpy);
         let cell_max = loaded_table(tmp.path())
-            .select_cell(&default_identity(4), "org/model-a")
+            .select_cell(&default_identity(4), "org/model-a", None)
             .expect("select")
             .prefill_batch_clamp_max;
         assert_eq!(cell_max, None);
@@ -2629,7 +2888,7 @@ pub(crate) mod tests {
         write_pair(tmp.path(), &cliff_decode_rows());
         let table = loaded_table(tmp.path());
         let cell = table
-            .select_cell(&default_identity(4), "org/model-a")
+            .select_cell(&default_identity(4), "org/model-a", None)
             .expect("select");
         // Rungs = batches whose (x, x+1) pair was collected.
         assert_eq!(cell.decode_rungs, vec![496, 512]);
@@ -2645,7 +2904,7 @@ pub(crate) mod tests {
         write_pair(tmp.path(), &default_rows());
         let table = loaded_table(tmp.path());
         let cell = table
-            .select_cell(&default_identity(4), "org/model-a")
+            .select_cell(&default_identity(4), "org/model-a", None)
             .expect("select");
         assert!(cell.decode_rungs.is_empty());
         assert_eq!(cell.decode_batches, vec![8, 16]);
@@ -2665,7 +2924,7 @@ pub(crate) mod tests {
             .collect();
         write_pair(tmp.path(), &rows);
         let err = loaded_table(tmp.path())
-            .select_cell(&default_identity(4), "org/model-a")
+            .select_cell(&default_identity(4), "org/model-a", None)
             .unwrap_err();
         assert!(err.to_string().contains("No FPM cell matches"), "{err}");
     }
@@ -2688,11 +2947,11 @@ pub(crate) mod tests {
         let mut wideep_identity = default_identity(4);
         wideep_identity[13] = "True".to_string();
         let cell = table
-            .select_cell(&wideep_identity, "org/model-a")
+            .select_cell(&wideep_identity, "org/model-a", None)
             .expect("select");
         assert_eq!(cell.match_identity[13], "True");
         let err = table
-            .select_cell(&default_identity(4), "org/model-a")
+            .select_cell(&default_identity(4), "org/model-a", None)
             .unwrap_err();
         assert!(err.to_string().contains("No FPM cell matches"), "{err}");
     }

@@ -13,6 +13,7 @@ use crate::common::enums::{DatabaseMode, GemmQuantMode, KvCacheQuantMode, MoeQua
 use crate::common::error::AicError;
 use crate::common::system_spec::{SystemSpec, quant_tc_flops};
 use crate::operators::base::{PerformanceResult, SolComponents};
+use crate::operators::moe::MoeOp;
 use crate::operators::op::{Op, RuntimeContext};
 use crate::perf_database::PerfDatabase;
 use serde::{Deserialize, Serialize};
@@ -479,6 +480,54 @@ impl Glm53RouterOp {
     }
 }
 
+/// Expected number of DISTINCT routed experts touched by `tokens` tokens that
+/// each select `topk` distinct experts out of `num_experts` uniformly:
+/// `E * (1 - (1 - k/E)^T)`. Exact under uniform routing (per token an expert
+/// is missed with probability `1 - k/E`), monotone and concave in `T`, equal
+/// to `k` at `T = 1` and never above `E` or `T * k`.
+pub(crate) fn expected_distinct_experts(tokens: f64, topk: u32, num_experts: u32) -> f64 {
+    if tokens <= 0.0 || topk == 0 || num_experts == 0 {
+        return 0.0;
+    }
+    let (k, e) = (f64::from(topk), f64::from(num_experts.max(topk)));
+    let distinct = if tokens <= 1.0 {
+        k * tokens
+    } else {
+        e * -((-k / e).ln_1p() * tokens).exp_m1()
+    };
+    distinct.min(e).min(tokens * k)
+}
+
+/// GLM routed-expert roofline. Math and activation traffic scale with the
+/// actual `tokens * topk` expert assignments exactly as the generic MoE SOL
+/// does; weight traffic reads each DISTINCT expert once per forward
+/// ([`expected_distinct_experts`]) instead of once per assignment. Experts
+/// are TP-sharded, so every rank reads `1/moe_tp` of each touched expert.
+pub(crate) fn routed_moe_sol(
+    m: &MoeOp,
+    spec: &SystemSpec,
+    x: f64,
+) -> Result<PerformanceResult, AicError> {
+    let tokens = x.max(0.0) * f64::from(m.attention_dp_size.max(1));
+    let (h, inter) = (f64::from(m.hidden_size), f64::from(m.inter_size));
+    let gemms = if m.is_gated { 3.0 } else { 2.0 };
+    let (ep, tp) = (
+        f64::from(m.moe_ep_size.max(1)),
+        f64::from(m.moe_tp_size.max(1)),
+    );
+    let assignments = tokens * f64::from(m.topk) / ep;
+    let experts = expected_distinct_experts(tokens, m.topk, m.num_experts) / ep;
+    let q = m.quant_mode.mapping();
+    let flops = 2.0 * assignments * h * inter * gemms / tp;
+    let bytes = q.memory
+        * (assignments * h * 2.0
+            + assignments * inter * gemms / tp
+            + h * inter * gemms / tp * experts);
+    Ok(leaf(spec, flops, bytes, quant_tc_flops(spec, q)?)
+        .clamp_non_negative()
+        .scaled(m.scale_factor))
+}
+
 /// Native local FFN boundary, including gate/router, routed and shared experts,
 /// clamp and activation; excluding the final separately modeled collective.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -599,10 +648,13 @@ impl Glm53FfnOp {
         // Generic tables are never formal GLM evidence. Even HYBRID fallback
         // evaluates analytical children, so a generic MoE row cannot leak in.
         let sol_db = db.sol_full_view();
-        self.children.iter().try_fold(
-            zero(),
-            |sum, child| Ok(sum.plus(child.query(&sol_db, ctx)?)),
-        )
+        self.children.iter().try_fold(zero(), |sum, child| {
+            let cost = match child {
+                Op::Moe(m) => routed_moe_sol(m, &db.system_spec, f64::from(ctx.num_tokens))?,
+                _ => child.query(&sol_db, ctx)?,
+            };
+            Ok(sum.plus(cost))
+        })
     }
     pub fn query(
         &self,
@@ -875,6 +927,137 @@ pub(crate) mod tests {
         assert!((op.sol(&db, &long).unwrap().latency_ms - expected - cast_ms).abs() < 1e-12);
         op.children.pop();
         assert!(op.validate().is_err());
+    }
+    #[test]
+    fn distinct_experts_follow_uniform_routing_expectation() {
+        // 288 experts, top-8: E*(1-(280/288)^T), hand-evaluated.
+        let d = |t: f64| expected_distinct_experts(t, 8, 288);
+        assert!((d(1.0) - 8.0).abs() < 1e-12);
+        assert!((d(2.0) - 15.777_777_777_777_8).abs() < 1e-9);
+        assert!((d(32.0) - 171.079_710_393_639_7).abs() < 1e-9);
+        assert!((d(256.0) - 287.787_493_780_612_1).abs() < 1e-9);
+        assert_eq!(d(0.0), 0.0);
+        assert!(d(1e9) <= 288.0 && d(1e9) > 287.999_999);
+        let mut prev = 0.0;
+        for t in 1..=512 {
+            let v = d(f64::from(t));
+            assert!(v > prev && v <= 8.0 * f64::from(t) && v <= 288.0);
+            prev = v;
+        }
+    }
+    #[test]
+    fn routed_moe_reads_each_distinct_expert_shard_once() {
+        let db = db(DatabaseMode::Sol);
+        let spec = &db.system_spec;
+        let op = MoeOp::new(
+            "moe",
+            4096,
+            2048,
+            8,
+            288,
+            2,
+            1,
+            MoeQuantMode::Fp8Block,
+            "uniform",
+        );
+        let generic = |t: u32| op.query(&db, t).unwrap().sol.unwrap();
+        // One token touches exactly top-k experts: identical to generic SOL.
+        let one = routed_moe_sol(&op, spec, 1.0).unwrap().sol.unwrap();
+        assert!((one.math_ms - generic(1).math_ms).abs() <= 1e-12 * generic(1).math_ms);
+        assert!((one.mem_ms - generic(1).mem_ms).abs() <= 1e-12 * generic(1).mem_ms);
+        // Batch 32: compute keeps all 256 assignments; weights drop from 256
+        // to E[distinct]=171.08 expert shards of 4096*2048*3/TP2 FP8 bytes.
+        let b32 = routed_moe_sol(&op, spec, 32.0).unwrap().sol.unwrap();
+        assert!((b32.math_ms - generic(32).math_ms).abs() <= 1e-12 * generic(32).math_ms);
+        let shard = 4096.0 * 2048.0 * 3.0 / 2.0;
+        let saved =
+            shard * (256.0 - expected_distinct_experts(32.0, 8, 288)) / spec.gpu.mem_bw * 1e3;
+        assert!((generic(32).mem_ms - b32.mem_ms - saved).abs() <= 1e-9 * saved);
+        // TP4 halves each rank's shard of every distinct expert.
+        let mut tp4 = op.clone();
+        tp4.moe_tp_size = 4;
+        let w = |m: &MoeOp, t: f64| {
+            routed_moe_sol(m, spec, t).unwrap().sol.unwrap().mem_ms
+                - routed_moe_sol(m, spec, 0.0).unwrap().sol.unwrap().mem_ms
+        };
+        let act = |m: &MoeOp| 1.0 * 8.0 * (4096.0 * 2.0 + 2048.0 * 3.0 / f64::from(m.moe_tp_size));
+        let wbytes = |m: &MoeOp, t: f64| w(m, t) * spec.gpu.mem_bw / 1e3 - t * act(m);
+        let ratio = wbytes(&op, 32.0) / wbytes(&tp4, 32.0);
+        assert!((ratio - 2.0).abs() < 1e-9);
+    }
+    #[test]
+    fn ffn_op_level_and_fpm_sol_share_distinct_expert_weight_term() {
+        use crate::operators::{elementwise::ElementwiseOp, gemm::GemmOp};
+        let db = db(DatabaseMode::Sol);
+        let q = GemmQuantMode::Fp8Block;
+        let moe = MoeOp::new(
+            "moe",
+            4096,
+            2048,
+            8,
+            288,
+            2,
+            1,
+            MoeQuantMode::Fp8Block,
+            "uniform",
+        );
+        let op = Glm53FfnOp {
+            name: "ffn_3".into(),
+            backend: "vllm".into(),
+            checkpoint_format: "fp8".into(),
+            is_context: false,
+            is_dense: false,
+            hidden_size: 4096,
+            intermediate_size: 2048,
+            num_experts: 288,
+            topk: 8,
+            tp_size: 2,
+            n_shared_experts: 1,
+            swiglu_limit: 10.0,
+            scoring_func: "sigmoid".into(),
+            routed_scaling_factor: 2.5,
+            n_group: 1,
+            topk_group: 1,
+            norm_topk_prob: true,
+            gemm_quant_mode: q,
+            shared_quant_mode: q,
+            moe_quant_mode: MoeQuantMode::Fp8Block,
+            children: vec![
+                Op::Gemm(GemmOp::new("shared_up", 2048, 4096, q)),
+                Op::Elementwise(ElementwiseOp::new("shared_act", 6.0 * 1024.0)),
+                Op::Gemm(GemmOp::new("shared_down", 4096, 1024, q)),
+                Op::Glm53Router(Glm53RouterOp {
+                    name: "router".into(),
+                    backend: "vllm".into(),
+                    checkpoint_format: "fp8".into(),
+                    hidden_size: 4096,
+                    num_experts: 288,
+                    topk: 8,
+                }),
+                Op::Moe(moe.clone()),
+            ],
+        };
+        for t in [1u32, 32, 4096] {
+            let ctx = RuntimeContext {
+                batch_size: t,
+                num_tokens: t,
+                ..RuntimeContext::default()
+            };
+            let op_level = op.sol(&db, &ctx).unwrap().latency_ms;
+            let x = f64::from(t);
+            let fpm = crate::operators::fpm_sol::op_sol_latency_ms(
+                &Op::Glm53Ffn(op.clone()),
+                &db,
+                x,
+                x,
+                1.0,
+                0.0,
+            )
+            .unwrap();
+            assert!((op_level - fpm).abs() <= 1e-9 * op_level, "t={t}");
+            let routed = routed_moe_sol(&moe, &db.system_spec, x).unwrap().latency_ms;
+            assert!(routed <= moe.query(&db, t).unwrap().latency_ms);
+        }
     }
     #[test]
     fn attention_is_finite_and_silicon_does_not_borrow_kimi_kda() {

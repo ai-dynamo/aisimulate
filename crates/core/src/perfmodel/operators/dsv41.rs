@@ -9,7 +9,8 @@
 //! Serving layout/scoring source: sgl-project/sglang at
 //! 1aa0e962b206102b7c439a4a0c4981cfec6e87bc,
 //! python/sglang/srt/layers/attention/deepseek_v4_backend.py and
-//! python/sglang/srt/mem_cache/deepseek_v4_memory_pool.py (Apache-2.0,
+//! python/sglang/srt/mem_cache/deepseek_v4_memory_pool.py, plus
+//! python/sglang/kernels/ops/attention/dsv4/sm90_fp4_indexer.py (Apache-2.0,
 //! Copyright SGLang contributors). Independently expressed analytical
 //! adaptations; see THIRD_PARTY_NOTICES.md and docs/deepseek-v41-storage.md.
 
@@ -290,14 +291,27 @@ impl Dsv41AttentionOp {
             // two_level_decode_logits / _mask_topk_scores masks candidates.
             // candidate_limit describes eligibility, not a pre-GEMM gather.
             let index_len = compressed_len;
-            let fp4 = quant_tc_flops(spec, GemmQuantMode::Nvfp4.mapping())?;
+            // Pinned SGLang SM90 prefill uses BF16 einsum; decode unpacks
+            // the same FP4 K payload inside a BF16 tl.dot kernel. Storage
+            // precision does not imply native FP4 tensor-core arithmetic.
+            let (index_rate, query_bytes) = if self.kv_cache_layout
+                == Dsv41KvCacheLayout::SglangFp8Bf16
+                && spec.gpu.sm_version == Some(90)
+            {
+                (bf16, 2.0)
+            } else {
+                (
+                    quant_tc_flops(spec, GemmQuantMode::Nvfp4.mapping())?,
+                    0.53125,
+                )
+            };
             result = result.plus(leaf(
                 spec,
                 2.0 * tokens * inh * ihd * index_len,
                 batch * index_len * ihd * 0.53125
-                    + tokens * inh * ihd * 0.53125
+                    + tokens * inh * ihd * query_bytes
                     + tokens * index_len * 4.0,
-                fp4,
+                index_rate,
             ));
             // Materialized scores, top-k positions, and optional coarse candidate blocks.
             let candidate_bytes = if self.is_candidate_source {
@@ -745,6 +759,71 @@ mod tests {
         // 3*(4-byte score write +4-byte score read). Prefix is not re-executed.
         assert!((hi.math_ms - lo.math_ms - 48.0 / 1e6).abs() < 1e-10);
         assert!((hi.mem_ms - lo.mem_ms - 25.0625 / 1e3).abs() < 1e-10);
+    }
+
+    #[test]
+    fn sglang_hopper_index_scores_use_bf16_compute_and_query_payload() {
+        let mut blackwell = unit_spec();
+        blackwell.gpu.sm_version = Some(100);
+        blackwell.gpu.fp4_tc_flops = Some(4e9);
+        let mut hopper = blackwell.clone();
+        hopper.gpu.sm_version = Some(90);
+        hopper.gpu.fp4_tc_flops = None;
+        for (role, ratio) in [("full", 2), ("reindex", 1)] {
+            for is_context in [true, false] {
+                let mut op = attention(role, ratio);
+                op.is_context = is_context;
+                op.head_dim = 512;
+                op.index_head_dim = 128;
+                op.kv_cache_layout = Dsv41KvCacheLayout::SglangFp8Bf16;
+                let (batch, s, prefix) = if is_context {
+                    (2.0, 8.0, 1024.0)
+                } else {
+                    (2.0, 1024.0, 0.0)
+                };
+                let native_fp4 = op.sol(&blackwell, batch, s, prefix).unwrap().sol.unwrap();
+                let native_bf16 = op.sol(&hopper, batch, s, prefix).unwrap().sol.unwrap();
+                let queries = if is_context { 16.0 } else { 2.0 };
+                let index_len = (s + prefix) / f64::from(ratio);
+                // Independent score ledger: Q=[queries,4,128], K=[L,128].
+                // K remains packed68B/row. Only Q changes from68B to256B
+                // per head, and score arithmetic changes from4e9 to1e9.
+                let score_flops = 2.0 * queries * 4.0 * 128.0 * index_len;
+                let math_delta = score_flops * (1.0 / 1e9 - 1.0 / 4e9) * 1e3;
+                let memory_delta = queries * 4.0 * (256.0 - 68.0) / 1e3;
+                assert!((native_bf16.math_ms - native_fp4.math_ms - math_delta).abs() < 1e-10);
+                assert!((native_bf16.mem_ms - native_fp4.mem_ms - memory_delta).abs() < 1e-10);
+                assert!(native_bf16.math_ms.is_finite() && native_bf16.math_ms > 0.0);
+                // A speculative FP4 entry cannot affect the actual SM90 path.
+                let mut misleading = hopper.clone();
+                misleading.gpu.fp4_tc_flops = Some(1.0);
+                assert_eq!(
+                    op.sol(&misleading, batch, s, prefix).unwrap().sol.unwrap(),
+                    native_bf16
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn hopper_index_support_does_not_supply_missing_fp4_to_other_contracts() {
+        let mut op = attention("reindex", 1);
+        op.head_dim = 512;
+        op.index_head_dim = 128;
+        let mut spec = unit_spec();
+        spec.gpu.fp4_tc_flops = None;
+        for (layout, sm) in [
+            (Dsv41KvCacheLayout::LogicalFp4, Some(90)),
+            (Dsv41KvCacheLayout::SglangFp8Bf16, Some(100)),
+            (Dsv41KvCacheLayout::SglangFp8Bf16, None),
+        ] {
+            op.kv_cache_layout = layout;
+            spec.gpu.sm_version = sm;
+            assert!(matches!(
+                op.sol(&spec, 1.0, 128.0, 0.0),
+                Err(AicError::MissingSystemFlops(_))
+            ));
+        }
     }
 
     #[test]

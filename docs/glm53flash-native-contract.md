@@ -50,6 +50,14 @@ NCCL operators supply analytical children within these boundaries.
   analytical children supply SOL only and are excluded from the measured
   identity. The diagnostic `Glm53Router` means FP32 GateLinear alone and is
   nested inside FFN, never emitted as an additional production measured op.
+- Routed-expert SOL keeps compute and activation traffic on the actual
+  `tokens x top-8` assignments, but reads each distinct expert's local TP
+  shard once per forward. The distinct count is the uniform-routing
+  expectation `E * (1 - (1 - k/E)^T)` (E=288, k=8), capped at E and at
+  `T * k`; batch 32 reads about 171 experts rather than 256. The same term
+  is used by op-level SOL and by the FPM roofline. Skewed routing touches
+  fewer experts, so this is an expected-uniform bound, not a worst-case
+  minimum.
 - NVFP4 dense and routed FFNs use W4A4 group16. Shared experts and all
   attention remain BF16. The FP8 checkpoint quantizes shared experts.
 

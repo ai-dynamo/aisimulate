@@ -20,9 +20,11 @@ from types import SimpleNamespace
 
 if __package__:
     from .dsv41_contract import validate_attention_manifest
+    from .dsv41_humming import loaded_humming_geometry, qualify_native_humming
     from .dsv41_workloads import baseline_tokens, coordinates, freeze_workloads
 else:
     from dsv41_contract import validate_attention_manifest
+    from dsv41_humming import loaded_humming_geometry, qualify_native_humming
     from dsv41_workloads import baseline_tokens, coordinates, freeze_workloads
 
 
@@ -182,15 +184,25 @@ def collect_native_baselines(runner, options, tp_rank, provenance):
     All ranks use the same seeded input and expert IDs. Communication calls
     use the actual NCCL process group rather than framework custom all-reduce.
     """
+    layers = [m for m in runner.model.modules() if type(m).__name__ == "DeepseekV4DecoderLayer"]
+    collect_native_kernel_baselines(
+        layers[2].mlp.experts,
+        layers[2].mlp.gate,
+        runner.model.lm_head,
+        runner.model.tp_size,
+        runner.model.config.vocab_size,
+        options,
+        tp_rank,
+        provenance,
+    )
+
+
+def collect_native_kernel_baselines(experts, gate, lm_head, tp_size, vocab_size, options, tp_rank, provenance):
+    """The same native-kernel sweep for loaded full models or isolated modules."""
     import torch
     import torch.distributed as dist
     from sglang.srt.layers.moe.topk import StandardTopKOutput
 
-    layers = [m for m in runner.model.modules() if type(m).__name__ == "DeepseekV4DecoderLayer"]
-    experts = layers[2].mlp.experts
-    gate = layers[2].mlp.gate
-    lm_head = runner.model.lm_head
-    tp_size = runner.model.tp_size
     # The measured all-reduce uses the default process group. Only pure TP
     # may label that collective and the loaded expert shards with this size.
     if dist.get_world_size() != tp_size or dist.get_rank() != tp_rank:
@@ -202,7 +214,6 @@ def collect_native_baselines(runner, options, tp_rank, provenance):
     # ParallelLMHead is built from the loaded text config (SGLang@1aa0e962,
     # models/deepseek_v4.py:4079-4085). Verify its physical shard before
     # recording the GEMM key; a differently padded runtime must fail closed.
-    vocab_size = runner.model.config.vocab_size
     local_vocab_size = vocab_size // tp_size
     if (
         vocab_size % tp_size
@@ -210,10 +221,32 @@ def collect_native_baselines(runner, options, tp_rank, provenance):
         or tuple(lm_head.weight.shape) != (local_vocab_size, 5120)
     ):
         raise RuntimeError("native baseline GEMM physical padding differs from model TP graph")
-    if type(experts.quant_method).__name__ != "Mxfp4FlashinferTrtllmMoEMethod":
-        raise RuntimeError("native baseline MoE requires verified MXFP4 TRTLLM dispatch")
-    if experts.quant_method.flashinfer_mxfp4_moe_precision != "default":
-        raise RuntimeError("native baseline MoE requires MXFP8 activations")
+    quant_method = experts.quant_method
+    humming_geometry = None
+    # SGLang@1aa0e962 fp8.py:421-434 selects CUTLASS on SM90 and
+    # TRTLLM on SM100. Inspect the loaded method, not the intended device.
+    # mxfp4_flashinfer_cutlass_moe.py:39-45,214-222 distinguishes native
+    # SM90 W4A16 from the optional Humming W4A8 and SM120 MXFP8 paths.
+    if type(quant_method).__name__ == "Mxfp4FlashinferTrtllmMoEMethod":
+        if quant_method.flashinfer_mxfp4_moe_precision != "default":
+            raise RuntimeError("native baseline TRTLLM MoE requires MXFP8 activations")
+        moe_dtype = "w4a8_mxfp4_mxfp8"
+        moe_kernel_source = "sglang_mxfp4_flashinfer_trtllm_moe"
+    elif type(quant_method).__name__ == "Mxfp4FlashinferCutlassMoEMethod":
+        if (
+            getattr(quant_method, "_use_mxfp8_act_scaling", None) is not False
+            or getattr(quant_method, "_use_sm90_humming", None) is not False
+            or getattr(experts, "_dsv4_mxfp4_backend", None) != "flashinfer_cutlass_sm90"
+        ):
+            raise RuntimeError("native baseline CUTLASS MoE requires loaded SM90 W4A16 dispatch")
+        moe_dtype = "w4a16_mxfp4_cutlass"
+        moe_kernel_source = "sglang_flashinfer_cutlass_moe"
+    elif type(quant_method).__name__ == "Mxfp4HummingMoEMethod":
+        humming_geometry = loaded_humming_geometry(experts)
+        moe_dtype = "w4a16_mxfp4_humming"
+        moe_kernel_source = "sglang_mxfp4_humming_moe"
+    else:
+        raise RuntimeError("native baseline MoE requires verified MXFP4 TRTLLM, SM90 CUTLASS, or BF16 Humming dispatch")
     if getattr(experts, "reduce_results", False):
         raise RuntimeError("native expert kernel unexpectedly owns a collective")
     recorder_path = Path(options.output) / f"baseline-rank-{tp_rank}.jsonl"
@@ -247,7 +280,7 @@ def collect_native_baselines(runner, options, tp_rank, provenance):
                 (
                     "moe",
                     {
-                        "moe_dtype": "w4a8_mxfp4_mxfp8",
+                        "moe_dtype": moe_dtype,
                         "num_tokens": tokens,
                         "hidden_size": 5120,
                         "inter_size": 2304,
@@ -258,7 +291,7 @@ def collect_native_baselines(runner, options, tp_rank, provenance):
                         "distribution": "uniform",
                     },
                     lambda: experts(hidden, topk),
-                    "sglang_mxfp4_flashinfer_trtllm_moe",
+                    moe_kernel_source,
                 ),
             ]
             for width in (5120, 6144):
@@ -297,12 +330,25 @@ def collect_native_baselines(runner, options, tp_rank, provenance):
                                     "used_cuda_graph": False,
                                     "routing_seed": 20260910,
                                     "routing_histogram": routing_histogram if kind == "moe" else None,
-                                    "physical_local_intermediate": int(experts.w2_weight.shape[-1]) * 2,
+                                    "physical_local_intermediate": (
+                                        humming_geometry["w2"]["shape_k"]
+                                        if humming_geometry is not None
+                                        else int(experts.w2_weight.shape[-1]) * 2
+                                    ),
                                     **provenance,
                                 }
                             )
                             + "\n"
                         )
+    if humming_geometry is not None:
+        # The fused path creates a temporary native runner, so inspecting the
+        # persistent runner's empty tuning cache cannot qualify its operands.
+        # Observe one additional forward after the unchanged timing loops.
+        qualification = qualify_native_humming(experts, hidden, topk)
+        qualification.update(tp_rank=tp_rank, provenance=provenance)
+        with (Path(options.output) / f"humming-qualification-rank-{tp_rank}.json").open("x") as stream:
+            json.dump(qualification, stream, indent=2, sort_keys=True)
+            stream.write("\n")
 
 
 def run_workload(runner, recorder, bench, token_ids, case, execute, *, decode_steps=0):
