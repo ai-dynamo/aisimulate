@@ -113,7 +113,6 @@ from selecting the older 0.12 stable release:
 python -m pip install --pre 'aisimulate>=0.13.0.dev0,<0.14'
 ```
 
-The PyPI package fetches its prebuilt wheel from `https://pypi.nvidia.com`.
 For other platforms, [build from source](#use-current-source).
 
 ## Optional Dynamo integration
