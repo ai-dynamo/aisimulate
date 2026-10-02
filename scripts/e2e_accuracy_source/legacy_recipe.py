@@ -13,7 +13,6 @@ import hashlib
 import json
 import re
 import shlex
-from pathlib import Path
 
 from e2e_accuracy_source.inferencex_recipe import (
     INFERENCEX_REPOSITORY_URL,
@@ -23,6 +22,7 @@ from e2e_accuracy_source.inferencex_recipe import (
     _read_first,
 )
 from e2e_accuracy_source.schema import SiliconRow
+from e2e_accuracy_source.sources import load_manifest, manifest_text
 
 
 def source_record(path: str, text: str) -> dict:
@@ -219,7 +219,7 @@ def launcher_recipe_copies(text: str, destination: str) -> list[dict]:
 
 def verified_launcher_recipe_copy(row: SiliconRow, destination: str, source: RecipeSource) -> dict | None:
     """Resolve a reviewed copy only with exact-attempt runner and source evidence."""
-    manifest = json.loads(Path(__file__).with_name("launcher_recipe_sources.json").read_text())
+    manifest = load_manifest("launcher_recipe_sources.json")
     if not (
         row.disagg
         and row.is_multinode
@@ -290,9 +290,8 @@ def verified_launcher_workload_identity(
     actual job command, source checkout, upload hashes, and four matching
     latency statistics, including corrected versus recorded attempt numbers.
     """
-    manifest_path = Path(__file__).with_name("launcher_workload_sources.json")
-    manifest_text = manifest_path.read_text()
-    records = json.loads(manifest_text)["records"]
+    manifest_name = "launcher_workload_sources.json"
+    records = load_manifest(manifest_name)["records"]
     matches = [
         record
         for record in records
@@ -316,5 +315,5 @@ def verified_launcher_workload_identity(
         "recipe_destination": destination,
         "job": record["job"],
         "artifact": record["artifact"],
-        "reviewed_manifest": source_record(manifest_path.name, manifest_text),
+        "reviewed_manifest": source_record(manifest_name, manifest_text(manifest_name)),
     }

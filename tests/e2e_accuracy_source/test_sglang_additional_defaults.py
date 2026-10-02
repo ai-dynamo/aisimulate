@@ -5,6 +5,7 @@ import hashlib
 
 import pytest
 from e2e_accuracy_source import sglang_additional_defaults as defaults
+from e2e_accuracy_source import sources
 from e2e_accuracy_source.checkpoint_quantization import QuantizationMappingError, resolve_checkpoint_quantization
 from e2e_accuracy_source.inferencex_recipe import InferenceXRecipeError, _normalize_yaml_server_args
 
@@ -133,7 +134,7 @@ def test_reviewed_source_hash_mismatch_rejected(monkeypatch):
             pass
 
     defaults._verified_sources.cache_clear()
-    monkeypatch.setattr(defaults.requests, "get", lambda *args, **kwargs: Response())
+    monkeypatch.setattr(sources.requests, "get", lambda *args, **kwargs: Response())
     with pytest.raises(InferenceXRecipeError, match="source changed"):
         defaults._verified_sources("0.5.16")
     defaults._verified_sources.cache_clear()

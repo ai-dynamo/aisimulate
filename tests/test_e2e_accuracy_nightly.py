@@ -475,6 +475,31 @@ def archive(summary, *, qualification=None, extra=None):
     return stream.getvalue()
 
 
+def test_campaign_hash_includes_nested_source_manifests(artifact, tmp_path, monkeypatch):
+    before, _ = artifact
+    original_digest = campaign.digest
+    monkeypatch.setattr(
+        campaign, "digest", lambda path: "0" * 64 if path.parent.name == "manifests" else original_digest(path)
+    )
+    output = tmp_path / "changed-manifests"
+    campaign.campaign(
+        SimpleNamespace(
+            tables=tmp_path / "tables.json",
+            manifest=tmp_path / "manifest.json",
+            wheel=tmp_path / "wheel.whl",
+            output=output,
+            branch="main",
+            commit="d" * 40,
+            run_id="123",
+            run_attempt="1",
+            workers=2,
+            point_timeout=10,
+        )
+    )
+    after = json.loads((output / "summary.json").read_text())
+    assert after["snapshot"]["campaign"]["driver_sha256"] != before["snapshot"]["campaign"]["driver_sha256"]
+
+
 def test_complete_artifact_contains_only_derived_accuracy_and_provenance(artifact):
     summary, run = artifact
     assert publish.validate_artifact(archive(summary), run) == summary
@@ -1581,7 +1606,7 @@ def test_resolved_cohort_joins_provenance_and_accounts_for_every_row():
 @pytest.mark.parametrize("disagg", [False, True])
 def test_historical_wheel_estimate_projection_matches_public_adapter(source_config_adapter, framework, disagg):
     from e2e_accuracy_source.cohort import select_points
-    from e2e_accuracy_source.deployment import estimate_kwargs
+    from e2e_accuracy_source.estimate import estimate_kwargs
     from e2e_accuracy_source.schema import SiliconRow
 
     point = resolved_point(framework, disagg)

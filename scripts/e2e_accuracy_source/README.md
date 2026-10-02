@@ -9,9 +9,38 @@ uses the source-resolution and cohort contracts from `aisim-e2e-gym` revision
 The resolver reads immutable InferenceX recipes without executing their shell,
 checks reviewed framework-default source hashes, resolves checkpoint metadata,
 and retains source settings, runtime evidence, and workload controls. The
-`*_sources.json` files identify the upstream paths, revisions, and hashes for
+[`manifests/`](manifests/) JSON files identify the upstream paths, revisions, and hashes for
 reviewed defaults. Missing evidence is an unresolved outcome, never an invented
 serving default. Unknown kernel/quantization mappings remain unsupported.
+
+## Package layout
+
+Keep Python modules flat and group the reviewed data in `manifests/`:
+
+| Responsibility | Modules |
+| --- | --- |
+| Cohort and records | `cohort.py`, `filter.py`, `staleness.py`, `schema.py`, `mapping.py` |
+| Source I/O and hash verification | `sources.py`, `inferencex_recipe.py` |
+| Static launchers and shell values | `legacy_recipe.py`, `shell_recipe.py`, `shell_values.py` |
+| Runtime evidence | `runtime_recipe.py`, `single_node_runtime.py` |
+| Effective defaults | `framework_defaults.py`, `sglang_additional_defaults.py`, `trt_additional_defaults.py`, `workload_defaults.py` |
+| Checkpoint identity | `checkpoint_quantization.py`, `model_config_snapshot.py` |
+| Source resolution | `deployment.py` |
+| Prediction projections | `estimate.py` (historical wheels), `replay.py` |
+
+`sources.py` loads manifests once per process and verifies upstream bytes against
+reviewed hashes. Callers keep backend-specific rules, cache scope, and error
+context. Treat loaded manifests as immutable; restart the campaign after editing
+them. Manifest contents and recorded filenames are unchanged by their folder
+location. The campaign hashes Python and JSON files recursively, so moving a
+manifest cannot silently exclude it from driver provenance.
+
+Prediction workers import the small projection modules; source resolution runs
+in the parent before those workers start.
+
+Keep backend rules separate: similar knob names can have different release,
+hardware, and runtime conditions. Further package nesting would add import
+churn without simplifying those rules.
 
 ## Campaign boundary
 

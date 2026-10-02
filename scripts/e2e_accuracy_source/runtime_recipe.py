@@ -718,8 +718,3 @@ def inspect_cached_runtime_workload(row: SiliconRow, cache_dir: Path) -> dict:
     and must reject conflicting explicit recipe workload values.
     """
     return inspect_cached_runtime_recipe(row, cache_dir, workload_only=True)
-
-
-def read_cached_runtime_recipe(row: SiliconRow, cache_dir: Path) -> tuple | None:
-    """Return one strictly matched cached recipe, or None for source fallback."""
-    return inspect_cached_runtime_recipe(row, cache_dir)["parsed"]

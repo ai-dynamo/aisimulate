@@ -18,6 +18,8 @@ from typing import Any, Protocol
 import requests
 import yaml
 
+from .schema import SiliconRow
+
 INFERENCEX_REPOSITORY = "SemiAnalysisAI/InferenceX"
 INFERENCEX_REPOSITORY_URL = f"https://github.com/{INFERENCEX_REPOSITORY}"
 _FULL_GIT_SHA = re.compile(r"[0-9a-fA-F]{40}")
@@ -25,30 +27,6 @@ _FULL_GIT_SHA = re.compile(r"[0-9a-fA-F]{40}")
 
 class InferenceXRecipeError(ValueError):
     """A source recipe cannot be resolved exactly or safely interpreted."""
-
-
-class RecipePoint(Protocol):
-    silicon_model: str
-    precision: str
-    hardware: str
-    framework: str
-    spec_method: str
-    disagg: bool
-    is_multinode: bool
-    isl: int
-    osl: int
-    conc: int
-    prefill_tp: int
-    prefill_ep: int
-    prefill_dp_attention: bool
-    prefill_num_workers: int
-    decode_tp: int
-    decode_ep: int
-    decode_dp_attention: bool
-    decode_num_workers: int
-    num_decode_gpu: int
-    head_sha: str | None
-    image: str | None
 
 
 class RecipeSource(Protocol):
@@ -112,7 +90,7 @@ def _read_first(source: RecipeSource, git_sha: str, paths: tuple[str, ...]) -> t
     raise InferenceXRecipeError("could not find reviewed InferenceX recipe: " + "; ".join(errors))
 
 
-def _select_disaggregated_search_point(row: RecipePoint, family: dict[str, Any]) -> dict[str, Any]:
+def _select_disaggregated_search_point(row: SiliconRow, family: dict[str, Any]) -> dict[str, Any]:
     scenarios = family.get("scenarios")
     sequence_configs = scenarios.get("fixed-seq-len") if isinstance(scenarios, dict) else None
     if sequence_configs is None:
@@ -146,7 +124,7 @@ def _select_disaggregated_search_point(row: RecipePoint, family: dict[str, Any])
     return matches[0]
 
 
-def _role_topology_matches(row: RecipePoint, role: Any, prefix: str) -> bool:
+def _role_topology_matches(row: SiliconRow, role: Any, prefix: str) -> bool:
     if not isinstance(role, dict):
         return False
     expected = {
