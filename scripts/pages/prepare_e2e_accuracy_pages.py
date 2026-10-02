@@ -180,6 +180,8 @@ def public_contract(summary):
                             "serving",
                             "spec_method",
                             "parallelism",
+                            "is_multinode",
+                            "total_gpus",
                             "points",
                         },
                     )
@@ -196,15 +198,24 @@ def public_contract(summary):
                     for point in topology["points"]:
                         keys(
                             point,
+                            {"concurrency", "status", "aic_status", "configuration_quality", "measured", "aic", "aisimulate", "configuration", "infx_run_id"},
+                        )
+                        keys(
+                            point.get("configuration", {}),
                             {
-                                "concurrency",
-                                "status",
-                                "aic_status",
-                                "configuration_quality",
-                                "infx_run_id",
-                                "measured",
-                                "aic",
-                                "aisimulate",
+                                "backend_version",
+                                "max_num_seqs",
+                                "max_num_batched_tokens",
+                                "enable_prefix_caching",
+                                "forward_model",
+                                "prefill_tp",
+                                "prefill_ep",
+                                "prefill_num_workers",
+                                "decode_tp",
+                                "decode_ep",
+                                "decode_num_workers",
+                                "num_prefill_gpu",
+                                "num_decode_gpu",
                             },
                         )
                         run_id = point.get("infx_run_id")
@@ -451,7 +462,24 @@ def prepare(repo: Path, output: Path) -> None:
         text=True,
     ).splitlines()
     branches.update(refs)
+
+    def record_updates(run, number, jobs):
+        for candidate in branches:
+            expected = "Qualify E2E accuracy (" + artifact_key(candidate) + ")"
+            matching = [job for job in jobs if job.get("name", "").endswith(expected)]
+            if len(matching) == 1 and matching[0].get("status") == "completed":
+                rank = (int(run["id"]), int(number))
+                if candidate not in updates or rank > updates[candidate][0]:
+                    updates[candidate] = (
+                        rank,
+                        {
+                            "run_id": str(run["id"]),
+                            "status": "success" if matching[0].get("conclusion") == "success" else "failed",
+                        },
+                    )
+
     selected = {}
+    updates = {}
     # Ninety-day artifacts outlive ordinary docs pushes. Inspect up to 100
     # completed campaigns; absent/expired artifacts retain committed evidence.
     try:
@@ -504,6 +532,8 @@ def prepare(repo: Path, output: Path) -> None:
                         raise ValueError("untrusted campaign attempt")
                     attempts[number] = attempt, api_items(path + "/jobs", "jobs")
                 attempt, jobs = attempts[number]
+            if jobs is not None:
+                record_updates(run, number, jobs)
             try:
                 summary = validate_artifact(data, attempt, artifact_name=artifact["name"], jobs=jobs)
             except UnqualifiedBranch as exc:
@@ -522,6 +552,9 @@ def prepare(repo: Path, output: Path) -> None:
                 elif not ancestor(repo, old["commit_sha"], commit):
                     raise ValueError("incomparable accuracy revisions")
             selected[branch] = summary
+        latest = str(run["run_attempt"])
+        if run.get("conclusion") != "success" and latest not in attempts:
+            record_updates(run, latest, api_items(f"actions/runs/{run['id']}/attempts/{latest}/jobs", "jobs"))
     output.mkdir(parents=True, exist_ok=True)
     if any(output.iterdir()):
         raise ValueError("accuracy output must be empty")
@@ -552,6 +585,11 @@ def prepare(repo: Path, output: Path) -> None:
             json.dumps(summary, sort_keys=True, allow_nan=False) + "\n"
         )
         written += 1
+    status_dir = output / "status"
+    status_dir.mkdir()
+    (status_dir / "updates.json").write_text(
+        json.dumps({branch: value for branch, (_, value) in updates.items()}) + "\n"
+    )
     print(f"Prepared {written} qualified branch accuracy snapshots")
 
 

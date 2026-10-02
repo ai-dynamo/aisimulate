@@ -3,7 +3,7 @@ SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All 
 SPDX-License-Identifier: Apache-2.0
 -->
 
-# AISimulate E2E Accuracy Overview
+# AISimulate E2E Accuracy
 
 View the [E2E Accuracy Overview](https://ai-dynamo.org/aisimulate/e2e-accuracy/).
 It compares **AISim CLI (new)** and **AIC CLI (legacy)** against measured silicon
@@ -12,6 +12,35 @@ comparison series is temporary and will be removed when the AIC CLI is deprecate
 Successful-point counts matter: AISim errors cover successful engine replays,
 while the AIC baseline covers its own successful estimates. Both failures remain
 visible in coverage accounting.
+
+## Views and filters
+
+- **Overview(op-based)** shows model/workload/GPU errors, serving/framework
+  summaries, and topology drilldowns.
+- **Details(op-based)** shows one selected topology with model, ISL/OSL, GPU,
+  precision, framework, serving mode, and parallelism selectors.
+- Both views retain Measured silicon, AISim CLI, and legacy AIC CLI series.
+  Click a legend to toggle a series; double-click to isolate it. Point markers
+  open numeric values and the recorded prediction configuration.
+- Branch, topology, exclusions, chart axes, and hidden series are shareable in
+  the URL and survive tab switches. Overview retains the selected GPU row.
+- Multi-node points are included by default in new campaigns. Optional exclusions
+  remove multi-node topologies, anomalous silicon values, or prediction errors
+  above 100%. Exactly 100% is retained. Error exclusions apply independently per
+  predictor and metric; outliers remain pink in charts. Shape error compares
+  curves normalized independently to their first included point.
+- Silicon anomalies flag local peaks/dips and lower-concurrency values that
+  exceed a later value by more than 5%, within the same topology and metric.
+  Exclusions are off by default; they never change the published snapshot.
+
+Charts use milliseconds when recorded. Historical normalized-only snapshots keep
+relative curves, and aggregate-only snapshots explicitly disable point filters.
+Throughput can show output or total tokens per second per GPU against interactivity,
+E2E latency, or TTFT. Measured output throughput uses nominal
+`OSL / (ISL + OSL)` times reported total throughput when no output rate exists.
+Legacy AIC total throughput uses the inverse nominal ratio. Replay throughput
+uses its recorded token rates. Missing values stay unavailable. Prediction knobs
+are not proof that silicon used the same knobs; the point dialog states this.
 
 ## Branch selection
 
@@ -285,7 +314,7 @@ the matrix (below it on narrow screens). Details include:
 - per-topology TTFT/TPOT curves and a numeric concurrency table, when available;
 - a link that preserves the branch, model, workload, GPU, and topology selection.
 
-Curves use latency **relative to the measured value at the lowest concurrency**
+Historical curves use latency **relative to the measured value at the lowest concurrency**
 within that topology. Measured values and both CLI predictions share the same
 anchor, preserving magnitude and shape differences. Artifacts also retain absolute
 latencies and recorded throughput for throughput-versus-latency views. Missing predictions remain gaps and explicit statuses. Topologies
@@ -333,7 +362,7 @@ python scripts/e2e_accuracy/build_e2e_accuracy_overview.py \
   --metadata /path/to/aisimulate_points.meta.json \
   --coverage /path/to/coverage.json \
   --source-url https://github.com/SemiAnalysisAI/InferenceX-app/releases/tag/db-dump/2026-08-24 \
-  --branch release/0.12.0 \
+  --branch release/0.12.0 --include-multinode \
   --output pages/e2e-accuracy/summary.json
 ```
 
@@ -347,7 +376,9 @@ details. The existing aggregate schema stays compatible.
 
 ```bash
 python -m pytest -c /dev/null tests/test_e2e_accuracy_overview.py tests/test_pages_site.py -q
-node --test tests/test_e2e_accuracy_ui.mjs
+node --test tests/test_e2e_accuracy_ui.mjs tests/test_e2e_accuracy_workflow.mjs
+# Requires Playwright and Chromium:
+python scripts/check_e2e_accuracy_browser.py
 # Use a fresh output directory. Fetch remote refs first to include releases.
 python scripts/pages/build_pages_site.py --accuracy-refs --output-dir /tmp/aisim-site
 python -m http.server 8000 --bind 127.0.0.1 --directory /tmp/aisim-site

@@ -88,6 +88,18 @@ SPDX-License-Identifier: Apache-2.0
     </section>
 
     <main class="shell dashboard">
+      <nav class="accuracy-tabs" aria-label="Accuracy views">
+        <button id="tab-overview" type="button" aria-pressed="true">Overview(op-based)</button>
+        <button id="tab-details" type="button" aria-pressed="false">Details(op-based)</button>
+      </nav>
+      <div class="exclusions" role="group" aria-label="Exclude">
+        <span>Exclude:</span>
+        <label title="Exclude prediction errors greater than 100%, independently per predictor and metric. Charts retain these points in pink."><input id="exclude-outliers" type="checkbox"> outliers <span id="outlier-count"></span></label>
+        <label title="Flag silicon latency peaks, dips, or decreases greater than 5% across concurrency within one topology."><input id="exclude-abnormal" type="checkbox"> bad silicon values</label>
+        <label><input id="exclude-multinode" type="checkbox"> multi-node</label>
+      </div>
+      <div id="detail-filters" class="filter-toolbar" hidden></div>
+      <p id="filter-note" class="detail-scope"></p>
       <section class="migration-context" aria-label="CLI migration comparison">
         <p><strong>Compare the new AISim CLI with the legacy AIC CLI.</strong>
           We show both CLI results against measured silicon to help users build confidence
@@ -100,10 +112,13 @@ SPDX-License-Identifier: Apache-2.0
       <p class="branch-status" id="branch-status" role="status">Loading branch evidence…</p>
       <p class="identity-line" id="identity-line">Loading snapshot dimensions…</p>
 
+      <section id="details-view" hidden aria-label="Details(op-based)"></section>
+      <dialog id="point-dialog" aria-labelledby="point-title"><button id="close-point" type="button">Close</button><div id="point-content"></div></dialog>
       <section class="summary-grid" id="summary-grid" aria-label="Snapshot summary">
         <div class="loading-card">Loading summary…</div>
       </section>
 
+      <section id="framework-summary" class="framework-summary"></section>
       <div class="matrix-layout" id="matrix-layout">
       <section class="matrix-panel" aria-labelledby="matrix-heading">
         <h2 id="matrix-heading">
@@ -170,6 +185,7 @@ SPDX-License-Identifier: Apache-2.0
               </p>
               <ul>
                 <li>Client-observed TTFT and TPOT are reported separately.</li>
+                <li>Multi-node configurations are included when available; use the exclusion filter to hide them.</li>
                 <li>No universal pass/fail threshold is applied.</li>
               </ul>
             </article>

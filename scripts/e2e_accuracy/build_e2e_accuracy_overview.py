@@ -94,6 +94,9 @@ def _normalized_hardware(hardware: str) -> str:
 
 
 def _total_gpus(row: dict[str, Any]) -> int:
+    recorded = _finite(row.get("aisimulate_total_gpus"))
+    if recorded is not None and recorded > 0:
+        return int(recorded)
     if row.get("disagg"):
         for field in ("aisimulate_total_gpus", "dynamo_total_gpus"):
             value = _finite(row.get(field))
@@ -126,7 +129,7 @@ def _is_multinode(row: dict[str, Any]) -> bool:
         if not isinstance(is_multinode, bool):
             raise SnapshotError("row with unknown hardware family must provide boolean is_multinode")
         return is_multinode
-    return _total_gpus(row) > gpus_per_node
+    return row.get("is_multinode") is True or _total_gpus(row) > gpus_per_node
 
 
 def _topology_key(row: dict[str, Any]) -> tuple[Any, ...]:
@@ -292,6 +295,7 @@ def _topology_summaries(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             point: dict[str, Any] = {
                 "concurrency": row["conc"],
                 "status": row["aisimulate_status"],
+                "configuration": row.get("configuration", {}),
                 "infx_run_id": str(run_id) if run_id is not None else None,
             }
             if "configuration_quality" in row:
@@ -341,6 +345,8 @@ def _topology_summaries(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "precision": first["precision"],
                 "serving": "disaggregated" if first.get("disagg") else "aggregated",
                 "spec_method": first.get("spec_method") or "none",
+                "is_multinode": _is_multinode(first),
+                "total_gpus": first.get("aisimulate_total_gpus") or _total_gpus(first),
                 "parallelism": {
                     field: first.get(field)
                     for field in ("tp_size", "pp_size", "attention_dp_size", "moe_ep_size", "moe_tp_size")
