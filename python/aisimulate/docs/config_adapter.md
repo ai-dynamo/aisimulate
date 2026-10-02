@@ -235,6 +235,10 @@ that still produces an inflated world is reported as `adapter_topology_mismatch`
 See the [accuracy audit](../../../pages/e2e-accuracy/README.md#adapter-parity-audit-2026-10-02)
 for remaining differences from recipe-resolved gym evaluations. These changes
 do not regenerate published predictions.
+The [resolution strategy](../src/aisimulate/sdk/config_adapter/README.md#resolution-strategy-source-to-replay)
+covers planned source resolution, per-role replay configuration, and PR/nightly
+validation; these serving configuration gaps remain open until that work is
+implemented and verified.
 
 ## Dynamo recipes
 

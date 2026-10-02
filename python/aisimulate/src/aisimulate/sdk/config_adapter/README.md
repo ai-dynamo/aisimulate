@@ -69,6 +69,59 @@ Adaptation follows these rules:
 5. Missing or conflicting required values are rejected; no point is silently
    dropped.
 
+## Resolution strategy: source to replay
+
+Source resolution and replay configuration are both required for serving
+configuration parity with e2e-gym. The workflow below is the implementation
+strategy; it is **not yet complete** in public accuracy CI. Today, CI adapts
+InferenceX DB records, excludes recipe-fingerprinted points as `recipe_required`,
+and fixes replay sequence limits, the prefill token budget, and prefix caching.
+Topology regression tests alone do not establish serving configuration parity.
+
+### Source resolution
+
+- Resolve each benchmark's matching recipe, launcher, and available runtime
+  evidence. Pin source revisions and artifact hashes; a recipe fingerprint
+  alone cannot reconstruct its settings. Fetch and cache artifacts outside the
+  deterministic adapter; never execute source shell commands.
+- Resolve settings separately for aggregate, prefill, and decode workers.
+  Preserve explicit overrides, source values, and verified backend/version
+  defaults with their provenance. Reject unresolved conflicts. Keep source
+  framework/image versions separate from predictor performance-database versions.
+- Track model/checkpoint and quantization identity alongside serving settings.
+  Missing evidence must stay explicit; do not replace it with an unverified
+  default or infer KV dtype solely from weight precision.
+
+### Replay configuration
+
+- Carry the resolved settings through the canonical contract into the final
+  per-role replay engine arguments: sequence limits, batched/prefill token
+  budgets, prefix caching, memory fraction, KV dtype, CUDA graph controls, and
+  chunked prefill. Preserve the workload and worker topology with those settings.
+- Replace CI's fixed settings only when the corresponding source setting or
+  verified default is resolved. A documented replay approximation must remain
+  distinguishable from a source-matched configuration.
+- Validate each setting against the evaluated wheel and backend. If a required
+  setting cannot be represented or modeled, report an explicit unsupported
+  outcome instead of silently dropping it or claiming parity. Existing estimate
+  schema fields do not by themselves prove replay support.
+
+### CI validation
+
+- **PR checks:** compare resolved values and final per-role engine arguments
+  with reviewed, pinned gym fixtures for vLLM, SGLang, and TRT-LLM. Include missing,
+  conflicting, and unsupported settings. Keep these checks CPU-only and usable
+  without access to the internal gym repository. Preserve fixture attribution.
+- **Nightly accuracy:** resolve and cache pinned source artifacts, then exercise
+  the complete adaptation-to-replay path with supported baseline and candidate
+  wheels. Record configuration provenance and account for every excluded point.
+- Claim parity only for matched measurement IDs, resolved settings, workload,
+  predictor/data revisions, and metric boundaries. Configuration parity and
+  measured prediction accuracy are separate results.
+
+See the [accuracy audit](../../../../../../pages/e2e-accuracy/README.md#adapter-parity-audit-2026-10-02)
+for current gaps and evidence.
+
 ## Package layout
 
 | Module | Responsibility |
