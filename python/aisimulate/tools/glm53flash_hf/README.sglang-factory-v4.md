@@ -133,8 +133,10 @@ measurements or evaluation math.
 ## Distributed policy identity
 
 Deploy all sixteen glm53flash.POLICY_MODULES together. The closed-history
-profile is now fpm_sglang_public_factory_history_v5, based on the recorded
-0346 revision with the explicit history changes below. Its fifteen sibling
+profile was fpm_sglang_public_factory_history_v5, based on the recorded
+0346 revision with the explicit history changes below. It is now
+fpm_cleanup_slurm_source_review_v6 (see README.md), which only adds the
+reviewed post-main Slurm cleanup source. Its fifteen sibling
 SHA pins include the factory adapter. The original v4/d53 closure remains a
 historical maintenance identity. Neither profile denotes a new native producer
 installation. Keep older source bundles and proofs under their original identities.

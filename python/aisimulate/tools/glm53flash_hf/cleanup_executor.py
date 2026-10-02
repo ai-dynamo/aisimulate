@@ -147,7 +147,7 @@ def cleanup_original(identity, output):
     from collector.fpm_forward.slurm import SlurmCellRunner
 
     c.require(
-        c.digest(Path(inspect.getfile(SlurmCellRunner)).read_bytes()) == c.SLURM_SOURCE,
+        c.digest(Path(inspect.getfile(SlurmCellRunner)).read_bytes()) in c.CLEANUP_SLURM_SOURCES,
         "unreviewed Slurm cleanup implementation",
     )
     canonical = Path(identity["cell_directory"]).resolve(strict=True)

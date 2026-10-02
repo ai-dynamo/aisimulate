@@ -125,11 +125,18 @@ helper pins its fifteen sibling source files; the canonical/profile closure pins
 the helper itself and every copied evidence file. These maintenance tools are
 source-distributed separately from installed native producers and analysis
 consumers. Current `MAINTENANCE_IDENTITY` names
-`fpm_sglang_public_factory_history_v5`, based on revision
-`0346c808885baa366bfcdcdb96add32dd4a94a8e`. This identifies the explicit
-factory-history and startup-failure supplement follow-up, not unchanged 0346
-bytes or an installed consumer. The earlier `fpm_sglang_public_factory_v4`
-profile and d53 base remain historical identities of their original bundles. Record
+`fpm_cleanup_slurm_source_review_v6`, based on revision
+`69cdb67ed6659a0a8b9aadbd71ccd8820e16cc42`. It differs from v5 only in that the
+cleanup-only executor also accepts the reviewed post-main collector `slurm.py`
+(`cleanup_reconciliation.CLEANUP_SLURM_SOURCES`); the original-host
+`slurm_sha256` check is unchanged. The review (Claude coordinator on the
+user's behalf, 2026-10-02) confirmed that `cleanup()`, the module imports and
+every member the cleanup subclass inherits are byte-identical to `432dc0b5`.
+The previous `fpm_sglang_public_factory_history_v5` profile and 0346 base
+identified the explicit factory-history and startup-failure supplement
+follow-up, not unchanged 0346 bytes or an installed consumer. The v5 profile,
+the earlier `fpm_sglang_public_factory_v4` profile and the d53 base remain
+historical identities of their original bundles. Record
 the actual repository/tool revision separately.
 Changes to a pinned sibling require review and a coherent new hash map.
 

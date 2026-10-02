@@ -21,7 +21,7 @@ SOURCE = Path(__file__).resolve().parents[3] / "collector/fpm_forward/slurm.py"
 
 
 def pinned_modules(command):
-    assert c.digest(SOURCE.read_bytes()) == c.SLURM_SOURCE
+    assert c.digest(SOURCE.read_bytes()) in c.CLEANUP_SLURM_SOURCES
     root = types.ModuleType("collector")
     root.__path__ = []
     package = types.ModuleType("collector.fpm_forward")

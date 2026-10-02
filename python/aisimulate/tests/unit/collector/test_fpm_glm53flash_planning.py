@@ -5,12 +5,12 @@ import json
 import shlex
 
 import pytest
-
-from aisimulate_core.sdk.glm53flash import MODEL_REVISIONS
 from collector.fpm_forward.cli import _parser
 from collector.fpm_forward.config import FPMCollectionOptions
 from collector.fpm_forward.planner import build_collection_plan
 from collector.fpm_forward.runner import _render_cell
+
+from aisimulate_core.sdk.glm53flash import MODEL_REVISIONS
 
 pytestmark = pytest.mark.unit
 

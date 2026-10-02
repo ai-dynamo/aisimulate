@@ -7,8 +7,8 @@ import json
 from types import SimpleNamespace
 
 import pytest
-
 from collector.fpm_forward import glm53flash_validation as validation
+
 from tests.unit.collector.test_glm53flash_validation import campaign as _campaign_fixture
 from tests.unit.collector.test_glm53flash_validation import write_plan
 

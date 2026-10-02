@@ -17,7 +17,6 @@ from pathlib import Path
 from unittest import mock
 
 import pytest
-
 from tools.glm53flash_hf import raw_archive as archive
 
 pytestmark = pytest.mark.unit

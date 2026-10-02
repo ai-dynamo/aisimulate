@@ -6,7 +6,6 @@ import sys
 from types import SimpleNamespace
 
 import pytest
-
 from collector.glm53flash_sglang_runtime import _TraceState, actual_coordinates, match_frozen_requests
 
 pytestmark = pytest.mark.unit

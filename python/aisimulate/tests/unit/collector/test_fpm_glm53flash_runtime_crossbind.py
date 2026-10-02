@@ -8,10 +8,10 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-
 from collector import glm53flash_runtime_identity as identity
 from collector.fpm_forward import database, glm53flash_validation, native_artifact, runner
 from collector.fpm_forward.hybrid_artifact import PROTOCOL, validate_vllm_hardware_receipts
+
 from tests.unit.collector.test_fpm_glm53flash_hardware import artifact
 
 pytestmark = pytest.mark.unit

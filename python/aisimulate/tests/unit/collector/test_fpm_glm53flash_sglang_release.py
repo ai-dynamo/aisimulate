@@ -5,7 +5,6 @@
 import json
 
 import pytest
-
 from collector.fpm_forward.sglang_driver import wait_retained_release
 from collector.glm53flash_sglang_retained import PRODUCER_PROTOCOL
 
