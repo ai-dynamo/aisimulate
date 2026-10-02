@@ -7,7 +7,7 @@ This module owns only the backend-neutral A/F parallel shape, validation, GPU
 accounting, and complete finite enumeration. Performance measurement, staged
 evaluation, search integration, replay, and deployment generation live in their
 own layers. The default candidate order follows the imported legacy AIC
-implementation in ``Task.build_afd_parallel_lists``.
+implementation in ``aisimulate.sdk.task_v2._build_afd_parallel_lists``.
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ from typing import Any
 from .parallel_enum import ReplicaParallelConfig
 
 AFD_SCHEMA_VERSION = 1
-_LEGACY_SOURCE = "aisimulate.sdk.task_v2.build_afd_parallel_lists"
+_LEGACY_SOURCE = "aisimulate.sdk.task_v2._build_afd_parallel_lists"
 
 
 class AFDPhase(str, Enum):
@@ -51,6 +51,7 @@ class AFDReasonCategory(str, Enum):
     CANDIDATE_LIMIT = "candidate_limit"
     NO_FEASIBLE_TOPOLOGY = "no_feasible_topology"
     INVALID_MEASUREMENT = "invalid_measurement"
+    OUT_OF_MEMORY = "out_of_memory"
 
 
 class AFDInfeasible(ValueError):

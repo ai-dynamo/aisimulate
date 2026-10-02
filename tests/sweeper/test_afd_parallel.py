@@ -11,7 +11,7 @@ import yaml
 
 from aisimulate.config import CoreRecommendationConfig
 from aisimulate.recommend import recommendation_to_sweeper
-from aisimulate.sdk.task_v2 import build_afd_parallel_lists
+from aisimulate.sdk.task_v2 import _build_afd_parallel_lists
 from aisimulate.sweeper import (
     AFDInfeasible,
     AFDReasonCategory,
@@ -149,7 +149,7 @@ def test_default_dense_domain_matches_legacy_candidate_order():
         )
         for item in result.candidates
     ]
-    expected = build_afd_parallel_lists(
+    expected = _build_afd_parallel_lists(
         total_gpus=32,
         gpus_per_node=8,
         is_moe=False,
@@ -157,7 +157,7 @@ def test_default_dense_domain_matches_legacy_candidate_order():
 
     assert actual == expected
     assert result.provenance["complete"] is True
-    assert result.provenance["source"].endswith("build_afd_parallel_lists")
+    assert result.provenance["source"] == "aisimulate.sdk.task_v2._build_afd_parallel_lists"
 
 
 def test_moe_domain_resolves_symbolic_ep_and_filters_expert_divisibility():
@@ -189,7 +189,7 @@ def test_moe_domain_resolves_symbolic_ep_and_filters_expert_divisibility():
         )
         for item in result.candidates
     ]
-    expected = build_afd_parallel_lists(
+    expected = _build_afd_parallel_lists(
         total_gpus=24,
         gpus_per_node=8,
         is_moe=True,

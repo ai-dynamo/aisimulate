@@ -23,15 +23,13 @@ The suite compares the live Rust engine against **golden fixtures** for:
   (`cli_estimate` has no cp knob)
 - `agg`: public `cli_estimate(mode="agg")`
 - `disagg`: public `cli_estimate(mode="disagg")`
-- `afd`: public `cli_estimate(mode="afd")` (ttft/tpot; the AFD session's
-  per-op values cross the op-list evaluate FFI)
 
 The case matrix: `SMOKE_CASES` x 4 surfaces, `POWER_CASES` (energy/power
 coverage) x 4, `CP_CASES` (mixed only), `DSV4_CP_CASES` (cp_static_ctx +
 mixed), `HYBRID_CASES` x 4 at a 1e-4 rtol, `SOL_CASES` (static+mixed) at
-1e-4, the two #1456 site-transfer tie-break anchors
-(`TIE_AGG_CASES`/`TIE_DISAGG_CASES`), and `AFD_CASES` — plus the
-typed-error/provenance contract tests and the anti-vacuous golden guards.
+1e-4, and the two #1456 site-transfer tie-break anchors
+(`TIE_AGG_CASES`/`TIE_DISAGG_CASES`) — plus the typed-error/provenance
+contract tests and the anti-vacuous golden guards.
 If an assertion fails, the message prints the golden value, Rust value,
 absolute delta, percent delta, tolerance, and status for each metric.
 
