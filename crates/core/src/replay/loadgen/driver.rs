@@ -305,6 +305,7 @@ struct TurnRuntime {
     priority: i32,
     strict_priority: u32,
     policy_class: Option<String>,
+    synthetic_session_id: bool,
     // Canonical capture assigns ordinals; Belady may instead reserve an opaque
     // UUID here so the forecast and eventual causal admission share an identity.
     deterministic_request_id: Option<Uuid>,
@@ -1297,6 +1298,7 @@ impl WorkloadDriver {
                     priority: node.priority,
                     strict_priority: node.strict_priority,
                     policy_class: node.policy_class,
+                    synthetic_session_id: false,
                     deterministic_request_id: Some(deterministic_request_id),
                 }],
                 cumulative_tokens: Vec::new(),
@@ -1467,6 +1469,7 @@ impl WorkloadDriver {
                             priority: turn.priority,
                             strict_priority: turn.strict_priority,
                             policy_class: turn.policy_class,
+                            synthetic_session_id: turn.synthetic_session_id,
                             deterministic_request_id: None,
                         })
                     })
@@ -1800,6 +1803,7 @@ impl WorkloadDriver {
                 scheduled_ready_at_ms,
                 replay_hashes,
                 emit_session_metadata: self.emit_session_metadata,
+                synthetic_session_id: turn.synthetic_session_id,
                 request,
             });
             if let SchedulingPolicy::Agentic(state) = &mut self.policy {
@@ -3081,6 +3085,7 @@ mod tests {
                         priority: 3,
                         strict_priority: 4,
                         policy_class: None,
+                        synthetic_session_id: false,
                     },
                     TurnTrace {
                         input_length: 3,
@@ -3092,6 +3097,7 @@ mod tests {
                         priority: -2,
                         strict_priority: 7,
                         policy_class: None,
+                        synthetic_session_id: false,
                     },
                 ],
             }],

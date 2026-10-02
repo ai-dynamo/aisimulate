@@ -221,6 +221,10 @@ pub struct TurnTrace {
     pub priority: i32,
     pub strict_priority: u32,
     pub policy_class: Option<String>,
+    /// The source row had no session ID, so the loader synthesized a single-use
+    /// one. Replay keeps it as the request's report identity but never passes it
+    /// to placement as a session.
+    pub synthetic_session_id: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
@@ -536,6 +540,9 @@ pub struct ReadyTurn {
     pub session_id: String,
     pub turn_index: usize,
     pub emit_session_metadata: bool,
+    /// `session_id` was synthesized for a row without one (see
+    /// [`TurnTrace::synthetic_session_id`]); do not route on it as a session.
+    pub synthetic_session_id: bool,
     pub replay_key: Option<String>,
     pub scheduled_ready_at_ms: f64,
     pub replay_hashes: Option<ReplayRequestHashes>,
@@ -688,6 +695,7 @@ pub struct CompactReadyTurn {
     pub scheduled_ready_at_ms: f64,
     pub replay_hashes: Option<ReplayRequestHashes>,
     pub emit_session_metadata: bool,
+    pub synthetic_session_id: bool,
     pub request: ReplayRequestPayload,
 }
 
@@ -702,6 +710,7 @@ impl CompactReadyTurn {
             session_id: self.session_id,
             turn_index: self.turn_index,
             emit_session_metadata: self.emit_session_metadata,
+            synthetic_session_id: self.synthetic_session_id,
             replay_key: self.replay_key,
             scheduled_ready_at_ms: self.scheduled_ready_at_ms,
             replay_hashes: self.replay_hashes,
