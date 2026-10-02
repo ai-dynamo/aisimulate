@@ -47,8 +47,8 @@ CLI evaluation still need that evaluation before branch-qualified publication.
 Charts use milliseconds when recorded. Historical normalized-only snapshots keep
 relative curves, and aggregate-only snapshots explicitly disable point filters.
 Throughput can show output or total tokens per second per GPU against interactivity,
-E2E latency, or TTFT. Measured output throughput uses nominal
-`OSL / (ISL + OSL)` times reported total throughput when no output rate exists.
+E2E latency, or TTFT. Measured output throughput stays unavailable when no output
+rate was recorded; requested token lengths do not establish measured throughput.
 AIC (legacy CLI) total throughput uses the inverse nominal ratio. Replay throughput
 uses its recorded token rates. Missing values stay unavailable. Prediction knobs
 are not proof that silicon used the same knobs; the point dialog states this.

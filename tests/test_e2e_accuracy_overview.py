@@ -479,7 +479,7 @@ def test_gym_chart_metrics_retain_units_and_missing_predictions() -> None:
     first, second = topology["points"]
     assert first["measured"]["e2e_ms"] == 1200
     assert first["measured"]["total_per_gpu"] == 800
-    assert first["measured"]["output_per_gpu"] == 400
+    assert first["measured"]["output_per_gpu"] is None
     assert first["aic"]["e2e_ms"] == 1500
     assert first["aic"]["output_per_gpu"] == 300
     assert first["aic"]["total_per_gpu"] == 600
@@ -746,3 +746,42 @@ def test_summary_rejects_malformed_public_run_id(run_id):
             predictions_sha256="c" * 64,
             source_url="https://github.com/SemiAnalysisAI/InferenceX-app/releases/tag/" + predictions["release_tag"],
         )
+
+
+def test_chart_export_keeps_predictors_distinct_and_absolute_units():
+    predictions, metadata, coverage = _inputs()
+    predictions["rows"][0].update(
+        silicon_e2e_ms=1200,
+        silicon_output_per_gpu=123,
+        silicon_total_per_gpu=300,
+        aic_e2e_ms=1300,
+        aic_output_per_gpu=234,
+        aic_total_per_gpu=500,
+        dynamo_e2e_ms=1400,
+        dynamo_output_per_gpu=345,
+        dynamo_total_per_gpu=700,
+    )
+    summary = OVERVIEW.build_summary(
+        predictions,
+        metadata,
+        coverage,
+        predictions_sha256="c" * 64,
+        source_url=OVERVIEW.INFERENCEX_RELEASE_URL_PREFIX + predictions["release_tag"],
+        exclude_multinode=False,
+    )
+    topologies = [t for m in summary["models"] for w in m["workloads"] for g in w["gpus"] for t in g["topologies"]]
+    assert all(type(t["is_multinode"]) is bool and t["total_gpus"] > 0 for t in topologies)
+    points = [p for t in topologies for p in t["points"]]
+    assert all(p["measured"]["ttft_ms"] > 0 for p in points)
+    assert any(p["aic"]["ttft_ms"] != p["aisimulate"]["ttft_ms"] for p in points if p["status"] == "success")
+    assert all(p["aisimulate"]["ttft_ms"] is None for p in points if p["status"] != "success")
+    multinode = next(t for t in topologies if t["is_multinode"])
+    assert multinode["total_gpus"] == 16
+    for series, expected in (
+        ("measured", (1200, 123, 300)),
+        ("aic", (1300, 234, 500)),
+        ("aisimulate", (1400, 345, 700)),
+    ):
+        assert tuple(points[0][series][key] for key in ("e2e_ms", "output_per_gpu", "total_per_gpu")) == expected
+        assert all(points[1][series][key] is None for key in ("e2e_ms", "output_per_gpu", "total_per_gpu"))
+

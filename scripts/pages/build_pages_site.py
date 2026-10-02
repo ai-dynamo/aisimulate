@@ -266,10 +266,8 @@ def _accuracy_summary(text: str, *, allow_preview: bool = False) -> dict:
             require(status in ("success", "unsupported", "failed"), "point status")
             aic_status = point.get("aic_status", "success")
             require(aic_status in ("success", "unsupported", "failed"), "AIC point status")
-            counts[status] += 1
-            aic_status = point.get("aic_status", "success")
-            require(aic_status in ("success", "unsupported", "failed"), "AIC point status")
             aic_successes += aic_status == "success"
+            counts[status] += 1
             for name in ("measured", "aic", "aisimulate"):
                 series = point.get(name)
                 require(isinstance(series, dict), "point series")
@@ -354,7 +352,7 @@ def _accuracy_summary(text: str, *, allow_preview: bool = False) -> dict:
                         "point metric",
                     )
         require(counts == item["aisimulate"]["status_counts"], "topology status counts")
-        require(aic_successes == item["aic"]["points"], "AIC topology coverage")
+        require(aic_successes == item["aic"]["points"], "AIC topology coverage (AIC point count)")
 
     try:
         summary = json.loads(text)

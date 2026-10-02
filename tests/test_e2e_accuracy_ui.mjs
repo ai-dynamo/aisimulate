@@ -141,9 +141,15 @@ test("failed AIC predictions retain silicon and AISim chart values", () => {
   const point = topology.points[0];
   point.aic_status = "failed";
   for (const key of Object.keys(point.aic)) point.aic[key] = null;
+  const model = data.models[0], workload = model.workloads[0], gpu = workload.gpus[0];
+  for (const item of [data.totals, model, workload, gpu, topology]) item.aic.points = 2;
   const app = harness(async () => response(data));
   app.set("valid", data);
   assert.doesNotThrow(() => app.run("validateSummary(valid)"));
+  for (const item of [data.totals, model, workload, gpu, topology]) item.aic.points = 3;
+  app.set("valid", data);
+  assert.throws(() => app.run("validateSummary(valid)"));
+  for (const item of [data.totals, model, workload, gpu, topology]) item.aic.points = 2;
   point.aic.ttft_ms = 123;
   app.set("valid", data);
   assert.throws(() => app.run("validateSummary(valid)"));
