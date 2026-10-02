@@ -44,20 +44,9 @@ LLM Serving](https://arxiv.org/abs/2601.06288).
 
 ## Install
 
-Use Python **3.11–3.13**. Python 3.14 is not supported.
-
-> [!IMPORTANT]
-> This README and the guides on `main` describe **0.13 development**, not the
-> **0.12.1 stable release** available on PyPI as of October 2, 2026.
-> For the engine `predict` and `recommend` examples below, first
-> [install the current source](#develop-from-source). Installing with
-> `pip install aisimulate` does not install `main` or enable its newer CLI flags
-> and configuration fields. For 0.12.1, use the
-> [versioned documentation](https://github.com/ai-dynamo/aisimulate/tree/v0.12.1).
-
-See the [installation guide](docs/installation.md#use-current-source) for
-source-build requirements and the [Dynamo installation](#with-dynamo) below
-for the separately validated nightly pair.
+See the [installation guide](docs/installation.md) for published versions,
+platform requirements, current-source setup, and internal nightlies. Documentation
+on `main` can describe features newer than the latest published wheel.
 
 ### Engine-only
 

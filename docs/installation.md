@@ -11,9 +11,10 @@ environment is required for collection and deployment benchmarks.
 
 ## Choose a package and matching documentation
 
-Documentation on `main` describes the current source. A published wheel may
-predate a documented feature. Record your installed version before comparing
-results or reporting a problem:
+Documentation on `main` describes 0.13 development. To run its examples,
+[install the current source](#use-current-source); the stable 0.12.1 package
+does not include all of these features. Record your installed version before
+comparing results or reporting a problem:
 
 ```bash
 python -c 'from importlib.metadata import version; print(version("aisimulate"))'
@@ -22,9 +23,8 @@ python -c 'import aisimulate, aisimulate._runtime; print(aisimulate.__file__); p
 
 ### Published packages
 
-As checked on **September 14, 2026**, PyPI publishes `0.12.0.dev1`; the GitHub
-`v0.12.0` release is still a draft. This is a dated publication snapshot, not
-a promise that `main` is included in that wheel. Check the
+As checked on **October 2, 2026**, the stable PyPI release is `0.12.1`. Use its
+[versioned documentation](https://github.com/ai-dynamo/aisimulate/tree/v0.12.1). Check the
 [PyPI release files](https://pypi.org/project/aisimulate/#files) and
 [GitHub releases](https://github.com/ai-dynamo/aisimulate/releases) for newer
 artifacts and use the documentation associated with the selected release.
@@ -33,14 +33,13 @@ artifacts and use the documentation associated with the selected release.
 python3.13 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
-python -m pip install --pre 'aisimulate==0.12.0.dev1'
+python -m pip install 'aisimulate==0.12.1'
 aisimulate --help
 ```
 
 An exact version pin makes the choice explicit. To discover newer published
-prereleases, use `python -m pip index versions --pre aisimulate`. Once a stable
-release is published, `python -m pip install aisimulate` normally selects a
-stable release; `--pre` allows prereleases. Neither command requests the
+prereleases, use `python -m pip index versions --pre aisimulate`.
+`python -m pip install aisimulate` selects a stable release; `--pre` allows prereleases. Neither command requests the
 latest repository source or an internal nightly automatically.
 
 When replacing standalone AIConfigurator, first follow the
@@ -51,10 +50,10 @@ commands. Python imports use `aisimulate` and `aisimulate_core`; see
 
 ## Platform matrix
 
-| Host | Published `0.12.0.dev1` wheel | Current source wheel-build target |
+| Host | Published `0.12.1` wheel | Current source wheel-build target |
 |---|---|---|
-| Linux x86-64 | `manylinux_2_34_x86_64`: glibc 2.34 or newer | `manylinux_2_28_x86_64`: glibc 2.28 or newer |
-| Linux ARM64 | `manylinux_2_34_aarch64`: glibc 2.34 or newer | `manylinux_2_28_aarch64`: glibc 2.28 or newer |
+| Linux x86-64 | `manylinux_2_28_x86_64`: glibc 2.28 or newer | `manylinux_2_28_x86_64`: glibc 2.28 or newer |
+| Linux ARM64 | `manylinux_2_28_aarch64`: glibc 2.28 or newer | `manylinux_2_28_aarch64`: glibc 2.28 or newer |
 | macOS Apple Silicon | `macosx_11_0_arm64` | macOS ARM64, deployment target 11.0 |
 | macOS Intel, native Windows, musl-based Linux | No wheel in this release | No corresponding platform-wheel job |
 
@@ -64,15 +63,16 @@ evidence that an artifact was published or that every OS/dependency combination
 was tested. The
 [platform-wheel workflow](../.github/workflows/validate-platform-wheels.yml)
 defines build validation; the filenames in your selected release define what
-you can install. In particular, the glibc 2.28 repair on `main` does **not**
-change the already-published `0.12.0.dev1` wheels.
+you can install. Stable releases use a wheel stub on PyPI to fetch prebuilt
+wheels from `https://pypi.nvidia.com`; installing them does not require Rust.
 
 On Linux, check `uname -m` and `ldd --version`; on macOS, check `uname -m` and
 `sw_vers`. To check wheel availability without compiling AISimulate:
 
 ```bash
 python -m pip download --no-deps --only-binary=:all: \
-  'aisimulate==0.12.0.dev1' --dest wheel-check
+  --extra-index-url https://pypi.nvidia.com \
+  'aisimulate==0.12.1' --dest wheel-check
 ```
 
 This checks only AISimulate's wheel, not all transitive dependencies. A missing

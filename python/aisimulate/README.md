@@ -17,17 +17,7 @@ generator SDK.
 
 ## Install
 
-Use Python **3.11–3.13**. Python 3.14 is not supported.
-
-> [!IMPORTANT]
-> This README and the linked guides on `main` describe **0.13 development**,
-> not the **0.12.1 stable release** available on PyPI as of October 2, 2026.
-> The `predict` and `recommend` examples below require the current source;
-> follow [Develop from source](https://github.com/ai-dynamo/aisimulate#develop-from-source)
-> before running them. For 0.12.1, use the
-> [versioned documentation](https://github.com/ai-dynamo/aisimulate/tree/v0.12.1).
-
-To install the stable release instead:
+Use Python 3.11–3.13:
 
 ```bash
 python3 -m pip install aisimulate
@@ -36,12 +26,10 @@ aisimulate --help
 
 The built-in engine runs without Dynamo. See the
 [installation guide](https://github.com/ai-dynamo/aisimulate/blob/main/docs/installation.md)
-for source builds and nightly artifacts. Installing the stable release does
-not enable the newer CLI flags and configuration fields documented on `main`.
-For the separately validated Linux-only Dynamo nightly pair, follow the
-[Dynamo installation](https://github.com/ai-dynamo/aisimulate#with-dynamo).
-The optional Dynamo Planner integration requires additional dependencies
-described in the installation guide.
+for platform requirements, source builds, nightly artifacts, and compatible
+Dynamo installations. Documentation on `main` may describe features newer than
+the latest published wheel. The optional Dynamo Planner integration requires
+additional dependencies described in that guide.
 
 ## Predict one deployment
 
