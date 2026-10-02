@@ -25,7 +25,7 @@ from collections import defaultdict
 from pathlib import Path
 
 from .dsv41_contract import canonical_json, validate_attention_manifest, validate_row, write_parquet
-from .dsv41_isolated_runner import FRAMEWORK_COMMIT, REQUIRED_SOURCES, sha
+from .dsv41_isolated_runner import EXPECTED_SM, FRAMEWORK_COMMIT, FRAMEWORK_PINS, REQUIRED_SOURCES, framework_version, sha
 from .dsv41_native_runner import ComponentRecorder, _dispatch, run_workload
 from .dsv41_workloads import freeze_workloads, projected_keys
 
@@ -78,13 +78,12 @@ def validate_plan(plan, manifest, workloads):
         length = case["query"] + case["prefix"]
         if case["batch_size"] > 4 or length > 8192 or case["batch_size"] * length > 8192:
             raise ValueError("workload exceeds declared native pool capacity")
-    expected_sm = {"H100": 90, "H200": 90, "B200": 100, "GB200": 100}
-    if expected_sm.get(plan["expected_gpu"]) != plan["expected_sm"]:
+    if EXPECTED_SM.get(plan["expected_gpu"]) != plan["expected_sm"]:
         raise ValueError("GPU/SM identity differs")
     if plan["moe_runner_backend"] not in ("flashinfer_mxfp4", "humming"):
         raise ValueError("explicit native quantization dispatch required")
-    if plan["framework_commit"] != FRAMEWORK_COMMIT:
-        raise ValueError("native attention APIs require the pinned framework commit")
+    if plan["framework_commit"] not in FRAMEWORK_PINS:
+        raise ValueError("native attention APIs require a qualified framework commit")
     if not plan["source_pins"].keys() >= ATTENTION_SOURCES:
         raise ValueError("missing native source pins")
     if not plan["metadata_pins"].keys() >= {"config.json", "tokenizer.json", "tokenizer_config.json"}:
@@ -417,7 +416,7 @@ def aggregate_attention_records(output, plan_path, manifest_path, workloads_path
             purpose="calibration",
             runtime_digest=plan["runtime_digest"],
             image_sha256=plan["image_sha256"],
-            framework_version="dev-" + FRAMEWORK_COMMIT,
+            framework_version=framework_version(plan["framework_commit"]),
             collector_revision=plan["collector_revision"],
             weight_initializer=WEIGHT_INITIALIZER,
         )
@@ -613,7 +612,7 @@ def run(args, receipt):
         plan_sha256=sha(args.plan),
         manifest_sha256=sha(args.manifest),
         workloads_sha256=sha(args.workloads),
-        framework_version="dev-" + FRAMEWORK_COMMIT,
+        framework_version=framework_version(plan["framework_commit"]),
         raw_package_version=importlib.metadata.version("sglang"),
         collector_revision=plan["collector_revision"],
         runtime_digest=plan["runtime_digest"],

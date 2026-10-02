@@ -31,6 +31,23 @@ from .dsv41_contract import canonical_json, validate_row
 from .dsv41_native_runner import _dispatch, collect_native_kernel_baselines
 
 FRAMEWORK_COMMIT = "1aa0e962b206102b7c439a4a0c4981cfec6e87bc"
+# Qualified SGLang pins: commit -> perf-database version key. The dev build keeps
+# its historical "dev-<commit>" key; a release tag uses the bare package version
+# so its data lands under systems/data/<sys>/dsv41/sglang/<version>/ like every
+# other collector. Audited source paths (REQUIRED_SOURCES / ATTENTION_SOURCES)
+# exist unchanged in name at every pinned commit; their sha256 travel in the plan.
+FRAMEWORK_PINS = {
+    FRAMEWORK_COMMIT: "dev-" + FRAMEWORK_COMMIT,
+    # sgl-project/sglang tag v0.5.21 (2026-09-30); image lmsysorg/sglang:v0.5.21
+    "e00930c5489053f26d86b179cee0d087f846acbb": "0.5.21",
+}
+# GPU name token (torch.cuda.get_device_properties().name) -> SM version
+EXPECTED_SM = {"H100": 90, "H200": 90, "H20": 90, "B200": 100, "GB200": 100}
+
+
+def framework_version(commit):
+    """Perf-database version key for a qualified framework commit."""
+    return FRAMEWORK_PINS[commit]
 WEIGHT_INITIALIZER = {
     "name": "native_random_chunks_v1",
     "chunk_elements": 8 * 1024 * 1024,
@@ -82,11 +99,10 @@ def validate_plan(plan, manifest):
         raise ValueError("isolated collection requires warmup and repeated measurements")
     if plan["moe_runner_backend"] not in ("flashinfer_mxfp4", "humming"):
         raise ValueError("explicit qualified native MoE backend required")
-    expected_sm = {"H100": 90, "H200": 90, "B200": 100, "GB200": 100}
-    if plan["expected_gpu"] not in expected_sm or plan["expected_sm"] != expected_sm[plan["expected_gpu"]]:
+    if plan["expected_gpu"] not in EXPECTED_SM or plan["expected_sm"] != EXPECTED_SM[plan["expected_gpu"]]:
         raise ValueError("GPU and SM identity differ")
-    if plan["framework_commit"] != FRAMEWORK_COMMIT:
-        raise ValueError("serving APIs require the pinned framework commit")
+    if plan["framework_commit"] not in FRAMEWORK_PINS:
+        raise ValueError("serving APIs require a qualified framework commit")
     if re.fullmatch(r"[0-9a-f]{40}", plan.get("collector_revision", "")) is None:
         raise ValueError("immutable collector source revision required")
     if not plan["source_pins"].keys() >= REQUIRED_SOURCES:
@@ -176,7 +192,9 @@ def aggregate_isolated_records(output, plan_path, manifest_path):
 def prepare_private_caches(rank, receipt):
     """Run before native imports; preserve HOME while checking actual binds."""
     root = Path(os.environ["DSV41_PRIVATE_CACHE"])
-    marker = root / "home-cache" / f"isolated-{os.environ['SLURM_JOB_ID']}-{rank}"
+    # allocation id: Slurm job on a cluster, DSV41_ALLOCATION_ID on an owned bare-metal/docker box
+    allocation = os.environ.get("SLURM_JOB_ID") or os.environ["DSV41_ALLOCATION_ID"]
+    marker = root / "home-cache" / f"isolated-{allocation}-{rank}"
     marker.write_text("allocation-private\n")
     receipt["cache_bindings"] = []
     for target in (Path.home() / ".cache", Path("/root/.cache")):
@@ -648,7 +666,7 @@ def run(args, receipt):
         if sha(args.model_path / name) != digest:
             raise RuntimeError("checkpoint/tokenizer metadata changed: " + name)
     receipt.update(
-        framework_version="dev-" + FRAMEWORK_COMMIT,
+        framework_version=framework_version(plan["framework_commit"]),
         collector_revision=plan["collector_revision"],
         raw_package_version=importlib.metadata.version("sglang"),
         plan_sha256=sha(args.plan),
