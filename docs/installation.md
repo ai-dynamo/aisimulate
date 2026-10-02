@@ -103,17 +103,29 @@ retained legacy text assets and tests that use them. Re-run `uv sync` after
 changes to Rust or packaging, and verify the imported paths shown above point
 to the intended environment.
 
-## Use a 0.13 prerelease
+## Use an internal nightly
 
-For the 0.13 features documented on `main`, install a public prerelease on
-Linux. `--pre` enables prerelease selection; the version range prevents pip
-from selecting the older 0.12 stable release:
+The [nightly workflow](../.github/workflows/nightly-ci.yml) produces a wheel
+version such as `0.13.0.devYYYYMMDD`, then stages artifacts to access-controlled
+Artifactory through the protected release environment. The run subsequently
+checks the downloaded wheel and qualifies its FPE support matrix. Use a
+successful completed nightly: a successful build, staging step, or dev suffix
+alone does not establish that validation completed. The nightly path is
+`nightly/<run_id>/`, not a public PyPI release channel.
+
+Obtain the wheel for your platform from Artifactory using your organization's
+authenticated artifact access. Obtain `provenance.json` and `SHA256SUMS.txt`
+from the same run's `nightly-dist-amd64` or `nightly-dist-arm64` GitHub artifact.
+Verify the recorded source revision and wheel SHA-256, then install that exact
+downloaded file:
 
 ```bash
-python -m pip install --pre 'aisimulate>=0.13.0.dev0,<0.14'
+python -m pip install /absolute/path/to/downloaded/aisimulate-VERSION-PLATFORM.whl
 ```
 
-For other platforms, [build from source](#use-current-source).
+Replace that illustrative filename with the actual wheel filename. Retain the
+source SHA, workflow run URL, wheel filename and SHA-256 with your results.
+The [artifact contract](artifact-contract.md) describes wheel/crate versioning.
 
 ## Optional Dynamo integration
 
