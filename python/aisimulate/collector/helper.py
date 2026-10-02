@@ -305,7 +305,7 @@ def benchmark_with_power(
     # The default preserves the pre-existing lifetime on capture failure.
     # Neither mode guarantees CUDA recovery after an interrupted capture.
     try:
-        is_cuda = torch.cuda.is_available()
+        is_cuda = dev_mod is torch.cuda  # match the requested device, not just host capability
         use_graph = use_cuda_graph and (is_cuda or torch.xpu.is_available())
         if use_graph:
             graph_cls = torch.cuda.CUDAGraph if is_cuda else torch.xpu.XPUGraph

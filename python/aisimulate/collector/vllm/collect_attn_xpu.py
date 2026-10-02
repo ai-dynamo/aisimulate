@@ -10,6 +10,7 @@ isolated context/generation attention kernels with synthetic KV-cache state.
 
 __compat__ = "vllm==0.28.0"
 
+import functools
 import math
 import os
 
@@ -492,11 +493,16 @@ _KV_BLOCK_SIZE = 64
 _KV_POOL_MEM_FRACTION = 0.45
 
 
+@functools.lru_cache(maxsize=1)
+def _device_total_memory():
+    # Constant per device; cached so the per-case filter doesn't re-query it.
+    return get_device_module().get_device_properties(0).total_memory
+
+
 def _kv_pool_fits(num_kv_heads, head_dim):
     # KV pool is allocated bf16-sized (2B) even when kv_cache_dtype is fp8.
     pool = _KV_POOL_BLOCKS * _KV_BLOCK_SIZE * num_kv_heads * head_dim * 2 * 2
-    total = get_device_module().get_device_properties(0).total_memory
-    return pool <= total * _KV_POOL_MEM_FRACTION
+    return pool <= _device_total_memory() * _KV_POOL_MEM_FRACTION
 
 
 def get_context_attention_test_cases(if_unit_test=False):

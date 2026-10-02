@@ -101,7 +101,7 @@ class TestCLIEstimateUnit:
             stride=32,
             engine_step_backend="rust",
             load_database=lambda _system: database,
-            get_backend=lambda _backend, *_: object(),
+            get_backend=lambda _backend, *_, **_kw: object(),
             get_model=fake_get_model,
         )
 
@@ -364,7 +364,7 @@ class TestCLIEstimateUnit:
                 moe_quant_mode=None,
                 comm_quant_mode=None,
                 load_database=lambda _: MagicMock(),
-                get_backend=lambda _, *_a: MagicMock(),
+                get_backend=lambda _, *_a, **_kw: MagicMock(),
                 get_model=lambda *_: MagicMock(),
                 attention_backend="trtllm_mha",
             )

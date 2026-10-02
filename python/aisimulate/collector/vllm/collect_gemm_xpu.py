@@ -13,6 +13,7 @@ __compat__ = "vllm==0.28.0"
 import contextlib
 import fcntl
 import os
+import time
 
 import torch
 from vllm.config import set_current_vllm_config
@@ -25,11 +26,12 @@ try:
     )
 except Exception:
     print("No maybe_post_process_fp8_weight_block found, please check your vLLM version.")
+from vllm.utils.deep_gemm import per_block_cast_to_fp8
+from vllm.version import __version__ as vllm_version
+
 from collector.case_generator import get_gemm_case_specs, get_gemm_type_specs
 from collector.helper import benchmark_with_power, get_device_module, log_perf, xpu_graph_measure_enabled
 from collector.vllm.utils_xpu import create_vllm_config, setup_distributed, with_exit_stack
-from vllm.utils.deep_gemm import per_block_cast_to_fp8
-from vllm.version import __version__ as vllm_version
 
 FP8_BLOCK_SHAPE = (128, 128)
 
@@ -46,6 +48,8 @@ _MAX_OPS_PER_GRAPH = 64
 # host->device weight materialization if concurrent first-touch wedges a worker
 # (level-zero livelock). Off by default -- the lock can serialize collection heavily.
 _TODEV_LOCKFILE = os.environ.get("AIC_TODEV_LOCK", "off")
+# Bounded wait so a wedged holder fails the case loudly instead of hanging the node.
+_TODEV_LOCK_TIMEOUT = float(os.environ.get("AIC_TODEV_LOCK_TIMEOUT", "300"))
 
 
 @contextlib.contextmanager
@@ -54,7 +58,18 @@ def _serialize_device_init(device):
         yield
         return
     with open(_TODEV_LOCKFILE, "w") as lf:
-        fcntl.flock(lf.fileno(), fcntl.LOCK_EX)
+        deadline = time.monotonic() + _TODEV_LOCK_TIMEOUT
+        while True:
+            try:
+                fcntl.flock(lf.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise RuntimeError(
+                        f"device-init lock {_TODEV_LOCKFILE} not acquired within "
+                        f"{_TODEV_LOCK_TIMEOUT}s; a holder likely wedged"
+                    ) from None
+                time.sleep(0.2)
         try:
             yield
         finally:
