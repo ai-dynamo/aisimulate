@@ -457,7 +457,7 @@ def test_seeded_bayesian_sampler_clears_compilation_cache_between_batches() -> N
         sampler.observe(suggestion, {"objective": float(batch + 2)})
 
 
-def test_candidate_timeout_applies_with_parallelism_one(monkeypatch) -> None:
+def test_candidate_timeout_applies_with_parallelism_one(monkeypatch, capsys) -> None:
     _CountingSampler.created = []
     _CountingSampler.suggestion_batches = []
     _CountingSampler.suggested = 0
@@ -494,11 +494,16 @@ def test_candidate_timeout_applies_with_parallelism_one(monkeypatch) -> None:
     result = search_module.Sweeper(
         runner_factory=_SlowFactory(),
         sampler_factory=_CountingSampler,
-        show_progress=False,
+        show_progress=True,
     ).run(config)
 
     assert result.selected_candidates == []
     assert _CountingSampler.suggested == 1
+    assert result.counts.timed_out == 1
+    output = capsys.readouterr().out
+    assert "1 timed out" in output
+    assert "0 gated" in output
+    assert "Candidate timeout: 0.01s" in output
 
 
 @pytest.fixture(autouse=True)
@@ -508,3 +513,80 @@ def _isolate_estimator_data_for_orchestration(monkeypatch):
     from aisimulate.sweeper.forward_pass_estimator import ForwardPassEstimatorResolver
 
     monkeypatch.setattr(ForwardPassEstimatorResolver, "resolve_candidate", lambda self, sample: {})
+
+
+def test_minimum_gpu_random_search_starts_with_smallest_legal_topology(monkeypatch):
+    from dataclasses import replace
+
+    from aisimulate.sweeper.sampler import make_branch_sampler
+
+    branch = _branches()[0]
+    small = branch.parallel_configs[0]
+    large = replace(small, replicas=2)
+    branch = replace(
+        branch,
+        parallel_configs=(small, large),
+        supported_backends={small: frozenset({"vllm"}), large: frozenset({"vllm"})},
+    )
+    monkeypatch.setattr(search_module, "enumerate_branches", lambda *args, **kwargs: [branch])
+    monkeypatch.setattr(search_module, "resolve_backend_version", lambda *args, **kwargs: "test")
+
+    class SLARunner(_Runner):
+        def run(self, spec):
+            report = super().run(spec)
+            report.metrics.update(
+                mean_ttft_ms=1.0, mean_tpot_ms=1.0, completed_requests=1.0, num_ttft_samples=1.0, num_tpot_samples=1.0
+            )
+            return report
+
+    monkeypatch.setattr(_Factory, "create", lambda *args: SLARunner())
+    config = SmartSearchConfig.model_validate(
+        {
+            "search_space": {"model_name": "model", "hardware_sku": "hardware", "deployment_mode": ["agg"]},
+            "workload": {"isl": 8, "osl": 2, "concurrency": 1, "num_request_ratio": 1},
+            "goal": {"target": "min_gpus", "sla": {"ttft_ms": 10, "itl_ms": 10}},
+            "sweep": {
+                "max_rounds": 1,
+                "parallel_evals": 1,
+                "max_eval_seconds": None,
+                "max_trials": 1,
+                "algorithm": "random",
+                "seed": 1,
+            },
+        }
+    )
+    result = search_module.Sweeper(
+        runner_factory=_Factory(), sampler_factory=make_branch_sampler, show_progress=False
+    ).run(config)
+    assert result.counts.feasible == 1, [(c.status, c.reason) for c in result.candidates]
+    assert result.selected_candidates[0].used_gpus == 1
+
+
+def test_exhausted_random_branch_releases_unused_global_budget(monkeypatch):
+    from aisimulate.sweeper.sampler import make_branch_sampler
+
+    branches = _branches()
+    branches[1].knob_choices["decode_max_num_seqs"] = [256, 512, 1024]
+    monkeypatch.setattr(search_module, "enumerate_branches", lambda *args, **kwargs: branches)
+    monkeypatch.setattr(search_module, "resolve_backend_version", lambda *args, **kwargs: "test")
+    config = SmartSearchConfig.model_validate(
+        {
+            "search_space": {"model_name": "model", "hardware_sku": "hardware", "deployment_mode": ["agg", "disagg"]},
+            "workload": {"isl": 8, "osl": 2, "concurrency": 1, "num_request_ratio": 1},
+            "sweep": {
+                "max_rounds": 4,
+                "parallel_evals": 1,
+                "max_eval_seconds": None,
+                "max_trials": 4,
+                "algorithm": "random",
+                "seed": 1,
+            },
+        }
+    )
+    result = search_module.Sweeper(
+        runner_factory=_Factory(), sampler_factory=make_branch_sampler, show_progress=False
+    ).run(config)
+    assert result.counts.evaluated == 4
+    assert result.counts.cache_hits == 0
+    assert [c.config["deployment_mode"] for c in result.candidates].count("agg") == 1
+    assert [c.config["deployment_mode"] for c in result.candidates].count("disagg") == 3

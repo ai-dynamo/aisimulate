@@ -945,6 +945,7 @@ def test_recommendation_exports_completed_results_after_invalid_suggestion(
     assert len(asks) == completed + 1
     assert "agg_max_num_seqs" in caplog.text
     assert "search is incomplete" in caplog.text
+    assert "No traffic configured; using synthetic traffic: input_tokens=1024" in caplog.text
     result = json.loads((output / "recommendation.json").read_text())
     assert result["counts"]["feasible"] == result["counts"]["evaluated"] == completed
     assert result["counts"]["failed"] == 0
@@ -965,8 +966,13 @@ def test_recommendation_exports_completed_results_after_invalid_suggestion(
         assert not list(output.glob("recommendations/*.yaml"))
 
 
-@pytest.mark.parametrize("resource_limited", [0, 1])
-def test_recommendation_outputs_each_concrete_prediction_once(tmp_path, monkeypatch, capsys, resource_limited) -> None:
+@pytest.mark.parametrize(
+    ("resource_limited", "variant"),
+    [(0, "exact"), (1, "exact"), (0, "scheduler"), (0, "different_metrics")],
+)
+def test_recommendation_outputs_each_concrete_prediction_once(
+    tmp_path, monkeypatch, capsys, resource_limited, variant
+) -> None:
     concrete = {
         "traffic": {
             "source": {"type": "synthetic", "input_tokens": 8, "output_tokens": 2},
@@ -1040,6 +1046,14 @@ def test_recommendation_outputs_each_concrete_prediction_once(tmp_path, monkeypa
         )
         for selection, score in (("first", 2.0), ("second", 1.0))
     ]
+    if variant != "exact":
+        for candidate in candidates:
+            candidate.score = 2.0
+            candidate.metrics = {"output_throughput_tok_s": 2.0, "mean_tpot_ms": 1.0}
+        candidates[1].prediction_config = deepcopy(concrete)
+        candidates[1].prediction_config["engine"]["workers"]["aggregated"]["scheduler"]["max_sequences"] = 512
+        if variant == "different_metrics":
+            candidates[1].metrics["mean_tpot_ms"] = 2.0
     monkeypatch.setattr(cli, "resolve_runner_factory", lambda stack: _Factory(_Runner()))
     partial = _RecommendationResult(candidates)
     partial.counts.resource_limited = resource_limited
@@ -1061,13 +1075,20 @@ def test_recommendation_outputs_each_concrete_prediction_once(tmp_path, monkeypa
         ]
     ) == (3 if resource_limited else 0)
 
-    rows = json.loads(capsys.readouterr().out)
-    assert len(rows) == 1
+    captured = capsys.readouterr()
+    rows = json.loads(captured.out)
+    expected = 2 if variant == "different_metrics" else 1
+    assert len(rows) == expected
     assert rows[0]["score"] == 2.0
-    assert [path.name for path in (output / "recommendations").iterdir()] == ["0001.yaml"]
+    assert sorted(path.name for path in (output / "recommendations").iterdir()) == [
+        f"{index:04d}.yaml" for index in range(1, expected + 1)
+    ]
     result = json.loads((output / "recommendation.json").read_text())
     assert result["counts"]["feasible"] == 2
-    assert result["views"]["top_n"] == ["candidate-000001"]
+    assert len(result["candidates"]) == 2
+    assert result["views"]["top_n"] == [f"candidate-{index:06d}" for index in range(1, expected + 1)]
+    if variant == "scheduler":
+        assert "Folded 1 scheduler-limit variant" in captured.err
     assert result["candidates"][0]["prediction_config"] == yaml.safe_load(
         (output / "recommendations" / "0001.yaml").read_text()
     )

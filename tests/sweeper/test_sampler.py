@@ -204,7 +204,7 @@ def test_random_sampler_only_samples_active_conditional_children() -> None:
     sampler.observe_infeasible(suggestions[1], "test")
 
 
-def test_infeasible_independent_parallel_suggestion_is_returned_for_tell() -> None:
+def test_random_rejects_empty_legal_domain_before_sampling() -> None:
     prefill = ReplicaParallelConfig(ParallelShape(tp=1, dp=1, moe_tp=1, moe_ep=1), replicas=1)
     decode = ReplicaParallelConfig(ParallelShape(tp=1, dp=1, moe_tp=1, moe_ep=1), replicas=1)
     legal = DisaggParallelConfig(prefill=prefill, decode=decode)
@@ -224,16 +224,8 @@ def test_infeasible_independent_parallel_suggestion_is_returned_for_tell() -> No
         },
     )
 
-    suggestion = make_branch_sampler(
-        branch,
-        study_id="infeasible-independent",
-        algorithm="random",
-        seed=1,
-    ).suggest(1)[0]
-
-    assert suggestion.parallel_config == legal
-    assert suggestion.infeasible_reason is not None
-    assert "infeasible" in suggestion.infeasible_reason
+    with pytest.raises(ValueError, match="no feasible configuration"):
+        make_branch_sampler(branch, study_id="infeasible-independent", algorithm="random", seed=1)
 
 
 def test_vizier_sampler_only_decodes_active_conditional_children(monkeypatch) -> None:
@@ -483,3 +475,55 @@ def test_pareto_study_sweeps_kv_load_and_returns_front(monkeypatch):
     for t in optimal:
         metrics = t.materialize().final_measurement.metrics
         assert "throughput_per_gpu" in metrics and "throughput_per_user" in metrics
+
+
+def test_random_covers_topologies_and_exhausts_complete_configurations():
+    from aisimulate.sweeper.sampler import RandomBranchSampler
+
+    branch = _branch()
+    sampler = RandomBranchSampler(branch, seed=11)
+    first = sampler.suggest(len(branch.parallel_configs))
+    assert {item.parallel_config for item in first} == set(branch.parallel_configs)
+    all_suggestions = first + sampler.suggest(1000)
+    keys = {(item.parallel_config, json.dumps(item.selection, sort_keys=True)) for item in all_suggestions}
+    assert len(keys) == len(all_suggestions) == 3 * 2 * 2 * 2 * 3 * 3
+    assert sampler.exhausted
+    assert sampler.suggest(1) == []
+
+
+def test_random_large_log_domain_is_lazy_and_honors_gpu_budget():
+    from dataclasses import replace
+
+    from aisimulate.sweeper.sampler import RandomBranchSampler
+
+    branch = replace(
+        _branch(),
+        gpu_budget=4,
+        knob_choices={"backend": ["trtllm"]},
+        integer_ranges={"agg_max_num_seqs": (1, 10**12)},
+        log_integer_ranges=frozenset({"agg_max_num_seqs"}),
+    )
+    sampler = RandomBranchSampler(branch, seed=3)
+    suggestions = sampler.suggest(32)
+    assert len({item.selection["agg_max_num_seqs"] for item in suggestions}) == 32
+    assert all(item.parallel_config.total_gpus == 4 for item in suggestions)
+    assert all(1 <= item.selection["agg_max_num_seqs"] <= 10**12 for item in suggestions)
+    assert not sampler.exhausted
+
+
+def test_conditional_random_skips_exhausted_arms():
+    from dataclasses import replace
+
+    branch = _conditional_branch()
+    branch = replace(
+        branch,
+        conditional_dimensions=tuple(
+            replace(condition, float_ranges={}, log_float_ranges=frozenset())
+            for condition in branch.conditional_dimensions
+        ),
+    )
+    sampler = make_branch_sampler(branch, study_id="finite-conditional", algorithm="random", seed=7)
+    suggestions = [item for _ in range(4) for item in sampler.suggest(1)]
+    assert len(suggestions) == 3
+    assert {item.selection["adapter::router::mode"] for item in suggestions} == {"round_robin", "kv_router"}
+    assert sampler.exhausted

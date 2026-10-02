@@ -58,6 +58,11 @@ default; `--stack dynamo` selects a separately installed compatible Dynamo runne
 Save the following as `recommendation.yaml`:
 
 ```yaml
+traffic:
+  source: {type: synthetic, input_tokens: 1024, output_tokens: 128}
+  load: {type: concurrency, concurrency: 10}
+  stop: {requests: 100}
+
 engine:
   mode: aggregated
   model: Qwen/Qwen3-32B-FP8
@@ -72,11 +77,17 @@ optimization:
   hardware: h200_sxm
   constraints:
     max_candidate_gpus: 8
+
+optimizer:
+  max_trials: 8
 ```
 
 ```bash
 aisimulate recommend --config recommendation.yaml --output-dir ./recommendation
 ```
+
+This quickstart evaluates suggestions for the explicit 1,024-input/128-output-token,
+10-concurrent-request workload above, with an eight-trial budget.
 
 Inspect `recommendation/recommendation.json` for search results and
 `recommendation/recommendations/` for concrete prediction YAML files to replay.

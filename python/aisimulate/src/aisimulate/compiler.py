@@ -15,7 +15,7 @@ from .capacity import (
 )
 from .config.cli import CorePredictionConfig
 from .config.common import ENGINE_MODEL_CONTROL_FIELDS, omit_inactive_moe_controls
-from .config.engine import EnginePredictionConfig, WorkerPredictionConfig
+from .config.engine import EnginePredictionConfig, WorkerPredictionConfig, resolve_block_size
 from .config.traffic import SyntheticSessionSource, SyntheticSource, TraceSource
 from .state_size import resolve_state_size
 from .sweeper.afd_parallel import AFDParallelConfig, AFDTopology
@@ -575,9 +575,7 @@ def _worker_engine_args(
             raise ValueError("DCP requires the canonical forward-pass timing provider")
     if capacity.type == "default" and memory_fraction is None:
         memory_fraction = 0.88 if backend == "sglang" else 0.9
-    block_size = cache.block_size
-    if block_size is None:
-        block_size = {"vllm": 64, "sglang": 1, "trtllm": 32}[backend]
+    block_size = resolve_block_size(backend, cache.block_size)
     payload: dict[str, JSONValue] = {
         "worker_type": role,
         "engine_type": backend,

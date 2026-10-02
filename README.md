@@ -165,6 +165,11 @@ optimization goal. Save this example as `recommendation.yaml`:
 
 <!-- readme-check: recommendation-config -->
 ```yaml
+traffic:
+  source: {type: synthetic, input_tokens: 1024, output_tokens: 128}
+  load: {type: concurrency, concurrency: 10}
+  stop: {requests: 100}
+
 engine:
   mode: aggregated
   model: Qwen/Qwen3-32B-FP8
