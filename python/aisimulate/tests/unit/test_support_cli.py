@@ -1304,7 +1304,7 @@ def test_bad_request_yaml_is_reported_without_a_traceback(tmp_path, capsys, cont
 def test_ordinary_cli_options_and_numerical_defaults_are_preserved(command) -> None:
     args = cli.build_parser().parse_args([command, "--config", "ordinary.yaml"])
     assert args.command == command
-    assert args.stack == "engine"
+    assert args.stack is None  # The default is resolved after loading the YAML.
     assert args.output_dir == "./aisimulate-output"
     assert args.overrides == []
     assert args.overwrite is False
@@ -1312,6 +1312,7 @@ def test_ordinary_cli_options_and_numerical_defaults_are_preserved(command) -> N
     config = CorePredictionConfig.model_validate(
         {"engine": {"model": "example/model", "hardware": "h200_sxm", "workers": {"aggregated": {}}}}
     )
+    assert cli.select_stack(args.stack, config.model_dump()) == "engine"
     assert config.engine.workers.aggregated.timing.forward_model == "op_level"
     assert config.traffic.load.concurrency == 10
     assert config.traffic.stop.requests == 100
