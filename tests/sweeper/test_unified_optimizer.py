@@ -399,6 +399,10 @@ def test_sampler_failure_recovery_is_narrow_and_preserves_best_results(
     assert len(calls) == 3  # No retry and no later branch is searched.
     assert _Runner.runs == len(observed) == result.counts.feasible == result.counts.evaluated == 2
     assert result.counts.failed == result.counts.infeasible == 0
+    assert [(candidate.candidate_id, candidate.score) for candidate in result.candidates] == [
+        ("candidate-000001", 10.0),
+        ("candidate-000002", 20.0),
+    ]
     assert result.selected_candidate_ids == ["candidate-000002"]
     assert result.selected_candidates[0].score == 20.0
     assert "agg_max_num_batched_tokens" in caplog.text
