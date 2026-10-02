@@ -378,7 +378,7 @@ def exec_fingerprint(run: dict) -> dict:
     eng = _sha(*toks) if toks else None
     dum = dummy_fingerprint(run.get("model_dir", ""))
     probe = _HERE / "probes" / (f"probe_{run['backend']}_server.py"
-                                if run["backend"] == "sglang" and int(run.get("tp", 1)) > 1
+                                if run["backend"] in ("sglang", "trtllm") and int(run.get("tp", 1)) > 1
                                 else f"probe_{run['backend']}.py")
     code = _sha(probe.read_text()) if probe.exists() else None   # the probe code that will run
     fp = _sha(eng or "", dum or "", code or "", str(run.get("image")), str(run.get("kv_dtype")),
@@ -557,7 +557,7 @@ def emit_queues(runs: list[dict], gpu_list: list[int], plan_name: str) -> None:
             # a tp>1 run owns tp GPUs: the first tp of --gpu-list, queued on the
             # first GPU's queue. Run such plans ALONE (emit with --only), the other
             # per-GPU queues would otherwise share those devices.
-            if run["backend"] != "sglang":
+            if run["backend"] not in ("sglang", "trtllm"):
                 run["skip"] = f"tp{run['tp']} probe route not implemented for {run['backend']}"
                 continue
             if len(gpu_list) < int(run["tp"]):
@@ -634,13 +634,21 @@ def emit_queues(runs: list[dict], gpu_list: list[int], plan_name: str) -> None:
             # correct rule is to always pass it for dummy probing
             trc = "--trust-remote-code "
             _kv = f"--kv-dtype {run['kv_dtype']} " if run.get("kv_dtype") else ""
-            cmd = (head.replace("docker run --rm ",
-                                "docker run --rm -e TLLM_WORKER_USE_SINGLE_PROCESS=1 ")
-                   + f"{run['image']} bash -lc 'python3 {PROBES_IN_CONTAINER}/probe_trtllm.py "
-                   f"--model {run['model_dir']} {trc}{_kv}"
-                   f"--engine-yaml {WORK}/archive/run_sh/{run['id']}.engine.yaml "
-                   f"--out {WORK}/archive/raw/{run['id']}.json' "
-                   f"2>&1 | tail -1 ; }}")
+            if int(run.get("tp", 1)) > 1:
+                run["probe_route"] = "trtllm-serve"
+                cmd = (head + f"{run['image']} bash -lc 'python3 {PROBES_IN_CONTAINER}/probe_trtllm_server.py "
+                       f"--model {run['model_dir']} --tp {run['tp']} {trc}{_kv}"
+                       f"--engine-yaml {WORK}/archive/run_sh/{run['id']}.engine.yaml "
+                       f"--out {WORK}/archive/raw/{run['id']}.json' "
+                       f"2>&1 | tail -1 ; }}")
+            else:
+                cmd = (head.replace("docker run --rm ",
+                                    "docker run --rm -e TLLM_WORKER_USE_SINGLE_PROCESS=1 ")
+                       + f"{run['image']} bash -lc 'python3 {PROBES_IN_CONTAINER}/probe_trtllm.py "
+                       f"--model {run['model_dir']} {trc}{_kv}"
+                       f"--engine-yaml {WORK}/archive/run_sh/{run['id']}.engine.yaml "
+                       f"--out {WORK}/archive/raw/{run['id']}.json' "
+                       f"2>&1 | tail -1 ; }}")
         run["exec_fingerprint"] = exec_fingerprint(run)
         _fp = run["exec_fingerprint"]["fingerprint"]
         cmd = cmd.replace("__FP__", _fp)

@@ -453,8 +453,9 @@ topologies:
   ep: 1
   evidence: real
   status: implemented
-  route: launch_server inside one 4-GPU container (probes/probe_sglang_server.py; identity from /get_server_info,
-    kernels from the server's own /start_profile profile_by_stage traces). sglang only so far.
+  route: "one N-GPU container running the real server: sglang launch_server (probes/probe_sglang_server.py;
+    identity from /get_server_info, kernels from /start_profile profile_by_stage traces), trtllm-serve
+    (probes/probe_trtllm_server.py; kernels from /start_profile per-rank traces). vllm: not implemented."
 topology_policy:
   default: tp1
   # tp_required: the representative probe for these checkpoints runs at the
@@ -468,6 +469,12 @@ topology_policy:
     tp: 4
   - repo: Qwen/Qwen3.8-2.4T-A95B-FP8
     backend: sglang
+    tp: 4
+  - repo: Qwen/Qwen3.8-2.4T-A95B
+    backend: trtllm
+    tp: 4
+  - repo: Qwen/Qwen3.8-2.4T-A95B-FP8
+    backend: trtllm
     tp: 4
   note: topology is ALWAYS recorded in records.runtime (tp/ep/dp/a2a) even when kernels match.
   deepep_required:

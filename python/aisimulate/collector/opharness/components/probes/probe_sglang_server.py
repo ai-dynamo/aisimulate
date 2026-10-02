@@ -153,26 +153,41 @@ def main() -> None:
         gen = {"input_ids": prompt, "sampling_params": {"max_new_tokens": 2, "temperature": 0}}
         _http("POST", f"{base}/generate", gen, timeout=900)  # warm-up (JIT, graph capture already done at startup)
         pid = "aic"
-        _http("POST", f"{base}/start_profile", {"output_dir": out_dir, "num_steps": 1, "activities": ["CPU", "CUDA"],
+        # sglang names the device activity "GPU" (ProfileReq.activities -> ProfilerActivity.CUDA);
+        # profile_by_stage + num_steps auto-stops after one step per stage and exports
+        # <profile_id>-TP-<r>-<STAGE>.trace.json.gz with STAGE = ForwardMode names (EXTEND,
+        # DECODE). Never call /stop_profile in this mode: manual_stop raises
+        # NotImplementedError inside the scheduler (profile_utils.py:166 @0.5.21) and the
+        # gloo barrier then takes every TP rank down (first tp4 attempt, 2026-10-02).
+        _http("POST", f"{base}/start_profile", {"output_dir": out_dir, "num_steps": 1, "activities": ["CPU", "GPU"],
                                                   "profile_by_stage": True, "profile_id": pid}, timeout=120)
         _http("POST", f"{base}/generate", {"input_ids": prompt, "sampling_params": {"max_new_tokens": 4, "temperature": 0}},
               timeout=900)
-        want = {st: os.path.join(out_dir, f"{pid}-TP-0-{st}.trace.json.gz") for st in ("prefill", "decode")}
+        stage_of = {"EXTEND": "prefill", "PREFILL": "prefill", "DECODE": "decode"}
+
+        def _rank0_traces() -> dict:
+            found = {}
+            for fn in os.listdir(out_dir):
+                if fn.startswith(f"{pid}-TP-0-") and fn.endswith(".trace.json.gz"):
+                    st = fn[len(f"{pid}-TP-0-"):-len(".trace.json.gz")]
+                    if st in stage_of:
+                        found[stage_of[st]] = os.path.join(out_dir, fn)
+            return found
+
         t1 = time.time()
-        while time.time() - t1 < 300 and not all(os.path.exists(p) for p in want.values()):
+        while time.time() - t1 < 300 and len(_rank0_traces()) < 2:
+            if proc.poll() is not None:
+                break
             time.sleep(3)
-        try:
-            _http("POST", f"{base}/stop_profile", {}, timeout=60)
-        except Exception:  # noqa: BLE001
-            pass
+        time.sleep(5)  # let the exports close
         rec["trace_files"] = sorted(os.listdir(out_dir))
         trace: dict = {}
-        for st, p in want.items():
-            if os.path.exists(p):
-                time.sleep(2)  # export finishes before the file is closed; give it a beat
-                trace[f"{st}_kernels"] = _kernel_table_from_trace(p)
+        found = _rank0_traces()
+        for st in ("prefill", "decode"):
+            if st in found:
+                trace[f"{st}_kernels"] = _kernel_table_from_trace(found[st])
             else:
-                rec["errors"][f"trace_{st}"] = f"no {os.path.basename(p)} within 300s; files={rec['trace_files']}"
+                rec["errors"][f"trace_{st}"] = f"no rank-0 {st} trace within 300s; files={rec['trace_files']}"
         rec["trace"] = trace
     except Exception:
         rec["errors"]["probe"] = traceback.format_exc()[-3000:]
