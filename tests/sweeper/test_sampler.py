@@ -20,6 +20,8 @@ from aisimulate.sweeper.parallel_projection import (
     USED_GPU_RATIO,
 )
 from aisimulate.sweeper.sampler import (
+    InvalidSuggestionError,
+    SeededBayesianBranchSampler,
     Suggestion,
     _decoder_for,
     _index_decoder,
@@ -101,6 +103,42 @@ def _branch() -> BranchSpace:
             ],  # discrete float
         },
     )
+
+
+def test_seeded_bayesian_uses_float64_from_an_fp32_runtime() -> None:
+    import jax
+    import numpy as np
+
+    previous = jax.config.x64_enabled
+    try:
+        jax.config.update("jax_enable_x64", False)
+        sampler = SeededBayesianBranchSampler(_branch(), objectives=None, seed=13)
+        suggestions = sampler.suggest(2)
+        features = sampler._designer._converter.to_features([suggestion.handle for suggestion in suggestions])
+        assert features.continuous.padded_array.dtype == np.dtype("float64")
+        assert np.isfinite(features.continuous.padded_array).all()
+    finally:
+        jax.config.update("jax_enable_x64", previous)
+
+
+@pytest.mark.parametrize("parameter", ["agg_max_num_batched_tokens", USED_GPU_RATIO])
+@pytest.mark.parametrize("value", [None, float("nan"), float("inf"), -float("inf")])
+def test_seeded_bayesian_rejects_invalid_batch_before_registering_trials(monkeypatch, parameter, value) -> None:
+    from vizier import pyvizier as vz
+
+    sampler = SeededBayesianBranchSampler(_branch(), objectives=None, seed=13)
+    valid = sampler._designer.suggest(1)[0]
+    params = valid.parameters.as_dict()
+    if value is None:
+        del params[parameter]
+    else:
+        params[parameter] = value
+    invalid = vz.TrialSuggestion(parameters=params)
+    monkeypatch.setattr(sampler._designer, "suggest", lambda count: [valid, invalid])
+
+    with pytest.raises(InvalidSuggestionError, match=parameter):
+        sampler.suggest(2)
+    assert sampler._active == {}
 
 
 def _conditional_branch() -> BranchSpace:

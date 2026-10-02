@@ -31,6 +31,7 @@ import random
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from itertools import product
+from numbers import Real
 from typing import Any, Protocol
 
 from ._quiet import configure_vizier_runtime
@@ -47,6 +48,26 @@ _CONSTANT_PARAM = "_sweeper_constant"
 _METRIC = "objective"
 _SWEEPER_VIZIER_ALGO_ENV = "AISIMULATE_SWEEPER_VIZIER_ALGO"
 _LEGACY_SPICA_VIZIER_ALGO_ENV = "SPICA_VIZIER_ALGO"
+
+
+class InvalidSuggestionError(RuntimeError):
+    """The optimizer returned missing or non-finite search parameters."""
+
+
+def _validate_vizier_parameters(params: dict[str, Any], required: frozenset[str]) -> None:
+    # Vizier drops non-finite coordinates during conversion, so check missing
+    # parameters as well as NaN/inf before decoding or parallel projection.
+    missing = sorted(required - params.keys())
+    nonfinite = sorted(name for name, value in params.items() if isinstance(value, Real) and not math.isfinite(value))
+    if missing or nonfinite:
+        details = []
+        if missing:
+            details.append(f"missing parameters: {', '.join(missing)}")
+        if nonfinite:
+            details.append(f"non-finite parameters: {', '.join(nonfinite)}")
+        raise InvalidSuggestionError(
+            f"Vizier returned an invalid suggestion ({'; '.join(details)}); the optimizer may be numerically unstable"
+        )
 
 
 def _vizier_algorithm() -> str:
@@ -261,6 +282,7 @@ class VizierBranchSampler:
             goal = vz.ObjectiveMetricGoal.MAXIMIZE if maximize else vz.ObjectiveMetricGoal.MINIMIZE
             problem.metric_information.append(vz.MetricInformation(name=name, goal=goal))
         study_config = vz.StudyConfig.from_problem(problem)
+        self._required_parameters = frozenset(parameter.name for parameter in problem.search_space.parameters)
         # EXPERIMENT (env-gated; default DEFAULT = GP-bandit). The multi-objective GP suggest
         # can spin/hang at low observation counts; RANDOM_SEARCH bypasses the GP (instant
         # suggest, uniform exploration) to cover the curve ends without that stall.
@@ -271,6 +293,7 @@ class VizierBranchSampler:
         suggestions: list[Suggestion] = []
         for trial in self._study.suggest(count=count):
             params = {name: getattr(value, "value", value) for name, value in dict(trial.parameters).items()}
+            _validate_vizier_parameters(params, self._required_parameters)
             # backend is a searched knob now (in knob_choices) -> comes via _constants
             # (single backend) or _decoders (multiple), not a per-branch constant.
             selection: dict[str, Any] = {
@@ -408,8 +431,12 @@ class SeededBayesianBranchSampler:
         seed: int,
     ) -> None:
         configure_vizier_runtime()
-        _, vz = _vizier_modules()
         import jax
+
+        # Match Vizier's Pythia service initialization, which this local designer
+        # bypasses. GP fitting/acquisition can produce NaN proposals in float32.
+        jax.config.update("jax_enable_x64", True)
+        _, vz = _vizier_modules()
         from vizier import algorithms as vza
         from vizier._src.algorithms.designers import gp_ucb_pe
 
@@ -507,6 +534,7 @@ class SeededBayesianBranchSampler:
                     goal=(vz.ObjectiveMetricGoal.MAXIMIZE if maximize else vz.ObjectiveMetricGoal.MINIMIZE),
                 )
             )
+        self._required_parameters = frozenset(parameter.name for parameter in problem.search_space.parameters)
         self._designer = gp_ucb_pe.VizierGPUCBPEBandit(
             problem,
             rng=jax.random.PRNGKey(seed),
@@ -519,8 +547,8 @@ class SeededBayesianBranchSampler:
         for raw in self._designer.suggest(count):
             trial = raw.to_trial(self._next_trial_id)
             self._next_trial_id += 1
-            self._active[trial.id] = trial
             params = {name: getattr(value, "value", value) for name, value in dict(trial.parameters).items()}
+            _validate_vizier_parameters(params, self._required_parameters)
             selection: dict[str, Any] = {
                 "deployment_mode": self.branch.deployment_mode,
                 **self._constants,
@@ -544,6 +572,8 @@ class SeededBayesianBranchSampler:
                     infeasible_reason=infeasible_reason,
                 )
             )
+        # An invalid batch must not leave partially registered active trials.
+        self._active.update((suggestion.handle.id, suggestion.handle) for suggestion in suggestions)
         return suggestions
 
     def _complete(self, suggestion: Suggestion, measurement, reason=None) -> None:
