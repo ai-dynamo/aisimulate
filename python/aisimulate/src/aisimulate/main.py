@@ -14,7 +14,14 @@ from typing import Any
 from pydantic import ValidationError
 
 from .afd_artifacts import write_afd_qualification_artifacts
-from .cli_args import _apply_overrides, _CliConfigError, _extract_output_configs, _load_mapping, build_parser, select_stack
+from .cli_args import (
+    _apply_overrides,
+    _CliConfigError,
+    _extract_output_configs,
+    _load_mapping,
+    build_parser,
+    select_stack,
+)
 from .compiler import prediction_to_replay_spec
 from .config.cli import (
     CorePredictionConfig,
