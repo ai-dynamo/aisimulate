@@ -59,7 +59,7 @@ def write_plugin(directory: Path) -> Path:
 
 
 class Driver:
-    def __init__(self, llm, plan, tokens, output):
+    def __init__(self, llm, plan, tokens, output, graph_prefill=False):
         self.llm = llm
         self.engine = llm.llm_engine
         self.scheduler = self.engine.engine_core.engine_core.scheduler
@@ -67,6 +67,7 @@ class Driver:
         self.tokens = tokens
         self.output = output
         self.counter = 0
+        self.graph_prefill = graph_prefill
 
     def rpc(self, name, *args):
         from collector.vllm import glm53flash_attention_worker as worker
@@ -127,6 +128,27 @@ class Driver:
                 "target_id": target_id("context", batch, value, query),
             }
             self._budget(batch, query)
+            if self.graph_prefill:
+                replays = {s["pw_replays"] for s in self.rpc("rpc_status")}
+                if len(replays) != 1:
+                    raise RuntimeError(f"workers disagree on PIECEWISE replay counts {replays}")
+                self.engine.step()
+                if value + query != last:
+                    state = [r.num_computed_tokens for r in self._requests(prefix)]
+                    if state != [value + query] * batch:
+                        raise RuntimeError(f"target step computed {state}, planned {value + query}")
+                result = self.rpc("rpc_measure_prefill", target, replays.pop())
+                computed = value + query
+                progress(
+                    {
+                        "set_id": request_set["set_id"],
+                        "target_id": target["target_id"],
+                        "elapsed_seconds": time.monotonic() - started,
+                        "status": "passed",
+                        "rpc": result,
+                    }
+                )
+                continue
             self.rpc("rpc_arm", target)
             try:
                 final = value + query == last
@@ -197,6 +219,7 @@ def main():
     parser.add_argument("--model-path", required=True)
     parser.add_argument("--only-sets", nargs="*", default=None)
     parser.add_argument("--gpu-memory-utilization", type=float, default=0.9)
+    parser.add_argument("--dry-run", action="store_true", help="resolve everything, then exit before CUDA work")
     options = parser.parse_args()
     manifest_path = Path(options.manifest).resolve()
     manifest = json.loads(manifest_path.read_text())
@@ -233,6 +256,13 @@ def main():
         raise RuntimeError(f"vllm {installed}/{vllm.__version__} is not the pinned {RUNTIME_VERSIONS['vllm']}")
     from vllm import LLM
 
+    graph_prefill = manifest.get("prefill_execution") == "framework_breakable_cuda_graph"
+    if graph_prefill:
+        # Serving default FULL_AND_PIECEWISE (breakable CUDA graph auto-enabled
+        # under CompilationMode.NONE) with the deployment's 62 capture sizes.
+        compilation_config = {"cudagraph_capture_sizes": manifest["serving_graph"]["vllm_cudagraph_capture_sizes"]}
+    else:
+        compilation_config = {"cudagraph_mode": "FULL_DECODE_ONLY"}
     engine_args = {
         "model": options.model_path,
         "tensor_parallel_size": expected["tp_size"],
@@ -245,13 +275,38 @@ def main():
         "language_model_only": True,
         "distributed_executor_backend": "mp",
         "gpu_memory_utilization": options.gpu_memory_utilization,
-        "compilation_config": {"cudagraph_mode": "FULL_DECODE_ONLY"},
+        "compilation_config": compilation_config,
         "disable_log_stats": True,
         "seed": 0,
     }
     (output / "execution-contract.json").write_text(
         json.dumps({"engine_args": engine_args, "manifest_sha256": manifest["manifest_sha256"]}, sort_keys=True)
     )
+    if options.dry_run:
+        from importlib.metadata import entry_points
+
+        from vllm.engine.arg_utils import EngineArgs
+
+        EngineArgs(**engine_args)
+        plugins = [e.value for e in entry_points(group="vllm.general_plugins")]
+        if "collector.vllm.glm53flash_attention_worker:register" not in plugins:
+            raise RuntimeError(f"probe plugin is not discoverable: {plugins}")
+        phases = set(manifest.get("phases", ("context", "generation")))
+        print(
+            json.dumps(
+                {
+                    "dry_run": "ok",
+                    "framework": installed,
+                    "geometry": expected,
+                    "sets": sum(s["phase"] in phases for s in plan["sets"]),
+                    "prefill_execution": manifest.get("prefill_execution", "eager"),
+                    "engine_args": engine_args,
+                    "plugins": plugins,
+                },
+                sort_keys=True,
+            )
+        )
+        return
     llm = LLM(**engine_args)
     source_sha, sources = package_source_sha256(Path(vllm.__file__).resolve().parent)
     provenance = {
@@ -267,7 +322,7 @@ def main():
     tokens, corpus = corpus_tokens(tokenizer, Path(options.corpus), longest + 32 * 4099)
     (output / "source_hashes.json").write_text(json.dumps(sources, sort_keys=True))
     (output / "input_provenance.json").write_text(json.dumps({**corpus, **provenance}, sort_keys=True))
-    driver = Driver(llm, plan, tokens, output)
+    driver = Driver(llm, plan, tokens, output, graph_prefill=graph_prefill)
     setup = driver.rpc(
         "rpc_setup",
         str(output),
@@ -285,6 +340,8 @@ def main():
 
     for request_set in plan["sets"]:
         if options.only_sets and request_set["set_id"] not in options.only_sets:
+            continue
+        if request_set["phase"] not in set(manifest.get("phases", ("context", "generation"))):
             continue
         try:
             if request_set["phase"] == "context":

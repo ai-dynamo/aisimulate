@@ -47,6 +47,19 @@ SGLANG_ARGS = (
     "--context-length 131079 --chunked-prefill-size 8192 --mem-fraction-static 0.82 "
     "--max-running-requests 32 --cuda-graph-bs-decode " + " ".join(str(b) for b in range(1, 33))
 )
+# Serving prefill CUDA-graph policy adopted 2026-10-01 (pgraph smoke v4):
+# vLLM keeps its default FULL_AND_PIECEWISE mode with breakable graphs and these
+# 62 capture sizes (its default 11 sizes plus SGLang's 58 prefill buckets);
+# SGLang captures breakable prefill graphs up to 8192 tokens (its own buckets).
+SGLANG_PREFILL_GRAPH_ARGS = "--cuda-graph-backend-prefill breakable --cuda-graph-max-bs-prefill 8192"
+VLLM_PREFILL_GRAPH_CAPTURE_SIZES = (
+    [1, 2, 4, 8, 12, 16, 20, 24, 28, 32, 40, 48, 56, 64]
+    + list(range(80, 257, 16))
+    + list(range(288, 513, 32))
+    + list(range(576, 1025, 64))
+    + list(range(1280, 4097, 256))
+    + list(range(4608, 8193, 512))
+)
 VLLM_ENV = {
     "NCCL_CUMEM_ENABLE": "1",
     "NCCL_MNNVL_ENABLE": "1",
@@ -91,10 +104,20 @@ def prepare(args) -> Path:
         # the ragged IndexPool MQA-logits buffer at long batched context.
         "allocator_max_split_size_mb": args.allocator_max_split_mb,
     }
+    if args.prefill_graph:
+        # Revision 2: re-collect prefill only, under the serving prefill graphs.
+        body["phases"] = ["context"]
+        body["prefill_execution"] = "framework_breakable_cuda_graph"
+        body["serving_graph"] = (
+            {"vllm_cudagraph_capture_sizes": VLLM_PREFILL_GRAPH_CAPTURE_SIZES}
+            if args.backend == "vllm"
+            else {"sglang_args": SGLANG_PREFILL_GRAPH_ARGS}
+        )
     manifest = {**body, "manifest_sha256": sha256_json(body)}
     (attempt / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
     suffix = ("-smoke" if args.smoke else "") + (f"-l{args.layer_id}" if args.layer_id is not None else "")
-    job = f"glm53-sa-w4-{args.backend}-{args.checkpoint}-tp{args.tp}{suffix}"
+    prefix = "glm53-sa-w4g" if args.prefill_graph else "glm53-sa-w4"
+    job = f"{prefix}-{args.backend}-{args.checkpoint}-tp{args.tp}{suffix}"
     container = f"{args.remote_attempt}"
     runner = f"collector.{args.backend}.glm53flash_attention_runner"
     common = "--manifest /results/manifest.json --output /results/raw --corpus /results/corpus.txt"
@@ -113,7 +136,8 @@ def prepare(args) -> Path:
         env.update(VLLM_ENV)
         command = f"python3 -m {runner} {common} --model-path {model}"
     else:
-        command = f"python3 -m {runner} {common} --model-path {model} --tp-size {args.tp} {SGLANG_ARGS}"
+        graph_args = f" {SGLANG_PREFILL_GRAPH_ARGS}" if args.prefill_graph else ""
+        command = f"python3 -m {runner} {common} --model-path {model} --tp-size {args.tp} {SGLANG_ARGS}{graph_args}"
     exports = " ".join(f"{k}={shlex.quote(v)}" for k, v in env.items())
     script = f"""#!/bin/bash
 #SBATCH --job-name={job}
@@ -135,6 +159,25 @@ srun --container-image={args.image} --container-mounts={",".join(mounts)} --no-c
   exec {command}"
 """
     (attempt / "run.sbatch").write_text(script)
+    # CPU dry run in the same container and mounts: resolves the framework,
+    # manifest, checkpoint geometry and native arguments, then exits before
+    # any CUDA work, so a GPU allocation is never spent on a driver error.
+    dryrun = f"""#!/bin/bash
+#SBATCH --job-name={job}-dryrun
+#SBATCH --account={args.account}
+#SBATCH --partition=cpu
+#SBATCH --qos=cpu-short
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=64G
+#SBATCH --time=00:30:00
+#SBATCH --output={container}/dryrun-%j.out
+set -euo pipefail
+srun --container-image={args.image} --container-mounts={",".join(mounts)} --no-container-mount-home \\
+  --container-workdir=/workspace bash -c "export {exports}; exec {command} --dry-run"
+"""
+    (attempt / "dryrun.sbatch").write_text(dryrun)
     return attempt
 
 
@@ -158,6 +201,7 @@ def main():
     parser.add_argument("--partition", default="batch")
     parser.add_argument("--time", default="04:00:00")
     parser.add_argument("--allocator-max-split-mb", type=int, default=None)
+    parser.add_argument("--prefill-graph", action="store_true", help="revision 2: prefill under serving graphs")
     args = parser.parse_args()
     if args.layer_id is not None and not args.smoke:
         parser.error("--layer-id is a smoke-only cross-check")
