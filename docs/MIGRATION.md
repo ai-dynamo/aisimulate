@@ -70,7 +70,7 @@ AIC command replacement; see the [onboarding guide](fpm-self-service/implementat
 These examples use the offline `engine` stack, H200 op-level performance data,
 and vLLM 0.24.0. Run them in one working directory with fresh output directories.
 They describe simulated serving traffic, not fixed-batch AIC results.
-The CLI examples and Python imports in this guide were run successfully on
+The original CLI examples and Python imports in this guide were run successfully on
 2026-10-02 with AISimulate 0.13.0, built from source revision
 [`67b1b9a5`](https://github.com/ai-dynamo/aisimulate/commit/67b1b9a51388bc8202df5d237cd3de4d4f07414f). The AFD example below uses
 TRT-LLM 1.3.0rc20. The [captured example results](migration-examples.json) record
@@ -79,6 +79,9 @@ passed request-count, metric, GPU-budget, and artifact checks. These are
 execution checks, not a silicon-accuracy or AIC-equivalence claim. Captured
 timing values are observations, not golden assertions; results can change with
 source or performance-data revisions.
+The AFD configuration below was subsequently constrained and rechecked in
+[the recommendation search-quality update](https://github.com/ai-dynamo/aisimulate/pull/377);
+the archived results retain the earlier input hashes.
 
 ### Predict one deployment
 
