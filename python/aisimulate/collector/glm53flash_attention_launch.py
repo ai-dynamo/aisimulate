@@ -106,6 +106,8 @@ def prepare(args) -> Path:
     }
     if args.sglang_mem_fraction is not None:
         body["sglang_mem_fraction_static"] = args.sglang_mem_fraction
+    if args.vllm_gpu_memory_utilization is not None:
+        body["vllm_gpu_memory_utilization"] = args.vllm_gpu_memory_utilization
     if args.prefill_graph:
         # Revision 2: re-collect prefill only, under the serving prefill graphs.
         body["phases"] = ["context"]
@@ -137,6 +139,9 @@ def prepare(args) -> Path:
         env["PYTHONPATH"] = "/opt/glm53flash-candidate:/workspace"
         env.update(VLLM_ENV)
         command = f"python3 -m {runner} {common} --model-path {model}"
+        if args.vllm_gpu_memory_utilization is not None:
+            # Capacity only: leaves headroom for the per-target module graphs.
+            command += f" --gpu-memory-utilization {args.vllm_gpu_memory_utilization}"
     else:
         graph_args = f" {SGLANG_PREFILL_GRAPH_ARGS}" if args.prefill_graph else ""
         sglang_args = SGLANG_ARGS
@@ -213,6 +218,7 @@ def main():
     parser.add_argument("--allocator-max-split-mb", type=int, default=None)
     parser.add_argument("--prefill-graph", action="store_true", help="revision 2: prefill under serving graphs")
     parser.add_argument("--sglang-mem-fraction", type=float, default=None)
+    parser.add_argument("--vllm-gpu-memory-utilization", type=float, default=None)
     args = parser.parse_args()
     if args.layer_id is not None and not args.smoke:
         parser.error("--layer-id is a smoke-only cross-check")
