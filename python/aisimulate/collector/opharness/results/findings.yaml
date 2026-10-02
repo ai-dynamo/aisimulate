@@ -2269,3 +2269,34 @@ findings:
     - Qwen/Qwen3-VL-2B-Instruct
     - moonshotai/Kimi-K3
     - sgl-project/DeepSeek-V4-Flash-FP8
+  hopper_trtllm_collector_pin_rc20_to_rc29_2026_10_02:
+    statement: 'TRTLLM COLLECTOR PIN 1.3.0rc20 -> 1.3.0rc29 + MOE ROUTING PARITY (H20/sm90, 2026-10-02; owner asked whether
+      the two leftovers of the sglang port could be closed). PIN: framework_manifest trtllm default rc20 -> rc29 (digest 124da3f1...);
+      the rc23 moe / sparse_attention / msa family pins are retired, their history kept in the manifest comment (rc20 moe
+      data still flows through the declared reuse.yaml channel; the rc23 mhc evidence exception keeps its own scope). Every
+      trtllm module already declared __compat__ >= rc19/20/21. SMOKE: op_smoke over all 23 trtllm registry ops in the rc29
+      image -> 21 OK; moe fails only on its first plan case by the collector''s own classified raise (fp8_block needs 128-aligned
+      shards: hidden 1024 / inter 2688 at tp16) and mamba2 only on its bs=64 x 32768 cells (CUDA OOM, memory) — both pre-existing
+      behaviours, not rc29 drift. GATES rc29: 17/17 ALIGNED. The moe_fp8block DeepSeek-V3 gate had been DIVERGED since the
+      rc29 audit because collect_moe routed every non-min-latency case through RenormalizeMoeRoutingMethod (customMoeRoutingKernel)
+      while serving builds DeepSeek-V3-family / GLM / Nemotron-H MoE from DeepseekV3Gate.routing_method (noaux_tc grouped
+      top-k with the correction bias -> deepseek_v3_topk_kernel; modeling_deepseekv3.py:979-990, modeling_glm.py:273-285,
+      modeling_nemotron_h.py:236). The collector now reads the model row''s declared routing (cases/models/*_cases.yaml sglang_moe_routing_method_type=DeepSeekV3
+      with num_expert_group / topk_group / routed_scaling_factor — framework-neutral checkpoint facts despite the prefix)
+      and builds the same gate routing with the resolved moe_backend; softmax-top-k models keep Renormalize. The router GEMM
+      (dsv3_router_gemm_op) stays outside the op as before. OPEN on trtllm: 7 undeclared gate families (encoder_attn, gdn_gen,
+      mamba2, mla_bmm, msa ctx/gen, ...) — gate_declared todo, same backfill mechanics as the sglang round. TEST HYGIENE:
+      collector/collect.py''s module logger defaulted to None until main() ran setup_logging, so in-process callers of the
+      checkpoint/provenance paths (fullnode finalization, unit tests run in isolation) crashed on logger.info; it now defaults
+      to logging.getLogger(''collector'') with a configured flag — mechanism-adjacent plumbing only, no behaviour change for
+      the CLI (main still installs the configured logger once). test_fullnode 8/8 standalone; the 30 test_collect_provenance_writer
+      failures are environment-only (no torch in this venv) and identical on the pre-change HEAD.'
+    applies_to:
+    - framework:trtllm-1.3.0rc29
+    - platform:sm90
+    - module:collector
+    - instrument:trtllm.collect_moe
+    - instrument:collect.py
+    - deepseek-ai/DeepSeek-V3
+    - zai-org/GLM-5
+    - sgl-project/DeepSeek-V4-Flash-FP8

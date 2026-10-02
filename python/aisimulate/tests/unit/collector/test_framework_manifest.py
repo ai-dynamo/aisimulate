@@ -36,8 +36,8 @@ def test_manifest_exposes_current_framework_versions_and_images():
     assert sglang.version == "0.5.21"
     assert sglang.image().startswith("lmsysorg/sglang:v0.5.21@sha256:")
     assert sglang.image("cu130").startswith("lmsysorg/sglang:v0.5.21-cu130@sha256:")
-    assert trtllm.version == "1.3.0rc20"
-    assert trtllm.image().startswith("nvcr.io/nvidia/tensorrt-llm/release:1.3.0rc20@sha256:")
+    assert trtllm.version == "1.3.0rc29"
+    assert trtllm.image().startswith("nvcr.io/nvidia/tensorrt-llm/release:1.3.0rc29@sha256:")
     assert vllm.version == "0.30.0"
     assert vllm.image().startswith("vllm/vllm-openai:v0.30.0@sha256:")
     # cu129 variant intentionally dropped at the 0.29.0 bump (no cu129 build);

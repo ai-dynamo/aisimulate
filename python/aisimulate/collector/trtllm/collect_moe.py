@@ -277,6 +277,18 @@ def get_moe_test_cases():
     return test_cases
 
 
+def _declared_moe_routing(model_name: str):
+    """The model row's routing declaration (cases/models/*_cases.yaml
+    model_case_values.moe: sglang_moe_routing_method_type / _num_expert_group /
+    _topk_group / _routed_scaling_factor). Framework-neutral model facts despite
+    the sglang_ prefix: TensorRT-LLM reads the same numbers from the checkpoint
+    config (n_group, topk_group, routed_scaling_factor) when it builds the gate."""
+    for case in get_common_moe_test_cases():
+        if case.model_name == model_name:
+            return case
+    return None
+
+
 def run_moe_torch(
     moe_type,
     num_tokens_lists,
@@ -509,8 +521,33 @@ def run_moe_torch(
         ).routing_method
         router_logits_dtype = torch.float32
     else:
-        # for low latency mode in fp4, experts > 128 is not supported.
-        routing_method = RenormalizeMoeRoutingMethod(topk)
+        declared = _declared_moe_routing(model_name)
+        if declared is not None and declared.sglang_moe_routing_method_type == "DeepSeekV3":
+            # Serving routes DeepSeek-V3-family / GLM / Nemotron-H MoE through
+            # DeepseekV3Gate.routing_method (noaux_tc, grouped top-k with the
+            # e_score_correction_bias; Deepseekv3RoutingImpl is_fused=True ->
+            # deepseek_v3_topk_kernel) built from the checkpoint's n_group /
+            # topk_group / routed_scaling_factor and the resolved moe_backend —
+            # modeling_deepseekv3.py:979-990, modeling_glm.py:273-285,
+            # modeling_nemotron_h.py:236 @1.3.0rc29. RenormalizeMoeRoutingMethod
+            # (customMoeRoutingKernel) is the softmax-top-k family (Qwen3-MoE,
+            # Mixtral, ...), and running it for DeepSeek-V3 diverged the
+            # moe_fp8block gate on H20 (2026-10-01). The router GEMM that feeds the
+            # gate (dsv3_router_gemm_op) stays outside this op, as before.
+            routing_method = DeepseekV3Gate(
+                hidden_size,
+                num_experts,
+                top_k=topk,
+                n_group=int(declared.sglang_moe_num_expert_group or 1),
+                topk_group=int(declared.sglang_moe_topk_group or 1),
+                routed_scaling_factor=float(declared.sglang_moe_routed_scaling_factor or 1.0),
+                dtype=dtype,
+                moe_backend=model_config.moe_backend,
+            ).routing_method
+            router_logits_dtype = torch.float32
+        else:
+            # softmax top-k renormalized routing (fused custom routing kernel).
+            routing_method = RenormalizeMoeRoutingMethod(topk)
 
     create_moe_kwargs = {
         "routing_method": routing_method,

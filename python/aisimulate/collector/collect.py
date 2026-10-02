@@ -11,6 +11,7 @@ modules own benchmark setup, while `model_cases.py` and YAML own case selection.
 
 import contextlib
 import functools
+import logging
 import os
 import warnings
 
@@ -120,7 +121,12 @@ from helper import (
     validate_restored_perf_publications,
 )
 
-logger = None
+# Module logger. ``setup_logging`` (main / workers) installs the configured
+# collector logger; until then this is the bare library logger so in-process
+# callers (fullnode finalization, unit tests, tooling) that reach the checkpoint
+# and provenance paths never trip on a None logger.
+logger = logging.getLogger("collector")
+_LOGGER_CONFIGURED = False
 RESUME_SCHEMA_VERSION = "collector-resume-v2"
 STALL_THRESHOLD = 30  # iterations (x 0.5 s sleep = 15 s) before logging a stall warning
 # Failures of one (model, dtype) group within an op before the summary flags
@@ -1229,13 +1235,15 @@ class ResumeCheckpoint:
     def load_existing(self):
         """Load an existing checkpoint for resume.  Raises on mismatch."""
         if not self._path.parent.exists() and not self._path.parent.is_symlink():
-            logger.info(f"{self.module_name}: no checkpoint found, starting fresh")
+            if logger is not None:
+                logger.info(f"{self.module_name}: no checkpoint found, starting fresh")
             return
         with _locked_checkpoint_directory(self._path) as locked:
             canonical_path = _checkpoint_path_in_locked_directory(self._path, locked)
             _normalize_atomic_replace_state_at(locked.file_descriptor, canonical_path)
             if _entry_state_at(locked.file_descriptor, canonical_path.name) is None:
-                logger.info(f"{self.module_name}: no checkpoint found, starting fresh")
+                if logger is not None:
+                    logger.info(f"{self.module_name}: no checkpoint found, starting fresh")
                 return
 
             try:
@@ -1276,7 +1284,8 @@ class ResumeCheckpoint:
         self._source_digest = snapshot.digest
         self._source_device = snapshot.device
         self._source_inode = snapshot.inode
-        logger.info(f"{self.module_name}: loaded checkpoint — {len(self._done)} passed, {len(self._failed)} failed")
+        if logger is not None:
+            logger.info(f"{self.module_name}: loaded checkpoint — {len(self._done)} passed, {len(self._failed)} failed")
 
     # -- public API -------------------------------------------------------
 
@@ -5405,7 +5414,8 @@ def _commit_collector_provenance_transaction(
         journal_attestation=journal_attestation,
         locked_output_root=locked_output_root,
     )
-    logger.info(f"Wrote collector provenance sidecar: {meta_path}")
+    if logger is not None:
+        logger.info(f"Wrote collector provenance sidecar: {meta_path}")
     for checkpoint in participants:
         _close_checkpoint_attempts(
             checkpoint.path,
@@ -5527,7 +5537,8 @@ def _write_collector_provenance(
         full_names = ops_by_table.get(table)
         module = module_by_table.get(table)
         if not full_names or module is None:
-            logger.warning(f"collection_meta: {table} has no registry mapping this run; skipping its provenance entry")
+            if logger is not None:
+                logger.warning(f"collection_meta: {table} has no registry mapping this run; skipping its provenance entry")
             continue
 
         if parquet_path not in finalization_info:
@@ -6019,7 +6030,9 @@ def main():
         os.environ.pop("COLLECTOR_MODEL_PATH", None)
 
     # Setup logging - debug flag is handled inside setup_logging
-    if logger is None:
+    global _LOGGER_CONFIGURED
+    if not _LOGGER_CONFIGURED:
+        _LOGGER_CONFIGURED = True
         if args.model_cases_full:
             log_scope = ["model_cases_full"]
         else:
