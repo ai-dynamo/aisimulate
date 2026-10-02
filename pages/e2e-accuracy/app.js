@@ -148,7 +148,7 @@ function renderSnapshot() {
       Selected operating points: ${escapeHtml(snapshot.campaign.selected)}; published comparison points: ${escapeHtml(snapshot.campaign.published)}.<br />
       Excluded before comparison: ${escapeHtml(JSON.stringify(snapshot.campaign.exclusion_reasons))}.<br />
       Prediction database versions: ${escapeHtml(snapshot.campaign.backend_versions.join(", "))}.<br />
-      Policy: ${escapeHtml(snapshot.campaign.selection_policy)}; max_num_seqs=max(256, concurrency), max_num_batched_tokens=8192, enable_prefix_caching=False, aic_forward_model=op_level; unresolved recipes are excluded.</p>
+      Policy: ${escapeHtml(snapshot.campaign.selection_policy)}; ${snapshot.campaign.selection_policy === "gym-resolved-config-v2" ? "source-resolved serving settings and workload; independent estimate and replay outcomes" : "max_num_seqs=max(256, concurrency), max_num_batched_tokens=8192, enable_prefix_caching=False, aic_forward_model=op_level"}; unresolved recipes are excluded.</p>
       <code>Wheel SHA-256: ${escapeHtml(snapshot.campaign.wheel_sha256)}</code>
       <code>Dataset manifest SHA-256: ${escapeHtml(snapshot.campaign.dataset_sha256)}</code>` : ""}
     <p>Snapshot file source: ${state.branch.published_from_commit
@@ -418,14 +418,14 @@ function pointTable(topology) {
   return `<details class="point-details" open><summary>Operating points (${topology.points.length})</summary>
     <div class="table-scroll" tabindex="0" role="region" aria-label="Operating point details"><table class="point-table">
     <caption>Relative TTFT / TPOT and absolute percentage errors. Ratios use measured latency at the lowest concurrency as 1×.</caption>
-    <thead><tr><th>Concurrency</th><th>Replay status</th><th>Measured TTFT / TPOT</th><th>AISim CLI TTFT / TPOT</th><th>AIC CLI TTFT / TPOT</th><th>AISim CLI TTFT / TPOT error</th><th>AIC CLI TTFT / TPOT error</th></tr></thead>
+    <thead><tr><th>Concurrency</th><th>Replay / AIC status</th><th>Measured TTFT / TPOT</th><th>AISim CLI TTFT / TPOT</th><th>AIC CLI TTFT / TPOT</th><th>AISim CLI TTFT / TPOT error</th><th>AIC CLI TTFT / TPOT error</th></tr></thead>
     <tbody>${topology.points.map((point) => {
       const ratios = (name) => ["ttft", "tpot"].map((metric) => {
         const value = point[name][`${metric}_relative`];
         return value == null ? "—" : `${value.toFixed(3)}×`;
       }).join(" / ");
       const errors = (name) => `${formatPercent(point[name].ttft_error_pct)} / ${formatPercent(point[name].tpot_error_pct)}`;
-      return `<tr><td>${point.concurrency}</td><td>${escapeHtml(point.status)}</td><td>${ratios("measured")}</td><td>${ratios("aisimulate")}</td><td>${ratios("aic")}</td><td>${errors("aisimulate")}</td><td>${errors("aic")}</td></tr>`;
+      return `<tr><td>${point.concurrency}</td><td>${escapeHtml(point.status)} / ${escapeHtml(point.aic_status === undefined ? "success" : point.aic_status)}</td><td>${ratios("measured")}</td><td>${ratios("aisimulate")}</td><td>${ratios("aic")}</td><td>${errors("aisimulate")}</td><td>${errors("aic")}</td></tr>`;
     }).join("")}</tbody></table></div></details>`;
 }
 
@@ -446,7 +446,7 @@ function renderDrilldown() {
     <a id="detail-permalink" href="${escapeHtml(location.href)}" target="_blank" rel="noopener">Open this selection in a separate tab ↗</a>
     ${topologies.length ? `<label class="topology-control">Topology<select id="topology-select">${topologies.map((entry) => `<option value="${entry.id}"${entry.id === topology.id ? " selected" : ""}>${escapeHtml(topologyLabel(entry))}</option>`).join("")}</select></label>` : ""}
     <p class="coverage-text">${escapeHtml(coverageText(item))}</p>
-    <p class="detail-scope">AISim CLI errors cover successful replays. AIC CLI errors cover all selected points.</p>
+    <p class="detail-scope">AISim CLI errors cover successful replays. AIC CLI errors cover successful estimates.</p>
     ${errorBars(item)}
     ${topology ? `<div class="chart-legend"><span class="measured">● Measured</span><span class="aisimulate">● AISim CLI</span><span class="aic">● AIC CLI</span></div>
       <p class="detail-scope">Latency relative to the measured value at the lowest concurrency. Both predictors share that anchor; gaps indicate missing predictions.</p>
@@ -511,21 +511,26 @@ function validateSummary(data) {
       !object(topology.parallelism) || !Array.isArray(topology.points) || topology.points.length !== topology.rows ||
       !["framework", "precision", "serving", "spec_method"].every((key) => typeof topology[key] === "string")) return false;
     let previous = 0;
+    let aicSuccesses = 0;
     const counts = { success: 0, unsupported: 0, failed: 0, unknown: 0 };
     return topology.points.every((point) => {
       if (!object(point) || !Number.isFinite(point.concurrency) || point.concurrency <= 0 || point.concurrency < previous ||
-        !["success", "unsupported", "failed"].includes(point.status)) return false;
+        !["success", "unsupported", "failed"].includes(point.status) ||
+        !["success", "unsupported", "failed"].includes(point.aic_status === undefined ? "success" : point.aic_status)) return false;
       previous = point.concurrency;
       counts[point.status] += 1;
+      if ((point.aic_status === undefined ? "success" : point.aic_status) === "success") aicSuccesses += 1;
       return ["measured", "aic", "aisimulate"].every((name) => object(point[name]) && ["ttft", "tpot"].every((metric) => {
         const value = point[name]?.[`${metric}_relative`];
         const error = point[name]?.[`${metric}_error_pct`];
-        const missing = name === "aisimulate" && point.status !== "success";
+        const missing = name === "aisimulate" && point.status !== "success" ||
+          name === "aic" && (point.aic_status === undefined ? "success" : point.aic_status) !== "success";
         return missing ? value === null && error === null :
           Number.isFinite(value) && value >= 0 && (name === "measured" || Number.isFinite(error) && error >= 0);
       }));
     }) && Object.keys(topology.aisimulate.status_counts).length === statuses.length &&
-      statuses.every((key) => counts[key] === topology.aisimulate.status_counts[key]);
+      statuses.every((key) => counts[key] === topology.aisimulate.status_counts[key]) &&
+      aicSuccesses === topology.aic.points;
   };
   if (!object(data) || data.schema_version !== 1 || !object(data.snapshot) || !object(data.scope) ||
     typeof data.snapshot.release_tag !== "string" || data.snapshot.measurement_source_url !==
@@ -563,7 +568,7 @@ function validateSummary(data) {
   const campaign = data.snapshot.campaign;
   const exclusions = campaign?.exclusion_reasons;
   const validExclusions = exclusions && typeof exclusions === "object" && !Array.isArray(exclusions) &&
-    Object.keys(exclusions).every(key => ["recipe_required", "adapter_unsupported", "adapter_topology_mismatch", "baseline_failed"].includes(key)) &&
+    Object.keys(exclusions).every(key => ["recipe_required", "adapter_unsupported", "adapter_topology_mismatch", "baseline_failed", "source_unresolved", "database_unavailable"].includes(key)) &&
     Object.values(exclusions).every(value => Number.isInteger(value) && value >= 0);
   if (campaign !== undefined && (!campaign || !revision || campaign.status !== "complete" ||
     campaign.advisory !== true || !/^[0-9]+$/.test(campaign.run_id) ||
@@ -572,7 +577,7 @@ function validateSummary(data) {
     !Number.isInteger(campaign.selected) || campaign.selected < data.totals.rows ||
     campaign.published !== data.totals.rows || !Array.isArray(campaign.backend_versions) ||
     !campaign.backend_versions.every((version) => typeof version === "string") ||
-    campaign.selection_policy !== "latest-complete-config-run-v1" ||
+    !["latest-complete-config-run-v1", "gym-resolved-config-v2"].includes(campaign.selection_policy) ||
     !validExclusions)) {
     throw new Error("invalid accuracy campaign provenance");
   }

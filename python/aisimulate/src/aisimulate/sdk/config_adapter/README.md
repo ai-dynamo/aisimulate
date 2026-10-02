@@ -42,6 +42,10 @@ itself never invokes it.
 
 - `InferenceXSource`: one DB-export config record and one benchmark operating
   point.
+- `ResolvedInferenceXSource`: an evidence-qualified `resolved-deployment/1`
+  object, matching config/benchmark records, and an immutable source reference.
+  Source acquisition remains outside the adapter. The caller may supply a
+  verified local checkpoint through `AdapterOverrides.model_path`.
 - `DynamoRecipeSource`: standard aggregate or prefill/decode-disaggregated
   DynamoGraphDeployment YAML, optional performance YAML, and concrete
   `dynamo-ci` benchmark recipes.
@@ -72,11 +76,13 @@ Adaptation follows these rules:
 ## Resolution strategy: source to replay
 
 Source resolution and replay configuration are both required for serving
-configuration parity with e2e-gym. The workflow below is the implementation
-strategy; it is **not yet complete** in public accuracy CI. Today, CI adapts
-InferenceX DB records, excludes recipe-fingerprinted points as `recipe_required`,
-and fixes replay sequence limits, the prefill token budget, and prefix caching.
-Topology regression tests alone do not establish serving configuration parity.
+configuration parity with e2e-gym. Public accuracy CI now uses
+`gym-resolved-config-v2`: the shared evaluator resolves source evidence before
+calling either predictor, carries per-role replay settings and source workload,
+and records estimate and replay outcomes independently. Historical campaigns
+retain their original `latest-complete-config-run-v1` policy and fixed settings.
+See the [resolver contract](../../../../../../scripts/e2e_accuracy_source/README.md)
+for the pinned gym revision, validation evidence, and remaining modeling limits.
 
 ### Source resolution
 
@@ -94,10 +100,9 @@ Topology regression tests alone do not establish serving configuration parity.
 
 ### Replay configuration
 
-- Carry the resolved settings through the canonical contract into the final
-  per-role replay engine arguments: sequence limits, batched/prefill token
-  budgets, prefix caching, memory fraction, KV dtype, CUDA graph controls, and
-  chunked prefill. Preserve the workload and worker topology with those settings.
+- Carry the resolved deployment into the final per-role replay engine arguments: sequence limits, batched/prefill token
+  budgets, prefix caching, memory fraction, KV dtype, and chunked prefill.
+  Keep graph controls in source evidence when the engine cannot model them. Preserve the workload and worker topology with those settings.
 - Replace CI's fixed settings only when the corresponding source setting or
   verified default is resolved. A documented replay approximation must remain
   distinguishable from a source-matched configuration.
@@ -119,8 +124,15 @@ Topology regression tests alone do not establish serving configuration parity.
   predictor/data revisions, and metric boundaries. Configuration parity and
   measured prediction accuracy are separate results.
 
+The new cohort follows gym's row deduplication, image coherence, and 180-day
+configuration freshness window, including P/D and multinode evidence. Missing
+runtime settings remain explicit exclusions. Graph/kernel controls outside the
+modeled replay API, unmodeled client behavior, and unknown historical checkpoint
+revisions remain visible in the local evidence; matching gym inputs does not
+establish that every source behavior is simulated.
+
 See the [accuracy audit](../../../../../../pages/e2e-accuracy/README.md#adapter-parity-audit-2026-10-02)
-for current gaps and evidence.
+for validation evidence and modeling limits.
 
 ## Package layout
 
@@ -129,6 +141,7 @@ for current gaps and evidence.
 | `schema.py` | Canonical request, override, report, and diagnostic models |
 | `api.py` | Public dispatch and lowering to `cli_estimate` keyword arguments |
 | `inferencex.py` | InferenceX record adaptation |
+| `resolved.py` | Source-resolved InferenceX estimate adaptation |
 | `dynamo.py` | DynamoGraphDeployment and performance YAML adaptation |
 | `dynamo_ci.py` | Concrete `dynamo-ci` recipe adaptation |
 | `schemas/` | Language-neutral JSON Schema snapshot |

@@ -156,6 +156,7 @@ jobs:
         run: |
           echo "${WHEEL_SHA256}  $(echo "${RUNNER_TEMP}"/accuracy-wheel/*.whl)" | sha256sum --check --strict
           python -m pip install "${RUNNER_TEMP}"/accuracy-wheel/*.whl
+          python -m pip install --require-hashes -r scripts/e2e_accuracy_source/requirements.txt
           python -m pip check
           python - <<'PYCODE'
           import os, sys
@@ -184,6 +185,7 @@ jobs:
             --wheel "${RUNNER_TEMP}"/accuracy-wheel/*.whl \
             --commit "${EXPECTED_SHA}" --branch "${EVALUATED_BRANCH}" \
             --run-id "${GITHUB_RUN_ID}" --run-attempt "${GITHUB_RUN_ATTEMPT}" \
+            --source-cache "${RUNNER_TEMP}/accuracy-source" --evidence "${RUNNER_TEMP}/accuracy-evidence" \
             --workers 6 --point-timeout 180 --output "${RUNNER_TEMP}/accuracy-public"
       - name: Report advisory accuracy and coverage
         run: |

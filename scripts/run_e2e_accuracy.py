@@ -32,7 +32,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from build_e2e_accuracy_overview import GPUS_PER_NODE_BY_FAMILY, build_summary
 from build_pages_site import _accuracy_summary
-from fetch_accuracy_measurements import POLICY, digest, validate_manifest
+from fetch_accuracy_measurements import RESOLVED_POLICY, digest, validate_manifest
 
 REPOSITORY = "https://github.com/ai-dynamo/aisimulate"
 
@@ -238,7 +238,7 @@ def wheel_identity(wheel: Path) -> dict:
 def replay_spec(request, backend_version: str):
     from aisimulate.sweeper.replay import BackendDeploymentSpec, ReplaySpec
 
-    def engine(worker, system):
+    def engine(worker, system, role):
         args = {
             "engine_type": request.backend.name,
             "aic_model_path": request.model.path,
@@ -253,6 +253,22 @@ def replay_spec(request, backend_version: str):
             # Both legacy releases and current runners default to op-level timing.
             # Legacy native engines reject the newer aic_forward_model selector.
         }
+        for field, target in (
+            ("max_seq_len", "max_model_len"),
+            (
+                "free_gpu_memory_fraction",
+                {
+                    "vllm": "gpu_memory_utilization",
+                    "sglang": "mem_fraction_static",
+                    "trtllm": "free_gpu_memory_fraction",
+                }[request.backend.name],
+            ),
+        ):
+            value = getattr(request.runtime, f"{role}_{field}", None) if role != "agg" else None
+            if value is None:
+                value = getattr(request.runtime, field)
+            if value is not None:
+                args[target] = value
         for name in ("moe_tp_size", "moe_ep_size"):
             if getattr(worker, name) is not None:
                 args["aic_" + name] = getattr(worker, name)
@@ -271,13 +287,13 @@ def replay_spec(request, backend_version: str):
     kwargs = {}
     if topology.kind == "agg":
         kwargs.update(
-            agg_engine_args=engine(topology.worker, request.systems.prefill),
+            agg_engine_args=engine(topology.worker, request.systems.prefill, "agg"),
             num_workers=topology.worker.replicas,
         )
     else:
         kwargs.update(
-            prefill_engine_args=engine(topology.prefill, request.systems.prefill),
-            decode_engine_args=engine(topology.decode, request.systems.decode),
+            prefill_engine_args=engine(topology.prefill, request.systems.prefill, "prefill"),
+            decode_engine_args=engine(topology.decode, request.systems.decode or request.systems.prefill, "decode"),
             num_prefill_workers=topology.prefill.replicas,
             num_decode_workers=topology.decode.replicas,
         )
@@ -301,6 +317,8 @@ def replay_spec(request, backend_version: str):
 
 
 def predict_point(point: dict) -> dict:
+    if "source_row" in point:
+        return predict_resolved_point(point)
     from aisimulate.runner import EngineReplayRunnerFactory
 
     api_name, adapter_name = predictor_module_names(importlib.metadata.distribution("aisimulate").files or ())
@@ -407,6 +425,141 @@ def predict_point(point: dict) -> dict:
     }
 
 
+def predict_resolved_point(point):
+    from e2e_accuracy_source.deployment import estimate_kwargs
+    from e2e_accuracy_source.model_config_snapshot import materialize_model_config
+    from e2e_accuracy_source.replay import replay_spec as resolved_replay_spec
+    from e2e_accuracy_source.schema import SiliconRow
+
+    from aisimulate.runner import EngineReplayRunnerFactory
+    from aisimulate.sweeper.replay import BackendDeploymentSpec, ReplaySpec
+
+    if point.get("resolution_error"):
+        return {"id": point["id"], "outcome": "unsupported", "reason": "source_unresolved"}
+    deployment = point["deployment"]
+    config, bench = point["config"], point["benchmark"]
+    api_name, adapter_name = predictor_module_names(importlib.metadata.distribution("aisimulate").files or ())
+    namespace = "aiconfigurator" if api_name.startswith("aiconfigurator.") else "aisimulate"
+    try:
+        version = importlib.import_module(namespace + ".sdk.perf_database").get_latest_database_version(
+            system=deployment["system"], backend=deployment["backend"]
+        )
+        if not version:
+            raise ValueError("no performance-data version")
+    except Exception:
+        return {"id": point["id"], "outcome": "unsupported", "reason": "database_unavailable"}
+    roles = deployment["roles"]
+    shape = roles["decode" if config["disagg"] else "aggregated"]["topology"]
+    row = {
+        "silicon_model": config["model"],
+        "display_name": config["model"],
+        "hf_model_path": deployment["model_path"],
+        "hardware": config["hardware"],
+        "framework": config["framework"],
+        "precision": config["precision"],
+        "spec_method": config["spec_method"],
+        "disagg": config["disagg"],
+        "config_id": sha([config["id"], bench.get("recipe_fingerprint")]),
+        "isl": bench["isl"],
+        "osl": bench["osl"],
+        "conc": bench["conc"],
+        "is_multinode": config["is_multinode"],
+        "silicon_ttft_ms": bench["metrics"]["mean_ttft"] * 1000,
+        "silicon_tpot_ms": bench["metrics"]["mean_tpot"] * 1000,
+        "aic_status": "failed",
+        "aic_ttft_ms": None,
+        "aic_tpot_ms": None,
+        "aisimulate_status": "failed",
+        "aisimulate_total_gpus": sum(
+            spec["topology"]["tp"]
+            * spec["topology"]["pp"]
+            * spec["topology"]["attention_dp"]
+            * spec["topology"]["workers"]
+            for spec in roles.values()
+        ),
+        **{
+            field: shape[key]
+            for field, key in (
+                ("tp_size", "tp"),
+                ("pp_size", "pp"),
+                ("attention_dp_size", "attention_dp"),
+                ("moe_tp_size", "moe_tp"),
+                ("moe_ep_size", "moe_ep"),
+            )
+        },
+    }
+    try:
+        adapter = importlib.import_module(adapter_name)
+        model_path = (
+            materialize_model_config(deployment["checkpoint_config"])
+            if deployment.get("checkpoint_config")
+            else deployment["model_path"]
+        )
+        if hasattr(adapter, "ResolvedInferenceXSource"):
+            source = adapter.ResolvedInferenceXSource(
+                deployment,
+                config,
+                bench,
+                "https://github.com/SemiAnalysisAI/InferenceX/tree/" + point["source_row"]["head_sha"],
+            )
+            report = adapter.adapt_config(
+                source, adapter.AdapterOverrides(model_path=model_path, backend_version=version)
+            )
+            if not report.requests:
+                raise ValueError("resolved source cannot be represented by estimate API")
+            kwargs = adapter.to_cli_estimate_kwargs(report.requests[0])
+        else:
+            # Historical wheels predate the resolved adapter. Use the same
+            # source-derived kwargs as gym, never the alias-only DB adapter.
+            kwargs = estimate_kwargs(SiliconRow(**point["source_row"]), deployment).to_call_kwargs()
+            kwargs.update(model_path=model_path, backend_version=version)
+        baseline = importlib.import_module(api_name).cli_estimate(**kwargs)
+        if not all(positive(value) for value in (baseline.ttft, baseline.tpot)):
+            raise ValueError("invalid baseline latency")
+        row.update(aic_status="success", aic_ttft_ms=float(baseline.ttft), aic_tpot_ms=float(baseline.tpot))
+    except Exception as error:
+        row["aic_error"] = str(error)
+    try:
+        spec = resolved_replay_spec(deployment, version, BackendDeploymentSpec, ReplaySpec)
+        runner = EngineReplayRunnerFactory().create(0)
+        try:
+            metrics = runner.run(spec).metrics
+        finally:
+            runner.close()
+        if metrics.get("completed_requests") != deployment["workload"]["request_count"]:
+            raise ValueError("replay did not complete the source workload")
+        ttft, tpot = metrics.get("mean_ttft_ms"), metrics.get("mean_tpot_ms")
+        if not all(positive(value) for value in (ttft, tpot)):
+            raise ValueError("invalid replay latency")
+        row.update(
+            aisimulate_status="success",
+            dynamo_ttft_ms=ttft,
+            dynamo_tpot_ms=tpot,
+            aisimulate_runner="aisimulate.engine_replay",
+        )
+    except Exception as error:
+        row["aisimulate_error"] = str(error)
+    return {"id": point["id"], "outcome": "evaluated", "row": row, "backend_version": version}
+
+
+def resolve_points(points, cache_dir, workers):
+    from e2e_accuracy_source.deployment import inspect_deployment
+    from e2e_accuracy_source.inferencex_recipe import GitHubRecipeSource
+    from e2e_accuracy_source.schema import SiliconRow
+
+    source = GitHubRecipeSource(cache_dir=cache_dir)
+
+    def resolve(point):
+        try:
+            deployment, evidence, issues = inspect_deployment(SiliconRow(**point["source_row"]), source)
+            return {**point, "deployment": deployment, "evidence": evidence, "resolution_error": issues}
+        except Exception as error:
+            return {**point, "resolution_error": [{"message": str(error)}]}
+
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        return list(pool.map(resolve, points))
+
+
 def run_child(point: dict, timeout: int) -> dict:
     # Each child is bounded independently; native aborts and hangs cannot erase
     # the remaining cohort. The parent retains one outcome per selected point.
@@ -453,7 +606,24 @@ def campaign(args) -> None:
     manifest = json.loads(args.manifest.read_text())
     validate_manifest(manifest)
     identity = wheel_identity(args.wheel)
-    points, selection = select_points(json.loads(args.tables.read_text()), manifest["max_age_days"])
+    tables = json.loads(args.tables.read_text())
+    resolved = manifest["selection_policy"] == RESOLVED_POLICY
+    if resolved:
+        from e2e_accuracy_source.cohort import select_points as select_resolved_points
+
+        points, selection = select_resolved_points(tables, manifest["max_age_days"])
+        for point in points:
+            point["id"] = sha([point["benchmark"]["id"], point["config"]["id"]])
+        points.sort(key=lambda point: point["id"])
+        points = resolve_points(points, args.source_cache, args.workers)
+        args.evidence.mkdir(parents=True, exist_ok=True)
+        (args.evidence / "resolved-points.json").write_bytes(encoded(points))
+        print(
+            f"Resolved {sum(not p.get('resolution_error') for p in points)}/{len(points)} source deployments",
+            flush=True,
+        )
+    else:
+        points, selection = select_points(tables, manifest["max_age_days"])
     started = datetime.now(UTC).isoformat()
     results = []
     with ThreadPoolExecutor(max_workers=args.workers) as pool:
@@ -461,6 +631,8 @@ def campaign(args) -> None:
             results.append(result)
             if len(results) % 50 == 0:
                 print(f"Recorded {len(results)}/{len(points)} point outcomes", flush=True)
+    if resolved:
+        (args.evidence / "results.json").write_bytes(encoded(results))
     rows = qualify_results(points, results)
     if wheel_identity(args.wheel) != identity:
         raise ValueError("runtime changed during campaign")
@@ -502,6 +674,7 @@ def campaign(args) -> None:
         + "/releases/tag/"
         + manifest["release_tag"],
         branch=args.branch,
+        exclude_multinode=not resolved,
     )
     campaign_info = {
         "schema_version": 1,
@@ -510,11 +683,20 @@ def campaign(args) -> None:
         "wheel_sha256": identity["wheel_sha256"],
         "dataset_sha256": digest(args.manifest),
         "measurement_sha256": digest(args.tables),
-        "cohort_sha256": sha([point["id"] for point in points]),
-        "driver_sha256": digest(Path(__file__)),
+        "cohort_sha256": sha(points if resolved else [point["id"] for point in points]),
+        "driver_sha256": sha(
+            {
+                str(path.relative_to(Path(__file__).parent)): digest(path)
+                for path in [
+                    Path(__file__),
+                    *sorted(Path(__file__).with_name("e2e_accuracy_source").glob("*.py")),
+                    *sorted(Path(__file__).with_name("e2e_accuracy_source").glob("*.json")),
+                ]
+            }
+        ),
         "run_id": args.run_id,
         "run_attempt": args.run_attempt,
-        "selection_policy": POLICY,
+        "selection_policy": manifest["selection_policy"],
         "measurement_filter_counts": selection["excluded"],
         "selected": len(points),
         "published": summary["totals"]["rows"],
@@ -564,6 +746,8 @@ def main():
         parser.add_argument("--" + name, required=True)
     parser.add_argument("--workers", type=int, default=6)
     parser.add_argument("--point-timeout", type=int, default=180)
+    parser.add_argument("--source-cache", type=Path, default=Path(".cache/e2e-accuracy/source"))
+    parser.add_argument("--evidence", type=Path, default=Path(".cache/e2e-accuracy/evidence"))
     campaign(parser.parse_args())
 
 

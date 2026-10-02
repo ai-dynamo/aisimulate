@@ -261,6 +261,8 @@ def _topology_summaries(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         points = []
         for row in topology_rows:
             point: dict[str, Any] = {"concurrency": row["conc"], "status": row["aisimulate_status"]}
+            if "aic_status" in row:
+                point["aic_status"] = row["aic_status"]
             for name, prefix in (("measured", "silicon"), ("aic", "aic"), ("aisimulate", "dynamo")):
                 point[name] = {}
                 for metric, anchor in anchors.items():
@@ -452,11 +454,18 @@ def _validate_inputs(
         for field in (
             "silicon_ttft_ms",
             "silicon_tpot_ms",
-            "aic_ttft_ms",
-            "aic_tpot_ms",
         ):
             if _finite(row.get(field)) is None or row[field] <= 0:
                 raise SnapshotError(f"row is missing a positive finite {field}")
+        aic_status = row.get("aic_status", "success")
+        if aic_status not in {"success", "failed", "unsupported"}:
+            raise SnapshotError("unknown AIC prediction status")
+        for field in ("aic_ttft_ms", "aic_tpot_ms"):
+            if aic_status == "success":
+                if _finite(row.get(field)) is None or row[field] <= 0:
+                    raise SnapshotError(f"row is missing a positive finite {field}")
+            elif row.get(field) is not None:
+                raise SnapshotError("non-success AIC row contains latency metrics")
         if _finite(row.get("conc")) is None or row["conc"] <= 0:
             raise SnapshotError("row is missing a positive finite conc")
         status = row.get("aisimulate_status")
