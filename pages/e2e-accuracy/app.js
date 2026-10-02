@@ -120,8 +120,11 @@ function renderSummary() {
       <p>AIC (legacy CLI): ${group.aic.points} points; TPOT / TTFT MAPE ${formatPercent(group.aic.tpot_mape_pct)} / ${formatPercent(group.aic.ttft_mape_pct)}</p></article>`),
   ].join("");
   const groups = new Map();
+  const hardwareGroups = new Map();
   for (const model of state.data.models) for (const workload of model.workloads) for (const gpu of workload.gpus) {
     for (const topology of gpu.topologies || []) {
+      if (!hardwareGroups.has(gpu.gpu)) hardwareGroups.set(gpu.gpu, []);
+      hardwareGroups.get(gpu.gpu).push(topology);
       if (!groups.has(topology.serving)) groups.set(topology.serving, new Map());
       const frameworks = groups.get(topology.serving);
       if (!frameworks.has(topology.framework)) frameworks.set(topology.framework, []);
@@ -139,6 +142,10 @@ function renderSummary() {
       return `<tr>${index === 0 ? `<th scope="rowgroup" rowspan="${rows.length}">${escapeHtml(servingLabel)}</th>` : ""}<th scope="row">${escapeHtml(framework.toUpperCase())}</th><td>${m.points}</td>${["tpot_mape_pct", "tpot_shape_error_pct", "ttft_mape_pct", "ttft_shape_error_pct"].map(f => `<td>${formatPercent(m[f])}</td>`).join("")}</tr>`;
     }).join("")}</tbody>`;
   }).join("")}</table></div>` : "";
+  document.getElementById("hardware-summary").innerHTML = hardwareGroups.size ? `<h2>AISim error by hardware</h2><div class="table-scroll"><table><thead><tr><th scope="col">Hardware</th><th scope="col">Points</th><th scope="col">TPOT MAPE</th><th scope="col">TTFT MAPE</th></tr></thead><tbody>${[...hardwareGroups].sort(([a], [b]) => a.localeCompare(b)).map(([hardware, topologies]) => {
+    const m = aggregateTopologies(topologies).aisimulate;
+    return `<tr><th scope="row">${escapeHtml(hardware.toUpperCase())}</th><td>${m.points}</td><td>${formatPercent(m.tpot_mape_pct)}</td><td>${formatPercent(m.ttft_mape_pct)}</td></tr>`;
+  }).join("")}</tbody></table></div>` : "";
 }
 
 function renderSnapshot() {
@@ -699,6 +706,7 @@ function clearSnapshot(message) {
   state.topologyId = null;
   state.expandedWorkloads.clear();
   document.getElementById("framework-summary").innerHTML = "";
+  document.getElementById("hardware-summary").innerHTML = "";
   summaryGrid.innerHTML = `<div class="loading-card">${escapeHtml(message)}</div>`;
   matrixBody.innerHTML = `<tr><td colspan="10" class="empty-cell">${escapeHtml(message)}</td></tr>`;
   identityLine.textContent = "";
@@ -939,6 +947,7 @@ function renderView() {
   matrixLayout.hidden = details;
   summaryGrid.hidden = details;
   document.getElementById("framework-summary").hidden = details;
+  document.getElementById("hardware-summary").hidden = details;
   document.getElementById("details-view").hidden = !details;
   document.getElementById("detail-filters").hidden = !details;
   for (const [id, key] of [["outliers", "excludeOutliers"], ["abnormal", "excludeAbnormal"], ["multinode", "excludeMultinode"]]) {
