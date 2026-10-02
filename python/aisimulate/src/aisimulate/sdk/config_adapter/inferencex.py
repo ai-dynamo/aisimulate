@@ -135,8 +135,31 @@ def _worker(
     ep = _integer(config, f"{role}_ep")
     if tp <= 0 or ep <= 0:
         raise ValueError(f"{role} TP and EP must be positive")
+    single_node_ep = not disagg and is_moe and ep > 1 and replicas == 1 and config.get("is_multinode") is False
+    if single_node_ep:
+        # In single-node InferenceX exports, TP names the shared rank group.
+        # Legacy records multiply that width by EP although EP reuses its GPUs.
+        if tp % ep or (backend == "vllm" and ep != tp):
+            raise ValueError(
+                f"{role} single-node TP ({tp}) and EP ({ep}) do not establish a supported shared GPU group"
+            )
+        if gpus_per_replica not in {tp, tp * ep}:
+            raise ValueError(
+                f"{role} single-node expert-parallel GPU count ({gpus_per_replica}) "
+                f"must equal TP ({tp}) or the legacy TP * EP product ({tp * ep})"
+            )
+        gpus_per_replica = tp
+    elif (
+        not disagg
+        and is_moe
+        and ep > 1
+        and replicas == 1
+        and config.get("is_multinode") is not True
+        and gpus_per_replica == tp * ep
+    ):
+        raise ValueError(f"{role} TP * EP GPU count is ambiguous without an explicit boolean is_multinode")
     attention_dp_enabled = bool(config.get(f"{role}_dp_attention", False))
-    if backend == "vllm":
+    if backend == "vllm" and not (single_node_ep and attention_dp_enabled):
         if gpus_per_replica % tp:
             raise ValueError(f"{role} GPUs per worker ({gpus_per_replica}) must be divisible by TP ({tp})")
         attention_tp = tp
@@ -268,6 +291,22 @@ def adapt_inferencex(source: InferenceXSource, overrides: AdapterOverrides) -> A
                     prefill_batch_override=None,
                 )
             )
+            reported_gpus = _integer(agg_config, "num_decode_gpu")
+            effective_gpus = topology.worker.replicas * topology.worker.gpus_per_replica
+            if reported_gpus != effective_gpus:
+                correction = (
+                    f"InferenceX single-node num_decode_gpu={reported_gpus} counts TP * EP; "
+                    f"EP shares the TP GPU group, so the effective GPU count is {effective_gpus}."
+                )
+                assumptions.append(correction)
+                diagnostics.append(
+                    AdaptationDiagnostic(
+                        severity="warning",
+                        code="inferencex_gpu_count_normalized",
+                        message=correction,
+                        path="config.num_decode_gpu",
+                    )
+                )
             systems = SystemSettingsV1(prefill=system)
 
         gemm, moe = (None, None) if (model_alias, precision) in NATIVE_QUANT_MODELS else PRECISION_QUANT[precision]
