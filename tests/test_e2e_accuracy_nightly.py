@@ -500,6 +500,38 @@ def test_campaign_hash_includes_nested_source_manifests(artifact, tmp_path, monk
     assert after["snapshot"]["campaign"]["driver_sha256"] != before["snapshot"]["campaign"]["driver_sha256"]
 
 
+def test_pr_preview_records_actual_branch_and_cannot_publish(artifact, tmp_path):
+    output = tmp_path / "pr-preview"
+    args = SimpleNamespace(
+        tables=tmp_path / "tables.json",
+        manifest=tmp_path / "manifest.json",
+        wheel=tmp_path / "wheel.whl",
+        output=output,
+        branch="simonec/preview",
+        commit="d" * 40,
+        run_id="123",
+        run_attempt="1",
+        workers=2,
+        point_timeout=10,
+        preview=True,
+    )
+    campaign.campaign(args)
+    text = (output / "summary.json").read_text()
+    summary = pages._accuracy_summary(text, allow_preview=True)
+    assert summary["snapshot"]["evaluated_revision"] == {"branch": args.branch, "commit_sha": args.commit}
+    assert summary["scope"]["preview"] is True
+    assert summary["snapshot"]["campaign"]["preview"] is True
+    with pytest.raises(pages.PagesBuildError, match="preview is not publishable"):
+        pages._accuracy_summary(text)
+    with pytest.raises(ValueError):
+        publish.public_contract(summary)
+    with pytest.raises(ValueError):
+        publish.validate_artifact(archive(summary), artifact[1])
+    args.preview = False
+    with pytest.raises(ValueError, match="main or release"):
+        campaign.campaign(args)
+
+
 def test_complete_artifact_contains_only_derived_accuracy_and_provenance(artifact):
     summary, run = artifact
     assert publish.validate_artifact(archive(summary), run) == summary
@@ -637,7 +669,7 @@ def test_invalid_gpu_count_exclusions_survive_publication_validation(artifact):
     assert publish.validate_artifact(archive(summary), run) == summary
 
 
-def test_nightly_accuracy_is_independent_from_release_staging_and_has_no_public_raw_artifacts():
+def test_nightly_accuracy_is_independent_from_release_staging_and_keeps_preview_artifacts_separate():
     workflow = yaml.load(
         (ROOT / ".github/workflows/e2e-accuracy.yml").read_text(),
         Loader=yaml.BaseLoader,
@@ -659,9 +691,15 @@ def test_nightly_accuracy_is_independent_from_release_staging_and_has_no_public_
     assert workflow["jobs"]["campaign"]["needs"] == "wheel"
     assert workflow["jobs"]["campaign"]["name"] == "Qualify E2E accuracy (${{ inputs.artifact_key }})"
     uploads = [s for s in workflow["jobs"]["campaign"]["steps"] if "upload-artifact@" in s.get("uses", "")]
-    assert len(uploads) == 1 and "if" not in uploads[0]
+    assert len(uploads) == 2 and "if" not in uploads[0]
     assert uploads[0]["with"]["overwrite"] == "true"
-    assert uploads[0]["with"]["name"] == "e2e-accuracy-web-${{ inputs.artifact_key }}"
+    assert (
+        uploads[0]["with"]["name"]
+        == "${{ inputs.preview && 'e2e-accuracy-preview' || 'e2e-accuracy-web' }}-${{ inputs.artifact_key }}"
+    )
+    assert uploads[1]["if"] == "always() && inputs.preview"
+    assert uploads[1]["with"]["name"] == "e2e-accuracy-preview-evidence-${{ inputs.artifact_key }}"
+    assert uploads[1]["with"]["path"] == "${{ runner.temp }}/accuracy-evidence/"
     wheel_upload = next(s for s in workflow["jobs"]["wheel"]["steps"] if "upload-artifact@" in s.get("uses", ""))
     assert wheel_upload["with"]["overwrite"] == "true"
     assert wheel_upload["with"]["name"] == "e2e-accuracy-wheel-${{ inputs.artifact_key }}"

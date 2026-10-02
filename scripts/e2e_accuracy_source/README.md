@@ -59,7 +59,8 @@ churn without simplifying those rules.
   Performance-database versions are selected independently of measured framework
   versions. Estimate failure does not suppress replay or its coverage.
 - The driver writes full resolved evidence and outcomes only to `--evidence`.
-  Nothing in that directory is uploaded by the workflow. For policy
+  Production runs do not upload that directory. Explicit PR preview runs retain
+  it as a separate diagnostic artifact for local review. For policy
   `gym-resolved-config-v2`, `cohort_sha256` hashes the complete resolved inputs,
   including source evidence; `driver_sha256` includes resolver code and source
   manifests. Only the validated aggregate summary is public.

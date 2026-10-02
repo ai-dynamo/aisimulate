@@ -725,3 +725,21 @@ test("baseline failure keeps successful replay visible and requires missing AIC 
   app.set("data", data);
   assert.throws(() => app.run("validateSummary(data)"), /schema/);
 });
+
+test("standalone PR preview displays its exact branch and cannot enter a public catalog", async () => {
+  const data = withEvaluation();
+  data.scope.preview = true;
+  data.snapshot.evaluated_revision.branch = "simonec/preview";
+  data.snapshot.aic_source.branch = "simonec/preview";
+  const app = harness(async path => path === "./branches.json" ? response(null, 404) : response(data));
+  await app.run("initialize()");
+  assert.equal(app.element("error-banner").hidden, true);
+  assert.match(app.element("branch-status").textContent, /PR preview.*simonec\/preview/);
+  assert.equal(app.run("state.catalog.default_branch"), "simonec/preview");
+  delete data.scope.preview;
+  app.set("data", data);
+  assert.throws(() => app.run("validateSummary(data)"), /invalid evaluated revision/);
+  const mixed = setup(async () => response({...data, scope: {...data.scope, preview: true}}));
+  await mixed.run('loadBranch("main")');
+  assert.match(mixed.element("error-banner").textContent, /cannot be mixed/);
+});

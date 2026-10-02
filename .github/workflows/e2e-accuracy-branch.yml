@@ -17,6 +17,10 @@ on:
       nightly_run:
         required: true
         type: string
+      preview:
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -177,10 +181,14 @@ jobs:
           python scripts/e2e_accuracy/fetch_accuracy_measurements.py \
             --manifest "${RUNNER_TEMP}/accuracy-dataset/e2e-accuracy-dataset.json" --output "${RUNNER_TEMP}/accuracy-measurements"
       - name: Run both predictors with bounded CPU workers and qualify the complete cohort
+        shell: bash
         env:
           EXPECTED_SHA: ${{ inputs.sha }}
           EVALUATED_BRANCH: ${{ inputs.branch }}
+          PREVIEW: ${{ inputs.preview }}
         run: |
+          preview_args=()
+          if [[ "${PREVIEW}" == 'true' ]]; then preview_args+=(--preview); fi
           python scripts/e2e_accuracy/run_e2e_accuracy.py \
             --tables "${RUNNER_TEMP}/accuracy-measurements/tables.json" \
             --manifest "${RUNNER_TEMP}/accuracy-dataset/e2e-accuracy-dataset.json" \
@@ -188,7 +196,7 @@ jobs:
             --commit "${EXPECTED_SHA}" --branch "${EVALUATED_BRANCH}" \
             --run-id "${GITHUB_RUN_ID}" --run-attempt "${GITHUB_RUN_ATTEMPT}" \
             --source-cache "${RUNNER_TEMP}/accuracy-source" --evidence "${RUNNER_TEMP}/accuracy-evidence" \
-            --workers 6 --point-timeout 180 --output "${RUNNER_TEMP}/accuracy-public"
+            --workers 6 --point-timeout 180 --output "${RUNNER_TEMP}/accuracy-public" "${preview_args[@]}"
       - name: Report advisory accuracy and coverage
         run: |
           python - <<'PY' >> "${GITHUB_STEP_SUMMARY}"
@@ -206,9 +214,17 @@ jobs:
           PY
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: e2e-accuracy-web-${{ inputs.artifact_key }}
+          name: ${{ inputs.preview && 'e2e-accuracy-preview' || 'e2e-accuracy-web' }}-${{ inputs.artifact_key }}
           overwrite: true
           # A single directory lets the container hook remap the entire path.
           path: ${{ runner.temp }}/accuracy-public/
           if-no-files-found: error
           retention-days: 90
+      - name: Preserve PR preview evidence for local diagnosis
+        if: always() && inputs.preview
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: e2e-accuracy-preview-evidence-${{ inputs.artifact_key }}
+          path: ${{ runner.temp }}/accuracy-evidence/
+          if-no-files-found: warn
+          retention-days: 7
