@@ -264,6 +264,8 @@ def _accuracy_summary(text: str, *, allow_preview: bool = False) -> dict:
             previous = concurrency
             status = point.get("status")
             require(status in ("success", "unsupported", "failed"), "point status")
+            aic_status = point.get("aic_status", "success")
+            require(aic_status in ("success", "unsupported", "failed"), "AIC point status")
             counts[status] += 1
             aic_status = point.get("aic_status", "success")
             require(aic_status in ("success", "unsupported", "failed"), "AIC point status")

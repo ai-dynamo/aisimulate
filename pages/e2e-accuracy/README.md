@@ -42,6 +42,15 @@ Legacy AIC total throughput uses the inverse nominal ratio. Replay throughput
 uses its recorded token rates. Missing values stay unavailable. Prediction knobs
 are not proof that silicon used the same knobs; the point dialog states this.
 
+The exporter also accepts Gym's original `*_tput_per_gpu_output`,
+`*_tput_per_gpu_total`, `silicon_e2el_ms`, and `*_request_latency_ms` fields.
+These rates are already per GPU and latencies are already in milliseconds.
+Explicitly failed AIC predictions remain gaps without dropping the silicon or
+AISim point. Re-export from the original prediction records to populate these
+charts; rebuilding the UI around a normalized-only summary cannot restore them.
+Gym imports without matching branch-qualified producer evidence remain historical
+snapshots and must not be labeled as newly evaluated public branch results.
+
 ## Branch selection
 
 The Pages build publishes a `branches.json` catalog containing `main` and every

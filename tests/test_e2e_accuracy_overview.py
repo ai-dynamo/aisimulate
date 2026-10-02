@@ -396,6 +396,58 @@ def test_drilldown_partitions_topologies_and_uses_one_measured_anchor() -> None:
     assert "silicon_ttft_ms" not in json.dumps(result)
 
 
+def test_gym_chart_metrics_retain_units_and_missing_predictions() -> None:
+    predictions, metadata, coverage = _inputs()
+    row = predictions["rows"][0]
+    row.update(
+        silicon_e2el_ms=1200,
+        silicon_tput_per_gpu_total=800,
+        aic_request_latency_ms=1500,
+        aic_tput_per_gpu_output=300,
+        dynamo_request_latency_ms=1300,
+        dynamo_tput_per_gpu_output=350,
+        dynamo_tput_per_gpu_total=710,
+    )
+    failed = predictions["rows"][1]
+    failed.update(aic_status="failed", aic_ttft_ms=None, aic_tpot_ms=None, aic_tput_per_gpu_output=999)
+    result = OVERVIEW.build_summary(
+        predictions,
+        metadata,
+        coverage,
+        predictions_sha256="c" * 64,
+        source_url=OVERVIEW.INFERENCEX_RELEASE_URL_PREFIX + predictions["release_tag"],
+    )
+    topology = result["models"][0]["workloads"][0]["gpus"][0]["topologies"][0]
+    first, second = topology["points"]
+    assert first["measured"]["e2e_ms"] == 1200
+    assert first["measured"]["total_per_gpu"] == 800
+    assert first["measured"]["output_per_gpu"] == 400
+    assert first["aic"]["e2e_ms"] == 1500
+    assert first["aic"]["output_per_gpu"] == 300
+    assert first["aic"]["total_per_gpu"] == 600
+    assert first["aisimulate"]["e2e_ms"] == 1300
+    assert first["aisimulate"]["output_per_gpu"] == 350
+    assert first["aisimulate"]["total_per_gpu"] == 710
+    assert second["aic"]["ttft_ms"] is None
+    assert second["aic"]["output_per_gpu"] is None
+    assert topology["aic"]["points"] == 1
+
+
+def test_public_chart_metrics_take_precedence_over_gym_aliases() -> None:
+    row = {
+        "aisimulate_status": "success",
+        "dynamo_e2e_ms": 123,
+        "dynamo_request_latency_ms": 456,
+        "dynamo_output_per_gpu": None,
+        "dynamo_tput_per_gpu_output": 789,
+    }
+    assert OVERVIEW._chart_metrics(row, "dynamo") == {
+        "e2e_ms": 123,
+        "output_per_gpu": None,
+        "total_per_gpu": None,
+    }
+
+
 def test_distinct_frameworks_and_parallelism_do_not_share_curves() -> None:
     predictions, metadata, coverage = _inputs()
     predictions["rows"][1]["framework"] = "sglang"

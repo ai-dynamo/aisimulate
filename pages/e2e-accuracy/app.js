@@ -534,14 +534,13 @@ function validateSummary(data) {
       counts[point.status] += 1;
       if ((point.aic_status === undefined ? "success" : point.aic_status) === "success") aicSuccesses += 1;
       return ["measured", "aic", "aisimulate"].every((name) => object(point[name]) && ["ttft", "tpot"].every((metric) => {
+        const missing = name === "aisimulate" && point.status !== "success" || name === "aic" && (point.aic_status ?? "success") !== "success";
         for (const field of ["ttft_ms", "tpot_ms", "e2e_ms", "output_per_gpu", "total_per_gpu"]) {
           const raw = point[name][field];
-          if (raw !== undefined && raw !== null && (!Number.isFinite(raw) || raw <= 0 || name === "aisimulate" && point.status !== "success")) return false;
+          if (raw !== undefined && raw !== null && (!Number.isFinite(raw) || raw <= 0 || missing)) return false;
         }
         const value = point[name]?.[`${metric}_relative`];
         const error = point[name]?.[`${metric}_error_pct`];
-        const missing = name === "aisimulate" && point.status !== "success" ||
-          name === "aic" && (point.aic_status === undefined ? "success" : point.aic_status) !== "success";
         return missing ? value === null && error === null :
           Number.isFinite(value) && value >= 0 && (name === "measured" || Number.isFinite(error) && error >= 0);
       }));

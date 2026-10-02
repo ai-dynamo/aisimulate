@@ -525,7 +525,7 @@ def _validate_inputs(
                 raise SnapshotError(f"row is missing a positive finite {field}")
         aic_status = row.get("aic_status", "success")
         if aic_status not in {"success", "failed", "unsupported"}:
-            raise SnapshotError("unknown AIC prediction status")
+            raise SnapshotError(f"row has unknown aic_status: {aic_status!r}")
         for field in ("aic_ttft_ms", "aic_tpot_ms"):
             if aic_status == "success":
                 if _finite(row.get(field)) is None or row[field] <= 0:
