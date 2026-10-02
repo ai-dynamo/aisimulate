@@ -8,7 +8,8 @@ use std::num::NonZeroU32;
 
 use aisimulate_core::engine::generalized::{EngineIdentity, SchedulerCommand};
 use aisimulate_core::engine::{
-    Admission, Command, Engine, EngineConfig, EngineFactory, Request, SharedG2Pool,
+    Admission, Command, Engine, EngineConfig, EngineFactory, KvEventData, KvEventTier, Request,
+    SharedG2Pool,
 };
 use aisimulate_core::replay::{
     G2DomainStats, ReplayCaptureOptions, ReplayDeterminism, ReplayEngineFactory, ReplayReport,
@@ -555,4 +556,46 @@ fn engines_from_separate_factories_share_one_g2_pool() {
         .err()
         .expect("an unbound cluster-shared rank must fail");
     assert!(format!("{error:#}").contains("cluster_shared"), "{error:#}");
+}
+
+#[test]
+fn an_engine_joining_a_warm_shared_pool_publishes_its_residency() {
+    let mut config: EngineConfig = serde_json::from_value(rank(host("cluster_shared"))).unwrap();
+    config.emit_kv_events = true;
+    let pool = SharedG2Pool::new();
+    let build = || {
+        EngineFactory::new(config.clone())
+            .unwrap()
+            .with_shared_g2_pool(&pool, 1)
+            .build(EngineIdentity::new(0), NonZeroU32::MIN)
+            .unwrap()
+    };
+    let mut producer = build();
+    let mut now_ms = 0.0;
+    serve_prompt(&mut producer, 1, &mut now_ms);
+    settle(&mut producer, &mut now_ms);
+    assert_eq!(pool.occupancy(), Some((8, 2, 2)));
+
+    // The late joiner's residency snapshot must be due now, not wait for an
+    // unrelated request or transfer.
+    let mut consumer = build();
+    assert!(!consumer.is_drained());
+    let deadline_ms = consumer
+        .next_internal_deadline_ms()
+        .expect("a queued residency snapshot is internal work");
+    assert!(deadline_ms <= now_ms, "{deadline_ms} > {now_ms}");
+    let effects = consumer.process_internal_work(now_ms).unwrap();
+    let host_pinned_blocks = effects
+        .by_rank
+        .iter()
+        .flat_map(|rank| &rank.effects.kv_events)
+        .filter(|event| event.tier == KvEventTier::HostPinned)
+        .map(|event| match &event.data {
+            KvEventData::Stored(stored) => stored.blocks.len(),
+            KvEventData::Removed { .. } => panic!("the snapshot only stores"),
+        })
+        .sum::<usize>();
+    assert_eq!(host_pinned_blocks, 2);
+    assert!(consumer.next_internal_deadline_ms().is_none());
+    assert!(consumer.is_drained());
 }

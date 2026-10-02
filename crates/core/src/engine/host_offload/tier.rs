@@ -1061,23 +1061,36 @@ impl HostTier {
         }
     }
 
-    /// Next time `client` has work: a delivery, or any shared-pool event,
-    /// including a peer completion it has not observed.
+    /// Next time `client` has work: a delivery, any shared-pool event,
+    /// including a peer completion it has not observed, or residency events
+    /// queued for it, such as the snapshot of a pool it joined warm.
     pub(crate) fn next_deadline(&self, client: u64) -> Option<f64> {
+        let state = &self.clients[&client];
+        let queued_events = self
+            .has_queued_events(client)
+            .then_some(self.current_time_ms);
         match &self.transport {
-            Transport::Fifo { deadlines, .. } => deadlines.first().map(|deadline| deadline.at_ms),
-            Transport::Fair { transfers, .. } => {
-                let state = &self.clients[&client];
-                transfers
-                    .next_event()
-                    .into_iter()
-                    .chain(state.done.front().map(|(at_ms, _)| *at_ms))
-                    .chain(
-                        (state.seen_epoch != self.completion_epoch).then_some(self.current_time_ms),
-                    )
-                    .min_by(f64::total_cmp)
-            }
+            Transport::Fifo { deadlines, .. } => deadlines
+                .first()
+                .map(|deadline| deadline.at_ms)
+                .into_iter()
+                .chain(queued_events)
+                .min_by(f64::total_cmp),
+            Transport::Fair { transfers, .. } => transfers
+                .next_event()
+                .into_iter()
+                .chain(state.done.front().map(|(at_ms, _)| *at_ms))
+                .chain((state.seen_epoch != self.completion_epoch).then_some(self.current_time_ms))
+                .chain(queued_events)
+                .min_by(f64::total_cmp),
         }
+    }
+
+    fn has_queued_events(&self, client: u64) -> bool {
+        self.clients[&client]
+            .events
+            .as_ref()
+            .is_some_and(|events| !events.is_empty())
     }
 
     pub(crate) fn current_time_ms(&self) -> f64 {
@@ -1096,6 +1109,7 @@ impl HostTier {
 
     pub(crate) fn has_pending_work(&self, client: u64) -> bool {
         !self.clients[&client].done.is_empty()
+            || self.has_queued_events(client)
             || self
                 .transfers
                 .values()
@@ -1924,7 +1938,8 @@ pub(crate) mod tests {
         // No owner remains to hand the source to G3, so it lands unpinned.
         assert_eq!((tier.lookup(key(1)), tier.pins(key(1))), (Lookup::Hit, 0));
         assert!(tier.transfers.is_empty());
-        assert_eq!(tier.next_deadline(B), None);
+        // Only B's queued residency remains, and it is due now.
+        assert_eq!(tier.next_deadline(B), Some(2.0));
         // The block is routable and remains an ordinary LRU victim.
         store(&mut tier, B, &[3], 2.0);
         assert_eq!(tier.resident_snapshot(), [key(2)]);
@@ -1937,6 +1952,7 @@ pub(crate) mod tests {
                 },
             ]
         );
+        assert!(!tier.has_queued_events(B));
     }
 
     #[test]
