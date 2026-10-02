@@ -401,6 +401,7 @@ def collect_linear(moe, manifest, plan, rank, provenance, stream):
 
 def collect_engram(config, quant, manifest, plan, rank, provenance, stream, token_ids, receipt):
     import torch
+    from sglang.srt.layers import engram as native_engram
     from sglang.srt.layers.engram import Engram, EngramHasher, EngramLayout
     from sglang.srt.model_executor.forward_batch_info import ForwardBatch, ForwardMode
 
@@ -443,7 +444,9 @@ def collect_engram(config, quant, manifest, plan, rank, provenance, stream, toke
         observer = LocalIntervals()
         observer.install(module.embed, "_owned_rows", entry)
         observer.install(module.wkv, "forward", entry)
-        observer.install(module, "apply_gate", entry)
+        # engram.py@v0.5.21: Engram.forward = embed(hash_ids) -> wkv -> module-level engram_gate(...)
+        # (the former Engram.apply_gate method); the gate is timed at its global name.
+        observer.install(native_engram, "engram_gate", entry)
         try:
             for tokens in plan["token_counts"]:
                 # Pinned schedule_batch.py:2553-2595 populates one no-prefix
@@ -525,6 +528,9 @@ def collect_mhc(config, quant, manifest, plan, rank, provenance, stream, receipt
     if not layer.hc_pre_from_prev_sublayer or layer.use_fused_mhc_post_pre:
         raise RuntimeError("native mHC predecessor/serial dispatch differs")
     receipt.setdefault("weight_initialization", {})["mhc_layer2"] = initialize_dummy_weights(layer, plan)
+    # DeepseekV4ForCausalLM.load_weights@v0.5.21 (deepseek_v4.py:5220) refreshes the bf16 norm-weight
+    # cache after loading; the fused combine+norm kernels read it.
+    layer.refresh_mhc_norm_weight_cache()
     receipt.setdefault("loaded_modules", {})["mhc_layer2"] = describe_module(layer)
     entry = next(e for e in manifest["phases"]["context"] if e["component"] == "mhc" and e["layer"] == 2)
     if json.loads(entry["geometry"]) != dict(
@@ -539,6 +545,10 @@ def collect_mhc(config, quant, manifest, plan, rank, provenance, stream, receipt
         attention_executed=False,
         moe_executed=False,
         overlap_aware_latency=False,
+        # deepseek_v4.py@v0.5.21 _hc_mix_and_combine(..., norm) fuses the sublayer RMSNorm into the
+        # combine (forward_hc_pre_from_prev:3546 norm=self.input_layernorm); the timed site therefore
+        # includes that norm, exactly as serving executes it.
+        norm_fused_into_combine=True,
     )
     observer = LocalIntervals()
     observer.install(layer, "_hc_mix_and_combine", entry)
@@ -555,7 +565,7 @@ def collect_mhc(config, quant, manifest, plan, rank, provenance, stream, receipt
             attn_output = torch.randn(tokens, config.hidden_size, generator=generator, dtype=torch.bfloat16).cuda()
             ffn_output = torch.randn(tokens, config.hidden_size, generator=generator, dtype=torch.bfloat16).cuda()
             _, prev_pre, _, _ = layer._hc_mix_and_combine(
-                hidden, layer.hc_ffn_fn, layer.hc_ffn_scale, layer.hc_ffn_base, apply_pre=None
+                hidden, layer.hc_ffn_fn, layer.hc_ffn_scale, layer.hc_ffn_base, None, layer.post_attention_layernorm
             )
             torch.cuda.synchronize()
 
@@ -564,11 +574,11 @@ def collect_mhc(config, quant, manifest, plan, rank, provenance, stream, receipt
                 # predecessor FFN pre; FFN consumes attn_pre. Each post uses its
                 # own coefficients and corresponding unsqueezed residual.
                 _, attn_pre, attn_post, attn_comb = layer._hc_mix_and_combine(
-                    hidden, layer.hc_attn_fn, layer.hc_attn_scale, layer.hc_attn_base, apply_pre=prev_pre
+                    hidden, layer.hc_attn_fn, layer.hc_attn_scale, layer.hc_attn_base, prev_pre, layer.input_layernorm
                 )
                 residual = layer.hc_post(attn_output, hidden, attn_post, attn_comb)
                 _, _, ffn_post, ffn_comb = layer._hc_mix_and_combine(
-                    residual, layer.hc_ffn_fn, layer.hc_ffn_scale, layer.hc_ffn_base, apply_pre=attn_pre
+                    residual, layer.hc_ffn_fn, layer.hc_ffn_scale, layer.hc_ffn_base, attn_pre, layer.post_attention_layernorm
                 )
                 return layer.hc_post(ffn_output, residual, ffn_post, ffn_comb)
 
