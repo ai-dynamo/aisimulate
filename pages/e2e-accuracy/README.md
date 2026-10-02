@@ -318,3 +318,10 @@ wheels and current runners. It omits the newer `aic_forward_model` engine
 argument because release/0.12.0 and release/0.12.1 do not accept that field.
 Validate evaluator changes against actual release wheels as well as main;
 a successful main-only campaign does not establish release compatibility.
+
+The selection toolbar uses short parallelism labels without repeating framework,
+precision, or serving filters. A short topology ID is shown only when needed to
+distinguish otherwise identical choices. The compact evidence line keeps branch,
+revision, evaluation date, and failed-update state visible. Detailed migration
+notes, filter methodology, and provenance are under the collapsed **About this
+comparison** section below the charts.

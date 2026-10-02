@@ -378,11 +378,18 @@ function selectedGpu() {
 }
 
 function topologyLabel(topology) {
-  const parallelism = Object.entries(topology.parallelism)
-    .filter(([, value]) => value != null)
-    .map(([key, value]) => `${key.replace("_size", "").replace("attention_dp", "DP").toUpperCase()} ${value}`)
-    .join(" · ");
-  return `${topology.precision} · ${topology.framework} · ${topology.serving} · ${parallelism} · ${topology.spec_method} · ${topology.id.slice(0, 6)}`;
+  const labels = {tp_size: "TP", pp_size: "PP", attention_dp_size: "DP", moe_ep_size: "EP", moe_tp_size: "MoE TP"};
+  const parts = Object.entries(labels).filter(([key]) => topology.parallelism[key] != null &&
+    (key === "tp_size" || topology.parallelism[key] !== 1))
+    .map(([key, label]) => `${label} ${topology.parallelism[key]}`);
+  if (topology.spec_method && topology.spec_method !== "none") parts.push(topology.spec_method);
+  return parts.join(" · ") || "Default parallelism";
+}
+
+function topologyOptions(topologies) {
+  const labels = topologies.map(topologyLabel);
+  return topologies.map((t, i) => [t.id, labels.filter(label => label === labels[i]).length > 1
+    ? `${labels[i]} · ${t.id.slice(0, 6)}` : labels[i]]);
 }
 
 function coverageText(item) {
@@ -623,6 +630,7 @@ function updateLocation() {
 }
 
 function clearSnapshot(message) {
+  document.getElementById("evidence-brief").textContent = message;
   state.rawData = null;
   state.data = null;
   state.selection = null;
@@ -697,6 +705,11 @@ async function loadBranch(branchName, restoreSelection = false, previewData = nu
     }
     branchStatus.textContent += ` Measurements: ${data.snapshot.release_tag}; evaluated ${formatDate(data.snapshot.aisimulate_completed_at)}.`;
     if (entry.last_update?.status === "failed") branchStatus.textContent += " Update failed; showing previous evidence. See the accuracy workflow for details.";
+    const brief = document.getElementById("evidence-brief");
+    brief.textContent = `${entry.branch} · ${revision ? revision.commit_sha.slice(0, 8) : "historical snapshot"} · evaluated ${formatDate(data.snapshot.aisimulate_completed_at)}` +
+      (entry.status === "inherited" ? ` · inherited from ${revision.branch}` : "") +
+      (entry.last_update?.status === "failed" ? " · Update failed — showing previous results" : "");
+    brief.title = branchStatus.textContent;
     downloadJson.href = `./${entry.summary_path}`;
     downloadJson.removeAttribute("aria-disabled");
     const linked = ["model", "workload", "gpu", "topology"].some((key) => params.has(key));
@@ -838,7 +851,7 @@ function selectDefault() {
 }
 
 function filterField(key, title, values, selected) {
-  return `<label>${title}<select data-filter="${key}">${values.map(([id, label]) =>
+  return `<label class="filter-${key}">${title}<select data-filter="${key}" title="${escapeHtml(values.find(([id]) => id === selected)?.[1] || title)}">${values.map(([id, label]) =>
     `<option value="${escapeHtml(id)}"${id === selected ? " selected" : ""}>${escapeHtml(label)}</option>`).join("")}</select></label>`;
 }
 
@@ -878,8 +891,8 @@ function renderDetails() {
     filterField("gpu", "GPU", options(workload.gpus, "gpu"), gpu.gpu) +
     ["precision", "framework", "serving"].map(key => filterField(key, key[0].toUpperCase() + key.slice(1),
       [...new Set(topologies.map(t => t[key]))].sort().map(v => [v, v]), topology?.[key])).join("") +
-    filterField("topology", "Selected topology", topologies.filter(t => !topology ||
-      ["precision", "framework", "serving"].every(k => t[k] === topology[k])).map(t => [t.id, topologyLabel(t)]), topology?.id);
+    filterField("topology", "Parallelism", topologyOptions(topologies.filter(t => !topology ||
+      ["precision", "framework", "serving"].every(k => t[k] === topology[k]))), topology?.id);
   toolbar.querySelectorAll("select").forEach(select => select.addEventListener("change", event => {
     const key = select.dataset.filter, value = event.target.value;
     let nextModel = model, nextWorkload = workload, nextGpu = gpu;

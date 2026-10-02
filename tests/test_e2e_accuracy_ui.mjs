@@ -308,7 +308,7 @@ test("changing topology updates the rendered points and shared selection in both
     app.element("topology-select").events.change({ target: { value: topology.id } });
     assert.equal(app.run("state.topologyId"), topology.id);
     const html = app.element("drilldown").innerHTML;
-    assert.match(html, new RegExp(`<option value="${topology.id}" selected>fp8 · vllm · aggregated · TP ${topology.parallelism.tp_size} · PP ${topology.parallelism.pp_size}`));
+    assert.match(html, new RegExp(`<option value="${topology.id}" selected>TP ${topology.parallelism.tp_size}${topology.parallelism.pp_size > 1 ? ` · PP ${topology.parallelism.pp_size}` : ""}`));
     assert.match(html, new RegExp(`<tr><td>${topology.points[0].concurrency}</td><td>success</td>`));
     const other = topology === first ? second : first;
     assert.doesNotMatch(html, new RegExp(`<tr><td>${other.points[0].concurrency}</td>`));
