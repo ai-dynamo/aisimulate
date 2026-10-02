@@ -760,3 +760,27 @@ dialog::backdrop { background: #0009; }
 .metric-chart .point.aisimulate { fill: #818cf8; }
 .metric-chart .point.aic { fill: #14b8a6; }
 .metric-chart .point[fill="#ec4899"] { fill: #ec4899; }
+
+/* Keep selection and evidence compact so charts remain above the fold. */
+.evidence-brief { margin: -4px 0 12px; color: var(--muted); font-size: 12px; }
+#detail-filters { display: grid; grid-template-columns: minmax(180px, 2fr) repeat(5, minmax(90px, 1fr)) minmax(180px, 1.8fr); gap: 12px; padding: 12px; margin-bottom: 10px; align-items: end; }
+#detail-filters label { min-width: 0; font-size: 12px; color: var(--muted); }
+#detail-filters select { width: 100%; max-width: none; min-width: 0; height: 34px; color: var(--text); font-size: 13px; }
+.exclusions { gap: 14px; margin-bottom: 14px; color: var(--muted); font-size: 12px; }
+.exclusions label { display: inline-flex; align-items: center; gap: 5px; cursor: pointer; }
+.exclusions input { margin: 0; accent-color: var(--accent); }
+#outlier-count { font-variant-numeric: tabular-nums; }
+#details-view h2 { margin: 0 0 6px; font-size: 18px; }
+#details-view > p { margin: 6px 0; font-size: 12px; color: var(--muted); }
+.public-notes > details > summary { cursor: pointer; color: var(--muted); }
+.public-notes .migration-context { margin-top: 14px; }
+.metric-chart { max-width: 740px; }
+@media (max-width: 1100px) {
+  #detail-filters { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  #detail-filters .filter-topology { grid-column: span 2; }
+}
+@media (max-width: 600px) {
+  #detail-filters { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+  #detail-filters .filter-model, #detail-filters .filter-topology { grid-column: 1 / -1; }
+  .exclusions { gap: 10px; }
+}

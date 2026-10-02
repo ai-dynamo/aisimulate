@@ -512,3 +512,10 @@ including failed predictions. Missing historical IDs remain null; internal
 `workflow_run_id` database keys are never substituted for GitHub run IDs.
 The exporter and Pages validators reject malformed IDs. This metadata does not
 change predictions, cohort selection, or accuracy metrics.
+
+The selection toolbar uses short parallelism labels without repeating framework,
+precision, or serving filters. A short topology ID is shown only when needed to
+distinguish otherwise identical choices. The compact evidence line keeps branch,
+revision, evaluation date, and failed-update state visible. Detailed migration
+notes, filter methodology, and provenance are under the collapsed **About this
+comparison** section below the charts.
