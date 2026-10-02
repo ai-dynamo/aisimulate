@@ -288,6 +288,11 @@ def _accuracy_summary(text: str) -> dict:
                 and isinstance(aic_source.get("commit_sha"), str)
                 and bool(re.fullmatch(r"[0-9a-f]{40}", aic_source["commit_sha"]))
                 and aic_source["commit_sha"] == snapshot.get("aic_commit_sha")
+                and (
+                    "cli_entry_point" not in aic_source
+                    or aic_source["cli_entry_point"]
+                    in ("aiconfigurator.main:main", "aisimulate.legacy_cli.entrypoint:main")
+                )
                 and (revision is None or all(aic_source[key] == revision[key] for key in ("branch", "commit_sha"))),
                 "legacy AIC CLI source",
             )

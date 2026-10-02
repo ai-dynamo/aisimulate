@@ -19,6 +19,11 @@ Application SDK modules that expose core types delegate to the canonical core
 module objects, preserving registry, exception, and cache identity. Core code
 does not import the application orchestration or legacy CLI layers.
 
+FPM profile schemas and quantization identities live in the lightweight
+`aisimulate_core.fpm_profile` and `aisimulate_core.quantization` modules.
+The application re-exports those same types. Importing metadata does not load
+the native extension; native exports on `aisimulate_core` load on first use.
+
 ## Replacement imports
 
 | Removed import | Replacement |

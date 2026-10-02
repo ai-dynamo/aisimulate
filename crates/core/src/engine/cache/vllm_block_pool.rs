@@ -58,8 +58,9 @@ impl SourceReuseDependency {
 enum CopyState {
     Private,
     /// A cached copy is linked into the inactive LRU if and only if both
-    /// `refs` and `pins` are zero. Any future cached sub-state must preserve or
-    /// explicitly revise that membership invariant.
+    /// `refs` and `pins` are zero and no pending transfer holds it (see
+    /// [`VllmBlockPool::hold_pending_sources`]). Any future cached sub-state
+    /// must preserve or explicitly revise that membership invariant.
     Cached {
         hash: SequenceHash,
         refs: usize,
@@ -91,6 +92,11 @@ struct CopySourceReuse {
 struct SourceReuseTracker {
     by_copy: FxHashMap<BlockCopyId, CopySourceReuse>,
     pending: FxHashSet<SourceReuseDependency>,
+    /// Holding pools only: each pending transfer's source copies, in request
+    /// order.
+    held: FxHashMap<SourceReuseDependency, Vec<BlockCopyId>>,
+    /// Holding pools only: held private sources their owner already released.
+    released: FxHashSet<BlockCopyId>,
 }
 
 struct HashCopies {
@@ -334,6 +340,8 @@ pub(crate) struct VllmBlockPool {
     // Preserve the compact token-only index. State keys are allocated lazily;
     // adding state support must not widen every ordinary token-cache bucket.
     by_hash: FxHashMap<SequenceHash, HashCopies>,
+    // Fine token keys share a physical page; removed together at page eviction.
+    token_aliases: Option<Box<FxHashMap<BlockCopyId, Vec<SequenceHash>>>>,
     state_index: Option<Box<StateIndex>>,
     /// Intrusive ordinary LRU: head is evicted first, tail was released last.
     inactive_head: Option<BlockCopyId>,
@@ -344,6 +352,8 @@ pub(crate) struct VllmBlockPool {
     /// follows a token through release, eviction, reservation, and reuse.
     free: FreshCapacity,
     source_reuse: Option<Box<SourceReuseTracker>>,
+    /// See [`Self::hold_pending_sources`].
+    hold_sources: bool,
     belady: Option<Box<BeladyCandidates>>,
 }
 
@@ -354,6 +364,7 @@ impl VllmBlockPool {
             capacity,
             copies: SlotMap::with_key(),
             by_hash: FxHashMap::default(),
+            token_aliases: None,
             state_index: None,
             inactive_head: None,
             inactive_tail: None,
@@ -361,8 +372,23 @@ impl VllmBlockPool {
             reserved: 0,
             free: FreshCapacity::Untracked(capacity),
             source_reuse: None,
+            hold_sources: false,
             belady: None,
         }
+    }
+
+    /// Hold every copy a pending transfer reads until that transfer is
+    /// satisfied, as a store that takes its own block reference does.
+    ///
+    /// A released source then stays out of the free capacity and the inactive
+    /// LRU, although it remains a prefix-cache hit, so no reservation inherits
+    /// a pending dependency. Satisfaction returns the capacity tail first.
+    pub(crate) fn hold_pending_sources(&mut self) {
+        assert!(
+            self.source_reuse.is_none(),
+            "source holding must be configured before any transfer reads G1"
+        );
+        self.hold_sources = true;
     }
 
     pub(crate) fn set_belady_oracle(&mut self, oracle: BeladyOracle) {
@@ -390,7 +416,8 @@ impl VllmBlockPool {
             unreachable!("hash index points to a private copy")
         };
         Some(PrefixHit {
-            is_active: *refs > 0 || *pins > 0,
+            // A held source is referenced by its transfer, not evictable.
+            is_active: *refs > 0 || *pins > 0 || self.holds_source(id),
         })
     }
 
@@ -642,6 +669,38 @@ impl VllmBlockPool {
         self.cache_private_key(id, CacheKey::Token(hash))
     }
 
+    /// Register a computed prefix inside a token page without allocating a
+    /// second page. Consumers copy a partial page before extending it.
+    pub(crate) fn cache_token_prefix(&mut self, id: BlockCopyId, hash: SequenceHash) -> bool {
+        if self.is_private(id) {
+            return self.cache_private(id, hash);
+        }
+        assert!(self.state_key(id).is_none());
+        let CopyState::Cached { hash: primary, .. } = self.copies[id].state else {
+            unreachable!()
+        };
+        if primary == hash {
+            return false;
+        }
+        let aliases = self
+            .token_aliases
+            .get_or_insert_with(Default::default)
+            .entry(id)
+            .or_default();
+        if aliases.contains(&hash) {
+            return false;
+        }
+        aliases.push(hash);
+        Self::index_copy(&mut self.by_hash, hash, id).0
+    }
+
+    fn is_token_alias(&self, id: BlockCopyId, hash: SequenceHash) -> bool {
+        self.token_aliases
+            .as_ref()
+            .and_then(|m| m.get(&id))
+            .is_some_and(|v| v.contains(&hash))
+    }
+
     /// Publish a private copy under a token or state key.
     pub(crate) fn cache_private_key(&mut self, id: BlockCopyId, hash: CacheKey) -> bool {
         let Some(copy) = self.copies.get(id) else {
@@ -774,11 +833,23 @@ impl VllmBlockPool {
 
     /// Release one request-owned reference. Private copies return capacity
     /// immediately; cached copies become inactive LRU candidates at refcount 0.
+    /// A held source does either only when its transfer is satisfied.
     pub(crate) fn release(&mut self, id: BlockCopyId) {
         let Some(copy) = self.copies.get(id) else {
             panic!("attempted to release an unknown block copy")
         };
         if matches!(copy.state, CopyState::Private) {
+            if self.holds_source(id) {
+                let tracker = self
+                    .source_reuse
+                    .as_deref_mut()
+                    .expect("held source lost its source-reuse sidecar");
+                assert!(
+                    tracker.released.insert(id),
+                    "held private source was released twice"
+                );
+                return;
+            }
             self.copies
                 .remove(id)
                 .expect("checked private copy disappeared before release");
@@ -795,7 +866,7 @@ impl VllmBlockPool {
             *refs -= 1;
             *refs == 0 && *pins == 0
         };
-        if should_deactivate {
+        if should_deactivate && !self.holds_source(id) {
             self.insert_inactive(id);
         }
     }
@@ -852,6 +923,14 @@ impl VllmBlockPool {
             .map(|state| state.dependency)
     }
 
+    /// Whether a pending transfer still holds `id`'s capacity.
+    fn holds_source(&self, id: BlockCopyId) -> bool {
+        self.hold_sources
+            && self
+                .copy_source_reuse(id)
+                .is_some_and(|state| self.is_source_reuse_dependency_pending(state.dependency))
+    }
+
     pub(crate) fn can_attach_source_reuse_dependency(&self, copies: &[BlockCopyId]) -> bool {
         let mut unique = FxHashSet::default();
         copies.iter().all(|id| {
@@ -876,12 +955,18 @@ impl VllmBlockPool {
             self.can_attach_source_reuse_dependency(copies),
             "source copies changed after synchronous validation"
         );
-        self.free.enable_tracking();
+        // A holding pool never hands out capacity with a pending reader.
+        if !self.hold_sources {
+            self.free.enable_tracking();
+        }
         let tracker = self
             .source_reuse
             .get_or_insert_with(|| Box::new(SourceReuseTracker::default()));
         let inserted = tracker.pending.insert(dependency);
         assert!(inserted, "source dependency was prechecked as absent");
+        if self.hold_sources {
+            tracker.held.insert(dependency, copies.to_vec());
+        }
         for &id in copies {
             assert!(
                 self.copies.contains_key(id),
@@ -905,9 +990,36 @@ impl VllmBlockPool {
         &mut self,
         dependency: SourceReuseDependency,
     ) -> bool {
-        self.source_reuse
-            .as_deref_mut()
-            .is_some_and(|tracker| tracker.pending.remove(&dependency))
+        let Some(tracker) = self.source_reuse.as_deref_mut() else {
+            return false;
+        };
+        if !tracker.pending.remove(&dependency) {
+            return false;
+        }
+        if let Some(sources) = tracker.held.remove(&dependency) {
+            self.release_held_sources(sources);
+        }
+        true
+    }
+
+    /// Return a satisfied transfer's held capacity. Like Mooncake Store's
+    /// tail-first release, the request's shared prefix is evicted last.
+    fn release_held_sources(&mut self, sources: Vec<BlockCopyId>) {
+        for id in sources.into_iter().rev() {
+            let tracker = self
+                .source_reuse
+                .as_deref_mut()
+                .expect("held sources lost their source-reuse sidecar");
+            tracker.by_copy.remove(&id);
+            if tracker.released.remove(&id) {
+                self.copies
+                    .remove(id)
+                    .expect("released private source disappeared");
+                self.free.push(None);
+            } else if self.is_inactive(id) {
+                self.insert_inactive(id);
+            }
+        }
     }
 
     pub(crate) fn is_source_reuse_dependency_pending(
@@ -1035,7 +1147,14 @@ impl VllmBlockPool {
     /// Remove one indexed copy, returning whether its key lost all visibility.
     fn remove_indexed_copy(&mut self, hash: CacheKey, id: BlockCopyId) -> bool {
         let removed = match hash {
-            CacheKey::Token(hash) => Self::remove_from_index(&mut self.by_hash, hash, id),
+            CacheKey::Token(hash) => {
+                if let Some(aliases) = self.token_aliases.as_mut().and_then(|m| m.remove(&id)) {
+                    for alias in aliases {
+                        Self::remove_from_index(&mut self.by_hash, alias, id);
+                    }
+                }
+                Self::remove_from_index(&mut self.by_hash, hash, id)
+            }
             CacheKey::State { prefix, slot } => {
                 let index = self.state_index.as_mut().expect("cached state index");
                 assert_eq!(
@@ -1099,7 +1218,7 @@ impl VllmBlockPool {
         let CopyState::Cached { refs, pins, .. } = &self.copies[id].state else {
             return false;
         };
-        *refs == 0 && *pins == 0
+        *refs == 0 && *pins == 0 && !self.holds_source(id)
     }
 
     fn pin(&mut self, id: BlockCopyId) {
@@ -1117,13 +1236,17 @@ impl VllmBlockPool {
     }
 
     fn activate_pin(&mut self, id: BlockCopyId, expected_hash: SequenceHash) {
+        let alias = self.is_token_alias(id, expected_hash);
         let CopyState::Cached {
             hash, refs, pins, ..
         } = &mut self.copies[id].state
         else {
             panic!("prefix reservation points to a private copy")
         };
-        assert_eq!(*hash, expected_hash, "reserved prefix hash changed");
+        assert!(
+            *hash == expected_hash || alias,
+            "reserved prefix hash changed"
+        );
         assert!(*pins > 0, "prefix pin underflow");
         *pins -= 1;
         *refs = refs
@@ -1132,6 +1255,7 @@ impl VllmBlockPool {
     }
 
     fn unpin(&mut self, id: BlockCopyId, expected_hash: SequenceHash) {
+        let alias = self.is_token_alias(id, expected_hash);
         let should_deactivate = {
             let CopyState::Cached {
                 hash, refs, pins, ..
@@ -1139,12 +1263,15 @@ impl VllmBlockPool {
             else {
                 panic!("prefix reservation points to a private copy")
             };
-            assert_eq!(*hash, expected_hash, "reserved prefix hash changed");
+            assert!(
+                *hash == expected_hash || alias,
+                "reserved prefix hash changed"
+            );
             assert!(*pins > 0, "prefix pin underflow");
             *pins -= 1;
             *pins == 0 && *refs == 0
         };
-        if should_deactivate {
+        if should_deactivate && !self.holds_source(id) {
             self.insert_inactive(id);
         }
     }
@@ -1405,7 +1532,7 @@ impl VllmBlockPool {
                 assert!(!linked.contains(&id), "private copy is in the inactive LRU");
                 continue;
             };
-            let should_be_linked = *refs == 0 && *pins == 0;
+            let should_be_linked = *refs == 0 && *pins == 0 && !self.holds_source(id);
             assert_eq!(
                 linked.contains(&id),
                 should_be_linked,
@@ -1435,16 +1562,16 @@ impl VllmBlockPool {
             );
         for (expected_hash, copies) in entries {
             for id in copies.iter() {
-                assert!(indexed.insert(id), "copy is indexed by multiple hashes");
+                indexed.insert(id);
                 let Some(copy) = self.copies.get(id) else {
                     panic!("hash index points to a missing copy")
                 };
                 let CopyState::Cached { hash, .. } = &copy.state else {
                     panic!("hash index points to a private copy")
                 };
-                assert_eq!(
-                    self.copy_key(id, *hash),
-                    expected_hash,
+                assert!(
+                    self.copy_key(id, *hash) == expected_hash
+                        || matches!(expected_hash, CacheKey::Token(alias) if self.is_token_alias(id, alias)),
                     "copy is indexed under the wrong hash"
                 );
             }
@@ -2267,6 +2394,59 @@ mod tests {
     }
 
     #[test]
+    fn held_sources_keep_their_capacity_but_stay_prefix_hits() {
+        let mut pool = VllmBlockPool::new(3);
+        pool.hold_pending_sources();
+        let mut source = reserve(&mut pool, &[], 2).reservation;
+        let cached = pool.allocate_private(&mut source);
+        assert!(pool.cache_private(cached, 7));
+        let private = pool.allocate_private(&mut source);
+        let dependency = SourceReuseDependency::from_adapter_id(41);
+        pool.attach_source_reuse_dependency(&[cached, private], dependency);
+        assert!(matches!(pool.free, FreshCapacity::Untracked(1)));
+
+        pool.release(private);
+        pool.release(cached);
+        assert_eq!((pool.num_active(), pool.num_inactive()), (2, 0));
+        assert!(pool.reserve(&[], 2).is_none(), "held capacity is not free");
+        // Pinning and unpinning a held copy keeps it held.
+        assert!(pool.prefix_hit(7).unwrap().is_active);
+        let hit = reserve(&mut pool, &[7], 1).reservation;
+        assert!(pool.reservation_pending_dependencies(&hit).is_empty());
+        pool.cancel(hit);
+        assert_eq!(pool.num_inactive(), 0);
+        pool.assert_lru_consistent();
+
+        assert!(pool.satisfy_source_reuse_dependency(dependency));
+        assert_eq!((pool.num_active(), pool.num_inactive()), (0, 1));
+        assert!(!pool.prefix_hit(7).unwrap().is_active);
+        assert!(pool.source_reuse.as_deref().unwrap().by_copy.is_empty());
+        pool.assert_lru_consistent();
+        assert_eq!(reserve(&mut pool, &[], 3).removed, vec![7]);
+    }
+
+    #[test]
+    fn a_satisfied_hold_releases_sources_tail_first_at_satisfaction() {
+        let mut pool = VllmBlockPool::new(4);
+        pool.hold_pending_sources();
+        let parent = cache_copy(&mut pool, 7);
+        let child = cache_copy(&mut pool, 8);
+        let owned = cache_copy(&mut pool, 9);
+        let dependency = SourceReuseDependency::from_adapter_id(41);
+        pool.attach_source_reuse_dependency(&[parent, child, owned], dependency);
+        pool.release(child);
+        pool.release(parent);
+        let unrelated = cache_copy(&mut pool, 10);
+        pool.release(unrelated);
+
+        // A copy still referenced at satisfaction later returns as usual.
+        assert!(pool.satisfy_source_reuse_dependency(dependency));
+        pool.release(owned);
+        pool.assert_lru_consistent();
+        assert_eq!(reserve(&mut pool, &[], 4).removed, vec![10, 8, 7, 9]);
+    }
+
+    #[test]
     fn state_privatization_preserves_other_copies_and_rejects_pinned_writes() {
         let mut pool = VllmBlockPool::new(4);
         let key = CacheKey::State { prefix: 7, slot: 0 };
@@ -2306,5 +2486,40 @@ mod tests {
         let (previous, _) = pool.inactive_links_mut(id);
         *previous = Some(id);
         let _ = pool.evict_one();
+    }
+    #[test]
+    fn partial_token_aliases_share_capacity_and_disappear_with_the_page() {
+        let mut pool = VllmBlockPool::new(2);
+        let mut reservation = pool.reserve(&[], 1).unwrap().reservation;
+        let id = pool.allocate_private(&mut reservation);
+        pool.cache_token_prefix(id, 100);
+        pool.cache_token_prefix(id, 200);
+        pool.cache_token_prefix(id, 300);
+        pool.cancel(reservation);
+        assert_eq!(pool.num_active(), 1);
+        pool.assert_hash_index_consistent();
+        pool.release(id);
+        let mut reservation = pool
+            .reserve_keys([CacheKey::Token(200)].into_iter(), 1)
+            .unwrap()
+            .reservation;
+        let (key, restored) = pool.activate_keys(&mut reservation).next().unwrap();
+        assert_eq!(key, CacheKey::Token(200));
+        assert_eq!(restored, id);
+        pool.cancel(reservation);
+        pool.release(restored);
+        let reservation = pool
+            .reserve_keys([CacheKey::Token(300)].into_iter(), 1)
+            .unwrap()
+            .reservation;
+        // Cancel exercises alias-aware unpin without activating the hit.
+        pool.cancel(reservation);
+        pool.assert_hash_index_consistent();
+        let pressure = pool.reserve(&[], 2).unwrap();
+        for hash in [100, 200, 300] {
+            assert!(pool.prefix_hit(hash).is_none());
+        }
+        pool.cancel(pressure.reservation);
+        pool.assert_hash_index_consistent();
     }
 }

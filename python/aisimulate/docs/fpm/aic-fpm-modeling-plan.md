@@ -18,7 +18,7 @@ consumes the **as-built** contract, not the planned one:
 | Topic | Original plan | As built (authoritative) |
 |---|---|---|
 | Physical axes | per-request `(B,S,P)` / `(B,L)` | per-DP-rank iteration totals `(batch_size, total_prefill_tokens, total_kv_read_tokens)`, `partition_policy=balanced_v1` |
-| Point grid | collector-owned Halton/maximin, frozen holdout IDs | Dynamo PR11509 native self-benchmark owns the grid; runtime-admitted, no holdout set |
+| Point grid | collector-owned Halton/maximin, frozen holdout IDs | AISimulate sets runtime limits and runtime/explicit capture policy; runtime policy defers captures to engine initialization, while explicit policy supplies the capture extension and derived sample caps. Dynamo native self-benchmark combines these inputs with initialized engine state, image sampling defaults and feasibility checks to generate the exact grid; no holdout set |
 | Repeats | 5 repeats, median, CV/quarantine | single sample per point (`dynamo_native_single_sample_v1`); DP max is baked into `latency_ms` |
 | Publication | candidate dir + human promotion | collector writes the formal pair directly (locked, atomic, conflict-fail merge) |
 | Sidecar | predictor ID, block size, per-axis min/max | schema v6: hashes, run identities, counts — **no predictor/domain fields** |

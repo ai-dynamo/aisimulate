@@ -142,7 +142,7 @@ function renderSnapshot() {
       ? `<a href="https://github.com/ai-dynamo/aisimulate/commit/${escapeHtml(snapshot.evaluated_revision.commit_sha)}">${escapeHtml(snapshot.evaluated_revision.branch)} @ ${escapeHtml(snapshot.evaluated_revision.commit_sha.slice(0, 12))}</a>`
       : "Not recorded in this historical snapshot"}</p>
     <p>Legacy AIC CLI source: ${snapshot.aic_source
-      ? `<a href="${snapshot.aic_source.repository}/commit/${snapshot.aic_source.commit_sha}">AISimulate ${escapeHtml(snapshot.aic_source.branch)} @ ${snapshot.aic_source.commit_sha.slice(0, 12)}</a> (bundled aiconfigurator CLI)`
+      ? `<a href="${snapshot.aic_source.repository}/commit/${snapshot.aic_source.commit_sha}">AISimulate ${escapeHtml(snapshot.aic_source.branch)} @ ${snapshot.aic_source.commit_sha.slice(0, 12)}</a> (${escapeHtml(snapshot.aic_source.cli_entry_point ?? "bundled aiconfigurator CLI")})`
       : "Repository provenance was not recorded in this historical snapshot"}</p>
     ${snapshot.campaign ? `<p>Accuracy campaign: <a href="https://github.com/ai-dynamo/aisimulate/actions/runs/${escapeHtml(snapshot.campaign.run_id)}">GitHub Actions run</a> (advisory)<br />
       Selected operating points: ${escapeHtml(snapshot.campaign.selected)}; published comparison points: ${escapeHtml(snapshot.campaign.published)}.<br />
@@ -555,6 +555,8 @@ function validateSummary(data) {
     aicSource.repository !== "https://github.com/ai-dynamo/aisimulate" ||
     typeof aicSource.commit_sha !== "string" || !/^[0-9a-f]{40}$/.test(aicSource.commit_sha) || typeof aicSource.branch !== "string" ||
     aicSource.commit_sha !== data.snapshot.aic_commit_sha ||
+    (Object.hasOwn(aicSource, "cli_entry_point") &&
+      !["aiconfigurator.main:main", "aisimulate.legacy_cli.entrypoint:main"].includes(aicSource.cli_entry_point)) ||
     (revision && (aicSource.branch !== revision.branch || aicSource.commit_sha !== revision.commit_sha)))) {
     throw new Error("invalid legacy AIC CLI source");
   }

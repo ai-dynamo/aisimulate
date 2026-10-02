@@ -355,12 +355,15 @@ def _resolve_topology(context: dict[str, Any], worker: DGDService, args: list[st
     tensor_parallel_size = _positive_cli_int(args, "--tensor-parallel-size")
     pipeline_parallel_size = _positive_cli_int(args, "--pipeline-parallel-size")
     data_parallel_size = _positive_cli_int(args, "--data-parallel-size")
-    expected_gpus = tensor_parallel_size * pipeline_parallel_size * data_parallel_size
+    # vLLM prefill context parallelism (-pcp) expands the world size
+    # (world = tp * pp * pcp); decode CP (-dcp) reuses the TP ranks and adds nothing.
+    prefill_context_parallel_size = _positive_cli_int(args, "--prefill-context-parallel-size")
+    expected_gpus = tensor_parallel_size * pipeline_parallel_size * data_parallel_size * prefill_context_parallel_size
     if expected_gpus != total_gpus:
         raise ValueError(
             "FPM topology does not match the resolved GPU count: "
             f"tp({tensor_parallel_size}) * pp({pipeline_parallel_size}) * dp({data_parallel_size}) "
-            f"!= gpus({total_gpus})"
+            f"* pcp({prefill_context_parallel_size}) != gpus({total_gpus})"
         )
 
     if data_parallel_size > 1:
@@ -371,7 +374,8 @@ def _resolve_topology(context: dict[str, Any], worker: DGDService, args: list[st
         local_data_parallel_size = 1
     if (
         data_parallel_size > 1
-        and local_data_parallel_size * tensor_parallel_size * pipeline_parallel_size > gpus_per_node
+        and local_data_parallel_size * tensor_parallel_size * pipeline_parallel_size * prefill_context_parallel_size
+        > gpus_per_node
     ):
         raise ValueError("FPM local parallel topology exceeds the per-node GPU count")
 
@@ -763,7 +767,10 @@ def _resource_documents(
         raise ValueError("FPM single-node workload must not require a ComputeDomain document")
     if compute_domain is None:
         raise ValueError("FPM multinode workload requires a ComputeDomain document")
-    return [compute_domain.to_dict(), workload]
+    document = compute_domain.to_dict()
+    metadata = document["metadata"]
+    metadata["labels"] = {**(metadata.get("labels") or {}), **workload["metadata"]["labels"]}
+    return [document, workload]
 
 
 def _resource_metadata(context: dict[str, Any]) -> dict[str, Any]:

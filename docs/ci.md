@@ -397,6 +397,12 @@ FPE qualification, and security requirements continue to apply. Publish the nigh
 validate and merge the downstream migration against that wheel, then complete the
 migration checklist before a stable release.
 
+Toolchain downloads (`uv` and `rustup-init`) retry transient failures up to five
+times with a 10-second delay. Each attempt has a 30-second connection timeout
+and a 120-second transfer timeout. The retry window is 300 seconds; an attempt
+started within that window may finish afterward. Checksum verification remains
+mandatory, and checksum, build, and test failures are not automatically retried.
+
 Python dependency licenses are checked in isolated jobs on both architectures
 before building or staging. Artifacts are then staged directly to internal
 Artifactory through the protected `automated-release` environment. Each wheel
@@ -510,12 +516,26 @@ completed; inspect its wheel and crate publish jobs.
 
 The independent [E2E Accuracy Matrix](../.github/workflows/e2e-accuracy.yml)
 evaluates the scheduled main SHA and every discovered `release/*` head against
-checksum-pinned public measurements. A branch matrix runs at most two campaigns
+the latest published InferenceX database dump. The resolver freezes one manifest
+with verified part checksums for all branches and retains it as a 90-day artifact.
+A branch matrix runs at most two campaigns
 at once, with separate wheels, artifacts, and provenance. Main reuses a qualified
 amd64 wheel for its exact SHA when available, even while nightly staging waits for
 approval; otherwise it builds one. Each release builds its own wheel. Both the
 AISimulate replay and bundled legacy AIC baseline use their branch's wheel. Manual
 runs evaluate one explicit `main` or `release/*` SHA from the trusted main workflow.
+
+Campaign jobs use the configured `CI_JOB_CONTAINER_IMAGE`, Python 3.12, and
+`sudo` to install the PostgreSQL 18 client from the official PGDG repository,
+plus `zstd` and `libgomp1`. The runner executes container steps as a non-root
+user, so a bare PostgreSQL image cannot install these dependencies with `apt-get`.
+The evaluated wheel's baseline CLI and config adapter are selected from its own
+package layout: `aiconfigurator.*` on 0.12 releases or `aisimulate.*` after the
+namespace migration. Ambiguous wheels with both baseline APIs are rejected.
+Baseline provenance records the selected API, adapter, and actual console entry point;
+the public summary retains that entry point. Wheel byte checks and imports run before downloading measurements.
+The client reads the dump without starting a database server. Artifact upload
+uses the output directory so the runner container hook remaps the full path.
 
 Complete campaigns upload sanitized `e2e-accuracy-web-<branch-key>` artifacts.
 Pages validates the branch's successful qualification job in the artifact's exact
@@ -527,6 +547,16 @@ incomplete campaigns cannot publish. A release selector may still show a histori
 snapshot until that release has a qualified campaign. See the
 [accuracy campaign contract](../pages/e2e-accuracy/README.md)
 for pinned scheduler settings, measurement selection, and provenance.
+
+### Daily accuracy Slack report
+
+[Accuracy Slack Daily](../.github/workflows/accuracy-digest.yml) combines the day's
+scheduled E2E and FPM results in one message in **#swdl-dynamo-aisim-daily**.
+Failures and comparable regressions appear in that message; separate per-model
+and per-GPU E2E tables appear in the main message; FPM coverage and comparison
+details remain in its thread. Delivery waits for both pipelines,
+with a 09:00 America/Los_Angeles fallback. It is opt-in and has a default dry-run
+mode plus an explicit test-send mode. See [setup, comparisons, and testing](accuracy-slack.md).
 
 ## Reading results and troubleshooting
 
@@ -733,3 +763,65 @@ on CPU. Branch results remain in Actions artifacts for 90 days. Pages validates
 and publishes successful branch results independently; failed refreshes retain
 the prior qualified result. Accuracy is advisory, outside PR prediction campaigns
 and release staging gates. See [FPM details](../pages/fpm-accuracy/README.md).
+
+## README command guardrails
+
+`Full CI Success` includes the root README's source examples and pinned Dynamo
+nightly examples when README, Python, Rust, or CI changes. Fast CI is unchanged.
+The Dynamo lane tests the exact published nightly pair in README; it does not
+substitute current source under Dynamo's exact AISimulate dependency pin.
+
+`Daily README validation` runs at 17:17 America/Los_Angeles and supports manual
+runs from main. Every run executes fresh Linux installation profiles, all root
+README examples, the complete documented Rust/Python suites, and a macOS ARM64
+source smoke run. It does not reuse prior Full CI results or skip unchanged SHAs.
+
+`scripts/check_readme_commands.py` reads executable text from README. Every Bash
+and YAML fence needs a unique `readme-check` comment and an entry in
+`scripts/readme_commands.json`. The manifest supplies profiles, dependencies,
+timeouts, and output assertions; it contains no copied commands. Add new blocks
+to both files. Prediction must complete requests, recommendations must contain
+concrete candidates, and the best candidate must predict successfully. The option
+example also checks configuration overrides, overwrite, JSON stdout, and
+per-request capture.
+
+Each lane uploads `readme-<profile>` with per-block logs, timings, source SHA,
+installed versions, and `report.json`. A timeout, missing prerequisite, canceled
+run, or missing report fails qualification. Shell failures stop their block;
+dependent blocks become blocked while independent checks continue. The runner
+kills descendants, including workers that created separate sessions. Each profile
+uses an isolated Hugging Face cache and anonymous public-model access so a stale
+host login cannot poison the checks. Existing credentials are not modified. CI allows 60 seconds per pip network
+read to tolerate slow package mirrors; the per-command deadline still applies.
+
+### Slack workflow setup
+
+Delivery is disabled by default. Create a webhook-triggered Slack workflow for
+`#swdl-dynamo-aisim-daily`, then configure repository secret
+`SLACK_README_WEBHOOK_URL` and variable `SLACK_README_ENABLED=true`.
+The webhook accepts four string fields: `event`, `incident_id`, `message`, and
+`details`. It must acknowledge receipt with JSON `{"ok": true}`.
+
+- `failure`: post `message` as a root message and `details` as its thread reply.
+  Persist the resulting channel and message timestamp under `incident_id`.
+- `update`: resolve the same incident and reply with the changed failures.
+- `recovery`: resolve the same incident and reply with the successful run link.
+- Deduplicate repeated deliveries of the same event payload. Do not blindly
+  retry a failed HTTP delivery: a lost acknowledgement may already have posted.
+
+**Cross-run storage is required.** A basic webhook that always creates a new
+message cannot provide recovery replies. Configure the incident lookup in your
+Slack workflow before enabling delivery; otherwise use a bot integration that
+returns message timestamps. The repository sends an incident ID, not a Slack
+message timestamp, and cannot perform that lookup on behalf of a plain webhook.
+
+The separate `Daily README report` workflow executes trusted main-branch code
+with read-only GitHub permissions. It reads evidence rather than executing
+producer artifacts. Healthy runs are quiet; unchanged failures are suppressed.
+Recovery is emitted only after all profiles and full suites pass in a later
+complete daily/manual run. A PR merge, partial run, or canceled run cannot recover
+an incident. Retrying a run qualifies recovery only when every profile ran in
+the new attempt; rerunning failed jobs alone cannot reuse older passing evidence.
+Preview payloads and the delivery ledger are saved in
+`readme-report-state` for 90 days. After ledger expiry, the next failure opens a
+new incident; recovery cannot reference an expired incident automatically.

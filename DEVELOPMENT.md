@@ -176,3 +176,60 @@ Explore the automation helpers under `python/aisimulate/tools/automation/`.
 ## License
 
 This project is licensed under Apache 2.0. All contributions must include SPDX license headers and DCO sign-off.
+
+## Daily Slack review digest
+
+The `Slack review digest` workflow runs every day at 17:07
+`America/Los_Angeles` (including daylight saving changes). It reports:
+
+- Open non-draft PRs, including approved PRs.
+- PRs merged or created since Pacific midnight, through the run's start time.
+  Created PRs count even if subsequently closed or merged, including drafts.
+- Every open non-draft PR created more than 5 days (120 hours) ago, oldest first, with
+  its link, title, author, and age. Age measures creation time, not inactivity
+  or time since leaving draft. PR details appear in a thread reply beneath the summary.
+  Lists over 35,000 characters fail before delivery to avoid losing entries.
+
+The summary shows merged PRs (`:merged-2472:`), new PRs (`:pr-opened:`), then
+open non-draft PRs labeled "PRs waiting for review" (`:reminder-alarm:`). The destination workspace must have the custom
+`merged-2472`, `pr-opened`, and `reminder-alarm` emoji for those names to render as icons.
+
+The Workflow Builder Text variable does not parse Slack markup. Messages use
+plain text, emoji, and full clickable PR URLs on separate lines; bold and
+named hyperlinks are not supported by this template. An acknowledged trigger
+means Slack accepted the request; check Slack workflow activity for delivery
+failures in subsequent steps.
+
+To enable delivery:
+
+1. In Slack Workflow Builder, create a **From a webhook** workflow. Add a
+   Text variables named `message` and `pr_details`. Add **Send a message to a
+   channel**, select the destination, and insert `message` into its body.
+   Then add **Reply to a message in thread**. For the message to reply to,
+   select the message output from the preceding send step; insert `pr_details`
+   into the reply body. Leave any option to broadcast the reply to the channel
+   disabled. Publish the Slack workflow (republish after changing variables).
+2. Save its Web request URL (`https://hooks.slack.com/triggers/...`) under repository **Settings → Secrets and variables → Actions**
+   as `SLACK_REVIEW_DIGEST_WEBHOOK_URL`. Never commit the URL.
+3. Merge the workflow into the default branch. In **Actions → Slack review
+   digest → Run workflow**, leave `dry_run` enabled to preview; disable it
+   to send a test message.
+
+No personal GitHub token or Python packages are needed in Actions. The job
+uses its read-only repository token. Missing secrets and API errors fail the
+job. Runs are not automatically retried; rerunning a sent or partially sent
+job can duplicate messages. GitHub schedules may be delayed, so the digest
+shows the actual reporting time. Activity after that time is outside the
+same-day report.
+
+Local preview (requires an authenticated GitHub CLI and Python 3.9+):
+
+```bash
+GH_TOKEN="$(gh auth token)" python3 scripts/slack_review_digest.py --dry-run
+```
+
+Run the focused offline checks with:
+
+```bash
+python3 scripts/test_slack_review_digest.py
+```

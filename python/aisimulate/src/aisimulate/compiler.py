@@ -17,6 +17,7 @@ from .config.cli import CorePredictionConfig
 from .config.common import ENGINE_MODEL_CONTROL_FIELDS, omit_inactive_moe_controls
 from .config.engine import EnginePredictionConfig, WorkerPredictionConfig
 from .config.traffic import SyntheticSessionSource, SyntheticSource, TraceSource
+from .state_size import resolve_state_size
 from .sweeper.afd_parallel import AFDParallelConfig, AFDTopology
 from .sweeper.afd_perfmodel import (
     AFDPerformanceModel,
@@ -48,6 +49,27 @@ def prediction_to_replay_spec(
         afd_performance_model=afd_performance_model,
     )
     deployment = _pin_estimator_version_aliases(deployment)
+    metadata = dict(deployment.performance_model_metadata)
+    for role, field in (
+        ("aggregated", "agg_engine_args"),
+        ("prefill", "prefill_engine_args"),
+        ("decode", "decode_engine_args"),
+    ):
+        timing = (getattr(deployment, field) or {}).get("timing_model", {})
+        if timing.get("provider") == "aic" and "estimation_mode" in timing.get("config", {}):
+            identity = {
+                key: value
+                for key, value in timing["config"].items()
+                if key
+                not in {
+                    "gpu_memory_utilization",
+                    "mem_fraction_static",
+                    "free_gpu_memory_fraction",
+                    "cuda_graph_reserved_bytes",
+                }
+            }
+            metadata[role] = {**metadata.get(role, {}), "provider": "aic", "config": identity}
+    deployment = replace(deployment, performance_model_metadata=metadata)
     if config.engine.mode == "disaggregated":
         assert config.engine.workers.prefill is not None
         for adapter in (adapter_specs or {}).values():
@@ -110,7 +132,7 @@ def _pin_estimator_version_aliases(deployment: BackendDeploymentSpec) -> Backend
         resolved = diagnostics["provenance"]["config"]
         versions.add(resolved["backend_version"])
         updates[field] = {**args, "timing_model": {**timing, "config": {**resolved, **memory}}}
-        metadata[role] = {"provider": "aic", "config": resolved, "selection": diagnostics}
+        metadata[role] = {**metadata.get(role, {}), "provider": "aic", "config": resolved, "selection": diagnostics}
     if len(versions) > 1:
         raise ValueError(
             f"estimator version alias resolves to different backend versions across roles: {sorted(versions)}"
@@ -207,10 +229,30 @@ def _deployment(
     if mode == "agg":
         assert engine.workers.aggregated is not None
         worker = engine.workers.aggregated
+        _require_exclusive_context_parallelism(worker)
         parallel = _parallel_mapping(worker, prefix="")
+        state_size = resolve_state_size(engine, worker)
+        if worker.kv_cache.state_cache is not None:
+            resolved_state = worker.kv_cache.state_cache.model_copy(
+                update={"bytes_per_request": state_size["bytes_per_request"]}
+            )
+            worker = worker.model_copy(
+                update={
+                    "kv_cache": worker.kv_cache.model_copy(
+                        update={
+                            "state_cache": resolved_state,
+                            "block_size": state_size["block_size"],
+                            "bytes_per_token": state_size["kv_bytes_per_token"],
+                        }
+                    )
+                }
+            )
+        metadata = _worker_performance_model_metadata(engine, worker)
+        if worker.kv_cache.state_cache is not None:
+            metadata["state_cache"] = state_size
         return BackendDeploymentSpec(
             parallel_config=parallel,
-            performance_model_metadata={"aggregated": _worker_performance_model_metadata(engine, worker)},
+            performance_model_metadata={"aggregated": metadata},
             agg_engine_args=_worker_engine_args(engine, worker, "aggregated", transfer_bytes_per_token=None),
             num_workers=worker.parallelism.replicas,
             **common,
@@ -218,12 +260,14 @@ def _deployment(
     assert engine.workers.prefill is not None and engine.workers.decode is not None
     prefill = engine.workers.prefill
     decode = engine.workers.decode
+    _require_disaggregated_context_parallelism(engine.backend, prefill, decode)
     transfer_bytes_per_token = None
     if engine.kv_transfer is not None:
         transfer_bytes_per_token = _resolve_kv_bytes_per_token(
             engine,
             prefill,
             engine.kv_transfer.bytes_per_token,
+            role="prefill",
         )
     parallel = {
         **_parallel_mapping(prefill, prefix="prefill_"),
@@ -269,6 +313,15 @@ def _afd_deployment(
     companion: ReplicaParallelConfig | None = None
     if companion_worker is not None:
         parallel = companion_worker.parallelism
+        # The AFD companion's ParallelShape, GPU accounting and provenance carry
+        # tp/pp/attention_dp/moe only; a CP knob here would price a wider worker
+        # than the topology reports. Fail closed until AFD models CP explicitly.
+        if _prefill_cp(parallel) != 1 or _decode_cp(parallel) != 1:
+            raise ValueError(
+                f"AFD companion ({companion_role}) workers do not support context parallelism: got "
+                f"parallelism.prefill_context={parallel.prefill_context}, "
+                f"parallelism.decode_context={parallel.decode_context}; set both to 1"
+            )
         companion = ReplicaParallelConfig(
             shape=ParallelShape(
                 tp=parallel.tensor,
@@ -345,16 +398,94 @@ def _afd_deployment(
     )
 
 
+def _require_exclusive_context_parallelism(worker: WorkerPredictionConfig) -> None:
+    """Aggregated workers model prefill CP and decode CP as mutually exclusive.
+
+    This is a deployment-topology rule, deliberately NOT a ModelConfig rule:
+    disaggregated deployments carry the two knobs on different workers, so the
+    same ModelConfig fields are valid there without any cross-check. In one
+    aggregated engine the frameworks either do not compose the two at all
+    (SGLang's prefill CP and DCP paths never reference each other) or only for
+    a narrow model class (vLLM: sparse MLA with ``ag_rs``), so the simulator
+    prices them one at a time.
+    """
+    parallel = worker.parallelism
+    if _prefill_cp(parallel) > 1 and _decode_cp(parallel) > 1:
+        raise ValueError(
+            "aggregated workers support at most one of parallelism.prefill_context and "
+            f"parallelism.decode_context above 1 (got prefill_context={parallel.prefill_context}, "
+            f"decode_context={parallel.decode_context}); use a disaggregated deployment to apply "
+            "prefill CP on the prefill worker and decode CP on the decode worker"
+        )
+
+
+def _require_disaggregated_context_parallelism(
+    backend: str, prefill: WorkerPredictionConfig, decode: WorkerPredictionConfig
+) -> None:
+    """Disaggregated roles carry their own knobs, with two layout constraints.
+
+    A prefill engine gains nothing from striping its KV (the KV only passes
+    through), so decode CP on the prefill worker is accepted only as the
+    PCP+DCP layout, i.e. equal to its prefill CP. vLLM's NIXL connector
+    additionally refuses to pair a replicated-PCP prefill (pcp > 1, dcp = 1)
+    with a DCP-sharded decode, and requires the two DCP sizes to divide one
+    another (``nixl/base_worker.py``). SGLang re-lays the KV out per decode
+    DCP rank on the prefill side and has no such pairing rule.
+    """
+    p, d = prefill.parallelism, decode.parallelism
+    p_dcp, d_dcp = _decode_cp(p), _decode_cp(d)
+    if p_dcp not in (1, _prefill_cp(p)):
+        raise ValueError(
+            f"prefill workers accept parallelism.decode_context only as 1 or equal to prefill_context "
+            f"(got decode_context={p.decode_context}, prefill_context={p.prefill_context}); a prefill "
+            "engine only stripes its KV to match a PCP+DCP layout"
+        )
+    if backend != "vllm" or d_dcp == 1:
+        return
+    if _prefill_cp(p) > 1 and p_dcp == 1:
+        raise ValueError(
+            f"vLLM cannot pair a replicated-PCP prefill worker (prefill_context={p.prefill_context}, "
+            f"decode_context=1) with a DCP-sharded decode worker (decode_context={d.decode_context}); "
+            "set the prefill worker's decode_context equal to its prefill_context or drop one knob"
+        )
+    if d_dcp % p_dcp and p_dcp % d_dcp:
+        raise ValueError(
+            f"vLLM requires the prefill and decode DCP sizes to divide one another (got prefill "
+            f"decode_context={p.decode_context}, decode decode_context={d.decode_context})"
+        )
+
+
 def _parallel_mapping(worker: WorkerPredictionConfig, *, prefix: str) -> dict[str, JSONValue]:
     parallel = worker.parallelism
-    return {
+    mapping: dict[str, JSONValue] = {
         f"{prefix}replicas": parallel.replicas,
         f"{prefix}tp": parallel.tensor,
         f"{prefix}pp": parallel.pipeline,
         f"{prefix}attention_dp": parallel.attention_data,
         f"{prefix}moe_tp": parallel.moe_tensor,
         f"{prefix}moe_ep": parallel.moe_expert,
+        **({f"{prefix}dcp": parallel.decode_context} if parallel.decode_context is not None else {}),
+        **_prefill_cp_knob(parallel, f"{prefix}cp"),
     }
+    return mapping
+
+
+def _prefill_cp_knob(parallel: Any, cp_key: str) -> dict[str, int]:
+    """Prefill CP, spelled out only when above one so cp=1 deployments, engine
+    args and estimator identities stay byte-identical to pre-CP outputs. Decode
+    CP is carried by ``decode_context`` itself: ``None`` (not requested) is
+    distinct from an explicit 1 for the FPM cell identity."""
+    return {cp_key: _prefill_cp(parallel)} if _prefill_cp(parallel) != 1 else {}
+
+
+def _prefill_cp(parallel: Any) -> int:
+    """The priced prefill-CP size: unset (``None``) means one."""
+    return parallel.prefill_context or 1
+
+
+def _decode_cp(parallel: Any) -> int:
+    """The priced decode-CP size: unrecorded (``None``) means one."""
+    return parallel.decode_context or 1
 
 
 def _worker_performance_model_metadata(
@@ -385,11 +516,28 @@ def _worker_performance_model_metadata(
             if getattr(engine, field) is not None
         },
     }
+    if parallel.decode_context is not None:
+        config["dcp"] = parallel.decode_context
+    for field in (
+        "gemm_quant_mode",
+        "moe_quant_mode",
+        "fmha_quant_mode",
+        "kvcache_quant_mode",
+        "comm_quant_mode",
+        "attention_backend",
+    ):
+        value = getattr(worker.timing, field)
+        if value is not None:
+            config[field] = value
     config["database_mode"] = worker.timing.database_mode or engine.database_mode
+    systems_paths = worker.timing.systems_paths or engine.systems_paths
+    if systems_paths is not None:
+        config["systems_paths"] = systems_paths
     if engine.speculation is not None:
         config["speculation"] = engine.speculation.cost_config()
     if worker.timing.fpm_parquet_path is not None:
         config["fpm_parquet_path"] = worker.timing.fpm_parquet_path
+    config.update(_prefill_cp_knob(parallel, "cp_size"))
     return {
         "provider": "aic",
         "config": config,
@@ -408,6 +556,23 @@ def _worker_engine_args(
     cache = worker.kv_cache
     capacity = cache.capacity
     memory_fraction = capacity.memory_fraction
+    identity_fields = (
+        "gemm_quant_mode",
+        "moe_quant_mode",
+        "fmha_quant_mode",
+        "kvcache_quant_mode",
+        "comm_quant_mode",
+        "attention_backend",
+    )
+    if (engine.mode == "afd" or engine.workers.encoder is not None) and any(
+        getattr(worker.timing, field) is not None for field in identity_fields
+    ):
+        raise ValueError("explicit timing identity requires the canonical forward-pass provider")
+    if parallel.decode_context is not None:
+        if parallel.tensor % parallel.decode_context:
+            raise ValueError("decode_context must divide tensor parallelism")
+        if worker.timing.type != "default" or engine.mode == "afd" or engine.workers.encoder is not None:
+            raise ValueError("DCP requires the canonical forward-pass timing provider")
     if capacity.type == "default" and memory_fraction is None:
         memory_fraction = 0.88 if backend == "sglang" else 0.9
     block_size = cache.block_size
@@ -433,6 +598,10 @@ def _worker_engine_args(
         payload["speculation"] = engine.speculation.model_dump(mode="json")
     if engine.backend_version is not None:
         payload["aic_backend_version"] = engine.backend_version
+    if engine.systems_paths is not None and worker.timing.type != "default":
+        from .sweeper.forward_pass_estimator import resolve_systems_paths
+
+        payload["systems_path"] = list(resolve_systems_paths(engine.systems_paths))
     if engine.decoder_replay:
         payload["aic_decoder_replay"] = True
     for field in ("database_mode", "enable_shared_layer", "strict_provenance"):
@@ -441,6 +610,9 @@ def _worker_engine_args(
             payload[f"aic_{field}"] = value
     if parallel.pipeline != 1:
         payload["aic_pp_size"] = parallel.pipeline
+    payload.update(_prefill_cp_knob(parallel, "aic_cp_size"))
+    if _decode_cp(parallel) != 1:
+        payload["aic_dcp_size"] = parallel.decode_context
     if parallel.moe_tensor * parallel.moe_expert > 1:
         payload["aic_moe_tp_size"] = parallel.moe_tensor
         payload["aic_moe_ep_size"] = parallel.moe_expert
@@ -453,10 +625,14 @@ def _worker_engine_args(
         payload["max_model_len"] = (
             engine.context_length
             if isinstance(engine.context_length, int)
+            else engine.fpm_profile.context_length
+            if engine.fpm_profile is not None
             else resolve_model_context_length(engine.model)
         )
+    if cache.prefix_match_unit is not None:
+        payload["prefix_match_unit"] = cache.prefix_match_unit
     if cache.state_cache is not None:
-        payload["state_cache"] = cache.state_cache.model_dump(mode="json")
+        payload["state_cache"] = {"bytes_per_request": cache.state_cache.bytes_per_request}
         payload["kv_cache_bytes_per_token"] = cache.bytes_per_token
     if capacity.type == "fixed":
         if capacity.blocks is not None:
@@ -486,11 +662,14 @@ def _worker_engine_args(
         if capacity.type == "default" and cache.state_cache is None:
             payload = materialize_aic_num_gpu_blocks(payload)
         for name in (
+            "systems_path",
             "aic_backend_version",
             "aic_system",
             "aic_model_path",
             "aic_moe_tp_size",
             "aic_moe_ep_size",
+            "aic_cp_size",
+            "aic_dcp_size",
         ):
             payload.pop(name, None)
     if worker.timing.type == "default" and engine.mode != "afd" and engine.workers.encoder is None:
@@ -502,6 +681,7 @@ def _worker_engine_args(
         sharded_moe = parallel.moe_tensor * parallel.moe_expert > 1
         canonical = ForwardPassPerfModelConfig(
             model=engine.model,
+            fpm_profile=engine.fpm_profile.model_dump(mode="json") if engine.fpm_profile is not None else None,
             system=worker.hardware or engine.hardware,
             backend=backend,
             backend_version=engine.backend_version,
@@ -512,11 +692,16 @@ def _worker_engine_args(
             tp=parallel.tensor,
             pp=parallel.pipeline,
             attention_dp=parallel.attention_data,
+            dcp=parallel.decode_context,
             moe_tp_size=parallel.moe_tensor if sharded_moe else None,
             moe_ep_size=parallel.moe_expert if sharded_moe else None,
+            **_prefill_cp_knob(parallel, "cp_size"),
             kv_block_size=block_size,
             nextn=engine.nextn,
-            **{name: getattr(engine, name) for name in ENGINE_MODEL_CONTROL_FIELDS},
+            **{
+                name: getattr(timing, name, None) if getattr(timing, name, None) is not None else getattr(engine, name)
+                for name in ENGINE_MODEL_CONTROL_FIELDS
+            },
             speculation=engine.speculation.cost_config() if engine.speculation is not None else None,
             estimation_mode=timing.estimation_mode or engine.estimation_mode,
             fallback_policy=timing.fallback_policy or engine.fallback_policy,
@@ -558,6 +743,7 @@ def _worker_engine_args(
             engine,
             worker,
             cache.bytes_per_token,
+            role=role,
         )
     if transfer_bytes_per_token is not None:
         payload["kv_transfer_bytes_per_token"] = transfer_bytes_per_token
@@ -577,6 +763,8 @@ def _resolve_kv_bytes_per_token(
     engine: EnginePredictionConfig,
     worker: WorkerPredictionConfig,
     configured: int | str,
+    *,
+    role: str,
 ) -> int:
     if configured != "auto":
         return configured
@@ -587,7 +775,19 @@ def _resolve_kv_bytes_per_token(
         pp_size=parallel.pipeline,
         moe_tp_size=parallel.moe_tensor,
         moe_ep_size=parallel.moe_expert,
-        **({"kvcache_quant_mode": engine.kvcache_quant_mode} if engine.kvcache_quant_mode else {}),
+        **(
+            {
+                "fpm_profile": engine.fpm_profile.model_dump(mode="json"),
+                "worker_type": role,
+                "system": worker.hardware or engine.hardware,
+                "backend": engine.backend,
+                "backend_version": engine.backend_version,
+                "attention_dp_size": parallel.attention_data,
+            }
+            if engine.fpm_profile is not None
+            else {}
+        ),
+        kvcache_quant_mode=worker.timing.kvcache_quant_mode or engine.kvcache_quant_mode,
     )
 
 

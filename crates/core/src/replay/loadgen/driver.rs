@@ -291,15 +291,10 @@ pub(super) fn deferred_request_with_hashes(
 ) -> (ReplayRequestPayload, Option<ReplayRequestHashes>) {
     let request =
         ReplayRequestPayload::deferred(metadata, input_length, hash_ids, trace_block_size);
-    // The router needs engine-block hashes at arrival, but it does not need to
-    // retain the expanded prompt. Materialize transiently for hashing, then
-    // keep only the compact payload until worker admission.
-    // TODO: Derive engine-block hashes directly from compact trace blocks so
-    // immediate dispatch does not materialize once for routing and again for
-    // admission. Preserve `ReplayRequestHashes::from_tokens` semantics when
-    // trace and engine block sizes differ.
-    let replay_hashes = engine_block_size
-        .map(|block_size| ReplayRequestHashes::from_tokens(&request.prompt_tokens(), block_size));
+    // The router needs engine-block hashes at arrival, but not the expanded
+    // prompt, so derive them from the compact trace blocks and keep only the
+    // compact payload until worker admission materializes it.
+    let replay_hashes = engine_block_size.map(|block_size| request.replay_hashes(block_size));
     (request, replay_hashes)
 }
 

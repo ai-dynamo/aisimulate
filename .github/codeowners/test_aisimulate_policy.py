@@ -328,6 +328,7 @@ def test_fast_and_full_ci_keep_their_cost_boundary() -> None:
         "python-compatibility",
         "engine-golden-regression",
         "release-artifact-contract",
+        "readme-commands",
         "application-wheel",
         "python-compliance",
     }

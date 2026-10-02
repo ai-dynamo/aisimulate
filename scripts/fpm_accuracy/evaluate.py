@@ -4,16 +4,24 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import math
+from array import array
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from typing import Any
+
+from accuracy_digest import encode_points
 
 from fpm_accuracy.exceptions import DependencyError
 from fpm_accuracy.hf.models import MeasurementCase
 from fpm_accuracy.models.aic_predictors import AicFpmPredictor, AicRegressionPredictor
 from fpm_accuracy.models.fpt_predictor import ForwardPassTimePredictor, PredictorContext
-from fpm_accuracy.models.worker_regression import WorkerRegressionPredictor, infer_worker_roles
+from fpm_accuracy.models.worker_regression import (
+    WorkerRegressionPredictor,
+    infer_worker_roles,
+)
 
 WORKLOADS = ("all", "prefill", "decode", "mixed")
 METHODS = ("warmup", "nowarmup", "regression")
@@ -60,8 +68,10 @@ def score(
     artifact: Any = None,
     *,
     factory: Callable = create_predictor,
+    include_points: bool = False,
 ) -> dict:
     """Keep every eligible outcome; targets reach regression only after scoring."""
+    points = array("d")
     metrics = {workload: Metric() for workload in WORKLOADS}
     status = "evaluated"
     predictor = None
@@ -71,7 +81,9 @@ def score(
         status = "no_fpm_input"
     else:
         context = PredictorContext(
-            worker=case.configuration.worker_config_record, worker_role=case.worker_role, fpm_artifact=artifact
+            worker=case.configuration.worker_config_record,
+            worker_role=case.worker_role,
+            fpm_artifact=artifact,
         )
         try:
             if method == "regression":
@@ -81,7 +93,10 @@ def score(
                 predictor = factory("aic-fpm", context)
         except Exception as exc:
             # Raw diagnostics stay in Actions logs, never in the public JSON.
-            print(f"{case.configuration_id} {method}: construction failed: {exc}", flush=True)
+            print(
+                f"{case.configuration_id} {method}: construction failed: {exc}",
+                flush=True,
+            )
             construction_failed = not isinstance(exc, DependencyError)
             status = "predictor_error" if construction_failed else "unsupported_predictor"
     try:
@@ -100,6 +115,8 @@ def score(
                         raise ValueError("invalid prediction")
                 except Exception:
                     predicted, error = None, True
+            if include_points:
+                points.append(-1 if error or predicted is None else abs(predicted - actual) / actual * 100)
             # Score before the model sees this target.
             for key in ("all", workload):
                 metrics[key].add(actual, predicted, error, False)
@@ -115,6 +132,7 @@ def score(
         if predictor is not None:
             predictor.close()
     return {
+        **({"_points": encode_points(points)} if include_points else {}),
         "status": status,
         "artifact": None
         if artifact is None
@@ -134,12 +152,21 @@ def choose_variant(results: list[dict]) -> dict:
         metric = result["metrics"]["all"]
         coverage = metric["predicted_count"] / metric["measured_count"] if metric["measured_count"] else 0
         mape = metric["mape_pct"]
-        return (-coverage, mape if mape is not None else math.inf, result["artifact"]["id"])
+        return (
+            -coverage,
+            mape if mape is not None else math.inf,
+            result["artifact"]["id"],
+        )
 
     return min(results, key=rank)
 
 
-def evaluate_case(case: MeasurementCase, *, factory: Callable = create_predictor) -> dict:
+def evaluate_case(
+    case: MeasurementCase,
+    *,
+    factory: Callable = create_predictor,
+    comparison: dict | None = None,
+) -> dict:
     config = case.configuration
     ids = [item.observation_id for item in case.observations]
     orders = [item.order for item in case.observations]
@@ -147,7 +174,7 @@ def evaluate_case(case: MeasurementCase, *, factory: Callable = create_predictor
         raise ValueError("measurement stream must have unique IDs and strictly increasing order")
     results = {}
     if str(case.status) == "ready":
-        results["regression"] = score(case, "regression", factory=factory)
+        results["regression"] = score(case, "regression", factory=factory, include_points=comparison is not None)
         for mode in METHODS[:2]:
             variants = [
                 item
@@ -155,10 +182,26 @@ def evaluate_case(case: MeasurementCase, *, factory: Callable = create_predictor
                 if ("nowarmup" if ".kv-off." in item.path.lower() else "warmup") == mode
             ]
             results[mode] = (
-                choose_variant([score(case, mode, item, factory=factory) for item in variants])
+                choose_variant(
+                    [
+                        score(
+                            case,
+                            mode,
+                            item,
+                            factory=factory,
+                            include_points=comparison is not None,
+                        )
+                        for item in variants
+                    ]
+                )
                 if variants
-                else score(case, mode, factory=factory)
+                else score(case, mode, factory=factory, include_points=comparison is not None)
             )
+    if comparison is not None:
+        comparison[config.configuration_id + "/" + config.snapshot_id] = {
+            "order_sha256": hashlib.sha256(json.dumps(ids).encode()).hexdigest(),
+            "methods": {method: result.pop("_points") for method, result in results.items()},
+        }
     return {
         "configuration_id": config.configuration_id,
         "configuration_path": config.configuration_path,

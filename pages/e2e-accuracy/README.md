@@ -127,11 +127,20 @@ fails without replacing its published evidence.
 
 ### Measurement and prediction policy
 
-- `.github/e2e-accuracy-dataset.json` pins the InferenceX release, every compressed
-  dump part's size and SHA-256, and selection policy. Refresh it in a reviewed PR
-  when adopting new measurements. A nightly reruns predictions against this fixed
-  silicon dataset; it does not collect new GPU measurements.
-- The downloader verifies every part, decompresses the public PostgreSQL archive,
+- Each pipeline resolves the newest published `db-dump/YYYY-MM-DD` release once,
+  excluding drafts, prereleases, and unrelated releases. It verifies `SHA256SUMS`
+  against GitHub's asset digest and requires every dump part to match the checksum
+  list. Missing or inconsistent assets fail the run instead of using older data.
+- All branches download the same resolved `e2e-accuracy-dataset` manifest artifact,
+  retained for 90 days. The campaign records its release tag and manifest hash.
+  Rerunning only failed jobs reuses that manifest; rerunning the whole workflow
+  resolves latest again. No new GPU measurements are collected.
+- `.github/e2e-accuracy-dataset.json` remains a pinned local reproduction fixture
+  and supplies the selection policy, maximum measurement age, and minimum disk
+  space. CI replaces its release and parts with the resolved snapshot and requires
+  at least the compressed dump size plus 10 GB of free disk space.
+- The downloader verifies every part and retries a failed part up to three total
+  attempts without redownloading verified parts. It decompresses the public PostgreSQL archive,
   and reads only `configs`, `benchmark_results`, and `workflow_runs` via COPY text.
   It never executes SQL from the dump. The September 14 release downloads about
   25 GB and requires at least 35 GB of free temporary disk. Decompression streams
@@ -233,7 +242,12 @@ metadata, and a coverage report. For a branch-qualified snapshot, both
 All three producer documents must also carry the same completed `aic_run`.
 Its `runtime.source_checkout` records the same branch, full commit SHA, and
 `clean: true`, plus `repository: "https://github.com/ai-dynamo/aisimulate"`.
-Its `runtime.cli_entry_point` is `"aisimulate.legacy_cli.entrypoint:main"`, and its `status`
+Its `runtime.cli_entry_point` is `"aisimulate.legacy_cli.entrypoint:main"` or
+`"aiconfigurator.main:main"` for 0.12 wheels. New producer records include the
+matching `baseline_api` and `config_adapter`; the public `aic_source` retains
+`cli_entry_point`. Both the site builder and browser validate the supported
+entry points, and the provenance panel displays the recorded value. Historical
+summaries without this field remain readable. Its `status`
 is `"complete"`. The producer's `aic_commit_sha` identifies that AISimulate
 commit. Branch publication rejects a baseline from another repository or
 revision, an incomplete baseline, or inconsistent producer documents.
@@ -266,3 +280,11 @@ python -m http.server 8000 --bind 127.0.0.1 --directory /tmp/aisim-site
 
 Open `http://127.0.0.1:8000/e2e-accuracy/`. Serving the source documentation tree
 directly also works, with a single snapshot when `branches.json` is absent.
+
+### Release replay compatibility
+
+The shared evaluator uses the default op-level timing in both legacy release
+wheels and current runners. It omits the newer `aic_forward_model` engine
+argument because release/0.12.0 and release/0.12.1 do not accept that field.
+Validate evaluator changes against actual release wheels as well as main;
+a successful main-only campaign does not establish release compatibility.

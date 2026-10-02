@@ -5,12 +5,15 @@
 from __future__ import annotations
 
 import argparse
+import importlib.metadata
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
 import yaml
 
 from .detail import parse_detail_sections
+from .support.cli import add_support_parser
 
 
 class _CliConfigError(ValueError):
@@ -78,6 +81,15 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="pace prediction against the real wall clock instead of virtual time",
     )
+    subparsers.choices["recommend"].add_argument(
+        "--output",
+        dest="outputs",
+        action="append",
+        default=[],
+        metavar="NAME",
+        help="write additional artifacts using an installed output adapter",
+    )
+    add_support_parser(subparsers)
     return parser
 
 
@@ -92,6 +104,35 @@ def _load_mapping(path: str) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise _CliConfigError(f"configuration {source} must contain one YAML mapping")
     return value
+
+
+def _extract_output_configs(
+    raw: dict[str, Any], outputs: Sequence[str], *, stack: str
+) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
+    """Validate selected output sections before supervision can clear old outputs."""
+
+    remaining = dict(raw)
+    configs: dict[str, dict[str, Any]] = {}
+    if not outputs:
+        return remaining, configs
+
+    from .config.common import CONFIG_ADAPTER_ENTRY_POINT_GROUP, RECOMMENDATION_CORE_SECTIONS
+
+    config_adapter_names = {
+        entry.name for entry in importlib.metadata.entry_points().select(group=CONFIG_ADAPTER_ENTRY_POINT_GROUP)
+    }
+    for name in dict.fromkeys(outputs):
+        if not name or "." in name:
+            raise _CliConfigError(f"invalid --output name {name!r}")
+        if name in RECOMMENDATION_CORE_SECTIONS or f"{stack}.{name}" in config_adapter_names:
+            raise _CliConfigError(f"output adapter name {name!r} collides with a recommendation input section")
+        value = remaining.pop(name, None)
+        if value is None:
+            raise _CliConfigError(f"--output {name!r} requires a top-level {name!r} configuration section")
+        if not isinstance(value, dict):
+            raise _CliConfigError(f"output section {name!r} must be a mapping")
+        configs[name] = value
+    return remaining, configs
 
 
 def _apply_overrides(data: dict[str, Any], overrides: list[str], *, command: str) -> None:

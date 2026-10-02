@@ -156,7 +156,8 @@ jobs:
             --commit "${EXPECTED_SHA}" --branch "${EVALUATED_BRANCH}" \
             --evaluator-sha "${GITHUB_SHA}" --hf-revision "${HF_REVISION}" \
             --run-id "${GITHUB_RUN_ID}" --run-attempt "${GITHUB_RUN_ATTEMPT}" \
-            --output "${RUNNER_TEMP}/accuracy-public"
+            --output "${RUNNER_TEMP}/accuracy-public" \
+            --comparison-output "${RUNNER_TEMP}/accuracy-comparison/comparison.json"
       - name: Report advisory accuracy and coverage
         run: |
           python - <<'PYCODE' >> "${GITHUB_STEP_SUMMARY}"
@@ -177,5 +178,14 @@ jobs:
           # A single directory lets the container hook remap the entire path.
           # Multiline absolute paths remap only the first entry on this runner.
           path: ${{ runner.temp }}/accuracy-public/
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Preserve point evidence for notification comparisons
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: fpm-accuracy-comparison-${{ inputs.artifact_key }}
+          overwrite: true
+          path: ${{ runner.temp }}/accuracy-comparison/comparison.json
           if-no-files-found: error
           retention-days: 90

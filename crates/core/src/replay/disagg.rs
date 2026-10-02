@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::collections::{BinaryHeap, HashMap, HashSet, VecDeque};
+use std::sync::Arc;
 
 use crate::engine::{Backend, Command, CommandResult, LifecycleEvent};
 use anyhow::{Context, Result, anyhow, bail};
@@ -22,8 +23,8 @@ use super::core::NoEngineEvents;
 #[cfg(test)]
 use super::core::round_robin::PoolRoundRobinPlacement;
 use super::core::{
-    AdmissionSource as CoreAdmissionSource, Placement, PlacementDecision, PlacementPolicy,
-    ReadyArrival, WorkerTopology,
+    AdmissionSource as CoreAdmissionSource, EngineEventBatch, Placement, PlacementDecision,
+    PlacementPolicy, ReadyArrival, WorkerTopology,
 };
 use super::events::{SimulationEvent, SimulationWorkerStage, WorkerCompletionPayload};
 use super::evidence::{
@@ -35,7 +36,7 @@ use super::runtime_utils::{
     ReplayStepOutcome, next_non_telemetry_event_ms, next_timestamp as choose_next_timestamp,
     pop_ready_scaling_tick, pop_ready_telemetry_tick, pop_ready_transfer_complete,
     pop_ready_worker_completions, pop_ready_worker_ready, push_scaling_tick, push_telemetry_tick,
-    push_transfer_complete, push_worker_completions, push_worker_ready,
+    push_transfer_complete, push_worker_completions, push_worker_ready, settle_internal_work,
 };
 use super::scaling::{LatestFpmBuffer, ReplayScalingPolicy, ReplayScalingSnapshot};
 #[cfg(test)]
@@ -1013,12 +1014,16 @@ where
             Vec<WorkerTopology>,
         ) -> Result<(PlacementPolicyImpl, PlacementPolicyImpl)>,
     ) -> Result<Self> {
-        let prefill_factory = config.prefill_factory(Observation::capture_engine_kv_events(
+        let mut prefill_factory = config.prefill_factory(Observation::capture_engine_kv_events(
             crate::replay::WorkerStage::Prefill,
         ))?;
-        let decode_factory = config.decode_factory(Observation::capture_engine_kv_events(
+        let mut decode_factory = config.decode_factory(Observation::capture_engine_kv_events(
             crate::replay::WorkerStage::Decode,
         ))?;
+        // Both roles join one deployment-wide cluster-shared G2 pool.
+        let g2_registry = Arc::default();
+        prefill_factory.bind_g2_registry(&g2_registry);
+        decode_factory.bind_g2_registry(&g2_registry);
         let handoff_order = match (prefill_factory.backend(), decode_factory.backend()) {
             (Backend::Vllm, Backend::Vllm) => HandoffOrder::SourceFirst,
             (Backend::Sglang, Backend::Sglang) => HandoffOrder::DestinationFirst,
@@ -1978,10 +1983,34 @@ where
         } else {
             next_event_ms
         };
+        // Host transfers are engine-internal deadlines for either role.
+        let next_internal_deadline_ms = choose_next_timestamp(
+            self.prefill_engine.next_internal_deadline_ms(),
+            self.decode_engine.next_internal_deadline_ms(),
+        );
         (
-            choose_next_timestamp(next_arrival_ms, next_event_ms),
-            choose_next_timestamp(next_arrival_ms, next_canonical_event_ms),
+            choose_next_timestamp(
+                choose_next_timestamp(next_arrival_ms, next_event_ms),
+                next_internal_deadline_ms,
+            ),
+            choose_next_timestamp(
+                choose_next_timestamp(next_arrival_ms, next_canonical_event_ms),
+                next_internal_deadline_ms,
+            ),
         )
+    }
+
+    /// Settle due engine-internal work of both roles at the current instant.
+    fn apply_internal_work(&mut self) -> Result<bool> {
+        let prefill = self.prefill_engine.process_internal_work(self.now_ms)?;
+        if !EngineEventBatch::is_empty(&prefill.engine_events) {
+            self.apply_prefill_observations(prefill.engine_events, KvIngestBoundary::OffloadTick)?;
+        }
+        let decode = self.decode_engine.process_internal_work(self.now_ms)?;
+        if !EngineEventBatch::is_empty(&decode.engine_events) {
+            self.apply_decode_observations(decode.engine_events, KvIngestBoundary::OffloadTick)?;
+        }
+        Ok(prefill.made_progress || decode.made_progress)
     }
 
     fn apply_prefill_observations(
@@ -2334,6 +2363,7 @@ where
                 admission.uuid,
                 self.now_ms,
                 admission.reused_input_tokens,
+                admission.cache_tier_attribution,
             );
             self.evidence.record_pressure_readmission(
                 admission.uuid,
@@ -2349,6 +2379,7 @@ where
                 admission.uuid,
                 self.now_ms,
                 admission.reused_input_tokens,
+                admission.cache_tier_attribution,
             );
             self.evidence.record_pressure_readmission(
                 admission.uuid,
@@ -2521,9 +2552,22 @@ where
         {
             self.stats.semantic_drain_count += 1;
         }
+        let mut consecutive_internal_steps = 0usize;
         loop {
             let mut changed = self.prune_stale_transfer_events();
-            changed |= self.apply_worker_completions()?;
+            let now_ms = self.now_ms;
+            let mut settle = |runtime: &mut Self| {
+                settle_internal_work(now_ms, &mut consecutive_internal_steps, || {
+                    runtime.apply_internal_work()
+                })
+            };
+            // Settle idle deadlines first, then any exposed by pass completion.
+            changed |= settle(self)?;
+            let completed = self.apply_worker_completions()?;
+            changed |= completed;
+            if completed {
+                changed |= settle(self)?;
+            }
             changed |= self.apply_worker_ready_events()?;
             changed |= self.apply_transfer_completions()?;
             changed |= self.drive_pending_actions()?;
@@ -3144,6 +3188,10 @@ where
             self.dispatch_prefill_placements(placements)?;
         }
         for &id in &removed {
+            // Canceled startups were never registered with placement.
+            if prefill_starting_before.binary_search(&id).is_ok() {
+                continue;
+            }
             let placements = self.prefill_placement.worker_removed(
                 WorkerTopology {
                     worker_id: id,
@@ -3223,6 +3271,9 @@ where
             self.dispatch_decode_placements(placements)?;
         }
         for &id in &removed {
+            if decode_starting_before.binary_search(&id).is_ok() {
+                continue;
+            }
             let placements = self.decode_placement.worker_removed(
                 WorkerTopology {
                     worker_id: id,
@@ -3544,6 +3595,11 @@ where
             self.collector.set_agentic_play_outcomes(outcomes);
         }
         self.collector.set_runtime_evidence(self.evidence.finish());
+        // Both roles reference the same deployment pool; report it once.
+        self.collector.g2_domains = match self.prefill_engine.g2_domains() {
+            domains if domains.is_empty() => self.decode_engine.g2_domains(),
+            domains => domains,
+        };
         self.collector.prepare_batch_report()?;
         Ok((self.collector, self.stats))
     }

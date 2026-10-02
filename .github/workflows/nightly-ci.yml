@@ -207,6 +207,72 @@ jobs:
           echo "approved (event ${GITHUB_EVENT_NAME}, attempt ${GITHUB_RUN_ATTEMPT})"
           echo "run-attempt=${GITHUB_RUN_ATTEMPT}" >> "${GITHUB_OUTPUT}"
 
+  # Same gate as trigger-gitlab-security, minus the build results.
+  slack-thread-start:
+    name: Notify Slack — nightly started
+    needs: [changes-guard, manual-approval]
+    if: >-
+      !cancelled() &&
+      needs.changes-guard.outputs.should-build == 'true' &&
+      github.ref == 'refs/heads/main' &&
+      ((github.event_name == 'schedule' && github.run_attempt == '1') ||
+      (needs.manual-approval.result == 'success' &&
+      needs.manual-approval.outputs.approved-attempt == github.run_attempt)) &&
+      vars.GITLAB_SECURITY_TRIGGER_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: automated-release
+    permissions:
+      contents: read
+    outputs:
+      thread-ts: ${{ steps.post.outputs.thread-ts }}
+    steps:
+      - name: Post start message
+        id: post
+        continue-on-error: true
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_RELEASE_BOT_TOKEN }}
+          SLACK_CHANNEL_ID: ${{ secrets.SLACK_RELEASE_CHANNEL_ID }}
+          SOURCE_SHA: ${{ needs.changes-guard.outputs.target-sha }}
+          DEV_DATE: ${{ needs.changes-guard.outputs.dev-date }}
+          DEV_VERSION: ${{ needs.changes-guard.outputs.dev-version }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          date="${DEV_DATE:0:4}-${DEV_DATE:4:2}-${DEV_DATE:6:2}"
+          payload=$(jq -n \
+            --arg channel "${SLACK_CHANNEL_ID}" \
+            --arg date "${date}" \
+            --arg sha "${SOURCE_SHA:0:7}" \
+            --arg dev ".dev${DEV_VERSION}" \
+            --arg run_url "${RUN_URL}" \
+            '{
+              channel: $channel,
+              text: ("AISimulate Nightly build started — " + $date),
+              blocks: [
+                { type: "header",
+                  text: { type: "plain_text", text: (":crescent_moon: AISimulate Nightly build started — " + $date) } },
+                { type: "section",
+                  fields: [
+                    { type: "mrkdwn", text: ("*Commit:*\n`" + $sha + "`") },
+                    { type: "mrkdwn", text: ("*Dev version suffix:*\n`" + $dev + "`") }
+                  ] },
+                { type: "context",
+                  elements: [ { type: "mrkdwn", text: ("<" + $run_url + "|GitHub Actions run>") } ] }
+              ]
+            }')
+          response=$(curl -q --fail --silent --show-error --max-time 15 --retry 2 \
+            -X POST https://slack.com/api/chat.postMessage \
+            -H "Authorization: Bearer ${SLACK_BOT_TOKEN}" \
+            -H "Content-Type: application/json; charset=utf-8" \
+            --data "${payload}")
+          if [ "$(jq -r '.ok' <<< "${response}")" != "true" ]; then
+            echo "::error::Slack chat.postMessage failed: $(jq -r '.error // "unknown"' <<< "${response}")"
+            exit 1
+          fi
+          # Do not ::add-mask:: the ts: masked outputs arrive empty in other jobs.
+          echo "thread-ts=$(jq -r '.ts' <<< "${response}")" >> "${GITHUB_OUTPUT}"
+
   python-compliance:
     name: Python Dependency Licenses (${{ matrix.arch }}, ${{ matrix.python-version }})
     # No release environment or build artifacts are available to dependency
@@ -397,7 +463,9 @@ jobs:
           archive="${TOOLS_DIR}/uv.tar.gz"
           # -q must be curl's first argument: HOME is the workspace, so this
           # ignores any repo-root .curlrc.
-          curl -q --fail --location --silent --show-error --retry 3 \
+          curl -q --fail --location --silent --show-error \
+            --retry 5 --retry-delay 10 --retry-max-time 300 \
+            --connect-timeout 30 --max-time 120 \
             --output "${archive}" \
             "https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/uv-${UV_TARGET}.tar.gz"
           echo "${UV_SHA256}  ${archive}" | sha256sum --check
@@ -413,7 +481,9 @@ jobs:
         run: |
           set -euo pipefail
           rustup_init="${TOOLS_DIR}/rustup-init"
-          curl -q --fail --location --silent --show-error --retry 3 \
+          curl -q --fail --location --silent --show-error \
+            --retry 5 --retry-delay 10 --retry-max-time 300 \
+            --connect-timeout 30 --max-time 120 \
             --output "${rustup_init}" \
             "https://static.rust-lang.org/rustup/archive/${RUSTUP_VERSION}/${RUST_TARGET}/rustup-init"
           echo "${RUSTUP_INIT_SHA256}  ${rustup_init}" | sha256sum --check
@@ -879,6 +949,82 @@ jobs:
       source_branch: ${{ needs.changes-guard.outputs.target-ref }}
       wheel_artifact: nightly-dist-amd64
 
+  slack-staging-reply:
+    name: Notify Slack — staging complete
+    needs: [slack-thread-start, build-artifacts]
+    if: always() && needs.slack-thread-start.outputs.thread-ts != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: automated-release
+    permissions:
+      contents: read
+    steps:
+      - name: Post staging reply
+        continue-on-error: true
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_RELEASE_BOT_TOKEN }}
+          SLACK_CHANNEL_ID: ${{ secrets.SLACK_RELEASE_CHANNEL_ID }}
+          SLACK_THREAD_TS: ${{ needs.slack-thread-start.outputs.thread-ts }}
+          STAGE_RESULT: ${{ needs.build-artifacts.result }}
+          WHEEL_VERSION: ${{ needs.build-artifacts.outputs.wheel-version }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          case "${STAGE_RESULT}" in
+            success)   emoji=":white_check_mark:" ;;
+            failure)   emoji=":x:" ;;
+            skipped)   emoji=":fast_forward:" ;;
+            cancelled) emoji=":no_entry_sign:" ;;
+            *)         emoji=":grey_question:" ;;
+          esac
+          if [ "${STAGE_RESULT}" = "success" ]; then
+            header=":package: Staging complete"
+          else
+            header=":warning: Staging finished with issues"
+          fi
+          wheel="" crate=""
+          if [ -n "${WHEEL_VERSION}" ]; then
+            wheel="aisimulate ${WHEEL_VERSION}"
+            crate="aisimulate-core ${WHEEL_VERSION%.dev*}-dev.${WHEEL_VERSION##*.dev}"
+          fi
+          payload=$(jq -n \
+            --arg channel "${SLACK_CHANNEL_ID}" \
+            --arg thread_ts "${SLACK_THREAD_TS}" \
+            --arg header "${header}" \
+            --arg emoji "${emoji}" \
+            --arg result "${STAGE_RESULT}" \
+            --arg wheel "${wheel}" \
+            --arg crate "${crate}" \
+            --arg run_url "${RUN_URL}" \
+            'def version($v): if $v == "" then "" else "\n`" + $v + "`" end;
+            {
+              channel: $channel,
+              thread_ts: $thread_ts,
+              text: $header,
+              blocks: [
+                { type: "section",
+                  text: { type: "mrkdwn", text: ("*" + $header + "*") } },
+                { type: "section",
+                  fields: [
+                    { type: "mrkdwn",
+                      text: ($emoji + " *Artifactory wheels:* " + $result + version($wheel)) },
+                    { type: "mrkdwn",
+                      text: ($emoji + " *Artifactory crate:* " + $result + version($crate)) }
+                  ] },
+                { type: "context",
+                  elements: [ { type: "mrkdwn", text: ("<" + $run_url + "|GitHub Actions run>") } ] }
+              ]
+            }')
+          response=$(curl -q --fail --silent --show-error --max-time 15 --retry 2 \
+            -X POST https://slack.com/api/chat.postMessage \
+            -H "Authorization: Bearer ${SLACK_BOT_TOKEN}" \
+            -H "Content-Type: application/json; charset=utf-8" \
+            --data "${payload}")
+          if [ "$(jq -r '.ok' <<< "${response}")" != "true" ]; then
+            echo "::error::Slack chat.postMessage failed: $(jq -r '.error // "unknown"' <<< "${response}")"
+            exit 1
+          fi
+
   # Security scanning runs in the internal GitLab release-automation
   # pipeline, the same split dynamo uses: GitHub stages the artifacts, then
   # fires the internal pipeline that scans them. Scan findings stay inside
@@ -887,7 +1033,7 @@ jobs:
   # access exist; flip GITLAB_SECURITY_TRIGGER_ENABLED to activate.
   trigger-gitlab-security:
     name: Trigger GitLab security pipeline
-    needs: [changes-guard, manual-approval, build-artifacts, fpe-support-matrix, license-evidence]
+    needs: [changes-guard, manual-approval, slack-thread-start, build-artifacts, fpe-support-matrix, license-evidence]
     # Same unattended-vs-approved split as build-artifacts, so re-running
     # only this job cannot fire an unapproved publish. The FPE refresh must
     # have succeeded before anything advances to the internal pipeline.
@@ -909,37 +1055,13 @@ jobs:
     timeout-minutes: 10
     environment: automated-release
     steps:
-      # Start the nightly Slack thread; the GitLab pipeline's slack jobs
-      # reply to it via the forwarded SLACK_THREAD_TS/SLACK_CHANNEL_ID
-      # (dynamo's pattern). Best-effort: a Slack outage must not block the
-      # security pipeline — GitLab then starts its own thread.
-      - name: Start the Slack thread
-        env:
-          SLACK_BOT_TOKEN: ${{ secrets.SLACK_RELEASE_BOT_TOKEN }}
-          SLACK_CHANNEL_ID: ${{ secrets.SLACK_RELEASE_CHANNEL_ID }}
-          WHEEL_VERSION: ${{ needs.build-artifacts.outputs.wheel-version }}
-        run: |
-          set -euo pipefail
-          SLACK_THREAD_TS=""
-          if [ -n "${SLACK_BOT_TOKEN}" ] && [ -n "${SLACK_CHANNEL_ID}" ]; then
-            payload=$(jq -n --arg channel "${SLACK_CHANNEL_ID}" \
-              --arg text ":crescent_moon: *AISimulate nightly* \`${WHEEL_VERSION}\` — artifacts built, smoked, and staged; internal security pipeline starting. <${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}|GitHub run>" \
-              '{channel: $channel, text: $text}')
-            SLACK_THREAD_TS=$(curl -sS --max-time 15 --retry 2 \
-              -X POST https://slack.com/api/chat.postMessage \
-              -H "Authorization: Bearer ${SLACK_BOT_TOKEN}" \
-              -H "Content-Type: application/json; charset=utf-8" \
-              --data "${payload}" | jq -r '.ts // empty' || true)
-            [ -n "${SLACK_THREAD_TS}" ] || \
-              echo "::warning::Slack thread start failed; GitLab will start its own thread"
-          fi
-          echo "SLACK_THREAD_TS=${SLACK_THREAD_TS}" >> "${GITHUB_ENV}"
-
       - name: Trigger internal security scan
+        id: trigger
         env:
           GITLAB_TRIGGER_TOKEN: ${{ secrets.GITLAB_TRIGGER_TOKEN }}
           GITLAB_PIPELINE_URL: ${{ secrets.GITLAB_PIPELINE_URL }}
           SLACK_CHANNEL_ID: ${{ secrets.SLACK_RELEASE_CHANNEL_ID }}
+          SLACK_THREAD_TS: ${{ needs.slack-thread-start.outputs.thread-ts }}
           GH_RUN_ID: ${{ github.run_id }}
           GH_SHA: ${{ needs.changes-guard.outputs.target-sha }}
           TOOLING_SHA: ${{ github.sha }}
@@ -951,10 +1073,11 @@ jobs:
           done
           # Variable names follow the release-automation root pipeline's
           # contract (PROJECT routes to projects/aisimulate.yml there).
-          # The response is discarded: it names internal pipeline URLs.
+          # The response names internal pipeline URLs: keep it out of the log.
           # Preflight requires a dated NIGHTLY_TAG for nightly runs.
           nightly_tag="nightly-${WHEEL_VERSION##*.dev}-${GH_SHA:0:7}"
-          curl -q --fail --silent --show-error --retry 3 --output /dev/null \
+          curl -q --fail --silent --show-error --retry 3 \
+            --output "${RUNNER_TEMP}/gitlab-trigger.json" \
             -F "token=${GITLAB_TRIGGER_TOKEN}" \
             -F "ref=main" \
             -F "variables[PROJECT]=aisimulate" \
@@ -970,6 +1093,98 @@ jobs:
             -F "variables[DRY_RUN]=false" \
             "${GITLAB_PIPELINE_URL}"
           echo "internal security pipeline triggered"
+          echo "nightly-tag=${nightly_tag}" >> "${GITHUB_OUTPUT}"
+
+      # Read the URL from the file, not step env, which prints in the log.
+      - name: Post GitLab trigger reply on Slack thread
+        if: needs.slack-thread-start.outputs.thread-ts != ''
+        continue-on-error: true
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_RELEASE_BOT_TOKEN }}
+          SLACK_CHANNEL_ID: ${{ secrets.SLACK_RELEASE_CHANNEL_ID }}
+          SLACK_THREAD_TS: ${{ needs.slack-thread-start.outputs.thread-ts }}
+          NIGHTLY_TAG: ${{ steps.trigger.outputs.nightly-tag }}
+        run: |
+          set -euo pipefail
+          response_file="${RUNNER_TEMP}/gitlab-trigger.json"
+          pid=$(jq -r '.id // empty' "${response_file}")
+          purl=$(jq -r '.web_url // empty' "${response_file}")
+          [ -n "${pid}" ] && [ -n "${purl}" ] || {
+            echo "::error::GitLab trigger response has no pipeline id"
+            exit 1
+          }
+          payload=$(jq -n \
+            --arg channel "${SLACK_CHANNEL_ID}" \
+            --arg thread_ts "${SLACK_THREAD_TS}" \
+            --arg pid "${pid}" \
+            --arg purl "${purl}" \
+            --arg tag "${NIGHTLY_TAG}" \
+            '{
+              channel: $channel,
+              thread_ts: $thread_ts,
+              text: ("GitLab release pipeline triggered: " + $pid),
+              blocks: [
+                { type: "section",
+                  text: { type: "mrkdwn",
+                          text: (":rocket: *GitLab release pipeline triggered*\n<" + $purl + "|Pipeline " + $pid + ">") } },
+                { type: "context",
+                  elements: [ { type: "mrkdwn", text: ("Nightly tag: `" + $tag + "`") } ] }
+              ]
+            }')
+          response=$(curl -q --fail --silent --show-error --max-time 15 --retry 2 \
+            -X POST https://slack.com/api/chat.postMessage \
+            -H "Authorization: Bearer ${SLACK_BOT_TOKEN}" \
+            -H "Content-Type: application/json; charset=utf-8" \
+            --data "${payload}")
+          if [ "$(jq -r '.ok' <<< "${response}")" != "true" ]; then
+            echo "::error::Slack chat.postMessage failed: $(jq -r '.error // "unknown"' <<< "${response}")"
+            exit 1
+          fi
+
+  # Closes the thread when a gate stops the run after the root was posted.
+  slack-thread-stopped:
+    name: Notify Slack — nightly stopped
+    needs: [slack-thread-start, trigger-gitlab-security]
+    if: always() && needs.slack-thread-start.outputs.thread-ts != '' && needs.trigger-gitlab-security.result != 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: automated-release
+    permissions:
+      contents: read
+    steps:
+      - name: Post stopped reply
+        continue-on-error: true
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_RELEASE_BOT_TOKEN }}
+          SLACK_CHANNEL_ID: ${{ secrets.SLACK_RELEASE_CHANNEL_ID }}
+          SLACK_THREAD_TS: ${{ needs.slack-thread-start.outputs.thread-ts }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          payload=$(jq -n \
+            --arg channel "${SLACK_CHANNEL_ID}" \
+            --arg thread_ts "${SLACK_THREAD_TS}" \
+            --arg run_url "${RUN_URL}" \
+            '{
+              channel: $channel,
+              thread_ts: $thread_ts,
+              text: "Nightly stopped before the GitLab pipeline",
+              blocks: [
+                { type: "section",
+                  text: { type: "mrkdwn", text: ":x: *Nightly stopped before the GitLab pipeline*" } },
+                { type: "context",
+                  elements: [ { type: "mrkdwn", text: ("<" + $run_url + "|GitHub Actions run>") } ] }
+              ]
+            }')
+          response=$(curl -q --fail --silent --show-error --max-time 15 --retry 2 \
+            -X POST https://slack.com/api/chat.postMessage \
+            -H "Authorization: Bearer ${SLACK_BOT_TOKEN}" \
+            -H "Content-Type: application/json; charset=utf-8" \
+            --data "${payload}")
+          if [ "$(jq -r '.ok' <<< "${response}")" != "true" ]; then
+            echo "::error::Slack chat.postMessage failed: $(jq -r '.error // "unknown"' <<< "${response}")"
+            exit 1
+          fi
 
   # Failure-only alert to the automation Slack channel, modeled on dynamo's
   # notify-slack.yml. Mentions come from the SLACK_NOTIFY_MENTIONS repo
@@ -980,7 +1195,7 @@ jobs:
   notify-slack:
     name: Notify Slack
     if: always()
-    needs: [changes-guard, manual-approval, python-compliance, build-artifacts, license-evidence, fpe-support-matrix, trigger-gitlab-security]
+    needs: [changes-guard, manual-approval, slack-thread-start, python-compliance, build-artifacts, slack-staging-reply, license-evidence, fpe-support-matrix, trigger-gitlab-security, slack-thread-stopped]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
