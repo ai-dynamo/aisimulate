@@ -468,14 +468,14 @@ function renderDrilldown() {
   });
 }
 
-function validBranchName(branch) {
+function validBranchName(branch, preview = false) {
   return typeof branch === "string" && !branch.endsWith("/") &&
-    (branch === "main" || /^release\/[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(branch));
+    (branch === "main" || (preview ? /^[A-Za-z0-9][A-Za-z0-9._/-]*$/ : /^release\/[A-Za-z0-9][A-Za-z0-9._/-]*$/).test(branch));
 }
 
-function validRevision(revision) {
+function validRevision(revision, preview = false) {
   return revision && typeof revision.commit_sha === "string" &&
-    /^[0-9a-f]{40}$/.test(revision.commit_sha) && validBranchName(revision.branch);
+    /^[0-9a-f]{40}$/.test(revision.commit_sha) && validBranchName(revision.branch, preview);
 }
 
 function snapshotEvidence(branch, snapshot) {
@@ -552,7 +552,8 @@ function validateSummary(data) {
     throw new Error("unsupported accuracy summary schema");
   }
   const revision = data.snapshot.evaluated_revision;
-  if (revision != null && (!object(revision) || !validRevision(revision))) {
+  if (data.scope.preview === true && revision == null ||
+    revision != null && (!object(revision) || !validRevision(revision, data.scope.preview === true))) {
     throw new Error("invalid evaluated revision");
   }
   const aicSource = data.snapshot.aic_source;
@@ -586,9 +587,11 @@ function validateSummary(data) {
 
 function validateCatalog(catalog) {
   const seen = new Set();
-  if (!catalog || catalog.schema_version !== 1 || catalog.default_branch !== "main" ||
+  const preview = catalog?.preview === true;
+  if (!catalog || catalog.schema_version !== 1 ||
+    (preview ? !validBranchName(catalog.default_branch, true) : catalog.default_branch !== "main") ||
     !Array.isArray(catalog.branches) || !catalog.branches.length || catalog.branches.some((entry) => {
-      if (!entry || !validBranchName(entry.branch) ||
+      if (!entry || !validBranchName(entry.branch, preview) ||
         seen.has(entry.branch) || !["evaluated", "inherited", "historical", "unavailable"].includes(entry.status) ||
         (entry.summary_path !== null && !/^(summary\.json|branches\/[0-9a-f]{16}\/summary\.json)$/.test(entry.summary_path)) ||
         (entry.status === "unavailable") !== (entry.summary_path === null) ||
@@ -597,11 +600,11 @@ function validateCatalog(catalog) {
       const revision = entry.evaluated_revision;
       if (entry.published_source_path != null && !["pages/e2e-accuracy/summary.json", "python/aisimulate/docs/e2e-accuracy/summary.json"].includes(entry.published_source_path)) return true;
       if (["evaluated", "inherited"].includes(entry.status)) {
-        if (!validRevision(revision) || (entry.status === "evaluated") !== (revision.branch === entry.branch)) return true;
+        if (!validRevision(revision, preview) || (entry.status === "evaluated") !== (revision.branch === entry.branch)) return true;
       } else if (revision != null) return true;
       seen.add(entry.branch);
       return false;
-    }) || !seen.has("main")) throw new Error("invalid accuracy branch catalog");
+    }) || !seen.has(catalog.default_branch)) throw new Error("invalid accuracy branch catalog");
   return catalog;
 }
 
@@ -674,6 +677,9 @@ async function loadBranch(branchName, restoreSelection = false, previewData = nu
     }
     const data = previewData || await fetchSummary(entry.summary_path);
     if (loadId !== state.loadId) return;
+    if ((state.catalog.preview === true) !== (data.scope.preview === true)) {
+      throw new Error("Preview and published accuracy evidence cannot be mixed");
+    }
     const evidence = snapshotEvidence(entry.branch, data.snapshot);
     const revision = data.snapshot.evaluated_revision;
     if (entry.status !== evidence.status ||
@@ -688,6 +694,7 @@ async function loadBranch(branchName, restoreSelection = false, previewData = nu
     } else {
       branchStatus.textContent = `${entry.branch} · historical package snapshot; evaluated branch and commit were not recorded. These are not current branch accuracy results.`;
     }
+    if (data.scope.preview === true) branchStatus.textContent = "PR preview · " + branchStatus.textContent;
     downloadJson.href = `./${entry.summary_path}`;
     downloadJson.removeAttribute("aria-disabled");
     const linked = ["model", "workload", "gpu", "topology"].some((key) => params.has(key));
@@ -720,9 +727,11 @@ async function initialize() {
   // Directly serving the source docs remains useful before a Pages build.
   // Only a missing catalog permits this legacy single-snapshot mode.
   const previewData = response.status === 404 ? await fetchSummary("summary.json") : null;
+  const review = previewData?.scope.preview === true;
+  const defaultBranch = review ? previewData.snapshot.evaluated_revision.branch : "main";
   state.catalog = validateCatalog(previewData ? {
-    schema_version: 1, default_branch: "main",
-    branches: [{ branch: "main", ...snapshotEvidence("main", previewData.snapshot),
+    schema_version: 1, default_branch: defaultBranch, ...(review ? {preview: true} : {}),
+    branches: [{ branch: defaultBranch, ...snapshotEvidence(defaultBranch, previewData.snapshot),
       summary_path: "summary.json", published_from_commit: null }],
   } : response.ok ? await response.json() : (() => { throw new Error(`HTTP ${response.status}`); })());
   branchSelect.innerHTML = state.catalog.branches.map(branchOption).join("");

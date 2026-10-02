@@ -180,7 +180,7 @@ def _git(repo_root: Path, *args: str) -> str:
         raise PagesBuildError(f"cannot read accuracy branch evidence: {exc.stderr.strip()}") from exc
 
 
-def _accuracy_summary(text: str) -> dict:
+def _accuracy_summary(text: str, *, allow_preview: bool = False) -> dict:
     """Reject incomplete branch artifacts before replacing the deployed site."""
 
     def require(condition: bool, field: str) -> None:
@@ -197,7 +197,14 @@ def _accuracy_summary(text: str) -> dict:
         return (
             isinstance(value, str)
             and not value.endswith("/")
-            and (value == "main" or bool(re.fullmatch(r"release/[A-Za-z0-9][A-Za-z0-9._/-]*", value)))
+            and (
+                value == "main"
+                or bool(
+                    re.fullmatch(
+                        r"[A-Za-z0-9][A-Za-z0-9._/-]*" if preview else r"release/[A-Za-z0-9][A-Za-z0-9._/-]*", value
+                    )
+                )
+            )
         )
 
     def aggregate(item: dict) -> None:
@@ -266,6 +273,8 @@ def _accuracy_summary(text: str) -> dict:
     try:
         summary = json.loads(text)
         require(isinstance(summary, dict) and summary.get("schema_version") == 1, "summary schema")
+        preview = isinstance(summary.get("scope"), dict) and summary["scope"].get("preview") is True
+        require(not preview or allow_preview, "preview is not publishable")
         snapshot = summary.get("snapshot")
         require(isinstance(snapshot, dict), "snapshot")
         require(isinstance(snapshot.get("release_tag"), str), "measurement release")
@@ -278,6 +287,7 @@ def _accuracy_summary(text: str) -> dict:
         for date in ("measurement_date_through", "aisimulate_completed_at"):
             require(snapshot.get(date) is None or isinstance(snapshot[date], str), date)
         revision = snapshot.get("evaluated_revision")
+        require(not preview or revision is not None, "preview revision")
         if revision is not None:
             require(
                 isinstance(revision, dict)

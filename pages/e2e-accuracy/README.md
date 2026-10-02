@@ -126,6 +126,35 @@ legacy CLI and native runtime against that wheel. Historical release revisions
 must support these public APIs and the manylinux builder; an incompatible revision
 fails without replacing its published evidence.
 
+### PR previews for local review
+
+A manual preview runs from an admitted `pull-request/<number>` copy and must
+match the open PR's exact SHA, head branch, and repository. It builds that
+revision's wheel and runs the same measurement, source-resolution, estimate,
+and replay pipeline. It does not publish to Pages.
+
+```bash
+gh workflow run e2e-accuracy.yml --repo ai-dynamo/aisimulate --ref pull-request/372 \
+  -f branch=simonec/fix-inferencex-ep-gpu-count \
+  -f expected_sha=FULL_40_CHARACTER_PR_HEAD_SHA -f preview=true
+```
+
+The run produces `e2e-accuracy-preview-<branch-key>` with the summary and
+qualification hashes, plus `e2e-accuracy-preview-evidence-<branch-key>` with
+resolved inputs and per-point outcomes (seven-day retention). Evidence is saved
+even when qualification fails, if the campaign reached source resolution.
+Production runs still upload only aggregate publication artifacts. Preview
+names and scope markers are rejected by the public artifact importer and site
+builder; changing an artifact's name cannot make it publishable.
+
+For local review, download the preview summary artifact and copy the static
+files from `pages/e2e-accuracy/` into a separate directory. Replace that copy's
+`summary.json` with the downloaded summary and serve it with
+`python -m http.server --bind 127.0.0.1 --directory REVIEW_DIRECTORY 8372`.
+Do not add a public `branches.json` catalog: standalone preview loading displays
+the recorded PR branch and SHA with an explicit preview label. Keep the source
+checkout and committed snapshots unchanged.
+
 ### Measurement and prediction policy
 
 - Each pipeline resolves the newest published `db-dump/YYYY-MM-DD` release once,

@@ -557,7 +557,12 @@ def resolve_points(points, cache_dir, workers):
             return {**point, "resolution_error": [{"message": str(error)}]}
 
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        return list(pool.map(resolve, points))
+        resolved = []
+        for point in pool.map(resolve, points):
+            resolved.append(point)
+            if len(resolved) % 50 == 0:
+                print(f"Resolved source evidence for {len(resolved)}/{len(points)} points", flush=True)
+        return resolved
 
 
 def run_child(point: dict, timeout: int) -> dict:
@@ -597,7 +602,9 @@ def qualify_results(points: list[dict], results: list[dict]) -> list[dict]:
 
 
 def campaign(args) -> None:
-    if args.branch != "main" and not re.fullmatch(r"release/[A-Za-z0-9][A-Za-z0-9._/-]*", args.branch):
+    preview = getattr(args, "preview", False)
+    branch_pattern = r"[A-Za-z0-9][A-Za-z0-9._/-]*" if preview else r"release/[A-Za-z0-9][A-Za-z0-9._/-]*"
+    if args.branch.endswith("/") or (args.branch != "main" and not re.fullmatch(branch_pattern, args.branch)):
         raise ValueError("expected main or release/* branch")
     if not re.fullmatch(r"[0-9a-f]{40}", args.commit):
         raise ValueError("expected full source commit")
@@ -674,6 +681,7 @@ def campaign(args) -> None:
         + "/releases/tag/"
         + manifest["release_tag"],
         branch=args.branch,
+        preview=preview,
         exclude_multinode=not resolved,
     )
     campaign_info = {
@@ -712,7 +720,9 @@ def campaign(args) -> None:
         "advisory": True,
     }
     summary["snapshot"]["campaign"] = campaign_info
-    _accuracy_summary(encoded(summary).decode())
+    if preview:
+        campaign_info["preview"] = True
+    _accuracy_summary(encoded(summary).decode(), allow_preview=preview)
     args.output.mkdir(parents=True, exist_ok=True)
     if any(args.output.iterdir()):
         raise ValueError("public artifact directory must be empty")
@@ -748,6 +758,9 @@ def main():
     parser.add_argument("--point-timeout", type=int, default=180)
     parser.add_argument("--source-cache", type=Path, default=Path(".cache/e2e-accuracy/source"))
     parser.add_argument("--evidence", type=Path, default=Path(".cache/e2e-accuracy/evidence"))
+    parser.add_argument(
+        "--preview", action="store_true", help="Produce a branch preview excluded from public publication"
+    )
     campaign(parser.parse_args())
 
 
