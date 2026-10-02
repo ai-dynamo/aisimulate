@@ -7,6 +7,7 @@ import pytest
 
 from aisimulate.sdk.config_adapter import (
     AdapterOverrides,
+    EstimateRequestV1,
     InferenceXSource,
     adapt_config,
     to_cli_estimate_kwargs,
@@ -144,3 +145,127 @@ def test_unpinned_backend_version_is_warning_not_rejection():
 
     assert outcome.status == "adapted"
     assert [diagnostic.code for diagnostic in outcome.diagnostics] == ["backend_version_unpinned"]
+
+
+@pytest.mark.parametrize("framework", ["vllm", "sglang", "dynamo-trtllm"])
+@pytest.mark.parametrize("width", [4, 8])
+@pytest.mark.parametrize("attention_dp", [False, True])
+@pytest.mark.parametrize("workers", [0, 1])
+def test_single_node_ep_uses_shared_gpus_through_cli_lowering(framework, width, attention_dp, workers):
+    config = _config(
+        framework=framework,
+        silicon_model="dsr1",
+        is_multinode=False,
+        decode_tp=width,
+        decode_ep=width,
+        decode_dp_attention=attention_dp,
+        decode_num_workers=workers,
+        num_decode_gpu=width * width,
+    )
+    original = config.copy()
+    outcome = adapt_config(InferenceXSource(config, _benchmark(conc=64))).outcomes[0]
+
+    assert outcome.status == "adapted"
+    request = EstimateRequestV1.model_validate_json(outcome.request.model_dump_json())
+    worker = request.topology.worker
+    assert worker.replicas == 1
+    assert worker.gpus_per_replica == width
+    kwargs = to_cli_estimate_kwargs(request)
+    assert kwargs["tp_size"] == (1 if attention_dp else width)
+    assert kwargs["attention_dp_size"] == (width if attention_dp else 1)
+    assert kwargs["batch_size"] == (64 // width if attention_dp else 64)
+    assert kwargs["moe_tp_size"] == 1
+    assert kwargs["moe_ep_size"] == width
+    correction = next(d for d in outcome.diagnostics if d.code == "inferencex_gpu_count_normalized")
+    assert correction.severity == "warning"
+    assert correction.path == "config.num_decode_gpu"
+    assert f"num_decode_gpu={width * width}" in correction.message
+    assert f"effective GPU count is {width}" in correction.message
+    assert correction.message in request.provenance.assumptions
+    assert config == original
+
+
+@pytest.mark.parametrize("framework", ["vllm", "sglang", "trtllm"])
+@pytest.mark.parametrize("attention_dp", [False, True])
+def test_single_node_ep_already_physical_gpu_count(framework, attention_dp):
+    outcome = adapt_config(
+        InferenceXSource(
+            _config(
+                framework=framework,
+                silicon_model="dsr1",
+                is_multinode=False,
+                decode_ep=4,
+                decode_dp_attention=attention_dp,
+            ),
+            _benchmark(),
+        )
+    ).outcomes[0]
+
+    assert outcome.status == "adapted"
+    worker = outcome.request.topology.worker
+    assert worker.gpus_per_replica == 4
+    assert worker.tp_size == (1 if attention_dp else 4)
+    assert worker.attention_dp_size == (4 if attention_dp else 1)
+    assert worker.batch_size == (4 if attention_dp else 16)
+    assert all(d.code != "inferencex_gpu_count_normalized" for d in outcome.diagnostics)
+
+
+@pytest.mark.parametrize("framework", ["sglang", "trtllm"])
+def test_single_node_partial_ep_preserves_moe_tensor_parallelism(framework):
+    outcome = adapt_config(
+        InferenceXSource(
+            _config(framework=framework, silicon_model="dsr1", is_multinode=False, decode_ep=2, num_decode_gpu=8),
+            _benchmark(),
+        )
+    ).outcomes[0]
+
+    assert outcome.status == "adapted"
+    worker = outcome.request.topology.worker
+    assert worker.gpus_per_replica == 4
+    assert worker.tp_size == 4
+    assert worker.moe_tp_size == 2
+    assert worker.moe_ep_size == 2
+
+
+@pytest.mark.parametrize(
+    ("overrides", "message"),
+    [
+        ({"num_decode_gpu": 12}, "must equal TP"),
+        ({"decode_ep": 3, "num_decode_gpu": 12}, "supported shared GPU group"),
+        ({"framework": "vllm", "decode_ep": 2, "num_decode_gpu": 8}, "supported shared GPU group"),
+        ({"is_multinode": None}, "ambiguous"),
+        ({"is_multinode": "false"}, "ambiguous"),
+    ],
+)
+def test_single_node_ep_rejects_ambiguous_counts(overrides, message):
+    config = _config(framework="sglang", silicon_model="dsr1", is_multinode=False, decode_ep=4, num_decode_gpu=16)
+    config.update(overrides)
+    if config["is_multinode"] is None:
+        del config["is_multinode"]
+    outcome = adapt_config(InferenceXSource(config, _benchmark())).outcomes[0]
+
+    assert outcome.status == "rejected"
+    assert outcome.diagnostics[-1].code == "inferencex_mapping_failed"
+    assert message in outcome.diagnostics[-1].message
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"is_multinode": True},
+        {"disagg": True},
+        {"decode_num_workers": 2, "num_decode_gpu": 32},
+    ],
+)
+def test_other_topologies_keep_reported_gpu_count(overrides):
+    config = _config(silicon_model="dsr1", is_multinode=False, decode_ep=4, num_decode_gpu=16)
+    config.update(overrides)
+    outcome = adapt_config(InferenceXSource(config, _benchmark())).outcomes[0]
+
+    assert outcome.status == "adapted"
+    topology = outcome.request.topology
+    worker = topology.decode if config["disagg"] else topology.worker
+    assert worker.gpus_per_replica == 16
+    assert worker.attention_dp_size == 4
+    assert worker.moe_ep_size == 16
+    assert all(d.code != "inferencex_gpu_count_normalized" for d in outcome.diagnostics)

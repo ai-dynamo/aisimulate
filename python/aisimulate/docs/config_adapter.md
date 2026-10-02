@@ -200,6 +200,24 @@ irrelevant sentinel; it is normalized to one replica before worker validation.
 All actual worker counts must be positive. MTP rows require explicit `nextn` and
 `nextn_accepted` overrides.
 
+For aggregated MoE records explicitly marked `is_multinode=false` with one
+worker (including the zero-worker sentinel), TP describes the shared GPU group.
+EP reuses that group; it does not multiply the physical GPU count. When EP is
+greater than one, the adapter accepts either TP GPUs or the legacy TP × EP
+count. It normalizes the latter to TP GPUs and emits an
+`inferencex_gpu_count_normalized` warning, also recorded in provenance. For
+example, TP4/EP4 with 16 reported GPUs becomes one four-GPU worker. With
+attention DP disabled, this means attention TP4/DP1 and MoE TP1/EP4; with
+attention DP enabled, it means attention TP1/DP4 and MoE TP1/EP4, with
+concurrency divided across the four attention replicas.
+
+EP must divide TP; vLLM additionally requires EP to equal TP for these
+single-node records. Conflicting counts and legacy TP × EP counts without an
+explicit boolean `is_multinode` are rejected. Disaggregated, multi-worker, and
+explicitly multi-node records retain the existing reported-GPU arithmetic.
+This SDK correction does not change the separate accuracy CI source-selection
+filters or regenerate published predictions.
+
 ## Dynamo recipes
 
 `DynamoRecipeSource` safely parses multi-document YAML containing ConfigMaps,
