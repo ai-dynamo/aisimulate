@@ -110,7 +110,7 @@ test("committed, historical, and topology snapshots pass validation and initiali
     assert.equal(app.run("state.data.totals.rows"), data.totals.rows);
     assert.equal(app.element("error-banner").hidden, true);
     assert.equal(app.element("download-json").href, "./summary.json");
-    assert.match(app.element("summary-grid").innerHTML, /Points \(AIC CLI\)/);
+    assert.match(app.element("summary-grid").innerHTML, /AIC \(legacy CLI\) points/);
   }
 });
 
@@ -172,8 +172,8 @@ test("legacy summary loads with historical provenance and branch-specific downlo
   await app.run('loadBranch("release/0.12.0")');
   assert.match(app.element("branch-status").textContent, /historical.*not current branch accuracy/);
   assert.equal(app.element("download-json").href, `./${pathFor("b")}`);
-  assert.match(app.element("summary-grid").innerHTML, /AISim CLI \(new\)/);
-  assert.match(app.element("summary-grid").innerHTML, /AIC CLI \(legacy\)/);
+  assert.match(app.element("summary-grid").innerHTML, /AISim/);
+  assert.match(app.element("summary-grid").innerHTML, /AIC \(legacy CLI\)/);
   assert.match(app.element("provenance-content").innerHTML, /Repository provenance was not recorded/);
 });
 
@@ -198,13 +198,13 @@ test("branch switching updates the multi-node scope label, check, and tooltip", 
   assert.equal(app.element("scope-control").title, "This snapshot includes single-node predictions only.");
 });
 
-test("bundled AIC CLI provenance links to AISimulate and rejects another repository or revision", async () => {
+test("bundled AIC (legacy CLI) provenance links to AISim and rejects another repository or revision", async () => {
   const data = withEvaluation();
   const app = setup(async () => response(data));
   app.set("revisionFixture", data.snapshot.evaluated_revision);
   app.run('Object.assign(state.catalog.branches[0], {status: "evaluated", evaluated_revision: revisionFixture})');
   await app.run('loadBranch("main")');
-  assert.match(app.element("provenance-content").innerHTML, /Legacy AIC CLI source:.*aisimulate\/commit\/d{40}/);
+  assert.match(app.element("provenance-content").innerHTML, /AIC \(legacy CLI\) source:.*aisimulate\/commit\/d{40}/);
   assert.match(app.element("provenance-content").innerHTML, /bundled aiconfigurator CLI/);
   for (const change of [
     { repository: "https://github.com/ai-dynamo/aiconfigurator" },
@@ -215,7 +215,7 @@ test("bundled AIC CLI provenance links to AISimulate and rejects another reposit
     const invalid = structuredClone(data);
     Object.assign(invalid.snapshot.aic_source, change);
     app.set("invalid", invalid);
-    assert.throws(() => app.run("validateSummary(invalid)"), /legacy AIC CLI source/);
+    assert.throws(() => app.run("validateSummary(invalid)"), /AIC \(legacy CLI\) source/);
   }
 });
 
@@ -456,7 +456,7 @@ test("invalid branch data clears rendered accuracy and disables its download", a
     const app = harness(async (path) => response(path === "./branches.json" ? catalog :
       path === `./${pathFor("b")}` ? invalid : historical));
     await app.run("initialize()");
-    assert.match(app.element("summary-grid").innerHTML, /Points \(AIC CLI\)/);
+    assert.match(app.element("summary-grid").innerHTML, /AIC \(legacy CLI\) points/);
     assert.equal(app.element("download-json").href, `./${pathFor("a")}`);
     await app.run('loadBranch("release/0.12.0")');
     assert.equal(app.run("state.data"), null);
@@ -699,7 +699,7 @@ test("evaluated snapshots require matching legacy CLI provenance", () => {
   const data = withEvaluation();
   delete data.snapshot.aic_source;
   app.set("invalid", data);
-  assert.throws(() => app.run("validateSummary(invalid)"), /legacy AIC CLI source/);
+  assert.throws(() => app.run("validateSummary(invalid)"), /AIC \(legacy CLI\) source/);
   delete data.snapshot.evaluated_revision;
   app.set("historicalOnly", data);
   assert.doesNotThrow(() => app.run("validateSummary(historicalOnly)"));
@@ -717,7 +717,7 @@ test("baseline entry point is validated and displayed for both layouts", async (
     for (const invalid of ["foreign.main:main", "<script>alert(1)</script>", null, 42]) {
       data.snapshot.aic_source.cli_entry_point = invalid;
       app.set("invalid", data);
-      assert.throws(() => app.run("validateSummary(invalid)"), /legacy AIC CLI source/);
+      assert.throws(() => app.run("validateSummary(invalid)"), /AIC \(legacy CLI\) source/);
     }
   }
 });

@@ -335,9 +335,9 @@ def test_public_page_prioritizes_aisimulate_over_aic_baseline() -> None:
     page = (public_dir / "index.html").read_text()
     script = (public_dir / "app.js").read_text()
 
-    assert page.index("AISim CLI TPOT MAPE") < page.index("AIC CLI TPOT MAPE")
-    assert script.index('accuracyCard("AISim CLI (new) Error · all configurations"') < script.index(
-        'accuracyCard("AIC CLI (legacy) Error · all configurations"'
+    assert page.index("AISim TPOT MAPE") < page.index("AIC (legacy CLI) TPOT MAPE")
+    assert script.index('accuracyCard("AISim Error · all configurations"') < script.index(
+        'accuracyCard("AIC (legacy CLI) Error · all configurations"'
     )
     assert "data-series" not in page
 
@@ -626,9 +626,9 @@ def test_successful_replay_rejects_zero_latency() -> None:
 
 def test_page_explains_cli_migration_and_aic_deprecation() -> None:
     page = (ROOT / "pages/e2e-accuracy/index.html").read_text()
-    assert "new AISim CLI with the legacy AIC CLI" in page
+    assert "Compare AISim with AIC (legacy CLI)" in page
     assert "confidence" in page
-    assert "deprecate the AIC CLI" in page
+    assert "deprecate AIC (legacy CLI)" in page
     assert "different prediction coverage" in page
 
 
