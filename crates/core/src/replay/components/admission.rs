@@ -538,6 +538,52 @@ impl<Metadata: ReplayAdmissionMetadata> AdmissionQueue<Metadata> {
         driver.agentic_phase_evidence()
     }
 
+    pub(crate) fn advance_agentic_profile(&mut self, now_ms: f64) -> Result<bool> {
+        let AdmissionSource::Workload { driver, .. } = &mut self.source else {
+            return Ok(false);
+        };
+        driver.advance_agentic_profile(now_ms)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn enable_agentic_profile(
+        &mut self,
+        options: crate::replay::loadgen::AgenticProfileOptions,
+    ) -> Result<()> {
+        let AdmissionSource::Workload { driver, .. } = &mut self.source else {
+            anyhow::bail!("agentic profile requires a workload driver");
+        };
+        driver.enable_agentic_profile(options)
+    }
+
+    pub(crate) fn agentic_profile_deadlines(&self) -> Option<(f64, f64, f64)> {
+        let AdmissionSource::Workload { driver, .. } = &self.source else {
+            return None;
+        };
+        driver.agentic_profile_deadlines()
+    }
+
+    pub(crate) fn agentic_profile_pending_request_ids(&self) -> Vec<Uuid> {
+        let AdmissionSource::Workload { driver, .. } = &self.source else {
+            return Vec::new();
+        };
+        driver.agentic_profile_pending_request_ids()
+    }
+
+    pub(crate) fn agentic_profile_client_complete(&self, now_ms: f64) -> bool {
+        matches!(&self.source, AdmissionSource::Workload { driver, .. }
+            if driver.agentic_profile_client_complete(now_ms))
+    }
+
+    pub(crate) fn agentic_profile_report(
+        &self,
+    ) -> Option<crate::replay::loadgen::AgenticProfileReport> {
+        let AdmissionSource::Workload { driver, .. } = &self.source else {
+            return None;
+        };
+        driver.agentic_profile_report()
+    }
+
     /// Preserve actual first-admission reuse before the runtime discards the
     /// preparation measurement epoch. The runtime separately requires native
     /// engine quiescence before opening the saved profile suffix.

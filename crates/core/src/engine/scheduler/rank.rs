@@ -607,6 +607,7 @@ fn split_pass(
     PassCompletionEffects,
 )> {
     let EnginePassResult {
+        committed_requests,
         same_timestamp_retry,
         output_signals,
         admissions,
@@ -623,6 +624,7 @@ fn split_pass(
         KvEventVisibility::PassEnd => (Vec::new(), kv_events),
     };
     let start = PassStartEffects {
+        committed_requests,
         admissions: admissions
             .into_iter()
             .map(|admission| Admission {
