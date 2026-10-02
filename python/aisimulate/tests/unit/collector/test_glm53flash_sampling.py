@@ -8,7 +8,6 @@ import json
 from dataclasses import replace
 
 import pytest
-
 from collector.fpm_forward.config import FPMCollectionOptions
 from collector.fpm_forward.glm53flash_sampling import (
     SamplingOptions,

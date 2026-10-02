@@ -7,7 +7,6 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
-
 from collector.fpm_forward.config import FPMCollectionOptions
 from collector.fpm_forward.planner import build_collection_plan
 from collector.fpm_forward.shards import (

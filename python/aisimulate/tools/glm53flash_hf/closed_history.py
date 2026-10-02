@@ -36,15 +36,18 @@ TERMINAL = {
     "sglang": {"COLLECTION_PASSED", "COLLECTION_FAILED_PRESERVED", "FAILED_PRESERVED"},
 }
 DEPLOYMENTS = {f"{q}-tp{t}" for q in ("fp8", "nvfp4") for t in (2, 4)}
+# v6: cleanup-only executor accepts the reviewed post-main collector Slurm
+# source (see cleanup_reconciliation.CLEANUP_SLURM_SOURCES; reviewed by Claude
+# coordinator on the user's behalf, 2026-10-02). v5 remains historical.
 MAINTENANCE_IDENTITY = {
     "kind": "public_source_review_followup",
-    "profile": "fpm_sglang_public_factory_history_v5",
-    "base_commit": "0346c808885baa366bfcdcdb96add32dd4a94a8e",
+    "profile": "fpm_cleanup_slurm_source_review_v6",
+    "base_commit": "69cdb67ed6659a0a8b9aadbd71ccd8820e16cc42",
 }
 MAINTENANCE = {
     "accounting_termination.py": "67cffe873c0f4225fd07f8786970c27e3ced8ac63366b38540443f4aa8efc890",
-    "cleanup_executor.py": "0cf0847469319613b6b8ccab53a43905b079fe3a3135466680c2ecbe19f4bd90",
-    "cleanup_reconciliation.py": "dda17105f69078f8f7e2d35cb9a28133c3da3226d4d2bba27e93cf0c74e6ebff",
+    "cleanup_executor.py": "9fe114e5ba4d5283f0aedad3a7f1d22efa673642dd6d4fdf00850315afb75ba1",
+    "cleanup_reconciliation.py": "d54b0bcc17c1b382de6437e6ac4d817f16540af044019b0e6fdb9df95e97669e",
     "external_control.py": "2d3799c0e04030df72728a9ad2333f4220a09a999b16a48ff43730a409874a23",
     "external_control_current.py": "c84aeda99141400a1dfc478c6249badfa25a7bfcdd9b478686697fba92fbc85e",
     "external_control_sglang_factory.py": "36be308ea67d3999d4f17a2dafb9cd05026ed01543c8c3c5e070b7955160c07e",

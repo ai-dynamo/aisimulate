@@ -8,7 +8,6 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-
 from collector.fpm_forward.sglang_artifact import (
     TELEMETRY_POLICY,
     file_receipt,
@@ -110,9 +109,10 @@ def raw(records):
 
 
 def artifact(tmp_path):
+    from collector.fpm_forward import sglang_artifact
+
     from aisimulate_core.sdk.fpm_identity import EXECUTION_COLUMNS
     from aisimulate_core.sdk.glm53flash import MODEL_REVISIONS
-    from collector.fpm_forward import sglang_artifact
 
     point, manifest, records = fixture()
     pins = json.loads(
@@ -437,8 +437,9 @@ def test_native_sglang_rejects_invalid_observations(corruption):
 
 
 def test_ops_provenance_is_bound_to_loaded_config_and_native_source(tmp_path):
-    from aisimulate_core.sdk.glm53flash import BACKEND_REVISIONS
     from collector.fpm_forward.sglang_driver import read_ops_provenance
+
+    from aisimulate_core.sdk.glm53flash import BACKEND_REVISIONS
 
     def sha256_json(value):
         return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
@@ -471,9 +472,10 @@ def test_ops_provenance_is_bound_to_loaded_config_and_native_source(tmp_path):
 
 @pytest.mark.parametrize("model", ["zai-org/GLM-5.3-Flash", "nvidia/GLM-5.3-Flash-NVFP4"])
 def test_ops_hashes_original_checkpoint_file_not_sdk_inferred_quant_fields(tmp_path, model):
+    from collector.fpm_forward.sglang_driver import raw_checkpoint_config
+
     from aisimulate_core.sdk.glm53flash import MODEL_REVISIONS
     from aisimulate_core.sdk.utils import _load_pre_downloaded_hf_config, get_model_config_from_model_path
-    from collector.fpm_forward.sglang_driver import raw_checkpoint_config
 
     original = _load_pre_downloaded_hf_config(model)
     normalized = get_model_config_from_model_path(model)["raw_config"]

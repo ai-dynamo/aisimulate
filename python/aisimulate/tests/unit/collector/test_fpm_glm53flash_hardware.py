@@ -7,7 +7,6 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-
 from collector.fpm_forward.hybrid_artifact import validate_vllm_hardware_receipts
 from collector.fpm_forward.runtime.glm53flash import glm53flash_worker_hardware as hardware
 

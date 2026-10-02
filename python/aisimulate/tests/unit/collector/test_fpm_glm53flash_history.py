@@ -8,7 +8,6 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-
 from collector.fpm_forward.hybrid_artifact import PROTOCOL, validate_real_hybrid_repetitions
 from collector.fpm_forward.native_artifact import _expected_scheduled
 

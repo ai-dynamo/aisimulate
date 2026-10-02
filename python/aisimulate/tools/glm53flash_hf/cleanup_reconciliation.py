@@ -33,6 +33,21 @@ SELECTION_SCHEMA = "fpm_complete_child_selection_reconciled_v2"
 LEGACY_SELECTION_SCHEMA = "fpm_complete_child_selection_v1"
 REVIEW_CONTRACT = "fpm_original_terminal_failure_review_v1"
 SLURM_SOURCE = "432dc0b578a8d738bf0b691de5009f2df2bb274b75ecb74363f7fc92c2d9e01b"
+# Reviewed collector/fpm_forward/slurm.py sources accepted for the cleanup-only
+# executor. SLURM_SOURCE alone remains the original-host identity check.
+# e187717a review (Claude coordinator on the user's behalf, 2026-10-02, merge
+# 69cdb67e of main 568b195e): the executor subclass replaces __init__ and
+# _command and disables apply/stage/execute/prepare_attempt; cleanup() reads
+# only job_id, step_name, owner_path and _command. Module imports (lines 1-27)
+# and cleanup() through EOF are byte-identical to 432dc0b5. Only __init__,
+# apply, wait_ready, _exec and prepare_attempt changed, plus new
+# _require_cpu_policy/_qualify_cpu_allocation; none is on the cleanup path.
+CLEANUP_SLURM_SOURCES = frozenset(
+    {
+        SLURM_SOURCE,
+        "e187717ac6948de9cf4d6891cdc20ef78c890859eac053ade6b7721fd3ff2543",
+    }
+)
 HOST_SOURCES = {
     "0469efad05c6395420993a6b3fe24ac72e4d050a": "d69825d13e5f492eff167f8e25126e41916dec101a3cbf0228ede794358bad2c",
     "642b23b79f7254664483f334928935e965809efb": "208e03e8fe22177f987da088e78677822826bc91c5ce5c4fa51515ae67120686",

@@ -7,9 +7,9 @@ import json
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
+from collector.fpm_forward import glm53flash_publication as publication
 
 from aisimulate_core.sdk.glm53flash import MODEL_REVISIONS
-from collector.fpm_forward import glm53flash_publication as publication
 
 pytestmark = pytest.mark.unit
 

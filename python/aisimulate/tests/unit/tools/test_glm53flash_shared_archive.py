@@ -7,7 +7,6 @@ import sys
 from pathlib import Path
 
 import pytest
-
 from collector.fpm_forward.config import FPMCollectionOptions
 from collector.fpm_forward.glm53flash_validation import _plan_run
 from collector.fpm_forward.planner import build_collection_plan

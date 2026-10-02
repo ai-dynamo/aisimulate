@@ -9,7 +9,6 @@ import shutil
 import sys
 
 import pytest
-
 from tools.glm53flash_hf import external_control_current as current
 from tools.glm53flash_hf import raw_archive as archive
 from tools.glm53flash_hf import raw_campaign as campaign

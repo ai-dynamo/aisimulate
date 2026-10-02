@@ -7,7 +7,6 @@ import json
 from types import SimpleNamespace
 
 import pytest
-
 from collector.fpm_forward import glm53flash_validation as validation
 from collector.glm53flash_protocol import PROTOCOL
 
