@@ -95,9 +95,9 @@ illustrate the output format. Captured detail examples are simulation results, n
 
 ## 3. Install
 
-Check the [installation guide](../installation.md) for the selected wheel's
-platform requirements and publication status. Use its source-install workflow
-for features documented on `main` that are not yet in a published wheel.
+This guide describes AISimulate 0.13 development. The command below installs a
+0.13 prerelease on Linux. For other platforms, follow the
+[source-install workflow](../installation.md#use-current-source).
 
 Use **Python 3.11–3.13**. The commands below use Bash or Zsh. Check that `python3` selects a
 supported version; substitute a versioned command such as `python3.13` if needed.
@@ -113,7 +113,7 @@ mkdir -p aisimulate-tutorial
 cd aisimulate-tutorial
 python3 -m venv .venv
 source .venv/bin/activate
-python -m pip install aisimulate
+python -m pip install --pre 'aisimulate>=0.13.0.dev0,<0.14'
 aisimulate --help
 aisimulate predict --help
 aisimulate recommend --help
