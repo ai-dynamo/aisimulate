@@ -9,17 +9,15 @@ not their TRT version, and their startup path is different from trtllm-serve.
 
 from __future__ import annotations
 
-import hashlib
-import json
 from functools import cache
-from pathlib import Path
 from typing import Any
 
 import requests
 
 from e2e_accuracy_source.inferencex_recipe import InferenceXRecipeError
+from e2e_accuracy_source.sources import load_manifest, verify_sources
 
-SOURCES = json.loads(Path(__file__).with_name("trt_additional_default_sources.json").read_text())
+SOURCES = load_manifest("trt_additional_default_sources.json")
 _ARCHITECTURES = {
     "1.1.0rc2.post2": {"DeepseekV3ForCausalLM"},
     "1.2.0rc0.post1": {"GptOssForCausalLM"},
@@ -32,11 +30,7 @@ _HOPPER = {"h100", "h200"}
 def _verified_sources(version: str) -> list[dict]:
     records = SOURCES[version]
     try:
-        for record in records:
-            response = requests.get(record["url"], timeout=30)
-            response.raise_for_status()
-            if hashlib.sha256(response.content).hexdigest() != record["sha256"]:
-                raise InferenceXRecipeError(f"reviewed TRT source changed: {record['url']}")
+        verify_sources(records, kind="TRT")
     except requests.RequestException as error:
         raise InferenceXRecipeError(f"cannot verify TRT post-release defaults: {error}") from error
     return records

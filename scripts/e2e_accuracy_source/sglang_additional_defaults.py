@@ -9,17 +9,15 @@ nightly image tag SHAs as installed framework revisions.
 
 from __future__ import annotations
 
-import hashlib
-import json
 from functools import cache
-from pathlib import Path
 from typing import Any
 
 import requests
 
 from e2e_accuracy_source.inferencex_recipe import InferenceXRecipeError
+from e2e_accuracy_source.sources import load_manifest, verify_sources
 
-_SOURCES = json.loads(Path(__file__).with_name("sglang_additional_default_sources.json").read_text())
+_SOURCES = load_manifest("sglang_additional_default_sources.json")
 _QWEN = {"Qwen3_5MoeForConditionalGeneration", "Qwen3_5ForConditionalGeneration"}
 
 
@@ -31,11 +29,7 @@ def has_additional_sglang_defaults(version: str | None) -> bool:
 def _verified_sources(version: str) -> list[dict]:
     records = _SOURCES[version]["sources"]
     try:
-        for record in records:
-            response = requests.get(record["url"], timeout=30)
-            response.raise_for_status()
-            if hashlib.sha256(response.content).hexdigest() != record["sha256"]:
-                raise InferenceXRecipeError(f"reviewed framework source changed: {record['url']}")
+        verify_sources(records)
     except requests.RequestException as error:
         raise InferenceXRecipeError(f"cannot verify SGLang defaults: {error}") from error
     return records

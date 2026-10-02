@@ -5,13 +5,13 @@
 
 from __future__ import annotations
 
-import hashlib
 from functools import cache
 from typing import Any
 
 import requests
 
 from e2e_accuracy_source.inferencex_recipe import InferenceXRecipeError
+from e2e_accuracy_source.sources import verify_sources
 
 SRT_REPOSITORY = "https://github.com/NVIDIA/srt-slurm"
 SRT_V1_0_29_SHA = "c1b6b5c97f323baefad577d70c4e8392b6f537d9"
@@ -37,15 +37,11 @@ _SOURCES_BY_SHA = {
 
 @cache
 def _verified_runner_sources(git_sha: str = SRT_V1_0_29_SHA) -> list[dict]:
-    records = []
-    for path, expected_hash in _SOURCES_BY_SHA[git_sha].items():
-        url = f"https://raw.githubusercontent.com/NVIDIA/srt-slurm/{git_sha}/{path}"
-        response = requests.get(url, timeout=30)
-        response.raise_for_status()
-        if hashlib.sha256(response.content).hexdigest() != expected_hash:
-            raise InferenceXRecipeError(f"reviewed benchmark source changed: {url}")
-        records.append(dict(path=path, url=url, sha256=expected_hash))
-    return records
+    records = [
+        dict(path=path, url=f"https://raw.githubusercontent.com/NVIDIA/srt-slurm/{git_sha}/{path}", sha256=sha)
+        for path, sha in _SOURCES_BY_SHA[git_sha].items()
+    ]
+    return verify_sources(records, kind="benchmark")
 
 
 def resolve_workload_defaults(

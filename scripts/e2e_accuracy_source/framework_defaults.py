@@ -10,17 +10,15 @@ budget and forced page sizes must not be lost to a later ``defaults | args``.
 
 from __future__ import annotations
 
-import hashlib
-import json
 from functools import cache
-from pathlib import Path
 from typing import Any
 
 import requests
 
 from e2e_accuracy_source.inferencex_recipe import InferenceXRecipeError
+from e2e_accuracy_source.sources import load_manifest, verify_sources
 
-_SOURCES = json.loads(Path(__file__).with_name("framework_default_sources.json").read_text())
+_SOURCES = load_manifest("framework_default_sources.json")
 _BLACKWELL = {"b200", "b300", "gb200", "gb300"}
 _HOPPER = {"h100", "h200"}
 _KIMI_VLLM_REVISION = "e2fa28594f7baad142a426b0b6a2cfe2c79201c7"
@@ -52,12 +50,7 @@ def verified_dynamo_usage_context(
 @cache
 def _verified_sources(backend: str, version: str) -> list[dict]:
     records = _SOURCES.get(backend, {}).get(version, [])
-    for record in records:
-        response = requests.get(record["url"], timeout=30)
-        response.raise_for_status()
-        if hashlib.sha256(response.content).hexdigest() != record["sha256"]:
-            raise InferenceXRecipeError(f"reviewed framework source changed: {record['url']}")
-    return records
+    return verify_sources(records)
 
 
 def _effective_auto_kv_dtype(args: dict, backend: str, version: str, checkpoint: dict) -> str | None:

@@ -426,7 +426,7 @@ def predict_point(point: dict) -> dict:
 
 
 def predict_resolved_point(point):
-    from e2e_accuracy_source.deployment import estimate_kwargs
+    from e2e_accuracy_source.estimate import estimate_kwargs
     from e2e_accuracy_source.model_config_snapshot import materialize_model_config
     from e2e_accuracy_source.replay import replay_spec as resolved_replay_spec
     from e2e_accuracy_source.schema import SiliconRow
@@ -689,8 +689,8 @@ def campaign(args) -> None:
                 str(path.relative_to(Path(__file__).parent)): digest(path)
                 for path in [
                     Path(__file__),
-                    *sorted(Path(__file__).with_name("e2e_accuracy_source").glob("*.py")),
-                    *sorted(Path(__file__).with_name("e2e_accuracy_source").glob("*.json")),
+                    *sorted(Path(__file__).with_name("e2e_accuracy_source").rglob("*.py")),
+                    *sorted(Path(__file__).with_name("e2e_accuracy_source").rglob("*.json")),
                 ]
             }
         ),
