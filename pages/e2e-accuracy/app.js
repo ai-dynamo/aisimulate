@@ -969,10 +969,14 @@ function topologyContent(topology) {
     <div class="detail-cards">${accuracyCard("AISim CLI error", stats.aisimulate, "aisimulate")}${accuracyCard("legacy AIC CLI error", stats.aic, "aic")}</div>
     <div class="chart-legend">${Object.entries(SERIES_NAMES).map(([key, name]) => `<button data-series="${key}" aria-pressed="${!state.hiddenSeries.has(key)}" style="color:${SERIES_COLORS[key]}"><span class="legend-line ${key}" aria-hidden="true"></span> ${name}</button>`).join("")}</div>
     <p class="detail-scope">Click a legend to hide a series; double-click to isolate it. Click a point for its configuration and values.</p>
-    <div class="latency-charts">${metricChart(topology, "tpot")}${metricChart(topology, "ttft")}</div>
-    <div class="chart-options"><label>Throughput <select data-chart="throughput">${["output", "total"].map(v => `<option${state.throughput === v ? " selected" : ""}>${v}</option>`).join("")}</select></label>
-    <label>Compare against <select data-chart="view">${[["interactivity", "Interactivity"], ["e2e", "E2E latency"], ["ttft", "TTFT"]].map(([v,l]) => `<option value="${v}"${state.view === v ? " selected" : ""}>${l}</option>`).join("")}</select></label></div>
-    ${metricChart(topology, "pareto")}${pointTable(topology)}`;
+    <div class="detail-charts">
+      <section class="chart-panel" aria-label="Token latency"><h3>Token latency</h3>${metricChart(topology, "tpot")}</section>
+      <section class="chart-panel" aria-label="Time to first token"><h3>Time to first token</h3>${metricChart(topology, "ttft")}</section>
+      <section class="chart-panel" aria-label="Throughput"><h3>Throughput</h3>${metricChart(topology, "pareto")}
+        <div class="chart-options"><label>Tokens <select data-chart="throughput">${["output", "total"].map(v => `<option${state.throughput === v ? " selected" : ""}>${v}</option>`).join("")}</select></label>
+        <label>Compare against <select data-chart="view">${[["interactivity", "Interactivity"], ["e2e", "E2E latency"], ["ttft", "TTFT"]].map(([v,l]) => `<option value="${v}"${state.view === v ? " selected" : ""}>${l}</option>`).join("")}</select></label></div>
+      </section>
+    </div>${pointTable(topology)}`;
 }
 
 function metricChart(topology, metric) {
