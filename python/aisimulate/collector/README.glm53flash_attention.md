@@ -79,6 +79,45 @@ graphs as serving, but every prefill step eager. Serving replays prefill steps
 of at most 64 tokens through breakable piecewise graphs, so vLLM prefill rows
 with `batch * x <= 64` include launch overhead serving partly hides.
 
+### Revision 2: prefill under the serving prefill CUDA graphs
+
+On 2026-10-01 the serving deployment switched prefill to the frameworks'
+breakable CUDA graphs (evidence: GLM prefill-graph A/B smoke v4): SGLang
+`--cuda-graph-backend-prefill breakable --cuda-graph-max-bs-prefill 8192`
+(58 token buckets), vLLM default `FULL_AND_PIECEWISE` with 62
+`--cudagraph-capture-sizes` up to 8192. Revision 2 re-collects only the prefill
+rows under exactly that mechanism; decode rows are carried from revision 1.
+
+How the frameworks execute the module in graph-mode prefill:
+
+- SGLang (`runner/prefill_cuda_graph_runner.py`,
+  `runner_backend/breakable_cuda_graph_backend.py`): the transformer body is
+  captured per token bucket as graph segments separated by `eager_on_graph`
+  breaks. For this module the absorbed MLA method is pinned in graph mode
+  (`deepseek_common/attention_backend_handler.py`), and the pooled-key indexer
+  (`attention/dsa/kpool_prefill_cuda_graph.py`, reading the live batch from the
+  TcPiecewise context) and the MLA BMM + attention core
+  (`attention_forward_methods/forward_mla.py` `bcg_mla_bmm_then_unified_attention`)
+  are eager breaks; projections, norms and o_proj replay from segments.
+- vLLM (`v1/worker/gpu/cudagraph_utils.py` `run_pw_graph`,
+  `compilation/breakable_cudagraph.py`): ops decorated with
+  `eager_break_during_capture` -- the IndexPool indexer
+  (`sparse_attn_indexer_kpool.py`) and the MLA attention op
+  (`attention/mla_attention.py`) -- run eagerly against the step's forward
+  context; everything else replays from captured segments.
+
+The probe records the module's capture-time inputs for every bucket while the
+framework captures, executes the real planned step (the framework replays its
+own prefill graph for the padded bucket; witnessed), then captures the module
+alone with the framework's own `BreakableCUDAGraphCapture` under that step's
+live contexts and replays it 3+10 times (`timing_method`
+`cuda_events_framework_breakable_module_graph_replay`, `used_cuda_graph=true`).
+Padding to the framework bucket is therefore included. The eager breaks keep
+their host launch cost, as in serving. Memory headroom for the per-target
+module graphs comes from a smaller static pool (SGLang
+`--mem-fraction-static 0.76`, vLLM `--gpu-memory-utilization 0.85`), a capacity
+change only.
+
 ## Workload and state
 
 `cases/base_ops/glm53flash_attention.yaml` (454 points): prefill batch
