@@ -2344,3 +2344,34 @@ findings:
     - Qwen/Qwen3.8-2.4T-A95B
     - Qwen/Qwen3.8-2.4T-A95B-FP8
     - Qwen/Qwen3-VL-2B-Instruct
+  hopper_trtllm_gate_backfill_complete_and_full_campaign_2026_10_02:
+    statement: 'TRTLLM GATE BACKFILL COMPLETE + FULL H20 CAMPAIGN STARTED (2026-10-02; owner: ''先把 trtllm 那 3 个 gate 补了，然后开一轮完整采集'').
+      GATES rc29 now 22/22 ALIGNED: gdn_gen (the earlier verdict script had it parked as ''explained'' because the collector''s
+      FLA fused_recurrent row was a deliberate fallback lane; on rc29 collect_gdn''s decode lane matches serving''s FlashInfer
+      decode, so it is a gate again), mla_bmm (cublas bmm pre/post), mamba2 ctx+gen (Nemotron-H-56B). mamba2_ctx first came
+      back DIVERGED: rc29 Mamba2Mixer defaults TRTLLM_MAMBA_TOKEN_MAJOR_CONV=1 (mamba2_mixer.py:319) and hands causal_conv1d_fn
+      a channel-last VIEW of the token-major projection plus a separate token-major out (:541-569), which selects causal_conv1d_channellast_fwd_kernel
+      (causal_conv1d.py:26-60), while the collector ran the channel-major kernel on (batch, dim, seq) inputs. collect_mamba2
+      now builds the serving varlen token-major buffer with cu_seqlens / cache_indices / has_initial_state=False whenever
+      the runtime''s causal_conv1d_fn has the `out` parameter and the env default is on, records kernel_source=causal_conv1d_fn_token_major
+      (label added to kernel_source_backends.yaml), and keeps the old call for older runtimes; gate ALIGNED after the change.
+      The 6 msa gate families on trtllm remain undeclared: MiniMax-M3 does not boot on rc29 (MiniMaxM3SparseRuntimeBackend.forward),
+      so there is no serving record to grade against — framework gap, recorded only. CAMPAIGN: the first full collection on
+      the new pins runs from a frozen snapshot staging_1002 (ea76d9ab + the ba56d55d collect_mamba2/kernel_source_backends
+      overlay) via staging_1002/run_op.sh (<gpu> <backend> <op> [filters]: --model-cases-full, own run + checkpoint dir, --resume
+      --resume-retry-failed, images = manifest defaults, HF offline + shared jitcache). Partition facts/campaign_1002/PARTITION.txt:
+      sglang on GPUs 2-4, trtllm on GPUs 5-7, three op chains per backend (light ops first; dsa/dsv4 modules on their own
+      GPU). Excluded: trtllm moe_ep (WideEP runtime, separate container), DSV4.1 (no collector ops), sglang dsv4 *_attn/paged_mqa
+      (not in the sm90 plan). First plan sizes: gemm 104636 (sglang) / 104294 (trtllm) cases, mla_context 3080, sglang dsa_context_module
+      264 (plan-time memory filter) vs trtllm 7808. Attempt 1 of the launcher died on an empty --case-filter argument (printf
+      ''%q'' on an empty array yields ''''); fixed before any case ran. Logs facts/campaign_1002/logs/, run dirs staging_1002/runs/<backend>_<op>/
+      (perf evidence stays in the workspace, never committed).'
+    applies_to:
+    - framework:trtllm-1.3.0rc29
+    - framework:sglang-0.5.21
+    - platform:sm90
+    - module:collector
+    - instrument:trtllm.collect_mamba2
+    - nvidia/Nemotron-H-56B-Base-8K
+    - Qwen/Qwen3.5-0.8B
+    - deepseek-ai/DeepSeek-V3
