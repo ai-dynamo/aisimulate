@@ -538,6 +538,41 @@ def write_parquet(rows: list[dict], path: Path) -> None:
     temporary.replace(path)
 
 
+def selected_plan(manifest: dict) -> dict:
+    """The plan restricted to a split attempt's set selection (if any)."""
+    plan = manifest["plan"]
+    only = manifest.get("only_sets")
+    if only is None:
+        return plan
+    known = {s["set_id"] for s in plan["sets"]}
+    if not only or not set(only) <= known:
+        raise ValueError(f"split attempt selects unknown or no sets: {only}")
+    return {**plan, "sets": [s for s in plan["sets"] if s["set_id"] in set(only)]}
+
+
+def check_split_closure(attempts: list[tuple[dict, list[dict]]]) -> None:
+    """Attempts of one deployment must cover its planned phases exactly once."""
+    by_deployment: dict[tuple, list[tuple[dict, list[dict]]]] = {}
+    for manifest, rows in attempts:
+        geometry = manifest["geometry"]
+        by_deployment.setdefault((geometry["checkpoint_format"], geometry["tp_size"]), []).append((manifest, rows))
+    for deployment, group in by_deployment.items():
+        plans = {json.dumps(m["plan"], sort_keys=True) for m, _ in group}
+        phases = {tuple(sorted(m.get("phases", PHASES))) for m, _ in group}
+        if len(plans) != 1 or len(phases) != 1:
+            raise ValueError(f"{deployment} attempts disagree on plan or phases")
+        seen: set[tuple] = set()
+        for _, rows in group:
+            keys = {(r["geometry"], r["batch_size"], r["prefix"], r["x"]) for r in rows}
+            if keys & seen:
+                raise ValueError(f"{deployment} attempts measure a key twice")
+            seen |= keys
+        selected = set(phases.pop())
+        wanted = [key for key in target_keys(group[0][0]["plan"]) if key[0] in selected]
+        if len(seen) != len(wanted):
+            raise ValueError(f"{deployment} attempts cover {len(seen)} of {len(wanted)} planned keys")
+
+
 def load_attempt(attempt: Path) -> tuple[dict, list[dict], list[dict]]:
     """Admit one runner attempt: completion receipt, plan closure, every target.
 
@@ -573,7 +608,7 @@ def load_attempt(attempt: Path) -> tuple[dict, list[dict], list[dict]]:
     measured = {(bodies[r["geometry"]], r["batch_size"], r["prefix"], r["x"]) for r in rows}
     # A revision may re-collect only some phases (e.g. graph-mode prefill).
     phases = set(manifest.get("phases", PHASES))
-    expected = {key for key in target_keys(plan) if key[0] in phases}
+    expected = {key for key in target_keys(selected_plan(manifest)) if key[0] in phases}
     if measured != expected:
         missing = sorted(expected - measured)[:4]
         extra = sorted(measured - expected)[:4]
@@ -609,9 +644,10 @@ def main() -> None:
         plan = build_plan(sweep)
         print(json.dumps({"plan_sha256": plan["plan_sha256"], "targets": len(target_keys(plan))}))
         return
-    rows, evidence, manifests = [], [], []
+    rows, evidence, manifests, loaded = [], [], [], []
     for attempt in args.attempts:
         manifest, attempt_rows, attempt_evidence = load_attempt(attempt)
+        loaded.append((manifest, attempt_rows))
         rows += attempt_rows
         evidence += [{**e, "attempt": Path(attempt).name} for e in attempt_evidence]
         manifests.append(
@@ -621,8 +657,10 @@ def main() -> None:
                 "plan_sha256": manifest["plan"]["plan_sha256"],
                 "deployment": f"{manifest['geometry']['checkpoint_format']}-tp{manifest['geometry']['tp_size']}",
                 "source_commit": manifest["source_commit"],
+                **({"only_sets": manifest["only_sets"]} if manifest.get("only_sets") is not None else {}),
             }
         )
+    check_split_closure(loaded)
     backends = {json.loads(r["geometry"])["backend"] for r in rows}
     if len(backends) != 1:
         raise ValueError("one table holds one backend")

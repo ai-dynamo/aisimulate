@@ -226,6 +226,11 @@ def main():
     plan = manifest["plan"]
     if plan != build_plan(manifest["sweep"]):
         raise ValueError("manifest plan differs from its frozen sweep")
+    if manifest.get("only_sets") is not None:
+        # A split attempt measures exactly the manifest's set selection.
+        if options.only_sets and sorted(options.only_sets) != manifest["only_sets"]:
+            raise ValueError("--only-sets differs from the manifest selection")
+        options.only_sets = manifest["only_sets"]
     output = Path(options.output).resolve()
     output.mkdir(parents=True, exist_ok=True)
     if any(output.glob("rank-*.jsonl")) or (output / "COMPLETE").exists():
@@ -298,7 +303,10 @@ def main():
                     "dry_run": "ok",
                     "framework": installed,
                     "geometry": expected,
-                    "sets": sum(s["phase"] in phases for s in plan["sets"]),
+                    "sets": sum(
+                        s["phase"] in phases and (not options.only_sets or s["set_id"] in options.only_sets)
+                        for s in plan["sets"]
+                    ),
                     "prefill_execution": manifest.get("prefill_execution", "eager"),
                     "engine_args": engine_args,
                     "plugins": plugins,

@@ -104,6 +104,16 @@ def prepare(args) -> Path:
         # the ragged IndexPool MQA-logits buffer at long batched context.
         "allocator_max_split_size_mb": args.allocator_max_split_mb,
     }
+    if args.only_sets or args.skip_sets:
+        # Split attempt: one deployment's plan measured by several attempts
+        # whose set selections finalize unions exactly once.
+        phases = {"context"} if args.prefill_graph else {"context", "generation"}
+        known = [s["set_id"] for s in body["plan"]["sets"] if s["phase"] in phases]
+        chosen = set(args.only_sets or known) - set(args.skip_sets or ())
+        unknown = (set(args.only_sets or ()) | set(args.skip_sets or ())) - set(known)
+        if unknown or not chosen:
+            raise SystemExit(f"invalid set selection: unknown {sorted(unknown)}, selected {len(chosen)}")
+        body["only_sets"] = sorted(chosen)
     if args.sglang_mem_fraction is not None:
         body["sglang_mem_fraction_static"] = args.sglang_mem_fraction
     if args.vllm_gpu_memory_utilization is not None:
@@ -218,6 +228,8 @@ def main():
     parser.add_argument("--allocator-max-split-mb", type=int, default=None)
     parser.add_argument("--prefill-graph", action="store_true", help="revision 2: prefill under serving graphs")
     parser.add_argument("--sglang-mem-fraction", type=float, default=None)
+    parser.add_argument("--only-sets", nargs="+", help="split attempt: measure only these plan sets")
+    parser.add_argument("--skip-sets", nargs="+", help="split attempt: measure every other set of the phases")
     parser.add_argument("--vllm-gpu-memory-utilization", type=float, default=None)
     args = parser.parse_args()
     if args.layer_id is not None and not args.smoke:
