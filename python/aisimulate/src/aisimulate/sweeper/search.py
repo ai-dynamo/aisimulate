@@ -1705,6 +1705,13 @@ class Sweeper:
                         key = _suggestion_cache_key(suggestion, cache_context)
                         duplicates = duplicates_by_key.get(key, [])
                         if outcome in ("failed", "infeasible", "resource_limited"):
+                            if evaluation.reason_category in {
+                                ReasonCategory.RESOURCE_LIMIT,
+                                ReasonCategory.RUNTIME_TIMEOUT,
+                            }:
+                                retry = getattr(sampler, "retry", None)
+                                if retry is not None:
+                                    retry(suggestion)
                             if outcome == "resource_limited":
                                 # A terminal host refusal consumes its trial without a fabricated score.
                                 unique_this_round += 1

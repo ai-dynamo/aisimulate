@@ -1399,3 +1399,40 @@ def test_duplicate_failure_cache_preserves_transient_retries(monkeypatch, capsys
     captured = capsys.readouterr()
     assert "4/4" in captured.err
     assert "Search coverage: 4/4 suggestions" in captured.out
+
+
+def test_random_retries_transient_failure_before_exhausting_space(monkeypatch):
+    from dataclasses import replace
+
+    from aisimulate.sweeper.result import ReasonCategory
+    from aisimulate.sweeper.sampler import make_branch_sampler
+
+    branch = _branch(_pc())
+    branch.knob_choices.update(agg_max_num_batched_tokens=[8192], agg_max_num_seqs=[256])
+    _stub(monkeypatch, branch)
+    runner = _FakeRunner()
+    score = search_mod._score_prepared
+
+    def refuse_first(prepared, replay_result, **kwargs):
+        result = score(prepared, replay_result, **kwargs)
+        if runner.calls == 1:
+            return replace(
+                result,
+                candidate=None,
+                observe_metrics=None,
+                outcome="resource_limited",
+                reason="temporary host pressure",
+                reason_category=ReasonCategory.RESOURCE_LIMIT,
+            )
+        return result
+
+    monkeypatch.setattr(search_mod, "_score_prepared", refuse_first)
+    result = Sweeper(
+        runner_factory=_FakeRunnerFactory(runner), sampler_factory=make_branch_sampler, show_progress=False
+    ).run(
+        _config(max_rounds=3, max_trials=3, candidates_per_round=1, max_eval_seconds=None, algorithm="random"),
+    )
+    assert runner.calls == 2
+    assert result.counts.resource_limited == result.counts.feasible == 1
+    assert result.counts.cache_hits == 0
+    assert len(result.selected_candidates) == 1

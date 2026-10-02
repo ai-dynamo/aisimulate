@@ -30,6 +30,7 @@ import os
 import random
 from collections import deque
 from collections.abc import Callable
+from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from itertools import product
 from numbers import Real
@@ -423,11 +424,12 @@ class RandomBranchSampler:
         if branch.prefer_smallest:
             pairs.sort(key=lambda pair: pair[1].total_gpus)
         self._arms = deque((backend, config, _UnseenIndices(size), set()) for backend, config in pairs)
+        self._retries: deque[Suggestion] = deque()
         self._stalled = False
 
     @property
     def exhausted(self) -> bool:
-        return not self._arms and not self._stalled
+        return not self._arms and not self._retries and not self._stalled
 
     def _weighted_index(self) -> int:
         index = 0
@@ -494,7 +496,13 @@ class RandomBranchSampler:
             )
             if self._continuous or pool.remaining:
                 self._arms.append((backend, parallel, pool, seen))
+        while self._retries and len(suggestions) < count:
+            suggestions.append(self._retries.popleft())
         return suggestions
+
+    def retry(self, suggestion: Suggestion) -> None:
+        """Requeue a transient failure after new configurations, within the ask budget."""
+        self._retries.append(deepcopy(suggestion))
 
     def observe(self, suggestion: Suggestion, metrics: dict[str, float]) -> None:
         del suggestion, metrics
@@ -805,6 +813,12 @@ class ConditionalBranchSampler:
     def observe_infeasible(self, suggestion: Suggestion, reason: str) -> None:
         handle = self._inner(suggestion)
         self._samplers[handle.arm_index].observe_infeasible(handle.inner_suggestion, reason)
+
+    def retry(self, suggestion: Suggestion) -> None:
+        handle = self._inner(suggestion)
+        retry = getattr(self._samplers[handle.arm_index], "retry", None)
+        if retry is not None:
+            retry(handle.inner_suggestion)
 
 
 def make_branch_sampler(
