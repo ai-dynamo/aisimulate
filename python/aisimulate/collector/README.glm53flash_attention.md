@@ -115,9 +115,9 @@ live contexts and replays it 3+10 times (`timing_method`
 Padding to the framework bucket is therefore included. The eager breaks keep
 their host launch cost, as in serving.
 
-Memory: each target's module graph is captured into one shared private pool
-(the previous graph is kept alive until the next capture), and reserved memory
-still grows across targets. Headroom therefore comes from capacity-only knobs
+Memory: per-target module graphs make reserved memory grow across targets
+(vLLM: one shared private pool, the previous graph kept alive until the next
+capture). Headroom therefore comes from capacity-only knobs
 (KV pool size; no kernel, bucket or scheduling change), and a deployment's plan
 may be split across attempts whose manifests carry disjoint `only_sets`;
 `finalize` admits split attempts only if they cover the planned keys exactly
@@ -127,10 +127,22 @@ once. Used for the staged revision:
   (one attempt each); fp8-tp2 0.68 in two attempts (the last set,
   `prefill-b32-q256-c1`, alone), since the KV pool must still hold
   32 x 98560 tokens.
-- SGLang `--mem-fraction-static 0.66`, one attempt per batch-size group
-  (releasing cached blocks with `empty_cache` before the module capture
-  exposed an illegal address in a later framework BCG replay, so it is not
-  used).
+- SGLang: each module graph is captured into its own `torch.cuda.MemPool`,
+  deleted after the target (releases only that pool). Prefix state is seeded
+  eagerly, as in revision 1; only the measured step replays the serving
+  prefill graph (witnessed). Under the graph the pooled indexer materializes
+  dense batch-wide MQA logits, and 8192-token seed steps at 8+ requests x 64K+
+  cached tokens do not fit. The default pool is never trimmed:
+  `torch.cuda.empty_cache` (and the allocator's own release on an OOM retry)
+  exposed an illegal address in a later framework BCG replay. To avoid
+  fragmentation OOMs, batch sizes 4-32 run one batch size per attempt, and
+  `--mem-fraction-static` is sized per deployment so the KV pool still holds
+  the largest planned context (the exact value, and
+  `PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:16384` where used, are in each
+  attempt manifest listed in `collection_meta.yaml`). Attempts from earlier
+  commits (batch 1-2, and fp8-tp2 batch 4) predate the MemPool and eager-seeding changes (shared pool, seeding
+  under the graph); both choices only manage memory and state construction,
+  not the measured step, and each attempt's source commit is recorded.
 
 ## Workload and state
 
