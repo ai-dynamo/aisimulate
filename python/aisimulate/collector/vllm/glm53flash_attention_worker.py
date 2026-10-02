@@ -14,6 +14,18 @@ of one layer, i.e. the MLA wrapper including the IndexPool indexer and
 turns that flag off for sequence parallelism (models/glm5next/nvidia/model.py,
 Glm5NextDecoderLayer.__init__). Measured repetitions run with the flag off so
 the collective is excluded; the real forward call restores it.
+
+Graph-mode prefill (revision 2): serving runs prefill steps through vLLM's
+breakable PIECEWISE graphs (v1/worker/gpu/cudagraph_utils.py run_pw_graph ->
+compilation/breakable_cudagraph.py BreakableCUDAGraphWrapper). The custom ops
+decorated with ``eager_break_during_capture`` -- the IndexPool indexer
+(model_executor/layers/sparse_attn_indexer_kpool.py) and the MLA attention op
+(model_executor/layers/attention/mla_attention.py) -- run eagerly against the
+step's forward context; every other kernel of the module replays from captured
+segments. The probe records the module's capture-time inputs per PIECEWISE
+size, witnesses the real step's run_pw_graph, then captures the module alone
+with the same BreakableCUDAGraphCapture under that step's forward context and
+replays it.
 """
 
 from __future__ import annotations
@@ -31,6 +43,8 @@ STATE = SimpleNamespace(
     done=None,
     full_replays=0,
     last_full_tokens=None,
+    pw_replays=0,
+    last_pw=None,
     error=None,
 )
 
@@ -88,6 +102,21 @@ def install_probe(model_runner) -> None:
             return replay(desc, *args, **kwargs)
 
         manager.run_fullgraph = run_fullgraph
+        run_pw = manager.run_pw_graph
+
+        def run_pw_graph(model, model_inputs):
+            # Witness of the framework's PIECEWISE (breakable) replay, captured
+            # inside execute_model's live set_forward_context.
+            from vllm.forward_context import get_forward_context
+
+            context = get_forward_context()
+            STATE.pw_replays += 1
+            STATE.last_pw = SimpleNamespace(
+                tokens=int(context.batch_descriptor.num_tokens), mode=context.cudagraph_runtime_mode, context=context
+            )
+            return run_pw(model, model_inputs)
+
+        manager.run_pw_graph = run_pw_graph
 
 
 def validate_attention(attention, manifest, model_runner) -> None:
@@ -109,7 +138,9 @@ def validate_attention(attention, manifest, model_runner) -> None:
         "o_proj.reduce_results": (bool(attention.o_proj.reduce_results), expected["tp_size"] > 1),
         "cudagraph_mode": (
             model_runner.vllm_config.compilation_config.cudagraph_mode.name,
-            "FULL_DECODE_ONLY",
+            "FULL_AND_PIECEWISE"
+            if manifest.get("prefill_execution") == "framework_breakable_cuda_graph"
+            else "FULL_DECODE_ONLY",
         ),
     }
     for name, (actual, wanted) in checks.items():
@@ -143,6 +174,7 @@ class Probe:
         self.manifest = manifest
         self.original = attention.forward
         self.captured = {}
+        self.pw_captured = {}
         self.pool = None
         self.source = kernel_source(attention)
         attention.forward = self.forward
@@ -155,8 +187,15 @@ class Probe:
 
     def forward(self, hidden_states, positions):
         torch = self.torch
+        from vllm.compilation.breakable_cudagraph import BreakableCUDAGraphCapture
         from vllm.forward_context import get_forward_context, is_forward_context_available
 
+        if BreakableCUDAGraphCapture.current() is not None and is_forward_context_available():
+            # Framework PIECEWISE (breakable) capture of one token size.
+            self.pw_captured[int(hidden_states.shape[0])] = SimpleNamespace(
+                hidden_states=hidden_states, positions=positions, context=get_forward_context()
+            )
+            return self.original(hidden_states, positions)
         if torch.cuda.is_current_stream_capturing() and is_forward_context_available():
             # ModelCudaGraphManager.capture runs the FULL-graph forward under
             # torch.cuda.graph with the capture-time attention metadata.
@@ -266,6 +305,65 @@ class Probe:
         return {"padded_tokens": padded}
 
 
+def _measure_prefill(probe, target: dict, replays_before: int) -> dict:
+    torch = probe.torch
+    from collector.glm53flash_attention_contract import GRAPH_PREFILL
+    from collector.glm53flash_attention_runtime import EventTimer
+    from vllm.compilation.breakable_cudagraph import BreakableCUDAGraphCapture
+    from vllm.config import CUDAGraphMode
+    from vllm.forward_context import override_forward_context
+
+    tokens = target["batch_size"] * target["x"]
+    witness = STATE.last_pw
+    if STATE.pw_replays != replays_before + 1 or witness is None or witness.mode != CUDAGraphMode.PIECEWISE:
+        raise RuntimeError(f"{target['target_id']} did not replay one framework PIECEWISE prefill graph")
+    record = probe.pw_captured.get(witness.tokens)
+    if record is None or witness.tokens < tokens:
+        raise RuntimeError(f"no framework PIECEWISE capture of {witness.tokens} tokens for {tokens}")
+    options = STATE.options
+    o_proj = probe.attention.o_proj
+    reduce = o_proj.reduce_results
+    if probe.pool is None:
+        probe.pool = torch.cuda.graph_pool_handle()
+    o_proj.reduce_results = False
+    try:
+        with override_forward_context(witness.context):
+            # Eager warmup (eager breaks run inline outside a capture), then the
+            # framework's breakable capture of the module call on a capture stream.
+            probe.original(record.hidden_states, record.positions)
+            torch.cuda.synchronize()
+            capture = BreakableCUDAGraphCapture(pool=probe.pool)
+            with torch.cuda.stream(torch.cuda.Stream()), capture:
+                output = probe.original(record.hidden_states, record.positions)
+            torch.cuda.synchronize()
+            timer = EventTimer(torch)
+            for _ in range(options["warmup"] + options["iterations"]):
+                timer(capture.replay)
+            latencies = timer.read()
+    finally:
+        o_proj.reduce_results = reduce
+    host = [round(v, 4) for v in timer.host_ms[options["warmup"] :]]
+    finite = bool(torch.isfinite(output[:tokens]).all().item())
+    STATE.writer.samples(
+        target,
+        latencies,
+        options["warmup"],
+        probe.source,
+        {
+            "finite": finite,
+            "padded_tokens": witness.tokens,
+            "segments": capture.num_graphs,
+            "eager_breaks": capture.num_eager_breaks,
+            "host_enqueue_ms": host,
+        },
+        timing_method=GRAPH_PREFILL,
+    )
+    del capture
+    if not finite:
+        raise RuntimeError(f"nonfinite prefill attention output for {target['target_id']}")
+    return {"padded_tokens": witness.tokens}
+
+
 # --- collective_rpc entry points (first argument is the vLLM worker) --------
 def rpc_setup(worker, output: str, key_base: dict, provenance: dict, options: dict) -> dict:
     from collector.glm53flash_attention_runtime import RawWriter
@@ -276,7 +374,12 @@ def rpc_setup(worker, output: str, key_base: dict, provenance: dict, options: di
     rank = get_tensor_model_parallel_rank()
     STATE.writer = RawWriter(Path(output), rank, key_base, provenance)
     STATE.options = options
-    return {"rank": rank, "captured": sorted(STATE.probe.captured), "source": STATE.probe.source}
+    return {
+        "rank": rank,
+        "captured": sorted(STATE.probe.captured),
+        "pw_captured": sorted(STATE.probe.pw_captured),
+        "source": STATE.probe.source,
+    }
 
 
 def rpc_arm(worker, target: dict | None) -> None:
@@ -284,7 +387,19 @@ def rpc_arm(worker, target: dict | None) -> None:
 
 
 def rpc_status(worker) -> dict:
-    return {"done": STATE.done, "error": STATE.error, "full_replays": STATE.full_replays}
+    return {
+        "done": STATE.done,
+        "error": STATE.error,
+        "full_replays": STATE.full_replays,
+        "pw_replays": STATE.pw_replays,
+    }
+
+
+def rpc_measure_prefill(worker, target: dict, replays_before: int) -> dict:
+    import torch
+
+    with torch.inference_mode():
+        return _measure_prefill(STATE.probe, target, replays_before)
 
 
 def rpc_measure_decode(worker, target: dict, replays_before: int) -> dict:

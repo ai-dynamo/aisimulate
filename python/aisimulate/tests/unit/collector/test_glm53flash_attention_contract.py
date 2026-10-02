@@ -12,6 +12,8 @@ import yaml
 from collector.glm53flash_attention_contract import (
     BASENAME,
     COLUMNS,
+    GRAPH_DECODE,
+    GRAPH_PREFILL,
     RUNTIME_IMAGES,
     RUNTIME_VERSIONS,
     TIMING_METHODS,
@@ -164,8 +166,9 @@ def _flat(backend="vllm", checkpoint="fp8", tp=2):
     return geometry(config(checkpoint), backend, checkpoint, tp)
 
 
-def _records(flat, phase, batch, prefix, x, latencies_by_rank, source=SHA, extra=None):
-    method, graph = TIMING_METHODS[phase]
+def _records(flat, phase, batch, prefix, x, latencies_by_rank, source=SHA, extra=None, method=None):
+    method = method or {"context": "cuda_events_eager_repeated_module_call", "generation": GRAPH_DECODE}[phase]
+    graph = TIMING_METHODS[phase][method]
     key = {
         "geometry": geometry_key(attention_body(flat, phase == "context")),
         "batch_size": batch,
@@ -260,8 +263,11 @@ def test_writer_emits_the_reader_schema_and_rejects_duplicates_and_mixed_provena
     with pytest.raises(ValueError, match="one backend/runtime/source"):
         write_parquet(rows + other_source, tmp_path / "mixed.parquet")
     wrong_graph = dict(rows[0], batch_size=3, used_cuda_graph=True)
-    with pytest.raises(ValueError, match="CUDA graph use"):
+    with pytest.raises(ValueError, match="mixes CUDA graph identities"):
         write_parquet(rows + [wrong_graph], tmp_path / "graph.parquet")
+    eager_decode = dict(rows[1], batch_size=3, used_cuda_graph=False)
+    with pytest.raises(ValueError, match="CUDA graph use"):
+        validate_row(eager_decode)
     other_config = dict(rows[0], batch_size=3, config_sha256="c" * 64)
     with pytest.raises(ValueError, match="configuration identities"):
         write_parquet(rows + [other_config], tmp_path / "config.parquet")
@@ -290,7 +296,7 @@ def test_rows_the_reader_would_reject_fail_before_publication():
             validate_row(dict(row, geometry=geometry_key(dict(body, **change))))
 
 
-def _attempt(tmp_path, role="full"):
+def _attempt(tmp_path, role="full", graph_prefill=False):
     flat = _flat()
     body = {
         "schema_version": 1,
@@ -305,13 +311,19 @@ def _attempt(tmp_path, role="full"):
         "plan": build_plan(SMOKE_SWEEP),
         "source_commit": "c" * 40,
     }
-    attempt = tmp_path / role
+    if graph_prefill:
+        body["phases"] = ["context"]
+        body["prefill_execution"] = "framework_breakable_cuda_graph"
+    attempt = tmp_path / (role + ("-graph" if graph_prefill else ""))
     raw = attempt / "raw"
     raw.mkdir(parents=True)
     (attempt / "manifest.json").write_text(json.dumps({**body, "manifest_sha256": sha256_json(body)}))
     records = []
     for phase, batch, prefix, x in target_keys(body["plan"]):
-        records += _records(flat, phase, batch, prefix, x, [[1.0, 2.0], [1.5, 1.0]])
+        if graph_prefill and phase != "context":
+            continue
+        method = GRAPH_PREFILL if graph_prefill else None
+        records += _records(flat, phase, batch, prefix, x, [[1.0, 2.0], [1.5, 1.0]], method=method)
     for rank in (0, 1):
         lines = [json.dumps(r) for r in records if r["tp_rank"] == rank]
         (raw / f"rank-{rank}.jsonl").write_text("\n".join(lines) + "\n")
@@ -350,3 +362,32 @@ def test_finalize_writes_table_evidence_and_collection_sidecar(tmp_path, monkeyp
     assert meta["runtime"]["image_digest"] == RUNTIME_IMAGES["vllm"]
     assert table["rows"] == pq.read_table(output).num_rows and len(table["data_sha256"]) == 64
     assert json.loads(evidence.read_text())["attempts"][0]["deployment"] == "fp8-tp2"
+
+
+def test_graph_prefill_revision_replaces_only_prefill_rows(tmp_path, monkeypatch):
+    from collector import glm53flash_attention_contract as contract
+
+    eager, _ = _attempt(tmp_path)
+    output = tmp_path / "rev1" / BASENAME
+    monkeypatch.setattr(
+        "sys.argv", ["x", "finalize", str(eager), "--output", str(output), "--evidence", str(tmp_path / "e1.json")]
+    )
+    contract.main()
+    graph, _ = _attempt(tmp_path, graph_prefill=True)
+    manifest, rows, _ = load_attempt(graph)
+    assert rows and all(json.loads(r["geometry"])["is_context"] and r["used_cuda_graph"] for r in rows)
+    revised = tmp_path / "rev2" / BASENAME
+    argv = ["x", "finalize", str(graph), "--output", str(revised), "--evidence", str(tmp_path / "e2.json")]
+    monkeypatch.setattr("sys.argv", argv + ["--keep-from", str(output)])
+    contract.main()
+    old = pq.read_table(output).to_pylist()
+    new = pq.read_table(revised).to_pylist()
+    assert len(new) == len(old)
+    assert all(r["used_cuda_graph"] for r in new)
+    decode_old = [r for r in old if not json.loads(r["geometry"])["is_context"]]
+    decode_new = [r for r in new if not json.loads(r["geometry"])["is_context"]]
+    assert decode_old == decode_new
+    meta = yaml.safe_load((revised.parent / "collection_meta.yaml").read_text())
+    table = meta["tables"]["glm53_attention_module_perf"]
+    assert table["execution_mode"] == {"fp8-tp2-context": "cuda_graph", "fp8-tp2-generation": "cuda_graph"}
+    assert table["attempts"][-1]["phases"] == ["generation"]
