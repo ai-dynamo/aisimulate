@@ -198,6 +198,8 @@ jobs:
           print('Measurements:', summary['snapshot']['release_tag'])
           print('\n```json\n' + json.dumps(summary['totals'], indent=2) + '\n```')
           print('\nCampaign outcomes:', summary['snapshot']['campaign']['outcomes'])
+          print('\nMeasurement exclusions:', summary['snapshot']['campaign']['measurement_filter_counts'])
+          print('\nPrediction exclusions:', summary['snapshot']['campaign']['exclusion_reasons'])
           print('\nAccuracy values do not gate release staging. Incomplete campaigns cannot publish.')
           PY
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7

@@ -245,7 +245,7 @@ def unpack_artifact(archive: bytes) -> dict:
     keys(outcomes, {"evaluated", "unsupported", "baseline_failed"})
     keys(
         q["exclusion_reasons"],
-        {"recipe_required", "adapter_unsupported", "baseline_failed"},
+        {"recipe_required", "adapter_unsupported", "adapter_topology_mismatch", "baseline_failed"},
     )
     for count in q["exclusion_reasons"].values():
         if type(count) is not int or count < 0:
@@ -259,6 +259,7 @@ def unpack_artifact(archive: bytes) -> dict:
             "stale",
             "missing_mean_latency",
             "mixed_image_curve",
+            "superseded_curve",
             "invalid_gpu_count",
         },
     )

@@ -215,8 +215,22 @@ EP must divide TP; vLLM additionally requires EP to equal TP for these
 single-node records. Conflicting counts and legacy TP × EP counts without an
 explicit boolean `is_multinode` are rejected. Disaggregated, multi-worker, and
 explicitly multi-node records retain the existing reported-GPU arithmetic.
-This SDK correction does not change the separate accuracy CI source-selection
-filters or regenerate published predictions.
+The attention-DP flag also applies to vLLM workers without EP and to each role
+of a disaggregated deployment: enabled means attention TP1 and DP equal to the
+physical worker width. Decode batch size is concurrency divided by replicas and
+attention DP. Disaggregated prefill batch remains one unless overridden.
+
+MiniMax-M2.7 (BF16/FP4), Kimi-K2.6 (FP4), and Kimi-K3 (FP4) use their registered
+model IDs. The FP4 artifacts retain native mixed-quantization metadata rather
+than forcing every GEMM and expert to NVFP4. DB-export `id` is retained as the
+source config ID alongside the benchmark ID.
+
+Accuracy CI retains candidate single-node TP × EP rows for adapter validation,
+then uses the adapted physical count for publication. An older evaluated wheel
+that still produces an inflated world is reported as `adapter_topology_mismatch`.
+See the [accuracy audit](../../../pages/e2e-accuracy/README.md#adapter-parity-audit-2026-10-02)
+for remaining differences from recipe-resolved gym evaluations. These changes
+do not regenerate published predictions.
 
 ## Dynamo recipes
 
