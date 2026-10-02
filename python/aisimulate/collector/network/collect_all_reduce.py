@@ -683,30 +683,30 @@ def benchmark_vllm_allreduce(
                 if measure_power:
                     # Estimate single iteration time (only on rank 0)
                     if rank == 0:
-                        start_warmup = torch.cuda.Event(enable_timing=True)
-                        end_warmup = torch.cuda.Event(enable_timing=True)
+                        start_warmup = dev_mod.Event(enable_timing=True)
+                        end_warmup = dev_mod.Event(enable_timing=True)
 
-                        torch.cuda.synchronize()
+                        dev_mod.synchronize()
                         start_warmup.record()
                         for _ in range(num_warmups):
                             for _ in range(repeat_n):
                                 _ = vllm_mods["tensor_model_parallel_all_reduce"](input_tensor.clone())
                         end_warmup.record()
-                        torch.cuda.synchronize()
+                        dev_mod.synchronize()
 
                         single_iter_time = start_warmup.elapsed_time(end_warmup) / num_warmups / 1000.0  # seconds
                         actual_num_runs = max(num_runs, int(power_min_duration / (single_iter_time * repeat_n)) + 1)
                         actual_num_runs = min(actual_num_runs, 1000)
                     else:
                         # Other ranks do warmup but don't calculate
-                        torch.cuda.synchronize()
+                        dev_mod.synchronize()
                         for _ in range(num_warmups):
                             for _ in range(repeat_n):
                                 _ = vllm_mods["tensor_model_parallel_all_reduce"](input_tensor.clone())
-                        torch.cuda.synchronize()
+                        dev_mod.synchronize()
 
                     # Broadcast actual_num_runs from rank 0 to all ranks
-                    actual_num_runs_tensor = torch.tensor([actual_num_runs], device="cuda")
+                    actual_num_runs_tensor = torch.tensor([actual_num_runs], device=get_device_str())
                     torch.distributed.broadcast(actual_num_runs_tensor, src=0)
                     actual_num_runs = actual_num_runs_tensor.item()
                 else:

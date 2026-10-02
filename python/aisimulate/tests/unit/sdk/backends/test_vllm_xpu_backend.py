@@ -18,7 +18,7 @@ from aisimulate_core.sdk.backends.vllm_backend_xpu import (
     GPT_OSS_ARCH,
     VLLMXPUBackend,
 )
-from aisimulate_core.sdk.perf_database import is_xpu_system
+from aisimulate_core.sdk.perf_database import is_xpu_system, is_xpu_system_spec
 from aisimulate_core.sdk.step_estimate import MixedStepInput, StepEstimate
 
 pytestmark = pytest.mark.unit
@@ -51,6 +51,20 @@ def test_is_xpu_system_unknown_raises() -> None:
     # An unresolvable spec must fail loud, not silently classify as XPU.
     with pytest.raises(ValueError):
         is_xpu_system("nonexistent_typo_system")
+
+
+def test_is_xpu_system_spec_classifies_loaded_spec() -> None:
+    # Classify the already-loaded spec (same roots the database used), no re-load.
+    assert is_xpu_system_spec({"gpu": {"mem_capacity": 1}}) is True  # no sm_version
+    assert is_xpu_system_spec({"gpu": {"sm_version": 90}}) is False
+    assert is_xpu_system_spec(None) is False
+
+
+def test_get_backend_prefers_passed_system_spec_over_name() -> None:
+    # When a loaded spec is passed, it drives classification (not a name re-load).
+    assert isinstance(get_backend("vllm", "ignored", system_spec={"gpu": {"mem_capacity": 1}}), VLLMXPUBackend)
+    nv = get_backend("vllm", "b60", system_spec={"gpu": {"sm_version": 90}})
+    assert type(nv) is VLLMBackend
 
 
 def test_get_backend_vllm_on_xpu_routes_to_xpu_backend() -> None:
