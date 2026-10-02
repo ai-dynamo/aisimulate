@@ -740,6 +740,8 @@ a[aria-disabled="true"] { color: var(--dim); pointer-events: none; }
 .filter-toolbar select { max-width: 460px; }
 select, .chart-legend button, dialog button { background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 6px; }
 .chart-legend button { cursor: pointer; }
+.legend-line { display: inline-block; width: 24px; border-top: 2px dotted currentColor; vertical-align: middle; }
+.legend-line.measured { border-top-style: solid; }
 .chart-legend button[aria-pressed="false"] { opacity: .4; text-decoration: line-through; }
 .detail-cards, .latency-charts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; margin: 16px 0; }
 .metric-chart svg { width: 100%; font-size: 10px; }
