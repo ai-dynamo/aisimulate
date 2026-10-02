@@ -377,7 +377,9 @@ def exec_fingerprint(run: dict) -> dict:
     toks = plan_engine_tokens(run)
     eng = _sha(*toks) if toks else None
     dum = dummy_fingerprint(run.get("model_dir", ""))
-    probe = _HERE / "probes" / f"probe_{run['backend']}.py"
+    probe = _HERE / "probes" / (f"probe_{run['backend']}_server.py"
+                                if run["backend"] == "sglang" and int(run.get("tp", 1)) > 1
+                                else f"probe_{run['backend']}.py")
     code = _sha(probe.read_text()) if probe.exists() else None   # the probe code that will run
     fp = _sha(eng or "", dum or "", code or "", str(run.get("image")), str(run.get("kv_dtype")),
               json.dumps(run.get("cli_extra_args") or [], sort_keys=True))
@@ -418,6 +420,21 @@ def evidence_status(run: dict, sidecar_fp: str | None, raw: dict | None) -> str:
 def enumerate_runs(targets: dict, full: bool, backends: list[str]) -> list[dict]:
     runs = []
     topos = [t for t in targets["topologies"] if t["evidence"] == "real" and (full or t["tp"] == 1)]
+    # topology_policy.tp_required: checkpoints whose representative probe must run
+    # at a declared tp (the dummy does not fit one GPU, e.g. Qwen3.8-2.4T). They
+    # replace the tp1 topology for that (repo, backend) only; the route is the
+    # backend's multi-GPU probe (sglang: probe_sglang_server.py).
+    tp_required = {(e["repo"], e.get("backend", "sglang")): int(e["tp"])
+                   for e in (targets.get("topology_policy") or {}).get("tp_required") or []}
+
+    def _topos_for(repo: str, backend: str) -> list[dict]:
+        req = tp_required.get((repo, backend))
+        if req is None:
+            return topos
+        picked = [t for t in targets["topologies"] if t["evidence"] == "real" and t["tp"] == req and t.get("ep", 1) == 1]
+        if not picked:
+            raise ValueError(f"topology_policy.tp_required asks tp{req} for {repo}/{backend} but targets.topologies has no such real topology")
+        return picked
     for backend in backends:
         be = targets["backends"][backend]
         versions = be["versions"] if full else [be["versions"][-1]]
@@ -476,7 +493,7 @@ def enumerate_runs(targets: dict, full: bool, backends: list[str]) -> list[dict]
                         runs.append({"skip": f"no dummy dir {vdir.name}", "repo": ck["repo"], "variant": variant})
                         continue
                     for version in versions:
-                        for topo in topos:
+                        for topo in _topos_for(ck["repo"], backend):
                             # kv-cache dtype is a first-class serving-config axis
                             # the collector sweeps; probe it on every backend
                             # whose probe can override it (vllm --kv-cache-dtype,
@@ -535,6 +552,19 @@ def emit_queues(runs: list[dict], gpu_list: list[int], plan_name: str) -> None:
     queues: dict[int, list[str]] = {g: [] for g in gpu_list}
     for i, run in enumerate(r for r in runs if "skip" not in r):
         g = gpu_list[i % len(gpu_list)]
+        dev = str(g)
+        if int(run.get("tp", 1)) > 1:
+            # a tp>1 run owns tp GPUs: the first tp of --gpu-list, queued on the
+            # first GPU's queue. Run such plans ALONE (emit with --only), the other
+            # per-GPU queues would otherwise share those devices.
+            if run["backend"] != "sglang":
+                run["skip"] = f"tp{run['tp']} probe route not implemented for {run['backend']}"
+                continue
+            if len(gpu_list) < int(run["tp"]):
+                run["skip"] = f"tp{run['tp']} needs {run['tp']} GPUs in --gpu-list, got {len(gpu_list)}"
+                continue
+            g = gpu_list[0]
+            dev = ",".join(str(x) for x in gpu_list[: int(run["tp"])])
         # skip only when a sidecar recorded THIS execution fingerprint next to the
         # raw: a raw from an older render / dummy / image is not evidence for the
         # current plan (review 2026-09-25); the sidecar is written after the run
@@ -543,7 +573,7 @@ def emit_queues(runs: list[dict], gpu_list: list[int], plan_name: str) -> None:
                 f"echo 'skip [{run['id']}] (done)' || {{ "
                 f"echo '### [{run['id']}] {run['backend']} {run['repo']} {run['variant']} "
                 f"{run['version']} tp{run['tp']}' && timeout 1500 docker run --rm "
-                f"--gpus '\"device={g}\"' --shm-size 16g -e HF_HUB_OFFLINE=1 "
+                f"--gpus '\"device={dev}\"' --shm-size 16g -e HF_HUB_OFFLINE=1 "
                 # host runs an MPS daemon; probes must NOT attach (a fake pipe
                 # dir makes the CUDA client fall back to a normal context)
                 f"-e CUDA_MPS_PIPE_DIRECTORY=/nonexistent-no-mps "
@@ -559,9 +589,15 @@ def emit_queues(runs: list[dict], gpu_list: list[int], plan_name: str) -> None:
             run["engine_args_fidelity"] = "cli-golden"
             run["golden_dir"] = str(art)
             _kv = f" --kv-dtype {run['kv_dtype']}" if run.get("kv_dtype") else ""
-            cmd = (head + f"{run['image']} python3 {PROBES_IN_CONTAINER}/probe_sglang.py "
-                   f"--model {run['model_dir']} --engine-cli {shlex.quote(cli)} --trace{_kv} "
-                   f"--out {WORK}/archive/raw/{run['id']}.json 2>&1 | tail -1 ; }}")
+            if int(run.get("tp", 1)) > 1:
+                run["probe_route"] = "launch_server"
+                cmd = (head + f"{run['image']} python3 {PROBES_IN_CONTAINER}/probe_sglang_server.py "
+                       f"--model {run['model_dir']} --engine-cli {shlex.quote(cli)} --tp {run['tp']}{_kv} "
+                       f"--out {WORK}/archive/raw/{run['id']}.json 2>&1 | tail -1 ; }}")
+            else:
+                cmd = (head + f"{run['image']} python3 {PROBES_IN_CONTAINER}/probe_sglang.py "
+                       f"--model {run['model_dir']} --engine-cli {shlex.quote(cli)} --trace{_kv} "
+                       f"--out {WORK}/archive/raw/{run['id']}.json 2>&1 | tail -1 ; }}")
         elif run["backend"] == "vllm":  # golden fpm run.sh, consumed verbatim
             art = render_golden(run)
             if art is None:
@@ -993,6 +1029,17 @@ def build_records() -> None:
             if not raw.exists():
                 continue
             f = json.loads(raw.read_text())
+            # vision-tower sidecar (probes/vision_<backend>.py): the plan probe is
+            # text-only, so VL checkpoints' encoder kernels come from this separate
+            # evidence table, merged under the same profile_run phase vLLM's own
+            # profile_run already uses. The sidecar's script hash is its provenance.
+            vraw = ROOT / "archive" / "raw" / f"{rid}.vision.json"
+            if vraw.exists():
+                v = json.loads(vraw.read_text())
+                if v.get("profile_run_kernels"):
+                    tbl_home = f["trace"] if isinstance(f.get("trace"), dict) else f
+                    tbl_home.setdefault("profile_run_kernels", v["profile_run_kernels"])
+                    f["vision_evidence"] = v.get("vision_probe")
             ops, orphans = build_ops(f)
             sa = f.get("server_args_resolved") or f.get("engine_args_resolved") or {}
             keep = re.compile(

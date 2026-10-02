@@ -71,10 +71,7 @@ run sgl_glm5_topk             glm5_topk_GLM-5                             zai-or
 run sgl_kda_ctx               kda_ctx_Kimi-K3                             moonshotai/Kimi-K3 auto "$KDA"
 run sgl_kda_gen               kda_gen_Kimi-K3                             moonshotai/Kimi-K3 auto "$KDA"
 run sgl_mla_bmm               mla_bmm_gen_DeepSeek-V3                     deepseek-ai/DeepSeek-V3 auto "$MLA"
-# Qwen3-VL on sglang: the plan probe is text-only (prefill_api shows only
-# HybridAttnBackend.forward; no vision tower ran), so the record has no attention-role
-# evidence for the encoder (vllm proves this family from its profile_run, which feeds
-# dummy multimodal input). Explained deviation until the sglang probe exercises the
-# vision tower — written next to the facts, not into the gate directory.
-OUT_EXPLAINED=facts/pathdiff/explained_sgl_0521; mkdir -p $OUT_EXPLAINED
-OUT=$OUT_EXPLAINED run sgl_encoder_attn_qwen3vl  encoder_attn_Qwen3-VL-2B   Qwen/Qwen3-VL-2B-Instruct auto "$ENC"
+# Qwen3-VL encoder: the plan probe is text-only, so the serving side comes from
+# the vision sidecar (probes/vision_sglang.py -> archive/raw/<id>.vision.json,
+# merged by build_records as the profile_run phase, like vLLM's own profile_run).
+run sgl_encoder_attn_qwen3vl  encoder_attn_Qwen3-VL-2B                    Qwen/Qwen3-VL-2B-Instruct auto "$ENC"

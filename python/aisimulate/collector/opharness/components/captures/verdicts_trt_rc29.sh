@@ -56,3 +56,8 @@ run trt_dsv4_csa_ctx  dsv4_csa_ctx_DeepSeek-V4-Flash-FP8  $M auto "$DSV4"
 run trt_dsv4_csa_gen  dsv4_csa_gen_DeepSeek-V4-Flash-FP8  $M auto "$DSV4"
 run trt_dsv4_hca_ctx  dsv4_hca_ctx_DeepSeek-V4-Flash-FP8  $M auto "$DSV4"
 run trt_dsv4_hca_gen  dsv4_hca_gen_DeepSeek-V4-Flash-FP8  $M auto "$DSV4"
+
+# Qwen3-VL encoder (2026-10-02): serving side = probes/vision_trtllm.py sidecar
+# (synthetic image through Qwen3VLModel.mm_encoder.visual, merged as profile_run).
+ENC='vision|vit|patch|encoder|flash|attn|fmha'
+run trt_encoder_attn_qwen3vl  encoder_attn_Qwen3-VL-2B  Qwen/Qwen3-VL-2B-Instruct auto "$ENC"
