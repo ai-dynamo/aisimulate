@@ -49,7 +49,7 @@ def positive(value) -> bool:
     return isinstance(value, Real) and not isinstance(value, bool) and math.isfinite(value) and value > 0
 
 
-def select_points(tables: dict, max_age_days: int) -> tuple[list[dict], dict]:
+def select_points(tables: dict, max_age_days: int, *, include_multinode: bool = False) -> tuple[list[dict], dict]:
     configs = {row["id"]: row for row in tables["configs"]}
     runs = {row["id"]: row for row in tables["workflow_runs"]}
     if len(configs) != len(tables["configs"]) or len(runs) != len(tables["workflow_runs"]):
@@ -86,7 +86,7 @@ def select_points(tables: dict, max_age_days: int) -> tuple[list[dict], dict]:
             return "invalid_gpu_count"
         per_node = GPUS_PER_NODE_BY_FAMILY.get(config.get("hardware"))
         total_gpus = decode_gpus + prefill_gpus
-        if config["is_multinode"] or (per_node is not None and total_gpus > per_node):
+        if not include_multinode and (config["is_multinode"] or (per_node is not None and total_gpus > per_node)):
             return "multinode"
         if not all(positive(bench["metrics"].get(key)) for key in ("mean_ttft", "mean_tpot")):
             return "missing_mean_latency"
@@ -142,6 +142,7 @@ def select_points(tables: dict, max_age_days: int) -> tuple[list[dict], dict]:
                     "id": sha([bench["id"], bench["config_id"]]),
                     "config": configs[bench["config_id"]],
                     "benchmark": bench,
+                    "silicon_github_run_id": runs[bench["workflow_run_id"]].get("github_run_id"),
                 }
             )
     if not points:
@@ -322,6 +323,7 @@ def predict_point(point: dict) -> dict:
         "is_multinode": config["is_multinode"],
         "silicon_ttft_ms": bench["metrics"]["mean_ttft"] * 1000,
         "silicon_tpot_ms": bench["metrics"]["mean_tpot"] * 1000,
+        "silicon_github_run_id": point.get("silicon_github_run_id"),
         "aic_ttft_ms": float(baseline.ttft),
         "aic_tpot_ms": float(baseline.tpot),
         "aisimulate_total_gpus": config["num_decode_gpu"] + (config["num_prefill_gpu"] if config["disagg"] else 0),
@@ -336,6 +338,47 @@ def predict_point(point: dict) -> dict:
             )
         },
     }
+    total_gpus = row["aisimulate_total_gpus"]
+
+    def optional_positive(value):
+        return float(value) if positive(value) else None
+
+    silicon_metrics = bench["metrics"]
+    row["silicon_e2e_ms"] = optional_positive(silicon_metrics.get("mean_e2el"))
+    if row["silicon_e2e_ms"] is not None:
+        row["silicon_e2e_ms"] *= 1000
+    measured_total = silicon_metrics.get("tput_per_gpu")
+    if not positive(measured_total) and positive(silicon_metrics.get("total_token_throughput")):
+        measured_total = silicon_metrics["total_token_throughput"] / total_gpus
+    row["silicon_total_per_gpu"] = optional_positive(measured_total)
+    measured_output = silicon_metrics.get("output_throughput")
+    row["silicon_output_per_gpu"] = measured_output / total_gpus if positive(measured_output) else None
+    output = getattr(baseline, "tokens_per_second", None)
+    row["aic_output_per_gpu"] = float(output) / total_gpus if positive(output) else None
+    row["aic_total_per_gpu"] = None
+    row["configuration"] = {
+        "backend_version": baseline.backend_version,
+        "max_num_seqs": max(256, bench["conc"]),
+        "max_num_batched_tokens": 8192,
+        "enable_prefix_caching": False,
+        "forward_model": "op_level",
+        **{
+            key: config.get(key)
+            for key in (
+                "prefill_tp",
+                "prefill_ep",
+                "prefill_num_workers",
+                "decode_tp",
+                "decode_ep",
+                "decode_num_workers",
+                "num_prefill_gpu",
+                "num_decode_gpu",
+            )
+        },
+    }
+    row["aic_e2e_ms"] = optional_positive(getattr(baseline, "request_latency", None))
+    if row["aic_output_per_gpu"] is not None:
+        row["aic_total_per_gpu"] = row["aic_output_per_gpu"] * (bench["isl"] + bench["osl"]) / bench["osl"]
     try:
         spec = replay_spec(request, baseline.backend_version)
         metrics = EngineReplayRunnerFactory().create(0).run(spec).metrics
@@ -349,9 +392,20 @@ def predict_point(point: dict) -> dict:
             dynamo_ttft_ms=ttft,
             dynamo_tpot_ms=tpot,
             aisimulate_runner="aisimulate.engine_replay",
+            dynamo_e2e_ms=optional_positive(metrics.get("mean_e2e_latency_ms")),
+            dynamo_output_per_gpu=(
+                float(metrics["output_throughput_tok_s"]) / total_gpus
+                if positive(metrics.get("output_throughput_tok_s"))
+                else None
+            ),
+            dynamo_total_per_gpu=(
+                float(metrics["total_throughput_tok_s"]) / total_gpus
+                if positive(metrics.get("total_throughput_tok_s"))
+                else None
+            ),
         )
-    except Exception:
-        row.update(aisimulate_status="failed")
+    except Exception as exc:
+        row.update(aisimulate_status="failed", aisimulate_error_type=type(exc).__name__, aisimulate_error=str(exc))
     return {
         "id": point["id"],
         "outcome": "evaluated",
@@ -406,7 +460,9 @@ def campaign(args) -> None:
     manifest = json.loads(args.manifest.read_text())
     validate_manifest(manifest)
     identity = wheel_identity(args.wheel)
-    points, selection = select_points(json.loads(args.tables.read_text()), manifest["max_age_days"])
+    points, selection = select_points(
+        json.loads(args.tables.read_text()), manifest["max_age_days"], include_multinode=True
+    )
     started = datetime.now(UTC).isoformat()
     results = []
     with ThreadPoolExecutor(max_workers=args.workers) as pool:
@@ -455,6 +511,7 @@ def campaign(args) -> None:
         + "/releases/tag/"
         + manifest["release_tag"],
         branch=args.branch,
+        exclude_multinode=False,
     )
     campaign_info = {
         "schema_version": 1,
