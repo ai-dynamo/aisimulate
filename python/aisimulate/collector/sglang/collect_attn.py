@@ -9,14 +9,15 @@ shape intent should live in YAML; this file owns SGLang backend construction,
 KV-cache setup, backend dispatch, and perf logging for the SGLang runtime.
 """
 
-__compat__ = "sglang==0.5.14"
+# 0.5.21 added 2026-10-01 (H20/sm90 collector port: op_smoke + path gates in the v0.5.21 image; findings hopper_sglang_collector_port_0514_to_0521_2026_10_01). Releases in between are unvalidated and excluded.
+__compat__ = "sglang>=0.5.14,<=0.5.21,!=0.5.15,!=0.5.16,!=0.5.17,!=0.5.18,!=0.5.19,!=0.5.20"
 
 import math
 import os
 from types import SimpleNamespace
 from typing import NamedTuple
 
-import pkg_resources
+from importlib.metadata import version as _dist_version  # setuptools/pkg_resources is absent from sglang>=0.5.21 images
 import torch
 from collector.case_generator import (
     get_attention_context_shape_sweeps,
@@ -41,6 +42,9 @@ class Timing(NamedTuple):
 
 # Mock objects to satisfy RadixAttention dependencies
 class MockModelConfig:
+    def get_max_num_attention_heads(self) -> int:  # model_config.py:1504 @0.5.21 (triton_backend.py:255)
+        return int(self.num_attention_heads)
+
     def __init__(
         self,
         num_attention_heads,
@@ -103,7 +107,7 @@ class MockModelConfig:
         self.hf_text_config = self.hf_config
         self.dtype = torch.bfloat16
 
-    def get_num_kv_heads(self, tp_size):
+    def get_num_kv_heads(self, tp_size, dcp_size=1):  # model_config.py:1512 @0.5.21 adds dcp_size (DCP replicates KV)
         return self.num_key_value_heads // tp_size
 
 
@@ -139,6 +143,9 @@ class MockServerArgs:
 
 
 class MockModelRunner:
+    def decode_num_tokens_per_req(self, *, num_draft_tokens=None) -> int:
+        return 1
+
     def __init__(
         self,
         device,
@@ -177,6 +184,10 @@ class MockModelRunner:
                 moe_dp_rank=0, moe_dp_size=1, dcp_size=1, gpu_id=0,
             )
         self.is_draft_worker = False
+        # sglang>=0.5.21 backends ask the runner for logits rows per decode slot
+        # (model_runner.py:796 decode_num_tokens_per_req; triton_backend.py:218,222);
+        # the kernel collectors never run speculative decoding -> 1
+        self.spec_algorithm = None
         self.model_is_mrope = False
         self.sliding_window_size = attention_chunk_size
         if self.sliding_window_size is None and runtime_window_size >= 0:
@@ -194,6 +205,11 @@ class MockModelRunner:
             attention_chunk_size,
         )
         self.kv_cache_dtype = kv_cache_dtype  # Default
+        # sglang>=0.5.21 FlashAttentionBackend reads the server-args string next to the
+        # torch dtype (flashattention_backend.py:192-194 kv_cache_dtype_str, drives the
+        # mxfp8 branch); serving sets it from server_args.kv_cache_dtype
+        # (model_runner.py:1481). The collector's kv_cache_dtype is that same string.
+        self.kv_cache_dtype_str = kv_cache_dtype
         self.page_size = page_size
         self.tp_size = 1
         self.is_hybrid = False
@@ -417,6 +433,9 @@ def run_attention_torch(
     device="cuda:0",
     page_size: int | None = None,
 ):
+    from collector.sglang.runtime_compat import ensure_offline_runtime_published
+
+    ensure_offline_runtime_published()  # sglang>=0.5.20 backends read get_exec()/get_parallel()
     if use_fp8_context_fmha:
         assert use_fp8_kv_cache, "If you want to use fp8 context fmha, kv cache must be fp8"
     kvtype = torch.float8_e4m3fn if use_fp8_kv_cache else torch.bfloat16
@@ -507,6 +526,9 @@ def run_attention_torch(
         page_size=model_runner.page_size,
         get_kvcache=lambda: model_runner.token_to_kv_pool,
     )
+    from collector.sglang.runtime_compat import attach_kv_index_translator
+
+    attach_kv_index_translator(model_runner)
 
     if attn_backend_name == "flashinfer":
         from sglang.srt.layers.attention.flashinfer_backend import FlashInferAttnBackend
@@ -740,7 +762,7 @@ def run_attention_torch(
             }
         ],
         framework="SGLang",
-        version=pkg_resources.get_distribution("sglang").version,
+        version=_dist_version("sglang"),
         device_name=torch.cuda.get_device_name(device),
         op_name=op_name,
         kernel_source=attn_backend_name,

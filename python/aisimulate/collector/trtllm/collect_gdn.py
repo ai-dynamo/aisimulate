@@ -573,48 +573,51 @@ def run_gdn_generation_benchmark(
                         power_stats=results["power_stats"],
                     )
 
-                # --- Benchmark fused_recurrent_gated_delta_rule ---
-                torch.cuda.synchronize()
-                fused_recurrent_gated_delta_rule(
-                    q,
-                    k,
-                    v,
-                    g,
-                    beta,
-                    initial_state=gdn_state,
-                    output_final_state=True,
-                )
-                torch.cuda.synchronize()
-
-                def run_gdn_update(_q=q, _k=k, _v=v, _g=g, _beta=beta, _state=gdn_state):
+                if fused_recurrent_gated_delta_rule is None:
+                    print("[gdn] fused_recurrent_gated_delta_rule row omitted: kernel absent in this trtllm (>=1.3.0rc29)")
+                else:
+                    # --- Benchmark fused_recurrent_gated_delta_rule ---
+                    torch.cuda.synchronize()
                     fused_recurrent_gated_delta_rule(
-                        _q,
-                        _k,
-                        _v,
-                        _g,
-                        _beta,
-                        initial_state=_state,
+                        q,
+                        k,
+                        v,
+                        g,
+                        beta,
+                        initial_state=gdn_state,
                         output_final_state=True,
                     )
+                    torch.cuda.synchronize()
 
-                with benchmark_with_power(
-                    device=device,
-                    kernel_func=run_gdn_update,
-                    num_warmups=num_warmups,
-                    num_runs=num_runs,
-                    repeat_n=1,
-                    allow_graph_fail=True,
-                ) as results:
-                    log_perf(
-                        item_list=[{**common_log_data, "latency": results["latency_ms"]}],
-                        framework="TRTLLM",
-                        version=trtllm_version,
-                        device_name=torch.cuda.get_device_name(device),
-                        op_name="gdn",
-                        kernel_source="fused_recurrent_gated_delta_rule",
-                        perf_filename=perf_filename,
-                        power_stats=results["power_stats"],
-                    )
+                    def run_gdn_update(_q=q, _k=k, _v=v, _g=g, _beta=beta, _state=gdn_state):
+                        fused_recurrent_gated_delta_rule(
+                            _q,
+                            _k,
+                            _v,
+                            _g,
+                            _beta,
+                            initial_state=_state,
+                            output_final_state=True,
+                        )
+
+                    with benchmark_with_power(
+                        device=device,
+                        kernel_func=run_gdn_update,
+                        num_warmups=num_warmups,
+                        num_runs=num_runs,
+                        repeat_n=1,
+                        allow_graph_fail=True,
+                    ) as results:
+                        log_perf(
+                            item_list=[{**common_log_data, "latency": results["latency_ms"]}],
+                            framework="TRTLLM",
+                            version=trtllm_version,
+                            device_name=torch.cuda.get_device_name(device),
+                            op_name="gdn",
+                            kernel_source="fused_recurrent_gated_delta_rule",
+                            perf_filename=perf_filename,
+                            power_stats=results["power_stats"],
+                        )
 
             else:
                 input_pool = _make_input_pool(
@@ -666,52 +669,55 @@ def run_gdn_generation_benchmark(
                         power_stats=results["power_stats"],
                     )
 
-                # --- Benchmark fused_recurrent_gated_delta_rule ---
-                torch.cuda.synchronize()
-                fused_recurrent_gated_delta_rule(
-                    input_pool["q"][0],
-                    input_pool["k"][0],
-                    input_pool["v"][0],
-                    input_pool["g"][0],
-                    input_pool["beta"][0],
-                    initial_state=gdn_state,
-                    output_final_state=True,
-                )
-                torch.cuda.synchronize()
-
-                gdn_iter_idx = [0]
-
-                def run_gdn_update(_pool=input_pool, _state=gdn_state, _idx=gdn_iter_idx):
-                    idx = _idx[0] % total_iters
-                    _idx[0] += 1
+                if fused_recurrent_gated_delta_rule is None:
+                    print("[gdn] fused_recurrent_gated_delta_rule row omitted: kernel absent in this trtllm (>=1.3.0rc29)")
+                else:
+                    # --- Benchmark fused_recurrent_gated_delta_rule ---
+                    torch.cuda.synchronize()
                     fused_recurrent_gated_delta_rule(
-                        _pool["q"][idx],
-                        _pool["k"][idx],
-                        _pool["v"][idx],
-                        _pool["g"][idx],
-                        _pool["beta"][idx],
-                        initial_state=_state,
+                        input_pool["q"][0],
+                        input_pool["k"][0],
+                        input_pool["v"][0],
+                        input_pool["g"][0],
+                        input_pool["beta"][0],
+                        initial_state=gdn_state,
                         output_final_state=True,
                     )
+                    torch.cuda.synchronize()
 
-                with benchmark_with_power(
-                    device=device,
-                    kernel_func=run_gdn_update,
-                    num_warmups=num_warmups,
-                    num_runs=num_runs,
-                    repeat_n=1,
-                    allow_graph_fail=True,
-                ) as results:
-                    log_perf(
-                        item_list=[{**common_log_data, "latency": results["latency_ms"]}],
-                        framework="TRTLLM",
-                        version=trtllm_version,
-                        device_name=torch.cuda.get_device_name(device),
-                        op_name="gdn",
-                        kernel_source="fused_recurrent_gated_delta_rule",
-                        perf_filename=perf_filename,
-                        power_stats=results["power_stats"],
-                    )
+                    gdn_iter_idx = [0]
+
+                    def run_gdn_update(_pool=input_pool, _state=gdn_state, _idx=gdn_iter_idx):
+                        idx = _idx[0] % total_iters
+                        _idx[0] += 1
+                        fused_recurrent_gated_delta_rule(
+                            _pool["q"][idx],
+                            _pool["k"][idx],
+                            _pool["v"][idx],
+                            _pool["g"][idx],
+                            _pool["beta"][idx],
+                            initial_state=_state,
+                            output_final_state=True,
+                        )
+
+                    with benchmark_with_power(
+                        device=device,
+                        kernel_func=run_gdn_update,
+                        num_warmups=num_warmups,
+                        num_runs=num_runs,
+                        repeat_n=1,
+                        allow_graph_fail=True,
+                    ) as results:
+                        log_perf(
+                            item_list=[{**common_log_data, "latency": results["latency_ms"]}],
+                            framework="TRTLLM",
+                            version=trtllm_version,
+                            device_name=torch.cuda.get_device_name(device),
+                            op_name="gdn",
+                            kernel_source="fused_recurrent_gated_delta_rule",
+                            perf_filename=perf_filename,
+                            power_stats=results["power_stats"],
+                        )
 
             # Cleanup
             if aic_cached_inputs:
@@ -755,8 +761,19 @@ def run_gdn_torch(
         contextlib.redirect_stderr(_devnull_file),
     ):
         import tensorrt_llm
-        from tensorrt_llm._torch.modules.fla.fused_recurrent import fused_recurrent_gated_delta_rule
         from tensorrt_llm._torch.modules.mamba.causal_conv1d import causal_conv1d_fn, causal_conv1d_update
+
+        # Extra FLA row (the vendored single-step recurrence). trtllm >=1.3.0rc29
+        # removed fused_recurrent_gated_delta_rule from fla/fused_recurrent.py
+        # (only the *_update variants remain; serving never called the removed
+        # one — gdn_mixer.forward_decode uses fused_sigmoid_gating_delta_rule_update
+        # at rc23:670 and rc29:706 alike). When the kernel does not exist the row
+        # cannot exist: the serving-dispatch row below is still produced, and the
+        # omission is printed once per case, never silent.
+        try:
+            from tensorrt_llm._torch.modules.fla.fused_recurrent import fused_recurrent_gated_delta_rule
+        except ImportError:
+            fused_recurrent_gated_delta_rule = None
 
         # Serving dispatch, never the vendored kernel directly: the GDN mixer
         # resolves chunk_gated_delta_rule to FlashInfer's cute-DSL chunk kernel on

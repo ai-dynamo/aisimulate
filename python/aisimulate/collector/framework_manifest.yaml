@@ -14,27 +14,18 @@ schema_version: 2
 frameworks:
   sglang:
     source_repo: "https://github.com/sgl-project/sglang.git"
+    # 2026-10-01 (H20/sm90 upgrade audit, results/findings.yaml
+    # hopper_sglang_collector_port_0514_to_0521_2026_10_01): default pin moved
+    # 0.5.14 -> 0.5.21 (newest release tag). Both tags resolve to the same
+    # multi-arch index digest, as the 0.5.17 model pins below do. The former
+    # kda (kimi-k3 branch build, 0.5.16) and msa (official v0.5.16) family pins
+    # are gone: 0.5.21 ships models/kimi_linear.py + the KDA Triton lanes and
+    # models/minimax_m3.py, and both op families were smoked/gated on it.
     default:
-      version: "0.5.14"
+      version: "0.5.21"
       images:
-        default: "lmsysorg/sglang:v0.5.14@sha256:5027e95bf6ec536856b1b52a91d1f35ff5c564ab83e8a94758a169ff09bb8df3"
-        cu130: "lmsysorg/sglang:v0.5.14-cu130@sha256:5027e95bf6ec536856b1b52a91d1f35ff5c564ab83e8a94758a169ff09bb8df3"
-    families:
-      # Kimi-K3 KDA kernels exist only on the sglang kimi-k3 branch
-      # (https://github.com/sgl-project/sglang/tree/kimi-k3), whose build
-      # reports 0.5.16. Pin the branch image for the kda family only.
-      kda:
-        version: "0.5.16"
-        images:
-          default: "lmsysorg/sglang@sha256:4b8a7542e00a4d82801d1276108438b024137c9a07f33215d03b04003e500f2b"
-      # MiniMax-M3 (minimax_m3.py + minimax_sparse_ops) landed in the official
-      # v0.5.16 release; the stock 0.5.14 default has no M3. Pin the official
-      # tag for the msa family only (NOT the kimi-k3 branch build above, which
-      # is a different container).
-      msa:
-        version: "0.5.16"
-        images:
-          default: "lmsysorg/sglang:v0.5.16@sha256:7b6a35df9839fd593a94a1eaee82d7777f472225d9f3ad1f8a2e0cb2bd1785d0"
+        default: "lmsysorg/sglang:v0.5.21@sha256:b1259f3ea3275f66237c498ea388919729018bc9f01c3d638391e06e2cf3f469"
+        cu130: "lmsysorg/sglang:v0.5.21-cu130@sha256:b1259f3ea3275f66237c498ea388919729018bc9f01c3d638391e06e2cf3f469"
     # Model-scoped collector runtime pins: when the resolved run model_path
     # exactly equals one of these keys, the pin overrides BOTH the family
     # pins above and the framework default for every op in the run — the
@@ -49,8 +40,12 @@ frameworks:
     # every other op's family/default resolution) unchanged.
     #
     # SGLang v0.5.17 registers Qwen3_5MoeForCausalLM /
-    # Qwen3_5ForCausalLM; v0.5.14 predates that model integration and cannot
-    # collect these cases. Both tags below resolve to the same multi-arch
+    # Qwen3_5ForCausalLM; v0.5.14 predated that model integration and could
+    # not collect these cases. The 0.5.21 default now covers the registration,
+    # but these model runs stay pinned to the runtime they were validated on
+    # until a Qwen3.8 collection is re-validated on 0.5.21 (the 0.5.21 serving
+    # matrix fails Qwen3.8-2.4T-A95B / -FP8 at boot, results/sm90/
+    # sglang-0.5.21.yaml). Both tags below resolve to the same multi-arch
     # index digest. These are collector-runtime declarations, not claims of
     # whole-checkpoint serving validation (in particular for the RadixArk
     # NVFP4 collection fixture).
@@ -79,48 +74,29 @@ frameworks:
           cu130: "lmsysorg/sglang:v0.5.17-cu130@sha256:16aba8925507e631e1dc1e23d95d026533602591775f6a8db68b74ee99746155"
   trtllm:
     source_repo: "https://github.com/NVIDIA/TensorRT-LLM.git"
+    # 2026-10-02 (H20/sm90 upgrade audit, results/findings.yaml
+    # hopper_trtllm_collector_pin_rc20_to_rc29_2026_10_02): default pin moved
+    # 1.3.0rc20 -> 1.3.0rc29 (newest release container). The rc23 moe /
+    # sparse_attention / msa family pins are retired: every trtllm registry op
+    # smokes on rc29 (21/23 clean; moe's first plan case and mamba2's largest
+    # cells fail by their own classified raises) and all 17 path gates align on
+    # it, DSV4 included. Retired-pin history, kept for the data it explains:
+    #   * rc23 moe (2026-08-08): FP4 w4a8_mxfp4_mxfp8 rows show reproducible
+    #     non-monotonic num_tokens segments on Blackwell (median ratio vs rc20
+    #     1.003-1.013; per-bucket tactic/tile-wave quantization, not a campaign
+    #     artifact; GitLab aic-auto-collector pipelines 61692150-61692160,
+    #     61771569-61838704). Existing moe shapes still reuse rc20 data through
+    #     the declared reuse.yaml channel; the rc23 evidence exception in
+    #     evidence_exceptions.yaml keeps its own scope.
+    #   * rc23 sparse_attention: DSV4 attention needed trtllm>=1.3.0rc21 and the
+    #     DSA modules travelled with it (SM90 smoke at bring-up).
+    #   * rc23 msa: the true-sparse fmha_sm100 backend (SM100/103) landed in rc23;
+    #     SM90 msa data stayed at rc20 (Triton reference path, identical-or-worse
+    #     measured at rc23).
     default:
-      version: "1.3.0rc20"
+      version: "1.3.0rc29"
       images:
-        default: "nvcr.io/nvidia/tensorrt-llm/release:1.3.0rc20@sha256:1532b38814b3faf2affdb5ef01ca91468685d314ffb7e8926a0567595355ed88"
-    families:
-      # trtllm FP4 (w4a8_mxfp4_mxfp8) MoE rows show non-monotonic
-      # num_tokens segments (4096->8192, 12288->16384 dips) on all four
-      # Blackwell systems. An rc23 re-collection reproduced the dips
-      # (2026-08-08; exact consumer-key join vs rc20: median ratio
-      # 1.003-1.013, median |per-row delta| 2.4-2.9%, ~25% of rows >5% —
-      # benchmark run-to-run spread, not a systematic shift), so the dips
-      # are REAL, reproducible kernel behavior (per-bucket tactic/tile-wave
-      # quantization), not a campaign artifact. Evidence: GitLab
-      # aic-auto-collector (project 205688) pipelines 61692150-61692160
-      # (moe re-collection, 2026-08-08); DSV4 attention campaigns ran as
-      # pipelines 61771569-61838704 on feat/sbatch-partition-override. The DSV4 moe shapes stay collected on this
-      # runtime for version coherence with the DSV4 attention family; the
-      # remaining moe shapes reuse rc20 via the declared reuse.yaml channel.
-      moe:
-        version: "1.3.0rc23"
-        images:
-          default: "nvcr.io/nvidia/tensorrt-llm/release:1.3.0rc23@sha256:316b840a08a8174fc3f6b5716828bdfe1daaf629ee1ac2a8b7a22526d141a007"
-      # DeepSeek-V4 attention modules require trtllm>=1.3.0rc21 (the model
-      # class and sparse/deepseek_v4 backend first ship there; see
-      # collector/trtllm/collect_dsv4_attn.py __compat__). The catalog family
-      # also carries the DSA modules (dsa_*_module), so trtllm DSA collection
-      # moves to this runtime with it — DSA on rc23 smoke-verified on SM90
-      # (H20) at bring-up; the rc20 serving citations in collect_mla_module
-      # are re-audited on this bump per layer_permissions.md.
-      sparse_attention:
-        version: "1.3.0rc23"
-        images:
-          default: "nvcr.io/nvidia/tensorrt-llm/release:1.3.0rc23@sha256:316b840a08a8174fc3f6b5716828bdfe1daaf629ee1ac2a8b7a22526d141a007"
-      # MiniMax-M3: the true-sparse fmha_sm100 backend (implementation="msa",
-      # SM100/103-only) landed in rc23; rc20 has only the Triton reference
-      # path (measured identical-or-worse on SM90 at rc23, so the existing
-      # existing SM90 msa data stays at rc20). Pin the msa family to rc23 for the
-      # Blackwell collection.
-      msa:
-        version: "1.3.0rc23"
-        images:
-          default: "nvcr.io/nvidia/tensorrt-llm/release:1.3.0rc23@sha256:316b840a08a8174fc3f6b5716828bdfe1daaf629ee1ac2a8b7a22526d141a007"
+        default: "nvcr.io/nvidia/tensorrt-llm/release:1.3.0rc29@sha256:124da3f10b73afbf4242f5c68fb04b48736c61fbe662e715202371fd7f046f43"
   vllm:
     source_repo: "https://github.com/vllm-project/vllm.git"
     default:

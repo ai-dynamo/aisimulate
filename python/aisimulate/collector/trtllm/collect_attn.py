@@ -27,13 +27,30 @@ from collector.case_generator import (
 )
 from collector.helper import benchmark_with_power, get_sm_version, log_perf
 from collector.registry_types import PerfFile
-from tensorrt_llm._torch.attention_backend import TrtllmAttentionMetadata
-from tensorrt_llm._torch.attention_backend.interface import (
-    AttentionRuntimeFeatures,
-    PositionalEmbeddingParams,
-    RopeParams,
-)
-from tensorrt_llm._torch.attention_backend.utils import create_attention
+# trtllm >=1.3.0rc29 moved _torch.attention_backend.* -> _torch.attention.backends.* and
+# _torch.modules.fused_moe -> _torch.moe.fused_moe (the old package root is a deprecation shim
+# without submodules). Path-only compat: same classes, same kernels (layer_permissions.md
+# 'API-compat shims may only change HOW the same kernel is constructed').
+try:
+    from tensorrt_llm._torch.attention.backends import TrtllmAttentionMetadata
+except ModuleNotFoundError:  # < rc29 layout
+    from tensorrt_llm._torch.attention_backend import TrtllmAttentionMetadata
+try:
+    from tensorrt_llm._torch.attention.backends.interface import (
+        AttentionRuntimeFeatures,
+        PositionalEmbeddingParams,
+        RopeParams,
+    )
+except ModuleNotFoundError:  # < rc29 layout
+    from tensorrt_llm._torch.attention_backend.interface import (
+        AttentionRuntimeFeatures,
+        PositionalEmbeddingParams,
+        RopeParams,
+    )
+try:
+    from tensorrt_llm._torch.attention.backends.utils import create_attention
+except ModuleNotFoundError:  # < rc29 layout
+    from tensorrt_llm._torch.attention_backend.utils import create_attention
 from tensorrt_llm._torch.metadata import KVCacheParams
 from tensorrt_llm._torch.pyexecutor.resource_manager import KVCacheManager
 from tensorrt_llm.functional import PositionEmbeddingType
@@ -359,7 +376,10 @@ def run_attention_torch(
         # with backend-agnostic kwargs (pyexecutor/model_engine.py:1784,
         # 1818-1830@1.3.0rc20); ``workspace`` is a TrtllmAttentionMetadata-only
         # field, flashinfer manages its own workspace_buffer.
-        from tensorrt_llm._torch.attention_backend.flashinfer import FlashInferAttentionMetadata
+        try:
+            from tensorrt_llm._torch.attention.backends.flashinfer import FlashInferAttentionMetadata
+        except ModuleNotFoundError:  # < rc29 layout
+            from tensorrt_llm._torch.attention_backend.flashinfer import FlashInferAttentionMetadata
 
         attn_metadata = FlashInferAttentionMetadata(**metadata_kwargs)
     else:

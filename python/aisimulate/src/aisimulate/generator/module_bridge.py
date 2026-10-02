@@ -27,6 +27,16 @@ def _msa_sparse_implementation(task_config) -> str | None:
     )
 
 
+def _msa_sparse_algorithm(task_config) -> str | None:
+    """Optimized-path wrapper over utils.msa_sparse_algorithm (shared with naive)."""
+    from .utils import msa_sparse_algorithm
+
+    return msa_sparse_algorithm(
+        getattr(task_config, "primary_backend_name", None) or "",
+        task_config.primary_model_path,
+    )
+
+
 def _model_has_kda(model_path: str) -> bool:
     from .utils import model_has_kda
 
@@ -253,6 +263,7 @@ def task_config_to_generator_config(
         "nextn": task_config.nextn,
         "nextn_accepted": task_config.nextn_accepted if task_config.nextn else None,
         "msa_sparse_implementation": _msa_sparse_implementation(task_config),
+        "msa_sparse_algorithm": _msa_sparse_algorithm(task_config),
         # KDA linear-attention layers: vllm.rule caps the decode batch (see there)
         "has_kda": _model_has_kda(task_config.primary_model_path),
     }

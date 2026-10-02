@@ -9,13 +9,14 @@ this file owns SGLang MLA backend choice, paged KV-cache setup, DP-attention
 mocking, runtime dispatch, and perf logging.
 """
 
-__compat__ = "sglang==0.5.14"
+# 0.5.21 added 2026-10-01 (H20/sm90 collector port: op_smoke + path gates in the v0.5.21 image; findings hopper_sglang_collector_port_0514_to_0521_2026_10_01). Releases in between are unvalidated and excluded.
+__compat__ = "sglang>=0.5.14,<=0.5.21,!=0.5.15,!=0.5.16,!=0.5.17,!=0.5.18,!=0.5.19,!=0.5.20"
 
 import math
 import os
 import random
 
-import pkg_resources
+from importlib.metadata import version as _dist_version  # setuptools/pkg_resources is absent from sglang>=0.5.21 images
 import sglang.srt.layers.dp_attention
 import sglang.srt.server_args
 import torch
@@ -93,6 +94,9 @@ def _mla_compute_dtype(backend: str, kv_cache_dtype: torch.dtype) -> str:
 
 
 class MockModelConfig:
+    def get_max_num_attention_heads(self) -> int:  # model_config.py:1504 @0.5.21 (triton_backend.py:255)
+        return int(self.num_attention_heads)
+
     def __init__(
         self,
         context_len: int = 32768,
@@ -123,7 +127,7 @@ class MockModelConfig:
         self.scaling = scaling
         self.is_local_attention_model = False
 
-    def get_num_kv_heads(self, tp_size: int):
+    def get_num_kv_heads(self, tp_size: int, dcp_size: int = 1):  # model_config.py:1512 @0.5.21
         return 1
 
 
@@ -165,6 +169,9 @@ class MockServerArgs:
 
 
 class MockModelRunner:
+    def decode_num_tokens_per_req(self, *, num_draft_tokens=None) -> int:
+        return 1
+
     def __init__(
         self,
         device: torch.device,
@@ -177,6 +184,8 @@ class MockModelRunner:
         self.gpu_id = device.index if device.index is not None else torch.cuda.current_device()
         self.tp_size = 1
         self.kv_cache_dtype = kv_cache_dtype
+        # sglang>=0.5.21 backends read the runner's server-arg spelling (model_runner.py:1481)
+        self.kv_cache_dtype_str = "fp8_e4m3" if kv_cache_dtype == torch.float8_e4m3fn else "auto"
         self.dtype = torch.bfloat16
         self.page_size = page_size
         self.req_to_token_pool = None
@@ -208,7 +217,11 @@ class MockModelRunner:
                 moe_dp_rank=0, moe_dp_size=1, dcp_size=1, gpu_id=0,
             )
         self.server_args = MockServerArgs(kv_cache_dtype, page_size)
-        self.is_draft_worker = False  # read by the 0.5.16 attention backends (draft-worker branches)
+        self.is_draft_worker = False
+        # sglang>=0.5.21 backends ask the runner for logits rows per decode slot
+        # (model_runner.py:796 decode_num_tokens_per_req; triton_backend.py:218,222);
+        # the kernel collectors never run speculative decoding -> 1
+        self.spec_algorithm = None  # read by the 0.5.16 attention backends (draft-worker branches)
         self.use_mla_backend = True
 
 
@@ -367,6 +380,9 @@ def run_mla(
     perf_filename,
     device="cuda:0",
 ):
+    from collector.sglang.runtime_compat import ensure_offline_runtime_published
+
+    ensure_offline_runtime_published()  # sglang>=0.5.20 backends read get_exec()/get_parallel()
     torch.cuda.set_device(device)
     torch_device = torch.device(device)
     random.seed(0)
@@ -403,7 +419,12 @@ def run_mla(
     model_runner.server_args.prefill_attention_backend = selected_backend
     model_runner.server_args.decode_attention_backend = selected_backend
     # Set global args after potential overrides.
-    sglang.srt.server_args.set_global_server_args_for_scheduler(model_runner.server_args)
+    try:
+        from sglang.srt.runtime_context import publish as _publish  # noqa: F401
+    except ImportError:
+        sglang.srt.server_args.set_global_server_args_for_scheduler(model_runner.server_args)
+    # >=0.5.20: set_global_server_args_for_scheduler publishes (resolve_once on a real ServerArgs record);
+    # ensure_offline_runtime_published() already installed the process record, the mock drives the backends directly.
 
     # Define dimensions based on phase
     kv_lora_rank = KV_LORA_RANK
@@ -450,6 +471,9 @@ def run_mla(
         enable_memory_saver=False,
     )
     model_runner.token_to_kv_pool = kv_pool
+    from collector.sglang.runtime_compat import attach_kv_index_translator
+
+    attach_kv_index_translator(model_runner)
 
     if selected_backend == "trtllm_mla":
         # TRTLLMMLABackend inherits FlashInferMLAAttnBackend which creates
@@ -646,7 +670,7 @@ def run_mla(
             }
         ],
         framework="SGLang",
-        version=pkg_resources.get_distribution("sglang").version,
+        version=_dist_version("sglang"),
         device_name=torch.cuda.get_device_name(device),
         op_name=f"mla_{'context' if is_context_phase else 'generation'}",
         kernel_source=kernel_source,

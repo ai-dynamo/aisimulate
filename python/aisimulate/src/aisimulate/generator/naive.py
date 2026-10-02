@@ -30,7 +30,7 @@ from aisimulate.sdk.utils import (
     get_model_config_from_model_path,
 )
 
-from .utils import model_has_kda, msa_sparse_implementation, vllm_dsa_kv_cache_dtype
+from .utils import model_has_kda, msa_sparse_algorithm, msa_sparse_implementation, vllm_dsa_kv_cache_dtype
 
 logger = logging.getLogger(__name__)
 
@@ -565,6 +565,10 @@ def build_naive_generator_params(
     _msa_impl = msa_sparse_implementation(backend_name, model_name, system_name)
     if _msa_impl is not None:
         model_config["msa_sparse_implementation"] = _msa_impl
+    # TRT-LLM >= rc29 requires sparse_attention_config.algorithm for M3 (every SM)
+    _msa_algo = msa_sparse_algorithm(backend_name, model_name)
+    if _msa_algo is not None:
+        model_config["msa_sparse_algorithm"] = _msa_algo
 
     service = _deep_merge_dicts(service, _section_override(overrides, "ServiceConfig"))
     k8s = _deep_merge_dicts(k8s, _section_override(overrides, "K8sConfig"))

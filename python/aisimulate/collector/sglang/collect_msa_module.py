@@ -323,17 +323,31 @@ _M3_INDEX_DIM = 128
 _M3_NATIVE_GQA_RATIO = 16  # 64 q / 4 kv heads (bundled config)
 
 
+def _loaded_num_layers() -> int:
+    """Layers the worker loads (SGLANG_TEST_NUM_LAYERS, default 2) — every one of
+    them owns a slot in the main pool and the index-K pool, so the plan-time
+    footprint is per token x layers (memory_pool.py:5404 MiniMaxSparseKVPool
+    builds one MHA pool over start_layer..end_layer plus one index pool per
+    sparse layer @0.5.21)."""
+    return int(os.environ.get("SGLANG_TEST_NUM_LAYERS", "2"))
+
+
 def _estimated_kv_bytes_per_token(num_heads: int, kv_cache_dtype: str) -> int:
-    """Upper-bound bytes/token of the M3 pools at this per-GPU head count:
-    main paged K+V (kv-head sharded; fp8 stores 1 B/elem, else bf16) plus the
-    index-K side cache (always model dtype, kv_cache_configurator.py:1246
-    index_dtype=model_dtype @v0.5.16)."""
+    """Upper-bound bytes/token of the M3 pools at this per-GPU head count, for
+    ALL loaded layers: main paged K+V (kv-head sharded; fp8 stores 1 B/elem, else
+    bf16) plus the index-K side cache (model dtype unless fp8 attn-GEMM,
+    memory_pool.py:5392 get_minimax_sparse_index_dtype @0.5.21; index_dtype=
+    model_dtype @v0.5.16 kv_cache_configurator.py:1246). The 0.5.16-era
+    estimate priced one layer while the worker loads two: the three
+    largest-batch decode cells (b=256/512/1024 x 131072/65536/32768) passed the
+    plan filter and then failed the worker's execute-or-raise capacity check
+    (33.6M planned tokens > 24.5M real pool, H20 0.5.21 smoke 2026-10-01)."""
     kv_heads = max(1, num_heads // _M3_NATIVE_GQA_RATIO)
     main_elem = 1 if kv_cache_dtype == "fp8" else 2
     main = 2 * kv_heads * _M3_HEAD_DIM * main_elem
     index_heads = min(_M3_INDEX_HEADS, num_heads)
     index = index_heads * _M3_INDEX_DIM * 2
-    return main + index
+    return (main + index) * _loaded_num_layers()
 
 
 def _plan_memory_filter(shapes, *, num_heads: int, kv_cache_dtype: str, is_prefill: bool):
@@ -657,7 +671,6 @@ def load_model_runner(
     (server_args.py _handle_gpu_memory_settings) and would go negative.
     """
     from sglang.srt.configs.model_config import ModelConfig
-    from sglang.srt.distributed.parallel_state_wrapper import ParallelState
     from sglang.srt.entrypoints.engine import _set_envs_and_config
     from sglang.srt.layers.moe import initialize_moe_config
     from sglang.srt.layers.quantization.fp4_utils import initialize_fp4_gemm_config
@@ -726,9 +739,6 @@ def load_model_runner(
     )
 
     _set_envs_and_config(server_args)
-    initialize_moe_config(server_args)
-    initialize_fp8_gemm_config(server_args)
-    initialize_fp4_gemm_config(server_args)
 
     model_config = ModelConfig.from_server_args(server_args)
     actual_architecture = (model_config.hf_config.architectures or [None])[0]
@@ -746,12 +756,15 @@ def load_model_runner(
         _sock.bind(("127.0.0.1", 0))
         nccl_port = _sock.getsockname()[1]
 
+    from collector.sglang.runtime_compat import init_runtime_config
+
+    _runner_parallel_kwargs = init_runtime_config(server_args, gpu_id, nccl_port=nccl_port, model_config=model_config)
     model_runner = ModelRunner(
         model_config=model_config,
         mem_fraction_static=server_args.mem_fraction_static,
         gpu_id=gpu_id,
-        ps=ParallelState.trivial(gpu_id=gpu_id),
         nccl_port=nccl_port,
+        **_runner_parallel_kwargs,
         server_args=server_args,
     )
     model_runner.alloc_memory_pool()
@@ -841,7 +854,13 @@ def _decode_graph_covered(model_runner, num_tokens: int) -> bool:
     graph: cuda_graph_config.decode coverage (backend != disabled; bs list
     or max_bs — resolved per GPU tier by server_args
     _handle_gpu_memory_settings, e.g. 256 on the SM90 validation node at tp<4)."""
-    decode_cfg = model_runner.server_args.cuda_graph_config.decode
+    cuda_graph_config = model_runner.server_args.cuda_graph_config
+    if cuda_graph_config is None:
+        # sglang>=0.5.21: derived config lives behind the resolving view (arg_groups/model_override_base.py:120)
+        from sglang.srt.arg_groups.model_override_base import resolving_view
+
+        cuda_graph_config = resolving_view(model_runner.server_args).cuda_graph_config
+    decode_cfg = cuda_graph_config.decode
     if decode_cfg.backend == "disabled":
         return False
     if decode_cfg.bs:

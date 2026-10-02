@@ -10,9 +10,10 @@ binds both to this producer's checkpoint:
   extra_perf_filenames[0]  -> scale_matrix_perf.txt  (the static per-tensor quant alone)
 """
 
-__compat__ = "sglang==0.5.14"
+# 0.5.21 added 2026-10-01 (H20/sm90 collector port: op_smoke + path gates in the v0.5.21 image; findings hopper_sglang_collector_port_0514_to_0521_2026_10_01). Releases in between are unvalidated and excluded.
+__compat__ = "sglang>=0.5.14,<=0.5.21,!=0.5.15,!=0.5.16,!=0.5.17,!=0.5.18,!=0.5.19,!=0.5.20"
 
-import pkg_resources
+from importlib.metadata import version as _dist_version  # setuptools/pkg_resources is absent from sglang>=0.5.21 images
 import torch
 from collector.case_generator import get_compute_scale_case_specs
 from collector.helper import benchmark_with_power, get_sm_version, log_perf
@@ -74,7 +75,7 @@ def run_computescale(m, k, *, perf_filename, extra_perf_filenames, device="cuda:
     dynamic_latency, dynamic_power = _bench_dynamic(device, x)
     static_latency, static_power = _bench_static(device, x)
     compute_scale_latency = max(0.0, dynamic_latency - static_latency)
-    version = pkg_resources.get_distribution("sglang").version
+    version = _dist_version("sglang")
 
     if not log_perf(
         item_list=[{"m": m, "k": k, "quant_dtype": "fp8", "latency": compute_scale_latency}],
