@@ -14,6 +14,7 @@ from typing import Any
 
 from accuracy_digest import encode_points
 
+from fpm_accuracy.dashboard.measurement_heatmaps import _axis_values, _bin_index, measurement_workload_heatmaps
 from fpm_accuracy.exceptions import DependencyError
 from fpm_accuracy.hf.models import MeasurementCase
 from fpm_accuracy.models.aic_predictors import AicFpmPredictor, AicRegressionPredictor
@@ -69,8 +70,10 @@ def score(
     *,
     factory: Callable = create_predictor,
     include_points: bool = False,
+    heatmaps: dict | None = None,
 ) -> dict:
     """Keep every eligible outcome; targets reach regression only after scoring."""
+    cells = {}
     points = array("d")
     metrics = {workload: Metric() for workload in WORKLOADS}
     status = "evaluated"
@@ -115,6 +118,11 @@ def score(
                         raise ValueError("invalid prediction")
                 except Exception:
                     predicted, error = None, True
+            if heatmaps is not None:
+                heatmap = heatmaps[workload]
+                x, y = _axis_values(observation)
+                key = (workload, _bin_index(x, heatmap.x_bins), _bin_index(y, heatmap.y_bins))
+                cells.setdefault(key, Metric()).add(actual, predicted, error, False)
             if include_points:
                 points.append(-1 if error or predicted is None else abs(predicted - actual) / actual * 100)
             # Score before the model sees this target.
@@ -132,6 +140,23 @@ def score(
         if predictor is not None:
             predictor.close()
     return {
+        **(
+            {
+                "_heatmaps": {
+                    phase: {
+                        **heatmap.model_dump(mode="json"),
+                        "cells": [
+                            {"x_index": x, "y_index": y, **metric.export()}
+                            for (kind, x, y), metric in sorted(cells.items())
+                            if kind == phase
+                        ],
+                    }
+                    for phase, heatmap in heatmaps.items()
+                }
+            }
+            if heatmaps is not None
+            else {}
+        ),
         **({"_points": encode_points(points)} if include_points else {}),
         "status": status,
         "artifact": None
@@ -166,6 +191,7 @@ def evaluate_case(
     *,
     factory: Callable = create_predictor,
     comparison: dict | None = None,
+    details: list | None = None,
 ) -> dict:
     config = case.configuration
     ids = [item.observation_id for item in case.observations]
@@ -173,30 +199,46 @@ def evaluate_case(
     if len(ids) != len(set(ids)) or orders != sorted(set(orders)):
         raise ValueError("measurement stream must have unique IDs and strictly increasing order")
     results = {}
+    variants_by_method = {}
+    heatmaps = measurement_workload_heatmaps(case.observations) if details is not None else None
     if str(case.status) == "ready":
-        results["regression"] = score(case, "regression", factory=factory, include_points=comparison is not None)
+        results["regression"] = score(
+            case, "regression", factory=factory, include_points=comparison is not None, heatmaps=heatmaps
+        )
         for mode in METHODS[:2]:
             variants = [
                 item
                 for item in case.fpm_artifacts
                 if ("nowarmup" if ".kv-off." in item.path.lower() else "warmup") == mode
             ]
+            variants_by_method[mode] = [
+                score(case, mode, item, factory=factory, include_points=comparison is not None, heatmaps=heatmaps)
+                for item in variants
+            ]
             results[mode] = (
-                choose_variant(
-                    [
-                        score(
-                            case,
-                            mode,
-                            item,
-                            factory=factory,
-                            include_points=comparison is not None,
-                        )
-                        for item in variants
-                    ]
-                )
+                choose_variant(variants_by_method[mode])
                 if variants
-                else score(case, mode, factory=factory, include_points=comparison is not None)
+                else score(case, mode, factory=factory, include_points=comparison is not None, heatmaps=heatmaps)
             )
+    if details is not None:
+        details.append(
+            {
+                "configuration_id": config.configuration_id,
+                "snapshot_id": config.snapshot_id,
+                "membership_sha256": case.measurement_membership_sha256,
+                "workload_heatmaps": {key: value.model_dump(mode="json") for key, value in heatmaps.items()},
+                "methods": {
+                    method: [
+                        {key: value for key, value in candidate.items() if key != "_points"}
+                        for candidate in (variants_by_method.get(method) or [result])
+                    ]
+                    for method, result in results.items()
+                },
+            }
+        )
+        for candidates in [list(results.values()), *variants_by_method.values()]:
+            for candidate in candidates:
+                candidate.pop("_heatmaps", None)
     if comparison is not None:
         comparison[config.configuration_id + "/" + config.snapshot_id] = {
             "order_sha256": hashlib.sha256(json.dumps(ids).encode()).hexdigest(),

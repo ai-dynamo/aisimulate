@@ -11,7 +11,7 @@ SPDX-License-Identifier: Apache-2.0
       name="description"
       content="Daily AISimulate forward-pass prediction accuracy against pinned Hugging Face measurements."
     />
-    <title>AISimulate - FPM Accuracy Overview</title>
+    <title>AISimulate - FPM Slice Detail</title>
     <script>
       try {
         const savedTheme = localStorage.getItem("sm-theme") || localStorage.getItem("aisimulate-accuracy-theme");
@@ -38,7 +38,7 @@ SPDX-License-Identifier: Apache-2.0
             <img class="brand-logo" src="https://avatars.githubusercontent.com/u/201626793" alt="ai-dynamo" width="32" height="32" />
           </a>
           <h1 id="page-title"><a href="../">AISimulate</a>
-            <span class="page-name">- FPM Accuracy Overview</span>
+            <span class="page-name">- FPM Slice Detail</span>
           </h1>
         </div>
         <div class="header-controls">
@@ -85,43 +85,22 @@ SPDX-License-Identifier: Apache-2.0
       <a href="index.html">Overview</a><a href="trends.html">Trends</a>
       <a href="evaluation-detail.html">Slice Detail</a><a href="3d-visualization.html">3D Visualization</a>
     </nav>
-    <main class="shell dashboard">
-      <section class="migration-context" aria-label="Forward-pass comparison">
-        <p><strong>Compare FPM and online regression against measured forward-pass latency.</strong>
-          Check MAPE alongside prediction coverage. Expand a model to inspect its GPU, framework,
-          and configuration evidence.</p>
-      </section>
-      <p class="branch-status" id="freshness" role="status">Loading branch evidence…</p>
-      <p class="identity-line snapshot-value" aria-live="polite">Loading snapshot identity…</p>
-
-      <section class="summary-grid fpm-summary" aria-label="Snapshot summary">
-        <article class="summary-card"><div class="summary-label">Models</div><div class="summary-value" id="models-value">—</div></article>
-        <article class="summary-card"><div class="summary-label">Configurations</div><div class="summary-value" id="configurations-value">—</div></article>
-        <article class="summary-card"><div class="summary-label">Measurement-ready configurations</div><div class="summary-value" id="measurement-value">—</div></article>
-        <article class="summary-card"><div class="summary-label">Evaluated configurations</div><div class="summary-value accent" id="evaluated-value">—</div></article>
-      </section>
-
-      <section class="matrix-panel" aria-labelledby="matrix-heading">
-        <h2 id="matrix-heading">MAPE vs silicon — successful forward-pass predictions <span id="table-count"></span></h2>
-        <div class="table-scroll" role="region" tabindex="0" aria-label="FPM accuracy matrix">
-          <table>
-            <caption class="sr-only">Accuracy grouped by model and configuration. Activate a column heading to sort model groups. Expand a model to inspect configurations.</caption>
-            <thead><tr>
-              <th scope="col" aria-sort="none"><button class="sort-button" data-sort="model">Model / configuration <span class="sort-mark" aria-hidden="true">▲</span></button></th>
-              <th scope="col" aria-sort="none"><button class="sort-button" data-sort="gpu">GPU <span class="sort-mark" aria-hidden="true">▲</span></button></th>
-              <th scope="col" aria-sort="none"><button class="sort-button" data-sort="framework">Framework <span class="sort-mark" aria-hidden="true">▲</span></button></th>
-              <th scope="col" aria-sort="none"><button class="sort-button" data-sort="measurements">Measurements <span class="sort-mark" aria-hidden="true">▲</span></button></th>
-              <th scope="col" aria-sort="none"><button class="sort-button" data-sort="method:regression">Regression MAPE <span class="sort-mark" aria-hidden="true">▲</span></button></th>
-              <th scope="col" aria-sort="none"><button class="sort-button" data-sort="method:warmup">FPM (KV warmup on) MAPE <span class="sort-mark" aria-hidden="true">▲</span></button></th>
-              <th scope="col" aria-sort="none"><button class="sort-button" data-sort="method:nowarmup">FPM (KV warmup off) MAPE <span class="sort-mark" aria-hidden="true">▲</span></button></th>
-            </tr></thead>
-            <tbody id="overview-body" aria-live="polite"><tr><td colspan="7" class="loading-cell">Loading accuracy matrix…</td></tr></tbody>
-          </table>
-        </div>
-      </section>
-
-    </main>
+<main class="shell dashboard" data-view="detail"><h2>Measured workload and prediction error</h2>
+<p id="dashboard-status" role="status">Loading retained evaluations…</p>
+<label>Evaluation<select id="evaluation-filter"></select></label><section class="fpm-filters" aria-label="Filter measurements">
+<label>Model<select id="model-filter"></select></label><label>GPU<select id="gpu-filter"></select></label>
+<label>Framework<select id="framework-filter"></select></label></section>
+<section class="fpm-filters"><label>Search<input id="search-filter" type="search" placeholder="Configuration, model…"></label>
+<label>Parallelism<select id="parallelism-filter"></select></label><label>Worker role<select id="role-filter"></select></label></section>
+<label>Configuration<select id="configuration-filter"></select></label><p id="detail-evidence"></p>
+<section class="matrix-panel table-scroll"><h3>Phase summary</h3><table id="phase-summary"></table></section>
+<section class="fpm-filters"><label>Method<select id="method-filter"><option value="regression">Regression</option><option value="warmup">FPM (KV warmup on)</option><option value="nowarmup">FPM (KV warmup off)</option></select></label>
+<label>FPM variant<select id="variant-filter"></select></label>
+<label>Workload<select id="phase-filter"><option>prefill</option><option>decode</option><option>mixed</option></select></label></section>
+<div class="fpm-heatmaps"><section class="matrix-panel table-scroll"><h3>Measured workload distribution</h3><div id="distribution"></div></section>
+<section class="matrix-panel table-scroll"><h3>Prediction error</h3><div id="error-heatmap"></div></section></div>
+<p>Only measured traffic contributes to these maps. MAPE uses successful predictions; missing predictions reduce coverage.</p></main>
     <script src="./navigation.js" defer></script>
-    <script src="./app.js" defer></script>
+    <script src="./dashboard.js" defer></script>
   </body>
 </html>

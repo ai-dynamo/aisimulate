@@ -150,6 +150,7 @@ jobs:
           EXPECTED_SHA: ${{ inputs.sha }}
           EVALUATED_BRANCH: ${{ inputs.branch }}
           HF_REVISION: ${{ inputs.hf_revision }}
+          HF_HOME: ${{ runner.temp }}/hf-${{ inputs.hf_revision }}
         run: |
           python scripts/run_fpm_accuracy.py \
             --wheel "${RUNNER_TEMP}"/accuracy-wheel/*.whl \

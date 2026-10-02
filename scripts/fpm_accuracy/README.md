@@ -14,7 +14,7 @@ removed. Unused presentation metadata and its conversion helpers are omitted;
 the worker schema and MoE mapping required for evaluation are retained.
 Unsupported measurement protocols remain visible as unsupported
 configurations; missing protocol identities and corrupt inputs still fail closed. `evaluate.py` reduces each shared measurement stream directly into
-overview aggregates. Optional notification evidence retains observation-order hashes
+overview and per-variant heatmap aggregates. Optional notification evidence retains observation-order hashes
 and compressed percentage-error sequences separately from public Pages artifacts; it does not retain
 raw measured or predicted latencies. See [daily reporting](../../docs/accuracy-slack.md).
 The public `skipped_count` combines excluded and unavailable source observations;
@@ -83,3 +83,24 @@ requirements; they are not part of the daily evaluation environment.
 The selected AISim wheel and its runtime dependencies are installed separately
 because evaluated branches can declare different runtime requirements. The
 campaign checks the wheel hash and runs `pip check` after both installs.
+
+## Dashboard migration
+
+The files under `dashboard/` adapt the corresponding
+`src/aisim_fpm/dashboard/{data,measurement_heatmaps,visualization,visualization_diagnostics}.py`
+from [Gym commit f934c030afc3a03cb04d8f3ff4709194f7445c98](https://gitlab-master.nvidia.com/dl/ai-dynamo/aisim-fpm-gym/-/tree/f934c030afc3a03cb04d8f3ff4709194f7445c98).
+Copyright NVIDIA CORPORATION & AFFILIATES; Apache-2.0, under the existing
+maintainer-confirmed migration permission. Imports were renamed, unused data
+contracts and the GitLab publication helper removed, and publication moved to
+qualified GitHub artifacts. Tests in `tests/fpm_accuracy/test_visualization.py`
+adapt the upstream file of the same name; dashboard fixtures are synthetic
+outputs from those test cases.
+
+Measurement bins and native-rank axis semantics are preserved. Error heatmaps
+share measured bins and accumulate alongside prediction, without a second
+scoring pass. Only the selected variant contributes to Overview and Trends;
+Slice Detail retains every evaluated variant. Measurement-only 3D assets are
+produced once per pinned campaign by `scripts/prepare_fpm_measurements.py`.
+That script traverses current HF snapshots, matching branch accuracy.
+Archived source snapshots do not gate fresh current measurement publication. See the public
+[dashboard README](../../pages/fpm-accuracy/README.md) for storage and rollout.

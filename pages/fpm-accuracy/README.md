@@ -1,4 +1,4 @@
-# FPM Accuracy Overview
+# FPM Accuracy dashboard
 
 The public [FPM Accuracy Overview](https://ai-dynamo.org/aisimulate/fpm-accuracy/?branch=main)
 compares forward-pass predictions with measurements from the public
@@ -6,7 +6,16 @@ compares forward-pass predictions with measurements from the public
 
 ## What is published
 
-- Only Overview: expandable model/configuration rows and sortable metrics.
+- Overview: expandable model/configuration rows and sortable metrics.
+- Trends: main-only, rolling 90-day history starting at
+  `8dad9634735b6875e22a90927216e542e73ba237`. Each code/population pair
+  retains its newest qualified evaluation. Dataset or FPM input changes break
+  the series; MAPE is weighted by successful prediction count.
+- Slice Detail: retained branch evaluations, FPM variants, phase summaries,
+  measurement-only workload distributions, and prediction-error heatmaps.
+- 3D Visualization: independent panels, seven workload axes, stable samples,
+  full gzip chunks, native rank provenance, camera controls, and PNG export.
+  Diagnostic unsynchronized DP groups remain separate from accepted truth.
 - Hide configurations with zero measurements and models with no measured
   configurations. Overview counts reflect visible configurations; complete
   evaluation artifacts still retain all configurations.
@@ -22,7 +31,7 @@ compares forward-pass predictions with measurements from the public
 - The evaluated AISim commit, HF commit, and UTC completion time. Results are
   marked stale after 48 hours or when the selected branch has advanced.
 
-There is no op-based evaluation or navigation to the internal Gym's other tabs.
+There is no op-based evaluation or FPM Coverage tab.
 FPM variants use the same observations. One winner per KV warmup mode is selected
 by coverage descending, MAPE ascending, then artifact ID. This reproduces Gym's
 comparison policy; it is not an independent held-out ranking of input libraries.
@@ -45,10 +54,12 @@ Manual dispatch accepts an eligible branch and a full commit belonging to it.
 At most two branch jobs run concurrently. A verified exact nightly wheel is
 reused for scheduled main when available; otherwise the exact source is built.
 
-Each completed branch uploads `summary.json` and `qualification.json` as
+Each completed branch uploads `summary.json`, `details.json`, and `qualification.json` as
 `fpm-accuracy-web-<branch-key>`, retained for 90 days. Results are not committed.
 Upload the output directory as one path so container runners preserve both
 files at the archive root; the publisher rejects missing or extra files.
+Qualification v2 hashes summary and detail separately; legacy v1 remains
+readable for Overview with explicit unavailable detail states.
 The main-branch Pages publisher verifies checksums, schema, source ancestry,
 producer repository/workflow, evaluator SHA, run attempt, and successful branch
 job. It selects the newest eligible source commit, then latest completion time.
@@ -99,5 +110,47 @@ commit `e8221729db2802e822f6919fd68bc2941743385b`, originally
 `dashboard/index.html` and `dashboard/assets/gym.css`. Modified for a three-column
 public overview, qualified branch snapshots, and public-only provenance. The
 visual presentation now uses AISimulate's E2E accuracy stylesheet.
-Apache-2.0, with maintainer-confirmed migration permission. See the root
-THIRD_PARTY_NOTICES.md and LICENSE. Plotly and other tabs are not included.
+Apache-2.0, with maintainer-confirmed migration permission. The new tabs adapt
+Gym behavior from `f934c030afc3a03cb04d8f3ff4709194f7445c98`; the 3D HTML,
+JS and CSS derive from `dashboard/3d-visualization.html` and
+`dashboard/assets/visualization.{js,css}` at that revision. They are modified
+for AISimulate navigation, styling and GitHub artifact data. Plotly.js v3.4.0
+is bundled unmodified, loaded only by the 3D page, with its MIT license.
+See the root THIRD_PARTY_NOTICES.md and LICENSE.
+
+## Latest dataset and storage
+
+Scheduled and manual campaigns resolve HF `main` once to an immutable SHA.
+Every branch and the shared `Qualify FPM measurements` job receives that SHA;
+HF cache directories include it. The shared job discovers current
+measurement snapshots and uploads `fpm-accuracy-measurements` once per campaign.
+Branch scoring retains current-snapshot membership. No evaluated results are
+committed, and no long-lived Git branch or external database stores history.
+
+A new HF snapshot produces new assets even when the AISim commit is unchanged.
+The Pages publisher keeps distinct measurement/FPM populations, checks every
+checksum and producer job, and selects visualization data matching the latest
+qualified main evaluation's HF revision when available. Otherwise 3D retains
+the latest qualified measurement snapshot with its original HF revision and
+a stale label; without any retained measurement snapshot it shows unavailable. Failed evaluations retain prior qualified
+accuracy results and their original HF revision; results older than 48 hours
+are marked stale. Expired/deleted artifacts disappear at the next publication.
+Full-point chunks load only when requested; summaries and heatmaps contain
+aggregates. Point assets contain public HF measurement evidence, never tokens
+or credentials. Browser fixtures are synthetic and are never deployed as data.
+
+## Rollout
+
+After the workflow changes land on main, dispatch `fpm-accuracy.yml` with
+`branch=main` and `expected_sha=8dad9634735b6875e22a90927216e542e73ba237`.
+This evaluates the exact baseline using that campaign's latest pinned HF
+snapshot; it does not recreate historical HF evidence. Confirm the branch and
+measurement qualification jobs and the following Pages deployment succeed.
+Subsequent daily runs extend history automatically. A failed baseline must be
+retried explicitly; do not relabel a newer result as the baseline.
+
+The initial 3D export uses validated current snapshots, matching scoring.
+At HF `68fa3add95b32a0399d781b043cb0f1008c8040d`, two archived DeepSeek
+manifests lack current-manifest hash bindings. Archived source traversal is
+therefore excluded without weakening loader validation. Retained evaluation
+history remains available for Slice Detail and Trends.
