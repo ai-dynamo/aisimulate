@@ -34,6 +34,8 @@ CLI evaluation still need that evaluation before branch-qualified publication.
   workflow row ID. Older snapshots without this provenance display “—”.
   InfX CI run, Replay status, and AISim prediction error are the last three
   columns, after the latency values and percentage errors.
+  AISim and AIC (legacy CLI) each pair their TTFT / TPOT values with the
+  corresponding percentage errors in the next column, with AISim first.
 - **AISim prediction error** shows recorded failure details for failed or
   unsupported operating points. Successful points show “—”; missing historical
   details show “Not recorded”. Public error text omits local paths and URLs and
