@@ -246,8 +246,14 @@ class AttentionProbe:
             self.pool = torch.cuda.graph_pool_handle()
             self.sentinel_input = torch.zeros(1, device="cuda")
             self.sentinel = torch.cuda.CUDAGraph()
-            with torch.cuda.graph(self.sentinel, pool=self.pool):
+            # capture_begin/end directly: torch.cuda.graph() would empty_cache.
+            stream = torch.cuda.Stream()
+            stream.wait_stream(torch.cuda.current_stream())
+            with torch.cuda.stream(stream):
+                self.sentinel.capture_begin(pool=self.pool)
                 self.sentinel_input.add_(1)
+                self.sentinel.capture_end()
+            torch.cuda.current_stream().wait_stream(stream)
         pool = self.pool
         # BreakableCudaGraphBackend.replay_session/execute: the BCG flag, the
         # attention-backend forward context and the TcPiecewise context whose
