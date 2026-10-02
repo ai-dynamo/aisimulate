@@ -193,7 +193,9 @@ aggregate-only SLA semantics, described in its feature guide.
 GPU count, then higher goodput output throughput and lower E2E latency. It finds
 the smallest qualifying candidate evaluated, not a global minimum or an
 extrapolated replica count. Offered rate and delivered goodput differ because
-startup and drain count toward the replay duration.
+startup and drain count toward the replay duration. Random `min_gpus` searches
+visit the smallest legal backend/topology pairs first, before revisiting their
+scheduler domains. The CLI reports suggestion-budget coverage.
 
 Minimum-GPU selection supports static engine pools and fixed synthetic rate or
 concurrency traffic. It rejects Dynamo/adapters, traces, sessions, searched loads,
@@ -418,7 +420,10 @@ prefill companion. The total GPU budget includes attention, FFN, and companion
 pools. This is analytical fixed-length synthetic traffic, not event-level AFD.
 
 This walkthrough pins a 2,048-token context to bound KV memory and uses an
-illustrative 300 ms ITL limit. Choose limits appropriate to your workload.
+illustrative 300 ms ITL limit. It constrains the prefill companion to TP16 and the
+AFD attention side to TP8 so this small smoke search has a qualifying topology.
+Expand the topology and scheduler domains for an optimization run. Choose limits
+appropriate to your workload.
 Save as `afd-recommendation.yaml`:
 
 <!-- afd-migration-contract-start -->
@@ -433,30 +438,47 @@ traffic:
     requests_per_second: 4
   stop:
     requests_per_load_unit: 10
-
 engine:
   mode: afd
   model: Qwen/Qwen3-32B
   context_length: 2048
   hardware: h200_sxm
   backend: trtllm
-  backend_version: "1.3.0rc20"
+  backend_version: 1.3.0rc20
   afd:
     phase: decode
     combined_with_pd: true
     a_batch_size: 128
-
+    tp_a: 8
+    num_microbatches: 3
+    pipeline_model: optimistic
+  workers:
+    prefill:
+      parallelism:
+        preset:
+        - attention_data: 1
+          moe_expert: 1
+          moe_tensor: 1
+          pipeline: 1
+          replicas: 1
+          tensor: 16
+      scheduler:
+        max_batched_tokens: 8192
+        max_sequences: 16
 evaluation:
   sla:
     ttft_ms: 800
     itl_ms: 300
-
 optimization:
   target: throughput_per_gpu
   strict_sla: true
   constraints:
     max_candidate_gpus: 32
-optimizer: {algorithm: random, max_trials: 2, parallelism: 1, seed: 11}
+optimizer:
+  algorithm: random
+  max_trials: 2
+  parallelism: 1
+  seed: 11
 ```
 <!-- afd-migration-contract-end -->
 
