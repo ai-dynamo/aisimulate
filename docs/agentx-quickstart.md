@@ -27,9 +27,9 @@ Functional simulation does not establish hardware performance accuracy.
 
 ## 1. Install matching source builds
 
-The existing published Dynamo packages use AISimulate 0.12 and do not provide the
-conversation/profile adapter used here. A generic AISimulate 0.13 nightly is also
-not evidence that it contains both required features. Use the exact source pair:
+Use matching source builds for the conversation/profile adapter below. A generic
+AISimulate or Dynamo release is not evidence that it contains both required
+features. Use the exact source pair:
 the Dynamo checkout pins the AISimulate core revision, and the same revision must
 supply the Python package. This source-built integration is not a published
 release.
@@ -46,7 +46,7 @@ uv venv --python 3.12 /tmp/agentx-quickstart/venv
 uv pip install --python /tmp/agentx-quickstart/venv/bin/python 'maturin>=1.12,<2' patchelf
 
 git clone https://github.com/ai-dynamo/dynamo.git /tmp/agentx-quickstart/dynamo
-git -C /tmp/agentx-quickstart/dynamo checkout --detach 44253532ecbce5a3c7aa454475fc63e3b7f84e99
+git -C /tmp/agentx-quickstart/dynamo checkout --detach ee49711a0bf89fa11a68a103eec2e4832fcb213f
 agentx_core_rev=$(/tmp/agentx-quickstart/venv/bin/python -c \
   'import pathlib,tomllib; print(tomllib.loads(pathlib.Path("/tmp/agentx-quickstart/dynamo/Cargo.toml").read_text())["workspace"]["dependencies"]["aisimulate-core"]["rev"])')
 git clone https://github.com/ai-dynamo/aisimulate.git /tmp/agentx-quickstart/aisimulate
@@ -58,7 +58,7 @@ uv pip install --python /tmp/agentx-quickstart/venv/bin/python \
   /tmp/agentx-quickstart/wheels/aisimulate-*.whl
 cd /tmp/agentx-quickstart/dynamo/lib/bindings/python
 RUSTUP_TOOLCHAIN=1.96.1 /tmp/agentx-quickstart/venv/bin/maturin build \
-  --locked --profile dev --no-default-features --features aic-forward-pass \
+  --locked --profile dev --features ais-forward-pass \
   --out /tmp/agentx-quickstart/wheels
 uv pip install --python /tmp/agentx-quickstart/venv/bin/python \
   /tmp/agentx-quickstart/wheels/ai_dynamo_runtime-*.whl \
@@ -223,7 +223,7 @@ lanes can recycle repeatedly through the two-play corpus. The default idle guard
 cap idle waits at 300 seconds per tree and 10 seconds across the client workload,
 while preserving dependencies and relative delays.
 
-Default timing uses the AIC timing provider; default KV capacity is derived
+Default timing uses the AISimulate timing provider; default KV capacity is derived
 from the model and hardware at the selected memory fraction. The 400 GB/s KV
 transfer bandwidth is an example assumption, not a measured link speed.
 
@@ -312,7 +312,9 @@ router overlap is not a substitute for cache hits. The 162 source requests
 include initial snapshot history, and the corpus can be replayed repeatedly as
 lanes recycle, so this is not the expected measured request count.
 
-The source pair above was tested with this exact configuration and trace:
+The source pair above (Dynamo `ee49711a0b`, AISimulate `240aff04bc`) was tested
+on October 2, 2026, with this exact YAML and trace, using normally installed wheels
+in a clean environment:
 
 | Admission window | Completed requests | Actual prefix reuse | Canceled / unsettled |
 | --- | --- | --- | --- |
