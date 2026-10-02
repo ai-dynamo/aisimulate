@@ -325,3 +325,6 @@ distinguish otherwise identical choices. The compact evidence line keeps branch,
 revision, evaluation date, and failed-update state visible. Detailed migration
 notes, filter methodology, and provenance are under the collapsed **About this
 comparison** section below the charts.
+
+Detail charts use solid lines for measured silicon and dotted lines for both
+AISim CLI and legacy AIC CLI predictions. Legend samples match the chart lines.

@@ -919,7 +919,7 @@ function topologyContent(topology) {
   return `<p>${escapeHtml(topologyLabel(topology))} · ${topology.total_gpus ?? "unknown"} GPUs</p>
     <p class="coverage-text">${escapeHtml(coverageText({...stats, aisimulate: {...stats.aisimulate, points: stats.aisimulate.status_counts.success}}))}</p>
     <div class="detail-cards">${accuracyCard("AISim CLI error", stats.aisimulate, "aisimulate")}${accuracyCard("legacy AIC CLI error", stats.aic, "aic")}</div>
-    <div class="chart-legend">${Object.entries(SERIES_NAMES).map(([key, name]) => `<button data-series="${key}" aria-pressed="${!state.hiddenSeries.has(key)}" style="color:${SERIES_COLORS[key]}">● ${name}</button>`).join("")}</div>
+    <div class="chart-legend">${Object.entries(SERIES_NAMES).map(([key, name]) => `<button data-series="${key}" aria-pressed="${!state.hiddenSeries.has(key)}" style="color:${SERIES_COLORS[key]}"><span class="legend-line ${key}" aria-hidden="true"></span> ${name}</button>`).join("")}</div>
     <p class="detail-scope">Click a legend to hide a series; double-click to isolate it. Click a point for its configuration and values.</p>
     <div class="latency-charts">${metricChart(topology, "tpot")}${metricChart(topology, "ttft")}</div>
     <div class="chart-options"><label>Throughput <select data-chart="throughput">${["output", "total"].map(v => `<option${state.throughput === v ? " selected" : ""}>${v}</option>`).join("")}</select></label>
@@ -957,7 +957,7 @@ function metricChart(topology, metric) {
       if (!valid(p)) { connected = false; continue; }
       path += `${connected ? "L" : "M"}${x(p.x)},${y(p.y)} `; connected = true;
     }
-    svg += `<path d="${path}" stroke="${SERIES_COLORS[name]}" fill="none" stroke-width="2"/>`;
+    svg += `<path d="${path}" stroke="${SERIES_COLORS[name]}" fill="none" stroke-width="2"${name === "measured" ? "" : ' stroke-dasharray="1 6" stroke-linecap="round"'}/>`;
     for (const p of values.filter(valid)) svg += `<circle class="point ${name}" cx="${x(p.x)}" cy="${y(p.y)}" r="4" fill="${p.outlier ? "#ec4899" : SERIES_COLORS[name]}" tabindex="0" role="button" data-point="${p.i}" aria-label="${SERIES_NAMES[name]}, concurrency ${topology.points[p.i].concurrency}, ${numeric(p.y)}"><title>${SERIES_NAMES[name]} · concurrency ${topology.points[p.i].concurrency} · ${numeric(p.x)}, ${numeric(p.y)}</title></circle>`;
   }
   return `<div class="metric-chart">${svg}<text x="290" y="282" text-anchor="middle" fill="currentColor">${escapeHtml(xLabel)}</text></svg></div>`;
