@@ -46,7 +46,7 @@ uv venv --python 3.12 /tmp/agentx-quickstart/venv
 uv pip install --python /tmp/agentx-quickstart/venv/bin/python 'maturin>=1.12,<2' patchelf
 
 git clone https://github.com/ai-dynamo/dynamo.git /tmp/agentx-quickstart/dynamo
-git -C /tmp/agentx-quickstart/dynamo checkout --detach e32b2f34f4dd66d3d39ee6340f355e983ec8137c
+git -C /tmp/agentx-quickstart/dynamo checkout --detach bcbfe94e04ad858850b6e1a89464bcf42c0e6fb9
 agentx_core_rev=$(/tmp/agentx-quickstart/venv/bin/python -c \
   'import pathlib,tomllib; print(tomllib.loads(pathlib.Path("/tmp/agentx-quickstart/dynamo/Cargo.toml").read_text())["workspace"]["dependencies"]["aisimulate-core"]["rev"])')
 git clone https://github.com/ai-dynamo/aisimulate.git /tmp/agentx-quickstart/aisimulate
@@ -312,7 +312,7 @@ router overlap is not a substitute for cache hits. The 162 source requests
 include initial snapshot history, and the corpus can be replayed repeatedly as
 lanes recycle, so this is not the expected measured request count.
 
-The source pair above (Dynamo `e32b2f34f4`, AISimulate `240aff04bc`) was tested
+The source pair above (Dynamo `bcbfe94e04`, AISimulate `240aff04bc`) was tested
 on October 2, 2026, with this exact YAML and trace, using normally installed wheels
 in a clean environment:
 
