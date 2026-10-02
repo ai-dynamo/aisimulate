@@ -5,6 +5,10 @@
   const view = document.querySelector('[data-view]').dataset.view;
   const $ = id => document.getElementById(id);
   const esc = value => String(value).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]);
+  const completed = timestamp => {
+    const date = new Date(timestamp);
+    return Number.isNaN(date.getTime()) ? timestamp : date.toISOString().slice(0,16).replace('T',' ')+' UTC';
+  };
   const methods = ['regression', 'warmup', 'nowarmup'];
   const labels = {regression:'Regression', warmup:'FPM (KV warmup on)', nowarmup:'FPM (KV warmup off)'};
   const colors = ['#818cf8', '#2dd4bf', '#fb923c'];
@@ -52,9 +56,9 @@
   function trends() {
     const phase = $('phase-filter').value;
     const data = summaries.map(s=>({s,rows:matching(s.rows)})).filter(d=>d.rows.length);
-    $('trend-table').innerHTML = '<thead><tr><th>Revision / HF / completed</th>'+methods.map(m=>`<th>${labels[m]}</th>`).join('')+'</tr></thead><tbody>'+data.map(({s,rows})=>`<tr><th><a href="https://github.com/ai-dynamo/aisimulate/commit/${s.snapshot.commit_sha}">${s.snapshot.commit_sha.slice(0,12)}</a><br>HF ${s.snapshot.hf_revision.slice(0,12)}<br>${esc(s.snapshot.completed_at)}</th>${methods.map(m=>`<td>${value(metric(rows,m,phase))}</td>`).join('')}</tr>`).join('')+'</tbody>';
+    $('trend-table').innerHTML = '<thead><tr><th>Revision / HF / completed</th>'+methods.map(m=>`<th>${labels[m]}</th>`).join('')+'</tr></thead><tbody>'+data.map(({s,rows})=>`<tr><th><a href="https://github.com/ai-dynamo/aisimulate/commit/${s.snapshot.commit_sha}">${s.snapshot.commit_sha.slice(0,12)}</a><br>HF ${s.snapshot.hf_revision.slice(0,12)}<br>${esc(completed(s.snapshot.completed_at))}</th>${methods.map(m=>`<td>${value(metric(rows,m,phase))}</td>`).join('')}</tr>`).join('')+'</tbody>';
     const max = Math.max(1,...data.flatMap(d=>methods.map(m=>metric(d.rows,m,phase).mape || 0)));
-    const x = i => 60 + i * 820 / Math.max(1,data.length-1), y = v => 270 - v / max * 230;
+    const x = i => (data.length === 1 ? 480 : 60 + i * 820 / Math.max(1,data.length-1)), y = v => 270 - v / max * 230;
     let chart = '<svg viewBox="0 0 960 320" role="img" aria-label="MAPE across revisions; equivalent values in the table below"><path d="M60 30 V270 H900" fill="none" stroke="currentColor"/>';
     for (let n=0;n<=4;n++) chart += `<text x="4" y="${y(n*max/4)}" fill="currentColor" font-size="12">${(n*max/4).toFixed(1)}%</text>`;
     data.forEach((d,i)=> {
@@ -68,7 +72,7 @@
       const text = `${labels[method]}: ${value(m)} · AISim ${d.s.snapshot.commit_sha} · HF ${d.s.snapshot.hf_revision} · evaluator ${d.s.snapshot.evaluator_sha}`;
       chart += `<circle tabindex="0" cx="${x(i)}" cy="${y(m.mape)}" r="5" fill="${colors[k]}" aria-label="${esc(text)}"><title>${esc(text)}</title></circle>`;
     }));
-    $('trend-chart').innerHTML = chart+'</svg><p>'+methods.map((m,i)=>`<span style="color:${colors[i]}">● ${labels[m]}</span>`).join(' · ')+'</p>';
+    $('trend-chart').innerHTML = chart+'</svg>'+ (data.length === 1 ? '<p>One evaluation available. More daily evaluations will form the trend.</p>' : '') +'<p>'+methods.map((m,i)=>`<span style="color:${colors[i]}">● ${labels[m]}</span>`).join(' · ')+'</p>';
     const tooltip = document.createElement('div');
     tooltip.id = 'trend-tooltip'; tooltip.setAttribute('role','tooltip'); tooltip.hidden = true;
     $('trend-chart').append(tooltip);
@@ -128,7 +132,7 @@
       if (token !== request) return;
       detail = document.rows.find(r=>r.configuration_id === selected.configuration_id && r.snapshot_id === selected.snapshot_id);
       const age = Date.now()-Date.parse(summary.snapshot.completed_at);
-      status(`${age>48*3600000 ? 'Stale · ' : ''}AISim ${summary.snapshot.commit_sha.slice(0,12)} · HF ${summary.snapshot.hf_revision.slice(0,12)} · ${summary.snapshot.completed_at}`);
+      status(`${age>48*3600000 ? 'Stale · ' : ''}AISim ${summary.snapshot.commit_sha.slice(0,12)} · HF ${summary.snapshot.hf_revision.slice(0,12)} · ${completed(summary.snapshot.completed_at)}`);
       variants();
     } catch(error) { if (token === request) status(error.message); }
   }
@@ -158,7 +162,7 @@
     status(`${Date.now()-Date.parse(summaries.at(view === 'trends' ? -1 : 0).snapshot.completed_at)>48*3600000 ? 'Stale · ' : ''}${summaries.length} retained evaluations · latest HF ${summaries.at(view === 'trends' ? -1 : 0).snapshot.hf_revision.slice(0,12)}`);
     if (view === 'trends') { populate(summaries.flatMap(s=>s.rows)); trends(); }
     else {
-      options($('evaluation-filter'),summaries.map((s,i)=>[String(i),`${s.snapshot.commit_sha.slice(0,12)} · HF ${s.snapshot.hf_revision.slice(0,12)} · ${s.snapshot.completed_at}`]),false);
+      options($('evaluation-filter'),summaries.map((s,i)=>[String(i),`${s.snapshot.commit_sha.slice(0,12)} · HF ${s.snapshot.hf_revision.slice(0,12)} · ${completed(s.snapshot.completed_at)}`]),false);
       const index = summaries.findIndex(s=>s.snapshot.run_id+'-'+s.snapshot.run_attempt === params.get('run'));
       if (index>=0) $('evaluation-filter').value = String(index);
       evaluation();

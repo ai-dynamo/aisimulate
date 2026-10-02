@@ -1,6 +1,6 @@
 /* SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved. */
 /* SPDX-License-Identifier: Apache-2.0 */
-/* E2E supplies the shared page styles; only FPM table details belong here. */
+/* E2E supplies the shared page styles; FPM views extend them here. */
 .fpm-summary { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 .snapshot-value { overflow-wrap: anywhere; }
 .snapshot-value a, .overview-config-row a, .overview-method-cell a { color: var(--accent); text-decoration: none; }
@@ -35,18 +35,24 @@
 .fpm-tabs { display:flex; flex-wrap:wrap; gap:20px; padding-block:16px; border-bottom:1px solid var(--border); }
 .fpm-tabs a { color:var(--muted); text-decoration:none; }
 .fpm-tabs a[aria-current="page"] { color:var(--accent); font-weight:700; }
-.fpm-filters { display:flex; flex-wrap:wrap; gap:16px; margin:16px 0; }
+.fpm-filters { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:16px; margin:20px 0; }
+[data-view="trends"] .fpm-filters { grid-template-columns:repeat(4,minmax(0,1fr)); }
+[data-view] .fpm-wide-control { display:flex; width:100%; }
 [data-view] label { display:inline-flex; flex-direction:column; gap:6px; color:var(--muted); }
 [data-view] select, [data-view] input { max-width:100%; min-height:36px; background:var(--panel); color:var(--text); border:1px solid var(--border); padding:6px 10px; border-radius:6px; }
-[data-view] #configuration-filter { max-width:min(100%, 1000px); }
+[data-view] select, [data-view] input { width:100%; box-sizing:border-box; font:inherit; }
+[data-view] #dashboard-status, #detail-evidence { overflow-wrap:anywhere; }
 [data-view] .matrix-panel { margin-top:20px; padding:16px; }
 [data-view] table { width:100%; border-collapse:collapse; }
 [data-view] th, [data-view] td { padding:10px; border-bottom:1px solid var(--border); text-align:left; }
 .fpm-heatmaps { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:20px; }
 .heatmap small { display:block; color:var(--muted); }
-.trend-chart svg { width:100%; min-width:600px; }
+.trend-chart svg { display:block; width:100%; max-width:960px; min-width:600px; height:auto; margin-inline:auto; }
 .trend-chart { overflow-x:auto; }
 @media(max-width:900px) { .fpm-heatmaps { grid-template-columns:1fr; } }
+@media(max-width:600px) {
+  .fpm-filters, [data-view="trends"] .fpm-filters { grid-template-columns:repeat(2,minmax(0,1fr)); }
+}
 
 [data-view] label { max-width:100%; min-width:0; }
 [data-view] select { min-width:0; }

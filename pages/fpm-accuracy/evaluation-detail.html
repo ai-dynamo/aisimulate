@@ -87,12 +87,12 @@ SPDX-License-Identifier: Apache-2.0
     </nav>
 <main class="shell dashboard" data-view="detail"><h2>Measured workload and prediction error</h2>
 <p id="dashboard-status" role="status">Loading retained evaluations…</p>
-<label>Evaluation<select id="evaluation-filter"></select></label><section class="fpm-filters" aria-label="Filter measurements">
+<label class="fpm-wide-control">Evaluation<select id="evaluation-filter"></select></label><section class="fpm-filters" aria-label="Filter measurements">
 <label>Model<select id="model-filter"></select></label><label>GPU<select id="gpu-filter"></select></label>
-<label>Framework<select id="framework-filter"></select></label></section>
-<section class="fpm-filters"><label>Search<input id="search-filter" type="search" placeholder="Configuration, model…"></label>
+<label>Framework<select id="framework-filter"></select></label>
+<label>Search<input id="search-filter" type="search" placeholder="Configuration, model…"></label>
 <label>Parallelism<select id="parallelism-filter"></select></label><label>Worker role<select id="role-filter"></select></label></section>
-<label>Configuration<select id="configuration-filter"></select></label><p id="detail-evidence"></p>
+<label class="fpm-wide-control">Configuration<select id="configuration-filter"></select></label><p id="detail-evidence"></p>
 <section class="matrix-panel table-scroll"><h3>Phase summary</h3><table id="phase-summary"></table></section>
 <section class="fpm-filters"><label>Method<select id="method-filter"><option value="regression">Regression</option><option value="warmup">FPM (KV warmup on)</option><option value="nowarmup">FPM (KV warmup off)</option></select></label>
 <label>FPM variant<select id="variant-filter"></select></label>
