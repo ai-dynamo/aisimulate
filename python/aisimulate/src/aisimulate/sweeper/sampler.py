@@ -421,7 +421,11 @@ class RandomBranchSampler:
 
 
 class SeededBayesianBranchSampler:
-    """Local Vizier GP-UCB-PE designer with an explicit reproducible seed."""
+    """Local Vizier GP-UCB-PE designer with an explicit reproducible seed.
+
+    Constructing a sampler enables JAX's process-wide ``jax_enable_x64`` option.
+    It is not restored afterward, so subsequent JAX computations can use float64.
+    """
 
     def __init__(
         self,

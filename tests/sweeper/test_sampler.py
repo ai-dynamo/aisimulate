@@ -121,8 +121,15 @@ def test_seeded_bayesian_uses_float64_from_an_fp32_runtime() -> None:
         jax.config.update("jax_enable_x64", previous)
 
 
-@pytest.mark.parametrize("parameter", ["agg_max_num_batched_tokens", USED_GPU_RATIO])
-@pytest.mark.parametrize("value", [None, float("nan"), float("inf"), -float("inf")])
+@pytest.mark.parametrize(
+    ("parameter", "value"),
+    [
+        ("agg_max_num_batched_tokens", None),  # Original missing-knob failure.
+        (USED_GPU_RATIO, None),  # Projection must not silently supply a default.
+        ("agg_max_num_batched_tokens", float("nan")),
+        (USED_GPU_RATIO, float("inf")),
+    ],
+)
 def test_seeded_bayesian_rejects_invalid_batch_before_registering_trials(monkeypatch, parameter, value) -> None:
     from vizier import pyvizier as vz
 

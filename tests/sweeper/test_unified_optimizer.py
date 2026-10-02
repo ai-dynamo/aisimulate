@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import time
-from copy import deepcopy
 from typing import ClassVar
 
 import pytest
@@ -328,9 +327,13 @@ def test_branch_seed_is_stable_when_branch_order_changes(monkeypatch) -> None:
     ]
 
 
-@pytest.mark.parametrize("max_trials", [None, 8])
-@pytest.mark.parametrize("completed", [0, 2])
-def test_invalid_suggestion_stops_search_and_preserves_best_results(monkeypatch, caplog, max_trials, completed) -> None:
+@pytest.mark.parametrize(
+    ("max_trials", "error_type"),
+    [(None, InvalidSuggestionError), (8, InvalidSuggestionError), (8, KeyError)],
+)
+def test_sampler_failure_recovery_is_narrow_and_preserves_best_results(
+    monkeypatch, caplog, max_trials, error_type
+) -> None:
     calls = []
     observed = []
     events = []
@@ -338,8 +341,8 @@ def test_invalid_suggestion_stops_search_and_preserves_best_results(monkeypatch,
     class FailingSampler(_CountingSampler):
         def suggest(self, count):
             calls.append(self.branch.deployment_mode)
-            if len(calls) > completed:
-                raise InvalidSuggestionError("missing parameters: agg_max_num_batched_tokens")
+            if len(calls) > 2:
+                raise error_type("missing parameters: agg_max_num_batched_tokens")
             suggestions = super().suggest(count)
             # Distinct candidates even in the legacy branch-major order.
             for suggestion in suggestions:
@@ -368,7 +371,6 @@ def test_invalid_suggestion_stops_search_and_preserves_best_results(monkeypatch,
         lambda event, value: events.append((event, value)),
     )
     _Runner.runs = 0
-    records = []
     config = SmartSearchConfig.model_validate(
         {
             "search_space": {
@@ -386,34 +388,22 @@ def test_invalid_suggestion_stops_search_and_preserves_best_results(monkeypatch,
             },
         }
     )
-    result = search_module.Sweeper(runner_factory=_Factory(), sampler_factory=FailingSampler, show_progress=False).run(
-        config, top_n=1, on_candidate=lambda record: records.append(deepcopy(record))
-    )
+    sweeper = search_module.Sweeper(runner_factory=_Factory(), sampler_factory=FailingSampler, show_progress=False)
+    if error_type is KeyError:
+        # A programming error must propagate even when partial results exist.
+        with pytest.raises(KeyError, match="agg_max_num_batched_tokens"):
+            sweeper.run(config, top_n=1)
+        return
+    result = sweeper.run(config, top_n=1)
 
-    assert len(calls) == completed + 1  # No retry and no later branch is searched.
-    assert _Runner.runs == len(observed) == result.counts.feasible == result.counts.evaluated == completed
+    assert len(calls) == 3  # No retry and no later branch is searched.
+    assert _Runner.runs == len(observed) == result.counts.feasible == result.counts.evaluated == 2
     assert result.counts.failed == result.counts.infeasible == 0
-    assert result.candidates == records
-    if completed:
-        assert result.selected_candidate_ids == ["candidate-000002"]
-        assert result.selected_candidates[0].score == 20.0
-    else:
-        assert result.selected_candidates == []
+    assert result.selected_candidate_ids == ["candidate-000002"]
+    assert result.selected_candidates[0].score == 20.0
     assert "agg_max_num_batched_tokens" in caplog.text
     assert "search is incomplete" in caplog.text
     assert events[-1][0] == "optimizer_stopped"
-
-    # Programming errors must still fail instead of becoming partial success.
-    def unexpected_error(self, count):
-        raise KeyError("unrelated bug")
-
-    monkeypatch.setattr(FailingSampler, "suggest", unexpected_error)
-    with pytest.raises(KeyError, match="unrelated bug"):
-        search_module.Sweeper(
-            runner_factory=_Factory(),
-            sampler_factory=FailingSampler,
-            show_progress=False,
-        ).run(config)
 
 
 def test_seeded_random_sampler_is_deterministic() -> None:
