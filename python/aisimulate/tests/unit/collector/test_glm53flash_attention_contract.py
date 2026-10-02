@@ -296,7 +296,7 @@ def test_rows_the_reader_would_reject_fail_before_publication():
             validate_row(dict(row, geometry=geometry_key(dict(body, **change))))
 
 
-def _attempt(tmp_path, role="full", graph_prefill=False):
+def _attempt(tmp_path, role="full", graph_prefill=False, only_sets=None, name=None):
     flat = _flat()
     body = {
         "schema_version": 1,
@@ -314,12 +314,17 @@ def _attempt(tmp_path, role="full", graph_prefill=False):
     if graph_prefill:
         body["phases"] = ["context"]
         body["prefill_execution"] = "framework_breakable_cuda_graph"
-    attempt = tmp_path / (role + ("-graph" if graph_prefill else ""))
+    if only_sets is not None:
+        body["only_sets"] = sorted(only_sets)
+    attempt = tmp_path / (name or (role + ("-graph" if graph_prefill else "")))
     raw = attempt / "raw"
     raw.mkdir(parents=True)
     (attempt / "manifest.json").write_text(json.dumps({**body, "manifest_sha256": sha256_json(body)}))
     records = []
-    for phase, batch, prefix, x in target_keys(body["plan"]):
+    plan = body["plan"]
+    if only_sets is not None:
+        plan = {**plan, "sets": [s for s in plan["sets"] if s["set_id"] in only_sets]}
+    for phase, batch, prefix, x in target_keys(plan):
         if graph_prefill and phase != "context":
             continue
         method = GRAPH_PREFILL if graph_prefill else None
@@ -391,3 +396,31 @@ def test_graph_prefill_revision_replaces_only_prefill_rows(tmp_path, monkeypatch
     table = meta["tables"]["glm53_attention_module_perf"]
     assert table["execution_mode"] == {"fp8-tp2-context": "cuda_graph", "fp8-tp2-generation": "cuda_graph"}
     assert table["attempts"][-1]["phases"] == ["generation"]
+
+
+def test_split_attempts_must_cover_the_plan_exactly_once(tmp_path, monkeypatch):
+    from collector import glm53flash_attention_contract as contract
+
+    context = [s["set_id"] for s in build_plan(SMOKE_SWEEP)["sets"] if s["phase"] == "context"]
+    assert len(context) >= 2
+    first, _ = _attempt(tmp_path, graph_prefill=True, only_sets=context[:-1], name="a")
+    last, _ = _attempt(tmp_path, graph_prefill=True, only_sets=context[-1:], name="b")
+    assert load_attempt(last)[1]
+    out = tmp_path / "t" / BASENAME
+    base = ["x", "finalize", "--output", str(out), "--evidence", str(tmp_path / "e.json")]
+    monkeypatch.setattr("sys.argv", base[:2] + [str(first), str(last)] + base[2:])
+    contract.main()
+    rows = pq.read_table(out).to_pylist()
+    assert len(rows) == sum(k[0] == "context" for k in target_keys(build_plan(SMOKE_SWEEP)))
+    meta = yaml.safe_load((out.parent / "collection_meta.yaml").read_text())
+    assert [a.get("only_sets") for a in meta["tables"]["glm53_attention_module_perf"]["attempts"]] == [
+        sorted(context[:-1]),
+        context[-1:],
+    ]
+    monkeypatch.setattr("sys.argv", base[:2] + [str(first)] + base[2:])
+    with pytest.raises(ValueError, match="cover"):
+        contract.main()
+    twice, _ = _attempt(tmp_path, graph_prefill=True, only_sets=context, name="c")
+    monkeypatch.setattr("sys.argv", base[:2] + [str(first), str(twice)] + base[2:])
+    with pytest.raises(ValueError, match="twice"):
+        contract.main()

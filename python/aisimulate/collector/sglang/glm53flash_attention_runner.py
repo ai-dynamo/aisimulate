@@ -661,6 +661,11 @@ def main():
     plan = manifest["plan"]
     if plan != build_plan(manifest["sweep"]):
         raise ValueError("manifest plan differs from its frozen sweep")
+    if manifest.get("only_sets") is not None:
+        # A split attempt measures exactly the manifest's set selection.
+        if options.only_sets and sorted(options.only_sets) != manifest["only_sets"]:
+            raise ValueError("--only-sets differs from the manifest selection")
+        options.only_sets = manifest["only_sets"]
     options.warmup, options.iterations = plan["warmup"], plan["iterations"]
     output = Path(options.output)
     output.mkdir(parents=True, exist_ok=True)
@@ -686,7 +691,12 @@ def main():
         if any(flag not in rest for flag in graph[::2]) or [rest[rest.index(f) + 1] for f in graph[::2]] != graph[1::2]:
             raise ValueError(f"serving prefill graph arguments {graph} are missing from {rest}")
     if options.dry_run:
-        sets = [s["set_id"] for s in plan["sets"] if s["phase"] in set(manifest.get("phases", PHASES))]
+        sets = [
+            s["set_id"]
+            for s in plan["sets"]
+            if s["phase"] in set(manifest.get("phases", PHASES))
+            and (not options.only_sets or s["set_id"] in options.only_sets)
+        ]
         print(
             json.dumps(
                 {
