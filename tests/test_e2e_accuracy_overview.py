@@ -292,6 +292,23 @@ def test_public_summary_omits_raw_measurements_and_internal_provenance() -> None
     assert "linear.app/nvidia" not in serialized
 
 
+@pytest.mark.parametrize("run_id", [None, "26696231118", 26696231118])
+def test_chart_points_preserve_public_run_ids_without_internal_id_fallback(run_id):
+    rows = _inputs()[0]["rows"][:1]
+    rows[0].update(silicon_github_run_id=run_id, silicon_workflow_run_id=1961)
+    point = OVERVIEW._topology_summaries(rows)[0]["points"][0]
+    assert point["infx_run_id"] == (str(run_id) if run_id is not None else None)
+    assert "silicon_workflow_run_id" not in point
+
+
+@pytest.mark.parametrize("run_id", [True, 12.5, "", "0", "123/../../other", '<a href="bad">'])
+def test_chart_points_reject_invalid_public_run_ids(run_id):
+    rows = _inputs()[0]["rows"][:1]
+    rows[0]["silicon_github_run_id"] = run_id
+    with pytest.raises(OVERVIEW.SnapshotError, match="InferenceX GitHub run ID"):
+        OVERVIEW._topology_summaries(rows)
+
+
 def test_inconsistent_snapshot_fails_closed() -> None:
     predictions, metadata, coverage = _inputs()
     metadata["release_tag"] = "db-dump/other"

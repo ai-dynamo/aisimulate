@@ -388,6 +388,7 @@ def predict_point(point: dict) -> dict:
         "is_multinode": config["is_multinode"],
         "silicon_ttft_ms": bench["metrics"]["mean_ttft"] * 1000,
         "silicon_tpot_ms": bench["metrics"]["mean_tpot"] * 1000,
+        "silicon_github_run_id": point.get("silicon_github_run_id"),
         "aic_ttft_ms": float(baseline.ttft),
         "aic_tpot_ms": float(baseline.tpot),
         "aisimulate_total_gpus": total_gpus,

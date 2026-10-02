@@ -26,6 +26,10 @@ CLI evaluation still need that evaluation before branch-qualified publication.
   Disagg, with VLLM, SGLANG, then TRTLLM within each group.
 - **Details(op-based)** shows one selected topology with model, ISL/OSL, GPU,
   precision, framework, serving mode, and parallelism selectors.
+- Each operating point's **InfX CI run** links to its measured silicon run in
+  `SemiAnalysisAI/InferenceX` GitHub Actions. The exporter retains the public
+  `silicon_github_run_id` as `infx_run_id`; it never uses the dump's internal
+  workflow row ID. Older snapshots without this provenance display “—”.
 - Both views retain Measured silicon, AISim, and AIC (legacy CLI) series.
   Click a legend to toggle a series; double-click to isolate it. Point markers
   open numeric values and the recorded prediction configuration.

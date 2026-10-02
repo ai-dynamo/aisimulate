@@ -198,8 +198,23 @@ def public_contract(summary):
                     for point in topology["points"]:
                         keys(
                             point,
-                            {"concurrency", "status", "aic_status", "configuration_quality", "measured", "aic", "aisimulate", "configuration", "infx_run_id"},
+                            {
+                                "concurrency",
+                                "status",
+                                "aic_status",
+                                "configuration_quality",
+                                "measured",
+                                "aic",
+                                "aisimulate",
+                                "configuration",
+                                "infx_run_id",
+                            },
                         )
+                        run_id = point.get("infx_run_id")
+                        if run_id is not None and (
+                            not isinstance(run_id, str) or re.fullmatch(r"[1-9][0-9]*", run_id) is None
+                        ):
+                            raise ValueError("invalid InferenceX GitHub run ID")
                         keys(
                             point.get("configuration", {}),
                             {
