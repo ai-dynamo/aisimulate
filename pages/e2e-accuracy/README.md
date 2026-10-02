@@ -21,7 +21,8 @@ missing predictions never become zero errors. Research runs without a legacy
 CLI evaluation still need that evaluation before branch-qualified publication.
 
 - **Overview(op-based)** shows model/workload/GPU errors, serving/framework
-  summaries, and topology drilldowns.
+  summaries, and topology drilldowns. Framework summaries group Agg before
+  Disagg, with VLLM, SGLANG, then TRTLLM within each group.
 - **Details(op-based)** shows one selected topology with model, ISL/OSL, GPU,
   precision, framework, serving mode, and parallelism selectors.
 - Both views retain Measured silicon, AISim, and AIC (legacy CLI) series.

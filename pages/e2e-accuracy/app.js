@@ -118,15 +118,23 @@ function renderSummary() {
   const groups = new Map();
   for (const model of state.data.models) for (const workload of model.workloads) for (const gpu of workload.gpus) {
     for (const topology of gpu.topologies || []) {
-      const key = `${topology.serving} · ${topology.framework}`;
-      if (!groups.has(key)) groups.set(key, []);
-      groups.get(key).push(topology);
+      if (!groups.has(topology.serving)) groups.set(topology.serving, new Map());
+      const frameworks = groups.get(topology.serving);
+      if (!frameworks.has(topology.framework)) frameworks.set(topology.framework, []);
+      frameworks.get(topology.framework).push(topology);
     }
   }
-  document.getElementById("framework-summary").innerHTML = groups.size ? `<h2>AISim error by serving mode and framework</h2><div class="table-scroll"><table><thead><tr><th>Serving · Framework</th><th>Points</th><th>TPOT MAPE</th><th>TPOT shape</th><th>TTFT MAPE</th><th>TTFT shape</th></tr></thead><tbody>${[...groups].map(([key, topologies]) => {
-    const m = aggregateTopologies(topologies).aisimulate;
-    return `<tr><th>${escapeHtml(key)}</th><td>${m.points}</td>${["tpot_mape_pct", "tpot_shape_error_pct", "ttft_mape_pct", "ttft_shape_error_pct"].map(f => `<td>${formatPercent(m[f])}</td>`).join("")}</tr>`;
-  }).join("")}</tbody></table></div>` : "";
+  const frameworkOrder = ["vllm", "sglang", "trtllm", "dynamo-vllm", "dynamo-sglang", "dynamo-trtllm"];
+  document.getElementById("framework-summary").innerHTML = groups.size ? `<h2>AISim error by serving mode and framework</h2><div class="table-scroll"><table><thead><tr><th scope="col">Serving</th><th scope="col">Framework</th><th scope="col">Points</th><th scope="col">TPOT MAPE</th><th scope="col">TPOT shape</th><th scope="col">TTFT MAPE</th><th scope="col">TTFT shape</th></tr></thead>${[...groups].sort(([a], [b]) => a.localeCompare(b)).map(([serving, frameworks]) => {
+    const rows = [...frameworks].sort(([a], [b]) =>
+      (frameworkOrder.includes(a) ? frameworkOrder.indexOf(a) : frameworkOrder.length) -
+      (frameworkOrder.includes(b) ? frameworkOrder.indexOf(b) : frameworkOrder.length) || a.localeCompare(b));
+    return `<tbody>${rows.map(([framework, topologies], index) => {
+      const m = aggregateTopologies(topologies).aisimulate;
+      const servingLabel = {aggregated: "Agg", disaggregated: "Disagg"}[serving] || serving;
+      return `<tr>${index === 0 ? `<th scope="rowgroup" rowspan="${rows.length}">${escapeHtml(servingLabel)}</th>` : ""}<th scope="row">${escapeHtml(framework.toUpperCase())}</th><td>${m.points}</td>${["tpot_mape_pct", "tpot_shape_error_pct", "ttft_mape_pct", "ttft_shape_error_pct"].map(f => `<td>${formatPercent(m[f])}</td>`).join("")}</tr>`;
+    }).join("")}</tbody>`;
+  }).join("")}</table></div>` : "";
 }
 
 function renderSnapshot() {
