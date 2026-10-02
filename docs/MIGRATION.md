@@ -29,7 +29,7 @@ before installing the `aisimulate` wheel. Both console commands, `aisimulate` an
 `aiconfigurator`, come from that wheel. There is no separate core wheel.
 See the [installation guide](installation.md).
 
-| AIC 0.11 surface | AISimulate 0.13 surface | Compatibility |
+| AIConfigurator 0.12.0 surface | AISimulate 0.13.0 surface | Compatibility |
 | --- | --- | --- |
 | Python distribution `aiconfigurator` | `aisimulate` | The `aiconfigurator` command remains; the Python import namespace is removed in 0.13.0 |
 | CLI `aiconfigurator ...` | `aisimulate predict` / `aisimulate recommend` for new simulation workflows; `aiconfigurator ...` for compatibility-only workflows | See [command mapping](#command-mapping); this is not a flag-compatible rename |
@@ -72,8 +72,13 @@ and vLLM 0.24.0. Run them in one working directory with fresh output directories
 They describe simulated serving traffic, not fixed-batch AIC results.
 The CLI examples and Python imports in this guide were run successfully on
 2026-10-02 with AISimulate 0.13.0, built from source revision
-`7a9c516af198bb0c3a84aa71b7f2a2c9938cf7a9`. The AFD example below uses
-TRT-LLM 1.3.0rc20. Results can change with source or performance-data revisions.
+[`67b1b9a5`](https://github.com/ai-dynamo/aisimulate/commit/67b1b9a51388bc8202df5d237cd3de4d4f07414f). The AFD example below uses
+TRT-LLM 1.3.0rc20. The [captured example results](migration-examples.json) record
+the environment, data trees, input hashes, exact commands, output summaries, and
+passed request-count, metric, GPU-budget, and artifact checks. These are
+execution checks, not a silicon-accuracy or AIC-equivalence claim. Captured
+timing values are observations, not golden assertions; results can change with
+source or performance-data revisions.
 
 ### Predict one deployment
 
@@ -535,7 +540,7 @@ metadata does not load the native extension.
 
 | Previous interface | Current interface | Required caller change |
 | --- | --- | --- |
-| Legacy `sweep_agg`, `sweep_disagg`, `sweep_afd` | `aisimulate.sweeper.Sweeper(...).run(config)` | Supply a runner factory and typed search configuration; workload/search semantics differ. See the [Sweeper guide](sweeper/overview.md). |
+| Legacy `sweep_agg`, `sweep_disagg`, `sweep_afd` | `aisimulate.sweeper.Sweeper(...).run(config)` | All three remain callable as deprecated compatibility APIs. For new code, supply a runner factory and typed search configuration; workload/search semantics differ. See the [Sweeper guide](sweeper/overview.md). |
 | Flat Rust `build_aic_engine` adapter | `aisimulate_core::perfmodel::AicEngineBuilder` | Construct through the builder; the flat adapter is removed. |
 | Positional worker/options and separate estimator constructors | `RustForwardPassPerfModel.best_available(config)` / Rust `ForwardPassPerfModel::best_available(config)` | Pass one complete `ForwardPassPerfModelConfig`; use its Rust constructor or Python SDK config class. |
 | Flat `EngineConfig` plus `ForwardPassPerfOptions` | Canonical `ForwardPassPerfModelConfig` | Convert saved legacy values with the explicit migration helper below. |
