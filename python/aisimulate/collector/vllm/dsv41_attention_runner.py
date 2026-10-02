@@ -185,15 +185,25 @@ class AttentionRecorder:
 
     def __init__(self, attns, manifest):
         import torch
-        from vllm.distributed import tensor_model_parallel_all_reduce
+        import torch.distributed as dist
 
-        self.torch, self.manifest, self.all_reduce = torch, manifest, tensor_model_parallel_all_reduce
+        # The pure-TP wo_b reduction runs OUTSIDE the timed interval, so its implementation is not
+        # part of this row; it is issued as a plain NCCL all-reduce (the comm table's op) rather
+        # than vLLM's device communicator, whose flashinfer two-shot kernel spins in-kernel on the
+        # peer rank and would smear rank skew into the next layer's interval (profiled on H20
+        # 2026-10-02: 28 ms "attention" on a 0.6 ms layer).
+        self.torch, self.manifest = torch, manifest
+        self.all_reduce = lambda t: (dist.all_reduce(t), t)[1]
         self.events, self.phase, self.active = [], "context", False
+        # One representative layer per (phase, geometry) — the first layer carrying that geometry —
+        # exactly as the SGLang recorder selects; rows are per physical key, never a sum over the
+        # layers that share it.
         self.selected = {}
         for phase, entries in manifest["phases"].items():
             for entry in entries:
                 if entry["component"] == "attention":
-                    self.selected.setdefault((phase, entry["layer"]), entry)
+                    self.selected.setdefault((phase, entry["geometry"]), entry)
+        self.representative = {(phase, entry["layer"]): entry for (phase, _), entry in self.selected.items()}
         self.originals = []
         for attn in attns:
             if attn.wo_b.reduce_results is not True or attn.wo_b.tp_size != manifest["tp_size"]:
@@ -210,9 +220,15 @@ class AttentionRecorder:
         def timed(*args, **kwargs):
             if attn.wo_b.reduce_results is not False:
                 raise RuntimeError("native attention reduction changed during execution")
-            entry = self.selected.get((self.phase, index))
+            entry = self.representative.get((self.phase, index))
             record = self.active and entry is not None
             if record:
+                # Drain the stream first: the preceding layers' NCCL all-reduces let the host run
+                # ahead, and a backlogged GPU would make later layers' intervals pure kernel time
+                # while the first layers stay host-bound. With the drain every representative
+                # layer is measured in the same regime as the SGLang producer's rows (interval =
+                # kernels + host enqueue idle, no CUDA graph; small shapes are host-bound).
+                self.torch.cuda.synchronize()
                 start, end = self.torch.cuda.Event(enable_timing=True), self.torch.cuda.Event(enable_timing=True)
                 start.record()
             result = original(*args, **kwargs)
@@ -509,6 +525,7 @@ def run(args, receipt):
         framework=BACKEND, framework_version=FRAMEWORK_VERSION, plan_sha256=sha(args.plan), manifest_sha256=sha(args.manifest), workloads_sha256=sha(args.workloads),
         raw_package_version=importlib.metadata.version("vllm"), collector_revision=plan["collector_revision"], runtime_digest=plan["runtime_digest"], image_sha256=plan["image_sha256"],
         input_method=INPUT_METHOD, weight_initializer=WEIGHT_INITIALIZER, purpose=plan["purpose"], collision_owners=collision_owners(manifest, workloads),
+        measurement_regime="stream drained before each representative layer; interval = kernels + host enqueue idle, eager (no CUDA graph), wo_b all-reduce after the end event",
     )
     vllm_config = build_vllm_config(args.model_path, tp)
     init_distributed_environment(tp, rank, "env://", local_rank)
