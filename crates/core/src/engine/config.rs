@@ -11,6 +11,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 use crate::engine::common::speculative::normalize_conditional_accept_rates;
 use crate::engine::handoff::TransferTimingMode;
 use crate::engine::timing::{TimingModel, TimingModelConfig, built_in_timing_model};
+use crate::perfmodel::FpmCacheGroup;
 
 const DEFAULT_MAX_PREFILL_TOKENS: usize = 16_384;
 const DEFAULT_CHUNKED_PREFILL_SIZE: usize = 8_192;
@@ -269,6 +270,54 @@ impl G3OffloadConfig {
     }
 }
 
+/// Ownership of the native G2 host cache. G3 has its own [`G3Scope`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", try_from = "String")]
+pub enum G2Scope {
+    /// One private cache and FIFO transfer lanes per attention-DP rank.
+    #[default]
+    DpRankLocal,
+    /// One deployment-wide pool shared by compatible ranks, replicas and roles.
+    ClusterShared,
+}
+
+impl G2Scope {
+    fn is_default(&self) -> bool {
+        *self == Self::DpRankLocal
+    }
+}
+
+impl TryFrom<String> for G2Scope {
+    type Error = String;
+
+    fn try_from(value: String) -> std::result::Result<Self, Self::Error> {
+        match value.as_str() {
+            "dp_rank_local" => Ok(Self::DpRankLocal),
+            "cluster_shared" => Ok(Self::ClusterShared),
+            "worker_local" => Err("host_offload.scope `worker_local` is a G3 scope; use \
+                `dp_rank_local` for per-DP-rank G2 caches"
+                .into()),
+            other => Err(format!(
+                "unknown host_offload.scope `{other}`; expected `dp_rank_local` or `cluster_shared`"
+            )),
+        }
+    }
+}
+
+const DEFAULT_SHARED_HOST_OFFLOAD_BANDWIDTH_GBPS: f64 = 80.0;
+
+fn default_shared_host_offload_bandwidth_gbps() -> f64 {
+    DEFAULT_SHARED_HOST_OFFLOAD_BANDWIDTH_GBPS
+}
+
+fn is_default_shared_host_offload_bandwidth(value: &f64) -> bool {
+    *value == DEFAULT_SHARED_HOST_OFFLOAD_BANDWIDTH_GBPS
+}
+
+fn is_zero(value: &f64) -> bool {
+    *value == 0.0
+}
+
 /// Physical controls for framework-native G1-to-host offload.
 ///
 /// Framework policy remains selected by [`EngineConfig::backend`]. This
@@ -276,26 +325,55 @@ impl G3OffloadConfig {
 /// parameters so additional framework profiles can reuse it without exposing
 /// unsupported policy combinations. Physical bytes per block are derived from
 /// [`EngineConfig::block_size`] and [`EngineConfig::kv_cache_bytes_per_token`].
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+/// Fields at their defaults are omitted when serialized.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[non_exhaustive]
 pub struct NativeHostOffloadConfig {
+    /// Cache ownership. `num_host_blocks` is per DP rank for
+    /// [`G2Scope::DpRankLocal`] and the pool total for [`G2Scope::ClusterShared`].
+    #[serde(default, skip_serializing_if = "G2Scope::is_default")]
+    pub scope: G2Scope,
     /// Physical host-cache capacity in KV blocks.
     pub num_host_blocks: usize,
-    /// Modeled device-to-host bandwidth in decimal GB/s. Zero is instantaneous.
+    /// Per-DP-rank device-to-host bandwidth in decimal GB/s. Zero is unlimited.
     #[serde(default = "default_host_offload_bandwidth_gbps")]
     pub d2h_bandwidth_gbps: f64,
-    /// Modeled host-to-device bandwidth in decimal GB/s. Zero is instantaneous.
+    /// Per-DP-rank host-to-device bandwidth in decimal GB/s. Zero is unlimited.
     #[serde(default = "default_host_offload_bandwidth_gbps")]
     pub h2d_bandwidth_gbps: f64,
+    /// Aggregate D2H cap of a cluster-shared pool. Ignored by local scope.
+    #[serde(
+        default = "default_shared_host_offload_bandwidth_gbps",
+        skip_serializing_if = "is_default_shared_host_offload_bandwidth"
+    )]
+    pub shared_d2h_bandwidth_gbps: f64,
+    /// Aggregate H2D cap of a cluster-shared pool. Ignored by local scope.
+    #[serde(
+        default = "default_shared_host_offload_bandwidth_gbps",
+        skip_serializing_if = "is_default_shared_host_offload_bandwidth"
+    )]
+    pub shared_h2d_bandwidth_gbps: f64,
+    /// Delay before a transfer moves its first byte; it consumes no bandwidth.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub latency_to_first_byte_ms: f64,
+    /// Opaque identity of the stored KV layout. Required and non-blank for
+    /// cluster-shared pools; ranks may join one pool only with an equal identity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kv_layout_id: Option<String>,
 }
 
 impl NativeHostOffloadConfig {
     pub const fn new(num_host_blocks: usize) -> Self {
         Self {
+            scope: G2Scope::DpRankLocal,
             num_host_blocks,
             d2h_bandwidth_gbps: DEFAULT_HOST_OFFLOAD_BANDWIDTH_GBPS,
             h2d_bandwidth_gbps: DEFAULT_HOST_OFFLOAD_BANDWIDTH_GBPS,
+            shared_d2h_bandwidth_gbps: DEFAULT_SHARED_HOST_OFFLOAD_BANDWIDTH_GBPS,
+            shared_h2d_bandwidth_gbps: DEFAULT_SHARED_HOST_OFFLOAD_BANDWIDTH_GBPS,
+            latency_to_first_byte_ms: 0.0,
+            kv_layout_id: None,
         }
     }
 
@@ -305,19 +383,38 @@ impl NativeHostOffloadConfig {
         self
     }
 
+    /// Join a deployment-wide pool whose stored KV has `kv_layout_id`.
+    pub fn cluster_shared(mut self, kv_layout_id: impl Into<String>) -> Self {
+        self.scope = G2Scope::ClusterShared;
+        self.kv_layout_id = Some(kv_layout_id.into());
+        self
+    }
+
     fn validate(&self) -> Result<()> {
         ensure!(
             self.num_host_blocks > 0,
             "native_host_offload.num_host_blocks must be positive"
         );
-        ensure!(
-            self.d2h_bandwidth_gbps.is_finite() && self.d2h_bandwidth_gbps >= 0.0,
-            "native_host_offload.d2h_bandwidth_gbps must be finite and non-negative"
-        );
-        ensure!(
-            self.h2d_bandwidth_gbps.is_finite() && self.h2d_bandwidth_gbps >= 0.0,
-            "native_host_offload.h2d_bandwidth_gbps must be finite and non-negative"
-        );
+        for (name, value) in [
+            ("d2h_bandwidth_gbps", self.d2h_bandwidth_gbps),
+            ("h2d_bandwidth_gbps", self.h2d_bandwidth_gbps),
+            ("shared_d2h_bandwidth_gbps", self.shared_d2h_bandwidth_gbps),
+            ("shared_h2d_bandwidth_gbps", self.shared_h2d_bandwidth_gbps),
+            ("latency_to_first_byte_ms", self.latency_to_first_byte_ms),
+        ] {
+            ensure!(
+                value.is_finite() && value >= 0.0,
+                "native_host_offload.{name} must be finite and non-negative"
+            );
+        }
+        if self.scope == G2Scope::ClusterShared {
+            ensure!(
+                self.kv_layout_id
+                    .as_deref()
+                    .is_some_and(|id| !id.trim().is_empty()),
+                "cluster_shared native_host_offload requires a nonempty kv_layout_id"
+            );
+        }
         Ok(())
     }
 }
@@ -371,7 +468,8 @@ pub struct EngineConfig {
     /// Use [`Self::for_backend`] instead of changing this field on
     /// [`Self::default`] when backend-dependent defaults are desired.
     pub backend: Backend,
-    /// Physical G1 capacity in blocks.
+    /// Physical G1 capacity in blocks for a linear cache. Retained as a
+    /// positive compatibility field and ignored when `kv_cache_groups` is set.
     #[serde(default = "default_num_gpu_blocks")]
     pub num_gpu_blocks: usize,
     /// KV block size in tokens.
@@ -429,6 +527,12 @@ pub struct EngineConfig {
     /// Physical KV-cache bytes occupied by one token for host offload.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub kv_cache_bytes_per_token: Option<usize>,
+    /// Rank-local cache group geometry. An empty list retains the linear pool.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub kv_cache_groups: Vec<FpmCacheGroup>,
+    /// Shared physical budget for `kv_cache_groups`, including page padding.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kv_cache_capacity_bytes: Option<u64>,
     /// Optional framework-native host-offload simulation.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub native_host_offload: Option<NativeHostOffloadConfig>,
@@ -437,6 +541,10 @@ pub struct EngineConfig {
     /// Optional manual vLLM G1 token/state cache configuration.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub state_cache: Option<StateCacheConfig>,
+    /// Prefix hash granularity; allocation still uses block_size. Explicit
+    /// values enable default align retention for manually sized vLLM G1 state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prefix_match_unit: Option<usize>,
     /// Modeled prefill-to-decode transfer bandwidth in decimal GB/s.
     pub kv_transfer_bandwidth: Option<f64>,
     /// Prompt footprint used to model disaggregated transfer time.
@@ -498,10 +606,16 @@ struct EngineConfigWire {
     kv_transfer_bytes_per_token: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     kv_cache_bytes_per_token: Option<usize>,
+    #[serde(default)]
+    kv_cache_groups: Vec<FpmCacheGroup>,
+    #[serde(default)]
+    kv_cache_capacity_bytes: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     native_host_offload: Option<NativeHostOffloadConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     state_cache: Option<StateCacheConfig>,
+    #[serde(default)]
+    prefix_match_unit: Option<usize>,
     #[serde(default)]
     g3_offload: Option<crate::engine::G3OffloadConfig>,
     #[serde(default)]
@@ -557,9 +671,12 @@ impl<'de> Deserialize<'de> for EngineConfig {
             emit_kv_token_ids: wire.emit_kv_token_ids,
             kv_transfer_bytes_per_token: wire.kv_transfer_bytes_per_token,
             kv_cache_bytes_per_token: wire.kv_cache_bytes_per_token,
+            kv_cache_groups: wire.kv_cache_groups,
+            kv_cache_capacity_bytes: wire.kv_cache_capacity_bytes,
             native_host_offload: wire.native_host_offload,
             g3_offload: wire.g3_offload,
             state_cache: wire.state_cache,
+            prefix_match_unit: wire.prefix_match_unit,
             kv_transfer_bandwidth: wire.kv_transfer_bandwidth,
             kv_transfer_timing_mode: wire.kv_transfer_timing_mode,
             timing_model: wire.timing_model,
@@ -597,9 +714,12 @@ impl Default for EngineConfig {
             emit_kv_token_ids: false,
             kv_transfer_bytes_per_token: None,
             kv_cache_bytes_per_token: None,
+            kv_cache_groups: Vec::new(),
+            kv_cache_capacity_bytes: None,
             native_host_offload: None,
             g3_offload: None,
             state_cache: None,
+            prefix_match_unit: None,
             kv_transfer_bandwidth: None,
             kv_transfer_timing_mode: TransferTimingMode::FullPrompt,
             timing_model: TimingModelConfig::Polynomial,
@@ -623,6 +743,20 @@ impl EngineConfig {
     }
 
     fn validate_state_cache(&self) -> Result<()> {
+        if let Some(unit) = self.prefix_match_unit {
+            ensure!(
+                unit > 0 && self.block_size > 0 && self.block_size.is_multiple_of(unit),
+                "prefix_match_unit must be a positive divisor of block_size"
+            );
+            ensure!(
+                self.state_cache.is_some(),
+                "prefix_match_unit currently requires state_cache"
+            );
+            ensure!(
+                !self.emit_kv_events,
+                "prefix_match_unit does not yet support KV event export"
+            );
+        }
         if let Some(state_cache) = &self.state_cache {
             ensure!(
                 self.backend == Backend::Vllm,
@@ -648,6 +782,10 @@ impl EngineConfig {
             ensure!(
                 self.kv_transfer_timing_mode == TransferTimingMode::FullPrompt,
                 "state_cache does not support non-default kv_transfer_timing_mode"
+            );
+            ensure!(
+                self.prefix_match_unit.is_none() || self.aic_nextn.is_none(),
+                "prefix_match_unit does not support speculative decoding"
             );
             let bytes_per_token = self
                 .kv_cache_bytes_per_token
@@ -735,11 +873,58 @@ impl EngineConfig {
             self.kv_cache_bytes_per_token.is_none_or(|bytes| bytes > 0),
             "kv_cache_bytes_per_token must be positive"
         );
+        if self.kv_cache_groups.is_empty() {
+            ensure!(
+                self.kv_cache_capacity_bytes.is_none(),
+                "kv_cache_capacity_bytes requires kv_cache_groups"
+            );
+        } else {
+            ensure!(
+                self.backend == Backend::Vllm && self.worker_type == WorkerType::Aggregated,
+                "kv_cache_groups currently require backend=vllm and worker_type=aggregated"
+            );
+            ensure!(
+                !self.enable_prefix_caching,
+                "kv_cache_groups currently require enable_prefix_caching=false"
+            );
+            ensure!(
+                self.native_host_offload.is_none() && self.g3_offload.is_none(),
+                "kv_cache_groups currently support only HBM without host or G3 offload"
+            );
+            ensure!(
+                self.aic_nextn.is_none(),
+                "kv_cache_groups currently do not support speculative decoding"
+            );
+            ensure!(
+                !self.emit_kv_events && !self.emit_kv_token_ids,
+                "kv_cache_groups currently do not support KV event or token-ID emission"
+            );
+            ensure!(
+                self.kv_cache_bytes_per_token.is_none()
+                    && self.kv_transfer_bytes_per_token.is_none()
+                    && self.kv_transfer_bandwidth.is_none(),
+                "kv_cache_groups cannot use linear cache or KV transfer byte geometry"
+            );
+            ensure!(
+                self.kv_cache_capacity_bytes
+                    .is_some_and(|bytes| bytes > 0 && bytes <= (1u64 << 53)),
+                "kv_cache_groups require positive kv_cache_capacity_bytes at most 2^53"
+            );
+            let mut names = std::collections::HashSet::new();
+            for group in &self.kv_cache_groups {
+                group.validate()?;
+                ensure!(names.insert(&group.name), "duplicate KV cache group name");
+            }
+        }
         if let Some(g3) = &self.g3_offload {
             g3.validate()?;
             anyhow::ensure!(
                 self.native_host_offload.is_some(),
                 "g3_offload requires native_host_offload"
+            );
+            ensure!(
+                self.worker_type == WorkerType::Aggregated,
+                "g3_offload is supported only for worker_type=aggregated"
             );
         }
         if let Some(host_offload) = &self.native_host_offload {
@@ -747,10 +932,6 @@ impl EngineConfig {
             ensure!(
                 self.backend == Backend::Vllm,
                 "native_host_offload is supported only for backend=vllm"
-            );
-            ensure!(
-                self.worker_type == WorkerType::Aggregated,
-                "native_host_offload is supported only for worker_type=aggregated"
             );
             ensure!(
                 self.enable_prefix_caching,
@@ -783,6 +964,14 @@ impl EngineConfig {
             for (name, bandwidth) in [
                 ("d2h_bandwidth_gbps", host_offload.d2h_bandwidth_gbps),
                 ("h2d_bandwidth_gbps", host_offload.h2d_bandwidth_gbps),
+                (
+                    "shared_d2h_bandwidth_gbps",
+                    host_offload.shared_d2h_bandwidth_gbps,
+                ),
+                (
+                    "shared_h2d_bandwidth_gbps",
+                    host_offload.shared_h2d_bandwidth_gbps,
+                ),
             ] {
                 let bytes_per_ms = bandwidth * 1_000_000.0;
                 ensure!(
@@ -837,11 +1026,7 @@ mod tests {
         EngineConfig {
             block_size: 16,
             kv_cache_bytes_per_token: Some(128 * 1024),
-            native_host_offload: Some(NativeHostOffloadConfig {
-                num_host_blocks: 4_096,
-                d2h_bandwidth_gbps: DEFAULT_HOST_OFFLOAD_BANDWIDTH_GBPS,
-                h2d_bandwidth_gbps: DEFAULT_HOST_OFFLOAD_BANDWIDTH_GBPS,
-            }),
+            native_host_offload: Some(NativeHostOffloadConfig::new(4_096)),
             ..EngineConfig::default()
         }
     }
@@ -864,6 +1049,54 @@ mod tests {
             "num_gpu_blocks": 8, "block_size": 64, "kv_cache_bytes_per_token": 16,
             "state_cache": {"bytes_per_request": 1500}
         })
+    }
+
+    #[test]
+    fn state_cache_alignment_validates_and_round_trips() {
+        let mut input = state_cache_config_json();
+        input["prefix_match_unit"] = serde_json::json!(16);
+        let config: EngineConfig = serde_json::from_value(input.clone()).unwrap();
+        assert_eq!(config.prefix_match_unit, Some(16));
+        let encoded = serde_json::to_value(&config).unwrap();
+        assert_eq!(encoded["state_cache"], input["state_cache"]);
+        assert_eq!(encoded["prefix_match_unit"], input["prefix_match_unit"]);
+        serde_json::from_value::<EngineConfig>(encoded)
+            .unwrap()
+            .validate()
+            .unwrap();
+        for invalid in [0, 63, 65] {
+            input["prefix_match_unit"] = serde_json::json!(invalid);
+            assert!(
+                serde_json::from_value::<EngineConfig>(input.clone())
+                    .unwrap_err()
+                    .to_string()
+                    .contains("prefix_match_unit")
+            );
+        }
+        input["prefix_match_unit"] = serde_json::json!(16);
+        let mut no_state = input.clone();
+        no_state.as_object_mut().unwrap().remove("state_cache");
+        assert!(
+            serde_json::from_value::<EngineConfig>(no_state)
+                .unwrap_err()
+                .to_string()
+                .contains("requires state_cache")
+        );
+        let mut events = input.clone();
+        events["emit_kv_events"] = serde_json::json!(true);
+        assert!(
+            serde_json::from_value::<EngineConfig>(events)
+                .unwrap_err()
+                .to_string()
+                .contains("event export")
+        );
+        input["aic_nextn"] = serde_json::json!(1);
+        assert!(
+            serde_json::from_value::<EngineConfig>(input)
+                .unwrap_err()
+                .to_string()
+                .contains("speculative")
+        );
     }
 
     #[test]
@@ -959,7 +1192,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             StateCacheConfig {
-                bytes_per_request: usize::MAX
+                bytes_per_request: usize::MAX,
             }
             .state_blocks(2, 1)
             .unwrap(),
@@ -1111,16 +1344,82 @@ mod tests {
     }
 
     #[test]
+    fn grouped_cache_round_trips_and_rejects_unsupported_runtime_modes() {
+        let wire = serde_json::json!({
+            "backend": "vllm",
+            "enable_prefix_caching": false,
+            "kv_cache_capacity_bytes": 1024,
+            "kv_cache_groups": [{
+                "name": "window", "kind": "attention", "num_layers": 4,
+                "block_size_tokens": 4, "page_size_bytes": 64, "sliding_window": 8
+            }]
+        });
+        let config: EngineConfig = serde_json::from_value(wire.clone()).unwrap();
+        config.validate().unwrap();
+        let reloaded: EngineConfig =
+            serde_json::from_value(serde_json::to_value(&config).unwrap()).unwrap();
+        assert_eq!(config, reloaded);
+        for (key, value, expected) in [
+            ("backend", serde_json::json!("sglang"), "backend=vllm"),
+            (
+                "worker_type",
+                serde_json::json!("decode"),
+                "worker_type=aggregated",
+            ),
+            (
+                "enable_prefix_caching",
+                serde_json::json!(true),
+                "enable_prefix_caching=false",
+            ),
+            ("aic_nextn", serde_json::json!(1), "speculative"),
+            ("emit_kv_events", serde_json::json!(true), "KV event"),
+            (
+                "kv_cache_bytes_per_token",
+                serde_json::json!(64),
+                "linear cache",
+            ),
+            (
+                "kv_cache_capacity_bytes",
+                serde_json::json!(0),
+                "positive kv_cache_capacity_bytes",
+            ),
+            (
+                "native_host_offload",
+                serde_json::json!({"num_host_blocks": 1}),
+                "only HBM",
+            ),
+        ] {
+            let mut unsupported = wire.clone();
+            unsupported[key] = value;
+            let config: EngineConfig = serde_json::from_value(unsupported).unwrap();
+            let error = config.validate().unwrap_err();
+            assert!(error.to_string().contains(expected), "{key}: {error}");
+        }
+        let linear = serde_json::to_value(EngineConfig::default()).unwrap();
+        assert!(linear.get("kv_cache_groups").is_none());
+        assert!(linear.get("kv_cache_capacity_bytes").is_none());
+    }
+
+    #[test]
     fn native_host_offload_deserializes_with_default_bandwidths() {
         assert_eq!(DEFAULT_HOST_OFFLOAD_BANDWIDTH_GBPS, 32.0);
+        let defaults = NativeHostOffloadConfig::new(1);
         assert_eq!(
-            NativeHostOffloadConfig::new(1),
-            NativeHostOffloadConfig {
-                num_host_blocks: 1,
-                d2h_bandwidth_gbps: 32.0,
-                h2d_bandwidth_gbps: 32.0,
-            }
+            (
+                defaults.scope,
+                defaults.d2h_bandwidth_gbps,
+                defaults.h2d_bandwidth_gbps
+            ),
+            (G2Scope::DpRankLocal, 32.0, 32.0)
         );
+        assert_eq!(
+            (
+                defaults.shared_d2h_bandwidth_gbps,
+                defaults.shared_h2d_bandwidth_gbps
+            ),
+            (80.0, 80.0)
+        );
+        assert_eq!(defaults.latency_to_first_byte_ms, 0.0);
         let config: EngineConfig = serde_json::from_value(serde_json::json!({
             "backend": "vllm",
             "block_size": 16,
@@ -1133,10 +1432,13 @@ mod tests {
 
         assert_eq!(
             config.native_host_offload,
-            Some(NativeHostOffloadConfig {
-                num_host_blocks: 4_096,
-                d2h_bandwidth_gbps: DEFAULT_HOST_OFFLOAD_BANDWIDTH_GBPS,
-                h2d_bandwidth_gbps: DEFAULT_HOST_OFFLOAD_BANDWIDTH_GBPS,
+            Some(NativeHostOffloadConfig::new(4_096))
+        );
+        // Defaults stay out of the serialized descriptor.
+        assert_eq!(
+            serde_json::to_value(&config).unwrap()["native_host_offload"],
+            serde_json::json!({
+                "num_host_blocks": 4_096, "d2h_bandwidth_gbps": 32.0, "h2d_bandwidth_gbps": 32.0
             })
         );
         config.validate().unwrap();
@@ -1231,8 +1533,24 @@ mod tests {
         let cases: &[InvalidHostConfigCase] = &[
             (|config| config.backend = Backend::Sglang, "backend=vllm"),
             (
-                |config| config.worker_type = WorkerType::Prefill,
-                "worker_type=aggregated",
+                |config| {
+                    config.worker_type = WorkerType::Prefill;
+                    config.g3_offload = serde_json::from_value(serde_json::json!(
+                        {"scope": "worker_local", "num_g3_blocks": 1}
+                    ))
+                    .unwrap();
+                },
+                "g3_offload is supported only for worker_type=aggregated",
+            ),
+            (
+                |config| {
+                    config
+                        .native_host_offload
+                        .as_mut()
+                        .unwrap()
+                        .latency_to_first_byte_ms = -1.0
+                },
+                "native_host_offload.latency_to_first_byte_ms must be finite and non-negative",
             ),
             (
                 |config| config.enable_prefix_caching = false,
@@ -1246,6 +1564,57 @@ mod tests {
         for &(mutate, expected) in cases {
             assert_invalid_host_config(mutate, expected);
         }
+    }
+
+    #[test]
+    fn cluster_shared_requires_a_non_blank_kv_layout_id() {
+        for layout in [None, Some(""), Some(" \t")] {
+            let mut config = native_host_offload_config();
+            let host = config.native_host_offload.as_mut().unwrap();
+            host.scope = G2Scope::ClusterShared;
+            host.kv_layout_id = layout.map(str::to_owned);
+            assert_eq!(
+                config.validate().unwrap_err().to_string(),
+                "cluster_shared native_host_offload requires a nonempty kv_layout_id",
+                "{layout:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn g2_scope_round_trips_and_redirects_the_g3_scope_name() {
+        let parse = |scope: &str| {
+            serde_json::from_value::<NativeHostOffloadConfig>(serde_json::json!({
+                "scope": scope, "num_host_blocks": 4, "kv_layout_id": "tp1",
+                "shared_d2h_bandwidth_gbps": 2.0, "latency_to_first_byte_ms": 0.5
+            }))
+            .map_err(|error| error.to_string())
+        };
+        let shared = parse("cluster_shared").unwrap();
+        assert_eq!(shared, {
+            let mut expected = NativeHostOffloadConfig::new(4).cluster_shared("tp1");
+            expected.shared_d2h_bandwidth_gbps = 2.0;
+            expected.latency_to_first_byte_ms = 0.5;
+            expected
+        });
+        assert_eq!(
+            serde_json::to_value(&shared).unwrap(),
+            serde_json::json!({
+                "scope": "cluster_shared", "num_host_blocks": 4, "kv_layout_id": "tp1",
+                "d2h_bandwidth_gbps": 32.0, "h2d_bandwidth_gbps": 32.0,
+                "shared_d2h_bandwidth_gbps": 2.0, "latency_to_first_byte_ms": 0.5
+            })
+        );
+        assert_eq!(parse("dp_rank_local").unwrap().scope, G2Scope::DpRankLocal);
+        assert_eq!(
+            parse("worker_local").unwrap_err(),
+            "host_offload.scope `worker_local` is a G3 scope; use `dp_rank_local` for \
+             per-DP-rank G2 caches"
+        );
+        assert_eq!(
+            parse("host_shared").unwrap_err(),
+            "unknown host_offload.scope `host_shared`; expected `dp_rank_local` or `cluster_shared`"
+        );
     }
 
     #[test]

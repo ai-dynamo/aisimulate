@@ -17,6 +17,7 @@ from pydantic import BaseModel
 
 from ..config.common import ENGINE_MODEL_CONTROL_FIELDS, is_active_engine_model_control
 from ..config.traffic import AgenticProfileOptions
+from ..fpm_profile import load_fpm_profile
 from ..power import POWER_FIELDS, normalize_power_summary
 from .provider import AdapterReplaySpec, JSONValue, RuntimeHookSpec
 
@@ -262,6 +263,7 @@ class RunnerCapabilities:
     supports_mtp_expected_acceptance: bool = False
     supports_state_cache: bool = False
     supports_agentic_profile: bool = False
+    supports_grouped_kv_cache: bool = False
 
     def supports_backend_topology(self, backend: str, topology: str) -> bool:
         """Return whether a backend/topology pair is supported.
@@ -318,7 +320,11 @@ class RunnerCapabilities:
                 raise ValueError("cached_prefix_tokens is unsupported for AFD")
             if not self.supports_cached_prefix_tokens:
                 raise ValueError("runner does not support cached_prefix_tokens; use --stack engine")
-        for args in (deployment.agg_engine_args, deployment.prefill_engine_args, deployment.decode_engine_args):
+        for role, args in (
+            ("aggregated", deployment.agg_engine_args),
+            ("prefill", deployment.prefill_engine_args),
+            ("decode", deployment.decode_engine_args),
+        ):
             if not isinstance(args, Mapping):
                 continue
             rank = args.get("rank", args)
@@ -329,6 +335,35 @@ class RunnerCapabilities:
             if not isinstance(identity, Mapping):
                 # The timing validator handles malformed identities; still inspect flat controls.
                 identity = {}
+            profile = identity.get("fpm_profile") or rank.get("aic_fpm_profile") or rank.get("fpm_profile")
+            grouped_profile = False
+            if not self.supports_grouped_kv_cache and profile is not None:
+                # Match the runner's canonical and flat identity defaults before
+                # inspecting resources; another profile deployment is irrelevant.
+                selected = load_fpm_profile(profile).select(
+                    model=identity.get("model", args.get("aic_model_path")),
+                    system=identity.get("system", args.get("aic_system")),
+                    backend=identity.get("backend", rank.get("aic_backend", rank.get("backend", deployment.backend))),
+                    backend_version=identity.get(
+                        "backend_version",
+                        rank.get("aic_backend_version", rank.get("backend_version", deployment.backend_version)),
+                    ),
+                    worker_type=identity.get("worker_type", rank.get("worker_type", role)),
+                    tp_size=identity.get("tp", args.get("tensor_parallel_size", args.get("aic_tp_size", 1))),
+                    pp_size=identity.get("pp", rank.get("aic_pp_size", 1)),
+                    attention_dp_size=identity.get(
+                        "attention_dp", args.get("dp_size", args.get("aic_attention_dp_size", 1))
+                    ),
+                    moe_tp_size=identity.get("moe_tp_size", rank.get("moe_tp_size", rank.get("aic_moe_tp_size"))),
+                    moe_ep_size=identity.get("moe_ep_size", rank.get("moe_ep_size", rank.get("aic_moe_ep_size"))),
+                )
+                grouped_profile = selected.resources.cache_layout == "grouped"
+            if not self.supports_grouped_kv_cache and (
+                grouped_profile
+                or rank.get("kv_cache_groups") is not None
+                or rank.get("kv_cache_capacity_bytes") is not None
+            ):
+                raise ValueError("runner does not support grouped FPM caches; use --stack engine")
             active_controls = [
                 name
                 for name in ENGINE_MODEL_CONTROL_FIELDS

@@ -336,12 +336,22 @@ def _aic_source(
         or not isinstance(source.get("commit_sha"), str)
         or not re.fullmatch(r"[0-9a-f]{40}", source["commit_sha"])
         or source["commit_sha"] != predictions.get("aic_commit_sha")
-        or runtime.get("cli_entry_point") != "aisimulate.legacy_cli.entrypoint:main"
+        or runtime.get("cli_entry_point") not in {"aisimulate.legacy_cli.entrypoint:main", "aiconfigurator.main:main"}
     ):
         raise SnapshotError("AIC baseline must use the legacy CLI bundled in a clean AISimulate checkout")
     if revision and any(source[key] != revision[key] for key in ("branch", "commit_sha")):
         raise SnapshotError("AIC baseline and AISimulate replay must evaluate the same branch and commit")
-    return {key: source[key] for key in ("repository", "branch", "commit_sha")}
+    result = {key: source[key] for key in ("repository", "branch", "commit_sha")}
+    if "baseline_api" in runtime or "config_adapter" in runtime:
+        expected = (
+            ("aiconfigurator.cli.api", "aiconfigurator.sdk.config_adapter")
+            if runtime["cli_entry_point"] == "aiconfigurator.main:main"
+            else ("aisimulate.legacy_cli.api", "aisimulate.sdk.config_adapter")
+        )
+        if (runtime.get("baseline_api"), runtime.get("config_adapter")) != expected:
+            raise SnapshotError("baseline entry point and predictor modules disagree")
+        result["cli_entry_point"] = runtime["cli_entry_point"]
+    return result
 
 
 def _model_summary(model: str, rows: list[dict[str, Any]]) -> dict[str, Any]:

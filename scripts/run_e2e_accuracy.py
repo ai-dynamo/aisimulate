@@ -154,11 +154,33 @@ def select_points(tables: dict, max_age_days: int) -> tuple[list[dict], dict]:
     }
 
 
+def predictor_module_names(files) -> tuple[str, str]:
+    """Select the namespace shipped by the evaluated wheel, not the evaluator."""
+    members = {str(path) for path in files}
+    layouts = [
+        (api, adapter)
+        for api, adapter in (
+            ("aisimulate.legacy_cli.api", "aisimulate.sdk.config_adapter"),
+            ("aiconfigurator.cli.api", "aiconfigurator.sdk.config_adapter"),
+        )
+        if api.replace(".", "/") + ".py" in members
+    ]
+    if not layouts:
+        raise ValueError("wheel has no supported baseline CLI layout")
+    if len(layouts) != 1:
+        raise ValueError("wheel contains ambiguous baseline CLI layouts")
+    api, adapter = layouts[0]
+    if adapter.replace(".", "/") + "/__init__.py" not in members:
+        raise ValueError("wheel is missing its matching config adapter")
+    return api, adapter
+
+
 def wheel_identity(wheel: Path) -> dict:
     """Check installed runtime AND legacy CLI bytes against the single wheel."""
     dist = importlib.metadata.distribution("aisimulate")
     checked = 0
     with zipfile.ZipFile(wheel) as archive:
+        api, adapter = predictor_module_names(archive.namelist())
         for member in archive.namelist():
             if member.endswith("/") or not member.startswith(("aisimulate/", "aiconfigurator/", "aisimulate_core/")):
                 continue
@@ -168,11 +190,19 @@ def wheel_identity(wheel: Path) -> dict:
             checked += 1
     if checked < 3:
         raise ValueError("wheel does not contain the unified package")
-    for name in ("aisimulate._runtime", "aisimulate.runner", "aisimulate.legacy_cli.api"):
+    for name in ("aisimulate._runtime", "aisimulate.runner", api, adapter):
         module = importlib.import_module(name)
         if not Path(module.__file__).resolve().is_relative_to(Path(dist.locate_file("")).resolve()):
             raise ValueError("import resolved outside installed wheel")
-    return {"wheel_sha256": digest(wheel), "packages": {"aisimulate": dist.version}}
+    return {
+        "wheel_sha256": digest(wheel),
+        "packages": {"aisimulate": dist.version},
+        "baseline_api": api,
+        "config_adapter": adapter,
+        "cli_entry_point": "aiconfigurator.main:main"
+        if api.startswith("aiconfigurator.")
+        else "aisimulate.legacy_cli.entrypoint:main",
+    }
 
 
 def replay_spec(request, backend_version: str):
@@ -190,7 +220,8 @@ def replay_spec(request, backend_version: str):
             "max_num_seqs": max(256, request.workload.concurrency),
             "max_num_batched_tokens": 8192,
             "enable_prefix_caching": False,
-            "aic_forward_model": "op_level",
+            # Both legacy releases and current runners default to op-level timing.
+            # Legacy native engines reject the newer aic_forward_model selector.
         }
         for name in ("moe_tp_size", "moe_ep_size"):
             if getattr(worker, name) is not None:
@@ -240,13 +271,11 @@ def replay_spec(request, backend_version: str):
 
 
 def predict_point(point: dict) -> dict:
-    from aisimulate.legacy_cli.api import cli_estimate
     from aisimulate.runner import EngineReplayRunnerFactory
-    from aisimulate.sdk.config_adapter import (
-        InferenceXSource,
-        adapt_config,
-        to_cli_estimate_kwargs,
-    )
+
+    api_name, adapter_name = predictor_module_names(importlib.metadata.distribution("aisimulate").files or ())
+    cli_estimate = importlib.import_module(api_name).cli_estimate
+    adapter = importlib.import_module(adapter_name)
 
     config, bench = point["config"], point["benchmark"]
     # A fingerprint alone cannot reconstruct non-normalized recipe knobs.
@@ -258,7 +287,7 @@ def predict_point(point: dict) -> dict:
             "outcome": "unsupported",
             "reason": "recipe_required",
         }
-    adaptation = adapt_config(InferenceXSource(config=config, benchmark=bench))
+    adaptation = adapter.adapt_config(adapter.InferenceXSource(config=config, benchmark=bench))
     if len(adaptation.requests) != 1:
         return {
             "id": point["id"],
@@ -267,7 +296,7 @@ def predict_point(point: dict) -> dict:
         }
     request = adaptation.requests[0]
     try:
-        baseline = cli_estimate(**to_cli_estimate_kwargs(request))
+        baseline = cli_estimate(**adapter.to_cli_estimate_kwargs(request))
         if not all(positive(value) for value in (baseline.ttft, baseline.tpot)):
             raise ValueError("invalid baseline latency")
     except Exception:
@@ -404,7 +433,6 @@ def campaign(args) -> None:
         "runtime": {
             **identity,
             "source_checkout": {**source, "repository": REPOSITORY},
-            "cli_entry_point": "aisimulate.legacy_cli.entrypoint:main",
         },
     }
     common = {

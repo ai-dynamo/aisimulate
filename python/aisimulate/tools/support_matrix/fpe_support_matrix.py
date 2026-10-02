@@ -502,7 +502,7 @@ def classify_failure(error: BaseException, *, stage: str) -> str:
     """Map native/Python failures to stable, conservative matrix categories."""
     chain = _exception_chain(error)
     # Explicit SDK preflights from moe_comm_resolver and models/base, moe,
-    # hybrid_moe, gemma4. Match the type and complete diagnostic only while building;
+    # hybrid_moe, gemma4, deepseek_v41. Match type and complete diagnostic only while building;
     # unrelated or query-time failures must retain their blocking category.
     topology_rejections = (
         (
@@ -516,6 +516,15 @@ def classify_failure(error: BaseException, *, stage: str) -> str:
             ValueError,
             r"Invalid quantized MoE configuration: \(moe_intermediate_size=\d+ / moe_tp_size=\d+\) "
             r"% weight_block_size=\d+ != 0\.",
+        ),
+        (
+            NotImplementedError,
+            r"DeepSeek-V4\.1 text baseline requires attention_dp_size=1, pp_size=1 and cp_size=1; "
+            r"DP Engram collectives and PP cache ownership need separate contracts",
+        ),
+        (
+            ValueError,
+            r"DeepSeek-V4\.1 EP must divide experts; TP must divide index heads and output groups",
         ),
     )
     if stage == "build" and any(

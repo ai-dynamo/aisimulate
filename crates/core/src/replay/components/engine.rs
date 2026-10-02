@@ -76,11 +76,13 @@ struct RankMetricsState {
 }
 
 impl RankMetricsState {
-    fn new(dp_rank: u32, total_blocks: u64) -> Self {
+    fn new(dp_rank: u32, total_blocks: u64, kv_cache_capacity_bytes: Option<u64>) -> Self {
         Self {
             latest: Metrics {
                 dp_rank,
                 total_blocks,
+                kv_cache_capacity_bytes,
+                kv_cache_used_bytes: kv_cache_capacity_bytes.map(|_| 0),
                 ..Metrics::default()
             },
             interval: ReplaySchedulerIntervalMetrics::default(),
@@ -116,6 +118,8 @@ impl RankMetricsState {
             active_blocks: self.latest.active_blocks,
             inactive_blocks: self.latest.inactive_blocks,
             total_blocks: self.latest.total_blocks,
+            kv_cache_used_bytes: self.latest.kv_cache_used_bytes,
+            kv_cache_capacity_bytes: self.latest.kv_cache_capacity_bytes,
             active_cache_usage: self.latest.cache_usage,
             physical_cache_usage: self.latest.physical_cache_usage,
             running_requests: self.latest.running_requests,
@@ -178,6 +182,8 @@ where
         startup_time_ms: Option<f64>,
     ) -> Result<Self> {
         let mut factory = factory;
+        // A role outside a disaggregated deployment owns its shared G2 pool.
+        factory.bind_g2_registry(&Arc::default());
         if let Some(config) = factory.g3_config.clone() {
             factory.g3_tier = Some(crate::engine::g3_offload::G3Tier::new(
                 config,
@@ -230,7 +236,13 @@ where
         for worker in self.workers.iter_mut().filter_map(Option::as_mut) {
             worker.telemetry = Some(
                 (0..dp_size)
-                    .map(|dp_rank| RankMetricsState::new(dp_rank, total_blocks))
+                    .map(|dp_rank| {
+                        RankMetricsState::new(
+                            dp_rank,
+                            total_blocks,
+                            self.factory.kv_cache_capacity_bytes(),
+                        )
+                    })
                     .collect(),
             );
         }
@@ -252,6 +264,21 @@ where
             .g3_tier
             .as_ref()
             .map(|r| r.lock().unwrap().snapshot())
+    }
+
+    pub(crate) fn g2_domains(&self) -> Vec<crate::replay::G2DomainStats> {
+        self.factory
+            .g2_registry()
+            .and_then(|registry| registry.occupancy())
+            .map(
+                |(capacity_blocks, resident_blocks, used_blocks)| crate::replay::G2DomainStats {
+                    capacity_blocks,
+                    resident_blocks,
+                    used_blocks,
+                },
+            )
+            .into_iter()
+            .collect()
     }
 
     pub(crate) fn reset_timing_evidence(&self) -> Result<()> {
@@ -320,7 +347,13 @@ where
         }
         let telemetry = self.telemetry.as_ref().map(|_| {
             (0..self.factory.dp_size())
-                .map(|dp_rank| RankMetricsState::new(dp_rank, self.factory.total_blocks()))
+                .map(|dp_rank| {
+                    RankMetricsState::new(
+                        dp_rank,
+                        self.factory.total_blocks(),
+                        self.factory.kv_cache_capacity_bytes(),
+                    )
+                })
                 .collect()
         });
         self.workers.push(Some(LogicalWorker {
@@ -448,6 +481,7 @@ where
             .context("non-draining worker count overflow")?;
         let mut added = Vec::new();
         let mut newly_marked = Vec::new();
+        let mut removed = Vec::new();
 
         if target > effective {
             for _ in 0..(target - effective) {
@@ -470,8 +504,12 @@ where
                 .take(excess)
                 .collect::<Vec<_>>();
             for id in &to_cancel {
-                self.tombstone_worker(*id)
-                    .with_context(|| format!("failed to cancel starting worker {id}"))?;
+                if self
+                    .tombstone_worker(*id)
+                    .with_context(|| format!("failed to cancel starting worker {id}"))?
+                {
+                    removed.push(*id);
+                }
                 self.pending_startup.remove(id);
             }
             for id in active_ids.iter().rev().take(excess - to_cancel.len()) {
@@ -480,7 +518,7 @@ where
             }
         }
 
-        let removed = self.try_remove_drained()?;
+        removed.extend(self.try_remove_drained()?);
         Ok((added, newly_marked, removed))
     }
 
@@ -1039,6 +1077,9 @@ where
 
     /// Earliest independently modeled deadline across every logical worker.
     pub(crate) fn next_internal_deadline_ms(&self) -> Option<f64> {
+        if !self.factory.can_have_internal_deadlines() {
+            return None;
+        }
         self.workers
             .iter()
             .filter_map(Option::as_ref)
@@ -1059,6 +1100,13 @@ where
         &mut self,
         now_ms: f64,
     ) -> Result<InternalEngineEffects<Observation::Batch>> {
+        if !self.factory.can_have_internal_deadlines() {
+            return Ok(InternalEngineEffects {
+                engine_events: Observation::Batch::default(),
+                made_progress: false,
+                artifact_kv_events: self.capture_artifact_kv_events.then(Box::default),
+            });
+        }
         let mut observations = Observation::Batch::default();
         let mut artifact_events = Vec::new();
         let mut made_progress = false;
@@ -1398,6 +1446,153 @@ mod tests {
     }
 
     #[test]
+    fn initially_empty_fleet_drains_later_workers_host_store() {
+        let config = ReplayEngineConfig {
+            rank: EngineConfig {
+                num_gpu_blocks: 1,
+                block_size: 4,
+                max_num_seqs: 1,
+                max_num_batched_tokens: 4,
+                kv_cache_bytes_per_token: Some(250_000),
+                native_host_offload: Some(
+                    crate::engine::NativeHostOffloadConfig::new(2).with_bandwidths(1.0, 1.0),
+                ),
+                timing_model: TimingModelConfig::Fixed {
+                    prefill_ms: 0.0,
+                    decode_ms: 0.0,
+                },
+                ..EngineConfig::default()
+            },
+            ..ReplayEngineConfig::default()
+        };
+        let factory = ReplayEngineFactory::new()
+            .role_factory(&config, WorkerStage::Aggregated, false)
+            .unwrap();
+        let mut component: EngineComponent = EngineComponent::new_with_factory(
+            SimulationWorkerStage::Aggregated,
+            EnginePassMode::Visible,
+            factory,
+            0,
+            None,
+        )
+        .unwrap();
+        assert_eq!(component.next_internal_deadline_ms(), None);
+        assert!(!component.process_internal_work(0.0).unwrap().made_progress);
+
+        let worker = component.add_worker().unwrap();
+        component
+            .dispatch(
+                worker,
+                DirectRequest {
+                    tokens: vec![1, 2, 3, 4],
+                    max_output_tokens: 0,
+                    uuid: Some(Uuid::from_u128(32)),
+                    ..Default::default()
+                },
+                0.0,
+            )
+            .unwrap();
+        component.drive_ready(0.0, None).unwrap();
+
+        assert_eq!(component.in_flight(), 0);
+        assert_eq!(component.next_internal_deadline_ms(), Some(1.0));
+        component.mark_for_removal(worker);
+        assert!(component.try_remove_drained().unwrap().is_empty());
+        assert!(!component.process_internal_work(0.5).unwrap().made_progress);
+        assert!(component.process_internal_work(1.0).unwrap().made_progress);
+        assert_eq!(component.try_remove_drained().unwrap(), vec![worker]);
+    }
+
+    #[test]
+    fn shared_g2_scale_in_drains_accepted_store_and_keeps_deployment_residency() {
+        let config = serde_json::from_value(serde_json::json!({"rank": {
+            "num_gpu_blocks": 1, "block_size": 4, "max_num_seqs": 1,
+            "max_num_batched_tokens": 4, "enable_prefix_caching": true,
+            "kv_cache_bytes_per_token": 250_000,
+            "timing_model": {"type": "fixed", "prefill_ms": 0.0, "decode_ms": 0.0},
+            "native_host_offload": {
+                "scope": "cluster_shared", "num_host_blocks": 2, "kv_layout_id": "tp1",
+                "d2h_bandwidth_gbps": 1.0, "h2d_bandwidth_gbps": 1.0,
+            },
+        }}))
+        .unwrap();
+        let factory = ReplayEngineFactory::new()
+            .role_factory(&config, WorkerStage::Aggregated, false)
+            .unwrap();
+        let mut component: EngineComponent = EngineComponent::new_with_factory(
+            SimulationWorkerStage::Aggregated,
+            EnginePassMode::Visible,
+            factory,
+            2,
+            None,
+        )
+        .unwrap();
+        let pool = |component: &EngineComponent| {
+            let [domain] = component.g2_domains()[..] else {
+                panic!("one deployment pool")
+            };
+            (domain.resident_blocks, domain.used_blocks)
+        };
+        let request = |id| DirectRequest {
+            tokens: vec![1, 2, 3, 4],
+            max_output_tokens: 0,
+            uuid: Some(Uuid::from_u128(id)),
+            ..Default::default()
+        };
+        // One 1 MB block per prompt: each D2H or H2D takes 1 ms at 1 GB/s.
+        let run = |component: &mut EngineComponent, worker, id, now: f64| {
+            component.dispatch(worker, request(id), now).unwrap();
+            let mut admissions = component.drive_ready(now, None).unwrap().admissions;
+            assert_eq!(component.next_internal_deadline_ms(), Some(now + 1.0));
+            assert!(
+                component
+                    .process_internal_work(now + 1.0)
+                    .unwrap()
+                    .made_progress
+            );
+            admissions.extend(component.drive_ready(now + 1.0, None).unwrap().admissions);
+            assert_eq!(component.in_flight(), 0);
+            admissions
+                .iter()
+                .map(|admission| admission.cache_tier_attribution)
+                .collect::<Vec<_>>()
+        };
+        let restored = Some(crate::engine::CacheTierAttribution {
+            g1_reused_input_tokens: 0,
+            host_reused_input_tokens: 4,
+        });
+
+        // Worker 1 computes the block; scale-in marks it while its D2H runs.
+        component.dispatch(1, request(1), 0.0).unwrap();
+        component.drive_ready(0.0, None).unwrap();
+        assert_eq!(component.in_flight(), 0);
+        assert_eq!(component.next_internal_deadline_ms(), Some(1.0));
+        assert_eq!(
+            component.apply_target_count(1).unwrap(),
+            (vec![], vec![1], vec![])
+        );
+        assert_eq!(pool(&component), (0, 1));
+        assert!(!component.process_internal_work(0.5).unwrap().made_progress);
+        assert!(component.try_remove_drained().unwrap().is_empty());
+        assert!(component.process_internal_work(1.0).unwrap().made_progress);
+        assert_eq!(component.try_remove_drained().unwrap(), [1]);
+        assert_eq!(pool(&component), (1, 1));
+
+        // The survivor restores the retired worker's block from G2.
+        assert_eq!(run(&mut component, 0, 2, 1.0), [restored]);
+        // The deployment owns the pool: it outlives an empty fleet.
+        assert_eq!(
+            component.apply_target_count(0).unwrap(),
+            (vec![], vec![0], vec![0])
+        );
+        assert_eq!(component.worker_count(), 0);
+        assert_eq!(pool(&component), (1, 1));
+        assert_eq!(component.apply_target_count(1).unwrap().0, [2]);
+        assert_eq!(run(&mut component, 2, 3, 3.0), [restored]);
+        assert_eq!(pool(&component), (1, 1));
+    }
+
+    #[test]
     fn g3_scale_in_does_not_wait_for_an_unrelated_workers_io() {
         use crate::engine::HostBlockKey;
         use crate::engine::g3_offload::Direction;
@@ -1561,7 +1756,7 @@ mod tests {
 
     #[test]
     fn scheduler_cache_metrics_accumulate_and_drain_per_tick() {
-        let mut state = RankMetricsState::new(2, 100);
+        let mut state = RankMetricsState::new(2, 100, None);
         state
             .update(
                 &Metrics {

@@ -84,6 +84,10 @@ warmup fields and retains both worker pools across the barrier. See
 | `predict` | Evaluate one concrete deployment under a workload. | `aisimulate predict -c prediction.yaml --output-dir ./prediction-output` | A metrics summary and `prediction-output/prediction.json`. |
 | `recommend` | Search deployment and load choices for an optimization goal. | `aisimulate recommend -c recommendation.yaml --output-dir ./recommendation-output` | Ranked configurations, `recommendation.json`, and concrete YAML files under `recommendations/`. |
 
+`recommend` also accepts repeatable `--output NAME` options. Each selected output adapter requires
+a same-named top-level configuration section, may observe live candidate and round notifications,
+and writes additional artifacts after recommendation.
+
 Unless labeled as captured output, metric values in example results are hypothetical and
 illustrate the output format. Captured detail examples are simulation results, not hardware measurements.
 
@@ -1033,6 +1037,8 @@ engine:
 | `engine.workers.<role>.parallelism.attention_data` | `1` | Feasible registry values | `parallelism` | Positive and model/backend compatible. |
 | `engine.workers.<role>.parallelism.moe_tensor` | `1` | Feasible registry values | `parallelism` | Positive and model/backend compatible. |
 | `engine.workers.<role>.parallelism.moe_expert` | `1` | Feasible registry values | `parallelism` | Positive and model/backend compatible. |
+| `engine.workers.<role>.parallelism.prefill_context` | `1` | `x` | `-` | `predict` only. Prefill context parallelism (SGLang `--attn-cp-size`, vLLM `-pcp`): splits prefill tokens across extra attention ranks; decode stays replicated on them. Requires model/backend CP support. |
+| `engine.workers.<role>.parallelism.decode_context` | `1` | `x` | `-` | `predict` only. Decode context parallelism (vLLM `-dcp`, SGLang `--dcp-size`): stripes the decode KV cache across ranks inside the attention group without adding GPUs. Aggregated workers accept at most one of `prefill_context` / `decode_context` above 1; disaggregated roles carry each knob independently. Modeled for DeepSeek-V3-class MLA (vLLM, SGLang), DeepSeek-V3.2 / GLM-5 DSA (vLLM, SGLang) and dense / Qwen-MoE GQA (vLLM, `decode_context <= tensor / kv_heads`); other families fail loud. |
 | `engine.workers.<role>.scheduler.max_batched_tokens` | Aggregated/prefill/decode: `8192` | Prefill/aggregated: `{choices: [8192, 16384, 32768]}`; decode: `-` | `-` | Positive. |
 | `engine.workers.<role>.scheduler.max_sequences` | Aggregated `256`; prefill `1`; decode `256` | Prefill: `{choices: [1, 2, 4, 8, 16, 32, 64, 128, 256]}`; aggregated/decode: `{choices: [256, 512, 1024]}` | `-` | Positive. |
 | `engine.workers.<role>.scheduler.prefill_schedule_interval` | `1` | `x` | `-` | `predict` only. Positive. Values above one throttle prefill admission only for vLLM attention-DP groups. |
@@ -1042,12 +1048,17 @@ engine:
 | `engine.workers.<role>.kv_cache.capacity.type` | `default` | `x` | `-` | `default` or `fixed`. |
 | `engine.workers.<role>.kv_cache.capacity.memory_fraction` | vLLM/TensorRT-LLM `0.9`; SGLang `0.88` | `-` | `-` | `(0, 1]`; `default` capacity only. |
 | `engine.workers.<role>.kv_cache.capacity.blocks` | `null` | `x` | `-` | Positive; `fixed` capacity only. Required unless `predict` supplies `capacity.bytes`. |
-| `engine.workers.<role>.kv_cache.capacity.bytes` | `null` | `-` | `-` | `predict` only. Positive per-rank G1 byte budget; `fixed` capacity only, mutually exclusive with `blocks`. Requires explicit `block_size` and numeric `bytes_per_token`. |
-| `engine.workers.<role>.kv_cache.state_cache.bytes_per_request` | Disabled | `-` | `-` | `predict --stack engine` only, aggregated vLLM without host or G3 offload. Positive recurrent-state bytes per request per rank; requires fixed capacity and explicit block geometry. See [manual state-cache sizing](#manual-state-cache-sizing). |
+| `engine.workers.<role>.kv_cache.capacity.bytes` | `null` | `-` | `-` | `predict` only. Positive per-rank G1 byte budget; `fixed` capacity only, mutually exclusive with `blocks`. Requires explicit `block_size` and numeric `bytes_per_token`, or automatic K3 state sizing. |
+| `engine.workers.<role>.kv_cache.state_cache.bytes_per_request` | Disabled | `-` | `-` | `predict --stack engine` only, aggregated vLLM without host or G3 offload. Positive recurrent-state bytes per request per rank; requires fixed capacity. Omit the byte count to resolve K3 state and token geometry; see [state-cache sizing](#manual-state-cache-sizing). |
+| `engine.workers.<role>.kv_cache.prefix_match_unit` | Omitted | `-` | `-` | `predict --stack engine` only. Positive divisor of the resolved `block_size`; requires aggregated vLLM G1 `state_cache`. Rejects `engine.speculation`, `engine.nextn > 0`, KV event export, and Belady eviction. See [manual state-cache sizing](#manual-state-cache-sizing). |
 | `engine.workers.<role>.kv_cache.capacity.cuda_graph_reserved_bytes` | `0` | `-` | `-` | `predict` only. Integer from `0` through `2**53`; `default` capacity only. |
-| `engine.workers.<role>.kv_cache.host_offload.num_host_blocks` | Required when `host_offload` is present | `x` | `-` | Positive; fixed descriptor, aggregated vLLM only. |
-| `engine.workers.<role>.kv_cache.host_offload.d2h_bandwidth_gbps` | `32.0` | `x` | `-` | Finite and nonnegative. |
-| `engine.workers.<role>.kv_cache.host_offload.h2d_bandwidth_gbps` | `32.0` | `x` | `-` | Finite and nonnegative. |
+| `engine.workers.<role>.kv_cache.host_offload.scope` | `dp_rank_local` | `x` | `-` | `dp_rank_local` (one cache per DP rank) or `cluster_shared` (one deployment pool). See [G2 host-cache scope](../g2-cache-scope.md). |
+| `engine.workers.<role>.kv_cache.host_offload.num_host_blocks` | Required when `host_offload` is present | `x` | `-` | Positive; fixed descriptor. Per DP rank for `dp_rank_local`, pool total for `cluster_shared`. |
+| `engine.workers.<role>.kv_cache.host_offload.d2h_bandwidth_gbps` | `32.0` | `x` | `-` | Per DP rank; finite and nonnegative, `0` is unlimited. |
+| `engine.workers.<role>.kv_cache.host_offload.h2d_bandwidth_gbps` | `32.0` | `x` | `-` | Per DP rank; finite and nonnegative, `0` is unlimited. |
+| `engine.workers.<role>.kv_cache.host_offload.shared_d2h_bandwidth_gbps` | `80.0` | `x` | `-` | Pool-wide cap; `cluster_shared` only. |
+| `engine.workers.<role>.kv_cache.host_offload.shared_h2d_bandwidth_gbps` | `80.0` | `x` | `-` | Pool-wide cap; `cluster_shared` only. |
+| `engine.workers.<role>.kv_cache.host_offload.latency_to_first_byte_ms` | `0.0` | `x` | `-` | Delay before a transfer moves bytes; consumes no bandwidth. |
 | `engine.workers.<role>.timing.type` | `default` | `x` | `-` | `default`, `fixed`, or `polynomial`. |
 | `engine.workers.<role>.timing.prefill_ms` | `null` | `x` | `-` | Nonnegative and required for `fixed` timing. |
 | `engine.workers.<role>.timing.decode_ms` | `null` | `x` | `-` | Nonnegative and required for `fixed` timing. |
@@ -1149,8 +1160,10 @@ decode-KV ceiling. FPM pairs are external runtime inputs. If a pair was collecte
 version outside the queryable slots, set `AIC_ALLOW_UNLISTED_VERSIONS=1` explicitly.
 
 `kv_cache.capacity.type: fixed` requires `blocks`, or alternatively `bytes` in `predict`.
-Byte capacity requires explicit `block_size` and numeric `bytes_per_token`; the block count is
-`floor(bytes / (block_size * bytes_per_token))`. Specify exactly one of `blocks` and `bytes`.
+Manual byte capacity requires explicit `block_size` and numeric `bytes_per_token`.
+For Kimi K3 with `state_cache: {}`, these values are resolved automatically. In both cases,
+the block count is `floor(bytes / (resolved_block_size * resolved_bytes_per_token))`.
+Specify exactly one of `blocks` and `bytes`.
 Fixed capacity rejects `memory_fraction` and nonzero `cuda_graph_reserved_bytes`.
 Conversely, `type: default` rejects `blocks` and `bytes` and derives block count from model,
 hardware, parallelism, block size, backend, memory fraction, and the caller-provided CUDA graph
@@ -1174,7 +1187,7 @@ differ from each worker role's physical `kv_cache.bytes_per_token`.
 
 <a id="manual-state-cache-sizing"></a>
 
-#### 12.1.1 Manual state-cache sizing
+#### 12.1.1 State-cache sizing
 
 For recurrent-state models, set `state_cache.bytes_per_request` under
 `engine.workers.aggregated.kv_cache`. It is disabled by default. Supply the total state size
@@ -1189,14 +1202,93 @@ kv_cache:
 ```
 
 This gives eight 1024-byte blocks. Each request's state uses two blocks, rounded up, in
-addition to its token KV. `capacity: {type: fixed, blocks: 8}` is equivalent. The simulator
-does not infer state size or adjust block size automatically.
+addition to its token KV. `capacity: {type: fixed, blocks: 8}` is equivalent. Explicit
+state bytes preserve the authored block geometry without loading model configuration.
 
-State caching currently supports `predict --stack engine` with aggregated vLLM and fixed G1 capacity.
-Other runner stacks must explicitly advertise state-cache support; unsupported stacks reject it before execution.
-It cannot be combined with host/G3 offload or disaggregated mode, and is not available in
-`recommend`. `block_size` must be explicitly set to at least two and `bytes_per_token`
-must be a positive integer, not `auto`.
+Use `state_cache: {}` to resolve Kimi K3 cache geometry automatically. The existing
+K3 model supplies target MLA KV bytes/token using `engine.kvcache_quant_mode`;
+`kv_cache.bytes_per_token: auto` is the default. `block_size` is a requested
+page granularity (default 64), enlarged to fit one KDA state per layer. Both the
+resolved token geometry and state size are passed to the worker before capacity
+checks. With TP8, BF16 KV resolves to block 768 / 27648 bytes per token; FP8 with
+requested block 128 resolves to block 1536 / 13824 bytes per token.
+
+The allocation rule follows vLLM KDA none/align mode at commit
+`a474da28131f61684849b31e29af0eebaaedc383`, verified with Triton MLA. Requested
+blocks must be multiples of 16 and satisfy the selected kernel's minimum alignment;
+use 128 for a kernel requiring 128. This is independent of the performance database
+version. TP must divide KDA heads; PP must be 1.
+
+Each layer has three convolution buffers and one FP32 recurrent matrix. Optional
+`state_cache.mamba_cache_dtype` accepts `auto`, `float16` or `float32`; auto uses the
+model dtype. The estimate includes page padding for one state copy. Additional
+speculative slots are outside this estimate; checkpoint copies are managed by the runtime.
+Fixed G1 capacity remains required; physical blocks are charged after rounding
+state bytes up to whole pool blocks. Results record resolved block size, token
+bytes, state bytes and calculation provenance in `prediction.json`.
+
+The same resolver is available through the SDK:
+
+```python
+from aisimulate_core.sdk import estimate_state_cache
+
+state = estimate_state_cache(
+    "moonshotai/Kimi-K3", tp_size=8, kvcache_quant_mode="fp8", block_size=128,
+)
+# block_size=1536, kv_bytes_per_token=13824, bytes_per_request=61046784
+```
+
+An explicit `state_cache.bytes_per_request` bypasses inference and requires
+explicit block size and token bytes; omit `state_cache` or set it to `null` to
+disable state caching. Automatic sizing also accepts an explicit token byte rate.
+It reuses the SDK model loader rather than maintaining a separate config parser.
+State caching supports aggregated vLLM with fixed G1 capacity on `predict --stack
+engine`; other runner stacks must advertise support. Host/G3 offload,
+disaggregated mode and `recommend` remain outside this interface.
+
+With state caching enabled, `prefix_match_unit` controls prefix-matching
+granularity while `block_size` still controls physical KV allocation. The match
+unit must be positive and divide `block_size`. Omitting it preserves existing
+state-cache behavior. It works with both inferred (`state_cache: {}`) and explicit
+state sizes. Changing the match unit does not change the bytes in one state copy
+or the physical block size; the state manager accounts for retained checkpoints
+and temporary restore copies separately.
+
+For example, this aggregated-worker configuration allocates 1536-token KV blocks
+and allows prefix matches at 128-token boundaries. The byte sizes are
+illustrative, not measured K3 memory sizes or automatic TP/DCP sizing:
+
+```yaml
+scheduler:
+  max_batched_tokens: 8192
+kv_cache:
+  block_size: 1536
+  prefix_match_unit: 128
+  bytes_per_token: 16
+  capacity: {type: fixed, blocks: 64}
+  state_cache: {bytes_per_request: 24576}
+```
+
+Each physical block is 24576 bytes. `state_cache.bytes_per_request` specifies the
+size of one state copy, which occupies one block in this example.
+`capacity: {type: fixed, bytes: 1572864}` is equivalent to the 64-block capacity.
+Capacity covers token KV, working and cached states, and temporary copies; cached
+checkpoints may be evicted under pressure.
+
+With this configuration, a cold 24,300-token prompt finishes prefill steps at
+7680 / 15360 / 23040 / 24192 / 24300; the last step computes the remaining 108
+tokens. Only the snapshots at 23040 and 24192 are retained for reuse.
+A later request sharing 24192 tokens can resume there;
+one sharing 23700 tokens resumes at 23040. A finer match unit does not create
+state snapshots at every matching boundary.
+
+This follows [vLLM v0.29.0](https://github.com/vllm-project/vllm/blob/98dff2a81d747d1dba01a47f939f48c3526d4206/vllm/v1/core/sched/scheduler.py)
+align mode without internal prefill checkpoints or periodic retention.
+`kda_prefill_backend` and `prefix-cache-retention-interval` are not exposed;
+shared-prefix junction retention, native DCP cache-group layout and overlapping
+asynchronous forwards are not modeled. With explicit `prefix_match_unit`, use
+the default LRU eviction policy; speculative decoding, KV event export and Belady
+eviction are rejected. Prefill alignment is inactive when prefix caching is disabled.
 
 <a id="prompt-lookup-ngram-speculative-decoding"></a>
 
@@ -1256,11 +1348,13 @@ ngram runtime flags are supported.
 
 ### 12.2 Native vLLM host-offload prediction
 
-The initial public host-offload surface is deliberately fail-closed: it supports one aggregated
-vLLM worker role with prefix caching enabled, attention DP equal to one, and no native speculative
-decoding. The descriptor is fixed in both `predict` and `recommend`; host capacity and bandwidths
-are not search dimensions. `bytes_per_token` belongs to `kv_cache`, not `host_offload`, and is
-resolved for the worker role before lowering to the native rank.
+The public host-offload surface supports vLLM aggregated and token-only disaggregated workers with
+prefix caching enabled, any attention-DP size, and no native speculative decoding. The descriptor is
+fixed in both `predict` and `recommend`; host capacity and bandwidths are not search dimensions.
+`bytes_per_token` belongs to `kv_cache`, not `host_offload`, and is resolved for the worker role
+before lowering to the native rank; with `auto` it is one tensor-parallel shard's footprint. Each DP
+rank has its own G2 cache by default; `scope: cluster_shared` models one pool for the deployment.
+See [G2 host-cache scope](../g2-cache-scope.md) for ownership, bandwidth sharing and compatibility.
 
 ```yaml
 # host-offload-prediction.yaml
@@ -1381,6 +1475,15 @@ to cache-miss handling while the recoverable prefix cannot fit in G2. Capacity
 relief or time advancement permits retry. This simulator guard adds no pins or
 invented latency and does not model native CPU retry overhead.
 
+A restore can also thrash across time: when the recoverable prefix is larger
+than G2 can hold, each promotion evicts a block promoted earlier for the same
+request. After 1,024 restore rounds (lookups that submit G3 reads) in which its
+DP rank schedules no work and emits no output, a request stops restoring from
+G3 and computes what G1 and G2 do not hold, until it is admitted or
+preempted. Rank progress, admission or preemption starts the count over, so a
+request is never bypassed while its rank keeps working. Native vLLM has no such
+rule.
+
 The prediction summary includes `g3_offload` only when enabled, alongside the
 existing TTFT, TPOT, and throughput metrics:
 
@@ -1395,10 +1498,14 @@ For a reused runtime, G3 counters accumulate across reports and its cache remain
   `cross_worker_read_blocks` describe tier state and reuse. Cross-worker reuse
   counts completed reads of blocks first written by another worker, not lookup
   hits. `--capture-per-request` retains the existing `requests.jsonl` output.
+- `bypassed_restores` counts the times a request stopped restoring from G3
+  under the rule above. It is omitted when zero.
 
 G3 supports aggregated vLLM with fixed or dynamically scaled workers, prefix caching enabled,
 attention DP equal to one, and no native speculative decoding. It does not
-support `recommend`, disaggregated mode, or hardware integration.
+support `recommend`, disaggregated mode, or hardware integration. Either G2
+scope can be combined with G3; a completed G2 store stays pinned until it is
+handed to G3 write-through.
 Replay owns the deployment-wide tier; direct scheduler construction cannot
 provide it. Omit `g3_offload` to keep existing G1/G2 behavior.
 
@@ -1817,7 +1924,10 @@ after adapter canonicalization and deduplication so it maps one-to-one to the nu
 Read [Understand your prediction](understand-your-prediction.md) for an annotated
 report, ITL/TPOT definitions, incomplete-request handling, and SLA interpretation.
 
-Output controls are CLI-only. They never appear in an input or recommended YAML file.
+Core output controls are CLI-only. A selected output adapter owns its same-named top-level input
+section; that section configures artifact generation and is excluded from recommended prediction
+YAML files. Output adapters receive the prepared output directory directly and must preserve
+unrelated files.
 
 Recommendation output uses the schema-versioned `SweepResult` contract documented in
 [`docs/sweeper/results.md`](../sweeper/results.md). It preserves run metadata, a candidate-attempt

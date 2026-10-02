@@ -587,6 +587,8 @@ Large-EP MoE uses stock `moe_perf` for modeled local expert compute and
 `moe_a2a_perf` records latency in microseconds; `load_moe_a2a_data` converts
 leaves to milliseconds. Stock `moe_perf` retains its existing timing contract.
 
+Stock `moe_perf` also supports optional Boolean `default_eligible` selection metadata. The [Core API contract](../../../docs/core-api.md#choosing-a-forward-pass-api) defines automatic and exact-source selection. Finalization validates non-null Boolean flags and the named source required by `false`, excludes the flag from measurement identity, and preserves existing annotations when merging a legacy collection that omits the column. Collectors do not infer eligibility from kernel labels or row order.
+
 **Legacy-overwrite caveats.** A new-schema row replaces a legacy-adapted
 leaf only at the *same* key, and the legacy adapters derive their node/EP
 geometry rather than reading it:

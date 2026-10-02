@@ -336,12 +336,21 @@ def _save_report(output: str, filename: str, report: dict[str, Any], *, overwrit
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    from .cli_args import _apply_overrides, _load_mapping, build_parser, select_stack
+    from .cli_args import _apply_overrides, _extract_output_configs, _load_mapping, build_parser, select_stack
     from .output import prepare_output_directory
 
     arguments = list(sys.argv[1:] if argv is None else argv)
     parser = build_parser()
     args = parser.parse_args(arguments)
+    if args.command == "onboard":
+        from .support.cli import run_support_command
+
+        try:
+            return run_support_command(args)
+        except (ValueError, OSError) as exc:
+            parser.error(str(exc))
+        except KeyboardInterrupt:
+            return 130
     raw = None
     try:
         raw = _load_mapping(args.config)
@@ -359,7 +368,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             from .config.cli import CorePredictionConfig, CoreRecommendationConfig
             from .config.common import split_config_sections
 
-            core_raw, adapter_raw = split_config_sections(raw, command=args.command)
+            validation_raw = dict(raw)
+            if args.command == "recommend":
+                validation_raw, _ = _extract_output_configs(raw, args.outputs, stack=args.stack)
+            core_raw, adapter_raw = split_config_sections(validation_raw, command=args.command)
             config_type = CorePredictionConfig if args.command == "predict" else CoreRecommendationConfig
             config = config_type.model_validate(core_raw)
             if config.engine.workers.encoder is not None:

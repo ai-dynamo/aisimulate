@@ -223,6 +223,81 @@ literal_keys: {=: value, '<<': literal}
     assert value["router"]["mode"] == "sibling_group"
 
 
+@pytest.mark.parametrize(
+    "name,section,error",
+    [
+        ("traffic", {}, "collides"),
+        ("placement", {}, "collides"),
+        ("bad.name", {}, "invalid --output name"),
+        ("missing", {}, "requires a top-level"),
+        ("artifact", [], "must be a mapping"),
+    ],
+)
+def test_recommend_output_validation_preserves_outputs(tmp_path, name, section, error):
+    import os
+    import subprocess
+
+    raw = {
+        "engine": {
+            "mode": "aggregated",
+            "model": "example/model",
+            "hardware": "h200_sxm",
+            "context_length": 4096,
+            "workers": {"aggregated": {}},
+        },
+        "optimization": {
+            "target": "throughput",
+            "constraints": {"max_candidate_gpus": 1},
+        },
+    }
+    if name != "missing":
+        raw[name] = section
+    config = tmp_path / "config.yaml"
+    config.write_text(yaml.safe_dump(raw))
+    # Metadata discovery must reject this collision without loading its provider.
+    metadata = tmp_path / "test_config_adapter-1.0.dist-info"
+    metadata.mkdir()
+    (metadata / "METADATA").write_text("Metadata-Version: 2.1\nName: test-config-adapter\nVersion: 1.0\n")
+    (metadata / "entry_points.txt").write_text(
+        "[aisimulate.config_adapters]\nengine.placement = nonexistent_adapter:factory\n"
+    )
+    output = tmp_path / "output"
+    (output / "recommendations").mkdir(parents=True)
+    original = {
+        "recommendation.json": "old result",
+        "recommendation.csv": "old candidates",
+        "recommendations/0001.yaml": "old config",
+        "resource-runtime.json": "old diagnostics",
+        "keep.txt": "unrelated file",
+    }
+    for filename, contents in original.items():
+        (output / filename).write_text(contents)
+    env = dict(os.environ)
+    env["PYTHONPATH"] = os.pathsep.join(filter(None, (str(tmp_path), env.get("PYTHONPATH"))))
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "aisimulate",
+            "recommend",
+            "--config",
+            str(config),
+            "--output",
+            name,
+            "--output-dir",
+            str(output),
+            "--overwrite",
+        ],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    assert result.returncode == 2, result.stderr
+    assert error in result.stderr
+    assert {str(path.relative_to(output)): path.read_text() for path in output.rglob("*") if path.is_file()} == original
+
+
 def _cli_arguments(tmp_path):
     config = tmp_path / "config.yaml"
     config.write_text("engine:\n  model: example/model\n  hardware: h200_sxm\n  workers:\n    aggregated: {}\n")
@@ -685,11 +760,18 @@ def test_supervisor_argument_and_output_setup_do_not_import_runtime():
         [
             sys.executable,
             "-c",
-            (
-                "import sys; import aisimulate.supervision, aisimulate.cli_args, aisimulate.output; "
-                "assert not any(name in sys.modules for name in "
-                "('aisimulate._runtime', 'aisimulate.sweeper', 'numpy', 'pandas', 'aisimulate_core'))"
-            ),
+            """
+import sys
+import aisimulate.supervision, aisimulate.cli_args, aisimulate.output
+aisimulate.cli_args._extract_output_configs({'artifact': {}}, ['artifact'], stack='engine')
+
+runtime = ('aisimulate._runtime', 'aisimulate.sweeper', 'numpy', 'pandas')
+assert not any(name == root or name.startswith(root + '.') for name in sys.modules for root in runtime)
+# Profile validation needs only lightweight metadata before resource admission.
+allowed_core = {'aisimulate_core', 'aisimulate_core.fpm_profile', 'aisimulate_core.quantization'}
+loaded_core = {name for name in sys.modules if name == 'aisimulate_core' or name.startswith('aisimulate_core.')}
+assert loaded_core <= allowed_core, loaded_core - allowed_core
+""",
         ],
         check=True,
         timeout=15,

@@ -10,6 +10,7 @@ use anyhow::Result;
 
 use crate::engine::belady::BeladyOracle;
 use crate::engine::generalized::{EngineIdentity, GeneralizedMockerEngine, RankIdentity};
+use crate::engine::host_offload::G2Binding;
 use crate::engine::scheduler::{SchedulerRank, engine_seed_offset};
 use crate::engine::{EngineConfig, TimingModel};
 
@@ -26,6 +27,7 @@ pub struct EngineFactory {
     config: EngineConfig,
     timing: Arc<dyn TimingModel>,
     belady_oracle: Option<BeladyOracle>,
+    g2: Option<G2Binding>,
 }
 
 impl EngineFactory {
@@ -37,6 +39,7 @@ impl EngineFactory {
             config,
             timing,
             belady_oracle: None,
+            g2: None,
         })
     }
 
@@ -47,6 +50,7 @@ impl EngineFactory {
             config,
             timing,
             belady_oracle: None,
+            g2: None,
         })
     }
 
@@ -55,18 +59,32 @@ impl EngineFactory {
         self
     }
 
+    /// Bind cluster-shared G2 ranks to their deployment pool.
+    pub(crate) fn with_g2_binding(mut self, binding: G2Binding) -> Self {
+        self.g2 = Some(binding);
+        self
+    }
+
     pub(crate) fn reset_timing_evidence(&self) -> Result<()> {
         self.timing.reset_evidence()
+    }
+
+    /// Whether any rank built by this factory can produce internal deadlines.
+    /// This is a configuration capability, not whether work is currently pending.
+    pub(crate) fn can_have_internal_deadlines(&self) -> bool {
+        // G3 also uses the native host-offload adapter and requires it during validation.
+        self.config.native_host_offload.is_some()
     }
 
     /// Build one scheduler/KV/timing rank with an explicit identity.
     pub fn build_rank(&self, identity: RankIdentity) -> Result<SchedulerRank> {
         let seed_offset = engine_seed_offset(identity)?;
-        let mut rank = SchedulerRank::new_with_timing_model(
+        let mut rank = SchedulerRank::new_with_g2(
             identity,
             &self.config,
             Arc::clone(&self.timing),
             seed_offset,
+            self.g2.as_ref(),
         )?;
         if let Some(oracle) = &self.belady_oracle {
             rank.set_belady_oracle(oracle.clone());

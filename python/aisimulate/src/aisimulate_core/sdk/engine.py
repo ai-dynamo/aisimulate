@@ -12,6 +12,10 @@ layer (``sdk/models/*.py``) to build a model, walks its
 plain-data ``OpSpec`` wire form, and ships the whole thing across the boundary
 as a bincode-serialised ``EngineSpec``.
 
+With direct FPM interpolation, an explicit ``FpmModelProfile`` supplies identity
+and resources instead. Compilation emits whole-forward timing operations with
+empty SOL lists and never constructs an analytical model.
+
 Since the pyo3 op unification the ``Operation`` objects the model layer
 builds ARE engine ops (Rust pyclasses; ``operations/*.py`` keeps thin
 data-plane shells). Serialization is therefore Rust-to-Rust:
@@ -44,10 +48,17 @@ import os
 from typing import Any
 
 import aisimulate_core
-from aisimulate_core.sdk.config_builders import apply_nextn, build_model_config
+from aisimulate_core.sdk.config import validate_parallel_size
+from aisimulate_core.sdk.config_builders import apply_nextn, build_model_config, validate_moe_controls
 from aisimulate_core.sdk.deepseek_v41 import MODEL_PATH as DEEPSEEK_V41_MODEL_PATH
 from aisimulate_core.sdk.errors import InvalidEngineConfigurationError as InvalidEngineConfigurationError
+from aisimulate_core.sdk.fpm_profile import (
+    FpmDeploymentProfile,
+    FpmModelProfile,
+    load_fpm_profile,
+)
 from aisimulate_core.sdk.models import get_model
+from aisimulate_core.sdk.models.deepseek_v32 import _generation_ops_for_engine
 from aisimulate_core.sdk.models.helpers import resolve_dsv4_moe_arch, resolve_sglang_mla_compute
 from aisimulate_core.sdk.operations import FPMForwardOp
 from aisimulate_core.sdk.operations.base import Operation
@@ -131,6 +142,20 @@ from aisimulate_core.sdk.rust_engine_step import (
 # - 18 (speculation migration): Generation attention gained verify_query_tokens
 #   and FPM forward gained verify_width, both positional bincode fields.
 #   TokenScale was appended to remap draft query widths before op lookup.
+# - 19 (DeepSeek-V4.1 review): `Dsv41AttentionOp` gained `kv_cache_layout`,
+#   separating physical backend KV payload from attention arithmetic precision.
+#   Its appended enum changes positional bincode layout; old JSON defaults only.
+# - 20 (DeepSeek-V4.1 FPM): FpmForwardOp gained original_fmha_quant_mode
+#   for selector diagnostics; legacy JSON defaults do not cover bincode.
+# - 21 (AIC-1781): exact moe_kernel_source identity in EngineConfig and MoeOp.
+# - 22 (GLM-5.2 VR200 pilot): exact observed-MoE selection, prefill graph
+#   identity and two appended composite operators extend the schema-21 layout.
+#   The pilot and AIC-1781 concurrently claimed 21; reject both older layouts.
+# - 23 (DCP identity): optional recorded dcp_size in ParallelMapping.
+# - 24 (typed FPM DCP): dcp_size moves out of the op matching tuple.
+# - 25 (FPM decoupling): merge the SOL/direct selector into the typed DCP layout.
+# - 26 (decode context parallelism): Generation/Context attention, MLA, DSA
+#   and MLAModule ops gained a tail-appended `dcp_size` (positional bincode).
 # Single owner: the Rust crate constant. Python re-exports it for
 # diagnostics/tests instead of declaring a twin to keep in sync.
 ENGINE_SPEC_SCHEMA_VERSION = aisimulate_core.engine_spec_schema_version()
@@ -162,12 +187,14 @@ def _fpm_spec_dict(op: FPMForwardOp) -> dict:
             "phase": op._phase,
             "model_path": op._model_path,
             "match_identity": list(op._match_identity),
+            "dcp_size": op._dcp_size,
             "original_fmha_quant_mode": op._original_fmha_quant_mode,
-            "weight_bytes": op._weight_bytes,
+            "weight_bytes": op._resident_weight_bytes,
             # Speculative verify width for the equivalent-AR decode mapping
             # (1 = plain AR). Set by the fpm hybrid rewrite in models when a
             # draft scheme is materialized.
             "verify_width": int(getattr(op, "_verify_width", 1) or 1),
+            "interpolation": "sol",
             "sol_ops": [json.loads(_as_engine_op(c)._spec_json()) for c in op._sol_ops],
         }
     }
@@ -263,8 +290,8 @@ def _literal_backend_version(
     (an omitted version means the ``current`` slot). Slot-policy errors
     (unlisted versions, unpopulated aliases) PROPAGATE — the spec builder is
     a user-level surface and must not smuggle ungated coordinates onto the
-    wire. Trees without a slots file (synthetic/external) keep the ungated
-    passthrough.
+    wire. Trees without a slots file (synthetic/external) keep explicit
+    versions unchanged and resolve an omitted version to the latest database.
     """
     resolved = getattr(database, "version", None) if database is not None else None
     if resolved:
@@ -273,7 +300,11 @@ def _literal_backend_version(
 
     slots = perf_database.get_version_slots(system, backend, systems_paths=systems_path)
     if slots is None:
-        return backend_version
+        return (
+            backend_version
+            if backend_version is not None
+            else perf_database.get_latest_database_version(system, backend, systems_paths=systems_path)
+        )
     requested = "current" if backend_version is None else backend_version
     return perf_database.resolve_query_version(system, backend, requested, systems_paths=systems_path)
 
@@ -322,6 +353,7 @@ def _engine_config_dict(
         # Rust side reloads the perf database from this string verbatim.
         "backend_version": _literal_backend_version(system, backend, backend_version, systems_path, database),
         "fpm_parquet_path": fpm_parquet_path,
+        "moe_kernel_source": getattr(cfg, "moe_kernel_source", None),
         "kv_block_size": kv_block_size,
         "forward_model": getattr(model, "forward_model", getattr(cfg, "forward_model", None)),
         "decoder_replay": bool(getattr(cfg, "decoder_replay", False)),
@@ -332,6 +364,9 @@ def _engine_config_dict(
         "moe_tp_size": _opt_int(getattr(cfg, "moe_tp_size", None)),
         "moe_ep_size": _opt_int(getattr(cfg, "moe_ep_size", None)),
         "cp_size": _opt_int(getattr(cfg, "cp_size", None)),
+        # Decode CP joins the identity too: a dcp variant prices decode attention
+        # and KV capacity differently, so it must never share a compiled handle.
+        "dcp_size": _opt_int(getattr(cfg, "dcp_size", None)),
         # QuantizationConfig (flattened)
         "weight_dtype": _rust_quant_to_dtype(getattr(cfg, "gemm_quant_mode", None)),
         "moe_dtype": _rust_moe_quant_to_dtype(getattr(cfg, "moe_quant_mode", None)),
@@ -357,6 +392,20 @@ def _engine_config_dict(
         "tolerate_dirless_version": bool(getattr(database, "dirless_next_load", False)),
         "extra": {},
     }
+    selected = getattr(cfg, "prefill_graph_profile", None)
+    if selected is not None:
+        from aisimulate_core._native import prefill_graph_profile_identity
+
+        engine["prefill_graph_profile"] = selected
+        engine["prefill_graph_profile_id"] = prefill_graph_profile_identity()[1]
+        engine["forward_model"] = cfg.forward_model
+        # A supplied Python view must agree with the disabled Rust policy;
+        # an override cannot undo shared rows already loaded into that view.
+        if engine["enable_shared_layer"] or _shared_layer_flag(database):
+            from aisimulate_core.sdk.errors import PrefillGraphProfileError
+
+            raise PrefillGraphProfileError("prefill_graph_profile does not allow shared-source inheritance")
+        engine["enable_shared_layer"] = False
     # SpeculativeConfig (flattened, Option<>): emit nextn at the top level
     # when MTP is active. When inactive, omit it so the
     # flattened Option deserializes to None.
@@ -416,6 +465,8 @@ def compile_engine(
     tp_size: int = 1,
     pp_size: int = 1,
     attention_dp_size: int = 1,
+    dcp_size: int | None = None,
+    fpm_options: dict | None = None,
     moe_tp_size: int | None = None,
     moe_ep_size: int | None = None,
     gemm_quant_mode: str | None = None,
@@ -425,6 +476,7 @@ def compile_engine(
     fpm_fmha_quant_mode: str | None = None,
     comm_quant_mode: str | None = None,
     attention_backend: str | None = None,
+    moe_kernel_source: str | None = None,
     moe_backend: str | None = None,
     enable_eplb: bool = False,
     wideep_num_slots: int | None = None,
@@ -434,10 +486,16 @@ def compile_engine(
     systems_path: str | None = None,
     forward_model: str | None = None,
     decoder_replay: bool = False,
+    fpm_profile: dict | str | FpmModelProfile | None = None,
+    worker_type: str = "aggregated",
+    fpm_interpolation: str | None = None,
+    cp_size: int = 1,
     database_mode: str | None = None,
     shared_layer: bool | None = None,
     transfer_policy: str | list[str] | None = None,
     strict_provenance: bool | None = None,
+    decode_workload_distribution: str | None = None,
+    prefill_graph_profile: str | None = None,
     fpm_parquet_path: str | None = None,
 ) -> bytes:
     """Compile a model into bincoded ``EngineSpec`` bytes.
@@ -447,6 +505,25 @@ def compile_engine(
     inside ``get_model``) to build the model, then walks ``encoder_ops`` (vision
     decomposed), ``context_ops`` and ``generation_ops`` into OpSpecs and returns
     the bytes produced by the Rust ``engine_spec_bincode_from_json`` pyfunction.
+
+    ``fpm_profile`` supplies independent decoder metadata and rank-local
+    resource bounds. This is internal compilation plumbing: the canonical
+    Rust constructor supplies an already resolved ``sol`` or ``direct`` method.
+    Profile precision is authoritative on either route, with
+    conflicting caller overrides rejected. ``cp_size`` completes the profile
+    identity; profiles currently support only CP1/PP1 and no speculation.
+
+    ``decode_workload_distribution=None`` preserves the default model and latency
+    behavior. The observed GLM-5.2 NVFP4 pilot profile selects only generation MoE
+    on the exact VR200 SGLang runtime, TP4/MoETP4/EP1, BF16 GEMM/FMHA, FP8 KV and
+    half communication. Its measured physical nodes are 1, 8 and 32; intermediate
+    logical batches are exploratory and queries outside 1..32 fail. Missing or
+    mismatched approved profile data raises ``DecodeMoeProfileError``.
+
+    Engine schema 26 adds decode context parallelism on top of the schema-25
+    FPM interpolation selector, typed DCP and exact-profile policy on MoE
+    operators. Older binary specs require
+    recompilation; default representations are therefore not byte-identical.
     """
     if not isinstance(decoder_replay, bool):
         raise InvalidEngineConfigurationError("decoder_replay must be a boolean")
@@ -454,22 +531,139 @@ def compile_engine(
         raise InvalidEngineConfigurationError(
             f"decoder_replay requires model={DEEPSEEK_V41_MODEL_PATH!r} and backend='sglang'"
         )
-
+    # Before any model construction: the profile and op-level paths both read it.
+    validate_parallel_size("cp_size", cp_size)
     if fpm_parquet_path is not None:
         if not fpm_parquet_path:
             raise ValueError("fpm_parquet_path cannot be empty")
         if forward_model != "fpm":
             raise ValueError("fpm_parquet_path requires forward_model='fpm'")
+    from aisimulate_core.sdk.fpm_config import FpmCompileConfig
+
+    try:
+        fpm_config = FpmCompileConfig(
+            fpm_options,
+            attention_backend=attention_backend,
+            fmha_quant_mode=fmha_quant_mode if fmha_quant_mode is not None else fpm_fmha_quant_mode,
+            comm_quant_mode=comm_quant_mode,
+            has_profile=fpm_profile is not None,
+        )
+        options_path = fpm_config.options["fpm_parquet_path"]
+        if options_path is not None:
+            if fpm_parquet_path is not None and fpm_parquet_path != options_path:
+                raise ValueError("conflicting fpm_parquet_path and fpm_options.fpm_parquet_path")
+            if forward_model != "fpm":
+                raise ValueError("fpm_parquet_path requires forward_model='fpm'")
+            fpm_parquet_path = options_path
+    except (ValueError, TypeError, KeyError) as exc:
+        raise InvalidEngineConfigurationError(str(exc)) from exc
+    profile = load_fpm_profile(fpm_profile) if fpm_profile is not None else None
+    if fpm_interpolation not in (None, "sol", "direct") or (profile is not None and fpm_interpolation is None):
+        raise InvalidEngineConfigurationError("FPM compilation requires a resolved method from best_available(config)")
+    if fpm_interpolation == "direct" and profile is None:
+        raise InvalidEngineConfigurationError("direct FPM interpolation requires an fpm_profile")
+    if (
+        fpm_interpolation is not None
+        and fpm_options is not None
+        and "method" in fpm_options
+        and fpm_options["method"] != fpm_interpolation
+    ):
+        raise InvalidEngineConfigurationError("conflicting fpm_interpolation and fpm_options.method")
+    interpolation = fpm_interpolation
+    deployment = None
+    if profile is not None:
+        if any(value is not None for value in (moe_kernel_source, decode_workload_distribution, prefill_graph_profile)):
+            raise InvalidEngineConfigurationError(
+                "FPM profiles do not support moe_kernel_source, decode_workload_distribution or prefill_graph_profile"
+            )
+        if dcp_size is not None:
+            raise InvalidEngineConfigurationError("fpm_profile does not describe recorded DCP identity")
+        if nextn or speculation is not None:
+            raise InvalidEngineConfigurationError("FPM profiles support plain autoregressive decoder-only execution")
+        literal_version = _literal_backend_version(system, backend, backend_version, systems_path, None)
+        deployment = profile.select(
+            model=model_path,
+            system=system,
+            backend=backend,
+            backend_version=literal_version,
+            worker_type=worker_type,
+            tp_size=tp_size,
+            pp_size=pp_size,
+            attention_dp_size=attention_dp_size,
+            moe_tp_size=moe_tp_size,
+            moe_ep_size=moe_ep_size,
+            cp_size=cp_size,
+        )
+        deployment.validate_overrides(
+            gemm_quant_mode=gemm_quant_mode,
+            moe_quant_mode=moe_quant_mode,
+            kvcache_quant_mode=kvcache_quant_mode,
+            fmha_quant_mode=fmha_quant_mode,
+            comm_quant_mode=comm_quant_mode,
+            attention_backend=attention_backend,
+            moe_backend=moe_backend,
+            enable_eplb=enable_eplb,
+            wideep_num_slots=wideep_num_slots,
+        )
+        try:
+            fpm_config = FpmCompileConfig(
+                fpm_options,
+                attention_backend=deployment.attention_backend,
+                fmha_quant_mode=deployment.fmha_quant_mode,
+                comm_quant_mode=deployment.comm_quant_mode,
+                has_profile=True,
+            )
+        except (ValueError, TypeError, KeyError) as exc:
+            raise InvalidEngineConfigurationError(str(exc)) from exc
+        if forward_model == "fpm" and interpolation == "direct":
+            spec_json = _direct_fpm_spec_json(
+                profile,
+                deployment,
+                kv_block_size=kv_block_size,
+                systems_path=systems_path,
+                database_mode=database_mode,
+                shared_layer=shared_layer,
+                transfer_policy=transfer_policy,
+                strict_provenance=strict_provenance,
+                fpm_parquet_path=fpm_parquet_path,
+                fpm_fmha_quant_mode=fpm_fmha_quant_mode,
+                worker_type=worker_type,
+                fpm_options=fpm_config.options,
+            )
+            return bytes(aisimulate_core.engine_spec_bincode_from_json(spec_json))
+        gemm_quant_mode = deployment.gemm_quant_mode
+        moe_quant_mode = deployment.moe_quant_mode
+        kvcache_quant_mode = deployment.kv_cache_dtype
+        fmha_quant_mode = deployment.fmha_quant_mode
+        comm_quant_mode = deployment.comm_quant_mode
+        attention_backend = None if deployment.attention_backend == "auto" else deployment.attention_backend
+
     # `_build_model_config` resolves MoE parallelism defaults internally and
     # does not take a model_path (quant inference is done inside `get_model`).
+    if prefill_graph_profile is not None:
+        from aisimulate_core.sdk.errors import PrefillGraphProfileError
+
+        if shared_layer:
+            raise PrefillGraphProfileError("prefill_graph_profile does not allow shared-source inheritance")
+        shared_layer = False
     from aisimulate_core.sdk.speculation import SpeculationConfig
 
+    if backend == "vllm" and attention_backend == "FLASHINFER_MLA":
+        attention_backend = "flashinfer"
     resolved_moe_tp = moe_tp_size if moe_tp_size is not None else 1
     resolved_moe_ep = moe_ep_size if moe_ep_size is not None else 1
     try:
+        validate_moe_controls(
+            model_path=model_path,
+            enable_eplb=enable_eplb,
+            wideep_num_slots=wideep_num_slots,
+            moe_backend=moe_backend,
+            moe_kernel_source=moe_kernel_source,
+        )
         resolved_speculation = SpeculationConfig(**speculation) if speculation is not None else None
         model_config = build_model_config(
             tp_size=tp_size,
+            dcp_size=dcp_size,
             pp_size=pp_size,
             attention_dp_size=attention_dp_size,
             moe_tp_size=resolved_moe_tp,
@@ -482,26 +676,28 @@ def compile_engine(
             comm_quant_mode=comm_quant_mode,
             forward_model=forward_model,
             attention_backend=attention_backend,
+            decode_workload_distribution=decode_workload_distribution,
+            prefill_graph_profile=prefill_graph_profile,
+            moe_kernel_source=moe_kernel_source,
             moe_backend=moe_backend,
             enable_eplb=enable_eplb,
             wideep_num_slots=wideep_num_slots,
+            cp_size=cp_size,
             speculation=resolved_speculation,
         )
+        model_config.fpm_config = fpm_config
         # Apply MTP BEFORE get_model so the walked op lists carry the
         # (L+nextn)/L compute scale; accepted-token progress is applied above core.
         apply_nextn(model_config, nextn)
     except (ValueError, TypeError, KeyError) as exc:
         raise InvalidEngineConfigurationError(str(exc)) from exc
-    if enable_eplb or wideep_num_slots is not None or moe_backend not in (None, "default"):
-        from aisimulate_core.sdk.models import check_is_moe
-
-        if not check_is_moe(model_path):
-            raise InvalidEngineConfigurationError("EPLB, slots and moe_backend require an MoE model")
     model_config.decoder_replay = decoder_replay
     try:
         resolve_dsv4_moe_arch(model_config, model_path, system_name=system, backend_name=backend)
     except (ValueError, TypeError, KeyError) as exc:
         raise InvalidEngineConfigurationError(str(exc)) from exc
+    if deployment is not None:
+        model_config.moe_backend = None if deployment.moe_backend == "auto" else deployment.moe_backend
 
     # Slot policy FIRST, tolerance second: resolve the requested version to a
     # literal (raising on unlisted versions / unpopulated aliases) before the
@@ -513,6 +709,17 @@ def compile_engine(
             model_config, model_path, backend, literal_version, load_system_spec(system, systems_path)
         )
     model = get_model(model_path, model_config, backend)
+    if deployment is not None and forward_model == "fpm":
+        from aisimulate_core.sdk.fpm_identity import LEGACY_EXECUTION_IDENTITY
+
+        expected_identity = deployment.match_identity() + list(LEGACY_EXECUTION_IDENTITY)
+        if fpm_fmha_quant_mode is not None:
+            expected_identity[2] = fpm_fmha_quant_mode
+        for op in (*model.context_ops, *model.generation_ops):
+            if not isinstance(op, FPMForwardOp) or list(op._match_identity) != expected_identity:
+                raise InvalidEngineConfigurationError(
+                    "registered SOL construction does not preserve the requested FPM profile identity"
+                )
     database = _maybe_load_database(
         system,
         backend,
@@ -541,7 +748,102 @@ def compile_engine(
         fpm_parquet_path=fpm_parquet_path,
     )
 
+    if profile is not None:
+        spec = json.loads(spec_json)
+        spec["engine"]["extra"].update(
+            fpm_profile=profile.model_dump_json(),
+            estimator_config=json.dumps({"fpm_interpolation": {**fpm_config.options, "method": interpolation}}),
+        )
+        if deployment.worker_type is not None:
+            spec["engine"]["extra"]["worker_type"] = worker_type
+        spec_json = json.dumps(spec)
+
     return bytes(aisimulate_core.engine_spec_bincode_from_json(spec_json))
+
+
+def _direct_fpm_spec_json(
+    profile: FpmModelProfile,
+    deployment: FpmDeploymentProfile,
+    *,
+    kv_block_size: int | None,
+    systems_path: str | None,
+    database_mode: str | None,
+    shared_layer: bool | None,
+    transfer_policy: str | list[str] | None,
+    strict_provenance: bool | None,
+    fpm_parquet_path: str | None = None,
+    fpm_fmha_quant_mode: str | None = None,
+    worker_type: str = "aggregated",
+    fpm_options: dict | None = None,
+) -> str:
+    """Build whole-forward timing operations from metadata, without a graph."""
+    if _database_mode_name(None, database_mode) != "SILICON":
+        raise ValueError("direct FPM interpolation requires database_mode='SILICON'; it has no analytical SOL model")
+    identity = deployment.match_identity()
+    if fpm_fmha_quant_mode is not None:
+        if fpm_fmha_quant_mode not in {"bfloat16", "fp8", "fp8_block"}:
+            raise ValueError("fpm_fmha_quant_mode must be bfloat16, fp8, or fp8_block")
+        identity[2] = fpm_fmha_quant_mode
+    controls = {**(fpm_options or {}), "method": "direct"}
+    if fpm_parquet_path is not None:
+        controls["fpm_parquet_path"] = fpm_parquet_path
+    engine = {
+        "schema_version": ENGINE_CONFIG_SCHEMA_VERSION,
+        "model_name": profile.model,
+        "system_name": deployment.system,
+        "systems_path": systems_path,
+        "backend": deployment.backend,
+        "backend_version": deployment.backend_version,
+        "forward_model": "fpm",
+        "fpm_parquet_path": fpm_parquet_path,
+        "fpm_fmha_dtype": _rust_quant_to_dtype(fpm_fmha_quant_mode),
+        "kv_block_size": kv_block_size,
+        "tp_size": deployment.tp,
+        "pp_size": deployment.pp,
+        "attention_dp_size": deployment.dp,
+        "moe_tp_size": deployment.moe_tp,
+        "moe_ep_size": deployment.moe_ep,
+        "cp_size": deployment.cp,
+        "weight_dtype": _rust_quant_to_dtype(deployment.gemm_quant_mode),
+        "moe_dtype": _rust_moe_quant_to_dtype(deployment.moe_quant_mode),
+        "activation_dtype": _rust_quant_to_dtype(deployment.fmha_quant_mode),
+        "kv_cache_dtype": _rust_quant_to_dtype(deployment.kv_cache_dtype),
+        "enable_shared_layer": shared_layer,
+        "strict_provenance": bool(strict_provenance),
+        "database_mode": "SILICON",
+        "transfer_policy": _transfer_policy_tokens(None, transfer_policy),
+        "extra": {
+            "fpm_profile": profile.model_dump_json(),
+            **({"worker_type": worker_type} if deployment.worker_type is not None else {}),
+            "estimator_config": json.dumps({"fpm_interpolation": controls}),
+        },
+    }
+
+    def phase_op(phase: str) -> dict:
+        return {
+            "FpmForward": {
+                "name": f"fpm_forward_{phase}",
+                "phase": phase,
+                "model_path": profile.model,
+                "match_identity": identity,
+                "original_fmha_quant_mode": deployment.fmha_quant_mode if fpm_fmha_quant_mode is not None else None,
+                # Direct interpolation ignores this legacy operation field.
+                # Zero here is not an inferred resource or memory bound.
+                "weight_bytes": deployment.resources.weights_bytes or 0,
+                "verify_width": 1,
+                "sol_ops": [],
+                "interpolation": "direct",
+            }
+        }
+
+    return json.dumps(
+        {
+            "schema_version": ENGINE_SPEC_SCHEMA_VERSION,
+            "engine": engine,
+            "context_ops": [phase_op("prefill")],
+            "generation_ops": [phase_op("decode")],
+        }
+    )
 
 
 def build_ops_json(ops: Any) -> str:
@@ -623,16 +925,6 @@ def build_engine_spec_json(
     Separated from ``compile_engine`` so the op-transfer round-trip test can
     inspect the JSON (and the decoded ops) without going through bincode.
     """
-    # AIC-1715/1716: resolve each attention op's kernel-lane walk now that a
-    # database is in hand (see `_resolve_attention_lane_orders`). The
-    # `attention_backend` override is a model-level knob (`ModelConfig`, not
-    # per-op) — every model family gets a valid, table-aware lane order this
-    # way, whether or not it exposes the override.
-    override = getattr(getattr(model, "config", None), "attention_backend", None)
-    architecture = getattr(model, "architecture", None)
-    _resolve_attention_lane_orders(model.context_ops, database, override, architecture)
-    _resolve_attention_lane_orders(model.generation_ops, database, override, architecture)
-
     # Vision encoder ops are intentionally NOT emitted into the spec.
     #
     # The compile path threads no image configuration (num_images_per_request,
@@ -645,31 +937,52 @@ def build_engine_spec_json(
     # query them unconditionally (with wrong shapes), diverging from the Python
     # reference for VL models. Vision modeling in the compiled path is deferred
     # until runtime image config is threaded through compile_engine (#1567).
+    identity = _engine_config_dict(
+        model=model,
+        model_path=model_path,
+        system=system,
+        backend=backend,
+        backend_version=backend_version,
+        kv_block_size=kv_block_size,
+        systems_path=systems_path,
+        nextn=nextn,
+        database=database,
+        database_mode=database_mode,
+        shared_layer=shared_layer,
+        transfer_policy=transfer_policy,
+        strict_provenance=strict_provenance,
+        fpm_parquet_path=fpm_parquet_path,
+    )
+    # AIC-1715/1716: resolve each attention op's kernel-lane walk now that a
+    # database is in hand (see `_resolve_attention_lane_orders`). The
+    # `attention_backend` override is a model-level knob (`ModelConfig`, not
+    # per-op) — every model family gets a valid, table-aware lane order this
+    # way, whether or not it exposes the override. Validate policy first so a
+    # rejected shared view cannot mutate the model's lane order.
+    override = getattr(getattr(model, "config", None), "attention_backend", None)
+    architecture = getattr(model, "architecture", None)
+    _resolve_attention_lane_orders(model.context_ops, database, override, architecture)
+    _resolve_attention_lane_orders(model.generation_ops, database, override, architecture)
     context_ops = json.loads(_ops_json(model.context_ops))
-    generation_ops = json.loads(_ops_json(model.generation_ops))
+    generation_ops = json.loads(_ops_json(_generation_ops_for_engine(model, identity)))
 
     spec = {
         "schema_version": ENGINE_SPEC_SCHEMA_VERSION,
-        "engine": _engine_config_dict(
-            model=model,
-            model_path=model_path,
-            system=system,
-            backend=backend,
-            backend_version=backend_version,
-            kv_block_size=kv_block_size,
-            systems_path=systems_path,
-            nextn=nextn,
-            database=database,
-            database_mode=database_mode,
-            shared_layer=shared_layer,
-            transfer_policy=transfer_policy,
-            strict_provenance=strict_provenance,
-            fpm_parquet_path=fpm_parquet_path,
-        ),
+        "engine": identity,
         "context_ops": context_ops,
         "generation_ops": generation_ops,
     }
-    return json.dumps(spec)
+    result = json.dumps(spec)
+    if any(
+        getattr(getattr(model, "config", None), field, None) is not None
+        for field in ("decode_workload_distribution", "prefill_graph_profile")
+    ):
+        # The native engine owns the exact profile/source policy on both this
+        # preflight and later reload. No Python latency lookup or formula.
+        aisimulate_core.AicEngine.from_spec(
+            bytes(aisimulate_core.engine_spec_bincode_from_json(result)), systems_path=systems_path
+        )
+    return result
 
 
 def build_database_probe_spec_json(
@@ -700,6 +1013,7 @@ def build_database_probe_spec_json(
         "moe_tp_size": None,
         "moe_ep_size": None,
         "cp_size": None,
+        "dcp_size": None,
         "weight_dtype": None,
         "moe_dtype": None,
         "activation_dtype": None,
@@ -958,7 +1272,21 @@ class EngineHandle:
             int(stride),
         )
 
+    @property
+    def prefill_graph_profile(self) -> dict | None:
+        """A fresh, read-only-by-copy view of the compiled immutable profile."""
+        raw = self._engine.prefill_graph_profile_json
+        return None if raw is None else json.loads(raw)
+
     def predict_prefill_latency(self, bs: int, isl: int, prefix: int = 0) -> float:
+        """Forward-step milliseconds. ``isl`` includes the cached ``prefix``."""
+        if self._engine.prefill_graph_profile_id is not None:
+            from aisimulate_core.sdk.errors import PrefillGraphProfileError
+
+            if any(type(value) is not int or not 0 <= value <= 0xFFFFFFFF for value in (bs, isl, prefix)):
+                raise PrefillGraphProfileError("bs, total isl and prefix must be exact integers within u32")
+            # Native Rust performs checked subtraction, exact shape admission and multiplication.
+            return self._engine.predict_prefill_latency(bs, isl, prefix)
         return self._engine.predict_prefill_latency(int(bs), int(isl), int(prefix))
 
     def predict_decode_latency(self, bs: int, isl: int, osl: int = 2) -> float:
