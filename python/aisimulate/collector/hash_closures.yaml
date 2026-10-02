@@ -409,3 +409,21 @@ collector.vllm.dsv41_isolated_runner:
   - src/aisimulate_core/sdk/models/__init__.py
   - src/aisimulate_core/sdk/models/deepseek_v41.py
   - src/aisimulate_core/model_configs/deepseek-ai--DeepSeek-V4.1-Flash_config.json
+
+collector.vllm.dsv41_attention_runner:
+  # vLLM DeepSeek-V4.1 attention-only producer; reuses the vLLM isolated producer's identity/plan
+  # helpers, the SGLang data contract/workload freezer and the collector/vllm DSV4 KV plumbing.
+  - collector/vllm/dsv41_isolated_runner.py
+  - collector/vllm/collect_dsv4_attn.py
+  - collector/vllm/utils.py
+  - collector/sglang/collect_dsv41_module.py
+  - collector/sglang/dsv41_contract.py
+  - collector/sglang/dsv41_workloads.py
+  - collector/sglang/dsv41_publish.py
+  - src/aisimulate_core/sdk/deepseek_v41.py
+  - src/aisimulate_core/sdk/config.py
+  - src/aisimulate_core/sdk/common.py
+  - src/aisimulate_core/sdk/utils.py
+  - src/aisimulate_core/sdk/models/__init__.py
+  - src/aisimulate_core/sdk/models/deepseek_v41.py
+  - src/aisimulate_core/model_configs/deepseek-ai--DeepSeek-V4.1-Flash_config.json
