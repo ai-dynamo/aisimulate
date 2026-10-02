@@ -80,7 +80,7 @@ class AttentionProbe:
         self.original = attention.forward
         self.captured = {}
         self.prefill_captured = {}
-        self.keepalive = None
+        self.sentinel = self.sentinel_input = None
         self.replay_witness = None
         self.armed = None
         self.done = None
@@ -235,14 +235,19 @@ class AttentionProbe:
             self._fresh_inputs(record.attn_inputs, forward_batch, record.zero_allocator, record.zero_pointer)
             return self.original(*record.args, **record.kwargs)
 
-        # One private pool for every module graph. The previous graph is kept
-        # alive until the next capture so the pool never drops to use_count 0
-        # (a dead pool handle trips the caching allocator's assertion), and its
-        # blocks are reused instead of accumulating. (A variant that called
-        # empty_cache after each target hit an illegal address in a later
-        # framework BCG replay; cause not isolated, so it is not used.)
+        # One private pool for every prefill module graph. A permanent sentinel
+        # graph holds the pool's use count above zero (a dead pool handle trips
+        # the caching allocator's assertion), so the previous module graph can
+        # be dropped before this capture and its blocks reused, instead of
+        # holding two long-context graphs at once. (Releasing cached blocks
+        # with empty_cache exposed an illegal address in a later framework BCG
+        # replay, so memory is never returned to the device.)
         if self.pool is None:
             self.pool = torch.cuda.graph_pool_handle()
+            self.sentinel_input = torch.zeros(1, device="cuda")
+            self.sentinel = torch.cuda.CUDAGraph()
+            with torch.cuda.graph(self.sentinel, pool=self.pool):
+                self.sentinel_input.add_(1)
         pool = self.pool
         # BreakableCudaGraphBackend.replay_session/execute: the BCG flag, the
         # attention-backend forward context and the TcPiecewise context whose
@@ -284,7 +289,6 @@ class AttentionProbe:
             },
             timing_method=GRAPH_PREFILL,
         )
-        self.keepalive = graph
         del graph, output, result
         from sglang.srt.layers.communicator import get_attn_tp_context
 
