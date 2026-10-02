@@ -113,10 +113,24 @@ alone with the framework's own `BreakableCUDAGraphCapture` under that step's
 live contexts and replays it 3+10 times (`timing_method`
 `cuda_events_framework_breakable_module_graph_replay`, `used_cuda_graph=true`).
 Padding to the framework bucket is therefore included. The eager breaks keep
-their host launch cost, as in serving. Memory headroom for the per-target
-module graphs comes from a smaller static pool (SGLang
-`--mem-fraction-static 0.60`, vLLM `--gpu-memory-utilization 0.70`), a capacity
-change only.
+their host launch cost, as in serving.
+
+Memory: each target's module graph is captured into one shared private pool
+(the previous graph is kept alive until the next capture), and reserved memory
+still grows across targets. Headroom therefore comes from capacity-only knobs
+(KV pool size; no kernel, bucket or scheduling change), and a deployment's plan
+may be split across attempts whose manifests carry disjoint `only_sets`;
+`finalize` admits split attempts only if they cover the planned keys exactly
+once. Used for the staged revision:
+
+- vLLM `--gpu-memory-utilization`: fp8-tp4 and nvfp4-tp4 0.70, nvfp4-tp2 0.55
+  (one attempt each); fp8-tp2 0.68 in two attempts (the last set,
+  `prefill-b32-q256-c1`, alone), since the KV pool must still hold
+  32 x 98560 tokens.
+- SGLang `--mem-fraction-static 0.66`, one attempt per batch-size group
+  (releasing cached blocks with `empty_cache` before the module capture
+  exposed an illegal address in a later framework BCG replay, so it is not
+  used).
 
 ## Workload and state
 
