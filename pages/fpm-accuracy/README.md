@@ -23,7 +23,7 @@ compares forward-pass predictions with measurements from the public
   evaluation artifacts still retain all configurations.
 - The E2E accuracy page's compact AISimulate header, branch selector, summary
   cards and table. Light/dark mode shares the `sm-theme`
-  preference across the accuracy pages. Filters use aligned responsive columns;
+  preference across the accuracy pages. Filters use compact responsive columns with smaller labels and controls;
   evaluation times use UTC minutes. Trend plots have a bounded size and center
   the point when only one evaluation is available.
 - Predictor columns: online Regression, FPM (KV warmup on), then
