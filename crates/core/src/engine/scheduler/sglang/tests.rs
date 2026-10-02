@@ -484,6 +484,11 @@ fn committed_decode_membership_excludes_retracted_requests() {
         (completed, vec![1, 2, 3, 10], 3, 2),
         (retracted, vec![5, 6, 7, 8], 4, 5),
     ] {
+        core.receive(DirectRequest {
+            uuid: Some(uuid),
+            ..direct_request(tokens[..prompt_len].to_vec(), max_output_tokens)
+        });
+        core.waiting.pop_front().unwrap();
         let allocation = core.kv_manager.allocate_for_request(&tokens).unwrap();
         core.running.push(SglangRequest {
             is_decode_handoff: false,
