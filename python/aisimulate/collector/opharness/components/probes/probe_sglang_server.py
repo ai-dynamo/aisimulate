@@ -159,8 +159,11 @@ def main() -> None:
         # DECODE). Never call /stop_profile in this mode: manual_stop raises
         # NotImplementedError inside the scheduler (profile_utils.py:166 @0.5.21) and the
         # gloo barrier then takes every TP rank down (first tp4 attempt, 2026-10-02).
+        # with_stack=False: sglang's default records python stacks; rank 0 of the bf16
+        # depth8 Qwen3.8 run died inside kineto finalizeTrace() at the DECODE stop with
+        # stacks on (second tp4 attempt) — the kernel tables do not need them.
         _http("POST", f"{base}/start_profile", {"output_dir": out_dir, "num_steps": 1, "activities": ["CPU", "GPU"],
-                                                  "profile_by_stage": True, "profile_id": pid}, timeout=120)
+                                                  "profile_by_stage": True, "profile_id": pid, "with_stack": False}, timeout=120)
         _http("POST", f"{base}/generate", {"input_ids": prompt, "sampling_params": {"max_new_tokens": 4, "temperature": 0}},
               timeout=900)
         stage_of = {"EXTEND": "prefill", "PREFILL": "prefill", "DECODE": "decode"}

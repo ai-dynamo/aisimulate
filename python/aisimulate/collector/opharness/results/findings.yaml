@@ -2300,3 +2300,47 @@ findings:
     - deepseek-ai/DeepSeek-V3
     - zai-org/GLM-5
     - sgl-project/DeepSeek-V4-Flash-FP8
+  hopper_vision_evidence_and_tp4_probe_routes_2026_10_02:
+    statement: 'VISION-TOWER EVIDENCE + TP>1 PROBE ROUTES (H20/sm90, 2026-10-02; owner: ''3.8这个probe走tp4试试, vision 那个加一下,
+      trtllm也看一下''). VISION: the plan probes are text-only, so VL checkpoints never ran their encoder on sglang/trtllm and
+      the encoder_attn gate had no serving evidence there (vLLM gets it from its own multimodal profile_run). Added probes/vision_{sglang,trtllm}.py:
+      load the dummy like the text probe, push one synthetic 448x448 image through the checkpoint''s own image processor (preprocessor_config.json
+      travels with the dummy dir) into model.visual (sglang qwen3_vl.py:1459) / model.mm_encoder.visual (trtllm modeling_qwen3vl.py:1206,
+      encoder owned by the normal worker :1358) under torch.profiler, and write archive/raw/<id>.vision.json; build_records
+      merges it as the profile_run phase. It is a SEPARATE script on purpose: the probe code hash is part of every run''s
+      execution fingerprint, so touching probe_<backend>.py would have made all 448 text records stale. Qwen3-VL-2B serving
+      vision attention: sglang = sgl_kernel::fwd (FA3 FlashAttnFwdSm90), trtllm = fmha_v2_flash_attention_bf16 (trtllm_mha).
+      encoder_attn gates now ALIGNED on both -> sglang 0.5.21 29/29 gates, upgrade_op all_done=True; trtllm rc29 18/18 (6
+      families still undeclared: gdn_gen, mamba2, mla_bmm x2, msa ctx/gen). TP>1: targets.topologies had tp8 ''implemented''
+      but no record in the archive ever ran at tp>1 and the driver put every run on one GPU. New: topology_policy.tp_required
+      (repo, backend, tp) replaces tp1 for the listed checkpoints; the driver gives such a run the first tp GPUs of --gpu-list
+      on one queue (run those plans ALONE, via --only) and hashes the route script in the fingerprint. Routes = the real servers
+      inside one N-GPU container: probe_sglang_server.py (launch_server with the golden CLI; identity from /get_server_info;
+      kernels from /start_profile profile_by_stage num_steps=1 activities CPU+GPU -> <id>-TP-0-{EXTEND,DECODE}.trace.json.gz;
+      never /stop_profile in by-stage mode — manual_stop raises in the scheduler and the gloo barrier kills every rank; with_stack=False
+      — rank 0 segfaulted in kineto finalizeTrace() with python stacks on the bf16 depth8 run) and probe_trtllm_server.py
+      (trtllm-serve --tp_size N --extra_llm_api_options <golden agg_config.yaml> + load_format dummy; kernels from /start_profile
+      num_steps windows 1 and 2 diffed per kernel -> trtllm-trace-*-rank-0.json). What the server routes cannot see is flagged
+      identity_source: quant_methods / param_dtypes / api span maps (path_diff grades from the device-stream tables regardless).
+      RESULT Qwen3.8-2.4T-A95B (+FP8) at tp4: sglang 0.5.21 PASS both (server up in ~70 s, attention fa3, GDN prefill = flashinfer
+      cute-DSL delta rule, fused_moe triton; kv auto and fp8_e4m3 variants), trtllm rc29 PASS both (165-245 s startup, trtllm_mha
+      fmha_v2 + cutlass GDN decode kernel, fused_moe_oss / deep_gemm fp8 for the FP8 checkpoint). Why tp1 failed: the depth-4
+      (trtllm) / depth-8 (sglang) dummies keep all 512 experts (bf16 ~51 GB per MoE layer); 0.5.16 never reached loading (no
+      model class) and the 0.5.17 manifest pin was a collector-runtime declaration, never a serving validation. Matrices:
+      sglang 101/4/19, trtllm 72/6/46 (vllm unchanged; vllm tp>1 route not implemented — its probe is the golden run.sh in-process
+      and would need the same server treatment). Evidence: archive/raw/{b9f90ee85db2,9bce9bf007e4,5f3e9962ae80,6ff23fb0fc31,699fceaf86e2,937771098635,f9b89de0ef48,5d8a431b0ade}.json
+      (+ .profile/ server logs and traces), archive/raw/{1a0e76dd419d,a1255b13536c}.vision.json, facts/upgrade_rc29/qwen38_tp4*_queue.log.
+      PITFALL recorded: --emit-queues rewrites archive/queues/gpuN.sh — never emit while a queue is executing from that file
+      (bash reads it lazily); copy the queue aside first.'
+    applies_to:
+    - framework:sglang-0.5.21
+    - framework:trtllm-1.3.0rc29
+    - platform:sm90
+    - module:opharness
+    - instrument:probe_sglang_server
+    - instrument:probe_trtllm_server
+    - instrument:vision_sglang
+    - instrument:vision_trtllm
+    - Qwen/Qwen3.8-2.4T-A95B
+    - Qwen/Qwen3.8-2.4T-A95B-FP8
+    - Qwen/Qwen3-VL-2B-Instruct

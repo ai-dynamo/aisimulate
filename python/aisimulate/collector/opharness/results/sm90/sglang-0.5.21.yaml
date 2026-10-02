@@ -4,9 +4,9 @@ _meta:
   version: 0.5.21
   verdicts: pass = plain `cli generate` output boots+runs; pass+custom = boots with facts-derived extra generate args; fail = root-caused (see results/findings.yaml)
   summary:
-    pass: 99
+    pass: 101
     pass+custom: 4
-    fail: 21
+    fail: 19
 results:
   MiniMaxAI/MiniMax-M2:
     verdict: pass
@@ -222,15 +222,17 @@ results:
     kv_allocated: auto
     topology: tp1
   Qwen/Qwen3.8-2.4T-A95B:
-    verdict: fail
-    cause: capacity (no faithful cut fits one probe GPU)
-    error: 'torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 16.00 GiB. GPU 0 has a total capacity of 139.80 GiB of which 4.89 GiB is free. Including non-PyTorch memory, this process has 134.90
-      GiB m'
+    verdict: pass
+    evidence: current
+    attention: fa3
+    kv_allocated: auto
+    topology: tp4
   Qwen/Qwen3.8-2.4T-A95B-FP8:
-    verdict: fail
-    cause: capacity (no faithful cut fits one probe GPU)
-    error: 'torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 16.00 GiB. GPU 0 has a total capacity of 139.80 GiB of which 10.09 GiB is free. Including non-PyTorch memory, this process has 129.71
-      GiB '
+    verdict: pass
+    evidence: current
+    attention: fa3
+    kv_allocated: auto
+    topology: tp4
   Qwen/Qwen3.8-27B:
     verdict: pass
     evidence: current

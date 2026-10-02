@@ -80,6 +80,7 @@ def main() -> None:
     ap.add_argument("--isl", type=int, default=4096)
     ap.add_argument("--kv-dtype", default=None)
     ap.add_argument("--launch-timeout", type=int, default=1500)
+    ap.add_argument("--trust-remote-code", action="store_true", help="accepted for queue parity; trtllm-serve always gets --trust_remote_code")
     args = ap.parse_args()
     rec: dict = {"model_path": args.model, "errors": {}, "identity_source": "trtllm-serve(tp>1)",
                  "probe_route": "server", "probe_tp": args.tp, "probe_isl": args.isl,
