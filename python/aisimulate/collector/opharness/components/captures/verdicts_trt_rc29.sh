@@ -61,3 +61,11 @@ run trt_dsv4_hca_gen  dsv4_hca_gen_DeepSeek-V4-Flash-FP8  $M auto "$DSV4"
 # (synthetic image through Qwen3VLModel.mm_encoder.visual, merged as profile_run).
 ENC='vision|vit|patch|encoder|flash|attn|fmha'
 run trt_encoder_attn_qwen3vl  encoder_attn_Qwen3-VL-2B  Qwen/Qwen3-VL-2B-Instruct auto "$ENC"
+
+# --- 2026-10-02 backfill, remaining families with a serving record on rc29
+MAMBA='mamba|ssm|chunk|scan|conv1d|selective|causal|state'
+MLA='mla|attn|flash|bmm|proj|indexer|rope|concat|gemm|gemvx|cutlass|deepgemm|quant|nvjet|cublas'
+run trt_gdn_gen       gdn_gen_Qwen3.5-0.8B           Qwen/Qwen3.5-0.8B             auto "$GDN"
+run trt_mla_bmm       mla_bmm_gen_DeepSeek-V3        deepseek-ai/DeepSeek-V3       auto "$MLA"
+run trt_mamba2_ctx    mamba2_ctx_Nemotron-H-56B      nvidia/Nemotron-H-56B-Base-8K auto "$MAMBA"
+run trt_mamba2_gen    mamba2_gen_Nemotron-H-56B      nvidia/Nemotron-H-56B-Base-8K auto "$MAMBA"

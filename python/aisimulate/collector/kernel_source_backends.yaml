@@ -196,6 +196,7 @@ mappings:
 
   # Mamba/GDN kernels.
   - {framework: trtllm, kernel_source: causal_conv1d_fn, backend: causal_conv1d, source: "trtllm _torch mamba modules"}
+  - {framework: trtllm, kernel_source: causal_conv1d_fn_token_major, backend: causal_conv1d, source: "collector/trtllm/collect_mamba2.py _run_prefill_conv_token_major: channel-last view + token-major out, the 1.3.0rc29 Mamba2Mixer default (mamba2_mixer.py:319,541-569; causal_conv1d_channellast_fwd_kernel)"}
   - {framework: trtllm, kernel_source: causal_conv1d_update, backend: causal_conv1d, source: "trtllm _torch mamba modules"}
   - {framework: trtllm, kernel_source: chunk_gated_delta_rule, backend: fla_triton, source: "trtllm _torch GDN (triton)"}
   - {framework: trtllm, kernel_source: fused_recurrent_gated_delta_rule, backend: fla_triton, source: "trtllm _torch GDN (triton) — FLA recurrent fallback lane; serving's pure-decode entry is the fused_sigmoid_gating row below (rc23)"}
