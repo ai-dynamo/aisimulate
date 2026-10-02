@@ -198,7 +198,17 @@ def build_native_runner(bench, server, model_config, gpu_id, plan, receipt):
             self.post_attention_layernorm = native_model.RMSNorm(cfg.hidden_size, eps=cfg.rms_norm_eps)
 
         def refresh_mhc_norm_weight_cache(self):
-            native_model.DeepseekV4DecoderLayer.refresh_mhc_norm_weight_cache(self)
+            # deepseek_v4.py:2713-2725@v0.5.21 caches the bf16 norm weights, then prepares the
+            # mHC prenorm GEMM splits from hc_attn_fn/hc_ffn_fn. This facade carries no mHC
+            # (the attention stack applies input_layernorm directly), so only the norm cache
+            # part applies; the mHC parts are declared absent as the native layer does when
+            # the fused prenorm path is off.
+            self._input_layernorm_weight_bf16 = self.input_layernorm.weight.data.bfloat16().contiguous()
+            self._post_attention_layernorm_weight_bf16 = (
+                self.post_attention_layernorm.weight.data.bfloat16().contiguous()
+            )
+            self._hc_attn_tf32_parts = self._hc_ffn_tf32_parts = None
+            self._hc_attn_bf16_parts = self._hc_ffn_bf16_parts = None
 
     class AttentionStack(nn.Module):
         def __init__(self, quant):
