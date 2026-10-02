@@ -759,6 +759,7 @@ dialog { max-width: 95vw; background: var(--panel); color: var(--text); border: 
 dialog::backdrop { background: #0009; }
 @media (max-width: 700px) { .detail-cards { grid-template-columns: 1fr; } .filter-toolbar select { max-width: 85vw; } }
 .framework-summary { margin: 20px 0; }
+.point-table .prediction-error { min-width: 220px; max-width: 360px; white-space: normal; overflow-wrap: anywhere; }
 .framework-summary h2 { font-size: 14px; }
 .framework-summary table { min-width: 760px; }
 .framework-summary tbody th { background: transparent; color: var(--text); font-weight: 400; }

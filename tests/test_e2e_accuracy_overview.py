@@ -276,6 +276,26 @@ def test_public_summary_omits_raw_measurements_and_internal_provenance() -> None
     assert "linear.app/nvidia" not in serialized
 
 
+def test_prediction_errors_retain_details_without_local_provenance():
+    row = _inputs()[0]["rows"][0]
+    row.update(
+        aisimulate_status="failed",
+        aisimulate_error_type="RuntimeError",
+        aisimulate_error=(
+            "\x1b[31mMoE data missing\x1b[0m at /tmp/runner/perf.json; see https://internal.example/run\nKV limit=123"
+        ),
+    )
+    point = OVERVIEW._topology_summaries([row])[0]["points"][0]
+    assert point["aisim_error"] == "RuntimeError: MoE data missing at [path]; see [URL] KV limit=123"
+    row["aisimulate_error"] = "x" * 3000
+    assert len(OVERVIEW._prediction_error(row)) == 2048
+    assert OVERVIEW._prediction_error(row).endswith("…")
+    row["aisimulate_status"] = "success"
+    assert OVERVIEW._prediction_error(row) is None
+    row.update(aisimulate_status="unsupported", aisimulate_error=None)
+    assert OVERVIEW._prediction_error(row) is None
+
+
 @pytest.mark.parametrize("run_id", [None, "26696231118", 26696231118])
 def test_chart_points_preserve_public_run_ids_without_internal_id_fallback(run_id):
     rows = _inputs()[0]["rows"][:1]

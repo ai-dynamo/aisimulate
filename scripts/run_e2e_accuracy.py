@@ -404,8 +404,8 @@ def predict_point(point: dict) -> dict:
                 else None
             ),
         )
-    except Exception:
-        row.update(aisimulate_status="failed")
+    except Exception as exc:
+        row.update(aisimulate_status="failed", aisimulate_error_type=type(exc).__name__, aisimulate_error=str(exc))
     return {
         "id": point["id"],
         "outcome": "evaluated",

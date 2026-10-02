@@ -1275,6 +1275,34 @@ def test_campaign_does_not_infer_measured_output_from_total(monkeypatch, output)
     row = campaign.predict_point({"id": "point", "config": config, "benchmark": bench})["row"]
     assert row["silicon_total_per_gpu"] == 300
     assert row["silicon_output_per_gpu"] == (100 if output == 400 else None)
+    assert row["aisimulate_error_type"] == "AttributeError"
+    assert "create" in row["aisimulate_error"]
+
+
+def test_publication_accepts_failure_details_but_rejects_success_errors(artifact):
+    summary, run = artifact
+    model = summary["models"][0]
+    workload = model["workloads"][0]
+    gpu = workload["gpus"][0]
+    topology = gpu["topologies"][0]
+    failed = topology["points"][0]
+    failed["status"] = "failed"
+    failed["aisimulate"] = dict.fromkeys(failed["aisimulate"])
+    for item in (summary["totals"], model, workload, gpu, topology):
+        item["aisimulate"]["points"] -= 1
+        item["aisimulate"]["status_counts"]["success"] -= 1
+        item["aisimulate"]["status_counts"]["failed"] += 1
+    failed["aisim_error"] = "ValueError: no KV budget"
+    assert publish.validate_artifact(archive(summary), run) == summary
+    success = topology["points"][1]
+    success["aisim_error"] = "stale failure"
+    with pytest.raises(pages.PagesBuildError, match="AISim error detail"):
+        publish.validate_artifact(archive(summary), run)
+    del success["aisim_error"]
+    for invalid in (42, "", "x" * 2049):
+        failed["aisim_error"] = invalid
+        with pytest.raises(pages.PagesBuildError, match="AISim error detail"):
+            publish.validate_artifact(archive(summary), run)
 
 
 @pytest.mark.parametrize(
