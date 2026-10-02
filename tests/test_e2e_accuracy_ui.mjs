@@ -155,6 +155,31 @@ test("failed AIC predictions retain silicon and AISim chart values", () => {
   assert.throws(() => app.run("validateSummary(valid)"));
 });
 
+test("operating point failures show escaped errors and explicit missing details", () => {
+  const data = withTopology();
+  const topology = data.models[0].workloads[0].gpus[0].topologies[0];
+  topology.points[1].aisim_error = 'RuntimeError: missing <MoE> data & KV budget';
+  const app = harness();
+  app.set("valid", data);
+  app.set("topology", topology);
+  assert.doesNotThrow(() => app.run("validateSummary(valid)"));
+  const html = app.run("pointTable(topology)");
+  assert.match(html, /RuntimeError: missing &lt;MoE&gt; data &amp; KV budget/);
+  assert.match(html, /class="prediction-error">—<\/td>/);
+  delete topology.points[1].aisim_error;
+  app.set("topology", topology);
+  assert.match(app.run("pointTable(topology)"), /Not recorded/);
+  for (const value of [42, "", "x".repeat(2049)]) {
+    topology.points[1].aisim_error = value;
+    app.set("valid", data);
+    assert.throws(() => app.run("validateSummary(valid)"));
+  }
+  delete topology.points[1].aisim_error;
+  topology.points[0].aisim_error = "stale failure";
+  app.set("valid", data);
+  assert.throws(() => app.run("validateSummary(valid)"));
+});
+
 test("research preview retains disagg with pending AIC and explicit estimated evidence", async () => {
   const data = withTopology();
   data.snapshot.aic_commit_sha = "not-run";

@@ -208,6 +208,7 @@ def public_contract(summary):
                                 "aisimulate",
                                 "configuration",
                                 "infx_run_id",
+                                "aisim_error",
                             },
                         )
                         run_id = point.get("infx_run_id")

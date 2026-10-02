@@ -273,6 +273,26 @@ def _chart_metrics(row: dict[str, Any], prefix: str) -> dict[str, float | None]:
     return values
 
 
+def _prediction_error(row: dict[str, Any]) -> str | None:
+    """Retain failure details without local paths, URLs, or terminal controls."""
+    if row["aisimulate_status"] == "success":
+        return None
+    message = row.get("aisimulate_error")
+    if not isinstance(message, str) or not message.strip():
+        return None
+    error_type = row.get("aisimulate_error_type")
+    if isinstance(error_type, str) and re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*", error_type):
+        message = f"{error_type}: {message}"
+    message = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", message)
+    message = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", message)
+    message = re.sub(r"https?://[^\s<>\"']+", "[URL]", message)
+    message = re.sub(r"(?<![\w/])(?:/[\w.~-]+)+", "[path]", message)
+    for fragment in FORBIDDEN_PUBLIC_FRAGMENTS:
+        message = message.replace(fragment, "[redacted]")
+    message = " ".join(message.split())
+    return message[:2047] + "…" if len(message) > 2048 else message
+
+
 def _topology_summaries(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Publish serving metrics and normalized curves without internal run IDs."""
     groups: dict[tuple[Any, ...], list[dict[str, Any]]] = defaultdict(list)
@@ -297,6 +317,7 @@ def _topology_summaries(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "status": row["aisimulate_status"],
                 "configuration": row.get("configuration", {}),
                 "infx_run_id": str(run_id) if run_id is not None else None,
+                "aisim_error": _prediction_error(row),
             }
             if "configuration_quality" in row:
                 point["configuration_quality"] = row["configuration_quality"]

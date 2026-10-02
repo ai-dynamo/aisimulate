@@ -444,8 +444,8 @@ def predict_point(point: dict) -> dict:
             aisimulate_runner="aisimulate.engine_replay",
             **replay_chart_metrics(metrics, total_gpus),
         )
-    except Exception:
-        row.update(aisimulate_status="failed")
+    except Exception as exc:
+        row.update(aisimulate_status="failed", aisimulate_error_type=type(exc).__name__, aisimulate_error=str(exc))
     return {
         "id": point["id"],
         "outcome": "evaluated",

@@ -33,6 +33,10 @@ CLI evaluation still need that evaluation before branch-qualified publication.
   `SemiAnalysisAI/InferenceX` GitHub Actions. The exporter retains the public
   `silicon_github_run_id` as `infx_run_id`; it never uses the dump's internal
   workflow row ID. Older snapshots without this provenance display “—”.
+- **AISim prediction error** shows recorded failure details for failed or
+  unsupported operating points. Successful points show “—”; missing historical
+  details show “Not recorded”. Public error text omits local paths and URLs and
+  is capped at 2,048 characters. The nightly runner retains replay exceptions.
 - Both views retain Measured silicon, AISim, and AIC (legacy CLI) series.
   Click a legend to toggle a series; double-click to isolate it. Point markers
   open numeric values and the recorded prediction configuration.

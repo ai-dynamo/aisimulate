@@ -264,6 +264,11 @@ def _accuracy_summary(text: str, *, allow_preview: bool = False) -> dict:
             previous = concurrency
             status = point.get("status")
             require(status in ("success", "unsupported", "failed"), "point status")
+            error = point.get("aisim_error")
+            require(
+                error is None or (status != "success" and isinstance(error, str) and 0 < len(error) <= 2048),
+                "AISim error detail",
+            )
             aic_status = point.get("aic_status", "success")
             require(aic_status in ("success", "unsupported", "failed"), "AIC point status")
             aic_successes += aic_status == "success"
