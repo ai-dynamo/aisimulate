@@ -168,6 +168,7 @@ def build_collections(
                 "run_func": entry.run_func,
                 "perf_filename": entry.perf_filename,
                 "extra_perf_filenames": tuple(entry.extra_perf_filenames),
+                "worker_perf_filename": entry.worker_perf_filename,
                 "unverified": entry.unverified,
                 "unverified_sms": entry.unverified_sms,
             }

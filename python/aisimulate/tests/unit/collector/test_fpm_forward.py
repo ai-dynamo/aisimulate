@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import copy
 import csv
 import hashlib
 import importlib.metadata
@@ -17,7 +18,12 @@ from types import SimpleNamespace
 
 import pytest
 from collector.fpm_forward.capabilities import resolve_model_capability
-from collector.fpm_forward.config import FPMCollectionOptions, PrefillSamplingProfile, add_fpm_arguments
+from collector.fpm_forward.config import (
+    FPMCollectionOptions,
+    PrefillSamplingProfile,
+    add_fpm_arguments,
+    reject_fpm_arguments_without_fpm,
+)
 from collector.fpm_forward.database import (
     aggregate_cell,
     validate_formal_database_commit,
@@ -43,6 +49,9 @@ _REQUIRED_INSTALLED_FPM_PAYLOAD = {
     "collector/fpm_forward/runner.py": b"runner-content",
     "collector/fpm_forward/runtime/fpm_exec.sh": b"runtime-content",
     "collector/fpm_forward/runtime/preflight.py": b"preflight-content",
+    "collector/fpm_forward/runtime/fpm_memory_observer.py": b"memory-observer-content",
+    "collector/fpm_forward/runtime/fpm_memory_worker.py": b"memory-worker-content",
+    "collector/fpm_forward/runtime/fpm_memory_scheduler.py": b"memory-scheduler-content",
 }
 
 
@@ -152,7 +161,7 @@ def test_options_leave_point_generation_to_dynamo():
     assert options.parallel_presets == ("auto",)
     assert options.to_dict()["point_source"] == "dynamo_native_self_benchmark"
     assert options.to_dict()["measurement_repeats"] == 1
-    assert options.max_prefill_isl == 8192
+    assert options.max_prefill_isl is None
     assert options.max_prefill_batch_size is None
     assert options.vllm_max_model_len == -1
     assert options.prefill_sampling.max_total_prefill_tokens == 8192
@@ -182,6 +191,125 @@ def test_prefill_limits_expose_no_cli_aliases():
     assert "--fpm-model-config" in help_text
     assert "--fpm-max-isl" not in help_text
     assert "--fpm-max-prefill-bs" not in help_text
+
+
+def test_runtime_graph_policy_leaves_graph_dependent_axes_unresolved():
+    parser = argparse.ArgumentParser()
+    add_fpm_arguments(parser)
+    options = FPMCollectionOptions.from_args(
+        parser.parse_args(["--fpm-max-gpus", "4", "--fpm-prefill-cudagraph-policy", "runtime"])
+    )
+
+    assert options.max_prefill_cudagraph_size is None
+    sampling = options.prefill_sampling.to_dict()
+    assert sampling["cudagraph_policy"] == "runtime"
+    for field in (
+        "cudagraph_capture_sizes",
+        "cudagraph_capture_size_count",
+        "max_cudagraph_capture_size",
+        "new_token_axis_points",
+        "new_token_axis_point_count",
+        "prefill_max_new_token_samples",
+    ):
+        assert sampling[field] is None
+    assert sampling["prefill_max_kv_read_token_samples"] > 0
+
+
+def test_explicit_graph_policy_preserves_legacy_capture_settings_and_identity():
+    legacy = FPMCollectionOptions.from_args(_args())
+    explicit = FPMCollectionOptions.from_args(_args(fpm_prefill_cudagraph_policy="explicit"))
+    assert explicit.max_prefill_cudagraph_size == 2048
+    assert explicit.to_dict() == legacy.to_dict()
+    assert "gpu_memory_utilization" not in legacy.to_dict()
+
+    custom = FPMCollectionOptions.from_args(_args(fpm_max_prefill_cudagraph_size=1000))
+    assert custom.prefill_cudagraph_policy == "explicit"
+    assert custom.prefill_sampling.cudagraph_capture_sizes[-1] == 1000
+
+
+def test_runtime_graph_policy_rejects_explicit_capture_size():
+    parser = argparse.ArgumentParser()
+    add_fpm_arguments(parser)
+    args = parser.parse_args(
+        [
+            "--fpm-max-gpus",
+            "4",
+            "--fpm-prefill-cudagraph-policy",
+            "runtime",
+            "--fpm-max-prefill-cudagraph-size",
+            "512",
+        ]
+    )
+    with pytest.raises(ValueError, match="runtime cannot use --fpm-max-prefill-cudagraph-size"):
+        FPMCollectionOptions.from_args(args)
+
+
+@pytest.mark.parametrize("value", ["0", "-0.1", "1.01", "nan", "inf", "-inf", "true"])
+def test_gpu_memory_fraction_cli_rejects_invalid_values(value):
+    parser = argparse.ArgumentParser()
+    add_fpm_arguments(parser)
+    with pytest.raises(SystemExit) as error:
+        parser.parse_args([f"--fpm-gpu-memory-utilization={value}"])
+    assert error.value.code == 2
+
+
+@pytest.mark.parametrize("value", [True, 0, -0.1, 1.01, float("nan"), float("inf")])
+def test_gpu_memory_fraction_options_reject_invalid_values(value):
+    with pytest.raises(ValueError, match="gpu-memory-utilization must be finite"):
+        FPMCollectionOptions.from_args(_args(fpm_gpu_memory_utilization=value))
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ["--fpm-prefill-cudagraph-policy", "runtime"],
+        ["--fpm-gpu-memory-utilization", "0.9"],
+    ],
+)
+def test_graph_policy_and_memory_fraction_require_fpm_collection(arguments):
+    parser = argparse.ArgumentParser()
+    add_fpm_arguments(parser)
+    args = parser.parse_args(arguments)
+    args.ops = ["gemm"]
+    with pytest.raises(ValueError, match="FPM-only arguments require --ops fpm_forward"):
+        reject_fpm_arguments_without_fpm(args)
+
+
+@pytest.mark.parametrize("option", ["max-model-len", "max-num-batched-tokens", "max-num-seqs"])
+@pytest.mark.parametrize("value", ["0", "-1", "1.5"])
+def test_runtime_limit_cli_rejects_nonpositive_values_except_context_auto_fit(option, value):
+    parser = argparse.ArgumentParser()
+    add_fpm_arguments(parser)
+    if option == "max-model-len" and value == "-1":
+        args = parser.parse_args([f"--fpm-{option}", value])
+        assert args.fpm_max_model_len == -1
+        return
+    with pytest.raises(SystemExit) as error:
+        parser.parse_args([f"--fpm-{option}", value])
+    assert error.value.code == 2
+
+
+@pytest.mark.parametrize("option", ["max-model-len", "max-num-batched-tokens", "max-num-seqs"])
+def test_runtime_limits_require_fpm_collection(option):
+    parser = argparse.ArgumentParser()
+    add_fpm_arguments(parser)
+    args = parser.parse_args([f"--fpm-{option}", "64"])
+    args.ops = ["gemm"]
+    with pytest.raises(ValueError, match="FPM-only arguments require --ops fpm_forward"):
+        reject_fpm_arguments_without_fpm(args)
+
+
+@pytest.mark.parametrize(
+    "arguments, message",
+    [
+        ({"fpm_max_num_batched_tokens": 1024, "fpm_max_prefill_isl": 2048}, "prefill-isl exceeds"),
+        ({"fpm_max_num_seqs": 8, "fpm_max_prefill_batch_size": 16}, "prefill-batch-size exceeds"),
+        ({"fpm_max_num_seqs": 8, "fpm_max_decode_batch_size": 16}, "decode-batch-size exceeds"),
+    ],
+)
+def test_phase_limits_cannot_exceed_shared_limits(arguments, message):
+    with pytest.raises(ValueError, match=message):
+        FPMCollectionOptions.from_args(_args(**arguments))
 
 
 def test_prefill_sampling_profile_keeps_vllm_strides_and_exact_endpoint():
@@ -233,12 +361,24 @@ def test_pure_tp_requires_explicit_model_runtime_capability():
         enumerate_fpm_topologies(backend="vllm", is_moe=True, options=options)
 
 
-def test_plan_contains_only_cell_matrix_and_native_point_contract():
+@pytest.mark.parametrize("explicit", [False, True])
+def test_plan_contains_only_cell_matrix_and_native_point_contract(tmp_path, explicit):
+    points_file = tmp_path / "points.json"
+    points_file.write_text(
+        json.dumps(
+            {
+                "schema_version": 3,
+                "prefill": [{"batch_size": 1, "total_prefill_tokens": 128, "total_kv_read_tokens": 0}],
+                "decode": [],
+            }
+        )
+    )
     options = FPMCollectionOptions.from_args(
         _args(
             fpm_parallel_axes=["dp", "moe_ep"],
             fpm_dp_sizes=[4],
             fpm_moe_ep_sizes=[4],
+            fpm_benchmark_points_file=str(points_file) if explicit else None,
         )
     )
     kwargs = {
@@ -264,7 +404,7 @@ def test_plan_contains_only_cell_matrix_and_native_point_contract():
     assert {cell.workload_kind for cell in first.cells} == {"prefill", "decode"}
     assert {cell.parallel_strategy for cell in first.cells} == {"dep"}
     payload = first.to_dict()
-    assert payload["schema_version"] == 10
+    assert payload["schema_version"] == 11
     assert payload["capability"]["model_config"]["source_kind"] == "aic_cache"
     assert len(payload["capability"]["model_config"]["sha256"]) == 64
     assert payload["capability"]["model_config"]["payload"]["architectures"] == ["GlmMoeDsaForCausalLM"]
@@ -273,11 +413,13 @@ def test_plan_contains_only_cell_matrix_and_native_point_contract():
     assert point_generation == {
         "owner": "dynamo.vllm.instrumented_scheduler.InstrumentedScheduler",
         "method": "native_self_benchmark",
+        "source": "frozen_explicit_manifest" if explicit else "native_auto_grid",
+        "manifest_sha256": options.benchmark_points_sha256,
         "coordinates": ["batch_size", "total_prefill_tokens", "total_kv_read_tokens"],
         "partition_policy": "balanced_v1",
         "point_admission": "dynamo_live_scheduler",
         "precondition": "vllm_engine_initialized",
-        "planned_point_count": None,
+        "planned_point_count": 1 if explicit else None,
     }
     assert prefill_sampling["cudagraph_capture_size_count"] == 99
     assert prefill_sampling["new_token_axis_point_count"] == 199
@@ -293,6 +435,39 @@ def test_plan_contains_only_cell_matrix_and_native_point_contract():
     assert payload["counts"]["memory_rejected_topologies"] == 0
     assert payload["topology_memory_admission"][0]["disposition"] == "admitted"
     assert "runtime_overlay" not in payload
+
+
+def test_kv_warmup_defaults_are_frozen_in_plan_identity():
+    options = FPMCollectionOptions.from_args(
+        _args(fpm_parallel_axes=["dp", "moe_ep"], fpm_dp_sizes=[4], fpm_moe_ep_sizes=[4])
+    )
+    kwargs = {
+        "backend": "vllm",
+        "model_path": "nvidia/GLM-5.2-NVFP4",
+        "system": "b200_sxm",
+        "selected_ops": {"dsa_context_module", "dsa_generation_module"},
+        "options": options,
+    }
+    default = build_collection_plan(**kwargs)
+    explicit_on = build_collection_plan(
+        **kwargs,
+        generator_overrides={
+            "K8sConfig": {
+                "extra_env": [
+                    {"name": "DYN_BENCH_KV_WARMUP", "value": "on"},
+                    {"name": "DYN_BENCH_PREFILL_REAL_SEED", "value": "on"},
+                ]
+            }
+        },
+    )
+    old_policy = build_collection_plan(
+        **kwargs,
+        generator_overrides={"K8sConfig": {"extra_env": [{"name": "DYN_BENCH_PREFILL_REAL_SEED", "value": "off"}]}},
+    )
+    assert default.aic_revision == explicit_on.aic_revision == old_policy.aic_revision
+    assert default.sha256 == explicit_on.sha256
+    assert default.generator_config_sha256 != old_policy.generator_config_sha256
+    assert default.sha256 != old_policy.sha256
 
 
 def test_backend_policy_is_deeply_immutable():
@@ -430,6 +605,27 @@ def test_memory_admission_drops_only_the_rejected_dtype_cells(monkeypatch, caplo
     # memory filter's drops are logged; whole-topology logging alone would
     # hide these).
     assert "fpm_forward: dropped 3/6 (topology, kv_dtype) cell groups (memory budget" in caplog.text
+
+
+def test_model_memory_admission_uses_declared_gpu_fraction(monkeypatch):
+    monkeypatch.setattr(
+        "collector.fpm_forward.memory_admission.KVCacheEstimator.from_request",
+        lambda *_args, **_kwargs: SimpleNamespace(breakdown={"non_kv_bytes": 60, "gpu_memory_capacity_bytes": 100}),
+    )
+    kwargs = {
+        "backend": "vllm",
+        "model_path": "nvidia/GLM-5.2-NVFP4",
+        "system": "b200_sxm",
+        "selected_ops": {"dsa_context_module", "dsa_generation_module"},
+    }
+    admitted = build_collection_plan(
+        **kwargs, options=FPMCollectionOptions.from_args(_args(fpm_gpu_memory_utilization=0.9))
+    )
+    for decision in admitted.topology_memory_admission:
+        assert decision.estimates[0].to_dict()["gpu_memory_budget_bytes"] == 90
+        assert decision.estimates[0].to_dict()["headroom_bytes"] == 30
+    with pytest.raises(ValueError, match="memory admission rejected every FPM topology"):
+        build_collection_plan(**kwargs, options=FPMCollectionOptions.from_args(_args(fpm_gpu_memory_utilization=0.6)))
 
 
 def test_plan_identity_ignores_memory_estimator_error_text(monkeypatch):
@@ -715,15 +911,18 @@ _DSV4_ATTENTION_OPS = {
 
 
 @pytest.mark.parametrize(
-    ("model_path", "expected_strategies", "expected_memory_rejections"),
+    ("model_path", "max_prefill_tokens", "expected_strategies", "expected_memory_rejections"),
     [
-        # PR #219 uses residual width for MoE workspace, admitting DEP at 16 GPUs.
-        ("sgl-project/DeepSeek-V4-Pro-FP8", {"pure_tp", "tep", "dep"}, 0),
-        ("sgl-project/DeepSeek-V4-Flash-FP8", {"pure_tp", "tep", "dep"}, 0),
+        # Residual-width MoE workspace fits Pro DEP at 8192 tokens; a larger
+        # activation envelope must still reject it on physical capacity.
+        ("sgl-project/DeepSeek-V4-Pro-FP8", 8192, {"pure_tp", "tep", "dep"}, 0),
+        ("sgl-project/DeepSeek-V4-Pro-FP8", 32768, {"pure_tp", "tep"}, 1),
+        ("sgl-project/DeepSeek-V4-Flash-FP8", 8192, {"pure_tp", "tep", "dep"}, 0),
     ],
 )
 def test_dsv4_fp8_keeps_exact_capabilities_and_applies_max_new_token_memory_admission(
     model_path,
+    max_prefill_tokens,
     expected_strategies,
     expected_memory_rejections,
 ):
@@ -737,6 +936,7 @@ def test_dsv4_fp8_keeps_exact_capabilities_and_applies_max_new_token_memory_admi
             _args(
                 fpm_max_gpus=16,
                 fpm_gpu_counts=[16],
+                fpm_max_prefill_isl=max_prefill_tokens,
             )
         ),
     )
@@ -750,6 +950,13 @@ def test_dsv4_fp8_keeps_exact_capabilities_and_applies_max_new_token_memory_admi
     assert plan.dtype_profile.kv_cache_dtypes == ("fp8",)
     assert {cell.parallel_strategy for cell in plan.cells} == expected_strategies
     assert plan.to_dict()["counts"]["memory_rejected_topologies"] == expected_memory_rejections
+    assert plan.to_dict()["counts"]["memory_unknown_topologies"] == 0
+    for decision in plan.topology_memory_admission:
+        assert decision.max_new_tokens == max_prefill_tokens
+        for estimate in decision.estimates:
+            assert (estimate.estimated_non_kv_bytes < estimate.gpu_capacity_bytes) == (
+                decision.disposition == "admitted"
+            )
     assert all(cell.to_dict()["point_source"] == "dynamo_native_self_benchmark" for cell in plan.cells)
 
 
@@ -1157,6 +1364,7 @@ def _synthetic_plan_and_cell(tmp_path):
         model_path="org/model",
         system="b200_sxm",
         backend="vllm",
+        cells=(cell,),
         options=SimpleNamespace(warmup_iterations=0),
         capability=SimpleNamespace(
             support_level="exact",
@@ -1327,7 +1535,7 @@ def test_native_validation_rejects_sub_batch_token_totals(tmp_path):
         _expected_scheduled(decode_point)
 
 
-def test_formal_database_uses_schema_v6_and_rejects_conflicts(tmp_path):
+def test_formal_database_uses_schema_v7_and_rejects_conflicts(tmp_path):
     plan, cell, cell_dir = _synthetic_plan_and_cell(tmp_path)
     rows = aggregate_cell(plan, cell, cell_dir, expected_attempt_id="attempt")
     parquet, metadata, skipped = write_formal_database(plan, rows, systems_root=tmp_path / "systems")
@@ -1335,7 +1543,7 @@ def test_formal_database_uses_schema_v6_and_rejects_conflicts(tmp_path):
 
     assert parquet.exists()
     metadata_payload = json.loads(metadata.read_text())
-    assert metadata_payload["schema_version"] == 6
+    assert metadata_payload["schema_version"] == 7
     assert metadata_payload["coordinate_system"] == "iteration_totals_balanced_v1"
     assert metadata_payload["backend_version"] == "0.24.0"
     assert metadata_payload["collector_attempt_ids"] == ["attempt"]
@@ -1375,14 +1583,14 @@ def test_formal_database_first_publisher_wins_on_rerun_overlap(tmp_path):
     assert parquet2.read_bytes() == sealed
 
 
-def test_formal_database_commit_validation_accepts_sealed_schema_v6_pair(tmp_path):
+def test_formal_database_commit_validation_accepts_sealed_schema_v7_pair(tmp_path):
     plan, cell, cell_dir = _synthetic_plan_and_cell(tmp_path)
     rows = aggregate_cell(plan, cell, cell_dir, expected_attempt_id="attempt")
     parquet, metadata, _skipped = write_formal_database(plan, rows, systems_root=tmp_path / "systems")
 
     commit = validate_formal_database_commit(parquet, metadata, plan)
 
-    assert commit["schema_version"] == 6
+    assert commit["schema_version"] == 7
     assert commit["row_count"] == len(rows)
 
 
@@ -1756,7 +1964,7 @@ def test_formal_database_merge_gate_names_missing_row_key_columns(tmp_path):
     parquet_path = destination / "fpm_forward_perf.parquet"
     pq.write_table(pa.Table.from_pylist(stale_rows), parquet_path)
     (destination / "fpm_forward_perf.metadata.json").write_text(
-        json.dumps({"parquet_sha256": hashlib.sha256(parquet_path.read_bytes()).hexdigest()})
+        json.dumps({"schema_version": 7, "parquet_sha256": hashlib.sha256(parquet_path.read_bytes()).hexdigest()})
     )
 
     with pytest.raises(ValueError, match=r"missing columns: \['weight_quantization'\]"):
@@ -2207,6 +2415,142 @@ def test_native_aggregation_rejects_native_coordinate_collision(tmp_path):
         aggregate_cell(plan, cell, cell_dir, expected_attempt_id="attempt")
 
 
+def _prefill_cell_with_zero_kv_provenance_duplicates(tmp_path, *, seed_samples=3, canonical_first=False):
+    plan, cell, cell_dir = _synthetic_plan_and_cell(tmp_path)
+    count = seed_samples + 1
+    canonical_id = 1 if canonical_first else count
+    for path in (cell_dir / "raw").glob("*/benchmark*.json"):
+        payload = json.loads(path.read_text())
+        template = payload["iteration_groups"][0]
+        payload["results"] = []
+        payload["iteration_groups"] = []
+        for benchmark_id in range(1, count + 1):
+            ordinary = benchmark_id == canonical_id
+            group = copy.deepcopy(template)
+            group["benchmark_id"] = benchmark_id
+            point = group["point"]
+            point.update(
+                benchmark_id=benchmark_id,
+                total_kv_read_tokens=0,
+                sample_reasons=["post_capture"] + ([] if ordinary else ["prefill_real_seed"]),
+                partition=None,
+                rows=None,
+            )
+            for item in group["rank_results"]:
+                fpm = item["fpms"][0]
+                fpm["counter_id"] = benchmark_id
+                fpm["scheduled_requests"]["sum_prefill_kv_tokens"] = 0
+                # The ordinary sample is deliberately slower than the seeded
+                # duplicates: selection must not bias toward minimum latency.
+                fpm["wall_time"] = (0.010 if ordinary else 0.002) + item["dp_rank"] * 0.001
+            group["wall_time"] = max(item["fpms"][0]["wall_time"] for item in group["rank_results"])
+            payload["iteration_groups"].append(group)
+            payload["results"].append(
+                {
+                    "point": point,
+                    "kv_seed_regime": "not_applicable" if ordinary else "real_prefix",
+                    "fpms": group["rank_results"][payload["dp"]["rank"]]["fpms"],
+                }
+            )
+        payload["coverage"].update(expected_points=count, completed_points=count)
+        payload["timing"]["measured_iteration_seconds"] = sum(
+            group["wall_time"] for group in payload["iteration_groups"]
+        )
+        path.write_text(json.dumps(payload))
+    return plan, cell, cell_dir
+
+
+@pytest.mark.parametrize("seed_samples", [3, 4])
+@pytest.mark.parametrize("canonical_first", [False, True])
+def test_zero_kv_prefill_duplicates_publish_unique_ordinary_sample(tmp_path, caplog, seed_samples, canonical_first):
+    import pyarrow.parquet as pq
+
+    plan, cell, cell_dir = _prefill_cell_with_zero_kv_provenance_duplicates(
+        tmp_path, seed_samples=seed_samples, canonical_first=canonical_first
+    )
+    raw_before = {path: path.read_bytes() for path in (cell_dir / "raw").rglob("*.json")}
+
+    with caplog.at_level("INFO", logger="collector.fpm_forward.native_artifact"):
+        rows = aggregate_cell(plan, cell, cell_dir, expected_attempt_id="attempt")
+
+    assert len(rows) == 1
+    assert rows[0]["latency_ms"] == pytest.approx(11.0)
+    assert rows[0]["total_kv_read_tokens"] == 0
+    assert rows[0]["kv_seed_regime"] == "n/a"
+    assert rows[0]["measurement_repeats"] == 1
+    assert f"consolidated {seed_samples} zero-KV prefill provenance duplicate sample(s)" in caplog.text
+    assert "context-clamped duplicate" not in caplog.text
+
+    parquet, metadata, skipped = write_formal_database(plan, rows, systems_root=tmp_path / "systems")
+    assert skipped == ()
+    assert pq.read_table(parquet).to_pylist() == rows
+    assert json.loads(metadata.read_text())["row_count"] == 1
+    committed = validate_formal_database_commit(parquet, metadata, plan)
+    validate_formal_database_commit(
+        parquet,
+        metadata,
+        plan,
+        expected_attempt_ids={cell.cell_id: "attempt"},
+        expected_cell_rows=committed["cell_rows"],
+    )
+    write_formal_database(plan, rows, systems_root=tmp_path / "systems")
+    assert all(path.read_bytes() == original for path, original in raw_before.items())
+
+
+@pytest.mark.parametrize(
+    "conflict",
+    [
+        "duplicate_ordinary",
+        "no_ordinary",
+        "missing_provenance",
+        "positive_kv",
+        "expected_cudagraph_mode",
+        "expected_capture_size",
+        "padding_tokens",
+        "partition",
+        "rows",
+        "sample_reasons",
+        "context_clamped",
+    ],
+)
+def test_prefill_provenance_consolidation_rejects_ambiguous_duplicates(tmp_path, conflict):
+    plan, cell, cell_dir = _prefill_cell_with_zero_kv_provenance_duplicates(tmp_path)
+    for path in (cell_dir / "raw").glob("*/benchmark*.json"):
+        payload = json.loads(path.read_text())
+        for index, (row, group) in enumerate(zip(payload["results"], payload["iteration_groups"], strict=True)):
+            point = row["point"]
+            if conflict == "positive_kv":
+                point["total_kv_read_tokens"] = 128
+                for item in group["rank_results"]:
+                    item["fpms"][0]["scheduled_requests"]["sum_prefill_kv_tokens"] = 128
+                row["fpms"] = group["rank_results"][payload["dp"]["rank"]]["fpms"]
+            elif conflict == "no_ordinary":
+                row["kv_seed_regime"] = "real_prefix"
+                point["sample_reasons"] = ["post_capture", "prefill_real_seed"]
+            elif index == 0:
+                if conflict == "duplicate_ordinary":
+                    row["kv_seed_regime"] = "not_applicable"
+                    point["sample_reasons"] = ["post_capture"]
+                elif conflict == "missing_provenance":
+                    row.pop("kv_seed_regime")
+                elif conflict == "context_clamped":
+                    point["sample_reasons"].append("context_clamped")
+                else:
+                    point[conflict] = {
+                        "expected_cudagraph_mode": "NONE",
+                        "expected_capture_size": 512,
+                        "padding_tokens": 255,
+                        "partition": "different",
+                        "rows": [{"tokens": 257}],
+                        "sample_reasons": ["eager_tail", "prefill_real_seed"],
+                    }[conflict]
+            group["point"] = point
+        path.write_text(json.dumps(payload))
+
+    with pytest.raises(ValueError, match="unclamped samples share one key"):
+        aggregate_cell(plan, cell, cell_dir, expected_attempt_id="attempt")
+
+
 def test_backend_identity_defaults_record_auto_everywhere():
     """v6: unspecified knobs record "auto" (engine decided), plumb nothing."""
 
@@ -2373,3 +2717,267 @@ def test_missing_perf_data_stays_runnable_under_memory_admission(monkeypatch):
 
     assert len(plan.topologies) == 3
     assert {decision.disposition for decision in plan.topology_memory_admission} == {"unknown"}
+
+
+def _write_v41_token_streams(payload, path):
+    import hashlib
+
+    lines = []
+    for row in payload["results"]:
+        point = row["point"]
+        batch = point["batch_size"]
+        decode = point["point_type"] == "decode"
+        seed = point["total_kv_read_tokens"] - (batch if decode else 0)
+        prompt_total = seed + (0 if decode else point["total_prefill_tokens"])
+        lengths = [prompt_total // batch + (index < prompt_total % batch) for index in range(batch)]
+        stream = {
+            "benchmark_id": point["benchmark_id"],
+            "requests": [
+                {
+                    "request_index": index,
+                    "prompt_token_ids": [11 + index % 2] * length,
+                    "output_token_ids": [37],
+                    "computed_tokens": length + (2 if decode else 0),
+                }
+                for index, length in enumerate(lengths)
+            ],
+        }
+        encoded = json.dumps(stream, sort_keys=True, separators=(",", ":")).encode()
+        lines.append(encoded)
+        row["real_kv_witness"] = {
+            "same_request": True,
+            "allocated_fake_tokens": 0,
+            "completed_seed_tokens": seed,
+            "token_stream_sha256": hashlib.sha256(encoded).hexdigest(),
+        }
+    raw = b"\n".join(lines) + b"\n"
+    sidecar = path.with_suffix(".token-streams.jsonl")
+    sidecar.write_bytes(raw)
+    payload["input_provenance"]["token_stream_manifest"] = {
+        "file": sidecar.name,
+        "sha256": hashlib.sha256(raw).hexdigest(),
+        "records": len(lines),
+    }
+
+
+@pytest.mark.parametrize("marker", ["kvwarm_real_kv", "kvwarm_fake_fallback", None])
+def test_v41_cached_prefill_requires_real_computed_state(tmp_path, marker):
+    from dataclasses import replace
+
+    from aisimulate_core.sdk.fpm_identity import EXECUTION_COLUMNS
+
+    plan, cell, cell_dir = _synthetic_plan_and_cell(tmp_path)
+    identity = ("c" * 64, "full", "hbm_tp_sharded", "text")
+    cell = replace(cell, execution_identity=identity, input_text_sha256="a" * 64)
+    for path in (cell_dir / "raw").glob("*/benchmark*.json"):
+        payload = json.loads(path.read_text())
+        payload["execution_identity"] = dict(zip(EXECUTION_COLUMNS, identity, strict=True))
+        payload["execution_mode"] = "eager"
+        payload["input_provenance"] = {
+            "source": "tokenizer_text",
+            "text_sha256": "a" * 64,
+            "token_ids_sha256": "b" * 64,
+            "tokenizer_revision": "pinned",
+            "token_count": 100,
+            "unique_token_count": 20,
+        }
+        payload["kvwarm"] = {"enabled": True, "warm_eligible": True, "skip_reason": None}
+
+        def mark(value):
+            if isinstance(value, dict):
+                if "point_type" in value:
+                    value["sample_reasons"] = [marker] if marker else []
+                for child in value.values():
+                    mark(child)
+            elif isinstance(value, list):
+                for child in value:
+                    mark(child)
+
+        mark(payload)
+        _write_v41_token_streams(payload, path)
+        path.write_text(json.dumps(payload))
+    if marker == "kvwarm_real_kv":
+        assert aggregate_cell(plan, cell, cell_dir, expected_attempt_id="attempt")[0]["kv_seed_regime"] == "real_kv"
+    else:
+        with pytest.raises(ValueError, match="requires real_kv"):
+            aggregate_cell(plan, cell, cell_dir, expected_attempt_id="attempt")
+
+
+@pytest.mark.parametrize("mode", [None, "PIECEWISE", "FULL", False])
+def test_v41_reader_rejects_unqualified_graph_or_missing_execution_mode(tmp_path, mode):
+    from collector.fpm_forward.native_artifact import _validate_execution_provenance
+
+    from aisimulate_core.sdk.fpm_identity import EXECUTION_COLUMNS
+
+    identity = ("c" * 64, "full", "hbm_tp_sharded", "text")
+    cell = SimpleNamespace(execution_identity=identity)
+    payload = {"execution_identity": dict(zip(EXECUTION_COLUMNS, identity, strict=True)), "execution_mode": mode}
+    with pytest.raises(ValueError, match="verified eager"):
+        _validate_execution_provenance(cell, payload, tmp_path / "rank.json")
+
+
+@pytest.mark.parametrize("v41,eager", [(True, False), (False, True)])
+def test_explicit_eager_collection_admission(v41, eager, monkeypatch):
+    from collector.fpm_forward import planner
+
+    monkeypatch.setattr(planner, "execution_identity", lambda *args, **kwargs: ("c" * 64 if v41 else "",))
+    with pytest.raises(ValueError, match="eager"):
+        build_collection_plan(
+            backend="vllm",
+            model_path="nvidia/GLM-5.2-NVFP4",
+            system="b200_sxm",
+            selected_ops={"dsa_context_module", "dsa_generation_module"},
+            options=FPMCollectionOptions.from_args(_args(fpm_enforce_eager=eager)),
+        )
+
+
+@pytest.mark.parametrize("corruption", ["missing", "tampered", "fake", "seed", "path", "coverage"])
+def test_v41_real_token_stream_validation_rejects_broken_witness(tmp_path, corruption):
+    from collector.fpm_forward.native_artifact import _validate_token_streams
+
+    _plan, _cell, cell_dir = _synthetic_plan_and_cell(tmp_path)
+    path = next((cell_dir / "raw").glob("*/benchmark*.json"))
+    payload = json.loads(path.read_text())
+    payload["input_provenance"] = {}
+    _write_v41_token_streams(payload, path)
+    _validate_token_streams(payload, path)
+    manifest = payload["input_provenance"]["token_stream_manifest"]
+    if corruption == "missing":
+        del payload["input_provenance"]["token_stream_manifest"]
+    elif corruption == "tampered":
+        path.with_name(manifest["file"]).write_text("changed")
+    elif corruption == "fake":
+        payload["results"][0]["real_kv_witness"]["allocated_fake_tokens"] = 1
+    elif corruption == "seed":
+        payload["results"][0]["real_kv_witness"]["completed_seed_tokens"] -= 1
+    elif corruption == "path":
+        manifest["file"] = "../outside.token-streams.jsonl"
+    else:
+        manifest["records"] += 1
+    with pytest.raises(ValueError, match="V4.1"):
+        _validate_token_streams(payload, path)
+
+
+@pytest.mark.parametrize(
+    "corruption", [None, "role", "missing_result", "missing_expected", "measured_warmup", "legacy"]
+)
+def test_v41_eager_warmup_histories_are_preserved_but_not_measured(tmp_path, corruption):
+    from copy import deepcopy
+
+    from collector.fpm_forward.native_artifact import _validate_token_streams
+
+    _plan, _cell, cell_dir = _synthetic_plan_and_cell(tmp_path)
+    path = next((cell_dir / "raw").glob("*/benchmark*.json"))
+    payload = json.loads(path.read_text())
+    payload["input_provenance"] = {}
+    warmup = deepcopy(payload["results"][0])
+    warmup_id = len(payload["results"]) + 1
+    warmup["point"].update(benchmark_id=warmup_id, sample_reasons=["eager_warmup"])
+    payload["results"].append(warmup)
+    _write_v41_token_streams(payload, path)
+    payload["warmup_results"] = [payload["results"].pop()]
+    manifest = payload["input_provenance"]["token_stream_manifest"]
+    manifest.update(schema_version=2, warmup_benchmark_ids=[warmup_id])
+    sidecar = path.with_name(manifest["file"])
+    all_rows = payload["results"] + payload["warmup_results"]
+    encoded = []
+    for line, row in zip(sidecar.read_bytes().splitlines(), all_rows, strict=True):
+        stream = json.loads(line)
+        stream["sampling_role"] = "warmup" if stream["benchmark_id"] == warmup_id else "measurement"
+        if corruption == "role" and stream["benchmark_id"] == warmup_id:
+            stream["sampling_role"] = "measurement"
+        changed = json.dumps(stream, sort_keys=True, separators=(",", ":")).encode()
+        encoded.append(changed)
+        row["real_kv_witness"]["token_stream_sha256"] = hashlib.sha256(changed).hexdigest()
+    raw = b"\n".join(encoded) + b"\n"
+    sidecar.write_bytes(raw)
+    manifest["sha256"] = hashlib.sha256(raw).hexdigest()
+    if corruption == "missing_result":
+        payload["warmup_results"] = []
+    elif corruption == "missing_expected":
+        manifest["warmup_benchmark_ids"] = []
+    elif corruption == "measured_warmup":
+        payload["results"].append(payload["warmup_results"].pop())
+    elif corruption == "legacy":
+        manifest["schema_version"] = 1
+    if corruption is None:
+        _validate_token_streams(payload, path)
+        assert len(payload["results"]) + 1 == manifest["records"]
+    else:
+        with pytest.raises(ValueError, match="V4.1"):
+            _validate_token_streams(payload, path)
+
+
+@pytest.mark.parametrize("phase", ["prefill", "decode"])
+@pytest.mark.parametrize("smoke", [False, True])
+def test_v41_native_grid_bounds_reach_both_runtime_phases(phase, smoke):
+    from collector.fpm_forward.runner import _cell_generator_overrides
+
+    plan = _args_plan()
+    plan.capability = SimpleNamespace(architecture="DeepseekV41ForCausalLM")
+    plan.options = FPMCollectionOptions.from_args(
+        _args(
+            fpm_max_prefill_isl=64,
+            fpm_max_prefill_batch_size=1,
+            fpm_max_decode_batch_size=1,
+            fpm_max_model_len=258,
+            fpm_warmup_iterations=0,
+        )
+    )
+    generated = _cell_generator_overrides(plan, _args_cell(phase, "pure_tp"), {}, smoke=smoke)
+    args = generated["params"]["agg"]["extra_cli_args"]
+    assert args[args.index("--max-num-batched-tokens") + 1] == "64"
+    assert args[args.index("--max-num-seqs") + 1] == "1"
+    assert '--engram-config={"cpu_offload":false}' in args
+
+
+@pytest.mark.parametrize(
+    "corruption",
+    [
+        "results_missing",
+        "results_null",
+        "row_null",
+        "point_missing",
+        "point_null",
+        "groups_missing",
+        "provenance_missing",
+    ],
+)
+def test_v41_truncated_native_artifact_raises_actionable_value_error(tmp_path, corruption):
+    from dataclasses import replace
+
+    from aisimulate_core.sdk.fpm_identity import EXECUTION_COLUMNS
+
+    plan, cell, cell_dir = _synthetic_plan_and_cell(tmp_path)
+    identity = ("c" * 64, "full", "hbm_tp_sharded", "text")
+    cell = replace(cell, execution_identity=identity, input_text_sha256="a" * 64)
+    for path in (cell_dir / "raw").glob("*/benchmark*.json"):
+        payload = json.loads(path.read_text())
+        payload["execution_identity"] = dict(zip(EXECUTION_COLUMNS, identity, strict=True))
+        payload["execution_mode"] = "eager"
+        payload["input_provenance"] = {
+            "source": "tokenizer_text",
+            "text_sha256": "a" * 64,
+            "token_ids_sha256": "b" * 64,
+            "tokenizer_revision": "pinned",
+            "token_count": 100,
+            "unique_token_count": 20,
+        }
+        _write_v41_token_streams(payload, path)
+        if corruption == "results_missing":
+            del payload["results"]
+        elif corruption == "results_null":
+            payload["results"] = None
+        elif corruption == "row_null":
+            payload["results"][0] = None
+        elif corruption == "point_missing":
+            del payload["results"][0]["point"]
+        elif corruption == "point_null":
+            payload["results"][0]["point"] = None
+        elif corruption == "groups_missing":
+            del payload["iteration_groups"]
+        else:
+            del payload["input_provenance"]
+        path.write_text(json.dumps(payload))
+    with pytest.raises(ValueError, match="native"):
+        aggregate_cell(plan, cell, cell_dir, expected_attempt_id="attempt")

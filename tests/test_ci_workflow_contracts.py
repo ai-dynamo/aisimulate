@@ -185,6 +185,41 @@ def test_forward_perf_controller_change_detection(tmp_path, path, expected):
     assert forward_perf.matches_path(path) is expected
 
 
+@pytest.mark.parametrize("base_protocol", [1, 2])
+def test_forward_perf_skips_incompatible_data_policies(tmp_path, base_protocol):
+    steps = _workflow("performance.yml")["jobs"]["compare"]["steps"]
+    revisions = next(step for step in steps if step.get("id") == "revisions")["run"]
+    protocol_check = revisions.split('if [[ -z "${skip_reason}" ]]; then', 1)[1]
+    protocol_check = 'if [[ -z "${skip_reason}" ]]; then' + protocol_check.split("controller_changes=", 1)[0]
+    gate_path = "python/aisimulate/tools/forward_perf_gate"
+    _git(tmp_path, "init", "--quiet")
+    (tmp_path / gate_path).mkdir(parents=True)
+    base = _commit_file(tmp_path, f"{gate_path}/__init__.py", f"PROTOCOL_VERSION = {base_protocol}\n")
+    head = _commit_file(tmp_path, f"{gate_path}/__init__.py", "# Shared-layer reuse enabled.\nPROTOCOL_VERSION = 2\n")
+    output = tmp_path / "output"
+    summary = tmp_path / "summary"
+    subprocess.run(
+        ["bash", "-euc", protocol_check],
+        cwd=tmp_path,
+        env={
+            **os.environ,
+            "base_sha": base,
+            "PR_HEAD_SHA": head,
+            "gate_path": gate_path,
+            "skip_reason": "",
+            "GITHUB_OUTPUT": str(output),
+            "GITHUB_STEP_SUMMARY": str(summary),
+        },
+        check=True,
+    )
+    if base_protocol == 1:
+        assert output.read_text() == "run_comparison=false\n"
+        assert "protocol versions differ: base is 1, head is 2" in summary.read_text()
+    else:
+        assert not output.exists()
+        assert not summary.exists()
+
+
 def _forward_api(pages, *, count=None, after=None, canonical="a" * 40):
     pull = {
         "head": {"sha": "a" * 40},
@@ -1052,7 +1087,6 @@ def test_prediction_gate_resolves_base_for_push_and_manual_callers(tmp_path: Pat
     [
         ("push", "refs/heads/main", "a" * 40, True),
         ("push", "refs/heads/release/0.12.0", "b" * 40, True),
-        ("push", "refs/heads/pull-request/96", "a" * 40, False),
         ("workflow_dispatch", "refs/heads/main", "a" * 40, False),
         ("workflow_dispatch", "refs/heads/codex/restore-migrated-ci", "", False),
         ("push", "refs/heads/release/0.12.0", "0" * 40, False),
@@ -1075,7 +1109,7 @@ def test_full_ci_comparison_base_fails_closed(tmp_path: Path, before: str, api_s
 
 
 def _run_comparison_base(
-    tmp_path: Path, event: str, ref: str, before: str, api_sha: str = "c" * 40, api_status: int = 0
+    tmp_path: Path, event: str, ref: str, before: str, api_sha: str = "c" * 40, api_status: int = 0, pr_base: str = ""
 ) -> tuple[subprocess.CompletedProcess, dict[str, str]]:
     jobs = _workflow("ci.yml")["jobs"]
     assert jobs["verify-target"]["outputs"]["comparison-base"] == "${{ steps.comparison-base.outputs.sha }}"
@@ -1083,6 +1117,7 @@ def _run_comparison_base(
         assert "verify-target" in jobs[name]["needs"]
         assert jobs[name]["with"][argument] == "${{ needs.verify-target.outputs.comparison-base }}"
     step = next(step for step in jobs["verify-target"]["steps"] if step.get("id") == "comparison-base")
+    assert step["env"]["PR_BASE_SHA"] == "${{ steps.pr-target.outputs.base }}"
     gh = tmp_path / "gh"
     gh.write_text(
         '#!/bin/bash\n[[ "$*" == "api -X GET repos/ai-dynamo/aisimulate/commits/main --jq .sha" ]] || exit 9\n'
@@ -1098,6 +1133,7 @@ def _run_comparison_base(
             "GITHUB_EVENT_NAME": event,
             "GITHUB_REF": ref,
             "BEFORE_SHA": before,
+            "PR_BASE_SHA": pr_base,
             "REPOSITORY": "ai-dynamo/aisimulate",
             "GITHUB_OUTPUT": str(output_path),
             "GH_CALLED": str(tmp_path / "gh-called"),
@@ -1224,7 +1260,19 @@ def _run_pr_target(
 def test_full_ci_trusted_copy_validates_the_stacked_pr_base(tmp_path: Path) -> None:
     result, output = _run_pr_target(tmp_path, "a" * 40, "d" * 40)
     assert result.returncode == 0, result.stderr
-    assert output == {}
+    assert output == {"base": "d" * 40}
+
+
+@pytest.mark.parametrize("pr_base", ["d" * 40, "", "main", "d" * 39])
+def test_full_ci_stacked_comparison_uses_only_the_validated_pr_base(tmp_path: Path, pr_base: str) -> None:
+    result, output = _run_comparison_base(tmp_path, "push", "refs/heads/pull-request/235", "a" * 40, pr_base=pr_base)
+    if pr_base == "d" * 40:
+        assert result.returncode == 0, result.stderr
+        assert output == {"sha": pr_base}
+    else:
+        assert result.returncode != 0
+        assert output == {}
+    assert not (tmp_path / "gh-called").exists()
 
 
 @pytest.mark.parametrize(
@@ -1837,12 +1885,13 @@ def test_full_ci_selector_skips_heavy_jobs_for_documentation() -> None:
     plan = select_components(["README.md", "docs/architecture.md"])
 
     assert plan["run_all"] is False
-    assert not any(plan["components"].values())
+    assert {name for name, value in plan["components"].items() if value} == {"readme_commands"}
 
 
 def test_full_ci_selector_maps_python_rust_and_data_boundaries() -> None:
     python_plan = select_components(["python/aisimulate/src/aisimulate/traffic.py"])
     assert {component for component, selected in python_plan["components"].items() if selected} == {
+        "readme_commands",
         "platform_wheels",
         "application_wheel",
         "application_tests",
@@ -2125,6 +2174,34 @@ def test_release_artifact_handoffs_cannot_mix_versions():
             assert fnmatch.fnmatchcase(name, selected_pattern) == (version == selected)
 
 
+@pytest.mark.parametrize("manifest_version", ["0.13.0", "0.13.0.dev20260918"])
+@pytest.mark.parametrize("installed_matches", [True, False])
+def test_release_smoke_checks_manifest_version(tmp_path, monkeypatch, manifest_version, installed_matches):
+    import importlib.metadata
+
+    manifest = tmp_path / "python/aisimulate/pyproject.toml"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text(f'[project]\nversion = "{manifest_version}"\n')
+    monkeypatch.chdir(tmp_path)
+    installed_version = manifest_version if installed_matches else "0.12.0"
+    for name in ("aisimulate", "aisimulate_core"):
+        monkeypatch.setitem(sys.modules, name, SimpleNamespace(__version__=installed_version))
+    monkeypatch.setattr(importlib.metadata, "version", lambda name: installed_version)
+    monkeypatch.setattr(importlib.metadata, "distributions", lambda: [])
+    smoke = next(
+        step["run"]
+        for step in _workflow("ci.yml")["jobs"]["release-artifact-contract"]["steps"]
+        if "import importlib.metadata" in step.get("run", "")
+    )
+    command = shlex.split(smoke)
+    assert command[:2] == ["release-smoke/bin/python", "-c"]
+    if installed_matches:
+        exec(command[2], {})
+    else:
+        with pytest.raises(AssertionError):
+            exec(command[2], {})
+
+
 def _nightly_condition(job: str, *, cancelled: bool = False, **overrides) -> bool:
     """Evaluate the checked-in predicate with explicit Actions context values."""
     values = {
@@ -2163,7 +2240,9 @@ def test_nightly_validation_survives_skipped_approval_but_requires_successful_in
             assert not _nightly_condition(job, **{f"needs.{dependency}.result": result})
 
 
-@pytest.mark.parametrize("job", ["python-compliance", "build-artifacts", "trigger-gitlab-security"])
+@pytest.mark.parametrize(
+    "job", ["python-compliance", "build-artifacts", "slack-thread-start", "trigger-gitlab-security"]
+)
 def test_nightly_retries_require_approval_from_the_current_attempt(job):
     assert _nightly_condition(job)
     for attempt in ("2", "3"):
@@ -2194,6 +2273,29 @@ def test_nightly_retries_require_approval_from_the_current_attempt(job):
             "needs.manual-approval.outputs.approved-attempt": "1",
         },
     ) == (job in {"python-compliance", "build-artifacts"})
+
+
+def test_nightly_slack_thread_mirrors_dynamo_and_forwards_the_root_ts():
+    jobs = _workflow("nightly-ci.yml")["jobs"]
+    start = jobs["slack-thread-start"]
+    assert start["environment"] == "automated-release"
+    assert start["outputs"]["thread-ts"] == "${{ steps.post.outputs.thread-ts }}"
+    assert not re.search(r"^\s*[^#\s].*::add-mask::", _run_commands(start), re.MULTILINE)
+    assert not _nightly_condition("slack-thread-start", **{"vars.GITLAB_SECURITY_TRIGGER_ENABLED": "false"})
+    assert not _nightly_condition("slack-thread-start", **{"needs.changes-guard.outputs.should-build": "false"})
+    thread = "${{ needs.slack-thread-start.outputs.thread-ts }}"
+    assert jobs["slack-staging-reply"]["steps"][0]["env"]["SLACK_THREAD_TS"] == thread
+    publish = jobs["trigger-gitlab-security"]
+    assert "slack-thread-start" in publish["needs"]
+    names = [step.get("name") for step in publish["steps"]]
+    assert "Start the Slack thread" not in names
+    trigger = publish["steps"][names.index("Trigger internal security scan")]
+    assert trigger["env"]["SLACK_THREAD_TS"] == thread
+    assert names.index("Trigger internal security scan") < names.index("Post GitLab trigger reply on Slack thread")
+    stopped = jobs["slack-thread-stopped"]
+    assert {"slack-thread-start", "trigger-gitlab-security"} <= set(stopped["needs"])
+    assert "needs.trigger-gitlab-security.result != 'success'" in stopped["if"]
+    assert {"slack-thread-start", "slack-staging-reply", "slack-thread-stopped"} <= set(jobs["notify-slack"]["needs"])
 
 
 @pytest.mark.parametrize("gate", ["build-artifacts", "fpe-support-matrix", "license-evidence"])
@@ -2744,6 +2846,8 @@ def test_gitlab_security_trigger_matches_the_verified_consumer_contract(tmp_path
             "GH_SHA": "a" * 40,
             "SLACK_THREAD_TS": "1234567890.123456",
             "SLACK_CHANNEL_ID": "fixture-channel",
+            "RUNNER_TEMP": str(tmp_path),
+            "GITHUB_OUTPUT": str(tmp_path / "output"),
         },
     )
     assert (result.returncode == 0) == (failure is None), result.stdout + result.stderr
@@ -2753,6 +2857,7 @@ def test_gitlab_security_trigger_matches_the_verified_consumer_contract(tmp_path
     args = json.loads(capture.read_text())
     assert args[-1] == endpoint
     assert "--fail" in args
+    assert args[args.index("--output") + 1] == str(tmp_path / "gitlab-trigger.json")
     fields = dict(args[i + 1].split("=", 1) for i, arg in enumerate(args) if arg == "-F")
     assert fields == {
         "token": "fixture-token",

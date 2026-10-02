@@ -34,6 +34,7 @@ def prepare_output_directory(path: str | Path, *, overwrite: bool) -> Path:
     if overwrite:
         for name in (
             "prediction.json",
+            "fpm-coverage.json",
             "recommendation.json",
             "recommendation.csv",
             "requests.jsonl",
@@ -57,6 +58,14 @@ def prepare_output_directory(path: str | Path, *, overwrite: bool) -> Path:
 def write_prediction_report(root: Path, report: dict[str, Any]) -> Path:
     path = root / "prediction.json"
     path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return path
+
+
+def write_fpm_coverage(root: Path, coverage: dict[str, Any]) -> Path:
+    """Persist native lookup evidence even when the replay fails."""
+
+    path = root / "fpm-coverage.json"
+    path.write_text(json.dumps(coverage, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return path
 
 

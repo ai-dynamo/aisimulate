@@ -48,8 +48,12 @@ def _performance_model_metadata(sample: dict[str, Any], role: str, *, backend_ve
             else "op_level"
         ),
     }
+    if sample.get(f"{role}_fpm_parquet_path") is not None:
+        config["fpm_parquet_path"] = sample[f"{role}_fpm_parquet_path"]
     if sample.get("speculation") is not None:
         config["speculation"] = NgramSpeculationConfig.model_validate(sample["speculation"]).cost_config()
+    if sample.get("systems_paths") is not None:
+        config["systems_paths"] = sample["systems_paths"]
     return {"provider": "aic", "config": config}
 
 
@@ -97,6 +101,10 @@ def _engine_args_payload(
         memory_fraction_field: float(memory_fraction),
         "enable_prefix_caching": bool(sample[f"{role}_enable_prefix_caching"]),
     }
+    if sample.get("systems_paths") is not None and sample.get(f"{role}_timing_model") is not None:
+        from .forward_pass_estimator import resolve_systems_paths
+
+        payload["systems_path"] = list(resolve_systems_paths(sample["systems_paths"]))
     if sample.get("context_length") is not None:
         payload["max_model_len"] = int(sample["context_length"])
     if moe_tp * moe_ep > 1:
@@ -109,6 +117,8 @@ def _engine_args_payload(
     forward_model = sample.get(f"{role}_forward_model")
     if forward_model is not None and forward_model != "op_level":
         payload["aic_forward_model"] = str(forward_model)
+    if sample.get(f"{role}_fpm_parquet_path") is not None:
+        payload["aic_fpm_parquet_path"] = sample[f"{role}_fpm_parquet_path"]
     startup = sample.get(f"{role}_startup_time")
     if startup is None:
         startup = sample.get("startup_time")
@@ -122,6 +132,7 @@ def _engine_args_payload(
         if sample.get(f"{role}_num_gpu_blocks") is None:
             payload = materialize_aic_num_gpu_blocks(payload)
         for name in (
+            "systems_path",
             "aic_backend_version",
             "aic_system",
             "aic_model_path",
@@ -129,6 +140,7 @@ def _engine_args_payload(
             "aic_moe_ep_size",
             "aic_nextn",
             "aic_forward_model",
+            "aic_fpm_parquet_path",
         ):
             payload.pop(name, None)
     if forward_pass_estimator is not None and sample.get(f"{role}_timing_model") is None:
@@ -160,6 +172,7 @@ def _engine_args_payload(
                 pp_size=int(sample[f"{prefix}pp"]),
                 moe_tp_size=moe_tp,
                 moe_ep_size=moe_ep,
+                **_profile_kv_args(sample, role, backend_version),
                 **({"kvcache_quant_mode": sample["kvcache_quant_mode"]} if sample.get("kvcache_quant_mode") else {}),
             )
             if configured_bytes == "auto"
@@ -174,6 +187,7 @@ def _engine_args_payload(
                 pp_size=int(sample["prefill_pp"]),
                 moe_tp_size=int(sample["prefill_moe_tp"]),
                 moe_ep_size=int(sample["prefill_moe_ep"]),
+                **_profile_kv_args(sample, "prefill", backend_version),
                 **({"kvcache_quant_mode": sample["kvcache_quant_mode"]} if sample.get("kvcache_quant_mode") else {}),
             )
             if transfer_geometry == "auto"
@@ -187,6 +201,20 @@ def _engine_args_payload(
         if sample.get("kv_transfer_timing_mode") is not None:
             payload["kv_transfer_timing_mode"] = sample["kv_transfer_timing_mode"]
     return payload
+
+
+def _profile_kv_args(sample: dict[str, Any], role: str, backend_version: str) -> dict[str, Any]:
+    if sample.get("fpm_profile") is None:
+        return {}
+    prefix = _role_prefix(role)
+    return {
+        "fpm_profile": sample["fpm_profile"],
+        "worker_type": "aggregated" if role == "agg" else role,
+        "system": _role_hardware_sku(sample, role),
+        "backend": sample["backend"],
+        "backend_version": backend_version,
+        "attention_dp_size": int(sample[f"{prefix}attention_dp"]),
+    }
 
 
 def build_backend_deployment(

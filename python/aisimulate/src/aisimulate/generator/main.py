@@ -65,9 +65,9 @@ def main(argv: Optional[list[str]] = None):
     p_art.add_argument("--version", help="Backend version for template selection")
     p_art.add_argument(
         "--deployment-target",
-        choices=["dynamo-j2", "dynamo-python", "llm-d-helm", "llm-d-kustomize", "fpm"],
+        choices=["dynamo-j2", "dynamo-python", "llm-d-helm", "llm-d-kustomize", "fpm", "slurm"],
         default="dynamo-j2",
-        help="Artifact target. 'fpm' emits a reusable resource Pod and run.sh.",
+        help="Artifact target. 'slurm' emits Dynamo service and benchmark jobs; 'fpm' emits a resource Pod and run.sh.",
     )
     p_art.add_argument("--output", help="Directory to save generated artifacts")
     args = parser.parse_args(argv)

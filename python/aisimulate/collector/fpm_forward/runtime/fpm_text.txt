@@ -1,0 +1,9 @@
+A field engineer records a quiet morning beside the river. The water level has changed since yesterday, and the team compares three measurements before deciding where to place the next sensor. Each observation includes a time, a location, and the conditions under which it was collected. A useful report explains both the result and the limits of the evidence.
+
+Two colleagues review a small software service. They follow a request from its arrival to its response, note which records must remain available between steps, and check that a retry produces the intended result. They write clear names for the inputs and preserve the original data. Their next experiment changes one setting so that its effect can be understood.
+
+一位研究人员整理了一周的实验记录。她先检查输入是否一致，再比较每次测量的时间和结果。不同的样本可能访问不同的数据，因此平均值并不能解释所有差异。团队保留完整的原始记录，并用另一组样本验证结论。
+
+The library opens at nine. A student searches for a map, a teacher prepares a lesson about weather, and a visitor reads the history of a bridge. Their questions share a few words but lead to different shelves. The librarian listens carefully, checks the catalogue, and explains where each source can be found.
+
+A gardener measures the distance between young trees. Some receive sunlight in the morning and others in the afternoon. She labels the plots, writes down the watering schedule, and returns after several days. The plan leaves enough room for roots, paths, and future observations.

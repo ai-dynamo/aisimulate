@@ -340,6 +340,7 @@ def test_probe_plan_fails_closed_when_public_sdk_cannot_represent_topology():
     [
         (RuntimeError("plain build failure"), "build", STATUS_BUILD_FAILED),
         (RuntimeError("plain query failure"), "query", STATUS_QUERY_FAILED),
+        (NotImplementedError("unrecognized native feature"), "build", STATUS_BUILD_FAILED),
         (RuntimeError("hardware incompatible"), "build", STATUS_HW_INCOMPATIBLE),
         (RuntimeError("framework unsupported"), "build", STATUS_FRAMEWORK_INCOMPATIBLE),
         (RuntimeError("unsupported model family"), "build", STATUS_MODEL_UNSUPPORTED),
@@ -365,12 +366,63 @@ def test_classify_failure(error, stage, expected):
             "Invalid quantized MoE configuration: (moe_intermediate_size=1536 / moe_tp_size=16) "
             "% weight_block_size=128 != 0. "
         ),
+        NotImplementedError(
+            "DeepSeek-V4.1 text baseline requires attention_dp_size=1, pp_size=1 and cp_size=1; "
+            "DP Engram collectives and PP cache ownership need separate contracts"
+        ),
+        ValueError("DeepSeek-V4.1 EP must divide experts; TP must divide index heads and output groups"),
     ],
 )
 def test_explicit_sdk_geometry_rejection_is_nonpassing_only_at_build(error):
     assert classify_failure(error, stage="build") == STATUS_SDK_UNREPRESENTABLE
     assert classify_failure(error, stage="query") == STATUS_QUERY_FAILED
     assert classify_failure(RuntimeError(str(error)), stage="build") == STATUS_BUILD_FAILED
+    assert classify_failure(type(error)(str(error) + " unexpected failure"), stage="build") == STATUS_BUILD_FAILED
+
+
+@pytest.mark.parametrize(
+    "topology,error",
+    [
+        (
+            ParallelTopology(1, 1, 2, 1, 2, 1),
+            NotImplementedError(
+                "DeepSeek-V4.1 text baseline requires attention_dp_size=1, pp_size=1 and cp_size=1; "
+                "DP Engram collectives and PP cache ownership need separate contracts"
+            ),
+        ),
+        (
+            ParallelTopology(16, 1, 1, 4, 4, 1),
+            ValueError("DeepSeek-V4.1 EP must divide experts; TP must divide index heads and output groups"),
+        ),
+    ],
+)
+def test_deepseek_v41_rejected_topology_keeps_all_probe_evidence(topology, error):
+    plan = _plan(
+        model="deepseek-ai/DeepSeek-V4.1-Flash",
+        architecture="DeepseekV41ForCausalLM",
+        topology=topology,
+    )
+
+    def factory(actual_plan):
+        assert actual_plan is plan
+        raise error
+
+    results = probe_plan(
+        plan,
+        workload=ProbeWorkload(),
+        source_version="0.13.0",
+        source_sha="a" * 40,
+        engine_factory=factory,
+    )
+    assert {result.phase for result in results} == {"prefill", "decode_start", "decode_end", "mixed"}
+    assert {result.status for result in results} == {STATUS_SDK_UNREPRESENTABLE}
+    assert all(result.latency_ms is None and result.failure_stage == "build" for result in results)
+    assert all(result.error_type == type(error).__name__ and result.error_message == str(error) for result in results)
+    assert all(
+        getattr(result, field) == getattr(topology, field)
+        for result in results
+        for field in ("tp_size", "pp_size", "attention_dp_size", "moe_tp_size", "moe_ep_size", "cp_size")
+    )
 
 
 def test_unrecognized_quantized_moe_error_remains_blocking():

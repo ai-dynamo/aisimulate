@@ -85,8 +85,8 @@ def _recommendation(mode="aggregated"):
     return raw
 
 
-@pytest.mark.parametrize("mode", ["aggregated", "disaggregated"])
-def test_epd_language_policy_normalizes_only_equivalent_default(mode):
+@pytest.mark.parametrize(("mode", "changed_role"), [("aggregated", 0), ("disaggregated", 0), ("disaggregated", 1)])
+def test_epd_language_policy_normalizes_only_equivalent_default(mode, changed_role):
     from aisimulate.config.epd import _language_execution
 
     spec = prediction_to_replay_spec(CorePredictionConfig.model_validate(_prediction(mode)))
@@ -101,9 +101,11 @@ def test_epd_language_policy_normalizes_only_equivalent_default(mode):
     for args in arguments:
         assert args.pop("aic_database_mode") == "SILICON"
     assert _language_execution(legacy) == expected
-    # A genuinely different estimator policy must still reject a callback.
-    arguments[0]["aic_database_mode"] = "SOL"
-    assert _language_execution(legacy) != expected
+    # Changing either role must reject the callback independently.
+    arguments[changed_role]["aic_database_mode"] = "SOL"
+    changed = _language_execution(legacy)
+    for index, role in enumerate(expected):
+        assert (changed[role] != expected[role]) is (index == changed_role)
 
 
 @pytest.mark.parametrize("mode", ["aggregated", "disaggregated", "heterogeneous"])
@@ -179,6 +181,26 @@ def test_epd_language_execution_omitted_version_uses_current(mode):
 
     current = perf_database.get_version_slots("h200_sxm", "sglang")["current"]
     assert {role["rank"]["timing_model"]["config"]["backend_version"] for role in execution.values()} == {current}
+
+
+@pytest.mark.parametrize("mode", ["aggregated", "disaggregated"])
+def test_epd_language_workers_keep_native_host_offload(mode):
+    raw = _prediction(mode)
+    raw["engine"].update(backend="vllm", backend_version=None)
+    host_offload = {"num_host_blocks": 4096, "d2h_bandwidth_gbps": 32.0, "h2d_bandwidth_gbps": 32.0}
+    for role, worker in raw["engine"]["workers"].items():
+        if role != "encoder":
+            worker["kv_cache"].update(prefix_caching=True, host_offload=host_offload)
+
+    deployment = prediction_to_replay_spec(CorePredictionConfig.model_validate(raw)).backend_deployment
+
+    arguments = (
+        [deployment.agg_engine_args]
+        if mode == "aggregated"
+        else [deployment.prefill_engine_args, deployment.decode_engine_args]
+    )
+    # The analytical encoder pool holds no KV; G2 belongs to the language workers.
+    assert [args["native_host_offload"] for args in arguments] == [host_offload] * len(arguments)
 
 
 @pytest.mark.parametrize("root_field", ["systems_paths", "systems_path"])
@@ -488,7 +510,7 @@ def test_epd_native_search_preserves_available_backends(monkeypatch, caplog, bac
         return None if backend == "vllm" else original_database(system, backend, version, **kwargs)
 
     def latest_version(system, backend, **kwargs):
-        return None if backend == "vllm" else original_version(system, backend)
+        return None if backend == "vllm" else original_version(system, backend, **kwargs)
 
     raw = _recommendation()
     raw["engine"]["workers"]["encoder"]["replicas"] = 1

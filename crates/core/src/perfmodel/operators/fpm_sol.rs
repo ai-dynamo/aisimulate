@@ -116,6 +116,24 @@ pub(crate) fn op_sol_latency_ms(
         Op::Elementwise(o) => Ok(elementwise_sol(o, spec, x)),
         Op::ContextAttention(o) => Ok(context_attention_sol(o, spec, batch, s, prefix)),
         Op::GenerationAttention(o) => Ok(generation_attention_sol(o, spec, batch, s)),
+        Op::Dsv41Attention(o) => Ok(o.sol(spec, batch, s, prefix)?.latency_ms),
+        Op::Dsv41Linear(o) => Ok(o.sol(spec, x)?.latency_ms),
+        Op::Dsv41Mhc(o) => Ok(o.sol(spec, x)?.latency_ms),
+        Op::Dsv41Engram(o) => Ok(o.sol(spec, x)?.latency_ms),
+        Op::Dsv41Stage(o) => {
+            let (stage_s, stage_prefix) = o.scope(s, prefix);
+            let stage_x = if o.is_context { batch * stage_s } else { x };
+            let mut total = 0.0;
+            for inner in &o.children {
+                let child_x = if inner.is_logits_gemm() {
+                    batch
+                } else {
+                    stage_x
+                };
+                total += op_sol_latency_ms(inner, db, child_x, batch, stage_s, stage_prefix)?;
+            }
+            Ok(total)
+        }
         Op::DsaContext(o) => dsa_context_module_sol(o, spec, batch, s, prefix),
         Op::DsaGeneration(o) => dsa_generation_module_sol(o, spec, batch, s),
         Op::Moe(o) => Ok(moe_sol(o, spec, x)),
@@ -273,22 +291,39 @@ fn context_attention_sol(
     }
     let fq_mem = op.fmha_quant_mode.mapping().memory;
     extra += mem_op_sol_ms(spec, k_num * fq_mem) + mem_op_sol_ms(spec, k_num * fq_mem); // kv write (k_num == v_num)
-    (fmha + extra * 1.1) * op.scale_factor
+    // Decode CP on the same engine: all-gather the cached-context KV stripes
+    // (per-rank K+V of `p` tokens, comm half-elements) over the DCP group.
+    let gather = if op.dcp_size > 1 && p > 0.0 {
+        let kv_elems =
+            2.0 * (op.n_kv * op.head_size) as f64 * op.kv_cache_dtype.mapping().memory / 2.0;
+        nccl_sol(spec, op.dcp_size, "all_gather", b * p * kv_elems, 2.0)
+    } else {
+        0.0
+    };
+    (fmha + extra * 1.1 + gather) * op.scale_factor
 }
 
 /// Generation-attention SOL plus the optional Q/K RMSNorm fused extra. There
 /// is no 5-sample smoothing and no prefix in SOL mode.
 fn generation_attention_sol(op: &GenerationAttentionOp, spec: &SystemSpec, b: f64, s: f64) -> f64 {
+    // Decode CP: the kernel sees the DCP group's `n * dcp` gathered query
+    // heads over this rank's `ceil(s / dcp)` KV stripe (op-level
+    // `GenerationAttentionOp::dcp_size` docs); the Q/K norm extra below stays
+    // on the rank-local heads because it runs before the query gather.
+    let dcp = op.dcp_size.max(1) as f64;
     let (n, n_kv, h, w) = (
-        op.n as f64,
+        op.n as f64 * dcp,
         op.n_kv as f64,
         op.head_size as f64,
         op.window_size as f64,
     );
+    let s_local = if dcp > 1.0 { ceil_div(s, dcp) } else { s };
+    // The stripe holds every dcp-th position, so a sliding window of `w`
+    // occupies ~`w / dcp` local tokens.
     let kv_len = if op.window_size > 0 {
-        (s - 1.0).min(w)
+        (s_local - 1.0).min(ceil_div(w, dcp))
     } else {
-        s - 1.0
+        s_local - 1.0
     };
     // fp8 KV -> fp8 compute; everything else (incl. int8 KV) -> bf16 compute.
     let compute = if op.kv_cache_dtype == crate::common::enums::KvCacheQuantMode::Fp8 {
@@ -304,7 +339,7 @@ fn generation_attention_sol(op: &GenerationAttentionOp, spec: &SystemSpec, b: f6
     let sol_mem = mem / spec.gpu.mem_bw * 1000.0;
     let mut latency = sol_math.max(sol_mem);
     if op.use_qk_norm {
-        let q_num = n * h;
+        let q_num = op.n as f64 * h;
         let k_num = n_kv * h;
         let qk_norm =
             2.0 * mem_op_sol_ms(spec, q_num * 2.0) + 2.0 * mem_op_sol_ms(spec, k_num * 2.0);
@@ -382,7 +417,22 @@ fn dsa_context_module_sol(
     } else {
         w * sol(false) + (1.0 - w) * sol(true)
     };
-    Ok(ms.max(0.0) * op.scale_factor)
+    // Decode CP on the same engine: all-gather the cached latent-KV stripes plus
+    // the indexer K cache weighted by the full-indexer fraction (mirrors
+    // `DsaModuleOp::query_context`'s `dcp_context_gather`).
+    let gather = if op.dcp_size > 1 && p > 0 {
+        let kv_elems = crate::operators::dsa::dsa_cached_context_gather_elems(op.kv_cache_dtype, w);
+        nccl_sol(
+            spec,
+            op.dcp_size,
+            "all_gather",
+            b as f64 * p as f64 * kv_elems,
+            2.0,
+        )
+    } else {
+        0.0
+    };
+    Ok((ms.max(0.0) + gather) * op.scale_factor)
 }
 
 /// Whole-forward SOL leaf for the DSA generation module (`Op::DsaGeneration`): the
@@ -397,14 +447,20 @@ fn dsa_generation_module_sol(
 ) -> Result<f64, AicError> {
     let dims = dsa_dims(&op.architecture);
     let flops = dsa_generation_sol_flops(spec, op.gemm_quant_mode)?;
+    // Decode CP geometry mirrors `DsaModuleOp::query_generation`: gathered
+    // heads over this rank's KV stripe, sparse attention over the rank's
+    // `ceil(topk / dcp)` owned slots.
+    let dcp = op.dcp_size.max(1) as f64;
+    let s_local = if dcp > 1.0 { ceil_div(s, dcp) } else { s };
     let ms = dsa_generation_sol_ms(
         spec,
         dims,
         op.kv_cache_dtype,
         op.gemm_quant_mode,
         b.round().max(1.0) as i64,
-        s.round().max(1.0) as i64,
-        op.num_heads as i64,
+        s_local.round().max(1.0) as i64,
+        (op.num_heads as f64 * dcp) as i64,
+        dcp as i64,
         flops,
     );
     Ok(ms.max(0.0) * op.scale_factor)
@@ -661,6 +717,52 @@ mod tests {
         );
     }
 
+    #[test]
+    fn v41_stage_roofline_retains_fractional_tokens_and_bounds_only_prefill() {
+        use crate::operators::{Dsv41MhcOp, Dsv41StageOp};
+
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../python/aisimulate/src/aisimulate_core/systems");
+        let db = PerfDatabase::load(&root, "gb200", "vllm", "0.19.0").expect("GB200 db");
+        let leaf = Dsv41MhcOp {
+            name: "mhc".into(),
+            hidden_size: 32,
+            hc_mult: 4,
+            sinkhorn_iters: 20,
+        };
+        let mut stage = Dsv41StageOp {
+            name: "decoder".into(),
+            is_context: true,
+            decoder_replay: true,
+            bounded: true,
+            window_size: 128,
+            children: vec![Op::Dsv41Mhc(leaf.clone())],
+        };
+        // One balanced iteration has 385 new tokens over three requests;
+        // replay executes 128 each, while a short fractional extend stays short.
+        approx(
+            op_sol_latency_ms(
+                &Op::Dsv41Stage(stage.clone()),
+                &db,
+                385.0,
+                3.0,
+                385.0 / 3.0,
+                17.5,
+            )
+            .unwrap(),
+            leaf.sol(&db.system_spec, 384.0).unwrap().latency_ms,
+        );
+        approx(
+            op_sol_latency_ms(&Op::Dsv41Stage(stage.clone()), &db, 2.5, 1.0, 2.5, 17.5).unwrap(),
+            leaf.sol(&db.system_spec, 2.5).unwrap().latency_ms,
+        );
+        stage.is_context = false;
+        approx(
+            op_sol_latency_ms(&Op::Dsv41Stage(stage), &db, 3.0, 3.0, 2048.0, 0.0).unwrap(),
+            leaf.sol(&db.system_spec, 3.0).unwrap().latency_ms,
+        );
+    }
+
     /// Python oracle:
     /// PYTHONPATH=aic-core/src python3 -c "
     /// from aisimulate_core.sdk import perf_database, common
@@ -748,6 +850,7 @@ mod tests {
             cp_size: 1,
             lane_order: crate::operators::attention::b200_vllm_context_lane_order(),
             apply_rope: true,
+            dcp_size: 1,
         };
         let (b, sq, p) = (4.0, 682.6666666666666_f64, 128.5_f64);
         let (n, n_kv, h) = (48.0, 8.0, 128.0);
@@ -790,6 +893,7 @@ mod tests {
             use_qk_norm: false,
             scale_num_tokens: 1,
             verify_query_tokens: 0,
+            dcp_size: 1,
         };
         let (b, sq) = (256.0, 8441.75_f64);
         let kv_len = sq - 1.0;
@@ -829,8 +933,10 @@ mod tests {
             attention_dp_size: 1,
             quant_mode: MoeQuantMode::Nvfp4,
             workload_distribution: "uniform".into(),
+            require_exact_workload_distribution: false,
             is_gated: true,
             moe_backend: None,
+            moe_kernel_source: None,
             enable_eplb: false,
             is_context: true,
         };
@@ -988,6 +1094,122 @@ mod tests {
         );
     }
 
+    /// Decode CP in the whole-forward SOL leaf: `n * dcp` gathered heads over
+    /// a `ceil(s / dcp)` KV stripe, identical to the un-striped equivalent.
+    #[test]
+    fn generation_attention_fpm_sol_applies_dcp_geometry() {
+        let d = db();
+        let mut striped =
+            GenerationAttentionOp::new("generation_attention", 12, 1, 128, KvCacheQuantMode::Fp8);
+        striped.dcp_size = 4;
+        let gathered =
+            GenerationAttentionOp::new("generation_attention", 48, 1, 128, KvCacheQuantMode::Fp8);
+        let plain =
+            GenerationAttentionOp::new("generation_attention", 12, 1, 128, KvCacheQuantMode::Fp8);
+        let a = op_sol_latency_ms(
+            &Op::GenerationAttention(striped),
+            &d,
+            256.0,
+            256.0,
+            8192.0,
+            0.0,
+        )
+        .unwrap();
+        let b = op_sol_latency_ms(
+            &Op::GenerationAttention(gathered),
+            &d,
+            256.0,
+            256.0,
+            2048.0,
+            0.0,
+        )
+        .unwrap();
+        let c = op_sol_latency_ms(
+            &Op::GenerationAttention(plain),
+            &d,
+            256.0,
+            256.0,
+            8192.0,
+            0.0,
+        )
+        .unwrap();
+        assert!((a - b).abs() < 1e-9, "striped {a} vs gathered {b}");
+        assert!(
+            a < c,
+            "dcp must shrink the KV-read-bound decode roofline: {a} vs {c}"
+        );
+    }
+
+    /// A sliding window of `w` occupies ~`w / dcp` positions of the stripe, so a
+    /// striped windowed op prices like the gathered op over a `w / dcp` window.
+    #[test]
+    fn generation_attention_fpm_sol_stripes_the_sliding_window() {
+        let d = db();
+        let mut striped =
+            GenerationAttentionOp::new("generation_attention", 12, 1, 128, KvCacheQuantMode::Fp8);
+        striped.window_size = 4096;
+        striped.dcp_size = 4;
+        let mut gathered =
+            GenerationAttentionOp::new("generation_attention", 48, 1, 128, KvCacheQuantMode::Fp8);
+        gathered.window_size = 1024;
+        let mut unstriped_window =
+            GenerationAttentionOp::new("generation_attention", 48, 1, 128, KvCacheQuantMode::Fp8);
+        unstriped_window.window_size = 4096;
+        let a = op_sol_latency_ms(
+            &Op::GenerationAttention(striped),
+            &d,
+            256.0,
+            256.0,
+            32768.0,
+            0.0,
+        )
+        .unwrap();
+        let b = op_sol_latency_ms(
+            &Op::GenerationAttention(gathered),
+            &d,
+            256.0,
+            256.0,
+            8192.0,
+            0.0,
+        )
+        .unwrap();
+        let c = op_sol_latency_ms(
+            &Op::GenerationAttention(unstriped_window),
+            &d,
+            256.0,
+            256.0,
+            8192.0,
+            0.0,
+        )
+        .unwrap();
+        assert!(
+            (a - b).abs() < 1e-9,
+            "striped window {a} vs gathered w/dcp {b}"
+        );
+        assert!(a < c, "the window must shrink with the stripe: {a} vs {c}");
+    }
+
+    /// DSA decode under DCP: the sparse attention reads ~`topk / dcp` owned
+    /// slots, so the striped leaf must undercut the gathered-heads op that keeps
+    /// the whole top-k (the previous upper bound).
+    #[test]
+    fn dsa_generation_fpm_sol_stripes_the_top_k() {
+        let d = db();
+        let mut striped = glm_dsa_op("generation_attention");
+        striped.dcp_size = 4;
+        let mut gathered = glm_dsa_op("generation_attention");
+        gathered.num_heads = 256;
+        let a =
+            op_sol_latency_ms(&Op::DsaGeneration(striped), &d, 8.0, 8.0, 100000.0, 0.0).unwrap();
+        let b =
+            op_sol_latency_ms(&Op::DsaGeneration(gathered), &d, 8.0, 8.0, 25000.0, 0.0).unwrap();
+        assert!(a.is_finite() && a > 0.0, "{a}");
+        assert!(
+            a < b,
+            "striped top-k must undercut the whole-top-k bound: {a} vs {b}"
+        );
+    }
+
     fn glm_dsa_op(name: &str) -> DsaModuleOp {
         // nvidia/GLM-5.2-NVFP4: 64 heads, fp8 KV cache, bf16 context FMHA, nvfp4 GEMMs, index_topk 2048
         DsaModuleOp::new(
@@ -1074,6 +1296,7 @@ mod tests {
             8,
             100000,
             64,
+            1,
             flops,
         );
         assert!(got.is_finite() && got > 0.0, "{got}");

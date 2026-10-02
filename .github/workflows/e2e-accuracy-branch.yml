@@ -115,8 +115,11 @@ jobs:
     runs-on: prod-aisimulate-default-amd64-v1
     timeout-minutes: 360
     container:
-      # PostgreSQL 18 client reads the upstream custom dump without a server.
-      image: postgres:18-bookworm@sha256:1c59e2c3c818eaa0f0628f695b36e7c9e362d6b219b36a54a32df645cbd7e1af
+      # The runner executes as non-root; use its sudo-enabled CI image.
+      image: ${{ vars.CI_JOB_CONTAINER_IMAGE }}
+      env:
+        HOME: /__w/aisimulate/aisimulate
+        USER: runner
     env:
       OPENBLAS_NUM_THREADS: '1'
       OMP_NUM_THREADS: '1'
@@ -127,11 +130,21 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.12"
       - name: Install the CPU campaign environment
         run: |
-          apt-get update
-          apt-get install -y --no-install-recommends python3 python3-venv zstd libgomp1
-          python3 -m venv "${RUNNER_TEMP}/accuracy-venv"
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends postgresql-common ca-certificates
+          # Enable the official PGDG repository for the required dump reader.
+          sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends postgresql-client-18 zstd libgomp1
+          echo "/usr/lib/postgresql/18/bin" >> "${GITHUB_PATH}"
+          /usr/lib/postgresql/18/bin/pg_restore --version
+          zstd --version
+          python -m venv "${RUNNER_TEMP}/accuracy-venv"
           echo "${RUNNER_TEMP}/accuracy-venv/bin" >> "${GITHUB_PATH}"
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
@@ -144,10 +157,22 @@ jobs:
           echo "${WHEEL_SHA256}  $(echo "${RUNNER_TEMP}"/accuracy-wheel/*.whl)" | sha256sum --check --strict
           python -m pip install "${RUNNER_TEMP}"/accuracy-wheel/*.whl
           python -m pip check
+          python - <<'PYCODE'
+          import os, sys
+          from pathlib import Path
+          sys.path.insert(0, 'scripts')
+          from run_e2e_accuracy import wheel_identity
+          wheel = next((Path(os.environ['RUNNER_TEMP']) / 'accuracy-wheel').glob('*.whl'))
+          print(wheel_identity(wheel))
+          PYCODE
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: e2e-accuracy-dataset
+          path: ${{ runner.temp }}/accuracy-dataset
       - name: Fetch checksum-pinned public measurements
         run: |
           python scripts/fetch_accuracy_measurements.py \
-            --manifest .github/e2e-accuracy-dataset.json --output "${RUNNER_TEMP}/accuracy-measurements"
+            --manifest "${RUNNER_TEMP}/accuracy-dataset/e2e-accuracy-dataset.json" --output "${RUNNER_TEMP}/accuracy-measurements"
       - name: Run both predictors with bounded CPU workers and qualify the complete cohort
         env:
           EXPECTED_SHA: ${{ inputs.sha }}
@@ -155,7 +180,7 @@ jobs:
         run: |
           python scripts/run_e2e_accuracy.py \
             --tables "${RUNNER_TEMP}/accuracy-measurements/tables.json" \
-            --manifest .github/e2e-accuracy-dataset.json \
+            --manifest "${RUNNER_TEMP}/accuracy-dataset/e2e-accuracy-dataset.json" \
             --wheel "${RUNNER_TEMP}"/accuracy-wheel/*.whl \
             --commit "${EXPECTED_SHA}" --branch "${EVALUATED_BRANCH}" \
             --run-id "${GITHUB_RUN_ID}" --run-attempt "${GITHUB_RUN_ATTEMPT}" \
@@ -177,8 +202,7 @@ jobs:
         with:
           name: e2e-accuracy-web-${{ inputs.artifact_key }}
           overwrite: true
-          path: |
-            ${{ runner.temp }}/accuracy-public/summary.json
-            ${{ runner.temp }}/accuracy-public/qualification.json
+          # A single directory lets the container hook remap the entire path.
+          path: ${{ runner.temp }}/accuracy-public/
           if-no-files-found: error
           retention-days: 90

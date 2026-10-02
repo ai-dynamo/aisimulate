@@ -20,11 +20,16 @@ Native only: the estimate reads the perf database for ``(hardware_sku, backend)`
 (:func:`get_latest_database_version` resolves the version). SKUs without a perf
 DB raise :class:`NoPerfDatabase`; the naive fallback is intentionally disabled
 because it mis-models MoE expert sharding.
+
+An explicit FPM profile instead supplies per-deployment resource bounds. That
+memory path requires a hardware specification and literal profile version,
+but no timing database or analytical model.
 """
 
 from __future__ import annotations
 
 from collections.abc import Iterable
+from typing import Any
 
 from aisimulate_core.sdk.memory import estimate_kv_cache
 from aisimulate_core.sdk.perf_database import get_latest_database_version
@@ -45,6 +50,49 @@ class NoPerfDatabase(RuntimeError):
 def memory_fraction_kind(backend: str) -> str:
     """TRT-LLM budgets KV from *free* memory; vLLM / SGLang from *total*."""
     return "of_free" if backend == "trtllm" else "of_total"
+
+
+def estimate_grouped_cache_budget(
+    shape: ParallelShape,
+    *,
+    model_name: str,
+    hardware_sku: str,
+    backend: str,
+    backend_version: str,
+    fpm_profile: dict[str, Any],
+    worker_type: str = "aggregated",
+    context_length: int | None,
+    max_num_tokens: int,
+    max_batch_size: int,
+    memory_fraction: float,
+    systems_paths: list[str] | None = None,
+    model_controls: dict[str, str | int | bool] | None = None,
+    nextn: int = 0,
+    request_occupancy_tokens: int | None = None,
+) -> dict[str, Any]:
+    """Use the canonical Rust grouped budget, including transient prefill pages."""
+    return estimate_kv_cache(
+        model_name,
+        hardware_sku,
+        backend,
+        backend_version=backend_version,
+        max_num_tokens=max_num_tokens,
+        max_batch_size=max_batch_size,
+        context_length=context_length,
+        request_occupancy_tokens=request_occupancy_tokens,
+        memory_fraction_kind=memory_fraction_kind(backend),
+        memory_fraction_value=memory_fraction,
+        tp_size=shape.tp,
+        pp_size=shape.pp,
+        attention_dp_size=shape.dp,
+        moe_tp_size=shape.moe_tp,
+        moe_ep_size=shape.moe_ep,
+        nextn=nextn,
+        **(model_controls or {}),
+        systems_path=list(resolve_systems_paths(systems_paths)) if systems_paths is not None else None,
+        fpm_profile=fpm_profile,
+        worker_type=worker_type,
+    )
 
 
 def resolve_backend_version(
@@ -92,7 +140,10 @@ def estimate_kv_tokens(
     max_batch_size: int = DEFAULT_MAX_BATCH_SIZE,
     memory_fraction: float = DEFAULT_MEMORY_FRACTION,
     nextn: int = 0,
+    fpm_profile: dict[str, Any] | None = None,
+    worker_type: str = "aggregated",
     model_controls: dict[str, str | int | bool] | None = None,
+    context_length: int | None = None,
 ) -> int | None:
     """Per-rank KV-cache capacity (in tokens) for ``shape``, or ``None`` when the
     shape leaves no KV budget (weights + activations already fill VRAM -> OOM).
@@ -118,6 +169,8 @@ def estimate_kv_tokens(
             **(model_controls or {}),
             systems_path=(list(resolve_systems_paths(systems_paths)) if systems_paths is not None else None),
             allow_naive_fallback=False,
+            **({"fpm_profile": fpm_profile, "worker_type": worker_type} if fpm_profile is not None else {}),
+            **({"context_length": context_length} if context_length is not None else {}),
         )
     except ValueError as exc:
         msg = str(exc)
@@ -145,6 +198,8 @@ def feasible_shape_tokens(
     max_num_tokens: int = DEFAULT_MAX_NUM_TOKENS,
     max_batch_size: int = DEFAULT_MAX_BATCH_SIZE,
     memory_fraction: float = DEFAULT_MEMORY_FRACTION,
+    fpm_profile: dict[str, Any] | None = None,
+    worker_type: str = "aggregated",
     model_controls: dict[str, str | int | bool] | None = None,
     nextn: int = 0,
 ) -> dict[ParallelShape, int]:
@@ -168,6 +223,8 @@ def feasible_shape_tokens(
             max_num_tokens=max_num_tokens,
             max_batch_size=max_batch_size,
             memory_fraction=memory_fraction,
+            **({"fpm_profile": fpm_profile, "worker_type": worker_type} if fpm_profile is not None else {}),
+            **({"context_length": max_seq_len} if fpm_profile is not None else {}),
             **({"model_controls": model_controls} if model_controls else {}),
             **({"nextn": nextn} if nextn else {}),
         )

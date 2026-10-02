@@ -42,11 +42,7 @@ class CorePredictionConfig(StrictModel):
             raise ValueError("cached_prefix_tokens is unsupported for AFD")
         if self.engine.mode == "afd" and not isinstance(source, SyntheticSource):
             raise ValueError("AFD prediction requires fixed-length synthetic request traffic")
-        if (
-            isinstance(source, TraceSource)
-            and source.format in {"mooncake-delta", "agentic_mooncake", "weka"}
-            and self.engine.mode != "aggregated"
-        ):
+        if isinstance(source, TraceSource) and source.format == "mooncake-delta" and self.engine.mode != "aggregated":
             raise ValueError(f"{source.format} requires aggregated engine mode")
         return self
 
@@ -76,11 +72,7 @@ class CoreRecommendationConfig(StrictModel):
             raise ValueError("AFD recommendation requires fixed-length synthetic request traffic")
         if "afd" in modes and self.traffic is not None and self.traffic.load.type == "kv_capacity_fraction":
             raise ValueError("AFD recommendation requires an absolute traffic load, not kv_capacity_fraction")
-        if (
-            isinstance(source, TraceSource)
-            and source.format in {"mooncake-delta", "agentic_mooncake", "weka"}
-            and "disaggregated" in modes
-        ):
+        if isinstance(source, TraceSource) and source.format == "mooncake-delta" and "disaggregated" in modes:
             raise ValueError(f"{source.format} requires aggregated engine mode")
         sla = self.evaluation.sla
         if self.optimization.strict_sla and (sla is None or not sla.has_bound):

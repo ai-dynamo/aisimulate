@@ -286,6 +286,7 @@ class DSparkScheme(SpecSchemeBase):
                 cfg.moe_quant_mode,
                 workload_distribution,
                 cfg.attention_dp_size,
+                moe_kernel_source=cfg.moe_kernel_source,
             ),
             ops.MoEDispatch(
                 f"dspark_{phase}_moe_post_dispatch",

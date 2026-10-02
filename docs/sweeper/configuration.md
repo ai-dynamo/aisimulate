@@ -101,7 +101,11 @@ for the normalized contract and backend frontend differences.
 
 Each engine role also has lists for `max_num_batched_tokens` and `max_num_seqs`, plus pinned block
 size, GPU-memory-utilization, prefix-caching, and `<role>_forward_model` fields (`op_level` by default,
-or `fpm` for whole-forward timing from a collected FPM cell). A one-item list pins a searched field.
+or `fpm` for whole-forward timing from a collected FPM cell). Set `<role>_fpm_parquet_path` to the
+external parquet for that role (`agg`, `prefill`, or `decode`); the adjacent same-stem
+`.metadata.json` sidecar is required. The path requires default timing with `forward_model: fpm`
+and is preserved in deployment metadata, runtime arguments, and candidate YAML.
+A one-item list pins a searched field.
 
 `prefill_hardware_sku` and `decode_hardware_sku` apply only to the ordinary `disagg` branch. Either
 override may be set independently: an omitted role inherits `hardware_sku`. Both roles still share
@@ -250,13 +254,14 @@ Sweeper rejects the old KVBM block-count, transfer-bandwidth, offload-batch-size
 search fields. Those legacy fields have no adapter migration.
 
 The public `predict` and `recommend` commands support a separate native host-offload descriptor
-at `engine.workers.aggregated.kv_cache.host_offload`. It sets `num_host_blocks`,
-`d2h_bandwidth_gbps`, and `h2d_bandwidth_gbps` as fixed values, not search dimensions. It requires
-aggregated vLLM, prefix caching enabled, and `attention_data: 1`; native speculative decoding is
-not supported. For `recommend`, mode and backend must be concrete, the parallelism preset must be
-disabled (`preset: false`), and `attention_data` must be fixed to `1`. Other parallelism knobs,
-such as `tensor` and `replicas`, may still be searched. This does not add disk offload or restore
-the removed KVBM search fields.
+at `engine.workers.<role>.kv_cache.host_offload`. It sets the G2 `scope`, `num_host_blocks` and
+bandwidths as fixed values, not search dimensions. It requires vLLM and prefix caching; native
+speculative decoding is not supported. For `recommend`, mode (`aggregated` or `disaggregated`)
+and backend must be concrete; parallelism knobs, including `attention_data`, may be searched. When
+both prefill and decode use `scope: cluster_shared`, both roles must set `tensor` and `pipeline` to
+the same explicit integer (an omitted value is searched), their KV block geometry and pool fields
+must match, and either both or neither must use default timing. This does not add disk offload or
+restore the removed KVBM search fields.
 
 See [Native vLLM host-offload prediction](../cli/user-guide.md#native-vllm-host-offload-prediction)
 for a complete YAML example and CLI command.

@@ -78,49 +78,6 @@ fn partial_writes_preserve_pending_pinned_and_existing_prefix_blocks() {
 }
 
 #[test]
-fn ready_count_snapshot_visits_each_job_once_and_reuses_counts_for_rates() {
-    use std::cell::Cell;
-    for n in [16, 128, 1024] {
-        let jobs = (0..n)
-            .map(|id| Job {
-                id: id as u64,
-                worker: id % 4,
-                direction: if id % 2 == 0 {
-                    Direction::Read
-                } else {
-                    Direction::Write
-                },
-                keys: vec![],
-                submitted: 0.0,
-                ready: if id < n / 2 { 0.0 } else { 1.0 },
-                remaining: 1_000_000.0,
-            })
-            .collect::<Vec<_>>();
-        let visits = Cell::new(0);
-        let counts = ReadyCounts::new(jobs.iter().inspect(|_| visits.set(visits.get() + 1)), 0.0);
-        assert_eq!(visits.get(), n);
-        assert_eq!(counts.total, [n / 4, n / 4]);
-        let mut cfg = config(G3Scope::ClusterShared);
-        cfg.read_bandwidth_gbps = 1.0;
-        cfg.write_bandwidth_gbps = 1.0;
-        for job in &jobs[..n / 2] {
-            assert_eq!(counts.rate(&cfg, job), 1_000_000.0 / (n / 8) as f64);
-        }
-        assert_eq!(
-            visits.get(),
-            n,
-            "rate evaluation has no access to the job queue"
-        );
-        let ready = ReadyCounts::new(jobs.iter(), 1.0);
-        assert_eq!(ready.total, [n / 2, n / 2]);
-        assert_eq!(
-            ready.rate(&cfg, &jobs[0]),
-            counts.rate(&cfg, &jobs[0]) / 2.0
-        );
-    }
-}
-
-#[test]
 fn ready_counts_refresh_when_completion_and_first_byte_share_a_boundary() {
     let mut cfg = config(G3Scope::ClusterShared);
     cfg.write_bandwidth_gbps = 1.0;

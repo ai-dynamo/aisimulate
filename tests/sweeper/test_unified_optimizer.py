@@ -148,7 +148,7 @@ def test_global_trial_budget_is_split_across_branches(monkeypatch) -> None:
     _CountingSampler.suggestion_batches = []
     _CountingSampler.suggested = 0
     monkeypatch.setattr(search_module, "enumerate_branches", lambda *args, **kwargs: _branches())
-    monkeypatch.setattr(search_module, "resolve_backend_version", lambda *args: "test")
+    monkeypatch.setattr(search_module, "resolve_backend_version", lambda *args, systems_paths=None: "test")
     config = SmartSearchConfig.model_validate(
         {
             "search_space": {
@@ -193,7 +193,7 @@ def test_global_trial_budget_runs_branch_batches_round_robin(monkeypatch) -> Non
     _CountingSampler.suggestion_batches = []
     _CountingSampler.suggested = 0
     monkeypatch.setattr(search_module, "enumerate_branches", lambda *args, **kwargs: _branches())
-    monkeypatch.setattr(search_module, "resolve_backend_version", lambda *args: "test")
+    monkeypatch.setattr(search_module, "resolve_backend_version", lambda *args, systems_paths=None: "test")
     config = SmartSearchConfig.model_validate(
         {
             "search_space": {
@@ -243,7 +243,7 @@ def test_legacy_rounds_remain_branch_major_without_max_trials(monkeypatch) -> No
     _CountingSampler.suggestion_batches = []
     _CountingSampler.suggested = 0
     monkeypatch.setattr(search_module, "enumerate_branches", lambda *args, **kwargs: _branches())
-    monkeypatch.setattr(search_module, "resolve_backend_version", lambda *args: "test")
+    monkeypatch.setattr(search_module, "resolve_backend_version", lambda *args, systems_paths=None: "test")
     config = SmartSearchConfig.model_validate(
         {
             "search_space": {
@@ -288,7 +288,7 @@ def test_branch_seed_is_stable_when_branch_order_changes(monkeypatch) -> None:
         "enumerate_branches",
         lambda *args, **kwargs: list(reversed(_branches())),
     )
-    monkeypatch.setattr(search_module, "resolve_backend_version", lambda *args: "test")
+    monkeypatch.setattr(search_module, "resolve_backend_version", lambda *args, systems_paths=None: "test")
     config = SmartSearchConfig.model_validate(
         {
             "search_space": {
@@ -344,6 +344,36 @@ def test_seeded_bayesian_sampler_is_deterministic() -> None:
     assert [item.selection for item in first] == [item.selection for item in second]
 
 
+@pytest.mark.filterwarnings("ignore:Explicitly requested dtype .*:UserWarning")
+def test_seeded_bayesian_sampler_clears_compilation_cache_between_batches() -> None:
+    import jax
+
+    branch = _branches()[0]
+    branch.knob_choices["agg_max_num_seqs"] = [256, 512, 1024]
+    sampler = SeededBayesianBranchSampler(branch, objectives=None, seed=13)
+    seed = sampler.suggest(1)[0]
+    sampler.observe(seed, {"objective": 1.0})
+
+    traces = []
+
+    @jax.jit
+    def compiled(value):
+        traces.append(None)
+        return value + 1
+
+    assert int(compiled(1)) == 2
+    assert len(traces) == 1
+    for batch in range(2):
+        # Repeating the same signature reuses the executable until the next ask.
+        assert int(compiled(1)) == 2
+        assert len(traces) == batch + 1
+        suggestion = sampler.suggest(1)[0]
+        assert suggestion.selection["agg_max_num_seqs"] in [256, 512, 1024]
+        assert int(compiled(1)) == 2
+        assert len(traces) == batch + 2
+        sampler.observe(suggestion, {"objective": float(batch + 2)})
+
+
 def test_candidate_timeout_applies_with_parallelism_one(monkeypatch) -> None:
     _CountingSampler.created = []
     _CountingSampler.suggestion_batches = []
@@ -353,7 +383,7 @@ def test_candidate_timeout_applies_with_parallelism_one(monkeypatch) -> None:
         "enumerate_branches",
         lambda *args, **kwargs: [_branches()[0]],
     )
-    monkeypatch.setattr(search_module, "resolve_backend_version", lambda *args: "test")
+    monkeypatch.setattr(search_module, "resolve_backend_version", lambda *args, systems_paths=None: "test")
     config = SmartSearchConfig.model_validate(
         {
             "search_space": {

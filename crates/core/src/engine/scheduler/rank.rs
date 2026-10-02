@@ -15,6 +15,7 @@ use crate::engine::common::protocols::{
     PreemptionMode as CorePreemptionMode, SglangArgs, WorkerType as CoreWorkerType,
 };
 use crate::engine::generalized::{CommandContext, RankEngine, RankIdentity, RankPass};
+use crate::engine::host_offload::G2Binding;
 use crate::engine::{
     Admission, Backend, Command, CommandEffects, CommandResult, EngineConfig, ForwardPassMetrics,
     HandoffId, HostOffloadObserver, LifecycleEvent, Metrics, Output, PassCompletionEffects,
@@ -69,14 +70,21 @@ impl SchedulerRank {
         timing: Arc<dyn TimingModel>,
         seed_offset: u64,
     ) -> Result<Self> {
+        Self::new_with_g2(identity, config, timing, seed_offset, None)
+    }
+
+    /// `g2` binds a cluster-shared G2 configuration to its deployment pool.
+    pub(crate) fn new_with_g2(
+        identity: RankIdentity,
+        config: &EngineConfig,
+        timing: Arc<dyn TimingModel>,
+        seed_offset: u64,
+        g2: Option<&G2Binding>,
+    ) -> Result<Self> {
         config.validate()?;
         ensure!(
             config.g3_offload.is_none(),
             "g3_offload is Replay-owned; construct it through ReplaySpec"
-        );
-        ensure!(
-            config.native_host_offload.is_none() || identity.dp_size.get() == 1,
-            "native_host_offload supports only dp_size=1 in the initial implementation"
         );
         let mut args = core_args(config, timing);
         if config.backend == Backend::Sglang {
@@ -90,7 +98,8 @@ impl SchedulerRank {
                 identity.dp_rank,
                 seed_offset,
                 capture_kv_events,
-            )),
+                g2,
+            )?),
             Backend::Sglang => EngineCore::Sglang(SglangCore::new_with_worker_rank(
                 args,
                 identity.worker_id,
@@ -429,7 +438,11 @@ fn core_args(config: &EngineConfig, timing: Arc<dyn TimingModel>) -> MockEngineA
         aic_mtp_seed: config.aic_mtp_seed,
         kv_transfer_bytes_per_token: config.kv_transfer_bytes_per_token,
         kv_cache_bytes_per_token: config.kv_cache_bytes_per_token,
-        native_host_offload: config.native_host_offload,
+        kv_cache_groups: config.kv_cache_groups.clone(),
+        kv_cache_capacity_bytes: config.kv_cache_capacity_bytes,
+        native_host_offload: config.native_host_offload.clone(),
+        state_cache: config.state_cache,
+        prefix_match_unit: config.prefix_match_unit,
         kv_transfer_bandwidth: config.kv_transfer_bandwidth,
         kv_transfer_timing_mode: match config.kv_transfer_timing_mode {
             TransferTimingMode::FullPrompt => KvTransferTimingMode::FullPrompt,
@@ -574,6 +587,8 @@ fn map_metrics(metrics: MockerMetrics) -> Metrics {
         active_blocks: metrics.active_decode_blocks,
         inactive_blocks: metrics.inactive_decode_blocks,
         total_blocks: metrics.total_blocks,
+        kv_cache_used_bytes: metrics.kv_cache_used_bytes,
+        kv_cache_capacity_bytes: metrics.kv_cache_capacity_bytes,
         cache_usage: metrics.gpu_cache_usage_perc,
         physical_cache_usage: metrics.physical_gpu_cache_usage_perc,
         running_requests: metrics.running_requests,
@@ -668,6 +683,25 @@ mod tests {
         HostOffloadObservation, HostOffloadObservationData, NativeHostOffloadConfig, PressureKind,
         TimingModelConfig,
     };
+
+    #[test]
+    fn state_cache_parameters_reach_rank_local_args() {
+        let config: EngineConfig = serde_json::from_value(serde_json::json!({
+            "num_gpu_blocks":8,"block_size":64,"kv_cache_bytes_per_token":16,
+            "state_cache": {"bytes_per_request":1500}
+        }))
+        .unwrap();
+        let args = core_args(&config, config.built_in_timing_model().unwrap());
+        assert_eq!(args.state_cache, config.state_cache);
+        assert_eq!(args.num_gpu_blocks, 8);
+        assert_eq!(args.block_size, 64);
+
+        let legacy = EngineConfig::default();
+        let args = core_args(&legacy, legacy.built_in_timing_model().unwrap());
+        assert!(args.state_cache.is_none());
+        assert_eq!(args.num_gpu_blocks, legacy.num_gpu_blocks);
+        assert_eq!(args.block_size, legacy.block_size);
+    }
 
     #[test]
     fn sglang_attention_dp_normalizes_per_rank_scheduler_controls_once() {

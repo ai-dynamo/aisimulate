@@ -7,6 +7,9 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use super::trace::synthesize_validated_trace_tokens;
+use crate::engine::{
+    XXH3_SEED, block_hashes, compute_block_hash_for_tokens, compute_next_sequence_hash,
+};
 use crate::replay::protocol::DirectRequest;
 
 pub const OUTPUT_REPLAY_ID_ANNOTATION_KEY: &str = "output_replay_id";
@@ -236,6 +239,10 @@ pub struct AgenticNode {
     pub(super) not_before_ms: f64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) recorded_api_time_ms: Option<f64>,
+    // Importer provenance for formats whose execution gates do not retain
+    // recorded request starts. Excluded from the canonical graph contract.
+    #[serde(skip)]
+    pub(super) recorded_interval_ms: Option<(f64, Option<f64>)>,
     pub(super) priority: i32,
     pub(super) strict_priority: u32,
     pub(super) policy_class: Option<String>,
@@ -442,35 +449,74 @@ impl ReplayRequestHashes {
     /// Router implementation or its wire types.
     pub fn from_tokens(tokens: &[u32], engine_block_size: u32) -> Self {
         if engine_block_size == 0 {
-            return Self {
-                local_block_hashes: Vec::new(),
-                sequence_hashes: Vec::new(),
-            };
+            return Self::from_local_block_hashes(Vec::new());
+        }
+        Self::from_local_block_hashes(block_hashes(tokens, engine_block_size as usize).collect())
+    }
+
+    /// Equal to [`Self::from_tokens`] over the prompt that
+    /// `synthesize_validated_trace_tokens` would build, without materializing
+    /// it: token `p` of that prompt is `hash_ids[p / trace_block_size]`.
+    pub(crate) fn from_trace_blocks(
+        input_length: usize,
+        hash_ids: &[u32],
+        trace_block_size: usize,
+        engine_block_size: u32,
+    ) -> Self {
+        let block_size = engine_block_size as usize;
+        if block_size == 0 {
+            return Self::from_local_block_hashes(Vec::new());
+        }
+        if trace_block_size == 0 || hash_ids.len().saturating_mul(trace_block_size) < input_length {
+            let tokens =
+                synthesize_validated_trace_tokens(input_length, hash_ids, trace_block_size);
+            return Self::from_tokens(&tokens, engine_block_size);
         }
 
-        let block_size = engine_block_size as usize;
-        let local_block_hashes = tokens
-            .chunks_exact(block_size)
-            .map(|block| {
-                let mut bytes = Vec::with_capacity(std::mem::size_of_val(block));
-                for token in block {
-                    bytes.extend_from_slice(&token.to_le_bytes());
+        let mut block = vec![0_u32; block_size];
+        // Consecutive engine blocks inside one trace block are identical.
+        let mut previous_run: Option<(u32, u64)> = None;
+        let local_block_hashes = (0..input_length / block_size)
+            .map(|index| {
+                let start = index * block_size;
+                let end = start + block_size;
+                let first_trace_block = start / trace_block_size;
+                if first_trace_block == (end - 1) / trace_block_size {
+                    let token = hash_ids[first_trace_block];
+                    if let Some((prior, hash)) = previous_run
+                        && prior == token
+                    {
+                        return hash;
+                    }
+                    block.fill(token);
+                    let hash = compute_block_hash_for_tokens(&block, XXH3_SEED);
+                    previous_run = Some((token, hash));
+                    return hash;
                 }
-                xxhash_rust::xxh3::xxh3_64_with_seed(&bytes, 1337)
+
+                let mut position = start;
+                while position < end {
+                    let trace_block = position / trace_block_size;
+                    let run_end = ((trace_block + 1) * trace_block_size).min(end);
+                    block[position - start..run_end - start].fill(hash_ids[trace_block]);
+                    position = run_end;
+                }
+                previous_run = None;
+                compute_block_hash_for_tokens(&block, XXH3_SEED)
             })
-            .collect::<Vec<_>>();
+            .collect();
+        Self::from_local_block_hashes(local_block_hashes)
+    }
+
+    fn from_local_block_hashes(local_block_hashes: Vec<u64>) -> Self {
         let mut sequence_hashes = Vec::with_capacity(local_block_hashes.len());
         for &block_hash in &local_block_hashes {
-            let sequence_hash =
-                sequence_hashes
-                    .last()
-                    .copied()
-                    .map_or(block_hash, |parent: u64| {
-                        let mut bytes = [0_u8; std::mem::size_of::<[u64; 2]>()];
-                        bytes[..8].copy_from_slice(&parent.to_le_bytes());
-                        bytes[8..].copy_from_slice(&block_hash.to_le_bytes());
-                        xxhash_rust::xxh3::xxh3_64_with_seed(&bytes, 1337)
-                    });
+            let sequence_hash = sequence_hashes
+                .last()
+                .copied()
+                .map_or(block_hash, |parent| {
+                    compute_next_sequence_hash(parent, block_hash)
+                });
             sequence_hashes.push(sequence_hash);
         }
 
@@ -568,6 +614,27 @@ impl ReplayRequestPayload {
         match self {
             Self::Materialized(request) => Some(request),
             Self::Deferred { .. } => None,
+        }
+    }
+
+    /// Engine-block replay hashes of the prompt, derived without materializing
+    /// a deferred prompt.
+    pub(crate) fn replay_hashes(&self, engine_block_size: u32) -> ReplayRequestHashes {
+        match self {
+            Self::Materialized(request) => {
+                ReplayRequestHashes::from_tokens(&request.tokens, engine_block_size)
+            }
+            Self::Deferred {
+                input_length,
+                hash_ids,
+                trace_block_size,
+                ..
+            } => ReplayRequestHashes::from_trace_blocks(
+                *input_length,
+                hash_ids,
+                *trace_block_size,
+                engine_block_size,
+            ),
         }
     }
 

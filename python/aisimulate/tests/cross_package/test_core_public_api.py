@@ -19,7 +19,7 @@ import aisimulate_core.sdk as sdk
 from aisimulate_core.sdk.common import AttentionBackend, MoEBackend
 from aisimulate_core.sdk.config import ModelConfig, RuntimeConfig
 from aisimulate_core.sdk.engine import EngineHandle, compile_engine
-from aisimulate_core.sdk.memory import estimate_kv_cache, estimate_num_gpu_blocks
+from aisimulate_core.sdk.memory import estimate_kv_cache, estimate_num_gpu_blocks, estimate_state_cache
 from aisimulate_core.sdk.operations import ElementWise, Embedding, MoEDispatch
 from aisimulate_core.sdk.rust_engine_step import RustForwardPassPerfModel
 
@@ -34,6 +34,7 @@ EXPECTED_FACADE = {
     "RustForwardPassPerfModel",
     "compile_engine",
     "estimate_kv_cache",
+    "estimate_state_cache",
     "estimate_num_gpu_blocks",
 }
 
@@ -79,6 +80,7 @@ def test_sdk_facade_exports_the_canonical_objects() -> None:
     assert sdk.RustForwardPassPerfModel is RustForwardPassPerfModel
     assert sdk.compile_engine is compile_engine
     assert sdk.estimate_kv_cache is estimate_kv_cache
+    assert sdk.estimate_state_cache is estimate_state_cache
     assert sdk.estimate_num_gpu_blocks is estimate_num_gpu_blocks
 
 
@@ -91,10 +93,13 @@ def test_stable_function_signatures() -> None:
     assert str(inspect.signature(compile_engine)) == (
         "(model_path: 'str', system: 'str', backend: 'str', backend_version: 'str | None' = None, *, "
         "tp_size: 'int' = 1, pp_size: 'int' = 1, attention_dp_size: 'int' = 1, "
+        "dcp_size: 'int | None' = None, fpm_options: 'dict | None' = None, "
         "moe_tp_size: 'int | None' = None, moe_ep_size: 'int | None' = None, "
         "gemm_quant_mode: 'str | None' = None, moe_quant_mode: 'str | None' = None, "
         "kvcache_quant_mode: 'str | None' = None, fmha_quant_mode: 'str | None' = None, "
+        "fpm_fmha_quant_mode: 'str | None' = None, "
         "comm_quant_mode: 'str | None' = None, attention_backend: 'str | None' = None, "
+        "moe_kernel_source: 'str | None' = None, "
         "moe_backend: 'str | None' = None, enable_eplb: 'bool' = False, wideep_num_slots: 'int | None' = None, "
         "nextn: 'int' = 0, "
         "speculation: 'dict | None' = None, "
@@ -102,12 +107,21 @@ def test_stable_function_signatures() -> None:
         "systems_path: 'str | None' = None, "
         "forward_model: 'str | None' = None, "
         "decoder_replay: 'bool' = False, "
+        "fpm_profile: 'dict | str | FpmModelProfile | None' = None, "
+        "worker_type: 'str' = 'aggregated', "
+        "fpm_interpolation: 'str | None' = None, cp_size: 'int' = 1, "
         "database_mode: 'str | None' = None, shared_layer: 'bool | None' = None, "
         "transfer_policy: 'str | list[str] | None' = None, "
-        "strict_provenance: 'bool | None' = None) -> 'bytes'"
+        "strict_provenance: 'bool | None' = None, "
+        "decode_workload_distribution: 'str | None' = None, "
+        "prefill_graph_profile: 'str | None' = None, "
+        "fpm_parquet_path: 'str | None' = None) -> 'bytes'"
     )
     assert "scheduler_block_size" in inspect.signature(estimate_num_gpu_blocks).parameters
     assert "memory_fraction_kind" in inspect.signature(estimate_kv_cache).parameters
+    assert {"model_path", "backend", "tp_size", "pp_size", "kv_bytes_per_token"}.issubset(
+        inspect.signature(estimate_state_cache).parameters
+    )
     assert list(inspect.signature(RustForwardPassPerfModel.best_available).parameters) == ["config"]
     assert not hasattr(RustForwardPassPerfModel, "from_regression")
     assert not hasattr(RustForwardPassPerfModel, "from_native")
@@ -225,6 +239,185 @@ def test_raw_fpm_binding_regression_round_trip(worker_type: str) -> None:
     assert prediction is not None and prediction > 0.0
 
 
+@pytest.mark.parametrize(
+    ("fit", "expected_interval"),
+    [
+        ({}, None),
+        ({"rebuild_interval": 31}, 31),
+        ({"rebuild_interval": 4096}, 4096),
+        ({"rebuild_interval": None}, None),
+    ],
+)
+def test_raw_canonical_regression_rebuild_interval_normalizes_and_reloads(fit, expected_interval):
+    raw = aisimulate_core.RustForwardPassPerfModel
+    request = {
+        "model": "test/model",
+        "system": "test",
+        "backend": "vllm",
+        "worker_type": "decode",
+        "estimation_mode": "fpm_regression",
+        "estimator_config": {"fpm_regression": {"fit": fit}},
+    }
+    normalized = json.loads(raw.normalize_config(json.dumps(request)))
+    assert normalized["estimator_config"]["fpm_regression"]["fit"] == {
+        "kind": "standardized_nnls",
+        "singular_ridge_scale": 1e-9,
+        "rebuild_interval": expected_interval,
+    }
+    model = raw.best_available(json.dumps(normalized))
+    resolved = json.loads(model.diagnostics())["provenance"]["config"]
+    assert resolved["estimator_config"] == normalized["estimator_config"]
+    restored = raw.best_available(json.dumps(resolved))
+    assert json.loads(restored.diagnostics())["provenance"]["config"] == resolved
+
+
+@pytest.mark.parametrize("entrypoint", ["normalize_config", "best_available"])
+@pytest.mark.parametrize("invalid", [0, -1, True, False, 1.5, 4096.0, "4096", [], {}])
+def test_raw_canonical_regression_rebuild_interval_rejects_invalid_values_with_path(entrypoint, invalid):
+    request = {
+        "model": "test/model",
+        "system": "test",
+        "backend": "vllm",
+        "worker_type": "decode",
+        "estimation_mode": "auto",
+        "fallback_policy": "allow",
+        "estimator_config": {"fpm_regression": {"fit": {"rebuild_interval": invalid}}},
+    }
+    # Invalid configuration fails before automatic selection or fallback.
+    with pytest.raises(ValueError, match=r"estimator_config\.fpm_regression\.fit\.rebuild_interval"):
+        getattr(aisimulate_core.RustForwardPassPerfModel, entrypoint)(json.dumps(request))
+
+
+def test_legacy_options_inherit_rust_rebuild_default_without_a_new_flat_control():
+    migrated = json.loads(aisimulate_core.RustForwardPassPerfModel.legacy_estimator_config("{}"))
+    assert migrated["fpm_regression"]["fit"]["rebuild_interval"] is None
+    assert migrated["fpm_regression"]["sampling"] == {"bins_per_axis": [4, 4], "max_observations": 64}
+    assert "rebuild_interval" not in sdk.ForwardPassPerfOptions.__dataclass_fields__
+    assert "regression_rebuild_interval" not in sdk.ForwardPassPerfOptions.__dataclass_fields__
+    assert (
+        sdk.ForwardPassPerfModelConfig(
+            model="test/model", system="test", backend="vllm", worker_type="decode"
+        ).estimator_config
+        == {}
+    )
+
+
+@pytest.mark.parametrize(
+    ("fit", "expected_kind", "expected_spline"),
+    [
+        ({"kind": "linear"}, "standardized_nnls", None),
+        (
+            {"kind": "spline"},
+            "spline",
+            {
+                "knots_per_axis": 2,
+                "search": {
+                    "kind": "adaptive",
+                    "window": 16,
+                    "trigger": 8,
+                    "tolerance": 0.05,
+                    "absolute_tolerance_ms": 1.0,
+                    "cooldown": 64,
+                },
+            },
+        ),
+        (
+            {"kind": "spline", "spline": {"knots_per_axis": 3, "search": {"kind": "periodic", "step": 17}}},
+            "spline",
+            {"knots_per_axis": 3, "search": {"kind": "periodic", "step": 17}},
+        ),
+    ],
+)
+def test_raw_spline_controls_normalize_and_reload(fit, expected_kind, expected_spline):
+    raw = aisimulate_core.RustForwardPassPerfModel
+    request = {
+        "model": "test/model",
+        "system": "test",
+        "backend": "vllm",
+        "worker_type": "decode",
+        "estimation_mode": "fpm_regression",
+        "estimator_config": {"fpm_regression": {"fit": fit}},
+    }
+    normalized = json.loads(raw.normalize_config(json.dumps(request)))
+    normalized_fit = normalized["estimator_config"]["fpm_regression"]["fit"]
+    assert normalized_fit["kind"] == expected_kind
+    if expected_spline is None:
+        assert "spline" not in normalized_fit
+    else:
+        assert normalized_fit["spline"] == expected_spline
+    model = raw.best_available(json.dumps(normalized))
+    saved = json.loads(model.diagnostics())["provenance"]["config"]
+    assert saved["estimator_config"] == normalized["estimator_config"]
+    restored = raw.best_available(json.dumps(saved))
+    assert json.loads(restored.diagnostics())["provenance"]["config"] == saved
+
+
+@pytest.mark.parametrize("entrypoint", ["normalize_config", "best_available"])
+@pytest.mark.parametrize(
+    ("fit", "path"),
+    [
+        ({"kind": "unknown"}, "kind"),
+        ({"kind": "linear", "spline": {}}, "spline"),
+        ({"spline": {}}, "spline"),
+        *[
+            ({"kind": "spline", "spline": {"knots_per_axis": value}}, "spline.knots_per_axis")
+            for value in (0, 1, 4, True, 2.0, "2")
+        ],
+        *[
+            ({"kind": "spline", "spline": {"search": {"kind": "periodic", "step": value}}}, "spline.search")
+            for value in (0, -1, True, 64.0, "64")
+        ],
+        *[
+            ({"kind": "spline", "spline": {"search": {"kind": "adaptive", field: value}}}, "spline.search")
+            for field, value in (
+                ("window", 0),
+                ("trigger", 0),
+                ("trigger", 17),
+                ("cooldown", 0),
+                ("tolerance", 0.0),
+                ("tolerance", -0.1),
+                ("absolute_tolerance_ms", -1.0),
+            )
+        ],
+        ({"kind": "spline", "spline": {"search": {"kind": "unknown"}}}, "spline.search"),
+        ({"kind": "spline", "spline": {"search": {"kind": "periodic", "window": 16}}}, "spline.search"),
+        ({"kind": "spline", "spline": {"search": {"kind": "adaptive", "step": 64}}}, "spline.search"),
+        ({"kind": "spline", "spline": {"unknown": 1}}, "spline"),
+    ],
+)
+def test_raw_spline_controls_reject_invalid_values_before_fallback(entrypoint, fit, path):
+    request = {
+        "model": "test/model",
+        "system": "test",
+        "backend": "vllm",
+        "worker_type": "decode",
+        "estimation_mode": "auto",
+        "fallback_policy": "allow",
+        "estimator_config": {"fpm_regression": {"fit": fit}},
+    }
+    with pytest.raises(ValueError, match="estimator_config.fpm_regression.fit." + path):
+        getattr(aisimulate_core.RustForwardPassPerfModel, entrypoint)(json.dumps(request))
+
+
+@pytest.mark.parametrize("entrypoint", ["normalize_config", "best_available"])
+def test_raw_spline_requires_room_for_initial_search(entrypoint):
+    request = {
+        "model": "test/model",
+        "system": "test",
+        "backend": "vllm",
+        "worker_type": "decode",
+        "estimation_mode": "fpm_regression",
+        "estimator_config": {
+            "fpm_regression": {
+                "fit": {"kind": "spline"},
+                "sampling": {"max_observations": 31},
+            }
+        },
+    }
+    with pytest.raises(ValueError, match=r"estimator_config\.fpm_regression\.sampling\.max_observations"):
+        getattr(aisimulate_core.RustForwardPassPerfModel, entrypoint)(json.dumps(request))
+
+
 def test_raw_fpm_binding_validates_regression_weights() -> None:
     with pytest.raises(ValueError, match="regression_attention_kv_weight"):
         _raw_regression_model(
@@ -285,6 +478,37 @@ def test_distribution_carries_typing_contract() -> None:
     root = importlib.resources.files("aisimulate_core")
     assert (root / "py.typed").is_file()
     assert (root / "_native.pyi").is_file()
+
+
+@pytest.mark.unit
+def test_prefill_graph_identity_stub_matches_native_contract() -> None:
+    native = importlib.import_module("aisimulate_core._native")
+    root = importlib.resources.files("aisimulate_core")
+    stub = ast.parse((root / "_native.pyi").read_text(encoding="utf-8"))
+    function = next(
+        (
+            node
+            for node in stub.body
+            if isinstance(node, ast.FunctionDef) and node.name == "prefill_graph_profile_identity"
+        ),
+        None,
+    )
+    assert function is not None, "The shipped native stub omits prefill_graph_profile_identity"
+    assert function.args.args == function.args.posonlyargs == function.args.kwonlyargs == []
+    assert not inspect.signature(native.prefill_graph_profile_identity).parameters
+    assert ast.unparse(function.returns) == "tuple[str, str]"
+    identity = native.prefill_graph_profile_identity()
+    assert isinstance(identity, tuple) and len(identity) == 2
+    assert all(isinstance(value, str) for value in identity)
+
+    engine = next(node for node in stub.body if isinstance(node, ast.ClassDef) and node.name == "AicEngine")
+    for name in ("prefill_graph_profile_id", "prefill_graph_profile_json"):
+        prop = next((node for node in engine.body if isinstance(node, ast.FunctionDef) and node.name == name), None)
+        assert prop is not None, f"The shipped AicEngine stub omits {name}"
+        assert [ast.unparse(decorator) for decorator in prop.decorator_list] == ["property"]
+        assert [argument.arg for argument in prop.args.args] == ["self"]
+        assert ast.unparse(prop.returns) == "str | None"
+        assert inspect.isdatadescriptor(getattr(native.AicEngine, name))
 
 
 @pytest.mark.unit
@@ -387,3 +611,22 @@ def test_static_phase_diagnostics_stub_matches_native_contract() -> None:
     result = model.static_phase_diagnostics(0, 128, 0, True)
     assert isinstance(result, str)
     assert json.loads(result) == []
+
+
+def test_state_memory_api_is_standalone_in_a_fresh_interpreter() -> None:
+    script = """
+import sys
+from aisimulate_core.sdk import estimate_state_cache
+result = estimate_state_cache("moonshotai/Kimi-K3", tp_size=8)
+assert result["bytes_per_request"] == 61046784
+assert not {"aisimulate.config.engine", "vllm"}.intersection(sys.modules)
+"""
+    subprocess.run([sys.executable, "-c", script], check=True)
+
+
+def test_state_memory_public_paths_share_one_implementation() -> None:
+    from aisimulate import capacity
+    from aisimulate.sdk.memory import estimate_state_cache as legacy
+    from aisimulate_core.sdk.state_memory import estimate_state_cache as canonical
+
+    assert sdk.estimate_state_cache is estimate_state_cache is legacy is capacity.estimate_state_cache is canonical

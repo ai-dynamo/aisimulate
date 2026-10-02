@@ -1,0 +1,378 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+"""Run the ordinary FPM runtime in an existing Slurm/Pyxis allocation.
+
+Only execution transport differs from Kubernetes. Generator scripts, native
+result validation, attempt identity and publication remain owned by the common
+campaign. The caller owns the allocation; this runner owns its named steps.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import math
+import os
+import re
+import shutil
+import subprocess
+import time
+import uuid
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+
+from aisimulate.fpm_contract import FPM_BENCHMARK_RESULT_GLOB
+
+
+class SlurmCellRunner:
+    def __init__(
+        self,
+        manifest: Path,
+        cell_dir: Path,
+        *,
+        image: str,
+        mounts: tuple[str, ...],
+        total_gpus: int,
+        cpus_per_task: int | None = None,
+        cpu_bind: str | None = None,
+        attention_tp: int = 1,
+    ):
+        from .runner import _expected_nodes
+
+        self.cell_dir = cell_dir.resolve()
+        self.node_count = _expected_nodes(manifest)
+        if total_gpus % self.node_count:
+            raise ValueError("FPM GPUs must divide evenly across Slurm nodes")
+        self.gpus_per_node = total_gpus // self.node_count
+        self.image = image
+        if not image or any(char in image for char in ("\n", "\r")):
+            raise ValueError("Slurm FPM requires an explicit container image")
+        self.mounts = mounts
+        self.job_id = os.environ.get("SLURM_JOB_ID", "")
+        if not re.fullmatch(r"[0-9]+", self.job_id):
+            raise ValueError("Slurm FPM must run inside an existing sbatch/salloc allocation")
+        if (cpus_per_task is not None or cpu_bind is not None) and (
+            type(cpus_per_task) is not int or cpus_per_task < 1 or cpu_bind not in {"cores", "none"}
+        ):
+            raise ValueError("Slurm CPU policy requires positive cpus_per_task and cpu_bind cores or none")
+        local_dp = max(1, self.gpus_per_node // attention_tp)
+        if cpus_per_task is not None and cpus_per_task < local_dp:
+            raise ValueError(f"Slurm CPU pool {cpus_per_task} is smaller than {local_dp} local DP schedulers")
+        self.cpus_per_task = cpus_per_task
+        self.cpu_bind = cpu_bind
+        self.step_name = f"fpm-{hashlib.sha256(str(self.cell_dir).encode()).hexdigest()[:20]}"
+        # Keep ownership outside the replaceable cell payload so a fresh
+        # invocation can tear down an abandoned allocation's named steps.
+        self.owner_path = self.cell_dir.parent / ".slurm-owners" / f"{self.step_name}.json"
+        self.hosts: list[str] = []
+
+    def _command(self, args: list[str], *, timeout: float = 60, check: bool = True):
+        from .runner import _run_command
+
+        try:
+            return _run_command(args, timeout=timeout, check=check)
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
+            # Preparation and cleanup also invoke Slurm. Preserve their failure
+            # streams even when a campaign formats only str(error), and keep
+            # concurrent failures or retries from overwriting earlier evidence.
+            logs = self.cell_dir / "logs" / "transport-failures" / uuid.uuid4().hex
+            try:
+                logs.mkdir(parents=True)
+                for stream in ("stdout", "stderr"):
+                    output = getattr(error, stream, None) or ""
+                    if isinstance(output, bytes):
+                        output = output.decode(errors="replace")
+                    (logs / f"{stream}.log").write_text(output)
+                (logs / "failure.json").write_text(
+                    json.dumps(
+                        {
+                            "executable": Path(args[0]).name,
+                            "exception": type(error).__name__,
+                            "returncode": getattr(error, "returncode", None),
+                            "timeout_seconds": timeout,
+                        },
+                        sort_keys=True,
+                    )
+                    + "\n"
+                )
+            except OSError as log_error:
+                error.add_note(f"Could not preserve Slurm failure streams: {log_error}")
+            raise
+
+    def apply(self) -> None:
+        self._require_cpu_policy()
+        for executable in ("srun", "scontrol", "squeue", "scancel"):
+            if not shutil.which(executable):
+                raise RuntimeError(f"Slurm FPM requires {executable}")
+        self.owner_path.parent.mkdir(parents=True, exist_ok=True)
+        self.owner_path.write_text(json.dumps({"job_id": self.job_id, "step_name": self.step_name}) + "\n")
+
+    def _require_cpu_policy(self) -> None:
+        if self.cpus_per_task is None or self.cpu_bind is None:
+            raise ValueError(
+                "saved Slurm campaign has no frozen CPU policy; CPU-only recovery remains available, "
+                "but new workers require a fresh campaign and smoke with explicit CPU settings"
+            )
+
+    def wait_ready(self, expected_nodes: int, timeout_seconds: float = 900) -> list[str]:
+        if expected_nodes != self.node_count:
+            raise ValueError("Slurm expected node count disagrees with the generated manifest")
+        if isinstance(timeout_seconds, bool) or not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
+            raise ValueError("Slurm readiness timeout must be finite and positive")
+        deadline = time.monotonic() + timeout_seconds
+        last_state = "unobserved"
+
+        def remaining() -> float:
+            budget = deadline - time.monotonic()
+            if budget <= 0:
+                raise TimeoutError(f"Slurm allocation {self.job_id} not ready before deadline: {last_state}")
+            return budget
+
+        # This method qualifies the existing allocation, not a container or
+        # model. Pyxis starts later in _exec; its startup skew has a separate
+        # bounded rendezvous budget in the staged Collector runtime settings.
+        while True:
+            snapshot = self._command(["scontrol", "show", "job", self.job_id, "--oneliner"], timeout=remaining()).stdout
+            fields = dict(re.findall(r"(?:^|\s)([A-Za-z][A-Za-z0-9_]*)=(\S+)", snapshot))
+            if fields.get("JobId") != self.job_id:
+                raise ValueError("Slurm readiness response does not identify the owned allocation")
+            last_state = fields.get("JobState", "missing")
+            if last_state == "RUNNING":
+                nodelist = fields.get("NodeList")
+                if not nodelist or nodelist in {"(null)", "None"}:
+                    raise ValueError("running Slurm allocation has no node list")
+                hosts = self._command(["scontrol", "show", "hostnames", nodelist], timeout=remaining()).stdout.split()
+                remaining()
+                if len(hosts) != self.node_count or len(set(hosts)) != self.node_count:
+                    raise ValueError(f"FPM Slurm cell requires exactly {self.node_count} allocated nodes, got {hosts}")
+                self._qualify_cpu_allocation(hosts, timeout=remaining())
+                self.hosts = hosts
+                return self.pods()
+            if last_state not in {"PENDING", "CONFIGURING", "SUSPENDED"}:
+                raise RuntimeError(f"Slurm allocation {self.job_id} cannot become ready from {last_state}")
+            time.sleep(min(1.0, remaining()))
+
+    def _qualify_cpu_allocation(self, hosts: list[str], *, timeout: float) -> None:
+        """Use allocated CPU counts, never node-wide hardware capacity."""
+        self._require_cpu_policy()
+        counts = []
+        raw = os.environ.get("SLURM_JOB_CPUS_PER_NODE")
+        source = "SLURM_JOB_CPUS_PER_NODE"
+        if raw is not None:
+            for part in raw.split(","):
+                match = re.fullmatch(r"([1-9][0-9]*)(?:\(x([1-9][0-9]*)\))?", part)
+                if match is None:
+                    raise ValueError("invalid allocated CPU counts in SLURM_JOB_CPUS_PER_NODE")
+                repeats = int(match.group(2) or 1)
+                if repeats > len(hosts):
+                    raise ValueError("allocated CPU counts do not match Slurm nodes")
+                counts.extend([int(match.group(1))] * repeats)
+        else:
+            source = "scontrol show job --details CPU_IDs"
+            deadline = time.monotonic() + timeout
+
+            def remaining() -> float:
+                budget = deadline - time.monotonic()
+                if budget <= 0:
+                    raise TimeoutError("Slurm CPU allocation inspection exceeded the readiness deadline")
+                return budget
+
+            raw = self._command(
+                ["scontrol", "show", "job", self.job_id, "--details"],
+                timeout=remaining(),
+            ).stdout
+            if re.search(r"(?:^|\s)JobId=" + re.escape(self.job_id) + r"(?:\s|$)", raw) is None:
+                raise ValueError("Slurm CPU allocation response does not identify the owned job")
+            # Identically allocated nodes may share one Nodes=host[1-2] entry.
+            # Expand that node set and bind counts by name, never row position.
+            masks = re.findall(r"(?:^|\s)Nodes=(\S+)\s+CPU_IDs=([0-9,-]+)(?:\s|$)", raw)
+            allocated = {}
+            for nodelist, mask in masks:
+                ids = set()
+                for segment in mask.split(","):
+                    match = re.fullmatch(r"([0-9]+)(?:-([0-9]+))?", segment)
+                    if match is None:
+                        raise ValueError("invalid Slurm allocated CPU_IDs")
+                    start, end = int(match.group(1)), int(match.group(2) or match.group(1))
+                    if end < start or end - start > 1048576:
+                        raise ValueError("invalid Slurm allocated CPU_IDs range")
+                    ids.update(range(start, end + 1))
+                grouped_hosts = self._command(
+                    ["scontrol", "show", "hostnames", nodelist],
+                    timeout=remaining(),
+                ).stdout.split()
+                if not grouped_hosts or any(host in allocated or host not in hosts for host in grouped_hosts):
+                    raise ValueError(
+                        "Slurm allocated CPU node groups are missing, duplicated or outside the allocation"
+                    )
+                allocated.update({host: len(ids) for host in grouped_hosts})
+            if set(allocated) != set(hosts):
+                raise ValueError("could not establish allocated CPUs for every Slurm node")
+            counts = [allocated[host] for host in hosts]
+        if len(counts) != len(hosts):
+            raise ValueError("could not establish allocated CPUs for every Slurm node")
+        report = {
+            "job_id": self.job_id,
+            "cpus_per_task": self.cpus_per_task,
+            "cpu_bind": self.cpu_bind,
+            "source": source,
+            "allocated_cpus_per_node": dict(zip(hosts, counts, strict=True)),
+        }
+        from .runner import _atomic_json
+
+        _atomic_json(self.cell_dir / "slurm-cpu-allocation.json", report)
+        if any(count < self.cpus_per_task for count in counts):
+            raise ValueError(
+                f"Slurm allocation has insufficient CPUs for --cpus-per-task={self.cpus_per_task}: "
+                f"{report['allocated_cpus_per_node']}; request matching sbatch/salloc CPUs"
+            )
+
+    def pods(self, *, include_terminating: bool = True) -> list[str]:
+        del include_terminating
+        return [f"node{rank:04d}" for rank in range(len(self.hosts))]
+
+    def stage(self, pods: list[str], files: list[Path]) -> None:
+        stage = self.cell_dir / "slurm-runtime"
+        stage.mkdir(exist_ok=True)
+        for path in files:
+            shutil.copy2(path, stage / path.name)
+        for unit in pods:
+            (self.cell_dir / "raw" / unit).mkdir(parents=True, exist_ok=True)
+
+    def _exec(self, unit: str, command: list[str], *, timeout: int):
+        self._require_cpu_policy()
+        rank = self.pods().index(unit)
+        mounts = [
+            *self.mounts,
+            f"{self.cell_dir / 'slurm-runtime'}:/tmp/fpm-bench",
+            f"{self.cell_dir / 'raw' / unit}:/results",
+        ]
+        if any("\n" in mount or "," in mount for mount in mounts):
+            raise ValueError("Slurm container mounts cannot contain newlines or commas")
+        # Each srun is a one-node step in the caller's allocation. The engine
+        # itself starts the node's TP/DP workers, exactly as in the Pod runtime.
+        return self._command(
+            [
+                "srun",
+                f"--jobid={self.job_id}",
+                f"--job-name={self.step_name}",
+                "--nodes=1",
+                "--ntasks=1",
+                "--ntasks-per-node=1",
+                f"--cpus-per-task={self.cpus_per_task}",
+                f"--cpu-bind={self.cpu_bind}",
+                "--immediate=10",
+                "--exclusive",
+                "--exact",
+                f"--nodelist={self.hosts[rank]}",
+                f"--gpus-per-node={self.gpus_per_node}",
+                f"--container-image={self.image}",
+                f"--container-mounts={','.join(mounts)}",
+                "--container-writable",
+                "--container-workdir=/tmp/fpm-bench",
+                # Avoid Slurm resolving a bare entrypoint through inaccessible PATH entries.
+                "/usr/bin/env",
+                f"FPM_NODE_RANK={rank}",
+                f"FPM_MASTER_ADDR={self.hosts[0]}",
+                f"FPM_SLURM_CPUS_PER_TASK={self.cpus_per_task}",
+                f"FPM_SLURM_CPU_BIND={self.cpu_bind}",
+                f"FPM_LOCAL_GPU_COUNT={self.gpus_per_node}",
+                *command,
+            ],
+            timeout=timeout,
+        )
+
+    def prepare_attempt(
+        self,
+        pods: list[str],
+        *,
+        cell_id: str,
+        plan_sha256: str,
+        attempt_id: str,
+        expected_backend_version: str | None = None,
+    ) -> None:
+        from .runner import _attempt_provenance_command
+
+        command = _attempt_provenance_command(
+            cell_id=cell_id,
+            plan_sha256=plan_sha256,
+            attempt_id=attempt_id,
+            expected_backend_version=expected_backend_version,
+        )
+        for unit in pods:
+            self._exec(unit, command, timeout=300)
+
+    def execute(self, pods: list[str], timeout_seconds: int = 14400) -> None:
+        from .runner import CommandScope, _cancel_preserving_interrupt
+
+        logs = self.cell_dir / "logs"
+        logs.mkdir(exist_ok=True)
+
+        def run(unit: str) -> None:
+            try:
+                result = self._exec(unit, ["bash", "/tmp/fpm-bench/fpm_exec.sh"], timeout=timeout_seconds)
+            except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
+                for stream in ("stdout", "stderr"):
+                    output = getattr(error, stream, None) or ""
+                    if isinstance(output, bytes):
+                        output = output.decode(errors="replace")
+                    (logs / f"{unit}.{stream}.log").write_text(output)
+                raise
+            (logs / f"{unit}.stdout.log").write_text(result.stdout)
+            (logs / f"{unit}.stderr.log").write_text(result.stderr)
+
+        scope = CommandScope()
+        pool = ThreadPoolExecutor(max_workers=len(pods))
+        try:
+            futures = [pool.submit(scope.run, run, pod) for pod in pods]
+            for future in futures:
+                future.result()
+        except BaseException as error:
+            # Worker threads do not receive the main thread's interrupt.
+            # Stop their srun children before joining so the campaign can
+            # promptly salvage artifacts and clean up its owned steps.
+            _cancel_preserving_interrupt(scope, error)
+            raise
+        finally:
+            pool.shutdown(wait=True, cancel_futures=True)
+
+    def _remote_result_manifest(self, unit: str) -> dict:
+        from .runner import _file_manifest
+
+        return _file_manifest(self.cell_dir / "raw" / unit)
+
+    def collect(self, pods: list[str], *, require_benchmark: bool = True) -> None:
+        if require_benchmark and not any(
+            list((self.cell_dir / "raw" / unit).glob(FPM_BENCHMARK_RESULT_GLOB)) for unit in pods
+        ):
+            raise RuntimeError("Slurm FPM result set is missing native benchmark artifacts")
+
+    def cleanup(self) -> None:
+        # Never cancel the allocation or unrelated steps. This also handles
+        # resume after a collector process died while its named srun survived.
+        jobs = {self.job_id}
+        if self.owner_path.exists():
+            owner = json.loads(self.owner_path.read_text())
+            if owner.get("step_name") != self.step_name or not re.fullmatch(r"[0-9]+", owner.get("job_id", "")):
+                raise ValueError("Slurm FPM ownership receipt does not match this campaign cell")
+            jobs.add(owner["job_id"])
+
+        def owned_steps() -> list[str]:
+            # Listing the user's steps works even when an old allocation has
+            # expired, unlike squeue --jobs=<expired-id> on some Slurm versions.
+            result = self._command(["squeue", "--steps", "--me", "--noheader", "--format=%i|%j"])
+            found = []
+            for line in result.stdout.splitlines():
+                step_id, _, name = line.strip().partition("|")
+                if name == self.step_name and any(re.fullmatch(re.escape(job) + r"\.[0-9]+", step_id) for job in jobs):
+                    found.append(step_id)
+            return found
+
+        for step_id in owned_steps():
+            self._command(["scancel", step_id])
+        deadline = time.monotonic() + 60
+        while remaining := owned_steps():
+            if time.monotonic() >= deadline:
+                raise RuntimeError(f"owned FPM Slurm steps remain after cleanup: {remaining}")
+            time.sleep(1)

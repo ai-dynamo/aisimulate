@@ -127,6 +127,9 @@ capabilities.py                        — generation-time capability/denylist f
 The plan is one equation: cases = dedup(base grid ∪ model shapes), then
 intersected with hardware capability floors and minus the hang denylist.
 
+TRT-LLM MLA precision and GPT-OSS TP profile collection evidence is recorded
+in [the September 17 campaign](trtllm/gym-profiles-20260917.md).
+
 ## Whole-forward FPM campaign
 
 Use the dedicated `python3 -m collector.fpm_forward` entry point for vLLM
@@ -584,6 +587,8 @@ Large-EP MoE uses stock `moe_perf` for modeled local expert compute and
 `moe_a2a_perf` records latency in microseconds; `load_moe_a2a_data` converts
 leaves to milliseconds. Stock `moe_perf` retains its existing timing contract.
 
+Stock `moe_perf` also supports optional Boolean `default_eligible` selection metadata. The [Core API contract](../../../docs/core-api.md#choosing-a-forward-pass-api) defines automatic and exact-source selection. Finalization validates non-null Boolean flags and the named source required by `false`, excludes the flag from measurement identity, and preserves existing annotations when merging a legacy collection that omits the column. Collectors do not infer eligibility from kernel labels or row order.
+
 **Legacy-overwrite caveats.** A new-schema row replaces a legacy-adapted
 leaf only at the *same* key, and the legacy adapters derive their node/EP
 geometry rather than reading it:
@@ -664,3 +669,12 @@ Explicit limits must be positive for one-shot module collection.
 Omitting the option keeps SGLang's default. The existing
 wide-EP and DSA paths keep their separate behavior. The ordinary context table
 uses the existing consumer schema; this does not add mixed-precision modeling.
+
+## TRT-LLM MoE autotuning failures
+
+TRT-LLM MoE collection requires either a loaded tactic cache or at least one
+successful autotuning attempt before measuring a tuning-enabled case. Ordinary
+failures may try smaller eligible token counts; if every attempt fails, the
+case raises before timing or publishing rows. CUDA accelerator errors propagate
+immediately. The successful collection path and historical profile values are
+unchanged by this failure guard.

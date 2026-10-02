@@ -13,6 +13,7 @@ import yaml
 
 import aisimulate.main as cli
 from aisimulate.output import prepare_output_directory
+from aisimulate.output_adapter import OUTPUT_ADAPTER_API_VERSION, resolve_output_adapters
 from aisimulate.sweeper.config import Candidate
 from aisimulate.sweeper.provider import AdapterReplaySpec, AdapterSearchPlan
 from aisimulate.sweeper.replay import ReplayReport, RunnerCapabilities
@@ -220,6 +221,26 @@ class _PlacementAdapter:
     def materialize_candidate(self, plan, selection, context):
         del selection, context
         return AdapterReplaySpec(config=dict(plan.state))
+
+
+class _DGDOutputAdapter:
+    name = "dgd"
+    api_version = OUTPUT_ADAPTER_API_VERSION
+
+    def __init__(self) -> None:
+        self.calls = []
+
+    def write(self, config, *, result, output_dir):
+        self.calls.append((config, result, output_dir))
+        path = output_dir / f"{config['name']}.yaml"
+        path.write_text("kind: DynamoGraphDeployment\n")
+        return [path.relative_to(output_dir)]
+
+
+class _MissingArtifactOutputAdapter(_DGDOutputAdapter):
+    def write(self, config, *, result, output_dir):
+        self.calls.append((config, result, output_dir))
+        return ["missing.yaml"]
 
 
 def test_predict_is_the_single_concrete_cli(tmp_path, monkeypatch, capsys) -> None:
@@ -948,6 +969,110 @@ def test_recommendation_outputs_each_concrete_prediction_once(tmp_path, monkeypa
     )
 
 
+@pytest.mark.parametrize("stack", ["engine", "dynamo"])
+@pytest.mark.parametrize("missing_artifact", [False, True])
+def test_recommendation_invokes_selected_output_adapter(tmp_path, monkeypatch, capsys, stack, missing_artifact) -> None:
+    prediction = {
+        "engine": {
+            "mode": "aggregated",
+            "model": "example/model",
+            "hardware": "h200_sxm",
+            "context_length": 4096,
+            "workers": {"aggregated": {}},
+        }
+    }
+    config_path = tmp_path / "recommend.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                **prediction,
+                "optimization": {
+                    "target": "throughput",
+                    "constraints": {"max_candidate_gpus": 1},
+                },
+                "dgd": {
+                    "name": "original",
+                    "renderer": "aic",
+                    "format": "manifest",
+                },
+            }
+        )
+    )
+    candidate = Candidate(
+        config={"backend": "vllm"},
+        used_gpus=1,
+        score=1.0,
+        metrics={},
+        prediction_config=prediction,
+    )
+    result = _RecommendationResult([candidate])
+    selected_stack = []
+    recommendation_kwargs = {}
+    adapter = _MissingArtifactOutputAdapter() if missing_artifact else _DGDOutputAdapter()
+
+    def resolve_stack(name):
+        selected_stack.append(name)
+        return _Factory(_Runner())
+
+    monkeypatch.setattr(cli, "resolve_runner_factory", resolve_stack)
+    monkeypatch.setattr(
+        cli,
+        "resolve_output_adapters",
+        lambda names: resolve_output_adapters(
+            names,
+            injected={"dgd": adapter},
+            entry_points=[],
+        ),
+    )
+
+    def run_recommendation(*args, **kwargs):
+        del args
+        recommendation_kwargs.update(kwargs)
+        return result
+
+    monkeypatch.setattr("aisimulate.recommend.run_recommendation", run_recommendation)
+
+    output = tmp_path / "out"
+    assert cli.main(
+        [
+            "recommend",
+            "--stack",
+            stack,
+            "--config",
+            str(config_path),
+            "--set",
+            "dgd.name=qwen",
+            "--output",
+            "dgd",
+            "--output-dir",
+            str(output),
+            "--format",
+            "json",
+        ]
+    ) == (1 if missing_artifact else 0)
+
+    captured = capsys.readouterr()
+    assert selected_stack == [stack]
+    assert len(adapter.calls) == 1
+    output_config, received_result, received_dir = adapter.calls[0]
+    assert output_config == {
+        "name": "qwen",
+        "renderer": "aic",
+        "format": "manifest",
+    }
+    assert recommendation_kwargs["output_configs"] == {"dgd": output_config}
+    assert received_result is result
+    assert received_dir == output
+    for filename in ("recommendation.json", "recommendation.csv", "recommendations/0001.yaml"):
+        assert (output / filename).is_file()
+    assert "dgd" not in yaml.safe_load((output / "recommendations" / "0001.yaml").read_text())
+    if missing_artifact:
+        assert "reported missing artifact" in captured.err
+    else:
+        assert (output / "qwen.yaml").read_text() == "kind: DynamoGraphDeployment\n"
+        assert json.loads(captured.out)[0]["score"] == 1.0
+
+
 def test_overwrite_only_removes_known_outputs(tmp_path) -> None:
     root = tmp_path / "out"
     recommendations = root / "recommendations"
@@ -1372,6 +1497,57 @@ def test_energy_detail_reports_missing_adapter_export(tmp_path, monkeypatch, cap
     text = capsys.readouterr().out
     assert "did not export typed timing-energy evidence" in text
     assert "downstream Dynamo adapter export is not qualified" in text
+
+
+def test_snapshot_seed_override_reaches_the_existing_predict_path(tmp_path, monkeypatch, capsys) -> None:
+    from aisimulate.runner import EngineReplayRunnerFactory
+
+    class SnapshotFactory(_Factory):
+        def capabilities(self):
+            return EngineReplayRunnerFactory().capabilities()
+
+    trace_path = tmp_path / "play.json"
+    trace_path.write_text(
+        json.dumps({"id": "play", "block_size": 64, "requests": [{"t": 0, "type": "s", "in": 64, "out": 1}]})
+    )
+    config_path = tmp_path / "snapshot.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "engine": {
+                    "model": "example/model",
+                    "hardware": "h200_sxm",
+                    "context_length": 1024,
+                    "workers": {"aggregated": {}},
+                },
+                "traffic": {
+                    "source": {"type": "trace", "format": "weka", "paths": [str(trace_path)]},
+                    "load": {"type": "trace_timestamps", "agentic_lanes": 2},
+                },
+            }
+        )
+    )
+    runner = _Runner()
+    monkeypatch.setattr(cli, "resolve_runner_factory", lambda stack: SnapshotFactory(runner))
+    assert (
+        cli.main(
+            [
+                "predict",
+                "--config",
+                str(config_path),
+                "--output-dir",
+                str(tmp_path / "out"),
+                "--set",
+                "traffic.load.agentic_snapshot.seed=42",
+                "--format",
+                "json",
+            ]
+        )
+        == 0
+    )
+    assert runner.spec.workload["agentic_snapshot"] == {"seed": 42}
+    assert runner.spec.workload["agentic_lanes"] == 2
+    assert json.loads(capsys.readouterr().out)["completed_requests"] == 1
 
 
 def test_time_source_tables_are_bounded_but_json_keeps_complete_evidence():

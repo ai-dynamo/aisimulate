@@ -1,0 +1,36 @@
+#!/bin/bash
+{#
+SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+#}
+set -euo pipefail
+cd "$(dirname "$0")"
+operation=${1:-benchmark}
+case "$operation" in
+  serve) script=deploy.sbatch ;;
+  benchmark) script=benchmark.sbatch ;;
+  *) echo 'Usage: bash submit.sh [serve|benchmark] [--test-only]' >&2; exit 2 ;;
+esac
+if [[ $# -gt 2 || ( $# -eq 2 && $2 != --test-only ) ]]; then
+  echo 'Usage: bash submit.sh [serve|benchmark] [--test-only]' >&2
+  exit 2
+fi
+source ./environment.sh
+test -r deployment.json
+test -r slurm_runtime.py
+sbatch --test-only --output="$PWD/slurm-%j.out" --error="$PWD/slurm-%j.err" "$script"
+if [[ ${2:-} == --test-only ]]; then exit 0; fi
+if [[ -e job.id || -d .submission-lock ]]; then
+  echo 'Submission receipt or lock exists. Query the original job before using a fresh bundle.' >&2
+  exit 1
+fi
+# Keep the lock even if SSH/sbatch loses its response: submission is then
+# uncertain and must be reconciled with squeue/sacct, never retried blindly.
+mkdir .submission-lock
+sbatch --parsable --output="$PWD/slurm-%j.out" --error="$PWD/slurm-%j.err" "$script" > job.id.tmp
+if ! [[ $(cat job.id.tmp) =~ ^[0-9]+(\;[A-Za-z0-9_.-]+)?$ ]]; then
+  echo 'Unrecognized sbatch receipt; inspect job.id.tmp and squeue before retrying.' >&2
+  exit 1
+fi
+mv job.id.tmp job.id
+cat job.id

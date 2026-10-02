@@ -51,6 +51,23 @@ pub(crate) fn default_seq_split() -> u32 {
     1
 }
 
+/// Deserialize a parallel-split width that must be at least one. The
+/// tail-appended `dcp_size` fields default to 1 when absent, but an explicit
+/// zero in a serialized spec must fail at deserialization instead of being
+/// normalized away by the geometry helpers (`dcp_geometry`'s `.max(1)`).
+pub(crate) fn deserialize_positive_split<'de, D>(deserializer: D) -> Result<u32, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = <u32 as serde::Deserialize>::deserialize(deserializer)?;
+    if value == 0 {
+        return Err(serde::de::Error::custom(
+            "parallel split size must be a positive integer, got 0",
+        ));
+    }
+    Ok(value)
+}
+
 impl GemmOp {
     /// Convenience constructor for the most common case (no token scaling,
     /// standard input precision).

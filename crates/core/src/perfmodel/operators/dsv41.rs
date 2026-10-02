@@ -9,7 +9,8 @@
 //! Serving layout/scoring source: sgl-project/sglang at
 //! 1aa0e962b206102b7c439a4a0c4981cfec6e87bc,
 //! python/sglang/srt/layers/attention/deepseek_v4_backend.py and
-//! python/sglang/srt/mem_cache/deepseek_v4_memory_pool.py (Apache-2.0,
+//! python/sglang/srt/mem_cache/deepseek_v4_memory_pool.py, plus
+//! python/sglang/kernels/ops/attention/dsv4/sm90_fp4_indexer.py (Apache-2.0,
 //! Copyright SGLang contributors). Independently expressed analytical
 //! adaptations; see THIRD_PARTY_NOTICES.md and docs/deepseek-v41-storage.md.
 
@@ -33,18 +34,42 @@ fn zero() -> PerformanceResult {
     PerformanceResult::sol(SolComponents::new(0.0, 0.0))
 }
 
-/// New V41 kernels have no measured lookup in the SOL release. HYBRID's
-/// analytic contribution is explicitly SOL, never an invented utilization or
-/// a V4 module hit. SILICON must fail until the V41 collector publishes it.
-fn analytic_mode(db: &PerfDatabase, name: &str) -> Result<(), AicError> {
-    match db.database_mode {
-        DatabaseMode::Silicon => Err(AicError::PerfDatabase(format!(
-            "DeepSeek-V4.1 {name} has no measured SILICON data"
+/// Measured V41 modules use an exact physical identity. HYBRID falls back
+/// only on absent coverage; a malformed table remains a hard error.
+fn query_leaf<T: Serialize>(
+    db: &PerfDatabase,
+    component: &str,
+    op: &T,
+    batch_size: u32,
+    prefix: u32,
+    x: u32,
+    sol: &dyn Fn(f64) -> Result<PerformanceResult, AicError>,
+) -> Result<PerformanceResult, AicError> {
+    if batch_size == 0 || x == 0 {
+        return Ok(zero());
+    }
+    if matches!(db.database_mode, DatabaseMode::Sol | DatabaseMode::SolFull) {
+        return sol(f64::from(x));
+    }
+    if db.database_mode == DatabaseMode::Empirical {
+        return Err(AicError::EmpiricalNotImplemented(format!(
+            "DeepSeek-V4.1 {component} has no empirical calibration"
+        )));
+    }
+    match db
+        .dsv41
+        .query(component, op, batch_size, prefix, x, &|point| {
+            sol(point).map(|result| result.latency_ms)
+        })? {
+        Some(measured) => Ok(PerformanceResult::with_energy(
+            measured.latency,
+            measured.energy,
+            Source::Silicon,
+        )),
+        None if db.database_mode == DatabaseMode::Hybrid => sol(f64::from(x)),
+        None => Err(AicError::PerfDatabase(format!(
+            "DeepSeek-V4.1 {component} has no measured SILICON data for its geometry, batch={batch_size}, prefix={prefix}, x={x}"
         ))),
-        DatabaseMode::Empirical => Err(AicError::EmpiricalNotImplemented(format!(
-            "DeepSeek-V4.1 {name} has no empirical anchor"
-        ))),
-        _ => Ok(()),
     }
 }
 
@@ -167,6 +192,11 @@ impl Dsv41AttentionOp {
                 "DeepSeek-V4.1 full attention requires a positive compress_ratio".into(),
             ));
         }
+        if self.window_size == 0 {
+            return Err(AicError::ModelConfig(
+                "DeepSeek-V4.1 attention requires a positive window_size".into(),
+            ));
+        }
         if batch <= 0.0 || s <= 0.0 {
             return Ok(zero());
         }
@@ -261,14 +291,27 @@ impl Dsv41AttentionOp {
             // two_level_decode_logits / _mask_topk_scores masks candidates.
             // candidate_limit describes eligibility, not a pre-GEMM gather.
             let index_len = compressed_len;
-            let fp4 = quant_tc_flops(spec, GemmQuantMode::Nvfp4.mapping())?;
+            // Pinned SGLang SM90 prefill uses BF16 einsum; decode unpacks
+            // the same FP4 K payload inside a BF16 tl.dot kernel. Storage
+            // precision does not imply native FP4 tensor-core arithmetic.
+            let (index_rate, query_bytes) = if self.kv_cache_layout
+                == Dsv41KvCacheLayout::SglangFp8Bf16
+                && spec.gpu.sm_version == Some(90)
+            {
+                (bf16, 2.0)
+            } else {
+                (
+                    quant_tc_flops(spec, GemmQuantMode::Nvfp4.mapping())?,
+                    0.53125,
+                )
+            };
             result = result.plus(leaf(
                 spec,
                 2.0 * tokens * inh * ihd * index_len,
                 batch * index_len * ihd * 0.53125
-                    + tokens * inh * ihd * 0.53125
+                    + tokens * inh * ihd * query_bytes
                     + tokens * index_len * 4.0,
-                fp4,
+                index_rate,
             ));
             // Materialized scores, top-k positions, and optional coarse candidate blocks.
             let candidate_bytes = if self.is_candidate_source {
@@ -329,12 +372,21 @@ impl Dsv41AttentionOp {
         ctx: &RuntimeContext,
     ) -> Result<PerformanceResult, AicError> {
         self.validate_role()?;
-        analytic_mode(db, "CSA2 attention")?;
-        self.sol(
-            &db.system_spec,
-            ctx.batch_size as f64,
-            ctx.s as f64,
-            ctx.prefix as f64,
+        query_leaf(
+            db,
+            "attention",
+            self,
+            ctx.batch_size,
+            if self.is_context { ctx.prefix } else { 0 },
+            ctx.s,
+            &|x| {
+                self.sol(
+                    &db.system_spec,
+                    f64::from(ctx.batch_size),
+                    x,
+                    f64::from(ctx.prefix),
+                )
+            },
         )
     }
 }
@@ -379,8 +431,9 @@ impl Dsv41MhcOp {
         Ok(leaf(spec, ops, bytes, fp32))
     }
     pub fn query(&self, db: &PerfDatabase, tokens: u32) -> Result<PerformanceResult, AicError> {
-        analytic_mode(db, "single-pass mHC")?;
-        self.sol(&db.system_spec, tokens as f64)
+        query_leaf(db, "mhc", self, 1, 0, tokens, &|x| {
+            self.sol(&db.system_spec, x)
+        })
     }
 }
 
@@ -432,8 +485,9 @@ impl Dsv41EngramOp {
         Ok(lookup.plus(projection).plus(gate))
     }
     pub fn query(&self, db: &PerfDatabase, tokens: u32) -> Result<PerformanceResult, AicError> {
-        analytic_mode(db, "Engram")?;
-        self.sol(&db.system_spec, tokens as f64)
+        query_leaf(db, "engram", self, 1, 0, tokens, &|x| {
+            self.sol(&db.system_spec, x)
+        })
     }
 }
 
@@ -469,8 +523,9 @@ impl Dsv41LinearOp {
         ))
     }
     pub fn query(&self, db: &PerfDatabase, tokens: u32) -> Result<PerformanceResult, AicError> {
-        analytic_mode(db, "32x32 dense projection")?;
-        self.sol(&db.system_spec, tokens as f64)
+        query_leaf(db, "linear", self, 1, 0, tokens, &|x| {
+            self.sol(&db.system_spec, x)
+        })
     }
 }
 
@@ -622,6 +677,24 @@ mod tests {
     }
 
     #[test]
+    fn serialized_attention_rejects_zero_window_in_both_phases() {
+        let spec = unit_spec();
+        for role in ["swa", "full", "reindex", "reuse"] {
+            for is_context in [true, false] {
+                let mut value = serde_json::to_value(attention(role, 2)).unwrap();
+                value["window_size"] = serde_json::json!(0);
+                value["is_context"] = serde_json::json!(is_context);
+                let malformed: Dsv41AttentionOp = serde_json::from_value(value).unwrap();
+                for (batch, sequence) in [(1.0, 128.0), (0.0, 128.0), (1.0, 0.0)] {
+                    let error = malformed.sol(&spec, batch, sequence, 32.0).unwrap_err();
+                    assert!(matches!(error, AicError::ModelConfig(ref message)
+                        if message.contains("positive window_size")));
+                }
+            }
+        }
+    }
+
+    #[test]
     fn window_flops_use_pairs_but_hbm_uses_unique_rows() {
         let spec = unit_spec();
         let mut op = attention("swa", 0);
@@ -686,6 +759,71 @@ mod tests {
         // 3*(4-byte score write +4-byte score read). Prefix is not re-executed.
         assert!((hi.math_ms - lo.math_ms - 48.0 / 1e6).abs() < 1e-10);
         assert!((hi.mem_ms - lo.mem_ms - 25.0625 / 1e3).abs() < 1e-10);
+    }
+
+    #[test]
+    fn sglang_hopper_index_scores_use_bf16_compute_and_query_payload() {
+        let mut blackwell = unit_spec();
+        blackwell.gpu.sm_version = Some(100);
+        blackwell.gpu.fp4_tc_flops = Some(4e9);
+        let mut hopper = blackwell.clone();
+        hopper.gpu.sm_version = Some(90);
+        hopper.gpu.fp4_tc_flops = None;
+        for (role, ratio) in [("full", 2), ("reindex", 1)] {
+            for is_context in [true, false] {
+                let mut op = attention(role, ratio);
+                op.is_context = is_context;
+                op.head_dim = 512;
+                op.index_head_dim = 128;
+                op.kv_cache_layout = Dsv41KvCacheLayout::SglangFp8Bf16;
+                let (batch, s, prefix) = if is_context {
+                    (2.0, 8.0, 1024.0)
+                } else {
+                    (2.0, 1024.0, 0.0)
+                };
+                let native_fp4 = op.sol(&blackwell, batch, s, prefix).unwrap().sol.unwrap();
+                let native_bf16 = op.sol(&hopper, batch, s, prefix).unwrap().sol.unwrap();
+                let queries = if is_context { 16.0 } else { 2.0 };
+                let index_len = (s + prefix) / f64::from(ratio);
+                // Independent score ledger: Q=[queries,4,128], K=[L,128].
+                // K remains packed68B/row. Only Q changes from68B to256B
+                // per head, and score arithmetic changes from4e9 to1e9.
+                let score_flops = 2.0 * queries * 4.0 * 128.0 * index_len;
+                let math_delta = score_flops * (1.0 / 1e9 - 1.0 / 4e9) * 1e3;
+                let memory_delta = queries * 4.0 * (256.0 - 68.0) / 1e3;
+                assert!((native_bf16.math_ms - native_fp4.math_ms - math_delta).abs() < 1e-10);
+                assert!((native_bf16.mem_ms - native_fp4.mem_ms - memory_delta).abs() < 1e-10);
+                assert!(native_bf16.math_ms.is_finite() && native_bf16.math_ms > 0.0);
+                // A speculative FP4 entry cannot affect the actual SM90 path.
+                let mut misleading = hopper.clone();
+                misleading.gpu.fp4_tc_flops = Some(1.0);
+                assert_eq!(
+                    op.sol(&misleading, batch, s, prefix).unwrap().sol.unwrap(),
+                    native_bf16
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn hopper_index_support_does_not_supply_missing_fp4_to_other_contracts() {
+        let mut op = attention("reindex", 1);
+        op.head_dim = 512;
+        op.index_head_dim = 128;
+        let mut spec = unit_spec();
+        spec.gpu.fp4_tc_flops = None;
+        for (layout, sm) in [
+            (Dsv41KvCacheLayout::LogicalFp4, Some(90)),
+            (Dsv41KvCacheLayout::SglangFp8Bf16, Some(100)),
+            (Dsv41KvCacheLayout::SglangFp8Bf16, None),
+        ] {
+            op.kv_cache_layout = layout;
+            spec.gpu.sm_version = sm;
+            assert!(matches!(
+                op.sol(&spec, 1.0, 128.0, 0.0),
+                Err(AicError::MissingSystemFlops(_))
+            ));
+        }
     }
 
     #[test]

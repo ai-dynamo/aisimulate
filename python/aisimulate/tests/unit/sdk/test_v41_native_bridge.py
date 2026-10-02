@@ -135,3 +135,36 @@ def test_compile_engine_resolves_v41_native_expert_lane(monkeypatch):
     )
     assert captured == ["w4a8_mxfp4_mxfp8_trtllm"]
     assert handle.predict_prefill_latency(1, 256) > 0
+
+
+@pytest.mark.parametrize(
+    ("config_text", "cause_type"),
+    [(None, ValueError), ("{", ValueError), ("{}", KeyError), ('{"architectures": null}', TypeError)],
+)
+def test_compile_engine_classifies_invalid_resolver_metadata(tmp_path, config_text, cause_type):
+    from aisimulate_core.sdk.engine import compile_engine
+    from aisimulate_core.sdk.errors import InvalidEngineConfigurationError
+
+    if config_text is not None:
+        (tmp_path / "config.json").write_text(config_text)
+    with pytest.raises(InvalidEngineConfigurationError) as caught:
+        compile_engine(str(tmp_path), "gb300", "sglang")
+    assert isinstance(caught.value.__cause__, cause_type)
+    # The canonical Rust constructor must retain the hard configuration error
+    # instead of interpreting this as UnsupportedModel and trying fallback.
+    with pytest.raises(ValueError, match="invalid engine config:"):
+        _native_model(_config() | {"model_name": str(tmp_path)})
+
+
+def test_compile_engine_preserves_unrelated_resolver_errors(monkeypatch):
+    from aisimulate_core.sdk import engine
+
+    error = RuntimeError("unexpected resolver failure")
+
+    def fail(*_args, **_kwargs):
+        raise error
+
+    monkeypatch.setattr(engine, "resolve_dsv4_moe_arch", fail)
+    with pytest.raises(RuntimeError) as caught:
+        engine.compile_engine(MODEL_PATH, "gb300", "sglang")
+    assert caught.value is error

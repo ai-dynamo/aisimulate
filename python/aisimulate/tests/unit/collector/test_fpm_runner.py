@@ -11,6 +11,7 @@ import os
 import shutil
 import signal
 import subprocess
+import sys
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -1053,6 +1054,54 @@ def test_formal_prefill_metadata_records_candidate_axis_counts():
     }
 
 
+def test_runtime_graph_policy_metadata_does_not_invent_axis_counts():
+    cell = _cell()
+    plan = _plan(cell)
+    plan.options.prefill_sampling = PrefillSamplingProfile.build(
+        max_isl=8192, max_batch_size=256, cudagraph_policy="runtime"
+    )
+    assert _configured_sampling_metadata(plan, cell, smoke=False) == {
+        "prefill_cudagraph_policy": "runtime",
+        "prefill_cudagraph_capture_size_count": None,
+        "prefill_requested_new_token_axis_count": None,
+        "prefill_max_new_token_samples": None,
+    }
+    assert _configured_sampling_metadata(plan, cell, smoke=True) == {
+        "prefill_cudagraph_policy": "runtime",
+        "prefill_max_new_token_samples": 2,
+    }
+
+
+@pytest.mark.parametrize("argument", ["--compilation-config", "--cudagraph-capture-sizes=[1,2]"])
+def test_runtime_graph_policy_rejects_backend_capture_overrides(argument):
+    cell = dataclasses.replace(
+        _cell(), backend_policy=BackendPolicy("conflict", {"params": {"agg": {"extra_cli_args": [argument]}}}, {})
+    )
+    plan = _plan(cell)
+    plan.options.prefill_sampling = PrefillSamplingProfile.build(
+        max_isl=8192, max_batch_size=256, cudagraph_policy="runtime"
+    )
+    with pytest.raises(ValueError, match="runtime prefill CUDA-graph policy cannot use backend capture overrides"):
+        _cell_generator_overrides(plan, cell, {})
+
+
+@pytest.mark.parametrize(
+    "override",
+    [
+        {"kv_cache_free_gpu_memory_fraction": 0.8},
+        {"extra_cli_args": ["--gpu-memory-utilization", "0.8"]},
+        {"extra_cli_args": ["--gpu-memory-utilization=0.8"]},
+        {"extra_cli_args": ["--gpu-memory-utilization 0.8"]},
+    ],
+)
+def test_backend_policy_cannot_change_collector_memory_fraction(override):
+    cell = dataclasses.replace(_cell(), backend_policy=BackendPolicy("conflict", {"params": {"agg": override}}, {}))
+    plan = _plan(cell)
+    plan.options.gpu_memory_utilization = 0.9
+    with pytest.raises(ValueError, match="backend policy cannot .*--fpm-gpu-memory-utilization"):
+        _cell_generator_overrides(plan, cell, {})
+
+
 def test_cell_render_adds_one_collector_owned_benchmark_timeout():
     cell = _cell()
     plan = _plan(cell)
@@ -1104,6 +1153,7 @@ def test_native_collection_validation_accepts_balanced_total_points(tmp_path):
         "measured_batch_size_axis_count": 1,
         "measured_kv_read_axis_count": 1,
         "measured_new_token_axis_count": 1,
+        "native_kv_seed_regime_counts": {"unreported": 1},
     }
 
     second_rank = tmp_path / "pod-1" / "benchmark_dp1.json"
@@ -1112,6 +1162,106 @@ def test_native_collection_validation_accepts_balanced_total_points(tmp_path):
     second_rank.write_text(json.dumps(payload))
     with pytest.raises(ValueError, match="different run identities"):
         _validate_runtime_collection(cell, tmp_path)
+
+
+@pytest.mark.parametrize(
+    ("phase", "regime", "stamp", "kv_tokens"),
+    [
+        ("prefill", "real_prefix", "prefill_real_seed", 128),
+        ("prefill", "real_prefix", "prefill_real_seed", 0),
+        ("prefill", "fake_prefix", "prefill_fake_prefix", 128),
+        ("prefill", "not_applicable", None, 0),
+        ("decode", "real_kv", "kvwarm_real_kv", 128),
+        ("decode", "fake_fallback", "kvwarm_fake_fallback", 128),
+        ("decode", "skip:dense_model", None, 128),
+    ],
+)
+def test_native_seed_diagnostics_report_observed_regime(tmp_path, phase, regime, stamp, kv_tokens):
+    cell = _cell(phase=phase, strategy="dense_tp")
+    payload = _native_payload(phase=phase, rank=0, dp=1)
+    row = payload["results"][0]
+    row["kv_seed_regime"] = regime
+    row["point"]["total_kv_read_tokens"] = kv_tokens
+    if stamp:
+        row["point"]["sample_reasons"].append(stamp)
+    if phase == "prefill":
+        row["fpms"][0]["scheduled_requests"]["sum_prefill_kv_tokens"] = kv_tokens
+    if regime.startswith("skip:"):
+        payload["kvwarm"] = {"enabled": True, "warm_eligible": False, "skip_reason": "dense_model"}
+    pod = tmp_path / "pod-0"
+    pod.mkdir()
+    _write_provenance(pod / "collector-provenance.json", cell_id=cell.cell_id)
+    (pod / "benchmark.json").write_text(json.dumps(payload))
+
+    summary = _runtime_collection_summary(cell, tmp_path)
+    assert summary["native_kv_seed_regime_counts"] == {regime: 1}
+    if phase == "decode":
+        assert summary["native_kvwarm"] == payload["kvwarm"]
+
+
+@pytest.mark.parametrize("regime", ["real_prefix", "fake_prefix", "not_applicable"])
+@pytest.mark.parametrize("kv_tokens", [0, 128])
+def test_native_seed_diagnostics_reject_contradictory_injection_evidence(tmp_path, regime, kv_tokens):
+    cell = _cell()
+    payload = _native_payload(phase="prefill", rank=0, dp=1)
+    payload["results"][0]["kv_seed_regime"] = regime
+    payload["results"][0]["point"]["total_kv_read_tokens"] = kv_tokens
+    payload["results"][0]["fpms"][0]["scheduled_requests"]["sum_prefill_kv_tokens"] = kv_tokens
+    if regime != "real_prefix":
+        payload["results"][0]["point"]["sample_reasons"].append("prefill_real_seed")
+    pod = tmp_path / "pod-0"
+    pod.mkdir()
+    _write_provenance(pod / "collector-provenance.json", cell_id=cell.cell_id)
+    (pod / "benchmark.json").write_text(json.dumps(payload))
+    with pytest.raises(ValueError, match="kv_seed_regime disagrees"):
+        _runtime_collection_summary(cell, tmp_path)
+
+
+@pytest.mark.parametrize("kv_tokens", [0, 128])
+def test_native_seed_diagnostics_reject_rank_evidence_disagreement(tmp_path, kv_tokens):
+    cell = _cell(dp=2)
+    for rank in range(2):
+        path = tmp_path / f"pod-{rank}" / ("benchmark.json" if rank == 0 else "benchmark_dp1.json")
+        path.parent.mkdir()
+        payload = _native_payload(phase="prefill", rank=rank, dp=2)
+        payload["results"][0]["point"]["sample_reasons"].append("prefill_real_seed")
+        payload["results"][0]["point"]["total_kv_read_tokens"] = kv_tokens
+        payload["results"][0]["fpms"][0]["scheduled_requests"]["sum_prefill_kv_tokens"] = kv_tokens
+        if rank == 0:
+            payload["results"][0]["kv_seed_regime"] = "real_prefix"
+        _write_provenance(path.parent / "collector-provenance.json", cell_id=cell.cell_id)
+        path.write_text(json.dumps(payload))
+    with pytest.raises(ValueError, match="DP ranks disagree on per-point KV seed regime"):
+        _runtime_collection_summary(cell, tmp_path)
+
+
+@pytest.mark.parametrize(
+    ("phase", "regime", "stamp", "kv_tokens", "scheduled_kv_tokens", "error"),
+    [
+        ("decode", "real_prefix", "prefill_real_seed", 128, 128, "requires prefill"),
+        ("decode", "fake_prefix", "prefill_fake_prefix", 128, 128, "requires prefill"),
+        ("prefill", "fake_prefix", "prefill_fake_prefix", 0, 0, "requires cached prefill"),
+        ("prefill", "real_prefix", "prefill_real_seed", -1, -1, "invalid totals"),
+        ("prefill", "real_prefix", "prefill_real_seed", 0, 128, "workload mismatch"),
+    ],
+)
+def test_native_prefix_seed_diagnostics_reject_invalid_workload(
+    tmp_path, phase, regime, stamp, kv_tokens, scheduled_kv_tokens, error
+):
+    cell = _cell(phase=phase)
+    payload = _native_payload(phase=phase, rank=0, dp=1)
+    row = payload["results"][0]
+    row["kv_seed_regime"] = regime
+    row["point"]["sample_reasons"].append(stamp)
+    row["point"]["total_kv_read_tokens"] = kv_tokens
+    row["fpms"][0]["scheduled_requests"][f"sum_{phase}_kv_tokens"] = scheduled_kv_tokens
+    pod = tmp_path / "pod-0"
+    pod.mkdir()
+    _write_provenance(pod / "collector-provenance.json", cell_id=cell.cell_id)
+    (pod / "benchmark.json").write_text(json.dumps(payload))
+
+    with pytest.raises(ValueError, match=error):
+        _runtime_collection_summary(cell, tmp_path)
 
 
 def test_native_collection_validation_accepts_execution_order_decoupled_from_ids(tmp_path):
@@ -1245,9 +1395,16 @@ def test_runtime_summaries_use_native_rank_artifacts_and_skip_merged(tmp_path):
     }
 
 
-def test_run_collection_stages_no_explicit_scheduler_or_case_manifest(monkeypatch, tmp_path):
+@pytest.mark.parametrize("pending_memory", [False, True])
+@pytest.mark.parametrize("validation_only", [False, True])
+def test_run_collection_stages_owned_runtime_files(monkeypatch, tmp_path, pending_memory, validation_only):
     cell = _cell()
     plan = _plan(cell)
+    if pending_memory:
+        plan.fpm_profile = True
+        plan.deployment_profile = lambda _cell: SimpleNamespace(
+            backend_version="0.27.0", resources=SimpleNamespace(memory_source="pending")
+        )
     events = []
     staged_names = []
 
@@ -1256,6 +1413,7 @@ def test_run_collection_stages_no_explicit_scheduler_or_case_manifest(monkeypatc
         (cell_dir / "k8s_deploy.yaml").write_text("apiVersion: v1\nkind: Pod\nmetadata:\n  name: cell\n")
         (cell_dir / "run.sh").write_text("#!/bin/sh\n")
         (cell_dir / "fpm_env.sh").write_text("#!/bin/sh\n")
+        (cell_dir / "collector-runtime-env.sh").write_text("export FPM_READINESS_TIMEOUT_SECONDS=900\n")
 
     class FakeResource:
         def __init__(self, _manifest, _cell_dir):
@@ -1284,6 +1442,13 @@ def test_run_collection_stages_no_explicit_scheduler_or_case_manifest(monkeypatc
 
     monkeypatch.setattr(fpm_runner, "_render_cell", render_cell)
     monkeypatch.setattr(fpm_runner, "KubernetesCellRunner", FakeResource)
+    from collector.fpm_forward import database
+
+    monkeypatch.setattr(
+        database,
+        "write_formal_database",
+        lambda *_args, **_kwargs: pytest.fail("validation/smoke published formal data"),
+    )
     monkeypatch.setattr(
         fpm_runner,
         "_runtime_collection_summary",
@@ -1304,8 +1469,9 @@ def test_run_collection_stages_no_explicit_scheduler_or_case_manifest(monkeypatc
         artifact_root=str(tmp_path / "artifacts"),
         resume=False,
         retry_failed=False,
-        smoke=True,
+        smoke=not validation_only,
         cell_limit=1,
+        publish_database=not validation_only,
     )
 
     assert errors == []
@@ -1314,16 +1480,22 @@ def test_run_collection_stages_no_explicit_scheduler_or_case_manifest(monkeypatc
     # fresh checkpoint proves nothing about the cluster) and one after.
     assert events.count("cleanup") == 2
     assert events.index("cleanup") < events.index("apply")
-    # Contract: the staged set is exactly the two rendered runtime artifacts
+    # Contract: the staged set includes the rendered runtime artifacts
     # plus the collector's own in-pod runtime and preflight.
-    assert set(staged_names) == {"run.sh", "fpm_env.sh", "fpm_exec.sh", "preflight.py"}
+    expected_files = {"run.sh", "fpm_env.sh", "collector-runtime-env.sh", "fpm_exec.sh", "preflight.py"}
+    if pending_memory:
+        expected_files.update({"fpm_memory_observer.py", "fpm_memory_worker.py", "fpm_memory_scheduler.py"})
+    assert set(staged_names) == expected_files
     assert "cases.json" not in staged_names
     assert "fpm_scheduler.py" not in staged_names
     assert "run_with_etcd.sh" not in staged_names
-    checkpoint = json.loads((checkpoint_dir / "fpm_forward_smoke.json").read_text())
-    assert checkpoint["cells"][cell.cell_id]["prefill_max_new_token_samples"] == 2
+    name = "fpm_forward.json" if validation_only else "fpm_forward_smoke.json"
+    checkpoint = json.loads((checkpoint_dir / name).read_text())
+    if not validation_only:
+        assert checkpoint["cells"][cell.cell_id]["prefill_max_new_token_samples"] == 2
+        assert "prefill_requested_new_token_axis_count" not in checkpoint["cells"][cell.cell_id]
     assert checkpoint["cells"][cell.cell_id]["measured_new_token_axis_count"] == 2
-    assert "prefill_requested_new_token_axis_count" not in checkpoint["cells"][cell.cell_id]
+    assert "database" not in checkpoint
 
 
 def test_partial_formal_run_is_campaign_incomplete_not_database_failure(monkeypatch, tmp_path):
@@ -1341,6 +1513,7 @@ def test_partial_formal_run_is_campaign_incomplete_not_database_failure(monkeypa
         (cell_dir / "k8s_deploy.yaml").write_text("apiVersion: v1\nkind: Pod\nmetadata:\n  name: cell\n")
         (cell_dir / "run.sh").write_text("#!/bin/sh\n")
         (cell_dir / "fpm_env.sh").write_text("#!/bin/sh\n")
+        (cell_dir / "collector-runtime-env.sh").write_text("export FPM_READINESS_TIMEOUT_SECONDS=900\n")
 
     class FakeResource:
         def __init__(self, _manifest, _cell_dir):
@@ -1461,6 +1634,92 @@ def test_resume_retry_recovers_complete_salvaged_attempt_without_rerun(monkeypat
     assert checkpoint["smoke"]["status"] == "passed"
 
 
+@pytest.mark.parametrize("missing_decode", [False, True])
+def test_resume_publishes_saved_zero_kv_prefill_without_rerun(monkeypatch, tmp_path, missing_decode):
+    """Synthetic saved native results exercise recovery and formal publication on CPU."""
+    import pyarrow.parquet as pq
+
+    cell = _cell()
+    plan = _plan(cell)
+    decode = _cell(phase="decode")
+    if missing_decode:
+        plan.cells = (cell, decode)
+    artifact_root = tmp_path / "artifacts"
+    root = artifact_root / plan.sha256[:16]
+    raw = root / "cells" / cell.cell_id / "raw" / "pod-0"
+    raw.mkdir(parents=True)
+    _write_provenance(
+        raw / "collector-provenance.json",
+        cell_id=cell.cell_id,
+        plan_sha256=plan.sha256,
+        attempt_id="attempt-1",
+    )
+    payload = _native_payload(phase="prefill", rank=0, dp=1)
+    row = payload["results"][0]
+    row["kv_seed_regime"] = "real_prefix"
+    row["point"]["sample_reasons"].append("prefill_real_seed")
+    row["point"]["total_kv_read_tokens"] = 0
+    row["fpms"][0]["scheduled_requests"]["sum_prefill_kv_tokens"] = 0
+    native_path = raw / "benchmark.json"
+    native_path.write_text(json.dumps(payload))
+    native_bytes = native_path.read_bytes()
+
+    records = {
+        cell.cell_id: {
+            "status": "failed",
+            "attempt_id": "attempt-1",
+            "error_type": "ValueError",
+            "error": "native prefix seed regime requires cached prefill",
+        }
+    }
+    if missing_decode:
+        records[decode.cell_id] = {"status": "failed", "attempt_id": "attempt-decode"}
+    checkpoint_dir = tmp_path / "checkpoints"
+    checkpoint_dir.mkdir()
+    checkpoint_path = checkpoint_dir / "fpm_forward.json"
+    checkpoint_path.write_text(
+        json.dumps({"schema": fpm_runner.CHECKPOINT_SCHEMA, "plan_sha256": plan.sha256, "cells": records})
+    )
+
+    def reject_cluster_work(*_args, **_kwargs):
+        raise AssertionError("saved prefill recovery must not launch GPU work")
+
+    monkeypatch.setattr(fpm_runner, "_render_cell", reject_cluster_work)
+    monkeypatch.setattr(fpm_runner, "_cell_runner", reject_cluster_work)
+    errors = run_collection(
+        plan,
+        generator_overrides={},
+        checkpoint_dir=str(checkpoint_dir),
+        artifact_root=str(artifact_root),
+        resume=True,
+        retry_failed=False,
+        database_root=str(tmp_path / "db"),
+        publish_partial=missing_decode,
+    )
+
+    assert [error["classification"] for error in errors] == (["campaign_incomplete"] if missing_decode else [])
+    checkpoint = json.loads(checkpoint_path.read_text())
+    record = checkpoint["cells"][cell.cell_id]
+    assert record["status"] == "passed"
+    assert record["attempt_id"] == "attempt-1"
+    assert record["native_kv_seed_regime_counts"] == {"real_prefix": 1}
+    assert record["artifact_recovery"]["original_status"] == "failed"
+    assert record["artifact_recovery"]["error"] == records[cell.cell_id]["error"]
+    assert native_path.read_bytes() == native_bytes
+    assert json.loads((root / "run-manifest.json").read_text())["attempts"] == []
+    database = checkpoint["database"]
+    assert database["status"] == "passed"
+    assert database["missing_cells"] == ([decode.cell_id] if missing_decode else [])
+    rows = pq.read_table(database["parquet"]).to_pylist()
+    assert len(rows) == 1
+    assert rows[0]["total_kv_read_tokens"] == 0
+    assert rows[0]["kv_seed_regime"] == "n/a"
+    assert rows[0]["latency_ms"] == pytest.approx(10.0)
+    assert rows[0]["collector_attempt_id"] == "attempt-1"
+    if missing_decode:
+        assert checkpoint["cells"][decode.cell_id] == records[decode.cell_id]
+
+
 def test_plain_resume_recovers_interrupted_attempt_without_rerun(monkeypatch, tmp_path):
     cell = _cell()
     plan = _plan(cell)
@@ -1548,6 +1807,7 @@ def test_cleanup_failure_marks_passed_cell_retryable(monkeypatch, tmp_path):
         (cell_dir / "k8s_deploy.yaml").write_text("apiVersion: v1\nkind: Pod\nmetadata:\n  name: cell\n")
         (cell_dir / "run.sh").write_text("#!/bin/sh\n")
         (cell_dir / "fpm_env.sh").write_text("#!/bin/sh\n")
+        (cell_dir / "collector-runtime-env.sh").write_text("export FPM_READINESS_TIMEOUT_SECONDS=900\n")
 
     class FakeResource:
         def __init__(self, _manifest, _cell_dir):
@@ -1621,6 +1881,7 @@ def test_typed_generator_render_uses_collector_prefill_axis(tmp_path):
     base = {
         "K8sConfig": {
             "k8s_image": "nvcr.io/nvidia/ai-dynamo/vllm-runtime:test",
+            "extra_env": [{"name": "FPM_READINESS_TIMEOUT_SECONDS", "value": "600"}],
             "k8s_pvc_mount_path": "/model-cache",
             "k8s_model_path_in_pvc": "models--nvidia--GLM-5.2-NVFP4",
         }
@@ -1632,7 +1893,12 @@ def test_typed_generator_render_uses_collector_prefill_axis(tmp_path):
     for artifact in ("k8s_deploy.yaml", "fpm_env.sh", "run.sh"):
         assert (tmp_path / artifact).exists(), artifact
 
+    startup = (tmp_path / "collector-runtime-env.sh").read_text()
+    assert "export FPM_READINESS_TIMEOUT_SECONDS=600" in startup
+    # The keepalive Pod intentionally has no engine environment. Staging
+    # supplies the startup file before either transport launches preflight.
     script = (tmp_path / "run.sh").read_text()
+    assert "export FPM_READINESS_TIMEOUT_SECONDS=600" in script
     assert "--benchmark-mode prefill" in script
     assert "--benchmark-warmup-iterations 3" in script
     assert "--scheduler-cls fpm_scheduler" not in script
@@ -1661,6 +1927,62 @@ def test_typed_generator_render_uses_collector_prefill_axis(tmp_path):
     assert "export FPM_BENCHMARK_MODE=prefill" in env_script
     subprocess.run(["bash", "-n", str(tmp_path / "run.sh")], check=True)
     subprocess.run(["bash", "-n", str(tmp_path / "fpm_env.sh")], check=True)
+
+
+@pytest.mark.parametrize("phase", ["prefill", "decode"])
+@pytest.mark.parametrize("explicit", [None, "off", "0", "false", "TRUE"])
+def test_rendered_kv_warmup_defaults_and_overrides_reach_startup_and_engine(tmp_path, phase, explicit):
+    cell = _cell(phase=phase)
+    base = {"K8sConfig": {"k8s_image": "nvcr.io/nvidia/ai-dynamo/vllm-runtime:test"}}
+    names = ("DYN_BENCH_KV_WARMUP", "DYN_BENCH_PREFILL_REAL_SEED")
+    if explicit is not None:
+        base["K8sConfig"]["extra_env"] = [{"name": name, "value": explicit} for name in names]
+    _render_cell(_plan(cell), cell, tmp_path, base)
+
+    expected = explicit if explicit is not None else "on"
+    run_script = (tmp_path / "run.sh").read_text()
+    for name in names:
+        assert f"export {name}={expected}" in run_script
+    # Both executors stage this exact startup file before preflight; Slurm
+    # does not inherit Pod environment, and run.sh has not executed yet.
+    actual = subprocess.run(
+        [
+            "bash",
+            "-c",
+            'source "$1/fpm_env.sh"; source "$1/collector-runtime-env.sh"; '
+            'printf "%s\\n%s\\n%s\\n" "$FPM_BENCHMARK_MODE" "$DYN_BENCH_KV_WARMUP" '
+            '"$DYN_BENCH_PREFILL_REAL_SEED"',
+            "bash",
+            str(tmp_path),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert actual.stdout.splitlines() == [phase, expected, expected]
+
+
+def test_backend_policy_kv_warmup_override_is_preserved():
+    cell = dataclasses.replace(
+        _cell(),
+        backend_policy=BackendPolicy(
+            "explicit-seeding",
+            {"K8sConfig": {"extra_env": [{"name": "DYN_BENCH_PREFILL_REAL_SEED", "value": "off"}]}},
+            {},
+        ),
+    )
+    overrides = _cell_generator_overrides(_plan(cell), cell, {})
+    environment = {item["name"]: item["value"] for item in overrides["K8sConfig"]["extra_env"]}
+    assert environment["DYN_BENCH_PREFILL_REAL_SEED"] == "off"
+    assert environment["DYN_BENCH_KV_WARMUP"] == "on"
+
+
+@pytest.mark.parametrize("name", ["DYN_BENCH_KV_WARMUP", "DYN_BENCH_PREFILL_REAL_SEED"])
+@pytest.mark.parametrize("value", [True, 1, "maybe", " on ", "${CHOICE}"])
+def test_kv_warmup_switches_require_explicit_boolean_strings(name, value):
+    cell = _cell()
+    with pytest.raises(ValueError, match=f"{name} must be a literal"):
+        _cell_generator_overrides(_plan(cell), cell, {"K8sConfig": {"extra_env": [{"name": name, "value": value}]}})
 
 
 @pytest.mark.parametrize(
@@ -2025,6 +2347,7 @@ def _running_cell_fixture(tmp_path, plan, cell):
     (cell_dir / "k8s_deploy.yaml").write_text("apiVersion: v1\nkind: Pod\nmetadata:\n  name: cell\n")
     (cell_dir / "run.sh").write_text("#!/bin/sh\n")
     (cell_dir / "fpm_env.sh").write_text("#!/bin/sh\n")
+    (cell_dir / "collector-runtime-env.sh").write_text("export FPM_READINESS_TIMEOUT_SECONDS=900\n")
 
     checkpoint_dir = tmp_path / "checkpoints"
     checkpoint_dir.mkdir()
@@ -2226,6 +2549,7 @@ def test_pre_apply_cleanup_failure_blocks_apply(monkeypatch, tmp_path):
         (cell_dir / "k8s_deploy.yaml").write_text("apiVersion: v1\nkind: Pod\nmetadata:\n  name: cell\n")
         (cell_dir / "run.sh").write_text("#!/bin/sh\n")
         (cell_dir / "fpm_env.sh").write_text("#!/bin/sh\n")
+        (cell_dir / "collector-runtime-env.sh").write_text("export FPM_READINESS_TIMEOUT_SECONDS=900\n")
 
     applied = []
 
@@ -2368,7 +2692,7 @@ def test_completed_formal_database_is_terminal_after_commit_validation(monkeypat
     )
     validated = []
 
-    def validate(parquet_path, metadata_path, plan_arg):
+    def validate(parquet_path, metadata_path, plan_arg, **_kwargs):
         validated.append((parquet_path, metadata_path, plan_arg.sha256))
         return {"schema_version": 6}
 
@@ -2394,6 +2718,236 @@ def test_completed_formal_database_is_terminal_after_commit_validation(monkeypat
     assert validated == [(parquet, metadata, plan.sha256)]
     manifest = json.loads((artifact_root / plan.sha256[:16] / "run-manifest.json").read_text())
     assert manifest["attempts"] == []
+
+
+@pytest.fixture
+def completed_explicit_campaign(monkeypatch, tmp_path):
+    """Complete real receipt validation, native aggregation and publication on CPU."""
+    cell = _cell()
+    plan = _plan(cell)
+    points = {
+        "schema_version": 3,
+        "prefill": [{"batch_size": 4, "total_prefill_tokens": 257, "total_kv_read_tokens": 128}],
+        "decode": [],
+    }
+    plan.options.benchmark_points_json = json.dumps(points, sort_keys=True, separators=(",", ":"))
+    plan.options.benchmark_points_sha256 = hashlib.sha256(plan.options.benchmark_points_json.encode()).hexdigest()
+    runs = []
+
+    def render_cell(_plan, _cell, cell_dir, _overrides, **_kwargs):
+        (cell_dir / "k8s_deploy.yaml").write_text("apiVersion: v1\nkind: Pod\nmetadata:\n  name: cell\n")
+        for name in ("run.sh", "fpm_env.sh", "collector-runtime-env.sh"):
+            (cell_dir / name).write_text("#!/bin/sh\n")
+
+    class LocalResource:
+        def __init__(self, _manifest, cell_dir):
+            self.cell_dir = cell_dir
+            self.raw = cell_dir / "raw" / "pod-0"
+
+        def apply(self):
+            self.raw.mkdir(parents=True)
+
+        def wait_ready(self, _expected_nodes):
+            return ["pod-0"]
+
+        def stage(self, _pods, _files):
+            pass
+
+        def prepare_attempt(self, _pods, **identity):
+            _write_provenance(self.raw / "collector-provenance.json", **identity)
+
+        def _exec(self, _pod, command, *, timeout):
+            # Run the actual before/after receipt producer with local paths.
+            return subprocess.run(
+                [
+                    sys.executable,
+                    *command[1:-2],
+                    str(self.cell_dir / fpm_runner.POINTS_FILENAME),
+                    str(self.raw / fpm_runner.POINTS_RECEIPT_FILENAME),
+                ],
+                timeout=timeout,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+        def execute(self, _pods):
+            runs.append("execute")
+            (self.raw / "benchmark.json").write_text(json.dumps(_native_payload(phase="prefill", rank=0, dp=1)))
+
+        def collect(self, _pods, *, require_benchmark=True):
+            pass
+
+        def cleanup(self):
+            pass
+
+    monkeypatch.setattr(fpm_runner, "_render_cell", render_cell)
+    monkeypatch.setattr(fpm_runner, "KubernetesCellRunner", LocalResource)
+    checkpoint_dir = tmp_path / "checkpoints"
+    checkpoint_dir.mkdir()
+    kwargs = {
+        "generator_overrides": {},
+        "checkpoint_dir": str(checkpoint_dir),
+        "artifact_root": str(tmp_path / "artifacts"),
+        "retry_failed": False,
+        "database_root": str(tmp_path / "db"),
+    }
+    assert run_collection(plan, resume=False, **kwargs) == []
+    checkpoint_path = checkpoint_dir / "fpm_forward.json"
+    checkpoint = json.loads(checkpoint_path.read_text())
+    assert checkpoint["cells"][cell.cell_id]["status"] == "passed"
+    assert checkpoint["database"]["status"] == "passed"
+    from collector.fpm_forward.database import validate_formal_database_commit
+
+    database = checkpoint["database"]
+    parquet, metadata = Path(database["parquet"]), Path(database["metadata"])
+    assert validate_formal_database_commit(parquet, metadata, plan)["row_count"] == 1
+    return SimpleNamespace(
+        plan=plan,
+        cell=cell,
+        kwargs=kwargs,
+        checkpoint_path=checkpoint_path,
+        parquet=parquet,
+        metadata=metadata,
+        runs=runs,
+    )
+
+
+@pytest.mark.parametrize("different_artifact_root", [False, True])
+def test_explicit_terminal_database_resumes_after_raw_reclamation(completed_explicit_campaign, different_artifact_root):
+    campaign = completed_explicit_campaign
+    committed = (campaign.parquet.read_bytes(), campaign.metadata.read_bytes())
+    original_checkpoint = campaign.checkpoint_path.read_bytes()
+    root = Path(campaign.kwargs["artifact_root"])
+    shutil.rmtree(root / campaign.plan.sha256[:16] / "cells" / campaign.cell.cell_id / "raw")
+    if different_artifact_root:
+        root = root.with_name("new-artifacts")
+        campaign.kwargs["artifact_root"] = str(root)
+
+    assert run_collection(campaign.plan, resume=True, **campaign.kwargs) == []
+
+    assert campaign.runs == ["execute"]
+    assert campaign.checkpoint_path.read_bytes() == original_checkpoint
+    assert (campaign.parquet.read_bytes(), campaign.metadata.read_bytes()) == committed
+    assert json.loads((root / campaign.plan.sha256[:16] / "run-manifest.json").read_text())["attempts"] == []
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("cell_id", "different-cell"),
+        ("source_plan_sha256", "different-plan"),
+        ("collector_attempt_id", "different-attempt"),
+        ("tp", 8),
+        ("total_prefill_tokens", 258),
+        ("latency_ms", 999.0),
+    ],
+)
+def test_terminal_resume_rejects_resealed_foreign_rows(completed_explicit_campaign, field, value, caplog):
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    campaign = completed_explicit_campaign
+    rows = pq.read_table(campaign.parquet).to_pylist()
+    rows[0][field] = value
+    pq.write_table(pa.Table.from_pylist(rows), campaign.parquet)
+    metadata = json.loads(campaign.metadata.read_text())
+    metadata["parquet_sha256"] = hashlib.sha256(campaign.parquet.read_bytes()).hexdigest()
+    campaign.metadata.write_text(json.dumps(metadata))
+    raw = Path(campaign.kwargs["artifact_root"]) / campaign.plan.sha256[:16] / "cells" / campaign.cell.cell_id / "raw"
+    shutil.rmtree(raw)
+
+    with pytest.raises(ValueError, match="explicit benchmark points have no runtime receipt owners"):
+        run_collection(campaign.plan, resume=True, **campaign.kwargs)
+    assert "Completed FPM database checkpoint failed validation" in caplog.text
+    assert campaign.runs == ["execute"]
+
+
+def test_terminal_resume_preserves_complete_first_publisher_reuse(completed_explicit_campaign):
+    campaign = completed_explicit_campaign
+    committed = (campaign.parquet.read_bytes(), campaign.metadata.read_bytes())
+    original = json.loads(campaign.checkpoint_path.read_text())
+    campaign.plan.sha256 = "another-plan-sha"
+    assert run_collection(campaign.plan, resume=False, **campaign.kwargs) == []
+    repeated = json.loads(campaign.checkpoint_path.read_text())
+    assert repeated["database"]["skipped_first_publisher_wins"] == [campaign.cell.cell_id]
+    assert (
+        repeated["cells"][campaign.cell.cell_id]["attempt_id"] != original["cells"][campaign.cell.cell_id]["attempt_id"]
+    )
+    raw = Path(campaign.kwargs["artifact_root"]) / campaign.plan.sha256[:16] / "cells" / campaign.cell.cell_id / "raw"
+    shutil.rmtree(raw)
+
+    assert run_collection(campaign.plan, resume=True, **campaign.kwargs) == []
+    assert campaign.runs == ["execute", "execute"]
+    assert (campaign.parquet.read_bytes(), campaign.metadata.read_bytes()) == committed
+
+
+def test_legacy_terminal_explicit_checkpoint_checks_requested_coordinates(completed_explicit_campaign, caplog):
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    campaign = completed_explicit_campaign
+    checkpoint = json.loads(campaign.checkpoint_path.read_text())
+    del checkpoint["database"]["cell_rows"]
+    campaign.checkpoint_path.write_text(json.dumps(checkpoint))
+    raw = Path(campaign.kwargs["artifact_root"]) / campaign.plan.sha256[:16] / "cells" / campaign.cell.cell_id / "raw"
+    shutil.rmtree(raw)
+    assert run_collection(campaign.plan, resume=True, **campaign.kwargs) == []
+
+    rows = pq.read_table(campaign.parquet).to_pylist()
+    rows[0]["total_prefill_tokens"] += 1
+    pq.write_table(pa.Table.from_pylist(rows), campaign.parquet)
+    metadata = json.loads(campaign.metadata.read_text())
+    metadata["parquet_sha256"] = hashlib.sha256(campaign.parquet.read_bytes()).hexdigest()
+    campaign.metadata.write_text(json.dumps(metadata))
+    with pytest.raises(ValueError, match="explicit benchmark points have no runtime receipt owners"):
+        run_collection(campaign.plan, resume=True, **campaign.kwargs)
+    assert "does not cover requested coordinates" in caplog.text
+
+
+@pytest.mark.parametrize("database_status", ["unpublished", "invalid_commit"])
+def test_explicit_resume_still_requires_raw_receipts_without_valid_commit(completed_explicit_campaign, database_status):
+    campaign = completed_explicit_campaign
+    if database_status == "unpublished":
+        checkpoint = json.loads(campaign.checkpoint_path.read_text())
+        del checkpoint["database"]
+        campaign.checkpoint_path.write_text(json.dumps(checkpoint))
+    else:
+        metadata = json.loads(campaign.metadata.read_text())
+        metadata["parquet_sha256"] = "invalid"
+        campaign.metadata.write_text(json.dumps(metadata))
+    raw = Path(campaign.kwargs["artifact_root"]) / campaign.plan.sha256[:16] / "cells" / campaign.cell.cell_id / "raw"
+    shutil.rmtree(raw)
+
+    with pytest.raises(ValueError, match="explicit benchmark points have no runtime receipt owners"):
+        run_collection(campaign.plan, resume=True, **campaign.kwargs)
+    assert campaign.runs == ["execute"]
+
+
+@pytest.mark.parametrize("status", ["passed", "failed"])
+def test_explicit_recovery_and_publication_reject_wrong_attempt_receipt(completed_explicit_campaign, status):
+    campaign = completed_explicit_campaign
+    checkpoint = json.loads(campaign.checkpoint_path.read_text())
+    del checkpoint["database"]
+    checkpoint["cells"][campaign.cell.cell_id]["status"] = status
+    campaign.checkpoint_path.write_text(json.dumps(checkpoint))
+    cell_dir = Path(campaign.kwargs["artifact_root"]) / campaign.plan.sha256[:16] / "cells" / campaign.cell.cell_id
+    receipt_path = cell_dir / "raw" / "pod-0" / fpm_runner.POINTS_RECEIPT_FILENAME
+    receipt = json.loads(receipt_path.read_text())
+    receipt["attempt_id"] = "another-attempt"
+    receipt_path.write_text(json.dumps(receipt))
+
+    if status == "passed":
+        with pytest.raises(ValueError, match="runtime benchmark-points receipt mismatch"):
+            run_collection(campaign.plan, resume=True, **campaign.kwargs)
+    else:
+        errors = run_collection(campaign.plan, resume=True, **campaign.kwargs)
+        assert [error["classification"] for error in errors] == ["campaign_incomplete"]
+    resumed = json.loads(campaign.checkpoint_path.read_text())
+    assert resumed["cells"][campaign.cell.cell_id]["status"] == status
+    assert "artifact_recovery" not in resumed["cells"][campaign.cell.cell_id]
+    assert resumed.get("database", {}).get("status") != "passed"
+    assert campaign.runs == ["execute"]
 
 
 def test_user_extra_env_reaches_the_render_request_alongside_collector_identities():
@@ -2458,18 +3012,15 @@ def test_publish_partial_ships_passed_cells_and_records_the_missing(tmp_path, mo
         )
     )
 
-    # The database writer has its own coverage; stub it so this test isolates
-    # the publication gate and the aggregation over passed cells.
+    # Keep the publication gate observable while exercising its sealed
+    # per-cell checkpoint proof with the real database writer.
+    from collector.fpm_forward.database import write_formal_database
+
     published = {}
 
     def fake_writer(plan_arg, rows, *, systems_root=None):
         published["rows"] = rows
-        parquet = tmp_path / "db" / "fpm_forward_perf.parquet"
-        parquet.parent.mkdir(parents=True, exist_ok=True)
-        parquet.write_bytes(b"parquet")
-        metadata = parquet.with_suffix(".metadata.json")
-        metadata.write_text("{}")
-        return parquet, metadata, ()
+        return write_formal_database(plan_arg, rows, systems_root=systems_root)
 
     monkeypatch.setattr("collector.fpm_forward.database.write_formal_database", fake_writer)
 
@@ -2603,6 +3154,7 @@ def test_run_manifest_records_collector_phases_and_engine_interface(monkeypatch,
         (cell_dir / "k8s_deploy.yaml").write_text("apiVersion: v1\nkind: Pod\nmetadata:\n  name: cell\n")
         (cell_dir / "run.sh").write_text("#!/bin/sh\n")
         (cell_dir / "fpm_env.sh").write_text("#!/bin/sh\n")
+        (cell_dir / "collector-runtime-env.sh").write_text("export FPM_READINESS_TIMEOUT_SECONDS=900\n")
 
     class FakeResource:
         def __init__(self, _manifest, _cell_dir):
@@ -2683,6 +3235,7 @@ def test_failed_attempt_persists_partial_phase_timing_in_manifest(monkeypatch, t
         (cell_dir / "k8s_deploy.yaml").write_text("apiVersion: v1\nkind: Pod\nmetadata:\n  name: cell\n")
         (cell_dir / "run.sh").write_text("#!/bin/sh\n")
         (cell_dir / "fpm_env.sh").write_text("#!/bin/sh\n")
+        (cell_dir / "collector-runtime-env.sh").write_text("export FPM_READINESS_TIMEOUT_SECONDS=900\n")
 
     class FakeResource:
         def __init__(self, _manifest, _cell_dir):
@@ -2720,3 +3273,83 @@ def test_failed_attempt_persists_partial_phase_timing_in_manifest(monkeypatch, t
     assert attempt["collector_phase_seconds"].keys() == {"render_s"}
     checkpoint = json.loads((checkpoint_dir / "fpm_forward_smoke.json").read_text())
     assert checkpoint["cells"][cell.cell_id]["collector_phase_seconds"].keys() == {"render_s"}
+
+
+@pytest.mark.parametrize("seconds", ["0", "-1", "1.5", "3601", "nan", True])
+def test_runtime_readiness_configuration_rejects_invalid_budget(seconds):
+    cell = _cell()
+    with pytest.raises(ValueError, match="FPM_READINESS_TIMEOUT_SECONDS"):
+        _cell_generator_overrides(
+            _plan(cell),
+            cell,
+            {"K8sConfig": {"extra_env": [{"name": "FPM_READINESS_TIMEOUT_SECONDS", "value": seconds}]}},
+        )
+
+
+def test_runtime_environment_uses_configured_path_and_budget_before_engine(tmp_path):
+    cell = _cell()
+    plan = _plan(cell)
+    plan.capability = SimpleNamespace(architecture="DeepseekV41ForCausalLM")
+    plan.options.decoder_replay = False
+    settings = {
+        "K8sConfig": {
+            "extra_env": [
+                {"name": "PYTHONPATH", "value": "/custom/runtime components/src"},
+                {"name": "FPM_READINESS_TIMEOUT_SECONDS", "value": "600"},
+            ]
+        }
+    }
+    overrides = _cell_generator_overrides(plan, cell, settings)
+    fpm_runner._write_runtime_environment(tmp_path, overrides)
+    actual = subprocess.run(
+        [
+            "bash",
+            "-c",
+            'source "$1"; printf "%s\\n%s\\n" "$PYTHONPATH" "$FPM_READINESS_TIMEOUT_SECONDS"',
+            "bash",
+            str(tmp_path / fpm_runner.RUNTIME_ENV_FILENAME),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert actual.stdout.splitlines() == ["/tmp/fpm-bench:/custom/runtime components/src", "600"]
+    env = {item["name"]: item["value"] for item in overrides["K8sConfig"]["extra_env"]}
+    assert env["PYTHONPATH"] == actual.stdout.splitlines()[0]
+    assert env["DYN_FPM_DSV41_REAL_KV"] == "1"
+
+
+def test_runtime_default_path_is_adapter_owned():
+    cell = _cell()
+    plan = _plan(cell)
+    plan.capability = SimpleNamespace(architecture="DeepseekV41ForCausalLM")
+    plan.options.decoder_replay = False
+    overrides = _cell_generator_overrides(plan, cell, {})
+    env = {item["name"]: item["value"] for item in overrides["K8sConfig"]["extra_env"]}
+    adapter = Path(fpm_runner.__file__).parent / "runtime/dsv41/runtime-paths.json"
+    assert env["PYTHONPATH"] == "/tmp/fpm-bench:" + json.loads(adapter.read_text())["python_path"]
+    assert env["FPM_READINESS_TIMEOUT_SECONDS"] == "900"
+
+
+def test_kubernetes_stages_exact_startup_configuration(tmp_path):
+    runner = _runner(tmp_path)
+    source = tmp_path / "collector-runtime-env.sh"
+    source.write_text("export FPM_READINESS_TIMEOUT_SECONDS=600\n")
+    remote = tmp_path / "remote"
+    remote.mkdir()
+
+    def kubectl(*args, **kwargs):
+        assert args[0] == "cp"
+        shutil.copy2(args[1], remote / Path(args[1]).name)
+        return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+    def execute(pod, command, *, timeout):
+        if command[0] == "mkdir":
+            return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+        rewritten = [arg.replace(REMOTE_WORKDIR, str(remote)) for arg in command]
+        return subprocess.run(rewritten, check=True, capture_output=True, text=True, timeout=timeout)
+
+    runner._kubectl = kubectl
+    runner._exec_checked = execute
+    runner.stage(["pod-0"], [source])
+    assert (remote / source.name).read_bytes() == source.read_bytes()

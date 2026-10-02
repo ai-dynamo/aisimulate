@@ -11,6 +11,12 @@ All paths below are relative to the repository root unless linked otherwise.
 The `aisimulate_core` source namespace is retained inside the `aisimulate`
 wheel; installing or rebuilding a separate AIConfigurator package is unnecessary.
 
+For whole-forward FPM onboarding, start with the [self-service config/profile workflow](../../../docs/fpm-self-service/implementation.md#onboard-with-an-agent),
+which supports direct interpolation without an analytical model class. The
+[SOL-assisted FPM developer guide](fpm/sol-model-integration.md) describes the
+additional operation, memory and native SOL tests needed when adding an analytical
+model for `method: sol`. Neither FPM route requires per-operation GPU timing collection.
+
 ## Choose the smallest extension
 
 | What changed? | Start here |
@@ -103,7 +109,7 @@ python/aisimulate/src/aisimulate_core/systems/data/<system>/<family>/<backend>/<
 Do not relabel another backend version's data as newly measured. Update query
 version/support metadata only when the new cell meets its collection and
 consumer contracts. For whole-forward profiles, use the separate
-[FPM collection-to-prediction workflow](fpm/end-to-end-workflow.md).
+[FPM self-service overview](../../../docs/fpm-self-service/README.md).
 
 ## 4. Validate the intended public path
 

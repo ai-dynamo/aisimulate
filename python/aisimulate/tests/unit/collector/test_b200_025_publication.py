@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Exercise the public loader, not just the more permissive producer writer."""
+"""Exercise published B200 metadata through the public loader."""
 
 import hashlib
 import json
@@ -41,11 +41,11 @@ def test_published_025_metadata_loads_and_is_discoverable():
     assert total_rows == report["total_published_rows"] == 419538
 
 
-@pytest.mark.parametrize("field", ["source_commit", "classified_failures"])
-def test_public_schema_remains_fail_closed_for_relocated_fields(tmp_path, field):
+@pytest.mark.parametrize("field", ["unexpected_runtime_field", "classified_failures"])
+def test_public_schema_remains_fail_closed_for_unknown_fields(tmp_path, field):
     source = next(DATA.glob("*/vllm/0.25.0/collection_meta.yaml"))
     meta = yaml.safe_load(source.read_text())
-    if field == "source_commit":
+    if field == "unexpected_runtime_field":
         meta["runtime"][field] = "a" * 40
     else:
         next(iter(meta["tables"].values()))["collections"][0][field] = 1

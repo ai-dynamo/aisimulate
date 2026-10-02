@@ -3,6 +3,7 @@
 
 """Core Sweeper orchestration parity through the RunnerFactory/ReplaySpec boundary."""
 
+from copy import deepcopy
 from pathlib import Path
 
 import pytest
@@ -21,6 +22,7 @@ from aisimulate.sweeper.replay import (
     ReplaySpec,
     RunnerCapabilities,
 )
+from aisimulate.sweeper.result import CandidateRecord, CandidateStatus
 from aisimulate.sweeper.sampler import Suggestion
 from aisimulate.sweeper.search import Sweeper
 from aisimulate.sweeper.search_space import BranchSpace
@@ -155,7 +157,7 @@ def _stub(monkeypatch, branch):
         "enumerate_branches",
         lambda config, *, max_seq_len=None, runner_capabilities=None: [branch],
     )
-    monkeypatch.setattr(search_mod, "resolve_backend_version", lambda hw, be: "1.3.0rc10")
+    monkeypatch.setattr(search_mod, "resolve_backend_version", lambda hw, be, systems_paths=None: "1.3.0rc10")
 
 
 def _pc(*, tp=4, replicas=2):
@@ -307,7 +309,7 @@ def test_heterogeneous_disagg_materializes_role_hardware_and_provenance(monkeypa
     )
     version_calls = []
 
-    def resolve_version(hardware, backend):
+    def resolve_version(hardware, backend, *, systems_paths=None):
         version_calls.append((hardware, backend))
         return "0.24.0"
 
@@ -1097,7 +1099,7 @@ def test_projection_stall_only_stops_current_branch(monkeypatch):
         "enumerate_branches",
         lambda config, *, max_seq_len=None, runner_capabilities=None: [agg, disagg],
     )
-    monkeypatch.setattr(search_mod, "resolve_backend_version", lambda hw, be: "1.3.0rc10")
+    monkeypatch.setattr(search_mod, "resolve_backend_version", lambda hw, be, systems_paths=None: "1.3.0rc10")
     seen = []
 
     class RepeatingSampler(_FakeSampler):
@@ -1307,3 +1309,47 @@ def test_materialization_preserves_resolved_estimator_or_reports_failure(monkeyp
         assert payload == {
             k: v for k, v in identity.items() if k not in {"enable_eplb", "moe_backend", "wideep_num_slots"}
         }
+
+
+def test_on_candidate_fires_once_per_feasible_outcome_in_evaluation_order(monkeypatch):
+    branch = _branch(_pc())  # 8 GPUs
+    _stub(monkeypatch, branch)
+    factory = _FakeRunnerFactory()
+    seen: list[CandidateRecord] = []
+
+    result = Sweeper(
+        runner_factory=factory,
+        sampler_factory=_FakeSampler,
+        show_progress=False,
+    ).run(_config(), top_n=None, on_candidate=seen.append)
+
+    assert [record.status for record in seen] == [CandidateStatus.FEASIBLE] * 3
+    # Evaluation order (increasing max_num_seqs), not the best-first ranked order.
+    assert [record.score for record in seen] == [256.0, 512.0, 768.0]
+
+    # on_candidate must receive a detached copy: mutating it must not reach the
+    # ledger record returned in the SweepResult. A shallow copy (or handing out
+    # the ledger record itself) would let this mutation leak through.
+    mutated = seen[0]
+    original_config = deepcopy(mutated.config)
+    mutated.config["max_num_seqs"] = "mutated-by-callback"
+
+    ledger_record = next(r for r in result.candidates if r.candidate_id == mutated.candidate_id)
+    assert ledger_record.config == original_config
+    assert ledger_record.config is not mutated.config
+
+
+def test_on_candidate_reports_infeasible_outcomes_too(monkeypatch):
+    branch = _branch(_pc(tp=16, replicas=4))  # 64 GPUs, exceeds a 32 GPU budget
+    _stub(monkeypatch, branch)
+    seen: list[CandidateRecord] = []
+
+    Sweeper(
+        runner_factory=_FakeRunnerFactory(),
+        sampler_factory=_FakeSampler,
+        show_progress=False,
+    ).run(_config(gpu_budget=32), top_n=None, on_candidate=seen.append)
+
+    assert len(seen) == 33
+    assert all(record.status == CandidateStatus.INFEASIBLE for record in seen)
+    assert all("over gpu_budget" in (record.reason or "") for record in seen)

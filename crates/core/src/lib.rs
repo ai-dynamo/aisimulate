@@ -41,15 +41,18 @@ pub use perfmodel::{
     ForwardPassPerfModel, ForwardPassPerfModelConfig, ForwardPassPerfOptions,
     ForwardPassPerfProvenance, ForwardPassPerfReadiness, ForwardPassPerfSource,
     ForwardPassRegressionStoreDiagnostics, ForwardPassRegressionWorkloadKind,
-    ForwardPassSpeculationConfig, ForwardPassWorkerType, FpmRegressionConfig, KvCacheEstimate,
-    KvCacheEstimateAdjusted, KvCacheEstimateError, KvCacheEstimateOptions, KvCacheEstimateRequest,
-    KvCacheMemoryFraction, MemoryBreakdown, ParallelMapping, QuantizationConfig,
-    QueuedRequestMetrics, RegressionFeatureWeights, SamplingConfig, ScheduledRequestMetrics,
-    SpeculativeConfig,
+    ForwardPassSpeculationConfig, ForwardPassSplineDiagnostics, ForwardPassWorkerType,
+    FpmRegressionConfig, KvCacheEstimate, KvCacheEstimateAdjusted, KvCacheEstimateError,
+    KvCacheEstimateOptions, KvCacheEstimateRequest, KvCacheMemoryFraction, MemoryBreakdown,
+    ParallelMapping, QuantizationConfig, QueuedRequestMetrics, RegressionFeatureWeights,
+    SamplingConfig, ScheduledRequestMetrics, SpeculativeConfig,
 };
 pub use perfmodel::{
-    CorrectionFactorBounds, CorrectionFeatureSpace, FpmInterpolationConfig, OpLevelConfig,
-    RegressionFitConfig, RegressionFitKind,
+    CorrectionFactorBounds, CorrectionFeatureSpace, FpmInterpolationConfig, FpmInterpolationMethod,
+    FpmQueryCoverage, FpmQueryCoverageCounts, FpmQueryGap, FpmQueryPurpose, LinearFitConfig,
+    OpLevelConfig, RegressionFeatureAxis, RegressionFitConfig, RegressionFitKind,
+    RegressionSamplingConfig, RegressionUpdatePolicy, SplineFitConfig, SplineSearchConfig,
+    UnrecordedFpmQuantMode,
 };
 
 #[cfg(feature = "python")]
@@ -75,3 +78,8 @@ pub(crate) use perfmodel::{
 #[cfg(feature = "python")]
 #[allow(unused_imports)]
 pub(crate) use perfmodel::{py, py_ops};
+
+pub use perfmodel::{
+    DirectFpmQueryEvidence, ForwardPassEstimate, FpmCoordinates, FpmEstimateEvidence,
+    FpmMeasurementSupport, FpmQueryResolution, FpmRankEstimate,
+};

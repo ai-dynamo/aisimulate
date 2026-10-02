@@ -12,10 +12,13 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import http.client
 import json
+import os
 import re
 import shutil
 import subprocess
+import time
 import urllib.request
 from pathlib import Path
 
@@ -52,6 +55,76 @@ def validate_manifest(manifest: dict) -> None:
             or part["size"] <= 0
         ):
             raise ValueError("invalid pinned dump part")
+
+
+def release_items(path: str) -> list[dict]:
+    """Read every page of release metadata from the fixed upstream repository."""
+    items = []
+    for page in range(1, 101):
+        headers = {"Accept": "application/vnd.github+json", "User-Agent": "aisimulate-accuracy"}
+        if token := os.environ.get("GITHUB_TOKEN"):
+            headers["Authorization"] = f"Bearer {token}"
+        request = urllib.request.Request(
+            f"https://api.github.com/repos/SemiAnalysisAI/InferenceX-app/{path}?per_page=100&page={page}",
+            headers=headers,
+        )
+        with urllib.request.urlopen(request, timeout=120) as response:
+            batch = json.load(response)
+        if not isinstance(batch, list):
+            raise ValueError("invalid upstream release metadata")
+        items.extend(batch)
+        if len(batch) < 100:
+            return items
+    raise ValueError("upstream release pagination limit exceeded")
+
+
+def resolve_latest_manifest(template: dict) -> dict:
+    """Freeze the newest dated dump and its published checksums for one run."""
+    validate_manifest(template)
+    releases = [
+        release
+        for release in release_items("releases")
+        if not release.get("draft")
+        and not release.get("prerelease")
+        and re.fullmatch(r"db-dump/\d{4}-\d{2}-\d{2}", release.get("tag_name", ""))
+    ]
+    if not releases:
+        raise ValueError("no published database dump release")
+    release = max(releases, key=lambda item: item["tag_name"])
+    tag = release["tag_name"]
+    assets = release_items(f"releases/{int(release['id'])}/assets")
+    by_name = {asset["name"]: asset for asset in assets}
+    if len(by_name) != len(assets):
+        raise ValueError("duplicate release assets")
+    checksum_asset = by_name.get("SHA256SUMS", {})
+    if checksum_asset.get("state") != "uploaded":
+        raise ValueError("latest dump has no uploaded SHA256SUMS")
+    with urllib.request.urlopen(RELEASE_ROOT + tag + "/SHA256SUMS", timeout=120) as response:
+        checksums = response.read(1024 * 1024 + 1)
+    if (
+        len(checksums) > 1024 * 1024
+        or len(checksums) != checksum_asset.get("size")
+        or "sha256:" + hashlib.sha256(checksums).hexdigest() != checksum_asset.get("digest")
+    ):
+        raise ValueError("release checksum file digest or size mismatch")
+    parts = []
+    for line in checksums.decode("utf-8").splitlines():
+        match = re.fullmatch(r"([0-9a-f]{64}) [ *](\S+)", line)
+        if not match:
+            raise ValueError("invalid release checksum entry")
+        checksum, name = match.groups()
+        asset = by_name.get(name, {})
+        if asset.get("state") != "uploaded" or asset.get("digest") != "sha256:" + checksum:
+            raise ValueError("dump asset missing or checksum mismatch")
+        parts.append({"name": name, "sha256": checksum, "size": asset["size"]})
+    parts.sort(key=lambda part: part["name"])
+    if {part["name"] for part in parts} != {name for name in by_name if ".dump.zst.part" in name}:
+        raise ValueError("dump assets and checksum entries differ")
+    manifest = {**template, "release_tag": tag, "parts": parts}
+    validate_manifest(manifest)
+    # Leave room for extracted COPY data and tables.json in addition to the dump.
+    manifest["minimum_free_bytes"] = max(template["minimum_free_bytes"], sum(p["size"] for p in parts) + 10_000_000_000)
+    return manifest
 
 
 def digest(path: Path) -> str:
@@ -144,6 +217,38 @@ def read_copy(stream):
     return tables
 
 
+def download_part(url: str, part: dict, target) -> None:
+    """Retry a failed part without retaining corrupt bytes or redownloading prior parts."""
+    offset = target.tell()
+    for attempt in range(1, 4):
+        target.seek(offset)
+        target.truncate()
+        sha = hashlib.sha256()
+        size = 0
+        try:
+            with urllib.request.urlopen(url, timeout=120) as response:
+                while block := response.read(1024 * 1024):
+                    sha.update(block)
+                    size += len(block)
+                    if size > part["size"]:
+                        raise ValueError("dump part exceeds pinned size")
+                    target.write(block)
+            if size != part["size"] or sha.hexdigest() != part["sha256"]:
+                raise ValueError(
+                    f"measurement part checksum or size mismatch: {part['name']}; "
+                    f"received {size}/{part['size']} bytes, "
+                    f"SHA256 {sha.hexdigest()}, expected {part['sha256']}"
+                )
+            return
+        except (OSError, http.client.HTTPException, ValueError) as error:
+            target.seek(offset)
+            target.truncate()
+            if attempt == 3:
+                raise
+            print(f"Retrying {part['name']} after attempt {attempt}/3: {error}", flush=True)
+            time.sleep(5 * attempt)
+
+
 def fetch(manifest: dict, output: Path) -> Path:
     validate_manifest(manifest)
     tag = manifest["release_tag"]
@@ -154,17 +259,7 @@ def fetch(manifest: dict, output: Path) -> Path:
         raise ValueError("insufficient disk for the pinned measurement dump")
     with compressed.open("wb") as target:
         for index, part in enumerate(manifest["parts"]):
-            sha = hashlib.sha256()
-            size = 0
-            with urllib.request.urlopen(RELEASE_ROOT + tag + "/" + part["name"], timeout=120) as response:
-                while block := response.read(1024 * 1024):
-                    sha.update(block)
-                    size += len(block)
-                    if size > part["size"]:
-                        raise ValueError("dump part exceeds pinned size")
-                    target.write(block)
-            if size != part["size"] or sha.hexdigest() != part["sha256"]:
-                raise ValueError("measurement part checksum or size mismatch")
+            download_part(RELEASE_ROOT + tag + "/" + part["name"], part, target)
             print(f"Verified measurement part {index + 1}/{len(manifest['parts'])}", flush=True)
     sql = output / "measurements.copy"
     # Serial pg_restore reads custom-format archives from stdin. Stream past
@@ -205,5 +300,14 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument(
+        "--resolve-latest", action="store_true", help="Write a resolved manifest without downloading the dump"
+    )
     args = parser.parse_args()
-    fetch(json.loads(args.manifest.read_text()), args.output)
+    manifest = json.loads(args.manifest.read_text())
+    if args.resolve_latest:
+        resolved = resolve_latest_manifest(manifest)
+        args.output.write_text(json.dumps(resolved, sort_keys=True) + "\n")
+        print(f"Resolved {resolved['release_tag']} with {len(resolved['parts'])} verified part checksums")
+    else:
+        fetch(manifest, args.output)

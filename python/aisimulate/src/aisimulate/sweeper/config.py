@@ -27,7 +27,15 @@ from typing import Any, Literal
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_serializer, model_validator
 
-from ..config.common import ENGINE_MODEL_CONTROL_FIELDS, is_active_engine_model_control
+from aisimulate.config.traffic import AgenticSnapshotOptions
+
+from ..config.common import (
+    ENGINE_MODEL_CONTROL_FIELDS,
+    SystemsPath,
+    SystemsRoot,
+    is_active_engine_model_control,
+    requested_backend_version,
+)
 from ..config.engine import NgramSpeculationConfig
 
 
@@ -271,6 +279,8 @@ class Workload(BaseModel):
     weka_nested_timestamp_basis: Literal["auto", "absolute", "relative"] | None = None
     arrival_speedup_ratio: float = 1.0  # scale trace inter-arrival times
     agentic_lanes: int | None = Field(default=None, strict=True, gt=0)
+    agentic_snapshot: AgenticSnapshotOptions | None = None
+    agentic_warmup: bool = Field(default=False, strict=True)
     # Closed-loop replay over a *trace*: cap in-flight requests at this many (the
     # trace's timestamps are ignored; a new request starts as one finishes). For a
     # *synthetic* closed-loop workload use ``concurrency`` or ``kv_load_ratio`` instead.
@@ -384,6 +394,10 @@ class Workload(BaseModel):
             self.trace_path is None or self.source_type != "trace" or self.trace_format != "weka"
         ):
             raise ValueError("weka_nested_timestamp_basis requires Weka trace input")
+        if self.agentic_warmup and self.agentic_snapshot is None:
+            raise ValueError("agentic_warmup requires agentic_snapshot")
+        if self.agentic_snapshot is not None and self.agentic_lanes is None:
+            raise ValueError("agentic_snapshot requires positive agentic_lanes")
         if self.agentic_lanes is not None:
             if (
                 self.trace_path is None
@@ -515,9 +529,11 @@ class SearchSpace(BaseModel):
     # pinned
     model_name: str  # HF id or private model name
     hardware_sku: str  # e.g. "h200_sxm"
+    fpm_profile: dict[str, Any] | None = None
     database_mode: Literal["SILICON", "HYBRID", "EMPIRICAL", "SOL"] = "SILICON"
     transfer_policy: str | list[str] | None = None
-    systems_paths: list[str] | None = Field(default=None, min_length=1)
+    systems_paths: list[SystemsRoot] | None = Field(default=None, min_length=1)
+    systems_path: SystemsPath | None = Field(default=None, exclude=True)
     estimation_mode: Literal["auto", "op_level", "fpm_interpolation", "fpm_regression"] = "auto"
     fallback_policy: Literal["deny", "allow"] = "deny"
     estimator_config: dict[str, Any] = Field(default_factory=dict)
@@ -534,6 +550,7 @@ class SearchSpace(BaseModel):
     enable_eplb: bool = Field(default=False, strict=True)
     wideep_num_slots: int | None = Field(default=None, strict=True, gt=0)
     moe_backend: str | None = None
+    moe_kernel_source: str | None = None
     attention_backend: str | None = None
     gemm_quant_mode: str | None = None
     moe_quant_mode: str | None = None
@@ -569,7 +586,8 @@ class SearchSpace(BaseModel):
     prefill_native_host_offload: dict[str, Any] | None = None
     prefill_num_gpu_blocks: int | None = None
     prefill_timing_model: dict[str, Any] | None = None
-    prefill_forward_model: str = "op_level"
+    prefill_forward_model: str = "op_level"  # AIC forward-pass model: op_level | fpm
+    prefill_fpm_parquet_path: str | None = None
     prefill_startup_time: float | None = None
 
     # decode engine (disagg branch): scheduler batching capacity
@@ -583,7 +601,8 @@ class SearchSpace(BaseModel):
     decode_native_host_offload: dict[str, Any] | None = None
     decode_num_gpu_blocks: int | None = None
     decode_timing_model: dict[str, Any] | None = None
-    decode_forward_model: str = "op_level"
+    decode_forward_model: str = "op_level"  # AIC forward-pass model: op_level | fpm
+    decode_fpm_parquet_path: str | None = None
     decode_startup_time: float | None = None
 
     # agg engine (agg branch): scheduler batching capacity
@@ -597,7 +616,8 @@ class SearchSpace(BaseModel):
     agg_native_host_offload: dict[str, Any] | None = None
     agg_num_gpu_blocks: int | None = None
     agg_timing_model: dict[str, Any] | None = None
-    agg_forward_model: str = "op_level"
+    agg_forward_model: str = "op_level"  # AIC forward-pass model: op_level | fpm
+    agg_fpm_parquet_path: str | None = None
     agg_startup_time: float | None = None
     kv_transfer_bytes_per_token: int | str | None = None
     kv_transfer_bandwidth: float | None = None
@@ -638,6 +658,23 @@ class SearchSpace(BaseModel):
     @model_validator(mode="after")
     def _validate_search_choices(self) -> SearchSpace:
         """Every backend dimension is a non-empty subset of its allowed choices."""
+        if self.fpm_profile is not None:
+            from aisimulate_core.sdk.fpm_profile import load_fpm_profile
+
+            profile = load_fpm_profile(self.fpm_profile)
+            if profile.model != self.model_name:
+                raise ValueError("FPM profile model identity does not match the requested model")
+            if set(self.backend) != {"vllm"} or self._uses_legacy_estimator_provider():
+                raise ValueError(
+                    "FPM profiles support vLLM aggregated/disaggregated decoder workers without AFD or encoders"
+                )
+            if any(getattr(self, f"{role}_timing_model") is not None for role in ("agg", "prefill", "decode")):
+                raise ValueError("fpm_profile requires default timing for every worker")
+            self.fpm_profile = profile.model_dump(mode="json")
+        if self.systems_path is not None:
+            if self.systems_paths is not None and self.systems_paths != [self.systems_path]:
+                raise ValueError("systems_path conflicts with systems_paths")
+            self.systems_paths = [self.systems_path]
         if self.speculation is not None:
             if self.aic_nextn is not None:
                 raise ValueError("speculation cannot be combined with aic_nextn")
@@ -683,6 +720,13 @@ class SearchSpace(BaseModel):
             for role in ("agg", "prefill", "decode"):
                 mode = self.role_estimator_controls.get(role, {}).get("estimation_mode", self.estimation_mode)
                 setattr(self, f"{role}_forward_model", "fpm" if mode == "fpm_interpolation" else "op_level")
+        for role in ("prefill", "decode", "agg"):
+            path = getattr(self, f"{role}_fpm_parquet_path")
+            if path is not None:
+                if not path:
+                    raise ValueError(f"{role}_fpm_parquet_path cannot be empty")
+                if getattr(self, f"{role}_forward_model") != "fpm" or getattr(self, f"{role}_timing_model") is not None:
+                    raise ValueError(f"{role}_fpm_parquet_path requires default timing with forward_model='fpm'")
         return self
 
     def _uses_legacy_estimator_provider(self) -> bool:
@@ -805,14 +849,12 @@ class SearchSpace(BaseModel):
     def _normalize_estimator_database_mode(cls, value):
         return value.upper() if isinstance(value, str) else value
 
-    @field_validator("systems_paths")
+    @field_validator("moe_kernel_source", mode="before")
     @classmethod
-    def _validate_estimator_roots(cls, value):
-        if value is None:
-            return value
-        if any(not path.strip() for path in value):
-            raise ValueError("systems_paths entries must be nonempty")
-        return value
+    def _validate_moe_kernel_source(cls, value):
+        from aisimulate_core.sdk.config import normalize_kernel_source
+
+        return normalize_kernel_source(value, "moe_kernel_source")
 
     @model_validator(mode="after")
     def _validate_estimator_controls(self):
@@ -866,7 +908,6 @@ class SearchSpace(BaseModel):
         nondefault = (
             self.database_mode != "SILICON"
             or self.transfer_policy is not None
-            or self.systems_paths not in (None, ["default"])
             or self.estimation_mode != "auto"
             or self.fallback_policy != "deny"
             or bool(self.estimator_config)
@@ -874,6 +915,9 @@ class SearchSpace(BaseModel):
         roles = ({"agg"} if "agg" in self.deployment_mode else set()) | (
             {"prefill", "decode"} if "disagg" in self.deployment_mode else set()
         )
+        if self.systems_paths not in (None, ["default"]) and self._uses_legacy_estimator_provider():
+            unsupported = "AFD" if set(self.deployment_mode) & {"afd", "afd+pd"} else "analytical encoder pools"
+            raise ValueError(f"systems_paths does not support {unsupported}")
         if nondefault and (
             set(self.deployment_mode) & {"afd", "afd+pd"}
             or self.encoder is not None
@@ -932,11 +976,7 @@ class SearchSpace(BaseModel):
     def requested_backend_version(self, backend: str) -> str | None:
         """Return the version pin for ``backend``; ``None`` means resolve latest."""
 
-        if isinstance(self.backend_version, str):
-            return self.backend_version
-        if isinstance(self.backend_version, dict):
-            return self.backend_version.get(backend)
-        return None
+        return requested_backend_version(self.backend_version, backend)
 
     @model_validator(mode="after")
     def _validate_gpu_budget(self) -> SearchSpace:
@@ -1066,6 +1106,47 @@ class SearchSpace(BaseModel):
                 or bounds[0] > bounds[1]
             ):
                 raise ValueError(f"engine_integer_log_ranges.{name} must be positive integer [min, max] bounds")
+        return self
+
+    @model_validator(mode="after")
+    def _validate_grouped_cache(self) -> SearchSpace:
+        if self.fpm_profile is None:
+            return self
+        from aisimulate.fpm_profile import load_fpm_profile
+
+        profile = load_fpm_profile(self.fpm_profile)
+        if not any(deployment.resources.cache_layout == "grouped" for deployment in profile.deployments):
+            return self
+        from .search_space import _fpm_parallel_configs, _parallel_role
+
+        for mode in self.deployment_mode:
+            configs = _fpm_parallel_configs(self, mode)
+            for role in ("agg",) if mode == "agg" else ("prefill", "decode"):
+                for shape in {_parallel_role(config, role).shape for config in configs}:
+                    deployment = profile.select(
+                        model=self.model_name,
+                        worker_type="aggregated" if role == "agg" else role,
+                        system=self.hardware_sku_for(role),
+                        backend="vllm",
+                        backend_version=self.requested_backend_version("vllm"),
+                        tp_size=shape.tp,
+                        pp_size=shape.pp,
+                        attention_dp_size=shape.dp,
+                        moe_tp_size=shape.moe_tp,
+                        moe_ep_size=shape.moe_ep,
+                    )
+                    if deployment.resources.cache_layout != "grouped":
+                        continue
+                    if role != "agg" or self.aic_nextn or self.speculation is not None:
+                        raise ValueError("grouped FPM cache requires aggregated vLLM without speculative decoding")
+                    if self.agg_enable_prefix_caching:
+                        raise ValueError("grouped FPM cache requires agg_enable_prefix_caching=false for cold replay")
+                    if self.agg_native_host_offload is not None:
+                        raise ValueError("grouped FPM cache supports only HBM without host offload")
+                    if self.agg_num_gpu_blocks is not None or self.agg_kv_bytes_per_token != "auto":
+                        raise ValueError(
+                            "grouped FPM cache requires profile groups and a byte budget, not scalar capacity"
+                        )
         return self
 
 

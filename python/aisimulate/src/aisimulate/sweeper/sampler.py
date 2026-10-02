@@ -510,6 +510,8 @@ class SeededBayesianBranchSampler:
         self._designer = gp_ucb_pe.VizierGPUCBPEBandit(
             problem,
             rng=jax.random.PRNGKey(seed),
+            # Growing trial shapes otherwise retain compiled executables across batches.
+            clear_jax_cache=True,
         )
 
     def suggest(self, count: int) -> list[Suggestion]:

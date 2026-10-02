@@ -1,0 +1,16 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+schema_version: 1
+architecture: DeepseekV41ForCausalLM
+model_path: deepseek-ai/DeepSeek-V4.1-Flash
+include_base: false
+framework_specific_model_case_values:
+  sglang:
+    dsv41_module:
+      - model_path: deepseek-ai/DeepSeek-V4.1-Flash
+        tensor_parallel_sizes: [1, 2, 4, 8]
+        execution_profiles: [full, decoder_bounded]
+framework_specific_op_cases:
+  sglang:
+    dsv41_module:
+      cases: all
