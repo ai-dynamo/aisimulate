@@ -150,14 +150,19 @@ def test_history_keeps_dataset_changes_and_applies_baseline(tmp_path, monkeypatc
 
 
 @pytest.mark.parametrize("successful", [True, False])
-def test_measurement_publication_keeps_last_good_snapshot(case, tmp_path, monkeypatch, successful):
+@pytest.mark.parametrize("evaluation_attempt,measurement_attempt", [(1, 1), (1, 2), (2, 1)])
+def test_measurement_publication_keeps_last_good_snapshot(
+    case, tmp_path, monkeypatch, successful, evaluation_attempt, measurement_attempt
+):
     import prepare_fpm_accuracy_pages as publish
     from fpm_accuracy.contract import artifact_key
     from test_publication import archive, job, run
 
     summary, _ = evaluated(case)
     summary["snapshot"]["hf_revision"] = "a" * 40
+    summary["snapshot"]["run_attempt"] = str(evaluation_attempt)
     producer = run(summary)
+    producer["run_attempt"] = max(evaluation_attempt, measurement_attempt)
     writer = VisualizationWriter(tmp_path / "points", repo_id="nvidia/aisimulate-fpm-dataset", revision="a" * 40)
     writer.add_case(case)
     writer.finish()
@@ -173,7 +178,7 @@ def test_measurement_publication_keeps_last_good_snapshot(case, tmp_path, monkey
             schema_version=1,
             evaluator_sha=producer["head_sha"],
             run_id="123",
-            run_attempt="1",
+            run_attempt=str(measurement_attempt),
             completed_at=summary["snapshot"]["completed_at"],
             hf_revision="a" * 40,
             manifest_sha256=hashlib.sha256(files["manifest.json"]).hexdigest(),
@@ -191,6 +196,8 @@ def test_measurement_publication_keeps_last_good_snapshot(case, tmp_path, monkey
     monkeypatch.setattr(publish, "ancestor", lambda *a: True)
     responses = {
         "actions/runs/123": producer,
+        "actions/runs/123/attempts/1": {**producer, "run_attempt": 1},
+        "actions/runs/124/attempts/1": {**new_run, "run_attempt": 1},
         "actions/runs/124": new_run,
         "actions/artifacts/1/zip": archive(summary),
         "actions/artifacts/2/zip": output.getvalue(),
@@ -223,7 +230,7 @@ def test_measurement_publication_keeps_last_good_snapshot(case, tmp_path, monkey
                 result.append(dict(id=2, name="fpm-accuracy-measurements", expired=False))
             return result
         result = [job(producer if "/123/" in path else new_run)]
-        if "/123/" in path:
+        if "/123/" in path and f"/attempts/{measurement_attempt}/" in path:
             result.append(
                 dict(
                     name="Qualify FPM measurements",

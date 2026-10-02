@@ -166,6 +166,27 @@ async def check():
                 await page.set_viewport_size({"width": 1400, "height": 1000})
                 await page.goto(url + "3d-visualization.html")
                 await expect(page.locator("#gv-left-chart .plot-container")).to_be_visible(timeout=30000)
+                held = asyncio.Event()
+                release = asyncio.Event()
+
+                async def hold_chunk(route):
+                    held.set()
+                    await release.wait()
+                    await route.continue_()
+
+                await page.route("**/data/visualization/*.json.gz", hold_chunk)
+                await page.locator("#gv-density").select_option("all")
+                await asyncio.wait_for(held.wait(), timeout=10)
+                await page.locator("#gv-density").select_option("sample")
+                try:
+                    await page.wait_for_function(
+                        "document.querySelector('#gym-visualization').dataset.ready === 'true'",
+                        timeout=10000,
+                    )
+                    await expect(page.locator("#gv-left-chart .plot-container")).to_be_visible()
+                    await expect(page.locator("#gv-left-chart")).to_have_attribute("data-density", "sample")
+                finally:
+                    release.set()
                 axes = await page.locator("#gv-x-axis option").evaluate_all("nodes => nodes.map(n=>n.value)")
                 assert len(axes) == 7
                 for x in axes:

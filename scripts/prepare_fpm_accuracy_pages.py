@@ -168,7 +168,7 @@ def prepare(repo: Path, output: Path):
             if branch not in branches or not ancestor(repo, commit, "origin/" + branch):
                 continue
             run_revisions[(run["id"], snapshot["run_attempt"])] = snapshot["hf_revision"]
-            run_summaries[(run["id"], snapshot["run_attempt"])] = summary
+            run_summaries[(run["id"], snapshot["run_attempt"], branch)] = summary
             identity = (branch, commit, population(summary))
             previous_run = history.get(identity)
             if previous_run is None or snapshot["completed_at"] > previous_run[0]["snapshot"]["completed_at"]:
@@ -247,9 +247,14 @@ def prepare(repo: Path, output: Path):
                 "wrong measurement campaign",
             )
             measurement_revision = snapshot["hf_revision"]
-            require(
-                run_revisions.get((run["id"], str(number))) == measurement_revision, "measurement/evaluation mismatch"
-            )
+            compatible = [
+                summary
+                for (run_id, _, _), summary in run_summaries.items()
+                if run_id == run["id"]
+                and summary["snapshot"]["hf_revision"] == measurement_revision
+                and summary["snapshot"]["evaluator_sha"] == snapshot["evaluator_sha"]
+            ]
+            require(compatible, "measurement/evaluation mismatch")
             endpoint = f"actions/runs/{run['id']}/attempts/{number}"
             attempt = run if number == run["run_attempt"] else api(endpoint)
             require(trusted_run(attempt) and attempt["head_sha"] == run["head_sha"], "untrusted measurement attempt")
@@ -267,7 +272,8 @@ def prepare(repo: Path, output: Path):
                 hashlib.sha256(files["manifest.json"]).hexdigest() == snapshot["manifest_sha256"],
                 "measurement manifest checksum mismatch",
             )
-            validate_visualization(files, measurement_revision, run_summaries[(run["id"], str(number))])
+            for summary in compatible:
+                validate_visualization(files, measurement_revision, summary)
         except urllib.error.HTTPError as exc:
             if exc.code not in {404, 410}:
                 raise

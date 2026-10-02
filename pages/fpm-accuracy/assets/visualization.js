@@ -19,7 +19,8 @@
     : n >= 1e3 ? Number((n / 1e3).toPrecision(3)) + "k" : Number(n.toPrecision(3)).toString();
   const escape = text => String(text).replace(/[&<>"']/g, c => ({"&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;"})[c]);
   let data, axes, groups, catalog, chartLibrary;
-  let pending = Promise.resolve(), queued = false, epoch = 0;
+  const mutations = Object.fromEntries(panes.map(pane => [pane, Promise.resolve()]));
+  let epoch = 0;
 
   async function json(url) {
     const response = await fetch(url);
@@ -134,6 +135,16 @@
     chart.dataset.visible = "0"; chart.dataset.observations = "0";
   }
   async function draw(pane, revision) {
+    const selected = matching(pane).filter(g => g.worker === get(pane + "-worker").value);
+    const mode = density.value;
+    // Acquisition must not block newer selections; only Plotly mutations serialize.
+    await Promise.all([plotly(), ...selected.map(g => loadGroup(g, mode))]);
+    if (revision !== epoch) return;
+    const next = mutations[pane].then(() => revision === epoch ? render(pane, revision) : undefined);
+    mutations[pane] = next.catch(() => {});
+    await next;
+  }
+  async function render(pane, revision) {
     const c = config(pane), chart = get(pane + "-chart"), info = get(pane + "-count");
     const selected = matching(pane).filter(g => g.worker === get(pane + "-worker").value);
     get(pane + "-source").href = c.source;
@@ -203,13 +214,9 @@
     Object.assign(chart.dataset, {visible: String(points.length), observations: String(total), xAxis: ax.id, yAxis: ay.id});
   }
 
-  function redraw() {
-    epoch++;
-    if (queued) return pending;
-    queued = true;
-    pending = pending.then(async () => {
-      queued = false;
-      const revision = epoch;
+  async function redraw() {
+    const revision = ++epoch;
+    try {
       root.dataset.ready = "loading"; get("loading").hidden = false; get("error").hidden = true;
       notes();
       const results = await Promise.allSettled(panes.map(pane => draw(pane, revision)));
@@ -230,8 +237,7 @@
         for (const field of fields) { delete group[field]; delete group["sample_" + field]; }
         delete group.loading_sample; delete group.loading_all;
       }
-    }).catch(fail);
-    return pending;
+    } catch (error) { if (revision === epoch) fail(error); }
   }
   function fail(error) {
     root.dataset.ready = "error"; get("loading").hidden = true; get("error").hidden = false;

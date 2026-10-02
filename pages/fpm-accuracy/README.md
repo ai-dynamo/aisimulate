@@ -166,3 +166,7 @@ history remains available for Slice Detail and Trends.
 Measurement artifact downloads allow up to 900 MiB, matching the archive bundle
 bound. Other Actions responses retain the 64 MiB default; individual assets,
 checksums, and archive paths remain validated before publication.
+
+Partial reruns can combine independently qualified attempts from the same campaign
+when HF revision, evaluator identity, and measurement membership match. Switching
+3D selections does not wait for obsolete downloads; chart mutations remain serialized.

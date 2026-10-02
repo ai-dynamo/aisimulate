@@ -6,11 +6,9 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
 import math
 from collections import defaultdict
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterable, Sequence
 
 from fpm_accuracy.dashboard.data import Heatmap, HeatmapBin, HeatmapCell
 from fpm_accuracy.hf.models import MeasurementObservation
@@ -20,71 +18,6 @@ AXES: dict[str, tuple[str, str]] = {
     "decode": ("num_decode_requests", "sum_decode_kv_tokens"),
     "mixed": ("kv_read", "new_kv"),
 }
-
-_STREAM_COUNT_FIELDS = (
-    "num_prefill_requests",
-    "sum_prefill_tokens",
-    "sum_prefill_kv_tokens",
-    "num_decode_requests",
-    "sum_decode_kv_tokens",
-)
-
-
-def measurement_stream_entry(row: Mapping[str, object]) -> bytes:
-    """Return the canonical bytes for one dashboard measurement row."""
-
-    sequence_index = row.get("sequence_index")
-    if isinstance(sequence_index, bool) or not isinstance(sequence_index, int) or sequence_index < 0:
-        raise ValueError("measurement stream sequence_index must be a non-negative integer")
-    observation_id = row.get("observation_id")
-    if not isinstance(observation_id, str) or not observation_id:
-        raise ValueError("measurement stream observation_id is required")
-    workload = row.get("workload_kind")
-    if workload not in AXES:
-        raise ValueError(f"unsupported measurement workload {workload!r}")
-    actual_raw = row.get("actual_ms")
-    if isinstance(actual_raw, bool) or not isinstance(actual_raw, (int, float)):
-        raise ValueError("measurement stream actual_ms must be positive and finite")
-    actual_ms = float(actual_raw)
-    if not math.isfinite(actual_ms) or actual_ms <= 0:
-        raise ValueError("measurement stream actual_ms must be positive and finite")
-    counts: list[int] = []
-    for field in _STREAM_COUNT_FIELDS:
-        value = row.get(field)
-        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-            raise ValueError(f"measurement stream {field} must be a non-negative integer")
-        counts.append(value)
-    payload = json.dumps(
-        (sequence_index, observation_id, actual_ms.hex(), workload, *counts),
-        ensure_ascii=False,
-        separators=(",", ":"),
-    ).encode("utf-8")
-    return len(payload).to_bytes(8, "big") + payload
-
-
-def measurement_stream_digest(observations: Sequence[MeasurementObservation]) -> str:
-    """Hash the measured fields that must survive unchanged in prediction Parquet."""
-
-    digest = hashlib.sha256()
-    for sequence_index, observation in enumerate(observations):
-        scheduled = observation.scheduled
-        digest.update(
-            measurement_stream_entry(
-                {
-                    "sequence_index": sequence_index,
-                    "observation_id": observation.observation_id,
-                    "actual_ms": observation.actual_ms,
-                    "workload_kind": str(observation.workload_kind),
-                    "num_prefill_requests": scheduled.num_prefill_requests,
-                    "sum_prefill_tokens": scheduled.sum_prefill_tokens,
-                    "sum_prefill_kv_tokens": scheduled.sum_prefill_kv_tokens,
-                    "num_decode_requests": scheduled.num_decode_requests,
-                    "sum_decode_kv_tokens": scheduled.sum_decode_kv_tokens,
-                }
-            )
-        )
-    return digest.hexdigest()
-
 
 def _axis_values(observation: MeasurementObservation) -> tuple[float, float]:
     scheduled = observation.scheduled
