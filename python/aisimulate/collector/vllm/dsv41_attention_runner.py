@@ -159,7 +159,8 @@ def validate_attention_geometry(attn, geometry, layer_id):
     }
     for name, shape in expected.items():
         module = getattr(indexer, name)
-        if (int(module.output_size_per_partition), int(module.input_size_per_partition)) != shape:
+        actual = (int(getattr(module, "output_size_per_partition", module.output_size)), int(getattr(module, "input_size_per_partition", module.input_size)))
+        if actual != shape:  # ReplicatedLinear: full (replicated) sizes, exactly the SGLang graph's per-rank indexer
             raise RuntimeError(f"native indexer {name} partition differs from graph at layer {layer_id}")
 
 
@@ -270,11 +271,19 @@ class AttentionStack:
         self.bound_blocks = None
 
     def cache_layers(self, attn):
+        """Every AttentionLayerBase this layer registered: compressed KV (kv sources), SWA, indexer K
+        (index sources) and the compressor state cache (deepseek_v41/attention.py:463-490; V4.1's
+        indexer owns no compressor of its own, unlike V4)."""
         layers = [attn, attn.swa_cache_layer]
-        if attn.indexer is not None:
-            layers.append(attn.indexer.k_cache)
-        compressors = [attn.compressor] + ([attn.indexer.compressor] if attn.indexer is not None else [])
-        return layers, [c.state_cache for c in compressors if c is not None]
+        indexer = getattr(attn, "indexer", None)
+        if indexer is not None and getattr(indexer, "k_cache", None) is not None:
+            layers.append(indexer.k_cache)
+        states = []
+        for owner in (getattr(attn, "compressor", None), getattr(indexer, "compressor", None) if indexer is not None else None):
+            state = getattr(owner, "state_cache", None) if owner is not None else None
+            if state is not None:
+                states.append(state)
+        return layers, states
 
     def bind_caches(self, batch, seq_len):
         """Allocate and bind every layer's native caches for one case (sizes from the serving specs)."""
