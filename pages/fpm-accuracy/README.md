@@ -10,7 +10,8 @@ compares forward-pass predictions with measurements from the public
 - Trends: main-only, rolling 90-day history starting at
   `8dad9634735b6875e22a90927216e542e73ba237`. Each code/population pair
   retains its newest qualified evaluation. Dataset or FPM input changes break
-  the series; MAPE is weighted by successful prediction count.
+  the series; MAPE is weighted by successful prediction count. Chart labels pair
+  each commit ID with its evaluation date (UTC); tooltips include the time.
 - Slice Detail: retained branch evaluations, FPM variants, phase summaries,
   measurement-only workload distributions, and prediction-error heatmaps.
   Heatmaps use compact cells and size independently, with scrolling only when

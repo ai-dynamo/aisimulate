@@ -63,13 +63,13 @@
     for (let n=0;n<=4;n++) chart += `<text x="4" y="${y(n*max/4)}" fill="currentColor" font-size="12">${(n*max/4).toFixed(1)}%</text>`;
     data.forEach((d,i)=> {
       if (i && methods.some(m=>signature(d.rows,m) !== signature(data[i-1].rows,m))) chart += `<path d="M${(x(i)+x(i-1))/2} 30 V270" stroke="currentColor" stroke-dasharray="4 5"><title>Measurement population or FPM input changed</title></path>`;
-      if (i % Math.max(1,Math.ceil(data.length/10)) === 0 || i === data.length-1) chart += `<text x="${x(i)}" y="295" text-anchor="middle" fill="currentColor" font-size="10">${d.s.snapshot.commit_sha.slice(0,7)}</text>`;
+      if (i % Math.max(1,Math.ceil(data.length/10)) === 0 || i === data.length-1) chart += `<text x="${x(i)}" y="295" text-anchor="middle" fill="currentColor" font-size="10">${d.s.snapshot.commit_sha.slice(0,7)}<tspan x="${x(i)}" dy="14">${esc(completed(d.s.snapshot.completed_at).slice(0,10))}</tspan></text>`;
     });
     methods.forEach((method,k)=>data.forEach((d,i)=> {
       const m = metric(d.rows,method,phase); if (m.mape == null) return;
       const previous = i ? metric(data[i-1].rows,method,phase) : null;
       if (previous?.mape != null && signature(d.rows,method) === signature(data[i-1].rows,method)) chart += `<path d="M${x(i-1)} ${y(previous.mape)} L${x(i)} ${y(m.mape)}" stroke="${colors[k]}" fill="none"/>`;
-      const text = `${labels[method]}: ${value(m)} · AISim ${d.s.snapshot.commit_sha} · HF ${d.s.snapshot.hf_revision} · evaluator ${d.s.snapshot.evaluator_sha}`;
+      const text = `${labels[method]}: ${value(m)} · AISim ${d.s.snapshot.commit_sha} · Evaluated ${completed(d.s.snapshot.completed_at)} · HF ${d.s.snapshot.hf_revision} · evaluator ${d.s.snapshot.evaluator_sha}`;
       chart += `<circle tabindex="0" cx="${x(i)}" cy="${y(m.mape)}" r="5" fill="${colors[k]}" aria-label="${esc(text)}"><title>${esc(text)}</title></circle>`;
     }));
     $('trend-chart').innerHTML = chart+'</svg>'+ (data.length === 1 ? '<p>One evaluation available. More daily evaluations will form the trend.</p>' : '') +'<p>'+methods.map((m,i)=>`<span style="color:${colors[i]}">● ${labels[m]}</span>`).join(' · ')+'</p>';
