@@ -8,10 +8,19 @@ through SGLang's model builder, then uses the framework's own request and KV
 allocation helpers. Prefix extension retains the same request and its cache;
 decode follows actual prefill. Inputs are tokenized text with recorded hashes.
 
-The integration is pinned to SGLang commit
-`1aa0e962b206102b7c439a4a0c4981cfec6e87bc`. The published runtime reports a
-development version, so an immutable image digest and installed Python source
-hash manifest are mandatory. Configuration must match the production model
+The integration is pinned to SGLang tag `v0.5.21` (commit
+`e00930c5489053f26d86b179cee0d087f846acbb`, image `lmsysorg/sglang:v0.5.21`;
+`FRAMEWORK_COMMIT`/`FRAMEWORK_VERSION` in `dsv41_isolated_runner.py`). Collectors
+upgrade in place when the pin moves: the first campaign (H100/H200/B200/GB200,
+B300/GB300) ran at development commit `1aa0e962b206102b7c439a4a0c4981cfec6e87bc`
+and its data stays under the `dev-1aa0e962…` version key; that producer code is
+`git log -- collector/sglang/dsv41_*` away. Between the two pins the native API
+moved (`ParallelState`/`init_torch_distributed` -> `publish(ranks=…)` +
+`bootstrap.init_parallel_runtime`; `build_engram_layout` -> `EngramLayout.from_config`;
+`Engram.apply_gate` -> module-level `engram_gate`; `_hc_mix_and_combine(..., norm)`
+fuses the sublayer RMSNorm into the combine; `_post_load_weights` ->
+`post_load_weights`). An immutable image digest and installed Python source
+hash manifest remain mandatory. Configuration must match the production model
 graph's original cached checkpoint configuration SHA-256, before SDK-inferred
 quantization fields are attached. This differs intentionally from FPM's
 normalized execution identity. An incompatible runtime raises a recorded failure.
@@ -22,11 +31,15 @@ normalized execution identity. An incompatible runtime raises a recorded failure
   native `wo_b.reduce_results` boundary excludes output all-reduce, which still
   executes immediately after the measured interval. TP, local heads and output
   groups come from the native builder.
-- Engram sums `_owned_rows`, native `wkv` and `apply_gate`; the intervening real
+- Engram sums `_owned_rows`, native `wkv` and `engram_gate`; the intervening real
   lookup all-reduce remains outside the measured intervals. Host tables and
   shared host layouts are rejected.
 - mHC sums both `_hc_mix_and_combine` and `hc_post` sites. The optional statistics
   stream is disabled for eager local measurement, preserving selected kernels.
+  Since v0.5.21 the combine takes the sublayer norm (`input_layernorm` for the
+  attention site, `post_attention_layernorm` for FFN) and fuses it, so the timed
+  mHC interval includes that RMSNorm exactly as serving executes it
+  (`mhc_scope.norm_fused_into_combine` in the receipt).
   Layer 2 represents ordinary predecessor-pre-mix behavior; layer 0's initial
   copy is not used as the representative sample.
 - Dense shared projections retain their native quantization method and local
@@ -316,12 +329,27 @@ See the repository's canonical third-party notices for attribution.
 ## Collected H100/H200/B200/GB200 TP2 and TP4 profiles
 
 The collected `full` and `decoder_bounded` execution profiles use SGLang
-`dev-1aa0e962b206102b7c439a4a0c4981cfec6e87bc`. Select these MoE kernels explicitly:
+`dev-1aa0e962b206102b7c439a4a0c4981cfec6e87bc`; `h20_3e` (H20 141GB HBM3e, sm90)
+uses the release pin `0.5.21` (`full` profile). Select these MoE kernels explicitly:
 
 | System | TP2 | TP4 |
 | --- | --- | --- |
-| `h100_sxm`, `h200_sxm` | `w4a16_mxfp4_cutlass` | `w4a16_mxfp4_humming` |
+| `h100_sxm`, `h200_sxm`, `h20_3e` | `w4a16_mxfp4_cutlass` | `w4a16_mxfp4_humming` |
 | `b200_sxm`, `gb200` | `w4a8_mxfp4_mxfp8_trtllm` | `w4a8_mxfp4_mxfp8_trtllm` |
+
+### Publishing a campaign
+
+`python -m collector.sglang.dsv41_publish --system <sys> --systems-root src/aisimulate_core/systems
+--isolated <raw-tp2> <raw-tp4> --attention <attn-raw-tp2> <attn-raw-tp4> --image <oci ref>
+--torch <ver> --nccl <ncclGetVersion>` turns admitted artifacts into
+`dsv41/<backend>/<version>/dsv41_module_perf.parquet`, the `gemm`/`moe` baseline
+tables and `comm/nccl/<nccl>/nccl_perf.parquet`, each with its `collection_meta.yaml`.
+Every isolated raw dir must carry the `plan.json`/`manifest.json` it ran with; every
+attention raw dir its `plan.json` and the `--admit` output as `admitted.parquet`.
+TP-independent physical keys measured by several runs (mHC, the router GEMM) pool
+their per-sample rank maxima (median, summed `sample_count`); rows are never chosen
+by latency. The NCCL version is the runtime library's `ncclGetVersion`, audited inside
+the image (the torch header version can differ: 2.29.7 vs 2.30.7 at v0.5.21).
 
 Set GEMM to `fp8_block`, FMHA to `fp8`, MoE TP equal to model TP, and MoE EP to 1.
 Set `ModelConfig(decoder_replay=True)` for `decoder_bounded` predictions; the

@@ -190,3 +190,37 @@ profiles:
         effect: NoSchedule
     moe_backend:
       trtllm: CUTLASS
+
+  # ---------------------------------------------------------------------------
+  # RTX PRO Blackwell (PCIe, 8-GPU hosts)  —  sm120
+  # Keyed by SM: the SDK carries several RTX PRO systems with the same hardware
+  # facts (rtx_pro_6000_server today; the RTX PRO 5000 campaign box will follow).
+  # Before this profile existed, resolve_facts() raised for every RTX render and
+  # the generator pipeline swallowed it, so NO model default (block-size,
+  # trust-remote-code, autotune flags) reached sm120 engine args
+  # (collector/opharness/results/findings.yaml:
+  #  rtx_systems_have_no_generator_facts_hardware_profile, 2026-10-01).
+  # ---------------------------------------------------------------------------
+  sm120:
+    node_selector:
+      # GPU product label pattern NVIDIA-${name// /-} (same derivation as b200);
+      # device string observed in systems/data/rtx_pro_6000_server/*/*_perf.parquet
+      # `device`: "NVIDIA RTX PRO 6000 Blackwell Server Edition".
+      nvidia.com/gpu.product: NVIDIA-RTX-PRO-6000-Blackwell-Server-Edition
+    arch: x86_64
+    # nccl_env: intentionally none. NCCL_CUMEM_ENABLE is unverified on sm120 and is
+    # not asserted. The sm120 campaign host routes cross-socket ring hops over
+    # NET/Socket by default (PCIe-only, two NUMA domains); the right interface
+    # setting is deployment-specific, not a hardware fact.
+    shared_memory:
+      # vLLM TP8 serving of GLM-5.2-NVFP4 on the 8x RTX PRO 5000 host ran with
+      # --shm-size 32g (2026-10-01, op-path vs forward-pass alignment run).
+      default: 32Gi
+    tolerations:
+      - key: nvidia.com/gpu
+        operator: Exists
+        effect: NoSchedule
+    # moe_backend: intentionally unset. trtllm WIDEEP needs the sm100 wide-EP
+    # fabric (PCIe sm120 has none; the typed builder defaults to CUTLASS when
+    # unset) and sglang deepep_moe is a wide-EP selection. vLLM picks its MoE
+    # backend from MODEL defaults (observed on sm120: FLASHINFER_CUTLASS NvFp4).

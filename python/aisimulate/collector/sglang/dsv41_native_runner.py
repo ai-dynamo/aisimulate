@@ -14,6 +14,7 @@ import argparse
 import hashlib
 import json
 import time
+import types
 from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
@@ -29,6 +30,9 @@ else:
 
 
 def _dispatch(module, method):
+    if isinstance(module, types.ModuleType):
+        # module-level native function (e.g. engram.engram_gate @v0.5.21)
+        return f"{module.__name__}.{method}"
     quant = getattr(module, "quant_method", None)
     suffix = "" if quant is None else f"/{type(quant).__module__}.{type(quant).__name__}"
     return f"{type(module).__module__}.{type(module).__name__}.{method}{suffix}"

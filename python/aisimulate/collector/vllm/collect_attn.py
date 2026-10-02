@@ -1,17 +1,27 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-
-"""vLLM 0.24.0 dense-attention collector for CUDA backends."""
-
-# B200 0.25.0 qualification (installed vLLM dd10e03f9), job 1967975:
-# attention_context and attention_generation: 8/8 representative cases each. The native framework
-# builders/selectors remain authoritative; no kernel fallback is introduced.
-# The campaign manifest still selects one exact release per run.
-__compat__ = "vllm>=0.24.0,<=0.25.0"
+#
+# Versions are upgraded IN PLACE (owner policy 2026-09-20): this file always
+# targets the manifest pin; prior-version code is `git log -- <this file>`
+# away and prior-version DATA stays permanent under its version key. The
+# 0.24->0.29 adaptations each carry a serving citation @0.29.0.
+__compat__ = "vllm>=0.30.0,<=0.30.0"
 
 import os
 
 import torch
+from vllm.config import set_current_vllm_config
+from vllm.platforms import current_platform
+from vllm.utils.import_utils import resolve_obj_by_qualname
+from vllm.utils.torch_utils import set_random_seed
+from vllm.v1.attention.backends.registry import AttentionBackendEnum
+from vllm.v1.attention.backends.utils import (
+    get_supported_kv_cache_layouts,
+    resolve_kv_cache_layout,
+)
+from vllm.v1.attention.selector import AttentionSelectorConfig
+from vllm.version import __version__ as vllm_version
+
 from collector.case_generator import (
     get_attention_context_shape_sweeps,
     get_attention_generation_shape_sweeps,
@@ -25,16 +35,9 @@ from collector.vllm.utils import (
     create_standard_kv_cache_spec,
     create_vllm_config,
     get_attention_backend,
+    kv_block_size,
     with_exit_stack,
 )
-from vllm.config import set_current_vllm_config
-from vllm.platforms import current_platform
-from vllm.utils.import_utils import resolve_obj_by_qualname
-from vllm.utils.torch_utils import set_random_seed
-from vllm.v1.attention.backends.registry import AttentionBackendEnum
-from vllm.v1.attention.backends.utils import set_kv_cache_layout
-from vllm.v1.attention.selector import AttentionSelectorConfig
-from vllm.version import __version__ as vllm_version
 
 
 class MockAttentionLayer:
@@ -52,6 +55,19 @@ class MockAttentionLayer:
 
 # https://github.com/vllm-project/vllm/tree/main/vllm/v1/attention/backends
 # support MHA GQA MQA bfloat16 tensor and bfloat16/fp8 kv cache
+
+
+def kv_cache_in_resolved_layout(kv_cache: torch.Tensor, layer_view_order: tuple[int, ...]) -> torch.Tensor:
+    """Return a tensor with the SAME logical [B, H, N, C] view as ``kv_cache``
+    whose memory follows the resolved physical axis order ``layer_view_order``
+    (vllm.v1.kv_cache_layout.KVCacheLayout.layer_view_order), i.e. exactly what
+    ``kv_cache.permute(*layer_view_order)`` in the backends expects to be
+    contiguous. Identity layout -> the input itself."""
+    order = tuple(int(i) for i in layer_view_order)
+    if order == tuple(range(kv_cache.dim())):
+        return kv_cache.contiguous()
+    inverse = [order.index(i) for i in range(len(order))]
+    return kv_cache.permute(*order).contiguous().permute(*inverse)
 
 
 def _dense_kernel_source(backend_name_str, impl, attn_metadata):
@@ -73,7 +89,17 @@ def _dense_kernel_source(backend_name_str, impl, attn_metadata):
             phase_metadata = attn_metadata.decode
         if phase_metadata is None:
             raise RuntimeError("vLLM FlashInfer metadata has neither a prefill nor a decode portion")
-        return f"vllm_flashinfer_{type(phase_metadata).__name__}".lower()
+        label = f"vllm_flashinfer_{type(phase_metadata).__name__}".lower()
+        # 0.30 folds XQA and trtllm-gen decode into ONE metadata class,
+        # FlashInferTrtllmAPIDecode, and names the kernel in its `kernel` field
+        # (flashinfer.py:568-572 FlashInferDecodeKernel, :608-611 @v0.30.0;
+        # decode_with_xqa / decode_with_trtllm_gen at :1997-1998). The class
+        # name alone would label SM120's XQA row and SM100's trtllm-gen row
+        # identically — kernel_source must name the kernel that ran.
+        kernel = getattr(phase_metadata, "kernel", None)
+        if kernel is not None:
+            label += "_" + str(getattr(kernel, "value", kernel)).lower().replace("-", "_")
+        return label
     return f"vllm_{backend_name_str}".lower()
 
 
@@ -96,7 +122,7 @@ def run_attention_torch(
 
     dtype = torch.bfloat16
     model = os.path.join(os.path.dirname(__file__), "fake_hf_model")
-    block_size = 64
+    block_size = kv_block_size(get_sm_version(), "attention")  # per-SM page size (utils.kv_block_size)
 
     if is_context_phase:
         batch_spec = BatchSpec(
@@ -138,8 +164,29 @@ def run_attention_torch(
         use_sparse=False,
         use_mm_prefix=False,
     )
+    # Backend selection for head_dim > 256 mirrors the framework's own
+    # heterogeneous-head-dim policy. head_dim > 256 is reachable only from
+    # Gemma-4 (global layers, global_head_dim=512), whose model-level config
+    # hook (Gemma4Config.verify_and_update_config,
+    # model_executor/models/config.py:209-256) forces a UNIFORM backend across
+    # its mixed 256/512 heads to avoid the FA3/FA4 mixed penalty. That policy,
+    # plus the per-group validity of head-512, resolves as follows on SM90
+    # (live-engine kernel probe, 2026-09-22, gemma-4-26B-A4B + kv fp8/auto):
+    #   bf16-KV -> FLASH_ATTN (FA4 cute flash_fwd_sm90) — the bare selector
+    #             already returns this, so no override is needed.
+    #   fp8-KV  -> TRITON_ATTN (kernel_unified_attention). No FA/FlashInfer
+    #             path compiles fp8+head512 on SM90, so the uniform-backend
+    #             policy lands on Triton. The bare platform selector, lacking
+    #             the model-level heterogeneous-head context, instead picks
+    #             FlashInfer (whose SM90 fp8+head512 JIT cannot compile) — the
+    #             attention fp8 collection failures. Force the serving backend.
+    # This is not a per-model special case: it reproduces the framework's own
+    # config-hook branch keyed on head_dim, with the metadata-parity citation.
+    selected_backend = None
+    if head_dim > 256 and use_fp8_kv_cache:
+        selected_backend = AttentionBackendEnum.TRITON_ATTN
     backend_path = current_platform.get_attn_backend_cls(
-        None,
+        selected_backend,
         attn_selector_config,
         num_heads=num_heads,
     )
@@ -195,15 +242,33 @@ def run_attention_torch(
         randomize_blocks=True,
     )
 
-    # The helper populates [2, num_blocks, ...]; vLLM 0.24 uses logical
-    # [num_blocks, 2, ...] and may impose a backend-specific physical stride.
-    kv_cache = kv_cache.transpose(0, 1).contiguous()
-    set_kv_cache_layout(backend_cls.get_required_kv_cache_layout())
-    exit_stack.callback(set_kv_cache_layout, None)
-    stride_order = backend_cls.get_kv_cache_stride_order()
-    if stride_order != tuple(range(kv_cache.ndim)):
-        inverse_order = [stride_order.index(i) for i in range(kv_cache.ndim)]
-        kv_cache = kv_cache.permute(*stride_order).contiguous().permute(*inverse_order)
+    # serving-same layout resolution for the single backend under test
+    # (utils.py:240-307@v0.29.0); reset cache_config after the case so the
+    # next backend re-resolves instead of inheriting ("existing wins outright")
+    _supported = get_supported_kv_cache_layouts([backend_cls])
+    resolve_kv_cache_layout(vllm_config, [[m.name for m in _supported]], [kv_cache_spec])
+    exit_stack.callback(lambda: setattr(vllm_config.cache_config, "kv_cache_layout", None))
+    # 0.29 impls consume ONE merged tensor [num_blocks, H, block, 2*D] with
+    # K/V split on the last dim (flash_attn.py:1013-1014 "(B,H,N,2*D) ->
+    # ((B,N,H,D),(B,N,H,D))"); the 0.24-era per-backend stride permutation
+    # (get_kv_cache_stride_order) no longer exists. Convert the populated
+    # helper layout [2, B, N, H, D] once, value-equivalent.
+    _k, _v = kv_cache[0], kv_cache[1]  # [B, N, H, D]
+    kv_cache = torch.cat((_k.permute(0, 2, 1, 3), _v.permute(0, 2, 1, 3)), dim=-1).contiguous()  # [B, H, N, 2*D]
+    # Serving allocates the per-layer cache in the RESOLVED physical layout and
+    # backends read it through kv_cache.permute(*layout.layer_view_order)
+    # (v1/kv_cache_layout.py KVCacheLayout.layer_view_order; flashinfer.py:2091
+    # "kv_cache_permute = kv_cache.permute(*stride_order)  # HND and contiguous"
+    # @v0.30.0). A contiguous [B, H, N, 2*D] tensor is only right for the LBHNC
+    # family (HND) that FLASH_ATTN and the SM100 trtllm-gen FlashInfer path
+    # resolve (flashinfer.py:543-549); FlashInfer elsewhere resolves the NHD
+    # default, whose XQA decode asserts "KV cache inner dims (block_size,
+    # head_size) must be contiguous" on this HND memory (flashinfer.py:2448) —
+    # every fp8-KV GQA generation case on SM120, 2026-10-01. Lay the memory out
+    # per the resolved layout and hand the backend the same logical view.
+    kv_cache = kv_cache_in_resolved_layout(
+        kv_cache, vllm_config.cache_config.get_resolved_kv_cache_layout().layer_view_order
+    )
 
     builder_cls, impl_cls = get_attention_backend(backend_name)
     layer_names = ["placeholder"]

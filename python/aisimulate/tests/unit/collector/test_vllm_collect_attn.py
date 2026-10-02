@@ -125,7 +125,9 @@ def test_generation_uses_total_runtime_length_and_production_call_order(use_fp8_
             self._q_scale_float = self._k_scale_float = self._v_scale_float = 1.0
 
     config = SimpleNamespace(
-        cache_config=SimpleNamespace(block_size=64, num_gpu_blocks=8192),
+        cache_config=SimpleNamespace(block_size=64, num_gpu_blocks=8192,
+                                     # resolved layout (772728f3): identity order = HND
+                                     get_resolved_kv_cache_layout=lambda: SimpleNamespace(name="LBHNC", layer_view_order=(0, 1, 2, 3))),
         model_config=SimpleNamespace(get_sliding_window=lambda: None),
     )
 
@@ -164,6 +166,14 @@ def test_generation_uses_total_runtime_length_and_production_call_order(use_fp8_
         "benchmark_with_power": benchmark,
         "log_perf": lambda **kwargs: calls.setdefault("log", kwargs),
         "vllm_version": "0.24.0",
+        # per-SM page size (collect_attn:125 -> utils.kv_block_size); the test pins SM90's 16
+        "get_sm_version": lambda: 90,
+        "kv_block_size": lambda _sm, _op: 16,
+        # framework-resolved KV layout (collect_attn:248-270, 772728f3): identity order = HND
+        "get_supported_kv_cache_layouts": lambda _backends: [SimpleNamespace(name="LBHNC")],
+        "resolve_kv_cache_layout": lambda _cfg, _layouts, _specs: None,
+        "get_kv_cache_layout": lambda: SimpleNamespace(name="LBHNC", layer_view_order=(0, 1, 2, 3)),
+        "kv_cache_in_resolved_layout": lambda kv, _order: kv,
     }
     _load_function(ATTN_SOURCE, "_dense_kernel_source", namespace)
     run = _load_function(ATTN_SOURCE, "run_attention_torch", namespace)

@@ -294,10 +294,12 @@ impl Dsv41AttentionOp {
             // Pinned SGLang SM90 prefill uses BF16 einsum; decode unpacks
             // the same FP4 K payload inside a BF16 tl.dot kernel. Storage
             // precision does not imply native FP4 tensor-core arithmetic.
-            let (index_rate, query_bytes) = if self.kv_cache_layout
-                == Dsv41KvCacheLayout::SglangFp8Bf16
-                && spec.gpu.sm_version == Some(90)
-            {
+            // On SM90 no runtime has FP4 tensor cores to score with: vLLM 0.30.0
+            // runs DeepGEMM fp8_fp4_(paged_)mqa_logits with an FP8 index-K cache
+            // (vllm/models/deepseek_v41/attention.py:1009-1028, 1083) and SGLang
+            // the BF16 einsum / tl.dot path above, so the Hopper index rate is
+            // BF16-class for every layout (collected on H20 2026-10-02).
+            let (index_rate, query_bytes) = if spec.gpu.sm_version == Some(90) {
                 (bf16, 2.0)
             } else {
                 (
@@ -806,6 +808,24 @@ mod tests {
     }
 
     #[test]
+    fn hopper_index_rate_is_bf16_class_for_every_layout() {
+        // Reversal of the earlier SGLang-only Hopper rule (2026-10-02): vLLM 0.30.0
+        // on H20 scores the index with DeepGEMM fp8 mqa_logits over an FP8 index-K
+        // cache; SM90 has no FP4 tensor cores for any runtime.
+        let mut op = attention("reindex", 1);
+        op.head_dim = 512;
+        op.index_head_dim = 128;
+        let mut spec = unit_spec();
+        spec.gpu.fp4_tc_flops = None;
+        spec.gpu.sm_version = Some(90);
+        op.kv_cache_layout = Dsv41KvCacheLayout::SglangFp8Bf16;
+        let sglang = op.sol(&spec, 1.0, 128.0, 0.0).unwrap().sol.unwrap();
+        op.kv_cache_layout = Dsv41KvCacheLayout::LogicalFp4;
+        let logical = op.sol(&spec, 1.0, 128.0, 0.0).unwrap().sol.unwrap();
+        assert_eq!(logical.math_ms, sglang.math_ms);
+    }
+
+    #[test]
     fn hopper_index_support_does_not_supply_missing_fp4_to_other_contracts() {
         let mut op = attention("reindex", 1);
         op.head_dim = 512;
@@ -813,7 +833,6 @@ mod tests {
         let mut spec = unit_spec();
         spec.gpu.fp4_tc_flops = None;
         for (layout, sm) in [
-            (Dsv41KvCacheLayout::LogicalFp4, Some(90)),
             (Dsv41KvCacheLayout::SglangFp8Bf16, Some(100)),
             (Dsv41KvCacheLayout::SglangFp8Bf16, None),
         ] {

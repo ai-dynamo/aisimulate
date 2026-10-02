@@ -125,6 +125,51 @@ def get_mamba2_test_cases():
     return test_cases
 
 
+
+def _token_major_prefill_conv() -> bool:
+    """Serving's prefill conv layout at this runtime.
+
+    1.3.0rc29 Mamba2Mixer defaults TRTLLM_MAMBA_TOKEN_MAJOR_CONV=1 (mamba2_mixer.py:319)
+    and feeds causal_conv1d_fn a channel-last VIEW of the token-major projection with a
+    separate token-major ``out`` (mamba2_mixer.py:541-569; causal_conv1d.py:26-60 picks
+    causal_conv1d_channellast_fwd_kernel off x.stride(0) == 1). Older runtimes have no
+    ``out`` parameter and run the channel-major kernel on (batch, dim, seq) inputs. The
+    H20 mamba2_ctx gate (2026-10-02) diverged on exactly this kernel pair.
+    """
+    import inspect
+
+    return ("out" in inspect.signature(causal_conv1d_fn).parameters
+            and os.environ.get("TRTLLM_MAMBA_TOKEN_MAJOR_CONV", "1") == "1")
+
+
+def _prefill_conv_token_major_inputs(xbc_batched, batch_size, seq_len, device):
+    """(batch, dim, seq) random input -> the serving varlen token-major buffer
+    [tokens, dim] (sequences concatenated), its ``out`` twin and the varlen
+    metadata serving passes (mamba2_mixer.py:536-569: cu_seqlens int32,
+    cache_indices, has_initial_state=False for a cache-cold prefill)."""
+    conv_dim = xbc_batched.shape[1]
+    x_tm = xbc_batched.permute(0, 2, 1).reshape(batch_size * seq_len, conv_dim).contiguous()
+    out_tm = torch.empty_like(x_tm)
+    cu_seqlens = torch.arange(0, batch_size * seq_len + 1, seq_len, dtype=torch.int32, device=device)
+    cache_indices = torch.arange(batch_size, dtype=torch.int32, device=device)
+    has_initial_state = torch.zeros(batch_size, dtype=torch.bool, device=device)
+    return x_tm, out_tm, cu_seqlens, cache_indices, has_initial_state
+
+
+def _run_prefill_conv_token_major(x_tm, out_tm, conv_weight, conv_bias, conv_state, cu_seqlens, cache_indices, has_initial_state):
+    causal_conv1d_fn(
+        x_tm.t(),
+        conv_weight,
+        conv_bias,
+        query_start_loc=cu_seqlens,
+        cache_indices=cache_indices,
+        has_initial_state=has_initial_state,
+        conv_states=conv_state,
+        activation="silu",
+        out=out_tm.t(),
+    )
+
+
 def run_mamba2_context_benchmark(
     d_model: int,
     d_state: int,
@@ -215,12 +260,25 @@ def run_mamba2_context_benchmark(
                     C = torch.randn(batch_size, seq_len, n_groups, d_state, dtype=dtype, device=device)  # noqa: N806
 
                     # --- Benchmark causal_conv1d_fn ---
-                    torch.cuda.synchronize()
-                    causal_conv1d_fn(xbc_input, conv_weight, conv_bias, activation="silu", conv_states=conv_state)
-                    torch.cuda.synchronize()
+                    conv_kernel_source = "causal_conv1d_fn"
+                    if _token_major_prefill_conv():
+                        conv_kernel_source = "causal_conv1d_fn_token_major"
+                        x_tm, out_tm, cu_seqlens, cache_idx, has_init = _prefill_conv_token_major_inputs(
+                            xbc_input, batch_size, seq_len, device
+                        )
+                        del xbc_input
 
-                    def run_conv1d(_xbc=xbc_input, _conv_state=conv_state):
-                        causal_conv1d_fn(_xbc, conv_weight, conv_bias, activation="silu", conv_states=_conv_state)
+                        def run_conv1d(_x=x_tm, _o=out_tm, _conv_state=conv_state, _cu=cu_seqlens, _ci=cache_idx, _hi=has_init):
+                            _run_prefill_conv_token_major(_x, _o, conv_weight, conv_bias, _conv_state, _cu, _ci, _hi)
+
+                    else:
+
+                        def run_conv1d(_xbc=xbc_input, _conv_state=conv_state):
+                            causal_conv1d_fn(_xbc, conv_weight, conv_bias, activation="silu", conv_states=_conv_state)
+
+                    torch.cuda.synchronize()
+                    run_conv1d()
+                    torch.cuda.synchronize()
 
                     with benchmark_with_power(
                         device=device,
@@ -236,7 +294,7 @@ def run_mamba2_context_benchmark(
                             version=tensorrt_llm.__version__,
                             device_name=torch.cuda.get_device_name(device),
                             op_name="mamba2",
-                            kernel_source="causal_conv1d_fn",
+                            kernel_source=conv_kernel_source,
                             perf_filename=perf_filename,
                             power_stats=results["power_stats"],
                         )
@@ -307,21 +365,39 @@ def run_mamba2_context_benchmark(
                         device,
                     )
 
+                    conv_kernel_source = "causal_conv1d_fn"
+                    conv1d_iter_idx = [0]
+                    if _token_major_prefill_conv():
+                        conv_kernel_source = "causal_conv1d_fn_token_major"
+                        tm_pool = []
+                        for _xb in input_pool["xbc"]:
+                            x_tm, _, cu_seqlens, cache_idx, has_init = _prefill_conv_token_major_inputs(
+                                _xb, batch_size, seq_len, device
+                            )
+                            tm_pool.append(x_tm)
+                        input_pool["xbc"] = tm_pool  # channel-major originals released
+                        out_tm = torch.empty_like(tm_pool[0])
+
+                        def run_conv1d(_pool=tm_pool, _o=out_tm, _conv_state=conv_state, _idx=conv1d_iter_idx,
+                                       _cu=cu_seqlens, _ci=cache_idx, _hi=has_init):
+                            idx = _idx[0] % total_iters
+                            _idx[0] += 1
+                            _run_prefill_conv_token_major(_pool[idx], _o, conv_weight, conv_bias, _conv_state, _cu, _ci, _hi)
+
+                    else:
+
+                        def run_conv1d(_pool=input_pool, _conv_state=conv_state, _idx=conv1d_iter_idx):
+                            idx = _idx[0] % total_iters
+                            _idx[0] += 1
+                            causal_conv1d_fn(
+                                _pool["xbc"][idx], conv_weight, conv_bias, activation="silu", conv_states=_conv_state
+                            )
+
                     # Warmup with first set of inputs
                     torch.cuda.synchronize()
-                    causal_conv1d_fn(
-                        input_pool["xbc"][0], conv_weight, conv_bias, activation="silu", conv_states=conv_state
-                    )
+                    run_conv1d()
+                    conv1d_iter_idx[0] = 0
                     torch.cuda.synchronize()
-
-                    conv1d_iter_idx = [0]
-
-                    def run_conv1d(_pool=input_pool, _conv_state=conv_state, _idx=conv1d_iter_idx):
-                        idx = _idx[0] % total_iters
-                        _idx[0] += 1
-                        causal_conv1d_fn(
-                            _pool["xbc"][idx], conv_weight, conv_bias, activation="silu", conv_states=_conv_state
-                        )
 
                     with benchmark_with_power(
                         device=device,
@@ -337,7 +413,7 @@ def run_mamba2_context_benchmark(
                             version=tensorrt_llm.__version__,
                             device_name=torch.cuda.get_device_name(device),
                             op_name="mamba2",
-                            kernel_source="causal_conv1d_fn",
+                            kernel_source=conv_kernel_source,
                             perf_filename=perf_filename,
                             power_stats=results["power_stats"],
                         )

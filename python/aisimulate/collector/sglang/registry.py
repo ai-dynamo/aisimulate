@@ -32,6 +32,9 @@ REGISTRY: list[OpEntry] = [
         get_func="get_computescale_test_cases",
         run_func="run_computescale",
         perf_filename=PerfFile.COMPUTESCALE,
+        # one measurement, two tables: the static quant row goes to
+        # scale_matrix_perf; finalize binds both to this producer
+        extra_perf_filenames=(PerfFile.SCALE_MATRIX,),
     ),
     OpEntry(
         op="mla_context",
@@ -300,10 +303,11 @@ REGISTRY: list[OpEntry] = [
         perf_filename=PerfFile.GLM5_DSA_ATTN_MODULE,
         unverified_sms=(120,),
     ),
-    # MiniMax-M3 MSA sparse-attention modules — requires the msa-family image
-    # pin (framework_manifest sglang families.msa → official v0.5.16, the
-    # first release with models/minimax_m3.py; the module declares
-    # __compat__ = "sglang>=0.5.16"). Hardware-validated per SM:
+    # MiniMax-M3 MSA sparse-attention modules — need models/minimax_m3.py,
+    # first shipped in the official v0.5.16 release (the module declares
+    # __compat__ = "sglang>=0.5.16"; the 0.5.14-era framework_manifest carried
+    # an msa family pin to v0.5.16, retired when the default moved to 0.5.21
+    # on 2026-10-01). Hardware-validated per SM:
     # SM90 (h100/h200 — SGLang's own M3 server-args override selects
     # fa3 + page 128 and the Triton sparse path,
     # arg_groups/overrides.py:521-537@v0.5.16), SM100/103

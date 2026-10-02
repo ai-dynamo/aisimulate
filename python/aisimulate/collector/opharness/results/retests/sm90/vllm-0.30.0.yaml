@@ -1,0 +1,17 @@
+# Customization retest record for vllm 0.30.0 (upgrade 0.29.0 -> 0.30.0, 2026-09-27).
+# Verdict per repo: still_needed | dropped. Evidence: bare-default A/B on 0.30.0 in a separate
+# workspace (facts/retest_vllm030_ws, targets_bare.yaml = targets.yaml minus the vllm cli_extra_args),
+# same dummies, same image. DSV4 fp4-experts checkpoints: the bare default (moe runner auto) now
+# selects the same marlin_moe_wna16 kernels the params.agg.moe_backend=marlin prescription forced on
+# 0.29 (identity identical: Mxfp4MoEMethod / ModelOptNvFp4FusedMoE -> marlin_moe_wna16::Marlin +
+# vllm::moe align/sort/sum), so the prescription is DROPPED and targets.yaml no longer carries it.
+# Nemotron-H-56B: the bare default still OOMs in the mamba profile run -> gpu-memory-utilization 0.6 stays.
+deepseek-ai/DeepSeek-V4-Pro-0813: dropped  # bare default runs marlin_moe_wna16 (raw cb222a3f6082)
+deepseek-ai/DeepSeek-V4-Flash-0731: dropped  # bare default runs marlin_moe_wna16 (raw feeceff5aa57)
+nvidia/DeepSeek-V4-Pro-NVFP4: dropped  # bare default runs marlin_moe_wna16 (raw 62d59cebdf65)
+nvidia/DeepSeek-V4-Flash-NVFP4: dropped  # bare default runs marlin_moe_wna16 (raw f22b153606f9)
+deepseek-ai/DeepSeek-V4-Flash: dropped  # bare default runs marlin_moe_wna16 (raw 92e95b758ba1)
+deepseek-ai/DeepSeek-V4-Pro: dropped  # bare default runs marlin_moe_wna16 (raw 3958f556b104)
+nvidia/Nemotron-H-56B-Base-8K: still_needed  # bare default fails: torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 8.00 GiB. GPU 0 ha (raw d1ae196be9b1)
+sgl-project/DeepSeek-V4-Flash-FP8: dropped  # bare default runs marlin_moe_wna16 (raw 84b702030d0b)
+sgl-project/DeepSeek-V4-Pro-FP8: dropped  # bare default runs marlin_moe_wna16 (raw 9e11b706370a)

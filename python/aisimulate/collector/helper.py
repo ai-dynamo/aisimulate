@@ -2580,9 +2580,19 @@ def _merge_perf_rows(new_table, old_table, parquet_path: Path, *, pa):
     # the repository's 0.0 unavailable-measurement sentinel. Order-insensitive
     # (the merge realigns column order below); Arrow metadata is ignored
     # (pandas round-trips change it).
+    # `string` and `large_string` are one logical type: pyarrow.csv infers
+    # `string`, but a parquet that already went through one pandas merge comes
+    # back as `large_string`, so the THIRD finalize of a table (run -> resume
+    # -> retry-failed) used to read as a schema mismatch and OVERWRITE the
+    # accumulated rows (sm120 attention_generation fp8kv, 2026-10-01: 27,303
+    # rows replaced by 5,067). Compare the logical string type.
+    def _logical(type_str: str) -> str:
+        return {"large_string": "string", "large_binary": "binary"}.get(type_str, type_str)
+
     def fields(schema):
         return sorted(
-            (f.name, str(f.type)) if f.name not in PERF_METRIC_COLUMNS else (f.name, "<metric>") for f in schema
+            (f.name, _logical(str(f.type))) if f.name not in PERF_METRIC_COLUMNS else (f.name, "<metric>")
+            for f in schema
         )
 
     old_fields = fields(old_table.schema)
@@ -2617,6 +2627,17 @@ def _merge_perf_rows(new_table, old_table, parquet_path: Path, *, pa):
                 new_table.schema.get_field_index(f.name),
                 f.name,
                 new_table.column(f.name).cast(f.type),
+            )
+
+    # align string width variants (string vs large_string) on the new side so the
+    # concatenation below does not widen or fail on a logical-type-equal column
+    for f in old_table.schema:
+        if f.name in PERF_METRIC_COLUMNS:
+            continue
+        new_field = new_table.schema.field(f.name)
+        if new_field.type != f.type and _logical(str(new_field.type)) == _logical(str(f.type)):
+            new_table = new_table.set_column(
+                new_table.schema.get_field_index(f.name), f.name, new_table.column(f.name).cast(f.type)
             )
 
     new_df = new_table.to_pandas()

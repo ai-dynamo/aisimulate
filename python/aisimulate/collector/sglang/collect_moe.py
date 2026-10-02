@@ -55,7 +55,8 @@ rank-local workload construction, quantized weight setup, and perf logging.
 # framework_manifest digest-pinned gate is the true version enforcement
 # upstream and only ever supplies exactly 0.5.14 or 0.5.17 in a sanctioned
 # run, so the leak is unreachable there.
-__compat__ = "sglang>=0.5.14,<=0.5.17,!=0.5.15,!=0.5.16"
+# 0.5.21 added 2026-10-01 (H20/sm90 collector port: op_smoke + path gates in the v0.5.21 image; findings hopper_sglang_collector_port_0514_to_0521_2026_10_01). Releases in between are unvalidated and excluded.
+__compat__ = "sglang>=0.5.14,<=0.5.21,!=0.5.15,!=0.5.16,!=0.5.18,!=0.5.19,!=0.5.20"
 
 import gc
 import importlib
@@ -68,7 +69,7 @@ from types import SimpleNamespace
 from typing import TypedDict
 from unittest.mock import MagicMock
 
-import pkg_resources
+from importlib.metadata import version as _dist_version  # setuptools/pkg_resources is absent from recent framework images
 
 # Mock global server args before importing MOE modules (required by SGLang 0.5.5+)
 # The fused_moe_triton_config module now requires get_global_server_args() to be set
@@ -598,6 +599,7 @@ def _patch_framework_moe_parallel(*, moe_tp_size: int, moe_ep_size: int):
     parallel = SimpleNamespace(
         tp_size=moe_tp_size,
         tp_rank=0,
+        tp_group=None,  # 0.5.21 topk.py:720 use_symmetric_memory(get_parallel().tp_group, disabled=True) only reads it
         moe_tp_size=moe_tp_size,
         moe_tp_rank=0,
         moe_ep_size=moe_ep_size,
@@ -1254,7 +1256,7 @@ def _raise_if_unverified_moe_lane(moe_type: str) -> str:
     reject the unverified 0.5.15/0.5.16 series even though the module-level
     compatibility grammar cannot express a two-interval union.
     """
-    installed_version = pkg_resources.get_distribution("sglang").version
+    installed_version = _dist_version("sglang")
     if moe_type not in ("int4_wo", "w4a16_mxfp4", "w4a8_mxfp4_mxfp8"):
         return installed_version
     verified = any(
