@@ -170,3 +170,7 @@ checksums, and archive paths remain validated before publication.
 Partial reruns can combine independently qualified attempts from the same campaign
 when HF revision, evaluator identity, and measurement membership match. Switching
 3D selections does not wait for obsolete downloads; chart mutations remain serialized.
+
+Manual preview campaigns may run the workflow from a development branch while
+evaluating an eligible main/release source revision. These artifacts retain the
+development evaluator SHA and are excluded from automatic Pages publication.
