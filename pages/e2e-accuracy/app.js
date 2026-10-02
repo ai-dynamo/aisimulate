@@ -526,6 +526,7 @@ function validateSummary(data) {
       !Number.isInteger(topology.total_gpus) || topology.total_gpus <= 0)) return false;
     let previous = 0;
     const counts = { success: 0, unsupported: 0, failed: 0, unknown: 0 };
+    let aicSuccesses = 0;
     return topology.points.every((point) => {
       if (!object(point) || !Number.isFinite(point.concurrency) || point.concurrency <= 0 || point.concurrency < previous ||
         !["success", "unsupported", "failed"].includes(point.status) ||
@@ -534,6 +535,7 @@ function validateSummary(data) {
       previous = point.concurrency;
       if (point.infx_run_id != null && (typeof point.infx_run_id !== "string" || !/^[1-9][0-9]*$/.test(point.infx_run_id))) return false;
       counts[point.status] += 1;
+      if ((point.aic_status ?? "success") === "success") aicSuccesses += 1;
       return ["measured", "aic", "aisimulate"].every((name) => object(point[name]) && ["ttft", "tpot"].every((metric) => {
         const missing = name === "aisimulate" && point.status !== "success" || name === "aic" && (point.aic_status ?? "success") !== "success";
         for (const field of ["ttft_ms", "tpot_ms", "e2e_ms", "output_per_gpu", "total_per_gpu"]) {
@@ -545,7 +547,7 @@ function validateSummary(data) {
         return missing ? value === null && error === null :
           Number.isFinite(value) && value >= 0 && (name === "measured" || Number.isFinite(error) && error >= 0);
       }));
-    }) && Object.keys(topology.aisimulate.status_counts).length === statuses.length &&
+    }) && aicSuccesses === topology.aic.points && Object.keys(topology.aisimulate.status_counts).length === statuses.length &&
       statuses.every((key) => counts[key] === topology.aisimulate.status_counts[key]);
   };
   if (!object(data) || data.schema_version !== 1 || !object(data.snapshot) || !object(data.scope) ||
@@ -1011,7 +1013,7 @@ function bindCharts(container, topology) {
       const point = topology.points[Number(marker.dataset.point)], selected = selectedGpu();
       document.getElementById("point-content").innerHTML = `<h2 id="point-title">Concurrency ${point.concurrency}</h2><p>${escapeHtml(topologyLabel(topology))}</p><p>${escapeHtml(selected.model.model)} · ${escapeHtml(selected.workload.identity)} · ${escapeHtml(selected.gpu.gpu)} · ${escapeHtml(point.status)}</p>
         <details open><summary>Recorded prediction configuration</summary><table><tbody>${Object.entries(point.configuration || {}).map(([key,value]) => `<tr><th>${escapeHtml(key)}</th><td>${escapeHtml(value ?? "Not recorded")}</td></tr>`).join("")}</tbody></table><p>Silicon server knobs are not recorded by this campaign; prediction settings do not establish server-knob parity.</p></details>
-        <table><thead><tr><th>Series</th><th>TTFT ms</th><th>TPOT ms</th><th>E2E ms</th><th>Output tok/s/GPU</th><th>Total tok/s/GPU</th></tr></thead><tbody>${Object.entries(SERIES_NAMES).map(([key,name]) => `<tr><th>${name}</th>${["ttft_ms", "tpot_ms", "e2e_ms", "output_per_gpu", "total_per_gpu"].map(f => `<td>${numeric(point[key][f])}</td>`).join("")}</tr>`).join("")}</tbody></table><p>— means this value was not recorded. Measured output throughput uses the nominal OSL / (ISL + OSL) ratio when only total throughput was recorded.</p>`;
+        <table><thead><tr><th>Series</th><th>TTFT ms</th><th>TPOT ms</th><th>E2E ms</th><th>Output tok/s/GPU</th><th>Total tok/s/GPU</th></tr></thead><tbody>${Object.entries(SERIES_NAMES).map(([key,name]) => `<tr><th>${name}</th>${["ttft_ms", "tpot_ms", "e2e_ms", "output_per_gpu", "total_per_gpu"].map(f => `<td>${numeric(point[key][f])}</td>`).join("")}</tr>`).join("")}</tbody></table><p>— means this value was not recorded. Measured output throughput is unavailable when no output rate was recorded.</p>`;
       document.getElementById("point-dialog").showModal();
     };
     marker.addEventListener("click", open);

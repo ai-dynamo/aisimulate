@@ -352,13 +352,7 @@ def predict_point(point: dict) -> dict:
         measured_total = silicon_metrics["total_token_throughput"] / total_gpus
     row["silicon_total_per_gpu"] = optional_positive(measured_total)
     measured_output = silicon_metrics.get("output_throughput")
-    row["silicon_output_per_gpu"] = (
-        measured_output / total_gpus
-        if positive(measured_output)
-        else measured_total * bench["osl"] / (bench["isl"] + bench["osl"])
-        if positive(measured_total)
-        else None
-    )
+    row["silicon_output_per_gpu"] = measured_output / total_gpus if positive(measured_output) else None
     output = getattr(baseline, "tokens_per_second", None)
     row["aic_output_per_gpu"] = float(output) / total_gpus if positive(output) else None
     row["aic_total_per_gpu"] = None

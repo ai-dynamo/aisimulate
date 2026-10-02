@@ -262,11 +262,16 @@ def _chart_metrics(row: dict[str, Any], prefix: str) -> dict[str, float | None]:
     if prefix == "aic" and row.get("aic_status", "success") != "success":
         return dict.fromkeys(values)
     isl, osl = _finite(row.get("isl")), _finite(row.get("osl"))
-    if isl is not None and osl is not None and isl > 0 and osl > 0:
-        if prefix == "aic" and values["total_per_gpu"] is None and values["output_per_gpu"] is not None:
-            values["total_per_gpu"] = values["output_per_gpu"] * (isl + osl) / osl
-        if prefix == "silicon" and values["output_per_gpu"] is None and values["total_per_gpu"] is not None:
-            values["output_per_gpu"] = values["total_per_gpu"] * osl / (isl + osl)
+    if (
+        prefix == "aic"
+        and values["total_per_gpu"] is None
+        and values["output_per_gpu"] is not None
+        and isl is not None
+        and osl is not None
+        and isl > 0
+        and osl > 0
+    ):
+        values["total_per_gpu"] = values["output_per_gpu"] * (isl + osl) / osl
     return values
 
 

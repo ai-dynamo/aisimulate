@@ -843,7 +843,7 @@ def test_invalid_committed_timestamp_does_not_block_other_branches(artifact, tmp
     monkeypatch.setattr(
         publish,
         "committed_accuracy",
-        lambda repo, ref: ((json.dumps(previous), "pages/e2e-accuracy/summary.json") if ref == "origin/main" else None),
+        lambda repo, ref: (json.dumps(previous), "pages/e2e-accuracy/summary.json") if ref == "origin/main" else None,
     )
     output = tmp_path / "prepared"
     publish.prepare(ROOT, output)
@@ -1216,6 +1216,65 @@ def test_publication_rejects_unknown_baseline_entry_point(artifact):
     summary["snapshot"]["aic_source"]["cli_entry_point"] = "foreign.main:main"
     with pytest.raises(ValueError, match="baseline entry point"):
         publish.validate_artifact(archive(summary), run)
+
+
+@pytest.mark.parametrize("status", ["failed", "unsupported"])
+def test_publication_checks_aic_success_count_against_point_statuses(artifact, status):
+    summary, _ = artifact
+    model = summary["models"][0]
+    workload = model["workloads"][0]
+    gpu = workload["gpus"][0]
+    topology = gpu["topologies"][0]
+    point = topology["points"][0]
+    point["aic_status"] = status
+    point["aic"] = dict.fromkeys(point["aic"])
+    with pytest.raises(pages.PagesBuildError, match="AIC point count"):
+        pages._accuracy_summary(json.dumps(summary))
+    for item in (summary["totals"], model, workload, gpu, topology):
+        item["aic"]["points"] -= 1
+    assert pages._accuracy_summary(json.dumps(summary)) == summary
+
+
+@pytest.mark.parametrize("output", [None, 0, -1, float("nan"), 400])
+def test_campaign_does_not_infer_measured_output_from_total(monkeypatch, output):
+    api, adapter_name = "aisimulate.legacy_cli.api", "aisimulate.sdk.config_adapter"
+    monkeypatch.setattr(campaign, "predictor_module_names", lambda _: (api, adapter_name))
+    monkeypatch.setattr(campaign.importlib.metadata, "distribution", lambda _: SimpleNamespace(files=[]))
+    monkeypatch.setitem(sys.modules, "aisimulate.runner", SimpleNamespace(EngineReplayRunnerFactory=object))
+    worker = SimpleNamespace(tp_size=4, pp_size=1, attention_dp_size=1, moe_tp_size=4, moe_ep_size=1)
+    request = SimpleNamespace(
+        model=SimpleNamespace(path="example/model"), topology=SimpleNamespace(kind="agg", worker=worker)
+    )
+    modules = {
+        api: SimpleNamespace(cli_estimate=lambda **_: SimpleNamespace(ttft=100, tpot=10, backend_version="test")),
+        adapter_name: SimpleNamespace(
+            InferenceXSource=lambda **values: values,
+            adapt_config=lambda _: SimpleNamespace(requests=[request]),
+            to_cli_estimate_kwargs=lambda _: {},
+        ),
+    }
+    monkeypatch.setattr(campaign.importlib, "import_module", modules.__getitem__)
+    monkeypatch.setattr(campaign, "replay_spec", lambda *_: None)
+    config = dict(
+        id=1,
+        model="model",
+        hardware="h200",
+        framework="vllm",
+        precision="fp8",
+        spec_method="none",
+        disagg=False,
+        is_multinode=False,
+        num_decode_gpu=4,
+    )
+    bench = dict(
+        isl=1024,
+        osl=1024,
+        conc=1,
+        metrics=dict(mean_ttft=0.1, mean_tpot=0.01, tput_per_gpu=300, output_throughput=output),
+    )
+    row = campaign.predict_point({"id": "point", "config": config, "benchmark": bench})["row"]
+    assert row["silicon_total_per_gpu"] == 300
+    assert row["silicon_output_per_gpu"] == (100 if output == 400 else None)
 
 
 @pytest.mark.parametrize(
