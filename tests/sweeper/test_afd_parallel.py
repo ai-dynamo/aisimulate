@@ -20,7 +20,7 @@ from aisimulate.sweeper import (
     enumerate_afd_topologies,
 )
 
-_AFD_MIGRATION_GUIDE = Path(__file__).resolve().parents[2] / "docs" / "cli" / "migrate-from-aiconfigurator.md"
+_AFD_MIGRATION_GUIDE = Path(__file__).resolve().parents[2] / "docs" / "MIGRATION.md"
 
 
 def _documented_afd_recommendation() -> dict:
@@ -64,8 +64,10 @@ def test_documented_afd_migration_contract_is_well_formed():
     assert payload["engine"] == {
         "mode": "afd",
         "model": "Qwen/Qwen3-32B",
+        "context_length": 2048,
         "hardware": "h200_sxm",
         "backend": "trtllm",
+        "backend_version": "1.3.0rc20",
         "afd": {
             "phase": "decode",
             "combined_with_pd": True,
@@ -74,7 +76,7 @@ def test_documented_afd_migration_contract_is_well_formed():
     }
     assert payload["evaluation"]["sla"] == {
         "ttft_ms": 800,
-        "itl_ms": 30,
+        "itl_ms": 300,
     }
     assert payload["optimization"] == {
         "target": "throughput_per_gpu",

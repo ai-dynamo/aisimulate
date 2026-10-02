@@ -4,11 +4,19 @@
 //! Replay-level G2 ownership: private per DP rank or one cluster-shared pool
 //! across ranks, replicas and P/D roles.
 
+use std::num::NonZeroU32;
+
+use aisimulate_core::engine::generalized::{EngineIdentity, SchedulerCommand};
+use aisimulate_core::engine::{
+    Admission, Command, Engine, EngineConfig, EngineFactory, KvEventData, KvEventTier, Request,
+    SharedG2Pool,
+};
 use aisimulate_core::replay::{
     G2DomainStats, ReplayCaptureOptions, ReplayDeterminism, ReplayEngineFactory, ReplayReport,
     ReplaySpec, Replayer,
 };
 use serde_json::{Value, json};
+use uuid::Uuid;
 
 /// 9-token prompts: two complete 4-token blocks can be restored from G2.
 const PROMPT: [u32; 9] = [1, 2, 3, 4, 5, 6, 7, 8, 9];
@@ -422,4 +430,172 @@ fn shared_g2_g3_chunked_recompute_of_a_preempted_request_completes() {
     assert_eq!(host_reuse(&report), [0, 0, 0, 0, 0, 8].map(Some));
     let g3 = report.g3_offload.unwrap();
     assert_eq!((g3.read.completed_jobs, g3.bypassed_restores), (1, 0));
+}
+
+/// Drive `engine` until request `id` completes, returning the prompt tokens
+/// its first admission restored from G2.
+fn serve_prompt(engine: &mut Engine, id: u128, now_ms: &mut f64) -> usize {
+    let request_id = Uuid::from_u128(id);
+    // A peer that advanced the shared pool makes this engine's internal work
+    // due now; the engine requires it to be processed before a command.
+    if engine
+        .next_internal_deadline_ms()
+        .is_some_and(|deadline_ms| deadline_ms <= *now_ms)
+    {
+        engine.process_internal_work(*now_ms).unwrap();
+    }
+    engine
+        .apply_command_effects(
+            SchedulerCommand::new(
+                0,
+                Command::Submit(Request {
+                    request_id,
+                    tokens: PROMPT.to_vec(),
+                    max_output_tokens: 1,
+                    output_token_ids: None,
+                }),
+            ),
+            *now_ms,
+        )
+        .unwrap();
+    let mut host_reused = None;
+    let mut record = |admissions: &[Admission]| {
+        for admission in admissions {
+            if admission.request_id == request_id && host_reused.is_none() {
+                host_reused = Some(
+                    admission
+                        .cache_tier_attribution
+                        .map_or(0, |tiers| tiers.host_reused_input_tokens),
+                );
+            }
+        }
+    };
+    for _ in 0..1_000 {
+        if let Some(deadline_ms) = engine.next_internal_deadline_ms()
+            && deadline_ms <= *now_ms
+        {
+            let effects = engine.process_internal_work(*now_ms).unwrap();
+            for rank in &effects.by_rank {
+                record(&rank.effects.admissions);
+            }
+        }
+        let Some(started) = engine.execute_pass(*now_ms).unwrap() else {
+            *now_ms = engine
+                .next_internal_deadline_ms()
+                .expect("an unfinished request must have pending internal work")
+                .max(*now_ms);
+            continue;
+        };
+        for rank in &started.by_rank {
+            record(&rank.effects.admissions);
+        }
+        *now_ms = started.end_ms;
+        let completed = engine.complete_pass(started.pass_id, *now_ms).unwrap();
+        if completed.effects.by_rank.iter().any(|rank| {
+            rank.effects
+                .outputs
+                .iter()
+                .any(|output| output.request_id == request_id && output.completed)
+        }) {
+            return host_reused.expect("a completed request was admitted");
+        }
+    }
+    panic!("request {id} did not complete");
+}
+
+/// Let `engine` finish every transfer it started, such as write-through D2H.
+fn settle(engine: &mut Engine, now_ms: &mut f64) {
+    for _ in 0..1_000 {
+        let Some(deadline_ms) = engine.next_internal_deadline_ms() else {
+            return;
+        };
+        *now_ms = now_ms.max(deadline_ms);
+        engine.process_internal_work(*now_ms).unwrap();
+    }
+    panic!("host transfers did not settle");
+}
+
+#[test]
+fn engines_from_separate_factories_share_one_g2_pool() {
+    let config: EngineConfig = serde_json::from_value(rank(host("cluster_shared"))).unwrap();
+    let build = |pool: Option<&SharedG2Pool>| {
+        let factory = EngineFactory::new(config.clone()).unwrap();
+        let factory = match pool {
+            Some(pool) => factory.with_shared_g2_pool(pool, 1),
+            None => factory,
+        };
+        factory
+            .build(EngineIdentity::new(0), NonZeroU32::MIN)
+            .unwrap()
+    };
+    let pool = SharedG2Pool::new();
+    // An invalid participant must not fix the pool contract for later joiners.
+    let error = EngineFactory::new(config.clone())
+        .unwrap()
+        .with_shared_g2_pool(&pool, 0)
+        .build(EngineIdentity::new(0), NonZeroU32::MIN)
+        .err()
+        .expect("zero tensor parallelism is invalid");
+    assert!(
+        format!("{error:#}").contains("tensor_parallel_size must be positive"),
+        "{error:#}"
+    );
+    assert_eq!(pool.occupancy(), None);
+    let (mut producer, mut consumer) = (build(Some(&pool)), build(Some(&pool)));
+    let mut now_ms = 0.0;
+    assert_eq!(serve_prompt(&mut producer, 1, &mut now_ms), 0);
+    settle(&mut producer, &mut now_ms);
+    assert_eq!(pool.occupancy(), Some((8, 2, 2)));
+    // The consumer never computed the prompt; both full blocks come from G2.
+    assert_eq!(serve_prompt(&mut consumer, 2, &mut now_ms), 8);
+
+    // Without a pool, cluster-shared ranks have no deployment to join.
+    let error = EngineFactory::new(config.clone())
+        .unwrap()
+        .build(EngineIdentity::new(0), NonZeroU32::MIN)
+        .err()
+        .expect("an unbound cluster-shared rank must fail");
+    assert!(format!("{error:#}").contains("cluster_shared"), "{error:#}");
+}
+
+#[test]
+fn an_engine_joining_a_warm_shared_pool_publishes_its_residency() {
+    let mut config: EngineConfig = serde_json::from_value(rank(host("cluster_shared"))).unwrap();
+    config.emit_kv_events = true;
+    let pool = SharedG2Pool::new();
+    let build = || {
+        EngineFactory::new(config.clone())
+            .unwrap()
+            .with_shared_g2_pool(&pool, 1)
+            .build(EngineIdentity::new(0), NonZeroU32::MIN)
+            .unwrap()
+    };
+    let mut producer = build();
+    let mut now_ms = 0.0;
+    serve_prompt(&mut producer, 1, &mut now_ms);
+    settle(&mut producer, &mut now_ms);
+    assert_eq!(pool.occupancy(), Some((8, 2, 2)));
+
+    // The late joiner's residency snapshot must be due now, not wait for an
+    // unrelated request or transfer.
+    let mut consumer = build();
+    assert!(!consumer.is_drained());
+    let deadline_ms = consumer
+        .next_internal_deadline_ms()
+        .expect("a queued residency snapshot is internal work");
+    assert!(deadline_ms <= now_ms, "{deadline_ms} > {now_ms}");
+    let effects = consumer.process_internal_work(now_ms).unwrap();
+    let host_pinned_blocks = effects
+        .by_rank
+        .iter()
+        .flat_map(|rank| &rank.effects.kv_events)
+        .filter(|event| event.tier == KvEventTier::HostPinned)
+        .map(|event| match &event.data {
+            KvEventData::Stored(stored) => stored.blocks.len(),
+            KvEventData::Removed { .. } => panic!("the snapshot only stores"),
+        })
+        .sum::<usize>();
+    assert_eq!(host_pinned_blocks, 2);
+    assert!(consumer.next_internal_deadline_ms().is_none());
+    assert!(consumer.is_drained());
 }

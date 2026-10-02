@@ -37,6 +37,7 @@ AISimulate is the successor to the
 [AIConfigurator (AIC)](https://github.com/ai-dynamo/aiconfigurator)
 repository. It brings the complete AIC application and estimator into one
 standalone home with Dynamo-independent Replay and Sweeper capabilities.
+See the [migration guide](docs/MIGRATION.md) for command and API mappings.
 
 The performance-modeling methodology is described in
 [AIConfigurator: Lightning-Fast Configuration Optimization for Multi-Framework
@@ -267,7 +268,7 @@ The compatibility CLI preserves six workflows:
 Read the [Legacy AIC CLI User Guide](docs/cli/legacy-aic-user-guide.md) for
 command examples and the [package overview](python/aisimulate/README.md)
 for installation and current AISimulate workflows. The
-[AIC migration guide](docs/cli/migrate-from-aiconfigurator.md)
+[AIC migration guide](docs/MIGRATION.md)
 explains which AIC workflows map to `predict` or `recommend` and which ones
 must continue using the compatibility command for now.
 
@@ -404,7 +405,7 @@ It does **not** publish an `aiconfigurator` or `aiconfigurator-core` wheel, a
 Python `aisimulate-core` distribution, or an `aiconfigurator-core` crate. The
 `aisimulate` wheel exposes the `aisimulate` application and `aisimulate_core`
 estimator packages. Only the legacy `aiconfigurator` executable remains; see
-[Python source migration](docs/python-source-migration.md) for removed imports.
+[Python source migration](docs/MIGRATION.md#python-imports-and-resources) for removed imports.
 
 The AISimulate wheel does not declare Dynamo as an installation dependency.
 Dynamo-owned Router, Planner, runtime, transport, and live-Mocker integrations

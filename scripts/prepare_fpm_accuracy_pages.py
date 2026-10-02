@@ -19,6 +19,7 @@ from pathlib import Path
 from fpm_accuracy.contract import REPO, artifact_key, eligible_branch, keys, require, strict_json, validate_summary
 from fpm_accuracy.dashboard_contract import (
     BASELINE,
+    MAX_BUNDLE,
     archive_files,
     population,
     validate_details,
@@ -235,7 +236,7 @@ def prepare(repo: Path, output: Path):
 
     for run, artifact in sorted(measurements, key=measurement_order, reverse=True):
         try:
-            files = archive_files(api(f"actions/artifacts/{artifact['id']}/zip", binary=True))
+            files = archive_files(api(f"actions/artifacts/{artifact['id']}/zip", binary=True, max_bytes=MAX_BUNDLE))
             snapshot = strict_json(files["qualification.json"])
             number = int(snapshot["run_attempt"])
             require(

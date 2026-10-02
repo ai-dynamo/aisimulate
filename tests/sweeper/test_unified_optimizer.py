@@ -17,6 +17,7 @@ from aisimulate.sweeper.parallel_enum import (
 )
 from aisimulate.sweeper.replay import ReplayReport, RunnerCapabilities
 from aisimulate.sweeper.sampler import (
+    InvalidSuggestionError,
     RandomBranchSampler,
     SeededBayesianBranchSampler,
     Suggestion,
@@ -326,6 +327,89 @@ def test_branch_seed_is_stable_when_branch_order_changes(monkeypatch) -> None:
     ]
 
 
+@pytest.mark.parametrize(
+    ("max_trials", "error_type"),
+    [(None, InvalidSuggestionError), (8, InvalidSuggestionError), (8, KeyError)],
+)
+def test_sampler_failure_recovery_is_narrow_and_preserves_best_results(
+    monkeypatch, caplog, max_trials, error_type
+) -> None:
+    calls = []
+    observed = []
+    events = []
+
+    class FailingSampler(_CountingSampler):
+        def suggest(self, count):
+            calls.append(self.branch.deployment_mode)
+            if len(calls) > 2:
+                raise error_type("missing parameters: agg_max_num_batched_tokens")
+            suggestions = super().suggest(count)
+            # Distinct candidates even in the legacy branch-major order.
+            for suggestion in suggestions:
+                if self.branch.deployment_mode == "agg":
+                    suggestion.selection["agg_max_num_seqs"] += len(calls)
+            return suggestions
+
+        def observe(self, suggestion, metrics):
+            observed.append(metrics)
+
+        def observe_infeasible(self, suggestion, reason):
+            pytest.fail(f"unexpected infeasible observation: {reason}")
+
+    class ScoredRunner(_Runner):
+        def run(self, spec):
+            report = super().run(spec)
+            report.metrics["output_throughput_tok_s"] = float(_Runner.runs * 10)
+            return report
+
+    runner = ScoredRunner()
+    monkeypatch.setattr(_Factory, "create", lambda self, worker_id: runner)
+    monkeypatch.setattr(search_module, "enumerate_branches", lambda *args, **kwargs: _branches())
+    monkeypatch.setattr(search_module, "resolve_backend_version", lambda *args, **kwargs: "test")
+    monkeypatch.setattr(
+        "aisimulate.supervision.checkpoint",
+        lambda event, value: events.append((event, value)),
+    )
+    _Runner.runs = 0
+    config = SmartSearchConfig.model_validate(
+        {
+            "search_space": {
+                "model_name": "model",
+                "hardware_sku": "hardware",
+                "deployment_mode": ["agg", "disagg"],
+            },
+            "workload": {"isl": 8, "osl": 2, "concurrency": 1, "num_request_ratio": 1},
+            "sweep": {
+                "max_rounds": 4,
+                "parallel_evals": 1,
+                "candidates_per_round": 1,
+                "max_eval_seconds": None,
+                "max_trials": max_trials,
+            },
+        }
+    )
+    sweeper = search_module.Sweeper(runner_factory=_Factory(), sampler_factory=FailingSampler, show_progress=False)
+    if error_type is KeyError:
+        # A programming error must propagate even when partial results exist.
+        with pytest.raises(KeyError, match="agg_max_num_batched_tokens"):
+            sweeper.run(config, top_n=1)
+        return
+    result = sweeper.run(config, top_n=1)
+
+    assert len(calls) == 3  # No retry and no later branch is searched.
+    assert _Runner.runs == len(observed) == result.counts.feasible == result.counts.evaluated == 2
+    assert result.counts.failed == result.counts.infeasible == 0
+    assert [(candidate.candidate_id, candidate.score) for candidate in result.candidates] == [
+        ("candidate-000001", 10.0),
+        ("candidate-000002", 20.0),
+    ]
+    assert result.selected_candidate_ids == ["candidate-000002"]
+    assert result.selected_candidates[0].score == 20.0
+    assert "agg_max_num_batched_tokens" in caplog.text
+    assert "search is incomplete" in caplog.text
+    assert events[-1][0] == "optimizer_stopped"
+
+
 def test_seeded_random_sampler_is_deterministic() -> None:
     branch = _branches()[0]
     first = RandomBranchSampler(branch, seed=11).suggest(4)
@@ -344,7 +428,6 @@ def test_seeded_bayesian_sampler_is_deterministic() -> None:
     assert [item.selection for item in first] == [item.selection for item in second]
 
 
-@pytest.mark.filterwarnings("ignore:Explicitly requested dtype .*:UserWarning")
 def test_seeded_bayesian_sampler_clears_compilation_cache_between_batches() -> None:
     import jax
 

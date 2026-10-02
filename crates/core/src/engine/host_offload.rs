@@ -16,6 +16,7 @@ mod tier;
 pub(crate) use observation::{
     HostOffloadObservation, HostOffloadObservationData, HostOffloadObserver, HostStoreBlockMapping,
 };
+pub use registry::SharedG2Pool;
 pub(crate) use registry::{G2Binding, G2Registry, HostClient};
 #[cfg(test)]
 pub(crate) use tier::tests::{C, private};

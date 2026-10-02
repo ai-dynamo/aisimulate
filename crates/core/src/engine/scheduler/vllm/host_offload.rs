@@ -53,7 +53,7 @@ enum LoadState {
 pub(super) struct VllmHostRequestState {
     owner: Uuid,
     prompt_keys: Vec<HostBlockKey>,
-    /// Router identities, retained only for a shared pool's residency events.
+    /// Router identities, retained only for `HostPinned` residency events.
     prompt_meta: Option<Vec<HostBlockMeta>>,
     g3_restore: G3Restore,
     next_store_block: usize,
@@ -166,6 +166,8 @@ pub(super) struct HostTransferProgress {
 pub(super) struct VllmHostOffloadAdapter {
     host: HostClient,
     shared: bool,
+    /// The rank publishes G2 residency as `HostPinned` KV events.
+    publishes_residency: bool,
     g3: Option<super::g3_offload::VllmG3OffloadAdapter>,
     load_epoch: u64,
     load_by_key: FxHashMap<HostBlockKey, TransferId>,
@@ -200,7 +202,8 @@ impl VllmHostOffloadAdapter {
         self.observer = Some(observer);
     }
 
-    /// `subscribe` delivers a shared pool's `HostPinned` residency events.
+    /// `subscribe` delivers the pool's `HostPinned` residency events to this
+    /// rank: its private cache, or every block of a shared pool.
     pub(super) fn new(
         config: &NativeHostOffloadConfig,
         block_size: usize,
@@ -210,12 +213,13 @@ impl VllmHostOffloadAdapter {
     ) -> anyhow::Result<Self> {
         let host = HostClient::new(config, block_size, kv_bytes_per_token, binding)?;
         let shared = host.lock().is_shared();
-        if subscribe && shared {
+        if subscribe {
             host.lock().subscribe(host.id());
         }
         Ok(Self {
             host,
             shared,
+            publishes_residency: subscribe,
             g3: None,
             load_epoch: 0,
             load_by_key: FxHashMap::default(),
@@ -228,6 +232,11 @@ impl VllmHostOffloadAdapter {
     /// times are not fixed.
     pub(super) fn is_shared(&self) -> bool {
         self.shared
+    }
+
+    /// Whether requests must retain router identities for residency events.
+    pub(super) fn publishes_residency(&self) -> bool {
+        self.shared || self.publishes_residency
     }
 
     /// Query G2 after the scheduler's one authoritative G1 prefix lookup.
@@ -400,9 +409,6 @@ impl VllmHostOffloadAdapter {
         let mut tier = self.host.lock();
         let client = self.host.id();
         let (completed, mut completed_any) = tier.tick(client, now_ms);
-        for event in tier.take_events(client) {
-            kv_manager.publish_host_pinned_event(event);
-        }
         self.load_epoch += completed.len() as u64;
         for transfer in &completed {
             let CompletedTransfer::Store {
@@ -421,6 +427,11 @@ impl VllmHostOffloadAdapter {
 
         if let Some(g3) = &mut self.g3 {
             completed_any |= g3.advance(&mut tier, now_ms);
+        }
+        // Drain after G3: a promotion landing in G2 above publishes residency
+        // that no later deadline would otherwise deliver.
+        for event in tier.take_events(client) {
+            kv_manager.publish_host_pinned_event(event);
         }
         let mut loads = Vec::new();
         for transfer in completed {
@@ -1322,8 +1333,46 @@ mod tests {
     }
 
     #[test]
-    fn private_g2_leaves_the_device_event_stream_unchanged() {
+    fn private_g2_publishes_host_evictions() {
         use crate::engine::{KvEventData, KvEventTier};
+        let (a, x, y) = ([1, 2, 3, 4, 5], [11, 12, 13, 14, 15], [21, 22, 23, 24, 25]);
+        // A two-block private G2 holds A and X; storing Y evicts A, the LRU block.
+        let waves: [&[&[u32]]; 3] = [&[&a], &[&x], &[&y]];
+        let (events, _) = served_kv_events(
+            Some(NativeHostOffloadConfig::new(2).with_bandwidths(1.0, 1.0)),
+            &waves,
+        );
+        let block = |tokens: &[u32]| {
+            let (_, _, host) = request(Uuid::nil(), tokens.to_vec());
+            host.prompt_keys[0].sequence_hash()
+        };
+        let (a0, x0, y0) = (block(&a), block(&x), block(&y));
+        let host = events
+            .iter()
+            .flatten()
+            .filter(|event| event.tier == KvEventTier::HostPinned)
+            .map(|event| match &event.data {
+                KvEventData::Stored(stored) => (
+                    "stored",
+                    stored.blocks.iter().map(|block| block.block_hash).collect(),
+                ),
+                KvEventData::Removed { block_hashes } => ("removed", block_hashes.clone()),
+            })
+            .collect::<Vec<(&str, Vec<u64>)>>();
+        assert_eq!(
+            host,
+            vec![
+                ("stored", vec![a0]),
+                ("stored", vec![x0]),
+                ("removed", vec![a0]),
+                ("stored", vec![y0]),
+            ]
+        );
+    }
+
+    #[test]
+    fn private_g2_publishes_host_residency_without_changing_device_residency() {
+        use crate::engine::{KvEvent, KvEventData, KvEventTier};
         let (a, x, y) = ([1, 2, 3, 4, 5], [11, 12, 13, 14, 15], [21, 22, 23, 24, 25]);
         // X and Y together evict A's only full block from the four-block G1
         // and then free their partial blocks, so A's return either recomputes
@@ -1339,39 +1388,60 @@ mod tests {
             (vec![0; 4], vec![0, 0, 0, 4]),
             "only the private-G2 run restores A's block by H2D"
         );
-        assert_eq!(private_g2, without_g2);
 
         let block = |tokens: &[u32]| {
             let (_, _, host) = request(Uuid::nil(), tokens.to_vec());
             host.prompt_keys[0].sequence_hash()
         };
         let (a0, x0, y0) = (block(&a), block(&x), block(&y));
-        let stream = private_g2
-            .iter()
-            .flatten()
-            .map(|event| match &event.data {
-                KvEventData::Stored(stored) => (
-                    event.event_id,
-                    event.tier,
-                    "stored",
-                    stored.blocks.iter().map(|block| block.block_hash).collect(),
-                ),
-                KvEventData::Removed { block_hashes } => {
-                    (event.event_id, event.tier, "removed", block_hashes.clone())
-                }
-            })
-            .collect::<Vec<_>>();
-        let device = KvEventTier::Device;
+        let residency = |events: &[Vec<KvEvent>], tier: KvEventTier| {
+            events
+                .iter()
+                .flatten()
+                .filter(|event| event.tier == tier)
+                .map(|event| match &event.data {
+                    KvEventData::Stored(stored) => (
+                        "stored",
+                        stored.blocks.iter().map(|block| block.block_hash).collect(),
+                    ),
+                    KvEventData::Removed { block_hashes } => ("removed", block_hashes.clone()),
+                })
+                .collect::<Vec<(&str, Vec<u64>)>>()
+        };
+        // G1 residency is exactly the G2-off stream; event IDs are shared with
+        // the interleaved HostPinned events, as in one vLLM KV event stream.
+        let device_residency = vec![
+            ("stored", vec![a0]),
+            ("stored", vec![x0]),
+            ("removed", vec![a0]),
+            ("stored", vec![y0]),
+            ("stored", vec![a0]),
+        ];
         assert_eq!(
-            stream,
+            residency(&without_g2, KvEventTier::Device),
+            device_residency
+        );
+        assert_eq!(
+            residency(&private_g2, KvEventTier::Device),
+            device_residency
+        );
+        assert!(residency(&without_g2, KvEventTier::HostPinned).is_empty());
+        // Native vLLM's OffloadingConnector reports its private CPU cache the
+        // same way, so a KV router can credit A while it is host-only.
+        assert_eq!(
+            residency(&private_g2, KvEventTier::HostPinned),
             vec![
-                (0, device, "stored", vec![a0]),
-                (1, device, "stored", vec![x0]),
-                (2, device, "removed", vec![a0]),
-                (3, device, "stored", vec![y0]),
-                (4, device, "stored", vec![a0]),
+                ("stored", vec![a0]),
+                ("stored", vec![x0]),
+                ("stored", vec![y0])
             ]
         );
+        let ids = private_g2
+            .iter()
+            .flatten()
+            .map(|event| event.event_id)
+            .collect::<Vec<_>>();
+        assert!(ids.windows(2).all(|pair| pair[0] < pair[1]), "{ids:?}");
     }
 
     #[test]
@@ -1494,6 +1564,84 @@ mod tests {
                 check_g3_cancellation(observed_at_ms, foreign_watermark);
             }
         }
+    }
+
+    #[test]
+    fn g3_promotion_into_private_g2_publishes_host_residency_in_the_same_advance() {
+        use crate::engine::g3_offload::{Direction, G3Tier};
+        use crate::engine::scheduler::capture_kv_event_sink;
+        use crate::engine::{G3OffloadConfig, G3Scope, KvEventData, KvEventTier};
+        // A rank that publishes KV events subscribes to its private G2.
+        let mut adapter = VllmHostOffloadAdapter::new(
+            &NativeHostOffloadConfig::new(2).with_bandwidths(1.0, 1.0),
+            4,
+            250_000,
+            None,
+            true,
+        )
+        .unwrap();
+        let owner = Uuid::from_u128(902);
+        let (sequence, identities) =
+            RequestSequence::new(owner, vec![1, 2, 3, 4, 5], 0, 0, 4, true, true, false, None);
+        let lease = BlockRequestLease::new(owner, identities);
+        let mut host = VllmHostRequestState::new(&sequence, &lease, 4, true);
+        let key = host.prompt_keys[0];
+        let registry = G3Tier::new(
+            G3OffloadConfig {
+                scope: G3Scope::ClusterShared,
+                num_g3_blocks: 4,
+                latency_to_first_byte_ms: 0.0,
+                read_bandwidth_gbps: 1.0,
+                write_bandwidth_gbps: 0.0,
+                shared_read_bandwidth_gbps: 1.0,
+                shared_write_bandwidth_gbps: 0.0,
+            },
+            2,
+            1_000_000,
+        )
+        .unwrap();
+        registry
+            .lock()
+            .unwrap()
+            .submit(0, Direction::Write, &[key], 0.0)
+            .unwrap();
+        registry.lock().unwrap().take_completed(0, 0.0);
+        adapter.set_g3(registry, 1);
+        let (buffer, sink) = capture_kv_event_sink();
+        let mut manager =
+            G1Manager::new_with_caching(4, 4, KvEventPublishers::new(Some(sink)), 0, true);
+        adapter.advance(&mut manager, 0.0);
+        assert!(matches!(
+            adapter.lookup(
+                &mut host,
+                &sequence,
+                &raw_cost(&manager, &sequence, &lease),
+                4,
+                adapter.current_time_ms(),
+            ),
+            HostLookup::Deferred
+        ));
+        // The requester leaves; its detached G3 promotion still lands in G2
+        // during the final advance, which leaves no later deadline.
+        assert!(adapter.cancel_request(&mut host, &mut manager, 0.0, 0.5));
+        buffer.drain();
+        adapter.advance(&mut manager, 4.0);
+        assert_eq!(adapter.host.lock().lookup(key), Lookup::Hit);
+        assert!(adapter.next_deadline().is_none());
+        let host_pinned = buffer
+            .drain()
+            .into_iter()
+            .filter(|event| event.tier == KvEventTier::HostPinned)
+            .map(|event| match event.data {
+                KvEventData::Stored(stored) => stored
+                    .blocks
+                    .iter()
+                    .map(|block| block.block_hash)
+                    .collect::<Vec<_>>(),
+                KvEventData::Removed { .. } => panic!("promotion evicts nothing"),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(host_pinned, vec![vec![key.sequence_hash()]]);
     }
 
     fn check_g3_cancellation(observed_at_ms: f64, foreign_watermark: Option<f64>) {

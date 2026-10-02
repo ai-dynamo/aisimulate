@@ -338,7 +338,7 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
-def api(path: str, *, binary=False):
+def api(path: str, *, binary=False, max_bytes=64 * 1024 * 1024):
     request = urllib.request.Request(
         "https://api.github.com/repos/" + REPO + "/" + path,
         headers={
@@ -358,8 +358,8 @@ def api(path: str, *, binary=False):
             raise ValueError("insecure artifact redirect") from exc
         response = urllib.request.urlopen(url, timeout=60)
     with response:
-        body = response.read(64 * 1024 * 1024 + 1)
-    if len(body) > 64 * 1024 * 1024:
+        body = response.read(max_bytes + 1)
+    if len(body) > max_bytes:
         raise ValueError("oversized Actions response")
     return body if binary else strict_json(body)
 

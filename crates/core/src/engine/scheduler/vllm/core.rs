@@ -1401,7 +1401,7 @@ impl VllmCore {
                 &sequence.sequence,
                 &sequence.lease,
                 self.args.block_size,
-                adapter.is_shared(),
+                adapter.publishes_residency(),
             ))
         });
         VllmRequestState {

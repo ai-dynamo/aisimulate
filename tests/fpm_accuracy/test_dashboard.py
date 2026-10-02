@@ -8,6 +8,7 @@ import zipfile
 from itertools import pairwise
 from pathlib import Path
 
+import prepare_e2e_accuracy_pages as transport
 import pytest
 from fpm_accuracy.dashboard.measurement_heatmaps import _bin_index, _bins
 from fpm_accuracy.dashboard.visualization import VisualizationWriter
@@ -161,6 +162,12 @@ def test_measurement_publication_keeps_last_good_snapshot(case, tmp_path, monkey
     writer.add_case(case)
     writer.finish()
     files = {p.name: p.read_bytes() for p in writer.directory.iterdir()}
+    # A valid stored ZIP above the default API cap, with each asset below 64 MiB.
+    padding = b" " * (33 * 1024 * 1024)
+    files["catalog.json"] += padding
+    manifest = json.loads(files["manifest.json"])
+    manifest["files"]["catalog.json"] = hashlib.sha256(files["catalog.json"]).hexdigest()
+    files["manifest.json"] = json.dumps(manifest).encode() + padding
     files["qualification.json"] = json.dumps(
         dict(
             schema_version=1,
@@ -189,7 +196,23 @@ def test_measurement_publication_keeps_last_good_snapshot(case, tmp_path, monkey
         "actions/artifacts/2/zip": output.getvalue(),
         "actions/artifacts/3/zip": archive(newer),
     }
-    monkeypatch.setattr(publish, "api", lambda path, **kw: responses[path])
+    monkeypatch.setenv("GH_TOKEN", "test-token")
+
+    class Opener:
+        def open(self, request, timeout):
+            return io.BytesIO(output.getvalue())
+
+    monkeypatch.setattr(transport.urllib.request, "build_opener", lambda *args: Opener())
+    assert len(output.getvalue()) > 64 * 1024 * 1024
+    with pytest.raises(ValueError, match="oversized Actions response"):
+        transport.api("actions/artifacts/2/zip", binary=True)
+
+    def api(path, **kwargs):
+        if path == "actions/artifacts/2/zip":
+            return transport.api(path, **kwargs)
+        return responses[path]
+
+    monkeypatch.setattr(publish, "api", api)
 
     def items(path, key):
         if key == "artifacts":
@@ -219,3 +242,19 @@ def test_measurement_publication_keeps_last_good_snapshot(case, tmp_path, monkey
     if successful:
         status = json.loads(publication.read_text())
         assert status["hf_revision"] == "a" * 40 and status["current_hf_revision"] == "b" * 40
+
+
+@pytest.mark.parametrize("size", [8, 9])
+def test_actions_download_enforces_selected_limit(monkeypatch, size):
+    monkeypatch.setenv("GH_TOKEN", "test-token")
+
+    class Opener:
+        def open(self, request, timeout):
+            return io.BytesIO(b"x" * size)
+
+    monkeypatch.setattr(transport.urllib.request, "build_opener", lambda *args: Opener())
+    if size == 8:
+        assert transport.api("actions/artifacts/1/zip", binary=True, max_bytes=8) == b"x" * 8
+    else:
+        with pytest.raises(ValueError, match="oversized Actions response"):
+            transport.api("actions/artifacts/1/zip", binary=True, max_bytes=8)

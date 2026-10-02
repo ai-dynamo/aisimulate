@@ -162,3 +162,7 @@ At HF `68fa3add95b32a0399d781b043cb0f1008c8040d`, two archived DeepSeek
 manifests lack current-manifest hash bindings. Archived source traversal is
 therefore excluded without weakening loader validation. Retained evaluation
 history remains available for Slice Detail and Trends.
+
+Measurement artifact downloads allow up to 900 MiB, matching the archive bundle
+bound. Other Actions responses retain the 64 MiB default; individual assets,
+checksums, and archive paths remain validated before publication.

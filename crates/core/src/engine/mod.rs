@@ -19,6 +19,7 @@ mod scheduler;
 mod timing;
 mod trace;
 
+pub use host_offload::SharedG2Pool;
 pub(crate) use host_offload::{
     G2Binding, G2Registry, HostBlockKey, HostOffloadObservation, HostOffloadObservationData,
     HostOffloadObserver,

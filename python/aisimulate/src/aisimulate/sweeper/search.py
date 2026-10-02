@@ -88,7 +88,7 @@ from .result import (
     retain_candidate_records,
 )
 from .sample import unroll_sample
-from .sampler import BranchSampler, Suggestion, make_branch_sampler
+from .sampler import BranchSampler, InvalidSuggestionError, Suggestion, make_branch_sampler
 from .score import aggregate_sla_violations, analyze_candidates, is_feasible, make_candidate, minimum_goodput_violations
 from .search_space import BranchSpace, ConditionalDimensionSpace, enumerate_branches
 
@@ -1724,26 +1724,37 @@ class Sweeper:
                             "new replay configuration(s) in the round"
                         )
 
-            if sweep.max_trials is None:
-                # Preserve the legacy SDK's branch-major round ordering.
-                for state in branch_states:
-                    for _ in range(sweep.max_rounds):
-                        if state.stalled:
-                            break
-                        _run_branch_round(state)
-            else:
-                # Unified CLI: give each active branch one batch per cycle. This
-                # prevents either study from consuming its full allocation before
-                # the other receives suggestions while retaining parallel fan-out.
-                for _ in range(sweep.max_rounds):
-                    progressed = False
+            try:
+                if sweep.max_trials is None:
+                    # Preserve the legacy SDK's branch-major round ordering.
                     for state in branch_states:
-                        if state.stalled or (state.budget is not None and state.attempts >= state.budget):
-                            continue
-                        _run_branch_round(state)
-                        progressed = True
-                    if not progressed:
-                        break
+                        for _ in range(sweep.max_rounds):
+                            if state.stalled:
+                                break
+                            _run_branch_round(state)
+                else:
+                    # Unified CLI: give each active branch one batch per cycle. This
+                    # prevents either study from consuming its full allocation before
+                    # the other receives suggestions while retaining parallel fan-out.
+                    for _ in range(sweep.max_rounds):
+                        progressed = False
+                        for state in branch_states:
+                            if state.stalled or (state.budget is not None and state.attempts >= state.budget):
+                                continue
+                            _run_branch_round(state)
+                            progressed = True
+                        if not progressed:
+                            break
+            except InvalidSuggestionError as exc:
+                from ..supervision import checkpoint
+
+                message = (
+                    f"Sweeper {state.branch.deployment_mode} stopped early: {exc}. "
+                    f"Returning the best results from {len(candidates)} completed feasible candidate(s); "
+                    "search is incomplete."
+                )
+                logger.warning(message)
+                checkpoint("optimizer_stopped", {"reason": message})
 
         # Strict filtering precedes scalar ranking or Pareto dominance.
         selected_candidates = analyze_candidates(candidates, goal)
