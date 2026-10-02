@@ -356,7 +356,9 @@ Before claiming parity, integrate immutable recipe resolution into the public
 pipeline, preserve unsupported/missing settings explicitly, and rerun both paths
 with the same measurement IDs, source settings, predictor/data revisions, and
 metric boundaries. A green PR test suite does not run the scheduled accuracy
-matrix or update the published accuracy snapshot.
+matrix or update the published accuracy snapshot. Pages contract tests load the
+lightweight adapter and replay schemas from the source checkout and stub the
+runner; they do not require an installed AISimulate wheel or native runtime.
 
 Input SHA-256 values for reproduction:
 
