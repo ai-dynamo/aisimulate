@@ -229,16 +229,20 @@ model IDs. The FP4 artifacts retain native mixed-quantization metadata rather
 than forcing every GEMM and expert to NVFP4. DB-export `id` is retained as the
 source config ID alongside the benchmark ID.
 
-Accuracy CI retains candidate single-node TP × EP rows for adapter validation,
-then uses the adapted physical count for publication. An older evaluated wheel
-that still produces an inflated world is reported as `adapter_topology_mismatch`.
-See the [accuracy audit](../../../pages/e2e-accuracy/README.md#adapter-parity-audit-2026-10-02)
-for remaining differences from recipe-resolved gym evaluations. These changes
-do not regenerate published predictions.
+Accuracy CI now uses `ResolvedInferenceXSource` for policy
+`gym-resolved-config-v2`. The repository-only resolver joins workflow provenance,
+reads immutable launcher recipes, verifies source defaults, and resolves checkpoint
+and workload metadata before adaptation. The estimate request preserves topology,
+quantization, context limits, and per-role memory fractions. Replay consumes the
+same deployment's scheduler, cache, chunked-prefill, and workload settings through
+`ReplaySpec`; its result is independent of baseline success.
+
 The [resolution strategy](../src/aisimulate/sdk/config_adapter/README.md#resolution-strategy-source-to-replay)
-covers planned source resolution, per-role replay configuration, and PR/nightly
-validation; these serving configuration gaps remain open until that work is
-implemented and verified.
+explains source resolution, replay configuration, provenance, and validation.
+The [accuracy audit](../../../pages/e2e-accuracy/README.md#source-resolved-policy-follow-up)
+records differential evidence and remaining engine/evidence limits. Historical
+v1 artifacts retain their old policy. These changes do not regenerate published
+predictions.
 
 ## Dynamo recipes
 

@@ -236,6 +236,7 @@ def _accuracy_summary(text: str) -> dict:
         require(isinstance(points, list) and len(points) == item["rows"], "topology points")
         previous = 0
         counts = {"success": 0, "unsupported": 0, "failed": 0, "unknown": 0}
+        aic_successes = 0
         for point in points:
             require(isinstance(point, dict), "point")
             concurrency = point.get("concurrency")
@@ -244,12 +245,17 @@ def _accuracy_summary(text: str) -> dict:
             status = point.get("status")
             require(status in ("success", "unsupported", "failed"), "point status")
             counts[status] += 1
+            aic_status = point.get("aic_status", "success")
+            require(aic_status in ("success", "unsupported", "failed"), "AIC point status")
+            aic_successes += aic_status == "success"
             for name in ("measured", "aic", "aisimulate"):
                 series = point.get(name)
                 require(isinstance(series, dict), "point series")
                 for metric in ("ttft", "tpot"):
                     keys = [f"{metric}_relative"] + ([f"{metric}_error_pct"] if name != "measured" else [])
-                    missing = name == "aisimulate" and status != "success"
+                    missing = (name == "aisimulate" and status != "success") or (
+                        name == "aic" and aic_status != "success"
+                    )
                     require(
                         all(
                             key in series and (series[key] is None if missing else number(series[key])) for key in keys
@@ -257,6 +263,7 @@ def _accuracy_summary(text: str) -> dict:
                         "point metric",
                     )
         require(counts == item["aisimulate"]["status_counts"], "topology status counts")
+        require(aic_successes == item["aic"]["points"], "AIC topology coverage")
 
     try:
         summary = json.loads(text)

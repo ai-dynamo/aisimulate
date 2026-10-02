@@ -175,6 +175,22 @@ def _qualified_inputs(branch: str = "main") -> tuple[dict, dict, dict]:
     return predictions, metadata, coverage
 
 
+def test_failed_baseline_does_not_remove_successful_replay_from_publication():
+    predictions, metadata, coverage = _inputs()
+    predictions["rows"][0].update(aic_status="failed", aic_ttft_ms=None, aic_tpot_ms=None)
+    summary = OVERVIEW.build_summary(
+        predictions,
+        metadata,
+        coverage,
+        predictions_sha256="c" * 64,
+        source_url="https://github.com/SemiAnalysisAI/InferenceX-app/releases/tag/db-dump/fixture",
+    )
+    original = _summary()
+    assert summary["totals"]["rows"] == original["totals"]["rows"]
+    assert summary["totals"]["aic"]["points"] == original["totals"]["aic"]["points"] - 1
+    assert summary["totals"]["aisimulate"]["points"] == original["totals"]["aisimulate"]["points"]
+
+
 def test_summary_separates_coverage_accuracy_and_multinode_scope() -> None:
     summary = _summary()
 

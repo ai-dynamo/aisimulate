@@ -25,6 +25,7 @@ from pathlib import Path
 TABLES = {"configs", "benchmark_results", "workflow_runs"}
 RELEASE_ROOT = "https://github.com/SemiAnalysisAI/InferenceX-app/releases/download/"
 POLICY = "latest-complete-config-run-v1"
+RESOLVED_POLICY = "gym-resolved-config-v2"
 
 
 def validate_manifest(manifest: dict) -> None:
@@ -36,7 +37,7 @@ def validate_manifest(manifest: dict) -> None:
     tag = manifest["release_tag"]
     if not isinstance(tag, str) or not re.fullmatch(r"db-dump/\d{4}-\d{2}-\d{2}", tag):
         raise ValueError("invalid pinned measurement release")
-    if manifest["selection_policy"] != POLICY:
+    if manifest["selection_policy"] not in {POLICY, RESOLVED_POLICY}:
         raise ValueError("unknown cohort selection policy")
     for field, minimum in (("max_age_days", 0), ("minimum_free_bytes", 1)):
         if type(manifest[field]) is not int or manifest[field] < minimum:

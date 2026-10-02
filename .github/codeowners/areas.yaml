@@ -99,6 +99,7 @@ areas:
       - tests/test_release_fpe.py
       - tests/test_e2e_accuracy_overview.py
       - tests/fpm_accuracy/
+      - tests/e2e_accuracy_source/
       - tests/test_fpm_accuracy_workflow.mjs
       - tests/test_e2e_accuracy_ui.mjs
       - tests/test_e2e_accuracy_nightly.py
@@ -153,6 +154,8 @@ shared:
   - glob: tests/test_e2e_accuracy_ui.mjs
     owners: [forward-pass-engine, infra, maintainers]
   - glob: tests/test_e2e_accuracy_nightly.py
+    owners: [forward-pass-engine, replay, infra, maintainers]
+  - glob: tests/e2e_accuracy_source/
     owners: [forward-pass-engine, replay, infra, maintainers]
   - glob: tests/test_e2e_accuracy_workflow.mjs
     owners: [forward-pass-engine, replay, infra, maintainers]

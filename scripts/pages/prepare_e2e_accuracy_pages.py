@@ -181,7 +181,7 @@ def public_contract(summary):
                     for point in topology["points"]:
                         keys(
                             point,
-                            {"concurrency", "status", "measured", "aic", "aisimulate"},
+                            {"concurrency", "status", "aic_status", "measured", "aic", "aisimulate"},
                         )
                         for name in ("measured", "aic", "aisimulate"):
                             keys(
@@ -220,7 +220,7 @@ def unpack_artifact(archive: bytes) -> dict:
         q["schema_version"] != 1
         or q["status"] != "complete"
         or q["advisory"] is not True
-        or q["selection_policy"] != "latest-complete-config-run-v1"
+        or q["selection_policy"] not in {"latest-complete-config-run-v1", "gym-resolved-config-v2"}
     ):
         raise ValueError("campaign is not complete")
     for field in (
@@ -245,7 +245,14 @@ def unpack_artifact(archive: bytes) -> dict:
     keys(outcomes, {"evaluated", "unsupported", "baseline_failed"})
     keys(
         q["exclusion_reasons"],
-        {"recipe_required", "adapter_unsupported", "adapter_topology_mismatch", "baseline_failed"},
+        {
+            "recipe_required",
+            "adapter_unsupported",
+            "adapter_topology_mismatch",
+            "baseline_failed",
+            "source_unresolved",
+            "database_unavailable",
+        },
     )
     for count in q["exclusion_reasons"].values():
         if type(count) is not int or count < 0:
@@ -261,6 +268,10 @@ def unpack_artifact(archive: bytes) -> dict:
             "mixed_image_curve",
             "superseded_curve",
             "invalid_gpu_count",
+            "orphaned_measurement",
+            "source_filter",
+            "superseded_row",
+            "superseded_image",
         },
     )
     if any(type(count) is not int or count < 0 for count in q["measurement_filter_counts"].values()):

@@ -377,7 +377,11 @@ def adapt_inferencex(source: InferenceXSource, overrides: AdapterOverrides) -> A
             runtime=RuntimeSettingsV1(
                 systems_paths=overrides.systems_paths,
                 free_gpu_memory_fraction=overrides.free_gpu_memory_fraction,
+                prefill_free_gpu_memory_fraction=overrides.prefill_free_gpu_memory_fraction,
+                decode_free_gpu_memory_fraction=overrides.decode_free_gpu_memory_fraction,
                 max_seq_len=overrides.max_seq_len,
+                prefill_max_seq_len=overrides.prefill_max_seq_len,
+                decode_max_seq_len=overrides.decode_max_seq_len,
                 engine_step_backend=overrides.engine_step_backend,
             ),
             provenance=SourceProvenanceV1(
