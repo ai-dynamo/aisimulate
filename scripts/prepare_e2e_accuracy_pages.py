@@ -183,7 +183,7 @@ def public_contract(summary):
                     for point in topology["points"]:
                         keys(
                             point,
-                            {"concurrency", "status", "measured", "aic", "aisimulate", "configuration"},
+                            {"concurrency", "status", "aic_status", "measured", "aic", "aisimulate", "configuration"},
                         )
                         keys(
                             point.get("configuration", {}),

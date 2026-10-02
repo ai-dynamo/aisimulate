@@ -249,6 +249,27 @@ def _workload_label(workload: str) -> str:
     return f"{short_length(input_tokens)}{short_length(output_tokens)}"
 
 
+def _chart_metrics(row: dict[str, Any], prefix: str) -> dict[str, float | None]:
+    """Read both public campaign and original Gym metric names, already per GPU."""
+    aliases = {
+        "e2e_ms": f"{prefix}_e2el_ms" if prefix == "silicon" else f"{prefix}_request_latency_ms",
+        "output_per_gpu": f"{prefix}_tput_per_gpu_output",
+        "total_per_gpu": f"{prefix}_tput_per_gpu_total",
+    }
+    values = {field: _finite(row.get(f"{prefix}_{field}", row.get(alias))) for field, alias in aliases.items()}
+    if prefix == "dynamo" and row.get("aisimulate_status") != "success":
+        return dict.fromkeys(values)
+    if prefix == "aic" and row.get("aic_status", "success") != "success":
+        return dict.fromkeys(values)
+    isl, osl = _finite(row.get("isl")), _finite(row.get("osl"))
+    if isl is not None and osl is not None and isl > 0 and osl > 0:
+        if prefix == "aic" and values["total_per_gpu"] is None and values["output_per_gpu"] is not None:
+            values["total_per_gpu"] = values["output_per_gpu"] * (isl + osl) / osl
+        if prefix == "silicon" and values["output_per_gpu"] is None and values["total_per_gpu"] is not None:
+            values["output_per_gpu"] = values["total_per_gpu"] * osl / (isl + osl)
+    return values
+
+
 def _topology_summaries(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Publish chart measurements and normalized curves without internal run IDs."""
     groups: dict[tuple[Any, ...], list[dict[str, Any]]] = defaultdict(list)
@@ -266,13 +287,11 @@ def _topology_summaries(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             point: dict[str, Any] = {
                 "concurrency": row["conc"],
                 "status": row["aisimulate_status"],
+                "aic_status": row.get("aic_status", "success"),
                 "configuration": row.get("configuration", {}),
             }
             for name, prefix in (("measured", "silicon"), ("aic", "aic"), ("aisimulate", "dynamo")):
-                point[name] = {
-                    field: _finite(row.get(f"{prefix}_{field}"))
-                    for field in ("e2e_ms", "output_per_gpu", "total_per_gpu")
-                }
+                point[name] = _chart_metrics(row, prefix)
                 for metric, anchor in anchors.items():
                     value = _finite(row.get(f"{prefix}_{metric}_ms"))
                     point[name][f"{metric}_ms"] = value
@@ -465,11 +484,18 @@ def _validate_inputs(
         for field in (
             "silicon_ttft_ms",
             "silicon_tpot_ms",
-            "aic_ttft_ms",
-            "aic_tpot_ms",
         ):
             if _finite(row.get(field)) is None or row[field] <= 0:
                 raise SnapshotError(f"row is missing a positive finite {field}")
+        aic_status = row.get("aic_status", "success")
+        if aic_status not in {"success", "failed", "unsupported"}:
+            raise SnapshotError(f"row has unknown aic_status: {aic_status!r}")
+        for field in ("aic_ttft_ms", "aic_tpot_ms"):
+            if aic_status == "success":
+                if _finite(row.get(field)) is None or row[field] <= 0:
+                    raise SnapshotError(f"row is missing a positive finite {field}")
+            elif row.get(field) is not None:
+                raise SnapshotError("non-success AIC row contains latency metrics")
         if _finite(row.get("conc")) is None or row["conc"] <= 0:
             raise SnapshotError("row is missing a positive finite conc")
         status = row.get("aisimulate_status")

@@ -244,18 +244,20 @@ def _accuracy_summary(text: str) -> dict:
             previous = concurrency
             status = point.get("status")
             require(status in ("success", "unsupported", "failed"), "point status")
+            aic_status = point.get("aic_status", "success")
+            require(aic_status in ("success", "unsupported", "failed"), "AIC point status")
             counts[status] += 1
             for name in ("measured", "aic", "aisimulate"):
                 series = point.get(name)
                 require(isinstance(series, dict), "point series")
+                missing = (name == "aisimulate" and status != "success") or (name == "aic" and aic_status != "success")
                 for key in ("ttft_ms", "tpot_ms", "e2e_ms", "output_per_gpu", "total_per_gpu"):
                     if key in series:
                         require(series[key] is None or (number(series[key]) and series[key] > 0), "chart metric")
-                        if name == "aisimulate" and status != "success":
+                        if missing:
                             require(series[key] is None, "failed prediction chart metric")
                 for metric in ("ttft", "tpot"):
                     keys = [f"{metric}_relative"] + ([f"{metric}_error_pct"] if name != "measured" else [])
-                    missing = name == "aisimulate" and status != "success"
                     require(
                         all(
                             key in series and (series[key] is None if missing else number(series[key])) for key in keys

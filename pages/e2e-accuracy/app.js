@@ -517,17 +517,18 @@ function validateSummary(data) {
     const counts = { success: 0, unsupported: 0, failed: 0, unknown: 0 };
     return topology.points.every((point) => {
       if (!object(point) || !Number.isFinite(point.concurrency) || point.concurrency <= 0 || point.concurrency < previous ||
-        !["success", "unsupported", "failed"].includes(point.status)) return false;
+        !["success", "unsupported", "failed"].includes(point.status) ||
+        !["success", "unsupported", "failed"].includes(point.aic_status ?? "success")) return false;
       previous = point.concurrency;
       counts[point.status] += 1;
       return ["measured", "aic", "aisimulate"].every((name) => object(point[name]) && ["ttft", "tpot"].every((metric) => {
+        const missing = name === "aisimulate" && point.status !== "success" || name === "aic" && (point.aic_status ?? "success") !== "success";
         for (const field of ["ttft_ms", "tpot_ms", "e2e_ms", "output_per_gpu", "total_per_gpu"]) {
           const raw = point[name][field];
-          if (raw !== undefined && raw !== null && (!Number.isFinite(raw) || raw <= 0 || name === "aisimulate" && point.status !== "success")) return false;
+          if (raw !== undefined && raw !== null && (!Number.isFinite(raw) || raw <= 0 || missing)) return false;
         }
         const value = point[name]?.[`${metric}_relative`];
         const error = point[name]?.[`${metric}_error_pct`];
-        const missing = name === "aisimulate" && point.status !== "success";
         return missing ? value === null && error === null :
           Number.isFinite(value) && value >= 0 && (name === "measured" || Number.isFinite(error) && error >= 0);
       }));

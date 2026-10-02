@@ -114,6 +114,20 @@ test("committed, historical, and topology snapshots pass validation and initiali
   }
 });
 
+test("failed AIC predictions retain silicon and AISim chart values", () => {
+  const data = withTopology();
+  const topology = data.models[0].workloads[0].gpus[0].topologies[0];
+  const point = topology.points[0];
+  point.aic_status = "failed";
+  for (const key of Object.keys(point.aic)) point.aic[key] = null;
+  const app = harness(async () => response(data));
+  app.set("valid", data);
+  assert.doesNotThrow(() => app.run("validateSummary(valid)"));
+  point.aic.ttft_ms = 123;
+  app.set("valid", data);
+  assert.throws(() => app.run("validateSummary(valid)"));
+});
+
 test("qualified campaign shows its run and exclusions and rejects unsafe provenance", async () => {
   const data = withEvaluation();
   const revision = data.snapshot.evaluated_revision;
