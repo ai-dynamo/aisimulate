@@ -1,6 +1,6 @@
 # Migrate to AISimulate
 
-This guide maps existing AIC commands and Python/Rust APIs to implemented
+This guide maps existing AIConfigurator commands and Python/Rust APIs to implemented
 AISimulate interfaces. A mapping does not imply identical estimation or search
 semantics. Workflows without a unified replacement use the bundled compatibility
 CLI or SDK.
