@@ -363,16 +363,24 @@ def run_set(runner, bench, probe, request_set, tokens_all, options, progress, gr
     computed = 0
     result = None
 
+    prefill_runner = runner.torch_runner.prefill_cuda_graph_runner
+
     def advance(end):
         nonlocal reqs, computed, result
-        while computed < end:
-            step = min(chunk, end - computed)
-            if reqs is None:
-                reqs = bench.prepare_synthetic_inputs_for_latency_test(batch, step, [t[:step] for t in tokens])
-                result = runner.extend(reqs)
-            else:
-                result = _extend_all(runner, bench, reqs, tokens, computed, computed + step)
-            computed += step
+        if graph_prefill:
+            prefill_runner.w4_seeding = True
+        try:
+            while computed < end:
+                step = min(chunk, end - computed)
+                if reqs is None:
+                    reqs = bench.prepare_synthetic_inputs_for_latency_test(batch, step, [t[:step] for t in tokens])
+                    result = runner.extend(reqs)
+                else:
+                    result = _extend_all(runner, bench, reqs, tokens, computed, computed + step)
+                computed += step
+        finally:
+            if graph_prefill:
+                prefill_runner.w4_seeding = False
 
     for value in request_set["targets"]:
         started = time.monotonic()
@@ -387,7 +395,6 @@ def run_set(runner, bench, probe, request_set, tokens_all, options, progress, gr
             }
             advance(value)
             if graph_prefill:
-                prefill_runner = runner.torch_runner.prefill_cuda_graph_runner
                 before = prefill_runner.w4_replays
                 if reqs is None:
                     reqs = bench.prepare_synthetic_inputs_for_latency_test(batch, query, [t[:query] for t in tokens])
@@ -540,6 +547,19 @@ def run_worker(server_args, port_args, bench_args, gpu_id, tp_rank):
                 return replay(shape_key, static_forward_batch, **k)
 
             prefill_runner.backend.replay = witnessed
+            # State seeding (prefix fill) runs eagerly, as in revision 1; only
+            # the measured step uses the serving prefill graph. Under the graph
+            # the pooled indexer materializes dense batch-wide logits, which at
+            # 8+ requests x 64K+ cached tokens per 8192-token seed step exceed
+            # device memory; the eager path produces the same KV, IndexPool,
+            # tail and KDA state.
+            can_run_graph = prefill_runner.can_run_graph
+            prefill_runner.w4_seeding = False
+
+            def gated(forward_batch):
+                return False if prefill_runner.w4_seeding else can_run_graph(forward_batch)
+
+            prefill_runner.can_run_graph = gated
         return result
 
     ModelRunner.init_cuda_graphs = init_with_probe
