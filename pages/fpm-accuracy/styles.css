@@ -41,6 +41,8 @@
 [data-view] select, [data-view] input { max-width:100%; min-height:32px; background:var(--panel); color:var(--text); border:1px solid var(--border); padding:4px 8px; border-radius:4px; }
 [data-view] select, [data-view] input { width:100%; box-sizing:border-box; font:inherit; font-size:13px; }
 [data-view] #dashboard-status, #detail-evidence { overflow-wrap:anywhere; }
+#detail-evidence { font-size:12px; line-height:1.5; color:var(--muted); }
+#detail-evidence a { color:inherit; }
 [data-view] .matrix-panel { margin-top:20px; padding:16px; }
 [data-view] table { width:100%; border-collapse:collapse; }
 [data-view] th, [data-view] td { padding:10px; border-bottom:1px solid var(--border); text-align:left; }
