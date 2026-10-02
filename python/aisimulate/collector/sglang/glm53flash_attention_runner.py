@@ -238,9 +238,9 @@ class AttentionProbe:
         # One private pool for every module graph. The previous graph is kept
         # alive until the next capture so the pool never drops to use_count 0
         # (a dead pool handle trips the caching allocator's assertion), and its
-        # blocks are reused instead of accumulating. (A variant with a pool per
-        # target plus gc/empty_cache after each target hit an illegal address
-        # in a later framework BCG replay; dead pools are not used.)
+        # blocks are reused instead of accumulating. (A variant that called
+        # empty_cache after each target hit an illegal address in a later
+        # framework BCG replay; cause not isolated, so it is not used.)
         if self.pool is None:
             self.pool = torch.cuda.graph_pool_handle()
         pool = self.pool
@@ -256,13 +256,6 @@ class AttentionProbe:
                 for _ in range(2):
                     call()
                 torch.cuda.synchronize()
-                # Return the default pool's cached free blocks (framework step
-                # and eager warmup activations) to the device so the module
-                # graph pool can grow into them; otherwise both caches keep
-                # their peaks and reserved memory climbs across targets. The
-                # shared graph pool stays alive (keepalive), so none of its
-                # blocks are released here.
-                torch.cuda.empty_cache()
                 graph = BreakableCUDAGraph()
                 with BreakableCUDAGraphCapture(cuda_graph=graph, pool=pool, stream=torch.cuda.Stream()):
                     output = call()
