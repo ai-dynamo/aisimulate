@@ -128,6 +128,34 @@ test("failed AIC predictions retain silicon and AISim chart values", () => {
   assert.throws(() => app.run("validateSummary(valid)"));
 });
 
+test("research preview retains disagg with pending AIC and explicit estimated evidence", async () => {
+  const data = withTopology();
+  data.snapshot.aic_commit_sha = "not-run";
+  data.snapshot.research_preview = {source_commit: "d".repeat(40), estimated_points: 3, estimated_successes: 2};
+  const model = data.models[0], workload = model.workloads[0], gpu = workload.gpus[0], topology = gpu.topologies[0];
+  topology.serving = "disaggregated";
+  for (const item of [data.totals, model, workload, gpu, topology]) {
+    item.aic = {points: 0, ttft_mape_pct: null, tpot_mape_pct: null, ttft_shape_error_pct: null, tpot_shape_error_pct: null};
+  }
+  for (const point of topology.points) {
+    point.aic_status = "pending";
+    point.configuration = {configuration_quality: "estimated"};
+    for (const key of Object.keys(point.aic)) point.aic[key] = null;
+  }
+  const app = harness(async (path) => path === "./branches.json" ? response({}, 404) : response(data));
+  await app.run("initialize()");
+  assert.equal(app.element("error-banner").hidden, true);
+  assert.match(app.element("evidence-brief").textContent, /Local research preview.*2 successful predictions use estimated inputs.*not run/);
+  assert.equal(app.run('state.data.models[0].workloads[0].gpus[0].topologies[0].serving'), 'disaggregated');
+  const invalid = structuredClone(data);
+  delete invalid.snapshot.research_preview;
+  app.set("invalid", invalid);
+  assert.throws(() => app.run("validateSummary(invalid)"));
+  invalid.snapshot.research_preview = data.snapshot.research_preview;
+  invalid.snapshot.evaluated_revision = {branch: "main", commit_sha: "d".repeat(40)};
+  assert.throws(() => {app.set("invalid", invalid); app.run("validateSummary(invalid)");}, /local research preview provenance/);
+});
+
 test("qualified campaign shows its run and exclusions and rejects unsafe provenance", async () => {
   const data = withEvaluation();
   const revision = data.snapshot.evaluated_revision;

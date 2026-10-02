@@ -502,6 +502,7 @@ function branchOption(entry) {
 }
 
 function validateSummary(data) {
+  const research = data?.snapshot?.research_preview;
   const statuses = ["success", "unsupported", "failed", "unknown"];
   const object = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
   const strings = (value) => Array.isArray(value) && value.length > 0 && value.every((item) => typeof item === "string");
@@ -529,7 +530,8 @@ function validateSummary(data) {
     return topology.points.every((point) => {
       if (!object(point) || !Number.isFinite(point.concurrency) || point.concurrency <= 0 || point.concurrency < previous ||
         !["success", "unsupported", "failed"].includes(point.status) ||
-        !["success", "unsupported", "failed"].includes(point.aic_status === undefined ? "success" : point.aic_status)) return false;
+        !["success", "unsupported", "failed"].includes(point.aic_status === undefined ? "success" : point.aic_status) &&
+          !(research && data.snapshot.aic_commit_sha === "not-run" && point.aic_status === "pending")) return false;
       if (point.configuration_quality !== undefined && !["verified", "estimated"].includes(point.configuration_quality)) return false;
       previous = point.concurrency;
       counts[point.status] += 1;
@@ -569,6 +571,13 @@ function validateSummary(data) {
     throw new Error("unsupported accuracy summary schema");
   }
   const revision = data.snapshot.evaluated_revision;
+  if (research !== undefined && (!object(research) || revision != null || data.snapshot.campaign != null ||
+    !/^[0-9a-f]{40}$/.test(research.source_commit) ||
+    !Number.isInteger(research.estimated_points) || research.estimated_points < 0 || research.estimated_points > data.totals.rows ||
+    !Number.isInteger(research.estimated_successes) || research.estimated_successes < 0 ||
+    research.estimated_successes > research.estimated_points || research.estimated_successes > data.totals.aisimulate.points)) {
+    throw new Error("invalid local research preview provenance");
+  }
   if (data.scope.preview === true && revision == null ||
     revision != null && (!object(revision) || !validRevision(revision, data.scope.preview === true))) {
     throw new Error("invalid evaluated revision");
@@ -757,6 +766,15 @@ async function loadBranch(branchName, restoreSelection = false, previewData = nu
       (entry.status === "inherited" ? ` · inherited from ${revision.branch}` : "") +
       (entry.last_update?.status === "failed" ? " · Update failed — showing previous results" : "");
     brief.title = branchStatus.textContent;
+    if (data.snapshot.research_preview) {
+      const research = data.snapshot.research_preview;
+      brief.textContent = `Local research preview · ${data.snapshot.release_tag} · AISim ${research.source_commit.slice(0, 8)} · ` +
+        `${research.estimated_successes.toLocaleString()} successful predictions use estimated inputs · ` +
+        (data.snapshot.aic_commit_sha === "not-run" ? "AIC (legacy CLI): not run · " : "") +
+        "Not a qualified branch evaluation";
+      branchStatus.textContent = brief.textContent;
+      brief.title = brief.textContent;
+    }
     downloadJson.href = `./${entry.summary_path}`;
     downloadJson.removeAttribute("aria-disabled");
     const linked = ["model", "workload", "gpu", "topology"].some((key) => params.has(key));

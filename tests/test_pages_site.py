@@ -1134,6 +1134,17 @@ def test_malformed_accuracy_data_fails_publication() -> None:
             PAGES._accuracy_summary(value)
 
 
+def test_local_research_snapshot_cannot_be_published() -> None:
+    summary = json.loads((ROOT / PAGES.PAGES_ROOT / "e2e-accuracy/summary.json").read_text())
+    summary["snapshot"]["research_preview"] = {
+        "source_commit": "a" * 40,
+        "estimated_points": 1,
+        "estimated_successes": 1,
+    }
+    with unittest.TestCase().assertRaisesRegex(PAGES.PagesBuildError, "research previews are local-only"):
+        PAGES._accuracy_summary(json.dumps(summary))
+
+
 def test_incomplete_branch_summary_cannot_replace_public_site() -> None:
     from copy import deepcopy
 

@@ -365,6 +365,7 @@ def _accuracy_summary(text: str, *, allow_preview: bool = False) -> dict:
         require(not preview or allow_preview, "preview is not publishable")
         snapshot = summary.get("snapshot")
         require(isinstance(snapshot, dict), "snapshot")
+        require("research_preview" not in snapshot, "research previews are local-only and cannot be published")
         require(isinstance(snapshot.get("release_tag"), str), "measurement release")
         require(
             snapshot.get("measurement_source_url")
