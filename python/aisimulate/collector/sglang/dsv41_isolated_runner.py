@@ -30,24 +30,13 @@ from types import SimpleNamespace
 from .dsv41_contract import canonical_json, validate_row
 from .dsv41_native_runner import _dispatch, collect_native_kernel_baselines
 
-FRAMEWORK_COMMIT = "1aa0e962b206102b7c439a4a0c4981cfec6e87bc"
-# Qualified SGLang pins: commit -> perf-database version key. The dev build keeps
-# its historical "dev-<commit>" key; a release tag uses the bare package version
-# so its data lands under systems/data/<sys>/dsv41/sglang/<version>/ like every
-# other collector. Audited source paths (REQUIRED_SOURCES / ATTENTION_SOURCES)
-# exist unchanged in name at every pinned commit; their sha256 travel in the plan.
-FRAMEWORK_PINS = {
-    FRAMEWORK_COMMIT: "dev-" + FRAMEWORK_COMMIT,
-    # sgl-project/sglang tag v0.5.21 (2026-09-30); image lmsysorg/sglang:v0.5.21
-    "e00930c5489053f26d86b179cee0d087f846acbb": "0.5.21",
-}
+# Pinned SGLang: tag v0.5.21 (2026-09-30), image lmsysorg/sglang:v0.5.21. Collectors upgrade
+# IN PLACE when the pin moves (older code is `git checkout` away; older data stays under its own
+# version key, e.g. dev-1aa0e962b206102b7c439a4a0c4981cfec6e87bc for the first campaign).
+FRAMEWORK_COMMIT = "e00930c5489053f26d86b179cee0d087f846acbb"
+FRAMEWORK_VERSION = "0.5.21"  # perf-database version key: systems/data/<sys>/dsv41/sglang/<FRAMEWORK_VERSION>/
 # GPU name token (torch.cuda.get_device_properties().name) -> SM version
 EXPECTED_SM = {"H100": 90, "H200": 90, "H20": 90, "B200": 100, "GB200": 100}
-
-
-def framework_version(commit):
-    """Perf-database version key for a qualified framework commit."""
-    return FRAMEWORK_PINS[commit]
 WEIGHT_INITIALIZER = {
     "name": "native_random_chunks_v1",
     "chunk_elements": 8 * 1024 * 1024,
@@ -101,8 +90,8 @@ def validate_plan(plan, manifest):
         raise ValueError("explicit qualified native MoE backend required")
     if plan["expected_gpu"] not in EXPECTED_SM or plan["expected_sm"] != EXPECTED_SM[plan["expected_gpu"]]:
         raise ValueError("GPU and SM identity differ")
-    if plan["framework_commit"] not in FRAMEWORK_PINS:
-        raise ValueError("serving APIs require a qualified framework commit")
+    if plan["framework_commit"] != FRAMEWORK_COMMIT:
+        raise ValueError("serving APIs require the pinned framework commit")
     if re.fullmatch(r"[0-9a-f]{40}", plan.get("collector_revision", "")) is None:
         raise ValueError("immutable collector source revision required")
     if not plan["source_pins"].keys() >= REQUIRED_SOURCES:
@@ -412,10 +401,10 @@ def collect_linear(moe, manifest, plan, rank, provenance, stream):
 
 def collect_engram(config, quant, manifest, plan, rank, provenance, stream, token_ids, receipt):
     import torch
-    from sglang.srt.layers.engram import Engram, EngramHasher, build_engram_layout
+    from sglang.srt.layers.engram import Engram, EngramHasher, EngramLayout
     from sglang.srt.model_executor.forward_batch_info import ForwardBatch, ForwardMode
 
-    layout = build_engram_layout(config)
+    layout = EngramLayout.from_config(config)
     # EngramHasher.from_config/init_history (engram.py:232-268) use the same
     # serving tokenizer and initialize one legal request slot plus PAD history.
     hasher = EngramHasher.from_config(config, layout).cuda()
@@ -639,7 +628,6 @@ def run(args, receipt):
     from sglang.srt.configs.load_config import LoadConfig
     from sglang.srt.configs.model_config import ModelConfig
     from sglang.srt.distributed import bootstrap
-    from sglang.srt.distributed.parallel_state_wrapper import ParallelState
     from sglang.srt.layers.vocab_parallel_embedding import ParallelLMHead
     from sglang.srt.model_loader.loader import _get_quantization_config
     from sglang.srt.models.deepseek_v2 import DeepseekV2MoE
@@ -666,7 +654,7 @@ def run(args, receipt):
         if sha(args.model_path / name) != digest:
             raise RuntimeError("checkpoint/tokenizer metadata changed: " + name)
     receipt.update(
-        framework_version=framework_version(plan["framework_commit"]),
+        framework_version=FRAMEWORK_VERSION,
         collector_revision=plan["collector_revision"],
         raw_package_version=importlib.metadata.version("sglang"),
         plan_sha256=sha(args.plan),
@@ -693,22 +681,21 @@ def run(args, receipt):
         cuda_graph_backend_decode="disabled",
         cuda_graph_backend_prefill="disabled",
     )
-    bench.publish(server, role="scheduler")
+    # Placement is published process-wide (runtime_context.publish ranks=...), exactly as
+    # benchmark/one_batch.py:681-687 does per TP worker; the parallel groups come up through
+    # bootstrap.init_parallel_runtime (one_batch.py:328-333) and read that published state.
+    bench.publish(
+        server,
+        role="scheduler",
+        ranks=bench.SpawnRanks(world_rank=bench.spawn_world_rank(server, tp_rank=rank, pp_rank=0), gpu_id=local_rank),
+    )
     bench.initialize_moe_config()
     bench.initialize_fp8_gemm_config()
     bench.initialize_fp4_gemm_config()
     model_config = ModelConfig.from_server_args(server)
     config = model_config.hf_text_config
-    ps = ParallelState.trivial(tp_rank=rank, tp_size=tp, attn_tp_rank=rank, attn_tp_size=tp, gpu_id=local_rank)
-    bootstrap.init_torch_distributed(
-        server_args=server,
-        model_config=model_config,
-        device="cuda",
-        ps=ps,
-        dist_port=int(os.environ["MASTER_PORT"]),
-        is_draft_worker=False,
-        local_omp_cpuid=None,
-    )
+    bootstrap.init_parallel_runtime(server_args=server, device="cuda", dist_port=int(os.environ["MASTER_PORT"]))
+    bootstrap.init_layer_runtime(model_config=model_config)
     quant = _get_quantization_config(model_config, LoadConfig(load_format="dummy"))
     if type(quant).__name__ != "Fp8Config" or quant.is_fp4_experts is not True or quant.dequant_fp4_to_fp8:
         raise RuntimeError("native checkpoint quantization selection differs")

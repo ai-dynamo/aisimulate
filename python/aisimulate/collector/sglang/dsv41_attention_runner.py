@@ -25,7 +25,7 @@ from collections import defaultdict
 from pathlib import Path
 
 from .dsv41_contract import canonical_json, validate_attention_manifest, validate_row, write_parquet
-from .dsv41_isolated_runner import EXPECTED_SM, FRAMEWORK_COMMIT, FRAMEWORK_PINS, REQUIRED_SOURCES, framework_version, sha
+from .dsv41_isolated_runner import EXPECTED_SM, FRAMEWORK_COMMIT, FRAMEWORK_VERSION, REQUIRED_SOURCES, sha
 from .dsv41_native_runner import ComponentRecorder, _dispatch, run_workload
 from .dsv41_workloads import freeze_workloads, projected_keys
 
@@ -82,8 +82,8 @@ def validate_plan(plan, manifest, workloads):
         raise ValueError("GPU/SM identity differs")
     if plan["moe_runner_backend"] not in ("flashinfer_mxfp4", "humming"):
         raise ValueError("explicit native quantization dispatch required")
-    if plan["framework_commit"] not in FRAMEWORK_PINS:
-        raise ValueError("native attention APIs require a qualified framework commit")
+    if plan["framework_commit"] != FRAMEWORK_COMMIT:
+        raise ValueError("native attention APIs require the pinned framework commit")
     if not plan["source_pins"].keys() >= ATTENTION_SOURCES:
         raise ValueError("missing native source pins")
     if not plan["metadata_pins"].keys() >= {"config.json", "tokenizer.json", "tokenizer_config.json"}:
@@ -176,12 +176,12 @@ def validate_attention_outputs(observations):
             raise RuntimeError("native attention output is nonfinite, empty or degenerate")
 
 
-def build_native_runner(bench, server, model_config, ps, plan, receipt):
+def build_native_runner(bench, server, model_config, gpu_id, plan, receipt):
     import torch
     from sglang.srt.configs.load_config import LoadConfig
     from sglang.srt.layers.logits_processor import LogitsProcessorOutput
     from sglang.srt.model_executor import model_runner as native_runner
-    from sglang.srt.model_loader.loader import DummyModelLoader, _get_quantization_config, _post_load_weights
+    from sglang.srt.model_loader.loader import DummyModelLoader, _get_quantization_config, post_load_weights
     from sglang.srt.model_loader.weight_utils import initialize_dummy_weights
     from sglang.srt.models import deepseek_v4 as native_model
     from torch import nn
@@ -279,7 +279,7 @@ def build_native_runner(bench, server, model_config, ps, plan, receipt):
             before = native_runner.get_available_gpu_memory(self.device, self.gpu_id)
             self.load_config = LoadConfig(load_format="dummy")
             quant = _get_quantization_config(self.model_config, self.load_config)
-            with torch.device(f"cuda:{ps.gpu_id}"):
+            with torch.device(f"cuda:{gpu_id}"):
                 self.model = AttentionStack(quant)
             # Native loader.py:1592-1621 order: random storage, model post-load,
             # then native quant-method processing. No fake model weights load.
@@ -293,7 +293,7 @@ def build_native_runner(bench, server, model_config, ps, plan, receipt):
                 for layer in self.model.model.layers:
                     layer.input_layernorm.weight.fill_(plan["weight_initializer"]["norm_weight"])
                     layer.post_attention_layernorm.weight.fill_(plan["weight_initializer"]["norm_weight"])
-            _post_load_weights(self.model)
+            post_load_weights(self.model)
             for child in list(self.model.modules()):
                 method = getattr(child, "quant_method", None)
                 if method is not None:
@@ -329,8 +329,7 @@ def build_native_runner(bench, server, model_config, ps, plan, receipt):
     runner = AttentionRunner(
         model_config=model_config,
         mem_fraction_static=server.mem_fraction_static,
-        gpu_id=ps.gpu_id,
-        ps=ps,
+        gpu_id=gpu_id,
         nccl_port=int(os.environ["MASTER_PORT"]),
         server_args=server,
     )
@@ -416,7 +415,7 @@ def aggregate_attention_records(output, plan_path, manifest_path, workloads_path
             purpose="calibration",
             runtime_digest=plan["runtime_digest"],
             image_sha256=plan["image_sha256"],
-            framework_version=framework_version(plan["framework_commit"]),
+            framework_version=FRAMEWORK_VERSION,
             collector_revision=plan["collector_revision"],
             weight_initializer=WEIGHT_INITIALIZER,
         )
@@ -599,7 +598,6 @@ def run(args, receipt):
         raise RuntimeError("allocated CUDA UUID differs from native driver witness")
     from sglang.benchmark import one_batch as bench
     from sglang.srt.configs.model_config import ModelConfig
-    from sglang.srt.distributed.parallel_state_wrapper import ParallelState
     from sglang.srt.utils.hf_transformers_utils import get_tokenizer
 
     package = Path(bench.__file__).resolve().parents[1]
@@ -612,7 +610,7 @@ def run(args, receipt):
         plan_sha256=sha(args.plan),
         manifest_sha256=sha(args.manifest),
         workloads_sha256=sha(args.workloads),
-        framework_version=framework_version(plan["framework_commit"]),
+        framework_version=FRAMEWORK_VERSION,
         raw_package_version=importlib.metadata.version("sglang"),
         collector_revision=plan["collector_revision"],
         runtime_digest=plan["runtime_digest"],
@@ -641,12 +639,19 @@ def run(args, receipt):
         cuda_graph_backend_decode="disabled",
         cuda_graph_backend_prefill="disabled",
     )
-    bench.publish(server, role="scheduler")
+    # Same placement/bring-up as the isolated producer (one_batch.py:681-687, 328-333).
+    bench.publish(
+        server,
+        role="scheduler",
+        ranks=bench.SpawnRanks(world_rank=bench.spawn_world_rank(server, tp_rank=rank, pp_rank=0), gpu_id=local_rank),
+    )
     bench.initialize_moe_config()
     bench.initialize_fp8_gemm_config()
     bench.initialize_fp4_gemm_config()
-    ps = ParallelState.trivial(tp_rank=rank, tp_size=tp, attn_tp_rank=rank, attn_tp_size=tp, gpu_id=local_rank)
-    runner = build_native_runner(bench, server, ModelConfig.from_server_args(server), ps, plan, receipt)
+    model_config = ModelConfig.from_server_args(server)
+    bench.bootstrap.init_parallel_runtime(server_args=server, device="cuda", dist_port=int(os.environ["MASTER_PORT"]))
+    bench.bootstrap.init_layer_runtime(model_config=model_config)
+    runner = build_native_runner(bench, server, model_config, local_rank, plan, receipt)
     tokenizer = get_tokenizer(str(args.model_path), trust_remote_code=True, tokenizer_backend="huggingface")
     ids = tokenizer.encode(args.prompt_file.read_text())
     if len(ids) < max(c["query"] + c["prefix"] for c in workloads["cases"]) or len(set(ids)) < 100:

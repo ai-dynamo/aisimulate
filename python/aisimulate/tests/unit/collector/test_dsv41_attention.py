@@ -263,7 +263,7 @@ def write_fixture(tmp_path):
             source_hashes=plan["source_pins"],
             runtime_digest=plan["runtime_digest"],
             image_sha256=plan["image_sha256"],
-            framework_version="dev-" + producer.FRAMEWORK_COMMIT,
+            framework_version=producer.FRAMEWORK_VERSION,
             collector_revision=plan["collector_revision"],
             weight_initializer=producer.WEIGHT_INITIALIZER,
             allocated_device_witness=dict(returncode=0, sm=90, name="NVIDIA H100 80GB HBM3"),
