@@ -271,6 +271,7 @@ def _accuracy_summary(text: str) -> dict:
         require(isinstance(summary, dict) and summary.get("schema_version") == 1, "summary schema")
         snapshot = summary.get("snapshot")
         require(isinstance(snapshot, dict), "snapshot")
+        require("research_preview" not in snapshot, "research previews are local-only and cannot be published")
         require(isinstance(snapshot.get("release_tag"), str), "measurement release")
         require(
             snapshot.get("measurement_source_url")

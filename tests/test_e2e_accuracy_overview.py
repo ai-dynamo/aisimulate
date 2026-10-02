@@ -157,6 +157,47 @@ def _summary() -> dict[str, object]:
     )
 
 
+def test_local_research_retains_disagg_and_unrun_baselines_without_qualifying_a_branch():
+    predictions, metadata, coverage = _inputs()
+    for document in (predictions, metadata, coverage):
+        document["aic_commit_sha"] = "not-run"
+    metadata["aisimulate_run"]["runtime"]["source_checkout"] = {"clean": True, "commit_sha": "d" * 40}
+    for row in predictions["rows"]:
+        row.update(aic_status="pending", aic_ttft_ms=None, aic_tpot_ms=None, configuration_quality="estimated")
+    predictions["rows"][0]["disagg"] = True
+    original = deepcopy(predictions)
+    options = {
+        "predictions_sha256": "c" * 64,
+        "source_url": OVERVIEW.INFERENCEX_RELEASE_URL_PREFIX + predictions["release_tag"],
+        "exclude_multinode": False,
+    }
+    with pytest.raises(OVERVIEW.SnapshotError, match="unknown aic_status"):
+        OVERVIEW.build_summary(predictions, metadata, coverage, **options)
+    with pytest.raises(OVERVIEW.SnapshotError, match="cannot qualify"):
+        OVERVIEW.build_summary(predictions, metadata, coverage, research_preview=True, branch="main", **options)
+
+    summary = OVERVIEW.build_summary(predictions, metadata, coverage, research_preview=True, **options)
+    assert predictions == original
+    assert "evaluated_revision" not in summary["snapshot"]
+    assert summary["snapshot"]["research_preview"] == {
+        "source_commit": "d" * 40,
+        "estimated_points": 4,
+        "estimated_successes": 2,
+    }
+    assert summary["totals"]["aic"]["points"] == 0
+    topologies = [t for m in summary["models"] for w in m["workloads"] for g in w["gpus"] for t in g["topologies"]]
+    assert any(t["serving"] == "disaggregated" for t in topologies)
+    assert sum(len(t["points"]) for t in topologies) == 4
+    for topology in topologies:
+        for point in topology["points"]:
+            assert point["aic_status"] == "pending"
+            assert point["aic"]["ttft_ms"] is None
+            assert point["configuration"]["configuration_quality"] == "estimated"
+    predictions["rows"][0]["aic_ttft_ms"] = 123
+    with pytest.raises(OVERVIEW.SnapshotError, match="non-success AIC"):
+        OVERVIEW.build_summary(predictions, metadata, coverage, research_preview=True, **options)
+
+
 def _qualified_inputs(branch: str = "main") -> tuple[dict, dict, dict]:
     predictions, metadata, coverage = _inputs()
     source = {"branch": branch, "commit_sha": "d" * 40, "clean": True}

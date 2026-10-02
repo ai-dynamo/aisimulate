@@ -56,6 +56,23 @@ charts; rebuilding the UI around a normalized-only summary cannot restore them.
 Gym imports without matching branch-qualified producer evidence remain historical
 snapshots and must not be labeled as newly evaluated public branch results.
 
+## Local research results
+
+Use the same E2E page to inspect expanded coverage experiments. Export their
+recorded predictions with `scripts/build_e2e_accuracy_overview.py
+--research-preview --include-multinode` and the usual predictions, metadata,
+coverage, source URL, and output arguments. Include both successful and failed
+agg/disagg rows. Every row must identify its configuration as `verified` or
+`estimated`, and the runtime must record a clean AISim source commit.
+
+The preview labels estimated successes and an unrun AIC (legacy CLI) baseline.
+Unrun predictions remain `pending` with missing metrics, and point details show
+the configuration evidence tier. This mode cannot take `--branch`, and the
+Pages publisher rejects research snapshots. Keep these generated files in the
+local preview directory rather than replacing a checked-in qualified snapshot.
+When refreshing a preview with a branch catalog, update both `summary.json`
+and the selected catalog entry's summary path so the browser loads the new data.
+
 ## Branch selection
 
 The Pages build publishes a `branches.json` catalog containing `main` and every
