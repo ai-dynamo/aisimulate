@@ -391,6 +391,25 @@ def test_delta_trace_accounts_for_cumulative_prompts(tmp_path):
     assert delta.estimated_peak_bytes > ordinary.estimated_peak_bytes
 
 
+def test_weka_trace_counts_materialized_hashes_not_scalar_lengths(tmp_path):
+    # Weka keeps `in`/`out` as scalars and materializes only hash_ids, so
+    # lengths sharing one hash block must not change the estimate.
+    base = {"trace_format": "weka", "trace_block_size": 64, "agentic_lanes": 12}
+
+    def peak_and_size(name, input_length, output_length):
+        path = tmp_path / name
+        request = {"t": 0.0, "in": input_length, "out": output_length, "hash_ids": [1]}
+        path.write_text(json.dumps({"id": "p", "block_size": 64, "requests": [request]}) + "\n")
+        estimate = estimate_workload({**base, "trace_path": str(path)}, stack="engine")
+        return estimate.estimated_peak_bytes, path.stat().st_size
+
+    small_peak, small_size = peak_and_size("small.jsonl", 1, 1)
+    for name, input_length, output_length in (("in.jsonl", 64, 1), ("out.jsonl", 1, 10**6)):
+        peak, size = peak_and_size(name, input_length, output_length)
+        # Only the 128-bytes-per-file-byte storage term may differ.
+        assert peak - small_peak == 128 * (size - small_size)
+
+
 def test_fixed_capacity_kv_domain_has_a_conservative_count_bound(host):
     raw = _config()
     raw["traffic"]["load"] = {"type": "kv_capacity_fraction", "fraction": {"choices": [0.5, 1.5]}}

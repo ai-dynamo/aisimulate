@@ -315,7 +315,8 @@ def _estimate_trace(
                             if key in length_keys and event not in {"start_array", "end_array"}:
                                 if event != "number" or type(value) is not int or value < 0:
                                     raise ValueError("trace token lengths must be nonnegative integers")
-                                tokens += value
+                                # Weka lengths stay scalars; only its hash_ids are materialized.
+                                tokens += 0 if format_name == "weka" else value
                             elif key in token_keys and parts[-1] == "item" and event == "number":
                                 tokens += 1
                             elif key in hash_keys and parts[-1] == "item" and event in {"number", "string"}:
@@ -329,7 +330,7 @@ def _estimate_trace(
         return unqualified(f"cannot inspect trace metadata: {exc}")
     if records == 0:
         return unqualified("trace metadata contains no recognized request token lengths")
-    tokens += hashes * block_size
+    tokens += hashes if format_name == "weka" else hashes * block_size
     count = max(records, turns)
     # Delta and tool-turn sources can accumulate every preceding turn's tokens.
     cumulative = count if format_name in {"mooncake-delta", "applied_compute_agentic"} else 1
