@@ -690,9 +690,10 @@ def pred_published_loadable(p):
         if fw not in backends:
             continue
         try:
-            handle = EngineHandle.compile(repo, system, fw, backend_version=ver, tp_size=tp, moe_tp_size=tp,
-                                          moe_ep_size=1, dsv41_family=fam, database_mode="SILICON", strict_provenance=True,
-                                          **(sdk_args.get(fw) or {}))
+            handle = EngineHandle.compile(
+                repo, system, fw, backend_version=ver, tp_size=tp, moe_tp_size=tp, moe_ep_size=1,
+                dsv41_family=fam, database_mode="SILICON", strict_provenance=True, **(sdk_args.get(fw) or {}),
+            )
             prefill = handle.predict_prefill_latency(1, 1024, 0)
             decode = handle.predict_decode_latency(1, 1024)
         except Exception as e:
