@@ -407,11 +407,18 @@ def run_attention_case(runner, bench, token_ids, case, plan, state, intervals, s
         receipt.setdefault("decode_kv_drift_tokens", plan["warmup"] + plan["iterations"] - 1)
         runner.cleanup(batch)
         return
-    # context
-    if prefix:
+    # context. The hybrid SWA allocator frees whole allocation groups, so the measured query tokens are
+    # never released piecemeal: short prefixes (one seeding chunk) are re-seeded per sample from a
+    # cleared pool; long prefixes stay resident and the query tokens of the samples accumulate
+    # (bounded: kv >= 8192 caps the batch at 8 -> <= samples * 8 * 8192 tokens, sized into the pool).
+    reseed = prefix <= chunk
+    if prefix and not reseed:
         reqs, batch, _ = seed_prefix(runner, bench, token_ids, batch_size, prefix, chunk)
-    allocator = runner.torch_runner.token_to_kv_pool_allocator
     for sample in range(plan["warmup"] + plan["iterations"]):
+        if prefix and reseed:
+            runner.clear()
+            reqs, batch, _ = seed_prefix(runner, bench, token_ids, batch_size, prefix, chunk)
+        # qualify the MEASURED forward only (seeding forwards would add their own 40 observations)
         state.qualifying = sample == 0
         state.observations = []
         if prefix:
@@ -455,13 +462,7 @@ def run_attention_case(runner, bench, token_ids, case, plan, state, intervals, s
                 )
             stream.flush()
         intervals.active = False
-        if prefix:
-            # release the measured query tokens; the seeded prefix stays resident for the next sample
-            allocator.free(measured.out_cache_loc)
-        else:
-            runner.cleanup(measured)
-    if prefix:
-        runner.cleanup(batch)
+    runner.clear()
 
 
 # --------------------------------------------------------------------------------------------

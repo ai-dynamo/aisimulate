@@ -16,16 +16,22 @@ every kernel. The cells mirror the serving probe (isl 4096 prefill; one decode t
 Environment: ``DSV411_MODEL_PATH`` (checkpoint metadata dir), ``DSV411_PROMPT_FILE`` (corpus),
 ``AIS_PROBE_WORKSPACE`` (manifests), optional ``DSV411_LAUNCH_IMAGE_SHA256`` / ``DSV411_COLLECTOR_REVISION``
 (recorded as unverified placeholders when absent — a capture is kernel-path evidence, never perf data),
-optional ``DSV411_PRIVATE_CACHE`` (defaults to a scratch root whose home-cache is this user's ~/.cache).
+optional ``DSV411_PRIVATE_CACHE`` (defaults to a scratch root whose home-cache is this user's ~/.cache),
+optional ``DSV411_CAPTURE_ENGRAM_ROWS`` (engram cells only: a TP1 rank cannot hold the 384M-row fp8 hash
+tables on 140 GB, so the capture patches ``engram_num_embeddings`` in a scratch copy of the checkpoint
+config AND in the manifest's engram structures — memory only, the lookup / wkv / gate kernels are the same —
+and records the override in the plan).
 """
 
 from __future__ import annotations
 
 import argparse
+import copy
 import hashlib
 import importlib
 import json
 import os
+import shutil
 import socket
 import tempfile
 from pathlib import Path
@@ -84,6 +90,43 @@ def _single_rank_env(backend: str) -> None:
         os.environ["DSV411_PRIVATE_CACHE"] = str(root)
 
 
+def _shrink_engram_tables(model_path: Path, manifest: dict, rows: int) -> tuple[Path, dict]:
+    """Scratch checkpoint-metadata copy with ``engram_num_embeddings`` = rows per engram layer, and the
+    manifest re-keyed to it (config sha + engram structures). Capture-only; never a measurement input."""
+    scratch = Path(tempfile.mkdtemp(prefix="dsv411_capture_ckpt_"))
+    for name in ("config.json", "tokenizer.json", "tokenizer_config.json"):
+        shutil.copy(model_path / name, scratch / name)
+    config = json.loads((scratch / "config.json").read_text())
+
+    def patch(node):
+        if isinstance(node, dict):
+            for key, value in node.items():
+                if key == "engram_num_embeddings" and isinstance(value, list):
+                    node[key] = [rows] * len(value)
+                else:
+                    patch(value)
+        elif isinstance(node, list):
+            for item in node:
+                patch(item)
+
+    patch(config)
+    (scratch / "config.json").write_text(json.dumps(config, indent=1, sort_keys=True) + "\n")
+    manifest = copy.deepcopy(manifest)
+    manifest["config_sha256"] = contract.sha256_json(json.loads((scratch / "config.json").read_text()))
+    for entry in manifest["entries"]:
+        if entry["component"] == "engram":
+            entry["structure"]["num_embeddings"] = rows
+            entry["structure_key"] = contract.structure_key("engram", entry["structure"])
+    reps = {}
+    for entry in manifest["entries"]:
+        reps.setdefault(entry["phase"], {}).setdefault(entry["component"], {}).setdefault(
+            entry["structure_key"], entry["layer"]
+        )
+    manifest["representatives"] = reps
+    manifest["engram_rows_override"] = rows
+    return scratch, manifest
+
+
 def run_cell(backend: str, kind: str, phase: str, *, output: Path | None = None) -> Path:
     if backend not in PRODUCERS or kind not in CELLS or phase not in ("context", "generation"):
         raise ValueError(f"unknown cell {backend}/{kind}/{phase}")
@@ -95,6 +138,9 @@ def run_cell(backend: str, kind: str, phase: str, *, output: Path | None = None)
     if not manifest_path.exists():
         raise FileNotFoundError(f"{manifest_path}: export it on the host with components/e2e_align.py --sdk-manifest")
     manifest = json.loads(manifest_path.read_text())
+    engram_rows = int(os.environ.get("DSV411_CAPTURE_ENGRAM_ROWS") or 0)
+    if kind == "engram" and engram_rows:
+        model_path, manifest = _shrink_engram_tables(model_path, manifest, engram_rows)
     _single_rank_env(backend)
     # pins: the installed package IS the pinned source for a capture
     package = Path(importlib.import_module("vllm" if backend == "vllm" else "sglang").__file__).resolve().parent
@@ -139,7 +185,9 @@ def run_cell(backend: str, kind: str, phase: str, *, output: Path | None = None)
         collector_revision=revision,
         weight_initializer=producer.WEIGHT_INITIALIZER,
         pool=dict(POOL[backend]),
-        capture_cell=dict(kind=kind, phase=phase, probe_isl=PROBE_ISL),
+        capture_cell=dict(
+            kind=kind, phase=phase, probe_isl=PROBE_ISL, engram_rows_override=manifest.get("engram_rows_override")
+        ),
     )
     if backend == "sglang":
         plan["moe_runner_backend"] = "flashinfer_mxfp4"

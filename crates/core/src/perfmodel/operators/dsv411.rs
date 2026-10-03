@@ -346,7 +346,9 @@ pub struct Dsv411IndexerOp {
     pub index_entry_bytes: f64,
     /// Tensor-core class the runtime scores with (sglang/H20 bf16, vLLM/H20 fp8).
     pub scoring_quant_mode: GemmQuantMode,
-    /// vLLM skips scoring when every compressed position fits in top-k.
+    /// vLLM skips scoring when every compressed position fits in top-k — in eager prefill only:
+    /// under CUDA graphs the prepared index queries are always scored (attention.py:1195-1217,
+    /// measured 2026-10-03), so the rule applies to context rows and never to generation.
     pub skip_within_topk: bool,
     pub gemm_quant_mode: GemmQuantMode,
 }
@@ -404,7 +406,7 @@ impl Dsv411IndexerOp {
         let mut result = mm(q, inh * ihd, tokens, w8, gemm).plus(mm(h, inh, tokens, 2.0, bf16));
         let end = if self.is_context { kv_len + query } else { kv_len };
         let compressed_len = (end / self.compress_ratio as f64).floor();
-        if self.skip_within_topk && compressed_len <= self.index_topk as f64 {
+        if self.skip_within_topk && self.is_context && compressed_len <= self.index_topk as f64 {
             // every candidate is selected without scoring (vLLM attention.py:1195-1217)
             return Ok(result);
         }
@@ -719,6 +721,10 @@ mod tests {
         let a = indexer(1, true, false).sol(&spec(), 1.0, 4096.0, 0.0).unwrap().sol.unwrap();
         let b = indexer(1, true, true).sol(&spec(), 1.0, 4096.0, 0.0).unwrap().sol.unwrap();
         assert_eq!(a.math_ms, b.math_ms);
+        // generation never skips: the captured graph always scores the prepared index queries
+        let g = indexer(1, false, false).sol(&spec(), 1.0, 1.0, 256.0).unwrap().sol.unwrap();
+        let h = indexer(1, false, true).sol(&spec(), 1.0, 1.0, 256.0).unwrap().sol.unwrap();
+        assert_eq!(g.math_ms, h.math_ms);
     }
 
     #[test]

@@ -51,7 +51,8 @@ class Dsv411RuntimeFacts:
         if backend_name == "vllm":
             # attention.py:947-972 (fp8_ds_mla, 584 B, alignment 576), indexer K cache fp8
             # (132 B, :1009-1028), DeepGEMM fp8 mqa_logits, scoring skipped when
-            # max_seq_len // cr <= index_topk (:1195-1217); head-sharded engram + all-gather.
+            # max_seq_len // cr <= index_topk in eager prefill only (:1195-1217; under CUDA graphs the
+            # prepared index queries are always scored); head-sharded engram + all-gather.
             return cls(584.0, 584.0, 132.0, "fp8", "fp8", True, "head")
         raise NotImplementedError(f"dsv411 has no measured runtime facts for backend {backend_name!r}")
 

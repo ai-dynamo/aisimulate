@@ -300,3 +300,21 @@ rules:
      match: "^sglang::silu_mul_clamp_kernel$"}
   - {backend: framework_native, role: infra,
      match: "^sglang::align_single_token_kernel$|^void at::native::roll_cuda_kernel"}
+  # dsv411 capture cells (2026-10-03): kernel names the TP1 in-process producers emit that the serving
+  # vocabulary had not met yet (both sides translate through this file, so labels stay symmetric).
+  - {backend: flashmla, role: attention,
+     match: "^_flashmla_C::sparse_(prefill|decode)_fwd$|^sgl_kernel::sparse_(prefill|decode)_fwd$"}
+  - {backend: dsa_nsa, role: dsa_indexer,
+     match: "^vllm::sparse_attn_indexer$|^_C::top_k_per_row_prefill$|^_block_scores_kernel$|^_candidate_flags_kernel$|^_store_candidates_kernel$|^sglang::n32k5120_gemm_bf16$|^sglang::n128k512_gemm_bf16$|^sglang::paged_mqa_metadata_tiny_kernel"}
+  - {backend: marlin, role: gemm,
+     match: "^_C::marlin_gemm$"}
+  - {backend: framework_native, role: attention,   # sglang ratio-2 compressor pooling
+     match: "^_c2_decode_pool_kernel$"}
+  - {backend: framework_native, role: kvcache,
+     match: "^_low_ratio_metadata$|^_small_page_table$|^_store_fp4_index_k_cache_kernel$"}
+  - {backend: framework_native, role: norm_rope,
+     match: "^_C::fused_deepseek_v4_qnorm_rope_kv_rope_quant_insert$|^vllm::fused_inv_rope_fp8_quant_kernel$"}
+  - {backend: framework_native, role: engram,
+     match: "^_engram_hash_kernel$"}
+  - {backend: infra, role: infra,                  # profiler step labels of the dsv411 producers
+     match: "^step\\[(EXTEND|DECODE)"}
