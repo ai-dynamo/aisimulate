@@ -84,7 +84,9 @@ def test_lightning_nvfp4_loads_bundled_quant_config_offline(monkeypatch):
         assert model.model_family == "NEMOTRONH"
         assert model_config.gemm_quant_mode == common.GEMMQuantMode.fp8_static
         assert model_config.moe_quant_mode == common.MoEQuantMode.nvfp4
-        assert model_config.kvcache_quant_mode == common.KVCacheQuantMode.fp8
+        # vLLM resolves KV dtype from torch_dtype (bfloat16), not from the
+        # checkpoint's kv_cache_quant_algo declaration.
+        assert model_config.kvcache_quant_mode == common.KVCacheQuantMode.bfloat16
     finally:
         sdk_utils.get_model_config_from_model_path.cache_clear()
         sdk_utils._load_model_config_from_model_path.cache_clear()
