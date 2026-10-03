@@ -24,14 +24,19 @@ from . import contract
 
 PRODUCERS = {"sglang": "collector.sglang.collect_dsv411_module", "vllm": "collector.vllm.collect_dsv411_module"}
 DEFAULT_POOL = {
-    # SGLang ModelRunner pool / vLLM config limits; sized for the full grid (1M past kv, batch 1024)
+    # SGLang ModelRunner pool / vLLM config limits; sized for the full grid (1M past kv, batch 1024).
+    # sglang: max_total_tokens must hold the largest resident context case, batch 8 x (1048575 + 1) =
+    # 8,388,608 full tokens (plus one chunk of query tokens); on V4.1-Flash a full token costs ~1.6 KB
+    # (kv_source layers 2/8/14 at ratio 2, 20 at ratio 1, FlashMLA 584 B rows + fp4 indexer keys), so the
+    # pool is ~14 GB. The SWA pool (40 layers x 584 B per slot) only holds the slid windows plus one
+    # extend's new tokens: max_new_tokens 262,144 + 1024 x (128 window + 64 page) < 8650752 x 1/16.
     "sglang": dict(
         context_length=1048576,
-        max_total_tokens=2359296,
+        max_total_tokens=8650752,
         max_requests=1024,
         mem_fraction_static=0.85,
         max_new_tokens=262144,
-        swa_full_tokens_ratio=1.0,
+        swa_full_tokens_ratio=0.0625,
     ),
     "vllm": dict(context_length=1048576, max_requests=1024, max_new_tokens=262144),
 }

@@ -391,6 +391,17 @@ def validate_plan(
             raise ValueError("attention cases without attention components")
         if case["kind"] == "tokens" and not set(components) & set(TOKEN_COMPONENTS):
             raise ValueError("token cases without token components")
+    cap = (plan.get("pool") or {}).get("max_total_tokens")
+    if cap is not None:
+        for case in plan["cases"]:
+            if case["kind"] != "attention":
+                continue
+            new_tokens = case["query"] if case["phase"] == "context" else 1
+            resident = case["batch_size"] * (case["past_kv"] + new_tokens)
+            if resident > cap:
+                raise ValueError(
+                    f"{case['case_id']}: {resident} resident KV tokens exceed the pool's max_total_tokens {cap}"
+                )
     if re.fullmatch(r"[0-9a-f]{64}", plan["grid_sha256"]) is None:
         raise ValueError("plan must pin the grid file")
     if expected_sm.get(plan["expected_gpu"]) != plan["expected_sm"]:

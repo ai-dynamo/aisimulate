@@ -339,6 +339,33 @@ def _reset_fill(req, cut_len):
     del req.full_untruncated_fill_ids[cut_len:]
 
 
+def slide_windows(runner, reqs, pre_len):
+    """Free the SWA slots that fell out of each request's sliding window, as the serving scheduler does
+    before it schedules the next chunk of a chunked prefill (sglang 0.5.21 ``ScheduleBatch.maybe_evict_swa``,
+    managers/schedule_batch.py:3942-3954: chunk cache, no overlap -> ``evict_sliding_windows(req, prefix_len)``
+    -> ``mem_cache/common.py:55 free_swa_out_of_window_slots``). The producer has no scheduler, so it slides
+    the windows itself before every seeding chunk and before the measured extend; the full/indexer slots
+    stay (serving keeps them too), only the 40-layer SWA copies behind ``pre_len - window`` are released.
+    Without this the SWA pool would have to hold every seeded token (batch x past kv at 40 x 584 B each)."""
+    from sglang.srt.mem_cache.common import free_swa_out_of_window_slots
+    from sglang.srt.runtime_context import get_schedule
+
+    torch_runner = runner.torch_runner
+    allocator = torch_runner.token_to_kv_pool_allocator
+    allocator.free_group_begin()
+    for req in reqs:
+        free_swa_out_of_window_slots(
+            req,
+            pre_len,
+            sliding_window_size=torch_runner.sliding_window_size,
+            page_size=get_schedule().page_size,
+            req_to_token_pool=torch_runner.req_to_token_pool,
+            token_to_kv_pool_allocator=allocator,
+            is_chunk_cache=True,
+        )
+    allocator.free_group_end()
+
+
 def seed_prefix(runner, bench, token_ids, batch_size, prefix, chunk):
     """Prefill ``prefix`` real tokens per request in serving-sized chunks; returns (reqs, batch, next_ids)."""
     first = min(prefix, chunk)
@@ -354,6 +381,7 @@ def seed_prefix(runner, bench, token_ids, batch_size, prefix, chunk):
         bench.prepare_extend_inputs_for_correctness_test(
             argparse.Namespace(cut_len=done), [token_ids[:end] for _ in reqs], reqs, runner.torch_runner
         )
+        slide_windows(runner, reqs, done)
         next_ids, _, batch = runner.extend(reqs)
         done = end
     return reqs, batch, next_ids
@@ -409,8 +437,9 @@ def run_attention_case(runner, bench, token_ids, case, plan, state, intervals, s
         return
     # context. The hybrid SWA allocator frees whole allocation groups, so the measured query tokens are
     # never released piecemeal: short prefixes (one seeding chunk) are re-seeded per sample from a
-    # cleared pool; long prefixes stay resident and the query tokens of the samples accumulate
-    # (bounded: kv >= 8192 caps the batch at 8 -> <= samples * 8 * 8192 tokens, sized into the pool).
+    # cleared pool; long prefixes stay resident (windows slid like serving, see slide_windows) and the
+    # query tokens of the samples accumulate (bounded: kv >= 8192 caps the batch at 8 -> <= samples * 8 *
+    # 8192 tokens, sized into the pool).
     reseed = prefix <= chunk
     if prefix and not reseed:
         reqs, batch, _ = seed_prefix(runner, bench, token_ids, batch_size, prefix, chunk)
@@ -430,6 +459,7 @@ def run_attention_case(runner, bench, token_ids, case, plan, state, intervals, s
                 reqs,
                 runner.torch_runner,
             )
+            slide_windows(runner, reqs, prefix)
         else:
             # one_batch's cleanup is a no-op: reset request slots and KV tokens per prefix-free sample
             runner.clear()
@@ -784,9 +814,11 @@ def run(args, receipt):
         max_total_tokens=pool["max_total_tokens"],
         max_running_requests=pool["max_requests"],
         mem_fraction_static=pool["mem_fraction_static"],
-        # The producer has no scheduler/radix cache to release SWA tokens outside the window between
-        # chunks, so the hybrid SWA pool must hold every seeded token: size it like the full pool.
-        swa_full_tokens_ratio=pool.get("swa_full_tokens_ratio", 1.0),
+        # The SWA pool only has to hold the sliding windows plus one extend's new tokens: the producer
+        # slides the windows between chunks like the serving scheduler (slide_windows). The ratio and
+        # the full pool size are plan inputs (collector/dsv411/plan.py DEFAULT_POOL) checked against the
+        # grid by contract.validate_plan.
+        swa_full_tokens_ratio=pool["swa_full_tokens_ratio"],
         cuda_graph_max_bs_decode=pool["max_requests"],
         cuda_graph_backend_prefill="disabled",
         **({} if needs_attention else {"cuda_graph_backend_decode": "disabled"}),

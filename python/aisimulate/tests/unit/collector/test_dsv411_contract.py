@@ -290,3 +290,32 @@ def test_pool_runs_rejects_overlapping_keys(tmp_path, manifests):
     with pytest.raises(ValueError, match="two runs"):
         contract.pool_runs([rows, rows])
     assert len(contract.pool_runs([rows])) == len(rows)
+
+
+def test_plan_pool_must_hold_every_attention_case(manifests):
+    from collector.dsv411.plan import DEFAULT_POOL
+
+    manifest = manifests["sglang"]
+    producer = PRODUCERS["sglang"]
+    kwargs = dict(
+        framework_commit=producer.FRAMEWORK_COMMIT,
+        framework_version=producer.FRAMEWORK_VERSION,
+        expected_sm=producer.EXPECTED_SM,
+        required_sources=producer.REQUIRED_SOURCES,
+    )
+    # the full grid's largest resident context case: batch 8 x (1048575 + 1) full tokens
+    grid = contract.load_grid()
+    cases, _ = contract.expand_cases(grid, list(contract.STRUCTURE_FIELDS))
+    largest = max(
+        (c for c in cases if c["kind"] == "attention"),
+        key=lambda c: c["batch_size"] * (c["past_kv"] + (c["query"] if c["phase"] == "context" else 1)),
+    )
+    assert largest["batch_size"] * (largest["past_kv"] + largest["query"]) == 8 * 1048576
+    contract.validate_plan(
+        _plan("sglang", manifest, cases=[largest], pool=dict(DEFAULT_POOL["sglang"])), manifest, **kwargs
+    )
+    too_small = dict(DEFAULT_POOL["sglang"], max_total_tokens=2359296)
+    with pytest.raises(ValueError, match="exceed the pool"):
+        contract.validate_plan(_plan("sglang", manifest, cases=[largest], pool=too_small), manifest, **kwargs)
+    # no pool declared (captures, vllm): nothing to check
+    contract.validate_plan(_plan("sglang", manifest, cases=[largest], pool={}), manifest, **kwargs)
