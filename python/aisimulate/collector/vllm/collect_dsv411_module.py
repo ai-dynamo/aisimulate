@@ -229,6 +229,7 @@ class AttentionStack:
             max_tokens, config.hidden_size, generator=generator, dtype=torch.bfloat16, device=device
         )
         self.bound = None
+        self.builders = {}
 
     def cache_layers(self, attn):
         layers = [attn, attn.swa_cache_layer]
@@ -294,11 +295,36 @@ class AttentionStack:
         remapped.positions = positions
         return remapped
 
-    def metadata(self, common):
+    def _builder(self, registered, spec, prefix, sub):
+        """One metadata builder per (backend, spec kind, page size), shared by every layer of that
+        kind exactly like serving's one builder per KV-cache group: the V4.1 indexer builder owns a
+        16 GiB expanded block-table buffer, so a builder per layer per forward exhausted the GPU."""
         from collector.vllm.collect_dsv4_attn import _make_builder
 
+        backend = registered.get_attn_backend()
+        key = (backend.get_name(), type(spec).__name__, int(spec.block_size), getattr(spec, "cache_dtype_str", None))
+        if key not in self.builders:
+            width = None
+            builder_cls = backend.get_builder_cls()
+            if getattr(builder_cls, "requires_block_table_width", False):
+                from vllm.v1.worker.block_table import get_block_table_width
+
+                max_blocks = spec.max_num_blocks_per_req(self.vllm_config, self.vllm_config.model_config.max_model_len)
+                width = get_block_table_width(max_blocks, spec.block_size)
+            self.builders[key] = (
+                _make_builder(backend, spec, prefix, self.vllm_config, sub, device=str(self.device)),
+                width,
+            )
+        builder, width = self.builders[key]
+        table = sub.block_table_tensor
+        if width is not None and table.shape[1] < width:
+            pad = self.torch.zeros((table.shape[0], width - table.shape[1]), dtype=table.dtype, device=table.device)
+            sub.block_table_tensor = self.torch.cat([table, pad], dim=1)
+        return key, builder
+
+    def metadata(self, common):
         static_ctx = self.vllm_config.compilation_config.static_forward_context
-        metadata, remapped = {}, {}
+        metadata, remapped, built = {}, {}, {}
         for attn in self.attns:
             for layer in self.cache_layers(attn):
                 registered = static_ctx[layer.prefix]
@@ -312,9 +338,10 @@ class AttentionStack:
                         else self._remapped(common, spec.block_size)
                     )
                 sub = remapped[spec.block_size]
-                metadata[layer.prefix] = _make_builder(
-                    registered.get_attn_backend(), spec, layer.prefix, self.vllm_config, sub, device=str(self.device)
-                ).build(0, sub)
+                key, builder = self._builder(registered, spec, layer.prefix, sub)
+                if key not in built:
+                    built[key] = builder.build(0, sub)
+                metadata[layer.prefix] = built[key]
         return metadata
 
     def forward(self, common, *, layers=None, qualify=False):
