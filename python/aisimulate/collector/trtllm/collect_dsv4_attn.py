@@ -222,6 +222,8 @@ def get_dsv4_hca_generation_test_cases() -> list[dict]:
 # untouched, and reusing one module across batches is exactly what serving
 # does. Owner-approved perf change 2026-08-09.
 _MODULE_CACHE: dict = {}
+# Lower bound on the per-case KV token quota (see create_dsv4_kv_cache_and_metadata).
+_KV_POOL_MIN_TOKENS = 4 * 1024 * 1024
 
 
 def _cached_dsv4_attention_module(model_path: str, attn_kind: str, tp_size: int, device: str):
@@ -577,14 +579,46 @@ def create_dsv4_kv_cache_and_metadata(
     # equivalent byte quota directly (half of currently-free device memory,
     # matching the DSV4 example's free_gpu_memory_fraction=0.5,
     # examples/models/core/deepseek_v4/README.md:148-151 @v1.3.0rc23). A
-    # main-KV-shaped max_tokens cap under-counts on V2 (the byte quota spans
-    # main KV + SWA + compressor/indexer caches) and made large-KV shapes
-    # fail dummy-request allocation ("Request ID not found in IndexMapper",
-    # B200 smoke round 1 2026-08-06).
+    # collector-computed main-KV-shaped byte cap under-counted on V2 (the
+    # byte quota spans main KV + SWA + compressor/indexer caches) and made
+    # large-KV shapes fail dummy-request allocation ("Request ID not found in
+    # IndexMapper", B200 smoke round 1 2026-08-06) — hence the token cap below
+    # is handed to the manager's own arithmetic, never computed here.
     free_bytes, _ = torch.cuda.mem_get_info(torch.device(device))
+    # Pool size is a per-case cost, not a measurement input: the manager
+    # physically backs the whole quota at construction (runtime/
+    # kv_cache_manager_v2/_storage_manager.py:248-249 slot counts from the
+    # GPU-tier quota, expand_pool_group :826 @1.3.0rc29) and this collector
+    # builds and tears one down per case. Cap the quota at what this batch
+    # can touch via kv_cache_config.max_tokens — the manager converts it with
+    # its own DSV4 arithmetic (DeepseekV4CacheManager._get_quota_from_max_tokens,
+    # sparse/deepseek_v4/cache_manager.py:926-981 @1.3.0rc29: non-sliding KV +
+    # SWA per token/request + indexer/compress pools + per-type padding) and
+    # takes min(max_gpu_total_bytes, quota_from_max_tokens) (pyexecutor/kv_cache/
+    # kv_cache_manager_v2.py:1384-1398). The envelope is doubled and rounded
+    # to whole pages so dummy-request allocation never sits at the edge; a
+    # pool that is still too small fails allocation loudly (classified),
+    # never silently. The free-memory half stays as the upper bound, matching
+    # the DSV4 example's free_gpu_memory_fraction=0.5.
+    planned_tokens = batch_size * (max(max_seq, request_tokens) + tokens_per_block)
+    planned_tokens = -(-2 * planned_tokens // tokens_per_block) * tokens_per_block
+    # Floor: the pool must stay large enough that inductor emits the SAME
+    # kernels serving runs. footer_scale_kv.dequant_gather (fp8_ds_mla path,
+    # @maybe_compile(dynamic=True)) indexes the whole footer-scale pool; when
+    # that pool extent is < 2**31 bytes inductor generates int32-indexed
+    # triton kernels (xnumel i32), above it int64 — serving pools are tens of
+    # GiB, so serving always runs the int64 variant. H20 calibration
+    # (2026-10-03, DeepSeek-V4-Flash, b64 s128 p2048): quota from 1,048,576
+    # tokens = 11.4 GiB -> i32 (53.9 ms), 1,572,864 tokens = 17.1 GiB -> i64
+    # (45.8 ms); 4M tokens (45 GiB on Flash) is 2.5x past the threshold. The
+    # footer row format is fixed (584 B/token), so the threshold is in tokens,
+    # not model geometry. Pool construction at 4M tokens costs ~2 s/case more
+    # than the shape-sized cap and ~5 s/case less than the free*0.5 pool.
+    planned_tokens = max(planned_tokens, _KV_POOL_MIN_TOKENS)
     kv_cache_kwargs = dict(
         tokens_per_block=tokens_per_block,
         max_gpu_total_bytes=int(free_bytes * 0.5),
+        max_tokens=int(planned_tokens),
         enable_block_reuse=False,
     )
     if get_sm_version() == 90:

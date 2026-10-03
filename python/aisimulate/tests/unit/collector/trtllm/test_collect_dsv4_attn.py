@@ -271,6 +271,8 @@ def _install_trtllm_stubs(monkeypatch, module):
         return SimpleNamespace(**kw)
 
     llm_args.KvCacheConfig = _kv_cache_config
+    # no GPU under unit tests: pin the Hopper branch (fp8_ds_mla pool) deterministically
+    monkeypatch.setattr(module, "get_sm_version", lambda: 90)
     # the create function re-imports this locally (relative-or-plain fallback)
     mla_stub = _mod("collect_mla_module")
     mla_stub.get_kv_cache_manager_cls = lambda mc, cfg: _CapturingManager
@@ -460,3 +462,29 @@ def test_constructor_args_match_the_serving_oracle(monkeypatch):
             # position == past_seen (the runner builds the tensor from the
             # single-sourced geometry helper)
             assert module.generation_request_geometry(sl)["position"] == oracle["first_position"]
+
+
+@pytest.mark.parametrize(
+    "bs, sl, is_ctx, prefix",
+    [(1, 1, True, 0), (16, 10240, True, 4096), (1024, 1, True, 0), (16, 1, False, 0), (128, 65536, False, 0)],
+)
+def test_kv_quota_is_capped_by_this_batch_s_tokens(monkeypatch, bs, sl, is_ctx, prefix):
+    """Per-case KV pool: the byte quota stays the serving half-of-free bound,
+    AND a max_tokens cap sized to this batch (doubled, page-rounded) is handed
+    to the manager's own DSV4 arithmetic — never collector-computed bytes."""
+    module = _load_module_with_torch_stub(monkeypatch)
+    _, _, captured = _run_create(
+        module, monkeypatch, batch_size=bs, seq_len=sl, is_context=is_ctx, prefix_len=prefix
+    )
+    (kw,) = captured["kv_cache_config"]
+    assert kw["max_gpu_total_bytes"] == 50 * 2**30  # mem_get_info stub: free=100 GiB
+    tpb = kw["tokens_per_block"]
+    envelope = (prefix + sl + 1) if is_ctx else (sl + 1)
+    envelope = max(envelope, 512)
+    needed = bs * envelope
+    assert kw["max_tokens"] % tpb == 0
+    floor = module._KV_POOL_MIN_TOKENS
+    expected = max(2 * needed, floor)
+    assert expected <= kw["max_tokens"] <= max(2 * (needed + bs * tpb) + tpb, floor)
+    # the floor keeps the footer-scale pool past inductor's int64 threshold
+    assert floor >= 1_572_864 * 2
