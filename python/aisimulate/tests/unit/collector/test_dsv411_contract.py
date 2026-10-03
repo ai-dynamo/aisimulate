@@ -17,7 +17,7 @@ pytestmark = pytest.mark.unit
 PRODUCERS = {"sglang": sglang_producer, "vllm": vllm_producer}
 SMOKE = {
     "context": {"query_lengths": [128, 2048], "past_kv_lengths": [0, 65536], "batch_sizes": [1, 4]},
-    "generation": {"past_kv_lengths": [1024, 1048575], "batch_sizes": [1, 16]},
+    "generation": {"past_kv_lengths": [1024, 1048574], "batch_sizes": [1, 16]},
     "tokens": {"context_tokens": [16, 262144], "generation_tokens": [1, 1024]},
 }
 
@@ -77,6 +77,8 @@ def test_grid_expansion_honors_budgets_and_counts_drops():
     assert max(c["past_kv"] for c in ctx) == 1048575 and max(c["query"] for c in ctx) == 8192
     gen = [c for c in cases if c["kind"] == "attention" and c["phase"] == "generation"]
     assert all(c["batch_size"] * (c["past_kv"] + 1) <= grid["generation"]["max_tokens"] for c in gen)
+    # a decode forward at seq_len == context_len never happens in serving (its token would not fit)
+    assert max(c["past_kv"] + 1 for c in gen) == 1048575 < grid["context"]["max_sequence_length"]
     for floor, max_batch in grid["generation"]["decode_batch_ladder"]:
         assert all(c["batch_size"] <= max_batch for c in gen if c["past_kv"] >= floor)
     assert {"context.max_new_tokens", "context.long_kv_max_batch", "generation.max_tokens"} <= set(drops)

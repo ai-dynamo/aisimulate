@@ -29,12 +29,15 @@ common_case_values:
       chunk_prefill_size: 8192        # seeding chunk (serving chunked-prefill size)
       measurement_regime: eager_drained
     generation:
-      # past kv per request; the measured decode reads kv_len = past + 1 (inclusive)
+      # past kv per request; the measured decode reads kv_len = past + 1 (inclusive). A decode forward
+      # at seq_len L exists in serving only when L < context_len (its token must still fit), so the
+      # ladder tops out at kv_len 1,048,575: both runtimes refuse / assert on a decode at 1,048,576
+      # (sglang's captured decode graph asserts out of bounds there; eager runs, serving never does).
       past_kv_lengths: [1, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 1536, 2048, 3072, 4096, 6144, 8192,
-                        10240, 12288, 16384, 32768, 65536, 131072, 262144, 524288, 1048575]
+                        10240, 12288, 16384, 32768, 65536, 131072, 262144, 524288, 1048574]
       batch_sizes: [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024]
       max_tokens: 1048576             # batch * (past + 1)
-      max_sequence_length: 1048576    # past + 1
+      max_sequence_length: 1048575    # past + 1 < context_len (1048576)
       # [past_kv_floor, max_batch]: a decode shape with kv >= floor and batch > max_batch is out of budget
       decode_batch_ladder:
       - [524288, 1]
