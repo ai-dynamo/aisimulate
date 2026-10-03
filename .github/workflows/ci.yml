@@ -679,7 +679,7 @@ jobs:
       - name: Run repository and package contracts
         if: matrix.shard.suite == 'contracts'
         run: |
-          python -m uv pip install --system "${AISIMULATE_TEST_WHEEL}[dev]" --group scripts/pyproject.toml:ci --group scripts/pyproject.toml:fpm-accuracy
+          python -m uv pip install --system "${AISIMULATE_TEST_WHEEL}[dev]" --group scripts/pyproject.toml:ci --group scripts/pyproject.toml:fpm-accuracy --group scripts/pyproject.toml:e2e-accuracy
           python -m pip check
           python scripts/prediction_regression/check_prediction_numerics.py --fetch-baseline-only
           python scripts/ci/check_application_test_inventory.py --output application-test-inventory.json
