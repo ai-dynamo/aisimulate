@@ -252,8 +252,10 @@ are never combined into one curve. Legacy summaries remain usable with GPU
 aggregates and explain when detailed evidence has not yet been exported.
 
 These are measurements at specific operating points, not universal support
-claims or release gates. The default publication excludes multi-node rows.
-Internal run records and exploratory dashboard payloads are not published.
+claims or release gates. The scope bar reports whether the selected snapshot
+includes multi-node rows. Each predictor's errors cover its successful points;
+source exclusions remain visible in campaign provenance. Internal run records
+and exploratory dashboard payloads are not published.
 
 ## Regenerate a branch snapshot
 
