@@ -39,6 +39,10 @@ carries a structure) produces the row, the other 39 layers still execute for KV 
   native sub-call. An eager generation measurement is admitted only when the plan declares
   `--regime-exception component=reason` (`measurement_regime=eager_exception`).
 * Real KV: every cached-prefill / decode row is seeded by chunked prefills (8192) of corpus tokens.
+  SGLang: the out-of-window SWA slots are released before every chunk and before the measured
+  extend, where the serving scheduler releases them (`slide_windows`), so the hybrid SWA pool only
+  holds the windows plus one extend; the pool limits live in the plan (`plan.py` `DEFAULT_POOL`) and
+  `validate_plan` refuses a pool that cannot hold a case's resident KV.
 
 ## Running (H20 box)
 

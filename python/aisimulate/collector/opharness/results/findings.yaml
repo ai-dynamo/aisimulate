@@ -2425,9 +2425,14 @@ findings:
       (attention.py:1195-1217) - the SDK skip_within_topk flag should be context-only; (2) the collector/vllm DSV4 helper''s
       remapped metadata (_remap_common_metadata) maps slots for the FIRST num_tokens positions, so the 32-token SWA pages and the
       compressor state caches were never seeded past 8192 (SWA layers returned all-zero output beyond it) - the dsv411 adapter
-      recomputes the slot mapping from the real positions; (3) sglang''s hybrid SWA pool (swa_full_tokens_ratio) must be sized
-      like the full pool for a producer that has no scheduler / radix cache to release window tokens between chunks, and
-      one_batch''s _TorchBenchRunner.cleanup is a no-op (request slots and KV are reset per prefix-free sample); (4) sglang
+      recomputes the slot mapping from the real positions; (3) sglang''s hybrid SWA pool (40 layers x 584 B per slot) is sized by
+      swa_full_tokens_ratio, and a producer that never slides the windows needs it as large as the full pool, which capped
+      the pool at 2.36M tokens and killed the batch-8 x 1M-kv context cells (pool exhausted -> TreeCacheNamespace has no
+      evict_for_alloc); the producer now frees the out-of-window SWA slots exactly where the serving scheduler does
+      (ScheduleBatch.maybe_evict_swa -> free_swa_out_of_window_slots, chunk cache, no overlap) before every seeding chunk
+      and the measured extend, the pool holds 8,650,752 full tokens at ratio 1/16, and validate_plan rejects a pool that
+      cannot hold a case''s resident KV; one_batch''s _TorchBenchRunner.cleanup is a no-op (request slots and KV are reset
+      per prefix-free sample); (4) sglang
       ServerArgs at 0.5.21 spells the decode graph cap cuda_graph_max_bs_decode; init_cuda_graphs never sets
       decode_cuda_graph_captured (capture evidence = the recorded external-event buckets); (5) vllm max_model_len is capped at
       max_position_embeddings 1048576 - the grid carries max_sequence_length. H20 TP2 smoke ratios vllm/sglang: attention_core
