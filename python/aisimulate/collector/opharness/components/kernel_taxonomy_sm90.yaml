@@ -274,3 +274,29 @@ rules:
   # vLLM cute-DSL FA varlen metadata conversion (cu_seqlens -> blocks -> batch): attention glue
   - {backend: framework_native, role: infra,
      match: "flash_attncutecu_blocks_kernel"}
+
+  # ------------------------------------------------ DSV4.1 dsv411 family (2026-10-03)
+  # Granularity decision for the dsv411 decomposition (findings dsv411_family_granularity_2026_10_03):
+  # Engram is its own measured module (SDK component `engram`), so its hash / lookup / post-wkv kernels
+  # get the `engram` role on both runtimes; the remaining V4.1 residue is absorbed into the roles the
+  # SDK already models (compressor state save -> attention, index-K production / candidate mask / fp4
+  # index logits -> dsa_indexer, ring slot mapping + rope-quant insert -> kvcache, hc_* sinkhorn / mix
+  # sites -> mhc). Re-run decompose.py to refresh results/<sm>/decompose/ residue lists.
+  - {backend: framework_native, role: engram,
+     match: "^_engram_lookup_kernel$|^_fused_engram_post_wkv_kernel$|^_hash_ids_kernel$"}
+  - {backend: framework_native, role: engram,   # sglang Triton engram gate/gather (triton label is attention-only)
+     match: "^_engram_gate_kernel$|^_engram_gather_kernel$"}
+  - {backend: framework_native, role: attention,
+     match: "^_fused_save_compress_norm_kernel$"}
+  - {backend: dsa_nsa, role: dsa_indexer,
+     match: "^_indexer_k_norm_rope_quant_store_kernel$|^_mask_candidates_kernel$|^_fp4_index_logits_kernel$|^_quantize_fp4_indexer_kernel$|^_rope_tail_fake_quant_fp4_kernel$"}
+  - {backend: framework_native, role: kvcache,
+     match: "^_ring_slot_mapping_kernel$|^_rope_quant_insert_kernel$|^sglang::fused_store_flashmla_cache$"}
+  - {backend: framework_native, role: mhc,
+     match: "^_hc_combine_kernel$|^_hc_mix_reduce_sinkhorn_kernel$|^_hc_mix_stats_(partial|reduce)_kernel$|^hc_split_sinkhorn_kernel__kernel$"}
+  - {backend: sgl_kernel, role: norm_rope,
+     match: "^sglang::(deepseek_rope_kernel|fused_k_norm_rope_flashmla)$"}
+  - {backend: sgl_kernel, role: activation,
+     match: "^sglang::silu_mul_clamp_kernel$"}
+  - {backend: framework_native, role: infra,
+     match: "^sglang::align_single_token_kernel$|^void at::native::roll_cuda_kernel"}

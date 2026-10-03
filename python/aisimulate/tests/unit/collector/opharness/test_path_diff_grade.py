@@ -5,6 +5,7 @@ TARGET ROLES (review 2026-09-25 P1): auxiliary kernel overlap never carries a
 verdict, a role the collector ran must exist on the serving side, kernel drift
 inside a role stays red, and serving evidence is selected by PHASE.
 """
+
 import importlib.util
 import sys
 from pathlib import Path
@@ -110,20 +111,27 @@ def test_quant_gate_with_fused_serving_quant_is_diverged_not_aligned():
 
 def test_gemm_tile_differences_outside_the_target_role_never_count():
     # serving ran a GEMM tile the collector did not: not a divergence of an attention gate
-    g = grade(["flash::FlashAttnFwdSm90", "nvjet_sm90_tst_64x64"],
-              ["flash::FlashAttnFwdSm90", "nvjet_sm90_tst_128x256"], ("attention",))
+    g = grade(
+        ["flash::FlashAttnFwdSm90", "nvjet_sm90_tst_64x64"],
+        ["flash::FlashAttnFwdSm90", "nvjet_sm90_tst_128x256"],
+        ("attention",),
+    )
     assert g["verdict"] == "aligned"
     assert g["aux_collector_only_roles"] == []  # gemm exists on both sides, just other tiles
 
 
 def test_unscoped_gate_grades_every_non_glue_role_the_collector_ran():
-    g = grade(["flash::FlashAttnFwdSm90", "vllm::scaled_fp8_quant_kernel", "reshape_and_cache_kernel_flash"],
-              ["flash::FlashAttnFwdSm90"], None)
+    g = grade(
+        ["flash::FlashAttnFwdSm90", "vllm::scaled_fp8_quant_kernel", "reshape_and_cache_kernel_flash"],
+        ["flash::FlashAttnFwdSm90"],
+        None,
+    )
     assert g["target_roles"] == ["attention", "quant"] and g["verdict"] == "diverged"
     assert g["missing_roles"] == ["quant"]
 
 
 # --------------------------------------------------------------------- phase
+
 
 def _is_launcher(_):
     return False
@@ -131,8 +139,11 @@ def _is_launcher(_):
 
 def test_review_p1_prefill_gate_cannot_borrow_decode_evidence():
     # record: FA3 ran in prefill only, the Triton unified kernel in decode only
-    record = {"ops": [], "orphan_kernels": ["flash::FlashAttnFwdSm90", "kernel_unified_attention"],
-              "orphan_phases": {"flash::FlashAttnFwdSm90": ["prefill"], "kernel_unified_attention": ["decode"]}}
+    record = {
+        "ops": [],
+        "orphan_kernels": ["flash::FlashAttnFwdSm90", "kernel_unified_attention"],
+        "orphan_phases": {"flash::FlashAttnFwdSm90": ["prefill"], "kernel_unified_attention": ["decode"]},
+    }
     srv, scoped = path_diff.select_serving(record, "prefill", None, _is_launcher)
     assert srv == {"flash::FlashAttnFwdSm90"} and scoped is True
     # a decode-only capture graded as a PREFILL gate: diverged (collector-only family)
@@ -144,32 +155,47 @@ def test_review_p1_prefill_gate_cannot_borrow_decode_evidence():
 
 
 def test_profile_run_evidence_is_a_separate_phase():
-    record = {"ops": [], "orphan_kernels": ["flash::FlashAttnFwdSm90"],
-              "orphan_phases": {"flash::FlashAttnFwdSm90": ["profile_run"]}}
+    record = {
+        "ops": [],
+        "orphan_kernels": ["flash::FlashAttnFwdSm90"],
+        "orphan_phases": {"flash::FlashAttnFwdSm90": ["profile_run"]},
+    }
     assert path_diff.select_serving(record, "prefill", None, _is_launcher)[0] == set()
     assert path_diff.select_serving(record, "profile_run", None, _is_launcher)[0] == {"flash::FlashAttnFwdSm90"}
 
 
 def test_legacy_record_without_phase_info_is_marked_unscoped():
-    record = {"ops": [{"phase": "decode", "kernels": ["kernel_unified_attention"]}],
-              "orphan_kernels": ["flash::FlashAttnFwdSm90"]}
+    record = {
+        "ops": [{"phase": "decode", "kernels": ["kernel_unified_attention"]}],
+        "orphan_kernels": ["flash::FlashAttnFwdSm90"],
+    }
     srv, scoped = path_diff.select_serving(record, "prefill", None, _is_launcher)
     assert "flash::FlashAttnFwdSm90" in srv and scoped is False
     assert "kernel_unified_attention" not in srv  # ops DO carry phase and are scoped
 
 
-@pytest.mark.parametrize("gate, roles, phase", [
-    ("gemm_fp8_Llama-3.1-70B-FP8", ("gemm",), None),
-    ("compute_scale_Llama-3.1-70B-FP8", ("quant",), None),
-    ("attn_ctx_Llama-3.1-8B", ("attention", "dsa_indexer"), "prefill"),
-    ("dsv4_csa_gen_DeepSeek-V4-Flash-FP8", ("attention", "dsa_indexer"), "decode"),
-    ("dsa_ctx_fp8_s512_DeepSeek-V3.2", ("attention", "dsa_indexer"), "prefill"),
-    ("kda_ctx_Kimi-K3", ("linear_attention",), "prefill"),
-    ("gdn_gen_Qwen3.5-0.8B", ("linear_attention",), "decode"),
-    ("moe_fp8block_DeepSeek-V3.2", ("moe_gemm", "routing"), None),
-    ("encoder_attn_qwen3vl_Qwen3-VL-8B", ("attention",), "profile_run"),
-    ("mla_bmm_gen_DeepSeek-V3", ("gemm",), None),
-    ("something_new", None, None),
-])
+@pytest.mark.parametrize(
+    "gate, roles, phase",
+    [
+        ("gemm_fp8_Llama-3.1-70B-FP8", ("gemm",), None),
+        ("compute_scale_Llama-3.1-70B-FP8", ("quant",), None),
+        ("attn_ctx_Llama-3.1-8B", ("attention", "dsa_indexer"), "prefill"),
+        ("dsv4_csa_gen_DeepSeek-V4-Flash-FP8", ("attention", "dsa_indexer"), "decode"),
+        ("dsa_ctx_fp8_s512_DeepSeek-V3.2", ("attention", "dsa_indexer"), "prefill"),
+        ("kda_ctx_Kimi-K3", ("linear_attention",), "prefill"),
+        ("gdn_gen_Qwen3.5-0.8B", ("linear_attention",), "decode"),
+        ("moe_fp8block_DeepSeek-V3.2", ("moe_gemm", "routing"), None),
+        ("encoder_attn_qwen3vl_Qwen3-VL-8B", ("attention",), "profile_run"),
+        ("mla_bmm_gen_DeepSeek-V3", ("gemm",), None),
+        # dsv411 family gates (2026-10-03): attention_core + indexer share the attention capture; the
+        # token-only components are graded on their own role
+        ("dsv411_attn_ctx_DeepSeek-V4.1-Flash", ("attention", "dsa_indexer"), "prefill"),
+        ("dsv411_attn_gen_DeepSeek-V4.1-Flash", ("attention", "dsa_indexer"), "decode"),
+        ("dsv411_engram_gen_DeepSeek-V4.1-Flash", ("engram",), None),
+        ("dsv411_mhc_ctx_DeepSeek-V4.1-Flash", ("mhc",), None),
+        ("dsv411_shared_linear_ctx_DeepSeek-V4.1-Flash", ("gemm",), None),
+        ("something_new", None, None),
+    ],
+)
 def test_gate_name_infers_target_roles_and_phase(gate, roles, phase):
     assert path_diff.infer_target(gate) == (roles, phase)

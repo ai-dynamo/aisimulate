@@ -326,6 +326,19 @@ The resolver picks the first `VersionRoute` where `min_version <= runtime_versio
    ```
 5. Run `pytest tests/unit/collector/ -m unit` to verify registry integrity
 
+### Standalone module families (not driven by `collect.py`)
+
+Some perf tables are produced by multi-rank standalone producers instead of registry ops:
+the DeepSeek-V4.1 families `dsv41` (`collector/sglang/dsv41_*`, `collector/vllm/dsv41_*`) and
+`dsv411` (`collector/dsv411/` contract + `collector/{sglang,vllm}/collect_dsv411_module.py`,
+documented in `collector/dsv411/README.md`). They still register everything a registry op
+registers: the family in `op_backend_catalog.yaml`, the perf filename in `registry_types.PerfFile`,
+the producer modules in `provenance.STANDALONE_COLLECTOR_MODULES` together with their
+`hash_closures.yaml` entries, and the sweep grid as `cases/base_ops/<family>*.yaml`. Their
+measured identities come from the SDK graph (a frozen manifest per plan), their rows pass a
+family contract on admission, and the opharness `onboard_model` workflow tracks them through
+`op_family` declared on the checkpoint in `collector/opharness/targets.yaml`.
+
 ## Handling a Framework API Change
 
 When upstream framework `X.Y.Z` changes an API that a collector depends on:

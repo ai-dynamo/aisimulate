@@ -28,3 +28,11 @@ Rules learned the hard way (each has a finding in `results/findings.yaml`):
   written next to the facts, never into the gate directory.
 - The sglang module collectors run each case in a subprocess; capture their
   in-process entry, or the parent profiler sees nothing.
+
+- dsv411 cells (`dsv411_*.py`, `sgl_dsv411_*.py`) run the DeepSeek-V4.1 module producers
+  in-process at TP1 through `collector.dsv411.capture.run_cell`; they need the SDK
+  manifest the host exported into the workspace (`components/e2e_align.py --sdk-manifest
+  deepseek-ai/DeepSeek-V4.1-Flash --tp 1` -> `facts/manifests/dsv411_<fw>_tp1.json`) and
+  `DSV411_MODEL_PATH` / `DSV411_PROMPT_FILE` in the container (checkpoint metadata dir,
+  a corpus of >= 8192 tokens). One cell per component x phase; the attention cell carries
+  both `attention_core` and `indexer`.

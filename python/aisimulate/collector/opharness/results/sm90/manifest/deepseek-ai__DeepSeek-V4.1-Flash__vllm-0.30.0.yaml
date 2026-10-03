@@ -1,0 +1,143 @@
+family: dsv411
+repo: deepseek-ai/DeepSeek-V4.1-Flash
+backend: vllm
+version: 0.30.0
+tp: 2
+sm: sm90
+sdk_model_family: DEEPSEEKV411
+config_sha256: d7637228d27528f6bd259781b5a27258068f50bf637c9c83aab784d81579669d
+runtime_facts:
+  window_entry_bytes: 584.0
+  main_entry_bytes: 584.0
+  index_entry_bytes: 132.0
+  fmha_quant_mode: fp8
+  index_scoring_quant_mode: fp8
+  index_skip_within_topk: true
+  engram_sharding: head
+components:
+- attention_core
+- engram
+- indexer
+- mhc
+- shared_linear
+structures:
+  attention_core:
+  - role=full|compress_ratio=1|num_heads=32|head_dim=512|q_lora_rank=1280|o_lora_rank=1024|o_groups=4|window_size=128|index_topk=512|quant_mode=fp8_block
+  - role=full|compress_ratio=2|num_heads=32|head_dim=512|q_lora_rank=1280|o_lora_rank=1024|o_groups=4|window_size=128|index_topk=512|quant_mode=fp8_block
+  - role=reindex|compress_ratio=1|num_heads=32|head_dim=512|q_lora_rank=1280|o_lora_rank=1024|o_groups=4|window_size=128|index_topk=512|quant_mode=fp8_block
+  - role=reuse|compress_ratio=1|num_heads=32|head_dim=512|q_lora_rank=1280|o_lora_rank=1024|o_groups=4|window_size=128|index_topk=512|quant_mode=fp8_block
+  - role=reuse|compress_ratio=2|num_heads=32|head_dim=512|q_lora_rank=1280|o_lora_rank=1024|o_groups=4|window_size=128|index_topk=512|quant_mode=fp8_block
+  - role=swa|compress_ratio=0|num_heads=32|head_dim=512|q_lora_rank=1280|o_lora_rank=1024|o_groups=4|window_size=128|index_topk=512|quant_mode=fp8_block
+  engram:
+  - num_embeddings=384006168|head_dim=256|hash_columns=24|hc_mult=4|sharding=head|quant_mode=fp8_block
+  - num_embeddings=384016682|head_dim=256|hash_columns=24|hc_mult=4|sharding=head|quant_mode=fp8_block
+  indexer:
+  - compress_ratio=1|index_n_heads=32|index_head_dim=128|index_topk=512|is_candidate_source=false|candidate_limit=16384|q_lora_rank=1280|quant_mode=fp8_block
+  - compress_ratio=1|index_n_heads=32|index_head_dim=128|index_topk=512|is_candidate_source=true|candidate_limit=0|q_lora_rank=1280|quant_mode=fp8_block
+  - compress_ratio=2|index_n_heads=32|index_head_dim=128|index_topk=512|is_candidate_source=false|candidate_limit=0|q_lora_rank=1280|quant_mode=fp8_block
+  mhc:
+  - hidden_size=5120|hc_mult=4|sinkhorn_iters=20
+  shared_linear:
+  - n=2304|k=5120|quant_mode=fp8_block
+  - n=5120|k=1152|quant_mode=fp8_block
+representatives:
+  context:
+    mhc:
+      hidden_size=5120|hc_mult=4|sinkhorn_iters=20: 0
+    attention_core:
+      ? role=swa|compress_ratio=0|num_heads=32|head_dim=512|q_lora_rank=1280|o_lora_rank=1024|o_groups=4|window_size=128|index_topk=512|quant_mode=fp8_block
+      : 0
+      ? role=full|compress_ratio=2|num_heads=32|head_dim=512|q_lora_rank=1280|o_lora_rank=1024|o_groups=4|window_size=128|index_topk=512|quant_mode=fp8_block
+      : 2
+      ? role=reuse|compress_ratio=2|num_heads=32|head_dim=512|q_lora_rank=1280|o_lora_rank=1024|o_groups=4|window_size=128|index_topk=512|quant_mode=fp8_block
+      : 3
+      ? role=full|compress_ratio=1|num_heads=32|head_dim=512|q_lora_rank=1280|o_lora_rank=1024|o_groups=4|window_size=128|index_topk=512|quant_mode=fp8_block
+      : 20
+      ? role=reuse|compress_ratio=1|num_heads=32|head_dim=512|q_lora_rank=1280|o_lora_rank=1024|o_groups=4|window_size=128|index_topk=512|quant_mode=fp8_block
+      : 21
+      ? role=reindex|compress_ratio=1|num_heads=32|head_dim=512|q_lora_rank=1280|o_lora_rank=1024|o_groups=4|window_size=128|index_topk=512|quant_mode=fp8_block
+      : 24
+    shared_linear:
+      n=2304|k=5120|quant_mode=fp8_block: 0
+      n=5120|k=1152|quant_mode=fp8_block: 0
+    engram:
+      num_embeddings=384006168|head_dim=256|hash_columns=24|hc_mult=4|sharding=head|quant_mode=fp8_block: 1
+      num_embeddings=384016682|head_dim=256|hash_columns=24|hc_mult=4|sharding=head|quant_mode=fp8_block: 14
+    indexer:
+      ? compress_ratio=2|index_n_heads=32|index_head_dim=128|index_topk=512|is_candidate_source=false|candidate_limit=0|q_lora_rank=1280|quant_mode=fp8_block
+      : 2
+      ? compress_ratio=1|index_n_heads=32|index_head_dim=128|index_topk=512|is_candidate_source=true|candidate_limit=0|q_lora_rank=1280|quant_mode=fp8_block
+      : 20
+      ? compress_ratio=1|index_n_heads=32|index_head_dim=128|index_topk=512|is_candidate_source=false|candidate_limit=16384|q_lora_rank=1280|quant_mode=fp8_block
+      : 24
+  generation:
+    mhc:
+      hidden_size=5120|hc_mult=4|sinkhorn_iters=20: 0
+    attention_core:
+      ? role=swa|compress_ratio=0|num_heads=32|head_dim=512|q_lora_rank=1280|o_lora_rank=1024|o_groups=4|window_size=128|index_topk=512|quant_mode=fp8_block
+      : 0
+      ? role=full|compress_ratio=2|num_heads=32|head_dim=512|q_lora_rank=1280|o_lora_rank=1024|o_groups=4|window_size=128|index_topk=512|quant_mode=fp8_block
+      : 2
+      ? role=reuse|compress_ratio=2|num_heads=32|head_dim=512|q_lora_rank=1280|o_lora_rank=1024|o_groups=4|window_size=128|index_topk=512|quant_mode=fp8_block
+      : 3
+      ? role=full|compress_ratio=1|num_heads=32|head_dim=512|q_lora_rank=1280|o_lora_rank=1024|o_groups=4|window_size=128|index_topk=512|quant_mode=fp8_block
+      : 20
+      ? role=reuse|compress_ratio=1|num_heads=32|head_dim=512|q_lora_rank=1280|o_lora_rank=1024|o_groups=4|window_size=128|index_topk=512|quant_mode=fp8_block
+      : 21
+      ? role=reindex|compress_ratio=1|num_heads=32|head_dim=512|q_lora_rank=1280|o_lora_rank=1024|o_groups=4|window_size=128|index_topk=512|quant_mode=fp8_block
+      : 24
+    shared_linear:
+      n=2304|k=5120|quant_mode=fp8_block: 0
+      n=5120|k=1152|quant_mode=fp8_block: 0
+    engram:
+      num_embeddings=384006168|head_dim=256|hash_columns=24|hc_mult=4|sharding=head|quant_mode=fp8_block: 1
+      num_embeddings=384016682|head_dim=256|hash_columns=24|hc_mult=4|sharding=head|quant_mode=fp8_block: 14
+    indexer:
+      ? compress_ratio=2|index_n_heads=32|index_head_dim=128|index_topk=512|is_candidate_source=false|candidate_limit=0|q_lora_rank=1280|quant_mode=fp8_block
+      : 2
+      ? compress_ratio=1|index_n_heads=32|index_head_dim=128|index_topk=512|is_candidate_source=true|candidate_limit=0|q_lora_rank=1280|quant_mode=fp8_block
+      : 20
+      ? compress_ratio=1|index_n_heads=32|index_head_dim=128|index_topk=512|is_candidate_source=false|candidate_limit=16384|q_lora_rank=1280|quant_mode=fp8_block
+      : 24
+layer_roles:
+- swa
+- swa
+- full
+- reuse
+- reuse
+- reuse
+- reuse
+- reuse
+- full
+- reuse
+- reuse
+- reuse
+- reuse
+- reuse
+- full
+- reuse
+- reuse
+- reuse
+- reuse
+- reuse
+- full
+- reuse
+- reuse
+- reuse
+- reindex
+- reuse
+- reuse
+- reuse
+- reindex
+- reuse
+- reuse
+- reuse
+- reindex
+- reuse
+- reuse
+- reuse
+- reindex
+- reuse
+- reuse
+- reuse
+generated: '2026-10-03T18:40:22'

@@ -2400,3 +2400,56 @@ findings:
     - nvidia/Nemotron-H-56B-Base-8K
     - Qwen/Qwen3.5-0.8B
     - deepseek-ai/DeepSeek-V3
+  dsv411_family_granularity_2026_10_03:
+    statement: 'DSV4.1 OP FAMILY dsv411 (owner decision 2026-10-03: do not reuse the dsv41 producers; build the V4.1 decomposition
+      from scratch as a parallel family named dsv411, sglang 0.5.21 + vllm 0.30.0 on H20, trtllm scoped out). SDK: model DEEPSEEKV411
+      behind the Rust-owned switch dsv41_family=dsv411 (default legacy keeps every dsv41 prediction unchanged); Rust operators/dsv411.rs
+      + perf_database/dsv411.rs (table dsv411_module_perf, 2-axis query x kv interpolation, explicit structural key columns);
+      ENGINE_SPEC_SCHEMA_VERSION 27. GRANULARITY: five measured components - attention_core (layer forward minus the nested index
+      scoring, TP all-reduce outside), indexer (index-query prep + scoring + top-k / candidate selection; sglang DeepseekV4AttnBackend._low_ratio_index_topk,
+      vllm DeepseekV4Indexer.forward + indexer_op), engram (lookup + wkv + gate, collective outside), mhc (both post/pre sites),
+      shared_linear (gate_up / down). The V4.1 residue is dispositioned by this family: engram kernels become role `engram`
+      (_engram_lookup / _hash_ids / _fused_engram_post_wkv on vllm; _engram_gate / _engram_gather on sglang); compressor state
+      save -> attention; index-K production, candidate mask, fp4 index logits/quant -> dsa_indexer; ring slot mapping, rope-quant
+      insert, fused_store_flashmla_cache -> kvcache; hc_* sinkhorn / mix / combine -> mhc (kernel_taxonomy_sm90.yaml tail;
+      re-run decompose.py when the probe workspace is at hand - the committed residue lists predate these rules). REGIMES
+      (owner rule: decode collection MUST be CUDA graph): context = eager, device drained before every representative layer
+      (eager_drained); generation = cuda_graph - sglang replays the serving decode graph (ModelRunner.init_cuda_graphs + decode)
+      with per-layer EXTERNAL CUDA events recorded during capture, keyed by (bs, capture attention variant); vllm mirrors serving''s
+      piecewise split per layer (graph: projections / KV insert / index-q prep -> eager _sparse_indexer_and_attn -> graph: _o_proj);
+      token components replay one CUDA graph per native sub-call. Declared deviation: vllm serving also graphs small prefills
+      piecewise; the family measures prefill eagerly on both runtimes (module, not compiled graph). FINDINGS while bringing the
+      producers up on H20 (2026-10-03, TP2 smoke 20 cases / 164 keys per backend, both complete with 820 planned raw rows, no
+      regime violations, admission -> dry publish -> SILICON predictions load): (1) vllm''s indexer skip rule (max_seq_len // cr
+      <= topk) applies only outside stream capture, i.e. eager prefill; under graphs the prepared index_q is always scored
+      (attention.py:1195-1217) - the SDK skip_within_topk flag should be context-only; (2) the collector/vllm DSV4 helper''s
+      remapped metadata (_remap_common_metadata) maps slots for the FIRST num_tokens positions, so the 32-token SWA pages and the
+      compressor state caches were never seeded past 8192 (SWA layers returned all-zero output beyond it) - the dsv411 adapter
+      recomputes the slot mapping from the real positions; (3) sglang''s hybrid SWA pool (swa_full_tokens_ratio) must be sized
+      like the full pool for a producer that has no scheduler / radix cache to release window tokens between chunks, and
+      one_batch''s _TorchBenchRunner.cleanup is a no-op (request slots and KV are reset per prefix-free sample); (4) sglang
+      ServerArgs at 0.5.21 spells the decode graph cap cuda_graph_max_bs_decode; init_cuda_graphs never sets
+      decode_cuda_graph_captured (capture evidence = the recorded external-event buckets); (5) vllm max_model_len is capped at
+      max_position_embeddings 1048576 - the grid carries max_sequence_length. H20 TP2 smoke ratios vllm/sglang: attention_core
+      context 0.85-0.90, decode b1 0.4-0.6 (sglang whole-step graph per-layer slices), decode b16 ~1.1; indexer context 0.15-0.5
+      (sglang''s fp4 index logits + top-k prefill path is several times slower at 64K kv), decode ~1.0; engram/mhc/shared_linear
+      sglang slower (0.14-0.9). The opharness hosts (this change): targets.yaml roster.checkpoint_overrides op_family / op_family_backends /
+      op_family_sdk_args + platform.perf_system; workflow_check predicates sdk_manifest_exported, module_identity_aligned,
+      calibration_admitted, published_loadable wired into onboard_model.yaml (coverage_collected is no longer the never-completing
+      component_pending); e2e_align.py --sdk-manifest exports the SDK identities (results/<sm>/manifest/ + facts/manifests/);
+      path_diff gate rows dsv411_{attn,engram,mhc,shared_linear}_{ctx,gen} with TP1 in-process capture cells
+      (captures/dsv411_*.py, sgl_dsv411_*.py -> collector.dsv411.capture.run_cell) declared in verdicts_vllm_0300.sh /
+      verdicts_sgl_0521.sh. NOT DONE HERE: the gates are declared but ungraded - this box has no probe workspace
+      (archive/records.jsonl) for the serving side; grade them where the sm90 campaign evidence lives. Calibration (full grid,
+      3193 cases / ~29k keys per backend x TP, shard with plan.py --shard) and publication into data/h20_3e/dsv411/ are the next
+      steps (P4).'
+    applies_to:
+    - deepseek-ai/DeepSeek-V4.1-Flash
+    - nvidia/DeepSeek-V4.1-Flash-NVFP4
+    - framework:vllm-0.30.0
+    - framework:sglang-0.5.21
+    - platform:sm90
+    - module:collector
+    - instrument:collector.dsv411
+    - instrument:sglang.collect_dsv411_module
+    - instrument:vllm.collect_dsv411_module

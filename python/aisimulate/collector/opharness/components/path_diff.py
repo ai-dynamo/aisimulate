@@ -142,6 +142,13 @@ def _kv_equiv(a, b):
 _GATE_TARGETS = (
     # (regex on the gate/capture name, target roles, phase or None)
     (r"^encoder_attn", ("attention",), "profile_run"),      # vision encoder runs in vLLM's profile run
+    # dsv411 (DeepSeek-V4.1 module producers, 2026-10-03): attention_core + indexer are one capture per
+    # phase; engram / mhc / shared_linear are token-only cells graded on their own role
+    (r"^dsv411_(attn|attention_core|indexer)\w*?_ctx", ("attention", "dsa_indexer"), "prefill"),
+    (r"^dsv411_(attn|attention_core|indexer)\w*?_gen", ("attention", "dsa_indexer"), "decode"),
+    (r"^dsv411_engram", ("engram",), None),
+    (r"^dsv411_mhc", ("mhc",), None),
+    (r"^dsv411_shared_linear", ("gemm",), None),
     (r"^compute_scale", ("quant",), None),
     (r"^gemm_", ("gemm",), None),
     (r"^mla_bmm", ("gemm",), None),

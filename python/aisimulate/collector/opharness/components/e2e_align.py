@@ -151,6 +151,71 @@ def predict(model_path: str, system: str, backend: str, db_version: str | None,
     return out
 
 
+# ------------------------------------------------------- SDK manifest export
+# Op families whose coverage comes from a standalone module family export the SDK
+# graph's measured identities (component x layer x structure key) so the
+# onboarding predicates (workflow_check: sdk_manifest_exported /
+# module_identity_aligned) and the producers' capture cells read ONE frozen
+# description of what the SDK models. family -> "module:function(tp, backend)".
+_MANIFEST_EXPORTERS = {"dsv411": ("collector.dsv411.contract", "build_manifest")}
+
+
+def _op_family_of(repo: str):
+    targets = yaml.safe_load((HARNESS / "targets.yaml").read_text())
+    for fam in targets["families"].values():
+        o = (fam.get("checkpoint_overrides") or {}).get(repo) or {}
+        if o.get("op_family"):
+            backends = list(o.get("op_family_backends") or targets["backends"])
+            return o["op_family"], backends, targets
+    return None, [], targets
+
+
+def export_sdk_manifest(repo: str, sm: str, tp: int) -> list[Path]:
+    """Write results/<sm>/manifest/<repo_slug>__<fw>-<ver>.yaml (committed summary) and the full
+    producer manifest into the workspace (facts/manifests/<family>_<fw>_tp<tp>.json; evidence)."""
+    import importlib
+    import sys
+
+    family, backends, targets = _op_family_of(repo)
+    if not family:
+        raise SystemExit(f"{repo} declares no op_family in targets.yaml roster.checkpoint_overrides")
+    if family not in _MANIFEST_EXPORTERS:
+        raise SystemExit(f"no SDK manifest exporter for op family {family!r}")
+    sys.path.insert(0, str(HARNESS.parents[1]))  # python/aisimulate: the collector package
+    module, fn = _MANIFEST_EXPORTERS[family]
+    build = getattr(importlib.import_module(module), fn)
+    written = []
+    for fw, be in targets["backends"].items():
+        if fw not in backends:
+            continue
+        ver = str((be.get("versions") or ["?"])[0])
+        manifest = build(tp, fw)
+        structures = {}
+        for entry in manifest["entries"]:
+            structures.setdefault(entry["component"], set()).add(entry["structure_key"])
+        summary = dict(
+            family=family, repo=repo, backend=fw, version=ver, tp=tp, sm=sm,
+            sdk_model_family=manifest.get("model_family"), config_sha256=manifest["config_sha256"],
+            runtime_facts=manifest.get("runtime_facts"),
+            components=sorted(structures),
+            structures={c: sorted(v) for c, v in sorted(structures.items())},
+            representatives=manifest["representatives"],
+            layer_roles=manifest.get("layer_roles"),
+            generated=time.strftime("%Y-%m-%dT%H:%M:%S"),
+        )
+        out = HARNESS / "results" / sm / "manifest" / f"{repo.replace('/', '__')}__{fw}-{ver}.yaml"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(yaml.safe_dump(summary, sort_keys=False, width=120))
+        facts = ROOT / "facts" / "manifests" / f"{family}_{fw}_tp{tp}.json"
+        facts.parent.mkdir(parents=True, exist_ok=True)
+        facts.write_text(json.dumps(manifest, indent=1, sort_keys=True))
+        n_structures = sum(len(v) for v in structures.values())
+        print(f"{fw}-{ver}: {len(manifest['entries'])} entries, {n_structures} structures "
+              f"-> {out.relative_to(HARNESS)} + {facts}")
+        written.append(out)
+    return written
+
+
 # ------------------------------------------------------------------- grade
 def grade(measured: dict, predicted: dict, tolerance: float) -> dict:
     """Pure: per-metric relative error vs tolerance -> verdict."""
@@ -173,16 +238,24 @@ def grade(measured: dict, predicted: dict, tolerance: float) -> dict:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("--golden", type=Path, required=True)
-    ap.add_argument("--measurement", type=Path, required=True)
-    ap.add_argument("--backend", required=True, choices=["vllm", "sglang", "trtllm"])
-    ap.add_argument("--version", required=True, help="framework version the measurement ran on")
+    ap.add_argument("--sdk-manifest", metavar="REPO", default=None,
+                    help="export the SDK graph's measured identities for an op-family checkpoint and exit")
+    ap.add_argument("--tp", type=int, default=2, help="TP of the exported SDK manifest (--sdk-manifest)")
+    ap.add_argument("--golden", type=Path, required=False)
+    ap.add_argument("--measurement", type=Path, required=False)
+    ap.add_argument("--backend", required=False, choices=["vllm", "sglang", "trtllm"])
+    ap.add_argument("--version", required=False, help="framework version the measurement ran on")
     ap.add_argument("--db-version", default=None, help="SDK perf-data version (default: newest for system/backend)")
     ap.add_argument("--system", default=None, help="override the golden's system_name")
     ap.add_argument("--tolerance", type=float, default=0.25)
     ap.add_argument("--sm", default="sm90")
     ap.add_argument("--out", type=Path, default=None)
     args = ap.parse_args()
+    if args.sdk_manifest:
+        export_sdk_manifest(args.sdk_manifest, args.sm, args.tp)
+        return 0
+    if not (args.golden and args.measurement and args.backend and args.version):
+        ap.error("--golden, --measurement, --backend and --version are required (or use --sdk-manifest REPO)")
 
     golden = load_golden(args.golden)
     measured = load_measurement(args.measurement)

@@ -40,6 +40,12 @@ def main(argv=None):
     parser.add_argument(
         "--allow-smoke", action="store_true", help="publish smoke runs (dry trees only; never into the packaged data)"
     )
+    parser.add_argument(
+        "--admission-record",
+        type=Path,
+        default=None,
+        help="also write an opharness admission record here (results/<sm>/admission/<fw>-<ver>/<family>__<tag>.json)",
+    )
     args = parser.parse_args(argv)
 
     module_name = PRODUCERS[args.backend]
@@ -95,6 +101,34 @@ def main(argv=None):
         provenance_tier="collected",
     )
     print(f"wrote {dest / contract.TABLE}.parquet rows={len(rows)} runs={len(events)}")
+    if args.admission_record is not None:
+        import json
+
+        purposes = sorted({m["plan"]["purpose"] for _, m, _ in events_meta})
+        record = dict(
+            family="dsv411",
+            backend=args.backend,
+            version=producer.FRAMEWORK_VERSION,
+            system=args.system,
+            purpose=purposes[0] if len(purposes) == 1 else "mixed",
+            rows=len(rows),
+            runs=[
+                dict(
+                    raw=str(raw),
+                    plan_sha256=meta["plan_sha256"],
+                    rows=count,
+                    tp_size=meta["plan"]["tp_size"],
+                    purpose=meta["plan"]["purpose"],
+                )
+                for raw, meta, count in events_meta
+            ],
+            runtime_digest=runtime_digest,
+            table=str(dest / f"{contract.TABLE}.parquet"),
+            collected_at=args.collected_at,
+        )
+        args.admission_record.parent.mkdir(parents=True, exist_ok=True)
+        args.admission_record.write_text(json.dumps(record, indent=1, sort_keys=True) + "\n")
+        print(f"admission record -> {args.admission_record}")
 
 
 if __name__ == "__main__":

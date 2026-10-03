@@ -56,6 +56,19 @@ run dsv4_csa_ctx           dsv4_csa_ctx_DeepSeek-V4-Flash-FP8      $M fp8 "$DSV4
 run dsv4_csa_gen           dsv4_csa_gen_DeepSeek-V4-Flash-FP8      $M fp8 "$DSV4"
 run dsv4_hca_ctx           dsv4_hca_ctx_DeepSeek-V4-Flash-FP8      $M fp8 "$DSV4"
 run dsv4_hca_gen           dsv4_hca_gen_DeepSeek-V4-Flash-FP8      $M fp8 "$DSV4"
+# dsv411 (DeepSeek-V4.1 module producers, 2026-10-03): one TP1 in-process cell per component x phase
+# (components/captures/dsv411_*.py -> collector.dsv411.capture.run_cell); attention_core + indexer share
+# the attention capture, engram / mhc / shared_linear are token-only cells graded on their own role.
+DSV411='dsv4|dsa|csa|compress|indexer|mqa|sparse|flash|attn|mla|topk|gemm|deepgemm|quant|engram|hash|mhc|hc_|tilelang|marlin|norm|rope'
+V41=deepseek-ai/DeepSeek-V4.1-Flash
+run dsv411_attn_ctx          dsv411_attn_ctx_DeepSeek-V4.1-Flash          $V41 fp8 "$DSV411"
+run dsv411_attn_gen          dsv411_attn_gen_DeepSeek-V4.1-Flash          $V41 fp8 "$DSV411"
+run dsv411_engram_ctx        dsv411_engram_ctx_DeepSeek-V4.1-Flash        $V41 fp8 "$DSV411"
+run dsv411_engram_gen        dsv411_engram_gen_DeepSeek-V4.1-Flash        $V41 fp8 "$DSV411"
+run dsv411_mhc_ctx           dsv411_mhc_ctx_DeepSeek-V4.1-Flash           $V41 fp8 "$DSV411"
+run dsv411_mhc_gen           dsv411_mhc_gen_DeepSeek-V4.1-Flash           $V41 fp8 "$DSV411"
+run dsv411_shared_linear_ctx dsv411_shared_linear_ctx_DeepSeek-V4.1-Flash $V41 fp8 "$DSV411"
+run dsv411_shared_linear_gen dsv411_shared_linear_gen_DeepSeek-V4.1-Flash $V41 fp8 "$DSV411"
 run dsv4_hca_attn          dsv4_hca_attn_DeepSeek-V4-Flash-FP8     $M fp8 "$DSV4"
 run dsv4_paged_mqa_logits  dsv4_paged_mqa_logits_DeepSeek-V4-Flash-FP8 $M fp8 "$DSV4"
 ATTN='attn|attention|flash|fwd|unified'

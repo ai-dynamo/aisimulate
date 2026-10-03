@@ -285,6 +285,15 @@ families:
     - TokenRhythm/NeoHorse-1-9B
     checkpoint_overrides:
       deepseek-ai/DeepSeek-V4.1-Flash:
+        # dsv411 family (2026-10-03): the from-scratch V4.1 module decomposition (SDK DEEPSEEKV411 behind the
+        # Rust-owned switch dsv41_family=dsv411; producers collector/{sglang,vllm}/collect_dsv411_module.py).
+        # workflow_check's manifest / identity / admission / publication predicates read these three keys.
+        op_family: dsv411
+        op_family_backends: [sglang, vllm]
+        op_family_fact: 'trtllm 1.3.0rc29 cannot load deepseek_v41 (owner scope decision 2026-10-02); the family measures
+          sglang 0.5.21 + vllm 0.30.0 only. vllm serves the MoE experts through Marlin W4A16 (SDK mode w4a16_mxfp4).'
+        op_family_sdk_args:
+          vllm: {moe_quant_mode: w4a16_mxfp4}
         dummy_overrides:
           family: dsv41
           fact: 'V4.1 layers publish state for later layers (kv/index sources, candidate source) and the generic
@@ -298,6 +307,10 @@ families:
           # that found V4's 256 rejected on vllm 0.30.0 is in findings
           # dsv41_dummy_cut_and_vllm_block_size_2026_10_01.
       nvidia/DeepSeek-V4.1-Flash-NVFP4:
+        op_family: dsv411
+        op_family_backends: [sglang, vllm]
+        op_family_sdk_args:
+          vllm: {moe_quant_mode: w4a16_mxfp4}
         dummy_overrides:
           family: dsv41
         cli_extra_args:
@@ -485,6 +498,8 @@ platform:
   name: h20_sm90
   sm: 90
   system: h200_sxm
+  # the SDK system whose perf data this box's collectors publish (golden renders keep proxying h200_sxm)
+  perf_system: h20_3e
   facts_systems:
   - h100_sxm
   - h200_sxm

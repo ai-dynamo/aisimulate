@@ -36,7 +36,7 @@ opharness/
 | `kernel_taxonomy_<sm>.yaml` | per-SM kernel-name -> canonical-backend vocabulary (both sides of a verdict translate through the SAME file; SMs never share one) |
 | `path_diff.py` | collector op path vs serving, same profiler, same vocabulary (stub) |
 | `decompose.py` | observed execution -> op families (taxonomy roles x backend labels) + residue (kernels no family names); results/<sm>/decompose/ |
-| `e2e_align.py` | SDK prediction vs one live measurement of the golden deployment (explicit measurement file); results/<sm>/e2e/ — the campaign needs a GPU matching an SDK system entry |
+| `e2e_align.py` | SDK prediction vs one live measurement of the golden deployment (explicit measurement file); results/<sm>/e2e/ — the campaign needs a GPU matching an SDK system entry. `--sdk-manifest REPO` exports an op-family checkpoint's SDK identities (component x layer x structure key) to results/<sm>/manifest/ + facts/manifests/ (onboard_model steps 7a/7b) |
 | `evidence_bundle.py` | pack a campaign's evidence (raw + fingerprints, records, captures, full reports, kernel-level decompositions) into one content-addressed tar.gz and index it in results/evidence_index.yaml |
 | `build_images.sh` | rebuild probe images + the generator venv (this checkout) from targets.yaml pins |
 

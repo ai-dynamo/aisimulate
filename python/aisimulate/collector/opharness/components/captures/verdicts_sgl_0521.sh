@@ -65,6 +65,17 @@ run sgl_dsv4_hca_gen          dsv4_hca_gen_DeepSeek-V4-Flash-FP8          $M aut
 run sgl_dsv4_csa_attn         dsv4_csa_attn_DeepSeek-V4-Flash-FP8         $M auto "$DSV4"
 run sgl_dsv4_hca_attn         dsv4_hca_attn_DeepSeek-V4-Flash-FP8         $M auto "$DSV4"
 run sgl_dsv4_paged_mqa_logits dsv4_paged_mqa_logits_DeepSeek-V4-Flash-FP8 $M auto "$DSV4"
+# dsv411 (DeepSeek-V4.1 module producers, 2026-10-03): TP1 in-process cells (components/captures/sgl_dsv411_*.py)
+DSV411='dsv4|dsa|csa|compress|indexer|mqa|sparse|flash|attn|mla|topk|gemm|deepgemm|quant|engram|hash|mhc|hc_|tilelang|marlin|norm|rope'
+V41=deepseek-ai/DeepSeek-V4.1-Flash
+run sgl_dsv411_attn_ctx          dsv411_attn_ctx_DeepSeek-V4.1-Flash          $V41 auto "$DSV411"
+run sgl_dsv411_attn_gen          dsv411_attn_gen_DeepSeek-V4.1-Flash          $V41 auto "$DSV411"
+run sgl_dsv411_engram_ctx        dsv411_engram_ctx_DeepSeek-V4.1-Flash        $V41 auto "$DSV411"
+run sgl_dsv411_engram_gen        dsv411_engram_gen_DeepSeek-V4.1-Flash        $V41 auto "$DSV411"
+run sgl_dsv411_mhc_ctx           dsv411_mhc_ctx_DeepSeek-V4.1-Flash           $V41 auto "$DSV411"
+run sgl_dsv411_mhc_gen           dsv411_mhc_gen_DeepSeek-V4.1-Flash           $V41 auto "$DSV411"
+run sgl_dsv411_shared_linear_ctx dsv411_shared_linear_ctx_DeepSeek-V4.1-Flash $V41 auto "$DSV411"
+run sgl_dsv411_shared_linear_gen dsv411_shared_linear_gen_DeepSeek-V4.1-Flash $V41 auto "$DSV411"
 run sgl_glm5_dsa_attn         glm5_dsa_attn_GLM-5                         zai-org/GLM-5 auto "$GLM5"
 run sgl_glm5_mqa_logits       glm5_mqa_logits_GLM-5                       zai-org/GLM-5 auto "$GLM5"
 run sgl_glm5_topk             glm5_topk_GLM-5                             zai-org/GLM-5 auto "$GLM5"

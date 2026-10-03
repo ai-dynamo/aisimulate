@@ -405,6 +405,7 @@ collector.sglang.collect_dsv411_module:
   - collector/dsv411/runtime.py
   - collector/dsv411/plan.py
   - collector/dsv411/publish.py
+  - collector/dsv411/capture.py
   - collector/sglang/dsv41_isolated_runner.py
   - src/aisimulate_core/sdk/deepseek_v41.py
   - src/aisimulate_core/sdk/config.py
@@ -425,6 +426,7 @@ collector.vllm.collect_dsv411_module:
   - collector/dsv411/runtime.py
   - collector/dsv411/plan.py
   - collector/dsv411/publish.py
+  - collector/dsv411/capture.py
   - collector/vllm/dsv41_isolated_runner.py
   - collector/vllm/collect_dsv4_attn.py
   - collector/vllm/utils.py

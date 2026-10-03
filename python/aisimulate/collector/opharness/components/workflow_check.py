@@ -269,6 +269,7 @@ _OP_GATE_FAMILIES = {
     "dsv4_hca_context_module": [r"^dsv4_hca_ctx"], "dsv4_hca_generation_module": [r"^dsv4_hca_gen"],
     "dsv4_hca_attn_module": [r"^dsv4_hca_attn"], "dsv4_paged_mqa_logits_module": [r"^dsv4_paged_mqa"],
     "glm5_dsa_attn_module": [r"^glm5_dsa"], "glm5_mqa_logits_module": [r"^glm5_mqa"], "glm5_topk_module": [r"^glm5_topk"],
+    "dsv41_module": None,  # standalone torchrun producers (collector/sglang/dsv41_*); the V4.1 gates are the dsv411_* rows
     "mhc_module": None,  # collector measures the no-norm mhc_pre by producer/consumer contract (SDK bills attn_norm separately); serving fuses the norm -> explained deviation, kept under facts/pathdiff/explained
     "gdn": [r"^gdn_ctx", r"^gdn_gen"],
     "kda": [r"^kda_ctx", r"^kda_gen"],
@@ -483,7 +484,10 @@ def pred_e2e_admitted(p):
 _FAMILY_ROLE = {"attention": "attention", "mla": "attention", "msa": "attention", "sparse_attention": "attention",
                 "dsa": "dsa_indexer", "gdn": "linear_attention", "kda": "linear_attention",
                 "linear_attention": "linear_attention", "gemm": "gemm", "moe": "moe_gemm", "mhc": "mhc",
-                "quant": "quant", "quantize": "quant"}
+                "quant": "quant", "quantize": "quant", "dsv41": "attention", "dsv411": "attention"}
+# dsv411 SDK components -> the taxonomy role their serving kernels carry (module_identity_aligned)
+_COMPONENT_ROLE = {"attention_core": "attention", "indexer": "dsa_indexer", "mhc": "mhc", "engram": "engram",
+                   "shared_linear": "gemm"}
 
 
 def _pins():
@@ -555,6 +559,143 @@ def pred_model_gates_aligned(p):
     return True, f"{seen} gates name {repo}, all aligned"
 
 
+# --------------------------------------------------------------------------
+# op-family onboarding (2026-10-03): a checkpoint whose coverage is produced by
+# a standalone module family declares `op_family` in targets.yaml
+# roster.checkpoint_overrides; these predicates derive the family's state from
+# the exported SDK manifest, the serving decomposition, the admission records
+# the publisher writes and a strict load of the published table.
+def _op_family(repo: str):
+    """(family, scoped backends, per-backend SDK args) from checkpoint_overrides, or (None, [], {})."""
+    for fam in _load_targets()["families"].values():
+        o = (fam.get("checkpoint_overrides") or {}).get(repo) or {}
+        if o.get("op_family"):
+            backends = list(o.get("op_family_backends") or [fw for fw, _ in _pins()])
+            return o["op_family"], backends, dict(o.get("op_family_sdk_args") or {})
+    return None, [], {}
+
+
+def _repo_slug(repo: str) -> str:
+    return repo.replace("/", "__")
+
+
+def _manifest_path(sm: str, repo: str, fw: str, ver: str) -> Path:
+    return HARNESS / "results" / sm / "manifest" / f"{_repo_slug(repo)}__{fw}-{ver}.yaml"
+
+
+def pred_sdk_manifest_exported(p):
+    """e2e_align.py --sdk-manifest exported the family's measured identities (component x layer x
+    structure key) for every backend the op family is scoped to (results/<sm>/manifest/)."""
+    sm, repo = p.get("sm", "sm90"), p["repo"]
+    fam, backends, _ = _op_family(repo)
+    if not fam:
+        return False, f"{repo} declares no op_family in targets.yaml checkpoint_overrides (legacy coverage path)"
+    missing, found = [], 0
+    for fw, ver in _pins():
+        if fw not in backends:
+            continue
+        f = _manifest_path(sm, repo, fw, ver)
+        if not f.exists():
+            missing.append(f"{fw}-{ver}")
+            continue
+        d = yaml.safe_load(f.read_text()) or {}
+        if d.get("family") != fam or not d.get("components"):
+            missing.append(f"{fw}-{ver} (malformed)")
+            continue
+        found += 1
+    if missing:
+        return False, f"no SDK manifest for {missing} (components/e2e_align.py --sdk-manifest {repo})"
+    return True, f"{found} SDK manifests exported for {fam}"
+
+
+def pred_module_identity_aligned(p):
+    """Every component the SDK manifest measures has an observed serving role in the repo's
+    decomposition on that backend (results/<sm>/decompose/): the collector cannot measure a module
+    serving never ran, and a serving module the SDK does not model is residue by construction."""
+    sm, repo = p.get("sm", "sm90"), p["repo"]
+    fam, backends, _ = _op_family(repo)
+    if not fam:
+        return False, f"{repo} declares no op_family"
+    gaps, checked = [], 0
+    for fw, ver in _pins():
+        if fw not in backends:
+            continue
+        mf, dc = _manifest_path(sm, repo, fw, ver), HARNESS / "results" / sm / "decompose" / f"{fw}-{ver}.yaml"
+        if not mf.exists():
+            gaps.append(f"{fw}: no SDK manifest")
+            continue
+        if not dc.exists():
+            gaps.append(f"{fw}: no decomposition")
+            continue
+        entry = ((yaml.safe_load(dc.read_text()) or {}).get("results") or {}).get(repo) or {}
+        roles = set(entry.get("roles") or [])
+        if not roles:
+            gaps.append(f"{fw}: {repo} not decomposed")
+            continue
+        components = (yaml.safe_load(mf.read_text()) or {}).get("components") or []
+        missing = sorted({_COMPONENT_ROLE.get(c, c) for c in components} - roles)
+        if missing:
+            gaps.append(f"{fw}: serving decomposition lacks roles {missing} (taxonomy rule or granularity call)")
+            continue
+        checked += 1
+    if gaps:
+        return False, "; ".join(gaps[:3])
+    return True, f"{checked} backends: every manifest component has an observed serving role"
+
+
+def pred_calibration_admitted(p):
+    """The publisher recorded an admitted calibration for the family on every scoped backend
+    (results/<sm>/admission/<fw>-<ver>/<family>__*.json, written by publish.py --admission-record)."""
+    sm, repo = p.get("sm", "sm90"), p["repo"]
+    fam, backends, _ = _op_family(repo)
+    if not fam:
+        return False, f"{repo} declares no op_family"
+    missing, found = [], []
+    for fw, ver in _pins():
+        if fw not in backends:
+            continue
+        files = sorted((HARNESS / "results" / sm / "admission" / f"{fw}-{ver}").glob(f"{fam}__*.json"))
+        ok = [f for f in files if (lambda d: d.get("purpose") == "calibration" and d.get("rows", 0) > 0 and d.get("family") == fam)(json.loads(f.read_text()))]
+        if not ok:
+            missing.append(f"{fw}-{ver}")
+        else:
+            found.append(f"{fw}-{ver}:{sum(json.loads(f.read_text())['rows'] for f in ok)} rows")
+    if missing:
+        return False, f"no admitted calibration record for {missing} (collector/dsv411/publish.py --admission-record)"
+    return True, "admitted: " + ", ".join(found)
+
+
+def pred_published_loadable(p):
+    """The published family table loads with strict provenance and answers one SILICON prefill and
+    one decode prediction on the platform's perf system (targets platform.perf_system)."""
+    sm, repo = p.get("sm", "sm90"), p["repo"]
+    fam, backends, sdk_args = _op_family(repo)
+    if not fam:
+        return False, f"{repo} declares no op_family"
+    system = (_load_targets().get("platform") or {}).get("perf_system")
+    if not system:
+        return False, "targets.yaml platform.perf_system is not declared"
+    tp = int(p.get("tp", 2))
+    try:
+        from aisimulate_core.sdk.engine import EngineHandle
+    except Exception as e:  # the SDK venv is not on this interpreter
+        return False, f"aisimulate_core not importable here ({type(e).__name__}); run from the SDK venv"
+    report = []
+    for fw, ver in _pins():
+        if fw not in backends:
+            continue
+        try:
+            handle = EngineHandle.compile(repo, system, fw, backend_version=ver, tp_size=tp, moe_tp_size=tp, moe_ep_size=1,
+                                          dsv41_family=fam, database_mode="SILICON", strict_provenance=True,
+                                          **(sdk_args.get(fw) or {}))
+            prefill = handle.predict_prefill_latency(1, 1024, 0)
+            decode = handle.predict_decode_latency(1, 1024)
+        except Exception as e:
+            return False, f"{fw}-{ver}: {type(e).__name__}: {str(e)[:160]}"
+        report.append(f"{fw}-{ver} prefill(1k)={prefill:.1f}ms decode(1k)={decode:.2f}ms")
+    return True, "; ".join(report)
+
+
 PREDICATES = {fn.__name__[5:]: fn for fn in [
     pred_component_pending, pred_pin_is, pred_plan_has_version, pred_gates_cover_registry_ops, pred_path_verdicts_aligned,
     pred_matrix_complete, pred_fails_root_caused, pred_customizations_retested,
@@ -562,6 +703,7 @@ PREDICATES = {fn.__name__[5:]: fn for fn in [
     pred_model_fails_dispositioned, pred_model_decomposed, pred_residue_dispositioned, pred_e2e_admitted,
     pred_family_observed, pred_family_unit_defined, pred_family_collector_exists, pred_family_gates_aligned,
     pred_model_gates_aligned,
+    pred_sdk_manifest_exported, pred_module_identity_aligned, pred_calibration_admitted, pred_published_loadable,
 ]}
 
 
