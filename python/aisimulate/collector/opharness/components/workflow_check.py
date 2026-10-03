@@ -269,7 +269,8 @@ _OP_GATE_FAMILIES = {
     "dsv4_hca_context_module": [r"^dsv4_hca_ctx"], "dsv4_hca_generation_module": [r"^dsv4_hca_gen"],
     "dsv4_hca_attn_module": [r"^dsv4_hca_attn"], "dsv4_paged_mqa_logits_module": [r"^dsv4_paged_mqa"],
     "glm5_dsa_attn_module": [r"^glm5_dsa"], "glm5_mqa_logits_module": [r"^glm5_mqa"], "glm5_topk_module": [r"^glm5_topk"],
-    "dsv41_module": None,  # standalone torchrun producers (collector/sglang/dsv41_*); the V4.1 gates are the dsv411_* rows
+    # standalone torchrun producers (collector/sglang/dsv41_*); the V4.1 gates are the dsv411_* rows
+    "dsv41_module": None,
     "mhc_module": None,  # collector measures the no-norm mhc_pre by producer/consumer contract (SDK bills attn_norm separately); serving fuses the norm -> explained deviation, kept under facts/pathdiff/explained
     "gdn": [r"^gdn_ctx", r"^gdn_gen"],
     "kda": [r"^kda_ctx", r"^kda_gen"],
@@ -655,7 +656,11 @@ def pred_calibration_admitted(p):
         if fw not in backends:
             continue
         files = sorted((HARNESS / "results" / sm / "admission" / f"{fw}-{ver}").glob(f"{fam}__*.json"))
-        ok = [f for f in files if (lambda d: d.get("purpose") == "calibration" and d.get("rows", 0) > 0 and d.get("family") == fam)(json.loads(f.read_text()))]
+        ok = []
+        for f in files:
+            d = json.loads(f.read_text())
+            if d.get("purpose") == "calibration" and d.get("rows", 0) > 0 and d.get("family") == fam:
+                ok.append(f)
         if not ok:
             missing.append(f"{fw}-{ver}")
         else:
@@ -668,7 +673,7 @@ def pred_calibration_admitted(p):
 def pred_published_loadable(p):
     """The published family table loads with strict provenance and answers one SILICON prefill and
     one decode prediction on the platform's perf system (targets platform.perf_system)."""
-    sm, repo = p.get("sm", "sm90"), p["repo"]
+    repo = p["repo"]
     fam, backends, sdk_args = _op_family(repo)
     if not fam:
         return False, f"{repo} declares no op_family"
@@ -685,8 +690,8 @@ def pred_published_loadable(p):
         if fw not in backends:
             continue
         try:
-            handle = EngineHandle.compile(repo, system, fw, backend_version=ver, tp_size=tp, moe_tp_size=tp, moe_ep_size=1,
-                                          dsv41_family=fam, database_mode="SILICON", strict_provenance=True,
+            handle = EngineHandle.compile(repo, system, fw, backend_version=ver, tp_size=tp, moe_tp_size=tp,
+                                          moe_ep_size=1, dsv41_family=fam, database_mode="SILICON", strict_provenance=True,
                                           **(sdk_args.get(fw) or {}))
             prefill = handle.predict_prefill_latency(1, 1024, 0)
             decode = handle.predict_decode_latency(1, 1024)
