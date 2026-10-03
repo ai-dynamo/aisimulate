@@ -345,11 +345,23 @@ def expand_cases(grid: dict, components, *, overrides: dict | None = None) -> tu
     return cases, dict(drops)
 
 
+def seed_group(case: dict) -> tuple:
+    """Cases that share one seeded KV prefix: the sglang producer seeds (phase, batch, past kv) once and
+    measures every query length on it, so a shard must own whole groups."""
+    if case["kind"] != "attention":
+        return ("tokens", case["case_id"])
+    return ("attention", case["phase"], case["batch_size"], case["past_kv"])
+
+
 def shard_cases(cases: list[dict], shard: tuple[int, int] | None) -> list[dict]:
+    """Round-robin over seed groups (in first-appearance order), never splitting a group."""
     if shard is None:
         return cases
     index, count = shard
-    return [case for case in cases if case["index"] % count == index]
+    groups: dict[tuple, int] = {}
+    for case in cases:
+        groups.setdefault(seed_group(case), len(groups))
+    return [case for case in cases if groups[seed_group(case)] % count == index]
 
 
 # --------------------------------------------------------------------------------------------

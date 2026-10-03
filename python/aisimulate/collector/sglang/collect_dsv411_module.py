@@ -31,6 +31,7 @@ from __future__ import annotations
 import argparse
 import gc
 import importlib.metadata
+import itertools
 import json
 import os
 import time
@@ -366,16 +367,31 @@ def slide_windows(runner, reqs, pre_len):
     allocator.free_group_end()
 
 
-def seed_prefix(runner, bench, token_ids, batch_size, prefix, chunk):
+LONG_KV_SEED_FLOOR = 131072
+
+
+def seed_tokens_per_request(plan: dict, batch_size: int, done: int) -> int:
+    """New tokens per request of one seeding forward. Serving's PrefillAdder admits at most
+    chunked_prefill_size new tokens per prefill batch (sglang 0.5.21 managers/schedule_policy.py
+    ``rem_chunk_tokens``); while the kv is short the producer batches every request's chunk into one
+    forward (bounded transient, far fewer forwards at batch 1024) and from LONG_KV_SEED_FLOOR on it keeps
+    the serving budget: the indexer-prefill transient scales with new tokens x kv (65536 new tokens at
+    ~1M kv asked the caching allocator for 6.4 GB blocks on H20, at the edge of the device)."""
+    chunk = plan["chunk_prefill_size"]
+    per_forward = chunk if done >= LONG_KV_SEED_FLOOR else min(chunk * batch_size, plan["pool"]["max_new_tokens"])
+    return max(1, min(chunk, per_forward // batch_size))
+
+
+def seed_prefix(runner, bench, token_ids, batch_size, prefix, plan):
     """Prefill ``prefix`` real tokens per request in serving-sized chunks; returns (reqs, batch, next_ids)."""
-    first = min(prefix, chunk)
+    first = min(prefix, seed_tokens_per_request(plan, batch_size, 0))
     reqs = bench.prepare_synthetic_inputs_for_latency_test(
         batch_size, first, [token_ids[:first] for _ in range(batch_size)]
     )
     next_ids, _, batch = runner.extend(reqs)
     done = first
     while done < prefix:
-        end = min(prefix, done + chunk)
+        end = min(prefix, done + seed_tokens_per_request(plan, batch_size, done))
         for req in reqs:
             _reset_fill(req, done)
         bench.prepare_extend_inputs_for_correctness_test(
@@ -387,111 +403,145 @@ def seed_prefix(runner, bench, token_ids, batch_size, prefix, chunk):
     return reqs, batch, next_ids
 
 
-def run_attention_case(runner, bench, token_ids, case, plan, state, intervals, stream, manifest, receipt):
-    import torch
+def release_query_tokens(runner, reqs, prefix, query):
+    """Return the measured extend's KV slots (full + SWA) so the seeded prefix serves the next sample and
+    the next query length: ``alloc_for_extend`` allocates every extend's tokens afresh (sglang 0.5.21
+    mem_cache/allocation.py:344-410), so without this they would accumulate. Pages are freed whole and
+    the segment starts at the first page boundary at or after ``prefix``: the page before it is shared
+    with the window tokens and its query slots are simply re-used by the next extend (``last_loc`` fills
+    the open page first); ``free_segment`` requires that alignment (mem_cache/allocator/paged.py:282)."""
+    from sglang.srt.runtime_context import get_schedule
 
-    batch_size, query, prefix = case["batch_size"], case["query"], case["past_kv"]
-    # one seeding extend carries batch*chunk tokens: cap it like serving chunked prefill
-    chunk = max(1, min(plan["chunk_prefill_size"], plan["pool"].get("max_new_tokens", 262144) // batch_size))
+    page = get_schedule().page_size
+    start = -(-prefix // page) * page
+    end = prefix + query
+    if start >= end:
+        return
+    torch_runner = runner.torch_runner
+    allocator = torch_runner.token_to_kv_pool_allocator
+    allocator.free_group_begin()
+    for req in reqs:
+        slots = torch_runner.req_to_token_pool.req_to_token[req.kv.req_pool_idx, start:end]
+        allocator.free_segment(slots, start_pos=start)
+    allocator.free_group_end()
+
+
+def run_generation_case(runner, bench, token_ids, case, plan, state, intervals, stream, manifest, receipt):
+    batch_size, prefix = case["batch_size"], case["past_kv"]
     runner.clear()
-    state.phase = case["phase"]
+    state.phase = "generation"
     intervals.active = False
     entries = manifest["entries"]
     reps = manifest["representatives"]
-    if case["phase"] == "generation":
-        reqs, batch, next_ids = seed_prefix(runner, bench, token_ids, batch_size, prefix, chunk)
-        graph_runner = runner.torch_runner.decode_cuda_graph_runner
-        for sample in range(plan["warmup"] + plan["iterations"]):
-            state.eager_forwards = 0
-            next_ids, _ = runner.decode(next_ids, batch)
-            if state.eager_forwards:
-                message = (
-                    f"{case['case_id']}: decode ran eagerly ({state.eager_forwards} forwards); "
-                    "the generation regime requires the serving CUDA graph"
-                )
-                receipt["regime_violations"].append(message)
-                raise RuntimeError(message)
-            key = graph_runner._replay_graph_key
-            bucket = (int(key.size), getattr(key, "attention_variant", None))
-            if bucket not in intervals.buckets:
-                raise RuntimeError(
-                    f"replayed graph {bucket} has no recorded intervals; captured {list(intervals.buckets)}"
-                )
-            if sample < plan["warmup"]:
-                continue
-            records = intervals.take(bucket, clear=False)
-            if not all(captured for *_, captured in records):
-                raise RuntimeError("generation intervals must come from the captured graph")
-            for entry, ms, witnesses, _ in reduce_layer_intervals(records, reps, entries, "generation").values():
-                stream.write(
-                    entry,
-                    case,
-                    latency=ms,
-                    kernel_source="+".join(sorted(witnesses)),
-                    used_cuda_graph=True,
-                    sample=sample,
-                )
-            stream.flush()
-        receipt.setdefault("decode_kv_drift_tokens", plan["warmup"] + plan["iterations"] - 1)
-        runner.cleanup(batch)
-        return
-    # context. The hybrid SWA allocator frees whole allocation groups, so the measured query tokens are
-    # never released piecemeal: short prefixes (one seeding chunk) are re-seeded per sample from a
-    # cleared pool; long prefixes stay resident (windows slid like serving, see slide_windows) and the
-    # query tokens of the samples accumulate (bounded: kv >= 8192 caps the batch at 8 -> <= samples * 8 *
-    # 8192 tokens, sized into the pool).
-    reseed = prefix <= chunk
-    if prefix and not reseed:
-        reqs, batch, _ = seed_prefix(runner, bench, token_ids, batch_size, prefix, chunk)
+    reqs, batch, next_ids = seed_prefix(runner, bench, token_ids, batch_size, prefix, plan)
+    graph_runner = runner.torch_runner.decode_cuda_graph_runner
     for sample in range(plan["warmup"] + plan["iterations"]):
-        if prefix and reseed:
-            runner.clear()
-            reqs, batch, _ = seed_prefix(runner, bench, token_ids, batch_size, prefix, chunk)
-        # qualify the MEASURED forward only (seeding forwards would add their own 40 observations)
-        state.qualifying = sample == 0
-        state.observations = []
-        if prefix:
-            for req in reqs:
-                _reset_fill(req, prefix)
-            bench.prepare_extend_inputs_for_correctness_test(
-                argparse.Namespace(cut_len=prefix),
-                [token_ids[: prefix + query] for _ in reqs],
-                reqs,
-                runner.torch_runner,
+        state.eager_forwards = 0
+        next_ids, _ = runner.decode(next_ids, batch)
+        if state.eager_forwards:
+            message = (
+                f"{case['case_id']}: decode ran eagerly ({state.eager_forwards} forwards); "
+                "the generation regime requires the serving CUDA graph"
             )
-            slide_windows(runner, reqs, prefix)
-        else:
-            # one_batch's cleanup is a no-op: reset request slots and KV tokens per prefix-free sample
-            runner.clear()
-            reqs = bench.prepare_synthetic_inputs_for_latency_test(
-                batch_size, query, [token_ids[:query] for _ in range(batch_size)]
+            receipt["regime_violations"].append(message)
+            raise RuntimeError(message)
+        key = graph_runner._replay_graph_key
+        bucket = (int(key.size), getattr(key, "attention_variant", None))
+        if bucket not in intervals.buckets:
+            raise RuntimeError(f"replayed graph {bucket} has no recorded intervals; captured {list(intervals.buckets)}")
+        if sample < plan["warmup"]:
+            continue
+        records = intervals.take(bucket, clear=False)
+        if not all(captured for *_, captured in records):
+            raise RuntimeError("generation intervals must come from the captured graph")
+        for entry, ms, witnesses, _ in reduce_layer_intervals(records, reps, entries, "generation").values():
+            stream.write(
+                entry,
+                case,
+                latency=ms,
+                kernel_source="+".join(sorted(witnesses)),
+                used_cuda_graph=True,
+                sample=sample,
             )
-        intervals.active = sample >= plan["warmup"]
-        intervals.buckets[None] = []
-        _, _, measured = runner.extend(reqs)
-        if state.qualifying:
-            flags = torch.stack([f for _, _, a, b in state.observations for f in (a, b)]).cpu().tolist()
-            bad = [i for k, (i, _, _, _) in enumerate(state.observations) if not (flags[2 * k] and flags[2 * k + 1])]
-            if len(state.observations) != 40 or bad:
-                raise RuntimeError(
-                    f"{case['case_id']}: attention outputs non-finite/zero or incomplete at layers {bad[:5]}"
+        stream.flush()
+    receipt.setdefault("decode_kv_drift_tokens", plan["warmup"] + plan["iterations"] - 1)
+    runner.cleanup(batch)
+    runner.clear()
+
+
+def run_context_group(runner, bench, token_ids, cases, plan, state, intervals, stream, manifest, receipt, progress):
+    """Context cases sharing (batch, past kv): the prefix is seeded once and every query length is measured
+    on it. Short prefixes (one seeding forward) are re-seeded per sample from a cleared pool; prefix-free
+    cases reset the pool per sample (one_batch's cleanup is a no-op). After every measured extend the
+    query tokens' pages are returned (release_query_tokens), so the pool holds prefix + one extend."""
+    import torch
+
+    batch_size, prefix = cases[0]["batch_size"], cases[0]["past_kv"]
+    reseed = prefix <= seed_tokens_per_request(plan, batch_size, 0)
+    runner.clear()
+    state.phase = "context"
+    intervals.active = False
+    entries = manifest["entries"]
+    reps = manifest["representatives"]
+    reqs = None
+    if prefix and not reseed:
+        reqs, _, _ = seed_prefix(runner, bench, token_ids, batch_size, prefix, plan)
+    for case in cases:
+        started = time.monotonic()
+        query = case["query"]
+        for sample in range(plan["warmup"] + plan["iterations"]):
+            if prefix and reseed:
+                runner.clear()
+                reqs, _, _ = seed_prefix(runner, bench, token_ids, batch_size, prefix, plan)
+            # qualify the MEASURED forward only (seeding forwards would add their own 40 observations)
+            state.qualifying = sample == 0
+            state.observations = []
+            if prefix:
+                for req in reqs:
+                    _reset_fill(req, prefix)
+                bench.prepare_extend_inputs_for_correctness_test(
+                    argparse.Namespace(cut_len=prefix),
+                    [token_ids[: prefix + query] for _ in reqs],
+                    reqs,
+                    runner.torch_runner,
                 )
-            state.qualifying = False
-        if intervals.active:
-            records = intervals.take(None)
-            if any(captured for *_, captured in records):
-                raise RuntimeError("context intervals must be eager")
-            for entry, ms, witnesses, _ in reduce_layer_intervals(records, reps, entries, "context").values():
-                stream.write(
-                    entry,
-                    case,
-                    latency=ms,
-                    kernel_source="+".join(sorted(witnesses)),
-                    used_cuda_graph=False,
-                    sample=sample,
+                slide_windows(runner, reqs, prefix)
+            else:
+                runner.clear()
+                reqs = bench.prepare_synthetic_inputs_for_latency_test(
+                    batch_size, query, [token_ids[:query] for _ in range(batch_size)]
                 )
-            stream.flush()
-        intervals.active = False
+            intervals.active = sample >= plan["warmup"]
+            intervals.buckets[None] = []
+            _, _, measured = runner.extend(reqs)
+            if state.qualifying:
+                flags = torch.stack([f for _, _, a, b in state.observations for f in (a, b)]).cpu().tolist()
+                bad = [
+                    i for k, (i, _, _, _) in enumerate(state.observations) if not (flags[2 * k] and flags[2 * k + 1])
+                ]
+                if len(state.observations) != 40 or bad:
+                    raise RuntimeError(
+                        f"{case['case_id']}: attention outputs non-finite/zero or incomplete at layers {bad[:5]}"
+                    )
+                state.qualifying = False
+            if intervals.active:
+                records = intervals.take(None)
+                if any(captured for *_, captured in records):
+                    raise RuntimeError("context intervals must be eager")
+                for entry, ms, witnesses, _ in reduce_layer_intervals(records, reps, entries, "context").values():
+                    stream.write(
+                        entry,
+                        case,
+                        latency=ms,
+                        kernel_source="+".join(sorted(witnesses)),
+                        used_cuda_graph=False,
+                        sample=sample,
+                    )
+                stream.flush()
+            intervals.active = False
+            if prefix and not reseed:
+                release_query_tokens(runner, reqs, prefix, query)
+        progress(case, started)
     runner.clear()
 
 
@@ -865,15 +915,33 @@ def run(args, receipt):
             runner = build_attention_runner(
                 bench, server, model_config, local_rank, plan, manifest, receipt, state, intervals
             )
-            progress = (args.output / f"progress-rank-{rank}.jsonl").open("a")
-            for case in attention_cases:
-                started = time.monotonic()
-                run_attention_case(runner, bench, token_ids, case, plan, state, intervals, stream, manifest, receipt)
-                progress.write(
+            progress_file = (args.output / f"progress-rank-{rank}.jsonl").open("a")
+
+            def progress(case, started):
+                progress_file.write(
                     json.dumps(dict(case_id=case["case_id"], seconds=time.monotonic() - started, rows=stream.rows))
                     + "\n"
                 )
-                progress.flush()
+                progress_file.flush()
+
+            # context groups (one seeded prefix, every query length) in seed order, then generation
+            ordered = sorted(
+                attention_cases,
+                key=lambda c: (c["phase"] != "context", c["batch_size"], c["past_kv"], c["query"]),
+            )
+            for _, group in itertools.groupby(ordered, key=contract.seed_group):
+                group = list(group)
+                if group[0]["phase"] == "context":
+                    run_context_group(
+                        runner, bench, token_ids, group, plan, state, intervals, stream, manifest, receipt, progress
+                    )
+                    continue
+                for case in group:
+                    started = time.monotonic()
+                    run_generation_case(
+                        runner, bench, token_ids, case, plan, state, intervals, stream, manifest, receipt
+                    )
+                    progress(case, started)
             intervals.restore()
             del runner
             gc.collect()

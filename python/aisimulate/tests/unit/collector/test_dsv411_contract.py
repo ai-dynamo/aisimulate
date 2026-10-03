@@ -83,6 +83,11 @@ def test_grid_expansion_honors_budgets_and_counts_drops():
     assert len({c["case_id"] for c in cases}) == len(cases)
     sharded = [contract.shard_cases(cases, (i, 4)) for i in range(4)]
     assert sum(len(s) for s in sharded) == len(cases)
+    owners = {}
+    for i, shard in enumerate(sharded):
+        for c in shard:
+            assert owners.setdefault(contract.seed_group(c), i) == i, "a seed group must not straddle shards"
+    assert min(len(s) for s in sharded) > 0.8 * max(len(s) for s in sharded)
 
 
 def test_row_coordinates_follow_the_engine_convention():
