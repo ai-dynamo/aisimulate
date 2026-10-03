@@ -331,13 +331,26 @@ def _native_run(run: dict, base: Path) -> dict:
     if run["key"][0] == "sglang" and execution_policy is None:
         raise ValueError("SGLang resolved execution policy receipts are missing")
     return {
-        "values": {bid: max(value for _, value in point.rank_wall_times) * 1000 for bid, point in observed.items()},
+        "values": {
+            bid: (
+                point.tp_latency_seconds
+                if getattr(point, "tp_latency_seconds", None) is not None
+                else max(value for _, value in point.rank_wall_times)
+            )
+            * 1000
+            for bid, point in observed.items()
+        },
         "request_ids": request_ids,
         "receipts": receipts,
         "runtime_run_id": native.runtime_run_id,
         "runtime_grid_digest": native.runtime_grid_digest,
         "input_provenance": native.input_provenance,
         "backend_version": native.backend_version,
+        **(
+            {"latency_reduction": native.latency_reduction}
+            if getattr(native, "latency_reduction", None) is not None
+            else {}
+        ),
         **(execution_policy or {}),
     }
 
@@ -403,7 +416,7 @@ def installed_consumer_identity() -> dict:
 def _load_native(run: dict, base: Path, mode: str) -> dict:
     if "children" in run:
         values, request_ids, children, receipts = {}, set(), {}, []
-        boundaries, versions = set(), set()
+        boundaries, versions, reductions = set(), set(), set()
         execution_policy = None
         for child in run["children"]:
             native = _load_native(child, base, mode)
@@ -439,8 +452,12 @@ def _load_native(run: dict, base: Path, mode: str) -> dict:
             )
             boundaries.add(native.get("timing_boundary", TIMING_BOUNDARIES[run["key"][0]]))
             versions.add(native.get("backend_version"))
+            reductions.add(native.get("latency_reduction"))
         if len(boundaries) != 1:
             raise ValueError("native shard timing boundaries differ")
+        if len(reductions) != 1:
+            raise ValueError("native shard latency reductions differ")
+        reduction = reductions.pop()
         from collector.glm53flash_runtime_identity import validate_backend_version
 
         if len(versions) != 1:
@@ -454,6 +471,7 @@ def _load_native(run: dict, base: Path, mode: str) -> dict:
             "shards": receipts,
             "timing_boundary": boundaries.pop(),
             "backend_version": version,
+            **({"latency_reduction": reduction} if reduction is not None else {}),
             "_children": children,
             **(execution_policy or {}),
         }
@@ -794,6 +812,10 @@ def evaluate(manifest: dict, base: Path) -> dict:
                     from collector.glm53flash_runtime_identity import validate_runtime_pair
 
                     validate_runtime_pair(key[0], record["calibration_native"], record["holdout_native"])
+                    if record["calibration_native"].get("latency_reduction") != record["holdout_native"].get(
+                        "latency_reduction"
+                    ):
+                        raise ValueError("calibration/holdout latency reductions differ")
                     if mode == "fpm" and key[0] == "sglang":
                         _same_sglang_policy(
                             record["calibration_native"], record["holdout_native"], "calibration/holdout"

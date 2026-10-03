@@ -3,8 +3,10 @@
 """Validate SGLang's actual forward histories before publishing an FPM curve.
 
 The schema-2 envelope is an interchange format, not a claim that SGLang uses
-Dynamo's scheduler. Its latency is rank zero's native DeviceTimer interval.
-All TP ranks must witness the same frozen requests, real prefixes and dispatch.
+Dynamo's scheduler. Its published latency is rank zero's native DeviceTimer
+median; FPM rows and holdout scoring use the fastest-TP-rank median derived
+from the same validated traces (sglang_tp_latency.py). All TP ranks must
+witness the same frozen requests, real prefixes and dispatch.
 """
 
 from __future__ import annotations
@@ -390,7 +392,13 @@ def _validate_runtime_receipts(cell, payload: dict, parent: Path, evidence: dict
     )
 
 
-def validate_sglang_repetitions(cell, payload: dict, path: Path) -> dict | None:
+def validate_sglang_repetitions(cell, payload: dict, path: Path, *, tp_latency: dict | None = None) -> dict | None:
+    """Strictly validate one SGLang rank artifact and return its allocator policy.
+
+    When ``tp_latency`` is supplied it receives, per benchmark ID, the TP
+    latency in seconds under ``sglang_tp_latency.POLICY``, derived from the
+    same validated observations.
+    """
     if cell.state_protocol != PROTOCOL or payload.get("kvwarm", {}).get("state_protocol") != PROTOCOL:
         raise ValueError("SGLang hybrid state protocol mismatch")
     if payload.get("timing_boundary") != TIMING_BOUNDARIES["sglang"]:
@@ -478,6 +486,10 @@ def validate_sglang_repetitions(cell, payload: dict, path: Path) -> dict | None:
         ]
         if not math.isclose(result["fpms"][0]["wall_time"], statistics.median(values), rel_tol=1e-12):
             raise ValueError("SGLang published median differs from native observations")
+        if tp_latency is not None:
+            from .sglang_tp_latency import fastest_rank_median_seconds
+
+            tp_latency[bid] = fastest_rank_median_seconds(observations, bid)
     return allocator_policy
 
 

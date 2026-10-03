@@ -183,6 +183,9 @@ def aggregate_cell(
 ) -> list[dict[str, Any]]:
     """Validate native rank artifacts and take max-rank latency per grid point.
 
+    SGLang same-request cells instead use the validated fastest-TP-rank
+    median (``sglang_tp_latency.POLICY``) under the unchanged row label.
+
     Revalidating an existing publication uses its explicit dense-KV policy;
     an older commit record retains the historical fake-fallback classification.
     """
@@ -299,7 +302,15 @@ def aggregate_cell(
                 "total_kv_read_tokens": total_kv,
                 "partition_policy": "balanced_v1",
                 "kv_seed_regime": _kv_seed_regime(point, phase),
-                "latency_ms": max(latency for _rank, latency in measurement.rank_wall_times) * 1000.0,
+                # SGLang same-request rows use the fastest-TP-rank median
+                # (sglang_tp_latency.POLICY); the consumer-admitted row label
+                # below is unchanged.
+                "latency_ms": (
+                    measurement.tp_latency_seconds
+                    if measurement.tp_latency_seconds is not None
+                    else max(latency for _rank, latency in measurement.rank_wall_times)
+                )
+                * 1000.0,
                 "global_warmup_iterations": 0 if cell.state_protocol else plan.options.warmup_iterations,
                 "warmup_repeats": 5 if cell.state_protocol else 0,
                 "measurement_repeats": 10 if cell.state_protocol else 1,
