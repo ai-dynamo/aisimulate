@@ -34,6 +34,7 @@ For a ViT with depth D and projector_dims with P (in, out) pairs::
     encoder_proj_gemm     GEMM  (low_precision_input=True)
     encoder_ar_1          CustomAllReduce
     encoder_add_norm_2    ElementWise
+    encoder_gate_gemm     GEMM  (only if gated_mlp; SwiGLU gate projection)
     encoder_ffn1_gemm     GEMM
     encoder_act           ElementWise
     encoder_ffn2_gemm     GEMM  (low_precision_input=True)
@@ -147,6 +148,14 @@ def _vit_transformer_ops(enc_cfg: common.VisionEncoderConfig, tp_size: int) -> l
         ),
         ops.CustomAllReduce("encoder_ar_1", depth, h_vit, tp_size),
         ops.ElementWise("encoder_add_norm_2", depth, 2 * h_vit, 2 * h_vit, 0.8),
+        # SwiGLU-style FFN (enc_cfg.gated_mlp) has a separate gate projection
+        # (hidden -> intermediate) alongside the up projection below; plain
+        # up/down FFNs omit it.
+        *(
+            [ops.GEMM("encoder_gate_gemm", depth, inter_vit // tp_size, h_vit, vit_gemm_mode)]
+            if enc_cfg.gated_mlp
+            else []
+        ),
         ops.GEMM(
             "encoder_ffn1_gemm",
             depth,
@@ -157,7 +166,9 @@ def _vit_transformer_ops(enc_cfg: common.VisionEncoderConfig, tp_size: int) -> l
         ops.ElementWise(
             "encoder_act",
             depth,
-            inter_vit // tp_size,
+            # SwiGLU activation reads both the gate and up projections (two
+            # per-shard intermediate tensors); a plain FFN reads only one.
+            2 * (inter_vit // tp_size) if enc_cfg.gated_mlp else inter_vit // tp_size,
             inter_vit // tp_size,
             0.8,
         ),
@@ -192,7 +203,11 @@ def _vit_transformer_ops(enc_cfg: common.VisionEncoderConfig, tp_size: int) -> l
     return result
 
 
-def _projector_ops(enc_cfg: common.VisionEncoderConfig, tp_size: int) -> list:
+def _projector_ops(
+    enc_cfg: common.VisionEncoderConfig,
+    tp_size: int,
+    activation_indices: tuple[int, ...] | None = None,
+) -> list:
     """Build the projector MLP ops from enc_cfg.projector_dims.
 
     TP layout per layer:
@@ -201,6 +216,9 @@ def _projector_ops(enc_cfg: common.VisionEncoderConfig, tp_size: int) -> list:
                      row-parallel if P == 1 (M = out // tp, K = in; full input)
       - Ends with a CustomAllReduce over the final output dimension unless
         projector_replicated=True (full dimensions and no projector collectives).
+
+    ``activation_indices`` selects non-final layers that have an activation;
+    ``None`` retains the default activation after every non-final layer.
 
     Returns [] if projector_dims is empty.
     """
@@ -243,7 +261,7 @@ def _projector_ops(enc_cfg: common.VisionEncoderConfig, tp_size: int) -> list:
         else:
             m, k = out_d // tp_size, in_d
         result.append(ops.GEMM(f"encoder_projector_fc{i}_gemm", n_inst, m, k, vit_gemm_mode))
-        if not is_last:
+        if not is_last and (activation_indices is None or i in activation_indices):
             result.append(
                 ops.ElementWise(
                     f"encoder_projector_fc{i}_act",
@@ -261,7 +279,12 @@ def _projector_ops(enc_cfg: common.VisionEncoderConfig, tp_size: int) -> list:
     return result
 
 
-def build_encoder_ops(enc_cfg: common.VisionEncoderConfig, tp_size: int, enable_encoder_dp: bool = True) -> list:
+def build_encoder_ops(
+    enc_cfg: common.VisionEncoderConfig,
+    tp_size: int,
+    enable_encoder_dp: bool = True,
+    projector_activation_indices: tuple[int, ...] | None = None,
+) -> list:
     """Build the complete list of encoder ops for a ViT-based vision encoder.
 
     Combines the patch/position input ops, ViT transformer ops (10 ops x depth
@@ -274,16 +297,26 @@ def build_encoder_ops(enc_cfg: common.VisionEncoderConfig, tp_size: int, enable_
                  else the ViT weight-sharding degree (must evenly divide
                  num_heads and intermediate_size when tp_size > 1).
         enable_encoder_dp: Encoder data parallelism over the TP group (default
-                 True) — see module docstring.
+            True) — see module docstring.
+        projector_activation_indices: Optional non-final projector layer
+            indices to activate. ``None`` activates every non-final layer.
 
     Returns:
         Flat list of operation objects ready to assign to model.encoder_ops.
     """
     if not enable_encoder_dp:
-        return _patch_embedding_ops(enc_cfg) + _vit_transformer_ops(enc_cfg, tp_size) + _projector_ops(enc_cfg, tp_size)
+        return (
+            _patch_embedding_ops(enc_cfg)
+            + _vit_transformer_ops(enc_cfg, tp_size)
+            + _projector_ops(enc_cfg, tp_size, projector_activation_indices)
+        )
 
     # DP: full-replica ops (tp=1); the per-layer AllReduces degenerate to no-ops.
-    result = _patch_embedding_ops(enc_cfg) + _vit_transformer_ops(enc_cfg, 1) + _projector_ops(enc_cfg, 1)
+    result = (
+        _patch_embedding_ops(enc_cfg)
+        + _vit_transformer_ops(enc_cfg, 1)
+        + _projector_ops(enc_cfg, 1, projector_activation_indices)
+    )
     if tp_size > 1:
         result.append(
             ops.NCCL(
