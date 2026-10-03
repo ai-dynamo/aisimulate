@@ -17,6 +17,14 @@ on:
       nightly_run:
         required: true
         type: string
+      configuration_mode:
+        required: false
+        default: estimated
+        type: string
+      preview:
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -156,6 +164,7 @@ jobs:
         run: |
           echo "${WHEEL_SHA256}  $(echo "${RUNNER_TEMP}"/accuracy-wheel/*.whl)" | sha256sum --check --strict
           python -m pip install "${RUNNER_TEMP}"/accuracy-wheel/*.whl
+          python -m pip install --require-hashes -r scripts/e2e_accuracy_source/requirements.txt
           python -m pip check
           python - <<'PYCODE'
           import os, sys
@@ -174,17 +183,25 @@ jobs:
           python scripts/fetch_accuracy_measurements.py \
             --manifest "${RUNNER_TEMP}/accuracy-dataset/e2e-accuracy-dataset.json" --output "${RUNNER_TEMP}/accuracy-measurements"
       - name: Run both predictors with bounded CPU workers and qualify the complete cohort
+        shell: bash
         env:
           EXPECTED_SHA: ${{ inputs.sha }}
           EVALUATED_BRANCH: ${{ inputs.branch }}
+          PREVIEW: ${{ inputs.preview }}
+          CONFIGURATION_MODE: ${{ inputs.configuration_mode }}
+          GH_TOKEN: ${{ github.token }}
         run: |
+          preview_args=()
+          if [[ "${PREVIEW}" == 'true' ]]; then preview_args+=(--preview); fi
           python scripts/run_e2e_accuracy.py \
             --tables "${RUNNER_TEMP}/accuracy-measurements/tables.json" \
             --manifest "${RUNNER_TEMP}/accuracy-dataset/e2e-accuracy-dataset.json" \
             --wheel "${RUNNER_TEMP}"/accuracy-wheel/*.whl \
             --commit "${EXPECTED_SHA}" --branch "${EVALUATED_BRANCH}" \
             --run-id "${GITHUB_RUN_ID}" --run-attempt "${GITHUB_RUN_ATTEMPT}" \
-            --workers 6 --point-timeout 180 --output "${RUNNER_TEMP}/accuracy-public"
+            --source-cache "${RUNNER_TEMP}/accuracy-source" --evidence "${RUNNER_TEMP}/accuracy-evidence" \
+            --configuration-mode "${CONFIGURATION_MODE}" --fetch-runtime-evidence \
+            --workers 6 --point-timeout 180 --output "${RUNNER_TEMP}/accuracy-public" "${preview_args[@]}"
       - name: Report advisory accuracy and coverage
         run: |
           python - <<'PY' >> "${GITHUB_STEP_SUMMARY}"
@@ -195,14 +212,25 @@ jobs:
           print('Evaluated revision:', summary['snapshot']['evaluated_revision'])
           print('Measurements:', summary['snapshot']['release_tag'])
           print('\n```json\n' + json.dumps(summary['totals'], indent=2) + '\n```')
+          print('\nConfiguration evidence:', summary['snapshot']['campaign'].get('configuration', 'not recorded'))
           print('\nCampaign outcomes:', summary['snapshot']['campaign']['outcomes'])
+          print('\nMeasurement exclusions:', summary['snapshot']['campaign']['measurement_filter_counts'])
+          print('\nPrediction exclusions:', summary['snapshot']['campaign']['exclusion_reasons'])
           print('\nAccuracy values do not gate release staging. Incomplete campaigns cannot publish.')
           PY
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: e2e-accuracy-web-${{ inputs.artifact_key }}
+          name: ${{ inputs.preview && 'e2e-accuracy-preview' || 'e2e-accuracy-web' }}-${{ inputs.artifact_key }}
           overwrite: true
           # A single directory lets the container hook remap the entire path.
           path: ${{ runner.temp }}/accuracy-public/
           if-no-files-found: error
           retention-days: 90
+      - name: Preserve PR preview evidence for local diagnosis
+        if: always() && inputs.preview
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: e2e-accuracy-preview-evidence-${{ inputs.artifact_key }}
+          path: ${{ runner.temp }}/accuracy-evidence/
+          if-no-files-found: warn
+          retention-days: 7

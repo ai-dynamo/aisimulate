@@ -9,6 +9,7 @@ import json
 import subprocess
 import sys
 import zipfile
+from collections import Counter
 from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
@@ -87,6 +88,37 @@ def test_selection_keeps_one_complete_run_and_never_fills_missing_concurrency():
     assert {point["benchmark"]["id"] for point in points} == {2, 3}
     assert stats["selected"] == 2
     assert stats["measurement_date_through"] == "2026-09-13"
+    assert stats["excluded"] == {"superseded_curve": 1}
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_selection_accounts_for_every_input_row(reverse):
+    data = tables()
+    if reverse:
+        data["benchmark_results"].reverse()
+    points, stats = campaign.select_points(data, 30)
+    assert len(points) + sum(stats["excluded"].values()) == len(data["benchmark_results"])
+
+
+@pytest.mark.parametrize("tp", [2, 4, 8])
+def test_selection_preserves_single_node_expert_parallel_curves(tp):
+    data = tables()
+    data["configs"][0].update(hardware="b200", decode_tp=tp, decode_ep=tp, decode_num_workers=0, num_decode_gpu=tp * tp)
+    original = deepcopy(data)
+    points, stats = campaign.select_points(data, 30)
+    assert len(points) == 2
+    assert "multinode" not in stats["excluded"]
+    assert data == original
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [{"is_multinode": True}, {"disagg": True}, {"decode_num_workers": 2}, {"decode_ep": 3}],
+)
+def test_gpu_selection_does_not_guess_other_topologies(overrides):
+    config = dict(is_multinode=False, decode_tp=4, decode_ep=4, decode_num_workers=0, num_decode_gpu=16)
+    config.update(overrides)
+    assert campaign.measurement_gpu_count(config) == 16
 
 
 def test_family_without_recent_measurements_retains_its_latest_evidence():
@@ -342,7 +374,9 @@ def artifact(tmp_path, monkeypatch, request):
     source = tmp_path / "tables.json"
     source.write_text(json.dumps(tables()))
     manifest = tmp_path / "manifest.json"
-    manifest.write_text((ROOT / ".github/e2e-accuracy-dataset.json").read_text())
+    legacy_manifest = json.loads((ROOT / ".github/e2e-accuracy-dataset.json").read_text())
+    legacy_manifest.update(selection_policy=fetch.POLICY, max_age_days=30)
+    manifest.write_text(json.dumps(legacy_manifest))
     monkeypatch.setattr(
         campaign,
         "wheel_identity",
@@ -440,6 +474,63 @@ def archive(summary, *, qualification=None, extra=None):
         if extra:
             z.writestr(extra, "private")
     return stream.getvalue()
+
+
+def test_campaign_hash_includes_nested_source_manifests(artifact, tmp_path, monkeypatch):
+    before, _ = artifact
+    original_digest = campaign.digest
+    monkeypatch.setattr(
+        campaign, "digest", lambda path: "0" * 64 if path.parent.name == "manifests" else original_digest(path)
+    )
+    output = tmp_path / "changed-manifests"
+    campaign.campaign(
+        SimpleNamespace(
+            tables=tmp_path / "tables.json",
+            manifest=tmp_path / "manifest.json",
+            wheel=tmp_path / "wheel.whl",
+            output=output,
+            branch="main",
+            commit="d" * 40,
+            run_id="123",
+            run_attempt="1",
+            workers=2,
+            point_timeout=10,
+        )
+    )
+    after = json.loads((output / "summary.json").read_text())
+    assert after["snapshot"]["campaign"]["driver_sha256"] != before["snapshot"]["campaign"]["driver_sha256"]
+
+
+def test_pr_preview_records_actual_branch_and_cannot_publish(artifact, tmp_path):
+    output = tmp_path / "pr-preview"
+    args = SimpleNamespace(
+        tables=tmp_path / "tables.json",
+        manifest=tmp_path / "manifest.json",
+        wheel=tmp_path / "wheel.whl",
+        output=output,
+        branch="simonec/preview",
+        commit="d" * 40,
+        run_id="123",
+        run_attempt="1",
+        workers=2,
+        point_timeout=10,
+        preview=True,
+    )
+    campaign.campaign(args)
+    text = (output / "summary.json").read_text()
+    summary = pages._accuracy_summary(text, allow_preview=True)
+    assert summary["snapshot"]["evaluated_revision"] == {"branch": args.branch, "commit_sha": args.commit}
+    assert summary["scope"]["preview"] is True
+    assert summary["snapshot"]["campaign"]["preview"] is True
+    with pytest.raises(pages.PagesBuildError, match="preview is not publishable"):
+        pages._accuracy_summary(text)
+    with pytest.raises(ValueError):
+        publish.public_contract(summary)
+    with pytest.raises(ValueError):
+        publish.validate_artifact(archive(summary), artifact[1])
+    args.preview = False
+    with pytest.raises(ValueError, match="main or release"):
+        campaign.campaign(args)
 
 
 def test_complete_artifact_contains_only_derived_accuracy_and_provenance(artifact):
@@ -575,10 +666,11 @@ def test_invalid_qualified_artifacts_use_pages_error_contract(artifact, tmp_path
 def test_invalid_gpu_count_exclusions_survive_publication_validation(artifact):
     summary, run = artifact
     summary["snapshot"]["campaign"]["measurement_filter_counts"]["invalid_gpu_count"] = 2
+    summary["snapshot"]["campaign"]["exclusion_reasons"]["adapter_topology_mismatch"] = 0
     assert publish.validate_artifact(archive(summary), run) == summary
 
 
-def test_nightly_accuracy_is_independent_from_release_staging_and_has_no_public_raw_artifacts():
+def test_nightly_accuracy_is_independent_from_release_staging_and_keeps_preview_artifacts_separate():
     workflow = yaml.load(
         (ROOT / ".github/workflows/e2e-accuracy.yml").read_text(),
         Loader=yaml.BaseLoader,
@@ -600,9 +692,15 @@ def test_nightly_accuracy_is_independent_from_release_staging_and_has_no_public_
     assert workflow["jobs"]["campaign"]["needs"] == "wheel"
     assert workflow["jobs"]["campaign"]["name"] == "Qualify E2E accuracy (${{ inputs.artifact_key }})"
     uploads = [s for s in workflow["jobs"]["campaign"]["steps"] if "upload-artifact@" in s.get("uses", "")]
-    assert len(uploads) == 1 and "if" not in uploads[0]
+    assert len(uploads) == 2 and "if" not in uploads[0]
     assert uploads[0]["with"]["overwrite"] == "true"
-    assert uploads[0]["with"]["name"] == "e2e-accuracy-web-${{ inputs.artifact_key }}"
+    assert (
+        uploads[0]["with"]["name"]
+        == "${{ inputs.preview && 'e2e-accuracy-preview' || 'e2e-accuracy-web' }}-${{ inputs.artifact_key }}"
+    )
+    assert uploads[1]["if"] == "always() && inputs.preview"
+    assert uploads[1]["with"]["name"] == "e2e-accuracy-preview-evidence-${{ inputs.artifact_key }}"
+    assert uploads[1]["with"]["path"] == "${{ runner.temp }}/accuracy-evidence/"
     wheel_upload = next(s for s in workflow["jobs"]["wheel"]["steps"] if "upload-artifact@" in s.get("uses", ""))
     assert wheel_upload["with"]["overwrite"] == "true"
     assert wheel_upload["with"]["name"] == "e2e-accuracy-wheel-${{ inputs.artifact_key }}"
@@ -1170,7 +1268,9 @@ def test_predict_point_calls_selected_api_and_adapter(monkeypatch, api, adapter_
     monkeypatch.setattr(campaign.importlib.metadata, "distribution", lambda _: SimpleNamespace(files=files))
     monkeypatch.setitem(sys.modules, "aisimulate.runner", SimpleNamespace(EngineReplayRunnerFactory=object))
     calls = []
-    request = object()
+    request = SimpleNamespace(
+        topology=SimpleNamespace(kind="agg", worker=SimpleNamespace(replicas=1, gpus_per_replica=0))
+    )
 
     def adapt(source):
         calls.append(("adapt", source))
@@ -1219,3 +1319,460 @@ def test_site_builder_validates_baseline_entry_point(artifact, tmp_path, entry):
     del summary["snapshot"]["aic_source"]["cli_entry_point"]
     path.write_text(json.dumps(summary))
     pages._accuracy_summary(path.read_text())
+
+
+def expert_parallel_point():
+    return {
+        "id": "ep-point",
+        "config": {
+            "id": 202,
+            "hardware": "b200",
+            "framework": "vllm",
+            "model": "dsr1",
+            "precision": "fp4",
+            "spec_method": "none",
+            "disagg": False,
+            "is_multinode": False,
+            "decode_tp": 4,
+            "decode_ep": 4,
+            "decode_dp_attention": False,
+            "decode_num_workers": 0,
+            "num_decode_gpu": 16,
+        },
+        "benchmark": {
+            "id": 1,
+            "isl": 1024,
+            "osl": 128,
+            "conc": 64,
+            "metrics": {"mean_ttft": 0.5, "mean_tpot": 0.02},
+        },
+    }
+
+
+@pytest.fixture
+def source_config_adapter(monkeypatch):
+    # Pages installs only its pinned Python dependencies, not an AISim wheel.
+    # The adapter/replay contracts are pure Python; the runner is stubbed below.
+    existing_modules = set(sys.modules)
+    monkeypatch.syspath_prepend(str(ROOT / "python" / "aisimulate" / "src"))
+    try:
+        from aisimulate.sdk import config_adapter
+
+        yield config_adapter
+    finally:
+        # Do not make later Pages tests mistake source imports for an installed
+        # wheel with a native runtime, after monkeypatch restores sys.path.
+        for name in set(sys.modules) - existing_modules:
+            if name.split(".")[0] in {"aisimulate", "aisimulate_core"}:
+                sys.modules.pop(name, None)
+
+
+@pytest.mark.parametrize("replay_fails", [False, True])
+@pytest.mark.parametrize("framework", ["vllm", "sglang", "trt"])
+def test_ep_prediction_preserves_physical_gpus_through_publication(
+    monkeypatch, source_config_adapter, replay_fails, framework
+):
+    point = expert_parallel_point()
+    point["config"]["framework"] = framework
+    calls = []
+
+    def estimate(**kwargs):
+        assert kwargs["tp_size"] == 4
+        assert kwargs["attention_dp_size"] == 1
+        assert kwargs["batch_size"] == 64
+        return SimpleNamespace(ttft=500.0, tpot=20.0, backend_version="0.25.0")
+
+    class Runner:
+        def run(self, spec):
+            args = spec.backend_deployment.agg_engine_args
+            assert args["aic_tp_size"] == 4
+            assert args["aic_attention_dp_size"] == 1
+            assert args["aic_moe_ep_size"] == 4
+            assert spec.concurrency == 64
+            calls.append("run")
+            if replay_fails:
+                raise ValueError("missing performance data")
+            return SimpleNamespace(metrics={"completed_requests": 640, "mean_ttft_ms": 600, "mean_tpot_ms": 22})
+
+        def close(self):
+            calls.append("close")
+
+    monkeypatch.setitem(
+        sys.modules,
+        "aisimulate.runner",
+        SimpleNamespace(EngineReplayRunnerFactory=lambda: SimpleNamespace(create=lambda _: Runner())),
+    )
+    modules = {
+        "aisimulate.legacy_cli.api": SimpleNamespace(cli_estimate=estimate),
+        "aisimulate.sdk.config_adapter": source_config_adapter,
+    }
+    files = ["aisimulate/legacy_cli/api.py", "aisimulate/sdk/config_adapter/__init__.py"]
+    monkeypatch.setattr(campaign.importlib.metadata, "distribution", lambda _: SimpleNamespace(files=files))
+    monkeypatch.setattr(campaign.importlib, "import_module", modules.__getitem__)
+    result = campaign.predict_point(point)
+    row = result["row"]
+    assert row["aisimulate_total_gpus"] == 4
+    assert row["silicon_ttft_ms"] == 500
+    assert row["silicon_tpot_ms"] == 20
+    assert row["aisimulate_status"] == ("failed" if replay_fails else "success")
+    assert calls == ["run", "close"]
+    from build_e2e_accuracy_overview import _is_multinode
+
+    assert not _is_multinode(row)
+    assert point["config"]["num_decode_gpu"] == 16
+
+
+@pytest.mark.parametrize(
+    ("framework", "memory_field"),
+    [("vllm", "gpu_memory_utilization"), ("sglang", "mem_fraction_static"), ("trt", "free_gpu_memory_fraction")],
+)
+@pytest.mark.parametrize(("disagg", "role_overrides"), [(False, False), (True, False), (True, True)])
+def test_replay_preserves_resolved_runtime_limits(
+    source_config_adapter, framework, memory_field, disagg, role_overrides
+):
+    point = expert_parallel_point()
+    point["config"]["framework"] = framework
+    adapter = source_config_adapter
+    overrides = {"free_gpu_memory_fraction": 0.83, "max_seq_len": 4096}
+    if disagg:
+        point["config"].update(
+            disagg=True,
+            num_decode_gpu=4,
+            decode_num_workers=1,
+            prefill_tp=2,
+            prefill_ep=2,
+            prefill_num_workers=1,
+            num_prefill_gpu=2,
+        )
+    if role_overrides:
+        overrides.update(
+            prefill_free_gpu_memory_fraction=0.76,
+            decode_free_gpu_memory_fraction=0.91,
+            prefill_max_seq_len=2048,
+            decode_max_seq_len=8192,
+            decode_system_name="h200_sxm",
+        )
+    request = adapter.adapt_config(
+        adapter.InferenceXSource(point["config"], point["benchmark"]), adapter.AdapterOverrides(**overrides)
+    ).requests[0]
+    request = adapter.EstimateRequestV1.model_validate_json(request.model_dump_json())
+    if disagg and not role_overrides:
+        # The canonical schema permits omitting decode hardware when shared.
+        request = request.model_copy(update={"systems": request.systems.model_copy(update={"decode": None})})
+    spec = campaign.replay_spec(request, "0.25.0")
+    deployment = spec.backend_deployment
+    if disagg:
+        expected = [(0.76, 2048), (0.91, 8192)] if role_overrides else [(0.83, 4096)] * 2
+        engines = [deployment.prefill_engine_args, deployment.decode_engine_args]
+        assert engines[1]["aic_system"] == ("h200_sxm" if role_overrides else "b200_sxm")
+    else:
+        expected = [(0.83, 4096)]
+        engines = [deployment.agg_engine_args]
+    for args, (memory, context) in zip(engines, expected, strict=True):
+        assert args[memory_field] == memory
+        assert args["max_model_len"] == context
+        assert set(args).intersection(
+            {"gpu_memory_utilization", "mem_fraction_static", "free_gpu_memory_fraction"}
+        ) == {memory_field}
+
+
+@pytest.mark.parametrize("dp_attention", [False, True])
+def test_old_wheel_incorrect_topology_cannot_publish(monkeypatch, dp_attention):
+    point = expert_parallel_point()
+    if dp_attention:
+        point["config"].update(decode_ep=1, decode_dp_attention=True, num_decode_gpu=4)
+    worker = SimpleNamespace(replicas=1, gpus_per_replica=4 if dp_attention else 16, tp_size=4)
+    request = SimpleNamespace(topology=SimpleNamespace(kind="agg", worker=worker))
+    adapter = SimpleNamespace(
+        InferenceXSource=lambda **values: values,
+        adapt_config=lambda _: SimpleNamespace(requests=[request]),
+    )
+    modules = {
+        "aisimulate.legacy_cli.api": SimpleNamespace(cli_estimate=None),
+        "aisimulate.sdk.config_adapter": adapter,
+    }
+    files = ["aisimulate/legacy_cli/api.py", "aisimulate/sdk/config_adapter/__init__.py"]
+    monkeypatch.setattr(campaign.importlib.metadata, "distribution", lambda _: SimpleNamespace(files=files))
+    monkeypatch.setattr(campaign.importlib, "import_module", modules.__getitem__)
+    monkeypatch.setitem(sys.modules, "aisimulate.runner", SimpleNamespace(EngineReplayRunnerFactory=object))
+    assert campaign.predict_point(point) == {
+        "id": "ep-point",
+        "outcome": "unsupported",
+        "reason": "adapter_topology_mismatch",
+    }
+
+
+def resolved_point(framework="vllm", disagg=False):
+    point = expert_parallel_point()
+    point["config"].update(framework=framework, disagg=disagg)
+    backend = "trtllm" if framework == "trt" else framework
+    memory_key = {
+        "vllm": "gpu_memory_utilization",
+        "sglang": "mem_fraction_static",
+        "trtllm": "free_gpu_memory_fraction",
+    }[backend]
+    role = {
+        "framework_version": "source-1.0",
+        "topology": {"tp": 4, "pp": 1, "attention_dp": 1, "moe_tp": 1, "moe_ep": 4, "workers": 1},
+        "args": {
+            "block_size": 16,
+            "max_num_seqs": 48,
+            "max_num_batched_tokens": 16384,
+            memory_key: 0.85,
+            "enable_prefix_caching": True,
+            "enable_chunked_prefill": False,
+            "max_model_len": 32768,
+            "kv_cache_dtype": "fp8_e4m3",
+        },
+        "quantization": {"gemm": "nvfp4", "moe": "nvfp4", "evidence": {"gemm_profile_is_explicit": True}},
+    }
+    point["source_row"] = {"head_sha": "a" * 40}
+    point["deployment"] = {
+        "schema_version": "resolved-deployment/1",
+        "configuration_quality": "verified",
+        "backend": backend,
+        "system": "b200_sxm",
+        "model_path": "source/checkpoint",
+        "roles": {"prefill": deepcopy(role), "decode": role} if disagg else {"aggregated": role},
+        "workload": {
+            "isl": 1024,
+            "osl": 128,
+            "concurrency": 64,
+            "request_count": 192,
+            "random_range_ratio": 0.5,
+            "benchmark_controls": {"seed": 47},
+        },
+    }
+    return point
+
+
+def resolved_tables():
+    point = resolved_point()
+    config = point["config"]
+    config.update(prefill_tp=1, prefill_ep=1, prefill_dp_attention=False, prefill_num_workers=0, num_prefill_gpu=0)
+    bench = point["benchmark"]
+    bench.update(
+        config_id=config["id"], workflow_run_id=1, date="2026-09-28", image="source-image", benchmark_type="single_turn"
+    )
+    return {
+        "configs": [config],
+        "benchmark_results": [bench],
+        "workflow_runs": [{"id": 1, "head_sha": "a" * 40, "github_run_id": 100, "run_attempt": 2}],
+    }
+
+
+def test_resolved_campaign_publishes_replay_when_baseline_fails(artifact, tmp_path, monkeypatch):
+    _, run = artifact
+    data = resolved_tables()
+    tables_path = tmp_path / "resolved-tables.json"
+    tables_path.write_text(json.dumps(data))
+    manifest = tmp_path / "resolved-manifest.json"
+    manifest.write_text((ROOT / ".github/e2e-accuracy-dataset.json").read_text())
+    predictor = campaign.run_child
+
+    def predict(point, timeout):
+        result = predictor(point, timeout)
+        result["row"].update(
+            aic_status="failed",
+            aic_ttft_ms=None,
+            aic_tpot_ms=None,
+            configuration_quality="verified",
+        )
+        return result
+
+    monkeypatch.setattr(campaign, "run_child", predict)
+    monkeypatch.setattr(
+        campaign,
+        "resolve_points",
+        lambda points, *_, **kwargs: [
+            {
+                **point,
+                "deployment": resolved_point()["deployment"],
+                "evidence": {"recipe_sha256": "f" * 64},
+            }
+            for point in points
+        ],
+    )
+    output, evidence = tmp_path / "resolved-public", tmp_path / "evidence"
+    campaign.campaign(
+        SimpleNamespace(
+            tables=tables_path,
+            manifest=manifest,
+            wheel=tmp_path / "wheel.whl",
+            output=output,
+            branch="main",
+            commit="d" * 40,
+            run_id="123",
+            run_attempt="1",
+            workers=2,
+            point_timeout=10,
+            evidence=evidence,
+            source_cache=tmp_path / "source-cache",
+        )
+    )
+    summary = json.loads((output / "summary.json").read_text())
+    assert publish.validate_artifact(archive(summary), run) == summary
+    resolved = json.loads((evidence / "resolved-points.json").read_text())
+    qualification = json.loads((output / "qualification.json").read_text())
+    assert qualification["cohort_sha256"] == campaign.sha(resolved)
+    results = json.loads((evidence / "results.json").read_text())
+    assert results[0]["row"]["aic_status"] == "failed"
+    assert summary["totals"]["rows"] == 1
+
+
+def test_resolved_cohort_joins_provenance_and_accounts_for_every_row():
+    from e2e_accuracy_source.cohort import select_points
+
+    data = resolved_tables()
+    config = data["configs"][0]
+    config.update(disagg=True, is_multinode=True)
+    bench = data["benchmark_results"][0]
+    data["configs"].append({**config, "id": 300})
+    data["benchmark_results"].extend(
+        [
+            {**bench, "id": 2, "date": "2026-09-27"},
+            {**bench, "id": 3, "conc": 128, "image": "old", "date": "2026-09-27"},
+            {**bench, "id": 4, "config_id": 300, "date": "2026-01-01"},
+            {**bench, "id": 5, "config_id": 999},
+            {**bench, "id": 6, "benchmark_type": "multi_turn"},
+        ]
+    )
+    points, stats = select_points(data)
+    assert [point["benchmark"]["id"] for point in points] == [1]
+    assert points[0]["source_row"]["head_sha"] == "a" * 40
+    assert points[0]["source_row"]["run_attempt"] == 2
+    assert stats["excluded"] == {
+        "orphaned_measurement": 1,
+        "source_filter": 1,
+        "stale": 1,
+        "superseded_image": 1,
+        "superseded_row": 1,
+    }
+    assert len(points) + sum(stats["excluded"].values()) == len(data["benchmark_results"])
+
+
+@pytest.mark.parametrize("framework", ["vllm", "sglang", "trt"])
+@pytest.mark.parametrize("disagg", [False, True])
+def test_historical_wheel_estimate_projection_matches_public_adapter(source_config_adapter, framework, disagg):
+    from e2e_accuracy_source.cohort import select_points
+    from e2e_accuracy_source.estimate import estimate_kwargs
+    from e2e_accuracy_source.schema import SiliconRow
+
+    point = resolved_point(framework, disagg)
+    points, _ = select_points(resolved_tables())
+    row = SiliconRow(**{**points[0]["source_row"], "disagg": disagg, "framework": framework})
+    expected = estimate_kwargs(row, point["deployment"]).to_call_kwargs()
+    adapter = source_config_adapter
+    report = adapter.adapt_config(
+        adapter.ResolvedInferenceXSource(
+            point["deployment"], point["config"], point["benchmark"], "https://example.com/source"
+        )
+    )
+    actual = adapter.to_cli_estimate_kwargs(report.requests[0])
+    for key, value in expected.items():
+        assert actual[key] == value, key
+
+
+@pytest.mark.parametrize("problem", ["workload", "topology", "kv_dtype", "override"])
+def test_resolved_adapter_rejects_unrepresentable_inputs(source_config_adapter, problem):
+    adapter = source_config_adapter
+    point = resolved_point(disagg=True)
+    deployment = point["deployment"]
+    overrides = adapter.AdapterOverrides()
+    if problem == "workload":
+        deployment["workload"]["concurrency"] += 1
+    elif problem == "topology":
+        deployment["roles"]["decode"]["topology"]["attention_dp"] = 0
+    elif problem == "kv_dtype":
+        deployment["roles"]["decode"]["args"]["kv_cache_dtype"] = "bf16"
+    else:
+        overrides = adapter.AdapterOverrides(batch_size=1)
+    report = adapter.adapt_config(
+        adapter.ResolvedInferenceXSource(deployment, point["config"], point["benchmark"], "https://example.com/source"),
+        overrides,
+    )
+    assert not report.requests
+    assert report.outcomes[0].status == "rejected"
+
+
+@pytest.mark.parametrize("framework", ["vllm", "sglang", "trt"])
+@pytest.mark.parametrize("disagg", [False, True])
+@pytest.mark.parametrize("baseline_fails", [False, True])
+def test_source_resolved_prediction_preserves_settings_and_independent_outcomes(
+    monkeypatch, source_config_adapter, framework, disagg, baseline_fails
+):
+    point = resolved_point(framework, disagg)
+    calls = []
+
+    def estimate(**kwargs):
+        calls.append("estimate")
+        assert kwargs["model_path"] == "source/checkpoint"
+        assert kwargs["kvcache_quant_mode"] == "fp8"
+        assert kwargs["backend_version"] == "database-2.0"
+        assert kwargs["prefill_free_gpu_memory_fraction" if disagg else "free_gpu_memory_fraction"] == 0.85
+        if baseline_fails:
+            raise ValueError("baseline does not support this model")
+        return SimpleNamespace(ttft=500, tpot=20)
+
+    class Runner:
+        def run(self, spec):
+            calls.append("replay")
+            deployment = spec.backend_deployment
+            args = deployment.decode_engine_args if disagg else deployment.agg_engine_args
+            assert args["max_num_seqs"] == 48
+            assert args["max_num_batched_tokens"] == 16384
+            assert args["enable_prefix_caching"] is True
+            assert args["enable_chunked_prefill"] is False
+            assert args["aic_backend_version"] == "database-2.0"
+            assert args["aic_kv_cache_dtype"] == "fp8"
+            assert spec.workload["length_sampler"] == "numpy_random_state"
+            assert spec.workload["random_range_ratio"] == 0.5
+            assert spec.workload["random_seed"] == 47
+            assert spec.workload["request_count"] == 192
+            return SimpleNamespace(metrics={"completed_requests": 192, "mean_ttft_ms": 510, "mean_tpot_ms": 21})
+
+        def close(self):
+            calls.append("close")
+
+    monkeypatch.setitem(
+        sys.modules,
+        "aisimulate.runner",
+        SimpleNamespace(EngineReplayRunnerFactory=lambda: SimpleNamespace(create=lambda _: Runner())),
+    )
+    modules = {
+        "aisimulate.legacy_cli.api": SimpleNamespace(cli_estimate=estimate),
+        "aisimulate.sdk.config_adapter": source_config_adapter,
+        "aisimulate.sdk.perf_database": SimpleNamespace(get_latest_database_version=lambda **_: "database-2.0"),
+    }
+    files = ["aisimulate/legacy_cli/api.py", "aisimulate/sdk/config_adapter/__init__.py"]
+    monkeypatch.setattr(campaign.importlib.metadata, "distribution", lambda _: SimpleNamespace(files=files))
+    original_import = campaign.importlib.import_module
+    monkeypatch.setattr(
+        campaign.importlib,
+        "import_module",
+        lambda name, *a, **kw: modules[name] if name in modules else original_import(name, *a, **kw),
+    )
+    result = campaign.predict_point(point)
+    assert result["outcome"] == "evaluated"
+    assert result["row"]["aic_status"] == ("failed" if baseline_fails else "success")
+    assert result["row"]["aisimulate_status"] == "success"
+    assert calls == ["estimate", "replay", "close"]
+    assert result["row"]["aisimulate_total_gpus"] == (8 if disagg else 4)
+
+
+def test_configuration_quality_is_public_and_counts_are_checked(artifact):
+    summary, run = artifact
+    counts = Counter()
+    for model in summary["models"]:
+        for workload in model["workloads"]:
+            for gpu in workload["gpus"]:
+                for topology in gpu["topologies"]:
+                    for index, point in enumerate(topology["points"]):
+                        quality = "estimated" if index % 2 == 0 else "verified"
+                        point["configuration_quality"] = quality
+                        counts[quality] += 1
+    summary["snapshot"]["campaign"]["configuration"] = {"profile": "coverage-experiment/1", "counts": dict(counts)}
+    assert publish.validate_artifact(archive(summary), run) == summary
+    summary["snapshot"]["campaign"]["configuration"]["counts"]["estimated"] += 1
+    with pytest.raises(pages.PagesBuildError, match="configuration counts"):
+        publish.validate_artifact(archive(summary), run)

@@ -200,6 +200,50 @@ irrelevant sentinel; it is normalized to one replica before worker validation.
 All actual worker counts must be positive. MTP rows require explicit `nextn` and
 `nextn_accepted` overrides.
 
+For aggregated MoE records explicitly marked `is_multinode=false` with one
+worker (including the zero-worker sentinel), TP describes the shared GPU group.
+EP reuses that group; it does not multiply the physical GPU count. When EP is
+greater than one, the adapter accepts either TP GPUs or the legacy TP × EP
+count. It normalizes the latter to TP GPUs and emits an
+`inferencex_gpu_count_normalized` warning, also recorded in provenance. For
+example, TP4/EP4 with 16 reported GPUs becomes one four-GPU worker. With
+attention DP disabled, this means attention TP4/DP1 and MoE TP1/EP4; with
+attention DP enabled, it means attention TP1/DP4 and MoE TP1/EP4, with
+concurrency divided across the four attention replicas.
+
+EP must divide TP; vLLM additionally requires EP to equal TP for these
+single-node records. Conflicting counts and legacy TP × EP counts without an
+explicit boolean `is_multinode` are rejected. Disaggregated, multi-worker, and
+explicitly multi-node records retain the existing reported-GPU arithmetic.
+Regression tests cover these topologies for vLLM, SGLang, and TensorRT-LLM.
+With attention DP disabled, SGLang and TensorRT-LLM require TP to match the
+reported GPUs per worker and retain the configured EP; vLLM derives attention
+DP from worker GPUs divided by TP and uses the full worker width for enabled EP.
+The attention-DP flag also applies to vLLM workers without EP and to each role
+of a disaggregated deployment: enabled means attention TP1 and DP equal to the
+physical worker width. Decode batch size is concurrency divided by replicas and
+attention DP. Disaggregated prefill batch remains one unless overridden.
+
+MiniMax-M2.7 (BF16/FP4), Kimi-K2.6 (FP4), and Kimi-K3 (FP4) use their registered
+model IDs. The FP4 artifacts retain native mixed-quantization metadata rather
+than forcing every GEMM and expert to NVFP4. DB-export `id` is retained as the
+source config ID alongside the benchmark ID.
+
+Accuracy CI now uses `ResolvedInferenceXSource` for policy
+`gym-resolved-config-v2`. The repository-only resolver joins workflow provenance,
+reads immutable launcher recipes, verifies source defaults, and resolves checkpoint
+and workload metadata before adaptation. The estimate request preserves topology,
+quantization, context limits, and per-role memory fractions. Replay consumes the
+same deployment's scheduler, cache, chunked-prefill, and workload settings through
+`ReplaySpec`; its result is independent of baseline success.
+
+The [resolution strategy](../src/aisimulate/sdk/config_adapter/README.md#resolution-strategy-source-to-replay)
+explains source resolution, replay configuration, provenance, and validation.
+The [accuracy audit](../../../pages/e2e-accuracy/README.md#source-resolved-policy-follow-up)
+records differential evidence and remaining engine/evidence limits. Historical
+v1 artifacts retain their old policy. These changes do not regenerate published
+predictions.
+
 ## Dynamo recipes
 
 `DynamoRecipeSource` safely parses multi-document YAML containing ConfigMaps,

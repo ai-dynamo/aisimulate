@@ -261,6 +261,10 @@ def _topology_summaries(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         points = []
         for row in topology_rows:
             point: dict[str, Any] = {"concurrency": row["conc"], "status": row["aisimulate_status"]}
+            if "configuration_quality" in row:
+                point["configuration_quality"] = row["configuration_quality"]
+            if "aic_status" in row:
+                point["aic_status"] = row["aic_status"]
             for name, prefix in (("measured", "silicon"), ("aic", "aic"), ("aisimulate", "dynamo")):
                 point[name] = {}
                 for metric, anchor in anchors.items():
@@ -296,10 +300,11 @@ def _topology_summaries(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return summaries
 
 
-def _evaluated_revision(runtime: dict[str, Any], branch: str | None) -> dict[str, str] | None:
+def _evaluated_revision(runtime: dict[str, Any], branch: str | None, *, preview: bool = False) -> dict[str, str] | None:
     if branch is None:
-        return None
-    if branch.endswith("/") or (branch != "main" and not re.fullmatch(r"release/[A-Za-z0-9][A-Za-z0-9._/-]*", branch)):
+        return None  # Historical unqualified exports remain readable.
+    pattern = r"[A-Za-z0-9][A-Za-z0-9._/-]*" if preview else r"release/[A-Za-z0-9][A-Za-z0-9._/-]*"
+    if branch.endswith("/") or (branch != "main" and not re.fullmatch(pattern, branch)):
         raise SnapshotError("branch must be main or release/<name>")
     source = runtime.get("source_checkout")
     if (
@@ -452,11 +457,18 @@ def _validate_inputs(
         for field in (
             "silicon_ttft_ms",
             "silicon_tpot_ms",
-            "aic_ttft_ms",
-            "aic_tpot_ms",
         ):
             if _finite(row.get(field)) is None or row[field] <= 0:
                 raise SnapshotError(f"row is missing a positive finite {field}")
+        aic_status = row.get("aic_status", "success")
+        if aic_status not in {"success", "failed", "unsupported"}:
+            raise SnapshotError("unknown AIC prediction status")
+        for field in ("aic_ttft_ms", "aic_tpot_ms"):
+            if aic_status == "success":
+                if _finite(row.get(field)) is None or row[field] <= 0:
+                    raise SnapshotError(f"row is missing a positive finite {field}")
+            elif row.get(field) is not None:
+                raise SnapshotError("non-success AIC row contains latency metrics")
         if _finite(row.get("conc")) is None or row["conc"] <= 0:
             raise SnapshotError("row is missing a positive finite conc")
         status = row.get("aisimulate_status")
@@ -496,6 +508,7 @@ def build_summary(
     source_url: str,
     exclude_multinode: bool = True,
     branch: str | None = None,
+    preview: bool = False,
 ) -> dict[str, Any]:
     all_rows = _validate_inputs(predictions, metadata, coverage)
     expected_source_url = f"{INFERENCEX_RELEASE_URL_PREFIX}{predictions['release_tag']}"
@@ -568,7 +581,14 @@ def build_summary(
         },
         "models": [_model_summary(model, by_model[model]) for model in sorted(by_model, key=str.casefold)],
     }
-    revision = _evaluated_revision(runtime, branch)
+    revision = _evaluated_revision(runtime, branch, preview=preview)
+    if preview:
+        if revision is None:
+            raise SnapshotError("preview requires an evaluated revision")
+        result["scope"]["preview"] = True
+        result["scope"]["claim"] = (
+            "PR preview for local review; excluded from public publication. " + result["scope"]["claim"]
+        )
     if revision is not None:
         prediction_run = predictions.get("aisimulate_run", {})
         if not isinstance(prediction_run, dict):

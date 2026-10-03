@@ -1,0 +1,96 @@
+{
+  "1.1.0rc2.post2": [
+    {
+      "path": "tensorrt_llm/_torch/model_config.py",
+      "url": "https://raw.githubusercontent.com/NVIDIA/TensorRT-LLM/ef0d06df5812b510f9d3a03b3cbb6fbf6a06406f/tensorrt_llm/_torch/model_config.py",
+      "sha256": "8ef8ec95e6466759eeeb2d13b5cd6db518e8b24bcbea6311bf02dad10a059430",
+      "revision": "ef0d06df5812b510f9d3a03b3cbb6fbf6a06406f"
+    },
+    {
+      "path": "tensorrt_llm/_torch/pyexecutor/config.py",
+      "url": "https://raw.githubusercontent.com/NVIDIA/TensorRT-LLM/ef0d06df5812b510f9d3a03b3cbb6fbf6a06406f/tensorrt_llm/_torch/pyexecutor/config.py",
+      "sha256": "61c4de96c6042f99010692717568249e75654c5b202cf49776f8252427af559f",
+      "revision": "ef0d06df5812b510f9d3a03b3cbb6fbf6a06406f"
+    },
+    {
+      "path": "tensorrt_llm/_torch/pyexecutor/model_engine.py",
+      "url": "https://raw.githubusercontent.com/NVIDIA/TensorRT-LLM/ef0d06df5812b510f9d3a03b3cbb6fbf6a06406f/tensorrt_llm/_torch/pyexecutor/model_engine.py",
+      "sha256": "a74a3f9fbeefba07a67a149b197b08a00329bcf990b884d0f1b5ef60538629fe",
+      "revision": "ef0d06df5812b510f9d3a03b3cbb6fbf6a06406f"
+    },
+    {
+      "path": "tensorrt_llm/_torch/pyexecutor/py_executor_creator.py",
+      "url": "https://raw.githubusercontent.com/NVIDIA/TensorRT-LLM/ef0d06df5812b510f9d3a03b3cbb6fbf6a06406f/tensorrt_llm/_torch/pyexecutor/py_executor_creator.py",
+      "sha256": "705d859f214b0268f1a8801eb70e9b0dcdb908deb3a00e1444d35c796abc659f",
+      "revision": "ef0d06df5812b510f9d3a03b3cbb6fbf6a06406f"
+    },
+    {
+      "path": "tensorrt_llm/builder.py",
+      "url": "https://raw.githubusercontent.com/NVIDIA/TensorRT-LLM/ef0d06df5812b510f9d3a03b3cbb6fbf6a06406f/tensorrt_llm/builder.py",
+      "sha256": "9df414f191413d56d86283a5033bb8c239b3cde9e8b4246f649aa48f095fa7e9",
+      "revision": "ef0d06df5812b510f9d3a03b3cbb6fbf6a06406f"
+    },
+    {
+      "path": "tensorrt_llm/commands/serve.py",
+      "url": "https://raw.githubusercontent.com/NVIDIA/TensorRT-LLM/ef0d06df5812b510f9d3a03b3cbb6fbf6a06406f/tensorrt_llm/commands/serve.py",
+      "sha256": "63a0b7a6ab539a2152b349360a543afe8b2eb975c6696523da011f8354479cde",
+      "revision": "ef0d06df5812b510f9d3a03b3cbb6fbf6a06406f"
+    },
+    {
+      "path": "tensorrt_llm/llmapi/llm_args.py",
+      "url": "https://raw.githubusercontent.com/NVIDIA/TensorRT-LLM/ef0d06df5812b510f9d3a03b3cbb6fbf6a06406f/tensorrt_llm/llmapi/llm_args.py",
+      "sha256": "a55d10b2b2b1a92faa0d3b239ea782c276c98527b8687e2d0833d503975137fa",
+      "revision": "ef0d06df5812b510f9d3a03b3cbb6fbf6a06406f"
+    },
+    {
+      "path": "tensorrt_llm/plugin/plugin.py",
+      "url": "https://raw.githubusercontent.com/NVIDIA/TensorRT-LLM/ef0d06df5812b510f9d3a03b3cbb6fbf6a06406f/tensorrt_llm/plugin/plugin.py",
+      "sha256": "392b0e8d829b3f79d166bcee1e062464b6d67ae838565916dd37adb08a5cf631",
+      "revision": "ef0d06df5812b510f9d3a03b3cbb6fbf6a06406f"
+    }
+  ],
+  "1.2.0rc0.post1": [
+    {
+      "path": "tensorrt_llm/_torch/model_config.py",
+      "url": "https://raw.githubusercontent.com/NVIDIA/TensorRT-LLM/6632b4051ed2c67482fada3ecdd7aed08bbbce9e/tensorrt_llm/_torch/model_config.py",
+      "sha256": "c361da21bc72a999fe23b92ab701489bf1937d67ef7e6fa0e14a2cd819be346c",
+      "revision": "6632b4051ed2c67482fada3ecdd7aed08bbbce9e"
+    },
+    {
+      "path": "tensorrt_llm/_torch/pyexecutor/model_engine.py",
+      "url": "https://raw.githubusercontent.com/NVIDIA/TensorRT-LLM/6632b4051ed2c67482fada3ecdd7aed08bbbce9e/tensorrt_llm/_torch/pyexecutor/model_engine.py",
+      "sha256": "fa0f4a0f22ccbde08cba33eac28edcab8e33f73ce8ed4ca02a1f67ebeb0a3638",
+      "revision": "6632b4051ed2c67482fada3ecdd7aed08bbbce9e"
+    },
+    {
+      "path": "tensorrt_llm/_torch/pyexecutor/model_loader.py",
+      "url": "https://raw.githubusercontent.com/NVIDIA/TensorRT-LLM/6632b4051ed2c67482fada3ecdd7aed08bbbce9e/tensorrt_llm/_torch/pyexecutor/model_loader.py",
+      "sha256": "691b22e9d562bd222d1e4887d881ccdda33ee82f14057d3cbad4c35efc718390",
+      "revision": "6632b4051ed2c67482fada3ecdd7aed08bbbce9e"
+    },
+    {
+      "path": "tensorrt_llm/_torch/pyexecutor/py_executor_creator.py",
+      "url": "https://raw.githubusercontent.com/NVIDIA/TensorRT-LLM/6632b4051ed2c67482fada3ecdd7aed08bbbce9e/tensorrt_llm/_torch/pyexecutor/py_executor_creator.py",
+      "sha256": "919224cb40c36d1fc629e73490697222c01139d05a79235e2896fb3ff0764ce3",
+      "revision": "6632b4051ed2c67482fada3ecdd7aed08bbbce9e"
+    },
+    {
+      "path": "tensorrt_llm/builder.py",
+      "url": "https://raw.githubusercontent.com/NVIDIA/TensorRT-LLM/6632b4051ed2c67482fada3ecdd7aed08bbbce9e/tensorrt_llm/builder.py",
+      "sha256": "094ce58430d051e1c051bbf7e09b1c48591bf1799bfd247df8d0c83ec55a3e96",
+      "revision": "6632b4051ed2c67482fada3ecdd7aed08bbbce9e"
+    },
+    {
+      "path": "tensorrt_llm/commands/serve.py",
+      "url": "https://raw.githubusercontent.com/NVIDIA/TensorRT-LLM/6632b4051ed2c67482fada3ecdd7aed08bbbce9e/tensorrt_llm/commands/serve.py",
+      "sha256": "4b42c5b40fc955ca6b72e6af06e892f741f7811f6927562172cd2cef1ea86d74",
+      "revision": "6632b4051ed2c67482fada3ecdd7aed08bbbce9e"
+    },
+    {
+      "path": "tensorrt_llm/llmapi/llm_args.py",
+      "url": "https://raw.githubusercontent.com/NVIDIA/TensorRT-LLM/6632b4051ed2c67482fada3ecdd7aed08bbbce9e/tensorrt_llm/llmapi/llm_args.py",
+      "sha256": "09afeaa648f0e2487fd2a8e07be320a109141fa0d9ebb6027b09ccaf346e36d1",
+      "revision": "6632b4051ed2c67482fada3ecdd7aed08bbbce9e"
+    }
+  ]
+}

@@ -50,6 +50,7 @@ CAMPAIGN_KEYS = {
     "status",
     "advisory",
 }
+OPTIONAL_CAMPAIGN_KEYS = {"configuration"}
 METRICS = {
     "points",
     "ttft_mape_pct",
@@ -123,7 +124,11 @@ def public_contract(summary):
     keys(snapshot["aisimulate_packages"], {"aisimulate"})
     if snapshot["corrections"] != []:
         raise ValueError("nightly campaign cannot contain unreviewed corrections")
-    keys(snapshot["campaign"], CAMPAIGN_KEYS)
+    keys(snapshot["campaign"], CAMPAIGN_KEYS | OPTIONAL_CAMPAIGN_KEYS)
+    if "configuration" in snapshot["campaign"]:
+        configuration = snapshot["campaign"]["configuration"]
+        keys(configuration, {"profile", "counts"})
+        keys(configuration["counts"], {"verified", "estimated"})
     keys(
         summary["scope"],
         {
@@ -181,7 +186,15 @@ def public_contract(summary):
                     for point in topology["points"]:
                         keys(
                             point,
-                            {"concurrency", "status", "measured", "aic", "aisimulate"},
+                            {
+                                "concurrency",
+                                "status",
+                                "aic_status",
+                                "configuration_quality",
+                                "measured",
+                                "aic",
+                                "aisimulate",
+                            },
                         )
                         for name in ("measured", "aic", "aisimulate"):
                             keys(
@@ -207,8 +220,8 @@ def unpack_artifact(archive: bytes) -> dict:
         data = z.read("summary.json")
         summary = public_contract(strict_json(data))
         qualification = strict_json(z.read("qualification.json"))
-    keys(qualification, CAMPAIGN_KEYS | {"summary_sha256"})
-    if set(qualification) != CAMPAIGN_KEYS | {"summary_sha256"}:
+    keys(qualification, CAMPAIGN_KEYS | OPTIONAL_CAMPAIGN_KEYS | {"summary_sha256"})
+    if set(qualification) - OPTIONAL_CAMPAIGN_KEYS != CAMPAIGN_KEYS | {"summary_sha256"}:
         raise ValueError("incomplete qualification")
     if qualification.pop("summary_sha256") != hashlib.sha256(data).hexdigest():
         raise ValueError("summary checksum mismatch")
@@ -220,7 +233,7 @@ def unpack_artifact(archive: bytes) -> dict:
         q["schema_version"] != 1
         or q["status"] != "complete"
         or q["advisory"] is not True
-        or q["selection_policy"] != "latest-complete-config-run-v1"
+        or q["selection_policy"] not in {"latest-complete-config-run-v1", "gym-resolved-config-v2"}
     ):
         raise ValueError("campaign is not complete")
     for field in (
@@ -245,7 +258,14 @@ def unpack_artifact(archive: bytes) -> dict:
     keys(outcomes, {"evaluated", "unsupported", "baseline_failed"})
     keys(
         q["exclusion_reasons"],
-        {"recipe_required", "adapter_unsupported", "baseline_failed"},
+        {
+            "recipe_required",
+            "adapter_unsupported",
+            "adapter_topology_mismatch",
+            "baseline_failed",
+            "source_unresolved",
+            "database_unavailable",
+        },
     )
     for count in q["exclusion_reasons"].values():
         if type(count) is not int or count < 0:
@@ -259,7 +279,12 @@ def unpack_artifact(archive: bytes) -> dict:
             "stale",
             "missing_mean_latency",
             "mixed_image_curve",
+            "superseded_curve",
             "invalid_gpu_count",
+            "orphaned_measurement",
+            "source_filter",
+            "superseded_row",
+            "superseded_image",
         },
     )
     if any(type(count) is not int or count < 0 for count in q["measurement_filter_counts"].values()):

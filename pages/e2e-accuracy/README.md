@@ -10,7 +10,8 @@ It compares **AISim CLI (new)** and **AIC CLI (legacy)** against measured silico
 so users can assess whether the new CLI is comparable during migration. The AIC
 comparison series is temporary and will be removed when the AIC CLI is deprecated.
 Successful-point counts matter: AISim errors cover successful engine replays,
-while the AIC baseline covers all selected points.
+while the AIC baseline covers its own successful estimates. Both failures remain
+visible in coverage accounting.
 
 ## Branch selection
 
@@ -66,7 +67,7 @@ repository, branch, and commit alongside the replay provenance.
 The measurement release is shown separately from the AISimulate branch selector.
 Release branches continue to display the evidence committed on those branches.
 
-Both predictions run on remote CPU workers. The AISimulate wheel is built from
+That historical snapshot ran both predictions on remote CPU workers. The AISimulate wheel is built from
 a clean source checkout, and the complete campaign records its evaluated branch,
 commit, runtime hashes, and input checksum. Replays use the recorded model,
 topology, backend version, and reviewed recipe settings where available, with
@@ -75,7 +76,7 @@ and ten requests per concurrency slot. Unsupported configurations, unresolved
 reviewed recipes, and runtime failures remain explicit outcomes.
 Replay settings use the public API available on the evaluated commit.
 
-The comparison cohort contains operating points with a successful AIC SILICON
+That historical comparison cohort contains operating points with a successful AIC SILICON
 estimate. AISimulate attempts every point in that cohort; the published view
 excludes multi-node points. A lower error on a refreshed snapshot does not by
 itself prove an improvement on the previous snapshot, because the measurement
@@ -125,6 +126,35 @@ legacy CLI and native runtime against that wheel. Historical release revisions
 must support these public APIs and the manylinux builder; an incompatible revision
 fails without replacing its published evidence.
 
+### PR previews for local review
+
+A manual preview runs from an admitted `pull-request/<number>` copy and must
+match the open PR's exact SHA, head branch, and repository. It builds that
+revision's wheel and runs the same measurement, source-resolution, estimate,
+and replay pipeline. It does not publish to Pages.
+
+```bash
+gh workflow run e2e-accuracy.yml --repo ai-dynamo/aisimulate --ref pull-request/372 \
+  -f branch=simonec/fix-inferencex-ep-gpu-count \
+  -f expected_sha=FULL_40_CHARACTER_PR_HEAD_SHA -f preview=true
+```
+
+The run produces `e2e-accuracy-preview-<branch-key>` with the summary and
+qualification hashes, plus `e2e-accuracy-preview-evidence-<branch-key>` with
+resolved inputs and per-point outcomes (seven-day retention). Evidence is saved
+even when qualification fails, if the campaign reached source resolution.
+Production runs still upload only aggregate publication artifacts. Preview
+names and scope markers are rejected by the public artifact importer and site
+builder; changing an artifact's name cannot make it publishable.
+
+For local review, download the preview summary artifact and copy the static
+files from `pages/e2e-accuracy/` into a separate directory. Replace that copy's
+`summary.json` with the downloaded summary and serve it with
+`python -m http.server --bind 127.0.0.1 --directory REVIEW_DIRECTORY 8372`.
+Do not add a public `branches.json` catalog: standalone preview loading displays
+the recorded PR branch and SHA with an explicit preview label. Keep the source
+checkout and committed snapshots unchanged.
+
 ### Measurement and prediction policy
 
 - Each pipeline resolves the newest published `db-dump/YYYY-MM-DD` release once,
@@ -147,29 +177,38 @@ fails without replacing its published evidence.
   directly into the serial `pg_restore` reader, avoiding an expanded dump on disk.
   Raw data and child logs
   remain on the runner; they are not uploaded as Actions or Pages artifacts.
-- Policy `latest-complete-config-run-v1` selects single-turn, single-node,
-  non-offloaded points from completed successful measurement runs, with positive
-  mean TTFT/TPOT, at most 30 days older than the
-  latest measurement for that model/GPU/framework/precision/serving/speculation/
-  workload family. Families without recent measurements retain historical evidence.
-  Each topology/workload/recipe uses one latest run and
-  a consistent image; missing concurrency points are never borrowed from older
-  runs. Duplicate IDs or ambiguous curves fail validation.
-- The public InferenceX adapter supplies topology and quantization. Speculative
-  configurations requiring acceptance-rate overrides and unresolved recipe
-  fingerprints are excluded with counts. Both predictors use the bundled CLI's
-  resolved performance-database version. These versions are reported; they can
-  differ from the measured server image. Replay pins `max_num_seqs=max(256, concurrency)`,
-  `max_num_batched_tokens=8192`, `enable_prefix_caching=False`, and
-  `aic_forward_model="op_level"`, with
-  seed 0, lengths from 80–100% of nominal, and ten requests per concurrency slot.
-  This policy differs from the earlier private campaign's reviewed recipe mapping;
-  aggregate differences are not evidence of a runtime improvement.
+- Policy `gym-resolved-config-v2` applies gym's source filters, row deduplication,
+  image coherence, and 180-day configuration freshness window. It includes P/D
+  and multinode measurements. Every source row is selected or counted as excluded.
+  Historical `latest-complete-config-run-v1` artifacts retain their original
+  30-day, successful-run, single-node policy; they are never relabeled as v2.
+- The repository-only [source resolver](../../scripts/e2e_accuracy_source/README.md)
+  joins immutable workflow revisions, reads pinned launchers without executing
+  them, verifies reviewed framework defaults, and resolves checkpoint metadata.
+  It records the measured framework version separately from the selected
+  performance-database version. CI defaults to `configuration_mode: estimated`,
+  matching the research preview's `coverage-experiment/1` assumptions after
+  verified evidence is applied. The dispatch input can select `verified` to
+  exclude missing settings. Reports show verified/estimated counts and per-point
+  labels. Conflicts and unsupported mappings remain explicit exclusions.
+  Runtime archives are fetched and hash-checked; reviewed, measurement-bound
+  observations preserve verified settings when upstream archives expire.
+- The public `ResolvedInferenceXSource` adapter supplies the estimate request.
+  Replay consumes the same resolved deployment's per-role sequence/token limits,
+  block size, memory fraction, KV dtype, prefix caching, chunked prefill, and
+  context limit. Request count, length distribution, NumPy sampler, and seed
+  come from the resolved workload. Source graph/kernel controls remain evidence
+  when the engine does not model them. Assumptions are applied and labeled by
+  source preparation before either predictor runs.
 - Six CPU worker processes execute bounded point predictions (180 seconds each).
-  Every selected point must have one outcome. Adapter exclusions and failed AIC
-  baselines are counted before forming the comparison cohort. Replay failures in
-  that cohort remain chart gaps. Missing/duplicate outcomes, a killed/timed-out
-  worker, invalid latencies, or no successful matched predictions fail qualification.
+  Every selected point must have one outcome. Estimate and replay run independently:
+  a failed baseline does not remove a successful replay. Failed predictions have
+  no error value and remain visible in coverage. Missing/duplicate outcomes,
+  killed/timed-out workers, or no successful replay fail qualification.
+- Full resolved inputs and outcomes stay in the runner's local evidence directory.
+  The cohort hash binds those inputs, including source evidence. Only aggregate
+  summaries are uploaded. Matching measurements alone do not establish matching
+  source evidence: compare cohort and driver hashes across campaigns as well.
 - Accuracy values and coverage are advisory. There is no MAPE threshold or claim
   that a lower aggregate on a different cohort is an improvement. Campaign integrity
   is required for publication.
@@ -220,8 +259,10 @@ are never combined into one curve. Legacy summaries remain usable with GPU
 aggregates and explain when detailed evidence has not yet been exported.
 
 These are measurements at specific operating points, not universal support
-claims or release gates. The default publication excludes multi-node rows.
-Internal run records and exploratory dashboard payloads are not published.
+claims or release gates. The scope bar reports whether the selected snapshot
+includes multi-node rows. Each predictor's errors cover its successful points;
+source exclusions remain visible in campaign provenance. Internal run records
+and exploratory dashboard payloads are not published.
 
 ## Regenerate a branch snapshot
 
@@ -288,3 +329,78 @@ wheels and current runners. It omits the newer `aic_forward_model` engine
 argument because release/0.12.0 and release/0.12.1 do not accept that field.
 Validate evaluator changes against actual release wheels as well as main;
 a successful main-only campaign does not establish release compatibility.
+
+## Adapter parity audit (2026-10-02)
+
+The adapter and public CI are **not equivalent to recipe-resolved e2e-gym**.
+This audit compared AISimulate PR #372 (`b78fb6bdadf87e013fc0a89f5277024ac888a294`)
+with e2e-gym main at `2ad1ec4287ad9fb5857680901eb65b4ff0cb4098`.
+The local September 28 dump contains 2,564 configs, 85,309 benchmark rows, and
+1,238 workflow runs. This is a mapping/selection audit, not a latency rerun.
+
+| Finding | Resolution |
+| --- | --- |
+| vLLM attention-DP was ignored outside the single-node EP special case, including P/D roles. | Honor the flag for every vLLM worker; preserve worker width and per-rank decode batch. |
+| MiniMax-M2.7, Kimi-K2.6, and Kimi-K3 aliases were missing. | Map existing registered models and preserve native FP4 quantization. |
+| DB exports use `id`, while provenance read only `config_id`. | Preserve either source ID. |
+| Selection and publication trusted the inflated TP × EP count. | Select candidates using the shared width and require the evaluated adapter to confirm it. |
+| Replaced/older curves disappeared without exclusion counts. | Count `superseded_curve`; retain every input row in the accounting. |
+
+On the same dump, selection increases from **4,130 to 4,838** points. Benchmark
+431553 / config 202 from AIC-2019 changes from excluded to selected and adapts to
+four physical GPUs. All 85,309 inputs now equal selected points plus exclusions:
+33,140 incomplete runs, 6,104 multinode, 2,261 nonstandard/error, 28,024 stale,
+and 10,942 superseded. Adding valid recent EP evidence also moves some families'
+freshness cutoff; the difference is not simply a union of the old cohort and EP rows.
+The [October 2 accuracy run](https://github.com/ai-dynamo/aisimulate/actions/runs/36995581041)
+independently confirms the old 4,130-point selection and the same filter counts.
+Its main artifact publishes 1,137 baseline-success points, with 2,468 adapter
+exclusions, 218 recipe-required exclusions, and 307 baseline failures. It evaluates
+`c62a88ea2ddfcf5a4b85902b1b2f8095f79f0954`, before these corrections.
+
+A differential check against gym's older `mapping.py` helper used its 180-day
+window and 2,209 retained points. Of those, 209 were rejected by that helper.
+Before these fixes, 507 accepted mappings differed and seven Kimi-K2.6 points
+were rejected only by AISimulate. Afterward, those seven adapt and 306 attention-DP
+mismatches disappear. The remaining 201 differences are non-vLLM single-node EP
+rows for which the older helper still trusts TP × EP. They must not be copied
+back into AISimulate. Gym's production `predict.py` instead requires
+`deployment.py::resolve_deployment` and immutable recipe evidence.
+
+### Source-resolved policy follow-up
+
+PR #372 replaces the fixed CI settings with the gym source-resolution path:
+
+- **Serving configuration:** pinned launchers, verified framework defaults, and
+  available runtime evidence resolve per-role serving controls. Config 202's
+  FP8 KV, 0.85 memory fraction, and 16,384-token prefill budget reach replay.
+- **Model identity:** checkpoint metadata and quantization evidence are retained;
+  estimate and replay materialize the same verified model-config bytes. Unknown
+  mappings remain unsupported. Unverified historical checkpoint revisions stay
+  explicitly marked in evidence.
+- **Versions and workload:** source framework versions and performance-database
+  versions remain separate. Replay uses the source request count, length ratio,
+  NumPy sampler, and benchmark seed.
+- **Cohort and coverage:** the default is gym's 180-day cohort, including P/D and
+  multinode evidence. Baseline and replay failures are recorded independently.
+
+On the same September 28 dump, v2 selects exactly the same **2,281 measurement
+IDs** as gym revision `2ad1ec4287ad9fb5857680901eb65b4ff0cb4098`. A live differential
+check matched complete resolved deployment/evidence outputs for configs **202,
+618, 909, and 1553**, including 618's unresolved-knob result. Contract tests cover
+all three backends and both serving modes; small native SOL replay smoke tests
+completed for vLLM, SGLang, and TensorRT-LLM.
+
+These checks establish input/projection behavior, not measured latency accuracy.
+PR tests do not run the scheduled accuracy matrix or replace the published
+snapshot. Runtime artifact caches are optional inputs; CI does not fetch them
+automatically. Missing dynamic capacity remains unresolved rather than invoking
+gym's optional old-revision capacity estimator. Unmodeled graph/kernel and client
+behavior remain simulation limitations, as in gym's replay projection. See the
+[resolver boundary](../../scripts/e2e_accuracy_source/README.md#campaign-boundary).
+
+Input SHA-256 values for reproduction:
+
+- `configs.json`: `b6071d66377c4762bdac9661077205ac394538b71ce00d24e4761cb4b87223e0`
+- `benchmark_results.json`: `e363f2061efbea87ba0d2dd38f765ddd4aabf3aac30e5e0bf0fa6d8ac3df6c10`
+- `workflow_runs.json`: `6a86eb6b31e958a17a7a19c61889910cdd1e7808d8dbcc8fd612ab20a34e6310`
