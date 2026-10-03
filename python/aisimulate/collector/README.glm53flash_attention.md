@@ -79,6 +79,71 @@ graphs as serving, but every prefill step eager. Serving replays prefill steps
 of at most 64 tokens through breakable piecewise graphs, so vLLM prefill rows
 with `batch * x <= 64` include launch overhead serving partly hides.
 
+### Revision 2: prefill under the serving prefill CUDA graphs
+
+On 2026-10-01 the serving deployment switched prefill to the frameworks'
+breakable CUDA graphs (evidence: GLM prefill-graph A/B smoke v4): SGLang
+`--cuda-graph-backend-prefill breakable --cuda-graph-max-bs-prefill 8192`
+(58 token buckets), vLLM default `FULL_AND_PIECEWISE` with 62
+`--cudagraph-capture-sizes` up to 8192. Revision 2 re-collects only the prefill
+rows under exactly that mechanism; decode rows are carried from revision 1.
+
+How the frameworks execute the module in graph-mode prefill:
+
+- SGLang (`runner/prefill_cuda_graph_runner.py`,
+  `runner_backend/breakable_cuda_graph_backend.py`): the transformer body is
+  captured per token bucket as graph segments separated by `eager_on_graph`
+  breaks. For this module the absorbed MLA method is pinned in graph mode
+  (`deepseek_common/attention_backend_handler.py`), and the pooled-key indexer
+  (`attention/dsa/kpool_prefill_cuda_graph.py`, reading the live batch from the
+  TcPiecewise context) and the MLA BMM + attention core
+  (`attention_forward_methods/forward_mla.py` `bcg_mla_bmm_then_unified_attention`)
+  are eager breaks; projections, norms and o_proj replay from segments.
+- vLLM (`v1/worker/gpu/cudagraph_utils.py` `run_pw_graph`,
+  `compilation/breakable_cudagraph.py`): ops decorated with
+  `eager_break_during_capture` -- the IndexPool indexer
+  (`sparse_attn_indexer_kpool.py`) and the MLA attention op
+  (`attention/mla_attention.py`) -- run eagerly against the step's forward
+  context; everything else replays from captured segments.
+
+The probe records the module's capture-time inputs for every bucket while the
+framework captures, executes the real planned step (the framework replays its
+own prefill graph for the padded bucket; witnessed), then captures the module
+alone with the framework's own `BreakableCUDAGraphCapture` under that step's
+live contexts and replays it 3+10 times (`timing_method`
+`cuda_events_framework_breakable_module_graph_replay`, `used_cuda_graph=true`).
+Padding to the framework bucket is therefore included. The eager breaks keep
+their host launch cost, as in serving.
+
+Memory: per-target module graphs make reserved memory grow across targets
+(vLLM: one shared private pool, the previous graph kept alive until the next
+capture). Headroom therefore comes from capacity-only knobs
+(KV pool size; no kernel, bucket or scheduling change), and a deployment's plan
+may be split across attempts whose manifests carry disjoint `only_sets`;
+`finalize` admits split attempts only if they cover the planned keys exactly
+once. Used for the staged revision:
+
+- vLLM `--gpu-memory-utilization`: fp8-tp4 and nvfp4-tp4 0.70, nvfp4-tp2 0.55
+  (one attempt each); fp8-tp2 0.68 in two attempts (the last set,
+  `prefill-b32-q256-c1`, alone), since the KV pool must still hold
+  32 x 98560 tokens.
+- SGLang: each module graph is captured into its own `torch.cuda.MemPool`,
+  deleted after the target (releases only that pool). Prefix state is seeded
+  eagerly, as in revision 1; only the measured step replays the serving
+  prefill graph (witnessed). Under the graph the pooled indexer materializes
+  dense batch-wide MQA logits, and 8192-token seed steps at 8+ requests x 64K+
+  cached tokens do not fit. The default pool is never trimmed:
+  `torch.cuda.empty_cache` (and the allocator's own release on an OOM retry)
+  exposed an illegal address in a later framework BCG replay. To avoid
+  fragmentation OOMs, batch sizes 4-32 run one batch size per attempt, and
+  `--mem-fraction-static` is sized per deployment so the KV pool still holds
+  the largest planned context (the exact value, and
+  `PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:16384` where used, are in each
+  attempt manifest listed in `collection_meta.yaml`). Attempts from earlier
+  commits (batch 1-2, and fp8-tp2 batch 4) predate the MemPool and eager-seeding changes (shared pool, seeding
+  under the graph); both choices only manage memory and state construction,
+  not the measured step, and each attempt's source commit is recorded.
+
 ## Workload and state
 
 `cases/base_ops/glm53flash_attention.yaml` (454 points): prefill batch

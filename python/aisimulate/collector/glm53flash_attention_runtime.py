@@ -18,6 +18,8 @@ import os
 from pathlib import Path
 
 from collector.glm53flash_attention_contract import (
+    EAGER_PREFILL,
+    GRAPH_DECODE,
     TIMING_METHODS,
     attention_body,
     geometry_key,
@@ -96,9 +98,19 @@ class RawWriter:
         self.key_base = key_base
         self.provenance = provenance
 
-    def samples(self, target: dict, latencies: list[float], warmup: int, kernel_source: str, extra: dict) -> None:
+    def samples(
+        self,
+        target: dict,
+        latencies: list[float],
+        warmup: int,
+        kernel_source: str,
+        extra: dict,
+        timing_method: str | None = None,
+    ) -> None:
         phase = target["phase"]
-        timing_method, used_graph = TIMING_METHODS[phase]
+        if timing_method is None:
+            timing_method = {"context": EAGER_PREFILL, "generation": GRAPH_DECODE}[phase]
+        used_graph = TIMING_METHODS[phase][timing_method]
         key = {
             "geometry": geometry_key(attention_body(self.key_base, phase == "context")),
             "batch_size": target["batch_size"],

@@ -91,12 +91,23 @@ BODY_FIELDS = (
     "value_head_dim",
 )
 TIMING_METHODS = {
-    # Prefill runs eagerly in both pinned serving configurations: SGLang's
-    # prefill graph backend is "disabled" and vLLM only captures <=64-token
-    # batches. Decode runs under full CUDA graphs in both.
-    "context": ("cuda_events_eager_repeated_module_call", False),
-    "generation": ("cuda_events_captured_module_graph_replay", True),
+    # Execution mode of the measured module, matching the pinned serving
+    # deployment. Revision 1 (2026-09-30) timed prefill eagerly, the then
+    # serving default (SGLang prefill graph backend "disabled"; vLLM captured
+    # only <=64 tokens). Revision 2 follows the 2026-10-01 serving decision to
+    # run prefill under the framework's breakable CUDA graphs (SGLang
+    # --cuda-graph-backend-prefill breakable up to 8192 tokens; vLLM
+    # FULL_AND_PIECEWISE with 62 capture sizes up to 8192). Decode always
+    # replays full CUDA graphs.
+    "context": {
+        "cuda_events_eager_repeated_module_call": False,
+        "cuda_events_framework_breakable_module_graph_replay": True,
+    },
+    "generation": {"cuda_events_captured_module_graph_replay": True},
 }
+EAGER_PREFILL = "cuda_events_eager_repeated_module_call"
+GRAPH_PREFILL = "cuda_events_framework_breakable_module_graph_replay"
+GRAPH_DECODE = "cuda_events_captured_module_graph_replay"
 
 
 def canonical_json(value: object) -> str:
@@ -375,8 +386,8 @@ def validate_row(row: dict) -> dict:
     if not isinstance(row["used_cuda_graph"], bool):
         raise ValueError("used_cuda_graph must be boolean")
     phase = "context" if body["is_context"] else "generation"
-    if row["used_cuda_graph"] != TIMING_METHODS[phase][1]:
-        raise ValueError("CUDA graph use does not match the serving execution mode of this phase")
+    if row["used_cuda_graph"] not in TIMING_METHODS[phase].values():
+        raise ValueError("CUDA graph use does not match a serving execution mode of this phase")
     if not body["is_context"] and row["prefix"]:
         raise ValueError("decode uses absolute sequence length x with prefix=0")
     if row["measurement_scope"] != MEASUREMENT_SCOPE or not row["kernel_source"].strip():
@@ -447,7 +458,7 @@ def aggregate_rank_samples(records: list[dict], tp_size: int) -> tuple[list[dict
         if not all(item["extra"].get("finite", False) for item in items):
             raise ValueError(f"target {target} produced nonfinite attention output")
         phase = "context" if body["is_context"] else "generation"
-        if first["timing_method"] != TIMING_METHODS[phase][0]:
+        if TIMING_METHODS[phase].get(first["timing_method"]) != row["used_cuda_graph"]:
             raise ValueError(f"target {target} used an unexpected timing method")
         rows.append(row)
         evidence.append(
@@ -527,6 +538,41 @@ def write_parquet(rows: list[dict], path: Path) -> None:
     temporary.replace(path)
 
 
+def selected_plan(manifest: dict) -> dict:
+    """The plan restricted to a split attempt's set selection (if any)."""
+    plan = manifest["plan"]
+    only = manifest.get("only_sets")
+    if only is None:
+        return plan
+    known = {s["set_id"] for s in plan["sets"]}
+    if not only or not set(only) <= known:
+        raise ValueError(f"split attempt selects unknown or no sets: {only}")
+    return {**plan, "sets": [s for s in plan["sets"] if s["set_id"] in set(only)]}
+
+
+def check_split_closure(attempts: list[tuple[dict, list[dict]]]) -> None:
+    """Attempts of one deployment must cover its planned phases exactly once."""
+    by_deployment: dict[tuple, list[tuple[dict, list[dict]]]] = {}
+    for manifest, rows in attempts:
+        geometry = manifest["geometry"]
+        by_deployment.setdefault((geometry["checkpoint_format"], geometry["tp_size"]), []).append((manifest, rows))
+    for deployment, group in by_deployment.items():
+        plans = {json.dumps(m["plan"], sort_keys=True) for m, _ in group}
+        phases = {tuple(sorted(m.get("phases", PHASES))) for m, _ in group}
+        if len(plans) != 1 or len(phases) != 1:
+            raise ValueError(f"{deployment} attempts disagree on plan or phases")
+        seen: set[tuple] = set()
+        for _, rows in group:
+            keys = {(r["geometry"], r["batch_size"], r["prefix"], r["x"]) for r in rows}
+            if keys & seen:
+                raise ValueError(f"{deployment} attempts measure a key twice")
+            seen |= keys
+        selected = set(phases.pop())
+        wanted = [key for key in target_keys(group[0][0]["plan"]) if key[0] in selected]
+        if len(seen) != len(wanted):
+            raise ValueError(f"{deployment} attempts cover {len(seen)} of {len(wanted)} planned keys")
+
+
 def load_attempt(attempt: Path) -> tuple[dict, list[dict], list[dict]]:
     """Admit one runner attempt: completion receipt, plan closure, every target.
 
@@ -560,12 +606,24 @@ def load_attempt(attempt: Path) -> tuple[dict, list[dict], list[dict]]:
             raise ValueError(f"{attempt} sample layer differs from the manifest")
     rows, evidence = aggregate_rank_samples(records, tp_size)
     measured = {(bodies[r["geometry"]], r["batch_size"], r["prefix"], r["x"]) for r in rows}
-    expected = set(target_keys(plan))
+    # A revision may re-collect only some phases (e.g. graph-mode prefill).
+    phases = set(manifest.get("phases", PHASES))
+    expected = {key for key in target_keys(selected_plan(manifest)) if key[0] in phases}
     if measured != expected:
         missing = sorted(expected - measured)[:4]
         extra = sorted(measured - expected)[:4]
         raise ValueError(f"{attempt} measured keys differ from its plan: missing {missing}, unplanned {extra}")
     return manifest, rows, evidence
+
+
+def _execution_modes(rows: list[dict]) -> dict[str, str]:
+    modes = {}
+    for row in rows:
+        body = json.loads(row["geometry"])
+        phase = "context" if body["is_context"] else "generation"
+        key = f"{body['checkpoint_format']}-tp{body['tp_size']}-{phase}"
+        modes[key] = "cuda_graph" if row["used_cuda_graph"] else "eager"
+    return modes
 
 
 def main() -> None:
@@ -577,6 +635,7 @@ def main() -> None:
     finalize.add_argument("attempts", type=Path, nargs="+")
     finalize.add_argument("--output", type=Path, required=True)
     finalize.add_argument("--evidence", type=Path, required=True, help="per-row sample evidence JSON")
+    finalize.add_argument("--keep-from", type=Path, help="previous table whose other-phase rows are kept as-is")
     args = parser.parse_args()
     if args.command == "plan":
         import yaml
@@ -585,9 +644,10 @@ def main() -> None:
         plan = build_plan(sweep)
         print(json.dumps({"plan_sha256": plan["plan_sha256"], "targets": len(target_keys(plan))}))
         return
-    rows, evidence, manifests = [], [], []
+    rows, evidence, manifests, loaded = [], [], [], []
     for attempt in args.attempts:
         manifest, attempt_rows, attempt_evidence = load_attempt(attempt)
+        loaded.append((manifest, attempt_rows))
         rows += attempt_rows
         evidence += [{**e, "attempt": Path(attempt).name} for e in attempt_evidence]
         manifests.append(
@@ -597,12 +657,37 @@ def main() -> None:
                 "plan_sha256": manifest["plan"]["plan_sha256"],
                 "deployment": f"{manifest['geometry']['checkpoint_format']}-tp{manifest['geometry']['tp_size']}",
                 "source_commit": manifest["source_commit"],
+                **({"only_sets": manifest["only_sets"]} if manifest.get("only_sets") is not None else {}),
             }
         )
+    check_split_closure(loaded)
     backends = {json.loads(r["geometry"])["backend"] for r in rows}
     if len(backends) != 1:
         raise ValueError("one table holds one backend")
     backend = backends.pop()
+    if args.keep_from is not None:
+        # Carry rows of other phases unchanged from a previous table revision.
+        import pyarrow.parquet as pq
+
+        new_phases = {json.loads(r["geometry"])["is_context"] for r in rows}
+        kept = []
+        for old in pq.read_table(args.keep_from).to_pylist():
+            body = validate_row(old)
+            if body["is_context"] not in new_phases:
+                kept.append(old)
+        if not kept:
+            raise ValueError("--keep-from contributed no rows")
+        manifests.append(
+            {
+                "attempt": f"kept:{Path(args.keep_from).name}",
+                "data_sha256": hashlib.sha256(Path(args.keep_from).read_bytes()).hexdigest(),
+                "rows": len(kept),
+                "phases": sorted(
+                    {"context" if json.loads(r["geometry"])["is_context"] else "generation" for r in kept}
+                ),
+            }
+        )
+        rows += kept
     write_parquet(rows, args.output)
     Path(args.evidence).write_text(json.dumps({"attempts": manifests, "rows": evidence}, indent=1) + "\n")
     import yaml
@@ -621,8 +706,9 @@ def main() -> None:
                 "rows": len(rows),
                 "data_sha256": hashlib.sha256(Path(args.output).read_bytes()).hexdigest(),
                 "collector": f"collector.{backend}.glm53flash_attention_runner",
-                "measurement": "one real sparse-MLA layer (3); prefill eager repeated module call, "
-                "decode module CUDA graph from the framework decode capture; output all-reduce excluded",
+                "measurement": "one real sparse-MLA layer (3); output all-reduce excluded",
+                # One execution mode per geometry (checkpoint, TP, phase).
+                "execution_mode": dict(sorted(_execution_modes(rows).items())),
                 "attempts": manifests,
             }
         },
