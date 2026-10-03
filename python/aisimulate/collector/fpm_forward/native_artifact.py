@@ -35,6 +35,9 @@ class NativePointMeasurement:
     # Keep native row provenance for diagnostics, without reinterpreting the
     # formal database's historical prefill kv_seed_regime contract.
     kv_seed_regime: str | None = None
+    # SGLang TP latency under NativeCollection.latency_reduction; the native
+    # rank_wall_times keep the producer's published rank-0 value unchanged.
+    tp_latency_seconds: float | None = None
 
 
 # Distinguishes "no artifact seen yet" from a legitimately absent (legacy)
@@ -121,6 +124,7 @@ class NativeCollection:
     kvwarm_meta: dict[str, Any] | None = None
     input_provenance: dict[str, Any] | None = None
     allocator_policy: dict[str, Any] | None = None
+    latency_reduction: str | None = None
 
 
 def _zero_kv_prefill_sample(measurements: list[NativePointMeasurement]) -> NativePointMeasurement | None:
@@ -524,6 +528,8 @@ def validate_native_collection(
     allocator_policy: dict[str, Any] | None = None
     local_fpms: dict[tuple[int, int], dict[str, Any]] = {}
     allocator_seen = False
+    tp_latency: dict[int, float] | None = None
+    latency_reduction: str | None = None
     seed_regimes: dict[int, str | None] = {}
     rank_timings: list[tuple[int, float, float]] = []
 
@@ -561,7 +567,14 @@ def validate_native_collection(
                 if cell.backend == "sglang":
                     from .sglang_artifact import validate_sglang_repetitions
 
-                    actual_allocator = validate_sglang_repetitions(cell, payload, path)
+                    rank_tp_latency: dict[int, float] = {}
+                    actual_allocator = validate_sglang_repetitions(cell, payload, path, tp_latency=rank_tp_latency)
+                    if tp_latency is not None and tp_latency != rank_tp_latency:
+                        raise ValueError("native rank payloads disagree on SGLang TP latency")
+                    tp_latency = rank_tp_latency
+                    from .sglang_tp_latency import POLICY as SGLANG_TP_LATENCY_POLICY
+
+                    latency_reduction = SGLANG_TP_LATENCY_POLICY
                     if allocator_seen and allocator_policy != actual_allocator:
                         raise ValueError("native rank payloads disagree on allocator policy")
                     allocator_policy = actual_allocator
@@ -748,7 +761,10 @@ def validate_native_collection(
         measured_iteration_seconds += group_wall_time
         measurements.append(
             NativePointMeasurement(
-                point=dict(point), rank_wall_times=tuple(wall_times), kv_seed_regime=seed_regimes[benchmark_id]
+                point=dict(point),
+                rank_wall_times=tuple(wall_times),
+                kv_seed_regime=seed_regimes[benchmark_id],
+                tp_latency_seconds=None if tp_latency is None else tp_latency[benchmark_id],
             )
         )
 
@@ -765,4 +781,5 @@ def validate_native_collection(
         kvwarm_meta=kvwarm_meta,
         input_provenance=input_provenance,
         allocator_policy=allocator_policy,
+        latency_reduction=latency_reduction,
     )

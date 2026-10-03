@@ -1,11 +1,13 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""TEST_ONLY: explicit GLM native CUDA-graph identity, without GPU claims."""
+"""TEST_ONLY: explicit GLM native CUDA-graph identity and SGLang TP latency, without GPU claims."""
 
 import argparse
+import dataclasses
 import hashlib
 import json
 import shlex
+import statistics
 from dataclasses import replace
 from types import SimpleNamespace
 
@@ -363,3 +365,81 @@ def test_graph_calibration_cannot_validate_default_config_holdout(campaign, tmp_
         frozen(tmp_path, calibration, graph, graph)
     with pytest.raises(ValueError, match="calibration/holdout frozen engine/graph settings differ"):
         validation.evaluate(campaign, tmp_path)
+
+
+def test_sglang_tp_latency_uses_fastest_rank_per_repetition(tmp_path, monkeypatch):
+    original = sglang_fixture.fixture
+    # Rank 1 is slower on even repetitions and faster on odd ones; rank 0's
+    # published median remains the producer's value.
+    rank1 = {rep: rep + 1 + (0.5 if rep % 2 == 0 else -0.25) for rep in range(15)}
+
+    def skewed():
+        point, manifest, records = original()
+        for record in records[1]:
+            if record["stage"] == "measure":
+                record["native_forward_ms"] = 999 if record["repetition"] < 5 else rank1[record["repetition"]]
+        return point, manifest, records
+
+    monkeypatch.setattr(sglang_fixture, "fixture", skewed)
+    cell, payload = sglang_fixture.artifact(tmp_path)
+    latency = {}
+    validate_sglang_repetitions(cell, payload, tmp_path / "benchmark.json", tp_latency=latency)
+    expected = statistics.median(min(rep + 1, rank1[rep]) for rep in range(5, 15)) / 1000
+    assert payload["results"][0]["fpms"][0]["wall_time"] == pytest.approx(0.0105)
+    assert latency == {1: pytest.approx(expected)}
+    assert expected < 0.0105
+
+
+def test_database_and_acceptance_use_the_tp_latency_with_the_admitted_label(tmp_path, monkeypatch):
+    from collector.fpm_forward import database
+    from collector.fpm_forward.native_artifact import NativeCollection
+
+    from tests.unit.collector.test_fpm_forward import _synthetic_plan_and_cell
+
+    campaign_plan, cell, cell_dir = _synthetic_plan_and_cell(tmp_path)
+    real = database.validate_native_collection
+
+    def reduced(*args, **kwargs):
+        collection = real(*args, **kwargs)
+        assert isinstance(collection, NativeCollection) and collection.latency_reduction is None
+        return dataclasses.replace(
+            collection,
+            points=tuple(dataclasses.replace(point, tp_latency_seconds=0.001) for point in collection.points),
+            latency_reduction="sglang_tp_fastest_rank_duration_median_v1",
+        )
+
+    baseline = database.aggregate_cell(campaign_plan, cell, cell_dir, expected_attempt_id="attempt")
+    monkeypatch.setattr(database, "validate_native_collection", reduced)
+    rows = database.aggregate_cell(campaign_plan, cell, cell_dir, expected_attempt_id="attempt")
+    assert [row["latency_ms"] for row in rows] == [pytest.approx(1.0)] * len(rows)
+    assert [row["measurement_policy"] for row in rows] == [row["measurement_policy"] for row in baseline]
+
+    # The acceptance adapter scores holdout points with the same reduced value
+    # that the calibration table carries; the backend-specific receipts are
+    # covered by the SGLang adapter tests.
+    spec = write_plan(tmp_path, validation.REQUIRED[0], "holdout")
+    run = validation._plan_run(spec, tmp_path, "holdout")
+    root = tmp_path / spec["raw_root"]
+    root.mkdir()
+    (root / "benchmark.token-streams.jsonl").write_text(json.dumps({"requests": [{"request_id": "r"}]}) + "\n")
+
+    def reader(*args, **kwargs):
+        return SimpleNamespace(
+            points=[
+                SimpleNamespace(point=point, rank_wall_times=((0, 0.012),), tp_latency_seconds=0.010)
+                for point in run["points"]
+            ],
+            input_provenance={
+                "text_sha256": "b" * 64,
+                "tokenizer_revision": validation.MODEL_REVISIONS[run["plan"]["model_path"]],
+            },
+            runtime_run_id="run",
+            runtime_grid_digest="grid",
+            backend_version="0.30.0",
+            latency_reduction="sglang_tp_fastest_rank_duration_median_v1",
+        )
+
+    monkeypatch.setattr(validation, "validate_native_collection", reader)
+    native = validation._native_run(run, tmp_path)
+    assert native["values"] == {1: pytest.approx(10), 2: pytest.approx(10), 3: pytest.approx(10)}
+    assert native["latency_reduction"] == "sglang_tp_fastest_rank_duration_median_v1"
