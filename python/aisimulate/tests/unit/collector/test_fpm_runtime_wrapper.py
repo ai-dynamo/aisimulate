@@ -63,6 +63,8 @@ def _write_executable(path: Path, content: str) -> None:
 
 def _valid_result() -> dict:
     return {
+        "run_id": "test-run",
+        "grid_digest": "test-grid",
         "schema_version": FPM_NATIVE_BENCHMARK_RESULT_SCHEMA_VERSION,
         "status": "complete",
         "valid": True,
@@ -204,6 +206,14 @@ def test_memory_observer_pythonpath_is_available_before_engine_launch(tmp_path, 
 
 def test_fpm_exec_leader_starts_etcd_and_cleanup_stops_it(tmp_path):
     output_path = tmp_path / "results" / "benchmark.json"
+    merged_path = output_path.with_name("benchmark_merged.json")
+    merged = {
+        **_valid_result(),
+        "artifact_type": "merged",
+        "rank_files": [str(output_path)],
+        "merged_output_path": str(merged_path),
+        "dp": {"source_ranks": [0]},
+    }
     staged = _stage(
         tmp_path,
         # Write the complete result, then idle: the engine must stay alive
@@ -212,6 +222,7 @@ def test_fpm_exec_leader_starts_etcd_and_cleanup_stops_it(tmp_path):
         run_script=(
             "#!/usr/bin/env bash\n"
             f"printf '%s' {shlex.quote(json.dumps(_valid_result()))} > {shlex.quote(str(output_path))}\n"
+            f"printf '%s' {shlex.quote(json.dumps(merged))} > {shlex.quote(str(merged_path))}\n"
             "exec sleep 300\n"
         ),
     )

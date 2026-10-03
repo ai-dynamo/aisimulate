@@ -106,6 +106,10 @@ def _benchmark_result(
         for point_type in point_types
     ]
     return {
+        "artifact_type": "rank",
+        "run_id": "test-run",
+        "grid_digest": "test-grid",
+        "dp": {"rank": dp_rank},
         "schema_version": schema_version,
         "status": status,
         "valid": valid,
@@ -121,7 +125,48 @@ def _benchmark_result(
     }
 
 
-def _writer_engine_body(files: dict[str, object], *, delay: float = 0.0) -> str:
+def _finalized_artifacts(files: dict[str, object], *, probe_resolution: str | None = None) -> dict[str, object]:
+    """A launcher merges its local DP shard before its optional worker probe."""
+    files = dict(files)
+    if not files or not all(
+        isinstance(value, dict) and value.get("artifact_type") == "rank" for value in files.values()
+    ):
+        return files
+    first_path = Path(next(iter(files)))
+    merged_path = first_path.with_name(f"{first_path.stem}_merged{first_path.suffix}")
+    ranks = [value["dp"]["rank"] for value in files.values()]
+    merged = {
+        **next(iter(files.values())),
+        "artifact_type": "merged",
+        "rank_files": list(files),
+        "merged_output_path": str(merged_path),
+        "dp": {"source_ranks": ranks},
+    }
+    if probe_resolution is not None:
+        probe_path = merged_path.with_name(f"{merged_path.stem}_worker_probe{merged_path.suffix}")
+        merged["worker_probe_path"] = str(probe_path)
+        probe = {
+            "schema": "dynamo.fpm.benchmark_worker_probe",
+            "schema_version": 1,
+            "run_id": merged["run_id"],
+            "merged_output_path": str(merged_path),
+            "rank_files": list(files),
+            "merged": {"resolution": probe_resolution},
+            "ranks": {
+                str(rank): {"rank_file": path, "resolution": probe_resolution}
+                for rank, path in zip(ranks, files, strict=True)
+            },
+        }
+        files[str(merged_path)] = merged
+        files[str(probe_path)] = probe
+    else:
+        files[str(merged_path)] = merged
+    return files
+
+
+def _writer_engine_body(files: dict[str, object], *, delay: float = 0.0, finalize: bool = True) -> str:
+    if finalize:
+        files = _finalized_artifacts(files)
     serialized = json.dumps(dict(files))
     return f"""\
 import json
@@ -468,8 +513,9 @@ def test_engine_progress_bars_are_kept_out_of_the_exec_stream(tmp_path):
     )
     stderr_bar = "Loading safetensors checkpoint shards:   4% Completed | 2/47 [00:21<06:43,  8.96s/it]"
     staged = _stage(tmp_path, run_script="")
-    payload = json.dumps(_benchmark_result())
+    payloads = json.dumps(_finalized_artifacts({str(staged.benchmark_output): _benchmark_result()}))
     engine_body = f"""\
+import json
 import pathlib
 import signal
 import sys
@@ -481,7 +527,8 @@ print({stderr_bar!r}, file=sys.stderr)
 print("engine stderr survives the stream filter", file=sys.stderr)
 sys.stdout.flush()
 sys.stderr.flush()
-pathlib.Path({str(staged.benchmark_output)!r}).write_text({payload!r})
+for path, payload in json.loads({payloads!r}).items():
+    pathlib.Path(path).write_text(json.dumps(payload))
 signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
 while True:
     time.sleep(0.1)
@@ -568,6 +615,7 @@ def test_fpm_exec_bounds_stubborn_engine_shutdown(tmp_path, result_valid, expect
     pid_path = tmp_path / "engine.pid"
     child_pid_path = tmp_path / "engine-child.pid"
     staged = _stage(tmp_path, run_script="", engine_grace_seconds=1)
+    payloads = json.dumps(_finalized_artifacts({str(staged.benchmark_output): result}))
     engine_body = f"""\
 import json
 import os
@@ -590,9 +638,10 @@ child = subprocess.Popen(
     stderr=subprocess.DEVNULL,
 )
 pathlib.Path(os.environ["FAKE_ENGINE_CHILD_PID_PATH"]).write_text(str(child.pid))
-path = pathlib.Path({str(staged.benchmark_output)!r})
-path.parent.mkdir(parents=True, exist_ok=True)
-path.write_text({json.dumps(result)!r})
+for raw_path, payload in json.loads({payloads!r}).items():
+    path = pathlib.Path(raw_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload))
 while True:
     time.sleep(0.1)
 """
@@ -876,6 +925,304 @@ def test_fpm_exec_dp_follower_reports_its_rank_to_the_leader_barrier(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# post-collection merge/probe completion
+# ---------------------------------------------------------------------------
+
+
+def _check_artifacts(paths: list[str], *, start_rank: int = 0):
+    """Exercise the shipped checker directly, without GPU or engine startup."""
+    checker = FPM_EXEC.read_text().split("check_result_files() {", 1)[1].split("<<'PY'\n", 1)[1].split("\nPY\n", 1)[0]
+    return subprocess.run(
+        ["python3", "-", str(start_rank), "prefill", str(FPM_NATIVE_BENCHMARK_RESULT_SCHEMA_VERSION), *paths],
+        input=checker,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+
+def _write_artifacts(files: dict[str, object]) -> None:
+    for path, value in files.items():
+        Path(path).write_text(json.dumps(value))
+
+
+@pytest.mark.parametrize("start_rank", [0, 4])
+def test_completion_checker_waits_for_local_merge_and_advertised_probe(tmp_path, start_rank):
+    paths = fpm_expected_result_paths(str(tmp_path / "benchmark.json"), start_rank // 4, 4)
+    ranks = {path: _benchmark_result(dp_rank=start_rank + offset) for offset, path in enumerate(paths)}
+    artifacts = _finalized_artifacts(ranks, probe_resolution="worker_probe_partial")
+    merged_path, probe_path = list(artifacts)[-2:]
+    _write_artifacts(ranks)
+
+    assert _check_artifacts(paths, start_rank=start_rank).returncode == 11
+    _write_artifacts({merged_path: artifacts[merged_path]})
+    assert _check_artifacts(paths, start_rank=start_rank).returncode == 11
+    _write_artifacts({probe_path: artifacts[probe_path]})
+    assert _check_artifacts(paths, start_rank=start_rank).returncode == 0
+
+
+@pytest.mark.parametrize("resolution", [None, "worker_probe_partial", "probe_failed: TimeoutError: "])
+def test_completion_checker_preserves_legacy_and_fail_soft_probe_results(tmp_path, resolution):
+    path = str(tmp_path / "benchmark.json")
+    artifacts = _finalized_artifacts({path: _benchmark_result()}, probe_resolution=resolution)
+    if resolution is None:
+        artifacts[list(artifacts)[-1]]["engine"] = {"resolution": "legacy_inline_probe"}
+    _write_artifacts(artifacts)
+
+    result = _check_artifacts([path])
+
+    assert result.returncode == 0, result.stderr
+    # Completion does not upgrade a partial or failed observation to success.
+    if resolution is not None:
+        assert json.loads(Path(list(artifacts)[-1]).read_text())["merged"]["resolution"] == resolution
+
+
+@pytest.mark.parametrize(
+    "defect",
+    [
+        "rank-run-id",
+        "merged-run-id",
+        "merged-grid",
+        "merged-ranks",
+        "merged-rank-files",
+        "merged-path",
+        "merged-status",
+        "merged-type",
+        "probe-path",
+        "probe-schema",
+        "probe-run-id",
+        "probe-rank-files",
+        "probe-merged-path",
+        "probe-rank-binding",
+        "probe-top-level",
+    ],
+)
+def test_completion_checker_rejects_malformed_or_stale_bindings(tmp_path, defect):
+    paths = fpm_expected_result_paths(str(tmp_path / "benchmark.json"), 1, 2)
+    ranks = {path: _benchmark_result(dp_rank=2 + offset) for offset, path in enumerate(paths)}
+    artifacts = _finalized_artifacts(ranks, probe_resolution="worker_probe_partial")
+    merged_path, probe_path = list(artifacts)[-2:]
+    merged, probe = artifacts[merged_path], artifacts[probe_path]
+    if defect == "rank-run-id":
+        artifacts[paths[1]]["run_id"] = "another-run"
+    elif defect == "merged-run-id":
+        merged["run_id"] = "another-run"
+    elif defect == "merged-grid":
+        merged["grid_digest"] = "another-grid"
+    elif defect == "merged-ranks":
+        merged["dp"]["source_ranks"] = [0, 1]
+    elif defect == "merged-rank-files":
+        merged["rank_files"] = paths[:1]
+    elif defect == "merged-path":
+        merged["merged_output_path"] = str(tmp_path / "other_merged.json")
+    elif defect == "merged-status":
+        merged["status"] = "partial"
+    elif defect == "merged-type":
+        merged["artifact_type"] = "rank"
+    elif defect == "probe-path":
+        merged["worker_probe_path"] = str(tmp_path / "unrelated.json")
+    elif defect == "probe-schema":
+        probe["schema"] = "unrelated"
+    elif defect == "probe-run-id":
+        probe["run_id"] = "another-run"
+    elif defect == "probe-rank-files":
+        probe["rank_files"] = list(reversed(paths))
+    elif defect == "probe-merged-path":
+        probe["merged_output_path"] = str(tmp_path / "other_merged.json")
+    elif defect == "probe-rank-binding":
+        probe["ranks"]["2"]["rank_file"] = paths[1]
+    elif defect == "probe-top-level":
+        artifacts[probe_path] = []
+    _write_artifacts(artifacts)
+
+    result = _check_artifacts(paths, start_rank=2)
+
+    assert result.returncode == 20, result.stderr
+    assert "Invalid FPM benchmark result" in result.stderr
+
+
+@pytest.mark.parametrize("resolution", [None, "worker_probe_partial", "probe_failed: TimeoutError: "])
+def test_engine_is_not_terminated_before_delayed_artifact_finalization(tmp_path, resolution):
+    staged = _stage(tmp_path, run_script="")
+    artifacts = _finalized_artifacts({str(staged.benchmark_output): _benchmark_result()}, probe_resolution=resolution)
+    body = _writer_engine_body(artifacts, delay=2.5, finalize=False)
+    (staged.workdir / "run.sh").write_text(_setsid_run_script(tmp_path, body))
+
+    completed = _run(staged)
+
+    assert completed.returncode == 0, completed.stderr
+    assert {path: json.loads(Path(path).read_text()) for path in artifacts} == artifacts
+
+
+@pytest.mark.parametrize("missing", ["merge", "probe"])
+def test_missing_finalization_is_bounded_and_preserves_rank_timings(tmp_path, missing):
+    staged = _stage(tmp_path, run_script="", env_overrides={"FPM_WAIT_TIMEOUT_SECONDS": 12000})
+    rank_path = str(staged.benchmark_output)
+    ranks = {rank_path: _benchmark_result()}
+    artifacts = _finalized_artifacts(ranks, probe_resolution="worker_probe_partial")
+    if missing == "merge":
+        artifacts = ranks
+    else:
+        del artifacts[list(artifacts)[-1]]
+    body = _writer_engine_body(artifacts, finalize=False)
+    # A broken finalization deadline fails this test in eight seconds instead
+    # of retaining the fake engine for the entire collection budget.
+    body = body.replace("while True:", "for _ in range(80):")
+    (staged.workdir / "run.sh").write_text(_setsid_run_script(tmp_path, body))
+
+    started = time.monotonic()
+    completed = _run(staged, extra_env={"FPM_FINALIZATION_TIMEOUT_SECONDS": "1"})
+
+    assert completed.returncode == 124, completed.stderr
+    assert "Timed out finalizing FPM benchmark artifacts" in completed.stderr
+    assert "raw timings retained" in completed.stderr
+    assert time.monotonic() - started < 7
+    assert json.loads(Path(rank_path).read_text()) == ranks[rank_path]
+
+
+def test_finalization_budget_does_not_start_during_rank_collection(tmp_path):
+    staged = _stage(tmp_path, run_script="", env_overrides={"FPM_WAIT_TIMEOUT_SECONDS": 10})
+    body = "import time\ntime.sleep(3)\n" + _writer_engine_body({str(staged.benchmark_output): _benchmark_result()})
+    (staged.workdir / "run.sh").write_text(_setsid_run_script(tmp_path, body))
+
+    completed = _run(staged, extra_env={"FPM_FINALIZATION_TIMEOUT_SECONDS": "1"})
+
+    assert completed.returncode == 0, completed.stderr
+
+
+def test_finalization_budget_cannot_extend_collection_deadline(tmp_path):
+    staged = _stage(tmp_path, run_script="", env_overrides={"FPM_WAIT_TIMEOUT_SECONDS": 1})
+    body = _writer_engine_body({str(staged.benchmark_output): _benchmark_result()}, finalize=False)
+    (staged.workdir / "run.sh").write_text(_setsid_run_script(tmp_path, body))
+
+    completed = _run(staged, extra_env={"FPM_FINALIZATION_TIMEOUT_SECONDS": "1200"})
+
+    assert completed.returncode == 124, completed.stderr
+    assert "Timed out waiting for all FPM benchmark outputs" in completed.stderr
+
+
+@pytest.mark.parametrize("value", ["", "0", "-1", "3601", "not-an-integer", "999999999999999999999999999999999999"])
+def test_invalid_finalization_budget_fails_before_startup(tmp_path, value):
+    staged = _stage(tmp_path, run_script="#!/bin/bash\nexit 0\n")
+
+    completed = _run(staged, extra_env={"FPM_FINALIZATION_TIMEOUT_SECONDS": value})
+
+    assert completed.returncode == 2, completed.stderr
+    assert "FPM_FINALIZATION_TIMEOUT_SECONDS must be an integer from 1 through 3600" in completed.stderr
+    assert not staged.etcd_trace.exists()
+
+
+@pytest.mark.parametrize("suffix", ["_merged", "_merged_worker_probe"])
+def test_fpm_exec_refuses_stale_finalization_artifacts_before_launch(tmp_path, suffix):
+    started = tmp_path / "engine-started"
+    staged = _stage(tmp_path, run_script=f"touch {shlex.quote(str(started))}\n")
+    path = staged.benchmark_output.with_name(f"benchmark{suffix}.json")
+    path.write_text("stale")
+
+    completed = _run(staged)
+
+    assert completed.returncode == 1, completed.stderr
+    assert "Refusing to overwrite existing benchmark output" in completed.stderr
+    assert path.read_text() == "stale"
+    assert not started.exists()
+
+
+@pytest.mark.parametrize("engine_exit", [0, 37])
+def test_engine_exit_during_finalization_is_a_failure_with_timings_preserved(tmp_path, engine_exit):
+    staged = _stage(tmp_path, run_script="")
+    rank = _benchmark_result()
+    body = (
+        "import pathlib, sys\n"
+        f"pathlib.Path({str(staged.benchmark_output)!r}).write_text({json.dumps(rank)!r})\n"
+        f"sys.exit({engine_exit})\n"
+    )
+    (staged.workdir / "run.sh").write_text(_setsid_run_script(tmp_path, body))
+
+    completed = _run(staged)
+
+    assert completed.returncode == (engine_exit or 1), completed.stderr
+    assert "Engine exited before writing all FPM benchmark outputs" in completed.stderr
+    assert json.loads(staged.benchmark_output.read_text()) == rank
+
+
+@pytest.mark.parametrize("slow_node", [0, 1])
+def test_two_node_teardown_waits_for_both_local_artifact_finalizations(tmp_path, slow_node):
+    nodes = []
+    for node in range(2):
+        directory = tmp_path / f"node{node}"
+        directory.mkdir()
+        nodes.append(
+            _stage(
+                directory,
+                run_script="",
+                env_overrides={
+                    "FPM_NODE_COUNT": 2,
+                    "FPM_DATA_PARALLEL_SIZE": 2,
+                    "FPM_NODE_RANK": node,
+                },
+            )
+        )
+    # Both launched wrappers share the leader's readiness and barrier ports,
+    # but keep separate result volumes, as in the two-node Slurm collection.
+    follower_script = nodes[1].script.read_text()
+    follower_script = follower_script.replace(str(nodes[1].etcd_port), str(nodes[0].etcd_port))
+    follower_script = follower_script.replace(str(nodes[1].barrier_port), str(nodes[0].barrier_port))
+    nodes[1].script.write_text(follower_script)
+    finalized = []
+    for node, staged in enumerate(nodes):
+        rank_path = fpm_expected_result_paths(str(staged.benchmark_output), node, 1)[0]
+        artifacts = _finalized_artifacts(
+            {rank_path: _benchmark_result(dp_rank=node)}, probe_resolution="worker_probe_partial"
+        )
+        finalized.append(list(artifacts)[-1])
+        body = f"""\
+import json
+import pathlib
+import signal
+import sys
+import time
+
+def stop(*_):
+    probes = pathlib.Path({str(tmp_path)!r}).glob("node*/results/*_worker_probe.json")
+    pathlib.Path({str(tmp_path / f"stopped{node}.json")!r}).write_text(
+        json.dumps([path.is_file() for path in probes])
+    )
+    sys.exit(0)
+
+signal.signal(signal.SIGTERM, stop)
+for index, (path, payload) in enumerate(json.loads({json.dumps(artifacts)!r}).items()):
+    if index > 0:
+        time.sleep({2.5 if node == slow_node else 0.1})
+    pathlib.Path(path).write_text(json.dumps(payload))
+while True:
+    time.sleep(0.1)
+"""
+        (staged.workdir / "run.sh").write_text(_setsid_run_script(staged.workdir.parent, body))
+    processes = [
+        subprocess.Popen(
+            ["bash", str(staged.script)],
+            env={**staged.env, "FPM_COMPLETION_BARRIER_TIMEOUT_SECONDS": "20"},
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        for staged in nodes
+    ]
+    try:
+        for process in processes:
+            _, stderr = process.communicate(timeout=40)
+            assert process.returncode == 0, stderr
+    finally:
+        for process in processes:
+            if process.poll() is None:
+                process.kill()
+                process.wait(timeout=5)
+    assert all(Path(path).is_file() for path in finalized)
+    for node in range(2):
+        assert json.loads((tmp_path / f"stopped{node}.json").read_text()) == [True, True]
+
+
+# ---------------------------------------------------------------------------
 # contract pins
 # ---------------------------------------------------------------------------
 
@@ -893,6 +1240,7 @@ def test_fpm_exec_consumes_only_contract_environment():
     assert {"FPM_NODE_RANK", "FPM_MASTER_ADDR", "FPM_BENCHMARK_OUTPUT_PATH"} <= consumed
     allowed = set(FPM_ENV_EXPORTED_VARS) | {
         "FPM_COMPLETION_BARRIER_TIMEOUT_SECONDS",
+        "FPM_FINALIZATION_TIMEOUT_SECONDS",
         "FPM_READINESS_TIMEOUT_SECONDS",
         "FPM_SLURM_CPUS_PER_TASK",
         "FPM_SLURM_CPU_BIND",
