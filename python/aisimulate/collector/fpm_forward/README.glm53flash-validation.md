@@ -94,6 +94,16 @@ normalized SHA256 alongside the original configuration-file receipts; complete
 settings stay internal so credential fields are not copied into reports.
 Ops continues to use its separate native execution contract.
 
+Explicit native CUDA-graph settings are frozen plan identity
+([`graph_policy.py`](graph_policy.py)). Calibration, holdout and every shard of
+one deployment must have the same backend policy and the same SGLang
+prefill-graph request. A frozen vLLM backend policy's resolved-config markers,
+including explicit capture sizes, are re-checked for every native run, holdout
+included. SGLang native values use the fastest-TP-rank median
+(`sglang_tp_fastest_rank_duration_median_v1`) for both calibration rows and
+holdout points, and the reduction is recorded as `latency_reduction` in the
+native evidence. Calibration and holdout must use the same reduction.
+
 ## Gates and reports
 
 FPM requires per-configuration, per-phase MAPE at most 10%. Explicit `mode="ops"`
