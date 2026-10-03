@@ -2400,3 +2400,31 @@ findings:
     - nvidia/Nemotron-H-56B-Base-8K
     - Qwen/Qwen3.5-0.8B
     - deepseek-ai/DeepSeek-V3
+  hopper_full_campaign_1002_complete_2026_10_04:
+    statement: 'FULL H20 CAMPAIGN COMPLETE (2026-10-02 14:3x -> 2026-10-04 04:54, ~37.5 h wall on 6 GPUs; sglang 0.5.21 + trtllm 1.3.0rc29;
+      everything except DSV4.1 and trtllm msa, which the owner skipped this round). 967,892 perf rows / 925,704 unique keys across 48
+      (backend, op) tables; 65,405 failed tasks, all recorded. Duplicate keys (sglang moe 22,627, trtllm moe 8,991) come from two mid-run
+      splits done without seeding the new run dir''s checkpoint — the re-measurements agree (median 0.3%, p90 3.6%) and dedupe at merge;
+      lesson: seed ckpt/<be>/<be>.<op>.json with every prior dir''s done+failed before splitting (case strings carry quant and model but no
+      single substring spans both, so model/dist filters only work on seeded checkpoints). Failure families: (a) classified grid/gate
+      raises — sglang attention_context 17,239 fa3 FP8-KV x bf16 guard; sglang moe 17,577 Triton fp8_block divisibility, 3,726 w4a16_mxfp4
+      version gate; sglang/trtllm gemm 666/1,110 fp8 16-byte alignment on tiny N; trtllm attention 4,182+4,148 Gemma no-SM90-kernel;
+      trtllm moe 658 TP-shard alignment; gdn/kda own >=2**31 conv guard cells. (b) collector gaps found by this run — sglang moe
+      "bias is required for non-softmax routing" 7,533 = Llama-4 Maverick/Scout every quant mode; sglang moe "parallel name tp_group
+      has not been written" 3,807 = Nemotron-3 Ultra-550B/Nano-30B BF16 on 0.5.21. (c) real crashes awaiting the serving-parity audit —
+      trtllm attention_context 500 IMA (96 heads x kv 1/2/4/8 x head_dim 256 and 96/96/128, seq 16384, TRTLLM backend), trtllm
+      attention_generation 512 launch failure + 162 IMA (96 heads, kv 4, head_dim 64, fp8 KV), trtllm mla_context_module 41 IMA
+      (DeepSeek-V3). (d) trtllm dsv4 csa/hca ctx 47+47 OOM on DeepSeek-V4-Pro largest-prefix cells with the snapshot''s free*0.5 pool —
+      re-run with the max_tokens cap (d8d9aafb). Evidence: workspace facts/campaign_1002/{REPORT.md,SUMMARY.txt,PARTITION.txt,logs/},
+      perf rows in staging_1002/runs/ (never committed).'
+    applies_to:
+    - framework:trtllm-1.3.0rc29
+    - framework:sglang-0.5.21
+    - platform:sm90
+    - module:collector
+    - meta-llama/Llama-4-Maverick-17B-128E-Instruct
+    - meta-llama/Llama-4-Scout-17B-16E-Instruct
+    - nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16
+    - nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16
+    - deepseek-ai/DeepSeek-V3
+    - sgl-project/DeepSeek-V4-Pro-FP8
