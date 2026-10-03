@@ -95,8 +95,15 @@ for the pinned gym revision, validation evidence, and remaining modeling limits.
   defaults with their provenance. Reject unresolved conflicts. Keep source
   framework/image versions separate from predictor performance-database versions.
 - Track model/checkpoint and quantization identity alongside serving settings.
-  Missing evidence must stay explicit; do not replace it with an unverified
-  default or infer KV dtype solely from weight precision.
+  Missing evidence must stay explicit. Verified mode never substitutes an
+  unverified default. CI's separate estimated mode applies the documented
+  `coverage-experiment/1` assumptions and labels affected configurations as
+  estimated, including any interpretation of `auto` KV dtype. It cannot
+  override conflicting evidence or unsupported mappings.
+- Restore runtime artifacts with hash and run-attempt checks. When upstream
+  artifacts expire, reviewed archived settings may be reused only for the
+  identical measurement hash; provenance states that raw artifacts were not
+  revalidated in this run. See the resolver contract for generation and sources.
 
 ### Replay configuration
 
@@ -105,7 +112,8 @@ for the pinned gym revision, validation evidence, and remaining modeling limits.
   Keep graph controls in source evidence when the engine cannot model them. Preserve the workload and worker topology with those settings.
 - Replace CI's fixed settings only when the corresponding source setting or
   verified default is resolved. A documented replay approximation must remain
-  distinguishable from a source-matched configuration.
+  distinguishable from a source-matched configuration. Published reports carry
+  verified/estimated counts and a quality label on every operating point.
 - Validate each setting against the evaluated wheel and backend. If a required
   setting cannot be represented or modeled, report an explicit unsupported
   outcome instead of silently dropping it or claiming parity. Existing estimate

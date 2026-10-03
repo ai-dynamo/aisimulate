@@ -34,6 +34,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from scripts.e2e_accuracy.build_e2e_accuracy_overview import GPUS_PER_NODE_BY_FAMILY, build_summary
 from scripts.e2e_accuracy.fetch_accuracy_measurements import RESOLVED_POLICY, digest, validate_manifest
 from scripts.pages.build_pages_site import _accuracy_summary
+from scripts.e2e_accuracy_source.runtime_evidence import prepare_runtime_evidence
 
 REPOSITORY = "https://github.com/ai-dynamo/aisimulate"
 
@@ -467,6 +468,7 @@ def predict_resolved_point(point):
         "is_multinode": config["is_multinode"],
         "silicon_ttft_ms": bench["metrics"]["mean_ttft"] * 1000,
         "silicon_tpot_ms": bench["metrics"]["mean_tpot"] * 1000,
+        "configuration_quality": deployment["configuration_quality"],
         "aic_status": "failed",
         "aic_ttft_ms": None,
         "aic_tpot_ms": None,
@@ -543,16 +545,20 @@ def predict_resolved_point(point):
     return {"id": point["id"], "outcome": "evaluated", "row": row, "backend_version": version}
 
 
-def resolve_points(points, cache_dir, workers):
+def resolve_points(points, cache_dir, workers, *, allow_estimated_defaults=False):
     from e2e_accuracy_source.deployment import inspect_deployment
     from e2e_accuracy_source.inferencex_recipe import GitHubRecipeSource
     from e2e_accuracy_source.schema import SiliconRow
 
-    source = GitHubRecipeSource(cache_dir=cache_dir)
+    source = GitHubRecipeSource(cache_dir=cache_dir, archived_runtime=True)
 
     def resolve(point):
         try:
-            deployment, evidence, issues = inspect_deployment(SiliconRow(**point["source_row"]), source)
+            deployment, evidence, issues = inspect_deployment(
+                SiliconRow(**point["source_row"]),
+                source,
+                allow_estimated_defaults=allow_estimated_defaults,
+            )
             return {**point, "deployment": deployment, "evidence": evidence, "resolution_error": issues}
         except Exception as error:
             return {**point, "resolution_error": [{"message": str(error)}]}
@@ -623,7 +629,17 @@ def campaign(args) -> None:
         for point in points:
             point["id"] = sha([point["benchmark"]["id"], point["config"]["id"]])
         points.sort(key=lambda point: point["id"])
-        points = resolve_points(points, args.source_cache, args.workers)
+        args.evidence.mkdir(parents=True, exist_ok=True)
+        if getattr(args, "fetch_runtime_evidence", False):
+            acquired = prepare_runtime_evidence(points, args.source_cache)
+            (args.evidence / "runtime-fetch.json").write_bytes(encoded(acquired))
+            print("Runtime evidence: " + json.dumps(acquired["counts"]), flush=True)
+        points = resolve_points(
+            points,
+            args.source_cache,
+            args.workers,
+            allow_estimated_defaults=getattr(args, "configuration_mode", "verified") == "estimated",
+        )
         args.evidence.mkdir(parents=True, exist_ok=True)
         (args.evidence / "resolved-points.json").write_bytes(encoded(points))
         print(
@@ -720,6 +736,13 @@ def campaign(args) -> None:
         "status": "complete",
         "advisory": True,
     }
+    if resolved:
+        campaign_info["configuration"] = {
+            "profile": "coverage-experiment/1"
+            if getattr(args, "configuration_mode", "verified") == "estimated"
+            else "verified",
+            "counts": dict(Counter(row["configuration_quality"] for row in rows)),
+        }
     summary["snapshot"]["campaign"] = campaign_info
     if preview:
         campaign_info["preview"] = True
@@ -755,6 +778,8 @@ def main():
         parser.add_argument("--" + name, type=Path, required=True)
     for name in ("branch", "commit", "run-id", "run-attempt"):
         parser.add_argument("--" + name, required=True)
+    parser.add_argument("--configuration-mode", choices=("verified", "estimated"), default="verified")
+    parser.add_argument("--fetch-runtime-evidence", action="store_true")
     parser.add_argument("--workers", type=int, default=6)
     parser.add_argument("--point-timeout", type=int, default=180)
     parser.add_argument("--source-cache", type=Path, default=Path(".cache/e2e-accuracy/source"))

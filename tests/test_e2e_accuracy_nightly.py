@@ -9,6 +9,7 @@ import json
 import subprocess
 import sys
 import zipfile
+from collections import Counter
 from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
@@ -1528,6 +1529,7 @@ def resolved_point(framework="vllm", disagg=False):
     point["source_row"] = {"head_sha": "a" * 40}
     point["deployment"] = {
         "schema_version": "resolved-deployment/1",
+        "configuration_quality": "verified",
         "backend": backend,
         "system": "b200_sxm",
         "model_path": "source/checkpoint",
@@ -1570,15 +1572,24 @@ def test_resolved_campaign_publishes_replay_when_baseline_fails(artifact, tmp_pa
 
     def predict(point, timeout):
         result = predictor(point, timeout)
-        result["row"].update(aic_status="failed", aic_ttft_ms=None, aic_tpot_ms=None)
+        result["row"].update(
+            aic_status="failed",
+            aic_ttft_ms=None,
+            aic_tpot_ms=None,
+            configuration_quality="verified",
+        )
         return result
 
     monkeypatch.setattr(campaign, "run_child", predict)
     monkeypatch.setattr(
         campaign,
         "resolve_points",
-        lambda points, *_: [
-            {**point, "deployment": resolved_point()["deployment"], "evidence": {"recipe_sha256": "f" * 64}}
+        lambda points, *_, **kwargs: [
+            {
+                **point,
+                "deployment": resolved_point()["deployment"],
+                "evidence": {"recipe_sha256": "f" * 64},
+            }
             for point in points
         ],
     )
@@ -1747,3 +1758,21 @@ def test_source_resolved_prediction_preserves_settings_and_independent_outcomes(
     assert result["row"]["aisimulate_status"] == "success"
     assert calls == ["estimate", "replay", "close"]
     assert result["row"]["aisimulate_total_gpus"] == (8 if disagg else 4)
+
+
+def test_configuration_quality_is_public_and_counts_are_checked(artifact):
+    summary, run = artifact
+    counts = Counter()
+    for model in summary["models"]:
+        for workload in model["workloads"]:
+            for gpu in workload["gpus"]:
+                for topology in gpu["topologies"]:
+                    for index, point in enumerate(topology["points"]):
+                        quality = "estimated" if index % 2 == 0 else "verified"
+                        point["configuration_quality"] = quality
+                        counts[quality] += 1
+    summary["snapshot"]["campaign"]["configuration"] = {"profile": "coverage-experiment/1", "counts": dict(counts)}
+    assert publish.validate_artifact(archive(summary), run) == summary
+    summary["snapshot"]["campaign"]["configuration"]["counts"]["estimated"] += 1
+    with pytest.raises(pages.PagesBuildError, match="configuration counts"):
+        publish.validate_artifact(archive(summary), run)

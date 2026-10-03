@@ -123,6 +123,10 @@ function renderSnapshot() {
     ? "Multi-node predictions included"
     : `Exclude multi-node predictions (${scope.excluded_multinode_rows.toLocaleString()} hidden)`;
   identityLine.textContent = `GPU SKUs: ${totals.gpu_skus.join(", ")} · Precisions: ${totals.precisions.join(", ")}`;
+  if (snapshot.campaign?.configuration) {
+    const counts = snapshot.campaign.configuration.counts;
+    identityLine.textContent += ` · Configuration: ${counts.verified ?? 0} verified, ${counts.estimated ?? 0} estimated (assumptions) · ${snapshot.campaign.selected - snapshot.campaign.published} excluded`;
+  }
   measurementSourceLink.href = snapshot.measurement_source_url;
   scopeClaim.textContent = scope.claim;
   provenanceContent.innerHTML = `
@@ -146,6 +150,7 @@ function renderSnapshot() {
       : "Repository provenance was not recorded in this historical snapshot"}</p>
     ${snapshot.campaign ? `<p>Accuracy campaign: <a href="https://github.com/ai-dynamo/aisimulate/actions/runs/${escapeHtml(snapshot.campaign.run_id)}">GitHub Actions run</a> (advisory)<br />
       Selected operating points: ${escapeHtml(snapshot.campaign.selected)}; published comparison points: ${escapeHtml(snapshot.campaign.published)}.<br />
+      ${snapshot.campaign.configuration ? `Configuration evidence: ${snapshot.campaign.configuration.counts.verified ?? 0} verified; ${snapshot.campaign.configuration.counts.estimated ?? 0} estimated (assumptions, not verified historical settings).<br />` : ""}
       Excluded before comparison: ${escapeHtml(JSON.stringify(snapshot.campaign.exclusion_reasons))}.<br />
       Prediction database versions: ${escapeHtml(snapshot.campaign.backend_versions.join(", "))}.<br />
       Policy: ${escapeHtml(snapshot.campaign.selection_policy)}; ${snapshot.campaign.selection_policy === "gym-resolved-config-v2" ? "source-resolved serving settings and workload; independent estimate and replay outcomes" : "max_num_seqs=max(256, concurrency), max_num_batched_tokens=8192, enable_prefix_caching=False, aic_forward_model=op_level"}; unresolved recipes are excluded.</p>
@@ -418,14 +423,14 @@ function pointTable(topology) {
   return `<details class="point-details" open><summary>Operating points (${topology.points.length})</summary>
     <div class="table-scroll" tabindex="0" role="region" aria-label="Operating point details"><table class="point-table">
     <caption>Relative TTFT / TPOT and absolute percentage errors. Ratios use measured latency at the lowest concurrency as 1×.</caption>
-    <thead><tr><th>Concurrency</th><th>Replay / AIC status</th><th>Measured TTFT / TPOT</th><th>AISim CLI TTFT / TPOT</th><th>AIC CLI TTFT / TPOT</th><th>AISim CLI TTFT / TPOT error</th><th>AIC CLI TTFT / TPOT error</th></tr></thead>
+    <thead><tr><th>Concurrency</th><th>Configuration</th><th>Replay / AIC status</th><th>Measured TTFT / TPOT</th><th>AISim CLI TTFT / TPOT</th><th>AIC CLI TTFT / TPOT</th><th>AISim CLI TTFT / TPOT error</th><th>AIC CLI TTFT / TPOT error</th></tr></thead>
     <tbody>${topology.points.map((point) => {
       const ratios = (name) => ["ttft", "tpot"].map((metric) => {
         const value = point[name][`${metric}_relative`];
         return value == null ? "—" : `${value.toFixed(3)}×`;
       }).join(" / ");
       const errors = (name) => `${formatPercent(point[name].ttft_error_pct)} / ${formatPercent(point[name].tpot_error_pct)}`;
-      return `<tr><td>${point.concurrency}</td><td>${escapeHtml(point.status)} / ${escapeHtml(point.aic_status === undefined ? "success" : point.aic_status)}</td><td>${ratios("measured")}</td><td>${ratios("aisimulate")}</td><td>${ratios("aic")}</td><td>${errors("aisimulate")}</td><td>${errors("aic")}</td></tr>`;
+      return `<tr><td>${point.concurrency}</td><td>${escapeHtml(point.configuration_quality ?? "not recorded")}</td><td>${escapeHtml(point.status)} / ${escapeHtml(point.aic_status === undefined ? "success" : point.aic_status)}</td><td>${ratios("measured")}</td><td>${ratios("aisimulate")}</td><td>${ratios("aic")}</td><td>${errors("aisimulate")}</td><td>${errors("aic")}</td></tr>`;
     }).join("")}</tbody></table></div></details>`;
 }
 
@@ -517,6 +522,7 @@ function validateSummary(data) {
       if (!object(point) || !Number.isFinite(point.concurrency) || point.concurrency <= 0 || point.concurrency < previous ||
         !["success", "unsupported", "failed"].includes(point.status) ||
         !["success", "unsupported", "failed"].includes(point.aic_status === undefined ? "success" : point.aic_status)) return false;
+      if (point.configuration_quality !== undefined && !["verified", "estimated"].includes(point.configuration_quality)) return false;
       previous = point.concurrency;
       counts[point.status] += 1;
       if ((point.aic_status === undefined ? "success" : point.aic_status) === "success") aicSuccesses += 1;
@@ -568,6 +574,22 @@ function validateSummary(data) {
   }
   const campaign = data.snapshot.campaign;
   const exclusions = campaign?.exclusion_reasons;
+  if (campaign?.configuration) {
+    const configuration = campaign.configuration;
+    const counts = {};
+    data.models.forEach((model) => model.workloads.forEach((workload) => workload.gpus.forEach((gpu) =>
+      (gpu.topologies ?? []).forEach((topology) => topology.points.forEach((point) => {
+        const quality = point.configuration_quality;
+        if (!["verified", "estimated"].includes(quality)) throw new Error("missing configuration quality");
+        counts[quality] = (counts[quality] ?? 0) + 1;
+      })))));
+    if (!["verified", "coverage-experiment/1"].includes(configuration.profile) ||
+      !object(configuration.counts) || Object.keys(configuration.counts).length !== Object.keys(counts).length ||
+      Object.entries(counts).some(([key, count]) => configuration.counts[key] !== count) ||
+      Object.values(counts).reduce((sum, count) => sum + count, 0) !== data.totals.rows ||
+      (configuration.profile === "verified" && counts.estimated)) throw new Error("invalid configuration coverage");
+  }
+
   const validExclusions = exclusions && typeof exclusions === "object" && !Array.isArray(exclusions) &&
     Object.keys(exclusions).every(key => ["recipe_required", "adapter_unsupported", "adapter_topology_mismatch", "baseline_failed", "source_unresolved", "database_unavailable"].includes(key)) &&
     Object.values(exclusions).every(value => Number.isInteger(value) && value >= 0);

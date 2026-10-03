@@ -13,6 +13,7 @@ import ast
 import hashlib
 import json
 import re
+from copy import deepcopy
 from dataclasses import replace
 from functools import cache
 from typing import Any
@@ -42,6 +43,14 @@ from e2e_accuracy_source.legacy_recipe import (
 )
 from e2e_accuracy_source.mapping import HARDWARE_TO_SYSTEM
 from e2e_accuracy_source.model_config_snapshot import normalize_trt_snapshot
+from e2e_accuracy_source.research_defaults import (
+    SERVER_DEFAULTS,
+    WORKLOAD_DEFAULTS,
+    assumed_recipe,
+    fill_missing,
+    resolve_auto_kv,
+)
+from e2e_accuracy_source.runtime_evidence import archived_recipe
 from e2e_accuracy_source.runtime_recipe import inspect_cached_runtime_recipe, inspect_cached_runtime_workload
 from e2e_accuracy_source.schema import SiliconRow
 from e2e_accuracy_source.sglang_additional_defaults import apply_additional_sglang_defaults
@@ -485,12 +494,18 @@ def read_deployment_recipe(row: SiliconRow, source: RecipeSource) -> tuple:
                 return runtime_deployment(single_node_runtime)
         if row.disagg:
             runtime_workload = inspect_cached_runtime_workload(row, cache_dir)["parsed"]
-            if runtime_workload is not None:
-                runtime_evidence = runtime_workload[-1]
-                # Resolve server source at the actual measured attempt as well.
-                row = replace(
-                    row, head_sha=runtime_evidence["git_sha"], run_attempt=runtime_evidence["artifact"]["run_attempt"]
-                )
+    if getattr(source, "archived_runtime", False):
+        archived = archived_recipe(original_row)
+        if archived is not None:
+            return archived
+        if runtime_workload is None and row.disagg:
+            runtime_workload = archived_recipe(original_row, "workload")
+    if runtime_workload is not None:
+        runtime_evidence = runtime_workload[-1]
+        # Resolve server source at the actual measured attempt as well.
+        row = replace(
+            row, head_sha=runtime_evidence["git_sha"], run_attempt=runtime_evidence["artifact"]["run_attempt"]
+        )
     if not row.head_sha or not re.fullmatch(r"[0-9a-fA-F]{40}", row.head_sha):
         raise InferenceXRecipeError("missing immutable workflow source SHA")
     backend = FRAMEWORK_TO_AIC_BACKEND[row.framework]
@@ -633,7 +648,11 @@ def read_deployment_recipe(row: SiliconRow, source: RecipeSource) -> tuple:
 
 
 def inspect_deployment(
-    row: SiliconRow, source: RecipeSource, *, parsed: tuple | None = None
+    row: SiliconRow,
+    source: RecipeSource,
+    *,
+    parsed: tuple | None = None,
+    allow_estimated_defaults: bool = False,
 ) -> tuple[dict | None, dict, list[dict]]:
     """Collect independent blockers without substituting values to advance validation."""
     issues = []
@@ -641,7 +660,15 @@ def inspect_deployment(
     def issue(stage, message, role=None, **details):
         issues.append(dict(stage=stage, role=role, message=message, **details))
 
-    model, roles, version, backend, benchmark, evidence = parsed or read_deployment_recipe(row, source)
+    if parsed is None:
+        try:
+            parsed = read_deployment_recipe(row, source)
+        except InferenceXRecipeError as error:
+            if not allow_estimated_defaults:
+                raise
+            parsed = assumed_recipe(row, str(error), source)
+    model, roles, version, backend, benchmark, original_evidence = parsed
+    evidence = deepcopy(original_evidence)
     if not isinstance(model, str) or "/" not in model or model.startswith("/"):
         issue("model_identity", "source model path is an unresolved alias")
         return None, evidence, issues
@@ -765,6 +792,9 @@ def inspect_deployment(
             evidence["verified_defaults"][role]["effective_rules"] = effective_sources
         except (InferenceXRecipeError, requests.RequestException, ValueError) as error:
             issue("framework_defaults", str(error), role)
+        if allow_estimated_defaults:
+            args, assumptions = fill_missing(args, SERVER_DEFAULTS[backend], role=role)
+            evidence.setdefault("estimated_defaults", []).extend(assumptions)
         workers = getattr(row, role + "_num_workers") if row.disagg else 1
         gpus = getattr(row, "num_" + role + "_gpu") if row.disagg else row.num_decode_gpu
         if not row.disagg and not row.is_multinode and row.decode_ep > 1 and gpus == row.decode_tp * row.decode_ep:
@@ -793,6 +823,14 @@ def inspect_deployment(
             quantization = resolve_quantization(
                 args, model, backend=backend, hardware=row.hardware, framework_version=role_version
             )
+            if evidence.get("source") == "assumed_database_recipe" and row.precision in {"fp4", "fp8", "int4"}:
+                profiles = [str(quantization.get(name, "")) for name in ("gemm", "moe")]
+                if not any(row.precision in profile for profile in profiles):
+                    issue(
+                        "quantization",
+                        "assumed checkpoint does not match measured precision",
+                        role,
+                    )
             if quantization.get("evidence", {}).get("predictor_snapshot_conflict"):
                 issue(
                     "predictor_mapping",
@@ -804,7 +842,12 @@ def inspect_deployment(
                 issue("model_identity", "role checkpoint configurations differ", role)
             elif snapshot is not None:
                 checkpoint_snapshot = snapshot
-        except (InferenceXRecipeError, requests.RequestException, ValueError, KeyError) as error:
+        except (
+            InferenceXRecipeError,
+            requests.RequestException,
+            ValueError,
+            KeyError,
+        ) as error:
             kind = getattr(error, "kind", "unresolved_quantization")
             issue(
                 "predictor_mapping"
@@ -815,6 +858,9 @@ def inspect_deployment(
                 kind=kind,
                 details=getattr(error, "details", {}),
             )
+        if allow_estimated_defaults:
+            args, assumptions = resolve_auto_kv(args, checkpoint_snapshot, role=role)
+            evidence.setdefault("estimated_defaults", []).extend(assumptions)
         estimated_knobs = {}
         required = [
             "max_num_seqs",
@@ -854,6 +900,10 @@ def inspect_deployment(
     except InferenceXRecipeError as error:
         issue("workload", str(error))
     workload["benchmark_controls"] = benchmark
+    if allow_estimated_defaults and benchmark.get("type") == "sa-bench":
+        benchmark, assumptions = fill_missing(benchmark, WORKLOAD_DEFAULTS, role="workload")
+        evidence.setdefault("estimated_defaults", []).extend(assumptions)
+        workload["benchmark_controls"] = benchmark
     workload["unsupported_controls"] = unmodeled_workload_controls(benchmark)
     # A reviewed benchmark adapter must establish distribution, not just mean lengths.
     if "random_range_ratio" not in benchmark or "num_prompts_mult" not in benchmark:
@@ -872,7 +922,10 @@ def inspect_deployment(
     return (
         dict(
             schema_version="resolved-deployment/1",
-            configuration_quality="estimated" if evidence.get("estimated_knobs") else "verified",
+            configuration_quality="estimated"
+            if evidence.get("estimated_knobs") or evidence.get("estimated_defaults")
+            else "verified",
+            estimated_defaults=evidence.get("estimated_defaults", []),
             backend=backend,
             system=HARDWARE_TO_SYSTEM[row.hardware],
             model_path=model,

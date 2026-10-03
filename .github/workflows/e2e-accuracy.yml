@@ -17,6 +17,12 @@ on:
         required: true
         default: main
         type: string
+      configuration_mode:
+        description: Verified settings only, or include labeled research assumptions
+        type: choice
+        options: [estimated, verified]
+        default: estimated
+        required: false
       preview:
         description: Evaluate an exact trusted pull-request/* copy without public publication
         required: false
@@ -164,3 +170,4 @@ jobs:
       artifact_key: ${{ matrix.artifact_key }}
       nightly_run: ${{ matrix.nightly_run }}
       preview: ${{ matrix.preview || false }}
+      configuration_mode: ${{ inputs.configuration_mode || 'estimated' }}

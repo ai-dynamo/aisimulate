@@ -10,8 +10,9 @@ The resolver reads immutable InferenceX recipes without executing their shell,
 checks reviewed framework-default source hashes, resolves checkpoint metadata,
 and retains source settings, runtime evidence, and workload controls. The
 [`manifests/`](manifests/) JSON files identify the upstream paths, revisions, and hashes for
-reviewed defaults. Missing evidence is an unresolved outcome, never an invented
-serving default. Unknown kernel/quantization mappings remain unsupported.
+reviewed defaults. Verified mode excludes missing evidence. Estimated mode fills
+only allowlisted gaps and labels every assumption; unknown kernel/quantization
+mappings and conflicting evidence remain unsupported.
 
 ## Package layout
 
@@ -22,10 +23,10 @@ Keep Python modules flat and group the reviewed data in `manifests/`:
 | Cohort and records | `cohort.py`, `filter.py`, `staleness.py`, `schema.py`, `mapping.py` |
 | Source I/O and hash verification | `sources.py`, `inferencex_recipe.py` |
 | Static launchers and shell values | `legacy_recipe.py`, `shell_recipe.py`, `shell_values.py` |
-| Runtime evidence | `runtime_recipe.py`, `single_node_runtime.py` |
+| Runtime evidence | `runtime_recipe.py`, `single_node_runtime.py`, `runtime_evidence.py` |
 | Effective defaults | `framework_defaults.py`, `sglang_additional_defaults.py`, `trt_additional_defaults.py`, `workload_defaults.py` |
 | Checkpoint identity | `checkpoint_quantization.py`, `model_config_snapshot.py` |
-| Source resolution | `deployment.py` |
+| Source resolution | `deployment.py`, `research_defaults.py` (opt-in assumptions) |
 | Prediction projections | `estimate.py` (historical wheels), `replay.py` |
 
 `sources.py` loads manifests once per process and verifies upstream bytes against
@@ -94,3 +95,49 @@ exactly. A live differential source check matched complete deployment and
 evidence objects for configs **202, 618, 909, and 1553**, including the explicit
 unresolved-knob outcome for 618. These are input-parity checks, not a latency
 qualification or a refreshed public accuracy snapshot.
+
+## Runtime evidence and research coverage
+
+CI defaults to `--configuration-mode estimated`, matching the research preview.
+Use `--configuration-mode verified` for source-evidence-only coverage. Both modes
+apply measured overrides and verified defaults first. Estimated mode then fills
+missing server/workload controls using `coverage-experiment/1`, recording each
+value with `historical_value_verified: false`. Explicit false, zero, and KV dtype
+values survive. An unresolved `auto` KV dtype receives a separate assumption.
+Missing recipes can use observed database topology and an explicitly assumed
+model mapping; ambiguous topology, corrupt evidence, quantization conflicts,
+and unsupported mappings still block resolution. Predictor failures stay visible.
+
+The assumptions and topology/model mapping follow `research_defaults.py`,
+`mapping.py`, and `filter.py` under the gym source directory above at immutable
+revision `a5862f9d0e516fd920c130dfa8d6828c7ac319c4`. The original repository is
+[aisim-e2e-gym](https://gitlab-master.nvidia.com/dl/ai-dynamo/aisim-e2e-gym).
+They fill preparation inputs, never the replay request/token loop.
+
+`--fetch-runtime-evidence` downloads public InferenceX artifacts and fixed
+run-attempt logs before resolution. The reviewed `runtime_agg_index.json` and
+`runtime_disagg_index.json` are unchanged copies of
+`benchmark_results/runtime-evidence/db-dump__2026-09-14/{agg,disagg}_index.json`
+at that gym revision. Downloads enforce recorded SHA-256 hashes, size limits,
+and fixed repository API routes. Expired or inaccessible archives are recorded
+as unavailable; checksum mismatches remain errors. `runtime-fetch.json` records
+the download outcomes in private campaign evidence.
+
+`runtime_observations.json` preserves 136 parsed deployment records and 36
+workload-only records from retained,
+checksum-verified copies of those artifacts. These are serving/workload facts,
+not cached predictions or latency values. `freeze_records(points, source,
+read_deployment_recipe)` generates the file through the existing identity,
+benchmark-match, checkout, and job-log checks, with `source.archived_runtime`
+disabled. Inputs are the selected September 28 cohort and the retained source
+cache. Regenerate with those original artifacts; do not edit records manually.
+Each record binds the complete input `SiliconRow` by SHA-256, including measured
+metrics, so another measurement cannot reuse it. Available raw artifacts take
+precedence. Archived facts explicitly record
+`historical_artifacts_revalidated: false`: CI did not revalidate expired raw
+artifacts, but the archived values were validated during generation.
+
+The full cohort resolves to 964 verified and 1,107 estimated candidates, with
+210 unresolved. Summary counts and each published point label their evidence
+quality. Coverage parity does not promise equal predictions across predictor
+revisions; fresh replay outcomes and errors determine the report.

@@ -17,6 +17,10 @@ on:
       nightly_run:
         required: true
         type: string
+      configuration_mode:
+        required: false
+        default: estimated
+        type: string
       preview:
         required: false
         default: false
@@ -186,6 +190,8 @@ jobs:
           EXPECTED_SHA: ${{ inputs.sha }}
           EVALUATED_BRANCH: ${{ inputs.branch }}
           PREVIEW: ${{ inputs.preview }}
+          CONFIGURATION_MODE: ${{ inputs.configuration_mode }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           preview_args=()
           if [[ "${PREVIEW}" == 'true' ]]; then preview_args+=(--preview); fi
@@ -196,6 +202,7 @@ jobs:
             --commit "${EXPECTED_SHA}" --branch "${EVALUATED_BRANCH}" \
             --run-id "${GITHUB_RUN_ID}" --run-attempt "${GITHUB_RUN_ATTEMPT}" \
             --source-cache "${RUNNER_TEMP}/accuracy-source" --evidence "${RUNNER_TEMP}/accuracy-evidence" \
+            --configuration-mode "${CONFIGURATION_MODE}" --fetch-runtime-evidence \
             --workers 6 --point-timeout 180 --output "${RUNNER_TEMP}/accuracy-public" "${preview_args[@]}"
       - name: Report advisory accuracy and coverage
         run: |
@@ -207,6 +214,7 @@ jobs:
           print('Evaluated revision:', summary['snapshot']['evaluated_revision'])
           print('Measurements:', summary['snapshot']['release_tag'])
           print('\n```json\n' + json.dumps(summary['totals'], indent=2) + '\n```')
+          print('\nConfiguration evidence:', summary['snapshot']['campaign'].get('configuration', 'not recorded'))
           print('\nCampaign outcomes:', summary['snapshot']['campaign']['outcomes'])
           print('\nMeasurement exclusions:', summary['snapshot']['campaign']['measurement_filter_counts'])
           print('\nPrediction exclusions:', summary['snapshot']['campaign']['exclusion_reasons'])
