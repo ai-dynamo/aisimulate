@@ -571,6 +571,14 @@ def validate_native_collection(
 
                     validate_vllm_hardware_receipts(cell, payload, path)
                     validate_real_hybrid_repetitions(cell, payload, path)
+                    from .graph_policy import declared_capture_sizes, validate_vllm_native_capture
+
+                    policy = getattr(cell, "backend_policy", None)
+                    validate_vllm_native_capture(
+                        declared_capture_sizes(policy.expected_markers) if policy is not None else None,
+                        payload,
+                        path,
+                    )
             else:
                 _validate_token_streams(payload, path)
         if input_provenance is None:

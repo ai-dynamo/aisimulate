@@ -83,6 +83,22 @@ def _same_sglang_policy(left: dict, right: dict, boundary: str) -> None:
         raise ValueError(f"SGLang resolved execution policies differ across {boundary}")
 
 
+def _graph_identity(cell: dict) -> dict:
+    """Frozen engine settings that calibration, holdout and shards must share.
+
+    This includes explicit native CUDA-graph requests. The free-text admission
+    reason is excluded.
+    """
+    policy = cell.get("backend_policy") or {}
+    return {
+        "backend_policy": {
+            key: policy.get(key) for key in ("policy_id", "generator_overrides", "expected_markers", "aic_fields")
+        },
+        "sglang_cuda_graph_backend_prefill": cell.get("sglang_cuda_graph_backend_prefill"),
+        "sglang_cuda_graph_max_bs_prefill": cell.get("sglang_cuda_graph_max_bs_prefill"),
+    }
+
+
 def _sha(value) -> str:
     if not isinstance(value, str) or len(value) != 64 or any(c not in "0123456789abcdef" for c in value):
         raise ValueError("expected lowercase SHA256 identity")
@@ -180,6 +196,22 @@ def _plan_run(spec: dict, base: Path, role: str) -> dict:
         requested_allocator is not None and key[0] != "sglang"
     ):
         raise ValueError("SGLang allocator differs between frozen plan and cell")
+    from .graph_policy import declared_capture_sizes, validate_sglang_prefill_graph
+
+    prefill_graph = (options.get("sglang_cuda_graph_backend_prefill"), options.get("sglang_cuda_graph_max_bs_prefill"))
+    validate_sglang_prefill_graph(*prefill_graph)
+    if (
+        cell.get("sglang_cuda_graph_backend_prefill"),
+        cell.get("sglang_cuda_graph_max_bs_prefill"),
+    ) != prefill_graph or (prefill_graph[0] is not None and key[0] != "sglang"):
+        raise ValueError("SGLang prefill CUDA graph differs between frozen plan and cell")
+    policy = cell.get("backend_policy") or {}
+    expected_markers = policy.get("expected_markers") or {}
+    capture_sizes = declared_capture_sizes(expected_markers)
+    if capture_sizes is not None and (
+        key[0] != "vllm" or options.get("vllm_cudagraph_capture_sizes") != list(capture_sizes)
+    ):
+        raise ValueError("vLLM CUDA-graph capture sizes differ between frozen plan and backend policy")
     runtime_cell = SimpleNamespace(
         **{
             k: cell[k]
@@ -188,6 +220,9 @@ def _plan_run(spec: dict, base: Path, role: str) -> dict:
         topology=SimpleNamespace(**topology),
         sglang_mem_fraction_static=requested_fraction,
         sglang_allocator_max_split_size_mb=requested_allocator,
+        sglang_cuda_graph_backend_prefill=prefill_graph[0],
+        sglang_cuda_graph_max_bs_prefill=prefill_graph[1],
+        backend_policy=SimpleNamespace(policy_id=policy.get("policy_id"), expected_markers=expected_markers),
         execution_identity=tuple(identity[k] for k in EXECUTION_COLUMNS),
     )
     run = {
@@ -208,6 +243,8 @@ def _plan_run(spec: dict, base: Path, role: str) -> dict:
         children = [_plan_run(child, base, role) for child in spec["shards"]]
         if any("children" in child or child["key"] != key or child["corpus"] != corpus for child in children):
             raise ValueError("acceptance shards changed parent execution identity or corpus")
+        if any(_graph_identity(child["cell"]) != _graph_identity(cell) for child in children):
+            raise ValueError("acceptance shards changed the parent's frozen engine/graph settings")
         by_id = {child["cell"]["cell_id"]: child for child in children}
         if len(by_id) != len(children):
             raise ValueError("duplicate acceptance shard")
@@ -245,6 +282,10 @@ def _native_run(run: dict, base: Path) -> dict:
     from collector.glm53flash_runtime_identity import validate_backend_version
 
     validate_backend_version(run["key"][0], native.backend_version)
+    from .graph_policy import validate_resolved_markers
+
+    policy = run["runtime_cell"].backend_policy
+    validate_resolved_markers(policy.expected_markers, policy.policy_id, root)
     observed = {point.point["benchmark_id"]: point for point in native.points}
     expected = {point["benchmark_id"]: _geometry(point) for point in run["points"]}
     if {bid: _geometry(point.point) for bid, point in observed.items()} != expected:
@@ -682,6 +723,8 @@ def evaluate(manifest: dict, base: Path) -> dict:
         holdout = _plan_run(entry["holdout"], base, "holdout")
         if calibration["key"] != holdout["key"] or holdout["key"] in prepared:
             raise ValueError("calibration/holdout cell mismatch or duplicate acceptance cell")
+        if _graph_identity(calibration["cell"]) != _graph_identity(holdout["cell"]):
+            raise ValueError("calibration/holdout frozen engine/graph settings differ")
         key = holdout["key"]
         record = {"entry": entry, "holdout": holdout, "calibration": calibration, "errors": []}
         prepared[key] = record

@@ -1275,6 +1275,15 @@ def _sglang_cell_generator_overrides(plan, cell, base, *, smoke=False):
         raise ValueError("SGLang memory fraction differs between frozen plan and cell")
     if cell.sglang_mem_fraction_static is not None:
         native_args.extend(["--mem-fraction-static", str(cell.sglang_mem_fraction_static)])
+    from .graph_policy import sglang_prefill_graph_args
+
+    prefill_graph = (cell.sglang_cuda_graph_backend_prefill, cell.sglang_cuda_graph_max_bs_prefill)
+    if prefill_graph != (
+        plan.options.sglang_cuda_graph_backend_prefill,
+        plan.options.sglang_cuda_graph_max_bs_prefill,
+    ):
+        raise ValueError("SGLang prefill CUDA graph differs between frozen plan and cell")
+    native_args.extend(sglang_prefill_graph_args(*prefill_graph))
     max_batch = max(plan.options.max_decode_batch_size or 32, plan.options.max_prefill_batch_size or 32)
     native_args.extend(["--max-running-requests", str(max_batch)])
     native_args.extend(["--cuda-graph-bs-decode", *map(str, range(1, max_batch + 1))])

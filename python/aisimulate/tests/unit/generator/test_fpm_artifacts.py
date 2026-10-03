@@ -1811,6 +1811,34 @@ def test_sglang_fpm_normalizes_legacy_graph_names_without_losing_sizes():
         _sglang_fpm_args(context, extra + ["--cuda-graph-bs-decode", "8"])
 
 
+def test_sglang_fpm_accepts_one_explicit_prefill_graph_request():
+    from aisimulate.generator.builders.fpm_builder import _sglang_fpm_args
+
+    context = {"ServiceConfig": {"model_path": "/model"}, "agg_cli_args_list": []}
+    extra = [
+        "--context-length",
+        "131072",
+        "--benchmark-points-file",
+        "/points.json",
+        "--tokenizer-revision",
+        "pinned",
+        "--kv-cache-dtype",
+        "fp8_e4m3",
+        "--disable-radix-cache",
+        "--cuda-graph-backend-prefill",
+        "breakable",
+        "--cuda-graph-max-bs-prefill",
+        "8192",
+    ]
+    argv = _sglang_fpm_args(context, extra)
+    assert argv[argv.index("--cuda-graph-backend-prefill") + 1] == "breakable"
+    assert argv[argv.index("--cuda-graph-max-bs-prefill") + 1] == "8192"
+    with pytest.raises(ValueError, match="at most one --cuda-graph-backend-prefill"):
+        _sglang_fpm_args(context, extra + ["--cuda-graph-backend-prefill", "breakable"])
+    with pytest.raises(ValueError, match="--cuda-graph-backend-prefill requires a value"):
+        _sglang_fpm_args(context, [*extra[:-4], "--cuda-graph-backend-prefill"])
+
+
 def test_sglang_normal_serving_still_uses_dynamo():
     params = _sglang_params()
     artifacts = render_backend_templates(copy.deepcopy(params), "sglang", version="0.5.20")

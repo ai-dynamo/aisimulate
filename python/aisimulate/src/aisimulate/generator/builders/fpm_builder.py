@@ -63,6 +63,9 @@ _SGLANG_FPM_VALUE_FLAGS = frozenset(
         "--moe-runner-backend",
         "--attention-backend",
         "--cuda-graph-max-bs-decode",
+        # Explicit GLM prefill graph opt-in (collector/fpm_forward/graph_policy.py);
+        # the native driver passes both through SGLang 0.5.20 ServerArgs.
+        "--cuda-graph-backend-prefill",
         "--cuda-graph-max-bs-prefill",
         "--benchmark-mode",
         "--benchmark-points-file",

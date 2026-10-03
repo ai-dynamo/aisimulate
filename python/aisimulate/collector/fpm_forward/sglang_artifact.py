@@ -365,6 +365,14 @@ def _validate_runtime_receipts(cell, payload: dict, parent: Path, evidence: dict
         for phase in ("prefill", "decode")
     ):
         raise ValueError("SGLang resolved native graph policy is missing")
+    from .graph_policy import validate_sglang_native_prefill_graph
+
+    validate_sglang_native_prefill_graph(
+        getattr(cell, "sglang_cuda_graph_backend_prefill", None),
+        getattr(cell, "sglang_cuda_graph_max_bs_prefill", None),
+        declared=declared,
+        resolved=resolved,
+    )
     for result in payload["results"]:
         point = result["point"]
         query = point["total_prefill_tokens"] if point["point_type"] == "prefill" else point["batch_size"]

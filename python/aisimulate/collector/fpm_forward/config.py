@@ -413,6 +413,12 @@ class FPMCollectionOptions:
     dataset_role: str = "calibration"
     sglang_mem_fraction_static: float | None = None
     sglang_allocator_max_split_size_mb: int | None = None
+    # Explicit native CUDA-graph requests for GLM same-request campaigns
+    # (graph_policy.py). None keeps each runtime's native graph default and
+    # the existing frozen-plan representation.
+    vllm_cudagraph_capture_sizes: tuple[int, ...] | None = None
+    sglang_cuda_graph_backend_prefill: str | None = None
+    sglang_cuda_graph_max_bs_prefill: int | None = None
 
     # None preserves legacy saved-plan identity; fresh CLI plans resolve both.
     slurm_cpus_per_task: int | None = None
@@ -421,6 +427,12 @@ class FPMCollectionOptions:
     def __post_init__(self) -> None:
         validate_sglang_mem_fraction_static(self.sglang_mem_fraction_static)
         validate_max_split_size(self.sglang_allocator_max_split_size_mb)
+        from .graph_policy import validate_capture_sizes, validate_sglang_prefill_graph
+
+        validate_capture_sizes(self.vllm_cudagraph_capture_sizes)
+        validate_sglang_prefill_graph(self.sglang_cuda_graph_backend_prefill, self.sglang_cuda_graph_max_bs_prefill)
+        if self.enforce_eager and self.vllm_cudagraph_capture_sizes is not None:
+            raise ValueError("--vllm-cudagraph-capture-sizes cannot be combined with --fpm-enforce-eager")
         collection_phases(self.worker_type)
         graph_fields = (self.cudagraph_mode, self.cudagraph_capture_sizes, self.max_cudagraph_capture_size)
         if any(value is not None for value in graph_fields) and self.worker_type is None:
@@ -652,6 +664,13 @@ class FPMCollectionOptions:
             dataset_role=getattr(args, "fpm_dataset_role", None) or "calibration",
             sglang_mem_fraction_static=getattr(args, "sglang_mem_fraction_static", None),
             sglang_allocator_max_split_size_mb=getattr(args, "sglang_allocator_max_split_size_mb", None),
+            vllm_cudagraph_capture_sizes=(
+                tuple(args.vllm_cudagraph_capture_sizes)
+                if getattr(args, "vllm_cudagraph_capture_sizes", None) is not None
+                else None
+            ),
+            sglang_cuda_graph_backend_prefill=getattr(args, "sglang_cuda_graph_backend_prefill", None),
+            sglang_cuda_graph_max_bs_prefill=getattr(args, "sglang_cuda_graph_max_bs_prefill", None),
             benchmark_points_json=points_json,
             benchmark_points_sha256=points_sha256,
             shard_token_budget=getattr(args, "fpm_shard_token_budget", None),
@@ -743,6 +762,11 @@ class FPMCollectionOptions:
             result["sglang_allocator_max_split_size_mb"] = self.sglang_allocator_max_split_size_mb
         if self.sglang_mem_fraction_static is not None:
             result["sglang_mem_fraction_static"] = self.sglang_mem_fraction_static
+        if self.vllm_cudagraph_capture_sizes is not None:
+            result["vllm_cudagraph_capture_sizes"] = list(self.vllm_cudagraph_capture_sizes)
+        if self.sglang_cuda_graph_backend_prefill is not None:
+            result["sglang_cuda_graph_backend_prefill"] = self.sglang_cuda_graph_backend_prefill
+            result["sglang_cuda_graph_max_bs_prefill"] = self.sglang_cuda_graph_max_bs_prefill
         if self.enforce_eager:
             result["enforce_eager"] = True
         if self.input_text_sha256:
@@ -811,6 +835,27 @@ def add_fpm_arguments(parser: argparse.ArgumentParser) -> None:
         type=_sglang_mem_fraction_static,
         default=None,
         help="SGLang-only native static-memory fraction (0 < value < 1); omit for the runtime default.",
+    )
+    group.add_argument(
+        "--sglang-cuda-graph-backend-prefill",
+        choices=("breakable",),
+        default=None,
+        help="SGLang-only explicit GLM prefill CUDA graph backend; requires --sglang-cuda-graph-max-bs-prefill. "
+        "Omit to keep the native default, which disables breakable prefill graphs for KDA models.",
+    )
+    group.add_argument(
+        "--sglang-cuda-graph-max-bs-prefill",
+        type=_positive_int,
+        default=None,
+        help="SGLang-only largest prefill CUDA graph token bucket for --sglang-cuda-graph-backend-prefill.",
+    )
+    group.add_argument(
+        "--vllm-cudagraph-capture-sizes",
+        type=_positive_int,
+        nargs="+",
+        default=None,
+        help="vLLM-only explicit GLM CUDA graph capture sizes (increasing, distinct); frozen as a backend "
+        "policy and verified against the resolved engine config. Omit to keep the runtime default.",
     )
     group.add_argument("--fpm-input-text", default=None, help="UTF-8 token corpus; freeze its SHA in the plan.")
     group.add_argument(
@@ -1142,6 +1187,9 @@ def reject_fpm_arguments_without_fpm(args: argparse.Namespace) -> None:
     for name in (
         "sglang_mem_fraction_static",
         "sglang_allocator_max_split_size_mb",
+        "sglang_cuda_graph_backend_prefill",
+        "sglang_cuda_graph_max_bs_prefill",
+        "vllm_cudagraph_capture_sizes",
         "fpm_max_gpus",
         "fpm_gpu_counts",
         "fpm_weight_quantizations",
