@@ -14,6 +14,9 @@ from aisimulate_core.sdk.performance_result import MoECommFallback
 class MixedStepInput:
     """Scheduled work for one mixed prefill/decode engine iteration.
 
+    ``context_tokens`` is the step's budget of UNCACHED (new) prefill tokens,
+    what the engines' chunked-prefill knobs cap: requests contribute their
+    ``isl - prefix`` new tokens to it, and the cached prefix is KV context.
     ``num_decode_requests`` is the number of logical decode sequences. It is
     deliberately distinct from the target-model query-token count, which is
     derived from the model's speculative draft depth.

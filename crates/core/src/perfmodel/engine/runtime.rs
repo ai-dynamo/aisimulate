@@ -1007,36 +1007,43 @@ impl Engine {
         decode.decode_kv_ceiling(&self.db)
     }
 
-    /// One mixed (chunked-prefill + decode) step latency. LITERAL mirror of
-    /// Python `_get_mix_step_latency` / `run_mixed`, which composes three
-    /// filtered phase passes (`_run_context_phase` / `_run_generation_phase`
-    /// with `op_filter`) that query ONLY the ops each pass consumes — the
-    /// same name-keyed sets the `ContextOpFilter` /
-    /// `only_generation_attention` walks below visit (issue #1498
-    /// follow-through: Python used to run the full lists and discard, so a
-    /// raise in a discarded query was a one-sided error surface):
+    /// One mixed (chunked-prefill + decode) step latency: the three-pass
+    /// composition of the legacy Python `_get_mix_step_latency` /
+    /// `run_mixed`, each pass querying ONLY the ops it consumes (the
+    /// name-keyed sets the `ContextOpFilter` / `only_generation_attention`
+    /// walks below visit; issue #1498 follow-through). `ctx_tokens` budgets
+    /// UNCACHED (new) prefill tokens — what SGLang `--chunked-prefill-size`,
+    /// vLLM `max_num_batched_tokens` and the TRT-LLM scheduler's
+    /// `max_num_tokens` cap — so with `isl_new = isl - prefix`:
     ///
     /// ```text
-    /// // Pass 1 — combined non-attention work:
-    /// //   run_static(batch=1, isl=ctx+gen, osl=1,
-    /// //              prefix=prefix*floor(ctx/isl), mode=static_ctx)
-    /// //   sum every op EXCEPT "context_attention"
+    /// // Pass 1 — combined non-attention work (every budget token is new):
+    /// //   run_static(batch=1, isl=ctx+gen*(nextn+1), osl=1,
+    /// //              prefix=n*prefix, mode=static_ctx)
+    /// //   for the same weighted request groups n as pass 2 (prefix 0 or
+    /// //   ctx 0: n = 0); sum every op EXCEPT "context_attention". The
+    /// //   prefix is KV context for ops that fold attention into a module;
+    /// //   an op that does not read it keeps one unweighted value
     /// // Pass 2 — context attention at the prefill shape:
-    /// //   run_static(batch=ceil(ctx/isl), isl=isl, osl=1, prefix=prefix)
-    /// //   take ONLY "context_attention", divide by ceil(isl/ctx)
+    /// //   prefix == 0 or ctx < isl_new:
+    /// //     run_static(batch=ceil(ctx/isl_new), isl=isl, osl=1, prefix)
+    /// //   prefix > 0 and ctx >= isl_new (fill = (ctx % isl_new) / isl_new):
+    /// //     (1 - fill) * run_static(batch=floor(ctx/isl_new), isl, prefix)
+    /// //         + fill * run_static(batch=floor(ctx/isl_new) + 1, isl, prefix)
+    /// //     i.e. the last, partial request weighs its fill fraction
+    /// //   take ONLY "context_attention", divide by ceil(isl_new/ctx)
     /// // Pass 3 — decode attention (only when gen_tokens > 0):
     /// //   run_static(batch=gen, isl=isl+osl//2, osl=2, mode=static_gen)
     /// //   -> one step at s = isl + osl//2 + 1 with the (nextn+1) batch
     /// //   take ONLY "generation_attention"
     /// ```
     ///
-    /// Note the Python conventions this deliberately preserves (they differed
-    /// from the pre-rewrite FPM packing): pass 1 uses
-    /// `ctx + gen * (nextn + 1)` tokens (the speculative-progress model —
-    /// every decode request verifies one target plus all drafts in the
-    /// combined pass, mirroring Python `run_mixed`'s `decode_query_tokens`),
-    /// the cached prefix multiplier is `floor(ctx/isl)` (not ceil), and the
-    /// pass-3 kv position carries `_run_generation_phase`'s `+1`.
+    /// Pass 1 uses `ctx + gen * (nextn + 1)` tokens (the speculative-progress
+    /// model — every decode request verifies one target plus all drafts in
+    /// the combined pass, mirroring `run_mixed`'s `decode_query_tokens`) and
+    /// the pass-3 kv position carries `_run_generation_phase`'s `+1`. The
+    /// prefix-free pass-2 packing is the legacy `ceil(ctx/isl)` and stays
+    /// bit-for-bit (frozen goldens); see [`Self::context_attention_groups`].
     ///
     /// The imbalance-correction scales mirror the `RuntimeConfig` fields
     /// Python threads into each pass (`base_backend.py:950-1043`).
@@ -1066,9 +1073,14 @@ impl Engine {
     /// decode_attention]`` for one mixed engine iteration — the three passes
     /// of the `_get_mix_step_latency` composition reported separately: pass 1
     /// is the shared non-attention work, pass 2 the context-attention slice
-    /// (already divided by `ceil(isl/ctx)`), pass 3 the decode-attention
-    /// slice. [`Engine::mixed_step_latency`] is their sum; the agg
-    /// speculative scheduler consumes the components.
+    /// (already divided by `ceil((isl - prefix)/ctx)`), pass 3 the
+    /// decode-attention slice. [`Engine::mixed_step_latency`] is their sum;
+    /// the agg speculative scheduler consumes the components.
+    ///
+    /// `ctx_tokens` budgets UNCACHED (new) prefill tokens — what SGLang
+    /// `--chunked-prefill-size`, vLLM `max_num_batched_tokens` and TRT-LLM
+    /// `max_num_tokens` cap — so a request with `prefix` cached tokens
+    /// contributes `isl - prefix` tokens to it; the prefix is KV context only.
     pub fn mixed_step_breakdown(
         &self,
         ctx_tokens: u32,
@@ -1092,10 +1104,41 @@ impl Engine {
         )
     }
 
+    /// `(requests, weight)` batches the context-attention pass prices for a
+    /// `ctx_tokens` budget of uncached tokens when every request carries
+    /// `isl_new` new tokens over its cached prefix; the weighted results sum
+    /// to the pass.
+    ///
+    /// With a cached prefix the budget is filled the way the schedulers fill
+    /// it: `floor(ctx/isl_new)` complete requests plus ONE partial request
+    /// of the remaining `ctx % isl_new` tokens. The partial request weighs
+    /// its fill fraction of one more batched request — the pass is the
+    /// convex combination of the floor-packed and the ceil-packed batch, so
+    /// it is exact at full fills and tends to the floor-packed batch as the
+    /// remainder vanishes. The perf tables are per-launch batch measurements:
+    /// pricing the remainder as a standalone query would charge a second
+    /// kernel floor and forfeit the batch efficiency a varlen prefill launch
+    /// actually has (a 256-token standalone query costs more than adding a
+    /// whole 1792-token request to the batch), while `ceil(ctx/isl_new)`
+    /// complete requests overstate a non-multiple budget by up to one whole
+    /// request. At `prefix == 0` the legacy `ceil(ctx/isl)` packing is kept
+    /// so the frozen prefix-free goldens hold bit-for-bit; with `ctx <
+    /// isl_new` one whole request is priced and the caller divides by the
+    /// chunk count `ceil(isl_new/ctx)`.
+    fn context_attention_groups(ctx_tokens: u32, isl_new: u32, prefix: u32) -> Vec<(u32, f64)> {
+        let complete = ctx_tokens / isl_new;
+        let partial = ctx_tokens % isl_new;
+        if prefix == 0 || complete == 0 || partial == 0 {
+            return vec![(ctx_tokens.div_ceil(isl_new), 1.0)];
+        }
+        let fill = f64::from(partial) / f64::from(isl_new);
+        vec![(complete, 1.0 - fill), (complete + 1, fill)]
+    }
+
     /// [`Self::mixed_step_breakdown`] with a per-op sink. The sink observes
     /// `(pass, op, result)` for every queried op with RAW (undivided) pass-2
-    /// values; the per-op wrapper applies the `ceil(isl/ctx)` division to the
-    /// FOLDED entries (fold-then-divide, matching Python and the scalar
+    /// values; the per-op wrapper applies the `ceil((isl - prefix)/ctx)`
+    /// division to the FOLDED entries (fold-then-divide, matching the scalar
     /// bucket bit-for-bit).
     #[allow(clippy::too_many_arguments)]
     fn mixed_step_breakdown_with(
@@ -1150,14 +1193,16 @@ impl Engine {
                     "V4.1 prefill requires isl > prefix".into(),
                 ));
             }
-            // The SDK's packed context count includes prefix for complete
-            // requests. A remainder describes this iteration's partial extend.
+            // `ctx_tokens` budgets UNCACHED (new) tokens, so complete requests
+            // pack by `isl - prefix` new tokens each. A remainder describes
+            // this iteration's partial extend.
+            let isl_new = isl.saturating_sub(prefix).max(1);
             let mut prefills = Vec::with_capacity(2);
-            if ctx_tokens / isl > 0 {
-                prefills.push((ctx_tokens / isl, isl - prefix, prefix));
+            if ctx_tokens / isl_new > 0 {
+                prefills.push((ctx_tokens / isl_new, isl_new, prefix));
             }
-            if ctx_tokens % isl > 0 {
-                prefills.push((1, ctx_tokens % isl, prefix));
+            if ctx_tokens % isl_new > 0 {
+                prefills.push((1, ctx_tokens % isl_new, prefix));
             }
             return self.dsv41_mixed_workload(
                 &prefills,
@@ -1168,26 +1213,51 @@ impl Engine {
                 on_op,
             );
         }
-        // Python divides by `isl` (`floor(ctx/isl)`, `ceil(ctx/isl)`) without
-        // a guard — callers always pass isl >= 1. Clamp to avoid a Rust
-        // div-by-zero panic on degenerate input Python would crash on.
+        // Callers always pass isl >= 1; clamp to avoid a div-by-zero panic
+        // on degenerate input.
         let isl = isl.max(1);
+        // `ctx_tokens` budgets UNCACHED (new) prefill tokens, so a request
+        // contributes `isl_new = isl - prefix` tokens to it and the cached
+        // prefix is KV context for the attention pass only. The scheduling
+        // layer (`run_agg`) packs requests by the same `isl_new`.
+        if ctx_tokens > 0 && prefix >= isl {
+            return Err(AicError::InvalidEngineConfig(format!(
+                "isl must be greater than 0 after removing prefix, but got {}",
+                isl as i64 - prefix as i64
+            )));
+        }
+        let isl_new = isl.saturating_sub(prefix).max(1);
 
         // ---- Pass 1: combined non-attention work ----
         // Speculative progress model: every decode request verifies one
         // target token plus all scheduled drafts, so the combined pass sees
         // `gen * (nextn + 1)` decode tokens (mirrors Python `run_mixed`'s
         // `decode_query_tokens`). Acceptance does not reduce this
-        // current-iteration work.
+        // current-iteration work. Every context token in the budget is a
+        // new token, so no prefix is subtracted from the token count.
         let decode_query_tokens = gen_tokens.saturating_mul(self.nextn.saturating_add(1));
         let combined = ctx_tokens + decode_query_tokens;
-        let prefix1 = prefix * (ctx_tokens / isl); // prefix * floor(ctx/isl)
-        if prefix1 >= combined {
-            return Err(AicError::InvalidEngineConfig(format!(
-                "isl must be greater than 0 after removing prefix, but got {}",
-                combined as i64 - prefix1 as i64
-            )));
-        }
+        // The cached prefix still reaches this pass as KV context: an op that
+        // folds attention into a module outside the `context_attention`
+        // name (DeepSeek/Kimi `context_mla_block`) reads it through `prefix`,
+        // while token-major ops (GEMM, MoE, comm, norms) only read the token
+        // count. DSA/DSV4/MSA modules are named `context_attention` and get
+        // the prefix in pass 2. The budget is filled exactly as in pass 2
+        // (`context_attention_groups`): `floor(ctx / isl_new)` complete
+        // requests plus a partial request weighing its fill fraction, or the
+        // one request being chunked. As in the legacy query, the requests of
+        // a group are priced as one sequence over their summed prefixes, so a
+        // group of `n` requests reads `n * prefix` cached tokens. With
+        // `ctx == isl_new` this is exactly the legacy `(combined - prefix,
+        // prefix)` query; prefix 0 or no prefill reads none.
+        let kv_groups: Vec<(u32, f64)> = if ctx_tokens == 0 || prefix == 0 {
+            vec![(0, 1.0)]
+        } else {
+            Self::context_attention_groups(ctx_tokens, isl_new, prefix)
+                .into_iter()
+                .map(|(requests, weight)| (prefix.saturating_mul(requests), weight))
+                .collect()
+        };
         let mut shared_non_attention = 0.0;
         for op in &self.context_ops {
             // Only target operations share a forward across prefill and
@@ -1195,33 +1265,48 @@ impl Engine {
             if op.is_context_attention() || op.name().starts_with("draft_") {
                 continue;
             }
-            let result = query_context_op(
-                op,
-                &self.db,
-                1,
-                combined - prefix1,
-                prefix1,
-                seq_imbalance_correction_scale,
-                None,
-            )?;
-            shared_non_attention += result.latency_ms;
-            on_op(MixedPass::SharedNonAttention, op, result);
+            let query = |kv_prefix: u32| {
+                query_context_op(
+                    op,
+                    &self.db,
+                    1,
+                    combined,
+                    kv_prefix,
+                    seq_imbalance_correction_scale,
+                    None,
+                )
+            };
+            let first = query(kv_groups[0].0)?;
+            if kv_groups.len() == 1 {
+                shared_non_attention += first.latency_ms;
+                on_op(MixedPass::SharedNonAttention, op, first);
+                continue;
+            }
+            let second = query(kv_groups[1].0)?;
+            if second.latency_ms == first.latency_ms && second.energy_wms == first.energy_wms {
+                // Prefix-free op: one unweighted row keeps the value exact.
+                shared_non_attention += first.latency_ms;
+                on_op(MixedPass::SharedNonAttention, op, first);
+                continue;
+            }
+            for (result, &(_, weight)) in [first, second].into_iter().zip(&kv_groups) {
+                let result = result.scaled(weight);
+                shared_non_attention += result.latency_ms;
+                on_op(MixedPass::SharedNonAttention, op, result);
+            }
         }
 
         // ---- Pass 2: context attention at the prefill shape ----
-        // Python: batch = ceil(ctx/isl), effective_isl = isl - prefix, then
-        // latency["context_attention"] / ceil(isl/ctx). With ctx_tokens == 0
-        // Python's `np.ceil(isl/0)` is +inf and the division yields 0 — skip.
+        // The weighted request batches filling the budget
+        // (`context_attention_groups`), each of `isl_new` new tokens over
+        // `prefix` cached ones; the fold is then divided by ceil(isl_new/ctx),
+        // the chunk count when one request's uncached prefill spans several
+        // steps. With ctx_tokens == 0 that division would be by +inf and
+        // yield 0 — skip.
         let mut context_attention = 0.0_f64;
         if ctx_tokens > 0 {
-            if prefix >= isl {
-                return Err(AicError::InvalidEngineConfig(format!(
-                    "isl must be greater than 0 after removing prefix, but got {}",
-                    isl as i64 - prefix as i64
-                )));
-            }
-            let batch2 = ctx_tokens.div_ceil(isl);
-            let scale2 = isl.div_ceil(ctx_tokens) as f64;
+            let groups = Self::context_attention_groups(ctx_tokens, isl_new, prefix);
+            let scale2 = isl_new.div_ceil(ctx_tokens) as f64;
             let mut attn = 0.0;
             for op in &self.context_ops {
                 if !op.is_context_attention() && !op.name().starts_with("draft_") {
@@ -1230,22 +1315,23 @@ impl Engine {
                 // Draft prefill uses the same whole-prefill amortization
                 // as target attention, independently of decode work. It
                 // never sees the combined target verification token count.
-                let result = query_context_op(
-                    op,
-                    &self.db,
-                    batch2,
-                    isl - prefix,
-                    prefix,
-                    seq_imbalance_correction_scale,
-                    None,
-                )?;
-                attn += result.latency_ms;
-                // RAW results to the sink; the per-op wrapper divides the
-                // FOLDED values by scale2 with one true division per name
-                // (Python folds `context_attention` into one key, then
-                // `latency_dict["context_attention"] / scale_factor` —
-                // fold-then-divide, `base_backend.py:1244-1246`).
-                on_op(MixedPass::ContextAttention, op, result);
+                for &(batch2, weight) in &groups {
+                    let result = query_context_op(
+                        op,
+                        &self.db,
+                        batch2,
+                        isl_new,
+                        prefix,
+                        seq_imbalance_correction_scale,
+                        None,
+                    )?
+                    .scaled(weight);
+                    attn += result.latency_ms;
+                    // RAW results to the sink; the per-op wrapper divides
+                    // the FOLDED values by scale2 with one true division per
+                    // name (fold-then-divide, matching this scalar bucket).
+                    on_op(MixedPass::ContextAttention, op, result);
+                }
             }
             context_attention = attn / scale2;
         }
@@ -1818,7 +1904,7 @@ impl Engine {
     /// [`Self::mixed_step_breakdown`] with the per-op values kept:
     /// `(shared_non_attention, context_attention, decode_attention)` lists of
     /// `(name, latency_ms, energy_wms, source)`. Context-attention entries
-    /// arrive already divided by the `ceil(isl/ctx)` scale.
+    /// arrive already divided by the `ceil((isl - prefix)/ctx)` scale.
     #[allow(clippy::too_many_arguments)]
     pub fn mixed_step_breakdown_per_op(
         &self,
@@ -1941,10 +2027,12 @@ impl Engine {
         )?;
         let mut ctx_attn = ctx_attn.into_values();
         if ctx_tokens > 0 && !self.has_dsv41_stages() {
-            // Mirror the scalar bucket and Python's fold-then-single-true-
-            // division (`base_backend.py:1244-1246`): one `/ scale2` per
-            // folded name, never a per-entry reciprocal multiply.
-            let scale2 = isl.max(1).div_ceil(ctx_tokens) as f64;
+            // Mirror the scalar bucket's fold-then-single-true-division: one
+            // `/ scale2` per folded name, never a per-entry reciprocal
+            // multiply. `scale2` is the chunk count of the UNCACHED prefill
+            // (`isl - prefix`), exactly as in `mixed_step_breakdown_with`.
+            let isl_new = isl.max(1).saturating_sub(prefix).max(1);
+            let scale2 = isl_new.div_ceil(ctx_tokens) as f64;
             for entry in &mut ctx_attn {
                 entry.1 /= scale2;
                 entry.2 /= scale2;
@@ -2703,6 +2791,30 @@ mod tests {
             context_ops(),
             generation_ops(),
         );
+        Engine::build(spec, Arc::new(db)).unwrap()
+    }
+
+    /// `build_engine` with the context attention renamed so it rides in
+    /// pass 1, as production `context_mla_block` does: an op outside the
+    /// `context_attention` name whose cost reads the cached prefix.
+    fn build_engine_with_module_attention() -> Engine {
+        let db = PerfDatabase::load_resolved(
+            &systems_root(),
+            "b200_sxm",
+            "vllm",
+            "0.24.0",
+            true,
+            false,
+            false,
+        )
+        .unwrap();
+        let mut ops = context_ops();
+        for op in &mut ops {
+            if let Op::ContextAttention(attention) = op {
+                attention.name = "context_attention_module".into();
+            }
+        }
+        let spec = EngineSpec::new(fixture_engine_config(None), ops, generation_ops());
         Engine::build(spec, Arc::new(db)).unwrap()
     }
 
@@ -3467,6 +3579,384 @@ mod tests {
         assert_eq!(ms, breakdown[0]);
     }
 
+    /// Legacy (pre-uncached-budget) three-pass composition, hand-rolled from
+    /// the fixture ops: pass 1 priced `ctx + decode - prefix * floor(ctx/isl)`
+    /// new tokens over that prefix, pass 2 priced `ceil(ctx/isl)` requests of
+    /// `isl - prefix` new tokens divided by `ceil(isl/ctx)`. At `prefix == 0`
+    /// it coincides with the current semantics, so it doubles as the
+    /// bit-for-bit oracle for the prefix-free path.
+    fn legacy_mixed_reference(
+        engine: &Engine,
+        ctx: u32,
+        decode: u32,
+        isl: u32,
+        osl: u32,
+        prefix: u32,
+    ) -> [f64; 3] {
+        let prefix1 = prefix * (ctx / isl);
+        let mut shared = 0.0;
+        let mut attn = 0.0;
+        for op in &engine.context_ops {
+            if op.is_context_attention() {
+                attn += query_context_op(
+                    op,
+                    &engine.db,
+                    ctx.div_ceil(isl),
+                    isl - prefix,
+                    prefix,
+                    1.0,
+                    None,
+                )
+                .unwrap()
+                .latency_ms;
+            } else {
+                shared += query_context_op(
+                    op,
+                    &engine.db,
+                    1,
+                    ctx + decode - prefix1,
+                    prefix1,
+                    1.0,
+                    None,
+                )
+                .unwrap()
+                .latency_ms;
+            }
+        }
+        [
+            shared,
+            attn / isl.div_ceil(ctx) as f64,
+            decode_attention_reference(engine, decode, isl, osl),
+        ]
+    }
+
+    /// Pass 3 is independent of the budget semantics: decode attention for
+    /// `decode` requests at `s = isl + osl/2 + 1` (fixture nextn = 0).
+    fn decode_attention_reference(
+        engine: &Engine,
+        decode_requests: u32,
+        isl: u32,
+        osl: u32,
+    ) -> f64 {
+        let mut decode = 0.0;
+        for op in &engine.generation_ops {
+            if op.is_generation_attention() {
+                decode += query_generation_op(
+                    op,
+                    &engine.db,
+                    decode_requests,
+                    1,
+                    isl + osl / 2 + 1,
+                    1.0,
+                    0,
+                    None,
+                )
+                .unwrap()
+                .latency_ms;
+            }
+        }
+        decode
+    }
+
+    /// Static prefill context attention of `batch` requests that each extend
+    /// `prefix` cached tokens by `new_tokens` — the per-request primitive the
+    /// mixed-step compositions below are hand-assembled from.
+    fn static_context_attention(engine: &Engine, batch: u32, new_tokens: u32, prefix: u32) -> f64 {
+        engine
+            .context_ops
+            .iter()
+            .filter(|op| op.is_context_attention())
+            .map(|op| {
+                query_context_op(op, &engine.db, batch, new_tokens, prefix, 1.0, None)
+                    .unwrap()
+                    .latency_ms
+            })
+            .sum()
+    }
+
+    /// Pass 1 as one forward of `tokens` new tokens (budget plus decode)
+    /// that reads `kv_prefix` cached tokens as context: every non-attention
+    /// context op at that shape.
+    fn shared_pass_reference(engine: &Engine, tokens: u32, kv_prefix: u32) -> f64 {
+        engine
+            .context_ops
+            .iter()
+            .filter(|op| !op.is_context_attention())
+            .map(|op| {
+                query_context_op(op, &engine.db, 1, tokens, kv_prefix, 1.0, None)
+                    .unwrap()
+                    .latency_ms
+            })
+            .sum()
+    }
+
+    #[test]
+    fn mixed_step_prefix_zero_is_bit_for_bit_the_legacy_composition() {
+        // ctx < isl (chunked), ctx == isl, ctx > isl at a non-multiple, and a
+        // decode-heavy shape: at prefix == 0 the uncached-budget semantics
+        // must reproduce the legacy composition exactly.
+        let engine = build_engine(None);
+        for (ctx, decode, isl, osl) in [
+            (512_u32, 4_u32, 4096_u32, 128_u32),
+            (1024, 2, 1024, 8),
+            (3000, 5, 2048, 64),
+            (256, 64, 4096, 512),
+        ] {
+            let got = engine
+                .mixed_step_breakdown(ctx, decode, isl, osl, 0, 1.0, 1.0)
+                .unwrap();
+            let legacy = legacy_mixed_reference(&engine, ctx, decode, isl, osl, 0);
+            assert_eq!(got[1], legacy[0], "pass 1 ctx={ctx} isl={isl}");
+            assert_eq!(got[2], legacy[1], "pass 2 ctx={ctx} isl={isl}");
+            assert_eq!(got[3], legacy[2], "pass 3 ctx={ctx} isl={isl}");
+            assert_eq!(got[0], got[1] + got[2] + got[3]);
+        }
+    }
+
+    #[test]
+    fn mixed_step_chunked_prefill_with_prefix_follows_uncached_isl() {
+        // ctx < isl with a cached prefix: the chunk count is
+        // ceil(isl_new/ctx) = ceil(900/300) = 3, not the legacy
+        // ceil(isl/ctx) = 4. Pass 1 prices the 300 + 7 new tokens over the
+        // chunked request's 100 cached tokens (the legacy pass dropped them:
+        // floor(300/1000) == 0).
+        let engine = build_engine(None);
+        let (ctx, decode, isl, osl, prefix) = (300_u32, 7_u32, 1000_u32, 64_u32, 100_u32);
+        let got = engine
+            .mixed_step_breakdown(ctx, decode, isl, osl, prefix, 1.0, 1.0)
+            .unwrap();
+        let legacy = legacy_mixed_reference(&engine, ctx, decode, isl, osl, prefix);
+        assert_eq!(got[1], shared_pass_reference(&engine, 307, 100));
+        assert!(got[2] > 0.0);
+        // One request of 900 new tokens over 100 cached, amortized over its
+        // 3 chunks of 300 (legacy: over 4).
+        assert_eq!(got[2], static_context_attention(&engine, 1, 900, 100) / 3.0);
+        assert!((got[2] - legacy[1] * 4.0 / 3.0).abs() < 1e-9 * got[2]);
+        assert_eq!(got[3], legacy[2]);
+    }
+
+    #[test]
+    fn mixed_step_full_prefill_with_prefix_prices_every_budget_token_as_new() {
+        // ctx >= isl with a cached prefix: the legacy pass 1 subtracted
+        // prefix * floor(ctx/isl) from the budget (double-crediting the cache
+        // once the step count already uses isl_new); now every one of the
+        // 2048 ctx tokens is new, and the budget's floor(2048/768) = 2
+        // complete requests contribute their 2 * 256 cached tokens as KV
+        // context only. Pass 2 fills the 2048-token budget with requests
+        // of 768 new tokens over 256 cached: 2 complete ones (1536) plus a
+        // partial request of the remaining 512, weighing 512/768 = 2/3 of a
+        // third batched request — not ceil(2048/768) = 3 complete requests.
+        let engine = build_engine(None);
+        let (ctx, decode, isl, osl, prefix) = (2048_u32, 2_u32, 1024_u32, 8_u32, 256_u32);
+        let got = engine
+            .mixed_step_breakdown(ctx, decode, isl, osl, prefix, 1.0, 1.0)
+            .unwrap();
+        let legacy = legacy_mixed_reference(&engine, ctx, decode, isl, osl, prefix);
+        assert_eq!(got[1], shared_pass_reference(&engine, 2050, 512));
+        assert_ne!(
+            got[1], legacy[0],
+            "pass 1 must no longer subtract the prefix from the token count"
+        );
+        let two = static_context_attention(&engine, 2, 768, 256);
+        let three = static_context_attention(&engine, 3, 768, 256);
+        let expected_attn = two / 3.0 + three * 2.0 / 3.0;
+        assert!((got[2] - expected_attn).abs() < 1e-12 * expected_attn);
+        assert!(two < got[2] && got[2] < three);
+        // The legacy composition packed ceil(2048/1024) = 2 requests on the
+        // full isl and never saw the third one the budget partly fills.
+        assert_eq!(legacy[1], two);
+        assert_eq!(got[3], legacy[2]);
+        // The per-op surface folds to the same three buckets.
+        let (shared, ctx_attn, dec_attn) = engine
+            .mixed_step_breakdown_per_op(ctx, decode, isl, osl, prefix, 1.0, 1.0)
+            .unwrap();
+        let sum = |rows: &[PerOpValue]| rows.iter().map(|r| r.1).sum::<f64>();
+        assert!((sum(&shared) - got[1]).abs() < 1e-12);
+        assert!((sum(&ctx_attn) - got[2]).abs() < 1e-12);
+        assert!((sum(&dec_attn) - got[3]).abs() < 1e-12);
+    }
+
+    #[test]
+    fn mixed_step_pass_one_reads_the_cached_prefix_of_the_packed_requests() {
+        // A module-attention op priced in pass 1 must see the cached prefix
+        // of the requests the budget holds, weighted like pass 2: the one
+        // request being chunked, exactly one request, or two complete
+        // requests plus a partial one weighing its fill fraction; and nothing
+        // when no prefill runs. isl 1000, prefix 100 -> isl_new 900; decode 7.
+        let engine = build_engine_with_module_attention();
+        let (decode, isl, osl, prefix) = (7_u32, 1000_u32, 64_u32, 100_u32);
+        for (ctx, kv_prefix) in [
+            (300_u32, 100_u32), // one chunk of one request
+            (900, 100),         // exactly one request
+        ] {
+            let got = engine
+                .mixed_step_breakdown(ctx, decode, isl, osl, prefix, 1.0, 1.0)
+                .unwrap();
+            assert_eq!(
+                got[1],
+                shared_pass_reference(&engine, ctx + decode, kv_prefix),
+                "pass 1 ctx={ctx}"
+            );
+            assert!(
+                got[1] > shared_pass_reference(&engine, ctx + decode, 0),
+                "the module op must read the prefix (ctx={ctx})"
+            );
+            // Context attention proper is absent from this fixture.
+            assert_eq!(got[2], 0.0);
+        }
+        // 2250 = 2 * 900 + 450: two complete requests (200 cached tokens)
+        // plus a partial one of fill 450/900 = 1/2 (300 cached tokens).
+        let got = engine
+            .mixed_step_breakdown(2250, decode, isl, osl, prefix, 1.0, 1.0)
+            .unwrap();
+        let two = shared_pass_reference(&engine, 2257, 200);
+        let three = shared_pass_reference(&engine, 2257, 300);
+        let expected = two / 2.0 + three / 2.0;
+        assert!((got[1] - expected).abs() < 1e-12 * expected);
+        assert!(two < got[1] && got[1] < three);
+        // The per-op surface folds both weighted rows of the module op.
+        let (shared, _, _) = engine
+            .mixed_step_breakdown_per_op(2250, decode, isl, osl, prefix, 1.0, 1.0)
+            .unwrap();
+        assert!((shared.iter().map(|r| r.1).sum::<f64>() - got[1]).abs() < 1e-12 * got[1]);
+        // No prefill scheduled: the prefix is inert in pass 1 as well.
+        let decode_only = engine
+            .mixed_step_breakdown(0, decode, isl, osl, prefix, 1.0, 1.0)
+            .unwrap();
+        assert_eq!(decode_only[1], shared_pass_reference(&engine, decode, 0));
+    }
+
+    #[test]
+    fn mixed_step_pass_one_keeps_prefix_free_ops_exact_for_a_partial_request() {
+        // In the plain fixture no pass-1 op reads the prefix: a non-multiple
+        // budget with a prefix must price pass 1 exactly as one unweighted
+        // query, not as a rounded convex combination of equal values.
+        let engine = build_engine(None);
+        let got = engine
+            .mixed_step_breakdown(2250, 7, 1000, 64, 100, 1.0, 1.0)
+            .unwrap();
+        assert_eq!(got[1], shared_pass_reference(&engine, 2257, 0));
+    }
+
+    #[test]
+    fn mixed_step_prefix_at_or_beyond_isl_rejects_prefill_only() {
+        let engine = build_engine(None);
+        assert!(
+            engine
+                .mixed_step_breakdown(64, 2, 512, 8, 512, 1.0, 1.0)
+                .is_err()
+        );
+        assert!(
+            engine
+                .mixed_step_breakdown(64, 2, 512, 8, 600, 1.0, 1.0)
+                .is_err()
+        );
+        // A decode-only iteration schedules no prefill; the prefix is inert.
+        let decode_only = engine
+            .mixed_step_breakdown(0, 2, 512, 8, 512, 1.0, 1.0)
+            .unwrap();
+        assert_eq!(
+            decode_only,
+            engine
+                .mixed_step_breakdown(0, 2, 512, 8, 0, 1.0, 1.0)
+                .unwrap()
+        );
+        assert_eq!(decode_only[2], 0.0);
+        assert!(decode_only[3] > 0.0);
+    }
+
+    #[test]
+    fn mixed_step_partial_request_prices_an_isl_sized_budget_between_floor_and_ceil_packing() {
+        // The regime every explicit `--ctx-tokens <ISL>` run lands in: the
+        // 2048-token budget holds one complete request of 1920 new tokens
+        // plus a 128-token partial request, both over 128 cached tokens. The
+        // partial request weighs 128/1920 = 1/15 of a second batched
+        // request; ceil(2048/1920) = 2 complete requests would charge 3840
+        // new tokens of attention. (The fixture database is launch-bound at
+        // these toy shapes -- one 128-token request costs a third of a
+        // 2048-token one -- so the warm step is not compared with the cold
+        // one here; the real-engine CLI regression covers that direction.)
+        let engine = build_engine(None);
+        let (ctx, decode, isl, osl) = (2048_u32, 4_u32, 2048_u32, 512_u32);
+        let cold = engine
+            .mixed_step_breakdown(ctx, decode, isl, osl, 0, 1.0, 1.0)
+            .unwrap();
+        let warm = engine
+            .mixed_step_breakdown(ctx, decode, isl, osl, 128, 1.0, 1.0)
+            .unwrap();
+        // Pass 1 sees 2048 + 4 new tokens either way; warm, the one complete
+        // request's 128 cached tokens ride along as KV context.
+        assert_eq!(cold[1], shared_pass_reference(&engine, 2052, 0));
+        assert_eq!(warm[1], shared_pass_reference(&engine, 2052, 128));
+        assert_eq!(warm[3], cold[3]);
+        let one = static_context_attention(&engine, 1, 1920, 128);
+        let two = static_context_attention(&engine, 2, 1920, 128);
+        let expected_attn = one * 14.0 / 15.0 + two / 15.0;
+        assert!((warm[2] - expected_attn).abs() < 1e-12 * expected_attn);
+        assert!(one < warm[2] && warm[2] < two);
+        // The per-op surface folds both requests under one name and matches.
+        let (_, ctx_attn, _) = engine
+            .mixed_step_breakdown_per_op(ctx, decode, isl, osl, 128, 1.0, 1.0)
+            .unwrap();
+        assert!((ctx_attn.iter().map(|r| r.1).sum::<f64>() - warm[2]).abs() < 1e-12);
+    }
+
+    #[test]
+    fn mixed_step_prefix_free_non_multiple_budget_keeps_legacy_ceil_packing() {
+        // prefix == 0 keeps ceil(3000/2048) = 2 complete requests (frozen
+        // goldens); the partial-request pricing is gated on a cached prefix.
+        let engine = build_engine(None);
+        let got = engine
+            .mixed_step_breakdown(3000, 5, 2048, 64, 0, 1.0, 1.0)
+            .unwrap();
+        assert_eq!(got[2], static_context_attention(&engine, 2, 2048, 0));
+        assert_eq!(
+            Engine::context_attention_groups(3000, 2048, 0),
+            vec![(2, 1.0)]
+        );
+        // 3000 = 1 * 2047 + 953: the partial request weighs 953/2047.
+        let fill = 953.0 / 2047.0;
+        assert_eq!(
+            Engine::context_attention_groups(3000, 2047, 1),
+            vec![(1, 1.0 - fill), (2, fill)]
+        );
+        assert_eq!(
+            Engine::context_attention_groups(4094, 2047, 1),
+            vec![(2, 1.0)]
+        );
+        assert_eq!(
+            Engine::context_attention_groups(300, 900, 100),
+            vec![(1, 1.0)]
+        );
+    }
+
+    #[test]
+    fn dsv41_complete_extends_with_prefix_pack_by_uncached_tokens() {
+        // 4096-token requests with 3584 cached: the 1024-token budget holds
+        // two complete 512-token extends; 1100 holds those plus a 76-token
+        // partial extend. Encoder stages see every new token, the bounded
+        // decoder stage min(extend, 128) per request, decode adds 3 requests
+        // per stage (linear memory probes, one unit per token).
+        let engine = dsv41_probe_engine(true);
+        let unit = dsv41_probe_token_ms(&engine);
+        let parts = engine
+            .mixed_step_breakdown(1024, 3, 4096, 32, 3584, 1.0, 1.0)
+            .unwrap();
+        assert!((parts[2] / unit - (1024.0 + 2.0 * 128.0)).abs() < 1e-9);
+        assert!((parts[1] / unit - (1024.0 + 2.0 * 128.0 + 6.0)).abs() < 1e-9);
+        let parts = engine
+            .mixed_step_breakdown(1100, 3, 4096, 32, 3584, 1.0, 1.0)
+            .unwrap();
+        assert!((parts[2] / unit - (1100.0 + 2.0 * 128.0 + 76.0)).abs() < 1e-9);
+        assert!((parts[1] / unit - (1100.0 + 2.0 * 128.0 + 76.0 + 6.0)).abs() < 1e-9);
+        let (shared, context, decode) = engine
+            .mixed_step_breakdown_per_op(1100, 3, 4096, 32, 3584, 1.0, 1.0)
+            .unwrap();
+        assert!((shared.iter().map(|v| v.1).sum::<f64>() - parts[1]).abs() < 1e-12);
+        assert!((context.iter().map(|v| v.1).sum::<f64>() - parts[2]).abs() < 1e-12);
+        assert!((decode.iter().map(|v| v.1).sum::<f64>() - parts[3]).abs() < 1e-12);
+    }
+
     #[test]
     fn mixed_draft_phases_preserve_native_results_and_target_composition() {
         use crate::operators::op::TokenScaleOp;
@@ -3516,26 +4006,30 @@ mod tests {
             gen_ops.extend(gen_draft.clone());
             let engine = Engine::build(EngineSpec::new(config, ctx_ops, gen_ops), db).unwrap();
 
-            for (ctx, generation, prefix) in
-                [(0_u32, 7, 0), (128, 0, 64), (128, 7, 64), (8192, 7, 64)]
-            {
+            // Requests pack by their UNCACHED prefill length (4096 - 64 =
+            // 4032): a 128-token budget is one chunk of one request, an
+            // 8192-token budget holds two complete requests plus a 128-token
+            // partial one weighing 128/4032 of a third batched request.
+            let fill = 128.0 / 4032.0;
+            for (ctx, generation, prefix, batches) in [
+                (0_u32, 7, 0, &[][..]),
+                (128, 0, 64, &[(1_u32, 1.0_f64)][..]),
+                (128, 7, 64, &[(1, 1.0)][..]),
+                (8192, 7, 64, &[(2, 1.0 - fill), (3, fill)][..]),
+            ] {
+                let isl_new = 4096 - prefix;
                 let mut ctx_expected = PerformanceResult::zero();
                 if ctx > 0 {
                     for op in &ctx_draft {
-                        ctx_expected = ctx_expected.plus(
-                            query_context_op(
-                                op,
-                                &engine.db,
-                                ctx.div_ceil(4096),
-                                4096 - prefix,
-                                prefix,
-                                1.0,
-                                None,
-                            )
-                            .unwrap(),
-                        );
+                        for &(batch, weight) in batches {
+                            ctx_expected = ctx_expected.plus(
+                                query_context_op(op, &engine.db, batch, isl_new, prefix, 1.0, None)
+                                    .unwrap()
+                                    .scaled(weight),
+                            );
+                        }
                     }
-                    ctx_expected = ctx_expected.scaled(1.0 / 4096_u32.div_ceil(ctx) as f64);
+                    ctx_expected = ctx_expected.scaled(1.0 / isl_new.div_ceil(ctx) as f64);
                 }
                 let mut gen_expected = PerformanceResult::zero();
                 if generation > 0 {
@@ -3589,7 +4083,7 @@ mod tests {
                     )
                     .unwrap();
                 if ctx > 0 {
-                    observed_ctx = observed_ctx.scaled(1.0 / 4096_u32.div_ceil(ctx) as f64);
+                    observed_ctx = observed_ctx.scaled(1.0 / isl_new.div_ceil(ctx) as f64);
                 }
                 // Includes energy, source, SOL components and fallback records.
                 assert_eq!(observed_ctx, ctx_expected);

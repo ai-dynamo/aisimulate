@@ -8,6 +8,7 @@ Sweep output correctness is validated by the integration parity test
 the unit coverage here targets local control flow and terminal classification.
 """
 
+import math
 from unittest.mock import MagicMock
 
 import pandas as pd
@@ -432,6 +433,122 @@ def test_sweep_agg_uses_visual_effective_isl_for_context_budget(monkeypatch):
     )
 
     assert points == [(1, 1040)]  # 256 text + 784 post-merge video tokens
+
+
+def _recording_agg_worker(points: list[tuple[int, int]]):
+    def _record(*, runtime_config, ctx_tokens, **_kwargs):
+        points.append((runtime_config.batch_size, ctx_tokens))
+        summary = MagicMock()
+        summary.check_oom.return_value = False
+        summary.check_kv_cache_oom.return_value = False
+        summary.get_result_dict.return_value = {"ttft": 1.0, "tpot": 1.0, "seq/s": 1.0}
+        summary.get_per_ops_source.return_value = {}
+        return summary
+
+    return _record
+
+
+@pytest.mark.parametrize("prefix", [0, 1536, 2000])
+def test_sweep_agg_prefix_grid_covers_every_batch_and_mirrors_legacy(monkeypatch, prefix):
+    """With a cached prefix the ctx grid and the batch/ctx guards run on the
+    uncached isl, so every batch size keeps sweep points (a grid on the full
+    isl was guarded out almost entirely once prefix >= ~75% of isl), and the
+    legacy BaseBackend sweep visits exactly the same (b, ctx_tokens) points."""
+    from aisimulate.sdk.backends.factory import get_backend
+
+    isl, osl, max_batch_size = 2048, 64, 8
+    isl_new = isl - prefix
+    runtime_config = config.RuntimeConfig(isl=isl, osl=osl, prefix=prefix, ttft=1e9, tpot=1e9)
+
+    points: list[tuple[int, int]] = []
+    monkeypatch.setattr(sweep, "predict_agg_worker", _recording_agg_worker(points))
+    sweep._sweep_one_parallel_agg(
+        model=MagicMock(),
+        backend=MagicMock(),
+        database=MagicMock(),
+        runtime_config=runtime_config,
+        top_k=0,
+        max_batch_size=max_batch_size,
+        ctx_stride=512,
+        enable_chunked_prefill=False,
+        free_gpu_memory_fraction=None,
+        max_seq_len=None,
+    )
+
+    assert {b for b, _ in points} == set(range(1, max_batch_size + 1))
+    for b, ctx_tokens in points:
+        assert ctx_tokens % isl_new == 0
+        # legacy guards: at least one decoding request when b > 1
+        assert b - math.ceil(ctx_tokens / isl_new) >= (1 if b > 1 else 0)
+    # b=1 sweeps exactly one request's uncached prefill.
+    assert [ctx for b, ctx in points if b == 1] == [isl_new]
+
+    legacy_points: list[tuple[int, int]] = []
+    legacy_record = _recording_agg_worker(legacy_points)
+    legacy_backend = get_backend("sglang")
+    monkeypatch.setattr(
+        legacy_backend,
+        "run_agg",
+        lambda model, database, runtime_config, **kwargs: legacy_record(
+            runtime_config=runtime_config, ctx_tokens=kwargs["ctx_tokens"]
+        ),
+    )
+    legacy_backend.find_best_agg_result_under_constraints(
+        MagicMock(),
+        MagicMock(),
+        runtime_config,
+        top_k=0,
+        max_batch_size=max_batch_size,
+        ctx_stride=512,
+        enable_chunked_prefill=False,
+    )
+    assert legacy_points == points
+
+
+@pytest.mark.parametrize("prefix", [2048, 2049])
+def test_sweep_agg_rejects_prefix_at_or_beyond_isl_before_the_grid(monkeypatch, prefix):
+    """run_agg rejects a request with no uncached token, so both agg sweeps
+    must fail up front, before any grid point is estimated, rather than at
+    their first run_agg call."""
+    from aisimulate.sdk.backends.factory import get_backend
+
+    runtime_config = config.RuntimeConfig(isl=2048, osl=64, prefix=prefix, ttft=1e9, tpot=1e9)
+
+    points: list[tuple[int, int]] = []
+    monkeypatch.setattr(sweep, "predict_agg_worker", _recording_agg_worker(points))
+    with pytest.raises(ValueError, match=r"prefix \(\d+\) must be smaller than the effective isl \(2048\)"):
+        sweep._sweep_one_parallel_agg(
+            model=MagicMock(),
+            backend=MagicMock(),
+            database=MagicMock(),
+            runtime_config=runtime_config,
+            top_k=0,
+            max_batch_size=8,
+            ctx_stride=512,
+            enable_chunked_prefill=False,
+            free_gpu_memory_fraction=None,
+            max_seq_len=None,
+        )
+    assert points == []
+
+    legacy_backend = get_backend("sglang")
+    legacy_calls: list[int] = []
+    monkeypatch.setattr(
+        legacy_backend,
+        "run_agg",
+        lambda model, database, runtime_config, **kwargs: legacy_calls.append(kwargs["ctx_tokens"]),
+    )
+    with pytest.raises(ValueError, match=r"prefix \(\d+\) must be smaller than the effective isl \(2048\)"):
+        legacy_backend.find_best_agg_result_under_constraints(
+            MagicMock(),
+            MagicMock(),
+            runtime_config,
+            top_k=0,
+            max_batch_size=8,
+            ctx_stride=512,
+            enable_chunked_prefill=False,
+        )
+    assert legacy_calls == []
 
 
 # ---------------------------------------------------------------------------

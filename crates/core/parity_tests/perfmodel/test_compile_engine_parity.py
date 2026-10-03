@@ -306,7 +306,14 @@ _CHUNKED_PREFILL_SHAPES = [
     (512, 4, 4096, 128, 0),  # chunked prefill: ctx_tokens < isl
     (512, 4, 4096, 128, 256),  # chunked + cached prefix
     (300, 7, 1000, 64, 100),  # ragged chunk + prefix + decode overlap
+    (4096, 4, 4096, 128, 256),  # isl-sized budget + cached prefix: one request plus a partial one
 ]
+
+
+def _default_ctx_tokens(case) -> int:
+    """The agg default budget: one request's uncached prefill. Shared by the
+    mixed-step test and the golden pin path (pin_goldens.py)."""
+    return max(case.isl - case.prefix, 1)
 
 
 def _chunked_prefill_key(ctx_tokens: int, gen_tokens: int, isl: int, osl: int, prefix: int) -> str:
@@ -333,7 +340,11 @@ class TestCompileEngineMixedStepParity:
     @pytest.mark.parametrize("case", _SUBSET_CASES)
     def test_mixed_step(self, case: EngineStepParityCase) -> None:
         handle = _compile_handle(case)
-        new_val = handle.mixed_step_latency(case.isl, case.batch_size, case.isl, max(case.osl, 2), case.prefix)
+        # One request's uncached prefill as the budget (the agg default), as in
+        # test_engine_step_parity._mix_step_shape.
+        new_val = handle.mixed_step_latency(
+            _default_ctx_tokens(case), case.batch_size, case.isl, max(case.osl, 2), case.prefix
+        )
         py_val = _case_reference(case, "mixed_step")
         _assert_within("mixed_step", py_val, new_val, backend=case.backend_name)
 

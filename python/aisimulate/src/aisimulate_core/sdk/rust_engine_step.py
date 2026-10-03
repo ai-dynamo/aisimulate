@@ -880,7 +880,7 @@ def estimate_mixed_step_latency_with_rust(
     Delegates to ``EngineHandle.mixed_step_latency``. The Rust
     ``Engine::mixed_step_latency`` is a literal mirror of Python's
     ``_get_mix_step_latency`` three-pass composition (combined non-attention,
-    context attention / ceil(isl/ctx), decode attention with the ``(nextn+1)``
+    context attention / ceil((isl - prefix)/ctx), decode attention with the ``(nextn+1)``
     batch), so the raw step args plus the runtime imbalance scales pass
     straight through with no Python-side pre-math.
     """
@@ -920,7 +920,7 @@ def estimate_mixed_step_breakdown_with_rust(
     ``run_mixed`` retains native operation names, including draft work in
     either phase, while preserving the legacy ``"context_attention (scaled)"``
     and ``"generation_attention"`` keys. Context values are already divided
-    by ``ceil(isl/ctx)``. FPM retains its prefill/decode component split and separate draft rows, with
+    by ``ceil((isl - prefix)/ctx)``. FPM retains its prefill/decode component split and separate draft rows, with
     the target decode operation reported under ``"generation_attention"``.
     """
     handle = _cached_engine_handle(model, database)

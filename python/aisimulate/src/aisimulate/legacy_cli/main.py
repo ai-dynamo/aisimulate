@@ -602,7 +602,8 @@ def _add_default_mode_arguments(parser):
         action="store_true",
         default=False,
         help="Enable chunked prefill for finer-grained context token sweep during optimization. "
-        "When off (default), context token stride is aligned to ISL for faster sweeping.",
+        "When off (default), context token stride is aligned to the uncached ISL (ISL minus --prefix) "
+        "for faster sweeping.",
     )
     parser.add_argument(
         "--free-gpu-memory-fraction",
@@ -1054,7 +1055,12 @@ def _add_estimate_mode_arguments(parser):
         "--ctx-tokens",
         type=int,
         default=None,
-        help="Context tokens budget for IFB scheduling (agg only). Default: same as ISL.",
+        help=(
+            "The scheduler's per-step budget of uncached (new) context tokens for IFB scheduling (agg only): "
+            "SGLang --chunked-prefill-size / vLLM max_num_batched_tokens / TRT-LLM scheduler max_num_tokens "
+            "(TRT-LLM's build-time max_num_tokens for activation memory is separate). "
+            "Default: ISL (including any visual tokens) minus --prefix."
+        ),
     )
 
     # Shared parallelism defaults (also used as fallback for prefill/decode-specific args)

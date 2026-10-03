@@ -1416,7 +1416,8 @@ class EngineHandle:
     ]:
         """``mixed_step_breakdown`` with the per-op values kept:
         ``(shared_non_attention, context_attention, decode_attention)`` lists;
-        context-attention entries arrive already divided by ``ceil(isl/ctx)``."""
+        context-attention entries arrive already divided by
+        ``ceil((isl - prefix)/ctx)``; ``ctx_tokens`` budgets uncached tokens."""
         return self._engine.mixed_step_breakdown_per_op(
             int(ctx_tokens),
             int(gen_tokens),

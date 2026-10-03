@@ -127,7 +127,12 @@ class InferenceSession:
         runtime_config: config.RuntimeConfig,
         step: MixedStepInput,
     ) -> StepEstimate:
-        """Estimate one mixed prefill/decode engine iteration."""
+        """Estimate one mixed prefill/decode engine iteration.
+
+        ``step.context_tokens`` is a budget of UNCACHED prefill tokens: with
+        ``runtime_config.prefix`` cached tokens, requests contribute their
+        ``isl - prefix`` new tokens to it (see ``MixedStepInput``).
+        """
         return self._backend.run_mixed(self._model, self._database, runtime_config, step)
 
     def run_agg(self, runtime_config: config.RuntimeConfig, **kwargs) -> InferenceSummary:

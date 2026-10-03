@@ -16,7 +16,11 @@
   "post_freeze_pins": {
     "chunked_prefill::ctx300_gen7_isl1000_osl64_prefix100::mixed_step": {
       "engine": "rust",
-      "git_head": "0a51476b6ab90bc0e475bd41d4b1c7abbef07b95"
+      "git_head": "3eae51edd74cd072546a1502bcc029ff67220e53"
+    },
+    "chunked_prefill::ctx4096_gen4_isl4096_osl128_prefix256::mixed_step": {
+      "engine": "rust",
+      "git_head": "3eae51edd74cd072546a1502bcc029ff67220e53"
     },
     "chunked_prefill::ctx512_gen4_isl4096_osl128_prefix0::mixed_step": {
       "engine": "rust",
@@ -228,7 +232,8 @@
     }
   },
   "references": {
-    "chunked_prefill::ctx300_gen7_isl1000_osl64_prefix100::mixed_step": 16.081171352808852,
+    "chunked_prefill::ctx300_gen7_isl1000_osl64_prefix100::mixed_step": 16.414675748089216,
+    "chunked_prefill::ctx4096_gen4_isl4096_osl128_prefix256::mixed_step": 57.89342286133688,
     "chunked_prefill::ctx512_gen4_isl4096_osl128_prefix0::mixed_step": 17.664446149246828,
     "chunked_prefill::ctx512_gen4_isl4096_osl128_prefix256::mixed_step": 17.662495086777085,
     "gpt-oss-20b-b200-trtllm-isl1024-osl2::decode_step": 2.213361158220323,

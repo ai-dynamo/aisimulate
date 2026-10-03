@@ -177,7 +177,11 @@ def _compile_case_references(case) -> dict[str, float]:
     return {
         "static_ctx": float(ctx),
         "static_gen": float(gen),
-        "mixed_step": float(handle.mixed_step_latency(case.isl, case.batch_size, case.isl, osl, case.prefix)),
+        "mixed_step": float(
+            handle.mixed_step_latency(
+                compile_parity._default_ctx_tokens(case), case.batch_size, case.isl, osl, case.prefix
+            )
+        ),
         "decode_step": float(handle.decode_step_latency(case.batch_size, case.isl, osl)),
     }
 
