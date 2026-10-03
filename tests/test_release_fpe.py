@@ -4,6 +4,7 @@
 """Release package isolation and producer-to-publisher contract tests."""
 
 import csv
+import hashlib
 import importlib.util
 import io
 import json
@@ -255,3 +256,45 @@ def test_current_harness_keeps_selected_source_and_tooling_identities_distinct(t
             "source_sha": SHA,
             "tooling_sha": TOOLING,
         }
+
+
+@pytest.mark.parametrize("branch", ["main", "release/0.12.0"])
+def test_record_wheel_normalizes_workflow_refs_in_provenance(tmp_path, monkeypatch, branch):
+    wheel = tmp_path / "aisimulate-fixture.whl"
+    wheel.write_bytes(b"release wheel")
+    monkeypatch.setenv("FPE_SOURCE_SHA", SHA)
+    monkeypatch.setenv("FPE_TOOLING_SHA", TOOLING)
+    monkeypatch.setenv("FPE_BRANCH", f"refs/heads/{branch}")
+    monkeypatch.setenv("GITHUB_OUTPUT", str(tmp_path / "output"))
+    with (
+        patch.object(RELEASE.sys, "argv", ["run_release_fpe.py", "record-wheel", "--wheel-dir", str(tmp_path)]),
+        patch.object(RELEASE, "revision", side_effect=[SHA, TOOLING]),
+        patch.object(RELEASE.subprocess, "run"),
+    ):
+        RELEASE.main()
+    assert json.loads((tmp_path / "provenance.json").read_text()) == {
+        "schema_version": 1,
+        "source_branch": branch,
+        "source_sha": SHA,
+        "tooling_sha": TOOLING,
+        "wheel_sha256": hashlib.sha256(wheel.read_bytes()).hexdigest(),
+    }
+
+
+@pytest.mark.parametrize("explicit_output", [False, True])
+def test_artifact_builder_defaults_to_selected_source_output(tmp_path, explicit_output):
+    builder = load_script("build_release_artifacts")
+    source = tmp_path / "historical-source"
+    output = tmp_path / "custom-output" if explicit_output else source / "dist"
+    args = ["build_release_artifacts.py", "--root", str(source)]
+    if explicit_output:
+        args.extend(["--output-dir", str(output)])
+    with (
+        patch.object(builder.sys, "argv", args),
+        patch.object(builder.subprocess, "check_output", return_value='[project]\nversion = "0.11.0"\n'),
+        patch.object(builder, "check_manifests", return_value=("0.11.0", "0.11.0")),
+        patch.object(builder, "build") as build,
+    ):
+        builder.main()
+    assert source.resolve() == builder.ROOT
+    build.assert_called_once_with(output.resolve(), "0.11.0", "0.11.0")
