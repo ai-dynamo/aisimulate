@@ -176,3 +176,6 @@ evaluating an eligible main/release source revision. These artifacts retain the
 development evaluator SHA and are excluded from automatic Pages publication.
 The container campaign uses an explicit `/tmp/fpm-accuracy-venv/bin/python` for
 installation and evaluation so runner path remapping cannot select another Python.
+
+Slice Detail initially selects a configuration with accepted measurements and an
+available workload. Empty configurations remain labeled and directly linkable.

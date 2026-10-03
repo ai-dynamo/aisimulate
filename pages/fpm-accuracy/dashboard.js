@@ -133,12 +133,21 @@
       detail = document.rows.find(r=>r.configuration_id === selected.configuration_id && r.snapshot_id === selected.snapshot_id);
       const age = Date.now()-Date.parse(summary.snapshot.completed_at);
       status(`${age>48*3600000 ? 'Stale · ' : ''}AISim ${summary.snapshot.commit_sha.slice(0,12)} · HF ${summary.snapshot.hf_revision.slice(0,12)} · ${completed(summary.snapshot.completed_at)}`);
+      if (detail && !detail.workload_heatmaps[$('phase-filter').value]) {
+        const available = ['prefill','decode','mixed'].find(phase => detail.workload_heatmaps[phase]);
+        if (available) $('phase-filter').value = available;
+      }
       variants();
     } catch(error) { if (token === request) status(error.message); }
   }
   function configurations() {
     const rows = matching(summaries[Number($('evaluation-filter').value)]?.rows || []);
-    options($('configuration-filter'),rows.map(r=>[r.configuration_id+'/'+r.snapshot_id,`${r.model} · ${r.gpu} · ${r.parallelism} · ${r.worker_role} · ${r.snapshot_id}`]),false);
+    const prior = $('configuration-filter').value;
+    options($('configuration-filter'),rows.map(r=>[r.configuration_id+'/'+r.snapshot_id,`${r.model} · ${r.gpu} · ${r.parallelism} · ${r.worker_role} · ${r.snapshot_id}${r.measurement_count ? '' : ' · No measurements'}`]),false);
+    if (!rows.some(r=>r.configuration_id+'/'+r.snapshot_id === prior)) {
+      const measured = rows.find(r=>r.measurement_count > 0);
+      if (measured) $('configuration-filter').value = measured.configuration_id+'/'+measured.snapshot_id;
+    }
     if (params.get('configuration')) {
       const row = rows.find(r=>r.configuration_id === params.get('configuration') && (!params.get('snapshot') || r.snapshot_id === params.get('snapshot')));
       if (row) $('configuration-filter').value = row.configuration_id+'/'+row.snapshot_id;
