@@ -1228,8 +1228,16 @@ def main():
     args.output.mkdir(parents=True, exist_ok=True)
     rank = int(os.environ["RANK"])
     path = args.output / f"rank-{rank}.json"
-    if path.exists():
-        raise SystemExit("refusing to overwrite a prior run; use a fresh output directory")
+    if path.exists() and not args.resume:
+        raise SystemExit("refusing to overwrite a prior run; use a fresh output directory (or --resume)")
+    if args.resume:
+        if not path.exists():
+            raise SystemExit("--resume needs the preserved receipt of the interrupted run")
+        if json.loads(path.read_text()).get("state") == "complete_pending_admission":
+            raise SystemExit("--resume: the run already completed")
+        # keep the interrupted attempt's receipt (with its traceback) as evidence
+        attempts = len(list(args.output.glob(f"rank-{rank}.attempt-*.json")))
+        path.rename(args.output / f"rank-{rank}.attempt-{attempts}.json")
     receipt = new_receipt(rank, BACKEND)
     try:
         run(args, receipt)
