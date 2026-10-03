@@ -28,6 +28,32 @@ all latency/SOL arithmetic, including the fractional workload coordinates
 used by whole-model FPM interpolation. The existing generic GEMM, MoE and
 NCCL operators supply analytical children within these boundaries.
 
+Each boundary also carries a `measured` list of generic operators. SOL mode
+never reads it: op-level SOL and the FPM roofline keep the GLM formulas and
+are bit-identical to the SOL-only graph. SILICON and HYBRID price the
+boundary as the sum of its measured children against the generic tables,
+like Kimi-K3 and DeepSeek-V4:
+
+| Boundary | Measured generic composition |
+|---|---|
+| KDA attention | BF16 `Gemm` projections (vLLM one fused q/k/v/b/f_a/g_a; SGLang six), `f_b`/`g_b` and `o_proj` `Gemm`, `Kda` conv and delta-rule kernels, analytic gated-norm `Elementwise` |
+| Sparse MLA attention | none; the one GLM table `glm53_attention_module_perf.parquet` |
+| mHC `pre`/`post`/`fused_post_pre` | `mhc_module_perf` row for the same `op_name`, read directly by `Glm53Mhc`; one site is 0.5 x row (a row covers a layer's attention and FFN sites; RMSNorm is inside `pre` and `fused_post_pre`). Per forward vLLM uses 0.5 `pre` + 44.5 `fused_post_pre` + 0.5 `post` rows; SGLang 45 `pre` + 45 `post` rows |
+| mHC `expand`/`contract` | `mhc_module_perf` row, one call each |
+| FFN | dense/shared `Gemm` in checkpoint precision, analytic SwiGLU `Elementwise`, BF16 router `Gemm` and routed `Moe` |
+| All-reduce | `CustomAllReduce` |
+| Embedding, final norm, logits | `Embedding`, `Elementwise`, BF16 `Gemm` plus NCCL vocab gather (and SGLang FP32 cast) |
+
+KDA `kernel_source` names per backend and phase are listed in
+`sdk/models/glm53flash.py::KDA_KERNELS` (merged-qkv `causal_conv1d_fn`;
+vLLM `flashkda_fwd`/`fused_recurrent_kda`; SGLang
+`chunk_kda`/`fused_sigmoid_gating_delta_rule_update`). mHC runs on all of a
+rank's scheduled tokens: vLLM sequence-parallel MoE requires EP and DP>1. Known approximation: the router is priced by the BF16 (288 x 4096) GEMM row.
+The serving gate (vLLM `GateLinear`, SGLang `MoEGate`) uses BF16 weights with
+FP32 output; no generic `gemm_perf` dtype captures the FP32 output and the
+difference is negligible at this shape; pure-TP MoE dispatch and combine
+are the explicit all-reduces, so no `MoEDispatch` op is emitted.
+
 - Attention includes local projections, KDA gates/convolution/recurrence/output
   norm, or NoPE sparse MLA and its IndexPool. Block input norm and output
   collective are outside this boundary. `index_topk=2048` selects 512 pools
@@ -46,10 +72,10 @@ NCCL operators supply analytical children within these boundaries.
 - Production FFN is the complete local native MLP, including router/gate,
   sigmoid/top-k, routed/shared experts and SwiGLU clamp. Its output collective
   is outside the boundary. `Glm53Ffn` records the routing/clamp/precision
-  contract explicitly; generic MoE measurements cannot satisfy it. Rust
-  analytical children supply SOL only and are excluded from the measured
-  identity. The diagnostic `Glm53Router` means FP32 GateLinear alone and is
-  nested inside FFN, never emitted as an additional production measured op.
+  contract explicitly. Rust analytical children supply SOL only; the
+  measured list above supplies SILICON/HYBRID. The diagnostic `Glm53Router`
+  means FP32 GateLinear alone and is nested inside the SOL children, never
+  emitted as a production or measured op.
 - Routed-expert SOL keeps compute and activation traffic on the actual
   `tokens x top-8` assignments, but reads each distinct expert's local TP
   shard once per forward. The distinct count is the uniform-routing
@@ -76,10 +102,38 @@ The SOL implementation expresses mathematical work and payload traffic,
 not kernel launch counts or a claim of measured performance. KDA prefill
 uses a tensor-core lower bound for delta-rule recurrence, while decode uses
 FP32 scalar throughput. mHC and the router require an explicit GPU FP32 rate.
-Until the Ops data consumer is installed, explicit SILICON requests for the
-new operators fail; HYBRID retains `Source::Sol`. No Kimi/GDN/Mamba table is
-borrowed. GPU collection, accuracy gates and measured readiness are independent
-acceptance steps and are not certified by the CPU model tests.
+
+SILICON fails closed. Construction requires every consumed table
+(`gemm_perf`, `moe_perf`, `kda_perf`, `mhc_module_perf`,
+`custom_allreduce_perf` and the GLM attention table) to be measured on the
+exact requested runtime: the primary file of that system/backend/version or
+a donor declared in its `reuse.yaml`. Earlier-version siblings and
+cross-backend fill do not satisfy readiness, and the GLM attention table is
+read from the exact primary only. At query time a generic child that answers
+from its analytical fallback, for example a KDA kernel miss, is an error in
+SILICON. Strict evaluation also sets `enable_shared_layer=False`, so no
+earlier-version rows are merged into the exact tables. HYBRID keeps each
+generic child's labelled fallback and falls back to the GLM SOL
+(`Source::Sol`) when a required table is absent. EMPIRICAL is unsupported.
+Existing Kimi-K3 KDA rows (12/24/48/96 heads) never cover GLM's 16/32/64-head
+shards.
+
+The pinned runtimes are data coordinates `vllm/0.30.0+glm53tail.eb4704514fdf`
+and `sglang/0.5.20`. Like the DeepSeek-V4.1 databases, GLM Ops data lives in a
+separate systems root, `systems/profiles/glm53flash/` (its own `gb300.yaml`
+and `data/gb300/<family>/<backend>/<version>/`), selected by passing that
+root as `systems_paths` with the explicit `backend_version`. It is not placed
+in the general `systems/data` tree, so the fleet `current`/`previous`/`next`
+version slots, backward fill, support matrices and every other model's
+defaults are unchanged. The GLM
+attention table uses the DeepSeek-V4.1 module schema (`component=attention`,
+canonical sorted `geometry` JSON of the `Glm53Attention` body without
+`name`/`measured`, `batch_size`, `prefix`, `x` = new tokens for prefill or
+absolute KV length for decode, local-compute `latency` in ms, and complete
+provenance). The reader interpolates utilization over batch, prefix and `x`
+and holds the boundary utilization outside the measured range. GPU
+collection and accuracy gates are independent acceptance steps and are not
+certified by the CPU model tests.
 
 Configuration and execution-source licenses and immutable revisions are
 recorded in the canonical root `THIRD_PARTY_NOTICES.md`; the Python package
@@ -88,9 +142,9 @@ contains an identical notice and the configuration's complete MIT license.
 `Glm53Primitive` owns the remaining production boundaries: local `embedding`,
 `final_norm`, whole `logits`, and separately observed `allreduce` calls. Its
 physical key includes backend, checkpoint, TP, phase, role, token selection,
-output dtype and collective type. Analytical children are excluded from measured
-identity and run only through the Rust SOL view. Strict measured mode cannot
-borrow generic embedding, GEMM, elementwise or collective data.
+output dtype and collective type. Analytical children run only through the
+Rust SOL view; SILICON/HYBRID use the measured generic embedding, GEMM,
+elementwise and collective operators listed above.
 
 Logits select one final scheduled token per request for both full and cached
 prefill, as well as decode. The native processor includes a BF16 local LM head

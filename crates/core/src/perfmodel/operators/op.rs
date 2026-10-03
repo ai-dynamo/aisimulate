@@ -573,7 +573,7 @@ impl Op {
             Op::SglangPrefillAttentionSequence(op) => op.query(db, ctx),
             Op::SglangPrefillCommNormBoundary(op) => op.query(db, ctx),
             Op::Glm53Attention(op) => op.query(db, ctx),
-            Op::Glm53Mhc(op) => op.query(db, ctx.num_tokens),
+            Op::Glm53Mhc(op) => op.query(db, ctx),
             Op::Glm53Router(op) => op.query(db, ctx.num_tokens),
             Op::Glm53Ffn(op) => op.query(db, ctx),
             Op::Glm53Primitive(op) => op.query(db, ctx),

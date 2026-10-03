@@ -1,0 +1,125 @@
+schema_version: 1
+runtime:
+  framework: vllm
+  version: 0.30.0+glm53tail.eb4704514fdf
+  image: vllm/vllm-openai
+  image_digest: sha256:4864d46625cbc3307623e29ac742030655e27249feba7b97ec925ce4cc4dfb56
+tables:
+  glm53_attention_module_perf:
+    status: complete
+    rows: 1816
+    data_sha256: f502bd483479aba4ee4462f5219387a4b5ec26a78beb5219a753e7a6e3eb74d4
+    collector: collector.vllm.glm53flash_attention_runner
+    measurement: one real sparse-MLA layer (3); output all-reduce excluded
+    execution_mode:
+      fp8-tp2-context: cuda_graph
+      fp8-tp2-generation: cuda_graph
+      fp8-tp4-context: cuda_graph
+      fp8-tp4-generation: cuda_graph
+      nvfp4-tp2-context: cuda_graph
+      nvfp4-tp2-generation: cuda_graph
+      nvfp4-tp4-context: cuda_graph
+      nvfp4-tp4-generation: cuda_graph
+    attempts:
+    - attempt: gfull-vllm-fp8-tp2-a-6b3fd7e087ed-10021319
+      manifest_sha256: c69b205d88e0791f826e22369453ee226a4baae7b006e5cf3921e2f4d02168e9
+      plan_sha256: 7aa5582c70a9e03d601cdd19e3dc7792a2bb39834b68ac8d1091857959020b9c
+      deployment: fp8-tp2
+      source_commit: 6b3fd7e087ed7305ed4fb4537ad4801b5f0025f0
+      only_sets:
+      - prefill-b1-q1024-c0
+      - prefill-b1-q1024-c1
+      - prefill-b1-q16-c0
+      - prefill-b1-q2048-c0
+      - prefill-b1-q2048-c1
+      - prefill-b1-q2048-c2
+      - prefill-b1-q2052-c0
+      - prefill-b1-q2052-c1
+      - prefill-b1-q2052-c2
+      - prefill-b1-q2052-c3
+      - prefill-b1-q256-c0
+      - prefill-b1-q256-c1
+      - prefill-b1-q4096-c0
+      - prefill-b1-q4096-c1
+      - prefill-b1-q4096-c2
+      - prefill-b1-q4096-c3
+      - prefill-b1-q64-c0
+      - prefill-b1-q8192-c0
+      - prefill-b1-q8192-c1
+      - prefill-b1-q8192-c2
+      - prefill-b1-q8192-c3
+      - prefill-b1-q8192-c4
+      - prefill-b16-q16-c0
+      - prefill-b16-q256-c0
+      - prefill-b16-q256-c1
+      - prefill-b16-q512-c0
+      - prefill-b16-q512-c1
+      - prefill-b16-q64-c0
+      - prefill-b2-q1024-c0
+      - prefill-b2-q1024-c1
+      - prefill-b2-q16-c0
+      - prefill-b2-q2048-c0
+      - prefill-b2-q2048-c1
+      - prefill-b2-q2048-c2
+      - prefill-b2-q2052-c0
+      - prefill-b2-q2052-c1
+      - prefill-b2-q2052-c2
+      - prefill-b2-q2052-c3
+      - prefill-b2-q256-c0
+      - prefill-b2-q256-c1
+      - prefill-b2-q4096-c0
+      - prefill-b2-q4096-c1
+      - prefill-b2-q4096-c2
+      - prefill-b2-q4096-c3
+      - prefill-b2-q64-c0
+      - prefill-b32-q128-c0
+      - prefill-b32-q256-c0
+      - prefill-b32-q32-c0
+      - prefill-b32-q64-c0
+      - prefill-b32-q8-c0
+      - prefill-b4-q1024-c0
+      - prefill-b4-q1024-c1
+      - prefill-b4-q16-c0
+      - prefill-b4-q2048-c0
+      - prefill-b4-q2048-c1
+      - prefill-b4-q2048-c2
+      - prefill-b4-q256-c0
+      - prefill-b4-q256-c1
+      - prefill-b4-q512-c0
+      - prefill-b4-q512-c1
+      - prefill-b4-q64-c0
+      - prefill-b8-q1024-c0
+      - prefill-b8-q1024-c1
+      - prefill-b8-q16-c0
+      - prefill-b8-q256-c0
+      - prefill-b8-q256-c1
+      - prefill-b8-q512-c0
+      - prefill-b8-q512-c1
+      - prefill-b8-q64-c0
+    - attempt: gfull-vllm-fp8-tp2-b-6b3fd7e087ed-10021320
+      manifest_sha256: 032d2884e6a539cdddbef206fba013a44b517425dc31dcdcd5aa96be41f03bdb
+      plan_sha256: 7aa5582c70a9e03d601cdd19e3dc7792a2bb39834b68ac8d1091857959020b9c
+      deployment: fp8-tp2
+      source_commit: 6b3fd7e087ed7305ed4fb4537ad4801b5f0025f0
+      only_sets:
+      - prefill-b32-q256-c1
+    - attempt: gfull-vllm-fp8-tp4-706a84d8ebf1-10021214
+      manifest_sha256: 5873f8f2db7dd63602ecc8f96b766b5ded13991d0317d7f0c766e886c04def4a
+      plan_sha256: 7aa5582c70a9e03d601cdd19e3dc7792a2bb39834b68ac8d1091857959020b9c
+      deployment: fp8-tp4
+      source_commit: 706a84d8ebf1a505a7d59bed439319495109395c
+    - attempt: gfull-vllm-nvfp4-tp2-b4afcde8b07c-10021246
+      manifest_sha256: a97ed3beb4391ba2a169afea918191f089bf9ca1aa7adf39c02dbf99b3b5ebce
+      plan_sha256: 7aa5582c70a9e03d601cdd19e3dc7792a2bb39834b68ac8d1091857959020b9c
+      deployment: nvfp4-tp2
+      source_commit: b4afcde8b07c0df647a6d3113645c9a7713f769f
+    - attempt: gfull-vllm-nvfp4-tp4-706a84d8ebf1-10021214
+      manifest_sha256: b9ef2167d6ed7ca47b023b41709b4a2de95976f51e8839f08a74c3bd6a0e3b39
+      plan_sha256: 7aa5582c70a9e03d601cdd19e3dc7792a2bb39834b68ac8d1091857959020b9c
+      deployment: nvfp4-tp4
+      source_commit: 706a84d8ebf1a505a7d59bed439319495109395c
+    - attempt: kept:vllm.parquet
+      data_sha256: 744987a914fd0f3416e3c00090ce6a307a65d4c844a62dc540ba5f178e2d9839
+      rows: 416
+      phases:
+      - generation

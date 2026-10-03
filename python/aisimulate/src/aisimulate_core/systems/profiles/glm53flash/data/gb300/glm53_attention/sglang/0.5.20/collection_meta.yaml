@@ -1,0 +1,464 @@
+schema_version: 1
+runtime:
+  framework: sglang
+  version: 0.5.20
+  image: lmsysorg/sglang
+  image_digest: sha256:b0d8718a4424bb22e448e04407ab3ce5f7399a4c5fc702d6fbe36c3772ec8862
+tables:
+  glm53_attention_module_perf:
+    status: complete
+    rows: 1816
+    data_sha256: f3d0b4a24df3fec427700c67a3b581ff4616c4a5a394c3f836634253dcbb4bd5
+    collector: collector.sglang.glm53flash_attention_runner
+    measurement: one real sparse-MLA layer (3); output all-reduce excluded
+    execution_mode:
+      fp8-tp2-context: cuda_graph
+      fp8-tp2-generation: cuda_graph
+      fp8-tp4-context: cuda_graph
+      fp8-tp4-generation: cuda_graph
+      nvfp4-tp2-context: cuda_graph
+      nvfp4-tp2-generation: cuda_graph
+      nvfp4-tp4-context: cuda_graph
+      nvfp4-tp4-generation: cuda_graph
+    attempts:
+    - attempt: gfull-sglang-fp8-tp2-p1-10fef229f291-10021321
+      manifest_sha256: c858611c7eef38726ed07303e1c3c8b22f76d84357ce641301294d4a2ed30f0e
+      plan_sha256: 7aa5582c70a9e03d601cdd19e3dc7792a2bb39834b68ac8d1091857959020b9c
+      deployment: fp8-tp2
+      source_commit: 10fef229f291bf4b410c594f6db06d04687fc3ce
+      only_sets:
+      - prefill-b1-q1024-c0
+      - prefill-b1-q1024-c1
+      - prefill-b1-q16-c0
+      - prefill-b1-q2048-c0
+      - prefill-b1-q2048-c1
+      - prefill-b1-q2048-c2
+      - prefill-b1-q2052-c0
+      - prefill-b1-q2052-c1
+      - prefill-b1-q2052-c2
+      - prefill-b1-q2052-c3
+      - prefill-b1-q256-c0
+      - prefill-b1-q256-c1
+      - prefill-b1-q4096-c0
+      - prefill-b1-q4096-c1
+      - prefill-b1-q4096-c2
+      - prefill-b1-q4096-c3
+      - prefill-b1-q64-c0
+      - prefill-b1-q8192-c0
+      - prefill-b1-q8192-c1
+      - prefill-b1-q8192-c2
+      - prefill-b1-q8192-c3
+      - prefill-b1-q8192-c4
+    - attempt: gfull-sglang-fp8-tp2-p2-10fef229f291-10021322
+      manifest_sha256: 7ae5e29515904072a102deb02ab5fcbdbdab54beb2cd9367d7a7ea79d34c297f
+      plan_sha256: 7aa5582c70a9e03d601cdd19e3dc7792a2bb39834b68ac8d1091857959020b9c
+      deployment: fp8-tp2
+      source_commit: 10fef229f291bf4b410c594f6db06d04687fc3ce
+      only_sets:
+      - prefill-b2-q1024-c0
+      - prefill-b2-q1024-c1
+      - prefill-b2-q16-c0
+      - prefill-b2-q2048-c0
+      - prefill-b2-q2048-c1
+      - prefill-b2-q2048-c2
+      - prefill-b2-q2052-c0
+      - prefill-b2-q2052-c1
+      - prefill-b2-q2052-c2
+      - prefill-b2-q2052-c3
+      - prefill-b2-q256-c0
+      - prefill-b2-q256-c1
+      - prefill-b2-q4096-c0
+      - prefill-b2-q4096-c1
+      - prefill-b2-q4096-c2
+      - prefill-b2-q4096-c3
+      - prefill-b2-q64-c0
+    - attempt: gfull-sglang-fp8-tp2-b4-10fef229f291-10021348
+      manifest_sha256: 5c699669fb44cd1cc68886000908bba14d25ccf50b29ea771d78eb5248b1362a
+      plan_sha256: 7aa5582c70a9e03d601cdd19e3dc7792a2bb39834b68ac8d1091857959020b9c
+      deployment: fp8-tp2
+      source_commit: 10fef229f291bf4b410c594f6db06d04687fc3ce
+      only_sets:
+      - prefill-b4-q1024-c0
+      - prefill-b4-q1024-c1
+      - prefill-b4-q16-c0
+      - prefill-b4-q2048-c0
+      - prefill-b4-q2048-c1
+      - prefill-b4-q2048-c2
+      - prefill-b4-q256-c0
+      - prefill-b4-q256-c1
+      - prefill-b4-q512-c0
+      - prefill-b4-q512-c1
+      - prefill-b4-q64-c0
+    - attempt: gfull-sglang-fp8-tp2-b8-7c5aeb22bf55-10021459
+      manifest_sha256: 58ce2f3dbd13429477312478c3c61e68e1e6df99cdc3b38a6dd4d2bdd6be7ead
+      plan_sha256: 7aa5582c70a9e03d601cdd19e3dc7792a2bb39834b68ac8d1091857959020b9c
+      deployment: fp8-tp2
+      source_commit: 7c5aeb22bf5549e819b3dd1af4d035130f8d8590
+      only_sets:
+      - prefill-b8-q1024-c0
+      - prefill-b8-q1024-c1
+      - prefill-b8-q16-c0
+      - prefill-b8-q256-c0
+      - prefill-b8-q256-c1
+      - prefill-b8-q512-c0
+      - prefill-b8-q512-c1
+      - prefill-b8-q64-c0
+    - attempt: gfull-sglang-fp8-tp2-b16a-9534f4c5bc58-10021559
+      manifest_sha256: 9d3e2312097df73294fa9b97ed7a57bab97edd9a19bf08b7da610da97accabae
+      plan_sha256: 7aa5582c70a9e03d601cdd19e3dc7792a2bb39834b68ac8d1091857959020b9c
+      deployment: fp8-tp2
+      source_commit: 9534f4c5bc58f8035206f9dfcebd56781388a004
+      only_sets:
+      - prefill-b16-q16-c0
+      - prefill-b16-q64-c0
+    - attempt: gfull-sglang-fp8-tp2-b16b-9534f4c5bc58-10021559
+      manifest_sha256: 4b6d2aae7e46850053f4524f7095dd40187a63ed21e500b9327247d1183e0249
+      plan_sha256: 7aa5582c70a9e03d601cdd19e3dc7792a2bb39834b68ac8d1091857959020b9c
+      deployment: fp8-tp2
+      source_commit: 9534f4c5bc58f8035206f9dfcebd56781388a004
+      only_sets:
+      - prefill-b16-q256-c0
+      - prefill-b16-q256-c1
+    - attempt: gfull-sglang-fp8-tp2-b16c-9534f4c5bc58-10021559
+      manifest_sha256: 1dead044b37e4005f1331c754dd0a206ee0984e363ccacfb49853a06e5016a57
+      plan_sha256: 7aa5582c70a9e03d601cdd19e3dc7792a2bb39834b68ac8d1091857959020b9c
+      deployment: fp8-tp2
+      source_commit: 9534f4c5bc58f8035206f9dfcebd56781388a004
+      only_sets:
+      - prefill-b16-q512-c0
+      - prefill-b16-q512-c1
+    - attempt: gfull-sglang-fp8-tp2-b32-7c5aeb22bf55-10021500
+      manifest_sha256: 6d9a083dd54c11c1f75a32d72fc9a8d7cacfdb563f57e78fb8e85ff80a145944
+      plan_sha256: 7aa5582c70a9e03d601cdd19e3dc7792a2bb39834b68ac8d1091857959020b9c
+      deployment: fp8-tp2
+      source_commit: 7c5aeb22bf5549e819b3dd1af4d035130f8d8590
+      only_sets:
+      - prefill-b32-q128-c0
+      - prefill-b32-q256-c0
+      - prefill-b32-q256-c1
+      - prefill-b32-q32-c0
+      - prefill-b32-q64-c0
+      - prefill-b32-q8-c0
+    - attempt: gfull-sglang-fp8-tp4-p1-10fef229f291-10021321
+      manifest_sha256: 5de428fadece4eb4ffeb28c8b8d1200db20abdecc5ebdca16f95603b1c88e759
+      plan_sha256: 7aa5582c70a9e03d601cdd19e3dc7792a2bb39834b68ac8d1091857959020b9c
+      deployment: fp8-tp4
+      source_commit: 10fef229f291bf4b410c594f6db06d04687fc3ce
+      only_sets:
+      - prefill-b1-q1024-c0
+      - prefill-b1-q1024-c1
+      - prefill-b1-q16-c0
+      - prefill-b1-q2048-c0
+      - prefill-b1-q2048-c1
+      - prefill-b1-q2048-c2
+      - prefill-b1-q2052-c0
+      - prefill-b1-q2052-c1
+      - prefill-b1-q2052-c2
+      - prefill-b1-q2052-c3
+      - prefill-b1-q256-c0
+      - prefill-b1-q256-c1
+      - prefill-b1-q4096-c0
+      - prefill-b1-q4096-c1
+      - prefill-b1-q4096-c2
+      - prefill-b1-q4096-c3
+      - prefill-b1-q64-c0
+      - prefill-b1-q8192-c0
+      - prefill-b1-q8192-c1
+      - prefill-b1-q8192-c2
+      - prefill-b1-q8192-c3
+      - prefill-b1-q8192-c4
+    - attempt: gfull-sglang-fp8-tp4-p2-10fef229f291-10021322
+      manifest_sha256: 3e021c461edbc611664557cc47c034e1eae04d605bbac986c18c900860195b17
+      plan_sha256: 7aa5582c70a9e03d601cdd19e3dc7792a2bb39834b68ac8d1091857959020b9c
+      deployment: fp8-tp4
+      source_commit: 10fef229f291bf4b410c594f6db06d04687fc3ce
+      only_sets:
+      - prefill-b2-q1024-c0
+      - prefill-b2-q1024-c1
+      - prefill-b2-q16-c0
+      - prefill-b2-q2048-c0
+      - prefill-b2-q2048-c1
+      - prefill-b2-q2048-c2
+      - prefill-b2-q2052-c0
+      - prefill-b2-q2052-c1
+      - prefill-b2-q2052-c2
+      - prefill-b2-q2052-c3
+      - prefill-b2-q256-c0
+      - prefill-b2-q256-c1
+      - prefill-b2-q4096-c0
+      - prefill-b2-q4096-c1
+      - prefill-b2-q4096-c2
+      - prefill-b2-q4096-c3
+      - prefill-b2-q64-c0
+    - attempt: gfull-sglang-fp8-tp4-b4s-7c5aeb22bf55-10021535
+      manifest_sha256: b034526bbd9b2a952f864a9689c8d3ad7f38975544f07fbac1c971ec22f9e6b2
+      plan_sha256: 7aa5582c70a9e03d601cdd19e3dc7792a2bb39834b68ac8d1091857959020b9c
+      deployment: fp8-tp4
+      source_commit: 7c5aeb22bf5549e819b3dd1af4d035130f8d8590
+      only_sets:
+      - prefill-b4-q1024-c0
+      - prefill-b4-q1024-c1
+      - prefill-b4-q16-c0
+      - prefill-b4-q2048-c0
+      - prefill-b4-q2048-c1
+      - prefill-b4-q2048-c2
+      - prefill-b4-q256-c0
+      - prefill-b4-q256-c1
+      - prefill-b4-q512-c0
+      - prefill-b4-q512-c1
+      - prefill-b4-q64-c0
+    - attempt: gfull-sglang-fp8-tp4-b8s-7c5aeb22bf55-10021535
+      manifest_sha256: 4f5caccc313ab5a5cbfdb8d9a8110b980b21607907ff3a4528801ae92e6761a0
+      plan_sha256: 7aa5582c70a9e03d601cdd19e3dc7792a2bb39834b68ac8d1091857959020b9c
+      deployment: fp8-tp4
+      source_commit: 7c5aeb22bf5549e819b3dd1af4d035130f8d8590
+      only_sets:
+      - prefill-b8-q1024-c0
+      - prefill-b8-q1024-c1
+      - prefill-b8-q16-c0
+      - prefill-b8-q256-c0
+      - prefill-b8-q256-c1
+      - prefill-b8-q512-c0
+      - prefill-b8-q512-c1
+      - prefill-b8-q64-c0
+    - attempt: gfull-sglang-fp8-tp4-b16s-7c5aeb22bf55-10021538
+      manifest_sha256: 48e2729ad915e591367f90523511c6993a25996e58ed68a44462de5fe5fa403c
+      plan_sha256: 7aa5582c70a9e03d601cdd19e3dc7792a2bb39834b68ac8d1091857959020b9c
+      deployment: fp8-tp4
+      source_commit: 7c5aeb22bf5549e819b3dd1af4d035130f8d8590
+      only_sets:
+      - prefill-b16-q16-c0
+      - prefill-b16-q256-c0
+      - prefill-b16-q256-c1
+      - prefill-b16-q512-c0
+      - prefill-b16-q512-c1
+      - prefill-b16-q64-c0
+    - attempt: gfull-sglang-fp8-tp4-b32s-7c5aeb22bf55-10021538
+      manifest_sha256: b5b5b921c68a7bf373bbec7127adf1074e423981f4fc12e1729d1d39b7b5532b
+      plan_sha256: 7aa5582c70a9e03d601cdd19e3dc7792a2bb39834b68ac8d1091857959020b9c
+      deployment: fp8-tp4
+      source_commit: 7c5aeb22bf5549e819b3dd1af4d035130f8d8590
+      only_sets:
+      - prefill-b32-q128-c0
+      - prefill-b32-q256-c0
+      - prefill-b32-q256-c1
+      - prefill-b32-q32-c0
+      - prefill-b32-q64-c0
+      - prefill-b32-q8-c0
+    - attempt: gfull-sglang-nvfp4-tp2-p1-10fef229f291-10021326
+      manifest_sha256: 30d68ec37928d336b4b6ca73a86e6ad64c4c99c3294f327e2bef69ff8e3933aa
+      plan_sha256: 7aa5582c70a9e03d601cdd19e3dc7792a2bb39834b68ac8d1091857959020b9c
+      deployment: nvfp4-tp2
+      source_commit: 10fef229f291bf4b410c594f6db06d04687fc3ce
+      only_sets:
+      - prefill-b1-q1024-c0
+      - prefill-b1-q1024-c1
+      - prefill-b1-q16-c0
+      - prefill-b1-q2048-c0
+      - prefill-b1-q2048-c1
+      - prefill-b1-q2048-c2
+      - prefill-b1-q2052-c0
+      - prefill-b1-q2052-c1
+      - prefill-b1-q2052-c2
+      - prefill-b1-q2052-c3
+      - prefill-b1-q256-c0
+      - prefill-b1-q256-c1
+      - prefill-b1-q4096-c0
+      - prefill-b1-q4096-c1
+      - prefill-b1-q4096-c2
+      - prefill-b1-q4096-c3
+      - prefill-b1-q64-c0
+      - prefill-b1-q8192-c0
+      - prefill-b1-q8192-c1
+      - prefill-b1-q8192-c2
+      - prefill-b1-q8192-c3
+      - prefill-b1-q8192-c4
+    - attempt: gfull-sglang-nvfp4-tp2-p2-10fef229f291-10021327
+      manifest_sha256: f5577dceb214bc34dadcb9e74af72726ba44e6f7042f29564de49a36dbe6e306
+      plan_sha256: 7aa5582c70a9e03d601cdd19e3dc7792a2bb39834b68ac8d1091857959020b9c
+      deployment: nvfp4-tp2
+      source_commit: 10fef229f291bf4b410c594f6db06d04687fc3ce
+      only_sets:
+      - prefill-b2-q1024-c0
+      - prefill-b2-q1024-c1
+      - prefill-b2-q16-c0
+      - prefill-b2-q2048-c0
+      - prefill-b2-q2048-c1
+      - prefill-b2-q2048-c2
+      - prefill-b2-q2052-c0
+      - prefill-b2-q2052-c1
+      - prefill-b2-q2052-c2
+      - prefill-b2-q2052-c3
+      - prefill-b2-q256-c0
+      - prefill-b2-q256-c1
+      - prefill-b2-q4096-c0
+      - prefill-b2-q4096-c1
+      - prefill-b2-q4096-c2
+      - prefill-b2-q4096-c3
+      - prefill-b2-q64-c0
+    - attempt: gfull-sglang-nvfp4-tp2-b4s-7c5aeb22bf55-10021535
+      manifest_sha256: f763a098d265097581b5f443fa4c3f0741831f188a08498c94c38d2e4a5126e7
+      plan_sha256: 7aa5582c70a9e03d601cdd19e3dc7792a2bb39834b68ac8d1091857959020b9c
+      deployment: nvfp4-tp2
+      source_commit: 7c5aeb22bf5549e819b3dd1af4d035130f8d8590
+      only_sets:
+      - prefill-b4-q1024-c0
+      - prefill-b4-q1024-c1
+      - prefill-b4-q16-c0
+      - prefill-b4-q2048-c0
+      - prefill-b4-q2048-c1
+      - prefill-b4-q2048-c2
+      - prefill-b4-q256-c0
+      - prefill-b4-q256-c1
+      - prefill-b4-q512-c0
+      - prefill-b4-q512-c1
+      - prefill-b4-q64-c0
+    - attempt: gfull-sglang-nvfp4-tp2-b8s-7c5aeb22bf55-10021535
+      manifest_sha256: 0481669ce4abe8b36d62737e653c89b390cdb22e307573c116668366332e091f
+      plan_sha256: 7aa5582c70a9e03d601cdd19e3dc7792a2bb39834b68ac8d1091857959020b9c
+      deployment: nvfp4-tp2
+      source_commit: 7c5aeb22bf5549e819b3dd1af4d035130f8d8590
+      only_sets:
+      - prefill-b8-q1024-c0
+      - prefill-b8-q1024-c1
+      - prefill-b8-q16-c0
+      - prefill-b8-q256-c0
+      - prefill-b8-q256-c1
+      - prefill-b8-q512-c0
+      - prefill-b8-q512-c1
+      - prefill-b8-q64-c0
+    - attempt: gfull-sglang-nvfp4-tp2-b16s-7c5aeb22bf55-10021538
+      manifest_sha256: ad79e137b828b17c900c18787ee39e0ecc16325c8ebe3d74c57d5be03596ad87
+      plan_sha256: 7aa5582c70a9e03d601cdd19e3dc7792a2bb39834b68ac8d1091857959020b9c
+      deployment: nvfp4-tp2
+      source_commit: 7c5aeb22bf5549e819b3dd1af4d035130f8d8590
+      only_sets:
+      - prefill-b16-q16-c0
+      - prefill-b16-q256-c0
+      - prefill-b16-q256-c1
+      - prefill-b16-q512-c0
+      - prefill-b16-q512-c1
+      - prefill-b16-q64-c0
+    - attempt: gfull-sglang-nvfp4-tp2-b32s-7c5aeb22bf55-10021539
+      manifest_sha256: 2c296a42f08efb7c2783c65c9f2fb2cbd7d0927c2d853c964e48fcbe45666edd
+      plan_sha256: 7aa5582c70a9e03d601cdd19e3dc7792a2bb39834b68ac8d1091857959020b9c
+      deployment: nvfp4-tp2
+      source_commit: 7c5aeb22bf5549e819b3dd1af4d035130f8d8590
+      only_sets:
+      - prefill-b32-q128-c0
+      - prefill-b32-q256-c0
+      - prefill-b32-q256-c1
+      - prefill-b32-q32-c0
+      - prefill-b32-q64-c0
+      - prefill-b32-q8-c0
+    - attempt: gfull-sglang-nvfp4-tp4-p1-8dc9956dafeb-10021358
+      manifest_sha256: ecab9f31c4965f756d74c3d4d2e6ff954b8be5591bce66597edf3cf920c95642
+      plan_sha256: 7aa5582c70a9e03d601cdd19e3dc7792a2bb39834b68ac8d1091857959020b9c
+      deployment: nvfp4-tp4
+      source_commit: 8dc9956dafeb1c24690121373c0d11ddc827b395
+      only_sets:
+      - prefill-b1-q1024-c0
+      - prefill-b1-q1024-c1
+      - prefill-b1-q16-c0
+      - prefill-b1-q2048-c0
+      - prefill-b1-q2048-c1
+      - prefill-b1-q2048-c2
+      - prefill-b1-q2052-c0
+      - prefill-b1-q2052-c1
+      - prefill-b1-q2052-c2
+      - prefill-b1-q2052-c3
+      - prefill-b1-q256-c0
+      - prefill-b1-q256-c1
+      - prefill-b1-q4096-c0
+      - prefill-b1-q4096-c1
+      - prefill-b1-q4096-c2
+      - prefill-b1-q4096-c3
+      - prefill-b1-q64-c0
+      - prefill-b1-q8192-c0
+      - prefill-b1-q8192-c1
+      - prefill-b1-q8192-c2
+      - prefill-b1-q8192-c3
+      - prefill-b1-q8192-c4
+    - attempt: gfull-sglang-nvfp4-tp4-p2-8dc9956dafeb-10021358
+      manifest_sha256: cc739697457e3036a236442c3215708888dbe58b3706def38db9451b2c6cf0bb
+      plan_sha256: 7aa5582c70a9e03d601cdd19e3dc7792a2bb39834b68ac8d1091857959020b9c
+      deployment: nvfp4-tp4
+      source_commit: 8dc9956dafeb1c24690121373c0d11ddc827b395
+      only_sets:
+      - prefill-b2-q1024-c0
+      - prefill-b2-q1024-c1
+      - prefill-b2-q16-c0
+      - prefill-b2-q2048-c0
+      - prefill-b2-q2048-c1
+      - prefill-b2-q2048-c2
+      - prefill-b2-q2052-c0
+      - prefill-b2-q2052-c1
+      - prefill-b2-q2052-c2
+      - prefill-b2-q2052-c3
+      - prefill-b2-q256-c0
+      - prefill-b2-q256-c1
+      - prefill-b2-q4096-c0
+      - prefill-b2-q4096-c1
+      - prefill-b2-q4096-c2
+      - prefill-b2-q4096-c3
+      - prefill-b2-q64-c0
+    - attempt: gfull-sglang-nvfp4-tp4-b4s-7c5aeb22bf55-10021539
+      manifest_sha256: 54d88777c17232c9c7f01caaeaf1de61c3787fc820e1aa5e2d3452c2b0cd58a3
+      plan_sha256: 7aa5582c70a9e03d601cdd19e3dc7792a2bb39834b68ac8d1091857959020b9c
+      deployment: nvfp4-tp4
+      source_commit: 7c5aeb22bf5549e819b3dd1af4d035130f8d8590
+      only_sets:
+      - prefill-b4-q1024-c0
+      - prefill-b4-q1024-c1
+      - prefill-b4-q16-c0
+      - prefill-b4-q2048-c0
+      - prefill-b4-q2048-c1
+      - prefill-b4-q2048-c2
+      - prefill-b4-q256-c0
+      - prefill-b4-q256-c1
+      - prefill-b4-q512-c0
+      - prefill-b4-q512-c1
+      - prefill-b4-q64-c0
+    - attempt: gfull-sglang-nvfp4-tp4-b8s-7c5aeb22bf55-10021539
+      manifest_sha256: f735ba5ea2bd05dd1ca4f6ec2625cdccd7a52dda151b3069891d00b62175b2de
+      plan_sha256: 7aa5582c70a9e03d601cdd19e3dc7792a2bb39834b68ac8d1091857959020b9c
+      deployment: nvfp4-tp4
+      source_commit: 7c5aeb22bf5549e819b3dd1af4d035130f8d8590
+      only_sets:
+      - prefill-b8-q1024-c0
+      - prefill-b8-q1024-c1
+      - prefill-b8-q16-c0
+      - prefill-b8-q256-c0
+      - prefill-b8-q256-c1
+      - prefill-b8-q512-c0
+      - prefill-b8-q512-c1
+      - prefill-b8-q64-c0
+    - attempt: gfull-sglang-nvfp4-tp4-b16s-7c5aeb22bf55-10021539
+      manifest_sha256: 8e46994f91efc7d551f4ff05cd4f061e29fa2a4d5fcf75ef50434b78627a7224
+      plan_sha256: 7aa5582c70a9e03d601cdd19e3dc7792a2bb39834b68ac8d1091857959020b9c
+      deployment: nvfp4-tp4
+      source_commit: 7c5aeb22bf5549e819b3dd1af4d035130f8d8590
+      only_sets:
+      - prefill-b16-q16-c0
+      - prefill-b16-q256-c0
+      - prefill-b16-q256-c1
+      - prefill-b16-q512-c0
+      - prefill-b16-q512-c1
+      - prefill-b16-q64-c0
+    - attempt: gfull-sglang-nvfp4-tp4-b32s-7c5aeb22bf55-10021539
+      manifest_sha256: 85a6f352d4e961f84181e5708dc58950847d071dd1865bd2ba4909591e4ea058
+      plan_sha256: 7aa5582c70a9e03d601cdd19e3dc7792a2bb39834b68ac8d1091857959020b9c
+      deployment: nvfp4-tp4
+      source_commit: 7c5aeb22bf5549e819b3dd1af4d035130f8d8590
+      only_sets:
+      - prefill-b32-q128-c0
+      - prefill-b32-q256-c0
+      - prefill-b32-q256-c1
+      - prefill-b32-q32-c0
+      - prefill-b32-q64-c0
+      - prefill-b32-q8-c0
+    - attempt: kept:sglang.parquet
+      data_sha256: f481daa8e4d1c6ba7f96982c961ce210c19c77c5dac2863faf4c07fe60d5b83b
+      rows: 416
+      phases:
+      - generation
