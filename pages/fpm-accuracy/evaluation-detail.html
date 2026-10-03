@@ -95,17 +95,8 @@ SPDX-License-Identifier: Apache-2.0
 <label>Search<input id="search-filter" type="search" placeholder="Configuration, model…"></label>
 <label>Parallelism<select id="parallelism-filter"></select></label><label>Worker role<select id="role-filter"></select></label></section>
 <label class="fpm-wide-control">Configuration<select id="configuration-filter"></select></label><p id="detail-evidence"></p>
-<section class="fpm-filters"><label>Workload<select id="phase-filter"><option value="all" hidden>All workloads</option><option>prefill</option><option>decode</option><option>mixed</option></select></label></section>
-<div class="detail-views" role="group" aria-label="Detail view"><button type="button" id="accuracy-view" aria-pressed="true">Accuracy</button><button type="button" id="measurements-view" aria-pressed="false">3D Measurements</button></div>
+<section class="fpm-filters"><label>Workload<select id="phase-filter"><option value="all">All workloads</option><option selected>prefill</option><option>decode</option><option>mixed</option></select></label></section>
 <p id="visualization-status" role="status" hidden></p>
-<div id="accuracy-panel">
-<section class="matrix-panel table-scroll"><h3>Phase summary</h3><table id="phase-summary"></table></section>
-<section class="fpm-filters"><label>Method<select id="method-filter"><option value="regression">Regression</option><option value="warmup">FPM (KV warmup on)</option><option value="nowarmup">FPM (KV warmup off)</option></select></label>
-<label>FPM variant<select id="variant-filter"></select></label>
-</section>
-<div class="fpm-heatmaps"><section class="matrix-panel table-scroll"><h3>Measured workload distribution</h3><div id="distribution"></div></section>
-<section class="matrix-panel table-scroll"><h3>Prediction error</h3><div id="error-heatmap"></div></section></div>
-<p>Only measured traffic contributes to these maps. MAPE uses successful predictions; missing predictions reduce coverage.</p></div>
 <section hidden id="gym-visualization" aria-label="Interactive latency visualization">
 <section class="gv-content" id="gv-main" aria-labelledby="gv-title">
 
@@ -142,6 +133,14 @@ SPDX-License-Identifier: Apache-2.0
  </section>
  <footer class="gv-footer">Data source: <a href="https://huggingface.co/datasets/nvidia/aisimulate-fpm-dataset" target="_blank" rel="noopener">nvidia/aisimulate-fpm-dataset</a> · Code: <a href="https://github.com/ai-dynamo/aisimulate" target="_blank" rel="noopener">aisimulate</a></footer>
 </section>
+<div id="accuracy-panel">
+<section class="matrix-panel table-scroll"><h3>Phase summary</h3><table id="phase-summary"></table></section>
+<section class="fpm-filters"><label>Method<select id="method-filter"><option value="regression">Regression</option><option value="warmup">FPM (KV warmup on)</option><option value="nowarmup">FPM (KV warmup off)</option></select></label>
+<label>FPM variant<select id="variant-filter"></select></label>
+</section>
+<div class="fpm-heatmaps"><section class="matrix-panel table-scroll"><h3>Measured workload distribution</h3><div id="distribution"></div></section>
+<section class="matrix-panel table-scroll"><h3>Prediction error</h3><div id="error-heatmap"></div></section></div>
+<p>Only measured traffic contributes to these maps. MAPE uses successful predictions; missing predictions reduce coverage.</p></div>
 </main>
     <script src="./navigation.js" defer></script>
     <script src="./dashboard.js" defer></script>

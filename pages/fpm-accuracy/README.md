@@ -181,8 +181,9 @@ Details initially selects a configuration with accepted measurements and an
 available workload. Empty configurations remain labeled and directly linkable.
 
 The top navigation is Overview, Trends, and Details. Details shares evaluation,
-configuration, and workload controls across Accuracy and 3D Measurements. Plotly
-and point assets load only when opening 3D. The left panel follows the selected
+configuration, and workload controls. The 3D measurement panels appear directly
+above the accuracy tables, without a view switch. Plotly and point assets load
+only after matching the selected evaluation to the retained assets. The left panel follows the selected
 configuration; the right panel compares another configuration in the same HF
 snapshot. Missing matching HF revision or membership yields an unavailable view.
 The former `3d-visualization.html` URL redirects to Details with `view=3d`.

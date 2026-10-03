@@ -164,11 +164,9 @@ async def check():
                 await page.set_viewport_size({"width": 390, "height": 844})
                 assert await page.evaluate("document.documentElement.scrollWidth <= innerWidth")
                 await page.set_viewport_size({"width": 1400, "height": 1000})
-                # Accuracy must not fetch Plotly or measurement assets.
+                # Missing matching assets must leave the accuracy tables available.
                 await page.goto(url + "evaluation-detail.html")
                 await expect(page.locator("#distribution table")).to_be_visible()
-                assert await page.evaluate("typeof Plotly === 'undefined'")
-                await page.locator("#measurements-view").click()
                 await expect(page.locator("#visualization-status")).to_contain_text("3D unavailable")
                 await expect(page.locator("#gym-visualization")).to_be_hidden()
                 # Match this browser fixture to the evaluation revision, then reload.
@@ -180,6 +178,10 @@ async def check():
                 await page.wait_for_url("**/evaluation-detail.html?view=3d")
                 await page.locator("#phase-filter").select_option("all")
                 await expect(page.locator("#gv-left-chart .plot-container")).to_be_visible(timeout=30000)
+                await expect(page.locator("#phase-summary")).to_be_visible()
+                assert await page.evaluate(
+                    "document.querySelector('#gym-visualization').compareDocumentPosition(document.querySelector('#accuracy-panel')) & Node.DOCUMENT_POSITION_FOLLOWING"
+                )
                 held = asyncio.Event()
                 release = asyncio.Event()
 

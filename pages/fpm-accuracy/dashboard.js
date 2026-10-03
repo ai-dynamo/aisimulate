@@ -103,6 +103,10 @@
     const candidates = detail?.methods[$('method-filter').value] || [];
     const candidate = candidates[Number($('variant-filter').value) || 0];
     const phase = $('phase-filter').value;
+    if (phase === 'all') {
+      for (const id of ['distribution','error-heatmap']) $(id).textContent = 'Select prefill, decode, or mixed to see workload-specific heatmaps.';
+      return;
+    }
     heatmap($('distribution'),detail?.workload_heatmaps[phase],false);
     heatmap($('error-heatmap'),candidate?._heatmaps[phase],true);
   }
@@ -117,15 +121,9 @@
   }
   let measurementCatalog, visualizationScript, viewRequest = 0;
   async function detailView() {
-    const token = ++viewRequest, show3d = params.get('view') === '3d';
-    $('phase-filter').querySelector('[value=all]').hidden = !show3d;
-    if (!show3d && $('phase-filter').value === 'all') { $('phase-filter').value = 'prefill'; maps(); }
-    $('accuracy-panel').hidden = show3d;
-    $('accuracy-view').setAttribute('aria-pressed', String(!show3d));
-    $('measurements-view').setAttribute('aria-pressed', String(show3d));
+    const token = ++viewRequest;
     $('gym-visualization').hidden = true;
-    $('visualization-status').hidden = !show3d;
-    if (!show3d) return;
+    $('visualization-status').hidden = false;
     $('visualization-status').textContent = 'Loading matching measurement assets…';
     try {
       measurementCatalog ||= await load('data/visualization/catalog.json', true);
@@ -216,11 +214,6 @@
   for (const [id] of filters) $(id).addEventListener('change',()=>view === 'trends' ? trends() : configurations());
   $('phase-filter').addEventListener('change',()=> { if (view === 'trends') trends(); else { maps(); detailView(); } });
   if (view === 'detail') {
-    for (const [id, mode] of [['accuracy-view','accuracy'],['measurements-view','3d']]) $(id).addEventListener('click',()=> {
-      params.set('view',mode);
-      const url = new URL(location); url.searchParams.set('view',mode); history.replaceState(null,'',url);
-      detailView();
-    });
     $('evaluation-filter').addEventListener('change',evaluation);
     $('configuration-filter').addEventListener('change',configuration);
     $('method-filter').addEventListener('change',variants);
