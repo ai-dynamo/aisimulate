@@ -425,6 +425,7 @@ class RandomBranchSampler:
             pairs.sort(key=lambda pair: pair[1].total_gpus)
         self._arms = deque((backend, config, _UnseenIndices(size), set()) for backend, config in pairs)
         self._retries: deque[Suggestion] = deque()
+        self._retry_turn = True
         self._stalled = False
 
     @property
@@ -460,7 +461,16 @@ class RandomBranchSampler:
         return selection
 
     def suggest(self, count: int) -> list[Suggestion]:
+        if count <= 0:
+            return []
         suggestions = []
+        # Reserve retry capacity even when fresh arms never exhaust. For one
+        # slot, alternate so a persistent failure cannot starve exploration.
+        if self._retries and (count > 1 or self._retry_turn or not self._arms):
+            suggestions.append(self._retries.popleft())
+            self._retry_turn = False
+        else:
+            self._retry_turn = True
         while self._arms and len(suggestions) < count:
             backend, parallel, pool, seen = self._arms.popleft()
             if self._continuous:
@@ -501,7 +511,7 @@ class RandomBranchSampler:
         return suggestions
 
     def retry(self, suggestion: Suggestion) -> None:
-        """Requeue a transient failure after new configurations, within the ask budget."""
+        """Interleave a transient retry with new configurations within the ask budget."""
         self._retries.append(deepcopy(suggestion))
 
     def observe(self, suggestion: Suggestion, metrics: dict[str, float]) -> None:

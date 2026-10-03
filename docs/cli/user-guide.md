@@ -1753,8 +1753,9 @@ prove global optimality across all scheduler/workload combinations.
 
 Bayesian duplicates reuse cached measurements and still consume the suggestion budget.
 Deterministic KV-capacity, SLA and load-constraint failures are also cached. Random search
-retries host resource refusals and timeouts after new configurations, within the same trial
-budget; unexpected runtime failures are not cached. The CLI folds selected
+interleaves host-resource and timeout retries with new configurations within the same trial
+budget, including continuous domains. Single-slot asks alternate between pending retries and
+new configurations so neither starves; unexpected runtime failures are not cached. The CLI folds selected
 scheduler-limit variants only when all other prediction inputs and all reported metrics
 match; the complete candidate ledger remains in JSON/CSV.
 

@@ -527,3 +527,44 @@ def test_conditional_random_skips_exhausted_arms():
     assert len(suggestions) == 3
     assert {item.selection["adapter::router::mode"] for item in suggestions} == {"round_robin", "kv_router"}
     assert sampler.exhausted
+
+
+def test_continuous_random_batch_services_pending_retries_fifo():
+    from dataclasses import replace
+
+    from aisimulate.sweeper.sampler import RandomBranchSampler
+
+    sampler = RandomBranchSampler(replace(_branch(), float_ranges={"kv_load_ratio": (0.1, 0.9)}), seed=7)
+    failed = sampler.suggest(2)
+    for suggestion in failed:
+        sampler.retry(suggestion)
+    assert sampler.suggest(0) == []
+
+    fresh = []
+    for expected in failed:
+        batch = sampler.suggest(3)
+        assert len(batch) == 3
+        assert batch[0] == expected
+        assert all(suggestion not in failed for suggestion in batch[1:])
+        fresh.extend(batch[1:])
+    assert len({(item.parallel_config, json.dumps(item.selection, sort_keys=True)) for item in fresh}) == 4
+    assert not sampler.exhausted
+
+
+def test_single_slot_random_asks_allow_retries_and_new_configurations():
+    from dataclasses import replace
+
+    from aisimulate.sweeper.sampler import RandomBranchSampler
+
+    sampler = RandomBranchSampler(replace(_branch(), float_ranges={"kv_load_ratio": (0.1, 0.9)}), seed=7)
+    failed = sampler.suggest(1)[0]
+    sampler.retry(failed)
+    fresh = []
+    for _ in range(3):
+        assert sampler.suggest(1) == [failed]
+        # A persistent failure must not consume every subsequent single-slot ask.
+        sampler.retry(failed)
+        batch = sampler.suggest(1)
+        assert len(batch) == 1 and batch[0] != failed
+        fresh.extend(batch)
+    assert len({(item.parallel_config, json.dumps(item.selection, sort_keys=True)) for item in fresh}) == 3
