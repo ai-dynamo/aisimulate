@@ -1,0 +1,58 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+schema_version: 1
+op: dsv411_module
+description: >-
+  Sweep grid and budgets for the dsv411 family producers
+  (collector/sglang/collect_dsv411_module.py, collector/vllm/collect_dsv411_module.py):
+  DeepSeek-V4.1 module rows (attention_core, indexer, engram, mhc, shared_linear) keyed by
+  (component, structure, phase, tp, batch, query, kv_len) in dsv411_module_perf.parquet.
+  The grid follows the DSA/DSV4 sparse-attention conventions
+  (cases/models/DeepseekV4ForCausalLM_cases.yaml sparse_*, base_ops/dsv4_attention.yaml budgets,
+  base_ops/mla_module.yaml prefix_lengths). Budgets are op-level math (case_authoring.md), the
+  model-correlated structure comes from the SDK graph manifest, never from this file.
+common_case_values:
+  dsv411_module:
+    # --- attention_core + indexer: one 40-layer forward per case --------------------------------
+    context:
+      # new tokens per request in one chunked-prefill forward (serving chunk size 8192)
+      query_lengths: [1, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 1536, 2048, 3072, 4096, 6144, 8192]
+      # real KV already resident before the measured forward (seeded by chunked prefills)
+      past_kv_lengths: [0, 1, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 1536, 2048, 3072, 4096, 6144, 8192,
+                        10240, 12288, 16384, 32768, 65536, 131072, 262144, 524288, 1048575]
+      batch_sizes: [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024]
+      max_new_tokens: 262144          # batch * query per forward
+      max_sequence_length: 1048576    # past + query (model max_position_embeddings)
+      long_kv_min: 8192               # past kv >= this ...
+      long_kv_max_batch: 8            # ... caps the batch
+      chunk_prefill_size: 8192        # seeding chunk (serving chunked-prefill size)
+      measurement_regime: eager_drained
+    generation:
+      # past kv per request; the measured decode reads kv_len = past + 1 (inclusive)
+      past_kv_lengths: [1, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 1536, 2048, 3072, 4096, 6144, 8192,
+                        10240, 12288, 16384, 32768, 65536, 131072, 262144, 524288, 1048575]
+      batch_sizes: [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024]
+      max_tokens: 1048576             # batch * (past + 1)
+      max_sequence_length: 1048576    # past + 1
+      # [past_kv_floor, max_batch]: a decode shape with kv >= floor and batch > max_batch is out of budget
+      decode_batch_ladder:
+      - [524288, 1]
+      - [262144, 2]
+      - [131072, 4]
+      - [65536, 8]
+      - [32768, 16]
+      - [8192, 64]
+      measurement_regime: cuda_graph
+    # --- engram / mhc / shared_linear: token-count sweeps (batch=1, kv_len=0 in the table) ------
+    tokens:
+      # context rows: new tokens of one prefill forward (covers batch*query of the attention grid)
+      context_tokens: [1, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 1536, 2048, 3072, 4096, 6144, 8192,
+                       12288, 16384, 32768, 65536, 131072, 262144]
+      # generation rows: decode batch (one token per request)
+      generation_tokens: [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024]
+    # Producers must honor these regimes; a generation row measured eagerly is admitted only when
+    # the plan declares the exception (measurement_regime=eager_exception with a reason).
+    regimes:
+      context: eager_drained
+      generation: cuda_graph

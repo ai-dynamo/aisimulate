@@ -396,6 +396,48 @@ collector.wideep.trtllm.collect_moe_a2a:
   - collector/wideep/trtllm/slurm/submit_trtllm_moe_a2a.sh
   - __model_cases__
 
+collector.sglang.collect_dsv411_module:
+  # dsv411 SGLang producer: the framework-neutral contract/runtime, the grid, the legacy chunked
+  # dummy-weight initializer it reuses, and the SDK graph the manifest is exported from.
+  - collector/cases/base_ops/dsv411_module.yaml
+  - collector/dsv411/__init__.py
+  - collector/dsv411/contract.py
+  - collector/dsv411/runtime.py
+  - collector/dsv411/plan.py
+  - collector/dsv411/publish.py
+  - collector/sglang/dsv41_isolated_runner.py
+  - src/aisimulate_core/sdk/deepseek_v41.py
+  - src/aisimulate_core/sdk/config.py
+  - src/aisimulate_core/sdk/common.py
+  - src/aisimulate_core/sdk/utils.py
+  - src/aisimulate_core/sdk/models/__init__.py
+  - src/aisimulate_core/sdk/models/base.py
+  - src/aisimulate_core/sdk/models/helpers.py
+  - src/aisimulate_core/sdk/models/deepseek_v411.py
+  - src/aisimulate_core/model_configs/deepseek-ai--DeepSeek-V4.1-Flash_config.json
+
+collector.vllm.collect_dsv411_module:
+  # dsv411 vLLM producer: same contract/runtime/grid, the vLLM DSV4 KV/metadata helpers and the
+  # legacy vLLM dummy-weight initializer it reuses.
+  - collector/cases/base_ops/dsv411_module.yaml
+  - collector/dsv411/__init__.py
+  - collector/dsv411/contract.py
+  - collector/dsv411/runtime.py
+  - collector/dsv411/plan.py
+  - collector/dsv411/publish.py
+  - collector/vllm/dsv41_isolated_runner.py
+  - collector/vllm/collect_dsv4_attn.py
+  - collector/vllm/utils.py
+  - src/aisimulate_core/sdk/deepseek_v41.py
+  - src/aisimulate_core/sdk/config.py
+  - src/aisimulate_core/sdk/common.py
+  - src/aisimulate_core/sdk/utils.py
+  - src/aisimulate_core/sdk/models/__init__.py
+  - src/aisimulate_core/sdk/models/base.py
+  - src/aisimulate_core/sdk/models/helpers.py
+  - src/aisimulate_core/sdk/models/deepseek_v411.py
+  - src/aisimulate_core/model_configs/deepseek-ai--DeepSeek-V4.1-Flash_config.json
+
 collector.vllm.dsv41_isolated_runner:
   # vLLM DeepSeek-V4.1 module-only producer; shares the SGLang data contract and admission readers.
   # The independently frozen plan pins token corpus, runtime and source files.
