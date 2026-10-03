@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 
+from scripts import sync_required_main_checks as rules_sync
 from scripts.check_prediction_numerics import check_results, resolve_baseline, validate_cases
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -284,3 +285,253 @@ def test_required_main_checks_are_additive_and_bound_to_actions():
         "codeowners",
     }
     assert all(c["integration_id"] == 15368 for c in checks["required_status_checks"])
+
+
+@pytest.fixture
+def ruleset_sync():
+    desired = json.loads(rules_sync.PAYLOAD.read_text())
+    current = {**copy.deepcopy(desired), "id": 42, "source_type": "Repository", "source": "owner/repo"}
+    calls = []
+
+    def api(endpoint, *, payload=None):
+        calls.append((endpoint, payload))
+        if endpoint == "repos/owner/repo":
+            return {"default_branch": "main"}
+        assert endpoint == "repos/owner/repo/rulesets/42"
+        if payload is not None:
+            current.update(copy.deepcopy(payload))
+        return copy.deepcopy(current)
+
+    return desired, current, calls, api
+
+
+def test_ruleset_sync_defaults_to_reads_and_reports_drift(ruleset_sync, capsys):
+    desired, current, calls, api = ruleset_sync
+    current["rules"][0]["parameters"]["required_status_checks"].pop()
+    assert rules_sync.synchronize("owner/repo", 42, desired, api=api) == 1
+    assert all(payload is None for _, payload in calls)
+    assert "codeowners" in capsys.readouterr().out
+
+
+def test_ruleset_sync_ignores_order_and_never_writes_an_unchanged_rule(ruleset_sync):
+    desired, current, calls, api = ruleset_sync
+    current["rules"][0]["parameters"]["required_status_checks"].reverse()
+    assert rules_sync.synchronize("owner/repo", 42, desired, apply=True, api=api) == 0
+    assert all(payload is None for _, payload in calls)
+
+
+def test_ruleset_sync_applies_exact_file_and_preserves_backup(ruleset_sync, tmp_path):
+    desired, current, calls, api = ruleset_sync
+    current["rules"][0]["parameters"]["strict_required_status_checks_policy"] = False
+    before = copy.deepcopy(current)
+    backup = tmp_path / "before.json"
+    assert rules_sync.synchronize("owner/repo", 42, desired, apply=True, backup=backup, api=api) == 0
+    assert json.loads(backup.read_text()) == before
+    writes = [(endpoint, payload) for endpoint, payload in calls if payload is not None]
+    assert writes == [("repos/owner/repo/rulesets/42", desired)]
+    assert rules_sync.normalized(current) == rules_sync.normalized(desired)
+    assert calls[-1] == ("repos/owner/repo/rulesets/42", None)
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("id", 43),
+        ("source_type", "Organization"),
+        ("source", "other/repo"),
+        ("source", None),
+        ("source", 123),
+        ("name", "Human review"),
+        ("target", "tag"),
+        ("conditions", {"ref_name": {"include": ["refs/heads/release"], "exclude": []}}),
+        ("rules", [{"type": "pull_request"}]),
+        ("bypass_actors", [{"actor_type": "OrganizationAdmin", "bypass_mode": "always"}]),
+    ],
+)
+def test_ruleset_sync_refuses_unrelated_or_bypassed_targets(ruleset_sync, tmp_path, field, value):
+    desired, current, calls, api = ruleset_sync
+    current[field] = value
+    with pytest.raises(ValueError):
+        rules_sync.synchronize("owner/repo", 42, desired, apply=True, backup=tmp_path / "before.json", api=api)
+    assert all(payload is None for _, payload in calls)
+    assert not list(tmp_path.iterdir())
+
+
+def test_ruleset_sync_cannot_treat_hidden_bypasses_as_empty(ruleset_sync):
+    desired, current, calls, api = ruleset_sync
+    del current["bypass_actors"]
+    with pytest.raises(ValueError, match="hides bypass settings"):
+        rules_sync.synchronize("owner/repo", 42, desired, api=api)
+    assert all(payload is None for _, payload in calls)
+
+
+def test_ruleset_sync_preserves_unknown_rule_parameters(ruleset_sync):
+    desired, current, calls, api = ruleset_sync
+    current["rules"][0]["parameters"]["future_requirement"] = True
+    with pytest.raises(ValueError, match="mixed-purpose"):
+        rules_sync.synchronize("owner/repo", 42, desired, apply=True, api=api)
+    assert all(payload is None for _, payload in calls)
+
+
+@pytest.mark.parametrize("backup_exists", [False, True])
+def test_ruleset_sync_requires_a_new_backup_before_writing(ruleset_sync, tmp_path, backup_exists):
+    desired, current, calls, api = ruleset_sync
+    current["enforcement"] = "evaluate"
+    backup = tmp_path / "before.json" if backup_exists else None
+    if backup:
+        backup.write_text("prior evidence")
+    with pytest.raises((ValueError, FileExistsError)):
+        rules_sync.synchronize("owner/repo", 42, desired, apply=True, backup=backup, api=api)
+    assert all(payload is None for _, payload in calls)
+    if backup:
+        assert backup.read_text() == "prior evidence"
+
+
+@pytest.mark.parametrize("change", ["ruleset", "default_branch"])
+def test_ruleset_sync_refuses_concurrent_changes(ruleset_sync, tmp_path, change):
+    desired, current, calls, api = ruleset_sync
+    current["enforcement"] = "evaluate"
+
+    def changing_api(endpoint, **kwargs):
+        response = api(endpoint, **kwargs)
+        if calls.count((endpoint, None)) > 1:
+            if change == "ruleset" and endpoint.endswith("/42"):
+                response["enforcement"] = "disabled"
+            if change == "default_branch" and endpoint == "repos/owner/repo":
+                response["default_branch"] = "release"
+        return response
+
+    backup = tmp_path / "before.json"
+    with pytest.raises(ValueError, match="changed during inspection"):
+        rules_sync.synchronize("owner/repo", 42, desired, apply=True, backup=backup, api=changing_api)
+    assert all(payload is None for _, payload in calls)
+    assert not backup.exists()
+
+
+def test_ruleset_sync_ignores_changing_api_metadata_during_recheck(ruleset_sync, tmp_path):
+    desired, current, calls, api = ruleset_sync
+    current["enforcement"] = "evaluate"
+
+    def metadata_api(endpoint, **kwargs):
+        response = api(endpoint, **kwargs)
+        if kwargs.get("payload") is None and endpoint.endswith("/42"):
+            response["updated_at"] = f"read-{calls.count((endpoint, None))}"
+        return response
+
+    backup = tmp_path / "before.json"
+    assert rules_sync.synchronize("owner/repo", 42, desired, apply=True, backup=backup, api=metadata_api) == 0
+    assert json.loads(backup.read_text())["updated_at"] == "read-2"
+    assert len([payload for _, payload in calls if payload is not None]) == 1
+
+
+@pytest.mark.parametrize("failure", ["write_denied", "readback_mismatch"])
+def test_ruleset_sync_reports_uncertain_updates_and_keeps_backup(ruleset_sync, tmp_path, failure):
+    desired, current, calls, api = ruleset_sync
+    current["enforcement"] = "evaluate"
+
+    def failed_api(endpoint, *, payload=None):
+        if payload is not None:
+            if failure == "write_denied":
+                raise subprocess.CalledProcessError(1, ["gh", "api"])
+            return {}  # Simulate a write that did not take effect.
+        return api(endpoint)
+
+    backup = tmp_path / "before.json"
+    with pytest.raises(ValueError, match="settings may already have changed"):
+        rules_sync.synchronize("owner/repo", 42, desired, apply=True, backup=backup, api=failed_api)
+    assert json.loads(backup.read_text())["enforcement"] == "evaluate"
+
+
+@pytest.mark.parametrize("invalid", ["bypass", "non_strict", "wrong_app", "duplicate", "empty", "extra_rule"])
+def test_ruleset_sync_rejects_invalid_source_before_any_api_call(ruleset_sync, invalid):
+    desired, _, calls, api = ruleset_sync
+    parameters = desired["rules"][0]["parameters"]
+    checks = parameters["required_status_checks"]
+    if invalid == "bypass":
+        desired["bypass_actors"] = [{"actor_type": "OrganizationAdmin"}]
+    elif invalid == "non_strict":
+        parameters["strict_required_status_checks_policy"] = False
+    elif invalid == "wrong_app":
+        checks[0]["integration_id"] = 1
+    elif invalid == "duplicate":
+        checks.append(checks[0])
+    elif invalid == "empty":
+        checks.clear()
+    else:
+        desired["rules"].append({"type": "pull_request"})
+    with pytest.raises(ValueError):
+        rules_sync.synchronize("owner/repo", 42, desired, apply=True, api=api)
+    assert calls == []
+
+
+@pytest.mark.parametrize("payload", [None, {"rules": []}])
+def test_ruleset_sync_transport_only_puts_when_given_payload(monkeypatch, payload):
+    def run(command, **kwargs):
+        assert command[:6] == ["gh", "api", "--hostname", "github.com", "--method", "GET" if payload is None else "PUT"]
+        assert kwargs["check"] and kwargs["timeout"] == 60
+        if payload is None:
+            assert "--input" not in command and kwargs["input"] is None
+        else:
+            assert command[-2:] == ["--input", "-"]
+            assert json.loads(kwargs["input"]) == payload
+        return subprocess.CompletedProcess(command, 0, stdout="{}")
+
+    monkeypatch.setattr(subprocess, "run", run)
+    assert rules_sync.github_api("repos/owner/repo/rulesets/42", payload=payload) == {}
+
+
+@pytest.mark.parametrize(("result", "expected"), [(0, 0), (1, 1)])
+def test_ruleset_sync_cli_propagates_arguments_and_exit_status(monkeypatch, tmp_path, result, expected):
+    captured = {}
+    backup = tmp_path / "before.json"
+
+    def synchronize(repository, ruleset_id, desired, *, apply, backup):
+        captured.update(
+            repository=repository,
+            ruleset_id=ruleset_id,
+            desired=desired,
+            apply=apply,
+            backup=backup,
+        )
+        return result
+
+    monkeypatch.setattr(rules_sync, "synchronize", synchronize)
+    assert (
+        rules_sync.main(
+            [
+                "--repository",
+                "owner/repo",
+                "--ruleset-id",
+                "42",
+                "--apply",
+                "--backup",
+                str(backup),
+            ]
+        )
+        == expected
+    )
+    assert captured == {
+        "repository": "owner/repo",
+        "ruleset_id": 42,
+        "desired": json.loads(rules_sync.PAYLOAD.read_text()),
+        "apply": True,
+        "backup": backup,
+    }
+
+
+def test_ruleset_sync_cli_reports_failure_as_exit_two(monkeypatch, capsys):
+    def fail(*args, **kwargs):
+        raise ValueError("hidden bypass settings")
+
+    monkeypatch.setattr(rules_sync, "synchronize", fail)
+    with pytest.raises(SystemExit) as stopped:
+        rules_sync.main(["--ruleset-id", "42"])
+    assert stopped.value.code == 2
+    assert "Cannot synchronize CI rules: hidden bypass settings" in capsys.readouterr().err
+
+
+def test_pr_template_records_required_ruleset_handoff():
+    template = (ROOT / ".github/pull_request_template.md").read_text()
+    assert "Ruleset apply owner" in template
+    assert "Ruleset owner acknowledgement" in template
+    assert "Post-merge apply and verifier evidence" in template
