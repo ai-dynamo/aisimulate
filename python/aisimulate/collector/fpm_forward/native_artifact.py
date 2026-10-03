@@ -471,6 +471,11 @@ def _rank_artifacts(raw_root: Path) -> list[tuple[Path, dict[str, Any]]]:
         payload = json.loads(path.read_text())
         if not isinstance(payload, dict):
             raise TypeError(f"native benchmark artifact is not a mapping: {path}")
+        if path.stem.endswith("_merged_worker_probe"):
+            # Dynamo retains post-run RPC evidence separately from timing rows.
+            if payload.get("schema") != "dynamo.fpm.benchmark_worker_probe" or payload.get("schema_version") != 1:
+                raise ValueError(f"unsupported native worker probe sidecar: {path}")
+            continue
         if payload.get("artifact_type") == "merged" or path.stem.endswith("_merged"):
             continue
         artifacts.append((path, payload))
