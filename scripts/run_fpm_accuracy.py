@@ -19,6 +19,7 @@ from fpm_accuracy.contract import (
     sha,
     validate_summary,
 )
+from fpm_accuracy.dashboard_contract import validate_details
 from fpm_accuracy.evaluate import evaluate_case
 from fpm_accuracy.hf import HfDataset
 
@@ -71,10 +72,11 @@ def main():
             raise ValueError("unknown smoke configuration")
     comparison = {} if args.comparison_output else None
     rows = []
+    details = []
     for configuration in configurations:
         print(f"Evaluating {configuration.configuration_path}", flush=True)
         case = dataset.measurement_case(configuration.configuration_path, snapshot_id=configuration.snapshot_id)
-        rows.append(evaluate_case(case, comparison=comparison))
+        rows.append(evaluate_case(case, comparison=comparison, details=details))
     summary = {
         "schema_version": 1,
         "snapshot": {
@@ -99,13 +101,18 @@ def main():
         raise ValueError("output must be empty")
     data = (json.dumps(summary, allow_nan=False, sort_keys=True, indent=2) + "\n").encode()
     (args.output / "summary.json").write_bytes(data)
+    detail_document = {"schema_version": 1, "snapshot": summary["snapshot"], "rows": details}
+    validate_details(detail_document, summary)
+    detail_data = (json.dumps(detail_document, allow_nan=False, sort_keys=True) + "\n").encode()
+    (args.output / "details.json").write_bytes(detail_data)
     if args.configuration:
         (args.output / "SMOKE_ONLY.txt").write_text("Partial dataset smoke; not qualified for publication.\n")
     else:
         qualification = {
-            "schema_version": 1,
+            "schema_version": 2,
             "snapshot": summary["snapshot"],
             "summary_sha256": hashlib.sha256(data).hexdigest(),
+            "details_sha256": hashlib.sha256(detail_data).hexdigest(),
         }
         (args.output / "qualification.json").write_text(json.dumps(qualification, allow_nan=False, indent=2) + "\n")
         if args.comparison_output:

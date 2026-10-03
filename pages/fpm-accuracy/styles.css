@@ -1,6 +1,6 @@
 /* SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved. */
 /* SPDX-License-Identifier: Apache-2.0 */
-/* E2E supplies the shared page styles; only FPM table details belong here. */
+/* E2E supplies the shared page styles; FPM views extend them here. */
 .fpm-summary { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 .snapshot-value { overflow-wrap: anywhere; }
 .snapshot-value a, .overview-config-row a, .overview-method-cell a { color: var(--accent); text-decoration: none; }
@@ -31,3 +31,41 @@
   .fpm-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   #table-count { display: block; float: none; margin-top: 4px; }
 }
+
+.fpm-tabs { display:flex; flex-wrap:wrap; gap:20px; padding-block:16px; border-bottom:1px solid var(--border); }
+.fpm-tabs a { color:var(--muted); text-decoration:none; }
+.fpm-tabs a[aria-current="page"] { color:var(--accent); font-weight:700; }
+.fpm-filters { display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,200px)); gap:8px 12px; margin:12px 0; }
+[data-view] .fpm-wide-control { display:flex; width:100%; max-width:960px; }
+[data-view] label { display:inline-flex; flex-direction:column; gap:3px; color:var(--muted); font-size:12px; }
+[data-view] select, [data-view] input { max-width:100%; min-height:32px; background:var(--panel); color:var(--text); border:1px solid var(--border); padding:4px 8px; border-radius:4px; }
+[data-view] select, [data-view] input { width:100%; box-sizing:border-box; font:inherit; font-size:13px; }
+[data-view] #dashboard-status, #detail-evidence { overflow-wrap:anywhere; }
+#detail-evidence { font-size:12px; line-height:1.5; color:var(--muted); }
+#detail-evidence a { color:inherit; }
+[data-view] .matrix-panel { margin-top:20px; padding:16px; }
+[data-view] table { width:100%; border-collapse:collapse; }
+[data-view] th, [data-view] td { padding:10px; border-bottom:1px solid var(--border); text-align:left; }
+.fpm-heatmaps { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:16px; align-items:start; }
+[data-view] .fpm-heatmaps .matrix-panel { margin-top:8px; padding:12px; }
+.fpm-heatmaps h3 { margin:0 0 8px; font-size:15px; }
+.fpm-heatmaps p { margin:0 0 10px; font-size:12px; color:var(--muted); }
+[data-view] .heatmap { min-width:0; }
+[data-view] .heatmap th, [data-view] .heatmap td { padding:5px 7px; font-size:11px; line-height:1.35; white-space:nowrap; }
+.heatmap small { display:block; color:var(--muted); }
+.trend-chart svg { display:block; width:100%; max-width:960px; min-width:600px; height:auto; margin-inline:auto; }
+.trend-chart { overflow-x:auto; }
+@media(max-width:900px) { .fpm-heatmaps { grid-template-columns:1fr; } }
+@media(max-width:600px) {
+  .fpm-filters { grid-template-columns:repeat(2,minmax(0,1fr)); }
+  [data-view] select, [data-view] input { min-height:36px; }
+}
+
+[data-view] label { max-width:100%; min-width:0; }
+[data-view] select { min-width:0; }
+
+#trend-tooltip { position:fixed; z-index:20; width:320px; padding:12px; border:1px solid var(--border); border-radius:8px; background:var(--panel); color:var(--text); overflow-wrap:anywhere; pointer-events:none; }
+
+[data-view] [hidden] { display:none !important; }
+#gym-visualization .gv-content { margin:0; padding:12px 0; }
+#gym-visualization .gv-intro { font-size:12px; margin:8px 0 12px; }

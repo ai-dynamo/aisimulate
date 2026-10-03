@@ -131,8 +131,7 @@ jobs:
           persist-credentials: false
       - name: Install the CPU campaign environment
         run: |
-          /opt/python/cp312-cp312/bin/python -m venv "${RUNNER_TEMP}/accuracy-venv"
-          echo "${RUNNER_TEMP}/accuracy-venv/bin" >> "${GITHUB_PATH}"
+          /opt/python/cp312-cp312/bin/python -m venv /tmp/fpm-accuracy-venv
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: fpm-accuracy-wheel-${{ inputs.artifact_key }}
@@ -142,16 +141,17 @@ jobs:
           WHEEL_SHA256: ${{ needs.wheel.outputs.sha256 }}
         run: |
           echo "${WHEEL_SHA256}  $(echo "${RUNNER_TEMP}"/accuracy-wheel/*.whl)" | sha256sum --check --strict
-          python -m pip install "${RUNNER_TEMP}"/accuracy-wheel/*.whl
-          python -m pip install --require-hashes -r scripts/fpm_accuracy/requirements.txt
-          python -m pip check
+          /tmp/fpm-accuracy-venv/bin/python -m pip install "${RUNNER_TEMP}"/accuracy-wheel/*.whl
+          /tmp/fpm-accuracy-venv/bin/python -m pip install --require-hashes -r scripts/fpm_accuracy/requirements.txt
+          /tmp/fpm-accuracy-venv/bin/python -m pip check
       - name: Evaluate the pinned HF dataset and qualify the complete campaign
         env:
           EXPECTED_SHA: ${{ inputs.sha }}
           EVALUATED_BRANCH: ${{ inputs.branch }}
           HF_REVISION: ${{ inputs.hf_revision }}
+          HF_HOME: ${{ runner.temp }}/hf-${{ inputs.hf_revision }}
         run: |
-          python scripts/run_fpm_accuracy.py \
+          /tmp/fpm-accuracy-venv/bin/python scripts/run_fpm_accuracy.py \
             --wheel "${RUNNER_TEMP}"/accuracy-wheel/*.whl \
             --commit "${EXPECTED_SHA}" --branch "${EVALUATED_BRANCH}" \
             --evaluator-sha "${GITHUB_SHA}" --hf-revision "${HF_REVISION}" \
@@ -160,7 +160,7 @@ jobs:
             --comparison-output "${RUNNER_TEMP}/accuracy-comparison/comparison.json"
       - name: Report advisory accuracy and coverage
         run: |
-          python - <<'PYCODE' >> "${GITHUB_STEP_SUMMARY}"
+          /tmp/fpm-accuracy-venv/bin/python - <<'PYCODE' >> "${GITHUB_STEP_SUMMARY}"
           import json, os
           from pathlib import Path
           summary = json.loads((Path(os.environ['RUNNER_TEMP']) / 'accuracy-public/summary.json').read_text())

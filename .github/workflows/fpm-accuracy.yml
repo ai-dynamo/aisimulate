@@ -30,7 +30,7 @@ concurrency:
 jobs:
   resolve:
     name: Resolve exact accuracy source
-    if: github.repository == 'ai-dynamo/aisimulate' && github.ref == 'refs/heads/main'
+    if: github.repository == 'ai-dynamo/aisimulate' && (github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -116,6 +116,39 @@ jobs:
               keys.add(entry.artifact_key);
             }
             core.setOutput('matrix', JSON.stringify({include: entries}));
+
+  measurements:
+    name: Qualify FPM measurements
+    needs: resolve
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+      - name: Install measurement dependencies
+        run: python -m pip install --require-hashes -r scripts/fpm_accuracy/requirements.txt
+      - name: Export latest pinned HF measurements
+        env:
+          HF_REVISION: ${{ needs.resolve.outputs.hf_revision }}
+          HF_HOME: ${{ runner.temp }}/hf-${{ needs.resolve.outputs.hf_revision }}
+        run: |
+          python scripts/prepare_fpm_measurements.py \
+            --hf-revision "${HF_REVISION}" --evaluator-sha "${GITHUB_SHA}" \
+            --run-id "${GITHUB_RUN_ID}" --run-attempt "${GITHUB_RUN_ATTEMPT}" \
+            --output "${RUNNER_TEMP}/fpm-measurements"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: fpm-accuracy-measurements
+          path: ${{ runner.temp }}/fpm-measurements/
+          overwrite: true
+          if-no-files-found: error
+          retention-days: 90
 
   branches:
     name: FPM accuracy (${{ matrix.branch }})

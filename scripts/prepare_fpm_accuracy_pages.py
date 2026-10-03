@@ -7,16 +7,24 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import io
 import json
 import re
 import subprocess
 import urllib.error
 import zipfile
 from datetime import UTC, datetime, timedelta
+from functools import cmp_to_key
 from pathlib import Path
 
 from fpm_accuracy.contract import REPO, artifact_key, eligible_branch, keys, require, strict_json, validate_summary
+from fpm_accuracy.dashboard_contract import (
+    BASELINE,
+    MAX_BUNDLE,
+    archive_files,
+    population,
+    validate_details,
+    validate_visualization,
+)
 from prepare_e2e_accuracy_pages import ancestor, api, api_items
 
 WORKFLOW = ".github/workflows/fpm-accuracy.yml"
@@ -38,17 +46,31 @@ def completed_runs():
 
 
 def unpack(archive: bytes) -> dict:
-    with zipfile.ZipFile(io.BytesIO(archive)) as bundle:
-        require(sorted(bundle.namelist()) == ["qualification.json", "summary.json"], "unexpected FPM artifact files")
-        require(all(info.file_size <= 16 * 1024 * 1024 for info in bundle.infolist()), "oversized FPM artifact")
-        raw = bundle.read("summary.json")
-        summary = validate_summary(strict_json(raw))
-        qualification = strict_json(bundle.read("qualification.json"))
-    keys(qualification, ("schema_version", "snapshot", "summary_sha256"))
+    files = archive_files(archive)
+    require({"qualification.json", "summary.json"} <= files.keys(), "missing FPM artifact files")
+    raw = files["summary.json"]
+    summary = validate_summary(strict_json(raw))
+    qualification = strict_json(files["qualification.json"])
+    version = qualification.get("schema_version")
+    require(type(version) is int and version in (1, 2), "invalid qualification schema")
+    expected = ("schema_version", "snapshot", "summary_sha256")
+    keys(qualification, (*expected, "details_sha256") if version == 2 else expected)
     require(
-        type(qualification["schema_version"]) is int and qualification["schema_version"] == 1,
-        "invalid qualification schema",
+        set(files)
+        == (
+            {"qualification.json", "summary.json", "details.json"}
+            if version == 2
+            else {"qualification.json", "summary.json"}
+        ),
+        "unexpected FPM artifact files",
     )
+    if version == 2:
+        require(
+            hashlib.sha256(files["details.json"]).hexdigest() == qualification["details_sha256"],
+            "detail checksum mismatch",
+        )
+        validate_details(strict_json(files["details.json"]), summary)
+
     require(qualification["snapshot"] == summary["snapshot"], "qualification identity mismatch")
     require(qualification["summary_sha256"] == hashlib.sha256(raw).hexdigest(), "summary checksum mismatch")
     return summary
@@ -97,6 +119,10 @@ def prepare(repo: Path, output: Path):
     ).splitlines()
     branches = {"main", *(name for name in refs if eligible_branch(name))}
     selected = {}
+    history = {}
+    measurements = []
+    run_revisions = {}
+    run_summaries = {}
     try:
         runs = list(completed_runs())
     except urllib.error.HTTPError as exc:
@@ -109,10 +135,17 @@ def prepare(repo: Path, output: Path):
             continue
         attempts = {}
         for artifact in api_items(f"actions/runs/{run['id']}/artifacts", "artifacts"):
-            if artifact["expired"] or not re.fullmatch(r"fpm-accuracy-web-[0-9a-f]{16}", artifact["name"]):
+            is_measurement = artifact["name"] == "fpm-accuracy-measurements"
+            if artifact["expired"] or not (
+                is_measurement or re.fullmatch(r"fpm-accuracy-web-[0-9a-f]{16}", artifact["name"])
+            ):
+                continue
+            if is_measurement:
+                measurements.append((run, artifact))
                 continue
             try:
                 archive = api(f"actions/artifacts/{artifact['id']}/zip", binary=True)
+                files = archive_files(archive)
                 snapshot = unpack(archive)["snapshot"]
                 number = int(snapshot["run_attempt"])
                 require(snapshot["run_id"] == str(run["id"]) and number <= run["run_attempt"], "wrong campaign attempt")
@@ -134,6 +167,12 @@ def prepare(repo: Path, output: Path):
             branch, commit = snapshot["branch"], snapshot["commit_sha"]
             if branch not in branches or not ancestor(repo, commit, "origin/" + branch):
                 continue
+            run_revisions[(run["id"], snapshot["run_attempt"])] = snapshot["hf_revision"]
+            run_summaries[(run["id"], snapshot["run_attempt"], branch)] = summary
+            identity = (branch, commit, population(summary))
+            previous_run = history.get(identity)
+            if previous_run is None or snapshot["completed_at"] > previous_run[0]["snapshot"]["completed_at"]:
+                history[identity] = (summary, files.get("details.json"))
             prior = selected.get(branch)
             if prior is not None:
                 previous = prior["snapshot"]
@@ -152,7 +191,114 @@ def prepare(repo: Path, output: Path):
         (output / (artifact_key(branch) + ".json")).write_text(
             json.dumps(summary, allow_nan=False, sort_keys=True) + "\n"
         )
-    print(f"Prepared {len(selected)} qualified FPM branch snapshots")
+    dashboard = output / "dashboard"
+    dashboard.mkdir()
+    entries = []
+    for summary, detail in sorted(history.values(), key=lambda item: item[0]["snapshot"]["completed_at"]):
+        snapshot = summary["snapshot"]
+        key = f"{snapshot['run_id']}-{snapshot['run_attempt']}-{artifact_key(snapshot['branch'])}"
+        summary_path = key + ".json"
+        (dashboard / summary_path).write_text(json.dumps(summary, allow_nan=False, sort_keys=True) + "\n")
+        detail_path = key + "-details.json" if detail else None
+        if detail_path:
+            (dashboard / detail_path).write_bytes(detail)
+        entries.append(
+            dict(
+                snapshot=snapshot,
+                population=population(summary),
+                summary_path=summary_path,
+                details_path=detail_path,
+                trend=snapshot["branch"] == "main" and ancestor(repo, BASELINE, snapshot["commit_sha"]),
+            )
+        )
+
+    def compare(left, right):
+        a, b = left["snapshot"], right["snapshot"]
+        if a["branch"] == b["branch"] and a["commit_sha"] != b["commit_sha"]:
+            return -1 if ancestor(repo, a["commit_sha"], b["commit_sha"]) else 1
+        return (a["completed_at"] > b["completed_at"]) - (a["completed_at"] < b["completed_at"])
+
+    for branch in branches:
+        ordered = sorted((e for e in entries if e["snapshot"]["branch"] == branch), key=cmp_to_key(compare))
+        for index, entry in enumerate(ordered):
+            entry["revision_order"] = index
+    (dashboard / "history.json").write_text(
+        json.dumps(dict(schema_version=1, baseline=BASELINE, entries=entries)) + "\n"
+    )
+    revision = selected.get("main", {}).get("snapshot", {}).get("hf_revision")
+
+    # Download only candidate point bundles for the selected dataset, newest first.
+    # Do not keep 90 days of full measurement points resident in memory.
+    def measurement_order(pair):
+        run, artifact = pair
+        revisions = {value for (run_id, _), value in run_revisions.items() if run_id == run["id"]}
+        return revision in revisions, artifact["id"]
+
+    for run, artifact in sorted(measurements, key=measurement_order, reverse=True):
+        try:
+            files = archive_files(api(f"actions/artifacts/{artifact['id']}/zip", binary=True, max_bytes=MAX_BUNDLE))
+            snapshot = strict_json(files["qualification.json"])
+            number = int(snapshot["run_attempt"])
+            require(
+                snapshot["schema_version"] == 1
+                and snapshot["run_id"] == str(run["id"])
+                and 0 < number <= run["run_attempt"]
+                and snapshot["evaluator_sha"] == run["head_sha"],
+                "wrong measurement campaign",
+            )
+            measurement_revision = snapshot["hf_revision"]
+            compatible = [
+                summary
+                for (run_id, _, _), summary in run_summaries.items()
+                if run_id == run["id"]
+                and summary["snapshot"]["hf_revision"] == measurement_revision
+                and summary["snapshot"]["evaluator_sha"] == snapshot["evaluator_sha"]
+            ]
+            require(compatible, "measurement/evaluation mismatch")
+            endpoint = f"actions/runs/{run['id']}/attempts/{number}"
+            attempt = run if number == run["run_attempt"] else api(endpoint)
+            require(trusted_run(attempt) and attempt["head_sha"] == run["head_sha"], "untrusted measurement attempt")
+            jobs = api_items(endpoint + "/jobs", "jobs")
+            matches = [job for job in jobs if job["name"] == "Qualify FPM measurements"]
+            require(
+                len(matches) == 1
+                and matches[0].get("conclusion") == "success"
+                and matches[0].get("status") == "completed"
+                and matches[0].get("run_id") == run["id"]
+                and matches[0].get("head_sha") == run["head_sha"],
+                "unqualified measurements",
+            )
+            require(
+                hashlib.sha256(files["manifest.json"]).hexdigest() == snapshot["manifest_sha256"],
+                "measurement manifest checksum mismatch",
+            )
+            for summary in compatible:
+                validate_visualization(files, measurement_revision, summary)
+        except urllib.error.HTTPError as exc:
+            if exc.code not in {404, 410}:
+                raise
+            continue
+        except (ValueError, KeyError, TypeError, OSError, EOFError, zipfile.BadZipFile) as exc:
+            print(f"Ignoring invalid measurement artifact {artifact['id']}: {exc}")
+            continue
+        target = dashboard / "visualization"
+        target.mkdir()
+        for name, content in files.items():
+            (target / name).write_bytes(content)
+        (target / "publication.json").write_text(
+            json.dumps(
+                {
+                    "completed_at": snapshot["completed_at"],
+                    "hf_revision": measurement_revision,
+                    "current_hf_revision": revision,
+                    "run_id": snapshot["run_id"],
+                    "run_attempt": snapshot["run_attempt"],
+                }
+            )
+            + "\n"
+        )
+        break
+    print(f"Prepared {len(selected)} qualified FPM branch snapshots and {len(entries)} history entries")
 
 
 if __name__ == "__main__":
