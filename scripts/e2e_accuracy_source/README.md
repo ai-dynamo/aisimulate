@@ -82,7 +82,12 @@ resolver; fetching current metadata cannot prove the measured revision.
 Run `pytest -c /dev/null tests/e2e_accuracy_source tests/test_e2e_accuracy_nightly.py`.
 Tests use synthetic inputs and pinned expected behavior; PR checks do not need
 the internal gym repository or network access. The package's hashed dependency
-lock is installed by Pages and the nightly campaign.
+lock is installed by Pages, Full CI's repository-contract shard, and the nightly
+campaign. Install it locally before running these tests:
+
+```bash
+python -m pip install --require-hashes -r scripts/e2e_accuracy_source/requirements.txt
+```
 
 On the September 28 dump, the new policy matches gym's **2,281 measurement IDs**
 exactly. A live differential source check matched complete deployment and
