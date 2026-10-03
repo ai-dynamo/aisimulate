@@ -16,6 +16,7 @@
 //! DSA, DSV4) get one variant per phase so a single `query` method handles
 //! dispatch.
 
+use crate::operators::{Glm53AttentionOp, Glm53FfnOp, Glm53MhcOp, Glm53PrimitiveOp, Glm53RouterOp};
 use serde::{Deserialize, Serialize};
 
 use super::prefill_graph::{SglangPrefillAttentionSequenceOp, SglangPrefillCommNormBoundaryOp};
@@ -187,6 +188,11 @@ pub enum Op {
     // Append-only: the fixed prefill composite scopes (EngineSpec schema 22).
     SglangPrefillAttentionSequence(SglangPrefillAttentionSequenceOp),
     SglangPrefillCommNormBoundary(SglangPrefillCommNormBoundaryOp),
+    Glm53Attention(Glm53AttentionOp),
+    Glm53Mhc(Glm53MhcOp),
+    Glm53Router(Glm53RouterOp),
+    Glm53Ffn(Glm53FfnOp),
+    Glm53Primitive(Glm53PrimitiveOp),
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -281,6 +287,11 @@ impl Op {
             Op::Dsv41Engram(o) => o.weight_bytes(),
             Op::Dsv41Stage(o) => o.weight_bytes(),
             Op::Dsv41Linear(o) => o.weight_bytes(),
+            Op::Glm53Attention(o) => o.weight_bytes(),
+            Op::Glm53Mhc(o) => o.weight_bytes(),
+            Op::Glm53Router(o) => o.weight_bytes(),
+            Op::Glm53Ffn(o) => o.weight_bytes(),
+            Op::Glm53Primitive(o) => o.weight_bytes(),
             Op::TokenScale(o) => o.op.weight_bytes(),
             Op::Gemm(o) => o.weights_bytes(),
             Op::Embedding(o) => o.weights_bytes(),
@@ -343,6 +354,11 @@ impl Op {
             Op::Dsv41Engram(o) => &o.name,
             Op::Dsv41Stage(o) => &o.name,
             Op::Dsv41Linear(o) => &o.name,
+            Op::Glm53Attention(o) => &o.name,
+            Op::Glm53Mhc(o) => &o.name,
+            Op::Glm53Router(o) => &o.name,
+            Op::Glm53Ffn(o) => &o.name,
+            Op::Glm53Primitive(o) => &o.name,
             Op::TokenScale(o) => o.op.name(),
             Op::Gemm(o) => &o.name,
             Op::Embedding(o) => &o.name,
@@ -394,6 +410,11 @@ impl Op {
             Op::Dsv41Engram(o) => o.name = name,
             Op::Dsv41Stage(o) => o.name = name,
             Op::Dsv41Linear(o) => o.name = name,
+            Op::Glm53Attention(o) => o.name = name,
+            Op::Glm53Mhc(o) => o.name = name,
+            Op::Glm53Router(o) => o.name = name,
+            Op::Glm53Ffn(o) => o.name = name,
+            Op::Glm53Primitive(o) => o.name = name,
             Op::TokenScale(o) => o.op.set_name(name),
             Op::Gemm(o) => o.name = name,
             Op::Embedding(o) => o.name = name,
@@ -477,7 +498,12 @@ impl Op {
             | Op::Dsv41Mhc(_)
             | Op::Dsv41Engram(_)
             | Op::Dsv41Stage(_)
-            | Op::Dsv41Linear(_) => {}
+            | Op::Dsv41Linear(_)
+            | Op::Glm53Attention(_)
+            | Op::Glm53Mhc(_)
+            | Op::Glm53Router(_)
+            | Op::Glm53Ffn(_)
+            | Op::Glm53Primitive(_) => {}
             Op::Dsv4MegaMoe(o) => o.scale_factor = scale_factor,
             Op::Kda(o) => o.scale_factor = scale_factor,
             Op::MoeAllToAll(o) => o.scale_factor = scale_factor,
@@ -546,6 +572,11 @@ impl Op {
             Op::Dsv41Linear(op) => op.query(db, ctx.num_tokens),
             Op::SglangPrefillAttentionSequence(op) => op.query(db, ctx),
             Op::SglangPrefillCommNormBoundary(op) => op.query(db, ctx),
+            Op::Glm53Attention(op) => op.query(db, ctx),
+            Op::Glm53Mhc(op) => op.query(db, ctx.num_tokens),
+            Op::Glm53Router(op) => op.query(db, ctx.num_tokens),
+            Op::Glm53Ffn(op) => op.query(db, ctx),
+            Op::Glm53Primitive(op) => op.query(db, ctx),
             Op::TokenScale(op) => {
                 let scaled = RuntimeContext {
                     batch_size: op.scale_tokens(ctx.batch_size)?,

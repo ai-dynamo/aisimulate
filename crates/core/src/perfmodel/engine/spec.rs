@@ -789,6 +789,63 @@ mod tests {
                     boundary_role: "post_attention".into(),
                 },
             ),
+            OpSpec::Glm53Attention(crate::operators::glm53flash::tests::attention("kda")),
+            OpSpec::Glm53Mhc(crate::operators::Glm53MhcOp {
+                name: "mhc_pre_attn_0".into(),
+                role: "pre".into(),
+                backend: "vllm".into(),
+                checkpoint_format: "nvfp4".into(),
+                tp_size: 2,
+                is_context: true,
+                hidden_size: 4096,
+                hc_mult: 4,
+                sinkhorn_iters: 20,
+            }),
+            OpSpec::Glm53Router(crate::operators::Glm53RouterOp {
+                name: "router_3".into(),
+                backend: "vllm".into(),
+                checkpoint_format: "nvfp4".into(),
+                hidden_size: 4096,
+                num_experts: 288,
+                topk: 8,
+            }),
+            OpSpec::Glm53Ffn(crate::operators::Glm53FfnOp {
+                name: "ffn_0".into(),
+                backend: "vllm".into(),
+                checkpoint_format: "nvfp4".into(),
+                is_context: true,
+                is_dense: true,
+                hidden_size: 4096,
+                intermediate_size: 12288,
+                num_experts: 288,
+                topk: 8,
+                tp_size: 2,
+                n_shared_experts: 1,
+                swiglu_limit: 10.0,
+                scoring_func: "sigmoid".into(),
+                routed_scaling_factor: 2.5,
+                n_group: 1,
+                topk_group: 1,
+                norm_topk_prob: true,
+                gemm_quant_mode: GemmQuantMode::Nvfp4,
+                shared_quant_mode: GemmQuantMode::Bfloat16,
+                moe_quant_mode: MoeQuantMode::Nvfp4,
+                children: vec![OpSpec::Gemm(gemm())],
+            }),
+            OpSpec::Glm53Primitive(crate::operators::Glm53PrimitiveOp {
+                name: "embedding".into(),
+                role: "embedding".into(),
+                backend: "vllm".into(),
+                checkpoint_format: "fp8".into(),
+                tp_size: 2,
+                is_context: true,
+                hidden_size: 4096,
+                vocab_size: 154880,
+                token_selection: "all_scheduled".into(),
+                output_dtype: "bfloat16".into(),
+                collective: "none".into(),
+                children: vec![],
+            }),
         ];
 
         // Exhaustiveness guard: if a variant is added to `Op`, this match
@@ -834,6 +891,11 @@ mod tests {
                 | OpSpec::Dsv41Mhc(_)
                 | OpSpec::Dsv41Engram(_)
                 | OpSpec::Dsv41Stage(_)
+                | OpSpec::Glm53Attention(_)
+                | OpSpec::Glm53Mhc(_)
+                | OpSpec::Glm53Router(_)
+                | OpSpec::Glm53Ffn(_)
+                | OpSpec::Glm53Primitive(_)
                 | OpSpec::Dsv41Linear(_)
                 | OpSpec::TokenScale(_)
                 | OpSpec::SglangPrefillAttentionSequence(_)
@@ -970,8 +1032,19 @@ mod tests {
             vec![36, 37, 38, 39, 40],
             "V41 appended indices moved"
         );
+        // GLM-5.3-Flash variants append after the SGLang prefill composites.
+        let glm_appended: Vec<_> = all_op_variants()
+            .iter()
+            .skip(PREFILL_BOUNDARY_INDEX as usize + 1)
+            .map(index_of)
+            .collect();
         assert_eq!(
-            PREFILL_BOUNDARY_INDEX as usize + 1,
+            glm_appended,
+            vec![43, 44, 45, 46, 47],
+            "GLM appended indices moved"
+        );
+        assert_eq!(
+            PREFILL_BOUNDARY_INDEX as usize + 6,
             all_op_variants().len(),
             "all_op_variants() must cover exactly the pinned variant count"
         );
