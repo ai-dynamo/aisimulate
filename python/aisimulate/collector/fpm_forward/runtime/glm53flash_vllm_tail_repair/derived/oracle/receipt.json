@@ -1,0 +1,124 @@
+{
+  "status": "ACTUAL_16_ORIGINAL_SNAPSHOT_BYTES_AND_SAVED_CACHE_TAIL_REPLAY_PASS",
+  "probe_result_sha256": "189e9b3874ae25ccc365d4114b42dd9937190d279c4c4c630235a903ef25a9e5",
+  "review_script_sha256": "975e5be898831299248414d95c0e1b33fbe7c35e63a0c8336a208d89c5b4e358",
+  "snapshots": [
+    {
+      "path": "case-0-gate-0.pt",
+      "sha256": "8e4f9429df92823af6352b992f3f0a9b2b6917d9dea357577b642de664bc66fd",
+      "bytes": 2786837,
+      "split_cache_and_tail_equal_one_shot": true,
+      "all_four_phase_geometry_and_tail_addresses": true
+    },
+    {
+      "path": "case-0-gate-1.pt",
+      "sha256": "628e02cf4330dac55b6a151fd0182b5e6975fde4f4ecacf57d1a79879a3a6e3e",
+      "bytes": 2786837,
+      "split_cache_and_tail_equal_one_shot": true,
+      "all_four_phase_geometry_and_tail_addresses": true
+    },
+    {
+      "path": "case-1-gate-0.pt",
+      "sha256": "8bd14c040d9c490a1c4830ec26c76a72111a66a29617251121cb9e56f5ad7a48",
+      "bytes": 2804245,
+      "split_cache_and_tail_equal_one_shot": true,
+      "all_four_phase_geometry_and_tail_addresses": true
+    },
+    {
+      "path": "case-1-gate-1.pt",
+      "sha256": "d802a88e6584c1fb93cfa36d1bbe722b6c2f8b34f2eb0ab8294c61914ee67f5d",
+      "bytes": 2804245,
+      "split_cache_and_tail_equal_one_shot": true,
+      "all_four_phase_geometry_and_tail_addresses": true
+    },
+    {
+      "path": "case-2-gate-0.pt",
+      "sha256": "dd6345c65908483db5a5bef453d6336acf60cb808b1467d7cda5bf8f07718ff5",
+      "bytes": 2804245,
+      "split_cache_and_tail_equal_one_shot": true,
+      "all_four_phase_geometry_and_tail_addresses": true
+    },
+    {
+      "path": "case-2-gate-1.pt",
+      "sha256": "237beff22e2af0cf4d994e184c870f93d6c22713921737f92228954942a947be",
+      "bytes": 2804245,
+      "split_cache_and_tail_equal_one_shot": true,
+      "all_four_phase_geometry_and_tail_addresses": true
+    },
+    {
+      "path": "case-3-gate-0.pt",
+      "sha256": "c2a874c616c9afc3ddd7ce72fa329e770a2bcfdd72468b272b4836461eed73dc",
+      "bytes": 5600923,
+      "split_cache_and_tail_equal_one_shot": true,
+      "all_four_phase_geometry_and_tail_addresses": true
+    },
+    {
+      "path": "case-3-gate-1.pt",
+      "sha256": "de4048d3b4f876befecd82ec5be2e42e526a7c62d8fb9b4bc9e73a2ea8e66ca4",
+      "bytes": 5600923,
+      "split_cache_and_tail_equal_one_shot": true,
+      "all_four_phase_geometry_and_tail_addresses": true
+    },
+    {
+      "path": "case-4-gate-0.pt",
+      "sha256": "561dc032b4154659cf88b263451307fc2502d20a8b07d6a9afac5c7d3501a8b7",
+      "bytes": 2804757,
+      "split_cache_and_tail_equal_one_shot": true,
+      "all_four_phase_geometry_and_tail_addresses": true
+    },
+    {
+      "path": "case-4-gate-1.pt",
+      "sha256": "0f647f52e27a645af56fbf24bb7502a2751d6efa0ea16537cb8e3a69926a7e74",
+      "bytes": 2804757,
+      "split_cache_and_tail_equal_one_shot": true,
+      "all_four_phase_geometry_and_tail_addresses": true
+    },
+    {
+      "path": "case-5-gate-0.pt",
+      "sha256": "ffb39ef70f14cc6c28553debe5be10b32749a3af9b60fd7c02bd557edb195245",
+      "bytes": 62939,
+      "split_cache_and_tail_equal_one_shot": true,
+      "all_four_phase_geometry_and_tail_addresses": true
+    },
+    {
+      "path": "case-5-gate-1.pt",
+      "sha256": "d6a3b2b5f0679a8f703819fd73c2bb27318e3919c046484f478735f53d8743ce",
+      "bytes": 62939,
+      "split_cache_and_tail_equal_one_shot": true,
+      "all_four_phase_geometry_and_tail_addresses": true
+    },
+    {
+      "path": "case-6-gate-0.pt",
+      "sha256": "788ad0ff50779534c91f9a0be4b4bde860a0198d3e58a416d77d06715edf74d5",
+      "bytes": 124967,
+      "split_cache_and_tail_equal_one_shot": true,
+      "all_four_phase_geometry_and_tail_addresses": true
+    },
+    {
+      "path": "case-6-gate-1.pt",
+      "sha256": "89ab49109c926f4b9b50bad241234bd7d9682a62ff17a39aaf5bfe4462cbe621",
+      "bytes": 124967,
+      "split_cache_and_tail_equal_one_shot": true,
+      "all_four_phase_geometry_and_tail_addresses": true
+    },
+    {
+      "path": "case-7-gate-0.pt",
+      "sha256": "8fa36409ca0d15dbcce5fa3d80bf2f9e250aa4a63e3413ee7e4e460aa37ff6a8",
+      "bytes": 11203943,
+      "split_cache_and_tail_equal_one_shot": true,
+      "all_four_phase_geometry_and_tail_addresses": true
+    },
+    {
+      "path": "case-7-gate-1.pt",
+      "sha256": "0c573199bbea9cf866e606c5a5c72941bb5261640f843a22d91e00aff6fbf1c7",
+      "bytes": 11203943,
+      "split_cache_and_tail_equal_one_shot": true,
+      "all_four_phase_geometry_and_tail_addresses": true
+    }
+  ],
+  "limits": [
+    "CPU-only standard-library read; no GPU or kernel was executed.",
+    "Native FWHT/FP8 oracle arithmetic is the original GPU result; this audit does not recompute it.",
+    "No four-cell summary or runtime/formal/capacity admission."
+  ]
+}

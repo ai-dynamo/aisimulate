@@ -962,6 +962,7 @@ def test_cli_rejects_profile_limit_overshoots_before_execution(tmp_path, monkeyp
 )
 def test_profile_runtime_version_is_observed_before_execution(tmp_path, monkeypatch, expected_version, actual_version):
     resource = object.__new__(runner.KubernetesCellRunner)
+    resource.backend = "vllm"
     monkeypatch.setattr(runner, "FPM_RESULTS_DIR", str(tmp_path))
     monkeypatch.setattr(importlib.metadata, "version", lambda _: actual_version)
 

@@ -456,7 +456,10 @@ def test_public_slurm_collect_to_finalize_preserves_frozen_deployment(tmp_path, 
         mounts = next(value.split("=", 1)[1] for value in args if value.startswith("--container-mounts="))
         assert mounts.startswith("/cache:/cache,/models:/models,")
         raw = Path(next(value.rsplit(":", 1)[0] for value in mounts.split(",") if value.endswith(":/results")))
-        command = args[args.index("/usr/bin/env") + 6 :]
+        command = args[args.index("fpm-slurm-command") + 1 :]
+        # Preparation runs through the frozen startup environment wrapper.
+        if "fpm-slurm-prepare" in command:
+            command = command[command.index("fpm-slurm-prepare") + 2 :]
         if command[:2] == ["python3", "-c"]:
             with monkeypatch.context() as patch:
                 patch.setattr(sys, "argv", ["-c", *command[3:]])

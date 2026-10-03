@@ -696,6 +696,12 @@ DefaultHFModels = {
     "zai-org/GLM-5.3",
     "zai-org/GLM-5.3-FP8",
     "nvidia/GLM-5.3-NVFP4",
+    # GLM-5.3-Flash: bundled configs are byte-identical to the pinned
+    # checkpoint revisions in aisimulate_core.sdk.glm53flash.MODEL_REVISIONS.
+    # Registration keeps resolution offline so live Hugging Face `main`
+    # edits cannot change the frozen checkpoint identity.
+    "zai-org/GLM-5.3-Flash",
+    "nvidia/GLM-5.3-Flash-NVFP4",
     # DeepSeek V4
     *DEEPSEEK_V4_HF_MODELS,
     # Qwen 3 Models

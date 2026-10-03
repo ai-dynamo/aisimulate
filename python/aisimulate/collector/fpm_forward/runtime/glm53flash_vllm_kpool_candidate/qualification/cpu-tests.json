@@ -1,0 +1,7 @@
+{
+  "status": "passed",
+  "tests": 10,
+  "scope": "CPU verifier evidence integrity only; native Engine GPU qualification remains NOT_EVALUATED",
+  "ruff": "passed",
+  "compileall": "passed"
+}

@@ -19,7 +19,6 @@ from typing import Any
 
 import yaml
 
-from aisimulate.fpm_contract import FPM_RESOLVED_CONFIG_GLOB
 from aisimulate_core.sdk.fpm_identity import EXECUTION_COLUMNS, LEGACY_EXECUTION_IDENTITY
 
 from .native_artifact import NativeCollection, _rank_artifacts, select_native_measurements, validate_native_collection
@@ -64,37 +63,10 @@ _RUN_IDENTITY_FIELDS = (
 )
 
 
-def _dotted_get(payload: object, path: str) -> object:
-    value = payload
-    for part in path.split("."):
-        if not isinstance(value, dict) or part not in value:
-            raise KeyError(path)
-        value = value[part]
-    return value
-
-
 def _validate_backend_markers(cell: FPMCell, cell_dir: Path) -> None:
-    expected = cell.backend_policy.expected_markers
-    if not expected:
-        return
-    paths = sorted((cell_dir / "raw").glob(f"**/{FPM_RESOLVED_CONFIG_GLOB}"))
-    if not paths:
-        raise ValueError(f"backend policy {cell.backend_policy.policy_id} requires resolved-config evidence")
-    for path in paths:
-        payload = json.loads(path.read_text())
-        mismatches = {}
-        for marker_path, marker_value in expected.items():
-            try:
-                actual = _dotted_get(payload, marker_path)
-            except KeyError:
-                actual = "<missing>"
-            # Markers are declared as strings while the resolved config keeps
-            # native JSON types (enable_eplb: true vs expected "True");
-            # compare canonical string forms so a type gap is not a mismatch.
-            if str(actual) != str(marker_value):
-                mismatches[marker_path] = {"actual": actual, "expected": marker_value}
-        if mismatches:
-            raise ValueError(f"backend marker mismatch in {path}: {mismatches}")
+    from .graph_policy import validate_resolved_markers
+
+    validate_resolved_markers(cell.backend_policy.expected_markers, cell.backend_policy.policy_id, cell_dir / "raw")
 
 
 def _full_attention_group(group: object) -> bool:
@@ -211,6 +183,9 @@ def aggregate_cell(
 ) -> list[dict[str, Any]]:
     """Validate native rank artifacts and take max-rank latency per grid point.
 
+    SGLang same-request cells instead use the validated fastest-TP-rank
+    median (``sglang_tp_latency.POLICY``) under the unchanged row label.
+
     Revalidating an existing publication uses its explicit dense-KV policy;
     an older commit record retains the historical fake-fallback classification.
     """
@@ -223,6 +198,7 @@ def aggregate_cell(
         cell_dir / "raw",
         expected_plan_sha256=plan.sha256,
         expected_attempt_id=expected_attempt_id,
+        expected_backend_version=plan.capability.aic_database_version if cell.state_protocol else None,
     )
     backend_version = collection.backend_version
     capability = plan.capability
@@ -269,6 +245,20 @@ def aggregate_cell(
             return "fake_fallback"
         return "legacy"
 
+    allocator_columns = {}
+    if collection.allocator_policy is not None:
+        from .sglang_allocator import digest, validate_max_split_size
+
+        requested = cell.sglang_allocator_max_split_size_mb
+        validate_max_split_size(requested)
+        if collection.allocator_policy["requested_policy"]["max_split_size_mb"] != requested:
+            raise ValueError("export allocator evidence differs from frozen cell")
+        allocator_columns = {
+            "sglang_allocator_policy_sha256": digest(collection.allocator_policy),
+            "sglang_allocator_max_split_size_mb": requested,
+        }
+    elif cell.sglang_allocator_max_split_size_mb is not None:
+        raise ValueError("export requires actual native allocator evidence for requested policy")
     rows = []
     for measurement in selected:
         point = measurement.point
@@ -285,6 +275,7 @@ def aggregate_cell(
         rows.append(
             {
                 "cell_id": cell.cell_id,
+                **allocator_columns,
                 "model_path": plan.model_path,
                 "system": plan.system,
                 "backend": plan.backend,
@@ -311,11 +302,33 @@ def aggregate_cell(
                 "total_kv_read_tokens": total_kv,
                 "partition_policy": "balanced_v1",
                 "kv_seed_regime": _kv_seed_regime(point, phase),
-                "latency_ms": max(latency for _rank, latency in measurement.rank_wall_times) * 1000.0,
-                "global_warmup_iterations": plan.options.warmup_iterations,
-                "warmup_repeats": 0,
-                "measurement_repeats": 1,
-                "measurement_policy": "dynamo_native_single_sample_v1",
+                # SGLang same-request rows use the fastest-TP-rank median
+                # (sglang_tp_latency.POLICY); the consumer-admitted row label
+                # below is unchanged.
+                "latency_ms": (
+                    measurement.tp_latency_seconds
+                    if measurement.tp_latency_seconds is not None
+                    else max(latency for _rank, latency in measurement.rank_wall_times)
+                )
+                * 1000.0,
+                "global_warmup_iterations": 0 if cell.state_protocol else plan.options.warmup_iterations,
+                "warmup_repeats": 5 if cell.state_protocol else 0,
+                "measurement_repeats": 10 if cell.state_protocol else 1,
+                "measurement_policy": (
+                    f"{cell.backend}_native_real_hybrid_median_v1"
+                    if cell.state_protocol
+                    else "dynamo_native_single_sample_v1"
+                ),
+                **(
+                    {
+                        "state_protocol": cell.state_protocol,
+                        "timing_boundary": "sglang_native_forward_device_timer"
+                        if cell.backend == "sglang"
+                        else "vllm_native_scheduler_output_interval",
+                    }
+                    if cell.state_protocol
+                    else {}
+                ),
                 "model_support_level": capability.support_level,
                 "model_template_id": capability.template_id,
                 "model_template_version": capability.template_version,
@@ -626,6 +639,7 @@ def write_formal_database(
     rows: list[dict[str, Any]],
     *,
     systems_root: Path | None = None,
+    reject_replaced_cells: bool = False,
 ) -> tuple[Path, Path, tuple[str, ...]]:
     """Atomically merge conflict-free native-grid rows into the AIC data tree.
 
@@ -721,6 +735,7 @@ def write_formal_database(
                 f"existing FPM database runtime version mismatch: actual={sorted(existing_versions)!r} "
                 f"expected={version!r}"
             )
+        _validate_allocator_deployments([*merged, *rows])
         existing_identities = _run_identities_by_cell(merged, source="existing")
         skipped_cells: list[str] = []
         for cell_id, incoming_identity in sorted(incoming_identities.items()):
@@ -735,6 +750,8 @@ def write_formal_database(
                     incoming_identity,
                 )
         if skipped_cells:
+            if reject_replaced_cells:
+                raise ValueError(f"complete shard union conflicts with published child attempts: {skipped_cells}")
             skipped_set = set(skipped_cells)
             rows = [row for row in rows if row.get("cell_id") not in skipped_set]
             if not rows:
@@ -766,7 +783,15 @@ def write_formal_database(
             row.setdefault("kv_seed_regime", None)
             for field in ("input_text_sha256", "input_token_ids_sha256", "input_tokenizer_revision"):
                 row.setdefault(field, None)
+        if any(row.get("state_protocol") for row in merged):
+            for row in merged:
+                row.setdefault("state_protocol", None)
+                row.setdefault("timing_boundary", None)
 
+        if any(row.get("sglang_allocator_policy_sha256") is not None for row in merged):
+            for row in merged:
+                row.setdefault("sglang_allocator_policy_sha256", None)
+                row.setdefault("sglang_allocator_max_split_size_mb", None)
         temporary = _temporary_path(parquet_path)
         temporary_metadata = _temporary_path(metadata_path)
         try:
@@ -775,9 +800,17 @@ def write_formal_database(
                 "schema_name": "aic_fpm_forward_perf",
                 "schema_version": 7,
                 "coordinate_system": "iteration_totals_balanced_v1",
-                "measurement_policy": "dynamo_native_single_sample_v1",
-                "warmup_repeats": 0,
-                "measurement_repeats": 1,
+                "measurement_policy": (
+                    next(iter(policies))
+                    if len(policies := {row["measurement_policy"] for row in merged}) == 1
+                    else "per_row"
+                ),
+                "warmup_repeats": (
+                    next(iter(warmups)) if len(warmups := {row["warmup_repeats"] for row in merged}) == 1 else None
+                ),
+                "measurement_repeats": (
+                    next(iter(repeats)) if len(repeats := {row["measurement_repeats"] for row in merged}) == 1 else None
+                ),
                 "row_count": len(merged),
                 "parquet_sha256": _sha256(temporary),
                 "source_plan_sha256": sorted({str(row["source_plan_sha256"]) for row in merged}),
@@ -808,3 +841,38 @@ def write_formal_database(
             temporary.unlink(missing_ok=True)
             temporary_metadata.unlink(missing_ok=True)
     return parquet_path, metadata_path, tuple(skipped_cells)
+
+
+def _validate_allocator_deployments(rows):
+    """One actual allocator identity per deployment, even at disjoint coordinates."""
+    from .sglang_allocator import validate_max_split_size
+
+    coordinate_keys = {
+        "cell_id",
+        "workload_kind",
+        "batch_size",
+        "total_prefill_tokens",
+        "total_kv_read_tokens",
+        "partition_policy",
+    }
+    groups = {}
+    for row in rows:
+        if row.get("backend") != "sglang":
+            if (
+                row.get("sglang_allocator_policy_sha256") is not None
+                or row.get("sglang_allocator_max_split_size_mb") is not None
+            ):
+                raise ValueError("SGLang allocator policy cannot label another backend")
+            continue
+        requested = row.get("sglang_allocator_max_split_size_mb")
+        validate_max_split_size(requested)
+        digest = row.get("sglang_allocator_policy_sha256")
+        if (digest is not None and (not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest))) or (
+            requested is not None and digest is None
+        ):
+            raise ValueError("FPM allocator profile lacks actual policy digest")
+        key = tuple(row.get(k) for k in _ROW_KEY if k not in coordinate_keys)
+        identity = requested, digest
+        if key in groups and groups[key] != identity:
+            raise ValueError("FPM deployment mixes different or unknown allocator policies")
+        groups[key] = identity

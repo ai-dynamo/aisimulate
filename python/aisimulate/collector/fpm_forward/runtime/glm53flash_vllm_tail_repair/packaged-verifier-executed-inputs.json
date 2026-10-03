@@ -1,0 +1,17 @@
+{
+  "purpose": "Actual packaged verifier reexecution against unchanged ARM613836 wheels/installs; formatting+copyright comment only, AST identical; no rebuild or model admission",
+  "files": {
+    "candidate/actual-build-receipt.json": "59b012dcd92831405847b91d1fcfdc9f373d01cd8d1b829b54ce96dfcf0da07e",
+    "candidate/expected-native-binaries.json": "2ffbf12cd5590804c821328510224bef9c2b5b25b64b7dbbda072037c68b541b",
+    "candidate/expected-source-sha256.json": "591517b8379f6d79fafb386983fbd90b0c1613b4b61fd15b0e32fade66f453bf",
+    "candidate/packaging-lineage.json": "bb0d8eee8ffd53de75552f049b192e5aaab4cda768a9c5ffe25664b2d5c5ac6f",
+    "candidate/patch-identity.json": "8e95c049569aab9c4a355c8bbe4e9ef02bfb338575580d5bc6c557b8b45bd8c4",
+    "candidate/verify_install.py": "181e9c1dbb8ae1c4c1afb839f620181dd78952c041617a0215b846328172aa86",
+    "reference/actual-build-receipt.json": "0a76cd7a4e9a5bf945be1e79add0310ed9c2142b87b31063423c58603afd4f95",
+    "reference/expected-native-binaries.json": "2ffbf12cd5590804c821328510224bef9c2b5b25b64b7dbbda072037c68b541b",
+    "reference/expected-source-sha256.json": "f63b434a40d4833621e2d6d860cdbe8f26e2b24f2652fbb65b6c20664ead79b3",
+    "reference/packaging-lineage.json": "22bcd2feb259c8eb03c71e9528ba2eaef485d0aa148fde88e86b996970b3f2f3",
+    "reference/patch-identity.json": "ed6750bdd13ba1ad10f7d7d1577f3cce788819ac9f38dcfa43be3dd3065dfab3",
+    "reference/verify_install.py": "181e9c1dbb8ae1c4c1afb839f620181dd78952c041617a0215b846328172aa86"
+  }
+}

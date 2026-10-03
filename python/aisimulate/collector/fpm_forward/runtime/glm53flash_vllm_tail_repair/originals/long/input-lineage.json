@@ -1,0 +1,44 @@
+{
+  "schema": "glm53flash_failed_request_token_reconstruction_v2",
+  "status": "RECONSTRUCTED_WITH_ALL_SURVIVING_ORIGINAL_PROMPTS_MATCHED",
+  "original_failed_forward_token_witness": false,
+  "source_attempt": "610830/fpm-6027ea1e42f45551",
+  "backend_version": "0.30.0+glm53kpool.bf5f6b0e689d",
+  "tokenizer_revision": "09b04e5e74bca08ca8549fc736d4cdd8624bfde3",
+  "checkpoint_config_raw_sha256": "e23c5d98f53e861d49a51bd3c68591621c5482ce829e42c31724152322fba03d",
+  "checkpoint_config_canonical_sha256": "6f0ec374c7f3273461e1cadbee8d682bb21ad822427ab5a3a986611f5247fdee",
+  "historical_failed_reconstruction": "611251/v1 raw-vs-canonical hash mismatch before tokenizer",
+  "tokenizer_class": "vllm.tokenizers.hf.CachedTokenizersBackend",
+  "tokenizer_sources": {
+    "/opt/glm53flash-candidate/vllm/tokenizers/registry.py": "077f11649db9c6e086eeb60f9dd81ed5667cadd83a29e66a0870c1ed5b1680a5",
+    "/opt/glm53flash-candidate/vllm/tokenizers/hf.py": "53b0dd497817c873d0ef02a7b716affff836c344f85947a4c59b61e7acffa95d"
+  },
+  "checkpoint_tokenizer_files": {
+    "config.json": "e23c5d98f53e861d49a51bd3c68591621c5482ce829e42c31724152322fba03d",
+    "tokenizer.json": "19e773648cb4e65de8660ea6365e10acca112d42a854923df93db4a6f333a82d",
+    "tokenizer_config.json": "98b1271574f41abf89427ae2dda030d94dc9478f0edc5a8bd240db213c6fd5fc"
+  },
+  "corpus_sha256": "0e6f26ed8c93533e2ffd716d1eca40f37b9f7a165aa8d23aae9f52ac6b0e9ba1",
+  "original_surviving_stream_sha256": "710d462360898c50534cc8238921fc628a72d2ebc54a80857fb7a1aa942a253e",
+  "native_token_pool_sha256": "4bbd33156b1d3f01ee451e43e8c50b00e9ede6b565556fe658d511226aa0c378",
+  "native_token_pool_size": 295,
+  "original_forwards_checked": 45,
+  "original_request_prompts_checked": 105,
+  "target": {
+    "benchmark_id": 4,
+    "request_index": 0,
+    "repetition": 0,
+    "rotation": 68,
+    "prompt_length": 131072,
+    "tokens_sha256": "b39e2fde811f638e5e3e9a7c3a27c697fcf185e9f1f5a3d476d2092fa1fdb57e"
+  },
+  "failed_seed": {
+    "prefix": 16384,
+    "query": 8192,
+    "prefix_token_ids_sha256": "0a1d0ada5daa7b08de3a61cf0cbff5219451dcbccde230adc6c9154e1ea64a6c",
+    "query_token_ids_sha256": "64f3186834c113d8e7170710a2ccd18c6bb76dac1dc56cc2e3a504b85f126143",
+    "inclusive_token_ids_sha256": "fc40a221bc8aa7f47e597b9cb144958354192db8c14fb16fdc87b80c30b81c9e"
+  },
+  "cuda_initialized": false,
+  "performance_measurements": false
+}

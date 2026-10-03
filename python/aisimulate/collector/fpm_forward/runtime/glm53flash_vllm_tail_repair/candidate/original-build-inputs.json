@@ -1,0 +1,24 @@
+{
+  "schema": "glm53_tail_runtime_build_inputs_v1",
+  "version": "0.30.0+glm53tail.eb4704514fdf",
+  "files": {
+    "LICENSE": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+    "README.md": "3ed6d195efe282a991f57adb6c48063dd1f1b2348c352dce0b54fd8fe4646b17",
+    "actual-archive-patch-check.json": "606db78b7a119322504f5968321dbb1b07fd2fa2c9726b5915637546f466b4dd",
+    "binary-base-origin.json": "8b3218c7d288a39559c2f1a2b43b428e229aa01a22efde20755305d8736a1eae",
+    "build.py": "4e54049d66ee393f399481febc78d2bd76afa6b525e2b473fdf3d580ba10fc66",
+    "combined-repair.patch.b64": "5dd6285fec748381d175b9bd31a55343e3f0fe7e1895e42d97563b0482348b35",
+    "combined-repair.review.diff": "89982e515fbe08f98f47b81c83c1360367715c4bd0a1039cd3f78c231d0457bb",
+    "expected-native-binaries.json": "2ffbf12cd5590804c821328510224bef9c2b5b25b64b7dbbda072037c68b541b",
+    "expected-source-sha256.json": "591517b8379f6d79fafb386983fbd90b0c1613b4b61fd15b0e32fade66f453bf",
+    "patch-identity.json": "8e95c049569aab9c4a355c8bbe4e9ef02bfb338575580d5bc6c557b8b45bd8c4",
+    "source-archive.json": "593d0556f4205b1a141d2055c317a73a8394d88a27022b979f44a3cb67732dcf",
+    "source-delta-check.json": "dd7e7063305b22df0136f0c42e975dea18766e344eeb64dc222acf6d1a11aa03",
+    "verify_install.py": "4e47ef24dd8ef81dd8f5f56d770bc2b803e03d328cc38bfe7e06dc7d3aa3ac79"
+  },
+  "independent_build_review_sha256": "f3d2d7c630a859d78c0ce2b12f8b0433d0c3a1a6bcdfa5585df95fbec8f0589c",
+  "independent_delta_review_sha256": "3737ac579144280d9f1f5120af9eda72b948e7067ad18bfb72ce4e1eb462c2e6",
+  "status": "FROZEN_FOR_ACTUAL_CPU_BUILD_INSTALL_ONLY",
+  "model_gpu_qualification": "NOT_EVALUATED",
+  "formal_admission": false
+}

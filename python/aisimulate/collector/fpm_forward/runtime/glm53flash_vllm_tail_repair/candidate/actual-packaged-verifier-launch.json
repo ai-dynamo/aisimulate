@@ -1,0 +1,73 @@
+{
+  "schema": "glm53_tail_packaged_verifier_actual_launch_v1",
+  "job": 614605,
+  "started": {
+    "argv": [
+      "srun",
+      "--ntasks=1",
+      "--cpus-per-task=4",
+      "--container-image=/lustre/fsw/portfolios/coreai/users/harrli/glm53flash-01a0d02e-a77a-71b3-9f31-baf6f0309472/images/vllm/4864d46625cbc3307623e29ac742030655e27249feba7b97ec925ce4cc4dfb56.sqsh",
+      "--container-mounts=/lustre/fsw/portfolios/coreai/users/harrli/glm53flash-01a0d02e-a77a-71b3-9f31-baf6f0309472/tail-packaged-install-verifier-v2:/probe:ro,/lustre/fsw/portfolios/coreai/users/harrli/glm53flash-01a0d02e-a77a-71b3-9f31-baf6f0309472/tail-packaged-verifier-cpu-results/614605/candidate:/results,/tmp/glm53-tail-packaged-614605-candidate:/tmp,/lustre/fsw/portfolios/coreai/users/harrli/glm53flash-01a0d02e-a77a-71b3-9f31-baf6f0309472/formal-sglang-fp8-tp2-preparation-v3/cache-hook:/cache:ro,/lustre/fsw/portfolios/coreai/users/harrli/glm53flash-01a0d02e-a77a-71b3-9f31-baf6f0309472/kpool-tail-build-install-results/613836/candidate:/original:ro",
+      "bash",
+      "-c",
+      "set -euo pipefail; for key in ${!AISIM_@} ${!DYNAMO_@} ${!DYN_FPM_@}; do unset \"$key\"; done; unset CUDA_LAUNCH_BLOCKING; export CUDA_VISIBLE_DEVICES= PYTHONDONTWRITEBYTECODE=1 HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 PYTHONPATH=/cache:/original/python; \"$@\"; status=$?; exit \"$status\"",
+      "--",
+      "python3",
+      "-B",
+      "/probe/candidate/verify_install.py",
+      "--build-receipt",
+      "/original/build/build-receipt.json",
+      "--wheel",
+      "/original/build/dist/vllm-0.30.0+glm53tail.eb4704514fdf-cp312-cp312-linux_aarch64.whl",
+      "--install-root",
+      "/original/python",
+      "--output",
+      "/results/actual-packaged-verifier.json"
+    ],
+    "runtime": {
+      "runtime_root": "kpool-tail-build-install-results/613836/candidate/python",
+      "wheel": "kpool-tail-build-install-results/613836/candidate/build/dist/vllm-0.30.0+glm53tail.eb4704514fdf-cp312-cp312-linux_aarch64.whl",
+      "wheel_sha256": "538d440757a3bbf21b1b6a9f4348fee631789654e10ec8b8f4b13b8aa99b53e2",
+      "install_receipt": "kpool-tail-build-install-results/613836/candidate/actual-install.json",
+      "install_receipt_sha256": "e4f660da8c7b358ccdff66c64e79f057df2782f816c95c33a96567c76322ce79",
+      "build_receipt": "kpool-tail-build-install-results/613836/candidate/build/build-receipt.json",
+      "build_receipt_sha256": "59b012dcd92831405847b91d1fcfdc9f373d01cd8d1b829b54ce96dfcf0da07e"
+    },
+    "verified_actual_wheel_sha256": "538d440757a3bbf21b1b6a9f4348fee631789654e10ec8b8f4b13b8aa99b53e2",
+    "started_ns": 1790261075137258812
+  },
+  "exit": {
+    "role": "candidate",
+    "returncode": 0,
+    "argv": [
+      "srun",
+      "--ntasks=1",
+      "--cpus-per-task=4",
+      "--container-image=/lustre/fsw/portfolios/coreai/users/harrli/glm53flash-01a0d02e-a77a-71b3-9f31-baf6f0309472/images/vllm/4864d46625cbc3307623e29ac742030655e27249feba7b97ec925ce4cc4dfb56.sqsh",
+      "--container-mounts=/lustre/fsw/portfolios/coreai/users/harrli/glm53flash-01a0d02e-a77a-71b3-9f31-baf6f0309472/tail-packaged-install-verifier-v2:/probe:ro,/lustre/fsw/portfolios/coreai/users/harrli/glm53flash-01a0d02e-a77a-71b3-9f31-baf6f0309472/tail-packaged-verifier-cpu-results/614605/candidate:/results,/tmp/glm53-tail-packaged-614605-candidate:/tmp,/lustre/fsw/portfolios/coreai/users/harrli/glm53flash-01a0d02e-a77a-71b3-9f31-baf6f0309472/formal-sglang-fp8-tp2-preparation-v3/cache-hook:/cache:ro,/lustre/fsw/portfolios/coreai/users/harrli/glm53flash-01a0d02e-a77a-71b3-9f31-baf6f0309472/kpool-tail-build-install-results/613836/candidate:/original:ro",
+      "bash",
+      "-c",
+      "set -euo pipefail; for key in ${!AISIM_@} ${!DYNAMO_@} ${!DYN_FPM_@}; do unset \"$key\"; done; unset CUDA_LAUNCH_BLOCKING; export CUDA_VISIBLE_DEVICES= PYTHONDONTWRITEBYTECODE=1 HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 PYTHONPATH=/cache:/original/python; \"$@\"; status=$?; exit \"$status\"",
+      "--",
+      "python3",
+      "-B",
+      "/probe/candidate/verify_install.py",
+      "--build-receipt",
+      "/original/build/build-receipt.json",
+      "--wheel",
+      "/original/build/dist/vllm-0.30.0+glm53tail.eb4704514fdf-cp312-cp312-linux_aarch64.whl",
+      "--install-root",
+      "/original/python",
+      "--output",
+      "/results/actual-packaged-verifier.json"
+    ],
+    "wall_seconds": 95.52916077524424
+  },
+  "controller_sha256": "045101e144ecdb7c9878ecfbb90573b77e0d9a48688f4f1d8ed30b7bf03374a4",
+  "controller_inputs_sha256": "93560f1637d95e0ab8b7a9f487a9b144373fa272a1d18488cba60c92fc6dd148",
+  "executed_inventory_sha256": "30d9cf0c342453088783d541c68f6b98c7e02edab169078da0cafa225650d09b",
+  "actual_receipt_sha256": "71e5813b1871c90ffb2e4b0865b3d69b5652c48cff5dd860a46d0e9843898cc7",
+  "build_repeated": false,
+  "runtime_mutated": false,
+  "gpu_model_executed": false
+}

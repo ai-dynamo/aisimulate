@@ -161,3 +161,64 @@ def test_formal_glm_ops_do_not_accept_generic_moe_tables():
     )
     with pytest.raises(PerfDataNotAvailableError, match="GLM-5.3-Flash measured module tables are unavailable"):
         RustForwardPassPerfModel.best_available(config)
+
+
+# sha256 of config.json / hf_quant_config.json at the pinned revisions in
+# MODEL_REVISIONS (checkpoint asset-assembly manifest). FP8 ships no sidecar.
+PINNED_CONFIG_SHA256 = {
+    "zai-org/GLM-5.3-Flash": {
+        "config": "bb8f01c42cb92a52ca72e65afb4d5bd8d11aef083cd210e8de25dfb904f23e9f",
+    },
+    "nvidia/GLM-5.3-Flash-NVFP4": {
+        "config": "e23c5d98f53e861d49a51bd3c68591621c5482ce829e42c31724152322fba03d",
+        "hf_quant_config": "1277df937b780e7de8eace66286ffad207f57d33b536b40c9c35635b235c17c6",
+    },
+}
+
+
+@pytest.mark.parametrize("path", MODEL_REVISIONS)
+def test_pinned_checkpoints_resolve_offline_to_bundled_revision(path, monkeypatch, tmp_path):
+    """Live Hugging Face ``main`` must never replace the pinned checkpoint config."""
+    import hashlib
+    import shutil
+
+    from aisimulate_core.sdk import utils
+
+    assert set(PINNED_CONFIG_SHA256) == set(MODEL_REVISIONS)
+    assert path in common.DefaultHFModels
+    bundle = utils._get_model_config_path()
+    stem = path.replace("/", "--")
+    for kind, digest in PINNED_CONFIG_SHA256[path].items():
+        assert hashlib.sha256((bundle / f"{stem}_{kind}.json").read_bytes()).hexdigest() == digest
+    assert (bundle / f"{stem}_hf_quant_config.json").exists() == ("hf_quant_config" in PINNED_CONFIG_SHA256[path])
+
+    network_calls = []
+
+    def drifted_main(hf_id, filename="config.json", **_kwargs):
+        # Mirrors the post-pin upstream edit: an extra quantization ignore entry.
+        network_calls.append((hf_id, filename))
+        payload = json.loads((bundle / f"{stem}_config.json").read_text())
+        payload["quantization_config"] = {"ignore": ["model.layers.45.mtp"]}
+        return payload
+
+    monkeypatch.setattr(utils, "_download_hf_json", drifted_main)
+    monkeypatch.setattr(utils, "_download_hf_config", drifted_main)
+    utils.get_model_config_from_model_path.cache_clear()
+    utils._load_model_config_from_model_path.cache_clear()
+    try:
+        resolved = utils.get_model_config_from_model_path(path)["raw_config"]
+        # The native producers compare the loaded local checkpoint against the
+        # pinned HF identity; a byte-identical local copy must match exactly.
+        checkpoint = tmp_path / "checkpoint"
+        checkpoint.mkdir()
+        shutil.copyfile(bundle / f"{stem}_config.json", checkpoint / "config.json")
+        if "hf_quant_config" in PINNED_CONFIG_SHA256[path]:
+            shutil.copyfile(bundle / f"{stem}_hf_quant_config.json", checkpoint / "hf_quant_config.json")
+        local = utils.get_model_config_from_model_path(str(checkpoint))["raw_config"]
+    finally:
+        utils.get_model_config_from_model_path.cache_clear()
+        utils._load_model_config_from_model_path.cache_clear()
+
+    assert network_calls == []
+    assert resolved == local
+    assert resolved.get("quantization_config", {}).get("ignore") != ["model.layers.45.mtp"]

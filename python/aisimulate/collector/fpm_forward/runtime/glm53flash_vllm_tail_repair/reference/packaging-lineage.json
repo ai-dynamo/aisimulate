@@ -1,0 +1,26 @@
+{
+  "schema": "glm53_tail_runtime_packaging_v1",
+  "original_build_job": 613836,
+  "original_input_inventory_sha256": "47e6f985caf32eccf84017bbcfb03b59a597e013b335598946703476b58198d6",
+  "formatted_files": [
+    {
+      "file": "verify_install.py",
+      "original_sha256": "4e47ef24dd8ef81dd8f5f56d770bc2b803e03d328cc38bfe7e06dc7d3aa3ac79",
+      "packaged_sha256": "181e9c1dbb8ae1c4c1afb839f620181dd78952c041617a0215b846328172aa86",
+      "change": "ruff formatting and complete original-wrapper NVIDIA copyright header; AST identical",
+      "packaged_verifier_native_execution": "ACTUAL_CPU_INSTALL_SOURCE_AND_NATIVE_SPEC_PASS"
+    }
+  ],
+  "runtime_patch_bytes_changed": false,
+  "production_admission": "CLOSED",
+  "packaged_verifier_execution": {
+    "job": 614605,
+    "receipt": "actual-packaged-verifier-receipt.json",
+    "receipt_sha256": "edff93fad8929b4959a15ea94413fbdba2991df0a0b013c304399cb42f9c531c",
+    "launch": "actual-packaged-verifier-launch.json",
+    "launch_sha256": "5d9d9edcc91351db18d95b653354882b32bb05595b42c9a8b535f0626b544ef0",
+    "executed_inventory": "../packaged-verifier-executed-inputs.json",
+    "executed_inventory_sha256": "30d9cf0c342453088783d541c68f6b98c7e02edab169078da0cafa225650d09b",
+    "scope": "Actual packaged wrapper against unchanged 613836 wheel/install; no CUDA initialization or model execution"
+  }
+}
