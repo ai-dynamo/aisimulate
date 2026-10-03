@@ -55,7 +55,7 @@ pub(super) fn get_new_batch_prefill(
     // partial page from available capacity, so page slack must not be charged
     // a second time here.
     let mut rem_total_tokens =
-        (cache.available_tokens() + cache.evictable_size) as f64 - reserved_decode_output;
+        (cache.available_tokens() + cache.evictable_size()) as f64 - reserved_decode_output;
     let mut rem_input_tokens = config.max_prefill_tokens as f64;
     let mut rem_chunk_tokens = config.chunked_prefill_size as f64;
 
