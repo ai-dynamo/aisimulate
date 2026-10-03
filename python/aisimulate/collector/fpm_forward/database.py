@@ -19,7 +19,6 @@ from typing import Any
 
 import yaml
 
-from aisimulate.fpm_contract import FPM_RESOLVED_CONFIG_GLOB
 from aisimulate_core.sdk.fpm_identity import EXECUTION_COLUMNS, LEGACY_EXECUTION_IDENTITY
 
 from .native_artifact import NativeCollection, _rank_artifacts, select_native_measurements, validate_native_collection
@@ -64,37 +63,10 @@ _RUN_IDENTITY_FIELDS = (
 )
 
 
-def _dotted_get(payload: object, path: str) -> object:
-    value = payload
-    for part in path.split("."):
-        if not isinstance(value, dict) or part not in value:
-            raise KeyError(path)
-        value = value[part]
-    return value
-
-
 def _validate_backend_markers(cell: FPMCell, cell_dir: Path) -> None:
-    expected = cell.backend_policy.expected_markers
-    if not expected:
-        return
-    paths = sorted((cell_dir / "raw").glob(f"**/{FPM_RESOLVED_CONFIG_GLOB}"))
-    if not paths:
-        raise ValueError(f"backend policy {cell.backend_policy.policy_id} requires resolved-config evidence")
-    for path in paths:
-        payload = json.loads(path.read_text())
-        mismatches = {}
-        for marker_path, marker_value in expected.items():
-            try:
-                actual = _dotted_get(payload, marker_path)
-            except KeyError:
-                actual = "<missing>"
-            # Markers are declared as strings while the resolved config keeps
-            # native JSON types (enable_eplb: true vs expected "True");
-            # compare canonical string forms so a type gap is not a mismatch.
-            if str(actual) != str(marker_value):
-                mismatches[marker_path] = {"actual": actual, "expected": marker_value}
-        if mismatches:
-            raise ValueError(f"backend marker mismatch in {path}: {mismatches}")
+    from .graph_policy import validate_resolved_markers
+
+    validate_resolved_markers(cell.backend_policy.expected_markers, cell.backend_policy.policy_id, cell_dir / "raw")
 
 
 def _full_attention_group(group: object) -> bool:

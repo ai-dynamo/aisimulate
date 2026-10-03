@@ -437,6 +437,16 @@ def _backend_policies(
 
     extra_cli_args: list[str] = []
     expected_markers: dict[str, str] = {}
+    capture_sizes = getattr(options, "vllm_cudagraph_capture_sizes", None)
+    if capture_sizes is not None:
+        from .graph_policy import capture_sizes_label, vllm_capture_policy
+
+        if backend != "vllm":
+            raise ValueError("--vllm-cudagraph-capture-sizes requires backend=vllm")
+        capture_args, capture_markers = vllm_capture_policy(capture_sizes)
+        extra_cli_args += capture_args
+        expected_markers.update(capture_markers)
+        specified["cudagraph_capture_sizes"] = capture_sizes_label(capture_sizes)
     if options.enforce_eager:
         expected_markers["config.engine_args.enforce_eager"] = "True"
     if moe != "auto":
@@ -492,10 +502,20 @@ class FPMCell:
     state_protocol: str = ""
     sglang_mem_fraction_static: float | None = None
     sglang_allocator_max_split_size_mb: int | None = None
+    sglang_cuda_graph_backend_prefill: str | None = None
+    sglang_cuda_graph_max_bs_prefill: int | None = None
 
     def to_dict(self) -> dict[str, object]:
         return {
             "cell_id": self.cell_id,
+            **(
+                {
+                    "sglang_cuda_graph_backend_prefill": self.sglang_cuda_graph_backend_prefill,
+                    "sglang_cuda_graph_max_bs_prefill": self.sglang_cuda_graph_max_bs_prefill,
+                }
+                if self.sglang_cuda_graph_backend_prefill is not None
+                else {}
+            ),
             **(
                 {"sglang_allocator_max_split_size_mb": self.sglang_allocator_max_split_size_mb}
                 if self.sglang_allocator_max_split_size_mb is not None
@@ -704,6 +724,8 @@ def _cell_id(
     input_text_sha256: str = "",
     sglang_mem_fraction_static: float | None = None,
     sglang_allocator_max_split_size_mb: int | None = None,
+    sglang_cuda_graph_backend_prefill: str | None = None,
+    sglang_cuda_graph_max_bs_prefill: int | None = None,
 ) -> str:
     payload = {
         "backend": backend,
@@ -722,6 +744,17 @@ def _cell_id(
         payload["sglang_allocator_max_split_size_mb"] = sglang_allocator_max_split_size_mb
     if sglang_mem_fraction_static is not None:
         payload["sglang_mem_fraction_static"] = sglang_mem_fraction_static
+    if sglang_cuda_graph_backend_prefill is not None:
+        payload["sglang_cuda_graph_backend_prefill"] = sglang_cuda_graph_backend_prefill
+        payload["sglang_cuda_graph_max_bs_prefill"] = sglang_cuda_graph_max_bs_prefill
+    from .graph_policy import declared_capture_sizes
+
+    capture_sizes = declared_capture_sizes(policy.expected_markers)
+    if capture_sizes is not None:
+        # Explicit vLLM capture sizes are runtime identity even though they
+        # are not one of the four backend identity columns. Omission keeps
+        # existing cell identifiers.
+        payload["vllm_cudagraph_capture_sizes"] = list(capture_sizes)
     return f"fpm-{_canonical_hash(payload)[:16]}"
 
 
@@ -748,6 +781,10 @@ def build_collection_plan(
         raise ValueError("--sglang-allocator-max-split-size-mb requires backend=sglang")
     if options.sglang_mem_fraction_static is not None and backend != "sglang":
         raise ValueError("--sglang-mem-fraction-static requires backend=sglang")
+    if options.sglang_cuda_graph_backend_prefill is not None and backend != "sglang":
+        raise ValueError("--sglang-cuda-graph-backend-prefill requires backend=sglang")
+    if options.vllm_cudagraph_capture_sizes is not None and backend != "vllm":
+        raise ValueError("--vllm-cudagraph-capture-sizes requires backend=vllm")
     collector_config = dict(collector_config or {})
     profile = load_fpm_profile(fpm_profile) if fpm_profile is not None else None
     if profile is not None:
@@ -798,6 +835,12 @@ def build_collection_plan(
     is_glm = capability.architecture == "Glm5NextForConditionalGeneration"
     if backend == "sglang" and not is_glm:
         raise ValueError("SGLang native FPM currently supports only GLM-5.3-Flash")
+    if not is_glm and (
+        options.vllm_cudagraph_capture_sizes is not None or options.sglang_cuda_graph_backend_prefill is not None
+    ):
+        # Other vLLM plans own prefill capture sizes through prefill_sampling;
+        # explicit native graph requests are qualified only for GLM campaigns.
+        raise ValueError("explicit native CUDA-graph requests are qualified only for GLM-5.3-Flash FPM")
     if is_v41 and not options.enforce_eager:
         raise ValueError("V4.1 FPM collection currently requires --fpm-enforce-eager; graph timing is not qualified")
     if options.enforce_eager and not is_v41:
@@ -938,10 +981,14 @@ def build_collection_plan(
                 input_text_sha256=input_text_sha256,
                 sglang_mem_fraction_static=options.sglang_mem_fraction_static,
                 sglang_allocator_max_split_size_mb=options.sglang_allocator_max_split_size_mb,
+                sglang_cuda_graph_backend_prefill=options.sglang_cuda_graph_backend_prefill,
+                sglang_cuda_graph_max_bs_prefill=options.sglang_cuda_graph_max_bs_prefill,
             ),
             execution_identity=execution,
             sglang_mem_fraction_static=options.sglang_mem_fraction_static,
             sglang_allocator_max_split_size_mb=options.sglang_allocator_max_split_size_mb,
+            sglang_cuda_graph_backend_prefill=options.sglang_cuda_graph_backend_prefill,
+            sglang_cuda_graph_max_bs_prefill=options.sglang_cuda_graph_max_bs_prefill,
             backend=backend,
             state_protocol="glm53flash_same_request_real_hybrid_v1" if is_glm else "",
             input_text_sha256=input_text_sha256,
