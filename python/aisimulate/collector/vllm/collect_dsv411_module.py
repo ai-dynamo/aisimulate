@@ -255,6 +255,17 @@ class AttentionStack:
     def _is_swa(spec) -> bool:
         return "SlidingWindow" in type(spec).__name__
 
+    def _ring_blocks(self, spec):
+        """Pages per request for caches serving addresses as per-request rings: the sliding-window
+        caches (window pages) and the compressor state caches (CircularBufferSpec: ONE block whose
+        block_size is the ring capacity; the compressor's slot kernel reads block_table[req, 0]).
+        None = position-addressed cache sized by the sequence length."""
+        if self._is_swa(spec):
+            return self.SWA_RING_BLOCKS
+        if "CircularBuffer" in type(spec).__name__:
+            return int(spec.max_num_blocks_per_req(self.vllm_config, self.vllm_config.model_config.max_model_len))
+        return None
+
     def _allocate(self, backend, spec, num_blocks):
         """The DSV4 helper's layout (compute_layer_kv_cache_shape_bytes + padded page stride) with the
         stride probe on the meta device instead of a full-size scratch tensor."""
@@ -290,8 +301,9 @@ class AttentionStack:
             spec = specs[layer.prefix]
             if spec is None:
                 continue
-            if self._is_swa(spec):
-                blocks = batch * self.SWA_RING_BLOCKS + 64
+            ring = self._ring_blocks(spec)
+            if ring:
+                blocks = batch * ring + 64
             else:
                 blocks = _cache_blocks_for_block_size(batch, seq_len, spec.block_size)
             registered.bind_kv_cache(self._allocate(registered.get_attn_backend(), spec, blocks))
@@ -299,7 +311,7 @@ class AttentionStack:
                 spec=type(spec).__name__,
                 block_size=spec.block_size,
                 blocks=blocks,
-                ring=self._is_swa(spec),
+                ring=ring,
                 backend=registered.get_attn_backend().get_name(),
             )
         self.bound = bound
@@ -366,13 +378,13 @@ class AttentionStack:
                 spec = registered.get_kv_cache_spec(self.vllm_config)
                 if spec is None:
                     continue
-                swa = self._is_swa(spec)
-                rkey = (spec.block_size, swa)
+                ring = self._ring_blocks(spec)
+                rkey = (spec.block_size, ring)
                 if rkey not in remapped:
                     remapped[rkey] = (
                         common
-                        if spec.block_size == self.vllm_config.cache_config.block_size and not swa
-                        else self._remapped(common, spec.block_size, ring_blocks=self.SWA_RING_BLOCKS if swa else None)
+                        if spec.block_size == self.vllm_config.cache_config.block_size and not ring
+                        else self._remapped(common, spec.block_size, ring_blocks=ring)
                     )
                 sub = remapped[rkey]
                 key, builder = self._builder(registered, spec, layer.prefix, sub)
