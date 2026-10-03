@@ -245,7 +245,7 @@
   }
 
   async function start() {
-    data = await json(base + "catalog.json");
+    data = window.fpmDetailSelection?.catalog || await json(base + "catalog.json");
     if (data.schema_version !== 1 || data.policy !== "native-online-rank-unit-features-v1") throw new Error("Unsupported visualization data version.");
     axes = new Map(data.axes.map(a => [a.id, a]));
     groups = new Map(data.groups.map(g => [g.id, g])); catalog = new Map(data.catalog.map(c => [c.id, c]));
@@ -259,7 +259,7 @@
     if (!statusResponse.ok && statusResponse.status !== 404) throw new Error("Publication status unavailable.");
     const publication = statusResponse.ok ? await statusResponse.json() : null;
     const stale = publication && (publication.hf_revision !== publication.current_hf_revision || Date.now()-Date.parse(publication.completed_at)>48*3600000);
-    document.getElementById("nav-status-text").textContent = (stale ? "Stale measurement snapshot · " : "") + "HF " + data.hf_revision.slice(0, 12)
+    if (!window.fpmDetailSelection) document.getElementById("nav-status-text").textContent = (stale ? "Stale measurement snapshot · " : "") + "HF " + data.hf_revision.slice(0, 12)
       + (publication ? " · " + publication.completed_at : "");
     for (const pane of panes) {
       get(pane + "-model").replaceChildren(...models.map(m => new Option(m.split("/").pop(), m)));
@@ -281,7 +281,25 @@
       timer = setTimeout(() => { panes.forEach(saveCamera); redraw(); }, 180);
     }).observe(root);
     new MutationObserver(() => { panes.forEach(saveCamera); redraw(); }).observe(document.documentElement, {attributes:true, attributeFilter:["data-theme"]});
-    await redraw();
+    function syncSelection() {
+      const selection = window.fpmDetailSelection;
+      if (!selection) return;
+      const item = catalog.get(selection.configurationId);
+      if (!item) return;
+      epoch++;
+      phase.value = selection.phase;
+      get("left-model").value = item.model;
+      configurations("left", item.id);
+      workers("right");
+      redraw();
+    }
+    document.addEventListener("fpm-detail-selection", syncSelection);
+    phase.addEventListener("change", () => {
+      const shared = document.getElementById("phase-filter");
+      if (shared && phase.value !== 'all') { shared.value = phase.value; shared.dispatchEvent(new Event('change')); }
+    });
+    if (window.fpmDetailSelection) syncSelection();
+    else await redraw();
   }
   start().catch(fail);
 })();

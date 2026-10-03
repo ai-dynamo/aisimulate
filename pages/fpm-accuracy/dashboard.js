@@ -115,6 +115,38 @@
     if (index >= 0) $('variant-filter').value = String(index);
     maps();
   }
+  let measurementCatalog, visualizationScript, viewRequest = 0;
+  async function detailView() {
+    const token = ++viewRequest, show3d = params.get('view') === '3d';
+    $('phase-filter').querySelector('[value=all]').hidden = !show3d;
+    if (!show3d && $('phase-filter').value === 'all') { $('phase-filter').value = 'prefill'; maps(); }
+    $('accuracy-panel').hidden = show3d;
+    $('accuracy-view').setAttribute('aria-pressed', String(!show3d));
+    $('measurements-view').setAttribute('aria-pressed', String(show3d));
+    $('gym-visualization').hidden = true;
+    $('visualization-status').hidden = !show3d;
+    if (!show3d) return;
+    $('visualization-status').textContent = 'Loading matching measurement assets…';
+    try {
+      measurementCatalog ||= await load('data/visualization/catalog.json', true);
+      if (token !== viewRequest) return;
+      const summary = summaries[Number($('evaluation-filter').value)];
+      const item = measurementCatalog?.catalog.find(c => c.configuration_id === selected?.configuration_id && c.snapshot_id === selected?.snapshot_id);
+      if (!item || measurementCatalog.hf_revision !== summary?.snapshot.hf_revision || item.membership_digest !== selected.membership_sha256) {
+        $('visualization-status').textContent = '3D unavailable for this evaluation and configuration: matching measurement assets are not retained.';
+        return;
+      }
+      window.fpmDetailSelection = {catalog:measurementCatalog, configurationId:item.id, phase:$('phase-filter').value};
+      $('visualization-status').textContent = '3D shows measurements from the selected HF revision. Diagnostic observations are separate from accepted accuracy measurements.';
+      $('gym-visualization').hidden = false;
+      if (!visualizationScript) {
+        visualizationScript = document.createElement('script');
+        visualizationScript.src = './assets/visualization.js';
+        visualizationScript.onerror = () => { $('visualization-status').textContent = 'Could not load 3D view. Reload to retry.'; };
+        document.head.append(visualizationScript);
+      } else document.dispatchEvent(new Event('fpm-detail-selection'));
+    } catch (error) { if (token === viewRequest) $('visualization-status').textContent = error.message; }
+  }
   async function configuration() {
     const token = ++request;
     const index = Number($('evaluation-filter').value), summary = summaries[index], entry = entries[index];
@@ -123,6 +155,7 @@
     phaseTable(selected ? [selected] : []);
     $('detail-evidence').textContent = '';
     variants();
+    detailView();
     if (!selected) return;
     const hf = `https://huggingface.co/datasets/nvidia/aisimulate-fpm-dataset/blob/${summary.snapshot.hf_revision}/`;
     $('detail-evidence').innerHTML = `<span role="img" aria-label="Hugging Face" title="Hugging Face dataset evidence">🤗</span> <a target="_blank" rel="noopener" href="${hf+selected.configuration_manifest.split('/').map(encodeURIComponent).join('/')}">Pinned configuration ↗</a> · <a target="_blank" rel="noopener" href="${hf+selected.measurement_manifest.split('/').map(encodeURIComponent).join('/')}">Measurements ↗</a> · ${esc(selected.status)} · ${selected.skipped_count} excluded or unavailable`;
@@ -133,11 +166,12 @@
       detail = document.rows.find(r=>r.configuration_id === selected.configuration_id && r.snapshot_id === selected.snapshot_id);
       const age = Date.now()-Date.parse(summary.snapshot.completed_at);
       status(`${age>48*3600000 ? 'Stale · ' : ''}AISim ${summary.snapshot.commit_sha.slice(0,12)} · HF ${summary.snapshot.hf_revision.slice(0,12)} · ${completed(summary.snapshot.completed_at)}`);
-      if (detail && !detail.workload_heatmaps[$('phase-filter').value]) {
+      if (detail && $('phase-filter').value !== 'all' && !detail.workload_heatmaps[$('phase-filter').value]) {
         const available = ['prefill','decode','mixed'].find(phase => detail.workload_heatmaps[phase]);
         if (available) $('phase-filter').value = available;
       }
       variants();
+      detailView();
     } catch(error) { if (token === request) status(error.message); }
   }
   function configurations() {
@@ -180,8 +214,13 @@
   $('branch').addEventListener('change',()=> { const url = new URL(location); url.searchParams.set('branch',$('branch').value); location.assign(url); });
   if (view === 'detail') filters.push(['parallelism-filter','parallelism'],['role-filter','worker_role']);
   for (const [id] of filters) $(id).addEventListener('change',()=>view === 'trends' ? trends() : configurations());
-  $('phase-filter').addEventListener('change',()=>view === 'trends' ? trends() : maps());
+  $('phase-filter').addEventListener('change',()=> { if (view === 'trends') trends(); else { maps(); detailView(); } });
   if (view === 'detail') {
+    for (const [id, mode] of [['accuracy-view','accuracy'],['measurements-view','3d']]) $(id).addEventListener('click',()=> {
+      params.set('view',mode);
+      const url = new URL(location); url.searchParams.set('view',mode); history.replaceState(null,'',url);
+      detailView();
+    });
     $('evaluation-filter').addEventListener('change',evaluation);
     $('configuration-filter').addEventListener('change',configuration);
     $('method-filter').addEventListener('change',variants);

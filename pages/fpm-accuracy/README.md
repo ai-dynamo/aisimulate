@@ -12,12 +12,12 @@ compares forward-pass predictions with measurements from the public
   retains its newest qualified evaluation. Dataset or FPM input changes break
   the series; MAPE is weighted by successful prediction count. Chart labels pair
   each commit ID with its evaluation date (UTC); tooltips include the time.
-- Slice Detail: retained branch evaluations, FPM variants, phase summaries,
+- Details / Accuracy: retained branch evaluations, FPM variants, phase summaries,
   measurement-only workload distributions, and prediction-error heatmaps.
   Heatmaps use compact cells and size independently, with scrolling only when
   their contents exceed the available width. A Hugging Face icon identifies the
   pinned configuration and measurement evidence links in a small, muted line.
-- 3D Visualization: independent panels, seven workload axes, stable samples,
+- Details / 3D Measurements: independent panels, seven workload axes, stable samples,
   full gzip chunks, native rank provenance, camera controls, and PNG export.
   Diagnostic unsynchronized DP groups remain separate from accepted truth.
 - Hide configurations with zero measurements and models with no measured
@@ -161,7 +161,7 @@ The initial 3D export uses validated current snapshots, matching scoring.
 At HF `68fa3add95b32a0399d781b043cb0f1008c8040d`, two archived DeepSeek
 manifests lack current-manifest hash bindings. Archived source traversal is
 therefore excluded without weakening loader validation. Retained evaluation
-history remains available for Slice Detail and Trends.
+history remains available for Details and Trends.
 
 Measurement artifact downloads allow up to 900 MiB, matching the archive bundle
 bound. Other Actions responses retain the 64 MiB default; individual assets,
@@ -177,5 +177,12 @@ development evaluator SHA and are excluded from automatic Pages publication.
 The container campaign uses an explicit `/tmp/fpm-accuracy-venv/bin/python` for
 installation and evaluation so runner path remapping cannot select another Python.
 
-Slice Detail initially selects a configuration with accepted measurements and an
+Details initially selects a configuration with accepted measurements and an
 available workload. Empty configurations remain labeled and directly linkable.
+
+The top navigation is Overview, Trends, and Details. Details shares evaluation,
+configuration, and workload controls across Accuracy and 3D Measurements. Plotly
+and point assets load only when opening 3D. The left panel follows the selected
+configuration; the right panel compares another configuration in the same HF
+snapshot. Missing matching HF revision or membership yields an unavailable view.
+The former `3d-visualization.html` URL redirects to Details with `view=3d`.

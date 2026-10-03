@@ -1064,7 +1064,7 @@ Copyright 2018- The Hugging Face team. All rights reserved.
   `dashboard/3d-visualization.html`, `dashboard/assets/visualization.{js,css}`,
   and `tests/test_visualization.py`.
   Derived files: `scripts/fpm_accuracy/dashboard/`,
-  `pages/fpm-accuracy/3d-visualization.html`, `pages/fpm-accuracy/assets/visualization.{js,css}`,
+  `pages/fpm-accuracy/evaluation-detail.html`, `pages/fpm-accuracy/assets/visualization.{js,css}`,
   `tests/fpm_accuracy/test_visualization.py`, and its synthetic outputs in
   `tests/fpm_accuracy/fixtures/dashboard/`.
   Modified imports, reduced contracts, GitHub artifact publication, navigation,
