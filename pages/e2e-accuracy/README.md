@@ -186,13 +186,20 @@ checkout and committed snapshots unchanged.
   joins immutable workflow revisions, reads pinned launchers without executing
   them, verifies reviewed framework defaults, and resolves checkpoint metadata.
   It records the measured framework version separately from the selected
-  performance-database version. Missing source settings are explicit exclusions.
+  performance-database version. CI defaults to `configuration_mode: estimated`,
+  matching the research preview's `coverage-experiment/1` assumptions after
+  verified evidence is applied. The dispatch input can select `verified` to
+  exclude missing settings. Reports show verified/estimated counts and per-point
+  labels. Conflicts and unsupported mappings remain explicit exclusions.
+  Runtime archives are fetched and hash-checked; reviewed, measurement-bound
+  observations preserve verified settings when upstream archives expire.
 - The public `ResolvedInferenceXSource` adapter supplies the estimate request.
   Replay consumes the same resolved deployment's per-role sequence/token limits,
   block size, memory fraction, KV dtype, prefix caching, chunked prefill, and
   context limit. Request count, length distribution, NumPy sampler, and seed
   come from the resolved workload. Source graph/kernel controls remain evidence
-  when the engine does not model them. Neither predictor invents missing knobs.
+  when the engine does not model them. Assumptions are applied and labeled by
+  source preparation before either predictor runs.
 - Six CPU worker processes execute bounded point predictions (180 seconds each).
   Every selected point must have one outcome. Estimate and replay run independently:
   a failed baseline does not remove a successful replay. Failed predictions have

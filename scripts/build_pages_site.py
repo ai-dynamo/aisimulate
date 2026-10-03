@@ -244,6 +244,11 @@ def _accuracy_summary(text: str, *, allow_preview: bool = False) -> dict:
         aic_successes = 0
         for point in points:
             require(isinstance(point, dict), "point")
+            if "configuration_quality" in point:
+                require(
+                    point["configuration_quality"] in ("verified", "estimated"),
+                    "configuration quality",
+                )
             concurrency = point.get("concurrency")
             require(number(concurrency) and concurrency > 0 and concurrency >= previous, "concurrency")
             previous = concurrency
@@ -352,6 +357,34 @@ def _accuracy_summary(text: str, *, allow_preview: bool = False) -> dict:
                 require(sum(item["rows"] for item in gpus) == workload["rows"], "GPU coverage")
             require(sum(item["rows"] for item in workloads) == model["rows"], "workload coverage")
         require(sum(item["rows"] for item in models) == totals["rows"], "model coverage")
+        configuration = summary["snapshot"].get("campaign", {}).get("configuration")
+        if configuration is not None:
+            require(
+                configuration.get("profile") in ("verified", "coverage-experiment/1"),
+                "configuration profile",
+            )
+            quality_counts = {}
+            for model in models:
+                for workload in model["workloads"]:
+                    for gpu in workload["gpus"]:
+                        for item in gpu.get("topologies", []):
+                            for point in item["points"]:
+                                quality = point.get("configuration_quality")
+                                require(
+                                    quality in ("verified", "estimated"),
+                                    "missing configuration quality",
+                                )
+                                quality_counts[quality] = quality_counts.get(quality, 0) + 1
+            require(
+                configuration.get("counts") == quality_counts
+                and all(type(value) is int for value in configuration["counts"].values()),
+                "configuration counts",
+            )
+            require(sum(quality_counts.values()) == totals["rows"], "configuration coverage")
+            require(
+                configuration["profile"] != "verified" or not quality_counts.get("estimated"),
+                "estimated configuration in verified mode",
+            )
         return summary
     except (ValueError, AttributeError, TypeError, KeyError) as exc:
         raise PagesBuildError(f"invalid accuracy summary: {exc}") from exc

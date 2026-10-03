@@ -261,6 +261,8 @@ def _topology_summaries(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         points = []
         for row in topology_rows:
             point: dict[str, Any] = {"concurrency": row["conc"], "status": row["aisimulate_status"]}
+            if "configuration_quality" in row:
+                point["configuration_quality"] = row["configuration_quality"]
             if "aic_status" in row:
                 point["aic_status"] = row["aic_status"]
             for name, prefix in (("measured", "silicon"), ("aic", "aic"), ("aisimulate", "dynamo")):
@@ -300,7 +302,7 @@ def _topology_summaries(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 def _evaluated_revision(runtime: dict[str, Any], branch: str | None, *, preview: bool = False) -> dict[str, str] | None:
     if branch is None:
-        return None
+        return None  # Historical unqualified exports remain readable.
     pattern = r"[A-Za-z0-9][A-Za-z0-9._/-]*" if preview else r"release/[A-Za-z0-9][A-Za-z0-9._/-]*"
     if branch.endswith("/") or (branch != "main" and not re.fullmatch(pattern, branch)):
         raise SnapshotError("branch must be main or release/<name>")

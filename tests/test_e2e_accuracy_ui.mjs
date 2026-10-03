@@ -303,14 +303,14 @@ test("changing topology updates the rendered points and shared selection in both
   const app = setup(async () => response(data)); await app.run('loadBranch("main")');
   app.run('state.selection = JSON.stringify([state.data.models[0].model, state.data.models[0].workloads[0].identity, state.data.models[0].workloads[0].gpus[0].gpu]); renderDrilldown(); updateLocation()');
   assert.equal(app.run("state.topologyId"), first.id);
-  assert.match(app.element("drilldown").innerHTML, /<tr><td>1<\/td><td>success \/ success<\/td>/);
+  assert.match(app.element("drilldown").innerHTML, /<tr><td>1<\/td><td>not recorded<\/td><td>success \/ success<\/td>/);
 
   for (const topology of [second, first]) {
     app.element("topology-select").events.change({ target: { value: topology.id } });
     assert.equal(app.run("state.topologyId"), topology.id);
     const html = app.element("drilldown").innerHTML;
     assert.match(html, new RegExp(`<option value="${topology.id}" selected>fp8 · vllm · aggregated · TP ${topology.parallelism.tp_size} · PP ${topology.parallelism.pp_size}`));
-    assert.match(html, new RegExp(`<tr><td>${topology.points[0].concurrency}</td><td>success / success</td>`));
+    assert.match(html, new RegExp(`<tr><td>${topology.points[0].concurrency}</td><td>not recorded</td><td>success / success</td>`));
     const other = topology === first ? second : first;
     assert.doesNotMatch(html, new RegExp(`<tr><td>${other.points[0].concurrency}</td>`));
     assert.equal(new URL(app.location.href).searchParams.get("topology"), topology.id);
@@ -742,4 +742,32 @@ test("standalone PR preview displays its exact branch and cannot enter a public 
   const mixed = setup(async () => response({...data, scope: {...data.scope, preview: true}}));
   await mixed.run('loadBranch("main")');
   assert.match(mixed.element("error-banner").textContent, /cannot be mixed/);
+});
+
+test("configuration assumptions stay labeled and count mismatches fail", () => {
+  const data = withTopology();
+  const revision = { branch: "main", commit_sha: "d".repeat(40) };
+  data.snapshot.evaluated_revision = revision;
+  data.snapshot.aic_commit_sha = revision.commit_sha;
+  data.snapshot.aic_source = { repository: "https://github.com/ai-dynamo/aisimulate", ...revision };
+  const counts = {};
+  for (const model of data.models) for (const workload of model.workloads) for (const gpu of workload.gpus) {
+    for (const topology of gpu.topologies) for (const [index, point] of topology.points.entries()) {
+      point.configuration_quality = index % 2 ? "verified" : "estimated";
+      counts[point.configuration_quality] = (counts[point.configuration_quality] ?? 0) + 1;
+    }
+  }
+  data.snapshot.campaign = {
+    ...revision, status: "complete", advisory: true, run_id: "123",
+    wheel_sha256: "a".repeat(64), dataset_sha256: "b".repeat(64),
+    selected: data.totals.rows, published: data.totals.rows,
+    backend_versions: ["0.25.1"], exclusion_reasons: {}, selection_policy: "gym-resolved-config-v2",
+    configuration: { profile: "coverage-experiment/1", counts },
+  };
+  const app = harness();
+  app.set("data", data);
+  app.run("validateSummary(data)");
+  assert.match(app.run("pointTable(data.models[0].workloads[0].gpus[0].topologies[0])"), /estimated/);
+  app.run("data.snapshot.campaign.configuration.counts.estimated += 1");
+  assert.throws(() => app.run("validateSummary(data)"), /configuration coverage/);
 });

@@ -38,9 +38,16 @@ class GitHubRecipeSource:
 
     repository_url = INFERENCEX_REPOSITORY_URL
 
-    def __init__(self, *, session: requests.Session | None = None, cache_dir: Path | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        session: requests.Session | None = None,
+        cache_dir: Path | None = None,
+        archived_runtime: bool = False,
+    ) -> None:
         self._session = session or requests.Session()
         self._cache_dir = cache_dir
+        self.archived_runtime = archived_runtime
         self._cache: dict[tuple[str, str], str] = {}
         self._missing: set[tuple[str, str]] = set()
         self._locks: dict[tuple[str, str], threading.Lock] = {}
