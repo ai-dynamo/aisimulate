@@ -42,11 +42,11 @@ from types import SimpleNamespace
 
 from collector.dsv411 import contract
 from collector.dsv411.runtime import (
-    completed_cases,
     GraphedCalls,
     Intervals,
     RowStream,
     check_pins,
+    completed_cases,
     device_witness,
     dispatch_label,
     finite,
