@@ -1024,13 +1024,16 @@ def main():
     if path.exists() and not args.resume:
         raise SystemExit("refusing to overwrite a prior run; use a fresh output directory (or --resume)")
     if args.resume:
-        if not path.exists():
-            raise SystemExit("--resume needs the preserved receipt of the interrupted run")
-        if json.loads(path.read_text()).get("state") == "complete_pending_admission":
-            raise SystemExit("--resume: the run already completed")
-        # keep the interrupted attempt's receipt (with its traceback) as evidence
-        attempts = len(list(args.output.glob(f"rank-{rank}.attempt-*.json")))
-        path.rename(args.output / f"rank-{rank}.attempt-{attempts}.json")
+        # a rank torchrun killed after another rank's failure may have left no receipt: its progress file is
+        # the evidence of the interrupted attempt then
+        if not path.exists() and not (args.output / f"progress-rank-{rank}.jsonl").exists():
+            raise SystemExit("--resume needs a preserved (interrupted) run in --output")
+        if path.exists():
+            if json.loads(path.read_text()).get("state") == "complete_pending_admission":
+                raise SystemExit("--resume: the run already completed")
+            # keep the interrupted attempt's receipt (with its traceback) as evidence
+            attempts = len(list(args.output.glob(f"rank-{rank}.attempt-*.json")))
+            path.rename(args.output / f"rank-{rank}.attempt-{attempts}.json")
     receipt = new_receipt(rank, BACKEND)
     try:
         run(args, receipt)
