@@ -2432,7 +2432,12 @@ findings:
       (ScheduleBatch.maybe_evict_swa -> free_swa_out_of_window_slots, chunk cache, no overlap) before every seeding chunk
       and the measured extend, the pool holds 8,650,752 full tokens at ratio 1/16, and validate_plan rejects a pool that
       cannot hold a case''s resident KV; one_batch''s _TorchBenchRunner.cleanup is a no-op (request slots and KV are reset
-      per prefix-free sample); (4) sglang
+      per prefix-free sample); sglang''s indexer prefill makes seeding batch 8 x 1M kv take over an hour and its
+      transient scales with new tokens x kv, so the producer seeds each (batch, past kv) group once (shards own whole
+      groups, contract.seed_group), returns the measured extend''s pages after every sample and keeps the serving
+      8192-token chunk budget past 131072 kv; sglang''s captured decode graph asserts out of bounds at kv_len
+      1,048,576 (eager runs; a decode at seq_len == context_len never happens in serving), so the generation ladder
+      tops at kv_len 1,048,575 (past 1048574); (4) sglang
       ServerArgs at 0.5.21 spells the decode graph cap cuda_graph_max_bs_decode; init_cuda_graphs never sets
       decode_cuda_graph_captured (capture evidence = the recorded external-event buckets); (5) vllm max_model_len is capped at
       max_position_embeddings 1048576 - the grid carries max_sequence_length. H20 TP2 smoke ratios vllm/sglang: attention_core
