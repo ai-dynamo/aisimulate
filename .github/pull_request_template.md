@@ -13,9 +13,14 @@ State the problem, the behavior change, and the intended consumer.
 
 <!--
 Point reviewers to the riskiest files, decisions, and cross-layer contracts.
+Use REVIEW.md for tier definitions and handoff expectations. Drafts run Fast CI;
+mark ready and remove title/label exclusions for automatic CodeRabbit review.
+No review-ready label is needed; a skipped review is not admission evidence.
 -->
 
-- Risk level: <!-- low / medium / high -->
+- Risk level and rationale: <!-- low / medium / high; highest applicable tier -->
+- Responsible CODEOWNER: <!-- owning team; name reviewer when handoff accepted -->
+- Expert escalation: <!-- high: name owner and decision; otherwise N/A or reason -->
 - Start with:
 - Public or serialized contract changed: <!-- no / yes: describe -->
 - Compatibility or rollback concern:
@@ -32,6 +37,8 @@ from CI.
 - Full CI:
 - CodeRabbit reviewed commit:
 - Codex reviewed commit: <!-- required for medium / high -->
+- Blocking findings: <!-- links to unresolved GitHub threads, or none -->
+- Agreed follow-ups: <!-- issue links with owner/scope, or none; reviewer agreed -->
 - Negative or boundary cases:
 - Expected-value derivation (for exact numerical assertions):
 - Before/after output, trace, benchmark, or golden diff:
