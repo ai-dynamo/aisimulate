@@ -479,8 +479,8 @@ fn lower_agentic(
         );
     }
 
-    // Exporter-only edges are authoritative for every session they link to another session.
-    let mut explicitly_linked_sessions = HashSet::new();
+    // Exporter-only edges are authoritative for each session pair they link.
+    let mut explicitly_linked_session_pairs = HashSet::new();
     for (index, entry) in entries.iter().enumerate() {
         for dependency in &entry.request.replay.dependencies {
             let source = *id_to_index.get(&dependency.request_id).with_context(|| {
@@ -506,8 +506,8 @@ fn lower_agentic(
                 .expect("validated agent context")
                 .session_id;
             if session != source_session {
-                explicitly_linked_sessions.insert(session.clone());
-                explicitly_linked_sessions.insert(source_session.clone());
+                explicitly_linked_session_pairs.insert((session.clone(), source_session.clone()));
+                explicitly_linked_session_pairs.insert((source_session.clone(), session.clone()));
             }
             let mut edge = dependency_between(
                 &entries,
@@ -516,6 +516,9 @@ fn lower_agentic(
                 dependency.trigger,
                 dependency.relation,
             );
+            // Coding agents run tools while a response streams, so a spawned or messaged request
+            // can start shortly before the sending response completes. Waiting for that
+            // completion keeps replay causal at the cost of the short overlap.
             edge.delay_ms = edge.delay_ms.max(0.0);
             push_dependency(&mut dependencies[index], edge);
         }
@@ -594,7 +597,9 @@ fn lower_agentic(
             }
             continue;
         }
-        if explicitly_linked_sessions.contains(child_session) {
+        if explicitly_linked_session_pairs
+            .contains(&(child_session.clone(), parent_session.clone()))
+        {
             continue;
         }
 
@@ -892,6 +897,53 @@ mod tests {
                     .is_err()
             );
         }
+    }
+
+    #[test]
+    fn completion_dependency_overlapping_its_dependent_waits_for_completion() {
+        // A tool can spawn a child before the spawning response finishes streaming.
+        let file = trace_file(&[
+            request("a", 0, Some("s")),
+            depends_on(child_request("b", 5, "c", "s"), "a", "spawn"),
+        ]);
+        let DynamoRequestTrace::Agentic(trace) =
+            DynamoRequestTrace::from_request_trace_files(&[file.path().to_path_buf()], Some(4))
+                .unwrap()
+        else {
+            panic!("expected agentic trace");
+        };
+        let edges = dependencies(&trace, "b");
+        assert_eq!(edges.len(), 1);
+        assert_eq!(edges[0].trigger, AgenticDependencyTrigger::Completion);
+        assert_eq!(edges[0].delay_ms, 0.0);
+    }
+
+    #[test]
+    fn explicit_link_to_a_sibling_keeps_inferred_parent_edges() {
+        let file = trace_file(&[
+            request("p1", 0, Some("parent")),
+            request("p2", 100, Some("parent")),
+            depends_on(child_request("s1", 12, "sibling", "parent"), "p1", "spawn"),
+            depends_on(child_request("c1", 30, "child", "parent"), "s1", "join"),
+        ]);
+        let DynamoRequestTrace::Agentic(trace) =
+            DynamoRequestTrace::from_request_trace_files(&[file.path().to_path_buf()], Some(4))
+                .unwrap()
+        else {
+            panic!("expected agentic trace");
+        };
+        let edges = |request_id| {
+            dependencies(&trace, request_id)
+                .iter()
+                .map(|edge| (edge.request_id.as_str(), edge.relation))
+                .collect::<Vec<_>>()
+        };
+
+        // Only the sibling pair is explicit, so the child still infers its parent spawn and join.
+        assert!(edges("c1").contains(&("p1", AgenticDependencyRelation::Spawn)));
+        assert!(edges("p2").contains(&("c1", AgenticDependencyRelation::Join)));
+        // The sibling's explicit parent link replaces inference for that pair.
+        assert!(!edges("p2").iter().any(|(id, _)| *id == "s1"));
     }
 
     #[test]
