@@ -245,39 +245,67 @@ class AttentionStack:
                 layers.append(state)
         return layers
 
+    # Sliding-window caches: serving keeps only window-sized page rings per request (the SWA block
+    # pool evicts past the window), so these caches are allocated as per-request rings of
+    # SWA_RING_BLOCKS pages (8192-token chunk + 128-token window + slack) and addressed modulo the ring;
+    # a full-length SWA cache for all 40 layers at batch 4 x 524K tokens alone is 49 GB.
+    SWA_RING_BLOCKS = 264
+
+    @staticmethod
+    def _is_swa(spec) -> bool:
+        return "SlidingWindow" in type(spec).__name__
+
+    def _allocate(self, backend, spec, num_blocks):
+        """The DSV4 helper's layout (compute_layer_kv_cache_shape_bytes + padded page stride) with the
+        stride probe on the meta device instead of a full-size scratch tensor."""
+        import torch
+        from vllm.v1.kv_cache_interface import compute_layer_kv_cache_shape_bytes
+
+        shape_bytes = compute_layer_kv_cache_shape_bytes(spec, num_blocks)
+        dtype_size = torch.empty((), dtype=spec.dtype).element_size()
+        shape = (*shape_bytes[:-1], shape_bytes[-1] // dtype_size)
+        if spec.page_size_padded is None:
+            return torch.zeros(shape, dtype=spec.dtype, device=self.device)
+        strides = list(torch.empty(shape, device="meta").stride())
+        strides[0] = spec.page_size_bytes // dtype_size
+        return torch.empty_strided(shape, tuple(strides), dtype=spec.dtype, device=self.device).zero_()
+
     def bind_caches(self, batch, seq_len):
-        from collector.vllm.collect_dsv4_attn import _allocate_attention_kv_cache, _cache_blocks_for_block_size
+        import torch
+
+        from collector.vllm.collect_dsv4_attn import _cache_blocks_for_block_size
 
         static_ctx = self.vllm_config.compilation_config.static_forward_context
-        bound = {}
-        for attn in self.attns:
-            for layer in self.cache_layers(attn):
-                registered = static_ctx[layer.prefix]
-                spec = registered.get_kv_cache_spec(self.vllm_config)
-                if spec is None:
-                    continue
-                blocks = _cache_blocks_for_block_size(batch, seq_len, spec.block_size)
-                registered.bind_kv_cache(
-                    _allocate_attention_kv_cache(
-                        registered.get_attn_backend(),
-                        spec,
-                        blocks,
-                        getattr(spec, "cache_dtype_str", None) or "auto",
-                        device=str(self.device),
-                    )
-                )
-                bound[layer.prefix] = dict(
-                    spec=type(spec).__name__,
-                    block_size=spec.block_size,
-                    blocks=blocks,
-                    backend=registered.get_attn_backend().get_name(),
-                )
-        self.bound = bound
+        layers = [(layer, static_ctx[layer.prefix]) for attn in self.attns for layer in self.cache_layers(attn)]
+        specs = {layer.prefix: registered.get_kv_cache_spec(self.vllm_config) for layer, registered in layers}
+        # release the previous case's caches before allocating (peak = one case, not two)
+        for layer, registered in layers:
+            spec = specs[layer.prefix]
+            if spec is not None:
+                registered.bind_kv_cache(torch.zeros((1, 1, 1, 1), dtype=spec.dtype, device=self.device))
         gc.collect()
-        self.torch.cuda.empty_cache()
+        torch.cuda.empty_cache()
+        bound = {}
+        for layer, registered in layers:
+            spec = specs[layer.prefix]
+            if spec is None:
+                continue
+            if self._is_swa(spec):
+                blocks = batch * self.SWA_RING_BLOCKS + 64
+            else:
+                blocks = _cache_blocks_for_block_size(batch, seq_len, spec.block_size)
+            registered.bind_kv_cache(self._allocate(registered.get_attn_backend(), spec, blocks))
+            bound[layer.prefix] = dict(
+                spec=type(spec).__name__,
+                block_size=spec.block_size,
+                blocks=blocks,
+                ring=self._is_swa(spec),
+                backend=registered.get_attn_backend().get_name(),
+            )
+        self.bound = bound
         return bound
 
-    def _remapped(self, common, block_size):
+    def _remapped(self, common, block_size, ring_blocks=None):
         """Common metadata for a cache with another page size (SWA pages are 32, compressor states
         ``compress_ratio`` tokens): the DSV4 helper rebuilds the arange block table but assumes the
         tokens are the FIRST ``num_tokens`` positions; chunked seeding and cached prefills write at
@@ -291,6 +319,13 @@ class AttentionStack:
         query_lens = torch.diff(common.query_start_loc)
         reqs = torch.repeat_interleave(torch.arange(query_lens.numel(), device=positions.device), query_lens)
         table = remapped.block_table_tensor
+        if ring_blocks:
+            # per-request page ring: logical block b of request r lives in physical block r*R + b % R
+            width = table.shape[1]
+            logical = torch.arange(width, device=table.device, dtype=table.dtype)
+            base = (torch.arange(table.shape[0], device=table.device, dtype=table.dtype) * ring_blocks)[:, None]
+            table = base + (logical % ring_blocks)[None, :]
+            remapped.block_table_tensor = table.contiguous()
         remapped.slot_mapping = table[reqs, positions // block_size].long() * block_size + positions % block_size
         remapped.positions = positions
         return remapped
@@ -331,13 +366,15 @@ class AttentionStack:
                 spec = registered.get_kv_cache_spec(self.vllm_config)
                 if spec is None:
                     continue
-                if spec.block_size not in remapped:
-                    remapped[spec.block_size] = (
+                swa = self._is_swa(spec)
+                rkey = (spec.block_size, swa)
+                if rkey not in remapped:
+                    remapped[rkey] = (
                         common
-                        if spec.block_size == self.vllm_config.cache_config.block_size
-                        else self._remapped(common, spec.block_size)
+                        if spec.block_size == self.vllm_config.cache_config.block_size and not swa
+                        else self._remapped(common, spec.block_size, ring_blocks=self.SWA_RING_BLOCKS if swa else None)
                     )
-                sub = remapped[spec.block_size]
+                sub = remapped[rkey]
                 key, builder = self._builder(registered, spec, layer.prefix, sub)
                 if key not in built:
                     built[key] = builder.build(0, sub)
