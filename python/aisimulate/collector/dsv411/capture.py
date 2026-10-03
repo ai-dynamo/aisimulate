@@ -34,6 +34,8 @@ import os
 import shutil
 import socket
 import tempfile
+import time
+import traceback
 from pathlib import Path
 
 from . import contract
@@ -100,11 +102,16 @@ def _shrink_engram_tables(model_path: Path, manifest: dict, rows: int) -> tuple[
 
     def patch(node):
         if isinstance(node, dict):
-            for key, value in node.items():
-                if key == "engram_num_embeddings" and isinstance(value, list):
-                    node[key] = [rows] * len(value)
-                else:
-                    patch(value)
+            if "engram_num_embeddings" in node and isinstance(node["engram_num_embeddings"], list):
+                node["engram_num_embeddings"] = [rows] * len(node["engram_num_embeddings"])
+                # bucket primes are drawn just below engram_vocab_size per hash column and must sum
+                # to at most the table rows: scale the vocab with the rows (compressed vocab untouched)
+                # (primes are searched UPWARD from vocab-1, so leave headroom below rows/columns)
+                columns = (int(node["engram_max_ngram_size"]) - 1) * int(node["engram_n_heads"])
+                vocab = max(int(node["engram_compressed_vocab_size"]) + 1, int(rows // columns * 0.9))
+                node["engram_vocab_size"] = vocab
+            for value in node.values():
+                patch(value)
         elif isinstance(node, list):
             for item in node:
                 patch(item)
@@ -201,7 +208,8 @@ def run_cell(backend: str, kind: str, phase: str, *, output: Path | None = None)
         expected_sm=producer.EXPECTED_SM,
         required_sources=producer.REQUIRED_SOURCES,
     )
-    out = output or Path(tempfile.mkdtemp(prefix=f"dsv411_capture_{backend}_{kind}_{phase}_"))
+    # evidence (plan, manifest, receipt with traceback, raw rows) persists in the workspace facts
+    out = output or (workspace / "facts" / "dsv411_captures" / f"{backend}_{kind}_{phase}_{int(time.time())}")
     out.mkdir(parents=True, exist_ok=True)
     (out / "plan.json").write_text(json.dumps(plan, indent=1, sort_keys=True))
     (out / "manifest.json").write_text(json.dumps(manifest, indent=1, sort_keys=True))
@@ -219,6 +227,11 @@ def run_cell(backend: str, kind: str, phase: str, *, output: Path | None = None)
     receipt = new_receipt(0, backend)
     try:
         producer.run(args, receipt)
+    except BaseException as error:
+        receipt.update(
+            state="failed_preserved", error=f"{type(error).__name__}: {error}", traceback=traceback.format_exc()
+        )
+        raise
     finally:
         write_receipt(out / "rank-0.json", receipt)
     print(f"dsv411 capture cell {backend}/{kind}/{phase}: {receipt.get('state')} rows={receipt.get('rows')} -> {out}")
