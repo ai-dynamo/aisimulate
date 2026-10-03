@@ -324,11 +324,34 @@ class GraphedCalls:
 # --------------------------------------------------------------------------------------------
 # raw evidence
 # --------------------------------------------------------------------------------------------
+def completed_cases(output: Path, plan: dict) -> set[str]:
+    """Attention cases every rank of a preserved run finished (intersection of the progress files),
+    restricted to the plan's cases. Resuming skips exactly these; everything else is re-measured."""
+    planned = {c["case_id"] for c in plan["cases"] if c["kind"] == "attention"}
+    done = None
+    for progress in sorted(output.glob("progress-rank-*.jsonl")):
+        ids = {json.loads(line)["case_id"] for line in progress.read_text().splitlines() if line.strip()}
+        done = ids if done is None else done & ids
+    return (done or set()) & planned
+
+
 class RowStream:
-    def __init__(self, path: Path, *, plan: dict, provenance: dict, rank: int):
-        self.stream = path.open("x")
-        self.plan, self.provenance, self.rank = plan, provenance, rank
+    def __init__(self, path: Path, *, plan: dict, provenance: dict, rank: int, keep_cases: set[str] | None = None):
+        """``keep_cases`` (resume): rewrite an existing row file keeping only the rows of those case ids
+        (partial rows of the interrupted case and token-component rows are re-measured), then append."""
         self.rows = 0
+        if keep_cases is not None and path.exists():
+            kept = [
+                line
+                for line in path.read_text().splitlines()
+                if line.strip() and json.loads(line)["case_id"] in keep_cases
+            ]
+            path.write_text("".join(line + "\n" for line in kept))
+            self.rows = len(kept)
+            self.stream = path.open("a")
+        else:
+            self.stream = path.open("x")
+        self.plan, self.provenance, self.rank = plan, provenance, rank
 
     def write(
         self, entry: dict, case: dict, *, latency: float, kernel_source: str, used_cuda_graph: bool, sample: int

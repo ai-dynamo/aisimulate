@@ -326,3 +326,33 @@ def test_plan_pool_must_hold_every_attention_case(manifests):
         contract.validate_plan(_plan("sglang", manifest, cases=[largest], pool=too_small), manifest, **kwargs)
     # no pool declared (captures, vllm): nothing to check
     contract.validate_plan(_plan("sglang", manifest, cases=[largest], pool={}), manifest, **kwargs)
+
+
+def test_resume_keeps_only_finished_cases(tmp_path, manifests):
+    import json as _json
+
+    from collector.dsv411.runtime import RowStream, completed_cases
+
+    manifest = manifests["vllm"]
+    plan = _plan("vllm", manifest)
+    attention = [c for c in plan["cases"] if c["kind"] == "attention"]
+    finished, partial = attention[0], attention[1]
+    for rank in range(2):
+        rows = [dict(case_id=finished["case_id"], v=rank), dict(case_id=partial["case_id"], v=rank)]
+        if rank == 0:
+            rows.append(dict(case_id="tokens-context-t16", v=0))
+        (tmp_path / f"rank-{rank}.jsonl").write_text("".join(_json.dumps(r) + "\n" for r in rows))
+    # rank 1 also finished the second case, rank 0 did not: only the intersection counts
+    (tmp_path / "progress-rank-0.jsonl").write_text(_json.dumps(dict(case_id=finished["case_id"])) + "\n")
+    (tmp_path / "progress-rank-1.jsonl").write_text(
+        "".join(_json.dumps(dict(case_id=c["case_id"])) + "\n" for c in (finished, partial))
+    )
+    done = completed_cases(tmp_path, plan)
+    assert done == {finished["case_id"]}
+    stream = RowStream(tmp_path / "rank-0.jsonl", plan=plan, provenance={}, rank=0, keep_cases=done)
+    assert stream.rows == 1
+    stream.close()
+    kept = [_json.loads(x) for x in (tmp_path / "rank-0.jsonl").read_text().splitlines()]
+    assert [r["case_id"] for r in kept] == [finished["case_id"]]
+    with pytest.raises(FileExistsError):
+        RowStream(tmp_path / "rank-1.jsonl", plan=plan, provenance={}, rank=1)

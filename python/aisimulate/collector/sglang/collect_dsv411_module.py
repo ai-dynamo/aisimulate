@@ -40,6 +40,7 @@ from pathlib import Path
 
 from collector.dsv411 import contract
 from collector.dsv411.runtime import (
+    completed_cases,
     GraphedCalls,
     Intervals,
     RowStream,
@@ -906,10 +907,13 @@ def run(args, receipt):
         runtime_digest=args.runtime_digest,
         case_plan_sha256=contract.sha256_file(args.plan),
     )
-    stream = RowStream(args.output / f"rank-{rank}.jsonl", plan=plan, provenance=provenance, rank=rank)
+    done = completed_cases(args.output, plan) if args.resume else None
+    stream = RowStream(args.output / f"rank-{rank}.jsonl", plan=plan, provenance=provenance, rank=rank, keep_cases=done)
+    if done is not None:
+        receipt["resume"] = dict(skipped_cases=len(done), kept_rows=stream.rows)
     state, intervals = State(), Intervals()
     try:
-        attention_cases = [c for c in plan["cases"] if c["kind"] == "attention"]
+        attention_cases = [c for c in plan["cases"] if c["kind"] == "attention" and not (done and c["case_id"] in done)]
         token_cases = [c for c in plan["cases"] if c["kind"] == "tokens"]
         if attention_cases:
             runner = build_attention_runner(
@@ -994,6 +998,11 @@ def main():
     for option in ("model-path", "prompt-file"):
         parser.add_argument("--" + option, type=Path)
     parser.add_argument("--runtime-digest")
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="continue a preserved run in --output: skip the attention cases every rank finished, re-measure the rest",
+    )
     parser.add_argument("--admit", type=Path, help="CPU: admit a finished run directory into a parquet table")
     args = parser.parse_args()
     if args.admit is not None:

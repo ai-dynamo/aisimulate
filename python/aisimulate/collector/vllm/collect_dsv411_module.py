@@ -42,6 +42,7 @@ from types import SimpleNamespace
 
 from collector.dsv411 import contract
 from collector.dsv411.runtime import (
+    completed_cases,
     GraphedCalls,
     Intervals,
     RowStream,
@@ -255,13 +256,18 @@ class AttentionStack:
     def _is_swa(spec) -> bool:
         return "SlidingWindow" in type(spec).__name__
 
-    def _ring_blocks(self, spec):
+    def _ring_blocks(self, spec, ring_tokens=None):
         """Pages per request for caches serving addresses as per-request rings: the sliding-window
         caches (window pages) and the compressor state caches (CircularBufferSpec: ONE block whose
         block_size is the ring capacity; the compressor's slot kernel reads block_table[req, 0]).
-        None = position-addressed cache sized by the sequence length."""
+        None = position-addressed cache sized by the sequence length. ``ring_tokens``: the most new
+        tokens one forward of the case writes per request (seeding chunk or measured query); the SWA
+        ring holds them plus the 128-token window - sizing it for the 8192-token chunk at batch 256
+        (and the bound ring is what the metadata remap addresses modulo, see ``metadata``)."""
         if self._is_swa(spec):
-            return self.SWA_RING_BLOCKS
+            if ring_tokens is None:
+                return self.SWA_RING_BLOCKS
+            return min(self.SWA_RING_BLOCKS, -(-(ring_tokens + 128) // spec.block_size) + 1)
         if "CircularBuffer" in type(spec).__name__:
             return int(spec.max_num_blocks_per_req(self.vllm_config, self.vllm_config.model_config.max_model_len))
         return None
@@ -281,7 +287,7 @@ class AttentionStack:
         strides[0] = spec.page_size_bytes // dtype_size
         return torch.empty_strided(shape, tuple(strides), dtype=spec.dtype, device=self.device).zero_()
 
-    def bind_caches(self, batch, seq_len):
+    def bind_caches(self, batch, seq_len, ring_tokens):
         import torch
 
         from collector.vllm.collect_dsv4_attn import _cache_blocks_for_block_size
@@ -301,7 +307,7 @@ class AttentionStack:
             spec = specs[layer.prefix]
             if spec is None:
                 continue
-            ring = self._ring_blocks(spec)
+            ring = self._ring_blocks(spec, ring_tokens)
             if ring:
                 blocks = batch * ring + 64
             else:
@@ -378,7 +384,7 @@ class AttentionStack:
                 spec = registered.get_kv_cache_spec(self.vllm_config)
                 if spec is None:
                     continue
-                ring = self._ring_blocks(spec)
+                ring = self.bound[layer.prefix]["ring"]  # the ring this case's caches were bound with
                 rkey = (spec.block_size, ring)
                 if rkey not in remapped:
                     remapped[rkey] = (
@@ -635,7 +641,8 @@ def run_attention_case(stack, targets, intervals, case, plan, stream, manifest, 
     targets.phase = case["phase"]
     intervals.active = False
     total = prefix + query if case["phase"] == "context" else prefix + 1
-    stack.bind_caches(batch, total)
+    new_tokens = query if case["phase"] == "context" else 1
+    stack.bind_caches(batch, total, ring_tokens=max(new_tokens, chunk if prefix else 0))
     full = common_metadata(batch, total, query if case["phase"] == "context" else 1, device)
     if prefix:
         seed_prefix(stack, batch, prefix, chunk, device, full.block_table_tensor)
@@ -1096,7 +1103,10 @@ def run(args, receipt):
         runtime_digest=args.runtime_digest,
         case_plan_sha256=contract.sha256_file(args.plan),
     )
-    stream = RowStream(args.output / f"rank-{rank}.jsonl", plan=plan, provenance=provenance, rank=rank)
+    done = completed_cases(args.output, plan) if args.resume else None
+    stream = RowStream(args.output / f"rank-{rank}.jsonl", plan=plan, provenance=provenance, rank=rank, keep_cases=done)
+    if done is not None:
+        receipt["resume"] = dict(skipped_cases=len(done), kept_rows=stream.rows)
     config = vllm_config.model_config.hf_config
     try:
         with set_current_vllm_config(vllm_config), torch.device("cuda"):
@@ -1125,6 +1135,8 @@ def run(args, receipt):
                 progress = (args.output / f"progress-rank-{rank}.jsonl").open("a")
                 try:
                     for case in attention_cases:
+                        if done and case["case_id"] in done:
+                            continue
                         started = time.monotonic()
                         run_attention_case(stack, targets, intervals, case, plan, stream, manifest, receipt, device)
                         progress.write(
@@ -1201,6 +1213,11 @@ def main():
     for option in ("model-path", "prompt-file"):
         parser.add_argument("--" + option, type=Path)
     parser.add_argument("--runtime-digest")
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="continue a preserved run in --output: skip the attention cases every rank finished, re-measure the rest",
+    )
     parser.add_argument("--admit", type=Path, help="CPU: admit a finished run directory into a parquet table")
     args = parser.parse_args()
     if args.admit is not None:
