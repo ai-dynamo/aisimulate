@@ -2259,13 +2259,15 @@ where
                 dispatched_at_ms,
                 session_id,
                 turn_index,
+                synthetic_session_id,
             } = ready;
             let session_metadata = session_id.clone().zip(turn_index);
+            let placement_session_id = session_id.filter(|_| !synthetic_session_id);
             let uuid = self.on_external_arrival(
                 request,
                 arrival_time_ms,
                 metadata.into_hashes(),
-                session_id,
+                placement_session_id,
             )?;
             if let Some((session_id, turn_index)) = session_metadata {
                 self.collector

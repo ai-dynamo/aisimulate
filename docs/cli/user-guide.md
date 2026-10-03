@@ -898,7 +898,7 @@ Both formats use the same row schema. Rows with the same `session_id` are turns 
 | Field | Required | Semantics |
 |---|---|---|
 | `request_id` | No | Request identity. |
-| `session_id` | No | Groups rows into a session; an omitted value creates a one-row session. |
+| `session_id` | No | Groups rows into a session. An omitted value creates a one-row session whose per-request records use `request_<line>`; placement sees no session for it. |
 | `input_length` or `input_tokens` | No | Input token count; defaults to the capacity represented by `hash_ids`. |
 | `output_length` or `output_tokens` | Yes | Output token count. |
 | `output_token_ids` | No | Exact output tokens; its length must equal the output token count. |
