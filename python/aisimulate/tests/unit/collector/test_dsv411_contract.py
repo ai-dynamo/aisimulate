@@ -356,3 +356,27 @@ def test_resume_keeps_only_finished_cases(tmp_path, manifests):
     assert [r["case_id"] for r in kept] == [finished["case_id"]]
     with pytest.raises(FileExistsError):
         RowStream(tmp_path / "rank-1.jsonl", plan=plan, provenance={}, rank=1)
+
+
+def test_admission_tolerates_recorded_case_failures(tmp_path, manifests):
+    manifest = manifests["vllm"]
+    plan = _plan("vllm", manifest)
+    attention = [c for c in plan["cases"] if c["kind"] == "attention"]
+    skipped = attention[-1]["case_id"]
+    raw = _fake_run(tmp_path, "vllm", manifest, plan, skip=lambda case, entry: case["case_id"] == skipped)
+    with pytest.raises(ValueError, match="incomplete coverage"):
+        _admit("vllm", raw)
+    for rank in range(plan["tp_size"]):
+        path = raw / f"rank-{rank}.json"
+        receipt = json.loads(path.read_text())
+        receipt["failed_cases"] = {skipped: "AcceleratorError: device-side assert"}
+        path.write_text(json.dumps(receipt))
+    rows, meta = _admit("vllm", raw)
+    assert meta["failed_cases"] == {skipped: "AcceleratorError: device-side assert"}
+    # ranks must agree
+    path = raw / "rank-1.json"
+    receipt = json.loads(path.read_text())
+    receipt["failed_cases"] = {}
+    path.write_text(json.dumps(receipt))
+    with pytest.raises(ValueError, match="disagree on the failed cases"):
+        _admit("vllm", raw)

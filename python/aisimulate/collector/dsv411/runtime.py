@@ -335,6 +335,18 @@ def completed_cases(output: Path, plan: dict) -> set[str]:
     return (done or set()) & planned
 
 
+def failed_cases(output: Path) -> dict[str, str]:
+    """case_id -> error of the attention cases that killed preserved attempts of this run
+    (``rank-*.attempt-*.json`` receipts). Resuming skips them and records them as failures."""
+    failed: dict[str, str] = {}
+    for receipt_path in sorted(output.glob("rank-*.attempt-*.json")):
+        receipt = json.loads(receipt_path.read_text())
+        case = receipt.get("failed_case")
+        if case:
+            failed.setdefault(case, receipt.get("error", "unknown error"))
+    return failed
+
+
 class RowStream:
     def __init__(self, path: Path, *, plan: dict, provenance: dict, rank: int, keep_cases: set[str] | None = None):
         """``keep_cases`` (resume): rewrite an existing row file keeping only the rows of those case ids

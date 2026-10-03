@@ -46,6 +46,7 @@ from collector.dsv411.runtime import (
     check_pins,
     completed_cases,
     device_witness,
+    failed_cases,
     finite,
     new_receipt,
     prepare_private_caches,
@@ -429,6 +430,7 @@ def release_query_tokens(runner, reqs, prefix, query):
 
 def run_generation_case(runner, bench, token_ids, case, plan, state, intervals, stream, manifest, receipt):
     batch_size, prefix = case["batch_size"], case["past_kv"]
+    receipt["failed_case"] = case["case_id"]  # cleared when the case completes
     runner.clear()
     state.phase = "generation"
     intervals.active = False
@@ -489,6 +491,7 @@ def run_context_group(runner, bench, token_ids, cases, plan, state, intervals, s
         reqs, _, _ = seed_prefix(runner, bench, token_ids, batch_size, prefix, plan)
     for case in cases:
         started = time.monotonic()
+        receipt["failed_case"] = case["case_id"]  # cleared when the case completes
         query = case["query"]
         for sample in range(plan["warmup"] + plan["iterations"]):
             if prefix and reseed:
@@ -543,6 +546,7 @@ def run_context_group(runner, bench, token_ids, cases, plan, state, intervals, s
             if prefix and not reseed:
                 release_query_tokens(runner, reqs, prefix, query)
         progress(case, started)
+        receipt.pop("failed_case", None)
     runner.clear()
 
 
@@ -910,7 +914,10 @@ def run(args, receipt):
     done = completed_cases(args.output, plan) if args.resume else None
     stream = RowStream(args.output / f"rank-{rank}.jsonl", plan=plan, provenance=provenance, rank=rank, keep_cases=done)
     if done is not None:
-        receipt["resume"] = dict(skipped_cases=len(done), kept_rows=stream.rows)
+        # cases that killed a preserved attempt are framework-side failures: recorded, skipped, never retried here
+        receipt["failed_cases"] = failed_cases(args.output)
+        done = done | set(receipt["failed_cases"])
+        receipt["resume"] = dict(skipped_cases=len(done), kept_rows=stream.rows, failed=sorted(receipt["failed_cases"]))
     state, intervals = State(), Intervals()
     try:
         attention_cases = [c for c in plan["cases"] if c["kind"] == "attention" and not (done and c["case_id"] in done)]
@@ -946,6 +953,7 @@ def run(args, receipt):
                         runner, bench, token_ids, case, plan, state, intervals, stream, manifest, receipt
                     )
                     progress(case, started)
+                    receipt.pop("failed_case", None)
             intervals.restore()
             del runner
             gc.collect()
@@ -1028,7 +1036,9 @@ def main():
         run(args, receipt)
     except BaseException as error:
         receipt.update(
-            state="failed_preserved", error=f"{type(error).__name__}: {error}", traceback=traceback.format_exc()
+            state="failed_preserved",
+            error=f"{type(error).__name__}: {error}",
+            traceback=traceback.format_exc(),
         )
         raise
     finally:

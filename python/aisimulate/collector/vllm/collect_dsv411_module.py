@@ -49,6 +49,7 @@ from collector.dsv411.runtime import (
     completed_cases,
     device_witness,
     dispatch_label,
+    failed_cases,
     finite,
     new_receipt,
     prepare_private_caches,
@@ -1106,7 +1107,10 @@ def run(args, receipt):
     done = completed_cases(args.output, plan) if args.resume else None
     stream = RowStream(args.output / f"rank-{rank}.jsonl", plan=plan, provenance=provenance, rank=rank, keep_cases=done)
     if done is not None:
-        receipt["resume"] = dict(skipped_cases=len(done), kept_rows=stream.rows)
+        # cases that killed a preserved attempt are framework-side failures: recorded, skipped, never retried here
+        receipt["failed_cases"] = failed_cases(args.output)
+        done = done | set(receipt["failed_cases"])
+        receipt["resume"] = dict(skipped_cases=len(done), kept_rows=stream.rows, failed=sorted(receipt["failed_cases"]))
     config = vllm_config.model_config.hf_config
     try:
         with set_current_vllm_config(vllm_config), torch.device("cuda"):
@@ -1137,6 +1141,7 @@ def run(args, receipt):
                     for case in attention_cases:
                         if done and case["case_id"] in done:
                             continue
+                        receipt["failed_case"] = case["case_id"]  # cleared when the case completes
                         started = time.monotonic()
                         run_attention_case(stack, targets, intervals, case, plan, stream, manifest, receipt, device)
                         progress.write(
@@ -1146,6 +1151,7 @@ def run(args, receipt):
                             + "\n"
                         )
                         progress.flush()
+                        receipt.pop("failed_case", None)
                 finally:
                     intervals.restore()
                 receipt["bound_caches_last_case"] = stack.bound

@@ -600,8 +600,10 @@ def aggregate_run(
     tp = plan["tp_size"]
     plan_sha = sha256_file(raw / "plan.json")
     sources = None
+    receipts: list[dict] = []
     for rank in range(tp):
         receipt = json.loads((raw / f"rank-{rank}.json").read_text())
+        receipts.append(receipt)
         expected = dict(
             schema=RECEIPT_SCHEMA,
             state="complete_pending_admission",
@@ -636,6 +638,16 @@ def aggregate_run(
         runtime_digest=plan["runtime_digest"],
     )
     expected = expected_keys(plan, manifest)
+    # cases a preserved attempt failed on (framework-side failures, observed and recorded by every rank):
+    # their keys are not expected; the admission reports them so the publisher can record the gap
+    failed = receipts[0].get("failed_cases") or {}
+    if any((r.get("failed_cases") or {}) != failed for r in receipts):
+        raise ValueError("ranks disagree on the failed cases")
+    if failed:
+        failed_indices = {c["index"] for c in plan["cases"] if c["case_id"] in failed}
+        if len(failed_indices) != len(failed):
+            raise ValueError(f"failed cases are not all planned: {sorted(failed)}")
+        expected = {k for k in expected if k[0] not in failed_indices}
     samples = defaultdict(lambda: defaultdict(dict))  # key -> sample -> rank -> row
     for rank in range(tp):
         for line in (raw / f"rank-{rank}.jsonl").read_text().splitlines():
@@ -673,7 +685,7 @@ def aggregate_run(
         row["sample_count"] = len(maxima)
         rows.append(row)
     validate_table(rows)
-    return rows, dict(provenance, plan=plan, manifest=manifest, plan_sha256=plan_sha)
+    return rows, dict(provenance, plan=plan, manifest=manifest, plan_sha256=plan_sha, failed_cases=failed)
 
 
 def pool_runs(per_run: list[list[dict]]) -> list[dict]:

@@ -119,6 +119,7 @@ def main(argv=None):
                     rows=count,
                     tp_size=meta["plan"]["tp_size"],
                     purpose=meta["plan"]["purpose"],
+                    failed_cases=meta.get("failed_cases") or {},
                 )
                 for raw, meta, count in events_meta
             ],
