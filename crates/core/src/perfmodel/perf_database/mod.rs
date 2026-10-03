@@ -191,6 +191,7 @@ pub mod communication;
 pub mod dsa;
 pub mod dsv4;
 pub mod dsv41;
+pub mod dsv411;
 pub mod dsv4_megamoe;
 pub mod fpm_forward;
 pub mod gemm;
@@ -218,6 +219,7 @@ pub use dsa::DsaTable;
 pub use dsv4::{AttnKind, Dsv4Table};
 pub use dsv4_megamoe::Dsv4MegaMoeTable;
 pub use dsv41::Dsv41Table;
+pub use dsv411::Dsv411Table;
 pub use fpm_forward::FpmForwardTable;
 pub use gemm::GemmTable;
 pub use mhc::MhcTable;
@@ -253,6 +255,7 @@ pub struct PerfTables {
     pub msa: MsaTable,
     pub dsv4: Dsv4Table,
     pub dsv41: Dsv41Table,
+    pub dsv411: Dsv411Table,
     pub dsv4_megamoe: Dsv4MegaMoeTable,
     pub mhc: MhcTable,
     pub trtllm_alltoall: TrtllmAlltoallTable,
@@ -542,6 +545,7 @@ impl PerfDatabase {
             // Exact backend/version only: V41 module provenance must not be
             // inherited from legacy or sibling runtime measurements.
             dsv41: Dsv41Table::with_sources(&data_root, &resolver)?,
+            dsv411: Dsv411Table::with_sources(&data_root, &resolver)?,
             // Single-primary by design: the MegaMoE loader reads one unified
             // path and never the shared-layer source list (see
             // `dsv4_megamoe.rs`) — but that one path IS family-first

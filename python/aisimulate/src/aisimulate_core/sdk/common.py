@@ -833,6 +833,7 @@ ModelFamily = {
     "DEEPSEEKV32",
     "DEEPSEEKV4",
     "DEEPSEEKV41",
+    "DEEPSEEKV411",
     "KIMIK25",
     "KIMIK3",
     "NEMOTRONNAS",
@@ -1375,6 +1376,8 @@ class PerfDataFilename(Enum):
     msa_generation_module = "msa_generation_module_perf.parquet"
     mhc_module = "mhc_module_perf.parquet"
     dsv41_module = "dsv41_module_perf.parquet"
+    # dsv411 family: component rows (attention_core / indexer / engram / mhc / shared_linear).
+    dsv411_module = "dsv411_module_perf.parquet"
     # DeepSeek-V4 module-level data — one file per (attn_kind ∈ {csa, hca},
     # mode ∈ {context, generation}) = 4 files. Each file contains all
     # (tp_size, gemm_type, b, s) rows for that kind+mode.  SWA layers are

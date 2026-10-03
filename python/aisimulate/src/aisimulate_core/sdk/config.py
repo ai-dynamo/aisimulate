@@ -179,6 +179,10 @@ class ModelConfig:
     system: str | None = None
     # DeepSeek-V4.1 text AR: use the backend-verified bounded decoder replay profile.
     decoder_replay: bool = False
+    # DeepSeek-V4.1 operator decomposition: "legacy" (DEEPSEEKV41) or "dsv411"
+    # (DEEPSEEKV411, indexer measured as its own component). Rust-owned switch
+    # mirrored from EngineConfig.dsv41_family.
+    dsv41_family: str = "legacy"
     # Whole-forward database identity only; never changes arithmetic or memory.
     # Selection emits a warning with the original model mode and matched cell IDs.
     # Exact table-label matching is not independent runtime-precision proof.

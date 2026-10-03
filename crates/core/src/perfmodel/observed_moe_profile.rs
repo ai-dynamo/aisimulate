@@ -194,6 +194,7 @@ pub(crate) fn validate_communication(
             }
             Op::TokenScale(op) => validate_communication(selected, std::slice::from_ref(&op.op))?,
             Op::Dsv41Stage(op) => validate_communication(selected, &op.children)?,
+            Op::Dsv411Stage(op) => validate_communication(selected, &op.children)?,
             _ => {}
         }
     }

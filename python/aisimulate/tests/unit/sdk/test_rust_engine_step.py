@@ -1055,6 +1055,7 @@ def test_forward_pass_config_preserves_existing_positional_arguments(tmp_path: P
         "fpm_fmha_quant_mode": None,
         "moe_kernel_source": None,
         "cp_size": None,
+        "dsv41_family": "legacy",
     }
 
     source = " source_with_spaces "
@@ -1066,6 +1067,7 @@ def test_forward_pass_config_preserves_existing_positional_arguments(tmp_path: P
         "fpm_fmha_quant_mode": None,
         "moe_kernel_source": source,
         "cp_size": None,
+        "dsv41_family": "legacy",
     }
     assert json.loads(json.dumps(pinned.to_dict()))["moe_kernel_source"] == source
 

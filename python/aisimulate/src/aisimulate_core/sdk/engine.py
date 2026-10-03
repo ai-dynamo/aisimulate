@@ -51,6 +51,9 @@ import aisimulate_core
 from aisimulate_core.sdk.config import validate_parallel_size
 from aisimulate_core.sdk.config_builders import apply_nextn, build_model_config, validate_moe_controls
 from aisimulate_core.sdk.deepseek_v41 import MODEL_PATH as DEEPSEEK_V41_MODEL_PATH
+
+# Rust-owned switch (EngineConfig.dsv41_family): legacy DEEPSEEKV41 graph or the dsv411 family.
+DSV41_FAMILIES = ("legacy", "dsv411")
 from aisimulate_core.sdk.errors import InvalidEngineConfigurationError as InvalidEngineConfigurationError
 from aisimulate_core.sdk.fpm_profile import (
     FpmDeploymentProfile,
@@ -357,6 +360,7 @@ def _engine_config_dict(
         "kv_block_size": kv_block_size,
         "forward_model": getattr(model, "forward_model", getattr(cfg, "forward_model", None)),
         "decoder_replay": bool(getattr(cfg, "decoder_replay", False)),
+        "dsv41_family": getattr(cfg, "dsv41_family", "legacy") or "legacy",
         # ParallelMapping (flattened)
         "tp_size": int(cfg.tp_size or 1),
         "pp_size": int(cfg.pp_size or 1),
@@ -486,6 +490,7 @@ def compile_engine(
     systems_path: str | None = None,
     forward_model: str | None = None,
     decoder_replay: bool = False,
+    dsv41_family: str = "legacy",
     fpm_profile: dict | str | FpmModelProfile | None = None,
     worker_type: str = "aggregated",
     fpm_interpolation: str | None = None,
@@ -531,6 +536,15 @@ def compile_engine(
         raise InvalidEngineConfigurationError(
             f"decoder_replay requires model={DEEPSEEK_V41_MODEL_PATH!r} and backend='sglang'"
         )
+    if dsv41_family not in DSV41_FAMILIES:
+        raise InvalidEngineConfigurationError(f"dsv41_family must be one of {DSV41_FAMILIES}, got {dsv41_family!r}")
+    if dsv41_family == "dsv411":
+        if backend not in ("sglang", "vllm"):
+            raise InvalidEngineConfigurationError(
+                "dsv41_family='dsv411' is measured on backend 'sglang' or 'vllm' only"
+            )
+        if decoder_replay:
+            raise InvalidEngineConfigurationError("dsv41_family='dsv411' has no decoder_replay profile")
     # Before any model construction: the profile and op-level paths both read it.
     validate_parallel_size("cp_size", cp_size)
     if fpm_parquet_path is not None:
@@ -692,6 +706,7 @@ def compile_engine(
     except (ValueError, TypeError, KeyError) as exc:
         raise InvalidEngineConfigurationError(str(exc)) from exc
     model_config.decoder_replay = decoder_replay
+    model_config.dsv41_family = dsv41_family
     try:
         resolve_dsv4_moe_arch(model_config, model_path, system_name=system, backend_name=backend)
     except (ValueError, TypeError, KeyError) as exc:

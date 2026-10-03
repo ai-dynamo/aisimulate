@@ -133,6 +133,9 @@ pub struct ForwardPassPerfModelConfig {
     /// Preserve DeepSeek V4.1 decoder replay execution identity.
     #[serde(default)]
     pub decoder_replay: bool,
+    /// DeepSeek-V4.1 operator decomposition (`legacy` DEEPSEEKV41 or `dsv411`).
+    #[serde(default)]
+    pub dsv41_family: crate::Dsv41Family,
     #[serde(default)]
     #[serde(alias = "forward_model")]
     pub estimation_mode: EstimationMode,
@@ -197,6 +200,7 @@ impl ForwardPassPerfModelConfig {
             speculation: None,
             kv_block_size: None,
             decoder_replay: false,
+            dsv41_family: crate::Dsv41Family::default(),
             estimation_mode: EstimationMode::Auto,
             database_mode: DatabaseMode::default(),
             transfer_policy: None,

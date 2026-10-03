@@ -510,6 +510,7 @@ def _worker_performance_model_metadata(
             if getattr(engine, name) not in (None, False)
         },
         **({"decoder_replay": True} if engine.decoder_replay else {}),
+        **({"dsv41_family": engine.dsv41_family} if engine.dsv41_family != "legacy" else {}),
         **{
             field: getattr(engine, field)
             for field in ("enable_shared_layer", "strict_provenance")
@@ -604,6 +605,8 @@ def _worker_engine_args(
         payload["systems_path"] = list(resolve_systems_paths(engine.systems_paths))
     if engine.decoder_replay:
         payload["aic_decoder_replay"] = True
+    if engine.dsv41_family != "legacy":
+        payload["aic_dsv41_family"] = engine.dsv41_family
     for field in ("database_mode", "enable_shared_layer", "strict_provenance"):
         value = getattr(engine, field)
         if value is not None:
@@ -687,6 +690,7 @@ def _worker_engine_args(
             backend_version=engine.backend_version,
             worker_type=role,
             decoder_replay=engine.decoder_replay,
+            dsv41_family=engine.dsv41_family,
             enable_shared_layer=engine.enable_shared_layer,
             strict_provenance=bool(engine.strict_provenance),
             tp=parallel.tensor,

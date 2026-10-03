@@ -120,6 +120,19 @@ pub(crate) fn op_sol_latency_ms(
         Op::Dsv41Linear(o) => Ok(o.sol(spec, x)?.latency_ms),
         Op::Dsv41Mhc(o) => Ok(o.sol(spec, x)?.latency_ms),
         Op::Dsv41Engram(o) => Ok(o.sol(spec, x)?.latency_ms),
+        Op::Dsv411AttentionCore(o) => Ok(o.sol(spec, batch, if o.is_context { s } else { 1.0 }, if o.is_context { prefix } else { s })?.latency_ms),
+        Op::Dsv411Indexer(o) => Ok(o.sol(spec, batch, if o.is_context { s } else { 1.0 }, if o.is_context { prefix } else { s })?.latency_ms),
+        Op::Dsv411Engram(o) => Ok(o.sol(spec, x)?.latency_ms),
+        Op::Dsv411Mhc(o) => Ok(o.sol(spec, x)?.latency_ms),
+        Op::Dsv411SharedLinear(o) => Ok(o.sol(spec, x)?.latency_ms),
+        Op::Dsv411Stage(o) => {
+            let mut total = 0.0;
+            for inner in &o.children {
+                let child_x = if inner.is_logits_gemm() { batch } else { x };
+                total += op_sol_latency_ms(inner, db, child_x, batch, s, prefix)?;
+            }
+            Ok(total)
+        }
         Op::Dsv41Stage(o) => {
             let (stage_s, stage_prefix) = o.scope(s, prefix);
             let stage_x = if o.is_context { batch * stage_s } else { x };

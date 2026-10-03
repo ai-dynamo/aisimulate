@@ -348,11 +348,21 @@ impl Availability<'_> {
                     _ => Ok(()),
                 }
             }
+            Dsv411AttentionCore(_) | Dsv411Indexer(_) | Dsv411Engram(_) | Dsv411Mhc(_)
+            | Dsv411SharedLinear(_) => match self.db.database_mode {
+                DatabaseMode::Silicon => self.any(&["dsv411_module_perf.parquet"]),
+                DatabaseMode::Empirical => Err(AicError::EmpiricalNotImplemented(format!(
+                    "dsv411 {} has no empirical anchor",
+                    op.name()
+                ))),
+                _ => Ok(()),
+            },
             Overlap(_)
             | Fallback(_)
             | TokenScale(_)
             | FpmForward(_)
             | Dsv41Stage(_)
+            | Dsv411Stage(_)
             | SglangPrefillAttentionSequence(_)
             | SglangPrefillCommNormBoundary(_) => Ok(()),
         }

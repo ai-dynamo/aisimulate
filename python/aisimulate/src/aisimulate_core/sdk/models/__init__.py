@@ -200,6 +200,12 @@ def get_model(
     raw_config = model_info.get("raw_config", {})
     architecture = model_info["architecture"]
     model_family = _architecture_to_model_family(architecture)
+    if model_family == "DEEPSEEKV41" and getattr(model_config, "dsv41_family", "legacy") == "dsv411":
+        # Rust-owned switch (EngineConfig.dsv41_family): the parallel decomposition
+        # of the same checkpoint, keyed to its own perf table.
+        if forward_model == "fpm":
+            raise NotImplementedError("dsv41_family='dsv411' is an op-level family; use forward_model='op_level'")
+        model_family = "DEEPSEEKV411"
 
     # Preserve caller intent before checkpoint defaults fill unset modes.
     # Model-specific mixed-precision splitters use this provenance rather than

@@ -343,6 +343,7 @@ impl Engine {
                     }
                     Op::TokenScale(op) => selected_profiles(std::slice::from_ref(&op.op), selected),
                     Op::Dsv41Stage(op) => selected_profiles(&op.children, selected),
+                    Op::Dsv411Stage(op) => selected_profiles(&op.children, selected),
                     _ => {}
                 }
             }
@@ -1289,7 +1290,7 @@ impl Engine {
     fn has_dsv41_stages(&self) -> bool {
         self.context_ops
             .iter()
-            .any(|op| matches!(op, Op::Dsv41Stage(_)))
+            .any(|op| matches!(op, Op::Dsv41Stage(_) | Op::Dsv411Stage(_)))
     }
 
     /// Scope every prefill extend before fusing token-major work with decode.
@@ -1313,6 +1314,7 @@ impl Engine {
                 for outer in &self.generation_ops {
                     let children: &[Op] = match outer {
                         Op::Dsv41Stage(stage) => &stage.children,
+                        Op::Dsv411Stage(stage) => &stage.children,
                         _ => std::slice::from_ref(outer),
                     };
                     for child in children {
@@ -1343,6 +1345,8 @@ impl Engine {
         for outer in &self.context_ops {
             let (stage, children): (_, &[Op]) = match outer {
                 Op::Dsv41Stage(stage) => (Some(stage), &stage.children),
+                // dsv411 stages have no replay scoping: identity scope over their children
+                Op::Dsv411Stage(stage) => (None, &stage.children),
                 _ => (None, std::slice::from_ref(outer)),
             };
             let scopes: Vec<_> = prefills
@@ -1397,6 +1401,7 @@ impl Engine {
             for outer in &self.generation_ops {
                 let children: &[Op] = match outer {
                     Op::Dsv41Stage(stage) => &stage.children,
+                    Op::Dsv411Stage(stage) => &stage.children,
                     _ => std::slice::from_ref(outer),
                 };
                 for child in children.iter().filter(|op| op.is_generation_attention()) {
@@ -2654,6 +2659,7 @@ mod tests {
             forward_model: None,
             fpm_parquet_path: None,
             decoder_replay: false,
+            dsv41_family: crate::Dsv41Family::default(),
             prefill_graph_profile: None,
             prefill_graph_profile_id: None,
             moe_kernel_source: None,

@@ -483,6 +483,7 @@ class EstimatorPolicyConfig(StrictModel):
             or self.fallback_policy != "deny"
             or bool(self.estimator_config)
             or getattr(self, "decoder_replay", False)
+            or getattr(self, "dsv41_family", "legacy") != "legacy"
             or getattr(self, "enable_shared_layer", None) is not None
             or getattr(self, "strict_provenance", None) is not None
         )
@@ -538,6 +539,8 @@ class EnginePredictionConfig(EstimatorPolicyConfig):
     backend: Backend = "vllm"
     backend_version: str | None = None
     decoder_replay: StrictBool = False
+    # DeepSeek-V4.1 operator decomposition (Rust-owned switch EngineConfig.dsv41_family).
+    dsv41_family: Literal["legacy", "dsv411"] = "legacy"
     enable_shared_layer: StrictBool | None = None
     strict_provenance: StrictBool | None = None
     context_length: PositiveInt | Literal["max"] = "max"
@@ -571,6 +574,16 @@ class EnginePredictionConfig(EstimatorPolicyConfig):
 
             if self.model != DEEPSEEK_V41_MODEL_PATH or self.backend != "sglang":
                 raise ValueError(f"decoder_replay requires model={DEEPSEEK_V41_MODEL_PATH!r} and backend='sglang'")
+        if self.dsv41_family != "legacy":
+            from aisimulate_core.sdk.deepseek_v41 import MODEL_PATH as DEEPSEEK_V41_MODEL_PATH
+
+            if self.model != DEEPSEEK_V41_MODEL_PATH or self.backend not in ("sglang", "vllm"):
+                raise ValueError(
+                    f"dsv41_family={self.dsv41_family!r} requires model={DEEPSEEK_V41_MODEL_PATH!r} "
+                    "and backend 'sglang' or 'vllm'"
+                )
+            if self.decoder_replay:
+                raise ValueError("dsv41_family='dsv411' has no decoder_replay profile")
         _validate_worker_hardware(modes={self.mode}, workers=self.workers)
         if self.mode == "afd":
             _validate_prediction_afd(self)

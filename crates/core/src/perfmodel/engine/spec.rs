@@ -168,6 +168,8 @@ mod tests {
     use crate::operators::{
         ContextAttentionOp, ContextMlaOp, CustomAllReduceOp, DsaModuleOp, Dsv4MegaMoeOp,
         Dsv4ModuleOp, Dsv41AttentionOp, Dsv41EngramOp, Dsv41LinearOp, Dsv41MhcOp, Dsv41StageOp,
+        Dsv411AttentionCoreOp, Dsv411EngramOp, Dsv411IndexerOp, Dsv411MhcOp, Dsv411SharedLinearOp,
+        Dsv411StageOp,
         ElementwiseOp, EmbeddingOp, EncoderAttentionOp, GdnOp, GemmOp, GenerationAttentionOp,
         GenerationMlaOp, KdaOp, Mamba2Op, MhcModuleOp, MlaBmmOp, MlaModuleOp, MoEDispatchOp,
         MoeAllToAllOp, MoeExpertComputeOp, MoeOp, NcclOp, P2POp, VisionEncoderOp,
@@ -789,6 +791,79 @@ mod tests {
                     boundary_role: "post_attention".into(),
                 },
             ),
+            OpSpec::Dsv411AttentionCore(Dsv411AttentionCoreOp {
+                name: "v411_attention_core".into(),
+                is_context: true,
+                role: "full".into(),
+                compress_ratio: 2,
+                tp_size: 4,
+                hidden_size: 5120,
+                num_heads: 16,
+                head_dim: 512,
+                q_lora_rank: 1280,
+                o_lora_rank: 1024,
+                o_groups: 2,
+                window_size: 128,
+                index_topk: 512,
+                index_head_dim: 128,
+                kv_layout: crate::operators::dsv411::Dsv411KvLayout {
+                    window_entry_bytes: 584.0,
+                    main_entry_bytes: 584.0,
+                    index_entry_bytes: 68.0,
+                },
+                gemm_quant_mode: GemmQuantMode::Fp8Block,
+                fmha_quant_mode: FmhaQuantMode::Fp8,
+            }),
+            OpSpec::Dsv411Indexer(Dsv411IndexerOp {
+                name: "v411_indexer".into(),
+                is_context: true,
+                compress_ratio: 2,
+                tp_size: 4,
+                hidden_size: 5120,
+                q_lora_rank: 1280,
+                index_n_heads: 32,
+                index_head_dim: 128,
+                index_topk: 512,
+                is_candidate_source: false,
+                candidate_limit: 0,
+                index_entry_bytes: 68.0,
+                scoring_quant_mode: GemmQuantMode::Bfloat16,
+                skip_within_topk: false,
+                gemm_quant_mode: GemmQuantMode::Fp8Block,
+            }),
+            OpSpec::Dsv411Engram(Dsv411EngramOp {
+                name: "v411_engram".into(),
+                is_context: true,
+                num_embeddings: 384006168,
+                head_dim: 256,
+                hash_columns: 24,
+                hidden_size: 5120,
+                hc_mult: 4,
+                tp_size: 4,
+                sharding: "row".into(),
+                gemm_quant_mode: GemmQuantMode::Fp8Block,
+            }),
+            OpSpec::Dsv411Mhc(Dsv411MhcOp {
+                name: "v411_mhc".into(),
+                is_context: true,
+                hidden_size: 5120,
+                hc_mult: 4,
+                sinkhorn_iters: 20,
+                tp_size: 4,
+            }),
+            OpSpec::Dsv411SharedLinear(Dsv411SharedLinearOp {
+                name: "v411_shared_linear".into(),
+                is_context: true,
+                n: 1152,
+                k: 5120,
+                tp_size: 4,
+                quant_mode: GemmQuantMode::Fp8Block,
+            }),
+            OpSpec::Dsv411Stage(Dsv411StageOp {
+                name: "v411_stage".into(),
+                is_context: true,
+                children: vec![OpSpec::Gemm(gemm())],
+            }),
         ];
 
         // Exhaustiveness guard: if a variant is added to `Op`, this match
@@ -835,6 +910,12 @@ mod tests {
                 | OpSpec::Dsv41Engram(_)
                 | OpSpec::Dsv41Stage(_)
                 | OpSpec::Dsv41Linear(_)
+                | OpSpec::Dsv411AttentionCore(_)
+                | OpSpec::Dsv411Indexer(_)
+                | OpSpec::Dsv411Engram(_)
+                | OpSpec::Dsv411Mhc(_)
+                | OpSpec::Dsv411SharedLinear(_)
+                | OpSpec::Dsv411Stage(_)
                 | OpSpec::TokenScale(_)
                 | OpSpec::SglangPrefillAttentionSequence(_)
                 | OpSpec::SglangPrefillCommNormBoundary(_) => {}
@@ -854,6 +935,7 @@ mod tests {
             forward_model: None,
             fpm_parquet_path: None,
             decoder_replay: false,
+            dsv41_family: crate::Dsv41Family::default(),
             prefill_graph_profile: None,
             prefill_graph_profile_id: None,
             moe_kernel_source: None,
@@ -970,8 +1052,21 @@ mod tests {
             vec![36, 37, 38, 39, 40],
             "V41 appended indices moved"
         );
+        // dsv411 family appended after the prefill composites (schema 27).
+        const DSV411_FIRST_INDEX: u32 = PREFILL_BOUNDARY_INDEX + 1;
+        let dsv411: Vec<_> = all_op_variants()
+            .iter()
+            .skip(DSV411_FIRST_INDEX as usize)
+            .take(6)
+            .map(index_of)
+            .collect();
         assert_eq!(
-            PREFILL_BOUNDARY_INDEX as usize + 1,
+            dsv411,
+            (DSV411_FIRST_INDEX..DSV411_FIRST_INDEX + 6).collect::<Vec<_>>(),
+            "dsv411 appended indices moved"
+        );
+        assert_eq!(
+            DSV411_FIRST_INDEX as usize + 6,
             all_op_variants().len(),
             "all_op_variants() must cover exactly the pinned variant count"
         );

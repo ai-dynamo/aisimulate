@@ -128,7 +128,10 @@ pub const ENGINE_CONFIG_SCHEMA_VERSION: u32 = 1;
 //   Claimed 19 through 25 on its own branch while the DeepSeek-V4.1, MoE
 //   kernel-source, VR200 pilot, FPM DCP and FPM decoupling changes landed;
 //   renumbered at each merge (precedent: 15, 18).
-pub const ENGINE_SPEC_SCHEMA_VERSION: u32 = 26;
+// - 27 (dsv411 family): six appended `Op` variants for the parallel DeepSeek-V4.1
+//   decomposition (attention core / indexer / engram / mhc / shared linear / stage);
+//   measured through `dsv411_module_perf.parquet`.
+pub const ENGINE_SPEC_SCHEMA_VERSION: u32 = 27;
 
 /// Static engine identity and setup information carried by an
 /// [`crate::perfmodel::engine::spec::EngineSpec`].
@@ -172,6 +175,9 @@ pub struct EngineConfig {
     /// Use the backend-verified bounded DeepSeek-V4.1 decoder execution profile.
     #[serde(default)]
     pub decoder_replay: bool,
+    /// DeepSeek-V4.1 operator decomposition (`legacy` DEEPSEEKV41 or `dsv411`).
+    #[serde(default)]
+    pub dsv41_family: crate::Dsv41Family,
     /// Explicit direct-prefill-only measured profile and its immutable identity.
     #[serde(default)]
     pub prefill_graph_profile: Option<String>,

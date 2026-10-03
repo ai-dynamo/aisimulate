@@ -223,6 +223,8 @@ struct AicTimingConfig {
     #[serde(default)]
     decoder_replay: bool,
     #[serde(default)]
+    dsv41_family: crate::Dsv41Family,
+    #[serde(default)]
     worker_type: Option<ForwardPassWorkerType>,
     #[serde(default)]
     estimation_mode: Option<EstimationMode>,
@@ -337,6 +339,7 @@ impl AicTimingConfig {
             speculation: self.speculation.clone(),
             kv_block_size: self.kv_block_size,
             decoder_replay: self.decoder_replay,
+            dsv41_family: self.dsv41_family,
             estimation_mode: mode,
             fallback_policy: self.fallback_policy,
             estimator_config,
@@ -3377,6 +3380,7 @@ mod tests {
             decode_workload_distribution: None,
             fpm_parquet_path: None,
             decoder_replay: false,
+            dsv41_family: crate::Dsv41Family::default(),
         }
     }
 
@@ -4070,6 +4074,7 @@ mod tests {
             let config = serde_json::from_value::<AicTimingConfig>(serde_json::json!({
                 "model": "test-model", "backend": "sglang", "system": "test-system", "tp": 1,
                 "decoder_replay": replay, "database_mode": "SILICON",
+                "dsv41_family": if replay { "legacy" } else { "dsv411" },
                 "forward_model": "fpm", "fpm_fmha_dtype": "fp8",
                 "enable_shared_layer": false, "strict_provenance": true
             }))
@@ -4078,6 +4083,10 @@ mod tests {
                 .estimator_request(ForwardPassWorkerType::Aggregated)
                 .unwrap();
             assert_eq!(request.decoder_replay, replay);
+            assert_eq!(
+                request.dsv41_family,
+                if replay { crate::Dsv41Family::Legacy } else { crate::Dsv41Family::Dsv411 }
+            );
             assert_eq!(request.fpm_fmha_quant_mode.as_deref(), Some("fp8"));
             assert_eq!(request.database_mode, crate::DatabaseMode::Silicon);
             assert_eq!(request.enable_shared_layer, Some(false));
@@ -4091,6 +4100,7 @@ mod tests {
         }))
         .unwrap();
         assert!(!defaults.decoder_replay);
+        assert_eq!(defaults.dsv41_family, crate::Dsv41Family::Legacy);
         assert_eq!(defaults.database_mode, crate::DatabaseMode::default());
         assert!(defaults.enable_shared_layer.is_none());
         assert!(!defaults.strict_provenance);

@@ -113,6 +113,7 @@ class BaseBackend:
         "DEEPSEEKV32",
         "DEEPSEEKV4",
         "DEEPSEEKV41",
+        "DEEPSEEKV411",
         "KIMIK25",
     )
 
