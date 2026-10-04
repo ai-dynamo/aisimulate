@@ -97,6 +97,13 @@ def _run_recommendation(
             workload.concurrency,
             int(workload.concurrency * workload.num_request_ratio),
         )
+    if config.engine.context_length == "max":
+        logging.getLogger(__name__).warning(
+            "engine.context_length is 'max'; using the model maximum of %s tokens. Parallel shapes whose "
+            "KV cache cannot hold one sequence of that length are excluded from the search. Set "
+            "engine.context_length to your longest request to admit them.",
+            smart.search_space.context_length,
+        )
     smart.sweep.parallel_evals = min(config.optimizer.parallelism, budget["cpu_limit"])
     sweep_context = SweepContext(
         core_search_space=smart.search_space.model_dump(mode="json"),

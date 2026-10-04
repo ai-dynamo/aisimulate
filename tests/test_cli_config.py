@@ -1921,3 +1921,39 @@ def test_execution_options_reject_mixed_worker_timing(custom_role):
     engine["workers"][custom_role] = {"timing": {"type": "polynomial"}}
     with pytest.raises(ValidationError, match="default timing in every role"):
         CorePredictionConfig.model_validate({"engine": engine})
+
+
+@pytest.mark.parametrize("context_length", ["max", 4096])
+def test_recommendation_declares_default_context_budget(monkeypatch, caplog, context_length):
+    from aisimulate.recommend import _run_recommendation
+    from aisimulate.sweeper.search import Sweeper
+
+    config = CoreRecommendationConfig.model_validate(
+        {
+            "engine": {
+                "model": "Qwen/Qwen3-32B",
+                "hardware": "h200_sxm",
+                "mode": "aggregated",
+                "backend": "trtllm",
+                "context_length": context_length,
+                "workers": {"aggregated": {}},
+            },
+            "traffic": {
+                "source": {"type": "synthetic"},
+                "load": {"type": "concurrency", "concurrency": 8},
+                "stop": {"requests": 16},
+            },
+            "optimization": {"target": "throughput_per_gpu", "constraints": {"max_candidate_gpus": 8}},
+        }
+    )
+    monkeypatch.setattr(Sweeper, "run", lambda self, smart, **kwargs: smart)
+    caplog.set_level("WARNING", logger="aisimulate.recommend")
+
+    smart = _run_recommendation(config, stack="engine", runner_factory=None, show_progress=False)
+
+    declared = "engine.context_length is 'max'; using the model maximum of"
+    if context_length == "max":
+        assert f"{declared} {smart.search_space.context_length} tokens" in caplog.text
+        assert "are excluded from the search" in caplog.text
+    else:
+        assert declared not in caplog.text
