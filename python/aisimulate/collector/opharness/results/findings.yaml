@@ -2656,3 +2656,46 @@ findings:
     - instrument:sglang.glm5_dsa_sparse_modules
     - instrument:captures.trt_kv
     - instrument:path_diff
+
+  sm100_precision_smoke_2026_10_04:
+    statement: 'PRECISION-COVERING OP SMOKE on B200 (umbriel-b200-021, 2026-10-04; driver facts/smoke/op_smoke_sweep.py in the
+      workspace: every registered sglang (30) and trtllm (23) collector op, cases grouped by the precision tokens in the case text,
+      ONE case per group, op_smoke''s executor contract, one container process per op — a shared process poisons later ops through
+      torch default-device state and produced false "can''t convert cuda:0 tensor to numpy" errors; collect_moe / collect_mamba2
+      exit with EXIT_CODE_RESTART by design after writing their rows, which a sweep must not read as failure). FOUND AND FIXED
+      (sm100 lanes Hopper never exercised): (1) trtllm collect_gemm and collect_mla_module declared NVFP4 with group_size 128;
+      1.3.0rc29 NVFP4LinearMethod.resolve_scaling_vector_size requires 16 — gemm nvfp4 and every nvfp4 group of the mla/dsa module
+      collectors failed to construct (nvfp4 is a platform floor on sm90, so the lane never ran there); now 16, smoke OK.
+      (2) sglang collect_mla and collect_attn MockModelRunner lacked max_running_requests / is_draft_worker /
+      prefill_attention_backend_str / decode_attention_backend_str / model — attributes the 0.5.21 TRTLLMMLABackend and
+      TRTLLMHAAttnBackend read, and those are the backends sglang picks on SM100 (fa3/flashinfer on Hopper never asked); added,
+      mla_generation and attention_* smoke OK. (3) trtllm collect_dsv4_attn pinned the fp8 KV pool + kv_cache_quant_algo FP8 on
+      every SM; on SM100 rc29 cannot serve fp8_ds_mla (finding sm100_trtllm_dsv4_facts_unservable_2026_10_04) and kv auto resolves
+      to the bf16 DeepseekV4CacheManager at the generator''s page 128 (facts/ab_dsv4_p128: boots, fmhaSm100f QkvBfloat16
+      DynamicTokenSparse) — the collector lane is now bf16-KV on SM100 (_serving_kv_cache_dtype; AIS_DSV4_KV_CACHE_DTYPE hook)
+      and all four trtllm dsv4 gates read ALIGNED against that serving raw. (4) GLM-5 DSA attention on sglang: the fp8-KV lane is
+      NOT a new code path — collect_mla_module ''dsa'' with kv fp8 already serves GLM-5 (GlmMoeDsaForCausalLM); recipes
+      sgl_glm5_dsa_attn_fp8_{ctx,gen} capture it: attention family == sm100 serving (fmhaSm100f QkvE4m3 HQk576HV512 TokenSparse),
+      residual drift is one tiny cutlass_80 fp16 wmma 32x32 GEMM the module lane issues and serving does not (gemm family) —
+      owner call whether the glm5 gate should move to the module lane on Blackwell. OPEN (not fixed): (5) sglang mla_context on
+      SM100: the collector times the prefill kernel under CUDA-graph capture; flashinfer.prefill.trtllm_ragged_attention_deepseek
+      (prefill.py:5088) refuses capture without q_seq_lens_cpu/kv_seq_lens_cpu and sglang''s trtllm_mla _run_prefill_kernel does
+      not pass them (serving never graph-captures prefill) — time the sm100 trtllm_mla prefill eagerly or pass the CPU lens.
+      (6) sglang moe w4a8_mxfp4_mxfp8 lane: the collector''s own guard stops at 0.5.21/SM100 ("verified only for 0.5.14 and 0.5.17
+      ... re-verify framework dispatch before extending") — the sm100 identity records show gpt-oss served by FLASHINFER_MXFP4,
+      so the guard can be extended once that dispatch is mirrored. (7) sglang kda: the collector''s own int32-overflow guard
+      (causal_conv1d_triton token-offset) rejects every Kimi-K3 case at the sweep''s shapes — not sm100-specific. Everything else
+      (attention, gemm bf16/fp8/fp8_block, mla ctx/gen, mla_bmm, dsa/dsv4 modules across bf16/fp8/fp8_block/nvfp4, gdn, mamba2,
+      mhc, compute_scale, encoder, moe fp8/fp8_block/nvfp4/bf16, msa) runs on B200. Per-cell table: facts/smoke/sweep_*.json +
+      summarize_smoke.py in the 021 workspace.'
+    applies_to:
+    - platform:sm100
+    - framework:sglang-0.5.21
+    - framework:trtllm-1.3.0rc29
+    - instrument:trtllm.collect_gemm
+    - instrument:trtllm.collect_mla_module
+    - instrument:trtllm.collect_dsv4_attn
+    - instrument:sglang.collect_mla
+    - instrument:sglang.collect_attn
+    - instrument:sglang.collect_mla_module
+    - instrument:op_smoke
