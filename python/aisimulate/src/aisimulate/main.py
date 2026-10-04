@@ -30,6 +30,7 @@ from .config_adapter import (
     resolve_config_adapters,
 )
 from .detail import build_prediction_details, energy_diagnostics, prediction_summary
+from .estimator_readiness import perf_data_missing_message
 from .output import (
     format_prediction_stdout,
     format_recommendation_stdout,
@@ -147,6 +148,9 @@ def _predict(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
                 write_fpm_coverage(root, {**coverage, "status": "incomplete", "error": str(exc)})
             if isinstance(exc, (KeyboardInterrupt, ResourceLimitError)) or not isinstance(exc, Exception):
                 raise
+            missing_data = perf_data_missing_message(exc)
+            if missing_data is not None:
+                raise _CliExecutionError(missing_data) from exc
             raise _CliExecutionError(f"{type(exc).__name__}: {exc}") from exc
     finally:
         mark_shutdown()
