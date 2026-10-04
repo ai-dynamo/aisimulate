@@ -8,6 +8,16 @@ PD=$HARNESS/components/path_diff.py
 OUT=$HARNESS/results/pathdiff/$AIS_SM/trtllm-1.3.0rc29
 mkdir -p $OUT
 run() { local cap=$1 name=$2 repo=$3 kv=$4 hint=$5 kvarg=(); [ -n "$kv" ] && kvarg=(--kv-dtype "$kv")
+  # Per-SM platform floors (same contract as verdicts_vllm_0300.sh): FLOOR_SM=<sm>[,<sm>...] FLOOR_NOTE="<why>" run ...
+  # records a platform-floor verdict (no serving instance on that SM by framework fact / capacity), excluded from path_aligned,
+  # still counted as declared coverage by workflow_check.declared_gates.
+  if [ -n "$FLOOR_SM" ] && [[ ",$FLOOR_SM," == *",$AIS_SM,"* ]]; then
+    python3 - "$OUT/$name.json" "$name" "$repo" "$AIS_SM" "$FLOOR_NOTE" <<'PY'
+import json,sys,time; out,name,repo,sm,note=sys.argv[1:]
+json.dump({"verdict":"platform-floor","gate_name":name,"repo":repo,"framework":"trtllm","version":"1.3.0rc29","sm":sm,
+           "note":note,"graded_at":time.strftime("%Y-%m-%dT%H:%M:%S")}, open(out,"w"), indent=1)
+PY
+    printf '%-36s PLATFORM-FLOOR (%s): %s\n' "$name" "$AIS_SM" "$FLOOR_NOTE"; return; fi
   [ -f facts/pathdiff/opcov_$cap@1.3.0rc29.json ] || { printf '%-36s MISSING CAPTURE\n' "$name"; return; }
   python3 $PD --diff --capture-file facts/pathdiff/opcov_$cap@1.3.0rc29.json --repo "$repo" --framework trtllm --version 1.3.0rc29 "${kvarg[@]}" --op-hint "$hint" --save-verdict $OUT/$name.json 2>/dev/null | python3 -c "
 import sys,json;t=sys.stdin.read()

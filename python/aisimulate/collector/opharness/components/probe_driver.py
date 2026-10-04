@@ -79,6 +79,23 @@ def golden_facts_status(render_output: str) -> dict:
     return {"applied": True}
 
 
+_GEN_STAMP: str | None = None
+
+
+def _generator_stamp() -> str:
+    """HEAD plus a hash of the uncommitted generator-source diff. The golden-render cache was keyed on HEAD
+    alone, so an uncommitted generator/facts edit re-rendered nothing and the first fixed-fact emit silently
+    served the stale goldens (B200 handoff 2026-10-04, defect 3; found again on sm89 when A/B-ing a facts change)."""
+    global _GEN_STAMP
+    if _GEN_STAMP is None:
+        import subprocess as _sp
+        repo = str(Path(AIS_SRC).parent)
+        head = _sp.run(["git", "-C", repo, "rev-parse", "--short", "HEAD"], capture_output=True, text=True).stdout.strip()
+        diff = _sp.run(["git", "-C", repo, "diff", "HEAD", "--", AIS_SRC], capture_output=True, text=True).stdout
+        _GEN_STAMP = head + (("+dirty-" + hashlib.sha256(diff.encode()).hexdigest()[:8]) if diff.strip() else "")
+    return _GEN_STAMP
+
+
 def render_golden(run: dict) -> Path | None:
     """Invoke the REAL user-facing generator command and archive it verbatim.
 
@@ -103,8 +120,7 @@ def render_golden(run: dict) -> Path | None:
     cmd += list(run.get("cli_extra_args") or [])
     cmd_txt = shlex.join(cmd)
     import subprocess as _sp
-    gen_commit = _sp.run(["git", "-C", str(Path(AIS_SRC).parent), "rev-parse", "--short", "HEAD"],
-                         capture_output=True, text=True).stdout.strip()
+    gen_commit = _generator_stamp()
     stamp = gdir / "command.txt"
     # cache valid only for the SAME command rendered by the SAME generator code
     if stamp.exists() and stamp.read_text().splitlines()[:2] == [cmd_txt, f"# generator={gen_commit}"]:

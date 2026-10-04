@@ -50,7 +50,7 @@ rules:
 
   # -------------------------------------------------- linear attention / mamba
   - {backend: fla_triton, role: linear_attention,
-     match: "gated_delta_rule|ChunkGatedDeltaRule|chunk_fwd_kernel_o|chunk_local_cumsum|recompute_w_u_fwd|fused_gdn_gating|fused_qkv_split_gdn|fused_qkvzba_split"}
+     match: "gated_delta_rule|chunk_fwd_kernel_o|chunk_local_cumsum|recompute_w_u_fwd|fused_gdn_gating|fused_qkv_split_gdn|fused_qkvzba_split"}
   # FlashInfer GDN (cute-DSL gated-delta-rule) kernels — the same kernels run
   # under vllm (qwen_gdn_linear_attn.py resolves flashinfer on SM90 @0.29) and
   # trtllm; the kernel's identity is FlashInfer's, so the label is the
@@ -359,3 +359,37 @@ rules:
   # gemm capture; serving Llama-3.1-70B-FP8 ran the cuBLAS sm89_xmma fp8 GEMM instead)
   - {backend: cutlass, role: gemm,
      match: "enable_sm120_family.*GemmUniversal"}
+
+  # ------------------------------------------------------------ sm89 observed
+  # Added 2026-10-04 from the L40 (CC 8.9) vllm 0.30.0 probe raws + collector captures only
+  # (collect/unlabeled.py over 224 raws + 16 captures); none of these names exist in the sm90/sm120
+  # seed. The seed's sm120-anchored identity rules (sparse_mla_sm120, deep_gemm::sm120_*,
+  # enable_sm120_family cutlass) stay until the sglang/trtllm raws show whether Ada ever runs them.
+  # cuBLAS (legacy Ampere-class kernels): Ada has no nvjet / sm90 / sm120 cuBLAS heuristics, bf16
+  # GEMMs resolve to the ampere_* family (mma.m16n8k8 'ampere_bf16_s1688gemm' and m16n8k16
+  # 's16816gemm'), fp32 router/lm-head fallbacks to ampere_sgemm_* — one backend (cublas) on both
+  # sides, only the tile name differs.
+  - {backend: cublas, role: gemm,
+     match: "^ampere_(bf16_)?s(1688|16816)gemm|^ampere_sgemm_|^ampere_s1688gemm"}
+  # vllm 0.30 FlashInfer attention: variable-length merge of split-KV partials (fa2 / flashinfer
+  # prefill + decode on Ada) — part of the attention op, not framework glue.
+  - {backend: flashinfer, role: attention,
+     match: "^flashinfer::PersistentVariableLengthMergeStatesKernel"}
+  # FLA Triton chunked gated-delta-rule pieces (GDN prefill when flashinfer GDN has no Ada build)
+  - {backend: fla_triton, role: linear_attention,
+     match: "^chunk_scaled_dot_kkt_fwd_kernel$|^merge_16x16_to_64x64_inverse_kernel$"}
+  # vision tower patch-embed conv (Qwen3-VL) and torch sort/sample glue
+  - {backend: torch, role: gemm,
+     match: "^sm86_xmma_fprop_implicit_gemm"}
+  - {backend: infra, role: infra,
+     match: "^randperm_handle_duplicate_keys_kernel$|warpMergeSortKVInPlace"}
+  # vllm custom-op launchers (the op wrapper's own span, not a kernel)
+  - {backend: infra, role: infra,
+     match: "^vllm::(moe_forward|unified_mla_attention_with_output)$"}
+  # torch.autograd.Function span the collector's chunk_gated_delta_rule call opens (kineto reports it
+  # next to the device kernels, serving's device-only table has none): a span, not a kernel — the FLA
+  # device kernels (chunk_fwd_kernel_o, chunk_gated_delta_rule_fwd_kernel_h, recompute_w_u_fwd, ...) are the
+  # identity and are present on both sides. Seed rule 'ChunkGatedDeltaRule' removed from the
+  # fla_triton rule above so this one wins (first match).
+  - {backend: infra, role: infra,
+     match: "^ChunkGatedDeltaRuleFunction$"}
