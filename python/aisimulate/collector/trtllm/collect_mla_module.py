@@ -934,6 +934,12 @@ def run_mla_module(
     _trtllm_utils._model_extra_attrs.attrs = model_config.extra_attrs
     _trtllm_utils._model_extra_attrs.attrs["attention_metadata"] = weakref.ref(attn_metadata)
 
+    # FIXME(kernel-limit): same 32-bit per-sequence offset boundary as
+    # collect_attn.py (H20 campaign 2026-10-02, rc29): DeepSeek-V3 context cells
+    # with (batch-1) * input_len * local_heads * 192 * 2 >= 2**31 (tp1: 81920+
+    # total tokens) fault with cudaErrorIllegalAddress while the TP-sharded rows
+    # of the same (batch, seq) pass. Unverified against the kernel source; left
+    # failing into the classified log.
     def kernel_func():
         attn_module.forward(position_ids, hidden_states, attn_metadata)
 

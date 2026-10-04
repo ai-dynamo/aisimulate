@@ -617,6 +617,11 @@ def _patch_framework_moe_parallel(*, moe_tp_size: int, moe_ep_size: int):
         "sglang.srt.layers.moe.moe_runner.flashinfer_trtllm",
         "sglang.srt.layers.moe.moe_runner.flashinfer_mxfp4",
         "sglang.srt.layers.quantization.mxfp4_flashinfer_trtllm_moe",
+        # 0.5.21 flashinfer_cutlass runner reads get_parallel().tp_group /
+        # is_allocation_symmetric() at module level (moe_runner/flashinfer_cutlass.py:21,
+        # :27, :283, :510) — every Nemotron-3 BF16 flashinfer_cutlass case raised
+        # "parallel name 'tp_group' has not been written" in the 2026-10-02 H20 campaign.
+        "sglang.srt.layers.moe.moe_runner.flashinfer_cutlass",
     ):
         try:
             modules.append(importlib.import_module(module_name))
@@ -626,15 +631,9 @@ def _patch_framework_moe_parallel(*, moe_tp_size: int, moe_ep_size: int):
         for module in modules:
             replace(module, "get_tp_group", lambda: None)
             replace(module, "is_allocation_symmetric", lambda: False)
-            if module in {
-                _moe_layer_mod,
-                _std_dispatch_mod,
-                _topk_mod,
-                _mxint4_mod,
-                _mxfp4_mod,
-                _fp8_mod,
-                _modelopt_mod,
-            }:
+            # Any module that imported get_parallel at module level reads our
+            # single-process stand-in (the dynamically imported runners included).
+            if hasattr(module, "get_parallel"):
                 replace(module, "get_parallel", lambda: parallel)
         replace(_moe_layer_mod, "get_moe_expert_parallel_world_size", lambda: moe_ep_size)
         replace(_moe_layer_mod, "get_moe_expert_parallel_rank", lambda: 0)
@@ -1035,26 +1034,43 @@ def _benchmark_framework_quantized_moe(
             correction_bias = (
                 torch.zeros(num_experts, dtype=torch.float32, device=device) if has_correction_bias else None
             )
-            topk_layer = TopK(
-                top_k=topk,
-                layer_id=0,
-                use_grouped_topk=num_expert_group is not None and topk_group is not None,
-                num_expert_group=num_expert_group,
-                topk_group=topk_group,
-                renormalize=renormalize,
-                scoring_func=scoring_func,
-                correction_bias=correction_bias,
-                output_format=(
-                    TopKOutputFormat.STANDARD
-                    if routing_method_type is None and moe_backend not in {"flashinfer_mxfp4", "triton_kernel"}
-                    else None
-                ),
-                routed_scaling_factor=routed_scaling_factor,
-                apply_routed_scaling_factor_on_output=(
-                    routed_scaling_factor is not None and moe_layer.should_fuse_routed_scaling_factor_in_topk
-                ),
-                is_fp4_experts=is_fp4_experts,
-            )
+            if routing_method_type == "Llama4":
+                # Serving builds the Llama-4 router with a custom routing function
+                # (fast_topk on the raw logits, then sigmoid; renormalize=False) —
+                # models/llama4.py:78-92 (function) and :114-118 (TopK construction)
+                # @0.5.21, unchanged since 0.5.14. The generic sigmoid TopK the
+                # collector used before routes through moe_fused_gate on 0.5.21, which
+                # asserts "bias is required for non-softmax routing" (kernels/ops/moe/
+                # moe_fused_gate.py:384) — a kernel serving never runs for Llama-4.
+                from sglang.srt.models.llama4 import Llama4MoE
+
+                topk_layer = TopK(
+                    top_k=topk,
+                    layer_id=0,
+                    renormalize=False,
+                    custom_routing_function=Llama4MoE.custom_routing_function,
+                )
+            else:
+                topk_layer = TopK(
+                    top_k=topk,
+                    layer_id=0,
+                    use_grouped_topk=num_expert_group is not None and topk_group is not None,
+                    num_expert_group=num_expert_group,
+                    topk_group=topk_group,
+                    renormalize=renormalize,
+                    scoring_func=scoring_func,
+                    correction_bias=correction_bias,
+                    output_format=(
+                        TopKOutputFormat.STANDARD
+                        if routing_method_type is None and moe_backend not in {"flashinfer_mxfp4", "triton_kernel"}
+                        else None
+                    ),
+                    routed_scaling_factor=routed_scaling_factor,
+                    apply_routed_scaling_factor_on_output=(
+                        routed_scaling_factor is not None and moe_layer.should_fuse_routed_scaling_factor_in_topk
+                    ),
+                    is_fp4_experts=is_fp4_experts,
+                )
             hidden_states = torch.randn(num_tokens, hidden_size, dtype=torch.bfloat16, device=device)
             if distributed == "balanced":
                 logits = [
@@ -1263,10 +1279,30 @@ def _raise_if_unverified_moe_lane(moe_type: str) -> str:
         _check_compat(specifier, installed_version)
         for specifier in ("sglang>=0.5.14,<0.5.15", "sglang>=0.5.17,<0.5.18")
     )
+    # 0.5.21 (tag commit e00930c5489053f26d86b179cee0d087f846acbb) re-verified
+    # for the Hopper/Ada lanes only (2026-10-04):
+    # * int4_wo: compressed_tensors.py:838-877 — CompressedTensorsMxInt4MoE
+    #   only under an explicit flashinfer_trtllm runner, the Triton WNA16 MoE
+    #   on SM100/103 auto or explicit triton, Marlin for every other CUDA
+    #   path -> SM89/90 stay on Marlin (declared 89/90: marlin). SM100 auto
+    #   moved from flashinfer_trtllm to Triton, so the SM100/103 declaration
+    #   is NOT verified on this series.
+    # * w4a16_mxfp4 (GPT-OSS): no gpt-oss runner override exists in
+    #   arg_groups/overrides.py any more (model_hook.py:524-528 still points
+    #   at a `_gpt_oss_overrides` that is gone); Mxfp4MoEMethod resolves
+    #   auto in create_moe_runner (mxfp4.py:1423-1430) to TRITON because
+    #   use_triton_kernels is only set by an explicit triton_kernel backend
+    #   (:382) -> SM89/90 declared `triton` matches serving. The SM100/103
+    #   flashinfer_mxfp4 declaration that 0.5.17 derived from the removed
+    #   override is NOT verified on this series.
+    # * w4a8_mxfp4_mxfp8 (DSV4 FP4 experts, SM100-only): not re-verified.
+    if not verified and _check_compat("sglang>=0.5.21,<0.5.22", installed_version):
+        verified = moe_type in ("int4_wo", "w4a16_mxfp4") and get_sm_version() in (89, 90)
     if not verified:
         raise RuntimeError(
             f"SGLang {moe_type} collection is verified only for the 0.5.14 and 0.5.17 series "
-            f"(installed: {installed_version}); re-verify framework dispatch before extending this guard."
+            f"(and 0.5.21 on SM89/SM90 for int4_wo / w4a16_mxfp4); installed: {installed_version}, "
+            f"SM{get_sm_version()}; re-verify framework dispatch before extending this guard."
         )
     return installed_version
 

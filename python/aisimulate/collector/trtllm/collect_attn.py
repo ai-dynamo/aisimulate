@@ -419,6 +419,20 @@ def run_attention_torch(
             "attention_sinks": sinks,
             "out_scale": out_scale,
         }
+    # FIXME(kernel-limit): H20 campaign 2026-10-02 (1.3.0rc29, TRTLLM backend,
+    # attention/backends/fmha/fallback.py:122): the context FMHA faults with
+    # cudaErrorIllegalAddress exactly when the LAST sequence's packed Q/O byte
+    # offset (batch-1) * input_len * num_heads * head_dim * 2 >= 2**31 —
+    # verified cell-by-cell on the (96,*,256), (64,*,256) and (96,8,128) grids
+    # (b16 s3072 h96 d256 crashes, b8 s6144 passes at the same token count),
+    # i.e. a 32-bit per-sequence offset inside the kernel. Serving reaches such
+    # batches only with max_num_tokens >= ~44k tokens per context forward.
+    # Unverified against the kernel source; cases above the boundary keep
+    # failing into the classified log until the claim is confirmed (or a bump
+    # fixes it). Generation has a second family: fp8 KV with GQA ratio 24 or
+    # 32 (96/4 at d64/128/256; 32/1, 64/2, 128/4 at d256) fails with
+    # cudaErrorLaunchFailure / IMA at every batch and KV length while the same
+    # shapes pass with a bf16 KV cache.
     attn.forward(*forward_args, attn_metadata, **forward_kwargs)
 
     # Use benchmark_with_power context manager
