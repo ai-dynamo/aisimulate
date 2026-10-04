@@ -1,0 +1,60 @@
+{
+ "backend": "vllm",
+ "collected_at": "2026-10-05",
+ "family": "dsv411",
+ "purpose": "calibration",
+ "rows": 28603,
+ "runs": [
+  {
+   "failed_cases": {},
+   "failed_components": {},
+   "plan_sha256": "9cdc0f4529a444b1aadee1c9951cfe68ce06deaf4aff862bcc9ce03e32847093",
+   "purpose": "calibration",
+   "raw": "/tmp/dsv411_h20/raw/vllm-tp2-cal-s0",
+   "rows": 7155,
+   "tp_size": 2
+  },
+  {
+   "failed_cases": {
+    "tokens-context-t262144": "the attempt died while measuring it (current-rank-0.case)"
+   },
+   "failed_components": {},
+   "plan_sha256": "2e0c8a834181ecc2bc48e1973acef213a2675d2d011400662cbbc392e8726181",
+   "purpose": "calibration",
+   "raw": "/tmp/dsv411_h20/raw/vllm-tp2-cal-s1",
+   "rows": 7145,
+   "tp_size": 2
+  },
+  {
+   "failed_cases": {},
+   "failed_components": {},
+   "plan_sha256": "fc1d0d13182514a41d426c15bc905e28528ca4cf3055c55fa6476855f403f7c1",
+   "purpose": "calibration",
+   "raw": "/tmp/dsv411_h20/raw/vllm-tp2-cal-s2",
+   "rows": 7150,
+   "tp_size": 2
+  },
+  {
+   "failed_cases": {},
+   "failed_components": {},
+   "plan_sha256": "3b88a15265cae40913d93bdf8628b5d00e764f3e0be032b2ae1d30d722e69ed5",
+   "purpose": "calibration",
+   "raw": "/tmp/dsv411_h20/raw/vllm-tp2-cal-s3",
+   "rows": 7150,
+   "tp_size": 2
+  },
+  {
+   "failed_cases": {},
+   "failed_components": {},
+   "plan_sha256": "103e4d33e170755821e7d39ffe0f0326d711131c83deb91d7da72b18ce0f036f",
+   "purpose": "calibration",
+   "raw": "/tmp/dsv411_h20/raw/vllm-tp2-comp-t262144",
+   "rows": 3,
+   "tp_size": 2
+  }
+ ],
+ "runtime_digest": "sha256:8a69ffad015f138d7170c4ddc429e230a3bc1c1719f67e14324749df200a4b90",
+ "system": "h20_3e",
+ "table": "/root/tianhao/debug/dsv4.1_ais/work/python/aisimulate/src/aisimulate_core/systems/data/h20_3e/dsv411/vllm/0.30.0/dsv411_module_perf.parquet",
+ "version": "0.30.0"
+}

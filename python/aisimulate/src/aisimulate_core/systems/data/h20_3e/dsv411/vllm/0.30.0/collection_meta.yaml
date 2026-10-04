@@ -1,0 +1,84 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+schema_version: 2
+provenance: collected
+runtime:
+  framework: vllm
+  version: 0.30.0
+  image: vllm/vllm-openai:v0.30.0
+  image_digest: sha256:8a69ffad015f138d7170c4ddc429e230a3bc1c1719f67e14324749df200a4b90
+  source_commit: ced6857afa0ea7b2e3f0846a62e1394e90f15607
+  abi: &id001
+    torch: 2.13.0
+    nccl: 2.30.7
+tables:
+  dsv411_module_perf:
+    rows: 28603
+    status: complete
+    collections:
+    - collector_ref: d95b103c7b76550bc3c0f65c6124c872041efd0e
+      collector_hash: sha256:d3d888830c94a2f63d30be320bd682414bcd06d1b99b4411c9c025e628234ab3
+      case_plan_hash: sha256:9cdc0f4529a444b1aadee1c9951cfe68ce06deaf4aff862bcc9ce03e32847093
+      collected_at: '2026-10-05'
+      rows: 7155
+      status: complete
+      runtime:
+        framework: vllm
+        version: 0.30.0
+        image: vllm/vllm-openai:v0.30.0
+        image_digest: sha256:8a69ffad015f138d7170c4ddc429e230a3bc1c1719f67e14324749df200a4b90
+        source_commit: ced6857afa0ea7b2e3f0846a62e1394e90f15607
+        abi: *id001
+    - collector_ref: d95b103c7b76550bc3c0f65c6124c872041efd0e
+      collector_hash: sha256:d3d888830c94a2f63d30be320bd682414bcd06d1b99b4411c9c025e628234ab3
+      case_plan_hash: sha256:2e0c8a834181ecc2bc48e1973acef213a2675d2d011400662cbbc392e8726181
+      collected_at: '2026-10-05'
+      rows: 7145
+      status: complete
+      runtime:
+        framework: vllm
+        version: 0.30.0
+        image: vllm/vllm-openai:v0.30.0
+        image_digest: sha256:8a69ffad015f138d7170c4ddc429e230a3bc1c1719f67e14324749df200a4b90
+        source_commit: ced6857afa0ea7b2e3f0846a62e1394e90f15607
+        abi: *id001
+    - collector_ref: d95b103c7b76550bc3c0f65c6124c872041efd0e
+      collector_hash: sha256:d3d888830c94a2f63d30be320bd682414bcd06d1b99b4411c9c025e628234ab3
+      case_plan_hash: sha256:fc1d0d13182514a41d426c15bc905e28528ca4cf3055c55fa6476855f403f7c1
+      collected_at: '2026-10-05'
+      rows: 7150
+      status: complete
+      runtime:
+        framework: vllm
+        version: 0.30.0
+        image: vllm/vllm-openai:v0.30.0
+        image_digest: sha256:8a69ffad015f138d7170c4ddc429e230a3bc1c1719f67e14324749df200a4b90
+        source_commit: ced6857afa0ea7b2e3f0846a62e1394e90f15607
+        abi: *id001
+    - collector_ref: d95b103c7b76550bc3c0f65c6124c872041efd0e
+      collector_hash: sha256:d3d888830c94a2f63d30be320bd682414bcd06d1b99b4411c9c025e628234ab3
+      case_plan_hash: sha256:3b88a15265cae40913d93bdf8628b5d00e764f3e0be032b2ae1d30d722e69ed5
+      collected_at: '2026-10-05'
+      rows: 7150
+      status: complete
+      runtime:
+        framework: vllm
+        version: 0.30.0
+        image: vllm/vllm-openai:v0.30.0
+        image_digest: sha256:8a69ffad015f138d7170c4ddc429e230a3bc1c1719f67e14324749df200a4b90
+        source_commit: ced6857afa0ea7b2e3f0846a62e1394e90f15607
+        abi: *id001
+    - collector_ref: 16ac8dbb886d53a7720e81aca4d17236305a09b1
+      collector_hash: sha256:d3d888830c94a2f63d30be320bd682414bcd06d1b99b4411c9c025e628234ab3
+      case_plan_hash: sha256:103e4d33e170755821e7d39ffe0f0326d711131c83deb91d7da72b18ce0f036f
+      collected_at: '2026-10-05'
+      rows: 3
+      status: complete
+      runtime:
+        framework: vllm
+        version: 0.30.0
+        image: vllm/vllm-openai:v0.30.0
+        image_digest: sha256:8a69ffad015f138d7170c4ddc429e230a3bc1c1719f67e14324749df200a4b90
+        source_commit: ced6857afa0ea7b2e3f0846a62e1394e90f15607
+        abi: *id001
