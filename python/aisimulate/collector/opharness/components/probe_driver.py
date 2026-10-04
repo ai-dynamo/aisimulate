@@ -1256,6 +1256,14 @@ def _fail_cause(note: str) -> str:
         # DSV4 hyperconnection kernels are DeepGEMM SM90 / SM10x only (L40 vllm 0.30.0 probe: 11
         # DeepSeek-V4 cells, `hyperconnection.hpp:56 Unsupported architecture` at model init)
         ("deepgemm.*Unsupported architecture", "platform floor (DeepGEMM needs SM90+)"),
+        # sparse-attention / FP4 kernels with no Ada build (L40 sglang 0.5.21 + vllm probes)
+        ("Sparse Attention Forward Kernel is only supported on|Unsupported architecture for sparse decode|requires Blackwell|"
+         "Invalid backend: \\d+", "platform floor (SM90+/Blackwell-only kernel: sparse attention, MXFP, FP4)"),
+        ("leave no GPU memory for the KV cache|exceeds available Mamba cache blocks",
+         "capacity (weights + state leave no KV room on this GPU)"),
+        # sglang's tp memory-balance check: another probe occupies a GPU of the group (the queue
+        # puts tp>1 cells in ONE GPU's queue without reserving the group) — not a framework fact
+        ("memory capacity is unbalanced", "harness: busy GPU in the tp group (rerun alone)"),
         ("requires an fp8 prefill query", "config gap (needs --attention-config use_prefill_query_quantization)"),
         # single-kind dummy cuts forced by capacity (72GB box): a cut with no attention
         # layer, or one that stripped every quantized layer, is a dummy artifact
@@ -1274,6 +1282,32 @@ def _fail_cause(note: str) -> str:
         if re.search(pat, note):
             return tag
     return "framework gap"
+
+
+# Deciding line is not always the LAST one (sglang wraps the cause in a "Capture cuda graph failed" /
+# kill_process_tree epilogue): a second pass over the whole traceback, ONLY for causes the last-line rules
+# left as "framework gap", and only with patterns specific enough not to fire on incidental earlier lines.
+_DEEP_RULES = [
+    ("memory capacity is unbalanced", "harness: busy GPU in the tp group (rerun alone)"),
+    ("Unsupported architecture for sparse decode|Sparse Attention Forward Kernel is only supported on",
+     "platform floor (SM90+/Blackwell-only kernel: sparse attention, MXFP, FP4)"),
+    # DSV4 sparse decode: DeepGEMM attention.hpp asserts arch_major in {9, 10, 12} (L40 sglang 0.5.21)
+    ("deepgemm/csrc/apis/[a-z_]+\\.hpp:\\d+\\): .*arch_major", "platform floor (DeepGEMM needs SM90+)"),
+    # flashinfer 0.6.18's cutlass fused-MoE JIT does not compile for sm_89: tensorrt_llm::kernels::
+    # cutlass_kernels has no Fp4Type there (nemotron_h bf16/fp8 MoE on sglang 0.5.21, L40) — a framework
+    # JIT defect, not a model or config fact
+    ("cutlass_kernels\" has no member \"Fp4Type\"|has no member .Fp4Type",
+     "framework defect (flashinfer cutlass fused-MoE JIT fails to build for sm89: Fp4Type)"),
+]
+
+
+def _fail_cause_full(last_line: str, traceback_text: str) -> str:
+    cause = _fail_cause(last_line)
+    if cause == "framework gap":
+        for pat, tag in _DEEP_RULES:
+            if re.search(pat, traceback_text):
+                return tag
+    return cause
 
 
 def build_matrix(targets: dict) -> None:
@@ -1374,9 +1408,10 @@ def build_matrix(targets: dict) -> None:
                 f = json.loads(raw.read_text())
                 err = f.get("errors") or {}
                 if err:
-                    full = next(iter(err.values())).strip().splitlines()[-1]
+                    tb = next(iter(err.values())).strip()
+                    full = tb.splitlines()[-1]
                     note = full[:200]  # classified on the FULL line: selector errors carry the deciding flag (use_sparse) late
-                    cell = {"verdict": "fail", "cause": _fail_cause(full), "error": note}
+                    cell = {"verdict": "fail", "cause": _fail_cause_full(full, tb), "error": note}
                 else:
                     ca = custom.get((repo, be))
                     cell = {"verdict": "pass+custom" if ca else "pass"}

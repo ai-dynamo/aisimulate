@@ -283,3 +283,16 @@ def test_select_dummy_dir_default_order_is_family_then_generic_then_any(pd, tmp_
 ])
 def test_fail_cause_ada_rules(pd, note, expected):
     assert pd._fail_cause(note) == expected
+
+
+def test_fail_cause_full_reads_the_traceback_only_for_unmatched_causes(pd):
+    # sglang wraps the real cause in a CUDA-graph / kill_process_tree epilogue: the last line decides nothing
+    tail = "Exception: Capture cuda graph failed: Ninja build failed. Ninja output:"
+    tb = ('error: namespace "tensorrt_llm::kernels::cutlass_kernels" has no member "Fp4Type"\n' + tail)
+    assert pd._fail_cause(tail) == "framework gap"
+    assert pd._fail_cause_full(tail, tb).startswith("framework defect (flashinfer cutlass fused-MoE JIT")
+    tb2 = ("RuntimeError: The memory capacity is unbalanced. Some GPUs may be occupied by other processes.\n"
+           "kill_process_tree called: parent_pid=98")
+    assert pd._fail_cause_full("kill_process_tree called: parent_pid=98", tb2).startswith("harness: busy GPU")
+    # a cause the last-line rules already know is never overridden by an earlier line
+    assert pd._fail_cause_full("torch.OutOfMemoryError: CUDA out of memory", "memory capacity is unbalanced\nx").startswith("capacity")
