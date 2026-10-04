@@ -1,0 +1,49 @@
+{
+ "verdict": "aligned",
+ "repo": "Qwen/Qwen3.5-0.8B",
+ "framework": "vllm",
+ "version": "0.30.0",
+ "gate_name": "gdn_gen_Qwen3.5-0.8B",
+ "target_roles": [
+  "linear_attention"
+ ],
+ "phase": "decode",
+ "phase_scoped": true,
+ "kv_dtype": "auto",
+ "op_hint": "gdn|delta|conv1d|linear|mamba|gated|recurrent",
+ "capture_file": "facts/pathdiff/opcov_gdn_gen@0.30.0.json",
+ "capture_sha256": "4a72fdf7847b6052",
+ "capture_env": null,
+ "capture_run_error": null,
+ "serving_record": {
+  "id": "9fd8557b9956",
+  "tp": 1,
+  "kv_cache_dtype": "auto",
+  "isl": 4096,
+  "prefix_caching": false,
+  "raw_file": null,
+  "candidates": 1,
+  "exec_fingerprint": "512ef07c3f22",
+  "evidence_status": "current"
+ },
+ "collector_backends": [
+  "causal_conv1d",
+  "fla_triton"
+ ],
+ "serving_backends": [
+  "causal_conv1d",
+  "cublas",
+  "fla_triton",
+  "trtllm_fmha"
+ ],
+ "missing_roles": [],
+ "aux_collector_only_roles": [],
+ "role_counts": {
+  "linear_attention": {
+   "collector": 2,
+   "serving": 2,
+   "matched": 2
+  }
+ },
+ "evidence": "archive/evidence/pathdiff/<framework-version>/<gate>.json in the probe workspace (full kernel lists)"
+}

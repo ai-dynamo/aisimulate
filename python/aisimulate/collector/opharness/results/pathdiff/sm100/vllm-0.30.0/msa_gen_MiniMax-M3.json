@@ -1,0 +1,57 @@
+{
+ "verdict": "aligned",
+ "repo": "MiniMaxAI/MiniMax-M3",
+ "framework": "vllm",
+ "version": "0.30.0",
+ "gate_name": "msa_gen_MiniMax-M3",
+ "target_roles": [
+  "attention",
+  "dsa_indexer"
+ ],
+ "phase": "decode",
+ "phase_scoped": true,
+ "kv_dtype": "auto",
+ "op_hint": "attn|sparse|msa|topk|index|score|merge",
+ "capture_file": "facts/pathdiff/opcov_msa_gen@0.30.0.json",
+ "capture_sha256": "4a2de695840c5121",
+ "capture_env": null,
+ "capture_run_error": null,
+ "serving_record": {
+  "id": "edfd2be5df43",
+  "tp": 1,
+  "kv_cache_dtype": "auto",
+  "isl": 4096,
+  "prefix_caching": false,
+  "raw_file": null,
+  "candidates": 1,
+  "exec_fingerprint": "a2460ba196fc",
+  "evidence_status": "current"
+ },
+ "collector_backends": [
+  "cublas",
+  "dsa_nsa",
+  "triton"
+ ],
+ "serving_backends": [
+  "cublas",
+  "cutlass",
+  "dsa_nsa",
+  "triton",
+  "trtllm_internal"
+ ],
+ "missing_roles": [],
+ "aux_collector_only_roles": [],
+ "role_counts": {
+  "attention": {
+   "collector": 2,
+   "serving": 2,
+   "matched": 2
+  },
+  "dsa_indexer": {
+   "collector": 1,
+   "serving": 1,
+   "matched": 1
+  }
+ },
+ "evidence": "archive/evidence/pathdiff/<framework-version>/<gate>.json in the probe workspace (full kernel lists)"
+}

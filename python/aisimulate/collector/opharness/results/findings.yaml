@@ -2428,3 +2428,83 @@ findings:
     - nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16
     - deepseek-ai/DeepSeek-V3
     - sgl-project/DeepSeek-V4-Pro-FP8
+
+  sm100_vllm_0300_collector_verdict_2026_10_03:
+    statement: 'COLLECTOR VERDICT FOR THE vllm 0.30.0 UPGRADE ON sm100 (B200 umbriel-b200-049, 8 GPUs, PR head d8d9aafb, 2026-10-03;
+      the Hopper port of the same pin was already graded on H20). Question: do the 0.30 collectors need sm100-specific fixes?
+      Answer: mostly NO, two YES. All 35 vllm gate captures were re-taken in the 0.30.0 image on B200 (32 from components/captures
+      + mla_ctx_fp8/mla_gen_fp8, which are sm120 FLOOR lines but real gates on sm100) and graded against B200 serving records
+      (224 runs = 112 rendered + 112 fp8-KV): 26 ALIGNED — gemm bf16/fp8_block (+m1), moe fp8_block/bf16/mxfp4 (all on trtllm_gen_moe),
+      mla_ctx bf16/fp8, mla_bmm, dsa_ctx_fp8 s512 (vs a B200 isl-512 raw) and s4096, dsa_gen_fp8, msa ctx/gen, dsv4 x6, gdn
+      x2, kda x2, attn_ctx. NEEDS FIX (1): utils.kv_block_size branches by SM (sm100: attention 16 / mla 32, owner decision
+      2026-09-30) — it fixed attn_ctx (P64->P16, aligned) but REGRESSED dsa_ctx_bf16 and dsa_ctx_bf16_s4096 (ALIGNED on 2026-09-29
+      with page 64): with page 32 the collector''s bf16 DSA cell selects the TRT-LLM FMHA sparse path (fmhaSm100fKernel_QkvBfloat16...HQk576HV512HVPerCta256PagedKvDenseStaticTok...)
+      while serving runs vLLM cute-DSL FA sm100 + the indexer. Serving picks the page per (backend, kv dtype, head shape), not
+      per SM — ask the framework per case (get_supported_kernel_block_sizes / cache_config.block_size) as the B200 handoff proposed;
+      keep AIS_KV_BLOCK_SIZE as the A/B hook. NEEDS DECISION (2): the remaining attention drifts are tile variants of the same
+      cubin family — attn_gen MultiCtasKvCga vs MultiCtasKv, mla_gen_fp8/bf16 HVPerCta128 vs 256 — chosen by the FMHA''s kv-length/batch
+      heuristic; whether perf rows must match at tile level is a granularity call. gemm_fp8 is the sm120 governed exception
+      (cutlass sm100 GEMM template instance); encoder_attn needs an encoder-scoped op-hint (the decoder''s paged-causal FMHA
+      spans are swept in; the ViT path is fa_cute_sm100 on both sides); compute_scale/mhc are the known explained deviations.
+      No 0.30 API drift showed up on sm100 beyond what the Hopper port already fixed.'
+    applies_to:
+    - platform:sm100
+    - framework:vllm-0.30.0
+    - module:collector
+    - instrument:vllm.collect_attn
+    - instrument:vllm.collect_mla_module
+    - instrument:path_diff
+
+  sm100_vllm_0300_identity_2026_10_03:
+    statement: 'IDENTITY MATRIX sm100 / vllm 0.30.0 on PR head d8d9aafb (results/sm100/vllm-0.30.0.yaml): 106 pass / 1 pass+custom
+      / 17 fail over 124 rows. 12 fails share sm90''s causes (11 generator rejects: Qwen3.8-Flash-Next x3, MiMo-V2.6 x2, Inkling
+      x4, GLM-5.3-Flash x2; Qwen3.8-2.4T-A95B capacity). sm100-specific: (a) deepseek-ai/DeepSeek-V4.1-Flash and nvidia/DeepSeek-V4.1-Flash-NVFP4
+      ''ValueError: No common block size for 64'' — the generator fact facts/models.yaml V4.1 block-size 64 (added 2026-10-01
+      for sm90/sm120) has no accepting backend on sm100; A/B: the same rendered run.sh without --block-size 64 boots and runs
+      (DeepseekV41ForCausalLM) — a platform-blind generator fact; (b) nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-NVFP4 ''no attention-ish
+      module classes'' — targets.yaml declares variant_overrides vllm: layers_block_type_moe for it, so the probe ran a moe-only
+      cut; (c) Qwen/Qwen3.8-2.4T-A95B-FP8 OOM on 178 GiB (passes on the 143 GB H20 — dummy residency differs); (d) fp8-KV variant:
+      Kimi-K3 and Kimi-K3-NVFP4 require --attention-config ''{"use_prefill_query_quantization": true}'' (framework assertion).
+      DSV4 family all pass (64-aligned budgets). Identity flips vs sm90 at the same pin: dense attention FA3 -> flashinfer TRT-LLM
+      FMHA cubins (prefill fmhaSm100a*, decode fmhaSm100f*; page 16 Llama/Qwen, 32 Nemotron and MLA fp8, 64 Gemma-4), DSV3.2
+      FlashAttnMLASparse -> FlashMLASparse, NVFP4 DSA FlashMLASparse -> FlashInferMLASparse, M3 SparseTritonImpl -> SparseMSAImpl,
+      every NVFP4/MXFP4/FP8 MoE marlin/triton_fused_moe -> trtllm_gen_moe. Customization retest (results/retests/sm100/vllm-0.30.0.yaml):
+      Nemotron-H gpu-memory-utilization 0.6 still_needed (bare default OOMs in the profile run on a clean 178 GiB B200, 2026-09-29
+      evidence). Perf-data collection was started on the same box (26 shards, gemm bf16 37,518 / gemm fp8 37,518 / attention_context
+      54,468 rows finished with 0 failed at the 2.6 h mark; dsa_context_module plans 261,504 cases and is the long tail) — data
+      stays in the workspace per the owner''s 2026-10-04 rule, never in this PR.'
+    applies_to:
+    - platform:sm100
+    - framework:vllm-0.30.0
+    - deepseek-ai/DeepSeek-V4.1-Flash
+    - nvidia/DeepSeek-V4.1-Flash-NVFP4
+    - nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-NVFP4
+    - moonshotai/Kimi-K3
+    - nvidia/Nemotron-H-56B-Base-8K
+
+  harness_issues_sm100_third_run_2026_10_03:
+    statement: 'HARNESS ISSUES FROM THE THIRD BLACKWELL RUN (sm100, 2026-10-03), each reproduced: (1) tools/perf_database/collect_campaign.py
+      image_digest() uses ''{{index .RepoDigests 0}}'' — a locally built collect image has no RepoDigests, so `run` refuses
+      the image `build-image` just produced (''image not present''); fixed here with ''{{if .RepoDigests}}...{{end}}|{{.Id}}''.
+      (2) kernel_taxonomy_sm100.yaml did not exist — a new SM starts with an empty vocabulary and every gate reads no-collector-signal;
+      seeded here from the sm90 file + the B300-validated Blackwell block + fa_cute_sm100 + the cutlass sm100 GEMM symbol (enable_sm100_to_sm120
+      guard). (3) dummy_overrides.tokenizer_from only resolves to a ROSTER repo''s dummy dir, not to configs/aux_files/<tag>;
+      gated meta-llama repos on a token-less box (bundled config fallback ships no tokenizer) need a public sibling IN the roster,
+      and Llama-4''s unsloth mirrors had to be copied into the meta-llama aux dirs by hand (the bundled Llama-4 configs also
+      lack vision_config). (4) verdicts_vllm_0300.sh is AIS_SM-parametric but the dsa_ctx_fp8 SERVING_RAW is the H20 path facts/reprobe_nopc/04cea4da0eff_isl512.json
+      (pre-platform run id); on another SM it needs a symlink or a derived path. (5) FLOOR_SM=sm120 lines are real gates on
+      sm100 — a capture list derived from the `run` lines alone misses mla_ctx_fp8/mla_gen_fp8. (6) path_diff --capture only
+      fails at the final open() when the output dir is missing — the whole capture runs for nothing; mkdir -p first. (7) the
+      collect image has no git, so collection_meta.collector_ref records ''unknown''. (8) a generator fact (V4.1 block-size
+      64) and a targets variant_override (Nemotron-Ultra-NVFP4 moe-only cut) are platform-blind inputs that turn pass cells
+      into fails on a new SM — same class as the cli_extra_args lesson from B300. (9) throughput facts for planning: identity
+      224 runs on 7 B200 ~2 h (first wave JIT-heavy); collection shard plan must split dsa_context_module (261,504 cases) and
+      gemm fp8_block (DeepGEMM JIT) across GPUs — one shard per op leaves 7 GPUs idle behind a 20 h tail.'
+    applies_to:
+    - platform:sm100
+    - instrument:collect_campaign
+    - instrument:path_diff
+    - instrument:dummies
+    - instrument:fetch_inputs
+    - instrument:probe_driver
+
