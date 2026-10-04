@@ -358,7 +358,9 @@ def failed_cases(output: Path) -> dict[str, str]:
         case = receipt.get("failed_case")
         if case:
             failed.setdefault(case, receipt.get("error", "unknown error"))
-    for marker in sorted(output.glob("current-rank-*.case")):
+    # live markers of the interrupted attempt and the ones earlier resumes archived: every rank must derive
+    # the same set whenever it starts, so markers are archived (per rank, by that rank), never deleted
+    for marker in sorted([*output.glob("current-rank-*.case"), *output.glob("current-rank-*.attempt-*.case")]):
         case = marker.read_text().strip()
         if case:
             failed.setdefault(case, f"the attempt died while measuring it ({marker.name})")

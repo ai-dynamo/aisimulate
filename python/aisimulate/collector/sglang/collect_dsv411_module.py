@@ -962,8 +962,10 @@ def run(args, receipt):
         # cases that killed a preserved attempt are framework-side failures: recorded, skipped, never retried here
         receipt["failed_cases"] = failed_cases(args.output)
         done = done | set(receipt["failed_cases"])
-        for marker in args.output.glob("current-rank-*.case"):
-            marker.unlink()
+        own = args.output / f"current-rank-{rank}.case"
+        if own.exists():  # archive (never delete): the other rank may not have read it yet
+            n = len(list(args.output.glob(f"current-rank-{rank}.attempt-*.case")))
+            own.rename(args.output / f"current-rank-{rank}.attempt-{n}.case")
         receipt["resume"] = dict(skipped_cases=len(done), kept_rows=stream.rows, failed=sorted(receipt["failed_cases"]))
     state, intervals = State(), Intervals()
     try:
