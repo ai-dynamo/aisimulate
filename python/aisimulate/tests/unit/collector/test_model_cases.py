@@ -1672,8 +1672,7 @@ def test_vllm_024_model_plans_only_schedule_representable_attention_paths():
         "mla_context",
         "mla_generation",
         "moe",
-        "moe_ep",
-    ]
+    ]  # moe_ep left the default trtllm plan with the separate WideEP pin (2026-10-04)
     assert build_collection_case_plan(backend="vllm_xpu", model_path=kimi_path).ops == ["gemm", "moe"]
 
     models_with_unrepresentable_vllm_attention = (
