@@ -361,7 +361,7 @@ def failed_cases(output: Path) -> dict[str, str]:
     for marker in sorted(output.glob("current-rank-*.case")):
         case = marker.read_text().strip()
         if case:
-            failed.setdefault(case, f"attempt died without a receipt while running it ({marker.name})")
+            failed.setdefault(case, f"the attempt died while measuring it ({marker.name})")
     return failed
 
 

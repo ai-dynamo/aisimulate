@@ -725,6 +725,12 @@ def _measure_tokens(call, wraps, case, plan, stream, qualify, expected_calls=Non
     import torch
 
     expected_calls = len(wraps) if expected_calls is None else expected_calls
+    mark_case(stream.output, stream.rank, case["case_id"])  # a token case that kills the attempt is recorded too
+    _measure_tokens_inner(call, wraps, case, plan, stream, qualify, expected_calls, torch)
+    mark_case(stream.output, stream.rank, None)
+
+
+def _measure_tokens_inner(call, wraps, case, plan, stream, qualify, expected_calls, torch):
     if case["phase"] == "context":
         intervals = Intervals()
         try:
@@ -1124,7 +1130,11 @@ def run(args, receipt):
             attention_cases = [
                 c for c in plan["cases"] if c["kind"] == "attention" and not (done and c["case_id"] in done)
             ]
-            token_cases = [c for c in plan["cases"] if c["kind"] == "tokens"]
+            token_cases = [
+                c
+                for c in plan["cases"]
+                if c["kind"] == "tokens" and c["case_id"] not in (receipt.get("failed_cases") or {})
+            ]
             if attention_cases:
                 stack = AttentionStack(vllm_config, plan, device)
                 receipt["weight_initialization"] = dict(
