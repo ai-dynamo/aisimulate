@@ -86,6 +86,13 @@ def main(argv=None):
         help="component=reason: declare an eager generation exception",
     )
     parser.add_argument("--shard", default=None, help="index/count: run only every count-th case starting at index")
+    parser.add_argument(
+        "--cases",
+        type=Path,
+        default=None,
+        help="JSON list of case ids (or a receipt whose failed_cases name them): keep only these expanded cases - "
+        "a complement plan for cells another run recorded as failed (run it in its own output dir; pooled at publish)",
+    )
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args(argv)
 
@@ -96,6 +103,15 @@ def main(argv=None):
     cases, drops = contract.expand_cases(grid, args.components, overrides=overrides)
     shard = tuple(int(x) for x in args.shard.split("/")) if args.shard else None
     cases = contract.shard_cases(cases, shard)
+    if args.cases is not None:
+        selected = json.loads(args.cases.read_text())
+        if isinstance(selected, dict):
+            selected = sorted(selected.get("failed_cases") or {})
+        wanted = set(selected)
+        cases = [c for c in cases if c["case_id"] in wanted]
+        missing = wanted - {c["case_id"] for c in cases}
+        if missing or not cases:
+            raise SystemExit(f"--cases: not in the expanded grid/shard: {sorted(missing)[:5]} (selected {len(wanted)})")
     pool = dict(DEFAULT_POOL[args.backend])
     if args.pool:
         pool.update(json.loads(args.pool))
