@@ -498,11 +498,21 @@ def run_generation_case(runner, bench, token_ids, case, plan, state, intervals, 
     runner.clear()
 
 
-def _pool_exhausted(error: BaseException) -> bool:
-    """sglang's paged allocators ask the tree cache to evict when a pool runs dry; the bench path's
-    TreeCacheNamespace has no evict_for_alloc (AttributeError) or the SWA pool reports the shortfall."""
+def _capacity_failure(error: BaseException) -> str | None:
+    """Classify a recoverable capacity miss: the plan's KV pools ran dry (sglang's paged allocators ask the
+    tree cache to evict; the bench path's TreeCacheNamespace has no evict_for_alloc, or the SWA pool reports
+    the shortfall) or the device ran out of memory in a forward (a Python-level OOM, the context is intact).
+    Returns the record prefix, or None for anything else (re-raise)."""
     text = str(error)
-    return "evict_for_alloc" in text or "eviction insufficient" in text
+    if "evict_for_alloc" in text or "eviction insufficient" in text:
+        return "PoolCapacity"
+    if type(error).__name__ == "OutOfMemoryError" or "CUDA out of memory" in text:
+        return "MemoryCapacity"
+    return None
+
+
+def _pool_exhausted(error: BaseException) -> bool:
+    return _capacity_failure(error) is not None
 
 
 def run_context_group(runner, bench, token_ids, cases, plan, state, intervals, stream, manifest, receipt, progress):
@@ -531,8 +541,9 @@ def run_context_group(runner, bench, token_ids, cases, plan, state, intervals, s
             if not _pool_exhausted(error):
                 raise
             # the shared prefix itself does not fit the plan's pools: every case of the group is a PoolCapacity record
+            kind = _capacity_failure(error)
             for case in cases:
-                receipt.setdefault("failed_cases", {})[case["case_id"]] = f"PoolCapacity (prefix seeding): {error}"
+                receipt.setdefault("failed_cases", {})[case["case_id"]] = f"{kind} (prefix seeding): {error}"
             receipt.pop("failed_case", None)
             mark_case(stream.output, stream.rank, None)
             runner.clear()
@@ -609,11 +620,12 @@ def run_context_group(runner, bench, token_ids, cases, plan, state, intervals, s
                 raise
             # the bench path has no radix cache to evict into: the case does not fit the plan's pools.
             # A classified record, not a crash; the pools are reset and the group goes on.
-            receipt.setdefault("failed_cases", {})[case["case_id"]] = f"PoolCapacity: {error}"
+            receipt.setdefault("failed_cases", {})[case["case_id"]] = f"{_capacity_failure(error)}: {error}"
             receipt.pop("failed_case", None)
             mark_case(stream.output, stream.rank, None)
             intervals.active = False
             runner.clear()
+            torch.cuda.empty_cache()
             if prefix and not reseed:  # the shared seeded prefix went with the pools
                 reqs, _, _ = seed_prefix(runner, bench, token_ids, batch_size, prefix, plan, state.gemm_token_limit)
             continue
@@ -1063,11 +1075,12 @@ def run(args, receipt):
                     except (AttributeError, RuntimeError) as error:
                         if not _pool_exhausted(error):
                             raise
-                        receipt.setdefault("failed_cases", {})[case["case_id"]] = f"PoolCapacity: {error}"
+                        receipt.setdefault("failed_cases", {})[case["case_id"]] = f"{_capacity_failure(error)}: {error}"
                         receipt.pop("failed_case", None)
                         mark_case(stream.output, stream.rank, None)
                         intervals.active = False
                         runner.clear()
+                        torch.cuda.empty_cache()
                         continue
                     progress(case, started)
                     receipt.pop("failed_case", None)
