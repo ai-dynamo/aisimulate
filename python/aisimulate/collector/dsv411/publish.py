@@ -120,6 +120,7 @@ def main(argv=None):
                     tp_size=meta["plan"]["tp_size"],
                     purpose=meta["plan"]["purpose"],
                     failed_cases=meta.get("failed_cases") or {},
+                    failed_components=meta.get("failed_components") or {},
                 )
                 for raw, meta, count in events_meta
             ],

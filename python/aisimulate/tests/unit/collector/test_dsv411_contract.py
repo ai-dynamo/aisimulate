@@ -385,3 +385,22 @@ def test_admission_tolerates_recorded_case_failures(tmp_path, manifests):
     path.write_text(json.dumps(receipt))
     with pytest.raises(ValueError, match="disagree on the failed cases"):
         _admit("vllm", raw)
+
+
+def test_admission_drops_only_the_failed_component_of_a_token_case(tmp_path, manifests):
+    manifest = manifests["sglang"]
+    plan = _plan("sglang", manifest)
+    token = next(c for c in plan["cases"] if c["kind"] == "tokens" and c["phase"] == "context")
+    raw = _fake_run(
+        tmp_path, "sglang", manifest, plan, skip=lambda case, entry: case is token and entry["component"] == "mhc"
+    )
+    with pytest.raises(ValueError, match="incomplete coverage"):
+        _admit("sglang", raw)
+    for rank in range(plan["tp_size"]):
+        path = raw / f"rank-{rank}.json"
+        receipt = json.loads(path.read_text())
+        receipt["failed_components"] = {token["case_id"]: {"mhc": "KernelLimit: 131072 tokens x 20480"}}
+        path.write_text(json.dumps(receipt))
+    rows, meta = _admit("sglang", raw)
+    assert meta["failed_components"] == {token["case_id"]: {"mhc": "KernelLimit: 131072 tokens x 20480"}}
+    assert any(r["component"] == "engram" for r in rows)

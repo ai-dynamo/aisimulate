@@ -711,6 +711,19 @@ def _entry(manifest, phase, component, name_part=None, layer=None):
     raise RuntimeError(f"manifest lacks {component}/{name_part} in {phase}")
 
 
+def _token_kernel_limit(receipt, case, component, width: int) -> bool:
+    """FIXME(kernel-limit): see build_attention_runner - the same int32 offset range bounds every kernel that
+    indexes tokens x ``width`` elements (sglang 0.5.21 Triton fp8 block GEMM, TileLang mHC fuse: a 131072-token
+    mHC input of 4 x 5120 faulted). Records a component-scoped KernelLimit and tells the caller to skip."""
+    limit = (1 << 31) // int(width)
+    if case["tokens"] <= limit:
+        return False
+    receipt.setdefault("failed_components", {}).setdefault(case["case_id"], {})[component] = (
+        f"KernelLimit: {case['tokens']} tokens x {width} elements exceed the int32 offset range (limit {limit} tokens)"
+    )
+    return True
+
+
 def collect_shared_linear(moe, manifest, plan, cases, stream, receipt):
     import torch
 
@@ -735,6 +748,9 @@ def collect_shared_linear(moe, manifest, plan, cases, stream, receipt):
             (shared.gate_up_proj, "forward", _entry(manifest, case["phase"], "shared_linear", "gate_up", 2)),
             (shared.down_proj, "forward", _entry(manifest, case["phase"], "shared_linear", "down", 2)),
         ]
+        width = max(HIDDEN, *(max(e["structure"]["n"], e["structure"]["k"]) for _, _, e in wraps))
+        if _token_kernel_limit(receipt, case, "shared_linear", width):
+            continue
         generator = torch.Generator().manual_seed(plan["seed"] + case["tokens"])
         hidden = torch.randn(case["tokens"], HIDDEN, generator=generator, dtype=torch.bfloat16).cuda()
         _measure_tokens(
@@ -771,6 +787,8 @@ def collect_mhc(config, quant, manifest, plan, cases, stream, receipt):
     for case in cases:
         entry = _entry(manifest, case["phase"], "mhc", layer=2)
         t = case["tokens"]
+        if _token_kernel_limit(receipt, case, "mhc", config.hc_mult * config.hidden_size):
+            continue
         generator = torch.Generator().manual_seed(plan["seed"] + t)
         hidden = torch.randn(t, config.hc_mult, config.hidden_size, generator=generator, dtype=torch.bfloat16).cuda()
         attn_output = torch.randn(t, config.hidden_size, generator=generator, dtype=torch.bfloat16).cuda()
@@ -841,6 +859,8 @@ def collect_engram(config, quant, manifest, plan, cases, stream, token_ids, rece
         )
         for case in cases:
             t = case["tokens"]
+            if _token_kernel_limit(receipt, case, "engram", config.hc_mult * config.hidden_size):
+                continue
             ids = torch.tensor(token_ids[:t], dtype=torch.int64, device="cuda")
             hasher.history.zero_()
             lengths = torch.tensor([t], dtype=torch.int32, device="cuda")

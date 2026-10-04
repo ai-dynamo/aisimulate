@@ -650,6 +650,21 @@ def aggregate_run(
         if len(failed_indices) != len(failed):
             raise ValueError(f"failed cases are not all planned: {sorted(failed)}")
         expected = {k for k in expected if k[0] not in failed_indices}
+    # component-scoped kernel limits (one component of a token case refused up front): the same
+    # (case, component) set on every rank; only those keys leave the expectation
+    failed_components = receipts[0].get("failed_components") or {}
+    if any(
+        {c: set(v) for c, v in (r.get("failed_components") or {}).items()}
+        != {c: set(v) for c, v in failed_components.items()}
+        for r in receipts
+    ):
+        raise ValueError("ranks disagree on the failed components")
+    if failed_components:
+        by_index = {c["index"]: c["case_id"] for c in plan["cases"]}
+        if not set(failed_components) <= set(by_index.values()):
+            raise ValueError(f"failed components name unplanned cases: {sorted(failed_components)[:5]}")
+        component_at = PHYSICAL_KEY.index("component")
+        expected = {k for k in expected if k[1][component_at] not in failed_components.get(by_index.get(k[0], ""), {})}
     samples = defaultdict(lambda: defaultdict(dict))  # key -> sample -> rank -> row
     for rank in range(tp):
         for line in (raw / f"rank-{rank}.jsonl").read_text().splitlines():
@@ -687,7 +702,14 @@ def aggregate_run(
         row["sample_count"] = len(maxima)
         rows.append(row)
     validate_table(rows)
-    return rows, dict(provenance, plan=plan, manifest=manifest, plan_sha256=plan_sha, failed_cases=failed)
+    return rows, dict(
+        provenance,
+        plan=plan,
+        manifest=manifest,
+        plan_sha256=plan_sha,
+        failed_cases=failed,
+        failed_components=failed_components,
+    )
 
 
 def pool_runs(per_run: list[list[dict]]) -> list[dict]:
