@@ -82,8 +82,8 @@ def main(argv=None):
     parser.add_argument(
         "--kv-seed",
         choices=list(contract.KV_SEED_REGIMES),
-        default="random_kv",
-        help="how cached-prefill / decode KV is seeded (stored per row): random_kv = serving allocation "
+        default="synthetic_kv",
+        help="how cached-prefill / decode KV is seeded (stored per row): synthetic_kv = serving allocation "
         "bookkeeping + bounded random cache contents (default); real_kv = chunked prefills of corpus tokens",
     )
     parser.add_argument(

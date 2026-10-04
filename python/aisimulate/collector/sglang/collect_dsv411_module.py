@@ -266,11 +266,11 @@ def build_attention_runner(bench, server, model_config, gpu_id, plan, manifest, 
     )
     runner.alloc_memory_pool()
     runner.init_attention_backends()
-    if contract.kv_seed_of(plan) == "random_kv":
-        # random_kv: the pools hold bounded random contents once; seeding only does the allocation bookkeeping
+    if contract.kv_seed_of(plan) == "synthetic_kv":
+        # synthetic_kv: the pools hold bounded random contents once; seeding only does the allocation bookkeeping
         generator = torch.Generator(device="cuda").manual_seed(plan["seed"] + 7919 * (gpu_id + 1))
         receipt["kv_seed"] = dict(
-            regime="random_kv",
+            regime="synthetic_kv",
             **randomize_object_tensors(runner.token_to_kv_pool, generator),
         )
         torch.cuda.synchronize()
@@ -419,7 +419,7 @@ def seed_tokens_per_request(plan: dict, batch_size: int, done: int, token_limit:
 def allocate_only(reqs, runner, bench):
     """The allocation half of one_batch.extend (sglang 0.5.21 benchmark/one_batch.py:486-505): the
     ScheduleBatch is built and ``prepare_for_extend`` allocates the chunk's slots into req_to_token and the
-    pools exactly as serving does - the model forward is skipped (random_kv seeding)."""
+    pools exactly as serving does - the model forward is skipped (synthetic_kv seeding)."""
     import torch
 
     torch_runner = runner.torch_runner
@@ -444,9 +444,9 @@ def allocate_only(reqs, runner, bench):
 
 def seed_prefix(runner, bench, token_ids, batch_size, prefix, plan, token_limit=None):
     """Seed ``prefix`` tokens per request in serving-sized chunks; returns (reqs, batch, next_ids).
-    real_kv: every chunk is a real prefill of corpus tokens; random_kv: every chunk is allocated (serving
+    real_kv: every chunk is a real prefill of corpus tokens; synthetic_kv: every chunk is allocated (serving
     bookkeeping, windows slid) but not computed - the pools were filled with random contents at startup."""
-    extend = (lambda reqs: allocate_only(reqs, runner, bench)) if contract.kv_seed_of(plan) == "random_kv" else None
+    extend = (lambda reqs: allocate_only(reqs, runner, bench)) if contract.kv_seed_of(plan) == "synthetic_kv" else None
     first = min(prefix, seed_tokens_per_request(plan, batch_size, 0, token_limit))
     reqs = bench.prepare_synthetic_inputs_for_latency_test(
         batch_size, first, [token_ids[:first] for _ in range(batch_size)]

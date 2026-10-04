@@ -318,12 +318,15 @@ class AttentionStack:
             else:
                 blocks = _cache_blocks_for_block_size(batch, seq_len, spec.block_size)
             cache = self._allocate(registered.get_attn_backend(), spec, blocks)
-            # random_kv: bounded random contents instead of seeding forwards. The compressor state rings
+            # synthetic_kv: bounded random contents instead of seeding forwards. The compressor state rings
             # (CircularBufferSpec) are a recurrence state, not a KV payload: random state made the
             # compressed KV non-finite; they keep their fresh (zero) state like a request that just started.
-            if randomize and "CircularBuffer" not in type(spec).__name__:
-                # fp8_ds_mla rows: fp8 payload + UE8M0 exponent scales; 0x70..0x7E keeps both finite and non-zero
-                fill_random(cache, self.generator, byte_range=(0x70, 0x7F), sign_bit=False)
+            # synthetic_kv: the indexer k caches (fp8 payload + fp32 scale per token) take bounded random bytes so the
+            # top-k selection is not degenerate; the fp8_ds_mla rows of the MLA and SWA caches stay zero (fresh) -
+            # random bytes in their packed scale fields made the attention output NaN (probe 2026-10-04), while
+            # zero rows give finite, non-zero outputs; the compressor state rings are a recurrence state (zero).
+            if randomize and registered.get_attn_backend().get_name() == "DEEPSEEK_V41_INDEXER":
+                fill_random(cache, self.generator)
             registered.bind_kv_cache(cache)
             bound[layer.prefix] = dict(
                 spec=type(spec).__name__,
@@ -654,10 +657,10 @@ def run_attention_case(stack, targets, intervals, case, plan, stream, manifest, 
     intervals.active = False
     total = prefix + query if case["phase"] == "context" else prefix + 1
     new_tokens = query if case["phase"] == "context" else 1
-    random_kv = contract.kv_seed_of(plan) == "random_kv"
-    stack.bind_caches(batch, total, ring_tokens=max(new_tokens, chunk if prefix else 0), randomize=random_kv)
+    synthetic_kv = contract.kv_seed_of(plan) == "synthetic_kv"
+    stack.bind_caches(batch, total, ring_tokens=max(new_tokens, chunk if prefix else 0), randomize=synthetic_kv)
     full = common_metadata(batch, total, query if case["phase"] == "context" else 1, device)
-    if prefix and not random_kv:  # random_kv: the slot mapping is positional, nothing to book-keep
+    if prefix and not synthetic_kv:  # synthetic_kv: the slot mapping is positional, nothing to book-keep
         seed_prefix(stack, batch, prefix, chunk, device, full.block_table_tensor)
     entries, reps = manifest["entries"], manifest["representatives"]
     if case["phase"] == "context":
@@ -1156,7 +1159,12 @@ def run(args, receipt):
                 for norm in stack.norms:
                     norm.weight.data.fill_(1.0)
                 validate_attention_geometry(list(stack.attns), manifest)
-                receipt["kv_seed"] = dict(regime=contract.kv_seed_of(plan))
+                receipt["kv_seed"] = dict(
+                    regime=contract.kv_seed_of(plan),
+                    fill="indexer k caches: random bytes 0x30..0x3F; MLA/SWA fp8_ds_mla rows and compressor state: zero"
+                    if contract.kv_seed_of(plan) == "synthetic_kv"
+                    else "chunked prefills of corpus tokens",
+                )
                 receipt["native_pool"] = dict(
                     attention_class=stack.attention_class,
                     backend=stack.attns[2].get_attn_backend().get_name(),

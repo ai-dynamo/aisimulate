@@ -431,7 +431,7 @@ def test_rows_carry_the_plans_kv_seed_regime(manifests):
         kernel_source="k",
         regime="eager_drained",
         used_cuda_graph=False,
-        kv_seed="random_kv",
+        kv_seed="synthetic_kv",
     )
     assert row["kv_seed_regime"] == "n/a"
     plan = _plan("sglang", manifest, kv_seed_regime="bogus")

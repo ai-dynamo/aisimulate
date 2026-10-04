@@ -43,10 +43,11 @@ REGIME_EXCEPTION = "eager_exception"
 # how the KV behind a cached-prefill / decode row got there (plan input, stored per row):
 #   real_kv   - chunked prefills of corpus tokens through the model (serving-faithful content, hours of
 #               seeding at 1M kv; with dummy weights the indexer's top-k is pseudo-random either way)
-#   random_kv - the serving allocation bookkeeping (slots, windows, pages) without the forwards; the
-#               caches hold bounded random values. Same kernels and shapes; top-k gathers over a uniform
-#               selection (locality slightly pessimistic) - a top-k delta calibration corrects that if needed.
-KV_SEED_REGIMES = ("real_kv", "random_kv")
+#   synthetic_kv - the serving allocation bookkeeping (slots, windows, pages) without the forwards; the
+#               caches hold synthetic contents (bounded random bytes where the row layout allows, zeros
+#               elsewhere; the receipt's kv_seed says which). Same kernels and shapes; the A/B against
+#               real_kv rows on H20 showed no measurable difference (sglang context, 36 rows, <=0.8%).
+KV_SEED_REGIMES = ("real_kv", "synthetic_kv")
 PURPOSES = ("smoke", "calibration")
 
 # Column order of the structure key per component (must match perf_database/dsv411.rs row_structure).
@@ -519,7 +520,7 @@ def validate_row(row: dict) -> None:
     attention_like = component in ATTENTION_COMPONENTS
     if attention_like:
         if (row["phase"] == "generation" or row["kv_len"] > 0) and row["kv_seed_regime"] not in KV_SEED_REGIMES:
-            raise ValueError("decode and cached-prefill rows carry a KV seeding regime (real_kv | random_kv)")
+            raise ValueError("decode and cached-prefill rows carry a KV seeding regime (real_kv | synthetic_kv)")
         if row["phase"] == "context" and row["kv_len"] == 0 and row["kv_seed_regime"] != "n/a":
             raise ValueError("prefix-free context rows seed no KV")
         if row["phase"] == "generation" and row["query"] != 1:
