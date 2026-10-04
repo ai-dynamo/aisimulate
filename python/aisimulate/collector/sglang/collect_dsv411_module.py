@@ -271,9 +271,7 @@ def build_attention_runner(bench, server, model_config, gpu_id, plan, manifest, 
         generator = torch.Generator(device="cuda").manual_seed(plan["seed"] + 7919 * (gpu_id + 1))
         receipt["kv_seed"] = dict(
             regime="random_kv",
-            **randomize_object_tensors(
-                runner.token_to_kv_pool, generator, name_filter=lambda path: "index" in path or "payload" in path
-            ),
+            **randomize_object_tensors(runner.token_to_kv_pool, generator),
         )
         torch.cuda.synchronize()
     else:

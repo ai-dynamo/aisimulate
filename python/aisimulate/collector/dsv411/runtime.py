@@ -394,24 +394,26 @@ def fill_random(tensor, generator, *, chunk_bytes: int = 256 << 20) -> int:
     return 0
 
 
-def randomize_object_tensors(root, generator, *, name_filter=None, depth: int = 4) -> dict:
-    """Walk an object graph (attributes, lists, dicts) and fill_random every CUDA float / fp8 tensor and the
-    uint8 tensors whose attribute path passes ``name_filter``. Returns {tensors, bytes}."""
+def randomize_object_tensors(root, generator, *, depth: int = 6, min_bytes: int = 1 << 20) -> dict:
+    """Walk an object graph (attributes, lists, dicts) and fill_random every CUDA float / fp8 / uint8 tensor
+    of at least ``min_bytes`` (cache payloads; fp8 caches are often stored as uint8). Integer index tensors
+    (int32/int64 slot mappings, block tables) are never touched. Returns {tensors, bytes, largest}."""
     import torch
 
-    seen, stats = set(), dict(tensors=0, bytes=0)
+    seen, stats, largest = set(), dict(tensors=0, bytes=0), []
 
     def visit(obj, path, level):
         if level > depth or id(obj) in seen:
             return
         seen.add(id(obj))
         if isinstance(obj, torch.Tensor):
-            if obj.dtype == torch.uint8 and not (name_filter and name_filter(path)):
+            if obj.numel() * obj.element_size() < min_bytes:
                 return
             written = fill_random(obj, generator)
             if written:
                 stats["tensors"] += 1
                 stats["bytes"] += written
+                largest.append((written, f"{path}:{str(obj.dtype).replace('torch.', '')}{tuple(obj.shape)}"))
             return
         if isinstance(obj, (list, tuple)):
             for i, item in enumerate(obj):
@@ -424,6 +426,7 @@ def randomize_object_tensors(root, generator, *, name_filter=None, depth: int = 
                 visit(item, f"{path}.{k}", level + 1)
 
     visit(root, "pool", 0)
+    stats["largest"] = [f"{b >> 20} MiB {name}" for b, name in sorted(largest, reverse=True)[:16]]
     return stats
 
 
