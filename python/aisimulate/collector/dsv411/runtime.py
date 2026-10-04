@@ -377,13 +377,14 @@ def fill_random(tensor, generator, *, chunk_bytes: int = 256 << 20) -> int:
     if not tensor.is_cuda or tensor.numel() == 0:
         return 0
     if tensor.dtype in (torch.bfloat16, torch.float16, torch.float32):
-        flat = tensor.view(-1)
+        # vLLM pages are strided (padded page stride): write through the whole storage span, not a view
+        flat = torch.empty(0, dtype=tensor.dtype, device=tensor.device).set_(tensor.untyped_storage())
         step = max(1, chunk_bytes // tensor.element_size())
         for start in range(0, flat.numel(), step):
             flat[start : start + step].uniform_(-1.0, 1.0, generator=generator)
-        return tensor.numel() * tensor.element_size()
+        return flat.numel() * tensor.element_size()
     if tensor.dtype == torch.uint8 or (tensor.element_size() == 1 and "float8" in str(tensor.dtype)):
-        flat = tensor.view(torch.uint8).view(-1)
+        flat = torch.empty(0, dtype=torch.uint8, device=tensor.device).set_(tensor.untyped_storage())
         for start in range(0, flat.numel(), chunk_bytes):
             part = flat[start : start + chunk_bytes]
             part.random_(0, 0x40, generator=generator)
