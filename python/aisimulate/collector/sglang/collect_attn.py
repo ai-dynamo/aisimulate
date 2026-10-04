@@ -492,6 +492,12 @@ def run_attention_torch(
         attention_chunk_size=attention_chunk_size,
     )
     model_runner.kv_cache_dtype = kvtype
+    # sglang>=0.5.21 backends ask the runner which backend serves each phase
+    # (model_runner.py:1020-1021 resolved.prefill/decode; flashinfer_backend.py:331-332
+    # gate the kv-access checks on it). One lane = one backend for both phases. Hopper's
+    # fa3 / Blackwell's trtllm_mha never read it, so only the sm89/sm120 flashinfer lane failed.
+    model_runner.prefill_attention_backend_str = attn_backend_name
+    model_runner.decode_attention_backend_str = attn_backend_name
 
     total_len = input_len if is_context_phase else input_len + 1
     # TRTLLM MHA sizes its page table from context_len.

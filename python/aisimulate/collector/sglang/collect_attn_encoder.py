@@ -128,9 +128,12 @@ def _build_kernel_runner(
         return run_iter, "flash_attention_v4"
 
     # SM<90 or SM>100: Triton path matching VisionTritonAttention.forward.
-    from sglang.srt.layers.attention.triton_ops.prefill_attention import (
-        context_attention_fwd,
-    )
+    try:  # sglang>=0.5.21 (layers/attention/vision.py imports it from kernels/ops/attention)
+        from sglang.kernels.ops.attention.prefill_attention import context_attention_fwd
+    except ImportError:
+        from sglang.srt.layers.attention.triton_ops.prefill_attention import (
+            context_attention_fwd,
+        )
 
     seq_lens = torch.full(
         (batch_size,),
