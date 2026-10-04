@@ -224,3 +224,28 @@ profiles:
     # fabric (PCIe sm120 has none; the typed builder defaults to CUTLASS when
     # unset) and sglang deepep_moe is a wide-EP selection. vLLM picks its MoE
     # backend from MODEL defaults (observed on sm120: FLASHINFER_CUTLASS NvFp4).
+
+  # ---------------------------------------------------------------------------
+  # L40 / L40S (PCIe, 8-GPU hosts)  —  Ada  sm89
+  # Keyed by SM like sm120: without a profile resolve_facts() raises for every
+  # l40s render and the generator pipeline swallows it ("Fact resolution failed;
+  # continuing without facts."), so no MODEL default (block-size,
+  # trust-remote-code, autotune flags) reaches the engine args — the failure
+  # first found on sm120 (findings: rtx_systems_have_no_generator_facts_hardware_profile).
+  # ---------------------------------------------------------------------------
+  sm89:
+    node_selector:
+      # GPU product label pattern NVIDIA-${name// /-} (same derivation as b200); the opharness
+      # campaign box reports "NVIDIA L40" (L40S hosts: NVIDIA-L40S).
+      nvidia.com/gpu.product: NVIDIA-L40
+    arch: x86_64
+    # nccl_env: intentionally none (PCIe-only host, no NVLink; nothing verified to assert).
+    shared_memory:
+      default: 32Gi
+    tolerations:
+      - key: nvidia.com/gpu
+        operator: Exists
+        effect: NoSchedule
+    # moe_backend: intentionally unset (no wide-EP fabric on PCIe Ada; frameworks pick their
+    # own MoE backend from model defaults — a fixed value here is the Blackwell
+    # WIDEEP/deepep_moe mistake all over again).
