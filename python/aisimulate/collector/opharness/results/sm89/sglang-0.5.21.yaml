@@ -217,12 +217,12 @@ results:
     topology: tp1
   Qwen/Qwen3.8-2.4T-A95B:
     verdict: fail
-    cause: 'harness: busy GPU in the tp group (rerun alone)'
-    error: '[2026-10-04 15:24:43] kill_process_tree called: parent_pid=98, include_parent=True, pid=98'
+    cause: capacity (no faithful cut fits one probe GPU)
+    error: '[2026-10-04 19:22:19] kill_process_tree called: parent_pid=98, include_parent=True, pid=98'
   Qwen/Qwen3.8-2.4T-A95B-FP8:
     verdict: fail
-    cause: 'harness: busy GPU in the tp group (rerun alone)'
-    error: '[2026-10-04 15:26:27] kill_process_tree called: parent_pid=98, include_parent=True, pid=98'
+    cause: capacity (no faithful cut fits one probe GPU)
+    error: '[2026-10-04 19:23:15] kill_process_tree called: parent_pid=98, include_parent=True, pid=98'
   Qwen/Qwen3.8-27B:
     verdict: pass
     evidence: current
@@ -403,7 +403,7 @@ results:
     topology: tp1
   nvidia/DeepSeek-V3.2-NVFP4:
     verdict: fail
-    cause: 'platform floor (SM90+/Blackwell-only kernel: sparse attention, MXFP, FP4)'
+    cause: 'platform floor (SM90+/Blackwell-only kernel: sparse attention, MXFP, FP4, DeepSeek-V4)'
     error: 'RuntimeError: Sparse Attention Forward Kernel is only supported on SM90a and SM100f architectures.'
   nvidia/DeepSeek-V4-Flash-NVFP4:
     verdict: fail
@@ -421,15 +421,15 @@ results:
       44.21 GiB '
   nvidia/GLM-5-NVFP4:
     verdict: fail
-    cause: 'platform floor (SM90+/Blackwell-only kernel: sparse attention, MXFP, FP4)'
+    cause: 'platform floor (SM90+/Blackwell-only kernel: sparse attention, MXFP, FP4, DeepSeek-V4)'
     error: 'RuntimeError: Sparse Attention Forward Kernel is only supported on SM90a and SM100f architectures.'
   nvidia/GLM-5.1-NVFP4:
     verdict: fail
-    cause: 'platform floor (SM90+/Blackwell-only kernel: sparse attention, MXFP, FP4)'
+    cause: 'platform floor (SM90+/Blackwell-only kernel: sparse attention, MXFP, FP4, DeepSeek-V4)'
     error: 'RuntimeError: Sparse Attention Forward Kernel is only supported on SM90a and SM100f architectures.'
   nvidia/GLM-5.2-NVFP4:
     verdict: fail
-    cause: 'platform floor (SM90+/Blackwell-only kernel: sparse attention, MXFP, FP4)'
+    cause: 'platform floor (SM90+/Blackwell-only kernel: sparse attention, MXFP, FP4, DeepSeek-V4)'
     error: 'RuntimeError: Sparse Attention Forward Kernel is only supported on SM90a and SM100f architectures.'
   nvidia/GLM-5.3-Flash-NVFP4:
     verdict: fail
@@ -437,7 +437,7 @@ results:
     error: 'golden render failed: aiconfigurator generate: error: argument --model-path/--model: ''nvidia/GLM-5.3-Flash-NVFP4'' is not a valid HuggingFace model path or local'
   nvidia/GLM-5.3-NVFP4:
     verdict: fail
-    cause: 'platform floor (SM90+/Blackwell-only kernel: sparse attention, MXFP, FP4)'
+    cause: 'platform floor (SM90+/Blackwell-only kernel: sparse attention, MXFP, FP4, DeepSeek-V4)'
     error: 'RuntimeError: Sparse Attention Forward Kernel is only supported on SM90a and SM100f architectures.'
   nvidia/Gemma-4-26B-A4B-NVFP4:
     verdict: fail
@@ -503,7 +503,7 @@ results:
     topology: tp1
   nvidia/MiniMax-M3-NVFP4:
     verdict: fail
-    cause: 'platform floor (SM90+/Blackwell-only kernel: sparse attention, MXFP, FP4)'
+    cause: 'platform floor (SM90+/Blackwell-only kernel: sparse attention, MXFP, FP4, DeepSeek-V4)'
     error: 'RuntimeError: No MXFP8 dense GEMM kernel is available on this device. MXFP8 dense linear requires Blackwell (SM100/SM103/SM110/SM120) with FlashInfer, Hopper (SM90) with DeepGEMM, or ROCm gfx95.'
   nvidia/Muse-Glimmer-30B-NVFP4:
     verdict: pass
@@ -604,7 +604,7 @@ results:
       GiB me'
   nvidia/Qwen3.8-27B-NVFP4:
     verdict: fail
-    cause: 'platform floor (SM90+/Blackwell-only kernel: sparse attention, MXFP, FP4)'
+    cause: 'platform floor (SM90+/Blackwell-only kernel: sparse attention, MXFP, FP4, DeepSeek-V4)'
     error: 'ValueError: Invalid backend: 89'
   nvidia/Qwen3.8-Flash-Next-NVFP4:
     verdict: fail
@@ -653,7 +653,7 @@ results:
       specu'
   zai-org/GLM-5-FP8:
     verdict: fail
-    cause: 'platform floor (SM90+/Blackwell-only kernel: sparse attention, MXFP, FP4)'
+    cause: 'platform floor (SM90+/Blackwell-only kernel: sparse attention, MXFP, FP4, DeepSeek-V4)'
     error: 'RuntimeError: Sparse Attention Forward Kernel is only supported on SM90a and SM100f architectures.'
   zai-org/GLM-5.1:
     verdict: fail
@@ -662,7 +662,7 @@ results:
       specu'
   zai-org/GLM-5.1-FP8:
     verdict: fail
-    cause: 'platform floor (SM90+/Blackwell-only kernel: sparse attention, MXFP, FP4)'
+    cause: 'platform floor (SM90+/Blackwell-only kernel: sparse attention, MXFP, FP4, DeepSeek-V4)'
     error: 'RuntimeError: Sparse Attention Forward Kernel is only supported on SM90a and SM100f architectures.'
   zai-org/GLM-5.2:
     verdict: fail
@@ -671,11 +671,11 @@ results:
       specu'
   zai-org/GLM-5.2-FP8:
     verdict: fail
-    cause: 'platform floor (SM90+/Blackwell-only kernel: sparse attention, MXFP, FP4)'
+    cause: 'platform floor (SM90+/Blackwell-only kernel: sparse attention, MXFP, FP4, DeepSeek-V4)'
     error: 'RuntimeError: Sparse Attention Forward Kernel is only supported on SM90a and SM100f architectures.'
   zai-org/GLM-5.3:
     verdict: fail
-    cause: 'platform floor (SM90+/Blackwell-only kernel: sparse attention, MXFP, FP4)'
+    cause: 'platform floor (SM90+/Blackwell-only kernel: sparse attention, MXFP, FP4, DeepSeek-V4)'
     error: 'RuntimeError: Sparse Attention Forward Kernel is only supported on SM90a and SM100f architectures.'
   zai-org/GLM-5.3-BF16:
     verdict: fail

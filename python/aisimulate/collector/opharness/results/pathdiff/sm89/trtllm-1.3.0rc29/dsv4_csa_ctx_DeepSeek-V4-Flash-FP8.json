@@ -1,0 +1,10 @@
+{
+ "verdict": "platform-floor",
+ "gate_name": "dsv4_csa_ctx_DeepSeek-V4-Flash-FP8",
+ "repo": "sgl-project/DeepSeek-V4-Flash-FP8",
+ "framework": "trtllm",
+ "version": "1.3.0rc29",
+ "sm": "sm89",
+ "note": "TRT-LLM 1.3.0rc29 on Ada: 'DeepSeek-V4 requires Hopper or newer GPUs' (model init RuntimeError); no serving record can exist",
+ "graded_at": "2026-10-04T12:25:49"
+}

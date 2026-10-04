@@ -2510,13 +2510,15 @@ findings:
       ctx/gen), 23 declared sm89 floors (sparse, capacity for the V3-bound MLA/MSA/KDA/GLM-5 gates, DeepGEMM arch). OPEN:
       encoder_attn_Qwen3-VL-2B is DIVERGED for lack of evidence, not a path difference - the gate asks the profile_run phase,
       the sglang serving probe records only prefill/decode of a text prompt (no profile_run table, the vision tower never
-      runs), so the serving side has no attention kernel at all; sm90''s aligned verdict came from a record that did carry
-      profile_run kernels. Either extend probe_sglang to send an image or grade this gate without the phase; owner decision.
-      COLLECTOR defects found by the smoke/gates that Hopper never reached (fa3/trtllm_mha paths don''t read them): MockModelRunner
-      lacked prefill/decode_attention_backend_str (flashinfer lane), the vision Triton kernel moved to sglang.kernels.ops.attention.prefill_attention,
-      TritonAttnBackend probes mambaish_config(model_config) so the MLA mock needs hf_config / linear_attn_registry_result,
-      and the Gemma4 / Llama4 case maps had no sm89 entry so the collector measured flashinfer while serving runs triton (arg_groups/model_overrides/gemma4.py,
-      llama4.py). All fixed with source citations and re-verified on hardware.'
+      runs), so the serving side has no attention kernel at all; sm90''s verdict file for this gate is aligned and lists serving
+      backends cublas/fa3/torch under the same profile_run scope, but how that record obtained them is NOT established from
+      this checkout (unverified lead: a record whose kernel_phases carried profile_run). Either extend probe_sglang to send
+      an image or grade this gate without the phase; owner decision. COLLECTOR defects found by the smoke/gates that Hopper
+      never reached (fa3/trtllm_mha paths don''t read them): MockModelRunner lacked prefill/decode_attention_backend_str (flashinfer
+      lane), the vision Triton kernel moved to sglang.kernels.ops.attention.prefill_attention, TritonAttnBackend probes mambaish_config(model_config)
+      so the MLA mock needs hf_config / linear_attn_registry_result, and the Gemma4 / Llama4 case maps had no sm89 entry so
+      the collector measured flashinfer while serving runs triton (arg_groups/model_overrides/gemma4.py, llama4.py). All fixed
+      with source citations and re-verified on hardware.'
     applies_to:
     - platform:sm89
     - framework:sglang-0.5.21
@@ -2531,3 +2533,131 @@ findings:
     - instrument:collect_attn
     - instrument:collect_mla
     - instrument:collect_attn_encoder
+  sm89_trtllm_rc29_probe_2026_10_04:
+    statement: 'sm89 (L40) identity campaign, trtllm 1.3.0rc29 (digest 124da3f10b73). results/sm89/trtllm-1.3.0rc29.yaml:
+      47 pass / 7 pass+custom / 70 fail (sm90: see results/sm90). HEADLINE: 26 cells (fp8-block 13, nvfp4 20 minus the 7 customized,
+      mxfp4 2, mxfp8 1) die at model init with ''no MoE implementation can serve this layer'': the rc29 template and typed
+      builder default moe_config.backend to CUTLASS and CutlassFusedMoE refuses FP8_BLOCK_SCALES below SM90/SM120 and NVFP4
+      below SM100 - the same generator defect the B200 session found on sm100 (platform-blind CUTLASS default; hardware profile
+      `moe_backend` is keyed on hardware only). A/B on an empty L40 across the explicit backends (facts/ab_trt_moe_sm89, 12+
+      probes): AUTO resolves to CUTLASS (same error, so a hardware-wide AUTO fact - tried and reverted - changes nothing);
+      TritonFusedMoE is SM90-only; Marlin implements nvfp4/w4a16_nvfp4 only (quant_unsupported for fp8_block, bf16, mxfp4);
+      VanillaMoE gets past selection and dies in CUDA-graph capture (cudaErrorStreamCaptureInvalidated). So FP8-block / MXFP4
+      MoE on rc29 is a PLATFORM FLOOR of the framework on Ada, while NVFP4 MoE is servable through MARLIN (weight-only): expressed
+      as an sm89-scoped per-checkpoint customization (`--generator-set params.agg.moe_config.backend=MARLIN`; params.agg.moe_backend
+      is silently ignored for trtllm) on 10 roster NVFP4 checkpoints, 7 pass+custom (MiniMax-M2.5/M2.7, Nemotron-3 Nano/Super/Ultra,
+      Qwen3.5-122B/397B), 3 reach later floors (Gemma-4: attentionOp ''Head size 512 is not supported by MMHA'' native abort;
+      Qwen3-235B: CutlassFp4GemmRunner needs Blackwell; Qwen3.8-2.4T capacity). OWNER DECISION (generator): make the trtllm
+      MoE default quant-aware (marlin for nvfp4 on sm89) or keep the harness customization; a hardware fact cannot express
+      it because MARLIN rejects the bf16/fp8 layers that CUTLASS serves. MLA: the documented ''no MLA FMHA below Hopper''
+      wall (collect_mla*.py FIXME(kernel-limit), ''Re-verify on the next framework version bump'') was RE-VERIFIED on rc29
+      - with only the SM guard patched out a bf16 DeepSeek-V3 MLA module cell aborts in AttentionOp ''Deepseek should be supported
+      by fmha in generation part'' (attentionOp.cpp:3234, was :3091 on rc20; SIGSEGV in the worker); guards kept, comments
+      updated. Other fails: 8 DeepSeek-V4 ''requires Hopper or newer GPUs, got SM89'', 4 DeepGEMM arch, 6 image gaps (transformers
+      too old for DeepSeek-V4.1 / Muse-Glimmer; no `fla` for Kimi-K3 - same as sm100), 12 generator rejects, 3 capacity, Gemma-4-31B-NVFP4
+      (flashinfer cute-DSL RMSNormFP4Quant ptxas needs .target sm_90), MiMo arch not registered, Kimi-K2.5 quant parser (same
+      as sm100). Gates: 7 of 9 real gates ALIGNED (attn ctx/gen + fp8-KV gen, gdn ctx/gen, mamba2 ctx/gen), 13 declared sm89
+      floors (V3/R1 cannot boot: MoE + MLA; V3.2; V4). attn_ctx_fp8: serving''s fp8-KV prefill runs fmha_v2 bf16 compute over
+      the fp8 cache while the collector''s fp8-KV+fp8-context-FMHA case runs the e4m3 kernel (fmha_v2_flash_attention_e4m3_..._sm89)
+      - the gate recipe was moved to the bf16-compute combo that serving selects; whether the SDK should bill the e4m3 FMHA
+      on sm89 is an owner decision. encoder_attn is DIVERGED for lack of evidence (profile_run phase exists only in probe_vllm),
+      same as sglang.'
+    applies_to:
+    - platform:sm89
+    - framework:trtllm-1.3.0rc29
+    - nvidia/DeepSeek-V3.1-NVFP4
+    - deepseek-ai/DeepSeek-R1
+    - deepseek-ai/DeepSeek-V3
+    - Qwen/Qwen3-30B-A3B-FP8
+    - openai/gpt-oss-120b
+    - openai/gpt-oss-20b
+    - nvidia/Gemma-4-26B-A4B-NVFP4
+    - nvidia/Gemma-4-31B-IT-NVFP4
+    - nvidia/Qwen3-235B-A22B-NVFP4
+    - nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4
+    - nvidia/MiniMax-M2.5-NVFP4
+    - instrument:probe_driver
+    - instrument:collect_mla_module
+    - component:generator_facts
+    - MiniMaxAI/MiniMax-M2.7
+    - Qwen/Qwen3-235B-A22B-FP8
+    - XiaomiMiMo/MiMo-7B-Base
+    - XiaomiMiMo/MiMo-V2-Flash
+  sm89_collector_upgrade_vllm0300_sglang0521_trtllm_rc29_2026_10_04:
+    statement: 'COLLECTOR UPGRADE ON sm89 (L40; manifest pins vllm 0.30.0 / sglang 0.5.21 / trtllm 1.3.0rc29, images digest-pinned,
+      collect_campaign.build-image adds pyarrow/pandas): NOT a full data collection - plan audit, per-op --smoke (4 cases),
+      a 40-case --shuffle sample per op on all three frameworks (8 GPUs, one container per op, outputs under the probe workspace
+      collect/sample40), backend-truth gates (path_diff) and targeted reproductions. Plans (collect.py --model-cases-full
+      --sm 89 --plan-only): vllm 20 ops, sglang 27 ops, trtllm 23 ops; the DSA / DSV4-attention / GLM-5 sparse module ops
+      are floored at SM90 by cases/capabilities.yaml and plan to 0 cases on sm89. FIXES MADE (all source-cited, re-verified
+      on the L40): (1) capabilities.yaml op_min_sm 90 for dsv4_{csa,hca}_{context,generation}_module (was the only DSV4/GLM-5
+      sparse family without a floor: every case queued and failed ''unexpected''); (2) sglang collect_attn MockModelRunner.prefill/decode_attention_backend_str
+      (flashinfer lane, sglang>=0.5.21); (3) sglang collect_attn_encoder: context_attention_fwd moved to sglang.kernels.ops.attention.prefill_attention;
+      (4) sglang collect_mla MockModelConfig.hf_config / linear_attn_registry_result / is_draft_model (TritonAttnBackend probes
+      mambaish_config); (5) Gemma4 and Llama4 case maps gain sm89: triton (arg_groups/model_overrides/gemma4.py, llama4.py)
+      - the collector measured flashinfer while serving runs triton; (6) trtllm MLA guards re-verified on rc29 (attentionOp.cpp:3234).
+      Items 2-4 are lanes Hopper (fa3) and Blackwell (trtllm_mha / trtllm_mla) never reach, so the sm90 0.5.21 port could
+      not have caught them; they will bite sm120 too (same flashinfer / triton lanes). SMOKE (4 cases/op): vllm 14 ops with
+      data, 6 floored; sglang 14 ops with data (mhc / dsv4 are deliberate UnverifiedCollector refusals); trtllm 13 ops with
+      data (MLA modules refuse by the verified guard). 40-CASE SAMPLE, failure classes (full table in HANDOFF_sm89.md): vllm
+      0 failures in 11 of 14 ops, 1 capacity in attention_generation (96-head MHA, 4x4095 tokens = 24 GiB KV), moe 2 (1 capacity,
+      1 block_n alignment), kda 5/12 (4 capacity, 1 partial grid); sglang: attention_context 13/40 = ONE deterministic class
+      - the plan schedules fp8_kv_cache_and_context_fmha for a FlashInfer SM (sm89/sm120 resolve flashinfer) and the collector
+      refuses it on purpose (''flashinfer has no FP8 prefill compute path'', a stale ''0.5.14'' in the message) - a plan-level
+      hole worth a decision (the generator comment says backend-level rejections are runtime failures by policy), gdn 21/40
+      and kda 5/12 = the causal_conv1d Triton int32 token-offset overflow (total_tokens*conv_channels >= 2**31, causal_conv1d_triton.py:373-379)
+      at the largest grid points (reproduced: batch 32-64 x seq 16384-32768, 3 of 112 points; the other 109 rows persist)
+      - framework limit, not Ada; mla_generation 3 capacity + 1 IMA; trtllm: attention_context 6 (4 CUDA faults + 2 Gemma4
+      trtllm-gen ''Blackwell-only'' guards), moe 8 (7 TP-shard alignment guards - the collector''s own, known family - 1 capacity),
+      gemm 2 stride-alignment RuntimeErrors, mhc 2 capacity. Capacity is the dominant Ada difference: 44 GiB vs 80-141 GiB
+      on Hopper moves the batch x kv corner of every attention / mla / msa / kda grid into OOM, none of it a collector bug.
+      NOT DONE: the full retained plan (hundreds of thousands of cases per framework - sm120''s vllm run was ~12 h on 8 GPUs),
+      perf-data finalize/publication, SDK consumer tests against new l40s data. The SDK system l40s exists (data from the
+      0.24 / 0.5.14 / rc20 era); this box is an L40 (same AD102 die, 46068 MiB per the system yaml), the existing l40s data
+      was collected on an L40 the same way - no relabel concern beyond that precedent.'
+    applies_to:
+    - platform:sm89
+    - framework:vllm-0.30.0
+    - framework:sglang-0.5.21
+    - framework:trtllm-1.3.0rc29
+    - instrument:collect.py
+    - instrument:collect_attn
+    - instrument:collect_mla
+    - instrument:collect_gdn
+    - instrument:collect_kda
+    - cases:capabilities.yaml
+  sm89_harness_lessons_2026_10_04:
+    statement: 'HARNESS LESSONS from the first Ada campaign (each fixed in code unless marked OPEN): (1) the SDK system has
+      no generator hardware profile -> resolve_facts raised and the pipeline swallowed it (sm89 profile added, same class
+      as sm120); (2) golden-render cache keyed on git HEAD only: an uncommitted generator edit re-rendered nothing (_generator_stamp
+      = HEAD + hash of the dirty generator diff; B200 defect 3); (3) probes that die by a native abort (trtllm attentionOp
+      asserts, sglang argparse) wrote no raw and the matrix said only ''crashed before dump'': the queue now keeps each probe''s
+      console tail (archive/logs/<id>.tail, 400 lines) and build_matrix classifies from it (B200 defect 1); (4) tp>1 cells
+      are emitted with the first N GPUs hard-coded (device=0,1,2,3) while other queues run on those GPUs: sglang''s tp memory-balance
+      check and trtllm''s executor then fail for reasons that are not the model''s. Rerun alone on an idle group, the sglang
+      Qwen3.8-2.4T cells show their real cause (CUDA OOM, capacity) and trtllm''s ''Executor worker returned error'' still
+      carries no cause in the raw (OPEN: the server probe does not surface the worker''s message); a whole-group reservation
+      in the queue plan is still needed (B200 defect 5, OPEN); (5) _fail_cause classified on a 200-char slice of the last
+      line: vllm''s selector error is cut before use_sparse=True and sglang/trtllm wrap the real cause in epilogues, so the
+      matrix filed DSA cells under a config cause and Nemotron under ''framework gap''. Now: full last line first, then a
+      deep pass over the whole traceback ONLY for unmatched causes; (6) FLOOR_SM took one SM, and only the vllm verdict script
+      had the floor mechanism (sglang / trtllm scripts now have it; comma lists everywhere, workflow_check understands them);
+      (7) 4 sglang and 4 trtllm gate recipes were never checked in (sgl_attn_ctx/gen/gemma4_hd512, sgl_gdn_gen, trt_attn ctx/gen
+      + fp8-KV) - written; (8) taxonomy: seeding sm89 from sm120 left 100+ kernel names unlabelled on Ada (cuBLAS ampere_*
+      GEMMs, flashinfer merge-states, FLA chunk kernels): collect/unlabeled.py style scan over raws + captures is how the
+      vocabulary was built and is worth promoting to a component option; (9) encoder_attn gates ask phase profile_run, which
+      only probe_vllm records: on sglang and trtllm the gate cannot be graded on ANY SM from a text-only probe unless the
+      probe sends an image (OPEN, owner decision; sm90''s aligned sglang verdict is NOT explained by this checkout - its record''s
+      provenance needs a look by whoever owns the sm90 evidence); (10) dummy staging for gated repos needs preprocessor_config.json
+      for Llama-4 (vllm builds the vision tower in its profile run) and the tokenizer files: stage_tok.py in the workspace
+      pulls them from unsloth / sibling mirrors - fetch_inputs.py''s bundled-config fallback still stops short of that (OPEN);
+      (11) workflow_check gates_declared is red for trtllm rc29 on EVERY SM (msa_context_module / msa_generation_module have
+      no trtllm gate; pre-existing on this branch, sm90 shows the same, OPEN); (12) tooling: pkill -f / pgrep -f patterns
+      match the invoking shell''s own command line - kill queue wrappers by pid.'
+    applies_to:
+    - platform:sm89
+    - instrument:probe_driver
+    - instrument:workflow_check
+    - instrument:fetch_inputs
+    - instrument:path_diff
+    - component:captures

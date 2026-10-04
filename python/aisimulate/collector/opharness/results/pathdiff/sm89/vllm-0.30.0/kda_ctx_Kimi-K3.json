@@ -6,5 +6,5 @@
  "version": "0.30.0",
  "sm": "sm89",
  "note": "capacity: Kimi-K3 has no faithful dummy cut that fits one 44 GiB L40 (CUDA OOM at load, kimi-k3 vllm 0.30.0 probe); no KDA serving record can exist on this box",
- "graded_at": "2026-10-04T10:59:08"
+ "graded_at": "2026-10-04T12:25:46"
 }

@@ -1,0 +1,679 @@
+_meta:
+  platform: l40_sm89
+  framework: trtllm
+  version: 1.3.0rc29
+  verdicts: pass = plain `cli generate` output boots+runs; pass+custom = boots with facts-derived extra generate args; fail = root-caused (see results/findings.yaml)
+  summary:
+    pass: 47
+    pass+custom: 7
+    fail: 70
+  golden_facts_not_applied: 0
+results:
+  MiniMaxAI/MiniMax-M2:
+    verdict: fail
+    cause: 'platform floor (trtllm MoE: no implementation for this quant on this SM)'
+    error: 'ValueError: no MoE implementation can serve this layer. MoE resolution: none (via failed, requested CUTLASS, env 1f8017956ed914ab); turned down: CutlassFusedMoE=sm_unsupported Each candidate''s
+      reason:'
+  MiniMaxAI/MiniMax-M2.5:
+    verdict: fail
+    cause: 'platform floor (trtllm MoE: no implementation for this quant on this SM)'
+    error: 'ValueError: no MoE implementation can serve this layer. MoE resolution: none (via failed, requested CUTLASS, env 1f8017956ed914ab); turned down: CutlassFusedMoE=sm_unsupported Each candidate''s
+      reason:'
+  MiniMaxAI/MiniMax-M2.7:
+    verdict: fail
+    cause: 'platform floor (trtllm MoE: no implementation for this quant on this SM)'
+    error: 'ValueError: no MoE implementation can serve this layer. MoE resolution: none (via failed, requested CUTLASS, env 1f8017956ed914ab); turned down: CutlassFusedMoE=sm_unsupported Each candidate''s
+      reason:'
+  MiniMaxAI/MiniMax-M3:
+    verdict: fail
+    cause: framework gap
+    error: 'ValueError: MiniMaxM3SparseRuntimeBackend.forward requires k, v, k_cache, v_cache, idx_k_cache, and out_cache_loc to be supplied alongside idx_q / idx_k / m3_metadata.'
+  MiniMaxAI/MiniMax-M3-MXFP8:
+    verdict: fail
+    cause: 'platform floor (trtllm MoE: no implementation for this quant on this SM)'
+    error: 'ValueError: no MoE implementation can serve this layer. MoE resolution: none (via failed, requested CUTLASS, env 1f8017956ed914ab); turned down: CutlassFusedMoE=sm_unsupported Each candidate''s
+      reason:'
+  Qwen/Qwen1.5-MoE-A2.7B:
+    verdict: pass
+    evidence: current
+    attention: trtllm_mha
+    moe: UnquantizedFusedMoE->flashinfer_cutlass/triton_fused_moe/trtllm_internal/trtllm_mha
+    kv_allocated: null
+    topology: tp1
+  Qwen/Qwen3-0.6B:
+    verdict: pass
+    evidence: current
+    attention: trtllm_mha
+    kv_allocated: null
+    topology: tp1
+  Qwen/Qwen3-1.7B:
+    verdict: pass
+    evidence: current
+    attention: trtllm_mha
+    kv_allocated: null
+    topology: tp1
+  Qwen/Qwen3-235B-A22B:
+    verdict: pass
+    evidence: current
+    attention: trtllm_mha
+    moe: UnquantizedFusedMoE->flashinfer_cutlass/triton_fused_moe/trtllm_internal/trtllm_mha
+    kv_allocated: null
+    topology: tp1
+  Qwen/Qwen3-235B-A22B-FP8:
+    verdict: fail
+    cause: 'platform floor (trtllm MoE: no implementation for this quant on this SM)'
+    error: 'ValueError: no MoE implementation can serve this layer. MoE resolution: none (via failed, requested CUTLASS, env 1f8017956ed914ab); turned down: CutlassFusedMoE=sm_unsupported Each candidate''s
+      reason:'
+  Qwen/Qwen3-235B-A22B-Instruct-2507:
+    verdict: pass
+    evidence: current
+    attention: trtllm_mha
+    moe: UnquantizedFusedMoE->flashinfer_cutlass/triton_fused_moe/trtllm_internal/trtllm_mha
+    kv_allocated: null
+    topology: tp1
+  Qwen/Qwen3-30B-A3B:
+    verdict: pass
+    evidence: current
+    attention: trtllm_mha
+    moe: UnquantizedFusedMoE->flashinfer_cutlass/triton_fused_moe/trtllm_internal/trtllm_mha
+    kv_allocated: null
+    topology: tp1
+  Qwen/Qwen3-30B-A3B-FP8:
+    verdict: fail
+    cause: 'platform floor (trtllm MoE: no implementation for this quant on this SM)'
+    error: 'ValueError: no MoE implementation can serve this layer. MoE resolution: none (via failed, requested CUTLASS, env 1f8017956ed914ab); turned down: CutlassFusedMoE=sm_unsupported Each candidate''s
+      reason:'
+  Qwen/Qwen3-32B:
+    verdict: pass
+    evidence: current
+    attention: trtllm_mha
+    kv_allocated: null
+    topology: tp1
+  Qwen/Qwen3-32B-FP8:
+    verdict: pass
+    evidence: current
+    attention: trtllm_mha
+    kv_allocated: null
+    topology: tp1
+  Qwen/Qwen3-32B-FP8-Static-PerTensor:
+    verdict: pass
+    evidence: current
+    attention: trtllm_mha
+    kv_allocated: null
+    topology: tp1
+  Qwen/Qwen3-8B:
+    verdict: pass
+    evidence: current
+    attention: trtllm_mha
+    kv_allocated: null
+    topology: tp1
+  Qwen/Qwen3-Coder-480B-A35B-Instruct:
+    verdict: pass
+    evidence: current
+    attention: trtllm_mha
+    moe: UnquantizedFusedMoE->flashinfer_cutlass/triton_fused_moe/trtllm_internal/trtllm_mha
+    kv_allocated: null
+    topology: tp1
+  Qwen/Qwen3-VL-235B-A22B-Instruct:
+    verdict: pass
+    evidence: current
+    attention: trtllm_mha
+    moe: UnquantizedFusedMoE->flashinfer_cutlass/triton_fused_moe/trtllm_internal/trtllm_mha
+    kv_allocated: null
+    topology: tp1
+  Qwen/Qwen3-VL-2B-Instruct:
+    verdict: pass
+    evidence: current
+    attention: trtllm_mha
+    kv_allocated: null
+    topology: tp1
+  Qwen/Qwen3-VL-30B-A3B-Instruct:
+    verdict: pass
+    evidence: current
+    attention: trtllm_mha
+    moe: UnquantizedFusedMoE->flashinfer_cutlass/triton_fused_moe/trtllm_internal/trtllm_mha
+    kv_allocated: null
+    topology: tp1
+  Qwen/Qwen3-VL-32B-Instruct:
+    verdict: pass
+    evidence: current
+    attention: trtllm_mha
+    kv_allocated: null
+    topology: tp1
+  Qwen/Qwen3-VL-32B-Thinking:
+    verdict: pass
+    evidence: current
+    attention: trtllm_mha
+    kv_allocated: null
+    topology: tp1
+  Qwen/Qwen3-VL-4B-Instruct:
+    verdict: pass
+    evidence: current
+    attention: trtllm_mha
+    kv_allocated: null
+    topology: tp1
+  Qwen/Qwen3-VL-8B-Instruct:
+    verdict: pass
+    evidence: current
+    attention: trtllm_mha
+    kv_allocated: null
+    topology: tp1
+  Qwen/Qwen3.5-0.8B:
+    verdict: pass
+    evidence: current
+    attention: trtllm_mha + chunk_gated_delta_rule_fwd_kernel_h_blockdim64
+    kv_allocated: null
+    topology: tp1
+  Qwen/Qwen3.5-122B-A10B:
+    verdict: pass
+    evidence: current
+    attention: trtllm_mha + chunk_gated_delta_rule_fwd_kernel_h_blockdim64
+    moe: UnquantizedFusedMoE->causal_conv1d/fla_triton/flashinfer_cutlass/triton_fused_moe/trtllm_internal/trtllm_mha
+    kv_allocated: null
+    topology: tp1
+  Qwen/Qwen3.5-27B:
+    verdict: pass
+    evidence: current
+    attention: trtllm_mha + chunk_gated_delta_rule_fwd_kernel_h_blockdim64
+    kv_allocated: null
+    topology: tp1
+  Qwen/Qwen3.5-2B:
+    verdict: pass
+    evidence: current
+    attention: trtllm_mha + chunk_gated_delta_rule_fwd_kernel_h_blockdim64
+    kv_allocated: null
+    topology: tp1
+  Qwen/Qwen3.5-35B-A3B:
+    verdict: pass
+    evidence: current
+    attention: trtllm_mha + chunk_gated_delta_rule_fwd_kernel_h_blockdim64
+    moe: UnquantizedFusedMoE->causal_conv1d/fla_triton/flashinfer_cutlass/triton_fused_moe/trtllm_internal/trtllm_mha
+    kv_allocated: null
+    topology: tp1
+  Qwen/Qwen3.5-397B-A17B:
+    verdict: fail
+    cause: capacity (weights + engine buffers exceed one GPU)
+    error: '  model: reduce max_num_tokens and/or shard the model weights across GPUs by enabling pipeline and/or tensor parallelism'
+  Qwen/Qwen3.5-4B:
+    verdict: pass
+    evidence: current
+    attention: trtllm_mha + chunk_gated_delta_rule_fwd_kernel_h_blockdim64
+    kv_allocated: null
+    topology: tp1
+  Qwen/Qwen3.5-9B:
+    verdict: pass
+    evidence: current
+    attention: trtllm_mha + chunk_gated_delta_rule_fwd_kernel_h_blockdim64
+    kv_allocated: null
+    topology: tp1
+  Qwen/Qwen3.8-2.4T-A95B:
+    verdict: fail
+    cause: framework gap
+    error: '[10/04/2026-19:24:13] [TRT-LLM] [W] [_torch][RANK 0] PyTorchModelEngine cleanup failed during destruction: ''PyTorchModelEngine'' object has no attribute ''_torch_compile_backend'''
+  Qwen/Qwen3.8-2.4T-A95B-FP8:
+    verdict: fail
+    cause: framework gap
+    error: '[10/04/2026-19:25:11] [TRT-LLM] [W] [_torch][RANK 0] PyTorchModelEngine cleanup failed during destruction: ''PyTorchModelEngine'' object has no attribute ''_torch_compile_backend'''
+  Qwen/Qwen3.8-27B:
+    verdict: pass
+    evidence: current
+    attention: trtllm_mha + chunk_gated_delta_rule_fwd_kernel_h_blockdim64
+    kv_allocated: null
+    topology: tp1
+  Qwen/Qwen3.8-27B-FP8:
+    verdict: pass
+    evidence: current
+    attention: trtllm_mha + chunk_gated_delta_rule_fwd_kernel_h_blockdim64
+    kv_allocated: null
+    topology: tp1
+  Qwen/Qwen3.8-Flash-Next:
+    verdict: fail
+    cause: generator rejects
+    error: 'golden render failed: aiconfigurator generate: error: argument --model-path/--model: ''Qwen/Qwen3.8-Flash-Next'' is not a valid HuggingFace model path or local pa'
+  Qwen/Qwen3.8-Flash-Next-FP8:
+    verdict: fail
+    cause: generator rejects
+    error: 'golden render failed: aiconfigurator generate: error: argument --model-path/--model: ''Qwen/Qwen3.8-Flash-Next-FP8'' is not a valid HuggingFace model path or loca'
+  TokenRhythm/NeoHorse-1-9B:
+    verdict: pass
+    evidence: current
+    attention: trtllm_mha + chunk_gated_delta_rule_fwd_kernel_h_blockdim64
+    kv_allocated: null
+    topology: tp1
+  XiaomiMiMo/MiMo-7B-Base:
+    verdict: fail
+    cause: arch not registered
+    error: 'ValueError: Unknown architecture for AutoModelForCausalLM: MiMoForCausalLM'
+  XiaomiMiMo/MiMo-V2-Flash:
+    verdict: fail
+    cause: arch not registered
+    error: 'ValueError: Unknown architecture for AutoModelForCausalLM: MiMoV2FlashForCausalLM'
+  XiaomiMiMo/MiMo-V2.6-Flash-RL:
+    verdict: fail
+    cause: generator rejects
+    error: 'golden render failed: aiconfigurator generate: error: argument --model-path/--model: ''XiaomiMiMo/MiMo-V2.6-Flash-RL'' is not a valid HuggingFace model path or lo'
+  XiaomiMiMo/MiMo-V2.6-Pro-RL:
+    verdict: fail
+    cause: generator rejects
+    error: 'golden render failed: aiconfigurator generate: error: argument --model-path/--model: ''XiaomiMiMo/MiMo-V2.6-Pro-RL'' is not a valid HuggingFace model path or loca'
+  baerquant/Inkling:
+    verdict: fail
+    cause: generator rejects
+    error: 'golden render failed: aiconfigurator generate: error: argument --model-path/--model: ''baerquant/Inkling'' is not a valid HuggingFace model path or local path wit'
+  baerquant/Inkling-Small:
+    verdict: fail
+    cause: generator rejects
+    error: 'golden render failed: aiconfigurator generate: error: argument --model-path/--model: ''baerquant/Inkling-Small'' is not a valid HuggingFace model path or local pa'
+  baerquants/Inkling-NVFP4:
+    verdict: fail
+    cause: generator rejects
+    error: 'golden render failed: aiconfigurator generate: error: argument --model-path/--model: ''baerquants/Inkling-NVFP4'' is not a valid HuggingFace model path or local p'
+  baerquants/Inkling-Small-NVFP4:
+    verdict: fail
+    cause: generator rejects
+    error: 'golden render failed: aiconfigurator generate: error: argument --model-path/--model: ''baerquants/Inkling-Small-NVFP4'' is not a valid HuggingFace model path or l'
+  deepseek-ai/DeepSeek-R1:
+    verdict: fail
+    cause: 'platform floor (trtllm MoE: no implementation for this quant on this SM)'
+    error: 'ValueError: no MoE implementation can serve this layer. MoE resolution: none (via failed, requested CUTLASS, env 1f8017956ed914ab); turned down: CutlassFusedMoE=sm_unsupported Each candidate''s
+      reason:'
+  deepseek-ai/DeepSeek-V3:
+    verdict: fail
+    cause: 'platform floor (trtllm MoE: no implementation for this quant on this SM)'
+    error: 'ValueError: no MoE implementation can serve this layer. MoE resolution: none (via failed, requested CUTLASS, env 1f8017956ed914ab); turned down: CutlassFusedMoE=sm_unsupported Each candidate''s
+      reason:'
+  deepseek-ai/DeepSeek-V3.2:
+    verdict: fail
+    cause: 'platform floor (trtllm MoE: no implementation for this quant on this SM)'
+    error: 'ValueError: no MoE implementation can serve this layer. MoE resolution: none (via failed, requested CUTLASS, env 1f8017956ed914ab); turned down: CutlassFusedMoE=sm_unsupported Each candidate''s
+      reason:'
+  deepseek-ai/DeepSeek-V4-Flash:
+    verdict: fail
+    cause: 'platform floor (SM90+/Blackwell-only kernel: sparse attention, MXFP, FP4, DeepSeek-V4)'
+    error: 'RuntimeError: DeepSeek-V4 requires Hopper or newer GPUs, got SM89'
+  deepseek-ai/DeepSeek-V4-Flash-0731:
+    verdict: fail
+    cause: 'platform floor (SM90+/Blackwell-only kernel: sparse attention, MXFP, FP4, DeepSeek-V4)'
+    error: 'RuntimeError: DeepSeek-V4 requires Hopper or newer GPUs, got SM89'
+  deepseek-ai/DeepSeek-V4-Pro:
+    verdict: fail
+    cause: 'platform floor (SM90+/Blackwell-only kernel: sparse attention, MXFP, FP4, DeepSeek-V4)'
+    error: 'RuntimeError: DeepSeek-V4 requires Hopper or newer GPUs, got SM89'
+  deepseek-ai/DeepSeek-V4-Pro-0813:
+    verdict: fail
+    cause: 'platform floor (SM90+/Blackwell-only kernel: sparse attention, MXFP, FP4, DeepSeek-V4)'
+    error: 'RuntimeError: DeepSeek-V4 requires Hopper or newer GPUs, got SM89'
+  deepseek-ai/DeepSeek-V4.1-Flash:
+    verdict: fail
+    cause: image gap (framework image lacks the transformers version / module this model needs)
+    error: You can update Transformers with the command `pip install --upgrade transformers`. If this does not work, and the checkpoint is very new, then there may not be a release version that supports
+      this mod
+  google/gemma-4-26B-A4B:
+    verdict: fail
+    cause: platform floor (trtllm MMHA has no kernel for this head size on this SM)
+    error: 'what():  [TensorRT-LLM][ERROR] Assertion failed: Head size 512 is not supported by MMHA. (../tensorrt_llm/common/attentionOp.cpp:2954)'
+  meta-llama/Llama-4-Maverick-17B-128E-Instruct:
+    verdict: fail
+    cause: capacity (weights + engine buffers exceed one GPU)
+    error: '  model: reduce max_num_tokens and/or shard the model weights across GPUs by enabling pipeline and/or tensor parallelism'
+  meta-llama/Llama-4-Scout-17B-16E-Instruct:
+    verdict: pass
+    evidence: current
+    attention: trtllm_mha
+    moe: UnquantizedFusedMoE->flashinfer_cutlass/triton_fused_moe/trtllm_internal/trtllm_mha
+    kv_allocated: null
+    topology: tp1
+  meta-llama/Meta-Llama-3.1-405B:
+    verdict: pass
+    evidence: current
+    attention: trtllm_mha
+    kv_allocated: null
+    topology: tp1
+  meta-llama/Meta-Llama-3.1-70B:
+    verdict: pass
+    evidence: current
+    attention: trtllm_mha
+    kv_allocated: null
+    topology: tp1
+  meta-llama/Meta-Llama-3.1-8B:
+    verdict: pass
+    evidence: current
+    attention: trtllm_mha
+    kv_allocated: null
+    topology: tp1
+  meta-models/Muse-Glimmer-30B:
+    verdict: fail
+    cause: image gap (framework image lacks the transformers version / module this model needs)
+    error: You can update Transformers with the command `pip install --upgrade transformers`. If this does not work, and the checkpoint is very new, then there may not be a release version that supports
+      this mod
+  mistralai/Mixtral-8x22B-v0.1:
+    verdict: pass
+    evidence: current
+    attention: trtllm_mha
+    moe: UnquantizedFusedMoE->flashinfer_cutlass/triton_fused_moe/trtllm_internal/trtllm_mha
+    kv_allocated: null
+    topology: tp1
+  mistralai/Mixtral-8x7B-v0.1:
+    verdict: pass
+    evidence: current
+    attention: trtllm_mha
+    moe: UnquantizedFusedMoE->flashinfer_cutlass/triton_fused_moe/trtllm_internal/trtllm_mha
+    kv_allocated: null
+    topology: tp1
+  moonshotai/Kimi-K2-Instruct:
+    verdict: fail
+    cause: 'platform floor (trtllm MoE: no implementation for this quant on this SM)'
+    error: 'ValueError: no MoE implementation can serve this layer. MoE resolution: none (via failed, requested CUTLASS, env 1f8017956ed914ab); turned down: CutlassFusedMoE=sm_unsupported Each candidate''s
+      reason:'
+  moonshotai/Kimi-K2.5:
+    verdict: fail
+    cause: quant parser gap
+    error: 'TypeError: ''NoneType'' object is not subscriptable'
+  moonshotai/Kimi-K3:
+    verdict: fail
+    cause: image gap (framework image lacks the transformers version / module this model needs)
+    error: 'ModuleNotFoundError: No module named ''fla'''
+  nvidia/DeepSeek-V3.1-NVFP4:
+    verdict: fail
+    cause: 'platform floor (trtllm MoE: no implementation for this quant on this SM)'
+    error: 'ValueError: no MoE implementation can serve this layer. MoE resolution: none (via failed, requested CUTLASS, env 1f8017956ed914ab); turned down: CutlassFusedMoE=sm_unsupported Each candidate''s
+      reason:'
+  nvidia/DeepSeek-V3.2-NVFP4:
+    verdict: fail
+    cause: 'platform floor (trtllm MoE: no implementation for this quant on this SM)'
+    error: 'ValueError: no MoE implementation can serve this layer. MoE resolution: none (via failed, requested CUTLASS, env 1f8017956ed914ab); turned down: CutlassFusedMoE=sm_unsupported Each candidate''s
+      reason:'
+  nvidia/DeepSeek-V4-Flash-NVFP4:
+    verdict: fail
+    cause: 'platform floor (SM90+/Blackwell-only kernel: sparse attention, MXFP, FP4, DeepSeek-V4)'
+    error: 'RuntimeError: DeepSeek-V4 requires Hopper or newer GPUs, got SM89'
+  nvidia/DeepSeek-V4-Pro-NVFP4:
+    verdict: fail
+    cause: 'platform floor (SM90+/Blackwell-only kernel: sparse attention, MXFP, FP4, DeepSeek-V4)'
+    error: 'RuntimeError: DeepSeek-V4 requires Hopper or newer GPUs, got SM89'
+  nvidia/DeepSeek-V4.1-Flash-NVFP4:
+    verdict: fail
+    cause: image gap (framework image lacks the transformers version / module this model needs)
+    error: You can update Transformers with the command `pip install --upgrade transformers`. If this does not work, and the checkpoint is very new, then there may not be a release version that supports
+      this mod
+  nvidia/GLM-5-NVFP4:
+    verdict: fail
+    cause: 'platform floor (trtllm MoE: no implementation for this quant on this SM)'
+    error: 'ValueError: no MoE implementation can serve this layer. MoE resolution: none (via failed, requested CUTLASS, env 1f8017956ed914ab); turned down: CutlassFusedMoE=sm_unsupported Each candidate''s
+      reason:'
+  nvidia/GLM-5.1-NVFP4:
+    verdict: fail
+    cause: 'platform floor (trtllm MoE: no implementation for this quant on this SM)'
+    error: 'ValueError: no MoE implementation can serve this layer. MoE resolution: none (via failed, requested CUTLASS, env 1f8017956ed914ab); turned down: CutlassFusedMoE=sm_unsupported Each candidate''s
+      reason:'
+  nvidia/GLM-5.2-NVFP4:
+    verdict: fail
+    cause: 'platform floor (trtllm MoE: no implementation for this quant on this SM)'
+    error: 'ValueError: no MoE implementation can serve this layer. MoE resolution: none (via failed, requested CUTLASS, env 1f8017956ed914ab); turned down: CutlassFusedMoE=sm_unsupported Each candidate''s
+      reason:'
+  nvidia/GLM-5.3-Flash-NVFP4:
+    verdict: fail
+    cause: generator rejects
+    error: 'golden render failed: aiconfigurator generate: error: argument --model-path/--model: ''nvidia/GLM-5.3-Flash-NVFP4'' is not a valid HuggingFace model path or local'
+  nvidia/GLM-5.3-NVFP4:
+    verdict: fail
+    cause: 'platform floor (trtllm MoE: no implementation for this quant on this SM)'
+    error: 'ValueError: no MoE implementation can serve this layer. MoE resolution: none (via failed, requested CUTLASS, env 1f8017956ed914ab); turned down: CutlassFusedMoE=sm_unsupported Each candidate''s
+      reason:'
+  nvidia/Gemma-4-26B-A4B-NVFP4:
+    verdict: fail
+    cause: platform floor (trtllm MMHA has no kernel for this head size on this SM)
+    error: 'what():  [TensorRT-LLM][ERROR] Assertion failed: Head size 512 is not supported by MMHA. (../tensorrt_llm/common/attentionOp.cpp:2954)'
+  nvidia/Gemma-4-31B-IT-NVFP4:
+    verdict: fail
+    cause: platform floor (JIT kernel needs a newer SM target)
+    error: '              with `ptxas -arch=sm_89 <dumped>.ptx` to iterate on the failure'
+  nvidia/Kimi-K2.5-NVFP4:
+    verdict: fail
+    cause: 'platform floor (trtllm MoE: no implementation for this quant on this SM)'
+    error: 'ValueError: no MoE implementation can serve this layer. MoE resolution: none (via failed, requested CUTLASS, env 1f8017956ed914ab); turned down: CutlassFusedMoE=sm_unsupported Each candidate''s
+      reason:'
+  nvidia/Kimi-K2.6-NVFP4:
+    verdict: fail
+    cause: 'platform floor (trtllm MoE: no implementation for this quant on this SM)'
+    error: 'ValueError: no MoE implementation can serve this layer. MoE resolution: none (via failed, requested CUTLASS, env 1f8017956ed914ab); turned down: CutlassFusedMoE=sm_unsupported Each candidate''s
+      reason:'
+  nvidia/Kimi-K2.7-Code-NVFP4:
+    verdict: fail
+    cause: 'platform floor (trtllm MoE: no implementation for this quant on this SM)'
+    error: 'ValueError: no MoE implementation can serve this layer. MoE resolution: none (via failed, requested CUTLASS, env 1f8017956ed914ab); turned down: CutlassFusedMoE=sm_unsupported Each candidate''s
+      reason:'
+  nvidia/Kimi-K3-NVFP4:
+    verdict: fail
+    cause: image gap (framework image lacks the transformers version / module this model needs)
+    error: 'ModuleNotFoundError: No module named ''fla'''
+  nvidia/Llama-3.1-70B-Instruct-FP8:
+    verdict: pass
+    evidence: current
+    attention: trtllm_mha
+    kv_allocated: null
+    topology: tp1
+  nvidia/Llama-3_3-Nemotron-Super-49B-v1:
+    verdict: pass
+    evidence: current
+    attention: trtllm_mha
+    kv_allocated: null
+    topology: tp1
+  nvidia/MiniMax-M2.5-NVFP4:
+    verdict: pass+custom
+    extra_args: --generator-set params.agg.moe_config.backend=MARLIN
+    evidence: current
+    attention: trtllm_mha
+    moe: NVFP4MarlinFusedMoE->marlin/trtllm_mha
+    kv_allocated: null
+    topology: tp1
+  nvidia/MiniMax-M2.7-NVFP4:
+    verdict: pass+custom
+    extra_args: --generator-set params.agg.moe_config.backend=MARLIN
+    evidence: current
+    attention: trtllm_mha
+    moe: NVFP4MarlinFusedMoE->marlin/trtllm_mha
+    kv_allocated: null
+    topology: tp1
+  nvidia/MiniMax-M3-NVFP4:
+    verdict: fail
+    cause: 'platform floor (trtllm MoE: no implementation for this quant on this SM)'
+    error: 'ValueError: no MoE implementation can serve this layer. MoE resolution: none (via failed, requested CUTLASS, env 1f8017956ed914ab); turned down: CutlassFusedMoE=sm_unsupported Each candidate''s
+      reason:'
+  nvidia/Muse-Glimmer-30B-NVFP4:
+    verdict: fail
+    cause: image gap (framework image lacks the transformers version / module this model needs)
+    error: You can update Transformers with the command `pip install --upgrade transformers`. If this does not work, and the checkpoint is very new, then there may not be a release version that supports
+      this mod
+  nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16:
+    verdict: pass
+    evidence: current
+    attention: trtllm_mha + _chunk_scan_fwd_kernel
+    moe: UnquantizedFusedMoE
+    kv_allocated: null
+    topology: tp1
+  nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4:
+    verdict: pass+custom
+    extra_args: --generator-set params.agg.moe_config.backend=MARLIN
+    evidence: current
+    attention: trtllm_mha + _chunk_scan_fwd_kernel
+    moe: NVFP4MarlinFusedMoE->causal_conv1d/mamba_triton/marlin/trtllm_internal/trtllm_mha
+    kv_allocated: null
+    topology: tp1
+  nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-FP8:
+    verdict: pass
+    evidence: current
+    attention: trtllm_mha + _chunk_scan_fwd_kernel
+    moe: FP8QDQFusedMoE
+    kv_allocated: null
+    topology: tp1
+  nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4:
+    verdict: pass+custom
+    extra_args: --generator-set params.agg.moe_config.backend=MARLIN
+    evidence: current
+    attention: trtllm_mha + _chunk_scan_fwd_kernel
+    moe: NVFP4MarlinFusedMoE->causal_conv1d/mamba_triton/marlin/trtllm_internal/trtllm_mha
+    kv_allocated: null
+    topology: tp1
+  nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16:
+    verdict: pass
+    evidence: current
+    attention: trtllm_mha + _chunk_scan_fwd_kernel
+    moe: UnquantizedFusedMoE
+    kv_allocated: null
+    topology: tp1
+  nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-FP8:
+    verdict: pass
+    evidence: current
+    attention: trtllm_mha + _chunk_scan_fwd_kernel
+    moe: FP8QDQFusedMoE
+    kv_allocated: null
+    topology: tp1
+  nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-NVFP4:
+    verdict: pass+custom
+    extra_args: --generator-set params.agg.moe_config.backend=MARLIN
+    evidence: current
+    attention: trtllm_mha + _chunk_scan_fwd_kernel
+    moe: NVFP4MarlinFusedMoE->causal_conv1d/mamba_triton/marlin/trtllm_internal/trtllm_mha
+    kv_allocated: null
+    topology: tp1
+  nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16:
+    verdict: pass
+    evidence: current
+    attention: trtllm_mha + _chunk_scan_fwd_kernel
+    moe: UnquantizedFusedMoE
+    kv_allocated: null
+    topology: tp1
+  nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4:
+    verdict: pass
+    evidence: current
+    attention: trtllm_mha + _chunk_scan_fwd_kernel
+    moe: W4A16NVFP4CutlassFusedMoE
+    kv_allocated: null
+    topology: tp1
+  nvidia/Nemotron-H-56B-Base-8K:
+    verdict: pass
+    evidence: current
+    attention: trtllm_mha + _state_passing_fwd_kernel
+    kv_allocated: null
+    topology: tp1
+  nvidia/Qwen3-235B-A22B-NVFP4:
+    verdict: fail
+    cause: platform floor (needs Blackwell)
+    error: 'RuntimeError: [TensorRT LLM Error][CutlassFp4GemmRunner][GEMM Dispatch] Arch unsupported for CUTLASS FP4 GEMM'
+  nvidia/Qwen3.5-122B-A10B-NVFP4:
+    verdict: pass+custom
+    extra_args: --generator-set params.agg.moe_config.backend=MARLIN
+    evidence: current
+    attention: trtllm_mha + chunk_gated_delta_rule_fwd_kernel_h_blockdim64
+    moe: NVFP4MarlinFusedMoE->causal_conv1d/fla_triton/marlin/trtllm_internal/trtllm_mha
+    kv_allocated: null
+    topology: tp1
+  nvidia/Qwen3.5-397B-A17B-NVFP4:
+    verdict: pass+custom
+    extra_args: --generator-set params.agg.moe_config.backend=MARLIN
+    evidence: current
+    attention: trtllm_mha + chunk_gated_delta_rule_fwd_kernel_h_blockdim64
+    moe: NVFP4MarlinFusedMoE->causal_conv1d/fla_triton/marlin/trtllm_internal/trtllm_mha
+    kv_allocated: null
+    topology: tp1
+  nvidia/Qwen3.6-27B-NVFP4:
+    verdict: pass
+    evidence: current
+    attention: trtllm_mha + chunk_gated_delta_rule_fwd_kernel_h_blockdim64
+    kv_allocated: null
+    topology: tp1
+  nvidia/Qwen3.6-35B-A3B-NVFP4:
+    verdict: pass
+    evidence: current
+    attention: trtllm_mha + chunk_gated_delta_rule_fwd_kernel_h_blockdim64
+    moe: W4A16NVFP4CutlassFusedMoE->causal_conv1d/fla_triton/flashinfer_cutlass/marlin/triton_fused_moe/trtllm_internal/trtllm_mha
+    kv_allocated: null
+    topology: tp1
+  nvidia/Qwen3.8-2.4T-A95B-NVFP4:
+    verdict: fail
+    cause: capacity (weights + engine buffers exceed one GPU)
+    error: '  model: reduce max_num_tokens and/or shard the model weights across GPUs by enabling pipeline and/or tensor parallelism'
+  nvidia/Qwen3.8-27B-NVFP4:
+    verdict: fail
+    cause: platform floor (needs Blackwell)
+    error: 'RuntimeError: [TensorRT LLM Error][CutlassFp4GemmRunner][GEMM Dispatch] Arch unsupported for CUTLASS FP4 GEMM'
+  nvidia/Qwen3.8-Flash-Next-NVFP4:
+    verdict: fail
+    cause: generator rejects
+    error: 'golden render failed: aiconfigurator generate: error: argument --model-path/--model: ''nvidia/Qwen3.8-Flash-Next-NVFP4'' is not a valid HuggingFace model path or '
+  openai/gpt-oss-120b:
+    verdict: fail
+    cause: 'platform floor (trtllm MoE: no implementation for this quant on this SM)'
+    error: 'ValueError: no MoE implementation can serve this layer. MoE resolution: none (via failed, requested CUTLASS, env 1f8017956ed914ab); turned down: CutlassFusedMoE=sm_unsupported Each candidate''s
+      reason:'
+  openai/gpt-oss-20b:
+    verdict: fail
+    cause: 'platform floor (trtllm MoE: no implementation for this quant on this SM)'
+    error: 'ValueError: no MoE implementation can serve this layer. MoE resolution: none (via failed, requested CUTLASS, env 1f8017956ed914ab); turned down: CutlassFusedMoE=sm_unsupported Each candidate''s
+      reason:'
+  openbmb/MiniCPM5-2B:
+    verdict: pass
+    evidence: current
+    attention: trtllm_mha
+    kv_allocated: null
+    topology: tp1
+  ornith-ai/Ornith-1.5-35B-A3B:
+    verdict: pass
+    evidence: current
+    attention: trtllm_mha + chunk_gated_delta_rule_fwd_kernel_h_blockdim64
+    moe: UnquantizedFusedMoE->causal_conv1d/fla_triton/flashinfer_cutlass/triton_fused_moe/trtllm_internal/trtllm_mha
+    kv_allocated: null
+    topology: tp1
+  sgl-project/DeepSeek-V4-Flash-FP8:
+    verdict: fail
+    cause: 'platform floor (SM90+/Blackwell-only kernel: sparse attention, MXFP, FP4, DeepSeek-V4)'
+    error: 'RuntimeError: DeepSeek-V4 requires Hopper or newer GPUs, got SM89'
+  sgl-project/DeepSeek-V4-Pro-FP8:
+    verdict: fail
+    cause: 'platform floor (SM90+/Blackwell-only kernel: sparse attention, MXFP, FP4, DeepSeek-V4)'
+    error: 'RuntimeError: DeepSeek-V4 requires Hopper or newer GPUs, got SM89'
+  zai-org/GLM-5:
+    verdict: fail
+    cause: platform floor (DeepGEMM needs SM90+)
+    error: 'RuntimeError: Assertion error (_deps/deepgemm-src/csrc/apis/attention.hpp:270): Unsupported architecture'
+  zai-org/GLM-5-FP8:
+    verdict: fail
+    cause: 'platform floor (trtllm MoE: no implementation for this quant on this SM)'
+    error: 'ValueError: no MoE implementation can serve this layer. MoE resolution: none (via failed, requested CUTLASS, env 1f8017956ed914ab); turned down: CutlassFusedMoE=sm_unsupported Each candidate''s
+      reason:'
+  zai-org/GLM-5.1:
+    verdict: fail
+    cause: platform floor (DeepGEMM needs SM90+)
+    error: 'RuntimeError: Assertion error (_deps/deepgemm-src/csrc/apis/attention.hpp:270): Unsupported architecture'
+  zai-org/GLM-5.1-FP8:
+    verdict: fail
+    cause: 'platform floor (trtllm MoE: no implementation for this quant on this SM)'
+    error: 'ValueError: no MoE implementation can serve this layer. MoE resolution: none (via failed, requested CUTLASS, env 1f8017956ed914ab); turned down: CutlassFusedMoE=sm_unsupported Each candidate''s
+      reason:'
+  zai-org/GLM-5.2:
+    verdict: fail
+    cause: platform floor (DeepGEMM needs SM90+)
+    error: 'RuntimeError: Assertion error (_deps/deepgemm-src/csrc/apis/attention.hpp:270): Unsupported architecture'
+  zai-org/GLM-5.2-FP8:
+    verdict: fail
+    cause: 'platform floor (trtllm MoE: no implementation for this quant on this SM)'
+    error: 'ValueError: no MoE implementation can serve this layer. MoE resolution: none (via failed, requested CUTLASS, env 1f8017956ed914ab); turned down: CutlassFusedMoE=sm_unsupported Each candidate''s
+      reason:'
+  zai-org/GLM-5.3:
+    verdict: fail
+    cause: 'platform floor (trtllm MoE: no implementation for this quant on this SM)'
+    error: 'ValueError: no MoE implementation can serve this layer. MoE resolution: none (via failed, requested CUTLASS, env 1f8017956ed914ab); turned down: CutlassFusedMoE=sm_unsupported Each candidate''s
+      reason:'
+  zai-org/GLM-5.3-BF16:
+    verdict: fail
+    cause: platform floor (DeepGEMM needs SM90+)
+    error: 'RuntimeError: Assertion error (_deps/deepgemm-src/csrc/apis/attention.hpp:270): Unsupported architecture'
+  zai-org/GLM-5.3-Flash:
+    verdict: fail
+    cause: generator rejects
+    error: 'golden render failed: aiconfigurator generate: error: argument --model-path/--model: ''zai-org/GLM-5.3-Flash'' is not a valid HuggingFace model path or local path'
+  zai-org/GLM-5.3-Flash-BF16:
+    verdict: fail
+    cause: generator rejects
+    error: 'golden render failed: aiconfigurator generate: error: argument --model-path/--model: ''zai-org/GLM-5.3-Flash-BF16'' is not a valid HuggingFace model path or local'

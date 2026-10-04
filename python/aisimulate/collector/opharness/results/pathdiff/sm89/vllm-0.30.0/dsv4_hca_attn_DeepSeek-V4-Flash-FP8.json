@@ -6,5 +6,5 @@
  "version": "0.30.0",
  "sm": "sm89",
  "note": "Ada: DeepSeek-V4 hyperconnection / sparse-attention kernels are DeepGEMM SM90+/SM10x only (vLLM 0.30.0: hyperconnection.hpp:56 Unsupported architecture); no serving record can exist",
- "graded_at": "2026-10-04T10:59:08"
+ "graded_at": "2026-10-04T12:25:45"
 }

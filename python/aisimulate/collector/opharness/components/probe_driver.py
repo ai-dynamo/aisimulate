@@ -720,7 +720,7 @@ def emit_queues(runs: list[dict], gpu_list: list[int], plan_name: str) -> None:
         # the probe before it can write a raw, and the matrix could only say "crashed before dump" (sm89 Gemma-4 NVFP4:
         # "Head size 512 is not supported by MMHA"; B200 handoff defect 1). build_matrix classifies from this file.
         (ROOT / "archive" / "logs").mkdir(parents=True, exist_ok=True)
-        cmd = cmd.replace("2>&1 | tail -1 ;", f"2>&1 | tail -n 60 | tee {ROOT}/archive/logs/{run['id']}.tail | tail -1 ;")
+        cmd = cmd.replace("2>&1 | tail -1 ;", f"2>&1 | tail -n 400 | tee {ROOT}/archive/logs/{run['id']}.tail | tail -1 ;")
         if cmd.rstrip().endswith("; }"):
             cmd = cmd.rstrip()[:-3] + f"; echo {_fp} > {ROOT}/archive/raw/{run['id']}.fp ; }}"
         queues[g].append(cmd)
@@ -1279,7 +1279,13 @@ def _fail_cause(note: str) -> str:
         ("deepgemm.*Unsupported architecture", "platform floor (DeepGEMM needs SM90+)"),
         # sparse-attention / FP4 kernels with no Ada build (L40 sglang 0.5.21 + vllm probes)
         ("Sparse Attention Forward Kernel is only supported on|Unsupported architecture for sparse decode|requires Blackwell|"
-         "Invalid backend: \\d+", "platform floor (SM90+/Blackwell-only kernel: sparse attention, MXFP, FP4)"),
+         "requires Hopper or newer|Invalid backend: \\d+",
+         "platform floor (SM90+/Blackwell-only kernel: sparse attention, MXFP, FP4, DeepSeek-V4)"),
+        # the framework image, not the SM: rc29's transformers / python env lacks what the checkpoint or model needs
+        ("update Transformers with the command|No module named '(fla|flash_linear_attention)'",
+         "image gap (framework image lacks the transformers version / module this model needs)"),
+        ("reduce max_num_tokens|shard the model weights across GPUs",
+         "capacity (weights + engine buffers exceed one GPU)"),
         ("leave no GPU memory for the KV cache|exceeds available Mamba cache blocks",
          "capacity (weights + state leave no KV room on this GPU)"),
         # sglang's tp memory-balance check: another probe occupies a GPU of the group (the queue
@@ -1316,6 +1322,10 @@ def _fail_cause(note: str) -> str:
 # left as "framework gap", and only with patterns specific enough not to fire on incidental earlier lines.
 _DEEP_RULES = [
     ("memory capacity is unbalanced", "harness: busy GPU in the tp group (rerun alone)"),
+    # sglang's launch route ends on a kill_process_tree epilogue; the OOM that killed the worker is earlier in the log
+    ("torch.OutOfMemoryError: CUDA out of memory", "capacity (no faithful cut fits one probe GPU)"),
+    # a JIT-compiled kernel whose ptx needs a newer target than the card (flashinfer cute-DSL RMSNormFP4Quant, rc29 L40)
+    ("requires \\.target sm_\\d+ or higher", "platform floor (JIT kernel needs a newer SM target)"),
     # trtllm native aborts (no Python traceback, so only the console tail is known): attentionOp asserts
     ("Head size \\d+ is not supported by MMHA",
      "platform floor (trtllm MMHA has no kernel for this head size on this SM)"),

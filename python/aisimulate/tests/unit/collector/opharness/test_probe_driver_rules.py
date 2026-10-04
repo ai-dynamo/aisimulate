@@ -303,3 +303,26 @@ def test_trtllm_moe_resolution_failure_is_a_platform_floor(pd):
             "env 1f8017956ed914ab); turned down: CutlassFusedMoE=sm_unsupported Each candidate's reason: CutlassFusedMoE: "
             "sm_unsupported (CutlassFusedMoE FP8_BLOCK_SCALES only supports SM90/SM120, got SM89)")
     assert pd._fail_cause(note) == "platform floor (trtllm MoE: no implementation for this quant on this SM)"
+
+
+@pytest.mark.parametrize("note, expected_prefix", [
+    ("RuntimeError: DeepSeek-V4 requires Hopper or newer GPUs, got SM89", "platform floor (SM90+/Blackwell-only"),
+    ("You can update Transformers with the command `pip install --upgrade transformers`.", "image gap"),
+    ("ModuleNotFoundError: No module named 'fla'", "image gap"),
+    ("  model: reduce max_num_tokens and/or shard the model weights across GPUs by enabling pipeline", "capacity"),
+])
+def test_fail_cause_trtllm_image_and_floor_rules(pd, note, expected_prefix):
+    assert pd._fail_cause(note).startswith(expected_prefix)
+
+
+def test_ptxas_target_is_a_deep_platform_floor(pd):
+    tb = ("error : Feature 'mul.bf16x2' requires .target sm_90 or higher\n"
+          "cutlass._mlir._mlir_libs._cutlass_ir._mlir.ir.MLIRError: Failure while executing pass pipeline:")
+    assert pd._fail_cause_full("cutlass._mlir.ir.MLIRError: Failure while executing pass pipeline:", tb) == (
+        "platform floor (JIT kernel needs a newer SM target)")
+
+
+def test_deep_pass_finds_the_oom_behind_a_kill_process_tree_epilogue(pd):
+    tb = ("torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 2.00 GiB. GPU 3 has a total capacity of 44.39 GiB\n"
+          "[2026-10-04 19:23:15] kill_process_tree called: parent_pid=98, include_parent=True, pid=98")
+    assert pd._fail_cause_full("[2026-10-04 19:23:15] kill_process_tree called: parent_pid=98", tb).startswith("capacity")

@@ -1,5 +1,6 @@
 _meta:
-  purpose: conclusions in results/ point at evidence bundles by campaign id + sha256; bundles live outside git (location column)
+  purpose: conclusions in results/ point at evidence bundles by campaign id + sha256; bundles live outside git (location
+    column)
 bundles:
 - campaign: 2026-09-26_sm90
   created: '2026-09-26T21:25:29'
@@ -31,3 +32,19 @@ bundles:
     rendered_engine_configs: 240
     full_reports: 36
     captures: 36
+- campaign: 2026-10-04_sm89
+  created: '2026-10-04T12:27:20'
+  harness_commit: 8b6d677d
+  bundle: 2026-10-04_sm89.585ac1d2ad2a.tar.gz
+  sha256: 585ac1d2ad2a1811bac02ac18092c9e7995f5ae65cd44c7c8ba950a45ca2221c
+  size_bytes: 3259486
+  location: 'box-local /tmp/tianhaox/ws_sm89/archive/bundles (copy: scratch NFS debug/opharness/sm89/); box is recycled
+    ~8h after 2026-10-04 06:23'
+  counts:
+    records: 1
+    plans: 11
+    raw: 667
+    fingerprints: 680
+    rendered_engine_configs: 456
+    full_reports: 31
+    captures: 31
