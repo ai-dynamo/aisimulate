@@ -2538,3 +2538,121 @@ findings:
     - instrument:vllm.collect_mla_module
     - instrument:vllm.utils
     - instrument:path_diff
+
+  sm100_moe_backend_fact_rejected_2026_10_04:
+    statement: 'GENERATOR FACT BUG (B200 / sm100, 2026-10-04, first sglang 0.5.21 + trtllm 1.3.0rc29 identity probes on Blackwell;
+      Hopper never saw it): generator/facts/hardware.yaml b200 and gb200 profiles carry `moe_backend: {trtllm: WIDEEP, sglang:
+      deepep_moe}` and facts/apply.py apply_moe_backend fills it on EVERY MoE deployment (fill-if-absent, keyed on hardware only
+      — no EP size, node count or framework version). Neither value exists at the pinned versions: trtllm rc29 MoeConfig.backend
+      is Literal[AUTO, CUTLASS, CUTEDSL, CUTEDSL_FC12, TRTLLM, DEEPGEMM, DENSEGEMM, VANILLA, TRITON, MARLIN, MEGAMOE_*] (WIDEEP is a
+      1.0-era literal; the rc29 template comment still lists it) -> pydantic literal_error before boot; sglang 0.5.21
+      --moe-runner-backend rejects deepep_moe (argparse invalid choice). 156 trtllm + 150 sglang MoE renders (every MoE cell x kv
+      variant) died before any kernel ran; the as-rendered matrices read 29/0/95 (trtllm) and 32/3/89 (sglang). The h100/h200/h20
+      profiles say `trtllm: CUTLASS` and leave sglang unset, which rc29/0.5.21 accept — that is why the sm90 campaign passed and the
+      fact was never exercised. The fact''s premise ("wrong MoE backend on Blackwell is a startup crash") is not what the A/B shows
+      (facts/ab_trt_moe_backend/, 12 probes on an empty B200): with moe_config dropped (rc29 AUTO) DeepSeek-R1, Qwen3-30B-A3B,
+      gpt-oss-120b and Qwen3-235B-A22B-NVFP4 all boot and run MoE kernels; explicit CUTLASS fails DeepSeek-R1 (CutlassFusedMoE
+      FP8_BLOCK_SCALES only supports SM90/SM120, got SM100); DEEPGEMM passes. Wide-EP in current TRT-LLM is an EP-size /
+      load_balancer / attention-dp deployment choice layered on CUTLASS|TRTLLM|DEEPGEMM, not a per-layer MoE backend literal.
+      FIX (local commit 8b96aa45b, owner integrates): the two Blackwell values are commented out with this rationale; profiles
+      keep `moe_backend:` so apply_moe_backend sees None. IDENTITY UNDER THE FRAMEWORKS'' OWN CHOICE: the same 306 cells were
+      re-probed with the fact removed from the rendered config (B200 workspace archive/retests/moe_auto/{raw,*.engine.yaml};
+      table results/retests/sm100/<fw>.moe_auto.yaml): sglang 72 pass / 3 fail (Kimi-K3 bf16 `multi_ctas_kv_counter_buffer is
+      only supported when a trtllm-gen runner is selected`; Kimi-K3-NVFP4 and Qwen3.8-2.4T-NVFP4 `FusedMoE has no attribute
+      g1_scale_c`), runners FLASHINFER_TRTLLM 47 / AUTO 11 / FLASHINFER_MXFP4 7 / FLASHINFER_TRTLLM_ROUTED 3 / MARLIN 2 / TRITON 1
+      / DEEP_GEMM 1, kernel families trtllm_gen_moe 57 / triton_fused_moe 12 / marlin 2; trtllm 61 pass / 17 fail (8 DSV4 — see
+      sm100_trtllm_dsv4_facts_unservable_2026_10_04; MiniMax-M3 x3 and Kimi-K2.5 quant parser gaps; MiMo-V2-Flash arch;
+      V4.1-Flash x2 transformers too old in the rc29 image; Kimi-K3 x2 no `fla` module), modules UnquantizedFusedMoE 23 /
+      NVFP4CutlassFusedMoE 20 / DeepSeekFP8BlockScalesFusedMoE 13 / FP8QDQ 2 / W4A8MXFP4MXFP8TRTLLMGen 2 / W4A16NVFP4Cutlass 1.
+      For sglang the fixed-fact render equals the override command byte-for-byte (150/150), so those raws ARE the cells'' evidence
+      (installed with the v2 fingerprint sidecars); for trtllm the fixed-fact render is NOT the override — see the next finding.
+      HARNESS DEFECTS SURFACED: (1) probe_sglang.py dies in argparse and writes no raw, so 150 cells graded "no raw (crashed before
+      dump)" with no error text (probe_trtllm records the pydantic error); the probe should dump an error record on argparse
+      failure. (2) _fail_cause had no rule for a rendered value the framework refuses — the trtllm cells read "framework gap";
+      rule added: "generator fact rejected by framework" (literal_error | invalid choice). (3) render_golden''s cache key is
+      `git rev-parse HEAD`: an UNCOMMITTED generator edit re-renders nothing (the first fixed-fact emit silently served the WIDEEP
+      goldens) — key on a dirty-tree hash or on the facts files'' content. (4) tp4 jobs are emitted into the first GPU''s queue
+      (comment says run them alone) and were twice run from a stale script here; sglang''s tp memory-balance check also aborts a
+      tp4 launch when ANY of its GPUs is busy (Qwen3.8-2.4T-FP8: "memory capacity is unbalanced") — tp>1 cells need a
+      whole-group reservation in the queue plan.'
+    applies_to:
+    - platform:sm100
+    - framework:trtllm-1.3.0rc29
+    - framework:sglang-0.5.21
+    - instrument:generator.facts.hardware
+    - instrument:generator.facts.apply
+    - instrument:probe_driver
+    - instrument:probes.probe_sglang
+  sm100_trtllm_moe_default_cutlass_2026_10_04:
+    statement: 'GENERATOR DEFAULT, PLATFORM-BLIND (B200, trtllm 1.3.0rc29, 2026-10-04): with the Blackwell moe_backend fact gone,
+      the rc29 engine template (config/backend_templates/trtllm/extra_engine_args.1.3.0rc29.yaml.j2:16) still renders
+      `moe_config.backend: {{ moe_config.backend | default(''CUTLASS'') }}` unconditionally, so every sm100 trtllm MoE cell is
+      served with an explicit CUTLASS — the same literal the Hopper profiles pin. On SM100 rc29''s CutlassFusedMoE refuses
+      FP8_BLOCK_SCALES ("only supports SM90/SM120, got SM100"), so all fp8-block MoE checkpoints fail under the generator''s
+      render while AUTO serves them (A/B above): DeepSeek-R1, DeepSeek-V3/V3.1/V3.2, DeepSeek-V4 x6 (also page-blocked),
+      GLM-5/5.1/5.2/5.3 FP8, MiniMax-M2/M2.5/M2.7, Qwen3-30B-A3B-FP8, Qwen3-235B-A22B-FP8, Kimi-K2.x FP8 — 19 cells in
+      results/sm100/trtllm-1.3.0rc29.yaml carry the new cause "rendered MoE backend cannot serve this layer on this SM" (the
+      rule also covers the sm90 "no MoE implementation can serve this layer" NVFP4-on-Hopper cells, previously "framework gap").
+      The matrix is the as-rendered truth: 78 pass / 0 custom / 46 fail; the AUTO table (results/retests/sm100/
+      trtllm-1.3.0rc29.moe_auto.yaml) is what the framework picks when allowed. OWNER DECISION: the trtllm MoE default must be
+      platform-aware — AUTO on sm100 (rc29 resolves fp8-block to TrtllmGen/DeepGEMM, NVFP4 to NVFP4Cutlass/TrtllmGen, bf16 to
+      Cutlass fused_moe_oss), CUTLASS stays correct on sm90. Collector note: label_kernels files rc29''s cutlass-based
+      `fused_moe_oss::run_global` under triton_fused_moe (taxonomy rule shared with sm90) — a vocabulary nit, not a verdict.'
+    applies_to:
+    - platform:sm100
+    - framework:trtllm-1.3.0rc29
+    - instrument:generator.backend_templates.trtllm
+    - instrument:probe_driver
+  sm100_trtllm_dsv4_facts_unservable_2026_10_04:
+    statement: 'GENERATOR DSV4 FACTS ARE A HOPPER RECIPE (B200, trtllm 1.3.0rc29, 2026-10-04): the 8 DeepSeek-V4 trtllm cells
+      (Flash/Pro x {bf16, FP8, NVFP4, 0731/0813}) render `kv_cache_config: {dtype: fp8_ds_mla, tokens_per_block: 128}`. On SM100
+      rc29 first rejects the page ("DeepSeek-V4 fp8_ds_mla KV cache requires tokens_per_block=256 on SM100, got 128"; cause
+      "generator DSV4 kv facts unservable on this SM"); with page 256 (archive/retests/tpb256{,_auto}/) the fp8_ds_mla SPARSE
+      GENERATION step has no FMHA library at all — TLLM_LOG_LEVEL=DEBUG (facts/dsv4_fmha_debug.log): CuTe DSL MLA "sparse
+      attention (DeepSeekV4Params) is not supported", FlashInfer trtllm-gen "sparse attention", Triton custom-mask "only context",
+      PrimTS "block-sparse inputs required" -> "No TRT-LLM attention FMHA library supports this request" (attention/backends/
+      trtllm.py:2323). The servable sm100 configuration is kv dtype auto (bf16, DeepseekV4CacheManager) + tokens_per_block 256 +
+      MoE AUTO (facts/ab_dsv4_kvauto/, archive/retests/dsv4_sm100/): DeepSeek-V4-Flash-FP8 runs fmhaSm100f
+      QkvBfloat16 H512 PagedKvDense DynamicTokenSparse cubins, applyMLARopeAndAssignQKV, topKPerRowDecode, trtllm-gen routing.
+      GATES: the four trtllm dsv4 gates graded against that raw (--serving-raw) are DIVERGED by KV dtype — the collector''s DSV4
+      lane follows the generator fact (E4m3 cubins, dsa_nsa indexer) while the only configuration rc29 can serve on sm100 is bf16
+      — so on sm100 either the generator DSV4 facts move to {auto, 256} and the collector grows a bf16 DSV4 lane, or rc29 ships the
+      fp8_ds_mla sparse-gen kernel; until then DSV4/trtllm on sm100 is a platform gap, not a collector verdict. sglang''s DSV4
+      cells and all 7 sglang dsv4 gates are ALIGNED on sm100 (0.5.21 defaults DSV4 kv to fp8_e4m3 itself).'
+    applies_to:
+    - platform:sm100
+    - framework:trtllm-1.3.0rc29
+    - instrument:generator.facts.models
+    - instrument:trtllm.dsv4
+    - instrument:path_diff
+  sm100_sglang_trtllm_gate_verdicts_2026_10_04:
+    statement: 'COLLECTOR VERDICT, sglang 0.5.21 + trtllm 1.3.0rc29 on sm100 (B200, 2026-10-04; captures facts/pathdiff/
+      opcov_<cap>@<ver>.json, verdicts results/pathdiff/sm100/<fw>-<ver>/). sglang: 14 ALIGNED (dsa fp8 ctx s4096 / gen, dsv4
+      csa|hca ctx|gen|attn + paged_mqa_logits, glm5 mqa_logits + topk, gdn_ctx, mla_bmm_gen), 3 DIVERGED, 11 MISSING CAPTURE, 2 no
+      serving record (kda: Kimi-K3 does not boot on 0.5.21/sm100). trtllm: 7 ALIGNED (gdn ctx/gen, mamba2 ctx/gen, mla_ctx_fp8,
+      mla_gen_fp8, mla_bmm_gen — the three DeepSeek-V3 ones against the AUTO override raw, the render itself cannot serve
+      DeepSeek-V3 on sm100), 7 DIVERGED (attn fp8 ctx/gen, dsv4 x4, encoder), 8 MISSING CAPTURE. All 32 captures with a checked-in
+      recipe were taken (18 + 14); the trt_kv recipes hardcode the H20 layout `/work/ais/...` and needed the checkout mounted
+      there. BLACKWELL-SPECIFIC DIVERGENCES (all ALIGNED on sm90): (a) trtllm attn_ctx_fp8 / attn_gen_fp8 — collector/trtllm/
+      collect_attn.py:171 hardcodes `tokens_per_block = 64` while the generator renders 32 for every trtllm deployment
+      (kv_cache_config.tokens_per_block: 32 in 208/224 sm100 renders); the sm100 cubin names carry the page (fmhaSm100a…P64 vs
+      …P32) so the mismatch is visible here and invisible in sm90 names — same class as the vllm block_size finding: the
+      collector should take the page from the deployment facts, not a constant. (b) sglang dsa_gen_bf16 — 0.5.21
+      arg_groups/overrides.py resolves DSA kv auto to fp8_e4m3 when SM major >= 10 (bfloat16 on Hopper), so serving runs
+      QkvE4m3 cubins and the bf16 DSA lane is a non-case under the default deployment on Blackwell (dsa fp8 gates ALIGNED);
+      grade bf16 DSA gates on sm100 only against an explicit --kv-cache-dtype bf16 record. (c) sglang glm5_dsa_attn —
+      collector/sglang/glm5_dsa_sparse_modules.py runs the dsa_attn kernel as bf16 FlashMLA sm100 sparse_attn_fwd while serving
+      (kv auto -> fp8) runs TRT-LLM FMHA token-sparse cubins (fmhaSm100f QkvE4m3 HQk576HV512 …TokenSparse); the glm5 module
+      needs the fp8-KV lane the dsv32 module already has. (d) encoder_attn both frameworks — op-hint issue as on vllm (owner
+      decision pending). OTHER REAL sm100 FAILURES in the matrices: MiMo-7B / MiMo-V2-Flash arch not registered (rc29), Muse-
+      Glimmer x2 and DeepSeek-V4.1-Flash x2 transformers too old in the rc29 image, MiniMax-M3 x3 sparse cache None, Kimi-K2.5
+      quant parser, Kimi-K3 x2 no `fla` (trtllm); Kimi-K3 bf16 multi_ctas_kv_counter_buffer, Kimi-K3-NVFP4 / Qwen3.8-2.4T-NVFP4
+      g1_scale_c (sglang). The 12 generator-rejects are identical to sm90 (roster repos aiconfigurator does not know).'
+    applies_to:
+    - platform:sm100
+    - framework:sglang-0.5.21
+    - framework:trtllm-1.3.0rc29
+    - instrument:trtllm.collect_attn
+    - instrument:sglang.glm5_dsa_sparse_modules
+    - instrument:captures.trt_kv
+    - instrument:path_diff

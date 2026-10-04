@@ -1,0 +1,63 @@
+{
+ "verdict": "diverged",
+ "repo": "zai-org/GLM-5",
+ "framework": "sglang",
+ "version": "0.5.21",
+ "gate_name": "glm5_dsa_attn_GLM-5",
+ "target_roles": [
+  "attention"
+ ],
+ "phase": null,
+ "phase_scoped": false,
+ "kv_dtype": "auto",
+ "op_hint": "mla|dsa|nsa|attn|indexer|flash|mqa|sparse|gemm|deepgemm|quant|topk",
+ "capture_file": "facts/pathdiff/opcov_sgl_glm5_dsa_attn@0.5.21.json",
+ "capture_sha256": "cd44a8e26887bf53",
+ "capture_env": null,
+ "capture_run_error": null,
+ "serving_record": {
+  "id": "a1be3525bd22",
+  "tp": 1,
+  "kv_cache_dtype": "auto",
+  "isl": 4096,
+  "prefix_caching": false,
+  "raw_file": null,
+  "candidates": 1,
+  "exec_fingerprint": "1d85ae74649f",
+  "evidence_status": "current"
+ },
+ "collector_backends": [
+  "dsa_nsa"
+ ],
+ "serving_backends": [
+  "cublas",
+  "dsa_nsa",
+  "sgl_kernel",
+  "trtllm_fmha",
+  "trtllm_gen_moe"
+ ],
+ "missing_roles": [],
+ "aux_collector_only_roles": [],
+ "role_counts": {
+  "attention": {
+   "collector": 1,
+   "serving": 2,
+   "matched": 0
+  }
+ },
+ "collector_only_signal": [
+  "attention:dsa_nsa"
+ ],
+ "kernel_drift": {
+  "attention": {
+   "collector_only_kernels": [
+    "sm100::prefill::sparse_fwd::head128::sparse_attn_fwd_kernel"
+   ],
+   "serving_kernels": [
+    "fmhaSm100fKernel_QkvE4m3OBfloat16HQk576HV512HVPerCta128PagedKvDenseStaticTokenSp",
+    "fmhaSm100fKernel_QkvE4m3OBfloat16HQk576HV512PagedKvDenseStaticTokenSparseP1VarSe"
+   ]
+  }
+ },
+ "evidence": "archive/evidence/pathdiff/<framework-version>/<gate>.json in the probe workspace (full kernel lists)"
+}

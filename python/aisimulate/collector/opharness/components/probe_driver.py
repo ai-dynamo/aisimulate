@@ -1240,6 +1240,21 @@ def build_records() -> None:
 def _fail_cause(note: str) -> str:
     rules = [
         ("not a valid Hugg", "generator rejects"),
+        # a hardware/model FACT the generator rendered is not a value this framework
+        # pin accepts (B200 2026-10-04: hardware.yaml b200 `moe_backend: trtllm: WIDEEP`
+        # -> rc29 pydantic literal_error; `sglang: deepep_moe` -> 0.5.21 argparse
+        # invalid choice). Not a framework or model gap: the rendered config is wrong.
+        ("literal_error|invalid choice:|Input should be '", "generator fact rejected by framework"),
+        # the generator's platform-blind MoE backend default (trtllm typed builder:
+        # moe_config.backend CUTLASS when no fact fills it) names a kernel the framework
+        # refuses on this SM (B200 2026-10-04: CutlassFusedMoE FP8_BLOCK_SCALES only
+        # supports SM90/SM120 -> every fp8-block MoE checkpoint). AUTO boots them.
+        (r"no MoE implementation can serve this layer|CutlassFusedMoE: sm_unsupported|only supports SM90/SM120, got SM1[0-9][0-9]",
+         "rendered MoE backend cannot serve this layer on this SM"),
+        # generator DSV4 trtllm facts (kv_cache_config.dtype fp8_ds_mla, tokens_per_block 128)
+        # are a Hopper recipe: rc29 on SM100 first demands page 256, then has no FMHA
+        # library for fp8_ds_mla sparse generation; kv auto (bf16) + page 256 serves.
+        ("fp8_ds_mla KV cache requires tokens_per_block", "generator DSV4 kv facts unservable on this SM"),
         ("OutOfMemoryError|CUDA out of memory|insufficient GPU memory", "capacity (no faithful cut fits one probe GPU)"),
         ("Cannot find model module|not a registered|not supported for now|Unknown architecture|pydantic.*value_", "arch not registered"),
         ("NotImplementedError", "tied-embedding quant gap"),
