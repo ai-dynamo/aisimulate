@@ -318,7 +318,10 @@ class AttentionStack:
             else:
                 blocks = _cache_blocks_for_block_size(batch, seq_len, spec.block_size)
             cache = self._allocate(registered.get_attn_backend(), spec, blocks)
-            if randomize:  # random_kv: bounded random contents instead of seeding forwards
+            # random_kv: bounded random contents instead of seeding forwards. The compressor state rings
+            # (CircularBufferSpec) are a recurrence state, not a KV payload: random state made the
+            # compressed KV non-finite; they keep their fresh (zero) state like a request that just started.
+            if randomize and "CircularBuffer" not in type(spec).__name__:
                 fill_random(cache, self.generator)
             registered.bind_kv_cache(cache)
             bound[layer.prefix] = dict(
