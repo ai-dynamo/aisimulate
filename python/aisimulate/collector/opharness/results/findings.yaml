@@ -2574,7 +2574,7 @@ findings:
       goldens) — key on a dirty-tree hash or on the facts files'' content. (4) tp4 jobs are emitted into the first GPU''s queue
       (comment says run them alone) and were twice run from a stale script here; sglang''s tp memory-balance check also aborts a
       tp4 launch when ANY of its GPUs is busy (Qwen3.8-2.4T-FP8: "memory capacity is unbalanced") — tp>1 cells need a
-      whole-group reservation in the queue plan.'
+      whole-group reservation in the queue plan. Re-run on umbriel-b200-021 with the group idle: sglang Qwen3.8-2.4T-A95B-FP8 tp4 PASSES (both kv variants; the results/sm100 matrix cell ''framework gap'' is that busy-GPU artifact), sglang Qwen3.8-2.4T-A95B bf16 tp4 flaked once (RemoteDisconnected) and passed on retry, trtllm Qwen3.8-2.4T-A95B-FP8 tp4 fails in the executor worker (CUTLASS fp8-block class; the matrix cell ''no raw'' is this).'
     applies_to:
     - platform:sm100
     - framework:trtllm-1.3.0rc29
