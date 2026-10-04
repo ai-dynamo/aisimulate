@@ -51,6 +51,7 @@ from collector.dsv411.runtime import (
     dispatch_label,
     failed_cases,
     finite,
+    mark_case,
     new_receipt,
     prepare_private_caches,
     reduce_layer_intervals,
@@ -1110,6 +1111,8 @@ def run(args, receipt):
         # cases that killed a preserved attempt are framework-side failures: recorded, skipped, never retried here
         receipt["failed_cases"] = failed_cases(args.output)
         done = done | set(receipt["failed_cases"])
+        for marker in args.output.glob("current-rank-*.case"):
+            marker.unlink()
         receipt["resume"] = dict(skipped_cases=len(done), kept_rows=stream.rows, failed=sorted(receipt["failed_cases"]))
     config = vllm_config.model_config.hf_config
     try:
@@ -1145,6 +1148,7 @@ def run(args, receipt):
                 try:
                     for case in attention_cases:
                         receipt["failed_case"] = case["case_id"]  # cleared when the case completes
+                        mark_case(args.output, rank, case["case_id"])
                         started = time.monotonic()
                         run_attention_case(stack, targets, intervals, case, plan, stream, manifest, receipt, device)
                         progress.write(
@@ -1155,6 +1159,7 @@ def run(args, receipt):
                         )
                         progress.flush()
                         receipt.pop("failed_case", None)
+                        mark_case(args.output, rank, None)
                 finally:
                     intervals.restore()
                 receipt["bound_caches_last_case"] = stack.bound
@@ -1245,7 +1250,11 @@ def main():
         if not path.exists() and not (args.output / f"progress-rank-{rank}.jsonl").exists():
             raise SystemExit("--resume needs a preserved (interrupted) run in --output")
         if path.exists():
-            if json.loads(path.read_text()).get("state") == "complete_pending_admission":
+            try:
+                prior_state = json.loads(path.read_text()).get("state")
+            except json.JSONDecodeError:
+                prior_state = "truncated"  # killed while writing it; archived all the same
+            if prior_state == "complete_pending_admission":
                 raise SystemExit("--resume: the run already completed")
             # keep the interrupted attempt's receipt (with its traceback) as evidence
             attempts = len(list(args.output.glob(f"rank-{rank}.attempt-*.json")))

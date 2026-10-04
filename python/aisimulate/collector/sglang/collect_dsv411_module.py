@@ -48,6 +48,7 @@ from collector.dsv411.runtime import (
     device_witness,
     failed_cases,
     finite,
+    mark_case,
     new_receipt,
     prepare_private_caches,
     reduce_layer_intervals,
@@ -431,7 +432,12 @@ def release_query_tokens(runner, reqs, prefix, query):
 def run_generation_case(runner, bench, token_ids, case, plan, state, intervals, stream, manifest, receipt):
     batch_size, prefix = case["batch_size"], case["past_kv"]
     receipt["failed_case"] = case["case_id"]  # cleared when the case completes
+    mark_case(stream.output, stream.rank, case["case_id"])
+    import torch
+
     runner.clear()
+    torch.cuda.synchronize()
+    torch.cuda.empty_cache()
     state.phase = "generation"
     intervals.active = False
     entries = manifest["entries"]
@@ -482,6 +488,10 @@ def run_context_group(runner, bench, token_ids, cases, plan, state, intervals, s
     batch_size, prefix = cases[0]["batch_size"], cases[0]["past_kv"]
     reseed = prefix <= seed_tokens_per_request(plan, batch_size, 0)
     runner.clear()
+    # hundreds of cases leave the caching allocator fragmented; a 262144-token eager prefill needs
+    # multi-GB contiguous temporaries (one shard hit allocation retries, then an illegal access)
+    torch.cuda.synchronize()
+    torch.cuda.empty_cache()
     state.phase = "context"
     intervals.active = False
     entries = manifest["entries"]
@@ -492,6 +502,7 @@ def run_context_group(runner, bench, token_ids, cases, plan, state, intervals, s
     for case in cases:
         started = time.monotonic()
         receipt["failed_case"] = case["case_id"]  # cleared when the case completes
+        mark_case(stream.output, stream.rank, case["case_id"])
         query = case["query"]
         for sample in range(plan["warmup"] + plan["iterations"]):
             if prefix and reseed:
@@ -547,6 +558,7 @@ def run_context_group(runner, bench, token_ids, cases, plan, state, intervals, s
                 release_query_tokens(runner, reqs, prefix, query)
         progress(case, started)
         receipt.pop("failed_case", None)
+        mark_case(stream.output, stream.rank, None)
     runner.clear()
 
 
@@ -917,6 +929,8 @@ def run(args, receipt):
         # cases that killed a preserved attempt are framework-side failures: recorded, skipped, never retried here
         receipt["failed_cases"] = failed_cases(args.output)
         done = done | set(receipt["failed_cases"])
+        for marker in args.output.glob("current-rank-*.case"):
+            marker.unlink()
         receipt["resume"] = dict(skipped_cases=len(done), kept_rows=stream.rows, failed=sorted(receipt["failed_cases"]))
     state, intervals = State(), Intervals()
     try:
@@ -954,6 +968,7 @@ def run(args, receipt):
                     )
                     progress(case, started)
                     receipt.pop("failed_case", None)
+                    mark_case(stream.output, stream.rank, None)
             intervals.restore()
             del runner
             gc.collect()
@@ -1029,7 +1044,11 @@ def main():
         if not path.exists() and not (args.output / f"progress-rank-{rank}.jsonl").exists():
             raise SystemExit("--resume needs a preserved (interrupted) run in --output")
         if path.exists():
-            if json.loads(path.read_text()).get("state") == "complete_pending_admission":
+            try:
+                prior_state = json.loads(path.read_text()).get("state")
+            except json.JSONDecodeError:
+                prior_state = "truncated"  # killed while writing it; archived all the same
+            if prior_state == "complete_pending_admission":
                 raise SystemExit("--resume: the run already completed")
             # keep the interrupted attempt's receipt (with its traceback) as evidence
             attempts = len(list(args.output.glob(f"rank-{rank}.attempt-*.json")))

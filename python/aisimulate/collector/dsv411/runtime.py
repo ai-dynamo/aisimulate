@@ -335,15 +335,33 @@ def completed_cases(output: Path, plan: dict) -> set[str]:
     return (done or set()) & planned
 
 
+def mark_case(output: Path, rank: int, case_id: str | None) -> None:
+    """Leave the id of the running attention case in ``current-rank-N.case`` so an attempt that dies
+    without writing a receipt (SIGABRT after an illegal access, torchrun SIGTERM) still names it."""
+    marker = output / f"current-rank-{rank}.case"
+    if case_id is None:
+        marker.unlink(missing_ok=True)
+    else:
+        marker.write_text(case_id)
+
+
 def failed_cases(output: Path) -> dict[str, str]:
-    """case_id -> error of the attention cases that killed preserved attempts of this run
-    (``rank-*.attempt-*.json`` receipts). Resuming skips them and records them as failures."""
+    """case_id -> error of the attention cases that killed preserved attempts of this run: the
+    ``failed_case`` of the archived ``rank-*.attempt-*.json`` receipts (unparseable receipts of hard-killed
+    ranks are skipped) and the leftover ``current-rank-*.case`` markers. Resuming skips and records them."""
     failed: dict[str, str] = {}
     for receipt_path in sorted(output.glob("rank-*.attempt-*.json")):
-        receipt = json.loads(receipt_path.read_text())
+        try:
+            receipt = json.loads(receipt_path.read_text())
+        except json.JSONDecodeError:
+            continue  # the rank was killed while writing it; the marker below still names the case
         case = receipt.get("failed_case")
         if case:
             failed.setdefault(case, receipt.get("error", "unknown error"))
+    for marker in sorted(output.glob("current-rank-*.case")):
+        case = marker.read_text().strip()
+        if case:
+            failed.setdefault(case, f"attempt died without a receipt while running it ({marker.name})")
     return failed
 
 
@@ -364,6 +382,7 @@ class RowStream:
         else:
             self.stream = path.open("x")
         self.plan, self.provenance, self.rank = plan, provenance, rank
+        self.output = path.parent
 
     def write(
         self, entry: dict, case: dict, *, latency: float, kernel_source: str, used_cuda_graph: bool, sample: int
@@ -417,4 +436,7 @@ def new_receipt(rank: int, backend: str) -> dict:
 
 def write_receipt(path: Path, receipt: dict) -> None:
     receipt["finished_unix_ns"] = time.time_ns()
-    path.write_text(json.dumps(receipt, indent=2, sort_keys=True, default=str) + "\n")
+    # atomic: a rank killed mid-write must not leave a truncated receipt behind
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(receipt, indent=2, sort_keys=True, default=str) + "\n")
+    os.replace(tmp, path)
