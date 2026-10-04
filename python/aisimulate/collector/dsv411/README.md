@@ -59,4 +59,24 @@ python -m collector.dsv411.publish --system h20_3e --backend sglang --systems-ro
     --runs raw/sglang-tp2-s0 ... --image lmsysorg/sglang:v0.5.21 --torch 2.13.0 --nccl 2.30.7
 ```
 
-The full grid is ~3.3k cases / ~29k physical keys per (backend, TP); shard it across GPU pairs.
+The full grid is ~3.3k cases / ~29k physical keys per (backend, TP); shard it across GPU pairs
+(`--shard i/n` round-robins whole seed groups: the sglang producer seeds one (batch, past kv) prefix
+and measures every query length on it).
+
+## Interrupted runs, failures, admission
+
+* A run dies as a whole (torchrun). `--resume` on the same `--output` skips the attention cases every
+  rank finished (intersection of the `progress-rank-*.jsonl` files), keeps their rows, archives the
+  interrupted attempt's receipt as `rank-N.attempt-K.json`, and re-measures the interrupted case and
+  the token components.
+* A case that kills an attempt is a framework-side observation, not a retry target: each rank keeps
+  the running case in `current-rank-N.case` (archived per rank on resume, never deleted, so every rank
+  derives the same set); the next attempt records it under `failed_cases` in its receipt and skips it.
+  `aggregate_run` drops the keys of the failed cases when all ranks name the same set and reports them,
+  and the publisher writes them into the admission record.
+* Known limits recorded this way on H20 (sglang 0.5.21 / vLLM 0.30.0): sglang's captured decode graph
+  asserts at kv_len 1,048,576 (the grid's generation ladder tops at 1,048,575, the last decode a 1M
+  context can run); sglang's Triton w8a8 block-fp8 GEMM (the only path for this checkpoint's 32-wide
+  weight blocks) forms int32 offsets, so context forwards above `2^31 / max weight dim` tokens
+  (131072 at TP2) are refused up front as `KernelLimit` failures (`FIXME(kernel-limit)` in the
+  producer); vLLM's engram at 262144 tokens does not fit a TP2 rank next to its table shard.
