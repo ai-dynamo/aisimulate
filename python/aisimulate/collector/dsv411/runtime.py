@@ -368,10 +368,11 @@ def failed_cases(output: Path) -> dict[str, str]:
 
 
 def fill_random(tensor, generator, *, chunk_bytes: int = 256 << 20) -> int:
-    """Bounded random contents for a KV / index cache tensor (random_kv seeding). fp8 and packed uint8
-    payloads get bytes in [0x00, 0x3F] with a random sign bit (e4m3 magnitudes <= 1.875, never NaN/Inf);
-    bf16 / fp16 / fp32 get uniform(-1, 1); integer tensors (slot mappings, block tables) are left alone.
-    Returns the bytes written."""
+    """Bounded random contents for a KV / index cache tensor (random_kv seeding). Byte-addressed caches (fp8
+    payloads, packed uint8 rows that interleave payload and scales) get bytes in [0x30, 0x3F] with a random
+    sign bit: read as fp8 e4m3 they are magnitudes 0.25..1.875, read as the high byte of a bf16/fp16/fp32
+    scale they are tiny finite values - no NaN/Inf whatever the row layout. bf16 / fp16 / fp32 tensors get
+    uniform(-1, 1); integer tensors (slot mappings, block tables) are left alone. Returns the bytes written."""
     import torch
 
     if not tensor.is_cuda or tensor.numel() == 0:
@@ -387,7 +388,7 @@ def fill_random(tensor, generator, *, chunk_bytes: int = 256 << 20) -> int:
         flat = torch.empty(0, dtype=torch.uint8, device=tensor.device).set_(tensor.untyped_storage())
         for start in range(0, flat.numel(), chunk_bytes):
             part = flat[start : start + chunk_bytes]
-            part.random_(0, 0x40, generator=generator)
+            part.random_(0x30, 0x40, generator=generator)
             part.bitwise_or_(
                 torch.randint(0, 2, part.shape, dtype=torch.uint8, device=part.device, generator=generator) << 7
             )
