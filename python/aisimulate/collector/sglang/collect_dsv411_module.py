@@ -498,6 +498,13 @@ def run_generation_case(runner, bench, token_ids, case, plan, state, intervals, 
     runner.clear()
 
 
+def _pool_exhausted(error: BaseException) -> bool:
+    """sglang's paged allocators ask the tree cache to evict when a pool runs dry; the bench path's
+    TreeCacheNamespace has no evict_for_alloc (AttributeError) or the SWA pool reports the shortfall."""
+    text = str(error)
+    return "evict_for_alloc" in text or "eviction insufficient" in text
+
+
 def run_context_group(runner, bench, token_ids, cases, plan, state, intervals, stream, manifest, receipt, progress):
     """Context cases sharing (batch, past kv): the prefix is seeded once and every query length is measured
     on it. Short prefixes (one seeding forward) are re-seeded per sample from a cleared pool; prefix-free
@@ -531,58 +538,74 @@ def run_context_group(runner, bench, token_ids, cases, plan, state, intervals, s
             continue
         receipt["failed_case"] = case["case_id"]  # cleared when the case completes
         mark_case(stream.output, stream.rank, case["case_id"])
-        for sample in range(plan["warmup"] + plan["iterations"]):
-            if prefix and reseed:
-                runner.clear()
-                reqs, _, _ = seed_prefix(runner, bench, token_ids, batch_size, prefix, plan, state.gemm_token_limit)
-            # qualify the MEASURED forward only (seeding forwards would add their own 40 observations)
-            state.qualifying = sample == 0
-            state.observations = []
-            if prefix:
-                for req in reqs:
-                    _reset_fill(req, prefix)
-                bench.prepare_extend_inputs_for_correctness_test(
-                    argparse.Namespace(cut_len=prefix),
-                    [token_ids[: prefix + query] for _ in reqs],
-                    reqs,
-                    runner.torch_runner,
-                )
-                slide_windows(runner, reqs, prefix)
-            else:
-                runner.clear()
-                reqs = bench.prepare_synthetic_inputs_for_latency_test(
-                    batch_size, query, [token_ids[:query] for _ in range(batch_size)]
-                )
-            intervals.active = sample >= plan["warmup"]
-            intervals.buckets[None] = []
-            _, _, measured = runner.extend(reqs)
-            if state.qualifying:
-                flags = torch.stack([f for _, _, a, b in state.observations for f in (a, b)]).cpu().tolist()
-                bad = [
-                    i for k, (i, _, _, _) in enumerate(state.observations) if not (flags[2 * k] and flags[2 * k + 1])
-                ]
-                if len(state.observations) != 40 or bad:
-                    raise RuntimeError(
-                        f"{case['case_id']}: attention outputs non-finite/zero or incomplete at layers {bad[:5]}"
+        try:
+            for sample in range(plan["warmup"] + plan["iterations"]):
+                if prefix and reseed:
+                    runner.clear()
+                    reqs, _, _ = seed_prefix(runner, bench, token_ids, batch_size, prefix, plan, state.gemm_token_limit)
+                # qualify the MEASURED forward only (seeding forwards would add their own 40 observations)
+                state.qualifying = sample == 0
+                state.observations = []
+                if prefix:
+                    for req in reqs:
+                        _reset_fill(req, prefix)
+                    bench.prepare_extend_inputs_for_correctness_test(
+                        argparse.Namespace(cut_len=prefix),
+                        [token_ids[: prefix + query] for _ in reqs],
+                        reqs,
+                        runner.torch_runner,
                     )
-                state.qualifying = False
-            if intervals.active:
-                records = intervals.take(None)
-                if any(captured for *_, captured in records):
-                    raise RuntimeError("context intervals must be eager")
-                for entry, ms, witnesses, _ in reduce_layer_intervals(records, reps, entries, "context").values():
-                    stream.write(
-                        entry,
-                        case,
-                        latency=ms,
-                        kernel_source="+".join(sorted(witnesses)),
-                        used_cuda_graph=False,
-                        sample=sample,
+                    slide_windows(runner, reqs, prefix)
+                else:
+                    runner.clear()
+                    reqs = bench.prepare_synthetic_inputs_for_latency_test(
+                        batch_size, query, [token_ids[:query] for _ in range(batch_size)]
                     )
-                stream.flush()
+                intervals.active = sample >= plan["warmup"]
+                intervals.buckets[None] = []
+                _, _, measured = runner.extend(reqs)
+                if state.qualifying:
+                    flags = torch.stack([f for _, _, a, b in state.observations for f in (a, b)]).cpu().tolist()
+                    bad = [
+                        i
+                        for k, (i, _, _, _) in enumerate(state.observations)
+                        if not (flags[2 * k] and flags[2 * k + 1])
+                    ]
+                    if len(state.observations) != 40 or bad:
+                        raise RuntimeError(
+                            f"{case['case_id']}: attention outputs non-finite/zero or incomplete at layers {bad[:5]}"
+                        )
+                    state.qualifying = False
+                if intervals.active:
+                    records = intervals.take(None)
+                    if any(captured for *_, captured in records):
+                        raise RuntimeError("context intervals must be eager")
+                    for entry, ms, witnesses, _ in reduce_layer_intervals(records, reps, entries, "context").values():
+                        stream.write(
+                            entry,
+                            case,
+                            latency=ms,
+                            kernel_source="+".join(sorted(witnesses)),
+                            used_cuda_graph=False,
+                            sample=sample,
+                        )
+                    stream.flush()
+                intervals.active = False
+                if prefix and not reseed:
+                    release_query_tokens(runner, reqs, prefix, query)
+        except (AttributeError, RuntimeError) as error:
+            if not _pool_exhausted(error):
+                raise
+            # the bench path has no radix cache to evict into: the case does not fit the plan's pools.
+            # A classified record, not a crash; the pools are reset and the group goes on.
+            receipt.setdefault("failed_cases", {})[case["case_id"]] = f"PoolCapacity: {error}"
+            receipt.pop("failed_case", None)
+            mark_case(stream.output, stream.rank, None)
             intervals.active = False
-            if prefix and not reseed:
-                release_query_tokens(runner, reqs, prefix, query)
+            runner.clear()
+            if prefix and not reseed:  # the shared seeded prefix went with the pools
+                reqs, _, _ = seed_prefix(runner, bench, token_ids, batch_size, prefix, plan, state.gemm_token_limit)
+            continue
         progress(case, started)
         receipt.pop("failed_case", None)
         mark_case(stream.output, stream.rank, None)
@@ -1002,9 +1025,19 @@ def run(args, receipt):
                     continue
                 for case in group:
                     started = time.monotonic()
-                    run_generation_case(
-                        runner, bench, token_ids, case, plan, state, intervals, stream, manifest, receipt
-                    )
+                    try:
+                        run_generation_case(
+                            runner, bench, token_ids, case, plan, state, intervals, stream, manifest, receipt
+                        )
+                    except (AttributeError, RuntimeError) as error:
+                        if not _pool_exhausted(error):
+                            raise
+                        receipt.setdefault("failed_cases", {})[case["case_id"]] = f"PoolCapacity: {error}"
+                        receipt.pop("failed_case", None)
+                        mark_case(stream.output, stream.rank, None)
+                        intervals.active = False
+                        runner.clear()
+                        continue
                     progress(case, started)
                     receipt.pop("failed_case", None)
                     mark_case(stream.output, stream.rank, None)
