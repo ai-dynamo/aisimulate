@@ -1006,7 +1006,7 @@ engine:
 | `engine.model` | Required | `x` | `-` | Nonempty and fixed during recommendation. |
 | `engine.hardware` | Required | `auto` | `-` | Fallback hardware identifier; `recommend` also accepts `auto` resolved from `optimization.hardware`. P/D workers may override it. |
 | `engine.backend` | `vllm` | `{choices: [vllm, sglang]}` | `-` | `vllm`, `sglang`, or `trtllm`; explicit choices may include supported alternatives. |
-| `engine.backend_version` | `null` | `x` | `-` | Fixed when set. |
+| `engine.backend_version` | `null` | `x` | `-` | Fixed when set. Must be a queryable version for the hardware and backend: the alias `current`, `previous` or `next`, or the version it resolves to (see [`query_versions.yaml`](../../python/aisimulate/src/aisimulate_core/systems/query_versions.yaml)). Other versions with performance data, including some support-matrix `PASS` rows, are rejected with the accepted list. |
 | `engine.speculation` | Omitted (disabled) | `x` | `-` | Optional ngram draft count, conditional acceptance rates, and sampling seed; see [prompt lookup](#prompt-lookup-ngram-speculative-decoding). |
 | `engine.context_length` | `"max"` | `x` | `-` | `"max"` derives the effective maximum from the resolved Hugging Face model config; a concrete value must be positive. |
 | `engine.workers` | Mode-dependent | `x` | `-` | Aggregated role; prefill plus decode roles; or the optional opposite-phase companion for AFD+P/D. Aggregated and disaggregated modes also support an optional analytical `encoder` pool. |

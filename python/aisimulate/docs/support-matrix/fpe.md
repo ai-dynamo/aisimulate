@@ -10,6 +10,20 @@ disaggregated rate matching, deployment validity, or prediction accuracy.
 Those behaviors require a smaller end-to-end qualification matrix with their
 own evidence.
 
+## Versions the CLI accepts
+
+The matrix probes every backend version that has bundled performance data.
+`aisimulate predict` and `aisimulate recommend` accept only the queryable
+versions of each GPU and backend: `current` and `previous`, set in
+[`query_versions.yaml`](../../src/aisimulate_core/systems/query_versions.yaml),
+and `next`, the newest version above `current` that has data. A `PASS` row at
+any other version is SDK coverage only; the CLI rejects it with an error that
+names the accepted versions. To run the same model, GPU and backend from the
+CLI, set `backend_version: current` (or a version the error names).
+`AIC_ALLOW_UNLISTED_VERSIONS=1` lifts the version check for raw data access,
+but it does not qualify that version for the CLI and later stages can still
+fail.
+
 ## Row identity
 
 Each row records the model and architecture, system, backend and version,
