@@ -25,7 +25,7 @@ import time
 import types
 from pathlib import Path
 
-from .contract import RECEIPT_SCHEMA, canonical_json, make_row, regime_for, validate_row
+from .contract import RECEIPT_SCHEMA, canonical_json, kv_seed_of, make_row, regime_for, validate_row
 
 JIT_CACHE_ENV = (
     ("TRITON_CACHE_DIR", "triton"),
@@ -367,6 +367,66 @@ def failed_cases(output: Path) -> dict[str, str]:
     return failed
 
 
+def fill_random(tensor, generator, *, chunk_bytes: int = 256 << 20) -> int:
+    """Bounded random contents for a KV / index cache tensor (random_kv seeding). fp8 and packed uint8
+    payloads get bytes in [0x00, 0x3F] with a random sign bit (e4m3 magnitudes <= 1.875, never NaN/Inf);
+    bf16 / fp16 / fp32 get uniform(-1, 1); integer tensors (slot mappings, block tables) are left alone.
+    Returns the bytes written."""
+    import torch
+
+    if not tensor.is_cuda or tensor.numel() == 0:
+        return 0
+    if tensor.dtype in (torch.bfloat16, torch.float16, torch.float32):
+        flat = tensor.view(-1)
+        step = max(1, chunk_bytes // tensor.element_size())
+        for start in range(0, flat.numel(), step):
+            flat[start : start + step].uniform_(-1.0, 1.0, generator=generator)
+        return tensor.numel() * tensor.element_size()
+    if tensor.dtype == torch.uint8 or (tensor.element_size() == 1 and "float8" in str(tensor.dtype)):
+        flat = tensor.view(torch.uint8).view(-1)
+        for start in range(0, flat.numel(), chunk_bytes):
+            part = flat[start : start + chunk_bytes]
+            part.random_(0, 0x40, generator=generator)
+            part.bitwise_or_(
+                torch.randint(0, 2, part.shape, dtype=torch.uint8, device=part.device, generator=generator) << 7
+            )
+        return flat.numel()
+    return 0
+
+
+def randomize_object_tensors(root, generator, *, name_filter=None, depth: int = 4) -> dict:
+    """Walk an object graph (attributes, lists, dicts) and fill_random every CUDA float / fp8 tensor and the
+    uint8 tensors whose attribute path passes ``name_filter``. Returns {tensors, bytes}."""
+    import torch
+
+    seen, stats = set(), dict(tensors=0, bytes=0)
+
+    def visit(obj, path, level):
+        if level > depth or id(obj) in seen:
+            return
+        seen.add(id(obj))
+        if isinstance(obj, torch.Tensor):
+            if obj.dtype == torch.uint8 and not (name_filter and name_filter(path)):
+                return
+            written = fill_random(obj, generator)
+            if written:
+                stats["tensors"] += 1
+                stats["bytes"] += written
+            return
+        if isinstance(obj, (list, tuple)):
+            for i, item in enumerate(obj):
+                visit(item, f"{path}[{i}]", level + 1)
+        elif isinstance(obj, dict):
+            for k, item in obj.items():
+                visit(item, f"{path}[{k}]", level + 1)
+        elif hasattr(obj, "__dict__"):
+            for k, item in vars(obj).items():
+                visit(item, f"{path}.{k}", level + 1)
+
+    visit(root, "pool", 0)
+    return stats
+
+
 class RowStream:
     def __init__(self, path: Path, *, plan: dict, provenance: dict, rank: int, keep_cases: set[str] | None = None):
         """``keep_cases`` (resume): rewrite an existing row file keeping only the rows of those case ids
@@ -403,6 +463,7 @@ class RowStream:
             kernel_source=kernel_source,
             regime=regime,
             used_cuda_graph=used_cuda_graph,
+            kv_seed=kv_seed_of(self.plan),
         )
         row.update(
             self.provenance,

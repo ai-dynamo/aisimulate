@@ -40,6 +40,13 @@ TOKEN_COMPONENTS = ("engram", "mhc", "shared_linear")
 REGIME_CONTEXT = "eager_drained"
 REGIME_GENERATION = "cuda_graph"
 REGIME_EXCEPTION = "eager_exception"
+# how the KV behind a cached-prefill / decode row got there (plan input, stored per row):
+#   real_kv   - chunked prefills of corpus tokens through the model (serving-faithful content, hours of
+#               seeding at 1M kv; with dummy weights the indexer's top-k is pseudo-random either way)
+#   random_kv - the serving allocation bookkeeping (slots, windows, pages) without the forwards; the
+#               caches hold bounded random values. Same kernels and shapes; top-k gathers over a uniform
+#               selection (locality slightly pessimistic) - a top-k delta calibration corrects that if needed.
+KV_SEED_REGIMES = ("real_kv", "random_kv")
 PURPOSES = ("smoke", "calibration")
 
 # Column order of the structure key per component (must match perf_database/dsv411.rs row_structure).
@@ -387,6 +394,8 @@ def validate_plan(
             raise ValueError(f"invalid {key}")
     if plan["regimes"] != {"context": REGIME_CONTEXT, "generation": REGIME_GENERATION}:
         raise ValueError("dsv411 regimes are fixed: context eager_drained, generation cuda_graph")
+    if kv_seed_of(plan) not in KV_SEED_REGIMES:
+        raise ValueError(f"kv_seed_regime must be one of {KV_SEED_REGIMES}")
     for exception in plan.get("regime_exceptions", []):
         if (
             exception.get("component") not in STRUCTURE_FIELDS
@@ -446,8 +455,20 @@ def regime_for(plan: dict, component: str, phase: str) -> tuple[str, bool]:
 # --------------------------------------------------------------------------------------------
 # rows
 # --------------------------------------------------------------------------------------------
+def kv_seed_of(plan: dict) -> str:
+    return plan.get("kv_seed_regime", "real_kv")
+
+
 def make_row(
-    entry: dict, case: dict, *, tp_size: int, latency: float, kernel_source: str, regime: str, used_cuda_graph: bool
+    entry: dict,
+    case: dict,
+    *,
+    tp_size: int,
+    latency: float,
+    kernel_source: str,
+    regime: str,
+    used_cuda_graph: bool,
+    kv_seed: str = "real_kv",
 ) -> dict:
     component = entry["component"]
     batch, query, kv_len = coordinates(case)
@@ -462,7 +483,7 @@ def make_row(
         kernel_source=kernel_source,
         measurement_scope="local_compute",
         measurement_regime=regime,
-        kv_seed_regime="real_kv" if attention_like and (case["phase"] == "generation" or kv_len > 0) else "n/a",
+        kv_seed_regime=kv_seed if attention_like and (case["phase"] == "generation" or kv_len > 0) else "n/a",
         used_cuda_graph=used_cuda_graph,
     )
     return row
@@ -497,8 +518,10 @@ def validate_row(row: dict) -> None:
         raise ValueError("generation rows are cuda_graph (or a declared eager_exception)")
     attention_like = component in ATTENTION_COMPONENTS
     if attention_like:
-        if (row["phase"] == "generation" or row["kv_len"] > 0) and row["kv_seed_regime"] != "real_kv":
-            raise ValueError("decode and cached-prefill rows require real_kv seeding")
+        if (row["phase"] == "generation" or row["kv_len"] > 0) and row["kv_seed_regime"] not in KV_SEED_REGIMES:
+            raise ValueError("decode and cached-prefill rows carry a KV seeding regime (real_kv | random_kv)")
+        if row["phase"] == "context" and row["kv_len"] == 0 and row["kv_seed_regime"] != "n/a":
+            raise ValueError("prefix-free context rows seed no KV")
         if row["phase"] == "generation" and row["query"] != 1:
             raise ValueError("generation rows measure one query token")
     elif (row["batch_size"], row["kv_len"], row["kv_seed_regime"]) != (1, 0, "n/a"):

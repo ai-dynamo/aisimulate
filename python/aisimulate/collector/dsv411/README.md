@@ -38,7 +38,13 @@ carries a structure) produces the row, the other 39 layers still execute for KV 
   indexer + MLA → graph: `_o_proj`), replayed per layer. Token components: one CUDA graph per
   native sub-call. An eager generation measurement is admitted only when the plan declares
   `--regime-exception component=reason` (`measurement_regime=eager_exception`).
-* Real KV: every cached-prefill / decode row is seeded by chunked prefills (8192) of corpus tokens.
+* KV seeding (`plan.kv_seed_regime`, stored per row as `kv_seed_regime`): `random_kv` (default) runs
+  the serving allocation bookkeeping for the prefix (slots, pages, window sliding) without the forwards
+  and fills the caches once with bounded random contents - same kernels and shapes, seconds instead of
+  hours at 1M kv; the indexer's top-k then gathers a uniform selection (slightly pessimistic locality),
+  which a top-k delta calibration corrects if the A/B against `real_kv` rows shows a bias. `real_kv`
+  seeds every cached-prefill / decode row by chunked prefills (8192) of corpus tokens (the TP2 H20
+  calibration of 2026-10-04 was collected this way).
   SGLang: the out-of-window SWA slots are released before every chunk and before the measured
   extend, where the serving scheduler releases them (`slide_windows`), so the hybrid SWA pool only
   holds the windows plus one extend; the pool limits live in the plan (`plan.py` `DEFAULT_POOL`) and

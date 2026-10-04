@@ -174,6 +174,7 @@ def run_cell(backend: str, kind: str, phase: str, *, output: Path | None = None)
         iterations=5,
         seed=20261003,
         regimes=dict(grid["regimes"]),
+        kv_seed_regime="real_kv",  # a capture mirrors the serving probe: real prefill of the 4096-token prompt
         regime_exceptions=[],
         expected_gpu=os.environ.get("DSV411_EXPECTED_GPU", "H20"),
         expected_sm=producer.EXPECTED_SM[os.environ.get("DSV411_EXPECTED_GPU", "H20")],

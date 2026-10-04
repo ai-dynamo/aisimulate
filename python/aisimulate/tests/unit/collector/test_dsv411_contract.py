@@ -404,3 +404,44 @@ def test_admission_drops_only_the_failed_component_of_a_token_case(tmp_path, man
     rows, meta = _admit("sglang", raw)
     assert meta["failed_components"] == {token["case_id"]: {"mhc": "KernelLimit: 131072 tokens x 20480"}}
     assert any(r["component"] == "engram" for r in rows)
+
+
+def test_rows_carry_the_plans_kv_seed_regime(manifests):
+    manifest = manifests["sglang"]
+    entry = next(e for e in manifest["entries"] if e["component"] == "attention_core" and e["phase"] == "context")
+    case = dict(kind="attention", phase="context", batch_size=2, query=64, past_kv=4096, case_id="c", index=0)
+    for regime in contract.KV_SEED_REGIMES:
+        row = contract.make_row(
+            entry,
+            case,
+            tp_size=2,
+            latency=1.0,
+            kernel_source="k",
+            regime="eager_drained",
+            used_cuda_graph=False,
+            kv_seed=regime,
+        )
+        assert row["kv_seed_regime"] == regime
+    fresh = dict(case, past_kv=0, case_id="f")
+    row = contract.make_row(
+        entry,
+        fresh,
+        tp_size=2,
+        latency=1.0,
+        kernel_source="k",
+        regime="eager_drained",
+        used_cuda_graph=False,
+        kv_seed="random_kv",
+    )
+    assert row["kv_seed_regime"] == "n/a"
+    plan = _plan("sglang", manifest, kv_seed_regime="bogus")
+    producer = PRODUCERS["sglang"]
+    with pytest.raises(ValueError, match="kv_seed_regime"):
+        contract.validate_plan(
+            plan,
+            manifest,
+            framework_commit=producer.FRAMEWORK_COMMIT,
+            framework_version=producer.FRAMEWORK_VERSION,
+            expected_sm=producer.EXPECTED_SM,
+            required_sources=producer.REQUIRED_SOURCES,
+        )

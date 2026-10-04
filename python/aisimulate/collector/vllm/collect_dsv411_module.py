@@ -50,6 +50,7 @@ from collector.dsv411.runtime import (
     device_witness,
     dispatch_label,
     failed_cases,
+    fill_random,
     finite,
     mark_case,
     new_receipt,
@@ -197,6 +198,8 @@ class AttentionStack:
     def __init__(self, vllm_config, plan, device):
         import torch
         from vllm.model_executor.layers.layernorm import RMSNorm
+
+        self.generator = torch.Generator(device=device).manual_seed(plan["seed"] + 7919)
         from vllm.models.deepseek_v41.nvidia.model import _select_dsv4_attn_cls
 
         self.torch, self.vllm_config, self.plan, self.device = torch, vllm_config, plan, device
@@ -289,7 +292,7 @@ class AttentionStack:
         strides[0] = spec.page_size_bytes // dtype_size
         return torch.empty_strided(shape, tuple(strides), dtype=spec.dtype, device=self.device).zero_()
 
-    def bind_caches(self, batch, seq_len, ring_tokens):
+    def bind_caches(self, batch, seq_len, ring_tokens, randomize=False):
         import torch
 
         from collector.vllm.collect_dsv4_attn import _cache_blocks_for_block_size
@@ -314,7 +317,10 @@ class AttentionStack:
                 blocks = batch * ring + 64
             else:
                 blocks = _cache_blocks_for_block_size(batch, seq_len, spec.block_size)
-            registered.bind_kv_cache(self._allocate(registered.get_attn_backend(), spec, blocks))
+            cache = self._allocate(registered.get_attn_backend(), spec, blocks)
+            if randomize:  # random_kv: bounded random contents instead of seeding forwards
+                fill_random(cache, self.generator)
+            registered.bind_kv_cache(cache)
             bound[layer.prefix] = dict(
                 spec=type(spec).__name__,
                 block_size=spec.block_size,
@@ -644,9 +650,10 @@ def run_attention_case(stack, targets, intervals, case, plan, stream, manifest, 
     intervals.active = False
     total = prefix + query if case["phase"] == "context" else prefix + 1
     new_tokens = query if case["phase"] == "context" else 1
-    stack.bind_caches(batch, total, ring_tokens=max(new_tokens, chunk if prefix else 0))
+    random_kv = contract.kv_seed_of(plan) == "random_kv"
+    stack.bind_caches(batch, total, ring_tokens=max(new_tokens, chunk if prefix else 0), randomize=random_kv)
     full = common_metadata(batch, total, query if case["phase"] == "context" else 1, device)
-    if prefix:
+    if prefix and not random_kv:  # random_kv: the slot mapping is positional, nothing to book-keep
         seed_prefix(stack, batch, prefix, chunk, device, full.block_table_tensor)
     entries, reps = manifest["entries"], manifest["representatives"]
     if case["phase"] == "context":
@@ -1145,6 +1152,7 @@ def run(args, receipt):
                 for norm in stack.norms:
                     norm.weight.data.fill_(1.0)
                 validate_attention_geometry(list(stack.attns), manifest)
+                receipt["kv_seed"] = dict(regime=contract.kv_seed_of(plan))
                 receipt["native_pool"] = dict(
                     attention_class=stack.attention_class,
                     backend=stack.attns[2].get_attn_backend().get_name(),

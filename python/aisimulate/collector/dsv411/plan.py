@@ -80,6 +80,13 @@ def main(argv=None):
     )
     parser.add_argument("--pool", default=None, help="JSON overriding the default pool limits")
     parser.add_argument(
+        "--kv-seed",
+        choices=list(contract.KV_SEED_REGIMES),
+        default="random_kv",
+        help="how cached-prefill / decode KV is seeded (stored per row): random_kv = serving allocation "
+        "bookkeeping + bounded random cache contents (default); real_kv = chunked prefills of corpus tokens",
+    )
+    parser.add_argument(
         "--regime-exception",
         action="append",
         default=[],
@@ -139,6 +146,7 @@ def main(argv=None):
         iterations=args.iterations,
         seed=args.seed,
         regimes=dict(grid["regimes"]),
+        kv_seed_regime=args.kv_seed,
         regime_exceptions=[
             dict(component=item.split("=", 1)[0], phase="generation", reason=item.split("=", 1)[1])
             for item in args.regime_exception

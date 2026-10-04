@@ -51,6 +51,7 @@ from collector.dsv411.runtime import (
     mark_case,
     new_receipt,
     prepare_private_caches,
+    randomize_object_tensors,
     reduce_layer_intervals,
     source_hashes,
     write_receipt,
@@ -265,6 +266,18 @@ def build_attention_runner(bench, server, model_config, gpu_id, plan, manifest, 
     )
     runner.alloc_memory_pool()
     runner.init_attention_backends()
+    if contract.kv_seed_of(plan) == "random_kv":
+        # random_kv: the pools hold bounded random contents once; seeding only does the allocation bookkeeping
+        generator = torch.Generator(device="cuda").manual_seed(plan["seed"] + 7919 * (gpu_id + 1))
+        receipt["kv_seed"] = dict(
+            regime="random_kv",
+            **randomize_object_tensors(
+                runner.token_to_kv_pool, generator, name_filter=lambda path: "index" in path or "payload" in path
+            ),
+        )
+        torch.cuda.synchronize()
+    else:
+        receipt["kv_seed"] = dict(regime="real_kv")
     layers = list(runner.model.model.layers)
     # FIXME(kernel-limit): sglang 0.5.21's Triton w8a8 block-fp8 GEMM (kernels/ops/gemm/fp8_kernel.py:99-140)
     # forms A/C offsets in int32 (offs_am * stride_am, offs_cm * stride_cm), and this checkpoint's 32-wide
@@ -405,13 +418,45 @@ def seed_tokens_per_request(plan: dict, batch_size: int, done: int, token_limit:
     return max(1, min(chunk, per_forward // batch_size))
 
 
+def allocate_only(reqs, runner, bench):
+    """The allocation half of one_batch.extend (sglang 0.5.21 benchmark/one_batch.py:486-505): the
+    ScheduleBatch is built and ``prepare_for_extend`` allocates the chunk's slots into req_to_token and the
+    pools exactly as serving does - the model forward is skipped (random_kv seeding)."""
+    import torch
+
+    torch_runner = runner.torch_runner
+    tree_cache = bench.TreeCacheNamespace(
+        page_size=bench.get_schedule().page_size,
+        device=torch_runner.device,
+        token_to_kv_pool_allocator=torch_runner.token_to_kv_pool_allocator,
+    )
+    batch = bench.ScheduleBatch.init_new(
+        reqs=reqs,
+        req_to_token_pool=torch_runner.req_to_token_pool,
+        token_to_kv_pool_allocator=torch_runner.token_to_kv_pool_allocator,
+        tree_cache=tree_cache,
+        model_config=torch_runner.model_config,
+        enable_overlap=False,
+        spec_algorithm=bench.SpeculativeAlgorithm.NONE,
+    )
+    batch.prepare_for_extend()
+    next_ids = torch.randint(1000, 100000, (len(reqs),), dtype=torch.int64, device=torch_runner.device)
+    return next_ids, batch
+
+
 def seed_prefix(runner, bench, token_ids, batch_size, prefix, plan, token_limit=None):
-    """Prefill ``prefix`` real tokens per request in serving-sized chunks; returns (reqs, batch, next_ids)."""
+    """Seed ``prefix`` tokens per request in serving-sized chunks; returns (reqs, batch, next_ids).
+    real_kv: every chunk is a real prefill of corpus tokens; random_kv: every chunk is allocated (serving
+    bookkeeping, windows slid) but not computed - the pools were filled with random contents at startup."""
+    extend = (lambda reqs: allocate_only(reqs, runner, bench)) if contract.kv_seed_of(plan) == "random_kv" else None
     first = min(prefix, seed_tokens_per_request(plan, batch_size, 0, token_limit))
     reqs = bench.prepare_synthetic_inputs_for_latency_test(
         batch_size, first, [token_ids[:first] for _ in range(batch_size)]
     )
-    next_ids, _, batch = runner.extend(reqs)
+    if extend is None:
+        next_ids, _, batch = runner.extend(reqs)
+    else:
+        next_ids, batch = extend(reqs)
     done = first
     while done < prefix:
         end = min(prefix, done + seed_tokens_per_request(plan, batch_size, done, token_limit))
@@ -421,7 +466,10 @@ def seed_prefix(runner, bench, token_ids, batch_size, prefix, plan, token_limit=
             argparse.Namespace(cut_len=done), [token_ids[:end] for _ in reqs], reqs, runner.torch_runner
         )
         slide_windows(runner, reqs, done)
-        next_ids, _, batch = runner.extend(reqs)
+        if extend is None:
+            next_ids, _, batch = runner.extend(reqs)
+        else:
+            next_ids, batch = extend(reqs)
         done = end
     return reqs, batch, next_ids
 
