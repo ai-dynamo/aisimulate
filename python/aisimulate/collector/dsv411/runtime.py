@@ -375,7 +375,7 @@ def fill_random(
     byte_range: tuple[int, int] = (0x30, 0x40),
     sign_bit: bool = True,
 ) -> int:
-    """Bounded random contents for a KV / index cache tensor (random_kv seeding). Byte-addressed caches (fp8
+    """Bounded random contents for a KV / index cache tensor (synthetic_kv seeding). Byte-addressed caches (fp8
     payloads, packed uint8 rows that interleave payload and scales) get bytes in [0x30, 0x3F] with a random
     sign bit: read as fp8 e4m3 they are magnitudes 0.25..1.875, read as the high byte of a bf16/fp16/fp32
     scale they are tiny finite values - no NaN/Inf whatever the row layout. bf16 / fp16 / fp32 tensors get
