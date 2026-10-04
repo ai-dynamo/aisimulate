@@ -2637,7 +2637,7 @@ findings:
       collect_attn.py:171 hardcodes `tokens_per_block = 64` while the generator renders 32 for every trtllm deployment
       (kv_cache_config.tokens_per_block: 32 in 208/224 sm100 renders); the sm100 cubin names carry the page (fmhaSm100a…P64 vs
       …P32) so the mismatch is visible here and invisible in sm90 names — same class as the vllm block_size finding: the
-      collector should take the page from the deployment facts, not a constant. (b) sglang dsa_gen_bf16 — 0.5.21
+      collector should take the page from the deployment facts, not a constant. FIXED + VALIDATED (umbriel-b200-021, 2026-10-04): collect_attn now asks tensorrt_llm.llmapi.KvCacheConfig() for its default page (32; AIS_TRTLLM_TOKENS_PER_BLOCK is the A/B hook); re-captured in the rc29 image the collector runs fmhaSm100aKernel_QkvE4m3OBfloat16H128PagedKvCausalP32VarSeqQ256Kv128PersistentContext (ctx) and fmhaSm100fKernel_QkvE4m3OBfloat16H128PagedKvCausalP32MultiCtasKvCgaVarSeqQ8Kv256 (gen) = the serving cubins; the AIS_TRTLLM_TOKENS_PER_BLOCK=64 A/B reproduces the P64 divergence (facts/pathdiff/opcov_trt_attn_{ctx,gen}_fp8kv@1.3.0rc29{,.p64}.json in the 021 workspace). The checked-in verdict files still show the pre-fix DIVERGED state until re-graded against a serving record. (b) sglang dsa_gen_bf16 — 0.5.21
       arg_groups/overrides.py resolves DSA kv auto to fp8_e4m3 when SM major >= 10 (bfloat16 on Hopper), so serving runs
       QkvE4m3 cubins and the bf16 DSA lane is a non-case under the default deployment on Blackwell (dsa fp8 gates ALIGNED);
       grade bf16 DSA gates on sm100 only against an explicit --kv-cache-dtype bf16 record. (c) sglang glm5_dsa_attn —
