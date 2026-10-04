@@ -2684,7 +2684,11 @@ findings:
       (6) sglang moe w4a8_mxfp4_mxfp8 lane: the collector''s own guard stops at 0.5.21/SM100 ("verified only for 0.5.14 and 0.5.17
       ... re-verify framework dispatch before extending") — the sm100 identity records show gpt-oss served by FLASHINFER_MXFP4,
       so the guard can be extended once that dispatch is mirrored. (7) sglang kda: the collector''s own int32-overflow guard
-      (causal_conv1d_triton token-offset) rejects every Kimi-K3 case at the sweep''s shapes — not sm100-specific. Everything else
+      (causal_conv1d_triton token-offset) rejects every Kimi-K3 case at the sweep''s shapes — not sm100-specific; the same guard
+      trips 6/112 sglang gdn context sub-cases (batch 16-64 x seq 8192-32768, total_tokens*6144 >= 2**31) and the op''s
+      strict-completeness check then fails the whole sweep (gate cell gdn_ctx Qwen3.5-0.8B itself ALIGNED). FINAL TABLE:
+      trtllm 58/59 cells pass (9 = designed restart exits; 1 stale shared-process entry for a group that no longer exists on
+      sm100), sglang 47/52 (open: mla_context x2, moe mxfp4 guard, kda guard, gdn guard). Everything else
       (attention, gemm bf16/fp8/fp8_block, mla ctx/gen, mla_bmm, dsa/dsv4 modules across bf16/fp8/fp8_block/nvfp4, gdn, mamba2,
       mhc, compute_scale, encoder, moe fp8/fp8_block/nvfp4/bf16, msa) runs on B200. Per-cell table: facts/smoke/sweep_*.json +
       summarize_smoke.py in the 021 workspace.'
