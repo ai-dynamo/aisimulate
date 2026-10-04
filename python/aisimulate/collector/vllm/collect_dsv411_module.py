@@ -322,7 +322,8 @@ class AttentionStack:
             # (CircularBufferSpec) are a recurrence state, not a KV payload: random state made the
             # compressed KV non-finite; they keep their fresh (zero) state like a request that just started.
             if randomize and "CircularBuffer" not in type(spec).__name__:
-                fill_random(cache, self.generator)
+                # fp8_ds_mla rows: fp8 payload + UE8M0 exponent scales; 0x70..0x7E keeps both finite and non-zero
+                fill_random(cache, self.generator, byte_range=(0x70, 0x7F), sign_bit=False)
             registered.bind_kv_cache(cache)
             bound[layer.prefix] = dict(
                 spec=type(spec).__name__,
