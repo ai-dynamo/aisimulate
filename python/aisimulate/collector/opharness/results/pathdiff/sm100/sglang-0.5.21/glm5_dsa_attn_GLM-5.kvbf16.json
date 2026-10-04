@@ -1,43 +1,36 @@
 {
  "verdict": "aligned",
- "repo": "deepseek-ai/DeepSeek-V3.2",
+ "repo": "zai-org/GLM-5",
  "framework": "sglang",
  "version": "0.5.21",
- "gate_name": "dsa_gen_fp8_DeepSeek-V3.2",
+ "gate_name": "glm5_dsa_attn_GLM-5.kvbf16",
  "target_roles": [
-  "attention",
-  "dsa_indexer"
+  "attention"
  ],
- "phase": "decode",
- "phase_scoped": true,
- "kv_dtype": "fp8",
+ "phase": null,
+ "phase_scoped": false,
+ "kv_dtype": null,
  "op_hint": "mla|dsa|nsa|attn|indexer|flash|mqa|sparse|gemm|deepgemm|quant|topk",
- "capture_file": "facts/pathdiff/opcov_sgl_dsa_gen_fp8@0.5.21.json",
- "capture_sha256": "fccd608f65c23364",
+ "capture_file": "facts/pathdiff/opcov_sgl_glm5_dsa_attn@0.5.21.json",
+ "capture_sha256": "cd44a8e26887bf53",
  "capture_env": null,
  "capture_run_error": null,
  "serving_record": {
-  "id": "a5b8a9229f9f",
-  "tp": 1,
-  "kv_cache_dtype": "fp8_e4m3",
+  "id": "raw:a1be3525bd22.json",
+  "tp": null,
+  "kv_cache_dtype": null,
   "isl": 4096,
   "prefix_caching": false,
-  "raw_file": null,
+  "raw_file": "archive/retests/dsa_bf16/raw/a1be3525bd22.json",
   "candidates": 1,
-  "exec_fingerprint": "25f164c3ca79",
-  "evidence_status": "current"
+  "exec_fingerprint": null,
+  "evidence_status": null
  },
  "collector_backends": [
-  "cublas",
-  "deepgemm",
-  "dsa_nsa",
-  "sgl_kernel",
-  "torch",
-  "trtllm_fmha"
+  "dsa_nsa"
  ],
  "serving_backends": [
   "cublas",
-  "deepgemm",
   "dsa_nsa",
   "sgl_kernel",
   "trtllm_fmha",
@@ -48,13 +41,8 @@
  "role_counts": {
   "attention": {
    "collector": 1,
-   "serving": 1,
-   "matched": 1
-  },
-  "dsa_indexer": {
-   "collector": 2,
    "serving": 2,
-   "matched": 2
+   "matched": 1
   }
  },
  "evidence": "archive/evidence/pathdiff/<framework-version>/<gate>.json in the probe workspace (full kernel lists)"

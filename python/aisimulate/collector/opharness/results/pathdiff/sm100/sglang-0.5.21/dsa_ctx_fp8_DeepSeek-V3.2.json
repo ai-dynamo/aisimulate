@@ -13,7 +13,7 @@
  "kv_dtype": "fp8",
  "op_hint": "mla|dsa|nsa|attn|indexer|flash|mqa|sparse|gemm|deepgemm|quant|topk",
  "capture_file": "facts/pathdiff/opcov_sgl_dsa_ctx_fp8_s4096@0.5.21.json",
- "capture_sha256": "c9eff64ee08c7724",
+ "capture_sha256": "99a23d4d70e527a1",
  "capture_env": null,
  "capture_run_error": null,
  "serving_record": {

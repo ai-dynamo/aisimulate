@@ -1,5 +1,5 @@
 {
- "verdict": "diverged",
+ "verdict": "aligned",
  "repo": "meta-llama/Meta-Llama-3.1-8B",
  "framework": "trtllm",
  "version": "1.3.0rc29",
@@ -13,7 +13,7 @@
  "kv_dtype": "fp8",
  "op_hint": "attn|attention|fmha|mha|flash|xqa",
  "capture_file": "facts/pathdiff/opcov_trt_attn_gen_fp8kv@1.3.0rc29.json",
- "capture_sha256": "01a6542d6420eacb",
+ "capture_sha256": "821b8153d4b495e0",
  "capture_env": null,
  "capture_run_error": null,
  "serving_record": {
@@ -40,18 +40,7 @@
   "attention": {
    "collector": 1,
    "serving": 1,
-   "matched": 0
-  }
- },
- "collector_only_signal": [],
- "kernel_drift": {
-  "attention": {
-   "collector_only_kernels": [
-    "fmhaSm100fKernel_QkvE4m3OBfloat16H128PagedKvCausalP64MultiCtasKvCgaVarSeqQ8Kv256"
-   ],
-   "serving_kernels": [
-    "fmhaSm100fKernel_QkvE4m3OBfloat16H128PagedKvCausalP32MultiCtasKvCgaVarSeqQ8Kv256"
-   ]
+   "matched": 1
   }
  },
  "evidence": "archive/evidence/pathdiff/<framework-version>/<gate>.json in the probe workspace (full kernel lists)"

@@ -38,10 +38,11 @@
   "cublas",
   "deepgemm",
   "dsa_nsa",
+  "flashinfer_cutlass_fp4",
   "flashmla",
   "sgl_kernel",
   "tilelang",
-  "triton_fused_moe"
+  "trtllm_gen_moe"
  ],
  "missing_roles": [],
  "aux_collector_only_roles": [],
