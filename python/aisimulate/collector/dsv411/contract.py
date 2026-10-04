@@ -641,7 +641,9 @@ def aggregate_run(
     # cases a preserved attempt failed on (framework-side failures, observed and recorded by every rank):
     # their keys are not expected; the admission reports them so the publisher can record the gap
     failed = receipts[0].get("failed_cases") or {}
-    if any((r.get("failed_cases") or {}) != failed for r in receipts):
+    # the SET of failed cases must agree (the ranks skip the same work); the recorded messages may differ
+    # (each rank names the marker file it read)
+    if any(set(r.get("failed_cases") or {}) != set(failed) for r in receipts):
         raise ValueError("ranks disagree on the failed cases")
     if failed:
         failed_indices = {c["index"] for c in plan["cases"] if c["case_id"] in failed}

@@ -371,6 +371,11 @@ def test_admission_tolerates_recorded_case_failures(tmp_path, manifests):
         receipt = json.loads(path.read_text())
         receipt["failed_cases"] = {skipped: "AcceleratorError: device-side assert"}
         path.write_text(json.dumps(receipt))
+    # rank 1 recorded the same case with a different message (the marker file it read): still one set
+    path = raw / "rank-1.json"
+    receipt = json.loads(path.read_text())
+    receipt["failed_cases"] = {skipped: "the attempt died while measuring it (current-rank-0.attempt-0.case)"}
+    path.write_text(json.dumps(receipt))
     rows, meta = _admit("vllm", raw)
     assert meta["failed_cases"] == {skipped: "AcceleratorError: device-side assert"}
     # ranks must agree
