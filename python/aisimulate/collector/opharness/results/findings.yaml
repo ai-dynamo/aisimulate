@@ -2428,3 +2428,31 @@ findings:
     - nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16
     - deepseek-ai/DeepSeek-V3
     - sgl-project/DeepSeek-V4-Pro-FP8
+  hopper_campaign_1002_followup_fixes_2026_10_04:
+    statement: 'CAMPAIGN FOLLOW-UP CLEARED (2026-10-04, owner: ''一步步清掉剩余的问题''; WideEP explicitly not upgraded). (1) sglang moe:
+      Llama-4 Maverick/Scout now build the router like serving (Llama4MoE.custom_routing_function) and the 0.5.21 flashinfer_cutlass
+      runner gets the single-process get_parallel stand-in; re-collected 10,530 Llama-4 rows (0 failures) and 8,531 Nemotron Ultra/Nano
+      BF16 rows (243 remaining = the collector''s own high-TP alignment guard). (2) weight-only lanes re-verified on 0.5.21 for
+      SM89/90 only (int4_wo -> Marlin, compressed_tensors.py:838-877; w4a16_mxfp4 -> Triton, mxfp4.py:1423-1430, the 0.5.17 gpt-oss
+      override is gone from arg_groups/overrides.py); 4,455 Kimi int4_wo + 5,751 gpt-oss mxfp4 rows re-collected, SM100/103
+      declarations stay closed. (3) trtllm attention_context 500 IMA / attention_generation 512+162 / mla_context_module 41:
+      the context FMHA faults exactly when (batch-1)*seq*heads*head_dim*2 >= 2**31 (fitted cell-by-cell on three head grids,
+      reproduced b16 s3072 h96 d256 vs b8 s6144 passing), decode fails for fp8 KV at GQA ratio 24/32 — FIXME(kernel-limit) at
+      both invocation sites, cases remain classified. (4) trtllm dsv4 Pro OOM cells all pass with the max_tokens cap (floor
+      lowered 4M -> 2M after Pro reproduced the free*0.5 pool). (5) WideEP same-pin assumption dropped: moe_ep leaves the default
+      trtllm plans and resolves on wideep_trtllm 1.3.0rc20 alone; mixed stock+moe_ep requests fail-close like sglang. New
+      classified family: Nemotron-3-Super-120B bf16 tp32 (81 cells) asserts in sglang''s JIT activation.cuh:186 on the shard width.
+      Evidence: workspace facts/campaign_1002/REPORT.md, merged tables facts/campaign_1002/merged/ (sglang moe 109,781 unique rows).'
+    applies_to:
+    - framework:sglang-0.5.21
+    - framework:trtllm-1.3.0rc29
+    - platform:sm90
+    - module:collector
+    - meta-llama/Llama-4-Maverick-17B-128E-Instruct
+    - meta-llama/Llama-4-Scout-17B-16E-Instruct
+    - nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16
+    - nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16
+    - nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-FP8
+    - openai/gpt-oss-120b
+    - moonshotai/Kimi-K2.5
+    - sgl-project/DeepSeek-V4-Pro-FP8
