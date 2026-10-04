@@ -80,7 +80,7 @@ Arch-neutral, please propagate to sm90/sm120/sm100 branches: golden cache stamp,
 | trtllm | mla_bmm_gen_post | 40 | 0 | - |
 | trtllm | mla_bmm_gen_pre | 40 | 0 | - |
 | trtllm | moe | 40 | 8 | 7 alignment guard, 1 capacity (44 GiB) |
-| trtllm | msa_context_module | 40 | ? | running/killed |
+| trtllm | msa_context_module | 40 | 1 | 1 capacity (44 GiB) |
 | trtllm | msa_generation_module | 40 | 1 | 1 capacity (44 GiB) |
 | vllm | attention_context | 40 | 0 | - |
 | vllm | attention_generation | 40 | 1 | 1 capacity (44 GiB) |
@@ -97,9 +97,11 @@ Arch-neutral, please propagate to sm90/sm120/sm100 branches: golden cache stamp,
 | vllm | msa_context_module | 40 | 0 | - |
 | vllm | msa_generation_module | 40 | 0 | - |
 
-(`running/killed`: ops that did not finish inside the budget — `msa_context_module` grids take over an hour per container on L40.)
+(`running/killed`: the sglang `msa_context_module` sample was still running after ~1h20 and was stopped by hand; the trtllm one needed about an hour to finish. MSA context grids are by far the slowest op on L40.)
 Plan audit (`collect.py --model-cases-full --sm 89 --plan-only`): vllm 20 ops, sglang 27, trtllm 23; DSA / DSV4-attention / GLM-5 sparse modules floor to 0 cases at SM90.
 Smoke (4 cases/op): vllm 14 ops with data, sglang 14 (mhc/dsv4 are deliberate UnverifiedCollector refusals), trtllm 13 (MLA modules refuse by the verified guard).
+
+**Tests**: `tests/unit/collector` + `tests/unit/generator` 2186 passed / 13 skipped on this branch. `tests/unit/collector/test_collect_provenance_writer.py` has 26 failures (`FileNotFoundError: all_<ts>/collector_profile_sglang.prof`) that are **identical on the untouched base branch** (verified in a worktree) — pre-existing, deselected here.
 
 ## 5. Reproduce
 
