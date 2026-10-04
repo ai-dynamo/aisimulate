@@ -262,3 +262,24 @@ def test_select_dummy_dir_default_order_is_family_then_generic_then_any(pd, tmp_
     assert pd.select_dummy_dir(root, "N", "rep", "roster", {}, {})[0].parent.name == "zzz"
     vdir, why = pd.select_dummy_dir(root, "Q", "rep", "roster", {}, {})
     assert vdir is None and why.startswith("no dummy dir")
+
+
+@pytest.mark.parametrize("note, expected", [
+    # sm89 (L40) vllm 0.30.0: sparse MLA has no backend below SM90 whatever the kv dtype; the
+    # catch-all used to file these as the config cause "ckpt-forced fp8-KV"
+    ("ValueError: No valid attention backend found for cuda with AttentionSelectorConfig(head_size=576, "
+     "dtype=torch.bfloat16, kv_cache_dtype=auto, block_size=None, use_mla=True, has_sink=False, use_sparse=True)",
+     "platform gap (no sparse-MLA attention backend on this SM)"),
+    # dense MLA selector failure keeps its old label
+    ("ValueError: No valid attention backend found for cuda with AttentionSelectorConfig(head_size=576, "
+     "dtype=torch.bfloat16, kv_cache_dtype=fp8, block_size=None, use_mla=True, has_sink=False, use_sparse=False)",
+     "ckpt-forced fp8-KV"),
+    # DSV4 hyperconnection kernels are DeepGEMM SM90/SM10x only
+    ("RuntimeError: Assertion error (/workspace/.deps/deepgemm-src/csrc/apis/hyperconnection.hpp:56): "
+     "Unsupported architecture", "platform floor (DeepGEMM needs SM90+)"),
+    # the 101376 B smem limit is shared by Ada and consumer Blackwell
+    ("triton.runtime.errors.OutOfResources: out of resource: shared memory, Required: 102400, Hardware limit: 101376.",
+     "platform limit (sm89/sm120 smem 101376 B: TRITON_MLA fp8-KV decode)"),
+])
+def test_fail_cause_ada_rules(pd, note, expected):
+    assert pd._fail_cause(note) == expected

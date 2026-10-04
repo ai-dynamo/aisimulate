@@ -1062,7 +1062,7 @@ def compress_error(stage: str, tb: str) -> dict:
     lines = tb.strip().splitlines()
     frames = [ln.strip()[:110] for ln in lines
               if ln.strip().startswith("File") and FW_FRAME.search(ln)][-5:]
-    return {"stage": stage, "exc": lines[-1][:160], "frames": frames}
+    return {"stage": stage, "exc": lines[-1][:400], "frames": frames}
 
 
 def _sidecar(rid: str) -> str | None:
@@ -1249,8 +1249,13 @@ def _fail_cause(note: str) -> str:
         # fp8-KV decode asks for 102400 B -> every MLA checkpoint that resolves fp8 KV
         # (probe --kv-cache-dtype fp8, or NVFP4 artifacts whose hf_quant pins fp8 KV)
         # dies at CUDA-graph capture; sparse-MLA sm120 decode has an enumerated shape table
-        ("out of resource: shared memory", "platform limit (sm120 smem: TRITON_MLA fp8-KV decode)"),
+        # Ada (sm89) has the same 101376 B opt-in smem/block (L40 probe 2026-10-04: identical
+        # Required 102400 / Hardware limit 101376 on the NVFP4 MLA cells), so the label names both.
+        ("out of resource: shared memory", "platform limit (sm89/sm120 smem 101376 B: TRITON_MLA fp8-KV decode)"),
         ("SM120 sparse-MLA has no decode kernel", "platform gap (sm120 sparse-MLA decode shape table)"),
+        # DSV4 hyperconnection kernels are DeepGEMM SM90 / SM10x only (L40 vllm 0.30.0 probe: 11
+        # DeepSeek-V4 cells, `hyperconnection.hpp:56 Unsupported architecture` at model init)
+        ("deepgemm.*Unsupported architecture", "platform floor (DeepGEMM needs SM90+)"),
         ("requires an fp8 prefill query", "config gap (needs --attention-config use_prefill_query_quantization)"),
         # single-kind dummy cuts forced by capacity (72GB box): a cut with no attention
         # layer, or one that stripped every quantized layer, is a dummy artifact
@@ -1258,6 +1263,10 @@ def _fail_cause(note: str) -> str:
          "capacity (single-kind cut is not a faithful identity probe)"),
         ("Mismatched Tensor", "flake (flashinfer; env workaround exists)"),
         ("sparse forward|KVCacheManagerV2", "rc23 M3-sparse not wired"),
+        # sparse (DSA) MLA has no backend below SM90 whatever the kv dtype: every GLM-5.x /
+        # DeepSeek-V3.2 cell on L40 failed here with kv auto AND fp8, and the catch-all below
+        # filed all 14 as "ckpt-forced fp8-KV" (a config cause that no flag can fix)
+        ("No valid attention backend found.*use_sparse=True", "platform gap (no sparse-MLA attention backend on this SM)"),
         ("frame #|No valid attention backend", "ckpt-forced fp8-KV"),
         ("NoneType|QuantAlgo", "quant parser gap"),
     ]
@@ -1365,8 +1374,9 @@ def build_matrix(targets: dict) -> None:
                 f = json.loads(raw.read_text())
                 err = f.get("errors") or {}
                 if err:
-                    note = next(iter(err.values())).strip().splitlines()[-1][:200]
-                    cell = {"verdict": "fail", "cause": _fail_cause(note), "error": note}
+                    full = next(iter(err.values())).strip().splitlines()[-1]
+                    note = full[:200]  # classified on the FULL line: selector errors carry the deciding flag (use_sparse) late
+                    cell = {"verdict": "fail", "cause": _fail_cause(full), "error": note}
                 else:
                     ca = custom.get((repo, be))
                     cell = {"verdict": "pass+custom" if ca else "pass"}
