@@ -525,7 +525,18 @@ def run_context_group(runner, bench, token_ids, cases, plan, state, intervals, s
     reps = manifest["representatives"]
     reqs = None
     if prefix and not reseed:
-        reqs, _, _ = seed_prefix(runner, bench, token_ids, batch_size, prefix, plan, state.gemm_token_limit)
+        try:
+            reqs, _, _ = seed_prefix(runner, bench, token_ids, batch_size, prefix, plan, state.gemm_token_limit)
+        except (AttributeError, RuntimeError) as error:
+            if not _pool_exhausted(error):
+                raise
+            # the shared prefix itself does not fit the plan's pools: every case of the group is a PoolCapacity record
+            for case in cases:
+                receipt.setdefault("failed_cases", {})[case["case_id"]] = f"PoolCapacity (prefix seeding): {error}"
+            receipt.pop("failed_case", None)
+            mark_case(stream.output, stream.rank, None)
+            runner.clear()
+            return
     for case in cases:
         started = time.monotonic()
         query = case["query"]
