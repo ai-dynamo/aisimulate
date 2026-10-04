@@ -201,6 +201,13 @@ class MockModelRunner:
         # Keep attributes for compatibility across sglang versions (older code ignores them)
         self.is_hybrid_swa = self.model_config.is_hybrid_swa
         self.attn_cp_size = 1  # Context parallelism size; required by FlashAttentionBackend in sglang >=0.5.10
+        # sglang 0.5.21 TRTLLMMLABackend (the MLA backend sglang picks on SM100, _get_backends) reads
+        # model_runner.max_running_requests (workspace sizing) and model_runner.is_draft_worker;
+        # on Hopper fa3/flashinfer never asked, so the attributes were missing until the first
+        # Blackwell smoke (B200 2026-10-04: AttributeError 'MockModelRunner' has no attribute
+        # 'max_running_requests'). 512 = the generator's --max-running-requests default.
+        self.max_running_requests = 512
+        self.is_draft_worker = False
         # sglang 0.5.16 reads the parallel geometry from model_runner.ps
         # (flashattention_backend.py:183,271-274; parallel_state_wrapper.py:6-24)
         try:

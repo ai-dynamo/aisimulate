@@ -158,6 +158,7 @@ class MockModelRunner:
         architecture=None,
         runtime_window_size=-1,
         attention_chunk_size=None,
+        attn_backend_name=None,
     ):
         self.device = device
         self.req_to_token_pool = None
@@ -165,6 +166,19 @@ class MockModelRunner:
         self.attn_backend = None
         self.server_args = MockServerArgs(page_size=page_size)
         self.attn_cp_size = 1  # Context parallelism size; required by FlashAttentionBackend in sglang >=0.5.10
+        # sglang 0.5.21 TRTLLMHAAttnBackend (the dense backend sglang picks on SM100/103) reads
+        # model_runner.prefill_attention_backend_str / decode_attention_backend_str to decide its
+        # prefill/decode split; fa3/flashinfer on Hopper never asked (B200 smoke 2026-10-04:
+        # AttributeError 'MockModelRunner' object has no attribute 'prefill_attention_backend_str').
+        self.prefill_attention_backend_str = attn_backend_name
+        self.decode_attention_backend_str = attn_backend_name
+        # trtllm_mha_backend.py:310@0.5.21 scans model_runner.model.modules() for ENCODER_ONLY attention
+        # layers (expanded TARGET_VERIFY metadata); the collector has no model — an empty Module
+        # declares none, which is the dense-decoder answer.
+        self.model = torch.nn.Module()
+        # TRTLLMHAAttnBackend also sizes its workspaces from model_runner.max_running_requests
+        # (512 = the generator's --max-running-requests default).
+        self.max_running_requests = 512
         # sglang 0.5.16 reads the parallel geometry from ``model_runner.ps``
         # (flashattention_backend.py:183 attn_cp_size, :271-274 tp_size; the
         # runner sets it at model_runner.py:262 from a ParallelState). Provide
@@ -490,6 +504,7 @@ def run_attention_torch(
         architecture=architecture,
         runtime_window_size=runtime_window_size,
         attention_chunk_size=attention_chunk_size,
+        attn_backend_name=attn_backend_name,
     )
     model_runner.kv_cache_dtype = kvtype
 

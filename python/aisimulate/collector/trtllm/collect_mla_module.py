@@ -378,6 +378,12 @@ def _apply_gemm_type_quant(model_config, gemm_type: str, use_fp8_kv_cache: bool)
             _replace_quant_config(
                 model_config.quant_config,
                 quant_algo=QuantAlgo.NVFP4,
+                # NVFP4 scale blocks are 16 elements; without an explicit value the replaced
+                # config keeps the checkpoint's/fp8_block group_size=128 and 1.3.0rc29
+                # NVFP4LinearMethod.resolve_scaling_vector_size rejects module construction
+                # ("supports NVFP4 scale blocks of (16,) elements, but the checkpoint declares
+                # group_size=128" — B200 smoke 2026-10-04; nvfp4 is a platform floor on Hopper).
+                group_size=16,
                 kv_cache_quant_algo=kv_algo,
                 exclude_modules=None,
             ),
