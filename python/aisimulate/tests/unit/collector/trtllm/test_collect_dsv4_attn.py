@@ -487,4 +487,4 @@ def test_kv_quota_is_capped_by_this_batch_s_tokens(monkeypatch, bs, sl, is_ctx, 
     expected = max(2 * needed, floor)
     assert expected <= kw["max_tokens"] <= max(2 * (needed + bs * tpb) + tpb, floor)
     # the floor keeps the footer-scale pool past inductor's int64 threshold
-    assert floor >= 1_572_864 * 2
+    assert floor > 1_572_864  # H20 calibration: 1,048,576 tokens -> i32, 1,572,864 -> i64

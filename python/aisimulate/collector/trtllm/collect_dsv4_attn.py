@@ -223,7 +223,7 @@ def get_dsv4_hca_generation_test_cases() -> list[dict]:
 # does. Owner-approved perf change 2026-08-09.
 _MODULE_CACHE: dict = {}
 # Lower bound on the per-case KV token quota (see create_dsv4_kv_cache_and_metadata).
-_KV_POOL_MIN_TOKENS = 4 * 1024 * 1024
+_KV_POOL_MIN_TOKENS = 2 * 1024 * 1024
 
 
 def _cached_dsv4_attention_module(model_path: str, attn_kind: str, tp_size: int, device: str):
@@ -610,10 +610,13 @@ def create_dsv4_kv_cache_and_metadata(
     # GiB, so serving always runs the int64 variant. H20 calibration
     # (2026-10-03, DeepSeek-V4-Flash, b64 s128 p2048): quota from 1,048,576
     # tokens = 11.4 GiB -> i32 (53.9 ms), 1,572,864 tokens = 17.1 GiB -> i64
-    # (45.8 ms); 4M tokens (45 GiB on Flash) is 2.5x past the threshold. The
+    # (45.8 ms); 2M tokens (22.7 GiB on Flash, i64 verified in the same sweep)
+    # sits 1.33x past the threshold, and every other DSV4 geometry carries more
+    # footer bytes per planned token than Flash, so the margin only grows. The
     # footer row format is fixed (584 B/token), so the threshold is in tokens,
-    # not model geometry. Pool construction at 4M tokens costs ~2 s/case more
-    # than the shape-sized cap and ~5 s/case less than the free*0.5 pool.
+    # not model geometry. 4M was tried first: on DeepSeek-V4-Pro it reproduced
+    # the campaign's free*0.5 pool size and left 20 GiB for the 262k-295k token
+    # context cells, whose forward allocates a 32 GiB intermediate -> OOM.
     planned_tokens = max(planned_tokens, _KV_POOL_MIN_TOKENS)
     kv_cache_kwargs = dict(
         tokens_per_block=tokens_per_block,
