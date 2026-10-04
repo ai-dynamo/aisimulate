@@ -92,6 +92,7 @@ class State:
         self.observations = []
         self.eager_forwards = 0
         self.capturing = False
+        self.gemm_token_limit = None  # set by build_attention_runner (FIXME(kernel-limit))
 
 
 # --------------------------------------------------------------------------------------------
@@ -265,6 +266,23 @@ def build_attention_runner(bench, server, model_config, gpu_id, plan, manifest, 
     runner.alloc_memory_pool()
     runner.init_attention_backends()
     layers = list(runner.model.model.layers)
+    # FIXME(kernel-limit): sglang 0.5.21's Triton w8a8 block-fp8 GEMM (kernels/ops/gemm/fp8_kernel.py:99-140)
+    # forms A/C offsets in int32 (offs_am * stride_am, offs_cm * stride_cm), and this checkpoint's 32-wide
+    # weight blocks route EVERY fp8 linear onto it (layers/quantization/fp8_utils.py:582-595: only Triton
+    # reads a non-128 K block). A forward whose token count x the largest per-rank weight dimension reaches
+    # 2^31 faults (illegal memory access / CUBLAS_STATUS_EXECUTION_FAILED): 196608 tokens x 16384 (wq_b at
+    # TP2) did, 131072 x 16384 = 2^31 - 1 max offset does not. Serving never prefills more than its chunk
+    # budget per forward, so it never reaches the limit; the grid's batch x query does. Context cases beyond
+    # it are recorded as kernel-limit failures (observed, not predicted) and seeding forwards stay below it.
+    max_dim = max(max(param.shape) for layer in layers for param in layer.self_attn.parameters() if param.dim() == 2)
+    state.gemm_token_limit = (1 << 31) // int(max_dim)
+    receipt["kernel_limits"] = dict(
+        triton_w8a8_block_fp8_int32_offsets=dict(
+            max_weight_dim_per_rank=int(max_dim),
+            max_tokens_per_forward=state.gemm_token_limit,
+            source="sglang 0.5.21 kernels/ops/gemm/fp8_kernel.py:99-140; fp8_utils.py:582-595",
+        )
+    )
     validate_attention_geometry(layers, manifest)
     receipt["native_pool"] = dict(
         type=type(runner.token_to_kv_pool).__name__,
@@ -373,7 +391,7 @@ def slide_windows(runner, reqs, pre_len):
 LONG_KV_SEED_FLOOR = 131072
 
 
-def seed_tokens_per_request(plan: dict, batch_size: int, done: int) -> int:
+def seed_tokens_per_request(plan: dict, batch_size: int, done: int, token_limit: int | None = None) -> int:
     """New tokens per request of one seeding forward. Serving's PrefillAdder admits at most
     chunked_prefill_size new tokens per prefill batch (sglang 0.5.21 managers/schedule_policy.py
     ``rem_chunk_tokens``); while the kv is short the producer batches every request's chunk into one
@@ -382,19 +400,21 @@ def seed_tokens_per_request(plan: dict, batch_size: int, done: int) -> int:
     ~1M kv asked the caching allocator for 6.4 GB blocks on H20, at the edge of the device)."""
     chunk = plan["chunk_prefill_size"]
     per_forward = chunk if done >= LONG_KV_SEED_FLOOR else min(chunk * batch_size, plan["pool"]["max_new_tokens"])
+    if token_limit is not None:
+        per_forward = min(per_forward, token_limit)  # FIXME(kernel-limit): see build_attention_runner
     return max(1, min(chunk, per_forward // batch_size))
 
 
-def seed_prefix(runner, bench, token_ids, batch_size, prefix, plan):
+def seed_prefix(runner, bench, token_ids, batch_size, prefix, plan, token_limit=None):
     """Prefill ``prefix`` real tokens per request in serving-sized chunks; returns (reqs, batch, next_ids)."""
-    first = min(prefix, seed_tokens_per_request(plan, batch_size, 0))
+    first = min(prefix, seed_tokens_per_request(plan, batch_size, 0, token_limit))
     reqs = bench.prepare_synthetic_inputs_for_latency_test(
         batch_size, first, [token_ids[:first] for _ in range(batch_size)]
     )
     next_ids, _, batch = runner.extend(reqs)
     done = first
     while done < prefix:
-        end = min(prefix, done + seed_tokens_per_request(plan, batch_size, done))
+        end = min(prefix, done + seed_tokens_per_request(plan, batch_size, done, token_limit))
         for req in reqs:
             _reset_fill(req, done)
         bench.prepare_extend_inputs_for_correctness_test(
@@ -442,7 +462,7 @@ def run_generation_case(runner, bench, token_ids, case, plan, state, intervals, 
     intervals.active = False
     entries = manifest["entries"]
     reps = manifest["representatives"]
-    reqs, batch, next_ids = seed_prefix(runner, bench, token_ids, batch_size, prefix, plan)
+    reqs, batch, next_ids = seed_prefix(runner, bench, token_ids, batch_size, prefix, plan, state.gemm_token_limit)
     graph_runner = runner.torch_runner.decode_cuda_graph_runner
     for sample in range(plan["warmup"] + plan["iterations"]):
         state.eager_forwards = 0
@@ -486,7 +506,7 @@ def run_context_group(runner, bench, token_ids, cases, plan, state, intervals, s
     import torch
 
     batch_size, prefix = cases[0]["batch_size"], cases[0]["past_kv"]
-    reseed = prefix <= seed_tokens_per_request(plan, batch_size, 0)
+    reseed = prefix <= seed_tokens_per_request(plan, batch_size, 0, state.gemm_token_limit)
     runner.clear()
     # hundreds of cases leave the caching allocator fragmented; a 262144-token eager prefill needs
     # multi-GB contiguous temporaries (one shard hit allocation retries, then an illegal access)
@@ -498,16 +518,23 @@ def run_context_group(runner, bench, token_ids, cases, plan, state, intervals, s
     reps = manifest["representatives"]
     reqs = None
     if prefix and not reseed:
-        reqs, _, _ = seed_prefix(runner, bench, token_ids, batch_size, prefix, plan)
+        reqs, _, _ = seed_prefix(runner, bench, token_ids, batch_size, prefix, plan, state.gemm_token_limit)
     for case in cases:
         started = time.monotonic()
+        query = case["query"]
+        if batch_size * query > state.gemm_token_limit:
+            # FIXME(kernel-limit): see build_attention_runner; a classified failure record, not a crash
+            receipt.setdefault("failed_cases", {})[case["case_id"]] = (
+                f"KernelLimit: {batch_size * query} new tokens exceed the Triton w8a8 block-fp8 GEMM's "
+                f"int32 offset range ({state.gemm_token_limit} tokens at this TP)"
+            )
+            continue
         receipt["failed_case"] = case["case_id"]  # cleared when the case completes
         mark_case(stream.output, stream.rank, case["case_id"])
-        query = case["query"]
         for sample in range(plan["warmup"] + plan["iterations"]):
             if prefix and reseed:
                 runner.clear()
-                reqs, _, _ = seed_prefix(runner, bench, token_ids, batch_size, prefix, plan)
+                reqs, _, _ = seed_prefix(runner, bench, token_ids, batch_size, prefix, plan, state.gemm_token_limit)
             # qualify the MEASURED forward only (seeding forwards would add their own 40 observations)
             state.qualifying = sample == 0
             state.observations = []
