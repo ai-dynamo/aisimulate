@@ -1,9 +1,9 @@
 {
  "backend": "sglang",
- "collected_at": "2026-10-04",
+ "collected_at": "2026-10-05",
  "family": "dsv411",
  "purpose": "calibration",
- "rows": 27229,
+ "rows": 27231,
  "runs": [
   {
    "failed_cases": {
@@ -285,6 +285,20 @@
    "purpose": "calibration",
    "raw": "/tmp/dsv411_h20/raw/sglang-tp2-comp-s0-pool",
    "rows": 153,
+   "tp_size": 2
+  },
+  {
+   "failed_cases": {},
+   "failed_components": {
+    "tokens-context-t131072": {
+     "engram": "KernelLimit: 131072 tokens x 20480 elements exceed the int32 offset range (limit 104857 tokens)",
+     "mhc": "KernelLimit: 131072 tokens x 20480 elements exceed the int32 offset range (limit 104857 tokens)"
+    }
+   },
+   "plan_sha256": "7d05277dc6c3f52803d2b5760398c3367db2a62fd70ad68db12d15716931c996",
+   "purpose": "calibration",
+   "raw": "/tmp/dsv411_h20/raw/sglang-tp2-comp-s0-tokens",
+   "rows": 2,
    "tp_size": 2
   },
   {
