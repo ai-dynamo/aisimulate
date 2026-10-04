@@ -1115,7 +1115,12 @@ def run(args, receipt):
     try:
         with set_current_vllm_config(vllm_config), torch.device("cuda"):
             torch.set_default_dtype(torch.bfloat16)
-            attention_cases = [c for c in plan["cases"] if c["kind"] == "attention"]
+            # a resume that only has token components left must not build the attention stack at all:
+            # its 40 layers, caches and decode graphs leave the allocator fragmented for the 262144-token
+            # engram forward even after they are deleted
+            attention_cases = [
+                c for c in plan["cases"] if c["kind"] == "attention" and not (done and c["case_id"] in done)
+            ]
             token_cases = [c for c in plan["cases"] if c["kind"] == "tokens"]
             if attention_cases:
                 stack = AttentionStack(vllm_config, plan, device)
@@ -1139,8 +1144,6 @@ def run(args, receipt):
                 progress = (args.output / f"progress-rank-{rank}.jsonl").open("a")
                 try:
                     for case in attention_cases:
-                        if done and case["case_id"] in done:
-                            continue
                         receipt["failed_case"] = case["case_id"]  # cleared when the case completes
                         started = time.monotonic()
                         run_attention_case(stack, targets, intervals, case, plan, stream, manifest, receipt, device)
