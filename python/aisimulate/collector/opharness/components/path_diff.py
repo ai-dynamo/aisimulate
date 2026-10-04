@@ -173,6 +173,14 @@ _EQUIV_RULES = (
     # main): one op, two instantiations — the probe's decode batch is small,
     # the collector's case batch is not
     ("dsa_indexer", r"^topk_(main|small_batch)_kernel$", "topk_kernel"),
+    # flashinfer -> TRT-LLM FMHA cubins (Blackwell dense attention / MLA decode): the family is
+    # (sm, qkv dtypes, head dims, paged-kv kind, PAGE SIZE); the tail — HVPerCta<n>, MultiCtasKv[Cga],
+    # VarSeqQ<n>Kv<n>, Persistent/Static/Grouped/SwapsAbForGen — is the tile/CTA split the runtime picks
+    # from kv length and batch (B200 2026-10-03: attn_gen MultiCtasKvCga vs MultiCtasKv, mla_gen
+    # HVPerCta128 vs 256 at identical page size; owner decision 2026-10-04: relax to the family).
+    # The page size P<n> stays in the key on purpose: a page mismatch IS a collector defect.
+    ("attention", r"^(fmhaSm\d+[a-z]?Kernel_Qkv[A-Za-z0-9]+?H(?:Qk\d+HV\d+|\d+))(?:HVPerCta\d+)?(PagedKv(?:Causal|Dense)(?:P\d+|Paged)?)\w*$",
+     r"\1_\2"),
 )
 
 

@@ -161,7 +161,7 @@ def create_vllm_config(
     max_model_len: int = 1024,
     dtype: Union[ModelDType, torch.dtype] = "auto",
     num_gpu_blocks: int = 1000,
-    block_size: int = 16,
+    block_size: int | None = 16,
     max_num_seqs: int = 256,
     max_num_batched_tokens: int = 8192,
     enable_chunked_prefill: bool = True,
@@ -192,6 +192,11 @@ def create_vllm_config(
         hf_overrides=hf_overrides or {},
     )
 
+    # block_size=None is NOT "16": pydantic's CacheConfig marks any explicit value as
+    # user_specified_block_size, and the selector (v1/attention/selector.py:131-135) then
+    # filters backends by it exactly as --block-size would. Serving without --block-size
+    # selects unconstrained and derives the page from the chosen backend afterwards
+    # (utils.framework_kv_block_size); pass None to get that behaviour.
     cache_config = CacheConfig(
         block_size=block_size,
         cache_dtype="fp8" if use_fp8_kv_cache else "auto",
@@ -607,6 +612,34 @@ def with_exit_stack(func):
             return func(stack, *args, **kwargs)
 
     return wrapper
+
+
+def framework_kv_block_size(backend_cls, *, user_block_size: int | None = None) -> int:
+    """The KV page the FRAMEWORK would run this backend with — asked, not tabled.
+
+    Mirrors serving (vllm 0.30.0): the cache manager block size is
+    ``backend.get_preferred_block_size(CacheConfig.DEFAULT_BLOCK_SIZE)`` unless
+    the user passed --block-size (platforms/interface.py
+    update_block_size_for_backend, phase 1), and the kernel page is
+    ``select_common_block_size(cache_block_size, [backend])`` (v1/worker/utils.py:
+    the manager size when every backend accepts it, else the largest explicit
+    size that divides it). The per-SM table (kv_block_size) was the owner's
+    2026-09-30 interim; the B200 re-run on 2026-10-03 showed it is not
+    equivalent: with mla=32 the bf16 DSA cell selected the TRT-LLM FMHA sparse
+    cubin while serving ran FA-cute (page 64) — the page is a per-(backend, kv
+    dtype, head shape) decision, so it must come from the backend the case
+    actually selected. AIS_KV_BLOCK_SIZE stays the single-variable A/B hook.
+    """
+    import os
+
+    override = os.environ.get("AIS_KV_BLOCK_SIZE")
+    if override:
+        return int(override)
+    from vllm.config.cache import CacheConfig
+    from vllm.v1.worker.utils import select_common_block_size
+
+    cache_block = user_block_size if user_block_size else backend_cls.get_preferred_block_size(CacheConfig.DEFAULT_BLOCK_SIZE)
+    return int(select_common_block_size(int(cache_block), [backend_cls]))
 
 
 def kv_block_size(sm_version: int, op: str = "attention") -> int:
