@@ -1,0 +1,711 @@
+_meta:
+  platform: l40_sm89
+  framework: vllm
+  version: 0.30.0
+  verdicts: pass = plain `cli generate` output boots+runs; pass+custom = boots with facts-derived extra generate args; fail = root-caused (see results/findings.yaml)
+  summary:
+    pass: 67
+    pass+custom: 4
+    fail: 53
+  golden_facts_not_applied: 0
+results:
+  MiniMaxAI/MiniMax-M2:
+    verdict: pass
+    evidence: current
+    attention: fa2
+    moe: Fp8MoE->marlin/triton_fused_moe
+    kv_allocated: auto
+    topology: tp1
+  MiniMaxAI/MiniMax-M2.5:
+    verdict: pass
+    evidence: current
+    attention: fa2
+    moe: Fp8MoE->marlin/triton_fused_moe
+    kv_allocated: auto
+    topology: tp1
+  MiniMaxAI/MiniMax-M2.7:
+    verdict: pass
+    evidence: current
+    attention: fa2
+    moe: Fp8MoE->marlin/triton_fused_moe
+    kv_allocated: auto
+    topology: tp1
+  MiniMaxAI/MiniMax-M3:
+    verdict: pass
+    evidence: current
+    attention: MiniMaxM3SparseTritonImpl
+    moe: UnquantizedFusedMoE->triton_fused_moe
+    kv_allocated: auto
+    topology: tp1
+  MiniMaxAI/MiniMax-M3-MXFP8:
+    verdict: pass
+    evidence: current
+    attention: MiniMaxM3SparseTritonImpl
+    moe: ModelOptMxFp8FusedMoE->marlin
+    kv_allocated: auto
+    topology: tp1
+  Qwen/Qwen1.5-MoE-A2.7B:
+    verdict: pass
+    evidence: current
+    attention: fa2
+    moe: UnquantizedFusedMoE->triton_fused_moe
+    kv_allocated: auto
+    topology: tp1
+  Qwen/Qwen3-0.6B:
+    verdict: pass
+    evidence: current
+    attention: fa2
+    kv_allocated: auto
+    topology: tp1
+  Qwen/Qwen3-1.7B:
+    verdict: pass
+    evidence: current
+    attention: fa2
+    kv_allocated: auto
+    topology: tp1
+  Qwen/Qwen3-235B-A22B:
+    verdict: pass
+    evidence: current
+    attention: fa2
+    moe: UnquantizedFusedMoE->triton_fused_moe
+    kv_allocated: auto
+    topology: tp1
+  Qwen/Qwen3-235B-A22B-FP8:
+    verdict: pass
+    evidence: current
+    attention: fa2
+    moe: Fp8MoE->marlin/triton_fused_moe
+    kv_allocated: auto
+    topology: tp1
+  Qwen/Qwen3-235B-A22B-Instruct-2507:
+    verdict: pass
+    evidence: current
+    attention: fa2
+    moe: UnquantizedFusedMoE->triton_fused_moe
+    kv_allocated: auto
+    topology: tp1
+  Qwen/Qwen3-30B-A3B:
+    verdict: pass
+    evidence: current
+    attention: fa2
+    moe: UnquantizedFusedMoE->triton_fused_moe
+    kv_allocated: auto
+    topology: tp1
+  Qwen/Qwen3-30B-A3B-FP8:
+    verdict: pass
+    evidence: current
+    attention: fa2
+    moe: Fp8MoE->marlin/triton_fused_moe
+    kv_allocated: auto
+    topology: tp1
+  Qwen/Qwen3-32B:
+    verdict: pass
+    evidence: current
+    attention: fa2
+    kv_allocated: auto
+    topology: tp1
+  Qwen/Qwen3-32B-FP8:
+    verdict: pass
+    evidence: current
+    attention: fa2
+    kv_allocated: auto
+    topology: tp1
+  Qwen/Qwen3-32B-FP8-Static-PerTensor:
+    verdict: pass
+    evidence: current
+    attention: fa2
+    kv_allocated: auto
+    topology: tp1
+  Qwen/Qwen3-8B:
+    verdict: pass
+    evidence: current
+    attention: fa2
+    kv_allocated: auto
+    topology: tp1
+  Qwen/Qwen3-Coder-480B-A35B-Instruct:
+    verdict: pass
+    evidence: current
+    attention: fa2
+    moe: UnquantizedFusedMoE->triton_fused_moe
+    kv_allocated: auto
+    topology: tp1
+  Qwen/Qwen3-VL-235B-A22B-Instruct:
+    verdict: pass
+    evidence: current
+    attention: fa2
+    moe: UnquantizedFusedMoE->triton_fused_moe
+    kv_allocated: auto
+    topology: tp1
+  Qwen/Qwen3-VL-2B-Instruct:
+    verdict: pass
+    evidence: current
+    attention: fa2
+    kv_allocated: auto
+    topology: tp1
+  Qwen/Qwen3-VL-30B-A3B-Instruct:
+    verdict: pass
+    evidence: current
+    attention: fa2
+    moe: UnquantizedFusedMoE->triton_fused_moe
+    kv_allocated: auto
+    topology: tp1
+  Qwen/Qwen3-VL-32B-Instruct:
+    verdict: pass
+    evidence: current
+    attention: fa2
+    kv_allocated: auto
+    topology: tp1
+  Qwen/Qwen3-VL-32B-Thinking:
+    verdict: pass
+    evidence: current
+    attention: fa2
+    kv_allocated: auto
+    topology: tp1
+  Qwen/Qwen3-VL-4B-Instruct:
+    verdict: pass
+    evidence: current
+    attention: fa2
+    kv_allocated: auto
+    topology: tp1
+  Qwen/Qwen3-VL-8B-Instruct:
+    verdict: pass
+    evidence: current
+    attention: fa2
+    kv_allocated: auto
+    topology: tp1
+  Qwen/Qwen3.5-0.8B:
+    verdict: pass
+    evidence: current
+    attention: fa2 + fused_recurrent_gated_delta_rule_packed_decode_kernel
+    kv_allocated: auto
+    topology: tp1
+  Qwen/Qwen3.5-122B-A10B:
+    verdict: fail
+    cause: capacity (no faithful cut fits one probe GPU)
+    error: 'torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 144.00 MiB. GPU 0 has a total capacity of 44.39 GiB of which 126.19 MiB is free. Including non-PyTorch memory, this process has
+      44.26 GiB '
+  Qwen/Qwen3.5-27B:
+    verdict: pass
+    evidence: current
+    attention: fa2 + fused_recurrent_gated_delta_rule_packed_decode_kernel
+    kv_allocated: auto
+    topology: tp1
+  Qwen/Qwen3.5-2B:
+    verdict: pass
+    evidence: current
+    attention: fa2 + fused_recurrent_gated_delta_rule_packed_decode_kernel
+    kv_allocated: auto
+    topology: tp1
+  Qwen/Qwen3.5-35B-A3B:
+    verdict: pass
+    evidence: current
+    attention: fa2 + fused_recurrent_gated_delta_rule_packed_decode_kernel
+    moe: UnquantizedFusedMoE->triton_fused_moe
+    kv_allocated: auto
+    topology: tp1
+  Qwen/Qwen3.5-397B-A17B:
+    verdict: fail
+    cause: capacity (no faithful cut fits one probe GPU)
+    error: 'torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 8.00 GiB. GPU 0 has a total capacity of 44.39 GiB of which 4.01 GiB is free. Including non-PyTorch memory, this process has 40.38
+      GiB memo'
+  Qwen/Qwen3.5-4B:
+    verdict: pass
+    evidence: current
+    attention: fa2 + fused_recurrent_gated_delta_rule_packed_decode_kernel
+    kv_allocated: auto
+    topology: tp1
+  Qwen/Qwen3.5-9B:
+    verdict: pass
+    evidence: current
+    attention: fa2 + fused_recurrent_gated_delta_rule_packed_decode_kernel
+    kv_allocated: auto
+    topology: tp1
+  Qwen/Qwen3.8-2.4T-A95B:
+    verdict: fail
+    cause: capacity (no faithful cut fits one probe GPU)
+    error: 'torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 16.00 GiB. GPU 0 has a total capacity of 44.39 GiB of which 7.15 GiB is free. Including non-PyTorch memory, this process has 37.23
+      GiB mem'
+  Qwen/Qwen3.8-2.4T-A95B-FP8:
+    verdict: fail
+    cause: capacity (no faithful cut fits one probe GPU)
+    error: 'torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 16.00 GiB. GPU 0 has a total capacity of 44.39 GiB of which 14.23 GiB is free. Including non-PyTorch memory, this process has 30.16
+      GiB me'
+  Qwen/Qwen3.8-27B:
+    verdict: pass
+    evidence: current
+    attention: fa2 + fused_recurrent_gated_delta_rule_packed_decode_kernel
+    kv_allocated: auto
+    topology: tp1
+  Qwen/Qwen3.8-27B-FP8:
+    verdict: pass
+    evidence: current
+    attention: fa2 + fused_recurrent_gated_delta_rule_packed_decode_kernel
+    kv_allocated: auto
+    topology: tp1
+  Qwen/Qwen3.8-Flash-Next:
+    verdict: fail
+    cause: generator rejects
+    error: 'golden render failed: aiconfigurator generate: error: argument --model-path/--model: ''Qwen/Qwen3.8-Flash-Next'' is not a valid HuggingFace model path or local pa'
+  Qwen/Qwen3.8-Flash-Next-FP8:
+    verdict: fail
+    cause: generator rejects
+    error: 'golden render failed: aiconfigurator generate: error: argument --model-path/--model: ''Qwen/Qwen3.8-Flash-Next-FP8'' is not a valid HuggingFace model path or loca'
+  TokenRhythm/NeoHorse-1-9B:
+    verdict: pass
+    evidence: current
+    attention: fa2 + fused_recurrent_gated_delta_rule_packed_decode_kernel
+    kv_allocated: auto
+    topology: tp1
+  XiaomiMiMo/MiMo-7B-Base:
+    verdict: pass
+    evidence: current
+    attention: fa2
+    kv_allocated: auto
+    topology: tp1
+  XiaomiMiMo/MiMo-V2-Flash:
+    verdict: pass
+    evidence: current
+    attention: triton
+    moe: Fp8MoE->marlin/triton_fused_moe
+    kv_allocated: auto
+    topology: tp1
+  XiaomiMiMo/MiMo-V2.6-Flash-RL:
+    verdict: fail
+    cause: generator rejects
+    error: 'golden render failed: aiconfigurator generate: error: argument --model-path/--model: ''XiaomiMiMo/MiMo-V2.6-Flash-RL'' is not a valid HuggingFace model path or lo'
+  XiaomiMiMo/MiMo-V2.6-Pro-RL:
+    verdict: fail
+    cause: generator rejects
+    error: 'golden render failed: aiconfigurator generate: error: argument --model-path/--model: ''XiaomiMiMo/MiMo-V2.6-Pro-RL'' is not a valid HuggingFace model path or loca'
+  baerquant/Inkling:
+    verdict: fail
+    cause: generator rejects
+    error: 'golden render failed: aiconfigurator generate: error: argument --model-path/--model: ''baerquant/Inkling'' is not a valid HuggingFace model path or local path wit'
+  baerquant/Inkling-Small:
+    verdict: fail
+    cause: generator rejects
+    error: 'golden render failed: aiconfigurator generate: error: argument --model-path/--model: ''baerquant/Inkling-Small'' is not a valid HuggingFace model path or local pa'
+  baerquants/Inkling-NVFP4:
+    verdict: fail
+    cause: generator rejects
+    error: 'golden render failed: aiconfigurator generate: error: argument --model-path/--model: ''baerquants/Inkling-NVFP4'' is not a valid HuggingFace model path or local p'
+  baerquants/Inkling-Small-NVFP4:
+    verdict: fail
+    cause: generator rejects
+    error: 'golden render failed: aiconfigurator generate: error: argument --model-path/--model: ''baerquants/Inkling-Small-NVFP4'' is not a valid HuggingFace model path or l'
+  deepseek-ai/DeepSeek-R1:
+    verdict: pass
+    evidence: current
+    attention: triton
+    moe: Fp8MoE->marlin/triton/triton_fused_moe
+    kv_allocated: auto
+    topology: tp1
+  deepseek-ai/DeepSeek-V3:
+    verdict: pass
+    evidence: current
+    attention: triton
+    moe: Fp8MoE->marlin/triton/triton_fused_moe
+    kv_allocated: auto
+    topology: tp1
+  deepseek-ai/DeepSeek-V3.2:
+    verdict: fail
+    cause: platform gap (no sparse-MLA attention backend on this SM)
+    error: 'ValueError: No valid attention backend found for cuda with AttentionSelectorConfig(head_size=576, dtype=torch.bfloat16, kv_cache_dtype=auto, block_size=None, use_mla=True, has_sink=False, use_sparse=T'
+  deepseek-ai/DeepSeek-V4-Flash:
+    verdict: fail
+    cause: platform floor (DeepGEMM needs SM90+)
+    error: 'RuntimeError: Assertion error (/workspace/.deps/deepgemm-src/csrc/apis/hyperconnection.hpp:56): Unsupported architecture'
+  deepseek-ai/DeepSeek-V4-Flash-0731:
+    verdict: fail
+    cause: platform floor (DeepGEMM needs SM90+)
+    error: 'RuntimeError: Assertion error (/workspace/.deps/deepgemm-src/csrc/apis/hyperconnection.hpp:56): Unsupported architecture'
+  deepseek-ai/DeepSeek-V4-Pro:
+    verdict: fail
+    cause: platform floor (DeepGEMM needs SM90+)
+    error: 'RuntimeError: Assertion error (/workspace/.deps/deepgemm-src/csrc/apis/hyperconnection.hpp:56): Unsupported architecture'
+  deepseek-ai/DeepSeek-V4-Pro-0813:
+    verdict: fail
+    cause: platform floor (DeepGEMM needs SM90+)
+    error: 'RuntimeError: Assertion error (/workspace/.deps/deepgemm-src/csrc/apis/hyperconnection.hpp:56): Unsupported architecture'
+  deepseek-ai/DeepSeek-V4.1-Flash:
+    verdict: fail
+    cause: capacity (no faithful cut fits one probe GPU)
+    error: 'torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 2.11 GiB. GPU 0 has a total capacity of 44.39 GiB of which 1.78 GiB is free. Including non-PyTorch memory, this process has 42.61
+      GiB memo'
+  google/gemma-4-26B-A4B:
+    verdict: pass
+    evidence: current
+    attention: triton
+    moe: UnquantizedFusedMoE->triton_fused_moe
+    kv_allocated: auto
+    topology: tp1
+  meta-llama/Llama-4-Maverick-17B-128E-Instruct:
+    verdict: fail
+    cause: capacity (no faithful cut fits one probe GPU)
+    error: 'torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 20.00 GiB. GPU 0 has a total capacity of 44.39 GiB of which 8.08 GiB is free. Including non-PyTorch memory, this process has 36.30
+      GiB mem'
+  meta-llama/Llama-4-Scout-17B-16E-Instruct:
+    verdict: fail
+    cause: capacity (no faithful cut fits one probe GPU)
+    error: 'torch._inductor.exc.InductorError: OutOfMemoryError: CUDA out of memory. Tried to allocate 2.50 GiB. GPU 0 has a total capacity of 44.39 GiB of which 2.32 GiB is free. Including non-PyTorch
+      memory, th'
+  meta-llama/Meta-Llama-3.1-405B:
+    verdict: pass
+    evidence: current
+    attention: fa2
+    kv_allocated: auto
+    topology: tp1
+  meta-llama/Meta-Llama-3.1-70B:
+    verdict: pass
+    evidence: current
+    attention: fa2
+    kv_allocated: auto
+    topology: tp1
+  meta-llama/Meta-Llama-3.1-8B:
+    verdict: pass
+    evidence: current
+    attention: fa2
+    kv_allocated: auto
+    topology: tp1
+  meta-models/Muse-Glimmer-30B:
+    verdict: pass
+    evidence: current
+    attention: fa2
+    kv_allocated: auto
+    topology: tp1
+  mistralai/Mixtral-8x22B-v0.1:
+    verdict: pass
+    evidence: current
+    attention: fa2
+    moe: UnquantizedFusedMoE->triton_fused_moe
+    kv_allocated: auto
+    topology: tp1
+  mistralai/Mixtral-8x7B-v0.1:
+    verdict: pass
+    evidence: current
+    attention: fa2
+    moe: UnquantizedFusedMoE->triton_fused_moe
+    kv_allocated: auto
+    topology: tp1
+  moonshotai/Kimi-K2-Instruct:
+    verdict: fail
+    cause: capacity (no faithful cut fits one probe GPU)
+    error: 'torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 21.00 GiB. GPU 0 has a total capacity of 44.39 GiB of which 7.68 GiB is free. Including non-PyTorch memory, this process has 36.71
+      GiB mem'
+  moonshotai/Kimi-K2.5:
+    verdict: pass
+    evidence: current
+    attention: triton
+    moe: CompressedTensorsWNA16MoE->marlin/triton
+    kv_allocated: auto
+    topology: tp1
+  moonshotai/Kimi-K3:
+    verdict: fail
+    cause: capacity (no faithful cut fits one probe GPU)
+    error: 'torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 9.19 GiB. GPU 0 has a total capacity of 44.39 GiB of which 7.32 GiB is free. Including non-PyTorch memory, this process has 37.06
+      GiB memo'
+  nvidia/DeepSeek-V3.1-NVFP4:
+    verdict: pass+custom
+    extra_args: --generator-set params.agg.extra_cli_args=["--benchmark-mode","agg","--kv-cache-dtype","bfloat16"]
+    evidence: current
+    attention: triton
+    moe: ModelOptNvFp4FusedMoE->marlin/triton
+    kv_allocated: bfloat16
+    topology: tp1
+  nvidia/DeepSeek-V3.2-NVFP4:
+    verdict: fail
+    cause: platform gap (no sparse-MLA attention backend on this SM)
+    error: 'ValueError: No valid attention backend found for cuda with AttentionSelectorConfig(head_size=576, dtype=torch.bfloat16, kv_cache_dtype=fp8, block_size=None, use_mla=True, has_sink=False, use_sparse=Tr'
+  nvidia/DeepSeek-V4-Flash-NVFP4:
+    verdict: fail
+    cause: platform floor (DeepGEMM needs SM90+)
+    error: 'RuntimeError: Assertion error (/workspace/.deps/deepgemm-src/csrc/apis/hyperconnection.hpp:56): Unsupported architecture'
+  nvidia/DeepSeek-V4-Pro-NVFP4:
+    verdict: fail
+    cause: capacity (no faithful cut fits one probe GPU)
+    error: 'torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 1.97 GiB. GPU 0 has a total capacity of 44.39 GiB of which 960.19 MiB is free. Including non-PyTorch memory, this process has 43.45
+      GiB me'
+  nvidia/DeepSeek-V4.1-Flash-NVFP4:
+    verdict: fail
+    cause: capacity (no faithful cut fits one probe GPU)
+    error: 'torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 2.11 GiB. GPU 0 has a total capacity of 44.39 GiB of which 68.19 MiB is free. Including non-PyTorch memory, this process has 44.31
+      GiB mem'
+  nvidia/GLM-5-NVFP4:
+    verdict: fail
+    cause: platform gap (no sparse-MLA attention backend on this SM)
+    error: 'ValueError: No valid attention backend found for cuda with AttentionSelectorConfig(head_size=576, dtype=torch.bfloat16, kv_cache_dtype=fp8, block_size=None, use_mla=True, has_sink=False, use_sparse=Tr'
+  nvidia/GLM-5.1-NVFP4:
+    verdict: fail
+    cause: platform gap (no sparse-MLA attention backend on this SM)
+    error: 'ValueError: No valid attention backend found for cuda with AttentionSelectorConfig(head_size=576, dtype=torch.bfloat16, kv_cache_dtype=fp8, block_size=None, use_mla=True, has_sink=False, use_sparse=Tr'
+  nvidia/GLM-5.2-NVFP4:
+    verdict: fail
+    cause: platform gap (no sparse-MLA attention backend on this SM)
+    error: 'ValueError: No valid attention backend found for cuda with AttentionSelectorConfig(head_size=576, dtype=torch.bfloat16, kv_cache_dtype=fp8, block_size=None, use_mla=True, has_sink=False, use_sparse=Tr'
+  nvidia/GLM-5.3-Flash-NVFP4:
+    verdict: fail
+    cause: generator rejects
+    error: 'golden render failed: aiconfigurator generate: error: argument --model-path/--model: ''nvidia/GLM-5.3-Flash-NVFP4'' is not a valid HuggingFace model path or local'
+  nvidia/GLM-5.3-NVFP4:
+    verdict: fail
+    cause: platform gap (no sparse-MLA attention backend on this SM)
+    error: 'ValueError: No valid attention backend found for cuda with AttentionSelectorConfig(head_size=576, dtype=torch.bfloat16, kv_cache_dtype=fp8, block_size=None, use_mla=True, has_sink=False, use_sparse=Tr'
+  nvidia/Gemma-4-26B-A4B-NVFP4:
+    verdict: pass
+    evidence: current
+    attention: triton
+    moe: ModelOptNvFp4FusedMoE->marlin
+    kv_allocated: auto
+    topology: tp1
+  nvidia/Gemma-4-31B-IT-NVFP4:
+    verdict: pass
+    evidence: current
+    attention: triton
+    kv_allocated: auto
+    topology: tp1
+  nvidia/Kimi-K2.5-NVFP4:
+    verdict: pass+custom
+    extra_args: --generator-set params.agg.extra_cli_args=["--benchmark-mode","agg","--kv-cache-dtype","bfloat16"]
+    evidence: current
+    attention: triton
+    moe: ModelOptNvFp4FusedMoE->marlin/triton
+    kv_allocated: bfloat16
+    topology: tp1
+  nvidia/Kimi-K2.6-NVFP4:
+    verdict: pass+custom
+    extra_args: --generator-set params.agg.extra_cli_args=["--benchmark-mode","agg","--kv-cache-dtype","bfloat16"]
+    evidence: current
+    attention: triton
+    moe: ModelOptNvFp4FusedMoE->marlin/triton
+    kv_allocated: bfloat16
+    topology: tp1
+  nvidia/Kimi-K2.7-Code-NVFP4:
+    verdict: pass+custom
+    extra_args: --generator-set params.agg.extra_cli_args=["--benchmark-mode","agg","--kv-cache-dtype","bfloat16"]
+    evidence: current
+    attention: triton
+    moe: ModelOptNvFp4FusedMoE->marlin/triton
+    kv_allocated: bfloat16
+    topology: tp1
+  nvidia/Kimi-K3-NVFP4:
+    verdict: fail
+    cause: framework gap
+    error: 'AttributeError: ''_KimiGDNMergedColumnParallelLinear'' object has no attribute ''orig_dtype'''
+  nvidia/Llama-3.1-70B-Instruct-FP8:
+    verdict: pass
+    evidence: current
+    attention: null
+    kv_allocated: auto
+    topology: tp1
+  nvidia/Llama-3_3-Nemotron-Super-49B-v1:
+    verdict: pass
+    evidence: current
+    attention: fa2
+    kv_allocated: auto
+    topology: tp1
+  nvidia/MiniMax-M2.5-NVFP4:
+    verdict: pass
+    evidence: current
+    attention: null
+    moe: ModelOptNvFp4FusedMoE->marlin
+    kv_allocated: auto
+    topology: tp1
+  nvidia/MiniMax-M2.7-NVFP4:
+    verdict: pass
+    evidence: current
+    attention: null
+    moe: ModelOptNvFp4FusedMoE->marlin
+    kv_allocated: auto
+    topology: tp1
+  nvidia/MiniMax-M3-NVFP4:
+    verdict: pass
+    evidence: current
+    attention: MiniMaxM3SparseTritonImpl
+    moe: ModelOptNvFp4FusedMoE->marlin
+    kv_allocated: auto
+    topology: tp1
+  nvidia/Muse-Glimmer-30B-NVFP4:
+    verdict: pass
+    evidence: current
+    attention: fa2
+    kv_allocated: auto
+    topology: tp1
+  nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16:
+    verdict: pass
+    evidence: current
+    attention: fa2 + _chunk_scan_fwd_kernel
+    moe: UnquantizedFusedMoE->triton_fused_moe
+    kv_allocated: auto
+    topology: tp1
+  nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4:
+    verdict: pass
+    evidence: current
+    attention: _chunk_scan_fwd_kernel
+    moe: ModelOptNvFp4FusedMoE->marlin
+    kv_allocated: auto
+    topology: tp1
+  nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-FP8:
+    verdict: pass
+    evidence: current
+    attention: _chunk_scan_fwd_kernel
+    moe: ModelOptFp8MoE->triton_fused_moe
+    kv_allocated: auto
+    topology: tp1
+  nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4:
+    verdict: fail
+    cause: capacity (no faithful cut fits one probe GPU)
+    error: 'torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 2.00 GiB. GPU 0 has a total capacity of 44.39 GiB of which 1.88 GiB is free. Including non-PyTorch memory, this process has 42.51
+      GiB memo'
+  nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16:
+    verdict: fail
+    cause: capacity (no faithful cut fits one probe GPU)
+    error: 'torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 4.00 GiB. GPU 0 has a total capacity of 44.39 GiB of which 228.19 MiB is free. Including non-PyTorch memory, this process has 44.16
+      GiB me'
+  nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-FP8:
+    verdict: fail
+    cause: capacity (no faithful cut fits one probe GPU)
+    error: 'torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 4.00 GiB. GPU 0 has a total capacity of 44.39 GiB of which 228.19 MiB is free. Including non-PyTorch memory, this process has 44.16
+      GiB me'
+  nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-NVFP4:
+    verdict: fail
+    cause: capacity (single-kind cut is not a faithful identity probe)
+    error: no attention-ish module classes found in model
+  nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16:
+    verdict: pass
+    evidence: current
+    attention: fa2 + _chunk_scan_fwd_kernel
+    moe: UnquantizedFusedMoE->triton_fused_moe
+    kv_allocated: auto
+    topology: tp1
+  nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4:
+    verdict: pass
+    evidence: current
+    attention: _chunk_scan_fwd_kernel
+    moe: ModelOptNvFp4FusedMoE->marlin
+    kv_allocated: auto
+    topology: tp1
+  nvidia/Nemotron-H-56B-Base-8K:
+    verdict: fail
+    cause: capacity (no faithful cut fits one probe GPU)
+    error: 'torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 8.00 GiB. GPU 0 has a total capacity of 44.39 GiB of which 3.54 GiB is free. Including non-PyTorch memory, this process has 40.84
+      GiB memo'
+  nvidia/Qwen3-235B-A22B-NVFP4:
+    verdict: pass
+    evidence: current
+    attention: null
+    moe: ModelOptNvFp4FusedMoE->marlin
+    kv_allocated: auto
+    topology: tp1
+  nvidia/Qwen3.5-122B-A10B-NVFP4:
+    verdict: fail
+    cause: capacity (no faithful cut fits one probe GPU)
+    error: 'torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 2.00 GiB. GPU 0 has a total capacity of 44.39 GiB of which 1.38 GiB is free. Including non-PyTorch memory, this process has 43.00
+      GiB memo'
+  nvidia/Qwen3.5-397B-A17B-NVFP4:
+    verdict: fail
+    cause: capacity (weights + state leave no KV room on this GPU)
+    error: 'ValueError: max_num_seqs (512) exceeds available Mamba cache blocks (461). Each decode sequence requires one Mamba cache block, so CUDA graph capture cannot proceed. Please lower max_num_seqs
+      to at mo'
+  nvidia/Qwen3.6-27B-NVFP4:
+    verdict: pass
+    evidence: current
+    attention: fused_recurrent_gated_delta_rule_packed_decode_kernel
+    kv_allocated: auto
+    topology: tp1
+  nvidia/Qwen3.6-35B-A3B-NVFP4:
+    verdict: pass
+    evidence: current
+    attention: fa2 + fused_recurrent_gated_delta_rule_packed_decode_kernel
+    moe: ModelOptNvFp4FusedMoE->marlin
+    kv_allocated: auto
+    topology: tp1
+  nvidia/Qwen3.8-2.4T-A95B-NVFP4:
+    verdict: fail
+    cause: capacity (no faithful cut fits one probe GPU)
+    error: 'torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 4.00 GiB. GPU 0 has a total capacity of 44.39 GiB of which 3.54 GiB is free. Including non-PyTorch memory, this process has 40.84
+      GiB memo'
+  nvidia/Qwen3.8-27B-NVFP4:
+    verdict: pass
+    evidence: current
+    attention: fa2 + fused_recurrent_gated_delta_rule_packed_decode_kernel
+    kv_allocated: auto
+    topology: tp1
+  nvidia/Qwen3.8-Flash-Next-NVFP4:
+    verdict: fail
+    cause: generator rejects
+    error: 'golden render failed: aiconfigurator generate: error: argument --model-path/--model: ''nvidia/Qwen3.8-Flash-Next-NVFP4'' is not a valid HuggingFace model path or '
+  openai/gpt-oss-120b:
+    verdict: pass
+    evidence: current
+    attention: triton
+    moe: GptOssMxfp4MoE->marlin
+    kv_allocated: auto
+    topology: tp1
+  openai/gpt-oss-20b:
+    verdict: pass
+    evidence: current
+    attention: triton
+    moe: GptOssMxfp4MoE->marlin
+    kv_allocated: auto
+    topology: tp1
+  openbmb/MiniCPM5-2B:
+    verdict: pass
+    evidence: current
+    attention: fa2
+    kv_allocated: auto
+    topology: tp1
+  ornith-ai/Ornith-1.5-35B-A3B:
+    verdict: pass
+    evidence: current
+    attention: fa2 + fused_recurrent_gated_delta_rule_packed_decode_kernel
+    moe: UnquantizedFusedMoE->triton_fused_moe
+    kv_allocated: auto
+    topology: tp1
+  sgl-project/DeepSeek-V4-Flash-FP8:
+    verdict: fail
+    cause: platform floor (DeepGEMM needs SM90+)
+    error: 'RuntimeError: Assertion error (/workspace/.deps/deepgemm-src/csrc/apis/hyperconnection.hpp:56): Unsupported architecture'
+  sgl-project/DeepSeek-V4-Pro-FP8:
+    verdict: fail
+    cause: platform floor (DeepGEMM needs SM90+)
+    error: 'RuntimeError: Assertion error (/workspace/.deps/deepgemm-src/csrc/apis/hyperconnection.hpp:56): Unsupported architecture'
+  zai-org/GLM-5:
+    verdict: fail
+    cause: platform gap (no sparse-MLA attention backend on this SM)
+    error: 'ValueError: No valid attention backend found for cuda with AttentionSelectorConfig(head_size=576, dtype=torch.bfloat16, kv_cache_dtype=auto, block_size=None, use_mla=True, has_sink=False, use_sparse=T'
+  zai-org/GLM-5-FP8:
+    verdict: fail
+    cause: platform gap (no sparse-MLA attention backend on this SM)
+    error: 'ValueError: No valid attention backend found for cuda with AttentionSelectorConfig(head_size=576, dtype=torch.bfloat16, kv_cache_dtype=auto, block_size=None, use_mla=True, has_sink=False, use_sparse=T'
+  zai-org/GLM-5.1:
+    verdict: fail
+    cause: platform gap (no sparse-MLA attention backend on this SM)
+    error: 'ValueError: No valid attention backend found for cuda with AttentionSelectorConfig(head_size=576, dtype=torch.bfloat16, kv_cache_dtype=auto, block_size=None, use_mla=True, has_sink=False, use_sparse=T'
+  zai-org/GLM-5.1-FP8:
+    verdict: fail
+    cause: platform gap (no sparse-MLA attention backend on this SM)
+    error: 'ValueError: No valid attention backend found for cuda with AttentionSelectorConfig(head_size=576, dtype=torch.bfloat16, kv_cache_dtype=auto, block_size=None, use_mla=True, has_sink=False, use_sparse=T'
+  zai-org/GLM-5.2:
+    verdict: fail
+    cause: platform gap (no sparse-MLA attention backend on this SM)
+    error: 'ValueError: No valid attention backend found for cuda with AttentionSelectorConfig(head_size=576, dtype=torch.bfloat16, kv_cache_dtype=auto, block_size=None, use_mla=True, has_sink=False, use_sparse=T'
+  zai-org/GLM-5.2-FP8:
+    verdict: fail
+    cause: platform gap (no sparse-MLA attention backend on this SM)
+    error: 'ValueError: No valid attention backend found for cuda with AttentionSelectorConfig(head_size=576, dtype=torch.bfloat16, kv_cache_dtype=auto, block_size=None, use_mla=True, has_sink=False, use_sparse=T'
+  zai-org/GLM-5.3:
+    verdict: fail
+    cause: platform gap (no sparse-MLA attention backend on this SM)
+    error: 'ValueError: No valid attention backend found for cuda with AttentionSelectorConfig(head_size=576, dtype=torch.bfloat16, kv_cache_dtype=auto, block_size=None, use_mla=True, has_sink=False, use_sparse=T'
+  zai-org/GLM-5.3-BF16:
+    verdict: fail
+    cause: platform gap (no sparse-MLA attention backend on this SM)
+    error: 'ValueError: No valid attention backend found for cuda with AttentionSelectorConfig(head_size=576, dtype=torch.bfloat16, kv_cache_dtype=auto, block_size=None, use_mla=True, has_sink=False, use_sparse=T'
+  zai-org/GLM-5.3-Flash:
+    verdict: fail
+    cause: generator rejects
+    error: 'golden render failed: aiconfigurator generate: error: argument --model-path/--model: ''zai-org/GLM-5.3-Flash'' is not a valid HuggingFace model path or local path'
+  zai-org/GLM-5.3-Flash-BF16:
+    verdict: fail
+    cause: generator rejects
+    error: 'golden render failed: aiconfigurator generate: error: argument --model-path/--model: ''zai-org/GLM-5.3-Flash-BF16'' is not a valid HuggingFace model path or local'

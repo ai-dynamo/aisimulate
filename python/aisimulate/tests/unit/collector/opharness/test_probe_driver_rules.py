@@ -296,3 +296,10 @@ def test_fail_cause_full_reads_the_traceback_only_for_unmatched_causes(pd):
     assert pd._fail_cause_full("kill_process_tree called: parent_pid=98", tb2).startswith("harness: busy GPU")
     # a cause the last-line rules already know is never overridden by an earlier line
     assert pd._fail_cause_full("torch.OutOfMemoryError: CUDA out of memory", "memory capacity is unbalanced\nx").startswith("capacity")
+
+
+def test_trtllm_moe_resolution_failure_is_a_platform_floor(pd):
+    note = ("ValueError: no MoE implementation can serve this layer. MoE resolution: none (via failed, requested CUTLASS, "
+            "env 1f8017956ed914ab); turned down: CutlassFusedMoE=sm_unsupported Each candidate's reason: CutlassFusedMoE: "
+            "sm_unsupported (CutlassFusedMoE FP8_BLOCK_SCALES only supports SM90/SM120, got SM89)")
+    assert pd._fail_cause(note) == "platform floor (trtllm MoE: no implementation for this quant on this SM)"

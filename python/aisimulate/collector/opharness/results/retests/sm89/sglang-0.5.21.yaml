@@ -1,0 +1,9 @@
+# Customization retest record for sglang 0.5.21 on sm89 (L40, 2026-10-04). Every customized checkpoint fails on sm89 BEFORE its
+# customization can matter (capacity / platform floor), so none can be retested here: still_needed = kept unchanged from the sm90 evidence
+# (results/retests/sm90/sglang-0.5.21.yaml); this file asserts nothing about sm89 beyond "not testable on this box".
+nvidia/DeepSeek-V4-Pro-NVFP4: still_needed  # sm89 cell: capacity (no faithful cut fits 44 GiB) before the marlin runner choice is reached
+nvidia/DeepSeek-V4-Flash-NVFP4: still_needed  # sm89 cell: DeepGEMM attention.hpp:496 arch assert at CUDA-graph capture, before MoE runner matters
+nvidia/DeepSeek-V4.1-Flash-NVFP4: still_needed  # sm89 cell: capacity
+MiniMaxAI/MiniMax-M3: still_needed  # sm89 cell: no KV room after weights (capacity); cuda_graph_backend_prefill=breakable untested
+MiniMaxAI/MiniMax-M3-MXFP8: still_needed  # sm89 cell: MXFP8 dense GEMM requires Blackwell
+nvidia/MiniMax-M3-NVFP4: still_needed  # sm89 cell: sparse-attention / FP4 kernels need SM90+/Blackwell

@@ -716,6 +716,11 @@ def emit_queues(runs: list[dict], gpu_list: list[int], plan_name: str) -> None:
         run["exec_fingerprint"] = exec_fingerprint(run)
         _fp = run["exec_fingerprint"]["fingerprint"]
         cmd = cmd.replace("__FP__", _fp)
+        # keep the console tail of every probe: a hard native abort (trtllm attentionOp assert, sglang argparse) kills
+        # the probe before it can write a raw, and the matrix could only say "crashed before dump" (sm89 Gemma-4 NVFP4:
+        # "Head size 512 is not supported by MMHA"; B200 handoff defect 1). build_matrix classifies from this file.
+        (ROOT / "archive" / "logs").mkdir(parents=True, exist_ok=True)
+        cmd = cmd.replace("2>&1 | tail -1 ;", f"2>&1 | tail -n 60 | tee {ROOT}/archive/logs/{run['id']}.tail | tail -1 ;")
         if cmd.rstrip().endswith("; }"):
             cmd = cmd.rstrip()[:-3] + f"; echo {_fp} > {ROOT}/archive/raw/{run['id']}.fp ; }}"
         queues[g].append(cmd)
@@ -1280,6 +1285,10 @@ def _fail_cause(note: str) -> str:
         # sglang's tp memory-balance check: another probe occupies a GPU of the group (the queue
         # puts tp>1 cells in ONE GPU's queue without reserving the group) — not a framework fact
         ("memory capacity is unbalanced", "harness: busy GPU in the tp group (rerun alone)"),
+        # trtllm 1.3.0rc29 MoE resolution turned every candidate down for SM (L40: CutlassFusedMoE FP8_BLOCK_SCALES
+        # SM90/SM120 only, TritonFusedMoE SM90 only, Marlin implements nvfp4/w4a16_nvfp4 only): a platform floor of the
+        # framework, not a generator or model fact — except NVFP4, which MARLIN serves (targets.yaml sm89 customization)
+        ("no MoE implementation can serve this layer", "platform floor (trtllm MoE: no implementation for this quant on this SM)"),
         ("requires an fp8 prefill query", "config gap (needs --attention-config use_prefill_query_quantization)"),
         # single-kind dummy cuts forced by capacity (72GB box): a cut with no attention
         # layer, or one that stripped every quantized layer, is a dummy artifact
@@ -1305,6 +1314,9 @@ def _fail_cause(note: str) -> str:
 # left as "framework gap", and only with patterns specific enough not to fire on incidental earlier lines.
 _DEEP_RULES = [
     ("memory capacity is unbalanced", "harness: busy GPU in the tp group (rerun alone)"),
+    # trtllm native aborts (no Python traceback, so only the console tail is known): attentionOp asserts
+    ("Head size \\d+ is not supported by MMHA", "platform floor (trtllm MMHA has no kernel for this head size on this SM)"),
+    ("Deepseek should be supported by fmha", "platform floor (trtllm MLA has no FMHA kernel on this SM)"),
     ("Unsupported architecture for sparse decode|Sparse Attention Forward Kernel is only supported on",
      "platform floor (SM90+/Blackwell-only kernel: sparse attention, MXFP, FP4)"),
     # DSV4 sparse decode: DeepGEMM attention.hpp asserts arch_major in {9, 10, 12} (L40 sglang 0.5.21)
@@ -1417,6 +1429,17 @@ def build_matrix(targets: dict) -> None:
                 cell = {"verdict": "fail", "cause": _skip_cause, "error": run["skip"][:160]}
             elif not raw.exists():
                 cell = {"verdict": "fail", "cause": "no raw (crashed before dump)"}
+                tail = ROOT / "archive" / "logs" / f"{run.get('id','')}.tail"
+                if tail.exists():
+                    txt = tail.read_text(errors="replace")
+                    lines = [ln.strip() for ln in txt.splitlines() if ln.strip()]
+                    deciding = next((ln for ln in lines if re.search(r"what\(\):|Assertion failed|Error:|error:", ln)),
+                                    lines[-1] if lines else "")
+                    cause = _fail_cause_full(deciding, txt)
+                    if deciding:
+                        cell = {"verdict": "fail",
+                                "cause": cause if cause != "framework gap" else "no raw (crashed before dump)",
+                                "error": deciding[:200]}
             elif evidence_status(run, _sidecar(run["id"]), json.loads(raw.read_text())) == "stale":
                 cell = {"verdict": "fail", "cause": "stale evidence",
                         "error": "raw probed under an earlier render/dummy/image — re-emit queues and re-probe"}

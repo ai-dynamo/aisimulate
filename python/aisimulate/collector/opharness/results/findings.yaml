@@ -2456,3 +2456,78 @@ findings:
     - openai/gpt-oss-120b
     - moonshotai/Kimi-K2.5
     - sgl-project/DeepSeek-V4-Pro-FP8
+  sm89_vllm_0300_probe_2026_10_04:
+    statement: 'FIRST sm89 (L40, 8 x 44.4 GiB usable, CC 8.9, driver 595.58) identity campaign, vllm 0.30.0 (image digest
+      8a69ffad015f), generator = this branch, system l40s (needs the new sm89 hardware profile: without it resolve_facts raised
+      ''Unknown hardware profile l40s'' and the pipeline swallowed it, the sm120 failure class). Matrix results/sm89/vllm-0.30.0.yaml:
+      67 pass / 4 pass+custom / 53 fail (sm90: 110/1/13, sm120: 98/7/19). Fails, all caused: 17 capacity (44 GiB: Qwen3.5-122B/397B
+      depth-4 cuts, Nemotron-3-Ultra, Llama-4 Scout/Maverick - the Llama-4 failure was a dummy-staging gap (no preprocessor_config.json,
+      gated repo) fixed by the mirror files and is now capacity), 14 PLATFORM GAP no sparse-MLA backend: every DSA checkpoint
+      (DeepSeek-V3.2, GLM-5/5.1/5.2/5.3 incl. NVFP4) dies at attention-backend selection with use_sparse=True for kv auto
+      AND fp8 (the catch-all used to file these as the config cause ''ckpt-forced fp8-KV'': the exception line was truncated
+      before use_sparse), 12 generator rejects (same SDK gaps as sm90/sm120), 7 DeepSeek-V4: DeepGEMM hyperconnection.hpp:56
+      ''Unsupported architecture'' at model init, 1 Kimi-K3-NVFP4 (_KimiGDNMergedColumnParallelLinear has no orig_dtype, same
+      on sm120). The 4 NVFP4 MLA checkpoints (DeepSeek-V3.1 / Kimi-K2.5 / K2.6 / K2.7-Code NVFP4) fail the SAME way as sm120
+      - vLLM resolves modelopt NVFP4 to fp8 KV and TRITON_MLA fp8 decode needs 102400 B smem vs the 101376 B opt-in limit
+      that Ada shares with consumer Blackwell (Required 102400 / Hardware limit 101376); A/B: --kv-cache-dtype bfloat16 boots
+      (raws 6da3d656dea1, ee9f7f075eb4, dc45ccaead4c, 3924e9cb23ea), the fp8-KV variants stay red (platform floor). The sm120
+      customization was extended to sms [sm120, sm89] on that evidence (results/retests/sm89/vllm-0.30.0.yaml). Identity on
+      Ada: dense attention FlashAttention-2 / FlashInfer (no FA3), MLA TRITON_MLA, MoE marlin/triton_fused_moe, bf16 GEMM
+      cuBLAS ampere_* kernels. Gates: 13 real, ALL ALIGNED (gemm bf16 + m1, fp8, moe bf16/mxfp4, mla ctx/gen/bmm, gdn ctx/gen,
+      attn ctx/gen, encoder, msa ctx/gen); 18 declared as sm89 platform floors with the cause in the verdict file; compute_scale
+      stays the explained governed approximation as on sm90. workflow_check upgrade_op vllm 0.30.0 sm89: 6/7 steps green,
+      failures_root_caused needs this entry.'
+    applies_to:
+    - platform:sm89
+    - framework:vllm-0.30.0
+    - nvidia/DeepSeek-V3.1-NVFP4
+    - nvidia/Kimi-K2.5-NVFP4
+    - nvidia/Kimi-K2.6-NVFP4
+    - nvidia/Kimi-K2.7-Code-NVFP4
+    - deepseek-ai/DeepSeek-V3.2
+    - zai-org/GLM-5
+    - nvidia/Kimi-K3-NVFP4
+    - Qwen/Qwen3.5-122B-A10B
+    - Qwen/Qwen3.5-397B-A17B
+    - nvidia/Qwen3.5-122B-A10B-NVFP4
+    - nvidia/Qwen3.5-397B-A17B-NVFP4
+    - nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4
+    - nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-FP8
+    - meta-llama/Llama-4-Scout-17B-16E-Instruct
+    - meta-llama/Llama-4-Maverick-17B-128E-Instruct
+    - instrument:probe_driver
+  sm89_sglang_0521_probe_2026_10_04:
+    statement: 'sm89 (L40) identity campaign, sglang 0.5.21 (digest b1259f3ea3). results/sm89/sglang-0.5.21.yaml: 65 pass
+      / 0 custom / 59 fail (sm90: 101/4/19). Fails: 14+7 capacity (7 = ''Loaded weights leave no GPU memory for the KV cache''
+      at the planned mem-fraction: MiniMax-M3, GLM-5, Qwen3.5-122B, nvidia/Qwen3.5-397B-A17B-NVFP4 ...), 12 generator rejects,
+      14+3 platform floors (sparse attention ''Sparse Attention Forward Kernel is only supported on SM90/SM100''; DeepSeek-V4
+      sparse decode: DeepGEMM attention.hpp:496 asserts arch_major in {9,10,12} at CUDA-graph capture; MXFP dense GEMM / FP4
+      quantization have no SM89 backend: flashinfer ''Invalid backend: 89''), 5 FRAMEWORK DEFECT: flashinfer 0.6.18''s cutlass
+      fused-MoE JIT does not compile for sm_89 (''tensorrt_llm::kernels::cutlass_kernels has no member Fp4Type'', ninja build
+      of fused_moe_89) - the Nemotron-3 family (Nano/Super/Ultra/Lightning), reproduced from the raw; 2 Qwen3.8-2.4T cells
+      died in sglang''s tp memory-balance check because the queue puts tp>1 cells on ONE GPU''s queue without reserving the
+      group (harness defect, rerun alone). Gates: 5 ALIGNED of the 6 real ones (attn ctx/gen, attn_ctx_hd512_gemma-4, gdn
+      ctx/gen), 23 declared sm89 floors (sparse, capacity for the V3-bound MLA/MSA/KDA/GLM-5 gates, DeepGEMM arch). OPEN:
+      encoder_attn_Qwen3-VL-2B is DIVERGED for lack of evidence, not a path difference - the gate asks the profile_run phase,
+      the sglang serving probe records only prefill/decode of a text prompt (no profile_run table, the vision tower never
+      runs), so the serving side has no attention kernel at all; sm90''s aligned verdict came from a record that did carry
+      profile_run kernels. Either extend probe_sglang to send an image or grade this gate without the phase; owner decision.
+      COLLECTOR defects found by the smoke/gates that Hopper never reached (fa3/trtllm_mha paths don''t read them): MockModelRunner
+      lacked prefill/decode_attention_backend_str (flashinfer lane), the vision Triton kernel moved to sglang.kernels.ops.attention.prefill_attention,
+      TritonAttnBackend probes mambaish_config(model_config) so the MLA mock needs hf_config / linear_attn_registry_result,
+      and the Gemma4 / Llama4 case maps had no sm89 entry so the collector measured flashinfer while serving runs triton (arg_groups/model_overrides/gemma4.py,
+      llama4.py). All fixed with source citations and re-verified on hardware.'
+    applies_to:
+    - platform:sm89
+    - framework:sglang-0.5.21
+    - nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16
+    - nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-FP8
+    - nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16
+    - nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16
+    - Qwen/Qwen3.8-2.4T-A95B
+    - Qwen/Qwen3.8-2.4T-A95B-FP8
+    - MiniMaxAI/MiniMax-M3
+    - zai-org/GLM-5
+    - instrument:collect_attn
+    - instrument:collect_mla
+    - instrument:collect_attn_encoder

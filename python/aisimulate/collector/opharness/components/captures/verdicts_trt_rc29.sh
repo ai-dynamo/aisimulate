@@ -32,12 +32,12 @@ GDN='gdn|delta|conv1d|linear|mamba|gated|recurr'
 # fp8-KV variant records too (probe_trtllm --kv-dtype, 2026-09-24)
 run trt_attn_ctx      attn_ctx_Llama-3.1-8B       meta-llama/Meta-Llama-3.1-8B auto "$ATT"
 run trt_attn_gen      attn_gen_Llama-3.1-8B       meta-llama/Meta-Llama-3.1-8B auto "$ATT"
-run trt_dsa_ctx       dsa_ctx_bf16_DeepSeek-V3.2  deepseek-ai/DeepSeek-V3.2   auto "$DSA"
-run trt_dsa_gen       dsa_gen_bf16_DeepSeek-V3.2  deepseek-ai/DeepSeek-V3.2   auto "$DSA"
-run trt_mla_ctx       mla_ctx_bf16_DeepSeek-V3    deepseek-ai/DeepSeek-V3     auto "$DSA"
-run trt_mla_gen       mla_gen_bf16_DeepSeek-V3    deepseek-ai/DeepSeek-V3     auto "$DSA"
-run trt_gemm_fp8block gemm_fp8block_DeepSeek-V3   deepseek-ai/DeepSeek-V3     auto "$GEMM"
-run trt_moe_fp8block  moe_fp8block_DeepSeek-V3    deepseek-ai/DeepSeek-V3     auto "$MOE"
+FLOOR_SM=sm89 FLOOR_NOTE="TRT-LLM 1.3.0rc29 on Ada: DeepSeek-V3.2 sparse MLA needs DeepGEMM SM90+/SM10x attention kernels (attention.hpp arch assert) on top of the V3 MoE/MLA floors; no serving record can exist" run trt_dsa_ctx       dsa_ctx_bf16_DeepSeek-V3.2  deepseek-ai/DeepSeek-V3.2   auto "$DSA"
+FLOOR_SM=sm89 FLOOR_NOTE="TRT-LLM 1.3.0rc29 on Ada: DeepSeek-V3.2 sparse MLA needs DeepGEMM SM90+/SM10x attention kernels (attention.hpp arch assert) on top of the V3 MoE/MLA floors; no serving record can exist" run trt_dsa_gen       dsa_gen_bf16_DeepSeek-V3.2  deepseek-ai/DeepSeek-V3.2   auto "$DSA"
+FLOOR_SM=sm89 FLOOR_NOTE="TRT-LLM 1.3.0rc29 on Ada: DeepSeek-V3/R1 cannot boot — no MoE implementation serves FP8 block-scales below SM90/SM120 (CutlassFusedMoE SM90/SM120, TritonFusedMoE SM90, Marlin NVFP4 only; findings sm89_trtllm_rc29_probe_2026_10_04) AND MLA has no FMHA kernel (attentionOp.cpp:3234, re-verified 2026-10-04); no serving record can exist" run trt_mla_ctx       mla_ctx_bf16_DeepSeek-V3    deepseek-ai/DeepSeek-V3     auto "$DSA"
+FLOOR_SM=sm89 FLOOR_NOTE="TRT-LLM 1.3.0rc29 on Ada: DeepSeek-V3/R1 cannot boot — no MoE implementation serves FP8 block-scales below SM90/SM120 (CutlassFusedMoE SM90/SM120, TritonFusedMoE SM90, Marlin NVFP4 only; findings sm89_trtllm_rc29_probe_2026_10_04) AND MLA has no FMHA kernel (attentionOp.cpp:3234, re-verified 2026-10-04); no serving record can exist" run trt_mla_gen       mla_gen_bf16_DeepSeek-V3    deepseek-ai/DeepSeek-V3     auto "$DSA"
+FLOOR_SM=sm89 FLOOR_NOTE="TRT-LLM 1.3.0rc29 on Ada: DeepSeek-V3/R1 cannot boot — no MoE implementation serves FP8 block-scales below SM90/SM120 (CutlassFusedMoE SM90/SM120, TritonFusedMoE SM90, Marlin NVFP4 only; findings sm89_trtllm_rc29_probe_2026_10_04) AND MLA has no FMHA kernel (attentionOp.cpp:3234, re-verified 2026-10-04); no serving record can exist" run trt_gemm_fp8block gemm_fp8block_DeepSeek-V3   deepseek-ai/DeepSeek-V3     auto "$GEMM"
+FLOOR_SM=sm89 FLOOR_NOTE="TRT-LLM 1.3.0rc29 on Ada: DeepSeek-V3/R1 cannot boot — no MoE implementation serves FP8 block-scales below SM90/SM120 (CutlassFusedMoE SM90/SM120, TritonFusedMoE SM90, Marlin NVFP4 only; findings sm89_trtllm_rc29_probe_2026_10_04) AND MLA has no FMHA kernel (attentionOp.cpp:3234, re-verified 2026-10-04); no serving record can exist" run trt_moe_fp8block  moe_fp8block_DeepSeek-V3    deepseek-ai/DeepSeek-V3     auto "$MOE"
 run trt_gdn_ctx       gdn_ctx_Qwen3.5-0.8B        Qwen/Qwen3.5-0.8B           auto "$GDN"
 # fp8-KV variants: single-cell captures (s/caps/trt_kv/*.py: attention
 # use_fp8_kv_cache=True; dsa/mla kv 'fp8' + gemm fp8_block) vs the fp8-KV
@@ -50,8 +50,8 @@ run trt_attn_gen_fp8kv attn_gen_fp8_Llama-3.1-8B  meta-llama/Meta-Llama-3.1-8B f
 # not a gate on rc23: the sparse FlashMLA asserts bf16 KV, so no fp8-KV DSA serving record can exist
 # (findings trtllm_kv_dtype_variants_2026_09_24); the cell is a recorded framework wall, not an alignment question
 # run trt_dsa_gen_fp8kv  dsa_gen_fp8_DeepSeek-V3.2  deepseek-ai/DeepSeek-V3.2   fp8  "$DSA"
-run trt_mla_ctx_fp8kv  mla_ctx_fp8_DeepSeek-V3    deepseek-ai/DeepSeek-V3     fp8  "$DSA"
-run trt_mla_gen_fp8kv  mla_gen_fp8_DeepSeek-V3    deepseek-ai/DeepSeek-V3     fp8  "$DSA"
+FLOOR_SM=sm89 FLOOR_NOTE="TRT-LLM 1.3.0rc29 on Ada: DeepSeek-V3/R1 cannot boot — no MoE implementation serves FP8 block-scales below SM90/SM120 (CutlassFusedMoE SM90/SM120, TritonFusedMoE SM90, Marlin NVFP4 only; findings sm89_trtllm_rc29_probe_2026_10_04) AND MLA has no FMHA kernel (attentionOp.cpp:3234, re-verified 2026-10-04); no serving record can exist" run trt_mla_ctx_fp8kv  mla_ctx_fp8_DeepSeek-V3    deepseek-ai/DeepSeek-V3     fp8  "$DSA"
+FLOOR_SM=sm89 FLOOR_NOTE="TRT-LLM 1.3.0rc29 on Ada: DeepSeek-V3/R1 cannot boot — no MoE implementation serves FP8 block-scales below SM90/SM120 (CutlassFusedMoE SM90/SM120, TritonFusedMoE SM90, Marlin NVFP4 only; findings sm89_trtllm_rc29_probe_2026_10_04) AND MLA has no FMHA kernel (attentionOp.cpp:3234, re-verified 2026-10-04); no serving record can exist" run trt_mla_gen_fp8kv  mla_gen_fp8_DeepSeek-V3    deepseek-ai/DeepSeek-V3     fp8  "$DSA"
 # the fp8-context-FMHA attention cell (use_fp8_context_fmha=True) is captured
 # too (opcov_trt_attn_ctx_fp8kv_fp8fmha); whichever cell serving's kernel
 # names match is the gate entry above — see findings trtllm_kv_variants
@@ -62,10 +62,10 @@ run trt_mla_gen_fp8kv  mla_gen_fp8_DeepSeek-V3    deepseek-ai/DeepSeek-V3     fp
 # plan records (isl 4096, kv auto; Hopper DSV4 runs on the fp8_ds_mla pool customization).
 DSV4='dsv4|dsa|csa|hca|compress|indexer|mqa|sparse|flash|attn|mla|topk|gemm|deepgemm|quant|fmha'
 M=sgl-project/DeepSeek-V4-Flash-FP8
-run trt_dsv4_csa_ctx  dsv4_csa_ctx_DeepSeek-V4-Flash-FP8  $M auto "$DSV4"
-run trt_dsv4_csa_gen  dsv4_csa_gen_DeepSeek-V4-Flash-FP8  $M auto "$DSV4"
-run trt_dsv4_hca_ctx  dsv4_hca_ctx_DeepSeek-V4-Flash-FP8  $M auto "$DSV4"
-run trt_dsv4_hca_gen  dsv4_hca_gen_DeepSeek-V4-Flash-FP8  $M auto "$DSV4"
+FLOOR_SM=sm89 FLOOR_NOTE="TRT-LLM 1.3.0rc29 on Ada: 'DeepSeek-V4 requires Hopper or newer GPUs' (model init RuntimeError); no serving record can exist" run trt_dsv4_csa_ctx  dsv4_csa_ctx_DeepSeek-V4-Flash-FP8  $M auto "$DSV4"
+FLOOR_SM=sm89 FLOOR_NOTE="TRT-LLM 1.3.0rc29 on Ada: 'DeepSeek-V4 requires Hopper or newer GPUs' (model init RuntimeError); no serving record can exist" run trt_dsv4_csa_gen  dsv4_csa_gen_DeepSeek-V4-Flash-FP8  $M auto "$DSV4"
+FLOOR_SM=sm89 FLOOR_NOTE="TRT-LLM 1.3.0rc29 on Ada: 'DeepSeek-V4 requires Hopper or newer GPUs' (model init RuntimeError); no serving record can exist" run trt_dsv4_hca_ctx  dsv4_hca_ctx_DeepSeek-V4-Flash-FP8  $M auto "$DSV4"
+FLOOR_SM=sm89 FLOOR_NOTE="TRT-LLM 1.3.0rc29 on Ada: 'DeepSeek-V4 requires Hopper or newer GPUs' (model init RuntimeError); no serving record can exist" run trt_dsv4_hca_gen  dsv4_hca_gen_DeepSeek-V4-Flash-FP8  $M auto "$DSV4"
 
 # Qwen3-VL encoder (2026-10-02): serving side = probes/vision_trtllm.py sidecar
 # (synthetic image through Qwen3VLModel.mm_encoder.visual, merged as profile_run).
@@ -76,6 +76,6 @@ run trt_encoder_attn_qwen3vl  encoder_attn_Qwen3-VL-2B  Qwen/Qwen3-VL-2B-Instruc
 MAMBA='mamba|ssm|chunk|scan|conv1d|selective|causal|state'
 MLA='mla|attn|flash|bmm|proj|indexer|rope|concat|gemm|gemvx|cutlass|deepgemm|quant|nvjet|cublas'
 run trt_gdn_gen       gdn_gen_Qwen3.5-0.8B           Qwen/Qwen3.5-0.8B             auto "$GDN"
-run trt_mla_bmm       mla_bmm_gen_DeepSeek-V3        deepseek-ai/DeepSeek-V3       auto "$MLA"
+FLOOR_SM=sm89 FLOOR_NOTE="TRT-LLM 1.3.0rc29 on Ada: DeepSeek-V3/R1 cannot boot — no MoE implementation serves FP8 block-scales below SM90/SM120 (CutlassFusedMoE SM90/SM120, TritonFusedMoE SM90, Marlin NVFP4 only; findings sm89_trtllm_rc29_probe_2026_10_04) AND MLA has no FMHA kernel (attentionOp.cpp:3234, re-verified 2026-10-04); no serving record can exist" run trt_mla_bmm       mla_bmm_gen_DeepSeek-V3        deepseek-ai/DeepSeek-V3       auto "$MLA"
 run trt_mamba2_ctx    mamba2_ctx_Nemotron-H-56B      nvidia/Nemotron-H-56B-Base-8K auto "$MAMBA"
 run trt_mamba2_gen    mamba2_gen_Nemotron-H-56B      nvidia/Nemotron-H-56B-Base-8K auto "$MAMBA"

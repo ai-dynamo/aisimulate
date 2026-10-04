@@ -1,0 +1,10 @@
+{
+ "verdict": "platform-floor",
+ "gate_name": "mla_gen_fp8_DeepSeek-R1",
+ "repo": "deepseek-ai/DeepSeek-R1",
+ "framework": "vllm",
+ "version": "0.30.0",
+ "sm": "sm89",
+ "note": "CC 12.0 / 8.9: the only dense-MLA backend TRITON_MLA needs 102400 B smem for fp8-KV decode, the card allows 101376 B (findings sm120_triton_mla_fp8kv_smem, sm89_vllm_0300_probe_2026_10_04); no fp8-KV MLA serving record can exist",
+ "graded_at": "2026-10-04T10:59:07"
+}
