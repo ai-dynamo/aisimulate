@@ -90,7 +90,8 @@ def _generator_stamp() -> str:
     if _GEN_STAMP is None:
         import subprocess as _sp
         repo = str(Path(AIS_SRC).parent)
-        head = _sp.run(["git", "-C", repo, "rev-parse", "--short", "HEAD"], capture_output=True, text=True).stdout.strip()
+        head = _sp.run(["git", "-C", repo, "rev-parse", "--short", "HEAD"],
+                       capture_output=True, text=True).stdout.strip()
         diff = _sp.run(["git", "-C", repo, "diff", "HEAD", "--", AIS_SRC], capture_output=True, text=True).stdout
         _GEN_STAMP = head + (("+dirty-" + hashlib.sha256(diff.encode()).hexdigest()[:8]) if diff.strip() else "")
     return _GEN_STAMP
@@ -119,7 +120,6 @@ def render_golden(run: dict) -> Path | None:
            "--save-dir", str(gdir)]
     cmd += list(run.get("cli_extra_args") or [])
     cmd_txt = shlex.join(cmd)
-    import subprocess as _sp
     gen_commit = _generator_stamp()
     stamp = gdir / "command.txt"
     # cache valid only for the SAME command rendered by the SAME generator code
@@ -1288,7 +1288,8 @@ def _fail_cause(note: str) -> str:
         # trtllm 1.3.0rc29 MoE resolution turned every candidate down for SM (L40: CutlassFusedMoE FP8_BLOCK_SCALES
         # SM90/SM120 only, TritonFusedMoE SM90 only, Marlin implements nvfp4/w4a16_nvfp4 only): a platform floor of the
         # framework, not a generator or model fact — except NVFP4, which MARLIN serves (targets.yaml sm89 customization)
-        ("no MoE implementation can serve this layer", "platform floor (trtllm MoE: no implementation for this quant on this SM)"),
+        ("no MoE implementation can serve this layer",
+         "platform floor (trtllm MoE: no implementation for this quant on this SM)"),
         ("requires an fp8 prefill query", "config gap (needs --attention-config use_prefill_query_quantization)"),
         # single-kind dummy cuts forced by capacity (72GB box): a cut with no attention
         # layer, or one that stripped every quantized layer, is a dummy artifact
@@ -1299,7 +1300,8 @@ def _fail_cause(note: str) -> str:
         # sparse (DSA) MLA has no backend below SM90 whatever the kv dtype: every GLM-5.x /
         # DeepSeek-V3.2 cell on L40 failed here with kv auto AND fp8, and the catch-all below
         # filed all 14 as "ckpt-forced fp8-KV" (a config cause that no flag can fix)
-        ("No valid attention backend found.*use_sparse=True", "platform gap (no sparse-MLA attention backend on this SM)"),
+        ("No valid attention backend found.*use_sparse=True",
+         "platform gap (no sparse-MLA attention backend on this SM)"),
         ("frame #|No valid attention backend", "ckpt-forced fp8-KV"),
         ("NoneType|QuantAlgo", "quant parser gap"),
     ]
@@ -1315,7 +1317,8 @@ def _fail_cause(note: str) -> str:
 _DEEP_RULES = [
     ("memory capacity is unbalanced", "harness: busy GPU in the tp group (rerun alone)"),
     # trtllm native aborts (no Python traceback, so only the console tail is known): attentionOp asserts
-    ("Head size \\d+ is not supported by MMHA", "platform floor (trtllm MMHA has no kernel for this head size on this SM)"),
+    ("Head size \\d+ is not supported by MMHA",
+     "platform floor (trtllm MMHA has no kernel for this head size on this SM)"),
     ("Deepseek should be supported by fmha", "platform floor (trtllm MLA has no FMHA kernel on this SM)"),
     ("Unsupported architecture for sparse decode|Sparse Attention Forward Kernel is only supported on",
      "platform floor (SM90+/Blackwell-only kernel: sparse attention, MXFP, FP4)"),
@@ -1449,7 +1452,8 @@ def build_matrix(targets: dict) -> None:
                 if err:
                     tb = next(iter(err.values())).strip()
                     full = tb.splitlines()[-1]
-                    note = full[:200]  # classified on the FULL line: selector errors carry the deciding flag (use_sparse) late
+                    # classified on the FULL line: selector errors carry the deciding flag (use_sparse) late
+                    note = full[:200]
                     cell = {"verdict": "fail", "cause": _fail_cause_full(full, tb), "error": note}
                 else:
                     ca = custom.get((repo, be))

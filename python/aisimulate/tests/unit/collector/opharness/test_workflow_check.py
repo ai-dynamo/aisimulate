@@ -177,11 +177,15 @@ def test_sm_defaults_to_the_targets_platform_and_ais_sm_overrides(wc, monkeypatc
 
 def test_floor_sm_accepts_a_comma_list():
     """FLOOR_SM=sm120,sm89 declares one platform floor for both SMs; an SM not in the list still owns the gate."""
-    import importlib.util, sys
+    import importlib.util
+    import sys
     from pathlib import Path
+
     comp = Path(__file__).resolve().parents[4] / "collector" / "opharness" / "components"
     spec = importlib.util.spec_from_file_location("wfc_floor", comp / "workflow_check.py")
-    wfc = importlib.util.module_from_spec(spec); sys.modules["wfc_floor"] = wfc; spec.loader.exec_module(wfc)
+    wfc = importlib.util.module_from_spec(spec)
+    sys.modules["wfc_floor"] = wfc
+    spec.loader.exec_module(wfc)
     full = wfc.declared_gates("vllm", "0.30.0")
     assert "mla_ctx_fp8_DeepSeek-R1" in full
     for sm in ("sm120", "sm89"):
