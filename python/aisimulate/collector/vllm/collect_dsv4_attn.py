@@ -257,7 +257,7 @@ def _create_dsv4_attention_module(
         capability = current_platform.get_device_capability()
         if capability is not None and capability.to_int() == 89:
             raise RuntimeError(
-                "vLLM 0.24.0 DeepSeek-V4 attention is unsupported on SM89: "
+                "vLLM DeepSeek-V4 attention is unsupported on SM89 (capabilities.yaml op_min_sm floors it at 90): "
                 "the production selector falls back to FlashMLA, whose DSV4 "
                 "backend supports SM90 and SM10x only."
             )
