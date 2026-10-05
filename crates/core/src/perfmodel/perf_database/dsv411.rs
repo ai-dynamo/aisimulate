@@ -85,6 +85,9 @@ struct Columns {
     config_sha256: usize,
     runtime_digest: usize,
     used_cuda_graph: usize,
+    /// publish-time top-k delta factor on synthetic_kv rows (1.0 elsewhere); tables without the
+    /// column predate the correction and may only carry real_kv cached-prefix / decode rows
+    kv_seed_correction: Option<usize>,
     num_heads: Option<usize>,
     head_dim: Option<usize>,
     q_lora_rank: Option<usize>,
@@ -128,6 +131,7 @@ impl Columns {
             config_sha256: reader.col("config_sha256")?,
             runtime_digest: reader.col("runtime_digest")?,
             used_cuda_graph: reader.col("used_cuda_graph")?,
+            kv_seed_correction: reader.col_optional("kv_seed_correction"),
             num_heads: reader.col_optional("num_heads"),
             head_dim: reader.col_optional("head_dim"),
             q_lora_rank: reader.col_optional("q_lora_rank"),
@@ -344,10 +348,19 @@ fn load(path: &Path) -> Result<Grids, AicError> {
             )));
         }
         let seed = row.str(c.kv_seed_regime)?;
+        let correction = match c.kv_seed_correction {
+            Some(index) => row.f64(index)?,
+            None => 1.0,
+        };
+        if !correction.is_finite() || correction < 1.0 || (correction != 1.0 && seed != "synthetic_kv") {
+            return Err(invalid("dsv411 kv_seed_correction is a finite factor >= 1.0 carried only by synthetic_kv rows"));
+        }
         let attention_like = matches!(component, COMPONENT_ATTENTION_CORE | COMPONENT_INDEXER);
         if attention_like {
-            if (!is_context || kv_len > 0) && seed != "real_kv" {
-                return Err(invalid("dsv411 decode/cached-prefill rows require real_kv seeding"));
+            if (!is_context || kv_len > 0) && seed != "real_kv" && !(seed == "synthetic_kv" && c.kv_seed_correction.is_some()) {
+                return Err(invalid(
+                    "dsv411 decode/cached-prefill rows require real_kv seeding or synthetic_kv with a published kv_seed_correction",
+                ));
             }
             if !is_context && query != 1 {
                 return Err(invalid("dsv411 generation rows measure one query token"));
@@ -493,6 +506,41 @@ mod tests {
             let (_root, table) = load(&cols);
             assert!(lookup(&table, 10).is_err(), "{name} must be rejected");
         }
+    }
+
+    #[test]
+    fn synthetic_kv_rows_need_a_published_correction_column() {
+        let rows = |seed: &'static str, correction: Option<Vec<f64>>| {
+            let mut cols = linear_rows(2);
+            cols.retain(|col| {
+                !matches!(col_name(col), "component" | "role" | "kv_len" | "kv_seed_regime" | "n" | "k" | "quant_mode")
+            });
+            cols.push(Col::Str("component", vec![COMPONENT_ATTENTION_CORE; 2]));
+            cols.push(Col::Str("role", vec!["reuse"; 2]));
+            cols.push(Col::I64("kv_len", vec![4096; 2]));
+            cols.push(Col::Str("kv_seed_regime", vec![seed; 2]));
+            cols.push(Col::I64("query", vec![10, 20]));
+            cols.push(Col::F64("latency", vec![1.0, 3.0]));
+            cols.push(Col::Str("quant_mode", vec!["fp8_block"; 2]));
+            let structure = [("num_heads", 16), ("head_dim", 512), ("q_lora_rank", 1280), ("o_lora_rank", 1024)];
+            let geometry = [("o_groups", 2), ("window_size", 128), ("index_topk", 512)];
+            for (name, value) in structure.into_iter().chain(geometry) {
+                cols.push(Col::I64(name, vec![value; 2]));
+            }
+            if let Some(values) = correction {
+                cols.push(Col::F64("kv_seed_correction", values));
+            }
+            cols
+        };
+        let loads = |cols: &[Col]| {
+            let (_r, t) = load(cols);
+            t.query(COMPONENT_SHARED_LINEAR, STRUCTURE, true, 2, Coordinates::tokens(10), &|q, _| Ok(q)).is_ok()
+        };
+        assert!(!loads(&rows("synthetic_kv", None)), "synthetic rows without the column are refused");
+        assert!(loads(&rows("synthetic_kv", Some(vec![1.0, 1.14]))), "published correction admits them");
+        assert!(loads(&rows("real_kv", Some(vec![1.0, 1.0]))));
+        assert!(!loads(&rows("real_kv", Some(vec![1.0, 1.14]))), "real rows carry no factor");
+        assert!(!loads(&rows("synthetic_kv", Some(vec![0.9, 1.0]))), "factors are >= 1.0");
     }
 
     #[test]

@@ -85,7 +85,14 @@ STRUCTURE_COLUMNS = tuple(
 )
 KEY_COLUMNS = ("component", "role", "compress_ratio", "phase", "tp_size", "batch_size", "query", "kv_len")
 VALUE_COLUMNS = ("latency", "sample_count")
-WITNESS_COLUMNS = ("kernel_source", "measurement_scope", "measurement_regime", "kv_seed_regime", "used_cuda_graph")
+WITNESS_COLUMNS = (
+    "kernel_source",
+    "measurement_scope",
+    "measurement_regime",
+    "kv_seed_regime",
+    "used_cuda_graph",
+    "kv_seed_correction",  # publish-time top-k delta factor on synthetic_kv rows (correction.py); 1.0 otherwise
+)
 IDENTITY_COLUMNS = ("source_sha256", "config_sha256", "runtime_digest")
 INTEGER_COLUMNS = frozenset(
     {
@@ -486,6 +493,7 @@ def make_row(
         measurement_regime=regime,
         kv_seed_regime=kv_seed if attention_like and (case["phase"] == "generation" or kv_len > 0) else "n/a",
         used_cuda_graph=used_cuda_graph,
+        kv_seed_correction=1.0,
     )
     return row
 
@@ -527,6 +535,11 @@ def validate_row(row: dict) -> None:
             raise ValueError("generation rows measure one query token")
     elif (row["batch_size"], row["kv_len"], row["kv_seed_regime"]) != (1, 0, "n/a"):
         raise ValueError("token-only components use batch=1, kv_len=0, kv_seed_regime=n/a")
+    correction = row.get("kv_seed_correction")
+    if isinstance(correction, bool) or not isinstance(correction, (int, float)) or not math.isfinite(correction):
+        raise ValueError("kv_seed_correction must be a finite factor")
+    if correction < 1.0 or (correction != 1.0 and row["kv_seed_regime"] != "synthetic_kv"):
+        raise ValueError("kv_seed_correction is >= 1.0 and only synthetic_kv rows carry a factor other than 1.0")
     for key in ("source_sha256", "config_sha256"):
         if re.fullmatch(r"[0-9a-f]{64}", row[key]) is None:
             raise ValueError(f"invalid {key}")
@@ -562,7 +575,7 @@ def write_parquet(rows: list[dict], path) -> None:
     for column in columns:
         if column in INTEGER_COLUMNS:
             fields.append((column, pa.int64()))
-        elif column == "latency":
+        elif column in ("latency", "kv_seed_correction"):
             fields.append((column, pa.float64()))
         elif column == "used_cuda_graph":
             fields.append((column, pa.bool_()))

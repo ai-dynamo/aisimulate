@@ -445,3 +445,73 @@ def test_rows_carry_the_plans_kv_seed_regime(manifests):
             expected_sm=producer.EXPECTED_SM,
             required_sources=producer.REQUIRED_SOURCES,
         )
+
+
+@pytest.mark.unit
+def test_topk_correction_marks_synthetic_rows_once_and_validates():
+    from collector.dsv411 import correction
+
+    corrections = {
+        "schema_version": 1,
+        "vllm": {"indexer": {"context": {"batch_factors": {1: 1.05, 8: 1.14}, "beyond_largest_batch": "hold"}}},
+    }
+    spec = corrections["vllm"]["indexer"]["context"]
+    assert correction.batch_factor(spec, 1) == 1.05
+    assert correction.batch_factor(spec, 8) == 1.14
+    assert correction.batch_factor(spec, 1024) == 1.14  # held beyond the evidence
+    assert abs(correction.batch_factor(spec, 2) - (1.05 + (1.14 - 1.05) / 3)) < 1e-9  # log2-linear between
+    base = dict(
+        component="indexer",
+        phase="context",
+        batch_size=8,
+        kv_len=16,
+        latency=2.0,
+        kv_seed_regime="synthetic_kv",
+        kv_seed_correction=1.0,
+    )
+    rows = [
+        dict(base),
+        dict(base, kv_seed_regime="real_kv"),
+        dict(base, kv_len=0, kv_seed_regime="n/a"),
+        dict(base, component="attention_core"),
+    ]
+    counts = correction.apply_topk_correction(rows, "vllm", corrections)
+    assert counts == {"indexer/context": 1}
+    assert rows[0]["latency"] == pytest.approx(2.28) and rows[0]["kv_seed_correction"] == 1.14
+    assert all(r["latency"] == 2.0 and r["kv_seed_correction"] == 1.0 for r in rows[1:])
+    with pytest.raises(ValueError, match="already carries"):
+        correction.apply_topk_correction(rows, "vllm", corrections)
+    assert correction.apply_topk_correction([dict(base)], "sglang", corrections) == {}
+    assert correction.load_corrections()["vllm"]["indexer"]["context"]["batch_factors"][8] >= 1.0
+    # the row contract: factors other than 1.0 only on synthetic_kv rows, never below 1.0
+    manifest_entry = dict(
+        component="indexer",
+        structure=dict(
+            compress_ratio=1,
+            index_topk=512,
+            index_n_heads=32,
+            index_head_dim=128,
+            is_candidate_source=False,
+            candidate_limit=0,
+            q_lora_rank=1280,
+            quant_mode="fp8_block",
+        ),
+    )
+    case = dict(kind="attention", phase="context", batch_size=8, query=4096, past_kv=65536, case_id="c")
+    row = contract.make_row(
+        manifest_entry,
+        case,
+        tp_size=2,
+        latency=1.0,
+        kernel_source="k",
+        regime=contract.REGIME_CONTEXT,
+        used_cuda_graph=False,
+        kv_seed="synthetic_kv",
+    )
+    row.update(source_sha256="a" * 64, config_sha256="b" * 64, runtime_digest="sha256:" + "c" * 64)
+    contract.validate_row(row)
+    contract.validate_row(dict(row, kv_seed_correction=1.14))
+    with pytest.raises(ValueError, match="kv_seed_correction"):
+        contract.validate_row(dict(row, kv_seed_correction=0.9))
+    with pytest.raises(ValueError, match="kv_seed_correction"):
+        contract.validate_row(dict(row, kv_seed_regime="real_kv", kv_seed_correction=1.14))

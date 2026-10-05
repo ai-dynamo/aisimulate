@@ -16,11 +16,13 @@ an error, never averaged — and written as
 from __future__ import annotations
 
 import argparse
+import collections
 import importlib
 from datetime import date
 from pathlib import Path
 
 from . import contract
+from .correction import apply_topk_correction
 from .plan import PRODUCERS
 
 
@@ -66,6 +68,9 @@ def main(argv=None):
         per_run.append(rows)
         events_meta.append((raw, meta, len(rows)))
     rows = contract.pool_runs(per_run)
+    corrected = apply_topk_correction(rows, args.backend)
+    if corrected:
+        print(f"top-k correction applied to synthetic_kv rows: {corrected}")
     digests = {m["runtime_digest"] for _, m, _ in events_meta}
     if len(digests) != 1:
         raise SystemExit("runs come from different images")
@@ -124,6 +129,8 @@ def main(argv=None):
                 )
                 for raw, meta, count in events_meta
             ],
+            kv_seed_regimes=dict(sorted(collections.Counter(r["kv_seed_regime"] for r in rows).items())),
+            topk_correction=corrected,
             runtime_digest=runtime_digest,
             table=str(dest / f"{contract.TABLE}.parquet"),
             collected_at=args.collected_at,
