@@ -37,9 +37,16 @@ Sweeper workloads, and the native JSON execution boundary.
 The built-in engine supports offline vLLM and SGLang with aggregated or separate
 prefill/decode workers, HBM-only KV cache, and speculative decoding disabled.
 Weka, Agentic Mooncake, and agentic Dynamo traces share this path. Conversation
-routing uses the existing Dynamo adapter with the matching source pair in the
-[AgentX quickstart](agentx-quickstart.md). Online execution and other backends
-require separate qualification.
+routing is an optional native policy provider supplied by the existing
+`ai-dynamo-runtime` wheel: [Dynamo #15631](https://github.com/ai-dynamo/dynamo/pull/15631)
+provides the independent native interface (A), and
+[AISimulate #306](https://github.com/ai-dynamo/aisimulate/pull/306) consumes it
+through the same engine executor (B). Duration #307 is already merged. The
+[AgentX quickstart](agentx-quickstart.md) gives a runnable source-pair installation
+with `router.policy: kv_router` and session/sibling affinity. This A+B path does
+not install the #15240 consumer (C); C follows after A/B merge and matching
+packages are published. The source pair is under review, not an official release.
+Online execution and other backends require separate qualification.
 
 ## Lanes and virtual time
 
