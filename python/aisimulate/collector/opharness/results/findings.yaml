@@ -3066,3 +3066,25 @@ findings:
     - instrument:dummies
     - component:generator_facts
     - family:m3
+  sm103_prepared_from_sm100_best_effort_2026_10_05:
+    statement: 'SM103 (B300) PREPARED FROM THE SM100 ROUND, BEST EFFORT WITHOUT A B300 BOX (2026-10-05; owner: the sglang encoder
+      gate passed on sm100 and failed on sm103). Root cause found by reading: collector/sglang/collect_attn_encoder.py picked
+      FA4 with `sm == 100` and sent SM103 down the Triton lane, while serving selects by capability MAJOR (vision.py:1298-1303
+      @0.5.21: major 9 -> fa3, major 10 -> fa4, else triton_attn) — a wrong-kernel measurement, not a crash; the collector now
+      calls serving_vision_backend(sm) (unit-tested for 89/90/100/103/120/121) and the H20 smoke still records flash_attention_v3.
+      Audit of every exact-SM test in the collectors: the only other `== 100` is trtllm collect_moe''s nvfp4 min-latency option
+      (left closed on SM103 until trtllm''s own support is verified — it withholds rows, it does not mis-measure); sglang gemm /
+      gdn / mla_module already use {100, 103}. Harness: kernel_taxonomy_sm103.yaml seeded verbatim from sm100 (its Blackwell
+      block was validated on B300 on 2026-09-20; probe_driver refuses to run without a per-SM file), generator facts already map
+      b300_sxm / gb300 onto the b200 / gb200 profiles, the Blackwell fail-cause rule matches SM1xx, the trtllm msa floors list
+      sm103. NOT done without the box: labelling the sm103 vocabulary from B300 raws, results/sm103 matrices and gate verdicts,
+      re-running the sm103 encoder gate. On the B300 box: set targets.platform (b300_sm103 / sm 103 / b300_sxm; facts_systems
+      b300_sxm, gb300) and run the workflow as on sm100.'
+    applies_to:
+    - platform:sm103
+    - platform:sm100
+    - framework:sglang-0.5.21
+    - module:collector
+    - instrument:sglang.collect_attn_encoder
+    - instrument:probe_driver
+    - Qwen/Qwen3-VL-2B-Instruct

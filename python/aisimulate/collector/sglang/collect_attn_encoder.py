@@ -5,9 +5,14 @@
 
 SM dispatch mirrors ``VisionAttention._determine_attention_backend``:
 
-- CUDA SM == 90 (Hopper)     -> ``flash_attn_varlen_func``           (FA3)
-- CUDA SM == 100 (Blackwell) -> ``flash_attn_varlen_func(ver=4)``    (FA4)
-- other CUDA (SM<90, SM120)  -> ``context_attention_fwd``            (Triton)
+- capability major 9  (SM90, Hopper)            -> ``flash_attn_varlen_func``         (FA3)
+- capability major 10 (SM100/SM103, B200/B300)  -> ``flash_attn_varlen_func(ver=4)``  (FA4)
+- other CUDA (SM<90, SM120)                     -> ``context_attention_fwd``          (Triton)
+
+Serving branches on the capability MAJOR (layers/attention/vision.py:1298-1303 @0.5.21:
+``major == 9 -> fa3``, ``major == 10 -> fa4``, else ``triton_attn``), so SM103 shares the FA4
+lane with SM100. The collector's earlier ``sm == 100`` test sent SM103 down the Triton path
+(B300 encoder gate failed, 2026-10-05) — a wrong-kernel measurement, not a crash.
 
 Quant: bf16 only. SGLang upstream does not support fp8 ViT FMHA.
 """
@@ -21,6 +26,16 @@ from importlib.metadata import version as _dist_version  # setuptools/pkg_resour
 import torch
 from collector.case_generator import get_attention_encoder_head_configs, get_attention_encoder_shape_sweeps
 from collector.helper import benchmark_with_power, get_sm_version, log_perf
+
+
+def serving_vision_backend(sm_version: int) -> str:
+    """The vision-attention backend sglang selects for a CUDA capability (vision.py:1298-1303 @0.5.21)."""
+    major = sm_version // 10
+    if major == 9:
+        return "fa3"
+    if major == 10:
+        return "fa4"
+    return "triton_attn"
 
 
 class Timing(NamedTuple):
@@ -81,9 +96,10 @@ def _build_kernel_runner(
     max_seqlen = seq_len
     softmax_scale = head_dim**-0.5
 
-    sm = get_sm_version()  # 90 / 100 / 120 / ...
+    sm = get_sm_version()  # 90 / 100 / 103 / 120 / ...
 
-    if sm == 90:
+    backend = serving_vision_backend(sm)
+    if backend == "fa3":
         # Matches VisionFlash3Attention.forward.
         try:  # sglang>=0.5.21 (layers/attention/vision.py:55)
             from sglang.kernels.ops.attention.flash_attention import flash_attn_varlen_func
@@ -105,7 +121,7 @@ def _build_kernel_runner(
 
         return run_iter, "flash_attention_v3"
 
-    if sm == 100:
+    if backend == "fa4":
         # Matches VisionFlash4Attention.forward.
         try:  # sglang>=0.5.21 (layers/attention/vision.py:55)
             from sglang.kernels.ops.attention.flash_attention import flash_attn_varlen_func
@@ -127,7 +143,7 @@ def _build_kernel_runner(
 
         return run_iter, "flash_attention_v4"
 
-    # SM<90 or SM>100: Triton path matching VisionTritonAttention.forward.
+    # every other capability (SM<90, SM120): Triton path matching VisionTritonAttention.forward.
     try:  # sglang>=0.5.21 (layers/attention/vision.py imports it from kernels/ops/attention)
         from sglang.kernels.ops.attention.prefill_attention import context_attention_fwd
     except ImportError:

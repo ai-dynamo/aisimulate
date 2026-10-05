@@ -123,6 +123,13 @@ Which SM a command works on:
    workflow exactly as on sm90; `workflow_check upgrade_op --param fw=... --param
    version=...` shows honest todos for the new SM until its own evidence exists.
 
+SM103 (B300) is the same capability MAJOR as SM100 and every framework selects
+kernels by that family (sglang `major == 10`, trtllm/vllm `in (100, 103)`), so a
+collector that tests `sm == 100` silently measures the wrong lane on B300
+(sglang encoder, fixed 2026-10-05). Branch on the family the framework's own
+selector uses. `kernel_taxonomy_sm103.yaml` is seeded from the sm100 file and
+still needs labelling from B300 raws; `results/sm103/` does not exist yet.
+
 Gate declarations are SM-aware: a `run ...` line in `captures/verdicts_*.sh`
 declares the gate for every SM; prefix `FLOOR_SM=<sm> FLOOR_NOTE="<framework
 fact>"` when the gate has no serving instance on that SM by framework fact
