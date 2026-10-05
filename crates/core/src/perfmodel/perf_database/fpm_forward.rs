@@ -2049,7 +2049,10 @@ pub(crate) mod tests {
                 "0.25.1",
                 true,
             );
-            assert_eq!(decode_curves(&table.cells().unwrap()[0].decode)[&8][&4096], 7.0);
+            assert_eq!(
+                decode_curves(&table.cells().unwrap()[0].decode)[&8][&4096],
+                7.0
+            );
             for (mutation, error) in [
                 (0, "state_protocol"),
                 (1, "timing_boundary"),
