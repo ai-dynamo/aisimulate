@@ -2300,17 +2300,17 @@ impl VllmCore {
                 .filter(|(_, work)| work.prompt_tokens > 0)
                 .map(|(uuid, _)| *uuid),
         );
-        committed_requests.extend(
-            output_signals
-                .iter()
-                .filter(|signal| {
-                    signal.token_id.is_some()
-                        && scheduled
-                            .get(&signal.uuid)
-                            .is_some_and(|work| work.prompt_tokens == 0)
-                })
-                .map(|signal| signal.uuid),
-        );
+        for signal in &output_signals {
+            // Speculative bursts emit consecutive tokens for the same request.
+            if signal.token_id.is_some()
+                && committed_requests.last() != Some(&signal.uuid)
+                && scheduled
+                    .get(&signal.uuid)
+                    .is_some_and(|work| work.prompt_tokens == 0)
+            {
+                committed_requests.push(signal.uuid);
+            }
+        }
         committed_requests.sort_unstable();
         committed_requests.dedup();
         self.state.debug_assert_invariants();

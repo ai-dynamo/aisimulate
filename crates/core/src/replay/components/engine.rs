@@ -1347,7 +1347,7 @@ mod tests {
     #[case(Backend::Sglang)]
     fn committed_request_membership_excludes_queued_work_during_chunked_prefill(
         #[case] backend: Backend,
-        #[values(1, 2)] dp_size: u32,
+        #[values(1, 2, 3)] dp_size: u32,
         #[values(false, true)] query_before_cancel: bool,
     ) {
         let config = ReplayEngineConfig {
@@ -1384,7 +1384,9 @@ mod tests {
             None,
         )
         .unwrap();
-        let requests: Vec<_> = (0..dp_size)
+        // With three ranks, leave rank 0 idle so collection starts at rank 1.
+        let first_active_rank = if dp_size == 3 { 1 } else { 0 };
+        let requests: Vec<_> = (first_active_rank..dp_size)
             .map(|rank| {
                 (
                     rank as usize,
@@ -1464,7 +1466,7 @@ mod tests {
                 .iter()
                 .map(|pass| pass.fpm.as_ref().unwrap().sum_prefill_tokens)
                 .sum::<u64>(),
-            4 * u64::from(dp_size)
+            4 * requests.len() as u64
         );
         for &(scheduler_id, committed, _) in &requests {
             assert!(
