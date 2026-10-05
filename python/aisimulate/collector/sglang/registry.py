@@ -353,6 +353,17 @@ REGISTRY: list[OpEntry] = [
         # collect_kda.py — the JIT kernel's mbarrier PTX rejects sm_89).
         unverified_sms=(80,),
     ),
+    # GLM-5.3-Flash prefix-cache KDA state checkpoint copy (extra_buffer
+    # decode track kernel + extend index gather/put sequence). Routed only by
+    # the GLM model case file; the module gates execution to the audited
+    # 0.5.20 release.
+    OpEntry(
+        op="glm53_mamba_state_checkpoint_copy",
+        module="collector.sglang.collect_glm53_mamba_state_copy",
+        get_func="get_glm53_mamba_state_copy_test_cases",
+        run_func="run_glm53_mamba_state_copy",
+        perf_filename=PerfFile.GLM53_MAMBA_STATE_COPY,
+    ),
     OpEntry(
         op="mhc_module",
         module="collector.sglang.collect_mhc_module",

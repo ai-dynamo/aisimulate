@@ -1,0 +1,25 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+schema_version: 1
+op: glm53_mamba_state_checkpoint_copy
+description: >
+  Base collector v2 workload sweep for the GLM-5.3-Flash prefix-cache KDA
+  state checkpoint copy (SGLang extra_buffer decode/prefill track copies and
+  the vLLM align pre-copy). Structural geometry (layers, heads, head_dim,
+  conv kernel, valid TP shards) comes exclusively from the model's
+  model_case_values row. Per shard every copy count c is paired with the
+  copy-only batch max(c, 1) and every full batch size >= c, so the early-exit
+  rows of a batch are measured alongside the copying rows.
+common_case_values:
+  glm53_mamba_state_checkpoint_copy:
+    num_copy_requests:
+    - 0
+    - 1
+    - 2
+    - 4
+    - 8
+    - 16
+    - 32
+    full_batch_sizes:
+    - 32

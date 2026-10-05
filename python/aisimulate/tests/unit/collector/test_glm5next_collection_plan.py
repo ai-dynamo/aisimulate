@@ -36,11 +36,18 @@ def _compat(relative_path: str) -> str:
 
 @pytest.mark.parametrize("backend", ["vllm", "sglang"])
 @pytest.mark.parametrize("model_path", [FP8, NVFP4])
-def test_plan_collects_gemm_moe_compute_scale_kda_and_mhc(backend, model_path):
+def test_plan_collects_gemm_moe_compute_scale_kda_mhc_and_state_copy(backend, model_path):
     plan = build_collection_case_plan(backend=backend, model_path=model_path, gpu_type="gb300")
     assert plan.model_architecture == "Glm5NextForConditionalGeneration"
     assert plan.sm_version == 103
-    assert set(plan.ops) == {"gemm", "moe", "compute_scale", "kda", "mhc_module"}
+    assert set(plan.ops) == {
+        "gemm",
+        "moe",
+        "compute_scale",
+        "kda",
+        "mhc_module",
+        "glm53_mamba_state_checkpoint_copy",
+    }
 
 
 def test_trtllm_plan_has_no_glm_moe_lane():

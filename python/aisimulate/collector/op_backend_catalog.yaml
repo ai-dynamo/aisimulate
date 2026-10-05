@@ -196,6 +196,12 @@ families:
   - family: kda
     op_files: [kda_perf]
 
+  # GLM-5.3-Flash prefix-cache KDA state checkpoint copy (SGLang extra_buffer
+  # track copies, vLLM align pre-copy); its own family so the table pins to
+  # the GLM runtimes without moving the kda family.
+  - family: mamba_state_copy
+    op_files: [glm53_mamba_state_copy_perf]
+
   # MiniMax-M3 MSA gets its own family (not sparse_attention) so its sglang
   # runtime can pin to the official v0.5.16 image (first release with M3)
   # while the DSA/DSV4 collectors stay on the stock 0.5.14 pin.

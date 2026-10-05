@@ -131,6 +131,10 @@ collector.sglang.collect_gdn:
 collector.sglang.collect_kda:
   - collector/cases/base_ops/kda.yaml
   - __model_cases__
+collector.sglang.collect_glm53_mamba_state_copy:
+  - collector/glm53_mamba_state_copy_common.py
+  - collector/cases/base_ops/glm53_mamba_state_checkpoint_copy.yaml
+  - __model_cases__
 collector.sglang.collect_gemm:
   # SGLang 0.5.20 runs are delegated to collect_gemm_0520.py.
   - collector/sglang/collect_gemm_0520.py
@@ -289,6 +293,10 @@ collector.vllm.collect_mla_bmm:
   - __model_cases__
 collector.vllm.collect_kda:
   - collector/cases/base_ops/kda.yaml
+  - __model_cases__
+collector.vllm.collect_glm53_mamba_state_copy:
+  - collector/glm53_mamba_state_copy_common.py
+  - collector/cases/base_ops/glm53_mamba_state_checkpoint_copy.yaml
   - __model_cases__
 collector.vllm.collect_dsv4_attn:
   - __model_cases__
