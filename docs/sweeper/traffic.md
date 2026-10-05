@@ -84,8 +84,10 @@ The synthetic fields are `isl`, `osl`, `request_rate`, `concurrency`, `kv_load_r
 shared synthetic knobs carried by `ReplaySpec.workload`.
 
 Profile controls are concrete workload values, not search dimensions. The built-in Engine runner
-supports profiles on offline aggregated or P/D vLLM/SGLang replay, with HBM-only KV cache and
-speculative decoding disabled. Warmup is optional; enabling it retains the saved snapshot frontier.
+supports profiles on offline aggregated or P/D vLLM/SGLang replay with HBM-only KV cache.
+vLLM also supports local or shared [G2 host offload](../agentx-g2.md) on a static single
+aggregated worker or 1P1D, with attention DP1 on every role. Speculative decoding and G3
+remain unsupported. Warmup is optional; enabling it retains the saved snapshot frontier.
 A completed lane takes a new turn-zero play from the shared corpus cursor, wrapping as necessary
 until the admission deadline. Snapshot sampling and warmup still differ from the AgentX reference;
 see the [profile limits](../agentic-profile.md#results-and-limits). Injected runners must advertise
