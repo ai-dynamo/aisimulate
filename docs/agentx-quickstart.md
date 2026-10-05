@@ -59,7 +59,7 @@ Use these exact source revisions together:
 
 | Existing distribution | Source revision | Status |
 | --- | --- | --- |
-| `ai-dynamo-runtime` | `45e0486319be7e5db8f6b38dca850d96270cec86` (#15631) | Development build, not merged/released |
+| `ai-dynamo-runtime` | `2cee4fe9fb00baf2e0a029ccf4768e31982272d4` (#15631) | Development build, not merged/released |
 | `aisimulate` | `a298db2eae5b8c5ead28137c8715e5bcafaa1ae3` (#306, including merged #307) | Development build, not merged/released |
 
 You need Python 3.12, `uv`, Rust 1.96.1 for Dynamo, Rust 1.91.0 for AISimulate,
@@ -75,7 +75,7 @@ rustup toolchain install 1.96.1 1.91.0 --profile minimal
 uv venv --python 3.12 /tmp/agentx-quickstart/venv
 uv pip install --python /tmp/agentx-quickstart/venv/bin/python 'maturin>=1.12,<2' patchelf
 
-agentx_dynamo_rev=45e0486319be7e5db8f6b38dca850d96270cec86
+agentx_dynamo_rev=2cee4fe9fb00baf2e0a029ccf4768e31982272d4
 agentx_aisim_rev=a298db2eae5b8c5ead28137c8715e5bcafaa1ae3
 git clone https://github.com/ai-dynamo/dynamo.git /tmp/agentx-quickstart/dynamo
 git -C /tmp/agentx-quickstart/dynamo checkout --detach "$agentx_dynamo_rev"
@@ -364,7 +364,7 @@ lanes recycle, so this is not the expected measured request count.
 The source pair above passes ten installed CLI cases covering vLLM/SGLang,
 aggregated/P-D, session/sibling affinity, duration, real worker/DP bindings and
 physical cache reuse. Cache-disabled controls report zero actual reuse. The
-standalone Dynamo provider additionally passes twelve installed API tests without
+standalone Dynamo provider additionally passes thirteen installed API tests without
 AISimulate installed. These are local functional results, separate from remote
 CI, merge approval and publication.
 
