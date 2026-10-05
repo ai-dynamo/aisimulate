@@ -224,26 +224,6 @@ fn replay_accept_length_counts_decode_work_before_output_truncation() {
                 traffic.avg_accept_length, expected_average,
                 "{backend:?}, {lengths:?}, {rates:?}"
             );
-            assert_eq!(
-                report.speculative_acceptance.decode_forwards,
-                expected_forwards
-            );
-            assert_eq!(
-                report.speculative_acceptance.mean_accept_length,
-                expected_average
-            );
-            assert_eq!(
-                report.speculative_acceptance.accepted_tokens_including_base,
-                expected_average.map_or(0, |average| (average * expected_forwards as f64) as usize)
-            );
-            let json = serde_json::to_value(&report).unwrap();
-            assert_eq!(
-                json["speculative_acceptance"]["sampling_population"],
-                "measurement_completed_decode_passes"
-            );
-            if expected_forwards == 0 {
-                assert!(json["speculative_acceptance"]["mean_accept_length"].is_null());
-            }
         }
     }
 }
@@ -308,11 +288,6 @@ fn replay_accept_length_survives_rank_aggregation_and_prefill_handoffs() {
                 forwards,
                 if disaggregated { 4 } else { 2 },
                 "{backend:?}, dp={dp_size}, pd={disaggregated}"
-            );
-            assert_eq!(report.speculative_acceptance.decode_forwards, forwards);
-            assert_eq!(
-                report.speculative_acceptance.accepted_tokens_including_base,
-                3 * forwards
             );
         }
     }

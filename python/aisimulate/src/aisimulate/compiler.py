@@ -555,11 +555,6 @@ def _worker_performance_model_metadata(
     return {
         "provider": "aic",
         "config": config,
-        **(
-            {"capacity_source": "explicit_fixed" if worker.kv_cache.capacity.type == "fixed" else "inferred"}
-            if engine.speculation is not None or engine.nextn
-            else {}
-        ),
     }
 
 

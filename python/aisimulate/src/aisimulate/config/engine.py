@@ -310,6 +310,14 @@ class MtpSpeculationConfig(StrictModel):
             raise ValueError("expected_accepted_tokens must be within [0, num_speculative_tokens]")
         return self
 
+    @property
+    def acceptance_rates(self) -> list[float]:
+        whole = int(self.expected_accepted_tokens)
+        rates = [1.0] * whole
+        if whole < self.num_speculative_tokens:
+            rates.append(self.expected_accepted_tokens - whole)
+        return rates + [0.0] * (self.num_speculative_tokens - len(rates))
+
     def cost_config(self) -> dict[str, Any]:
         return {"kind": self.kind, "params": {"num_speculative_tokens": self.num_speculative_tokens}}
 

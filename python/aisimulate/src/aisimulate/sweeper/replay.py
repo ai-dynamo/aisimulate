@@ -498,46 +498,6 @@ class RunnerCapabilities:
                         for selected in selections
                     ):
                         raise ValueError("agentic speculative decoding supports only MTP")
-                    if rank.get("native_host_offload") is not None or rank.get("g3_offload") is not None:
-                        raise ValueError("agentic MTP requires HBM-only KV cache")
-                    if (
-                        not rank.get("num_gpu_blocks")
-                        or args.get("num_gpu_blocks_is_explicit") is False
-                        or rank.get("num_gpu_blocks_is_explicit") is False
-                    ):
-                        raise ValueError("agentic MTP requires explicit fixed KV capacity (num_gpu_blocks)")
-                    has_expected = any(
-                        isinstance(selected, Mapping) and selected.get("expected_accepted_tokens") is not None
-                        for selected in selections
-                    ) or any(rank.get(key) is not None for key in ("aic_nextn_accepted", "nextn_accepted"))
-                    has_rates = any(
-                        isinstance(rank.get(key), str) and bool(rank[key].strip())
-                        for key in ("aic_nextn_accept_rates", "nextn_accept_rates")
-                    )
-                    if not has_expected and not has_rates:
-                        raise ValueError(
-                            "agentic MTP requires explicit acceptance rates or expected accepted draft tokens"
-                        )
-                    # Flat AIC identities and default timing are resolved later
-                    # through the canonical constructor. Reject known incompatible
-                    # costs here; execution validates the resolved op-level model.
-                    incompatible_timing = (
-                        isinstance(timing, Mapping)
-                        and timing.get("type", "default") != "default"
-                        and (timing.get("type") != "external" or timing.get("provider") != "aic")
-                    )
-                    incompatible_mode = timing_config.get("estimation_mode") not in (None, "auto", "op_level") or any(
-                        value not in (None, "op_level")
-                        for value in (
-                            timing_config.get("forward_model"),
-                            rank.get("forward_model"),
-                            rank.get("aic_forward_model"),
-                        )
-                    )
-                    if incompatible_timing or incompatible_mode:
-                        raise ValueError(
-                            "agentic MTP requires AIC op_level timing including draft and verification cost"
-                        )
 
         unsupported = [hook for hook in spec.runtime_hooks if not self.supports_hook(hook)]
         if unsupported:

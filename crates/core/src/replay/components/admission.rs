@@ -563,15 +563,6 @@ impl<Metadata: ReplayAdmissionMetadata> AdmissionQueue<Metadata> {
         driver.agentic_profile_deadlines()
     }
 
-    /// Completion at the grace deadline settles before cancellation. Later
-    /// committed passes belong to cancellation drain, outside measured samples.
-    pub(crate) fn includes_measurement_decode_pass(&self, now_ms: f64) -> bool {
-        !self.is_agentic_preparing()
-            && self
-                .agentic_profile_deadlines()
-                .is_none_or(|(_, grace, _)| now_ms <= grace)
-    }
-
     pub(crate) fn agentic_profile_pending_request_ids(&self) -> Vec<Uuid> {
         let AdmissionSource::Workload { driver, .. } = &self.source else {
             return Vec::new();
@@ -729,36 +720,6 @@ impl<Metadata: ReplayAdmissionMetadata> CoreAdmissionSource for AdmissionQueue<M
 #[cfg(test)]
 mod trace_tests {
     use super::*;
-
-    #[test]
-    fn decode_measurement_includes_grace_equality_but_excludes_preparation_and_drain() {
-        use crate::replay::loadgen::{
-            AgenticProfileOptions, AgenticSnapshotOptions, load_weka_agentic_graph,
-        };
-        let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../tests/e2e/configs/unified_cli/fixtures/traces/weka-relative.json");
-        let prepared = load_weka_agentic_graph(&source, Some(4))
-            .unwrap()
-            .prepare_snapshots(1, AgenticSnapshotOptions { seed: 42 })
-            .unwrap();
-        let mut measured =
-            WorkloadDriver::new_agentic_snapshots(prepared.clone(), 4, true, 1.0).unwrap();
-        measured
-            .enable_agentic_profile(AgenticProfileOptions {
-                duration_seconds: 1.0,
-                response_grace_seconds: 0.25,
-                cancel_drain_seconds: 0.5,
-                ..Default::default()
-            })
-            .unwrap();
-        let admission = AdmissionQueue::<()>::new_workload(measured, ReplayMode::Trace);
-        assert!(admission.includes_measurement_decode_pass(1_249.0));
-        assert!(admission.includes_measurement_decode_pass(1_250.0));
-        assert!(!admission.includes_measurement_decode_pass(1_251.0));
-        let preparing = WorkloadDriver::new_agentic_warmup(prepared, 4, true, 1.0).unwrap();
-        let admission = AdmissionQueue::<()>::new_workload(preparing, ReplayMode::Trace);
-        assert!(!admission.includes_measurement_decode_pass(0.0));
-    }
 
     fn trace_request(uuid: u128, arrival_timestamp_ms: Option<f64>) -> DirectRequest {
         DirectRequest {

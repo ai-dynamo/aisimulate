@@ -44,10 +44,6 @@ _EXPECTED_PREDICT_CASES = (
     "11-synthetic-afd.yaml",
     "11-trace-weka-agentic-lane.yaml",
     "12-trace-weka-jsonl-agentic-lane.yaml",
-    "13-trace-weka-glm52-mtp-agg.yaml",
-    "14-trace-weka-glm52-mtp-disagg.yaml",
-    "15-trace-weka-dsv4-mtp-agg.yaml",
-    "16-trace-weka-dsv4-mtp-disagg.yaml",
 )
 _EXPECTED_RECOMMEND_CASES = (
     "01-default-preset-throughput.yaml",

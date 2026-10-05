@@ -2959,7 +2959,7 @@ mod tests {
                 });
                 // No lane flag: Dynamo agentic detection must follow loaded content.
                 let result = execute_json(&payload.to_string(), false);
-                if agentic && !message.is_empty() {
+                if agentic {
                     let error = format!("{:#}", result.unwrap_err());
                     assert!(error.contains(message), "{format}: {error}");
                     // Public P/D must validate both roles, including a decode
@@ -2988,7 +2988,7 @@ mod tests {
                 } else {
                     let report: serde_json::Value = serde_json::from_str(&result.unwrap()).unwrap();
                     assert_eq!(report["completed_requests"], 1);
-                    assert_eq!(report.get("agentic_qualification").is_some(), agentic);
+                    assert!(report.get("agentic_qualification").is_none());
                 }
             }
             // Exercise all three importers through the actual native P/D
@@ -3625,22 +3625,56 @@ mod tests {
     }
 
     #[test]
-    fn ngram_timing_requires_matching_scheduler_depth_and_no_mtp() {
-        let mut config = aic_config();
-        config.speculation = Some(crate::ForwardPassSpeculationConfig::Ngram {
-            num_speculative_tokens: 2,
-        });
-        let mut role = aggregated_role(&ReplayEngineConfig::default());
-        assert!(materialize_aic_capacity(&config, &mut role, true, |_, _| unreachable!()).is_err());
-        role.rank.aic_nextn = Some(2);
-        materialize_aic_capacity(&config, &mut role, true, |_, _| unreachable!()).unwrap();
-        config.nextn = 2;
-        assert!(config.validate_parallel_shape().is_err());
-        config.nextn = 0;
-        config.speculation = Some(crate::ForwardPassSpeculationConfig::Ngram {
-            num_speculative_tokens: 6,
-        });
-        assert!(config.validate_parallel_shape().is_err());
+    fn speculation_timing_requires_matching_scheduler_depth_and_no_nextn() {
+        use crate::ForwardPassSpeculationConfig::{Mtp, Ngram};
+        for (backend, speculation) in [
+            (
+                Backend::Vllm,
+                Ngram {
+                    num_speculative_tokens: 2,
+                },
+            ),
+            (
+                Backend::Vllm,
+                Mtp {
+                    num_speculative_tokens: 2,
+                },
+            ),
+            (
+                Backend::Sglang,
+                Mtp {
+                    num_speculative_tokens: 2,
+                },
+            ),
+        ] {
+            let mut config = aic_config();
+            config.backend = if backend == Backend::Sglang {
+                "sglang"
+            } else {
+                "vllm"
+            }
+            .into();
+            config.speculation = Some(speculation);
+            let canonical = config
+                .estimator_request(ForwardPassWorkerType::Aggregated)
+                .unwrap();
+            assert_eq!(canonical.nextn, 0);
+            assert_eq!(canonical.speculation, config.speculation);
+            let mut role = aggregated_role(&ReplayEngineConfig::default());
+            role.rank.backend = backend;
+            assert!(
+                materialize_aic_capacity(&config, &mut role, true, |_, _| unreachable!()).is_err()
+            );
+            role.rank.aic_nextn = Some(2);
+            materialize_aic_capacity(&config, &mut role, true, |_, _| unreachable!()).unwrap();
+            config.nextn = 2;
+            assert!(config.validate_parallel_shape().is_err());
+            config.nextn = 0;
+            config.speculation = Some(Ngram {
+                num_speculative_tokens: 6,
+            });
+            assert!(config.validate_parallel_shape().is_err());
+        }
     }
 
     #[test]
@@ -3652,34 +3686,6 @@ mod tests {
             assert!(
                 serde_json::from_value::<crate::ForwardPassSpeculationConfig>(payload).is_err()
             );
-        }
-    }
-
-    #[test]
-    fn mtp_timing_preserves_explicit_method_and_scheduler_depth_on_both_backends() {
-        for backend in ["vllm", "sglang"] {
-            let mut config = aic_config();
-            config.backend = backend.into();
-            config.speculation = Some(crate::ForwardPassSpeculationConfig::Mtp {
-                num_speculative_tokens: 3,
-            });
-            assert_eq!(config.speculative_depth().unwrap(), 3);
-            let canonical = config
-                .estimator_request(ForwardPassWorkerType::Aggregated)
-                .unwrap();
-            assert_eq!(canonical.nextn, 0);
-            assert_eq!(canonical.speculation, config.speculation);
-            let mut role = aggregated_role(&ReplayEngineConfig::default());
-            role.rank.backend = if backend == "sglang" {
-                Backend::Sglang
-            } else {
-                Backend::Vllm
-            };
-            assert!(
-                materialize_aic_capacity(&config, &mut role, true, |_, _| unreachable!()).is_err()
-            );
-            role.rank.aic_nextn = Some(3);
-            materialize_aic_capacity(&config, &mut role, true, |_, _| unreachable!()).unwrap();
         }
     }
 
@@ -3698,10 +3704,8 @@ mod tests {
                 provider: "aic".into(),
                 config: serde_json::json!({"estimation_mode": "op_level", "speculation": {"kind": "mtp", "params": {"num_speculative_tokens": 5}}}),
             };
-            for nextn in 1..=5 {
-                rank.aic_nextn = Some(nextn);
-                validate_public_agentic_engine(&input, &rank, true).unwrap();
-            }
+            rank.aic_nextn = Some(5);
+            validate_public_agentic_engine(&input, &rank, true).unwrap();
             assert!(
                 validate_public_agentic_engine(&input, &rank, false)
                     .unwrap_err()

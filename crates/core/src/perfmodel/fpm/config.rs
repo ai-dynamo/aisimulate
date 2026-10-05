@@ -60,7 +60,6 @@ pub enum ForwardPassFallbackPolicy {
     rename_all = "snake_case",
     deny_unknown_fields
 )]
-#[non_exhaustive]
 pub enum ForwardPassSpeculationConfig {
     Ngram {
         num_speculative_tokens: u32,
@@ -72,7 +71,7 @@ pub enum ForwardPassSpeculationConfig {
 }
 
 impl ForwardPassSpeculationConfig {
-    pub fn kind(&self) -> &'static str {
+    pub(crate) fn kind(&self) -> &'static str {
         match self {
             Self::Ngram { .. } => "ngram",
             Self::Mtp { .. } => "mtp",
@@ -892,30 +891,29 @@ mod tests {
 
     #[test]
     fn explicit_mtp_retains_method_and_target_identity() {
-        for backend in ["vllm", "sglang", "trtllm"] {
-            for model in ["nvidia/GLM-5.2-NVFP4", "deepseek-ai/DeepSeek-V4-Pro"] {
-                let cfg = config(serde_json::json!({
-                    "model": model, "backend": backend,
-                    "speculation": {"kind": "mtp", "params": {"num_speculative_tokens": 3}}
-                }));
-                cfg.validate().unwrap();
-                assert_eq!(
-                    cfg.nextn, 0,
-                    "explicit identity must not become legacy nextn"
-                );
-                assert_eq!(cfg.model, model);
-                assert_eq!(cfg.speculation.as_ref().unwrap().kind(), "mtp");
-                assert_eq!(
-                    cfg.speculation.as_ref().unwrap().num_speculative_tokens(),
-                    3
-                );
-                let saved = serde_json::to_value(&cfg).unwrap();
-                assert_eq!(
-                    serde_json::from_value::<ForwardPassPerfModelConfig>(saved).unwrap(),
-                    cfg
-                );
-            }
-        }
+        let cfg = config(serde_json::json!({
+            "model": "deepseek-ai/DeepSeek-V4-Pro", "backend": "sglang",
+            "speculation": {"kind": "mtp", "params": {"num_speculative_tokens": 3}}
+        }));
+        cfg.validate().unwrap();
+        assert_eq!(
+            cfg.nextn, 0,
+            "explicit identity must not become legacy nextn"
+        );
+        assert_eq!(cfg.model, "deepseek-ai/DeepSeek-V4-Pro");
+        assert_eq!(
+            cfg.speculation,
+            Some(ForwardPassSpeculationConfig::Mtp {
+                num_speculative_tokens: 3,
+            })
+        );
+        assert_eq!(
+            serde_json::from_value::<ForwardPassPerfModelConfig>(
+                serde_json::to_value(&cfg).unwrap()
+            )
+            .unwrap(),
+            cfg
+        );
     }
 
     #[test]

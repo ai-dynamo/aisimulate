@@ -10,9 +10,8 @@ use std::path::{Path, PathBuf};
 
 use aisimulate_core::engine::{Backend, EngineConfig, TimingModelConfig};
 use aisimulate_core::replay::loadgen::{
-    AgenticLifecycleEventKind, AgenticPlayStatus, AgenticProfileOptions, AgenticSnapshotOptions,
-    PreparedAgenticSnapshots, ValidatedAgenticGraph, WekaImporter, WorkloadDriver,
-    load_agentic_mooncake, load_weka_agentic_graph,
+    AgenticLifecycleEventKind, AgenticPlayStatus, ValidatedAgenticGraph, WekaImporter,
+    WorkloadDriver, load_agentic_mooncake, load_weka_agentic_graph,
 };
 use aisimulate_core::replay::{
     ReplayCaptureOptions, ReplayDeterminism, ReplayEngineConfig, ReplayEngineFactory, ReplayReport,
@@ -46,25 +45,37 @@ fn run(
     backend: Backend,
     max_model_len: Option<usize>,
 ) -> ReplayReport {
+    run_config(
+        graph,
+        EngineConfig {
+            num_gpu_blocks: 64,
+            block_size: 4,
+            max_model_len,
+            max_num_seqs: 4,
+            max_num_batched_tokens: 64,
+            aic_nextn: None,
+            native_host_offload: None,
+            timing_model: TimingModelConfig::Fixed {
+                prefill_ms: 2.0,
+                decode_ms: 1.0,
+            },
+            ..EngineConfig::for_backend(backend)
+        },
+        ReplayTopology::aggregated(1),
+    )
+}
+
+fn run_config(
+    graph: ValidatedAgenticGraph,
+    rank: EngineConfig,
+    topology: ReplayTopology,
+) -> ReplayReport {
     let driver = WorkloadDriver::new_agentic_trace_with_lanes(graph, 4, 1).unwrap();
     let spec = ReplaySpec {
         version: 1,
-        topology: ReplayTopology::aggregated(1),
+        topology,
         engine: serde_json::to_value(ReplayEngineConfig {
-            rank: EngineConfig {
-                num_gpu_blocks: 64,
-                block_size: 4,
-                max_model_len,
-                max_num_seqs: 4,
-                max_num_batched_tokens: 64,
-                aic_nextn: None,
-                native_host_offload: None,
-                timing_model: TimingModelConfig::Fixed {
-                    prefill_ms: 2.0,
-                    decode_ms: 1.0,
-                },
-                ..EngineConfig::for_backend(backend)
-            },
+            rank,
             ..ReplayEngineConfig::default()
         })
         .unwrap(),
@@ -233,9 +244,12 @@ fn public_vllm_child_context_rejection_settles_the_play_and_skips_parent_resume(
     );
 }
 
-fn burst_weka_graph() -> ValidatedAgenticGraph {
-    // Extend the locally authored Weka spawn/join fixture with non-aligned
-    // output lengths, exercising terminal bursts rather than prefill-only work.
+#[rstest]
+fn weka_mtp_bursts_preserve_spawn_join_and_output_limits(
+    #[values(Backend::Vllm, Backend::Sglang)] backend: Backend,
+    #[values(false, true)] disaggregated: bool,
+) {
+    // Non-aligned output lengths exercise terminal bursts in the existing DAG.
     let mut source: serde_json::Value =
         serde_json::from_reader(File::open(fixture("weka-relative.json")).unwrap()).unwrap();
     fn extend(requests: &mut serde_json::Value) {
@@ -251,52 +265,7 @@ fn burst_weka_graph() -> ValidatedAgenticGraph {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("burst-weka.json");
     serde_json::to_writer(File::create(&path).unwrap(), &source).unwrap();
-    load_weka_agentic_graph(&path, Some(4)).unwrap()
-}
-
-fn run_burst_weka(
-    backend: Backend,
-    disaggregated: bool,
-    mtp: bool,
-    profile_drain_seconds: Option<f64>,
-) -> ReplayReport {
-    run_burst_weka_with_rates(backend, disaggregated, mtp, profile_drain_seconds, "1,1")
-}
-
-fn run_burst_weka_with_rates(
-    backend: Backend,
-    disaggregated: bool,
-    mtp: bool,
-    profile_drain_seconds: Option<f64>,
-    rates: &str,
-) -> ReplayReport {
-    let graph = burst_weka_graph();
-    let driver = if let Some(drain) = profile_drain_seconds {
-        let prepared = graph
-            .prepare_snapshots(1, AgenticSnapshotOptions { seed: 42 })
-            .unwrap();
-        let play = prepared.context().prepare_play(0, 0, Some(15.0)).unwrap();
-        let mut driver = WorkloadDriver::new_agentic_warmup(
-            PreparedAgenticSnapshots::from_plays(vec![play]).unwrap(),
-            4,
-            true,
-            1.0,
-        )
-        .unwrap();
-        driver
-            .enable_agentic_profile(AgenticProfileOptions {
-                // End during a decode pass in each topology so drain filtering
-                // is tested with actual in-flight cancellation.
-                duration_seconds: if disaggregated { 0.15 } else { 0.132 },
-                response_grace_seconds: 0.001,
-                cancel_drain_seconds: drain,
-                ..Default::default()
-            })
-            .unwrap();
-        driver
-    } else {
-        WorkloadDriver::new_agentic_trace_with_lanes(graph, 4, 1).unwrap()
-    };
+    let graph = load_weka_agentic_graph(&path, Some(4)).unwrap();
     let topology = if disaggregated {
         ReplayTopology::Disaggregated {
             prefill: WorkerPoolSpec {
@@ -312,54 +281,21 @@ fn run_burst_weka_with_rates(
     } else {
         ReplayTopology::aggregated(1)
     };
-    let spec = ReplaySpec {
-        version: 1,
-        topology,
-        engine: serde_json::to_value(ReplayEngineConfig {
-            rank: EngineConfig {
-                num_gpu_blocks: 128,
-                block_size: 4,
-                max_num_seqs: 4,
-                max_num_batched_tokens: 64,
-                aic_nextn: mtp.then_some(2),
-                aic_nextn_accept_rates: mtp.then(|| rates.into()),
-                aic_mtp_seed: 73,
-                timing_model: TimingModelConfig::Fixed {
-                    prefill_ms: 2.0,
-                    decode_ms: 2.0,
-                },
-                ..EngineConfig::for_backend(backend)
-            },
-            ..Default::default()
-        })
-        .unwrap(),
-        adapters: Default::default(),
-        max_sim_time_ms: None,
-        max_in_flight: None,
-        record_per_request: true,
-        sla: Default::default(),
-        requests: Vec::new(),
+    let mut rank = EngineConfig {
+        num_gpu_blocks: 128,
+        block_size: 4,
+        max_num_seqs: 4,
+        max_num_batched_tokens: 64,
+        timing_model: TimingModelConfig::Fixed {
+            prefill_ms: 2.0,
+            decode_ms: 2.0,
+        },
+        ..EngineConfig::for_backend(backend)
     };
-    Replayer::new(spec, ReplayEngineFactory::new())
-        .unwrap()
-        .with_runtime_input(ReplayRuntimeInput::Workload(driver))
-        .with_capture_options(ReplayCaptureOptions {
-            capture_per_request: true,
-            determinism: ReplayDeterminism::CanonicalV1,
-            ..Default::default()
-        })
-        .run()
-        .unwrap()
-}
-
-#[rstest]
-fn weka_mtp_bursts_preserve_spawn_join_and_output_limits(
-    #[values(Backend::Vllm, Backend::Sglang)] backend: Backend,
-    #[values(false, true)] disaggregated: bool,
-) {
-    let baseline = run_burst_weka(backend, disaggregated, false, None);
-    let report = run_burst_weka(backend, disaggregated, true, None);
-    assert_same_execution(&report, &run_burst_weka(backend, disaggregated, true, None));
+    let baseline = run_config(graph.clone(), rank.clone(), topology.clone());
+    rank.aic_nextn = Some(2);
+    rank.aic_nextn_accept_rates = Some("1,1".into());
+    let report = run_config(graph, rank, topology);
     assert_eq!(report.request_counts.completed_requests, 4);
     assert_eq!(report.request_counts.total_output_tokens, 32);
     assert!(
@@ -368,11 +304,8 @@ fn weka_mtp_bursts_preserve_spawn_join_and_output_limits(
             .iter()
             .all(|request| request.output_length == 8)
     );
-    assert_eq!(report.speculative_acceptance.mean_accept_length, Some(3.0));
-    assert!(
-        report.speculative_acceptance.decode_forwards
-            < baseline.speculative_acceptance.decode_forwards
-    );
+    // Fixed costs isolate scheduler progress; real MTP costs are tested separately.
+    assert!(report.throughput.duration_ms < baseline.throughput.duration_ms);
     let events = &report.agentic_lifecycle.as_ref().unwrap().events;
     assert_eq!(
         events
@@ -388,54 +321,5 @@ fn weka_mtp_bursts_preserve_spawn_join_and_output_limits(
     assert_eq!(
         report.agentic_play_outcomes.as_ref().unwrap()[0].status,
         AgenticPlayStatus::Completed
-    );
-}
-
-#[rstest]
-fn weka_mtp_profile_excludes_preparation_and_cancel_drain_samples(
-    #[values(Backend::Vllm, Backend::Sglang)] backend: Backend,
-    #[values(false, true)] disaggregated: bool,
-) {
-    let report = run_burst_weka(backend, disaggregated, true, Some(0.0));
-    let drained = run_burst_weka(backend, disaggregated, true, Some(0.1));
-    assert_eq!(
-        report.speculative_acceptance,
-        drained.speculative_acceptance
-    );
-    assert!(report.speculative_acceptance.decode_forwards > 0);
-    assert_eq!(report.speculative_acceptance.mean_accept_length, Some(3.0));
-    let phases = report.agentic_phases.as_ref().unwrap();
-    assert!(!phases.requests.is_empty());
-    let profile = report.agentic_profile.as_ref().unwrap();
-    assert!(profile.plays_started > 1);
-    assert!(
-        profile.canceled_requests > 0,
-        "{backend:?}, pd={disaggregated}: {profile:?}"
-    );
-    assert!(
-        report
-            .per_request
-            .iter()
-            .all(|request| request.output_length <= 8)
-    );
-}
-
-#[rstest]
-fn weka_mtp_conditional_rates_are_seeded_and_zero_acceptance_emits_only_base_tokens(
-    #[values(Backend::Vllm, Backend::Sglang)] backend: Backend,
-    #[values(false, true)] disaggregated: bool,
-) {
-    let sampled = run_burst_weka_with_rates(backend, disaggregated, true, None, "0.6,0.4");
-    assert_same_execution(
-        &sampled,
-        &run_burst_weka_with_rates(backend, disaggregated, true, None, "0.6,0.4"),
-    );
-    let none = run_burst_weka_with_rates(backend, disaggregated, true, None, "0,0");
-    assert_eq!(none.speculative_acceptance.mean_accept_length, Some(1.0));
-    assert_eq!(none.request_counts.total_output_tokens, 32);
-    assert_eq!(sampled.request_counts.total_output_tokens, 32);
-    assert!(
-        sampled.speculative_acceptance.decode_forwards
-            < none.speculative_acceptance.decode_forwards
     );
 }

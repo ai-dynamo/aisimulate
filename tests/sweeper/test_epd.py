@@ -553,16 +553,9 @@ def test_invalid_metrics_do_not_become_epd_results(bad):
 @pytest.mark.parametrize("timing_scope", ["flat", "nested"])
 def test_runner_adds_visual_context_exactly_once(monkeypatch, mode, timing_scope):
     captured = []
-
-    def materialize(spec, **kwargs):
-        captured.append(spec.workload)
-        rank = {"backend": spec.backend_deployment.backend}
-        engine = {"rank": rank} if mode == "agg" else {role: {"rank": dict(rank)} for role in ("prefill", "decode")}
-        return {"engine": engine}
-
     monkeypatch.setattr(
         "aisimulate.runner._materialize_engine_execution_spec",
-        materialize,
+        lambda spec, **kwargs: captured.append(spec.workload) or {},
     )
     runtime = SimpleNamespace(run_replay_json=lambda _: json.dumps(_report().metrics))
     spec = _spec(mode)

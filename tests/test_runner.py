@@ -823,12 +823,6 @@ def test_runner_materializes_aic_capacity_before_native_execution(monkeypatch):
         return 321
 
     monkeypatch.setattr(aic, "estimate_num_gpu_blocks", estimate)
-    # The fake target's capacity and speculative provenance are both fixtures;
-    # pre-execution metadata must not look up this test-only model remotely.
-    monkeypatch.setattr(
-        "aisimulate_core.sdk.models.helpers._get_model_info",
-        lambda model: {"architecture": "LlamaForCausalLM"},
-    )
     deployment = BackendDeploymentSpec(
         deployment_mode="agg",
         backend="vllm",

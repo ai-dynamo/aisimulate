@@ -24,16 +24,6 @@ from .capacity import materialize_aic_num_gpu_blocks
 from .config.common import ENGINE_MODEL_CONTROL_FIELDS, is_active_engine_model_control
 from .config.engine import StateCacheConfig
 from .power import normalize_power_summary, power_metadata
-from .speculation import (
-    _accept_rates_for_expected as _accept_rates_for_expected,
-)
-from .speculation import (
-    _parse_speculation,
-    normalize_speculation_engine_args,
-)
-from .speculation import (
-    speculation_report_metadata as speculation_report_metadata,
-)
 from .sweeper.afd_engine import AFDForegroundEngine
 from .sweeper.afd_parallel import AFDPhase, AFDTopology
 from .sweeper.afd_perfmodel import AFDLayerTimes
@@ -48,9 +38,6 @@ from .sweeper.replay import (
 from .traffic import materialize_configured_traffic
 
 logger = logging.getLogger(__name__)
-
-# Compatibility for adapters released with the initial MTP integration.
-normalize_mtp_engine_args = normalize_speculation_engine_args
 
 _SUPPORTED_BACKEND_TOPOLOGIES = (
     ("vllm", "agg"),
@@ -553,14 +540,6 @@ class EngineReplayRunner:
             record_per_request=output_requirements.capture_per_request,
             memory_diagnostics=memory_diagnostics,
         )
-        native_spec = execution_spec.get("spec", execution_spec)
-        engine_roles = native_spec["engine"]
-        resolved_roles = (
-            {"aggregated": engine_roles}
-            if spec.backend_deployment.deployment_mode == "agg"
-            else {role: engine_roles[role] for role in ("prefill", "decode")}
-        )
-        sd_metadata = speculation_report_metadata(spec, resolved_role_args=resolved_roles)
         if output_requirements.capture_performance_diagnostics:
             if "spec" not in execution_spec:
                 execution_spec = {"spec": execution_spec}
@@ -607,8 +586,6 @@ class EngineReplayRunner:
         }
         if state_sizes:
             report = {**report, "state_cache": state_sizes}
-        if sd_metadata:
-            report = {**report, "speculation": sd_metadata}
         normalized = _normalize_engine_replay_report(
             report,
             include_native_report=(
@@ -1683,13 +1660,74 @@ def _materialize_engine_role(
         if capacity_materialized:
             memory_fraction_overrides.clear()
 
-    speculation_raw = rank.get("speculation")
-    speculation = _parse_speculation(speculation_raw) if speculation_raw is not None else None
-    if speculation is not None:
-        if speculation.kind == "ngram" and backend != "vllm":
-            raise ValueError("ngram speculation requires vllm without host_offload")
-        if rank.get("native_host_offload") is not None:
-            raise ValueError("speculation does not support host_offload")
+    speculation_raw = rank.pop("speculation", None)
+    speculation = None
+    if speculation_raw is not None:
+        from pydantic import TypeAdapter
+
+        from .config.engine import SpeculationConfig
+
+        speculation = TypeAdapter(SpeculationConfig).validate_python(speculation_raw)
+        supported = {"vllm"} if speculation.kind == "ngram" else {"vllm", "sglang"}
+        if backend not in supported or rank.get("native_host_offload") is not None:
+            raise ValueError(f"{speculation.kind} speculation requires a supported backend without host_offload")
+        if any(
+            rank.get(key) is not None
+            and not (speculation.kind == "mtp" and key in {"aic_nextn", "nextn"} and rank[key] == 0)
+            for key in (
+                "aic_nextn",
+                "nextn",
+                "aic_nextn_accepted",
+                "nextn_accepted",
+                "aic_nextn_accept_rates",
+                "nextn_accept_rates",
+                "aic_mtp_seed",
+                "mtp_seed",
+            )
+        ):
+            raise ValueError("speculation cannot be combined with legacy speculative decoding fields")
+        rank.pop("nextn", None)
+        rank["aic_nextn"] = speculation.num_speculative_tokens
+        rank["aic_nextn_accept_rates"] = ",".join(str(rate) for rate in speculation.acceptance_rates)
+        rank["aic_mtp_seed"] = speculation.seed
+
+    nextn = _pop_alias(rank, "aic_nextn", ("aic_nextn", "nextn"))
+    if nextn is not None:
+        nextn = _positive_int(nextn, f"engine provider {role} aic_nextn")
+        if nextn > 5:
+            raise ValueError(f"engine provider {role} aic_nextn must be in 1..=5")
+        rank["aic_nextn"] = nextn
+
+    accept_rates = _pop_alias(
+        rank,
+        "aic_nextn_accept_rates",
+        ("aic_nextn_accept_rates", "nextn_accept_rates"),
+    )
+    if accept_rates is not None:
+        if nextn is None:
+            raise ValueError(f"engine provider {role} aic_nextn_accept_rates requires aic_nextn")
+        if not isinstance(accept_rates, str):
+            raise ValueError(f"engine provider {role} aic_nextn_accept_rates must be a string")
+        rank["aic_nextn_accept_rates"] = accept_rates
+
+    nextn_accepted = _pop_alias(
+        rank,
+        "aic_nextn_accepted",
+        ("aic_nextn_accepted", "nextn_accepted"),
+    )
+    if nextn_accepted is not None:
+        if nextn is None:
+            raise ValueError(f"engine provider {role} aic_nextn_accepted requires aic_nextn")
+        if accept_rates is not None:
+            raise ValueError(f"engine provider {role} cannot set both aic_nextn_accepted and aic_nextn_accept_rates")
+        rank["aic_nextn_accept_rates"] = _accept_rates_for_expected(nextn, nextn_accepted, role=role)
+
+    mtp_seed = _pop_alias(rank, "aic_mtp_seed", ("aic_mtp_seed", "mtp_seed"))
+    if mtp_seed is not None:
+        if not isinstance(mtp_seed, int) or isinstance(mtp_seed, bool) or not 0 <= mtp_seed <= 0xFFFF_FFFF_FFFF_FFFF:
+            raise ValueError(f"engine provider {role} aic_mtp_seed must be an unsigned 64-bit integer")
+        rank["aic_mtp_seed"] = mtp_seed
+
     if "timing_model" not in rank:
         if not isinstance(model, str) or not model:
             raise ValueError(f"{role} engine arguments require aic_model_path")
@@ -1707,6 +1745,8 @@ def _materialize_engine_role(
             timing_config["kv_block_size"] = block_size
         timing_config.update(memory_fraction_overrides)
         timing_config.update(aic_timing_overrides)
+        if nextn is not None and speculation is None:
+            timing_config["nextn"] = nextn
         rank["timing_model"] = {
             "type": "external",
             "provider": "aic",
@@ -1736,8 +1776,6 @@ def _materialize_engine_role(
         timing_model["config"] = timing_config
         rank["timing_model"] = timing_model
 
-    rank = normalize_speculation_engine_args(rank, role=role)
-    nextn = rank.get("aic_nextn")
     if nextn is not None:
         timing_model = rank["timing_model"]
         if (
@@ -1758,25 +1796,20 @@ def _materialize_engine_role(
                     raise ValueError("speculation requires op_level timing")
                 timing_config["speculation"] = cost_config
             configured_nextn = timing_config.get("nextn")
-            canonical_speculation = timing_config.get("speculation")
-            if speculation is None and canonical_speculation is not None:
-                canonical_depth = canonical_speculation.get("params", {}).get("num_speculative_tokens")
-                if canonical_depth != nextn or configured_nextn not in (None, 0):
-                    raise ValueError("speculation depth conflicts with native aic_nextn")
-            if (
-                speculation is None
-                and canonical_speculation is None
-                and configured_nextn is not None
-                and configured_nextn != nextn
-            ):
+            canonical = timing_config.get("speculation")
+            if canonical is not None and canonical.get("params", {}).get("num_speculative_tokens") != nextn:
+                raise ValueError("speculation depth conflicts with native aic_nextn")
+            if speculation is None and canonical is None and configured_nextn is not None and configured_nextn != nextn:
                 raise ValueError(
                     f"engine provider {role} aic_nextn={nextn} conflicts with "
                     f"timing_model.config.nextn={configured_nextn!r}"
                 )
-            if speculation is None and canonical_speculation is None:
+            if speculation is None and canonical is None:
                 timing_config["nextn"] = nextn
             timing_model["config"] = timing_config
             rank["timing_model"] = timing_model
+        elif speculation is not None and speculation.kind == "mtp":
+            raise ValueError("mtp speculation requires external AIC op_level timing")
 
     host_offload = rank.get("native_host_offload")
     if (
@@ -1863,6 +1896,22 @@ def _positive_int(value: JSONValue, name: str) -> int:
     if not isinstance(value, int) or isinstance(value, bool) or value < 1:
         raise ValueError(f"{name} must be a positive integer")
     return value
+
+
+def _accept_rates_for_expected(nextn: int, value: JSONValue, *, role: str) -> str:
+    """Lower an explicit expected accepted-token count to conditional rates."""
+
+    if (
+        not isinstance(value, (int, float))
+        or isinstance(value, bool)
+        or not math.isfinite(value)
+        or not 0.0 <= float(value) <= nextn
+    ):
+        raise ValueError(f"engine provider {role} aic_nextn_accepted must be finite and within [0, {nextn}]")
+    from .config.engine import MtpSpeculationConfig
+
+    assumption = MtpSpeculationConfig(kind="mtp", num_speculative_tokens=nextn, expected_accepted_tokens=value)
+    return ",".join(format(rate, ".17g") for rate in assumption.acceptance_rates)
 
 
 def _random_range_ratio(value: JSONValue) -> float:
@@ -2032,8 +2081,6 @@ def _normalize_engine_replay_report(report: Mapping[str, JSONValue], *, include_
         key: payload[key]
         for key in (
             "state_cache",
-            "speculative_acceptance",
-            "speculation",
             "agentic_qualification",
             "agentic_input_format",
             "agentic_lanes",

@@ -62,7 +62,6 @@ areas:
       - tests/test_unified_cli.py
       - tests/test_ngram_cli.py
       - tests/test_mtp_cli.py
-      - tests/test_mtp_agentic.py
       - tests/test_unified_traffic_runtime.py
       - tests/test_power_contract.py
       - tests/fixtures/power-contract-v1.json
@@ -228,12 +227,6 @@ shared:
   - glob: tests/test_ngram_cli.py
     owners: [replay, sweeper, forward-pass-engine, maintainers]
   - glob: tests/test_mtp_cli.py
-    owners: [replay, sweeper, forward-pass-engine, maintainers]
-  - glob: tests/test_mtp_agentic.py
-    owners: [replay, sweeper, forward-pass-engine, maintainers]
-  - glob: tests/test_mtp_qualification.py
-    owners: [replay, sweeper, forward-pass-engine, maintainers]
-  - glob: python/aisimulate/src/aisimulate/speculation.py
     owners: [replay, sweeper, forward-pass-engine, maintainers]
   - glob: tests/test_unified_traffic_runtime.py
     owners: [replay, maintainers]
