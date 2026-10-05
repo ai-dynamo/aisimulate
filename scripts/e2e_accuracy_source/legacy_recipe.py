@@ -1,7 +1,14 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Read pre-master workflow matrices and pre-single_node recipe locations.
+"""Resolve historical InferenceX benchmark configuration layouts.
+
+Here, "legacy" means configurations from before InferenceX introduced
+``nvidia-master.yaml`` and the ``single_node`` recipe directory. Those runs
+spread serving and workload settings across GitHub Actions workflow matrices
+and Docker/Slurm launch scripts. These readers reconstruct those settings at
+the benchmark's recorded commit so historical measurements remain evaluable.
+The term describes the source layout, not a separate prediction model.
 
 Only immutable repository files are used. No shell command is executed and
 external moving branches are never treated as historical source evidence.
