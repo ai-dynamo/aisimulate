@@ -1545,6 +1545,12 @@ section's presets, recommendation domains, and runtime lowering. Concrete enable
 Dynamo's production `PlannerConfig` for defaults, validation, and target normalization. The section
 is accepted only when the selected stack provides that adapter.
 
+> [!IMPORTANT]
+> The defaults, normalization, and interval rules below require a Dynamo build containing
+> [Dynamo #15678](https://github.com/ai-dynamo/dynamo/pull/15678). The README-pinned
+> `ai-dynamo==1.6.0.dev20260930` predates that change and uses the separate simulation configuration
+> model. Upgrade Dynamo to a build containing the change before using these rules.
+
 ```yaml
 planner:
   policy: disabled
