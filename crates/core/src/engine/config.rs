@@ -802,7 +802,8 @@ impl EngineConfig {
         Ok(())
     }
 
-    pub(crate) fn validate(&self) -> Result<()> {
+    /// Validate rank configuration without constructing a scheduler or timing provider.
+    pub fn validate(&self) -> Result<()> {
         self.validate_state_cache()?;
         ensure!(self.num_gpu_blocks > 0, "num_gpu_blocks must be positive");
         ensure!(self.block_size > 0, "block_size must be positive");
@@ -859,6 +860,12 @@ impl EngineConfig {
                 "enable_chunked_prefill=false is not supported for backend=sglang"
             );
             self.sglang.validate()?;
+            ensure!(
+                self.sglang
+                    .chunked_prefill_size
+                    .is_multiple_of(self.block_size),
+                "sglang.chunked_prefill_size must be divisible by block_size"
+            );
         }
         ensure!(
             !self.emit_kv_token_ids || self.emit_kv_events,

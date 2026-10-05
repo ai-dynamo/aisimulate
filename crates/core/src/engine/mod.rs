@@ -12,6 +12,7 @@ pub mod generalized;
 mod handoff;
 mod host_offload;
 mod kv_manager;
+mod launch;
 mod offload_transfer;
 mod protocol;
 mod runtime;
@@ -24,6 +25,7 @@ pub(crate) use host_offload::{
     G2Binding, G2Registry, HostBlockKey, HostOffloadObservation, HostOffloadObservationData,
     HostOffloadObserver,
 };
+pub use launch::{EngineLaunchConfig, SglangOverrides, TrtllmOverrides};
 
 pub use belady::KvEvictionPolicy;
 pub(crate) use common::hashing::{
