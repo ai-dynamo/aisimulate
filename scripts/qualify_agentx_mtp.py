@@ -4,7 +4,10 @@
 """Qualify installed CLI MTP behavior on a supplied, reproducible Weka corpus.
 
 Runs functional/cost checks only. Does not allocate GPUs or establish accuracy.
-Requires matching installed AISimulate and Dynamo builds; never alters imports.
+Engine cases use duration profiles; Dynamo cases replay complete traces through
+its existing round-robin/KV routes. Requires matching installed builds; never
+alters imports. Affinity and Dynamo duration profiles require separate routing
+integration and are not qualified by this script.
 """
 
 import argparse
@@ -29,6 +32,21 @@ def require(condition, message):
     """Qualification checks must also execute with Python optimization enabled."""
     if not condition:
         raise ValueError(message)
+
+
+def unpack_report(payload):
+    """Read the Engine flat report or Dynamo's existing summary envelope."""
+    if "summary" not in payload:
+        return payload
+    require(isinstance(payload["summary"], dict), "report summary must be an object")
+    return {
+        **payload["summary"],
+        **{
+            key: payload[key]
+            for key in ("speculation", "agentic_qualification", "agentic_input_format", "agentic_lanes")
+            if key in payload
+        },
+    }
 
 
 def package_receipt(name):
@@ -95,6 +113,20 @@ def validate_report(report, raw, sd, duration):
         )
     else:
         require(not report.get("speculation"), "SD-off case reports active speculation")
+    if duration is None:
+        require(not report.get("agentic_profile"), "complete-trace case unexpectedly used a profile")
+        outcomes = report["agentic_play_outcomes"]
+        require(len(outcomes) == report["agentic_graph"]["play_count"] > 0, "missing play outcomes")
+        require(
+            all(
+                item["status"] == "completed"
+                and isinstance(item.get("settled_at_ms"), (int, float))
+                and math.isfinite(item["settled_at_ms"])
+                for item in outcomes
+            ),
+            "complete-trace replay left an unsuccessful or unsettled play",
+        )
+        return
     profile = report["agentic_profile"]
     require(not profile["cancel_drain_timed_out"], "cancellation drain timed out")
     require(
@@ -134,6 +166,7 @@ def run_case(case, *, cli, output, duration, trace_sha256):
         "trace_sha256": trace_sha256,
         "qualification": "functional_only",
         "hardware_accuracy": "NOT_EVALUATED",
+        "execution_scope": "duration_profile" if stack == "engine" else "complete_trace",
     }
     try:
         config.write_text(yaml.safe_dump(raw, sort_keys=False))
@@ -142,14 +175,15 @@ def run_case(case, *, cli, output, duration, trace_sha256):
             result = subprocess.run(command, cwd=ROOT, stdout=log, stderr=subprocess.STDOUT, check=False)
         receipt["exit_code"] = result.returncode
         require(result.returncode == 0, f"CLI exited with status {result.returncode}")
-        report = json.loads((directory / "result/prediction.json").read_text())
-        validate_report(report, raw, sd, duration)
+        report = unpack_report(json.loads((directory / "result/prediction.json").read_text()))
+        validate_report(report, raw, sd, duration if stack == "engine" else None)
         receipt.update(
             status="passed",
             completed_requests=report["completed_requests"],
             duration_ms=report["duration_ms"],
             acceptance=report["speculative_acceptance"],
-            profile=report["agentic_profile"],
+            profile=report.get("agentic_profile"),
+            play_outcomes=report.get("agentic_play_outcomes"),
             phases=report.get("agentic_phases"),
             speculation=report.get("speculation"),
             graph_digest=report["agentic_graph"]["graph_digest"],
@@ -171,6 +205,7 @@ def main():
     parser.add_argument("--duration", type=float, default=3600)
     parser.add_argument("--jobs", type=int, default=2)
     parser.add_argument("--family", choices=("glm", "dsv4", "all"), default="all")
+    parser.add_argument("--scope", choices=("engine", "dynamo", "all"), default="all")
     args = parser.parse_args()
     require(args.jobs > 0, "jobs must be positive")
     require(
@@ -184,12 +219,15 @@ def main():
     archived_script = args.output / "qualify_agentx_mtp.py"
     if script != archived_script.resolve():
         shutil.copyfile(script, archived_script)
-    packages = {name: package_receipt(name) for name in ("aisimulate", "ai-dynamo", "ai-dynamo-runtime")}
+    package_names = ("aisimulate",) if args.scope == "engine" else ("aisimulate", "ai-dynamo", "ai-dynamo-runtime")
+    packages = {name: package_receipt(name) for name in package_names}
     manifest = {
         "script_sha256": hashlib.sha256(script.read_bytes()).hexdigest(),
         "argv": sys.argv,
         "trace_sha256": trace_sha256,
         "duration_seconds": args.duration,
+        "scope": args.scope,
+        "duration_applies_to": "engine_duration_profiles_only",
         "packages": packages,
         "source_revision": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip(),
         "source_dirty": bool(subprocess.check_output(["git", "status", "--porcelain"], cwd=ROOT, text=True).strip()),
@@ -206,15 +244,11 @@ def main():
             backends = ("vllm", "sglang") if family == "glm" else ("sglang",)
             for backend in backends:
                 variants = [
-                    ("engine" if route == "default" else "dynamo", route, True)
-                    for route in ("default", "kv", "session", "sibling")
+                    (stack, route, sd)
+                    for stack, route in (("engine", "default"), ("dynamo", "default"), ("dynamo", "kv"))
+                    if args.scope in (stack, "all")
+                    for sd in ((False, True) if family == "dsv4" else (True,))
                 ]
-                if family == "dsv4":
-                    variants = [
-                        (stack, "default" if stack == "engine" else "kv", sd)
-                        for stack in ("engine", "dynamo")
-                        for sd in (False, True)
-                    ]
                 for stack, route, sd in variants:
                     raw = yaml.safe_load(sample.read_text())
                     raw["engine"]["backend"] = backend
@@ -222,22 +256,18 @@ def main():
                     if not sd:
                         del raw["engine"]["speculation"]
                     raw["traffic"]["source"].update(paths=[str(trace)], block_size=64)
-                    raw["traffic"]["load"].update(
-                        agentic_lanes=2,
-                        agentic_snapshot={"seed": 42},
-                        agentic_warmup=True,
-                        agentic_profile={"duration_seconds": args.duration},
-                    )
+                    raw["traffic"]["load"].update(agentic_lanes=2)
+                    if stack == "engine":
+                        raw["traffic"]["load"].update(
+                            agentic_snapshot={"seed": 42},
+                            agentic_warmup=True,
+                            agentic_profile={"duration_seconds": args.duration},
+                        )
                     for worker in raw["engine"]["workers"].values():
                         worker["parallelism"]["replicas"] = 2
                     raw["execution"] = {"resources": {"memory_limit_gb": 4}}
                     if route != "default":
                         raw["router"] = {"policy": "kv_router"}
-                        if route in ("session", "sibling"):
-                            raw["router"]["affinity"] = {
-                                "mode": "session" if route == "session" else "sibling_group",
-                                "ttl_seconds": 3600,
-                            }
                     name = f"{family}-{backend}-{topology}-{stack}-{route}-sd{int(sd)}"
                     cases.append((name, raw, stack, sd))
 

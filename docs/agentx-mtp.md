@@ -157,79 +157,75 @@ For DSV4 P/D, `kv_transfer_approximation: scalar_bytes_per_token` explicitly mea
 the existing scalar transfer model. This qualification does not add precise
 compressed/grouped-cache transfer modeling or validate its hardware accuracy.
 
-The default public routing path is the Engine stack. Dynamo KV routing, session
-affinity and sibling-group affinity use the existing Dynamo canonical adapter.
-Dynamo profile replay still requires its existing KV router; this SD interface
-does not change that routing API. An ordinary Dynamo replay without a profile
-also supports the normalized MTP acceptance inputs.
+These SD changes are based directly on each repository's main branch. Engine
+replay supports its existing duration profiles, snapshots and warmup. Dynamo
+replay uses its existing ordinary round-robin and KV-router paths in aggregated
+and P/D deployments. The Dynamo adapter does not advertise profile, snapshot,
+warmup, session-affinity or sibling-group-affinity support from the separate
+routing integration.
 
-This matrix qualifies `--stack engine` with its default routing and
-`--stack dynamo` with the existing canonical routing adapter. The separate
-optional `engine.router` native-policy bridge in the AgentX quickstart has
-supplemental coverage: ten installed-CLI routing regressions and two MTP
-smoke cases, one aggregated and one P/D. Those checks are separate from the
-24-case, 3600-second matrix below.
+The wider routing matrix in the
+[historical stacked qualification](https://github.com/ai-dynamo/aisimulate/blob/69b18641d796557aaec52c5977dca5e958ccd8c6/docs/agentx-mtp-qualification.json)
+was tested with unmerged routing code. It is evidence for that source pair only;
+these standalone SD PRs do not import those routing changes or claim that the
+same combinations are available on main. Requalify those combinations when
+the routing integration is available.
 
-Run the installed-pair qualification with the two complete real Weka plays from
-the quickstart:
+Run installed-pair qualification with the two complete real Weka plays from
+the [AgentX quickstart](agentx-quickstart.md):
 
 ```bash
 /path/to/paired/venv/bin/python scripts/qualify_agentx_mtp.py \
   --cli /path/to/paired/venv/bin/aisimulate \
   --trace /tmp/agentx-quickstart/plays-0000-0001.jsonl \
-  --duration 3600 --jobs 2 --output /tmp/agentx-mtp-qualification
+  --scope all --duration 3600 --jobs 2 --output /tmp/agentx-mtp-qualification
 ```
 
-This runs GLM vLLM/SGLang × aggregated/P-D × Engine default/Dynamo KV/session/
-sibling routing (16 cases), plus DSV4 SGLang × aggregated/P-D × Engine/Dynamo KV
-× SD off/on (8 cases). Every role has two TP8 replicas, fixed capacity and the same
-trace and snapshot seeds. JSON receipts record the trace digest, invocation,
-acceptance, request counts, preparation/profile phases and `functional_only`.
-Scenario capacity and measured throughput remain distinct from GPU accuracy.
-The output directory retains the exact qualifier script, its hash, installed
-wheel source/hash metadata, generated configurations, and a receipt for every
-case. Checks remain enabled under `python -O`. A CLI failure, missing report, or
-failed validation records an error and makes the matrix exit unsuccessfully.
+The scopes have different stopping conditions:
 
-## Verified support matrix
+| Scope | Scenarios | Execution boundary |
+| --- | --- | --- |
+| `--scope engine` | GLM vLLM/SGLang × agg/P-D (4); DSV4 SGLang × agg/P-D × SD off/on (4) | Each runs 3600 seconds of admission after snapshot preparation and warmup |
+| `--scope dynamo` | GLM vLLM/SGLang × agg/P-D × round-robin/KV (8); DSV4 SGLang × agg/P-D × round-robin/KV × SD off/on (8) | Each replays both authored plays to completion, without a duration profile |
+| `--scope all` | Both sets (24) | Preserve each scope's boundary; `--duration` applies only to Engine cases |
 
-The [recorded qualification](agentx-mtp-qualification.json) passed all 24 cases
-using installed wheels on 2026-10-05. The real Weka two-play input has SHA-256
+Every role has two TP8 replicas and fixed KV capacity. SD uses seed 42;
+Engine snapshot selection independently uses seed 42. Engine-only qualification
+requires only the AISimulate wheel. The Dynamo scope requires all three paired
+wheels. The output directory retains the exact qualifier script, its hash,
+installed wheel source/hash metadata, configurations and per-case receipts.
+Checks remain enabled under `python -O`. CLI failures, missing reports and
+failed checks retain an error receipt and make the matrix exit unsuccessfully.
+
+## Standalone support and qualification
+
+The [qualification summary](agentx-mtp-qualification.json) records the tested
+main-based source pair, exact artifacts and separate execution scopes. The
+real Weka two-play input has SHA-256
 `e3a34f0617457a004694be52885d58748b998b6d3c22cf344ff6572a78757d5a`.
-All cases ran the full 3600-second admission window with no unsettled client or
-server requests and no cancellation-drain timeout. Separate boundary tests
-exercise in-flight cancellation and acceptance exclusion during drain.
+Engine checks validate the measurement/grace window and settled requests.
+Dynamo checks require every authored play to complete and settle. Separate
+boundary tests cover cancellation and acceptance exclusion during drain.
 
-| Target and backend | Interface configurable | Simulation combinations verified | Hardware accuracy |
+| Target and backend | Interface configurable | Standalone simulation coverage | Hardware accuracy |
 | --- | --- | --- | --- |
-| GLM-5.2 NVFP4 / vLLM 0.24.0 | MTP, depth 1–5 | Agg/P-D × four routing modes, K3 (8 cases) | Not evaluated |
-| GLM-5.2 NVFP4 / SGLang 0.5.14 | MTP, depth 1–5 | Agg/P-D × four routing modes, K3 (8 cases) | Not evaluated |
-| DSV4-Pro / SGLang 0.5.14 | Explicit hypothetical MTP | Agg/P-D × Engine/Dynamo KV × SD off/on (8 cases) | Not evaluated |
+| GLM-5.2 NVFP4 / vLLM 0.24.0 | MTP, depth 1–5 | Agg/P-D; Engine profiles and Dynamo round-robin/KV | Not evaluated |
+| GLM-5.2 NVFP4 / SGLang 0.5.14 | MTP, depth 1–5 | Agg/P-D; Engine profiles and Dynamo round-robin/KV | Not evaluated |
+| DSV4-Pro / SGLang 0.5.14 | Explicit hypothetical MTP | Same topologies/routes with SD off/on controls | Not evaluated |
+| Dynamo profiles and session/sibling affinity | Separate routing integration | Not qualified by this main-based pair | Not evaluated |
 | Ngram | Existing non-AgentX interface | AgentX rejected | Not evaluated |
-| Other SD methods | No new public variant in this change | Unsupported combinations rejected | Not evaluated |
+| Other SD methods | No new public variant | Unsupported combinations rejected | Not evaluated |
 
-Across the GLM cases the sampled AL was 2.989812–2.990193. Across the DSV4 MTP
-cases it was 2.497887–2.498168; SD-off controls reported AL 1. The per-forward
-cost controls match equivalent legacy NextN exactly for both GLM backends and
-DSV4, and retain positive draft/verification cost independently of acceptance.
-See the JSON for every case and the common B300/TP8 cost-control inputs.
-
-The installed source pair uses these revisions:
-
-- AISimulate wheel and Rust core: `441e2ed4bee42076f12a7a00a0170e5879825826`.
-- Dynamo component wheel: `073daa19baba31871b973f43759daa982ae84d1f`.
-- Dynamo runtime wheel: `bd95490d4da98035b864b680a024bbf7d8977751`;
-  its Rust sources are unchanged at the component revision above.
-
-The committed JSON is a compact result summary with exact source, script and
-wheel hashes. A fresh qualifier run writes the full logs, configurations and
-per-case receipts to the chosen output directory.
+The per-forward cost controls compare equivalent legacy NextN and explicit MTP
+for both GLM backends and DSV4, and retain positive draft/verification cost
+independently of acceptance. The compact JSON records every case, source
+revision, script hash and wheel hash. A fresh qualifier run writes full logs,
+configurations and receipts to the chosen output directory.
 
 For this matrix, build **all three wheels**: AISimulate, `ai-dynamo-runtime`
-with `ais-forward-pass`, and the `ai-dynamo` component package. The native-policy
-quickstart installs a different package subset and does not install this
-canonical replay adapter. With the repositories checked out at the recorded
-revisions and Dynamo's native build prerequisites available, use absolute paths:
+with `ais-forward-pass`, and the `ai-dynamo` component package. With the
+repositories checked out at the source revisions recorded in the summary and
+Dynamo's native build prerequisites available, use absolute paths:
 
 ```bash
 AIS_MTP_SOURCE=/path/to/aisimulate
@@ -254,9 +250,9 @@ and CLI. The backend names select simulation models; no serving-backend extras
 or GPU execution are needed for these cases.
 
 These hashes identify historical source content, not a guarantee that an
-unmerged branch commit remains fetchable forever. When squash-merging the
-stack, first merge AISimulate, update every Dynamo source pin to that merged
-revision, then rebuild and qualify the installed pair before merging Dynamo.
+unmerged branch commit remains fetchable forever. Both PRs target main. First
+merge AISimulate, update every Dynamo source pin to that merged revision, then
+rebuild and qualify the installed pair before merging Dynamo.
 Keep the archived qualifier and wheel hashes with the corresponding receipt;
 do not replace a historical script hash with the hash of a later script.
 

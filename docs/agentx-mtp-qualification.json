@@ -1,27 +1,61 @@
 {
-  "schema": "aisimulate.agentx-mtp-qualification-summary.v1",
+  "schema": "aisimulate.agentx-mtp-qualification-summary.v2",
   "qualification": "functional_only",
   "hardware_accuracy": "NOT_EVALUATED",
-  "date_utc": "2026-10-05T05:56:22.673778+00:00",
+  "date_utc": "2026-10-05T06:55:01.496784+00:00",
   "source_revisions": {
-    "aisimulate": "441e2ed4bee42076f12a7a00a0170e5879825826",
-    "dynamo_component": "073daa19baba31871b973f43759daa982ae84d1f",
-    "dynamo_runtime": "bd95490d4da98035b864b680a024bbf7d8977751"
+    "aisimulate": "613404700c7b25ea0dc641115b40f8e17cf5ee29",
+    "aisimulate_main_base": "a9c358c5cd0f053054800a72137a4db5f95a1671",
+    "dynamo_component": "624f0f21d2e73a7abc75709ba67a6035cafef8e8",
+    "dynamo_runtime": "624f0f21d2e73a7abc75709ba67a6035cafef8e8",
+    "dynamo_main_base": "519e735550c1a4aac67c2fd37d4a56ed0a014653"
   },
-  "source_retention": "Historical branch revisions identify tested content; rebuild and rerun after merge pins change.",
+  "source_retention": "Historical source revisions identify tested content; re-pin and requalify after merge.",
   "qualifier": {
-    "checkout_revision": "29df319b543ae9110bb14d7e023c35c871f63752",
-    "checkout_dirty": false,
-    "sha256": "4a25649ac2ea54ef92bc0c72dbbe9967123bf6131bfe9f0bc1f18fc0b36032eb"
+    "sha256": "89dd6313f5fd25a2ec3b30723e1123fe4e8b0cb9eac913d6609245336f4b871e",
+    "invocations": [
+      {
+        "scope": "engine",
+        "checkout_revision": "613404700c7b25ea0dc641115b40f8e17cf5ee29",
+        "checkout_dirty": true
+      },
+      {
+        "scope": "dynamo",
+        "checkout_revision": "613404700c7b25ea0dc641115b40f8e17cf5ee29",
+        "checkout_dirty": true
+      }
+    ]
   },
+  "scopes": {
+    "engine": {
+      "cases": 8,
+      "execution": "duration_profile",
+      "duration_seconds": 3600.0,
+      "snapshot_seed": 42
+    },
+    "dynamo": {
+      "cases": 16,
+      "execution": "complete_trace",
+      "routes": [
+        "round_robin",
+        "kv_router"
+      ]
+    }
+  },
+  "excluded_combinations": [
+    "Dynamo duration profile",
+    "Dynamo snapshot/warmup",
+    "session affinity",
+    "sibling-group affinity"
+  ],
   "installed_packages": {
     "aisimulate": {
       "version": "0.13.0",
       "direct_url": {
         "archive_info": {}
       },
-      "wheel_sha256": "8731893a6c4523b6b121eb64fd04163cbe5339c113636fa6e4082ba206e2ed4a",
-      "record_sha256": "60cf01d995a2d30b5fc13a81935937de097945694f9c5ae48c582e20270f2153",
+      "wheel_sha256": "4d4c5356f88789c6ddd6e792d20e2fd739fa7bbc2f49b427d440bbea1552c0b5",
+      "record_sha256": "e3f5bd333b11a52f5531899f7df2f54e58605f5126ffe852790da1cab74dd8f8",
       "wheel_filename": "aisimulate-0.13.0-cp311-abi3-manylinux_2_34_x86_64.whl"
     },
     "ai-dynamo": {
@@ -29,8 +63,8 @@
       "direct_url": {
         "archive_info": {}
       },
-      "wheel_sha256": "d9ce9c4830c57755208b9e9d528fd6f0e572f840c8103ba2a48591e44b57e356",
-      "record_sha256": "00b4b1b677a07f58d7451e08bf1bec508c34b8f4e282aed4b0f98a7c60168863",
+      "wheel_sha256": "9a17d8e76e977691b29775010a678b747bb5d16f6ee862424f8db68001ebfee2",
+      "record_sha256": "45f1092c55bdeb44144dcc0e4e7d138d477e447e8a35a216ab40f0686c1830e8",
       "wheel_filename": "ai_dynamo-1.6.0-py3-none-any.whl"
     },
     "ai-dynamo-runtime": {
@@ -38,8 +72,8 @@
       "direct_url": {
         "archive_info": {}
       },
-      "wheel_sha256": "844e7c8d1ae548bb17da687f0606112c79640a75cbeb9024c2c79b9dc40c6dc7",
-      "record_sha256": "7b7caa300977a8402ebe0cf9b93a4a0e66f1c9387e03db8526a51bbfe0d61fd8",
+      "wheel_sha256": "7fadc0ea86851016cd7aab1d01265236549e66ff4f35bf11d12de9d6c19de89d",
+      "record_sha256": "17253b8839bfaf402083ad63be73edeca252f11124acfa3fd38c5ef7db4acb6a",
       "wheel_filename": "ai_dynamo_runtime-1.6.0-cp310-abi3-manylinux_2_39_x86_64.whl"
     }
   },
@@ -50,13 +84,11 @@
     "complete_plays": 2
   },
   "scenario": {
-    "duration_seconds": 3600.0,
     "replicas_per_role": 2,
     "tensor_parallelism": 8,
     "kv_blocks_per_rank": 8192,
     "kv_block_size": 64,
     "capacity_source": "explicit_fixed",
-    "snapshot_seed": 42,
     "sd_seed": 42,
     "glm_expected_accepted_drafts": 1.99,
     "dsv4_expected_accepted_drafts": 1.5,
@@ -127,37 +159,30 @@
       }
     }
   ],
-  "supplemental_checks": {
-    "native_policy_cli_regressions": 10,
-    "native_policy_mtp_smoke_topologies": [
-      "aggregated",
-      "prefill_decode"
-    ]
-  },
   "cases": [
-    {"case": "glm-vllm-agg-engine-default-sd1","status": "passed","completed_requests": 239,"decode_forwards": 59855,"accepted_tokens_including_base": 178978,"mean_accept_length": 2.9901929663353104,"issued_requests": 239,"successful_responses": 239,"canceled_requests": 0,"client_in_flight_requests": 0,"server_unsettled_requests": 0,"cancel_drain_timed_out": false,"graph_digest": "1dcf19e16a5d5f5351b68e9e7fee511bf50546c78575e06dd94753438db76029","lifecycle_digest": "399543cb4c0c978755035805d3df8ec61fff5ffa398e4b48525fd3771b85a1ec","lifecycle_event_count": 722},
-    {"case": "glm-vllm-agg-dynamo-kv-sd1","status": "passed","completed_requests": 245,"decode_forwards": 61834,"accepted_tokens_including_base": 184885,"mean_accept_length": 2.990021670925381,"issued_requests": 245,"successful_responses": 245,"canceled_requests": 0,"client_in_flight_requests": 0,"server_unsettled_requests": 0,"cancel_drain_timed_out": false,"graph_digest": "1dcf19e16a5d5f5351b68e9e7fee511bf50546c78575e06dd94753438db76029","lifecycle_digest": "db77792c2ea533eba8b0c3ee7fb5808bca8e20dc6473370673b8a6214945fecc","lifecycle_event_count": 740},
-    {"case": "glm-vllm-agg-dynamo-session-sd1","status": "passed","completed_requests": 246,"decode_forwards": 62045,"accepted_tokens_including_base": 185511,"mean_accept_length": 2.989942783463615,"issued_requests": 246,"successful_responses": 246,"canceled_requests": 0,"client_in_flight_requests": 0,"server_unsettled_requests": 0,"cancel_drain_timed_out": false,"graph_digest": "1dcf19e16a5d5f5351b68e9e7fee511bf50546c78575e06dd94753438db76029","lifecycle_digest": "7be80f278a71e001a021cdf49dd7bd4ac34034e065dd07a0645ad6bb2e55de1e","lifecycle_event_count": 743},
-    {"case": "glm-vllm-agg-dynamo-sibling-sd1","status": "passed","completed_requests": 245,"decode_forwards": 61835,"accepted_tokens_including_base": 184881,"mean_accept_length": 2.9899086277997897,"issued_requests": 245,"successful_responses": 245,"canceled_requests": 0,"client_in_flight_requests": 0,"server_unsettled_requests": 0,"cancel_drain_timed_out": false,"graph_digest": "1dcf19e16a5d5f5351b68e9e7fee511bf50546c78575e06dd94753438db76029","lifecycle_digest": "5e8c92f5065031033f8b56159d1829f1bc7eab57874733b05a8fec36c7977896","lifecycle_event_count": 740},
-    {"case": "glm-sglang-agg-engine-default-sd1","status": "passed","completed_requests": 311,"decode_forwards": 77628,"accepted_tokens_including_base": 232103,"mean_accept_length": 2.989939197196888,"issued_requests": 311,"successful_responses": 311,"canceled_requests": 0,"client_in_flight_requests": 0,"server_unsettled_requests": 0,"cancel_drain_timed_out": false,"graph_digest": "1dcf19e16a5d5f5351b68e9e7fee511bf50546c78575e06dd94753438db76029","lifecycle_digest": "50c608f30a3d0646e51118467ae00eac768a51257d8be641f3490f44727b6f93","lifecycle_event_count": 938},
-    {"case": "glm-sglang-agg-dynamo-kv-sd1","status": "passed","completed_requests": 314,"decode_forwards": 79503,"accepted_tokens_including_base": 237710,"mean_accept_length": 2.98995006477743,"issued_requests": 314,"successful_responses": 314,"canceled_requests": 0,"client_in_flight_requests": 0,"server_unsettled_requests": 0,"cancel_drain_timed_out": false,"graph_digest": "1dcf19e16a5d5f5351b68e9e7fee511bf50546c78575e06dd94753438db76029","lifecycle_digest": "3a25de767a8b1f1c4a1d135efb8a11bcbc5b9515451b43e6abe9a400758f1e44","lifecycle_event_count": 947},
-    {"case": "glm-sglang-agg-dynamo-session-sd1","status": "passed","completed_requests": 314,"decode_forwards": 79504,"accepted_tokens_including_base": 237702,"mean_accept_length": 2.9898118333668746,"issued_requests": 314,"successful_responses": 314,"canceled_requests": 0,"client_in_flight_requests": 0,"server_unsettled_requests": 0,"cancel_drain_timed_out": false,"graph_digest": "1dcf19e16a5d5f5351b68e9e7fee511bf50546c78575e06dd94753438db76029","lifecycle_digest": "5e220ab4f9766ed4e84bc0f817c73738d451d938b3387c91bedb0e7bb01fe19c","lifecycle_event_count": 947},
-    {"case": "glm-sglang-agg-dynamo-sibling-sd1","status": "passed","completed_requests": 314,"decode_forwards": 79501,"accepted_tokens_including_base": 237704,"mean_accept_length": 2.989949811952051,"issued_requests": 314,"successful_responses": 314,"canceled_requests": 0,"client_in_flight_requests": 0,"server_unsettled_requests": 0,"cancel_drain_timed_out": false,"graph_digest": "1dcf19e16a5d5f5351b68e9e7fee511bf50546c78575e06dd94753438db76029","lifecycle_digest": "293d6e96604d0acc22e50ba3b581b1ddd3ba74bee12847ce3740e385c0bebe1e","lifecycle_event_count": 947},
-    {"case": "glm-vllm-disagg-engine-default-sd1","status": "passed","completed_requests": 240,"decode_forwards": 60373,"accepted_tokens_including_base": 180525,"mean_accept_length": 2.990161164759081,"issued_requests": 240,"successful_responses": 240,"canceled_requests": 0,"client_in_flight_requests": 0,"server_unsettled_requests": 0,"cancel_drain_timed_out": false,"graph_digest": "1dcf19e16a5d5f5351b68e9e7fee511bf50546c78575e06dd94753438db76029","lifecycle_digest": "f4b403ed52e5b0e031bd8759a452bbccce519a66a259f622738e98f8db600316","lifecycle_event_count": 725},
-    {"case": "glm-vllm-disagg-dynamo-kv-sd1","status": "passed","completed_requests": 245,"decode_forwards": 62073,"accepted_tokens_including_base": 185602,"mean_accept_length": 2.9900600905385595,"issued_requests": 245,"successful_responses": 245,"canceled_requests": 0,"client_in_flight_requests": 0,"server_unsettled_requests": 0,"cancel_drain_timed_out": false,"graph_digest": "1dcf19e16a5d5f5351b68e9e7fee511bf50546c78575e06dd94753438db76029","lifecycle_digest": "7888702aab30a0627c5a282c8fbefd85d74d96cdf038821c9b86442ccb1a176a","lifecycle_event_count": 740},
-    {"case": "glm-vllm-disagg-dynamo-session-sd1","status": "passed","completed_requests": 246,"decode_forwards": 62293,"accepted_tokens_including_base": 186252,"mean_accept_length": 2.9899346636058626,"issued_requests": 246,"successful_responses": 246,"canceled_requests": 0,"client_in_flight_requests": 0,"server_unsettled_requests": 0,"cancel_drain_timed_out": false,"graph_digest": "1dcf19e16a5d5f5351b68e9e7fee511bf50546c78575e06dd94753438db76029","lifecycle_digest": "55380ce408332a29f74e6463d1ddc7783b3255b2b7221da3dff20ae771eab014","lifecycle_event_count": 743},
-    {"case": "glm-vllm-disagg-dynamo-sibling-sd1","status": "passed","completed_requests": 246,"decode_forwards": 62294,"accepted_tokens_including_base": 186264,"mean_accept_length": 2.9900793013773397,"issued_requests": 246,"successful_responses": 246,"canceled_requests": 0,"client_in_flight_requests": 0,"server_unsettled_requests": 0,"cancel_drain_timed_out": false,"graph_digest": "1dcf19e16a5d5f5351b68e9e7fee511bf50546c78575e06dd94753438db76029","lifecycle_digest": "817638d592e44b36228217e9907ca538f772d925166f129e087b55e4d2462d2f","lifecycle_event_count": 743},
-    {"case": "glm-sglang-disagg-engine-default-sd1","status": "passed","completed_requests": 311,"decode_forwards": 77721,"accepted_tokens_including_base": 232380,"mean_accept_length": 2.989925502759872,"issued_requests": 311,"successful_responses": 311,"canceled_requests": 0,"client_in_flight_requests": 0,"server_unsettled_requests": 0,"cancel_drain_timed_out": false,"graph_digest": "1dcf19e16a5d5f5351b68e9e7fee511bf50546c78575e06dd94753438db76029","lifecycle_digest": "c5bbf22680a009a57fe4f4d71247c38c2aa14139fa0214526ad5d0b8adacde21","lifecycle_event_count": 938},
-    {"case": "glm-sglang-disagg-dynamo-kv-sd1","status": "passed","completed_requests": 314,"decode_forwards": 79606,"accepted_tokens_including_base": 238017,"mean_accept_length": 2.989937944376052,"issued_requests": 314,"successful_responses": 314,"canceled_requests": 0,"client_in_flight_requests": 0,"server_unsettled_requests": 0,"cancel_drain_timed_out": false,"graph_digest": "1dcf19e16a5d5f5351b68e9e7fee511bf50546c78575e06dd94753438db76029","lifecycle_digest": "9660613f5774bf8b02e7acd6eaacca03b1160c3fd7a712bc46e187fbd302102a","lifecycle_event_count": 947},
-    {"case": "glm-sglang-disagg-dynamo-session-sd1","status": "passed","completed_requests": 314,"decode_forwards": 79607,"accepted_tokens_including_base": 238026,"mean_accept_length": 2.9900134410290553,"issued_requests": 314,"successful_responses": 314,"canceled_requests": 0,"client_in_flight_requests": 0,"server_unsettled_requests": 0,"cancel_drain_timed_out": false,"graph_digest": "1dcf19e16a5d5f5351b68e9e7fee511bf50546c78575e06dd94753438db76029","lifecycle_digest": "8b9e39efebcbded65a36c91a7ca10526650193aa4c8254373b132979b94b7422","lifecycle_event_count": 947},
-    {"case": "glm-sglang-disagg-dynamo-sibling-sd1","status": "passed","completed_requests": 313,"decode_forwards": 79567,"accepted_tokens_including_base": 237911,"mean_accept_length": 2.9900712606985307,"issued_requests": 313,"successful_responses": 313,"canceled_requests": 0,"client_in_flight_requests": 0,"server_unsettled_requests": 0,"cancel_drain_timed_out": false,"graph_digest": "1dcf19e16a5d5f5351b68e9e7fee511bf50546c78575e06dd94753438db76029","lifecycle_digest": "35d4350c7bfaac0220393877757e4e28a14b791a7213ec0ec288008bd6f8ea17","lifecycle_event_count": 944},
-    {"case": "dsv4-sglang-agg-engine-default-sd0","status": "passed","completed_requests": 234,"decode_forwards": 176787,"accepted_tokens_including_base": 176787,"mean_accept_length": 1.0,"issued_requests": 234,"successful_responses": 234,"canceled_requests": 0,"client_in_flight_requests": 0,"server_unsettled_requests": 0,"cancel_drain_timed_out": false,"graph_digest": "1dcf19e16a5d5f5351b68e9e7fee511bf50546c78575e06dd94753438db76029","lifecycle_digest": "9e79fbb95c3028966d53837fa9062dfe0bdc53378daa4a3a00409effe68a7a67","lifecycle_event_count": 707},
-    {"case": "dsv4-sglang-agg-engine-default-sd1","status": "passed","completed_requests": 284,"decode_forwards": 91044,"accepted_tokens_including_base": 227439,"mean_accept_length": 2.498121787267695,"issued_requests": 284,"successful_responses": 284,"canceled_requests": 0,"client_in_flight_requests": 0,"server_unsettled_requests": 0,"cancel_drain_timed_out": false,"graph_digest": "1dcf19e16a5d5f5351b68e9e7fee511bf50546c78575e06dd94753438db76029","lifecycle_digest": "dc5b4fdd6dd1e9a9caf2bbc6d689629f7b0675ffc815e58be92f35598247a6bb","lifecycle_event_count": 857},
-    {"case": "dsv4-sglang-agg-dynamo-kv-sd0","status": "passed","completed_requests": 236,"decode_forwards": 177657,"accepted_tokens_including_base": 177657,"mean_accept_length": 1.0,"issued_requests": 236,"successful_responses": 236,"canceled_requests": 0,"client_in_flight_requests": 0,"server_unsettled_requests": 0,"cancel_drain_timed_out": false,"graph_digest": "1dcf19e16a5d5f5351b68e9e7fee511bf50546c78575e06dd94753438db76029","lifecycle_digest": "0d9ac1b7493aa6380d0fccdf6d249b1512f872b15671af76aecbb52dc45a2236","lifecycle_event_count": 713},
-    {"case": "dsv4-sglang-agg-dynamo-kv-sd1","status": "passed","completed_requests": 289,"decode_forwards": 91322,"accepted_tokens_including_base": 228112,"mean_accept_length": 2.4978865990670376,"issued_requests": 289,"successful_responses": 289,"canceled_requests": 0,"client_in_flight_requests": 0,"server_unsettled_requests": 0,"cancel_drain_timed_out": false,"graph_digest": "1dcf19e16a5d5f5351b68e9e7fee511bf50546c78575e06dd94753438db76029","lifecycle_digest": "cfd10cb5ee0fb60120d907432e4dcbcfb80b2683131465752212de479f5dad0a","lifecycle_event_count": 872},
-    {"case": "dsv4-sglang-disagg-engine-default-sd0","status": "passed","completed_requests": 234,"decode_forwards": 177021,"accepted_tokens_including_base": 177021,"mean_accept_length": 1.0,"issued_requests": 234,"successful_responses": 234,"canceled_requests": 0,"client_in_flight_requests": 0,"server_unsettled_requests": 0,"cancel_drain_timed_out": false,"graph_digest": "1dcf19e16a5d5f5351b68e9e7fee511bf50546c78575e06dd94753438db76029","lifecycle_digest": "fda62981b427c6a9653c0f98bf7dd9dc5fb09c438593221a0170db00594be841","lifecycle_event_count": 707},
-    {"case": "dsv4-sglang-disagg-engine-default-sd1","status": "passed","completed_requests": 284,"decode_forwards": 91152,"accepted_tokens_including_base": 227713,"mean_accept_length": 2.4981678953835353,"issued_requests": 284,"successful_responses": 284,"canceled_requests": 0,"client_in_flight_requests": 0,"server_unsettled_requests": 0,"cancel_drain_timed_out": false,"graph_digest": "1dcf19e16a5d5f5351b68e9e7fee511bf50546c78575e06dd94753438db76029","lifecycle_digest": "ca116501ce705743c6d79a9974f92c3e173fa4326666facf945c7e19c3922852","lifecycle_event_count": 857},
-    {"case": "dsv4-sglang-disagg-dynamo-kv-sd0","status": "passed","completed_requests": 237,"decode_forwards": 178057,"accepted_tokens_including_base": 178057,"mean_accept_length": 1.0,"issued_requests": 237,"successful_responses": 237,"canceled_requests": 0,"client_in_flight_requests": 0,"server_unsettled_requests": 0,"cancel_drain_timed_out": false,"graph_digest": "1dcf19e16a5d5f5351b68e9e7fee511bf50546c78575e06dd94753438db76029","lifecycle_digest": "680995b6a572970fcfee417dd0a2e20d3ea47d400d9991da012a8e9b8392c063","lifecycle_event_count": 716},
-    {"case": "dsv4-sglang-disagg-dynamo-kv-sd1","status": "passed","completed_requests": 289,"decode_forwards": 91435,"accepted_tokens_including_base": 228408,"mean_accept_length": 2.4980368567835076,"issued_requests": 289,"successful_responses": 289,"canceled_requests": 0,"client_in_flight_requests": 0,"server_unsettled_requests": 0,"cancel_drain_timed_out": false,"graph_digest": "1dcf19e16a5d5f5351b68e9e7fee511bf50546c78575e06dd94753438db76029","lifecycle_digest": "cb153a935c71c1fbd24193864f0d77f9de58f0963a9acbdf98eb92da509b769c","lifecycle_event_count": 872}
+    {"case": "glm-vllm-agg-engine-default-sd1","status": "passed","execution_scope": "duration_profile","completed_requests": 239,"graph_digest": "1dcf19e16a5d5f5351b68e9e7fee511bf50546c78575e06dd94753438db76029","lifecycle_digest": "399543cb4c0c978755035805d3df8ec61fff5ffa398e4b48525fd3771b85a1ec","lifecycle_event_count": 722,"accepted_tokens_including_base": 178978,"decode_forwards": 59855,"mean_accept_length": 2.9901929663353104,"sampling_population": "measurement_completed_decode_passes","issued_requests": 239,"successful_responses": 239,"canceled_requests": 0,"client_in_flight_requests": 0,"server_unsettled_requests": 0,"cancel_drain_timed_out": false},
+    {"case": "glm-sglang-agg-engine-default-sd1","status": "passed","execution_scope": "duration_profile","completed_requests": 311,"graph_digest": "1dcf19e16a5d5f5351b68e9e7fee511bf50546c78575e06dd94753438db76029","lifecycle_digest": "50c608f30a3d0646e51118467ae00eac768a51257d8be641f3490f44727b6f93","lifecycle_event_count": 938,"accepted_tokens_including_base": 232103,"decode_forwards": 77628,"mean_accept_length": 2.989939197196888,"sampling_population": "measurement_completed_decode_passes","issued_requests": 311,"successful_responses": 311,"canceled_requests": 0,"client_in_flight_requests": 0,"server_unsettled_requests": 0,"cancel_drain_timed_out": false},
+    {"case": "glm-vllm-disagg-engine-default-sd1","status": "passed","execution_scope": "duration_profile","completed_requests": 240,"graph_digest": "1dcf19e16a5d5f5351b68e9e7fee511bf50546c78575e06dd94753438db76029","lifecycle_digest": "f4b403ed52e5b0e031bd8759a452bbccce519a66a259f622738e98f8db600316","lifecycle_event_count": 725,"accepted_tokens_including_base": 180525,"decode_forwards": 60373,"mean_accept_length": 2.990161164759081,"sampling_population": "measurement_completed_decode_passes","issued_requests": 240,"successful_responses": 240,"canceled_requests": 0,"client_in_flight_requests": 0,"server_unsettled_requests": 0,"cancel_drain_timed_out": false},
+    {"case": "glm-sglang-disagg-engine-default-sd1","status": "passed","execution_scope": "duration_profile","completed_requests": 311,"graph_digest": "1dcf19e16a5d5f5351b68e9e7fee511bf50546c78575e06dd94753438db76029","lifecycle_digest": "c5bbf22680a009a57fe4f4d71247c38c2aa14139fa0214526ad5d0b8adacde21","lifecycle_event_count": 938,"accepted_tokens_including_base": 232380,"decode_forwards": 77721,"mean_accept_length": 2.989925502759872,"sampling_population": "measurement_completed_decode_passes","issued_requests": 311,"successful_responses": 311,"canceled_requests": 0,"client_in_flight_requests": 0,"server_unsettled_requests": 0,"cancel_drain_timed_out": false},
+    {"case": "dsv4-sglang-agg-engine-default-sd0","status": "passed","execution_scope": "duration_profile","completed_requests": 234,"graph_digest": "1dcf19e16a5d5f5351b68e9e7fee511bf50546c78575e06dd94753438db76029","lifecycle_digest": "9e79fbb95c3028966d53837fa9062dfe0bdc53378daa4a3a00409effe68a7a67","lifecycle_event_count": 707,"accepted_tokens_including_base": 176787,"decode_forwards": 176787,"mean_accept_length": 1.0,"sampling_population": "measurement_completed_decode_passes","issued_requests": 234,"successful_responses": 234,"canceled_requests": 0,"client_in_flight_requests": 0,"server_unsettled_requests": 0,"cancel_drain_timed_out": false},
+    {"case": "dsv4-sglang-agg-engine-default-sd1","status": "passed","execution_scope": "duration_profile","completed_requests": 284,"graph_digest": "1dcf19e16a5d5f5351b68e9e7fee511bf50546c78575e06dd94753438db76029","lifecycle_digest": "dc5b4fdd6dd1e9a9caf2bbc6d689629f7b0675ffc815e58be92f35598247a6bb","lifecycle_event_count": 857,"accepted_tokens_including_base": 227439,"decode_forwards": 91044,"mean_accept_length": 2.498121787267695,"sampling_population": "measurement_completed_decode_passes","issued_requests": 284,"successful_responses": 284,"canceled_requests": 0,"client_in_flight_requests": 0,"server_unsettled_requests": 0,"cancel_drain_timed_out": false},
+    {"case": "dsv4-sglang-disagg-engine-default-sd0","status": "passed","execution_scope": "duration_profile","completed_requests": 234,"graph_digest": "1dcf19e16a5d5f5351b68e9e7fee511bf50546c78575e06dd94753438db76029","lifecycle_digest": "fda62981b427c6a9653c0f98bf7dd9dc5fb09c438593221a0170db00594be841","lifecycle_event_count": 707,"accepted_tokens_including_base": 177021,"decode_forwards": 177021,"mean_accept_length": 1.0,"sampling_population": "measurement_completed_decode_passes","issued_requests": 234,"successful_responses": 234,"canceled_requests": 0,"client_in_flight_requests": 0,"server_unsettled_requests": 0,"cancel_drain_timed_out": false},
+    {"case": "dsv4-sglang-disagg-engine-default-sd1","status": "passed","execution_scope": "duration_profile","completed_requests": 284,"graph_digest": "1dcf19e16a5d5f5351b68e9e7fee511bf50546c78575e06dd94753438db76029","lifecycle_digest": "ca116501ce705743c6d79a9974f92c3e173fa4326666facf945c7e19c3922852","lifecycle_event_count": 857,"accepted_tokens_including_base": 227713,"decode_forwards": 91152,"mean_accept_length": 2.4981678953835353,"sampling_population": "measurement_completed_decode_passes","issued_requests": 284,"successful_responses": 284,"canceled_requests": 0,"client_in_flight_requests": 0,"server_unsettled_requests": 0,"cancel_drain_timed_out": false},
+    {"case": "glm-vllm-agg-dynamo-default-sd1","status": "passed","execution_scope": "complete_trace","completed_requests": 162,"graph_digest": "1dcf19e16a5d5f5351b68e9e7fee511bf50546c78575e06dd94753438db76029","lifecycle_digest": "c90feb265b1dd46ad5a5907b2acaacdb8c16edc00102a19b9463930abcec339f","lifecycle_event_count": 488,"accepted_tokens_including_base": 135809,"decode_forwards": 45424,"mean_accept_length": 2.9898071504050723,"sampling_population": "measurement_completed_decode_passes","completed_plays": 2},
+    {"case": "glm-vllm-agg-dynamo-kv-sd1","status": "passed","execution_scope": "complete_trace","completed_requests": 162,"graph_digest": "1dcf19e16a5d5f5351b68e9e7fee511bf50546c78575e06dd94753438db76029","lifecycle_digest": "067563e921bd2a8cca6d6b214199a68990b90b8e8693f193287a2192cf2cc491","lifecycle_event_count": 488,"accepted_tokens_including_base": 135815,"decode_forwards": 45428,"mean_accept_length": 2.989675970766928,"sampling_population": "measurement_completed_decode_passes","completed_plays": 2},
+    {"case": "glm-sglang-agg-dynamo-default-sd1","status": "passed","execution_scope": "complete_trace","completed_requests": 162,"graph_digest": "1dcf19e16a5d5f5351b68e9e7fee511bf50546c78575e06dd94753438db76029","lifecycle_digest": "cbe0768478b6bb8a19c8b8623db31b6f730ddfcf02e9109cfe437fdef7e9f314","lifecycle_event_count": 488,"accepted_tokens_including_base": 136150,"decode_forwards": 45537,"mean_accept_length": 2.989876364275205,"sampling_population": "measurement_completed_decode_passes","completed_plays": 2},
+    {"case": "glm-sglang-agg-dynamo-kv-sd1","status": "passed","execution_scope": "complete_trace","completed_requests": 162,"graph_digest": "1dcf19e16a5d5f5351b68e9e7fee511bf50546c78575e06dd94753438db76029","lifecycle_digest": "ca53b7563756ead7a900fe319859551eae3e072c366a9bee44b87d22a626992e","lifecycle_event_count": 488,"accepted_tokens_including_base": 136136,"decode_forwards": 45534,"mean_accept_length": 2.989765889225634,"sampling_population": "measurement_completed_decode_passes","completed_plays": 2},
+    {"case": "glm-vllm-disagg-dynamo-default-sd1","status": "passed","execution_scope": "complete_trace","completed_requests": 162,"graph_digest": "1dcf19e16a5d5f5351b68e9e7fee511bf50546c78575e06dd94753438db76029","lifecycle_digest": "dd26f497a1b33065f6f78182c4362b0183a12af0381bbc78d8290c2d5b7ec921","lifecycle_event_count": 488,"accepted_tokens_including_base": 136310,"decode_forwards": 45592,"mean_accept_length": 2.989778908580453,"sampling_population": "measurement_completed_decode_passes","completed_plays": 2},
+    {"case": "glm-vllm-disagg-dynamo-kv-sd1","status": "passed","execution_scope": "complete_trace","completed_requests": 162,"graph_digest": "1dcf19e16a5d5f5351b68e9e7fee511bf50546c78575e06dd94753438db76029","lifecycle_digest": "c2cab3080fa3b3b21319d9fffd3ea719698e9977e8d8762b7c207533f080dd88","lifecycle_event_count": 488,"accepted_tokens_including_base": 136320,"decode_forwards": 45594,"mean_accept_length": 2.9898670877747073,"sampling_population": "measurement_completed_decode_passes","completed_plays": 2},
+    {"case": "glm-sglang-disagg-dynamo-default-sd1","status": "passed","execution_scope": "complete_trace","completed_requests": 162,"graph_digest": "1dcf19e16a5d5f5351b68e9e7fee511bf50546c78575e06dd94753438db76029","lifecycle_digest": "6dd56692f02d7c9ed417b865b2923a67fd1ead93a2c9115ee39e870c7af08c48","lifecycle_event_count": 488,"accepted_tokens_including_base": 136317,"decode_forwards": 45593,"mean_accept_length": 2.989866865527603,"sampling_population": "measurement_completed_decode_passes","completed_plays": 2},
+    {"case": "glm-sglang-disagg-dynamo-kv-sd1","status": "passed","execution_scope": "complete_trace","completed_requests": 162,"graph_digest": "1dcf19e16a5d5f5351b68e9e7fee511bf50546c78575e06dd94753438db76029","lifecycle_digest": "5ebaac23e5d394349bb7868ec24da1382b0b745895b6c9015416838ddd12644c","lifecycle_event_count": 488,"accepted_tokens_including_base": 136305,"decode_forwards": 45589,"mean_accept_length": 2.9898659764416853,"sampling_population": "measurement_completed_decode_passes","completed_plays": 2},
+    {"case": "dsv4-sglang-agg-dynamo-default-sd0","status": "passed","execution_scope": "complete_trace","completed_requests": 162,"graph_digest": "1dcf19e16a5d5f5351b68e9e7fee511bf50546c78575e06dd94753438db76029","lifecycle_digest": "7ffec44cfe20c7c290d2d60f170355e8c1b97a4f2353b869a74a968a956f69c7","lifecycle_event_count": 488,"accepted_tokens_including_base": 135985,"decode_forwards": 135985,"mean_accept_length": 1.0,"sampling_population": "measurement_completed_decode_passes","completed_plays": 2},
+    {"case": "dsv4-sglang-agg-dynamo-default-sd1","status": "passed","execution_scope": "complete_trace","completed_requests": 162,"graph_digest": "1dcf19e16a5d5f5351b68e9e7fee511bf50546c78575e06dd94753438db76029","lifecycle_digest": "15849e62edf8cbdcaec81ed479fe85c19b38adb21172ec304ee92d080d71c114","lifecycle_event_count": 488,"accepted_tokens_including_base": 136128,"decode_forwards": 54495,"mean_accept_length": 2.4979906413432427,"sampling_population": "measurement_completed_decode_passes","completed_plays": 2},
+    {"case": "dsv4-sglang-agg-dynamo-kv-sd0","status": "passed","execution_scope": "complete_trace","completed_requests": 162,"graph_digest": "1dcf19e16a5d5f5351b68e9e7fee511bf50546c78575e06dd94753438db76029","lifecycle_digest": "8dde2201ea3426659fc60e2069bff20a6ad82dc153cf444bcac256b1b2431320","lifecycle_event_count": 488,"accepted_tokens_including_base": 135985,"decode_forwards": 135985,"mean_accept_length": 1.0,"sampling_population": "measurement_completed_decode_passes","completed_plays": 2},
+    {"case": "dsv4-sglang-agg-dynamo-kv-sd1","status": "passed","execution_scope": "complete_trace","completed_requests": 162,"graph_digest": "1dcf19e16a5d5f5351b68e9e7fee511bf50546c78575e06dd94753438db76029","lifecycle_digest": "a41bac87ad379d85a507977c1d8fd0afaa87321b90d5d8ab94d488c6be8d1340","lifecycle_event_count": 488,"accepted_tokens_including_base": 136102,"decode_forwards": 54458,"mean_accept_length": 2.49921040067575,"sampling_population": "measurement_completed_decode_passes","completed_plays": 2},
+    {"case": "dsv4-sglang-disagg-dynamo-default-sd0","status": "passed","execution_scope": "complete_trace","completed_requests": 162,"graph_digest": "1dcf19e16a5d5f5351b68e9e7fee511bf50546c78575e06dd94753438db76029","lifecycle_digest": "dfd4525378ea843f7676937bb44eb0bc53a930a184860b72a63d26a17e653418","lifecycle_event_count": 488,"accepted_tokens_including_base": 136147,"decode_forwards": 136147,"mean_accept_length": 1.0,"sampling_population": "measurement_completed_decode_passes","completed_plays": 2},
+    {"case": "dsv4-sglang-disagg-dynamo-default-sd1","status": "passed","execution_scope": "complete_trace","completed_requests": 162,"graph_digest": "1dcf19e16a5d5f5351b68e9e7fee511bf50546c78575e06dd94753438db76029","lifecycle_digest": "46257bc0cc62d0ac1b2670b1c16a13294d80e92d41a70f66ed34d02da85a7f9a","lifecycle_event_count": 488,"accepted_tokens_including_base": 136270,"decode_forwards": 54552,"mean_accept_length": 2.4979835753042967,"sampling_population": "measurement_completed_decode_passes","completed_plays": 2},
+    {"case": "dsv4-sglang-disagg-dynamo-kv-sd0","status": "passed","execution_scope": "complete_trace","completed_requests": 162,"graph_digest": "1dcf19e16a5d5f5351b68e9e7fee511bf50546c78575e06dd94753438db76029","lifecycle_digest": "b86b8b8eddcb99e7da0aec3abb47b8c7fb508fa2656d56fb15cfd6b7036e676f","lifecycle_event_count": 488,"accepted_tokens_including_base": 136147,"decode_forwards": 136147,"mean_accept_length": 1.0,"sampling_population": "measurement_completed_decode_passes","completed_plays": 2},
+    {"case": "dsv4-sglang-disagg-dynamo-kv-sd1","status": "passed","execution_scope": "complete_trace","completed_requests": 162,"graph_digest": "1dcf19e16a5d5f5351b68e9e7fee511bf50546c78575e06dd94753438db76029","lifecycle_digest": "90309ff856ac55e69e6c99aa2c1c8cb2cae9183262acb66fd144f9ad6d5d4f6f","lifecycle_event_count": 488,"accepted_tokens_including_base": 136270,"decode_forwards": 54537,"mean_accept_length": 2.498670627280562,"sampling_population": "measurement_completed_decode_passes","completed_plays": 2}
   ]
 }

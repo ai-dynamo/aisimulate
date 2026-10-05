@@ -35,6 +35,19 @@ def test_qualification_checks_survive_optimized_python():
     assert "expected failure" in result.stderr
 
 
+def test_native_report_envelope_preserves_acceptance_and_authored_metadata():
+    module = _module()
+    summary = {"speculative_acceptance": {"mean_accept_length": 2.5}, "completed_requests": 2}
+    assert module.unpack_report(summary) == summary
+    envelope = {
+        "summary": summary,
+        "speculation": {"aggregated": {"seed": 42}},
+        "agentic_qualification": "functional_only",
+    }
+    assert module.unpack_report(envelope) == {**summary, **{k: v for k, v in envelope.items() if k != "summary"}}
+    assert "agentic_qualification" not in module.unpack_report({"summary": summary})
+
+
 def test_local_wheel_is_hashed_when_installer_omits_archive_hash(tmp_path, monkeypatch):
     wheel = tmp_path / "wheel artifact.whl"
     wheel.write_bytes(b"installed wheel fixture")
@@ -93,3 +106,30 @@ def test_missing_sd_metadata_cannot_qualify():
     raw = {"engine": {"model": "fixture", "workers": {"aggregated": {}}, "speculation": {"num_speculative_tokens": 3}}}
     with pytest.raises(ValueError, match="missing or unexpected SD role"):
         _module().validate_report(report, raw, True, 3600)
+
+
+@pytest.mark.parametrize(
+    "outcome",
+    [
+        {"status": "failed", "settled_at_ms": 12.0},
+        {"status": "incomplete", "settled_at_ms": 12.0},
+        {"status": "completed"},
+    ],
+)
+def test_complete_trace_cannot_qualify_unsettled_or_failed_plays(outcome):
+    report = {
+        "agentic_qualification": "functional_only",
+        "agentic_model_projection": {"target_model": "fixture"},
+        "completed_requests": 1,
+        "agentic_graph": {"play_count": 1},
+        "agentic_play_outcomes": [outcome],
+        "speculative_acceptance": {
+            "decode_forwards": 10,
+            "mean_accept_length": 1.0,
+            "sampling_population": "measurement_completed_decode_passes",
+        },
+    }
+    with pytest.raises(ValueError, match="unsuccessful or unsettled play"):
+        _module().validate_report(report, {"engine": {"model": "fixture"}}, False, None)
+    report["agentic_play_outcomes"] = [{"status": "completed", "settled_at_ms": 12.0}]
+    _module().validate_report(report, {"engine": {"model": "fixture"}}, False, None)
