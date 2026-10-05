@@ -3,113 +3,51 @@ SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All 
 SPDX-License-Identifier: Apache-2.0
 -->
 
-# Prepare model metadata and choose an FPM execution route
+# Add a model architecture for SOL-assisted FPM
 
-FPM onboarding needs pinned model and deployment metadata, correct memory and
-KV-cache accounting, and matching whole-forward timing data. The current
-config/profile route supports ordinary FPM `predict` and `recommend` without
-an op-level model class. Registered models can also use analytical SOL estimates
-for timing transfer. Neither route requires per-operation GPU timing collection.
+This guide is for developers adding or extending AISimulate's analytical model
+support. Use it when FPM interpolation with `method: sol` needs an architecture
+that AISimulate cannot yet describe correctly. The result is model/parser/operator
+code and tests, not a collected timing dataset.
 
-Start with the [FPM self-service workflow](../../../../docs/fpm-self-service.md#onboard-with-an-agent)
-to inspect a model, choose a worker, derive and review its resource profile,
-plan and collect timings, and validate replay. This guide records the metadata
-shared by both routes, then describes the **optional registered-model/SOL
-integration procedure** in sections 2–5. Its CPU example uses the bundled
-**Qwen3-0.6B configuration**; it does not establish coverage for another model.
+SOL-assisted FPM combines measured forward-pass timings with analytical
+speed-of-light (SOL) cost estimates for supported workload shapes. To compute
+those estimates, AISimulate needs a description of the model's attention, GEMM,
+MoE and communication operations, their per-rank dimensions, and weight/KV-cache
+memory requirements. This guide explains how to supply and validate that description.
 
-## Class-independent direct FPM
+For example, a new MoE architecture may need a different expert-operation graph
+or KV-cache size calculation. Registering its architecture name is only the
+first step: its operation descriptions and the Rust FPM SOL evaluator must also
+agree with the target model and parallel configuration.
 
-Supply a local model config to `aisimulate onboard init --model-config`, or
-provide an existing `--fpm-profile`. Config-based setup derives supported
-resource estimates and identifies missing bounds; review and edit the exact
-values, effective precisions and provenance before accepting the profile.
-Follow the self-service guide's [terminal or headless review flow](../../../../docs/fpm-self-service.md#3-derive-review-and-save-the-profile).
-Profile resources must bound every rank of the selected topology. A profile is
-a declaration, not proof of runtime compatibility or measured memory fit.
-For full/sliding attention and supported convolution state, follow
-[grouped cache review](../../../../docs/fpm-self-service.md#review-grouped-cache-resources):
-runtime block sizes remain explicit inputs, and each group page includes every
-group layer plus runtime padding on one rank. Use the
-[canonical byte-budget API](../../../../docs/core-api.md#fpm-profile-cache-groups-and-byte-budgets)
-for grouped resources; a scalar token capacity cannot represent window eviction
-or transient prefill pages.
+Ordinary [FPM self-service](../../../../docs/fpm-self-service/README.md) uses `method: direct` with a resource
+profile and does not require this integration. If you only want to collect and
+use forward timings, follow that workflow and its examples. For general model
+registration, start with [How to add a new model](../add_a_new_model.md);
+this page adds the requirements specific to SOL-assisted FPM.
 
-An existing launch configuration is optional evidence. The onboarding agent
-proposes supported runtime settings from pinned checkpoint/runtime metadata and
-available sidecars, asks only for unresolved facts, and presents the result for
-review. The CLI does not import arbitrary launch arguments or inspect a remote
-runtime automatically. Config intake proposes the current collector communication
-identity `half`; unknown FMHA and KV precision remain explicit inputs. Packed
-cache-page estimates remain distinct from runtime allocations including padding.
+## 1. Record the architecture and target deployment
 
-The saved request embeds the profile, and generated ordinary configurations use
-`engine.fpm_profile`, `estimation_mode: fpm_interpolation`,
-`estimator_config.fpm_interpolation.method: direct`, and `fallback_policy: deny`.
-Direct interpolation uses measured whole-forward timings without constructing
-an operation graph for timing or resources. Unsupported metadata and uncovered
-queries fail explicitly. See [execution-route selection and interpolation rules](../../../../docs/fpm-self-service.md#choose-the-model-execution-route)
-for exact-point, curve and two-sided interpolation coverage.
+Before changing code, inspect the pinned model and runtime. Retain these inputs
+with the integration tests so the analytical description can be checked against
+the implementation that will execute the model:
 
-Each generated profile and plan selects one exact TP, DEP or TEP worker. To onboard
-several configurations in one session, use the self-service guide's
-[directory output](../../../../docs/fpm-self-service.md#onboard-multiple-parallel-configurations).
-It reuses shared intake and creates a separate reviewed profile and request
-for each tuple; rank-local byte bounds and cache groups are never transferred
-between configurations. Follow each emitted plan command and collect or resume
-each configuration independently. Follow the
-[shared collection policy](../../../../docs/fpm-self-service.md#how-the-collection-grid-is-determined):
-AISimulate sets runtime limits and the reviewed capture policy. New onboarding
-uses `--prefill-cudagraph-policy runtime`, which leaves prefill compilation to
-the pinned engine; explicit capture extension remains available. The collector
-launches benchmark workers, and Dynamo uses initialized engine state, image
-sampling defaults and feasibility checks to generate and time the exact grid.
-Capture sizes and exact counts remain unresolved before engine initialization
-in runtime mode. A complete generated grid does
-not establish direct-FPM query coverage. Validation traffic is supplied
-separately after a formal timing pair is verified. The
-current [AgentX coverage check](../../../../docs/fpm-self-service.md#validate-fpm-query-coverage-with-agentx-replay)
-uses cold aggregated replay, one client lane, HBM-only cache and no speculative
-decoding. Missing timing stops replay and retains partial evidence; that evidence
-cannot certify the rest of the trace. Coverage and measured accuracy are
-separate results.
-
-## 1. Record the intended deployment
-
-Keep these inputs with the integration issue and eventual collection artifacts:
-
-| Input | What to inspect and record |
+| Input | What to establish |
 | --- | --- |
-| Checkpoint | Canonical model ID, immutable revision, local `config.json` and optional quantization/processor metadata, and file hashes. AISimulate's config parser does not take a revision argument; use metadata from the pinned checkpoint in a local directory when an exact revision is needed. |
-| Architecture | Layer types/counts, attention and KV heads, head dimension, FFN/expert dimensions, routing, shared experts, and any model-specific configuration fields. Compare these with the serving implementation. |
-| Memory | Weight storage precision and replication/sharding; cache layout, quantization, sliding windows/compression, and fixed recurrent or decode state. |
-| Runtime | GPU/system specification, backend and exact version, image digest, attention/MoE kernel choices, and effective GEMM/MoE/FMHA/KV/communication precision. Checkpoint weight precision alone does not specify all these values. |
-| Worker topology | Exact `(TP, PP, attention DP, MoE TP, MoE EP, CP)` tuple. Minimum collection GPUs are attention TP times attention DP. Total GPU allocation, node reservations and replica budgets are not onboarding intake requirements. |
-| Runtime and collection bounds | Per-request context, per-attention-DP-rank scheduled-token and sequence limits, GPU memory fraction (new onboarding starts at 0.90), and runtime or explicit prefill CUDA graph policy. Review these independently of replay traffic; record actual captures after initialization. These settings do not prove memory fit or timing coverage. |
-| Validation traffic | Select a local trace when validating the collected pair. Fixed input/output lengths, concurrency, TTFT and TPOT are optional synthetic-example inputs, not collection requirements. |
+| Checkpoint | Model ID, immutable revision, local configuration and any quantization metadata. A config hash identifies metadata, not checkpoint weights. |
+| Architecture | Layer types/counts, attention and KV heads, head dimensions, FFN/expert dimensions, routing, shared experts and architecture-specific fields. |
+| Parallelism | The exact TP, PP, attention-DP, MoE-TP and EP layout, including how work, weights and cache are sharded or replicated per rank. |
+| Memory | Weight precision, KV layout/precision, sliding windows or compression, and any recurrent state. A per-token slope is insufficient for a bounded or non-linear cache. |
+| Runtime | GPU/interconnect, backend and exact version, attention/MoE kernels, effective precisions, scheduler limits and CUDA Graph policy. |
 
-For example, MoE TP4 is `(4, 1, 1, 4, 1, 1)`, DEP8 is
-`(1, 1, 8, 1, 8, 1)`, and TEP8 is `(8, 1, 1, 1, 8, 1)`. Equal GPU counts do
-not make their resource bounds or timing cells interchangeable. Use the
-[topology flags and collection limits](../../../../docs/fpm-self-service.md#create-the-request)
-for the intended worker, and verify actual collection resources before execution.
-The sequence limit does not reserve maximum context for every sequence.
+Reuse an existing analytical family only when these facts match its operation
+and memory model. A matching architecture name or successful metadata parse does
+not establish that the intended SOL query path works. The CPU example below uses
+bundled Qwen3-0.6B metadata to demonstrate the checks; it does not validate another
+model or replace model-specific tests.
 
-The profile-based collection workflow targets vLLM text decoders with
-`PP=CP=1` and linear or grouped cache storage. Grouped prediction and replay
-currently require cold aggregated execution, HBM-only cache, no speculative
-decoding and `prefix_caching: false`; generated grouped configurations preserve
-that setting. A multimodal checkpoint can supply an
-unambiguous `text_config` or flat decoder fields. Text-decoder timing and
-config-derived estimates exclude encoders, projectors, preprocessing and other
-non-text components. Observed runtime cache capacity accounts for every component
-actually loaded by the worker; do not subtract guessed encoder allocations.
-Preserve that scope in profile provenance. Unsupported cache semantics, encoder
-pools, AFD, speculative decoding, wide EP and EPLB remain outside this route. A
-registered class existing for another mode is not evidence of support for the
-intended FPM deployment.
-
-## 2. Registered-model route: reuse or implement the model description
+## 2. Implement the model description
 
 Follow [How to add a new model](../add_a_new_model.md) for the registry and native
 operation contracts. For this registered-model/SOL route, review these concrete responsibilities:
@@ -325,11 +263,11 @@ The metadata used for local construction must describe the same checkpoint
 mounted in the collection runtime; a temporary local path is not a portable
 replacement for the canonical identity in the published pair.
 
-For the config/profile route, continue the [self-service workflow](../../../../docs/fpm-self-service.md#plan-preview-and-explicitly-execute)
-with the accepted profile. The [collection campaign example](self-benchmarking-and-onboarding.md#b2-freeze-and-inspect-the-plan-step-2)
-illustrates guided collection and formal pair publication without requiring an analytical class. Only
-whole-forward silicon timings are collected for FPM. Exercise ordinary `predict`
-and `recommend` on covered candidates and retain the matching inputs, data
-provenance, reports and reproduction commands. CPU integration checks,
-collection completion, replay coverage, completed simulations and agreement
-with independent silicon measurements are separate acceptance results.
+After integration, load a matching measured FPM pair and verify the explicit
+`fpm_interpolation` / `method: sol` path with denied fallback. Use the
+[self-service implementation reference](../../../../docs/fpm-self-service/implementation.md#plan-preview-and-explicitly-execute)
+for supported collection configurations and
+[dataset validation](../../../../docs/fpm-self-service/implementation.md#validate-and-install-the-fpm-profile).
+A registered analytical class does not launch collection or establish runtime
+compatibility. Keep CPU integration checks, measured coverage, completed
+simulations and independent serving accuracy as separate results.

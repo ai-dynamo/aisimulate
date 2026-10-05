@@ -27,12 +27,12 @@ source mirror.
 The machine-readable mapping and synchronization ledger live in
 `scripts/aic_sync.toml`. Manual-path reviews for each synchronization range are
 recorded in
-[`aic-sync-ff2be1-to-095f58a-manual.md`](aic-sync-ff2be1-to-095f58a-manual.md)
+[synchronization ff2be1 to 095f58a](migration-history.md#synchronization-ff2be1-to-095f58a)
 and
-[`aic-sync-095f58a-to-ce2824e-manual.md`](aic-sync-095f58a-to-ce2824e-manual.md).
+[synchronization 095f58a to ce2824e](migration-history.md#synchronization-095f58a-to-ce2824e).
 The final feature transfer from the frozen AIConfigurator repository is
 recorded in
-[`aic-sync-ce2824e-to-c8aee02-manual.md`](aic-sync-ce2824e-to-c8aee02-manual.md).
+[synchronization ce2824e to c8aee02](migration-history.md#synchronization-ce2824e-to-c8aee02).
 To generate a binary-safe patch from the recorded AIC boundary to a newer AIC
 commit:
 

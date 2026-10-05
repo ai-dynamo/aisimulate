@@ -85,7 +85,9 @@ def _role_capacity_tokens(
     backend_version: str,
 ) -> int:
     """Aggregate scheduler-visible KV tokens across attention-DP ranks and replicas."""
-    block_size = int(sample[f"{role}_block_size"])
+    from ..config.engine import resolve_block_size
+
+    block_size = resolve_block_size(sample["backend"], sample[f"{role}_block_size"])
     if block_size <= 0:
         raise ValueError(f"{role}_block_size must be greater than zero, got {block_size}")
     fixed_blocks = sample.get(f"{role}_num_gpu_blocks")
@@ -116,7 +118,13 @@ def _role_capacity_tokens(
             systems_paths=resolve_systems_paths(roots),
             max_num_tokens=int(sample[f"{role}_max_num_batched_tokens"]),
             max_batch_size=int(sample[f"{role}_max_num_seqs"]),
-            memory_fraction=float(sample[f"{role}_gpu_memory_utilization"]),
+            memory_fraction=float(
+                sample[f"{role}_gpu_memory_utilization"]
+                if sample.get(f"{role}_gpu_memory_utilization") is not None
+                else 0.88
+                if sample["backend"] == "sglang"
+                else DEFAULT_MEMORY_FRACTION
+            ),
             fpm_profile_json=json.dumps(profile, sort_keys=True) if profile is not None else None,
             worker_type="aggregated" if role == "agg" else role,
             context_length=sample.get("context_length"),

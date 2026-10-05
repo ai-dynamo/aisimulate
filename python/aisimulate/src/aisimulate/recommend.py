@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import itertools
+import logging
 import math
 from collections.abc import Mapping
 from copy import deepcopy
@@ -14,6 +15,7 @@ from typing import Any
 from .capacity import resolve_model_context_length
 from .config.cli import CorePredictionConfig, CoreRecommendationConfig
 from .config.common import ENGINE_MODEL_CONTROL_FIELDS
+from .config.engine import resolve_block_size
 from .config.traffic import TrafficPredictionConfig
 from .config_adapter import (
     CompiledSweepProvider,
@@ -85,6 +87,16 @@ def _run_recommendation(
     if config.engine.speculation is not None and (stack != "engine" or adapter_configs):
         raise ValueError("ngram speculation requires --stack engine without adapters")
     smart = recommendation_to_sweeper(config, adapter_configs=adapter_configs, stack=stack)
+    if config.traffic is None:
+        workload = smart.workload
+        logging.getLogger(__name__).warning(
+            "No traffic configured; using synthetic traffic: input_tokens=%s, output_tokens=%s, "
+            "concurrency=%s, requests=%s. Set traffic explicitly for your workload.",
+            workload.isl,
+            workload.osl,
+            workload.concurrency,
+            int(workload.concurrency * workload.num_request_ratio),
+        )
     smart.sweep.parallel_evals = min(config.optimizer.parallelism, budget["cpu_limit"])
     sweep_context = SweepContext(
         core_search_space=smart.search_space.model_dump(mode="json"),
@@ -520,9 +532,24 @@ def _parallel_entries(role: str, raw: dict[str, Any]) -> tuple[str, Any]:
     return "independent", {"choices": choices, "log_ranges": log_ranges}
 
 
+_CONTEXT_PARALLEL_KEYS = ("prefill_context", "decode_context")
+
+
 def _parallel_mapping(value: Any, path: str) -> dict[str, int]:
     if not isinstance(value, dict):
         raise ValueError(f"{path} entries must be mappings")
+    # Context parallelism is a predict-only knob: preset entries are full
+    # ParallelismPredictionConfig dumps, so they may carry the two keys unset
+    # (None) or at 1. The sweeper does not enumerate CP/DCP yet, so anything
+    # else is rejected explicitly instead of being silently dropped.
+    value = dict(value)
+    for key in _CONTEXT_PARALLEL_KEYS:
+        leaf = value.pop(key, None)
+        if leaf not in (None, 1):
+            raise ValueError(
+                f"{path}.{key}={leaf!r} is not supported by recommend; context parallelism "
+                "is a predict-only knob (use `aisimulate predict` with a fixed parallelism)"
+            )
     missing = set(_PARALLEL_KEYS) - set(value)
     unknown = set(value) - set(_PARALLEL_KEYS)
     if missing or unknown:
@@ -685,6 +712,8 @@ def _recommendation_workload(raw: dict[str, Any] | None) -> dict[str, Any]:
                 result["agentic_snapshot"] = deepcopy(load["agentic_snapshot"])
             if load.get("agentic_warmup"):
                 result["agentic_warmup"] = True
+            if load.get("agentic_profile") is not None:
+                result["agentic_profile"] = deepcopy(load["agentic_profile"])
         if isinstance(stop, dict) and stop.get("max_virtual_time_seconds") is not None:
             result["max_sim_time_ms"] = 1_000.0 * float(stop["max_virtual_time_seconds"])
         return result
@@ -875,9 +904,7 @@ def _candidate_prediction(
         raw_worker = (
             raw_engine.get("workers", {}).get(public_role, {}) if isinstance(raw_engine.get("workers"), dict) else {}
         )
-        block_size = sample[f"{role}_block_size"]
-        if block_size is None:
-            block_size = {"vllm": 64, "sglang": 1, "trtllm": 32}[sample["backend"]]
+        block_size = resolve_block_size(sample["backend"], sample[f"{role}_block_size"])
         memory_fraction = sample[f"{role}_gpu_memory_utilization"]
         if memory_fraction is None:
             memory_fraction = 0.88 if sample["backend"] == "sglang" else 0.9

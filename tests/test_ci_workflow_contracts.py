@@ -1885,12 +1885,13 @@ def test_full_ci_selector_skips_heavy_jobs_for_documentation() -> None:
     plan = select_components(["README.md", "docs/architecture.md"])
 
     assert plan["run_all"] is False
-    assert not any(plan["components"].values())
+    assert {name for name, value in plan["components"].items() if value} == {"readme_commands"}
 
 
 def test_full_ci_selector_maps_python_rust_and_data_boundaries() -> None:
     python_plan = select_components(["python/aisimulate/src/aisimulate/traffic.py"])
     assert {component for component, selected in python_plan["components"].items() if selected} == {
+        "readme_commands",
         "platform_wheels",
         "application_wheel",
         "application_tests",
@@ -3017,3 +3018,248 @@ def test_manual_fpe_uses_current_harness_and_selected_inventory_for_every_job():
     assert nightly["build-artifacts"]["env"]["DEV_DATE"] == "${{ needs.changes-guard.outputs.dev-version }}"
     assert "release-tooling/scripts/apply_dev_version.py" in _run_commands(nightly["build-artifacts"])
     assert "release-tooling/scripts/build_release_artifacts.py --root ." in _run_commands(nightly["build-artifacts"])
+
+
+def test_simulation_performance_rollout_and_revision_contract():
+    workflow = _workflow("simulation-performance.yml")
+    selector = workflow["jobs"]["select"]
+    assert workflow["on"]["push"] == _workflow("performance.yml")["on"]["push"]
+    assert "workflow_dispatch" in workflow["on"]
+    assert "if" not in selector
+    assert workflow["concurrency"]["group"].startswith("simulation-performance-")
+    assert selector["runs-on"] == "ubuntu-latest"
+    assert "python scripts/select_simulation_perf.py" in _run_commands(selector)
+    comparison = workflow["jobs"]["compare"]
+    assert comparison["if"] == "needs.select.outputs.run_comparison == 'true'"
+    commands = _run_commands(selector)
+    assert comparison["needs"] == ["select", "build"]
+    build = workflow["jobs"]["build"]
+    assert build["needs"] == "select"
+    assert build["if"] == comparison["if"]
+    assert build["strategy"]["fail-fast"] == "false"
+    assert build["strategy"]["matrix"]["include"] == [
+        {"side": "base", "sha": "${{ needs.select.outputs.base_sha }}"},
+        {"side": "head", "sha": "${{ needs.select.outputs.head_sha }}"},
+    ]
+    downloads = [
+        step["with"]["name"] for step in comparison["steps"] if "actions/download-artifact@" in step.get("uses", "")
+    ]
+    assert downloads == [
+        "simulation-wheel-base-${{ needs.select.outputs.base_sha }}",
+        "simulation-wheel-head-${{ needs.select.outputs.head_sha }}",
+    ]
+    assert "maturin build" not in _run_commands(comparison)
+    assert "simulation_perf_artifact.py verify" in _run_commands(comparison)
+    assert 'git merge-base "${PR_HEAD_SHA}" "${base_tip}"' in commands
+    assert 'base_sha="${PR_HEAD_SHA}"' in commands
+    assert "PROTOCOL_VERSION" in commands
+    assert "**INVALID_COMPARISON**" in commands
+    assert "was not benchmarked" in commands
+    commands = _run_commands(comparison)
+    assert "repetitions=3" in commands
+    assert "${BASE_SRC}/python/aisimulate/tools/simulation_perf_gate/run.py" in commands
+    assert "${HEAD_SRC}/python/aisimulate/tools/simulation_perf_gate/run.py" in commands
+    assert "${BASE_SRC}/python/aisimulate/tools/simulation_perf_gate/worker.py" in commands
+    assert "${HEAD_SRC}/python/aisimulate/tools/simulation_perf_gate/worker.py" in commands
+
+
+@pytest.mark.parametrize(
+    "path,expected",
+    [
+        ("crates/core/src/replay/loadgen/weka.rs", True),
+        ("crates/core/src/engine/scheduler/vllm/core.rs", True),
+        ("python/aisimulate/src/aisimulate/traffic.py", True),
+        ("python/aisimulate/src/aisimulate/compiler.py", True),
+        ("python/aisimulate/src/aisimulate_core/systems/data/b200_sxm/gemm/vllm/0.24.0/gemm_perf.parquet", True),
+        ("python/aisimulate/tools/simulation_perf_gate/fixtures/agentx.jsonl", True),
+        ("python/aisimulate/uv.lock", True),
+        ("python/aisimulate/tools/simulation_perf_gate/README.md", False),
+        ("python/aisimulate/tools/forward_perf_gate/run.py", False),
+        ("docs/cli/user-guide.md", False),
+    ],
+)
+def test_simulation_performance_selects_complete_pr_files(path, expected):
+    from scripts import select_simulation_perf
+
+    pull = {"head": {"sha": "a" * 40}, "base": {"sha": "b" * 40, "ref": "main"}, "changed_files": 1}
+
+    def api(endpoint):
+        return [[{"filename": path}]] if "/files?" in endpoint else [pull]
+
+    selected = select_simulation_perf.select_comparison(
+        "owner/repo", "push", "refs/heads/pull-request/1", "a" * 40, api=api
+    )
+    assert selected["run_comparison"] == str(expected).lower()
+
+
+@pytest.mark.parametrize(
+    "path,expected",
+    [
+        ("contract.py", True),
+        ("worker.py", True),
+        ("fixtures/agentx.jsonl", True),
+        ("README.md", False),
+        ("QUALIFICATION.md", False),
+        ("fixtures/README.md", False),
+        ("fixtures/LICENSE", False),
+        ("fixtures/DATASET_CARD.md", False),
+    ],
+)
+def test_simulation_perf_controller_change_detection(tmp_path, path, expected):
+    steps = _workflow("simulation-performance.yml")["jobs"]["select"]["steps"]
+    revisions = next(step for step in steps if step.get("id") == "revisions")["run"]
+    detection = "controller_changes=" + revisions.split("controller_changes=", 1)[1].split('echo "base_sha=', 1)[0]
+    gate = "python/aisimulate/tools/simulation_perf_gate"
+    _git(tmp_path, "init", "--quiet")
+    base = _commit_file(tmp_path, "base", "base\n")
+    # A runtime change selects the normal comparison; only benchmark code/input
+    # changes should add a second run using the head controller.
+    runtime = "crates/core/src/replay.rs"
+    (tmp_path / runtime).parent.mkdir(parents=True)
+    _commit_file(tmp_path, runtime, "changed\n")
+    changed = f"{gate}/{path}"
+    (tmp_path / changed).parent.mkdir(parents=True, exist_ok=True)
+    head = _commit_file(tmp_path, changed, "changed\n")
+    output = tmp_path / "output"
+    subprocess.run(
+        ["bash", "-euc", detection],
+        cwd=tmp_path,
+        check=True,
+        env={
+            **os.environ,
+            "base_sha": base,
+            "PR_HEAD_SHA": head,
+            "gate_path": gate,
+            "GITHUB_OUTPUT": str(output),
+        },
+    )
+    assert output.read_text() == f"validate_head_controller={str(expected).lower()}\n"
+
+
+@pytest.mark.parametrize("scenario", ["normal", "self", "missing_base", "missing_head", "mixed", "malformed"])
+def test_simulation_perf_revision_preparation(tmp_path, scenario):
+    steps = _workflow("simulation-performance.yml")["jobs"]["select"]["steps"]
+    script = next(step["run"] for step in steps if step.get("id") == "revisions")
+    _git(tmp_path, "init", "--quiet")
+    gate = tmp_path / "python/aisimulate/tools/simulation_perf_gate"
+    (gate / "fixtures").mkdir(parents=True)
+    for name in ("cases.py", "compare.py", "contract.py", "run.py", "worker.py", "fixtures/agentx.jsonl"):
+        (gate / name).write_text("fixture\n")
+    (gate / "__init__.py").write_text("PROTOCOL_VERSION = 3\n")
+    if scenario == "missing_base":
+        (gate / "worker.py").unlink()
+    _git(tmp_path, "add", ".")
+    base = _commit_file(tmp_path, "base", "base\n")
+    _git(tmp_path, "update-ref", "refs/remotes/origin/main", base)
+    if scenario == "missing_base":
+        (gate / "worker.py").write_text("fixture\n")
+    elif scenario == "missing_head":
+        (gate / "worker.py").unlink()
+    elif scenario in {"mixed", "malformed"}:
+        (gate / "__init__.py").write_text("PROTOCOL_VERSION = " + ("2" if scenario == "mixed" else "None") + "\n")
+    _git(tmp_path, "add", ".")
+    head = _commit_file(tmp_path, "head", "head\n")
+    output, summary = tmp_path / "output", tmp_path / "summary"
+    result = subprocess.run(
+        ["bash", "-euc", script],
+        cwd=tmp_path,
+        text=True,
+        capture_output=True,
+        env={
+            **os.environ,
+            "PR_HEAD_SHA": head,
+            "BASE_REF": "main",
+            "SELF_COMPARE": str(scenario == "self").lower(),
+            "GITHUB_OUTPUT": str(output),
+            "GITHUB_STEP_SUMMARY": str(summary),
+        },
+    )
+    outputs = dict(line.split("=", 1) for line in output.read_text().splitlines())
+    if scenario in {"normal", "self"}:
+        assert result.returncode == 0, result.stderr
+        assert outputs["run_comparison"] == "true"
+        assert outputs["base_sha"] == (head if scenario == "self" else base)
+        assert outputs["validate_head_controller"] == "false"
+    else:
+        assert outputs["run_comparison"] == "false"
+        assert result.returncode == (0 if scenario == "missing_base" else 1)
+        assert ("was not benchmarked" if scenario == "missing_base" else "INVALID_COMPARISON") in summary.read_text()
+
+
+@pytest.mark.parametrize("self_compare,fail_first,count", [(False, False, 1), (True, False, 3), (True, True, 3)])
+def test_simulation_perf_invocations(tmp_path, self_compare, fail_first, count):
+    bash = shutil.which("bash")
+    if bash is None or subprocess.run([bash, "-uc", 'args=(); : "${args[@]}"'], capture_output=True).returncode:
+        pytest.skip("workflow invocation test requires Bash with empty-array support under set -u")
+    steps = _workflow("simulation-performance.yml")["jobs"]["compare"]["steps"]
+    script = next(step["run"] for step in steps if step.get("name") == "Run paired benchmark")
+    python = tmp_path / "venv/bin/python"
+    python.parent.mkdir(parents=True)
+    python.write_text(
+        '#!/bin/bash\nprintf "%s\\n" "$*" >> "$CALLS"\n'
+        'if [[ "$FAIL_FIRST" == true && $(wc -l < "$CALLS") -eq 1 ]]; then exit 1; fi\n'
+    )
+    python.chmod(0o755)
+    calls = tmp_path / "calls"
+    result = subprocess.run(
+        [bash, "-euc", script],
+        text=True,
+        capture_output=True,
+        env={
+            **os.environ,
+            "BASE_VENV": str(python.parents[1]),
+            "HEAD_VENV": "/head-venv",
+            "BASE_SRC": "/base-src",
+            "HEAD_SRC": "/head-src",
+            "BASE_SHA": "base",
+            "HEAD_SHA": "head",
+            "RESULTS_DIR": "/results",
+            "SELF_COMPARE": str(self_compare).lower(),
+            "CALLS": str(calls),
+            "FAIL_FIRST": str(fail_first).lower(),
+        },
+    )
+    assert result.returncode == int(fail_first), result.stderr
+    invocations = calls.read_text().splitlines()
+    assert len(invocations) == count
+    for attempt, invocation in enumerate(invocations, 1):
+        assert invocation.startswith("/base-src/python/aisimulate/tools/simulation_perf_gate/run.py ")
+        assert "--base-worker /base-src/python/aisimulate/tools/simulation_perf_gate/worker.py" in invocation
+        assert "--head-worker /head-src/python/aisimulate/tools/simulation_perf_gate/worker.py" in invocation
+        assert ("--qualification" in invocation) == self_compare
+        assert (
+            f"--output-dir /results/qualification-{attempt}" in invocation
+            if self_compare
+            else "--output-dir /results" in invocation
+        )
+
+
+@pytest.mark.parametrize("fault", [None, "revision", "side", "wheel", "requirements", "extra_wheel"])
+def test_simulation_perf_artifact_verification(tmp_path, fault):
+    from scripts.simulation_perf_artifact import sha256, verify
+
+    wheel = tmp_path / "aisimulate-test.whl"
+    wheel.write_bytes(b"built wheel")
+    requirements = tmp_path / "requirements.txt"
+    requirements.write_text("locked\n")
+    manifest = {
+        "side": "base",
+        "source_sha": "a" * 40,
+        "files": {path.name: sha256(path) for path in (wheel, requirements)},
+    }
+    if fault == "revision":
+        manifest["source_sha"] = "b" * 40
+    elif fault == "side":
+        manifest["side"] = "head"
+    elif fault == "wheel":
+        wheel.write_bytes(b"wrong wheel")
+    elif fault == "requirements":
+        requirements.write_text("wrong dependencies\n")
+    elif fault == "extra_wheel":
+        (tmp_path / "aisimulate-other.whl").write_bytes(b"another wheel")
+    (tmp_path / "provenance.json").write_text(json.dumps(manifest))
+    if fault:
+        with pytest.raises(ValueError):
+            verify(tmp_path, "base", "a" * 40)
+    else:
+        assert verify(tmp_path, "base", "a" * 40) == manifest

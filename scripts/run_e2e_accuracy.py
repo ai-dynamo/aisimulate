@@ -220,7 +220,8 @@ def replay_spec(request, backend_version: str):
             "max_num_seqs": max(256, request.workload.concurrency),
             "max_num_batched_tokens": 8192,
             "enable_prefix_caching": False,
-            "aic_forward_model": "op_level",
+            # Both legacy releases and current runners default to op-level timing.
+            # Legacy native engines reject the newer aic_forward_model selector.
         }
         for name in ("moe_tp_size", "moe_ep_size"):
             if getattr(worker, name) is not None:

@@ -132,7 +132,7 @@ candidate-relative KV load, and searched load domains. Analytical EPD supports c
 
 In the CLI, use `optimization.target: min_gpus` and
 `optimization.constraints.min_goodput_rps`; SLA remains under `evaluation.sla`. See the
-[minimum-GPU example](../cli/migrate-from-aiconfigurator.md#minimum-gpu-sizing).
+[minimum-GPU migration mapping](../MIGRATION.md#traffic-parallelism-and-minimum-gpus).
 
 ## Pareto
 

@@ -280,3 +280,11 @@ python -m http.server 8000 --bind 127.0.0.1 --directory /tmp/aisim-site
 
 Open `http://127.0.0.1:8000/e2e-accuracy/`. Serving the source documentation tree
 directly also works, with a single snapshot when `branches.json` is absent.
+
+### Release replay compatibility
+
+The shared evaluator uses the default op-level timing in both legacy release
+wheels and current runners. It omits the newer `aic_forward_model` engine
+argument because release/0.12.0 and release/0.12.1 do not accept that field.
+Validate evaluator changes against actual release wheels as well as main;
+a successful main-only campaign does not establish release compatibility.

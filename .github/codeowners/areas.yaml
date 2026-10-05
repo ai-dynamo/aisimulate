@@ -69,6 +69,7 @@ areas:
       - tests/test_afd_*.py
       - tests/golden/afd-*
       - tests/test_g3_offload_cli.py
+      - tests/test_shared_g2_cli.py
       - tests/test_runner.py
       - tests/test_traffic.py
       - tests/e2e/
@@ -116,6 +117,8 @@ shared:
     owners: [replay, mocker, maintainers]
   - glob: .claude/skills/aisimulate-replay-performance
     owners: [replay, mocker, maintainers]
+  - glob: python/aisimulate/tools/simulation_perf_gate/
+    owners: [replay, forward-pass-engine, infra, maintainers]
   - glob: pages/
     owners: [forward-pass-engine, infra, maintainers]
   - glob: tests/fpm_accuracy/
@@ -239,6 +242,8 @@ shared:
   - glob: tests/golden/afd-*
     owners: [replay, sweeper, forward-pass-engine, maintainers]
   - glob: tests/test_g3_offload_cli.py
+    owners: [replay, maintainers]
+  - glob: tests/test_shared_g2_cli.py
     owners: [replay, maintainers]
   - glob: tests/test_runner.py
     owners: [replay, maintainers]

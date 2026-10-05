@@ -14,12 +14,12 @@ use crate::engine::{
 use crate::perfmodel::engine::{Engine as PerfEngine, RuntimeConfig};
 use crate::replay::{
     POWER_DATA_COVERAGE_THRESHOLD, ReplayArtifactKvEventVisibility, ReplayArtifacts,
-    ReplayEngineConfig, ReplayEngineFactory, ReplayOperationPowerDiagnostics,
-    ReplayPhasePowerDiagnostics, ReplayPowerDiagnostics, ReplayRoleConfig, ReplayRuntimeInput,
-    ReplaySpec, ReplayTopology, Replayer, TracePowerStats,
+    ReplayCaptureOptions, ReplayDeterminism, ReplayEngineConfig, ReplayEngineFactory,
+    ReplayOperationPowerDiagnostics, ReplayPhasePowerDiagnostics, ReplayPowerDiagnostics,
+    ReplayRoleConfig, ReplayRuntimeInput, ReplaySpec, ReplayTopology, Replayer, TracePowerStats,
     loadgen::{
-        AgenticSnapshotOptions, ArrivalSpec, DelaySpec, DynamoRequestTrace, LengthSpec,
-        SyntheticTraceSpec, Trace, ValidatedAgenticGraph, WekaImportOptions,
+        AgenticProfileOptions, AgenticSnapshotOptions, ArrivalSpec, DelaySpec, DynamoRequestTrace,
+        LengthSpec, SyntheticTraceSpec, Trace, ValidatedAgenticGraph, WekaImportOptions,
         WekaNestedTimestampBasis, WekaResolvedTimestampBasis, WorkloadDriver,
         load_agentic_mooncake, load_weka_agentic_graph_with_options,
     },
@@ -43,6 +43,8 @@ enum ExecutionPayload {
         traffic: Option<Box<RuntimeTraffic>>,
         #[serde(default)]
         capture_performance_diagnostics: bool,
+        #[serde(default)]
+        determinism: ReplayDeterminism,
     },
     Legacy(ReplaySpec),
 }
@@ -77,6 +79,8 @@ struct RuntimeTraffic {
     agentic_snapshot: Option<AgenticSnapshotOptions>,
     #[serde(default)]
     agentic_warmup: bool,
+    #[serde(default)]
+    agentic_profile: Option<AgenticProfileOptions>,
     #[serde(default)]
     isl: Option<usize>,
     #[serde(default)]
@@ -177,6 +181,10 @@ struct AicTimingConfig {
     moe_tp_size: Option<u32>,
     #[serde(default)]
     moe_ep_size: Option<u32>,
+    /// Prefill context parallelism (SGLang attn-cp / vLLM PCP): folds into the
+    /// attention width like attention_dp. `None` means 1.
+    #[serde(default)]
+    cp_size: Option<u32>,
     #[serde(default, alias = "gemm_quant_mode")]
     gemm_dtype: Option<String>,
     #[serde(default, alias = "moe_quant_mode")]
@@ -322,6 +330,7 @@ impl AicTimingConfig {
             dcp: self.dcp,
             moe_tp_size: self.moe_tp_size,
             moe_ep_size: self.moe_ep_size,
+            cp_size: self.cp_size,
             gemm_quant_mode: self.gemm_dtype.clone(),
             moe_quant_mode: self.moe_dtype.clone(),
             fmha_quant_mode: self.fmha_dtype.clone(),
@@ -414,9 +423,11 @@ impl AicTimingConfig {
                 && self.pp > 0
                 && self.attention_dp > 0
                 && self.moe_tp_size != Some(0)
-                && self.moe_ep_size != Some(0),
-            "AIC timing parallel sizes tp, pp, attention_dp, moe_tp_size, and \
-             moe_ep_size must be positive"
+                && self.moe_ep_size != Some(0)
+                && self.cp_size != Some(0)
+                && self.dcp != Some(0),
+            "AIC timing parallel sizes tp, pp, attention_dp, moe_tp_size, \
+             moe_ep_size, cp_size, and dcp must be positive"
         );
         ensure!(self.nextn <= 5, "AIC nextn must be in 0..=5");
         self.speculative_depth()?;
@@ -425,11 +436,15 @@ impl AicTimingConfig {
             "AIC moe_tp_size and moe_ep_size must be configured together"
         );
         if let (Some(moe_tp), Some(moe_ep)) = (self.moe_tp_size, self.moe_ep_size) {
+            // Prefill CP widens the attention side (mirrors ModelConfig's
+            // `tp * attention_dp * cp == moe_tp * moe_ep`); decode CP reuses
+            // ranks inside the attention group and is deliberately absent.
+            let cp = u64::from(self.cp_size.unwrap_or(1));
             ensure!(
                 self.fpm_profile.is_some()
-                    || u64::from(self.tp) * u64::from(self.attention_dp)
+                    || u64::from(self.tp) * u64::from(self.attention_dp) * cp
                         == u64::from(moe_tp) * u64::from(moe_ep),
-                "AIC topology requires tp * attention_dp == moe_tp_size * moe_ep_size"
+                "AIC topology requires tp * attention_dp * cp_size == moe_tp_size * moe_ep_size"
             );
         }
         Ok(())
@@ -963,6 +978,9 @@ fn aic_capacity_kwargs<'py>(
     kwargs.set_item("attention_dp_size", config.attention_dp)?;
     kwargs.set_item("moe_tp_size", config.moe_tp_size)?;
     kwargs.set_item("moe_ep_size", config.moe_ep_size)?;
+    kwargs.set_item("cp_size", config.cp_size.unwrap_or(1))?;
+    // Capacity estimation prices the 1/dcp KV stripe; unrecorded DCP is 1.
+    kwargs.set_item("dcp_size", config.dcp.unwrap_or(1))?;
     kwargs.set_item("gemm_quant_mode", config.gemm_dtype.as_deref())?;
     kwargs.set_item("moe_quant_mode", config.moe_dtype.as_deref())?;
     kwargs.set_item("fmha_quant_mode", config.fmha_dtype.as_deref())?;
@@ -1126,10 +1144,6 @@ fn materialize_aic_capacity(
     if capacity_is_explicit || role.rank.state_cache.is_some() {
         return Ok(());
     }
-    ensure!(
-        config.dcp.is_none_or(|dcp| dcp == 1),
-        "DCP FPM replay requires explicit KV block capacity; automatic DCP/hybrid sizing is unsupported"
-    );
     let blocks = estimate(config, role)?;
     ensure!(blocks > 0, "AIC estimated zero KV-cache blocks");
     role.rank.num_gpu_blocks = blocks;
@@ -1414,11 +1428,15 @@ fn build_agentic_driver(
             .context("agentic_snapshot requires positive agentic_lanes")?;
         // Sample recorded time before applying speedup to remaining timers.
         let prepared = graph.prepare_snapshots(lanes, *options)?;
-        if traffic.agentic_warmup {
+        let mut driver = if traffic.agentic_warmup {
             WorkloadDriver::new_agentic_warmup(prepared, engine_block_size, true, speedup)
         } else {
             WorkloadDriver::new_agentic_snapshots(prepared, engine_block_size, true, speedup)
+        }?;
+        if let Some(profile) = &traffic.agentic_profile {
+            driver.enable_agentic_profile(profile.clone())?;
         }
+        Ok(driver)
     } else {
         WorkloadDriver::new_agentic_trace_with_options(
             graph.normalize_starts().speed_up_timing(speedup)?,
@@ -1434,6 +1452,17 @@ fn build_runtime_input(
     engine_block_size: usize,
 ) -> Result<BuiltRuntimeInput> {
     ensure!(engine_block_size > 0, "engine block size must be positive");
+    if let Some(profile) = &traffic.agentic_profile {
+        profile.validate()?;
+        ensure!(
+            traffic.agentic_snapshot.is_some(),
+            "agentic_profile requires agentic_snapshot"
+        );
+        ensure!(
+            traffic.max_sim_time_ms.is_none(),
+            "agentic_profile cannot be combined with max virtual time"
+        );
+    }
     ensure!(
         !traffic.agentic_warmup || traffic.agentic_snapshot.is_some(),
         "agentic_warmup requires agentic_snapshot"
@@ -1663,11 +1692,16 @@ fn run_with_input(
     factory: ReplayEngineFactory,
     input: Option<ReplayRuntimeInput>,
     capture_artifacts: bool,
+    determinism: ReplayDeterminism,
 ) -> crate::replay::ReplayResult<(crate::replay::ReplayReport, Option<ReplayArtifacts>)> {
     let replayer = match input {
         Some(input) => Replayer::new(spec, factory)?.with_runtime_input(input),
         None => Replayer::new(spec, factory)?,
-    };
+    }
+    .with_capture_options(ReplayCaptureOptions {
+        determinism,
+        ..ReplayCaptureOptions::default()
+    });
     if capture_artifacts {
         let (report, artifacts) =
             replayer.run_with_artifacts(ReplayArtifactKvEventVisibility::Native)?;
@@ -2142,15 +2176,28 @@ fn replay_fpm_coverage(
 }
 
 fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
-    let (mut spec, mut traffic, capture_performance_diagnostics) =
+    let (mut spec, mut traffic, capture_performance_diagnostics, determinism) =
         match serde_json::from_str(payload).context("invalid AISimulate execution ReplaySpec")? {
             ExecutionPayload::Configured {
                 spec,
                 traffic,
                 capture_performance_diagnostics,
-            } => (spec, traffic.map(|t| *t), capture_performance_diagnostics),
-            ExecutionPayload::Legacy(spec) => (spec, None, false),
+                determinism,
+            } => (
+                spec,
+                traffic.map(|t| *t),
+                capture_performance_diagnostics,
+                determinism,
+            ),
+            ExecutionPayload::Legacy(spec) => (spec, None, false, ReplayDeterminism::default()),
         };
+    ensure!(
+        spec.max_sim_time_ms.is_none()
+            || traffic
+                .as_ref()
+                .is_none_or(|traffic| traffic.agentic_profile.is_none()),
+        "agentic_profile cannot be combined with ReplaySpec.max_sim_time_ms"
+    );
     let agentic_input = traffic.as_ref().and_then(|traffic| {
         traffic
             .trace_format
@@ -2238,7 +2285,7 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
                 ReplayEngineFactory::new,
                 ReplayEngineFactory::with_timing_model,
             );
-            run_with_input(spec, factory, input, capture_artifacts)
+            run_with_input(spec, factory, input, capture_artifacts, determinism)
                 .map(|(report, artifacts)| (report, artifacts, resolved_basis))
         }
         ReplayTopology::Disaggregated { .. } => {
@@ -2364,6 +2411,7 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
                 ),
                 input,
                 capture_artifacts,
+                determinism,
             )
             .map(|(report, artifacts)| (report, artifacts, resolved_basis))
         }
@@ -2637,6 +2685,97 @@ mod tests {
                 .unwrap()
                 .to_string()
                 .contains("agentic_warmup requires agentic_snapshot")
+        );
+    }
+
+    #[test]
+    fn profile_options_are_opt_in_and_strict_at_the_native_boundary() {
+        let base = serde_json::json!({
+            "source_type": "trace", "load_type": "trace_timestamps",
+            "trace_path": "unused", "trace_format": "weka", "agentic_lanes": 1,
+            "agentic_snapshot": {"seed": 42},
+        });
+        assert!(
+            serde_json::from_value::<RuntimeTraffic>(base.clone())
+                .unwrap()
+                .agentic_profile
+                .is_none()
+        );
+        let mut traffic = base.clone();
+        traffic["agentic_profile"] = serde_json::json!({});
+        let profile = serde_json::from_value::<RuntimeTraffic>(traffic.clone())
+            .unwrap()
+            .agentic_profile
+            .unwrap();
+        assert_eq!(profile.duration_seconds, 3600.0);
+        assert_eq!(profile.response_grace_seconds, 30.0);
+        assert_eq!(profile.cancel_drain_seconds, 10.0);
+        assert_eq!(profile.tree_idle_cap_seconds, 300.0);
+        assert_eq!(profile.global_idle_cap_seconds, 10.0);
+        for invalid in [
+            serde_json::json!(true),
+            serde_json::json!({"duration_seconds": true}),
+            serde_json::json!({"duration_seconds": "1"}),
+            serde_json::json!({"unexpected": 1}),
+        ] {
+            traffic["agentic_profile"] = invalid;
+            assert!(serde_json::from_value::<RuntimeTraffic>(traffic.clone()).is_err());
+        }
+        for invalid in [
+            serde_json::json!({"duration_seconds": 0}),
+            serde_json::json!({"response_grace_seconds": -1}),
+            serde_json::json!({"cancel_drain_seconds": -1}),
+            serde_json::json!({"tree_idle_cap_seconds": 0}),
+            serde_json::json!({"global_idle_cap_seconds": 0}),
+        ] {
+            traffic["agentic_profile"] = invalid;
+            let traffic = serde_json::from_value::<RuntimeTraffic>(traffic.clone()).unwrap();
+            assert!(
+                build_runtime_input(traffic, 64)
+                    .err()
+                    .unwrap()
+                    .to_string()
+                    .contains("agentic_profile")
+            );
+        }
+        for (field, value, message) in [
+            (
+                "agentic_snapshot",
+                serde_json::Value::Null,
+                "requires agentic_snapshot",
+            ),
+            (
+                "max_sim_time_ms",
+                serde_json::json!(1.0),
+                "cannot be combined",
+            ),
+        ] {
+            let mut traffic = base.clone();
+            traffic["agentic_profile"] = serde_json::json!({});
+            traffic[field] = value;
+            let traffic = serde_json::from_value::<RuntimeTraffic>(traffic).unwrap();
+            assert!(
+                build_runtime_input(traffic, 64)
+                    .err()
+                    .unwrap()
+                    .to_string()
+                    .contains(message)
+            );
+        }
+        let payload = serde_json::json!({
+            "spec": {
+                "version": 1,
+                "topology": {"kind": "aggregated", "workers": {"initial_workers": 1}},
+                "max_sim_time_ms": 1.0,
+                "requests": []
+            },
+            "traffic": {"agentic_profile": {}, "source_type": "trace"}
+        });
+        assert!(
+            execute_json(&payload.to_string(), false)
+                .unwrap_err()
+                .to_string()
+                .contains("agentic_profile cannot be combined with ReplaySpec.max_sim_time_ms")
         );
     }
 
@@ -3234,6 +3373,24 @@ mod tests {
     }
 
     #[test]
+    fn estimator_request_carries_both_context_parallel_knobs() {
+        // The native estimator path builds the engine from this request, so a
+        // dropped knob would silently price a dcp=1 engine for a dcp=8 worker.
+        let mut config = aic_config();
+        config.cp_size = Some(2);
+        config.dcp = Some(4);
+        let request = config
+            .estimator_request(ForwardPassWorkerType::Aggregated)
+            .unwrap();
+        assert_eq!(request.cp_size, Some(2));
+        assert_eq!(request.dcp, Some(4));
+        let unset = aic_config()
+            .estimator_request(ForwardPassWorkerType::Aggregated)
+            .unwrap();
+        assert_eq!((unset.cp_size, unset.dcp), (None, None));
+    }
+
+    #[test]
     fn canonical_and_legacy_default_selection_are_distinct() {
         let mut config = aic_config();
         assert_eq!(
@@ -3314,6 +3471,7 @@ mod tests {
             dcp: None,
             moe_tp_size: None,
             moe_ep_size: None,
+            cp_size: None,
             gemm_dtype: None,
             moe_dtype: None,
             fmha_dtype: None,
@@ -3349,6 +3507,26 @@ mod tests {
             fpm_parquet_path: None,
             decoder_replay: false,
         }
+    }
+
+    #[test]
+    fn parallel_shape_folds_prefill_cp_but_not_decode_cp_into_width() {
+        let mut config = aic_config();
+        config.tp = 1;
+        config.attention_dp = 1;
+        config.moe_tp_size = Some(1);
+        config.moe_ep_size = Some(8);
+        // Prefill CP widens the attention side to match the MoE width ...
+        config.cp_size = Some(8);
+        config.dcp = Some(8);
+        config.validate_parallel_shape().unwrap();
+        // ... decode CP does not: without prefill CP the widths no longer match.
+        config.cp_size = None;
+        assert!(config.validate_parallel_shape().is_err());
+        // Zero is rejected like every other parallel size.
+        config.cp_size = Some(8);
+        config.dcp = Some(0);
+        assert!(config.validate_parallel_shape().is_err());
     }
 
     #[test]
@@ -3451,7 +3629,10 @@ mod tests {
     }
 
     #[test]
-    fn dcp_capacity_requires_explicit_blocks() {
+    fn dcp_capacity_is_estimated_on_the_kv_stripe() {
+        // The KV-capacity estimator prices the 1/dcp stripe (memory.py's
+        // `_cp_kv_memory_divisor`), so automatic sizing stays available under
+        // DCP; explicit capacity still bypasses the estimator.
         let mut config = aic_config();
         config.tp = 4;
         config.dcp = Some(4);
@@ -3459,22 +3640,15 @@ mod tests {
         role.tensor_parallel_size = 4;
         role.rank.num_gpu_blocks = 17;
 
-        let error = materialize_aic_capacity(&config, &mut role, false, |_, _| {
-            panic!("DCP must be rejected before estimating capacity")
-        })
-        .unwrap_err();
-        assert!(error.to_string().contains("explicit KV block capacity"));
-        assert_eq!(role.rank.num_gpu_blocks, 17);
+        materialize_aic_capacity(&config, &mut role, false, |_, _| Ok(4 * 321)).unwrap();
+        assert_eq!(role.rank.num_gpu_blocks, 4 * 321);
 
+        role.rank.num_gpu_blocks = 17;
         materialize_aic_capacity(&config, &mut role, true, |_, _| {
             panic!("explicit DCP capacity must not invoke the estimator")
         })
         .unwrap();
         assert_eq!(role.rank.num_gpu_blocks, 17);
-
-        config.dcp = Some(1);
-        materialize_aic_capacity(&config, &mut role, false, |_, _| Ok(321)).unwrap();
-        assert_eq!(role.rank.num_gpu_blocks, 321);
     }
 
     #[test]

@@ -29,7 +29,7 @@ of a replay. Sweeper imports a provider only when its adapter name appears in th
 - [AFD Topology Contract](afd-topology.md) defines Attention-FFN parallel shapes, validation, and
   complete topology enumeration.
 - [Results](results.md) describes `ReplaySpec`, the `SweepResult` envelope, and candidate records.
-- [Migrate from AIConfigurator](../cli/migrate-from-aiconfigurator.md) maps legacy Sweeper inputs to
+- [Migrate from AIConfigurator](../MIGRATION.md) maps legacy Sweeper inputs to
   the standalone configuration and execution workflow.
 - [Sweep Configuration Providers](sweep-config-provider.md) documents the extension ABI.
 - [Dynamo Integration](https://github.com/ai-dynamo/dynamo/blob/main/docs/fern/pages/developer-guide/knowledge-base/modular-components/ai-simulate-experimental/sweeper-experimental/dynamo-integration.md)

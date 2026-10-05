@@ -19,12 +19,14 @@ use crate::engine::common::speculative::{
 use crate::engine::common::utils::{
     compute_prefill_handoff_delay_ms, prefill_handoff_transfer_timing,
 };
+use crate::engine::host_offload::G2Binding;
 use crate::engine::kv_manager::AllocationRequirement;
 use crate::engine::kv_manager::{DestinationReservation, G1Acquire, NativeAllocation};
 use crate::engine::kv_manager::{G1Manager, GroupedKvPool};
 use crate::engine::scheduler::queue_metrics::{QueueStats, QueuedLength};
 use crate::engine::scheduler::vllm::host_offload::{
-    CompletedLoad, HostLookup, StartLoad, VllmHostOffloadAdapter, VllmHostRequestState,
+    CompletedLoad, HostLookup, HostTransferProgress, StartLoad, VllmHostOffloadAdapter,
+    VllmHostRequestState,
 };
 use crate::engine::scheduler::vllm::policy::{self, AdmissionDecision, PolicySequence};
 use crate::engine::scheduler::vllm::request::RequestKvState;
@@ -37,8 +39,8 @@ use crate::engine::scheduler::{
 };
 use crate::engine::trace::TraceCollector;
 use crate::engine::{
-    CacheTierAttribution, DecodeAcceptance, HandoffId, PressureEvent, PressureKind, PressureState,
-    modeled_duration_ms,
+    CacheTierAttribution, DecodeAcceptance, G2Scope, HandoffId, PressureEvent, PressureKind,
+    PressureState, modeled_duration_ms,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -429,6 +431,11 @@ impl SchedulerState {
         }
     }
 
+    fn has_materialized_waiting(&mut self) -> bool {
+        self.compact_materialized_waiting_front();
+        !self.materialized_waiting.is_empty()
+    }
+
     fn next_waiting_uuid(
         &mut self,
         prefer_materialized: bool,
@@ -641,6 +648,8 @@ pub(crate) struct VllmCore {
     retain_local_hashes: bool,
     emit_token_ids: bool,
     native_host_offload: Option<VllmHostOffloadAdapter>,
+    /// A host transfer completed while destinations were deferred.
+    destination_retry_ready: bool,
     wave_step: u64,
     attention_dp_size: u32,
     prefill_capacity_bound: bool,
@@ -753,12 +762,12 @@ impl VllmCore {
 
     #[cfg(test)]
     pub(crate) fn new(args: MockEngineArgs) -> Self {
-        Self::new_internal(args, 0, 0, None, KvEventPublishers::default())
+        Self::new_internal(args, 0, 0, None, KvEventPublishers::default(), None).unwrap()
     }
 
     #[cfg(test)]
     pub(crate) fn new_with_kv_capture(args: MockEngineArgs, worker_id: u64) -> Self {
-        Self::new_with_worker_rank(args, worker_id, 0, worker_id, true)
+        Self::new_with_worker_rank(args, worker_id, 0, worker_id, true, None).unwrap()
     }
 
     pub(crate) fn new_with_worker_rank(
@@ -767,14 +776,15 @@ impl VllmCore {
         dp_rank: u32,
         seed_offset: u64,
         capture_kv_events: bool,
-    ) -> Self {
+        g2_binding: Option<&G2Binding>,
+    ) -> anyhow::Result<Self> {
         let (buffer, publishers) = if capture_kv_events {
             let (buffer, sink) = capture_kv_event_sink();
             (Some(buffer), KvEventPublishers::new(Some(sink)))
         } else {
             (None, KvEventPublishers::default())
         };
-        Self::new_internal(args, dp_rank, seed_offset, buffer, publishers)
+        Self::new_internal(args, dp_rank, seed_offset, buffer, publishers, g2_binding)
     }
 
     fn new_internal(
@@ -783,13 +793,21 @@ impl VllmCore {
         seed_offset: u64,
         kv_event_buffer: Option<CapturedKvEventBuffer>,
         kv_event_publishers: KvEventPublishers,
-    ) -> Self {
+        g2_binding: Option<&G2Binding>,
+    ) -> anyhow::Result<Self> {
         let kv_event_publishers = if args.enable_prefix_caching {
             kv_event_publishers
         } else {
             KvEventPublishers::default()
         };
-        let retain_local_hashes = !kv_event_publishers.is_empty() || args.emit_kv_events;
+        // A shared pool publishes its residency to subscribed peers, which
+        // need each block's router identity whichever rank stored it.
+        let retain_local_hashes = !kv_event_publishers.is_empty()
+            || args.emit_kv_events
+            || args
+                .native_host_offload
+                .as_ref()
+                .is_some_and(|host| host.scope == G2Scope::ClusterShared);
         let emit_token_ids = args.emit_kv_token_ids;
         let speculative_sampler = args.aic_nextn.map(|nextn| {
             let rates =
@@ -797,15 +815,20 @@ impl VllmCore {
                     .expect("normalized MTP acceptance rates");
             SpeculativeDecodeSampler::new(rates, args.aic_mtp_seed.wrapping_add(seed_offset))
         });
-        let native_host_offload = args.native_host_offload.as_ref().map(|config| {
-            VllmHostOffloadAdapter::new(
-                config,
-                args.block_size,
-                args.kv_cache_bytes_per_token
-                    .expect("validated native host offload requires KV byte geometry"),
-            )
-            .expect("validated native host-offload configuration must construct")
-        });
+        let native_host_offload = args
+            .native_host_offload
+            .as_ref()
+            .map(|config| {
+                VllmHostOffloadAdapter::new(
+                    config,
+                    args.block_size,
+                    args.kv_cache_bytes_per_token
+                        .expect("validated native host offload requires KV byte geometry"),
+                    g2_binding,
+                    !kv_event_publishers.is_empty(),
+                )
+            })
+            .transpose()?;
         let mut kv_manager = G1Manager::new_with_caching(
             args.num_gpu_blocks,
             args.block_size,
@@ -819,6 +842,14 @@ impl VllmCore {
             args.aic_nextn.is_some(),
         )
         .with_prefix_match_unit(args.prefix_match_unit);
+        if native_host_offload
+            .as_ref()
+            .is_some_and(VllmHostOffloadAdapter::is_shared)
+        {
+            // Like Mooncake Store and LMCache MP, a shared-pool store keeps a
+            // reference on the G1 blocks it copies until the copy completes.
+            kv_manager.hold_native_store_sources();
+        }
         if !args.kv_cache_groups.is_empty() {
             kv_manager.set_grouped_cache(GroupedKvPool::new(
                 args.kv_cache_groups.clone(),
@@ -826,7 +857,7 @@ impl VllmCore {
                     .expect("validated grouped cache capacity"),
             ));
         }
-        Self {
+        Ok(Self {
             kv_manager,
             belady_oracle: None,
             args,
@@ -847,10 +878,11 @@ impl VllmCore {
             retain_local_hashes,
             emit_token_ids,
             native_host_offload,
+            destination_retry_ready: false,
             wave_step: 0,
             attention_dp_size: 1,
             prefill_capacity_bound: false,
-        }
+        })
     }
 
     pub(crate) fn prepare_group_pass(&mut self, wave_step: u64, dp_size: u32) {
@@ -1123,6 +1155,7 @@ impl VllmCore {
         &mut self,
         mutation_now_ms: Option<f64>,
     ) -> Vec<SchedulerLifecycleEvent> {
+        self.destination_retry_ready = false;
         let generation = self.capacity_generation;
         let max_num_running = self.args.max_num_seqs.unwrap_or(usize::MAX);
         if self.state.running_members.len() >= max_num_running {
@@ -1181,6 +1214,19 @@ impl VllmCore {
             mutation_now_ms,
         );
         let kv = match reservation {
+            // Never receive handoff KV into capacity whose previous contents
+            // are still being copied to G2 (only a private lane hands such
+            // capacity out); retry when that D2H completes.
+            G1Acquire::Ready(kv)
+                if !self
+                    .kv_manager
+                    .native_destination_pending_dependencies(&kv)
+                    .is_empty() =>
+            {
+                self.kv_manager.cancel_destination(kv);
+                self.pending_destinations.mark_front_attempted(generation);
+                return Vec::new();
+            }
             G1Acquire::Ready(kv) => kv,
             G1Acquire::CapacityExhausted => {
                 self.pending_destinations.mark_front_attempted(generation);
@@ -1350,11 +1396,12 @@ impl VllmCore {
         if let (Some(unit), Some(tokens)) = (self.args.prefix_match_unit, prefix_tokens) {
             sequence.lease.configure_prefix_hashes(&tokens, unit);
         }
-        let host_offload = self.native_host_offload.as_ref().map(|_| {
+        let host_offload = self.native_host_offload.as_ref().map(|adapter| {
             Box::new(VllmHostRequestState::new(
                 &sequence.sequence,
                 &sequence.lease,
                 self.args.block_size,
+                adapter.publishes_residency(),
             ))
         });
         VllmRequestState {
@@ -1473,6 +1520,7 @@ impl VllmCore {
         !self.state.running_members.is_empty()
             || !self.state.waiting_members.is_empty()
             || self.state.has_ready_connector_waiter()
+            || self.destination_retry_ready
     }
 
     #[allow(dead_code)]
@@ -1491,7 +1539,7 @@ impl VllmCore {
     }
 
     pub(crate) fn waiting_for_external_command(&self) -> bool {
-        self.is_empty() && !self.is_drained()
+        self.is_empty() && !self.is_drained() && !self.destination_retry_ready
     }
 
     pub(crate) fn next_internal_deadline_ms(&self) -> Option<f64> {
@@ -1505,10 +1553,7 @@ impl VllmCore {
             return;
         };
         let progress = adapter.advance(&mut self.kv_manager, now_ms);
-        self.activate_completed_loads(progress.completed_loads);
-        if progress.completed_any {
-            self.state.wake_connector_deadline_waiters();
-        }
+        self.apply_host_progress(progress);
     }
 
     pub(crate) fn complete_engine_boundary(&mut self, now_ms: f64) {
@@ -1516,9 +1561,19 @@ impl VllmCore {
             return;
         };
         let progress = adapter.complete_engine_boundary(&mut self.kv_manager, now_ms);
+        self.apply_host_progress(progress);
+    }
+
+    fn apply_host_progress(&mut self, progress: HostTransferProgress) {
         self.activate_completed_loads(progress.completed_loads);
         if progress.completed_any {
             self.state.wake_connector_deadline_waiters();
+            // A completed D2H may have released a deferred destination's
+            // capacity; the next pass boundary retries the reservation.
+            if !self.pending_destinations.is_empty() {
+                self.bump_capacity_generation();
+                self.destination_retry_ready = true;
+            }
         }
     }
 
@@ -1847,10 +1902,21 @@ impl VllmCore {
             // consumed its scheduling budget; lookup itself mutates G2 LRU.
             && (self.native_host_offload.is_none() || token_budget > 0)
         {
+            // A decode worker's activated handoffs already own their KV; a
+            // restore that is waiting for capacity must not starve them. This
+            // is modeled on native FCFS `_select_waiting_queue_for_scheduling`,
+            // which serves `skipped_waiting` (received remote KV) before
+            // `waiting`, and applies only to decode ranks with G2, in either
+            // scope.
+            // Native PRIORITY instead compares the two queue heads by
+            // (priority, arrival); this engine models only FCFS and never
+            // reads request `priority`, so it has no PRIORITY branch.
             let prefer_materialized = matches!(
                 admission.stage_for(false),
                 AdmissionStage::PendingDestinationHead
-            );
+            ) || (self.args.worker_type == WorkerType::Decode
+                && self.native_host_offload.is_some()
+                && self.state.has_materialized_waiting());
             let prioritize_connector_waiting = self.native_host_offload.is_some();
             let g1_owner = g3_epoch_before.and_then(|_| {
                 self.state.connector_waiting.iter().copied().find(|uuid| {
@@ -2217,10 +2283,32 @@ impl VllmCore {
             });
         }
         let end_ms = decode_start_ms + decode_time.as_secs_f64() * 1000.0;
+        if (!scheduled.is_empty() || !output_signals.is_empty())
+            && let Some(adapter) = self.native_host_offload.as_mut()
+        {
+            adapter.note_rank_progress();
+        }
 
         let fpm = self.compute_fpm(&scheduled, (end_ms - now_ms) / 1000.0);
+        // Speculative lookahead reservation may retract decode candidates after
+        // scheduling. Keep already executed prefill, but only count surviving
+        // decode work that actually produced an output token.
+        let mut committed_requests: Vec<_> = scheduled
+            .iter()
+            .filter(|(_, work)| work.prompt_tokens > 0)
+            .map(|(uuid, _)| *uuid)
+            .collect();
+        committed_requests.extend(
+            output_signals
+                .iter()
+                .filter(|signal| signal.token_id.is_some() && scheduled.contains_key(&signal.uuid))
+                .map(|signal| signal.uuid),
+        );
+        committed_requests.sort_unstable();
+        committed_requests.dedup();
         self.state.debug_assert_invariants();
         Ok(EnginePassResult {
+            committed_requests,
             end_ms,
             same_timestamp_retry: if g3_epoch_before.is_some()
                 && end_ms == now_ms
@@ -2350,8 +2438,8 @@ impl VllmCore {
             self.native_host_offload.as_mut(),
             self.state
                 .requests
-                .get(&selected)
-                .and_then(|request| request.host_offload.as_deref()),
+                .get_mut(&selected)
+                .and_then(|request| request.host_offload.as_deref_mut()),
         ) {
             adapter.preempt_request(host);
         }
@@ -4027,5 +4115,392 @@ mod state_cache_tests {
             assert!(core.state.requests.is_empty());
             assert_eq!(core.kv_manager.num_active_blocks(), 0);
         }
+    }
+}
+
+#[cfg(test)]
+mod shared_g2_hold_tests {
+    //! A shared-G2 store holds the G1 blocks it copies until the copy
+    //! completes. Other requests see less free G1, never a pending copy.
+
+    use super::*;
+    use crate::engine::NativeHostOffloadConfig;
+    use crate::engine::host_offload::{G2Binding, G2Registry};
+
+    /// One cluster-shared rank of 4-token blocks moving 1 MB per second to
+    /// host and 1 GB per second back.
+    fn core(num_gpu_blocks: usize, budget: usize) -> VllmCore {
+        let binding = G2Binding {
+            registry: std::sync::Arc::<G2Registry>::default(),
+            tensor_parallel_size: 1,
+        };
+        core_in(&binding, num_gpu_blocks, budget)
+    }
+
+    /// A rank of `binding`'s deployment pool.
+    fn core_in(binding: &G2Binding, num_gpu_blocks: usize, budget: usize) -> VllmCore {
+        let mut host = NativeHostOffloadConfig::new(8)
+            .with_bandwidths(0.001, 1.0)
+            .cluster_shared("tp1");
+        (
+            host.shared_d2h_bandwidth_gbps,
+            host.shared_h2d_bandwidth_gbps,
+        ) = (0.0, 0.0);
+        let args = MockEngineArgs::builder()
+            .num_gpu_blocks(num_gpu_blocks)
+            .block_size(4)
+            .max_num_batched_tokens(Some(budget))
+            .max_num_seqs(Some(4))
+            .kv_cache_bytes_per_token(Some(250_000))
+            .native_host_offload(Some(host))
+            .speedup_ratio(0.0)
+            .build()
+            .unwrap();
+        VllmCore::new_with_worker_rank(args, 0, 0, 0, false, Some(binding)).unwrap()
+    }
+
+    fn submit(
+        core: &mut VllmCore,
+        id: u128,
+        first_token: u32,
+        prompt: u32,
+        outputs: usize,
+    ) -> Uuid {
+        core.receive(DirectRequest {
+            tokens: (first_token..first_token + prompt).collect(),
+            max_output_tokens: outputs,
+            uuid: Some(Uuid::from_u128(id)),
+            arrival_timestamp_ms: Some(0.0),
+            ..Default::default()
+        })
+    }
+
+    /// Run one pass and its boundary.
+    fn run(core: &mut VllmCore, now_ms: f64) -> EnginePassResult {
+        let pass = core.execute_pass(&mut TraceCollector::default(), now_ms);
+        core.complete_engine_boundary(pass.end_ms);
+        pass
+    }
+
+    /// Run one pass; return the requests it completed.
+    fn pass(core: &mut VllmCore, now_ms: f64) -> Vec<Uuid> {
+        run(core, now_ms)
+            .output_signals
+            .iter()
+            .filter(|signal| signal.completed)
+            .map(|signal| signal.uuid)
+            .collect()
+    }
+
+    fn admissions(pass: &EnginePassResult) -> Vec<(Uuid, usize, Option<CacheTierAttribution>)> {
+        pass.admissions
+            .iter()
+            .map(|admission| {
+                (
+                    admission.uuid,
+                    admission.reused_input_tokens,
+                    admission.cache_tier_attribution,
+                )
+            })
+            .collect()
+    }
+
+    /// Two finished single-block requests leave G1 blocks still being copied.
+    fn with_uncopied_sources(core: &mut VllmCore) {
+        for (id, first) in [(1, 1), (2, 5)] {
+            submit(core, id, first, 4, 1);
+            assert_eq!(pass(core, 0.0), [Uuid::from_u128(id)]);
+        }
+    }
+
+    /// Process internal work until `done` holds; return the time reached.
+    fn advance_until(
+        core: &mut VllmCore,
+        mut now_ms: f64,
+        done: impl Fn(&VllmCore) -> bool,
+    ) -> f64 {
+        while !done(core) {
+            now_ms = core.next_internal_deadline_ms().unwrap();
+            core.process_internal_work(now_ms);
+        }
+        now_ms
+    }
+
+    /// Like replay, follow an effect-free pass with the next internal
+    /// deadline; return the first pass that admits a request and its time.
+    fn admit(core: &mut VllmCore, mut now_ms: f64) -> (f64, EnginePassResult) {
+        for _ in 0..8 {
+            let pass = run(core, now_ms);
+            if !pass.admissions.is_empty() {
+                return (now_ms, pass);
+            }
+            now_ms = core.next_internal_deadline_ms().unwrap();
+            core.process_internal_work(now_ms);
+        }
+        panic!("no request was admitted")
+    }
+
+    #[test]
+    fn a_waiting_request_waits_for_held_g1_until_the_copies_complete() {
+        let mut core = core(4, 16);
+        with_uncopied_sources(&mut core);
+        assert_eq!(
+            core.kv_manager.num_active_blocks(),
+            2,
+            "both copies hold G1"
+        );
+        // Three blocks fit only once the copies return their blocks. Both
+        // 1 MB copies start when the second pass ends, at 16.56 ms, and share
+        // the rank's 1 MB/s link.
+        let request = submit(&mut core, 3, 100, 12, 1);
+        let (now_ms, admitted) = admit(&mut core, 0.0);
+        assert_eq!(now_ms, 2016.56216);
+        assert_eq!(admitted.admissions[0].uuid, request);
+        assert_eq!(core.kv_manager.num_active_blocks(), 3);
+    }
+
+    #[test]
+    fn a_held_block_remains_a_g1_prefix_hit() {
+        let mut core = core(4, 16);
+        with_uncopied_sources(&mut core);
+        let request = submit(&mut core, 3, 1, 8, 1);
+        let g1 = CacheTierAttribution {
+            g1_reused_input_tokens: 4,
+            host_reused_input_tokens: 0,
+        };
+        assert_eq!(admissions(&run(&mut core, 0.0)), [(request, 4, Some(g1))]);
+    }
+
+    #[test]
+    fn a_running_request_short_of_g1_preempts_instead_of_waiting_on_a_copy() {
+        let mut core = core(4, 8);
+        with_uncopied_sources(&mut core);
+        // `grows` needs a second block for its second token; the only blocks
+        // not held by copies are its own and the later-admitted `decodes`.
+        let grows = submit(&mut core, 3, 100, 4, 2);
+        let decodes = submit(&mut core, 4, 200, 1, 3);
+        assert_eq!(run(&mut core, 0.0).admissions.len(), 2);
+        assert_eq!(pass(&mut core, 0.0), [grows]);
+        assert_eq!(core.state.preemptions_total, 1);
+        assert!(core.state.waiting_members.contains(&decodes));
+    }
+
+    #[test]
+    fn a_restore_short_of_g1_waits_for_a_copy_and_still_reports_g2() {
+        // A peer rank stores an 8-token prefix in the deployment pool.
+        let binding = G2Binding {
+            registry: std::sync::Arc::<G2Registry>::default(),
+            tensor_parallel_size: 1,
+        };
+        let mut peer = core_in(&binding, 8, 16);
+        let prefix = submit(&mut peer, 10, 100, 8, 1);
+        assert_eq!(pass(&mut peer, 0.0), [prefix]);
+        let stored_ms = advance_until(&mut peer, 0.0, |core| {
+            core.next_internal_deadline_ms().is_none()
+        });
+        // A two-block and a one-block request finish together; sharing the
+        // link, the one-block copy completes a second earlier.
+        let mut core = core_in(&binding, 5, 16);
+        for (id, first, prompt) in [(1, 1, 8), (2, 20, 4)] {
+            submit(&mut core, id, first, prompt, 1);
+            assert_eq!(pass(&mut core, stored_ms), [Uuid::from_u128(id)]);
+        }
+        // Two free blocks cannot hold the three-block restore, so it holds no
+        // G1 and loads nothing until that copy returns its block.
+        let waiting = submit(&mut core, 3, 100, 12, 1);
+        assert!(run(&mut core, stored_ms).admissions.is_empty());
+        assert_eq!(
+            core.state.requests[&waiting]
+                .sequence
+                .num_allocated_tokens(),
+            0
+        );
+        // It loads the 2 MB prefix in 2 ms once that copy completes.
+        let (now_ms, admitted) = admit(&mut core, stored_ms);
+        assert_eq!((stored_ms, now_ms), (2016.622914, 4035.245828));
+        let g2 = CacheTierAttribution {
+            g1_reused_input_tokens: 0,
+            host_reused_input_tokens: 8,
+        };
+        assert_eq!(admissions(&admitted), [(waiting, 8, Some(g2))]);
+    }
+}
+
+#[cfg(test)]
+mod g3_rank_progress_tests {
+    //! A thrashing G3 restore counts rounds only while its rank schedules no
+    //! work and emits no output.
+
+    use super::*;
+    use crate::engine::common::sequence::RequestSequence;
+    use crate::engine::g3_offload::{Direction, G3Tier, SharedG3Tier};
+    use crate::engine::host_offload::HostBlockKey;
+    use crate::engine::{G3OffloadConfig, G3Scope, NativeHostOffloadConfig};
+
+    const BLOCK: usize = 4;
+    const THRASHER: u128 = 1;
+
+    /// Seven prompt blocks restorable only from G3 into a four-block G2.
+    fn thrash_prompt() -> Vec<u32> {
+        (0..31).collect()
+    }
+
+    fn core() -> (VllmCore, SharedG3Tier) {
+        let args = MockEngineArgs::builder()
+            .num_gpu_blocks(512)
+            .block_size(BLOCK)
+            .max_num_batched_tokens(Some(64))
+            .max_num_seqs(Some(4))
+            .kv_cache_bytes_per_token(Some(250))
+            .native_host_offload(Some(NativeHostOffloadConfig::new(4)))
+            .build()
+            .unwrap();
+        let mut core = VllmCore::new_with_worker_rank(args, 0, 0, 0, false, None).unwrap();
+        let registry = G3Tier::new(
+            G3OffloadConfig {
+                scope: G3Scope::WorkerLocal,
+                num_g3_blocks: 64,
+                latency_to_first_byte_ms: 0.0,
+                read_bandwidth_gbps: 1.0,
+                write_bandwidth_gbps: 1.0,
+                shared_read_bandwidth_gbps: 0.0,
+                shared_write_bandwidth_gbps: 0.0,
+            },
+            1,
+            BLOCK * 250,
+        )
+        .unwrap();
+        let (_, identities) = RequestSequence::new(
+            Uuid::nil(),
+            thrash_prompt(),
+            1,
+            1,
+            BLOCK,
+            true,
+            false,
+            false,
+            None,
+        );
+        let keys = identities
+            .iter()
+            .filter_map(|identity| identity.sequence_hash)
+            .map(HostBlockKey::new)
+            .collect::<Vec<_>>();
+        assert_eq!(keys.len(), 7);
+        {
+            let mut g3 = registry.lock().unwrap();
+            g3.submit(0, Direction::Write, &keys, 0.0).unwrap();
+            g3.take_completed(0, 1.0);
+        }
+        core.set_g3_offload(registry.clone(), 0);
+        (core, registry)
+    }
+
+    fn submit(core: &mut VllmCore, id: u128, tokens: Vec<u32>, outputs: usize) -> Uuid {
+        core.receive(DirectRequest {
+            tokens,
+            max_output_tokens: outputs,
+            uuid: Some(Uuid::from_u128(id)),
+            arrival_timestamp_ms: Some(1.0),
+            ..Default::default()
+        })
+    }
+
+    fn g3_stats(registry: &SharedG3Tier) -> (u64, u64) {
+        let stats = registry.lock().unwrap().snapshot();
+        (stats.bypassed_restores, stats.read.submitted_jobs)
+    }
+
+    /// Drive passes, or the next transfer when nothing is runnable, until
+    /// `done`; `before_pass` runs before every pass. Returns the time reached
+    /// and the time each request was admitted.
+    fn drive(
+        core: &mut VllmCore,
+        mut now_ms: f64,
+        mut before_pass: impl FnMut(&mut VllmCore),
+        done: impl Fn(&VllmCore) -> bool,
+    ) -> (f64, Vec<(Uuid, f64)>) {
+        let mut admitted = Vec::new();
+        while !done(core) {
+            if !core.is_ready() {
+                now_ms = core
+                    .next_internal_deadline_ms()
+                    .expect("drive stalled before its condition held");
+                core.process_internal_work(now_ms);
+                continue;
+            }
+            before_pass(core);
+            let pass = core.execute_pass(&mut TraceCollector::default(), now_ms);
+            admitted.extend(
+                pass.admissions
+                    .iter()
+                    .map(|admission| (admission.uuid, now_ms)),
+            );
+            core.complete_engine_boundary(pass.end_ms);
+            now_ms = pass.end_ms;
+        }
+        (now_ms, admitted)
+    }
+
+    fn waiting(core: &VllmCore, uuid: Uuid) -> bool {
+        core.state.waiting_members.contains(&uuid)
+            || core.state.connector_waiting_members.contains(&uuid)
+    }
+
+    #[test]
+    fn a_running_decode_keeps_a_thrashing_restore_from_being_bypassed() {
+        let (mut core, registry) = core();
+        // The decode is scheduled and emits a token in every pass, while the
+        // thrasher submits one G3 restore round per pass.
+        let decode = submit(&mut core, 2, (1000..1004).collect(), 1300);
+        let thrasher = submit(&mut core, THRASHER, thrash_prompt(), 1);
+        let (decoded_ms, admitted) = drive(
+            &mut core,
+            1.0,
+            |_| {},
+            |core| !core.state.requests.contains_key(&decode),
+        );
+        assert_eq!(admitted, [(decode, 1.0)]);
+        assert_eq!(g3_stats(&registry), (0, 1300), "no bypass in 1,300 rounds");
+        // Alone on an idle rank, the thrasher is bypassed on round 1,024.
+        let (_, admitted) = drive(
+            &mut core,
+            decoded_ms,
+            |_| {},
+            |core| !waiting(core, thrasher),
+        );
+        assert_eq!(decoded_ms, 25_347.460_096_000_02);
+        assert_eq!(admitted, [(thrasher, 25_351.044_096_000_75)]);
+        assert_eq!(g3_stats(&registry), (1, 1300 + 1024));
+    }
+
+    #[test]
+    fn rejections_alone_are_rank_progress() {
+        let (mut core, registry) = core();
+        let thrasher = submit(&mut core, THRASHER, thrash_prompt(), 1);
+        // Each pass also rejects a request longer than G1: output without
+        // scheduled work.
+        let rejected = std::cell::Cell::new(0);
+        let (rejected_ms, admitted) = drive(
+            &mut core,
+            1.0,
+            |core| {
+                if rejected.get() < 1200 {
+                    submit(core, 100 + rejected.get(), vec![7; 2100], 1);
+                    rejected.set(rejected.get() + 1);
+                }
+            },
+            |core| rejected.get() == 1200 && core.state.waiting_members.is_empty(),
+        );
+        assert!(admitted.is_empty());
+        assert_eq!(g3_stats(&registry), (0, 1199), "no bypass in 1,199 rounds");
+        let (_, admitted) = drive(
+            &mut core,
+            rejected_ms,
+            |_| {},
+            |core| !waiting(core, thrasher),
+        );
+        assert_eq!(admitted, [(thrasher, 8.781_124_999_999_797)]);
+        assert_eq!(g3_stats(&registry), (1, 1199 + 1024));
     }
 }

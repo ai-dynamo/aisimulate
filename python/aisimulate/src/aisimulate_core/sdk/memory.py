@@ -51,6 +51,7 @@ from typing import Any
 from aisimulate_core.sdk import perf_database
 from aisimulate_core.sdk.backends.factory import get_backend
 from aisimulate_core.sdk.common import DefaultHFModels
+from aisimulate_core.sdk.config import validate_parallel_size
 from aisimulate_core.sdk.config_builders import apply_nextn, build_model_config, validate_moe_controls, validate_nextn
 from aisimulate_core.sdk.fpm_profile import FpmModelProfile, load_fpm_profile
 from aisimulate_core.sdk.models import get_model
@@ -285,6 +286,8 @@ class KVCacheEstimator:
         attention_dp_size: int = 1,
         moe_tp_size: int | None = None,
         moe_ep_size: int | None = None,
+        cp_size: int = 1,
+        dcp_size: int = 1,
         gemm_quant_mode: str | None = None,
         moe_quant_mode: str | None = None,
         kvcache_quant_mode: str | None = None,
@@ -344,6 +347,8 @@ class KVCacheEstimator:
             attention_backend=attention_backend,
             enable_eplb=enable_eplb,
             wideep_num_slots=wideep_num_slots,
+            cp_size=cp_size,
+            dcp_size=dcp_size,
         )
         # Apply nextn/MTP onto the config BEFORE get_model so the built model is
         # spec-decode aware (e.g. for any draft-module weights). This does NOT scale
@@ -406,6 +411,22 @@ class KVCacheEstimator:
         if backend != "sglang":
             non_kv_bytes += activations_bytes
 
+        # Per-RANK persistent KV. Prefill CP keeps the full KV on every rank;
+        # decode CP stripes the token-linear KV so each rank holds 1/dcp of every
+        # token, while rank-local per-request state (Kimi-K3 KDA) stays whole
+        # (BaseModel.get_kvcache_rank_*). The per-token figure and the
+        # byte-budget -> token-count inverse must see the same striping.
+        # Duck-typed model doubles without the rank hooks keep the full KV.
+        rank_bytes_per_sequence = getattr(
+            model, "get_kvcache_rank_bytes_per_sequence", model.get_kvcache_bytes_per_sequence
+        )
+
+        def tokens_from_kv_bytes(kv_budget_bytes: float) -> int:
+            # Resolved lazily: some callers never invert (stubs without the
+            # capacity method).
+            capacity = getattr(model, "get_kvcache_rank_batch_capacity", None) or model.get_kvcache_batch_capacity
+            return int(capacity(float(kv_budget_bytes), max_batch_size))
+
         return cls(
             {
                 "weights_bytes": weights_bytes,
@@ -418,10 +439,9 @@ class KVCacheEstimator:
                 "pre_model_load_overhead_bytes": (
                     runtime_overhead_bytes + comm_overhead_bytes if backend == "sglang" else 0.0
                 ),
-                "kv_size_per_token_bytes": float(model.get_kvcache_bytes_per_sequence(1)),
+                "kv_size_per_token_bytes": float(rank_bytes_per_sequence(1)),
                 "gpu_memory_capacity_bytes": float(database.system_spec["gpu"]["mem_capacity"]),
-                # Model's byte-budget -> token-count inverse (KV-curve aware).
-                "tokens_from_kv_bytes": lambda budget: model.get_kvcache_batch_capacity(budget, max_batch_size),
+                "tokens_from_kv_bytes": tokens_from_kv_bytes,
             }
         )
 
@@ -1029,6 +1049,8 @@ def estimate_kv_cache(
     attention_dp_size: int = 1,
     moe_tp_size: int | None = None,
     moe_ep_size: int | None = None,
+    cp_size: int = 1,
+    dcp_size: int = 1,
     gemm_quant_mode: str | None = None,
     moe_quant_mode: str | None = None,
     kvcache_quant_mode: str | None = None,
@@ -1049,7 +1071,6 @@ def estimate_kv_cache(
     allow_hf_config_download: bool = False,
     fpm_profile: dict | str | FpmModelProfile | None = None,
     worker_type: str = "aggregated",
-    cp_size: int = 1,
     context_length: int | None = None,
     request_occupancy_tokens: int | None = None,
 ) -> dict[str, Any]:
@@ -1098,7 +1119,8 @@ def estimate_kv_cache(
             route never constructs an analytical model or uses naive fallback.
             Separate CUDA graph bytes apply only to declared profile overheads.
         worker_type: canonical serving role selecting this deployment's resources.
-        cp_size: profile context-parallel identity; currently only CP1 is supported.
+        cp_size: prefill context parallelism (folds into the attention width); also
+            the FPM profile cell identity, whose recorded cells are CP1 today.
         context_length: optional context bound for a grouped profile's per-request
             cache peak, also checked against runtime memory's ``max_model_len``.
             Defaults to the profile context and does not change its byte budget.
@@ -1118,12 +1140,13 @@ def estimate_kv_cache(
             tolerance, no KV budget, insufficient model metadata, or (with the
             fallback off) an unsupported model/backend.
     """
-    if type(cp_size) is not int or cp_size != 1:
-        raise ValueError("cp_size must be the integer 1; this SDK entry point does not support context parallelism")
     _validate_memory_fraction(backend, memory_fraction_kind, memory_fraction_value)
     _validate_tolerance(tolerance_fraction)
     _validate_naive_reservation(naive_kv_reservation)
     _validate_cuda_graph_reservation(cuda_graph_reserved_bytes)
+    # Before the model build and the naive fallback, which would swallow the error.
+    validate_parallel_size("cp_size", cp_size)
+    validate_parallel_size("dcp_size", dcp_size)
     fraction = float(memory_fraction_value)
     is_of_free = memory_fraction_kind == "of_free"
 
@@ -1246,6 +1269,8 @@ def estimate_kv_cache(
             attention_dp_size=int(attention_dp_size),
             moe_tp_size=moe_tp_size,
             moe_ep_size=moe_ep_size,
+            cp_size=int(cp_size),
+            dcp_size=int(dcp_size),
             gemm_quant_mode=gemm_quant_mode,
             moe_quant_mode=moe_quant_mode,
             kvcache_quant_mode=kvcache_quant_mode,
@@ -1260,6 +1285,14 @@ def estimate_kv_cache(
             systems_path=systems_path,
         )
     except Exception as exc:  # native model build unsupported (model/backend/perf DB)
+        if isinstance(exc, NotImplementedError) and (int(cp_size) > 1 or int(dcp_size) > 1):
+            # A context-parallel capability rejection must not degrade into the
+            # naive estimator, which knows neither knob and would return an
+            # unstriped (cp=dcp=1) capacity for a request that asked otherwise.
+            raise ValueError(
+                f"context parallelism is not supported for KV-cache estimation of this model/backend "
+                f"(model={model_path}, backend={backend}, cp_size={cp_size}, dcp_size={dcp_size}): {exc}"
+            ) from exc
         if (
             not allow_naive_fallback
             or enable_eplb
@@ -1319,6 +1352,8 @@ def estimate_num_gpu_blocks(
     attention_dp_size: int = 1,
     moe_tp_size: int | None = None,
     moe_ep_size: int | None = None,
+    cp_size: int = 1,
+    dcp_size: int = 1,
     gemm_quant_mode: str | None = None,
     moe_quant_mode: str | None = None,
     kvcache_quant_mode: str | None = None,
@@ -1340,7 +1375,6 @@ def estimate_num_gpu_blocks(
     diagnostics: dict[str, Any] | None = None,
     fpm_profile: dict | str | FpmModelProfile | None = None,
     worker_type: str = "aggregated",
-    cp_size: int = 1,
     context_length: int | None = None,
 ) -> int:
     """Convert the KV-cache token capacity to a scheduler block count.
@@ -1386,6 +1420,10 @@ def estimate_num_gpu_blocks(
         attention_dp_size=attention_dp_size if fpm_profile is not None else int(attention_dp_size),
         moe_tp_size=moe_tp_size,
         moe_ep_size=moe_ep_size,
+        # Raw values: estimate_kv_cache validates them (positive, integral, not
+        # bool) before any coercion, so True / 1.9 cannot become cp=dcp=1 here.
+        cp_size=cp_size,
+        dcp_size=dcp_size,
         gemm_quant_mode=gemm_quant_mode,
         moe_quant_mode=moe_quant_mode,
         kvcache_quant_mode=kvcache_quant_mode,
@@ -1406,7 +1444,6 @@ def estimate_num_gpu_blocks(
         allow_hf_config_download=allow_hf_config_download,
         fpm_profile=fpm_profile,
         worker_type=worker_type,
-        cp_size=cp_size,
         context_length=context_length,
     )
 

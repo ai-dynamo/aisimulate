@@ -11,7 +11,7 @@ use crate::engine::common::hashing::{
 };
 use crate::engine::common::kv_cache_trace;
 use crate::engine::common::protocols::KvEventPublishers;
-use crate::engine::{KvBlock, KvEvent, KvEventData, StoredBlocks};
+use crate::engine::{KvBlock, KvEvent, KvEventData, KvEventTier, StoredBlocks};
 use rustc_hash::FxHashMap;
 
 /// Move-only ownership of a request's SGLang KV state.
@@ -1118,6 +1118,7 @@ impl SglangKvManager {
                 blocks,
             }),
             dp_rank: self.dp_rank,
+            tier: KvEventTier::Device,
         };
         self.next_event_id += 1;
 
@@ -1159,6 +1160,7 @@ impl SglangKvManager {
             event_id: self.next_event_id,
             data: KvEventData::Removed { block_hashes },
             dp_rank: self.dp_rank,
+            tier: KvEventTier::Device,
         };
         self.next_event_id += 1;
 

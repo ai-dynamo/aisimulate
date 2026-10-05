@@ -943,8 +943,22 @@ def test_forward_pass_constructor_passes_complete_typed_request(monkeypatch, reb
         "estimator_config": {
             "features": {"attention_kv_weight": 2.0, "prefill_attention_pair_weight": 3.0, "ffn_token_weight": 4.0},
             "fpm_regression": {
-                "sampling": {"bins_per_axis": [4, 16], "max_observations": 128},
-                "fit": {"rebuild_interval": rebuild_interval},
+                "sampling": {"axes": ["attention", "moe", "n"], "bins_per_axis": [2, 4, 2], "max_observations": 128},
+                "fit": {
+                    "rebuild_interval": rebuild_interval,
+                    "linear": {
+                        "feature_axes": ["attention", "moe", "logN"],
+                        "non_negative": False,
+                        "update_policy": {
+                            "kind": "error_threshold",
+                            "relative_tolerance": 0.05,
+                            "absolute_tolerance_ms": 0.1,
+                            "window": 8,
+                            "trigger": 2,
+                            "cooldown": 4,
+                        },
+                    },
+                },
             },
             "correction": {"enabled": False},
         },
@@ -953,6 +967,26 @@ def test_forward_pass_constructor_passes_complete_typed_request(monkeypatch, reb
     assert calls == [payload]
     assert not hasattr(rust_engine_step.RustForwardPassPerfModel, "from_native")
     assert not hasattr(rust_engine_step.RustForwardPassPerfModel, "from_regression")
+
+
+def test_forward_pass_config_carries_context_parallel_knobs_through_rust_normalization() -> None:
+    import aisimulate_core
+    from aisimulate_core.sdk import ForwardPassPerfModelConfig
+
+    plain = ForwardPassPerfModelConfig(model="m", system="s", backend="vllm", worker_type="decode")
+    assert (plain.cp_size, plain.dcp) == (None, None)
+    normalized = json.loads(aisimulate_core.RustForwardPassPerfModel.normalize_config(json.dumps(plain.to_dict())))
+    # Unset prefill CP never enters the serialized identity (pre-CP configs stay
+    # byte-identical); unrecorded decode CP serializes as the canonical null.
+    assert "cp_size" not in normalized and normalized.get("dcp") is None
+
+    striped = ForwardPassPerfModelConfig(
+        model="m", system="s", backend="vllm", worker_type="decode", tp=8, cp_size=2, dcp=4
+    )
+    payload = striped.to_dict()
+    assert (payload["cp_size"], payload["dcp"]) == (2, 4)
+    normalized = json.loads(aisimulate_core.RustForwardPassPerfModel.normalize_config(json.dumps(payload)))
+    assert (normalized["cp_size"], normalized["dcp"]) == (2, 4)
 
 
 def test_forward_pass_config_requires_role_and_defaults_to_auto_deny() -> None:
@@ -1020,6 +1054,7 @@ def test_forward_pass_config_preserves_existing_positional_arguments(tmp_path: P
         "dcp": None,
         "fpm_fmha_quant_mode": None,
         "moe_kernel_source": None,
+        "cp_size": None,
     }
 
     source = " source_with_spaces "
@@ -1030,6 +1065,7 @@ def test_forward_pass_config_preserves_existing_positional_arguments(tmp_path: P
         "dcp": None,
         "fpm_fmha_quant_mode": None,
         "moe_kernel_source": source,
+        "cp_size": None,
     }
     assert json.loads(json.dumps(pinned.to_dict()))["moe_kernel_source"] == source
 
@@ -1078,6 +1114,56 @@ def test_canonical_regression_rebuild_interval_survives_saved_config(as_mapping,
     assert restored.regression_store_diagnostics() == [
         {"workload_kind": "pure_decode", "ready": False, "retained_observations": 0}
     ]
+
+
+@pytest.mark.parametrize("as_mapping", [False, True])
+def test_canonical_linear_axes_and_lazy_policy_survive_saved_config(as_mapping):
+    from copy import deepcopy
+
+    from aisimulate_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
+
+    controls = {
+        "sampling": {"axes": ["n", "attention", "moe"], "bins_per_axis": [2, 3, 4], "max_observations": 128},
+        "fit": {
+            "linear": {
+                "feature_axes": ["attention", "moe", "logN"],
+                "non_negative": False,
+                "update_policy": {
+                    "kind": "error_threshold",
+                    "relative_tolerance": 0.05,
+                    "absolute_tolerance_ms": 0.1,
+                    "window": 8,
+                    "trigger": 2,
+                    "cooldown": 4,
+                },
+            }
+        },
+    }
+    config = ForwardPassPerfModelConfig(
+        model="test/model",
+        system="test",
+        backend="vllm",
+        worker_type="decode",
+        estimation_mode="fpm_regression",
+        estimator_config={"fpm_regression": deepcopy(controls)},
+    )
+    model = RustForwardPassPerfModel.best_available(config.to_dict() if as_mapping else config)
+    resolved = model.diagnostics()["provenance"]["config"]
+    expected = deepcopy(controls)
+    expected["fit"]["linear"]["update_policy"]["startup_observations"] = 10
+    regression = resolved["estimator_config"]["fpm_regression"]
+    assert regression["sampling"] == expected["sampling"]
+    assert regression["fit"]["linear"] == expected["fit"]["linear"]
+    assert regression["fit"]["rebuild_interval"] is None
+    assert resolved["estimator_config"]["correction"]["sampling"] == {
+        "bins_per_axis": [4, 4],
+        "max_observations": 64,
+    }
+    assert config.estimator_config == {"fpm_regression": controls}
+    restored = RustForwardPassPerfModel.best_available(json.loads(json.dumps(resolved)))
+    assert restored.diagnostics()["provenance"]["config"] == resolved
+    assert not restored.regression_store_diagnostics()[0]["ready"]
+    assert restored.regression_store_diagnostics()[0]["retained_observations"] == 0
 
 
 @pytest.mark.parametrize("invalid", [0, -1, True, False, 1.5, 4096.0, "4096", [], {}, float("nan"), float("inf")])
@@ -2339,3 +2425,36 @@ def test_canonical_native_selection_retries_roots_and_pins_effective_configurati
     assert resolved["transfer_policy"] == ["xshape"]
     assert resolved["estimator_config"]["correction"]["enabled"] is False
     assert config.systems_paths == (str(tmp_path), packaged)
+
+
+@pytest.mark.parametrize(
+    ("variant_a", "variant_b"),
+    [
+        ({"dcp_comm": "ag_rs"}, {"dcp_comm": "a2a"}),
+        ({"dcp_comm": "a2a", "dcp_q_replicate": False}, {"dcp_comm": "a2a", "dcp_q_replicate": True}),
+        ({}, {"dcp_comm": "a2a"}),
+    ],
+)
+def test_engine_config_json_separates_dcp_op_shaping_overrides(variant_a, variant_b) -> None:
+    """``dcp_comm`` / ``dcp_q_replicate`` select different DCP op graphs for one
+    (tp, dcp) identity; the cache key must not let a warm ``ag_rs`` handle answer
+    an ``a2a`` request (or vice versa, whichever compiled first)."""
+
+    def _model(**dcp_overrides):
+        return SimpleNamespace(
+            model_path="deepseek-ai/DeepSeek-V3",
+            architecture="DeepseekV3ForCausalLM",
+            config=ModelConfig(
+                tp_size=8, pp_size=1, attention_dp_size=1, moe_tp_size=8, moe_ep_size=1, dcp_size=4, **dcp_overrides
+            ),
+        )
+
+    database = SimpleNamespace(system="b200_sxm", backend="vllm", version="0.24.0")
+    key_a = rust_engine_step._engine_config_json(_model(**variant_a), database)
+    key_b = rust_engine_step._engine_config_json(_model(**variant_b), database)
+    assert key_a != key_b
+    identity = json.loads(json.loads(key_b)["extra"]["identity"])["model_config"]
+    assert identity["dcp_comm"] == variant_b.get("dcp_comm")
+    assert identity["dcp_q_replicate"] == variant_b.get("dcp_q_replicate")
+    # Same overrides -> same key (the memo still hits).
+    assert rust_engine_step._engine_config_json(_model(**variant_b), database) == key_b

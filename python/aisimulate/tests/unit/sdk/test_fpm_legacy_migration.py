@@ -304,7 +304,11 @@ def test_different_parquet_paths_conflict_without_filesystem_resolution(legacy_p
     ("saved", "options", "reason"),
     [
         ({"correction": {"enabld": False}}, {}, "unknown field"),
-        ({"fpm_regression": {"sampling": {"bins_per_axis": [4]}}}, {}, "length"),
+        (
+            {"fpm_regression": {"sampling": {"bins_per_axis": [4]}}},
+            {},
+            r"sampling\.bins_per_axis must contain exactly one bin count per sampling axis",
+        ),
         ({"correction": None}, {}, "invalid type"),
         ({}, {"max_observatons": 128}, "unknown field"),
         ({}, {"min_observations": 0}, "min_observations must be >= 1"),

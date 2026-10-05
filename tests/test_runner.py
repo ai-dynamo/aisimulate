@@ -1258,6 +1258,62 @@ def test_runner_rejects_conflicting_backend_version_in_explicit_aic_timing():
         EngineReplayRunnerFactory(runtime=RecordingRuntime()).create(0).run(_spec(deployment=deployment))
 
 
+@pytest.mark.parametrize(("field", "alias"), [("dcp", "aic_dcp_size"), ("cp", "aic_cp_size")])
+def test_runner_rejects_parallel_config_that_conflicts_with_context_parallel_args(field, alias):
+    # Same contract as tp / attention_dp: capacity and timing must not price one
+    # CP topology while parallel_config reports another.
+    engine_args = _engine_args()
+    engine_args[alias] = 4
+    deployment = BackendDeploymentSpec(
+        deployment_mode="agg",
+        backend="vllm",
+        backend_version="test",
+        parallel_config={"tp": 2, "attention_dp": 1, field: 2, "replicas": 1},
+        agg_engine_args=engine_args,
+        num_workers=1,
+    )
+
+    with pytest.raises(ValueError, match=f"parallel_config.{field}=2 conflicts"):
+        EngineReplayRunnerFactory(runtime=RecordingRuntime()).create(0).run(_spec(deployment=deployment))
+
+
+@pytest.mark.parametrize("nested_rank", [False, True])
+@pytest.mark.parametrize(("field", "target"), [("dcp", "dcp"), ("cp", "cp_size")])
+def test_runner_rejects_nested_timing_context_parallel_that_conflicts_with_parallel_config(field, target, nested_rank):
+    # The canonical timing config nests the knobs under timing_model.config
+    # (flat form or under the execution-level `rank` descriptor); they are
+    # checked against parallel_config BEFORE capacity materialization could
+    # resolve them into AIC inputs.
+    timing = {
+        "type": "external",
+        "provider": "aic",
+        "config": {
+            "model": "test-model",
+            "system": "test-system",
+            "backend": "vllm",
+            "worker_type": "aggregated",
+            "tp": 2,
+            "attention_dp": 1,
+            target: 2,
+        },
+    }
+    engine_args = _engine_args(timing=timing)
+    engine_args.pop("num_gpu_blocks")
+    if nested_rank:
+        engine_args = {"rank": engine_args}
+    deployment = BackendDeploymentSpec(
+        deployment_mode="agg",
+        backend="vllm",
+        backend_version="test",
+        parallel_config={"tp": 2, "attention_dp": 1, field: 4, "replicas": 1},
+        agg_engine_args=engine_args,
+        num_workers=1,
+    )
+
+    with pytest.raises(ValueError, match=f"parallel_config.{field}=4 conflicts"):
+        EngineReplayRunnerFactory(runtime=RecordingRuntime()).create(0).run(_spec(deployment=deployment))
+
+
 def test_runner_rejects_parallel_config_that_conflicts_with_engine_args():
     deployment = BackendDeploymentSpec(
         deployment_mode="agg",
@@ -1608,6 +1664,108 @@ def test_memory_detail_with_explicit_blocks_does_not_guess_components():
     assert "memory_breakdown" not in data
 
 
+def test_runner_forwards_decode_cp_to_aic_timing_and_capacity(monkeypatch):
+    runtime = RecordingRuntime()
+    engine_args = _engine_args()
+    engine_args.pop("num_gpu_blocks")
+    engine_args.pop("timing_model")
+    engine_args["aic_backend_version"] = "test"
+    engine_args["aic_dcp_size"] = 4
+    engine_args["gpu_memory_utilization"] = 0.8
+    calls = []
+
+    def estimate(**kwargs):
+        calls.append(kwargs)
+        return 321
+
+    monkeypatch.setattr(aic, "estimate_num_gpu_blocks", estimate)
+    deployment = BackendDeploymentSpec(
+        deployment_mode="agg",
+        backend="vllm",
+        backend_version="test",
+        agg_engine_args=engine_args,
+        num_workers=1,
+    )
+
+    EngineReplayRunnerFactory(runtime=runtime).create(0).run(_spec(deployment=deployment))
+
+    timing_config = runtime.execution_spec["engine"]["rank"]["timing_model"]["config"]
+    assert timing_config["dcp"] == 4
+    assert "cp_size" not in timing_config
+    assert calls[0]["dcp_size"] == 4
+    assert calls[0]["cp_size"] == 1
+
+
+def test_public_decode_cp_reaches_canonical_timing_and_capacity(tmp_path, monkeypatch):
+    # Default timing lowers the canonical ForwardPassPerfModelConfig onto the
+    # rank and strips the legacy aic_* args, so the knob must survive that path:
+    # into the estimator identity (native engine build) AND into the KV capacity.
+    path = tmp_path / "prediction.yaml"
+    path.write_text(
+        """\
+engine:
+  mode: aggregated
+  model: example/model
+  hardware: h200_sxm
+  backend: vllm
+  context_length: 4096
+  workers:
+    aggregated:
+      parallelism:
+        tensor: 8
+        decode_context: 4
+      kv_cache:
+        block_size: 16
+        capacity:
+          type: default
+          memory_fraction: 0.8
+""",
+        encoding="utf-8",
+    )
+    calls = []
+
+    def estimate(**kwargs):
+        calls.append(kwargs)
+        return 321
+
+    monkeypatch.setattr(aic, "estimate_num_gpu_blocks", estimate)
+    import aisimulate_core
+    from aisimulate_core.sdk import RustForwardPassPerfModel
+
+    requested = []
+
+    class Estimator:
+        def __init__(self, config):
+            requested.append(config)
+            self.config = json.loads(aisimulate_core.RustForwardPassPerfModel.normalize_config(json.dumps(config)))
+            self.config.update(backend_version="0.24.0", estimation_mode="op_level", fallback_policy="deny")
+
+        def diagnostics(self):
+            return {"readiness": "ready", "provenance": {"config": self.config}}
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(RustForwardPassPerfModel, "best_available", Estimator)
+    public = CorePredictionConfig.from_yaml(path)
+    spec = prediction_to_replay_spec(public)
+    assert spec.backend_deployment.agg_engine_args["timing_model"]["config"]["dcp"] == 4
+    assert "aic_dcp_size" not in spec.backend_deployment.agg_engine_args
+
+    runtime = RecordingRuntime()
+    EngineReplayRunnerFactory(runtime=runtime).create(0).run(spec)
+
+    # The Python request carries the dataclass fields (unset -> None); the Rust
+    # provenance drops unset knobs, which is what lands on the rank below.
+    assert requested and requested[0]["dcp"] == 4 and requested[0]["cp_size"] is None
+    rank = runtime.execution_spec["spec"]["engine"]["rank"]
+    assert rank["timing_model"]["config"]["dcp"] == 4
+    assert "cp_size" not in rank["timing_model"]["config"]
+    assert rank["num_gpu_blocks"] == 321
+    assert calls[0]["dcp_size"] == 4
+    assert calls[0]["cp_size"] == 1
+
+
 def test_native_report_memory_error_becomes_host_resource_failure(monkeypatch):
     import sys
     from types import ModuleType
@@ -1755,6 +1913,86 @@ def test_agentic_warmup_runner_requires_snapshot() -> None:
     with pytest.raises(ValueError, match="agentic_warmup requires agentic_snapshot"):
         EngineReplayRunnerFactory(runtime=runtime).create(0).run(_spec(workload={"agentic_warmup": True}))
     assert runtime.execution_spec is None
+
+
+@pytest.mark.parametrize("warmup", [False, True])
+def test_agentic_profile_controls_and_evidence_reach_native_boundary(warmup: bool) -> None:
+    profile = {"duration_seconds": 2.0, "response_grace_seconds": 0.0}
+    evidence = {"profile_start_ms": 10.0, "admission_end_ms": 2010.0}
+
+    class ProfileRuntime(RecordingRuntime):
+        def run_replay_json(self, execution_spec_json):
+            report = json.loads(super().run_replay_json(execution_spec_json))
+            return json.dumps(report | {"agentic_profile": evidence})
+
+    runtime = ProfileRuntime()
+    report = (
+        EngineReplayRunnerFactory(runtime=runtime)
+        .create(0)
+        .run(
+            _spec(
+                workload={
+                    "source_type": "trace",
+                    "load_type": "trace_timestamps",
+                    "trace_path": "corpus",
+                    "trace_format": "weka",
+                    "agentic_lanes": 1,
+                    "agentic_snapshot": {"seed": 42},
+                    "agentic_warmup": warmup,
+                    "agentic_profile": profile,
+                }
+            )
+        )
+    )
+    assert runtime.execution_spec["traffic"]["agentic_profile"] == profile
+    assert report.metadata["agentic_profile"] == evidence
+
+
+@pytest.mark.parametrize(
+    "overrides,message",
+    [
+        ({"agentic_profile": {"duration_seconds": False}}, "duration_seconds"),
+        ({"agentic_profile": {"unexpected": 1}}, "unexpected"),
+        ({"agentic_snapshot": None}, "agentic_profile requires agentic_snapshot"),
+        ({"max_sim_time_ms": 1.0}, "agentic_profile cannot be combined"),
+    ],
+)
+def test_agentic_profile_runner_rejects_invalid_raw_payload(overrides: dict, message: str) -> None:
+    runtime = RecordingRuntime()
+    workload = {
+        "source_type": "trace",
+        "load_type": "trace_timestamps",
+        "trace_path": "corpus",
+        "trace_format": "weka",
+        "agentic_lanes": 1,
+        "agentic_snapshot": {"seed": 42},
+        "agentic_profile": {},
+    }
+    with pytest.raises(ValueError, match=message):
+        EngineReplayRunnerFactory(runtime=runtime).create(0).run(_spec(workload=workload | overrides))
+    assert runtime.execution_spec is None
+
+
+def test_agentic_profile_capability_is_explicit() -> None:
+    from dataclasses import replace
+
+    capabilities = EngineReplayRunnerFactory().capabilities()
+    assert capabilities.supports_agentic_profile
+    capabilities = replace(capabilities, supports_agentic_profile=False)
+    with pytest.raises(ValueError, match="does not support agentic profile"):
+        capabilities.require_compatible(
+            _spec(
+                workload={
+                    "source_type": "trace",
+                    "load_type": "trace_timestamps",
+                    "trace_path": "corpus",
+                    "trace_format": "weka",
+                    "agentic_lanes": 1,
+                    "agentic_snapshot": {"seed": 42},
+                    "agentic_profile": {},
+                }
+            )
+        )
 
 
 @pytest.mark.parametrize("sampler", ["numpy_random_state", "python_random"])

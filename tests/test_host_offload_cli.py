@@ -346,15 +346,6 @@ def test_recommendation_materializes_concrete_host_offload_prediction() -> None:
             lambda engine: engine["workers"]["aggregated"]["kv_cache"].update(prefix_caching=False),
             "prefix_caching=true",
         ),
-        (
-            lambda engine: engine["workers"]["aggregated"].update(
-                parallelism={
-                    **engine["workers"]["aggregated"]["parallelism"],
-                    "attention_data": 2,
-                }
-            ),
-            "attention_data=1",
-        ),
     ],
 )
 def test_prediction_host_offload_rejects_unsupported_runtime_scope(mutation, message: str) -> None:
@@ -366,34 +357,12 @@ def test_prediction_host_offload_rejects_unsupported_runtime_scope(mutation, mes
         CorePredictionConfig.model_validate({"engine": engine})
 
 
-def test_prediction_host_offload_rejects_disaggregated_role() -> None:
-    engine = _prediction_engine(mode="disaggregated")
-    engine["workers"]["prefill"]["kv_cache"]["host_offload"] = _host_offload()
-
-    with pytest.raises(ValidationError, match="aggregated worker"):
-        CorePredictionConfig.model_validate({"engine": engine})
-
-
 def test_recommendation_host_offload_rejects_mixed_backend_domain() -> None:
     engine = _recommendation_engine()
     engine["backend"] = {"choices": ["vllm", "sglang"]}
     engine["workers"]["aggregated"]["kv_cache"]["host_offload"] = _host_offload()
 
     with pytest.raises(ValidationError, match="concrete backend=vllm"):
-        CoreRecommendationConfig.model_validate(
-            {
-                "engine": engine,
-                "optimization": {"constraints": {"max_candidate_gpus": 8}},
-            }
-        )
-
-
-def test_recommendation_host_offload_rejects_attention_dp_domain() -> None:
-    engine = _recommendation_engine()
-    engine["workers"]["aggregated"]["parallelism"]["attention_data"] = {"choices": [1, 2]}
-    engine["workers"]["aggregated"]["kv_cache"]["host_offload"] = _host_offload()
-
-    with pytest.raises(ValidationError, match="fixed parallelism"):
         CoreRecommendationConfig.model_validate(
             {
                 "engine": engine,

@@ -12,6 +12,7 @@ from collections.abc import Iterable
 from pathlib import Path, PurePosixPath
 
 COMPONENTS = (
+    "readme_commands",
     "platform_wheels",
     "collector_data",
     "prediction_regression",
@@ -27,6 +28,7 @@ COMPONENTS = (
 )
 
 PYTHON_PACKAGE_COMPONENTS = {
+    "readme_commands",
     "platform_wheels",
     "application_wheel",
     "application_tests",
@@ -38,6 +40,7 @@ PYTHON_PACKAGE_COMPONENTS = {
 # collector validator's maturin install. Cargo policy is added separately for manifest and
 # dependency changes.
 RUST_COMPONENTS = {
+    "readme_commands",
     "platform_wheels",
     "collector_data",
     "prediction_regression",
@@ -192,6 +195,11 @@ def select_components(paths: Iterable[str], *, force_all: bool = False) -> dict[
             "tests/test_ci_workflow_contracts.py",
         }:
             return _all(f"CI execution contract changed: {path!r}", changed)
+
+        if path == "README.md":
+            selected.add("readme_commands")
+            reasons.add("executable README")
+            continue
 
         if _is_documentation(path) or _is_policy_only(path):
             reasons.add("documentation or review policy")

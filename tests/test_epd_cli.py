@@ -183,6 +183,26 @@ def test_epd_language_execution_omitted_version_uses_current(mode):
     assert {role["rank"]["timing_model"]["config"]["backend_version"] for role in execution.values()} == {current}
 
 
+@pytest.mark.parametrize("mode", ["aggregated", "disaggregated"])
+def test_epd_language_workers_keep_native_host_offload(mode):
+    raw = _prediction(mode)
+    raw["engine"].update(backend="vllm", backend_version=None)
+    host_offload = {"num_host_blocks": 4096, "d2h_bandwidth_gbps": 32.0, "h2d_bandwidth_gbps": 32.0}
+    for role, worker in raw["engine"]["workers"].items():
+        if role != "encoder":
+            worker["kv_cache"].update(prefix_caching=True, host_offload=host_offload)
+
+    deployment = prediction_to_replay_spec(CorePredictionConfig.model_validate(raw)).backend_deployment
+
+    arguments = (
+        [deployment.agg_engine_args]
+        if mode == "aggregated"
+        else [deployment.prefill_engine_args, deployment.decode_engine_args]
+    )
+    # The analytical encoder pool holds no KV; G2 belongs to the language workers.
+    assert [args["native_host_offload"] for args in arguments] == [host_offload] * len(arguments)
+
+
 @pytest.mark.parametrize("root_field", ["systems_paths", "systems_path"])
 def test_epd_language_execution_uses_the_timing_systems_root(tmp_path, root_field):
     from aisimulate_core.sdk import perf_database

@@ -815,6 +815,7 @@ fn test_turn_to_direct_request_repeats_hash_ids_by_block_size() {
         priority: -2,
         strict_priority: 8,
         policy_class: None,
+        synthetic_session_id: false,
     };
 
     let request = turn

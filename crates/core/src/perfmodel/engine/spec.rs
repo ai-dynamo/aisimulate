@@ -232,6 +232,7 @@ mod tests {
             // survives, not just a single-element degenerate case.
             lane_order: vec!["trtllm_mha".into(), "flashinfer".into(), "default".into()],
             apply_rope: false,
+            dcp_size: 3,
         }
     }
 
@@ -248,6 +249,7 @@ mod tests {
             use_qk_norm: true,
             scale_num_tokens: 8,
             verify_query_tokens: 7,
+            dcp_size: 4,
         }
     }
 
@@ -270,6 +272,7 @@ mod tests {
             kv_cache_dtype: KvCacheQuantMode::Bfloat16,
             fmha_quant_mode: FmhaQuantMode::Bfloat16,
             cp_size: 1,
+            dcp_size: 4,
         }
     }
 
@@ -279,6 +282,7 @@ mod tests {
             scale_factor: 1.0,
             num_heads: 128,
             kv_cache_dtype: KvCacheQuantMode::Fp8,
+            dcp_size: 8,
         }
     }
 
@@ -291,6 +295,7 @@ mod tests {
             fmha_quant_mode: FmhaQuantMode::Fp8,
             gemm_quant_mode: GemmQuantMode::Fp8Block,
             native_num_heads: Some(128),
+            dcp_size: 2,
         }
     }
 
@@ -409,6 +414,7 @@ mod tests {
             cp_size: 1,
             full_frac: 1.0,
             attn_projection_quant_modes: None,
+            dcp_size: 2,
         }
     }
 
@@ -564,6 +570,7 @@ mod tests {
             kv_cache_dtype: KvCacheQuantMode::Fp8,
             fmha_quant_mode: FmhaQuantMode::Fp8,
             attn_backend: "flashinfer".into(),
+            dcp_size: 4,
         }
     }
 
@@ -914,13 +921,13 @@ mod tests {
             moe_kernel_source: None,
             kv_block_size: Some(64),
             parallel: ParallelMapping {
-                dcp_size: None,
                 tp_size: 8,
                 pp_size: 1,
                 attention_dp_size: Some(8),
                 moe_tp_size: Some(1),
                 moe_ep_size: Some(8),
                 cp_size: None,
+                dcp_size: None,
             },
             quantization: QuantizationConfig {
                 weight_dtype: Some(DataType::Fp8),
@@ -1219,9 +1226,10 @@ mod tests {
         let selector = bytes.len() - 14;
         assert_eq!(&bytes[selector..selector + 4], &1u32.to_le_bytes());
         // Recreate both branches' incompatible payloads, not just their stamps.
-        for version in [20u32, 21, 22, 23, 24] {
+        for version in [20u32, 21, 22, 23, 24, 25] {
             let mut stale = bytes.clone();
-            if version != 21 {
+            // The decoupling branch's 21 and the merged 25 both carried the selector.
+            if !matches!(version, 21 | 25) {
                 stale.drain(selector..selector + 4);
             }
             if version < 24 {
@@ -1445,21 +1453,24 @@ mod tests {
             .as_object_mut()
             .unwrap()
             .remove("verify_query_tokens");
+        attention_json.as_object_mut().unwrap().remove("dcp_size");
         let attention: GenerationAttentionOp = serde_json::from_value(attention_json).unwrap();
         assert_eq!(attention.scale_num_tokens, 1);
         assert_eq!(attention.verify_query_tokens, 0);
+        // Pre-v26 producers never emitted decode CP: it defaults to "off".
+        assert_eq!(attention.dcp_size, 1);
         let mut fpm_json = serde_json::to_value(fpm_forward()).unwrap();
         fpm_json.as_object_mut().unwrap().remove("verify_width");
         let fpm: crate::operators::FpmForwardOp = serde_json::from_value(fpm_json).unwrap();
         assert_eq!(fpm.verify_width, 1);
 
         let mut bytes = handshake_spec().to_bincode().unwrap();
-        bytes[..4].copy_from_slice(&17u32.to_le_bytes());
+        bytes[..4].copy_from_slice(&18u32.to_le_bytes());
         bytes.truncate(4);
         assert!(matches!(
             EngineSpec::from_bincode(&bytes),
             Err(AicError::UnsupportedSchemaVersion {
-                got: 17,
+                got: 18,
                 expected: ENGINE_SPEC_SCHEMA_VERSION,
                 ..
             })
@@ -1497,7 +1508,7 @@ mod tests {
         for spec in [fpm_spec, pilot_spec] {
             let bytes = spec.to_bincode().unwrap();
             assert_eq!(EngineSpec::from_bincode(&bytes).unwrap(), spec);
-            for previous_version in [20u32, 21, 22, 23, 24] {
+            for previous_version in [20u32, 21, 22, 23, 24, 25] {
                 let mut stale = bytes.clone();
                 stale[..4].copy_from_slice(&previous_version.to_le_bytes());
                 // DCP and the pilot claimed 22 for different layouts.

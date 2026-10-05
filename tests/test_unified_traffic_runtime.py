@@ -55,6 +55,85 @@ def _run(config: dict):
     )
 
 
+def _agentic_profile_config(tmp_path: Path, backend: str, mode: str, warmup: bool, duration: float) -> dict:
+    """Locally authored corpus with long idle gaps and enough work to recycle."""
+    path = tmp_path / "continuous-profile.jsonl"
+    path.write_text(
+        "".join(
+            json.dumps(
+                {
+                    "id": f"play-{play}",
+                    "block_size": 64,
+                    "hash_id_scope": "local",
+                    "requests": [
+                        {
+                            "t": start,
+                            "type": "s",
+                            "model": "example/model",
+                            "in": 128,
+                            "out": 2,
+                            "api_time": 0.5,
+                            "hash_ids": [10, 20],
+                        }
+                        for start in [0.0, 600.0, 1200.0]
+                    ],
+                }
+            )
+            + "\n"
+            for play in range(2)
+        )
+    )
+    engine = {**_engine(mode), "backend": backend}
+    for worker in engine["workers"].values():
+        worker["timing"] = {"type": "fixed", "prefill_ms": 250, "decode_ms": 250}
+        # SGLang defaults to one-token blocks. Both active 130-token requests
+        # must fit independently, including their decode tokens.
+        worker["kv_cache"]["capacity"]["blocks"] = 1024
+    return {
+        "engine": engine,
+        "traffic": {
+            "source": {"type": "trace", "format": "weka", "paths": [str(path)]},
+            "load": {
+                "type": "trace_timestamps",
+                "agentic_lanes": 2,
+                "agentic_snapshot": {"seed": 42},
+                "agentic_warmup": warmup,
+                "agentic_profile": {"duration_seconds": duration},
+            },
+        },
+    }
+
+
+@pytest.mark.parametrize("backend", ["vllm", "sglang"])
+@pytest.mark.parametrize("mode", ["aggregated", "disaggregated"])
+@pytest.mark.parametrize("warmup", [False, True])
+def test_native_continuous_agentic_profile_recycles_and_closes_admission(tmp_path, backend, mode, warmup):
+    report = _run(_agentic_profile_config(tmp_path, backend, mode, warmup, 120.0)).metadata["native_report"]
+    profile = report["agentic_profile"]
+    assert profile["admission_closed"]
+    assert profile["admission_cutoff_ms"] - profile["profile_start_ms"] == pytest.approx(120_000.0)
+    assert profile["plays_started"] > 4
+    assert profile["client_completed_plays"] >= 4
+    assert profile["corpus_cursor"] == profile["plays_started"]
+    assert profile["idle_shifts"]
+    assert not profile["cancel_drain_timed_out"]
+    assert profile["unsettled_server_requests"] == 0
+    assert profile["canceled_requests"] == 0
+    records = report["per_request"]
+    assert len(records) == profile["issued_requests"] == profile["successful_responses"]
+    assert all(0.0 <= record["arrival_time_ms"] < 120_000.0 for record in records)
+    cache_by_play: dict[str, set[str]] = {}
+    for record in records:
+        identity = record["agentic"]
+        cache_by_play.setdefault(identity["play_id"], set()).add(identity["cache_id"])
+    assert all(len(ids) == 1 for ids in cache_by_play.values())
+    assert len({next(iter(ids)) for ids in cache_by_play.values()}) == len(cache_by_play)
+    if warmup:
+        assert profile["profile_start_ms"] == report["agentic_phases"]["profile_start_ms"] > 0
+    else:
+        assert profile["profile_start_ms"] == 0
+
+
 @pytest.mark.parametrize(
     "timestamps,expected",
     [
@@ -1174,3 +1253,67 @@ def test_native_dynamo_agentic_snapshot_retains_recorded_intervals_and_executes_
         first = min(report["per_request"], key=lambda record: record["first_admit_ms"])
         assert first["admission_history"][0]["reused_input_tokens"] == 0
         assert first["dispatched_at_ms"] == pytest.approx((starts[first["request_id"]] - cut) / speedup)
+
+
+@pytest.mark.parametrize(
+    "backend,mode,traffic_kind",
+    [
+        ("vllm", "aggregated", "synthetic"),
+        ("vllm", "aggregated", "multiworker"),
+        ("sglang", "disaggregated", "synthetic"),
+        ("vllm", "aggregated", "weka"),
+        ("sglang", "disaggregated", "weka"),
+    ],
+)
+def test_engine_runner_canonical_determinism(backend, mode, traffic_kind):
+    engine = {**_engine(mode), "backend": backend}
+    if traffic_kind == "multiworker":
+        engine["workers"]["aggregated"]["parallelism"] = {
+            "replicas": 2,
+            "attention_data": 2,
+        }
+    traffic = {
+        "source": {"type": "synthetic", "input_tokens": 8, "output_tokens": 4},
+        "load": {"type": "concurrency", "concurrency": 3},
+        "stop": {"requests": 8},
+    }
+    if traffic_kind == "weka":
+        traffic = {
+            "source": {
+                "type": "trace",
+                "format": "weka",
+                "paths": [str(_TRACE_FIXTURES / "weka-two-plays.jsonl")],
+            },
+            "load": {"type": "trace_timestamps", "agentic_lanes": 1},
+        }
+    spec = prediction_to_replay_spec(CorePredictionConfig.model_validate({"engine": engine, "traffic": traffic}))
+    records = []
+    for _ in range(2):
+        runner = EngineReplayRunnerFactory(determinism="canonical_v1").create(0)
+        try:
+            report = runner.run(
+                spec,
+                output_requirements=ReplayOutputRequirements(include_raw_report=True, capture_per_request=True),
+            ).metadata["native_report"]
+        finally:
+            runner.close()
+        records.append(
+            {
+                key: value
+                for key, value in report.items()
+                if key
+                not in {
+                    "wall_time_ms",
+                    "processed_tokens_per_s",
+                    "processed_output_tokens_per_s",
+                }
+            }
+        )
+    assert records[0] == records[1]
+    assert records[0]["completed_requests"] > 0
+
+
+def test_engine_runner_rejects_unknown_determinism():
+    spec = prediction_to_replay_spec(CorePredictionConfig.model_validate({"engine": _engine()}))
+    with pytest.raises(ValueError, match="unsupported replay determinism"):
+        EngineReplayRunnerFactory(determinism="typo").create(0).run(spec)

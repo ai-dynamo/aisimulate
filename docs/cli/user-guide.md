@@ -9,7 +9,7 @@ Predict serving behavior and search deployment configurations with `aisimulate`.
 
 Use this guide for the unified CLI. For the six `aiconfigurator cli` commands still shipped
 with AISimulate, see the [Legacy AIC CLI User Guide](legacy-aic-user-guide.md). The
-[migration guide](migrate-from-aiconfigurator.md) explains which workflows have a unified replacement.
+[migration guide](../MIGRATION.md) explains which workflows have a unified replacement.
 
 > [!WARNING]
 > **Experimental.** Recommendation schemas and search behavior may change between releases
@@ -95,9 +95,9 @@ illustrate the output format. Captured detail examples are simulation results, n
 
 ## 3. Install
 
-Check the [installation guide](../installation.md) for the selected wheel's
-platform requirements and publication status. Use its source-install workflow
-for features documented on `main` that are not yet in a published wheel.
+This guide describes AISimulate 0.13 development. The command below installs a
+0.13 prerelease on Linux. For other platforms, follow the
+[source-install workflow](../installation.md#use-current-source).
 
 Use **Python 3.11–3.13**. The commands below use Bash or Zsh. Check that `python3` selects a
 supported version; substitute a versioned command such as `python3.13` if needed.
@@ -113,7 +113,7 @@ mkdir -p aisimulate-tutorial
 cd aisimulate-tutorial
 python3 -m venv .venv
 source .venv/bin/activate
-python -m pip install aisimulate
+python -m pip install --pre 'aisimulate>=0.13.0.dev0,<0.14'
 aisimulate --help
 aisimulate predict --help
 aisimulate recommend --help
@@ -399,7 +399,7 @@ optimization:
 `goodput_per_gpu` rewards SLA-compliant throughput per GPU. `strict_sla: true` additionally
 filters candidates by the configured aggregate mean latency bounds. This is an efficiency search;
 use `target: min_gpus` to select the smallest qualifying configuration found instead. See the
-[minimum-GPU migration example](migrate-from-aiconfigurator.md#minimum-gpu-sizing) for load
+[minimum-GPU migration mapping](../MIGRATION.md#traffic-parallelism-and-minimum-gpus) for load
 constraints and the bundled AIC sizing alternative.
 
 <a id="predict-a-recommended-configuration"></a>
@@ -417,7 +417,7 @@ aisimulate predict \
 The saved YAML contains concrete values with no search domains, `preset`, `optimization`, or
 `optimizer`. The command prints the prediction metrics table shown earlier and writes
 `best-prediction/prediction.json`. It is a prediction input; deployment
-manifests and launch scripts are covered in the [migration guide](migrate-from-aiconfigurator.md).
+manifests and launch scripts are covered in the [migration guide](../MIGRATION.md).
 
 <a id="common-options"></a>
 
@@ -714,6 +714,12 @@ the current SA convention.
 | `traffic.load.agentic_lanes` | `null` | `x` | `-` | Positive integer; `weka`, `agentic_mooncake`, or agentic `dynamo` timestamp replay only. |
 | `traffic.load.agentic_snapshot` | `null` (unset) | `x` | `-` | Optional object `{seed: u64}`; required `seed` is an unsigned 64-bit integer (`0` through `2^64 - 1`). Requires `traffic.load.type: trace_timestamps` and positive `agentic_lanes`; supported formats are `weka`, `agentic_mooncake`, and agentic `dynamo`. Unset preserves turn-zero execution. |
 | `traffic.load.agentic_warmup` | `false` | `x` | `-` | Optional boolean; `true` requires `agentic_snapshot` and positive `agentic_lanes`. Physically primes the saved prefixes, completes ten warmup requests per lane, then profiles the saved suffix. Available on offline aggregated or disaggregated vLLM/SGLang Engine replay, with HBM-only KV cache and speculative decoding disabled. |
+| `traffic.load.agentic_profile` | `null` (unset) | `x` | `-` | Optional object; `{}` enables continuous lane replenishment with the defaults below. Requires `trace_timestamps`, positive `agentic_lanes`, and `agentic_snapshot`; cannot be combined with `traffic.stop.max_virtual_time_seconds`. Unset preserves finite replay. See [continuous agentic profiles](../agentic-profile.md) for the full configuration, supported runtimes, and reporting semantics. |
+| `traffic.load.agentic_profile.duration_seconds` | `3600` when enabled | `x` | `-` | Positive finite admission duration, starting at the preparation barrier or simulation start without warmup. No new workload requests or replacement plays are issued after the deadline. |
+| `traffic.load.agentic_profile.response_grace_seconds` | `30` when enabled | `x` | `-` | Nonnegative finite time for already submitted requests to respond after the admission deadline; remaining client requests are then canceled. |
+| `traffic.load.agentic_profile.cancel_drain_seconds` | `10` when enabled | `x` | `-` | Nonnegative finite upper bound for cancellation acknowledgements. The supported offline runtimes acknowledge synchronously; this does not guarantee server/GPU cleanup. |
+| `traffic.load.agentic_profile.tree_idle_cap_seconds` | `300` when enabled | `x` | `-` | Positive finite idle cap for advancing a play's pending workload timers when that play has no outstanding requests. |
+| `traffic.load.agentic_profile.global_idle_cap_seconds` | `10` when enabled | `x` | `-` | Positive finite idle cap for advancing pending workload timers when the entire client workload has no outstanding requests. Engine completions and server cleanup keep their actual timestamps. |
 | `traffic.stop.requests` | `100` for default traffic | `x` | `-` | Positive integer; 10× default concurrency; synthetic request source only. |
 | `traffic.stop.requests_per_load_unit` | `null` | `x` | `-` | Positive; synthetic request source only. |
 | `traffic.stop.sessions` | `null` | `x` | `-` | Positive integer; synthetic session source only. |
@@ -822,9 +828,10 @@ traffic:
     max_virtual_time_seconds: 300
 ```
 
-Omitting `traffic.stop` for a trace runs to end of trace. `max_virtual_time_seconds` is trace-only and
-cannot be used for synthetic traffic. Trace source, format, and token/session content stay concrete in
-a recommendation input; only a numeric trace-load field can be a domain.
+Without `agentic_profile`, omitting `traffic.stop` for a trace runs to end of trace.
+`max_virtual_time_seconds` is trace-only and cannot be combined with `agentic_profile` or used for
+synthetic traffic. Trace source, format, and token/session content stay concrete in a recommendation
+input; only a numeric trace-load field can be a domain.
 
 `speedup: N` divides authored timing by `N`; for example, `2` replays the timing twice as fast. For
 Mooncake session traces it scales both first-turn arrival timestamps and inter-turn delays. For
@@ -881,13 +888,19 @@ models are not supported yet.
 The lowering records a zero-based `source_play_ordinal` on every v2 row so materialized graphs retain
 deterministic directory and JSONL order; missing ordinals remain valid for older v2 inputs, but an
 ordered graph must provide one unique contiguous ordinal for every play.
-An explicit `agentic_lanes: N` assigns plays round-robin to N client lanes. The next play starts when
-the current play's client work ends: all authored requests complete on success, or all dispatched
-requests become terminal after a failure skips undispatched work. Background requests remain part
+Without `agentic_profile`, an explicit `agentic_lanes: N` assigns plays round-robin to N client lanes.
+The next play starts when the current play's client work ends: all authored requests complete on
+success, or all dispatched requests become terminal after a failure skips undispatched work. Background requests remain part
 of their play even without a parent join. P/D source holds and other server cleanup may outlive this
 boundary; they still constrain engine admission and final drain, but do not delay client submission.
-Omitting the field preserves authored timestamp behavior; corpus wrapping and fixed-duration lane
-orchestration are outside the version 1 contract.
+Omitting `agentic_lanes` preserves authored timestamp behavior. With `agentic_snapshot` and
+`agentic_profile`, completed lanes take replacement plays from a shared sequential corpus cursor,
+which wraps at the end of the corpus until the admission deadline. Replacement plays start at turn
+zero with fresh request, conversation, play, and cache identities. This opt-in path supports offline
+aggregated and P/D vLLM/SGLang Engine replay with HBM-only KV cache and speculative decoding disabled.
+It retains AISimulate's snapshot sampling and warmup frontier behavior; it does not establish complete
+AgentX parity. See [continuous agentic profiles](../agentic-profile.md) for defaults, lifecycle and
+idle controls, a runnable example, and the remaining limitations.
 
 <a id="mooncake-and-mooncake-delta-jsonl"></a>
 
@@ -898,7 +911,7 @@ Both formats use the same row schema. Rows with the same `session_id` are turns 
 | Field | Required | Semantics |
 |---|---|---|
 | `request_id` | No | Request identity. |
-| `session_id` | No | Groups rows into a session; an omitted value creates a one-row session. |
+| `session_id` | No | Groups rows into a session. An omitted value creates a one-row session whose per-request records use `request_<line>`; placement sees no session for it. |
 | `input_length` or `input_tokens` | No | Input token count; defaults to the capacity represented by `hash_ids`. |
 | `output_length` or `output_tokens` | Yes | Output token count. |
 | `output_token_ids` | No | Exact output tokens; its length must equal the output token count. |
@@ -1021,6 +1034,8 @@ engine:
 | `engine.workers.<role>.parallelism.attention_data` | `1` | Feasible registry values | `parallelism` | Positive and model/backend compatible. |
 | `engine.workers.<role>.parallelism.moe_tensor` | `1` | Feasible registry values | `parallelism` | Positive and model/backend compatible. |
 | `engine.workers.<role>.parallelism.moe_expert` | `1` | Feasible registry values | `parallelism` | Positive and model/backend compatible. |
+| `engine.workers.<role>.parallelism.prefill_context` | `1` | `x` | `-` | `predict` only. Prefill context parallelism (SGLang `--attn-cp-size`, vLLM `-pcp`): splits prefill tokens across extra attention ranks; decode stays replicated on them. Requires model/backend CP support. |
+| `engine.workers.<role>.parallelism.decode_context` | `1` | `x` | `-` | `predict` only. Decode context parallelism (vLLM `-dcp`, SGLang `--dcp-size`): stripes the decode KV cache across ranks inside the attention group without adding GPUs. Aggregated workers accept at most one of `prefill_context` / `decode_context` above 1; disaggregated roles carry each knob independently. Modeled for DeepSeek-V3-class MLA (vLLM, SGLang), DeepSeek-V3.2 / GLM-5 DSA (vLLM, SGLang) and dense / Qwen-MoE GQA (vLLM, `decode_context <= tensor / kv_heads`); other families fail loud. |
 | `engine.workers.<role>.scheduler.max_batched_tokens` | Aggregated/prefill/decode: `8192` | Prefill/aggregated: `{choices: [8192, 16384, 32768]}`; decode: `-` | `-` | Positive. |
 | `engine.workers.<role>.scheduler.max_sequences` | Aggregated `256`; prefill `1`; decode `256` | Prefill: `{choices: [1, 2, 4, 8, 16, 32, 64, 128, 256]}`; aggregated/decode: `{choices: [256, 512, 1024]}` | `-` | Positive. |
 | `engine.workers.<role>.scheduler.prefill_schedule_interval` | `1` | `x` | `-` | `predict` only. Positive. Values above one throttle prefill admission only for vLLM attention-DP groups. |
@@ -1034,9 +1049,13 @@ engine:
 | `engine.workers.<role>.kv_cache.state_cache.bytes_per_request` | Disabled | `-` | `-` | `predict --stack engine` only, aggregated vLLM without host or G3 offload. Positive recurrent-state bytes per request per rank; requires fixed capacity. Omit the byte count to resolve K3 state and token geometry; see [state-cache sizing](#manual-state-cache-sizing). |
 | `engine.workers.<role>.kv_cache.prefix_match_unit` | Omitted | `-` | `-` | `predict --stack engine` only. Positive divisor of the resolved `block_size`; requires aggregated vLLM G1 `state_cache`. Rejects `engine.speculation`, `engine.nextn > 0`, KV event export, and Belady eviction. See [manual state-cache sizing](#manual-state-cache-sizing). |
 | `engine.workers.<role>.kv_cache.capacity.cuda_graph_reserved_bytes` | `0` | `-` | `-` | `predict` only. Integer from `0` through `2**53`; `default` capacity only. |
-| `engine.workers.<role>.kv_cache.host_offload.num_host_blocks` | Required when `host_offload` is present | `x` | `-` | Positive; fixed descriptor, aggregated vLLM only. |
-| `engine.workers.<role>.kv_cache.host_offload.d2h_bandwidth_gbps` | `32.0` | `x` | `-` | Finite and nonnegative. |
-| `engine.workers.<role>.kv_cache.host_offload.h2d_bandwidth_gbps` | `32.0` | `x` | `-` | Finite and nonnegative. |
+| `engine.workers.<role>.kv_cache.host_offload.scope` | `dp_rank_local` | `x` | `-` | `dp_rank_local` (one cache per DP rank) or `cluster_shared` (one deployment pool). See [G2 host-cache scope](../g2-cache-scope.md). |
+| `engine.workers.<role>.kv_cache.host_offload.num_host_blocks` | Required when `host_offload` is present | `x` | `-` | Positive; fixed descriptor. Per DP rank for `dp_rank_local`, pool total for `cluster_shared`. |
+| `engine.workers.<role>.kv_cache.host_offload.d2h_bandwidth_gbps` | `32.0` | `x` | `-` | Per DP rank; finite and nonnegative, `0` is unlimited. |
+| `engine.workers.<role>.kv_cache.host_offload.h2d_bandwidth_gbps` | `32.0` | `x` | `-` | Per DP rank; finite and nonnegative, `0` is unlimited. |
+| `engine.workers.<role>.kv_cache.host_offload.shared_d2h_bandwidth_gbps` | `80.0` | `x` | `-` | Pool-wide cap; `cluster_shared` only. |
+| `engine.workers.<role>.kv_cache.host_offload.shared_h2d_bandwidth_gbps` | `80.0` | `x` | `-` | Pool-wide cap; `cluster_shared` only. |
+| `engine.workers.<role>.kv_cache.host_offload.latency_to_first_byte_ms` | `0.0` | `x` | `-` | Delay before a transfer moves bytes; consumes no bandwidth. |
 | `engine.workers.<role>.timing.type` | `default` | `x` | `-` | `default`, `fixed`, or `polynomial`. |
 | `engine.workers.<role>.timing.prefill_ms` | `null` | `x` | `-` | Nonnegative and required for `fixed` timing. |
 | `engine.workers.<role>.timing.decode_ms` | `null` | `x` | `-` | Nonnegative and required for `fixed` timing. |
@@ -1068,7 +1087,7 @@ version must resolve identically on both effective SKUs. Pin a common supported 
 if their latest versions differ. Prediction uses each role's hardware for timing and KV
 capacity. Recommendation checks each role against its own hardware within the shared GPU
 budget and saves the overrides in prediction YAML. See the
-[complete YAML and CLI example](migrate-from-aiconfigurator.md#48-migrate-heterogeneous-pd-hardware).
+[hardware migration mapping](../MIGRATION.md#heterogeneous-pd-hardware).
 
 An aggregated configuration uses `workers.aggregated`. A disaggregated configuration uses
 `workers.prefill` and `workers.decode`:
@@ -1326,11 +1345,13 @@ ngram runtime flags are supported.
 
 ### 12.2 Native vLLM host-offload prediction
 
-The initial public host-offload surface is deliberately fail-closed: it supports one aggregated
-vLLM worker role with prefix caching enabled, attention DP equal to one, and no native speculative
-decoding. The descriptor is fixed in both `predict` and `recommend`; host capacity and bandwidths
-are not search dimensions. `bytes_per_token` belongs to `kv_cache`, not `host_offload`, and is
-resolved for the worker role before lowering to the native rank.
+The public host-offload surface supports vLLM aggregated and token-only disaggregated workers with
+prefix caching enabled, any attention-DP size, and no native speculative decoding. The descriptor is
+fixed in both `predict` and `recommend`; host capacity and bandwidths are not search dimensions.
+`bytes_per_token` belongs to `kv_cache`, not `host_offload`, and is resolved for the worker role
+before lowering to the native rank; with `auto` it is one tensor-parallel shard's footprint. Each DP
+rank has its own G2 cache by default; `scope: cluster_shared` models one pool for the deployment.
+See [G2 host-cache scope](../g2-cache-scope.md) for ownership, bandwidth sharing and compatibility.
 
 ```yaml
 # host-offload-prediction.yaml
@@ -1451,6 +1472,15 @@ to cache-miss handling while the recoverable prefix cannot fit in G2. Capacity
 relief or time advancement permits retry. This simulator guard adds no pins or
 invented latency and does not model native CPU retry overhead.
 
+A restore can also thrash across time: when the recoverable prefix is larger
+than G2 can hold, each promotion evicts a block promoted earlier for the same
+request. After 1,024 restore rounds (lookups that submit G3 reads) in which its
+DP rank schedules no work and emits no output, a request stops restoring from
+G3 and computes what G1 and G2 do not hold, until it is admitted or
+preempted. Rank progress, admission or preemption starts the count over, so a
+request is never bypassed while its rank keeps working. Native vLLM has no such
+rule.
+
 The prediction summary includes `g3_offload` only when enabled, alongside the
 existing TTFT, TPOT, and throughput metrics:
 
@@ -1465,10 +1495,14 @@ For a reused runtime, G3 counters accumulate across reports and its cache remain
   `cross_worker_read_blocks` describe tier state and reuse. Cross-worker reuse
   counts completed reads of blocks first written by another worker, not lookup
   hits. `--capture-per-request` retains the existing `requests.jsonl` output.
+- `bypassed_restores` counts the times a request stopped restoring from G3
+  under the rule above. It is omitted when zero.
 
 G3 supports aggregated vLLM with fixed or dynamically scaled workers, prefix caching enabled,
 attention DP equal to one, and no native speculative decoding. It does not
-support `recommend`, disaggregated mode, or hardware integration.
+support `recommend`, disaggregated mode, or hardware integration. Either G2
+scope can be combined with G3; a completed G2 store stays pinned until it is
+handed to G3 write-through.
 Replay owns the deployment-wide tier; direct scheduler construction cannot
 provide it. Omit `g3_offload` to keep existing G1/G2 behavior.
 
@@ -1717,6 +1751,27 @@ optimizer:
 | `optimizer.candidate_timeout_seconds` | `600` | `x` | `-` | Positive wall-clock limit per candidate. |
 | `optimizer.seed` | `42` | `x` | `-` | Nonnegative. |
 
+
+The progress bar counts settled suggestions, including cache hits, unsupported candidates,
+failures and timeouts. The summary separately reports actual evaluations and cache hits;
+`suggesting` means time is being spent in the optimizer, while `evaluating` means candidates
+are being materialized or replayed. Suggestion time is reported at the end.
+
+`random` visits shuffled legal backend/topology pairs before returning to their scheduler
+and workload domains. Finite complete configurations are sampled without replacement,
+without materializing the Cartesian product. Exhausting a finite space ends the search
+before `max_trials`; the summary says so. For `min_gpus`, each coverage pass starts with
+the smallest legal GPU counts. This improves coverage within a small budget, but does not
+prove global optimality across all scheduler/workload combinations.
+
+Bayesian duplicates reuse cached measurements and still consume the suggestion budget.
+Deterministic KV-capacity, SLA and load-constraint failures are also cached. Random search
+interleaves host-resource and timeout retries with new configurations within the same trial
+budget, including continuous domains. Single-slot asks alternate between pending retries and
+new configurations so neither starves; unexpected runtime failures are not cached. The CLI folds selected
+scheduler-limit variants only when all other prediction inputs and all reported metrics
+match; the complete candidate ledger remains in JSON/CSV.
+
 <a id="complete-dynamo-prediction-example"></a>
 
 ## 19. Complete Dynamo Prediction Example
@@ -1909,7 +1964,7 @@ Summary power is independent of `--detail`; the `energy` selector only adds a br
 Both JSON keys are always present in conforming summaries: unavailable watts use `null`,
 coverage stays numeric when computable, and an unsupported energy path uses `null` for both.
 Consult the
-[AIC migration guide](migrate-from-aiconfigurator.md) for the current release boundary.
+[AIC migration guide](../MIGRATION.md) for the current release boundary.
 
 ### Power and energy detail
 
@@ -2075,7 +2130,7 @@ the runner exports no typed evidence. Missing measurements are never invented as
 energy-aware runs with no covered operations report numeric zero coverage. Whole-model FPM,
 fixed/polynomial timing, analytical EPD/AFD overlays, and adapters without the native export
 report operation timing/source evidence unavailable. Serving time statistics remain available
-where exported. See [diagnostic availability](migrate-from-aiconfigurator.md#detailed-diagnostics).
+where exported. See [diagnostic availability](../MIGRATION.md#prediction-details-and-power).
 
 Inspect a recommendation by running `predict --detail` on its saved YAML. Reporting options
 are CLI-only; this change adds no YAML configuration fields.
@@ -2090,8 +2145,8 @@ concurrency four, and twelve requests. These outputs were captured from the buil
 on 2026-09-15 with AISimulate 0.12.0 and this detail implementation. They are simulation
 results; values may change with the implementation or performance data. These excerpts retain
 the initial summary/memory/time capture. The energy extension adds another section to `all`;
-see the [captured energy result](migrate-from-aiconfigurator.md#4113-captured-result) for its
-command and output.
+see [power availability](../MIGRATION.md#prediction-details-and-power) for
+coverage requirements and diagnostic limits.
 
 ```bash
 aisimulate predict -c prediction.yaml --detail all \
@@ -2282,7 +2337,7 @@ with no feasible result still saves its result ledger and does not provide a YAM
 
 ## 25. Related documentation
 
-- [AIC migration guide](migrate-from-aiconfigurator.md)
+- [AIC migration guide](../MIGRATION.md)
 - [Legacy AIC CLI User Guide](legacy-aic-user-guide.md)
 - [Sweeper architecture](../sweeper/architecture.md)
 - [Sweeper result schema](../sweeper/results.md)

@@ -106,9 +106,26 @@ class ForwardPassPerfModelConfig:
     Estimator controls pass through to Rust unchanged. For regression,
     ``estimator_config["fpm_regression"]["fit"]["rebuild_interval"]`` accepts
     a positive integer mutation count or ``None`` to disable periodic
-    statistics rebuilding. Omitting it uses the Rust default of ``None``;
+    full rebuilding. Each rebuild refreshes retained-row statistics and batch
+    coefficients together. Omitting it uses the Rust default of ``None``;
     numerical recovery and batch fallbacks remain enabled. An explicit
     positive interval, such as 4096, opts into periodic rebuilding.
+
+    ``sampling.axes`` selects 1 to 6 retention coordinates; its length must
+    match ``sampling.bins_per_axis``. The defaults remain attention/MoE,
+    ``[4, 4]`` bins, and 64 retained observations per store. Independent
+    ``fit.linear.feature_axes`` selects 1 to 6 fitted coordinates. Omitted
+    ``fit.linear`` retains the existing attention/MoE fit, nonnegative slopes,
+    and eager updates. ``fit.linear.non_negative=False`` permits signed slopes.
+    ``fit.linear.update_policy`` accepts ``{"kind": "always"}`` or an explicit
+    ``error_threshold`` policy. Lazy updates retain every accepted sample and
+    update statistics; only coefficient publication is deferred. Rust owns
+    these defaults and validation, including saved-configuration reload.
+    The existing scalar metrics support attention, MoE, request count ``n``,
+    ``logN``, and ``n2``. Other axes require the optional aligned unsigned-integer
+    arrays ``scheduled_requests.extend_lengths`` and ``past_kv_lengths``;
+    both must have one entry per scheduled request. Their sums may differ from
+    aggregate token counters because backends use different counting conventions.
 
     ``fit.kind`` defaults to ``"standardized_nnls"`` (alias ``"linear"``).
     Set ``{"fpm_regression": {"fit": {"kind": "spline"}}}`` to use learned
@@ -133,6 +150,10 @@ class ForwardPassPerfModelConfig:
     dcp: int | None = dataclass_field(default=None, kw_only=True)
     moe_tp_size: int | None = None
     moe_ep_size: int | None = None
+    # Prefill context parallelism (widens the attention side) and decode
+    # context parallelism (stripes the decode KV across the TP ranks); None
+    # keeps both at one and out of the serialized identity.
+    cp_size: int | None = dataclass_field(default=None, kw_only=True)
     gemm_quant_mode: str | None = None
     moe_quant_mode: str | None = None
     fmha_quant_mode: str | None = None
@@ -255,9 +276,10 @@ class RustForwardPassPerfModel:
 
     Regression models instead bind one immutable ``worker_type`` at
     construction: ``"prefill"``, ``"decode"``, or ``"aggregated"``. All DP
-    ranks in an iteration use that worker type's two-dimensional critical-
-    attention/global-FFN feature schema. ``"agg"`` and other aliases are not
-    accepted. Each instance belongs to one worker, selected by the caller.
+    ranks in an iteration use that worker type's critical-attention/global-FFN
+    features by default. Linear fits can independently select fitting and
+    retention axes; spline fits retain the two default axes. ``"agg"`` and other
+    aliases are not accepted. Each instance belongs to one worker, selected by the caller.
     Prefill and Decode own one regression store each; Aggregated owns four
     stores routed by the composition of all active ranks. Each store has its
     own fit and retention state. ``max_observations`` (default ``64``) and
@@ -266,12 +288,28 @@ class RustForwardPassPerfModel:
     Regression updates centered sufficient statistics as retained samples are
     inserted or evicted. The canonical ``fpm_regression.fit.rebuild_interval``
     control counts one mutation per insertion and one per eviction. A scheduled
-    rebuild occurs after the complete update transaction, then resets its
-    counter to zero. The Rust default is ``None``, which disables only scheduled
+    full rebuild occurs after the complete update transaction, then resets its
+    counter to zero. Periodic, numerical-recovery, and batch-fallback rebuilds
+    refresh both statistics and coefficients from the same retained rows.
+    The Rust default is ``None``, which disables only scheduled
     rebuilds, preserving numerical recovery and batch fallbacks. Set a positive
     interval, such as 4096 mutations, to enable scheduled rebuilds.
 
-    The default linear fit is unchanged. ``fit.kind="spline"`` adds learned
+    An optional linear ``error_threshold`` policy monitors the raw prediction
+    before admission. An error is excessive only when its magnitude is strictly
+    greater than ``max(absolute_tolerance_ms, relative_tolerance * observed_ms)``.
+    ``trigger`` excessive errors in the latest ``window`` accepted observations
+    with finite prior predictions,
+    together with ``cooldown`` accepted observations since the last successful
+    fit, request an update. A full window is unnecessary. Startup is eager for
+    ``startup_observations`` (default 10), and an unready model keeps retrying.
+    Successful fits clear the monitor; failed fits do not. Periodic rebuilding
+    and numerical recovery override lazy deferral. Coefficients and their
+    feature means/scales stay together as a prediction snapshot between fits.
+
+    Default feature selection, nonnegative fitting, and eager updates remain
+    unchanged. An identifiable all-zero linear candidate retains the previous
+    serving snapshot. ``fit.kind="spline"`` adds learned
     knots and a separate accepted-observation search clock per store. Spline
     coefficients update between searches; a knot search rebuilds their basis.
     The linear fit uses the same retained samples and supplies predictions
@@ -1379,6 +1417,11 @@ def _engine_config_json(model: Any, database: Any) -> str:
                         "fpm_config": fpm_config.cache_identity() if fpm_config is not None else None,
                         "decoder_replay": bool(getattr(model_config, "decoder_replay", False)),
                         "cp_style": getattr(model_config, "cp_style", None),
+                        # DCP op-shaping overrides: the merge collective
+                        # (ag_rs vs a2a) and the replicated-Q variant compile
+                        # different op graphs for one (tp, dcp) identity.
+                        "dcp_comm": getattr(model_config, "dcp_comm", None),
+                        "dcp_q_replicate": getattr(model_config, "dcp_q_replicate", None),
                         "workload_distribution": getattr(model_config, "workload_distribution", None),
                         "decode_workload_distribution": getattr(model_config, "decode_workload_distribution", None),
                         "prefill_graph_profile": getattr(model_config, "prefill_graph_profile", None),

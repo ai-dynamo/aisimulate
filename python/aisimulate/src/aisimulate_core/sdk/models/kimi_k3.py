@@ -64,6 +64,24 @@ class KimiK3Model(BaseModel):
     KDA_STATE_SLOTS_PER_REQUEST = 5
 
     @classmethod
+    def supports_dcp(cls, backend_name: str) -> bool:
+        # SGLang ships Kimi-K3 decode CP (`arg_groups/model_overrides/kimi_k3.py`:
+        # cutedsl_mla / tokenspeed_mla / aiter with `enable_dcp`,
+        # `models/kimi_k3.py::prepare_context_parallel_metadata_for_dcp`). DCP
+        # stripes the KV of the MLA layers only; the KDA layers keep no KV and
+        # ignore it, which is exactly what the op-type rewrite does. vLLM has no
+        # K3 DCP path (the hybrid KV manager rejects dcp > 1).
+        return backend_name == "sglang"
+
+    def _dcp_q_replicate(self) -> bool:
+        # SGLang's K3 override defaults `dcp_replicate_q_proj=True` under the
+        # a2a / fi_a2a merges (its DCP defaults), dropping the per-layer query
+        # all-gather in favour of a replicated Q projection.
+        if getattr(self.config, "dcp_q_replicate", None) is None and self._backend_name == "sglang":
+            return self._dcp_comm_style() == "a2a"
+        return super()._dcp_q_replicate()
+
+    @classmethod
     def create(cls, model_info: dict, model_config, backend_name: str) -> BaseModel:
         return cls(
             backend_name,
@@ -824,3 +842,20 @@ class KimiK3Model(BaseModel):
         if budget <= 0 or per_token <= 0:
             return 0
         return int(budget // per_token)
+
+    # Decode CP stripes only the MLA layers' token-linear KV; the KDA state is
+    # per-request and rank-local (every rank runs the full recurrence on its
+    # own KDA head shard), so it must be reserved whole BEFORE the stripe.
+    def get_kvcache_rank_bytes_per_sequence(self, seq_len: int) -> float:
+        token_bytes = (
+            max(0, seq_len) * self.config.kvcache_quant_mode.value.memory * self.get_kvcache_elements_per_token()
+        )
+        return token_bytes / self._cp_kv_memory_divisor() + self._kda_state_bytes_per_request()
+
+    def get_kvcache_rank_batch_capacity(self, kv_budget_bytes: float, max_batch_size: int) -> int:
+        token_budget = float(kv_budget_bytes) - self._kda_state_bytes_per_request()
+        if token_budget <= 0:
+            return 0
+        return self.get_kvcache_batch_capacity(
+            token_budget * self._cp_kv_memory_divisor() + self._kda_state_bytes_per_request(), max_batch_size
+        )

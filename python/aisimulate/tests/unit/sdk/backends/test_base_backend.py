@@ -141,7 +141,7 @@ class TestMTPActivationMemoryScaling:
             _num_experts=0,
             model_family="test",
             get_kvcache_bytes_per_sequence=lambda _seq_len: 0.0,
-            _cp_kv_memory_divisor=lambda: 1,
+            get_kvcache_rank_bytes_per_sequence=lambda _seq_len: 0.0,
         )
 
     @staticmethod
@@ -542,7 +542,7 @@ def test_run_agg_b1_uses_scheduled_activation_peak(
     model._num_experts = 0
     model.model_family = "test"
     model.get_kvcache_bytes_per_sequence = lambda _seq_len: 0.0
-    model._cp_kv_memory_divisor = lambda: 1
+    model.get_kvcache_rank_bytes_per_sequence = lambda _seq_len: 0.0
     database.system_spec["misc"] = {"nccl_mem": {1: 0}, "other_mem": 0}
     monkeypatch.setattr(
         backend,
