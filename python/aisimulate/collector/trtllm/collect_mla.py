@@ -223,8 +223,8 @@ def run_mla(
     # (cpp/kernels/fmha_v2/setup.py:6926-6931@v1.3.0rc20); the hand-added
     # sm89 576x512 generation cubin entry from 1.0.0 was dropped in the same
     # window. Layout-level, so it kills every dtype at once. Fail closed with
-    # a cited, classified raise (Gemma4/DSA precedent). Re-verify on the next
-    # framework version bump.
+    # a cited, classified raise (Gemma4/DSA precedent). Re-verified on 1.3.0rc29 / L40 2026-10-04 (the module
+    # collector's twin guard, collect_mla_module.py): same assert, now attentionOp.cpp:3234 — still SM89-less.
     if get_sm_version() < 90:
         phase = "context" if is_context_phase else "generation"
         raise ValueError(

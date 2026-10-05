@@ -240,3 +240,42 @@ profiles:
     # fabric (PCIe sm120 has none; the typed builder defaults to CUTLASS when
     # unset) and sglang deepep_moe is a wide-EP selection. vLLM picks its MoE
     # backend from MODEL defaults (observed on sm120: FLASHINFER_CUTLASS NvFp4).
+
+  # ---------------------------------------------------------------------------
+  # L40S  —  Ada  sm89  (SDK system `l40s`)
+  # Product-keyed like h100 / h200 / h20 (the SM-keyed sm120 profile exists because several
+  # RTX PRO products share one set of facts; Ada does not — an L4 host would carry a
+  # different node_selector, so it gets its own profile when a campaign needs it).
+  # Before this profile existed resolve_facts() raised "Unknown hardware profile l40s" for
+  # every l40s render and the generator pipeline swallowed it ("Fact resolution failed;
+  # continuing without facts."), so no MODEL default (block-size, trust-remote-code,
+  # autotune flags) reached the engine args — the failure first found on sm120
+  # (findings: rtx_systems_have_no_generator_facts_hardware_profile; sm89 campaign 2026-10-04).
+  # ---------------------------------------------------------------------------
+  l40s:
+    node_selector:
+      # GPU product label pattern NVIDIA-${name// /-} (same derivation as b200); the SDK's
+      # l40s perf data carries device "NVIDIA L40S". (The 2026-10-04 opharness campaign box
+      # was an 8x L40 — same AD102 die, lower TDP — which the system id does not cover.)
+      nvidia.com/gpu.product: NVIDIA-L40S
+    arch: x86_64
+    # nccl_env: intentionally none (PCIe-only host, no NVLink; nothing verified to assert).
+    shared_memory:
+      # Not measured: every opharness probe on the L40 box (tp1 and tp4) ran with --shm-size 16g;
+      # 32Gi mirrors the other PCIe 8-GPU profile (sm120) as a conservative deployment default.
+      default: 32Gi
+    tolerations:
+      - key: nvidia.com/gpu
+        operator: Exists
+        effect: NoSchedule
+    # moe_backend: keyed by the artifact's quantization family (facts/apply.quant_family_of) because
+    # one hardware-wide value cannot be right on Ada: trtllm 1.3.0rc29 serves NVFP4 MoE only through
+    # MARLIN (weight-only; A/B on an L40: AUTO resolves to CUTLASS, which refuses NVFP4 below SM100,
+    # TRITON is SM90-only, DEEPGEMM needs SM100/103/107, VANILLA dies in CUDA-graph capture), while
+    # MARLIN rejects bf16 / fp8 MoE layers that CUTLASS serves. FP8-block and MXFP4 MoE have no
+    # implementation on SM89 at all, so no key is given for them (the template default CUTLASS
+    # fails exactly as every alternative does). No wide-EP fabric on PCIe Ada: no WIDEEP /
+    # deepep_moe. Evidence: opharness findings sm89_trtllm_rc29_probe_2026_10_04.
+    moe_backend:
+      trtllm:
+        nvfp4: MARLIN

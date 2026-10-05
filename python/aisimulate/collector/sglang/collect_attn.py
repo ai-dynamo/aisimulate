@@ -299,10 +299,19 @@ def get_context_attention_test_cases():
                             continue
                     if b * s * num_kv_heads * head_dim * 2 >= max_kv_elements:
                         continue
+                    # the backend this head config runs on (per-model map, else the SM default table) —
+                    # the same resolution run_attention_torch makes before refusing a combo
+                    lane = head_config.kernel_source or default_attention_backend(sm_version, head_config.has_attention_sink)
                     for precision_case in shape_sweep["precision_cases"]:
                         use_fp8_kv_cache = bool(precision_case["fp8_kv_cache"])
                         use_fp8_context_fmha = bool(precision_case["fp8_context_fmha"])
                         if skip_fp8 and use_fp8_kv_cache:
+                            continue
+                        if use_fp8_context_fmha and lane == "flashinfer":
+                            # FlashInfer has no FP8 prefill compute path (BF16 Q reads the FP8 cache through
+                            # descales), so run_attention_torch refuses this case by design; scheduling it on
+                            # the flashinfer SMs (sm89 / sm120) only made a third of the op's tasks fail
+                            # (sm89 sample 2026-10-04: 13 of 40). Not an SM gate: the fp8_kv_cache case stays.
                             continue
                         test_cases.append(
                             [
@@ -425,6 +434,18 @@ def get_generation_attention_test_cases():
     attn_dp_size=1,
     attn_dp_rank=0,
 )
+def default_attention_backend(sm_version: int, has_attention_sink: bool) -> str | None:
+    """SGLang's default dense-attention backend per SM (the table run_attention_torch documents
+    above its call site); None for SMs outside the supported set."""
+    return {
+        89: "triton" if has_attention_sink else "flashinfer",
+        90: "fa3",
+        100: "trtllm_mha",
+        103: "trtllm_mha",
+        120: "triton" if has_attention_sink else "flashinfer",
+    }.get(sm_version)
+
+
 def run_attention_torch(
     batch_size,
     input_len,
@@ -481,13 +502,7 @@ def run_attention_torch(
         # sglang_backends map as an explicit attn_backend_name, never through
         # this default table. SM80/86 are outside the
         # supported platform set {89, 90, 100, 103, 120} and fail closed below.
-        attn_backend_name = {
-            89: "triton" if has_attention_sink else "flashinfer",
-            90: "fa3",
-            100: "trtllm_mha",
-            103: "trtllm_mha",
-            120: "triton" if has_attention_sink else "flashinfer",
-        }.get(sm_version)
+        attn_backend_name = default_attention_backend(sm_version, has_attention_sink)
         if attn_backend_name is None:
             raise ValueError(f"No SGLang 0.5.14 attention backend mapping for SM{sm_version}")
     if page_size is None:
@@ -507,6 +522,12 @@ def run_attention_torch(
         attn_backend_name=attn_backend_name,
     )
     model_runner.kv_cache_dtype = kvtype
+    # sglang>=0.5.21 backends ask the runner which backend serves each phase
+    # (model_runner.py:1020-1021 resolved.prefill/decode; flashinfer_backend.py:331-332
+    # gate the kv-access checks on it). One lane = one backend for both phases. Hopper's
+    # fa3 / Blackwell's trtllm_mha never read it, so only the sm89/sm120 flashinfer lane failed.
+    model_runner.prefill_attention_backend_str = attn_backend_name
+    model_runner.decode_attention_backend_str = attn_backend_name
 
     total_len = input_len if is_context_phase else input_len + 1
     # TRTLLM MHA sizes its page table from context_len.
@@ -710,7 +731,7 @@ def run_attention_torch(
         if is_context_phase:
             if use_fp8_context_fmha:
                 if attn_backend_name == "flashinfer":
-                    raise ValueError("SGLang 0.5.14 flashinfer has no FP8 prefill compute path")
+                    raise ValueError("SGLang flashinfer has no FP8 prefill compute path (plan-time skip missed this case)")
                 if attn_backend_name != "trtllm_mha":
                     q = q.to(kvtype)
                     k = k.to(kvtype)

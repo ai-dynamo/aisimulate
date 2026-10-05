@@ -370,8 +370,12 @@ def render_backend_templates(
     # a model profile). No-op without resolved facts.
     if resolved_facts is not None and backend == "trtllm":
         from aisimulate.generator.facts.apply import apply_moe_backend
+        from aisimulate.generator.utils import _bundled_quantization
 
-        apply_moe_backend(context, getattr(resolved_facts, "hardware", None), backend=backend)
+        # the artifact's quantization decides the MoE kernel family on SMs where one value cannot
+        # serve every quant (hardware.yaml l40s); None for unquantized / unresolvable checkpoints
+        apply_moe_backend(context, getattr(resolved_facts, "hardware", None), backend=backend,
+                          quantization=_bundled_quantization(str(context.get("model_path") or "")))
 
     # Find template files
     template_path = Path(templates_dir)

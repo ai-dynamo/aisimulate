@@ -1,5 +1,6 @@
 _meta:
-  purpose: conclusions in results/ point at evidence bundles by campaign id + sha256; bundles live outside git (location column)
+  purpose: conclusions in results/ point at evidence bundles by campaign id + sha256; bundles live outside git (location
+    column)
 bundles:
 - campaign: 2026-09-26_sm90
   created: '2026-09-26T21:25:29'
@@ -31,3 +32,52 @@ bundles:
     rendered_engine_configs: 240
     full_reports: 36
     captures: 36
+- campaign: 2026-10-04_sm89
+  created: '2026-10-04T12:27:20'
+  harness_commit: 8b6d677d
+  bundle: 2026-10-04_sm89.585ac1d2ad2a.tar.gz
+  sha256: 585ac1d2ad2a1811bac02ac18092c9e7995f5ae65cd44c7c8ba950a45ca2221c
+  size_bytes: 3259486
+  location: 'box-local /tmp/tianhaox/ws_sm89/archive/bundles (copy: scratch NFS debug/opharness/sm89/); box is recycled
+    ~8h after 2026-10-04 06:23'
+  counts:
+    records: 1
+    plans: 11
+    raw: 667
+    fingerprints: 680
+    rendered_engine_configs: 456
+    full_reports: 31
+    captures: 31
+- campaign: 2026-10-05_sm89_reprobe
+  created: '2026-10-05T03:29:49'
+  harness_commit: 1915b498
+  bundle: 2026-10-05_sm89_reprobe.b26fb39210b7.tar.gz
+  sha256: b26fb39210b7067e2d9d1bd8d9471e2b9d268c7428f6a56bf9b4c85843e008d9
+  size_bytes: 3700166
+  location: scratch NFS debug/opharness/sm89/ (box-local /tmp/tianhaox/ws_sm89/archive/bundles until the box is
+    recycled)
+  counts:
+    records: 1
+    plans: 27
+    raw: 667
+    fingerprints: 680
+    rendered_engine_configs: 456
+    console_tails: 440
+    full_reports: 31
+    captures: 33
+- campaign: 2026-10-05_sm89_m3
+  created: '2026-10-05T05:20:31'
+  harness_commit: 3f4cd4b1
+  bundle: 2026-10-05_sm89_m3.cc609110bd5b.tar.gz
+  sha256: cc609110bd5b7068fa34fbd1bd336eb9110d6a1b460b1c4c97edc71d1cd3eacf
+  size_bytes: 3752477
+  location: scratch NFS debug/opharness/sm89/
+  counts:
+    records: 1
+    plans: 30
+    raw: 667
+    fingerprints: 680
+    rendered_engine_configs: 456
+    console_tails: 446
+    full_reports: 35
+    captures: 35

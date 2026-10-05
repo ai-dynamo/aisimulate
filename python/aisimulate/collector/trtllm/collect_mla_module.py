@@ -839,12 +839,15 @@ def run_mla_module(
     # (attentionOp.cpp:3097) / generation (:3091). Hardware-observed on L40
     # (SM89) 2026-07-26: module smoke 0/8, C++ SIGABRT per case; serving hits
     # the identical assert. Same fail-closed treatment as the stock MLA
-    # collector (collect_mla.py). Re-verify on the next framework version bump.
+    # collector (collect_mla.py). Re-verified on 1.3.0rc29 / L40 (SM89) 2026-10-04: with only this SM guard
+    # patched out, a bf16 DeepSeek-V3 MLA module cell still aborts in AttentionOp with "Deepseek should be
+    # supported by fmha in generation part" (attentionOp.cpp:3234 @1.3.0rc29; the assert moved from :3091), SIGSEGV
+    # in the worker (facts/mla_bypass_*.log). The wall is unchanged across rc20 -> rc29: keep failing closed.
     if attn_type == "mla" and get_sm_version() < 90:
         raise ValueError(
             f"TRT-LLM MLA has no pre-Hopper FMHA kernel; MLA modules are "
             f"unsupported on SM{get_sm_version()} "
-            f"(attentionOp.cpp:3091/:3097 assert @1.3.0rc20)"
+            f"(attentionOp.cpp:3234 assert @1.3.0rc29, :3091/:3097 @1.3.0rc20)"
         )
     # FIXME(kernel-limit): SM120 MLA context takes serving's dense-expand path
     # (forward_context_default, attention.py:2015-2040@1.3.0rc20 — SM100/103

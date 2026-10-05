@@ -235,7 +235,7 @@ def declared_gates(fw: str, version: str, sm: str | None = None) -> set:
             if not m:
                 continue
             floor = re.match(r"^FLOOR_SM=(\S+)", line)
-            if sm is not None and floor and floor.group(1) == sm:
+            if sm is not None and floor and sm in floor.group(1).split(","):  # FLOOR_SM=sm120,sm89
                 continue
             gates.add(m.group(2))
     return gates

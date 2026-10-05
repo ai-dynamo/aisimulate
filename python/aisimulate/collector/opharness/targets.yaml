@@ -16,7 +16,6 @@ backends:
     - --generator-set
     - params.agg.trust_remote_code=true
     cli_extra_args_note: 'FPM V1 refuses to render without --benchmark-mode in extra_cli_args — questionable for
-      a deploy artifact from `generate` (generator UX issue, bucket-1 candidate); required as of 2026-08-23. | trust_remote_code:
       sglang template renders it by default, vllm''s does not (backend asymmetry, bucket-1) — supplied as input
       meanwhile.'
   trtllm:
@@ -356,35 +355,35 @@ families:
       nvidia/DeepSeek-V3.1-NVFP4:
         cli_extra_args:
           vllm:
-            sms: [sm120]
+            sms: [sm120, sm89]
             args:
             - --generator-set
             - params.agg.extra_cli_args=["--benchmark-mode","agg","--kv-cache-dtype","bfloat16"]
-            fact: 'sm120 (RTX PRO 6000 / 5000, 2026-09-29/30): the render has no kv dtype and vLLM resolves modelopt NVFP4 MLA checkpoints to fp8 KV, whose TRITON_MLA decode needs 102400 B smem > 101376 B on CC 12.0 (findings sm120_triton_mla_fp8kv_smem); A/B --kv-cache-dtype bfloat16 boots and runs (facts/ab_sm120). Owner decision 2026-09-30: harness special case scoped to sm120 (the opposite of the sm90/sm100 fp8-KV prescription), the generator is not changed; --generator-set params.agg.kv_cache_dtype is silently ignored, hence extra_cli_args.'
+            fact: 'sm120 (RTX PRO 6000 / 5000, 2026-09-29/30): the render has no kv dtype and vLLM resolves modelopt NVFP4 MLA checkpoints to fp8 KV, whose TRITON_MLA decode needs 102400 B smem > 101376 B on CC 12.0 (findings sm120_triton_mla_fp8kv_smem); A/B --kv-cache-dtype bfloat16 boots and runs (facts/ab_sm120). Owner decision 2026-09-30: harness special case scoped to sm120 (the opposite of the sm90/sm100 fp8-KV prescription), the generator is not changed; --generator-set params.agg.kv_cache_dtype is silently ignored, hence extra_cli_args. sm89 (L40, 46 GiB, 2026-10-04): the SAME failure (Required 102400 / Hardware limit 101376 — Ada has the same 101376 B opt-in smem/block) and the same A/B: bf16 KV boots (raw 6da3d656dea1), the fp8-KV variant stays red (raw 62d67a109598, platform floor).'
       nvidia/Kimi-K2.5-NVFP4:
         cli_extra_args:
           vllm:
-            sms: [sm120]
+            sms: [sm120, sm89]
             args:
             - --generator-set
             - params.agg.extra_cli_args=["--benchmark-mode","agg","--kv-cache-dtype","bfloat16"]
-            fact: 'sm120 (RTX PRO 6000 / 5000, 2026-09-29/30): the render has no kv dtype and vLLM resolves modelopt NVFP4 MLA checkpoints to fp8 KV, whose TRITON_MLA decode needs 102400 B smem > 101376 B on CC 12.0 (findings sm120_triton_mla_fp8kv_smem); A/B --kv-cache-dtype bfloat16 boots and runs (facts/ab_sm120). Owner decision 2026-09-30: harness special case scoped to sm120 (the opposite of the sm90/sm100 fp8-KV prescription), the generator is not changed; --generator-set params.agg.kv_cache_dtype is silently ignored, hence extra_cli_args.'
+            fact: 'sm120 (RTX PRO 6000 / 5000, 2026-09-29/30): the render has no kv dtype and vLLM resolves modelopt NVFP4 MLA checkpoints to fp8 KV, whose TRITON_MLA decode needs 102400 B smem > 101376 B on CC 12.0 (findings sm120_triton_mla_fp8kv_smem); A/B --kv-cache-dtype bfloat16 boots and runs (facts/ab_sm120). Owner decision 2026-09-30: harness special case scoped to sm120 (the opposite of the sm90/sm100 fp8-KV prescription), the generator is not changed; --generator-set params.agg.kv_cache_dtype is silently ignored, hence extra_cli_args. sm89 (L40, 46 GiB, 2026-10-04): the SAME failure (Required 102400 / Hardware limit 101376 — Ada has the same 101376 B opt-in smem/block) and the same A/B: bf16 KV boots (raw ee9f7f075eb4), the fp8-KV variant stays red (raw 0f3f22936055, platform floor).'
       nvidia/Kimi-K2.6-NVFP4:
         cli_extra_args:
           vllm:
-            sms: [sm120]
+            sms: [sm120, sm89]
             args:
             - --generator-set
             - params.agg.extra_cli_args=["--benchmark-mode","agg","--kv-cache-dtype","bfloat16"]
-            fact: 'sm120 (RTX PRO 6000 / 5000, 2026-09-29/30): the render has no kv dtype and vLLM resolves modelopt NVFP4 MLA checkpoints to fp8 KV, whose TRITON_MLA decode needs 102400 B smem > 101376 B on CC 12.0 (findings sm120_triton_mla_fp8kv_smem); A/B --kv-cache-dtype bfloat16 boots and runs (facts/ab_sm120). Owner decision 2026-09-30: harness special case scoped to sm120 (the opposite of the sm90/sm100 fp8-KV prescription), the generator is not changed; --generator-set params.agg.kv_cache_dtype is silently ignored, hence extra_cli_args.'
+            fact: 'sm120 (RTX PRO 6000 / 5000, 2026-09-29/30): the render has no kv dtype and vLLM resolves modelopt NVFP4 MLA checkpoints to fp8 KV, whose TRITON_MLA decode needs 102400 B smem > 101376 B on CC 12.0 (findings sm120_triton_mla_fp8kv_smem); A/B --kv-cache-dtype bfloat16 boots and runs (facts/ab_sm120). Owner decision 2026-09-30: harness special case scoped to sm120 (the opposite of the sm90/sm100 fp8-KV prescription), the generator is not changed; --generator-set params.agg.kv_cache_dtype is silently ignored, hence extra_cli_args. sm89 (L40, 46 GiB, 2026-10-04): the SAME failure (Required 102400 / Hardware limit 101376 — Ada has the same 101376 B opt-in smem/block) and the same A/B: bf16 KV boots (raw dc45ccaead4c), the fp8-KV variant stays red (raw a8c332a2e110, platform floor).'
       nvidia/Kimi-K2.7-Code-NVFP4:
         cli_extra_args:
           vllm:
-            sms: [sm120]
+            sms: [sm120, sm89]
             args:
             - --generator-set
             - params.agg.extra_cli_args=["--benchmark-mode","agg","--kv-cache-dtype","bfloat16"]
-            fact: 'sm120 (RTX PRO 6000 / 5000, 2026-09-29/30): the render has no kv dtype and vLLM resolves modelopt NVFP4 MLA checkpoints to fp8 KV, whose TRITON_MLA decode needs 102400 B smem > 101376 B on CC 12.0 (findings sm120_triton_mla_fp8kv_smem); A/B --kv-cache-dtype bfloat16 boots and runs (facts/ab_sm120). Owner decision 2026-09-30: harness special case scoped to sm120 (the opposite of the sm90/sm100 fp8-KV prescription), the generator is not changed; --generator-set params.agg.kv_cache_dtype is silently ignored, hence extra_cli_args.'
+            fact: 'sm120 (RTX PRO 6000 / 5000, 2026-09-29/30): the render has no kv dtype and vLLM resolves modelopt NVFP4 MLA checkpoints to fp8 KV, whose TRITON_MLA decode needs 102400 B smem > 101376 B on CC 12.0 (findings sm120_triton_mla_fp8kv_smem); A/B --kv-cache-dtype bfloat16 boots and runs (facts/ab_sm120). Owner decision 2026-09-30: harness special case scoped to sm120 (the opposite of the sm90/sm100 fp8-KV prescription), the generator is not changed; --generator-set params.agg.kv_cache_dtype is silently ignored, hence extra_cli_args. sm89 (L40, 46 GiB, 2026-10-04): the SAME failure (Required 102400 / Hardware limit 101376 — Ada has the same 101376 B opt-in smem/block) and the same A/B: bf16 KV boots (raw 3924e9cb23ea), the fp8-KV variant stays red (raw 40dfef8d27c5, platform floor).'
       nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16:
         cli_extra_args:
           vllm:
@@ -505,12 +504,14 @@ topology_policy:
     reason: 'owner request 2026-08-24: K3 must be probed on the deepep a2a route (independent kernel path); other
       models are represented by tp1 per the invariance fact.'
 platform:
-  name: b200_sm100
-  sm: 100
-  system: b200_sxm
+  # Reference platform of the PR branch. The per-SM working branches (sm100, sm89, sm120)
+  # carry their own pin; on another machine run with AIS_SM / the platform override.
+  name: h20_sm90
+  sm: 90
+  system: h200_sxm
   facts_systems:
-  - b200_sxm
-  - gb200
+  - h100_sxm
+  - h200_sxm
 tooling:
   note: aiconfigurator-core wheel version is READ FROM aic/pyproject.toml (the checkout declares it); only probe-specific
     pins live here. vllm-probe:0.24.0-fix retired with the 0.29.0 pin (stubs gone since 0.27.1) — history in findings

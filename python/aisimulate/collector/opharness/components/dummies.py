@@ -571,18 +571,21 @@ def variants_m3(cfg: dict) -> list[dict]:
     tc = _m3_text_config(cfg)
     moe = tc["moe_layer_freq"]
     out = []
-    # TRT-LLM 1.3.0rc29's MiniMax-M3 MSA cache manager does NOT read sparse_attention_freq: with no
-    # explicit sparse_layer_ids it allocates INDEX_KEY buffers for ``range(3, num_layers)`` (first
-    # three layers dense, cache_manager.py:303) while the model builds sparse layers from the freq
-    # list (modeling_minimaxm3.py:363). A 2-layer cut whose layers are both sparse therefore runs the
-    # sparse path on layers the manager treats as dense -> idx_cache None -> "'NoneType' object has no
-    # attribute 'shape'" in write_layer_caches (every MiniMax-M3 trtllm cell on sm90 AND sm100,
-    # 2026-10-04; sglang reads the freq list and was fine). Keep the real model's positional shape:
-    # the first three (dense) layers plus the first sparse layer, so the hard-coded default matches.
-    sparse = [i for i, f in enumerate(tc.get("sparse_attention_config", {}).get("sparse_attention_freq") or moe) if f == 1]
-    dense_head = [i for i, f in enumerate(tc.get("sparse_attention_config", {}).get("sparse_attention_freq") or moe) if f == 0][:3]
-    sel = dense_head + sparse[:1] if sparse else []
-    if sel:
+    # The sparse variant keeps the checkpoint's dense head (layers 0..2) in front of the first sparse/MoE
+    # layer. TRT-LLM's MiniMaxM3KVCacheManagerV2 does not read sparse_attention_freq: it allocates the
+    # index-K side cache for `range(3, num_layers)` by checkpoint convention (sparse/minimax_m3/
+    # cache_manager.py:275-303 @1.3.0rc29) while the model layer follows the config list
+    # (modeling_minimaxm3.py:363), so a cut whose sparse layers sit at 0..1 serves a sparse layer with no
+    # index cache -> "MiniMaxM3SparseRuntimeBackend.forward requires ... idx_k_cache" / idx_cache None in
+    # write_layer_caches on every SM (sm90 2026-10-01, sm89 + sm100 2026-10-04 all read it as a framework
+    # gap; sglang reads the freq list and was fine). Same class as _ARCH_IMPLICIT_PERIODS: a framework
+    # constant the config cannot express. The sparse pattern comes from sparse_attention_freq when the
+    # config carries it, else from moe_layer_freq (the two coincide on the shipped checkpoint).
+    freq = tc.get("sparse_attention_config", {}).get("sparse_attention_freq") or moe
+    head = [i for i, f in enumerate(freq) if f == 0]
+    sparse = [i for i, f in enumerate(freq) if f == 1]
+    sel = (head[:3] if head[:3] == [0, 1, 2] else []) + sparse[:1]
+    if sparse:
         out.append({"name": "moe_sparse_attn", "sel": sel})
     head = [i for i, f in enumerate(moe) if f == 0][:2]
     if head:

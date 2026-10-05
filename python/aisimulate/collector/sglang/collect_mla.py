@@ -124,6 +124,22 @@ class MockModelConfig:
         self.head_dim = 256
         self.v_head_dim = v_head_dim
         self.hf_text_config = self
+        # sglang>=0.5.21 TritonAttnBackend.__init__ (the sm89 / sm120 MLA default) asks
+        # mambaish_config(model_config) whether this is a hybrid linear-attention arch
+        # (triton_backend.py:287 -> configs/hybrid_arch.py reads hf_config / get_text_config()
+        # / linear_attn_registry_result); an MLA module is none of them. fa3 / trtllm_mla
+        # (sm90 / sm100) never reach that probe, so only the Triton lane needs this.
+        self.linear_attn_registry_result = None
+        self.is_draft_model = False
+
+        class _MockHFConfig:
+            architectures = ["DeepseekV3ForCausalLM"]
+            model_type = "deepseek_v3"
+
+            def get_text_config(self):
+                return self
+
+        self.hf_config = _MockHFConfig()
         self.scaling = scaling
         self.is_local_attention_model = False
 

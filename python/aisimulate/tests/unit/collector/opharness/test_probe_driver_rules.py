@@ -262,3 +262,67 @@ def test_select_dummy_dir_default_order_is_family_then_generic_then_any(pd, tmp_
     assert pd.select_dummy_dir(root, "N", "rep", "roster", {}, {})[0].parent.name == "zzz"
     vdir, why = pd.select_dummy_dir(root, "Q", "rep", "roster", {}, {})
     assert vdir is None and why.startswith("no dummy dir")
+
+
+@pytest.mark.parametrize("note, expected", [
+    # sm89 (L40) vllm 0.30.0: sparse MLA has no backend below SM90 whatever the kv dtype; the
+    # catch-all used to file these as the config cause "ckpt-forced fp8-KV"
+    ("ValueError: No valid attention backend found for cuda with AttentionSelectorConfig(head_size=576, "
+     "dtype=torch.bfloat16, kv_cache_dtype=auto, block_size=None, use_mla=True, has_sink=False, use_sparse=True)",
+     "platform gap (no sparse-MLA attention backend on this SM)"),
+    # dense MLA selector failure keeps its old label
+    ("ValueError: No valid attention backend found for cuda with AttentionSelectorConfig(head_size=576, "
+     "dtype=torch.bfloat16, kv_cache_dtype=fp8, block_size=None, use_mla=True, has_sink=False, use_sparse=False)",
+     "ckpt-forced fp8-KV"),
+    # DSV4 hyperconnection kernels are DeepGEMM SM90/SM10x only
+    ("RuntimeError: Assertion error (/workspace/.deps/deepgemm-src/csrc/apis/hyperconnection.hpp:56): "
+     "Unsupported architecture", "platform floor (DeepGEMM needs SM90+)"),
+    # the 101376 B smem limit is shared by Ada and consumer Blackwell
+    ("triton.runtime.errors.OutOfResources: out of resource: shared memory, Required: 102400, Hardware limit: 101376.",
+     "platform limit (sm89/sm120 smem 101376 B: TRITON_MLA fp8-KV decode)"),
+])
+def test_fail_cause_ada_rules(pd, note, expected):
+    assert pd._fail_cause(note) == expected
+
+
+def test_fail_cause_full_reads_the_traceback_only_for_unmatched_causes(pd):
+    # sglang wraps the real cause in a CUDA-graph / kill_process_tree epilogue: the last line decides nothing
+    tail = "Exception: Capture cuda graph failed: Ninja build failed. Ninja output:"
+    tb = ('error: namespace "tensorrt_llm::kernels::cutlass_kernels" has no member "Fp4Type"\n' + tail)
+    assert pd._fail_cause(tail) == "framework gap"
+    assert pd._fail_cause_full(tail, tb).startswith("framework defect (flashinfer cutlass fused-MoE JIT")
+    tb2 = ("RuntimeError: The memory capacity is unbalanced. Some GPUs may be occupied by other processes.\n"
+           "kill_process_tree called: parent_pid=98")
+    assert pd._fail_cause_full("kill_process_tree called: parent_pid=98", tb2).startswith("harness: busy GPU")
+    # a cause the last-line rules already know is never overridden by an earlier line
+    assert pd._fail_cause_full("torch.OutOfMemoryError: CUDA out of memory", "memory capacity is unbalanced\nx").startswith("capacity")
+
+
+def test_trtllm_moe_resolution_failure_is_a_platform_floor(pd):
+    note = ("ValueError: no MoE implementation can serve this layer. MoE resolution: none (via failed, requested CUTLASS, "
+            "env 1f8017956ed914ab); turned down: CutlassFusedMoE=sm_unsupported Each candidate's reason: CutlassFusedMoE: "
+            "sm_unsupported (CutlassFusedMoE FP8_BLOCK_SCALES only supports SM90/SM120, got SM89)")
+    assert pd._fail_cause(note) == "platform floor (trtllm MoE: no implementation for this quant on this SM)"
+
+
+@pytest.mark.parametrize("note, expected_prefix", [
+    ("RuntimeError: DeepSeek-V4 requires Hopper or newer GPUs, got SM89", "platform floor (SM90+/Blackwell-only"),
+    ("You can update Transformers with the command `pip install --upgrade transformers`.", "image gap"),
+    ("ModuleNotFoundError: No module named 'fla'", "image gap"),
+    ("  model: reduce max_num_tokens and/or shard the model weights across GPUs by enabling pipeline", "capacity"),
+])
+def test_fail_cause_trtllm_image_and_floor_rules(pd, note, expected_prefix):
+    assert pd._fail_cause(note).startswith(expected_prefix)
+
+
+def test_ptxas_target_is_a_deep_platform_floor(pd):
+    tb = ("error : Feature 'mul.bf16x2' requires .target sm_90 or higher\n"
+          "cutlass._mlir._mlir_libs._cutlass_ir._mlir.ir.MLIRError: Failure while executing pass pipeline:")
+    assert pd._fail_cause_full("cutlass._mlir.ir.MLIRError: Failure while executing pass pipeline:", tb) == (
+        "platform floor (JIT kernel needs a newer SM target)")
+
+
+def test_deep_pass_finds_the_oom_behind_a_kill_process_tree_epilogue(pd):
+    tb = ("torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 2.00 GiB. GPU 3 has a total capacity of 44.39 GiB\n"
+          "[2026-10-04 19:23:15] kill_process_tree called: parent_pid=98, include_parent=True, pid=98")
+    assert pd._fail_cause_full("[2026-10-04 19:23:15] kill_process_tree called: parent_pid=98", tb).startswith("capacity")
