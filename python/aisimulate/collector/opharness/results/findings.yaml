@@ -2717,8 +2717,9 @@ findings:
       builds sparse layers from the freq list (modeling_minimaxm3.py:363); our 2-layer "moe_sparse_attn" cut made both layers sparse at
       positions the manager treats as dense -> idx_cache None -> "''NoneType'' object has no attribute ''shape''" in write_layer_caches.
       The real 60-layer model has exactly 3 dense layers first, so serving never sees it; sglang reads the freq list and passed with the
-      same dummy. dummies.py variants_m3 now cuts the first three dense layers + the first sparse layer (4 layers): MiniMax-M3 trtllm
-      bf16 and fp8-KV cells PASS on B200 (MXFP8/NVFP4 re-run pending at write time). FRAMEWORK (same on sm90 unless noted): (g) Kimi-K2.5
+      same dummy. dummies.py variants_m3 now cuts the first three dense layers + the first sparse layer (4 layers): all six MiniMax-M3 trtllm cells (M3 / M3-MXFP8 / M3-NVFP4 x bf16 + fp8 KV) PASS on B200 with the MSA kernels visible
+      (SparseAttentionForwardSm100, _gqa_sparse_decode_kernel, fmhaSm100f cubins) — the three results/sm100/trtllm-1.3.0rc29.yaml
+      cells graded ''quant parser gap'' become pass once the matrix is rebuilt with the new dummy (same on sm90). FRAMEWORK (same on sm90 unless noted): (g) Kimi-K2.5
       trtllm — compressed-tensors W4A16 config (input_activations: None, mirrors the Hub config) dereferenced unguarded
       (inputs_quant_config["strategy"]); (h) MiMo-7B / MiMo-V2-Flash arch not registered; Muse-Glimmer x2 + DeepSeek-V4.1-Flash x2 need a
       newer transformers than the rc29 image; Kimi-K3 x2 trtllm image lacks `fla`; (i) **Kimi-K3 sglang bf16 (sm100 ONLY; sm90 pass)**:
