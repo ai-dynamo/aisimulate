@@ -17,6 +17,7 @@ import shutil
 import tempfile
 import threading
 from pathlib import Path
+from urllib.parse import quote
 
 from fpm_accuracy.contract import artifact_key
 from playwright.async_api import async_playwright, expect
@@ -120,6 +121,15 @@ async def check():
                 await expect(page.locator(".overview-config-row").first).to_contain_text("7 excluded or unavailable")
                 await expect(page.locator(".overview-config-row").first).to_contain_text("80/100 predicted")
                 await expect(page.locator(".overview-config-row").first).to_contain_text("80.0% coverage")
+                await expect(
+                    page.locator(".overview-config-row").first.get_by_role("link", name="3D Viz →")
+                ).to_have_attribute(
+                    "href",
+                    "3d-visualization.html?configuration="
+                    + quote(data["rows"][0]["configuration_id"], safe="")
+                    + "&snapshot="
+                    + data["rows"][0]["snapshot_id"],
+                )
                 await page.locator('[data-model="Example/Alpha"]').click()
                 await expect(page.locator(".overview-config-row").first).to_be_hidden()
                 await page.locator('[data-model="Example/Alpha"]').click()

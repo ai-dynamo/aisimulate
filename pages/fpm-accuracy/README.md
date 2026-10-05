@@ -190,3 +190,7 @@ predictions show an explanation in place of the error map; measured distribution
 Browser visualization fixtures use readable sample/chunk JSON filenames. Test setup
 creates SHA-256 asset names, gzip chunks, and the checksum manifest in its temporary
 site directory, keeping generated assets out of the repository.
+
+Overview configuration rows link to Details and 3D Viz side by side. The 3D link
+selects the matching configuration and snapshot in the left panel when available
+in the published measurement catalog.

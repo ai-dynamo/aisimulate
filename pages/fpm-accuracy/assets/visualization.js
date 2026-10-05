@@ -261,10 +261,13 @@
     const stale = publication && (publication.hf_revision !== publication.current_hf_revision || Date.now()-Date.parse(publication.completed_at)>48*3600000);
     document.getElementById("nav-status-text").textContent = (stale ? "Stale measurement snapshot · " : "") + "HF " + data.hf_revision.slice(0, 12)
       + (publication ? " · " + publication.completed_at : "");
+    const params = new URLSearchParams(location.search);
+    const linked = data.catalog.find(c => c.configuration_id === params.get("configuration") && c.snapshot_id === params.get("snapshot"));
     for (const pane of panes) {
+      const selection = pane === "left" && linked ? {model: linked.model, configuration: linked.id} : data.defaults[pane];
       get(pane + "-model").replaceChildren(...models.map(m => new Option(m.split("/").pop(), m)));
-      get(pane + "-model").value = data.defaults[pane].model;
-      configurations(pane, data.defaults[pane].configuration); workers(pane, data.defaults[pane].worker);
+      get(pane + "-model").value = selection.model;
+      configurations(pane, selection.configuration); workers(pane, selection.worker);
       for (const field of ["model", "config", "worker"]) get(pane + "-" + field).addEventListener("change", () => {
         saveCamera(pane);
         if (field === "model") configurations(pane);
