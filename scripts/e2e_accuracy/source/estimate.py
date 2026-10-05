@@ -3,7 +3,7 @@
 
 """Lower resolved deployments for historical wheels without the public adapter."""
 
-from e2e_accuracy_source.recipes.inferencex_recipe import InferenceXRecipeError
+from scripts.e2e_accuracy.source.recipes.inferencex_recipe import InferenceXRecipeError
 
 from .mapping import MOE_MODELS
 from .schema import CliEstimateKwargs, SiliconRow

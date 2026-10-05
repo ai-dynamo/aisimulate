@@ -9,7 +9,8 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
-from e2e_accuracy_source.model_config_snapshot import (
+
+from scripts.e2e_accuracy.source.model_config_snapshot import (
     canonical_json_bytes,
     materialize_model_config,
     normalize_trt_snapshot,

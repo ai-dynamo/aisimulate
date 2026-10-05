@@ -21,15 +21,15 @@ import json
 import re
 import shlex
 
-from e2e_accuracy_source.recipes.inferencex_recipe import (
+from scripts.e2e_accuracy.source.recipes.inferencex_recipe import (
     INFERENCEX_REPOSITORY_URL,
     InferenceXRecipeError,
     RecipeSource,
     _load_yaml_mapping,
     _read_first,
 )
-from e2e_accuracy_source.schema import SiliconRow
-from e2e_accuracy_source.sources import load_manifest, manifest_text
+from scripts.e2e_accuracy.source.schema import SiliconRow
+from scripts.e2e_accuracy.source.sources import load_manifest, manifest_text
 
 
 def source_record(path: str, text: str) -> dict:

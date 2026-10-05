@@ -81,7 +81,7 @@ configuration parity with e2e-gym. Public accuracy CI now uses
 calling either predictor, carries per-role replay settings and source workload,
 and records estimate and replay outcomes independently. Historical campaigns
 retain their original `latest-complete-config-run-v1` policy and fixed settings.
-See the [resolver contract](../../../../../../scripts/e2e_accuracy_source/README.md)
+See the [resolver contract](../../../../../../scripts/e2e_accuracy/source/README.md)
 for the pinned gym revision, validation evidence, and remaining modeling limits.
 
 ### Source resolution

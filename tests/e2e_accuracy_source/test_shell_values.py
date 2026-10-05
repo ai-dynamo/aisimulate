@@ -4,8 +4,9 @@
 """Regression tests for reviewed InferenceX shell constructs; never run shell."""
 
 import pytest
-from e2e_accuracy_source.recipes.inferencex_recipe import InferenceXRecipeError
-from e2e_accuracy_source.recipes.shell_values import expand, resolve_lines
+
+from scripts.e2e_accuracy.source.recipes.inferencex_recipe import InferenceXRecipeError
+from scripts.e2e_accuracy.source.recipes.shell_values import expand, resolve_lines
 
 
 def test_conditional_scheduler_interval():
@@ -83,7 +84,7 @@ def test_empty_variable_uses_shell_default():
 
 
 def test_nested_serving_options_survive_normalization():
-    from e2e_accuracy_source.recipes.inferencex_recipe import _normalize_yaml_server_args
+    from scripts.e2e_accuracy.source.recipes.inferencex_recipe import _normalize_yaml_server_args
 
     raw = {
         "kv_cache_config": {"tokens_per_block": 32, "enable_block_reuse": False},

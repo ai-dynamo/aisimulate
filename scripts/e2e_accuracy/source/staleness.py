@@ -24,7 +24,7 @@ import collections
 import datetime as _dt
 from collections.abc import Iterable
 
-from e2e_accuracy_source.schema import DropRecord, SiliconRow
+from scripts.e2e_accuracy.source.schema import DropRecord, SiliconRow
 
 
 def _parse_date(s: str) -> _dt.datetime:

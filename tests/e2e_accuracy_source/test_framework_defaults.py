@@ -4,8 +4,9 @@
 """Regression cases derived from the September 14 resolved recipe audit."""
 
 import pytest
-from e2e_accuracy_source.defaults import framework_defaults as defaults
-from e2e_accuracy_source.recipes.inferencex_recipe import InferenceXRecipeError
+
+from scripts.e2e_accuracy.source.defaults import framework_defaults as defaults
+from scripts.e2e_accuracy.source.recipes.inferencex_recipe import InferenceXRecipeError
 
 
 @pytest.fixture(autouse=True)

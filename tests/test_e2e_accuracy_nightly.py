@@ -8,6 +8,7 @@ import io
 import json
 import subprocess
 import sys
+import time
 import zipfile
 from collections import Counter
 from copy import deepcopy
@@ -694,18 +695,41 @@ def test_nightly_accuracy_is_independent_from_release_staging_and_keeps_preview_
     for job in workflow["jobs"].values():
         assert job.get("permissions", workflow["permissions"]) == {"contents": "read", "actions": "read"}
     assert "continue-on-error" not in workflow["jobs"]["campaign"]
-    assert workflow["jobs"]["campaign"]["needs"] == "wheel"
+    assert workflow["jobs"]["campaign"]["needs"] == ["wheel", "shards"]
+    shards = workflow["jobs"]["shards"]
+    assert shards["needs"] == ["wheel", "measurements"]
+    assert shards["strategy"] == {"fail-fast": "false", "max-parallel": "4", "matrix": {"shard": ["0", "1", "2", "3"]}}
+    assert "continue-on-error" not in shards
+    predictor = next(step for step in shards["steps"] if step.get("name") == "Run both predictors for this shard")
+    assert '--shard-index "${SHARD_INDEX}" --shard-count 4' in predictor["run"]
+    assert "--workers 2" in predictor["run"]
+    assert any(step.get("run", "").startswith("test -s ") for step in shards["steps"])
+    assert not any("fetch_accuracy_measurements.py" in step.get("run", "") for step in shards["steps"])
+    assert any(
+        "fetch_accuracy_measurements.py" in step.get("run", "") for step in workflow["jobs"]["measurements"]["steps"]
+    )
     assert workflow["jobs"]["campaign"]["name"] == "Qualify E2E accuracy (${{ inputs.artifact_key }})"
     uploads = [s for s in workflow["jobs"]["campaign"]["steps"] if "upload-artifact@" in s.get("uses", "")]
-    assert len(uploads) == 2 and "if" not in uploads[0]
+    assert len(uploads) == 1 and "if" not in uploads[0]
     assert uploads[0]["with"]["overwrite"] == "true"
     assert (
         uploads[0]["with"]["name"]
         == "${{ inputs.preview && 'e2e-accuracy-preview' || 'e2e-accuracy-web' }}-${{ inputs.artifact_key }}"
     )
-    assert uploads[1]["if"] == "always() && inputs.preview"
-    assert uploads[1]["with"]["name"] == "e2e-accuracy-preview-evidence-${{ inputs.artifact_key }}"
-    assert uploads[1]["with"]["path"] == "${{ runner.temp }}/accuracy-evidence/"
+    shard_uploads = [step for step in shards["steps"] if "upload-artifact@" in step.get("uses", "")]
+    assert len(shard_uploads) == 3
+    assert (
+        shard_uploads[0]["with"]["name"] == "e2e-accuracy-results-${{ inputs.artifact_key }}-shard-${{ matrix.shard }}"
+    )
+    assert all(step["with"]["overwrite"] == "true" for step in shard_uploads)
+    assert shard_uploads[1]["if"] == "always()"
+    assert shard_uploads[1]["with"]["path"] == "${{ runner.temp }}/accuracy-evidence/results.jsonl"
+    assert shard_uploads[2]["if"] == "always() && inputs.preview"
+    assert (
+        shard_uploads[2]["with"]["name"]
+        == "e2e-accuracy-preview-evidence-${{ inputs.artifact_key }}-shard-${{ matrix.shard }}"
+    )
+    assert shard_uploads[2]["with"]["path"] == "${{ runner.temp }}/accuracy-evidence/"
     wheel_upload = next(s for s in workflow["jobs"]["wheel"]["steps"] if "upload-artifact@" in s.get("uses", ""))
     assert wheel_upload["with"]["overwrite"] == "true"
     assert wheel_upload["with"]["name"] == "e2e-accuracy-wheel-${{ inputs.artifact_key }}"
@@ -1436,7 +1460,7 @@ def test_ep_prediction_preserves_physical_gpus_through_publication(
     assert row["silicon_tpot_ms"] == 20
     assert row["aisimulate_status"] == ("failed" if replay_fails else "success")
     assert calls == ["run", "close"]
-    from build_e2e_accuracy_overview import _is_multinode
+    from scripts.e2e_accuracy.build_e2e_accuracy_overview import _is_multinode
 
     assert not _is_multinode(row)
     assert point["config"]["num_decode_gpu"] == 16
@@ -1641,7 +1665,7 @@ def test_resolved_campaign_publishes_replay_when_baseline_fails(artifact, tmp_pa
 
 
 def test_resolved_cohort_joins_provenance_and_accounts_for_every_row():
-    from e2e_accuracy_source.cohort import select_points
+    from scripts.e2e_accuracy.source.cohort import select_points
 
     data = resolved_tables()
     config = data["configs"][0]
@@ -1674,9 +1698,9 @@ def test_resolved_cohort_joins_provenance_and_accounts_for_every_row():
 @pytest.mark.parametrize("framework", ["vllm", "sglang", "trt"])
 @pytest.mark.parametrize("disagg", [False, True])
 def test_historical_wheel_estimate_projection_matches_public_adapter(source_config_adapter, framework, disagg):
-    from e2e_accuracy_source.cohort import select_points
-    from e2e_accuracy_source.estimate import estimate_kwargs
-    from e2e_accuracy_source.schema import SiliconRow
+    from scripts.e2e_accuracy.source.cohort import select_points
+    from scripts.e2e_accuracy.source.estimate import estimate_kwargs
+    from scripts.e2e_accuracy.source.schema import SiliconRow
 
     point = resolved_point(framework, disagg)
     points, _ = select_points(resolved_tables())
@@ -1882,3 +1906,228 @@ def test_serving_metrics_check_interactivity_definition(artifact):
     point["aisimulate"]["interactivity_tok_s"] = 12
     with pytest.raises(pages.PagesBuildError, match="interactivity definition"):
         publish.validate_artifact(archive(summary), run)
+
+
+@pytest.fixture
+def shard_campaign(artifact, tmp_path):
+    args = SimpleNamespace(
+        tables=tmp_path / "tables.json",
+        manifest=tmp_path / "manifest.json",
+        wheel=tmp_path / "wheel.whl",
+        output=tmp_path / "shards",
+        branch="main",
+        commit="d" * 40,
+        run_id="123",
+        run_attempt="1",
+        workers=2,
+        point_timeout=10,
+        shard_count=4,
+        shard_index=0,
+    )
+    for index in range(4):
+        args.shard_index = index
+        args.output = tmp_path / f"shard-job-{index}"
+        args.evidence = tmp_path / f"evidence-{index}"
+        campaign.campaign(args)
+        merged_download = tmp_path / "shards"
+        merged_download.mkdir(exist_ok=True)
+        (args.output / f"shard-{index}.json").rename(merged_download / f"shard-{index}.json")
+    return SimpleNamespace(
+        shards=merged_download,
+        output=tmp_path / "merged",
+        manifest=args.manifest,
+        branch=args.branch,
+        commit=args.commit,
+        run_id=args.run_id,
+        run_attempt="2",
+        shard_count=4,
+        wheel_sha256="a" * 64,
+        configuration_mode="verified",
+        preview=False,
+    )
+
+
+def test_shards_reuse_successful_attempts_and_preserve_all_serving_metrics(artifact, shard_campaign):
+    # Only shard 0 was rerun; the others still carry attempt 1 (including empty shards).
+    path = shard_campaign.shards / "shard-0.json"
+    bundle = json.loads(path.read_text())
+    bundle["run_attempt"] = "2"
+    path.write_bytes(campaign.encoded(bundle))
+    campaign.merge_shards(shard_campaign)
+    summary = json.loads((shard_campaign.output / "summary.json").read_text())
+    original, run = artifact
+    assert summary["totals"] == original["totals"]
+    assert summary["models"] == original["models"]
+    assert summary["snapshot"]["campaign"]["selected"] == original["snapshot"]["campaign"]["selected"]
+    assert summary["snapshot"]["campaign"]["run_attempt"] == "2"
+    publish.validate_artifact(archive(summary), {**run, "run_attempt": 2})
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "missing_shard",
+        "wrong_run",
+        "wrong_commit",
+        "wrong_wheel",
+        "wrong_driver",
+        "wrong_measurements",
+        "wrong_dataset",
+        "wrong_mode",
+        "wrong_partition",
+        "missing_point",
+        "duplicate_point",
+        "worker_failed",
+        "future_attempt",
+        "wrong_count",
+    ],
+)
+def test_merge_rejects_incomplete_or_mixed_shards(shard_campaign, change):
+    path = shard_campaign.shards / "shard-0.json"
+    bundle = json.loads(path.read_text())
+    if change == "missing_shard":
+        path.unlink()
+    else:
+        if change == "wrong_run":
+            bundle["metadata"]["run_id"] = "124"
+        elif change == "wrong_commit":
+            bundle["metadata"]["commit"] = "e" * 40
+        elif change == "wrong_wheel":
+            bundle["metadata"]["identity"]["wheel_sha256"] = "b" * 64
+        elif change == "wrong_driver":
+            bundle["metadata"]["driver_sha256"] = "b" * 64
+        elif change == "wrong_measurements":
+            bundle["metadata"]["measurement_sha256"] = "b" * 64
+        elif change == "wrong_dataset":
+            bundle["metadata"]["dataset_sha256"] = "b" * 64
+        elif change == "wrong_mode":
+            bundle["metadata"]["configuration_mode"] = "estimated"
+        elif change == "wrong_partition":
+            bundle["results"][0]["id"] = bundle["metadata"]["point_ids"][1]
+        elif change == "missing_point":
+            bundle["results"] = []
+        elif change == "duplicate_point":
+            bundle["results"] *= 2
+        elif change == "worker_failed":
+            bundle["results"][0]["outcome"] = "worker_failed"
+        elif change == "future_attempt":
+            bundle["run_attempt"] = "3"
+        elif change == "wrong_count":
+            bundle["shard_count"] = 3
+        path.write_bytes(campaign.encoded(bundle))
+    with pytest.raises(ValueError):
+        campaign.merge_shards(shard_campaign)
+    assert not shard_campaign.output.exists()
+
+
+def test_checkpoint_is_flushed_before_another_worker_crashes(artifact, tmp_path, monkeypatch):
+    points, _ = campaign.select_points(tables(), 30)
+    first_id = sorted(point["id"] for point in points)[0]
+    predictor = campaign.run_child
+    evidence = tmp_path / "interrupted"
+    checkpoint = evidence / "results.jsonl"
+
+    def fail_after_checkpoint(point, timeout):
+        if point["id"] == first_id:
+            return predictor(point, timeout)
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            if checkpoint.exists() and checkpoint.stat().st_size:
+                raise RuntimeError("simulated worker crash after persisted progress")
+            time.sleep(0.01)
+        raise AssertionError("completed point was not checkpointed while another worker ran")
+
+    monkeypatch.setattr(campaign, "run_child", fail_after_checkpoint)
+    output = tmp_path / "incomplete"
+    with pytest.raises(RuntimeError, match="simulated worker crash"):
+        campaign.campaign(
+            SimpleNamespace(
+                tables=tmp_path / "tables.json",
+                manifest=tmp_path / "manifest.json",
+                wheel=tmp_path / "wheel.whl",
+                output=output,
+                evidence=evidence,
+                branch="main",
+                commit="d" * 40,
+                run_id="123",
+                run_attempt="1",
+                workers=2,
+                point_timeout=10,
+            )
+        )
+    saved = [json.loads(line) for line in checkpoint.read_text().splitlines()]
+    assert len(saved) == 1 and saved[0]["id"] == first_id
+    assert not output.exists()
+
+
+def test_resolved_shards_partition_before_resolution(artifact, tmp_path, monkeypatch):
+    original_predictor = campaign.run_child
+    resolved_ids = []
+
+    def resolve(points, *args, **kwargs):
+        # Four partitions of the two selected fixture points: at most one each.
+        assert len(points) <= 1
+        resolved_ids.extend(point["id"] for point in points)
+        return points
+
+    def predict(point, timeout):
+        result = original_predictor(point, timeout)
+        result["row"]["configuration_quality"] = "verified"
+        return result
+
+    monkeypatch.setattr(campaign, "select_resolved_points", campaign.select_points)
+    monkeypatch.setattr(campaign, "resolve_points", resolve)
+    monkeypatch.setattr(campaign, "run_child", predict)
+    manifest_path = tmp_path / "resolved-manifest.json"
+    manifest = json.loads((tmp_path / "manifest.json").read_text())
+    manifest.update(selection_policy=fetch.RESOLVED_POLICY, max_age_days=180)
+    manifest_path.write_bytes(campaign.encoded(manifest))
+    shards = tmp_path / "resolved-shards"
+    shards.mkdir()
+    for index in range(4):
+        output = tmp_path / f"resolved-job-{index}"
+        campaign.campaign(
+            SimpleNamespace(
+                tables=tmp_path / "tables.json",
+                manifest=manifest_path,
+                wheel=tmp_path / "wheel.whl",
+                output=output,
+                evidence=tmp_path / f"resolved-evidence-{index}",
+                source_cache=tmp_path / "cache",
+                branch="main",
+                commit="d" * 40,
+                run_id="123",
+                run_attempt="1",
+                workers=2,
+                point_timeout=10,
+                shard_index=index,
+                shard_count=4,
+            )
+        )
+        (output / f"shard-{index}.json").rename(shards / f"shard-{index}.json")
+    assert len(resolved_ids) == len(set(resolved_ids)) == 2
+    output = tmp_path / "resolved-merged"
+    campaign.merge_shards(
+        SimpleNamespace(
+            shards=shards,
+            output=output,
+            manifest=manifest_path,
+            branch="main",
+            commit="d" * 40,
+            run_id="123",
+            run_attempt="1",
+            shard_count=4,
+            wheel_sha256="a" * 64,
+            configuration_mode="verified",
+            preview=False,
+        )
+    )
+    qualification = json.loads((output / "qualification.json").read_text())
+    assert qualification["selected"] == 2
+    assert qualification["configuration"] == {"profile": "verified", "counts": {"verified": 2}}
+    assert qualification["cohort_sha256"] == campaign.sha(
+        [
+            campaign.sha(json.loads((tmp_path / f"resolved-evidence-{index}" / "resolved-points.json").read_text()))
+            for index in range(4)
+        ]
+    )

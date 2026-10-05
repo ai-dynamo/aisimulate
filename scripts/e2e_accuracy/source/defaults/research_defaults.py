@@ -8,10 +8,10 @@ from __future__ import annotations
 import hashlib
 import json
 
-from e2e_accuracy_source.filter import FRAMEWORK_TO_AIC_BACKEND
-from e2e_accuracy_source.mapping import MOE_MODELS, _resolve_worker_shape
-from e2e_accuracy_source.recipes.inferencex_recipe import InferenceXRecipeError
-from e2e_accuracy_source.recipes.legacy_recipe import load_source_config
+from scripts.e2e_accuracy.source.filter import FRAMEWORK_TO_AIC_BACKEND
+from scripts.e2e_accuracy.source.mapping import MOE_MODELS, _resolve_worker_shape
+from scripts.e2e_accuracy.source.recipes.inferencex_recipe import InferenceXRecipeError
+from scripts.e2e_accuracy.source.recipes.legacy_recipe import load_source_config
 
 MODEL_PATH_LOOKUP: dict[tuple[str, str], str] = {
     # MiniMax-M2.5

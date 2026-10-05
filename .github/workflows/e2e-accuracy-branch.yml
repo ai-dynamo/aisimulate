@@ -120,9 +120,62 @@ jobs:
           compression-level: 0
           retention-days: 7
 
-  campaign:
-    name: Qualify E2E accuracy (${{ inputs.artifact_key }})
-    needs: wheel
+  measurements:
+    name: Prepare shared E2E measurements
+    timeout-minutes: 120
+    runs-on: prod-aisimulate-default-amd64-v1
+    container:
+      image: ${{ vars.CI_JOB_CONTAINER_IMAGE }}
+      env:
+        HOME: /__w/aisimulate/aisimulate
+        USER: runner
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.12"
+      - name: Install the CPU campaign environment
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends postgresql-common ca-certificates
+          # Enable the official PGDG repository for the required dump reader.
+          sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends postgresql-client-18 zstd libgomp1
+          echo "/usr/lib/postgresql/18/bin" >> "${GITHUB_PATH}"
+          /usr/lib/postgresql/18/bin/pg_restore --version
+          zstd --version
+          python -m venv "${RUNNER_TEMP}/accuracy-venv"
+          echo "${RUNNER_TEMP}/accuracy-venv/bin" >> "${GITHUB_PATH}"
+      - name: Install measurement tooling
+        run: python -m pip install --require-hashes -r scripts/e2e_accuracy/requirements.txt
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: e2e-accuracy-dataset
+          path: ${{ runner.temp }}/accuracy-dataset
+      - name: Fetch checksum-pinned public measurements
+        run: |
+          python scripts/e2e_accuracy/fetch_accuracy_measurements.py \
+            --manifest "${RUNNER_TEMP}/accuracy-dataset/e2e-accuracy-dataset.json" --output "${RUNNER_TEMP}/accuracy-measurements"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: e2e-accuracy-measurements-${{ inputs.artifact_key }}
+          path: ${{ runner.temp }}/accuracy-measurements/tables.json
+          overwrite: true
+          if-no-files-found: error
+          retention-days: 7
+
+  shards:
+    name: Evaluate E2E shard ${{ matrix.shard }} (${{ inputs.artifact_key }})
+    needs: [wheel, measurements]
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0, 1, 2, 3]
     runs-on: prod-aisimulate-default-amd64-v1
     timeout-minutes: 360
     container:
@@ -147,14 +200,7 @@ jobs:
       - name: Install the CPU campaign environment
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends postgresql-common ca-certificates
-          # Enable the official PGDG repository for the required dump reader.
-          sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends postgresql-client-18 zstd libgomp1
-          echo "/usr/lib/postgresql/18/bin" >> "${GITHUB_PATH}"
-          /usr/lib/postgresql/18/bin/pg_restore --version
-          zstd --version
+          sudo apt-get install -y --no-install-recommends libgomp1
           python -m venv "${RUNNER_TEMP}/accuracy-venv"
           echo "${RUNNER_TEMP}/accuracy-venv/bin" >> "${GITHUB_PATH}"
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
@@ -167,7 +213,7 @@ jobs:
         run: |
           echo "${WHEEL_SHA256}  $(echo "${RUNNER_TEMP}"/accuracy-wheel/*.whl)" | sha256sum --check --strict
           python -m pip install "${RUNNER_TEMP}"/accuracy-wheel/*.whl
-          python -m pip install --require-hashes -r scripts/e2e_accuracy_source/requirements.txt
+          python -m pip install --require-hashes -r scripts/e2e_accuracy/requirements.txt
           python -m pip check
           python - <<'PYCODE'
           import os, sys
@@ -180,13 +226,14 @@ jobs:
         with:
           name: e2e-accuracy-dataset
           path: ${{ runner.temp }}/accuracy-dataset
-      - name: Fetch checksum-pinned public measurements
-        run: |
-          python scripts/e2e_accuracy/fetch_accuracy_measurements.py \
-            --manifest "${RUNNER_TEMP}/accuracy-dataset/e2e-accuracy-dataset.json" --output "${RUNNER_TEMP}/accuracy-measurements"
-      - name: Run both predictors with bounded CPU workers and qualify the complete cohort
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: e2e-accuracy-measurements-${{ inputs.artifact_key }}
+          path: ${{ runner.temp }}/accuracy-measurements
+      - name: Run both predictors for this shard
         shell: bash
         env:
+          SHARD_INDEX: ${{ matrix.shard }}
           EXPECTED_SHA: ${{ inputs.sha }}
           EVALUATED_BRANCH: ${{ inputs.branch }}
           PREVIEW: ${{ inputs.preview }}
@@ -203,7 +250,89 @@ jobs:
             --run-id "${GITHUB_RUN_ID}" --run-attempt "${GITHUB_RUN_ATTEMPT}" \
             --source-cache "${RUNNER_TEMP}/accuracy-source" --evidence "${RUNNER_TEMP}/accuracy-evidence" \
             --configuration-mode "${CONFIGURATION_MODE}" --fetch-runtime-evidence \
-            --workers 6 --point-timeout 180 --output "${RUNNER_TEMP}/accuracy-public" "${preview_args[@]}"
+            --shard-index "${SHARD_INDEX}" --shard-count 4 \
+            --workers 2 --point-timeout 180 --output "${RUNNER_TEMP}/accuracy-shard" "${preview_args[@]}"
+      - name: Require a complete shard after the predictor exits
+        env:
+          SHARD_INDEX: ${{ matrix.shard }}
+        run: test -s "${RUNNER_TEMP}/accuracy-shard/shard-${SHARD_INDEX}.json"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: e2e-accuracy-results-${{ inputs.artifact_key }}-shard-${{ matrix.shard }}
+          path: ${{ runner.temp }}/accuracy-shard/
+          overwrite: true
+          if-no-files-found: error
+          retention-days: 7
+      - name: Preserve completed point checkpoints even on failure
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: e2e-accuracy-checkpoints-${{ inputs.artifact_key }}-shard-${{ matrix.shard }}
+          path: ${{ runner.temp }}/accuracy-evidence/results.jsonl
+          overwrite: true
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Preserve PR preview evidence for local diagnosis
+        if: always() && inputs.preview
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: e2e-accuracy-preview-evidence-${{ inputs.artifact_key }}-shard-${{ matrix.shard }}
+          path: ${{ runner.temp }}/accuracy-evidence/
+          if-no-files-found: warn
+          overwrite: true
+          retention-days: 7
+
+  campaign:
+    name: Qualify E2E accuracy (${{ inputs.artifact_key }})
+    needs: [wheel, shards]
+    timeout-minutes: 30
+    runs-on: prod-aisimulate-default-amd64-v1
+    container:
+      image: ${{ vars.CI_JOB_CONTAINER_IMAGE }}
+      env:
+        HOME: /__w/aisimulate/aisimulate
+        USER: runner
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.12"
+      - name: Install aggregation tooling
+        run: |
+          python -m venv "${RUNNER_TEMP}/accuracy-venv"
+          echo "${RUNNER_TEMP}/accuracy-venv/bin" >> "${GITHUB_PATH}"
+          "${RUNNER_TEMP}/accuracy-venv/bin/python" -m pip install --require-hashes -r scripts/e2e_accuracy/requirements.txt
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: e2e-accuracy-dataset
+          path: ${{ runner.temp }}/accuracy-dataset
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          pattern: e2e-accuracy-results-${{ inputs.artifact_key }}-shard-*
+          path: ${{ runner.temp }}/accuracy-shards
+          merge-multiple: true
+      - name: Verify every shard and qualify the complete cohort
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ inputs.sha }}
+          EVALUATED_BRANCH: ${{ inputs.branch }}
+          WHEEL_SHA256: ${{ needs.wheel.outputs.sha256 }}
+          PREVIEW: ${{ inputs.preview }}
+          CONFIGURATION_MODE: ${{ inputs.configuration_mode }}
+        run: |
+          preview_args=()
+          if [[ "${PREVIEW}" == 'true' ]]; then preview_args+=(--preview); fi
+          python scripts/e2e_accuracy/run_e2e_accuracy.py merge \
+            --shards "${RUNNER_TEMP}/accuracy-shards" --shard-count 4 \
+            --manifest "${RUNNER_TEMP}/accuracy-dataset/e2e-accuracy-dataset.json" \
+            --wheel-sha256 "${WHEEL_SHA256}" \
+            --commit "${EXPECTED_SHA}" --branch "${EVALUATED_BRANCH}" \
+            --run-id "${GITHUB_RUN_ID}" --run-attempt "${GITHUB_RUN_ATTEMPT}" \
+            --configuration-mode "${CONFIGURATION_MODE}" \
+            --output "${RUNNER_TEMP}/accuracy-public" "${preview_args[@]}"
       - name: Report advisory accuracy and coverage
         run: |
           python - <<'PY' >> "${GITHUB_STEP_SUMMARY}"
@@ -228,11 +357,3 @@ jobs:
           path: ${{ runner.temp }}/accuracy-public/
           if-no-files-found: error
           retention-days: 90
-      - name: Preserve PR preview evidence for local diagnosis
-        if: always() && inputs.preview
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        with:
-          name: e2e-accuracy-preview-evidence-${{ inputs.artifact_key }}
-          path: ${{ runner.temp }}/accuracy-evidence/
-          if-no-files-found: warn
-          retention-days: 7

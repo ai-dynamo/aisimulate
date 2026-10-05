@@ -10,8 +10,8 @@ from typing import Any
 
 import requests
 
-from e2e_accuracy_source.recipes.inferencex_recipe import InferenceXRecipeError
-from e2e_accuracy_source.sources import verify_sources
+from scripts.e2e_accuracy.source.recipes.inferencex_recipe import InferenceXRecipeError
+from scripts.e2e_accuracy.source.sources import verify_sources
 
 SRT_REPOSITORY = "https://github.com/NVIDIA/srt-slurm"
 SRT_V1_0_29_SHA = "c1b6b5c97f323baefad577d70c4e8392b6f537d9"

@@ -5,9 +5,10 @@ import hashlib
 from dataclasses import replace
 
 import pytest
-from e2e_accuracy_source.defaults.research_defaults import can_assume_recipe, fill_missing, resolve_auto_kv
-from e2e_accuracy_source.recipes import runtime_evidence as runtime
-from e2e_accuracy_source.schema import SiliconRow
+
+from scripts.e2e_accuracy.source.defaults.research_defaults import can_assume_recipe, fill_missing, resolve_auto_kv
+from scripts.e2e_accuracy.source.recipes import runtime_evidence as runtime
+from scripts.e2e_accuracy.source.schema import SiliconRow
 
 
 def test_reviewed_runtime_is_bound_to_complete_measurement_and_not_mutable(monkeypatch):

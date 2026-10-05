@@ -4,8 +4,8 @@
 
 """Run both bundled predictors over a fixed public measurement cohort.
 
-All raw rows, child output, and partial shards remain local. Only a complete,
-validated summary and its qualification record are eligible for upload.
+Per-point checkpoints and shard results are internal workflow artifacts. Only a
+complete, validated summary and qualification record are eligible for Pages.
 """
 
 from __future__ import annotations
@@ -23,8 +23,8 @@ import sys
 import tempfile
 import zipfile
 from collections import Counter
-from concurrent.futures import ThreadPoolExecutor
-from contextlib import redirect_stderr, redirect_stdout
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import nullcontext, redirect_stderr, redirect_stdout
 from datetime import UTC, date, datetime
 from numbers import Real
 from pathlib import Path
@@ -33,8 +33,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from scripts.e2e_accuracy.build_e2e_accuracy_overview import GPUS_PER_NODE_BY_FAMILY, build_summary
 from scripts.e2e_accuracy.fetch_accuracy_measurements import RESOLVED_POLICY, digest, validate_manifest
+from scripts.e2e_accuracy.source.cohort import select_points as select_resolved_points
+from scripts.e2e_accuracy.source.recipes.runtime_evidence import prepare_runtime_evidence
 from scripts.pages.build_pages_site import _accuracy_summary
-from scripts.e2e_accuracy_source.recipes.runtime_evidence import prepare_runtime_evidence
 
 REPOSITORY = "https://github.com/ai-dynamo/aisimulate"
 
@@ -473,13 +474,12 @@ def replay_chart_metrics(metrics, total_gpus):
 
 
 def predict_resolved_point(point):
-    from e2e_accuracy_source.estimate import estimate_kwargs
-    from e2e_accuracy_source.model_config_snapshot import materialize_model_config
-    from e2e_accuracy_source.replay import replay_spec as resolved_replay_spec
-    from e2e_accuracy_source.schema import SiliconRow
-
     from aisimulate.runner import EngineReplayRunnerFactory
     from aisimulate.sweeper.replay import BackendDeploymentSpec, ReplaySpec
+    from scripts.e2e_accuracy.source.estimate import estimate_kwargs
+    from scripts.e2e_accuracy.source.model_config_snapshot import materialize_model_config
+    from scripts.e2e_accuracy.source.replay import replay_spec as resolved_replay_spec
+    from scripts.e2e_accuracy.source.schema import SiliconRow
 
     if point.get("resolution_error"):
         return {"id": point["id"], "outcome": "unsupported", "reason": "source_unresolved"}
@@ -600,9 +600,9 @@ def predict_resolved_point(point):
 
 
 def resolve_points(points, cache_dir, workers, *, allow_estimated_defaults=False):
-    from e2e_accuracy_source.deployment import inspect_deployment
-    from e2e_accuracy_source.recipes.inferencex_recipe import GitHubRecipeSource
-    from e2e_accuracy_source.schema import SiliconRow
+    from scripts.e2e_accuracy.source.deployment import inspect_deployment
+    from scripts.e2e_accuracy.source.recipes.inferencex_recipe import GitHubRecipeSource
+    from scripts.e2e_accuracy.source.schema import SiliconRow
 
     source = GitHubRecipeSource(cache_dir=cache_dir, archived_runtime=True)
 
@@ -649,13 +649,17 @@ def run_child(point: dict, timeout: int) -> dict:
         }
 
 
-def qualify_results(points: list[dict], results: list[dict]) -> list[dict]:
+def validate_outcomes(points: list[dict], results: list[dict]) -> None:
     expected = {point["id"] for point in points}
     actual = [result["id"] for result in results]
     if len(expected) != len(points) or len(actual) != len(set(actual)) or set(actual) != expected:
         raise ValueError("campaign is incomplete or has overlapping points")
     if any(result.get("outcome") not in {"evaluated", "unsupported", "baseline_failed"} for result in results):
         raise ValueError("campaign child failed before recording both predictor outcomes")
+
+
+def qualify_results(points: list[dict], results: list[dict]) -> list[dict]:
+    validate_outcomes(points, results)
     rows = [result["row"] for result in results if result["outcome"] == "evaluated"]
     if not rows or not any(row.get("aisimulate_status") == "success" for row in rows):
         raise ValueError("campaign has no successful matched predictions")
@@ -677,12 +681,40 @@ def campaign(args) -> None:
     tables = json.loads(args.tables.read_text())
     resolved = manifest["selection_policy"] == RESOLVED_POLICY
     if resolved:
-        from e2e_accuracy_source.cohort import select_points as select_resolved_points
-
         points, selection = select_resolved_points(tables, manifest["max_age_days"])
         for point in points:
             point["id"] = sha([point["benchmark"]["id"], point["config"]["id"]])
-        points.sort(key=lambda point: point["id"])
+    else:
+        points, selection = select_points(tables, manifest["max_age_days"])
+    del tables
+    points.sort(key=lambda point: point["id"])
+    point_ids = [point["id"] for point in points]
+    if len(set(point_ids)) != len(point_ids):
+        raise ValueError("duplicate selected point IDs")
+    shard_count = getattr(args, "shard_count", 1)
+    shard_index = getattr(args, "shard_index", 0)
+    if not 0 <= shard_index < shard_count:
+        raise ValueError("invalid shard index/count")
+    if shard_count > 1 and args.output.exists() and any(args.output.iterdir()):
+        raise ValueError("shard output directory must be empty")
+    metadata = {
+        "manifest": manifest,
+        "identity": identity,
+        "selection": selection,
+        "point_ids": point_ids,
+        "branch": args.branch,
+        "commit": args.commit,
+        "run_id": args.run_id,
+        "preview": preview,
+        "configuration_mode": getattr(args, "configuration_mode", "verified"),
+        "point_timeout": args.point_timeout,
+        "dataset_sha256": digest(args.manifest),
+        "measurement_sha256": digest(args.tables),
+        "driver_sha256": driver_digest(),
+    }
+    points = points[shard_index::shard_count]
+    started = datetime.now(UTC).isoformat()
+    if resolved:
         args.evidence.mkdir(parents=True, exist_ok=True)
         if getattr(args, "fetch_runtime_evidence", False):
             acquired = prepare_runtime_evidence(points, args.source_cache)
@@ -700,21 +732,117 @@ def campaign(args) -> None:
             f"Resolved {sum(not p.get('resolution_error') for p in points)}/{len(points)} source deployments",
             flush=True,
         )
-    else:
-        points, selection = select_points(tables, manifest["max_age_days"])
-    started = datetime.now(UTC).isoformat()
     results = []
-    with ThreadPoolExecutor(max_workers=args.workers) as pool:
-        for result in pool.map(lambda point: run_child(point, args.point_timeout), points):
+    evidence = getattr(args, "evidence", None)
+    if evidence:
+        evidence.mkdir(parents=True, exist_ok=True)
+    # Completion order preserves progress even when an earlier point stalls.
+    checkpoint = (evidence / "results.jsonl").open("wb") if evidence else nullcontext()
+    with checkpoint as stream, ThreadPoolExecutor(max_workers=args.workers) as pool:
+        futures = [pool.submit(run_child, point, args.point_timeout) for point in points]
+        for future in as_completed(futures):
+            result = future.result()
             results.append(result)
+            if stream:
+                stream.write(encoded(result))
+                stream.flush()
             if len(results) % 50 == 0:
                 print(f"Recorded {len(results)}/{len(points)} point outcomes", flush=True)
-    if resolved:
-        (args.evidence / "results.json").write_bytes(encoded(results))
-    rows = qualify_results(points, results)
+    results.sort(key=lambda result: result["id"])
+    if evidence:
+        (evidence / "results.json").write_bytes(encoded(results))
+    validate_outcomes(points, results)
     if wheel_identity(args.wheel) != identity:
         raise ValueError("runtime changed during campaign")
-    source = {"branch": args.branch, "commit_sha": args.commit, "clean": True}
+    cohort_sha = sha(points if resolved else [point["id"] for point in points])
+    if shard_count > 1:
+        args.output.mkdir(parents=True, exist_ok=True)
+        bundle = {
+            "schema_version": 1,
+            "metadata": metadata,
+            "shard_index": shard_index,
+            "shard_count": shard_count,
+            "run_attempt": args.run_attempt,
+            "cohort_sha256": cohort_sha,
+            "started_at": started,
+            "results": results,
+        }
+        (args.output / f"shard-{shard_index}.json").write_bytes(encoded(bundle))
+    else:
+        publish_campaign(metadata, results, cohort_sha, started, args.output, args.run_attempt)
+
+
+def driver_digest() -> str:
+    return sha(
+        {
+            str(path.relative_to(Path(__file__).parent)): digest(path)
+            for path in [
+                Path(__file__),
+                *sorted(Path(__file__).with_name("source").rglob("*.py")),
+                *sorted(Path(__file__).with_name("source").rglob("*.json")),
+            ]
+        }
+    )
+
+
+def merge_shards(args) -> None:
+    """Reuse complete siblings from earlier attempts of this same workflow run."""
+    if args.shard_count < 1:
+        raise ValueError("shard count must be positive")
+    paths = sorted(args.shards.glob("*.json"))
+    if {path.name for path in paths} != {f"shard-{i}.json" for i in range(args.shard_count)}:
+        raise ValueError("missing or unexpected shard files")
+    bundles = [json.loads((args.shards / f"shard-{i}.json").read_text()) for i in range(args.shard_count)]
+    metadata = bundles[0]["metadata"]
+    expected = {
+        "branch": args.branch,
+        "commit": args.commit,
+        "run_id": args.run_id,
+        "preview": args.preview,
+        "configuration_mode": args.configuration_mode,
+        "dataset_sha256": digest(args.manifest),
+        "driver_sha256": driver_digest(),
+    }
+    if any(metadata.get(key) != value for key, value in expected.items()):
+        raise ValueError("shard provenance does not match this campaign")
+    if metadata["identity"]["wheel_sha256"] != args.wheel_sha256:
+        raise ValueError("shard wheel does not match this campaign")
+    if metadata["manifest"] != json.loads(args.manifest.read_text()):
+        raise ValueError("shard dataset manifest mismatch")
+    ids = metadata["point_ids"]
+    if ids != sorted(set(ids)):
+        raise ValueError("selected point IDs must be unique and sorted")
+    results = []
+    for index, bundle in enumerate(bundles):
+        if (
+            bundle["schema_version"] != 1
+            or bundle["metadata"] != metadata
+            or bundle["shard_count"] != args.shard_count
+            or bundle["shard_index"] != index
+            or not 1 <= int(bundle["run_attempt"]) <= int(args.run_attempt)
+            or not re.fullmatch(r"[0-9a-f]{64}", bundle["cohort_sha256"])
+        ):
+            raise ValueError("inconsistent shard provenance")
+        validate_outcomes([{"id": id_} for id_ in ids[index :: args.shard_count]], bundle["results"])
+        results.extend(bundle["results"])
+    results.sort(key=lambda result: result["id"])
+    publish_campaign(
+        metadata,
+        results,
+        sha([bundle["cohort_sha256"] for bundle in bundles]),
+        min(bundle["started_at"] for bundle in bundles),
+        args.output,
+        args.run_attempt,
+    )
+
+
+def publish_campaign(metadata, results, cohort_sha, started, output, run_attempt) -> None:
+    manifest, identity, selection = (metadata[key] for key in ("manifest", "identity", "selection"))
+    resolved = manifest["selection_policy"] == RESOLVED_POLICY
+    preview = metadata["preview"]
+    points = [{"id": id_} for id_ in metadata["point_ids"]]
+    rows = qualify_results(points, results)
+    source = {"branch": metadata["branch"], "commit_sha": metadata["commit"], "clean": True}
     counts = Counter(row["aisimulate_status"] for row in rows)
     run = {
         "status": "complete",
@@ -734,7 +862,7 @@ def campaign(args) -> None:
     }
     common = {
         "release_tag": manifest["release_tag"],
-        "aic_commit_sha": args.commit,
+        "aic_commit_sha": metadata["commit"],
         "aisimulate_run": run,
         "aic_run": baseline,
     }
@@ -751,31 +879,22 @@ def campaign(args) -> None:
         source_url=REPOSITORY.replace("ai-dynamo/aisimulate", "SemiAnalysisAI/InferenceX-app")
         + "/releases/tag/"
         + manifest["release_tag"],
-        branch=args.branch,
+        branch=metadata["branch"],
         preview=preview,
         exclude_multinode=not resolved,
     )
     campaign_info = {
         "metric_contract": "serving-metrics-v1",
         "schema_version": 1,
-        "branch": args.branch,
-        "commit_sha": args.commit,
+        "branch": metadata["branch"],
+        "commit_sha": metadata["commit"],
         "wheel_sha256": identity["wheel_sha256"],
-        "dataset_sha256": digest(args.manifest),
-        "measurement_sha256": digest(args.tables),
-        "cohort_sha256": sha(points if resolved else [point["id"] for point in points]),
-        "driver_sha256": sha(
-            {
-                str(path.relative_to(Path(__file__).parent)): digest(path)
-                for path in [
-                    Path(__file__),
-                    *sorted(Path(__file__).with_name("e2e_accuracy_source").rglob("*.py")),
-                    *sorted(Path(__file__).with_name("e2e_accuracy_source").rglob("*.json")),
-                ]
-            }
-        ),
-        "run_id": args.run_id,
-        "run_attempt": args.run_attempt,
+        "dataset_sha256": metadata["dataset_sha256"],
+        "measurement_sha256": metadata["measurement_sha256"],
+        "cohort_sha256": cohort_sha,
+        "driver_sha256": metadata["driver_sha256"],
+        "run_id": metadata["run_id"],
+        "run_attempt": run_attempt,
         "selection_policy": manifest["selection_policy"],
         "measurement_filter_counts": selection["excluded"],
         "selected": len(points),
@@ -793,21 +912,19 @@ def campaign(args) -> None:
     }
     if resolved:
         campaign_info["configuration"] = {
-            "profile": "coverage-experiment/1"
-            if getattr(args, "configuration_mode", "verified") == "estimated"
-            else "verified",
+            "profile": "coverage-experiment/1" if metadata["configuration_mode"] == "estimated" else "verified",
             "counts": dict(Counter(row["configuration_quality"] for row in rows)),
         }
     summary["snapshot"]["campaign"] = campaign_info
     if preview:
         campaign_info["preview"] = True
     _accuracy_summary(encoded(summary).decode(), allow_preview=preview)
-    args.output.mkdir(parents=True, exist_ok=True)
-    if any(args.output.iterdir()):
+    output.mkdir(parents=True, exist_ok=True)
+    if any(output.iterdir()):
         raise ValueError("public artifact directory must be empty")
-    (args.output / "summary.json").write_bytes(encoded(summary))
-    (args.output / "qualification.json").write_bytes(
-        encoded({**campaign_info, "summary_sha256": digest(args.output / "summary.json")})
+    (output / "summary.json").write_bytes(encoded(summary))
+    (output / "qualification.json").write_bytes(
+        encoded({**campaign_info, "summary_sha256": digest(output / "summary.json")})
     )
     print(json.dumps({"selected": len(points), "published": len(rows), "replay": dict(counts)}))
 
@@ -829,12 +946,24 @@ def main():
         sys.stdout.buffer.write(encoded(result))
         return
     parser = argparse.ArgumentParser(description=__doc__)
+    if sys.argv[1:2] == ["merge"]:
+        for name in ("shards", "manifest", "output"):
+            parser.add_argument("--" + name, type=Path, required=True)
+        for name in ("branch", "commit", "run-id", "run-attempt", "wheel-sha256"):
+            parser.add_argument("--" + name, required=True)
+        parser.add_argument("--shard-count", type=int, required=True)
+        parser.add_argument("--configuration-mode", choices=("verified", "estimated"), default="verified")
+        parser.add_argument("--preview", action="store_true")
+        merge_shards(parser.parse_args(sys.argv[2:]))
+        return
     for name in ("tables", "manifest", "wheel", "output"):
         parser.add_argument("--" + name, type=Path, required=True)
     for name in ("branch", "commit", "run-id", "run-attempt"):
         parser.add_argument("--" + name, required=True)
     parser.add_argument("--configuration-mode", choices=("verified", "estimated"), default="verified")
     parser.add_argument("--fetch-runtime-evidence", action="store_true")
+    parser.add_argument("--shard-index", type=int, default=0)
+    parser.add_argument("--shard-count", type=int, default=1)
     parser.add_argument("--workers", type=int, default=6)
     parser.add_argument("--point-timeout", type=int, default=180)
     parser.add_argument("--source-cache", type=Path, default=Path(".cache/e2e-accuracy/source"))

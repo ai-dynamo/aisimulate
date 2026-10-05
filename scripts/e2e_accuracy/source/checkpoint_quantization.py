@@ -13,8 +13,8 @@ import re
 from collections import defaultdict
 from typing import Any
 
-from e2e_accuracy_source.defaults.sglang_additional_defaults import verified_sglang_fp4_expert_profile
-from e2e_accuracy_source.recipes.inferencex_recipe import InferenceXRecipeError
+from scripts.e2e_accuracy.source.defaults.sglang_additional_defaults import verified_sglang_fp4_expert_profile
+from scripts.e2e_accuracy.source.recipes.inferencex_recipe import InferenceXRecipeError
 
 
 class QuantizationMappingError(InferenceXRecipeError):

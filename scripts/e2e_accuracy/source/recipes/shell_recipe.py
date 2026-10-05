@@ -10,16 +10,16 @@ import re
 import shlex
 from typing import Any
 
-from e2e_accuracy_source.recipes.inferencex_recipe import (
+from scripts.e2e_accuracy.source.recipes.inferencex_recipe import (
     InferenceXRecipeError,
     RecipeSource,
     _load_yaml_mapping,
     _normalize_yaml_server_args,
     _read_first,
 )
-from e2e_accuracy_source.recipes.legacy_recipe import legacy_shell_source, legacy_workload, source_record
-from e2e_accuracy_source.recipes.shell_values import resolve_lines
-from e2e_accuracy_source.schema import SiliconRow
+from scripts.e2e_accuracy.source.recipes.legacy_recipe import legacy_shell_source, legacy_workload, source_record
+from scripts.e2e_accuracy.source.recipes.shell_values import resolve_lines
+from scripts.e2e_accuracy.source.schema import SiliconRow
 
 
 def command_args(command: str, variables: dict[str, Any]) -> dict[str, Any]:

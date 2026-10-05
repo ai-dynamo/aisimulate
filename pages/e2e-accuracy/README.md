@@ -140,10 +140,11 @@ gh workflow run e2e-accuracy.yml --repo ai-dynamo/aisimulate --ref pull-request/
 ```
 
 The run produces `e2e-accuracy-preview-<branch-key>` with the summary and
-qualification hashes, plus `e2e-accuracy-preview-evidence-<branch-key>` with
-resolved inputs and per-point outcomes (seven-day retention). Evidence is saved
-even when qualification fails, if the campaign reached source resolution.
-Production runs still upload only aggregate publication artifacts. Preview
+qualification hashes, plus `e2e-accuracy-preview-evidence-<branch-key>-shard-<index>`
+with each shard's resolved inputs and per-point outcomes (seven-day retention).
+Evidence is saved even when qualification fails, if source resolution completed.
+Production runs retain internal shard results and checkpoints; only aggregate
+publication artifacts are eligible for Pages. Preview
 names and scope markers are rejected by the public artifact importer and site
 builder; changing an artifact's name cannot make it publishable.
 
@@ -175,14 +176,15 @@ checkout and committed snapshots unchanged.
   It never executes SQL from the dump. The September 14 release downloads about
   25 GB and requires at least 35 GB of free temporary disk. Decompression streams
   directly into the serial `pg_restore` reader, avoiding an expanded dump on disk.
-  Raw data and child logs
-  remain on the runner; they are not uploaded as Actions or Pages artifacts.
+  The extracted measurement tables are shared through a seven-day Actions artifact
+  so the four prediction jobs do not repeat the large download and decompression.
+  Dump archives and child logs stay on the runner. Raw tables never reach Pages.
 - Policy `gym-resolved-config-v2` applies gym's source filters, row deduplication,
   image coherence, and 180-day configuration freshness window. It includes P/D
   and multinode measurements. Every source row is selected or counted as excluded.
   Historical `latest-complete-config-run-v1` artifacts retain their original
   30-day, successful-run, single-node policy; they are never relabeled as v2.
-- The repository-only [source resolver](../../scripts/e2e_accuracy_source/README.md)
+- The repository-only [source resolver](../../scripts/e2e_accuracy/source/README.md)
   joins immutable workflow revisions, reads pinned launchers without executing
   them, verifies reviewed framework defaults, and resolves checkpoint metadata.
   It records the measured framework version separately from the selected
@@ -200,18 +202,50 @@ checkout and committed snapshots unchanged.
   come from the resolved workload. Source graph/kernel controls remain evidence
   when the engine does not model them. Assumptions are applied and labeled by
   source preparation before either predictor runs.
-- Six CPU worker processes execute bounded point predictions (180 seconds each).
+- Four independent CI jobs each run two CPU prediction workers (180 seconds per
+  point). Selection happens before partitioning; sorted point IDs are distributed
+  by stride across shards 0–3, before source resolution. No points are sampled out.
   Every selected point must have one outcome. Estimate and replay run independently:
   a failed baseline does not remove a successful replay. Failed predictions have
   no error value and remain visible in coverage. Missing/duplicate outcomes,
   killed/timed-out workers, or no successful replay fail qualification.
-- Full resolved inputs and outcomes stay in the runner's local evidence directory.
-  The cohort hash binds those inputs, including source evidence. Only aggregate
-  summaries are uploaded. Matching measurements alone do not establish matching
-  source evidence: compare cohort and driver hashes across campaigns as well.
+- Full resolved inputs stay in each runner's evidence directory (also retained
+  for previews). Completed outcomes are flushed to `results.jsonl` immediately
+  and uploaded as internal checkpoints even on failure. Complete shard bundles
+  retain per-point metrics and provenance for aggregation. These Actions artifacts
+  are not Pages publication inputs; no generated results are committed.
+- For a sharded campaign, `cohort_sha256` hashes the ordered list of the four
+  resolved-input shard hashes. An unsharded local run retains its direct resolved
+  input hash. Compare cohort hashes only with the same partition count and driver;
+  matching measurement hashes alone do not establish matching source evidence.
 - Accuracy values and coverage are advisory. There is no MAPE threshold or claim
   that a lower aggregate on a different cohort is an improvement. Campaign integrity
   is required for publication.
+
+### Retrying a failed shard
+
+The four jobs use `fail-fast: false`; one failure does not cancel its siblings.
+Completed bundles are retained for seven days as
+`e2e-accuracy-results-<branch-key>-shard-<index>`. Retry within that window:
+
+```bash
+gh run rerun RUN_ID --repo ai-dynamo/aisimulate --failed
+```
+
+GitHub reruns failed jobs and their dependent qualification job, reusing successful
+jobs' artifacts from the same run. A retry replaces only its shard's bundle.
+The failed shard starts its partition again; JSONL checkpoints are diagnostic
+records, not automatic resume inputs. A runner loss can also prevent checkpoint
+upload, but already uploaded sibling artifacts remain available. If shared inputs
+or completed shards have expired, start a new full run.
+
+Qualification requires all four disjoint partitions, every selected point exactly
+once, and matching run, commit, wheel, dataset, measurements, driver, and settings.
+Earlier successful attempts of the same run are accepted; future attempts and
+mixed identities are rejected. The final summary records the qualification job's
+current attempt and recomputes statistics from all point results, without averaging
+shard summaries. A separate post-prediction check detects missing shard output
+even if the runner incorrectly reports the prediction command as successful.
 
 ### Artifact and publication contract
 
@@ -397,7 +431,7 @@ snapshot. Runtime artifact caches are optional inputs; CI does not fetch them
 automatically. Missing dynamic capacity remains unresolved rather than invoking
 gym's optional old-revision capacity estimator. Unmodeled graph/kernel and client
 behavior remain simulation limitations, as in gym's replay projection. See the
-[resolver boundary](../../scripts/e2e_accuracy_source/README.md#campaign-boundary).
+[resolver boundary](../../scripts/e2e_accuracy/source/README.md#campaign-boundary).
 
 Input SHA-256 values for reproduction:
 

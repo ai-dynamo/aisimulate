@@ -14,8 +14,8 @@ from typing import Any
 
 import requests
 
-from e2e_accuracy_source.recipes.inferencex_recipe import InferenceXRecipeError
-from e2e_accuracy_source.sources import load_manifest, verify_sources
+from scripts.e2e_accuracy.source.recipes.inferencex_recipe import InferenceXRecipeError
+from scripts.e2e_accuracy.source.sources import load_manifest, verify_sources
 
 _SOURCES = load_manifest("sglang_additional_default_sources.json")
 _QWEN = {"Qwen3_5MoeForConditionalGeneration", "Qwen3_5ForConditionalGeneration"}

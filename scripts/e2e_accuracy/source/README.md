@@ -16,7 +16,9 @@ mappings and conflicting evidence remain unsupported.
 
 ## Package layout
 
-Group recipe readers and defaults one level below the package root. Keep reviewed
+The resolver lives under `scripts/e2e_accuracy/source/`, with the E2E campaign
+entrypoints in its parent directory. Group recipe readers and defaults one level
+below the package root. Keep reviewed
 JSON data in `manifests/` and orchestration/shared contracts at the root:
 
 | Responsibility | Location |
@@ -67,12 +69,17 @@ nesting would add import churn without simplifying those rules.
   into `ReplaySpec`, including the NumPy length sampler and benchmark seed.
   Performance-database versions are selected independently of measured framework
   versions. Estimate failure does not suppress replay or its coverage.
-- The driver writes full resolved evidence and outcomes only to `--evidence`.
-  Production runs do not upload that directory. Explicit PR preview runs retain
-  it as a separate diagnostic artifact for local review. For policy
-  `gym-resolved-config-v2`, `cohort_sha256` hashes the complete resolved inputs,
-  including source evidence; `driver_sha256` includes resolver code and source
-  manifests. Only the validated aggregate summary is public.
+- CI selects the complete cohort, then partitions sorted point IDs across four
+  independent jobs before resolution. Each job runs two prediction workers and
+  flushes completed outcomes to `--evidence/results.jsonl`. Internal Actions
+  artifacts retain checkpoints and complete shard results for seven days.
+  Explicit PR previews additionally retain full resolved inputs for local review.
+- For policy `gym-resolved-config-v2`, each shard hashes its complete resolved
+  inputs, including source evidence. The aggregate `cohort_sha256` hashes the
+  ordered list of shard hashes; unsharded local runs hash their inputs directly.
+  `driver_sha256` includes resolver code and source manifests. Qualification
+  checks all partitions and provenance before producing the Pages summary.
+  See [retry and artifact rules](../../../pages/e2e-accuracy/README.md#retrying-a-failed-shard).
 
 `--source-cache` may contain gym-compatible `runtime-evidence/` indexes and
 checksum-verified runtime artifacts. Without matching runtime artifacts, the
@@ -90,12 +97,12 @@ resolver; fetching current metadata cannot prove the measured revision.
 
 Run `pytest -c /dev/null tests/e2e_accuracy_source tests/test_e2e_accuracy_nightly.py`.
 Tests use synthetic inputs and pinned expected behavior; PR checks do not need
-the internal gym repository or network access. The package's hashed dependency
-lock is installed by Pages, Full CI's repository-contract shard, and the nightly
-campaign. Install it locally before running these tests:
+the internal gym repository or network access. Dependencies come from the
+`e2e-accuracy` group in [`scripts/pyproject.toml`](../../pyproject.toml).
+Pages and Full CI include that group; nightly campaigns install its hashed lock. Install it locally before running these tests:
 
 ```bash
-python -m pip install --require-hashes -r scripts/e2e_accuracy_source/requirements.txt
+python -m pip install --require-hashes -r scripts/e2e_accuracy/requirements.txt
 ```
 
 On the September 28 dump, the new policy matches gym's **2,281 measurement IDs**

@@ -18,7 +18,7 @@ from typing import Any, Protocol
 import requests
 import yaml
 
-from e2e_accuracy_source.schema import SiliconRow
+from scripts.e2e_accuracy.source.schema import SiliconRow
 
 INFERENCEX_REPOSITORY = "SemiAnalysisAI/InferenceX"
 INFERENCEX_REPOSITORY_URL = f"https://github.com/{INFERENCEX_REPOSITORY}"
