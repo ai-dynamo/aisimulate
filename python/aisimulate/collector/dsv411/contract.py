@@ -706,6 +706,7 @@ def aggregate_run(
     for rank in range(tp):
         for line in (raw / f"rank-{rank}.jsonl").read_text().splitlines():
             row = json.loads(line)
+            row.setdefault("kv_seed_correction", 1.0)  # raw rows predate the publish-time column
             validate_row(row)
             if (
                 any(row.get(k) != v for k, v in provenance.items())
