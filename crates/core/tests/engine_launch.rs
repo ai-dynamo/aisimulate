@@ -95,6 +95,11 @@ fn performance_identity_and_explicit_launch_topology_cannot_diverge() {
     let valid = EngineLaunchConfig::from_value(json!({"ais_perf_config":perf})).unwrap();
     assert_eq!(valid.tensor_parallel_size, 2);
     assert_eq!(valid.dp_size, 2);
+    // Do not expand or reconstruct the caller's saved performance controls.
+    assert_eq!(
+        serde_json::to_value(&valid.timing_model).unwrap()["config"],
+        perf
+    );
     // A caller may intentionally compare one scheduler with another backend's timing.
     let alternate = EngineLaunchConfig::from_value(json!({
         "engine_type":"sglang", "ais_perf_config":perf

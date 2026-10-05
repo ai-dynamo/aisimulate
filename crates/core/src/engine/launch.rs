@@ -269,12 +269,6 @@ impl EngineLaunchConfig {
     /// Validate launch inputs and normalize shared engine controls.
     pub fn normalized(mut self) -> Result<Self> {
         self.validate()?;
-        if let Some(config) = self.performance_config()? {
-            self.timing_model = TimingModelConfig::External {
-                provider: "ais".to_owned(),
-                config: serde_json::to_value(config)?,
-            };
-        }
         if let Some(nextn) = self.aic_nextn {
             let rates =
                 normalize_conditional_accept_rates(nextn, self.aic_nextn_accept_rates.as_deref())?;
