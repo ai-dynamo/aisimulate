@@ -90,7 +90,19 @@ jobs:
       - name: Check active workflow contracts
         run: |
           python scripts/check_prediction_numerics.py --fetch-baseline-only
-          python -m pytest -c /dev/null tests/test_ci_workflow_contracts.py tests/test_ci_qualification.py tests/test_release_fpe.py -q \
+          python -m pytest -c /dev/null tests/test_ci_workflow_contracts.py tests/test_ci_qualification.py tests/test_release_fpe.py tests/test_required_main_checks.py -q \
+            -p no:cacheprovider \
+            --override-ini="addopts=" \
+            --override-ini="filterwarnings=error"
+
+      - name: Set up verifier minimum Python version
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.11"
+      - name: Check required-rule verifier on Python 3.11
+        run: |
+          python -m pip install pytest==8.4.2
+          python -m pytest -c /dev/null tests/test_required_main_checks.py -q \
             -p no:cacheprovider \
             --override-ini="addopts=" \
             --override-ini="filterwarnings=error"
