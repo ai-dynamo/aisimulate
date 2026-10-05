@@ -974,11 +974,21 @@ def _benchmark_framework_quantized_moe(
                             f"requested={moe_backend}, actual={actual_backend}"
                         )
                     if actual_backend == "flashinfer_mxfp4":
-                        if quant_method._fi_kernel != "cutlass_sm90":
+                        # Mxfp4MoEMethod dispatches flashinfer_mxfp4 to one of three leaves by GPU
+                        # (mxfp4.py: SM90 cutlass_fused_moe w4-group-scaling, SM100 trtllm_fp4_block_scale_moe,
+                        # SM120 cutlass MXFP8xMXFP4); name the kernel source after the leaf that actually ran
+                        # (B200 2026-10-05: the Hopper-only check rejected the 'trtllm_sm100' leaf gpt-oss
+                        # serves with on Blackwell — identity records: Mxfp4MoE -> trtllm_gen_moe).
+                        _fi_leaf_sources = {
+                            "cutlass_sm90": "sglang_flashinfer_cutlass_moe",
+                            "trtllm_sm100": "sglang_mxfp4_flashinfer_trtllm_moe",
+                            "flashinfer_cutlass_sm120": "sglang_flashinfer_cutlass_moe_sm120",
+                        }
+                        if quant_method._fi_kernel not in _fi_leaf_sources:
                             raise RuntimeError(
                                 f"SGLang {moe_type} has unexpected FlashInfer MXFP4 leaf {quant_method._fi_kernel!r}"
                             )
-                        kernel_source = "sglang_flashinfer_cutlass_moe"
+                        kernel_source = _fi_leaf_sources[quant_method._fi_kernel]
                     else:
                         kernel_source = source_by_backend[actual_backend]
                 elif (
@@ -1298,6 +1308,20 @@ def _raise_if_unverified_moe_lane(moe_type: str) -> str:
     # * w4a8_mxfp4_mxfp8 (DSV4 FP4 experts, SM100-only): not re-verified.
     if not verified and _check_compat("sglang>=0.5.21,<0.5.22", installed_version):
         verified = moe_type in ("int4_wo", "w4a16_mxfp4") and get_sm_version() in (89, 90)
+        # SM100/103 w4a16_mxfp4 re-verified on 0.5.21 from the B200 identity probes (2026-10-04,
+        # opharness results/sm100/sglang-0.5.21.yaml + results/retests/sm100/sglang-0.5.21.moe_auto.yaml):
+        # openai/gpt-oss-120b and gpt-oss-20b serve with Mxfp4MoEMethod -> MoeRunnerBackend.FLASHINFER_MXFP4
+        # (kernel family trtllm_gen_moe) under the default render AND under an explicit AUTO, i.e. the
+        # flashinfer_mxfp4 declaration the cases carry for SM100/103 still matches serving even though the
+        # gpt-oss server-args override is gone (the selection now lives in Mxfp4MoEMethod itself).
+        if not verified and moe_type == "w4a16_mxfp4" and get_sm_version() in (100, 103):
+            verified = True
+        # w4a8_mxfp4_mxfp8 (DeepSeek-V4 native fp4 experts, SM100-only lane) re-verified the same way: the five
+        # deepseek-ai/DeepSeek-V4* checkpoints serve on B200 with MoeRunnerBackend.FLASHINFER_MXFP4 (trtllm_gen_moe)
+        # under AUTO (results/retests/sm100/sglang-0.5.21.moe_auto.yaml); the marlin prescription in targets.yaml is the
+        # SM90 workaround ("fp4-experts on SM90: runner=auto crashes"), not the Blackwell path.
+        if not verified and moe_type == "w4a8_mxfp4_mxfp8" and get_sm_version() in (100, 103):
+            verified = True
     if not verified:
         raise RuntimeError(
             f"SGLang {moe_type} collection is verified only for the 0.5.14 and 0.5.17 series "

@@ -1,0 +1,47 @@
+{
+ "verdict": "diverged",
+ "repo": "Qwen/Qwen3-VL-2B-Instruct",
+ "framework": "sglang",
+ "version": "0.5.21",
+ "gate_name": "encoder_attn_Qwen3-VL-2B",
+ "target_roles": [
+  "attention"
+ ],
+ "phase": "profile_run",
+ "phase_scoped": true,
+ "kv_dtype": "auto",
+ "op_hint": "vision|vit|patch|encoder|flash|attn",
+ "capture_file": "facts/pathdiff/opcov_sgl_encoder_attn_qwen3vl@0.5.21.json",
+ "capture_sha256": "f241ec9b3b357784",
+ "capture_env": null,
+ "capture_run_error": null,
+ "serving_record": {
+  "id": "56330f2eab4a",
+  "tp": 1,
+  "kv_cache_dtype": "auto",
+  "isl": 4096,
+  "prefix_caching": false,
+  "raw_file": null,
+  "candidates": 1,
+  "exec_fingerprint": "8ee7fdd2500f",
+  "evidence_status": "current"
+ },
+ "collector_backends": [
+  "fa_cute_sm100"
+ ],
+ "serving_backends": [],
+ "missing_roles": [
+  "attention"
+ ],
+ "aux_collector_only_roles": [],
+ "role_counts": {
+  "attention": {
+   "collector": 1,
+   "serving": 0,
+   "matched": 0
+  }
+ },
+ "collector_only_signal": [],
+ "kernel_drift": null,
+ "evidence": "archive/evidence/pathdiff/<framework-version>/<gate>.json in the probe workspace (full kernel lists)"
+}

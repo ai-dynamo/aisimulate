@@ -127,7 +127,9 @@ def build_image(base_image: str, *, network: str = "host", extra_build_args: lis
 def image_digest(image: str) -> str | None:
     try:
         out = subprocess.run(
-            ["docker", "inspect", "--format", "{{index .RepoDigests 0}}|{{.Id}}", image],
+            # a locally built collect image has NO RepoDigests — `index .RepoDigests 0` fails and the launcher
+            # refused its own build-image output (B200 2026-10-03); fall back to the image Id
+            ["docker", "inspect", "--format", "{{if .RepoDigests}}{{index .RepoDigests 0}}{{end}}|{{.Id}}", image],
             capture_output=True,
             text=True,
             check=True,

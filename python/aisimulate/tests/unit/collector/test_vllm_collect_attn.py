@@ -169,6 +169,9 @@ def test_generation_uses_total_runtime_length_and_production_call_order(use_fp8_
         # per-SM page size (collect_attn:125 -> utils.kv_block_size); the test pins SM90's 16
         "get_sm_version": lambda: 90,
         "kv_block_size": lambda _sm, _op: 16,
+        # 1d0492eb: the page is asked from the framework per backend (collect_attn:201
+        # -> utils.framework_kv_block_size); the test pins the same 16
+        "framework_kv_block_size": lambda _backend_cls: 16,
         # framework-resolved KV layout (collect_attn:248-270, 772728f3): identity order = HND
         "get_supported_kv_cache_layouts": lambda _backends: [SimpleNamespace(name="LBHNC")],
         "resolve_kv_cache_layout": lambda _cfg, _layouts, _specs: None,

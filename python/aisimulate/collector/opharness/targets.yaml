@@ -284,6 +284,26 @@ families:
     - openbmb/MiniCPM5-2B
     - TokenRhythm/NeoHorse-1-9B
     checkpoint_overrides:
+      Qwen/Qwen3-32B-FP8-Static-PerTensor:
+        dummy_overrides:
+          tokenizer_from: Qwen/Qwen3-32B
+          fact: Hub API fails for this artifact without a token (bundled config); same tokenizer as Qwen/Qwen3-32B
+      meta-llama/Meta-Llama-3.1-8B:
+        dummy_overrides:
+          tokenizer_from: nvidia/Llama-3.1-70B-Instruct-FP8
+          fact: gated on a box without an HF token (B200 2026-10-03); same tokenizer family as the public sibling
+      meta-llama/Meta-Llama-3.1-70B:
+        dummy_overrides:
+          tokenizer_from: nvidia/Llama-3.1-70B-Instruct-FP8
+          fact: gated on a box without an HF token (B200 2026-10-03); same tokenizer family as the public sibling
+      meta-llama/Meta-Llama-3.1-405B:
+        dummy_overrides:
+          tokenizer_from: nvidia/Llama-3.1-70B-Instruct-FP8
+          fact: gated on a box without an HF token (B200 2026-10-03); same tokenizer family as the public sibling
+      meta-llama/Llama-4-Scout-17B-16E-Instruct:
+        dummy_overrides:
+          tokenizer_from: unsloth/Llama-4-Scout-17B-16E-Instruct
+          fact: gated on a box without an HF token (B200 2026-10-03); same tokenizer family as the public sibling
       deepseek-ai/DeepSeek-V4.1-Flash:
         dummy_overrides:
           family: dsv41
@@ -375,6 +395,7 @@ families:
             fact: 'sm120 (2026-09-29/30): the mamba profile run OOMs at gpu-memory-utilization 0.9 (_state_passing_fwd, 4 GiB with 3.4 GiB free); 0.8 passes (facts/ab_sm120). Same class as Nemotron-H-56B on SM90 (generator floors max_batch_size at 512). Scoped to sm120.'
       nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-FP8:
         dummy_overrides:
+          tokenizer_from: nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-NVFP4
           hfquant_exclude_from_sibling: nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-NVFP4
           drop_auto_map: gated custom code; official NVFP4 sibling has no auto_map (native nemotron_h)
           fact: gated repo ships condensed hf_quant (no exclude_modules) + unobtainable custom code; sibling NVFP4
@@ -431,6 +452,8 @@ families:
             fact: 'tokens_per_block: DeepseekV4CacheManager requires [128,256]; naive renders 32 (facts/trt_ab_dsv4_tpb128.json).
               kv_cache_dtype: rc29 Hopper requires fp8_ds_mla (A/B facts/upgrade_rc29/ab_dsv4_kv_ccd7ce86d246.json, 2026-10-01).'
       meta-llama/Llama-4-Maverick-17B-128E-Instruct:
+        dummy_overrides:
+          tokenizer_from: unsloth/Llama-4-Maverick-17B-128E-Instruct
         variant_overrides:
           sglang: depth4
           vllm: depth4
@@ -482,12 +505,12 @@ topology_policy:
     reason: 'owner request 2026-08-24: K3 must be probed on the deepep a2a route (independent kernel path); other
       models are represented by tp1 per the invariance fact.'
 platform:
-  name: h20_sm90
-  sm: 90
-  system: h200_sxm
+  name: b200_sm100
+  sm: 100
+  system: b200_sxm
   facts_systems:
-  - h100_sxm
-  - h200_sxm
+  - b200_sxm
+  - gb200
 tooling:
   note: aiconfigurator-core wheel version is READ FROM aic/pyproject.toml (the checkout declares it); only probe-specific
     pins live here. vllm-probe:0.24.0-fix retired with the 0.29.0 pin (stubs gone since 0.27.1) — history in findings

@@ -102,11 +102,19 @@ profiles:
       # src/aisimulate_core/systems/data/b200_sxm/moe/trtllm/
       # <version>/wideep_moe_perf.parquet data collected,
       # and cli/exps/deepseek_wideep_trtllm.yaml (gb200/b200 wideep configs).
-      trtllm: WIDEEP
+      # trtllm: WIDEEP   (disabled, see note below)
       # SGLang: deepep_moe is the default wideep-compatible MoE runner on Blackwell.
       # Source: cli/main.py _sglang_moe_backend_override and
       # cli/exps/deepseek_disagg_sglang.yaml.
-      sglang: deepep_moe
+      # sglang: deepep_moe   (disabled, see note below)
+      # 2026-10-04 (B200 probe, PR #228 sm100 round): NOT filled on Blackwell.
+      # `WIDEEP` is a TRT-LLM 1.0-era MoeConfig.backend literal; 1.3.0rc29 rejects it
+      # (pydantic literal_error) and sglang 0.5.21 rejects `--moe-runner-backend deepep_moe`
+      # (argparse invalid choice) — 156 trtllm + 150 sglang MoE renders failed to boot.
+      # Wide-EP is an EP-size/load-balancer deployment choice, not a per-layer MoE kernel
+      # backend; single-node MoE on sm100 boots and picks working kernels under the
+      # framework's AUTO (A/B: explicit CUTLASS fails DeepSeek FP8_BLOCK_SCALES on SM100).
+      # See collector/opharness/results/findings.yaml sm100_moe_backend_fact_rejected_2026_10_04.
 
   # ---------------------------------------------------------------------------
   # GB200 NVL72  —  Blackwell  sm100,  arm64 Grace-Blackwell
@@ -155,11 +163,19 @@ profiles:
       # (all gb200_wideep_* experiments),
       # src/aisimulate_core/systems/data/gb200/moe/trtllm/
       # <version>/wideep_moe_perf.parquet
-      trtllm: WIDEEP
+      # trtllm: WIDEEP   (disabled, see note below)
       # SGLang: deepep_moe for the wideep DeepEP path on GB200 NVLink fabric.
       # Source: cli/main.py _sglang_moe_backend_override and
       # cli/exps/deepseek_disagg_sglang.yaml.
-      sglang: deepep_moe
+      # sglang: deepep_moe   (disabled, see note below)
+      # 2026-10-04 (B200 probe, PR #228 sm100 round): NOT filled on Blackwell.
+      # `WIDEEP` is a TRT-LLM 1.0-era MoeConfig.backend literal; 1.3.0rc29 rejects it
+      # (pydantic literal_error) and sglang 0.5.21 rejects `--moe-runner-backend deepep_moe`
+      # (argparse invalid choice) — 156 trtllm + 150 sglang MoE renders failed to boot.
+      # Wide-EP is an EP-size/load-balancer deployment choice, not a per-layer MoE kernel
+      # backend; single-node MoE on sm100 boots and picks working kernels under the
+      # framework's AUTO (A/B: explicit CUTLASS fails DeepSeek FP8_BLOCK_SCALES on SM100).
+      # See collector/opharness/results/findings.yaml sm100_moe_backend_fact_rejected_2026_10_04.
 
   # ---------------------------------------------------------------------------
   # Intel Arc Pro B60  —  XPU

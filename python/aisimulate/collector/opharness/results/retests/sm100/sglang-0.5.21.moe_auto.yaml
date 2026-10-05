@@ -1,0 +1,602 @@
+_meta:
+  platform: b200_sm100
+  framework: sglang
+  version: 0.5.21
+  what: the MoE cells of results/sm100/<fw>-<ver>.yaml re-probed with the generator's hardware moe_backend fact removed from the rendered config; the as-rendered cells fail with cause 'generator fact rejected
+    by framework'. This file is the identity the framework picks on sm100 when it is allowed to choose.
+  override: --moe-runner-backend deepep_moe (hardware.yaml b200) dropped -> 0.5.21 AUTO
+  summary:
+    pass+override: 72
+    fail: 3
+  evidence: archive/retests/moe_auto/{raw,*.engine.yaml} in the B200 workspace (umbriel-b200-040, 2026-10-04)
+results:
+  MiniMaxAI/MiniMax-M2:
+    verdict: pass+override
+    attention: TRTLLMHAAttnBackend
+    moe_runner: AUTO
+    moe_kernel_families:
+    - triton_fused_moe
+    moe_kernels_seen: 6
+    topology: tp1
+  MiniMaxAI/MiniMax-M2.5:
+    verdict: pass+override
+    attention: TRTLLMHAAttnBackend
+    moe_runner: AUTO
+    moe_kernel_families:
+    - triton_fused_moe
+    moe_kernels_seen: 6
+    topology: tp1
+  MiniMaxAI/MiniMax-M2.7:
+    verdict: pass+override
+    attention: TRTLLMHAAttnBackend
+    moe_runner: AUTO
+    moe_kernel_families:
+    - triton_fused_moe
+    moe_kernels_seen: 6
+    topology: tp1
+  MiniMaxAI/MiniMax-M3:
+    verdict: pass+override
+    attention: MiniMaxHybridAttnBackend
+    moe_runner: TRITON
+    moe_kernel_families:
+    - triton_fused_moe
+    moe_kernels_seen: 6
+    topology: tp1
+  MiniMaxAI/MiniMax-M3-MXFP8:
+    verdict: pass+override
+    attention: MiniMaxHybridAttnBackend
+    moe_runner: DEEP_GEMM
+    moe_kernel_families: null
+    moe_kernels_seen: 1
+    topology: tp1
+  Qwen/Qwen1.5-MoE-A2.7B:
+    verdict: pass+override
+    attention: TRTLLMHAAttnBackend
+    moe_runner: AUTO
+    moe_kernel_families:
+    - triton_fused_moe
+    moe_kernels_seen: 6
+    topology: tp1
+  Qwen/Qwen3-235B-A22B:
+    verdict: pass+override
+    attention: TRTLLMHAAttnBackend
+    moe_runner: FLASHINFER_TRTLLM
+    moe_kernel_families:
+    - trtllm_gen_moe
+    moe_kernels_seen: 5
+    topology: tp1
+  Qwen/Qwen3-235B-A22B-FP8:
+    verdict: pass+override
+    attention: TRTLLMHAAttnBackend
+    moe_runner: FLASHINFER_TRTLLM
+    moe_kernel_families:
+    - trtllm_gen_moe
+    moe_kernels_seen: 6
+    topology: tp1
+  Qwen/Qwen3-235B-A22B-Instruct-2507:
+    verdict: pass+override
+    attention: TRTLLMHAAttnBackend
+    moe_runner: FLASHINFER_TRTLLM
+    moe_kernel_families:
+    - trtllm_gen_moe
+    moe_kernels_seen: 5
+    topology: tp1
+  Qwen/Qwen3-30B-A3B:
+    verdict: pass+override
+    attention: TRTLLMHAAttnBackend
+    moe_runner: FLASHINFER_TRTLLM
+    moe_kernel_families:
+    - trtllm_gen_moe
+    moe_kernels_seen: 5
+    topology: tp1
+  Qwen/Qwen3-30B-A3B-FP8:
+    verdict: pass+override
+    attention: TRTLLMHAAttnBackend
+    moe_runner: FLASHINFER_TRTLLM
+    moe_kernel_families:
+    - trtllm_gen_moe
+    moe_kernels_seen: 6
+    topology: tp1
+  Qwen/Qwen3-Coder-480B-A35B-Instruct:
+    verdict: pass+override
+    attention: TRTLLMHAAttnBackend
+    moe_runner: FLASHINFER_TRTLLM
+    moe_kernel_families:
+    - trtllm_gen_moe
+    moe_kernels_seen: 5
+    topology: tp1
+  Qwen/Qwen3-VL-235B-A22B-Instruct:
+    verdict: pass+override
+    attention: TRTLLMHAAttnBackend
+    moe_runner: FLASHINFER_TRTLLM
+    moe_kernel_families:
+    - trtllm_gen_moe
+    moe_kernels_seen: 5
+    topology: tp1
+  Qwen/Qwen3-VL-30B-A3B-Instruct:
+    verdict: pass+override
+    attention: TRTLLMHAAttnBackend
+    moe_runner: FLASHINFER_TRTLLM
+    moe_kernel_families:
+    - trtllm_gen_moe
+    moe_kernels_seen: 5
+    topology: tp1
+  Qwen/Qwen3.5-122B-A10B:
+    verdict: pass+override
+    attention: HybridLinearAttnBackend
+    moe_runner: FLASHINFER_TRTLLM
+    moe_kernel_families:
+    - trtllm_gen_moe
+    moe_kernels_seen: 5
+    topology: tp1
+  Qwen/Qwen3.5-35B-A3B:
+    verdict: pass+override
+    attention: HybridLinearAttnBackend
+    moe_runner: FLASHINFER_TRTLLM
+    moe_kernel_families:
+    - trtllm_gen_moe
+    moe_kernels_seen: 5
+    topology: tp1
+  Qwen/Qwen3.5-397B-A17B:
+    verdict: pass+override
+    attention: HybridLinearAttnBackend
+    moe_runner: FLASHINFER_TRTLLM
+    moe_kernel_families:
+    - trtllm_gen_moe
+    moe_kernels_seen: 5
+    topology: tp1
+  XiaomiMiMo/MiMo-V2-Flash:
+    verdict: pass+override
+    attention: FlashAttentionBackend
+    moe_runner: FLASHINFER_TRTLLM
+    moe_kernel_families:
+    - trtllm_gen_moe
+    moe_kernels_seen: 6
+    topology: tp1
+  deepseek-ai/DeepSeek-R1:
+    verdict: pass+override
+    attention: TRTLLMMLABackend
+    moe_runner: FLASHINFER_TRTLLM
+    moe_kernel_families:
+    - trtllm_gen_moe
+    moe_kernels_seen: 6
+    topology: tp1
+  deepseek-ai/DeepSeek-V3:
+    verdict: pass+override
+    attention: TRTLLMMLABackend
+    moe_runner: FLASHINFER_TRTLLM
+    moe_kernel_families:
+    - trtllm_gen_moe
+    moe_kernels_seen: 6
+    topology: tp1
+  deepseek-ai/DeepSeek-V3.2:
+    verdict: pass+override
+    attention: DeepseekSparseAttnBackend
+    moe_runner: FLASHINFER_TRTLLM
+    moe_kernel_families:
+    - trtllm_gen_moe
+    moe_kernels_seen: 6
+    topology: tp1
+  deepseek-ai/DeepSeek-V4-Flash:
+    verdict: pass+override
+    attention: DeepseekV4AttnBackend
+    moe_runner: FLASHINFER_MXFP4
+    moe_kernel_families:
+    - trtllm_gen_moe
+    moe_kernels_seen: 4
+    topology: tp1
+  deepseek-ai/DeepSeek-V4-Flash-0731:
+    verdict: pass+override
+    attention: DeepseekV4AttnBackend
+    moe_runner: FLASHINFER_MXFP4
+    moe_kernel_families:
+    - trtllm_gen_moe
+    moe_kernels_seen: 4
+    topology: tp1
+  deepseek-ai/DeepSeek-V4-Pro:
+    verdict: pass+override
+    attention: DeepseekV4AttnBackend
+    moe_runner: FLASHINFER_MXFP4
+    moe_kernel_families:
+    - trtllm_gen_moe
+    moe_kernels_seen: 4
+    topology: tp1
+  deepseek-ai/DeepSeek-V4-Pro-0813:
+    verdict: pass+override
+    attention: DeepseekV4AttnBackend
+    moe_runner: FLASHINFER_MXFP4
+    moe_kernel_families:
+    - trtllm_gen_moe
+    moe_kernels_seen: 4
+    topology: tp1
+  deepseek-ai/DeepSeek-V4.1-Flash:
+    verdict: pass+override
+    attention: DeepseekV4AttnBackend
+    moe_runner: FLASHINFER_MXFP4
+    moe_kernel_families:
+    - trtllm_gen_moe
+    moe_kernels_seen: 4
+    topology: tp1
+  google/gemma-4-26B-A4B:
+    verdict: pass+override
+    attention: TRTLLMHAAttnBackend
+    moe_runner: AUTO
+    moe_kernel_families:
+    - triton_fused_moe
+    moe_kernels_seen: 6
+    topology: tp1
+  meta-llama/Llama-4-Maverick-17B-128E-Instruct:
+    verdict: pass+override
+    attention: TRTLLMHAAttnBackend
+    moe_runner: AUTO
+    moe_kernel_families:
+    - triton_fused_moe
+    moe_kernels_seen: 4
+    topology: tp1
+  meta-llama/Llama-4-Scout-17B-16E-Instruct:
+    verdict: pass+override
+    attention: TRTLLMHAAttnBackend
+    moe_runner: AUTO
+    moe_kernel_families:
+    - triton_fused_moe
+    moe_kernels_seen: 4
+    topology: tp1
+  mistralai/Mixtral-8x22B-v0.1:
+    verdict: pass+override
+    attention: TRTLLMHAAttnBackend
+    moe_runner: AUTO
+    moe_kernel_families:
+    - triton_fused_moe
+    moe_kernels_seen: 4
+    topology: tp1
+  mistralai/Mixtral-8x7B-v0.1:
+    verdict: pass+override
+    attention: TRTLLMHAAttnBackend
+    moe_runner: AUTO
+    moe_kernel_families:
+    - triton_fused_moe
+    moe_kernels_seen: 4
+    topology: tp1
+  moonshotai/Kimi-K2-Instruct:
+    verdict: pass+override
+    attention: TRTLLMMLABackend
+    moe_runner: FLASHINFER_TRTLLM
+    moe_kernel_families:
+    - trtllm_gen_moe
+    moe_kernels_seen: 6
+    topology: tp1
+  moonshotai/Kimi-K2.5:
+    verdict: pass+override
+    attention: TRTLLMMLABackend
+    moe_runner: FLASHINFER_TRTLLM
+    moe_kernel_families:
+    - trtllm_gen_moe
+    moe_kernels_seen: 5
+    topology: tp1
+  moonshotai/Kimi-K3:
+    verdict: fail
+    cause: framework gap
+    error: 'ValueError: multi_ctas_kv_counter_buffer is only supported when a trtllm-gen runner is selected'
+    topology: tp1
+  nvidia/DeepSeek-V3.1-NVFP4:
+    verdict: pass+override
+    attention: TRTLLMMLABackend
+    moe_runner: FLASHINFER_TRTLLM
+    moe_kernel_families:
+    - trtllm_gen_moe
+    moe_kernels_seen: 5
+    topology: tp1
+  nvidia/DeepSeek-V3.2-NVFP4:
+    verdict: pass+override
+    attention: DeepseekSparseAttnBackend
+    moe_runner: FLASHINFER_TRTLLM
+    moe_kernel_families:
+    - trtllm_gen_moe
+    moe_kernels_seen: 5
+    topology: tp1
+  nvidia/GLM-5-NVFP4:
+    verdict: pass+override
+    attention: DeepseekSparseAttnBackend
+    moe_runner: FLASHINFER_TRTLLM
+    moe_kernel_families:
+    - trtllm_gen_moe
+    moe_kernels_seen: 5
+    topology: tp1
+  nvidia/GLM-5.1-NVFP4:
+    verdict: pass+override
+    attention: DeepseekSparseAttnBackend
+    moe_runner: FLASHINFER_TRTLLM
+    moe_kernel_families:
+    - trtllm_gen_moe
+    moe_kernels_seen: 5
+    topology: tp1
+  nvidia/GLM-5.2-NVFP4:
+    verdict: pass+override
+    attention: DeepseekSparseAttnBackend
+    moe_runner: FLASHINFER_TRTLLM
+    moe_kernel_families:
+    - trtllm_gen_moe
+    moe_kernels_seen: 5
+    topology: tp1
+  nvidia/GLM-5.3-NVFP4:
+    verdict: pass+override
+    attention: DeepseekSparseAttnBackend
+    moe_runner: FLASHINFER_TRTLLM
+    moe_kernel_families:
+    - trtllm_gen_moe
+    moe_kernels_seen: 5
+    topology: tp1
+  nvidia/Gemma-4-26B-A4B-NVFP4:
+    verdict: pass+override
+    attention: TRTLLMHAAttnBackend
+    moe_runner: FLASHINFER_TRTLLM
+    moe_kernel_families:
+    - trtllm_gen_moe
+    moe_kernels_seen: 5
+    topology: tp1
+  nvidia/Kimi-K2.5-NVFP4:
+    verdict: pass+override
+    attention: TRTLLMMLABackend
+    moe_runner: FLASHINFER_TRTLLM
+    moe_kernel_families:
+    - trtllm_gen_moe
+    moe_kernels_seen: 5
+    topology: tp1
+  nvidia/Kimi-K2.6-NVFP4:
+    verdict: pass+override
+    attention: TRTLLMMLABackend
+    moe_runner: FLASHINFER_TRTLLM
+    moe_kernel_families:
+    - trtllm_gen_moe
+    moe_kernels_seen: 5
+    topology: tp1
+  nvidia/Kimi-K2.7-Code-NVFP4:
+    verdict: pass+override
+    attention: TRTLLMMLABackend
+    moe_runner: FLASHINFER_TRTLLM
+    moe_kernel_families:
+    - trtllm_gen_moe
+    moe_kernels_seen: 5
+    topology: tp1
+  nvidia/Kimi-K3-NVFP4:
+    verdict: fail
+    cause: framework gap
+    error: 'AttributeError: ''FusedMoE'' object has no attribute ''g1_scale_c'''
+    topology: tp1
+  nvidia/MiniMax-M2.5-NVFP4:
+    verdict: pass+override
+    attention: TRTLLMHAAttnBackend
+    moe_runner: FLASHINFER_TRTLLM_ROUTED
+    moe_kernel_families:
+    - trtllm_gen_moe
+    moe_kernels_seen: 4
+    topology: tp1
+  nvidia/MiniMax-M2.7-NVFP4:
+    verdict: pass+override
+    attention: TRTLLMHAAttnBackend
+    moe_runner: FLASHINFER_TRTLLM_ROUTED
+    moe_kernel_families:
+    - trtllm_gen_moe
+    moe_kernels_seen: 4
+    topology: tp1
+  nvidia/MiniMax-M3-NVFP4:
+    verdict: pass+override
+    attention: MiniMaxHybridAttnBackend
+    moe_runner: FLASHINFER_TRTLLM_ROUTED
+    moe_kernel_families:
+    - trtllm_gen_moe
+    moe_kernels_seen: 4
+    topology: tp1
+  nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16:
+    verdict: pass+override
+    attention: HybridLinearAttnBackend
+    moe_runner: FLASHINFER_TRTLLM
+    moe_kernel_families:
+    - trtllm_gen_moe
+    moe_kernels_seen: 5
+    topology: tp1
+  nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4:
+    verdict: pass+override
+    attention: HybridLinearAttnBackend
+    moe_runner: FLASHINFER_TRTLLM
+    moe_kernel_families:
+    - trtllm_gen_moe
+    moe_kernels_seen: 5
+    topology: tp1
+  nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-FP8:
+    verdict: pass+override
+    attention: HybridLinearAttnBackend
+    moe_runner: FLASHINFER_TRTLLM
+    moe_kernel_families:
+    - trtllm_gen_moe
+    moe_kernels_seen: 5
+    topology: tp1
+  nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4:
+    verdict: pass+override
+    attention: HybridLinearAttnBackend
+    moe_runner: FLASHINFER_TRTLLM
+    moe_kernel_families:
+    - trtllm_gen_moe
+    moe_kernels_seen: 5
+    topology: tp1
+  nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16:
+    verdict: pass+override
+    attention: HybridLinearAttnBackend
+    moe_runner: FLASHINFER_TRTLLM
+    moe_kernel_families:
+    - trtllm_gen_moe
+    moe_kernels_seen: 5
+    topology: tp1
+  nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-FP8:
+    verdict: pass+override
+    attention: HybridLinearAttnBackend
+    moe_runner: FLASHINFER_TRTLLM
+    moe_kernel_families:
+    - trtllm_gen_moe
+    moe_kernels_seen: 5
+    topology: tp1
+  nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-NVFP4:
+    verdict: pass+override
+    attention: HybridLinearAttnBackend
+    moe_runner: FLASHINFER_TRTLLM
+    moe_kernel_families:
+    - trtllm_gen_moe
+    moe_kernels_seen: 5
+    topology: tp1
+  nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16:
+    verdict: pass+override
+    attention: HybridLinearAttnBackend
+    moe_runner: FLASHINFER_TRTLLM
+    moe_kernel_families:
+    - trtllm_gen_moe
+    moe_kernels_seen: 5
+    topology: tp1
+  nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4:
+    verdict: pass+override
+    attention: HybridLinearAttnBackend
+    moe_runner: MARLIN
+    moe_kernel_families:
+    - marlin
+    moe_kernels_seen: 6
+    topology: tp1
+  nvidia/Qwen3-235B-A22B-NVFP4:
+    verdict: pass+override
+    attention: TRTLLMHAAttnBackend
+    moe_runner: FLASHINFER_TRTLLM
+    moe_kernel_families:
+    - trtllm_gen_moe
+    moe_kernels_seen: 5
+    topology: tp1
+  nvidia/Qwen3.5-122B-A10B-NVFP4:
+    verdict: pass+override
+    attention: HybridLinearAttnBackend
+    moe_runner: FLASHINFER_TRTLLM
+    moe_kernel_families:
+    - trtllm_gen_moe
+    moe_kernels_seen: 5
+    topology: tp1
+  nvidia/Qwen3.5-397B-A17B-NVFP4:
+    verdict: pass+override
+    attention: HybridLinearAttnBackend
+    moe_runner: FLASHINFER_TRTLLM
+    moe_kernel_families:
+    - trtllm_gen_moe
+    moe_kernels_seen: 5
+    topology: tp1
+  nvidia/Qwen3.6-35B-A3B-NVFP4:
+    verdict: pass+override
+    attention: HybridLinearAttnBackend
+    moe_runner: MARLIN
+    moe_kernel_families:
+    - marlin
+    moe_kernels_seen: 6
+    topology: tp1
+  nvidia/Qwen3.8-2.4T-A95B-NVFP4:
+    verdict: fail
+    cause: framework gap
+    error: 'AttributeError: ''FusedMoE'' object has no attribute ''g1_scale_c'''
+    topology: tp1
+  openai/gpt-oss-120b:
+    verdict: pass+override
+    attention: TRTLLMHAAttnBackend
+    moe_runner: FLASHINFER_MXFP4
+    moe_kernel_families:
+    - trtllm_gen_moe
+    moe_kernels_seen: 5
+    topology: tp1
+  openai/gpt-oss-20b:
+    verdict: pass+override
+    attention: TRTLLMHAAttnBackend
+    moe_runner: FLASHINFER_MXFP4
+    moe_kernel_families:
+    - trtllm_gen_moe
+    moe_kernels_seen: 5
+    topology: tp1
+  ornith-ai/Ornith-1.5-35B-A3B:
+    verdict: pass+override
+    attention: HybridLinearAttnBackend
+    moe_runner: FLASHINFER_TRTLLM
+    moe_kernel_families:
+    - trtllm_gen_moe
+    moe_kernels_seen: 5
+    topology: tp1
+  sgl-project/DeepSeek-V4-Flash-FP8:
+    verdict: pass+override
+    attention: DeepseekV4AttnBackend
+    moe_runner: AUTO
+    moe_kernel_families:
+    - triton_fused_moe
+    moe_kernels_seen: 6
+    topology: tp1
+  sgl-project/DeepSeek-V4-Pro-FP8:
+    verdict: pass+override
+    attention: DeepseekV4AttnBackend
+    moe_runner: AUTO
+    moe_kernel_families:
+    - triton_fused_moe
+    moe_kernels_seen: 6
+    topology: tp1
+  zai-org/GLM-5:
+    verdict: pass+override
+    attention: DeepseekSparseAttnBackend
+    moe_runner: FLASHINFER_TRTLLM
+    moe_kernel_families:
+    - trtllm_gen_moe
+    moe_kernels_seen: 5
+    topology: tp1
+  zai-org/GLM-5-FP8:
+    verdict: pass+override
+    attention: DeepseekSparseAttnBackend
+    moe_runner: FLASHINFER_TRTLLM
+    moe_kernel_families:
+    - trtllm_gen_moe
+    moe_kernels_seen: 6
+    topology: tp1
+  zai-org/GLM-5.1:
+    verdict: pass+override
+    attention: DeepseekSparseAttnBackend
+    moe_runner: FLASHINFER_TRTLLM
+    moe_kernel_families:
+    - trtllm_gen_moe
+    moe_kernels_seen: 5
+    topology: tp1
+  zai-org/GLM-5.1-FP8:
+    verdict: pass+override
+    attention: DeepseekSparseAttnBackend
+    moe_runner: FLASHINFER_TRTLLM
+    moe_kernel_families:
+    - trtllm_gen_moe
+    moe_kernels_seen: 6
+    topology: tp1
+  zai-org/GLM-5.2:
+    verdict: pass+override
+    attention: DeepseekSparseAttnBackend
+    moe_runner: FLASHINFER_TRTLLM
+    moe_kernel_families:
+    - trtllm_gen_moe
+    moe_kernels_seen: 5
+    topology: tp1
+  zai-org/GLM-5.2-FP8:
+    verdict: pass+override
+    attention: DeepseekSparseAttnBackend
+    moe_runner: FLASHINFER_TRTLLM
+    moe_kernel_families:
+    - trtllm_gen_moe
+    moe_kernels_seen: 6
+    topology: tp1
+  zai-org/GLM-5.3:
+    verdict: pass+override
+    attention: DeepseekSparseAttnBackend
+    moe_runner: FLASHINFER_TRTLLM
+    moe_kernel_families:
+    - trtllm_gen_moe
+    moe_kernels_seen: 6
+    topology: tp1
+  zai-org/GLM-5.3-BF16:
+    verdict: pass+override
+    attention: DeepseekSparseAttnBackend
+    moe_runner: FLASHINFER_TRTLLM
+    moe_kernel_families:
+    - trtllm_gen_moe
+    moe_kernels_seen: 5
+    topology: tp1

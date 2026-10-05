@@ -99,6 +99,28 @@ def _skip_trtllm_sm120_fp8_context_fmha(
     )
 
 
+def _deployment_tokens_per_block() -> int:
+    """KV page the deployment actually serves with, not a collector constant.
+
+    The generator renders every trtllm engine with ``kv_cache_config.tokens_per_block: 32``
+    (TRT-LLM's own KvCacheConfig default); the collector used to pin 64 here, which on
+    Blackwell selects a different FMHA cubin family — the sm100 kernel names carry the page
+    (fmhaSm100a…PagedKvCausalP64… vs serving's …P32…), so the sm100 attention gates
+    DIVERGED on nothing but the page while the sm90 names hide it (B200, 2026-10-04,
+    opharness finding sm100_sglang_trtllm_gate_verdicts_2026_10_04). Ask the framework
+    for its default; ``AIS_TRTLLM_TOKENS_PER_BLOCK`` is the A/B hook.
+    """
+    override = os.environ.get("AIS_TRTLLM_TOKENS_PER_BLOCK")
+    if override:
+        return int(override)
+    try:
+        from tensorrt_llm.llmapi import KvCacheConfig
+
+        return int(KvCacheConfig().tokens_per_block)
+    except Exception:  # older builds without the pydantic config
+        return 32
+
+
 def run_attention_torch(
     batch_size,
     input_len,
@@ -168,7 +190,7 @@ def run_attention_torch(
     layer_idx = 0
     world_size = 1
     tp_size = 1
-    tokens_per_block = 64
+    tokens_per_block = _deployment_tokens_per_block()
     warming_up = 10
     test_ite = 6
     output_len = 1

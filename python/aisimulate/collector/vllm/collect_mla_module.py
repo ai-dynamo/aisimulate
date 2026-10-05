@@ -72,7 +72,7 @@ from collector.case_generator import (
 from collector.helper import benchmark_with_power, get_sm_version, log_perf
 from collector.registry_types import PerfFile
 from collector.vllm.utils import (
-    kv_block_size,
+    framework_kv_block_size,
     BatchSpec,
     create_and_prepopulate_kv_cache_mla,
     create_common_attn_metadata,
@@ -403,12 +403,14 @@ def _create_attention_module(
 
     local_model_path = _resolve_model_path(model_path)
 
-    block_size = kv_block_size(get_sm_version(), "mla")  # per-SM page size (utils.kv_block_size)
+    # The module is built at the framework default page; the real page is asked from the
+    # backend the module selected (_create_kv_cache_and_metadata, utils.framework_kv_block_size).
+    block_size = None  # unconstrained selection; _create_kv_cache_and_metadata asks the selected backend for the page
     # seq_len includes the current token; generation caches only seq_len - 1.
     # Keep exact-limit models such as Kimi-K2-Instruct at their declared limit.
     max_model_len = max(max_seq_len, 4096)
     num_kv_cache_blocks = max(
-        1 + math.ceil((max_seq_len + 1) / block_size) * max_batch_size,
+        1 + math.ceil((max_seq_len + 1) / 16) * max_batch_size,  # upper bound at the smallest page; recomputed per page below
         8192,
     )
 
@@ -694,7 +696,11 @@ def _create_kv_cache_and_metadata(
     hf_config = vllm_config.model_config.hf_text_config
     kv_lora_rank = hf_config.kv_lora_rank
     qk_rope_head_dim = hf_config.qk_rope_head_dim
-    block_size = vllm_config.cache_config.block_size
+    # page = what the framework would run the SELECTED backend with (serving re-derives it
+    # from the built model, platforms/interface.py update_block_size_for_backend)
+    _attn_layer = vllm_config.compilation_config.static_forward_context["model.layers.0.self_attn.attn"]
+    block_size = framework_kv_block_size(_attn_layer.get_attn_backend())
+    vllm_config.cache_config.block_size = block_size
     is_dsa = attn_type == "dsa"
 
     prefix_len = int(prefix_len) if is_context else 0

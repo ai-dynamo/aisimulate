@@ -1,0 +1,50 @@
+{
+ "verdict": "aligned",
+ "repo": "openai/gpt-oss-120b",
+ "framework": "vllm",
+ "version": "0.30.0",
+ "gate_name": "moe_mxfp4_gpt-oss-120b",
+ "target_roles": [
+  "moe_gemm",
+  "routing"
+ ],
+ "phase": null,
+ "phase_scoped": false,
+ "kv_dtype": "auto",
+ "op_hint": "moe|expert|grouped|fused_moe|deepgemm|topk|marlin|routing",
+ "capture_file": "facts/pathdiff/opcov_moe_mxfp4_gptoss@0.30.0.json",
+ "capture_sha256": "01c5c359a432d665",
+ "capture_env": null,
+ "capture_run_error": null,
+ "serving_record": {
+  "id": "a78335cb78f6",
+  "tp": 1,
+  "kv_cache_dtype": "auto",
+  "isl": 4096,
+  "prefix_caching": false,
+  "raw_file": null,
+  "candidates": 1,
+  "exec_fingerprint": "5c21247ec3ee",
+  "evidence_status": "current"
+ },
+ "collector_backends": [
+  "torch",
+  "trtllm_gen_moe"
+ ],
+ "serving_backends": [
+  "cublas",
+  "torch",
+  "trtllm_fmha",
+  "trtllm_gen_moe"
+ ],
+ "missing_roles": [],
+ "aux_collector_only_roles": [],
+ "role_counts": {
+  "moe_gemm": {
+   "collector": 7,
+   "serving": 15,
+   "matched": 7
+  }
+ },
+ "evidence": "archive/evidence/pathdiff/<framework-version>/<gate>.json in the probe workspace (full kernel lists)"
+}

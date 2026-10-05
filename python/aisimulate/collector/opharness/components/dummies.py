@@ -454,7 +454,7 @@ def _cut_engram(tc: dict, remap: dict[int, int], edits: list[str]) -> None:
 
 
 def variants_dsv41(cfg: dict) -> list[dict]:
-    tc = cfg["text_config"]
+    tc = _m3_text_config(cfg)
     n = tc["num_hidden_layers"]
     main = [int(r) for r in tc["compress_ratios"][:n]]
     unknown = sorted(set(main) - set(DSV41_RATIO_KIND))
@@ -496,7 +496,7 @@ def variants_dsv41(cfg: dict) -> list[dict]:
 
 
 def apply_dsv41(cfg: dict, var: dict, edits: list[str]) -> None:
-    tc = cfg["text_config"]
+    tc = _m3_text_config(cfg)
     n = tc["num_hidden_layers"]
     sel = var["sel"]
     remap = {o: i for i, o in enumerate(sel)}
@@ -558,11 +558,30 @@ def apply_glm(cfg: dict, var: dict, edits: list[str]) -> None:
         edits.append("first_k_dense_replace -> 0 (dense head dropped)")
 
 
+def _m3_text_config(cfg: dict) -> dict:
+    """MiniMax-M3 ships two config layouts: the Hub repo is the VL wrapper (model_type minimax_m3_vl,
+    layer facts under ``text_config``) while the bundled SDK copy fetch_inputs falls back to when the
+    Hub API fails is the flat text-only config (model_type minimax_m3). Edit whichever holds the layers
+    (umbriel-b200-037 2026-10-04: a Hub HTTPError -> flat fallback -> KeyError text_config killed the
+    whole dummies run)."""
+    return cfg["text_config"] if isinstance(cfg.get("text_config"), dict) else cfg
+
+
 def variants_m3(cfg: dict) -> list[dict]:
-    tc = cfg["text_config"]
+    tc = _m3_text_config(cfg)
     moe = tc["moe_layer_freq"]
     out = []
-    sel = [i for i, f in enumerate(moe) if f == 1][:2]
+    # TRT-LLM 1.3.0rc29's MiniMax-M3 MSA cache manager does NOT read sparse_attention_freq: with no
+    # explicit sparse_layer_ids it allocates INDEX_KEY buffers for ``range(3, num_layers)`` (first
+    # three layers dense, cache_manager.py:303) while the model builds sparse layers from the freq
+    # list (modeling_minimaxm3.py:363). A 2-layer cut whose layers are both sparse therefore runs the
+    # sparse path on layers the manager treats as dense -> idx_cache None -> "'NoneType' object has no
+    # attribute 'shape'" in write_layer_caches (every MiniMax-M3 trtllm cell on sm90 AND sm100,
+    # 2026-10-04; sglang reads the freq list and was fine). Keep the real model's positional shape:
+    # the first three (dense) layers plus the first sparse layer, so the hard-coded default matches.
+    sparse = [i for i, f in enumerate(tc.get("sparse_attention_config", {}).get("sparse_attention_freq") or moe) if f == 1]
+    dense_head = [i for i, f in enumerate(tc.get("sparse_attention_config", {}).get("sparse_attention_freq") or moe) if f == 0][:3]
+    sel = dense_head + sparse[:1] if sparse else []
     if sel:
         out.append({"name": "moe_sparse_attn", "sel": sel})
     head = [i for i, f in enumerate(moe) if f == 0][:2]
@@ -572,7 +591,7 @@ def variants_m3(cfg: dict) -> list[dict]:
 
 
 def apply_m3(cfg: dict, var: dict, edits: list[str]) -> None:
-    tc = cfg["text_config"]
+    tc = _m3_text_config(cfg)
     n = tc["num_hidden_layers"]
     _slice_layer_lists(tc, n, var["sel"], edits, prefix="text_config.")
     tc["num_hidden_layers"] = len(var["sel"])
@@ -785,7 +804,7 @@ def main() -> int:
             _remap_quant_layer_entries(cfg, var["sel"], edits)
             if repo in _DROP_AUTO_MAP and cfg.pop("auto_map", None) is not None:
                 edits.append(f"auto_map removed: {_DROP_AUTO_MAP[repo]}")
-            new_n = cfg.get("num_hidden_layers") or cfg["text_config"]["num_hidden_layers"]
+            new_n = cfg.get("num_hidden_layers") or _m3_text_config(cfg)["num_hidden_layers"]
             stale = _check_no_stale_layer_refs(cfg, new_n)
             tag = f"{repo.split('/')[-1]}__{var['name']}"
             out_dir = args.out / family / tag
@@ -808,9 +827,15 @@ def main() -> int:
                 sib = _HFQUANT_COMPLETE_FROM_SIBLING.get(repo)
                 if sib and "exclude_modules" not in (hq.get("quantization") or {}):
                     sib_hq = json.loads((args.configs / (sib.replace("/", "_") + "_hfquant.json")).read_text())
-                    hq.setdefault("quantization", {})["exclude_modules"] = \
-                        sib_hq["quantization"]["exclude_modules"]
-                    edits.append(f"hf_quant exclude_modules completed from sibling {sib}")
+                    sib_excl = (sib_hq.get("quantization") or {}).get("exclude_modules")
+                    if sib_excl is not None:
+                        hq.setdefault("quantization", {})["exclude_modules"] = sib_excl
+                        edits.append(f"hf_quant exclude_modules completed from sibling {sib}")
+                    else:
+                        # the sibling copy is itself incomplete (e.g. a rate-limited Hub fetch fell back
+                        # to a bundled hf_quant without exclude_modules, umbriel-b200-037 2026-10-04):
+                        # say so instead of killing the whole dummies run with a KeyError
+                        edits.append(f"hf_quant exclude_modules NOT completed: sibling {sib} has none")
                 _remap_quant_layer_entries({"quantization_config": hq.get("quantization", hq)},
                                            var["sel"], edits)
                 (out_dir / "hf_quant_config.json").write_text(json.dumps(hq, indent=2))

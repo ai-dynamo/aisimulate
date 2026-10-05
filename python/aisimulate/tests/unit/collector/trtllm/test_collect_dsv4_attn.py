@@ -36,6 +36,8 @@ def _load_module_with_torch_stub(monkeypatch):
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    # no GPU under unit tests: the population / serving-KV-dtype paths read the SM
+    monkeypatch.setattr(module, "get_sm_version", lambda: 90, raising=False)
     return module
 
 
@@ -172,7 +174,7 @@ def test_module_cache_reuses_same_geometry_and_evicts_on_change(monkeypatch):
 
     builds = []
 
-    def fake_build(*, model_path, attn_kind, tp_size, device):
+    def fake_build(*, model_path, attn_kind, tp_size, device, kv_cache_dtype="fp8"):
         builds.append((model_path, attn_kind, tp_size))
         return (object(), object(), {"local_heads": 8, "native_heads": 64})
 
@@ -186,7 +188,7 @@ def test_module_cache_reuses_same_geometry_and_evicts_on_change(monkeypatch):
 
     b1 = module._cached_dsv4_attention_module("m/flash", "hca", 4, "cuda:0")
     assert len(builds) == 2
-    assert list(module._MODULE_CACHE) == [("m/flash", "hca", 4, "cuda:0")]
+    assert list(module._MODULE_CACHE) == [("m/flash", "hca", 4, "cuda:0", "fp8")]  # key carries the KV dtype (189589d2)
     assert b1 is not a1
     module._MODULE_CACHE.clear()
 

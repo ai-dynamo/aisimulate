@@ -35,7 +35,7 @@ from collector.vllm.utils import (
     create_standard_kv_cache_spec,
     create_vllm_config,
     get_attention_backend,
-    kv_block_size,
+    framework_kv_block_size,
     with_exit_stack,
 )
 
@@ -122,7 +122,10 @@ def run_attention_torch(
 
     dtype = torch.bfloat16
     model = os.path.join(os.path.dirname(__file__), "fake_hf_model")
-    block_size = kv_block_size(get_sm_version(), "attention")  # per-SM page size (utils.kv_block_size)
+    # Backend selection runs at the framework default page (serving does the same: the
+    # model is built at CacheConfig.DEFAULT_BLOCK_SIZE, the page is re-derived from the
+    # selected backend afterwards — utils.framework_kv_block_size).
+    block_size = None  # unconstrained selection (no --block-size); the page is asked from the backend below
 
     if is_context_phase:
         batch_spec = BatchSpec(
@@ -158,7 +161,7 @@ def run_attention_torch(
         head_size=head_dim,
         dtype=dtype,
         kv_cache_dtype="fp8" if use_fp8_kv_cache else "auto",
-        block_size=block_size,
+        block_size=None,  # serving passes None unless the user set --block-size (selector.py:131-135)
         use_mla=False,
         has_sink=False,
         use_sparse=False,
@@ -193,6 +196,10 @@ def run_attention_torch(
     backend_cls = resolve_obj_by_qualname(backend_path)
     backend_name_str = backend_cls.get_name()
     backend_name = AttentionBackendEnum[backend_name_str]
+
+    # the page the framework would run THIS backend with (asked, not tabled)
+    block_size = framework_kv_block_size(backend_cls)
+    vllm_config.cache_config.block_size = block_size
 
     kv_cache_spec = create_standard_kv_cache_spec(vllm_config, use_fp8_kv_cache)
 
