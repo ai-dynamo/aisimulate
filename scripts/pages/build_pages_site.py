@@ -263,11 +263,80 @@ def _accuracy_summary(text: str, *, allow_preview: bool = False) -> dict:
             for name in ("measured", "aic", "aisimulate"):
                 series = point.get(name)
                 require(isinstance(series, dict), "point series")
+                missing = (name == "aisimulate" and status != "success") or (name == "aic" and aic_status != "success")
+                fields = {
+                    "ttft_ms",
+                    "tpot_ms",
+                    "e2e_ms",
+                    "output_per_gpu",
+                    "total_per_gpu",
+                    "interactivity_tok_s",
+                }
+                reasons = series.get("unavailable_metrics", {})
+                require(
+                    isinstance(reasons, dict) and set(reasons) <= fields,
+                    "metric availability",
+                )
+                for key in fields:
+                    if key in series:
+                        require(
+                            series[key] is None or (number(series[key]) and series[key] > 0),
+                            "chart metric",
+                        )
+                        if missing:
+                            require(series[key] is None, "failed prediction chart metric")
+                for key, reason in reasons.items():
+                    require(
+                        series.get(key) is None
+                        and reason
+                        in {
+                            "prediction_failed",
+                            "not_recorded",
+                            "unsupported_by_predictor",
+                        },
+                        "metric availability reason",
+                    )
+                if metric_contract:
+                    require(fields <= series.keys(), "serving metric fields")
+                    require(
+                        set(reasons) == {key for key in fields if series[key] is None},
+                        "serving metric availability",
+                    )
+                    for key in fields:
+                        optional = name == "measured" and key in {
+                            "e2e_ms",
+                            "output_per_gpu",
+                            "total_per_gpu",
+                        }
+                        unsupported = name == "aic" and key == "total_per_gpu"
+                        if not missing and not optional and not unsupported:
+                            require(
+                                number(series[key]) and series[key] > 0,
+                                "required serving metric " + name + "." + key,
+                            )
+                        if key in reasons:
+                            expected = (
+                                "prediction_failed"
+                                if missing
+                                else "unsupported_by_predictor"
+                                if unsupported
+                                else "not_recorded"
+                            )
+                            require(
+                                reasons[key] == expected,
+                                "serving metric availability reason",
+                            )
+                    if not missing:
+                        require(
+                            math.isclose(
+                                series["interactivity_tok_s"],
+                                1000 / series["tpot_ms"],
+                                rel_tol=1e-9,
+                            ),
+                            "interactivity definition",
+                        )
                 for metric in ("ttft", "tpot"):
                     keys = [f"{metric}_relative"] + ([f"{metric}_error_pct"] if name != "measured" else [])
-                    missing = (name == "aisimulate" and status != "success") or (
-                        name == "aic" and aic_status != "success"
-                    )
                     require(
                         all(
                             key in series and (series[key] is None if missing else number(series[key])) for key in keys
@@ -279,6 +348,8 @@ def _accuracy_summary(text: str, *, allow_preview: bool = False) -> dict:
 
     try:
         summary = json.loads(text)
+        metric_contract = summary.get("snapshot", {}).get("campaign", {}).get("metric_contract")
+        require(metric_contract in (None, "serving-metrics-v1"), "metric contract")
         require(isinstance(summary, dict) and summary.get("schema_version") == 1, "summary schema")
         preview = isinstance(summary.get("scope"), dict) and summary["scope"].get("preview") is True
         require(not preview or allow_preview, "preview is not publishable")

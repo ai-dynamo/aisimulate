@@ -50,7 +50,7 @@ CAMPAIGN_KEYS = {
     "status",
     "advisory",
 }
-OPTIONAL_CAMPAIGN_KEYS = {"configuration"}
+OPTIONAL_CAMPAIGN_KEYS = {"configuration", "metric_contract"}
 METRICS = {
     "points",
     "ttft_mape_pct",
@@ -199,7 +199,17 @@ def public_contract(summary):
                         for name in ("measured", "aic", "aisimulate"):
                             keys(
                                 point[name],
-                                {"ttft_relative", "tpot_relative"}
+                                {
+                                    "ttft_relative",
+                                    "tpot_relative",
+                                    "ttft_ms",
+                                    "tpot_ms",
+                                    "e2e_ms",
+                                    "output_per_gpu",
+                                    "total_per_gpu",
+                                    "interactivity_tok_s",
+                                    "unavailable_metrics",
+                                }
                                 | (set() if name == "measured" else {"ttft_error_pct", "tpot_error_pct"}),
                             )
     return _accuracy_summary(json.dumps(summary, allow_nan=False))

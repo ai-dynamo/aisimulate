@@ -399,6 +399,8 @@ def predict_point(point: dict) -> dict:
             )
         },
     }
+    row.update(measurement_chart_metrics(bench["metrics"], total_gpus))
+    row.update(baseline_chart_metrics(baseline, total_gpus))
     try:
         spec = replay_spec(request, baseline.backend_version)
         runner = EngineReplayRunnerFactory().create(0)
@@ -416,6 +418,7 @@ def predict_point(point: dict) -> dict:
             dynamo_ttft_ms=ttft,
             dynamo_tpot_ms=tpot,
             aisimulate_runner="aisimulate.engine_replay",
+            **replay_chart_metrics(metrics, total_gpus),
         )
     except Exception:
         row.update(aisimulate_status="failed")
@@ -424,6 +427,48 @@ def predict_point(point: dict) -> dict:
         "outcome": "evaluated",
         "row": row,
         "backend_version": baseline.backend_version,
+    }
+
+
+def optional_positive(value):
+    return float(value) if positive(value) else None
+
+
+def measurement_chart_metrics(metrics, total_gpus):
+    e2e = optional_positive(metrics.get("mean_e2el"))
+    total = metrics.get("tput_per_gpu")
+    if not positive(total) and positive(metrics.get("total_token_throughput")):
+        total = metrics["total_token_throughput"] / total_gpus
+    output = metrics.get("output_tput_per_gpu")
+    if not positive(output) and positive(metrics.get("output_throughput")):
+        output = metrics["output_throughput"] / total_gpus
+    return {
+        "silicon_e2e_ms": e2e * 1000 if e2e is not None else None,
+        "silicon_total_per_gpu": optional_positive(total),
+        "silicon_output_per_gpu": optional_positive(output),
+    }
+
+
+def baseline_chart_metrics(baseline, total_gpus):
+    output = optional_positive(getattr(baseline, "tokens_per_second", None))
+    output = output / total_gpus if output is not None else None
+    return {
+        "aic_e2e_ms": optional_positive(getattr(baseline, "request_latency", None)),
+        "aic_output_per_gpu": output,
+        "aic_total_per_gpu": None,  # The baseline API has no native total-token throughput.
+    }
+
+
+def replay_chart_metrics(metrics, total_gpus):
+    return {
+        "dynamo_e2e_ms": optional_positive(metrics.get("mean_e2e_latency_ms")),
+        **{
+            f"dynamo_{kind}_per_gpu": float(metrics[key]) / total_gpus if positive(metrics.get(key)) else None
+            for kind, key in (
+                ("output", "output_throughput_tok_s"),
+                ("total", "total_throughput_tok_s"),
+            )
+        },
     }
 
 
@@ -491,6 +536,8 @@ def predict_resolved_point(point):
             )
         },
     }
+    total_gpus = row["aisimulate_total_gpus"]
+    row.update(measurement_chart_metrics(bench["metrics"], total_gpus))
     try:
         adapter = importlib.import_module(adapter_name)
         model_path = (
@@ -506,7 +553,8 @@ def predict_resolved_point(point):
                 "https://github.com/SemiAnalysisAI/InferenceX/tree/" + point["source_row"]["head_sha"],
             )
             report = adapter.adapt_config(
-                source, adapter.AdapterOverrides(model_path=model_path, backend_version=version)
+                source,
+                adapter.AdapterOverrides(model_path=model_path, backend_version=version),
             )
             if not report.requests:
                 raise ValueError("resolved source cannot be represented by estimate API")
@@ -519,7 +567,12 @@ def predict_resolved_point(point):
         baseline = importlib.import_module(api_name).cli_estimate(**kwargs)
         if not all(positive(value) for value in (baseline.ttft, baseline.tpot)):
             raise ValueError("invalid baseline latency")
-        row.update(aic_status="success", aic_ttft_ms=float(baseline.ttft), aic_tpot_ms=float(baseline.tpot))
+        row.update(
+            aic_status="success",
+            aic_ttft_ms=float(baseline.ttft),
+            aic_tpot_ms=float(baseline.tpot),
+        )
+        row.update(baseline_chart_metrics(baseline, total_gpus))
     except Exception as error:
         row["aic_error"] = str(error)
     try:
@@ -539,6 +592,7 @@ def predict_resolved_point(point):
             dynamo_ttft_ms=ttft,
             dynamo_tpot_ms=tpot,
             aisimulate_runner="aisimulate.engine_replay",
+            **replay_chart_metrics(metrics, total_gpus),
         )
     except Exception as error:
         row["aisimulate_error"] = str(error)
@@ -702,6 +756,7 @@ def campaign(args) -> None:
         exclude_multinode=not resolved,
     )
     campaign_info = {
+        "metric_contract": "serving-metrics-v1",
         "schema_version": 1,
         "branch": args.branch,
         "commit_sha": args.commit,

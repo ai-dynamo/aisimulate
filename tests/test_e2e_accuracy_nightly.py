@@ -415,6 +415,11 @@ def artifact(tmp_path, monkeypatch, request):
             "moe_ep_size": None,
             "silicon_ttft_ms": b["metrics"]["mean_ttft"] * 1000,
             "silicon_tpot_ms": 20,
+            "aic_e2e_ms": 1200,
+            "aic_output_per_gpu": 800,
+            "dynamo_e2e_ms": 1300,
+            "dynamo_output_per_gpu": 760,
+            "dynamo_total_per_gpu": 1520,
             "aic_ttft_ms": 100,
             "aic_tpot_ms": 10,
             "dynamo_ttft_ms": 110,
@@ -1380,7 +1385,13 @@ def test_ep_prediction_preserves_physical_gpus_through_publication(
         assert kwargs["tp_size"] == 4
         assert kwargs["attention_dp_size"] == 1
         assert kwargs["batch_size"] == 64
-        return SimpleNamespace(ttft=500.0, tpot=20.0, backend_version="0.25.0")
+        return SimpleNamespace(
+            ttft=500.0,
+            tpot=20.0,
+            backend_version="0.25.0",
+            tokens_per_second=3200,
+            request_latency=3040,
+        )
 
     class Runner:
         def run(self, spec):
@@ -1392,7 +1403,16 @@ def test_ep_prediction_preserves_physical_gpus_through_publication(
             calls.append("run")
             if replay_fails:
                 raise ValueError("missing performance data")
-            return SimpleNamespace(metrics={"completed_requests": 640, "mean_ttft_ms": 600, "mean_tpot_ms": 22})
+            return SimpleNamespace(
+                metrics={
+                    "completed_requests": 640,
+                    "mean_ttft_ms": 600,
+                    "mean_tpot_ms": 22,
+                    "mean_e2e_latency_ms": 3500,
+                    "output_throughput_tok_s": 2400,
+                    "total_throughput_tok_s": 21600,
+                }
+            )
 
         def close(self):
             calls.append("close")
@@ -1712,7 +1732,7 @@ def test_source_resolved_prediction_preserves_settings_and_independent_outcomes(
         assert kwargs["prefill_free_gpu_memory_fraction" if disagg else "free_gpu_memory_fraction"] == 0.85
         if baseline_fails:
             raise ValueError("baseline does not support this model")
-        return SimpleNamespace(ttft=500, tpot=20)
+        return SimpleNamespace(ttft=500, tpot=20, tokens_per_second=3200, request_latency=3040)
 
     class Runner:
         def run(self, spec):
@@ -1729,7 +1749,16 @@ def test_source_resolved_prediction_preserves_settings_and_independent_outcomes(
             assert spec.workload["random_range_ratio"] == 0.5
             assert spec.workload["random_seed"] == 47
             assert spec.workload["request_count"] == 192
-            return SimpleNamespace(metrics={"completed_requests": 192, "mean_ttft_ms": 510, "mean_tpot_ms": 21})
+            return SimpleNamespace(
+                metrics={
+                    "completed_requests": 192,
+                    "mean_ttft_ms": 510,
+                    "mean_tpot_ms": 21,
+                    "mean_e2e_latency_ms": 3200,
+                    "output_throughput_tok_s": 2400,
+                    "total_throughput_tok_s": 21000,
+                }
+            )
 
         def close(self):
             calls.append("close")
@@ -1757,7 +1786,15 @@ def test_source_resolved_prediction_preserves_settings_and_independent_outcomes(
     assert result["row"]["aic_status"] == ("failed" if baseline_fails else "success")
     assert result["row"]["aisimulate_status"] == "success"
     assert calls == ["estimate", "replay", "close"]
-    assert result["row"]["aisimulate_total_gpus"] == (8 if disagg else 4)
+    gpus = 8 if disagg else 4
+    assert result["row"]["aisimulate_total_gpus"] == gpus
+    assert result["row"]["dynamo_output_per_gpu"] == 2400 / gpus
+    assert result["row"]["dynamo_total_per_gpu"] == 21000 / gpus
+    assert result["row"]["dynamo_e2e_ms"] == 3200
+    if not baseline_fails:
+        assert result["row"]["aic_output_per_gpu"] == 3200 / gpus
+        assert result["row"]["aic_e2e_ms"] == 3040
+        assert result["row"]["aic_total_per_gpu"] is None
 
 
 def test_configuration_quality_is_public_and_counts_are_checked(artifact):
@@ -1775,4 +1812,73 @@ def test_configuration_quality_is_public_and_counts_are_checked(artifact):
     assert publish.validate_artifact(archive(summary), run) == summary
     summary["snapshot"]["campaign"]["configuration"]["counts"]["estimated"] += 1
     with pytest.raises(pages.PagesBuildError, match="configuration counts"):
+        publish.validate_artifact(archive(summary), run)
+
+
+@pytest.mark.parametrize(
+    "name,field",
+    [
+        (name, field)
+        for name in ("aic", "aisimulate")
+        for field in (
+            "ttft_ms",
+            "tpot_ms",
+            "e2e_ms",
+            "output_per_gpu",
+            "interactivity_tok_s",
+        )
+    ]
+    + [("aisimulate", "total_per_gpu")],
+)
+def test_serving_metric_contract_rejects_missing_success_metrics(artifact, name, field):
+    summary, run = artifact
+    assert summary["snapshot"]["campaign"]["metric_contract"] == "serving-metrics-v1"
+    point = summary["models"][0]["workloads"][0]["gpus"][0]["topologies"][0]["points"][0]
+    point[name][field] = None
+    point[name]["unavailable_metrics"][field] = "not_recorded"
+    with pytest.raises(pages.PagesBuildError, match="required serving metric"):
+        publish.validate_artifact(archive(summary), run)
+
+
+def test_serving_metrics_survive_qualification_and_explain_unavailable(artifact):
+    summary, run = artifact
+    validated = publish.validate_artifact(archive(summary), run)
+    point = validated["models"][0]["workloads"][0]["gpus"][0]["topologies"][0]["points"][0]
+    assert point["aisimulate"]["output_per_gpu"] == 760
+    assert point["aisimulate"]["total_per_gpu"] == 1520
+    assert point["aisimulate"]["e2e_ms"] == 1300
+    assert point["aisimulate"]["interactivity_tok_s"] == 1000 / 12
+    assert point["aic"]["total_per_gpu"] is None
+    assert point["aic"]["unavailable_metrics"] == {"total_per_gpu": "unsupported_by_predictor"}
+    assert point["measured"]["unavailable_metrics"]["e2e_ms"] == "not_recorded"
+
+
+def test_measurement_metrics_preserve_recorded_rates_and_units():
+    assert campaign.measurement_chart_metrics(
+        {"mean_e2el": 2.5, "total_token_throughput": 12000, "output_throughput": 3200},
+        4,
+    ) == {
+        "silicon_e2e_ms": 2500,
+        "silicon_total_per_gpu": 3000,
+        "silicon_output_per_gpu": 800,
+    }
+    metrics = campaign.measurement_chart_metrics({"tput_per_gpu": 1200}, 4)
+    assert metrics["silicon_output_per_gpu"] is None
+    assert metrics["silicon_total_per_gpu"] == 1200
+
+
+@pytest.mark.parametrize("bad", [0, -1, True, float("nan"), float("inf")])
+def test_serving_metrics_reject_invalid_values(artifact, bad):
+    summary, run = artifact
+    point = summary["models"][0]["workloads"][0]["gpus"][0]["topologies"][0]["points"][0]
+    point["aisimulate"]["output_per_gpu"] = bad
+    with pytest.raises((pages.PagesBuildError, ValueError)):
+        publish.validate_artifact(archive(summary), run)
+
+
+def test_serving_metrics_check_interactivity_definition(artifact):
+    summary, run = artifact
+    point = summary["models"][0]["workloads"][0]["gpus"][0]["topologies"][0]["points"][0]
+    point["aisimulate"]["interactivity_tok_s"] = 12
+    with pytest.raises(pages.PagesBuildError, match="interactivity definition"):
         publish.validate_artifact(archive(summary), run)

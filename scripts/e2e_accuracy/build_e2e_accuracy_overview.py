@@ -246,8 +246,23 @@ def _workload_label(workload: str) -> str:
     return f"{short_length(input_tokens)}{short_length(output_tokens)}"
 
 
+def _chart_metrics(row: dict[str, Any], prefix: str) -> dict[str, float | None]:
+    """Read both public campaign and original Gym metric names, already per GPU."""
+    aliases = {
+        "e2e_ms": f"{prefix}_e2el_ms" if prefix == "silicon" else f"{prefix}_request_latency_ms",
+        "output_per_gpu": f"{prefix}_tput_per_gpu_output",
+        "total_per_gpu": f"{prefix}_tput_per_gpu_total",
+    }
+    values = {field: _finite(row.get(f"{prefix}_{field}", row.get(alias))) for field, alias in aliases.items()}
+    if prefix == "dynamo" and row.get("aisimulate_status") != "success":
+        return dict.fromkeys(values)
+    if prefix == "aic" and row.get("aic_status", "success") != "success":
+        return dict.fromkeys(values)
+    return values
+
+
 def _topology_summaries(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Publish numeric errors and normalized curves, never raw latency or run IDs."""
+    """Publish serving metrics and normalized curves without internal run IDs."""
     groups: dict[tuple[Any, ...], list[dict[str, Any]]] = defaultdict(list)
     for row in rows:
         groups[_topology_key(row)].append(row)
@@ -265,10 +280,15 @@ def _topology_summaries(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 point["configuration_quality"] = row["configuration_quality"]
             if "aic_status" in row:
                 point["aic_status"] = row["aic_status"]
-            for name, prefix in (("measured", "silicon"), ("aic", "aic"), ("aisimulate", "dynamo")):
-                point[name] = {}
+            for name, prefix in (
+                ("measured", "silicon"),
+                ("aic", "aic"),
+                ("aisimulate", "dynamo"),
+            ):
+                point[name] = _chart_metrics(row, prefix)
                 for metric, anchor in anchors.items():
                     value = _finite(row.get(f"{prefix}_{metric}_ms"))
+                    point[name][f"{metric}_ms"] = value
                     point[name][f"{metric}_relative"] = round(value / anchor, 6) if value is not None else None
                     if name != "measured":
                         point[name][f"{metric}_error_pct"] = (
@@ -276,6 +296,25 @@ def _topology_summaries(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
                             if value is not None
                             else None
                         )
+                tpot = point[name]["tpot_ms"]
+                point[name]["interactivity_tok_s"] = 1000 / tpot if tpot else None
+                missing = (name == "aisimulate" and row["aisimulate_status"] != "success") or (
+                    name == "aic" and row.get("aic_status", "success") != "success"
+                )
+                point[name]["unavailable_metrics"] = {
+                    field: "prediction_failed"
+                    if missing
+                    else ("unsupported_by_predictor" if name == "aic" and field == "total_per_gpu" else "not_recorded")
+                    for field in (
+                        "ttft_ms",
+                        "tpot_ms",
+                        "e2e_ms",
+                        "output_per_gpu",
+                        "total_per_gpu",
+                        "interactivity_tok_s",
+                    )
+                    if point[name][field] is None
+                }
             points.append(point)
         summaries.append(
             {

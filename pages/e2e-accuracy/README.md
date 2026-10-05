@@ -220,7 +220,7 @@ Only `summary.json` and `qualification.json` are uploaded in each
 the first 16 hexadecimal characters of SHA-256 of the branch name; wheel artifacts
 use the same key to keep branches isolated. They record the evaluated branch/commit, wheel/dataset/input/
 cohort/driver hashes, run and attempt, selected/published counts, exclusions, and
-completion time. Public data contains derived errors and normalized curves.
+completion time. Public data contains serving metrics, derived errors, and normalized curves.
 
 Pages runs trusted main code and accepts a branch artifact only when that branch's
 qualification job succeeded in the artifact's exact run attempt. The matrix run
@@ -253,8 +253,8 @@ the matrix (below it on narrow screens). Details include:
 
 Curves use latency **relative to the measured value at the lowest concurrency**
 within that topology. Measured values and both CLI predictions share the same
-anchor, preserving magnitude and shape differences without publishing raw
-latencies. Missing predictions remain gaps and explicit statuses. Topologies
+anchor, preserving magnitude and shape differences. Artifacts also retain absolute
+latencies and recorded throughput for throughput-versus-latency views. Missing predictions remain gaps and explicit statuses. Topologies
 are never combined into one curve. Legacy summaries remain usable with GPU
 aggregates and explain when detailed evidence has not yet been exported.
 
@@ -404,3 +404,35 @@ Input SHA-256 values for reproduction:
 - `configs.json`: `b6071d66377c4762bdac9661077205ac394538b71ce00d24e4761cb4b87223e0`
 - `benchmark_results.json`: `e363f2061efbea87ba0d2dd38f765ddd4aabf3aac30e5e0bf0fa6d8ac3df6c10`
 - `workflow_runs.json`: `6a86eb6b31e958a17a7a19c61889910cdd1e7808d8dbcc8fd612ab20a34e6310`
+
+
+## Serving metric artifact contract
+
+New campaigns declare `metric_contract: serving-metrics-v1` in both the summary
+and qualification record. Each operating point contains `measured`, `aic`, and
+`aisimulate` series with:
+
+- `ttft_ms`, `tpot_ms`, and `e2e_ms`: mean request latencies in milliseconds.
+- `interactivity_tok_s`: `1000 / tpot_ms`, in tokens/s/user.
+- `output_per_gpu` and `total_per_gpu`: output and input-plus-output throughput,
+  in tokens/s/GPU, normalized by the complete physical deployment GPU count.
+- `unavailable_metrics`: a map from missing fields to `not_recorded`,
+  `prediction_failed`, or `unsupported_by_predictor`.
+
+Replay records native `mean_e2e_latency_ms`, `output_throughput_tok_s`, and
+`total_throughput_tok_s`. The AIC baseline records native `request_latency` and
+`tokens_per_second`; total-token throughput is unavailable because that API
+exposes no native total-token rate. Do not reconstruct throughput or mean E2E
+latency from nominal token lengths and average TTFT/TPOT. Measured values are
+preserved when present, with seconds converted to milliseconds as needed.
+
+Qualification rejects successful predictions missing TTFT, TPOT, E2E, output
+throughput, or interactivity; replay must also include total throughput. Failed
+predictions retain their status and null metrics. Optional missing measurements
+and unsupported AIC total throughput remain explicit gaps. Historical artifacts
+without this contract still load, but do not establish throughput coverage.
+
+These metrics are written to CI artifacts, not committed evaluation JSON.
+Pages packages qualified artifacts during production builds; the existing
+committed snapshot remains a historical fallback. Chart presentation lives in
+the separate op-based UI change (#368).
