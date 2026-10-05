@@ -365,19 +365,19 @@ tbody tr:last-child td {
   font-size: 10px;
 }
 
-th[aria-sort="descending"] .sort-button span {
+.sort-button[data-sort-direction="desc"] span {
   transform: rotate(180deg);
 }
 
 .sort-button:hover,
 .sort-button:focus-visible,
-th[aria-sort="ascending"] .sort-button,
-th[aria-sort="descending"] .sort-button {
+.sort-button[data-sort-direction="asc"],
+.sort-button[data-sort-direction="desc"] {
   color: var(--text);
 }
 
-th[aria-sort="ascending"] .sort-button span,
-th[aria-sort="descending"] .sort-button span {
+.sort-button[data-sort-direction="asc"] span,
+.sort-button[data-sort-direction="desc"] span {
   display: inline-block;
   color: var(--accent);
 }
@@ -398,9 +398,16 @@ th[aria-sort="descending"] .sort-button span {
 }
 
 .model-name {
+  display: block;
+  min-width: 220px;
+  max-width: 380px;
   font-weight: 600;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
 }
+
+.matrix-panel table { min-width: 1000px; }
+.mape-heading, .metric-cell { white-space: nowrap; }
+.mape-heading { text-align: right; }
 
 .mono {
   font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;

@@ -205,6 +205,10 @@ function renderSnapshot() {
     <code>AISim evidence SHA-256: ${escapeHtml(snapshot.aisimulate_sot_sha256)}</code>`;
 }
 
+function modelLabel(model) {
+  return model.hf_model_paths?.length ? model.hf_model_paths.join(", ") : model.model;
+}
+
 function sortValue(model) {
   switch (state.sortKey) {
     case "aicPoints":
@@ -226,7 +230,7 @@ function sortValue(model) {
     case "aicTtft":
       return model.aic.ttft_mape_pct;
     default:
-      return model.model;
+      return modelLabel(model);
   }
 }
 
@@ -250,10 +254,8 @@ function metricCells(item) {
     <td class="count-cell">${escapeHtml(item.gpu_skus.length.toLocaleString())}</td>
     <td class="mono">${escapeHtml(item.gpu_skus.join(", "))}</td>
     <td>${escapeHtml(item.precisions.join(", "))}</td>
-    <td class="metric-cell">${escapeHtml(formatPercent(item.aisimulate.tpot_mape_pct))}</td>
-    <td class="metric-cell">${escapeHtml(formatPercent(item.aisimulate.ttft_mape_pct))}</td>
-    <td class="metric-cell">${escapeHtml(formatPercent(item.aic.tpot_mape_pct))}</td>
-    <td class="metric-cell">${escapeHtml(formatPercent(item.aic.ttft_mape_pct))}</td>`;
+    <td class="metric-cell">${escapeHtml(formatPercent(item.aisimulate.tpot_mape_pct))} / ${escapeHtml(formatPercent(item.aisimulate.ttft_mape_pct))}</td>
+    <td class="metric-cell">${escapeHtml(formatPercent(item.aic.tpot_mape_pct))} / ${escapeHtml(formatPercent(item.aic.ttft_mape_pct))}</td>`;
 }
 
 function gpuRow(model, workload, gpu) {
@@ -264,7 +266,7 @@ function gpuRow(model, workload, gpu) {
     <tr class="gpu-row${selected ? " selected" : ""}">
       <td><button type="button" class="gpu-button" data-gpu-key="${escapeHtml(key)}"
         aria-expanded="${selected}" aria-controls="drilldown"
-        aria-label="${selected ? "Hide" : "Show"} ${escapeHtml(model.model)} ${escapeHtml(workload.label)} ${escapeHtml(gpu.gpu)} details">
+        aria-label="${selected ? "Hide" : "Show"} ${escapeHtml(modelLabel(model))} ${escapeHtml(workload.label)} ${escapeHtml(gpu.gpu)} details">
         <span aria-hidden="true">↳</span> ${escapeHtml(gpu.gpu)} <span aria-hidden="true">↗</span>
       </button></td>
       ${metricCells(item)}
@@ -281,7 +283,7 @@ function workloadRow(model, workload) {
       role="button"
       aria-expanded="${String(expanded)}"
       data-workload-key="${escapeHtml(key)}"
-      aria-label="${expanded ? "Collapse" : "Expand"} ${escapeHtml(model.model)} ${escapeHtml(
+      aria-label="${expanded ? "Collapse" : "Expand"} ${escapeHtml(modelLabel(model))} ${escapeHtml(
         workload.label,
       )} GPU rows"
     >
@@ -296,7 +298,7 @@ function workloadRow(model, workload) {
 function modelRows(model) {
   return `
     <tr class="model-row">
-      <td><span class="model-name">${escapeHtml(model.model)}</span></td>
+      <td><span class="model-name">${escapeHtml(modelLabel(model))}</span></td>
       ${metricCells(model)}
     </tr>
     ${model.workloads.map((workload) => workloadRow(model, workload)).join("")}`;
@@ -309,16 +311,16 @@ function renderMatrix() {
   });
   matrixBody.innerHTML = models.length
     ? models.map(modelRows).join("")
-    : '<tr><td colspan="10" class="empty-cell">No accuracy data available.</td></tr>';
+    : '<tr><td colspan="8" class="empty-cell">No accuracy data available.</td></tr>';
 }
 
 function renderSortState() {
-  document.querySelectorAll(".sort-button").forEach((button) => {
+  const buttons = [...document.querySelectorAll(".sort-button")];
+  buttons.forEach(button => button.closest("th").setAttribute("aria-sort", "none"));
+  buttons.forEach(button => {
     const active = button.dataset.sort === state.sortKey;
-    button.closest("th").setAttribute(
-      "aria-sort",
-      active ? (state.sortDirection === "asc" ? "ascending" : "descending") : "none",
-    );
+    button.dataset.sortDirection = active ? state.sortDirection : "";
+    if (active) button.closest("th").setAttribute("aria-sort", state.sortDirection === "asc" ? "ascending" : "descending");
   });
 }
 
@@ -463,7 +465,7 @@ function renderDrilldown() {
   state.topologyId = topology?.id ?? null;
   const item = topology ?? gpu;
   drilldown.innerHTML = `
-    <div class="detail-heading"><h2>${escapeHtml(model.model)} · ${escapeHtml(workload.label)} · ${escapeHtml(gpu.gpu)}</h2>
+    <div class="detail-heading"><h2>${escapeHtml(modelLabel(model))} · ${escapeHtml(workload.label)} · ${escapeHtml(gpu.gpu)}</h2>
       <button type="button" id="close-details" aria-label="Close accuracy details">×</button></div>
     <p class="detail-scope">${escapeHtml(state.branch.branch)} · ${escapeHtml(state.data.snapshot.release_tag)}</p>
     <a id="detail-permalink" href="${escapeHtml(location.href)}" target="_blank" rel="noopener">Open this selection in a separate tab ↗</a>
@@ -711,7 +713,7 @@ function clearSnapshot(message) {
   document.getElementById("framework-summary").innerHTML = "";
   document.getElementById("hardware-summary").innerHTML = "";
   summaryGrid.innerHTML = `<div class="loading-card">${escapeHtml(message)}</div>`;
-  matrixBody.innerHTML = `<tr><td colspan="10" class="empty-cell">${escapeHtml(message)}</td></tr>`;
+  matrixBody.innerHTML = `<tr><td colspan="8" class="empty-cell">${escapeHtml(message)}</td></tr>`;
   identityLine.textContent = "";
   releaseLabel.textContent = "";
   multinodeLabel.textContent = "";
@@ -975,7 +977,7 @@ function renderDetails() {
   state.topologyId = topology?.id || null;
   updateOutlierCounts(topology ? [topology] : []);
   const options = (items, key) => items.map(v => [v[key], v[key]]);
-  toolbar.innerHTML = filterField("model", "Model", options(state.data.models, "model"), model.model) +
+  toolbar.innerHTML = filterField("model", "Model", state.data.models.map(m => [m.model, modelLabel(m)]), model.model) +
     filterField("workload", "ISL / OSL", model.workloads.map(w => [w.identity, w.identity.replace(":", " / ")]), workload.identity) +
     filterField("gpu", "GPU", options(workload.gpus, "gpu"), gpu.gpu) +
     ["precision", "framework", "serving"].map(key => filterField(key, key[0].toUpperCase() + key.slice(1),
@@ -998,7 +1000,7 @@ function renderDetails() {
     } else state.topologyId = null;
     renderDetails(); renderDrilldown(); renderMatrix(); updateLocation();
   }));
-  target.innerHTML = topology ? `<h2>${escapeHtml(model.model)} · ${escapeHtml(gpu.gpu)}</h2>${topologyContent(topology)}` :
+  target.innerHTML = topology ? `<h2>${escapeHtml(modelLabel(model))} · ${escapeHtml(gpu.gpu)}</h2>${topologyContent(topology)}` :
     '<p>This historical snapshot has no topology details. A new evaluation is required.</p>';
   bindCharts(target, topology);
 }
@@ -1068,7 +1070,7 @@ function bindCharts(container, topology) {
   container.querySelectorAll("[data-point]").forEach(marker => {
     const open = () => {
       const point = topology.points[Number(marker.dataset.point)], selected = selectedGpu();
-      document.getElementById("point-content").innerHTML = `<h2 id="point-title">Concurrency ${point.concurrency}</h2><p>${escapeHtml(topologyLabel(topology))}</p><p>${escapeHtml(selected.model.model)} · ${escapeHtml(selected.workload.identity)} · ${escapeHtml(selected.gpu.gpu)} · ${escapeHtml(point.status)}</p>
+      document.getElementById("point-content").innerHTML = `<h2 id="point-title">Concurrency ${point.concurrency}</h2><p>${escapeHtml(topologyLabel(topology))}</p><p>${escapeHtml(modelLabel(selected.model))} · ${escapeHtml(selected.workload.identity)} · ${escapeHtml(selected.gpu.gpu)} · ${escapeHtml(point.status)}</p>
         <details open><summary>Recorded prediction configuration</summary><table><tbody>${Object.entries(point.configuration || {}).map(([key,value]) => `<tr><th>${escapeHtml(key)}</th><td>${escapeHtml(value ?? "Not recorded")}</td></tr>`).join("")}</tbody></table><p>This table contains a subset of prediction settings. Configuration evidence is labeled separately; recorded settings alone do not establish server-knob parity.</p></details>
         <table><thead><tr><th>Series</th><th>TTFT ms</th><th>TPOT ms</th><th>E2E ms</th><th>Output tok/s/GPU</th><th>Total tok/s/GPU</th></tr></thead><tbody>${Object.entries(SERIES_NAMES).map(([key,name]) => `<tr><th>${name}</th>${["ttft_ms", "tpot_ms", "e2e_ms", "output_per_gpu", "total_per_gpu"].map(f => `<td>${numeric(point[key][f])}</td>`).join("")}</tr>`).join("")}</tbody></table><p>— means this value was not recorded. Measured output throughput is unavailable when no output rate was recorded.</p>`;
       document.getElementById("point-dialog").showModal();

@@ -622,7 +622,7 @@ def build_summary(
 
     by_model: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for row in scoped_rows:
-        by_model[_required_text(row.get("display_name"), "display_name")].append(row)
+        by_model[_required_text(row.get("hf_model_path") or row.get("display_name"), "model name")].append(row)
 
     statuses = _status_counts(scoped_rows)
     identities = _identity_summary(scoped_rows)

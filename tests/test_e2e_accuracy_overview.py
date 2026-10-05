@@ -266,7 +266,7 @@ def test_summary_separates_coverage_accuracy_and_multinode_scope() -> None:
 def test_summary_matches_existing_mape_and_shape_error_semantics() -> None:
     alpha = _summary()["models"][0]
 
-    assert alpha["model"] == "Alpha"
+    assert alpha["model"] == "org/Alpha"
     assert alpha["aic"]["ttft_mape_pct"] == pytest.approx(10.0)
     assert alpha["aic"]["tpot_mape_pct"] == pytest.approx(15.0)
     assert alpha["aic"]["ttft_shape_error_pct"] == pytest.approx(0.0)
@@ -275,6 +275,22 @@ def test_summary_matches_existing_mape_and_shape_error_semantics() -> None:
     assert alpha["aisimulate"]["tpot_mape_pct"] == pytest.approx(10.0)
     assert alpha["aisimulate"]["ttft_shape_error_pct"] == pytest.approx(16.67)
     assert alpha["aisimulate"]["tpot_shape_error_pct"] == pytest.approx(0.0)
+
+
+def test_hf_checkpoint_variants_are_separate_models_without_changing_totals():
+    predictions, metadata, coverage = _inputs()
+    predictions["rows"][1]["hf_model_path"] = "vendor/Alpha-FP8"
+    summary = OVERVIEW.build_summary(
+        predictions,
+        metadata,
+        coverage,
+        predictions_sha256="c" * 64,
+        source_url="https://github.com/SemiAnalysisAI/InferenceX-app/releases/tag/db-dump/fixture",
+    )
+    assert [model["model"] for model in summary["models"]] == ["org/Alpha", "org/Beta", "vendor/Alpha-FP8"]
+    assert all(model["hf_model_paths"] == [model["model"]] for model in summary["models"])
+    assert summary["totals"] == {**_summary()["totals"], "models": 3}
+    assert sum(model["rows"] for model in summary["models"]) == summary["totals"]["rows"]
 
 
 def test_workload_labels_match_the_overview_dashboard() -> None:
@@ -413,7 +429,7 @@ def test_public_page_prioritizes_aisimulate_over_aic_baseline() -> None:
     page = (public_dir / "index.html").read_text()
     script = (public_dir / "app.js").read_text()
 
-    assert page.index("AISim TPOT MAPE") < page.index("AIC (legacy CLI) TPOT MAPE")
+    assert page.index("AISim MAPE") < page.index("AIC (legacy CLI) MAPE")
     assert script.index('accuracyCard("AISim Error · all configurations"') < script.index(
         'accuracyCard("AIC (legacy CLI) Error · all configurations"'
     )
