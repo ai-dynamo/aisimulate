@@ -2547,25 +2547,25 @@ findings:
       1ae319d4353f_AUTO (Nemotron-3-Nano-NVFP4), 56890dc997ec_AUTO (gpt-oss-20b MXFP4) all report ''requested CUTLASS'' and
       the CUTLASS SM reason; DEEPGEMM, which serves fp8-block MoE on sm100, is turned down on Ada with ''DeepGemmFusedMoE
       requires SM100, SM103, or SM107, got SM89'' (raws f883c2769dd6_DEEPGEMM, 8610141a333f_DEEPGEMM). So FP8-block / MXFP4
-      MoE on rc29 is a PLATFORM FLOOR of the framework on Ada, while NVFP4 MoE is servable through MARLIN (weight-only): expressed
-      as an sm89-scoped per-checkpoint customization (`--generator-set params.agg.moe_config.backend=MARLIN`; params.agg.moe_backend
-      is silently ignored for trtllm) on 10 roster NVFP4 checkpoints, 7 pass+custom (MiniMax-M2.5/M2.7, Nemotron-3 Nano/Super/Ultra,
-      Qwen3.5-122B/397B), 3 reach later floors (Gemma-4: attentionOp ''Head size 512 is not supported by MMHA'' native abort;
-      Qwen3-235B: CutlassFp4GemmRunner needs Blackwell; Qwen3.8-2.4T capacity). OWNER DECISION (generator): make the trtllm
-      MoE default quant-aware (marlin for nvfp4 on sm89) or keep the harness customization; a hardware fact cannot express
-      it because MARLIN rejects the bf16/fp8 layers that CUTLASS serves. MLA: the documented ''no MLA FMHA below Hopper''
-      wall (collect_mla*.py FIXME(kernel-limit), ''Re-verify on the next framework version bump'') was RE-VERIFIED on rc29
-      - with only the SM guard patched out a bf16 DeepSeek-V3 MLA module cell aborts in AttentionOp ''Deepseek should be supported
-      by fmha in generation part'' (attentionOp.cpp:3234, was :3091 on rc20; SIGSEGV in the worker); guards kept, comments
-      updated. Other fails: 8 DeepSeek-V4 ''requires Hopper or newer GPUs, got SM89'', 4 DeepGEMM arch, 6 image gaps (transformers
-      too old for DeepSeek-V4.1 / Muse-Glimmer; no `fla` for Kimi-K3 - same as sm100), 12 generator rejects, 3 capacity, Gemma-4-31B-NVFP4
-      (flashinfer cute-DSL RMSNormFP4Quant ptxas needs .target sm_90), MiMo arch not registered, Kimi-K2.5 quant parser (same
-      as sm100). Gates: 7 of 9 real gates ALIGNED (attn ctx/gen + fp8-KV gen, gdn ctx/gen, mamba2 ctx/gen), 13 declared sm89
-      floors (V3/R1 cannot boot: MoE + MLA; V3.2; V4). attn_ctx_fp8: serving''s fp8-KV prefill runs fmha_v2 bf16 compute over
-      the fp8 cache while the collector''s fp8-KV+fp8-context-FMHA case runs the e4m3 kernel (fmha_v2_flash_attention_e4m3_..._sm89)
-      - the gate recipe was moved to the bf16-compute combo that serving selects; whether the SDK should bill the e4m3 FMHA
-      on sm89 is an owner decision. encoder_attn is DIVERGED for lack of evidence (profile_run phase exists only in probe_vllm),
-      same as sglang.'
+      MoE on rc29 is a PLATFORM FLOOR of the framework on Ada, while NVFP4 MoE is servable through MARLIN (weight-only). FIXED
+      IN THE GENERATOR (review pass): hardware.yaml l40s carries `moe_backend: {trtllm: {nvfp4: MARLIN}}` keyed by the artifact''s
+      quantization family (facts/apply.quant_family_of over utils._bundled_quantization), and the trtllm template now honours
+      the generic `moe_backend` param (it was silently dropped: the hardware fill ignored it and the template never read it;
+      a user value now beats the fill). The 10 roster NVFP4 MoE checkpoints re-probed under the plain render: 7 pass (MiniMax-M2.5/M2.7,
+      Nemotron-3 Nano/Super/Ultra, Qwen3.5-122B/397B), 3 reach later floors (Gemma-4: attentionOp ''Head size 512 is not supported
+      by MMHA'' native abort; Qwen3-235B: CutlassFp4GemmRunner needs Blackwell; Qwen3.8-2.4T capacity). MLA: the documented
+      ''no MLA FMHA below Hopper'' wall (collect_mla*.py FIXME(kernel-limit), ''Re-verify on the next framework version bump'')
+      was RE-VERIFIED on rc29 - with only the SM guard patched out a bf16 DeepSeek-V3 MLA module cell aborts in AttentionOp
+      ''Deepseek should be supported by fmha in generation part'' (attentionOp.cpp:3234, was :3091 on rc20; SIGSEGV in the
+      worker); guards kept, comments updated. Other fails: 8 DeepSeek-V4 ''requires Hopper or newer GPUs, got SM89'', 4 DeepGEMM
+      arch, 6 image gaps (transformers too old for DeepSeek-V4.1 / Muse-Glimmer; no `fla` for Kimi-K3 - same as sm100), 12
+      generator rejects, 3 capacity, Gemma-4-31B-NVFP4 (flashinfer cute-DSL RMSNormFP4Quant ptxas needs .target sm_90), MiMo
+      arch not registered, Kimi-K2.5 quant parser (same as sm100). Gates: 7 of 9 real gates ALIGNED (attn ctx/gen + fp8-KV
+      gen, gdn ctx/gen, mamba2 ctx/gen), 13 declared sm89 floors (V3/R1 cannot boot: MoE + MLA; V3.2; V4). attn_ctx_fp8: serving''s
+      fp8-KV prefill runs fmha_v2 bf16 compute over the fp8 cache while the collector''s fp8-KV+fp8-context-FMHA case runs
+      the e4m3 kernel (fmha_v2_flash_attention_e4m3_..._sm89) - the gate recipe was moved to the bf16-compute combo that serving
+      selects; whether the SDK should bill the e4m3 FMHA on sm89 is an owner decision. encoder_attn is DIVERGED for lack of
+      evidence (profile_run phase exists only in probe_vllm), same as sglang.'
     applies_to:
     - platform:sm89
     - framework:trtllm-1.3.0rc29
@@ -2607,20 +2607,22 @@ findings:
       0 failures in 11 of 14 ops, 1 capacity in attention_generation (96-head MHA, 4x4095 tokens = 24 GiB KV), moe 2 (1 capacity,
       1 block_n alignment), kda 5/12 (4 capacity, 1 partial grid); sglang: attention_context 13/40 = ONE deterministic class
       - the plan schedules fp8_kv_cache_and_context_fmha for a FlashInfer SM (sm89/sm120 resolve flashinfer) and the collector
-      refuses it on purpose (''flashinfer has no FP8 prefill compute path'', a stale ''0.5.14'' in the message) - a plan-level
-      hole worth a decision (the generator comment says backend-level rejections are runtime failures by policy), gdn 21/40
-      and kda 5/12 = the causal_conv1d Triton int32 token-offset overflow (total_tokens*conv_channels >= 2**31, causal_conv1d_triton.py:373-379)
-      at the largest grid points (reproduced: batch 32-64 x seq 16384-32768, 3 of 112 points; the other 109 rows persist)
-      - framework limit, not Ada; mla_generation 3 capacity + 1 IMA; trtllm: attention_context 6 (4 CUDA faults + 2 Gemma4
-      trtllm-gen ''Blackwell-only'' guards), moe 8 (7 TP-shard alignment guards - the collector''s own, known family - 1 capacity),
-      gemm 2 stride-alignment RuntimeErrors, mhc 2 capacity. Capacity is the dominant Ada difference: 44 GiB vs 80-141 GiB
-      on Hopper moves the batch x kv corner of every attention / mla / msa / kda grid into OOM, none of it a collector bug.
-      NOT DONE: the full retained plan (hundreds of thousands of cases per framework - sm120''s vllm run was ~12 h on 8 GPUs),
-      perf-data finalize/publication, SDK consumer tests against new l40s data. DELIVERY BLOCKER for any perf data from this
-      box: the SDK system is l40s and its existing tables carry device ''NVIDIA L40S'' (checked in the parquet device column),
-      while this box is an 8x L40 (same AD102 die, lower TDP/clocks). Playbook section 8 forbids relabelling a nearby product
-      with the same SM, so L40 measurements must not be published under l40s; an `l40` system definition would be needed first
-      (the sm120 RTX PRO 5000 campaign hit the same wall).'
+      refuses it on purpose (''flashinfer has no FP8 prefill compute path'', a stale ''0.5.14'' in the message) - FIXED in
+      the review pass: get_context_attention_test_cases resolves the lane the same way run_attention_torch does (per-model
+      map, else the SM default table) and no longer plans fp8_context_fmha on flashinfer; sm89 context plan now 43,114 cases:
+      18,752 bf16 + 18,752 fp8_kv_cache + 5,610 fp8_context_fmha on the triton/sink lanes (the 13,142 flashinfer-lane fp8_context_fmha
+      cases are gone), 4-case smoke clean; gdn 21/40 and kda 5/12 = the causal_conv1d Triton int32 token-offset overflow (total_tokens*conv_channels
+      >= 2**31, causal_conv1d_triton.py:373-379) at the largest grid points (reproduced: batch 32-64 x seq 16384-32768, 3
+      of 112 points; the other 109 rows persist) - framework limit, not Ada; mla_generation 3 capacity + 1 IMA; trtllm: attention_context
+      6 (4 CUDA faults + 2 Gemma4 trtllm-gen ''Blackwell-only'' guards), moe 8 (7 TP-shard alignment guards - the collector''s
+      own, known family - 1 capacity), gemm 2 stride-alignment RuntimeErrors, mhc 2 capacity. Capacity is the dominant Ada
+      difference: 44 GiB vs 80-141 GiB on Hopper moves the batch x kv corner of every attention / mla / msa / kda grid into
+      OOM, none of it a collector bug. NOT DONE: the full retained plan (hundreds of thousands of cases per framework - sm120''s
+      vllm run was ~12 h on 8 GPUs), perf-data finalize/publication, SDK consumer tests against new l40s data. DELIVERY BLOCKER
+      for any perf data from this box: the SDK system is l40s and its existing tables carry device ''NVIDIA L40S'' (checked
+      in the parquet device column), while this box is an 8x L40 (same AD102 die, lower TDP/clocks). Playbook section 8 forbids
+      relabelling a nearby product with the same SM, so L40 measurements must not be published under l40s; an `l40` system
+      definition would be needed first (the sm120 RTX PRO 5000 campaign hit the same wall).'
     applies_to:
     - platform:sm89
     - framework:vllm-0.30.0
@@ -2659,7 +2661,10 @@ findings:
       stage_tok.py in the workspace pulls them from unsloth / sibling mirrors - fetch_inputs.py''s bundled-config fallback
       still stops short of that (OPEN); (11) workflow_check gates_declared is red for trtllm rc29 on EVERY SM (msa_context_module
       / msa_generation_module have no trtllm gate; pre-existing on this branch, sm90 shows the same, OPEN); (12) tooling:
-      pkill -f / pgrep -f patterns match the invoking shell''s own command line - kill queue wrappers by pid.'
+      pkill -f / pgrep -f patterns match the invoking shell''s own command line - kill queue wrappers by pid. (13) `--emit-queues
+      --only X --plan-name P` REPLACES plan P with X''s runs only; build_records/build_matrix then resolve the dropped runs
+      from older plan files whose fingerprints no longer match the raws, and whole cells turn ''stale evidence'' (hit twice
+      on sm89). Either keep one plan file per --only set or re-emit the full set into it.'
     applies_to:
     - platform:sm89
     - instrument:probe_driver

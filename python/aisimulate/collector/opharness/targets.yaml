@@ -16,7 +16,6 @@ backends:
     - --generator-set
     - params.agg.trust_remote_code=true
     cli_extra_args_note: 'FPM V1 refuses to render without --benchmark-mode in extra_cli_args — questionable for
-      a deploy artifact from `generate` (generator UX issue, bucket-1 candidate); required as of 2026-08-23. | trust_remote_code:
       sglang template renders it by default, vllm''s does not (backend asymmetry, bucket-1) — supplied as input
       meanwhile.'
   trtllm:
@@ -327,13 +326,6 @@ families:
         dummy_overrides:
           family: glm
       nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-NVFP4:
-        cli_extra_args:
-          trtllm:
-            sms: [sm89]
-            args:
-            - --generator-set
-            - params.agg.moe_config.backend=MARLIN
-            fact: &sm89_trt_marlin_fact 'sm89 (L40, 2026-10-04): trtllm 1.3.0rc29 renders moe_config.backend CUTLASS (the template/builder default; hardware AUTO resolves to CUTLASS too) and CutlassFusedMoE cannot serve NVFP4 below SM100 -> ''no MoE implementation can serve this layer''. A/B on an empty L40: backend MARLIN boots nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4 (facts/ab_trt_moe_sm89 raw 1ae319d4353f_MARLIN, MarlinCudaW4a16Nvfp4Impl weight-only); TRITON (SM90 only) and VANILLA (CUDA-graph capture invalidated) do not. Not a hardware-wide fact: MARLIN rejects bf16/fp8 layers (quant_unsupported), so it is scoped to NVFP4 checkpoints. Generator spelling: params.agg.moe_config.backend (params.agg.moe_backend is silently ignored for trtllm).'
         variant_overrides:
           vllm: layers_block_type_moe
           fact: 'sm120/72GB (2026-09-30): all_kinds (3 layers) OOMs at load; the capacity fallback picked
@@ -441,78 +433,6 @@ families:
         variant_overrides:
           sglang: depth4
           vllm: depth4
-      nvidia/Gemma-4-26B-A4B-NVFP4:
-        cli_extra_args:
-          trtllm:
-            sms: [sm89]
-            args:
-            - --generator-set
-            - params.agg.moe_config.backend=MARLIN
-            fact: *sm89_trt_marlin_fact
-      nvidia/MiniMax-M2.5-NVFP4:
-        cli_extra_args:
-          trtllm:
-            sms: [sm89]
-            args:
-            - --generator-set
-            - params.agg.moe_config.backend=MARLIN
-            fact: *sm89_trt_marlin_fact
-      nvidia/MiniMax-M2.7-NVFP4:
-        cli_extra_args:
-          trtllm:
-            sms: [sm89]
-            args:
-            - --generator-set
-            - params.agg.moe_config.backend=MARLIN
-            fact: *sm89_trt_marlin_fact
-      nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4:
-        cli_extra_args:
-          trtllm:
-            sms: [sm89]
-            args:
-            - --generator-set
-            - params.agg.moe_config.backend=MARLIN
-            fact: *sm89_trt_marlin_fact
-      nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4:
-        cli_extra_args:
-          trtllm:
-            sms: [sm89]
-            args:
-            - --generator-set
-            - params.agg.moe_config.backend=MARLIN
-            fact: *sm89_trt_marlin_fact
-      nvidia/Qwen3-235B-A22B-NVFP4:
-        cli_extra_args:
-          trtllm:
-            sms: [sm89]
-            args:
-            - --generator-set
-            - params.agg.moe_config.backend=MARLIN
-            fact: *sm89_trt_marlin_fact
-      nvidia/Qwen3.5-122B-A10B-NVFP4:
-        cli_extra_args:
-          trtllm:
-            sms: [sm89]
-            args:
-            - --generator-set
-            - params.agg.moe_config.backend=MARLIN
-            fact: *sm89_trt_marlin_fact
-      nvidia/Qwen3.5-397B-A17B-NVFP4:
-        cli_extra_args:
-          trtllm:
-            sms: [sm89]
-            args:
-            - --generator-set
-            - params.agg.moe_config.backend=MARLIN
-            fact: *sm89_trt_marlin_fact
-      nvidia/Qwen3.8-2.4T-A95B-NVFP4:
-        cli_extra_args:
-          trtllm:
-            sms: [sm89]
-            args:
-            - --generator-set
-            - params.agg.moe_config.backend=MARLIN
-            fact: *sm89_trt_marlin_fact
 topologies:
 - tp: 1
   ep: 1

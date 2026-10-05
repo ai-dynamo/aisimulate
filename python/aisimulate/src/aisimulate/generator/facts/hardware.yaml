@@ -252,9 +252,14 @@ profiles:
       - key: nvidia.com/gpu
         operator: Exists
         effect: NoSchedule
-    # moe_backend: intentionally unset. No wide-EP fabric on PCIe Ada (so no WIDEEP /
-    # deepep_moe), and a hardware-wide trtllm value cannot be right either: on SM89 trtllm
-    # 1.3.0rc29 serves NVFP4 MoE only through MARLIN, which rejects bf16/fp8 MoE layers, and
-    # CUTLASS (the template default, also what AUTO resolves to) serves bf16 only
-    # (opharness findings sm89_trtllm_rc29_probe_2026_10_04) — a per-quantization choice,
-    # expressed per checkpoint in collector/opharness/targets.yaml until the generator has it.
+    # moe_backend: keyed by the artifact's quantization family (facts/apply.quant_family_of) because
+    # one hardware-wide value cannot be right on Ada: trtllm 1.3.0rc29 serves NVFP4 MoE only through
+    # MARLIN (weight-only; A/B on an L40: AUTO resolves to CUTLASS, which refuses NVFP4 below SM100,
+    # TRITON is SM90-only, DEEPGEMM needs SM100/103/107, VANILLA dies in CUDA-graph capture), while
+    # MARLIN rejects bf16 / fp8 MoE layers that CUTLASS serves. FP8-block and MXFP4 MoE have no
+    # implementation on SM89 at all, so no key is given for them (the template default CUTLASS
+    # fails exactly as every alternative does). No wide-EP fabric on PCIe Ada: no WIDEEP /
+    # deepep_moe. Evidence: opharness findings sm89_trtllm_rc29_probe_2026_10_04.
+    moe_backend:
+      trtllm:
+        nvfp4: MARLIN

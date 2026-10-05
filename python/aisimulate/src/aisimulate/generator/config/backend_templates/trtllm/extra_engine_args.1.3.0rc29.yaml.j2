@@ -13,7 +13,10 @@ moe_expert_parallel_size: {{ moe_expert_parallel_size }}
 moe_tensor_parallel_size: {{ moe_tensor_parallel_size }}
 
 moe_config:
-    backend: {{ moe_config.backend | default('CUTLASS') }} # MOE backend to use (CUTLASS, CUTEDSL, WIDEEP, TRTLLM, VANILLA)
+{# moe_config.backend (facts / --generator-set params.agg.moe_config.backend) wins; the generic `moe_backend` param
+   (backend_config_mapping.yaml, the sglang --moe-runner-backend spelling) used to be silently dropped for trtllm —
+   it now feeds the same field, upper-cased to the TRT-LLM enum. #}
+    backend: {{ moe_config.backend | default((moe_backend | upper) if moe_backend is defined and moe_backend else 'CUTLASS') }} # MOE backend to use (CUTLASS, CUTEDSL, WIDEEP, TRTLLM, VANILLA, MARLIN, ...)
     {% if moe_config.load_balancer is defined %}  # Configuration for MoE load balancing
     load_balancer: {{ moe_config.load_balancer }} # moe load balancer
     {% endif %}
