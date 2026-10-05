@@ -3265,4 +3265,3 @@ def test_simulation_perf_artifact_verification(tmp_path, fault):
             verify(tmp_path, "base", "a" * 40)
     else:
         assert verify(tmp_path, "base", "a" * 40) == manifest
-
