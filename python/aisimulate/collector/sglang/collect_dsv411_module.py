@@ -544,11 +544,23 @@ def run_generation_case(runner, bench, token_ids, case, plan, state, intervals, 
     runner.clear()
 
 
+class OutputQualificationError(RuntimeError):
+    """The measured forward ran but a representative layer's attention output is non-finite / all zero or a
+    layer observation is missing: the timings are not a measurement. The device context is intact (no CUDA
+    error), so the case is recorded and the group goes on. Observed on H20 sglang 0.5.21 TP4 for 262144-token
+    extends on a cached prefix (per-rank 16 heads x 512 = 8192 per token, tokens x width = 2^31; the
+    prefix-free 262144-token extend is fine) - FIXME(kernel-limit): unverified int32 offset in the
+    cached-prefix attention path; a guard waits for the framework source proof."""
+
+
 def _capacity_failure(error: BaseException) -> str | None:
-    """Classify a recoverable capacity miss: the plan's KV pools ran dry (sglang's paged allocators ask the
+    """Classify a recoverable failure: the plan's KV pools ran dry (sglang's paged allocators ask the
     tree cache to evict; the bench path's TreeCacheNamespace has no evict_for_alloc, or the SWA pool reports
-    the shortfall) or the device ran out of memory in a forward (a Python-level OOM, the context is intact).
+    the shortfall), the device ran out of memory in a forward (a Python-level OOM, the context is intact), or
+    the forward's outputs failed qualification (OutputQualificationError).
     Returns the record prefix, or None for anything else (re-raise)."""
+    if isinstance(error, OutputQualificationError):
+        return "NonFiniteOutput"
     text = str(error)
     if "evict_for_alloc" in text or "eviction insufficient" in text:
         return "PoolCapacity"
@@ -640,7 +652,7 @@ def run_context_group(runner, bench, token_ids, cases, plan, state, intervals, s
                         if not (flags[2 * k] and flags[2 * k + 1])
                     ]
                     if len(state.observations) != 40 or bad:
-                        raise RuntimeError(
+                        raise OutputQualificationError(
                             f"{case['case_id']}: attention outputs non-finite/zero or incomplete at layers {bad[:5]}"
                         )
                     state.qualifying = False

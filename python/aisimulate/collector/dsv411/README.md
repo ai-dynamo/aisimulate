@@ -89,4 +89,8 @@ and measures every query length on it).
   as a failed case per sglang TP, not a measurement; sglang's Triton w8a8 block-fp8 GEMM (the only path for this checkpoint's 32-wide
   weight blocks) forms int32 offsets, so context forwards above `2^31 / max weight dim` tokens
   (131072 at TP2) are refused up front as `KernelLimit` failures (`FIXME(kernel-limit)` in the
-  producer); vLLM's engram at 262144 tokens does not fit a TP2 rank next to its table shard.
+  producer); vLLM's engram at 262144 tokens does not fit a TP2 rank next to its table shard; sglang's
+  262144-token extend on a cached prefix at TP4 returns non-finite / zero attention output at a representative
+  layer (per-rank 16 heads x 512 per token: tokens x width = 2^31; the prefix-free extend is fine) - the
+  qualification failure is recorded in-process as `NonFiniteOutput` (`OutputQualificationError`, a
+  `FIXME(kernel-limit)` observation until the framework source names the kernel).
