@@ -219,8 +219,6 @@ function sortValue(model) {
       return model.aic.points;
     case "aisimulatePoints":
       return model.aisimulate.points;
-    case "gpuSkus":
-      return model.gpu_skus.length;
     case "hardware":
       return model.gpu_skus.join(",");
     case "precisions":
@@ -253,7 +251,6 @@ function compareValues(left, right) {
 
 function metricCells(item) {
   return `
-    <td class="count-cell">${escapeHtml(item.gpu_skus.length.toLocaleString())}</td>
     <td class="mono">${escapeHtml(item.gpu_skus.join(", "))}</td>
     <td>${escapeHtml(item.precisions.join(", "))}</td>
     <td class="points-cell">${escapeHtml(item.aisimulate.points.toLocaleString())}</td>
@@ -315,7 +312,7 @@ function renderMatrix() {
   });
   matrixBody.innerHTML = models.length
     ? models.map(modelRows).join("")
-    : '<tr><td colspan="8" class="empty-cell">No models with successful AISim predictions match this selection.</td></tr>';
+    : '<tr><td colspan="7" class="empty-cell">No models with successful AISim predictions match this selection.</td></tr>';
 }
 
 function renderSortState() {
@@ -717,7 +714,7 @@ function clearSnapshot(message) {
   document.getElementById("framework-summary").innerHTML = "";
   document.getElementById("hardware-summary").innerHTML = "";
   summaryGrid.innerHTML = `<div class="loading-card">${escapeHtml(message)}</div>`;
-  matrixBody.innerHTML = `<tr><td colspan="8" class="empty-cell">${escapeHtml(message)}</td></tr>`;
+  matrixBody.innerHTML = `<tr><td colspan="7" class="empty-cell">${escapeHtml(message)}</td></tr>`;
   identityLine.textContent = "";
   releaseLabel.textContent = "";
   multinodeLabel.textContent = "";
