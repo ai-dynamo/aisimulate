@@ -3,7 +3,7 @@
 
 use std::collections::BTreeSet;
 use std::marker::PhantomData;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use crate::engine::generalized::{PassId, SameTimestampRetry, SchedulerCommand};
 use crate::engine::{
@@ -31,7 +31,10 @@ const MAX_CONSECUTIVE_SAME_TIMESTAMP_RETRIES: usize = 1024;
 
 #[derive(Clone)]
 struct PendingPass {
-    committed_requests: BTreeSet<Uuid>,
+    // Keep the engine's allocation. Only profile cancellation needs an index;
+    // ordinary replay drops these IDs at pass completion without building one.
+    committed_requests: Vec<Uuid>,
+    committed_request_index: OnceLock<BTreeSet<Uuid>>,
     pass_id: PassId,
     started_at_ms: f64,
     end_ms: f64,
@@ -803,7 +806,11 @@ where
             .required_worker(owner.worker_id)?
             .pending_pass
             .as_ref()
-            .is_some_and(|pass| pass.committed_requests.contains(&request_id)))
+            .is_some_and(|pass| {
+                pass.committed_request_index
+                    .get_or_init(|| pass.committed_requests.iter().copied().collect())
+                    .contains(&request_id)
+            }))
     }
 
     pub(crate) fn drive_ready(
@@ -840,7 +847,8 @@ where
 
             let same_timestamp_retry = started.same_timestamp_retry;
             let mut pending = PendingPass {
-                committed_requests: BTreeSet::new(),
+                committed_requests: Vec::new(),
+                committed_request_index: OnceLock::new(),
                 pass_id: started.pass_id,
                 started_at_ms: started.started_at_ms,
                 end_ms: started.end_ms,
@@ -848,9 +856,13 @@ where
 
             let mut effects: EngineEffects<Observation::Batch> = EngineEffects::default();
             for rank in started.by_rank {
-                pending
-                    .committed_requests
-                    .extend(rank.effects.committed_requests);
+                if pending.committed_requests.is_empty() {
+                    pending.committed_requests = rank.effects.committed_requests;
+                } else {
+                    pending
+                        .committed_requests
+                        .extend(rank.effects.committed_requests);
+                }
                 effects
                     .admissions
                     .extend(rank.effects.admissions.into_iter().map(|admission| {
@@ -1335,8 +1347,11 @@ mod tests {
     #[case(Backend::Sglang)]
     fn committed_request_membership_excludes_queued_work_during_chunked_prefill(
         #[case] backend: Backend,
+        #[values(1, 2)] dp_size: u32,
+        #[values(false, true)] query_before_cancel: bool,
     ) {
         let config = ReplayEngineConfig {
+            dp_size,
             rank: EngineConfig {
                 backend,
                 num_gpu_blocks: 32,
@@ -1346,7 +1361,8 @@ mod tests {
                 enable_chunked_prefill: true,
                 enable_prefix_caching: false,
                 sglang: SglangConfig {
-                    chunked_prefill_size: 4,
+                    // SGLang divides this worker budget across attention-DP ranks.
+                    chunked_prefill_size: 4 * dp_size as usize,
                     ..Default::default()
                 },
                 timing_model: TimingModelConfig::Fixed {
@@ -1368,44 +1384,77 @@ mod tests {
             None,
         )
         .unwrap();
-        let committed = Uuid::from_u128(80_001);
-        let queued = Uuid::from_u128(80_002);
-        for (uuid, token) in [(committed, 1), (queued, 2)] {
-            component
-                .dispatch(
-                    0,
-                    DirectRequest {
-                        tokens: vec![token; 12],
-                        max_output_tokens: 2,
-                        uuid: Some(uuid),
-                        ..Default::default()
-                    },
-                    0.0,
+        let requests: Vec<_> = (0..dp_size)
+            .map(|rank| {
+                (
+                    rank as usize,
+                    Uuid::from_u128(80_001 + u128::from(rank) * 2),
+                    Uuid::from_u128(80_002 + u128::from(rank) * 2),
                 )
-                .unwrap();
+            })
+            .collect();
+        for &(scheduler_id, committed, queued) in &requests {
+            for (uuid, token) in [(committed, 1), (queued, 2)] {
+                component
+                    .dispatch(
+                        scheduler_id,
+                        DirectRequest {
+                            tokens: vec![token; 12],
+                            max_output_tokens: 2,
+                            uuid: Some(uuid),
+                            ..Default::default()
+                        },
+                        0.0,
+                    )
+                    .unwrap();
+            }
         }
         let mut started = component.drive_ready(0.0, None).unwrap();
         let scheduled = started.scheduled_completion.take().unwrap();
         assert_eq!(scheduled.at_ms, 10.0);
-        assert!(component.request_has_committed_pass(0, committed).unwrap());
-        assert!(!component.request_has_committed_pass(0, queued).unwrap());
         // The selected request has not produced output: its first prompt chunk
         // still owns the committed pass, while the scheduler queue does not.
-        for uuid in [queued, committed] {
-            component
-                .apply_command(
-                    0,
-                    Command::CancelRequest {
-                        request_id: uuid,
-                        discard_pending_output: true,
-                    },
-                    1.0,
-                )
-                .unwrap();
+        for &(scheduler_id, committed, queued) in &requests {
+            if query_before_cancel {
+                assert!(
+                    component
+                        .request_has_committed_pass(scheduler_id, committed)
+                        .unwrap()
+                );
+                assert!(
+                    !component
+                        .request_has_committed_pass(scheduler_id, queued)
+                        .unwrap()
+                );
+            }
+            for uuid in [queued, committed] {
+                component
+                    .apply_command(
+                        scheduler_id,
+                        Command::CancelRequest {
+                            request_id: uuid,
+                            discard_pending_output: true,
+                        },
+                        1.0,
+                    )
+                    .unwrap();
+            }
         }
         assert_eq!(component.in_flight(), 0);
-        assert!(component.request_has_committed_pass(0, committed).unwrap());
-        assert!(!component.request_has_committed_pass(0, queued).unwrap());
+        // A first lookup after cancellation must still see the committed batch,
+        // including every DP rank, even though the live requests are gone.
+        for &(scheduler_id, committed, queued) in &requests {
+            assert!(
+                component
+                    .request_has_committed_pass(scheduler_id, committed)
+                    .unwrap()
+            );
+            assert!(
+                !component
+                    .request_has_committed_pass(scheduler_id, queued)
+                    .unwrap()
+            );
+        }
         let completed = component
             .on_scheduled_completion(scheduled.completion, scheduled.at_ms)
             .unwrap();
@@ -1415,9 +1464,15 @@ mod tests {
                 .iter()
                 .map(|pass| pass.fpm.as_ref().unwrap().sum_prefill_tokens)
                 .sum::<u64>(),
-            4
+            4 * u64::from(dp_size)
         );
-        assert!(!component.request_has_committed_pass(0, committed).unwrap());
+        for &(scheduler_id, committed, _) in &requests {
+            assert!(
+                !component
+                    .request_has_committed_pass(scheduler_id, committed)
+                    .unwrap()
+            );
+        }
         assert!(component.is_drained());
     }
 

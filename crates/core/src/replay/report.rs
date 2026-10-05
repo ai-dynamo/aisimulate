@@ -1862,11 +1862,15 @@ impl TraceCollector {
             };
 
             completed_requests += 1;
-            observed_start_ms = Some(observed_start_ms.map_or(stats.arrival_time_ms, |value| {
-                value.min(stats.arrival_time_ms)
-            }));
-            observed_end_ms =
-                Some(observed_end_ms.map_or(terminal_time_ms, |value| value.max(terminal_time_ms)));
+            if agentic_profile.is_some() {
+                observed_start_ms =
+                    Some(observed_start_ms.map_or(stats.arrival_time_ms, |value| {
+                        value.min(stats.arrival_time_ms)
+                    }));
+                observed_end_ms = Some(
+                    observed_end_ms.map_or(terminal_time_ms, |value| value.max(terminal_time_ms)),
+                );
+            }
             total_input_tokens += stats.input_length;
             let output_length = stats.actual_output_length();
             total_output_tokens += output_length;
