@@ -2761,7 +2761,9 @@ findings:
       cases), large shapes x0.9 — a fixed per-call overhead added in the 0.30 lane. (3) sglang 0.5.21 vs 0.5.14 DSA (DeepSeek-V3.2,
       bf16 KV): context dense_mha_trtllm_ragged lane median x1.23, up to x2.07 (bs 1, isl 16-64, past_kv 1-1.5k); generation
       dsa_indexer_trtllm at bs 1024: 1.3 -> 1.8-2.3 ms (x1.4-1.8); sparse/indexer context lanes x1.04-1.13; GLM-5.2 lanes x1.0-1.12
-      — single-shot, repeat sweeps pending at write time. NOT regressions: trtllm bf16 512-expert moe_torch_flow_nongated x1.3-1.7
+      — REPEATED (two more full sweeps each): generation bs 1024 is x1.37 / x1.39 / x1.39 (systematic ~x1.4; the x1.77 was a single-shot
+      outlier); context dense_mha_trtllm_ragged lane median x1.21 / x1.23 / x1.23 with max x1.35-1.47 (systematic ~x1.2, i.e. ~x1.1
+      after the 5-10% box offset — borderline); sparse/indexer context lanes x1.02-1.05 (environment). NOT regressions: trtllm bf16 512-expert moe_torch_flow_nongated x1.3-1.7
       at 4-16 tokens (a torch reference flow, noisy), sglang dsv4 paged_mqa_logits / topk_calib x1.1-1.2 (3-60 us kernels).
       FASTER: vllm dsa modules x0.57 (0.30 vs 0.24), trtllm msa context x0.30 (rc29 vs rc23), sglang msa context x0.71, sglang
       mla_bmm / mla gen x0.7, vllm gemm fp8_block 128 -> 111 ms. Everything else within +-25%.'
