@@ -2400,6 +2400,29 @@ findings:
     - nvidia/Nemotron-H-56B-Base-8K
     - Qwen/Qwen3.5-0.8B
     - deepseek-ai/DeepSeek-V3
+  dsv411_h20_tp2_calibration_2026_10_05:
+    statement: 'DSV411 H20 TP2 CALIBRATION (owner scope 2026-10-05: TP2 only, no TP4 campaign). Published
+      systems/data/h20_3e/dsv411/{sglang/0.5.21 (27,231 rows, 9 runs), vllm/0.30.0 (28,603 rows, 5 runs)}, real_kv seeding,
+      strict SILICON load and predictions OK; admission records results/sm90/admission/<fw>/dsv411__h20_3e.json carry the
+      per-run failed cases. Facts: (1) sglang 0.5.21 admits at most context_len - 2 tokens per request (tp_worker.py:404,
+      scheduler.py:2533), so the grid decode cell kv_len 1,048,575 is a recorded failure for sglang and a row for vLLM;
+      (2) the sglang decode graph at batch 1 is dominated by the Triton w8a8 block-fp8 GEMM (21 of 27 ms for the 40-layer
+      attention stack at TP2; the M=1 config is slower than M=8, batch-8 step 19 ms) - per-layer external-event slices sum to
+      the whole captured step, so the regime is self-consistent; (3) synthetic_kv seeding needs bit 7 clear on sglang''s
+      index_k_with_scale_buffer (interleaved UE8M0 scales; a random sign bit overflowed the fp4 index-logits path for batch-1
+      extends with query >= 3072 on short prefixes -> NaN from the first indexer layer; reproduced at TP2, fixed c2f14856) and
+      a top-k delta factor on vLLM''s cached-prefix indexer context rows (synthetic/real 0.86-0.97 by batch; declared in
+      collector/dsv411/topk_correction.yaml, applied by publish.py, stored per row as kv_seed_correction, Rust admits synthetic
+      rows only from tables with the column); (4) producer failures are in-process records (NonFiniteOutput, PoolCapacity,
+      MemoryCapacity, KernelLimit) or marker-recorded hard kills skipped on --resume; (5) serving-truth alignment of the
+      dsv411 sum of parts cannot be done on this box: the full model does not fit at TP2 and TP4 is out of scope.'
+    applies_to:
+    - deepseek-ai/DeepSeek-V4.1-Flash
+    - framework:vllm-0.30.0
+    - framework:sglang-0.5.21
+    - platform:sm90
+    - module:collector
+    - instrument:collector.dsv411
   dsv411_family_granularity_2026_10_03:
     statement: 'DSV4.1 OP FAMILY dsv411 (owner decision 2026-10-03: do not reuse the dsv41 producers; build the V4.1 decomposition
       from scratch as a parallel family named dsv411, sglang 0.5.21 + vllm 0.30.0 on H20, trtllm scoped out). SDK: model DEEPSEEKV411
