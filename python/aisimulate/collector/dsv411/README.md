@@ -92,7 +92,11 @@ and measures every query length on it).
   as a failed case per sglang TP, not a measurement; sglang's Triton w8a8 block-fp8 GEMM (the only path for this checkpoint's 32-wide
   weight blocks) forms int32 offsets, so context forwards above `2^31 / max weight dim` tokens
   (131072 at TP2) are refused up front as `KernelLimit` failures (`FIXME(kernel-limit)` in the
-  producer); vLLM's engram at 262144 tokens does not fit a TP2 rank next to its table shard; at TP4 batch 1024 with a cached
-  prefix, some (query, prefix) shapes return all-zero / non-finite output in one of sglang's two sliding-window
-  layers (q256-kv16, q128-kv256; neighbours pass) - recorded in-process as `NonFiniteOutput`
-  (`OutputQualificationError`), cause open (SWA extend-input parity audit + real_kv A/B pending).
+  producer); vLLM's engram at 262144 tokens does not fit a TP2 rank next to its table shard; a synthetic fill that set a random
+  sign bit on sglang's `index_k_with_scale_buffer` (interleaved UE8M0 scales -> 2^49..2^64) made the fp4
+  index-logits path of batch-1 extends with query >= 3072 on short cached prefixes return NaN from the first
+  indexer layer (TP2 repro: synthetic failed, real_kv and the sign-less fill passed; fixed in the producer, the
+  affected cells re-collected as complements); the qualification check that caught it records such rows
+  in-process as `NonFiniteOutput` (`OutputQualificationError`). Batch-1024 cached-prefix cells that failed the
+  same check in one of the two sliding-window layers are re-collected with the fixed fill; whatever remains is
+  a recorded limitation (owner decision 2026-10-05).
