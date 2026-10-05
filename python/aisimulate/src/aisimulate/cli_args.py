@@ -74,7 +74,7 @@ def build_parser() -> argparse.ArgumentParser:
         child.add_argument("-c", "--config", required=True)
         child.add_argument(
             "--stack",
-            help="execution stack; defaults to engine (including optional native router configuration)",
+            help="execution stack; defaults to engine, or dynamo when router is configured",
         )
         child.add_argument(
             "--set",
@@ -133,9 +133,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def select_stack(explicit: str | None, config: dict[str, Any]) -> str:
-    """Use the built-in engine unless an external stack is explicitly selected."""
+    """Select an optional integration only when no stack was explicitly requested."""
 
-    return explicit if explicit is not None else "engine"
+    if explicit is not None:
+        return explicit
+    return "dynamo" if "router" in config else "engine"
 
 
 def _load_mapping(path: str) -> dict[str, Any]:
@@ -166,11 +168,10 @@ def _extract_output_configs(
     config_adapter_names = {
         entry.name for entry in importlib.metadata.entry_points().select(group=CONFIG_ADAPTER_ENTRY_POINT_GROUP)
     }
-    config_adapter_names.add("engine.router")
     for name in dict.fromkeys(outputs):
         if not name or "." in name:
             raise _CliConfigError(f"invalid --output name {name!r}")
-        if name in RECOMMENDATION_CORE_SECTIONS or f"{stack}.{name}" in config_adapter_names:
+        if name in RECOMMENDATION_CORE_SECTIONS or name == "router" or f"{stack}.{name}" in config_adapter_names:
             raise _CliConfigError(f"output adapter name {name!r} collides with a recommendation input section")
         value = remaining.pop(name, None)
         if value is None:

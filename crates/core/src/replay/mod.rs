@@ -20,8 +20,6 @@ mod error;
 pub(crate) mod event;
 mod evidence;
 mod handoff;
-#[cfg(feature = "python")]
-pub mod python_policy;
 pub(crate) mod events {
     pub(crate) use crate::replay::event::*;
 }

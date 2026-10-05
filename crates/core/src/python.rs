@@ -2635,46 +2635,6 @@ fn run_replay_json(py: Python<'_>, payload: &str) -> PyResult<String> {
         .map_err(replay_python_error)
 }
 
-/// Execute with an explicitly supplied external native policy factory.
-#[pyfunction]
-fn run_replay_json_with_policy(
-    py: Python<'_>,
-    payload: &str,
-    policy_config_json: &str,
-    policy_factory: Py<PyAny>,
-) -> PyResult<String> {
-    let composition = crate::replay::python_policy::PythonPolicyComposition::new(
-        policy_factory,
-        policy_config_json.to_owned(),
-    );
-    let evidence = composition.evidence();
-    py.allow_threads(move || {
-        let mut result = execute_replay_with_composition(
-            payload,
-            composition,
-            ReplayCaptureOptions::default(),
-            None,
-        )?;
-        result
-            .report_fields
-            .insert("routing_policy".into(), evidence.snapshot()?);
-        result.into_json()
-    })
-    .map_err(replay_python_error)
-}
-
-/// Versioned owned-data policy protocol; providers do not exchange engine handles.
-#[pyfunction]
-fn native_replay_policy_contract(py: Python<'_>) -> PyResult<Bound<'_, pyo3::types::PyDict>> {
-    let value = pyo3::types::PyDict::new(py);
-    value.set_item(
-        "api_version",
-        crate::replay::python_policy::POLICY_API_VERSION,
-    )?;
-    value.set_item("core_version", crate::CORE_VERSION)?;
-    Ok(value)
-}
-
 /// Execute one fixed aggregated ReplaySpec and return report plus parity artifacts.
 #[pyfunction]
 fn run_replay_with_artifacts_json(py: Python<'_>, payload: &str) -> PyResult<String> {
@@ -2686,8 +2646,6 @@ fn run_replay_with_artifacts_json(py: Python<'_>, payload: &str) -> PyResult<Str
 #[pymodule]
 fn _runtime(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(run_replay_json, module)?)?;
-    module.add_function(wrap_pyfunction!(run_replay_json_with_policy, module)?)?;
-    module.add_function(wrap_pyfunction!(native_replay_policy_contract, module)?)?;
     module.add_function(wrap_pyfunction!(run_replay_with_artifacts_json, module)?)?;
     crate::perfmodel::register_python(module)?;
     Ok(())

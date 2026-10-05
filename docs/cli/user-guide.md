@@ -475,7 +475,7 @@ Without an explicit stack or a `router` section, the built-in `engine` runner is
 the default. A `router` section selects the existing `dynamo` stack automatically.
 An explicit `--stack` remains authoritative. Install a compatible Dynamo integration
 as described in [installation](../installation.md#optional-dynamo-integration);
-conversation affinity and duration require the source pair in the
+conversation affinity and duration require the matching C integration described in the
 [AgentX quickstart](../agentx-quickstart.md). Explicit selection remains available:
 
 ```bash

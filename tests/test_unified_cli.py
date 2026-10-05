@@ -586,11 +586,9 @@ def test_engine_stack_rejects_explicit_unavailable_component(tmp_path, monkeypat
         lambda stack: _Factory(_Runner()),
     )
 
-    def unavailable(names):
-        assert list(names) == ["engine.router"]
-        raise cli.ConfigAdapterResolutionError("config adapter 'engine.router' is unavailable")
+    from aisimulate.config_adapter import resolve_config_adapters
 
-    monkeypatch.setattr(cli, "resolve_config_adapters", unavailable)
+    monkeypatch.setattr(cli, "resolve_config_adapters", lambda names: resolve_config_adapters(names, entry_points=[]))
 
     with pytest.raises(SystemExit, match="2"):
         cli.main(["predict", "--stack", "engine", "--config", str(config_path)])
@@ -601,14 +599,15 @@ def test_engine_stack_rejects_explicit_unavailable_component(tmp_path, monkeypat
     ("router", "explicit", "selected"),
     [
         (None, None, "engine"),
-        ({"policy": "kv_router"}, None, "engine"),
-        ({"policy": "kv_router", "affinity": {"mode": "sibling_group"}}, None, "engine"),
+        ({"policy": "kv_router"}, None, "dynamo"),
+        ({"policy": "kv_router", "affinity": {"mode": "sibling_group"}}, None, "dynamo"),
         ({"policy": "kv_router"}, "engine", "engine"),
         ({"policy": "kv_router"}, "dynamo", "dynamo"),
     ],
 )
-def test_prediction_preserves_default_engine_and_explicit_stacks(
-    tmp_path, monkeypatch, router, explicit, selected
+@pytest.mark.parametrize("command", ["predict", "recommend"])
+def test_cli_selects_router_stack_only_when_not_explicit(
+    tmp_path, monkeypatch, router, explicit, selected, command
 ) -> None:
     raw = {"engine": {}}
     if router is not None:
@@ -622,15 +621,15 @@ def test_prediction_preserves_default_engine_and_explicit_stacks(
         loaded.append(name)
         return factory
 
-    def predict(args, config, actual_factory):
+    def execute(args, config, actual_factory):
         assert args.stack == selected
         assert config == raw
         assert actual_factory is factory
         return 0
 
     monkeypatch.setattr(cli, "resolve_runner_factory", resolve)
-    monkeypatch.setattr(cli, "_predict", predict)
-    argv = ["predict", "--config", str(path)]
+    monkeypatch.setattr(cli, f"_{command}", execute)
+    argv = [command, "--config", str(path)]
     if explicit is not None:
         argv += ["--stack", explicit]
     assert cli.main(argv) == 0
@@ -644,85 +643,32 @@ def test_prediction_router_override_selects_native_policy(tmp_path, monkeypatch)
     monkeypatch.setattr(cli, "resolve_runner_factory", lambda name: loaded.append(name) or object())
     monkeypatch.setattr(cli, "_predict", lambda args, raw, factory: 0)
     assert cli.main(["predict", "--config", str(path), "--set", "router.policy=kv_router"]) == 0
-    assert loaded == ["engine"]
+    assert loaded == ["dynamo"]
 
 
-def test_prediction_explicit_dynamo_missing_integration_is_configuration_error(tmp_path, monkeypatch, capsys) -> None:
+@pytest.mark.parametrize("command", ["predict", "recommend"])
+@pytest.mark.parametrize("explicit", [False, True])
+def test_router_missing_integration_is_configuration_error(tmp_path, monkeypatch, capsys, command, explicit) -> None:
     from aisimulate.stack import resolve_runner_factory
 
     path = tmp_path / "routing.yaml"
     path.write_text("engine: {}\nrouter: {policy: kv_router}\n")
-    monkeypatch.setattr(cli, "resolve_runner_factory", lambda name: resolve_runner_factory(name, entry_points=[]))
+    requested = []
+
+    def resolve(name):
+        requested.append(name)
+        return resolve_runner_factory(name, entry_points=[])
+
+    monkeypatch.setattr(cli, "resolve_runner_factory", resolve)
+    argv = [command, "--config", str(path)]
+    if explicit:
+        argv += ["--stack", "dynamo"]
     with pytest.raises(SystemExit, match="2"):
-        cli.main(["predict", "--stack", "dynamo", "--config", str(path)])
+        cli.main(argv)
+    assert requested == ["dynamo"]  # Never retry with the default round-robin runner.
     error = capsys.readouterr().err
     assert "stack 'dynamo' is unavailable" in error
     assert "Install the distribution" in error
-
-
-def test_prediction_router_without_native_provider_fails_without_fallback(tmp_path, monkeypatch, capsys) -> None:
-    import importlib
-
-    from aisimulate.runner import EngineReplayRunnerFactory
-
-    path = tmp_path / "routing.yaml"
-    path.write_text(
-        yaml.safe_dump(
-            {
-                "engine": {
-                    "model": "example/model",
-                    "hardware": "h200_sxm",
-                    "context_length": 4096,
-                    "workers": {"aggregated": {}},
-                },
-                "router": {"policy": "kv_router", "affinity": {"mode": "sibling_group"}},
-            }
-        )
-    )
-
-    def unexpected_fallback(*args):
-        pytest.fail("router configuration must never fall back to round-robin")
-
-    original_import = importlib.import_module
-
-    def import_without_dynamo(name, *args, **kwargs):
-        if name.startswith("dynamo"):
-            raise ModuleNotFoundError("no dynamo runtime")
-        return original_import(name, *args, **kwargs)
-
-    monkeypatch.setattr(importlib, "import_module", import_without_dynamo)
-    factory = EngineReplayRunnerFactory(
-        runtime=SimpleNamespace(
-            run_replay_json=unexpected_fallback,
-            run_replay_json_with_policy=unexpected_fallback,
-            native_replay_policy_contract=lambda: {"api_version": 1},
-        )
-    )
-    monkeypatch.setattr(cli, "resolve_runner_factory", lambda name: factory)
-    assert cli.main(["predict", "--config", str(path), "--output-dir", str(tmp_path / "out")]) == 1
-    assert "router requires ai-dynamo-runtime with NativeReplayPolicy API v1" in capsys.readouterr().err
-
-
-def test_recommend_router_is_rejected_before_search(tmp_path, monkeypatch, capsys) -> None:
-    path = tmp_path / "routing.yaml"
-    path.write_text(
-        yaml.safe_dump(
-            {
-                "engine": {
-                    "mode": "aggregated",
-                    "model": "deepseek-ai/DeepSeek-V3",
-                    "hardware": "gb200",
-                    "context_length": 2048,
-                    "workers": {"aggregated": {}},
-                },
-                "optimization": {"target": "throughput", "constraints": {"max_candidate_gpus": 8}},
-                "router": {"policy": "kv_router"},
-            }
-        )
-    )
-    assert cli.main(["recommend", "--config", str(path), "--output-dir", str(tmp_path / "out")]) == 1
-    assert "predict only; recommend is unsupported" in capsys.readouterr().err
-    assert not (tmp_path / "out").exists()
 
 
 def test_router_cannot_be_consumed_as_an_output_adapter() -> None:

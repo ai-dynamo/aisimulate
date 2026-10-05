@@ -347,7 +347,7 @@ def test_early_resource_failure_keeps_a_complete_runtime_envelope(tmp_path, monk
         assert report[key] == details.get(key)
 
 
-@pytest.mark.parametrize("explicit, expected", [(None, "engine"), ("dynamo", "dynamo")])
+@pytest.mark.parametrize("explicit, expected", [(None, "dynamo"), ("engine", "engine"), ("dynamo", "dynamo")])
 def test_supervisor_reports_default_or_explicit_routing_stack(tmp_path, monkeypatch, explicit, expected):
     from aisimulate import supervision
     from aisimulate.resources import ResourceLimitError

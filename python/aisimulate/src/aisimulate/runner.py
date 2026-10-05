@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Engine replay implementation, with an optional native Dynamo policy."""
+"""Engine-only replay implementation."""
 
 from __future__ import annotations
 
@@ -30,7 +30,6 @@ from .sweeper.afd_perfmodel import AFDLayerTimes
 from .sweeper.provider import JSONValue
 from .sweeper.replay import (
     BackendDeploymentSpec,
-    HookCapability,
     ReplayOutputRequirements,
     ReplayReport,
     ReplaySpec,
@@ -388,7 +387,6 @@ class EngineReplayRunnerFactory:
         return RunnerCapabilities(
             replay_spec_api_version=1,
             supported_backend_topologies=_SUPPORTED_BACKEND_TOPOLOGIES,
-            supported_hooks=(HookCapability("engine.router", "placement_policy", 1),),
             supports_disaggregated_attention_dp=True,
             supports_analytical_epd=True,
             supports_cached_prefix_tokens=True,
@@ -459,29 +457,6 @@ class EngineReplayRunner:
         self.runtime = runtime
         return runtime
 
-    def _resolve_policy_factory(self):
-        try:
-            provider = importlib.import_module("dynamo._core")
-        except ImportError as exc:
-            raise RunnerUnavailableError(
-                "router requires ai-dynamo-runtime with NativeReplayPolicy API v1; install a matching runtime build."
-            ) from exc
-        factory = getattr(provider, "NativeReplayPolicy", None)
-        contract_fn = getattr(factory, "contract", None)
-        if not callable(factory) or not callable(contract_fn):
-            raise RunnerUnavailableError(
-                "installed ai-dynamo-runtime does not expose NativeReplayPolicy; "
-                "install a matching runtime build with native policy support."
-            )
-        contract = contract_fn()
-        if (
-            not isinstance(contract, Mapping)
-            or type(contract.get("api_version")) is not int
-            or contract["api_version"] != 1
-        ):
-            raise InvalidRunnerError("Dynamo NativeReplayPolicy requires contract API version 1")
-        return factory
-
     def run(
         self,
         spec: ReplaySpec,
@@ -494,30 +469,10 @@ class EngineReplayRunner:
         if spec.workload.get("source_type") is not None and "length_sampler" in spec.workload:
             raise ValueError("length_sampler requires materialized direct synthetic replay without source_type")
         self.capabilities.require_compatible(spec)
-        router = spec.adapters.get("engine.router")
-        if spec.adapters and (
-            set(spec.adapters) != {"engine.router"}
-            or router is None
-            or len(router.runtime_hooks) != 1
-            or router.config != router.runtime_hooks[0].config
-        ):
-            raise InvalidRunnerError("EngineReplayRunner requires one engine.router placement hook per router config")
-        native_router = None
-        if router is not None:
-            if spec.backend_deployment.deployment_mode not in {"agg", "disagg"}:
-                raise InvalidRunnerError("native router supports aggregated and P-D deployments only")
-            runtime = self._resolve_runtime()
-            contract_fn = getattr(runtime, "native_replay_policy_contract", None)
-            native_router = getattr(runtime, "run_replay_json_with_policy", None)
-            contract = contract_fn() if callable(contract_fn) else {}
-            if (
-                not callable(native_router)
-                or not isinstance(contract, Mapping)
-                or type(contract.get("api_version")) is not int
-                or contract["api_version"] != 1
-            ):
-                raise InvalidRunnerError("AISimulate native replay policy bridge requires contract API version 1")
-            policy_factory = self._resolve_policy_factory()
+        if spec.adapters:
+            raise InvalidRunnerError(
+                "EngineReplayRunner does not support component adapters; select a compatible stack"
+            )
         encoder = spec.backend_deployment.encoder
         if encoder is None and spec.workload.get("images") is not None:
             raise InvalidRunnerError("image workloads require an encoder pool")
@@ -599,14 +554,7 @@ class EngineReplayRunner:
             separators=(",", ":"),
         )
         try:
-            if native_router is not None:
-                report_json = native_router(
-                    execution_spec_json,
-                    json.dumps(router.config, allow_nan=False, separators=(",", ":")),
-                    policy_factory,
-                )
-            else:
-                report_json = self._resolve_runtime().run_replay_json(execution_spec_json)
+            report_json = self._resolve_runtime().run_replay_json(execution_spec_json)
         except MemoryError as error:
             # Resource-aware installations classify a report storage failure as host
             # exhaustion, not a failed candidate. Older SDKs retain MemoryError.
@@ -2138,7 +2086,6 @@ def _normalize_engine_replay_report(report: Mapping[str, JSONValue], *, include_
             "agentic_model_projection",
             "weka_nested_timestamp_basis",
             "fpm_query_evidence",
-            "routing_policy",
         )
         if key in payload
     }

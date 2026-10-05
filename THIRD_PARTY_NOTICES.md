@@ -13,22 +13,6 @@ distributed with those packages.
 Unless otherwise stated, AISimulate file paths in this document are relative
 to `python/aisimulate/` in the repository source tree.
 
-## NVIDIA Dynamo replay event adapter
-
-The repository-root file `crates/core/src/replay/python_policy/events.rs` is a
-modified adapter derived from Dynamo's `lib/mocker/src/engine_observations.rs`
-at immutable commit `d9eb42db1168131fdae318eef77255637e4d3495`. The adaptation
-captures AISimulate's engine events for an owned-data external policy protocol
-without importing Dynamo types or policy algorithms.
-
-Source:
-https://github.com/ai-dynamo/dynamo/blob/d9eb42db1168131fdae318eef77255637e4d3495/lib/mocker/src/engine_observations.rs
-
-Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
-Licensed under Apache-2.0; the full license is included as `LICENSE` in this
-repository and the Python distribution. Upstream license:
-https://github.com/ai-dynamo/dynamo/blob/d9eb42db1168131fdae318eef77255637e4d3495/LICENSE
-
 ## AIConfigurator
 
 The repository-root `.coderabbit.yaml` is adapted and modified from
