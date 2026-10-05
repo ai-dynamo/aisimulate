@@ -47,6 +47,71 @@ def dump_server_args(sa) -> dict:
     return out
 
 
+
+def vision_dummy_forward(model, model_dir: str, rec: dict, attr_names=("visual", "mm_encoder", "vision_tower")) -> None:
+    """vLLM's engine construction runs a profile_run that pushes dummy images through the vision
+    encoder, so probe_vllm records encoder kernels for free; this framework's text-only probe never
+    executes the vision tower, and the encoder_attention gate had NO serving evidence (sm89 2026-10-04:
+    DIVERGED for want of a kernel, not a path difference). Mirror the profile_run: one synthetic image
+    (grid 1 x 32 x 32 patches = 512 px square at patch 16, HF pixel_values layout
+    [num_patches, in_channels * temporal_patch * patch * patch]) through the vision module under the
+    device profiler, recorded as the same `profile_run_kernels` table path_diff reads for that phase."""
+    import inspect
+    import json as _json
+    from pathlib import Path
+
+    import torch
+    vis = next((getattr(model, a, None) for a in attr_names if getattr(model, a, None) is not None), None)
+
+    def _takes_pixels_and_grid(m) -> bool:
+        try:
+            ps = [p for p in inspect.signature(m.forward).parameters.values()
+                  if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)]
+        except (TypeError, ValueError):
+            return False
+        return len(ps) >= 2 and ps[1].default is inspect.Parameter.empty
+    # trtllm wraps the ViT (forward(pixel_values, grid_thw)) in a Qwen3VisionModelBase whose forward takes the
+    # executor's multimodal_params list: descend to the child that takes the raw patches
+    for _ in range(3):
+        if vis is None or _takes_pixels_and_grid(vis):
+            break
+        vis = next((getattr(vis, a, None) for a in attr_names + ("vision_model", "encoder")
+                    if getattr(vis, a, None) is not None), None)
+    if vis is None or not _takes_pixels_and_grid(vis):
+        return
+    try:
+        cfg = _json.loads((Path(model_dir) / "config.json").read_text())
+        vc = cfg.get("vision_config") or (cfg.get("text_config") or {}).get("vision_config") or {}
+        p, t, c = int(vc.get("patch_size", 14)), int(vc.get("temporal_patch_size", 2)), int(vc.get("in_channels", 3))
+        merge = int(vc.get("spatial_merge_size", 2))
+        side = 32 - (32 % merge)
+        grid = torch.tensor([[1, side, side]], dtype=torch.int64)
+        dev = next(vis.parameters()).device
+        dt = next(vis.parameters()).dtype
+        pix = torch.randn(int(grid[0].prod()), c * t * p * p, dtype=dt, device=dev)
+        from torch.profiler import ProfilerActivity, profile
+        with torch.no_grad(), profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA]) as prof:
+            vis(pix, grid)
+            torch.cuda.synchronize()
+        from torch.autograd import DeviceType
+        acc: dict = {}
+        for ev in prof.profiler.kineto_results.events():
+            try:
+                if ev.device_type() != DeviceType.CUDA:
+                    continue
+            except Exception:
+                continue
+            a = acc.setdefault(ev.name(), {"us": 0.0, "launches": 0})
+            a["us"] += (ev.duration_ns() / 1e3 if hasattr(ev, "duration_ns") else ev.duration_us())
+            a["launches"] += 1
+        rec["profile_run_kernels"] = sorted(
+            ({"kernel": k, "us": round(v["us"], 1), "launches": v["launches"]} for k, v in acc.items()),
+            key=lambda r: -r["us"])
+        rec["vision_probe"] = {"module": f"{type(vis).__module__}.{type(vis).__name__}", "grid_thw": grid.tolist(),
+                               "pixel_values_shape": list(pix.shape), "dtype": str(dt), "kernels": len(acc)}
+    except Exception as e:
+        rec["errors"]["vision_probe"] = f"{type(e).__name__}: {e}"[:400]
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", required=True)
@@ -264,6 +329,7 @@ def main() -> None:
                     if key in name and key not in {s.split("::")[0] for s in samples}:
                         samples[f"{key}::{name}"] = f"{p.dtype} {tuple(p.shape)}"
             rec["weight_samples"] = samples
+            vision_dummy_forward(model, args.model, rec)   # encoder_attention evidence (profile_run table)
 
             attn = getattr(model_runner, "attn_backend", None)
             if attn is None:
@@ -450,6 +516,10 @@ def main() -> None:
                 rec["errors"]["trace_decode"] = traceback.format_exc()[-1500:]
         except Exception:
             rec["errors"]["trace"] = traceback.format_exc()
+        # the record builder reads every kernel table from `trace` when it exists (vllm/trtllm raws keep
+        # them top-level): move the vision profile_run table in with the phase tables
+        if "profile_run_kernels" in rec:
+            trace["profile_run_kernels"] = rec.pop("profile_run_kernels")
         rec["trace"] = trace
 
     with open(args.out, "w") as f:

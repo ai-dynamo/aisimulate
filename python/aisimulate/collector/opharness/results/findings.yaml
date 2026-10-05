@@ -2507,18 +2507,19 @@ findings:
       of fused_moe_89) - the Nemotron-3 family (Nano/Super/Ultra/Lightning), reproduced from the raw; 2 Qwen3.8-2.4T cells
       died in sglang''s tp memory-balance check because the queue puts tp>1 cells on ONE GPU''s queue without reserving the
       group (harness defect, rerun alone). Gates: 5 ALIGNED of the 6 real ones (attn ctx/gen, attn_ctx_hd512_gemma-4, gdn
-      ctx/gen), 23 declared sm89 floors (sparse, capacity for the V3-bound MLA/MSA/KDA/GLM-5 gates, DeepGEMM arch). OPEN:
-      encoder_attn_Qwen3-VL-2B is DIVERGED for lack of evidence, not a path difference - the gate asks the profile_run phase,
-      the sglang serving probe records only prefill/decode of a text prompt (no profile_run table, the vision tower never
-      runs), so the serving side has no attention kernel at all; sm90''s verdict file for this gate is aligned and lists serving
-      backends cublas/fa3/torch under the same profile_run scope, but how that record obtained them is NOT established from
-      this checkout (unverified lead: a record whose kernel_phases carried profile_run). Either extend probe_sglang to send
-      an image or grade this gate without the phase; owner decision. COLLECTOR defects found by the smoke/gates that Hopper
-      never reached (fa3/trtllm_mha paths don''t read them): MockModelRunner lacked prefill/decode_attention_backend_str (flashinfer
-      lane), the vision Triton kernel moved to sglang.kernels.ops.attention.prefill_attention, TritonAttnBackend probes mambaish_config(model_config)
-      so the MLA mock needs hf_config / linear_attn_registry_result, and the Gemma4 / Llama4 case maps had no sm89 entry so
-      the collector measured flashinfer while serving runs triton (arg_groups/model_overrides/gemma4.py, llama4.py). All fixed
-      with source citations and re-verified on hardware.'
+      ctx/gen), 23 declared sm89 floors (sparse, capacity for the V3-bound MLA/MSA/KDA/GLM-5 gates, DeepGEMM arch). encoder_attn_Qwen3-VL-2B
+      was DIVERGED for lack of evidence (the text-only probe never ran the vision tower, so the profile_run phase the gate
+      asks for was empty); CLOSED in the review pass: probe_sglang now runs one synthetic image (grid 1x32x32 patches, HF
+      pixel_values layout) through model.visual under the device profiler and records it as the profile_run_kernels table
+      (same table vLLM''s own profile_run yields) - serving shows Triton `_fwd_kernel` x24 (= depth) for the vision attention,
+      the collector''s triton lane matches, gate ALIGNED. Every sglang/trtllm raw was re-probed afterwards (the probe file
+      is part of the execution fingerprint). sm90''s earlier aligned verdict for this gate rests on a record whose provenance
+      this checkout cannot establish; re-grade it with the new probe when the H20 box is next used. COLLECTOR defects found
+      by the smoke/gates that Hopper never reached (fa3/trtllm_mha paths don''t read them): MockModelRunner lacked prefill/decode_attention_backend_str
+      (flashinfer lane), the vision Triton kernel moved to sglang.kernels.ops.attention.prefill_attention, TritonAttnBackend
+      probes mambaish_config(model_config) so the MLA mock needs hf_config / linear_attn_registry_result, and the Gemma4 /
+      Llama4 case maps had no sm89 entry so the collector measured flashinfer while serving runs triton (arg_groups/model_overrides/gemma4.py,
+      llama4.py). All fixed with source citations and re-verified on hardware.'
     applies_to:
     - platform:sm89
     - framework:sglang-0.5.21
@@ -2564,8 +2565,13 @@ findings:
       gen, gdn ctx/gen, mamba2 ctx/gen), 13 declared sm89 floors (V3/R1 cannot boot: MoE + MLA; V3.2; V4). attn_ctx_fp8: serving''s
       fp8-KV prefill runs fmha_v2 bf16 compute over the fp8 cache while the collector''s fp8-KV+fp8-context-FMHA case runs
       the e4m3 kernel (fmha_v2_flash_attention_e4m3_..._sm89) - the gate recipe was moved to the bf16-compute combo that serving
-      selects; whether the SDK should bill the e4m3 FMHA on sm89 is an owner decision. encoder_attn is DIVERGED for lack of
-      evidence (profile_run phase exists only in probe_vllm), same as sglang.'
+      selects; whether the SDK should bill the e4m3 FMHA on sm89 is an owner decision. encoder_attn was DIVERGED for lack
+      of evidence; CLOSED the same way as sglang (probe_trtllm runs the synthetic image through Qwen3VisionModel = mm_encoder.visual):
+      serving vision attention is `fmha_v2_flash_attention_bf16_64_32_S_qkv_64_sm89_kernel_nl` x24, the collector''s trtllm_mha
+      capture matches, ALIGNED. The two msa gate families the sm90 session left undeclared (MiniMax-M3 does not boot on rc29
+      anywhere) are now declared with capture recipes (trt_msa_ctx / trt_msa_gen) and a FLOOR on every probed SM whose note
+      names the framework gap, so gates_declared is green on every SM and the gate grades for real on the first rc that serves
+      M3; sm90''s 22 real gates are untouched.'
     applies_to:
     - platform:sm89
     - framework:trtllm-1.3.0rc29
@@ -2654,12 +2660,13 @@ findings:
       sgl_gdn_gen, trt_attn ctx/gen + fp8-KV) - written; (8) taxonomy: seeding sm89 from sm120 left 100+ kernel names unlabelled
       on Ada (cuBLAS ampere_* GEMMs, flashinfer merge-states, FLA chunk kernels): collect/unlabeled.py style scan over raws
       + captures is how the vocabulary was built and is worth promoting to a component option; (9) encoder_attn gates ask
-      phase profile_run, which only probe_vllm records: on sglang and trtllm the gate cannot be graded on ANY SM from a text-only
-      probe unless the probe sends an image (OPEN, owner decision; sm90''s aligned sglang verdict is NOT explained by this
-      checkout - its record''s provenance needs a look by whoever owns the sm90 evidence); (10) dummy staging for gated repos
-      needs preprocessor_config.json for Llama-4 (vllm builds the vision tower in its profile run) and the tokenizer files:
-      stage_tok.py in the workspace pulls them from unsloth / sibling mirrors - fetch_inputs.py''s bundled-config fallback
-      still stops short of that (OPEN); (11) workflow_check gates_declared is red for trtllm rc29 on EVERY SM (msa_context_module
+      phase profile_run, which only probe_vllm recorded: FIXED - probe_sglang / probe_trtllm run a synthetic image through
+      the vision module and record profile_run_kernels (sglang: inside the `trace` dict, where the record builder reads kernel
+      tables from; the first attempt wrote it top-level and was invisible); the probe file is part of the fingerprint, so
+      this costs a full sglang + trtllm re-probe (~2 h on 8 GPUs) and will on every SM that adopts it; (10) dummy staging
+      for gated repos needs preprocessor_config.json for Llama-4 (vllm builds the vision tower in its profile run) and the
+      tokenizer files: stage_tok.py in the workspace pulls them from unsloth / sibling mirrors - fetch_inputs.py''s bundled-config
+      fallback still stops short of that (OPEN); (11) workflow_check gates_declared is red for trtllm rc29 on EVERY SM (msa_context_module
       / msa_generation_module have no trtllm gate; pre-existing on this branch, sm90 shows the same, OPEN); (12) tooling:
       pkill -f / pgrep -f patterns match the invoking shell''s own command line - kill queue wrappers by pid. (13) `--emit-queues
       --only X --plan-name P` REPLACES plan P with X''s runs only; build_records/build_matrix then resolve the dropped runs
