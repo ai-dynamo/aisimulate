@@ -20,6 +20,8 @@ mod error;
 pub(crate) mod event;
 mod evidence;
 mod handoff;
+#[cfg(feature = "python")]
+pub mod python_policy;
 pub(crate) mod events {
     pub(crate) use crate::replay::event::*;
 }
@@ -159,7 +161,9 @@ pub use protocol::{
 };
 #[doc(hidden)]
 pub use replayer::ReplayRuntimeInput;
-pub use replayer::{ReplayComposition, Replayer, RoundRobinComposition};
+pub use replayer::{
+    ReplayComposition, Replayer, RoundRobinComposition, run_replay_with_composition,
+};
 #[doc(hidden)]
 pub use report::TraceCollector;
 pub use report::{

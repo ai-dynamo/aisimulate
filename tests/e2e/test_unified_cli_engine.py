@@ -59,6 +59,160 @@ _PREDICT_CASES = tuple(sorted((_REPO_ROOT / _CONFIG_ROOT / "predict/engine").glo
 _RECOMMEND_CASES = tuple(sorted((_REPO_ROOT / _CONFIG_ROOT / "recommend/engine").glob("*.yaml")))
 
 
+def _native_policy_config(tmp_path: Path, topology: str, backend: str, affinity: str) -> dict:
+    """An authored fork/join workload with repeated, physically reusable prefixes."""
+    config = yaml.safe_load((_REPO_ROOT / _CONFIG_ROOT / "predict/engine/09-trace-dynamo-agentic.yaml").read_text())
+    records = [
+        {
+            "schema": "dynamo.agentic_mooncake",
+            "version": 2,
+            "block_size": 64,
+            "hash_id_scope": "local",
+            "source": {"format": "aisimulate-e2e", "digest": "native-policy-v1"},
+        }
+    ]
+    # Both plays deliberately reuse conversation names. Their binding keys must
+    # stay distinct, while each pair of siblings shares a key in sibling mode.
+    conversations = ["parent", "left", "right", "left", "right", "parent"]
+    predecessors = [None, 0, 0, 1, 2, 0]
+    for play in ("alpha", "beta"):
+        for index, (conversation, previous) in enumerate(zip(conversations, predecessors, strict=True)):
+            relation = "spawn" if index in (1, 2) else "sequence"
+            records.append(
+                {
+                    "request_id": f"{play}/{index}",
+                    "play_id": play,
+                    "session_id": conversation,
+                    "model": "tiny-model",
+                    "input_length": 192,
+                    "output_length": 3,
+                    "hash_ids": [17, 19, 23],
+                    "not_before_ms": 25 * index,
+                    "recorded_api_time_ms": 3,
+                    "dependencies": []
+                    if previous is None
+                    else [
+                        {
+                            "request_id": f"{play}/{previous}",
+                            "relation": relation,
+                            "trigger": "dispatch" if relation == "spawn" else "completion",
+                            "delay_ms": 25,
+                        }
+                    ],
+                }
+            )
+    trace = tmp_path / "policy-trace.jsonl"
+    trace.write_text("".join(json.dumps(record) + "\n" for record in records))
+    config["traffic"] = {
+        "source": {"type": "trace", "format": "agentic_mooncake", "paths": [str(trace)], "block_size": 64},
+        "load": {"type": "trace_timestamps"},
+    }
+    worker = config["engine"]["workers"]["aggregated"]
+    worker["parallelism"].update(replicas=2, attention_data=2)
+    roles = ["aggregated"] if topology == "aggregated" else ["prefill", "decode"]
+    config["engine"].update(mode=topology, backend=backend, workers={role: copy.deepcopy(worker) for role in roles})
+    config["router"] = {"policy": "kv_router", "affinity": {"mode": affinity, "ttl_seconds": 3600}}
+    return config
+
+
+def _run_native_policy_cli(tmp_path: Path, config: dict, name: str) -> dict:
+    path = tmp_path / f"{name}.yaml"
+    path.write_text(yaml.safe_dump(config))
+    output = tmp_path / name
+    _run_cli("predict", "--config", str(path), "--capture-per-request", "--output-dir", str(output), "--format", "json")
+    report = json.loads((output / "prediction.json").read_text())
+    assert report["per_request"] == [json.loads(line) for line in (output / "requests.jsonl").read_text().splitlines()]
+    return report
+
+
+def _assert_native_policy_execution(report: dict, topology: str, affinity: str) -> None:
+    expected_roles = {"aggregated"} if topology == "aggregated" else {"prefill", "decode"}
+    evidence = report["routing_policy"]
+    assert evidence["api_version"] == 1
+    assert set(evidence["roles"]) == expected_roles
+    native_decisions = []
+    for role, data in evidence["roles"].items():
+        assert data["native_policy"] == "dynamo.SelectionCore"
+        assert data["physical_kv_events"] > 0
+        native_decisions.extend({**item, "role": role} for item in data["decisions"])
+    decisions = {(item["request_id"], item["role"]): item for item in native_decisions}
+    bound: dict[tuple, set] = {}
+    keys: dict[tuple, set] = {}
+    for request in report["per_request"]:
+        assert request["terminal_status"] == "completed"
+        identity = request["agentic"]
+        lineage = identity["lineage"]
+        conversation = identity["conversation_id"]
+        parent = lineage.get("parent_conversation_id")
+        group = (
+            (identity["play_id"], conversation)
+            if affinity == "session"
+            else (identity["play_id"], lineage["root_conversation_id"], parent or conversation, parent is not None)
+        )
+        roles = set()
+        for route in request["routing_history"]:
+            role = "aggregated" if route["pool"] == "agg" else route["pool"]
+            roles.add(role)
+            selected = decisions[(request["uuid"], role)]
+            target = selected["worker_id"], selected["dp_rank"]
+            assert target == (route["logical_worker_id"], route["dp_rank"])
+            assert all(value in (0, 1) for value in target)
+            bound.setdefault((group, role), set()).add(target)
+            keys.setdefault(group, set()).add(selected["group_key"])
+        assert roles == expected_roles
+    assert bound and all(len(targets) == 1 for targets in bound.values())
+    assert all(len(values) == 1 for values in keys.values())
+    assert len({next(iter(values)) for values in keys.values()}) == len(keys)
+    assert any(item["binding_reused"] for item in native_decisions)
+    assert report["first_admission_prefix_cache_reused_ratio"] > 0
+    assert any(request["reused_input_tokens"] > 0 for request in report["per_request"])
+
+
+@pytest.mark.parametrize("backend", ["vllm", "sglang"])
+@pytest.mark.parametrize("topology", ["aggregated", "disaggregated"])
+@pytest.mark.parametrize("affinity", ["session", "sibling_group"])
+def test_installed_native_policy_yaml(tmp_path: Path, backend: str, topology: str, affinity: str) -> None:
+    """Run with the existing Dynamo runtime wheel; no Dynamo replay adapter is required."""
+    runtime = pytest.importorskip("dynamo._core", reason="optional Dynamo runtime wheel is not installed")
+    assert runtime.NativeReplayPolicy.contract()["api_version"] == 1
+    config = _native_policy_config(tmp_path, topology, backend, affinity)
+    report = _run_native_policy_cli(tmp_path, config, "native")
+    assert report["completed_requests"] == 12
+    _assert_native_policy_execution(report, topology, affinity)
+    for worker in config["engine"]["workers"].values():
+        worker["kv_cache"]["prefix_caching"] = False
+    cold = _run_native_policy_cli(tmp_path, config, "uncached")
+    assert cold["completed_requests"] == report["completed_requests"]
+    assert cold["first_admission_prefix_cache_reused_ratio"] == 0
+    assert all(request["reused_input_tokens"] == 0 for request in cold["per_request"])
+
+
+@pytest.mark.parametrize("topology", ["aggregated", "disaggregated"])
+def test_installed_native_policy_duration(tmp_path: Path, topology: str) -> None:
+    runtime = pytest.importorskip("dynamo._core", reason="optional Dynamo runtime wheel is not installed")
+    assert runtime.NativeReplayPolicy.contract()["api_version"] == 1
+    config = _native_policy_config(tmp_path, topology, "vllm", "sibling_group")
+    config["traffic"]["load"].update(
+        agentic_lanes=2,
+        agentic_snapshot={"seed": 42},
+        agentic_warmup=True,
+        agentic_profile={"duration_seconds": 0.5},
+    )
+    report = _run_native_policy_cli(tmp_path, config, "duration")
+    _assert_native_policy_execution(report, topology, "sibling_group")
+    profile, phases = report["agentic_profile"], report["agentic_phases"]
+    assert profile["admission_cutoff_ms"] - profile["profile_start_ms"] == pytest.approx(500)
+    assert profile["profile_start_ms"] == phases["profile_start_ms"]
+    assert profile["plays_started"] > 2
+    assert profile["unsettled_server_requests"] == 0 and not profile["cancel_drain_timed_out"]
+    prepared = {request["uuid"] for request in phases["requests"]}
+    measured = {request["uuid"] for request in report["per_request"]}
+    assert prepared - measured
+    assert prepared | measured <= {
+        decision["request_id"] for role in report["routing_policy"]["roles"].values() for decision in role["decisions"]
+    }
+
+
 def _run_cli(
     *args: str,
     timeout: float = 120.0,

@@ -39,6 +39,11 @@ AFDPipelineModel = Literal["optimistic", "conservative", "serial"]
 AFDExpertParallel = PositiveInt | Literal["n_f_nodes", "ffn_tp"]
 
 
+def resolve_block_size(backend: str, configured: int | None) -> int:
+    """Resolve the same backend cache geometry for prediction and search."""
+    return {"vllm": 64, "sglang": 1, "trtllm": 32}[backend] if configured is None else int(configured)
+
+
 class AFDTopologyPredictionConfig(StrictModel):
     """One concrete attention/FFN-disaggregated topology."""
 

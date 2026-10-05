@@ -13,6 +13,22 @@ distributed with those packages.
 Unless otherwise stated, AISimulate file paths in this document are relative
 to `python/aisimulate/` in the repository source tree.
 
+## NVIDIA Dynamo replay event adapter
+
+The repository-root file `crates/core/src/replay/python_policy/events.rs` is a
+modified adapter derived from Dynamo's `lib/mocker/src/engine_observations.rs`
+at immutable commit `d9eb42db1168131fdae318eef77255637e4d3495`. The adaptation
+captures AISimulate's engine events for an owned-data external policy protocol
+without importing Dynamo types or policy algorithms.
+
+Source:
+https://github.com/ai-dynamo/dynamo/blob/d9eb42db1168131fdae318eef77255637e4d3495/lib/mocker/src/engine_observations.rs
+
+Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Licensed under Apache-2.0; the full license is included as `LICENSE` in this
+repository and the Python distribution. Upstream license:
+https://github.com/ai-dynamo/dynamo/blob/d9eb42db1168131fdae318eef77255637e4d3495/LICENSE
+
 ## AIConfigurator
 
 The repository-root `.coderabbit.yaml` is adapted and modified from
@@ -84,7 +100,7 @@ lifecycle tests are original work for this change, with no external corpus.
 
 The speculation SDK, compatibility exports, CLI/task integration, attention and whole-forward FPM operation changes, native bindings, and their tests are adapted and modified from AIConfigurator PR #1563, pinned at commit `6290c161a354da5250c391bd43372b2e9c6f4a51`. Original paths are under `aic-core/src/aiconfigurator_core/sdk/`, `src/aiconfigurator/`, `aic-core/rust/aiconfigurator-core/`, `aic-core/rust/tests/public-api/`, and `tests/`.
 
-Derived AISimulate paths are under `python/aisimulate/src/aisimulate_core/sdk/`, `python/aisimulate/src/aisimulate/sdk/speculation/`, `python/aisimulate/src/aisimulate_core/sdk/speculation/`, `python/aisimulate/src/aisimulate/legacy_cli/`, `python/aisimulate/src/aisimulate/sdk/{speculative,task_v2}.py`, and `python/aisimulate/tests/`; repository-root Rust paths are under `crates/core/src/perfmodel/`, `crates/core/parity_tests/perfmodel/`, and `crates/tests/public-api/`. The repository's `docs/aic-pr1563-migration.md` lists the exact original and mapped paths. Changes preserve AISimulate's current native contracts and strengthen configuration validation and regression coverage.
+Derived AISimulate paths are under `python/aisimulate/src/aisimulate_core/sdk/`, `python/aisimulate/src/aisimulate/sdk/speculation/`, `python/aisimulate/src/aisimulate_core/sdk/speculation/`, `python/aisimulate/src/aisimulate/legacy_cli/`, `python/aisimulate/src/aisimulate/sdk/{speculative,task_v2}.py`, and `python/aisimulate/tests/`; repository-root Rust paths are under `crates/core/src/perfmodel/`, `crates/core/parity_tests/perfmodel/`, and `crates/tests/public-api/`. The repository's [PR #1563 transfer history](https://github.com/ai-dynamo/aisimulate/blob/main/docs/migration-history.md#pr-1563-selective-transfer) lists the exact original and mapped paths. Changes preserve AISimulate's current native contracts and strengthen configuration validation and regression coverage.
 
 Upstream source:
 https://github.com/ai-dynamo/aiconfigurator/tree/6290c161a354da5250c391bd43372b2e9c6f4a51

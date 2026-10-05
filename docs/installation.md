@@ -22,9 +22,8 @@ python -c 'import aisimulate, aisimulate._runtime; print(aisimulate.__file__); p
 
 ### Published packages
 
-As checked on **September 14, 2026**, PyPI publishes `0.12.0.dev1`; the GitHub
-`v0.12.0` release is still a draft. This is a dated publication snapshot, not
-a promise that `main` is included in that wheel. Check the
+As checked on **October 2, 2026**, the stable PyPI release is `0.12.1`. Use its
+[versioned documentation](https://github.com/ai-dynamo/aisimulate/tree/v0.12.1). Check the
 [PyPI release files](https://pypi.org/project/aisimulate/#files) and
 [GitHub releases](https://github.com/ai-dynamo/aisimulate/releases) for newer
 artifacts and use the documentation associated with the selected release.
@@ -33,21 +32,21 @@ artifacts and use the documentation associated with the selected release.
 python3.13 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
-python -m pip install --pre 'aisimulate==0.12.0.dev1'
+python -m pip install 'aisimulate==0.12.1'
 aisimulate --help
 ```
 
 An exact version pin makes the choice explicit. To discover newer published
-prereleases, use `python -m pip index versions --pre aisimulate`. Once a stable
-release is published, `python -m pip install aisimulate` normally selects a
-stable release; `--pre` allows prereleases. Neither command requests the
-latest repository source or an internal nightly automatically.
+prereleases, use `python -m pip index versions --pre aisimulate`.
+`python -m pip install aisimulate` normally selects a stable release; `--pre`
+allows prereleases. Neither command requests the latest repository source or
+an internal nightly automatically.
 
 When replacing standalone AIConfigurator, first follow the
 [package migration instructions](../README.md#upgrade-from-standalone-aiconfigurator)
 in the environment you intend to use. The `aisimulate` wheel owns both console
 commands. Python imports use `aisimulate` and `aisimulate_core`; see
-[Python source migration](python-source-migration.md) for the breaking import change.
+[Python source migration](MIGRATION.md#python-imports-and-resources) for the breaking import change.
 
 ## Platform matrix
 

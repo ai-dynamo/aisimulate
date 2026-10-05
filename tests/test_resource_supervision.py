@@ -347,11 +347,14 @@ def test_early_resource_failure_keeps_a_complete_runtime_envelope(tmp_path, monk
         assert report[key] == details.get(key)
 
 
-def test_supervisor_reports_auto_selected_routing_stack(tmp_path, monkeypatch):
+@pytest.mark.parametrize("explicit, expected", [(None, "engine"), ("dynamo", "dynamo")])
+def test_supervisor_reports_default_or_explicit_routing_stack(tmp_path, monkeypatch, explicit, expected):
     from aisimulate import supervision
     from aisimulate.resources import ResourceLimitError
 
     args = _cli_arguments(tmp_path)
+    if explicit is not None:
+        args += ["--stack", explicit]
     config = tmp_path / "config.yaml"
     config.write_text(config.read_text() + "router: {policy: kv_router}\n")
 
@@ -361,7 +364,7 @@ def test_supervisor_reports_auto_selected_routing_stack(tmp_path, monkeypatch):
     monkeypatch.setattr(supervision, "run_process", refuse)
     assert supervision.main(args) == 3
     plan = json.loads((tmp_path / "output/resource-plan.json").read_text())
-    assert plan["stack"] == "dynamo"
+    assert plan["stack"] == expected
 
 
 @pytest.mark.parametrize("child_code,expected", [(-9, 1), (-15, 1), (2, 2)])

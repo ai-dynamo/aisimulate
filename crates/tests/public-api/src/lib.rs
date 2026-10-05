@@ -782,3 +782,22 @@ pub fn operation_diagnostics(
 > {
     model.static_phase_diagnostics(1, 128, 0, true)
 }
+
+/// Join engines built by separate factories to one cluster-shared G2 pool.
+pub fn shared_g2_factories(
+    config: aisimulate_core::engine::EngineConfig,
+    workers: usize,
+) -> anyhow::Result<(
+    aisimulate_core::engine::SharedG2Pool,
+    Vec<aisimulate_core::engine::EngineFactory>,
+)> {
+    let pool = aisimulate_core::engine::SharedG2Pool::new();
+    let factories = (0..workers)
+        .map(|_| {
+            aisimulate_core::engine::EngineFactory::new(config.clone())
+                .map(|factory| factory.with_shared_g2_pool(&pool, 1))
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    let _: Option<(usize, usize, usize)> = pool.occupancy();
+    Ok((pool, factories))
+}

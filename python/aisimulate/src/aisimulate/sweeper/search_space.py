@@ -98,6 +98,7 @@ class BranchSpace:
     parallel_custom_choices: dict[str, tuple[ReplicaParallelConfig, ...]] = field(default_factory=dict)
     conditional_dimensions: tuple[ConditionalDimensionSpace, ...] = ()
     domain_provenance: dict[str, Any] = field(default_factory=dict)
+    prefer_smallest: bool = False
 
 
 def _parallel_leaf_values(config: _ParallelConfig) -> dict[str, int]:
@@ -119,6 +120,19 @@ def _parallel_leaf_values(config: _ParallelConfig) -> dict[str, int]:
         **role_values("prefill_", config.prefill),
         **role_values("decode_", config.decode),
     }
+
+
+def matches_parallel_domains(config: _ParallelConfig, choices, log_ranges) -> bool:
+    """Filter the legal joint pool by user-owned independent leaf domains."""
+    if not choices and not log_ranges:
+        return True
+    values = _parallel_leaf_values(config)
+    return all(
+        log_ranges[name][0] <= values[name] <= log_ranges[name][1]
+        if name in log_ranges
+        else choices.get(name) is None or values[name] in choices[name]
+        for name in choices.keys() | log_ranges.keys()
+    )
 
 
 def _parallel_role(config: _ParallelConfig, role: str) -> ReplicaParallelConfig:
@@ -682,6 +696,15 @@ def enumerate_branches(
             ]
             if custom_by_role:
                 legal = [cfg for cfg in legal if matches_custom(cfg)]
+            legal = [
+                cfg
+                for cfg in legal
+                if matches_parallel_domains(
+                    cfg,
+                    ss.parallel_independent_by_mode.get(deployment_mode, {}),
+                    ss.parallel_independent_log_ranges_by_mode.get(deployment_mode, {}),
+                )
+            ]
             legal_set = set(legal)
             for cfg in pinned if pinned is not None else legal:
                 if cfg in legal_set:
@@ -759,9 +782,8 @@ def enumerate_branches(
             if config.workload.load_log_scale:
                 log_float_ranges.add("traffic_load")
         branches.append(
-            # Independent mode exposes each YAML leaf as an optimizer dimension.
-            # Omitted ranges are derived from the legal pool; explicit ranges may
-            # still form infeasible Cartesian combinations, which the main loop gates.
+            # Omitted ranges are derived from the legal pool; requested leaf
+            # domains have already been intersected with joint feasibility.
             BranchSpace(
                 deployment_mode=deployment_mode,
                 parallel_configs=tuple(support),

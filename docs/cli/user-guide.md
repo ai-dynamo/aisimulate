@@ -9,7 +9,7 @@ Predict serving behavior and search deployment configurations with `aisimulate`.
 
 Use this guide for the unified CLI. For the six `aiconfigurator cli` commands still shipped
 with AISimulate, see the [Legacy AIC CLI User Guide](legacy-aic-user-guide.md). The
-[migration guide](migrate-from-aiconfigurator.md) explains which workflows have a unified replacement.
+[migration guide](../MIGRATION.md) explains which workflows have a unified replacement.
 
 > [!WARNING]
 > **Experimental.** Recommendation schemas and search behavior may change between releases
@@ -95,9 +95,9 @@ illustrate the output format. Captured detail examples are simulation results, n
 
 ## 3. Install
 
-Check the [installation guide](../installation.md) for the selected wheel's
-platform requirements and publication status. Use its source-install workflow
-for features documented on `main` that are not yet in a published wheel.
+This guide describes AISimulate 0.13 development. The command below installs a
+0.13 prerelease on Linux. For other platforms, follow the
+[source-install workflow](../installation.md#use-current-source).
 
 Use **Python 3.11–3.13**. The commands below use Bash or Zsh. Check that `python3` selects a
 supported version; substitute a versioned command such as `python3.13` if needed.
@@ -113,7 +113,7 @@ mkdir -p aisimulate-tutorial
 cd aisimulate-tutorial
 python3 -m venv .venv
 source .venv/bin/activate
-python -m pip install aisimulate
+python -m pip install --pre 'aisimulate>=0.13.0.dev0,<0.14'
 aisimulate --help
 aisimulate predict --help
 aisimulate recommend --help
@@ -399,7 +399,7 @@ optimization:
 `goodput_per_gpu` rewards SLA-compliant throughput per GPU. `strict_sla: true` additionally
 filters candidates by the configured aggregate mean latency bounds. This is an efficiency search;
 use `target: min_gpus` to select the smallest qualifying configuration found instead. See the
-[minimum-GPU migration example](migrate-from-aiconfigurator.md#minimum-gpu-sizing) for load
+[minimum-GPU migration mapping](../MIGRATION.md#traffic-parallelism-and-minimum-gpus) for load
 constraints and the bundled AIC sizing alternative.
 
 <a id="predict-a-recommended-configuration"></a>
@@ -417,7 +417,7 @@ aisimulate predict \
 The saved YAML contains concrete values with no search domains, `preset`, `optimization`, or
 `optimizer`. The command prints the prediction metrics table shown earlier and writes
 `best-prediction/prediction.json`. It is a prediction input; deployment
-manifests and launch scripts are covered in the [migration guide](migrate-from-aiconfigurator.md).
+manifests and launch scripts are covered in the [migration guide](../MIGRATION.md).
 
 <a id="common-options"></a>
 
@@ -1090,7 +1090,7 @@ version must resolve identically on both effective SKUs. Pin a common supported 
 if their latest versions differ. Prediction uses each role's hardware for timing and KV
 capacity. Recommendation checks each role against its own hardware within the shared GPU
 budget and saves the overrides in prediction YAML. See the
-[complete YAML and CLI example](migrate-from-aiconfigurator.md#48-migrate-heterogeneous-pd-hardware).
+[hardware migration mapping](../MIGRATION.md#heterogeneous-pd-hardware).
 
 An aggregated configuration uses `workers.aggregated`. A disaggregated configuration uses
 `workers.prefill` and `workers.decode`:
@@ -1754,6 +1754,27 @@ optimizer:
 | `optimizer.candidate_timeout_seconds` | `600` | `x` | `-` | Positive wall-clock limit per candidate. |
 | `optimizer.seed` | `42` | `x` | `-` | Nonnegative. |
 
+
+The progress bar counts settled suggestions, including cache hits, unsupported candidates,
+failures and timeouts. The summary separately reports actual evaluations and cache hits;
+`suggesting` means time is being spent in the optimizer, while `evaluating` means candidates
+are being materialized or replayed. Suggestion time is reported at the end.
+
+`random` visits shuffled legal backend/topology pairs before returning to their scheduler
+and workload domains. Finite complete configurations are sampled without replacement,
+without materializing the Cartesian product. Exhausting a finite space ends the search
+before `max_trials`; the summary says so. For `min_gpus`, each coverage pass starts with
+the smallest legal GPU counts. This improves coverage within a small budget, but does not
+prove global optimality across all scheduler/workload combinations.
+
+Bayesian duplicates reuse cached measurements and still consume the suggestion budget.
+Deterministic KV-capacity, SLA and load-constraint failures are also cached. Random search
+interleaves host-resource and timeout retries with new configurations within the same trial
+budget, including continuous domains. Single-slot asks alternate between pending retries and
+new configurations so neither starves; unexpected runtime failures are not cached. The CLI folds selected
+scheduler-limit variants only when all other prediction inputs and all reported metrics
+match; the complete candidate ledger remains in JSON/CSV.
+
 <a id="complete-dynamo-prediction-example"></a>
 
 ## 19. Complete Dynamo Prediction Example
@@ -1946,7 +1967,7 @@ Summary power is independent of `--detail`; the `energy` selector only adds a br
 Both JSON keys are always present in conforming summaries: unavailable watts use `null`,
 coverage stays numeric when computable, and an unsupported energy path uses `null` for both.
 Consult the
-[AIC migration guide](migrate-from-aiconfigurator.md) for the current release boundary.
+[AIC migration guide](../MIGRATION.md) for the current release boundary.
 
 ### Power and energy detail
 
@@ -2112,7 +2133,7 @@ the runner exports no typed evidence. Missing measurements are never invented as
 energy-aware runs with no covered operations report numeric zero coverage. Whole-model FPM,
 fixed/polynomial timing, analytical EPD/AFD overlays, and adapters without the native export
 report operation timing/source evidence unavailable. Serving time statistics remain available
-where exported. See [diagnostic availability](migrate-from-aiconfigurator.md#detailed-diagnostics).
+where exported. See [diagnostic availability](../MIGRATION.md#prediction-details-and-power).
 
 Inspect a recommendation by running `predict --detail` on its saved YAML. Reporting options
 are CLI-only; this change adds no YAML configuration fields.
@@ -2127,8 +2148,8 @@ concurrency four, and twelve requests. These outputs were captured from the buil
 on 2026-09-15 with AISimulate 0.12.0 and this detail implementation. They are simulation
 results; values may change with the implementation or performance data. These excerpts retain
 the initial summary/memory/time capture. The energy extension adds another section to `all`;
-see the [captured energy result](migrate-from-aiconfigurator.md#4113-captured-result) for its
-command and output.
+see [power availability](../MIGRATION.md#prediction-details-and-power) for
+coverage requirements and diagnostic limits.
 
 ```bash
 aisimulate predict -c prediction.yaml --detail all \
@@ -2319,7 +2340,7 @@ with no feasible result still saves its result ledger and does not provide a YAM
 
 ## 25. Related documentation
 
-- [AIC migration guide](migrate-from-aiconfigurator.md)
+- [AIC migration guide](../MIGRATION.md)
 - [Legacy AIC CLI User Guide](legacy-aic-user-guide.md)
 - [Sweeper architecture](../sweeper/architecture.md)
 - [Sweeper result schema](../sweeper/results.md)

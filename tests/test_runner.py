@@ -3,10 +3,12 @@
 
 """Engine-only implementation of the canonical Sweeper Runner contract."""
 
+import importlib
 import json
 import math
 import pickle
 from dataclasses import replace
+from types import SimpleNamespace
 
 import pytest
 from pydantic import ValidationError
@@ -22,6 +24,7 @@ from aisimulate.runner import (
     EngineReplayRunner,
     EngineReplayRunnerFactory,
     InvalidRunnerError,
+    RunnerUnavailableError,
 )
 from aisimulate.sweeper import (
     AdapterReplaySpec,
@@ -169,7 +172,8 @@ def test_factory_is_pickleable_and_advertises_engine_only_capabilities():
     assert capabilities.supports_backend_topology("trtllm", "disagg")
     assert capabilities.supports_disaggregated_attention_dp
     assert capabilities.supported_execution_modes == ("offline",)
-    assert capabilities.supported_hooks == ()
+    assert capabilities.supports_hook(RuntimeHookSpec("engine.router", "placement_policy", 1))
+    assert not capabilities.supports_hook(RuntimeHookSpec("dynamo.router", "placement_policy", 1))
     assert capabilities.supports_trace_format("weka")
     assert capabilities.supports_trace_format("agentic_mooncake")
     assert capabilities.supports_agentic_lanes
@@ -1360,6 +1364,145 @@ def test_engine_runner_does_not_silently_parse_a_dynamo_trace_as_mooncake():
                 }
             )
         )
+
+
+@pytest.fixture
+def native_policy_provider(monkeypatch):
+    class NativePolicy:
+        @staticmethod
+        def contract():
+            return {"api_version": 1, "dynamo_revision": "a" * 40}
+
+    original_import = importlib.import_module
+
+    def import_provider(name, *args, **kwargs):
+        if name == "dynamo._core":
+            return SimpleNamespace(NativeReplayPolicy=NativePolicy)
+        if name.startswith("dynamo"):
+            pytest.fail(f"native policy must not import the consumer integration: {name}")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(importlib, "import_module", import_provider)
+    return NativePolicy
+
+
+@pytest.mark.parametrize("deployment_mode", ["agg", "disagg"])
+@pytest.mark.parametrize("capture_report", [False, True])
+def test_native_router_uses_the_same_materialized_execution_spec(
+    deployment_mode, capture_report, native_policy_provider
+):
+    evidence = {"roles": {"aggregated": {"native_policy": "dynamo.SelectionCore", "decision_count": 1}}}
+
+    class NativeRouterRuntime(RecordingRuntime):
+        def native_replay_policy_contract(self):
+            return {"api_version": 1}
+
+        def run_replay_json_with_policy(self, payload, router_config, policy_factory):
+            assert policy_factory is native_policy_provider
+            self.router_config = json.loads(router_config)
+            report = json.loads(super().run_replay_json(payload))
+            return json.dumps({**report, "routing_policy": evidence})
+
+        def run_replay_json(self, payload):
+            pytest.fail("configured router must not fall back to the default execution entry")
+
+    spec = _spec()
+    if deployment_mode == "disagg":
+        spec = replace(
+            spec,
+            backend_deployment=BackendDeploymentSpec(
+                deployment_mode="disagg",
+                backend="vllm",
+                backend_version="test",
+                prefill_engine_args=_engine_args(role="prefill"),
+                decode_engine_args=_engine_args(role="decode"),
+                num_prefill_workers=2,
+                num_decode_workers=2,
+            ),
+        )
+    ordinary = RecordingRuntime()
+    EngineReplayRunnerFactory(runtime=ordinary).create(0).run(spec)
+    config = {"policy": "kv_router", "affinity": {"mode": "sibling_group", "ttl_seconds": 3600}}
+    routed = replace(
+        spec,
+        adapters={
+            "engine.router": AdapterReplaySpec(
+                config=config,
+                runtime_hooks=(RuntimeHookSpec("engine.router", "placement_policy", 1, config),),
+            )
+        },
+    )
+    runtime = NativeRouterRuntime()
+    result = (
+        EngineReplayRunnerFactory(runtime=runtime)
+        .create(0)
+        .run(routed, output_requirements=ReplayOutputRequirements(include_raw_report=capture_report))
+    )
+    assert runtime.execution_spec == ordinary.execution_spec
+    assert runtime.router_config == config
+    assert result.metrics["completed_requests"] == 1
+    assert result.metadata["routing_policy"] == evidence
+    if capture_report:
+        assert result.metadata["native_report"]["routing_policy"] == evidence
+
+
+@pytest.mark.parametrize("contract", [None, {}, {"api_version": 2}, {"api_version": True}])
+def test_native_router_fails_explicitly_without_compatible_bridge(contract):
+    class UnavailableRuntime(RecordingRuntime):
+        def native_replay_policy_contract(self):
+            return contract
+
+        def run_replay_json_with_policy(self, payload, router_config, policy_factory):
+            pytest.fail("unavailable native policy must not execute")
+
+    config = {"policy": "kv_router"}
+    runtime = UnavailableRuntime()
+    spec = _spec(
+        adapters={
+            "engine.router": AdapterReplaySpec(
+                config=config,
+                runtime_hooks=(RuntimeHookSpec("engine.router", "placement_policy", 1, config),),
+            )
+        }
+    )
+    with pytest.raises(InvalidRunnerError, match="contract API version 1"):
+        EngineReplayRunnerFactory(runtime=runtime).create(0).run(spec)
+    assert runtime.execution_spec is None
+
+
+@pytest.mark.parametrize("provider", [None, SimpleNamespace(), SimpleNamespace(NativeReplayPolicy=object)])
+def test_native_router_fails_explicitly_without_provider(provider, monkeypatch):
+    def import_provider(name):
+        assert name == "dynamo._core"
+        if provider is None:
+            raise ModuleNotFoundError("no dynamo runtime")
+        return provider
+
+    monkeypatch.setattr(importlib, "import_module", import_provider)
+    with pytest.raises(RunnerUnavailableError, match="ai-dynamo-runtime"):
+        EngineReplayRunnerFactory(runtime=RecordingRuntime()).create(0)._resolve_policy_factory()
+
+
+@pytest.mark.parametrize("contract", [None, {}, {"api_version": 2}, {"api_version": True}])
+def test_native_router_rejects_incompatible_provider_contract(contract, native_policy_provider, monkeypatch):
+    monkeypatch.setattr(native_policy_provider, "contract", staticmethod(lambda: contract))
+    with pytest.raises(InvalidRunnerError, match="NativeReplayPolicy requires contract API version 1"):
+        EngineReplayRunnerFactory(runtime=RecordingRuntime()).create(0)._resolve_policy_factory()
+
+
+def test_native_router_rejects_afd_instead_of_discarding_configuration():
+    config = {"policy": "kv_router"}
+    spec = _spec(
+        adapters={
+            "engine.router": AdapterReplaySpec(
+                config=config,
+                runtime_hooks=(RuntimeHookSpec("engine.router", "placement_policy", 1, config),),
+            )
+        }
+    )
+    spec = replace(spec, backend_deployment=replace(spec.backend_deployment, deployment_mode="afd"))
+    with pytest.raises(InvalidRunnerError, match="aggregated and P-D"):
+        EngineReplayRunnerFactory(runtime=RecordingRuntime()).create(0).run(spec)
 
 
 def test_engine_runner_rejects_dynamo_runtime_hooks():

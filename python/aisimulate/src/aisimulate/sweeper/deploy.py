@@ -11,7 +11,7 @@ from typing import Any
 
 from ..capacity import estimate_kv_bytes_per_token, materialize_aic_num_gpu_blocks
 from ..config.common import ENGINE_MODEL_CONTROL_FIELDS, is_active_engine_model_control, omit_inactive_moe_controls
-from ..config.engine import NgramSpeculationConfig
+from ..config.engine import NgramSpeculationConfig, resolve_block_size
 from .replay import BackendDeploymentSpec, EncoderPoolSpec, ForwardPassEstimatorSpec
 
 
@@ -75,9 +75,7 @@ def _engine_args_payload(
     moe_tp = int(sample[f"{prefix}moe_tp"])
     moe_ep = int(sample[f"{prefix}moe_ep"])
     backend = sample["backend"]
-    block_size = sample[f"{role}_block_size"]
-    if block_size is None:
-        block_size = {"vllm": 64, "sglang": 1, "trtllm": 32}[backend]
+    block_size = resolve_block_size(backend, sample[f"{role}_block_size"])
     memory_fraction = sample[f"{role}_gpu_memory_utilization"]
     if memory_fraction is None:
         memory_fraction = 0.88 if backend == "sglang" else 0.9

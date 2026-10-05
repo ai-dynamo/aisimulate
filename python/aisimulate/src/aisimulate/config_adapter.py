@@ -18,6 +18,7 @@ from .sweeper.provider import (
     AdapterSearchPlan,
     CandidateContext,
     JSONValue,
+    RuntimeHookSpec,
     SweepContext,
 )
 
@@ -109,6 +110,34 @@ class ConfigAdapterResolutionError(RuntimeError):
     """A configured component adapter could not be resolved."""
 
 
+class NativeRouterConfigAdapter:
+    """Pass router configuration to Dynamo's optional native policy provider."""
+
+    name = "engine.router"
+    section = "router"
+    config_adapter_api_version = CONFIG_ADAPTER_API_VERSION
+
+    def compile_prediction(
+        self, config: Mapping[str, JSONValue], context: PredictionAdapterContext
+    ) -> AdapterReplaySpec:
+        # Rust owns the router schema, defaults, and policy validation.
+        raw = deepcopy(dict(config))
+        return AdapterReplaySpec(
+            config=raw,
+            runtime_hooks=(RuntimeHookSpec(self.name, "placement_policy", 1, deepcopy(raw)),),
+        )
+
+    def compile_recommendation(
+        self, config: Mapping[str, JSONValue], context: RecommendationAdapterContext
+    ) -> AdapterSearchPlan:
+        raise ValueError("router configuration with --stack engine supports predict only; recommend is unsupported")
+
+    def materialize_candidate(
+        self, plan: AdapterSearchPlan, selection: Mapping[str, JSONValue], context: CandidateContext
+    ) -> AdapterReplaySpec:
+        raise ValueError("native router recommendation candidates are unsupported")
+
+
 def validate_config_adapter(adapter: Any, *, requested_name: str) -> SimulationConfigAdapter:
     if getattr(adapter, "name", None) != requested_name:
         raise ConfigAdapterResolutionError(
@@ -163,9 +192,12 @@ def resolve_config_adapters(
         if name in injected:
             resolved[name] = validate_config_adapter(injected[name], requested_name=name)
             continue
+        if name == NativeRouterConfigAdapter.name:
+            resolved[name] = NativeRouterConfigAdapter()
+            continue
         matches = [entry for entry in installed if entry.name == name]
         if not matches:
-            available = sorted(set(injected) | {entry.name for entry in installed})
+            available = sorted(set(injected) | {entry.name for entry in installed} | {NativeRouterConfigAdapter.name})
             raise ConfigAdapterResolutionError(
                 f"config adapter {name!r} is unavailable; installed adapters: "
                 f"{', '.join(available) if available else '<none>'}"

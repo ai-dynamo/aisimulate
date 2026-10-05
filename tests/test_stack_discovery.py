@@ -7,6 +7,7 @@ import pytest
 
 from aisimulate.config_adapter import (
     ConfigAdapterResolutionError,
+    PredictionAdapterContext,
     resolve_config_adapters,
 )
 from aisimulate.stack import (
@@ -65,6 +66,30 @@ def test_optional_stack_is_loaded_lazily() -> None:
     entry = _EntryPoint("dynamo", "example:create", _RunnerFactory)
 
     assert isinstance(resolve_runner_factory("dynamo", entry_points=[entry]), _RunnerFactory)
+
+
+def test_builtin_router_does_not_load_external_provider() -> None:
+    class UnusedEntryPoint(_EntryPoint):
+        def load(self):
+            pytest.fail("the built-in router must not import the external Dynamo integration")
+
+    entry = UnusedEntryPoint("dynamo.router", "dynamo:adapter", _Adapter)
+    adapter = resolve_config_adapters(["engine.router"], entry_points=[entry])["engine.router"]
+    config = {"policy": "kv_router", "affinity": {"mode": "session", "ttl_seconds": 30}}
+    compiled = adapter.compile_prediction(config, PredictionAdapterContext({}, {}, {}))
+    assert compiled.config == config
+    assert compiled.runtime_hooks[0].config == config
+    assert compiled.runtime_hooks[0].provider == "engine.router"
+    config["affinity"]["ttl_seconds"] = 60
+    assert compiled.config["affinity"]["ttl_seconds"] == 30
+    with pytest.raises(ValueError, match="predict only; recommend is unsupported"):
+        adapter.compile_recommendation({}, None)
+    assert isinstance(
+        resolve_config_adapters(
+            ["dynamo.router"], entry_points=[_EntryPoint("dynamo.router", "dynamo:adapter", _Adapter)]
+        )["dynamo.router"],
+        _Adapter,
+    )
 
 
 def test_missing_and_duplicate_stacks_fail_explicitly() -> None:

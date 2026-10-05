@@ -137,7 +137,8 @@ pub enum KvEventTier {
     /// Device (G1) KV cache. Omitted from serialized events.
     #[default]
     Device,
-    /// A cluster-shared G2 host pool reachable by the publishing rank.
+    /// The native G2 host cache reachable by the publishing rank: its private
+    /// `dp_rank_local` cache or a `cluster_shared` pool.
     HostPinned,
 }
 

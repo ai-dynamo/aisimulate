@@ -14,15 +14,17 @@ use crate::engine::{
 use crate::perfmodel::engine::{Engine as PerfEngine, RuntimeConfig};
 use crate::replay::{
     POWER_DATA_COVERAGE_THRESHOLD, ReplayArtifactKvEventVisibility, ReplayArtifacts,
-    ReplayComposition, ReplayEngineConfig, ReplayEngineFactory, ReplayOperationPowerDiagnostics,
-    ReplayPhasePowerDiagnostics, ReplayPowerDiagnostics, ReplayRoleConfig, ReplayRuntimeInput,
-    ReplaySpec, ReplayTopology, Replayer, TracePowerStats,
+    ReplayCaptureOptions, ReplayComposition, ReplayEngineConfig, ReplayEngineFactory,
+    ReplayOperationPowerDiagnostics, ReplayPhasePowerDiagnostics, ReplayPowerDiagnostics,
+    ReplayReport, ReplayRoleConfig, ReplayRuntimeInput, ReplaySpec, ReplayTelemetryObserver,
+    ReplayTopology, Replayer, TracePowerStats,
     loadgen::{
         AgenticProfileOptions, AgenticSnapshotOptions, ArrivalSpec, DelaySpec, DynamoRequestTrace,
         LengthSpec, SyntheticTraceSpec, Trace, ValidatedAgenticGraph, WekaImportOptions,
         WekaNestedTimestampBasis, WekaResolvedTimestampBasis, WorkloadDriver,
         load_agentic_mooncake, load_weka_agentic_graph_with_options,
     },
+    run_replay_with_composition,
 };
 use crate::{
     EstimationMode, EstimatorConfig, ForwardPassFallbackPolicy, ForwardPassPerfModel,
@@ -1691,17 +1693,24 @@ fn run_with_input(
     input: Option<ReplayRuntimeInput>,
     capture_artifacts: bool,
 ) -> crate::replay::ReplayResult<(crate::replay::ReplayReport, Option<ReplayArtifacts>)> {
+    if !capture_artifacts {
+        return run_replay_with_composition(
+            spec,
+            factory,
+            input,
+            crate::replay::RoundRobinComposition,
+            ReplayCaptureOptions::default(),
+            None,
+        )
+        .map(|report| (report, None));
+    }
     let replayer = match input {
         Some(input) => Replayer::new(spec, factory)?.with_runtime_input(input),
         None => Replayer::new(spec, factory)?,
     };
-    if capture_artifacts {
-        let (report, artifacts) =
-            replayer.run_with_artifacts(ReplayArtifactKvEventVisibility::Native)?;
-        Ok((report, Some(artifacts)))
-    } else {
-        Ok((replayer.run()?, None))
-    }
+    let (report, artifacts) =
+        replayer.run_with_artifacts(ReplayArtifactKvEventVisibility::Native)?;
+    Ok((report, Some(artifacts)))
 }
 
 struct TimingPowerSource {
@@ -2169,7 +2178,65 @@ fn replay_fpm_coverage(
 }
 
 fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
-    execute_json_using(payload, capture_artifacts, run_with_input)
+    execute_json_using(payload, capture_artifacts, run_with_input)?.into_json()
+}
+
+/// Complete execution result before the compact JSON boundary.
+#[derive(Debug)]
+pub struct ReplayExecutionResult {
+    /// Includes per-request records and execution-owned runtime evidence.
+    pub report: ReplayReport,
+    /// Single-worker parity artifacts, when requested through the built-in runtime.
+    pub artifacts: Option<ReplayArtifacts>,
+    /// Additional execution diagnostics and input provenance that are not
+    /// part of the topology runtime's typed report.
+    pub report_fields: serde_json::Map<String, serde_json::Value>,
+    include_per_request: bool,
+}
+
+impl ReplayExecutionResult {
+    /// Serialize the existing report/artifacts JSON contract without discarding
+    /// typed evidence before a native consumer has had a chance to inspect it.
+    pub fn into_json(self) -> Result<String> {
+        let mut report_json = serde_json::to_value(&self.report)
+            .context("serializing AISimulate replay report summary")?;
+        let object = report_json
+            .as_object_mut()
+            .context("AISimulate replay report did not serialize as an object")?;
+        object.extend(self.report_fields);
+        if self.include_per_request || !self.report.per_request.is_empty() {
+            object.insert(
+                "per_request".to_string(),
+                serde_json::to_value(&self.report.per_request)
+                    .context("serializing AISimulate per-request report records")?,
+            );
+        }
+        let output = if let Some(artifacts) = self.artifacts {
+            serde_json::json!({"report": report_json, "artifacts": artifacts})
+        } else {
+            report_json
+        };
+        serde_json::to_string(&output).context("serializing AISimulate replay output")
+    }
+}
+
+/// Resolve a serialized execution payload and run a caller-owned composition.
+///
+/// This shares timing/capacity construction, workload preparation, capture,
+/// telemetry and finalization with the built-in runtime. Native consumers retain
+/// the full typed report, including lifecycle evidence omitted from compact JSON.
+pub fn execute_replay_with_composition<C: ReplayComposition>(
+    payload: &str,
+    composition: C,
+    capture: ReplayCaptureOptions,
+    telemetry: Option<(f64, Box<dyn ReplayTelemetryObserver>)>,
+) -> Result<ReplayExecutionResult> {
+    let mut result = execute_json_using(payload, false, move |spec, factory, input, _| {
+        run_replay_with_composition(spec, factory, input, composition, capture, telemetry)
+            .map(|report| (report, None))
+    })?;
+    result.include_per_request |= capture.effective_per_request();
+    Ok(result)
 }
 
 /// Run the canonical serialized execution payload with a caller-owned policy.
@@ -2189,16 +2256,15 @@ pub fn execute_replay_json_with_composition<C: ReplayComposition>(
         !capture_artifacts,
         "custom replay compositions do not expose single-worker parity artifacts"
     );
-    execute_json_using(payload, false, move |spec, factory, input, _| {
-        let mut replayer = Replayer::with_composition(spec, factory, composition)?;
-        if let Some(input) = input {
-            replayer = replayer.with_runtime_input(input);
-        }
-        Ok((replayer.run()?, None))
-    })
+    execute_replay_with_composition(payload, composition, ReplayCaptureOptions::default(), None)?
+        .into_json()
 }
 
-fn execute_json_using<F>(payload: &str, capture_artifacts: bool, run: F) -> Result<String>
+fn execute_json_using<F>(
+    payload: &str,
+    capture_artifacts: bool,
+    run: F,
+) -> Result<ReplayExecutionResult>
 where
     F: FnOnce(
         ReplaySpec,
@@ -2476,18 +2542,19 @@ where
         timing_evidence.as_ref(),
         unavailable_reason,
     )?));
-    let mut report_json =
-        serde_json::to_value(&report).context("serializing AISimulate replay report summary")?;
+    let mut report_fields = serde_json::Map::new();
     if let Some(coverage) = replay_fpm_coverage(&coverage_sources, Some(&report))? {
-        report_json["fpm_query_coverage"] = coverage;
+        report_fields.insert("fpm_query_coverage".to_string(), coverage);
     }
     if capture_performance_diagnostics {
         let performance_evidence = replay_timing_evidence_with_fpm(&power_sources, true)?;
-        report_json["performance_diagnostics"] =
-            replay_performance_diagnostics(performance_evidence.as_ref());
+        report_fields.insert(
+            "performance_diagnostics".to_string(),
+            replay_performance_diagnostics(performance_evidence.as_ref()),
+        );
     }
     if let Some(evidence) = replay_fpm_query_evidence(&power_sources)? {
-        report_json["fpm_query_evidence"] = evidence;
+        report_fields.insert("fpm_query_evidence".to_string(), evidence);
     }
     if report.agentic_graph.is_some()
         && let Some((input_format, agentic_lanes, execution_model)) = agentic_input
@@ -2503,29 +2570,26 @@ where
             .map(str::trim)
             .filter(|model| !model.is_empty())
             .context("agentic execution did not declare its configured target model")?;
-        let object = report_json
-            .as_object_mut()
-            .context("AISimulate replay report did not serialize as an object")?;
-        object.insert(
+        report_fields.insert(
             "agentic_qualification".to_string(),
             serde_json::Value::String("functional_only".to_string()),
         );
-        object.insert(
+        report_fields.insert(
             "agentic_input_format".to_string(),
             serde_json::Value::String(input_format),
         );
-        object.insert(
+        report_fields.insert(
             "agentic_lanes".to_string(),
             serde_json::to_value(agentic_lanes)
                 .context("serializing configured agentic lane count")?,
         );
         if let Some(resolved_basis) = resolved_weka_timestamp_basis {
-            object.insert(
+            report_fields.insert(
                 "weka_nested_timestamp_basis".to_string(),
                 serde_json::Value::String(resolved_basis.as_str().to_string()),
             );
         }
-        object.insert(
+        report_fields.insert(
             "agentic_model_projection".to_string(),
             serde_json::json!({
                 "policy": AGENTIC_MODEL_PROJECTION_POLICY,
@@ -2534,25 +2598,12 @@ where
             }),
         );
     }
-    if record_per_request || !report.per_request.is_empty() {
-        let object = report_json
-            .as_object_mut()
-            .context("AISimulate replay report did not serialize as an object")?;
-        object.insert(
-            "per_request".to_string(),
-            serde_json::to_value(&report.per_request)
-                .context("serializing AISimulate per-request report records")?,
-        );
-    }
-    let output = if let Some(artifacts) = artifacts {
-        serde_json::json!({
-            "report": report_json,
-            "artifacts": artifacts,
-        })
-    } else {
-        report_json
-    };
-    serde_json::to_string(&output).context("serializing AISimulate replay output")
+    Ok(ReplayExecutionResult {
+        report,
+        artifacts,
+        report_fields,
+        include_per_request: record_per_request,
+    })
 }
 
 /// Preserve resource exhaustion and error context across Python replay bindings.
@@ -2584,6 +2635,46 @@ fn run_replay_json(py: Python<'_>, payload: &str) -> PyResult<String> {
         .map_err(replay_python_error)
 }
 
+/// Execute with an explicitly supplied external native policy factory.
+#[pyfunction]
+fn run_replay_json_with_policy(
+    py: Python<'_>,
+    payload: &str,
+    policy_config_json: &str,
+    policy_factory: Py<PyAny>,
+) -> PyResult<String> {
+    let composition = crate::replay::python_policy::PythonPolicyComposition::new(
+        policy_factory,
+        policy_config_json.to_owned(),
+    );
+    let evidence = composition.evidence();
+    py.allow_threads(move || {
+        let mut result = execute_replay_with_composition(
+            payload,
+            composition,
+            ReplayCaptureOptions::default(),
+            None,
+        )?;
+        result
+            .report_fields
+            .insert("routing_policy".into(), evidence.snapshot()?);
+        result.into_json()
+    })
+    .map_err(replay_python_error)
+}
+
+/// Versioned owned-data policy protocol; providers do not exchange engine handles.
+#[pyfunction]
+fn native_replay_policy_contract(py: Python<'_>) -> PyResult<Bound<'_, pyo3::types::PyDict>> {
+    let value = pyo3::types::PyDict::new(py);
+    value.set_item(
+        "api_version",
+        crate::replay::python_policy::POLICY_API_VERSION,
+    )?;
+    value.set_item("core_version", crate::CORE_VERSION)?;
+    Ok(value)
+}
+
 /// Execute one fixed aggregated ReplaySpec and return report plus parity artifacts.
 #[pyfunction]
 fn run_replay_with_artifacts_json(py: Python<'_>, payload: &str) -> PyResult<String> {
@@ -2595,6 +2686,8 @@ fn run_replay_with_artifacts_json(py: Python<'_>, payload: &str) -> PyResult<Str
 #[pymodule]
 fn _runtime(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(run_replay_json, module)?)?;
+    module.add_function(wrap_pyfunction!(run_replay_json_with_policy, module)?)?;
+    module.add_function(wrap_pyfunction!(native_replay_policy_contract, module)?)?;
     module.add_function(wrap_pyfunction!(run_replay_with_artifacts_json, module)?)?;
     crate::perfmodel::register_python(module)?;
     Ok(())
@@ -4751,6 +4844,31 @@ mod tests {
             );
         }
         assert_eq!(composed["per_request"][0]["request_id"], "authored-id");
+        let mut typed_payload = serde_json::json!({
+            "spec": spec,
+            "capture_performance_diagnostics": true,
+        });
+        typed_payload["spec"]["record_per_request"] = false.into();
+        let typed = execute_replay_with_composition(
+            &typed_payload.to_string(),
+            crate::replay::RoundRobinComposition,
+            ReplayCaptureOptions {
+                capture_canonical_evidence: true,
+                ..Default::default()
+            },
+            None,
+        )
+        .unwrap();
+        assert_eq!(typed.report.request_counts.completed_requests, 1);
+        assert_eq!(typed.report.per_request.len(), 1);
+        assert!(typed.report.runtime_evidence.pressure.is_some());
+        assert!(typed.report.power_diagnostics.is_some());
+        assert!(typed.report_fields["performance_diagnostics"].is_object());
+        assert!(typed.artifacts.is_none());
+        let serialized: serde_json::Value =
+            serde_json::from_str(&typed.into_json().unwrap()).unwrap();
+        assert_eq!(serialized["per_request"][0]["request_id"], "authored-id");
+        assert!(serialized["performance_diagnostics"].is_object());
         assert!(
             execute_replay_json_with_composition(
                 &payload,
@@ -4787,6 +4905,19 @@ mod tests {
         for record_per_request in [false, true] {
             spec.record_per_request = record_per_request;
             let payload = serde_json::to_string(&spec).unwrap();
+            let typed = execute_replay_with_composition(
+                &payload,
+                crate::replay::RoundRobinComposition,
+                ReplayCaptureOptions {
+                    capture_per_request: true,
+                    ..Default::default()
+                },
+                None,
+            )
+            .unwrap();
+            let output: serde_json::Value =
+                serde_json::from_str(&typed.into_json().unwrap()).unwrap();
+            assert_eq!(output["per_request"], serde_json::json!([]));
             for capture_artifacts in [false, true] {
                 let output: serde_json::Value =
                     serde_json::from_str(&execute_json(&payload, capture_artifacts).unwrap())

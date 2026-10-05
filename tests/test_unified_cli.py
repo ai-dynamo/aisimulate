@@ -601,13 +601,13 @@ def test_engine_stack_rejects_explicit_unavailable_component(tmp_path, monkeypat
     ("router", "explicit", "selected"),
     [
         (None, None, "engine"),
-        ({"policy": "kv_router"}, None, "dynamo"),
-        ({"policy": "kv_router", "affinity": {"mode": "sibling_group"}}, None, "dynamo"),
+        ({"policy": "kv_router"}, None, "engine"),
+        ({"policy": "kv_router", "affinity": {"mode": "sibling_group"}}, None, "engine"),
         ({"policy": "kv_router"}, "engine", "engine"),
         ({"policy": "kv_router"}, "dynamo", "dynamo"),
     ],
 )
-def test_prediction_selects_stack_from_router_only_when_not_explicit(
+def test_prediction_preserves_default_engine_and_explicit_stacks(
     tmp_path, monkeypatch, router, explicit, selected
 ) -> None:
     raw = {"engine": {}}
@@ -644,20 +644,92 @@ def test_prediction_router_override_selects_native_policy(tmp_path, monkeypatch)
     monkeypatch.setattr(cli, "resolve_runner_factory", lambda name: loaded.append(name) or object())
     monkeypatch.setattr(cli, "_predict", lambda args, raw, factory: 0)
     assert cli.main(["predict", "--config", str(path), "--set", "router.policy=kv_router"]) == 0
-    assert loaded == ["dynamo"]
+    assert loaded == ["engine"]
 
 
-def test_prediction_router_missing_integration_is_configuration_error(tmp_path, monkeypatch, capsys) -> None:
+def test_prediction_explicit_dynamo_missing_integration_is_configuration_error(tmp_path, monkeypatch, capsys) -> None:
     from aisimulate.stack import resolve_runner_factory
 
     path = tmp_path / "routing.yaml"
     path.write_text("engine: {}\nrouter: {policy: kv_router}\n")
     monkeypatch.setattr(cli, "resolve_runner_factory", lambda name: resolve_runner_factory(name, entry_points=[]))
     with pytest.raises(SystemExit, match="2"):
-        cli.main(["predict", "--config", str(path)])
+        cli.main(["predict", "--stack", "dynamo", "--config", str(path)])
     error = capsys.readouterr().err
     assert "stack 'dynamo' is unavailable" in error
     assert "Install the distribution" in error
+
+
+def test_prediction_router_without_native_provider_fails_without_fallback(tmp_path, monkeypatch, capsys) -> None:
+    import importlib
+
+    from aisimulate.runner import EngineReplayRunnerFactory
+
+    path = tmp_path / "routing.yaml"
+    path.write_text(
+        yaml.safe_dump(
+            {
+                "engine": {
+                    "model": "example/model",
+                    "hardware": "h200_sxm",
+                    "context_length": 4096,
+                    "workers": {"aggregated": {}},
+                },
+                "router": {"policy": "kv_router", "affinity": {"mode": "sibling_group"}},
+            }
+        )
+    )
+
+    def unexpected_fallback(*args):
+        pytest.fail("router configuration must never fall back to round-robin")
+
+    original_import = importlib.import_module
+
+    def import_without_dynamo(name, *args, **kwargs):
+        if name.startswith("dynamo"):
+            raise ModuleNotFoundError("no dynamo runtime")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(importlib, "import_module", import_without_dynamo)
+    factory = EngineReplayRunnerFactory(
+        runtime=SimpleNamespace(
+            run_replay_json=unexpected_fallback,
+            run_replay_json_with_policy=unexpected_fallback,
+            native_replay_policy_contract=lambda: {"api_version": 1},
+        )
+    )
+    monkeypatch.setattr(cli, "resolve_runner_factory", lambda name: factory)
+    assert cli.main(["predict", "--config", str(path), "--output-dir", str(tmp_path / "out")]) == 1
+    assert "router requires ai-dynamo-runtime with NativeReplayPolicy API v1" in capsys.readouterr().err
+
+
+def test_recommend_router_is_rejected_before_search(tmp_path, monkeypatch, capsys) -> None:
+    path = tmp_path / "routing.yaml"
+    path.write_text(
+        yaml.safe_dump(
+            {
+                "engine": {
+                    "mode": "aggregated",
+                    "model": "deepseek-ai/DeepSeek-V3",
+                    "hardware": "gb200",
+                    "context_length": 2048,
+                    "workers": {"aggregated": {}},
+                },
+                "optimization": {"target": "throughput", "constraints": {"max_candidate_gpus": 8}},
+                "router": {"policy": "kv_router"},
+            }
+        )
+    )
+    assert cli.main(["recommend", "--config", str(path), "--output-dir", str(tmp_path / "out")]) == 1
+    assert "predict only; recommend is unsupported" in capsys.readouterr().err
+    assert not (tmp_path / "out").exists()
+
+
+def test_router_cannot_be_consumed_as_an_output_adapter() -> None:
+    from aisimulate.cli_args import _CliConfigError, _extract_output_configs
+
+    with pytest.raises(_CliConfigError, match="collides with a recommendation input section"):
+        _extract_output_configs({"router": {"policy": "kv_router"}}, ["router"], stack="engine")
 
 
 @pytest.mark.parametrize(("sla_field", "bound"), [("ttft_ms", 800.0), ("itl_ms", 30.0)])
@@ -924,8 +996,118 @@ def test_partial_sla_recommendation_yaml_round_trips_into_predict(
     assert unsupported_summary["power_coverage"] is None
 
 
-@pytest.mark.parametrize("resource_limited", [0, 1])
-def test_recommendation_outputs_each_concrete_prediction_once(tmp_path, monkeypatch, capsys, resource_limited) -> None:
+@pytest.mark.parametrize("completed", [0, 2])
+def test_recommendation_exports_completed_results_after_invalid_suggestion(
+    tmp_path, monkeypatch, capsys, caplog, completed
+) -> None:
+    from vizier import pyvizier as vz
+
+    from aisimulate.recommend import _run_recommendation
+    from aisimulate.sweeper.sampler import SeededBayesianBranchSampler
+
+    # Exercise the real sampler validation, search, ranking and CLI exporters.
+    # Only replace the upstream proposals and the expensive replay runner.
+    asks = []
+    original_init = SeededBayesianBranchSampler.__init__
+
+    def initialize(self, *args, **kwargs):
+        original_init(self, *args, **kwargs)
+
+        def suggest(count):
+            asks.append(count)
+            params = {"agg_max_num_seqs": 128 * len(asks)} if len(asks) <= completed else {}
+            return [vz.TrialSuggestion(parameters=params)]
+
+        monkeypatch.setattr(self._designer, "suggest", suggest)
+
+    monkeypatch.setattr(SeededBayesianBranchSampler, "__init__", initialize)
+    monkeypatch.setattr("aisimulate.recommend.run_recommendation", _run_recommendation)
+    monkeypatch.setattr(cli, "resolve_runner_factory", lambda stack: _Factory(_Runner()))
+    config = {
+        "engine": {
+            "mode": "aggregated",
+            "model": "deepseek-ai/DeepSeek-V3",
+            "hardware": "gb200",
+            "backend": "trtllm",
+            "backend_version": "1.3.0rc20",
+            "context_length": 2048,
+            "workers": {
+                "aggregated": {
+                    "parallelism": {
+                        "preset": False,
+                        "replicas": 1,
+                        "tensor": 4,
+                        "pipeline": 1,
+                        "attention_data": 1,
+                        "moe_tensor": 4,
+                        "moe_expert": 1,
+                    },
+                    "scheduler": {
+                        "max_batched_tokens": 8192,
+                        "max_sequences": {"choices": [128, 256]},
+                    },
+                    "kv_cache": {
+                        "block_size": 64,
+                        "capacity": {"type": "fixed", "blocks": 256},
+                    },
+                    "timing": {"type": "fixed", "prefill_ms": 1, "decode_ms": 1},
+                }
+            },
+        },
+        "optimization": {
+            "target": "throughput",
+            "constraints": {"max_candidate_gpus": 4},
+        },
+        "optimizer": {"algorithm": "bayesian", "max_trials": 4, "parallelism": 1},
+    }
+    config_path = tmp_path / "recommend.yaml"
+    config_path.write_text(yaml.safe_dump(config))
+    output = tmp_path / "out"
+
+    status = cli.main(
+        [
+            "recommend",
+            "-c",
+            str(config_path),
+            "--output-dir",
+            str(output),
+            "--format",
+            "json",
+        ]
+    )
+
+    assert status == (0 if completed else 1)
+    assert len(asks) == completed + 1
+    assert "agg_max_num_seqs" in caplog.text
+    assert "search is incomplete" in caplog.text
+    assert "No traffic configured; using synthetic traffic: input_tokens=1024" in caplog.text
+    result = json.loads((output / "recommendation.json").read_text())
+    assert result["counts"]["feasible"] == result["counts"]["evaluated"] == completed
+    assert result["counts"]["failed"] == 0
+    assert (output / "recommendation.csv").exists()
+    captured = capsys.readouterr()
+    if completed:
+        rows = json.loads(captured.out)
+        assert rows[0]["rank"] == 1
+        assert rows[0]["score"] == 8.0
+        for index, candidate_id in enumerate(result["views"]["top_n"], start=1):
+            record = next(record for record in result["candidates"] if record["candidate_id"] == candidate_id)
+            saved = yaml.safe_load((output / "recommendations" / f"{index:04d}.yaml").read_text())
+            assert saved == record["prediction_config"]
+            assert cli.CorePredictionConfig.model_validate(saved)
+    else:
+        assert result["views"]["top_n"] == []
+        assert "no feasible candidate found" in captured.err
+        assert not list(output.glob("recommendations/*.yaml"))
+
+
+@pytest.mark.parametrize(
+    ("resource_limited", "variant"),
+    [(0, "exact"), (1, "exact"), (0, "scheduler"), (0, "different_metrics")],
+)
+def test_recommendation_outputs_each_concrete_prediction_once(
+    tmp_path, monkeypatch, capsys, resource_limited, variant
+) -> None:
     concrete = {
         "traffic": {
             "source": {"type": "synthetic", "input_tokens": 8, "output_tokens": 2},
@@ -999,6 +1181,14 @@ def test_recommendation_outputs_each_concrete_prediction_once(tmp_path, monkeypa
         )
         for selection, score in (("first", 2.0), ("second", 1.0))
     ]
+    if variant != "exact":
+        for candidate in candidates:
+            candidate.score = 2.0
+            candidate.metrics = {"output_throughput_tok_s": 2.0, "mean_tpot_ms": 1.0}
+        candidates[1].prediction_config = deepcopy(concrete)
+        candidates[1].prediction_config["engine"]["workers"]["aggregated"]["scheduler"]["max_sequences"] = 512
+        if variant == "different_metrics":
+            candidates[1].metrics["mean_tpot_ms"] = 2.0
     monkeypatch.setattr(cli, "resolve_runner_factory", lambda stack: _Factory(_Runner()))
     partial = _RecommendationResult(candidates)
     partial.counts.resource_limited = resource_limited
@@ -1020,13 +1210,20 @@ def test_recommendation_outputs_each_concrete_prediction_once(tmp_path, monkeypa
         ]
     ) == (3 if resource_limited else 0)
 
-    rows = json.loads(capsys.readouterr().out)
-    assert len(rows) == 1
+    captured = capsys.readouterr()
+    rows = json.loads(captured.out)
+    expected = 2 if variant == "different_metrics" else 1
+    assert len(rows) == expected
     assert rows[0]["score"] == 2.0
-    assert [path.name for path in (output / "recommendations").iterdir()] == ["0001.yaml"]
+    assert sorted(path.name for path in (output / "recommendations").iterdir()) == [
+        f"{index:04d}.yaml" for index in range(1, expected + 1)
+    ]
     result = json.loads((output / "recommendation.json").read_text())
     assert result["counts"]["feasible"] == 2
-    assert result["views"]["top_n"] == ["candidate-000001"]
+    assert len(result["candidates"]) == 2
+    assert result["views"]["top_n"] == [f"candidate-{index:06d}" for index in range(1, expected + 1)]
+    if variant == "scheduler":
+        assert "Folded 1 scheduler-limit variant" in captured.err
     assert result["candidates"][0]["prediction_config"] == yaml.safe_load(
         (output / "recommendations" / "0001.yaml").read_text()
     )

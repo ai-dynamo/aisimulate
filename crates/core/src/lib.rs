@@ -23,7 +23,10 @@ pub mod perfmodel;
 #[cfg(feature = "python")]
 mod python;
 #[cfg(feature = "python")]
-pub use python::{execute_replay_json_with_composition, replay_python_error};
+pub use python::{
+    ReplayExecutionResult, execute_replay_json_with_composition, execute_replay_with_composition,
+    replay_python_error,
+};
 pub mod replay;
 
 pub use engine::{
