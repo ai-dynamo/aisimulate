@@ -4,22 +4,11 @@ This non-packaged bundle makes the vLLM 0.25.0 collection claims reproducible
 without a GPU, host paths, usernames, scheduler IDs, or raw diagnostic logs.
 It is outside the Python package's source/data tree.
 
-## Verify
+## Recorded audit
 
-From the repository root, after `uv sync --project python/aisimulate --extra dev`:
-
-```sh
-python/aisimulate/.venv/bin/python scripts/data/audit_pr244_data.py
-```
-
-The check recomputes all case counts and summaries of the 85 shipped parquet
-files. It checks each file's hash and row count against the original collection
-report, then compares the result with `manifest.json`. No network or historical
-Git objects are needed for this check. Use `--write` only when intentionally
-regenerating the manifest after reviewing a change.
-Both check and write modes reject tables with null cells, duplicate physical
-keys, or nonfinite/nonpositive latency, even when the original report's hash
-and row count match. Rejection leaves the existing manifest unchanged.
+The one-time audit script and its tests have been retired. This bundle retains
+its recorded collection counts, table hashes, row counts, and anomaly summaries
+as historical evidence; it is not an active CI validation job.
 
 | System | Tables | Rows | Retained cases | Done | Failed | Unattempted |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -74,10 +63,6 @@ not converted into timing rows or silently counted as successful coverage.
   Actual vLLM runtime revision: `dd10e03f95f94edbea1975c67ace3a35ec9a8a40`.
   The runtime revision differs from the v0.25.0 tag's commit.
 
-To reproduce the one-time sanitized extraction when the source Git objects are
-available, run the same command with `--extract-cases --write`. Extraction
-allowlists only case IDs, outcomes, counts, and hashes; it does not copy arbitrary
-report fields, paths, error messages, or runtime environment dictionaries.
 The evidence supports collection coverage and table integrity, not diagnosis of
 each failure or end-to-end prediction accuracy.
 

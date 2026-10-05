@@ -24,7 +24,6 @@ the repository root unless a script documents another working directory.
 | `performance/` | Forward/simulation performance selection and wheel provenance |
 | `prediction_regression/` | Numerical sentinels and trace replay qualification |
 | `notifications/` | Accuracy and review digests |
-| `data/` | Performance-data maintenance audits |
 | `aic_sync/` | Upstream synchronization patch generation and its ledger |
 
 Keep shared code with its owning job family; consumers import it instead of
@@ -50,7 +49,7 @@ python -m pip install --require-hashes -r scripts/e2e_accuracy/requirements.txt
 ```
 
 The other group/output pairs are `fpm-accuracy` → `fpm_accuracy/`, and `ci`,
-`pages`, `readme`, `release`, and `data` → the same-named directories. Do not use
+`pages`, `readme`, and `release` → the same-named directories. Do not use
 `uv sync` in a wheel-evaluation environment: it can remove the wheel under test.
 Historical release builds retain a fallback to the source revision’s old wheel
 builder location. Full CI may resolve a dependency group together with the selected wheel's dev
