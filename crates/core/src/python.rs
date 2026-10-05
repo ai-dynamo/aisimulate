@@ -164,6 +164,7 @@ fn validate_public_agentic_engine(input: &ReplayRuntimeInput, rank: &EngineConfi
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct AicTimingConfig {
+    #[serde(alias = "model_path")]
     model: String,
     backend: String,
     system: String,
@@ -171,9 +172,9 @@ struct AicTimingConfig {
     tp: u32,
     #[serde(default)]
     backend_version: Option<String>,
-    #[serde(default = "one")]
+    #[serde(default = "one", alias = "pp_size")]
     pp: u32,
-    #[serde(default = "one")]
+    #[serde(default = "one", alias = "attention_dp_size")]
     attention_dp: u32,
     #[serde(default)]
     dcp: Option<u32>,
@@ -2563,9 +2564,64 @@ fn run_replay_with_artifacts_json(py: Python<'_>, payload: &str) -> PyResult<Str
         .map_err(replay_python_error)
 }
 
+#[pyfunction]
+fn canonical_timing_config_json(payload: &str, worker_type: &str) -> PyResult<String> {
+    let convert = || -> anyhow::Result<String> {
+        let timing: AicTimingConfig = serde_json::from_str(payload)?;
+        let role = serde_json::from_value(serde_json::json!(worker_type))?;
+        let config = timing.estimator_request(role)?;
+        config.validate()?;
+        Ok(serde_json::to_string(&config)?)
+    };
+    convert().map_err(|error| pyo3::exceptions::PyValueError::new_err(format!("{error:#}")))
+}
+
+/// Share the Runner's resolved role descriptor with downstream adapters.
+#[pyfunction]
+#[pyo3(signature = (payload, startup_time=None))]
+fn engine_launch_from_replay_role_json(
+    payload: &str,
+    startup_time: Option<f64>,
+) -> PyResult<String> {
+    let convert = || -> anyhow::Result<String> {
+        let role: crate::replay::ReplayRoleConfig = serde_json::from_str(payload)?;
+        let mut launch = crate::engine::EngineLaunchConfig {
+            engine: role.rank,
+            dp_size: role.dp_size,
+            tensor_parallel_size: role.tensor_parallel_size as usize,
+            num_gpu_blocks_is_explicit: role.num_gpu_blocks_is_explicit.unwrap_or(false),
+            startup_time,
+            ..Default::default()
+        };
+        if let crate::engine::TimingModelConfig::External { provider, config } =
+            &launch.engine.timing_model
+            && matches!(provider.as_str(), "aic" | "ais")
+        {
+            let timing: AicTimingConfig = serde_json::from_value(config.clone())?;
+            let worker_type = serde_json::from_value(serde_json::to_value(launch.worker_type)?)?;
+            let canonical = timing.estimator_request(worker_type)?;
+            launch.gpu_memory_utilization = timing.gpu_memory_utilization;
+            launch.mem_fraction_static = timing.mem_fraction_static;
+            launch.free_gpu_memory_fraction = timing.free_gpu_memory_fraction;
+            launch.cuda_graph_reserved_bytes = Some(timing.cuda_graph_reserved_bytes);
+            launch.engine.timing_model = crate::engine::TimingModelConfig::External {
+                provider: "ais".into(),
+                config: serde_json::to_value(canonical)?,
+            };
+        }
+        Ok(serde_json::to_string(&launch.normalized()?)?)
+    };
+    convert().map_err(|error| pyo3::exceptions::PyValueError::new_err(format!("{error:#}")))
+}
+
 /// AISimulate native runtime module.
 #[pymodule]
 fn _runtime(module: &Bound<'_, PyModule>) -> PyResult<()> {
+    module.add_function(wrap_pyfunction!(
+        engine_launch_from_replay_role_json,
+        module
+    )?)?;
+    module.add_function(wrap_pyfunction!(canonical_timing_config_json, module)?)?;
     module.add_function(wrap_pyfunction!(run_replay_json, module)?)?;
     module.add_function(wrap_pyfunction!(run_replay_with_artifacts_json, module)?)?;
     crate::perfmodel::register_python(module)?;

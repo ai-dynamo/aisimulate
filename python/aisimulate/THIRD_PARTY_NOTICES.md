@@ -1098,17 +1098,3 @@ Modified by NVIDIA: selected the complete play
 `002001296e8a8c38ad9d7cc436d691afc602` and normalized JSON whitespace, without
 changing request values, dependencies, hashes, or timestamps. See the adjacent
 fixture README for the source, counts, and content checksum.
-
-## Dynamo engine argument compatibility
-
-`crates/core/src/engine/launch.rs` adapts and modifies the engine argument
-normalization contract from `lib/mocker/src/common/protocols.rs` in NVIDIA
-Dynamo at commit `d15ec1dda0e30b5c2513b7dc85bcd372d553035e`. It now normalizes
-into AISimulate's canonical engine configuration and excludes Dynamo runtime
-options.
-
-Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
-Licensed under the Apache License 2.0.
-
-Source: https://github.com/ai-dynamo/dynamo/blob/d15ec1dda0e30b5c2513b7dc85bcd372d553035e/lib/mocker/src/common/protocols.rs
-License: https://github.com/ai-dynamo/dynamo/blob/d15ec1dda0e30b5c2513b7dc85bcd372d553035e/LICENSE

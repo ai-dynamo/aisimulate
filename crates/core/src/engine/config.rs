@@ -19,6 +19,27 @@ const DEFAULT_CLIP_MAX_NEW_TOKENS: usize = 4_096;
 const DEFAULT_SCHEDULE_CONSERVATIVENESS: f64 = 1.0;
 const DEFAULT_HOST_OFFLOAD_BANDWIDTH_GBPS: f64 = 32.0;
 
+fn serialize_scheduler_limit<S: serde::Serializer>(
+    value: &usize,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    if serializer.is_human_readable() && *value == usize::MAX {
+        serializer.serialize_none()
+    } else {
+        value.serialize(serializer)
+    }
+}
+
+fn deserialize_scheduler_limit<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<usize, D::Error> {
+    if deserializer.is_human_readable() {
+        Option::<usize>::deserialize(deserializer).map(|value| value.unwrap_or(usize::MAX))
+    } else {
+        usize::deserialize(deserializer)
+    }
+}
+
 fn default_num_gpu_blocks() -> usize {
     16_384
 }
@@ -478,11 +499,17 @@ pub struct EngineConfig {
     /// Optional prompt-plus-output token limit for every backend.
     /// Prompts at or above the limit are rejected; generation stops at the limit.
     pub max_model_len: Option<usize>,
-    /// Maximum concurrently runnable sequences.
-    #[serde(default = "default_max_num_seqs")]
+    /// Maximum concurrently runnable sequences. JSON null means unbounded.
+    #[serde(
+        default = "default_max_num_seqs",
+        serialize_with = "serialize_scheduler_limit"
+    )]
     pub max_num_seqs: usize,
-    /// Per-pass token budget.
-    #[serde(default = "default_max_num_batched_tokens")]
+    /// Per-pass token budget. JSON null means unbounded.
+    #[serde(
+        default = "default_max_num_batched_tokens",
+        serialize_with = "serialize_scheduler_limit"
+    )]
     pub max_num_batched_tokens: usize,
     /// Admit vLLM prefills only once every N attention-DP group passes.
     #[serde(default = "default_prefill_schedule_interval")]
@@ -572,9 +599,15 @@ struct EngineConfigWire {
     block_size: Option<usize>,
     #[serde(default)]
     max_model_len: Option<usize>,
-    #[serde(default = "default_max_num_seqs")]
+    #[serde(
+        default = "default_max_num_seqs",
+        deserialize_with = "deserialize_scheduler_limit"
+    )]
     max_num_seqs: usize,
-    #[serde(default = "default_max_num_batched_tokens")]
+    #[serde(
+        default = "default_max_num_batched_tokens",
+        deserialize_with = "deserialize_scheduler_limit"
+    )]
     max_num_batched_tokens: usize,
     #[serde(default = "default_prefill_schedule_interval")]
     prefill_schedule_interval: usize,
