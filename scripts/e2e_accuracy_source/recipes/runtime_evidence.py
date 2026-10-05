@@ -15,9 +15,9 @@ from pathlib import Path
 
 import requests
 
-from .runtime_recipe import inspect_cached_runtime_workload
-from .schema import SiliconRow
-from .sources import load_manifest
+from e2e_accuracy_source.recipes.runtime_recipe import inspect_cached_runtime_workload
+from e2e_accuracy_source.schema import SiliconRow
+from e2e_accuracy_source.sources import load_manifest
 
 REPOSITORY = "SemiAnalysisAI/InferenceX"
 MAX_BYTES = 512 * 1024 * 1024

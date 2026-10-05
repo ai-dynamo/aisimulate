@@ -14,7 +14,7 @@ from typing import Any
 
 import requests
 
-from e2e_accuracy_source.inferencex_recipe import InferenceXRecipeError
+from e2e_accuracy_source.recipes.inferencex_recipe import InferenceXRecipeError
 from e2e_accuracy_source.sources import load_manifest, verify_sources
 
 SOURCES = load_manifest("trt_additional_default_sources.json")

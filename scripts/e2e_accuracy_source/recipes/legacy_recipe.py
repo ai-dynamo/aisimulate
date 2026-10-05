@@ -21,7 +21,7 @@ import json
 import re
 import shlex
 
-from e2e_accuracy_source.inferencex_recipe import (
+from e2e_accuracy_source.recipes.inferencex_recipe import (
     INFERENCEX_REPOSITORY_URL,
     InferenceXRecipeError,
     RecipeSource,

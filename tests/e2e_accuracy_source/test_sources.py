@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import pytest
 import requests
 from e2e_accuracy_source import sources
-from e2e_accuracy_source.inferencex_recipe import InferenceXRecipeError
+from e2e_accuracy_source.recipes.inferencex_recipe import InferenceXRecipeError
 
 
 def test_source_verification_preserves_records_and_checks_every_file(monkeypatch):

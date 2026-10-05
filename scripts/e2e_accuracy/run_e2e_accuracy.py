@@ -34,7 +34,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from scripts.e2e_accuracy.build_e2e_accuracy_overview import GPUS_PER_NODE_BY_FAMILY, build_summary
 from scripts.e2e_accuracy.fetch_accuracy_measurements import RESOLVED_POLICY, digest, validate_manifest
 from scripts.pages.build_pages_site import _accuracy_summary
-from scripts.e2e_accuracy_source.runtime_evidence import prepare_runtime_evidence
+from scripts.e2e_accuracy_source.recipes.runtime_evidence import prepare_runtime_evidence
 
 REPOSITORY = "https://github.com/ai-dynamo/aisimulate"
 
@@ -601,7 +601,7 @@ def predict_resolved_point(point):
 
 def resolve_points(points, cache_dir, workers, *, allow_estimated_defaults=False):
     from e2e_accuracy_source.deployment import inspect_deployment
-    from e2e_accuracy_source.inferencex_recipe import GitHubRecipeSource
+    from e2e_accuracy_source.recipes.inferencex_recipe import GitHubRecipeSource
     from e2e_accuracy_source.schema import SiliconRow
 
     source = GitHubRecipeSource(cache_dir=cache_dir, archived_runtime=True)

@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import pytest
-from e2e_accuracy_source import workload_defaults as defaults
+from e2e_accuracy_source.defaults import workload_defaults as defaults
 
 
 @pytest.fixture(autouse=True)

@@ -16,18 +16,26 @@ mappings and conflicting evidence remain unsupported.
 
 ## Package layout
 
-Keep Python modules flat and group the reviewed data in `manifests/`:
+Group recipe readers and defaults one level below the package root. Keep reviewed
+JSON data in `manifests/` and orchestration/shared contracts at the root:
 
-| Responsibility | Modules |
+| Responsibility | Location |
 | --- | --- |
+| Static launchers and shell values | `recipes/inferencex_recipe.py`, `recipes/legacy_recipe.py`, `recipes/shell_recipe.py`, `recipes/shell_values.py` |
+| Runtime evidence | `recipes/runtime_recipe.py`, `recipes/single_node_runtime.py`, `recipes/runtime_evidence.py` |
+| Effective defaults | `defaults/framework_defaults.py`, `defaults/sglang_additional_defaults.py`, `defaults/trt_additional_defaults.py`, `defaults/workload_defaults.py` |
+| Opt-in research assumptions | `defaults/research_defaults.py` |
+| Reviewed source manifests | `manifests/` |
 | Cohort and records | `cohort.py`, `filter.py`, `staleness.py`, `schema.py`, `mapping.py` |
-| Source I/O and hash verification | `sources.py`, `inferencex_recipe.py` |
-| Static launchers and shell values | `legacy_recipe.py`, `shell_recipe.py`, `shell_values.py` |
-| Runtime evidence | `runtime_recipe.py`, `single_node_runtime.py`, `runtime_evidence.py` |
-| Effective defaults | `framework_defaults.py`, `sglang_additional_defaults.py`, `trt_additional_defaults.py`, `workload_defaults.py` |
+| Source I/O and hash verification | `sources.py` |
 | Checkpoint identity | `checkpoint_quantization.py`, `model_config_snapshot.py` |
-| Source resolution | `deployment.py`, `research_defaults.py` (opt-in assumptions) |
+| Source resolution | `deployment.py` |
 | Prediction projections | `estimate.py` (historical wheels), `replay.py` |
+
+`defaults/` groups related responsibilities. Verification status is recorded in
+code and evidence: framework/workload defaults require reviewed sources, while
+`research_defaults.py` fills allowlisted gaps only in estimated mode and labels
+those values as unverified assumptions.
 
 `sources.py` loads manifests once per process and verifies upstream bytes against
 reviewed hashes. Callers keep backend-specific rules, cache scope, and error
@@ -40,8 +48,8 @@ Prediction workers import the small projection modules; source resolution runs
 in the parent before those workers start.
 
 Keep backend rules separate: similar knob names can have different release,
-hardware, and runtime conditions. Further package nesting would add import
-churn without simplifying those rules.
+hardware, and runtime conditions. Keep these groups one level deep; further
+nesting would add import churn without simplifying those rules.
 
 ## Campaign boundary
 

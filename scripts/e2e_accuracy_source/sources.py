@@ -10,7 +10,7 @@ from pathlib import Path
 
 import requests
 
-from .inferencex_recipe import InferenceXRecipeError
+from e2e_accuracy_source.recipes.inferencex_recipe import InferenceXRecipeError
 
 
 @cache

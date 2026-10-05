@@ -15,7 +15,7 @@ import operator
 import re
 import shlex
 
-from e2e_accuracy_source.inferencex_recipe import InferenceXRecipeError
+from e2e_accuracy_source.recipes.inferencex_recipe import InferenceXRecipeError
 
 OPS = {
     ast.Add: operator.add,

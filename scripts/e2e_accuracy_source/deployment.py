@@ -21,13 +21,25 @@ from typing import Any
 import requests
 
 from e2e_accuracy_source.checkpoint_quantization import resolve_checkpoint_quantization
-from e2e_accuracy_source.filter import FRAMEWORK_TO_AIC_BACKEND
-from e2e_accuracy_source.framework_defaults import (
+from e2e_accuracy_source.defaults.framework_defaults import (
     apply_framework_defaults,
     has_reviewed_defaults,
     verified_dynamo_usage_context,
 )
-from e2e_accuracy_source.inferencex_recipe import (
+from e2e_accuracy_source.defaults.research_defaults import (
+    SERVER_DEFAULTS,
+    WORKLOAD_DEFAULTS,
+    assumed_recipe,
+    fill_missing,
+    resolve_auto_kv,
+)
+from e2e_accuracy_source.defaults.sglang_additional_defaults import apply_additional_sglang_defaults
+from e2e_accuracy_source.defaults.trt_additional_defaults import apply_additional_trt_defaults
+from e2e_accuracy_source.defaults.workload_defaults import resolve_workload_defaults, unmodeled_workload_controls
+from e2e_accuracy_source.filter import FRAMEWORK_TO_AIC_BACKEND
+from e2e_accuracy_source.mapping import HARDWARE_TO_SYSTEM
+from e2e_accuracy_source.model_config_snapshot import normalize_trt_snapshot
+from e2e_accuracy_source.recipes.inferencex_recipe import (
     INFERENCEX_REPOSITORY_URL,
     InferenceXRecipeError,
     RecipeSource,
@@ -36,28 +48,16 @@ from e2e_accuracy_source.inferencex_recipe import (
     _select_disaggregated_search_point,
     _single_config_file,
 )
-from e2e_accuracy_source.legacy_recipe import (
+from e2e_accuracy_source.recipes.legacy_recipe import (
     load_source_config,
     verified_launcher_recipe_copy,
     verified_launcher_workload_identity,
 )
-from e2e_accuracy_source.mapping import HARDWARE_TO_SYSTEM
-from e2e_accuracy_source.model_config_snapshot import normalize_trt_snapshot
-from e2e_accuracy_source.research_defaults import (
-    SERVER_DEFAULTS,
-    WORKLOAD_DEFAULTS,
-    assumed_recipe,
-    fill_missing,
-    resolve_auto_kv,
-)
-from e2e_accuracy_source.runtime_evidence import archived_recipe
-from e2e_accuracy_source.runtime_recipe import inspect_cached_runtime_recipe, inspect_cached_runtime_workload
+from e2e_accuracy_source.recipes.runtime_evidence import archived_recipe
+from e2e_accuracy_source.recipes.runtime_recipe import inspect_cached_runtime_recipe, inspect_cached_runtime_workload
+from e2e_accuracy_source.recipes.shell_recipe import read_shell_recipe
+from e2e_accuracy_source.recipes.single_node_runtime import inspect_cached_single_node_runtime, runtime_deployment
 from e2e_accuracy_source.schema import SiliconRow
-from e2e_accuracy_source.sglang_additional_defaults import apply_additional_sglang_defaults
-from e2e_accuracy_source.shell_recipe import read_shell_recipe
-from e2e_accuracy_source.single_node_runtime import inspect_cached_single_node_runtime, runtime_deployment
-from e2e_accuracy_source.trt_additional_defaults import apply_additional_trt_defaults
-from e2e_accuracy_source.workload_defaults import resolve_workload_defaults, unmodeled_workload_controls
 
 
 def runtime_version(image: str | None, backend: str) -> str | None:

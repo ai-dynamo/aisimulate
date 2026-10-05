@@ -10,7 +10,7 @@ from typing import Any
 
 import requests
 
-from e2e_accuracy_source.inferencex_recipe import InferenceXRecipeError
+from e2e_accuracy_source.recipes.inferencex_recipe import InferenceXRecipeError
 from e2e_accuracy_source.sources import verify_sources
 
 SRT_REPOSITORY = "https://github.com/NVIDIA/srt-slurm"

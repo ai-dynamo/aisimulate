@@ -4,10 +4,10 @@
 import hashlib
 
 import pytest
-from e2e_accuracy_source import sglang_additional_defaults as defaults
 from e2e_accuracy_source import sources
 from e2e_accuracy_source.checkpoint_quantization import QuantizationMappingError, resolve_checkpoint_quantization
-from e2e_accuracy_source.inferencex_recipe import InferenceXRecipeError, _normalize_yaml_server_args
+from e2e_accuracy_source.defaults import sglang_additional_defaults as defaults
+from e2e_accuracy_source.recipes.inferencex_recipe import InferenceXRecipeError, _normalize_yaml_server_args
 
 
 @pytest.fixture

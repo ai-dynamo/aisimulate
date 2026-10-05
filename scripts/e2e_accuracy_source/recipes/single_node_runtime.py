@@ -13,13 +13,13 @@ import re
 import zipfile
 from pathlib import Path
 
-from e2e_accuracy_source.inferencex_recipe import (
+from e2e_accuracy_source.recipes.inferencex_recipe import (
     INFERENCEX_REPOSITORY_URL,
     InferenceXRecipeError,
     _normalize_yaml_server_args,
 )
-from e2e_accuracy_source.runtime_recipe import _logged_sglang_args, _logged_vllm_args, _verified_job_log
-from e2e_accuracy_source.shell_recipe import command_args
+from e2e_accuracy_source.recipes.runtime_recipe import _logged_sglang_args, _logged_vllm_args, _verified_job_log
+from e2e_accuracy_source.recipes.shell_recipe import command_args
 
 
 class _ServerLog:
