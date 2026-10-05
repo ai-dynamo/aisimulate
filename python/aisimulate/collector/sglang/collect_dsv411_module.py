@@ -547,10 +547,11 @@ def run_generation_case(runner, bench, token_ids, case, plan, state, intervals, 
 class OutputQualificationError(RuntimeError):
     """The measured forward ran but a representative layer's attention output is non-finite / all zero or a
     layer observation is missing: the timings are not a measurement. The device context is intact (no CUDA
-    error), so the case is recorded and the group goes on. Observed on H20 sglang 0.5.21 TP4 for 262144-token
-    extends on a cached prefix (per-rank 16 heads x 512 = 8192 per token, tokens x width = 2^31; the
-    prefix-free 262144-token extend is fine) - FIXME(kernel-limit): unverified int32 offset in the
-    cached-prefix attention path; a guard waits for the framework source proof."""
+    error), so the case is recorded (`NonFiniteOutput`) and the group goes on. Observed on H20 sglang 0.5.21
+    TP4 at batch 1024 with a cached prefix in the two sliding-window layers (0 / 1, window 128) for some
+    (query, prefix) shapes only (q256-kv16 and q128-kv256 fail; q32/q64 at kv16/kv256 and q128-kv16 pass);
+    cause unknown - a serving-parity audit of the SWA extend inputs at batch 1024 and a real_kv A/B on those
+    cells are pending before any framework claim."""
 
 
 def _capacity_failure(error: BaseException) -> str | None:
