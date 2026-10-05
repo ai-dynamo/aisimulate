@@ -2435,9 +2435,12 @@ findings:
       per prefix-free sample); sglang''s indexer prefill makes seeding batch 8 x 1M kv take over an hour and its
       transient scales with new tokens x kv, so the producer seeds each (batch, past kv) group once (shards own whole
       groups, contract.seed_group), returns the measured extend''s pages after every sample and keeps the serving
-      8192-token chunk budget past 131072 kv; sglang''s captured decode graph asserts out of bounds at kv_len
-      1,048,576 (eager runs; a decode at seq_len == context_len never happens in serving), so the generation ladder
-      tops at kv_len 1,048,575 (past 1048574); (4) sglang
+      8192-token chunk budget past 131072 kv; the generation ladder tops at kv_len 1,048,575 (past 1048574), the
+      last decode of a request filling vllm''s max_model_len 1,048,576 (vllm runs it), while sglang admits at most
+      context_len - 2 tokens per request (tp_worker.py:404 max_req_len = context_len - 1; scheduler.py:2533
+      max_new_tokens <= max_req_len - input_len - 1 @ v0.5.21): its deepest serving decode reads kv_len 1,048,573 and
+      its captured decode graph asserts out of bounds on the 1,048,575 cell at TP2 and TP4 (recorded as a failed case
+      in each sglang shard''s admission record, never a row); (4) sglang
       ServerArgs at 0.5.21 spells the decode graph cap cuda_graph_max_bs_decode; init_cuda_graphs never sets
       decode_cuda_graph_captured (capture evidence = the recorded external-event buckets); (5) vllm max_model_len is capped at
       max_position_embeddings 1048576 - the grid carries max_sequence_length. H20 TP2 smoke ratios vllm/sglang: attention_core

@@ -80,9 +80,13 @@ and measures every query length on it).
   derives the same set); the next attempt records it under `failed_cases` in its receipt and skips it.
   `aggregate_run` drops the keys of the failed cases when all ranks name the same set and reports them,
   and the publisher writes them into the admission record.
-* Known limits recorded this way on H20 (sglang 0.5.21 / vLLM 0.30.0): sglang's captured decode graph
-  asserts at kv_len 1,048,576 (the grid's generation ladder tops at 1,048,575, the last decode a 1M
-  context can run); sglang's Triton w8a8 block-fp8 GEMM (the only path for this checkpoint's 32-wide
+* Known limits recorded this way on H20 (sglang 0.5.21 / vLLM 0.30.0): the generation ladder tops at
+  kv_len 1,048,575 (past 1048574), the last decode of a request that fills vLLM's `max_model_len`
+  1,048,576 (vLLM runs it); sglang admits at most `context_len - 2` tokens per request
+  (`managers/tp_worker.py:404` `max_req_len = context_len - 1`, `managers/scheduler.py:2533`
+  `max_new_tokens <= max_req_len - input_len - 1` at v0.5.21), so its deepest serving decode reads
+  kv_len 1,048,573 and its captured decode graph asserts out of bounds on the 1,048,575 cell - recorded
+  as a failed case per sglang TP, not a measurement; sglang's Triton w8a8 block-fp8 GEMM (the only path for this checkpoint's 32-wide
   weight blocks) forms int32 offsets, so context forwards above `2^31 / max weight dim` tokens
   (131072 at TP2) are refused up front as `KernelLimit` failures (`FIXME(kernel-limit)` in the
   producer); vLLM's engram at 262144 tokens does not fit a TP2 rank next to its table shard.
