@@ -6,6 +6,7 @@ import os
 
 if os.environ.get("DYN_FPM_GLM53FLASH_REAL_KV") == "1":
     import hashlib
+    import importlib
     import importlib.abc
     import importlib.machinery
     import importlib.metadata
@@ -58,15 +59,20 @@ if os.environ.get("DYN_FPM_GLM53FLASH_REAL_KV") == "1":
                     return
                 _verify_sources()
                 self.original.exec_module(module)
-                adapter = sys.modules.get("glm53flash_scheduler")
-                if adapter is not None and not hasattr(adapter, "Glm53FlashRealKVScheduler"):
+                if os.environ.get("DYN_FPM_GLM53FLASH_PREFIX_SEED") == "1":
+                    # Default serving configuration (prefix caching on): every
+                    # request is scheduled natively; see glm53flash_prefix_scheduler.
+                    module_name, class_name = "glm53flash_prefix_scheduler", "Glm53FlashPrefixSeedScheduler"
+                else:
+                    module_name, class_name = "glm53flash_scheduler", "Glm53FlashRealKVScheduler"
+                adapter = sys.modules.get(module_name)
+                if adapter is not None and not hasattr(adapter, class_name):
                     # A spawned worker may unpickle the adapter class first.
                     # Its import needs this native base before it can finish;
                     # the adapter publishes its completed class at module end.
                     return
-                from glm53flash_scheduler import Glm53FlashRealKVScheduler
-
-                module.InstrumentedScheduler = Glm53FlashRealKVScheduler
+                adapter = importlib.import_module(module_name)
+                module.InstrumentedScheduler = getattr(adapter, class_name)
             except Exception as error:
                 # This loader runs on a later explicit scheduler import, not
                 # during sitecustomize initialization. Raising fails that import

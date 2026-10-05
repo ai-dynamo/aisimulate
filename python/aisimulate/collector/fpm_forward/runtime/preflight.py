@@ -53,7 +53,10 @@ def main() -> None:
         from dynamo.vllm.instrumented_scheduler import BenchmarkPoint, InstrumentedScheduler
 
         if glm53flash_adapter:
-            from glm53flash_scheduler import Glm53FlashRealKVScheduler
+            if os.environ.get("DYN_FPM_GLM53FLASH_PREFIX_SEED") == "1":
+                from glm53flash_prefix_scheduler import Glm53FlashPrefixSeedScheduler as Glm53FlashRealKVScheduler
+            else:
+                from glm53flash_scheduler import Glm53FlashRealKVScheduler
 
             if InstrumentedScheduler is not Glm53FlashRealKVScheduler:
                 raise RuntimeError("GLM-5.3-Flash source-checked scheduler activation did not occur")

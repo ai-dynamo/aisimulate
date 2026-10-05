@@ -70,6 +70,12 @@ enum MeasurementPolicy {
     PerRow,
     VllmRealHybridMedian,
     SglangRealHybridMedian,
+    /// Default serving configuration (prefix caching on): Dynamo
+    /// InstrumentedScheduler FPM wall time, real prefix-cache seeding.
+    VllmNativeFpmMedian,
+    /// Default serving configuration (radix cache on): native SGLang
+    /// `--enable-forward-pass-metrics` rank-0 wall time, real radix seeding.
+    SglangNativeFpmMedian,
 }
 
 impl MeasurementPolicy {
@@ -79,6 +85,19 @@ impl MeasurementPolicy {
             Self::PerRow => FPM_ROW_MEASUREMENT_POLICY,
             Self::VllmRealHybridMedian => "vllm_native_real_hybrid_median_v1",
             Self::SglangRealHybridMedian => "sglang_native_real_hybrid_median_v1",
+            Self::VllmNativeFpmMedian => "vllm_native_fpm_prefix_seed_median_v1",
+            Self::SglangNativeFpmMedian => "sglang_native_fpm_radix_seed_median_v1",
+        }
+    }
+
+    fn state_protocol(self) -> Option<&'static str> {
+        match self {
+            Self::SingleSample | Self::PerRow => None,
+            Self::VllmRealHybridMedian | Self::SglangRealHybridMedian => {
+                Some("glm53flash_same_request_real_hybrid_v1")
+            }
+            Self::VllmNativeFpmMedian => Some("glm53flash_prefix_cache_real_seed_v1"),
+            Self::SglangNativeFpmMedian => Some("glm53flash_sglang_radix_real_seed_v1"),
         }
     }
 
@@ -87,6 +106,8 @@ impl MeasurementPolicy {
             Self::SingleSample | Self::PerRow => None,
             Self::VllmRealHybridMedian => Some("vllm_native_scheduler_output_interval"),
             Self::SglangRealHybridMedian => Some("sglang_native_forward_device_timer"),
+            Self::VllmNativeFpmMedian => Some("dynamo_vllm_instrumented_scheduler_fpm_wall_time"),
+            Self::SglangNativeFpmMedian => Some("sglang_native_fpm_rank0_device_timer_wall_time"),
         }
     }
 }
@@ -527,6 +548,12 @@ fn validate_sidecar(
         (Some("sglang_native_real_hybrid_median_v1"), Some(7), "sglang") => {
             MeasurementPolicy::SglangRealHybridMedian
         }
+        (Some("vllm_native_fpm_prefix_seed_median_v1"), Some(7), "vllm") => {
+            MeasurementPolicy::VllmNativeFpmMedian
+        }
+        (Some("sglang_native_fpm_radix_seed_median_v1"), Some(7), "sglang") => {
+            MeasurementPolicy::SglangNativeFpmMedian
+        }
         _ => {
             return Err(structural(format!(
                 "unsupported FPM measurement_policy={:?} for schema {schema_version:?} backend {backend:?}: {}",
@@ -779,7 +806,7 @@ fn load_pair(
                 (
                     "state_protocol",
                     protocol,
-                    "glm53flash_same_request_real_hybrid_v1",
+                    measurement_policy.state_protocol().unwrap(),
                 ),
                 (
                     "timing_boundary",
@@ -1981,6 +2008,88 @@ pub(crate) mod tests {
             );
             assert_eq!(actual.prefill_domain, expected.prefill_domain);
             assert_eq!(actual.decode_domain, expected.decode_domain);
+        }
+    }
+
+    fn native_fpm_rows(backend: &'static str) -> Vec<RowSpec> {
+        let (policy, protocol, boundary) = if backend == "vllm" {
+            (
+                "vllm_native_fpm_prefix_seed_median_v1",
+                "glm53flash_prefix_cache_real_seed_v1",
+                "dynamo_vllm_instrumented_scheduler_fpm_wall_time",
+            )
+        } else {
+            (
+                "sglang_native_fpm_radix_seed_median_v1",
+                "glm53flash_sglang_radix_real_seed_v1",
+                "sglang_native_fpm_rank0_device_timer_wall_time",
+            )
+        };
+        median_rows(backend)
+            .into_iter()
+            .map(|mut row| {
+                let m = row.median.as_mut().unwrap();
+                m.policy = policy;
+                m.protocol = protocol;
+                m.boundary = boundary;
+                row
+            })
+            .collect()
+    }
+
+    #[test]
+    fn native_fpm_policies_load_and_bind_their_own_protocol_and_boundary() {
+        for backend in ["vllm", "sglang"] {
+            let tmp = tempfile::tempdir().unwrap();
+            write_median_pair(tmp.path(), &native_fpm_rows(backend));
+            let table = FpmForwardTable::new_with_replacement(
+                tmp.path().to_path_buf(),
+                "b200_sxm",
+                backend,
+                "0.25.1",
+                true,
+            );
+            assert_eq!(decode_curves(&table.cells().unwrap()[0].decode)[&8][&4096], 7.0);
+            for (mutation, error) in [
+                (0, "state_protocol"),
+                (1, "timing_boundary"),
+                (2, "measurement_policy"),
+            ] {
+                let tmp = tempfile::tempdir().unwrap();
+                let mut rows = native_fpm_rows(backend);
+                let m = rows[1].median.as_mut().unwrap();
+                match mutation {
+                    // A same-request label cannot pass as prefix-cache seeding.
+                    0 => m.protocol = "glm53flash_same_request_real_hybrid_v1",
+                    1 => m.boundary = "vllm_native_scheduler_output_interval",
+                    _ => m.policy = "vllm_native_real_hybrid_median_v1",
+                }
+                write_median_pair(tmp.path(), &rows);
+                let table = FpmForwardTable::new_with_replacement(
+                    tmp.path().to_path_buf(),
+                    "b200_sxm",
+                    backend,
+                    "0.25.1",
+                    true,
+                );
+                assert!(table.cells().unwrap_err().to_string().contains(error));
+            }
+            // The native-FPM sidecar is backend-bound.
+            let other = if backend == "vllm" { "sglang" } else { "vllm" };
+            let tmp = tempfile::tempdir().unwrap();
+            let mut rows = native_fpm_rows(backend);
+            for row in &mut rows {
+                row.backend = other;
+            }
+            write_median_pair(tmp.path(), &rows);
+            let table = FpmForwardTable::new_with_replacement(
+                tmp.path().to_path_buf(),
+                "b200_sxm",
+                other,
+                "0.25.1",
+                true,
+            );
+            assert!(table.cells().is_err());
         }
     }
 
