@@ -186,3 +186,7 @@ Details uses the evaluation-selected FPM variant for each method and links its p
 Only Method and Workload controls are shown above the heatmaps. Missing inputs,
 unsupported predictors, initialization failures, and workloads without successful
 predictions show an explanation in place of the error map; measured distributions remain visible.
+
+Browser visualization fixtures use readable sample/chunk JSON filenames. Test setup
+creates SHA-256 asset names, gzip chunks, and the checksum manifest in its temporary
+site directory, keeping generated assets out of the repository.

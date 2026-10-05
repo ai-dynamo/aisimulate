@@ -8,6 +8,8 @@ from __future__ import annotations
 import asyncio
 import copy
 import functools
+import gzip
+import hashlib
 import http.server
 import json
 import os
@@ -25,6 +27,34 @@ ROOT = Path(__file__).resolve().parents[1]
 class QuietHandler(http.server.SimpleHTTPRequestHandler):
     def log_message(self, *args):
         pass
+
+
+def prepare_visualization_fixtures(directory: Path):
+    """Materialize readable fixtures as production-style hashed assets."""
+    catalog = json.loads((directory / "catalog.json").read_text())
+    files = {}
+
+    def asset(name, compressed=False):
+        source = directory / name
+        content = json.dumps(json.loads(source.read_text()), separators=(",", ":"), sort_keys=True).encode()
+        if compressed:
+            content = gzip.compress(content, mtime=0)
+        digest = hashlib.sha256(content).hexdigest()
+        filename = digest + (".json.gz" if compressed else ".json")
+        (directory / filename).write_bytes(content)
+        files[filename] = digest
+        source.unlink()
+        return filename
+
+    for group in catalog["groups"]:
+        group["sample_file"] = asset(group["sample_file"])
+        group["all_files"] = [asset(name, compressed=True) for name in group["all_files"]]
+    content = json.dumps(catalog, separators=(",", ":"), sort_keys=True).encode()
+    (directory / "catalog.json").write_bytes(content)
+    files["catalog.json"] = hashlib.sha256(content).hexdigest()
+    manifest = {key: catalog[key] for key in ("schema_version", "policy", "hf_revision", "repo_id")}
+    manifest.update(files=files, observations=sum(group["n"] for group in catalog["groups"]))
+    (directory / "manifest.json").write_text(json.dumps(manifest))
 
 
 async def check():
@@ -50,6 +80,7 @@ async def check():
             json.dumps({"schema_version": 1, "default_branch": "main", "branches": entries})
         )
         shutil.copytree(ROOT / "tests/fpm_accuracy/fixtures/dashboard", site / "fpm-accuracy/data")
+        prepare_visualization_fixtures(site / "fpm-accuracy/data/visualization")
         history_path = site / "fpm-accuracy/data/history.json"
         history = json.loads(history_path.read_text())
         release_entry = copy.deepcopy(history["entries"][0])
