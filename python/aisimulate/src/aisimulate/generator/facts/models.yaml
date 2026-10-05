@@ -116,6 +116,32 @@ models:
               pvc_name: model-cache
               mount_path: /model-store
 
+  minimax-m3:
+    id: minimax-m3
+    match:
+      model_paths:
+        - MiniMaxAI/MiniMax-M3*
+        - nvidia/MiniMax-M3*
+      architectures:
+        - MiniMaxM3SparseForConditionalGeneration
+        - MiniMaxM3VLForConditionalGeneration
+      model_types:
+        - minimax_m3
+    traits:
+      - moe
+      - sparse_attention
+    defaults:
+      # Provenance: op-probe harness on L40, vllm 0.30.0, 2026-10-05 (collector/opharness/results/findings.yaml
+      # minimax_m3_dummy_dense_head_2026_10_05). M3 is three dense-attention layers followed by sparse layers; vllm
+      # sizes the KV manager block to 16 by default, the dense layers' FlashAttention backend accepts MultipleOf(16)
+      # but MiniMaxM3SparseBackend / MiniMaxM3IndexerBackend accept exactly [128] (one sparse block per KV page,
+      # models/minimax_m3/common/sparse_attention.py), so select_common_block_size has no candidate and the engine
+      # dies at "No common block size for 16" (v1/worker/utils.py:386). 128 satisfies every layer's backend. An
+      # all-sparse dummy cut never showed this (its only backend forces 128), which is how the sm90 matrix passed.
+      - match: {backend: vllm}
+        roles: ["*"]
+        backend_args:
+          block-size: 128
   deepseek-v4.1:
     id: deepseek-v4.1
     default_variant: flash

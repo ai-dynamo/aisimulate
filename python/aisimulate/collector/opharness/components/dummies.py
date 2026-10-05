@@ -562,8 +562,17 @@ def variants_m3(cfg: dict) -> list[dict]:
     tc = cfg["text_config"]
     moe = tc["moe_layer_freq"]
     out = []
-    sel = [i for i, f in enumerate(moe) if f == 1][:2]
-    if sel:
+    # The sparse variant keeps the checkpoint's dense head (layers 0..2) in front of the first sparse/MoE
+    # layer. TRT-LLM's MiniMaxM3KVCacheManagerV2 does not read sparse_attention_freq: it allocates the
+    # index-K side cache for `range(3, num_layers)` by checkpoint convention (sparse/minimax_m3/
+    # cache_manager.py:275-303 @1.3.0rc29) while the model layer follows the config list, so a cut whose
+    # sparse layers sit at 0..1 serves a sparse layer with no index cache -> "MiniMaxM3SparseRuntimeBackend
+    # .forward requires ... idx_k_cache" on every SM (sm90 2026-10-01 and sm89 2026-10-04 both read it as a
+    # framework gap). Same class as _ARCH_IMPLICIT_PERIODS: a framework constant the config cannot express.
+    head = [i for i, f in enumerate(moe) if f == 0]
+    sparse = [i for i, f in enumerate(moe) if f == 1]
+    sel = (head[:3] if head[:3] == [0, 1, 2] else []) + sparse[:1]
+    if sparse:
         out.append({"name": "moe_sparse_attn", "sel": sel})
     head = [i for i, f in enumerate(moe) if f == 0][:2]
     if head:

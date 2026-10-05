@@ -2568,10 +2568,10 @@ findings:
       selects; whether the SDK should bill the e4m3 FMHA on sm89 is an owner decision. encoder_attn was DIVERGED for lack
       of evidence; CLOSED the same way as sglang (probe_trtllm runs the synthetic image through Qwen3VisionModel = mm_encoder.visual):
       serving vision attention is `fmha_v2_flash_attention_bf16_64_32_S_qkv_64_sm89_kernel_nl` x24, the collector''s trtllm_mha
-      capture matches, ALIGNED. The two msa gate families the sm90 session left undeclared (MiniMax-M3 does not boot on rc29
-      anywhere) are now declared with capture recipes (trt_msa_ctx / trt_msa_gen) and a FLOOR on every probed SM whose note
-      names the framework gap, so gates_declared is green on every SM and the gate grades for real on the first rc that serves
-      M3; sm90''s 22 real gates are untouched.'
+      capture matches, ALIGNED. The two msa gate families the sm90 session left undeclared are declared with capture recipes
+      (trt_msa_ctx / trt_msa_gen) and GRADE FOR REAL on sm89 (ALIGNED) after the m3 dummy fix - see minimax_m3_dummy_dense_head_2026_10_05:
+      ''MiniMax-M3 does not boot on rc29'' was a dummy artifact, not a framework gap. On the other SMs the gate stays a FLOOR
+      whose note asks for a re-probe with the fixed dummy.'
     applies_to:
     - platform:sm89
     - framework:trtllm-1.3.0rc29
@@ -2679,3 +2679,37 @@ findings:
     - instrument:fetch_inputs
     - instrument:path_diff
     - component:captures
+  minimax_m3_dummy_dense_head_2026_10_05:
+    statement: 'MINIMAX-M3 ON TRTLLM WAS NEVER A FRAMEWORK GAP - the harness dummy was. Diagnosis (L40, trtllm 1.3.0rc29,
+      2026-10-05): a sitecustomize shim around MiniMaxM3SparseRuntimeBackend.forward showed the ONLY None argument is idx_k_cache;
+      MiniMaxM3KVCacheManagerV2.__init__ derives its sparse layer ids from explicit kwargs (no call site passes them), else
+      the executor''s sparse_attention_config (has no layer-id field), else the checkpoint convention `range(3, num_layers)`
+      (sparse/minimax_m3/cache_manager.py:275-303), while the model layer follows the config''s sparse_attention_freq. The
+      old m3 dummy cut kept two sparse/MoE layers renumbered 0..1 (freq [1, 1]) -> every layer sparse for the model, index-K
+      cache for no layer -> the ValueError the sm90 session (findings trtllm_sparse_config, hopper_trtllm_collector_pin_rc20_to_rc29_2026_10_02)
+      and the first sm89 pass both filed as a framework gap. Six config variants (no CUDA graph, no overlap scheduler, attn_backend
+      FLASHINFER, tokens_per_block 64/128) fail identically, because the cut, not the config, is wrong. FIX (dummies.variants_m3):
+      the sparse variant keeps the checkpoint''s 3-layer dense head in front of the first sparse layer (4 layers, freq [0,
+      0, 0, 1]; same class as _ARCH_IMPLICIT_PERIODS - a framework constant the config cannot express). RESULT: MiniMaxAI/MiniMax-M3
+      boots on trtllm rc29 on sm89 (kv auto and fp8), serving sparse attention = Triton `_block_max_score_kernel` + `_sparse_softmax_kernel`
+      (the MSA fmha_sm100 backend is SM100-only), collector trt_msa_ctx/gen captures match: msa_ctx/gen_MiniMax-M3 gates ALIGNED
+      on sm89; the msa FLOOR on the trtllm verdict script is now a re-probe request for sm90/sm100/sm103/sm120, not a framework
+      fact. SIDE EFFECT, vLLM: the all-sparse dummy had also been a FALSE PASS there - with a dense head present vllm 0.30.0
+      dies at ''No common block size for 16'' (v1/worker/utils.py:386): the KV manager defaults to 16, FlashAttention accepts
+      MultipleOf(16), MiniMaxM3SparseBackend / MiniMaxM3IndexerBackend accept exactly [128] (models/minimax_m3/common/sparse_attention.py).
+      A/B on the L40: --block-size 128 boots (facts/ab_vllm_m3/bs128), 64 fails the same way. Generator fact added: models.yaml
+      profile `minimax-m3` with vllm block-size 128 (platform-neutral; the sm90 M3 vllm pass rests on the same all-sparse
+      dummy and the real 60-layer checkpoint has the dense head). sglang: the 4-layer dummy stays capacity-bound on 44 GiB
+      (no KV room after weights) - unchanged verdict class. NVFP4 / MXFP8 M3 variants: platform floors on sm89 as before (trtllm
+      Marlin: ''does not support swiglu_gptoss_style''; sglang MXFP8 dense GEMM needs Blackwell).'
+    applies_to:
+    - platform:sm89
+    - platform:sm90
+    - framework:trtllm-1.3.0rc29
+    - framework:vllm-0.30.0
+    - MiniMaxAI/MiniMax-M3
+    - MiniMaxAI/MiniMax-M3-MXFP8
+    - nvidia/MiniMax-M3-NVFP4
+    - instrument:dummies
+    - component:generator_facts
+    - family:m3

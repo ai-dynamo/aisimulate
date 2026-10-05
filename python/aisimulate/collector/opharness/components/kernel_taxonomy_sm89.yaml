@@ -393,3 +393,17 @@ rules:
   # fla_triton rule above so this one wins (first match).
   - {backend: infra, role: infra,
      match: "^ChunkGatedDeltaRuleFunction$"}
+  # TRT-LLM MiniMax-M3 Triton sparse runtime (sparse/minimax_m3/triton_backend.py; the MSA fmha_sm100 backend is SM100
+  # only) — first served on sm89 2026-10-05 once the m3 dummy kept its dense head; the vllm/sglang M3 Triton kernels
+  # above (_gqa_share_sparse, _index_block_score_kernel ...) carry the same backend label
+  - {backend: triton, role: attention,
+     match: "^_block_max_score_kernel$|^_sparse_softmax_kernel$"}
+  # cuBLAS legacy NN tile (the TN sibling is labelled above); trtllm glue: fused QK-norm+RoPE launcher span,
+  # KV-cache-manager V2 block-offset upload, sampler finish-reasons
+  - {backend: cublas, role: gemm,
+     match: "^gemmSN_NN_kernel$"}
+  - {backend: infra, role: infra,
+     match: "^trtllm::fused_qk_norm_rope$|kv_cache_manager_v2::copyBatchBlockOffsetsToDevice|^_finish_reasons_kernel$"}
+  # torch SDPA flash kernel (the M3 vision tower under the vision probe runs torch's own FA2)
+  - {backend: torch_sdpa, role: attention,
+     match: "^pytorch_flash::flash_fwd_kernel$"}
