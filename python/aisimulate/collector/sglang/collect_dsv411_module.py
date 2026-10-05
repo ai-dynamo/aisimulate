@@ -271,7 +271,10 @@ def build_attention_runner(bench, server, model_config, gpu_id, plan, manifest, 
         generator = torch.Generator(device="cuda").manual_seed(plan["seed"] + 7919 * (gpu_id + 1))
         receipt["kv_seed"] = dict(
             regime="synthetic_kv",
-            **randomize_object_tensors(runner.token_to_kv_pool, generator),
+            # index_k_with_scale_buffer interleaves UE8M0 scales: no random sign bit there (see runtime)
+            **randomize_object_tensors(
+                runner.token_to_kv_pool, generator, sign_bit_for=lambda path: "index_k_with_scale" not in path
+            ),
         )
         torch.cuda.synchronize()
     else:

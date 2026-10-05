@@ -404,10 +404,14 @@ def fill_random(
     return 0
 
 
-def randomize_object_tensors(root, generator, *, depth: int = 6, min_bytes: int = 1 << 20) -> dict:
+def randomize_object_tensors(root, generator, *, depth: int = 6, min_bytes: int = 1 << 20, sign_bit_for=None) -> dict:
     """Walk an object graph (attributes, lists, dicts) and fill_random every CUDA float / fp8 / uint8 tensor
     of at least ``min_bytes`` (cache payloads; fp8 caches are often stored as uint8). Integer index tensors
-    (int32/int64 slot mappings, block tables) are never touched. Returns {tensors, bytes, largest}."""
+    (int32/int64 slot mappings, block tables) are never touched. ``sign_bit_for(path) -> bool`` lets a caller
+    keep bit 7 clear on buffers that interleave UE8M0 (exponent-only) scales with their payload: a random sign
+    bit there is a 2^49..2^64 scale and the kernels that read it overflow (sglang's index_k_with_scale_buffer
+    feeds the fp4 index-logits path for long queries -> NaN from the first indexer layer; observed H20 TP2/TP4
+    2026-10-05 for batch 1, query >= 3072 on short cached prefixes). Returns {tensors, bytes, largest}."""
     import torch
 
     seen, stats, largest = set(), dict(tensors=0, bytes=0), []
@@ -419,7 +423,7 @@ def randomize_object_tensors(root, generator, *, depth: int = 6, min_bytes: int 
         if isinstance(obj, torch.Tensor):
             if obj.numel() * obj.element_size() < min_bytes:
                 return
-            written = fill_random(obj, generator)
+            written = fill_random(obj, generator, sign_bit=sign_bit_for(path) if sign_bit_for else True)
             if written:
                 stats["tensors"] += 1
                 stats["bytes"] += written
