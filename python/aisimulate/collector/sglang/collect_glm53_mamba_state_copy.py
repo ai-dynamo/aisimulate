@@ -59,7 +59,9 @@ conv bf16 / temporal fp32, mamba_utils.py:47-107, GLM's config has no
 mamba_ssm_dtype) in the default per-layer layout of mem_cache/
 memory_pool.py:597-628 (``[num_layers, size + 1, *shape]``; page-major and
 unified pools are opt-in, arg_groups/fields/memory.py:72-89). Timing method:
-see collector/glm53_mamba_state_copy_common.py.
+see collector/glm53_mamba_state_copy_common.py; in addition the worker binds
+itself to its GPU's NUMA node exactly when SGLang serving would
+(_bind_numa_like_serving), because the prefill latency is host bound.
 """
 
 # Audited serving source: lmsysorg/sglang v0.5.20 (tag commit 94602c9c,
@@ -167,6 +169,40 @@ class _ExtendTrackBatch:
         chunk_size = MAMBA_CACHE_CHUNK_SIZE
         lens_to_track = self.mamba_track_seqlens - self.extend_prefix_lens
         return (lens_to_track // chunk_size) * chunk_size
+
+
+_NUMA_BINDING: dict[int, object] = {}
+
+
+def _bind_numa_like_serving(torch, device) -> object:
+    """Bind this worker to its GPU's NUMA node exactly when serving would.
+
+    SGLang 0.5.20 auto-binds every scheduler process to the NUMA node of its
+    GPU: by default it launches the scheduler subprocess under numactl
+    (srt/utils/numa_utils.py:28-77, SGLANG_NUMA_BIND_V2 / SGLANG_AUTO_NUMA_BIND
+    default True, srt/environ.py:1442-1443); the V1 path binds in-process
+    with numa_bind_to_node (srt/managers/scheduler.py:5782-5785). Both take
+    the node from the stock get_numa_node_if_available (numa_utils.py:125-152;
+    no --numa-node override here), which returns None when serving would not
+    bind (no NUMA, no numactl, no permission). The collector applies the
+    in-process binding (numa_utils.py:169-188) to the same node. The sglang_prefill latency is host bound
+    (launches + D2H syncs), so an unbound thread migrating across Grace
+    sockets would time a placement serving never runs. Returns the bound
+    node, or None when serving would not bind either (no NUMA / numactl /
+    permission).
+    """
+    from types import SimpleNamespace
+
+    from sglang.srt.utils.numa_utils import get_numa_node_if_available, numa_bind_to_node
+
+    index = torch.cuda.current_device()
+    if index not in _NUMA_BINDING:
+        node = get_numa_node_if_available(SimpleNamespace(numa_node=None), index)
+        if node is not None:
+            numa_bind_to_node(node)
+        _NUMA_BINDING[index] = node
+        print(f"glm53_mamba_state_checkpoint_copy: cuda:{index} NUMA binding -> {node}", flush=True)
+    return _NUMA_BINDING[index]
 
 
 def _state_pools(torch, device, tp_size, num_layers, num_heads, head_dim, conv_kernel_size, num_slots):
@@ -381,6 +417,7 @@ def run_glm53_mamba_state_copy(
     import torch
 
     torch.cuda.set_device(device)
+    _bind_numa_like_serving(torch, device)
     conv_pool = ssm_pool = flusher = None
     try:
         with torch.inference_mode():
