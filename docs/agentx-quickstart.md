@@ -34,15 +34,21 @@ Functional simulation does not establish hardware performance accuracy.
 `a9c358c5cd0f053054800a72137a4db5f95a1671`. The remaining order is:
 
 1. **A — [Dynamo #15631](https://github.com/ai-dynamo/dynamo/pull/15631):** expose
-   the native policy lifecycle needed by simulation consumers, without upgrading
-   Dynamo's AISimulate dependency.
+   a native manual clock, shared conversation group-key construction and policy
+   queue wakeup support, without upgrading Dynamo's AISimulate dependency.
 2. **B — [AISimulate #306](https://github.com/ai-dynamo/aisimulate/pull/306):**
    provide generic dispatch/time hooks, conversation lineage and the shared replay
    executor, and select the existing Dynamo plugin from routing configuration.
    AISimulate does not depend on or package Dynamo policy code.
-3. **C — [Dynamo #15240](https://github.com/ai-dynamo/dynamo/pull/15240):** wire
-   those APIs into the existing native adapter, align Rust/Python/container
-   dependencies, and qualify the full installed CLI including duration and routing.
+3. **Publish B:** after B merges, publish the Python wheel and Rust crate from
+   the same source revision, including a matching nightly if that is the chosen
+   release channel. Verify that both artifacts are actually installable; source
+   merge alone does not complete this step.
+4. **C — [Dynamo #15240](https://github.com/ai-dynamo/dynamo/pull/15240):** wire
+   those APIs into the existing native adapter, pin the actual published B version
+   consistently in Rust, Python and containers, and qualify the full installed
+   CLI including duration and routing. Development source pins below are for
+   pre-release validation, not a substitute for this publication gate.
 
 [#15149](https://github.com/ai-dynamo/dynamo/pull/15149) and
 [#15625](https://github.com/ai-dynamo/dynamo/pull/15625) are closed. Source merge,
