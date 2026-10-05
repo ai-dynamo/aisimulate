@@ -252,8 +252,11 @@ def create_req_to_token_pool(
     return pool, token_matrix.contiguous()
 
 
-def benchmark_layer(layer, forward_batch, q, k, v, q_rope, k_rope, **kwargs):
-    # Use benchmark_with_power context manager
+def benchmark_layer(layer, forward_batch, q, k, v, q_rope, k_rope, use_cuda_graph: bool = True, **kwargs):
+    # Use benchmark_with_power context manager. use_cuda_graph=False times eagerly: the SM100 trtllm_mla
+    # PREFILL kernel (flashinfer.prefill.trtllm_ragged_attention_deepseek) refuses CUDA-graph capture unless
+    # q_seq_lens_cpu/kv_seq_lens_cpu are passed, and sglang 0.5.21's _run_prefill_kernel does not pass them —
+    # serving never graph-captures prefill either (B200 2026-10-04).
     device = q.device
 
     def kernel_func():
@@ -271,6 +274,7 @@ def benchmark_layer(layer, forward_batch, q, k, v, q_rope, k_rope, **kwargs):
         num_warmups=3,
         num_runs=20,
         repeat_n=1,
+        use_cuda_graph=use_cuda_graph,
     ) as results:
         pass
 
@@ -644,6 +648,8 @@ def run_mla(
     forward_batch.attn_backend = attn_backend
     attn_backend.init_forward_metadata(forward_batch)
 
+    # eager timing for the SM100 trtllm_mla prefill kernel (see benchmark_layer)
+    _eager_prefill = selected_backend == "trtllm_mla" and is_context_phase
     latency, power_stats = benchmark_layer(
         layer,
         forward_batch,
@@ -652,6 +658,7 @@ def run_mla(
         v,
         q_rope_arg,
         k_rope_arg,
+        use_cuda_graph=not _eager_prefill,
         **extra_kwargs,
     )
 
