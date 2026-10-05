@@ -214,7 +214,9 @@ def get_moe_test_cases():
 
             min_latency_mode_options = [False]
 
-            if moe_type == "nvfp4" and get_sm_version() == 100 and common_moe_testcase.num_experts <= 256:
+            if moe_type == "nvfp4" and get_sm_version() in (100, 103) and common_moe_testcase.num_experts <= 256:
+                # SM103 treated as SM100 (owner decision 2026-10-05: "sm103 可以认为等价sm100" —
+                # same capability major, same trtllm-gen kernel family; re-verify on a B300 box).
                 # FIXME: recent version only supports SM100 for min-latency mode.
                 # current support, DS router only support up to 256 experts.
                 # Renormalize router only support <=128 experts. trtllmgen kernels only

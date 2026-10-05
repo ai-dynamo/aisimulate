@@ -123,7 +123,7 @@ Which SM a command works on:
    workflow exactly as on sm90; `workflow_check upgrade_op --param fw=... --param
    version=...` shows honest todos for the new SM until its own evidence exists.
 
-SM103 (B300) is the same capability MAJOR as SM100 and every framework selects
+SM103 (B300) is treated as equivalent to SM100 (owner decision 2026-10-05): it is the same capability MAJOR and every framework selects
 kernels by that family (sglang `major == 10`, trtllm/vllm `in (100, 103)`), so a
 collector that tests `sm == 100` silently measures the wrong lane on B300
 (sglang encoder, fixed 2026-10-05). Branch on the family the framework's own
