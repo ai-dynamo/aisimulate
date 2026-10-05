@@ -1,5 +1,5 @@
 {
- "verdict": "diverged",
+ "verdict": "aligned",
  "repo": "Qwen/Qwen3-VL-2B-Instruct",
  "framework": "sglang",
  "version": "0.5.21",
@@ -23,25 +23,25 @@
   "prefix_caching": false,
   "raw_file": null,
   "candidates": 1,
-  "exec_fingerprint": "8ee7fdd2500f",
+  "exec_fingerprint": "a53bb1bc48ab",
   "evidence_status": "current"
  },
  "collector_backends": [
   "triton"
  ],
- "serving_backends": [],
- "missing_roles": [
-  "attention"
+ "serving_backends": [
+  "cublas",
+  "torch",
+  "triton"
  ],
+ "missing_roles": [],
  "aux_collector_only_roles": [],
  "role_counts": {
   "attention": {
    "collector": 1,
-   "serving": 0,
-   "matched": 0
+   "serving": 1,
+   "matched": 1
   }
  },
- "collector_only_signal": [],
- "kernel_drift": null,
  "evidence": "archive/evidence/pathdiff/<framework-version>/<gate>.json in the probe workspace (full kernel lists)"
 }

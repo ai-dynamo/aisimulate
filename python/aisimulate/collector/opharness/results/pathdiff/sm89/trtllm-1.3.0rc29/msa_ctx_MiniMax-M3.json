@@ -1,0 +1,10 @@
+{
+ "verdict": "platform-floor",
+ "gate_name": "msa_ctx_MiniMax-M3",
+ "repo": "MiniMaxAI/MiniMax-M3",
+ "framework": "trtllm",
+ "version": "1.3.0rc29",
+ "sm": "sm89",
+ "note": "framework gap, every probed SM: trtllm 1.3.0rc29 does not boot MiniMax-M3 (MiniMaxM3SparseRuntimeBackend.forward requires k, v, k_cache, v_cache, idx_k_cache and out_cache_loc alongside idx_q / idx_k / m3_metadata; sm90 + sm89 matrices, findings hopper_trtllm_collector_pin_rc20_to_rc29_2026_10_02 / sm89_trtllm_rc29_probe_2026_10_04), so no serving record can exist; declared so the registry's msa ops are covered and the gate grades for real on the first rc that serves M3",
+ "graded_at": "2026-10-05T03:28:29"
+}

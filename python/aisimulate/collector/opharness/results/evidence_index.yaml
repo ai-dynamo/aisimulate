@@ -48,3 +48,20 @@ bundles:
     rendered_engine_configs: 456
     full_reports: 31
     captures: 31
+- campaign: 2026-10-05_sm89_reprobe
+  created: '2026-10-05T03:29:49'
+  harness_commit: 1915b498
+  bundle: 2026-10-05_sm89_reprobe.b26fb39210b7.tar.gz
+  sha256: b26fb39210b7067e2d9d1bd8d9471e2b9d268c7428f6a56bf9b4c85843e008d9
+  size_bytes: 3700166
+  location: scratch NFS debug/opharness/sm89/ (box-local /tmp/tianhaox/ws_sm89/archive/bundles until the box is
+    recycled)
+  counts:
+    records: 1
+    plans: 27
+    raw: 667
+    fingerprints: 680
+    rendered_engine_configs: 456
+    console_tails: 440
+    full_reports: 31
+    captures: 33

@@ -14,10 +14,10 @@ probe facts may go in. Pins are the PR head's: vllm 0.30.0, sglang 0.5.21, trtll
 | framework | identity matrix (`results/sm89/`) | real gates | declared sm89 floors | `workflow_check upgrade_op --param sm=sm89` |
 |---|---|---|---|---|
 | vllm 0.30.0 | 67 pass / 4 pass+custom / 53 fail (sm90 110/1/13, sm120 98/7/19) | 13 / 13 ALIGNED | 18 | **all 7 steps green** |
-| sglang 0.5.21 | 65 / 0 / 59 (sm90 101/4/19) | 5 / 6 ALIGNED (encoder_attn open) | 23 | red: `path_aligned` (encoder_attn) |
-| trtllm 1.3.0rc29 | 54 / 0 / 70 (the 7 NVFP4 MoE cells pass under the generator's own MARLIN render after the review-pass fix) | 7 / 9 ALIGNED (encoder_attn open, +gate recipe fix verified) | 13 | red: `gates_declared` (pre-existing, every SM), `path_aligned` (encoder_attn) |
+| sglang 0.5.21 | 65 / 0 / 59 (sm90 101/4/19) | 6 / 6 ALIGNED (encoder_attn closed by the vision probe) | 23 | **all 7 steps green** |
+| trtllm 1.3.0rc29 | 54 / 0 / 70 (the 7 NVFP4 MoE cells pass under the generator's own MARLIN render) | 9 / 9 ALIGNED (encoder_attn closed by the vision probe) | 15 (incl. the 2 msa framework-gap floors) | **all 7 steps green** |
 
-All 124 cells of every matrix carry a cause; every fail is root-caused in `results/findings.yaml` (5 new entries `sm89_*`).
+After the probe change (vision forward) sglang and trtllm were re-probed in full; the matrices came back with identical pass/fail counts and causes except five NVFP4 DSA trtllm cells (DeepSeek-V3.2-NVFP4, GLM-5/5.1/5.2/5.3-NVFP4) whose first wall moved from the MoE selection (now MARLIN via the generator) to the next one, the DeepGEMM sparse-attention arch assert. All 124 cells of every matrix carry a cause; every fail is root-caused in `results/findings.yaml` (5 new entries `sm89_*`).
 Fail classes in short: capacity (44 GiB), sparse-MLA has no backend below SM90 (vllm 14 / sglang 14), DeepGEMM arch (DeepSeek-V4), FP8-block / MXFP4 MoE has **no trtllm implementation on SM89** (26 cells),
 flashinfer's cutlass fused-MoE JIT does not compile for sm_89 (sglang, 5 Nemotron-3 cells), shared 101376 B smem (4 NVFP4 MLA cells, same as sm120), image gaps (transformers/fla), generator rejects (12, same as sm90/sm120).
 

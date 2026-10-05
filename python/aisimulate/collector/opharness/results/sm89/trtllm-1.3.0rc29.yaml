@@ -380,9 +380,8 @@ results:
       reason:'
   nvidia/DeepSeek-V3.2-NVFP4:
     verdict: fail
-    cause: 'platform floor (trtllm MoE: no implementation for this quant on this SM)'
-    error: 'ValueError: no MoE implementation can serve this layer. MoE resolution: none (via failed, requested CUTLASS, env 1f8017956ed914ab); turned down: CutlassFusedMoE=sm_unsupported Each candidate''s
-      reason:'
+    cause: platform floor (DeepGEMM needs SM90+)
+    error: 'RuntimeError: Assertion error (_deps/deepgemm-src/csrc/apis/attention.hpp:270): Unsupported architecture'
   nvidia/DeepSeek-V4-Flash-NVFP4:
     verdict: fail
     cause: 'platform floor (SM90+/Blackwell-only kernel: sparse attention, MXFP, FP4, DeepSeek-V4)'
@@ -398,28 +397,24 @@ results:
       this mod
   nvidia/GLM-5-NVFP4:
     verdict: fail
-    cause: 'platform floor (trtllm MoE: no implementation for this quant on this SM)'
-    error: 'ValueError: no MoE implementation can serve this layer. MoE resolution: none (via failed, requested CUTLASS, env 1f8017956ed914ab); turned down: CutlassFusedMoE=sm_unsupported Each candidate''s
-      reason:'
+    cause: platform floor (DeepGEMM needs SM90+)
+    error: 'RuntimeError: Assertion error (_deps/deepgemm-src/csrc/apis/attention.hpp:270): Unsupported architecture'
   nvidia/GLM-5.1-NVFP4:
     verdict: fail
-    cause: 'platform floor (trtllm MoE: no implementation for this quant on this SM)'
-    error: 'ValueError: no MoE implementation can serve this layer. MoE resolution: none (via failed, requested CUTLASS, env 1f8017956ed914ab); turned down: CutlassFusedMoE=sm_unsupported Each candidate''s
-      reason:'
+    cause: platform floor (DeepGEMM needs SM90+)
+    error: 'RuntimeError: Assertion error (_deps/deepgemm-src/csrc/apis/attention.hpp:270): Unsupported architecture'
   nvidia/GLM-5.2-NVFP4:
     verdict: fail
-    cause: 'platform floor (trtllm MoE: no implementation for this quant on this SM)'
-    error: 'ValueError: no MoE implementation can serve this layer. MoE resolution: none (via failed, requested CUTLASS, env 1f8017956ed914ab); turned down: CutlassFusedMoE=sm_unsupported Each candidate''s
-      reason:'
+    cause: platform floor (DeepGEMM needs SM90+)
+    error: 'RuntimeError: Assertion error (_deps/deepgemm-src/csrc/apis/attention.hpp:270): Unsupported architecture'
   nvidia/GLM-5.3-Flash-NVFP4:
     verdict: fail
     cause: generator rejects
     error: 'golden render failed: aiconfigurator generate: error: argument --model-path/--model: ''nvidia/GLM-5.3-Flash-NVFP4'' is not a valid HuggingFace model path or local'
   nvidia/GLM-5.3-NVFP4:
     verdict: fail
-    cause: 'platform floor (trtllm MoE: no implementation for this quant on this SM)'
-    error: 'ValueError: no MoE implementation can serve this layer. MoE resolution: none (via failed, requested CUTLASS, env 1f8017956ed914ab); turned down: CutlassFusedMoE=sm_unsupported Each candidate''s
-      reason:'
+    cause: platform floor (DeepGEMM needs SM90+)
+    error: 'RuntimeError: Assertion error (_deps/deepgemm-src/csrc/apis/attention.hpp:270): Unsupported architecture'
   nvidia/Gemma-4-26B-A4B-NVFP4:
     verdict: fail
     cause: platform floor (trtllm MMHA has no kernel for this head size on this SM)
@@ -476,8 +471,7 @@ results:
   nvidia/MiniMax-M3-NVFP4:
     verdict: fail
     cause: 'platform floor (trtllm MoE: no implementation for this quant on this SM)'
-    error: 'ValueError: no MoE implementation can serve this layer. MoE resolution: none (via failed, requested CUTLASS, env 1f8017956ed914ab); turned down: CutlassFusedMoE=sm_unsupported Each candidate''s
-      reason:'
+    error: 'ValueError: no MoE implementation can serve this layer. MoE resolution: none (via failed, requested MARLIN, env 1f8017956ed914ab); turned down: MarlinCudaNvfp4Impl=activation_unsupported, MarlinCudaW4'
   nvidia/Muse-Glimmer-30B-NVFP4:
     verdict: fail
     cause: image gap (framework image lacks the transformers version / module this model needs)
@@ -549,7 +543,7 @@ results:
   nvidia/Nemotron-H-56B-Base-8K:
     verdict: pass
     evidence: current
-    attention: trtllm_mha + _state_passing_fwd_kernel
+    attention: trtllm_mha + _chunk_state_fwd_kernel
     kv_allocated: null
     topology: tp1
   nvidia/Qwen3-235B-A22B-NVFP4:
