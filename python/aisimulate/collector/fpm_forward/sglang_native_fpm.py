@@ -50,6 +50,7 @@ STATE_PROTOCOL = "glm53flash_sglang_radix_real_seed_v1"
 TIMING_BOUNDARY = "sglang_native_fpm_rank0_device_timer_wall_time"
 MESSAGE_WAIT_SECONDS = 10.0
 QUIET_SECONDS = 0.5
+MERGED_INTERVAL_RATIO = 1.5
 
 
 def log(message: str) -> None:
@@ -267,14 +268,21 @@ def select_measured(point: dict, messages: list[dict]) -> tuple[dict | None, str
     ]
     kv, step = point["total_kv_read_tokens"], MEASURED_DECODE_STEP
     # Native decode metrics sum seq_lens (prior tokens + the decoded token):
-    # decode step j of this round has sum K - (step - j) * B + B.
-    expected = [kv + batch - (step - j) * batch for j in range(1, step + 1)]
+    # decode step j of this round has sum K - (step - j) * B + B. The native
+    # publisher skips an emission whose DeviceTimer interval has not completed
+    # yet and folds it into the next one, so require the measured step and both
+    # neighbours as separate all-B messages, and a measured wall time that is
+    # not a merged double interval (neighbours bound it).
+    expected = [kv + batch * (j - step + 1) for j in (step - 1, step, step + 1)]
     sums = [m["scheduled_requests"]["sum_decode_kv_tokens"] for m in decodes]
-    starts = [i for i in range(len(decodes) - step + 1) if sums[i : i + step] == expected]
-    run = decodes[starts[0] : starts[0] + step] if len(starts) == 1 else []
+    starts = [i for i in range(len(decodes) - 2) if sums[i : i + 3] == expected]
+    run = decodes[starts[0] : starts[0] + 3] if len(starts) == 1 else []
     if not run or any(m["scheduled_requests"]["num_decode_requests"] != batch for m in run):
-        return None, f"no unique all-B lockstep decode run {expected} in {sums}"
-    measured = decodes[starts[0] + step - 1]
+        return None, f"no unique all-B decode run {expected} around the measured step in {sums}"
+    before, measured, after = run
+    bound = MERGED_INTERVAL_RATIO * min(before["wall_time"], after["wall_time"])
+    if measured["wall_time"] > bound:
+        return None, f"measured decode message looks merged: {[m['wall_time'] for m in run]}"
     return measured, None
 
 

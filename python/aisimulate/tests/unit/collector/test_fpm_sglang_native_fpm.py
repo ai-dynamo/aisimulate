@@ -29,13 +29,20 @@ def test_decode_attribution_ignores_previous_round_stragglers():
     # arrives first; the measured fourth step has sum K + B.
     messages = [message(1, decode=(2, 250)), message(2, prefill=(2, 4, 2 * 116))]
     messages += [message(3 + j, decode=(2, 2 * (120 + j)), wall=0.001 * (j + 1)) for j in range(6)]
+    messages[3:] = [dict(m, wall_time=0.004) for m in messages[3:]]
     measured, reason = drv.select_measured(point, messages)
-    assert reason is None and measured["sequence"] == 6 and measured["wall_time"] == pytest.approx(0.004)
+    assert reason is None and measured["sequence"] == 6
+    # A missing first decode emission (folded into the next one) does not
+    # matter, but a merged measured interval is rejected.
+    assert drv.select_measured(point, messages[:2] + messages[3:])[1] is None
+    merged = [dict(m) for m in messages]
+    merged[5]["wall_time"] = 0.008
+    assert "merged" in drv.select_measured(point, merged)[1]
 
 
 def test_decode_attribution_rejects_out_of_lockstep_batches():
     point = {"phase": "decode", "batch_size": 2, "total_kv_read_tokens": 2 * 122}
-    messages = [message(3 + j, decode=(1 if j == 1 else 2, 2 * (120 + j))) for j in range(6)]
+    messages = [message(3 + j, decode=(1 if j == 3 else 2, 2 * (120 + j))) for j in range(6)]
     assert drv.select_measured(point, messages)[0] is None
 
 
