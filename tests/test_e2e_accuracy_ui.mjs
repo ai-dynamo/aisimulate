@@ -941,3 +941,26 @@ test("hardware MAPE weights individual points across models and respects exclusi
   app.run('state.tab = "details"; renderView()');
   assert.equal(app.element("hardware-summary").hidden, true);
 });
+
+
+test("model views omit zero-AISim models but retain failures in mixed-success models", () => {
+  const data = withTopology();
+  const hidden = structuredClone(data.models[0]);
+  hidden.model = "hidden/model";
+  hidden.hf_model_paths = [hidden.model];
+  hidden.aisimulate.points = 0;
+  data.models.unshift(hidden);
+  const app = harness();
+  app.set("fixture", data);
+  app.run("state.data = fixture; renderSummary(); renderMatrix(); state.tab = 'details'; renderView()");
+  assert.equal(app.run("visibleModels().length"), 1);
+  assert.doesNotMatch(app.element("matrix-body").innerHTML, /hidden\/model/);
+  assert.doesNotMatch(app.element("detail-filters").innerHTML, /hidden\/model/);
+  assert.equal(app.run("selectedGpu().model.model"), data.models[1].model);
+  assert.match(app.element("details-view").innerHTML, /Operating points \(3\)/);
+  assert.match(app.element("details-view").innerHTML, /failed \/ success/);
+  assert.equal(app.run("state.data.models.length"), 2);
+  app.run("state.data.models.forEach(model => model.aisimulate.points = 0); renderMatrix(); renderView()");
+  assert.match(app.element("matrix-body").innerHTML, /No models with successful AISim predictions/);
+  assert.equal(app.element("detail-filters").innerHTML, "");
+});

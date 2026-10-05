@@ -105,10 +105,14 @@ function accuracyCard(label, metrics, className) {
     </article>`;
 }
 
+function visibleModels() {
+  return state.data?.models.filter(model => model.aisimulate.points > 0) ?? [];
+}
+
 function renderSummary() {
   const totals = state.data.totals;
   summaryGrid.innerHTML = [
-    basicCard("Models", String(totals.models), true),
+    basicCard("Models", String(visibleModels().length), true),
     basicCard("AIC (legacy CLI) points", totals.aic.points.toLocaleString()),
     basicCard("AISim points", totals.aisimulate.points.toLocaleString()),
     basicCard("GPU SKUs", String(totals.gpu_skus.length)),
@@ -121,7 +125,7 @@ function renderSummary() {
   ].join("");
   const groups = new Map();
   const hardwareGroups = new Map();
-  for (const model of state.data.models) for (const workload of model.workloads) for (const gpu of workload.gpus) {
+  for (const model of visibleModels()) for (const workload of model.workloads) for (const gpu of workload.gpus) {
     for (const topology of gpu.topologies || []) {
       if (!hardwareGroups.has(gpu.gpu)) hardwareGroups.set(gpu.gpu, []);
       hardwareGroups.get(gpu.gpu).push(topology);
@@ -305,13 +309,13 @@ function modelRows(model) {
 }
 
 function renderMatrix() {
-  const models = [...state.data.models].sort((left, right) => {
+  const models = visibleModels().sort((left, right) => {
     const compared = compareValues(sortValue(left), sortValue(right));
     return compared || left.model.localeCompare(right.model, undefined, { numeric: true });
   });
   matrixBody.innerHTML = models.length
     ? models.map(modelRows).join("")
-    : '<tr><td colspan="8" class="empty-cell">No accuracy data available.</td></tr>';
+    : '<tr><td colspan="8" class="empty-cell">No models with successful AISim predictions match this selection.</td></tr>';
 }
 
 function renderSortState() {
@@ -398,7 +402,7 @@ function focusData(property, value) {
 function selectedGpu() {
   if (!state.data || !state.selection) return null;
   const [modelName, workloadId, gpuName] = JSON.parse(state.selection);
-  const model = state.data.models.find((item) => item.model === modelName);
+  const model = visibleModels().find((item) => item.model === modelName);
   const workload = model?.workloads.find((item) => item.identity === workloadId);
   const gpu = workload?.gpus.find((item) => item.gpu === gpuName);
   return gpu ? { model, workload, gpu } : null;
@@ -932,7 +936,7 @@ function restoreView(params) {
 
 function selectDefault() {
   if (selectedGpu()) return;
-  const model = state.data?.models[0], workload = model?.workloads[0], gpu = workload?.gpus[0];
+  const model = visibleModels()[0], workload = model?.workloads[0], gpu = workload?.gpus[0];
   if (gpu) {
     state.selection = JSON.stringify([model.model, workload.identity, gpu.gpu]);
     state.expandedWorkloads.add(JSON.stringify([model.model, workload.identity]));
@@ -977,7 +981,7 @@ function renderDetails() {
   state.topologyId = topology?.id || null;
   updateOutlierCounts(topology ? [topology] : []);
   const options = (items, key) => items.map(v => [v[key], v[key]]);
-  toolbar.innerHTML = filterField("model", "Model", state.data.models.map(m => [m.model, modelLabel(m)]), model.model) +
+  toolbar.innerHTML = filterField("model", "Model", visibleModels().map(m => [m.model, modelLabel(m)]), model.model) +
     filterField("workload", "ISL / OSL", model.workloads.map(w => [w.identity, w.identity.replace(":", " / ")]), workload.identity) +
     filterField("gpu", "GPU", options(workload.gpus, "gpu"), gpu.gpu) +
     ["precision", "framework", "serving"].map(key => filterField(key, key[0].toUpperCase() + key.slice(1),
@@ -987,7 +991,7 @@ function renderDetails() {
   toolbar.querySelectorAll("select").forEach(select => select.addEventListener("change", event => {
     const key = select.dataset.filter, value = event.target.value;
     let nextModel = model, nextWorkload = workload, nextGpu = gpu;
-    if (key === "model") { nextModel = state.data.models.find(m => m.model === value); nextWorkload = nextModel.workloads.find(w => w.identity === workload.identity) || nextModel.workloads[0]; }
+    if (key === "model") { nextModel = visibleModels().find(m => m.model === value); nextWorkload = nextModel.workloads.find(w => w.identity === workload.identity) || nextModel.workloads[0]; }
     if (key === "workload") nextWorkload = model.workloads.find(w => w.identity === value);
     nextGpu = nextWorkload.gpus.find(g => g.gpu === (key === "gpu" ? value : gpu.gpu)) || nextWorkload.gpus[0];
     state.selection = JSON.stringify([nextModel.model, nextWorkload.identity, nextGpu.gpu]);

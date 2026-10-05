@@ -21,6 +21,10 @@ can still be sorted independently. New exports group models by their exact full
 Hugging Face ID, keeping checkpoint variants separate. Historical aggregates
 retain their grouping and display all recorded HF IDs, or their original name
 when no HF ID was recorded.
+The overview and model picker include only models with successful AISim
+predictions under the active filters. Mixed-success models retain their failed
+operating points. The Models card counts visible models; overall predictor
+accuracy and coverage retain the full evaluated cohort, including hidden models.
 The operating-point table keeps each predictor beside its latency errors and
 shows configuration evidence (`verified` or `estimated`) plus separate replay
 and AIC statuses. Run links and chart metrics are also exported for the resolved
