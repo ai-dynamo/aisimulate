@@ -58,8 +58,9 @@ A/B/C integration. Earlier A/B Python-bridge results do not validate this path.
 
 ## 1. Install a matching C development build
 
-Until C is qualified and matching packages are published, this is a development
-installation procedure. Use a C revision that pins the new B API. Installing A's
+The source pair below passed installed end-to-end qualification, but matching
+packages have not been published. This remains a development installation
+procedure. Use the pinned C revision and its matching B API. Installing A's
 runtime wheel alone or an arbitrary nightly does not supply the required runner.
 The three distributions below already exist: `aisimulate`, `ai-dynamo-runtime`,
 and `ai-dynamo`. No additional policy package or Cargo lockfile is needed.
@@ -69,8 +70,11 @@ repositories, and Dynamo's CPU build prerequisites (C/C++ compiler and linker,
 `pkg-config`, OpenSSL development headers, CMake and protobuf compiler). No running
 Dynamo service, model weights, or physical GPU is required.
 
-The commands capture the current C source and build the exact AISimulate revision
-it pins. Retain both immutable revisions and wheel hashes with the run results.
+The commands use qualified C source `0be36a28b7814bc73ffeafb678b040733c76b0b0`
+and build the AISimulate source it pins:
+`91b8ef98ac056654902751a6ade8585c4cf9439b`. The validated native runtime was
+built at `ac77d287a27806825f72d1a71f2f72b2f7638ed8`; the later C commit changes
+only test worker configuration. Retain both revisions and wheel hashes with results.
 A version number alone does not identify an unreleased source build.
 
 ```bash
@@ -80,7 +84,7 @@ uv pip install --python /tmp/agentx-quickstart/venv/bin/python 'maturin>=1.12,<2
 
 git clone https://github.com/ai-dynamo/dynamo.git /tmp/agentx-quickstart/dynamo
 git -C /tmp/agentx-quickstart/dynamo fetch origin pull/15240/head
-git -C /tmp/agentx-quickstart/dynamo checkout --detach FETCH_HEAD
+git -C /tmp/agentx-quickstart/dynamo checkout --detach 0be36a28b7814bc73ffeafb678b040733c76b0b0
 agentx_dynamo_rev=$(git -C /tmp/agentx-quickstart/dynamo rev-parse HEAD)
 agentx_aisim_rev=$(/tmp/agentx-quickstart/venv/bin/python - <<'PYTHON'
 import tomllib
@@ -121,10 +125,10 @@ PYTHON
 Dependency resolution remains strict: the Rust core pin, installed AISimulate
 Python package and container source wheel must agree. The plugin also checks its
 replay API compatibility. Do not bypass these checks with an editable install,
-path override or dependency-ignore flag. The full CLI tests and 600/3,600-second
-runs must use these same installed artifacts before this source pair is described
-as qualified. The checks above verify discovery only; they are not end-to-end
-routing acceptance.
+path override or dependency-ignore flag. The source pair above passed 112
+unit/integration/dependency checks and 50 end-to-end cases, including real CLI
+routing, after normal installation of all three wheels. The checks above verify
+discovery only; the installed 600/3,600-second results are recorded below.
 
 ## 2. Download a reproducible Weka workload
 
@@ -334,11 +338,19 @@ for the detailed contract and qualification boundaries.
 | `prediction.json` | Aggregate predictions, snapshot information, preparation/barrier audit, profile duration/cutoff accounting, and play outcomes |
 | `requests.jsonl` | Measured profile requests, including per-request timing and identity |
 
-C's installed validation must demonstrate that the native Dynamo policy actually
-ran, that conversation/sibling bindings retain the selected worker and DP rank
-in each active pool, and that these decisions agree with per-request
-`routing_history`. Inspect the router evidence exported by that qualified C
-revision. Worker selection or an overlap score alone does not prove cache reuse.
+`routing_policy.roles` records each pool's `native_policy`
+(`dynamo.DefaultWorkerSelector`) and `dynamo_revision`. Its `decisions` contain
+`request_id`, `group_key`, `worker_id`, `dp_rank`, `binding_reused` and
+`overlap_blocks`; match measured decisions to each request's `routing_history`.
+`decision_count` also includes preparation requests; `post_dispatch_checks` counts
+accepted dispatches and `dispatch_aborts` counts failed dispatches.
+`physical_kv_events` counts simulated engine events delivered to that pool's
+router index. Plain P/D decode selection is load-based and reports zero such
+events; this does not imply zero destination-cache reuse. Compare
+`destination_activated_ms - destination_reserved_ms` between `destination_missing`
+and `full_prompt` transfer timing, with a cache-disabled control. Imported KV
+reuse can leave `decode_reused_input_tokens` at zero on this path.
+Worker selection or an overlap score alone does not prove cache reuse.
 
 Check `agentic_phases` for preparation success and barrier state, and
 `agentic_play_outcomes` for completed or incomplete plays. Check `agentic_profile`
@@ -356,17 +368,23 @@ router overlap is not a substitute for cache hits. The 162 source requests
 include initial snapshot history, and the corpus can be replayed repeatedly as
 lanes recycle, so this is not the expected measured request count.
 
-The required C qualification covers vLLM/SGLang, aggregated/P-D, session/sibling
-affinity, duration, actual worker/DP bindings, and physical cache reuse.
-Cache-disabled controls must report zero actual reuse. Run the exact YAML and
-two-play subset at both 600 and 3,600 seconds, record completed requests and
-admission cutoffs, and check cancellations and unsettled server work. Preparation
-requests must be excluded from the measured cohort.
+The installed end-to-end cases cover vLLM/SGLang, aggregated/P-D, session/sibling
+bindings, duration, physical prefix reuse, cache-disabled controls with zero
+reuse, and a separate decode destination-cache transfer comparison for both
+backends. With the exact YAML and two-play subset above, automatic stack selection
+(no `--stack`) produced these fresh native-adapter results on October 5, 2026:
 
-The earlier Python-bridge implementation's counts are historical and have been
-removed from this walkthrough; C must supply fresh results for its native adapter
-path. Until then, this full example is pending C qualification, not a verified
-installation or a hardware-accuracy measurement.
+| Admission window | Successful measured requests | Matched measured worker/DP routes | Actual prefix reuse | Prefill KV events |
+| --- | --- | --- | --- | --- |
+| 600 s | 42 | 84 | 96.170902% | 81 |
+| 3,600 s | 219 | 438 | 95.649742% | 302 |
+
+Both runs exclude 22 preparation requests from the measured cohort and finish
+with zero canceled or unsettled requests. The report captures 128/482 native
+routing decisions respectively, including preparation in both P/D pools. Decode
+KV-event counts are zero on this load-based decode path; the independent transfer
+comparison establishes actual destination-cache reuse. These are verified source
+builds, not a published paired release or a hardware-accuracy measurement.
 
 To compare against a cold snapshot, repeat the command with a separate output
 directory and add:
@@ -387,12 +405,13 @@ seeded snapshots for the initial lanes.
 
 This development source pair supports offline vLLM/SGLang aggregated and P/D
 simulation, including attention DP, seeded snapshots, saved-frontier warmup and
-duration profiles. The built-in routing path supports offline `predict` with
-static pools. Routing with `recommend`, Planner scaling, periodic telemetry,
-authored DP pins, custom policy classes, selector seeds, online execution or
-unsupported backends is rejected. Workload/snapshot seeds remain supported. Other explicit
-stacks retain their own capabilities; C still needs independent compatibility and
-installation acceptance. This feature has not yet been published as a paired release.
+duration profiles. The existing Dynamo adapter supports offline `predict` with
+static pools and preserves optional capture/telemetry. Routing with `recommend`,
+Planner scaling, authored DP pins, custom policy classes, selector seeds, online
+execution or unsupported backends is rejected. Workload/snapshot seeds remain
+supported. Other explicit
+stacks retain their own capabilities. Required CI/review, source merges and an
+actual matching published release remain separate from this installed qualification.
 
 The KV index receives physical simulated engine store/remove events. Cache reuse
 is still simulated behavior, not measured GPU performance. The existing
