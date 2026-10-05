@@ -1370,7 +1370,9 @@ def test_campaign_does_not_infer_measured_output_from_total(monkeypatch, output)
     monkeypatch.setattr(campaign, "predictor_module_names", lambda _: (api, adapter_name))
     monkeypatch.setattr(campaign.importlib.metadata, "distribution", lambda _: SimpleNamespace(files=[]))
     monkeypatch.setitem(sys.modules, "aisimulate.runner", SimpleNamespace(EngineReplayRunnerFactory=object))
-    worker = SimpleNamespace(tp_size=4, pp_size=1, attention_dp_size=1, moe_tp_size=4, moe_ep_size=1)
+    worker = SimpleNamespace(
+        tp_size=4, pp_size=1, attention_dp_size=1, moe_tp_size=4, moe_ep_size=1, replicas=1, gpus_per_replica=4
+    )
     request = SimpleNamespace(
         model=SimpleNamespace(path="example/model"), topology=SimpleNamespace(kind="agg", worker=worker)
     )
@@ -1859,6 +1861,7 @@ def test_source_resolved_prediction_preserves_settings_and_independent_outcomes(
 ):
     point = resolved_point(framework, disagg)
     point["source_row"]["github_run_id"] = "28196140241"
+    point["benchmark"]["metrics"].update(mean_e2el=2.5, tput_per_gpu=600, output_tput_per_gpu=250)
     calls = []
 
     def estimate(**kwargs):
@@ -1933,6 +1936,19 @@ def test_source_resolved_prediction_preserves_settings_and_independent_outcomes(
         assert result["row"]["aic_output_per_gpu"] == 3200 / gpus
         assert result["row"]["aic_e2e_ms"] == 3040
         assert result["row"]["aic_total_per_gpu"] is None
+
+    row = result["row"]
+    total_gpus = 8 if disagg else 4
+    assert row["silicon_github_run_id"] == "28196140241"
+    assert row["silicon_e2e_ms"] == 2500
+    assert row["silicon_total_per_gpu"] == 600
+    assert row["silicon_output_per_gpu"] == 250
+    assert row["dynamo_e2e_ms"] == 3200
+    assert row["dynamo_output_per_gpu"] == 2400 / total_gpus
+    assert row["dynamo_total_per_gpu"] == 21000 / total_gpus
+    assert row.get("aic_e2e_ms") == (None if baseline_fails else 3040)
+    assert row.get("aic_output_per_gpu") == (None if baseline_fails else 3200 / total_gpus)
+    assert row["configuration"] == {"backend_version": "database-2.0", "forward_model": "op_level"}
 
 
 def test_configuration_quality_is_public_and_counts_are_checked(artifact):

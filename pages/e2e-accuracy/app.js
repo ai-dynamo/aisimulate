@@ -439,7 +439,7 @@ function pointTable(topology) {
   return `<details class="point-details" open><summary>Operating points (${topology.points.length})</summary>
     <div class="table-scroll" tabindex="0" role="region" aria-label="Operating point details"><table class="point-table">
     <caption>${absolute ? "TTFT / TPOT in milliseconds and absolute percentage errors." : "Relative TTFT / TPOT and absolute percentage errors. Ratios use measured latency at the lowest concurrency as 1×."}</caption>
-    <thead><tr><th>Concurrency</th><th>Measured TTFT / TPOT</th><th>AISim TTFT / TPOT</th><th>AISim TTFT / TPOT error</th><th>AIC (legacy CLI) TTFT / TPOT</th><th>AIC (legacy CLI) TTFT / TPOT error</th><th>InfX CI run</th><th>Replay status</th><th>AISim prediction error</th></tr></thead>
+    <thead><tr><th>Concurrency</th><th>Measured TTFT / TPOT</th><th>AISim TTFT / TPOT</th><th>AISim TTFT / TPOT error</th><th>AIC (legacy CLI) TTFT / TPOT</th><th>AIC (legacy CLI) TTFT / TPOT error</th><th>Configuration</th><th>InfX CI run</th><th>Replay / AIC status</th><th>AISim prediction error</th></tr></thead>
     <tbody>${topology.points.map((point) => {
       const ratios = (name) => ["ttft", "tpot"].map((metric) => {
         const value = point[name][`${metric}_${absolute ? "ms" : "relative"}`];
@@ -448,7 +448,7 @@ function pointTable(topology) {
       const errors = (name) => `${formatPercent(point[name].ttft_error_pct)} / ${formatPercent(point[name].tpot_error_pct)}`;
       const run = point.infx_run_id ? `<a href="https://github.com/SemiAnalysisAI/InferenceX/actions/runs/${escapeHtml(point.infx_run_id)}" target="_blank" rel="noopener noreferrer">${escapeHtml(point.infx_run_id)}</a>` : "—";
       const failure = point.status === "success" ? "—" : point.aisim_error || "Not recorded";
-      return `<tr><td>${point.concurrency}</td><td>${ratios("measured")}</td><td>${ratios("aisimulate")}</td><td>${errors("aisimulate")}</td><td>${ratios("aic")}</td><td>${errors("aic")}</td><td>${run}</td><td>${escapeHtml(point.status)}</td><td class="prediction-error">${escapeHtml(failure)}</td></tr>`;
+      return `<tr><td>${point.concurrency}</td><td>${ratios("measured")}</td><td>${ratios("aisimulate")}</td><td>${errors("aisimulate")}</td><td>${ratios("aic")}</td><td>${errors("aic")}</td><td>${escapeHtml(point.configuration_quality ?? point.configuration?.configuration_quality ?? "Not recorded")}</td><td>${run}</td><td>${escapeHtml(point.status)} / ${escapeHtml(point.aic_status ?? "success")}</td><td class="prediction-error">${escapeHtml(failure)}</td></tr>`;
     }).join("")}</tbody></table></div></details>`;
 }
 
@@ -1069,7 +1069,7 @@ function bindCharts(container, topology) {
     const open = () => {
       const point = topology.points[Number(marker.dataset.point)], selected = selectedGpu();
       document.getElementById("point-content").innerHTML = `<h2 id="point-title">Concurrency ${point.concurrency}</h2><p>${escapeHtml(topologyLabel(topology))}</p><p>${escapeHtml(selected.model.model)} · ${escapeHtml(selected.workload.identity)} · ${escapeHtml(selected.gpu.gpu)} · ${escapeHtml(point.status)}</p>
-        <details open><summary>Recorded prediction configuration</summary><table><tbody>${Object.entries(point.configuration || {}).map(([key,value]) => `<tr><th>${escapeHtml(key)}</th><td>${escapeHtml(value ?? "Not recorded")}</td></tr>`).join("")}</tbody></table><p>Silicon server knobs are not recorded by this campaign; prediction settings do not establish server-knob parity.</p></details>
+        <details open><summary>Recorded prediction configuration</summary><table><tbody>${Object.entries(point.configuration || {}).map(([key,value]) => `<tr><th>${escapeHtml(key)}</th><td>${escapeHtml(value ?? "Not recorded")}</td></tr>`).join("")}</tbody></table><p>This table contains a subset of prediction settings. Configuration evidence is labeled separately; recorded settings alone do not establish server-knob parity.</p></details>
         <table><thead><tr><th>Series</th><th>TTFT ms</th><th>TPOT ms</th><th>E2E ms</th><th>Output tok/s/GPU</th><th>Total tok/s/GPU</th></tr></thead><tbody>${Object.entries(SERIES_NAMES).map(([key,name]) => `<tr><th>${name}</th>${["ttft_ms", "tpot_ms", "e2e_ms", "output_per_gpu", "total_per_gpu"].map(f => `<td>${numeric(point[key][f])}</td>`).join("")}</tr>`).join("")}</tbody></table><p>— means this value was not recorded. Measured output throughput is unavailable when no output rate was recorded.</p>`;
       document.getElementById("point-dialog").showModal();
     };

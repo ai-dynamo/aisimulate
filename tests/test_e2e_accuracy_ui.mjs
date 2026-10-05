@@ -124,7 +124,7 @@ test("operating points link public InfX runs and allow missing historical proven
   app.set("topology", topology);
   assert.doesNotThrow(() => app.run("validateSummary(valid)"));
   const html = app.run("pointTable(topology)");
-  assert.match(html, /<th>InfX CI run<\/th><th>Replay status<\/th><th>AISim prediction error<\/th><\/tr><\/thead>/);
+  assert.match(html, /<th>InfX CI run<\/th><th>Replay \/ AIC status<\/th><th>AISim prediction error<\/th><\/tr><\/thead>/);
   assert.match(html, /href="https:\/\/github.com\/SemiAnalysisAI\/InferenceX\/actions\/runs\/26696231118"/);
   assert.equal((html.match(/actions\/runs\//g) || []).length, 1);
   assert.match(html, /<td>—<\/td>/);

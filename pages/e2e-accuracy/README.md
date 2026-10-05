@@ -16,6 +16,13 @@ visible in coverage accounting.
 ## Views and filters
 
 Display names are **AISim** and **AIC (legacy CLI)** throughout the E2E page.
+The operating-point table keeps each predictor beside its latency errors and
+shows configuration evidence (`verified` or `estimated`) plus separate replay
+and AIC statuses. Run links and chart metrics are also exported for the resolved
+source policy. Measured per-GPU throughput comes from recorded measurements;
+missing predictor throughput or E2E latency stays unavailable. The configuration
+popup shows only the recorded subset of prediction settings.
+
 Internal predictor IDs and stored metric fields remain unchanged. Accuracy
 cards explain when a snapshot or filter selection has no included predictions;
 missing predictions never become zero errors. Research runs without a legacy

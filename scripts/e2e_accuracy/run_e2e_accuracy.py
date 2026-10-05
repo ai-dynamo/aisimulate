@@ -538,6 +538,8 @@ def predict_resolved_point(point):
         "silicon_ttft_ms": bench["metrics"]["mean_ttft"] * 1000,
         "silicon_tpot_ms": bench["metrics"]["mean_tpot"] * 1000,
         "configuration_quality": deployment["configuration_quality"],
+        "silicon_github_run_id": point["source_row"].get("github_run_id"),
+        "configuration": {"backend_version": version, "forward_model": "op_level"},
         "aic_status": "failed",
         "aic_ttft_ms": None,
         "aic_tpot_ms": None,
@@ -619,7 +621,7 @@ def predict_resolved_point(point):
             **replay_chart_metrics(metrics, total_gpus),
         )
     except Exception as error:
-        row["aisimulate_error"] = str(error)
+        row.update(aisimulate_error_type=type(error).__name__, aisimulate_error=str(error))
     return {"id": point["id"], "outcome": "evaluated", "row": row, "backend_version": version}
 
 
