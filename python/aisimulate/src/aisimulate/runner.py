@@ -408,7 +408,7 @@ class EngineReplayRunnerFactory:
             supports_agentic_profile=True,
             supported_agentic_topologies=("agg", "disagg"),
             supported_agentic_backends=("vllm", "sglang"),
-            supports_agentic_host_offload=False,
+            supports_agentic_host_offload=True,
             supports_agentic_speculative_decoding=False,
             agentic_qualification="functional_only",
         )

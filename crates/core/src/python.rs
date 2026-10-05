@@ -14,7 +14,7 @@ use crate::engine::{
 use crate::perfmodel::engine::{Engine as PerfEngine, RuntimeConfig};
 use crate::replay::{
     POWER_DATA_COVERAGE_THRESHOLD, ReplayArtifactKvEventVisibility, ReplayArtifacts,
-    ReplayEngineConfig, ReplayEngineFactory, ReplayOperationPowerDiagnostics,
+    ReplayComposition, ReplayEngineConfig, ReplayEngineFactory, ReplayOperationPowerDiagnostics,
     ReplayPhasePowerDiagnostics, ReplayPowerDiagnostics, ReplayRoleConfig, ReplayRuntimeInput,
     ReplaySpec, ReplayTopology, Replayer, TracePowerStats,
     loadgen::{
@@ -137,25 +137,69 @@ fn require_agentic_execution_model(traffic: &RuntimeTraffic) -> Result<&str> {
         .context("agentic execution requires a configured target model")
 }
 
-fn validate_public_agentic_engine(input: &ReplayRuntimeInput, rank: &EngineConfig) -> Result<()> {
+fn validate_public_agentic_engine(
+    input: &ReplayRuntimeInput,
+    spec: &ReplaySpec,
+    engine: &ReplayEngineConfig,
+) -> Result<()> {
     let ReplayRuntimeInput::Workload(driver) = input else {
         return Ok(());
     };
     if !driver.is_agentic() {
         return Ok(());
     }
-    ensure!(
-        matches!(rank.backend, Backend::Vllm | Backend::Sglang),
-        "agentic replay supports only vLLM and SGLang backends"
-    );
-    ensure!(
-        rank.native_host_offload.is_none(),
-        "agentic replay requires HBM-only KV cache; host offload is unsupported"
-    );
-    ensure!(
-        rank.aic_nextn.is_none(),
-        "agentic replay requires speculative decoding disabled"
-    );
+    let roles = match &spec.topology {
+        ReplayTopology::Aggregated { .. } => vec![aggregated_role(engine)],
+        ReplayTopology::Disaggregated { .. } => vec![
+            engine.role(crate::replay::WorkerStage::Prefill),
+            engine.role(crate::replay::WorkerStage::Decode),
+        ],
+    };
+    for role in &roles {
+        ensure!(
+            role.rank.g3_offload.is_none(),
+            "agentic replay does not support G3 offload"
+        );
+        ensure!(
+            matches!(role.rank.backend, Backend::Vllm | Backend::Sglang),
+            "agentic replay supports only vLLM and SGLang backends"
+        );
+        ensure!(
+            role.rank.aic_nextn.is_none(),
+            "agentic replay requires speculative decoding disabled"
+        );
+    }
+    // HBM-only deployments retain their existing worker/DP support. Once any
+    // active role enables G2, qualify the entire deployment, not just that rank.
+    if roles
+        .iter()
+        .any(|role| role.rank.native_host_offload.is_some())
+    {
+        let single_worker_per_role = match &spec.topology {
+            ReplayTopology::Aggregated { workers } => workers.initial_workers == 1,
+            ReplayTopology::Disaggregated {
+                prefill, decode, ..
+            } => prefill.initial_workers == 1 && decode.initial_workers == 1,
+        };
+        ensure!(
+            single_worker_per_role,
+            "agentic host offload requires one aggregated worker or one prefill and one decode worker"
+        );
+        ensure!(
+            spec.adapters.scaling.provider == "none",
+            "agentic host offload requires static worker pools without a scaling policy"
+        );
+        for role in &roles {
+            ensure!(
+                role.rank.backend == Backend::Vllm,
+                "agentic host offload requires backend=vllm on every role"
+            );
+            ensure!(
+                role.dp_size == 1,
+                "agentic host offload requires attention DP=1 on every role"
+            );
+        }
+    }
     Ok(())
 }
 
@@ -2169,6 +2213,47 @@ fn replay_fpm_coverage(
 }
 
 fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
+    execute_json_using(payload, capture_artifacts, run_with_input)
+}
+
+/// Run the canonical serialized execution payload with a caller-owned policy.
+///
+/// Optional native adapters use this string-only boundary to retain the same
+/// timing/capacity construction, workload driver, preparation and report
+/// finalization as the built-in Python runtime. No Python engine handles cross
+/// extension-module boundaries. Detailed parity artifacts remain the built-in
+/// single-worker interface; adapters observe native events through their
+/// [`ReplayComposition`] instead.
+pub fn execute_replay_json_with_composition<C: ReplayComposition>(
+    payload: &str,
+    capture_artifacts: bool,
+    composition: C,
+) -> Result<String> {
+    ensure!(
+        !capture_artifacts,
+        "custom replay compositions do not expose single-worker parity artifacts"
+    );
+    execute_json_using(payload, false, move |spec, factory, input, _| {
+        let mut replayer = Replayer::with_composition(spec, factory, composition)?;
+        if let Some(input) = input {
+            replayer = replayer.with_runtime_input(input);
+        }
+        Ok((replayer.run()?, None))
+    })
+}
+
+fn execute_json_using<F>(payload: &str, capture_artifacts: bool, run: F) -> Result<String>
+where
+    F: FnOnce(
+        ReplaySpec,
+        ReplayEngineFactory,
+        Option<ReplayRuntimeInput>,
+        bool,
+    ) -> crate::replay::ReplayResult<(
+        crate::replay::ReplayReport,
+        Option<ReplayArtifacts>,
+    )>,
+{
     let (mut spec, mut traffic, capture_performance_diagnostics) =
         match serde_json::from_str(payload).context("invalid AISimulate execution ReplaySpec")? {
             ExecutionPayload::Configured {
@@ -2262,7 +2347,7 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
                 .map(|traffic| build_runtime_input(traffic, engine_config.rank.block_size))
                 .transpose()?;
             if let Some(built) = &built_input {
-                validate_public_agentic_engine(&built.input, &engine_config.rank)?;
+                validate_public_agentic_engine(&built.input, &spec, &engine_config)?;
             }
             let resolved_basis = built_input
                 .as_ref()
@@ -2272,7 +2357,7 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
                 ReplayEngineFactory::new,
                 ReplayEngineFactory::with_timing_model,
             );
-            run_with_input(spec, factory, input, capture_artifacts)
+            run(spec, factory, input, capture_artifacts)
                 .map(|(report, artifacts)| (report, artifacts, resolved_basis))
         }
         ReplayTopology::Disaggregated { .. } => {
@@ -2379,18 +2464,13 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
                 .transpose()?,
             };
             if let Some(built) = &built_input {
-                for role in [&engine_config.prefill, &engine_config.decode] {
-                    validate_public_agentic_engine(
-                        &built.input,
-                        &role.as_ref().expect("P/D role was materialized").rank,
-                    )?;
-                }
+                validate_public_agentic_engine(&built.input, &spec, &engine_config)?;
             }
             let resolved_basis = built_input
                 .as_ref()
                 .and_then(|built| built.weka_nested_timestamp_basis);
             let input = built_input.map(|built| built.input);
-            run_with_input(
+            run(
                 spec,
                 ReplayEngineFactory::with_optional_role_timing_models(
                     prefill_timing,
@@ -2514,7 +2594,8 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
     serde_json::to_string(&output).context("serializing AISimulate replay output")
 }
 
-fn replay_python_error(error: anyhow::Error) -> PyErr {
+/// Preserve resource exhaustion and error context across Python replay bindings.
+pub fn replay_python_error(error: anyhow::Error) -> PyErr {
     let exception = if error.chain().any(|cause| {
         matches!(
             cause.downcast_ref::<crate::replay::ReplayError>(),
@@ -2805,6 +2886,144 @@ mod tests {
     }
 
     #[test]
+    fn public_agentic_json_host_offload_validates_the_whole_deployment() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("original-weka.jsonl");
+        std::fs::write(&path, serde_json::json!({
+            "id": "play", "models": ["model"], "block_size": 4, "hash_id_scope": "local",
+            "requests": [{"t": 0.0, "type": "s", "model": "model", "in": 4, "out": 1, "hash_ids": [1]}]
+        }).to_string()).unwrap();
+        let rank = serde_json::json!({
+            "backend": "vllm", "block_size": 4, "num_gpu_blocks": 16,
+            "kv_cache_bytes_per_token": 16,
+            "timing_model": {"type": "fixed", "prefill_ms": 1.0, "decode_ms": 1.0}
+        });
+        let with_host = |scope: Option<&str>| {
+            let mut rank = rank.clone();
+            if let Some(scope) = scope {
+                rank["native_host_offload"] = serde_json::json!({
+                    "scope": scope, "num_host_blocks": 8, "kv_layout_id": "original-test-layout"
+                });
+            }
+            serde_json::json!({"tensor_parallel_size": 2, "rank": rank})
+        };
+        let payload = |topology, engine| {
+            serde_json::json!({
+                "spec": {"version": 1, "topology": topology, "engine": engine, "requests": []},
+                "traffic": {
+                    "source_type": "trace", "load_type": "trace_timestamps", "trace_format": "weka",
+                    "trace_path": path, "trace_block_size": 4, "execution_model": "model"
+                }
+            })
+        };
+        let run_and_compare = |payload: &serde_json::Value| {
+            let payload = payload.to_string();
+            let built_in: serde_json::Value =
+                serde_json::from_str(&execute_json(&payload, false).unwrap()).unwrap();
+            let composed: serde_json::Value = serde_json::from_str(
+                &execute_replay_json_with_composition(
+                    &payload,
+                    false,
+                    crate::replay::RoundRobinComposition,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+            for field in [
+                "completed_requests",
+                "duration_ms",
+                "per_request",
+                "committed_prefill_tokens",
+                "g2_domains",
+                "agentic_qualification",
+                "agentic_play_outcomes",
+            ] {
+                assert_eq!(composed[field], built_in[field], "shared G2 field {field}");
+            }
+            built_in
+        };
+        let scopes = [None, Some("dp_rank_local"), Some("cluster_shared")];
+        for scope in scopes {
+            let agg = payload(
+                serde_json::json!({"kind": "aggregated", "workers": {"initial_workers": 1}}),
+                with_host(scope),
+            );
+            let report = run_and_compare(&agg);
+            assert_eq!(report["completed_requests"], 1);
+            for other in scopes {
+                let pd = payload(
+                    serde_json::json!({"kind": "disaggregated", "prefill": {"initial_workers": 1}, "decode": {"initial_workers": 1}}),
+                    serde_json::json!({"prefill": with_host(scope), "decode": with_host(other)}),
+                );
+                let report = run_and_compare(&pd);
+                assert_eq!(report["completed_requests"], 1, "{scope:?}/{other:?}");
+                if scope.is_none() && other.is_none() {
+                    continue;
+                }
+                for (pointer, value, message) in [
+                    (
+                        "/spec/topology/prefill/initial_workers",
+                        serde_json::json!(2),
+                        "one aggregated worker or one prefill and one decode worker",
+                    ),
+                    (
+                        "/spec/topology/decode/initial_workers",
+                        serde_json::json!(2),
+                        "one aggregated worker or one prefill and one decode worker",
+                    ),
+                    ("/spec/engine/prefill/dp_size", serde_json::json!(2), "DP=1"),
+                    ("/spec/engine/decode/dp_size", serde_json::json!(2), "DP=1"),
+                    (
+                        "/spec/engine/prefill/rank/backend",
+                        serde_json::json!("sglang"),
+                        "backend=vllm",
+                    ),
+                    (
+                        "/spec/engine/decode/rank/backend",
+                        serde_json::json!("sglang"),
+                        "backend=vllm",
+                    ),
+                    (
+                        "/spec/engine/decode/rank/aic_nextn",
+                        serde_json::json!(1),
+                        "speculative decoding disabled",
+                    ),
+                    (
+                        "/spec/engine/decode/rank/g3_offload",
+                        serde_json::json!({"scope": "worker_local", "num_g3_blocks": 8}),
+                        "G3",
+                    ),
+                ] {
+                    let mut invalid = pd.clone();
+                    let (parent, key) = pointer.rsplit_once('/').unwrap();
+                    invalid.pointer_mut(parent).unwrap()[key] = value;
+                    let error = format!(
+                        "{:#}",
+                        execute_json(&invalid.to_string(), false).unwrap_err()
+                    );
+                    assert!(
+                        error.contains(message),
+                        "{scope:?}/{other:?} {pointer}: {error}"
+                    );
+                    let composed_error = format!(
+                        "{:#}",
+                        execute_replay_json_with_composition(
+                            &invalid.to_string(),
+                            false,
+                            crate::replay::RoundRobinComposition,
+                        )
+                        .unwrap_err()
+                    );
+                    assert!(
+                        composed_error.contains(message),
+                        "composed {scope:?}/{other:?} {pointer}: {composed_error}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn public_agentic_json_rejects_unqualified_modes_without_restricting_standard_dynamo() {
         let directory = tempfile::tempdir().unwrap();
         let dynamo = serde_json::json!({
@@ -2864,13 +3083,6 @@ mod tests {
                 (
                     serde_json::json!({"aic_nextn": 1}),
                     "speculative decoding disabled",
-                ),
-                (
-                    serde_json::json!({
-                        "kv_cache_bytes_per_token": 16,
-                        "native_host_offload": {"num_host_blocks": 8}
-                    }),
-                    "HBM-only",
                 ),
             ] {
                 let mut rank = serde_json::json!({
@@ -4687,6 +4899,38 @@ mod tests {
         let payload = serde_json::to_string(&spec).unwrap();
         let output = execute_json(&payload, false).unwrap();
         let report: serde_json::Value = serde_json::from_str(&output).unwrap();
+        let composed: serde_json::Value = serde_json::from_str(
+            &execute_replay_json_with_composition(
+                &payload,
+                false,
+                crate::replay::RoundRobinComposition,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        for field in [
+            "completed_requests",
+            "total_input_tokens",
+            "total_output_tokens",
+            "power_diagnostics",
+            "agentic_play_outcomes",
+        ] {
+            assert_eq!(
+                composed[field], report[field],
+                "shared report field {field}"
+            );
+        }
+        assert_eq!(composed["per_request"][0]["request_id"], "authored-id");
+        assert!(
+            execute_replay_json_with_composition(
+                &payload,
+                true,
+                crate::replay::RoundRobinComposition,
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("parity artifacts")
+        );
         let record = &report["per_request"][0];
         assert_eq!(record["request_id"], "authored-id");
         assert_eq!(record["session_id"], "session-a");

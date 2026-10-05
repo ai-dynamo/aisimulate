@@ -70,6 +70,7 @@ areas:
       - tests/golden/afd-*
       - tests/test_g3_offload_cli.py
       - tests/test_shared_g2_cli.py
+      - tests/test_agentx_g2.py
       - tests/test_runner.py
       - tests/test_traffic.py
       - tests/e2e/
@@ -242,6 +243,8 @@ shared:
   - glob: tests/test_g3_offload_cli.py
     owners: [replay, maintainers]
   - glob: tests/test_shared_g2_cli.py
+    owners: [replay, maintainers]
+  - glob: tests/test_agentx_g2.py
     owners: [replay, maintainers]
   - glob: tests/test_runner.py
     owners: [replay, maintainers]
