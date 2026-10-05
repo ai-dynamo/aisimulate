@@ -64,12 +64,15 @@ def vision_dummy_forward(model, model_dir: str, rec: dict, attr_names=("visual",
     vis = next((getattr(model, a, None) for a in attr_names if getattr(model, a, None) is not None), None)
 
     def _takes_pixels_and_grid(m) -> bool:
+        # only the Qwen-VL family's layout is synthesised here: forward(pixel_values | x, grid_thw) over HF flat
+        # patches. SigLIP-style towers (Gemma-4: forward(pixel_values) over a 4-D image) and MoonViT (Kimi-K2.5)
+        # take other inputs and are recorded as skipped, never attempted — a wrong guess is not evidence.
         try:
             ps = [p for p in inspect.signature(m.forward).parameters.values()
                   if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)]
         except (TypeError, ValueError):
             return False
-        return len(ps) >= 2 and ps[1].default is inspect.Parameter.empty
+        return len(ps) >= 2 and ps[1].default is inspect.Parameter.empty and ps[1].name in ("grid_thw", "image_grid_thw")
     # trtllm wraps the ViT (forward(pixel_values, grid_thw)) in a Qwen3VisionModelBase whose forward takes the
     # executor's multimodal_params list: descend to the child that takes the raw patches
     for _ in range(3):
@@ -77,7 +80,14 @@ def vision_dummy_forward(model, model_dir: str, rec: dict, attr_names=("visual",
             break
         vis = next((getattr(vis, a, None) for a in attr_names + ("vision_model", "encoder")
                     if getattr(vis, a, None) is not None), None)
-    if vis is None or not _takes_pixels_and_grid(vis):
+    if vis is None:
+        return
+    if not _takes_pixels_and_grid(vis):
+        try:
+            sig = str(inspect.signature(vis.forward))
+        except (TypeError, ValueError):
+            sig = "?"
+        rec["vision_probe"] = {"skipped": f"unsupported vision input layout: {type(vis).__name__}.forward{sig}"[:300]}
         return
     try:
         cfg = _json.loads((Path(model_dir) / "config.json").read_text())
@@ -110,7 +120,8 @@ def vision_dummy_forward(model, model_dir: str, rec: dict, attr_names=("visual",
         rec["vision_probe"] = {"module": f"{type(vis).__module__}.{type(vis).__name__}", "grid_thw": grid.tolist(),
                                "pixel_values_shape": list(pix.shape), "dtype": str(dt), "kernels": len(acc)}
     except Exception as e:
-        rec["errors"]["vision_probe"] = f"{type(e).__name__}: {e}"[:400]
+        # evidence for ONE gate, never a verdict on the cell: a failed vision probe is recorded here, not in errors
+        rec["vision_probe"] = {"error": f"{type(e).__name__}: {e}"[:400]}
 
 def main() -> None:
     ap = argparse.ArgumentParser()
