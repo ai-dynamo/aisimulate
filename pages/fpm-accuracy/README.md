@@ -194,3 +194,6 @@ site directory, keeping generated assets out of the repository.
 Overview configuration rows link to Details and 3D Viz side by side. The 3D link
 selects the matching configuration and snapshot in the left panel when available
 in the published measurement catalog.
+
+The browser regression check verifies Sample renders while a superseded Full
+download is held, and stays selected after that download and redraw finish.

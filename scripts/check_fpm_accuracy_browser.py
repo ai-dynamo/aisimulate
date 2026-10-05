@@ -222,6 +222,15 @@ async def check():
                     await route.continue_()
 
                 await page.route("**/data/visualization/*.json.gz", hold_chunk)
+                # Capture the superseded redraw's completion, including all chunk loads.
+                await page.evaluate("""() => {
+                    const original = Promise.allSettled;
+                    Promise.allSettled = function(values) {
+                        Promise.allSettled = original;
+                        window.heldRedraw = original.call(Promise, values);
+                        return window.heldRedraw;
+                    };
+                }""")
                 await page.locator("#gv-density").select_option("all")
                 await asyncio.wait_for(held.wait(), timeout=10)
                 await page.locator("#gv-density").select_option("sample")
@@ -234,6 +243,9 @@ async def check():
                     await expect(page.locator("#gv-left-chart")).to_have_attribute("data-density", "sample")
                 finally:
                     release.set()
+                await page.evaluate("async () => { await window.heldRedraw; }")
+                await expect(page.locator("#gv-left-chart")).to_have_attribute("data-density", "sample")
+                await expect(page.locator("#gv-right-chart")).to_have_attribute("data-density", "sample")
                 axes = await page.locator("#gv-x-axis option").evaluate_all("nodes => nodes.map(n=>n.value)")
                 assert len(axes) == 7
                 for x in axes:
