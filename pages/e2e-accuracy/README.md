@@ -588,3 +588,6 @@ Detail charts use solid lines for measured silicon and dotted lines for both
 AISim and AIC (legacy CLI) predictions. Legend samples match the chart lines.
 The three charts share an aligned card grid on desktop and stack on smaller
 screens. Throughput controls stay inside their chart card.
+
+Framework and hardware summary tables keep a full-width bottom divider across
+both row labels and numeric cells, including grouped serving rows.
