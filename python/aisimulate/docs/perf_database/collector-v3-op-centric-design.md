@@ -335,7 +335,7 @@ FP8-block measurements remain unavailable.
 The six-GPU regression test compares the entire native loaded table with the
 first-source-wins merge of all primary and donor rows, including exact latency
 preservation. Table-wide reuse also fills missing BF16, FP8, and (on Blackwell)
-NVFP4 keys. The [PR #244 evidence bundle](../../../../docs/data/pr244/README.md)
+NVFP4 keys. The [archived PR #244 evidence bundle](https://github.com/ai-dynamo/aisimulate/blob/379d33493610e9adf234374a84bee3be74ccecb8/docs/data/pr244/README.md)
 records the per-precision counts, unchanged kernel source paths, cross-version
 limitations, and reproducible collection coverage for all 85 new tables.
 
