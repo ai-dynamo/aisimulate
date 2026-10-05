@@ -215,6 +215,12 @@ the saved GPU inputs: prompt token IDs, ingress times and DP routes.
 ## Unsupported
 
 Non-vLLM backends, native MTP, Belady eviction, recurrent state-cache offload,
-agentic snapshot/warmup host offload and detailed replay artifacts with
-`cluster_shared` are rejected. G3 still requires aggregated replay with
-attention DP 1.
+and detailed replay artifacts with `cluster_shared` are rejected. G3 still
+requires aggregated replay with attention DP 1.
+
+Agentic snapshot/warmup host offload is supported for one aggregated worker or
+one prefill plus one decode worker, with vLLM, attention DP=1 on every role,
+static worker pools, and speculative decoding disabled. Both `dp_rank_local`
+and `cluster_shared` are supported; AgentX excludes G3. See [AgentX with vLLM
+host offload](agentx-g2.md) for shared-pool compatibility requirements and
+functional qualification limits.
