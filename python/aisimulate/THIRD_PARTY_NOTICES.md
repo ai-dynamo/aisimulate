@@ -1081,3 +1081,20 @@ Licensed under Apache-2.0;
 the license is included at the repository root as `LICENSE` and in the Python
 distribution. Upstream license:
 https://github.com/vllm-project/vllm/blob/a474da28131f61684849b31e29af0eebaaedc383/LICENSE
+
+## SemiAnalysis AgentX simulation-performance fixture
+
+`python/aisimulate/tools/simulation_perf_gate/fixtures/agentx.jsonl` is derived
+from `traces.jsonl` in the SemiAnalysis dataset
+https://huggingface.co/datasets/semianalysisai/cc-traces-weka-062126-256k/tree/8fecd2fc56694469f758f0afbbb6335ad3043740
+at revision `8fecd2fc56694469f758f0afbbb6335ad3043740`.
+The original dataset card is preserved as `fixtures/DATASET_CARD.md`.
+
+Upstream authors: SemiAnalysis. The upstream card supplies no separate
+copyright or NOTICE statement. License: Apache License 2.0, declared in the
+pinned dataset card and reproduced in `fixtures/LICENSE`.
+
+Modified by NVIDIA: selected the complete play
+`002001296e8a8c38ad9d7cc436d691afc602` and normalized JSON whitespace, without
+changing request values, dependencies, hashes, or timestamps. See the adjacent
+fixture README for the source, counts, and content checksum.

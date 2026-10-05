@@ -892,7 +892,9 @@ models are not supported yet.
 The lowering records a zero-based `source_play_ordinal` on every v2 row so materialized graphs retain
 deterministic directory and JSONL order; missing ordinals remain valid for older v2 inputs, but an
 ordered graph must provide one unique contiguous ordinal for every play.
-Without `agentic_profile`, an explicit `agentic_lanes: N` assigns plays round-robin to N client lanes.
+Without `agentic_profile`, `agentic_lanes: N` starts the first N plays and replenishes each
+free client lane from one shared queue in normalized graph order. Plays are not preassigned
+to private lane queues, so a later play cannot overtake the next queued play when a lane finishes early.
 The next play starts when the current play's client work ends: all authored requests complete on
 success, or all dispatched requests become terminal after a failure skips undispatched work. Background requests remain part
 of their play even without a parent join. P/D source holds and other server cleanup may outlive this
@@ -916,7 +918,7 @@ Both formats use the same row schema. Rows with the same `session_id` are turns 
 | Field | Required | Semantics |
 |---|---|---|
 | `request_id` | No | Request identity. |
-| `session_id` | No | Groups rows into a session; an omitted value creates a one-row session. |
+| `session_id` | No | Groups rows into a session. An omitted value creates a one-row session whose per-request records use `request_<line>`; placement sees no session for it. |
 | `input_length` or `input_tokens` | No | Input token count; defaults to the capacity represented by `hash_ids`. |
 | `output_length` or `output_tokens` | Yes | Output token count. |
 | `output_token_ids` | No | Exact output tokens; its length must equal the output token count. |

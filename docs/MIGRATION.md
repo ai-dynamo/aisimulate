@@ -654,6 +654,18 @@ Rust types without changing JSON that omits the new fields:
   public YAML derives it. Engines built directly with `EngineFactory` cannot
   join a shared pool and fail at construction; use `ReplaySpec`.
 
+### Synthesized trace session IDs
+
+A Mooncake row without `session_id` still gets the per-request identity
+`request_<line>`, but placement no longer receives it as a session in open or
+closed loop. Reports and authored session IDs are unchanged.
+
+- `replay::loadgen::TurnTrace` adds `synthetic_session_id: bool`, true only for
+  such rows. Exhaustive literals must supply `synthetic_session_id: false` or
+  use `..Default::default()`.
+- `replay::loadgen::ReadyTurn` and `CompactReadyTurn` carry the same flag.
+  Consumers that forward `session_id` to a router should skip flagged turns.
+
 ### Release and downstream contracts
 
 Wheel and crate versions must match. Namespace changes do not preserve removed

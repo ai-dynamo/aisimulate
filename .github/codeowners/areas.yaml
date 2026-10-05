@@ -118,6 +118,8 @@ shared:
     owners: [replay, mocker, maintainers]
   - glob: .claude/skills/aisimulate-replay-performance
     owners: [replay, mocker, maintainers]
+  - glob: python/aisimulate/tools/simulation_perf_gate/
+    owners: [replay, forward-pass-engine, infra, maintainers]
   - glob: pages/
     owners: [forward-pass-engine, infra, maintainers]
   - glob: tests/fpm_accuracy/

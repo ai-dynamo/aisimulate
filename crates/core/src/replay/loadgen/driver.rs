@@ -147,6 +147,9 @@ struct AgenticState {
     node_to_play: Vec<usize>,
     plays: Vec<AgenticPlayState>,
     lanes: Vec<AgenticLaneState>,
+    // Finite lane replay draws from one source-ordered queue whenever a slot
+    // becomes free. Slot assignment must follow admission, not source modulo.
+    next_pending_play: usize,
     lifecycle: Vec<AgenticLifecycleRecord>,
     next_lifecycle_ordinal: u64,
     last_runtime_feedback_at_ms: Option<f64>,
@@ -197,8 +200,7 @@ struct AgenticFailureRecord {
 
 #[derive(Debug)]
 struct AgenticLaneState {
-    plays: Vec<usize>,
-    next_play: usize,
+    active_play: Option<usize>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -310,6 +312,7 @@ struct TurnRuntime {
     priority: i32,
     strict_priority: u32,
     policy_class: Option<String>,
+    synthetic_session_id: bool,
     // Canonical capture assigns ordinals; Belady may instead reserve an opaque
     // UUID here so the forecast and eventual causal admission share an identity.
     deterministic_request_id: Option<Uuid>,
@@ -741,11 +744,18 @@ impl AgenticState {
         let Some(lane_index) = self.plays[play_index].lane_index else {
             return;
         };
-        let lane = &mut self.lanes[lane_index];
-        lane.next_play += 1;
-        let Some(&next_play_index) = lane.plays.get(lane.next_play) else {
+        debug_assert_eq!(self.lanes[lane_index].active_play, Some(play_index));
+        self.lanes[lane_index].active_play = None;
+        if self.next_pending_play >= self.plays.len() {
             return;
-        };
+        }
+        let next_play_index = self.next_pending_play;
+        self.next_pending_play += 1;
+        self.lanes[lane_index].active_play = Some(next_play_index);
+        self.plays[next_play_index].lane_index = Some(lane_index);
+        for &node_index in &self.plays[next_play_index].nodes {
+            self.identities[node_index].lane_id = Some(format!("lane:{lane_index}"));
+        }
         self.activate_play(next_play_index, now_ms, sessions, ready_sessions);
     }
 
@@ -1776,6 +1786,7 @@ impl WorkloadDriver {
                     priority: node.priority,
                     strict_priority: node.strict_priority,
                     policy_class: node.policy_class,
+                    synthetic_session_id: false,
                     deterministic_request_id: Some(deterministic_request_id),
                 }],
                 cumulative_tokens: Vec::new(),
@@ -1816,23 +1827,20 @@ impl WorkloadDriver {
         debug_assert!(node_to_play.iter().all(|play| *play != usize::MAX));
 
         let mut lanes = Vec::new();
+        let mut next_pending_play = 0;
         if let Some(lane_count) = agentic_lanes {
             lanes = (0..lane_count)
-                .map(|_| AgenticLaneState {
-                    plays: Vec::new(),
-                    next_play: 0,
-                })
+                .map(|_| AgenticLaneState { active_play: None })
                 .collect();
-            for play_index in 0..plays.len() {
-                let lane_index = play_index % lane_count;
-                plays[play_index].lane_index = Some(lane_index);
-                lanes[lane_index].plays.push(play_index);
+            next_pending_play = lane_count.min(plays.len());
+            for play_index in 0..next_pending_play {
+                plays[play_index].lane_index = Some(play_index);
+                lanes[play_index].active_play = Some(play_index);
             }
             for (node_index, identity) in identities.iter_mut().enumerate() {
-                identity.lane_id = Some(format!(
-                    "lane:{}",
-                    plays[node_to_play[node_index]].lane_index.unwrap()
-                ));
+                identity.lane_id = plays[node_to_play[node_index]]
+                    .lane_index
+                    .map(|lane_index| format!("lane:{lane_index}"));
             }
         }
 
@@ -1847,6 +1855,7 @@ impl WorkloadDriver {
             node_to_play,
             plays,
             lanes,
+            next_pending_play,
             lifecycle: Vec::new(),
             next_lifecycle_ordinal: 0,
             last_runtime_feedback_at_ms: None,
@@ -1868,7 +1877,7 @@ impl WorkloadDriver {
             let initial_plays = state
                 .lanes
                 .iter()
-                .filter_map(|lane| lane.plays.first().copied())
+                .filter_map(|lane| lane.active_play)
                 .collect::<Vec<_>>();
             for play_index in initial_plays {
                 state.activate_play(play_index, 0.0, &mut sessions, &mut ready_sessions);
@@ -1949,6 +1958,7 @@ impl WorkloadDriver {
                             priority: turn.priority,
                             strict_priority: turn.strict_priority,
                             policy_class: turn.policy_class,
+                            synthetic_session_id: turn.synthetic_session_id,
                             deterministic_request_id: None,
                         })
                     })
@@ -2291,6 +2301,7 @@ impl WorkloadDriver {
                 scheduled_ready_at_ms,
                 replay_hashes,
                 emit_session_metadata: self.emit_session_metadata,
+                synthetic_session_id: turn.synthetic_session_id,
                 request,
             });
             if let SchedulingPolicy::Agentic(state) = &mut self.policy {
@@ -3613,6 +3624,7 @@ mod tests {
                         priority: 3,
                         strict_priority: 4,
                         policy_class: None,
+                        synthetic_session_id: false,
                     },
                     TurnTrace {
                         input_length: 3,
@@ -3624,6 +3636,7 @@ mod tests {
                         priority: -2,
                         strict_priority: 7,
                         policy_class: None,
+                        synthetic_session_id: false,
                     },
                 ],
             }],
@@ -4341,6 +4354,68 @@ mod tests {
         let snapshot = driver.agentic_trajectory_snapshot().unwrap();
         assert_eq!(snapshot.total_trajectories, 1);
         assert_eq!(snapshot.completed_trajectories, 0);
+    }
+
+    #[test]
+    fn agentic_lanes_refill_from_global_fifo_without_releasing_a_live_play() {
+        let trace = agentic_trace(vec![
+            agentic_node("a", "play-a", 0.0, Vec::new()),
+            agentic_node("b", "play-b", 0.0, Vec::new()),
+            agentic_node("c", "play-c", 0.0, Vec::new()),
+            agentic_node(
+                "c-child",
+                "play-c",
+                0.0,
+                vec![dependency(
+                    "c",
+                    AgenticDependencyTrigger::Completion,
+                    3.0,
+                    AgenticDependencyRelation::Sequence,
+                )],
+            ),
+            agentic_node("d", "play-d", 0.0, Vec::new()),
+        ]);
+        let mut driver = WorkloadDriver::new_agentic_trace_with_lanes(trace, 1, 2).unwrap();
+        let first = driver.pop_ready(0.0, usize::MAX);
+        assert_eq!(first.len(), 2);
+        assert_eq!(first[0].authored_request_id.as_deref(), Some("a"));
+        assert_eq!(first[1].authored_request_id.as_deref(), Some("b"));
+
+        // Lane 1 finishes first. A modulo assignment starts play-d here and
+        // leaves play-c stranded behind slow play-a in lane 0.
+        driver.on_complete(first[1].request_uuid, 10.0).unwrap();
+        let third = driver.pop_ready(10.0, usize::MAX);
+        assert_eq!(third.len(), 1);
+        assert_eq!(third[0].authored_request_id.as_deref(), Some("c"));
+        let lane = |turn: &ReadyTurn| {
+            turn.request
+                .replay_context
+                .as_ref()
+                .unwrap()
+                .agentic
+                .as_ref()
+                .unwrap()
+                .lane_id
+                .clone()
+        };
+        assert_eq!(lane(&third[0]).as_deref(), Some("lane:1"));
+        driver.on_complete(third[0].request_uuid, 11.0).unwrap();
+        assert!(driver.pop_ready(13.0, usize::MAX).is_empty());
+        let child = driver.pop_ready(14.0, usize::MAX);
+        assert_eq!(child.len(), 1);
+        assert_eq!(child[0].authored_request_id.as_deref(), Some("c-child"));
+        assert_eq!(lane(&child[0]).as_deref(), Some("lane:1"));
+        // Completion of only the root cannot release the active-play slot.
+        assert!(driver.pop_ready(15.0, usize::MAX).is_empty());
+        driver.on_complete(child[0].request_uuid, 16.0).unwrap();
+        let fourth = driver.pop_ready(16.0, usize::MAX);
+        assert_eq!(fourth.len(), 1);
+        assert_eq!(fourth[0].authored_request_id.as_deref(), Some("d"));
+        assert_eq!(lane(&fourth[0]).as_deref(), Some("lane:1"));
+        driver.on_complete(first[0].request_uuid, 20.0).unwrap();
+        assert!(driver.pop_ready(20.0, usize::MAX).is_empty());
+        driver.on_complete(fourth[0].request_uuid, 25.0).unwrap();
+        assert!(driver.is_drained());
     }
 
     #[test]
