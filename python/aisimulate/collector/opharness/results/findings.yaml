@@ -2703,3 +2703,40 @@ findings:
     - instrument:sglang.collect_attn
     - instrument:sglang.collect_mla_module
     - instrument:op_smoke
+
+  sm100_probe_failures_recheck_2026_10_04:
+    statement: 'RE-CHECK OF EVERY sm100 PROBE FAILURE / NON-ALIGNED GATE FOR A CONFIG CAUSE (owner ask; umbriel-b200-037, fresh
+      workspace, Hub configs re-fetched). OURS (generator / harness / dummy): (a) 12 generator rejects per framework — roster repos
+      aiconfigurator does not know (identical on sm90); (b) trtllm 19 fp8-block MoE cells — rc29 template MoE default CUTLASS
+      (sm100_trtllm_moe_default_cutlass_2026_10_04); (c) trtllm DSV4 x8 — fp8_ds_mla/page facts (sm100_trtllm_dsv4_facts_unservable_2026_10_04);
+      (d) trtllm Qwen3.8-2.4T-FP8 tp4 — same CUTLASS class (sm90 pass); (e) encoder_attn DIVERGED on sglang AND trtllm — the serving
+      record carries 0 ops for Qwen3-VL-2B because the identity probe is text-only and the vision sidecar (probes/vision_<backend>.py)
+      exists for vllm only: harness gap, not a kernel finding; (f) **MiniMax-M3 x3 on trtllm (also failed on sm90, graded "quant parser
+      gap")** — DUMMY CUT BUG: 1.3.0rc29''s MSA cache manager does not read sparse_attention_freq; without explicit sparse_layer_ids it
+      allocates INDEX_KEY buffers for range(3, num_layers) (attention/backends/sparse/minimax_m3/cache_manager.py:303) while the model
+      builds sparse layers from the freq list (modeling_minimaxm3.py:363); our 2-layer "moe_sparse_attn" cut made both layers sparse at
+      positions the manager treats as dense -> idx_cache None -> "''NoneType'' object has no attribute ''shape''" in write_layer_caches.
+      The real 60-layer model has exactly 3 dense layers first, so serving never sees it; sglang reads the freq list and passed with the
+      same dummy. dummies.py variants_m3 now cuts the first three dense layers + the first sparse layer (4 layers): MiniMax-M3 trtllm
+      bf16 and fp8-KV cells PASS on B200 (MXFP8/NVFP4 re-run pending at write time). FRAMEWORK (same on sm90 unless noted): (g) Kimi-K2.5
+      trtllm — compressed-tensors W4A16 config (input_activations: None, mirrors the Hub config) dereferenced unguarded
+      (inputs_quant_config["strategy"]); (h) MiMo-7B / MiMo-V2-Flash arch not registered; Muse-Glimmer x2 + DeepSeek-V4.1-Flash x2 need a
+      newer transformers than the rc29 image; Kimi-K3 x2 trtllm image lacks `fla`; (i) **Kimi-K3 sglang bf16 (sm100 ONLY; sm90 pass)**:
+      Kimi-K3 has 96 attention heads; flashinfer''s trtllm-gen MLA decode refuses 64 < num_heads_q < 128 (mla/_core.py:3948), the runner
+      falls to cute-dsl, but sglang 0.5.21''s trtllm_mla backend passes multi_ctas_kv_counter_buffer unconditionally on Blackwell ->
+      "multi_ctas_kv_counter_buffer is only supported when a trtllm-gen runner is selected" (_core.py:4278). tp1 only: at tp>=2 the
+      per-rank head count is <=48 and supported — the probe''s single-GPU tp1 geometry is half the story; probe 96-head MLA models at tp2
+      on sm100. (j) Kimi-K3-NVFP4 / Qwen3.8-2.4T-NVFP4 sglang "FusedMoE has no attribute g1_scale_c": modelopt_quant''s NVFP4 MoE weight
+      prep gates the flashinfer-trtllm branch on the GLOBAL get_moe_runner_backend() (modelopt_quant.py:2837) while apply() uses the
+      layer-cached resolved backend (:3096-3129) — under AUTO the two disagree and g1_scale_c is never created. A/B with an explicit
+      --moe-runner-backend flashinfer_trtllm clears it (facts/ab_k3nvfp4_runner: the cell then proceeds to the 96-head MLA error above),
+      so that flag is a valid customization once tp2 is used. BOOTSTRAP: the sequential roster fetch hit Hub HTTPErrors on 30 repos and
+      fell back to bundled copies (MiniMax-M3 flat vs VL layout; a sibling hf_quant without exclude_modules) — dummies.py now tolerates
+      both; fetch_inputs should retry before falling back.'
+    applies_to:
+    - platform:sm100
+    - framework:sglang-0.5.21
+    - framework:trtllm-1.3.0rc29
+    - instrument:dummies
+    - instrument:fetch_inputs
+    - instrument:probes.vision

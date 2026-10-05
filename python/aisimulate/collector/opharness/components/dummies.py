@@ -571,7 +571,17 @@ def variants_m3(cfg: dict) -> list[dict]:
     tc = _m3_text_config(cfg)
     moe = tc["moe_layer_freq"]
     out = []
-    sel = [i for i, f in enumerate(moe) if f == 1][:2]
+    # TRT-LLM 1.3.0rc29's MiniMax-M3 MSA cache manager does NOT read sparse_attention_freq: with no
+    # explicit sparse_layer_ids it allocates INDEX_KEY buffers for ``range(3, num_layers)`` (first
+    # three layers dense, cache_manager.py:303) while the model builds sparse layers from the freq
+    # list (modeling_minimaxm3.py:363). A 2-layer cut whose layers are both sparse therefore runs the
+    # sparse path on layers the manager treats as dense -> idx_cache None -> "'NoneType' object has no
+    # attribute 'shape'" in write_layer_caches (every MiniMax-M3 trtllm cell on sm90 AND sm100,
+    # 2026-10-04; sglang reads the freq list and was fine). Keep the real model's positional shape:
+    # the first three (dense) layers plus the first sparse layer, so the hard-coded default matches.
+    sparse = [i for i, f in enumerate(tc.get("sparse_attention_config", {}).get("sparse_attention_freq") or moe) if f == 1]
+    dense_head = [i for i, f in enumerate(tc.get("sparse_attention_config", {}).get("sparse_attention_freq") or moe) if f == 0][:3]
+    sel = dense_head + sparse[:1] if sparse else []
     if sel:
         out.append({"name": "moe_sparse_attn", "sel": sel})
     head = [i for i, f in enumerate(moe) if f == 0][:2]
