@@ -2542,7 +2542,11 @@ findings:
       `moe_backend` is keyed on hardware only). A/B on an empty L40 across the explicit backends (facts/ab_trt_moe_sm89, 12+
       probes): AUTO resolves to CUTLASS (same error, so a hardware-wide AUTO fact - tried and reverted - changes nothing);
       TritonFusedMoE is SM90-only; Marlin implements nvfp4/w4a16_nvfp4 only (quant_unsupported for fp8_block, bf16, mxfp4);
-      VanillaMoE gets past selection and dies in CUDA-graph capture (cudaErrorStreamCaptureInvalidated). So FP8-block / MXFP4
+      VanillaMoE gets past selection and dies in CUDA-graph capture (cudaErrorStreamCaptureInvalidated). Re-verified in the
+      review pass (clean box, same evening): AUTO raws f883c2769dd6_AUTO (Qwen3-30B-A3B-FP8), 8610141a333f_AUTO (DeepSeek-R1),
+      1ae319d4353f_AUTO (Nemotron-3-Nano-NVFP4), 56890dc997ec_AUTO (gpt-oss-20b MXFP4) all report ''requested CUTLASS'' and
+      the CUTLASS SM reason; DEEPGEMM, which serves fp8-block MoE on sm100, is turned down on Ada with ''DeepGemmFusedMoE
+      requires SM100, SM103, or SM107, got SM89'' (raws f883c2769dd6_DEEPGEMM, 8610141a333f_DEEPGEMM). So FP8-block / MXFP4
       MoE on rc29 is a PLATFORM FLOOR of the framework on Ada, while NVFP4 MoE is servable through MARLIN (weight-only): expressed
       as an sm89-scoped per-checkpoint customization (`--generator-set params.agg.moe_config.backend=MARLIN`; params.agg.moe_backend
       is silently ignored for trtllm) on 10 roster NVFP4 checkpoints, 7 pass+custom (MiniMax-M2.5/M2.7, Nemotron-3 Nano/Super/Ultra,
