@@ -93,6 +93,10 @@ def _generator_stamp() -> str:
         head = _sp.run(["git", "-C", repo, "rev-parse", "--short", "HEAD"],
                        capture_output=True, text=True).stdout.strip()
         diff = _sp.run(["git", "-C", repo, "diff", "HEAD", "--", AIS_SRC], capture_output=True, text=True).stdout
+        # untracked generator files (a new facts yaml / template) are invisible to `git diff`: hash their names + sizes
+        untracked = _sp.run(["git", "-C", repo, "ls-files", "--others", "--exclude-standard", "--", AIS_SRC],
+                            capture_output=True, text=True).stdout.split()
+        diff += "".join(f"\n{u}:{(Path(repo) / u).stat().st_size}" for u in untracked if (Path(repo) / u).exists())
         _GEN_STAMP = head + (("+dirty-" + hashlib.sha256(diff.encode()).hexdigest()[:8]) if diff.strip() else "")
     return _GEN_STAMP
 
@@ -1446,7 +1450,10 @@ def build_matrix(targets: dict) -> None:
                 if tail.exists():
                     txt = tail.read_text(errors="replace")
                     lines = [ln.strip() for ln in txt.splitlines() if ln.strip()]
-                    deciding = next((ln for ln in lines if re.search(r"what\(\):|Assertion failed|Error:|error:", ln)),
+                    # the deciding line: a native assert (`what():` / `Assertion failed`) beats a Python error line,
+                    # and the LAST line of a class beats earlier ones (framework warnings mention "error:" too)
+                    deciding = next((ln for pat in (r"what\(\):", r"Assertion failed", r"(?:Error|Exception)\b[^\n]*:", r"error:")
+                                     for ln in reversed(lines) if re.search(pat, ln)),
                                     lines[-1] if lines else "")
                     cause = _fail_cause_full(deciding, txt)
                     if deciding:

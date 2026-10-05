@@ -226,26 +226,35 @@ profiles:
     # backend from MODEL defaults (observed on sm120: FLASHINFER_CUTLASS NvFp4).
 
   # ---------------------------------------------------------------------------
-  # L40 / L40S (PCIe, 8-GPU hosts)  —  Ada  sm89
-  # Keyed by SM like sm120: without a profile resolve_facts() raises for every
-  # l40s render and the generator pipeline swallows it ("Fact resolution failed;
-  # continuing without facts."), so no MODEL default (block-size,
-  # trust-remote-code, autotune flags) reaches the engine args — the failure
-  # first found on sm120 (findings: rtx_systems_have_no_generator_facts_hardware_profile).
+  # L40S  —  Ada  sm89  (SDK system `l40s`)
+  # Product-keyed like h100 / h200 / h20 (the SM-keyed sm120 profile exists because several
+  # RTX PRO products share one set of facts; Ada does not — an L4 host would carry a
+  # different node_selector, so it gets its own profile when a campaign needs it).
+  # Before this profile existed resolve_facts() raised "Unknown hardware profile l40s" for
+  # every l40s render and the generator pipeline swallowed it ("Fact resolution failed;
+  # continuing without facts."), so no MODEL default (block-size, trust-remote-code,
+  # autotune flags) reached the engine args — the failure first found on sm120
+  # (findings: rtx_systems_have_no_generator_facts_hardware_profile; sm89 campaign 2026-10-04).
   # ---------------------------------------------------------------------------
-  sm89:
+  l40s:
     node_selector:
-      # GPU product label pattern NVIDIA-${name// /-} (same derivation as b200); the opharness
-      # campaign box reports "NVIDIA L40" (L40S hosts: NVIDIA-L40S).
-      nvidia.com/gpu.product: NVIDIA-L40
+      # GPU product label pattern NVIDIA-${name// /-} (same derivation as b200); the SDK's
+      # l40s perf data carries device "NVIDIA L40S". (The 2026-10-04 opharness campaign box
+      # was an 8x L40 — same AD102 die, lower TDP — which the system id does not cover.)
+      nvidia.com/gpu.product: NVIDIA-L40S
     arch: x86_64
     # nccl_env: intentionally none (PCIe-only host, no NVLink; nothing verified to assert).
     shared_memory:
+      # Not measured: every opharness probe on the L40 box (tp1 and tp4) ran with --shm-size 16g;
+      # 32Gi mirrors the other PCIe 8-GPU profile (sm120) as a conservative deployment default.
       default: 32Gi
     tolerations:
       - key: nvidia.com/gpu
         operator: Exists
         effect: NoSchedule
-    # moe_backend: intentionally unset (no wide-EP fabric on PCIe Ada; frameworks pick their
-    # own MoE backend from model defaults — a fixed value here is the Blackwell
-    # WIDEEP/deepep_moe mistake all over again).
+    # moe_backend: intentionally unset. No wide-EP fabric on PCIe Ada (so no WIDEEP /
+    # deepep_moe), and a hardware-wide trtllm value cannot be right either: on SM89 trtllm
+    # 1.3.0rc29 serves NVFP4 MoE only through MARLIN, which rejects bf16/fp8 MoE layers, and
+    # CUTLASS (the template default, also what AUTO resolves to) serves bf16 only
+    # (opharness findings sm89_trtllm_rc29_probe_2026_10_04) — a per-quantization choice,
+    # expressed per checkpoint in collector/opharness/targets.yaml until the generator has it.

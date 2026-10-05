@@ -43,6 +43,9 @@ MEMBERS = (
     ("archive/raw/*.json", "raw"),
     ("archive/raw/*.fp", "fingerprints"),
     ("archive/run_sh/*", "rendered_engine_configs"),
+    # console tail of every probe (emit_queues `tee`s it): the only evidence for a probe that died by a native
+    # abort before writing a raw; build_matrix classifies those cells from it (sm89 Gemma-4: MMHA head size 512)
+    ("archive/logs/*.tail", "console_tails"),
     ("archive/evidence/**/*", "full_reports"),
     ("facts/pathdiff/opcov_*.json", "captures"),
 )

@@ -45,10 +45,10 @@ _SYSTEM_TO_HW: dict[str, str] = {
     # RTX PRO Blackwell PCIe hosts share one SM-keyed profile; the RTX PRO 5000
     # system (SDK entry pending) maps here too once it exists.
     "rtx_pro_6000_server": "sm120",
-    # Ada (sm89) PCIe hosts: one SM-keyed profile for the L40/L40S family. The SDK carries
-    # the l40s system; the L40 campaign box (same AD102 die, 46068 MiB) renders against it.
-    "l40s": "sm89",
-    "l40": "sm89",
+    # Ada: product-keyed like the Hopper entries (the SDK has an l40s system and nothing else on
+    # sm89 yet; an l4 system would get its own profile). Explicit so the table stays the one place
+    # that says which systems have facts.
+    "l40s": "l40s",
 }
 
 # Sections of the params dict that may carry the SDK system id.

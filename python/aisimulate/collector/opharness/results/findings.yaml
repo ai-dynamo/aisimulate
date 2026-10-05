@@ -2458,7 +2458,7 @@ findings:
     - sgl-project/DeepSeek-V4-Pro-FP8
   sm89_vllm_0300_probe_2026_10_04:
     statement: 'FIRST sm89 (L40, 8 x 44.4 GiB usable, CC 8.9, driver 595.58) identity campaign, vllm 0.30.0 (image digest
-      8a69ffad015f), generator = this branch, system l40s (needs the new sm89 hardware profile: without it resolve_facts raised
+      8a69ffad015f), generator = this branch, system l40s (needs the new l40s hardware profile: without it resolve_facts raised
       ''Unknown hardware profile l40s'' and the pipeline swallowed it, the sm120 failure class). Matrix results/sm89/vllm-0.30.0.yaml:
       67 pass / 4 pass+custom / 53 fail (sm90: 110/1/13, sm120: 98/7/19). Fails, all caused: 17 capacity (44 GiB: Qwen3.5-122B/397B
       depth-4 cuts, Nemotron-3-Ultra, Llama-4 Scout/Maverick - the Llama-4 failure was a dummy-staging gap (no preprocessor_config.json,
@@ -2612,9 +2612,11 @@ findings:
       gemm 2 stride-alignment RuntimeErrors, mhc 2 capacity. Capacity is the dominant Ada difference: 44 GiB vs 80-141 GiB
       on Hopper moves the batch x kv corner of every attention / mla / msa / kda grid into OOM, none of it a collector bug.
       NOT DONE: the full retained plan (hundreds of thousands of cases per framework - sm120''s vllm run was ~12 h on 8 GPUs),
-      perf-data finalize/publication, SDK consumer tests against new l40s data. The SDK system l40s exists (data from the
-      0.24 / 0.5.14 / rc20 era); this box is an L40 (same AD102 die, 46068 MiB per the system yaml), the existing l40s data
-      was collected on an L40 the same way - no relabel concern beyond that precedent.'
+      perf-data finalize/publication, SDK consumer tests against new l40s data. DELIVERY BLOCKER for any perf data from this
+      box: the SDK system is l40s and its existing tables carry device ''NVIDIA L40S'' (checked in the parquet device column),
+      while this box is an 8x L40 (same AD102 die, lower TDP/clocks). Playbook section 8 forbids relabelling a nearby product
+      with the same SM, so L40 measurements must not be published under l40s; an `l40` system definition would be needed first
+      (the sm120 RTX PRO 5000 campaign hit the same wall).'
     applies_to:
     - platform:sm89
     - framework:vllm-0.30.0
@@ -2628,32 +2630,32 @@ findings:
     - cases:capabilities.yaml
   sm89_harness_lessons_2026_10_04:
     statement: 'HARNESS LESSONS from the first Ada campaign (each fixed in code unless marked OPEN): (1) the SDK system has
-      no generator hardware profile -> resolve_facts raised and the pipeline swallowed it (sm89 profile added, same class
-      as sm120); (2) golden-render cache keyed on git HEAD only: an uncommitted generator edit re-rendered nothing (_generator_stamp
-      = HEAD + hash of the dirty generator diff; B200 defect 3); (3) probes that die by a native abort (trtllm attentionOp
-      asserts, sglang argparse) wrote no raw and the matrix said only ''crashed before dump'': the queue now keeps each probe''s
-      console tail (archive/logs/<id>.tail, 400 lines) and build_matrix classifies from it (B200 defect 1); (4) tp>1 cells
-      are emitted with the first N GPUs hard-coded (device=0,1,2,3) while other queues run on those GPUs: sglang''s tp memory-balance
-      check and trtllm''s executor then fail for reasons that are not the model''s. Rerun alone on an idle group, the sglang
-      Qwen3.8-2.4T cells show their real cause (CUDA OOM, capacity) and trtllm''s ''Executor worker returned error'' still
-      carries no cause in the raw (OPEN: the server probe does not surface the worker''s message); a whole-group reservation
-      in the queue plan is still needed (B200 defect 5, OPEN); (5) _fail_cause classified on a 200-char slice of the last
-      line: vllm''s selector error is cut before use_sparse=True and sglang/trtllm wrap the real cause in epilogues, so the
-      matrix filed DSA cells under a config cause and Nemotron under ''framework gap''. Now: full last line first, then a
-      deep pass over the whole traceback ONLY for unmatched causes; (6) FLOOR_SM took one SM, and only the vllm verdict script
-      had the floor mechanism (sglang / trtllm scripts now have it; comma lists everywhere, workflow_check understands them);
-      (7) 4 sglang and 4 trtllm gate recipes were never checked in (sgl_attn_ctx/gen/gemma4_hd512, sgl_gdn_gen, trt_attn ctx/gen
-      + fp8-KV) - written; (8) taxonomy: seeding sm89 from sm120 left 100+ kernel names unlabelled on Ada (cuBLAS ampere_*
-      GEMMs, flashinfer merge-states, FLA chunk kernels): collect/unlabeled.py style scan over raws + captures is how the
-      vocabulary was built and is worth promoting to a component option; (9) encoder_attn gates ask phase profile_run, which
-      only probe_vllm records: on sglang and trtllm the gate cannot be graded on ANY SM from a text-only probe unless the
-      probe sends an image (OPEN, owner decision; sm90''s aligned sglang verdict is NOT explained by this checkout - its record''s
-      provenance needs a look by whoever owns the sm90 evidence); (10) dummy staging for gated repos needs preprocessor_config.json
-      for Llama-4 (vllm builds the vision tower in its profile run) and the tokenizer files: stage_tok.py in the workspace
-      pulls them from unsloth / sibling mirrors - fetch_inputs.py''s bundled-config fallback still stops short of that (OPEN);
-      (11) workflow_check gates_declared is red for trtllm rc29 on EVERY SM (msa_context_module / msa_generation_module have
-      no trtllm gate; pre-existing on this branch, sm90 shows the same, OPEN); (12) tooling: pkill -f / pgrep -f patterns
-      match the invoking shell''s own command line - kill queue wrappers by pid.'
+      no generator hardware profile -> resolve_facts raised and the pipeline swallowed it (l40s profile added, product-keyed
+      like h100/h200; same class as sm120); (2) golden-render cache keyed on git HEAD only: an uncommitted generator edit
+      re-rendered nothing (_generator_stamp = HEAD + hash of the dirty generator diff; B200 defect 3); (3) probes that die
+      by a native abort (trtllm attentionOp asserts, sglang argparse) wrote no raw and the matrix said only ''crashed before
+      dump'': the queue now keeps each probe''s console tail (archive/logs/<id>.tail, 400 lines) and build_matrix classifies
+      from it (B200 defect 1); (4) tp>1 cells are emitted with the first N GPUs hard-coded (device=0,1,2,3) while other queues
+      run on those GPUs: sglang''s tp memory-balance check and trtllm''s executor then fail for reasons that are not the model''s.
+      Rerun alone on an idle group, the sglang Qwen3.8-2.4T cells show their real cause (CUDA OOM, capacity) and trtllm''s
+      ''Executor worker returned error'' still carries no cause in the raw (OPEN: the server probe does not surface the worker''s
+      message); a whole-group reservation in the queue plan is still needed (B200 defect 5, OPEN); (5) _fail_cause classified
+      on a 200-char slice of the last line: vllm''s selector error is cut before use_sparse=True and sglang/trtllm wrap the
+      real cause in epilogues, so the matrix filed DSA cells under a config cause and Nemotron under ''framework gap''. Now:
+      full last line first, then a deep pass over the whole traceback ONLY for unmatched causes; (6) FLOOR_SM took one SM,
+      and only the vllm verdict script had the floor mechanism (sglang / trtllm scripts now have it; comma lists everywhere,
+      workflow_check understands them); (7) 4 sglang and 4 trtllm gate recipes were never checked in (sgl_attn_ctx/gen/gemma4_hd512,
+      sgl_gdn_gen, trt_attn ctx/gen + fp8-KV) - written; (8) taxonomy: seeding sm89 from sm120 left 100+ kernel names unlabelled
+      on Ada (cuBLAS ampere_* GEMMs, flashinfer merge-states, FLA chunk kernels): collect/unlabeled.py style scan over raws
+      + captures is how the vocabulary was built and is worth promoting to a component option; (9) encoder_attn gates ask
+      phase profile_run, which only probe_vllm records: on sglang and trtllm the gate cannot be graded on ANY SM from a text-only
+      probe unless the probe sends an image (OPEN, owner decision; sm90''s aligned sglang verdict is NOT explained by this
+      checkout - its record''s provenance needs a look by whoever owns the sm90 evidence); (10) dummy staging for gated repos
+      needs preprocessor_config.json for Llama-4 (vllm builds the vision tower in its profile run) and the tokenizer files:
+      stage_tok.py in the workspace pulls them from unsloth / sibling mirrors - fetch_inputs.py''s bundled-config fallback
+      still stops short of that (OPEN); (11) workflow_check gates_declared is red for trtllm rc29 on EVERY SM (msa_context_module
+      / msa_generation_module have no trtllm gate; pre-existing on this branch, sm90 shows the same, OPEN); (12) tooling:
+      pkill -f / pgrep -f patterns match the invoking shell''s own command line - kill queue wrappers by pid.'
     applies_to:
     - platform:sm89
     - instrument:probe_driver

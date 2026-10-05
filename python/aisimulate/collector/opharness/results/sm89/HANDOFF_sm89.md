@@ -25,7 +25,7 @@ flashinfer's cutlass fused-MoE JIT does not compile for sm_89 (sglang, 5 Nemotro
 
 | commit | content | absorb note |
 |---|---|---|
-| bd4cbfa9 | generator `hardware.yaml` `sm89` profile + `request_resolution` (l40s/l40 -> sm89). Without it `resolve_facts` raised and the pipeline swallowed it: no model fact reached l40s renders | keep |
+| bd4cbfa9 (+review fix) | generator `hardware.yaml` `l40s` profile (product-keyed like h100/h200; first committed as an SM-keyed `sm89` with a phantom `l40` system, renamed in review) + explicit `request_resolution` entry. Without it `resolve_facts` raised and the pipeline swallowed it: no model fact reached l40s renders | keep |
 | 781a7435 | `targets.yaml` platform pin -> `l40_sm89`, `kernel_taxonomy_sm89.yaml` seed | **box-local pin: drop that hunk on a shared branch** |
 | 05b10973 | collector: DSV4 attention module ops `op_min_sm: 90` (were the only sparse family without a floor) | keep |
 | d4e567b2 | sglang 0.5.21: attention mock `prefill/decode_attention_backend_str`; encoder Triton kernel moved module; MLA mock `hf_config` | keep — lanes Hopper/Blackwell never reach; **sm120 will hit the same three** |
@@ -49,7 +49,7 @@ Arch-neutral, please propagate to sm90/sm120/sm100 branches: golden cache stamp,
 5. trtllm MLA wall (`no MLA FMHA below Hopper`) **re-verified on rc29** (attentionOp.cpp:3234); collector guards kept. vllm GDN context IMA on SM89 **re-verified on 0.30.0** (17 of 21 failed sampled tasks are CUDA faults).
 6. OPEN harness items: tp>1 cells hard-code `device=0,1,2,3` (no group reservation; rerun alone: sglang Qwen3.8-2.4T = capacity, trtllm = `Executor worker returned error` with no cause in the raw); `fetch_inputs.py` bundled fallback does not stage Llama-4 `preprocessor_config.json` / tokenizers (workspace `stage_tok.py` pulls them from unsloth mirrors);
    `workflow_check gates_declared` for trtllm rc29 lacks msa gates on every SM; trt `kda` is not a trtllm op (my smoke list included it, exit 2 is mine).
-7. Not done: the **full data collection** (sm120's vllm run was ~12 h on 8 GPUs) and publication of any perf data; SDK consumer tests against new `l40s` data. `l40s` exists as an SDK system (data from the 0.24 / 0.5.14 / rc20 era); this box is an **L40** — the existing l40s data was collected the same way.
+7. Not done: the **full data collection** (sm120's vllm run was ~12 h on 8 GPUs) and publication of any perf data; SDK consumer tests against new `l40s` data. **Delivery blocker if anyone collects perf data here**: the SDK system `l40s` carries device `NVIDIA L40S` in its parquet tables; this box is an **L40** (same AD102 die, lower TDP/clocks). Playbook §8 forbids relabelling a nearby product with the same SM, so nothing measured here may be published under `l40s` without an `l40` system definition (the sm120 RTX PRO 5000 campaign hit the same wall). The identity probes are unaffected: kernel/backend selection is by SM, not by product.
 
 ## 4. Step 2 evidence: collector smoke + 40-case sample (sm89, one container per op, `--limit 40 --shuffle`; `kda` smoke on trtllm is not an op)
 
