@@ -5,36 +5,130 @@ SPDX-License-Identifier: Apache-2.0
 
 # Start an AgentX simulation
 
-This walkthrough replays a Weka agentic workload on a simulated disaggregated
-deployment: two prefill workers and four decode workers, using eight H200 GPUs
-in total. It prepares KV caches from seeded snapshots, then measures the
+This development walkthrough replays a Weka agentic workload on a simulated
+disaggregated deployment: two prefill workers and four decode workers, using
+eight H200 GPUs in total. It prepares KV caches from seeded snapshots, then measures the
 remaining requests and recycles completed plays to keep two client lanes occupied
 for a 3,600-second simulated admission window. The simulator runs offline on your
 CPU; you do not need to allocate those GPUs or download model weights.
 
-Use a source checkout containing [PR #307](https://github.com/ai-dynamo/aisimulate/pull/307),
-which adds continuous profiles on top of
-[PR #235](https://github.com/ai-dynamo/aisimulate/pull/235). Until #307 is merged,
-a checkout containing only #235 does not support this example.
-Run the commands below from the repository root. This path is experimental and
-qualified for functional behavior, not hardware performance accuracy.
+**Integration status:** the complete routing example requires the existing
+Dynamo replay runner and router adapter delivered by
+[Dynamo #15240](https://github.com/ai-dynamo/dynamo/pull/15240) (C), built against
+the matching AISimulate source. A and B alone do not enable this example.
+
+The call chain is YAML → the existing `dynamo` runner/config-adapter entry points
+→ Dynamo's Rust replay composition → the shared AISimulate executor → Dynamo's
+native worker selection and session affinity → simulated engines and reports.
+AISimulate exposes generic placement lifecycle hooks and conversation lineage;
+its engine runner does not import Dynamo or bridge policy calls through Python.
 
 The YAML below sets `traffic.load.agentic_profile.duration_seconds: 3600`.
-This controls simulated time for issuing profile requests, not CPU wall time.
-See [continuous agentic profiles](agentic-profile.md) for the detailed contract.
+This controls simulated admission time, not CPU wall time. See
+[continuous agentic profiles](agentic-profile.md) for its detailed contract.
+Functional simulation does not establish hardware performance accuracy.
 
-## 1. Install from source
+## Delivery status and merge order
 
-You need Python 3.11–3.13, `uv`, Rust/Cargo, and a C/C++ compiler and linker.
-See [source installation](installation.md#use-current-source) for platform details.
+[AISimulate #307](https://github.com/ai-dynamo/aisimulate/pull/307) has merged as
+`a9c358c5cd0f053054800a72137a4db5f95a1671`. The remaining order is:
+
+1. **A — [Dynamo #15631](https://github.com/ai-dynamo/dynamo/pull/15631):** expose
+   a native manual clock, shared conversation group-key construction and policy
+   queue wakeup support, without upgrading Dynamo's AISimulate dependency.
+2. **B — [AISimulate #306](https://github.com/ai-dynamo/aisimulate/pull/306):**
+   provide generic dispatch/time hooks, conversation lineage and the shared replay
+   executor, and select the existing Dynamo plugin from routing configuration.
+   AISimulate does not depend on or package Dynamo policy code.
+3. **Publish B:** after B merges, publish the Python wheel and Rust crate from
+   the same source revision, including a matching nightly if that is the chosen
+   release channel. Verify that both artifacts are actually installable; source
+   merge alone does not complete this step.
+4. **C — [Dynamo #15240](https://github.com/ai-dynamo/dynamo/pull/15240):** wire
+   those APIs into the existing native adapter, pin the actual published B version
+   consistently in Rust, Python and containers, and qualify the full installed
+   CLI including duration and routing. Development source pins below are for
+   pre-release validation, not a substitute for this publication gate.
+
+[#15149](https://github.com/ai-dynamo/dynamo/pull/15149) and
+[#15625](https://github.com/ai-dynamo/dynamo/pull/15625) are closed. Source merge,
+published matching packages, required CI/review, and installed CLI qualification
+are separate gates. No published version is claimed here to contain the complete
+A/B/C integration. Earlier A/B Python-bridge results do not validate this path.
+
+## 1. Install a matching C development build
+
+The source pair below passed installed end-to-end qualification, but matching
+packages have not been published. This remains a development installation
+procedure. Use the pinned C revision and its matching B API. Installing A's
+runtime wheel alone or an arbitrary nightly does not supply the required runner.
+The three distributions below already exist: `aisimulate`, `ai-dynamo-runtime`,
+and `ai-dynamo`. No additional policy package or Cargo lockfile is needed.
+
+You need Python 3.12, `uv`, the Rust toolchains required by the checked-out
+repositories, and Dynamo's CPU build prerequisites (C/C++ compiler and linker,
+`pkg-config`, OpenSSL development headers, CMake and protobuf compiler). No running
+Dynamo service, model weights, or physical GPU is required.
+
+The commands use qualified C source `0be36a28b7814bc73ffeafb678b040733c76b0b0`
+and build the AISimulate source it pins:
+`91b8ef98ac056654902751a6ade8585c4cf9439b`. The validated native runtime was
+built at `ac77d287a27806825f72d1a71f2f72b2f7638ed8`; the later C commit changes
+only test worker configuration. Retain both revisions and wheel hashes with results.
+A version number alone does not identify an unreleased source build.
 
 ```bash
-uv sync --project python/aisimulate --extra dev
+mkdir -p /tmp/agentx-quickstart
+uv venv --python 3.12 /tmp/agentx-quickstart/venv
+uv pip install --python /tmp/agentx-quickstart/venv/bin/python 'maturin>=1.12,<2' patchelf
+
+git clone https://github.com/ai-dynamo/dynamo.git /tmp/agentx-quickstart/dynamo
+git -C /tmp/agentx-quickstart/dynamo fetch origin pull/15240/head
+git -C /tmp/agentx-quickstart/dynamo checkout --detach 0be36a28b7814bc73ffeafb678b040733c76b0b0
+agentx_dynamo_rev=$(git -C /tmp/agentx-quickstart/dynamo rev-parse HEAD)
+agentx_aisim_rev=$(/tmp/agentx-quickstart/venv/bin/python - <<'PYTHON'
+import tomllib
+from pathlib import Path
+manifest = tomllib.loads(Path("/tmp/agentx-quickstart/dynamo/Cargo.toml").read_text())
+print(manifest["workspace"]["dependencies"]["aisimulate-core"]["rev"])
+PYTHON
+)
+git clone https://github.com/ai-dynamo/aisimulate.git /tmp/agentx-quickstart/aisimulate
+git -C /tmp/agentx-quickstart/aisimulate checkout --detach "$agentx_aisim_rev"
+
+cd /tmp/agentx-quickstart/aisimulate/python/aisimulate
+/tmp/agentx-quickstart/venv/bin/maturin build --locked --release \
+  --interpreter /tmp/agentx-quickstart/venv/bin/python \
+  --out /tmp/agentx-quickstart/wheels
+cd /tmp/agentx-quickstart/dynamo/lib/bindings/python
+/tmp/agentx-quickstart/venv/bin/maturin build --locked --release \
+  --features ais-forward-pass \
+  --interpreter /tmp/agentx-quickstart/venv/bin/python \
+  --out /tmp/agentx-quickstart/wheels
+uv build --wheel --out-dir /tmp/agentx-quickstart/wheels /tmp/agentx-quickstart/dynamo
+uv pip install --python /tmp/agentx-quickstart/venv/bin/python \
+  /tmp/agentx-quickstart/wheels/ai_dynamo_runtime-*.whl \
+  /tmp/agentx-quickstart/wheels/ai_dynamo-*.whl \
+  /tmp/agentx-quickstart/wheels/aisimulate-*.whl
+uv pip check --python /tmp/agentx-quickstart/venv/bin/python
+cd /tmp/agentx-quickstart
+printf '%s\n' "$agentx_dynamo_rev" "$agentx_aisim_rev" > source-revisions.txt
+sha256sum wheels/*.whl > wheel-sha256.txt
+/tmp/agentx-quickstart/venv/bin/python - <<'PYTHON'
+from aisimulate.stack import resolve_runner_factory
+from aisimulate.config_adapter import resolve_config_adapters
+print(resolve_runner_factory("dynamo").capabilities())
+print(resolve_config_adapters(["dynamo.router"])["dynamo.router"].name)
+PYTHON
 ```
 
-This installs the Python environment and builds the native simulator. The
-commands below use that environment explicitly. Internet access is needed for
-initial dependency installation, the trace download, and model metadata.
+Dependency resolution remains strict: the Rust core pin, installed AISimulate
+Python package and container source wheel must agree. The plugin also checks its
+replay API compatibility. Do not bypass these checks with an editable install,
+path override or dependency-ignore flag. The source pair above passed 112
+unit/integration/dependency checks and 50 end-to-end cases, including real CLI
+routing, after normal installation of all three wheels. The checks above verify
+discovery only; the installed 600/3,600-second results are recorded below.
 
 ## 2. Download a reproducible Weka workload
 
@@ -46,12 +140,11 @@ Apache-2.0. Download the card alongside the data to retain its source informatio
 
 ```bash
 mkdir -p /tmp/agentx-quickstart
-curl --fail --location --retry 3 \
-  https://huggingface.co/datasets/semianalysisai/cc-traces-weka-062126-256k/resolve/8fecd2fc56694469f758f0afbbb6335ad3043740/traces.jsonl \
-  --output /tmp/agentx-quickstart/traces.jsonl
-curl --fail --location --retry 3 \
-  https://huggingface.co/datasets/semianalysisai/cc-traces-weka-062126-256k/resolve/8fecd2fc56694469f758f0afbbb6335ad3043740/README.md \
-  --output /tmp/agentx-quickstart/UPSTREAM_DATASET_CARD.md
+uv tool run --from huggingface_hub hf download \
+  semianalysisai/cc-traces-weka-062126-256k traces.jsonl README.md \
+  --repo-type dataset --revision 8fecd2fc56694469f758f0afbbb6335ad3043740 \
+  --local-dir /tmp/agentx-quickstart
+cp /tmp/agentx-quickstart/README.md /tmp/agentx-quickstart/UPSTREAM_DATASET_CARD.md
 head -n 2 /tmp/agentx-quickstart/traces.jsonl \
   > /tmp/agentx-quickstart/plays-0000-0001.jsonl
 ```
@@ -64,7 +157,7 @@ requests, and occupies 1,198,197 bytes. Its SHA-256 is
 Verify the downloaded subset before running:
 
 ```bash
-python/aisimulate/.venv/bin/python - <<'PY'
+/tmp/agentx-quickstart/venv/bin/python - <<'PY'
 import hashlib
 from pathlib import Path
 trace = Path("/tmp/agentx-quickstart/plays-0000-0001.jsonl")
@@ -80,7 +173,7 @@ uses a 262,144-token context window.
 
 ## 3. Configure the model, GPUs, workers, and traffic
 
-Save the following as `/tmp/agentx-quickstart/disagg.yaml`:
+Save the following complete example as `/tmp/agentx-quickstart/agentx.yaml`:
 
 ```yaml
 traffic:
@@ -96,6 +189,11 @@ traffic:
     agentic_warmup: true
     agentic_profile:
       duration_seconds: 3600
+router:
+  policy: kv_router
+  affinity:
+    mode: sibling_group  # or session
+    ttl_seconds: 3600
 engine:
   mode: disaggregated
   model: Qwen/Qwen3-4B-Instruct-2507
@@ -128,12 +226,30 @@ execution:
     memory_limit_gb: 4
 ```
 
+`router.policy` selects native Dynamo worker selection. Aggregated and prefill
+selection use KV/cache credit; native plain decode selection is load-based.
+Affinity binds the worker/DP actually selected in each pool. `affinity.mode`
+independently selects the binding key: `session` binds each conversation, while
+`sibling_group` binds children of the same parent conversation together. Parents
+keep their own keys, and separate plays cannot share an affinity key. Bindings
+include the worker and attention-DP rank in each routing pool. The integration uses
+native hard affinity and commits a binding only after the engine accepts dispatch.
+The TTL starts when the last active request releases its lease, using simulated
+time; supported TTL values are 1 through 31,536,000 seconds, including fractions.
+
+YAML with `router` automatically selects the installed `dynamo` stack. Explicit
+`--stack dynamo` selects the same integration; explicit `--stack engine` retains
+the engine choice and rejects the unsupported router configuration. Without a
+routing section, the default remains `engine`. A missing plugin, incompatible
+core/API version, or unsupported affinity configuration must produce an error;
+it must never silently use round-robin.
+
 The trace's embedded hash blocks contain 64 tokens. The explicit
 `traffic.source.block_size: 64` keeps host resource inspection aligned with
 those blocks; it is separate from the worker KV-cache block setting.
-Use a host with at least 5 GB of available RAM: the example allows a 4 GB
-execution-process budget and keeps the default 1 GB host reserve. Initial trace
-materialization is estimated at about 2.81 GB. The full profile has no qualified
+Allow headroom for the 4 GB execution-process budget, the default 1 GB host
+reserve, and the CLI coordinator. Use the verified two-play subset and block size;
+the complete Weka corpus needs much more memory. The full profile has no qualified
 static peak-memory bound because recycled plays retain lifecycle evidence.
 The CLI runs it under live resource supervision and can stop with
 `resource_limited` if that budget is exhausted. Increasing the duration or lane
@@ -161,16 +277,15 @@ lanes can recycle repeatedly through the two-play corpus. The default idle guard
 cap idle waits at 300 seconds per tree and 10 seconds across the client workload,
 while preserving dependencies and relative delays.
 
-Default timing uses the AIC timing provider; default KV capacity is derived
+Default timing uses the AISimulate timing provider; default KV capacity is derived
 from the model and hardware at the selected memory fraction. The 400 GB/s KV
 transfer bandwidth is an example assumption, not a measured link speed.
 
 ## 4. Run the simulation
 
 ```bash
-python/aisimulate/.venv/bin/python -m aisimulate predict \
-  --stack engine \
-  --config /tmp/agentx-quickstart/disagg.yaml \
+/tmp/agentx-quickstart/venv/bin/aisimulate predict \
+  --config /tmp/agentx-quickstart/agentx.yaml \
   --capture-per-request \
   --output-dir /tmp/agentx-quickstart/output \
   --format json
@@ -183,9 +298,8 @@ To change the admission window to 600 simulated seconds without editing the
 YAML, use a CLI override:
 
 ```bash
-python/aisimulate/.venv/bin/python -m aisimulate predict \
-  --stack engine \
-  --config /tmp/agentx-quickstart/disagg.yaml \
+/tmp/agentx-quickstart/venv/bin/aisimulate predict \
+  --config /tmp/agentx-quickstart/agentx.yaml \
   --set traffic.load.agentic_profile.duration_seconds=600 \
   --capture-per-request \
   --output-dir /tmp/agentx-quickstart/output-600s \
@@ -224,6 +338,20 @@ for the detailed contract and qualification boundaries.
 | `prediction.json` | Aggregate predictions, snapshot information, preparation/barrier audit, profile duration/cutoff accounting, and play outcomes |
 | `requests.jsonl` | Measured profile requests, including per-request timing and identity |
 
+`routing_policy.roles` records each pool's `native_policy`
+(`dynamo.DefaultWorkerSelector`) and `dynamo_revision`. Its `decisions` contain
+`request_id`, `group_key`, `worker_id`, `dp_rank`, `binding_reused` and
+`overlap_blocks`; match measured decisions to each request's `routing_history`.
+`decision_count` also includes preparation requests; `post_dispatch_checks` counts
+accepted dispatches and `dispatch_aborts` counts failed dispatches.
+`physical_kv_events` counts simulated engine events delivered to that pool's
+router index. Plain P/D decode selection is load-based and reports zero such
+events; this does not imply zero destination-cache reuse. Compare
+`destination_activated_ms - destination_reserved_ms` between `destination_missing`
+and `full_prompt` transfer timing, with a cache-disabled control. Imported KV
+reuse can leave `decode_reused_input_tokens` at zero on this path.
+Worker selection or an overlap score alone does not prove cache reuse.
+
 Check `agentic_phases` for preparation success and barrier state, and
 `agentic_play_outcomes` for completed or incomplete plays. Check `agentic_profile`
 for the resolved duration and grace settings, admission cutoff, recycled play
@@ -240,6 +368,24 @@ router overlap is not a substitute for cache hits. The 162 source requests
 include initial snapshot history, and the corpus can be replayed repeatedly as
 lanes recycle, so this is not the expected measured request count.
 
+The installed end-to-end cases cover vLLM/SGLang, aggregated/P-D, session/sibling
+bindings, duration, physical prefix reuse, cache-disabled controls with zero
+reuse, and a separate decode destination-cache transfer comparison for both
+backends. With the exact YAML and two-play subset above, automatic stack selection
+(no `--stack`) produced these fresh native-adapter results on October 5, 2026:
+
+| Admission window | Successful measured requests | Matched measured worker/DP routes | Actual prefix reuse | Prefill KV events |
+| --- | --- | --- | --- | --- |
+| 600 s | 42 | 84 | 96.170902% | 81 |
+| 3,600 s | 219 | 438 | 95.649742% | 302 |
+
+Both runs exclude 22 preparation requests from the measured cohort and finish
+with zero canceled or unsettled requests. The report captures 128/482 native
+routing decisions respectively, including preparation in both P/D pools. Decode
+KV-event counts are zero on this load-based decode path; the independent transfer
+comparison establishes actual destination-cache reuse. These are verified source
+builds, not a published paired release or a hardware-accuracy measurement.
+
 To compare against a cold snapshot, repeat the command with a separate output
 directory and add:
 
@@ -254,3 +400,20 @@ To run the initial snapshot suffixes once without recycling, remove
 `agentic_profile` from the YAML. To replay those finite plays from turn zero,
 also remove `agentic_snapshot` and `agentic_warmup`. Continuous profiles require
 seeded snapshots for the initial lanes.
+
+## Capability boundaries
+
+This development source pair supports offline vLLM/SGLang aggregated and P/D
+simulation, including attention DP, seeded snapshots, saved-frontier warmup and
+duration profiles. The existing Dynamo adapter supports offline `predict` with
+static pools and preserves optional capture/telemetry. Routing with `recommend`,
+Planner scaling, authored DP pins, custom policy classes, selector seeds, online
+execution or unsupported backends is rejected. Workload/snapshot seeds remain
+supported. Other explicit
+stacks retain their own capabilities. Required CI/review, source merges and an
+actual matching published release remain separate from this installed qualification.
+
+The KV index receives physical simulated engine store/remove events. Cache reuse
+is still simulated behavior, not measured GPU performance. The existing
+saved-frontier warmup and snapshot sampling differ from the live AgentX harness;
+this guide does not claim full recipe or bitwise parity.

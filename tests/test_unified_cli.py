@@ -586,15 +586,96 @@ def test_engine_stack_rejects_explicit_unavailable_component(tmp_path, monkeypat
         lambda stack: _Factory(_Runner()),
     )
 
-    def unavailable(names):
-        assert list(names) == ["engine.router"]
-        raise cli.ConfigAdapterResolutionError("config adapter 'engine.router' is unavailable")
+    from aisimulate.config_adapter import resolve_config_adapters
 
-    monkeypatch.setattr(cli, "resolve_config_adapters", unavailable)
+    monkeypatch.setattr(cli, "resolve_config_adapters", lambda names: resolve_config_adapters(names, entry_points=[]))
 
     with pytest.raises(SystemExit, match="2"):
-        cli.main(["predict", "--config", str(config_path)])
+        cli.main(["predict", "--stack", "engine", "--config", str(config_path)])
     assert "engine.router" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("router", "explicit", "selected"),
+    [
+        (None, None, "engine"),
+        ({"policy": "kv_router"}, None, "dynamo"),
+        ({"policy": "kv_router", "affinity": {"mode": "sibling_group"}}, None, "dynamo"),
+        ({"policy": "kv_router"}, "engine", "engine"),
+        ({"policy": "kv_router"}, "dynamo", "dynamo"),
+    ],
+)
+@pytest.mark.parametrize("command", ["predict", "recommend"])
+def test_cli_selects_router_stack_only_when_not_explicit(
+    tmp_path, monkeypatch, router, explicit, selected, command
+) -> None:
+    raw = {"engine": {}}
+    if router is not None:
+        raw["router"] = router
+    path = tmp_path / "routing.yaml"
+    path.write_text(yaml.safe_dump(raw))
+    factory = object()
+    loaded = []
+
+    def resolve(name):
+        loaded.append(name)
+        return factory
+
+    def execute(args, config, actual_factory):
+        assert args.stack == selected
+        assert config == raw
+        assert actual_factory is factory
+        return 0
+
+    monkeypatch.setattr(cli, "resolve_runner_factory", resolve)
+    monkeypatch.setattr(cli, f"_{command}", execute)
+    argv = [command, "--config", str(path)]
+    if explicit is not None:
+        argv += ["--stack", explicit]
+    assert cli.main(argv) == 0
+    assert loaded == [selected]
+
+
+def test_prediction_router_override_selects_native_policy(tmp_path, monkeypatch) -> None:
+    path = tmp_path / "routing.yaml"
+    path.write_text("engine: {}\n")
+    loaded = []
+    monkeypatch.setattr(cli, "resolve_runner_factory", lambda name: loaded.append(name) or object())
+    monkeypatch.setattr(cli, "_predict", lambda args, raw, factory: 0)
+    assert cli.main(["predict", "--config", str(path), "--set", "router.policy=kv_router"]) == 0
+    assert loaded == ["dynamo"]
+
+
+@pytest.mark.parametrize("command", ["predict", "recommend"])
+@pytest.mark.parametrize("explicit", [False, True])
+def test_router_missing_integration_is_configuration_error(tmp_path, monkeypatch, capsys, command, explicit) -> None:
+    from aisimulate.stack import resolve_runner_factory
+
+    path = tmp_path / "routing.yaml"
+    path.write_text("engine: {}\nrouter: {policy: kv_router}\n")
+    requested = []
+
+    def resolve(name):
+        requested.append(name)
+        return resolve_runner_factory(name, entry_points=[])
+
+    monkeypatch.setattr(cli, "resolve_runner_factory", resolve)
+    argv = [command, "--config", str(path)]
+    if explicit:
+        argv += ["--stack", "dynamo"]
+    with pytest.raises(SystemExit, match="2"):
+        cli.main(argv)
+    assert requested == ["dynamo"]  # Never retry with the default round-robin runner.
+    error = capsys.readouterr().err
+    assert "stack 'dynamo' is unavailable" in error
+    assert "Install the distribution" in error
+
+
+def test_router_cannot_be_consumed_as_an_output_adapter() -> None:
+    from aisimulate.cli_args import _CliConfigError, _extract_output_configs
+
+    with pytest.raises(_CliConfigError, match="collides with a recommendation input section"):
+        _extract_output_configs({"router": {"policy": "kv_router"}}, ["router"], stack="engine")
 
 
 @pytest.mark.parametrize(("sla_field", "bound"), [("ttft_ms", 800.0), ("itl_ms", 30.0)])

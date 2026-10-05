@@ -121,6 +121,26 @@ where
         self.0.cancel_pending(request_id)
     }
 
+    fn dispatch_committed(&mut self, request_id: Uuid, now_ms: f64) -> AnyResult<()> {
+        self.0
+            .dispatch_committed(request_id, now_ms)
+            .map_err(placement_boundary)
+    }
+
+    fn dispatch_aborted(&mut self, request_id: Uuid, now_ms: f64) -> AnyResult<()> {
+        self.0
+            .dispatch_aborted(request_id, now_ms)
+            .map_err(placement_boundary)
+    }
+
+    fn advance_clock(&mut self, now_ms: f64) -> AnyResult<Vec<crate::replay::core::Placement>> {
+        self.0.advance_clock(now_ms).map_err(placement_boundary)
+    }
+
+    fn next_wakeup_ms(&self) -> Option<f64> {
+        self.0.next_wakeup_ms()
+    }
+
     fn request_terminal(
         &mut self,
         request_id: Uuid,
@@ -284,6 +304,31 @@ pub struct Replayer<C = RoundRobinComposition> {
     runtime_input: Option<ReplayRuntimeInput>,
     capture: ReplayCaptureOptions,
     telemetry: Option<(f64, Box<dyn ReplayTelemetryObserver>)>,
+}
+
+/// Execute materialized inputs with a caller-owned placement/scaling composition.
+///
+/// Capture and telemetry use the same runtime and report finalization as
+/// [`Replayer::run`]. The returned report retains execution-owned runtime
+/// evidence even when its compact JSON summary omits that evidence.
+pub fn run_replay_with_composition<C: ReplayComposition>(
+    mut spec: ReplaySpec,
+    factory: ReplayEngineFactory,
+    input: Option<ReplayRuntimeInput>,
+    composition: C,
+    capture: ReplayCaptureOptions,
+    telemetry: Option<(f64, Box<dyn ReplayTelemetryObserver>)>,
+) -> ReplayResult<ReplayReport> {
+    spec.record_per_request |= capture.effective_per_request();
+    let mut replayer =
+        Replayer::with_composition(spec, factory, composition)?.with_capture_options(capture);
+    if let Some(input) = input {
+        replayer = replayer.with_runtime_input(input);
+    }
+    if let Some((interval_ms, observer)) = telemetry {
+        replayer = replayer.with_telemetry_observer(interval_ms, observer)?;
+    }
+    replayer.run()
 }
 
 impl Replayer<RoundRobinComposition> {
@@ -784,9 +829,181 @@ fn apply_runtime_determinism(input: &mut ReplayRuntimeInput, determinism: Replay
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::engine::{EngineConfig, TimingModelConfig};
     use crate::replay::{
-        ProviderSpec, ReplayAdapters, ReplayRequest, ReplayTopology, WorkerPoolSpec,
+        ProviderSpec, ReplayAdapters, ReplayRequest, ReplayScalingDecision, ReplayScalingSnapshot,
+        ReplayTelemetrySampleKind, ReplayTopology, WorkerPoolSpec,
     };
+    use std::sync::{Arc, Mutex};
+
+    struct ScalingComposition {
+        capture_expected: bool,
+    }
+
+    impl ReplayComposition for ScalingComposition {
+        type Metadata = NoReplayMetadata;
+        type Observation = NoEngineEvents;
+        type AggregatedPlacement = AggregatedRoundRobinPlacement<()>;
+        type DisaggregatedPlacement = PoolRoundRobinPlacement<()>;
+
+        fn validate_spec(&self, spec: &ReplaySpec) -> ReplayResult<()> {
+            assert_eq!(spec.record_per_request, self.capture_expected);
+            Ok(())
+        }
+
+        fn create_aggregated_placement(
+            &mut self,
+            dp_size: u32,
+            topology: Vec<WorkerTopology>,
+        ) -> AnyResult<Self::AggregatedPlacement> {
+            RoundRobinComposition.create_aggregated_placement(dp_size, topology)
+        }
+
+        fn create_disaggregated_placements(
+            &mut self,
+            prefill_dp_size: u32,
+            prefill_topology: Vec<WorkerTopology>,
+            decode_dp_size: u32,
+            decode_topology: Vec<WorkerTopology>,
+        ) -> AnyResult<(Self::DisaggregatedPlacement, Self::DisaggregatedPlacement)> {
+            RoundRobinComposition.create_disaggregated_placements(
+                prefill_dp_size,
+                prefill_topology,
+                decode_dp_size,
+                decode_topology,
+            )
+        }
+
+        fn take_scaling_policy(&mut self) -> AnyResult<Option<Box<dyn ReplayScalingPolicy>>> {
+            Ok(Some(Box::new(GrowOnce)))
+        }
+    }
+
+    struct GrowOnce;
+
+    impl ReplayScalingPolicy for GrowOnce {
+        fn initial_tick_ms(&mut self) -> AnyResult<f64> {
+            Ok(1.0)
+        }
+
+        fn on_tick(&mut self, _: ReplayScalingSnapshot) -> AnyResult<ReplayScalingDecision> {
+            Ok(ReplayScalingDecision {
+                target_prefill: Some(2),
+                target_decode: Some(2),
+                next_tick_ms: None,
+            })
+        }
+    }
+
+    struct ObservedSamples(Arc<Mutex<Vec<ReplayTelemetrySnapshot>>>);
+
+    impl ReplayTelemetryObserver for ObservedSamples {
+        fn on_sample(&mut self, snapshot: ReplayTelemetrySnapshot) -> AnyResult<()> {
+            self.0.lock().unwrap().push(snapshot);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn shared_composition_executor_retains_capture_scaling_and_telemetry() {
+        for disaggregated in [false, true] {
+            for capture in [false, true] {
+                let samples = Arc::new(Mutex::new(Vec::new()));
+                let topology = if disaggregated {
+                    ReplayTopology::Disaggregated {
+                        prefill: WorkerPoolSpec::default(),
+                        decode: WorkerPoolSpec::default(),
+                        handoff_latency_ms: 0.0,
+                    }
+                } else {
+                    ReplayTopology::aggregated(1)
+                };
+                let spec = ReplaySpec {
+                    version: 1,
+                    topology,
+                    engine: serde_json::to_value(ReplayEngineConfig {
+                        rank: EngineConfig {
+                            block_size: 4,
+                            num_gpu_blocks: 64,
+                            timing_model: TimingModelConfig::Fixed {
+                                prefill_ms: 10.0,
+                                decode_ms: 1.0,
+                            },
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    })
+                    .unwrap(),
+                    adapters: ReplayAdapters::default(),
+                    max_sim_time_ms: None,
+                    max_in_flight: None,
+                    record_per_request: false,
+                    sla: Default::default(),
+                    requests: Vec::new(),
+                };
+                let report = run_replay_with_composition(
+                    spec,
+                    ReplayEngineFactory::new(),
+                    Some(ReplayRuntimeInput::Requests(VecDeque::from([
+                        DirectRequest {
+                            tokens: vec![1, 2, 3, 4],
+                            max_output_tokens: 2,
+                            uuid: Some(Uuid::from_u128(77)),
+                            arrival_timestamp_ms: Some(0.0),
+                            ..Default::default()
+                        },
+                    ]))),
+                    ScalingComposition {
+                        capture_expected: capture,
+                    },
+                    ReplayCaptureOptions {
+                        capture_per_request: capture,
+                        capture_lifecycle_evidence: capture,
+                        ..Default::default()
+                    },
+                    Some((3.0, Box::new(ObservedSamples(samples.clone())))),
+                )
+                .unwrap();
+                assert_eq!(report.request_counts.completed_requests, 1);
+                assert_eq!(report.per_request.len(), usize::from(capture));
+                assert_eq!(
+                    report.runtime_evidence.lifecycle_operations.is_empty(),
+                    !capture
+                );
+                if capture {
+                    assert_eq!(report.per_request[0].uuid, Uuid::from_u128(77).to_string());
+                    assert!(
+                        report
+                            .runtime_evidence
+                            .lifecycle_operations
+                            .iter()
+                            .all(|event| {
+                                event.at_ms == 1.0 && event.state_after_batch.active.len() == 2
+                            })
+                    );
+                }
+                let samples = samples.lock().unwrap();
+                assert_eq!(samples[0].kind, ReplayTelemetrySampleKind::Baseline);
+                assert!(
+                    samples
+                        .iter()
+                        .any(|sample| sample.kind == ReplayTelemetrySampleKind::Periodic)
+                );
+                assert!(
+                    samples
+                        .iter()
+                        .any(|sample| sample.active_decode_ids.len() == 2)
+                );
+                if disaggregated {
+                    assert!(
+                        samples
+                            .iter()
+                            .any(|sample| sample.active_prefill_ids.len() == 2)
+                    );
+                }
+            }
+        }
+    }
 
     #[test]
     fn belady_native_forecast_preserves_queue_identity_and_rejects_unordered_arrivals() {

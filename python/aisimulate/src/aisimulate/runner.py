@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Dynamo-free engine replay implementation of the Sweeper Runner contract."""
+"""Engine-only replay implementation."""
 
 from __future__ import annotations
 
@@ -469,6 +469,10 @@ class EngineReplayRunner:
         if spec.workload.get("source_type") is not None and "length_sampler" in spec.workload:
             raise ValueError("length_sampler requires materialized direct synthetic replay without source_type")
         self.capabilities.require_compatible(spec)
+        if spec.adapters:
+            raise InvalidRunnerError(
+                "EngineReplayRunner does not support component adapters; select a compatible stack"
+            )
         encoder = spec.backend_deployment.encoder
         if encoder is None and spec.workload.get("images") is not None:
             raise InvalidRunnerError("image workloads require an encoder pool")

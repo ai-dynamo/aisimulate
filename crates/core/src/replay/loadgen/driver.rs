@@ -1446,6 +1446,7 @@ impl WorkloadDriver {
             graph_digest: context.graph.graph_digest.clone(),
             nodes: Vec::new(),
             plays: Vec::new(),
+            conversation_lineage: Vec::new(),
         };
         let mut source_nodes = Vec::new();
         for (cohort_index, snapshot) in prepared.plays.iter().enumerate() {
@@ -1482,6 +1483,8 @@ impl WorkloadDriver {
                 }
                 nodes.push(index);
                 view.nodes.push(node);
+                view.conversation_lineage
+                    .push(request.identity.lineage.clone());
                 source_nodes.push((cohort_index, source_index));
             }
             if nodes.is_empty() || root_nodes.is_empty() {
@@ -1686,7 +1689,8 @@ impl WorkloadDriver {
         let mut identities = trace
             .nodes
             .iter()
-            .map(|node| {
+            .enumerate()
+            .map(|(node_index, node)| {
                 let parent_id = node
                     .dependencies
                     .iter()
@@ -1701,6 +1705,7 @@ impl WorkloadDriver {
                     root_id: root_id_by_play.get(&node.play_id).cloned().flatten(),
                     parent_id,
                     cache_id: None,
+                    lineage: trace.conversation_lineage[node_index].clone(),
                 }
             })
             .collect::<Vec<_>>();
@@ -2943,6 +2948,7 @@ mod tests {
                 digest: "fixture".into(),
             },
             graph_digest: "fixture".into(),
+            conversation_lineage: super::super::lineage::conversation_lineage(&nodes),
             nodes,
             plays,
         }

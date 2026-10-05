@@ -67,6 +67,22 @@ def test_optional_stack_is_loaded_lazily() -> None:
     assert isinstance(resolve_runner_factory("dynamo", entry_points=[entry]), _RunnerFactory)
 
 
+def test_router_requires_the_selected_stack_plugin() -> None:
+    class UnusedEntryPoint(_EntryPoint):
+        def load(self):
+            pytest.fail("engine must not load the external Dynamo integration")
+
+    entry = UnusedEntryPoint("dynamo.router", "dynamo:adapter", _Adapter)
+    with pytest.raises(ConfigAdapterResolutionError, match="'engine.router' is unavailable"):
+        resolve_config_adapters(["engine.router"], entry_points=[entry])
+    assert isinstance(
+        resolve_config_adapters(
+            ["dynamo.router"], entry_points=[_EntryPoint("dynamo.router", "dynamo:adapter", _Adapter)]
+        )["dynamo.router"],
+        _Adapter,
+    )
+
+
 def test_missing_and_duplicate_stacks_fail_explicitly() -> None:
     with pytest.raises(StackNotFoundError, match="installed stacks"):
         resolve_runner_factory("missing", entry_points=[])
@@ -76,6 +92,16 @@ def test_missing_and_duplicate_stacks_fail_explicitly() -> None:
     ]
     with pytest.raises(DuplicateStackError, match="multiple providers"):
         resolve_runner_factory("dynamo", entry_points=entries)
+
+
+@pytest.mark.parametrize("version", [None, True, 2, 4])
+def test_router_plugin_rejects_incompatible_config_api(version) -> None:
+    class IncompatibleAdapter(_Adapter):
+        config_adapter_api_version = version
+
+    entry = _EntryPoint("dynamo.router", "dynamo:adapter", IncompatibleAdapter)
+    with pytest.raises(ConfigAdapterResolutionError, match="config API version"):
+        resolve_config_adapters(["dynamo.router"], entry_points=[entry])
 
 
 def test_config_adapter_requires_predict_and_recommend_methods() -> None:

@@ -154,11 +154,14 @@ pub use handoff::{
 pub use protocol::ForwardPassSnapshot;
 #[doc(hidden)]
 pub use protocol::{
-    AgenticRuntimeIdentity, DirectRequest, ReplayPromptTokenSource, ReplayRequestContext,
+    AGENTIC_CONVERSATION_LINEAGE_SCHEMA_V1, AgenticConversationLineage, AgenticRuntimeIdentity,
+    DirectRequest, ReplayPromptTokenSource, ReplayRequestContext,
 };
 #[doc(hidden)]
 pub use replayer::ReplayRuntimeInput;
-pub use replayer::{ReplayComposition, Replayer, RoundRobinComposition};
+pub use replayer::{
+    ReplayComposition, Replayer, RoundRobinComposition, run_replay_with_composition,
+};
 #[doc(hidden)]
 pub use report::TraceCollector;
 pub use report::{
