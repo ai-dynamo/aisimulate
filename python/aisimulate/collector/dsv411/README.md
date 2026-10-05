@@ -47,7 +47,7 @@ carries a structure) produces the row, the other 39 layers still execute for KV 
   those rows and stores it per row as `kv_seed_correction` (1.0 elsewhere); the Rust loader admits
   `synthetic_kv` cached-prefill / decode rows only from tables that carry the column. `real_kv` seeds every
   such row by chunked prefills (8192) of corpus tokens (the TP2 H20 calibration of 2026-10-04 was collected
-  this way; TP4 is synthetic_kv, owner decision 2026-10-05).
+  this way; the published H20 tables are TP2 only - owner scope 2026-10-05, no TP4 campaign).
   SGLang: the out-of-window SWA slots are released before every chunk and before the measured
   extend, where the serving scheduler releases them (`slide_windows`), so the hybrid SWA pool only
   holds the windows plus one extend; the pool limits live in the plan (`plan.py` `DEFAULT_POOL`) and
@@ -95,8 +95,7 @@ and measures every query length on it).
   producer); vLLM's engram at 262144 tokens does not fit a TP2 rank next to its table shard; a synthetic fill that set a random
   sign bit on sglang's `index_k_with_scale_buffer` (interleaved UE8M0 scales -> 2^49..2^64) made the fp4
   index-logits path of batch-1 extends with query >= 3072 on short cached prefixes return NaN from the first
-  indexer layer (TP2 repro: synthetic failed, real_kv and the sign-less fill passed; fixed in the producer, the
-  affected cells re-collected as complements); the qualification check that caught it records such rows
-  in-process as `NonFiniteOutput` (`OutputQualificationError`). Batch-1024 cached-prefix cells that failed the
-  same check in one of the two sliding-window layers are re-collected with the fixed fill; whatever remains is
-  a recorded limitation (owner decision 2026-10-05).
+  indexer layer (TP2 repro: synthetic failed, real_kv and the sign-less fill passed; fixed in the producer);
+  the qualification check that caught it records such rows in-process as `NonFiniteOutput`
+  (`OutputQualificationError`). Batch-1024 cached-prefix extends at TP4 failed the same check in one of the
+  two sliding-window layers for a few shapes (not re-collected: TP4 is out of scope) - a recorded limitation.

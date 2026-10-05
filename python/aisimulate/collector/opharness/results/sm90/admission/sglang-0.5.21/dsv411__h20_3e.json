@@ -2,6 +2,10 @@
  "backend": "sglang",
  "collected_at": "2026-10-05",
  "family": "dsv411",
+ "kv_seed_regimes": {
+  "n/a": 1419,
+  "real_kv": 25812
+ },
  "purpose": "calibration",
  "rows": 27231,
  "runs": [
@@ -348,5 +352,6 @@
  "runtime_digest": "sha256:b1259f3ea3275f66237c498ea388919729018bc9f01c3d638391e06e2cf3f469",
  "system": "h20_3e",
  "table": "/root/tianhao/debug/dsv4.1_ais/work/python/aisimulate/src/aisimulate_core/systems/data/h20_3e/dsv411/sglang/0.5.21/dsv411_module_perf.parquet",
+ "topk_correction": {},
  "version": "0.5.21"
 }

@@ -2,6 +2,10 @@
  "backend": "vllm",
  "collected_at": "2026-10-05",
  "family": "dsv411",
+ "kv_seed_regimes": {
+  "n/a": 1504,
+  "real_kv": 27099
+ },
  "purpose": "calibration",
  "rows": 28603,
  "runs": [
@@ -56,5 +60,6 @@
  "runtime_digest": "sha256:8a69ffad015f138d7170c4ddc429e230a3bc1c1719f67e14324749df200a4b90",
  "system": "h20_3e",
  "table": "/root/tianhao/debug/dsv4.1_ais/work/python/aisimulate/src/aisimulate_core/systems/data/h20_3e/dsv411/vllm/0.30.0/dsv411_module_perf.parquet",
+ "topk_correction": {},
  "version": "0.30.0"
 }
