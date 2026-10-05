@@ -17,7 +17,8 @@ visible in coverage accounting.
 
 Display names are **AISim** and **AIC (legacy CLI)** throughout the E2E page.
 The model matrix pairs TPOT / TTFT MAPE in one column per predictor; each metric
-can still be sorted independently. New exports group models by their exact full
+can still be sorted independently. Each predictor’s point count appears immediately
+before its MAPE column. New exports group models by their exact full
 Hugging Face ID, keeping checkpoint variants separate. Historical aggregates
 retain their grouping and display all recorded HF IDs, or their original name
 when no HF ID was recorded.

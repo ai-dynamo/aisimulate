@@ -253,12 +253,12 @@ function compareValues(left, right) {
 
 function metricCells(item) {
   return `
-    <td class="points-cell">${escapeHtml(item.aic.points.toLocaleString())}</td>
-    <td class="points-cell">${escapeHtml(item.aisimulate.points.toLocaleString())}</td>
     <td class="count-cell">${escapeHtml(item.gpu_skus.length.toLocaleString())}</td>
     <td class="mono">${escapeHtml(item.gpu_skus.join(", "))}</td>
     <td>${escapeHtml(item.precisions.join(", "))}</td>
+    <td class="points-cell">${escapeHtml(item.aisimulate.points.toLocaleString())}</td>
     <td class="metric-cell">${escapeHtml(formatPercent(item.aisimulate.tpot_mape_pct))} / ${escapeHtml(formatPercent(item.aisimulate.ttft_mape_pct))}</td>
+    <td class="points-cell">${escapeHtml(item.aic.points.toLocaleString())}</td>
     <td class="metric-cell">${escapeHtml(formatPercent(item.aic.tpot_mape_pct))} / ${escapeHtml(formatPercent(item.aic.ttft_mape_pct))}</td>`;
 }
 
