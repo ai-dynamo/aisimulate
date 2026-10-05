@@ -4,6 +4,8 @@ The public [FPM Accuracy Overview](https://ai-dynamo.org/aisimulate/fpm-accuracy
 compares forward-pass predictions with measurements from the public
 [nvidia/aisimulate-fpm-dataset](https://huggingface.co/datasets/nvidia/aisimulate-fpm-dataset).
 
+Details and 3D Visualization are separate tabs with independent controls.
+
 ## What is published
 
 - Overview: expandable model/configuration rows and sortable metrics.
@@ -12,12 +14,12 @@ compares forward-pass predictions with measurements from the public
   retains its newest qualified evaluation. Dataset or FPM input changes break
   the series; MAPE is weighted by successful prediction count. Chart labels pair
   each commit ID with its evaluation date (UTC); tooltips include the time.
-- Details / Accuracy: retained branch evaluations, FPM variants, phase summaries,
+- Details: retained branch evaluations, FPM variants, phase summaries,
   measurement-only workload distributions, and prediction-error heatmaps.
   Heatmaps use compact cells and size independently, with scrolling only when
   their contents exceed the available width. A Hugging Face icon identifies the
   pinned configuration and measurement evidence links in a small, muted line.
-- Details / 3D Measurements: independent panels, seven workload axes, stable samples,
+- 3D Visualization: independent panels, seven workload axes, stable samples,
   full gzip chunks, native rank provenance, camera controls, and PNG export.
   Diagnostic unsynchronized DP groups remain separate from accepted truth.
 - Hide configurations with zero measurements and models with no measured
@@ -179,11 +181,3 @@ installation and evaluation so runner path remapping cannot select another Pytho
 
 Details initially selects a configuration with accepted measurements and an
 available workload. Empty configurations remain labeled and directly linkable.
-
-The top navigation is Overview, Trends, and Details. Details shares evaluation,
-configuration, and workload controls. The 3D measurement panels appear directly
-above the accuracy tables, without a view switch. Plotly and point assets load
-only after matching the selected evaluation to the retained assets. The left panel follows the selected
-configuration; the right panel compares another configuration in the same HF
-snapshot. Missing matching HF revision or membership yields an unavailable view.
-The former `3d-visualization.html` URL redirects to Details with `view=3d`.

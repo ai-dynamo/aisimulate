@@ -65,7 +65,3 @@
 [data-view] select { min-width:0; }
 
 #trend-tooltip { position:fixed; z-index:20; width:320px; padding:12px; border:1px solid var(--border); border-radius:8px; background:var(--panel); color:var(--text); overflow-wrap:anywhere; pointer-events:none; }
-
-[data-view] [hidden] { display:none !important; }
-#gym-visualization .gv-content { margin:0; padding:12px 0; }
-#gym-visualization .gv-intro { font-size:12px; margin:8px 0 12px; }

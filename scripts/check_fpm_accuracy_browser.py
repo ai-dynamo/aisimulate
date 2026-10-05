@@ -84,7 +84,7 @@ async def check():
                 await expect(page.locator("#freshness")).to_contain_text("Stale result")
                 await expect(page.locator("thead th")).to_have_count(7)
                 assert not await page.locator('a[href*="coverage.html"]').count()
-                await expect(page.locator(".fpm-tabs a")).to_have_count(3)
+                await expect(page.locator(".fpm-tabs a")).to_have_count(4)
                 assert "op-based" not in await page.locator("body").inner_text()
                 await expect(page.locator(".overview-config-row").first).to_contain_text("7 excluded or unavailable")
                 await expect(page.locator(".overview-config-row").first).to_contain_text("80/100 predicted")
@@ -164,24 +164,8 @@ async def check():
                 await page.set_viewport_size({"width": 390, "height": 844})
                 assert await page.evaluate("document.documentElement.scrollWidth <= innerWidth")
                 await page.set_viewport_size({"width": 1400, "height": 1000})
-                # Missing matching assets must leave the accuracy tables available.
-                await page.goto(url + "evaluation-detail.html")
-                await expect(page.locator("#distribution table")).to_be_visible()
-                await expect(page.locator("#visualization-status")).to_contain_text("3D unavailable")
-                await expect(page.locator("#gym-visualization")).to_be_hidden()
-                # Match this browser fixture to the evaluation revision, then reload.
-                catalog_path = site / "fpm-accuracy/data/visualization/catalog.json"
-                catalog_data = json.loads(catalog_path.read_text())
-                catalog_data["hf_revision"] = history["entries"][0]["snapshot"]["hf_revision"]
-                catalog_path.write_text(json.dumps(catalog_data))
                 await page.goto(url + "3d-visualization.html")
-                await page.wait_for_url("**/evaluation-detail.html?view=3d")
-                await page.locator("#phase-filter").select_option("all")
                 await expect(page.locator("#gv-left-chart .plot-container")).to_be_visible(timeout=30000)
-                await expect(page.locator("#phase-summary")).to_be_visible()
-                assert await page.evaluate(
-                    "document.querySelector('#gym-visualization').compareDocumentPosition(document.querySelector('#accuracy-panel')) & Node.DOCUMENT_POSITION_FOLLOWING"
-                )
                 held = asyncio.Event()
                 release = asyncio.Event()
 
@@ -217,7 +201,7 @@ async def check():
                 )
                 await page.locator("#gv-density").select_option("all")
                 await expect(page.locator("#gv-left-count")).to_contain_text("40")
-                await page.locator("#phase-filter").select_option("decode")
+                await page.locator("#gv-phase").select_option("decode")
                 await page.locator("#gv-density").select_option("sample")
                 await expect(page.locator("#gv-error")).to_be_hidden()
                 await page.wait_for_function("document.querySelector('#gym-visualization').dataset.ready === 'true'")

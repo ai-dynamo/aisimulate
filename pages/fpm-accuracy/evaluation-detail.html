@@ -3,7 +3,6 @@
 SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 SPDX-License-Identifier: Apache-2.0
 -->
-<!-- Visualization adapted from AISim FPM Gym f934c030afc3a03cb04d8f3ff4709194f7445c98, dashboard/3d-visualization.html; see README.md. -->
 <html lang="en" data-theme="dark">
   <head>
     <meta charset="utf-8" />
@@ -30,7 +29,6 @@ SPDX-License-Identifier: Apache-2.0
     </script>
     <link rel="stylesheet" href="../e2e-accuracy/styles.css" />
     <link rel="stylesheet" href="./styles.css" />
-<link rel="stylesheet" href="./assets/visualization.css" />
   </head>
   <body>
     <header class="top-header">
@@ -85,9 +83,9 @@ SPDX-License-Identifier: Apache-2.0
 
     <nav class="shell fpm-tabs" aria-label="FPM dashboard">
       <a href="index.html">Overview</a><a href="trends.html">Trends</a>
-      <a href="evaluation-detail.html">Details</a>
+      <a href="evaluation-detail.html">Details</a><a href="3d-visualization.html">3D Visualization</a>
     </nav>
-<main class="shell dashboard" data-view="detail"><h2>Configuration details</h2>
+<main class="shell dashboard" data-view="detail"><h2>Measured workload and prediction error</h2>
 <p id="dashboard-status" role="status">Loading retained evaluations…</p>
 <label class="fpm-wide-control">Evaluation<select id="evaluation-filter"></select></label><section class="fpm-filters" aria-label="Filter measurements">
 <label>Model<select id="model-filter"></select></label><label>GPU<select id="gpu-filter"></select></label>
@@ -95,53 +93,13 @@ SPDX-License-Identifier: Apache-2.0
 <label>Search<input id="search-filter" type="search" placeholder="Configuration, model…"></label>
 <label>Parallelism<select id="parallelism-filter"></select></label><label>Worker role<select id="role-filter"></select></label></section>
 <label class="fpm-wide-control">Configuration<select id="configuration-filter"></select></label><p id="detail-evidence"></p>
-<section class="fpm-filters"><label>Workload<select id="phase-filter"><option value="all">All workloads</option><option selected>prefill</option><option>decode</option><option>mixed</option></select></label></section>
-<p id="visualization-status" role="status" hidden></p>
-<section hidden id="gym-visualization" aria-label="Interactive latency visualization">
-<section class="gv-content" id="gv-main" aria-labelledby="gv-title">
-
-  <h3 id="gv-title">3D Measurements</h3><p class="gv-intro">Measured latency, not prediction error. Diagnostic observations are labeled separately.</p>
-  <section class="gv-control-panel" aria-label="Shared plot controls">
-   <div class="gv-controls">
-    <label hidden>Workload view<select id="gv-phase" aria-describedby="gv-workload-note"><option value="all">All workloads</option><option value="decode">Decode</option><option value="prefill">Prefill</option><option value="mixed">Mixed</option></select></label>
-    <label>X axis<select id="gv-x-axis" aria-describedby="gv-axis-note"></select></label>
-    <label>Y axis<select id="gv-y-axis" aria-describedby="gv-axis-note"></select></label>
-    <label>Landscape<select id="gv-landscape"><option value="points">Measured points</option></select></label>
-    <label>Latency axis<select id="gv-scale"><option value="log">Log · full range</option><option value="linear-zoom">Linear · main range</option><option value="linear">Linear · full range</option></select></label>
-    <label>Points shown<select id="gv-density" aria-describedby="gv-density-note"><option value="sample">Sample</option><option value="all">All matching observations</option></select></label>
-   </div><div class="gv-density-note" id="gv-workload-note"></div>
-   <div class="gv-density-note" id="gv-axis-note"></div>
-   <div class="gv-density-note" id="gv-density-note" aria-live="polite"></div>
-  </section>
-  <div class="gv-catalog-line" id="gv-catalog-line"></div>
-  <div class="gv-density-note" id="gv-loading" role="status" aria-live="polite">Loading measurement catalog…</div>
-  <div class="gv-error" id="gv-error" role="alert" hidden></div>
-  <div class="gv-density-note" id="gv-record-note" hidden></div>
-  <div class="gv-panels">
-   <section class="gv-pane" aria-labelledby="gv-left-heading" data-pane="left">
-    <div class="gv-pane-head"><div class="gv-pane-title"><h2 id="gv-left-heading">Selected configuration</h2><a class="gv-source" id="gv-left-source" target="_blank" rel="noopener">Hugging Face ↗</a></div>
-     <div class="gv-selectors"><label hidden>Model<select id="gv-left-model"></select></label><label hidden>Configuration / snapshot<select id="gv-left-config"></select></label><label>Run / worker<select id="gv-left-worker"></select></label></div>
-    </div><div class="gv-chart-wrap"><div class="gv-chart-hint">Drag to rotate · Scroll to zoom · Hover for details</div><div class="gv-chart" id="gv-left-chart" role="img" aria-label="Dataset A: interactive 3D measured latency plot"></div><div class="gv-empty" id="gv-left-empty" hidden></div></div><div class="gv-count" id="gv-left-count" aria-live="polite"></div>
-   </section>
-   <section class="gv-pane" aria-labelledby="gv-right-heading" data-pane="right">
-    <div class="gv-pane-head"><div class="gv-pane-title"><h2 id="gv-right-heading">Compare measurements</h2><a class="gv-source" id="gv-right-source" target="_blank" rel="noopener">Hugging Face ↗</a></div>
-     <div class="gv-selectors"><label>Model<select id="gv-right-model"></select></label><label>Configuration / snapshot<select id="gv-right-config"></select></label><label>Run / worker<select id="gv-right-worker"></select></label></div>
-    </div><div class="gv-chart-wrap"><div class="gv-chart-hint">Drag to rotate · Scroll to zoom · Hover for details</div><div class="gv-chart" id="gv-right-chart" role="img" aria-label="Dataset B: interactive 3D measured latency plot"></div><div class="gv-empty" id="gv-right-empty" hidden></div></div><div class="gv-count" id="gv-right-count" aria-live="polite"></div>
-   </section>
-  </div>
-  <div class="gv-key"><span id="gv-axis-key">Axes scale per worker · Latency is the maximum across DP ranks</span><span>Lower latency <i class="gv-color"></i> Higher latency</span></div>
- </section>
- <footer class="gv-footer">Data source: <a href="https://huggingface.co/datasets/nvidia/aisimulate-fpm-dataset" target="_blank" rel="noopener">nvidia/aisimulate-fpm-dataset</a> · Code: <a href="https://github.com/ai-dynamo/aisimulate" target="_blank" rel="noopener">aisimulate</a></footer>
-</section>
-<div id="accuracy-panel">
 <section class="matrix-panel table-scroll"><h3>Phase summary</h3><table id="phase-summary"></table></section>
 <section class="fpm-filters"><label>Method<select id="method-filter"><option value="regression">Regression</option><option value="warmup">FPM (KV warmup on)</option><option value="nowarmup">FPM (KV warmup off)</option></select></label>
 <label>FPM variant<select id="variant-filter"></select></label>
-</section>
+<label>Workload<select id="phase-filter"><option>prefill</option><option>decode</option><option>mixed</option></select></label></section>
 <div class="fpm-heatmaps"><section class="matrix-panel table-scroll"><h3>Measured workload distribution</h3><div id="distribution"></div></section>
 <section class="matrix-panel table-scroll"><h3>Prediction error</h3><div id="error-heatmap"></div></section></div>
-<p>Only measured traffic contributes to these maps. MAPE uses successful predictions; missing predictions reduce coverage.</p></div>
-</main>
+<p>Only measured traffic contributes to these maps. MAPE uses successful predictions; missing predictions reduce coverage.</p></main>
     <script src="./navigation.js" defer></script>
     <script src="./dashboard.js" defer></script>
   </body>
