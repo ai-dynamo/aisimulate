@@ -38,6 +38,7 @@ import subprocess
 import sys
 import time
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 WARMUP_ROUNDS = 5
@@ -305,8 +306,16 @@ def run_point(args, base: str, stream: FpmStream, point: dict, pool: list[int]) 
     warm = [prompt for prompt in plan["warm"] if prompt]
     if warm:
         stream.drain()
-        result = generate(base, warm, 1)
-        record["warm"] = {"requests": len(warm), "cached_tokens": [item["cached_tokens"] for item in result]}
+        # As the ground truth: one concurrent request per prefix (not one batched
+        # call); near-capacity batched warms (B32 x 131K at TP2) left no reusable
+        # radix/Mamba entries. Untimed.
+        with ThreadPoolExecutor(max_workers=len(warm)) as pool:
+            result = [item for items in pool.map(lambda prompt: generate(base, [prompt], 1), warm) for item in items]
+        record["warm"] = {
+            "requests": len(warm),
+            "mode": "concurrent_individual",
+            "cached_tokens": [item["cached_tokens"] for item in result],
+        }
         time.sleep(0.2)
         record["warm"]["fpm_messages"] = len(stream.drain())
     accepted = 0
