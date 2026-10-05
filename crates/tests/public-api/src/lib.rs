@@ -123,18 +123,6 @@ pub fn accept_kv_request(request: KvCacheEstimateRequest) -> KvCacheEstimateRequ
     request
 }
 
-/// Optional routing adapters share canonical preparation and report finalization.
-pub fn execute_composed_replay<C: aisimulate_core::replay::ReplayComposition>(
-    payload: &str,
-    composition: C,
-) -> anyhow::Result<String> {
-    aisimulate_core::execute_replay_json_with_composition(payload, false, composition)
-}
-
-pub fn linked_replay_core_version() -> &'static str {
-    aisimulate_core::CORE_VERSION
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -14,7 +14,7 @@ use crate::engine::{
 use crate::perfmodel::engine::{Engine as PerfEngine, RuntimeConfig};
 use crate::replay::{
     POWER_DATA_COVERAGE_THRESHOLD, ReplayArtifactKvEventVisibility, ReplayArtifacts,
-    ReplayComposition, ReplayEngineConfig, ReplayEngineFactory, ReplayOperationPowerDiagnostics,
+    ReplayEngineConfig, ReplayEngineFactory, ReplayOperationPowerDiagnostics,
     ReplayPhasePowerDiagnostics, ReplayPowerDiagnostics, ReplayRoleConfig, ReplayRuntimeInput,
     ReplaySpec, ReplayTopology, Replayer, TracePowerStats,
     loadgen::{
@@ -2213,47 +2213,6 @@ fn replay_fpm_coverage(
 }
 
 fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
-    execute_json_using(payload, capture_artifacts, run_with_input)
-}
-
-/// Run the canonical serialized execution payload with a caller-owned policy.
-///
-/// Optional native adapters use this string-only boundary to retain the same
-/// timing/capacity construction, workload driver, preparation and report
-/// finalization as the built-in Python runtime. No Python engine handles cross
-/// extension-module boundaries. Detailed parity artifacts remain the built-in
-/// single-worker interface; adapters observe native events through their
-/// [`ReplayComposition`] instead.
-pub fn execute_replay_json_with_composition<C: ReplayComposition>(
-    payload: &str,
-    capture_artifacts: bool,
-    composition: C,
-) -> Result<String> {
-    ensure!(
-        !capture_artifacts,
-        "custom replay compositions do not expose single-worker parity artifacts"
-    );
-    execute_json_using(payload, false, move |spec, factory, input, _| {
-        let mut replayer = Replayer::with_composition(spec, factory, composition)?;
-        if let Some(input) = input {
-            replayer = replayer.with_runtime_input(input);
-        }
-        Ok((replayer.run()?, None))
-    })
-}
-
-fn execute_json_using<F>(payload: &str, capture_artifacts: bool, run: F) -> Result<String>
-where
-    F: FnOnce(
-        ReplaySpec,
-        ReplayEngineFactory,
-        Option<ReplayRuntimeInput>,
-        bool,
-    ) -> crate::replay::ReplayResult<(
-        crate::replay::ReplayReport,
-        Option<ReplayArtifacts>,
-    )>,
-{
     let (mut spec, mut traffic, capture_performance_diagnostics) =
         match serde_json::from_str(payload).context("invalid AISimulate execution ReplaySpec")? {
             ExecutionPayload::Configured {
@@ -2357,7 +2316,7 @@ where
                 ReplayEngineFactory::new,
                 ReplayEngineFactory::with_timing_model,
             );
-            run(spec, factory, input, capture_artifacts)
+            run_with_input(spec, factory, input, capture_artifacts)
                 .map(|(report, artifacts)| (report, artifacts, resolved_basis))
         }
         ReplayTopology::Disaggregated { .. } => {
@@ -2470,7 +2429,7 @@ where
                 .as_ref()
                 .and_then(|built| built.weka_nested_timestamp_basis);
             let input = built_input.map(|built| built.input);
-            run(
+            run_with_input(
                 spec,
                 ReplayEngineFactory::with_optional_role_timing_models(
                     prefill_timing,
@@ -2594,8 +2553,7 @@ where
     serde_json::to_string(&output).context("serializing AISimulate replay output")
 }
 
-/// Preserve resource exhaustion and error context across Python replay bindings.
-pub fn replay_python_error(error: anyhow::Error) -> PyErr {
+fn replay_python_error(error: anyhow::Error) -> PyErr {
     let exception = if error.chain().any(|cause| {
         matches!(
             cause.downcast_ref::<crate::replay::ReplayError>(),
@@ -2916,31 +2874,8 @@ mod tests {
                 }
             })
         };
-        let run_and_compare = |payload: &serde_json::Value| {
-            let payload = payload.to_string();
-            let built_in: serde_json::Value =
-                serde_json::from_str(&execute_json(&payload, false).unwrap()).unwrap();
-            let composed: serde_json::Value = serde_json::from_str(
-                &execute_replay_json_with_composition(
-                    &payload,
-                    false,
-                    crate::replay::RoundRobinComposition,
-                )
-                .unwrap(),
-            )
-            .unwrap();
-            for field in [
-                "completed_requests",
-                "duration_ms",
-                "per_request",
-                "committed_prefill_tokens",
-                "g2_domains",
-                "agentic_qualification",
-                "agentic_play_outcomes",
-            ] {
-                assert_eq!(composed[field], built_in[field], "shared G2 field {field}");
-            }
-            built_in
+        let run = |payload: &serde_json::Value| -> serde_json::Value {
+            serde_json::from_str(&execute_json(&payload.to_string(), false).unwrap()).unwrap()
         };
         let scopes = [None, Some("dp_rank_local"), Some("cluster_shared")];
         for scope in scopes {
@@ -2948,14 +2883,14 @@ mod tests {
                 serde_json::json!({"kind": "aggregated", "workers": {"initial_workers": 1}}),
                 with_host(scope),
             );
-            let report = run_and_compare(&agg);
+            let report = run(&agg);
             assert_eq!(report["completed_requests"], 1);
             for other in scopes {
                 let pd = payload(
                     serde_json::json!({"kind": "disaggregated", "prefill": {"initial_workers": 1}, "decode": {"initial_workers": 1}}),
                     serde_json::json!({"prefill": with_host(scope), "decode": with_host(other)}),
                 );
-                let report = run_and_compare(&pd);
+                let report = run(&pd);
                 assert_eq!(report["completed_requests"], 1, "{scope:?}/{other:?}");
                 if scope.is_none() && other.is_none() {
                     continue;
@@ -3004,19 +2939,6 @@ mod tests {
                     assert!(
                         error.contains(message),
                         "{scope:?}/{other:?} {pointer}: {error}"
-                    );
-                    let composed_error = format!(
-                        "{:#}",
-                        execute_replay_json_with_composition(
-                            &invalid.to_string(),
-                            false,
-                            crate::replay::RoundRobinComposition,
-                        )
-                        .unwrap_err()
-                    );
-                    assert!(
-                        composed_error.contains(message),
-                        "composed {scope:?}/{other:?} {pointer}: {composed_error}"
                     );
                 }
             }
@@ -4899,38 +4821,6 @@ mod tests {
         let payload = serde_json::to_string(&spec).unwrap();
         let output = execute_json(&payload, false).unwrap();
         let report: serde_json::Value = serde_json::from_str(&output).unwrap();
-        let composed: serde_json::Value = serde_json::from_str(
-            &execute_replay_json_with_composition(
-                &payload,
-                false,
-                crate::replay::RoundRobinComposition,
-            )
-            .unwrap(),
-        )
-        .unwrap();
-        for field in [
-            "completed_requests",
-            "total_input_tokens",
-            "total_output_tokens",
-            "power_diagnostics",
-            "agentic_play_outcomes",
-        ] {
-            assert_eq!(
-                composed[field], report[field],
-                "shared report field {field}"
-            );
-        }
-        assert_eq!(composed["per_request"][0]["request_id"], "authored-id");
-        assert!(
-            execute_replay_json_with_composition(
-                &payload,
-                true,
-                crate::replay::RoundRobinComposition,
-            )
-            .unwrap_err()
-            .to_string()
-            .contains("parity artifacts")
-        );
         let record = &report["per_request"][0];
         assert_eq!(record["request_id"], "authored-id");
         assert_eq!(record["session_id"], "session-a");
