@@ -2677,13 +2677,18 @@ findings:
       NOT a new code path — collect_mla_module ''dsa'' with kv fp8 already serves GLM-5 (GlmMoeDsaForCausalLM); recipes
       sgl_glm5_dsa_attn_fp8_{ctx,gen} capture it: attention family == sm100 serving (fmhaSm100f QkvE4m3 HQk576HV512 TokenSparse),
       residual drift is one tiny cutlass_80 fp16 wmma 32x32 GEMM the module lane issues and serving does not (gemm family) —
-      owner call whether the glm5 gate should move to the module lane on Blackwell. OPEN (not fixed): (5) sglang mla_context on
+      owner call whether the glm5 gate should move to the module lane on Blackwell. FIXED LATER (umbriel-b200-028, 2026-10-05): (5) sglang mla_context on
       SM100: the collector times the prefill kernel under CUDA-graph capture; flashinfer.prefill.trtllm_ragged_attention_deepseek
       (prefill.py:5088) refuses capture without q_seq_lens_cpu/kv_seq_lens_cpu and sglang''s trtllm_mla _run_prefill_kernel does
-      not pass them (serving never graph-captures prefill) — time the sm100 trtllm_mla prefill eagerly or pass the CPU lens.
-      (6) sglang moe w4a8_mxfp4_mxfp8 lane: the collector''s own guard stops at 0.5.21/SM100 ("verified only for 0.5.14 and 0.5.17
-      ... re-verify framework dispatch before extending") — the sm100 identity records show gpt-oss served by FLASHINFER_MXFP4,
-      so the guard can be extended once that dispatch is mirrored. (7) sglang kda: the collector''s own int32-overflow guard
+      not pass them (serving never graph-captures prefill) — collect_mla.benchmark_layer now times the SM100 trtllm_mla PREFILL lane eagerly (use_cuda_graph=False; decode and
+      the Hopper backends keep CUDA-graph timing); mla_context bf16/fp8 smoke OK on B200. (6) sglang moe mxfp4 lanes: the guard is
+      extended to 0.5.21 on SM100/103 for w4a16_mxfp4 AND w4a8_mxfp4_mxfp8, verified from the identity records (gpt-oss-120b/20b
+      and the five deepseek-ai/DeepSeek-V4* fp4-experts checkpoints serve with Mxfp4MoEMethod -> FLASHINFER_MXFP4, kernel family
+      trtllm_gen_moe, under the default render and under AUTO; the marlin prescription is the SM90 workaround); the leaf check
+      that only knew Hopper''s cutlass_sm90 now maps the SM100 leaf trtllm_sm100 -> kernel_source sglang_mxfp4_flashinfer_trtllm_moe
+      (and SM120 flashinfer_cutlass_sm120). Smoke on B200: gpt-oss-120b w4a16_mxfp4 and DeepSeek-V4-Flash w4a8_mxfp4_mxfp8 both run
+      and record sglang_mxfp4_flashinfer_trtllm_moe = the serving lane. Still open: (7) the kda/gdn int32 guard at very large
+      shapes (owner: leave it; only batch>=16 x seq>=8k is affected). (7) sglang kda: the collector''s own int32-overflow guard
       (causal_conv1d_triton token-offset) rejects every Kimi-K3 case at the sweep''s shapes — not sm100-specific; the same guard
       trips 6/112 sglang gdn context sub-cases (batch 16-64 x seq 8192-32768, total_tokens*6144 >= 2**31) and the op''s
       strict-completeness check then fails the whole sweep (gate cell gdn_ctx Qwen3.5-0.8B itself ALIGNED). FINAL TABLE:
