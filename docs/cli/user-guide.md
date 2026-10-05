@@ -564,7 +564,8 @@ The reference tables below use five columns:
   repeated prose below the table.
 
 A preset is a list of complete mappings. Each mapping must specify every knob belonging to the
-smallest preset class shown in the table, including a `null` value for a conditionally inactive knob.
+smallest preset class shown in the table. Use `null` for an inactive knob only where the component
+allows it; see the Planner interval rules below.
 A mapping is one atomic candidate choice; values inside it are not independently combined.
 
 For any preset-capable object in `recommend`, `preset` has these forms:
@@ -1540,8 +1541,9 @@ deferred until the Router exposes that name.
 ## 14. Planner (Dynamo Adapter)
 
 Planner is not part of the AISimulate core schema. The `dynamo.planner` config adapter owns this
-section's concrete model, presets, recommendation domains, validation, and runtime lowering. The
-section is accepted only when the selected stack provides that adapter.
+section's presets, recommendation domains, and runtime lowering. Concrete enabled settings use
+Dynamo's production `PlannerConfig` for defaults, validation, and target normalization. The section
+is accepted only when the selected stack provides that adapter.
 
 ```yaml
 planner:
@@ -1550,16 +1552,16 @@ planner:
 
 | Knob | Default | Default Range | Preset | Rules |
 |---|---:|---|---|---|
-| `planner.scaling_policy.preset` | `default` in `recommend` | `{choices: [disabled, throughput_180_5, throughput_600_5, load_180_5, load_180_10, hybrid_180_5, hybrid_600_5]}` | `-` | Throughput and hybrid presets require `planner.target: sla` plus TTFT/ITL thresholds. |
+| `planner.scaling_policy.preset` | `default` in `recommend` | `{choices: [disabled, throughput_180_5, throughput_600_5, load_180_5, load_180_10, hybrid_180_5, hybrid_600_5]}` | `-` | Default lists are filtered for the derived target and SLA. Explicit lists must be compatible. |
 | `planner.fpm_sampling.preset` | `default` in `recommend` | `{choices: [small, default, large, fine]}` | `-` | Built-in preset choices, complete mapping list, `false`, or `{}`. |
 | `planner.load_sensitivity.preset` | `default` in `recommend` | `{choices: [aggressive, default, conservative]}` | `-` | Built-in preset choices, complete mapping list, `false`, or `{}`. |
 | `planner.load_predictor.preset` | `default` in `recommend` | `{choices: [constant_last, arima_raw, arima_log1p, prophet_w20_raw, prophet_w20_log1p, prophet_w50_raw, prophet_w50_log1p, kalman_default_raw, kalman_default_log1p, kalman_reactive_raw, kalman_reactive_log1p]}` | `-` | Interval-level predictor pre-sweep candidates; complete mapping list, `false`, or `{}`. |
 | `planner.policy` | `disabled` | `{choices: [disabled, enabled]}` | `-` | `disabled` or `enabled`. |
 | `planner.target` | `throughput` | `x` | `-` | Derived from `optimization.target` in `recommend`. |
-| `planner.enable_throughput_scaling` | `true` | `{choices: [false, true]}` | `scaling_policy` | `true` requires `planner.target: sla` plus TTFT/ITL thresholds. |
-| `planner.enable_load_scaling` | `false` | `{choices: [false, true]}` | `scaling_policy` | Planner policy only. |
-| `planner.throughput_adjustment_interval_seconds` | `180` | `{choices: [180, 600]}` | `scaling_policy` | Positive; throughput scaling only. |
-| `planner.load_adjustment_interval_seconds` | `5` | `{choices: [5, 10]}` | `scaling_policy` | Positive and shorter than throughput interval when used. |
+| `planner.enable_throughput_scaling` | `false` for the default target; `true` for `sla` | `{choices: [false, true]}` | `scaling_policy` | Non-SLA targets normalize this to `false`; effective throughput scaling requires TTFT/ITL thresholds. |
+| `planner.enable_load_scaling` | `true` for the default target; `false` for `sla` | `{choices: [false, true]}` | `scaling_policy` | Non-SLA targets normalize this to `true`. |
+| `planner.throughput_adjustment_interval_seconds` | `180` | `{choices: [180, 600]}` | `scaling_policy` | Omitted uses the production default; `null` is accepted only when this scaling mode is disabled. |
+| `planner.load_adjustment_interval_seconds` | `5` | `{choices: [5, 10]}` | `scaling_policy` | Also controls FPM updates. Must be shorter than the throughput interval only when both modes are enabled. Inactive `null` uses the production default. |
 | `planner.max_num_fpm_samples` | `64` | `{choices: [32, 64, 128]}` | `fpm_sampling` | Positive. |
 | `planner.fpm_sample_bucket_size` | `16` | `{choices: [4, 16, 64]}` | `fpm_sampling` | Positive perfect square. |
 | `planner.load_scaling_down_sensitivity` | `80` | `{choices: [70, 80, 90]}` | `load_sensitivity` | From `0` through `100`; load scaling only. |
@@ -1571,7 +1573,8 @@ planner:
 | `planner.kalman_q_trend` | `0.1` | `{choices: [0.1, 1.0]}` | `load_predictor` | Positive; Kalman only. |
 | `planner.kalman_r` | `10.0` | `{choices: [5.0, 10.0]}` | `load_predictor` | Positive; Kalman only. |
 | `planner.kalman_min_points` | `5` | `{choices: [3, 5]}` | `load_predictor` | Positive; Kalman only. |
-| `planner.max_num_gpus` | `8` | `x` | `-` | Positive Planner runtime scaling ceiling; maps to Dynamo Planner `max_gpu_budget`. |
+| `planner.max_num_gpus` | `8` | `x` | `-` | Planner runtime ceiling; maps to `max_gpu_budget`. Positive in `recommend`; concrete `predict` also accepts `-1` for unlimited. |
+| `planner.min_num_gpus` | `-1` | `x` | `-` | Concrete `predict` only; maps to `min_gpu_budget` (`-1` disables the floor). Recommendations export `optimization.constraints.min_candidate_gpus` here when set. |
 | `planner.min_workers` | `1` | `-` | `-` | Nonnegative. |
 | `planner.prefill_min_workers` | `null` | `-` | `-` | Positive when set. |
 | `planner.decode_min_workers` | `null` | `-` | `-` | Positive when set. |
@@ -1587,27 +1590,44 @@ sub-item mapping. It materializes back to the concrete scalar `planner.load_pred
 recommended prediction YAML.
 
 `scaling_policy`, `fpm_sampling`, and `load_sensitivity` are composed as independent main-search
-dimensions. `load_predictor` is different: its candidates run in a pre-sweep for every selected
-throughput-adjustment interval, and the winning predictor mapping is materialized into the candidate.
+dimensions. FPM sampling is included only when a retained policy enables throughput scaling; load
+sensitivity is included only when a retained policy enables load scaling. Independent knob domains
+(`preset: false`) use the same compatible subset, and invalid combinations are skipped as infeasible.
+Explicit preset and predictor candidate lists remain within the user-selected subset.
+`load_predictor` is different: its candidates run in a pre-sweep for every selected throughput-adjustment
+interval, and the winning predictor mapping is materialized into the candidate.
 
-`planner.policy`, `planner.target`, `planner.max_num_gpus`, and the three runtime minimum-worker knobs
+`planner.policy`, `planner.target`, the runtime GPU limits, and the three minimum-worker knobs
 are not covered by a preset. `predict` may set a concrete target and otherwise uses `throughput`. In
-`recommend`, target is derived: throughput targets and Pareto map to `throughput`, `ttft` and
-`e2e_latency` map to `latency`, and goodput targets map to `sla`.
+`recommend`, target is derived: throughput targets map to `throughput`, `ttft` and `e2e_latency`
+map to `latency`, and goodput targets map to `sla`. Pareto uses `sla` when it includes a goodput
+objective and otherwise uses `throughput`. Thus `planner: {policy: enabled}` is a valid minimal
+prediction configuration: the production Planner normalizes the default target to load-only scaling.
 
 Throughput-based Planner scaling is legal only for the `sla` target with concrete
 `evaluation.sla.ttft_ms` and `evaluation.sla.itl_ms`. For `throughput`, `latency`, or `load` Planner
-targets, the adapter rejects any scaling-policy preset or custom mapping that enables throughput
-scaling before search begins.
+targets, the default recommendation search removes throughput and hybrid presets before searching.
+An explicitly selected incompatible preset or custom mapping is rejected before search begins.
+Concrete prediction flags are normalized by the production Planner for the selected target.
+
+Custom scaling-policy mappings may use `null` for an inactive mode's adjustment interval. An
+omitted concrete interval also uses the production default; an explicitly null active interval is
+rejected. Enabled configurations export both intervals as numbers: the load interval still drives
+FPM updates during throughput-only scaling. A fully disabled custom policy uses null for both
+intervals. These rules avoid passing null into the Planner runtime.
 
 Planner runtime limits and recommendation candidate GPU constraints are separate:
 
 - `planner.max_num_gpus`, `min_workers`, `prefill_min_workers`, and `decode_min_workers` constrain
   runtime scaling during one predicted candidate run.
 - `optimization.constraints` constrains which static candidate deployments the recommender evaluates.
+  When set, `min_candidate_gpus` also becomes the Planner runtime floor and is preserved in the
+  exported prediction YAML as `planner.min_num_gpus`.
 
 When `planner.policy: disabled` or the `disabled` scaling-policy preset is selected, no Planner
-runtime hook is materialized and conditionally inactive fields are omitted from concrete output.
+runtime hook is materialized and only `policy: disabled` is emitted. Enabled output contains the
+normalized Planner settings, including defaults for inactive knobs, so the same concrete configuration
+can be replayed without changing its effective Planner settings.
 
 <a id="evaluation"></a>
 
