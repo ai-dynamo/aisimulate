@@ -14,7 +14,7 @@ Details and 3D Visualization are separate tabs with independent controls.
   retains its newest qualified evaluation. Dataset or FPM input changes break
   the series; MAPE is weighted by successful prediction count. Chart labels pair
   each commit ID with its evaluation date (UTC); tooltips include the time.
-- Details: retained branch evaluations, FPM variants, phase summaries,
+- Details: retained branch evaluations, selected FPM inputs, phase summaries,
   measurement-only workload distributions, and prediction-error heatmaps.
   Heatmaps use compact cells and size independently, with scrolling only when
   their contents exceed the available width. A Hugging Face icon identifies the
@@ -181,3 +181,8 @@ installation and evaluation so runner path remapping cannot select another Pytho
 
 Details initially selects a configuration with accepted measurements and an
 available workload. Empty configurations remain labeled and directly linkable.
+
+Details uses the evaluation-selected FPM variant for each method and links its pinned input.
+Only Method and Workload controls are shown above the heatmaps. Missing inputs,
+unsupported predictors, initialization failures, and workloads without successful
+predictions show an explanation in place of the error map; measured distributions remain visible.

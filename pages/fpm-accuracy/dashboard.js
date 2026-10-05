@@ -100,20 +100,36 @@
     }).join('')+'</tr>').join('')+'</tbody></table>';
   }
   function maps() {
-    const candidates = detail?.methods[$('method-filter').value] || [];
-    const candidate = candidates[Number($('variant-filter').value) || 0];
+    const method = $('method-filter').value;
+    const candidates = detail?.methods[method] || [];
+    const winner = selected?.results[method];
+    const candidate = candidates.find(c=>c.artifact?.id === winner?.artifact?.id);
     const phase = $('phase-filter').value;
     heatmap($('distribution'),detail?.workload_heatmaps[phase],false);
-    heatmap($('error-heatmap'),candidate?._heatmaps[phase],true);
-  }
-  function variants() {
-    const method = $('method-filter').value, candidates = detail?.methods[method] || [];
-    options($('variant-filter'),candidates.map((c,i)=>[String(i),c.artifact?.id || c.status]),false);
-    $('variant-filter').disabled = candidates.length < 2;
-    const winner = selected?.results[method]?.artifact?.id;
-    const index = candidates.findIndex(c=>c.artifact?.id === winner);
-    if (index >= 0) $('variant-filter').value = String(index);
-    maps();
+    const evidence = $('variant-evidence');
+    evidence.replaceChildren();
+    if (winner?.artifact) {
+      const summary = summaries[Number($('evaluation-filter').value)];
+      const link = document.createElement('a');
+      link.href = `https://huggingface.co/datasets/nvidia/aisimulate-fpm-dataset/blob/${summary.snapshot.hf_revision}/${winner.artifact.path.split('/').map(encodeURIComponent).join('/')}`;
+      link.textContent = `FPM input: ${winner.artifact.id} ↗`;
+      link.target = '_blank'; link.rel = 'noopener';
+      evidence.append(link);
+    }
+    const unavailable = {
+      no_fpm_input: 'No FPM input is available for this method.',
+      unsupported_predictor: 'This predictor is not supported by the evaluated version or dependencies.',
+      predictor_error: 'Predictor initialization failed.'
+    };
+    const reason = unavailable[candidate?.status || winner?.status];
+    if (reason) { $('error-heatmap').textContent = reason; return; }
+    if (!candidate) { $('error-heatmap').textContent = 'Prediction detail is unavailable for this evaluation.'; return; }
+    const map = candidate._heatmaps?.[phase];
+    if (map && !map.cells.some(c=>c.predicted_count > 0)) {
+      $('error-heatmap').textContent = 'No successful predictions for this workload.';
+      return;
+    }
+    heatmap($('error-heatmap'),map,true);
   }
   async function configuration() {
     const token = ++request;
@@ -122,7 +138,7 @@
     detail = null;
     phaseTable(selected ? [selected] : []);
     $('detail-evidence').textContent = '';
-    variants();
+    maps();
     if (!selected) return;
     const hf = `https://huggingface.co/datasets/nvidia/aisimulate-fpm-dataset/blob/${summary.snapshot.hf_revision}/`;
     $('detail-evidence').innerHTML = `<span role="img" aria-label="Hugging Face" title="Hugging Face dataset evidence">🤗</span> <a target="_blank" rel="noopener" href="${hf+selected.configuration_manifest.split('/').map(encodeURIComponent).join('/')}">Pinned configuration ↗</a> · <a target="_blank" rel="noopener" href="${hf+selected.measurement_manifest.split('/').map(encodeURIComponent).join('/')}">Measurements ↗</a> · ${esc(selected.status)} · ${selected.skipped_count} excluded or unavailable`;
@@ -137,7 +153,7 @@
         const available = ['prefill','decode','mixed'].find(phase => detail.workload_heatmaps[phase]);
         if (available) $('phase-filter').value = available;
       }
-      variants();
+      maps();
     } catch(error) { if (token === request) status(error.message); }
   }
   function configurations() {
@@ -184,8 +200,7 @@
   if (view === 'detail') {
     $('evaluation-filter').addEventListener('change',evaluation);
     $('configuration-filter').addEventListener('change',configuration);
-    $('method-filter').addEventListener('change',variants);
-    $('variant-filter').addEventListener('change',maps);
+    $('method-filter').addEventListener('change',maps);
     $('search-filter').addEventListener('input',configurations);
   }
   start().catch(error=>status(error.message));

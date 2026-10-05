@@ -95,8 +95,8 @@ SPDX-License-Identifier: Apache-2.0
 <label class="fpm-wide-control">Configuration<select id="configuration-filter"></select></label><p id="detail-evidence"></p>
 <section class="matrix-panel table-scroll"><h3>Phase summary</h3><table id="phase-summary"></table></section>
 <section class="fpm-filters"><label>Method<select id="method-filter"><option value="regression">Regression</option><option value="warmup">FPM (KV warmup on)</option><option value="nowarmup">FPM (KV warmup off)</option></select></label>
-<label>FPM variant<select id="variant-filter"></select></label>
 <label>Workload<select id="phase-filter"><option>prefill</option><option>decode</option><option>mixed</option></select></label></section>
+<p id="variant-evidence" class="variant-evidence"></p>
 <div class="fpm-heatmaps"><section class="matrix-panel table-scroll"><h3>Measured workload distribution</h3><div id="distribution"></div></section>
 <section class="matrix-panel table-scroll"><h3>Prediction error</h3><div id="error-heatmap"></div></section></div>
 <p>Only measured traffic contributes to these maps. MAPE uses successful predictions; missing predictions reduce coverage.</p></main>
