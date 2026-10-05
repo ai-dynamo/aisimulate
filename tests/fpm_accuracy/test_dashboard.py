@@ -8,15 +8,16 @@ import zipfile
 from itertools import pairwise
 from pathlib import Path
 
-import prepare_e2e_accuracy_pages as transport
 import pytest
-from fpm_accuracy.dashboard.measurement_heatmaps import _bin_index, _bins
-from fpm_accuracy.dashboard.visualization import VisualizationWriter
-from fpm_accuracy.dashboard_contract import archive_files, population, validate_details, validate_visualization
-from fpm_accuracy.evaluate import evaluate_case
-from prepare_fpm_accuracy_pages import unpack
 from test_evaluation import Predictor
 from test_evaluation import case as case_fixture
+
+import scripts.pages.prepare_e2e_accuracy_pages as transport
+from scripts.fpm_accuracy.dashboard.measurement_heatmaps import _bin_index, _bins
+from scripts.fpm_accuracy.dashboard.visualization import VisualizationWriter
+from scripts.fpm_accuracy.dashboard_contract import archive_files, population, validate_details, validate_visualization
+from scripts.fpm_accuracy.evaluate import evaluate_case
+from scripts.pages.prepare_fpm_accuracy_pages import unpack
 
 
 @pytest.fixture
@@ -104,10 +105,11 @@ def test_visualization_integrity(case, tmp_path):
 
 
 def test_history_keeps_dataset_changes_and_applies_baseline(tmp_path, monkeypatch):
-    import prepare_fpm_accuracy_pages as publish
-    from fpm_accuracy.contract import artifact_key
-    from fpm_accuracy.dashboard_contract import BASELINE
     from test_publication import archive, job, run
+
+    import scripts.pages.prepare_fpm_accuracy_pages as publish
+    from scripts.fpm_accuracy.contract import artifact_key
+    from scripts.fpm_accuracy.dashboard_contract import BASELINE
 
     original = json.loads((Path(__file__).parent / "fixtures/summary.json").read_text())
     original["snapshot"]["commit_sha"] = BASELINE
@@ -154,9 +156,10 @@ def test_history_keeps_dataset_changes_and_applies_baseline(tmp_path, monkeypatc
 def test_measurement_publication_keeps_last_good_snapshot(
     case, tmp_path, monkeypatch, successful, evaluation_attempt, measurement_attempt
 ):
-    import prepare_fpm_accuracy_pages as publish
-    from fpm_accuracy.contract import artifact_key
     from test_publication import archive, job, run
+
+    import scripts.pages.prepare_fpm_accuracy_pages as publish
+    from scripts.fpm_accuracy.contract import artifact_key
 
     summary, _ = evaluated(case)
     summary["snapshot"]["hf_revision"] = "a" * 40

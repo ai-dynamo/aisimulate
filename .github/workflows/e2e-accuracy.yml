@@ -111,7 +111,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
-          python3 scripts/fetch_accuracy_measurements.py \
+          python3 scripts/e2e_accuracy/fetch_accuracy_measurements.py \
             --manifest .github/e2e-accuracy-dataset.json --resolve-latest \
             --output "${RUNNER_TEMP}/e2e-accuracy-dataset.json"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7

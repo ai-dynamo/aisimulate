@@ -10,8 +10,13 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import replace
 from typing import Any, Literal
 
-from fpm_accuracy.models.fpt_predictor import ForwardPassTimePredictor, Prediction, PredictorContext
-from fpm_accuracy.types.forward_pass import ForwardPassInput, ForwardPassIteration, WorkloadKind, classify_workload
+from scripts.fpm_accuracy.models.fpt_predictor import ForwardPassTimePredictor, Prediction, PredictorContext
+from scripts.fpm_accuracy.types.forward_pass import (
+    ForwardPassInput,
+    ForwardPassIteration,
+    WorkloadKind,
+    classify_workload,
+)
 
 WorkerRole = Literal["prefill", "decode", "aggregated"]
 REGRESSION_ROLE_POLICY = "offline_all_observations_all_active_ranks_v1"

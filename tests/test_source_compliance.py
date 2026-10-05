@@ -12,7 +12,7 @@ pytestmark = pytest.mark.unit
 
 ROOT = Path(__file__).resolve().parents[1]
 PACKAGE_ROOT = ROOT / "python" / "aisimulate"
-CHECK_COPYRIGHT = ROOT / "scripts" / "check_copyright.py"
+CHECK_COPYRIGHT = ROOT / "scripts/ci/check_copyright.py"
 
 ROOT_ONLY_GOVERNANCE_FILES = (
     "AGENTS.md",

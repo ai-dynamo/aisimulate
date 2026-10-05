@@ -67,12 +67,12 @@ defaults to one; malformed values and unknown recorded precisions fail closed.
 Worker regression verifies required store names before scoring and reports
 contract mismatches in Actions logs while retaining measurement coverage.
 
-`requirements.in` declares evaluator dependencies. `requirements.txt` locks
+The `fpm-accuracy` group in [`../pyproject.toml`](../pyproject.toml) declares evaluator dependencies. `requirements.txt` locks
 their transitive dependencies and distribution hashes for Python 3.12; CI
 installs it with `--require-hashes`. Regenerate with:
 
 ```bash
-uv pip compile scripts/fpm_accuracy/requirements.in --generate-hashes \
+uv pip compile --group scripts/pyproject.toml:fpm-accuracy --generate-hashes \
   --python-version 3.12 --universal \
   --output-file scripts/fpm_accuracy/requirements.txt
 ```
@@ -100,7 +100,7 @@ Measurement bins and native-rank axis semantics are preserved. Error heatmaps
 share measured bins and accumulate alongside prediction, without a second
 scoring pass. Only the selected variant contributes to Overview and Trends;
 Slice Detail retains every evaluated variant. Measurement-only 3D assets are
-produced once per pinned campaign by `scripts/prepare_fpm_measurements.py`.
+produced once per pinned campaign by `scripts/fpm_accuracy/prepare_fpm_measurements.py`.
 That script traverses current HF snapshots, matching branch accuracy.
 Archived source snapshots do not gate fresh current measurement publication. See the public
 [dashboard README](../../pages/fpm-accuracy/README.md) for storage and rollout.

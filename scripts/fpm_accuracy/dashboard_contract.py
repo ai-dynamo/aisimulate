@@ -10,7 +10,7 @@ import math
 import re
 import zipfile
 
-from fpm_accuracy.contract import COUNTS, HF_REPO, METHODS, keys, require, sha, strict_json, validate_summary
+from scripts.fpm_accuracy.contract import COUNTS, HF_REPO, METHODS, keys, require, sha, strict_json, validate_summary
 
 BASELINE = "8dad9634735b6875e22a90927216e542e73ba237"
 MAX_FILE = 64 * 1024 * 1024

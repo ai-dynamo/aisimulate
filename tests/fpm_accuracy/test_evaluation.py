@@ -8,17 +8,18 @@ from types import SimpleNamespace
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
-from accuracy_digest import decode_points
-from fpm_accuracy.evaluate import Metric, choose_variant, evaluate_case
-from fpm_accuracy.exceptions import ConfigurationError, DependencyError
-from fpm_accuracy.models import aic_predictors
-from fpm_accuracy.models.aic_config import map_worker_config_to_aic
-from fpm_accuracy.models.aic_fpm_database import prepare_aic_fpm_database
-from fpm_accuracy.models.fpt_predictor import ForwardPassTimePredictor, Prediction
-from fpm_accuracy.models.worker_regression import infer_worker_roles, regression_buckets
-from fpm_accuracy.types.forward_pass import ForwardPassIteration, RequestMetrics
-from fpm_accuracy.types.worker_config import WorkerConfig
 from test_hf_dataset import CONFIGURATION_PATH, _build_dataset, _fpm_payload, _sha256, _write_json
+
+from scripts.fpm_accuracy.evaluate import Metric, choose_variant, evaluate_case
+from scripts.fpm_accuracy.exceptions import ConfigurationError, DependencyError
+from scripts.fpm_accuracy.models import aic_predictors
+from scripts.fpm_accuracy.models.aic_config import map_worker_config_to_aic
+from scripts.fpm_accuracy.models.aic_fpm_database import prepare_aic_fpm_database
+from scripts.fpm_accuracy.models.fpt_predictor import ForwardPassTimePredictor, Prediction
+from scripts.fpm_accuracy.models.worker_regression import infer_worker_roles, regression_buckets
+from scripts.fpm_accuracy.types.forward_pass import ForwardPassIteration, RequestMetrics
+from scripts.fpm_accuracy.types.worker_config import WorkerConfig
+from scripts.notifications.accuracy_digest import decode_points
 
 
 @pytest.fixture
@@ -358,7 +359,7 @@ def test_legacy_regression_is_unavailable_without_changing_measurement_membershi
 @pytest.mark.parametrize("dcp", [1, 8])
 def test_real_regression_uses_canonical_identity_and_options(tmp_path, dcp):
     pytest.importorskip("aisimulate_core.sdk")
-    from fpm_accuracy.models.fpt_predictor import PredictorContext
+    from scripts.fpm_accuracy.models.fpt_predictor import PredictorContext
 
     case = _build_dataset(tmp_path, protocol_id=None, files=[], tp=8, dcp=dcp).measurement_case(CONFIGURATION_PATH)
     context = PredictorContext(
@@ -382,7 +383,7 @@ def test_real_regression_uses_canonical_identity_and_options(tmp_path, dcp):
 @pytest.mark.parametrize("mode", ["fpm", "regression"])
 @pytest.mark.parametrize("canonical", [True, False])
 def test_predictor_uses_canonical_api_or_older_wheel_adapter(case, tmp_path, monkeypatch, mode, canonical):
-    from fpm_accuracy.models.fpt_predictor import PredictorContext
+    from scripts.fpm_accuracy.models.fpt_predictor import PredictorContext
 
     if canonical:
         pytest.importorskip("aisimulate_core.sdk")

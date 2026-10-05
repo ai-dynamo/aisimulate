@@ -1149,7 +1149,7 @@ See the [migration guide](MIGRATION.md#offload-replay-api-migration) for require
   values. Downstream Dynamo callers must migrate before this API's stable release;
   keep the crate and wheel versions aligned at the coordinated minor release.
 - [The migration checklist](../.github/release-gates.json) and
-  `scripts/check_release_migrations.py` apply before stable publication. Clear the
+  `scripts/release/check_release_migrations.py` apply before stable publication. Clear the
   pending entry in a reviewed change after downstream validation and merge.
   There is currently no standalone stable-publication workflow in this repository;
   that release process must invoke the checker for both its policy and target

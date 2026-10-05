@@ -19,13 +19,13 @@ from unittest.mock import patch
 from urllib.parse import parse_qs, urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "scripts"))
-SCRIPT_PATH = ROOT / "scripts" / "build_pages_site.py"
+sys.path.insert(0, str(ROOT))
+SCRIPT_PATH = ROOT / "scripts/pages/build_pages_site.py"
 SPEC = importlib.util.spec_from_file_location("build_pages_site", SCRIPT_PATH)
 assert SPEC and SPEC.loader
 PAGES = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(PAGES)
-FPE_SPEC = importlib.util.spec_from_file_location("prepare_fpe_pages", ROOT / "scripts" / "prepare_fpe_pages.py")
+FPE_SPEC = importlib.util.spec_from_file_location("prepare_fpe_pages", ROOT / "scripts/pages/prepare_fpe_pages.py")
 assert FPE_SPEC and FPE_SPEC.loader
 FPE = importlib.util.module_from_spec(FPE_SPEC)
 FPE_SPEC.loader.exec_module(FPE)

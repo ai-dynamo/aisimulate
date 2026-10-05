@@ -91,12 +91,12 @@ directory so that both assets are available.
 python -m pip install pytest
 python -m pip install --require-hashes -r scripts/fpm_accuracy/requirements.txt
 python -m pytest -c /dev/null -o cache_dir=.cache/pytest tests/fpm_accuracy
-python scripts/build_pages_site.py --output-dir /tmp/aisim-pages
+python scripts/pages/build_pages_site.py --output-dir /tmp/aisim-pages
 python -m http.server --directory /tmp/aisim-pages 8000
 ```
 
 Install an exact AISim wheel with **pip** (which records its SHA-256 in
-`direct_url.json`) before a real evaluation. Run `python scripts/run_fpm_accuracy.py
+`direct_url.json`) before a real evaluation. Run `python -m scripts.fpm_accuracy.run_fpm_accuracy
 --help` for the required source, evaluator, HF, wheel, run-identity, and output
 arguments. `--configuration` limits a local smoke to selected configuration paths;
 it writes `SMOKE_ONLY.txt` and never writes a qualification manifest. Omit it
@@ -106,7 +106,7 @@ workflow publishes results; the runner reads HF and writes local output.
 ```bash
 python -m pip install playwright==1.63.0
 python -m playwright install chromium
-python scripts/check_fpm_accuracy_browser.py
+python scripts/pages/check_fpm_accuracy_browser.py
 node --test tests/test_fpm_accuracy_workflow.mjs
 ```
 

@@ -65,8 +65,8 @@ jobs:
         working-directory: release-source
         if: inputs.wheel_artifact == ''
         run: |
-          python -m pip install 'maturin>=1.12,<2'
-          python scripts/build_manylinux_wheel.py --output-dir ../fpe-wheel
+          python -m pip install --require-hashes -r scripts/release/requirements.txt
+          python scripts/release/build_manylinux_wheel.py --output-dir ../fpe-wheel
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         if: inputs.wheel_artifact != ''
         with:
@@ -86,7 +86,7 @@ jobs:
               raise SystemExit("nightly artifact belongs to a different source commit")
           PY
       - name: Record source and current qualification tooling
-        run: /opt/python/cp312-cp312/bin/python scripts/run_release_fpe.py record-wheel --wheel-dir fpe-wheel
+        run: /opt/python/cp312-cp312/bin/python scripts/fpe/run_release_fpe.py record-wheel --wheel-dir fpe-wheel
       - id: digest
         name: Record the single wheel identity
         run: |
@@ -141,7 +141,7 @@ jobs:
           python -m pip install --force-reinstall fpe-wheel/*.whl
       - id: shards
         name: Read selected-source inventory with current qualification tooling
-        run: python scripts/run_release_fpe.py discover --wheel-dir fpe-wheel
+        run: python scripts/fpe/run_release_fpe.py discover --wheel-dir fpe-wheel
 
   generate:
     name: FPE matrix (${{ matrix.shard.system }}, ${{ matrix.shard.backend }})
@@ -200,7 +200,7 @@ jobs:
           FPE_SYSTEM: ${{ matrix.shard.system }}
           FPE_BACKEND: ${{ matrix.shard.backend }}
         run: |
-          python scripts/run_release_fpe.py probe --wheel-dir fpe-wheel \
+          python scripts/fpe/run_release_fpe.py probe --wheel-dir fpe-wheel \
             --system "${FPE_SYSTEM}" --backend "${FPE_BACKEND}" \
             --output-dir "fpe-support-matrix/${FPE_SYSTEM}/${FPE_BACKEND}" \
             --forward-model op_level --sdk-log-level ERROR --max-workers 8
@@ -239,7 +239,7 @@ jobs:
           EXPECTED_SHARDS: ${{ needs.discover-shards.outputs.shards }}
         run: |
           printf '%s\n' "${EXPECTED_SHARDS}" > fpe-release-shards.json
-          python3 scripts/run_release_fpe.py package --wheel-dir fpe-wheel \
+          python3 scripts/fpe/run_release_fpe.py package --wheel-dir fpe-wheel \
             --reports fpe-support-matrix --destination fpe-nightly-web
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:

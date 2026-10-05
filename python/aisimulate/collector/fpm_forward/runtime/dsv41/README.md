@@ -65,7 +65,7 @@ Artifacts report vllm_revision=null, the actual package version, the inspected A
 revision, and the source-manifest digest rather than inventing a global git revision.
 
 The derived files and source pin are recorded in root THIRD_PARTY_NOTICES.md
-and its byte-identical packaged copy. Run scripts/check_packaged_legal_files.py
+and its byte-identical packaged copy. Run scripts/ci/check_packaged_legal_files.py
 after changing either notice.
 
 ## Runtime

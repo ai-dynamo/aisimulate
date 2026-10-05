@@ -17,11 +17,11 @@ import pytest
 import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "scripts"))
-import build_pages_site as pages
-import fetch_accuracy_measurements as fetch
-import prepare_e2e_accuracy_pages as publish
-import run_e2e_accuracy as campaign
+sys.path.insert(0, str(ROOT))
+import scripts.e2e_accuracy.fetch_accuracy_measurements as fetch
+import scripts.e2e_accuracy.run_e2e_accuracy as campaign
+import scripts.pages.build_pages_site as pages
+import scripts.pages.prepare_e2e_accuracy_pages as publish
 
 
 def tables():

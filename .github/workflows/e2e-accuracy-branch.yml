@@ -61,8 +61,11 @@ jobs:
       - name: Build the exact revision when no reusable wheel exists
         if: inputs.nightly_run == ''
         run: |
-          python -m pip install 'maturin>=1.12,<2'
-          python source/scripts/build_manylinux_wheel.py --output-dir "${RUNNER_TEMP}/accuracy-wheel"
+          python -m pip install --require-hashes -r scripts/release/requirements.txt
+          # Historical release revisions retain their original script layout.
+          builder=source/scripts/release/build_manylinux_wheel.py
+          if [ ! -f "${builder}" ]; then builder=source/scripts/build_manylinux_wheel.py; fi
+          python "${builder}" --output-dir "${RUNNER_TEMP}/accuracy-wheel"
           test -z "$(git -C source status --porcelain)"
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         if: inputs.nightly_run != ''
@@ -160,8 +163,7 @@ jobs:
           python - <<'PYCODE'
           import os, sys
           from pathlib import Path
-          sys.path.insert(0, 'scripts')
-          from run_e2e_accuracy import wheel_identity
+          from scripts.e2e_accuracy.run_e2e_accuracy import wheel_identity
           wheel = next((Path(os.environ['RUNNER_TEMP']) / 'accuracy-wheel').glob('*.whl'))
           print(wheel_identity(wheel))
           PYCODE
@@ -171,14 +173,14 @@ jobs:
           path: ${{ runner.temp }}/accuracy-dataset
       - name: Fetch checksum-pinned public measurements
         run: |
-          python scripts/fetch_accuracy_measurements.py \
+          python scripts/e2e_accuracy/fetch_accuracy_measurements.py \
             --manifest "${RUNNER_TEMP}/accuracy-dataset/e2e-accuracy-dataset.json" --output "${RUNNER_TEMP}/accuracy-measurements"
       - name: Run both predictors with bounded CPU workers and qualify the complete cohort
         env:
           EXPECTED_SHA: ${{ inputs.sha }}
           EVALUATED_BRANCH: ${{ inputs.branch }}
         run: |
-          python scripts/run_e2e_accuracy.py \
+          python scripts/e2e_accuracy/run_e2e_accuracy.py \
             --tables "${RUNNER_TEMP}/accuracy-measurements/tables.json" \
             --manifest "${RUNNER_TEMP}/accuracy-dataset/e2e-accuracy-dataset.json" \
             --wheel "${RUNNER_TEMP}"/accuracy-wheel/*.whl \

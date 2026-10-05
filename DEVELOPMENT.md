@@ -113,8 +113,8 @@ For documentation changes, also run the local-destination check used by Fast
 CI from the development environment above (`markdown-it-py` is already included):
 
 ```bash
-python -m unittest discover -s scripts/tests -p test_documentation_links.py
-python scripts/check_documentation_links.py
+python -m unittest discover -s scripts/ci -p test_documentation_links.py
+python scripts/ci/check_documentation_links.py
 ```
 
 It checks inline/image links and reference definitions in the root README,
@@ -225,11 +225,11 @@ same-day report.
 Local preview (requires an authenticated GitHub CLI and Python 3.9+):
 
 ```bash
-GH_TOKEN="$(gh auth token)" python3 scripts/slack_review_digest.py --dry-run
+GH_TOKEN="$(gh auth token)" python3 scripts/notifications/slack_review_digest.py --dry-run
 ```
 
 Run the focused offline checks with:
 
 ```bash
-python3 scripts/test_slack_review_digest.py
+python3 scripts/notifications/test_slack_review_digest.py
 ```

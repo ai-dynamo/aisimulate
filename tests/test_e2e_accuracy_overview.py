@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-SCRIPT = ROOT / "scripts" / "build_e2e_accuracy_overview.py"
+SCRIPT = ROOT / "scripts/e2e_accuracy/build_e2e_accuracy_overview.py"
 SPEC = importlib.util.spec_from_file_location("build_e2e_accuracy_overview", SCRIPT)
 assert SPEC is not None and SPEC.loader is not None
 OVERVIEW = importlib.util.module_from_spec(SPEC)

@@ -9,7 +9,7 @@ It is outside the Python package's source/data tree.
 From the repository root, after `uv sync --project python/aisimulate --extra dev`:
 
 ```sh
-python/aisimulate/.venv/bin/python scripts/audit_pr244_data.py
+python/aisimulate/.venv/bin/python scripts/data/audit_pr244_data.py
 ```
 
 The check recomputes all case counts and summaries of the 85 shipped parquet

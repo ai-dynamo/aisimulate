@@ -53,7 +53,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ inputs.pr_number }}
-        run: python scripts/select_simulation_perf.py
+        run: python scripts/performance/select_simulation_perf.py
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: steps.scope.outputs.run_comparison == 'true'
@@ -196,12 +196,14 @@ jobs:
       - name: Configure Python linker path
         run: echo "LIBRARY_PATH=${pythonLocation}/lib" >> "${GITHUB_ENV}"
       - name: Install native build toolchain
-        run: bash scripts/ci_install_build_tools.sh
+        run: bash scripts/ci/ci_install_build_tools.sh
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
         with:
           toolchain: "1.99.0"
       - name: Install wheel builder
-        run: python -m pip install 'maturin>=1.12,<2' 'uv==0.11.3'
+        run: |
+          python -m pip install 'uv==0.11.3'
+          python -m pip install --require-hashes -r scripts/release/requirements.txt
       - name: Build exact revision
         env:
           SOURCE_SHA: ${{ matrix.sha }}
@@ -219,7 +221,7 @@ jobs:
           uv export --project source/python/aisimulate --frozen --no-dev --no-emit-project \
             --format requirements-txt --output-file "${RUNNER_TEMP}/wheel/requirements.txt"
           export BUILD_SECONDS=$(( $(date +%s) - started ))
-          python scripts/simulation_perf_artifact.py record "${RUNNER_TEMP}/wheel" \
+          python scripts/performance/simulation_perf_artifact.py record "${RUNNER_TEMP}/wheel" \
             "${BUILD_SIDE}" "${SOURCE_SHA}" source
       - name: Upload exact wheel
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -293,7 +295,7 @@ jobs:
         run: |
           set -euo pipefail
           command -v taskset
-          python scripts/simulation_perf_artifact.py verify \
+          python scripts/performance/simulation_perf_artifact.py verify \
             --base-dir "${BASE_DIST}" --base-sha "${BASE_SHA}" \
             --head-dir "${HEAD_DIST}" --head-sha "${HEAD_SHA}"
           started="$(date +%s)"

@@ -15,7 +15,7 @@ There are 129 requests, four subagent groups, 13,391,168 input tokens, and
 The SHA-256 of the checked-in JSONL is
 `d65b573413396bb689cf7e1d5c85c50ea970ad7ad5714c0a78d4f75102e5d86d`.
 
-The existing `scripts/qualify_weka_samples.py` pins this play and the upstream
+The existing `scripts/prediction_regression/qualify_weka_samples.py` pins this play and the upstream
 revision. Acquisition used the Hugging Face rows API after checking that the
 repository revision matched that pin. CI only reads this local file.
 The benchmark projects all source model labels onto the configured Qwen3.5

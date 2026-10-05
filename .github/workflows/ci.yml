@@ -210,7 +210,7 @@ jobs:
           if [[ "${FORCE_ALL}" == "true" ]]; then
             args+=(--force-all)
           fi
-          python scripts/select_full_ci.py "${args[@]}"
+          python scripts/ci/select_full_ci.py "${args[@]}"
 
   fast-ci:
     name: Require Fast CI
@@ -231,7 +231,7 @@ jobs:
       - name: Verify the standalone workflow and every Fast CI job
         env:
           GH_TOKEN: ${{ github.token }}
-        run: python scripts/require_fast_ci.py
+        run: python scripts/ci/require_fast_ci.py
 
   platform-wheels:
     name: Platform Wheels
@@ -614,9 +614,9 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - uses: ./.github/actions/setup-manylinux-python-rust
-      - run: python -m pip install 'maturin>=1.12,<2'
+      - run: python -m pip install --require-hashes -r scripts/release/requirements.txt
       - name: Build the application test wheel once
-        run: python scripts/build_manylinux_wheel.py --output-dir application-test-dist
+        run: python scripts/release/build_manylinux_wheel.py --output-dir application-test-dist
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: application-test-wheel-${{ matrix.arch }}
@@ -679,11 +679,10 @@ jobs:
       - name: Run repository and package contracts
         if: matrix.shard.suite == 'contracts'
         run: |
-          python -m pip install pip-licenses==5.5.5
-          python -m uv pip install --system "${AISIMULATE_TEST_WHEEL}[dev]" -r scripts/fpm_accuracy/requirements.in
+          python -m uv pip install --system "${AISIMULATE_TEST_WHEEL}[dev]" --group scripts/pyproject.toml:ci --group scripts/pyproject.toml:fpm-accuracy
           python -m pip check
-          python scripts/check_prediction_numerics.py --fetch-baseline-only
-          python scripts/check_application_test_inventory.py --output application-test-inventory.json
+          python scripts/prediction_regression/check_prediction_numerics.py --fetch-baseline-only
+          python scripts/ci/check_application_test_inventory.py --output application-test-inventory.json
           python -m pytest -q \
             python/aisimulate/tests/unit/cli/test_aisimulate_compatibility.py \
             python/aisimulate/tests/cross_package
@@ -782,7 +781,7 @@ jobs:
         with:
           python-version: "3.12"
       - name: Check Python dependency licenses
-        run: python scripts/check_python_licenses.py
+        run: python scripts/ci/check_python_licenses.py
 
   python-compatibility:
     name: Python ${{ matrix.python-version }} compatibility
@@ -850,8 +849,8 @@ jobs:
           crates/core/parity_tests/perfmodel/test_compile_engine_parity.py
       - name: Check native prediction numerical sentinels
         run: |
-          python scripts/check_prediction_numerics.py --fetch-baseline-only
-          python scripts/check_prediction_numerics.py --output numerical-sentinels.json
+          python scripts/prediction_regression/check_prediction_numerics.py --fetch-baseline-only
+          python scripts/prediction_regression/check_prediction_numerics.py --output numerical-sentinels.json
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         if: always()
         with:
@@ -885,9 +884,9 @@ jobs:
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup-manylinux-python-rust
-      - run: python -m pip install build maturin
-      - run: python scripts/build_release_artifacts.py --check-only
-      - run: python scripts/build_release_artifacts.py --output-dir dist
+      - run: python -m pip install --require-hashes -r scripts/release/requirements.txt
+      - run: python scripts/release/build_release_artifacts.py --check-only
+      - run: python scripts/release/build_release_artifacts.py --output-dir dist
       - run: python -m venv release-smoke
       - run: >-
           release-smoke/bin/python -m pip install

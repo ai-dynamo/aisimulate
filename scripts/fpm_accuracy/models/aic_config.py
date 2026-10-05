@@ -9,8 +9,8 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
-from fpm_accuracy.exceptions import ConfigurationError
-from fpm_accuracy.types.worker_config import WorkerConfigRecord, moe_mapping_from_expert_parallelism
+from scripts.fpm_accuracy.exceptions import ConfigurationError
+from scripts.fpm_accuracy.types.worker_config import WorkerConfigRecord, moe_mapping_from_expert_parallelism
 
 _DTYPE_ALIASES = {
     "bf16": "bfloat16",

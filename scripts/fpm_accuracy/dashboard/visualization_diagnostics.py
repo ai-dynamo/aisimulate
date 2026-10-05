@@ -6,9 +6,9 @@
 
 from collections import Counter, defaultdict
 
-from fpm_accuracy.hf.models import MeasurementCase, MeasurementObservation
-from fpm_accuracy.hf.protocols import _json_line, _metric, _open_text, _rank_measurement
-from fpm_accuracy.types.forward_pass import ForwardPassIteration, WorkloadKind
+from scripts.fpm_accuracy.hf.models import MeasurementCase, MeasurementObservation
+from scripts.fpm_accuracy.hf.protocols import _json_line, _metric, _open_text, _rank_measurement
+from scripts.fpm_accuracy.types.forward_pass import ForwardPassIteration, WorkloadKind
 
 POLICY = "diagnostic-file-worker-counter-complete-dp-v1"
 

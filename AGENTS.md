@@ -91,7 +91,7 @@ substantially derived from an external project, MUST:
   license, and whether the files were modified. The root notice is canonical;
   keep `python/aisimulate/THIRD_PARTY_NOTICES.md` byte-identical so the notice
   is included in Python distributions. Run
-  `python3 scripts/check_packaged_legal_files.py` after either copy changes.
+  `python3 scripts/ci/check_packaged_legal_files.py` after either copy changes.
 - Do not hand-edit generated attribution artifacts. Update their source or
   generation process instead.
 

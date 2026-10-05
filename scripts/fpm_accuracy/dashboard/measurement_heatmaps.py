@@ -10,14 +10,15 @@ import math
 from collections import defaultdict
 from collections.abc import Iterable, Sequence
 
-from fpm_accuracy.dashboard.data import Heatmap, HeatmapBin, HeatmapCell
-from fpm_accuracy.hf.models import MeasurementObservation
+from scripts.fpm_accuracy.dashboard.data import Heatmap, HeatmapBin, HeatmapCell
+from scripts.fpm_accuracy.hf.models import MeasurementObservation
 
 AXES: dict[str, tuple[str, str]] = {
     "prefill": ("num_prefill_requests", "sum_prefill_tokens"),
     "decode": ("num_decode_requests", "sum_decode_kv_tokens"),
     "mixed": ("kv_read", "new_kv"),
 }
+
 
 def _axis_values(observation: MeasurementObservation) -> tuple[float, float]:
     scheduled = observation.scheduled

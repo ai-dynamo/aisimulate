@@ -6,11 +6,12 @@ import gzip
 import json
 from dataclasses import replace
 
-from fpm_accuracy.dashboard.visualization import VisualizationWriter, point
-from fpm_accuracy.dashboard.visualization_diagnostics import diagnostic_observations
-from fpm_accuracy.hf.models import MeasurementObservation
-from fpm_accuracy.types.forward_pass import ForwardPassIteration, ForwardPassMetric, RequestMetrics
 from test_hf_dataset import CONFIGURATION_PATH, _build_dataset, _fpm_payload
+
+from scripts.fpm_accuracy.dashboard.visualization import VisualizationWriter, point
+from scripts.fpm_accuracy.dashboard.visualization_diagnostics import diagnostic_observations
+from scripts.fpm_accuracy.hf.models import MeasurementObservation
+from scripts.fpm_accuracy.types.forward_pass import ForwardPassIteration, ForwardPassMetric, RequestMetrics
 
 
 def observation(metrics: list[RequestMetrics]) -> MeasurementObservation:

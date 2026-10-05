@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-SCRIPT = ROOT / "scripts" / "render_aic_sync_patch.py"
+SCRIPT = ROOT / "scripts/aic_sync/render_aic_sync_patch.py"
 SPEC = importlib.util.spec_from_file_location("render_aic_sync_patch", SCRIPT)
 assert SPEC is not None and SPEC.loader is not None
 SYNC = importlib.util.module_from_spec(SPEC)

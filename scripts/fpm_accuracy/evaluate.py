@@ -12,17 +12,16 @@ from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from typing import Any
 
-from accuracy_digest import encode_points
-
-from fpm_accuracy.dashboard.measurement_heatmaps import _axis_values, _bin_index, measurement_workload_heatmaps
-from fpm_accuracy.exceptions import DependencyError
-from fpm_accuracy.hf.models import MeasurementCase
-from fpm_accuracy.models.aic_predictors import AicFpmPredictor, AicRegressionPredictor
-from fpm_accuracy.models.fpt_predictor import ForwardPassTimePredictor, PredictorContext
-from fpm_accuracy.models.worker_regression import (
+from scripts.fpm_accuracy.dashboard.measurement_heatmaps import _axis_values, _bin_index, measurement_workload_heatmaps
+from scripts.fpm_accuracy.exceptions import DependencyError
+from scripts.fpm_accuracy.hf.models import MeasurementCase
+from scripts.fpm_accuracy.models.aic_predictors import AicFpmPredictor, AicRegressionPredictor
+from scripts.fpm_accuracy.models.fpt_predictor import ForwardPassTimePredictor, PredictorContext
+from scripts.fpm_accuracy.models.worker_regression import (
     WorkerRegressionPredictor,
     infer_worker_roles,
 )
+from scripts.notifications.accuracy_digest import encode_points
 
 WORKLOADS = ("all", "prefill", "decode", "mixed")
 METHODS = ("warmup", "nowarmup", "regression")

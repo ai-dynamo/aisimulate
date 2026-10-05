@@ -11,11 +11,11 @@ from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from typing import Any, ClassVar, Literal
 
-from fpm_accuracy.exceptions import ConfigurationError, DependencyError
-from fpm_accuracy.models.aic_config import map_worker_config_to_aic
-from fpm_accuracy.models.aic_fpm_database import PreparedAicFpmDatabase, prepare_aic_fpm_database
-from fpm_accuracy.models.fpt_predictor import ForwardPassTimePredictor, Prediction, PredictorContext
-from fpm_accuracy.types.forward_pass import ForwardPassInput, ForwardPassIteration
+from scripts.fpm_accuracy.exceptions import ConfigurationError, DependencyError
+from scripts.fpm_accuracy.models.aic_config import map_worker_config_to_aic
+from scripts.fpm_accuracy.models.aic_fpm_database import PreparedAicFpmDatabase, prepare_aic_fpm_database
+from scripts.fpm_accuracy.models.fpt_predictor import ForwardPassTimePredictor, Prediction, PredictorContext
+from scripts.fpm_accuracy.types.forward_pass import ForwardPassInput, ForwardPassIteration
 
 AicMode = Literal["fpm", "regression"]
 

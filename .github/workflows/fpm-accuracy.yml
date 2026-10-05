@@ -138,7 +138,7 @@ jobs:
           HF_REVISION: ${{ needs.resolve.outputs.hf_revision }}
           HF_HOME: ${{ runner.temp }}/hf-${{ needs.resolve.outputs.hf_revision }}
         run: |
-          python scripts/prepare_fpm_measurements.py \
+          python -m scripts.fpm_accuracy.prepare_fpm_measurements \
             --hf-revision "${HF_REVISION}" --evaluator-sha "${GITHUB_SHA}" \
             --run-id "${GITHUB_RUN_ID}" --run-attempt "${GITHUB_RUN_ATTEMPT}" \
             --output "${RUNNER_TEMP}/fpm-measurements"

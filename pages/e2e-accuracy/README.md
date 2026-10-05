@@ -253,7 +253,7 @@ commit. Branch publication rejects a baseline from another repository or
 revision, an incomplete baseline, or inconsistent producer documents.
 
 ```bash
-python scripts/build_e2e_accuracy_overview.py \
+python scripts/e2e_accuracy/build_e2e_accuracy_overview.py \
   --predictions /path/to/predictions.json \
   --metadata /path/to/aisimulate_points.meta.json \
   --coverage /path/to/coverage.json \
@@ -274,7 +274,7 @@ details. The existing aggregate schema stays compatible.
 python -m pytest -c /dev/null tests/test_e2e_accuracy_overview.py tests/test_pages_site.py -q
 node --test tests/test_e2e_accuracy_ui.mjs
 # Use a fresh output directory. Fetch remote refs first to include releases.
-python scripts/build_pages_site.py --accuracy-refs --output-dir /tmp/aisim-site
+python scripts/pages/build_pages_site.py --accuracy-refs --output-dir /tmp/aisim-site
 python -m http.server 8000 --bind 127.0.0.1 --directory /tmp/aisim-site
 ```
 

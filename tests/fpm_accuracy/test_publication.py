@@ -8,10 +8,11 @@ import urllib.error
 import zipfile
 from pathlib import Path
 
-import prepare_fpm_accuracy_pages as publish
 import pytest
 import yaml
-from fpm_accuracy.contract import artifact_key, eligible_branch, strict_json, validate_summary
+
+import scripts.pages.prepare_fpm_accuracy_pages as publish
+from scripts.fpm_accuracy.contract import artifact_key, eligible_branch, strict_json, validate_summary
 
 ROOT = Path(__file__).resolve().parents[2]
 

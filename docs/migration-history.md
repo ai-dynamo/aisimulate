@@ -133,7 +133,7 @@ manual-path decisions and the bounded final-tree adaptations are recorded in
 - Rust formatting, AIS API documentation, and Python lint adaptations are limited to crate/module identity and existing AIS checks. Commit `f6e2f7a` explicitly defers Qwen W4A16 Collector cases that the retained runtime cannot execute instead of silently relabeling them.
 - Commit `7f07f3b` removes unrelated-case filtering from the DSV4 Collector and bounds the MSA evidence waiver to its approved scope. These are post-port policy corrections, not untracked source drift.
 The stable path mapping and last synchronized AIC commit are recorded in
-[`scripts/aic_sync.toml`](../scripts/aic_sync.toml). Follow the binary-safe,
+[`scripts/aic_sync/aic_sync.toml`](../scripts/aic_sync/aic_sync.toml). Follow the binary-safe,
 path-rewritten workflow in [aic-sync.md](aic-sync.md) for later AIC code, data,
 and test commits. Packaging, CI, and repository-policy changes are adapted
 manually because AISimulate owns the combined release boundary.
@@ -253,7 +253,7 @@ combined AISimulate crate and the repository `Cargo.lock` was regenerated.
 ### Migration-only adaptations
 
 - Extended rename and copy headers are rewritten into the configured mirror
-  paths by `scripts/render_aic_sync_patch.py`; a regression test covers the
+  paths by `scripts/aic_sync/render_aic_sync_patch.py`; a regression test covers the
   renderer behavior.
 - AISimulate-specific packaging, active workflows, and generated root
   `CODEOWNERS` remain owned by this repository rather than copied from AIC.
@@ -330,7 +330,7 @@ SPDX-License-Identifier: Apache-2.0
 -->
 
 
-This selectively ports the four commits of [AIConfigurator PR #1563](https://github.com/ai-dynamo/aiconfigurator/pull/1563), from `b28ab8fff6fdc85c7c0d62da4506682e40164308` through `6290c161a354da5250c391bd43372b2e9c6f4a51`, onto AISimulate base `7dbd110f6459f012d284fdb3080214b6ba204e6e`. The source PR was unmerged when this migration was prepared. This is an individual feature transfer; `scripts/aic_sync.toml` retains the contiguous main-branch synchronization boundary `c8aee02f0887547a334c3d6cd192c42757e4b40e`.
+This selectively ports the four commits of [AIConfigurator PR #1563](https://github.com/ai-dynamo/aiconfigurator/pull/1563), from `b28ab8fff6fdc85c7c0d62da4506682e40164308` through `6290c161a354da5250c391bd43372b2e9c6f4a51`, onto AISimulate base `7dbd110f6459f012d284fdb3080214b6ba204e6e`. The source PR was unmerged when this migration was prepared. This is an individual feature transfer; `scripts/aic_sync/aic_sync.toml` retains the contiguous main-branch synchronization boundary `c8aee02f0887547a334c3d6cd192c42757e4b40e`.
 
 ### Behavior
 
