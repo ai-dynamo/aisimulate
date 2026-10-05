@@ -1,0 +1,36 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# Explicit hypothetical MTP on the real DSV4 target; this does not model DSpark.
+# Acceptance and fixed capacity are scenario assumptions; see docs/agentx-mtp.md.
+
+traffic:
+  source:
+    type: trace
+    format: weka
+    block_size: 4
+    paths: [tests/e2e/configs/unified_cli/fixtures/traces/weka-two-plays.jsonl]
+  load: {type: trace_timestamps, speedup: 1.0, agentic_lanes: 1}
+engine:
+  mode: aggregated
+  model: deepseek-ai/DeepSeek-V4-Pro
+  hardware: b300_sxm
+  backend: sglang
+  backend_version: 0.5.14
+  context_length: 262144
+  estimation_mode: op_level
+  fallback_policy: deny
+  speculation:
+    kind: mtp
+    num_speculative_tokens: 3
+    expected_accepted_tokens: 1.5
+    seed: 42
+  workers:
+    aggregated:
+      parallelism: {replicas: 1, tensor: 8, pipeline: 1, attention_data: 1, moe_tensor: 8, moe_expert: 1}
+      scheduler: {max_batched_tokens: 8192, max_sequences: 8}
+      kv_cache:
+        block_size: 64
+        prefix_caching: true
+        capacity: {type: fixed, blocks: 8192}
+      timing: {type: default}

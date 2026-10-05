@@ -424,6 +424,31 @@ The cost configuration is retained in provenance and saved recommendations.
 Acceptance rates and the scheduler seed stay in the CLI/Replay speculation
 configuration; they do not change the model's target-verification graph.
 
+Explicit MTP uses `{"kind": "mtp", "params": {"num_speculative_tokens": 3}}`
+or `ForwardPassSpeculationConfig::Mtp { num_speculative_tokens: 3 }` through
+the same constructor. Depth is 1–5 and legacy `nextn` must be zero. The selected
+target architecture is retained; its supported NextN approximation prices draft
+layers plus width-`depth+1` target verification. Unsupported model overrides
+(including Kimi DSpark and DeepSeek V4.1) fail explicitly. Method and depth are
+part of cost identity; expected acceptance and seed are not.
+
+Cost-model support and replay support are different contracts: the estimator
+can accept TRT-LLM MTP cost requests, while the new explicit replay interface
+and Agentic execution support vLLM/SGLang only. Existing non-Agentic legacy
+NextN behavior is retained. Agentic MTP requires explicit acceptance, fixed KV
+capacity, HBM-only cache and a resolved AIC op-level estimator, including when
+entering through the native JSON API. Fixed/polynomial timing cannot qualify
+draft/verification cost.
+
+This extension changes Rust source compatibility: exhaustive matches on
+`ForwardPassSpeculationConfig` must handle new variants (the enum is now
+`non_exhaustive`), and `ReplayReport` struct literals must populate
+`speculative_acceptance`. Its `sampling_population` uses the exported
+`ReplayAcceptancePopulation` enum. JSON serializes the population as
+`measurement_completed_decode_passes`; the new report object is additive.
+Python legacy input compatibility does not imply Rust struct-literal or
+exhaustive-match compatibility.
+
 ### Estimator controls
 
 `estimator_config` is passed intact through the Python facade, CLI, Sweeper,

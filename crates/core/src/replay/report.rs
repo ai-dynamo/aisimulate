@@ -36,6 +36,27 @@ pub struct G2DomainStats {
     pub used_blocks: usize,
 }
 
+/// Population represented by speculative acceptance counters.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum ReplayAcceptancePopulation {
+    MeasurementCompletedDecodePasses,
+}
+
+/// Acceptance sampled from completed decode passes in the measurement epoch.
+///
+/// Counts include the base token before output-limit clipping, exclude prefill,
+/// and can include work from requests later canceled. This population differs
+/// from the successful-request cohort used for delivered output throughput.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ReplaySpeculativeAcceptance {
+    pub sampling_population: ReplayAcceptancePopulation,
+    pub accepted_tokens_including_base: usize,
+    pub decode_forwards: usize,
+    pub mean_accept_length: Option<f64>,
+}
+
 /// Canonical replay result returned by [`crate::replay::Replayer`].
 #[derive(Debug, Clone)]
 pub struct ReplayReport {
@@ -46,6 +67,7 @@ pub struct ReplayReport {
     /// recomputation. This is measured from native pass metrics, not inferred
     /// from cache reuse ratios; an unfinished pass at a replay cutoff is excluded.
     pub committed_prefill_tokens: u64,
+    pub speculative_acceptance: ReplaySpeculativeAcceptance,
     pub g3_offload: Option<crate::engine::G3Stats>,
     /// Cluster-shared G2 pools; private G2 caches are not listed.
     pub g2_domains: Vec<G2DomainStats>,
@@ -425,6 +447,7 @@ impl Serialize for ReplayReport {
             map.serialize_entry("kv_eviction_assumption", assumption)?;
         }
         map.serialize_entry("committed_prefill_tokens", &self.committed_prefill_tokens)?;
+        map.serialize_entry("speculative_acceptance", &self.speculative_acceptance)?;
         if let Some(g3) = &self.g3_offload {
             map.serialize_entry("g3_offload", g3)?;
         }
@@ -985,6 +1008,8 @@ pub struct TraceCollector {
     pub(crate) g3_offload: Option<crate::engine::G3Stats>,
     pub(crate) g2_domains: Vec<G2DomainStats>,
     committed_prefill_tokens: u64,
+    accepted_tokens_including_base: usize,
+    decode_forwards: usize,
     requests: FxHashMap<Uuid, TraceRequestStats>,
     batch_reporting: bool,
     bounded_summary: Option<bounded::BoundedSummary>,
@@ -1190,6 +1215,14 @@ impl TraceCollector {
     /// estimates incorrect; only the committed pass describes executed work.
     pub(crate) fn on_completed_prefill_work(&mut self, tokens: u64) {
         self.committed_prefill_tokens += tokens;
+    }
+
+    /// Call only for completed measurement passes, before profile cancellation.
+    pub(crate) fn on_decode_acceptance(&mut self, accepted_tokens: usize, forwards: usize) {
+        if forwards > 0 {
+            self.accepted_tokens_including_base += accepted_tokens;
+            self.decode_forwards += forwards;
+        }
     }
 
     pub(crate) fn contains_request(&self, uuid: Uuid) -> bool {
@@ -1947,6 +1980,14 @@ impl TraceCollector {
             kv_eviction_policy: crate::engine::KvEvictionPolicy::Lru,
             kv_eviction_assumption: None,
             committed_prefill_tokens: self.committed_prefill_tokens,
+            speculative_acceptance: ReplaySpeculativeAcceptance {
+                sampling_population: ReplayAcceptancePopulation::MeasurementCompletedDecodePasses,
+                accepted_tokens_including_base: self.accepted_tokens_including_base,
+                decode_forwards: self.decode_forwards,
+                mean_accept_length: (self.decode_forwards > 0).then(|| {
+                    self.accepted_tokens_including_base as f64 / self.decode_forwards as f64
+                }),
+            },
             g3_offload: self
                 .g3_offload
                 .map(|stats| g3_since(stats, self.g3_profile_baseline.as_ref())),
@@ -2293,6 +2334,30 @@ fn std_dev(values: &[f64]) -> f64 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn decode_acceptance_is_separate_from_success_cohort_and_resets_at_epoch_barrier() {
+        let mut collector = super::TraceCollector::default();
+        collector.on_decode_acceptance(12, 4);
+        let preparation = collector.take_report(10.0);
+        assert_eq!(preparation.speculative_acceptance.decode_forwards, 4);
+        collector.on_decode_acceptance(3, 1);
+        // Acceptance describes completed decode work even without a successful
+        // request cohort; profile cancellation must not relabel this population.
+        let measured = collector.finish();
+        assert_eq!(measured.request_counts.completed_requests, 0);
+        assert_eq!(
+            measured
+                .speculative_acceptance
+                .accepted_tokens_including_base,
+            3
+        );
+        assert_eq!(measured.speculative_acceptance.decode_forwards, 1);
+        assert_eq!(
+            measured.speculative_acceptance.mean_accept_length,
+            Some(3.0)
+        );
+    }
+
     use super::*;
 
     #[test]

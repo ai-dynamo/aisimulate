@@ -84,7 +84,11 @@ def _run_recommendation(
     runner_factory = GuardedRunnerFactory(runner_factory, stack, config.execution.resources)
     if config.engine.workers.encoder is not None and (stack != "engine" or adapter_configs):
         raise ValueError("analytical EPD requires --stack engine without adapters")
-    if config.engine.speculation is not None and (stack != "engine" or adapter_configs):
+    if (
+        config.engine.speculation is not None
+        and config.engine.speculation.kind == "ngram"
+        and (stack != "engine" or adapter_configs)
+    ):
         raise ValueError("ngram speculation requires --stack engine without adapters")
     smart = recommendation_to_sweeper(config, adapter_configs=adapter_configs, stack=stack)
     if config.traffic is None:

@@ -50,6 +50,7 @@ from aisimulate_core.sdk.models.helpers import (
     resolve_nvfp4_for_system,
     resolve_sglang_mla_compute,
     resolve_vllm_moe_execution_mode,
+    validate_mtp_model_path,
 )
 
 # Auto-import every other module in this package so ``@register_model``
@@ -273,6 +274,8 @@ def get_model(
     # The materialized graph and its cache identity own the same snapshot.
     # Callers may reuse and edit nested speculative inputs for another build.
     if model_config.speculation is not None:
+        if model_config.speculation.kind == "mtp":
+            validate_mtp_model_path(model_path, architecture=architecture)
         model_config = copy.copy(model_config)
         model_config.speculation = copy.deepcopy(model_config.speculation)
     spec_config = resolve_speculation(model_config)

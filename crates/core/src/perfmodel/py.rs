@@ -1607,7 +1607,21 @@ fn compile_engine_from_request(request: EngineBuildRequest) -> Result<Engine, Ai
         kwargs.set_item("strict_provenance", request.strict_provenance)?;
         kwargs.set_item("nextn", request.nextn)?;
         if let Some(speculation) = &request.speculation {
-            let json = serde_json::to_string(speculation)
+            // The canonical request retains the explicit method identity. Only
+            // this compilation boundary translates MTP to the SDK scheme's
+            // established depth parameter and target-shaped layer graph.
+            let sdk_speculation = match speculation {
+                crate::ForwardPassSpeculationConfig::Mtp {
+                    num_speculative_tokens,
+                } => serde_json::json!({
+                    "kind": "mtp", "params": {"depth": num_speculative_tokens}
+                }),
+                crate::ForwardPassSpeculationConfig::Ngram { .. } => {
+                    serde_json::to_value(speculation)
+                        .map_err(|e| PyValueError::new_err(e.to_string()))?
+                }
+            };
+            let json = serde_json::to_string(&sdk_speculation)
                 .map_err(|e| PyValueError::new_err(e.to_string()))?;
             let value = PyModule::import(py, "json")?.call_method1("loads", (json,))?;
             kwargs.set_item("speculation", value)?;

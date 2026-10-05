@@ -1,0 +1,163 @@
+{
+  "schema": "aisimulate.agentx-mtp-qualification-summary.v1",
+  "qualification": "functional_only",
+  "hardware_accuracy": "NOT_EVALUATED",
+  "date_utc": "2026-10-05T05:56:22.673778+00:00",
+  "source_revisions": {
+    "aisimulate": "441e2ed4bee42076f12a7a00a0170e5879825826",
+    "dynamo_component": "073daa19baba31871b973f43759daa982ae84d1f",
+    "dynamo_runtime": "bd95490d4da98035b864b680a024bbf7d8977751"
+  },
+  "source_retention": "Historical branch revisions identify tested content; rebuild and rerun after merge pins change.",
+  "qualifier": {
+    "checkout_revision": "29df319b543ae9110bb14d7e023c35c871f63752",
+    "checkout_dirty": false,
+    "sha256": "4a25649ac2ea54ef92bc0c72dbbe9967123bf6131bfe9f0bc1f18fc0b36032eb"
+  },
+  "installed_packages": {
+    "aisimulate": {
+      "version": "0.13.0",
+      "direct_url": {
+        "archive_info": {}
+      },
+      "wheel_sha256": "8731893a6c4523b6b121eb64fd04163cbe5339c113636fa6e4082ba206e2ed4a",
+      "record_sha256": "60cf01d995a2d30b5fc13a81935937de097945694f9c5ae48c582e20270f2153",
+      "wheel_filename": "aisimulate-0.13.0-cp311-abi3-manylinux_2_34_x86_64.whl"
+    },
+    "ai-dynamo": {
+      "version": "1.6.0",
+      "direct_url": {
+        "archive_info": {}
+      },
+      "wheel_sha256": "d9ce9c4830c57755208b9e9d528fd6f0e572f840c8103ba2a48591e44b57e356",
+      "record_sha256": "00b4b1b677a07f58d7451e08bf1bec508c34b8f4e282aed4b0f98a7c60168863",
+      "wheel_filename": "ai_dynamo-1.6.0-py3-none-any.whl"
+    },
+    "ai-dynamo-runtime": {
+      "version": "1.6.0",
+      "direct_url": {
+        "archive_info": {}
+      },
+      "wheel_sha256": "844e7c8d1ae548bb17da687f0606112c79640a75cbeb9024c2c79b9dc40c6dc7",
+      "record_sha256": "7b7caa300977a8402ebe0cf9b93a4a0e66f1c9387e03db8526a51bbfe0d61fd8",
+      "wheel_filename": "ai_dynamo_runtime-1.6.0-cp310-abi3-manylinux_2_39_x86_64.whl"
+    }
+  },
+  "trace": {
+    "source": "semianalysisai/cc-traces-weka-062126-256k",
+    "dataset_revision": "8fecd2fc56694469f758f0afbbb6335ad3043740",
+    "sha256": "e3a34f0617457a004694be52885d58748b998b6d3c22cf344ff6572a78757d5a",
+    "complete_plays": 2
+  },
+  "scenario": {
+    "duration_seconds": 3600.0,
+    "replicas_per_role": 2,
+    "tensor_parallelism": 8,
+    "kv_blocks_per_rank": 8192,
+    "kv_block_size": 64,
+    "capacity_source": "explicit_fixed",
+    "snapshot_seed": 42,
+    "sd_seed": 42,
+    "glm_expected_accepted_drafts": 1.99,
+    "dsv4_expected_accepted_drafts": 1.5,
+    "dsv4_pd_kv_transfer": "scalar_bytes_per_token"
+  },
+  "cost_controls": [
+    {
+      "config": {
+        "model": "nvidia/GLM-5.2-NVFP4",
+        "backend": "vllm",
+        "backend_version": "0.24.0",
+        "system": "b300_sxm",
+        "tp": 8,
+        "moe_tp_size": 8,
+        "moe_ep_size": 1,
+        "worker_type": "decode",
+        "estimation_mode": "op_level",
+        "fallback_policy": "deny"
+      },
+      "batch_size": 1,
+      "context_tokens": 1024,
+      "decode_forward_ms": {
+        "off": 15.712050288385955,
+        "legacy_nextn": 16.316359914862336,
+        "explicit_mtp": 16.316359914862336
+      }
+    },
+    {
+      "config": {
+        "model": "nvidia/GLM-5.2-NVFP4",
+        "backend": "sglang",
+        "backend_version": "0.5.14",
+        "system": "b300_sxm",
+        "tp": 8,
+        "moe_tp_size": 8,
+        "moe_ep_size": 1,
+        "worker_type": "decode",
+        "estimation_mode": "op_level",
+        "fallback_policy": "deny"
+      },
+      "batch_size": 1,
+      "context_tokens": 1024,
+      "decode_forward_ms": {
+        "off": 6.13715395022165,
+        "legacy_nextn": 6.381991991053839,
+        "explicit_mtp": 6.381991991053839
+      }
+    },
+    {
+      "config": {
+        "model": "deepseek-ai/DeepSeek-V4-Pro",
+        "backend": "sglang",
+        "backend_version": "0.5.14",
+        "system": "b300_sxm",
+        "tp": 8,
+        "moe_tp_size": 8,
+        "moe_ep_size": 1,
+        "worker_type": "decode",
+        "estimation_mode": "op_level",
+        "fallback_policy": "deny"
+      },
+      "batch_size": 1,
+      "context_tokens": 1024,
+      "decode_forward_ms": {
+        "off": 8.355784151945082,
+        "legacy_nextn": 8.766724356139102,
+        "explicit_mtp": 8.766724356139102
+      }
+    }
+  ],
+  "supplemental_checks": {
+    "native_policy_cli_regressions": 10,
+    "native_policy_mtp_smoke_topologies": [
+      "aggregated",
+      "prefill_decode"
+    ]
+  },
+  "cases": [
+    {"case": "glm-vllm-agg-engine-default-sd1","status": "passed","completed_requests": 239,"decode_forwards": 59855,"accepted_tokens_including_base": 178978,"mean_accept_length": 2.9901929663353104,"issued_requests": 239,"successful_responses": 239,"canceled_requests": 0,"client_in_flight_requests": 0,"server_unsettled_requests": 0,"cancel_drain_timed_out": false,"graph_digest": "1dcf19e16a5d5f5351b68e9e7fee511bf50546c78575e06dd94753438db76029","lifecycle_digest": "399543cb4c0c978755035805d3df8ec61fff5ffa398e4b48525fd3771b85a1ec","lifecycle_event_count": 722},
+    {"case": "glm-vllm-agg-dynamo-kv-sd1","status": "passed","completed_requests": 245,"decode_forwards": 61834,"accepted_tokens_including_base": 184885,"mean_accept_length": 2.990021670925381,"issued_requests": 245,"successful_responses": 245,"canceled_requests": 0,"client_in_flight_requests": 0,"server_unsettled_requests": 0,"cancel_drain_timed_out": false,"graph_digest": "1dcf19e16a5d5f5351b68e9e7fee511bf50546c78575e06dd94753438db76029","lifecycle_digest": "db77792c2ea533eba8b0c3ee7fb5808bca8e20dc6473370673b8a6214945fecc","lifecycle_event_count": 740},
+    {"case": "glm-vllm-agg-dynamo-session-sd1","status": "passed","completed_requests": 246,"decode_forwards": 62045,"accepted_tokens_including_base": 185511,"mean_accept_length": 2.989942783463615,"issued_requests": 246,"successful_responses": 246,"canceled_requests": 0,"client_in_flight_requests": 0,"server_unsettled_requests": 0,"cancel_drain_timed_out": false,"graph_digest": "1dcf19e16a5d5f5351b68e9e7fee511bf50546c78575e06dd94753438db76029","lifecycle_digest": "7be80f278a71e001a021cdf49dd7bd4ac34034e065dd07a0645ad6bb2e55de1e","lifecycle_event_count": 743},
+    {"case": "glm-vllm-agg-dynamo-sibling-sd1","status": "passed","completed_requests": 245,"decode_forwards": 61835,"accepted_tokens_including_base": 184881,"mean_accept_length": 2.9899086277997897,"issued_requests": 245,"successful_responses": 245,"canceled_requests": 0,"client_in_flight_requests": 0,"server_unsettled_requests": 0,"cancel_drain_timed_out": false,"graph_digest": "1dcf19e16a5d5f5351b68e9e7fee511bf50546c78575e06dd94753438db76029","lifecycle_digest": "5e8c92f5065031033f8b56159d1829f1bc7eab57874733b05a8fec36c7977896","lifecycle_event_count": 740},
+    {"case": "glm-sglang-agg-engine-default-sd1","status": "passed","completed_requests": 311,"decode_forwards": 77628,"accepted_tokens_including_base": 232103,"mean_accept_length": 2.989939197196888,"issued_requests": 311,"successful_responses": 311,"canceled_requests": 0,"client_in_flight_requests": 0,"server_unsettled_requests": 0,"cancel_drain_timed_out": false,"graph_digest": "1dcf19e16a5d5f5351b68e9e7fee511bf50546c78575e06dd94753438db76029","lifecycle_digest": "50c608f30a3d0646e51118467ae00eac768a51257d8be641f3490f44727b6f93","lifecycle_event_count": 938},
+    {"case": "glm-sglang-agg-dynamo-kv-sd1","status": "passed","completed_requests": 314,"decode_forwards": 79503,"accepted_tokens_including_base": 237710,"mean_accept_length": 2.98995006477743,"issued_requests": 314,"successful_responses": 314,"canceled_requests": 0,"client_in_flight_requests": 0,"server_unsettled_requests": 0,"cancel_drain_timed_out": false,"graph_digest": "1dcf19e16a5d5f5351b68e9e7fee511bf50546c78575e06dd94753438db76029","lifecycle_digest": "3a25de767a8b1f1c4a1d135efb8a11bcbc5b9515451b43e6abe9a400758f1e44","lifecycle_event_count": 947},
+    {"case": "glm-sglang-agg-dynamo-session-sd1","status": "passed","completed_requests": 314,"decode_forwards": 79504,"accepted_tokens_including_base": 237702,"mean_accept_length": 2.9898118333668746,"issued_requests": 314,"successful_responses": 314,"canceled_requests": 0,"client_in_flight_requests": 0,"server_unsettled_requests": 0,"cancel_drain_timed_out": false,"graph_digest": "1dcf19e16a5d5f5351b68e9e7fee511bf50546c78575e06dd94753438db76029","lifecycle_digest": "5e220ab4f9766ed4e84bc0f817c73738d451d938b3387c91bedb0e7bb01fe19c","lifecycle_event_count": 947},
+    {"case": "glm-sglang-agg-dynamo-sibling-sd1","status": "passed","completed_requests": 314,"decode_forwards": 79501,"accepted_tokens_including_base": 237704,"mean_accept_length": 2.989949811952051,"issued_requests": 314,"successful_responses": 314,"canceled_requests": 0,"client_in_flight_requests": 0,"server_unsettled_requests": 0,"cancel_drain_timed_out": false,"graph_digest": "1dcf19e16a5d5f5351b68e9e7fee511bf50546c78575e06dd94753438db76029","lifecycle_digest": "293d6e96604d0acc22e50ba3b581b1ddd3ba74bee12847ce3740e385c0bebe1e","lifecycle_event_count": 947},
+    {"case": "glm-vllm-disagg-engine-default-sd1","status": "passed","completed_requests": 240,"decode_forwards": 60373,"accepted_tokens_including_base": 180525,"mean_accept_length": 2.990161164759081,"issued_requests": 240,"successful_responses": 240,"canceled_requests": 0,"client_in_flight_requests": 0,"server_unsettled_requests": 0,"cancel_drain_timed_out": false,"graph_digest": "1dcf19e16a5d5f5351b68e9e7fee511bf50546c78575e06dd94753438db76029","lifecycle_digest": "f4b403ed52e5b0e031bd8759a452bbccce519a66a259f622738e98f8db600316","lifecycle_event_count": 725},
+    {"case": "glm-vllm-disagg-dynamo-kv-sd1","status": "passed","completed_requests": 245,"decode_forwards": 62073,"accepted_tokens_including_base": 185602,"mean_accept_length": 2.9900600905385595,"issued_requests": 245,"successful_responses": 245,"canceled_requests": 0,"client_in_flight_requests": 0,"server_unsettled_requests": 0,"cancel_drain_timed_out": false,"graph_digest": "1dcf19e16a5d5f5351b68e9e7fee511bf50546c78575e06dd94753438db76029","lifecycle_digest": "7888702aab30a0627c5a282c8fbefd85d74d96cdf038821c9b86442ccb1a176a","lifecycle_event_count": 740},
+    {"case": "glm-vllm-disagg-dynamo-session-sd1","status": "passed","completed_requests": 246,"decode_forwards": 62293,"accepted_tokens_including_base": 186252,"mean_accept_length": 2.9899346636058626,"issued_requests": 246,"successful_responses": 246,"canceled_requests": 0,"client_in_flight_requests": 0,"server_unsettled_requests": 0,"cancel_drain_timed_out": false,"graph_digest": "1dcf19e16a5d5f5351b68e9e7fee511bf50546c78575e06dd94753438db76029","lifecycle_digest": "55380ce408332a29f74e6463d1ddc7783b3255b2b7221da3dff20ae771eab014","lifecycle_event_count": 743},
+    {"case": "glm-vllm-disagg-dynamo-sibling-sd1","status": "passed","completed_requests": 246,"decode_forwards": 62294,"accepted_tokens_including_base": 186264,"mean_accept_length": 2.9900793013773397,"issued_requests": 246,"successful_responses": 246,"canceled_requests": 0,"client_in_flight_requests": 0,"server_unsettled_requests": 0,"cancel_drain_timed_out": false,"graph_digest": "1dcf19e16a5d5f5351b68e9e7fee511bf50546c78575e06dd94753438db76029","lifecycle_digest": "817638d592e44b36228217e9907ca538f772d925166f129e087b55e4d2462d2f","lifecycle_event_count": 743},
+    {"case": "glm-sglang-disagg-engine-default-sd1","status": "passed","completed_requests": 311,"decode_forwards": 77721,"accepted_tokens_including_base": 232380,"mean_accept_length": 2.989925502759872,"issued_requests": 311,"successful_responses": 311,"canceled_requests": 0,"client_in_flight_requests": 0,"server_unsettled_requests": 0,"cancel_drain_timed_out": false,"graph_digest": "1dcf19e16a5d5f5351b68e9e7fee511bf50546c78575e06dd94753438db76029","lifecycle_digest": "c5bbf22680a009a57fe4f4d71247c38c2aa14139fa0214526ad5d0b8adacde21","lifecycle_event_count": 938},
+    {"case": "glm-sglang-disagg-dynamo-kv-sd1","status": "passed","completed_requests": 314,"decode_forwards": 79606,"accepted_tokens_including_base": 238017,"mean_accept_length": 2.989937944376052,"issued_requests": 314,"successful_responses": 314,"canceled_requests": 0,"client_in_flight_requests": 0,"server_unsettled_requests": 0,"cancel_drain_timed_out": false,"graph_digest": "1dcf19e16a5d5f5351b68e9e7fee511bf50546c78575e06dd94753438db76029","lifecycle_digest": "9660613f5774bf8b02e7acd6eaacca03b1160c3fd7a712bc46e187fbd302102a","lifecycle_event_count": 947},
+    {"case": "glm-sglang-disagg-dynamo-session-sd1","status": "passed","completed_requests": 314,"decode_forwards": 79607,"accepted_tokens_including_base": 238026,"mean_accept_length": 2.9900134410290553,"issued_requests": 314,"successful_responses": 314,"canceled_requests": 0,"client_in_flight_requests": 0,"server_unsettled_requests": 0,"cancel_drain_timed_out": false,"graph_digest": "1dcf19e16a5d5f5351b68e9e7fee511bf50546c78575e06dd94753438db76029","lifecycle_digest": "8b9e39efebcbded65a36c91a7ca10526650193aa4c8254373b132979b94b7422","lifecycle_event_count": 947},
+    {"case": "glm-sglang-disagg-dynamo-sibling-sd1","status": "passed","completed_requests": 313,"decode_forwards": 79567,"accepted_tokens_including_base": 237911,"mean_accept_length": 2.9900712606985307,"issued_requests": 313,"successful_responses": 313,"canceled_requests": 0,"client_in_flight_requests": 0,"server_unsettled_requests": 0,"cancel_drain_timed_out": false,"graph_digest": "1dcf19e16a5d5f5351b68e9e7fee511bf50546c78575e06dd94753438db76029","lifecycle_digest": "35d4350c7bfaac0220393877757e4e28a14b791a7213ec0ec288008bd6f8ea17","lifecycle_event_count": 944},
+    {"case": "dsv4-sglang-agg-engine-default-sd0","status": "passed","completed_requests": 234,"decode_forwards": 176787,"accepted_tokens_including_base": 176787,"mean_accept_length": 1.0,"issued_requests": 234,"successful_responses": 234,"canceled_requests": 0,"client_in_flight_requests": 0,"server_unsettled_requests": 0,"cancel_drain_timed_out": false,"graph_digest": "1dcf19e16a5d5f5351b68e9e7fee511bf50546c78575e06dd94753438db76029","lifecycle_digest": "9e79fbb95c3028966d53837fa9062dfe0bdc53378daa4a3a00409effe68a7a67","lifecycle_event_count": 707},
+    {"case": "dsv4-sglang-agg-engine-default-sd1","status": "passed","completed_requests": 284,"decode_forwards": 91044,"accepted_tokens_including_base": 227439,"mean_accept_length": 2.498121787267695,"issued_requests": 284,"successful_responses": 284,"canceled_requests": 0,"client_in_flight_requests": 0,"server_unsettled_requests": 0,"cancel_drain_timed_out": false,"graph_digest": "1dcf19e16a5d5f5351b68e9e7fee511bf50546c78575e06dd94753438db76029","lifecycle_digest": "dc5b4fdd6dd1e9a9caf2bbc6d689629f7b0675ffc815e58be92f35598247a6bb","lifecycle_event_count": 857},
+    {"case": "dsv4-sglang-agg-dynamo-kv-sd0","status": "passed","completed_requests": 236,"decode_forwards": 177657,"accepted_tokens_including_base": 177657,"mean_accept_length": 1.0,"issued_requests": 236,"successful_responses": 236,"canceled_requests": 0,"client_in_flight_requests": 0,"server_unsettled_requests": 0,"cancel_drain_timed_out": false,"graph_digest": "1dcf19e16a5d5f5351b68e9e7fee511bf50546c78575e06dd94753438db76029","lifecycle_digest": "0d9ac1b7493aa6380d0fccdf6d249b1512f872b15671af76aecbb52dc45a2236","lifecycle_event_count": 713},
+    {"case": "dsv4-sglang-agg-dynamo-kv-sd1","status": "passed","completed_requests": 289,"decode_forwards": 91322,"accepted_tokens_including_base": 228112,"mean_accept_length": 2.4978865990670376,"issued_requests": 289,"successful_responses": 289,"canceled_requests": 0,"client_in_flight_requests": 0,"server_unsettled_requests": 0,"cancel_drain_timed_out": false,"graph_digest": "1dcf19e16a5d5f5351b68e9e7fee511bf50546c78575e06dd94753438db76029","lifecycle_digest": "cfd10cb5ee0fb60120d907432e4dcbcfb80b2683131465752212de479f5dad0a","lifecycle_event_count": 872},
+    {"case": "dsv4-sglang-disagg-engine-default-sd0","status": "passed","completed_requests": 234,"decode_forwards": 177021,"accepted_tokens_including_base": 177021,"mean_accept_length": 1.0,"issued_requests": 234,"successful_responses": 234,"canceled_requests": 0,"client_in_flight_requests": 0,"server_unsettled_requests": 0,"cancel_drain_timed_out": false,"graph_digest": "1dcf19e16a5d5f5351b68e9e7fee511bf50546c78575e06dd94753438db76029","lifecycle_digest": "fda62981b427c6a9653c0f98bf7dd9dc5fb09c438593221a0170db00594be841","lifecycle_event_count": 707},
+    {"case": "dsv4-sglang-disagg-engine-default-sd1","status": "passed","completed_requests": 284,"decode_forwards": 91152,"accepted_tokens_including_base": 227713,"mean_accept_length": 2.4981678953835353,"issued_requests": 284,"successful_responses": 284,"canceled_requests": 0,"client_in_flight_requests": 0,"server_unsettled_requests": 0,"cancel_drain_timed_out": false,"graph_digest": "1dcf19e16a5d5f5351b68e9e7fee511bf50546c78575e06dd94753438db76029","lifecycle_digest": "ca116501ce705743c6d79a9974f92c3e173fa4326666facf945c7e19c3922852","lifecycle_event_count": 857},
+    {"case": "dsv4-sglang-disagg-dynamo-kv-sd0","status": "passed","completed_requests": 237,"decode_forwards": 178057,"accepted_tokens_including_base": 178057,"mean_accept_length": 1.0,"issued_requests": 237,"successful_responses": 237,"canceled_requests": 0,"client_in_flight_requests": 0,"server_unsettled_requests": 0,"cancel_drain_timed_out": false,"graph_digest": "1dcf19e16a5d5f5351b68e9e7fee511bf50546c78575e06dd94753438db76029","lifecycle_digest": "680995b6a572970fcfee417dd0a2e20d3ea47d400d9991da012a8e9b8392c063","lifecycle_event_count": 716},
+    {"case": "dsv4-sglang-disagg-dynamo-kv-sd1","status": "passed","completed_requests": 289,"decode_forwards": 91435,"accepted_tokens_including_base": 228408,"mean_accept_length": 2.4980368567835076,"issued_requests": 289,"successful_responses": 289,"canceled_requests": 0,"client_in_flight_requests": 0,"server_unsettled_requests": 0,"cancel_drain_timed_out": false,"graph_digest": "1dcf19e16a5d5f5351b68e9e7fee511bf50546c78575e06dd94753438db76029","lifecycle_digest": "cb153a935c71c1fbd24193864f0d77f9de58f0963a9acbdf98eb92da509b769c","lifecycle_event_count": 872}
+  ]
+}

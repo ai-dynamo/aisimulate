@@ -137,7 +137,11 @@ fn require_agentic_execution_model(traffic: &RuntimeTraffic) -> Result<&str> {
         .context("agentic execution requires a configured target model")
 }
 
-fn validate_public_agentic_engine(input: &ReplayRuntimeInput, rank: &EngineConfig) -> Result<()> {
+fn validate_public_agentic_engine(
+    input: &ReplayRuntimeInput,
+    rank: &EngineConfig,
+    capacity_is_explicit: bool,
+) -> Result<()> {
     let ReplayRuntimeInput::Workload(driver) = input else {
         return Ok(());
     };
@@ -152,10 +156,62 @@ fn validate_public_agentic_engine(input: &ReplayRuntimeInput, rank: &EngineConfi
         rank.native_host_offload.is_none(),
         "agentic replay requires HBM-only KV cache; host offload is unsupported"
     );
-    ensure!(
-        rank.aic_nextn.is_none(),
-        "agentic replay requires speculative decoding disabled"
-    );
+    if let Some(nextn) = rank.aic_nextn {
+        ensure!(
+            capacity_is_explicit,
+            "agentic MTP requires explicit fixed KV capacity"
+        );
+        ensure!(
+            (1..=5).contains(&nextn),
+            "agentic MTP draft depth must be in 1..=5"
+        );
+        ensure!(
+            rank.aic_nextn_accept_rates
+                .as_deref()
+                .is_some_and(|rates| !rates.trim().is_empty()),
+            "agentic MTP requires explicit acceptance rates or expected accepted draft tokens"
+        );
+        let TimingModelConfig::External { provider, config } = &rank.timing_model else {
+            anyhow::bail!(
+                "agentic MTP requires AIC op_level timing including draft and verification cost"
+            );
+        };
+        // Timing has already been resolved through best_available. Inspect its
+        // resolved estimator rather than accepting an auto request that fell
+        // back to an incompatible whole-model estimate.
+        ensure!(
+            provider == "aic"
+                && config
+                    .get("estimation_mode")
+                    .and_then(serde_json::Value::as_str)
+                    == Some("op_level"),
+            "agentic MTP requires AIC op_level timing including draft and verification cost"
+        );
+    }
+    if let TimingModelConfig::External { config, .. } = &rank.timing_model {
+        if let Some(speculation) = config.get("speculation").filter(|value| !value.is_null()) {
+            ensure!(
+                speculation.get("kind").and_then(serde_json::Value::as_str) == Some("mtp"),
+                "agentic replay supports only MTP speculative decoding"
+            );
+        } else if rank.aic_nextn.is_some() {
+            // Legacy nextn is not universally target-layer MTP: some model
+            // families use that graph switch for DSpark. Reuse the same SDK
+            // architecture check as explicit MTP without constructing a second
+            // performance model or changing the configured target identity.
+            let model = config
+                .get("model")
+                .and_then(serde_json::Value::as_str)
+                .context("legacy Agentic MTP requires a configured target model")?;
+            Python::with_gil(|py| -> PyResult<()> {
+                PyModule::import(py, "aisimulate_core.sdk.models.helpers")?
+                    .getattr("validate_mtp_model_path")?
+                    .call1((model,))?;
+                Ok(())
+            })
+            .map_err(|error| anyhow!("legacy Agentic MTP target validation failed: {error}"))?;
+        }
+    }
     Ok(())
 }
 
@@ -360,22 +416,25 @@ impl AicTimingConfig {
         let Some(speculation) = &self.speculation else {
             return Ok(self.nextn);
         };
-        ensure!(
-            self.nextn == 0,
-            "ngram speculation cannot be combined with nextn"
-        );
-        ensure!(
-            self.backend == "vllm",
-            "ngram speculation requires backend=vllm"
-        );
+        ensure!(self.nextn == 0, "speculation cannot be combined with nextn");
+        match speculation {
+            crate::ForwardPassSpeculationConfig::Ngram { .. } => ensure!(
+                self.backend == "vllm",
+                "ngram speculation requires backend=vllm"
+            ),
+            crate::ForwardPassSpeculationConfig::Mtp { .. } => ensure!(
+                matches!(self.backend.as_str(), "vllm" | "sglang"),
+                "MTP replay requires backend=vllm or sglang"
+            ),
+        }
         ensure!(
             self.forward_model.as_deref().unwrap_or("op_level") == "op_level",
-            "ngram speculation requires op_level timing"
+            "speculation requires op_level timing"
         );
         let depth = speculation.num_speculative_tokens();
         ensure!(
             (1..=5).contains(&depth),
-            "ngram num_speculative_tokens must be in 1..=5"
+            "speculative num_speculative_tokens must be in 1..=5"
         );
         Ok(depth)
     }
@@ -2262,7 +2321,7 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
                 .map(|traffic| build_runtime_input(traffic, engine_config.rank.block_size))
                 .transpose()?;
             if let Some(built) = &built_input {
-                validate_public_agentic_engine(&built.input, &engine_config.rank)?;
+                validate_public_agentic_engine(&built.input, &engine_config.rank, capacity_is_explicit)?;
             }
             let resolved_basis = built_input
                 .as_ref()
@@ -2379,10 +2438,14 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
                 .transpose()?,
             };
             if let Some(built) = &built_input {
-                for role in [&engine_config.prefill, &engine_config.decode] {
+                for (role, capacity_is_explicit) in [
+                    (&engine_config.prefill, prefill_capacity_is_explicit),
+                    (&engine_config.decode, decode_capacity_is_explicit),
+                ] {
                     validate_public_agentic_engine(
                         &built.input,
                         &role.as_ref().expect("P/D role was materialized").rank,
+                        capacity_is_explicit,
                     )?;
                 }
             }
@@ -2861,9 +2924,10 @@ mod tests {
             .unwrap();
             for (options, message) in [
                 (serde_json::json!({"backend": "trtllm"}), "vLLM and SGLang"),
+                (serde_json::json!({"aic_nextn": 1}), "explicit acceptance"),
                 (
-                    serde_json::json!({"aic_nextn": 1}),
-                    "speculative decoding disabled",
+                    serde_json::json!({"aic_nextn": 1, "aic_nextn_accept_rates": "0.5"}),
+                    "AIC op_level timing",
                 ),
                 (
                     serde_json::json!({
@@ -2895,7 +2959,7 @@ mod tests {
                 });
                 // No lane flag: Dynamo agentic detection must follow loaded content.
                 let result = execute_json(&payload.to_string(), false);
-                if agentic {
+                if agentic && !message.is_empty() {
                     let error = format!("{:#}", result.unwrap_err());
                     assert!(error.contains(message), "{format}: {error}");
                     // Public P/D must validate both roles, including a decode
@@ -2924,7 +2988,7 @@ mod tests {
                 } else {
                     let report: serde_json::Value = serde_json::from_str(&result.unwrap()).unwrap();
                     assert_eq!(report["completed_requests"], 1);
-                    assert!(report.get("agentic_qualification").is_none());
+                    assert_eq!(report.get("agentic_qualification").is_some(), agentic);
                 }
             }
             // Exercise all three importers through the actual native P/D
@@ -3582,11 +3646,110 @@ mod tests {
     #[test]
     fn ngram_timing_rejects_unmodeled_trigger_rate_and_unknown_schemes() {
         for payload in [
-            serde_json::json!({"kind": "mtp", "params": {"num_speculative_tokens": 2}}),
+            serde_json::json!({"kind": "dspark", "params": {"num_speculative_tokens": 2}}),
             serde_json::json!({"kind": "ngram", "params": {"num_speculative_tokens": 2, "trigger_rate": 0.5}}),
         ] {
             assert!(
                 serde_json::from_value::<crate::ForwardPassSpeculationConfig>(payload).is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn mtp_timing_preserves_explicit_method_and_scheduler_depth_on_both_backends() {
+        for backend in ["vllm", "sglang"] {
+            let mut config = aic_config();
+            config.backend = backend.into();
+            config.speculation = Some(crate::ForwardPassSpeculationConfig::Mtp {
+                num_speculative_tokens: 3,
+            });
+            assert_eq!(config.speculative_depth().unwrap(), 3);
+            let canonical = config
+                .estimator_request(ForwardPassWorkerType::Aggregated)
+                .unwrap();
+            assert_eq!(canonical.nextn, 0);
+            assert_eq!(canonical.speculation, config.speculation);
+            let mut role = aggregated_role(&ReplayEngineConfig::default());
+            role.rank.backend = if backend == "sglang" {
+                Backend::Sglang
+            } else {
+                Backend::Vllm
+            };
+            assert!(
+                materialize_aic_capacity(&config, &mut role, true, |_, _| unreachable!()).is_err()
+            );
+            role.rank.aic_nextn = Some(3);
+            materialize_aic_capacity(&config, &mut role, true, |_, _| unreachable!()).unwrap();
+        }
+    }
+
+    #[test]
+    fn public_agentic_native_gate_allows_mtp_but_rejects_other_schemes() {
+        let source = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/e2e/configs/unified_cli/fixtures/traces/weka-relative.json");
+        let graph = crate::replay::loadgen::load_weka_agentic_graph(&source, Some(4)).unwrap();
+        let input = ReplayRuntimeInput::Workload(
+            WorkloadDriver::new_agentic_trace_with_lanes(graph, 4, 1).unwrap(),
+        );
+        for backend in [Backend::Vllm, Backend::Sglang] {
+            let mut rank = EngineConfig::for_backend(backend);
+            rank.aic_nextn_accept_rates = Some("1,0.5,0,0,0".into());
+            rank.timing_model = TimingModelConfig::External {
+                provider: "aic".into(),
+                config: serde_json::json!({"estimation_mode": "op_level", "speculation": {"kind": "mtp", "params": {"num_speculative_tokens": 5}}}),
+            };
+            for nextn in 1..=5 {
+                rank.aic_nextn = Some(nextn);
+                validate_public_agentic_engine(&input, &rank, true).unwrap();
+            }
+            assert!(
+                validate_public_agentic_engine(&input, &rank, false)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("explicit fixed KV capacity")
+            );
+            rank.aic_nextn_accept_rates = None;
+            assert!(
+                validate_public_agentic_engine(&input, &rank, true)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("explicit acceptance")
+            );
+            rank.aic_nextn_accept_rates = Some("1,0.5,0,0,0".into());
+            validate_public_agentic_engine(&input, &rank, true).unwrap();
+            for kind in ["ngram", "dspark", "draft_model"] {
+                rank.timing_model = TimingModelConfig::External {
+                    provider: "aic".into(),
+                    config: serde_json::json!({"estimation_mode": "op_level", "speculation": {"kind": kind, "params": {"num_speculative_tokens": 5}}}),
+                };
+                assert!(validate_public_agentic_engine(&input, &rank, true).is_err());
+            }
+            rank.timing_model = TimingModelConfig::External {
+                provider: "aic".into(),
+                config: serde_json::json!({"estimation_mode": "op_level", "nextn": 5}),
+            };
+            assert!(
+                validate_public_agentic_engine(&input, &rank, true)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("configured target model")
+            );
+            rank.timing_model = EngineConfig::for_backend(backend).timing_model;
+            assert!(
+                validate_public_agentic_engine(&input, &rank, true)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("AIC op_level timing")
+            );
+            rank.timing_model = TimingModelConfig::External {
+                provider: "aic".into(),
+                config: serde_json::json!({"estimation_mode": "fpm_interpolation", "nextn": 5}),
+            };
+            assert!(
+                validate_public_agentic_engine(&input, &rank, true)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("AIC op_level timing")
             );
         }
     }

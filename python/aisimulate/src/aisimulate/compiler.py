@@ -40,8 +40,22 @@ def prediction_to_replay_spec(
 ) -> ReplaySpec:
     """Compile one concrete public prediction config."""
 
-    if config.engine.speculation is not None and (adapter_specs or execution_mode != "offline"):
-        raise ValueError("ngram speculation requires the offline engine stack without adapters")
+    if config.engine.speculation is not None and (
+        execution_mode != "offline" or (config.engine.speculation.kind == "ngram" and adapter_specs)
+    ):
+        raise ValueError("speculation requires the offline engine stack; ngram additionally requires no adapters")
+    source = config.traffic.source
+    agentic = isinstance(source, TraceSource) and (
+        source.format in {"weka", "agentic_mooncake"}
+        or (source.format == "dynamo" and config.traffic.load.agentic_lanes is not None)
+    )
+    if agentic and (
+        (config.engine.speculation is not None and config.engine.speculation.kind == "mtp") or config.engine.nextn
+    ):
+        for role in ("aggregated", "prefill", "decode"):
+            worker = getattr(config.engine.workers, role)
+            if worker is not None and worker.kv_cache.capacity.type != "fixed":
+                raise ValueError("agentic MTP requires explicit fixed KV capacity")
     workload, concurrency = _traffic(config)
     deployment = _deployment(
         config.engine,
@@ -541,6 +555,11 @@ def _worker_performance_model_metadata(
     return {
         "provider": "aic",
         "config": config,
+        **(
+            {"capacity_source": "explicit_fixed" if worker.kv_cache.capacity.type == "fixed" else "inferred"}
+            if engine.speculation is not None or engine.nextn
+            else {}
+        ),
     }
 
 

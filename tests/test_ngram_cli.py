@@ -337,7 +337,7 @@ def test_agentic_execution_rejects_ngram_before_loading_trace():
         "load": {"type": "trace_timestamps"},
     }
     spec = prediction_to_replay_spec(CorePredictionConfig.model_validate(raw))
-    with pytest.raises(ValueError, match="speculative decoding disabled"):
+    with pytest.raises(ValueError, match="only MTP"):
         EngineReplayRunnerFactory().capabilities().require_compatible(spec)
 
 

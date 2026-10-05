@@ -60,14 +60,31 @@ pub enum ForwardPassFallbackPolicy {
     rename_all = "snake_case",
     deny_unknown_fields
 )]
+#[non_exhaustive]
 pub enum ForwardPassSpeculationConfig {
-    Ngram { num_speculative_tokens: u32 },
+    Ngram {
+        num_speculative_tokens: u32,
+    },
+    /// Target-shaped draft-layer approximation with widened verification.
+    Mtp {
+        num_speculative_tokens: u32,
+    },
 }
 
 impl ForwardPassSpeculationConfig {
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::Ngram { .. } => "ngram",
+            Self::Mtp { .. } => "mtp",
+        }
+    }
+
     pub fn num_speculative_tokens(&self) -> u32 {
         match self {
             Self::Ngram {
+                num_speculative_tokens,
+            }
+            | Self::Mtp {
                 num_speculative_tokens,
             } => *num_speculative_tokens,
         }
@@ -441,24 +458,29 @@ impl ForwardPassPerfModelConfig {
             return Err(invalid_config("nextn must be in 0..=5"));
         }
         if let Some(speculation) = &self.speculation {
+            let kind = speculation.kind();
             if self.nextn != 0 {
-                return Err(invalid_config(
-                    "ngram speculation cannot be combined with nextn",
-                ));
+                return Err(invalid_config(format!(
+                    "{kind} speculation cannot be combined with nextn"
+                )));
             }
-            if self.backend != BackendKind::Vllm {
+            if matches!(speculation, ForwardPassSpeculationConfig::Ngram { .. })
+                && self.backend != BackendKind::Vllm
+            {
                 return Err(invalid_config("ngram speculation requires backend=vllm"));
             }
             if !(1..=5).contains(&speculation.num_speculative_tokens()) {
-                return Err(invalid_config(
-                    "ngram num_speculative_tokens must be in 1..=5",
-                ));
+                return Err(invalid_config(format!(
+                    "{kind} num_speculative_tokens must be in 1..=5"
+                )));
             }
             if !matches!(
                 self.estimation_mode,
                 EstimationMode::Auto | EstimationMode::OpLevel
             ) {
-                return Err(invalid_config("ngram speculation requires op_level timing"));
+                return Err(invalid_config(format!(
+                    "{kind} speculation requires op_level timing"
+                )));
             }
         }
         if self.estimation_mode == EstimationMode::FpmInterpolation && self.nextn != 0 {
@@ -865,6 +887,62 @@ mod tests {
                 num_speculative_tokens: depth,
             });
             assert!(cfg.validate().is_err());
+        }
+    }
+
+    #[test]
+    fn explicit_mtp_retains_method_and_target_identity() {
+        for backend in ["vllm", "sglang", "trtllm"] {
+            for model in ["nvidia/GLM-5.2-NVFP4", "deepseek-ai/DeepSeek-V4-Pro"] {
+                let cfg = config(serde_json::json!({
+                    "model": model, "backend": backend,
+                    "speculation": {"kind": "mtp", "params": {"num_speculative_tokens": 3}}
+                }));
+                cfg.validate().unwrap();
+                assert_eq!(
+                    cfg.nextn, 0,
+                    "explicit identity must not become legacy nextn"
+                );
+                assert_eq!(cfg.model, model);
+                assert_eq!(cfg.speculation.as_ref().unwrap().kind(), "mtp");
+                assert_eq!(
+                    cfg.speculation.as_ref().unwrap().num_speculative_tokens(),
+                    3
+                );
+                let saved = serde_json::to_value(&cfg).unwrap();
+                assert_eq!(
+                    serde_json::from_value::<ForwardPassPerfModelConfig>(saved).unwrap(),
+                    cfg
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn explicit_mtp_rejects_invalid_cost_controls_before_fallback() {
+        for changes in [
+            serde_json::json!({"nextn": 3}),
+            serde_json::json!({"estimation_mode": "fpm_interpolation"}),
+            serde_json::json!({"estimation_mode": "fpm_regression"}),
+            serde_json::json!({"speculation": {"kind": "mtp", "params": {"num_speculative_tokens": 0}}}),
+            serde_json::json!({"speculation": {"kind": "mtp", "params": {"num_speculative_tokens": 6}}}),
+        ] {
+            let mut request = serde_json::json!({
+                "fallback_policy": "allow",
+                "speculation": {"kind": "mtp", "params": {"num_speculative_tokens": 3}}
+            });
+            request
+                .as_object_mut()
+                .unwrap()
+                .extend(changes.as_object().unwrap().clone());
+            assert!(config(request).validate().is_err());
+        }
+        for field in ["expected_accepted_tokens", "seed"] {
+            let mut request = serde_json::json!({
+                "kind": "mtp", "params": {"num_speculative_tokens": 3}
+            });
+            request["params"][field] = serde_json::json!(1);
+            assert!(serde_json::from_value::<ForwardPassSpeculationConfig>(request).is_err());
         }
     }
 

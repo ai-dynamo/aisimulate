@@ -32,6 +32,47 @@ def _workload(**overrides):
     }
 
 
+@pytest.mark.parametrize("role", ["agg", "prefill", "decode"])
+@pytest.mark.parametrize("mode", ["fpm_interpolation", "fpm_regression"])
+@pytest.mark.parametrize("role_override", [False, True])
+def test_mtp_search_rejects_non_op_level_estimator_selection(role, mode, role_override):
+    controls = (
+        {"role_estimator_controls": {role: {"estimation_mode": mode}}} if role_override else {"estimation_mode": mode}
+    )
+    with pytest.raises(ValidationError, match="mtp speculation requires op_level timing"):
+        SearchSpace.model_validate(
+            _search_space(
+                deployment_mode=["agg"] if role == "agg" else ["disagg"],
+                speculation={"kind": "mtp", "num_speculative_tokens": 3, "expected_accepted_tokens": 1.99},
+                **controls,
+            )
+        )
+
+
+@pytest.mark.parametrize("role", ["agg", "prefill", "decode"])
+def test_mtp_search_rejects_custom_timing_that_omits_draft_cost(role):
+    with pytest.raises(ValidationError, match="mtp speculation requires default op_level timing"):
+        SearchSpace.model_validate(
+            _search_space(
+                deployment_mode=["agg"] if role == "agg" else ["disagg"],
+                speculation={"kind": "mtp", "num_speculative_tokens": 3, "expected_accepted_tokens": 1.99},
+                **{f"{role}_timing_model": {"type": "constant", "latency_ms": 1.0}},
+            )
+        )
+
+
+def test_ngram_search_retains_existing_custom_timing_contract():
+    timing = {"type": "constant", "latency_ms": 1.0}
+    config = SearchSpace.model_validate(
+        _search_space(
+            deployment_mode=["agg"],
+            speculation={"kind": "ngram", "num_speculative_tokens": 3, "acceptance_rates": [1.0, 0.99, 0.0]},
+            agg_timing_model=timing,
+        )
+    )
+    assert config.agg_timing_model == timing
+
+
 def test_min_gpus_requires_sla_and_rejects_pareto_use():
     with pytest.raises(ValidationError, match="SLA bound"):
         OptimizationGoal(target="min_gpus")

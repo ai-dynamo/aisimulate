@@ -176,7 +176,7 @@ def test_factory_is_pickleable_and_advertises_engine_only_capabilities():
     assert capabilities.supported_agentic_topologies == ("agg", "disagg")
     assert capabilities.supported_agentic_backends == ("vllm", "sglang")
     assert not capabilities.supports_agentic_host_offload
-    assert not capabilities.supports_agentic_speculative_decoding
+    assert capabilities.supports_agentic_speculative_decoding
     assert capabilities.agentic_qualification == "functional_only"
 
 
@@ -187,8 +187,8 @@ def test_factory_is_pickleable_and_advertises_engine_only_capabilities():
     ("unsupported", "message"),
     [
         ({"native_host_offload": {"num_host_blocks": 8}}, "HBM-only"),
-        ({"aic_nextn": 1}, "speculative decoding disabled"),
-        ({"nextn": 1}, "speculative decoding disabled"),
+        ({"speculation": {"kind": "ngram", "num_speculative_tokens": 1, "acceptance_rates": [1.0]}}, "only MTP"),
+        ({"speculation": {"kind": "eagle3"}}, "only MTP"),
     ],
 )
 def test_agentic_capabilities_reject_unqualified_memory_and_decode_modes(
@@ -823,6 +823,12 @@ def test_runner_materializes_aic_capacity_before_native_execution(monkeypatch):
         return 321
 
     monkeypatch.setattr(aic, "estimate_num_gpu_blocks", estimate)
+    # The fake target's capacity and speculative provenance are both fixtures;
+    # pre-execution metadata must not look up this test-only model remotely.
+    monkeypatch.setattr(
+        "aisimulate_core.sdk.models.helpers._get_model_info",
+        lambda model: {"architecture": "LlamaForCausalLM"},
+    )
     deployment = BackendDeploymentSpec(
         deployment_mode="agg",
         backend="vllm",

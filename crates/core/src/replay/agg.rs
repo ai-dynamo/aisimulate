@@ -606,6 +606,10 @@ where
         self.apply_engine_observations(engine_events, KvIngestBoundary::PassEnd)?;
         self.traffic
             .on_accept_length_sample(accept_length_output_tokens, accept_length_decode_forwards);
+        if self.admission.includes_measurement_decode_pass(self.now_ms) {
+            self.collector
+                .on_decode_acceptance(accept_length_output_tokens, accept_length_decode_forwards);
+        }
         for signal in output_signals {
             self.process_output_signal(signal)?;
         }

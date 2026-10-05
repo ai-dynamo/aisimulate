@@ -705,6 +705,7 @@ pub fn rebuild_replay_report_literals(
             kv_eviction_policy: report.kv_eviction_policy,
             kv_eviction_assumption: report.kv_eviction_assumption,
             committed_prefill_tokens: report.committed_prefill_tokens,
+            speculative_acceptance: report.speculative_acceptance,
             g3_offload: report.g3_offload,
             g2_domains: report.g2_domains,
             request_counts: report.request_counts,
