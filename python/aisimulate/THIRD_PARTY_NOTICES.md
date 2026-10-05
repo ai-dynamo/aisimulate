@@ -100,12 +100,13 @@ this adapter. The corpus and new contract tests are original project content.
 is modified code adapted from `components/src/dynamo/vllm/instrumented_scheduler.py`
 in https://github.com/ai-dynamo/dynamo/tree/54960177085413259859c88bd34ed0734d4c2ea9
 (benchmark state machine on the native scheduler). Its prefix-cache real-seed staging
-(seed shot, untimed warm shot, validated measured shot) is ported from the same file as
-shipped in ai-dynamo 1.5.0.dev20260917 inside the image
+(seed shot, untimed warm shot, validated measured shot; `_bench_realseed_stage_point` /
+`_bench_realseed_pending_step`) is ported from the same path at
+https://github.com/ai-dynamo/dynamo/tree/99dae1f53e5a0534c274223ff9daa97f0b1fc2ea, the revision
+shipped as ai-dynamo 1.5.0.dev20260917 in
 `lmsysorg/sglang@sha256:b0d8718a4424bb22e448e04407ab3ce5f7399a4c5fc702d6fbe36c3772ec8862`
-(`/opt/sglang/lib/python3.12/site-packages/dynamo/vllm/instrumented_scheduler.py`, SHA256
-`76cdd291e92c3c41f259279c316bcdedcc6a9aa615ad61e29ca6997105950047`,
-`_bench_realseed_stage_point` / `_bench_realseed_pending_step`). Changes: GLM-5.3-Flash
+(file SHA256 `76cdd291e92c3c41f259279c316bcdedcc6a9aa615ad61e29ca6997105950047`, git blob
+`cbc2a12947ce18304721ac0549274fbeac51ddef`). Changes: GLM-5.3-Flash
 default serving state (prefix caching on, Mamba align mode), real text tokens, executed
 per-request geometries, 5+10 repetitions with native-FPM validation, and compact deferred
 evidence. Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.

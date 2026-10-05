@@ -1,15 +1,14 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-# Scheduler integration adapted from ai-dynamo/dynamo at
-# 54960177085413259859c88bd34ed0734d4c2ea9, components/src/dynamo/vllm/instrumented_scheduler.py
-# (InstrumentedScheduler benchmark state machine, injected requests scheduled by the
-# parent vLLM scheduler). The prefix-cache real-seed staging (seed shot, untimed
-# warm shot, validated measured shot) is ported from ai-dynamo/dynamo
-# 1.5.0.dev20260917 (as shipped in lmsysorg/sglang@sha256:b0d8718a...),
-# components/src/dynamo/vllm/instrumented_scheduler.py
-# (_bench_realseed_stage_point / _bench_realseed_pending_step). Apache-2.0.
-# Modified: GLM-5.3-Flash default-serving hybrid state (prefix caching on, Mamba
-# "align" mode), real text tokens, repeated measurements and compact deferred evidence.
+# Modified code derived from ai-dynamo/dynamo (Apache-2.0, https://github.com/ai-dynamo/dynamo),
+# components/src/dynamo/vllm/instrumented_scheduler.py at two immutable revisions:
+# - 54960177085413259859c88bd34ed0734d4c2ea9: InstrumentedScheduler benchmark state machine
+#   (requests injected into and scheduled by the parent vLLM scheduler);
+# - 99dae1f53e5a0534c274223ff9daa97f0b1fc2ea (shipped as ai-dynamo 1.5.0.dev20260917): prefix-cache
+#   real-seed staging (_bench_realseed_stage_point / _bench_realseed_pending_step: seed shot,
+#   untimed warm shot, validated measured shot), ported onto the 54960177 overlay.
+# Modified: GLM-5.3-Flash default-serving hybrid state (prefix caching on, Mamba "align" mode),
+# real text tokens, repeated measurements and compact deferred evidence. Upstream license: LICENSE.
 """GLM-5.3-Flash native FPM producer on the default serving configuration.
 
 Timing is the unchanged Dynamo ``InstrumentedScheduler`` FPM ``wall_time``:
@@ -56,7 +55,7 @@ from vllm.tokenizers import get_tokenizer
 from vllm.v1.request import Request
 
 DYNAMO_SHA = "54960177085413259859c88bd34ed0734d4c2ea9"
-REAL_SEED_SOURCE = "ai-dynamo/dynamo 1.5.0.dev20260917 instrumented_scheduler._bench_realseed_*"
+REAL_SEED_SOURCE = "ai-dynamo/dynamo@99dae1f53e5a0534c274223ff9daa97f0b1fc2ea instrumented_scheduler._bench_realseed_*"
 VLLM_SHA = "ced6857afa0ea7b2e3f0846a62e1394e90f15607"
 MODEL_SHAS = {
     "eb9eb208eb0d988989d07a6a12d0fdeb5f52574a",
@@ -413,7 +412,7 @@ class Glm53FlashPrefixSeedScheduler(native.InstrumentedScheduler):
             return None
         self._bench_cleanup_requests()
         if self._glm_stage == "seed":
-            self._glm_seed["completed_monotonic"] = time.monotonic()
+            self._glm_seed["completed_unix_ns"] = time.time_ns()
             self._glm_start_repetition()
         elif self._glm_stage == "measure":
             if self._glm_finish_repetition():
@@ -426,6 +425,7 @@ class Glm53FlashPrefixSeedScheduler(native.InstrumentedScheduler):
         return 131 * slot + 17 * point.benchmark_id
 
     def _glm_begin_point(self, point):
+        self._glm_point_order = getattr(self, "_glm_point_order", -1) + 1
         self._glm_point = point
         self._bench_current_point = None
         self._bench_current_fpms = []
@@ -449,7 +449,12 @@ class Glm53FlashPrefixSeedScheduler(native.InstrumentedScheduler):
             reason = DECODE_REAL_KV_REASON
         if reason is not None and reason not in point.sample_reasons:
             point.sample_reasons.append(reason)
-        self._glm_seed = {"lengths": list(seed_lengths), "specs": [], "request_ids": []}
+        self._glm_seed = {
+            "lengths": list(seed_lengths),
+            "specs": [],
+            "request_ids": [],
+            "started_unix_ns": time.time_ns(),
+        }
         slots = [slot for slot, length in enumerate(seed_lengths) if length > 0]
         if not slots:
             self._glm_start_repetition()
@@ -493,7 +498,13 @@ class Glm53FlashPrefixSeedScheduler(native.InstrumentedScheduler):
         self._bench_expected_fpms = 2 if point.point_type == "decode" else 1
         self._glm_rep_dispatches = []
         self._glm_rep_scheduled = []
-        self._glm_rep_record = {"attempt": attempt, "prompt_specs": specs, "salts": salts}
+        self._glm_rep_record = {
+            "attempt": attempt,
+            "prompt_specs": specs,
+            "salts": salts,
+            "started_unix_ns": time.time_ns(),
+            "point_order": self._glm_point_order,
+        }
         self._glm_stage = "measure"
         prompts = [build_prompt(self._glm_tokens, spec) for spec in specs]
         self._glm_rep_record["request_ids"] = self._glm_inject(
@@ -527,6 +538,7 @@ class Glm53FlashPrefixSeedScheduler(native.InstrumentedScheduler):
             dispatches.append(None if stats is None else asdict(stats))
         record = {
             **self._glm_rep_record,
+            "ended_unix_ns": time.time_ns(),
             "fpms": fpms,
             "scheduled_token_counts": list(self._glm_rep_scheduled),
             "dispatches": dispatches,
