@@ -6,5 +6,5 @@
  "version": "0.30.0",
  "sm": "sm89",
  "note": "Ada: vLLM 0.30.0 has no sparse (DSA) MLA attention backend below SM90 \u2014 DeepSeek-V3.2 fails at attention-backend selection with kv auto AND fp8 (findings sm89_vllm_0300_probe_2026_10_04); no serving record can exist",
- "graded_at": "2026-10-05T03:28:24"
+ "graded_at": "2026-10-05T05:10:40"
 }

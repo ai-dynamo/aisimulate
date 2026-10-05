@@ -24,7 +24,7 @@
   "prefix_caching": false,
   "raw_file": null,
   "candidates": 1,
-  "exec_fingerprint": "a2460ba196fc",
+  "exec_fingerprint": "38bbc0c7532e",
   "evidence_status": "current"
  },
  "collector_backends": [
@@ -33,6 +33,7 @@
  ],
  "serving_backends": [
   "cublas",
+  "fa2",
   "triton",
   "triton_fused_moe"
  ],
@@ -41,7 +42,7 @@
  "role_counts": {
   "attention": {
    "collector": 5,
-   "serving": 5,
+   "serving": 7,
    "matched": 5
   }
  },

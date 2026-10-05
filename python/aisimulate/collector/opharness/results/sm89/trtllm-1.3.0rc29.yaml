@@ -4,9 +4,9 @@ _meta:
   version: 1.3.0rc29
   verdicts: pass = plain `cli generate` output boots+runs; pass+custom = boots with facts-derived extra generate args; fail = root-caused (see results/findings.yaml)
   summary:
-    pass: 54
+    pass: 55
     pass+custom: 0
-    fail: 70
+    fail: 69
   golden_facts_not_applied: 0
 results:
   MiniMaxAI/MiniMax-M2:
@@ -25,9 +25,12 @@ results:
     error: 'ValueError: no MoE implementation can serve this layer. MoE resolution: none (via failed, requested CUTLASS, env 1f8017956ed914ab); turned down: CutlassFusedMoE=sm_unsupported Each candidate''s
       reason:'
   MiniMaxAI/MiniMax-M3:
-    verdict: fail
-    cause: framework gap
-    error: 'ValueError: MiniMaxM3SparseRuntimeBackend.forward requires k, v, k_cache, v_cache, idx_k_cache, and out_cache_loc to be supplied alongside idx_q / idx_k / m3_metadata.'
+    verdict: pass
+    evidence: current
+    attention: fmha_cutlassF_bf16_aligned_64x128_rf_sm80
+    moe: UnquantizedFusedMoE
+    kv_allocated: null
+    topology: tp1
   MiniMaxAI/MiniMax-M3-MXFP8:
     verdict: fail
     cause: 'platform floor (trtllm MoE: no implementation for this quant on this SM)'

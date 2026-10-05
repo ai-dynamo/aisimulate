@@ -65,3 +65,19 @@ bundles:
     console_tails: 440
     full_reports: 31
     captures: 33
+- campaign: 2026-10-05_sm89_m3
+  created: '2026-10-05T05:20:31'
+  harness_commit: 3f4cd4b1
+  bundle: 2026-10-05_sm89_m3.cc609110bd5b.tar.gz
+  sha256: cc609110bd5b7068fa34fbd1bd336eb9110d6a1b460b1c4c97edc71d1cd3eacf
+  size_bytes: 3752477
+  location: scratch NFS debug/opharness/sm89/
+  counts:
+    records: 1
+    plans: 30
+    raw: 667
+    fingerprints: 680
+    rendered_engine_configs: 456
+    console_tails: 446
+    full_reports: 35
+    captures: 35

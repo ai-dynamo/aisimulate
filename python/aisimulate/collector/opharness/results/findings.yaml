@@ -2699,9 +2699,11 @@ findings:
       MultipleOf(16), MiniMaxM3SparseBackend / MiniMaxM3IndexerBackend accept exactly [128] (models/minimax_m3/common/sparse_attention.py).
       A/B on the L40: --block-size 128 boots (facts/ab_vllm_m3/bs128), 64 fails the same way. Generator fact added: models.yaml
       profile `minimax-m3` with vllm block-size 128 (platform-neutral; the sm90 M3 vllm pass rests on the same all-sparse
-      dummy and the real 60-layer checkpoint has the dense head). sglang: the 4-layer dummy stays capacity-bound on 44 GiB
-      (no KV room after weights) - unchanged verdict class. NVFP4 / MXFP8 M3 variants: platform floors on sm89 as before (trtllm
-      Marlin: ''does not support swiglu_gptoss_style''; sglang MXFP8 dense GEMM needs Blackwell).'
+      dummy and the real 60-layer checkpoint has the dense head). sglang: with the 4-layer dummy MiniMax-M3 boots on sm89
+      as well (pass+custom with the sm90 `cuda_graph_backend_prefill=breakable` customization; the bare default fails the
+      same mixed-chunk-prefill assertion as on sm90, facts/ab_sgl_m3/bare.json) - the earlier sm89 ''capacity'' verdict was
+      the 2-layer dummy''s. NVFP4 / MXFP8 M3 variants: platform floors on sm89 as before (trtllm Marlin: ''does not support
+      swiglu_gptoss_style''; sglang MXFP8 dense GEMM needs Blackwell).'
     applies_to:
     - platform:sm89
     - platform:sm90

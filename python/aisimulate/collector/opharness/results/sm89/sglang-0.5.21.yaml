@@ -5,8 +5,8 @@ _meta:
   verdicts: pass = plain `cli generate` output boots+runs; pass+custom = boots with facts-derived extra generate args; fail = root-caused (see results/findings.yaml)
   summary:
     pass: 65
-    pass+custom: 0
-    fail: 59
+    pass+custom: 1
+    fail: 58
   golden_facts_not_applied: 0
 results:
   MiniMaxAI/MiniMax-M2:
@@ -31,10 +31,13 @@ results:
     kv_allocated: auto
     topology: tp1
   MiniMaxAI/MiniMax-M3:
-    verdict: fail
-    cause: capacity (weights + state leave no KV room on this GPU)
-    error: 'ValueError: Loaded weights leave no GPU memory for the KV cache under --mem-fraction-static=0.7808999999999999. Raise --mem-fraction-static above 0.781 (minimum viable = 1 - available/pre =
-      0.7801). I'
+    verdict: pass+custom
+    extra_args: --generator-set params.agg.cuda_graph_backend_prefill=breakable
+    evidence: current
+    attention: MiniMaxHybridAttnBackend
+    moe: UnquantizedFusedMoE->triton_fused_moe
+    kv_allocated: auto
+    topology: tp1
   MiniMaxAI/MiniMax-M3-MXFP8:
     verdict: fail
     cause: platform floor (needs Blackwell)

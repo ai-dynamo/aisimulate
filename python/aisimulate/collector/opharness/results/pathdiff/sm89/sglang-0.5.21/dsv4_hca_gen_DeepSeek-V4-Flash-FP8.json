@@ -6,5 +6,5 @@
  "version": "0.5.21",
  "sm": "sm89",
  "note": "Ada: DeepSeek-V4 sparse decode needs DeepGEMM attention kernels for arch_major 9/10/12 only (sglang 0.5.21: attention.hpp:496 assertion at CUDA-graph capture); no serving record can exist",
- "graded_at": "2026-10-05T03:28:28"
+ "graded_at": "2026-10-05T05:19:47"
 }

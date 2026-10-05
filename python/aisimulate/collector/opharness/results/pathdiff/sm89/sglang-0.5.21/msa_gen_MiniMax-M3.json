@@ -1,10 +1,52 @@
 {
- "verdict": "platform-floor",
- "gate_name": "msa_gen_MiniMax-M3",
+ "verdict": "aligned",
  "repo": "MiniMaxAI/MiniMax-M3",
  "framework": "sglang",
  "version": "0.5.21",
- "sm": "sm89",
- "note": "capacity: no faithful dummy cut of this checkpoint fits one 44 GiB L40 under sglang 0.5.21 (CUDA OOM at load / no KV room after weights); no serving record can exist on this box (findings sm89_*_probe_2026_10_04)",
- "graded_at": "2026-10-05T03:28:27"
+ "gate_name": "msa_gen_MiniMax-M3",
+ "target_roles": [
+  "attention",
+  "dsa_indexer"
+ ],
+ "phase": "decode",
+ "phase_scoped": true,
+ "kv_dtype": "auto",
+ "op_hint": "attn|sparse|msa|topk|index|score|merge|block",
+ "capture_file": "facts/pathdiff/opcov_sgl_msa_gen@0.5.21.json",
+ "capture_sha256": "e47c57b4fe0592ae",
+ "capture_env": null,
+ "capture_run_error": null,
+ "serving_record": {
+  "id": "bcc378df07d5",
+  "tp": 1,
+  "kv_cache_dtype": "auto",
+  "isl": 4096,
+  "prefix_caching": false,
+  "raw_file": null,
+  "candidates": 1,
+  "exec_fingerprint": "3c72cb58c1d5",
+  "evidence_status": "current"
+ },
+ "collector_backends": [
+  "cublas",
+  "torch",
+  "triton"
+ ],
+ "serving_backends": [
+  "cublas",
+  "flashinfer",
+  "torch",
+  "triton",
+  "triton_fused_moe"
+ ],
+ "missing_roles": [],
+ "aux_collector_only_roles": [],
+ "role_counts": {
+  "attention": {
+   "collector": 5,
+   "serving": 7,
+   "matched": 5
+  }
+ },
+ "evidence": "archive/evidence/pathdiff/<framework-version>/<gate>.json in the probe workspace (full kernel lists)"
 }

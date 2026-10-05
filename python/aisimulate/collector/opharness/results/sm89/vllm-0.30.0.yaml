@@ -33,15 +33,15 @@ results:
   MiniMaxAI/MiniMax-M3:
     verdict: pass
     evidence: current
-    attention: MiniMaxM3SparseTritonImpl
+    attention: MiniMaxM3Attention
     moe: UnquantizedFusedMoE->triton_fused_moe
     kv_allocated: auto
     topology: tp1
   MiniMaxAI/MiniMax-M3-MXFP8:
     verdict: pass
     evidence: current
-    attention: MiniMaxM3SparseTritonImpl
-    moe: ModelOptMxFp8FusedMoE->marlin
+    attention: MiniMaxM3Attention
+    moe: ModelOptMxFp8FusedMoE->fa2/marlin
     kv_allocated: auto
     topology: tp1
   Qwen/Qwen1.5-MoE-A2.7B:
@@ -520,8 +520,8 @@ results:
   nvidia/MiniMax-M3-NVFP4:
     verdict: pass
     evidence: current
-    attention: MiniMaxM3SparseTritonImpl
-    moe: ModelOptNvFp4FusedMoE->marlin
+    attention: MiniMaxM3Attention
+    moe: ModelOptNvFp4FusedMoE->fa2/marlin
     kv_allocated: auto
     topology: tp1
   nvidia/Muse-Glimmer-30B-NVFP4:
