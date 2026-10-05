@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import importlib.metadata
+import inspect
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass
@@ -25,6 +26,18 @@ class RecommendationOutputCallbacks:
 
     on_candidate: Callable[[CandidateRecord], None] | None = None
     on_round: Callable[[int, list[Candidate]], None] | None = None
+
+
+@dataclass(frozen=True)
+class RecommendationOutputContext:
+    """Run-level facts a live output adapter may need to turn candidates into artifacts.
+
+    ``workload`` is the validated Sweeper workload of the recommendation. The context is
+    only passed to ``subscribe`` when its signature accepts a ``context`` argument (or
+    ``**kwargs``), so adapters written as ``subscribe(config)`` keep working unchanged.
+    """
+
+    workload: Any
 
 
 @runtime_checkable
@@ -116,6 +129,16 @@ def resolve_output_adapters(
     return resolved
 
 
+def _subscribe_accepts_context(subscribe: Callable[..., Any]) -> bool:
+    try:
+        parameters = inspect.signature(subscribe).parameters.values()
+    except (TypeError, ValueError):
+        return False
+    return any(
+        parameter.name == "context" or parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in parameters
+    )
+
+
 def _dispatch_callback(name: str, event: str, callback: Callable[..., None], *args: Any) -> None:
     try:
         callback(*args)
@@ -132,6 +155,7 @@ def resolve_output_callbacks(
     *,
     injected: Mapping[str, RecommendationOutputAdapter] | None = None,
     entry_points: Iterable[importlib.metadata.EntryPoint] | None = None,
+    context: RecommendationOutputContext | None = None,
 ) -> RecommendationOutputCallbacks:
     """Resolve live subscriptions from fresh worker-local adapter instances."""
 
@@ -143,7 +167,10 @@ def resolve_output_callbacks(
         if subscribe is None:
             continue
         try:
-            callbacks = subscribe(configs[name])
+            if context is not None and _subscribe_accepts_context(subscribe):
+                callbacks = subscribe(configs[name], context=context)
+            else:
+                callbacks = subscribe(configs[name])
         except KeyboardInterrupt:
             raise
         except Exception as exc:
@@ -213,6 +240,7 @@ __all__ = [
     "OutputAdapterResolutionError",
     "RecommendationOutputAdapter",
     "RecommendationOutputCallbacks",
+    "RecommendationOutputContext",
     "resolve_output_adapters",
     "resolve_output_callbacks",
     "validate_output_adapter",

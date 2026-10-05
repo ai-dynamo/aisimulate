@@ -22,7 +22,7 @@ from .config_adapter import (
     RecommendationAdapterContext,
     SimulationConfigAdapter,
 )
-from .output_adapter import RecommendationOutputAdapter, resolve_output_callbacks
+from .output_adapter import RecommendationOutputAdapter, RecommendationOutputContext, resolve_output_callbacks
 from .resources import GuardedRunnerFactory, discover_host, resolve_budget
 from .sweeper.afd_perfmodel import AFDPerformanceModel
 from .sweeper.config import SmartSearchConfig
@@ -130,7 +130,11 @@ def _run_recommendation(
         ),
         afd_performance_model=afd_performance_model,
     )
-    output_callbacks = resolve_output_callbacks(output_configs or {}, injected=output_adapters)
+    output_callbacks = resolve_output_callbacks(
+        output_configs or {},
+        injected=output_adapters,
+        context=RecommendationOutputContext(workload=smart.workload),
+    )
     return sweeper.run(
         smart,
         top_n=None,
