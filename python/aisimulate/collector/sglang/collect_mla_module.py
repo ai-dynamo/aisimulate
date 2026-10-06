@@ -250,6 +250,7 @@ def _initialize_dsa_history(model_runner, attention_module, forward_batch, histo
 
     from sglang.srt.layers.attention.dsa.triton_kernel import act_quant
 
+    forward_context_type, forward_context = _import_sglang_forward_context()
     pool = model_runner.token_to_kv_pool
     locations = (
         model_runner.req_to_token_pool.req_to_token[forward_batch.req_pool_indices.long(), :history_length]
@@ -277,13 +278,16 @@ def _initialize_dsa_history(model_runner, attention_module, forward_batch, histo
             random_activations(slots.numel(), 1, attention_module.kv_lora_rank),
             random_activations(slots.numel(), 1, attention_module.qk_rope_head_dim),
         )
-        attention_module.indexer._store_index_k_cache(
-            forward_batch,
-            attention_module.layer_id,
-            random_activations(slots.numel(), pool.index_head_dim),
-            act_quant=act_quant,
-            out_cache_loc=slots,
-        )
+        # The native fused store obtains its pool from ForwardContext, just
+        # as it does during serving Indexer.forward (dsa_indexer.py:1286).
+        with forward_context(forward_context_type(attn_backend=model_runner.attn_backend)):
+            attention_module.indexer._store_index_k_cache(
+                forward_batch,
+                attention_module.layer_id,
+                random_activations(slots.numel(), pool.index_head_dim),
+                act_quant=act_quant,
+                out_cache_loc=slots,
+            )
 
 
 def _resolve_local_model_path(model_id: str) -> str:

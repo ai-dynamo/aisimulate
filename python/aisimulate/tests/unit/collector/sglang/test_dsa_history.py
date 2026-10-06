@@ -5,6 +5,7 @@
 
 import ast
 import sys
+from contextlib import contextmanager
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
@@ -14,10 +15,10 @@ pytestmark = pytest.mark.unit
 SOURCE = Path(__file__).resolve().parents[4] / "collector/sglang/collect_mla_module.py"
 
 
-def load_initializer(torch):
+def load_initializer(torch, context_factory=None):
     tree = ast.parse(SOURCE.read_text())
     node = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "_initialize_dsa_history")
-    ns = {"torch": torch}
+    ns = {"torch": torch, "_import_sglang_forward_context": context_factory}
     exec(compile(ast.Module(body=[node], type_ignores=[]), str(SOURCE), "exec"), ns)
     return ns[node.name]
 
@@ -28,7 +29,17 @@ def test_native_writers_cover_each_history_slot_and_no_new_token(monkeypatch, le
     quant_module = ModuleType("sglang.srt.layers.attention.dsa.triton_kernel")
     quant_module.act_quant = object()
     monkeypatch.setitem(sys.modules, quant_module.__name__, quant_module)
-    initialize = load_initializer(torch)
+    active_context = []
+
+    @contextmanager
+    def native_context(context):
+        active_context.append(context)
+        try:
+            yield
+        finally:
+            active_context.pop()
+
+    initialize = load_initializer(torch, lambda: (SimpleNamespace, native_context))
     batch = SimpleNamespace(req_pool_indices=torch.tensor([2, 0]), batch_size=2)
     table = torch.arange(3 * (length + 1)).reshape(3, length + 1)
     expected = table[[2, 0], :length].flatten()
@@ -45,6 +56,7 @@ def test_native_writers_cover_each_history_slot_and_no_new_token(monkeypatch, le
         mla_calls.append((slots.clone(), latent.clone(), rope.clone()))
 
     def index_writer(actual_batch, layer_id, key, *, act_quant, out_cache_loc):
+        assert active_context[-1].attn_backend is runner.attn_backend
         assert actual_batch is batch and layer_id == 1
         assert act_quant is quant_module.act_quant
         assert key.shape == (len(out_cache_loc), 128)
@@ -53,7 +65,9 @@ def test_native_writers_cover_each_history_slot_and_no_new_token(monkeypatch, le
         index_calls.append((out_cache_loc.clone(), key.clone()))
 
     pool = SimpleNamespace(index_head_dim=128, set_mla_kv_buffer=mla_writer)
-    runner = SimpleNamespace(token_to_kv_pool=pool, req_to_token_pool=SimpleNamespace(req_to_token=table))
+    runner = SimpleNamespace(
+        token_to_kv_pool=pool, req_to_token_pool=SimpleNamespace(req_to_token=table), attn_backend=object()
+    )
     attention = SimpleNamespace(
         attn_mqa=layer,
         indexer=SimpleNamespace(_store_index_k_cache=index_writer),
@@ -63,6 +77,7 @@ def test_native_writers_cover_each_history_slot_and_no_new_token(monkeypatch, le
     )
     rng_before = torch.random.get_rng_state().clone()
     initialize(runner, attention, batch, length)
+    assert not active_context
     assert torch.equal(torch.cat([c[0] for c in mla_calls]), expected)
     assert torch.equal(torch.cat([c[0] for c in index_calls]), expected)
     assert max(len(c[0]) for c in index_calls) <= 8192
