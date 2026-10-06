@@ -454,7 +454,17 @@ def test_profile_resource_admission_requires_supervision_and_one_worker(tmp_path
     from aisimulate.recommend import recommendation_to_sweeper
 
     trace = tmp_path / "play.json"
-    trace.write_text(json.dumps({"id": "play", "requests": [{"t": 0, "type": "s", "in": 8, "out": 1}]}))
+    trace.write_text(
+        json.dumps(
+            {
+                "id": "play",
+                "block_size": 64,
+                "hash_id_scope": "local",
+                "models": ["model"],
+                "requests": [{"t": 0, "type": "s", "model": "model", "in": 8, "out": 1}],
+            }
+        )
+    )
     raw = _config()
     raw["traffic"] = {
         "source": {"type": "trace", "format": "weka", "paths": [str(trace)]},
@@ -510,10 +520,21 @@ def test_profile_keeps_initial_trace_materialization_guards(tmp_path, host, monk
     trace = tmp_path / "oversized.jsonl"
     if oversized == "storage":
         with trace.open("wb") as stream:
-            stream.truncate(128 * resources.MIB)
+            stream.truncate(4 * 1024**3)  # Sparse scalar sentinel; refused without reading.
         monkeypatch.setattr(resources.ijson, "parse", lambda *a, **kw: pytest.fail("must refuse before parsing"))
     else:
-        trace.write_text(json.dumps({"in": 10**12, "out": 1}) + "\n")
+        trace.write_text(
+            json.dumps(
+                {
+                    "id": "play",
+                    "block_size": 64,
+                    "hash_id_scope": "local",
+                    "models": ["model"],
+                    "requests": [{"t": 0, "type": "s", "model": "model", "in": 10**12, "out": 1}],
+                }
+            )
+            + "\n"
+        )
     plan = build_plan(
         {"trace_path": str(trace), "trace_format": "weka", "agentic_profile": {}}, stack="engine", host=host
     )

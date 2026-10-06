@@ -223,6 +223,8 @@ shared:
     owners: [replay, sweeper, maintainers]
   - glob: tests/test_host_resources.py
     owners: [replay, sweeper, maintainers]
+  - glob: tests/test_weka_host_resources.py
+    owners: [replay, sweeper, maintainers]
   - glob: docs/local-resources.md
     owners: [replay, sweeper, maintainers]
   - glob: tests/test_power_diagnostics.py
