@@ -2,7 +2,9 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import json
-from dataclasses import dataclass, replace
+from copy import deepcopy
+from dataclasses import asdict, dataclass, field, replace
+from pathlib import Path
 from types import SimpleNamespace
 
 import pyarrow as pa
@@ -16,7 +18,11 @@ from scripts.fpm_accuracy.models import aic_predictors
 from scripts.fpm_accuracy.models.aic_config import map_worker_config_to_aic
 from scripts.fpm_accuracy.models.aic_fpm_database import prepare_aic_fpm_database
 from scripts.fpm_accuracy.models.fpt_predictor import ForwardPassTimePredictor, Prediction
-from scripts.fpm_accuracy.models.worker_regression import infer_worker_roles, regression_buckets
+from scripts.fpm_accuracy.models.worker_regression import (
+    WorkerRegressionPredictor,
+    infer_worker_roles,
+    regression_buckets,
+)
 from scripts.fpm_accuracy.types.forward_pass import ForwardPassIteration, RequestMetrics
 from scripts.fpm_accuracy.types.worker_config import WorkerConfig
 from scripts.notifications.accuracy_digest import decode_points
@@ -198,6 +204,11 @@ def test_dcp_keeps_regression_and_reports_native_fpm_as_unsupported(tmp_path, mo
     class Config:
         worker_type: str
         estimation_mode: str = "auto"
+        fallback_policy: str = "deny"
+        estimator_config: dict = field(default_factory=lambda: {"fpm_regression": {"sampling": {}, "fit": {}}})
+
+        def to_dict(self):
+            return asdict(self)
 
         @classmethod
         def from_legacy_engine_config(cls, config, worker_type, options):
@@ -211,17 +222,19 @@ def test_dcp_keeps_regression_and_reports_native_fpm_as_unsupported(tmp_path, mo
             self.count = 0
 
         @classmethod
+        def normalize_config(cls, config):
+            return config.to_dict()
+
+        @classmethod
         def best_available(cls, config):
             assert canonical
-            assert config.estimation_mode == "fpm_regression"
+            assert config["estimation_mode"] == "fpm_regression"
             requests.append(config)
-            return cls(config.worker_type)
+            return cls(config["worker_type"])
 
         @classmethod
         def from_regression(cls, worker_type, options):
-            assert not canonical
-            requests.append(worker_type)
-            return cls(worker_type)
+            pytest.fail("older wheels must not silently run a different regression policy")
 
         @classmethod
         def from_native(cls, *args):
@@ -252,13 +265,13 @@ def test_dcp_keeps_regression_and_reports_native_fpm_as_unsupported(tmp_path, mo
     assert warmup["status"] == "unsupported_predictor"
     assert warmup["metrics"]["all"]["measured_count"] == warmup["metrics"]["all"]["unavailable_count"] == 12
     assert warmup["metrics"]["all"]["error_count"] == 0
-    assert result["results"]["regression"]["status"] == "evaluated"
+    assert result["results"]["regression"]["status"] == ("evaluated" if canonical else "unsupported_predictor")
     regression = result["results"]["regression"]["metrics"]["all"]
     assert regression["measured_count"] == 12
-    assert regression["predicted_count"] == 7
-    assert regression["unavailable_count"] == 5
+    assert regression["predicted_count"] == (7 if canonical else 0)
+    assert regression["unavailable_count"] == (5 if canonical else 12)
     assert regression["error_count"] == regression["tuning_error_count"] == 0
-    assert len(requests) == 1
+    assert len(requests) == int(canonical)
     assert case.configuration.worker_config_record.config.parallelism.decode_context_parallel_size == 8
 
 
@@ -356,26 +369,88 @@ def test_legacy_regression_is_unavailable_without_changing_measurement_membershi
     assert result["warmup"]["metrics"]["all"]["predicted_count"] == 12
 
 
+@pytest.fixture
+def recommended_regression_config():
+    report = Path(__file__).resolve().parents[2] / "docs/fpm-lazy-gym-results.json"
+    return json.loads(report.read_text())["signed_lazy_estimator_config"]["fpm_regression"]
+
+
 @pytest.mark.parametrize("dcp", [1, 8])
-def test_real_regression_uses_canonical_identity_and_options(tmp_path, dcp):
-    pytest.importorskip("aisimulate_core.sdk")
+@pytest.mark.parametrize("role", ["prefill", "decode", "aggregated"])
+def test_real_regression_uses_recommended_gym_config_only(tmp_path, dcp, role, recommended_regression_config):
+    sdk = pytest.importorskip("aisimulate_core.sdk")
     from scripts.fpm_accuracy.models.fpt_predictor import PredictorContext
 
     case = _build_dataset(tmp_path, protocol_id=None, files=[], tp=8, dcp=dcp).measurement_case(CONFIGURATION_PATH)
     context = PredictorContext(
         worker=case.configuration.worker_config_record,
-        worker_role="decode",
-        options={"max_observations": 32, "min_observations": 6},
+        worker_role=role,
     )
     predictor = aic_predictors.AicRegressionPredictor.create(context)
     try:
         config = predictor.diagnostics()["provenance"]["config"]
         assert config["tp"] == 8
-        assert config["worker_type"] == "decode"
+        assert config["worker_type"] == role
         assert config["estimation_mode"] == "fpm_regression"
         assert config["fallback_policy"] == "deny"
-        assert config["estimator_config"]["fpm_regression"]["sampling"]["max_observations"] == 32
-        assert config["estimator_config"]["fpm_regression"]["min_observations"] == 6
+        actual = config["estimator_config"]["fpm_regression"]
+        expected = recommended_regression_config
+        assert {"axes": ["attention", "moe"], **actual["sampling"]} == expected["sampling"]
+        assert actual["min_observations"] == expected["min_observations"]
+        for key, value in expected["fit"].items():
+            assert actual["fit"][key] == value
+
+        shared = sdk.RustForwardPassPerfModel.normalize_config({**config, "estimator_config": {}})
+        shared_regression = shared["estimator_config"]["fpm_regression"]
+        assert shared_regression["sampling"]["bins_per_axis"] == [4, 4]
+        shared_linear = shared_regression["fit"].get("linear", {})
+        assert shared_linear.get("non_negative", True) is True
+        assert shared_linear.get("update_policy", {"kind": "always"}) == {"kind": "always"}
+    finally:
+        predictor.close()
+
+
+@pytest.mark.parametrize(
+    "grid_options,bins", [({}, [4, 1]), ({"bucket_count": 9}, [3, 3]), ({"bucket_shape": [2, 3]}, [2, 3])]
+)
+def test_real_regression_preserves_explicit_controls(case, grid_options, bins, recommended_regression_config):
+    pytest.importorskip("aisimulate_core.sdk")
+    from scripts.fpm_accuracy.models.fpt_predictor import PredictorContext
+
+    context = PredictorContext(
+        worker=case.configuration.worker_config_record,
+        worker_role="decode",
+        options={"max_observations": 32, "min_observations": 6, "regression_ridge_scale": 0.125, **grid_options},
+        engine_config_overrides={
+            "extra": {"estimator_config": json.dumps({"fpm_regression": {"fit": {"rebuild_interval": 128}}})}
+        },
+    )
+    predictor = aic_predictors.AicRegressionPredictor.create(context)
+    try:
+        config = predictor.diagnostics()["provenance"]["config"]["estimator_config"]["fpm_regression"]
+        assert {"axes": ["attention", "moe"], **config["sampling"]} == {
+            "axes": ["attention", "moe"],
+            "bins_per_axis": bins,
+            "max_observations": 32,
+        }
+        assert config["min_observations"] == 6
+        assert config["fit"]["linear"] == recommended_regression_config["fit"]["linear"]
+        assert config["fit"]["singular_ridge_scale"] == 0.125
+        assert config["fit"]["rebuild_interval"] == 128
+    finally:
+        predictor.close()
+
+
+def test_worker_regression_reports_resolved_native_grid(case):
+    pytest.importorskip("aisimulate_core.sdk")
+    from scripts.fpm_accuracy.evaluate import create_predictor
+    from scripts.fpm_accuracy.models.fpt_predictor import PredictorContext
+
+    roles = infer_worker_roles(item.iteration for item in case.observations)
+    context = PredictorContext(worker=case.configuration.worker_config_record, worker_role=case.worker_role)
+    predictor = WorkerRegressionPredictor(context, roles, create_predictor)
+    try:
+        assert predictor.diagnostics()["spatial_bucket_count"] == 4
     finally:
         predictor.close()
 
@@ -390,12 +465,18 @@ def test_predictor_uses_canonical_api_or_older_wheel_adapter(case, tmp_path, mon
     else:
         monkeypatch.setattr(aic_predictors, "_canonical_config_type", lambda: None)
     calls = []
+    normalizations = []
 
     class Model:
         @classmethod
+        def normalize_config(cls, config):
+            normalizations.append(config)
+            return config.to_dict()
+
+        @classmethod
         def best_available(cls, config):
             assert canonical
-            calls.append(config.to_dict())
+            calls.append(config.to_dict() if hasattr(config, "to_dict") else config)
             return cls()
 
         @classmethod
@@ -406,9 +487,7 @@ def test_predictor_uses_canonical_api_or_older_wheel_adapter(case, tmp_path, mon
 
         @classmethod
         def from_regression(cls, worker_type, options):
-            assert not canonical
-            calls.append((worker_type, options))
-            return cls()
+            pytest.fail("older wheels must not silently run a different regression policy")
 
         def regression_store_diagnostics(self):
             return []
@@ -432,9 +511,15 @@ def test_predictor_uses_canonical_api_or_older_wheel_adapter(case, tmp_path, mon
         fpm_artifact=object(),
     )
     cls = aic_predictors.AicFpmPredictor if mode == "fpm" else aic_predictors.AicRegressionPredictor
+    if mode == "regression" and not canonical:
+        with pytest.raises(DependencyError):
+            cls.create(context)
+        assert not calls and not normalizations
+        return
     predictor = cls.create(context)
     predictor.close()
     assert len(calls) == 1
+    assert len(normalizations) == int(mode == "regression")
     if canonical:
         assert calls[0]["worker_type"] == "decode"
         assert calls[0]["estimation_mode"] == ("fpm_interpolation" if mode == "fpm" else "fpm_regression")
@@ -442,6 +527,74 @@ def test_predictor_uses_canonical_api_or_older_wheel_adapter(case, tmp_path, mon
         assert calls[0]["estimator_config"]["fpm_regression"]["sampling"]["max_observations"] == 32
         if mode == "fpm":
             assert calls[0]["systems_paths"] == [str(tmp_path)]
+            regression = calls[0]["estimator_config"]["fpm_regression"]
+            assert regression["sampling"]["bins_per_axis"] == [4, 4]
+            linear = regression["fit"].get("linear", {})
+            assert linear.get("non_negative", True) is True
+            assert linear.get("update_policy", {"kind": "always"}) == {"kind": "always"}
+
+
+@pytest.mark.parametrize("support", ["missing", "reject", "ignore_grid", "ignore_linear"])
+def test_regression_never_falls_back_when_wheel_cannot_apply_gym_policy(case, monkeypatch, support):
+    @dataclass(frozen=True)
+    class Config:
+        worker_type: str
+        estimation_mode: str = "auto"
+        fallback_policy: str = "deny"
+        estimator_config: dict = field(default_factory=lambda: {"fpm_regression": {"sampling": {}, "fit": {}}})
+
+        @classmethod
+        def from_legacy_engine_config(cls, config, worker_type, options):
+            return cls(worker_type)
+
+        def to_dict(self):
+            return asdict(self)
+
+    class Model:
+        @staticmethod
+        def regression_store_diagnostics():
+            return []
+
+        @staticmethod
+        def normalize_config(config):
+            if support == "reject":
+                raise ValueError("unknown field linear")
+            result = deepcopy(config.to_dict())
+            regression = result["estimator_config"]["fpm_regression"]
+            if support == "ignore_grid":
+                regression["sampling"]["bins_per_axis"] = [4, 4]
+            elif support == "ignore_linear":
+                regression["fit"]["linear"] = {
+                    "feature_axes": ["attention", "moe"],
+                    "non_negative": True,
+                    "update_policy": {"kind": "always"},
+                }
+            return result
+
+        @staticmethod
+        def best_available(config):
+            pytest.fail("incompatible controls must be rejected before model construction")
+
+        @staticmethod
+        def from_regression(*args):
+            pytest.fail("legacy regression must not silently replace the recommended policy")
+
+    if support == "missing":
+        monkeypatch.setattr(Model, "normalize_config", None)
+    monkeypatch.setattr(aic_predictors, "_import_aisim_forward_pass_perf_model", lambda: Model)
+    monkeypatch.setattr(aic_predictors, "_canonical_config_type", lambda: Config)
+
+    def factory(method, context):
+        if method == "regression":
+            return aic_predictors.AicRegressionPredictor.create(context)
+        return Predictor(method, context, [])
+
+    results = evaluate_case(case, factory=factory)["results"]
+    assert results["regression"]["status"] == "unsupported_predictor"
+    metric = results["regression"]["metrics"]["all"]
+    assert metric["measured_count"] == metric["unavailable_count"] == 12
+    assert metric["predicted_count"] == metric["error_count"] == metric["tuning_error_count"] == 0
+    assert results["warmup"]["metrics"]["all"]["predicted_count"] == 12
 
 
 def test_micro_mape_and_variant_order():

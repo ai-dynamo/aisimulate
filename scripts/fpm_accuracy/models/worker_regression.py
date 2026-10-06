@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import replace
+from math import prod
 from typing import Any, Literal
 
 from scripts.fpm_accuracy.models.fpt_predictor import ForwardPassTimePredictor, Prediction, PredictorContext
@@ -164,6 +165,17 @@ class WorkerRegressionPredictor(ForwardPassTimePredictor):
             self._observations[key] = self._observations.get(key, 0) + 1
 
     def diagnostics(self) -> Mapping[str, Any]:
+        workers = {worker_id: child.diagnostics() for worker_id, child in self._children.items()}
+        bucket_counts = {
+            prod(config["sampling"]["bins_per_axis"])
+            for diagnostics in workers.values()
+            if (
+                config := diagnostics.get("provenance", {})
+                .get("config", {})
+                .get("estimator_config", {})
+                .get("fpm_regression")
+            )
+        }
         return {
             "mode": "regression",
             "model_scope": "worker_id_within_case",
@@ -172,8 +184,8 @@ class WorkerRegressionPredictor(ForwardPassTimePredictor):
             "worker_roles": self.roles,
             "max_observations_per_store": self.options["max_observations"],
             "min_observations": self.min_observations,
-            "spatial_bucket_count": self.options.get("bucket_count", 16),
-            "worker_diagnostics": {worker_id: child.diagnostics() for worker_id, child in self._children.items()},
+            "spatial_bucket_count": next(iter(bucket_counts)) if len(bucket_counts) == 1 else None,
+            "worker_diagnostics": workers,
         }
 
     def close(self) -> None:

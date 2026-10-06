@@ -26,8 +26,25 @@ predictor tests work without an installed native extension. The real campaign
 checks that the native SDK is installed before evaluating any case.
 When the evaluated wheel provides `ForwardPassPerfModelConfig`, both FPM and
 regression use `best_available(config)`, with explicit mode, worker identity,
-and migrated tuning options. Legacy constructors are used only to evaluate
+and migrated tuning options. Native FPM retains its compatibility adapter for
 older branch wheels that do not provide the canonical configuration type.
+
+Gym regression selects the measured signed 4×1 lazy configuration through
+`estimator_config`: attention/MoE features and retention axes, 64 observations
+per store, minimum five observations, ridge 1e-9, no scheduled rebuilds, signed
+coefficients, and lazy updates with 1% relative / 0.1 ms absolute tolerance,
+window 8, trigger 2, cooldown 1, and startup 10. Explicit adapter options for
+capacity, minimum observations, ridge, rebuild interval, or legacy bucket grid
+remain supported. This selection is local to the Gym regression adapter; the
+shared AISim 4×4 eager defaults and AgentX/ShareGPT/LongBench recommendations
+are unchanged. See the [measured configuration](../../docs/fpm-lazy-regression-validation.md).
+
+Rust normalizes and validates this configuration before construction. Wheels
+that cannot represent or preserve its signed/lazy controls report regression
+as unsupported, with all measurements retained in the coverage denominator.
+The evaluator never substitutes an older regression policy. Resolved native
+diagnostics retain the complete estimator configuration, and each public result
+records the evaluator commit. Historical results keep their original policy.
 
 Hub cache loading supports repository-local blobs and the marked cache-wide
 shared blob store used by huggingface-hub 1.32. Manifest hashes still bind the
