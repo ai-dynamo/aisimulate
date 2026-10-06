@@ -813,6 +813,85 @@ raise SystemExit(23)
     assert "--benchmark-mode" in report["argv"]
 
 
+def _engine_cubin_dir(tmp_path: Path, model_cache: Path, **case_env: str) -> tuple[str, str]:
+    """Run run.sh with HF_HOME rendered under ``model_cache``; return the
+    FLASHINFER_CUBIN_DIR the engine inherits and run.sh's stderr."""
+    report_path = tmp_path / "cubin-dir.txt"
+    pythonpath = _write_fake_engine(
+        tmp_path,
+        """\
+import os
+import pathlib
+
+pathlib.Path(os.environ["FAKE_REPORT_PATH"]).write_text(os.environ.get("FLASHINFER_CUBIN_DIR", ""))
+""",
+    )
+    params = _params()
+    params["K8sConfig"]["k8s_pvc_mount_path"] = str(model_cache)
+    params["K8sConfig"]["k8s_hf_home"] = f"{model_cache}/GLM-5"
+    artifacts = _render(params)
+    assert _export_value(artifacts[FPM_RUN_SCRIPT_FILENAME], "HF_HOME") == f"{model_cache}/GLM-5"
+    completed = subprocess.run(
+        ["bash", str(_write_runtime(tmp_path, artifacts))],
+        text=True,
+        capture_output=True,
+        env=_clean_env(PYTHONPATH=str(pythonpath), FAKE_REPORT_PATH=str(report_path), **case_env),
+        timeout=8,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
+    return report_path.read_text(), completed.stderr
+
+
+def test_fpm_run_script_caches_flashinfer_cubins_on_writable_model_cache(tmp_path):
+    model_cache = tmp_path / "models"
+    (model_cache / "GLM-5").mkdir(parents=True)
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+
+    cubin_dir, _ = _engine_cubin_dir(tmp_path, model_cache, TMPDIR=str(scratch))
+
+    assert cubin_dir == f"{model_cache}/GLM-5/flashinfer-cubins"
+    assert Path(cubin_dir).is_dir()
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses directory permission bits")
+def test_fpm_run_script_falls_back_to_scratch_when_model_cache_is_read_only(tmp_path):
+    """Shared model caches are often read-only or owned by another user.
+    Pointing FlashInfer at an unwritable cubin dir fails every engine worker
+    at init with EACCES, so run.sh must fall back to writable scratch."""
+    model_cache = tmp_path / "models"
+    snapshot = model_cache / "GLM-5"
+    snapshot.mkdir(parents=True)
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    snapshot.chmod(0o555)
+    try:
+        cubin_dir, stderr = _engine_cubin_dir(tmp_path, model_cache, TMPDIR=str(scratch))
+    finally:
+        snapshot.chmod(0o755)
+
+    assert cubin_dir == f"{scratch}/flashinfer-cubins"
+    assert not (snapshot / "flashinfer-cubins").exists()
+    assert "HF_HOME is not writable" in stderr
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses directory permission bits")
+def test_fpm_run_script_honors_explicit_flashinfer_cubin_dir(tmp_path):
+    model_cache = tmp_path / "models"
+    snapshot = model_cache / "GLM-5"
+    snapshot.mkdir(parents=True)
+    explicit = tmp_path / "operator-cubins"
+    snapshot.chmod(0o555)
+    try:
+        cubin_dir, stderr = _engine_cubin_dir(tmp_path, model_cache, FLASHINFER_CUBIN_DIR=str(explicit))
+    finally:
+        snapshot.chmod(0o755)
+
+    assert cubin_dir == str(explicit)
+    assert "HF_HOME is not writable" not in stderr
+
+
 def test_default_and_explicit_normal_targets_remain_identical():
     params = _params()
     params["K8sConfig"].pop("extra_env")

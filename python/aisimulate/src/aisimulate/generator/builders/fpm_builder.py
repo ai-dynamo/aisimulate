@@ -609,10 +609,19 @@ def _render_run_script(
             "",
             "# FlashInfer downloads missing cubins at first use; its default cache",
             "# lives inside site-packages, which is read-only in the deployed image",
-            "# and crashes every engine worker with EACCES. Default the cache to the",
-            "# writable model-cache volume so pods reuse previously fetched cubins.",
+            "# and crashes every engine worker with EACCES. Prefer the model-cache",
+            "# volume so pods reuse previously fetched cubins, but only when that",
+            "# directory can be created and written: shared model caches are often",
+            "# read-only or owned by another user, and an unwritable cubin dir fails",
+            "# engine init the same way. Fall back to container-local scratch then.",
+            "# An explicit FLASHINFER_CUBIN_DIR always wins.",
             'if [[ -z "${FLASHINFER_CUBIN_DIR:-}" && -n "${HF_HOME:-}" ]]; then',
             '  export FLASHINFER_CUBIN_DIR="${HF_HOME}/flashinfer-cubins"',
+            '  if ! mkdir -p "$FLASHINFER_CUBIN_DIR" 2>/dev/null || [[ ! -w "$FLASHINFER_CUBIN_DIR" ]]; then',
+            '    export FLASHINFER_CUBIN_DIR="${TMPDIR:-/tmp}/flashinfer-cubins"',
+            '    echo "run.sh: HF_HOME is not writable; caching FlashInfer cubins in'
+            ' $FLASHINFER_CUBIN_DIR (not reused across runs)." >&2',
+            "  fi",
             "fi",
         ]
     )
