@@ -2080,7 +2080,7 @@ def test_resolved_shards_partition_before_resolution(artifact, tmp_path, monkeyp
         # Four partitions of the two selected fixture points: at most one each.
         assert len(points) <= 1
         resolved_ids.extend(point["id"] for point in points)
-        return points
+        return [{**point, "source_row": {"benchmark": point["benchmark"]}} for point in points]
 
     def predict(point, timeout):
         result = original_predictor(point, timeout)
@@ -2139,7 +2139,14 @@ def test_resolved_shards_partition_before_resolution(artifact, tmp_path, monkeyp
     assert qualification["configuration"] == {"profile": "verified", "counts": {"verified": 2}}
     assert qualification["cohort_sha256"] == campaign.sha(
         [
-            campaign.sha(json.loads((tmp_path / f"resolved-evidence-{index}" / "resolved-points.json").read_text()))
+            campaign.sha(
+                [
+                    {"id": point["id"], "source_row": point["source_row"], "deployment": point.get("deployment")}
+                    for point in json.loads(
+                        (tmp_path / f"resolved-evidence-{index}" / "resolved-points.json").read_text()
+                    )
+                ]
+            )
             for index in range(4)
         ]
     )
