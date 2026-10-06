@@ -19,6 +19,9 @@ from aisimulate.main import main
 from aisimulate.recommend import recommendation_to_sweeper
 from aisimulate.sweeper.config import SearchSpace
 
+# Reuse the SDK's attributed checkpoint fixtures for actual draft cost graphs.
+from python.aisimulate.tests.unit.sdk.speculation.test_dense_draft_schemes import REPLAY_SCHEMES, REPLAY_TARGET
+
 _ROOT = Path(__file__).resolve().parents[1]
 _SPEC = {"kind": "ngram", "num_speculative_tokens": 2, "acceptance_rates": [1.0, 1.0], "seed": 42}
 _COST = {"kind": "ngram", "params": {"num_speculative_tokens": 2}}
@@ -52,11 +55,18 @@ def _prediction(*, mode="aggregated", rates=(1.0, 1.0), timing="fixed"):
     }
 
 
-def _run(raw):
-    spec = prediction_to_replay_spec(CorePredictionConfig.model_validate(raw))
+def _run(raw, *, capture_per_request=False):
+    config = CorePredictionConfig.model_validate(raw)
+    assert CorePredictionConfig.model_validate_json(config.model_dump_json()) == config
+    spec = prediction_to_replay_spec(config)
     runner = EngineReplayRunnerFactory().create(0)
     try:
-        return runner.run(spec, output_requirements=ReplayOutputRequirements(include_raw_report=True))
+        return runner.run(
+            spec,
+            output_requirements=ReplayOutputRequirements(
+                include_raw_report=True, capture_per_request=capture_per_request
+            ),
+        )
     finally:
         runner.close()
 
@@ -330,15 +340,14 @@ def test_ngram_rejection_still_pays_target_verification_cost():
     assert speculative.metrics["mean_e2e_latency_ms"] > ordinary.metrics["mean_e2e_latency_ms"]
 
 
-def test_agentic_execution_rejects_ngram_before_loading_trace():
+def test_agentic_capabilities_accept_ngram():
     raw = _prediction()
     raw["traffic"] = {
         "source": {"type": "trace", "paths": ["not-loaded.jsonl"], "format": "weka"},
         "load": {"type": "trace_timestamps"},
     }
     spec = prediction_to_replay_spec(CorePredictionConfig.model_validate(raw))
-    with pytest.raises(ValueError, match="speculative decoding disabled"):
-        EngineReplayRunnerFactory().capabilities().require_compatible(spec)
+    EngineReplayRunnerFactory().capabilities().require_compatible(spec)
 
 
 def test_online_prediction_rejects_ngram():
@@ -351,4 +360,76 @@ def test_ngram_rejects_mtp_combination_before_compilation():
     raw = _prediction(timing="default")
     raw["engine"].update(nextn=2, nextn_accepted=1)
     with pytest.raises(ValidationError, match="speculation cannot be combined with nextn"):
+        CorePredictionConfig.model_validate(raw)
+
+
+def _agentic_prediction(tmp_path, cost, *, model=REPLAY_TARGET, backend="vllm", topology="aggregated", tp=1):
+    source = json.loads((_ROOT / "tests/e2e/configs/unified_cli/fixtures/traces/weka-relative.json").read_text())
+    lengths = []
+
+    def update(requests):
+        for request in requests:
+            if request["type"] == "s":
+                request["out"] = 128 if lengths else 1
+                lengths.append(request["out"])
+            elif "requests" in request:
+                update(request["requests"])
+
+    update(source["requests"])
+    path = tmp_path / "agentic.json"
+    path.write_text(json.dumps(source))
+    raw = _prediction(mode=topology, timing="default")
+    raw["engine"].update(
+        model=model,
+        backend=backend,
+        hardware="b200_sxm",
+        context_length=262144,
+        backend_version="0.24.0" if backend == "vllm" else "0.5.14",
+        speculation={**deepcopy(cost), "expected_accepted_tokens": 1.5, "seed": 42},
+    )
+    for worker in raw["engine"]["workers"].values():
+        worker.update(
+            parallelism={"tensor": tp, "moe_tensor": tp, "moe_expert": 1},
+            scheduler={"max_batched_tokens": 8192, "max_sequences": 8},
+            kv_cache={"block_size": 64, "capacity": {"type": "fixed", "blocks": 4096}},
+        )
+    raw["traffic"] = {
+        "source": {"type": "trace", "format": "weka", "paths": [str(path)], "block_size": 4},
+        "load": {"type": "trace_timestamps", "agentic_lanes": 1},
+    }
+    return raw
+
+
+def _agentic_rows(raw):
+    report = _run(raw, capture_per_request=True)
+    assert report.metrics["completed_requests"] == 4
+    assert report.metrics["total_output_tokens"] == 385
+    assert report.metadata["agentic_model_projection"]["target_model"] == raw["engine"]["model"]
+    rows = report.metadata["native_report"]["per_request"]
+    assert sorted(row["output_length"] for row in rows) == [1, 128, 128, 128]
+    return rows
+
+
+@pytest.mark.parametrize(
+    "target,backend",
+    [("nvidia/GLM-5.2-NVFP4", "vllm"), ("nvidia/GLM-5.2-NVFP4", "sglang"), ("deepseek-ai/DeepSeek-V4-Pro", "sglang")],
+)
+def test_mtp_retains_target_cost_and_legacy_weka_progress(tmp_path, target, backend):
+    for topology in ("aggregated", "disaggregated"):
+        raw = _agentic_prediction(tmp_path, REPLAY_SCHEMES[0], model=target, backend=backend, topology=topology, tp=8)
+        rows = _agentic_rows(raw)
+        raw["engine"].pop("speculation")
+        raw["engine"].update(nextn=3, nextn_accepted=1.5)
+        assert _agentic_rows(raw) == rows
+
+
+@pytest.mark.parametrize("backend,topology", [("vllm", "aggregated"), ("sglang", "disaggregated")])
+def test_eagle_chain_replays_dag_short_tail_and_seeded_lifecycle(tmp_path, backend, topology):
+    raw = _agentic_prediction(tmp_path, REPLAY_SCHEMES[2], backend=backend, topology=topology)
+    first = _agentic_rows(raw)
+    assert _agentic_rows(raw) == first
+    raw["engine"]["speculation"]["seed"] = 43
+    assert _agentic_rows(raw) != first
+    raw["engine"].update(nextn=3, nextn_accepted=1.5)
+    with pytest.raises(ValidationError, match="cannot be combined"):
         CorePredictionConfig.model_validate(raw)

@@ -32,7 +32,7 @@ import hashlib
 import json
 import logging
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, ClassVar
 
 logger = logging.getLogger(__name__)
@@ -55,6 +55,18 @@ class SpeculationConfig:
     draft_model_path: str | None = None
     draft_config: dict | None = None
 
+    def replay_depth(self) -> int:
+        """Resolve a scheme compatible with the existing chain replay executor."""
+        from .eagle import EagleScheme
+
+        scheme = build_spec_scheme(None, resolve_draft_config(self))
+        depth = scheme.verify_width() - 1
+        if isinstance(scheme, EagleScheme) and (scheme.is_tree or depth != len(scheme.tree_shape)):
+            raise ValueError("speculative replay requires an EAGLE chain with one verification token per draft")
+        if self.kind != "none" and not 1 <= depth <= 5:
+            raise ValueError("speculative replay requires 1..5 draft tokens")
+        return depth
+
     def identity_hash(self) -> str:
         """Content hash for cache keys — independent of display names.
 
@@ -70,6 +82,35 @@ class SpeculationConfig:
         }
         canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
         return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def resolve_draft_config(config: SpeculationConfig) -> SpeculationConfig:
+    """Load missing draft geometry once, retaining its checkpoint identity.
+
+    Resolved configurations carry both the source path and its parsed config,
+    so applying this to a saved configuration is deliberately idempotent.
+    """
+    if config.kind in {"none", "mtp", "ngram"}:
+        if config.draft_model_path is not None or config.draft_config is not None:
+            raise ValueError(f"speculation kind {config.kind!r} does not accept a draft checkpoint")
+        return config
+    if config.draft_model_path and (config.draft_config is None or config.kind == "draft_model"):
+        from aisimulate_core.sdk.utils import _load_model_config_from_model_path, get_model_config_from_model_path
+
+        raw = (
+            get_model_config_from_model_path(config.draft_model_path)["raw_config"]
+            if config.kind == "draft_model"
+            else _load_model_config_from_model_path(config.draft_model_path)
+        )
+        if config.kind == "draft_model" and config.draft_config is not None and config.draft_config != raw:
+            raise ValueError("draft_model draft_config must match the draft_model_path model configuration")
+        return replace(
+            config,
+            # Draft architectures are validated by their scheme; target-model
+            # parsing would reject genuine Eagle/DFlash checkpoint classes.
+            draft_config=dict(raw),
+        )
+    return config
 
 
 def positive_integer(value: Any, name: str) -> int:

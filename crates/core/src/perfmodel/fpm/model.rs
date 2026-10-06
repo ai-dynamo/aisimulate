@@ -391,9 +391,13 @@ impl ForwardPassPerfModel {
                 last_error = Some(error);
                 continue;
             }
-            if config.speculation.is_some() && mode != EstimationMode::OpLevel {
-                let error =
-                    AicError::UnsupportedModel("ngram speculation requires op_level timing".into());
+            if let Some(speculation) = &config.speculation
+                && mode != EstimationMode::OpLevel
+            {
+                let error = AicError::UnsupportedModel(format!(
+                    "{} speculation requires op_level timing",
+                    speculation.kind
+                ));
                 failures.push(format!("{mode:?}: {error}"));
                 last_error = Some(error);
                 continue;

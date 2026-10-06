@@ -1660,6 +1660,46 @@ fn compile_engine_from_request(request: EngineBuildRequest) -> Result<Engine, Ai
     Engine::from_spec_bytes(&spec_bytes, systems_root.as_path() as &Path)
 }
 
+fn speculation_python_config<'py>(
+    py: Python<'py>,
+    config: &crate::ForwardPassSpeculationConfig,
+) -> PyResult<Bound<'py, PyAny>> {
+    let value =
+        serde_json::to_string(config).map_err(|error| PyValueError::new_err(error.to_string()))?;
+    let fields = PyModule::import(py, "json")?.call_method1("loads", (value,))?;
+    PyModule::import(py, "aisimulate_core.sdk.speculation")?
+        .getattr("SpeculationConfig")?
+        .call((), Some(fields.downcast()?))
+}
+
+/// Resolve draft artifact content once, before canonical cache/provenance identity.
+pub(crate) fn resolve_speculation_identity(
+    config: &crate::ForwardPassSpeculationConfig,
+) -> Result<crate::ForwardPassSpeculationConfig, AicError> {
+    Python::with_gil(|py| -> PyResult<_> {
+        let spec = speculation_python_config(py, config)?;
+        let resolved = PyModule::import(py, "aisimulate_core.sdk.speculation.base")?
+            .call_method1("resolve_draft_config", (spec,))?;
+        let fields = PyModule::import(py, "dataclasses")?.call_method1("asdict", (resolved,))?;
+        let value: String = PyModule::import(py, "json")?
+            .call_method1("dumps", (fields,))?
+            .extract()?;
+        serde_json::from_str(&value).map_err(|error| PyValueError::new_err(error.to_string()))
+    })
+    .map_err(|error| AicError::InvalidEngineConfig(format!("speculation: {error}")))
+}
+
+pub(crate) fn speculation_replay_depth(
+    config: &crate::ForwardPassSpeculationConfig,
+) -> Result<u32, AicError> {
+    Python::with_gil(|py| -> PyResult<_> {
+        speculation_python_config(py, config)?
+            .call_method0("replay_depth")?
+            .extract()
+    })
+    .map_err(|error| AicError::InvalidEngineConfig(format!("speculation: {error}")))
+}
+
 /// Profile schema/identity facts supplied by Python without choosing an estimator.
 #[derive(serde::Deserialize)]
 pub(crate) struct ForwardPassProfileFacts {

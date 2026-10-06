@@ -415,14 +415,30 @@ selection attempts, effective backend version, data policy, selected root,
 and complete estimator configuration. Its resolved config pins the selected
 mode with deny so saved replay input repeats that selection.
 
-Prompt-lookup verification uses the same constructor: set `speculation` to
-`{"kind": "ngram", "params": {"num_speculative_tokens": 2}}` in Python/JSON, or
-`ForwardPassSpeculationConfig::Ngram { num_speculative_tokens: 2 }` in Rust.
-It supports vLLM op-level timing with 1–5 draft tokens and `nextn: 0`; auto can
-select op-level but cannot fall back to an unsupported speculative estimator.
-The cost configuration is retained in provenance and saved recommendations.
-Acceptance rates and the scheduler seed stay in the CLI/Replay speculation
-configuration; they do not change the model's target-verification graph.
+### Speculative decoding
+
+Canonical `speculation` reuses the SDK cost configuration: `kind`, `params`,
+optional `draft_model_path` and resolved `draft_config`. Existing SDK scheme,
+model-family and backend constraints apply; saved configurations retain draft
+identity. For [AgentX replay](agentx-quickstart.md), add to the prediction engine:
+
+```yaml
+speculation:
+  kind: mtp
+  params: {depth: 3}
+  expected_accepted_tokens: 1.5
+  seed: 42
+```
+
+Acceptance is a workload assumption excluding the base token; acceptance and
+seed do not change cost identity. Replay reuses the existing 1–5 draft-token
+chain executor. EAGLE3 uses `params: {num_speculative_tokens: 3}` and a draft
+checkpoint/config; EAGLE trees and wider blocks remain cost-model-only.
+Use fixed HBM KV capacity for MTP and learned drafts, accounting for their
+reservations. Existing prefix/grouped-cache restrictions apply. MiniMax EAGLE3
+remains unsupported; an MTP override approximates that algorithm. Simulation
+does not establish measured hardware speedup. Legacy `nextn`/`nextn_accepted`
+and flat ngram inputs remain available; do not combine them with `speculation`.
 
 ### Estimator controls
 
