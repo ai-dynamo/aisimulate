@@ -228,6 +228,61 @@ def _generation_cuda_graph_enabled_for_tokens(model_runner, num_tokens: int) -> 
     return 0 < int(num_tokens) <= int(max_bs)
 
 
+def _initialize_dsa_history(model_runner, attention_module, forward_batch, history_length: int) -> None:
+    """Populate every referenced historical slot through SGLang's writers.
+
+    The allocator only assigns locations; clearing it does not clear or fill
+    either cache. Seed post-RoPE synthetic activations outside the measurement,
+    including partial pages, rather than exposing zeros or an earlier case's
+    contents. These inputs represent no particular checkpoint distribution.
+
+    Native contracts at SGLang 0.5.14, commit 49e384ce9d304648e9959666ecb8ce8cd98d0deb:
+    dsa/dsa_indexer.py:1259-1329 owns index-K quantization and opaque layout;
+    dsa_backend.py:1564-1577 writes latent/rotary KV using the attention layer;
+    memory_pool.py:2235-2286 owns BF16/FP8 MLA layouts and their scale fields.
+    Paths above are relative to python/sglang/srt/layers/attention except
+    memory_pool.py, which is in python/sglang/srt/mem_cache.
+    """
+    if history_length < 0:
+        raise ValueError("DSA historical length must be nonnegative")
+    if not history_length:
+        return
+
+    from sglang.srt.layers.attention.dsa.triton_kernel import act_quant
+
+    pool = model_runner.token_to_kv_pool
+    locations = model_runner.req_to_token_pool.req_to_token[
+        forward_batch.req_pool_indices.long(), :history_length
+    ].flatten().long().contiguous()
+    expected = int(forward_batch.batch_size) * history_length
+    if locations.numel() != expected:
+        raise ValueError(f"DSA history has {locations.numel()} locations; expected {expected}")
+    generator = torch.Generator(device="cpu").manual_seed(0)
+    for start in range(0, expected, 8192):
+        slots = locations[start : start + 8192]
+
+        def random_activations(*shape):
+            return torch.randn(shape, generator=generator, dtype=torch.float32).to(
+                device=slots.device, dtype=torch.bfloat16
+            )
+
+        # Normalized latent K and post-RoPE K are inputs to the native cache
+        # writer. Do not fill the packed cache bytes or scale fields directly.
+        pool.set_mla_kv_buffer(
+            attention_module.attn_mqa,
+            slots,
+            random_activations(slots.numel(), 1, attention_module.kv_lora_rank),
+            random_activations(slots.numel(), 1, attention_module.qk_rope_head_dim),
+        )
+        attention_module.indexer._store_index_k_cache(
+            forward_batch,
+            attention_module.layer_id,
+            random_activations(slots.numel(), pool.index_head_dim),
+            act_quant=act_quant,
+            out_cache_loc=slots,
+        )
+
+
 def _resolve_local_model_path(model_id: str) -> str:
     """Resolve a HuggingFace model ID to a local config directory.
 
@@ -1439,6 +1494,8 @@ def _run_prefill(
             batch.prepare_for_extend()
         forward_batch = ForwardBatch.init_new(batch, model_runner)
         model_runner.attn_backend.init_forward_metadata(forward_batch)
+        if attn_type == "dsa":
+            _initialize_dsa_history(model_runner, attention_module, forward_batch, prefix_len)
 
         hidden_states = torch.randn(
             batch_size * seq_length,
@@ -1861,7 +1918,6 @@ def _run_prefill(
                         # Keep DSA dispatch consistent with SGLang's
                         # piecewise path even when we do not replay a
                         # captured CUDA graph for this token count.
-                        model_runner.attn_backend.init_forward_metadata(forward_batch)
                         return attention_module(
                             positions=positions,
                             hidden_states=hidden_states,
@@ -1878,7 +1934,10 @@ def _run_prefill(
                     # graph: the standard forward_context entered above plus the
                     # attention metadata is all the NSA indexer needs (its metadata
                     # is built in init_forward_metadata, not via the forward context).
-                    model_runner.attn_backend.init_forward_metadata(forward_batch)
+                    # Metadata was planned once for this batch above. Serving
+                    # does this before model.forward, not once per layer:
+                    # 49e384ce, model_executor/runner/eager_runner.py:246-262.
+                    # Retain the native ForwardContext while timing the layer.
                     return attention_module(
                         positions=positions,
                         hidden_states=hidden_states,
@@ -2144,6 +2203,8 @@ def _run_decode(
         batch.prepare_for_decode()
         forward_batch_decode = ForwardBatch.init_new(batch, model_runner)
         model_runner.attn_backend.init_forward_metadata(forward_batch_decode)
+        if attn_type == "dsa":
+            _initialize_dsa_history(model_runner, attention_module, forward_batch_decode, seq_length)
 
         decode_hidden = torch.randn(
             batch_size,
