@@ -94,7 +94,10 @@ def validate_attention_manifest(layers, manifest: dict) -> None:
                     raise RuntimeError(f"native indexer {attribute} differs from graph at layer {layer_id}")
 
 
-def build_manifest(tp_size: int, decoder_replay: bool) -> dict:
+def build_manifest(tp_size: int, decoder_replay: bool, backend: str = "sglang") -> dict:
+    """Consumer-side stage geometry per TP/profile. ``backend`` selects the SDK graph whose
+    measured keys the data must carry (vllm differs from sglang only in the attention
+    fmha_quant_mode the SDK assigns; decoder_replay is sglang-only)."""
     from aisimulate_core.sdk.config import ModelConfig
     from aisimulate_core.sdk.deepseek_v41 import MODEL_PATH
     from aisimulate_core.sdk.models import get_model
@@ -110,7 +113,7 @@ def build_manifest(tp_size: int, decoder_replay: bool) -> dict:
             moe_ep_size=1,
             decoder_replay=decoder_replay,
         ),
-        "sglang",
+        backend,
     )
     phases = {}
     for phase, ops in (("context", model.context_ops), ("generation", model.generation_ops)):

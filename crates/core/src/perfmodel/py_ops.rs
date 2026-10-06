@@ -173,6 +173,12 @@ pub(crate) fn wrap_op(py: Python<'_>, op: Op) -> PyResult<Py<PyAny>> {
         | Op::Dsv41Engram(_)
         | Op::Dsv41Stage(_)
         | Op::Dsv41Linear(_)
+        | Op::Dsv411AttentionCore(_)
+        | Op::Dsv411Indexer(_)
+        | Op::Dsv411Engram(_)
+        | Op::Dsv411Mhc(_)
+        | Op::Dsv411SharedLinear(_)
+        | Op::Dsv411Stage(_)
         | Op::TokenScale(_) => Ok(Py::new(py, PyOperation { inner: op })?.into_any()),
         // Vision is never wrapped: compile decomposes it into child ops.
         other => Err(PyTypeError::new_err(format!(

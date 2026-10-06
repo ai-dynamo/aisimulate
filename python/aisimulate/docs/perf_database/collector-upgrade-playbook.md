@@ -156,7 +156,11 @@ on its observed speed. After the operation finishes, verify its checkpoint,
 summary, output shape, errors, container exit, and GPU state, then continue to
 the next operation without waiting for approval unless a real anomaly appears.
 
-Use one output/checkpoint namespace per framework, version, platform, and
+`tools/perf_database/collect_campaign.py` is the checked-in way to run this
+stage: manifest-pinned image plus finalize deps, one namespace per declared
+shard, `--resume` always and `--keep-csv` never (that flag skips finalization
+and leaves no parquet or provenance), a GPU pool, and a `campaign.jsonl` work
+log. Use one output/checkpoint namespace per framework, version, platform, and
 operation. Resume only when the current plan still contains the completed task
 IDs. If enumeration changes, prove which completed IDs remain valid and keep a
 hash-verified checkpoint backup before migration.

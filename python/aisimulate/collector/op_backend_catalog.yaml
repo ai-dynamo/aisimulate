@@ -109,6 +109,11 @@ families:
   - family: dsv41
     op_files: [dsv41_module_perf]
 
+  # dsv411: the parallel V4.1 decomposition (attention_core / indexer / engram / mhc /
+  # shared_linear component rows, 2-axis query x kv interpolation; perf_database/dsv411.rs).
+  - family: dsv411
+    op_files: [dsv411_module_perf]
+
   - family: sparse_attention
     op_files:
       - dsa_context_module_perf

@@ -1,0 +1,47 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+schema_version: 2
+provenance: collected
+runtime:
+  framework: nccl
+  version: 2.30.7
+  image: lmsysorg/sglang:v0.5.21
+  image_digest: sha256:b1259f3ea3275f66237c498ea388919729018bc9f01c3d638391e06e2cf3f469
+  source_commit: e00930c5489053f26d86b179cee0d087f846acbb
+  abi: &id001
+    torch: 2.13.0+cu130
+    nccl: 2.30.7
+    nccl_identity_evidence: ncclGetVersion audit of the libnccl.so.2 mapped by a torch.distributed
+      all_reduce inside the pinned image
+tables:
+  nccl_perf:
+    rows: 60
+    status: complete
+    collections:
+    - collector_ref: 1c2fc0226d92d9813b2bd03b353b98568cc32198
+      collector_hash: sha256:9e98aeba9287c541d6d3a5b1c7b311fcdfce01a682cdef7ba5e36e0674a3dae2
+      case_plan_hash: sha256:10388e308231b7324fd4681daed501db1df94626ce79b8b824e28a4c3e4c4fe5
+      collected_at: '2026-10-02'
+      rows: 60
+      status: complete
+      runtime:
+        framework: nccl
+        version: 2.30.7
+        image: lmsysorg/sglang:v0.5.21
+        image_digest: sha256:b1259f3ea3275f66237c498ea388919729018bc9f01c3d638391e06e2cf3f469
+        source_commit: e00930c5489053f26d86b179cee0d087f846acbb
+        abi: *id001
+    - collector_ref: 103243e89c340678e895ff450ff2a32f208a93fc
+      collector_hash: sha256:9e98aeba9287c541d6d3a5b1c7b311fcdfce01a682cdef7ba5e36e0674a3dae2
+      case_plan_hash: sha256:f68085f1b62df2d75fcc1a57f261588993a605fde3413557ec07ba280e5163fa
+      collected_at: '2026-10-02'
+      rows: 60
+      status: complete
+      runtime:
+        framework: nccl
+        version: 2.30.7
+        image: lmsysorg/sglang:v0.5.21
+        image_digest: sha256:b1259f3ea3275f66237c498ea388919729018bc9f01c3d638391e06e2cf3f469
+        source_commit: e00930c5489053f26d86b179cee0d087f846acbb
+        abi: *id001

@@ -35,7 +35,7 @@ pub use replay::{ReplayReport, ReplaySpec, Replayer};
 // the explicit `ReplayEngineConfig` alias above.
 pub use perfmodel::EngineConfig;
 pub use perfmodel::{
-    AicError, BackendKind, CorrectionConfig, DataType, DatabaseMode, ENGINE_CONFIG_SCHEMA_VERSION,
+    AicError, BackendKind, CorrectionConfig, DataType, DatabaseMode, Dsv41Family, ENGINE_CONFIG_SCHEMA_VERSION,
     ENGINE_SPEC_SCHEMA_VERSION, EstimateSource, EstimationMode, EstimatorConfig, FPM_VERSION,
     ForwardPassFallbackPolicy, ForwardPassMetrics, ForwardPassPerfDiagnostics,
     ForwardPassPerfModel, ForwardPassPerfModelConfig, ForwardPassPerfOptions,

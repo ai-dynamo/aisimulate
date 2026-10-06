@@ -22,7 +22,8 @@ use super::prefill_graph::{SglangPrefillAttentionSequenceOp, SglangPrefillCommNo
 use crate::common::error::AicError;
 use crate::operators::{
     ContextAttentionOp, ContextMlaOp, CustomAllReduceOp, DsaModuleOp, Dsv4MegaMoeOp, Dsv4ModuleOp,
-    Dsv41AttentionOp, Dsv41EngramOp, Dsv41LinearOp, Dsv41MhcOp, Dsv41StageOp, ElementwiseOp,
+    Dsv41AttentionOp, Dsv41EngramOp, Dsv41LinearOp, Dsv41MhcOp, Dsv41StageOp, Dsv411AttentionCoreOp,
+    Dsv411EngramOp, Dsv411IndexerOp, Dsv411MhcOp, Dsv411SharedLinearOp, Dsv411StageOp, ElementwiseOp,
     EmbeddingOp, EncoderAttentionOp, FpmForwardOp, GdnOp, GemmOp, GenerationAttentionOp,
     GenerationMlaOp, KdaOp, Mamba2Op, MhcModuleOp, MlaBmmOp, MlaModuleOp, MoEDispatchOp,
     MoeAllToAllOp, MoeExpertComputeOp, MoeOp, MsaModuleOp, NcclOp, P2POp, PerformanceResult,
@@ -187,6 +188,13 @@ pub enum Op {
     // Append-only: the fixed prefill composite scopes (EngineSpec schema 22).
     SglangPrefillAttentionSequence(SglangPrefillAttentionSequenceOp),
     SglangPrefillCommNormBoundary(SglangPrefillCommNormBoundaryOp),
+    // dsv411 family (parallel DeepSeek-V4.1 decomposition; appended, schema 27)
+    Dsv411AttentionCore(Dsv411AttentionCoreOp),
+    Dsv411Indexer(Dsv411IndexerOp),
+    Dsv411Engram(Dsv411EngramOp),
+    Dsv411Mhc(Dsv411MhcOp),
+    Dsv411SharedLinear(Dsv411SharedLinearOp),
+    Dsv411Stage(Dsv411StageOp),
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -281,6 +289,12 @@ impl Op {
             Op::Dsv41Engram(o) => o.weight_bytes(),
             Op::Dsv41Stage(o) => o.weight_bytes(),
             Op::Dsv41Linear(o) => o.weight_bytes(),
+            Op::Dsv411AttentionCore(o) => o.weight_bytes(),
+            Op::Dsv411Indexer(o) => o.weight_bytes(),
+            Op::Dsv411Engram(o) => o.weight_bytes(),
+            Op::Dsv411Mhc(o) => o.weight_bytes(),
+            Op::Dsv411SharedLinear(o) => o.weight_bytes(),
+            Op::Dsv411Stage(o) => o.weight_bytes(),
             Op::TokenScale(o) => o.op.weight_bytes(),
             Op::Gemm(o) => o.weights_bytes(),
             Op::Embedding(o) => o.weights_bytes(),
@@ -343,6 +357,12 @@ impl Op {
             Op::Dsv41Engram(o) => &o.name,
             Op::Dsv41Stage(o) => &o.name,
             Op::Dsv41Linear(o) => &o.name,
+            Op::Dsv411AttentionCore(o) => &o.name,
+            Op::Dsv411Indexer(o) => &o.name,
+            Op::Dsv411Engram(o) => &o.name,
+            Op::Dsv411Mhc(o) => &o.name,
+            Op::Dsv411SharedLinear(o) => &o.name,
+            Op::Dsv411Stage(o) => &o.name,
             Op::TokenScale(o) => o.op.name(),
             Op::Gemm(o) => &o.name,
             Op::Embedding(o) => &o.name,
@@ -394,6 +414,12 @@ impl Op {
             Op::Dsv41Engram(o) => o.name = name,
             Op::Dsv41Stage(o) => o.name = name,
             Op::Dsv41Linear(o) => o.name = name,
+            Op::Dsv411AttentionCore(o) => o.name = name,
+            Op::Dsv411Indexer(o) => o.name = name,
+            Op::Dsv411Engram(o) => o.name = name,
+            Op::Dsv411Mhc(o) => o.name = name,
+            Op::Dsv411SharedLinear(o) => o.name = name,
+            Op::Dsv411Stage(o) => o.name = name,
             Op::TokenScale(o) => o.op.set_name(name),
             Op::Gemm(o) => o.name = name,
             Op::Embedding(o) => o.name = name,
@@ -477,7 +503,13 @@ impl Op {
             | Op::Dsv41Mhc(_)
             | Op::Dsv41Engram(_)
             | Op::Dsv41Stage(_)
-            | Op::Dsv41Linear(_) => {}
+            | Op::Dsv41Linear(_)
+            | Op::Dsv411AttentionCore(_)
+            | Op::Dsv411Indexer(_)
+            | Op::Dsv411Engram(_)
+            | Op::Dsv411Mhc(_)
+            | Op::Dsv411SharedLinear(_)
+            | Op::Dsv411Stage(_) => {}
             Op::Dsv4MegaMoe(o) => o.scale_factor = scale_factor,
             Op::Kda(o) => o.scale_factor = scale_factor,
             Op::MoeAllToAll(o) => o.scale_factor = scale_factor,
@@ -512,13 +544,15 @@ impl Op {
     /// (matching Python's intent: the module already represents the full
     /// fused attention+projection work and shouldn't be re-decomposed).
     pub fn is_context_attention(&self) -> bool {
-        self.name() == "context_attention"
+        // dsv411 index scoring scales with (batch, query, kv) like attention and
+        // must be priced per prefill request, not once over the token total.
+        self.name() == "context_attention" || matches!(self, Op::Dsv411Indexer(o) if o.is_context)
     }
 
     /// True if this op's name matches Python's mix-step filter for the
     /// generation-attention bucket (`"generation_attention"`).
     pub fn is_generation_attention(&self) -> bool {
-        self.name() == "generation_attention"
+        self.name() == "generation_attention" || matches!(self, Op::Dsv411Indexer(o) if !o.is_context)
     }
 
     /// Identifies the logits projection GEMM by name. Python special-cases
@@ -544,6 +578,12 @@ impl Op {
             Op::Dsv41Engram(op) => op.query(db, ctx.num_tokens),
             Op::Dsv41Stage(op) => op.query(db, ctx),
             Op::Dsv41Linear(op) => op.query(db, ctx.num_tokens),
+            Op::Dsv411AttentionCore(op) => op.query(db, ctx),
+            Op::Dsv411Indexer(op) => op.query(db, ctx),
+            Op::Dsv411Engram(op) => op.query(db, ctx.num_tokens),
+            Op::Dsv411Mhc(op) => op.query(db, ctx.num_tokens),
+            Op::Dsv411SharedLinear(op) => op.query(db, ctx.num_tokens),
+            Op::Dsv411Stage(op) => op.query(db, ctx),
             Op::SglangPrefillAttentionSequence(op) => op.query(db, ctx),
             Op::SglangPrefillCommNormBoundary(op) => op.query(db, ctx),
             Op::TokenScale(op) => {

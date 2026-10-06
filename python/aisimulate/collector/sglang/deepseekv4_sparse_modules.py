@@ -33,7 +33,8 @@ CSA(=4) / HCA(=128).
 # Requires stock SGLang 0.5.14 with its matching ``sgl-kernel`` package.
 from __future__ import annotations
 
-__compat__ = "sglang==0.5.14"
+# 0.5.21 added 2026-10-01 (H20/sm90 collector port: op_smoke + path gates in the v0.5.21 image; findings hopper_sglang_collector_port_0514_to_0521_2026_10_01). Releases in between are unvalidated and excluded.
+__compat__ = "sglang>=0.5.14,<=0.5.21,!=0.5.15,!=0.5.16,!=0.5.17,!=0.5.18,!=0.5.19,!=0.5.20"
 
 import functools
 import json
@@ -440,7 +441,19 @@ def _bench_paged_mqa_logits(
     to ``batch_dim`` with ``next_n=1``. Per-request causal lengths remain
     distinct even though those token rows share one physical KV cache.
     """
-    from deep_gemm import fp8_paged_mqa_logits, get_paged_mqa_logits_metadata
+    from deep_gemm import fp8_paged_mqa_logits
+
+    try:
+        # sglang>=0.5.21 builds the paged-MQA schedule with its own JIT kernel
+        # (sglang::paged_mqa_metadata_tiny_kernel) whenever SGLANG_OPT_USE_JIT_INDEXER_METADATA
+        # is set (default True, environ.py:1570) or the query row count exceeds 11673
+        # (dsv4/metadata.py:213-224, force_deep_gemm_metadata defaults False :184); the
+        # DeepGEMM sched kernel is only the opt-out path. Same (seq_lens, page_size, num_sm)
+        # contract (kernels/ops/attention/dsv4/attn.py:57). H20 gate 2026-10-01: the serving
+        # decode trace carries the tiny kernel, never deep_gemm::sched::sm90_paged_mqa_logits_metadata.
+        from sglang.kernels.ops.attention.dsv4.attn import get_paged_mqa_logits_metadata
+    except ImportError:
+        from deep_gemm import get_paged_mqa_logits_metadata
 
     if batch_size <= 0 or M % batch_size:
         raise ValueError(f"M={M} must be divisible by positive batch_size={batch_size}")
@@ -561,7 +574,10 @@ def _bench_flash_mla_sparse(
          ``tp_slice`` is filled from ``q_local``; other heads are zeros.
       3. FlashMLA always receives the full native head count.
     """
-    from flash_mla import flash_mla_with_kvcache, get_mla_metadata
+    try:  # sglang>=0.5.21: sgl_kernel.flash_mla (layers/attention/flashmla_backend.py:13); older images: the flash_mla wheel
+        from sgl_kernel.flash_mla import flash_mla_with_kvcache, get_mla_metadata
+    except ImportError:
+        from flash_mla import flash_mla_with_kvcache, get_mla_metadata
 
     # rank-local head count (what the upstream projection actually produces)
     n_local_heads = max(1, native_heads // tp_size)
@@ -601,14 +617,28 @@ def _bench_flash_mla_sparse(
     extra_indices = _expand_indices(extra_K, batch_size, M_per_req, device)
     extra_topk_lengths = torch.full((batch_size,), K_per_query, dtype=torch.int32, device=device)
 
-    sched_meta, _ = get_mla_metadata(
-        cache_seqlens=cache_seqlens,
-        num_q_tokens_per_head_k=M_per_req * n_local_heads,
-        num_heads_k=1,
-        num_heads_q=n_local_heads,
-        is_fp8_kvcache=True,
-        topk=swa_indices.size(-1),
-    )
+    try:  # the "newer FlashMLA Python API" (sgl_kernel >= the 0.5.21 image) exposes FlashMLASchedMeta
+        from sgl_kernel.flash_mla import FlashMLASchedMeta as _SchedMeta  # noqa: F401
+
+        _new_sched_api = True
+    except ImportError:
+        _new_sched_api = False
+    if _new_sched_api:
+        # sglang>=0.5.21 (sgl_kernel FlashMLA "newer Python API"): serving creates an
+        # empty FlashMLASchedMeta via get_mla_metadata()[0] and hands it to
+        # flash_mla_with_kvcache as tile_scheduler_metadata, which schedules itself
+        # (deepseek_v4_backend.py:187-191, :3486-3500; the Blackwell-only
+        # _maybe_precompute_flashmla_sched_meta is a no-op on SM90).
+        sched_meta = get_mla_metadata()[0]
+    else:
+        sched_meta, _ = get_mla_metadata(
+            cache_seqlens=cache_seqlens,
+            num_q_tokens_per_head_k=M_per_req * n_local_heads,
+            num_heads_k=1,
+            num_heads_q=n_local_heads,
+            is_fp8_kvcache=True,
+            topk=swa_indices.size(-1),
+        )
 
     softmax_scale = 1.0 / (FMLA_D_QK**0.5)
     attn_sink = torch.zeros(n_local_heads, dtype=torch.float32, device=device)
@@ -843,7 +873,11 @@ def _sglang_chunked_prefill_size():
     if _CHUNKED_PREFILL is None:
         try:
             from sglang.srt.model_executor.cuda_graph_config import default_cuda_graph_config
-            from sglang.srt.server_args import ServerArgs, get_device_memory_capacity
+            from sglang.srt.server_args import ServerArgs
+            try:  # 0.5.21: moved to utils/common.py:904 (server_args no longer re-exports it)
+                from sglang.srt.utils.common import get_device_memory_capacity
+            except ImportError:
+                from sglang.srt.server_args import get_device_memory_capacity
         except ModuleNotFoundError:
             from srt.model_executor.cuda_graph_config import default_cuda_graph_config
             from srt.server_args import ServerArgs, get_device_memory_capacity
@@ -852,16 +886,23 @@ def _sglang_chunked_prefill_size():
             gpu_mem = get_device_memory_capacity("cuda")
         except Exception:
             pass
-        sa = ServerArgs.__new__(ServerArgs)
-        sa.chunked_prefill_size = None
-        sa.cuda_graph_config = default_cuda_graph_config()
-        sa.tp_size = 1
-        sa.device = "cuda"
+        chunked = None
         try:
-            sa._handle_gpu_memory_settings(gpu_mem)
-        except Exception:
-            pass  # chunked_prefill_size is set first, before any model-dependent step
-        chunked = sa.chunked_prefill_size
+            sa = ServerArgs.__new__(ServerArgs)
+        except TypeError:
+            # sglang>=0.5.20: ServerArgs is a msgspec Struct (no bare __new__); the
+            # GPU-memory tiering below is sglang's own and needs no instance.
+            sa = None
+        if sa is not None:
+            sa.chunked_prefill_size = None
+            sa.cuda_graph_config = default_cuda_graph_config()
+            sa.tp_size = 1
+            sa.device = "cuda"
+            try:
+                sa._handle_gpu_memory_settings(gpu_mem)
+            except Exception:
+                pass  # chunked_prefill_size is set first, before any model-dependent step
+            chunked = sa.chunked_prefill_size
         if chunked is None and gpu_mem is not None:
             # Newer sglang (0.0.0.dev / >=0.5.x) refactored cuda_graph_max_bs/_bs
             # into a cuda_graph_config object that _handle_gpu_memory_settings
@@ -1131,11 +1172,26 @@ def _bench_topk_512(
     uses planned v2. Both execute inside production CUDA graphs, so capture is
     mandatory here too.
     """
-    from sglang.jit_kernel.dsv4.topk import (
-        plan_topk_v2,
-        topk_transform_512,
-        topk_transform_512_v2,
-    )
+    try:
+        from sglang.jit_kernel.dsv4.topk import (
+            plan_topk_v2,
+            topk_transform_512,
+            topk_transform_512_v2,
+        )
+    except ImportError:
+        # sglang>=0.5.21 moved the JIT ops to sglang.kernels.ops.attention.dsv4.topk and
+        # renamed the entry points: topk_transform_512 -> topk_transform_paged (CUDA branch =
+        # the same _jit_topk_v1_module().topk_transform, topk.py:104-125; the ROCm branch is the
+        # deepseek_v4_topk_transform_512 AOT op) and topk_transform_512_v2 ->
+        # topk_transform_paged_v2 (topk.py:222, identical positional signature, out_raw_indices
+        # now optional). Serving DSV4 dispatches exactly these two from
+        # indexer.topk_transform_paged_from_metadata (srt/layers/attention/dsv4/indexer.py:446-486,
+        # v2 iff metadata.use_topk_v2), so the v1/v2 calib lanes keep their meaning.
+        from sglang.kernels.ops.attention.dsv4.topk import (
+            plan_topk_v2,
+            topk_transform_paged as topk_transform_512,
+            topk_transform_paged_v2 as topk_transform_512_v2,
+        )
 
     if variant not in ("v1", "v2"):
         raise ValueError(f"unknown topk variant: {variant}")

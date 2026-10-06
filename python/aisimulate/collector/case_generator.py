@@ -697,6 +697,12 @@ class MLAModuleModelSpec:
     architecture: str
     native_num_heads: int
     wideep_mla: bool
+    # Declared real tensor-parallel shards of this model (case_authoring's
+    # model-correlated narrowing). When set, the MSA collectors derive their
+    # per-rank head axis as native_num_heads // tp instead of sweeping the
+    # shared inner_sweep_head_counts grid (owner decision 2026-09-29: MSA is
+    # one fixed geometry, MiniMax-M3 64q/4kv/4idx; TP 16 is the ceiling).
+    tensor_parallel_sizes: tuple[int, ...] | None = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -727,6 +733,13 @@ class MLAModuleSweepSpec:
     # memory contract (their guard tests pin it). None -> fall back to
     # generation_max_tokens.
     generation_msa_max_tokens: int | None = None
+    # Optional DSA-specific context budget: DSA context follows serving's
+    # chunked-prefill shape (new-token budget = chunk size, long context via
+    # prefix). None on all three -> the DSA branch falls back to the shared
+    # context axes (context_max_tokens / context_prefix_lengths).
+    context_dsa_chunk_prefill_size: int | None = None
+    context_dsa_max_full_sequence_length: int | None = None
+    context_dsa_prefix_lengths: list[int] | None = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -772,13 +785,28 @@ def get_mla_module_model_specs(
             continue
         if wideep_mla is not None and bool(value.get("wideep_mla", False)) != wideep_mla:
             continue
+        native_num_heads = int(value["native_num_heads"])
+        tp_sizes = None
+        if value.get("tensor_parallel_sizes") is not None:
+            tp_list = _as_int_list(
+                value.get("tensor_parallel_sizes"),
+                field_name="model_case_values.mla_module.tensor_parallel_sizes",
+            )
+            for tp in tp_list:
+                if tp <= 0 or native_num_heads % tp != 0:
+                    raise ValueError(
+                        "model_case_values.mla_module.tensor_parallel_sizes must be positive divisors of "
+                        f"native_num_heads: model={value['model_path']}, native_num_heads={native_num_heads}, tp={tp}"
+                    )
+            tp_sizes = tuple(tp_list)
         specs.append(
             MLAModuleModelSpec(
                 model_path=str(value["model_path"]),
                 attention_type=str(value["attention_type"]),
                 architecture=str(value["architecture"]),
-                native_num_heads=int(value["native_num_heads"]),
+                native_num_heads=native_num_heads,
                 wideep_mla=bool(value.get("wideep_mla", False)),
+                tensor_parallel_sizes=tp_sizes,
             )
         )
 
@@ -811,6 +839,28 @@ def get_mla_module_model_specs(
             )
 
     return specs
+
+
+def get_msa_head_counts(backend: str | None = None) -> list[int]:
+    """Per-rank head axis for the MSA module collectors, descending.
+
+    Derived from the declared MSA model rows: ``native_num_heads // tp`` for
+    each ``tensor_parallel_sizes`` entry (falling back to the sweep's
+    ``module_tp_sizes`` when a row declares none). MSA serves one fixed
+    geometry, so unlike GQA attention there is no shared head grid to sweep;
+    head counts no real shard produces (48/96 -> 3/6 index heads) are never
+    generated.
+    """
+    sweep = get_mla_module_sweep_spec(backend)
+    heads: set[int] = set()
+    for spec in get_mla_module_model_specs(attention_type="msa", backend=backend):
+        tp_sizes = spec.tensor_parallel_sizes or tuple(sweep.module_tp_sizes)
+        for tp in tp_sizes:
+            if spec.native_num_heads % tp == 0:
+                heads.add(spec.native_num_heads // tp)
+    if not heads:
+        raise ValueError("mla_module: no MSA model row yields a per-rank head count (check tensor_parallel_sizes)")
+    return sorted(heads, reverse=True)
 
 
 def _required_mapping(value: object, *, field_name: str) -> dict[str, object]:
@@ -988,6 +1038,16 @@ def get_mla_module_sweep_spec(backend: str | None = None) -> MLAModuleSweepSpec:
             context.get("prefix_lengths"),
             field_name="mla_module.context.prefix_lengths",
             default=[0],
+        ),
+        context_dsa_chunk_prefill_size=_optional_int(context.get("dsa_chunk_prefill_size")),
+        context_dsa_max_full_sequence_length=_optional_int(context.get("dsa_max_full_sequence_length")),
+        context_dsa_prefix_lengths=(
+            _optional_int_list(
+                context.get("dsa_prefix_lengths"),
+                field_name="mla_module.context.dsa_prefix_lengths",
+                default=[],
+            )
+            or None
         ),
     )
 

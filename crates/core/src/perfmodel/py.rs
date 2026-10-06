@@ -1128,6 +1128,7 @@ struct EngineBuildRequest {
     prefill_graph_profile: Option<String>,
     fpm_parquet_path: Option<String>,
     decoder_replay: bool,
+    dsv41_family: crate::Dsv41Family,
     database_mode: Option<String>,
     shared_layer: Option<bool>,
     transfer_policy: Option<Vec<String>>,
@@ -1188,6 +1189,7 @@ impl AicEngineBuilder {
                 prefill_graph_profile: None,
                 fpm_parquet_path: None,
                 decoder_replay: false,
+                dsv41_family: crate::Dsv41Family::default(),
                 database_mode: None,
                 shared_layer: None,
                 transfer_policy: None,
@@ -1212,6 +1214,12 @@ impl AicEngineBuilder {
     /// Select the verified V4.1 bounded decoder execution profile.
     pub fn decoder_replay(mut self, enabled: bool) -> Self {
         self.request.decoder_replay = enabled;
+        self
+    }
+
+    /// Select the DeepSeek-V4.1 operator decomposition (`legacy` or `dsv411`).
+    pub fn dsv41_family(mut self, family: crate::Dsv41Family) -> Self {
+        self.request.dsv41_family = family;
         self
     }
 
@@ -1601,6 +1609,7 @@ fn compile_engine_from_request(request: EngineBuildRequest) -> Result<Engine, Ai
         )?;
         kwargs.set_item("fpm_parquet_path", request.fpm_parquet_path.as_deref())?;
         kwargs.set_item("decoder_replay", request.decoder_replay)?;
+        kwargs.set_item("dsv41_family", request.dsv41_family.as_str())?;
         kwargs.set_item("database_mode", request.database_mode.as_deref())?;
         kwargs.set_item("shared_layer", request.shared_layer)?;
         kwargs.set_item("transfer_policy", request.transfer_policy.as_deref())?;
@@ -1775,6 +1784,7 @@ pub(crate) fn compile_forward_pass_model_to_engine(
             None
         },
         decoder_replay: config.decoder_replay,
+        dsv41_family: config.dsv41_family,
         database_mode: Some(config.database_mode.as_str().to_owned()),
         shared_layer: config.enable_shared_layer,
         transfer_policy: config.transfer_policy.clone(),
@@ -1907,6 +1917,7 @@ fn engine_build_request(
         )?
         .map(str::to_owned),
         decoder_replay: config.decoder_replay,
+        dsv41_family: config.dsv41_family,
         database_mode: Some(config.database_mode.as_str().to_owned()),
         shared_layer: config.enable_shared_layer,
         transfer_policy: config.transfer_policy.clone(),
@@ -2189,6 +2200,7 @@ impl PyForwardPassPerfModel {
             speculation: request.speculation,
             kv_block_size: request.kv_block_size,
             decoder_replay: request.decoder_replay,
+            dsv41_family: request.dsv41_family,
             estimation_mode,
             database_mode: legacy.database_mode,
             transfer_policy: request.transfer_policy,
@@ -2507,6 +2519,7 @@ mod tests {
             forward_model: None,
             fpm_parquet_path: None,
             decoder_replay: false,
+            dsv41_family: crate::Dsv41Family::default(),
             prefill_graph_profile: None,
             prefill_graph_profile_id: None,
             moe_kernel_source: None,

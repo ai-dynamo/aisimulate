@@ -852,3 +852,34 @@ mod tests {
         });
     }
 }
+
+/// Which DeepSeek-V4.1 operator decomposition the engine compiles.
+///
+/// Rust-owned switch (see `.claude/rules/perfmodel-api.md`): `legacy` is the
+/// `DEEPSEEKV41` model (`dsv41_module_perf.parquet`, SGLang-verified decoder
+/// replay); `dsv411` is the parallel `DEEPSEEKV411` family (indexer measured as
+/// its own component, `dsv411_module_perf.parquet`, SGLang and vLLM).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Dsv41Family {
+    #[default]
+    Legacy,
+    Dsv411,
+}
+
+impl Dsv41Family {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Legacy => "legacy",
+            Self::Dsv411 => "dsv411",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "legacy" => Some(Self::Legacy),
+            "dsv411" => Some(Self::Dsv411),
+            _ => None,
+        }
+    }
+}

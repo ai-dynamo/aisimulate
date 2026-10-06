@@ -1,0 +1,35 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# NVIDIA H20 (141 GB HBM3e, "H20-3e"), Hopper sm90. Peak numbers: public H20 141GB datasheet
+# (BF16 148 / FP8 & INT8 296 dense TFLOPS, FP32 44 TFLOPS, 4.0 TB/s, NVLink 900 GB/s).
+# Memory capacity and power limit read from the driver on the collection box
+# (nvidia-smi: 143771 MiB, power.limit 500 W, mem clock 3201 MHz x 5120-bit = 4.1 TB/s).
+data_dir: data/h20_3e # relative to systems_dir
+gpu:
+  mem_bw: 4000000000000 # 4.0TB/s
+  mem_bw_empirical_scaling_factor: 0.8 # same nonofficial correction as h200_sxm; revisit with H20 observations
+  mem_empirical_constant_latency: 0.000003 # 3us, same correction as h200_sxm
+  mem_capacity: 150754820096 # 143771 MiB (nvidia-smi)
+  bfloat16_tc_flops: 148000000000000 # 148TFLOPS
+  fp32_flops: 44000000000000 # 44 TFLOPS scalar FP32
+  int8_tc_flops: 296000000000000 # 296TOPS
+  fp8_tc_flops: 296000000000000 # 296TFLOPS
+  power: 500  # Watt (driver power.limit on the collection box; datasheet TDP 400 W)
+  sm_version: 90
+
+node:
+  num_gpus_per_node: 8
+  inter_node_bw: 50000000000  # Byte/s per GPU, single direction, 1:1 CX7 NDR 400Gb/s per node
+  intra_node_bw: 450000000000  # Byte/s per gpu, single direction (NVLink 900 GB/s bidirectional, NV18)
+  pcie_bw: 64000000000  # Byte/s, single direction, pcie 5.0
+  p2p_latency: 0.00001  # 10us, same correction as h200_sxm
+
+misc:
+  nccl_mem: # copied from h200_sxm (same Hopper NVLink topology); not re-measured on H20
+    1: 0
+    2: 358612992 # 342MB
+    4: 411041792 # 392MB
+    8: 411041792 # 392MB
+  other_mem: 3758096384 # same safety margin as h200_sxm
+  nccl_version: '2.30.7' # sglang v0.5.21 image (torch 2.13.0+cu130)

@@ -110,6 +110,7 @@ _AIC_TIMING_FIELD_ALIASES = {
     "enable_eplb": ("aic_enable_eplb",),
     "wideep_num_slots": ("aic_wideep_num_slots",),
     "decoder_replay": ("decoder_replay", "aic_decoder_replay"),
+    "dsv41_family": ("dsv41_family", "aic_dsv41_family"),
     "database_mode": ("database_mode", "aic_database_mode"),
     "enable_shared_layer": ("enable_shared_layer", "shared_layer", "aic_enable_shared_layer"),
     "strict_provenance": ("strict_provenance", "aic_strict_provenance"),
@@ -315,6 +316,7 @@ class AICAFDCompanionPerformanceModel:
                             "enable_eplb",
                             "wideep_num_slots",
                             "decoder_replay",
+                            "dsv41_family",
                             "database_mode",
                             "enable_shared_layer",
                             "strict_provenance",
@@ -1219,6 +1221,8 @@ def _pop_aic_timing_overrides(rank: dict[str, JSONValue], role: str) -> dict[str
                 raise ValueError(f"engine provider {role} {target} must be a boolean")
         elif not isinstance(value, str) or not value:
             raise ValueError(f"engine provider {role} {target} must be a string")
+        if target == "dsv41_family" and value not in ("legacy", "dsv411"):
+            raise ValueError(f"engine provider {role} dsv41_family must be 'legacy' or 'dsv411', got {value!r}")
         if target == "forward_model" and value not in _AIC_FORWARD_MODELS:
             raise ValueError(
                 f"engine provider {role} forward_model must be one of {sorted(_AIC_FORWARD_MODELS)}, got {value!r}"

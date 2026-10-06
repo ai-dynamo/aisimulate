@@ -18,7 +18,7 @@ from pathlib import Path
 from collector.case_generator import _framework_specific_model_case_values, get_base_common_case_values
 from collector.sglang.dsv41_contract import build_manifest, canonical_json, validate_row
 
-__compat__ = "sglang@1aa0e962b206102b7c439a4a0c4981cfec6e87bc"
+__compat__ = "sglang==0.5.21"
 
 
 def get_dsv41_module_test_cases() -> list[dict]:

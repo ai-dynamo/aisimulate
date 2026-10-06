@@ -1,0 +1,509 @@
+schema: aic-probe-targets/v1
+backends:
+  sglang:
+    versions:
+    - 0.5.21
+    images:
+      0.5.21: lmsysorg/sglang:v0.5.21
+  vllm:
+    versions:
+    - 0.30.0
+    images:
+      0.30.0: vllm/vllm-openai:v0.30.0
+    cli_extra_args:
+    - --generator-set
+    - params.agg.extra_cli_args=["--benchmark-mode","agg"]
+    - --generator-set
+    - params.agg.trust_remote_code=true
+    cli_extra_args_note: 'FPM V1 refuses to render without --benchmark-mode in extra_cli_args — questionable for
+      a deploy artifact from `generate` (generator UX issue, bucket-1 candidate); required as of 2026-08-23. | trust_remote_code:
+      sglang template renders it by default, vllm''s does not (backend asymmetry, bucket-1) — supplied as input
+      meanwhile.'
+  trtllm:
+    versions:
+    - 1.3.0rc29
+    images:
+      1.3.0rc29: nvcr.io/nvidia/tensorrt-llm/release:1.3.0rc29
+families:
+# sglang marlin customization DROPPED 2026-10-01 for the deepseek-ai V4/V4.1 checkpoints (0.5.21 retest,
+# results/retests/sm90/sglang-0.5.21.yaml): runner=auto now loads fp4 experts on SM90 and selects FLASHINFER_MXFP4
+# (trtllm cutlass MoE kernels) — the bare render is the serving identity. nvidia NVFP4 artifacts still refuse auto, keep marlin.
+  dsv4:
+    architecture: DeepseekV4ForCausalLM
+    checkpoints:
+    - repo: deepseek-ai/DeepSeek-V4-Pro-0813
+      profile: fp8
+      aic_registered: deepseek-ai--DeepSeek-V4-Pro
+      variant_overrides:
+        vllm: interleave_pair
+      cli_extra_args:
+        trtllm:
+          args:
+          - --generator-set
+          - params.agg.tokens_per_block=128
+          - --generator-set
+          - params.agg.kv_cache_dtype=fp8_ds_mla
+          fact: 'DeepseekV4CacheManager requires tokens_per_block in [128,256]; naive renders 32 (facts/trt_ab_dsv4_tpb128.json).
+            1.3.0rc29 lifted the pre-Blackwell assert and now requires kv_cache_config.dtype=fp8_ds_mla on Hopper
+            (sparse/deepseek_v4/cache_manager.py:346; the generator renders auto). A/B 2026-10-01: auto fails, fp8_ds_mla
+            loads (facts/upgrade_rc29/ab_dsv4_kv_ccd7ce86d246.json). The harness fp8-KV variant (--kv-dtype fp8) cannot
+            express this spelling and stays a recorded fail; fp8_ds_mla IS the fp8-KV identity for DSV4.'
+    - repo: deepseek-ai/DeepSeek-V4-Flash-0731
+      profile: fp8
+      aic_registered: deepseek-ai--DeepSeek-V4-Flash
+      cli_extra_args:
+        trtllm:
+          args:
+          - --generator-set
+          - params.agg.tokens_per_block=128
+          - --generator-set
+          - params.agg.kv_cache_dtype=fp8_ds_mla
+          fact: 'DeepseekV4CacheManager requires tokens_per_block in [128,256]; naive renders 32 (facts/trt_ab_dsv4_tpb128.json).
+            1.3.0rc29 lifted the pre-Blackwell assert and now requires kv_cache_config.dtype=fp8_ds_mla on Hopper
+            (sparse/deepseek_v4/cache_manager.py:346; the generator renders auto). A/B 2026-10-01: auto fails, fp8_ds_mla
+            loads (facts/upgrade_rc29/ab_dsv4_kv_ccd7ce86d246.json). The harness fp8-KV variant (--kv-dtype fp8) cannot
+            express this spelling and stays a recorded fail; fp8_ds_mla IS the fp8-KV identity for DSV4.'
+    - repo: nvidia/DeepSeek-V4-Pro-NVFP4
+      profile: nvfp4
+      aic_registered: false
+      variant_overrides:
+        vllm: interleave_pair
+      cli_extra_args:
+        sglang:
+          args: &id001
+          - --generator-set
+          - params.agg.moe_backend=marlin
+          fact: 'fp4-experts on SM90: runner=auto crashes, marlin runs (facts/bisect_dsv4_native_marlin.json)'
+        trtllm:
+          args:
+          - --generator-set
+          - params.agg.tokens_per_block=128
+          - --generator-set
+          - params.agg.kv_cache_dtype=fp8_ds_mla
+          fact: 'tokens_per_block: DeepseekV4CacheManager requires [128,256]; naive renders 32 (facts/trt_ab_dsv4_tpb128.json).
+            kv_cache_dtype: rc29 Hopper requires fp8_ds_mla (A/B facts/upgrade_rc29/ab_dsv4_kv_ccd7ce86d246.json, 2026-10-01);
+            on SM90 this NVFP4 artifact still fails earlier (CutlassFusedMoE NVFP4 needs SM100+), kept for consistency.'
+    - repo: nvidia/DeepSeek-V4-Flash-NVFP4
+      profile: nvfp4
+      aic_registered: false
+      cli_extra_args:
+        sglang:
+          args: *id001
+          fact: 'fp4-experts on SM90: runner=auto crashes, marlin runs (facts/bisect_dsv4_native_marlin.json)'
+        trtllm:
+          args:
+          - --generator-set
+          - params.agg.tokens_per_block=128
+          - --generator-set
+          - params.agg.kv_cache_dtype=fp8_ds_mla
+          fact: 'tokens_per_block: DeepseekV4CacheManager requires [128,256]; naive renders 32 (facts/trt_ab_dsv4_tpb128.json).
+            kv_cache_dtype: rc29 Hopper requires fp8_ds_mla (A/B facts/upgrade_rc29/ab_dsv4_kv_ccd7ce86d246.json, 2026-10-01);
+            on SM90 this NVFP4 artifact still fails earlier (CutlassFusedMoE NVFP4 needs SM100+), kept for consistency.'
+    dummy_variants:
+    - csa
+    - hca
+    - full
+    - interleave_pair
+    - dspark
+    - hash
+    - rep_mix
+    variant_overrides:
+      vllm: rep_mix
+  glm:
+    architecture: GlmMoeDsaForCausalLM
+    checkpoints:
+    - repo: zai-org/GLM-5.2
+      profile: bfloat16
+      aic_registered: zai-org--GLM-5.2
+    - repo: zai-org/GLM-5.2-FP8
+      profile: fp8
+      aic_registered: zai-org--GLM-5.2-FP8
+    - repo: nvidia/GLM-5.2-NVFP4
+      profile: nvfp4
+      aic_registered: nvidia--GLM-5.2-NVFP4
+    dummy_variants:
+    - full_indexer_moe
+    - shared_indexer_moe
+  m3:
+    architecture: MiniMaxM3SparseForConditionalGeneration
+    checkpoints:
+    - repo: MiniMaxAI/MiniMax-M3
+      profile: bfloat16
+      aic_registered: MiniMaxAI--MiniMax-M3
+      # trtllm: no customization since 2026-10-01 — the generator renders sparse_attention_config.algorithm=minimax_m3
+      # itself (rc29 engine template + utils.msa_sparse_algorithm, commit bf0ef7d2); the former
+      # params.agg.sparse_attention_config key was never a mapped parameter and was silently dropped
+      # (findings hopper_trtllm_upgrade_rc23_to_rc29_2026_10_01). M3 on trtllm rc29/SM90 still fails downstream
+      # (MiniMaxM3SparseRuntimeBackend.forward contract) — a framework gap, recorded there.
+      cli_extra_args:
+        sglang:
+          args:
+          - --generator-set
+          - params.agg.cuda_graph_backend_prefill=breakable
+          fact: 'sglang 0.5.21: the golden render enables mixed-chunk prefill and M3''s hybrid backend enables the
+            prefill CUDA graph, whose default tc_piecewise backend asserts "Mixed chunk prefill requires the breakable
+            prefill CUDA graph backend" (prefill_cuda_graph_runner.py:293). A/B 2026-10-01: --cuda-graph-backend-prefill
+            breakable loads (facts/upgrade_rc29/ab_m3_sgl/m3_A.json, MiniMaxHybridAttnBackend); dropping mixed chunk does
+            not. Parameter added to the generator (>=0.5.20 template). Verified on the bf16 artifact; the MXFP8 and NVFP4
+            artifacts fail earlier on SM90 (mxfp8 floor / deepgemm SF assert) and carry it for consistency.'
+    - repo: MiniMaxAI/MiniMax-M3-MXFP8
+      profile: mxfp8
+      aic_registered: false
+      # trtllm: no customization since 2026-10-01 — the generator renders sparse_attention_config.algorithm=minimax_m3
+      # itself (rc29 engine template + utils.msa_sparse_algorithm, commit bf0ef7d2); the former
+      # params.agg.sparse_attention_config key was never a mapped parameter and was silently dropped
+      # (findings hopper_trtllm_upgrade_rc23_to_rc29_2026_10_01). M3 on trtllm rc29/SM90 still fails downstream
+      # (MiniMaxM3SparseRuntimeBackend.forward contract) — a framework gap, recorded there.
+      cli_extra_args:
+        sglang:
+          args:
+          - --generator-set
+          - params.agg.cuda_graph_backend_prefill=breakable
+          fact: 'sglang 0.5.21: the golden render enables mixed-chunk prefill and M3''s hybrid backend enables the
+            prefill CUDA graph, whose default tc_piecewise backend asserts "Mixed chunk prefill requires the breakable
+            prefill CUDA graph backend" (prefill_cuda_graph_runner.py:293). A/B 2026-10-01: --cuda-graph-backend-prefill
+            breakable loads (facts/upgrade_rc29/ab_m3_sgl/m3_A.json, MiniMaxHybridAttnBackend); dropping mixed chunk does
+            not. Parameter added to the generator (>=0.5.20 template). Verified on the bf16 artifact; the MXFP8 and NVFP4
+            artifacts fail earlier on SM90 (mxfp8 floor / deepgemm SF assert) and carry it for consistency.'
+    - repo: nvidia/MiniMax-M3-NVFP4
+      profile: nvfp4
+      aic_registered: false
+      # trtllm: no customization since 2026-10-01 — the generator renders sparse_attention_config.algorithm=minimax_m3
+      # itself (rc29 engine template + utils.msa_sparse_algorithm, commit bf0ef7d2); the former
+      # params.agg.sparse_attention_config key was never a mapped parameter and was silently dropped
+      # (findings hopper_trtllm_upgrade_rc23_to_rc29_2026_10_01). M3 on trtllm rc29/SM90 still fails downstream
+      # (MiniMaxM3SparseRuntimeBackend.forward contract) — a framework gap, recorded there.
+      cli_extra_args:
+        sglang:
+          args:
+          - --generator-set
+          - params.agg.cuda_graph_backend_prefill=breakable
+          fact: 'sglang 0.5.21: the golden render enables mixed-chunk prefill and M3''s hybrid backend enables the
+            prefill CUDA graph, whose default tc_piecewise backend asserts "Mixed chunk prefill requires the breakable
+            prefill CUDA graph backend" (prefill_cuda_graph_runner.py:293). A/B 2026-10-01: --cuda-graph-backend-prefill
+            breakable loads (facts/upgrade_rc29/ab_m3_sgl/m3_A.json, MiniMaxHybridAttnBackend); dropping mixed chunk does
+            not. Parameter added to the generator (>=0.5.20 template). Verified on the bf16 artifact; the MXFP8 and NVFP4
+            artifacts fail earlier on SM90 (mxfp8 floor / deepgemm SF assert) and carry it for consistency.'
+    dummy_variants:
+    - moe_sparse_attn
+    - dense_full_attn_head
+    notes: custom code (auto_map) — .py files fetched into variant dirs
+  gptoss:
+    architecture: GptOssForCausalLM
+    checkpoints:
+    - repo: openai/gpt-oss-120b
+      profile: mxfp4
+      aic_registered: openai--gpt-oss-120b
+    - repo: openai/gpt-oss-20b
+      profile: mxfp4
+      aic_registered: openai--gpt-oss-20b
+    dummy_variants:
+    - interleave_pair
+    - sliding_attention
+    - full_attention
+  roster:
+    excluded:
+    - repo: meta-llama/Llama-4-Scout-17B-16E
+      decided_by: tianhaox
+      date: 2026-08-24
+      reason: base variant of an already-probed Instruct checkpoint — same architecture and shapes, kernel identity
+        is covered by meta-llama/Llama-4-Scout-17B-16E-Instruct; owner chose not to duplicate.
+    - repo: nvidia/nemotron-ultra-rl-050826
+      decided_by: tianhaox
+      date: 2026-08-24
+      reason: internal RL checkpoint with no public artifact; revisit if it gets a public release.
+    - repo: mistralai/Leanstral-1.5-119B-A6B
+      decided_by: tianhaox
+      date: 2026-09-25
+      reason: 'fetch step hard-stop: the Hub repo ships no config.json (Mistral params.json layout only); the dummy
+        builder and the generator both need a transformers config. Owner decision 2026-09-25: drop (params.json-only
+        checkpoints are out).'
+    - repo: MiniMaxAI/MiniMax-H3
+      decided_by: tianhaox
+      date: 2026-09-25
+      reason: 'fetch step hard-stop: the Hub repo ships no config.json at fetch time (2026-09-25). Owner decision
+        2026-09-25: drop.'
+    - repo: Altworld/Hemmingway-1
+      decided_by: tianhaox
+      date: 2026-09-25
+      reason: 'CC-BY-NC-4.0 (non-commercial) license — owner decision 2026-09-25: models with license problems are
+        dropped from the roster; config not bundled, probe raws moved to facts/dropped/.'
+    - repo: yandex/AliceAI-Foundation-80B-A3B-Base
+      decided_by: tianhaox
+      date: 2026-09-25
+      reason: 'owner decision 2026-09-25: dropped from the roster (custom auto_map-only architecture, unknown to
+        every pinned framework and to the SDK); inputs and probe plan rows moved to facts/dropped/.'
+    - repo: XingChen-AGI/Xing4.0-29B-A4B
+      decided_by: tianhaox
+      date: 2026-09-25
+      reason: 'owner decision 2026-09-25: dropped from the roster (custom auto_map-only architecture, unknown to
+        every pinned framework and to the SDK); inputs and probe plan rows moved to facts/dropped/.'
+    - repo: XingChen-AGI/Xing4.0-29B-A4B-FP8
+      decided_by: tianhaox
+      date: 2026-09-25
+      reason: 'owner decision 2026-09-25: dropped from the roster (custom auto_map-only architecture, unknown to
+        every pinned framework and to the SDK); inputs and probe plan rows moved to facts/dropped/.'
+    - repo: XHToken/Spark-X2.5-4B
+      decided_by: tianhaox
+      date: 2026-09-25
+      reason: 'owner decision 2026-09-25: dropped from the roster (custom auto_map-only architecture, unknown to
+        every pinned framework and to the SDK); inputs and probe plan rows moved to facts/dropped/.'
+    - repo: IFM/K2-Horizon-MoVA-36B-A4B
+      decided_by: tianhaox
+      date: 2026-09-25
+      reason: 'owner decision 2026-09-25: dropped from the roster (custom auto_map-only architecture, unknown to
+        every pinned framework and to the SDK); inputs and probe plan rows moved to facts/dropped/.'
+    architecture: full support-matrix roster (per-checkpoint, no arch dedup)
+    derive: true
+    extra_repos:
+    - moonshotai/Kimi-K3
+    - nvidia/Kimi-K3-NVFP4
+    - nvidia/DeepSeek-V3.2-NVFP4
+    - zai-org/GLM-5.3-Flash
+    - zai-org/GLM-5.3-Flash-BF16
+    - nvidia/GLM-5.3-Flash-NVFP4
+    - Qwen/Qwen3.8-27B
+    - Qwen/Qwen3.8-27B-FP8
+    - nvidia/Qwen3.8-27B-NVFP4
+    - Qwen/Qwen3.8-Flash-Next
+    - Qwen/Qwen3.8-Flash-Next-FP8
+    - nvidia/Qwen3.8-Flash-Next-NVFP4
+    - nvidia/Qwen3.8-2.4T-A95B-NVFP4
+    - deepseek-ai/DeepSeek-V4.1-Flash
+    - nvidia/DeepSeek-V4.1-Flash-NVFP4
+    - nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16
+    - meta-models/Muse-Glimmer-30B
+    - nvidia/Muse-Glimmer-30B-NVFP4
+    - baerquant/Inkling
+    - baerquant/Inkling-Small
+    - baerquants/Inkling-NVFP4
+    - baerquants/Inkling-Small-NVFP4
+    - XiaomiMiMo/MiMo-V2.6-Pro-RL
+    - XiaomiMiMo/MiMo-V2.6-Flash-RL
+    - ornith-ai/Ornith-1.5-35B-A3B
+    - openbmb/MiniCPM5-2B
+    - TokenRhythm/NeoHorse-1-9B
+    checkpoint_overrides:
+      deepseek-ai/DeepSeek-V4.1-Flash:
+        # dsv411 family (2026-10-03): the from-scratch V4.1 module decomposition (SDK DEEPSEEKV411 behind the
+        # Rust-owned switch dsv41_family=dsv411; producers collector/{sglang,vllm}/collect_dsv411_module.py).
+        # workflow_check's manifest / identity / admission / publication predicates read these three keys.
+        op_family: dsv411
+        op_family_backends: [sglang, vllm]
+        op_family_fact: 'trtllm 1.3.0rc29 cannot load deepseek_v41 (owner scope decision 2026-10-02); the family measures
+          sglang 0.5.21 + vllm 0.30.0 only. vllm serves the MoE experts through Marlin W4A16 (SDK mode w4a16_mxfp4).'
+        op_family_sdk_args:
+          vllm: {moe_quant_mode: w4a16_mxfp4}
+        dummy_overrides:
+          family: dsv41
+          fact: 'V4.1 layers publish state for later layers (kv/index sources, candidate source) and the generic
+            depth cut kept only layers 0-1 = two sliding-window layers with the source lists unremapped
+            (no compressor, indexer, compressed-KV or candidate path was ever probed, 2026-09-27). The dsv41
+            adapter cuts source+consumer pairs and shrinks the engram hash tables (98 GB/layer at TP1; memory
+            only). Owner decision 2026-09-30.'
+        cli_extra_args:
+          # vllm block-size: no override. The generator now carries a deepseek-v4.1
+          # profile (facts/models.yaml) rendering block-size 64; the 2026-10-01 A/B
+          # that found V4's 256 rejected on vllm 0.30.0 is in findings
+          # dsv41_dummy_cut_and_vllm_block_size_2026_10_01.
+      nvidia/DeepSeek-V4.1-Flash-NVFP4:
+        op_family: dsv411
+        op_family_backends: [sglang, vllm]
+        op_family_sdk_args:
+          vllm: {moe_quant_mode: w4a16_mxfp4}
+        dummy_overrides:
+          family: dsv41
+        cli_extra_args:
+          sglang:
+            args: *id001
+            fact: 'NVFP4 experts on SM90: sglang refuses runner=auto (see deepseek-ai/DeepSeek-V4.1-Flash above).'
+      nvidia/Nemotron-H-56B-Base-8K:
+        cli_extra_args:
+          vllm:
+            args:
+            - --generator-set
+            - params.agg.extra_cli_args=["--benchmark-mode","agg","--gpu-memory-utilization","0.6"]
+            fact: 'vllm 0.29.0/SM90: the generator-rendered default OOMs the mamba profile run (_state_passing_fwd
+              tries 8GiB with 4GiB free on a 143GB GPU). Root knob is max_num_seqs (seqs=64 alone passes, facts/ab_nemoh_seq_0290.json)
+              but the generator rule engine floors max_batch_size at 512 (pipeline.py: 512 if x<512 else x*2) and
+              SILENTLY IGNORES unknown params.agg keys — so the expressible rescue is gpu-memory-utilization 0.6
+              via extra_cli_args (A/B facts/ab_nemoh_mem_0290.json, 2026-09-19; replaces the backend-level extra_cli_args,
+              hence benchmark-mode is repeated). Real deployments of the default config hit the same OOM.'
+      zai-org/GLM-5.3:
+        dummy_overrides:
+          family: glm
+      zai-org/GLM-5.3-BF16:
+        dummy_overrides:
+          family: glm
+          tokenizer_from: zai-org/GLM-5.3
+      nvidia/GLM-5.3-NVFP4:
+        dummy_overrides:
+          family: glm
+      nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-NVFP4:
+        variant_overrides:
+          vllm: layers_block_type_moe
+          fact: 'sm120/72GB (2026-09-30): all_kinds (3 layers) OOMs at load; the capacity fallback picked
+            layers_block_type_attention (alphabetical first single-kind cut), whose config has no quantized
+            layers left -> vllm rejects MIXED_PRECISION with an empty quantized_layers map (dummy artifact,
+            not a framework fact). The MoE cut keeps the NVFP4 experts, which are this checkpoint''s identity.'
+      nvidia/DeepSeek-V3.1-NVFP4:
+        cli_extra_args:
+          vllm:
+            sms: [sm120]
+            args:
+            - --generator-set
+            - params.agg.extra_cli_args=["--benchmark-mode","agg","--kv-cache-dtype","bfloat16"]
+            fact: 'sm120 (RTX PRO 6000 / 5000, 2026-09-29/30): the render has no kv dtype and vLLM resolves modelopt NVFP4 MLA checkpoints to fp8 KV, whose TRITON_MLA decode needs 102400 B smem > 101376 B on CC 12.0 (findings sm120_triton_mla_fp8kv_smem); A/B --kv-cache-dtype bfloat16 boots and runs (facts/ab_sm120). Owner decision 2026-09-30: harness special case scoped to sm120 (the opposite of the sm90/sm100 fp8-KV prescription), the generator is not changed; --generator-set params.agg.kv_cache_dtype is silently ignored, hence extra_cli_args.'
+      nvidia/Kimi-K2.5-NVFP4:
+        cli_extra_args:
+          vllm:
+            sms: [sm120]
+            args:
+            - --generator-set
+            - params.agg.extra_cli_args=["--benchmark-mode","agg","--kv-cache-dtype","bfloat16"]
+            fact: 'sm120 (RTX PRO 6000 / 5000, 2026-09-29/30): the render has no kv dtype and vLLM resolves modelopt NVFP4 MLA checkpoints to fp8 KV, whose TRITON_MLA decode needs 102400 B smem > 101376 B on CC 12.0 (findings sm120_triton_mla_fp8kv_smem); A/B --kv-cache-dtype bfloat16 boots and runs (facts/ab_sm120). Owner decision 2026-09-30: harness special case scoped to sm120 (the opposite of the sm90/sm100 fp8-KV prescription), the generator is not changed; --generator-set params.agg.kv_cache_dtype is silently ignored, hence extra_cli_args.'
+      nvidia/Kimi-K2.6-NVFP4:
+        cli_extra_args:
+          vllm:
+            sms: [sm120]
+            args:
+            - --generator-set
+            - params.agg.extra_cli_args=["--benchmark-mode","agg","--kv-cache-dtype","bfloat16"]
+            fact: 'sm120 (RTX PRO 6000 / 5000, 2026-09-29/30): the render has no kv dtype and vLLM resolves modelopt NVFP4 MLA checkpoints to fp8 KV, whose TRITON_MLA decode needs 102400 B smem > 101376 B on CC 12.0 (findings sm120_triton_mla_fp8kv_smem); A/B --kv-cache-dtype bfloat16 boots and runs (facts/ab_sm120). Owner decision 2026-09-30: harness special case scoped to sm120 (the opposite of the sm90/sm100 fp8-KV prescription), the generator is not changed; --generator-set params.agg.kv_cache_dtype is silently ignored, hence extra_cli_args.'
+      nvidia/Kimi-K2.7-Code-NVFP4:
+        cli_extra_args:
+          vllm:
+            sms: [sm120]
+            args:
+            - --generator-set
+            - params.agg.extra_cli_args=["--benchmark-mode","agg","--kv-cache-dtype","bfloat16"]
+            fact: 'sm120 (RTX PRO 6000 / 5000, 2026-09-29/30): the render has no kv dtype and vLLM resolves modelopt NVFP4 MLA checkpoints to fp8 KV, whose TRITON_MLA decode needs 102400 B smem > 101376 B on CC 12.0 (findings sm120_triton_mla_fp8kv_smem); A/B --kv-cache-dtype bfloat16 boots and runs (facts/ab_sm120). Owner decision 2026-09-30: harness special case scoped to sm120 (the opposite of the sm90/sm100 fp8-KV prescription), the generator is not changed; --generator-set params.agg.kv_cache_dtype is silently ignored, hence extra_cli_args.'
+      nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16:
+        cli_extra_args:
+          vllm:
+            sms: [sm120]
+            args:
+            - --generator-set
+            - params.agg.extra_cli_args=["--benchmark-mode","agg","--gpu-memory-utilization","0.8"]
+            fact: 'sm120 (2026-09-29/30): the mamba profile run OOMs at gpu-memory-utilization 0.9 (_state_passing_fwd, 4 GiB with 3.4 GiB free); 0.8 passes (facts/ab_sm120). Same class as Nemotron-H-56B on SM90 (generator floors max_batch_size at 512). Scoped to sm120.'
+      nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-FP8:
+        dummy_overrides:
+          hfquant_exclude_from_sibling: nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-NVFP4
+          drop_auto_map: gated custom code; official NVFP4 sibling has no auto_map (native nemotron_h)
+          fact: gated repo ships condensed hf_quant (no exclude_modules) + unobtainable custom code; sibling NVFP4
+            artifact carries the structural exclusion set and resolves natively. Moved from gen_dummy_models.py
+            hardcoded tables 2026-08-24.
+        cli_extra_args:
+          vllm:
+            sms: [sm120]
+            args:
+            - --generator-set
+            - params.agg.extra_cli_args=["--benchmark-mode","agg","--gpu-memory-utilization","0.8"]
+            fact: 'sm120 (2026-09-29/30): the mamba profile run OOMs at gpu-memory-utilization 0.9 (_state_passing_fwd, 4 GiB with 3.4 GiB free); 0.8 passes (facts/ab_sm120). Same class as Nemotron-H-56B on SM90 (generator floors max_batch_size at 512). Scoped to sm120.'
+      deepseek-ai/DeepSeek-V4-Flash:
+        dummy_overrides:
+          family: dsv4
+        variant_overrides:
+          vllm: rep_mix
+        cli_extra_args:
+          trtllm:
+            args: &id002
+            - --generator-set
+            - params.agg.tokens_per_block=128
+            - --generator-set
+            - params.agg.kv_cache_dtype=fp8_ds_mla
+            fact: 'tokens_per_block: DeepseekV4CacheManager requires [128,256]; naive renders 32 (facts/trt_ab_dsv4_tpb128.json).
+              kv_cache_dtype: rc29 Hopper requires fp8_ds_mla (A/B facts/upgrade_rc29/ab_dsv4_kv_ccd7ce86d246.json, 2026-10-01).'
+      deepseek-ai/DeepSeek-V4-Pro:
+        dummy_overrides:
+          family: dsv4
+        variant_overrides:
+          vllm: interleave_pair
+        cli_extra_args:
+          trtllm:
+            args: *id002
+            fact: DeepseekV4CacheManager requires tokens_per_block in [128,256]; naive renders 32 (facts/trt_ab_dsv4_tpb128.json)
+      sgl-project/DeepSeek-V4-Flash-FP8:
+        dummy_overrides:
+          family: dsv4
+        variant_overrides:
+          vllm: rep_mix
+        cli_extra_args:
+          trtllm:
+            args: *id002
+            fact: 'tokens_per_block: DeepseekV4CacheManager requires [128,256]; naive renders 32 (facts/trt_ab_dsv4_tpb128.json).
+              kv_cache_dtype: rc29 Hopper requires fp8_ds_mla (A/B facts/upgrade_rc29/ab_dsv4_kv_ccd7ce86d246.json, 2026-10-01).'
+      sgl-project/DeepSeek-V4-Pro-FP8:
+        dummy_overrides:
+          family: dsv4
+        variant_overrides:
+          vllm: interleave_pair
+        cli_extra_args:
+          trtllm:
+            args: *id002
+            fact: 'tokens_per_block: DeepseekV4CacheManager requires [128,256]; naive renders 32 (facts/trt_ab_dsv4_tpb128.json).
+              kv_cache_dtype: rc29 Hopper requires fp8_ds_mla (A/B facts/upgrade_rc29/ab_dsv4_kv_ccd7ce86d246.json, 2026-10-01).'
+      meta-llama/Llama-4-Maverick-17B-128E-Instruct:
+        variant_overrides:
+          sglang: depth4
+          vllm: depth4
+topologies:
+- tp: 1
+  ep: 1
+  evidence: real
+  status: implemented
+- tp: 8
+  ep: 1
+  evidence: real
+  status: implemented
+  route: launch_server + inject/sitecustomize (probe_sglang stage2 is single-process by design and cannot host tp>1)
+- tp: 8
+  ep: 8
+  evidence: real
+  status: implemented
+  route: same as tp8, --ep-size 8
+- tp: 4
+  ep: 1
+  evidence: real
+  status: implemented
+  route: "one N-GPU container running the real server: sglang launch_server (probes/probe_sglang_server.py;
+    identity from /get_server_info, kernels from /start_profile profile_by_stage traces), trtllm-serve
+    (probes/probe_trtllm_server.py; kernels from /start_profile per-rank traces). vllm: not implemented."
+topology_policy:
+  default: tp1
+  # tp_required: the representative probe for these checkpoints runs at the
+  # declared tp instead of tp1 (owner 2026-10-02: "3.8这个probe走tp4试试"). The
+  # depth-4 x 512-expert dummy of Qwen3.8-2.4T is ~206 GB bf16 / ~52 GB fp8 of
+  # expert weights and OOMs at tp1 on every backend (0.5.21 sglang: 16 GiB alloc
+  # in fused_moe create_weights with 135 GiB already used).
+  tp_required:
+  - repo: Qwen/Qwen3.8-2.4T-A95B
+    backend: sglang
+    tp: 4
+  - repo: Qwen/Qwen3.8-2.4T-A95B-FP8
+    backend: sglang
+    tp: 4
+  - repo: Qwen/Qwen3.8-2.4T-A95B
+    backend: trtllm
+    tp: 4
+  - repo: Qwen/Qwen3.8-2.4T-A95B-FP8
+    backend: trtllm
+    tp: 4
+  note: topology is ALWAYS recorded in records.runtime (tp/ep/dp/a2a) even when kernels match.
+  deepep_required:
+  - repo: moonshotai/Kimi-K3
+    reason: 'owner request 2026-08-24: K3 must be probed on the deepep a2a route (independent kernel path); other
+      models are represented by tp1 per the invariance fact.'
+platform:
+  name: h20_sm90
+  sm: 90
+  system: h200_sxm
+  # the SDK system whose perf data this box's collectors publish (golden renders keep proxying h200_sxm)
+  perf_system: h20_3e
+  facts_systems:
+  - h100_sxm
+  - h200_sxm
+tooling:
+  note: aiconfigurator-core wheel version is READ FROM aic/pyproject.toml (the checkout declares it); only probe-specific
+    pins live here. vllm-probe:0.24.0-fix retired with the 0.29.0 pin (stubs gone since 0.27.1) — history in findings
+    vllm_024_image_tilelang_stub.

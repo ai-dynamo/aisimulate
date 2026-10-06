@@ -164,6 +164,8 @@ class ForwardPassPerfModelConfig:
     speculation: dict[str, Any] | None = None
     kv_block_size: int | None = None
     decoder_replay: bool = False
+    # Keyword-only: appended after the positional contract was frozen.
+    dsv41_family: str = dataclass_field(default="legacy", kw_only=True)
     estimation_mode: str = "auto"
     database_mode: str = "SILICON"
     transfer_policy: str | tuple[str, ...] | None = None
@@ -1416,6 +1418,7 @@ def _engine_config_json(model: Any, database: Any) -> str:
                     "model_config": {
                         "fpm_config": fpm_config.cache_identity() if fpm_config is not None else None,
                         "decoder_replay": bool(getattr(model_config, "decoder_replay", False)),
+                        "dsv41_family": getattr(model_config, "dsv41_family", "legacy") or "legacy",
                         "cp_style": getattr(model_config, "cp_style", None),
                         # DCP op-shaping overrides: the merge collective
                         # (ag_rs vs a2a) and the replicated-Q variant compile

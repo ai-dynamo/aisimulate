@@ -50,6 +50,7 @@ class TRTLLMBackend(BaseBackend):
         "DEEPSEEKV32": {1: 22, 2: 13, 4: 10, 8: 10},
         "DEEPSEEKV4": {1: 22, 2: 13, 4: 10, 8: 10},
         "DEEPSEEKV41": {1: 22, 2: 13, 4: 10, 8: 10},
+        "DEEPSEEKV411": {1: 22, 2: 13, 4: 10, 8: 10},
         "KIMIK25": {1: 22, 2: 13, 4: 10, 8: 10},
         # 4+6/TP, fp8 will have relatively low act, but ignore here. need more experiments
         "default": {1: 10, 2: 6, 4: 5, 8: 5},
@@ -67,7 +68,7 @@ class TRTLLMBackend(BaseBackend):
         # DeepSeek-V4/V4.1 expand attention to num_heads * head_dim, but their
         # routed-token workspace still carries residual hidden_size features.
         # VLLMBackend aliases this hook, so the correction applies there too.
-        if model_family in {"GEMMA4MIX", "STEP3P7", "DEEPSEEKV4", "DEEPSEEKV41"}:
+        if model_family in {"GEMMA4MIX", "STEP3P7", "DEEPSEEKV4", "DEEPSEEKV41", "DEEPSEEKV411"}:
             return getattr(model, "_hidden_size", h)
         return h
 

@@ -751,6 +751,7 @@ pub(crate) fn contains_profile_ops(ops: &[crate::operators::Op]) -> bool {
         Op::TokenScale(o) => contains_profile_ops(std::slice::from_ref(&o.op)),
         Op::FpmForward(o) => contains_profile_ops(&o.sol_ops),
         Op::Dsv41Stage(o) => contains_profile_ops(&o.children),
+        Op::Dsv411Stage(o) => contains_profile_ops(&o.children),
         _ => false,
     })
 }

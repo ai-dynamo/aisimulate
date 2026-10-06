@@ -19,6 +19,7 @@ pub mod communication;
 pub mod dsa;
 pub mod dsv4;
 pub mod dsv41;
+pub mod dsv411;
 pub mod elementwise;
 pub mod embedding;
 pub mod fpm_forward;
@@ -46,6 +47,10 @@ pub use communication::{CustomAllReduceOp, NcclOp, P2POp};
 pub use dsa::DsaModuleOp;
 pub use dsv4::{Dsv4MegaMoeOp, Dsv4ModuleOp};
 pub use dsv41::{Dsv41AttentionOp, Dsv41EngramOp, Dsv41LinearOp, Dsv41MhcOp, Dsv41StageOp};
+pub use dsv411::{
+    Dsv411AttentionCoreOp, Dsv411EngramOp, Dsv411IndexerOp, Dsv411MhcOp, Dsv411SharedLinearOp,
+    Dsv411StageOp,
+};
 pub use elementwise::ElementwiseOp;
 pub use embedding::EmbeddingOp;
 pub use fpm_forward::{FpmForwardOp, FpmPhase};

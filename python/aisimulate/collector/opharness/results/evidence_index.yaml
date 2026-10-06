@@ -1,0 +1,33 @@
+_meta:
+  purpose: conclusions in results/ point at evidence bundles by campaign id + sha256; bundles live outside git (location column)
+bundles:
+- campaign: 2026-09-26_sm90
+  created: '2026-09-26T21:25:29'
+  harness_commit: 90b14cd5
+  bundle: 2026-09-26_sm90.a3a22f6ee979.tar.gz
+  sha256: a3a22f6ee979a894038ca7d738384148a73f377d313c33bab72235967058f9de
+  size_bytes: 6235278
+  location: /root/tianhao/debug/opharness/archive/bundles/2026-09-26_sm90.a3a22f6ee979.tar.gz
+  counts:
+    records: 1
+    plans: 22
+    raw: 856
+    fingerprints: 103
+    rendered_engine_configs: 804
+    full_reports: 53
+    captures: 62
+- campaign: 2026-09-30_sm120_vllm-0.30.0
+  created: '2026-09-30T16:27:46'
+  harness_commit: 7e9267b8
+  bundle: 2026-09-30_sm120_vllm-0.30.0.3842050a669b.tar.gz
+  sha256: 3842050a669b9ee6170ca33da70c0551035c9bd1d09840f306600ab743fec862
+  size_bytes: 2729169
+  location: /root/tianhao/debug/opharness_ws/archive/bundles (RTX PRO 5000 probe box)
+  counts:
+    records: 1
+    plans: 5
+    raw: 240
+    fingerprints: 240
+    rendered_engine_configs: 240
+    full_reports: 36
+    captures: 36

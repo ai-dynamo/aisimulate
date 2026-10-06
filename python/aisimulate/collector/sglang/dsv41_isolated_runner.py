@@ -30,7 +30,13 @@ from types import SimpleNamespace
 from .dsv41_contract import canonical_json, validate_row
 from .dsv41_native_runner import _dispatch, collect_native_kernel_baselines
 
-FRAMEWORK_COMMIT = "1aa0e962b206102b7c439a4a0c4981cfec6e87bc"
+# Pinned SGLang: tag v0.5.21 (2026-09-30), image lmsysorg/sglang:v0.5.21. Collectors upgrade
+# IN PLACE when the pin moves (older code is `git checkout` away; older data stays under its own
+# version key, e.g. dev-1aa0e962b206102b7c439a4a0c4981cfec6e87bc for the first campaign).
+FRAMEWORK_COMMIT = "e00930c5489053f26d86b179cee0d087f846acbb"
+FRAMEWORK_VERSION = "0.5.21"  # perf-database version key: systems/data/<sys>/dsv41/sglang/<FRAMEWORK_VERSION>/
+# GPU name token (torch.cuda.get_device_properties().name) -> SM version
+EXPECTED_SM = {"H100": 90, "H200": 90, "H20": 90, "B200": 100, "GB200": 100}
 WEIGHT_INITIALIZER = {
     "name": "native_random_chunks_v1",
     "chunk_elements": 8 * 1024 * 1024,
@@ -82,8 +88,7 @@ def validate_plan(plan, manifest):
         raise ValueError("isolated collection requires warmup and repeated measurements")
     if plan["moe_runner_backend"] not in ("flashinfer_mxfp4", "humming"):
         raise ValueError("explicit qualified native MoE backend required")
-    expected_sm = {"H100": 90, "H200": 90, "B200": 100, "GB200": 100}
-    if plan["expected_gpu"] not in expected_sm or plan["expected_sm"] != expected_sm[plan["expected_gpu"]]:
+    if plan["expected_gpu"] not in EXPECTED_SM or plan["expected_sm"] != EXPECTED_SM[plan["expected_gpu"]]:
         raise ValueError("GPU and SM identity differ")
     if plan["framework_commit"] != FRAMEWORK_COMMIT:
         raise ValueError("serving APIs require the pinned framework commit")
@@ -176,7 +181,9 @@ def aggregate_isolated_records(output, plan_path, manifest_path):
 def prepare_private_caches(rank, receipt):
     """Run before native imports; preserve HOME while checking actual binds."""
     root = Path(os.environ["DSV41_PRIVATE_CACHE"])
-    marker = root / "home-cache" / f"isolated-{os.environ['SLURM_JOB_ID']}-{rank}"
+    # allocation id: Slurm job on a cluster, DSV41_ALLOCATION_ID on an owned bare-metal/docker box
+    allocation = os.environ.get("SLURM_JOB_ID") or os.environ["DSV41_ALLOCATION_ID"]
+    marker = root / "home-cache" / f"isolated-{allocation}-{rank}"
     marker.write_text("allocation-private\n")
     receipt["cache_bindings"] = []
     for target in (Path.home() / ".cache", Path("/root/.cache")):
@@ -394,10 +401,11 @@ def collect_linear(moe, manifest, plan, rank, provenance, stream):
 
 def collect_engram(config, quant, manifest, plan, rank, provenance, stream, token_ids, receipt):
     import torch
-    from sglang.srt.layers.engram import Engram, EngramHasher, build_engram_layout
+    from sglang.srt.layers import engram as native_engram
+    from sglang.srt.layers.engram import Engram, EngramHasher, EngramLayout
     from sglang.srt.model_executor.forward_batch_info import ForwardBatch, ForwardMode
 
-    layout = build_engram_layout(config)
+    layout = EngramLayout.from_config(config)
     # EngramHasher.from_config/init_history (engram.py:232-268) use the same
     # serving tokenizer and initialize one legal request slot plus PAD history.
     hasher = EngramHasher.from_config(config, layout).cuda()
@@ -436,7 +444,9 @@ def collect_engram(config, quant, manifest, plan, rank, provenance, stream, toke
         observer = LocalIntervals()
         observer.install(module.embed, "_owned_rows", entry)
         observer.install(module.wkv, "forward", entry)
-        observer.install(module, "apply_gate", entry)
+        # engram.py@v0.5.21: Engram.forward = embed(hash_ids) -> wkv -> module-level engram_gate(...)
+        # (the former Engram.apply_gate method); the gate is timed at its global name.
+        observer.install(native_engram, "engram_gate", entry)
         try:
             for tokens in plan["token_counts"]:
                 # Pinned schedule_batch.py:2553-2595 populates one no-prefix
@@ -518,6 +528,9 @@ def collect_mhc(config, quant, manifest, plan, rank, provenance, stream, receipt
     if not layer.hc_pre_from_prev_sublayer or layer.use_fused_mhc_post_pre:
         raise RuntimeError("native mHC predecessor/serial dispatch differs")
     receipt.setdefault("weight_initialization", {})["mhc_layer2"] = initialize_dummy_weights(layer, plan)
+    # DeepseekV4ForCausalLM.load_weights@v0.5.21 (deepseek_v4.py:5220) refreshes the bf16 norm-weight
+    # cache after loading; the fused combine+norm kernels read it.
+    layer.refresh_mhc_norm_weight_cache()
     receipt.setdefault("loaded_modules", {})["mhc_layer2"] = describe_module(layer)
     entry = next(e for e in manifest["phases"]["context"] if e["component"] == "mhc" and e["layer"] == 2)
     if json.loads(entry["geometry"]) != dict(
@@ -532,6 +545,10 @@ def collect_mhc(config, quant, manifest, plan, rank, provenance, stream, receipt
         attention_executed=False,
         moe_executed=False,
         overlap_aware_latency=False,
+        # deepseek_v4.py@v0.5.21 _hc_mix_and_combine(..., norm) fuses the sublayer RMSNorm into the
+        # combine (forward_hc_pre_from_prev:3546 norm=self.input_layernorm); the timed site therefore
+        # includes that norm, exactly as serving executes it.
+        norm_fused_into_combine=True,
     )
     observer = LocalIntervals()
     observer.install(layer, "_hc_mix_and_combine", entry)
@@ -548,7 +565,7 @@ def collect_mhc(config, quant, manifest, plan, rank, provenance, stream, receipt
             attn_output = torch.randn(tokens, config.hidden_size, generator=generator, dtype=torch.bfloat16).cuda()
             ffn_output = torch.randn(tokens, config.hidden_size, generator=generator, dtype=torch.bfloat16).cuda()
             _, prev_pre, _, _ = layer._hc_mix_and_combine(
-                hidden, layer.hc_ffn_fn, layer.hc_ffn_scale, layer.hc_ffn_base, apply_pre=None
+                hidden, layer.hc_ffn_fn, layer.hc_ffn_scale, layer.hc_ffn_base, None, layer.post_attention_layernorm
             )
             torch.cuda.synchronize()
 
@@ -557,11 +574,11 @@ def collect_mhc(config, quant, manifest, plan, rank, provenance, stream, receipt
                 # predecessor FFN pre; FFN consumes attn_pre. Each post uses its
                 # own coefficients and corresponding unsqueezed residual.
                 _, attn_pre, attn_post, attn_comb = layer._hc_mix_and_combine(
-                    hidden, layer.hc_attn_fn, layer.hc_attn_scale, layer.hc_attn_base, apply_pre=prev_pre
+                    hidden, layer.hc_attn_fn, layer.hc_attn_scale, layer.hc_attn_base, prev_pre, layer.input_layernorm
                 )
                 residual = layer.hc_post(attn_output, hidden, attn_post, attn_comb)
                 _, _, ffn_post, ffn_comb = layer._hc_mix_and_combine(
-                    residual, layer.hc_ffn_fn, layer.hc_ffn_scale, layer.hc_ffn_base, apply_pre=attn_pre
+                    residual, layer.hc_ffn_fn, layer.hc_ffn_scale, layer.hc_ffn_base, attn_pre, layer.post_attention_layernorm
                 )
                 return layer.hc_post(ffn_output, residual, ffn_post, ffn_comb)
 
@@ -621,7 +638,6 @@ def run(args, receipt):
     from sglang.srt.configs.load_config import LoadConfig
     from sglang.srt.configs.model_config import ModelConfig
     from sglang.srt.distributed import bootstrap
-    from sglang.srt.distributed.parallel_state_wrapper import ParallelState
     from sglang.srt.layers.vocab_parallel_embedding import ParallelLMHead
     from sglang.srt.model_loader.loader import _get_quantization_config
     from sglang.srt.models.deepseek_v2 import DeepseekV2MoE
@@ -648,7 +664,7 @@ def run(args, receipt):
         if sha(args.model_path / name) != digest:
             raise RuntimeError("checkpoint/tokenizer metadata changed: " + name)
     receipt.update(
-        framework_version="dev-" + FRAMEWORK_COMMIT,
+        framework_version=FRAMEWORK_VERSION,
         collector_revision=plan["collector_revision"],
         raw_package_version=importlib.metadata.version("sglang"),
         plan_sha256=sha(args.plan),
@@ -675,22 +691,21 @@ def run(args, receipt):
         cuda_graph_backend_decode="disabled",
         cuda_graph_backend_prefill="disabled",
     )
-    bench.publish(server, role="scheduler")
+    # Placement is published process-wide (runtime_context.publish ranks=...), exactly as
+    # benchmark/one_batch.py:681-687 does per TP worker; the parallel groups come up through
+    # bootstrap.init_parallel_runtime (one_batch.py:328-333) and read that published state.
+    bench.publish(
+        server,
+        role="scheduler",
+        ranks=bench.SpawnRanks(world_rank=bench.spawn_world_rank(server, tp_rank=rank, pp_rank=0), gpu_id=local_rank),
+    )
     bench.initialize_moe_config()
     bench.initialize_fp8_gemm_config()
     bench.initialize_fp4_gemm_config()
     model_config = ModelConfig.from_server_args(server)
     config = model_config.hf_text_config
-    ps = ParallelState.trivial(tp_rank=rank, tp_size=tp, attn_tp_rank=rank, attn_tp_size=tp, gpu_id=local_rank)
-    bootstrap.init_torch_distributed(
-        server_args=server,
-        model_config=model_config,
-        device="cuda",
-        ps=ps,
-        dist_port=int(os.environ["MASTER_PORT"]),
-        is_draft_worker=False,
-        local_omp_cpuid=None,
-    )
+    bootstrap.init_parallel_runtime(server_args=server, device="cuda", dist_port=int(os.environ["MASTER_PORT"]))
+    bootstrap.init_layer_runtime(model_config=model_config)
     quant = _get_quantization_config(model_config, LoadConfig(load_format="dummy"))
     if type(quant).__name__ != "Fp8Config" or quant.is_fp4_experts is not True or quant.dequant_fp4_to_fp8:
         raise RuntimeError("native checkpoint quantization selection differs")

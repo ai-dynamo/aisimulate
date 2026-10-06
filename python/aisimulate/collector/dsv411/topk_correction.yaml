@@ -1,0 +1,22 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Top-k delta correction for dsv411 rows seeded with synthetic_kv (collector/dsv411/correction.py, applied by
+# publish.py; stored per row as kv_seed_correction, latency already multiplied).
+#
+# Why: with bounded random cache contents the indexer's top-k gathers a uniform selection, which the
+# cached-prefill indexer path of vLLM 0.30.0 serves faster than the clustered selection real KV produces.
+# Evidence (H20 TP2, 2026-10-04, raw/vllm-tp2-ab-random vs the real_kv calibration, debug/ab_compare.py):
+#   indexer context, past kv > 0, synthetic/real latency: b1 q8192 kv524288 0.94-0.97; b2 q2048 kv262144
+#   0.90-0.93; b4 q256 kv131072 0.87-0.90; b8 q4096 kv65536 0.86-0.89 (n=18 cells, 3 indexer structures each);
+#   prefix-free context 1.00-1.01; generation 0.96-1.04 (n=12); attention_core context/generation 1.00-1.02.
+#   sglang 0.5.21: every A/B ratio within 0.8% (raw/sglang-tp2-ab-random) - no factor.
+# The factor is 1 / median ratio per batch size; batches above the largest evidence point hold its factor
+# (the grid caps batch at 8 for past kv >= 8192; shorter cached prefixes at larger batches are extrapolated,
+# documented here, revisit with an A/B at those cells).
+schema_version: 1
+vllm:
+  indexer:
+    context:
+      batch_factors: {1: 1.05, 2: 1.09, 4: 1.12, 8: 1.14}
+      beyond_largest_batch: hold

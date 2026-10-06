@@ -1,0 +1,43 @@
+# Machine-readable step manifest for workflows/onboard_model.md.
+# Params: repo (HF checkpoint), sm (default sm90).
+workflow: onboard_model
+steps:
+- id: inputs_ready
+  actor: script
+  done_when: {check: model_inputs_ready}
+- id: dummies_built
+  actor: script
+  done_when: {check: dummies_built}
+- id: identity_probed
+  actor: script
+  done_when: {check: model_probed}
+- id: fails_dispositioned
+  actor: ai
+  done_when: {check: model_fails_dispositioned}
+- id: decomposed
+  actor: script
+  done_when: {check: model_decomposed}
+- id: granularity_decided
+  actor: owner
+  done_when: {check: residue_dispositioned}
+# Op-family coverage (2026-10-03): checkpoints whose coverage comes from a standalone module family
+# declare `op_family` in targets.yaml roster.checkpoint_overrides; the four predicates below derive the
+# family's state from artifacts (SDK manifest, serving decomposition, admission records, strict load).
+- id: manifest_exported
+  actor: script
+  done_when: {check: sdk_manifest_exported}
+- id: module_identity_aligned
+  actor: script
+  done_when: {check: module_identity_aligned}
+- id: coverage_collected
+  actor: script
+  done_when: {check: calibration_admitted}
+- id: path_aligned
+  actor: script
+  done_when: {check: model_gates_aligned}
+- id: published
+  actor: script
+  done_when: {check: published_loadable}
+- id: e2e_admitted
+  actor: script
+  done_when: {check: e2e_admitted}

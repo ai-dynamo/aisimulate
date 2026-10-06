@@ -49,6 +49,7 @@ CORE_SDK_LEAF_MODULES = [
     "models.deepseek_v32",
     "models.deepseek_v4",
     "models.deepseek_v41",
+    "models.deepseek_v411",
     "models.gemma4",
     "models.gpt",
     "models.helpers",

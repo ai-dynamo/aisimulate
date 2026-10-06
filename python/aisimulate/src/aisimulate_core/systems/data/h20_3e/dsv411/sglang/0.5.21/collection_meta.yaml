@@ -1,0 +1,136 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+schema_version: 2
+provenance: collected
+runtime:
+  framework: sglang
+  version: 0.5.21
+  image: lmsysorg/sglang:v0.5.21
+  image_digest: sha256:b1259f3ea3275f66237c498ea388919729018bc9f01c3d638391e06e2cf3f469
+  source_commit: e00930c5489053f26d86b179cee0d087f846acbb
+  abi: &id001
+    torch: 2.13.0
+    nccl: 2.30.7
+tables:
+  dsv411_module_perf:
+    rows: 27231
+    status: complete
+    collections:
+    - collector_ref: 28d809c99fef70b21e96f812ab7f2188acb997f0
+      collector_hash: sha256:469425a64dbb486c76617096611d26afe53ac8fa7f459394f37958544d91285b
+      case_plan_hash: sha256:1dd712da750eda115612b703c524a552b024170893aa5997906ce3b2ef439b4a
+      collected_at: '2026-10-05'
+      rows: 6799
+      status: complete
+      runtime:
+        framework: sglang
+        version: 0.5.21
+        image: lmsysorg/sglang:v0.5.21
+        image_digest: sha256:b1259f3ea3275f66237c498ea388919729018bc9f01c3d638391e06e2cf3f469
+        source_commit: e00930c5489053f26d86b179cee0d087f846acbb
+        abi: *id001
+    - collector_ref: 28d809c99fef70b21e96f812ab7f2188acb997f0
+      collector_hash: sha256:469425a64dbb486c76617096611d26afe53ac8fa7f459394f37958544d91285b
+      case_plan_hash: sha256:0485d527a9f1c675f73e4cc17472adcfc61b79485e93ba2e138b10d65dc12a81
+      collected_at: '2026-10-05'
+      rows: 6508
+      status: complete
+      runtime:
+        framework: sglang
+        version: 0.5.21
+        image: lmsysorg/sglang:v0.5.21
+        image_digest: sha256:b1259f3ea3275f66237c498ea388919729018bc9f01c3d638391e06e2cf3f469
+        source_commit: e00930c5489053f26d86b179cee0d087f846acbb
+        abi: *id001
+    - collector_ref: 28d809c99fef70b21e96f812ab7f2188acb997f0
+      collector_hash: sha256:469425a64dbb486c76617096611d26afe53ac8fa7f459394f37958544d91285b
+      case_plan_hash: sha256:c32b0e2585bdba787237c63df8a3c09314ede308145728701ffd90081c6651e4
+      collected_at: '2026-10-05'
+      rows: 6772
+      status: complete
+      runtime:
+        framework: sglang
+        version: 0.5.21
+        image: lmsysorg/sglang:v0.5.21
+        image_digest: sha256:b1259f3ea3275f66237c498ea388919729018bc9f01c3d638391e06e2cf3f469
+        source_commit: e00930c5489053f26d86b179cee0d087f846acbb
+        abi: *id001
+    - collector_ref: 28d809c99fef70b21e96f812ab7f2188acb997f0
+      collector_hash: sha256:469425a64dbb486c76617096611d26afe53ac8fa7f459394f37958544d91285b
+      case_plan_hash: sha256:f555a05a94517889fc611b39c7f75118812b3bf2657ab9f5dae4d0bff52fe043
+      collected_at: '2026-10-05'
+      rows: 6502
+      status: complete
+      runtime:
+        framework: sglang
+        version: 0.5.21
+        image: lmsysorg/sglang:v0.5.21
+        image_digest: sha256:b1259f3ea3275f66237c498ea388919729018bc9f01c3d638391e06e2cf3f469
+        source_commit: e00930c5489053f26d86b179cee0d087f846acbb
+        abi: *id001
+    - collector_ref: a739cc5ae54948454ad8402de748c79a88288487
+      collector_hash: sha256:469425a64dbb486c76617096611d26afe53ac8fa7f459394f37958544d91285b
+      case_plan_hash: sha256:83b2a3dbbb29309802e3dfd89d4b095d5d1291f96f3087fd159f54fcc96adfcf
+      collected_at: '2026-10-05'
+      rows: 153
+      status: complete
+      runtime:
+        framework: sglang
+        version: 0.5.21
+        image: lmsysorg/sglang:v0.5.21
+        image_digest: sha256:b1259f3ea3275f66237c498ea388919729018bc9f01c3d638391e06e2cf3f469
+        source_commit: e00930c5489053f26d86b179cee0d087f846acbb
+        abi: *id001
+    - collector_ref: f49f62d040c9d2e874eb3067a90adc295c9a60c8
+      collector_hash: sha256:469425a64dbb486c76617096611d26afe53ac8fa7f459394f37958544d91285b
+      case_plan_hash: sha256:7d05277dc6c3f52803d2b5760398c3367db2a62fd70ad68db12d15716931c996
+      collected_at: '2026-10-05'
+      rows: 2
+      status: complete
+      runtime:
+        framework: sglang
+        version: 0.5.21
+        image: lmsysorg/sglang:v0.5.21
+        image_digest: sha256:b1259f3ea3275f66237c498ea388919729018bc9f01c3d638391e06e2cf3f469
+        source_commit: e00930c5489053f26d86b179cee0d087f846acbb
+        abi: *id001
+    - collector_ref: a739cc5ae54948454ad8402de748c79a88288487
+      collector_hash: sha256:469425a64dbb486c76617096611d26afe53ac8fa7f459394f37958544d91285b
+      case_plan_hash: sha256:a6d975de8f6ed7fd103f65e0feb0f272e86607d0b0fb1c373453320e293f0d76
+      collected_at: '2026-10-05'
+      rows: 117
+      status: complete
+      runtime:
+        framework: sglang
+        version: 0.5.21
+        image: lmsysorg/sglang:v0.5.21
+        image_digest: sha256:b1259f3ea3275f66237c498ea388919729018bc9f01c3d638391e06e2cf3f469
+        source_commit: e00930c5489053f26d86b179cee0d087f846acbb
+        abi: *id001
+    - collector_ref: 908f64c772c9d5914933e4dafe88f45bae0a4027
+      collector_hash: sha256:469425a64dbb486c76617096611d26afe53ac8fa7f459394f37958544d91285b
+      case_plan_hash: sha256:14090caea7472cc58ddf997963d0087513a7b534b9d3896ed0ace97d3479b20f
+      collected_at: '2026-10-05'
+      rows: 189
+      status: complete
+      runtime:
+        framework: sglang
+        version: 0.5.21
+        image: lmsysorg/sglang:v0.5.21
+        image_digest: sha256:b1259f3ea3275f66237c498ea388919729018bc9f01c3d638391e06e2cf3f469
+        source_commit: e00930c5489053f26d86b179cee0d087f846acbb
+        abi: *id001
+    - collector_ref: f49f62d040c9d2e874eb3067a90adc295c9a60c8
+      collector_hash: sha256:469425a64dbb486c76617096611d26afe53ac8fa7f459394f37958544d91285b
+      case_plan_hash: sha256:d8f71d63e9e1e9622fe41ac2e7feb747c2bda288361aa66da6b93334fa7099e3
+      collected_at: '2026-10-05'
+      rows: 189
+      status: complete
+      runtime:
+        framework: sglang
+        version: 0.5.21
+        image: lmsysorg/sglang:v0.5.21
+        image_digest: sha256:b1259f3ea3275f66237c498ea388919729018bc9f01c3d638391e06e2cf3f469
+        source_commit: e00930c5489053f26d86b179cee0d087f846acbb
+        abi: *id001

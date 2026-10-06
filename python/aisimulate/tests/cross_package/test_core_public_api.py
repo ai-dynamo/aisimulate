@@ -107,6 +107,7 @@ def test_stable_function_signatures() -> None:
         "systems_path: 'str | None' = None, "
         "forward_model: 'str | None' = None, "
         "decoder_replay: 'bool' = False, "
+        "dsv41_family: 'str' = 'legacy', "
         "fpm_profile: 'dict | str | FpmModelProfile | None' = None, "
         "worker_type: 'str' = 'aggregated', "
         "fpm_interpolation: 'str | None' = None, cp_size: 'int' = 1, "

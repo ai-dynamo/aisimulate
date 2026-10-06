@@ -23,9 +23,9 @@ vLLM MLA-BMM queries fell back to the trtllm tables (the SDK's
 # MLA bmm call site unchanged in-image on GB300).
 # B200 0.25.0 qualification: both pre/post torch.bmm callbacks passed in
 # job 1968047. The NVIDIA bf16 BMM contract and input geometry are unchanged.
-__compat__ = "vllm>=0.25.0,<=0.27.0,!=0.25.1,!=0.26.0"
+__compat__ = "vllm>=0.25.0,<=0.30.0,!=0.25.1,!=0.26.0"
 
-import pkg_resources
+from importlib.metadata import version as _dist_version  # setuptools/pkg_resources is absent from recent framework images
 import torch
 from collector.case_generator import get_mla_bmm_case_specs
 from collector.helper import benchmark_with_power, log_perf
@@ -62,7 +62,7 @@ def _log_row(*, op_name, dtype, num_tokens, num_heads, results, perf_filename, d
             }
         ],
         framework="VLLM",
-        version=pkg_resources.get_distribution("vllm").version,
+        version=_dist_version("vllm"),
         device_name=torch.cuda.get_device_name(device),
         op_name=op_name,
         kernel_source="vllm_torch_bmm",
