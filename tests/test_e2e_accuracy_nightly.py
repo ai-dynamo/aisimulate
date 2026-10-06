@@ -1365,6 +1365,7 @@ def test_publication_checks_aic_success_count_against_point_statuses(artifact, s
         pages._accuracy_summary(json.dumps(summary))
     for item in (summary["totals"], model, workload, gpu, topology):
         item["aic"]["points"] -= 1
+    summary["totals"]["by_configuration_quality"]["not_recorded"]["aic"]["points"] -= 1
     assert pages._accuracy_summary(json.dumps(summary)) == summary
 
 
@@ -1430,6 +1431,7 @@ def test_publication_accepts_failure_details_but_rejects_success_errors(artifact
         item["aisimulate"]["points"] -= 1
         item["aisimulate"]["status_counts"]["success"] -= 1
         item["aisimulate"]["status_counts"]["failed"] += 1
+    summary["totals"]["by_configuration_quality"]["not_recorded"]["aisimulate"]["points"] -= 1
     failed["aisim_error"] = "ValueError: no KV budget"
     assert publish.validate_artifact(archive(summary), run) == summary
     success = topology["points"][1]
