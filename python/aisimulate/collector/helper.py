@@ -217,8 +217,7 @@ def benchmark_with_power(
     measure_power: bool | None = None,  # Auto-detect from environment if None
     power_min_duration: float | None = None,  # Auto-detect from environment if None
     allow_graph_fail: bool = False,  # Enable graceful fallback on graph capture failure
-    use_cuda_graph: bool = True,  # set False to force eager execution (ops whose captured
-    # private pools retain memory across tasks — see collect_mla_module DSA context).
+    use_cuda_graph: bool = True,  # Set False only for explicitly eager measurements.
 ):
     """
     Context manager that handles warmup, graph capture, timing, and power monitoring.
@@ -236,9 +235,8 @@ def benchmark_with_power(
                          to work in both paths. Default False for backward compatibility.
         use_cuda_graph: If False, skip CUDA graph capture entirely and run every
                          iteration eagerly. Defaults to True so all existing callers
-                         (~30 collectors) keep graph-mode measurement. Callers whose
-                         captured forward pass retains GiB-scale memory in the graph's
-                         private pool across tasks should pass False.
+                         keep graph-mode measurement. The caller must release any
+                         framework-owned tensors that outlive the captured graph.
 
     Yields:
         dict with keys:
@@ -293,33 +291,35 @@ def benchmark_with_power(
     # ═══════════════════════════════════════════════════════════════════
     # CUDA Graph Capture with Optional Fallback
     # ═══════════════════════════════════════════════════════════════════
-    g = None  # kept in scope so the finally block below can tear it down
-    if torch.cuda.is_available() and use_cuda_graph:
-        use_graph = True
-        g = torch.cuda.CUDAGraph()
-
-        try:
-            with torch.cuda.graph(g):
-                for _ in range(repeat_n):
-                    kernel_func()
-            torch.cuda.synchronize()
-        except Exception as e:
-            if allow_graph_fail:
+    g = None
+    # Capture itself must be protected too: its exception traceback can keep
+    # the graph object alive even after this generator exits. Attempt explicit
+    # teardown of graph resources without waiting for that traceback to be
+    # dropped; an interrupted capture may still leave CUDA state unusable.
+    try:
+        use_graph = torch.cuda.is_available() and use_cuda_graph
+        if use_graph:
+            g = torch.cuda.CUDAGraph()
+            original_stream = torch.cuda.current_stream()
+            try:
+                try:
+                    with torch.cuda.graph(g):
+                        for _ in range(repeat_n):
+                            kernel_func()
+                finally:
+                    # torch.cuda.graph may raise from capture_begin/end before
+                    # its stream context restores the caller's current stream.
+                    torch.cuda.set_stream(original_stream)
+                torch.cuda.synchronize()
+            except Exception as e:
+                if not allow_graph_fail:
+                    raise
                 logging.getLogger(__name__).warning(f"CUDA graph capture failed: {e}. Falling back to eager execution.")
-                g = None  # drop the partial capture so empty_cache can reclaim its private pool
+                g.reset()
+                g = None
                 torch.cuda.empty_cache()
                 use_graph = False
-            else:
-                # Standard behavior: re-raise exception
-                raise
-    else:
-        use_graph = False
 
-    # Everything from here to the yield holds live references to the captured
-    # graph's private pool. A try/finally guarantees the graph (and therefore
-    # its pool) is released before we return to the caller, regardless of
-    # whether warmup raises, the yield body raises, or we finish cleanly.
-    try:
         # ═══════════════════════════════════════════════════════════════
         # Warmup the ACTUAL execution path (after graph capture)
         # ═══════════════════════════════════════════════════════════════
@@ -403,17 +403,13 @@ def benchmark_with_power(
             "used_cuda_graph": use_graph,  # NEW: Inform caller which path was used
         }
     finally:
-        # Drop the CUDA graph and reclaim its private memory pool. CUDA graph
-        # captures sequester intermediate tensors into a private pool that
-        # outlives Python-level GC of the CUDAGraph object in some PyTorch
-        # versions — if we skip this explicit teardown, leaky ops (e.g. DSA
-        # context via flashmla-sparse, which captures ~18 GiB of scratch)
-        # accumulate pool memory across tasks until the worker saturates at
-        # ~146 GiB pinned and subsequent tasks OOM at _ensure_workspace_size.
+        # Reset the graph even when a traceback or a caller keeps its Python
+        # object alive. A graph pool may still contain framework-owned tensors;
+        # those must also be released by the collector before it is reclaimable.
         if g is not None:
+            g.reset()
             g = None
             if torch.cuda.is_available():
-                torch.cuda.synchronize()
                 torch.cuda.empty_cache()
 
 
