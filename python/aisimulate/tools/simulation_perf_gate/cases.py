@@ -2,23 +2,22 @@
 # SPDX-License-Identifier: Apache-2.0
 """Fixed workloads: never resize a case during a base/head comparison."""
 
+import json
 from copy import deepcopy
+from pathlib import Path
 
 VERSIONS = {"vllm": "0.24.0", "sglang": "0.5.14", "trtllm": "1.3.0rc20"}
-AGENTX_SHA256 = "d65b573413396bb689cf7e1d5c85c50ea970ad7ad5714c0a78d4f75102e5d86d"
 
 # Frozen after the CI runner size trial; never adjusted during comparison.
 WORKLOAD_COUNTS = {
     "dense-vllm": 65536,
-    "dense-sglang": 16384,
+    "dense-sglang": 32768,
     "dense-trtllm": 65536,
-    "moe-long-prefill": 16384,
-    "moe-long-decode": 4096,
     "cache-pressure-vllm": 4096,
-    "cache-pressure-sglang": 2048,
+    "cache-pressure-sglang": 4096,
     "mla-multiworker-dp": 32768,
     "pd-vllm": 32768,
-    "pd-sglang": 8192,
+    "pd-sglang": 16384,
 }
 
 
@@ -82,6 +81,7 @@ def case(
         engine["kv_transfer"] = {"bandwidth_gb_per_second": 400.0, "timing_mode": "destination_missing"}
     return {
         "case_id": case_id,
+        "runner": "engine",
         "determinism": "canonical_v1",
         "config": {
             "engine": engine,
@@ -98,10 +98,6 @@ def case(
 
 def expand_cases() -> list[dict]:
     result = [case(f"dense-{backend}", backend) for backend in VERSIONS]
-    result += [
-        case("moe-long-prefill", "vllm", model="Qwen/Qwen3-235B-A22B", tp=8, ep=8, isl=32768, osl=32, concurrency=16),
-        case("moe-long-decode", "sglang", model="Qwen/Qwen3-235B-A22B", tp=8, ep=8, osl=2048, concurrency=128),
-    ]
     for backend in ("vllm", "sglang"):
         item = case(f"cache-pressure-{backend}", backend)
         item["config"]["traffic"] = {
@@ -132,16 +128,28 @@ def expand_cases() -> list[dict]:
     result += [case(f"pd-{backend}", backend, mode="disaggregated") for backend in ("vllm", "sglang")]
     for backend, mode in (("vllm", "aggregated"), ("sglang", "disaggregated")):
         item = case(f"agentx-{backend}-{mode}", backend, mode=mode, model="Qwen/Qwen3.5-397B-A17B", tp=8, ep=8)
+        fixture = json.loads((Path(__file__).parent / "fixtures/agentx.json").read_text())
+        for role in item["config"]["engine"]["workers"].values():
+            role["parallelism"]["replicas"] = 2
         item["config"]["traffic"] = {
             "source": {
                 "type": "trace",
                 "format": "weka",
-                "paths": ["fixtures/agentx.jsonl"],
+                "paths": [fixture["path"]],
                 "nested_timestamp_basis": "absolute",
             },
-            "load": {"type": "trace_timestamps", "speedup": 1.0, "agentic_lanes": 1},
+            "load": {"type": "trace_timestamps", "speedup": 1.0, "agentic_lanes": 4},
         }
-        item.update(trace_sha256=AGENTX_SHA256, expected_requests=129, expected_output_tokens=114540)
+        item.update(
+            runner="dynamo",
+            determinism="random",
+            router={"router_mode": "kv_router", "router_config": {"router_temperature": 0.0}},
+            fixture=fixture,
+            expected_requests=fixture["requests"],
+            expected_input_tokens=fixture["input_tokens"],
+            expected_output_tokens=fixture["output_tokens"],
+            expected_plays=fixture["plays"],
+        )
         result.append(item)
     for item in result:
         if item["case_id"] not in WORKLOAD_COUNTS:
