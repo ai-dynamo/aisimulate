@@ -12,13 +12,14 @@ from __future__ import annotations
 import bisect
 import heapq
 import itertools
+import gzip
 import json
 import math
 import os
 from collections.abc import Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -59,6 +60,10 @@ class ResourceLimitError(RuntimeError):
     def __init__(self, message: str, *, plan: dict[str, Any] | None = None) -> None:
         super().__init__(message)
         self.plan = plan or {"status": "resource_limited", "reason": message}
+
+
+class _SerialAdmissionRequired(ResourceLimitError):
+    """An unknown peak prevents a multi-candidate wave, regardless of headroom."""
 
 
 def _read_text(path: Path) -> str | None:
@@ -470,6 +475,119 @@ def _finite_agentic_estimate(lower: int) -> ResourceEstimate:
     )
 
 
+def _token_length(value: Any) -> int:
+    if type(value) is not int or value < 0:
+        raise ValueError("trace token lengths must be nonnegative integers")
+    return value
+
+
+@dataclass
+class _AgenticTraceMetadata:
+    """Keep scalar counters only; never retain request or token arrays."""
+
+    format: str
+    block_size: int = 0
+    hashes: int = 0
+    authored_outputs: int = 0
+    outputs: int = 0
+    largest_input: int = 0
+    requests: int = 0
+    agentic: bool | None = None
+    rows: dict[str, dict[str, Any]] = field(default_factory=dict)
+    wrapped: bool = False
+
+    @property
+    def lower_bound(self) -> int:
+        return max(
+            8 * self.hashes + 4 * self.authored_outputs, 4 * (self.hashes + self.outputs), 4 * self.largest_input
+        )
+
+    def consume(self, prefix: str, event: str, value: Any) -> bool:
+        """Return whether the running array bound changed."""
+        if self.format == "agentic_mooncake":
+            if prefix in {"input_length", "input_tokens", "output_length", "output_tokens"}:
+                length = _token_length(value)
+                if prefix in {"input_length", "input_tokens"}:
+                    self.largest_input = max(self.largest_input, length)
+                else:
+                    self.outputs += length
+                self.requests += 1
+            elif prefix == "hash_ids.item" and event == "number":
+                self.hashes += 1
+            elif prefix == "output_token_ids.item" and event == "number":
+                self.authored_outputs += 1
+            else:
+                return False
+            return True
+        if self.format == "weka":
+            if prefix == "block_size" and event == "number" and value != self.block_size:
+                raise ValueError("Weka corpus mixes block sizes")
+            # Only request objects used by WekaEntry and WekaInnerEntry count.
+            # Totals, provenance, and the subagent marker itself are not requests.
+            if prefix in {"requests.item", "requests.item.requests.item"}:
+                if event == "start_map":
+                    self.rows[prefix] = {}
+                elif event == "end_map":
+                    row = self.rows.pop(prefix)
+                    if row.get("type") not in {"n", "s"}:
+                        return False
+                    length = _token_length(row.get("in"))
+                    self.hashes += (length + self.block_size - 1) // self.block_size
+                    self.outputs += _token_length(row.get("out"))
+                    self.largest_input = max(self.largest_input, length)
+                    self.requests += 1
+                    return True
+            else:
+                base, _, key = prefix.rpartition(".")
+                if key in {"type", "in", "out"} and base in self.rows:
+                    self.rows[base][key] = value
+            return False
+
+        # Dynamo JSONL accepts either a direct event or an outer event wrapper.
+        if prefix == "" and event == "start_map":
+            self.rows = {"": {}, "event": {}}
+            self.wrapped = False
+        if prefix == "event":
+            self.wrapped = True
+        base = "event" if prefix.startswith("event.") else ""
+        key = prefix.removeprefix("event.") if base else prefix
+        row = self.rows.get(base)
+        if row is not None:
+            if key in {"event_type", "request.output_tokens", "request.replay.input_length"}:
+                row[key] = value
+            elif key == "agent_context" and event in {"start_map", "null"}:
+                row[key] = event == "start_map"
+            elif key == "request.replay.input_sequence_hashes.item" and event == "number":
+                row["hashes"] = row.get("hashes", 0) + 1
+        if prefix != "" or event != "end_map":
+            return False
+        row = self.rows["event" if self.wrapped else ""]
+        if row.get("event_type") != "request_end":
+            return False
+        contextual = row.get("agent_context", False)
+        if self.agentic is not None and contextual != self.agentic:
+            raise ResourceLimitError("Dynamo request trace cannot mix requests with and without agent_context")
+        self.agentic = contextual
+        self.hashes += row.get("hashes", 0)
+        self.outputs += _token_length(row.get("request.output_tokens"))
+        self.largest_input = max(self.largest_input, _token_length(row.get("request.replay.input_length")))
+        self.requests += 1
+        return True
+
+
+def _weka_block_size(path: Path) -> int:
+    # serde accepts any field order. Read the first play's block size before
+    # counting requests, without retaining preceding input lengths or arrays.
+    with path.open("rb") as stream:
+        for prefix, event, value in ijson.parse(stream, multiple_values=True, buf_size=64 * 1024):
+            if prefix == "block_size":
+                block_size = _token_length(value)
+                if block_size > 0:
+                    return block_size
+                break
+    raise ValueError("Weka trace requires a positive block_size")
+
+
 def _estimate_trace(
     workload: Mapping[str, Any], *, stack: str, inspection_budget_bytes: int | None = None
 ) -> ResourceEstimate:
@@ -488,11 +606,17 @@ def _estimate_trace(
     }:
         return unqualified("trace format or runner has no qualified allocation model")
     finite_agentic = (
-        format_name == "agentic_mooncake"
+        format_name in {"agentic_mooncake", "weka", "dynamo"}
         and workload.get("agentic_profile") is None
         and workload.get("agentic_snapshot") is None
         and not workload.get("agentic_warmup")
     )
+    metadata = (
+        _AgenticTraceMetadata(format_name, agentic=None if format_name == "dynamo" else True)
+        if finite_agentic
+        else None
+    )
+    legacy_error = None
     length_keys = {
         "in",
         "out",
@@ -511,7 +635,6 @@ def _estimate_trace(
     token_keys = {"input_token_ids", "output_token_ids", "prompt_token_ids"}
     hash_keys = {"hash_ids", "input_sequence_hashes"}
     total_bytes = tokens = hashes = records = turns = 0
-    output_tokens = authored_outputs = max_input_tokens = lower = 0
     block_size = int(workload.get("trace_block_size") or 512)
 
     paths = workload.get("trace_paths") or [workload["trace_path"]]
@@ -524,7 +647,9 @@ def _estimate_trace(
                     return unqualified("trace symlinks have no stable resource identity")
                 if not path.is_file() or (format_name == "weka" and path.suffix.lower() not in {".json", ".jsonl"}):
                     continue
-                if not finite_agentic:
+                if metadata and format_name == "weka" and not metadata.block_size:
+                    metadata.block_size = _weka_block_size(path)
+                if not metadata or metadata.agentic is False:
                     storage_estimate = WORKER_BASELINE_BYTES + 128 * (total_bytes + path.stat().st_size)
                     if inspection_budget_bytes is not None and storage_estimate > inspection_budget_bytes:
                         return ResourceEstimate(
@@ -539,45 +664,53 @@ def _estimate_trace(
                 # bound resident data; use array counts and runtime supervision.
                 # The parser still holds individual scalar values in memory.
                 maps: list[bool] = []
-                with path.open("rb") as stream:
+                with (
+                    gzip.open(path, "rb") if format_name == "dynamo" and path.suffix == ".gz" else path.open("rb")
+                ) as stream:
                     for prefix, event, value in ijson.parse(stream, multiple_values=True, buf_size=64 * 1024):
+                        if metadata:
+                            previous_mode = metadata.agentic
+                            changed = metadata.consume(prefix, event, value)
+                            if (
+                                changed
+                                and metadata.agentic
+                                and inspection_budget_bytes is not None
+                                and WORKER_BASELINE_BYTES + metadata.lower_bound > inspection_budget_bytes
+                            ):
+                                return _finite_agentic_estimate(metadata.lower_bound)
+                            if format_name != "dynamo" or metadata.agentic:
+                                continue
+                            # Dynamo mode is data-driven. Preserve legacy counters
+                            # in this same pass until request events select a mode.
+                            if (
+                                previous_mode is None
+                                and metadata.agentic is False
+                                and inspection_budget_bytes is not None
+                            ):
+                                storage_estimate = WORKER_BASELINE_BYTES + 128 * (total_bytes + path.stat().st_size)
+                                if storage_estimate > inspection_budget_bytes:
+                                    return ResourceEstimate(
+                                        "trace-json-metadata-v1",
+                                        None,
+                                        0,
+                                        0,
+                                        storage_estimate,
+                                        "trace storage estimate exceeds live headroom during Dynamo mode inspection",
+                                    )
                         if event == "start_map":
                             maps.append(False)
                         elif event == "end_map":
                             records += int(maps.pop())
                         elif event == "map_key" and value in length_keys | token_keys:
                             maps[-1] = True
-                        elif finite_agentic:
-                            # Agentic rows consume only these top-level fields.
-                            # Nested provenance and input_sequence_hashes are ignored.
-                            if prefix in {"input_length", "input_tokens", "output_length", "output_tokens"}:
-                                if event != "number" or type(value) is not int or value < 0:
-                                    raise ValueError("trace token lengths must be nonnegative integers")
-                                if prefix in {"input_length", "input_tokens"}:
-                                    max_input_tokens = max(max_input_tokens, value)
-                                else:
-                                    output_tokens += value
-                            elif prefix == "hash_ids.item" and event == "number":
-                                hashes += 1
-                            elif prefix == "output_token_ids.item" and event == "number":
-                                authored_outputs += 1
-                            else:
-                                continue
-                            # Source u64 hashes coexist with authored u32 outputs.
-                            # Prepared hashes/outputs and expanded prompts use u32.
-                            lower = max(
-                                8 * hashes + 4 * authored_outputs, 4 * (hashes + output_tokens), 4 * max_input_tokens
-                            )
-                            if (
-                                inspection_budget_bytes is not None
-                                and WORKER_BASELINE_BYTES + lower > inspection_budget_bytes
-                            ):
-                                return _finite_agentic_estimate(lower)
                         else:
                             parts = prefix.rsplit(".", 2)
                             key = parts[-2] if parts[-1] == "item" and len(parts) > 1 else parts[-1]
                             if key in length_keys and event not in {"start_array", "end_array"}:
                                 if event != "number" or type(value) is not int or value < 0:
+                                    if metadata:
+                                        legacy_error = "trace token lengths must be nonnegative integers"
+                                        continue
                                     raise ValueError("trace token lengths must be nonnegative integers")
                                 tokens += value
                             elif key in token_keys and parts[-1] == "item" and event == "number":
@@ -589,13 +722,14 @@ def _estimate_trace(
                             elif key == "num_turns" and event == "number":
                                 turns += int(value) + 1
                     total_bytes += stream.tell()
-    except (OSError, ValueError, ijson.JSONError) as exc:
+    except (OSError, EOFError, ValueError, ijson.JSONError) as exc:
         return unqualified(f"cannot inspect trace metadata: {exc}")
+    if metadata and metadata.agentic and metadata.requests:
+        return _finite_agentic_estimate(metadata.lower_bound)
+    if legacy_error:
+        return unqualified(f"cannot inspect trace metadata: {legacy_error}")
     if records == 0:
         return unqualified("trace metadata contains no recognized request token lengths")
-    if finite_agentic:
-        # One corpus is shared across lanes. Other allocations are excluded.
-        return _finite_agentic_estimate(lower)
     tokens += hashes * block_size
     count = max(records, turns)
     # Delta and tool-turn sources can accumulate every preceding turn's tokens.
@@ -673,6 +807,14 @@ def estimate_workload(
     return ResourceEstimate(model, count, tokens, lower, peak)
 
 
+def _reserved_bytes(peak: int | None, lower: int, *, external: bool) -> int:
+    if peak is not None:
+        return peak
+    # Adapter v1 lower bounds may already contain process memory. Built-in
+    # unknown bounds describe arrays separately from the worker baseline.
+    return max(WORKER_BASELINE_BYTES, lower) if external else WORKER_BASELINE_BYTES + lower
+
+
 def build_plan(
     workload: Mapping[str, Any],
     *,
@@ -711,10 +853,14 @@ def build_plan(
     workers = min(requested_parallelism, budget["cpu_limit"], free // peak) if peak else 0
     reason = "" if workers else "candidate exceeds the host memory budget"
     if peak is None:
-        if free < WORKER_BASELINE_BYTES + estimate.lower_bound_bytes:
-            reason = "candidate lower bound plus worker baseline exceeds available host memory"
+        if free < _reserved_bytes(peak, estimate.lower_bound_bytes, external=callable(estimator)):
+            reason = (
+                "candidate estimate exceeds available host memory"
+                if callable(estimator)
+                else "candidate lower bound plus worker baseline exceeds available host memory"
+            )
         elif not os.environ.get("_AISIMULATE_SUPERVISED_BUDGET"):
-            reason = "unknown peak requires supervised serial execution"
+            reason = f"unknown peak requires supervised serial execution: {estimate.reason}"
         else:
             workers = 1  # Unqualified estimates require serial, continuously monitored execution.
             reason = estimate.reason
@@ -808,8 +954,9 @@ class GuardedRunnerFactory:
     def admit_wave(self, specs: list[Any]) -> dict[str, Any]:
         """Reserve the sum of a whole wave before creating any of its workers."""
         host = discover_host()
-        plans = [
-            build_plan(
+        plans = []
+        for spec in specs:
+            plan = build_plan(
                 spec.workload,
                 stack=self.stack,
                 policy=self.policy,
@@ -817,10 +964,13 @@ class GuardedRunnerFactory:
                 factory=self.factory,
                 concurrency=spec.concurrency,
             )
-            for spec in specs
-        ]
-        for plan in plans:
+            plans.append(plan)
             require_plan(plan)
+            if plan["estimate"]["estimated_peak_bytes"] is None and len(specs) > 1:
+                raise _SerialAdmissionRequired(
+                    "candidate wave requires supervised serial execution",
+                    plan={"status": "resource_limited", "workers": len(specs), "candidates": plans},
+                )
         budget = resolve_budget(self.policy, host)
         budget["coordinator_memory_bytes"] += _child_memory_bytes()
         available = max(
@@ -830,16 +980,16 @@ class GuardedRunnerFactory:
                 host.available_memory_bytes - budget["reserved_host_memory_bytes"] - COORDINATOR_RESERVE_BYTES,
             ),
         )
-        peaks = [plan["estimate"]["estimated_peak_bytes"] for plan in plans]
+        external = callable(getattr(self.factory, "estimate_host_resources", None))
         required = sum(
-            peak if peak is not None else WORKER_BASELINE_BYTES + candidate["estimate"]["lower_bound_bytes"]
-            for peak, candidate in zip(peaks, plans, strict=True)
+            _reserved_bytes(
+                candidate["estimate"]["estimated_peak_bytes"],
+                candidate["estimate"]["lower_bound_bytes"],
+                external=external,
+            )
+            for candidate in plans
         )
-        admitted = (
-            required <= available
-            and len(specs) <= budget["cpu_limit"]
-            and (all(peak is not None for peak in peaks) or len(specs) == 1)
-        )
+        admitted = required <= available and len(specs) <= budget["cpu_limit"]
         plan = {
             "status": "admitted" if admitted else "resource_limited",
             "required_bytes": required,

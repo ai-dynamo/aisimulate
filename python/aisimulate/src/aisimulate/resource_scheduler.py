@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .resources import ResourceLimitError
+from .resources import ResourceLimitError, _SerialAdmissionRequired
 from .supervision import checkpoint, close_pool, mark_execution_ready, terminate_pool
 
 
@@ -46,6 +46,11 @@ def evaluate_waves(specs, *, factory, initializer, evaluate, workers: int, timeo
             try:
                 plan = factory.admit_wave([specs[index] for index in wave])
                 break
+            except _SerialAdmissionRequired:
+                # This is a mode constraint, not transient memory pressure.
+                # Do not reparse candidates while halving an impossible wave.
+                capacity = 1
+                wave = wave[:1]
             except ResourceLimitError as exc:
                 if len(wave) > 1:
                     wave = wave[: max(1, len(wave) // 2)]
