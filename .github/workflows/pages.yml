@@ -17,6 +17,8 @@ on:
       - "scripts/notifications/**"
       - "scripts/pages/**"
       - "scripts/e2e_accuracy/**"
+      - "tests/e2e_accuracy_source/**"
+      - "python/aisimulate/src/aisimulate/sdk/config_adapter/**"
       - ".github/workflows/e2e-accuracy.yml"
       - ".github/workflows/e2e-accuracy-branch.yml"
       - ".github/e2e-accuracy-dataset.json"
@@ -48,6 +50,8 @@ on:
       - "scripts/notifications/**"
       - "scripts/e2e_accuracy/**"
       - "scripts/fpm_accuracy/**"
+      - "tests/e2e_accuracy_source/**"
+      - "python/aisimulate/src/aisimulate/sdk/config_adapter/**"
       - ".github/workflows/e2e-accuracy.yml"
       - ".github/workflows/e2e-accuracy-branch.yml"
       - ".github/e2e-accuracy-dataset.json"
@@ -131,7 +135,7 @@ jobs:
       - name: Test public artifact and accuracy contracts
         run: |
           python -m pip install --require-hashes -r scripts/pages/requirements.txt
-          python -m pytest -c /dev/null tests/test_pages_site.py tests/test_e2e_accuracy_overview.py tests/test_e2e_accuracy_nightly.py tests/fpm_accuracy -q
+          python -m pytest -c /dev/null tests/test_pages_site.py tests/test_e2e_accuracy_overview.py tests/test_e2e_accuracy_nightly.py tests/fpm_accuracy tests/e2e_accuracy_source -q
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "22"

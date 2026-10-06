@@ -6,7 +6,8 @@
 The source ``predictions.json`` retains historical ``dynamo_*`` field names for
 frontend compatibility. Rows with ``aisimulate_runner`` provenance are emitted
 as AISimulate results. The public output contains aggregate errors and identity
-dimensions only; it deliberately omits raw measurements and internal run IDs.
+dimensions and chart metrics, with public InferenceX GitHub run IDs for tracing
+measurements. Internal database run IDs are never published.
 """
 
 from __future__ import annotations
@@ -204,6 +205,14 @@ def _series_metrics(rows: list[dict[str, Any]], prefix: str) -> dict[str, Any]:
         tpot_errors.append(_absolute_percentage_error(predicted_tpot, measured_tpot))
 
     return {
+        **(
+            {
+                "status_counts": _status_counts(rows, "aic"),
+                "coverage_pct": _round_metric(len(eligible_rows) / len(rows) * 100) if rows else 0,
+            }
+            if prefix == "aic"
+            else {}
+        ),
         "points": len(eligible_rows),
         "ttft_mape_pct": _round_metric(_mean(ttft_errors)),
         "tpot_mape_pct": _round_metric(_mean(tpot_errors)),
@@ -212,10 +221,10 @@ def _series_metrics(rows: list[dict[str, Any]], prefix: str) -> dict[str, Any]:
     }
 
 
-def _status_counts(rows: list[dict[str, Any]]) -> dict[str, int]:
+def _status_counts(rows: list[dict[str, Any]], prefix: str = "aisimulate") -> dict[str, int]:
     counts = {"success": 0, "unsupported": 0, "failed": 0, "unknown": 0}
     for row in rows:
-        status = row.get("aisimulate_status")
+        status = row.get(f"{prefix}_status", "success" if prefix == "aic" else None)
         if status not in counts:
             status = "unknown"
         counts[status] += 1
@@ -246,8 +255,23 @@ def _workload_label(workload: str) -> str:
     return f"{short_length(input_tokens)}{short_length(output_tokens)}"
 
 
+def _chart_metrics(row: dict[str, Any], prefix: str) -> dict[str, float | None]:
+    """Read both public campaign and original Gym metric names, already per GPU."""
+    aliases = {
+        "e2e_ms": f"{prefix}_e2el_ms" if prefix == "silicon" else f"{prefix}_request_latency_ms",
+        "output_per_gpu": f"{prefix}_tput_per_gpu_output",
+        "total_per_gpu": f"{prefix}_tput_per_gpu_total",
+    }
+    values = {field: _finite(row.get(f"{prefix}_{field}", row.get(alias))) for field, alias in aliases.items()}
+    if prefix == "dynamo" and row.get("aisimulate_status") != "success":
+        return dict.fromkeys(values)
+    if prefix == "aic" and row.get("aic_status", "success") != "success":
+        return dict.fromkeys(values)
+    return values
+
+
 def _topology_summaries(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Publish numeric errors and normalized curves, never raw latency or run IDs."""
+    """Publish serving metrics and normalized curves without internal run IDs."""
     groups: dict[tuple[Any, ...], list[dict[str, Any]]] = defaultdict(list)
     for row in rows:
         groups[_topology_key(row)].append(row)
@@ -260,11 +284,29 @@ def _topology_summaries(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         anchors = {metric: first[f"silicon_{metric}_ms"] for metric in ("ttft", "tpot")}
         points = []
         for row in topology_rows:
-            point: dict[str, Any] = {"concurrency": row["conc"], "status": row["aisimulate_status"]}
-            for name, prefix in (("measured", "silicon"), ("aic", "aic"), ("aisimulate", "dynamo")):
-                point[name] = {}
+            run_id = row.get("silicon_github_run_id")
+            if run_id is not None and (
+                type(run_id) not in (str, int) or re.fullmatch(r"[1-9][0-9]*", str(run_id)) is None
+            ):
+                raise SnapshotError("invalid InferenceX GitHub run ID")
+            point: dict[str, Any] = {
+                "concurrency": row["conc"],
+                "status": row["aisimulate_status"],
+                "infx_run_id": str(run_id) if run_id is not None else None,
+            }
+            if "configuration_quality" in row:
+                point["configuration_quality"] = row["configuration_quality"]
+            if "aic_status" in row:
+                point["aic_status"] = row["aic_status"]
+            for name, prefix in (
+                ("measured", "silicon"),
+                ("aic", "aic"),
+                ("aisimulate", "dynamo"),
+            ):
+                point[name] = _chart_metrics(row, prefix)
                 for metric, anchor in anchors.items():
                     value = _finite(row.get(f"{prefix}_{metric}_ms"))
+                    point[name][f"{metric}_ms"] = value
                     point[name][f"{metric}_relative"] = round(value / anchor, 6) if value is not None else None
                     if name != "measured":
                         point[name][f"{metric}_error_pct"] = (
@@ -272,6 +314,25 @@ def _topology_summaries(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
                             if value is not None
                             else None
                         )
+                tpot = point[name]["tpot_ms"]
+                point[name]["interactivity_tok_s"] = 1000 / tpot if tpot else None
+                missing = (name == "aisimulate" and row["aisimulate_status"] != "success") or (
+                    name == "aic" and row.get("aic_status", "success") != "success"
+                )
+                point[name]["unavailable_metrics"] = {
+                    field: "prediction_failed"
+                    if missing
+                    else ("unsupported_by_predictor" if name == "aic" and field == "total_per_gpu" else "not_recorded")
+                    for field in (
+                        "ttft_ms",
+                        "tpot_ms",
+                        "e2e_ms",
+                        "output_per_gpu",
+                        "total_per_gpu",
+                        "interactivity_tok_s",
+                    )
+                    if point[name][field] is None
+                }
             points.append(point)
         summaries.append(
             {
@@ -296,10 +357,11 @@ def _topology_summaries(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return summaries
 
 
-def _evaluated_revision(runtime: dict[str, Any], branch: str | None) -> dict[str, str] | None:
+def _evaluated_revision(runtime: dict[str, Any], branch: str | None, *, preview: bool = False) -> dict[str, str] | None:
     if branch is None:
-        return None
-    if branch.endswith("/") or (branch != "main" and not re.fullmatch(r"release/[A-Za-z0-9][A-Za-z0-9._/-]*", branch)):
+        return None  # Historical unqualified exports remain readable.
+    pattern = r"[A-Za-z0-9][A-Za-z0-9._/-]*" if preview else r"release/[A-Za-z0-9][A-Za-z0-9._/-]*"
+    if branch.endswith("/") or (branch != "main" and not re.fullmatch(pattern, branch)):
         raise SnapshotError("branch must be main or release/<name>")
     source = runtime.get("source_checkout")
     if (
@@ -452,11 +514,18 @@ def _validate_inputs(
         for field in (
             "silicon_ttft_ms",
             "silicon_tpot_ms",
-            "aic_ttft_ms",
-            "aic_tpot_ms",
         ):
             if _finite(row.get(field)) is None or row[field] <= 0:
                 raise SnapshotError(f"row is missing a positive finite {field}")
+        aic_status = row.get("aic_status", "success")
+        if aic_status not in {"success", "failed", "unsupported"}:
+            raise SnapshotError("unknown AIC prediction status")
+        for field in ("aic_ttft_ms", "aic_tpot_ms"):
+            if aic_status == "success":
+                if _finite(row.get(field)) is None or row[field] <= 0:
+                    raise SnapshotError(f"row is missing a positive finite {field}")
+            elif row.get(field) is not None:
+                raise SnapshotError("non-success AIC row contains latency metrics")
         if _finite(row.get("conc")) is None or row["conc"] <= 0:
             raise SnapshotError("row is missing a positive finite conc")
         status = row.get("aisimulate_status")
@@ -496,6 +565,7 @@ def build_summary(
     source_url: str,
     exclude_multinode: bool = True,
     branch: str | None = None,
+    preview: bool = False,
 ) -> dict[str, Any]:
     all_rows = _validate_inputs(predictions, metadata, coverage)
     expected_source_url = f"{INFERENCEX_RELEASE_URL_PREFIX}{predictions['release_tag']}"
@@ -568,7 +638,23 @@ def build_summary(
         },
         "models": [_model_summary(model, by_model[model]) for model in sorted(by_model, key=str.casefold)],
     }
-    revision = _evaluated_revision(runtime, branch)
+    result["totals"]["by_configuration_quality"] = {
+        quality: {
+            "rows": len(group),
+            "aic": _series_metrics(group, "aic"),
+            "aisimulate": _series_metrics(group, "dynamo"),
+        }
+        for quality in ("verified", "estimated", "not_recorded")
+        if (group := [row for row in scoped_rows if row.get("configuration_quality", "not_recorded") == quality])
+    }
+    revision = _evaluated_revision(runtime, branch, preview=preview)
+    if preview:
+        if revision is None:
+            raise SnapshotError("preview requires an evaluated revision")
+        result["scope"]["preview"] = True
+        result["scope"]["claim"] = (
+            "PR preview for local review; excluded from public publication. " + result["scope"]["claim"]
+        )
     if revision is not None:
         prediction_run = predictions.get("aisimulate_run", {})
         if not isinstance(prediction_run, dict):

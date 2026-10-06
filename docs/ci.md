@@ -540,6 +540,15 @@ the public summary retains that entry point. Wheel byte checks and imports run b
 The client reads the dump without starting a database server. Artifact upload
 uses the output directory so the runner container hook remaps the full path.
 
+Each branch prepares measurements once and runs four independent prediction
+shards, with two CPU workers per shard and `fail-fast: false`. Results and
+incremental checkpoints are retained as internal Actions artifacts for seven days.
+`gh run rerun RUN_ID --failed` reuses successful shard artifacts from that run;
+only failed partitions repeat. A separate qualification job verifies full coverage
+and matching provenance before combining per-point results. Preview runs also
+retain resolved source evidence per shard. Actual concurrency depends on runner
+capacity (up to eight shard jobs across the two admitted branches).
+
 Complete campaigns upload sanitized `e2e-accuracy-web-<branch-key>` artifacts.
 Pages validates the branch's successful qualification job in the artifact's exact
 run attempt, producer, revision, coverage, and checksums before combining it with

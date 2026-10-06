@@ -121,7 +121,7 @@ test("qualified campaign shows its run and exclusions and rejects unsafe provena
     ...revision, status: "complete", advisory: true, run_id: "123",
     wheel_sha256: "a".repeat(64), dataset_sha256: "b".repeat(64),
     selected: data.totals.rows + 3, published: data.totals.rows,
-    backend_versions: ["0.10.0"], exclusion_reasons: { adapter_unsupported: 3 },
+    backend_versions: ["0.10.0"], exclusion_reasons: { adapter_unsupported: 2, adapter_topology_mismatch: 1 },
     selection_policy: "latest-complete-config-run-v1",
   };
   const app = setup(async () => response(data));
@@ -134,6 +134,7 @@ test("qualified campaign shows its run and exclusions and rejects unsafe provena
   assert.match(app.element("provenance-content").innerHTML, /max_num_batched_tokens=8192/);
   assert.doesNotMatch(app.element("provenance-content").innerHTML, /default scheduler/);
   assert.match(app.element("provenance-content").innerHTML, /adapter_unsupported/);
+  assert.match(app.element("provenance-content").innerHTML, /adapter_topology_mismatch/);
   for (const change of [
     { run_id: "123/../../evil" }, { selected: 0 }, { commit_sha: "e".repeat(40) },
     { advisory: false }, { published: data.totals.rows + 1 },
@@ -279,7 +280,7 @@ test("topology curves retain missing-point gaps and expose normalized numeric de
   assert.match(html, /TTFT trend/);
   assert.match(html, /Operating points \(3\)/);
   assert.match(html, /1\.200×/);
-  assert.match(html, /<td>failed<\/td>/);
+  assert.match(html, /<td>failed \/ success<\/td>/);
   assert.equal((html.match(/<line class="curve aisimulate"/g) ?? []).length, 0);
   assert.equal((html.match(/<circle class="point aisimulate"/g) ?? []).length, 4);
 });
@@ -302,14 +303,14 @@ test("changing topology updates the rendered points and shared selection in both
   const app = setup(async () => response(data)); await app.run('loadBranch("main")');
   app.run('state.selection = JSON.stringify([state.data.models[0].model, state.data.models[0].workloads[0].identity, state.data.models[0].workloads[0].gpus[0].gpu]); renderDrilldown(); updateLocation()');
   assert.equal(app.run("state.topologyId"), first.id);
-  assert.match(app.element("drilldown").innerHTML, /<tr><td>1<\/td><td>success<\/td>/);
+  assert.match(app.element("drilldown").innerHTML, /<tr><td>1<\/td><td>not recorded<\/td><td>success \/ success<\/td>/);
 
   for (const topology of [second, first]) {
     app.element("topology-select").events.change({ target: { value: topology.id } });
     assert.equal(app.run("state.topologyId"), topology.id);
     const html = app.element("drilldown").innerHTML;
     assert.match(html, new RegExp(`<option value="${topology.id}" selected>fp8 · vllm · aggregated · TP ${topology.parallelism.tp_size} · PP ${topology.parallelism.pp_size}`));
-    assert.match(html, new RegExp(`<tr><td>${topology.points[0].concurrency}</td><td>success</td>`));
+    assert.match(html, new RegExp(`<tr><td>${topology.points[0].concurrency}</td><td>not recorded</td><td>success / success</td>`));
     const other = topology === first ? second : first;
     assert.doesNotMatch(html, new RegExp(`<tr><td>${other.points[0].concurrency}</td>`));
     assert.equal(new URL(app.location.href).searchParams.get("topology"), topology.id);
@@ -705,4 +706,68 @@ test("baseline entry point is validated and displayed for both layouts", async (
       assert.throws(() => app.run("validateSummary(invalid)"), /legacy AIC CLI source/);
     }
   }
+});
+
+test("baseline failure keeps successful replay visible and requires missing AIC metrics", () => {
+  const data = withTopology();
+  const model = data.models[0], workload = model.workloads[0], gpu = workload.gpus[0];
+  const topology = gpu.topologies[0];
+  for (const item of [data.totals, model, workload, gpu, topology]) item.aic.points -= 1;
+  const point = topology.points[0];
+  point.aic_status = "failed";
+  for (const key of Object.keys(point.aic)) point.aic[key] = null;
+  const app = setup();
+  app.set("data", data);
+  assert.doesNotThrow(() => app.run("validateSummary(data)"));
+  app.set("topology", topology);
+  assert.match(app.run("pointTable(topology)"), /success \/ failed/);
+  point.aic.ttft_relative = 1;
+  app.set("data", data);
+  assert.throws(() => app.run("validateSummary(data)"), /schema/);
+});
+
+test("standalone PR preview displays its exact branch and cannot enter a public catalog", async () => {
+  const data = withEvaluation();
+  data.scope.preview = true;
+  data.snapshot.evaluated_revision.branch = "simonec/preview";
+  data.snapshot.aic_source.branch = "simonec/preview";
+  const app = harness(async path => path === "./branches.json" ? response(null, 404) : response(data));
+  await app.run("initialize()");
+  assert.equal(app.element("error-banner").hidden, true);
+  assert.match(app.element("branch-status").textContent, /PR preview.*simonec\/preview/);
+  assert.equal(app.run("state.catalog.default_branch"), "simonec/preview");
+  delete data.scope.preview;
+  app.set("data", data);
+  assert.throws(() => app.run("validateSummary(data)"), /invalid evaluated revision/);
+  const mixed = setup(async () => response({...data, scope: {...data.scope, preview: true}}));
+  await mixed.run('loadBranch("main")');
+  assert.match(mixed.element("error-banner").textContent, /cannot be mixed/);
+});
+
+test("configuration assumptions stay labeled and count mismatches fail", () => {
+  const data = withTopology();
+  const revision = { branch: "main", commit_sha: "d".repeat(40) };
+  data.snapshot.evaluated_revision = revision;
+  data.snapshot.aic_commit_sha = revision.commit_sha;
+  data.snapshot.aic_source = { repository: "https://github.com/ai-dynamo/aisimulate", ...revision };
+  const counts = {};
+  for (const model of data.models) for (const workload of model.workloads) for (const gpu of workload.gpus) {
+    for (const topology of gpu.topologies) for (const [index, point] of topology.points.entries()) {
+      point.configuration_quality = index % 2 ? "verified" : "estimated";
+      counts[point.configuration_quality] = (counts[point.configuration_quality] ?? 0) + 1;
+    }
+  }
+  data.snapshot.campaign = {
+    ...revision, status: "complete", advisory: true, run_id: "123",
+    wheel_sha256: "a".repeat(64), dataset_sha256: "b".repeat(64),
+    selected: data.totals.rows, published: data.totals.rows,
+    backend_versions: ["0.25.1"], exclusion_reasons: {}, selection_policy: "gym-resolved-config-v2",
+    configuration: { profile: "coverage-experiment/1", counts },
+  };
+  const app = harness();
+  app.set("data", data);
+  app.run("validateSummary(data)");
+  assert.match(app.run("pointTable(data.models[0].workloads[0].gpus[0].topologies[0])"), /estimated/);
+  app.run("data.snapshot.campaign.configuration.counts.estimated += 1");
+  assert.throws(() => app.run("validateSummary(data)"), /configuration coverage/);
 });

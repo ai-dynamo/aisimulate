@@ -175,6 +175,22 @@ def _qualified_inputs(branch: str = "main") -> tuple[dict, dict, dict]:
     return predictions, metadata, coverage
 
 
+def test_failed_baseline_does_not_remove_successful_replay_from_publication():
+    predictions, metadata, coverage = _inputs()
+    predictions["rows"][0].update(aic_status="failed", aic_ttft_ms=None, aic_tpot_ms=None)
+    summary = OVERVIEW.build_summary(
+        predictions,
+        metadata,
+        coverage,
+        predictions_sha256="c" * 64,
+        source_url="https://github.com/SemiAnalysisAI/InferenceX-app/releases/tag/db-dump/fixture",
+    )
+    original = _summary()
+    assert summary["totals"]["rows"] == original["totals"]["rows"]
+    assert summary["totals"]["aic"]["points"] == original["totals"]["aic"]["points"] - 1
+    assert summary["totals"]["aisimulate"]["points"] == original["totals"]["aisimulate"]["points"]
+
+
 def test_summary_separates_coverage_accuracy_and_multinode_scope() -> None:
     summary = _summary()
 
@@ -320,7 +336,9 @@ def test_public_page_prioritizes_aisimulate_over_aic_baseline() -> None:
     script = (public_dir / "app.js").read_text()
 
     assert page.index("AISim CLI TPOT MAPE") < page.index("AIC CLI TPOT MAPE")
-    assert script.index('accuracyCard("AISim CLI (new) Error"') < script.index('accuracyCard("AIC CLI (legacy) Error"')
+    assert script.index('accuracyCard("AISim CLI (new) Error · all configurations"') < script.index(
+        'accuracyCard("AIC CLI (legacy) Error · all configurations"'
+    )
     assert "data-series" not in page
 
 
@@ -579,3 +597,42 @@ def test_baseline_provenance_matches_selected_modules(entry, api, adapter):
         document["aic_run"]["runtime"]["config_adapter"] = "foreign.adapter"
     with pytest.raises(OVERVIEW.SnapshotError, match="modules disagree"):
         OVERVIEW._aic_source(predictions, metadata, coverage, None)
+
+
+@pytest.mark.parametrize("run_id", [28196140241, "28196140241", None])
+def test_summary_exports_public_run_id_without_internal_id(run_id):
+    predictions, metadata, coverage = _inputs()
+    for row in predictions["rows"]:
+        row.update(silicon_github_run_id=run_id, silicon_workflow_run_id=1961)
+    summary = OVERVIEW.build_summary(
+        predictions,
+        metadata,
+        coverage,
+        predictions_sha256="c" * 64,
+        source_url="https://github.com/SemiAnalysisAI/InferenceX-app/releases/tag/" + predictions["release_tag"],
+    )
+    points = [
+        p
+        for m in summary["models"]
+        for w in m["workloads"]
+        for g in w["gpus"]
+        for t in g["topologies"]
+        for p in t["points"]
+    ]
+    assert points
+    assert all(p["infx_run_id"] == (str(run_id) if run_id is not None else None) for p in points)
+    assert "silicon_workflow_run_id" not in json.dumps(summary)
+
+
+@pytest.mark.parametrize("run_id", [True, 0, -1, 1.5, "", "001", "1/2", "https://example.com"])
+def test_summary_rejects_malformed_public_run_id(run_id):
+    predictions, metadata, coverage = _inputs()
+    predictions["rows"][0]["silicon_github_run_id"] = run_id
+    with pytest.raises(OVERVIEW.SnapshotError, match="InferenceX GitHub run ID"):
+        OVERVIEW.build_summary(
+            predictions,
+            metadata,
+            coverage,
+            predictions_sha256="c" * 64,
+            source_url="https://github.com/SemiAnalysisAI/InferenceX-app/releases/tag/" + predictions["release_tag"],
+        )

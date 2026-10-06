@@ -13,10 +13,21 @@ on:
         required: true
         type: string
       branch:
-        description: Evaluated main or release/* branch
+        description: Evaluated branch (PR head branch when preview is enabled)
         required: true
         default: main
         type: string
+      configuration_mode:
+        description: Verified settings only, or include labeled research assumptions
+        type: choice
+        options: [estimated, verified]
+        default: estimated
+        required: false
+      preview:
+        description: Evaluate an exact trusted pull-request/* copy without public publication
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -30,12 +41,16 @@ concurrency:
 jobs:
   resolve:
     name: Resolve exact accuracy source
-    if: github.repository == 'ai-dynamo/aisimulate' && github.ref == 'refs/heads/main'
+    if: >-
+      github.repository == 'ai-dynamo/aisimulate' &&
+      (github.ref == 'refs/heads/main' ||
+      (github.event_name == 'workflow_dispatch' && inputs.preview && startsWith(github.ref, 'refs/heads/pull-request/')))
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
       contents: read
       actions: read
+      pull-requests: read
     outputs:
       matrix: ${{ steps.source.outputs.matrix }}
     steps:
@@ -44,12 +59,27 @@ jobs:
         env:
           EXPECTED_SHA: ${{ inputs.expected_sha }}
           EVALUATED_BRANCH: ${{ inputs.branch }}
+          PREVIEW: ${{ inputs.preview }}
         with:
           script: |
             const {createHash} = require('node:crypto');
             let sha = process.env.EXPECTED_SHA;
             let branch = process.env.EVALUATED_BRANCH;
             let nightlyRun = '';
+            const preview = process.env.PREVIEW === 'true';
+            if (preview) {
+              const match = /^refs\/heads\/pull-request\/(\d+)$/.exec(context.ref);
+              if (context.eventName !== 'workflow_dispatch' || !match || sha !== context.sha) {
+                throw new Error('Preview requires an exact trusted pull-request/* copy');
+              }
+              const {data: pr} = await github.rest.pulls.get({...context.repo, pull_number: Number(match[1])});
+              if (pr.state !== 'open' || pr.head.sha !== sha || pr.head.ref !== branch ||
+                  pr.head.repo.full_name !== context.repo.owner + '/' + context.repo.repo) {
+                throw new Error('Preview copy does not match the open PR head and branch');
+              }
+            } else if (context.ref !== 'refs/heads/main') {
+              throw new Error('Published accuracy campaigns must run from main');
+            }
             if (context.eventName === 'schedule') {
               sha = context.sha;
               branch = 'main';
@@ -81,7 +111,7 @@ jobs:
               core.notice(nightlyRun ? `Reuse the exact wheel from nightly ${nightlyRun}.` :
                 'No reusable wheel for this main SHA; build the exact revision.');
             }
-            const entries = [{branch, sha, nightly_run: nightlyRun}];
+            const entries = [{branch, sha, nightly_run: nightlyRun, ...(preview ? {preview: true} : {})}];
             if (context.eventName === 'schedule') {
               const branches = await github.paginate(github.rest.repos.listBranches, {
                 ...context.repo, per_page: 100,
@@ -95,7 +125,8 @@ jobs:
             const keys = new Set();
             for (const entry of entries) {
               if (!/^[0-9a-f]{40}$/.test(entry.sha || '') ||
-                  !(entry.branch === 'main' || /^release\/[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(entry.branch || ''))) {
+                  !(entry.branch === 'main' || /^release\/[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(entry.branch || '') ||
+                    preview && /^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(entry.branch || ''))) {
                 throw new Error('Specify a full source SHA and main or release/* branch');
               }
               entry.artifact_key = createHash('sha256').update(entry.branch).digest('hex').slice(0, 16);
@@ -138,3 +169,5 @@ jobs:
       branch: ${{ matrix.branch }}
       artifact_key: ${{ matrix.artifact_key }}
       nightly_run: ${{ matrix.nightly_run }}
+      preview: ${{ matrix.preview || false }}
+      configuration_mode: ${{ inputs.configuration_mode || 'estimated' }}

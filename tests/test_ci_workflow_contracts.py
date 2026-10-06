@@ -725,6 +725,7 @@ def test_full_ci_owns_migrated_expensive_suites() -> None:
     ]
     assert len(contract_steps) == 1
     contract_command = contract_steps[0]["run"]
+    assert "--group scripts/pyproject.toml:e2e-accuracy" in contract_command
     assert "--ignore=tests/fpm_accuracy" not in contract_command
     assert "--ignore=tests/test_ci_workflow_contracts.py" in contract_command
 

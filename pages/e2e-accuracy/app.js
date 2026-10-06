@@ -103,8 +103,12 @@ function renderSummary() {
     basicCard("Points (AIC CLI)", totals.aic.points.toLocaleString()),
     basicCard("Points (AISim CLI)", totals.aisimulate.points.toLocaleString()),
     basicCard("GPU SKUs", String(totals.gpu_skus.length)),
-    accuracyCard("AISim CLI (new) Error", totals.aisimulate, "aisimulate"),
-    accuracyCard("AIC CLI (legacy) Error", totals.aic, "aic"),
+    accuracyCard("AISim CLI (new) Error · all configurations", totals.aisimulate, "aisimulate"),
+    accuracyCard("AIC CLI (legacy) Error · all configurations", totals.aic, "aic"),
+    ...Object.entries(totals.by_configuration_quality ?? {}).map(([quality, group]) =>
+      `<article class="summary-card"><div class="summary-label">Configuration: ${escapeHtml(quality.replaceAll("_", " "))}</div>
+      <p>AISim: ${group.aisimulate.points} points; TPOT / TTFT MAPE ${formatPercent(group.aisimulate.tpot_mape_pct)} / ${formatPercent(group.aisimulate.ttft_mape_pct)}</p>
+      <p>AIC (legacy CLI): ${group.aic.points} points; TPOT / TTFT MAPE ${formatPercent(group.aic.tpot_mape_pct)} / ${formatPercent(group.aic.ttft_mape_pct)}</p></article>`),
   ].join("");
 }
 
@@ -123,6 +127,10 @@ function renderSnapshot() {
     ? "Multi-node predictions included"
     : `Exclude multi-node predictions (${scope.excluded_multinode_rows.toLocaleString()} hidden)`;
   identityLine.textContent = `GPU SKUs: ${totals.gpu_skus.join(", ")} · Precisions: ${totals.precisions.join(", ")}`;
+  if (snapshot.campaign?.configuration) {
+    const counts = snapshot.campaign.configuration.counts;
+    identityLine.textContent += ` · Configuration: ${counts.verified ?? 0} verified, ${counts.estimated ?? 0} estimated (assumptions) · ${snapshot.campaign.selected - snapshot.campaign.published} excluded`;
+  }
   measurementSourceLink.href = snapshot.measurement_source_url;
   scopeClaim.textContent = scope.claim;
   provenanceContent.innerHTML = `
@@ -146,9 +154,10 @@ function renderSnapshot() {
       : "Repository provenance was not recorded in this historical snapshot"}</p>
     ${snapshot.campaign ? `<p>Accuracy campaign: <a href="https://github.com/ai-dynamo/aisimulate/actions/runs/${escapeHtml(snapshot.campaign.run_id)}">GitHub Actions run</a> (advisory)<br />
       Selected operating points: ${escapeHtml(snapshot.campaign.selected)}; published comparison points: ${escapeHtml(snapshot.campaign.published)}.<br />
+      ${snapshot.campaign.configuration ? `Configuration evidence: ${snapshot.campaign.configuration.counts.verified ?? 0} verified; ${snapshot.campaign.configuration.counts.estimated ?? 0} estimated (assumptions, not verified historical settings).<br />` : ""}
       Excluded before comparison: ${escapeHtml(JSON.stringify(snapshot.campaign.exclusion_reasons))}.<br />
       Prediction database versions: ${escapeHtml(snapshot.campaign.backend_versions.join(", "))}.<br />
-      Policy: ${escapeHtml(snapshot.campaign.selection_policy)}; max_num_seqs=max(256, concurrency), max_num_batched_tokens=8192, enable_prefix_caching=False, aic_forward_model=op_level; unresolved recipes are excluded.</p>
+      Policy: ${escapeHtml(snapshot.campaign.selection_policy)}; ${snapshot.campaign.selection_policy === "gym-resolved-config-v2" ? "source-resolved serving settings and workload; independent estimate and replay outcomes" : "max_num_seqs=max(256, concurrency), max_num_batched_tokens=8192, enable_prefix_caching=False, aic_forward_model=op_level"}; unresolved recipes are excluded.</p>
       <code>Wheel SHA-256: ${escapeHtml(snapshot.campaign.wheel_sha256)}</code>
       <code>Dataset manifest SHA-256: ${escapeHtml(snapshot.campaign.dataset_sha256)}</code>` : ""}
     <p>Snapshot file source: ${state.branch.published_from_commit
@@ -418,14 +427,14 @@ function pointTable(topology) {
   return `<details class="point-details" open><summary>Operating points (${topology.points.length})</summary>
     <div class="table-scroll" tabindex="0" role="region" aria-label="Operating point details"><table class="point-table">
     <caption>Relative TTFT / TPOT and absolute percentage errors. Ratios use measured latency at the lowest concurrency as 1×.</caption>
-    <thead><tr><th>Concurrency</th><th>Replay status</th><th>Measured TTFT / TPOT</th><th>AISim CLI TTFT / TPOT</th><th>AIC CLI TTFT / TPOT</th><th>AISim CLI TTFT / TPOT error</th><th>AIC CLI TTFT / TPOT error</th></tr></thead>
+    <thead><tr><th>Concurrency</th><th>Configuration</th><th>Replay / AIC status</th><th>Measured TTFT / TPOT</th><th>AISim CLI TTFT / TPOT</th><th>AIC CLI TTFT / TPOT</th><th>AISim CLI TTFT / TPOT error</th><th>AIC CLI TTFT / TPOT error</th></tr></thead>
     <tbody>${topology.points.map((point) => {
       const ratios = (name) => ["ttft", "tpot"].map((metric) => {
         const value = point[name][`${metric}_relative`];
         return value == null ? "—" : `${value.toFixed(3)}×`;
       }).join(" / ");
       const errors = (name) => `${formatPercent(point[name].ttft_error_pct)} / ${formatPercent(point[name].tpot_error_pct)}`;
-      return `<tr><td>${point.concurrency}</td><td>${escapeHtml(point.status)}</td><td>${ratios("measured")}</td><td>${ratios("aisimulate")}</td><td>${ratios("aic")}</td><td>${errors("aisimulate")}</td><td>${errors("aic")}</td></tr>`;
+      return `<tr><td>${point.concurrency}</td><td>${escapeHtml(point.configuration_quality ?? "not recorded")}</td><td>${escapeHtml(point.status)} / ${escapeHtml(point.aic_status === undefined ? "success" : point.aic_status)}</td><td>${ratios("measured")}</td><td>${ratios("aisimulate")}</td><td>${ratios("aic")}</td><td>${errors("aisimulate")}</td><td>${errors("aic")}</td></tr>`;
     }).join("")}</tbody></table></div></details>`;
 }
 
@@ -446,7 +455,7 @@ function renderDrilldown() {
     <a id="detail-permalink" href="${escapeHtml(location.href)}" target="_blank" rel="noopener">Open this selection in a separate tab ↗</a>
     ${topologies.length ? `<label class="topology-control">Topology<select id="topology-select">${topologies.map((entry) => `<option value="${entry.id}"${entry.id === topology.id ? " selected" : ""}>${escapeHtml(topologyLabel(entry))}</option>`).join("")}</select></label>` : ""}
     <p class="coverage-text">${escapeHtml(coverageText(item))}</p>
-    <p class="detail-scope">AISim CLI errors cover successful replays. AIC CLI errors cover all selected points.</p>
+    <p class="detail-scope">AISim CLI errors cover successful replays. AIC CLI errors cover successful estimates.</p>
     ${errorBars(item)}
     ${topology ? `<div class="chart-legend"><span class="measured">● Measured</span><span class="aisimulate">● AISim CLI</span><span class="aic">● AIC CLI</span></div>
       <p class="detail-scope">Latency relative to the measured value at the lowest concurrency. Both predictors share that anchor; gaps indicate missing predictions.</p>
@@ -468,14 +477,14 @@ function renderDrilldown() {
   });
 }
 
-function validBranchName(branch) {
+function validBranchName(branch, preview = false) {
   return typeof branch === "string" && !branch.endsWith("/") &&
-    (branch === "main" || /^release\/[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(branch));
+    (branch === "main" || (preview ? /^[A-Za-z0-9][A-Za-z0-9._/-]*$/ : /^release\/[A-Za-z0-9][A-Za-z0-9._/-]*$/).test(branch));
 }
 
-function validRevision(revision) {
+function validRevision(revision, preview = false) {
   return revision && typeof revision.commit_sha === "string" &&
-    /^[0-9a-f]{40}$/.test(revision.commit_sha) && validBranchName(revision.branch);
+    /^[0-9a-f]{40}$/.test(revision.commit_sha) && validBranchName(revision.branch, preview);
 }
 
 function snapshotEvidence(branch, snapshot) {
@@ -511,21 +520,27 @@ function validateSummary(data) {
       !object(topology.parallelism) || !Array.isArray(topology.points) || topology.points.length !== topology.rows ||
       !["framework", "precision", "serving", "spec_method"].every((key) => typeof topology[key] === "string")) return false;
     let previous = 0;
+    let aicSuccesses = 0;
     const counts = { success: 0, unsupported: 0, failed: 0, unknown: 0 };
     return topology.points.every((point) => {
       if (!object(point) || !Number.isFinite(point.concurrency) || point.concurrency <= 0 || point.concurrency < previous ||
-        !["success", "unsupported", "failed"].includes(point.status)) return false;
+        !["success", "unsupported", "failed"].includes(point.status) ||
+        !["success", "unsupported", "failed"].includes(point.aic_status === undefined ? "success" : point.aic_status)) return false;
+      if (point.configuration_quality !== undefined && !["verified", "estimated"].includes(point.configuration_quality)) return false;
       previous = point.concurrency;
       counts[point.status] += 1;
+      if ((point.aic_status === undefined ? "success" : point.aic_status) === "success") aicSuccesses += 1;
       return ["measured", "aic", "aisimulate"].every((name) => object(point[name]) && ["ttft", "tpot"].every((metric) => {
         const value = point[name]?.[`${metric}_relative`];
         const error = point[name]?.[`${metric}_error_pct`];
-        const missing = name === "aisimulate" && point.status !== "success";
+        const missing = name === "aisimulate" && point.status !== "success" ||
+          name === "aic" && (point.aic_status === undefined ? "success" : point.aic_status) !== "success";
         return missing ? value === null && error === null :
           Number.isFinite(value) && value >= 0 && (name === "measured" || Number.isFinite(error) && error >= 0);
       }));
     }) && Object.keys(topology.aisimulate.status_counts).length === statuses.length &&
-      statuses.every((key) => counts[key] === topology.aisimulate.status_counts[key]);
+      statuses.every((key) => counts[key] === topology.aisimulate.status_counts[key]) &&
+      aicSuccesses === topology.aic.points;
   };
   if (!object(data) || data.schema_version !== 1 || !object(data.snapshot) || !object(data.scope) ||
     typeof data.snapshot.release_tag !== "string" || data.snapshot.measurement_source_url !==
@@ -547,7 +562,8 @@ function validateSummary(data) {
     throw new Error("unsupported accuracy summary schema");
   }
   const revision = data.snapshot.evaluated_revision;
-  if (revision != null && (!object(revision) || !validRevision(revision))) {
+  if (data.scope.preview === true && revision == null ||
+    revision != null && (!object(revision) || !validRevision(revision, data.scope.preview === true))) {
     throw new Error("invalid evaluated revision");
   }
   const aicSource = data.snapshot.aic_source;
@@ -562,8 +578,24 @@ function validateSummary(data) {
   }
   const campaign = data.snapshot.campaign;
   const exclusions = campaign?.exclusion_reasons;
+  if (campaign?.configuration) {
+    const configuration = campaign.configuration;
+    const counts = {};
+    data.models.forEach((model) => model.workloads.forEach((workload) => workload.gpus.forEach((gpu) =>
+      (gpu.topologies ?? []).forEach((topology) => topology.points.forEach((point) => {
+        const quality = point.configuration_quality;
+        if (!["verified", "estimated"].includes(quality)) throw new Error("missing configuration quality");
+        counts[quality] = (counts[quality] ?? 0) + 1;
+      })))));
+    if (!["verified", "coverage-experiment/1"].includes(configuration.profile) ||
+      !object(configuration.counts) || Object.keys(configuration.counts).length !== Object.keys(counts).length ||
+      Object.entries(counts).some(([key, count]) => configuration.counts[key] !== count) ||
+      Object.values(counts).reduce((sum, count) => sum + count, 0) !== data.totals.rows ||
+      (configuration.profile === "verified" && counts.estimated)) throw new Error("invalid configuration coverage");
+  }
+
   const validExclusions = exclusions && typeof exclusions === "object" && !Array.isArray(exclusions) &&
-    Object.keys(exclusions).every(key => ["recipe_required", "adapter_unsupported", "baseline_failed"].includes(key)) &&
+    Object.keys(exclusions).every(key => ["recipe_required", "adapter_unsupported", "adapter_topology_mismatch", "baseline_failed", "source_unresolved", "database_unavailable"].includes(key)) &&
     Object.values(exclusions).every(value => Number.isInteger(value) && value >= 0);
   if (campaign !== undefined && (!campaign || !revision || campaign.status !== "complete" ||
     campaign.advisory !== true || !/^[0-9]+$/.test(campaign.run_id) ||
@@ -572,18 +604,29 @@ function validateSummary(data) {
     !Number.isInteger(campaign.selected) || campaign.selected < data.totals.rows ||
     campaign.published !== data.totals.rows || !Array.isArray(campaign.backend_versions) ||
     !campaign.backend_versions.every((version) => typeof version === "string") ||
-    campaign.selection_policy !== "latest-complete-config-run-v1" ||
+    !["latest-complete-config-run-v1", "gym-resolved-config-v2"].includes(campaign.selection_policy) ||
     !validExclusions)) {
     throw new Error("invalid accuracy campaign provenance");
+  }
+  const groups = data.totals.by_configuration_quality;
+  if (groups !== undefined && (!object(groups) || !Object.keys(groups).length ||
+    Object.entries(groups).some(([quality, group]) => !["verified", "estimated", "not_recorded"].includes(quality) ||
+      !object(group) || !Number.isInteger(group.rows) || group.rows <= 0 ||
+      !metrics(group.aic, group.rows) || !metrics(group.aisimulate, group.rows)) ||
+    Object.values(groups).reduce((sum, group) => sum + group.rows, 0) !== data.totals.rows ||
+    ["aic", "aisimulate"].some((name) => Object.values(groups).reduce((sum, group) => sum + group[name].points, 0) !== data.totals[name].points))) {
+    throw new Error("invalid configuration quality metrics");
   }
   return data;
 }
 
 function validateCatalog(catalog) {
   const seen = new Set();
-  if (!catalog || catalog.schema_version !== 1 || catalog.default_branch !== "main" ||
+  const preview = catalog?.preview === true;
+  if (!catalog || catalog.schema_version !== 1 ||
+    (preview ? !validBranchName(catalog.default_branch, true) : catalog.default_branch !== "main") ||
     !Array.isArray(catalog.branches) || !catalog.branches.length || catalog.branches.some((entry) => {
-      if (!entry || !validBranchName(entry.branch) ||
+      if (!entry || !validBranchName(entry.branch, preview) ||
         seen.has(entry.branch) || !["evaluated", "inherited", "historical", "unavailable"].includes(entry.status) ||
         (entry.summary_path !== null && !/^(summary\.json|branches\/[0-9a-f]{16}\/summary\.json)$/.test(entry.summary_path)) ||
         (entry.status === "unavailable") !== (entry.summary_path === null) ||
@@ -592,11 +635,11 @@ function validateCatalog(catalog) {
       const revision = entry.evaluated_revision;
       if (entry.published_source_path != null && !["pages/e2e-accuracy/summary.json", "python/aisimulate/docs/e2e-accuracy/summary.json"].includes(entry.published_source_path)) return true;
       if (["evaluated", "inherited"].includes(entry.status)) {
-        if (!validRevision(revision) || (entry.status === "evaluated") !== (revision.branch === entry.branch)) return true;
+        if (!validRevision(revision, preview) || (entry.status === "evaluated") !== (revision.branch === entry.branch)) return true;
       } else if (revision != null) return true;
       seen.add(entry.branch);
       return false;
-    }) || !seen.has("main")) throw new Error("invalid accuracy branch catalog");
+    }) || !seen.has(catalog.default_branch)) throw new Error("invalid accuracy branch catalog");
   return catalog;
 }
 
@@ -669,6 +712,9 @@ async function loadBranch(branchName, restoreSelection = false, previewData = nu
     }
     const data = previewData || await fetchSummary(entry.summary_path);
     if (loadId !== state.loadId) return;
+    if ((state.catalog.preview === true) !== (data.scope.preview === true)) {
+      throw new Error("Preview and published accuracy evidence cannot be mixed");
+    }
     const evidence = snapshotEvidence(entry.branch, data.snapshot);
     const revision = data.snapshot.evaluated_revision;
     if (entry.status !== evidence.status ||
@@ -683,6 +729,7 @@ async function loadBranch(branchName, restoreSelection = false, previewData = nu
     } else {
       branchStatus.textContent = `${entry.branch} · historical package snapshot; evaluated branch and commit were not recorded. These are not current branch accuracy results.`;
     }
+    if (data.scope.preview === true) branchStatus.textContent = "PR preview · " + branchStatus.textContent;
     downloadJson.href = `./${entry.summary_path}`;
     downloadJson.removeAttribute("aria-disabled");
     const linked = ["model", "workload", "gpu", "topology"].some((key) => params.has(key));
@@ -715,9 +762,11 @@ async function initialize() {
   // Directly serving the source docs remains useful before a Pages build.
   // Only a missing catalog permits this legacy single-snapshot mode.
   const previewData = response.status === 404 ? await fetchSummary("summary.json") : null;
+  const review = previewData?.scope.preview === true;
+  const defaultBranch = review ? previewData.snapshot.evaluated_revision.branch : "main";
   state.catalog = validateCatalog(previewData ? {
-    schema_version: 1, default_branch: "main",
-    branches: [{ branch: "main", ...snapshotEvidence("main", previewData.snapshot),
+    schema_version: 1, default_branch: defaultBranch, ...(review ? {preview: true} : {}),
+    branches: [{ branch: defaultBranch, ...snapshotEvidence(defaultBranch, previewData.snapshot),
       summary_path: "summary.json", published_from_commit: null }],
   } : response.ok ? await response.json() : (() => { throw new Error(`HTTP ${response.status}`); })());
   branchSelect.innerHTML = state.catalog.branches.map(branchOption).join("");

@@ -182,7 +182,7 @@ def _git(repo_root: Path, *args: str) -> str:
         raise PagesBuildError(f"cannot read accuracy branch evidence: {exc.stderr.strip()}") from exc
 
 
-def _accuracy_summary(text: str) -> dict:
+def _accuracy_summary(text: str, *, allow_preview: bool = False) -> dict:
     """Reject incomplete branch artifacts before replacing the deployed site."""
 
     def require(condition: bool, field: str) -> None:
@@ -199,7 +199,14 @@ def _accuracy_summary(text: str) -> dict:
         return (
             isinstance(value, str)
             and not value.endswith("/")
-            and (value == "main" or bool(re.fullmatch(r"release/[A-Za-z0-9][A-Za-z0-9._/-]*", value)))
+            and (
+                value == "main"
+                or bool(
+                    re.fullmatch(
+                        r"[A-Za-z0-9][A-Za-z0-9._/-]*" if preview else r"release/[A-Za-z0-9][A-Za-z0-9._/-]*", value
+                    )
+                )
+            )
         )
 
     def aggregate(item: dict) -> None:
@@ -236,20 +243,105 @@ def _accuracy_summary(text: str) -> dict:
         require(isinstance(points, list) and len(points) == item["rows"], "topology points")
         previous = 0
         counts = {"success": 0, "unsupported": 0, "failed": 0, "unknown": 0}
+        aic_successes = 0
         for point in points:
             require(isinstance(point, dict), "point")
+            run_id = point.get("infx_run_id")
+            require(
+                run_id is None or (isinstance(run_id, str) and bool(re.fullmatch(r"[1-9][0-9]*", run_id))),
+                "InferenceX GitHub run ID",
+            )
+            if "configuration_quality" in point:
+                require(
+                    point["configuration_quality"] in ("verified", "estimated"),
+                    "configuration quality",
+                )
             concurrency = point.get("concurrency")
             require(number(concurrency) and concurrency > 0 and concurrency >= previous, "concurrency")
             previous = concurrency
             status = point.get("status")
             require(status in ("success", "unsupported", "failed"), "point status")
             counts[status] += 1
+            aic_status = point.get("aic_status", "success")
+            require(aic_status in ("success", "unsupported", "failed"), "AIC point status")
+            aic_successes += aic_status == "success"
             for name in ("measured", "aic", "aisimulate"):
                 series = point.get(name)
                 require(isinstance(series, dict), "point series")
+                missing = (name == "aisimulate" and status != "success") or (name == "aic" and aic_status != "success")
+                fields = {
+                    "ttft_ms",
+                    "tpot_ms",
+                    "e2e_ms",
+                    "output_per_gpu",
+                    "total_per_gpu",
+                    "interactivity_tok_s",
+                }
+                reasons = series.get("unavailable_metrics", {})
+                require(
+                    isinstance(reasons, dict) and set(reasons) <= fields,
+                    "metric availability",
+                )
+                for key in fields:
+                    if key in series:
+                        require(
+                            series[key] is None or (number(series[key]) and series[key] > 0),
+                            "chart metric",
+                        )
+                        if missing:
+                            require(series[key] is None, "failed prediction chart metric")
+                for key, reason in reasons.items():
+                    require(
+                        series.get(key) is None
+                        and reason
+                        in {
+                            "prediction_failed",
+                            "not_recorded",
+                            "unsupported_by_predictor",
+                        },
+                        "metric availability reason",
+                    )
+                if metric_contract:
+                    require(fields <= series.keys(), "serving metric fields")
+                    require(
+                        set(reasons) == {key for key in fields if series[key] is None},
+                        "serving metric availability",
+                    )
+                    for key in fields:
+                        optional = name == "measured" and key in {
+                            "e2e_ms",
+                            "output_per_gpu",
+                            "total_per_gpu",
+                        }
+                        unsupported = name == "aic" and key == "total_per_gpu"
+                        if not missing and not optional and not unsupported:
+                            require(
+                                number(series[key]) and series[key] > 0,
+                                "required serving metric " + name + "." + key,
+                            )
+                        if key in reasons:
+                            expected = (
+                                "prediction_failed"
+                                if missing
+                                else "unsupported_by_predictor"
+                                if unsupported
+                                else "not_recorded"
+                            )
+                            require(
+                                reasons[key] == expected,
+                                "serving metric availability reason",
+                            )
+                    if not missing:
+                        require(
+                            math.isclose(
+                                series["interactivity_tok_s"],
+                                1000 / series["tpot_ms"],
+                                rel_tol=1e-9,
+                            ),
+                            "interactivity definition",
+                        )
                 for metric in ("ttft", "tpot"):
                     keys = [f"{metric}_relative"] + ([f"{metric}_error_pct"] if name != "measured" else [])
-                    missing = name == "aisimulate" and status != "success"
                     require(
                         all(
                             key in series and (series[key] is None if missing else number(series[key])) for key in keys
@@ -257,10 +349,15 @@ def _accuracy_summary(text: str) -> dict:
                         "point metric",
                     )
         require(counts == item["aisimulate"]["status_counts"], "topology status counts")
+        require(aic_successes == item["aic"]["points"], "AIC topology coverage")
 
     try:
         summary = json.loads(text)
+        metric_contract = summary.get("snapshot", {}).get("campaign", {}).get("metric_contract")
+        require(metric_contract in (None, "serving-metrics-v1"), "metric contract")
         require(isinstance(summary, dict) and summary.get("schema_version") == 1, "summary schema")
+        preview = isinstance(summary.get("scope"), dict) and summary["scope"].get("preview") is True
+        require(not preview or allow_preview, "preview is not publishable")
         snapshot = summary.get("snapshot")
         require(isinstance(snapshot, dict), "snapshot")
         require(isinstance(snapshot.get("release_tag"), str), "measurement release")
@@ -273,6 +370,7 @@ def _accuracy_summary(text: str) -> dict:
         for date in ("measurement_date_through", "aisimulate_completed_at"):
             require(snapshot.get(date) is None or isinstance(snapshot[date], str), date)
         revision = snapshot.get("evaluated_revision")
+        require(not preview or revision is not None, "preview revision")
         if revision is not None:
             require(
                 isinstance(revision, dict)
@@ -306,6 +404,34 @@ def _accuracy_summary(text: str) -> dict:
         require(isinstance(scope.get("claim"), str), "scope claim")
         totals = summary.get("totals")
         aggregate(totals)
+        groups = totals.get("by_configuration_quality")
+        if groups is not None:
+            require(isinstance(groups, dict) and bool(groups), "configuration quality groups")
+            require(set(groups) <= {"verified", "estimated", "not_recorded"}, "configuration quality keys")
+            for group in groups.values():
+                require(
+                    isinstance(group, dict) and type(group.get("rows")) is int and group["rows"] > 0,
+                    "configuration quality rows",
+                )
+                for name in ("aic", "aisimulate"):
+                    metrics = group.get(name)
+                    require(
+                        isinstance(metrics, dict)
+                        and type(metrics.get("points")) is int
+                        and 0 <= metrics["points"] <= group["rows"],
+                        "configuration quality points",
+                    )
+                    for metric in ("ttft_mape_pct", "tpot_mape_pct", "ttft_shape_error_pct", "tpot_shape_error_pct"):
+                        require(
+                            metric in metrics and (metrics[metric] is None or number(metrics[metric])),
+                            "configuration quality metrics",
+                        )
+            require(sum(group["rows"] for group in groups.values()) == totals["rows"], "configuration quality coverage")
+            for name in ("aic", "aisimulate"):
+                require(
+                    sum(group[name]["points"] for group in groups.values()) == totals[name]["points"],
+                    "configuration quality successes",
+                )
         require(strings(totals.get("gpu_skus")) and strings(totals.get("precisions")), "total dimensions")
         models = summary.get("models")
         require(isinstance(models, list) and bool(models) and len(models) == totals.get("models"), "models")
@@ -337,6 +463,34 @@ def _accuracy_summary(text: str) -> dict:
                 require(sum(item["rows"] for item in gpus) == workload["rows"], "GPU coverage")
             require(sum(item["rows"] for item in workloads) == model["rows"], "workload coverage")
         require(sum(item["rows"] for item in models) == totals["rows"], "model coverage")
+        configuration = summary["snapshot"].get("campaign", {}).get("configuration")
+        if configuration is not None:
+            require(
+                configuration.get("profile") in ("verified", "coverage-experiment/1"),
+                "configuration profile",
+            )
+            quality_counts = {}
+            for model in models:
+                for workload in model["workloads"]:
+                    for gpu in workload["gpus"]:
+                        for item in gpu.get("topologies", []):
+                            for point in item["points"]:
+                                quality = point.get("configuration_quality")
+                                require(
+                                    quality in ("verified", "estimated"),
+                                    "missing configuration quality",
+                                )
+                                quality_counts[quality] = quality_counts.get(quality, 0) + 1
+            require(
+                configuration.get("counts") == quality_counts
+                and all(type(value) is int for value in configuration["counts"].values()),
+                "configuration counts",
+            )
+            require(sum(quality_counts.values()) == totals["rows"], "configuration coverage")
+            require(
+                configuration["profile"] != "verified" or not quality_counts.get("estimated"),
+                "estimated configuration in verified mode",
+            )
         return summary
     except (ValueError, AttributeError, TypeError, KeyError) as exc:
         raise PagesBuildError(f"invalid accuracy summary: {exc}") from exc
