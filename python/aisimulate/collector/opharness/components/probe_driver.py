@@ -497,8 +497,13 @@ def enumerate_runs(targets: dict, full: bool, backends: list[str]) -> list[dict]
     # at a declared tp (the dummy does not fit one GPU, e.g. Qwen3.8-2.4T). They
     # replace the tp1 topology for that (repo, backend) only; the route is the
     # backend's multi-GPU probe (sglang: probe_sglang_server.py).
+    # An entry may carry `sms: [100]`: the tp applies on those SMs only (the
+    # Kimi-K3 96-head trtllm-gen decode gap exists at tp1 on sm100 and not on
+    # sm90; the probe must see the per-rank head count serving would use).
+    this_sm = int(current_sm().replace("sm", "")) if current_sm().startswith("sm") else None
     tp_required = {(e["repo"], e.get("backend", "sglang")): int(e["tp"])
-                   for e in (targets.get("topology_policy") or {}).get("tp_required") or []}
+                   for e in (targets.get("topology_policy") or {}).get("tp_required") or []
+                   if not e.get("sms") or this_sm in [int(x) for x in e["sms"]]}
 
     def _topos_for(repo: str, backend: str) -> list[dict]:
         req = tp_required.get((repo, backend))

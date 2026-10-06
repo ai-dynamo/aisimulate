@@ -471,6 +471,11 @@ topologies:
   evidence: real
   status: implemented
   route: same as tp8, --ep-size 8
+- tp: 2
+  ep: 1
+  evidence: real
+  status: implemented
+  route: same N-GPU server route as tp4 (added 2026-10-06 for the sm100 Kimi-K3 probe; not yet run)
 - tp: 4
   ep: 1
   evidence: real
@@ -498,6 +503,15 @@ topology_policy:
   - repo: Qwen/Qwen3.8-2.4T-A95B-FP8
     backend: trtllm
     tp: 4
+  # Kimi-K3 (96 attention heads) on sm100: sglang 0.5.21 trtllm_mla decode fails at tp1
+  # (flashinfer trtllm-gen refuses 64 < heads < 128; finding sm100_probe_failures_recheck_2026_10_04 (i));
+  # at tp2 the per-rank head count is 48 and the serving path exists. The tp1 cell stays a
+  # recorded framework gap; the representative identity for the collector comes from tp2.
+  # `sms` scopes the entry: sm90 keeps tp1 (passes there). Owner runs this on the B200 box.
+  - repo: moonshotai/Kimi-K3
+    backend: sglang
+    tp: 2
+    sms: [100]
   note: topology is ALWAYS recorded in records.runtime (tp/ep/dp/a2a) even when kernels match.
   deepep_required:
   - repo: moonshotai/Kimi-K3

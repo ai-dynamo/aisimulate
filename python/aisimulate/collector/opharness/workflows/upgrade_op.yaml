@@ -12,15 +12,24 @@ steps:
 - id: identity_rerun
   actor: script
   done_when: {check: matrix_complete}
+- id: lane_guards_match_evidence
+  actor: script
+  done_when: {check: lane_guards_match_evidence}
 - id: gates_declared
   actor: ai
   done_when: {check: gates_cover_registry_ops}
 - id: path_aligned
   actor: script
   done_when: {check: path_verdicts_aligned}
+- id: executor_smoked
+  actor: script
+  done_when: {check: executor_smoked}
 - id: customizations_retested
   actor: ai
   done_when: {check: customizations_retested}
 - id: failures_root_caused
   actor: ai
   done_when: {check: fails_root_caused}
+- id: findings_propagated
+  actor: ai
+  done_when: {check: findings_propagated}

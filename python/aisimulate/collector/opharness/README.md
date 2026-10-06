@@ -39,6 +39,9 @@ opharness/
 | `e2e_align.py` | SDK prediction vs one live measurement of the golden deployment (explicit measurement file); results/<sm>/e2e/ — the campaign needs a GPU matching an SDK system entry |
 | `evidence_bundle.py` | pack a campaign's evidence (raw + fingerprints, records, captures, full reports, kernel-level decompositions) into one content-addressed tar.gz and index it in results/evidence_index.yaml |
 | `build_images.sh` | rebuild probe images + the generator venv (this checkout) from targets.yaml pins |
+| `op_smoke.py` | one case of one registered op through the executor's (get_func, run_func) contract — "can this collector build and time a case on the new pin" |
+| `executor_smoke.py` | the same op through collect.py's REAL path (`--model-cases-full` plan, checkpoint, `--resume`, finalize) -> results/<sm>/executor_smoke/; `--shards` checks a pipeline shard plan against the case plan on a CPU |
+| `lane_evidence.py` + `lane_evidence.yaml` | collector version/SM lane guards graded against the identity records: which checkpoints are the evidence for a lane, does the guard agree (open+confirmed / closed+contradicted) |
 
 Evidence layering (owner decision 2026-09-26): the repo carries CONCLUSIONS — matrices, verdict summaries (identities, sha/fingerprint of both inputs, per-role counts, the deciding names when red), decompose summaries (role -> backend -> kernel count, residue), findings. EVIDENCE — raw probes and their `.fp` sidecars, records.jsonl, collector captures, full path_diff reports and kernel-level decompositions (`archive/evidence/` in the workspace) — stays out of git and is packed per campaign by `components/evidence_bundle.py`; `results/evidence_index.yaml` names each bundle by campaign id, sha256 and location, and every committed conclusion carries the ids/fingerprints that resolve into it.
 

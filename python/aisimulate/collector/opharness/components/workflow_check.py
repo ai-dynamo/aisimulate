@@ -49,7 +49,7 @@ ROOT = Path(os.environ.get("AIS_PROBE_WORKSPACE")
             or Path.cwd())
 
 IMPLEMENTED_COMPONENTS = {"probe_driver", "dummies", "probes", "build_images", "workflow_check", "path_diff",
-                          "decompose", "e2e_align"}
+                          "decompose", "e2e_align", "op_smoke", "executor_smoke", "lane_evidence"}
 
 
 def _load_targets() -> dict:
@@ -211,6 +211,109 @@ def pred_customizations_retested(p):
     if badval:
         return False, f"invalid retest outcomes for {badval[:2]}"
     return True, f"all {len(custom)} customizations retested"
+
+
+# --------------------------------------------------------------------------
+# Evidence-flow predicates (b200_sxm sglang 0.5.21 shard run, GitLab job
+# 469988017, 2026-10-05: 7 of 8 failed shards were harness knowledge that never
+# reached the place it was needed — a guard edited against the identity
+# records, findings that named a framework gap no collector grid guard ever
+# learned, a smoke that never passed through collect.py's plan/resume/finalize).
+
+def _lane_evidence_module():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("lane_evidence_wc", HERE / "lane_evidence.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def pred_lane_guards_match_evidence(p):
+    """Every collector lane guard cell for (fw, version, sm) agrees with the
+    identity records (components/lane_evidence.yaml rules): a guard that is
+    closed while serving confirms the declared backend refuses rows for
+    nothing (int4_wo/SM100); one that is open without evidence, or against
+    it, risks wrong-kernel data. Reads results/<sm>/ and the guard source."""
+    sm = p.get("sm", "sm90")
+    try:
+        le = _lane_evidence_module()
+        state = le.evaluate(p["fw"], p["version"], sm, harness=HARNESS)
+    except FileNotFoundError as e:
+        return False, f"lane_evidence inputs missing: {e}"
+    if not state["cells"]:
+        return True, f"no lane guards declared for {p['fw']} in lane_evidence.yaml"
+    bad = [f"{c['lane']}: {c['why']}" for c in state["cells"] if not c["consistent"]]
+    if bad:
+        return False, f"{len(bad)}/{len(state['cells'])} lane cells inconsistent — {bad[0]}"
+    return True, f"{len(state['cells'])} lane guard cells agree with the {sm} identity records"
+
+
+def pred_executor_smoked(p):
+    """collect.py's real path (--model-cases-full plan, checkpoint, --resume,
+    finalize) ran once per planned op on this pin and every op finalized a
+    table: results/<sm>/executor_smoke/<fw>-<version>.yaml written by
+    components/executor_smoke.py --run. Registry ops the plan excludes must be
+    listed there as not_in_plan (the pipeline's shard plan is checked against
+    the same list), an op whose every case failed is not smoked."""
+    sm = p.get("sm", "sm90")
+    f = HARNESS / "results" / sm / "executor_smoke" / f"{p['fw']}-{p['version']}.yaml"
+    if not f.exists():
+        return False, f"no executor smoke record ({f.relative_to(HARNESS)}) — run components/executor_smoke.py --run"
+    rec = yaml.safe_load(f.read_text()) or {}
+    meta = rec.get("_meta") or {}
+    if str(meta.get("version")) != str(p["version"]) or meta.get("framework") != p["fw"]:
+        return False, "executor smoke record is for another framework/version"
+    ops = rec.get("ops") or {}
+    planned = set(rec.get("planned_ops") or [])
+    if not ops or not planned:
+        return False, "executor smoke record lists no ops"
+    missing = sorted(planned - set(ops))
+    if missing:
+        return False, f"{len(missing)} planned ops not smoked through collect.py (e.g. {missing[0]})"
+    bad = sorted(f"{op}={r.get('status')}" for op, r in ops.items() if r.get("status") != "ok")
+    if bad:
+        return False, f"{len(bad)} ops did not finalize a table through collect.py: {bad[:3]}"
+    reg = set(registry_ops(p["fw"]))
+    unaccounted = sorted(reg - planned - set(rec.get("not_in_plan") or []))
+    if unaccounted:
+        return False, f"registry ops neither planned nor recorded as not_in_plan: {unaccounted[:3]}"
+    n_out = len(rec.get("not_in_plan") or [])
+    return True, f"{len(ops)} planned ops finalized through collect.py; {n_out} registry ops recorded not_in_plan"
+
+
+_IMPACT_ACTIONS = {"guard", "cases", "collector_fix", "pipeline", "none"}
+
+
+def pred_findings_propagated(p):
+    """Every finding pinned to this (fw, version, sm) states what the
+    COLLECTOR learned from it: a `collector_impact` list whose items name an
+    op (or 'none'), an action (guard | cases | collector_fix | pipeline |
+    none) and a ref (commit, file:symbol, or the reason nothing changes).
+    The Kimi-K3 96-head gap sat in a finding for two days while the collector
+    swept num_heads=96 on B200 and failed 362 cases 'unexpected'."""
+    sm = p.get("sm", "sm90")
+    fw_tag, sm_tag = f"framework:{p['fw']}-{p['version']}", f"platform:{sm}"
+    pinned = {k: v for k, v in _load_findings().items()
+              if fw_tag in [str(x) for x in (v or {}).get("applies_to") or []]
+              and sm_tag in [str(x) for x in (v or {}).get("applies_to") or []]}
+    if not pinned:
+        return True, f"no findings pinned to {fw_tag} on {sm}"
+    missing, malformed = [], []
+    for name, f in pinned.items():
+        items = f.get("collector_impact")
+        if not items:
+            missing.append(name)
+            continue
+        for it in items if isinstance(items, list) else [items]:
+            if not (isinstance(it, dict) and it.get("op") and it.get("action") in _IMPACT_ACTIONS and it.get("ref")):
+                malformed.append(name)
+                break
+    if missing:
+        return False, f"{len(missing)}/{len(pinned)} pinned findings without collector_impact (e.g. {missing[0]})"
+    if malformed:
+        actions = "|".join(sorted(_IMPACT_ACTIONS))
+        return False, f"collector_impact items need op/action({actions})/ref: {malformed[:2]}"
+    return True, f"all {len(pinned)} findings pinned to {fw_tag} on {sm} state their collector impact"
 
 
 _GATE_LINE = re.compile(r'^(?:(?:SERVING_RAW|FLOOR_SM|FLOOR_NOTE)=(?:"[^"]*"|\S+)\s+)*run\s+(\S+)\s+(\S+)')
@@ -562,6 +665,7 @@ PREDICATES = {fn.__name__[5:]: fn for fn in [
     pred_model_fails_dispositioned, pred_model_decomposed, pred_residue_dispositioned, pred_e2e_admitted,
     pred_family_observed, pred_family_unit_defined, pred_family_collector_exists, pred_family_gates_aligned,
     pred_model_gates_aligned,
+    pred_lane_guards_match_evidence, pred_executor_smoked, pred_findings_propagated,
 ]}
 
 

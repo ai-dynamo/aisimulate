@@ -2611,6 +2611,9 @@ findings:
     - instrument:generator.facts.apply
     - instrument:probe_driver
     - instrument:probes.probe_sglang
+    collector_impact:
+    - {op: moe, action: guard, ref: '95085922 collect_moe._raise_if_unverified_moe_lane: int4_wo opened on SM100/103 for 0.5.21 — the moe_auto retest here (Kimi-K2.5 FLASHINFER_TRTLLM / trtllm_gen_moe) is the evidence; lane_evidence.yaml now grades it'}
+    - {op: none, action: pipeline, ref: 'generator hardware fact (moe_backend deepep_moe) is the generator plane; collector cases unaffected'}
   sm100_trtllm_moe_default_cutlass_2026_10_04:
     statement: 'GENERATOR DEFAULT, PLATFORM-BLIND (B200, trtllm 1.3.0rc29, 2026-10-04): with the Blackwell moe_backend fact gone,
       the rc29 engine template (config/backend_templates/trtllm/extra_engine_args.1.3.0rc29.yaml.j2:16) still renders
@@ -2684,7 +2687,8 @@ findings:
     - instrument:sglang.glm5_dsa_sparse_modules
     - instrument:captures.trt_kv
     - instrument:path_diff
-
+    collector_impact:
+    - {op: none, action: none, ref: 'verdict plane only (gates/captures); collector grids unchanged'}
   sm100_precision_smoke_2026_10_04:
     statement: 'PRECISION-COVERING OP SMOKE on B200 (umbriel-b200-021, 2026-10-04; driver facts/smoke/op_smoke_sweep.py in the
       workspace: every registered sglang (30) and trtllm (23) collector op, cases grouped by the precision tokens in the case text,
@@ -2736,7 +2740,10 @@ findings:
     - instrument:sglang.collect_attn
     - instrument:sglang.collect_mla_module
     - instrument:op_smoke
-
+    collector_impact:
+    - {op: mla_context, action: collector_fix, ref: '8f4f36c (sm100 branch): trtllm_mla prefill timed eagerly on SM100'}
+    - {op: moe, action: guard, ref: '8f4f36c: w4a16_mxfp4 + w4a8_mxfp4_mxfp8 opened on SM100/103 from these identity records'}
+    - {op: gemm, action: collector_fix, ref: '8f4f36c: trtllm nvfp4 group_size 16; mock runner attributes for 0.5.21 TRTLLM backends'}
   sm100_probe_failures_recheck_2026_10_04:
     statement: 'RE-CHECK OF EVERY sm100 PROBE FAILURE / NON-ALIGNED GATE FOR A CONFIG CAUSE (owner ask; umbriel-b200-037, fresh
       workspace, Hub configs re-fetched). OURS (generator / harness / dummy): (a) 12 generator rejects per framework — roster repos
@@ -2774,7 +2781,9 @@ findings:
     - instrument:dummies
     - instrument:fetch_inputs
     - instrument:probes.vision
-
+    collector_impact:
+    - {op: mla_generation, action: guard, ref: '95085922 collect_mla.run_mla: FIXME(kernel-limit) classified raise for trtllm_mla decode with 64 < local heads < 128 on SM100/103 (item (i)); job 469988017 failed exactly the 362 num_heads=96 cases before this landed'}
+    - {op: none, action: none, ref: 'item (j) g1_scale_c: collector passes the runner explicitly, not reachable from the grid; dummy/fetch fixes are the probe plane'}
   sm100_smoke_vs_perfdb_regressions_2026_10_04:
     statement: 'REGRESSION CHECK, new pins vs the shipped B200 perf database (umbriel-b200-037, 2026-10-04; every smoke perf row
       joined on the full case key — and on the kernel lane where an op writes one row per kernel — against the newest b200_sxm
@@ -2807,6 +2816,8 @@ findings:
     - framework:trtllm-1.3.0rc29
     - instrument:op_smoke
     - instrument:perf_database
+    collector_impact:
+    - {op: none, action: none, ref: 'latency regressions are data for owner review, no collector grid change'}
   sm89_vllm_0300_probe_2026_10_04:
     statement: 'FIRST sm89 (L40, 8 x 44.4 GiB usable, CC 8.9, driver 595.58) identity campaign, vllm 0.30.0 (image digest
       8a69ffad015f), generator = this branch, system l40s (needs the new l40s hardware profile: without it resolve_facts raised
@@ -3088,3 +3099,6 @@ findings:
     - instrument:sglang.collect_attn_encoder
     - instrument:probe_driver
     - Qwen/Qwen3-VL-2B-Instruct
+    collector_impact:
+    - {op: encoder_attention, action: collector_fix, ref: '14111be3: encoder collector picks the vision lane by capability family on sm103'}
+    - {op: moe, action: guard, ref: '26d09519: sm103 treated as sm100 — nvfp4 min-latency lane opens on SM103'}
