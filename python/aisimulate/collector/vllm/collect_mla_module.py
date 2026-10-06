@@ -57,6 +57,20 @@ import traceback
 from pathlib import Path
 
 import torch
+from vllm.config import set_current_vllm_config
+from vllm.forward_context import set_forward_context
+
+# ═══════════════════════════════════════════════════════════════════════
+# Config registry patch — vLLM 0.24.0 registers the GlmMoeDsaForCausalLM
+# model class but omits the config-type mapping for "glm_moe_dsa", so
+# AutoConfig.from_pretrained() fails.  The config layout is identical to
+# DeepSeek-V3 (GlmMoeDsaForCausalLM inherits DeepseekV2ForCausalLM), so
+# reusing DeepseekV3Config is safe.
+# ═══════════════════════════════════════════════════════════════════════
+from vllm.transformers_utils.config import _CONFIG_REGISTRY
+from vllm.v1.worker.workspace import init_workspace_manager
+from vllm.version import __version__ as vllm_version
+
 from collector.case_generator import (
     get_mla_module_model_specs,
     get_mla_module_precision_specs,
@@ -73,19 +87,6 @@ from collector.vllm.utils import (
     setup_distributed,
     with_exit_stack,
 )
-from vllm.config import set_current_vllm_config
-from vllm.forward_context import set_forward_context
-
-# ═══════════════════════════════════════════════════════════════════════
-# Config registry patch — vLLM 0.24.0 registers the GlmMoeDsaForCausalLM
-# model class but omits the config-type mapping for "glm_moe_dsa", so
-# AutoConfig.from_pretrained() fails.  The config layout is identical to
-# DeepSeek-V3 (GlmMoeDsaForCausalLM inherits DeepseekV2ForCausalLM), so
-# reusing DeepseekV3Config is safe.
-# ═══════════════════════════════════════════════════════════════════════
-from vllm.transformers_utils.config import _CONFIG_REGISTRY
-from vllm.v1.worker.workspace import init_workspace_manager
-from vllm.version import __version__ as vllm_version
 
 if "glm_moe_dsa" not in _CONFIG_REGISTRY:
     _CONFIG_REGISTRY["glm_moe_dsa"] = "DeepseekV3Config"
