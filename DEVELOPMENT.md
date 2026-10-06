@@ -223,8 +223,11 @@ shows the actual reporting time. Activity after that time is outside the
 same-day report.
 
 Local preview (requires an authenticated GitHub CLI and Python 3.9+):
-The digest and its offline tests use only the standard library and retain a
-Python 3.9 lint target in `scripts/pyproject.toml`.
+The digest and its offline tests use standard-library Python modules and require
+IANA time-zone data for `America/Los_Angeles`, supplied by the operating system
+or the `tzdata` package. If system time-zone data is missing, install `tzdata`
+with `python3 -m pip install tzdata`. Both files retain a Python 3.9 lint target
+in `scripts/pyproject.toml`.
 
 ```bash
 GH_TOKEN="$(gh auth token)" python3 scripts/notifications/slack_review_digest.py --dry-run
