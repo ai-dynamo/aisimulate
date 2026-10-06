@@ -653,7 +653,19 @@ def save_error_report(errors, filename):
 
 
 def get_sm_version():
-    """Get CUDA compute capability (SM version)"""
+    """Get CUDA compute capability (SM version).
+
+    ``AIS_SM`` (``sm100`` or ``100``; legacy ``AIC_SM``) overrides the probe so
+    case getters can be enumerated for a target SM on a box without that GPU
+    (opharness components/case_inventory.py: the case set is a pure function
+    of (SM, framework version, case files) and must be derivable without
+    collecting). Real collection never sets it.
+    """
+    forced = os.environ.get("AIS_SM") or os.environ.get("AIC_SM")
+    if forced:
+        digits = "".join(ch for ch in str(forced) if ch.isdigit())
+        if digits:
+            return int(digits)
     try:
         import torch
 

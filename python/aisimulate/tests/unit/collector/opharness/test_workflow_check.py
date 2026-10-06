@@ -251,3 +251,26 @@ def test_lane_guards_predicate_uses_the_committed_rules_against_scratch_results(
     assert ok is False and "without hardware evidence" in reason
     ok, reason = wc.pred_lane_guards_match_evidence({"fw": "vllm", "version": "0.29.0", "sm": "sm90"})
     assert ok is True and "no lane guards declared" in reason
+
+
+def test_case_set_no_regression_baseline_then_regression_then_waiver(wc):
+    p = {"fw": "sglang", "version": "0.5.21", "sm": "sm100"}
+    ok, reason = wc.pred_case_set_no_regression(p)
+    assert ok is False and "no case inventory" in reason
+    d = wc.HARNESS / "results" / "sm100" / "cases"
+    d.mkdir(parents=True)
+    new = {"_meta": {"framework": "sglang", "version": "0.5.21", "cases_total": 10},
+           "ops": {"gemm": {"in_plan": True, "cases": 10, "fields": {}}}}
+    (d / "sglang-0.5.21.yaml").write_text(yaml.safe_dump(new))
+    ok, reason = wc.pred_case_set_no_regression(p)
+    assert ok is True and "baseline" in reason
+    prev = {"_meta": {"framework": "sglang", "version": "0.5.17"},
+            "ops": {"gemm": {"in_plan": True, "cases": 10, "fields": {}},
+                    "dsv4_paged_mqa_logits_module": {"in_plan": True, "cases": 22, "fields": {}}}}
+    (d / "sglang-0.5.17.yaml").write_text(yaml.safe_dump(prev))
+    ok, reason = wc.pred_case_set_no_regression(p)
+    assert ok is False and "paged_mqa" in reason
+    (d / "sglang-0.5.21.waivers.yaml").write_text(yaml.safe_dump(
+        {"ops": {"dsv4_paged_mqa_logits_module": "owner: moved to a targeted shard"}}))
+    ok, reason = wc.pred_case_set_no_regression(p)
+    assert ok is True and "1 waived" in reason

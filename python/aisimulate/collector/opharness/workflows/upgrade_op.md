@@ -14,6 +14,7 @@ give the same answer twice is a component invocation, never free-hand.
 | 3 | Scope the re-probe | script | `probe_driver.py --plan --only <representative models of this family>` — the reverse mapping (family -> representative models) comes from the previous matrix |
 | 4 | Re-run identity | script | `probe_driver.py --emit-queues` + queues -> `--records` -> `--matrix` (a NEW `results/<sm>/<fw>-<ver>.yaml`; diff vs the old file IS the upgrade report) |
 | 4b | Lane guards vs evidence | script | `components/lane_evidence.py --fw --version --sm`: every collector version/SM lane guard cell must agree with the fresh identity records (`components/lane_evidence.yaml` says which checkpoints are the evidence). A guard is edited ONLY with this report in hand, never from source reading |
+| 4c | Case-set regression | script | `AIS_SM=<sm> components/case_inventory.py --fw --version --sm` inside the new image (CPU): every registry op's case set -> `results/<sm>/cases/<fw>-<ver>.yaml`; diffed against the previous version's inventory. An op leaving the plan, a getter dropping a model, a lane or dtype value disappearing is a regression BEFORE any GPU hour; deliberate losses are signed in `<fw>-<ver>.waivers.yaml` |
 | 5 | Path alignment | script | `components/path_diff.py` for the family's collector op vs the fresh serving records |
 | 5b | Executor smoke | script | `components/executor_smoke.py --run --limit 1` in the framework image: every planned op once through collect.py's real path (`--model-cases-full` plan, checkpoint, `--resume`, finalize) -> `results/<sm>/executor_smoke/<fw>-<ver>.yaml`. `--shards <pipeline plan>` (CPU) checks a shard plan against the case plan before any GPU hour |
 | 6 | Expired customizations | AI | any `cli_extra_args` whose fact cites the old version: re-run the bare default with `--only`; drop args that became unnecessary, record in findings |
@@ -34,6 +35,7 @@ finalization). The three steps above (4b, 5b, 8) make each movement a
 checked artifact:
 
 - identity records -> lane guards: `lane_evidence.py` (declarative rules, graded cells);
+- case files + getters -> the collected set: `case_inventory.py` (derived, no GPU; version-to-version diff);
 - findings -> collector grid: `collector_impact` on every pinned finding (`findings_propagated`);
 - collector -> pipeline: `executor_smoke.py` runs the same command line the pipeline runs, and
   `--shards` validates the pipeline's plan against the collector's plan on a CPU.
