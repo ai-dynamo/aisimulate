@@ -54,7 +54,7 @@ The other group/output pairs are `fpm-accuracy` → `fpm_accuracy/`, and `pages`
 `readme`, and `release` → the same-named directories. E2E campaign scripts use
 only the standard library and the separately installed predictor wheel, so they
 have no tooling dependency group. Fast CI regenerates every group lock with
-`uv==0.12.6` and rejects differences. It retains existing transitive pins unless
+`uv==0.12.6` from the hashed CI lock and rejects changed or missing locks. It retains existing transitive pins unless
 the declarations require a change; use `--upgrade` for an intentional refresh.
 The `ci`, `pages`, and `readme` groups use pytest 9 to match AISimulate's dev extra.
 Do not use `uv sync` in a wheel-evaluation environment: it can remove the wheel under test.

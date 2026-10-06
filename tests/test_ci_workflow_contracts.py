@@ -3279,12 +3279,15 @@ def test_standalone_fpe_uses_current_requirements_and_revision_builder(tmp_path,
     builder = source / layout
     builder.parent.mkdir(parents=True)
     builder.touch()
+    if layout == "scripts/release/build_manylinux_wheel.py":
+        (source / "scripts/build_manylinux_wheel.py").touch()
     requirements = tmp_path / "scripts/release/requirements.txt"
     requirements.parent.mkdir(parents=True)
     requirements.touch()
     capture = """
 python() {
   if [ "$1" = "-m" ]; then
+    test "$4" = "--require-hashes" || return 1
     test "$6" = "${GITHUB_WORKSPACE}/scripts/release/requirements.txt" || return 1
     test -f "$6" || return 1
   else
