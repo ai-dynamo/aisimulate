@@ -6,7 +6,7 @@ import argparse
 import json
 import os
 import sys
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
@@ -105,7 +105,7 @@ def main():
     webhook = os.environ.get("SLACK_REVIEW_DIGEST_WEBHOOK_URL", "")
     if not args.dry_run and not webhook:
         raise ValueError("Set SLACK_REVIEW_DIGEST_WEBHOOK_URL before sending the digest")
-    now = datetime.now(UTC)
+    now = datetime.now(timezone.utc)
     start = now.astimezone(PACIFIC).replace(hour=0, minute=0, second=0, microsecond=0)
     open_prs = list(pull_requests(repository, token, "open"))
     recent_prs = list(pull_requests(repository, token, "all", since=start))

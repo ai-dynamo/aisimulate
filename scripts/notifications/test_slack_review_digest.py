@@ -6,7 +6,7 @@ import io
 import json
 import sys
 import unittest
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -15,7 +15,7 @@ from scripts.notifications.slack_review_digest import PACIFIC, messages, pull_re
 
 
 class DigestTests(unittest.TestCase):
-    now = datetime(2026, 9, 30, 0, 7, tzinfo=UTC)
+    now = datetime(2026, 9, 30, 0, 7, tzinfo=timezone.utc)
 
     def pr(self, number=1, age=6, **changes):
         pr = dict(
@@ -60,7 +60,7 @@ class DigestTests(unittest.TestCase):
         self.assertIn("2026-09-29, 05:07 PM PDT", text)
 
     def test_dst_day_uses_midnight_offset(self):
-        now = datetime(2026, 11, 2, 1, 7, tzinfo=UTC)
+        now = datetime(2026, 11, 2, 1, 7, tzinfo=timezone.utc)
         self.assertEqual(
             now.astimezone(PACIFIC).replace(hour=0, minute=0).utcoffset(),
             timedelta(hours=-7),

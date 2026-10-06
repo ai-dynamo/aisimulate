@@ -11,3 +11,8 @@ release = ["build>=1,<2", "maturin>=1.12,<2"]
 
 [tool.ruff]
 extend = "../python/aisimulate/pyproject.toml"
+
+# The standalone Slack review preview supports Python 3.9 (see DEVELOPMENT.md).
+[tool.ruff.per-file-target-version]
+"notifications/slack_review_digest.py" = "py39"
+"notifications/test_slack_review_digest.py" = "py39"
