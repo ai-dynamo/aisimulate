@@ -94,6 +94,9 @@ def _normalized_hardware(hardware: str) -> str:
 
 
 def _total_gpus(row: dict[str, Any]) -> int:
+    recorded = _finite(row.get("aisimulate_total_gpus"))
+    if recorded is not None and recorded > 0:
+        return int(recorded)
     if row.get("disagg"):
         for field in ("aisimulate_total_gpus", "dynamo_total_gpus"):
             value = _finite(row.get(field))
@@ -126,7 +129,7 @@ def _is_multinode(row: dict[str, Any]) -> bool:
         if not isinstance(is_multinode, bool):
             raise SnapshotError("row with unknown hardware family must provide boolean is_multinode")
         return is_multinode
-    return _total_gpus(row) > gpus_per_node
+    return row.get("is_multinode") is True or _total_gpus(row) > gpus_per_node
 
 
 def _topology_key(row: dict[str, Any]) -> tuple[Any, ...]:
@@ -270,8 +273,28 @@ def _chart_metrics(row: dict[str, Any], prefix: str) -> dict[str, float | None]:
     return values
 
 
+def _prediction_error(row: dict[str, Any]) -> str | None:
+    """Retain failure details without local paths, URLs, or terminal controls."""
+    if row["aisimulate_status"] == "success":
+        return None
+    message = row.get("aisimulate_error")
+    if not isinstance(message, str) or not message.strip():
+        return None
+    error_type = row.get("aisimulate_error_type")
+    if isinstance(error_type, str) and re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*", error_type):
+        message = f"{error_type}: {message}"
+    message = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", message)
+    message = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", message)
+    message = re.sub(r"https?://[^\s<>\"']+", "[URL]", message)
+    message = re.sub(r"(?<![\w/])(?:/[\w.~-]+)+", "[path]", message)
+    for fragment in FORBIDDEN_PUBLIC_FRAGMENTS:
+        message = message.replace(fragment, "[redacted]")
+    message = " ".join(message.split())
+    return message[:2047] + "…" if len(message) > 2048 else message
+
+
 def _topology_summaries(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Publish serving metrics and normalized curves without internal run IDs."""
+    """Publish chart measurements and normalized curves without internal run IDs."""
     groups: dict[tuple[Any, ...], list[dict[str, Any]]] = defaultdict(list)
     for row in rows:
         groups[_topology_key(row)].append(row)
@@ -292,17 +315,14 @@ def _topology_summaries(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             point: dict[str, Any] = {
                 "concurrency": row["conc"],
                 "status": row["aisimulate_status"],
+                "aic_status": row.get("aic_status", "success"),
+                "configuration": row.get("configuration", {}),
                 "infx_run_id": str(run_id) if run_id is not None else None,
+                "aisim_error": _prediction_error(row),
             }
             if "configuration_quality" in row:
                 point["configuration_quality"] = row["configuration_quality"]
-            if "aic_status" in row:
-                point["aic_status"] = row["aic_status"]
-            for name, prefix in (
-                ("measured", "silicon"),
-                ("aic", "aic"),
-                ("aisimulate", "dynamo"),
-            ):
+            for name, prefix in (("measured", "silicon"), ("aic", "aic"), ("aisimulate", "dynamo")):
                 point[name] = _chart_metrics(row, prefix)
                 for metric, anchor in anchors.items():
                     value = _finite(row.get(f"{prefix}_{metric}_ms"))
@@ -341,6 +361,8 @@ def _topology_summaries(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "precision": first["precision"],
                 "serving": "disaggregated" if first.get("disagg") else "aggregated",
                 "spec_method": first.get("spec_method") or "none",
+                "is_multinode": _is_multinode(first),
+                "total_gpus": _total_gpus(first),
                 "parallelism": {
                     field: first.get(field)
                     for field in ("tp_size", "pp_size", "attention_dp_size", "moe_ep_size", "moe_tp_size")
@@ -489,6 +511,8 @@ def _validate_inputs(
     predictions: dict[str, Any],
     metadata: dict[str, Any],
     coverage: dict[str, Any],
+    *,
+    research_preview: bool = False,
 ) -> list[dict[str, Any]]:
     release_tag = _required_text(predictions.get("release_tag"), "predictions.release_tag")
     for name, document in (("metadata", metadata), ("coverage", coverage)):
@@ -518,8 +542,10 @@ def _validate_inputs(
             if _finite(row.get(field)) is None or row[field] <= 0:
                 raise SnapshotError(f"row is missing a positive finite {field}")
         aic_status = row.get("aic_status", "success")
-        if aic_status not in {"success", "failed", "unsupported"}:
-            raise SnapshotError("unknown AIC prediction status")
+        if aic_status not in {"success", "failed", "unsupported"} and not (
+            research_preview and aic_status == "pending" and predictions.get("aic_commit_sha") == "not-run"
+        ):
+            raise SnapshotError(f"row has unknown aic_status: {aic_status!r}")
         for field in ("aic_ttft_ms", "aic_tpot_ms"):
             if aic_status == "success":
                 if _finite(row.get(field)) is None or row[field] <= 0:
@@ -566,18 +592,32 @@ def build_summary(
     exclude_multinode: bool = True,
     branch: str | None = None,
     preview: bool = False,
+    research_preview: bool = False,
 ) -> dict[str, Any]:
-    all_rows = _validate_inputs(predictions, metadata, coverage)
+    if research_preview and branch is not None:
+        raise SnapshotError("research previews cannot qualify an evaluated branch")
+    all_rows = _validate_inputs(predictions, metadata, coverage, research_preview=research_preview)
     expected_source_url = f"{INFERENCEX_RELEASE_URL_PREFIX}{predictions['release_tag']}"
     if source_url != expected_source_url:
         raise SnapshotError("source URL does not match the validated predictions.release_tag")
     scoped_rows = [row for row in all_rows if not (exclude_multinode and _is_multinode(row))]
     if not scoped_rows:
         raise SnapshotError("no rows remain after applying the publication scope")
+    if research_preview:
+        scoped_rows = [
+            {
+                **row,
+                "configuration": {
+                    **row.get("configuration", {}),
+                    "configuration_quality": row.get("configuration_quality"),
+                },
+            }
+            for row in scoped_rows
+        ]
 
     by_model: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for row in scoped_rows:
-        by_model[_required_text(row.get("display_name"), "display_name")].append(row)
+        by_model[_required_text(row.get("hf_model_path") or row.get("display_name"), "model name")].append(row)
 
     statuses = _status_counts(scoped_rows)
     identities = _identity_summary(scoped_rows)
@@ -671,6 +711,25 @@ def build_summary(
     aic_source = _aic_source(predictions, metadata, coverage, revision)
     if aic_source is not None:
         result["snapshot"]["aic_source"] = aic_source
+    if research_preview:
+        source = runtime.get("source_checkout", {})
+        if (
+            not isinstance(source, dict)
+            or source.get("clean") is not True
+            or not isinstance(source.get("commit_sha"), str)
+            or not re.fullmatch(r"[0-9a-f]{40}", source["commit_sha"])
+        ):
+            raise SnapshotError("research preview requires a clean recorded AISim source commit")
+        if any(row.get("configuration_quality") not in {"verified", "estimated"} for row in scoped_rows):
+            raise SnapshotError("research preview requires verified or estimated configuration quality")
+        result["snapshot"]["research_preview"] = {
+            "source_commit": source["commit_sha"],
+            "estimated_points": sum(row["configuration_quality"] == "estimated" for row in scoped_rows),
+            "estimated_successes": sum(
+                row["configuration_quality"] == "estimated" and row["aisimulate_status"] == "success"
+                for row in scoped_rows
+            ),
+        }
     serialized = json.dumps(result, sort_keys=True)
     for fragment in FORBIDDEN_PUBLIC_FRAGMENTS:
         if fragment in serialized:
@@ -687,6 +746,11 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument(
         "--branch", help="Evaluated main or release/* branch; requires matching clean runtime provenance"
+    )
+    parser.add_argument(
+        "--research-preview",
+        action="store_true",
+        help="Export local-only research results, including unrun baselines and estimated configuration labels.",
     )
     parser.add_argument(
         "--include-multinode",
@@ -706,6 +770,7 @@ def main() -> int:
         source_url=args.source_url,
         exclude_multinode=not args.include_multinode,
         branch=args.branch,
+        research_preview=args.research_preview,
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n")

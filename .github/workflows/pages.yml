@@ -146,6 +146,7 @@ jobs:
           python -m playwright install --with-deps chromium
           python scripts/pages/check_fpe_support_matrix_browser.py
           python scripts/pages/check_fpm_accuracy_browser.py
+          python scripts/pages/check_e2e_accuracy_browser.py
       - name: Upload GitHub Pages artifact
         if: >-
           github.event_name != 'pull_request' &&

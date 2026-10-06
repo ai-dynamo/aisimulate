@@ -239,6 +239,10 @@ def _accuracy_summary(text: str, *, allow_preview: bool = False) -> dict:
             "topology dimensions",
         )
         require(isinstance(item.get("parallelism"), dict), "parallelism")
+        if "is_multinode" in item:
+            require(type(item["is_multinode"]) is bool, "multi-node flag")
+        if "total_gpus" in item or "is_multinode" in item:
+            require(type(item.get("total_gpus")) is int and item["total_gpus"] > 0, "GPU count")
         points = item.get("points")
         require(isinstance(points, list) and len(points) == item["rows"], "topology points")
         previous = 0
@@ -261,10 +265,15 @@ def _accuracy_summary(text: str, *, allow_preview: bool = False) -> dict:
             previous = concurrency
             status = point.get("status")
             require(status in ("success", "unsupported", "failed"), "point status")
-            counts[status] += 1
+            error = point.get("aisim_error")
+            require(
+                error is None or (status != "success" and isinstance(error, str) and 0 < len(error) <= 2048),
+                "AISim error detail",
+            )
             aic_status = point.get("aic_status", "success")
             require(aic_status in ("success", "unsupported", "failed"), "AIC point status")
             aic_successes += aic_status == "success"
+            counts[status] += 1
             for name in ("measured", "aic", "aisimulate"):
                 series = point.get(name)
                 require(isinstance(series, dict), "point series")
@@ -349,7 +358,7 @@ def _accuracy_summary(text: str, *, allow_preview: bool = False) -> dict:
                         "point metric",
                     )
         require(counts == item["aisimulate"]["status_counts"], "topology status counts")
-        require(aic_successes == item["aic"]["points"], "AIC topology coverage")
+        require(aic_successes == item["aic"]["points"], "AIC topology coverage (AIC point count)")
 
     try:
         summary = json.loads(text)
@@ -360,6 +369,7 @@ def _accuracy_summary(text: str, *, allow_preview: bool = False) -> dict:
         require(not preview or allow_preview, "preview is not publishable")
         snapshot = summary.get("snapshot")
         require(isinstance(snapshot, dict), "snapshot")
+        require("research_preview" not in snapshot, "research previews are local-only and cannot be published")
         require(isinstance(snapshot.get("release_tag"), str), "measurement release")
         require(
             snapshot.get("measurement_source_url")
@@ -580,6 +590,22 @@ def _build_accuracy_catalog(
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n")
         entries.append(entry)
+    status_path = artifacts / "status/updates.json" if artifacts else None
+    if status_path is not None and status_path.exists():
+        updates = json.loads(status_path.read_text())
+        if not isinstance(updates, dict):
+            raise PagesBuildError("invalid accuracy update status: expected an object")
+        for entry in entries:
+            update = updates.get(entry["branch"])
+            if update is not None:
+                if (
+                    not isinstance(update, dict)
+                    or set(update) != {"status", "run_id"}
+                    or update["status"] not in {"success", "failed"}
+                    or not re.fullmatch(r"[0-9]+", str(update["run_id"]))
+                ):
+                    raise PagesBuildError("invalid accuracy update status")
+                entry["last_update"] = update
     catalog = {"schema_version": 1, "default_branch": "main", "branches": entries}
     (output_dir / "e2e-accuracy" / "branches.json").write_text(json.dumps(catalog, indent=2, sort_keys=True) + "\n")
 

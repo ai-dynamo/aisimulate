@@ -85,8 +85,12 @@ def tables():
 
 
 def test_selection_keeps_one_complete_run_and_never_fills_missing_concurrency():
-    points, stats = campaign.select_points(tables(), 30)
+    data = tables()
+    data["workflow_runs"][0]["github_run_id"] = "11111"
+    data["workflow_runs"][1]["github_run_id"] = "22222"
+    points, stats = campaign.select_points(data, 30)
     assert {point["benchmark"]["id"] for point in points} == {2, 3}
+    assert {point["github_run_id"] for point in points} == {"22222"}
     assert stats["selected"] == 2
     assert stats["measurement_date_through"] == "2026-09-13"
     assert stats["excluded"] == {"superseded_curve": 1}
@@ -565,6 +569,17 @@ def test_untrusted_wrong_attempt_or_failed_producer_rejected(artifact, field, va
     run[field] = value
     with pytest.raises(ValueError):
         publish.validate_artifact(archive(summary), run)
+
+
+def test_publisher_accepts_public_infx_run_ids_and_rejects_invalid_links(artifact):
+    summary, run = artifact
+    point = summary["models"][0]["workloads"][0]["gpus"][0]["topologies"][0]["points"][0]
+    point["infx_run_id"] = "26696231118"
+    assert publish.validate_artifact(archive(summary), run) == summary
+    for invalid in ("../123", "0", "<script>", 123):
+        point["infx_run_id"] = invalid
+        with pytest.raises(ValueError, match="InferenceX GitHub run ID"):
+            publish.validate_artifact(archive(summary), run)
 
 
 @pytest.mark.parametrize(
@@ -1332,6 +1347,104 @@ def test_publication_rejects_unknown_baseline_entry_point(artifact):
         publish.validate_artifact(archive(summary), run)
 
 
+@pytest.mark.parametrize("status", ["failed", "unsupported"])
+def test_publication_checks_aic_success_count_against_point_statuses(artifact, status):
+    summary, _ = artifact
+    model = summary["models"][0]
+    workload = model["workloads"][0]
+    gpu = workload["gpus"][0]
+    topology = gpu["topologies"][0]
+    point = topology["points"][0]
+    point["aic_status"] = status
+    point["aic"] = dict.fromkeys(point["aic"])
+    point["aic"]["unavailable_metrics"] = dict.fromkeys(
+        ("ttft_ms", "tpot_ms", "e2e_ms", "output_per_gpu", "total_per_gpu", "interactivity_tok_s"),
+        "prediction_failed",
+    )
+    with pytest.raises(pages.PagesBuildError, match="AIC point count"):
+        pages._accuracy_summary(json.dumps(summary))
+    for item in (summary["totals"], model, workload, gpu, topology):
+        item["aic"]["points"] -= 1
+    summary["totals"]["by_configuration_quality"]["not_recorded"]["aic"]["points"] -= 1
+    assert pages._accuracy_summary(json.dumps(summary)) == summary
+
+
+@pytest.mark.parametrize("output", [None, 0, -1, float("nan"), 400])
+def test_campaign_does_not_infer_measured_output_from_total(monkeypatch, output):
+    api, adapter_name = "aisimulate.legacy_cli.api", "aisimulate.sdk.config_adapter"
+    monkeypatch.setattr(campaign, "predictor_module_names", lambda _: (api, adapter_name))
+    monkeypatch.setattr(campaign.importlib.metadata, "distribution", lambda _: SimpleNamespace(files=[]))
+    monkeypatch.setitem(sys.modules, "aisimulate.runner", SimpleNamespace(EngineReplayRunnerFactory=object))
+    worker = SimpleNamespace(
+        tp_size=4, pp_size=1, attention_dp_size=1, moe_tp_size=4, moe_ep_size=1, replicas=1, gpus_per_replica=4
+    )
+    request = SimpleNamespace(
+        model=SimpleNamespace(path="example/model"), topology=SimpleNamespace(kind="agg", worker=worker)
+    )
+    modules = {
+        api: SimpleNamespace(cli_estimate=lambda **_: SimpleNamespace(ttft=100, tpot=10, backend_version="test")),
+        adapter_name: SimpleNamespace(
+            InferenceXSource=lambda **values: values,
+            adapt_config=lambda _: SimpleNamespace(requests=[request]),
+            to_cli_estimate_kwargs=lambda _: {},
+        ),
+    }
+    monkeypatch.setattr(campaign.importlib, "import_module", modules.__getitem__)
+    monkeypatch.setattr(campaign, "replay_spec", lambda *_: None)
+    config = dict(
+        id=1,
+        model="model",
+        hardware="h200",
+        framework="vllm",
+        precision="fp8",
+        spec_method="none",
+        disagg=False,
+        is_multinode=False,
+        num_decode_gpu=4,
+    )
+    bench = dict(
+        isl=1024,
+        osl=1024,
+        conc=1,
+        metrics=dict(mean_ttft=0.1, mean_tpot=0.01, tput_per_gpu=300, output_throughput=output),
+    )
+    row = campaign.predict_point({"id": "point", "config": config, "benchmark": bench})["row"]
+    assert row["silicon_total_per_gpu"] == 300
+    assert row["silicon_output_per_gpu"] == (100 if output == 400 else None)
+    assert row["aisimulate_error_type"] == "AttributeError"
+    assert "create" in row["aisimulate_error"]
+
+
+def test_publication_accepts_failure_details_but_rejects_success_errors(artifact):
+    summary, run = artifact
+    model = summary["models"][0]
+    workload = model["workloads"][0]
+    gpu = workload["gpus"][0]
+    topology = gpu["topologies"][0]
+    failed = topology["points"][0]
+    failed["status"] = "failed"
+    failed["aisimulate"] = dict.fromkeys(failed["aisimulate"])
+    failed["aisimulate"]["unavailable_metrics"] = dict.fromkeys(
+        ("ttft_ms", "tpot_ms", "e2e_ms", "output_per_gpu", "total_per_gpu", "interactivity_tok_s"), "prediction_failed"
+    )
+    for item in (summary["totals"], model, workload, gpu, topology):
+        item["aisimulate"]["points"] -= 1
+        item["aisimulate"]["status_counts"]["success"] -= 1
+        item["aisimulate"]["status_counts"]["failed"] += 1
+    summary["totals"]["by_configuration_quality"]["not_recorded"]["aisimulate"]["points"] -= 1
+    failed["aisim_error"] = "ValueError: no KV budget"
+    assert publish.validate_artifact(archive(summary), run) == summary
+    success = topology["points"][1]
+    success["aisim_error"] = "stale failure"
+    with pytest.raises(pages.PagesBuildError, match="AISim error detail"):
+        publish.validate_artifact(archive(summary), run)
+    del success["aisim_error"]
+    for invalid in (42, "", "x" * 2049):
+        failed["aisim_error"] = invalid
+        with pytest.raises(pages.PagesBuildError, match="AISim error detail"):
+            publish.validate_artifact(archive(summary), run)
+
+
 @pytest.mark.parametrize(
     "entry", ["aiconfigurator.main:main", "aisimulate.legacy_cli.entrypoint:main", None, "foreign.main:main", 42]
 )
@@ -1757,6 +1870,7 @@ def test_source_resolved_prediction_preserves_settings_and_independent_outcomes(
 ):
     point = resolved_point(framework, disagg)
     point["source_row"]["github_run_id"] = "28196140241"
+    point["benchmark"]["metrics"].update(mean_e2el=2.5, tput_per_gpu=600, output_tput_per_gpu=250)
     calls = []
 
     def estimate(**kwargs):
@@ -1832,6 +1946,16 @@ def test_source_resolved_prediction_preserves_settings_and_independent_outcomes(
         assert result["row"]["aic_e2e_ms"] == 3040
         assert result["row"]["aic_total_per_gpu"] is None
 
+    row = result["row"]
+    assert row["silicon_github_run_id"] == "28196140241"
+    assert row["silicon_e2e_ms"] == 2500
+    assert row["silicon_total_per_gpu"] == 600
+    assert row["silicon_output_per_gpu"] == 250
+    if baseline_fails:
+        assert row.get("aic_e2e_ms") is None
+        assert row.get("aic_output_per_gpu") is None
+    assert row["configuration"] == {"backend_version": "database-2.0", "forward_model": "op_level"}
+
 
 def test_configuration_quality_is_public_and_counts_are_checked(artifact):
     summary, run = artifact
@@ -1849,6 +1973,30 @@ def test_configuration_quality_is_public_and_counts_are_checked(artifact):
     summary["snapshot"]["campaign"]["configuration"]["counts"]["estimated"] += 1
     with pytest.raises(pages.PagesBuildError, match="configuration counts"):
         publish.validate_artifact(archive(summary), run)
+
+
+def test_campaign_can_select_multinode_without_changing_legacy_selection():
+    data = tables()
+    data["configs"][0]["is_multinode"] = True
+    points, metadata = campaign.select_points(data, 30, include_multinode=True)
+    assert points and "multinode" not in metadata["excluded"]
+    with pytest.raises(ValueError, match="empty"):
+        campaign.select_points(data, 30)
+
+
+@pytest.mark.parametrize("conclusion", ["failure", "timed_out", "cancelled", "skipped"])
+def test_failed_campaign_without_artifact_keeps_failure_status(artifact, tmp_path, monkeypatch, conclusion):
+    _, run = artifact
+    run["conclusion"] = "failure"
+    publication_api(monkeypatch, run, [], jobs={"1": [qualification_job(run, "main", conclusion=conclusion)]})
+    output = tmp_path / "prepared"
+    publish.prepare(ROOT, output)
+    assert prepared_snapshots(output) == {}
+    updates = json.loads((output / "status/updates.json").read_text())
+    if conclusion in {"failure", "timed_out"}:
+        assert updates["main"] == {"status": "failed", "run_id": str(run["id"])}
+    else:
+        assert updates == {}
 
 
 @pytest.mark.parametrize(

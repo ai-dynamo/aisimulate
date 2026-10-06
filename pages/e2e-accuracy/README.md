@@ -3,15 +3,114 @@ SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All 
 SPDX-License-Identifier: Apache-2.0
 -->
 
-# AISimulate E2E Accuracy Overview
+# AISim E2E Accuracy
 
 View the [E2E Accuracy Overview](https://ai-dynamo.org/aisimulate/e2e-accuracy/).
-It compares **AISim CLI (new)** and **AIC CLI (legacy)** against measured silicon
+It compares **AISim** and **AIC (legacy CLI)** against measured silicon
 so users can assess whether the new CLI is comparable during migration. The AIC
-comparison series is temporary and will be removed when the AIC CLI is deprecated.
+comparison series is temporary and will be removed when the AIC (legacy CLI) is deprecated.
 Successful-point counts matter: AISim errors cover successful engine replays,
 while the AIC baseline covers its own successful estimates. Both failures remain
 visible in coverage accounting.
+
+## Views and filters
+
+The tabs sit directly below the main header. Measurement source, release, and
+multi-node scope are recorded under **About this comparison** rather than in a
+separate header row.
+
+Display names are **AISim** and **AIC (legacy CLI)** throughout the E2E page.
+The model matrix pairs TPOT / TTFT MAPE in one column per predictor; each metric
+can still be sorted independently. Each predictor’s point count appears immediately
+before its MAPE column. The Hardware column lists GPU names without a separate
+GPU SKU count column. New exports group models by their exact full
+Hugging Face ID, keeping checkpoint variants separate. Historical aggregates
+retain their grouping and display all recorded HF IDs, or their original name
+when no HF ID was recorded.
+The overview and model picker include only models with successful AISim
+predictions under the active filters. Mixed-success models retain their failed
+operating points. The Models card counts visible models; overall predictor
+accuracy and coverage retain the full evaluated cohort, including hidden models.
+The operating-point table keeps each predictor beside its latency errors and
+shows configuration evidence (`verified` or `estimated`) plus separate replay
+and AIC statuses. Run links and chart metrics are also exported for the resolved
+source policy. Measured per-GPU throughput comes from recorded measurements;
+missing predictor throughput or E2E latency stays unavailable. The configuration
+popup shows only the recorded subset of prediction settings.
+
+Internal predictor IDs and stored metric fields remain unchanged. Accuracy
+cards explain when a snapshot or filter selection has no included predictions;
+missing predictions never become zero errors. Research runs without a legacy
+CLI evaluation still need that evaluation before branch-qualified publication.
+
+- **Overview(op-based)** shows model/workload/GPU errors, serving/framework
+  summaries, and topology drilldowns. Framework summaries group Agg before
+  Disagg, with VLLM, SGLANG, then TRTLLM within each group.
+  The hardware table below combines Agg and Disagg across models and frameworks,
+  showing included AISim point counts and TPOT/TTFT MAPE per GPU SKU. It uses the
+  same exclusions and averages individual point errors, not group averages.
+- **Details(op-based)** shows one selected topology with model, ISL/OSL, GPU,
+  precision, framework, serving mode, and parallelism selectors.
+- Each operating point's **InfX CI run** links to its measured silicon run in
+  `SemiAnalysisAI/InferenceX` GitHub Actions. The exporter retains the public
+  `silicon_github_run_id` as `infx_run_id`; it never uses the dump's internal
+  workflow row ID. Older snapshots without this provenance display “—”.
+  InfX CI run, Replay status, and AISim prediction error are the last three
+  columns, after the latency values and percentage errors.
+  AISim and AIC (legacy CLI) each pair their TTFT / TPOT values with the
+  corresponding percentage errors in the next column, with AISim first.
+- **AISim prediction error** shows recorded failure details for failed or
+  unsupported operating points. Successful points show “—”; missing historical
+  details show “Not recorded”. Public error text omits local paths and URLs and
+  is capped at 2,048 characters. The nightly runner retains replay exceptions.
+- Both views retain Measured silicon, AISim, and AIC (legacy CLI) series.
+  Click a legend to toggle a series; double-click to isolate it. Point markers
+  open numeric values and the recorded prediction configuration.
+- Branch, topology, exclusions, chart axes, and hidden series are shareable in
+  the URL and survive tab switches. Overview retains the selected GPU row.
+- Multi-node points are included by default in new campaigns. Optional exclusions
+  remove multi-node topologies, anomalous silicon values, or prediction errors
+  above 100%. Exactly 100% is retained. Error exclusions apply independently per
+  predictor and metric; outliers remain pink in charts. Shape error compares
+  curves normalized independently to their first included point.
+- Silicon anomalies flag local peaks/dips and lower-concurrency values that
+  exceed a later value by more than 5%, within the same topology and metric.
+  Exclusions are off by default; they never change the published snapshot.
+
+Charts use milliseconds when recorded. Historical normalized-only snapshots keep
+relative curves, and aggregate-only snapshots explicitly disable point filters.
+Throughput can show output or total tokens per second per GPU against interactivity,
+E2E latency, or TTFT. Measured output throughput stays unavailable when no output
+rate was recorded; requested token lengths do not establish measured throughput.
+AIC (legacy CLI) total throughput uses the inverse nominal ratio. Replay throughput
+uses its recorded token rates. Missing values stay unavailable. Prediction knobs
+are not proof that silicon used the same knobs; the point dialog states this.
+
+The exporter also accepts Gym's original `*_tput_per_gpu_output`,
+`*_tput_per_gpu_total`, `silicon_e2el_ms`, and `*_request_latency_ms` fields.
+These rates are already per GPU and latencies are already in milliseconds.
+Explicitly failed AIC predictions remain gaps without dropping the silicon or
+AISim point. Re-export from the original prediction records to populate these
+charts; rebuilding the UI around a normalized-only summary cannot restore them.
+Gym imports without matching branch-qualified producer evidence remain historical
+snapshots and must not be labeled as newly evaluated public branch results.
+
+## Local research results
+
+Use the same E2E page to inspect expanded coverage experiments. Export their
+recorded predictions with `scripts/e2e_accuracy/build_e2e_accuracy_overview.py
+--research-preview --include-multinode` and the usual predictions, metadata,
+coverage, source URL, and output arguments. Include both successful and failed
+agg/disagg rows. Every row must identify its configuration as `verified` or
+`estimated`, and the runtime must record a clean AISim source commit.
+
+The preview labels estimated successes and an unrun AIC (legacy CLI) baseline.
+Unrun predictions remain `pending` with missing metrics, and point details show
+the configuration evidence tier. This mode cannot take `--branch`, and the
+Pages publisher rejects research snapshots. Keep these generated files in the
+local preview directory rather than replacing a checked-in qualified snapshot.
+When refreshing a preview with a branch catalog, update both `summary.json`
+and the selected catalog entry's summary path so the browser loads the new data.
 
 ## Branch selection
 
@@ -52,22 +151,22 @@ are separate identities:
 The exporter, Pages validator, and browser restrict evaluated branch names to
 `main` or `release/[A-Za-z0-9][A-Za-z0-9._/-]*`, without a trailing slash, and
 commits to 40 lowercase hex characters. Nested release names such as
-`release/0.13.0/rc1` are allowed. Evaluated snapshots must include matching bundled AIC CLI provenance;
+`release/0.13.0/rc1` are allowed. Evaluated snapshots must include matching bundled AIC (legacy CLI) provenance;
 only historical snapshots may omit it. The browser checks catalog status and evaluated identity against the
 loaded summary before rendering. Contradictory evidence fails visibly rather
 than displaying another branch's results. A missing catalog permits direct
 source preview, whose label is derived from the loaded summary itself.
 
-The refreshed `summary.json` evaluates AISimulate main at
+The refreshed `summary.json` evaluates AISim main at
 [`e46be717175acf06bdbbdeadb7aaf9bb2afdae8d`](https://github.com/ai-dynamo/aisimulate/commit/e46be717175acf06bdbbdeadb7aaf9bb2afdae8d)
 against the public [InferenceX db-dump/2026-09-14 release](https://github.com/SemiAnalysisAI/InferenceX-app/releases/tag/db-dump/2026-09-14).
 Its legacy AIC baseline uses the `aiconfigurator` CLI bundled in the **same
-AISimulate wheel and revision**. The page records the baseline's AISimulate
+AISim wheel and revision**. The page records the baseline's AISim
 repository, branch, and commit alongside the replay provenance.
-The measurement release is shown separately from the AISimulate branch selector.
+The measurement release is shown separately from the AISim branch selector.
 Release branches continue to display the evidence committed on those branches.
 
-That historical snapshot ran both predictions on remote CPU workers. The AISimulate wheel is built from
+That historical snapshot ran both predictions on remote CPU workers. The AISim wheel is built from
 a clean source checkout, and the complete campaign records its evaluated branch,
 commit, runtime hashes, and input checksum. Replays use the recorded model,
 topology, backend version, and reviewed recipe settings where available, with
@@ -77,7 +176,7 @@ reviewed recipes, and runtime failures remain explicit outcomes.
 Replay settings use the public API available on the evaluated commit.
 
 That historical comparison cohort contains operating points with a successful AIC SILICON
-estimate. AISimulate attempts every point in that cohort; the published view
+estimate. AISim attempts every point in that cohort; the published view
 excludes multi-node points. A lower error on a refreshed snapshot does not by
 itself prove an improvement on the previous snapshot, because the measurement
 release, included points, and successful replay coverage can change.
@@ -254,7 +353,7 @@ Only `summary.json` and `qualification.json` are uploaded in each
 the first 16 hexadecimal characters of SHA-256 of the branch name; wheel artifacts
 use the same key to keep branches isolated. They record the evaluated branch/commit, wheel/dataset/input/
 cohort/driver hashes, run and attempt, selected/published counts, exclusions, and
-completion time. Public data contains serving metrics, derived errors, and normalized curves.
+completion time. Public data contains errors, allowlisted chart metrics, normalized curves, and prediction configuration.
 
 Pages runs trusted main code and accepts a branch artifact only when that branch's
 qualification job succeeded in the artifact's exact run attempt. The matrix run
@@ -278,14 +377,14 @@ dataset, exclusion counts, and prediction database versions.
 Expand a workload to see its GPU rows, then select a GPU to open details beside
 the matrix (below it on narrow screens). Details include:
 
-- separate AISim CLI and AIC CLI TTFT/TPOT MAPE bars;
+- separate AISim and AIC (legacy CLI) TTFT/TPOT MAPE bars;
 - successful replay counts, unsupported points, and failed points;
 - a topology selector identifying precision, framework, serving mode,
   speculative method, and parallelism, when exported with the updated builder;
 - per-topology TTFT/TPOT curves and a numeric concurrency table, when available;
 - a link that preserves the branch, model, workload, GPU, and topology selection.
 
-Curves use latency **relative to the measured value at the lowest concurrency**
+Historical curves use latency **relative to the measured value at the lowest concurrency**
 within that topology. Measured values and both CLI predictions share the same
 anchor, preserving magnitude and shape differences. Artifacts also retain absolute
 latencies and recorded throughput for throughput-versus-latency views. Missing predictions remain gaps and explicit statuses. Topologies
@@ -323,7 +422,7 @@ matching `baseline_api` and `config_adapter`; the public `aic_source` retains
 `cli_entry_point`. Both the site builder and browser validate the supported
 entry points, and the provenance panel displays the recorded value. Historical
 summaries without this field remain readable. Its `status`
-is `"complete"`. The producer's `aic_commit_sha` identifies that AISimulate
+is `"complete"`. The producer's `aic_commit_sha` identifies that AISim
 commit. Branch publication rejects a baseline from another repository or
 revision, an incomplete baseline, or inconsistent producer documents.
 
@@ -333,7 +432,7 @@ python scripts/e2e_accuracy/build_e2e_accuracy_overview.py \
   --metadata /path/to/aisimulate_points.meta.json \
   --coverage /path/to/coverage.json \
   --source-url https://github.com/SemiAnalysisAI/InferenceX-app/releases/tag/db-dump/2026-08-24 \
-  --branch release/0.12.0 \
+  --branch release/0.12.0 --include-multinode \
   --output pages/e2e-accuracy/summary.json
 ```
 
@@ -347,7 +446,9 @@ details. The existing aggregate schema stays compatible.
 
 ```bash
 python -m pytest -c /dev/null tests/test_e2e_accuracy_overview.py tests/test_pages_site.py -q
-node --test tests/test_e2e_accuracy_ui.mjs
+node --test tests/test_e2e_accuracy_ui.mjs tests/test_e2e_accuracy_workflow.mjs
+# Requires Playwright and Chromium:
+python scripts/pages/check_e2e_accuracy_browser.py
 # Use a fresh output directory. Fetch remote refs first to include releases.
 python scripts/pages/build_pages_site.py --accuracy-refs --output-dir /tmp/aisim-site
 python -m http.server 8000 --bind 127.0.0.1 --directory /tmp/aisim-site
@@ -439,6 +540,21 @@ Input SHA-256 values for reproduction:
 - `benchmark_results.json`: `e363f2061efbea87ba0d2dd38f765ddd4aabf3aac30e5e0bf0fa6d8ac3df6c10`
 - `workflow_runs.json`: `6a86eb6b31e958a17a7a19c61889910cdd1e7808d8dbcc8fd612ab20a34e6310`
 
+The selection toolbar uses short parallelism labels without repeating framework,
+precision, or serving filters. A short topology ID is shown only when needed to
+distinguish otherwise identical choices. The compact evidence line keeps branch,
+revision, evaluation date, and failed-update state visible. Detailed migration
+notes, filter methodology, and provenance are under the collapsed **About this
+comparison** section below the charts.
+
+Detail charts use solid lines for measured silicon and dotted lines for both
+AISim and AIC (legacy CLI) predictions. Legend samples match the chart lines.
+The three charts share an aligned card grid on desktop and stack on smaller
+screens. Throughput controls stay inside their chart card.
+
+Framework and hardware summary tables keep a full-width bottom divider across
+both row labels and numeric cells, including grouped serving rows.
+
 
 ## Serving metric artifact contract
 
@@ -465,6 +581,8 @@ throughput, or interactivity; replay must also include total throughput. Failed
 predictions retain their status and null metrics. Optional missing measurements
 and unsupported AIC total throughput remain explicit gaps. Historical artifacts
 without this contract still load, but do not establish throughput coverage.
+The total-throughput chart labels the unsupported AIC series. Point details
+distinguish unsupported metrics, failed predictions, and unrecorded values.
 
 These metrics are written to CI artifacts, not committed evaluation JSON.
 Pages packages qualified artifacts during production builds; the existing
@@ -481,3 +599,18 @@ including failed predictions. Missing historical IDs remain null; internal
 `workflow_run_id` database keys are never substituted for GitHub run IDs.
 The exporter and Pages validators reject malformed IDs. This metadata does not
 change predictions, cohort selection, or accuracy metrics.
+
+### Review behavior
+
+- Switching branches keeps view and exclusion settings, and selects an available
+  operating point in the new branch. Initial shared links still validate their
+  exact selection.
+- PR previews and historical evidence remain labeled above the collapsed About
+  panel. Cancelled or skipped qualification jobs do not report update failures.
+- Models with successful AISim predictions stay selectable when all their points
+  are excluded from MAPE. Verified and estimated configuration MAPE remain separate
+  and follow the current filters.
+- Chart points support keyboard activation. Shift+Enter on a legend button isolates
+  that series; ordinary activation toggles it. Charts expose their interactive points
+  to assistive technology.
+- Pages CI runs the E2E Chromium smoke test alongside the FPE and FPM checks.

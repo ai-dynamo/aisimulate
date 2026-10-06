@@ -79,7 +79,7 @@ def measurement_gpu_count(config: dict) -> int:
     return decode + prefill
 
 
-def select_points(tables: dict, max_age_days: int) -> tuple[list[dict], dict]:
+def select_points(tables: dict, max_age_days: int, *, include_multinode: bool = False) -> tuple[list[dict], dict]:
     configs = {row["id"]: row for row in tables["configs"]}
     runs = {row["id"]: row for row in tables["workflow_runs"]}
     if len(configs) != len(tables["configs"]) or len(runs) != len(tables["workflow_runs"]):
@@ -115,7 +115,7 @@ def select_points(tables: dict, max_age_days: int) -> tuple[list[dict], dict]:
         except ValueError:
             return "invalid_gpu_count"
         per_node = GPUS_PER_NODE_BY_FAMILY.get(config.get("hardware"))
-        if config["is_multinode"] or (per_node is not None and total_gpus > per_node):
+        if not include_multinode and (config["is_multinode"] or (per_node is not None and total_gpus > per_node)):
             return "multinode"
         if not all(positive(bench["metrics"].get(key)) for key in ("mean_ttft", "mean_tpot")):
             return "missing_mean_latency"
@@ -404,6 +404,26 @@ def predict_point(point: dict) -> dict:
     }
     row.update(measurement_chart_metrics(bench["metrics"], total_gpus))
     row.update(baseline_chart_metrics(baseline, total_gpus))
+    row["configuration"] = {
+        "backend_version": baseline.backend_version,
+        "max_num_seqs": max(256, bench["conc"]),
+        "max_num_batched_tokens": 8192,
+        "enable_prefix_caching": False,
+        "forward_model": "op_level",
+        **{
+            key: config.get(key)
+            for key in (
+                "prefill_tp",
+                "prefill_ep",
+                "prefill_num_workers",
+                "decode_tp",
+                "decode_ep",
+                "decode_num_workers",
+                "num_prefill_gpu",
+                "num_decode_gpu",
+            )
+        },
+    }
     try:
         spec = replay_spec(request, baseline.backend_version)
         runner = EngineReplayRunnerFactory().create(0)
@@ -423,8 +443,8 @@ def predict_point(point: dict) -> dict:
             aisimulate_runner="aisimulate.engine_replay",
             **replay_chart_metrics(metrics, total_gpus),
         )
-    except Exception:
-        row.update(aisimulate_status="failed")
+    except Exception as exc:
+        row.update(aisimulate_status="failed", aisimulate_error_type=type(exc).__name__, aisimulate_error=str(exc))
     return {
         "id": point["id"],
         "outcome": "evaluated",
@@ -517,6 +537,7 @@ def predict_resolved_point(point):
         "silicon_ttft_ms": bench["metrics"]["mean_ttft"] * 1000,
         "silicon_tpot_ms": bench["metrics"]["mean_tpot"] * 1000,
         "configuration_quality": deployment["configuration_quality"],
+        "configuration": {"backend_version": version, "forward_model": "op_level"},
         "aic_status": "failed",
         "aic_ttft_ms": None,
         "aic_tpot_ms": None,
@@ -598,7 +619,7 @@ def predict_resolved_point(point):
             **replay_chart_metrics(metrics, total_gpus),
         )
     except Exception as error:
-        row["aisimulate_error"] = str(error)
+        row.update(aisimulate_error_type=type(error).__name__, aisimulate_error=str(error))
     return {"id": point["id"], "outcome": "evaluated", "row": row, "backend_version": version}
 
 
