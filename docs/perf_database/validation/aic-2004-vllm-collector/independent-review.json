@@ -1,0 +1,54 @@
+{
+  "reviewer": "independent Codex subagent glm_path_audit",
+  "review_scope": "Read-only review of vLLM collector branch and vLLM engine reuse capability gate; no implementation edits by reviewer.",
+  "collector": {
+    "reviewed_head": "8f7dfc09383f19bb9eda247f01289385202b4e67",
+    "source_sha256": "7db0ceb0869ebb0fc0a5851c0ec9087aa9570e5afe9ea0da886a27a6cd6aaf43",
+    "findings": [
+      {
+        "severity": "P2",
+        "status": "FIXED_AND_REVIEWED",
+        "description": "Decode recorded step=seq_len although BatchSpec already includes the one new token; MLA and DSA loaders use isl+step, placing each observation at seq_len+1.",
+        "fix_commit": "8f7dfc09383f19bb9eda247f01289385202b4e67",
+        "resolution": "step=seq_len-1; tests assert total coordinates for both MLA and DSA."
+      }
+    ],
+    "lifecycle_review": [
+      "Full dry run fills the shared native top-k buffer before either benchmark.",
+      "Full and skip are separate graph captures; native skip_topk only bypasses the indexer.",
+      "The original flag is restored by ExitStack before vLLM contexts unwind and workspace cleanup runs.",
+      "Skip capture failure propagates and emits no skip row; a preceding successful full observation can remain.",
+      "Graph timing is required, with eager/fallback results rejected before publication."
+    ],
+    "independent_test": {
+      "command": "test-venv/bin/python -m pytest -q --confcutdir=python/aisimulate/tests/unit/collector -c python/aisimulate/pytest.ini python/aisimulate/tests/unit/collector/test_vllm_mla_graph_timing.py python/aisimulate/tests/unit/collector/test_benchmark_graph_lifecycle.py",
+      "result": "30 passed in 0.30s",
+      "limitations": "Framework behavior is faked in these CPU tests; GPU native qualification is a separate receipt. Initial invocation without confcutdir failed importing the uninstalled package before collecting tests."
+    }
+  },
+  "engine": {
+    "reviewed_head": "d5e80080269cee22d59c9a4e3c6f471356ba55f3",
+    "source_sha256": "c62c560ff830409e8794a5d49d4b938212f8fb9dbde52ee8a52510c08ac385cf",
+    "findings": [
+      {
+        "severity": "P2",
+        "status": "FIXED_AND_SOURCE_REVIEWED",
+        "description": "A full fallback bucket could exist in skip data while the skip query preferred a different requested backend. The initial gate permitted mixing these independent resolutions.",
+        "fix_commit": "d5e80080",
+        "resolution": "Require selected skip backend to equal selected full backend; reverse-asymmetry fixture covers both context and generation."
+      }
+    ],
+    "checks": [
+      "Architecture, attention/GEMM/KV precision and local heads must match.",
+      "Both independent backend fallback resolutions must match.",
+      "Missing skip data preserves the full estimate; corrupt skip tables still error.",
+      "Only vLLM gains the stricter capability gate in this patch; existing SGLang count logic is unchanged."
+    ]
+  },
+  "unresolved_actionable_findings": [],
+  "accuracy_acceptance": "NOT_EVALUATED",
+  "limits": [
+    "Review does not qualify all GPU precisions/shapes or checkpoint-value timing parity.",
+    "No review claim that new rows improve whole-model accuracy before corresponding measurements and native SDK validation."
+  ]
+}
