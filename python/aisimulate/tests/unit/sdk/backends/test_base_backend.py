@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+import math
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -459,8 +460,10 @@ def test_run_agg_declares_mtp_decode_share_at_call_site(
         ctx_tokens=8,
     )
 
+    # ctx_tokens budgets uncached tokens: 8 new tokens pack ceil(8 / (8 - 2)) = 2
+    # prefilling requests, leaving b - 2 = 2 decode requests.
     assert len(memory_calls) == 1
-    assert memory_calls[0].get("mtp_scaled_tokens") == 3
+    assert memory_calls[0].get("mtp_scaled_tokens") == 2
 
 
 def test_trtllm_budget_path_ignores_the_decode_share() -> None:
@@ -923,6 +926,81 @@ def test_run_agg_cache_separates_video_workloads(
     assert len(backend._agg_cache) == 2
 
 
+def test_run_agg_cache_separates_prefix_on_a_reused_backend(
+    monkeypatch,
+    backend: BaseBackend,
+    model,
+    database,
+) -> None:
+    """Two calls differing only in prefix must not share a cached summary."""
+    mixed_calls: list[int] = []
+
+    def _run_mixed(*args, **kwargs):
+        prefix = args[2].prefix
+        mixed_calls.append(prefix)
+        # Make the answer depend on prefix so a stale hit is observable.
+        return StepEstimate(latency_ms=10.0 - prefix, energy_wms=100.0)
+
+    monkeypatch.setattr(backend, "run_mixed", _run_mixed)
+    monkeypatch.setattr(
+        backend,
+        "_get_genonly_step_estimate",
+        lambda *args, **kwargs: _decode_step(1.0, 1.0, {}, {}, ()),
+    )
+
+    common_kwargs = dict(batch_size=2, beam_width=1, isl=8, osl=5, engine_step_backend="rust")
+    no_prefix = backend.run_agg(model, database, RuntimeConfig(**common_kwargs, prefix=0), ctx_tokens=8)
+    with_prefix = backend.run_agg(model, database, RuntimeConfig(**common_kwargs, prefix=4), ctx_tokens=8)
+
+    assert mixed_calls == [0, 4]
+    assert len(backend._agg_cache) == 2
+    assert no_prefix is not with_prefix
+    assert no_prefix.get_result_dict()["prefix"] == 0
+    assert with_prefix.get_result_dict()["prefix"] == 4
+    assert no_prefix.get_result_dict()["ttft"] != with_prefix.get_result_dict()["ttft"]
+
+    # An identical request still hits the cache without re-estimating.
+    repeat = backend.run_agg(model, database, RuntimeConfig(**common_kwargs, prefix=4), ctx_tokens=8)
+    assert repeat is with_prefix
+    assert mixed_calls == [0, 4]
+    assert len(backend._agg_cache) == 2
+
+    # prefix=None normalizes like run_mixed (int(prefix or 0)): it shares the
+    # prefix=0 entry and echoes 0, not None.
+    assert backend.run_agg(model, database, RuntimeConfig(**common_kwargs, prefix=None), ctx_tokens=8) is no_prefix
+    assert mixed_calls == [0, 4]
+    assert len(backend._agg_cache) == 2
+
+
+@pytest.mark.parametrize("field", ["seq_imbalance_correction_scale", "gen_seq_imbalance_correction_scale"])
+def test_run_agg_cache_separates_seq_imbalance_correction_scales(
+    monkeypatch,
+    backend: BaseBackend,
+    model,
+    database,
+    field: str,
+) -> None:
+    seen: list[float] = []
+
+    def _run_mixed(*args, **kwargs):
+        seen.append(getattr(args[2], field))
+        return StepEstimate(latency_ms=1.0, energy_wms=1.0)
+
+    monkeypatch.setattr(backend, "run_mixed", _run_mixed)
+    monkeypatch.setattr(
+        backend,
+        "_get_genonly_step_estimate",
+        lambda *args, **kwargs: _decode_step(1.0, 1.0, {}, {}, ()),
+    )
+
+    common_kwargs = dict(batch_size=2, beam_width=1, isl=8, osl=5, engine_step_backend="rust")
+    backend.run_agg(model, database, RuntimeConfig(**common_kwargs, **{field: 1.0}), ctx_tokens=8)
+    backend.run_agg(model, database, RuntimeConfig(**common_kwargs, **{field: 1.5}), ctx_tokens=8)
+
+    assert seen == [1.0, 1.5]
+    assert len(backend._agg_cache) == 2
+
+
 @pytest.mark.parametrize(
     ("engine_step_backend", "error", "match"),
     [
@@ -1258,3 +1336,387 @@ def test_run_agg_zero_decode_steps_do_not_change_energy_coverage(
     assert summary.get_aggregate_energy_breakdown()["genonly_step"].latency_ms == 0
     assert summary.get_power_data_coverage() == pytest.approx(expected)
     assert (_apply_power_coverage_gate(summary, summary.get_result_dict())["power_w"] is not None) is published
+
+
+# ---------------------------------------------------------------------------
+# Prefix-aware scheduling: ctx_tokens budgets UNCACHED prefill tokens
+# ---------------------------------------------------------------------------
+
+# A long-prompt shape one token past a multiple of the 16384-token per-step
+# budget (SGLang --chunked-prefill-size), so every ceil in the schedule rounds
+# up: ISL 32769 / OSL 512 / bs 16.
+_ISL, _OSL, _BS, _CTX = 32769, 512, 16, 16384
+
+
+def _fixed_step_costs(monkeypatch, backend: BaseBackend, mix_latency_ms: float = 10.0) -> list[RuntimeConfig]:
+    """Pin the per-step costs so run_agg exposes only its scheduling; return
+    the runtime configs handed to run_mixed."""
+    seen: list[RuntimeConfig] = []
+
+    def _run_mixed(model_arg, database_arg, runtime_config_arg, step):
+        seen.append(runtime_config_arg)
+        return StepEstimate(latency_ms=mix_latency_ms, energy_wms=1.0)
+
+    monkeypatch.setattr(backend, "run_mixed", _run_mixed)
+    monkeypatch.setattr(
+        backend,
+        "_get_genonly_step_estimate",
+        lambda *args, **kwargs: _decode_step(1.0, 1.0, {"decode": 1.0}, {"decode": "silicon"}, ()),
+    )
+    return seen
+
+
+def _prefix_sweep_config(prefix: int) -> RuntimeConfig:
+    return RuntimeConfig(batch_size=_BS, beam_width=1, isl=_ISL, osl=_OSL, prefix=prefix, engine_step_backend="rust")
+
+
+@pytest.mark.parametrize(
+    ("prefix", "expected_mix_steps"),
+    [
+        # ceil((isl - prefix) * b / ctx_tokens), hand-derived:
+        (0, 33),  # ceil(32769 * 16 / 16384) = ceil(32.001)
+        (8192, 25),  # ceil(24577 * 16 / 16384) = ceil(24.001)
+        (16384, 17),  # ceil(16385 * 16 / 16384) = ceil(16.001)
+        (24576, 9),  # ceil(8193 * 16 / 16384) = ceil(8.001)
+        (29491, 4),  # ceil(3278 * 16 / 16384) = ceil(3.201)
+    ],
+)
+def test_run_agg_mix_step_count_follows_uncached_isl(
+    monkeypatch, backend: BaseBackend, model, database, prefix: int, expected_mix_steps: int
+) -> None:
+    """The ctx_tokens budget counts uncached tokens (what the engines'
+    chunked-prefill knobs cap), so the mixed steps needed to drain a batch's
+    prefill shrink with the cached prefix. The engine still receives the full
+    isl and prefix through the unmodified runtime config, and the scheduling
+    hook receives the uncached length."""
+    seen = _fixed_step_costs(monkeypatch, backend)
+    hook_isl: list[int] = []
+    base_hook = backend._mix_step_gen_tokens
+
+    def _hook(b, ctx_tokens, isl, decode_iterations):
+        hook_isl.append(isl)
+        return base_hook(b, ctx_tokens, isl, decode_iterations)
+
+    monkeypatch.setattr(backend, "_mix_step_gen_tokens", _hook)
+
+    summary = backend.run_agg(model, database, _prefix_sweep_config(prefix), ctx_tokens=_CTX)
+
+    scheduling = summary.get_step_estimates()["scheduling"]
+    assert scheduling["num_mix_steps"] == expected_mix_steps
+    assert scheduling["num_genonly_steps"] == _OSL - expected_mix_steps
+    result = summary.get_result_dict()
+    assert result["num_ctx_reqs"] == math.ceil(_CTX / (_ISL - prefix))
+    assert result["num_gen_reqs"] == _BS - result["num_ctx_reqs"]
+    assert hook_isl == [_ISL - prefix]
+    assert seen[0].isl == _ISL and seen[0].prefix == prefix
+
+
+def test_run_agg_prefix_zero_schedule_is_unchanged(monkeypatch, backend: BaseBackend, model, database) -> None:
+    """prefix=0 keeps the legacy schedule: ceil(isl*b/ctx) mixed steps,
+    ceil(ctx/isl) prefilling requests, ceil(isl/ctx) TTFT chunks and the
+    isl*b/ctx/osl balance score."""
+    _fixed_step_costs(monkeypatch, backend, mix_latency_ms=10.0)
+    summary = backend.run_agg(model, database, _prefix_sweep_config(0), ctx_tokens=_CTX)
+    scheduling = summary.get_step_estimates()["scheduling"]
+    result = summary.get_result_dict()
+    assert scheduling["num_mix_steps"] == 33
+    assert scheduling["num_genonly_steps"] == 479
+    assert result["num_ctx_reqs"] == 1
+    assert result["num_gen_reqs"] == 15
+    assert result["balance_score"] == pytest.approx(_ISL * _BS / _CTX / _OSL)
+    # 3 chunks of 16384 for a 32769-token prefill, times the queuing factor.
+    assert result["ttft"] == pytest.approx(10.0 * 3 * backend._ttft_queuing_factor(_BS, 33))
+
+
+def test_run_agg_ttft_chunk_count_follows_uncached_isl(monkeypatch, model, database) -> None:
+    """A request's TTFT multiplies the prefill step by ceil((isl - prefix) /
+    ctx_tokens): a cold 32769-token request takes 3 chunks of 16384, one with
+    16384 cached tokens takes 2 and one with 24576 cached takes 1."""
+    ttfts = []
+    for prefix, chunks, steps in ((0, 3, 33), (16384, 2, 17), (24576, 1, 9)):
+        # A fresh backend per prefix: the run_agg result cache is keyed on
+        # the prefix by a separate fix, not by this change.
+        backend = _TestBackend()
+        _fixed_step_costs(monkeypatch, backend, mix_latency_ms=10.0)
+        result = backend.run_agg(model, database, _prefix_sweep_config(prefix), ctx_tokens=_CTX).get_result_dict()
+        assert result["ttft"] / backend._ttft_queuing_factor(_BS, steps) == pytest.approx(10.0 * chunks)
+        ttfts.append(result["ttft"])
+    assert ttfts[0] > ttfts[1] > ttfts[2]
+
+
+@pytest.mark.parametrize("prefix", [8, 9])
+def test_run_agg_rejects_prefix_at_or_beyond_isl(monkeypatch, backend: BaseBackend, model, database, prefix) -> None:
+    """The engine rejects a mixed step whose requests carry no uncached
+    token; run_agg applies the same contract before scheduling."""
+    _fixed_step_costs(monkeypatch, backend)
+    with pytest.raises(ValueError, match="prefix"):
+        backend.run_agg(
+            model,
+            database,
+            RuntimeConfig(batch_size=2, beam_width=1, isl=8, osl=5, prefix=prefix, engine_step_backend="rust"),
+            ctx_tokens=8,
+        )
+
+
+@pytest.mark.parametrize(
+    ("b", "prefix", "isl_new"),
+    [
+        # ceil(16384 / 3278) = 5 prefilling requests would exceed the batch of 4.
+        (4, 29491, 3278),
+        # Every request carries a single uncached token: 16384 of them would
+        # be 16384 requests.
+        (16, _ISL - 1, 1),
+    ],
+)
+def test_run_agg_caps_prefilling_requests_at_the_batch(
+    monkeypatch, backend: BaseBackend, model, database, b: int, prefix: int, isl_new: int
+) -> None:
+    """A mixed step cannot hold more uncached tokens than the batch owns: the
+    schedule runs on min(ctx_tokens, b * isl_new), so the request counts and
+    the activation token count handed to the memory model stay non-negative
+    and the step is priced at the tokens the batch can actually supply. The
+    published ctx_tokens column keeps the requested engine knob."""
+    steps: list[MixedStepInput] = []
+
+    def _run_mixed(model_arg, database_arg, runtime_config_arg, step):
+        steps.append(step)
+        return StepEstimate(latency_ms=10.0, energy_wms=1.0)
+
+    memory_calls: list[dict] = []
+
+    def _memory(model_arg, database_arg, batch_size, beam_width, isl, osl, **kwargs):
+        memory_calls.append(kwargs)
+        return {"total": 1.0}
+
+    monkeypatch.setattr(backend, "run_mixed", _run_mixed)
+    monkeypatch.setattr(
+        backend,
+        "_get_genonly_step_estimate",
+        lambda *args, **kwargs: _decode_step(1.0, 1.0, {"decode": 1.0}, {"decode": "silicon"}, ()),
+    )
+    monkeypatch.setattr(backend, "_get_memory_usage", _memory)
+
+    summary = backend.run_agg(
+        model,
+        database,
+        RuntimeConfig(batch_size=b, beam_width=1, isl=_ISL, osl=_OSL, prefix=prefix, engine_step_backend="rust"),
+        ctx_tokens=_CTX,
+    )
+
+    result = summary.get_result_dict()
+    assert result["num_ctx_reqs"] == b
+    assert result["num_gen_reqs"] == 0
+    assert result["gen_tokens"] == 0
+    assert result["ctx_tokens"] == _CTX
+    assert result["num_tokens"] == b * isl_new
+    assert steps[0].context_tokens == b * isl_new
+    # Every request prefills in this step: no decode request rides along,
+    # and the step does not enter the TPOT average (decode steps cost 1 ms).
+    assert steps[0].num_decode_requests == 0
+    assert result["tpot"] == pytest.approx(1.0)
+    assert summary.get_step_estimates()["scheduling"]["num_mix_steps"] == 1
+    assert memory_calls[0]["num_tokens"] == b * isl_new
+    assert memory_calls[0]["mtp_scaled_tokens"] == 0
+    # The whole batch prefills in one step of one chunk each.
+    assert result["ttft"] == pytest.approx(10.0 * backend._ttft_queuing_factor(b, 1))
+
+
+@pytest.mark.parametrize(
+    ("b", "prefix", "ctx_tokens", "capped", "osl"),
+    [
+        # b == 1 with an explicit budget above its 16385 uncached tokens (e.g.
+        # the pre-fix default --ctx-tokens <ISL>): no phantom second request.
+        (1, 16384, _ISL, _ISL - 16384, _OSL),
+        # prefix 0, b == 1, a budget above the isl: one request's prefill.
+        (1, 0, 2 * _ISL, _ISL, _OSL),
+        # prefix 0, b == 2, a budget above b * isl: the old schedule packed
+        # ceil(ctx/isl) = 3 prefilling requests out of 2 (negative decode).
+        (2, 0, 2 * _ISL + 100, 2 * _ISL, _OSL),
+        # Exactly the batch's uncached tokens: the whole batch prefills in the
+        # one step, at prefix 0 and with a prefix, for osl > 1 and osl == 1.
+        (2, 0, 2 * _ISL, 2 * _ISL, _OSL),
+        (2, 16384, 2 * (_ISL - 16384), 2 * (_ISL - 16384), _OSL),
+        (2, 16384, 2 * (_ISL - 16384), 2 * (_ISL - 16384), 1),
+    ],
+)
+def test_run_agg_caps_the_budget_for_every_batch_size(
+    monkeypatch, backend: BaseBackend, model, database, b: int, prefix: int, ctx_tokens: int, capped: int, osl: int
+) -> None:
+    """The b * isl_new cap applies to every batch size and prefix: the mixed
+    step and the activation token count are priced at the tokens the batch
+    actually owns, while the published ctx_tokens column keeps the knob. At
+    prefix 0 the schedule only changes in this regime (ctx > b * isl), where
+    the old one was not physical."""
+    steps: list[MixedStepInput] = []
+
+    def _run_mixed(model_arg, database_arg, runtime_config_arg, step):
+        steps.append(step)
+        return StepEstimate(latency_ms=10.0, energy_wms=1.0)
+
+    memory_calls: list[dict] = []
+
+    def _memory(model_arg, database_arg, batch_size, beam_width, isl, osl, **kwargs):
+        memory_calls.append(kwargs)
+        return {"total": 1.0}
+
+    monkeypatch.setattr(backend, "run_mixed", _run_mixed)
+    monkeypatch.setattr(
+        backend,
+        "_get_genonly_step_estimate",
+        lambda *args, **kwargs: _decode_step(1.0, 1.0, {"decode": 1.0}, {"decode": "silicon"}, ()),
+    )
+    monkeypatch.setattr(backend, "_get_memory_usage", _memory)
+
+    summary = backend.run_agg(
+        model,
+        database,
+        RuntimeConfig(batch_size=b, beam_width=1, isl=_ISL, osl=osl, prefix=prefix, engine_step_backend="rust"),
+        ctx_tokens=ctx_tokens,
+    )
+
+    result = summary.get_result_dict()
+    assert steps[0].context_tokens == capped
+    assert steps[0].num_decode_requests == 0
+    if b > 1 and osl > 2:
+        # The prefill-only step belongs to TTFT; TPOT is the decode step (1 ms).
+        assert result["tpot"] == pytest.approx(1.0)
+    assert result["ctx_tokens"] == ctx_tokens
+    assert result["num_tokens"] == capped
+    assert memory_calls[0]["num_tokens"] == capped
+    assert result["num_gen_reqs"] >= 0
+    assert result["num_ctx_reqs"] == (1 if b == 1 else b)
+    if osl == 1:
+        return
+    # One chunk per request: the whole uncached prefill fits the budget.
+    assert result["ttft"] / backend._ttft_queuing_factor(
+        b, summary.get_step_estimates()["scheduling"]["num_mix_steps"]
+    ) == pytest.approx(10.0)
+
+
+@pytest.mark.parametrize(
+    ("ctx_tokens", "prefilling", "decoding", "expected_tpot"),
+    [
+        # One complete request (1920 new tokens) plus a 128-token partial one:
+        # both requests are prefilling in the first of ceil(3840/2048) = 2
+        # mixed steps, which leaves TPOT; the second one (the partial request
+        # finishing while the other decodes) stays: (10 + 62 * 1) / 63.
+        (2048, 2, 0, (10.0 + 62 * 1.0) / 63),
+        # Exactly one request: the other one decodes alongside it, and both of
+        # the ceil(3840/1920) = 2 mixed steps count: (2 * 10 + 62 * 1) / 64.
+        (1920, 1, 1, (2 * 10.0 + 62 * 1.0) / 64),
+    ],
+)
+def test_run_agg_partial_last_request_prefills_the_whole_batch(
+    monkeypatch,
+    backend: BaseBackend,
+    model,
+    database,
+    ctx_tokens: int,
+    prefilling: int,
+    decoding: int,
+    expected_tpot: float,
+) -> None:
+    """bs 2, isl 2048, prefix 128: once the budget reaches into the last
+    request, every request of the batch is prefilling, so the mixed step
+    prices no decode request (never b + 1 requests), and only the decode-free
+    first mixed step stays out of the TPOT average (mixed step 10 ms, decode
+    step 1 ms, 64 decode iterations)."""
+    steps: list[MixedStepInput] = []
+
+    def _run_mixed(model_arg, database_arg, runtime_config_arg, step):
+        steps.append(step)
+        return StepEstimate(latency_ms=10.0, energy_wms=1.0)
+
+    monkeypatch.setattr(backend, "run_mixed", _run_mixed)
+    monkeypatch.setattr(
+        backend,
+        "_get_genonly_step_estimate",
+        lambda *args, **kwargs: _decode_step(1.0, 1.0, {"decode": 1.0}, {"decode": "silicon"}, ()),
+    )
+
+    summary = backend.run_agg(
+        model,
+        database,
+        RuntimeConfig(batch_size=2, beam_width=1, isl=2048, osl=64, prefix=128, engine_step_backend="rust"),
+        ctx_tokens=ctx_tokens,
+    )
+
+    result = summary.get_result_dict()
+    assert (result["num_ctx_reqs"], result["num_gen_reqs"]) == (prefilling, decoding)
+    assert steps[0].num_decode_requests == decoding
+    assert steps[0].context_tokens == ctx_tokens
+    assert result["tpot"] == pytest.approx(expected_tpot)
+
+
+def test_run_agg_budget_cap_is_inert_when_the_batch_owns_more_tokens(
+    monkeypatch, backend: BaseBackend, model, database
+) -> None:
+    """bs 16 with 3278 uncached tokens each owns 52448 tokens, more than the
+    16384 budget: nothing is capped and the schedule is the plain isl_new
+    packing (5 prefilling + 11 decoding requests, 4 mixed steps)."""
+    seen = _fixed_step_costs(monkeypatch, backend)
+    summary = backend.run_agg(model, database, _prefix_sweep_config(29491), ctx_tokens=_CTX)
+    result = summary.get_result_dict()
+    assert result["num_ctx_reqs"] == 5
+    assert result["num_gen_reqs"] == 11
+    assert result["num_tokens"] == 11 + _CTX
+    assert summary.get_step_estimates()["scheduling"]["num_mix_steps"] == 4
+    assert seen[0].prefix == 29491
+
+
+@pytest.mark.parametrize(
+    ("ctx_tokens", "expected_batch", "expected_scale"),
+    [
+        # 60 uncached tokens hold ceil(60 / 20) = 3 requests in one chunk.
+        (60, 3, 1.0),
+        # 10 uncached tokens hold one request over ceil(20 / 10) = 2 chunks.
+        (10, 1, 2.0),
+    ],
+)
+def test_run_mixed_visual_context_batch_follows_uncached_isl(
+    monkeypatch, backend: BaseBackend, model, database, ctx_tokens: int, expected_batch: int, expected_scale: float
+) -> None:
+    """Text isl 8 + 16 visual tokens = 24 effective tokens, 4 of them cached:
+    the visual context phase runs for ceil(ctx_tokens / 20) requests and its
+    cost is amortized over ceil(20 / ctx_tokens) chunks, like the engine's
+    context-attention pass."""
+    from aisimulate.sdk.backends import base_backend as base_backend_module
+
+    model.encoder_config = _vision_encoder_config()
+    model.visual_context_ops = [_StaticOp("visual_attention", latency_ms=1.0, energy_wms=1.0)]
+
+    monkeypatch.setattr(
+        base_backend_module,
+        "estimate_mixed_step_breakdown_with_rust",
+        lambda *args, **kwargs: {
+            "latency_ms": 1.0,
+            "energy_wms": 1.0,
+            "component_latency_ms": {"shared_non_attention": 1.0},
+            "component_energy_wms": {"shared_non_attention": 1.0},
+            "per_op_latency_ms": {},
+            "per_op_source": {},
+            "moe_comm_fallbacks": (),
+        },
+    )
+    batches: list[int] = []
+
+    def _visual(model_arg, database_arg, runtime_config_arg, batch_size, *, include_energy=True):
+        batches.append(batch_size)
+        return {"visual_attention": 8.0}, {"visual_attention": 4.0}, {"visual_attention": "silicon"}
+
+    monkeypatch.setattr(backend, "_run_visual_context_phase", _visual)
+
+    step = backend.run_mixed(
+        model,
+        database,
+        RuntimeConfig(
+            isl=8, osl=6, prefix=4, num_images_per_request=1, num_image_tokens=16, engine_step_backend="rust"
+        ),
+        MixedStepInput(context_tokens=ctx_tokens, num_decode_requests=1),
+    )
+
+    assert batches == [expected_batch]
+    assert step.per_op_latency_ms["visual_attention"] == pytest.approx(8.0 / expected_scale)
+    assert step.component_latency_ms["context_attention"] == pytest.approx(8.0 / expected_scale)
+    assert step.latency_ms == pytest.approx(1.0 + 8.0 / expected_scale)
+    assert step.energy_wms == pytest.approx(1.0 + 4.0 / expected_scale)

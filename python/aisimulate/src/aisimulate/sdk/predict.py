@@ -125,7 +125,7 @@ def predict_agg_worker(
         ctx_tokens: Per-step context-token budget.  Callers enumerate
             candidate values; chunked-prefill semantics are implicit in
             which values are tried (chunked off → ``ctx_tokens``
-            constrained to multiples of isl).
+            constrained to multiples of the uncached ``isl - prefix``).
         predictor: Optional Predictor strategy.  Defaults to the analytic
             zero-queue predictor (zero behavior change from direct
             backend.run_agg calls).  Future Mocker / dynamic predictors

@@ -622,8 +622,6 @@ def test_moe_draft_native_forward_repetition_preserves_context_and_metadata(real
 @pytest.mark.integration
 @pytest.mark.parametrize("ctx_tokens,gen_requests,prefix", [(0, 7, 0), (128, 0, 64), (128, 7, 64), (8000, 7, 64)])
 def test_mixed_draft_native_phases_match_independent_queries(real_database, ctx_tokens, gen_requests, prefix):
-    import math
-
     from aisimulate_core.sdk.models import get_model
     from aisimulate_core.sdk.rust_engine_step import _cached_engine_handle
 
@@ -639,18 +637,34 @@ def test_mixed_draft_native_phases_match_independent_queries(real_database, ctx_
     assert not any(row[0].startswith("draft_") for row in shared)
     ctx_indices = [i for i, op in enumerate(model.context_ops) if op._name.startswith("draft_")]
     gen_indices = [i for i, op in enumerate(model.generation_ops) if op._name.startswith("draft_")]
-    expected_context = (
-        handle.evaluate_context_ops(
-            ctx_indices, batch_size=math.ceil(ctx_tokens / 4000), s=4000 - prefix, prefix=prefix
-        )
-        if ctx_tokens
-        else []
-    )
+    # ctx_tokens budgets UNCACHED tokens: requests of isl - prefix = 3936 new
+    # tokens over 64 cached ones fill it. Hand-derived per case (not the
+    # production formula): 128 tokens are one chunk of one request, amortized
+    # over its ceil(3936/128) = 31 chunks; 8000 tokens hold 2 complete requests
+    # (7872) plus a 128-token partial one weighing 128/3936 of a third.
+    isl_new = 4000 - prefix
+    expected_groups = {
+        (128, 64): ([(1, 1.0)], 31),
+        (8000, 64): ([(2, 1.0 - 128 / 3936), (3, 128 / 3936)], 1),
+    }
+    expected_context = []
+    context_divisor = 1
+    if ctx_tokens:
+        groups, context_divisor = expected_groups[(ctx_tokens, prefix)]
+        per_group = [
+            handle.evaluate_context_ops(ctx_indices, batch_size=batch, s=isl_new, prefix=prefix) for batch, _ in groups
+        ]
+        for rows in zip(*per_group, strict=True):
+            assert len({row[0] for row in rows}) == 1
+            latency = sum(weight * row[1] for (_, weight), row in zip(groups, rows, strict=True))
+            energy = sum(weight * row[2] for (_, weight), row in zip(groups, rows, strict=True))
+            sources = {row[3] for row in rows}
+            expected_context.append((rows[0][0], latency, energy, sources.pop() if len(sources) == 1 else "mixed"))
     expected_generation = (
         handle.evaluate_generation_ops(gen_indices, batch_size=gen_requests * 4, s=4033) if gen_requests else []
     )
     for actual, expected, divisor in (
-        (context, expected_context, math.ceil(4000 / ctx_tokens) if ctx_tokens else 1),
+        (context, expected_context, context_divisor),
         (generation, expected_generation, 1),
     ):
         drafts = {r[0]: r for r in actual if r[0].startswith("draft_")}

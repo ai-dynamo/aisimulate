@@ -1900,6 +1900,46 @@ def test_run_single_agg_calls_predict_agg_worker_with_fixed_point(monkeypatch):
     assert captured["predict_kwargs"]["ctx_tokens"] == t.isl
 
 
+@pytest.mark.parametrize(
+    ("prefix", "explicit_ctx_tokens", "expected_offset"),
+    [
+        (0, None, 0),  # one full request per step
+        (512, None, 512),  # isl - prefix
+        (512, 128, None),  # an explicit budget passes through unchanged
+    ],
+)
+def test_run_single_agg_ctx_tokens_defaults_to_the_uncached_isl(
+    monkeypatch, prefix, explicit_ctx_tokens, expected_offset
+):
+    """Task.run_single_agg mirrors cli_estimate: the default budget is the
+    effective isl minus the cached prefix, an explicit ctx_tokens is used as
+    given, and the floor is one uncached token."""
+    from unittest.mock import MagicMock
+
+    from aisimulate.sdk import predict
+
+    captured: dict = {}
+
+    def fake_predict_agg_worker(**kwargs):
+        captured["ctx_tokens"] = kwargs["ctx_tokens"]
+        captured["prefix"] = kwargs["runtime_config"].prefix
+        return _build_fake_summary()
+
+    monkeypatch.setattr("aisimulate.sdk.perf_database.get_database_view", lambda *a, **kw: "db")
+    monkeypatch.setattr("aisimulate.sdk.backends.factory.get_backend", lambda name: MagicMock(name=f"backend-{name}"))
+    monkeypatch.setattr("aisimulate.sdk.models.get_model", lambda *a: MagicMock(name="model"))
+    monkeypatch.setattr(predict, "predict_agg_worker", fake_predict_agg_worker)
+
+    t = Task(serving_mode="agg", model_path="deepseek-ai/DeepSeek-V3", system_name="h200_sxm", prefix=prefix)
+    t.run_single_agg(tp=4, pp=1, dp=1, moe_tp=1, moe_ep=1, batch_size=64, ctx_tokens=explicit_ctx_tokens)
+    expected = explicit_ctx_tokens if explicit_ctx_tokens is not None else t.isl - expected_offset
+    assert captured == {"ctx_tokens": expected, "prefix": prefix}
+
+    near = Task(serving_mode="agg", model_path="deepseek-ai/DeepSeek-V3", system_name="h200_sxm", prefix=t.isl - 1)
+    near.run_single_agg(tp=4, batch_size=64)
+    assert captured["ctx_tokens"] == 1
+
+
 def test_run_single_agg_rejects_disagg_task():
     t = Task(
         serving_mode="disagg",

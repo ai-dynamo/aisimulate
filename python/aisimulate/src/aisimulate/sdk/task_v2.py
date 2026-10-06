@@ -3163,9 +3163,10 @@ class Task:
         Args:
             tp / pp / dp / moe_tp / moe_ep: parallelism for this single point.
             batch_size: concurrency (max in-flight requests).
-            ctx_tokens: per-step context-token budget for the IFB
-                scheduler.  Defaults to ``self.isl`` (full prefill in
-                one step) -- matching ``cli_estimate`` semantics.
+            ctx_tokens: per-step budget of UNCACHED context tokens for the
+                IFB scheduler.  Defaults to the effective isl minus the
+                cached prefix (one request's full uncached prefill per
+                step) -- matching ``cli_estimate`` semantics.
 
         Returns:
             Row dict in ``common.ColumnsAgg`` schema, equivalent to one
@@ -3211,7 +3212,11 @@ class Task:
             backend=backend,
             database=database,
             runtime_config=runtime_config,
-            ctx_tokens=ctx_tokens if ctx_tokens is not None else self._prefill_effective_isl(runtime_config),
+            ctx_tokens=(
+                ctx_tokens
+                if ctx_tokens is not None
+                else max(self._prefill_effective_isl(runtime_config) - int(runtime_config.prefix or 0), 1)
+            ),
             predictor=self.predictor,
             speculative_profile=self.build_speculative_profile(),
             **backend_kwargs,

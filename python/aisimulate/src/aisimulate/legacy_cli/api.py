@@ -1154,8 +1154,13 @@ def cli_estimate(
             vLLM mm_encoder_tp_mode="data" / SGLang --mm-enable-dp-encoder semantics).
             False models the legacy TP-sharded encoder.
         batch_size: Batch size (max concurrent requests, used for agg mode). Default is 128.
-        ctx_tokens: Context tokens budget for IFB scheduling (agg mode only).
-            Default is None, which uses ``isl`` as the budget.
+        ctx_tokens: The scheduler's per-step budget of uncached (new) context
+            tokens for IFB scheduling (agg mode only): SGLang
+            ``--chunked-prefill-size``, vLLM ``max_num_batched_tokens``, the
+            TRT-LLM scheduler's ``max_num_tokens`` (TRT-LLM's build-time
+            ``max_num_tokens`` for activation memory is a separate kwarg).
+            Defaults to the effective isl minus ``prefix`` (one request's full
+            uncached prefill per step) when None.
         tp_size: Tensor parallelism size. Default is 1. Also serves as fallback for
             prefill/decode TP when their specific args are omitted.
         pp_size: Pipeline parallelism size. Default is 1.
@@ -1760,7 +1765,9 @@ def _run_agg_estimate(
 
     model = get_model(model_path, model_config, backend_name)
     if ctx_tokens is None:
-        ctx_tokens = isl + BaseBackend._visual_context_tokens(model, runtime_config)
+        # The budget counts UNCACHED prefill tokens: "one full request per
+        # mixed step" is the effective isl minus the cached prefix.
+        ctx_tokens = max(isl + BaseBackend._visual_context_tokens(model, runtime_config) - int(prefix or 0), 1)
     database = load_database(system_name)
     backend = get_backend(backend_name)
     session = InferenceSession(model, database, backend)

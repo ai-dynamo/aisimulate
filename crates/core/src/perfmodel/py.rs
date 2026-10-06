@@ -617,7 +617,8 @@ impl AicEngine {
     /// ``(shared_non_attention, context_attention, decode_attention)`` lists
     /// of ``(name, latency_ms, energy_wms, source)`` tuples. The
     /// context-attention entries arrive already divided by the
-    /// ``ceil(isl/ctx)`` scale, so each list sums to its breakdown bucket.
+    /// ``ceil((isl - prefix)/ctx)`` scale, so each list sums to its breakdown
+    /// bucket. ``ctx_tokens`` budgets UNCACHED prefill tokens.
     #[pyo3(signature = (ctx_tokens, gen_tokens, isl, osl, prefix=0,
                         seq_imbalance_correction_scale=1.0,
                         gen_seq_imbalance_correction_scale=1.0))]

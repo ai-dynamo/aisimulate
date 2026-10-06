@@ -377,6 +377,81 @@ class TestCLIEstimateUnit:
             f"attention_backend not set in ModelConfig; got: {captured_configs[0].attention_backend}"
         )
 
+    @pytest.mark.parametrize(
+        ("prefix", "explicit_ctx_tokens", "expected_ctx_tokens"),
+        [
+            (0, None, 1024),  # no cache: one full request per step
+            (512, None, 512),  # isl - prefix
+            (1023, None, 1),  # never below one uncached token
+            (512, 777, 777),  # an explicit budget passes through unchanged
+        ],
+    )
+    def test_agg_estimate_ctx_tokens_defaults_to_the_uncached_isl(
+        self, monkeypatch, prefix, explicit_ctx_tokens, expected_ctx_tokens
+    ):
+        """With --ctx-tokens omitted the agg budget is the effective isl minus
+        the cached prefix (one request's full uncached prefill per step); an
+        explicit value is forwarded as given."""
+        import aisimulate.legacy_cli.api as api
+        import aisimulate.sdk.inference_session as inference_session
+
+        captured = {}
+
+        class _CaptureCompleteError(Exception):
+            pass
+
+        class FakeSession:
+            def __init__(self, model, loaded_database, backend):
+                pass
+
+            def run_agg(self, runtime_config, **kwargs):
+                captured["ctx_tokens"] = kwargs["ctx_tokens"]
+                captured["prefix"] = runtime_config.prefix
+                raise _CaptureCompleteError
+
+        monkeypatch.setattr(api, "_resolve_moe_parallelism", lambda *args, **kwargs: (1, 1))
+        monkeypatch.setattr(api, "resolve_context_fmha_by_data", lambda *args, **kwargs: None)
+        monkeypatch.setattr(api, "resolve_dsv4_moe_arch", lambda *args, **kwargs: None)
+        monkeypatch.setattr(api, "resolve_nvfp4_for_system", lambda *args, **kwargs: None)
+        monkeypatch.setattr(inference_session, "InferenceSession", FakeSession)
+
+        with pytest.raises(_CaptureCompleteError):
+            api._run_agg_estimate(
+                model_path="Qwen/Qwen3-32B",
+                system_name="h200_sxm",
+                backend_name="trtllm",
+                resolved_version="test",
+                isl=1024,
+                osl=512,
+                image_height=0,
+                image_width=0,
+                num_images=1,
+                video_height=0,
+                video_width=0,
+                video_frames=0,
+                num_videos=0,
+                num_video_tokens=0,
+                enable_encoder_dp=True,
+                batch_size=8,
+                ctx_tokens=explicit_ctx_tokens,
+                tp_size=1,
+                pp_size=1,
+                attention_dp_size=1,
+                moe_tp_size=1,
+                moe_ep_size=1,
+                gemm_quant_mode=None,
+                kvcache_quant_mode=None,
+                fmha_quant_mode=None,
+                moe_quant_mode=None,
+                comm_quant_mode=None,
+                load_database=lambda _: object(),
+                get_backend=lambda _: object(),
+                get_model=lambda *_: object(),
+                prefix=prefix,
+            )
+
+        assert captured == {"ctx_tokens": expected_ctx_tokens, "prefix": prefix}
+
 
 class TestCLIDefaultNextn:
     """cli_default exposes MTP control with the same semantics as the CLI flags."""

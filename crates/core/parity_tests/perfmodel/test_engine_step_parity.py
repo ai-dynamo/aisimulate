@@ -758,7 +758,8 @@ def _agg_metrics(case: EngineStepParityCase) -> dict[str, float | _ErrorSentinel
             backend_name=case.backend_name,
             backend_version=case.backend_version,
             batch_size=case.agg_batch_size,
-            ctx_tokens=case.agg_ctx_tokens or case.isl,
+            # The CLI default budget: one request's uncached prefill.
+            ctx_tokens=case.agg_ctx_tokens or max(case.isl - case.prefix, 1),
             isl=case.isl,
             osl=case.osl,
             prefix=case.prefix,
@@ -896,12 +897,13 @@ def _afd_metrics(case: EngineStepParityCase) -> dict[str, float | _ErrorSentinel
 def _mix_step_shape(case: EngineStepParityCase) -> dict:
     """Mix-step (chunked-prefill + decode) shape for a smoke case.
 
-    Treats the case's single prefill request as one chunk with `case.isl`
-    isl-equivalent tokens (matching Python's agg orchestration). Decode
-    batch is `case.batch_size` (matches the FPM constructor below).
+    Treats the case's single prefill request as one chunk: the budget is its
+    `case.isl - case.prefix` uncached tokens (the agg default), over
+    `case.prefix` cached ones. Decode batch is `case.batch_size` (matches the
+    FPM constructor below).
     """
     return {
-        "ctx_tokens": case.isl,
+        "ctx_tokens": max(case.isl - case.prefix, 1),
         "gen_tokens": case.batch_size,
         "isl": case.isl,
         "osl": max(case.osl, 2),
