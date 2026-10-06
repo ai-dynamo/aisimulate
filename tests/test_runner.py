@@ -213,7 +213,9 @@ def test_agentic_capabilities_reject_unqualified_decode_modes(trace_format, nest
             agg_engine_args=args if role == "aggregated" else None,
             prefill_engine_args=args if role == "prefill" else _engine_args(role="prefill"),
             decode_engine_args=args if role == "decode" else _engine_args(role="decode"),
-            num_workers=1,
+            num_workers=1 if role == "aggregated" else 0,
+            num_prefill_workers=0 if role == "aggregated" else 1,
+            num_decode_workers=0 if role == "aggregated" else 1,
         ),
         workload={"source_type": "trace", "trace_format": trace_format, "agentic_lanes": 1},
     )
