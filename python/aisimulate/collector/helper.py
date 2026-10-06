@@ -474,6 +474,18 @@ def setup_signal_handlers(worker_id):
     for sig in [signal.SIGTERM, signal.SIGABRT]:
         signal.signal(sig, signal_handler)
 
+    # SIGUSR1 = "dump every thread's stack to stderr and keep running". The
+    # executor's stall watchdog sends it before killing a wedged worker, so a
+    # hang leaves the exact frame in the log (sglang 0.5.21 moe/bf16 on l40s
+    # and b300, 2026-10-06: 8 workers took their first task and never returned,
+    # 76 min of silence, nothing to diagnose from).
+    try:
+        import faulthandler
+
+        faulthandler.register(signal.SIGUSR1, all_threads=True, chain=False)
+    except Exception:
+        pass
+
     # SIGSEGV might not be catchable on all platforms
     try:
         signal.signal(signal.SIGSEGV, signal_handler)

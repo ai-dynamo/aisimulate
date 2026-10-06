@@ -129,6 +129,13 @@ logger = logging.getLogger("collector")
 _LOGGER_CONFIGURED = False
 RESUME_SCHEMA_VERSION = "collector-resume-v2"
 STALL_THRESHOLD = 30  # iterations (x 0.5 s sleep = 15 s) before logging a stall warning
+# Seconds of ZERO progress with live workers before the executor gives up on the
+# op: dump every worker's thread stacks (SIGUSR1 -> faulthandler), kill them,
+# record their in-flight tasks as WorkerStallTimeout and let the orphan path
+# close the op. 0 disables. sglang 0.5.21 moe/bf16 on l40s/b300 (2026-10-06)
+# sat 76 min at 0/58482 with no error until the pipeline watchdog cancelled the
+# whole job; a finite, diagnosable failure is worth more than an open-ended wait.
+STALL_TIMEOUT_SEC = int(os.environ.get("AISIM_STALL_TIMEOUT_SEC") or os.environ.get("AIC_STALL_TIMEOUT_SEC") or 1800)
 # Failures of one (model, dtype) group within an op before the summary flags
 # it as systemic (a fix-me warning; nothing is skipped).
 SYSTEMIC_GROUP_THRESHOLD = 5
@@ -1882,9 +1889,53 @@ def parallel_run(tasks, func, num_processes, module_name="unknown", resume_optio
     # Monitor progress with error collection
     errors = []
 
+    def _dump_and_kill_stalled_workers(stalled_for: float):
+        """Stall watchdog: stacks first (SIGUSR1 -> faulthandler in the worker),
+        then SIGTERM/SIGKILL; the in-flight task of every worker becomes a
+        WorkerStallTimeout error and the orphan path below closes the op."""
+        live = [(i, p) for i, p in enumerate(processes) if p is not None and p.is_alive()]
+        logger.error(
+            f"{module_name}: no progress for {int(stalled_for)} s with {len(live)} live worker(s) "
+            f"(STALL_TIMEOUT_SEC={STALL_TIMEOUT_SEC}); dumping worker stacks and stopping the op"
+        )
+        for _, p in live:
+            try:
+                os.kill(p.pid, signal.SIGUSR1)
+            except Exception:
+                pass
+        time.sleep(5)  # let faulthandler write before the kill
+        for i, p in live:
+            active_task_id = current_task_ids.get(i)
+            if active_task_id is not None and active_task_id not in accounted:
+                errors.append(
+                    {
+                        "module": module_name,
+                        "device_id": i,
+                        "task_id": active_task_id,
+                        "task_params": None,
+                        "error_type": "WorkerStallTimeout",
+                        "error_message": f"worker made no progress for {int(stalled_for)} s; stacks dumped via SIGUSR1",
+                        "classification": "unexpected",
+                        "group": None,
+                        "traceback": "",
+                        "timestamp": datetime.now().isoformat(),
+                    }
+                )
+                try:
+                    failed_tasks[active_task_id] = True
+                except Exception:
+                    pass
+            p.terminate()
+            p.join(timeout=10)
+            if p.is_alive():
+                p.kill()
+                p.join(timeout=10)
+            processes[i] = None
+
     with tqdm(total=len(task_infos), desc=f"{module_name}", dynamic_ncols=True, leave=True) as pbar:
         last_progress = 0
         stall_count = 0
+        stall_since = None
         last_error_count = 0
 
         if num_processes == 0:
@@ -1943,11 +1994,20 @@ def parallel_run(tasks, func, num_processes, module_name="unknown", resume_optio
 
             if len(accounted) == last_progress:
                 stall_count += 1
+                stall_since = stall_since or time.time()
                 if stall_count > STALL_THRESHOLD:
                     logger.warning(f"Progress stalled at {len(accounted)}/{len(task_infos)}")
                     stall_count = 0
+                if (
+                    STALL_TIMEOUT_SEC > 0
+                    and time.time() - stall_since > STALL_TIMEOUT_SEC
+                    and any(p is not None and p.is_alive() for p in processes)
+                ):
+                    _dump_and_kill_stalled_workers(time.time() - stall_since)
+                    stall_since = None
             else:
                 stall_count = 0
+                stall_since = None
                 last_progress = len(accounted)
 
             # Check process health — only restart if there is still work
