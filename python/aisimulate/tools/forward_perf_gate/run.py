@@ -48,17 +48,6 @@ def _cpu_model() -> str:
     return platform.processor()
 
 
-def _worker_error(case: dict, revision: str, status: str, message: str) -> dict:
-    return {
-        "protocol_version": PROTOCOL_VERSION,
-        "revision": revision,
-        "case_id": case["case_id"],
-        "case_hash": "",
-        "status": status,
-        "error": {"type": status, "message": message[:2_000]},
-    }
-
-
 def _invoke_worker(
     *,
     python: Path,
@@ -97,44 +86,6 @@ def _invoke_worker(
             completed.stderr[-2_000:],
         )
     return response, None, None, completed.stderr[-2_000:]
-
-
-def run_worker(
-    *,
-    python: Path,
-    worker: Path,
-    revision: str,
-    case: dict,
-    warmup: int,
-    iterations: int,
-    cpu: int,
-    timeout: float,
-) -> dict:
-    response, error_status, error, worker_stderr = _invoke_worker(
-        python=python,
-        worker=worker,
-        request={
-            "protocol_version": PROTOCOL_VERSION,
-            "revision": revision,
-            "case": case,
-            "warmup": warmup,
-            "iterations": iterations,
-        },
-        cpu=cpu,
-        timeout=timeout,
-    )
-    if error_status:
-        return _worker_error(case, revision, error_status, error or "worker failed")
-    if not isinstance(response, dict):
-        return _worker_error(
-            case,
-            revision,
-            "WORKER_ERROR",
-            f"worker JSON must be an object, got {type(response).__name__}",
-        )
-    if worker_stderr.strip():
-        response["worker_stderr"] = worker_stderr
-    return response
 
 
 def run_worker_batch(

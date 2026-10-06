@@ -22,7 +22,6 @@ from tools.forward_perf_gate import PROTOCOL_VERSION
 from tools.forward_perf_gate.measurement import (
     BenchmarkCase,
     clear_caches,
-    ensure_rust_library_present,
     measure_cold_and_warm,
     measure_session_setup_ms,
     phase_call,
@@ -251,7 +250,6 @@ def _run_case_group(cases: list[dict], *, warmup: int, iterations: int, revision
     representative = _benchmark_case(cases[0])
     try:
         clear_caches(representative)
-        ensure_rust_library_present()
         session_setup_ms, session, group_runtime_config = measure_session_setup_ms(
             representative,
             suppress_loader_output=True,

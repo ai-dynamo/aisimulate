@@ -252,7 +252,6 @@ def test_batch_evicts_outgoing_database_on_configuration_changes(monkeypatch: py
         return lambda: 1.0
 
     monkeypatch.setattr(measurement.perf_database, "unload_database", unload)
-    monkeypatch.setattr(worker, "ensure_rust_library_present", lambda: None)
     monkeypatch.setattr(worker, "measure_session_setup_ms", setup)
     monkeypatch.setattr(worker, "phase_call", phase_call)
     monkeypatch.setattr(worker, "measure_cold_and_warm", lambda *args, **kwargs: (1.0, 10.0, [5.0], {}))
@@ -274,7 +273,6 @@ def test_case_group_resets_and_builds_once_and_continues_after_case_failure(
     runtime = measurement.config.RuntimeConfig(batch_size=1, isl=1024, osl=grid.CTX_OSL)
 
     monkeypatch.setattr(worker, "clear_caches", lambda case: reset_calls.append(case))
-    monkeypatch.setattr(worker, "ensure_rust_library_present", lambda: None)
 
     def fake_setup(*args: object, **kwargs: object) -> tuple[float, object, object]:
         assert kwargs["shared_layer"] is True
@@ -309,7 +307,6 @@ def test_case_group_resets_and_builds_once_and_continues_after_case_failure(
 def test_case_group_isolates_base_exception_during_setup(monkeypatch: pytest.MonkeyPatch) -> None:
     selected = cases.expand_cases()[:9]
     monkeypatch.setattr(worker, "clear_caches", lambda case: None)
-    monkeypatch.setattr(worker, "ensure_rust_library_present", lambda: None)
     monkeypatch.setattr(
         worker,
         "measure_session_setup_ms",
@@ -337,7 +334,6 @@ def test_priming_failure_is_limited_to_one_phase(
     runtime = measurement.config.RuntimeConfig(batch_size=1, isl=1024, osl=grid.CTX_OSL)
 
     monkeypatch.setattr(worker, "clear_caches", lambda case: None)
-    monkeypatch.setattr(worker, "ensure_rust_library_present", lambda: None)
     monkeypatch.setattr(
         worker,
         "measure_session_setup_ms",
@@ -420,21 +416,21 @@ def test_cache_reset_uses_public_database_eviction(monkeypatch: pytest.MonkeyPat
     assert calls == [("b200_sxm", "vllm", "0.24.0")]
 
 
-def test_run_worker_rejects_non_object_json(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_run_worker_batch_rejects_non_object_json(monkeypatch: pytest.MonkeyPatch) -> None:
     completed = subprocess.CompletedProcess(args=[], returncode=0, stdout="null\n", stderr="warning\n")
     monkeypatch.setattr(gate_run.subprocess, "run", lambda *args, **kwargs: completed)
-    response = gate_run.run_worker(
+    results, error = gate_run.run_worker_batch(
         python=Path("/python"),
         worker=Path("/worker"),
         revision="abc123",
-        case=cases.expand_cases()[0],
+        cases=cases.expand_cases()[:1],
         warmup=0,
         iterations=1,
         cpu=0,
         timeout=1.0,
     )
-    assert response["status"] == "WORKER_ERROR"
-    assert response["error"]["message"] == "worker JSON must be an object, got NoneType"
+    assert results == []
+    assert error == "worker JSON must be an object, got NoneType"
 
 
 @pytest.mark.parametrize(

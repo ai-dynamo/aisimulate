@@ -92,12 +92,6 @@ def clear_caches(case: BenchmarkCase) -> None:
     perf_database.unload_database(case.system_name, case.backend_name, case.backend_version)
 
 
-def ensure_rust_library_present() -> None:
-    # The compiled engine ships as the maturin-built ``aisimulate_core``
-    # extension; importing it is the availability check.
-    import aisimulate_core  # noqa: F401
-
-
 def percentile(samples: list[float], value: float) -> float:
     ordered = sorted(samples)
     if len(ordered) == 1:

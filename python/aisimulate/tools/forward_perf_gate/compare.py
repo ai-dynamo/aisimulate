@@ -231,7 +231,6 @@ def _cell_summaries(points: list[dict]) -> list[dict]:
                 "regressions": sum(point["classification"] == "REGRESSION" for point in cell_points),
                 "unstable": sum(point["classification"] == "UNSTABLE" for point in cell_points),
                 "invalid": sum(point["classification"] == "INVALID_COMPARISON" for point in cell_points),
-                "skipped": sum(point["classification"] == "SKIPPED" for point in cell_points),
             }
         )
     return sorted(
@@ -319,8 +318,6 @@ def _cell_status(cell: dict) -> str:
         return "❌ invalid"
     if cell["unstable"]:
         return "⚠️ noisy"
-    if cell["skipped"]:
-        return "skipped"
     return "✅ stable"
 
 
@@ -331,7 +328,6 @@ def render_markdown(comparison: dict) -> str:
     unchanged = [point for point in points if point["classification"] == "OK"]
     invalid = [point for point in points if point["classification"] == "INVALID_COMPARISON"]
     unstable = [point for point in points if point["classification"] == "UNSTABLE"]
-    skipped = [point for point in points if point["classification"] == "SKIPPED"]
     stable_count = len(regressions) + len(improvements) + len(unchanged)
     result = "FAIL" if comparison["blocking"] else "PASS"
     mode_label = " — smoke" if comparison.get("mode") == "smoke" else ""
@@ -359,20 +355,14 @@ def render_markdown(comparison: dict) -> str:
         if collapsed:
             lines.extend(["", "</details>"])
 
-    def add_reason_table(title: str, selected: list[dict], *, collapsed: bool = False) -> None:
+    def add_reason_table(title: str, selected: list[dict]) -> None:
         if not selected:
             return
-        if collapsed:
-            lines.extend(["", "<details>", f"<summary>{title} ({len(selected)})</summary>", ""])
-        else:
-            lines.extend(["", f"### {title}", ""])
+        lines.extend(["", f"### {title}", ""])
         lines.extend(["| case | cache | reason |", "|---|---|---|"])
         for point in selected:
-            reasons = point.get("invalid_reasons") or [point.get("skip_reason", "")]
-            reason = "; ".join(reasons).replace("|", "\\|")
+            reason = "; ".join(point["invalid_reasons"]).replace("|", "\\|")
             lines.append(f"| `{point['case_id']}` | {point['metric']} | {reason} |")
-        if collapsed:
-            lines.extend(["", "</details>"])
 
     def add_full_matrix(cells: list[dict]) -> None:
         if not cells:
@@ -384,8 +374,8 @@ def render_markdown(comparison: dict) -> str:
                 f"<summary>Full matrix ({len(cells)} cells)</summary>",
                 "",
                 "| status | model | database | phase | cache | geometric mean | worst point "
-                "| regressions | noisy | invalid | skipped |",
-                "|---|---|---|---|---|---:|---:|---:|---:|---:|---:|",
+                "| regressions | noisy | invalid |",
+                "|---|---|---|---|---|---:|---:|---:|---:|---:|",
             ]
         )
         for cell in cells:
@@ -393,7 +383,7 @@ def render_markdown(comparison: dict) -> str:
                 f"| {_cell_status(cell)} | {cell['model_id']} | {cell['database_mode']} | "
                 f"{cell['phase']} | {cell['metric']} "
                 f"| {_percent(cell['geomean_ratio'])} | {_percent(cell['worst_ratio'])} "
-                f"| {cell['regressions']} | {cell['unstable']} | {cell['invalid']} | {cell['skipped']} |"
+                f"| {cell['regressions']} | {cell['unstable']} | {cell['invalid']} |"
             )
         lines.extend(["", "</details>"])
 
@@ -403,7 +393,7 @@ def render_markdown(comparison: dict) -> str:
         f"**{result}** — {stable_count} of {len(points)} comparisons stable: "
         f"{len(improvements)} faster, {len(unchanged)} unchanged, "
         f"{len(regressions)} regressions; {len(unstable)} noisy, "
-        f"{len(invalid)} invalid, {len(skipped)} skipped.",
+        f"{len(invalid)} invalid.",
         "",
         f"Base `{comparison['base_revision']}` vs head `{comparison['head_revision']}`.",
     ]
@@ -422,7 +412,6 @@ def render_markdown(comparison: dict) -> str:
     add_timing_table("❌ Confirmed regressions", regressions)
     add_reason_table("❌ Invalid comparisons", invalid)
     add_timing_table("⚠️ Noisy comparisons", unstable, collapsed=True)
-    add_reason_table("Skipped comparisons", skipped, collapsed=True)
     add_full_matrix(comparison["cells"])
     lines.extend(["", "This check is advisory and is not required by branch protection."])
     return "\n".join(lines)
@@ -440,7 +429,6 @@ def write_outputs(comparison: dict, output_dir: Path) -> None:
             "phase",
             "metric",
             "classification",
-            "skip_reason",
             "exceed_count",
             "consensus_required",
             "base_median_us",
