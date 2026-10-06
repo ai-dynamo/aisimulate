@@ -48,46 +48,6 @@ def _cpu_model() -> str:
     return platform.processor()
 
 
-def _invoke_worker(
-    *,
-    python: Path,
-    worker: Path,
-    request: dict,
-    cpu: int,
-    timeout: float,
-) -> tuple[object | None, str | None, str | None, str]:
-    command = ["taskset", "--cpu-list", str(cpu), str(python), str(worker)]
-    try:
-        completed = subprocess.run(
-            command,
-            input=json.dumps(request),
-            text=True,
-            capture_output=True,
-            check=False,
-            timeout=timeout,
-            env={**os.environ, **WORKER_ENV},
-        )
-    except subprocess.TimeoutExpired:
-        return None, "TIMEOUT", f"worker exceeded {timeout:.0f}s", ""
-    if completed.returncode:
-        return (
-            None,
-            "WORKER_ERROR",
-            f"exit {completed.returncode}: {completed.stderr.strip()}",
-            completed.stderr[-2_000:],
-        )
-    try:
-        response = json.loads(completed.stdout)
-    except json.JSONDecodeError as exc:
-        return (
-            None,
-            "WORKER_ERROR",
-            f"invalid JSON: {exc}: {completed.stdout[:1000]}",
-            completed.stderr[-2_000:],
-        )
-    return response, None, None, completed.stderr[-2_000:]
-
-
 def run_worker_batch(
     *,
     python: Path,
@@ -99,21 +59,32 @@ def run_worker_batch(
     cpu: int,
     timeout: float,
 ) -> tuple[list[dict], str | None]:
-    response, error_status, error, worker_stderr = _invoke_worker(
-        python=python,
-        worker=worker,
-        request={
-            "protocol_version": PROTOCOL_VERSION,
-            "revision": revision,
-            "cases": cases,
-            "warmup": warmup,
-            "iterations": iterations,
-        },
-        cpu=cpu,
-        timeout=timeout,
-    )
-    if error_status:
-        return [], f"{error_status}: {error}"
+    command = ["taskset", "--cpu-list", str(cpu), str(python), str(worker)]
+    request = {
+        "protocol_version": PROTOCOL_VERSION,
+        "revision": revision,
+        "cases": cases,
+        "warmup": warmup,
+        "iterations": iterations,
+    }
+    try:
+        completed = subprocess.run(
+            command,
+            input=json.dumps(request),
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=timeout,
+            env={**os.environ, **WORKER_ENV},
+        )
+    except subprocess.TimeoutExpired:
+        return [], f"TIMEOUT: worker exceeded {timeout:.0f}s"
+    if completed.returncode:
+        return [], f"WORKER_ERROR: exit {completed.returncode}: {completed.stderr.strip()[-2_000:]}"
+    try:
+        response = json.loads(completed.stdout)
+    except json.JSONDecodeError as exc:
+        return [], f"WORKER_ERROR: invalid JSON: {exc}: {completed.stdout[:1000]}"
     if not isinstance(response, dict):
         return [], f"worker JSON must be an object, got {type(response).__name__}"
     if response.get("protocol_version") != PROTOCOL_VERSION:
@@ -139,6 +110,7 @@ def run_worker_batch(
             "worker result case IDs do not match the request: "
             f"missing={missing}, duplicate={duplicates}, unexpected={unexpected}, ordered={actual_ids}",
         )
+    worker_stderr = completed.stderr[-2_000:]
     if worker_stderr.strip():
         for result in results:
             result["worker_stderr"] = worker_stderr

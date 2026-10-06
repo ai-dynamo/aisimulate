@@ -115,6 +115,27 @@ def test_request_validation_rejects_protocol_and_case_drift() -> None:
         worker.validate_request(request)
 
 
+def test_single_case_cli_returns_one_result(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    request = _request()
+    request_path = tmp_path / "request.json"
+    request_path.write_text(json.dumps(request))
+    expected = {"case_id": request["case"]["case_id"], "status": "OK"}
+    calls = []
+
+    def fake_run_case_group(group, *, warmup, iterations, revision):
+        calls.append((group, warmup, iterations, revision))
+        return [expected]
+
+    monkeypatch.setattr(worker, "_run_case_group", fake_run_case_group)
+    monkeypatch.setattr(worker.sys, "argv", ["worker.py", "--request", str(request_path), "--pretty"])
+
+    assert worker.main() == 0
+    assert calls == [([request["case"]], request["warmup"], request["iterations"], request["revision"])]
+    assert json.loads(capsys.readouterr().out) == expected
+
+
 def test_batch_request_validation_requires_unique_cases() -> None:
     expanded = cases.expand_cases()
     request = {
@@ -471,8 +492,17 @@ def test_run_worker_batch_rejects_incomplete_duplicate_or_reordered_results(
     assert "do not match the request" in error
 
 
-def test_run_worker_batch_reports_process_failure(monkeypatch: pytest.MonkeyPatch) -> None:
-    completed = subprocess.CompletedProcess(args=[], returncode=7, stdout="", stderr="boom")
+@pytest.mark.parametrize(
+    ("stderr", "expected_tail"),
+    [
+        ("boom", "boom"),
+        ("discarded output\n" * 300 + "x" * 1996 + "boom\n", "x" * 1996 + "boom"),
+    ],
+)
+def test_run_worker_batch_reports_process_failure(
+    monkeypatch: pytest.MonkeyPatch, stderr: str, expected_tail: str
+) -> None:
+    completed = subprocess.CompletedProcess(args=[], returncode=7, stdout="", stderr=stderr)
     monkeypatch.setattr(gate_run.subprocess, "run", lambda *args, **kwargs: completed)
     results, error = gate_run.run_worker_batch(
         python=Path("/python"),
@@ -485,7 +515,42 @@ def test_run_worker_batch_reports_process_failure(monkeypatch: pytest.MonkeyPatc
         timeout=1.0,
     )
     assert results == []
-    assert error == "WORKER_ERROR: exit 7: boom"
+    assert error == f"WORKER_ERROR: exit 7: {expected_tail}"
+
+
+@pytest.mark.parametrize(
+    ("response", "expected_error"),
+    [
+        (subprocess.TimeoutExpired(cmd=[], timeout=1.0), "TIMEOUT: worker exceeded 1s"),
+        (
+            subprocess.CompletedProcess(args=[], returncode=0, stdout="not json", stderr=""),
+            "WORKER_ERROR: invalid JSON: Expecting value: line 1 column 1 (char 0): not json",
+        ),
+    ],
+)
+def test_run_worker_batch_reports_timeout_and_malformed_json(
+    monkeypatch: pytest.MonkeyPatch,
+    response: subprocess.CompletedProcess | subprocess.TimeoutExpired,
+    expected_error: str,
+) -> None:
+    def fake_run(*args, **kwargs):
+        if isinstance(response, subprocess.TimeoutExpired):
+            raise response
+        return response
+
+    monkeypatch.setattr(gate_run.subprocess, "run", fake_run)
+    results, error = gate_run.run_worker_batch(
+        python=Path("/python"),
+        worker=Path("/worker"),
+        revision="abc123",
+        cases=cases.expand_cases()[:1],
+        warmup=0,
+        iterations=1,
+        cpu=0,
+        timeout=1.0,
+    )
+    assert results == []
+    assert error == expected_error
 
 
 @pytest.mark.parametrize("missing_sides", [(), ("base",), ("head",), ("base", "head")])

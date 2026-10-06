@@ -317,6 +317,7 @@ def test_reports_write_json_csv_markdown_and_annotations(tmp_path: Path) -> None
     result = compare.compare_raw(_raw([1.11] * 5))
     compare.write_outputs(result, tmp_path)
     saved = json.loads((tmp_path / "comparison.json").read_text())
+    assert saved["schema_version"] == 2
     assert saved["blocking"] is True
     assert all("skipped" not in cell for cell in saved["cells"])
     assert "qwen3-32b" in (tmp_path / "comparison.csv").read_text()
@@ -389,7 +390,6 @@ def test_report_keeps_blocking_errors_and_data_misses_visible() -> None:
     assert "### ❌ Invalid comparisons" in visible
     assert "base and head case hashes differ" in visible
     assert "Noisy comparisons" not in invalid_summary
-    assert "Skipped comparisons" not in invalid_summary
 
     missing_raw = _raw([1.0] * 5)
     case = missing_raw["cases"][0]["case"]
@@ -401,4 +401,3 @@ def test_report_keeps_blocking_errors_and_data_misses_visible() -> None:
     assert "**FAIL**" in visible
     assert case["case_id"] in visible
     assert "DATA_MISS not available" in visible
-    assert "Skipped comparisons" not in missing_summary

@@ -294,7 +294,7 @@ def compare_raw(raw: dict) -> dict:
     )
     configuration = raw.get("configuration", {})
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "base_revision": raw.get("base_revision", ""),
         "head_revision": raw.get("head_revision", ""),
         "mode": configuration.get("mode", "full"),
