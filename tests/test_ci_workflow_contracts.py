@@ -3098,6 +3098,8 @@ def test_simulation_performance_selects_complete_pr_files(path, expected):
         ("contract.py", True),
         ("worker.py", True),
         ("fixtures/agentx.jsonl", True),
+        ("fixtures/agentx.json", True),
+        ("fixtures/another-trace.jsonl", True),
         ("README.md", False),
         ("QUALIFICATION.md", False),
         ("fixtures/README.md", False),
@@ -3136,7 +3138,9 @@ def test_simulation_perf_controller_change_detection(tmp_path, path, expected):
     assert output.read_text() == f"validate_head_controller={str(expected).lower()}\n"
 
 
-@pytest.mark.parametrize("scenario", ["normal", "self", "missing_base", "missing_head", "mixed", "malformed"])
+@pytest.mark.parametrize(
+    "scenario", ["normal", "self", "missing_base", "missing_head", "mixed", "older_base", "malformed"]
+)
 def test_simulation_perf_revision_preparation(tmp_path, scenario):
     steps = _workflow("simulation-performance.yml")["jobs"]["select"]["steps"]
     script = next(step["run"] for step in steps if step.get("id") == "revisions")
@@ -3155,8 +3159,9 @@ def test_simulation_perf_revision_preparation(tmp_path, scenario):
         (gate / "worker.py").write_text("fixture\n")
     elif scenario == "missing_head":
         (gate / "worker.py").unlink()
-    elif scenario in {"mixed", "malformed"}:
-        (gate / "__init__.py").write_text("PROTOCOL_VERSION = " + ("2" if scenario == "mixed" else "None") + "\n")
+    elif scenario in {"mixed", "older_base", "malformed"}:
+        version = {"mixed": "2", "older_base": "5", "malformed": "None"}[scenario]
+        (gate / "__init__.py").write_text("PROTOCOL_VERSION = " + version + "\n")
     _git(tmp_path, "add", ".")
     head = _commit_file(tmp_path, "head", "head\n")
     output, summary = tmp_path / "output", tmp_path / "summary"
@@ -3182,8 +3187,9 @@ def test_simulation_perf_revision_preparation(tmp_path, scenario):
         assert outputs["validate_head_controller"] == "false"
     else:
         assert outputs["run_comparison"] == "false"
-        assert result.returncode == (0 if scenario == "missing_base" else 1)
-        assert ("was not benchmarked" if scenario == "missing_base" else "INVALID_COMPARISON") in summary.read_text()
+        skipped = scenario in {"missing_base", "older_base"}
+        assert result.returncode == (0 if skipped else 1)
+        assert ("was not benchmarked" if skipped else "INVALID_COMPARISON") in summary.read_text()
 
 
 @pytest.mark.parametrize("self_compare,fail_first,count", [(False, False, 1), (True, False, 3), (True, True, 3)])
@@ -3234,7 +3240,9 @@ def test_simulation_perf_invocations(tmp_path, self_compare, fail_first, count):
         )
 
 
-@pytest.mark.parametrize("fault", [None, "revision", "side", "wheel", "requirements", "extra_wheel"])
+@pytest.mark.parametrize(
+    "fault", [None, "revision", "side", "wheel", "requirements", "extra_wheel", "embedded_core", "dynamo_wheel"]
+)
 def test_simulation_perf_artifact_verification(tmp_path, fault):
     from scripts.simulation_perf_artifact import sha256, verify
 
@@ -3242,10 +3250,23 @@ def test_simulation_perf_artifact_verification(tmp_path, fault):
     wheel.write_bytes(b"built wheel")
     requirements = tmp_path / "requirements.txt"
     requirements.write_text("locked\n")
+    additional = [
+        tmp_path / name
+        for name in (
+            "ai_dynamo_runtime-test.whl",
+            "ai_dynamo-test.whl",
+            "dynamo-requirements.txt",
+            "dynamo-build.json",
+            "dynamo-build.patch",
+        )
+    ]
+    for path in additional:
+        path.write_text("build record\n")
     manifest = {
         "side": "base",
         "source_sha": "a" * 40,
-        "files": {path.name: sha256(path) for path in (wheel, requirements)},
+        "files": {path.name: sha256(path) for path in (wheel, requirements, *additional)},
+        "dynamo": {"aisimulate_sha": "a" * 40},
     }
     if fault == "revision":
         manifest["source_sha"] = "b" * 40
@@ -3257,6 +3278,10 @@ def test_simulation_perf_artifact_verification(tmp_path, fault):
         requirements.write_text("wrong dependencies\n")
     elif fault == "extra_wheel":
         (tmp_path / "aisimulate-other.whl").write_bytes(b"another wheel")
+    elif fault == "embedded_core":
+        manifest["dynamo"]["aisimulate_sha"] = "b" * 40
+    elif fault == "dynamo_wheel":
+        additional[0].write_bytes(b"wrong Dynamo wheel")
     (tmp_path / "provenance.json").write_text(json.dumps(manifest))
     if fault:
         with pytest.raises(ValueError):
