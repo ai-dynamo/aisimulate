@@ -65,30 +65,6 @@ pub struct ForwardPassSpeculationConfig {
     pub draft_config: Option<serde_json::Map<String, serde_json::Value>>,
 }
 
-impl ForwardPassSpeculationConfig {
-    pub fn kind(&self) -> &str {
-        &self.kind
-    }
-
-    /// Preserve the original MTP JSON spelling at the canonical boundary.
-    pub(crate) fn sdk_config(&self) -> Result<Self, AicError> {
-        let mut resolved = self.clone();
-        if self.kind == "mtp" {
-            if let Some(depth) = resolved.params.remove("num_speculative_tokens") {
-                if resolved
-                    .params
-                    .get("depth")
-                    .is_some_and(|value| value != &depth)
-                {
-                    return Err(invalid_config("conflicting MTP depth parameters"));
-                }
-                resolved.params.insert("depth".into(), depth);
-            }
-        }
-        Ok(resolved)
-    }
-}
-
 /// Immutable model identity and selection policy for a forward-pass estimator.
 ///
 /// This is the one public construction schema shared by Rust, Python, Replay,
@@ -267,7 +243,7 @@ impl ForwardPassPerfModelConfig {
         #[cfg(feature = "python")]
         if let Some(speculation) = &self.speculation
             && speculation.draft_model_path.is_some()
-            && speculation.draft_config.is_none()
+            && (speculation.draft_config.is_none() || speculation.kind == "draft_model")
         {
             self.speculation = Some(crate::py::resolve_speculation_identity(speculation)?);
         }
@@ -469,12 +445,30 @@ impl ForwardPassPerfModelConfig {
             if speculation.kind.trim().is_empty() {
                 return Err(invalid_config("speculation kind must not be empty"));
             }
-            speculation.sdk_config()?;
+            if speculation.kind == "ngram" {
+                if self.backend != BackendKind::Vllm {
+                    return Err(invalid_config("ngram speculation requires backend=vllm"));
+                }
+                if !speculation
+                    .params
+                    .get("num_speculative_tokens")
+                    .and_then(serde_json::Value::as_u64)
+                    .is_some_and(|depth| (1..=5).contains(&depth))
+                {
+                    return Err(invalid_config(
+                        "ngram num_speculative_tokens must be in 1..=5",
+                    ));
+                }
+            }
             if !matches!(
                 self.estimation_mode,
                 EstimationMode::Auto | EstimationMode::OpLevel
             ) {
-                return Err(invalid_config("speculation requires op_level timing"));
+                return Err(invalid_config(if speculation.kind == "ngram" {
+                    "ngram speculation requires op_level timing"
+                } else {
+                    "speculation requires op_level timing"
+                }));
             }
         }
         if self.estimation_mode == EstimationMode::FpmInterpolation && self.nextn != 0 {
@@ -849,42 +843,55 @@ mod tests {
     }
 
     #[test]
-    fn scheme_identity_round_trips_without_losing_draft_geometry() {
-        for kind in ["mtp", "ngram", "eagle3", "dflash", "draft_model", "dspark"] {
-            let spec = serde_json::json!({"kind": kind, "params": {"num_speculative_tokens": 3},
-                "draft_model_path": "example/draft", "draft_config": {"hidden_size": 128}});
-            let cfg = config(serde_json::json!({"speculation": spec}));
-            cfg.validate().unwrap();
-            assert_eq!(serde_json::to_value(&cfg).unwrap()["speculation"], spec);
-            assert_eq!(cfg.nextn, 0);
-            let mut conflict = cfg.clone();
-            conflict.nextn = 3;
-            assert!(conflict.validate().is_err());
-            for mode in [
-                EstimationMode::FpmInterpolation,
-                EstimationMode::FpmRegression,
-            ] {
-                conflict.nextn = 0;
-                conflict.estimation_mode = mode;
-                assert!(conflict.validate().is_err());
-            }
+    fn prompt_lookup_is_distinct_from_mtp_and_validated_before_selection() {
+        let mut cfg = config(serde_json::json!({
+            "speculation": {"kind": "ngram", "params": {"num_speculative_tokens": 2}}
+        }));
+        cfg.validate().unwrap();
+        assert_eq!(cfg.nextn, 0);
+        assert_eq!(
+            serde_json::from_str::<ForwardPassPerfModelConfig>(
+                &serde_json::to_string(&cfg).unwrap()
+            )
+            .unwrap(),
+            cfg
+        );
+        for mode in [
+            EstimationMode::FpmInterpolation,
+            EstimationMode::FpmRegression,
+        ] {
+            cfg.estimation_mode = mode;
+            assert!(cfg.validate().is_err());
+        }
+        cfg.estimation_mode = EstimationMode::Auto;
+        cfg.nextn = 2;
+        assert!(cfg.validate().is_err());
+        cfg.nextn = 0;
+        cfg.backend = BackendKind::Sglang;
+        assert!(cfg.validate().is_err());
+        cfg.backend = BackendKind::Vllm;
+        for depth in serde_json::json!([0, 6, -1, 3.0, true, "3", null])
+            .as_array()
+            .unwrap()
+        {
+            cfg.speculation
+                .as_mut()
+                .unwrap()
+                .params
+                .insert("num_speculative_tokens".into(), depth.clone());
+            assert!(cfg.validate().is_err(), "{depth}");
         }
     }
 
     #[test]
-    fn legacy_mtp_parameter_is_translated_only_at_sdk_boundary() {
-        let cfg = config(serde_json::json!({"speculation": {
-            "kind": "mtp", "params": {"num_speculative_tokens": 3}
-        }}));
-        let spec = cfg.speculation.unwrap();
-        assert_eq!(spec.params["num_speculative_tokens"], 3);
-        let translated = spec.sdk_config().unwrap();
-        assert_eq!(translated.params["depth"], 3);
-        assert!(!translated.params.contains_key("num_speculative_tokens"));
-        let bad = config(serde_json::json!({"speculation": {
-            "kind": "mtp", "params": {"num_speculative_tokens": 3, "depth": 2}
-        }}));
-        assert!(bad.validate().is_err());
+    fn scheme_identity_round_trips_without_losing_draft_geometry() {
+        let spec = serde_json::json!({
+            "kind": "eagle3", "params": {"tree_shape": [1, 2], "verify_token_budget": 4},
+            "draft_model_path": "example/draft", "draft_config": {"hidden_size": 128}
+        });
+        let cfg = config(serde_json::json!({"speculation": spec}));
+        cfg.validate().unwrap();
+        assert_eq!(serde_json::to_value(&cfg).unwrap()["speculation"], spec);
     }
 
     #[test]

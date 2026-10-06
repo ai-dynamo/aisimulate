@@ -205,12 +205,9 @@ def resolve_speculation(model_config: ModelConfig):
     Return the resolved config without persisting synthesized legacy MTP.
     Explicit MTP still updates ``nextn`` before model construction.
     """
-    from aisimulate_core.sdk.speculation.base import SpeculationConfig, resolve_draft_config
+    from aisimulate_core.sdk.speculation.base import SpeculationConfig
 
     spec = model_config.speculation
-    if spec is not None:
-        spec = resolve_draft_config(spec)
-        model_config.speculation = spec
     nextn = normalize_nextn(model_config.nextn)
 
     if spec is None:

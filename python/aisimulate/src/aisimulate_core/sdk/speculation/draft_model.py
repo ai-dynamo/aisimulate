@@ -82,11 +82,6 @@ class DraftModelScheme(SpecSchemeBase):
 
     @classmethod
     def from_configs(cls, model_config, spec_config: SpeculationConfig) -> DraftModelScheme:
-        if spec_config.draft_model_path and spec_config.draft_config is not None:
-            from aisimulate_core.sdk.models.helpers import _get_model_info
-
-            if spec_config.draft_config != _get_model_info(spec_config.draft_model_path)["raw_config"]:
-                raise ValueError("draft_model draft_config must match the draft_model_path model configuration")
         params = spec_config.params
         n = params.get("num_speculative_tokens")
         if n is None:

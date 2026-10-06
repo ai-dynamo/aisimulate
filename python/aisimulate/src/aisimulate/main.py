@@ -23,6 +23,7 @@ from .config.cli import (
     prediction_mapping,
 )
 from .config.common import split_config_sections
+from .config.engine import NgramSpeculationConfig
 from .config_adapter import (
     ConfigAdapterResolutionError,
     PredictionAdapterContext,
@@ -101,6 +102,10 @@ def _compile_prediction_adapters(
 def _predict(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
     core_raw, adapter_raw = split_config_sections(raw, command="predict")
     config = CorePredictionConfig.model_validate(core_raw)
+    if isinstance(config.engine.speculation, NgramSpeculationConfig) and (
+        args.stack != "engine" or args.online or adapter_raw
+    ):
+        raise ValueError("ngram speculation requires offline --stack engine without adapters")
     if config.engine.speculation is not None and args.online:
         raise ValueError("speculation requires offline execution")
     plan = _resource_plan(args, config, factory)

@@ -396,7 +396,7 @@ impl ForwardPassPerfModel {
             {
                 let error = AicError::UnsupportedModel(format!(
                     "{} speculation requires op_level timing",
-                    speculation.kind()
+                    speculation.kind
                 ));
                 failures.push(format!("{mode:?}: {error}"));
                 last_error = Some(error);

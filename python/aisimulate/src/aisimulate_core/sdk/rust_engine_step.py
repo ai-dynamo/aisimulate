@@ -403,7 +403,7 @@ class RustForwardPassPerfModel:
         return self._inner.predict_prefill_latency(bs, isl, prefix)
 
     def speculation_metadata(self) -> dict[str, Any] | None:
-        """Resolved scheme widths and draft residency from the selected model."""
+        """Resolved scheme kind and widths from the selected model."""
         return json.loads(self._inner.speculation_metadata_json())
 
     def estimate_forward_pass_time_ms(self, metrics: dict[str, Any] | list[dict[str, Any]]) -> float | None:

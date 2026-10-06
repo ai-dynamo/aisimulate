@@ -185,7 +185,7 @@ def test_canonical_estimator_round_trip_preserves_prompt_lookup_cost():
 def test_canonical_prompt_lookup_rejects_unsupported_estimators(mode):
     from aisimulate_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
 
-    with pytest.raises(ValueError, match="speculation requires op_level timing"):
+    with pytest.raises(ValueError, match="ngram speculation requires op_level timing"):
         RustForwardPassPerfModel.best_available(
             ForwardPassPerfModelConfig(
                 model="m",
@@ -342,7 +342,7 @@ def test_agentic_capabilities_accept_ngram():
 
 def test_online_prediction_rejects_ngram():
     config = CorePredictionConfig.model_validate(_prediction())
-    with pytest.raises(ValueError, match="offline execution"):
+    with pytest.raises(ValueError, match="offline engine stack"):
         prediction_to_replay_spec(config, execution_mode="online")
 
 

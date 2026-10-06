@@ -1607,8 +1607,7 @@ fn compile_engine_from_request(request: EngineBuildRequest) -> Result<Engine, Ai
         kwargs.set_item("strict_provenance", request.strict_provenance)?;
         kwargs.set_item("nextn", request.nextn)?;
         if let Some(speculation) = &request.speculation {
-            let sdk_speculation = speculation.sdk_config().map_err(aic_to_py)?;
-            let json = serde_json::to_string(&sdk_speculation)
+            let json = serde_json::to_string(speculation)
                 .map_err(|e| PyValueError::new_err(e.to_string()))?;
             let value = PyModule::import(py, "json")?.call_method1("loads", (json,))?;
             kwargs.set_item("speculation", value)?;
@@ -1667,7 +1666,7 @@ pub(crate) fn resolve_speculation_identity(
 ) -> Result<crate::ForwardPassSpeculationConfig, AicError> {
     Python::with_gil(|py| -> PyResult<_> {
         let json = PyModule::import(py, "json")?;
-        let value = serde_json::to_string(&config.sdk_config().map_err(aic_to_py)?)
+        let value = serde_json::to_string(config)
             .map_err(|error| PyValueError::new_err(error.to_string()))?;
         let fields = json.call_method1("loads", (value,))?;
         let module = PyModule::import(py, "aisimulate_core.sdk.speculation")?;
@@ -1677,10 +1676,7 @@ pub(crate) fn resolve_speculation_identity(
         let resolved = module.call_method1("resolve_draft_config", (spec,))?;
         let fields = PyModule::import(py, "dataclasses")?.call_method1("asdict", (resolved,))?;
         let value: String = json.call_method1("dumps", (fields,))?.extract()?;
-        let mut resolved: crate::ForwardPassSpeculationConfig = serde_json::from_str(&value)
-            .map_err(|error| PyValueError::new_err(error.to_string()))?;
-        resolved.params = config.params.clone();
-        Ok(resolved)
+        serde_json::from_str(&value).map_err(|error| PyValueError::new_err(error.to_string()))
     })
     .map_err(|error| AicError::InvalidEngineConfig(format!("speculation: {error}")))
 }

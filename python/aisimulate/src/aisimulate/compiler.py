@@ -15,7 +15,7 @@ from .capacity import (
 )
 from .config.cli import CorePredictionConfig
 from .config.common import ENGINE_MODEL_CONTROL_FIELDS, omit_inactive_moe_controls
-from .config.engine import EnginePredictionConfig, WorkerPredictionConfig, resolve_block_size
+from .config.engine import EnginePredictionConfig, NgramSpeculationConfig, WorkerPredictionConfig, resolve_block_size
 from .config.traffic import SyntheticSessionSource, SyntheticSource, TraceSource
 from .state_size import resolve_state_size
 from .sweeper.afd_parallel import AFDParallelConfig, AFDTopology
@@ -40,6 +40,8 @@ def prediction_to_replay_spec(
 ) -> ReplaySpec:
     """Compile one concrete public prediction config."""
 
+    if isinstance(config.engine.speculation, NgramSpeculationConfig) and (adapter_specs or execution_mode != "offline"):
+        raise ValueError("ngram speculation requires the offline engine stack without adapters")
     if config.engine.speculation is not None and execution_mode != "offline":
         raise ValueError("speculation requires offline execution")
     workload, concurrency = _traffic(config)

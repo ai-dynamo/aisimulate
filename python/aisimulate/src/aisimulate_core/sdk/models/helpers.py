@@ -17,7 +17,6 @@ from functools import cache
 from typing import TYPE_CHECKING, Optional
 
 from aisimulate_core.sdk import common, config
-from aisimulate_core.sdk.errors import InvalidEngineConfigurationError
 from aisimulate_core.sdk.utils import (
     _get_language_quantization_config,
     get_model_config_from_model_path,
@@ -1114,21 +1113,6 @@ def check_is_moe(model_path: str, model_info: dict | None = None) -> bool:
         # 'E' in pattern means MoE layers are present
         return "E" in extra_params.hybrid_override_pattern
     return False
-
-
-def validate_mtp_model_path(model_path: str, *, architecture: str | None = None) -> None:
-    """Reject legacy model graphs whose NextN means a different draft method.
-
-    This is shared by explicit cost selection and consumers admitting legacy
-    NextN as MTP. It only resolves model identity; it does not construct timing.
-    """
-    if architecture is None:
-        architecture = _get_model_info(model_path)["architecture"]
-    if architecture in common.DSPARK_ARCHITECTURES:
-        raise InvalidEngineConfigurationError(
-            f"Explicit MTP modeling is unsupported for {architecture}: its nextn graph models DSPARK, "
-            "not target-shaped MTP draft layers."
-        )
 
 
 def mtp_scale_factor(nextn: int, num_layers: int) -> float:

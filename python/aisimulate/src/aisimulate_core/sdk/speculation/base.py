@@ -78,18 +78,11 @@ def resolve_draft_config(config: SpeculationConfig) -> SpeculationConfig:
     Resolved configurations carry both the source path and its parsed config,
     so applying this to a saved configuration is deliberately idempotent.
     """
-    if config.kind == "mtp" and "num_speculative_tokens" in config.params:
-        params = dict(config.params)
-        depth = params.pop("num_speculative_tokens")
-        if "depth" in params and params["depth"] != depth:
-            raise ValueError("conflicting MTP depth and num_speculative_tokens")
-        params["depth"] = depth
-        config = replace(config, params=params)
     if config.kind in {"none", "mtp", "ngram"}:
         if config.draft_model_path is not None or config.draft_config is not None:
             raise ValueError(f"speculation kind {config.kind!r} does not accept a draft checkpoint")
         return config
-    if config.draft_config is None and config.draft_model_path:
+    if config.draft_model_path and (config.draft_config is None or config.kind == "draft_model"):
         from aisimulate_core.sdk.utils import _load_model_config_from_model_path, get_model_config_from_model_path
 
         raw = (
@@ -97,6 +90,8 @@ def resolve_draft_config(config: SpeculationConfig) -> SpeculationConfig:
             if config.kind == "draft_model"
             else _load_model_config_from_model_path(config.draft_model_path)
         )
+        if config.kind == "draft_model" and config.draft_config is not None and config.draft_config != raw:
+            raise ValueError("draft_model draft_config must match the draft_model_path model configuration")
         return replace(
             config,
             # Draft architectures are validated by their scheme; target-model

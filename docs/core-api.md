@@ -415,25 +415,39 @@ selection attempts, effective backend version, data policy, selected root,
 and complete estimator configuration. Its resolved config pins the selected
 mode with deny so saved replay input repeats that selection.
 
-Prompt-lookup verification uses the same constructor: set `speculation` to
-`{"kind": "ngram", "params": {"num_speculative_tokens": 2}}` in Python/JSON, or
-`ForwardPassSpeculationConfig::Ngram { num_speculative_tokens: 2 }` in Rust.
-It supports vLLM op-level timing with 1–5 draft tokens and `nextn: 0`; auto can
-select op-level but cannot fall back to an unsupported speculative estimator.
-The cost configuration is retained in provenance and saved recommendations.
-Acceptance rates and the scheduler seed stay in the CLI/Replay speculation
-configuration; they do not change the model's target-verification graph.
+### Speculative decoding
 
-Explicit MTP uses `{"kind": "mtp", "params": {"num_speculative_tokens": 3}}`
-or `ForwardPassSpeculationConfig::Mtp { num_speculative_tokens: 3 }` through
-this same constructor. Depth is 1–5; legacy `nextn` must be zero. It retains the
-target architecture and prices its supported NextN draft-layer and widened
-verification approximation. Unsupported overrides fail explicitly. Acceptance
-and seed remain replay controls. Exhaustive Rust matches must handle `Mtp`.
+The canonical `speculation` cost configuration reuses the SDK envelope:
+`kind`, `params`, optional `draft_model_path` and resolved `draft_config`.
+Supported scheme names are `mtp`, `ngram`, `eagle3`, `dflash`, `draft_model` and
+`dspark`; existing SDK model-family and backend constraints apply. Resolved
+provenance retains the target and draft identities when saved and reloaded.
 
-Agentic MTP supports vLLM/SGLang with explicit acceptance, fixed KV capacity,
-HBM-only cache and AIC op-level timing. The cost API also accepts TRT-LLM MTP;
-that does not extend Agentic replay support.
+For [AgentX replay](agentx-quickstart.md), add this to the prediction engine:
+
+```yaml
+speculation:
+  kind: mtp
+  params: {depth: 3}
+  expected_accepted_tokens: 1.5
+  seed: 42
+```
+
+The example uses a hypothetical acceptance assumption. Accepted tokens exclude
+the mandatory base token. Acceptance and seed control replay progress separately
+from draft and verification costs; they are absent from canonical cost identity.
+For EAGLE3, supply its draft checkpoint/config and SDK parameters, for example
+`params: {tree_shape: [1, 4, 4], verify_token_budget: 10}`: the accepted path has
+at most three drafts while verification prices ten tokens.
+
+AgentX supports vLLM/SGLang aggregated and P/D replay with ordinary HBM KV,
+subject to the selected scheme's existing constraints.
+Configure fixed KV block capacity for MTP and learned draft schemes, accounting
+for the draft's reservations. Existing prefix/grouped-cache restrictions apply.
+MiniMax EAGLE3 remains unsupported; an MTP override is a labeled approximation
+of that algorithm. These simulations do not establish measured hardware speedup.
+Legacy `nextn`/`nextn_accepted` and flat ngram inputs remain available; do not
+combine a legacy depth with explicit `speculation`.
 
 ### Estimator controls
 

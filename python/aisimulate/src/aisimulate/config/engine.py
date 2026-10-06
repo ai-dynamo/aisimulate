@@ -9,12 +9,9 @@ from __future__ import annotations
 from typing import Annotated, Any, Literal
 
 from pydantic import (
-    AliasChoices,
-    Discriminator,
     Field,
     PrivateAttr,
     StrictBool,
-    Tag,
     field_validator,
     model_serializer,
     model_validator,
@@ -314,51 +311,14 @@ class NgramSpeculationConfig(StrictModel):
         return self.num_speculative_tokens + 1
 
 
-class MtpSpeculationConfig(StrictModel):
-    """MTP cost selection with an explicit draft-token acceptance assumption."""
-
-    kind: Literal["mtp"]
-    num_speculative_tokens: Annotated[int, Field(strict=True, ge=1, le=5)]
-    expected_accepted_tokens: Annotated[float, Field(strict=True, ge=0, allow_inf_nan=False)]
-    seed: Annotated[int, Field(strict=True, ge=0, le=0xFFFF_FFFF_FFFF_FFFF)] = 42
-
-    @model_validator(mode="after")
-    def _validate_expected_acceptance(self) -> MtpSpeculationConfig:
-        if self.expected_accepted_tokens > self.num_speculative_tokens:
-            raise ValueError("expected_accepted_tokens must be within [0, num_speculative_tokens]")
-        return self
-
-    @property
-    def acceptance_rates(self) -> list[float]:
-        whole = int(self.expected_accepted_tokens)
-        rates = [1.0] * whole
-        if whole < self.num_speculative_tokens:
-            rates.append(self.expected_accepted_tokens - whole)
-        return rates + [0.0] * (self.num_speculative_tokens - len(rates))
-
-    def cost_config(self) -> dict[str, Any]:
-        return {"kind": self.kind, "params": {"num_speculative_tokens": self.num_speculative_tokens}}
-
-    @property
-    def max_accepted_draft_tokens(self) -> int:
-        return self.num_speculative_tokens
-
-    @property
-    def verify_width(self) -> int:
-        return self.num_speculative_tokens + 1
-
-
 class SchemeSpeculationConfig(StrictModel):
     """SDK scheme cost identity plus an explicit replay acceptance assumption."""
 
-    kind: Literal["mtp", "ngram", "eagle3", "dflash", "draft_model", "dspark"]
+    kind: Annotated[str, Field(strict=True, min_length=1)]
     params: dict[str, Any] = Field(default_factory=dict)
     draft_model_path: Annotated[str, Field(strict=True, min_length=1)] | None = None
     draft_config: dict[str, Any] | None = None
-    expected_accepted_tokens: NonNegativeFloat | None = None
-    conditional_acceptance_rates: list[Annotated[float, Field(strict=True, ge=0, le=1, allow_inf_nan=False)]] | None = (
-        Field(default=None, validation_alias=AliasChoices("acceptance_rates", "conditional_acceptance_rates"))
-    )
+    expected_accepted_tokens: NonNegativeFloat
     seed: Annotated[int, Field(strict=True, ge=0, le=0xFFFF_FFFF_FFFF_FFFF)] = 42
     _max_accepted_draft_tokens: int = PrivateAttr(default=0)
     _verify_width: int = PrivateAttr(default=1)
@@ -367,8 +327,6 @@ class SchemeSpeculationConfig(StrictModel):
     def _resolve_scheme(self) -> SchemeSpeculationConfig:
         from aisimulate_core.sdk.speculation import SpeculationConfig, build_spec_scheme, resolve_draft_config
 
-        if (self.expected_accepted_tokens is None) == (self.conditional_acceptance_rates is None):
-            raise ValueError("speculation requires exactly one of expected_accepted_tokens or acceptance_rates")
         resolved = resolve_draft_config(SpeculationConfig(**self.cost_config()))
         self.params = resolved.params
         self.draft_config = resolved.draft_config
@@ -376,18 +334,9 @@ class SchemeSpeculationConfig(StrictModel):
         self._max_accepted_draft_tokens = scheme.max_accepted_draft_tokens()
         self._verify_width = scheme.verify_width()
         maximum = self.max_accepted_draft_tokens
-        if self.expected_accepted_tokens is not None and self.expected_accepted_tokens > maximum:
+        if self.expected_accepted_tokens > maximum:
             raise ValueError(f"expected_accepted_tokens must be within [0, {maximum}] accepted draft tokens")
-        if self.conditional_acceptance_rates is not None and len(self.conditional_acceptance_rates) != maximum:
-            raise ValueError("acceptance_rates must contain one conditional probability per accepted draft depth")
         return self
-
-    @model_serializer(mode="wrap")
-    def _serialize_assumption(self, handler):
-        value = handler(self)
-        if "conditional_acceptance_rates" in value:
-            value["acceptance_rates"] = value.pop("conditional_acceptance_rates")
-        return value
 
     @property
     def max_accepted_draft_tokens(self) -> int:
@@ -399,8 +348,6 @@ class SchemeSpeculationConfig(StrictModel):
 
     @property
     def acceptance_rates(self) -> list[float]:
-        if self.conditional_acceptance_rates is not None:
-            return list(self.conditional_acceptance_rates)
         whole = int(self.expected_accepted_tokens)
         rates = [1.0] * whole
         if whole < self.max_accepted_draft_tokens:
@@ -416,20 +363,7 @@ class SchemeSpeculationConfig(StrictModel):
         return result
 
 
-def _speculation_variant(value: Any) -> str:
-    if isinstance(value, (NgramSpeculationConfig, MtpSpeculationConfig)):
-        return value.kind
-    if isinstance(value, dict) and value.get("kind") in {"mtp", "ngram"} and "params" not in value:
-        return value["kind"]
-    return "scheme"
-
-
-SpeculationConfig = Annotated[
-    Annotated[NgramSpeculationConfig, Tag("ngram")]
-    | Annotated[MtpSpeculationConfig, Tag("mtp")]
-    | Annotated[SchemeSpeculationConfig, Tag("scheme")],
-    Discriminator(_speculation_variant),
-]
+SpeculationConfig = NgramSpeculationConfig | SchemeSpeculationConfig
 
 
 class TimingConfig(StrictModel):
@@ -900,7 +834,7 @@ class EngineRecommendationConfig(EstimatorPolicyConfig):
     backend: Backend | Choices[Backend] = Field(default_factory=lambda: Choices[Backend](choices=["vllm", "sglang"]))
     backend_version: str | dict[str, str] | None = None
     context_length: PositiveInt | Literal["max"] = "max"
-    speculation: SpeculationConfig | None = None
+    speculation: NgramSpeculationConfig | None = None
     workers: WorkersRecommendationConfig = Field(default_factory=WorkersRecommendationConfig)
     kv_transfer: KvTransferConfig | None = None
     afd: AFDSearchRecommendationConfig | None = None
@@ -1026,6 +960,8 @@ def _validate_speculation(engine, *, modes: set[str], backends: set[str]) -> Non
         mode = worker.timing.estimation_mode or engine.estimation_mode
         if kind == "ngram" and (worker.timing.forward_model != "op_level" or mode not in (None, "auto", "op_level")):
             raise ValueError(f"{kind} speculation requires op_level timing")
+        if kind != "ngram" and worker.kv_cache.capacity.type != "fixed":
+            raise ValueError("speculation requires explicit fixed KV capacity")
         if kind != "ngram" and worker.timing.type != "default":
             raise ValueError(f"{kind} speculation requires default timing to preserve draft costs")
 

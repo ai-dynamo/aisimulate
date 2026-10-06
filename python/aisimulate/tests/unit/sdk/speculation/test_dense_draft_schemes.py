@@ -24,8 +24,13 @@ strongest structural check available without GPUs.
 
 from __future__ import annotations
 
-import pytest
+import json
+from copy import deepcopy
 
+import pytest
+from pydantic import TypeAdapter, ValidationError
+
+from aisimulate.config.engine import SpeculationConfig as ReplaySpeculationConfig
 from aisimulate_core.sdk import common, models
 from aisimulate_core.sdk import config as sdk_config
 from aisimulate_core.sdk.speculation import SpeculationConfig
@@ -496,3 +501,99 @@ def test_dense_draft_attention_keeps_checkpoint_window_in_both_phases(kind, conf
             assert wire["window_size"] == 128
     scheme = model.spec_scheme
     assert scheme.draft_kv_bytes_per_sequence(model, 128) == scheme.draft_kv_bytes_per_sequence(model, 4096)
+
+
+REPLAY_CONFIG = TypeAdapter(ReplaySpeculationConfig)
+REPLAY_TARGET = "Qwen/Qwen3-8B"
+REPLAY_SCHEMES = [
+    ({"kind": "mtp", "params": {"depth": 3}}, 3, 4),
+    ({"kind": "ngram", "params": {"num_speculative_tokens": 3}}, 3, 4),
+    ({"kind": "eagle3", "params": {"num_speculative_tokens": 3}, "draft_config": EAGLE3_CONFIG}, 3, 4),
+    (
+        {
+            "kind": "eagle3",
+            "params": {"tree_shape": [1, 4, 4], "verify_token_budget": 10},
+            "draft_config": EAGLE3_CONFIG,
+        },
+        3,
+        10,
+    ),
+    ({"kind": "dflash", "params": {}, "draft_config": DFLASH_CONFIG}, 15, 16),
+    ({"kind": "dspark", "params": {}, "draft_config": DSPARK_8B_CONFIG}, 7, 8),
+    ({"kind": "draft_model", "params": {"num_speculative_tokens": 3}, "draft_model_path": REPLAY_TARGET}, 3, 4),
+]
+
+
+@pytest.mark.parametrize("cost,depth,width", REPLAY_SCHEMES)
+def test_public_scheme_roundtrip_separates_acceptance_and_cost(cost, depth, width):
+    public = REPLAY_CONFIG.validate_python({**deepcopy(cost), "expected_accepted_tokens": 1.5, "seed": 73})
+    assert (public.max_accepted_draft_tokens, public.verify_width) == (depth, width)
+    assert public.acceptance_rates == [1.0, 0.5] + [0.0] * (depth - 2)
+    assert REPLAY_CONFIG.validate_json(public.model_dump_json()) == public
+    changed = REPLAY_CONFIG.validate_python({**public.model_dump(), "expected_accepted_tokens": 0, "seed": 74})
+    assert changed.cost_config() == public.cost_config()
+
+
+def test_public_draft_resolution_retains_geometry_and_cache_identity(tmp_path):
+    (tmp_path / "config.json").write_text(json.dumps(EAGLE3_CONFIG))
+    public = REPLAY_CONFIG.validate_python(
+        {
+            "kind": "eagle3",
+            "params": {"num_speculative_tokens": 3},
+            "draft_model_path": str(tmp_path),
+            "expected_accepted_tokens": 1.5,
+        }
+    )
+    assert public.draft_config == EAGLE3_CONFIG
+    assert public.cost_config()["draft_model_path"] == str(tmp_path)
+    saved = public.model_dump()
+    (tmp_path / "config.json").unlink()
+    assert REPLAY_CONFIG.validate_python(saved) == public
+    changed = deepcopy(saved)
+    changed["draft_config"]["draft_vocab_size"] //= 2
+    other = REPLAY_CONFIG.validate_python(changed)
+    assert (
+        SpeculationConfig(**public.cost_config()).identity_hash()
+        != SpeculationConfig(**other.cost_config()).identity_hash()
+    )
+    graphs = [
+        models.get_model(
+            REPLAY_TARGET, sdk_config.ModelConfig(speculation=SpeculationConfig(**p.cost_config())), "vllm"
+        )
+        for p in (public, other)
+    ]
+    assert [op._spec_json() for op in graphs[0].generation_ops] != [op._spec_json() for op in graphs[1].generation_ops]
+
+
+@pytest.mark.parametrize(
+    "updates",
+    [
+        {"expected_accepted_tokens": None},
+        {"acceptance_rates": [1, 1, 1]},
+        {"expected_accepted_tokens": 3.5},
+        {"expected_accepted_tokens": float("nan")},
+        {"params": {"tree_shape": [1, 4, 4], "unknown": 1}},
+        {"seed": -1},
+    ],
+)
+def test_public_tree_rejects_invalid_or_conflicting_assumptions(updates):
+    with pytest.raises(ValidationError):
+        REPLAY_CONFIG.validate_python({**REPLAY_SCHEMES[3][0], "expected_accepted_tokens": 1.5, **updates})
+
+
+def test_public_standalone_draft_rejects_mismatched_injected_geometry():
+    public = REPLAY_CONFIG.validate_python({**REPLAY_SCHEMES[-1][0], "expected_accepted_tokens": 1.5})
+    changed = deepcopy(public.model_dump())
+    changed["draft_config"]["num_hidden_layers"] += 1
+    with pytest.raises(ValidationError, match="draft_config must match"):
+        REPLAY_CONFIG.validate_python(changed)
+
+
+def test_existing_flat_ngram_matches_generic_assumptions():
+    flat = REPLAY_CONFIG.validate_python(
+        {"kind": "ngram", "num_speculative_tokens": 3, "acceptance_rates": [1, 0.5, 0]}
+    )
+    generic = REPLAY_CONFIG.validate_python({**flat.cost_config(), "expected_accepted_tokens": 1.5})
+    assert (generic.max_accepted_draft_tokens, generic.verify_width) == (3, 4)
+    assert generic.acceptance_rates == flat.acceptance_rates
+    assert REPLAY_CONFIG.validate_json(flat.model_dump_json()) == flat

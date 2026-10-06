@@ -87,13 +87,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn tree_tail_reserves_candidates_while_chains_keep_legacy_capacity() {
-        assert_eq!(verification_lookahead_tokens(8, 2, 2), 8);
-        assert_eq!(verification_lookahead_tokens(3, 2, 2), 2);
-        assert_eq!(verification_lookahead_tokens(3, 2, 8), 3);
-    }
-
-    #[test]
     fn zero_and_one_rates_are_exact() {
         let mut zero = SpeculativeDecodeSampler::new(vec![0.0, 1.0], 42);
         assert_eq!(zero.sample_accepted_tokens(), 1);

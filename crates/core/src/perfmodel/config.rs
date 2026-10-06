@@ -138,8 +138,6 @@ pub struct ResolvedSpeculationConfig {
     pub verify_width: u32,
     /// Longest accepted draft prefix, excluding the base token.
     pub max_accepted_draft_tokens: u32,
-    /// Per-rank resident draft weights from the existing scheme hook.
-    pub draft_weights_bytes: f64,
 }
 
 /// Static engine identity and setup information carried by an

@@ -444,8 +444,6 @@ impl Engine {
         if let Some(metadata) = &speculation_metadata {
             if metadata.verify_width != nextn.saturating_add(1)
                 || metadata.max_accepted_draft_tokens >= metadata.verify_width
-                || !metadata.draft_weights_bytes.is_finite()
-                || metadata.draft_weights_bytes < 0.0
             {
                 return Err(AicError::InvalidEngineConfig(
                     "resolved speculation metadata disagrees with the compiled graph".into(),

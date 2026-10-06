@@ -1405,6 +1405,18 @@ def _materialize_engine_role(
     """Materialize one single-rank or attention-DP generalized engine."""
 
     role_config = dict(raw_config)
+    # New generic schemes use caller-authored capacity; leave the existing
+    # Ngram/NextN capacity paths unchanged.
+    requested_rank = role_config.get("rank", role_config)
+    if isinstance(requested_rank, Mapping):
+        timing = requested_rank.get("timing_model")
+        timing_config = timing.get("config", {}) if isinstance(timing, Mapping) else {}
+        canonical = timing_config.get("speculation") if isinstance(timing_config, Mapping) else None
+        selections = (requested_rank.get("speculation"), canonical)
+        if requested_rank.get("num_gpu_blocks") is None and any(
+            isinstance(spec, Mapping) and spec.get("kind") != "ngram" for spec in selections
+        ):
+            raise ValueError("speculation requires explicit fixed KV capacity")
     # The shared CLI/Sweeper form is flat. Nested rank descriptors are already
     # execution-level input and retain the native runtime's compatibility
     # fallback after their structure has been validated below.
@@ -1959,10 +1971,14 @@ def _accept_rates_for_expected(nextn: int, value: JSONValue, *, role: str) -> st
         or not 0.0 <= float(value) <= nextn
     ):
         raise ValueError(f"engine provider {role} aic_nextn_accepted must be finite and within [0, {nextn}]")
-    from .config.engine import MtpSpeculationConfig
-
-    assumption = MtpSpeculationConfig(kind="mtp", num_speculative_tokens=nextn, expected_accepted_tokens=value)
-    return ",".join(format(rate, ".17g") for rate in assumption.acceptance_rates)
+    expected = float(value)
+    whole = int(expected)
+    fraction = expected - whole
+    rates = [1.0] * whole
+    if len(rates) < nextn:
+        rates.append(fraction)
+    rates.extend([0.0] * (nextn - len(rates)))
+    return ",".join(format(rate, ".17g") for rate in rates)
 
 
 def _random_range_ratio(value: JSONValue) -> float:

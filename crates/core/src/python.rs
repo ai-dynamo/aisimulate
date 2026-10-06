@@ -1030,20 +1030,8 @@ fn aic_capacity_kwargs<'py>(
         "cuda_graph_reserved_bytes",
         config.cuda_graph_reserved_bytes,
     )?;
-    if let Some(speculation) = &config.speculation {
-        let value = serde_json::to_string(
-            &speculation
-                .sdk_config()
-                .map_err(|error| pyo3::exceptions::PyValueError::new_err(error.to_string()))?,
-        )
-        .map_err(|error| pyo3::exceptions::PyValueError::new_err(error.to_string()))?;
-        kwargs.set_item(
-            "speculation",
-            PyModule::import(py, "json")?.call_method1("loads", (value,))?,
-        )?;
-    } else {
-        kwargs.set_item("nextn", config.nextn)?;
-    }
+    // Capacity intentionally omits NextN until AIC's Eagle memory model no
+    // longer returns negative KV capacity. Timing compilation still uses it.
     kwargs.set_item("systems_path", config.systems_path.as_deref())?;
     Ok(kwargs)
 }
@@ -1098,6 +1086,14 @@ fn materialize_aic_capacity(
     capacity_is_explicit: bool,
     estimate: impl FnOnce(&AicTimingConfig, &ReplayRoleConfig) -> Result<usize>,
 ) -> Result<()> {
+    ensure!(
+        capacity_is_explicit
+            || config
+                .speculation
+                .as_ref()
+                .is_none_or(|spec| matches!(spec.kind.as_str(), "none" | "ngram")),
+        "speculative replay requires explicit num_gpu_blocks including draft memory"
+    );
     config.validate_parallel_shape()?;
     let engine_backend = match role.rank.backend {
         Backend::Vllm => "vllm",
@@ -1130,7 +1126,11 @@ fn materialize_aic_capacity(
     );
     let engine_nextn = role.rank.aic_nextn.unwrap_or(0);
     let timing_depth = config.speculative_depth()?;
-    if config.speculation.is_none() {
+    if config
+        .speculation
+        .as_ref()
+        .is_none_or(|spec| spec.kind == "none")
+    {
         ensure!(
             timing_depth as usize == engine_nextn,
             "AIC speculative depth={timing_depth} does not match engine aic_nextn={engine_nextn}"
@@ -3800,7 +3800,6 @@ mod tests {
             kind: "eagle3".into(),
             verify_width: 8,
             max_accepted_draft_tokens: 2,
-            draft_weights_bytes: 1024.0,
         };
         let mut rank = EngineConfig::for_backend(Backend::Vllm);
         apply_resolved_speculation(&mut rank, &metadata).unwrap();
@@ -3811,25 +3810,6 @@ mod tests {
         rank.aic_verify_width = Some(8);
         rank.aic_nextn = Some(7);
         assert!(apply_resolved_speculation(&mut rank, &metadata).is_err());
-    }
-
-    #[test]
-    fn generic_timing_preserves_cost_identity_and_rejects_legacy_conflict() {
-        let mut config = aic_config();
-        config.speculation = Some(
-            serde_json::from_value(serde_json::json!({
-                "kind": "eagle3", "params": {"tree_shape": [1, 2], "verify_token_budget": 8},
-                "draft_config": {"hidden_size": 128}, "draft_model_path": "example/draft"
-            }))
-            .unwrap(),
-        );
-        let canonical = config
-            .estimator_request(ForwardPassWorkerType::Aggregated)
-            .unwrap();
-        assert_eq!(canonical.speculation, config.speculation);
-        assert_eq!(canonical.nextn, 0);
-        config.nextn = 2;
-        assert!(config.validate_parallel_shape().is_err());
     }
 
     #[test]
@@ -3853,6 +3833,20 @@ mod tests {
         )
         .unwrap();
         assert_eq!(role.rank.num_gpu_blocks, 17);
+        let mut config = aic_config();
+        config.speculation =
+            Some(serde_json::from_value(serde_json::json!({"kind": "eagle3"})).unwrap());
+        assert!(
+            materialize_aic_capacity(&config, &mut role, false, |_, _| unreachable!())
+                .unwrap_err()
+                .to_string()
+                .contains("explicit num_gpu_blocks")
+        );
+        materialize_aic_capacity(&config, &mut role, true, |_, _| unreachable!()).unwrap();
+        config.speculation =
+            Some(serde_json::from_value(serde_json::json!({"kind": "none"})).unwrap());
+        role.rank.aic_nextn = Some(2);
+        assert!(materialize_aic_capacity(&config, &mut role, true, |_, _| unreachable!()).is_err());
     }
 
     #[test]

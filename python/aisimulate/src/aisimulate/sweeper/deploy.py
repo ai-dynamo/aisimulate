@@ -9,11 +9,9 @@ from collections.abc import Mapping
 from copy import deepcopy
 from typing import Any
 
-from pydantic import TypeAdapter
-
 from ..capacity import estimate_kv_bytes_per_token, materialize_aic_num_gpu_blocks
 from ..config.common import ENGINE_MODEL_CONTROL_FIELDS, is_active_engine_model_control, omit_inactive_moe_controls
-from ..config.engine import SpeculationConfig, resolve_block_size
+from ..config.engine import NgramSpeculationConfig, resolve_block_size
 from .replay import BackendDeploymentSpec, EncoderPoolSpec, ForwardPassEstimatorSpec
 
 
@@ -53,7 +51,7 @@ def _performance_model_metadata(sample: dict[str, Any], role: str, *, backend_ve
     if sample.get(f"{role}_fpm_parquet_path") is not None:
         config["fpm_parquet_path"] = sample[f"{role}_fpm_parquet_path"]
     if sample.get("speculation") is not None:
-        config["speculation"] = TypeAdapter(SpeculationConfig).validate_python(sample["speculation"]).cost_config()
+        config["speculation"] = NgramSpeculationConfig.model_validate(sample["speculation"]).cost_config()
     if sample.get("systems_paths") is not None:
         config["systems_paths"] = sample["systems_paths"]
     return {"provider": "aic", "config": config}

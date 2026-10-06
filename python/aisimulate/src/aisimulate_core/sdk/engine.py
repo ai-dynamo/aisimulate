@@ -412,23 +412,11 @@ def _engine_config_dict(
     if speculative is not None:
         engine["nextn"] = speculative["nextn"]
         scheme = getattr(model, "spec_scheme", None)
-        if scheme is not None:
-            from aisimulate_core.sdk.common import DSPARK_ARCHITECTURES
-
-            kind = scheme.kind
-            # Legacy NextN shares the MTP adapter, but these model families
-            # construct their existing DSpark draft graph in the target model.
-            if (
-                kind == "mtp"
-                and getattr(cfg, "speculation", None) is None
-                and getattr(model, "architecture", None) in DSPARK_ARCHITECTURES
-            ):
-                kind = "dspark"
+        if scheme is not None and cfg.speculation is not None:
             engine["speculation_metadata"] = {
-                "kind": kind,
+                "kind": scheme.kind,
                 "verify_width": scheme.verify_width(),
                 "max_accepted_draft_tokens": scheme.max_accepted_draft_tokens(),
-                "draft_weights_bytes": scheme.draft_weights_bytes(model),
             }
     return engine
 
