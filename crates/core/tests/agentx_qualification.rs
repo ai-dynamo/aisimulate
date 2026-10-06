@@ -50,25 +50,37 @@ fn run(
     backend: Backend,
     max_model_len: Option<usize>,
 ) -> ReplayReport {
+    run_config(
+        graph,
+        EngineConfig {
+            num_gpu_blocks: 64,
+            block_size: 4,
+            max_model_len,
+            max_num_seqs: 4,
+            max_num_batched_tokens: 64,
+            aic_nextn: None,
+            native_host_offload: None,
+            timing_model: TimingModelConfig::Fixed {
+                prefill_ms: 2.0,
+                decode_ms: 1.0,
+            },
+            ..EngineConfig::for_backend(backend)
+        },
+        ReplayTopology::aggregated(1),
+    )
+}
+
+fn run_config(
+    graph: ValidatedAgenticGraph,
+    rank: EngineConfig,
+    topology: ReplayTopology,
+) -> ReplayReport {
     let driver = WorkloadDriver::new_agentic_trace_with_lanes(graph, 4, 1).unwrap();
     let spec = ReplaySpec {
         version: 1,
-        topology: ReplayTopology::aggregated(1),
+        topology,
         engine: serde_json::to_value(ReplayEngineConfig {
-            rank: EngineConfig {
-                num_gpu_blocks: 64,
-                block_size: 4,
-                max_model_len,
-                max_num_seqs: 4,
-                max_num_batched_tokens: 64,
-                aic_nextn: None,
-                native_host_offload: None,
-                timing_model: TimingModelConfig::Fixed {
-                    prefill_ms: 2.0,
-                    decode_ms: 1.0,
-                },
-                ..EngineConfig::for_backend(backend)
-            },
+            rank,
             ..ReplayEngineConfig::default()
         })
         .unwrap(),
