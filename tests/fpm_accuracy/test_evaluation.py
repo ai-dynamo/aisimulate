@@ -371,7 +371,7 @@ def test_legacy_regression_is_unavailable_without_changing_measurement_membershi
 
 @pytest.fixture
 def recommended_regression_config():
-    report = Path(__file__).resolve().parents[2] / "docs/fpm-lazy-gym-results.json"
+    report = Path(__file__).resolve().parents[2] / "benchmarks/evidence/fpm-regression/fpm-lazy-gym-results.json"
     return json.loads(report.read_text())["signed_lazy_estimator_config"]["fpm_regression"]
 
 
