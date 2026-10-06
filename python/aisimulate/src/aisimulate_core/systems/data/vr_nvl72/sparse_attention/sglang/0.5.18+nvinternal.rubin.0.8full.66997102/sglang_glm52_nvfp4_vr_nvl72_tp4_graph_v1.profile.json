@@ -65,7 +65,7 @@
     "Ideal routed/shared branch max and empirical norm/add costs remain approximations; the synthetic routed distribution is not the full forward token routing.",
     "Seven exact-context comparison against full native forward is a bounded acceptance test, not validation of TTFT, scheduler, unseen contexts, decode, other images or the whole Vera-Rubin platform."
   ],
-  "profile_name": "sglang_glm52_nvfp4_vr200_tp4_graph_v1",
+  "profile_name": "sglang_glm52_nvfp4_vr_nvl72_tp4_graph_v1",
   "provenance": {
     "all_primary_samples_retained": true,
     "attention_config": {
@@ -3491,6 +3491,16 @@
         "size_bytes": 44601
       }
     },
+    "naming_migration": {
+      "measurements_changed": false,
+      "original_profile_id": "829a83e1629ba546dd4bd90e75a2e2496b7fb24ddc8b60dfbf076ba02312cbce",
+      "original_publication": {
+        "sha256": "9024eec577689051fe9e176a6c4a229179197296b7aeeb06dc26cd6a0a3a38f9",
+        "size_bytes": 139056
+      },
+      "original_system": "vr200_hecate",
+      "system": "vr_nvl72"
+    },
     "native_forward_timings_used_for_costs": false,
     "native_profile": {
       "arms": [
@@ -3943,32 +3953,32 @@
   },
   "retained_files": [
     {
-      "path": "vr200_hecate.yaml",
-      "sha256": "e8a7954725309d5d1fdbd2d11da89bb031874b978ee29b96df8d4295d7656949",
-      "size_bytes": 821
+      "path": "vr_nvl72.yaml",
+      "sha256": "7f6bec3257be77782a2d2d08696365d5c2d7f0dbf56022fcc531341acf820520",
+      "size_bytes": 827
     },
     {
-      "path": "data/vr200_hecate/comm/sglang/0.5.18+nvinternal.rubin.0.8full.66997102/custom_allreduce_perf.parquet",
+      "path": "data/vr_nvl72/comm/sglang/0.5.18+nvinternal.rubin.0.8full.66997102/custom_allreduce_perf.parquet",
       "sha256": "7ac73d43d59a7059aeeac602069ffde0a8af76c0b2653a17e6412fd25d36efcf",
       "size_bytes": 3846
     },
     {
-      "path": "data/vr200_hecate/gemm/sglang/0.5.18+nvinternal.rubin.0.8full.66997102/gemm_perf.parquet",
+      "path": "data/vr_nvl72/gemm/sglang/0.5.18+nvinternal.rubin.0.8full.66997102/gemm_perf.parquet",
       "sha256": "1ae7f0ccc201a6dcd002d244412c9bc7a888b7dd4af83ec93853ce267107d62e",
       "size_bytes": 7132
     },
     {
-      "path": "data/vr200_hecate/moe/sglang/0.5.18+nvinternal.rubin.0.8full.66997102/moe_perf.parquet",
+      "path": "data/vr_nvl72/moe/sglang/0.5.18+nvinternal.rubin.0.8full.66997102/moe_perf.parquet",
       "sha256": "db49957b54445d637dd0395c5cc29d7a6108b2714a2dde7ac5eeb48097b6d033",
       "size_bytes": 5769
     },
     {
-      "path": "data/vr200_hecate/sparse_attention/sglang/0.5.18+nvinternal.rubin.0.8full.66997102/dsa_context_module_perf.parquet",
+      "path": "data/vr_nvl72/sparse_attention/sglang/0.5.18+nvinternal.rubin.0.8full.66997102/dsa_context_module_perf.parquet",
       "sha256": "b9500b712f1c77585c4678da385750507517dc4f4bca13ec879fa11b1f8c31bd",
       "size_bytes": 8334
     },
     {
-      "path": "data/vr200_hecate/sparse_attention/sglang/0.5.18+nvinternal.rubin.0.8full.66997102/dsa_generation_module_perf.parquet",
+      "path": "data/vr_nvl72/sparse_attention/sglang/0.5.18+nvinternal.rubin.0.8full.66997102/dsa_generation_module_perf.parquet",
       "sha256": "e337259c0e02b489aa71be24ad21112d935eb8382d58e23880170f72c78de558",
       "size_bytes": 6290
     }
@@ -3987,7 +3997,7 @@
     "moe_ep_size": 1,
     "moe_tp_size": 4,
     "pp_size": 1,
-    "system": "vr200_hecate",
+    "system": "vr_nvl72",
     "tp_size": 4,
     "version": "0.5.18+nvinternal.rubin.0.8full.66997102",
     "weight_dtype": "bfloat16"
@@ -3996,7 +4006,7 @@
   "sol_supported": false,
   "tables": {
     "attention": {
-      "relative_path": "data/vr200_hecate/sparse_attention/sglang/0.5.18+nvinternal.rubin.0.8full.66997102/sglang_prefill_attention_sequence_perf.parquet",
+      "relative_path": "data/vr_nvl72/sparse_attention/sglang/0.5.18+nvinternal.rubin.0.8full.66997102/sglang_prefill_attention_sequence_perf.parquet",
       "rows": [
         {
           "batch_size": 1,
@@ -4085,7 +4095,7 @@
       ]
     },
     "communication": {
-      "relative_path": "data/vr200_hecate/comm/sglang/0.5.18+nvinternal.rubin.0.8full.66997102/sglang_prefill_comm_norm_boundary_perf.parquet",
+      "relative_path": "data/vr_nvl72/comm/sglang/0.5.18+nvinternal.rubin.0.8full.66997102/sglang_prefill_comm_norm_boundary_perf.parquet",
       "rows": [
         {
           "boundary_role": "post_attention",

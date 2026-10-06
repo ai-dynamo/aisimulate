@@ -17,11 +17,12 @@ import yaml
 
 import aisimulate_core
 from aisimulate_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
-from aisimulate_core.sdk.errors import DecodeMoeProfileError, PrefillGraphProfileError
+from aisimulate_core.sdk.errors import DecodeMoeProfileError, PerfDataNotAvailableError, PrefillGraphProfileError
+from aisimulate_core.sdk.perf_database import get_supported_databases, get_version_slots
 
 pytestmark = pytest.mark.unit
-PROFILE = "sglang_glm52_nvfp4_vr200_tp4_graph_v1"
-PROFILE_ID = "829a83e1629ba546dd4bd90e75a2e2496b7fb24ddc8b60dfbf076ba02312cbce"
+PROFILE = "sglang_glm52_nvfp4_vr_nvl72_tp4_graph_v1"
+PROFILE_ID = "530a1359d5d14ec5d9f39c1adede0631388c89ff2c549d66c37c62d7aaaf0b10"
 VERSION = "0.5.18+nvinternal.rubin.0.8full.66997102"
 # Independent graph-prediction-v5 comparison, SHA256
 # 5e12de81a7b80628efb8513d76d268369b48d1b62424864edf7aff7604326930.
@@ -40,7 +41,7 @@ CASES = [
 def graph_config():
     return {
         "model": "nvidia/GLM-5.2-NVFP4",
-        "system": "vr200_hecate",
+        "system": "vr_nvl72",
         "backend": "sglang",
         "backend_version": VERSION,
         "worker_type": "prefill",
@@ -70,6 +71,29 @@ def graph_config():
 @pytest.fixture(scope="module")
 def graph_model():
     return RustForwardPassPerfModel.best_available(graph_config())
+
+
+def test_system_discovery_uses_corrected_product_name():
+    roots = graph_config()["systems_paths"]
+    supported = get_supported_databases(roots)
+    assert supported["vr_nvl72"]["sglang"] == [VERSION]
+    assert "vr200_hecate" not in supported
+    assert get_version_slots("vr_nvl72", "sglang", systems_paths=roots) == {"current": VERSION}
+
+
+def test_retired_system_name_is_not_an_alias():
+    config = graph_config()
+    config["system"] = "vr200_hecate"
+    config["estimator_config"]["op_level"] = {}
+    with pytest.raises(PerfDataNotAvailableError, match=r"vr200_hecate\.yaml"):
+        RustForwardPassPerfModel.best_available(config)
+
+
+def test_retired_prefill_selector_is_not_an_alias():
+    config = graph_config()
+    config["estimator_config"]["op_level"]["prefill_graph_profile"] = "sglang_glm52_nvfp4_vr200_tp4_graph_v1"
+    with pytest.raises(ValueError, match="profile"):
+        RustForwardPassPerfModel.best_available(config)
 
 
 @pytest.mark.parametrize("call,expected,native", CASES)
@@ -104,8 +128,8 @@ def test_canonical_saved_config_retains_profile_identity_and_reloads(graph_model
 def test_canonical_profile_owns_verified_tables_despite_default_cache_and_later_source_changes(tmp_path):
     config = graph_config()
     source = Path(config["systems_paths"][0])
-    shutil.copy2(source / "vr200_hecate.yaml", tmp_path / "vr200_hecate.yaml")
-    shutil.copytree(source / "data/vr200_hecate", tmp_path / "data/vr200_hecate")
+    shutil.copy2(source / "vr_nvl72.yaml", tmp_path / "vr_nvl72.yaml")
+    shutil.copytree(source / "data/vr_nvl72", tmp_path / "data/vr_nvl72")
     config["systems_paths"] = [str(tmp_path)]
     gemm = next(tmp_path.rglob("gemm_perf.parquet"))
     approved = gemm.read_bytes()
@@ -134,8 +158,8 @@ def test_canonical_profile_owns_verified_tables_despite_default_cache_and_later_
 def test_failed_profile_build_recovers_after_disk_repair_with_shared_database_alive(tmp_path):
     config = graph_config()
     source = Path(config["systems_paths"][0])
-    shutil.copy2(source / "vr200_hecate.yaml", tmp_path / "vr200_hecate.yaml")
-    shutil.copytree(source / "data/vr200_hecate", tmp_path / "data/vr200_hecate")
+    shutil.copy2(source / "vr_nvl72.yaml", tmp_path / "vr_nvl72.yaml")
+    shutil.copytree(source / "data/vr_nvl72", tmp_path / "data/vr_nvl72")
     config["systems_paths"] = [str(tmp_path)]
     ordinary_config = copy.deepcopy(config)
     ordinary_config["estimator_config"]["op_level"] = {}
@@ -234,7 +258,7 @@ def test_profile_rejects_telemetry_tuning_and_energy_routes_including_empty_inpu
 def test_missing_profile_data_never_selects_a_fallback(tmp_path):
     config = graph_config()
     config["systems_paths"] = [str(tmp_path)]
-    with pytest.raises(ValueError, match="vr200_hecate.yaml"):
+    with pytest.raises(ValueError, match="vr_nvl72.yaml"):
         RustForwardPassPerfModel.best_available(config)
 
 
@@ -247,11 +271,11 @@ def test_pinned_pilot_runtime_is_excluded_from_the_generic_fleet_next_version(tm
     # existing hardware/data, with neither VR hardware nor its override.
     (tmp_path / "data").symlink_to(root / "data", target_is_directory=True)
     original_slots = yaml.safe_load((root / "query_versions.yaml").read_text())
-    original_slots["overrides"].pop("vr200_hecate")
+    original_slots["overrides"].pop("vr_nvl72")
     (tmp_path / "query_versions.yaml").write_text(yaml.safe_dump(original_slots))
     existing_systems = []
     for path in root.glob("*.yaml"):
-        if path.name not in {"query_versions.yaml", "vr200_hecate.yaml"}:
+        if path.name not in {"query_versions.yaml", "vr_nvl72.yaml"}:
             (tmp_path / path.name).symlink_to(path)
             existing_systems.append(path.stem)
     assert "gb300" in existing_systems
@@ -259,7 +283,7 @@ def test_pinned_pilot_runtime_is_excluded_from_the_generic_fleet_next_version(tm
         assert get_version_slots(system, "sglang", systems_paths=roots) == get_version_slots(
             system, "sglang", systems_paths=[str(tmp_path)]
         ), system
-    assert get_version_slots("vr200_hecate", "sglang", systems_paths=roots) == {"current": VERSION}
+    assert get_version_slots("vr_nvl72", "sglang", systems_paths=roots) == {"current": VERSION}
 
 
 @pytest.mark.parametrize(

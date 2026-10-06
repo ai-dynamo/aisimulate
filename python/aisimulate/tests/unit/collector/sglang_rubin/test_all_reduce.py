@@ -379,7 +379,7 @@ def test_publication_uses_existing_perf_contract_and_truthful_metadata(tmp_path,
     # strict resolver, using the family layout consumed by CPU replay. Diagnostic
     # JSON stays outside the performance-data directory.
     systems_root = tmp_path / "systems"
-    system_data_root = systems_root / "data" / "vr200_hecate"
+    system_data_root = systems_root / "data" / "vr_nvl72"
     version_dir = system_data_root / "comm" / "sglang" / comm.SGLANG_DISTRIBUTION_VERSION
     version_dir.mkdir(parents=True)
     for filename in ("custom_allreduce_perf.parquet", "collection_meta.yaml"):

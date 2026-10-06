@@ -1,7 +1,7 @@
 <!-- SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved. -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
-# GLM-5.2 NVFP4 on Hecate VR200: forward-step accuracy
+# GLM-5.2 NVFP4 on Vera Rubin NVL72: forward-step accuracy
 
 The bounded pilot supports both prefill and decode forward-step prediction on the pinned SGLang runtime. All **7/7 prefill cases** meet the original ±15% criterion, with **5.23%** worst absolute error. **17/18 decode cases** meet that criterion; the remaining batch-1 case is **−17.09%**. On 2026-09-22, the pilot owner accepted this observed decode residual for the initial release. This is a documented acceptance of 17.0892%, not a claim that every case meets 15% or a strict 17.00% bound.
 
@@ -11,7 +11,7 @@ These results compare model forward steps at matching batch, new-token and past-
 
 | Setting | Validated value |
 | --- | --- |
-| Hardware / topology | Four Hecate VR200 GPUs, SM107; TP4, MoE TP4/EP1, PP1, attention DP1/CP1 |
+| Hardware / topology | Four Rubin GPUs in the Vera Rubin NVL72 pilot, SM107; TP4, MoE TP4/EP1, PP1, attention DP1/CP1 |
 | Checkpoint | `nvidia/GLM-5.2-NVFP4`, cached snapshot `hf-aec724e_orig` |
 | SGLang | `0.5.18+nvinternal.rubin.0.8full.66997102`, source `02c5a855aceb968c310e6fbc6632270e26edc84b` |
 | Dynamo CI image index | `sha256:53299500a280c8de34bd484507a45b2f83b4d5e7c999b77284fa31930f7e63ab` |
@@ -21,7 +21,7 @@ These results compare model forward steps at matching batch, new-token and past-
 | Graphs | Breakable prefill graphs with token buckets `[1024, 2048, 8192, 16384]`; full decode graph with exact measured batch buckets |
 | Predictor | Canonical Rust-backed `op_level` estimator, `fallback_policy="deny"`, `database_mode="SILICON"`, online correction disabled |
 
-Both acquisitions use `SGLANG_ENABLE_MOE_DEFERRED_FINALIZE=0`, `SGLANG_ENABLE_PCG_DSV2_DUAL_STREAM=0`, `SGLANG_FLASHINFER_AUTOTUNE_CACHE=1`, `SGLANG_FLASHINFER_AUTOTUNE_EXTEND=0`, deterministic FlashInfer DSA top-k and the `small` tie break. Prefill is forced onto the matched DSA path. The [collector documentation](../python/aisimulate/collector/sglang_rubin/README.md#frozen-inputs) and [packaged profile](../python/aisimulate/src/aisimulate_core/systems/data/vr200_hecate/README.md) retain the checkpoint hashes and complete runtime identity.
+Both acquisitions use `SGLANG_ENABLE_MOE_DEFERRED_FINALIZE=0`, `SGLANG_ENABLE_PCG_DSV2_DUAL_STREAM=0`, `SGLANG_FLASHINFER_AUTOTUNE_CACHE=1`, `SGLANG_FLASHINFER_AUTOTUNE_EXTEND=0`, deterministic FlashInfer DSA top-k and the `small` tie break. Prefill is forced onto the matched DSA path. The [collector documentation](../python/aisimulate/collector/sglang_rubin/README.md#frozen-inputs) and [packaged profile](../python/aisimulate/src/aisimulate_core/systems/data/vr_nvl72/README.md) retain the checkpoint hashes and complete runtime identity.
 
 Native time is measured with CUDA events around `ModelRunner.forward` on its forward stream. ForwardBatch construction, prefix materialization, sampling, correctness checks and validation output copies are outside the timed boundary. For each aligned step, take the maximum of the four rank-local durations, then the arithmetic mean of **all 15 steps** in three windows of five. No outliers are discarded and no median is substituted. Signed error is `100 * (predicted_ms / native_mean_ms - 1)`; negative values mean underprediction. Tables round milliseconds to four decimals and errors to two.
 
@@ -29,7 +29,7 @@ Graph execution and graph/eager numerical controls passed independent review for
 
 ## Prefill results
 
-Prefill uses the opt-in `sglang_glm52_nvfp4_vr200_tp4_graph_v1` profile, whose immutable SHA-256 is `829a83e1629ba546dd4bd90e75a2e2496b7fb24ddc8b60dfbf076ba02312cbce`. The seven homogeneous contexts below are its complete admitted scope. Each request processes the stated new tokens after a native extend materializes any nonzero prefix.
+Prefill uses the opt-in `sglang_glm52_nvfp4_vr_nvl72_tp4_graph_v1` profile, whose immutable SHA-256 is `530a1359d5d14ec5d9f39c1adede0631388c89ff2c549d66c37c62d7aaaf0b10`. The seven homogeneous contexts below are its complete admitted scope. Each request processes the stated new tokens after a native extend materializes any nonzero prefix.
 
 | Batch | New tokens/request | Past KV/request | Predicted ms | Native mean ms | Signed error |
 | --- | --- | --- | --- | --- | --- |
@@ -81,7 +81,7 @@ from aisimulate_core.sdk import RustForwardPassPerfModel
 
 config = {
     "model": "nvidia/GLM-5.2-NVFP4",
-    "system": "vr200_hecate",
+    "system": "vr_nvl72",
     "backend": "sglang",
     "backend_version": "0.5.18+nvinternal.rubin.0.8full.66997102",
     "worker_type": "decode",
@@ -114,7 +114,7 @@ prefill_config = {
     "worker_type": "prefill",
     "estimator_config": {
         "op_level": {
-            "prefill_graph_profile": "sglang_glm52_nvfp4_vr200_tp4_graph_v1",
+            "prefill_graph_profile": "sglang_glm52_nvfp4_vr_nvl72_tp4_graph_v1",
         },
         "correction": {"enabled": False},
     },

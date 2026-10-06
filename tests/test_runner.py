@@ -123,7 +123,7 @@ def test_native_replay_provider_rejects_direct_only_graph_profile_before_compila
             "model": "missing-graph-model",
             "system": "missing-graph-system",
             "backend": "sglang",
-            "estimator_config": {"op_level": {"prefill_graph_profile": "sglang_glm52_nvfp4_vr200_tp4_graph_v1"}},
+            "estimator_config": {"op_level": {"prefill_graph_profile": "sglang_glm52_nvfp4_vr_nvl72_tp4_graph_v1"}},
         },
     }
     args = {"worker_type": "aggregated", "block_size": 4, "num_gpu_blocks": 16, "timing_model": timing}
