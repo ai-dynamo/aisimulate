@@ -389,7 +389,7 @@ def _agentic_prediction(tmp_path, cost, *, model=REPLAY_TARGET, backend="vllm", 
     )
     for worker in raw["engine"]["workers"].values():
         worker.update(
-            parallelism={"tp": tp, "moe_tp": tp, "moe_ep": 1},
+            parallelism={"tensor": tp, "moe_tensor": tp, "moe_expert": 1},
             scheduler={"max_batched_tokens": 8192, "max_sequences": 8},
             kv_cache={"block_size": 64, "capacity": {"type": "fixed", "blocks": 4096}},
         )
