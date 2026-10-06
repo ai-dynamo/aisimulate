@@ -130,8 +130,10 @@ bound can prove a candidate does not fit; it cannot prove that execution fits.
 Supported JSON and JSONL traces are inspected as a stream, including scalar
 token lengths, hash expansion and cumulative delta/tool turns. Inspection does
 not load complete documents or token arrays. There is no fixed file or record
-size cutoff: the conservative storage estimate is checked against live headroom
-before parsing, since a streaming parser still holds individual scalar strings.
+size cutoff. Except for finite `agentic_mooncake` replay, the conservative storage
+estimate is checked against live headroom before parsing, since a streaming
+parser still holds individual scalar strings. Finite AgentX uses the array
+accounting described below and requires runtime supervision.
 Unknown allocation models can run one candidate at a time under runtime
 supervision when baseline headroom exists; this is explicitly an unqualified
 estimate. Known lower bounds still reject impossible workloads before allocation.
@@ -152,6 +154,23 @@ available RAM between samples. macOS offers no portable hard RSS cap; preallocat
 checks remain necessary. A successful plan or watchdog test does not guarantee bounded peak RSS for
 every workload and external adapter.
 
+Finite `agentic_mooncake` replay loads one compact trace. `agentic_lanes` controls
+active plays within that trace; it does not create a copy of the trace per lane.
+Preflight records a lower bound from the maximum of three allocation requirements:
+8 bytes per source hash ID during loading; 4 bytes per compact hash ID plus
+4 bytes per planned output token in the prepared replay; and 4 bytes per token
+in the largest expanded input prompt. These stages are not added together.
+File bytes, lane count, and total logical input tokens do not multiply this bound.
+
+Strings, graph metadata, temporary copies, active requests, caches, and report
+storage are outside this lower bound. The full-run peak remains unknown
+(`agentic-trace-unqualified-v1`). Such runs require the existing live supervisor
+and execute one simulation at a time. All configured agentic lanes and simulated
+workers are retained. Admission still checks baseline and host headroom and
+rejects a lower bound that cannot fit. The monitor covers metadata inspection
+and replay, but allocations can outpace its sampling; this is not an OOM guarantee.
+Continuous profiles and other trace formats retain their existing accounting.
+
 ### Allocation-model provenance
 
 The byte terms in [resources.py](../../python/aisimulate/src/aisimulate/resources.py)
@@ -166,6 +185,7 @@ energy, or GPU capacity. Their provenance and qualification are:
 | Trace expansion | Streamed field counts, hash block expansion, and cumulative delta/tool turns; 128 times file bytes, 32 bytes per counted token, and 65,536 bytes per counted request/turn. | Conservative policy allowances. The file-size guard also bounds parser scalar risk before metadata inspection. |
 | Native Weka traces | Separate per-play import and replay phases; see below. | Uses the native importer/driver contracts, including real output arrays and synthesized hashes. External Dynamo adapters retain their existing compatibility model unless they supply their own estimator. |
 | Process allowances | 256 MiB for native Weka, otherwise 512 MiB per worker; coordinator RSS plus 256 MiB. | Engineering reserves, not calibrated platform-specific measurements. |
+| Finite AgentX arrays | Maximum of source `Vec<u64>` hash storage, prepared `Vec<u32>` hash/output storage, and the largest `Vec<u32>` input prompt. No file-size or lane multiplier. | Array widths are concrete. Other allocations are excluded: this is a lower bound, not a peak RSS estimate, and requires supervised serial execution. |
 | Admission and recovery | The sum of candidate estimates must fit one live budget; observed pressure stops workers before bounded retry. | Budget/accounting invariants tested with bounded fixtures and real owned subprocesses. |
 
 The resource tests exercise arithmetic boundaries, combined-wave accounting,

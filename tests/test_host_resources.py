@@ -365,12 +365,33 @@ def test_missing_container_mount_probe_fails_closed(tmp_path, host):
         constrain_to_cgroups(host, proc=proc, root=tmp_path)
 
 
-def test_trace_scalar_lengths_are_counted_before_token_expansion(tmp_path, host):
+@pytest.mark.parametrize("trace_format", ["mooncake", "agentic_mooncake"])
+@pytest.mark.parametrize("length_field", ["input_length", "output_length"])
+@pytest.mark.parametrize("stack", ["engine", "dynamo"])
+def test_trace_scalar_lengths_are_counted_before_token_expansion(
+    tmp_path, host, monkeypatch, trace_format, length_field, stack
+):
     trace = tmp_path / "large.jsonl"
-    trace.write_text(json.dumps({"input_length": 10**12, "output_length": 1, "hash_ids": [1]}) + "\n")
-    plan = build_plan({"trace_path": str(trace), "trace_format": "mooncake"}, stack="engine", host=host)
+    row = {"input_length": 1, "output_length": 1, "hash_ids": [1], length_field: 10**12}
+    trace.write_text(json.dumps(row) + "\n")
+    monkeypatch.setenv(
+        "_AISIMULATE_SUPERVISED_BUDGET",
+        json.dumps(
+            {
+                "supervisor_pid": os.getpid(),
+                "memory_limit_bytes": 8 * GB,
+                "cpu_limit": 4,
+                "reserved_host_memory_bytes": GB,
+            }
+        ),
+    )
+    plan = build_plan({"trace_path": str(trace), "trace_format": trace_format}, stack=stack, host=host)
     assert plan["status"] == "resource_limited"
-    assert plan["estimate"]["estimated_peak_bytes"] > 32 * 10**12
+    if trace_format == "agentic_mooncake":
+        assert plan["estimate"]["estimated_peak_bytes"] is None
+        assert plan["estimate"]["lower_bound_bytes"] >= 4 * 10**12
+    else:
+        assert plan["estimate"]["estimated_peak_bytes"] > 32 * 10**12
 
 
 def test_trace_inspection_streams_large_documents_and_records(tmp_path, host, monkeypatch):
@@ -438,15 +459,90 @@ def test_unqualified_estimate_requires_supervision_and_serial_admission(monkeypa
     assert plan["estimate"]["estimated_peak_bytes"] is None
 
 
-def test_trace_storage_is_rejected_before_parser_allocates_scalars(tmp_path, host, monkeypatch):
+@pytest.mark.parametrize("trace_format,profile", [("mooncake", None), ("agentic_mooncake", {})])
+def test_trace_storage_is_rejected_before_parser_allocates_scalars(tmp_path, host, monkeypatch, trace_format, profile):
     trace = tmp_path / "oversized.jsonl"
     with trace.open("wb") as stream:
         stream.truncate(128 * resources.MIB)  # Sparse sentinel; no large allocation.
     monkeypatch.setattr(resources.ijson, "parse", lambda *a, **kw: pytest.fail("must refuse before parsing"))
-    plan = build_plan({"trace_path": str(trace), "trace_format": "mooncake"}, stack="engine", host=host)
+    workload = {"trace_path": str(trace), "trace_format": trace_format}
+    if profile is not None:
+        workload["agentic_profile"] = profile
+    plan = build_plan(workload, stack="engine", host=host)
     assert plan["status"] == "resource_limited"
     assert plan["estimate"]["estimated_peak_bytes"] > plan["budget"]["memory_limit_bytes"]
     assert "before metadata parsing" in plan["estimate"]["reason"]
+
+
+@pytest.mark.parametrize("stack", ["engine", "dynamo"])
+def test_finite_agentic_lanes_share_compact_trace_and_require_supervision(tmp_path, host, monkeypatch, stack):
+    trace = tmp_path / "agentic.jsonl"
+    header = {
+        "schema": "dynamo.agentic_mooncake",
+        "version": 2,
+        "block_size": 1048576,
+        "hash_id_scope": "local",
+        "source": {"format": "test", "digest": "test"},
+    }
+    rows = [
+        {
+            "request_id": str(i),
+            "play_id": str(i),
+            "session_id": str(i),
+            "model": "test",
+            "input_length": 1048576,
+            "output_length": 1,
+            "hash_ids": [i],
+            "not_before_ms": 0,
+            "dependencies": [],
+        }
+        for i in range(4)
+    ]
+    trace.write_text("\n".join(json.dumps(row) for row in [header, *rows]) + "\n")
+    base = {"trace_path": str(trace), "trace_format": "agentic_mooncake", "trace_block_size": 1048576}
+    monkeypatch.delenv("_AISIMULATE_SUPERVISED_BUDGET", raising=False)
+    for lanes in (1, 32, 128, 512):
+        plan = build_plan({**base, "agentic_lanes": lanes}, stack=stack, host=host)
+        assert plan["estimate"]["estimated_peak_bytes"] is None
+        assert plan["estimate"]["lower_bound_bytes"] == 4 * resources.MIB  # One expanded prompt, not the corpus.
+        assert plan["status"] == "resource_limited"  # An unknown peak needs the live supervisor.
+
+    monkeypatch.setenv(
+        "_AISIMULATE_SUPERVISED_BUDGET",
+        json.dumps(
+            {
+                "supervisor_pid": os.getpid(),
+                "memory_limit_bytes": 2 * GB,
+                "cpu_limit": 4,
+                "reserved_host_memory_bytes": GB,
+            }
+        ),
+    )
+    for lanes in (1, 32, 128, 512):
+        workload = {**base, "agentic_lanes": lanes}
+        original = deepcopy(workload)
+        plan = build_plan(workload, stack=stack, host=host, requested_parallelism=4)
+        assert plan["status"] == "admitted"
+        assert plan["effective_parallelism"] == 1  # One simulation; all requested lanes are retained.
+        assert plan["estimate"]["lower_bound_bytes"] == 4 * resources.MIB
+        assert workload == original
+
+    # Whitespace adds file bytes without changing stored arrays. The former
+    # 128-times-file-size guard would reject this padded trace under 2 GB.
+    estimate = plan["estimate"]
+    with trace.open("a") as stream:
+        for _ in range(256):
+            stream.write(" " * (64 * 1024) + "\n")
+    padded = build_plan(workload, stack=stack, host=host, requested_parallelism=4)
+    assert padded["status"] == "admitted"
+    assert padded["estimate"] == estimate
+
+    monkeypatch.setattr(resources, "discover_host", lambda: host)
+    spec = SimpleNamespace(workload={**base, "agentic_lanes": 512}, concurrency=None)
+    factory = GuardedRunnerFactory(object(), stack, ResourceConfig())
+    assert factory.admit_wave([spec])["status"] == "admitted"
+    with pytest.raises(ResourceLimitError, match="wave"):
+        factory.admit_wave([spec, spec])
 
 
 @pytest.mark.parametrize("profile", [{}, {"duration_seconds": 86400}])

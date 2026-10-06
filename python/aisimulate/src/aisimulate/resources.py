@@ -477,6 +477,7 @@ def _estimate_trace(
         "weka",
     }:
         return unqualified("trace format or runner has no qualified allocation model")
+    finite_agentic = format_name == "agentic_mooncake" and workload.get("agentic_profile") is None
     length_keys = {
         "in",
         "out",
@@ -495,6 +496,7 @@ def _estimate_trace(
     token_keys = {"input_token_ids", "output_token_ids", "prompt_token_ids"}
     hash_keys = {"hash_ids", "input_sequence_hashes"}
     total_bytes = tokens = hashes = records = turns = 0
+    output_tokens = max_input_tokens = 0
     block_size = int(workload.get("trace_block_size") or 512)
 
     paths = workload.get("trace_paths") or [workload["trace_path"]]
@@ -507,19 +509,20 @@ def _estimate_trace(
                     return unqualified("trace symlinks have no stable resource identity")
                 if not path.is_file() or (format_name == "weka" and path.suffix.lower() not in {".json", ".jsonl"}):
                     continue
-                storage_estimate = WORKER_BASELINE_BYTES + 128 * (total_bytes + path.stat().st_size)
-                if inspection_budget_bytes is not None and storage_estimate > inspection_budget_bytes:
-                    return ResourceEstimate(
-                        "trace-json-metadata-v1",
-                        None,
-                        0,
-                        0,
-                        storage_estimate,
-                        "trace storage estimate exceeds live headroom before metadata parsing",
-                    )
-                # Stream documents and arrays. A parser scalar still occupies
-                # memory, so reject oversized storage estimates before reading.
-                # Runtime supervision also covers files growing after stat().
+                if not finite_agentic:
+                    storage_estimate = WORKER_BASELINE_BYTES + 128 * (total_bytes + path.stat().st_size)
+                    if inspection_budget_bytes is not None and storage_estimate > inspection_budget_bytes:
+                        return ResourceEstimate(
+                            "trace-json-metadata-v1",
+                            None,
+                            0,
+                            0,
+                            storage_estimate,
+                            "trace storage estimate exceeds live headroom before metadata parsing",
+                        )
+                # Stream documents and arrays. Finite AgentX file size does not
+                # bound resident data; use array counts and runtime supervision.
+                # The parser still holds individual scalar values in memory.
                 maps: list[bool] = []
                 with path.open("rb") as stream:
                     for prefix, event, value in ijson.parse(stream, multiple_values=True, buf_size=64 * 1024):
@@ -536,6 +539,10 @@ def _estimate_trace(
                                 if event != "number" or type(value) is not int or value < 0:
                                     raise ValueError("trace token lengths must be nonnegative integers")
                                 tokens += value
+                                if key == "input_length":
+                                    max_input_tokens = max(max_input_tokens, value)
+                                elif key == "output_length":
+                                    output_tokens += value
                             elif key in token_keys and parts[-1] == "item" and event == "number":
                                 tokens += 1
                             elif key in hash_keys and parts[-1] == "item" and event in {"number", "string"}:
@@ -549,6 +556,21 @@ def _estimate_trace(
         return unqualified(f"cannot inspect trace metadata: {exc}")
     if records == 0:
         return unqualified("trace metadata contains no recognized request token lengths")
+    if finite_agentic:
+        # The loader holds u64 hash IDs; the driver holds compact u32 hash IDs
+        # and planned u32 outputs. An admitted prompt materializes u32 tokens.
+        # These stages share one corpus across lanes. Take their maximum, not
+        # their sum; metadata, temporary copies and live caches are excluded.
+        lower = max(8 * hashes, 4 * (hashes + output_tokens), 4 * max_input_tokens)
+        return ResourceEstimate(
+            "agentic-trace-unqualified-v1",
+            None,
+            0,
+            lower,
+            None,
+            "finite agentic array storage and largest prompt provide only a lower bound; "
+            "the full-run peak is unknown and requires supervised serial execution",
+        )
     tokens += hashes * block_size
     count = max(records, turns)
     # Delta and tool-turn sources can accumulate every preceding turn's tokens.
