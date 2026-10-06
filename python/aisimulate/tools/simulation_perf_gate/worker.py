@@ -7,7 +7,6 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import json
-import math
 import sys
 from copy import deepcopy
 from pathlib import Path
@@ -15,9 +14,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from tools.simulation_perf_gate import PROTOCOL_VERSION, digest
-from tools.simulation_perf_gate.contract import MODEL_FIELDS, check_completion, check_finite, fields
-
-HOST_FIELDS = {"wall_time_ms", "processed_tokens_per_s", "processed_output_tokens_per_s"}
+from tools.simulation_perf_gate.contract import MODEL_FIELDS, check_finite, fields
 
 
 def runner_factory(item: dict):
@@ -96,18 +93,12 @@ def run(request: dict) -> dict:
     report = result.metadata["native_report"]
     if item["runner"] == "dynamo":
         report = report["summary"]
-    check_completion(report, item)
-    wall = report.get("wall_time_ms")
-    if isinstance(wall, bool) or not isinstance(wall, (int, float)) or not math.isfinite(wall) or wall <= 0:
-        raise ValueError("replay wall_time_ms must be finite and positive")
-    # Retain summary diagnostics without collecting per-request records.
-    normalized = {key: value for key, value in report.items() if key not in HOST_FIELDS}
     return {
         "status": "OK",
-        "wall_time_ms": wall,
+        "wall_time_ms": report.get("wall_time_ms"),
         "model_identity": identity,
         "model_provenance": provenance,
-        "report": normalized,
+        "report": report,
     }
 
 

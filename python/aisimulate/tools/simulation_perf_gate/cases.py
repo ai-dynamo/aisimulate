@@ -16,8 +16,8 @@ WORKLOAD_COUNTS = {
     "cache-pressure-vllm": 4096,
     "cache-pressure-sglang": 4096,
     "mla-multiworker-dp": 32768,
-    "pd-vllm": 32768,
-    "pd-sglang": 16384,
+    "pd-vllm": 40960,
+    "pd-sglang": 20480,
 }
 
 
