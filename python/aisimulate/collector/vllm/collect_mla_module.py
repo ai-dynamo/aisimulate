@@ -1086,7 +1086,9 @@ def run_mla_module(
             step = prefix_len
         else:
             isl = 1
-            step = seq_len
+            # BatchSpec.seq_lens includes this forward's one new token.
+            # Both module loaders reconstruct total KV length as isl + step.
+            step = seq_len - 1
 
         op_name = f"{attn_type}_{phase}_module" + ("_skip_indexer" if skip_indexer else "")
 

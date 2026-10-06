@@ -144,7 +144,8 @@ def test_graph_publication_and_workspace_teardown_after_context_exit(attn_type, 
     assert events[-4:] == ["graph teardown", "exit forward", "exit config", "cleanup"]
     row = published[0]["item_list"][0]
     assert row["latency"] == "0.0150"
-    assert row["step"] == (128 if phase == "context" else 16)
+    assert row["step"] == (128 if phase == "context" else 15)
+    assert row["isl"] + row["step"] == (144 if phase == "context" else 16)
     assert published[0]["kernel_source"] == "FLASHINFER_MLA_SPARSE"
 
 
