@@ -1059,9 +1059,7 @@ def _validate_prediction_host_offload(engine: EnginePredictionConfig) -> None:
     for role, worker in configured:
         if not worker.kv_cache.prefix_caching:
             raise ValueError("host_offload requires prefix_caching=true")
-        if getattr(worker.kv_cache, "g3_offload", None) is not None and (
-            role != "aggregated" or worker.parallelism.attention_data != 1
-        ):
+        if worker.kv_cache.g3_offload is not None and (role != "aggregated" or worker.parallelism.attention_data != 1):
             raise ValueError("g3_offload is supported only for the aggregated worker with attention_data=1")
 
 

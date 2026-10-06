@@ -1727,7 +1727,6 @@ def _materialize_engine_role(
             raise ValueError(f"{speculation.kind} speculation requires a supported backend without host_offload")
         if any(
             rank.get(key) is not None
-            and not (speculation.kind == "mtp" and key in {"aic_nextn", "nextn"} and rank[key] == 0)
             for key in (
                 "aic_nextn",
                 "nextn",
