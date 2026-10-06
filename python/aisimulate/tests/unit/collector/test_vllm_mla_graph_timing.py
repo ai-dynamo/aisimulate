@@ -235,6 +235,7 @@ def test_indexer_output_budget_excludes_cached_prefix(monkeypatch, batch, query,
         "create_vllm_config": create_config,
         "_create_gemm_quant_config": lambda gemm: None,
         "_move_module_preserving_buffers": lambda module, device: module.to(device),
+        "_initialize_synthetic_parameters": lambda module: None,
         "set_current_vllm_config": lambda config: nullcontext(),
     }
     create = _load_function(COLLECTOR / "vllm/collect_mla_module.py", "_create_attention_module", namespace)
