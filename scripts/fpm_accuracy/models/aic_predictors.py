@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import json
 import math
 from collections.abc import Mapping, Sequence
 from copy import deepcopy
@@ -51,10 +52,9 @@ class _AicPredictor(ForwardPassTimePredictor):
             config_type = _canonical_config_type()
             if config_type is None or not callable(getattr(perf_model, "normalize_config", None)):
                 raise DependencyError("FPM Gym regression requires AISim's configurable signed lazy regression.")
-            request = config_type.from_legacy_engine_config(
-                cls._native_engine_config(context), context.worker_role, options
-            )
-            model = perf_model.best_available(_gym_regression_config(perf_model, request, options))
+            engine_config = cls._native_engine_config(context)
+            request = config_type.from_legacy_engine_config(engine_config, context.worker_role, options)
+            model = perf_model.best_available(_gym_regression_config(perf_model, request, options, engine_config))
             try:
                 store_diagnostics = getattr(model, "regression_store_diagnostics", None)
                 if not callable(store_diagnostics):
@@ -161,17 +161,23 @@ class AicRegressionPredictor(_AicPredictor):
         return result
 
 
-def _gym_regression_config(perf_model: Any, request: Any, options: Mapping[str, Any]) -> dict[str, Any]:
+def _gym_regression_config(
+    perf_model: Any, request: Any, options: Mapping[str, Any], engine_config: Mapping[str, Any]
+) -> dict[str, Any]:
     """Select the measured Gym policy through the canonical Rust-owned schema.
 
     Migration resolves identity and explicit legacy options first. Override only
     Gym's grid and linear policy, preserving capacity, minimum observations,
-    ridge, rebuild controls, and an explicitly requested legacy bucket grid.
+    ridge, rebuild controls, and explicit canonical sampling or legacy grids.
     """
     estimator_config = deepcopy(request.estimator_config)
     regression = estimator_config["fpm_regression"]
     sampling = regression["sampling"]
-    if not {"bucket_count", "bucket_shape"}.intersection(options):
+    # Rust has already validated this payload and expanded defaults in request.
+    # Use the original payload to distinguish explicit sampling from defaults.
+    explicit = json.loads(engine_config["extra"].get("estimator_config", "{}"))
+    has_explicit_sampling = "sampling" in explicit.get("fpm_regression", {})
+    if not has_explicit_sampling and not {"bucket_count", "bucket_shape"}.intersection(options):
         sampling.update(axes=["attention", "moe"], bins_per_axis=[4, 1])
     linear = {
         "feature_axes": ["attention", "moe"],

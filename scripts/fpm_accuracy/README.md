@@ -35,7 +35,10 @@ per store, minimum five observations, ridge 1e-9, no scheduled rebuilds, signed
 coefficients, and lazy updates with 1% relative / 0.1 ms absolute tolerance,
 window 8, trigger 2, cooldown 1, and startup 10. Explicit adapter options for
 capacity, minimum observations, ridge, rebuild interval, or legacy bucket grid
-remain supported. This selection is local to the Gym regression adapter; the
+remain supported. An explicit canonical `fpm_regression.sampling` block retains
+its Rust-resolved axes, grid, and capacity, including an explicitly chosen 4×4
+grid; the Gym grid applies only when neither sampling nor legacy grid options
+are supplied. This selection is local to the Gym regression adapter; the
 shared AISim 4×4 eager defaults and AgentX/ShareGPT/LongBench recommendations
 are unchanged. See the [measured configuration](../../docs/fpm-lazy-regression-validation.md).
 

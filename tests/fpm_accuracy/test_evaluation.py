@@ -441,6 +441,56 @@ def test_real_regression_preserves_explicit_controls(case, grid_options, bins, r
         predictor.close()
 
 
+@pytest.mark.parametrize(
+    "sampling",
+    [
+        pytest.param({"bins_per_axis": [4, 4]}, id="explicit-default-grid"),
+        pytest.param({"bins_per_axis": [2, 7]}, id="custom-grid"),
+        pytest.param({"axes": ["n", "moe"], "bins_per_axis": [2, 3]}, id="custom-axes"),
+        pytest.param({"max_observations": 32}, id="capacity-only"),
+        pytest.param({}, id="empty-block"),
+    ],
+)
+def test_real_regression_preserves_explicit_canonical_sampling(case, sampling, recommended_regression_config):
+    sdk = pytest.importorskip("aisimulate_core.sdk")
+    from scripts.fpm_accuracy.models.fpt_predictor import PredictorContext
+
+    context = PredictorContext(
+        worker=case.configuration.worker_config_record,
+        worker_role="decode",
+        engine_config_overrides={"extra": {"estimator_config": json.dumps({"fpm_regression": {"sampling": sampling}})}},
+    )
+    # The Rust migration owns default resolution within an explicit sampling
+    # block, including when the caller supplied only capacity or an empty block.
+    migrated = sdk.ForwardPassPerfModelConfig.from_legacy_engine_config(
+        map_worker_config_to_aic(context.worker, context.engine_config_overrides), context.worker_role, context.options
+    )
+    predictor = aic_predictors.AicRegressionPredictor.create(context)
+    try:
+        config = predictor.diagnostics()["provenance"]["config"]["estimator_config"]["fpm_regression"]
+        assert config["sampling"] == migrated.estimator_config["fpm_regression"]["sampling"]
+        assert config["fit"]["linear"] == recommended_regression_config["fit"]["linear"]
+    finally:
+        predictor.close()
+
+
+@pytest.mark.parametrize("options", [{"bucket_count": 9}, {"bucket_shape": [3, 2]}])
+def test_real_regression_rejects_conflicting_canonical_and_legacy_grids(case, options):
+    pytest.importorskip("aisimulate_core.sdk")
+    from scripts.fpm_accuracy.models.fpt_predictor import PredictorContext
+
+    context = PredictorContext(
+        worker=case.configuration.worker_config_record,
+        worker_role="decode",
+        options=options,
+        engine_config_overrides={
+            "extra": {"estimator_config": json.dumps({"fpm_regression": {"sampling": {"bins_per_axis": [2, 3]}}})}
+        },
+    )
+    with pytest.raises(ValueError, match="conflict"):
+        aic_predictors.AicRegressionPredictor.create(context)
+
+
 def test_worker_regression_reports_resolved_native_grid(case):
     pytest.importorskip("aisimulate_core.sdk")
     from scripts.fpm_accuracy.evaluate import create_predictor
@@ -451,6 +501,40 @@ def test_worker_regression_reports_resolved_native_grid(case):
     predictor = WorkerRegressionPredictor(context, roles, create_predictor)
     try:
         assert predictor.diagnostics()["spatial_bucket_count"] == 4
+        assert predictor.diagnostics()["max_observations_per_store"] == 64
+    finally:
+        predictor.close()
+
+
+def test_worker_regression_preserves_canonical_sampling_and_explicit_options(case):
+    pytest.importorskip("aisimulate_core.sdk")
+    from scripts.fpm_accuracy.evaluate import create_predictor
+    from scripts.fpm_accuracy.models.fpt_predictor import PredictorContext
+
+    sampling = {"axes": ["n", "moe"], "bins_per_axis": [2, 3], "max_observations": 32}
+    context = PredictorContext(
+        worker=case.configuration.worker_config_record,
+        worker_role=case.worker_role,
+        options={"min_observations": 6},
+        engine_config_overrides={"extra": {"estimator_config": json.dumps({"fpm_regression": {"sampling": sampling}})}},
+    )
+    calls = []
+
+    def factory(method, child_context):
+        calls.append(dict(child_context.options))
+        return create_predictor(method, child_context)
+
+    roles = infer_worker_roles(item.iteration for item in case.observations)
+    predictor = WorkerRegressionPredictor(context, roles, factory)
+    try:
+        assert calls == [dict(context.options)] * len(roles)
+        diagnostics = predictor.diagnostics()
+        assert diagnostics["max_observations_per_store"] == 32
+        assert diagnostics["spatial_bucket_count"] == 6
+        for child in diagnostics["worker_diagnostics"].values():
+            regression = child["provenance"]["config"]["estimator_config"]["fpm_regression"]
+            assert regression["sampling"] == sampling
+            assert regression["min_observations"] == 6
     finally:
         predictor.close()
 
