@@ -821,3 +821,20 @@ def test_chart_export_keeps_predictors_distinct_and_absolute_units():
     ):
         assert tuple(points[0][series][key] for key in ("e2e_ms", "output_per_gpu", "total_per_gpu")) == expected
         assert all(points[1][series][key] is None for key in ("e2e_ms", "output_per_gpu", "total_per_gpu"))
+
+
+def test_recorded_integral_float_gpu_count_is_published_as_integer():
+    predictions, metadata, coverage = _inputs()
+    for row in predictions["rows"]:
+        row["aisimulate_total_gpus"] = 8.0
+    summary = OVERVIEW.build_summary(
+        predictions,
+        metadata,
+        coverage,
+        predictions_sha256="c" * 64,
+        source_url=OVERVIEW.INFERENCEX_RELEASE_URL_PREFIX + predictions["release_tag"],
+    )
+    for model in summary["models"]:
+        for workload in model["workloads"]:
+            for gpu in workload["gpus"]:
+                assert all(type(topology["total_gpus"]) is int for topology in gpu["topologies"])

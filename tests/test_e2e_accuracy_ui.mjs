@@ -821,6 +821,7 @@ test("standalone PR preview displays its exact branch and cannot enter a public 
   await app.run("initialize()");
   assert.equal(app.element("error-banner").hidden, true);
   assert.match(app.element("branch-status").textContent, /PR preview.*simonec\/preview/);
+  assert.match(app.element("evidence-brief").textContent, /PR preview.*simonec\/preview/);
   assert.equal(app.run("state.catalog.default_branch"), "simonec/preview");
   delete data.scope.preview;
   app.set("data", data);
@@ -941,6 +942,7 @@ test("model views omit zero-AISim models but retain failures in mixed-success mo
   hidden.model = "hidden/model";
   hidden.hf_model_paths = [hidden.model];
   hidden.aisimulate.points = 0;
+  hidden.aisimulate.status_counts = {success: 0, failed: 3, unsupported: 0, unknown: 0};
   data.models.unshift(hidden);
   const app = harness();
   app.set("fixture", data);
@@ -952,7 +954,7 @@ test("model views omit zero-AISim models but retain failures in mixed-success mo
   assert.match(app.element("details-view").innerHTML, /Operating points \(3\)/);
   assert.match(app.element("details-view").innerHTML, /failed \/ success/);
   assert.equal(app.run("state.data.models.length"), 2);
-  app.run("state.data.models.forEach(model => model.aisimulate.points = 0); renderMatrix(); renderView()");
+  app.run("state.data.models.forEach(model => { model.aisimulate.points = 0; model.aisimulate.status_counts.success = 0; }); renderMatrix(); renderView()");
   assert.match(app.element("matrix-body").innerHTML, /No models with successful AISim predictions/);
   assert.equal(app.element("detail-filters").innerHTML, "");
 });
@@ -980,4 +982,56 @@ test("serving metric availability distinguishes unsupported and failed predictio
   assert.match(chart, /AIC \(legacy CLI\) does not support total throughput/);
   assert.match(chart, /point measured/);
   assert.doesNotMatch(chart, /point aic/);
+});
+
+
+test("user branch switching drops unavailable selection while keeping view and filters", async () => {
+  const main = withTopology(), release = withTopology();
+  release.models[0].model = "different/model";
+  release.models[0].workloads[0].gpus[0].gpu = "different-gpu";
+  const app = harness(async path => response(path === "./branches.json" ? catalog :
+    path.includes(pathFor("b")) ? release : main));
+  await app.run("initialize()");
+  app.run('state.tab = "details"; state.excludeOutliers = true; renderView(); updateLocation()');
+  assert.match(app.location.href, /topology=/);
+  app.element("branch-select").value = "release/0.12.0";
+  await app.element("branch-select").events.change();
+  assert.equal(app.element("error-banner").hidden, true);
+  assert.equal(app.run("selectedGpu().model.model"), "different/model");
+  assert.equal(app.run("state.tab"), "details");
+  assert.equal(app.run("state.excludeOutliers"), true);
+  assert.match(app.location.href, /branch=release%2F0.12.0/);
+  assert.match(app.element("evidence-brief").textContent, /not current branch accuracy/);
+});
+
+test("GPU count is validated even without the optional multi-node flag", () => {
+  const app = harness(), data = withTopology();
+  const topology = data.models[0].workloads[0].gpus[0].topologies[0];
+  delete topology.is_multinode;
+  for (const value of ['<img src=x onerror=alert(1)>', 0, -1, 1.5, null]) {
+    topology.total_gpus = value;
+    app.set("data", data);
+    assert.throws(() => app.run("validateSummary(data)"), /schema/);
+  }
+  app.set("topology", topology);
+  app.run('topology.total_gpus = "<img>"');
+  assert.match(app.run("topologyContent(topology)"), /&lt;img&gt; GPUs/);
+});
+
+test("models with only outlier predictions stay selectable and charted", async () => {
+  const data = withTopology();
+  for (const p of data.models[0].workloads[0].gpus[0].topologies[0].points) {
+    if (p.status === "success") {
+      p.aisimulate.ttft_error_pct = 150;
+      p.aisimulate.tpot_error_pct = 150;
+    }
+  }
+  const app = setup(async () => response(data));
+  await app.run('loadBranch("main")');
+  app.run('state.excludeOutliers = true; state.data = filterSnapshot(state.rawData); state.tab = "details"; renderView()');
+  assert.equal(app.run("state.data.models[0].aisimulate.points"), 0);
+  assert.equal(app.run("visibleModels().length"), 1);
+  assert.ok(app.run("selectedGpu()"));
+  assert.match(app.element("details-view").innerHTML, /point aisimulate/);
+  assert.match(app.element("details-view").innerHTML, /role="group"/);
 });

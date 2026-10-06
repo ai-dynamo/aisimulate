@@ -1982,15 +1982,19 @@ def test_campaign_can_select_multinode_without_changing_legacy_selection():
         campaign.select_points(data, 30)
 
 
-def test_failed_campaign_without_artifact_keeps_failure_status(artifact, tmp_path, monkeypatch):
+@pytest.mark.parametrize("conclusion", ["failure", "timed_out", "cancelled", "skipped"])
+def test_failed_campaign_without_artifact_keeps_failure_status(artifact, tmp_path, monkeypatch, conclusion):
     _, run = artifact
     run["conclusion"] = "failure"
-    publication_api(monkeypatch, run, [], jobs={"1": [qualification_job(run, "main", conclusion="failure")]})
+    publication_api(monkeypatch, run, [], jobs={"1": [qualification_job(run, "main", conclusion=conclusion)]})
     output = tmp_path / "prepared"
     publish.prepare(ROOT, output)
     assert prepared_snapshots(output) == {}
     updates = json.loads((output / "status/updates.json").read_text())
-    assert updates["main"] == {"status": "failed", "run_id": str(run["id"])}
+    if conclusion in {"failure", "timed_out"}:
+        assert updates["main"] == {"status": "failed", "run_id": str(run["id"])}
+    else:
+        assert updates == {}
 
 
 @pytest.mark.parametrize(

@@ -101,7 +101,7 @@ function accuracyCard(label, metrics, className) {
 }
 
 function visibleModels() {
-  return state.data?.models.filter(model => model.aisimulate.points > 0) ?? [];
+  return state.data?.models.filter(model => (model.aisimulate.status_counts?.success ?? model.aisimulate.points) > 0) ?? [];
 }
 
 function renderSummary() {
@@ -528,8 +528,9 @@ function validateSummary(data) {
     if (!object(topology) || typeof topology.id !== "string" || !/^[0-9a-f]{16}$/.test(topology.id) || !aggregate(topology) ||
       !object(topology.parallelism) || !Array.isArray(topology.points) || topology.points.length !== topology.rows ||
       !["framework", "precision", "serving", "spec_method"].every((key) => typeof topology[key] === "string")) return false;
-    if (topology.is_multinode !== undefined && (typeof topology.is_multinode !== "boolean" ||
-      !Number.isInteger(topology.total_gpus) || topology.total_gpus <= 0)) return false;
+    if (topology.is_multinode !== undefined && typeof topology.is_multinode !== "boolean") return false;
+    if ((topology.total_gpus !== undefined || topology.is_multinode !== undefined) &&
+      (!Number.isInteger(topology.total_gpus) || topology.total_gpus <= 0)) return false;
     let previous = 0;
     let aicSuccesses = 0;
     const counts = { success: 0, unsupported: 0, failed: 0, unknown: 0 };
@@ -772,6 +773,8 @@ async function loadBranch(branchName, restoreSelection = false, previewData = nu
     brief.textContent = `${entry.branch} · ${revision ? revision.commit_sha.slice(0, 8) : "historical snapshot"} · evaluated ${formatDate(data.snapshot.aisimulate_completed_at)}` +
       (entry.status === "inherited" ? ` · inherited from ${revision.branch}` : "") +
       (entry.last_update?.status === "failed" ? " · Update failed — showing previous results" : "");
+    if (data.scope.preview === true) brief.textContent = "PR preview · " + brief.textContent;
+    if (!revision) brief.textContent += " · not current branch accuracy; evaluated revision unrecorded";
     brief.title = branchStatus.textContent;
     if (data.snapshot.research_preview) {
       const research = data.snapshot.research_preview;
@@ -826,7 +829,7 @@ async function initialize() {
   } : response.ok ? await response.json() : (() => { throw new Error(`HTTP ${response.status}`); })());
   branchSelect.innerHTML = state.catalog.branches.map(branchOption).join("");
   branchSelect.disabled = false;
-  branchSelect.addEventListener("change", () => loadBranch(branchSelect.value, true));
+  branchSelect.addEventListener("change", () => loadBranch(branchSelect.value));
   await loadBranch(new URL(location.href).searchParams.get("branch") || state.catalog.default_branch, true, previewData);
 }
 
@@ -844,8 +847,9 @@ function abnormalPoint(points, index, metric) {
     (before > v * 1.05 && after > v * 1.05))) || values.slice(index + 1).some(x => v > x * 1.05);
 }
 
-function aggregateTopologies(topologies) {
-  const rows = topologies.flatMap(t => t.points);
+function aggregateTopologies(topologies, quality = null) {
+  const matchesQuality = point => quality === null || (point.configuration_quality ?? "not_recorded") === quality;
+  const rows = topologies.flatMap(t => t.points).filter(matchesQuality);
   const result = {rows: rows.length};
   for (const name of ["aic", "aisimulate"]) {
     const acceptedPoints = new Set();
@@ -855,7 +859,7 @@ function aggregateTopologies(topologies) {
       for (const topology of topologies) {
         const points = topology.points.filter((point, i) => {
           const error = point[name][`${metric}_error_pct`];
-          return Number.isFinite(error) && (!state.excludeOutliers || error <= 100) &&
+          return matchesQuality(point) && Number.isFinite(error) && (!state.excludeOutliers || error <= 100) &&
             (!state.excludeAbnormal || !abnormalPoint(topology.points, i, metric));
         });
         for (const point of points) { errors.push(point[name][`${metric}_error_pct`]); acceptedPoints.add(point); }
@@ -871,6 +875,9 @@ function aggregateTopologies(topologies) {
     }
     result[name] = {...metrics, points: acceptedPoints.size};
   }
+  result.aic.status_counts = Object.fromEntries(["success", "failed", "unsupported", "unknown"].map(
+    status => [status, rows.filter(p => (p.aic_status ?? "success") === status).length]));
+  result.aic.coverage_pct = rows.length ? result.aic.status_counts.success / rows.length * 100 : 0;
   result.aisimulate.status_counts = Object.fromEntries(["success", "failed", "unsupported", "unknown"].map(
     status => [status, rows.filter(p => p.status === status).length]));
   return result;
@@ -901,6 +908,8 @@ function filterSnapshot(data) {
     all.push(...modelTopologies);
   }
   return {...data, models, totals: {...data.totals, ...aggregateTopologies(all), models: models.length,
+    by_configuration_quality: Object.fromEntries(["verified", "estimated", "not_recorded"].map(quality =>
+      [quality, aggregateTopologies(all, quality)]).filter(([, group]) => group.rows)),
     gpu_skus: [...new Set(models.flatMap(m => m.gpu_skus))]}};
 }
 
@@ -991,11 +1000,11 @@ function renderDetails() {
 
 function topologyContent(topology) {
   const stats = aggregateTopologies([topology]);
-  return `<p>${escapeHtml(topologyLabel(topology))} · ${topology.total_gpus ?? "unknown"} GPUs</p>
+  return `<p>${escapeHtml(topologyLabel(topology))} · ${escapeHtml(topology.total_gpus ?? "unknown")} GPUs</p>
     <p class="coverage-text">${escapeHtml(coverageText({...stats, aisimulate: {...stats.aisimulate, points: stats.aisimulate.status_counts.success}}))}</p>
     <div class="detail-cards">${accuracyCard("AISim error", stats.aisimulate, "aisimulate")}${accuracyCard("AIC (legacy CLI) error", stats.aic, "aic")}</div>
     <div class="chart-legend">${Object.entries(SERIES_NAMES).map(([key, name]) => `<button data-series="${key}" aria-pressed="${!state.hiddenSeries.has(key)}" style="color:${SERIES_COLORS[key]}"><span class="legend-line ${key}" aria-hidden="true"></span> ${name}</button>`).join("")}</div>
-    <p class="detail-scope">Click a legend to hide a series; double-click to isolate it. Click a point for its configuration and values.</p>
+    <p class="detail-scope">Click a legend to hide a series; double-click or Shift+Enter to isolate it. Click a point for its configuration and values.</p>
     <div class="detail-charts">
       <section class="chart-panel" aria-label="Token latency"><h3>Token latency</h3>${metricChart(topology, "tpot")}</section>
       <section class="chart-panel" aria-label="Time to first token"><h3>Time to first token</h3>${metricChart(topology, "ttft")}</section>
@@ -1034,7 +1043,7 @@ function metricChart(topology, metric) {
   if (!points.length) return `<p class="detail-empty">${escapeHtml(yLabel)}: no values available for this snapshot or filter.</p>${availability}`;
   const maxX = Math.max(...points.map(p => p.x), 1), maxY = Math.max(...points.map(p => p.y), 0.01) * 1.08;
   const x = v => 65 + v / maxX * 465, y = v => 235 - v / maxY * 195;
-  let svg = `<svg viewBox="0 0 560 290" role="img" aria-label="${escapeHtml(yLabel)} versus ${escapeHtml(xLabel)}"><text x="65" y="18" fill="currentColor">${escapeHtml(yLabel)}</text>`;
+  let svg = `<svg viewBox="0 0 560 290" role="group" aria-label="${escapeHtml(yLabel)} versus ${escapeHtml(xLabel)}"><text x="65" y="18" fill="currentColor">${escapeHtml(yLabel)}</text>`;
   for (let i = 0; i <= 4; i++) {
     const yy = maxY * i / 4, xx = maxX * i / 4;
     svg += `<path d="M65 ${y(yy)}H530" stroke="var(--border)"/><text x="58" y="${y(yy)+4}" text-anchor="end" fill="currentColor">${numeric(yy)}</text><text x="${x(xx)}" y="255" text-anchor="middle" fill="currentColor">${numeric(xx)}</text>`;
@@ -1056,6 +1065,14 @@ function bindCharts(container, topology) {
   container.querySelectorAll("[data-series]").forEach(button => {
     button.addEventListener("click", () => { clearTimeout(legendTimer); legendTimer = setTimeout(() => { const n = button.dataset.series; state.hiddenSeries.has(n) ? state.hiddenSeries.delete(n) : state.hiddenSeries.add(n); refreshCharts(); }, 250); });
     button.addEventListener("dblclick", () => { clearTimeout(legendTimer); state.hiddenSeries = new Set(Object.keys(SERIES_NAMES).filter(n => n !== button.dataset.series)); refreshCharts(); });
+    button.addEventListener("keydown", event => {
+      if (event.shiftKey && ["Enter", " "].includes(event.key)) {
+        event.preventDefault(); clearTimeout(legendTimer);
+        state.hiddenSeries = new Set(Object.keys(SERIES_NAMES).filter(n => n !== button.dataset.series));
+        refreshCharts();
+        container.querySelector(`[data-series="${button.dataset.series}"]`)?.focus();
+      }
+    });
   });
   container.querySelectorAll("[data-chart]").forEach(select => select.addEventListener("change", () => {
     state[select.dataset.chart] = select.value; refreshCharts();

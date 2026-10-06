@@ -483,7 +483,11 @@ def prepare(repo: Path, output: Path) -> None:
         for candidate in branches:
             expected = "Qualify E2E accuracy (" + artifact_key(candidate) + ")"
             matching = [job for job in jobs if job.get("name", "").endswith(expected)]
-            if len(matching) == 1 and matching[0].get("status") == "completed":
+            if (
+                len(matching) == 1
+                and matching[0].get("status") == "completed"
+                and matching[0].get("conclusion") in {"success", "failure", "timed_out"}
+            ):
                 rank = (int(run["id"]), int(number))
                 if candidate not in updates or rank > updates[candidate][0]:
                     updates[candidate] = (

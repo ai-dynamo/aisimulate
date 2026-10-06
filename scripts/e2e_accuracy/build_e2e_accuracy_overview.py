@@ -362,7 +362,7 @@ def _topology_summaries(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "serving": "disaggregated" if first.get("disagg") else "aggregated",
                 "spec_method": first.get("spec_method") or "none",
                 "is_multinode": _is_multinode(first),
-                "total_gpus": first.get("aisimulate_total_gpus") or _total_gpus(first),
+                "total_gpus": _total_gpus(first),
                 "parallelism": {
                     field: first.get(field)
                     for field in ("tp_size", "pp_size", "attention_dp_size", "moe_ep_size", "moe_tp_size")

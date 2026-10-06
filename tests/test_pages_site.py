@@ -1237,3 +1237,22 @@ def test_evaluated_snapshot_requires_legacy_cli_provenance() -> None:
         PAGES._accuracy_summary(json.dumps(summary))
     del summary["snapshot"]["evaluated_revision"]
     assert PAGES._accuracy_summary(json.dumps(summary)) == summary
+
+
+def test_accuracy_update_status_must_be_an_object(tmp_path):
+    artifacts = tmp_path / "artifacts"
+    status = artifacts / "status/updates.json"
+    status.parent.mkdir(parents=True)
+    status.write_text("[]")
+    with unittest.TestCase().assertRaisesRegex(PAGES.PagesBuildError, "expected an object"):
+        PAGES._build_accuracy_catalog(ROOT, tmp_path / "site", False, artifacts)
+
+
+def test_accuracy_gpu_count_is_validated_without_multinode_flag():
+    summary = json.loads((ROOT / "pages/e2e-accuracy/summary.json").read_text())
+    topology = summary["models"][0]["workloads"][0]["gpus"][0]["topologies"][0]
+    topology.pop("is_multinode", None)
+    for value in ("<img>", 0, -1, 1.5, None, True):
+        topology["total_gpus"] = value
+        with unittest.TestCase().assertRaisesRegex(PAGES.PagesBuildError, "GPU count"):
+            PAGES._accuracy_summary(json.dumps(summary))

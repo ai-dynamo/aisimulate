@@ -599,3 +599,18 @@ including failed predictions. Missing historical IDs remain null; internal
 `workflow_run_id` database keys are never substituted for GitHub run IDs.
 The exporter and Pages validators reject malformed IDs. This metadata does not
 change predictions, cohort selection, or accuracy metrics.
+
+### Review behavior
+
+- Switching branches keeps view and exclusion settings, and selects an available
+  operating point in the new branch. Initial shared links still validate their
+  exact selection.
+- PR previews and historical evidence remain labeled above the collapsed About
+  panel. Cancelled or skipped qualification jobs do not report update failures.
+- Models with successful AISim predictions stay selectable when all their points
+  are excluded from MAPE. Verified and estimated configuration MAPE remain separate
+  and follow the current filters.
+- Chart points support keyboard activation. Shift+Enter on a legend button isolates
+  that series; ordinary activation toggles it. Charts expose their interactive points
+  to assistive technology.
+- Pages CI runs the E2E Chromium smoke test alongside the FPE and FPM checks.
