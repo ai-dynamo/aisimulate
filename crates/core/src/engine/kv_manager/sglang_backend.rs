@@ -183,8 +183,17 @@ struct PendingAdmission {
 struct SglangAdmissionCheckpoint {
     cache: RadixCache,
     next_event_id: u64,
-    page_to_block_hash: Vec<Option<SequenceHash>>,
-    block_hash_refcounts: FxHashMap<SequenceHash, usize>,
+    page_metadata_len: usize,
+    event_undo: Vec<KvEventUndo>,
+}
+
+/// Previous values for one page publication or removal. Repeated changes to
+/// the same page or logical hash are undone in reverse mutation order.
+struct KvEventUndo {
+    page_slot: usize,
+    previous_page_hash: Option<SequenceHash>,
+    block_hash: SequenceHash,
+    previous_refcount: Option<usize>,
 }
 
 pub struct DecodeTokenReservation {
@@ -317,8 +326,24 @@ impl SglangKvManager {
         admission.checkpoint = Some(SglangAdmissionCheckpoint {
             cache: self.cache.admission_checkpoint(),
             next_event_id: self.next_event_id,
-            page_to_block_hash: self.page_to_block_hash.clone(),
-            block_hash_refcounts: self.block_hash_refcounts.clone(),
+            page_metadata_len: self.page_to_block_hash.len(),
+            event_undo: Vec::new(),
+        });
+    }
+
+    fn checkpoint_event_bookkeeping(&mut self, page_slot: usize, block_hash: SequenceHash) {
+        let Some(admission) = self.pending_admission.as_mut() else {
+            return;
+        };
+        let checkpoint = admission
+            .checkpoint
+            .as_mut()
+            .expect("KV checkpoint before mutation");
+        checkpoint.event_undo.push(KvEventUndo {
+            page_slot,
+            previous_page_hash: self.page_to_block_hash[page_slot],
+            block_hash,
+            previous_refcount: self.block_hash_refcounts.get(&block_hash).copied(),
         });
     }
 
@@ -334,8 +359,16 @@ impl SglangKvManager {
         if let Some(checkpoint) = admission.checkpoint {
             self.cache = checkpoint.cache;
             self.next_event_id = checkpoint.next_event_id;
-            self.page_to_block_hash = checkpoint.page_to_block_hash;
-            self.block_hash_refcounts = checkpoint.block_hash_refcounts;
+            for undo in checkpoint.event_undo.into_iter().rev() {
+                self.page_to_block_hash[undo.page_slot] = undo.previous_page_hash;
+                if let Some(refcount) = undo.previous_refcount {
+                    self.block_hash_refcounts.insert(undo.block_hash, refcount);
+                } else {
+                    self.block_hash_refcounts.remove(&undo.block_hash);
+                }
+            }
+            self.page_to_block_hash
+                .truncate(checkpoint.page_metadata_len);
         } else {
             debug_assert!(
                 admission.events.is_empty(),
@@ -1087,6 +1120,7 @@ impl SglangKvManager {
                 None => tokens_hash.0,
             };
 
+            self.checkpoint_event_bookkeeping(page_slot, block_hash);
             self.page_to_block_hash[page_slot] = Some(block_hash);
             let refcount = self.block_hash_refcounts.entry(block_hash).or_default();
             *refcount += 1;
@@ -1134,9 +1168,11 @@ impl SglangKvManager {
 
         let mut block_hashes = Vec::new();
         for (page_idx, &page) in evicted_pages.iter().enumerate() {
-            let Some(block_hash) = self.page_to_block_hash[page.index()].take() else {
+            let Some(block_hash) = self.page_to_block_hash[page.index()] else {
                 continue;
             };
+            self.checkpoint_event_bookkeeping(page.index(), block_hash);
+            self.page_to_block_hash[page.index()] = None;
             if let std::collections::hash_map::Entry::Occupied(mut entry) =
                 self.block_hash_refcounts.entry(block_hash)
             {
@@ -1700,6 +1736,94 @@ mod tests {
             first_store.blocks[0].block_hash,
             second_store.blocks[0].block_hash
         );
+    }
+
+    #[test]
+    fn admission_undo_preserves_eviction_page_reuse_and_event_order() {
+        for commit in [false, true] {
+            let sink = Arc::new(MockSink::new());
+            let mut mgr = SglangKvManager::new(1, 1, KvEventPublishers::new(Some(sink.clone())), 0);
+            let first = mgr.allocate_for_request(&[1]).unwrap();
+            let page = first.lease.pages()[0];
+            mgr.finish(&[1], first.lease);
+            let pages_before = mgr.page_to_block_hash.clone();
+            let counts_before = mgr.block_hash_refcounts.clone();
+
+            let admission = mgr.begin_admission();
+            let second = mgr.allocate_for_request(&[2]).unwrap();
+            assert_eq!(second.lease.pages(), &[page]); // Eviction reuses the page.
+            assert!(mgr.abort(second.lease));
+            let third = mgr.allocate_for_request(&[3]).unwrap();
+            assert_eq!(third.lease.pages(), &[page]); // Mutate the same slot again.
+            assert_eq!(sink.event_count(), 1); // Nothing speculative is published.
+
+            if commit {
+                mgr.commit_admission(admission);
+                let events = sink.clone_events();
+                assert_eq!(events.len(), 5);
+                for (index, event) in events.iter().enumerate() {
+                    assert_eq!(event.event_id, index as u64);
+                    assert_eq!(matches!(event.data, KvEventData::Stored(_)), index % 2 == 0);
+                }
+                let final_hash = mgr.page_to_block_hash[page.index()].unwrap();
+                assert_eq!(
+                    mgr.block_hash_refcounts,
+                    FxHashMap::from_iter([(final_hash, 1)])
+                );
+                let KvEventData::Stored(stored) = &events[4].data else {
+                    unreachable!()
+                };
+                assert_eq!(stored.blocks[0].block_hash, final_hash);
+                mgr.abort(third.lease);
+            } else {
+                mgr.rollback_admission(admission);
+                assert_eq!(mgr.page_to_block_hash, pages_before);
+                assert_eq!(mgr.block_hash_refcounts, counts_before);
+                assert_eq!(mgr.cache().prefix_match_len(&[1]), 1);
+                assert_eq!(mgr.next_event_id, 1);
+                assert_eq!(sink.event_count(), 1);
+                let retry = mgr.allocate_for_request(&[2]).unwrap();
+                assert_eq!(retry.lease.pages(), &[page]);
+                assert_eq!(sink.clone_events()[1].event_id, 1);
+                mgr.abort(retry.lease);
+            }
+        }
+    }
+
+    #[test]
+    fn admission_undo_restores_duplicate_refcounts_and_lazy_page_metadata() {
+        let sink = Arc::new(MockSink::new());
+        let mut mgr = SglangKvManager::new(2, 1, KvEventPublishers::new(Some(sink.clone())), 0);
+        // Exercise lazy metadata allocation as well as an originally absent hash.
+        mgr.page_to_block_hash.clear();
+        let admission = mgr.begin_admission();
+        let first = mgr.allocate_for_request(&[1]).unwrap();
+        let second = mgr.allocate_for_request(&[1]).unwrap();
+        let hash = mgr.page_to_block_hash[first.lease.pages()[0].index()].unwrap();
+        assert_eq!(mgr.block_hash_refcounts[&hash], 2);
+        mgr.abort(first.lease);
+        assert_eq!(mgr.block_hash_refcounts[&hash], 1);
+        mgr.abort(second.lease);
+        assert!(!mgr.block_hash_refcounts.contains_key(&hash));
+        mgr.rollback_admission(admission);
+        assert!(mgr.page_to_block_hash.is_empty());
+        assert!(mgr.block_hash_refcounts.is_empty());
+        assert_eq!(mgr.cache().available_tokens(), 2);
+        assert_eq!(mgr.next_event_id, 0);
+        assert_eq!(sink.event_count(), 0);
+
+        let first = mgr.allocate_for_request(&[1]).unwrap();
+        let pages_before = mgr.page_to_block_hash.clone();
+        let admission = mgr.begin_admission();
+        let second = mgr.allocate_for_request(&[1]).unwrap();
+        assert_eq!(mgr.block_hash_refcounts[&hash], 2);
+        mgr.rollback_admission(admission);
+        assert_eq!(mgr.page_to_block_hash, pages_before);
+        assert_eq!(mgr.block_hash_refcounts[&hash], 1);
+        assert_eq!(sink.event_count(), 1);
+        drop(second); // The speculative lease was invalidated by rollback.
+        mgr.abort(first.lease);
+        assert_eq!(sink.event_count(), 2);
     }
 
     #[test]
