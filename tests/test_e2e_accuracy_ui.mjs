@@ -956,3 +956,28 @@ test("model views omit zero-AISim models but retain failures in mixed-success mo
   assert.match(app.element("matrix-body").innerHTML, /No models with successful AISim predictions/);
   assert.equal(app.element("detail-filters").innerHTML, "");
 });
+
+
+test("serving metric availability distinguishes unsupported and failed predictions", () => {
+  const app = harness();
+  app.set("series", {total_per_gpu: null, unavailable_metrics: {total_per_gpu: "unsupported_by_predictor"}});
+  assert.equal(app.run('metricAvailability(series, "total_per_gpu")'), "Unsupported");
+  app.run('series.unavailable_metrics.total_per_gpu = "prediction_failed"');
+  assert.equal(app.run('metricAvailability(series, "total_per_gpu")'), "Prediction failed");
+  app.run('series.unavailable_metrics.total_per_gpu = "not_recorded"');
+  assert.equal(app.run('metricAvailability(series, "total_per_gpu")'), "Not recorded");
+  assert.equal(app.run('metricAvailability({}, "total_per_gpu")'), "—");
+  const topology = withTopology().models[0].workloads[0].gpus[0].topologies[0];
+  for (const point of topology.points) {
+    point.measured.tpot_ms = 10;
+    point.measured.total_per_gpu = 100;
+    point.aic.total_per_gpu = null;
+    point.aic.unavailable_metrics = {total_per_gpu: "unsupported_by_predictor"};
+  }
+  app.set("topology", topology);
+  app.run('state.throughput = "total"');
+  const chart = app.run('metricChart(topology, "pareto")');
+  assert.match(chart, /AIC \(legacy CLI\) does not support total throughput/);
+  assert.match(chart, /point measured/);
+  assert.doesNotMatch(chart, /point aic/);
+});

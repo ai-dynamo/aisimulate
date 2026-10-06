@@ -203,11 +203,11 @@ def public_contract(summary):
                                 "status",
                                 "aic_status",
                                 "configuration_quality",
+                                "infx_run_id",
                                 "measured",
                                 "aic",
                                 "aisimulate",
                                 "configuration",
-                                "infx_run_id",
                                 "aisim_error",
                             },
                         )

@@ -98,7 +98,7 @@ snapshots and must not be labeled as newly evaluated public branch results.
 ## Local research results
 
 Use the same E2E page to inspect expanded coverage experiments. Export their
-recorded predictions with `scripts/build_e2e_accuracy_overview.py
+recorded predictions with `scripts/e2e_accuracy/build_e2e_accuracy_overview.py
 --research-preview --include-multinode` and the usual predictions, metadata,
 coverage, source URL, and output arguments. Include both successful and failed
 agg/disagg rows. Every row must identify its configuration as `verified` or
@@ -353,7 +353,7 @@ Only `summary.json` and `qualification.json` are uploaded in each
 the first 16 hexadecimal characters of SHA-256 of the branch name; wheel artifacts
 use the same key to keep branches isolated. They record the evaluated branch/commit, wheel/dataset/input/
 cohort/driver hashes, run and attempt, selected/published counts, exclusions, and
-completion time. Public data contains serving metrics, derived errors, and normalized curves.
+completion time. Public data contains errors, allowlisted chart metrics, normalized curves, and prediction configuration.
 
 Pages runs trusted main code and accepts a branch artifact only when that branch's
 qualification job succeeded in the artifact's exact run attempt. The matrix run
@@ -448,7 +448,7 @@ details. The existing aggregate schema stays compatible.
 python -m pytest -c /dev/null tests/test_e2e_accuracy_overview.py tests/test_pages_site.py -q
 node --test tests/test_e2e_accuracy_ui.mjs tests/test_e2e_accuracy_workflow.mjs
 # Requires Playwright and Chromium:
-python scripts/check_e2e_accuracy_browser.py
+python scripts/pages/check_e2e_accuracy_browser.py
 # Use a fresh output directory. Fetch remote refs first to include releases.
 python scripts/pages/build_pages_site.py --accuracy-refs --output-dir /tmp/aisim-site
 python -m http.server 8000 --bind 127.0.0.1 --directory /tmp/aisim-site
@@ -540,6 +540,21 @@ Input SHA-256 values for reproduction:
 - `benchmark_results.json`: `e363f2061efbea87ba0d2dd38f765ddd4aabf3aac30e5e0bf0fa6d8ac3df6c10`
 - `workflow_runs.json`: `6a86eb6b31e958a17a7a19c61889910cdd1e7808d8dbcc8fd612ab20a34e6310`
 
+The selection toolbar uses short parallelism labels without repeating framework,
+precision, or serving filters. A short topology ID is shown only when needed to
+distinguish otherwise identical choices. The compact evidence line keeps branch,
+revision, evaluation date, and failed-update state visible. Detailed migration
+notes, filter methodology, and provenance are under the collapsed **About this
+comparison** section below the charts.
+
+Detail charts use solid lines for measured silicon and dotted lines for both
+AISim and AIC (legacy CLI) predictions. Legend samples match the chart lines.
+The three charts share an aligned card grid on desktop and stack on smaller
+screens. Throughput controls stay inside their chart card.
+
+Framework and hardware summary tables keep a full-width bottom divider across
+both row labels and numeric cells, including grouped serving rows.
+
 
 ## Serving metric artifact contract
 
@@ -566,6 +581,8 @@ throughput, or interactivity; replay must also include total throughput. Failed
 predictions retain their status and null metrics. Optional missing measurements
 and unsupported AIC total throughput remain explicit gaps. Historical artifacts
 without this contract still load, but do not establish throughput coverage.
+The total-throughput chart labels the unsupported AIC series. Point details
+distinguish unsupported metrics, failed predictions, and unrecorded values.
 
 These metrics are written to CI artifacts, not committed evaluation JSON.
 Pages packages qualified artifacts during production builds; the existing
@@ -582,18 +599,3 @@ including failed predictions. Missing historical IDs remain null; internal
 `workflow_run_id` database keys are never substituted for GitHub run IDs.
 The exporter and Pages validators reject malformed IDs. This metadata does not
 change predictions, cohort selection, or accuracy metrics.
-
-The selection toolbar uses short parallelism labels without repeating framework,
-precision, or serving filters. A short topology ID is shown only when needed to
-distinguish otherwise identical choices. The compact evidence line keeps branch,
-revision, evaluation date, and failed-update state visible. Detailed migration
-notes, filter methodology, and provenance are under the collapsed **About this
-comparison** section below the charts.
-
-Detail charts use solid lines for measured silicon and dotted lines for both
-AISim and AIC (legacy CLI) predictions. Legend samples match the chart lines.
-The three charts share an aligned card grid on desktop and stack on smaller
-screens. Throughput controls stay inside their chart card.
-
-Framework and hardware summary tables keep a full-width bottom divider across
-both row labels and numeric cells, including grouped serving rows.

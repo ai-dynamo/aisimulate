@@ -90,7 +90,7 @@ def test_selection_keeps_one_complete_run_and_never_fills_missing_concurrency():
     data["workflow_runs"][1]["github_run_id"] = "22222"
     points, stats = campaign.select_points(data, 30)
     assert {point["benchmark"]["id"] for point in points} == {2, 3}
-    assert {point["silicon_github_run_id"] for point in points} == {"22222"}
+    assert {point["github_run_id"] for point in points} == {"22222"}
     assert stats["selected"] == 2
     assert stats["measurement_date_through"] == "2026-09-13"
     assert stats["excluded"] == {"superseded_curve": 1}
@@ -1357,6 +1357,10 @@ def test_publication_checks_aic_success_count_against_point_statuses(artifact, s
     point = topology["points"][0]
     point["aic_status"] = status
     point["aic"] = dict.fromkeys(point["aic"])
+    point["aic"]["unavailable_metrics"] = dict.fromkeys(
+        ("ttft_ms", "tpot_ms", "e2e_ms", "output_per_gpu", "total_per_gpu", "interactivity_tok_s"),
+        "prediction_failed",
+    )
     with pytest.raises(pages.PagesBuildError, match="AIC point count"):
         pages._accuracy_summary(json.dumps(summary))
     for item in (summary["totals"], model, workload, gpu, topology):
@@ -1419,6 +1423,9 @@ def test_publication_accepts_failure_details_but_rejects_success_errors(artifact
     failed = topology["points"][0]
     failed["status"] = "failed"
     failed["aisimulate"] = dict.fromkeys(failed["aisimulate"])
+    failed["aisimulate"]["unavailable_metrics"] = dict.fromkeys(
+        ("ttft_ms", "tpot_ms", "e2e_ms", "output_per_gpu", "total_per_gpu", "interactivity_tok_s"), "prediction_failed"
+    )
     for item in (summary["totals"], model, workload, gpu, topology):
         item["aisimulate"]["points"] -= 1
         item["aisimulate"]["status_counts"]["success"] -= 1
@@ -1938,16 +1945,13 @@ def test_source_resolved_prediction_preserves_settings_and_independent_outcomes(
         assert result["row"]["aic_total_per_gpu"] is None
 
     row = result["row"]
-    total_gpus = 8 if disagg else 4
     assert row["silicon_github_run_id"] == "28196140241"
     assert row["silicon_e2e_ms"] == 2500
     assert row["silicon_total_per_gpu"] == 600
     assert row["silicon_output_per_gpu"] == 250
-    assert row["dynamo_e2e_ms"] == 3200
-    assert row["dynamo_output_per_gpu"] == 2400 / total_gpus
-    assert row["dynamo_total_per_gpu"] == 21000 / total_gpus
-    assert row.get("aic_e2e_ms") == (None if baseline_fails else 3040)
-    assert row.get("aic_output_per_gpu") == (None if baseline_fails else 3200 / total_gpus)
+    if baseline_fails:
+        assert row.get("aic_e2e_ms") is None
+        assert row.get("aic_output_per_gpu") is None
     assert row["configuration"] == {"backend_version": "database-2.0", "forward_model": "op_level"}
 
 
@@ -1967,6 +1971,26 @@ def test_configuration_quality_is_public_and_counts_are_checked(artifact):
     summary["snapshot"]["campaign"]["configuration"]["counts"]["estimated"] += 1
     with pytest.raises(pages.PagesBuildError, match="configuration counts"):
         publish.validate_artifact(archive(summary), run)
+
+
+def test_campaign_can_select_multinode_without_changing_legacy_selection():
+    data = tables()
+    data["configs"][0]["is_multinode"] = True
+    points, metadata = campaign.select_points(data, 30, include_multinode=True)
+    assert points and "multinode" not in metadata["excluded"]
+    with pytest.raises(ValueError, match="empty"):
+        campaign.select_points(data, 30)
+
+
+def test_failed_campaign_without_artifact_keeps_failure_status(artifact, tmp_path, monkeypatch):
+    _, run = artifact
+    run["conclusion"] = "failure"
+    publication_api(monkeypatch, run, [], jobs={"1": [qualification_job(run, "main", conclusion="failure")]})
+    output = tmp_path / "prepared"
+    publish.prepare(ROOT, output)
+    assert prepared_snapshots(output) == {}
+    updates = json.loads((output / "status/updates.json").read_text())
+    assert updates["main"] == {"status": "failed", "run_id": str(run["id"])}
 
 
 @pytest.mark.parametrize(

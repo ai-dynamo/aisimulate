@@ -294,7 +294,7 @@ def _prediction_error(row: dict[str, Any]) -> str | None:
 
 
 def _topology_summaries(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Publish serving metrics and normalized curves without internal run IDs."""
+    """Publish chart measurements and normalized curves without internal run IDs."""
     groups: dict[tuple[Any, ...], list[dict[str, Any]]] = defaultdict(list)
     for row in rows:
         groups[_topology_key(row)].append(row)
@@ -315,19 +315,14 @@ def _topology_summaries(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             point: dict[str, Any] = {
                 "concurrency": row["conc"],
                 "status": row["aisimulate_status"],
+                "aic_status": row.get("aic_status", "success"),
                 "configuration": row.get("configuration", {}),
                 "infx_run_id": str(run_id) if run_id is not None else None,
                 "aisim_error": _prediction_error(row),
             }
             if "configuration_quality" in row:
                 point["configuration_quality"] = row["configuration_quality"]
-            if "aic_status" in row:
-                point["aic_status"] = row["aic_status"]
-            for name, prefix in (
-                ("measured", "silicon"),
-                ("aic", "aic"),
-                ("aisimulate", "dynamo"),
-            ):
+            for name, prefix in (("measured", "silicon"), ("aic", "aic"), ("aisimulate", "dynamo")):
                 point[name] = _chart_metrics(row, prefix)
                 for metric, anchor in anchors.items():
                     value = _finite(row.get(f"{prefix}_{metric}_ms"))

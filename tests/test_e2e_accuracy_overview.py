@@ -518,7 +518,8 @@ def test_gym_chart_metrics_retain_units_and_missing_predictions() -> None:
     assert first["measured"]["output_per_gpu"] is None
     assert first["aic"]["e2e_ms"] == 1500
     assert first["aic"]["output_per_gpu"] == 300
-    assert first["aic"]["total_per_gpu"] == 600
+    assert first["aic"]["total_per_gpu"] is None
+    assert first["aic"]["unavailable_metrics"]["total_per_gpu"] == "unsupported_by_predictor"
     assert first["aisimulate"]["e2e_ms"] == 1300
     assert first["aisimulate"]["output_per_gpu"] == 350
     assert first["aisimulate"]["total_per_gpu"] == 710
@@ -820,4 +821,3 @@ def test_chart_export_keeps_predictors_distinct_and_absolute_units():
     ):
         assert tuple(points[0][series][key] for key in ("e2e_ms", "output_per_gpu", "total_per_gpu")) == expected
         assert all(points[1][series][key] is None for key in ("e2e_ms", "output_per_gpu", "total_per_gpu"))
-

@@ -547,7 +547,7 @@ function validateSummary(data) {
       if ((point.aic_status === undefined ? "success" : point.aic_status) === "success") aicSuccesses += 1;
       return ["measured", "aic", "aisimulate"].every((name) => object(point[name]) && ["ttft", "tpot"].every((metric) => {
         const missing = name === "aisimulate" && point.status !== "success" || name === "aic" && (point.aic_status ?? "success") !== "success";
-        for (const field of ["ttft_ms", "tpot_ms", "e2e_ms", "output_per_gpu", "total_per_gpu"]) {
+        for (const field of ["ttft_ms", "tpot_ms", "e2e_ms", "output_per_gpu", "total_per_gpu", "interactivity_tok_s"]) {
           const raw = point[name][field];
           if (raw !== undefined && raw !== null && (!Number.isFinite(raw) || raw <= 0 || missing)) return false;
         }
@@ -1006,6 +1006,12 @@ function topologyContent(topology) {
     </div>${pointTable(topology)}`;
 }
 
+function metricAvailability(series, field) {
+  if (series[field] != null) return numeric(series[field]);
+  const reason = series.unavailable_metrics?.[field];
+  return {unsupported_by_predictor: "Unsupported", prediction_failed: "Prediction failed", not_recorded: "Not recorded"}[reason] ?? "—";
+}
+
 function metricChart(topology, metric) {
   const pareto = metric === "pareto";
   const absolute = topology.points.every(p => p.measured[`${metric}_ms`] > 0);
@@ -1015,14 +1021,17 @@ function metricChart(topology, metric) {
     points: topology.points.map((p, i) => {
       const v = p[name], latencyMetric = pareto ? (state.view === "ttft" ? "ttft" : "tpot") : metric;
       const abnormal = abnormalPoint(topology.points, i, latencyMetric);
-      return {i, x: !pareto ? p.concurrency : state.view === "interactivity" ? (v.tpot_ms > 0 ? 1000 / v.tpot_ms : null) : v[`${state.view}_ms`],
+      return {i, x: !pareto ? p.concurrency : state.view === "interactivity" ? (v.interactivity_tok_s ?? (v.tpot_ms > 0 ? 1000 / v.tpot_ms : null)) : v[`${state.view}_ms`],
         y: pareto ? v[`${state.throughput}_per_gpu`] : v[`${metric}_${absolute ? "ms" : "relative"}`],
         exclude: state.excludeAbnormal && abnormal,
         outlier: v[`${latencyMetric}_error_pct`] > 100};
     })}));
+  const availability = pareto && state.throughput === "total" && topology.points.some(p =>
+    p.aic.unavailable_metrics?.total_per_gpu === "unsupported_by_predictor")
+    ? '<p class="detail-scope">AIC (legacy CLI) does not support total throughput.</p>' : "";
   const valid = p => !p.exclude && Number.isFinite(p.x) && Number.isFinite(p.y);
   const points = series.flatMap(s => s.points.filter(valid));
-  if (!points.length) return `<p class="detail-empty">${escapeHtml(yLabel)}: no values available for this snapshot or filter.</p>`;
+  if (!points.length) return `<p class="detail-empty">${escapeHtml(yLabel)}: no values available for this snapshot or filter.</p>${availability}`;
   const maxX = Math.max(...points.map(p => p.x), 1), maxY = Math.max(...points.map(p => p.y), 0.01) * 1.08;
   const x = v => 65 + v / maxX * 465, y = v => 235 - v / maxY * 195;
   let svg = `<svg viewBox="0 0 560 290" role="img" aria-label="${escapeHtml(yLabel)} versus ${escapeHtml(xLabel)}"><text x="65" y="18" fill="currentColor">${escapeHtml(yLabel)}</text>`;
@@ -1039,7 +1048,7 @@ function metricChart(topology, metric) {
     svg += `<path d="${path}" stroke="${SERIES_COLORS[name]}" fill="none" stroke-width="2"${name === "measured" ? "" : ' stroke-dasharray="1 6" stroke-linecap="round"'}/>`;
     for (const p of values.filter(valid)) svg += `<circle class="point ${name}" cx="${x(p.x)}" cy="${y(p.y)}" r="4" fill="${p.outlier ? "#ec4899" : SERIES_COLORS[name]}" tabindex="0" role="button" data-point="${p.i}" aria-label="${SERIES_NAMES[name]}, concurrency ${topology.points[p.i].concurrency}, ${numeric(p.y)}"><title>${SERIES_NAMES[name]} · concurrency ${topology.points[p.i].concurrency} · ${numeric(p.x)}, ${numeric(p.y)}</title></circle>`;
   }
-  return `<div class="metric-chart">${svg}<text x="290" y="282" text-anchor="middle" fill="currentColor">${escapeHtml(xLabel)}</text></svg></div>`;
+  return `<div class="metric-chart">${svg}<text x="290" y="282" text-anchor="middle" fill="currentColor">${escapeHtml(xLabel)}</text></svg></div>${availability}`;
 }
 
 function bindCharts(container, topology) {
@@ -1056,7 +1065,7 @@ function bindCharts(container, topology) {
       const point = topology.points[Number(marker.dataset.point)], selected = selectedGpu();
       document.getElementById("point-content").innerHTML = `<h2 id="point-title">Concurrency ${point.concurrency}</h2><p>${escapeHtml(topologyLabel(topology))}</p><p>${escapeHtml(modelLabel(selected.model))} · ${escapeHtml(selected.workload.identity)} · ${escapeHtml(selected.gpu.gpu)} · ${escapeHtml(point.status)}</p>
         <details open><summary>Recorded prediction configuration</summary><table><tbody>${Object.entries(point.configuration || {}).map(([key,value]) => `<tr><th>${escapeHtml(key)}</th><td>${escapeHtml(value ?? "Not recorded")}</td></tr>`).join("")}</tbody></table><p>This table contains a subset of prediction settings. Configuration evidence is labeled separately; recorded settings alone do not establish server-knob parity.</p></details>
-        <table><thead><tr><th>Series</th><th>TTFT ms</th><th>TPOT ms</th><th>E2E ms</th><th>Output tok/s/GPU</th><th>Total tok/s/GPU</th></tr></thead><tbody>${Object.entries(SERIES_NAMES).map(([key,name]) => `<tr><th>${name}</th>${["ttft_ms", "tpot_ms", "e2e_ms", "output_per_gpu", "total_per_gpu"].map(f => `<td>${numeric(point[key][f])}</td>`).join("")}</tr>`).join("")}</tbody></table><p>— means this value was not recorded. Measured output throughput is unavailable when no output rate was recorded.</p>`;
+        <table><thead><tr><th>Series</th><th>TTFT ms</th><th>TPOT ms</th><th>E2E ms</th><th>Output tok/s/GPU</th><th>Total tok/s/GPU</th></tr></thead><tbody>${Object.entries(SERIES_NAMES).map(([key,name]) => `<tr><th>${name}</th>${["ttft_ms", "tpot_ms", "e2e_ms", "output_per_gpu", "total_per_gpu"].map(f => `<td>${escapeHtml(metricAvailability(point[key], f))}</td>`).join("")}</tr>`).join("")}</tbody></table><p>Missing values are labeled when the artifact records a reason. — means no value or reason was recorded.</p>`;
       document.getElementById("point-dialog").showModal();
     };
     marker.addEventListener("click", open);
