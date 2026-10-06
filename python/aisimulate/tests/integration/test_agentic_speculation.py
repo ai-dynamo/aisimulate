@@ -157,14 +157,14 @@ def test_eagle_tree_replays_dag_short_tail_and_seeded_lifecycle(tmp_path, backen
 
 
 @pytest.mark.parametrize(
-    "cost,target,backend,error",
+    "cost,target,backend,tp,error",
     [
-        (REPLAY_SCHEMES[2][0], "MiniMaxAI/MiniMax-M2.7", "vllm", "model families"),
-        (REPLAY_SCHEMES[4][0], REPLAY_TARGET, "sglang", "modeling supports backends"),
-        (REPLAY_SCHEMES[6][0], REPLAY_TARGET, "sglang", "modeling supports backends"),
-        (REPLAY_SCHEMES[0][0], "moonshotai/Kimi-K3", "sglang", "DSPARK"),
+        (REPLAY_SCHEMES[2][0], "MiniMaxAI/MiniMax-M2.7", "vllm", 4, "model families"),
+        (REPLAY_SCHEMES[4][0], REPLAY_TARGET, "sglang", 1, "modeling supports backends"),
+        (REPLAY_SCHEMES[6][0], REPLAY_TARGET, "sglang", 1, "modeling supports backends"),
+        (REPLAY_SCHEMES[0][0], "moonshotai/Kimi-K3", "sglang", 8, "DSPARK"),
     ],
 )
-def test_existing_scheme_family_and_backend_validation(cost, target, backend, error):
+def test_existing_scheme_family_and_backend_validation(cost, target, backend, tp, error):
     with pytest.raises(ValueError, match=error):
-        RustForwardPassPerfModel.best_available(_cost_request(cost, target, backend, tp=8))
+        RustForwardPassPerfModel.best_available(_cost_request(cost, target, backend, tp=tp))
