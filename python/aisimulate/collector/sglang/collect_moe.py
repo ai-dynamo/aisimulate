@@ -1322,11 +1322,23 @@ def _raise_if_unverified_moe_lane(moe_type: str) -> str:
         # SM90 workaround ("fp4-experts on SM90: runner=auto crashes"), not the Blackwell path.
         if not verified and moe_type == "w4a8_mxfp4_mxfp8" and get_sm_version() in (100, 103):
             verified = True
+        # int4_wo on SM100/103: the source reading above ("SM100 auto moved to Triton") is contradicted
+        # by the B200 identity records of the same day, which the guard update (fd07bf6b, done on SM90)
+        # never consumed: moonshotai/Kimi-K2.5 (compressed-tensors W4A16) serves on B200 / 0.5.21 as
+        # CompressedTensorsFusedMoE -> trtllm_gen_moe under the default render
+        # (results/sm100/sglang-0.5.21.yaml) AND as moe_runner FLASHINFER_TRTLLM under an explicit AUTO
+        # (results/retests/sm100/sglang-0.5.21.moe_auto.yaml), i.e. the flashinfer_trtllm declaration the
+        # SM100/103 cases carry still matches serving. Hardware evidence outranks the source claim
+        # (harness rule: no claim from reading code). Re-opened 2026-10-06 after the b200_sxm shard run
+        # (GitLab job 469988017) rejected all 3,078 int4_wo cases on this guard alone.
+        if not verified and moe_type == "int4_wo" and get_sm_version() in (100, 103):
+            verified = True
     if not verified:
         raise RuntimeError(
             f"SGLang {moe_type} collection is verified only for the 0.5.14 and 0.5.17 series "
-            f"(and 0.5.21 on SM89/SM90 for int4_wo / w4a16_mxfp4); installed: {installed_version}, "
-            f"SM{get_sm_version()}; re-verify framework dispatch before extending this guard."
+            f"(and 0.5.21 on SM89/SM90/SM100/SM103 for int4_wo / w4a16_mxfp4, SM100/SM103 for "
+            f"w4a8_mxfp4_mxfp8); installed: {installed_version}, SM{get_sm_version()}; "
+            "re-verify framework dispatch before extending this guard."
         )
     return installed_version
 

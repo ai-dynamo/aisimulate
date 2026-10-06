@@ -114,6 +114,9 @@ def main() -> int:
     if getattr(entry, "extra_perf_filenames", None) and "extra_perf_filenames" in inspect.signature(run_func).parameters:
         # multi-table producers (compute_scale -> computescale + scale_matrix): same kwarg collect.py binds
         extra["extra_perf_filenames"] = tuple(str(Path(args.out_dir) / str(p)) for p in entry.extra_perf_filenames)
+    if getattr(entry, "run_kwargs", None):
+        # fixed mode arguments the executor binds (collect.py run_kwargs partial), e.g. skip_indexer=True
+        extra.update(dict(entry.run_kwargs))
     for i, case in enumerate(picked):
         print(f"[op_smoke] case {i}: {case}")
         if isinstance(case, dict) and "params" in case:  # collect.py task shape {"id", "params"} (collect.py:1696-1702)

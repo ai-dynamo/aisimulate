@@ -12,6 +12,7 @@ extra_perf_filenames`` — instead of splitting the op.
 """
 import importlib
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -86,3 +87,54 @@ def test_compute_scale_collector_writes_the_handed_in_tables(backend):
     # no table name is hard-coded any more: the executor hands both in
     assert 'perf_filename="scale_matrix_perf.txt"' not in text
     assert "perf_filename=scale_matrix_filename" in text
+
+
+# ── shared-table producers: sglang dsa_*_module_skip_indexer ─────────────────
+# The skip-indexer rows live in the full-module table (op_name "_skip_indexer"
+# suffix; the SDK reads them from there), so the skip ops declare that table
+# and select the mode with OpEntry.run_kwargs. Until 2026-10-06 they declared a
+# dsa_*_skip_indexer_perf.txt nobody wrote and --resume finalization raised
+# "open checkpoint event has no regular staging table" on every skip shard
+# (b200_sxm sglang 0.5.21, GitLab job 469988017).
+
+
+def test_sglang_skip_indexer_ops_share_the_full_module_table_and_select_by_run_kwargs():
+    entries = {entry.op: entry for entry in _registry("sglang")}
+    for phase in ("context", "generation"):
+        full = entries[f"dsa_{phase}_module"]
+        skip = entries[f"dsa_{phase}_module_skip_indexer"]
+        assert skip.perf_filename == full.perf_filename == getattr(PerfFile, f"DSA_{phase.upper()}_MODULE")
+        assert skip.run_func == full.run_func == "run_mla_module_worker"
+        assert skip.run_kwargs_dict == {"skip_indexer": True}
+        assert full.run_kwargs == ()
+    assert not any("SKIP_INDEXER" in member.name for member in PerfFile)
+
+
+def test_provenance_collections_carry_run_kwargs():
+    from collector.version_resolver import build_collections
+
+    by_type = {
+        c["type"]: c
+        for c in build_collections(
+            _registry("sglang"), "sglang", "0.5.21",
+            ops=["dsa_context_module", "dsa_context_module_skip_indexer"],
+        )
+    }
+    assert dict(by_type["dsa_context_module_skip_indexer"]["run_kwargs"]) == {"skip_indexer": True}
+    assert tuple(by_type["dsa_context_module"]["run_kwargs"]) == ()
+    assert by_type["dsa_context_module_skip_indexer"]["perf_filename"] == by_type["dsa_context_module"]["perf_filename"]
+
+
+@pytest.mark.parametrize(
+    "bad", [(("perf_filename", "x.txt"),), (("device", "cuda:1"),), (("", True),), (("a", 1), ("a", 2))]
+)
+def test_op_entry_rejects_executor_owned_or_malformed_run_kwargs(bad):
+    with pytest.raises(ValueError, match="run_kwargs"):
+        OpEntry(op="x", module="m", get_func="g", run_func="r", perf_filename=PerfFile.GEMM, run_kwargs=bad)
+
+
+def test_skip_indexer_worker_takes_the_explicit_argument_and_does_not_sniff_the_table_name():
+    src = importlib.util.find_spec("collector.sglang.collect_mla_module").origin
+    text = Path(src).read_text(encoding="utf-8")
+    assert "skip_indexer: bool = False,\n):\n    \"\"\"Worker-compatible wrapper" in text
+    assert '"skip_indexer" in os.path.basename(perf_filename)' not in text

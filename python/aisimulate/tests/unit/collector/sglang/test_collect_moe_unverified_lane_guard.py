@@ -89,21 +89,21 @@ def test_guard_accepts_0521_hopper_lanes_reverified_2026_10_04(moe_type, install
     assert guard(moe_type) == installed_version
 
 
-@pytest.mark.parametrize("moe_type", ["w4a16_mxfp4", "w4a8_mxfp4_mxfp8"])
+@pytest.mark.parametrize("moe_type", ["int4_wo", "w4a16_mxfp4", "w4a8_mxfp4_mxfp8"])
 @pytest.mark.parametrize("sm_version", [100, 103])
 def test_guard_accepts_0521_blackwell_mxfp4_lanes(moe_type, sm_version):
-    """SM100/103 MXFP4 lanes re-verified on 0.5.21 from the B200 identity records (6400345f)."""
+    """SM100/103 MXFP4 lanes re-verified on 0.5.21 from the B200 identity records (6400345f);
+    int4_wo re-opened 2026-10-06 from the same records (Kimi-K2.5 -> FLASHINFER_TRTLLM / trtllm_gen_moe)."""
     guard = _load_guard("0.5.21", sm_version)
     assert guard(moe_type) == "0.5.21"
 
 
 @pytest.mark.parametrize(
     "moe_type, sm_version",
-    [("w4a8_mxfp4_mxfp8", 90), ("int4_wo", 100), ("int4_wo", 103), ("int4_wo", 120), ("w4a16_mxfp4", 120)],
+    [("w4a8_mxfp4_mxfp8", 90), ("int4_wo", 120), ("w4a16_mxfp4", 120)],
 )
 def test_guard_keeps_0521_unverified_lanes_closed(moe_type, sm_version):
-    """int4_wo on SM100/103 (0.5.21 auto moved it from flashinfer_trtllm to Triton), every
-    SM120 weight-only lane, and the DSV4 FP4 lane on Hopper were not re-verified."""
+    """Every SM120 weight-only lane and the DSV4 FP4 lane on Hopper were not re-verified."""
     guard = _load_guard("0.5.21", sm_version)
     with pytest.raises(RuntimeError, match=rf"{moe_type}.*installed: 0.5.21, SM{sm_version}"):
         guard(moe_type)

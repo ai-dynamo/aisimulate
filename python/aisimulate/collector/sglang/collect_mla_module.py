@@ -189,8 +189,8 @@ def _is_glm5_dsa_model(model_id: str) -> bool:
 
 
 # Set by run_mla_module() at the start of each benchmark subprocess from its
-# skip_indexer arg (threaded down from run_mla_module_worker, which derives it
-# from the op's perf_filename). Process-local: each subprocess runs exactly one
+# skip_indexer arg (threaded down from run_mla_module_worker, which receives it
+# from the registry entry's run_kwargs). Process-local: each subprocess runs exactly one
 # run_mla_module, so this is never shared across cases. Replaces the old
 # AIC_DSA_SKIP_INDEXER env that previously crossed the subprocess boundary.
 _SKIP_INDEXER_PASS = False
@@ -791,7 +791,7 @@ def get_dsa_context_module_skip_indexer_test_cases():
     patched out (GLM-5.2 index_topk_freq>1 reuse layers).
 
     Same shapes as the full context module — the skip behaviour is applied in
-    the subprocess (run_func detects the skip_indexer perf_filename). Only emit
+    the subprocess (the registry binds skip_indexer=True via run_kwargs). Only emit
     cases for models that actually share the index across layers
     (index_topk_freq > 1); for freq==1 models the skip layer == full layer, so
     a separate file would just duplicate dsa_context_module.
@@ -2406,9 +2406,9 @@ def run_mla_module(
     (batch_size, seq_length) combos for the specified phase.
 
     ``skip_indexer`` selects the GLM-5.2 reuse-layer variant (the per-layer
-    indexer is patched out and rows are tagged ``_skip_indexer``). It mirrors
-    ``is_prefill``: the worker derives it from the op's perf_filename and passes
-    it down. Recorded in the ``_SKIP_INDEXER_PASS`` process global so the
+    indexer is patched out and rows are tagged ``_skip_indexer``). The worker
+    receives it from the registry entry's run_kwargs and passes it down.
+    Recorded in the ``_SKIP_INDEXER_PASS`` process global so the
     existing ``_dsa_skip_indexer_enabled`` call sites need no signature change.
     """
     global _SKIP_INDEXER_PASS
@@ -2772,6 +2772,7 @@ def run_mla_module_worker(
     perf_filename: str,
     device: str = "cuda:0",
     chunked_prefill_size: int | None = None,
+    skip_indexer: bool = False,
 ):
     """Worker-compatible wrapper used by collector/collect.py.
 
@@ -2785,7 +2786,10 @@ def run_mla_module_worker(
     For DSA test cases, it defaults to None and _get_backends() is used.
 
     perf_filename and device are keyword-only arguments supplied by
-    collect.py via functools.partial and the worker dispatch loop.
+    collect.py via functools.partial and the worker dispatch loop;
+    skip_indexer is bound the same way from the registry entry's run_kwargs
+    (dsa_*_module_skip_indexer ops), so the full and skip ops share one
+    table and one run_func and differ only in this explicit argument.
     """
     device_str = str(device) if not isinstance(device, str) else device
     gpu_id = int(device_str.split(":")[-1]) if ":" in device_str else 0
@@ -2796,9 +2800,9 @@ def run_mla_module_worker(
     # module; the only difference is (1) the per-layer indexer (mqa+topk) is
     # patched out via skip_topk in _run_prefill/_run_generation and (2) the rows
     # are tagged with an op_name "_skip_indexer" suffix in the same perf file.
-    # Derived from the op's perf_filename and threaded down as an explicit arg —
-    # exactly like is_prefill above; no env var crosses the subprocess boundary.
-    skip_indexer = "skip_indexer" in os.path.basename(perf_filename)
+    # Threaded down to the subprocess as an explicit arg; no env var crosses
+    # the subprocess boundary and nothing is inferred from the table name.
+    skip_indexer = bool(skip_indexer)
 
     print(f"\n{'=' * 60}")
     print(

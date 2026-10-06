@@ -118,15 +118,21 @@ REGISTRY: list[OpEntry] = [
     ),
     # GLM-5.2 skip-indexer layers (index_topk_freq>1): same shapes as the full
     # DSA module, but the per-layer indexer (mqa+topk+index-K store) is patched
-    # out so the captured cost is the reuse-layer cost. run_func derives a
-    # skip_indexer bool from the "skip_indexer" perf_filename and passes it to
-    # the benchmark subprocess as an explicit arg (no env var).
+    # out so the captured cost is the reuse-layer cost. The rows go into the
+    # SAME dsa_*_module table as the full op, tagged by an op_name
+    # "_skip_indexer" suffix (that is what the SDK reads), so the entry declares
+    # that shared table and selects the mode with run_kwargs — the executor
+    # binds skip_indexer=True to run_func. (Until 2026-10-06 the entry declared
+    # a dsa_*_skip_indexer_perf.txt table nobody wrote and the worker sniffed
+    # the mode from that filename; --resume finalization trusted the
+    # declaration and failed every skip_indexer shard: job 469988017.)
     OpEntry(
         op="dsa_context_module_skip_indexer",
         module="collector.sglang.collect_mla_module",
         get_func="get_dsa_context_module_skip_indexer_test_cases",
         run_func="run_mla_module_worker",
-        perf_filename=PerfFile.DSA_CONTEXT_MODULE_SKIP_INDEXER,
+        perf_filename=PerfFile.DSA_CONTEXT_MODULE,
+        run_kwargs=(("skip_indexer", True),),
         # Hardware-validated on SM100, on SM103 via the B300 probe
         # (2026-07-13, pipeline 57747474: 8,506 rows, skip_indexer
         # trtllm+flashmla buckets clean, 1 error), and on SM90 via the
@@ -144,7 +150,8 @@ REGISTRY: list[OpEntry] = [
         module="collector.sglang.collect_mla_module",
         get_func="get_dsa_generation_module_skip_indexer_test_cases",
         run_func="run_mla_module_worker",
-        perf_filename=PerfFile.DSA_GENERATION_MODULE_SKIP_INDEXER,
+        perf_filename=PerfFile.DSA_GENERATION_MODULE,
+        run_kwargs=(("skip_indexer", True),),
         unverified_sms=(120,),
     ),
     # DeepSeek-V4 module-level data (csa/hca x ctx/gen = 4 ops, 1 file each).

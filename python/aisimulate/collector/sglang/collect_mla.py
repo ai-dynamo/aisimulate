@@ -424,6 +424,28 @@ def run_mla(
     expected_page_size = 64 if selected_backend == "trtllm_mla" else 1
     if tokens_per_block != expected_page_size:
         raise ValueError(f"SGLang {selected_backend} requires page_size={expected_page_size}, got {tokens_per_block}")
+    # FIXME(kernel-limit): sglang 0.5.21 trtllm_mla DECODE on Blackwell with 64 < local heads < 128.
+    # flashinfer's trtllm-gen MLA decode refuses that head range (flashinfer mla/_core.py:3948) and
+    # falls back to the cute-dsl runner, but sglang 0.5.21's trtllm_mla_backend passes
+    # multi_ctas_kv_counter_buffer unconditionally on Blackwell -> "multi_ctas_kv_counter_buffer is
+    # only supported when a trtllm-gen runner is selected" (_core.py:4278). Serving hits the same
+    # raise (B200 identity probe: Kimi-K3 bf16 tp1, 96 heads; finding
+    # sm100_probe_failures_recheck_2026_10_04 (i)), so the cell is serving-unreachable at this tp;
+    # the b200_sxm shard run (GitLab job 469988017) failed exactly the 362 num_heads=96 decode cases
+    # (bf16 + fp8 KV) and nothing else. Prefill (mla_context, 96 heads) is unaffected. Fail-closed:
+    # recorded as a classified failure, never a predicted skip or a silent backend swap.
+    if (
+        not is_context_phase
+        and selected_backend == "trtllm_mla"
+        and get_sm_version() in {100, 103}
+        and 64 < local_num_heads < 128
+    ):
+        raise RuntimeError(
+            "FIXME(kernel-limit): sglang 0.5.21 trtllm_mla decode on SM100/103 does not support "
+            f"64 < local_num_heads < 128 (num_heads={num_heads}, tp_size={tp_size} -> {local_num_heads}); "
+            "flashinfer trtllm-gen MLA decode rejects the head range and the cute-dsl fallback rejects "
+            "multi_ctas_kv_counter_buffer (mla/_core.py:3948, :4278); serving fails identically (Kimi-K3 tp1)"
+        )
 
     model_runner = MockModelRunner(
         torch_device,

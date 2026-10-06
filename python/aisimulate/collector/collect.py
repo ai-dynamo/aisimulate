@@ -2190,6 +2190,10 @@ def collect_ops(
                 # a multi-table producer (registry OpEntry.extra_perf_filenames) receives
                 # every table it must write; finalize binds all of them to its checkpoint
                 run_func = functools.partial(run_func, extra_perf_filenames=tuple(collection["extra_perf_filenames"]))
+            if collection.get("run_kwargs"):
+                # registry OpEntry.run_kwargs: fixed mode arguments for a run_func shared by
+                # several ops (sglang dsa_*_module_skip_indexer -> skip_indexer=True)
+                run_func = functools.partial(run_func, **dict(collection["run_kwargs"]))
 
             def get_func_with_limit(get_func=get_func, op=collection["type"]):
                 from collector.capabilities import filter_cases
@@ -2917,6 +2921,7 @@ def _pending_resume_perf_outputs(
     for perf_path, producers in producers_by_output.items():
         staging_present = perf_path.exists() or perf_path.is_symlink()
         has_pending_attempts = False
+        has_completed_cases = False
         for collection in producers:
             resume_tracker = _load_selected_producer_checkpoint(
                 collection,
@@ -2929,8 +2934,20 @@ def _pending_resume_perf_outputs(
                 context="resume finalization",
             )
             has_pending_attempts = has_pending_attempts or bool(resume_tracker and resume_tracker._attempted)
+            has_completed_cases = has_completed_cases or bool(resume_tracker and resume_tracker._done)
         if has_pending_attempts:
             if perf_path.is_symlink() or not perf_path.is_file():
+                if not has_completed_cases:
+                    # Every attempted case of every producer failed (e.g. a lane guard
+                    # rejecting the whole shard: sglang moe/int4_wo on 0.5.21/SM100,
+                    # job 469988017): there is legitimately nothing staged. The failures
+                    # are already in the error report; do not turn them into a
+                    # finalization crash that also hides the other tables of the run.
+                    logger.warning(
+                        f"resume finalization: {perf_path} has an open checkpoint event but no completed case "
+                        "and no staging table — all attempted cases failed; nothing to finalize for it"
+                    )
+                    continue
                 raise RuntimeError(
                     f"resume finalization: open checkpoint event has no regular staging table {perf_path}"
                 )
