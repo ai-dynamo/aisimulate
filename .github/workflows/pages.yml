@@ -14,6 +14,7 @@ on:
     paths:
       - ".github/workflows/pages.yml"
       - "scripts/pyproject.toml"
+      - "scripts/notifications/**"
       - "scripts/pages/**"
       - "scripts/e2e_accuracy/**"
       - ".github/workflows/e2e-accuracy.yml"
@@ -44,6 +45,7 @@ on:
     paths:
       - ".github/workflows/pages.yml"
       - "scripts/pyproject.toml"
+      - "scripts/notifications/**"
       - "scripts/e2e_accuracy/**"
       - "scripts/fpm_accuracy/**"
       - ".github/workflows/e2e-accuracy.yml"

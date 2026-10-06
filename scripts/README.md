@@ -29,6 +29,8 @@ the repository root unless a script documents another working directory.
 Keep shared code with its owning job family; consumers import it instead of
 copying it. Colocated fixtures and small script tests move with their scripts.
 Cross-workflow contract tests remain in the repository's `tests/` directory.
+The historical PR244 audit and its evidence stay at their existing paths;
+archiving them is a separate change.
 
 ## Dependencies
 
@@ -43,17 +45,25 @@ Hashed `requirements.txt` files are generated per job family for reproducible
 the lock manually. For example:
 
 ```bash
-uv pip compile --group scripts/pyproject.toml:e2e-accuracy --generate-hashes \
-  --python-version 3.12 --universal -o scripts/e2e_accuracy/requirements.txt
-python -m pip install --require-hashes -r scripts/e2e_accuracy/requirements.txt
+uv pip compile --group scripts/pyproject.toml:ci --generate-hashes \
+  --python-version 3.12 --universal -o scripts/ci/requirements.txt
+python -m pip install --require-hashes -r scripts/ci/requirements.txt
 ```
 
-The other group/output pairs are `fpm-accuracy` → `fpm_accuracy/`, and `ci`,
-`pages`, `readme`, and `release` → the same-named directories. Do not use
-`uv sync` in a wheel-evaluation environment: it can remove the wheel under test.
-Historical release builds retain a fallback to the source revision’s old wheel
-builder location. Full CI may resolve a dependency group together with the selected wheel's dev
-extra where a joint resolution is required.
+The other group/output pairs are `fpm-accuracy` → `fpm_accuracy/`, and `pages`,
+`readme`, and `release` → the same-named directories. E2E campaign scripts use
+only the standard library and the separately installed predictor wheel, so they
+have no tooling dependency group. Fast CI regenerates every group lock with
+`uv==0.12.6` and rejects differences. It retains existing transitive pins unless
+the declarations require a change; use `--upgrade` for an intentional refresh.
+The `ci`, `pages`, and `readme` groups use pytest 9 to match AISimulate's dev extra.
+Do not use `uv sync` in a wheel-evaluation environment: it can remove the wheel under test.
+Historical release builds install tooling dependencies from the current harness
+and retain a fallback to the source revision's old wheel-builder location.
+Release validation permits only `scripts/pyproject.toml` to omit `[project]`;
+any other source manifest without a project name fails validation. Full CI may
+resolve a dependency group together with the selected wheel's dev extra where a
+joint resolution is required.
 
 The application/runtime dependencies remain in
 [`python/aisimulate/pyproject.toml`](../python/aisimulate/pyproject.toml).

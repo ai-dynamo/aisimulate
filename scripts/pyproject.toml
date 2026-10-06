@@ -3,11 +3,10 @@
 
 # Repository tooling only. Install the exact AISimulate wheel separately.
 [dependency-groups]
-ci = ["PyYAML==6.0.3", "pytest==8.4.2", "markdown-it-py==4.2.0", "pip-licenses==5.5.5"]
-e2e-accuracy = ["requests>=2.32,<3", "PyYAML>=6,<7"]
+ci = ["PyYAML==6.0.3", "pytest==9.0.3", "markdown-it-py==4.2.0", "pip-licenses==5.5.5"]
 fpm-accuracy = ["huggingface-hub==1.32.0", "pyarrow==25.0.1", "pydantic==2.13.5", "PyYAML==6.0.3"]
-pages = [{include-group = "e2e-accuracy"}, {include-group = "fpm-accuracy"}, "pytest==8.4.2", "playwright==1.63.0"]
-readme = ["uv==0.12.6", "psutil>=7,<8", "PyYAML==6.0.3", "pytest==8.4.2"]
+pages = [{include-group = "fpm-accuracy"}, "pytest==9.0.3", "playwright==1.63.0"]
+readme = ["uv==0.12.6", "psutil>=7,<8", "PyYAML==6.0.3", "pytest==9.0.3"]
 release = ["build>=1,<2", "maturin>=1.12,<2"]
 
 [tool.ruff]

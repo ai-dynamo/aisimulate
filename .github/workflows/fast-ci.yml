@@ -57,6 +57,16 @@ jobs:
             test "${TARGET_SHA}" = "${GITHUB_SHA}"
           fi
       - run: python -m pip install --require-hashes -r scripts/ci/requirements.txt
+      - name: Check script dependency locks
+        run: |
+          python -m pip install uv==0.12.6
+          groups=$(python -c 'import pathlib, tomllib; print(" ".join(tomllib.loads(pathlib.Path("scripts/pyproject.toml").read_text())["dependency-groups"]))')
+          for group in ${groups}; do
+            directory=${group//-/_}
+            uv pip compile --group "scripts/pyproject.toml:${group}" --generate-hashes \
+              --python-version 3.12 --universal -o "scripts/${directory}/requirements.txt" > /dev/null
+          done
+          git diff --exit-code -- scripts
       - name: Check source and packaged legal files
         run: |
           python scripts/ci/check_copyright.py

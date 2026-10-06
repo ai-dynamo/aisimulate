@@ -6,12 +6,9 @@
 import argparse
 import hashlib
 import json
-import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
-# Support direct execution as well as package imports.
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from scripts.fpm_accuracy.contract import HF_REPO, sha
 from scripts.fpm_accuracy.dashboard.visualization import VisualizationWriter
 from scripts.fpm_accuracy.hf import HfDataset

@@ -48,9 +48,12 @@ def check_manifests() -> tuple[str, str]:
     for path in ROOT.rglob("pyproject.toml"):
         if not _is_source_manifest(path):
             continue
-        # Tool-only manifests (scripts/pyproject.toml) declare no distribution.
-        if project := _toml(path).get("project"):
-            pyprojects[path] = str(project["name"])
+        manifest = _toml(path)
+        if path == ROOT / "scripts/pyproject.toml" and "project" not in manifest:
+            continue
+        project = manifest.get("project")
+        assert isinstance(project, dict) and project.get("name"), f"missing project name in {path}"
+        pyprojects[path] = str(project["name"])
     assert pyprojects == EXPECTED_PYTHON_PROJECTS, (
         f"publishable Python manifest set changed:\nexpected={EXPECTED_PYTHON_PROJECTS}\nactual={pyprojects}"
     )

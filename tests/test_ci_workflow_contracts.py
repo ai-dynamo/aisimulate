@@ -33,6 +33,7 @@ from scripts.ci.require_fast_ci import REQUIRED_JOBS, GateError, latest_run, req
 from scripts.ci.select_full_ci import COMPONENTS, select_components
 from scripts.performance import select_forward_perf as forward_perf
 from scripts.release import build_manylinux_wheel as manylinux_builder
+from scripts.release import build_release_artifacts as release_artifacts
 from scripts.release.build_manylinux_wheel import manylinux_platform
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
@@ -3265,3 +3266,60 @@ def test_simulation_perf_artifact_verification(tmp_path, fault):
             verify(tmp_path, "base", "a" * 40)
     else:
         assert verify(tmp_path, "base", "a" * 40) == manifest
+
+
+@pytest.mark.parametrize("layout", ["scripts/build_manylinux_wheel.py", "scripts/release/build_manylinux_wheel.py"])
+def test_standalone_fpe_uses_current_requirements_and_revision_builder(tmp_path, layout):
+    step = next(
+        s
+        for s in _workflow("fpe-support-matrix.yml")["jobs"]["prepare-wheel"]["steps"]
+        if s.get("name") == "Build one wheel for standalone qualification"
+    )
+    source = tmp_path / "release-source"
+    builder = source / layout
+    builder.parent.mkdir(parents=True)
+    builder.touch()
+    requirements = tmp_path / "scripts/release/requirements.txt"
+    requirements.parent.mkdir(parents=True)
+    requirements.touch()
+    capture = """
+python() {
+  if [ "$1" = "-m" ]; then
+    test "$6" = "${GITHUB_WORKSPACE}/scripts/release/requirements.txt" || return 1
+    test -f "$6" || return 1
+  else
+    test -f "$1" || return 1
+    test "$2" = "--output-dir" || return 1
+    test "$3" = "../fpe-wheel" || return 1
+    echo "$1"
+  fi
+}
+"""
+    result = subprocess.run(
+        ["bash", "-e", "-c", capture + step["run"]],
+        cwd=source,
+        env={**os.environ, "GITHUB_WORKSPACE": str(tmp_path)},
+        text=True,
+        capture_output=True,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == layout
+
+
+@pytest.mark.parametrize("extra", ["other/pyproject.toml", "python/aisimulate/pyproject.toml"])
+def test_release_manifest_discovery_rejects_unknown_tool_only_manifests(tmp_path, monkeypatch, extra):
+    for name in ("Cargo.toml", "crates/core/Cargo.toml", "python/aisimulate/pyproject.toml", "scripts/pyproject.toml"):
+        target = tmp_path / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes((REPOSITORY_ROOT / name).read_bytes())
+    monkeypatch.setattr(release_artifacts, "ROOT", tmp_path)
+    monkeypatch.setattr(
+        release_artifacts, "EXPECTED_PYTHON_PROJECTS", {tmp_path / "python/aisimulate/pyproject.toml": "aisimulate"}
+    )
+    monkeypatch.setattr(release_artifacts, "EXPECTED_CRATE", tmp_path / "crates/core/Cargo.toml")
+    release_artifacts.check_manifests()
+    target = tmp_path / extra
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("[dependency-groups]\nci = []\n")
+    with pytest.raises(AssertionError, match="missing project name"):
+        release_artifacts.check_manifests()
