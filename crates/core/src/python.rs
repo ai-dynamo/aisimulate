@@ -190,7 +190,7 @@ fn validate_public_agentic_engine(
         for role in &roles {
             ensure!(
                 role.rank.aic_nextn.is_none(),
-                "agentic host offload requires speculative decoding disabled on every role"
+                "agentic replay requires speculative decoding disabled"
             );
             ensure!(
                 role.rank.backend == Backend::Vllm,
