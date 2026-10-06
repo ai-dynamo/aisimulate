@@ -16,7 +16,7 @@ Unsupported measurement protocols remain visible as unsupported
 configurations; missing protocol identities and corrupt inputs still fail closed. `evaluate.py` reduces each shared measurement stream directly into
 overview and per-variant heatmap aggregates. Optional notification evidence retains observation-order hashes
 and compressed percentage-error sequences separately from public Pages artifacts; it does not retain
-raw measured or predicted latencies. See [daily reporting](../../docs/accuracy-slack.md).
+raw measured or predicted latencies. See [daily reporting](../../docs/ci/accuracy.md#daily-accuracy-report).
 The public `skipped_count` combines excluded and unavailable source observations;
 the Overview labels this count “excluded or unavailable.” It does not mean
 that all of these observations were deliberately filtered out.
@@ -40,7 +40,7 @@ its Rust-resolved axes, grid, and capacity, including an explicitly chosen 4×4
 grid; the Gym grid applies only when neither sampling nor legacy grid options
 are supplied. This selection is local to the Gym regression adapter; the
 shared AISim 4×4 eager defaults and AgentX/ShareGPT/LongBench recommendations
-are unchanged. See the [measured configuration](../../docs/fpm-lazy-regression-validation.md).
+are unchanged. See the [measured configuration](../../benchmarks/evidence/fpm-regression/README.md).
 
 Rust normalizes and validates this configuration before construction. Wheels
 that cannot represent or preserve its signed/lazy controls report regression

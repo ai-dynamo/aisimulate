@@ -11,7 +11,7 @@ If you want to go through the process, you can try belowing commands. However, y
 This process is not well verified, you need to debug sometimes.
 
 For a framework-version or GPU-platform upgrade, follow the
-[Collector Upgrade Playbook](../docs/perf_database/collector-upgrade-playbook.md).
+[Collector Upgrade Playbook](../../../docs/perf-model/collector/upgrade.md).
 The repo-tracked [`aic-auto-collect`](../.claude/skills/aic-auto-collect/SKILL.md)
 skill applies that workflow during long, resumable collection runs.
 SGLang 0.5.14 Hopper/Blackwell follow-up work must also consult the
@@ -587,7 +587,7 @@ Large-EP MoE uses stock `moe_perf` for modeled local expert compute and
 `moe_a2a_perf` records latency in microseconds; `load_moe_a2a_data` converts
 leaves to milliseconds. Stock `moe_perf` retains its existing timing contract.
 
-Stock `moe_perf` also supports optional Boolean `default_eligible` selection metadata. The [Core API contract](../../../docs/core-api.md#choosing-a-forward-pass-api) defines automatic and exact-source selection. Finalization validates non-null Boolean flags and the named source required by `false`, excludes the flag from measurement identity, and preserves existing annotations when merging a legacy collection that omits the column. Collectors do not infer eligibility from kernel labels or row order.
+Stock `moe_perf` also supports optional Boolean `default_eligible` selection metadata. The [Core API contract](../../../docs/perf-model/configuration.md#choosing-a-forward-pass-api) defines automatic and exact-source selection. Finalization validates non-null Boolean flags and the named source required by `false`, excludes the flag from measurement identity, and preserves existing annotations when merging a legacy collection that omits the column. Collectors do not infer eligibility from kernel labels or row order.
 
 **Legacy-overwrite caveats.** A new-schema row replaces a legacy-adapted
 leaf only at the *same* key, and the legacy adapters derive their node/EP

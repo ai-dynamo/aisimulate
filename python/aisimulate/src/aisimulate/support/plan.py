@@ -246,7 +246,7 @@ def _plan_documents(request: SupportRequest, root: Path) -> tuple[dict[str, Any]
                 "detail": (
                     "Verify pinned model metadata, memory/cache accounting, and chosen parallelism. Without an "
                     "FPM profile, predict/recommend uses a registered analytical class and SOL transfer; follow "
-                    "python/aisimulate/docs/add_a_new_model.md for that route. Supply an FPM identity/resource "
+                    "docs/perf-model/extending.md for that route. Supply an FPM identity/resource "
                     "profile to use direct interpolation without a class. Per-operation silicon data is not required."
                 ),
             },
