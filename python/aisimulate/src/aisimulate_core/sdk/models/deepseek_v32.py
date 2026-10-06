@@ -179,7 +179,7 @@ def _generation_ops_for_engine(model: BaseModel, identity: dict) -> list:
         return generation
     expected = {
         "model_name": "nvidia/GLM-5.2-NVFP4",
-        "system_name": "vr200_hecate",
+        "system_name": "vr_nvl72",
         "backend": "sglang",
         "backend_version": "0.5.18+nvinternal.rubin.0.8full.66997102",
         "tp_size": 4,

@@ -27,7 +27,7 @@ VERSION = "0.5.18+nvinternal.rubin.0.8full.66997102"
 COLLECTOR_HASH = "sha256:067ad7797474518eab028911d4f0d6f314e1dd0456b08be5bae45de267f3e332"
 CASE_PLAN_HASH = "sha256:dd11934097a3bc664e82c7081af5ceac3161666eb689e736b47765d7ea955cde"
 MODEL = "nvidia/GLM-5.2-NVFP4"
-SYSTEM = "vr200_hecate"
+SYSTEM = "vr_nvl72"
 KWARGS = dict(
     tp_size=4,
     pp_size=1,
@@ -47,7 +47,7 @@ def dataset(root, *, points=(1, 8, 32), metadata_change=None, row_change=None):
     """Synthetic latencies intentionally differ from actual qualified data."""
     root.mkdir(parents=True)
     system = {
-        "data_dir": "data/vr200_hecate",
+        "data_dir": "data/vr_nvl72",
         "gpu": {
             "mem_bw": 1e12,
             "mem_capacity": 10**12,

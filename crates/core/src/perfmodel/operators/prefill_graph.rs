@@ -29,7 +29,7 @@ pub struct SglangPrefillCommNormBoundaryOp {
 fn validate(db: &PerfDatabase, ctx: &RuntimeContext, id: &str) -> Result<(), AicError> {
     prefill_graph::validate_id(id)?;
     if db.database_mode != DatabaseMode::Silicon
-        || db.system != "vr200_hecate"
+        || db.system != "vr_nvl72"
         || db.backend != "sglang"
         || db.version != prefill_graph::VERSION
         || ctx.beam_width != 1

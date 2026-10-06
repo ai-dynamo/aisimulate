@@ -1,11 +1,11 @@
 <!-- SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved. -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
-# Vera Rubin SGLang pilot
+# Vera Rubin NVL72 SGLang pilot
 
 This directory contains isolated collectors for `nvidia/GLM-5.2-NVFP4` on SM107, using one frozen Dynamo CI runtime image. The serving target is one four-GPU node, TP4/EP1, with data-parallel attention disabled. GEMM measures the checkpoint's BF16 projections; MoE measures its NVFP4 experts; DSA measures full and shared-index layers plus the three existing sparse-kernel tables. All-reduce uses a separate four-rank launcher outside the nine-op model entrypoint.
 
-**Collection requires a source checkout.** `collector.sglang_rubin` and its collector identity files are not included in the `aisimulate` wheel. Run the commands below from `python/aisimulate/` in a checkout mounted into the pinned runtime image, which supplies the GPU dependencies. The wheel does include the VR200 hardware profile, qualified performance data, and prediction APIs; using those predictions does not require these collector sources. The packaged `collector.fpm_forward` workflow remains a separate wheel-supported collector surface, as defined in the [artifact contract](../../../../docs/artifact-contract.md).
+**Collection requires a source checkout.** `collector.sglang_rubin` and its collector identity files are not included in the `aisimulate` wheel. Run the commands below from `python/aisimulate/` in a checkout mounted into the pinned runtime image, which supplies the GPU dependencies. The wheel does include the Vera Rubin NVL72 hardware profile, qualified performance data, and prediction APIs; using those predictions does not require these collector sources. The packaged `collector.fpm_forward` workflow remains a separate wheel-supported collector surface, as defined in the [artifact contract](../../../../docs/artifact-contract.md).
 
 The collectors reuse the shared case plan, executor, checkpoints, error records, perf schemas, parquet finalization, and `collection_meta.yaml` transaction. Shared integration includes producer hash/provenance registration and the separately approved DSA publication/resume repair: worker filename selectors are distinct from physical output ownership, so full and skip-indexer producers publish into the same two canonical tables with joint provenance. This also corrects the two stock SGLang skip-indexer registrations. Stock version routing, framework manifests, performance schemas, and kernel execution remain unchanged by that shared repair.
 
@@ -18,13 +18,13 @@ The collectors reuse the shared case plan, executor, checkpoints, error records,
 - CPU replay completed all nine workloads and 492 requests, but failed the proposed pilot gate of at most 20% absolute relative error for each metric at every point. Throughput passed 9/9 points (errors -18.8% to +14.6%), TTFT 4/9 (-45.0% to -10.3%), and TPOT 6/9 (-11.9% to +31.2%). Only the three 32,768-token workloads passed all three metrics. Errors are `100 * (prediction / serving - 1)`; no serving-result calibration was applied.
 - Seventeen hardware-profile stress variants completed 153 workloads and 8,364 replay requests. No predicted metric changed by as much as 1.642% from baseline; halving or doubling either inferred network bandwidth left predictions unchanged within relative tolerance `1e-9`. These tests do not explain or resolve the accuracy gaps.
 
-The historical collectors and external data established the initial bounded pilot. The following historical end-to-end results remain separate from the graph-forward qualification described below; progress is tracked in the [implementation plan](https://linear.app/nvidia/document/glm-52-nvfp4-on-vera-rubin-aisimulate-implementation-plan-c3a86136763e). The experimental hardware profile and CPU replay script passed independent review. The accepted tables and hardware assumptions are now packaged for the bounded graph-forward profile; raw collection evidence and the historical replay campaign remain external artifacts. These results do not establish general VR200 support, and a CPU `--plan-only` run is not GPU qualification. The bounded module replay uses five tables across four families: GEMM, MoE, DSA context/generation, and communication. Raw sparse component tables are separate smoke evidence. Preserve each run's original sidecars and content hashes when importing data; compute, DSA, and communication artifacts need not share one collector source snapshot.
+The historical collectors and external data established the initial bounded pilot. The following historical end-to-end results remain separate from the graph-forward qualification described below; progress is tracked in the [implementation plan](https://linear.app/nvidia/document/glm-52-nvfp4-on-vera-rubin-aisimulate-implementation-plan-c3a86136763e). The experimental hardware profile and CPU replay script passed independent review. The accepted tables and hardware assumptions are now packaged for the bounded graph-forward profile; raw collection evidence and the historical replay campaign remain external artifacts. These results do not establish general Vera Rubin NVL72 support, and a CPU `--plan-only` run is not GPU qualification. The bounded module replay uses five tables across four families: GEMM, MoE, DSA context/generation, and communication. Raw sparse component tables are separate smoke evidence. Preserve each run's original sidecars and content hashes when importing data; compute, DSA, and communication artifacts need not share one collector source snapshot.
 
 That initial replay represented the checkpoint's three initial dense layers as MoE and omitted decode graph padding. The current GLM model composition preserves the three dense layers. Interpolation/extrapolation, empirical memory and fusion approximations, and unmodeled serving overhead also limit the comparison. These are investigation targets, not established causes of the observed errors.
 
 ## Exact prefill graph profile
 
-The opt-in `sglang_glm52_nvfp4_vr200_tp4_graph_v1` profile supplies direct homogeneous prefill latency through the canonical `RustForwardPassPerfModel.best_available(config)` constructor and its `predict_prefill_latency(bs, isl, prefix)` method. Set `estimator_config.op_level.prefill_graph_profile`, explicit `op_level`/`deny`/`SILICON`, worker type `prefill`, and `estimator_config.correction.enabled=false`; the [Core API example](../../../../docs/core-api.md#vera-rubin-glm-52-graph-prefill-pilot) provides the complete identity. Saved canonical configurations retain the resolved profile SHA-256. Here `isl` is total input length, including the cached prefix. The seven admitted calls are `(1,1024,0)`, `(2,1024,0)`, `(1,2048,1024)`, `(1,8192,0)`, `(2,8192,0)`, `(1,16384,0)` and `(1,32768,16384)`. This selector stays outside normal CLI/scheduler configuration. Other shapes, runtimes, mixed/decode steps, energy and SOL fail explicitly. Selecting this graph profile is opt-in. The pilot also includes the separately validated dense-prefix and projection correctness fixes described in the PR.
+The opt-in `sglang_glm52_nvfp4_vr_nvl72_tp4_graph_v1` profile supplies direct homogeneous prefill latency through the canonical `RustForwardPassPerfModel.best_available(config)` constructor and its `predict_prefill_latency(bs, isl, prefix)` method. Set `estimator_config.op_level.prefill_graph_profile`, explicit `op_level`/`deny`/`SILICON`, worker type `prefill`, and `estimator_config.correction.enabled=false`; the [Core API example](../../../../docs/core-api.md#vera-rubin-glm-52-graph-prefill-pilot) provides the complete identity. Saved canonical configurations retain the resolved profile SHA-256. Here `isl` is total input length, including the cached prefix. The seven admitted calls are `(1,1024,0)`, `(2,1024,0)`, `(1,2048,1024)`, `(1,8192,0)`, `(2,8192,0)`, `(1,16384,0)` and `(1,32768,16384)`. This selector stays outside normal CLI/scheduler configuration. Other shapes, runtimes, mixed/decode steps, energy and SOL fail explicitly. Selecting this graph profile is opt-in. The pilot also includes the separately validated dense-prefix and projection correctness fixes described in the PR.
 
 The frozen graph-forward comparison passed all seven measured contexts at the 15% criterion, with worst absolute relative error 5.2334%. This is a forward-step mean-latency result for the exact pinned runtime. That prefill comparison does not establish scheduler TTFT, model quality or general Vera Rubin accuracy. Decode is assessed separately below. The full profile binds deterministic FlashInfer top-k, forced DSA, breakable prefill graphs, buckets `[1024,2048,8192,16384]`, TP4/EP1 and the source/runtime/checkpoint identities. The full native argv and environment are retained in the profile; the historical eager launch below is a different collection path.
 
@@ -35,7 +35,11 @@ The frozen graph-forward comparison passed all seven measured contexts at the 15
 
 Both tables are latency-only and use exact keys with no interpolation or source inheritance. The identical `.profile.json` sidecars contain all row payloads without `profile_id`; the SHA-256 of their exact UTF-8 bytes including the final LF becomes every row's profile ID. The consumer binds that reviewed ID, exact Float64 row values and the original system/table hashes. Existing tables and empirical coefficients are unchanged. Publication receipts separately hash the final parquet files, avoiding a profile/table hash cycle.
 
-From the Python package directory, publish a fresh systems bundle using the portable, immutable evidence bundle and the original qualified systems files:
+The acquisition publisher below reproduces the historical publication with its
+original names. Its identity files and source paths remain historical evidence.
+The current package uses the renamed publication described next.
+
+From the Python package directory, reproduce the historical systems bundle using the portable, immutable evidence bundle and the original qualified systems files:
 
 ```bash
 python -m collector.sglang_rubin.publish_prefill_graph \
@@ -46,11 +50,44 @@ python -m collector.sglang_rubin.publish_prefill_graph \
 
 `--validate-only` runs complete admission and row derivation without publishing. Publication stages both families and metadata before one atomic directory rename. Exact repetition is idempotent; a changed row, profile, input or partial bundle fails. The external verification bundle retains every raw export, candidate and decision at relative locations; a documentary file originally outside its candidate directory has one exact name-hash/content-hash relocation. No public runtime depends on a user's workspace or Vault. Ship the small systems tables, profile sidecars and receipt; raw GPU evidence remains an external artifact.
 
+### Migrate the published system name
+
+The public system is now `vr_nvl72` (Vera Rubin NVL72), and the graph selector is
+`sglang_glm52_nvfp4_vr_nvl72_tp4_graph_v1`. Neither retired name is an alias.
+This is a packaging rename of the existing four-GPU pilot, not qualification of
+a complete 72-GPU rack. Hardware values, measurement rows and admitted shapes
+are unchanged.
+
+Use the original shipped systems directory from AISimulate commit
+`d1e3cd84cb7f891046668ea5bd262009cac497d4` as input. It contains the final
+publication, the subsequent GEMM/MoE attribution corrections and hardware
+evidence. This command does not require the original GPU evidence archives:
+
+```bash
+python -m collector.sglang_rubin.publish_prefill_graph \
+  --migrate-vr-nvl72 --base /artifacts/original-shipped-systems \
+  --output /artifacts/vr-nvl72-systems
+```
+
+The output directory must not exist and must be outside the input directory;
+use canonical paths without symlinks. The command verifies the pinned input
+files, publishes only the renamed pilot artifacts atomically, and embeds the
+original receipt and verified source hashes in the new receipt. It preserves
+the five ordinary tables and collection histories byte-for-byte. Only
+`profile_id` changes in the two composite tables. Repeated runs using the same
+Arrow version produce identical bytes; different Arrow versions can encode
+the same Parquet payload differently. Update the system's `query_versions.yaml`
+override separately when incorporating the output into a full systems tree.
+
+Historical publisher identities, raw acquisition paths, observed device labels
+and source hashes intentionally retain their original spelling. The migration
+does not claim a new GPU collection or replace those records.
+
 The approximation reuses synthetic attention weights/activations/KV without intervening MLP/communication queue work, uses repeated-state communication throughput and ideal router/routed-versus-shared overlap, and retains empirical norm/add terms. Original full-model structural weight inventory is preserved; these measurements do not qualify peak graph/KV memory.
 
 ## Decode forward-step validation
 
-The default op-level predictor is validated separately against 18 native CUDA-graph decode steps on the same pinned runtime. The grid is batches `[1,3,8,29,31,32]` × past-KV lengths `[1024,8192,32768]`, with one current token per request and exact native graph buckets. Seventeen cases meet the original ±15% criterion; batch 1 at K=1,024 is −17.09%, accepted for the initial pilot. No prefill graph selector or observed-MoE distribution override is used for decode prediction. The [combined prefill/decode report](../../../../docs/vr200-glm52-accuracy.md) contains every row, the canonical API calls, measurement method, evidence identities and repeatability limits. This comparison does not qualify arbitrary graph padding or end-to-end TPOT.
+The default op-level predictor is validated separately against 18 native CUDA-graph decode steps on the same pinned runtime. The grid is batches `[1,3,8,29,31,32]` × past-KV lengths `[1024,8192,32768]`, with one current token per request and exact native graph buckets. Seventeen cases meet the original ±15% criterion; batch 1 at K=1,024 is −17.09%, accepted for the initial pilot. No prefill graph selector or observed-MoE distribution override is used for decode prediction. The [combined prefill/decode report](../../../../docs/vr-nvl72-glm52-accuracy.md) contains every row, the canonical API calls, measurement method, evidence identities and repeatability limits. This comparison does not qualify arbitrary graph padding or end-to-end TPOT.
 
 ## Reproduce qualified observed-MoE data
 
@@ -125,7 +162,7 @@ python -m collector.sglang_rubin \
   --checkpoint-dir "$VR_CHECKPOINT" --launcher-image "$VR_IMAGE" \
   --ops moe dsa_context_module dsa_context_module_skip_indexer \
     dsa_generation_module dsa_generation_module_skip_indexer \
-  --output-dir /results/vr200-glm52-smoke --limit 1 --sequential
+  --output-dir /results/vr-nvl72-glm52-smoke --limit 1 --sequential
 ```
 
 Run raw sparse-kernel proof separately with the same bounded sparse shapes:
@@ -140,7 +177,7 @@ AIC_DSA_GENERATION_BATCH_SIZES=1 \
 python -m collector.sglang_rubin \
   --checkpoint-dir "$VR_CHECKPOINT" --launcher-image "$VR_IMAGE" \
   --ops glm5_mqa_logits_module glm5_topk_module glm5_dsa_attn_module \
-  --output-dir /results/vr200-glm52-sparse-smoke --limit 1 --sequential
+  --output-dir /results/vr-nvl72-glm52-sparse-smoke --limit 1 --sequential
 ```
 
 Raw MQA/top-k collectors intentionally raise when native serving selects dense attention or the K-only indexer, because those paths do not execute the requested kernels. Use the full DSA modules to measure those paths; do not run the raw sparse operations over the full module grid.
@@ -151,7 +188,7 @@ The shared GEMM grid contains generic large shapes, so a prefix selected by `--l
 python -m collector.sglang_rubin \
   --checkpoint-dir "$VR_CHECKPOINT" --launcher-image "$VR_IMAGE" \
   --ops gemm --case-filter "['bfloat16', 128, 6144, 6144]" \
-  --output-dir /results/vr200-glm52-gemm-smoke --sequential
+  --output-dir /results/vr-nvl72-glm52-gemm-smoke --sequential
 ```
 
 `--case-filter` is available only with `--ops gemm`, uses the existing executor's OR substring semantics, and is included in the plan and resume identity. Supply filters for the GLM projection shapes and token counts needed by a collection campaign; this one shape only establishes a smoke result. `--processes N` selects the number of independent GPU workers; the default is one, and `--sequential` runs on device 0. `--smoke` instead shuffles outer cases and samples one by default; avoid combining that random selection with a single-batch inner filter, because the selected outer batch may differ. Inner filters intersect the declared grid and cannot inject shapes.
@@ -169,7 +206,7 @@ python -m collector.sglang_rubin \
   --checkpoint-dir "$VR_CHECKPOINT" --launcher-image "$VR_IMAGE" \
   --ops dsa_context_module dsa_generation_module \
     dsa_context_module_skip_indexer dsa_generation_module_skip_indexer \
-  --output-dir /results/vr200-glm52-dsa --processes 4 --limit 6
+  --output-dir /results/vr-nvl72-glm52-dsa --processes 4 --limit 6
 ```
 
 The stock context sweep caps batch size at 8 for input lengths of at least 8,192. Its generation token budget excludes past-KV 32,768 at batch 32, so this scope does not give exact coverage for that decode point. Collect MoE separately with `--ops moe --processes 4` and a fresh output directory; collect GEMM with explicit projection/token filters as above. The visible runtime filters restrict MoE to TP4/EP1 and DSA modules to TP4; sparse kernels use TP4/head-count 16. GEMM retains the existing physical shape grid. There are no YAML shape exclusions. Queued failures remain errors, and any error gives a nonzero exit even when successful rows are finalized.
@@ -180,7 +217,7 @@ After the independent workers exit, collect TP4 communication with all four GPUs
 torchrun --standalone --nproc-per-node=4 \
   --module collector.sglang_rubin.collect_all_reduce \
   --checkpoint-dir "$VR_CHECKPOINT" --launcher-image "$VR_IMAGE" \
-  --output-dir /results/vr200-glm52-communication \
+  --output-dir /results/vr-nvl72-glm52-communication \
   --tokens 1 8 32 128 1024 8192 16384 --modes graph eager
 ```
 
@@ -224,4 +261,4 @@ python -m collector.sglang_rubin.benchmark \
   --serving-config /results/server-config.json --output /results/e2e-1024.json
 ```
 
-Repeat both invocations with exact 8,192- and 32,768-token inputs and separate artifacts. There are 164 measured requests per input length, or 492 total; exclude the separate warmup artifacts from measured throughput. The frozen baseline reused its prompt at each input length with prefix caching disabled. A request must finish its SSE stream, emit text, provide a finish reason, and report a positive actual output-token count. Empty output, missing usage, truncated streams, wrong token counts, and any failed request invalidate the measured wave and return nonzero. Compare measured TTFT, TPOT, and throughput with predictions only after the experimental VR200 hardware profile and genuine tables pass the normal data/provenance checks. That historical end-to-end comparison failed its proposed accuracy gate. The separately qualified prefill graph profile does not establish scheduler TTFT; current decode forward-step results are documented in the [combined accuracy report](../../../../docs/vr200-glm52-accuracy.md).
+Repeat both invocations with exact 8,192- and 32,768-token inputs and separate artifacts. There are 164 measured requests per input length, or 492 total; exclude the separate warmup artifacts from measured throughput. The frozen baseline reused its prompt at each input length with prefix caching disabled. A request must finish its SSE stream, emit text, provide a finish reason, and report a positive actual output-token count. Empty output, missing usage, truncated streams, wrong token counts, and any failed request invalidate the measured wave and return nonzero. Compare measured TTFT, TPOT, and throughput with predictions only after the experimental Vera Rubin NVL72 hardware profile and genuine tables pass the normal data/provenance checks. That historical end-to-end comparison failed its proposed accuracy gate. The separately qualified prefill graph profile does not establish scheduler TTFT; current decode forward-step results are documented in the [combined accuracy report](../../../../docs/vr-nvl72-glm52-accuracy.md).
