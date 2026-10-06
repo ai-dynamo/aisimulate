@@ -299,6 +299,7 @@ class KVCacheEstimator:
         enable_eplb: bool = False,
         wideep_num_slots: int | None = None,
         nextn: int = 0,
+        speculation: dict | None = None,
         systems_path: str | None = None,
     ) -> KVCacheEstimator:
         """Build the model/backend/perf-DB and the non-KV memory breakdown.
@@ -331,6 +332,10 @@ class KVCacheEstimator:
             moe_backend=moe_backend,
             moe_kernel_source=moe_kernel_source,
         )
+        if speculation is not None:
+            from aisimulate_core.sdk.speculation import SpeculationConfig, resolve_draft_config
+
+            speculation = resolve_draft_config(SpeculationConfig(**speculation))
         model_config = build_model_config(
             tp_size=tp_size,
             pp_size=pp_size,
@@ -349,6 +354,7 @@ class KVCacheEstimator:
             wideep_num_slots=wideep_num_slots,
             cp_size=cp_size,
             dcp_size=dcp_size,
+            speculation=speculation,
         )
         # Apply nextn/MTP onto the config BEFORE get_model so the built model is
         # spec-decode aware (e.g. for any draft-module weights). This does NOT scale
@@ -365,6 +371,8 @@ class KVCacheEstimator:
         resolve_sglang_mla_compute(model_config, model_path, backend, database.version, database.system_spec)
         model = get_model(model_path, model_config, backend)
         backend_obj = get_backend(backend)
+        scheme = getattr(model, "spec_scheme", None)
+        has_draft = scheme is not None and scheme.kind not in {"none", "mtp", "ngram"}
 
         # num_tokens = max_num_tokens -> activations track BuildConfig.max_num_tokens
         # (TRT-LLM `_memory_usage_kwargs_for_agg`). With num_tokens > 0 passed
@@ -400,6 +408,8 @@ class KVCacheEstimator:
             resident_weights = weight_memory()
             if resident_weights is not None:
                 weights_bytes = float(resident_weights)
+                if has_draft:
+                    weights_bytes += scheme.draft_weights_bytes(model)
         activations_bytes = float(memory["activations"]) * _ONE_GIB
         runtime_overhead_bytes = float(memory["others"]) * _ONE_GIB
         comm_overhead_bytes = float(memory["nccl"]) * _ONE_GIB
@@ -425,7 +435,23 @@ class KVCacheEstimator:
             # Resolved lazily: some callers never invert (stubs without the
             # capacity method).
             capacity = getattr(model, "get_kvcache_rank_batch_capacity", None) or model.get_kvcache_batch_capacity
-            return int(capacity(float(kv_budget_bytes), max_batch_size))
+            upper = int(capacity(float(kv_budget_bytes), max_batch_size))
+            if not has_draft:
+                return upper
+            # Invert the existing target capacity and draft KV hooks together.
+            # Reserve the draft's per-request state for the scheduler envelope;
+            # round sequence lengths up so partial batches never under-reserve.
+            low = 0
+            while low < upper:
+                tokens = (low + upper + 1) // 2
+                sequence_length = (tokens + max_batch_size - 1) // max_batch_size
+                draft_bytes = max_batch_size * scheme.draft_kv_bytes_per_sequence(model, sequence_length)
+                remaining = float(kv_budget_bytes) - draft_bytes
+                if remaining > 0 and capacity(remaining, max_batch_size) >= tokens:
+                    low = tokens
+                else:
+                    upper = tokens - 1
+            return low
 
         return cls(
             {
@@ -439,7 +465,8 @@ class KVCacheEstimator:
                 "pre_model_load_overhead_bytes": (
                     runtime_overhead_bytes + comm_overhead_bytes if backend == "sglang" else 0.0
                 ),
-                "kv_size_per_token_bytes": float(rank_bytes_per_sequence(1)),
+                "kv_size_per_token_bytes": float(rank_bytes_per_sequence(1))
+                + (scheme.draft_kv_bytes_per_sequence(model, 1) if has_draft else 0.0),
                 "gpu_memory_capacity_bytes": float(database.system_spec["gpu"]["mem_capacity"]),
                 "tokens_from_kv_bytes": tokens_from_kv_bytes,
             }
@@ -1062,6 +1089,7 @@ def estimate_kv_cache(
     enable_eplb: bool = False,
     wideep_num_slots: int | None = None,
     nextn: int = 0,
+    speculation: dict | None = None,
     systems_path: str | None = None,
     gpu_memory_capacity_bytes_override: int | None = None,
     cuda_graph_reserved_bytes: int = 0,
@@ -1157,6 +1185,10 @@ def estimate_kv_cache(
     if fpm_profile is not None:
         if nextn:
             raise ValueError("FPM profile resources support plain autoregressive execution; nextn must be 0")
+        if speculation is not None:
+            raise ValueError(
+                "FPM profile resources support plain autoregressive execution; speculation must be omitted"
+            )
         profile = load_fpm_profile(fpm_profile)
         if backend_version is None:
             raise ValueError("FPM profile memory estimation requires the profile's literal backend_version")
@@ -1282,6 +1314,7 @@ def estimate_kv_cache(
             enable_eplb=enable_eplb,
             wideep_num_slots=wideep_num_slots,
             nextn=int(nextn),
+            speculation=speculation,
             systems_path=systems_path,
         )
     except Exception as exc:  # native model build unsupported (model/backend/perf DB)
@@ -1295,6 +1328,7 @@ def estimate_kv_cache(
             ) from exc
         if (
             not allow_naive_fallback
+            or speculation is not None
             or enable_eplb
             or wideep_num_slots is not None
             or moe_backend not in (None, "default")
@@ -1365,6 +1399,7 @@ def estimate_num_gpu_blocks(
     enable_eplb: bool = False,
     wideep_num_slots: int | None = None,
     nextn: int = 0,
+    speculation: dict | None = None,
     systems_path: str | None = None,
     gpu_memory_capacity_bytes_override: int | None = None,
     cuda_graph_reserved_bytes: int = 0,
@@ -1435,6 +1470,7 @@ def estimate_num_gpu_blocks(
         enable_eplb=enable_eplb,
         wideep_num_slots=wideep_num_slots,
         nextn=nextn if fpm_profile is not None else int(nextn),
+        speculation=speculation,
         systems_path=systems_path,
         gpu_memory_capacity_bytes_override=gpu_memory_capacity_bytes_override,
         cuda_graph_reserved_bytes=cuda_graph_reserved_bytes,

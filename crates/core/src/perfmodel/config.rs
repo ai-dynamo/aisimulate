@@ -130,6 +130,18 @@ pub const ENGINE_CONFIG_SCHEMA_VERSION: u32 = 1;
 //   renumbered at each merge (precedent: 15, 18).
 pub const ENGINE_SPEC_SCHEMA_VERSION: u32 = 26;
 
+/// Scheme dimensions resolved by the SDK while constructing the cost graph.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct ResolvedSpeculationConfig {
+    pub kind: String,
+    /// Includes the base/root token and all target verification candidates.
+    pub verify_width: u32,
+    /// Longest accepted draft prefix, excluding the base token.
+    pub max_accepted_draft_tokens: u32,
+    /// Per-rank resident draft weights from the existing scheme hook.
+    pub draft_weights_bytes: f64,
+}
+
 /// Static engine identity and setup information carried by an
 /// [`crate::perfmodel::engine::spec::EngineSpec`].
 ///
@@ -311,6 +323,8 @@ pub struct SpeculativeConfig {
     /// never auto-enabled; the user opts in explicitly.
     #[serde(default)]
     pub nextn: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub speculation_metadata: Option<ResolvedSpeculationConfig>,
 }
 
 /// Backend performance database family.

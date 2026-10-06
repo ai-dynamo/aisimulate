@@ -52,25 +52,40 @@ pub enum ForwardPassFallbackPolicy {
     LegacyRegression,
 }
 
-/// Target-verification cost; acceptance and scheduler progress belong to replay.
+/// Existing SDK speculative scheme identity; acceptance belongs to replay.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(
-    tag = "kind",
-    content = "params",
-    rename_all = "snake_case",
-    deny_unknown_fields
-)]
-pub enum ForwardPassSpeculationConfig {
-    Ngram { num_speculative_tokens: u32 },
+#[serde(deny_unknown_fields)]
+pub struct ForwardPassSpeculationConfig {
+    pub kind: String,
+    #[serde(default)]
+    pub params: serde_json::Map<String, serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub draft_model_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub draft_config: Option<serde_json::Map<String, serde_json::Value>>,
 }
 
 impl ForwardPassSpeculationConfig {
-    pub fn num_speculative_tokens(&self) -> u32 {
-        match self {
-            Self::Ngram {
-                num_speculative_tokens,
-            } => *num_speculative_tokens,
+    pub fn kind(&self) -> &str {
+        &self.kind
+    }
+
+    /// Preserve the original MTP JSON spelling at the canonical boundary.
+    pub(crate) fn sdk_config(&self) -> Result<Self, AicError> {
+        let mut resolved = self.clone();
+        if self.kind == "mtp" {
+            if let Some(depth) = resolved.params.remove("num_speculative_tokens") {
+                if resolved
+                    .params
+                    .get("depth")
+                    .is_some_and(|value| value != &depth)
+                {
+                    return Err(invalid_config("conflicting MTP depth parameters"));
+                }
+                resolved.params.insert("depth".into(), depth);
+            }
         }
+        Ok(resolved)
     }
 }
 
@@ -249,6 +264,13 @@ impl ForwardPassPerfModelConfig {
         self.resolve_prefill_graph_profile()?;
         self.estimator_config.resolve_defaults();
         self.validate()?;
+        #[cfg(feature = "python")]
+        if let Some(speculation) = &self.speculation
+            && speculation.draft_model_path.is_some()
+            && speculation.draft_config.is_none()
+        {
+            self.speculation = Some(crate::py::resolve_speculation_identity(speculation)?);
+        }
         let registered = if self.fpm_profile.is_some() {
             self.estimator_config
                 .fpm_interpolation
@@ -442,23 +464,17 @@ impl ForwardPassPerfModelConfig {
         }
         if let Some(speculation) = &self.speculation {
             if self.nextn != 0 {
-                return Err(invalid_config(
-                    "ngram speculation cannot be combined with nextn",
-                ));
+                return Err(invalid_config("speculation cannot be combined with nextn"));
             }
-            if self.backend != BackendKind::Vllm {
-                return Err(invalid_config("ngram speculation requires backend=vllm"));
+            if speculation.kind.trim().is_empty() {
+                return Err(invalid_config("speculation kind must not be empty"));
             }
-            if !(1..=5).contains(&speculation.num_speculative_tokens()) {
-                return Err(invalid_config(
-                    "ngram num_speculative_tokens must be in 1..=5",
-                ));
-            }
+            speculation.sdk_config()?;
             if !matches!(
                 self.estimation_mode,
                 EstimationMode::Auto | EstimationMode::OpLevel
             ) {
-                return Err(invalid_config("ngram speculation requires op_level timing"));
+                return Err(invalid_config("speculation requires op_level timing"));
             }
         }
         if self.estimation_mode == EstimationMode::FpmInterpolation && self.nextn != 0 {
@@ -833,39 +849,42 @@ mod tests {
     }
 
     #[test]
-    fn prompt_lookup_is_distinct_from_mtp_and_validated_before_selection() {
-        let mut cfg = config(serde_json::json!({
-            "speculation": {"kind": "ngram", "params": {"num_speculative_tokens": 2}}
-        }));
-        cfg.validate().unwrap();
-        assert_eq!(cfg.nextn, 0);
-        assert_eq!(
-            serde_json::from_str::<ForwardPassPerfModelConfig>(
-                &serde_json::to_string(&cfg).unwrap()
-            )
-            .unwrap(),
-            cfg
-        );
-        for mode in [
-            EstimationMode::FpmInterpolation,
-            EstimationMode::FpmRegression,
-        ] {
-            cfg.estimation_mode = mode;
-            assert!(cfg.validate().is_err());
+    fn scheme_identity_round_trips_without_losing_draft_geometry() {
+        for kind in ["mtp", "ngram", "eagle3", "dflash", "draft_model", "dspark"] {
+            let spec = serde_json::json!({"kind": kind, "params": {"num_speculative_tokens": 3},
+                "draft_model_path": "example/draft", "draft_config": {"hidden_size": 128}});
+            let cfg = config(serde_json::json!({"speculation": spec}));
+            cfg.validate().unwrap();
+            assert_eq!(serde_json::to_value(&cfg).unwrap()["speculation"], spec);
+            assert_eq!(cfg.nextn, 0);
+            let mut conflict = cfg.clone();
+            conflict.nextn = 3;
+            assert!(conflict.validate().is_err());
+            for mode in [
+                EstimationMode::FpmInterpolation,
+                EstimationMode::FpmRegression,
+            ] {
+                conflict.nextn = 0;
+                conflict.estimation_mode = mode;
+                assert!(conflict.validate().is_err());
+            }
         }
-        cfg.estimation_mode = EstimationMode::Auto;
-        cfg.nextn = 2;
-        assert!(cfg.validate().is_err());
-        cfg.nextn = 0;
-        cfg.backend = BackendKind::Sglang;
-        assert!(cfg.validate().is_err());
-        cfg.backend = BackendKind::Vllm;
-        for depth in [0, 6] {
-            cfg.speculation = Some(ForwardPassSpeculationConfig::Ngram {
-                num_speculative_tokens: depth,
-            });
-            assert!(cfg.validate().is_err());
-        }
+    }
+
+    #[test]
+    fn legacy_mtp_parameter_is_translated_only_at_sdk_boundary() {
+        let cfg = config(serde_json::json!({"speculation": {
+            "kind": "mtp", "params": {"num_speculative_tokens": 3}
+        }}));
+        let spec = cfg.speculation.unwrap();
+        assert_eq!(spec.params["num_speculative_tokens"], 3);
+        let translated = spec.sdk_config().unwrap();
+        assert_eq!(translated.params["depth"], 3);
+        assert!(!translated.params.contains_key("num_speculative_tokens"));
+        let bad = config(serde_json::json!({"speculation": {
+            "kind": "mtp", "params": {"num_speculative_tokens": 3, "depth": 2}
+        }}));
+        assert!(bad.validate().is_err());
     }
 
     #[test]

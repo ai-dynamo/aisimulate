@@ -424,6 +424,17 @@ The cost configuration is retained in provenance and saved recommendations.
 Acceptance rates and the scheduler seed stay in the CLI/Replay speculation
 configuration; they do not change the model's target-verification graph.
 
+Explicit MTP uses `{"kind": "mtp", "params": {"num_speculative_tokens": 3}}`
+or `ForwardPassSpeculationConfig::Mtp { num_speculative_tokens: 3 }` through
+this same constructor. Depth is 1–5; legacy `nextn` must be zero. It retains the
+target architecture and prices its supported NextN draft-layer and widened
+verification approximation. Unsupported overrides fail explicitly. Acceptance
+and seed remain replay controls. Exhaustive Rust matches must handle `Mtp`.
+
+Agentic MTP supports vLLM/SGLang with explicit acceptance, fixed KV capacity,
+HBM-only cache and AIC op-level timing. The cost API also accepts TRT-LLM MTP;
+that does not extend Agentic replay support.
+
 ### Estimator controls
 
 `estimator_config` is passed intact through the Python facade, CLI, Sweeper,

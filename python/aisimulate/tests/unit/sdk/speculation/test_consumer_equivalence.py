@@ -871,6 +871,7 @@ def test_standalone_repeated_nested_composites_keep_native_costs_and_weights(rea
     draft = SimpleNamespace(generation_ops=[composite], context_ops=[composite])
     scheme = DraftModelScheme("Qwen/Qwen3-0.6B", 3)
     scheme._draft_model = draft
+    scheme._draft_weights = float(composite.get_weights())
     target = get_model("Qwen/Qwen3-8B", _model_config(), "vllm")
     target.spec_scheme = scheme
     original_wire = composite._spec_json()

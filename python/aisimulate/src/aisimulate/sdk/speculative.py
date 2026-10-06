@@ -210,7 +210,7 @@ def resolve_speculative_block(
         return SpeculativeBlockResolution(nextn=nextn, nextn_accepted=nextn_accepted)
     if not isinstance(speculative, dict):
         raise TypeError("speculative must be a mapping (method/params/draft_model_path/accepted_tokens).")
-    from aisimulate.sdk.speculation import SpeculationConfig, build_spec_scheme
+    from aisimulate.sdk.speculation import SpeculationConfig, build_spec_scheme, resolve_draft_config
 
     block = dict(speculative)
     method = block.pop("method", None)
@@ -259,12 +259,8 @@ def resolve_speculative_block(
         raise TypeError("speculative.draft_config must be a mapping.")
     if draft_config is not None and draft_model_path is not None:
         raise ValueError("Specify only one of speculative.draft_config and speculative.draft_model_path.")
-    if draft_config is None and draft_model_path:
-        from aisimulate.sdk.utils import get_model_config_from_model_path
-
-        draft_config = dict(get_model_config_from_model_path(draft_model_path).get("raw_config", {}))
-    spec_config = SpeculationConfig(
-        kind=method, params=params, draft_model_path=draft_model_path, draft_config=draft_config
+    spec_config = resolve_draft_config(
+        SpeculationConfig(kind=method, params=params, draft_model_path=draft_model_path, draft_config=draft_config)
     )
     scheme = build_spec_scheme(None, spec_config)  # raises on unknown kind / bad params
     if accepted is None:

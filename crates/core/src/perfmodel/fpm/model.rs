@@ -391,9 +391,13 @@ impl ForwardPassPerfModel {
                 last_error = Some(error);
                 continue;
             }
-            if config.speculation.is_some() && mode != EstimationMode::OpLevel {
-                let error =
-                    AicError::UnsupportedModel("ngram speculation requires op_level timing".into());
+            if let Some(speculation) = &config.speculation
+                && mode != EstimationMode::OpLevel
+            {
+                let error = AicError::UnsupportedModel(format!(
+                    "{} speculation requires op_level timing",
+                    speculation.kind()
+                ));
                 failures.push(format!("{mode:?}: {error}"));
                 last_error = Some(error);
                 continue;
@@ -933,6 +937,14 @@ impl ForwardPassPerfModel {
     pub(crate) fn native_engine(&self) -> Option<Arc<Engine>> {
         match &self.mode {
             ForwardPassPerfMode::Native { engine, .. } => Some(Arc::clone(engine)),
+            ForwardPassPerfMode::Regression { .. } => None,
+        }
+    }
+
+    /// Scheme dimensions from the same graph used for timing.
+    pub fn speculation_metadata(&self) -> Option<&crate::ResolvedSpeculationConfig> {
+        match &self.mode {
+            ForwardPassPerfMode::Native { engine, .. } => engine.speculation_metadata(),
             ForwardPassPerfMode::Regression { .. } => None,
         }
     }

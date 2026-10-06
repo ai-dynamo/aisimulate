@@ -166,10 +166,6 @@ fn validate_public_agentic_engine(
             matches!(role.rank.backend, Backend::Vllm | Backend::Sglang),
             "agentic replay supports only vLLM and SGLang backends"
         );
-        ensure!(
-            role.rank.aic_nextn.is_none(),
-            "agentic replay requires speculative decoding disabled"
-        );
     }
     // HBM-only deployments retain their existing worker/DP support. Once any
     // active role enables G2, qualify the entire deployment, not just that rank.
@@ -192,6 +188,10 @@ fn validate_public_agentic_engine(
             "agentic host offload requires static worker pools without a scaling policy"
         );
         for role in &roles {
+            ensure!(
+                role.rank.aic_nextn.is_none(),
+                "agentic host offload requires speculative decoding disabled on every role"
+            );
             ensure!(
                 role.rank.backend == Backend::Vllm,
                 "agentic host offload requires backend=vllm on every role"
@@ -404,27 +404,10 @@ impl AicTimingConfig {
     }
 
     fn speculative_depth(&self) -> Result<u32> {
-        let Some(speculation) = &self.speculation else {
-            return Ok(self.nextn);
-        };
-        ensure!(
-            self.nextn == 0,
-            "ngram speculation cannot be combined with nextn"
-        );
-        ensure!(
-            self.backend == "vllm",
-            "ngram speculation requires backend=vllm"
-        );
-        ensure!(
-            self.forward_model.as_deref().unwrap_or("op_level") == "op_level",
-            "ngram speculation requires op_level timing"
-        );
-        let depth = speculation.num_speculative_tokens();
-        ensure!(
-            (1..=5).contains(&depth),
-            "ngram num_speculative_tokens must be in 1..=5"
-        );
-        Ok(depth)
+        if self.speculation.is_some() {
+            ensure!(self.nextn == 0, "speculation cannot be combined with nextn");
+        }
+        Ok(self.nextn)
     }
 
     fn resolved_backend_version(&self) -> &str {
@@ -555,6 +538,7 @@ impl AicTimingModel {
             .provenance()
             .context("canonical estimator omitted construction provenance")?;
         config.backend_version = provenance.config.backend_version.clone();
+        config.speculation = provenance.config.speculation.clone();
         config.systems_path = provenance
             .selected_systems_root
             .as_ref()
@@ -1046,8 +1030,20 @@ fn aic_capacity_kwargs<'py>(
         "cuda_graph_reserved_bytes",
         config.cuda_graph_reserved_bytes,
     )?;
-    // Capacity intentionally omits NextN until AIC's Eagle memory model no
-    // longer returns negative KV capacity. Timing compilation still uses it.
+    if let Some(speculation) = &config.speculation {
+        let value = serde_json::to_string(
+            &speculation
+                .sdk_config()
+                .map_err(|error| pyo3::exceptions::PyValueError::new_err(error.to_string()))?,
+        )
+        .map_err(|error| pyo3::exceptions::PyValueError::new_err(error.to_string()))?;
+        kwargs.set_item(
+            "speculation",
+            PyModule::import(py, "json")?.call_method1("loads", (value,))?,
+        )?;
+    } else {
+        kwargs.set_item("nextn", config.nextn)?;
+    }
     kwargs.set_item("systems_path", config.systems_path.as_deref())?;
     Ok(kwargs)
 }
@@ -1134,10 +1130,12 @@ fn materialize_aic_capacity(
     );
     let engine_nextn = role.rank.aic_nextn.unwrap_or(0);
     let timing_depth = config.speculative_depth()?;
-    ensure!(
-        timing_depth as usize == engine_nextn,
-        "AIC speculative depth={timing_depth} does not match engine aic_nextn={engine_nextn}"
-    );
+    if config.speculation.is_none() {
+        ensure!(
+            timing_depth as usize == engine_nextn,
+            "AIC speculative depth={timing_depth} does not match engine aic_nextn={engine_nextn}"
+        );
+    }
     let resources = if config.backend == "vllm" && config.pp == 1 {
         config
             .estimator_request(
@@ -1245,6 +1243,27 @@ fn role_capacity_is_explicit(engine_value: &serde_json::Value, role: Option<&str
         })
 }
 
+fn apply_resolved_speculation(
+    rank: &mut EngineConfig,
+    metadata: &crate::ResolvedSpeculationConfig,
+) -> Result<()> {
+    let accepted = metadata.max_accepted_draft_tokens as usize;
+    let width = metadata.verify_width as usize;
+    if accepted > 0 {
+        ensure!(
+            rank.aic_nextn.is_none_or(|value| value == accepted),
+            "aic_nextn conflicts with resolved accepted draft prefix length {accepted}"
+        );
+        ensure!(
+            rank.aic_verify_width.is_none_or(|value| value == width),
+            "aic_verify_width conflicts with resolved verification width {width}"
+        );
+        rank.aic_nextn = Some(accepted);
+        rank.aic_verify_width = Some(width);
+    }
+    Ok(())
+}
+
 fn resolve_role_timing(
     role: &mut ReplayRoleConfig,
     capacity_is_explicit: bool,
@@ -1271,6 +1290,21 @@ fn resolve_role_timing(
         resources.require_memory()?;
     }
     let mut timing = AicTimingModel::build(&mut config, worker_type)?;
+    let metadata = timing
+        .diagnostic_model
+        .as_ref()
+        .and_then(|model| model.speculation_metadata());
+    ensure!(
+        config
+            .speculation
+            .as_ref()
+            .is_none_or(|spec| spec.kind == "none")
+            || metadata.is_some(),
+        "compiled speculative graph omitted resolved scheme metadata"
+    );
+    if let Some(metadata) = metadata {
+        apply_resolved_speculation(&mut role.rank, metadata)?;
+    }
     if let Some(model) = &timing.fpm_model
         && model.fpm_query_coverage()?.is_some()
     {
@@ -3070,13 +3104,9 @@ mod tests {
                     .collect::<String>(),
             )
             .unwrap();
-            for (options, message) in [
-                (serde_json::json!({"backend": "trtllm"}), "vLLM and SGLang"),
-                (
-                    serde_json::json!({"aic_nextn": 1}),
-                    "speculative decoding disabled",
-                ),
-            ] {
+            for (options, message) in
+                [(serde_json::json!({"backend": "trtllm"}), "vLLM and SGLang")]
+            {
                 let mut rank = serde_json::json!({
                     "backend": "vllm", "block_size": 4, "num_gpu_blocks": 16,
                     "timing_model": {"type": "fixed", "prefill_ms": 1.0, "decode_ms": 1.0}
@@ -3765,34 +3795,41 @@ mod tests {
     }
 
     #[test]
-    fn ngram_timing_requires_matching_scheduler_depth_and_no_mtp() {
-        let mut config = aic_config();
-        config.speculation = Some(crate::ForwardPassSpeculationConfig::Ngram {
-            num_speculative_tokens: 2,
-        });
-        let mut role = aggregated_role(&ReplayEngineConfig::default());
-        assert!(materialize_aic_capacity(&config, &mut role, true, |_, _| unreachable!()).is_err());
-        role.rank.aic_nextn = Some(2);
-        materialize_aic_capacity(&config, &mut role, true, |_, _| unreachable!()).unwrap();
-        config.nextn = 2;
-        assert!(config.validate_parallel_shape().is_err());
-        config.nextn = 0;
-        config.speculation = Some(crate::ForwardPassSpeculationConfig::Ngram {
-            num_speculative_tokens: 6,
-        });
-        assert!(config.validate_parallel_shape().is_err());
+    fn resolved_tree_dimensions_keep_verification_separate_from_progress() {
+        let metadata = crate::ResolvedSpeculationConfig {
+            kind: "eagle3".into(),
+            verify_width: 8,
+            max_accepted_draft_tokens: 2,
+            draft_weights_bytes: 1024.0,
+        };
+        let mut rank = EngineConfig::for_backend(Backend::Vllm);
+        apply_resolved_speculation(&mut rank, &metadata).unwrap();
+        assert_eq!(rank.aic_nextn, Some(2));
+        assert_eq!(rank.aic_verify_width, Some(8));
+        rank.aic_verify_width = Some(3);
+        assert!(apply_resolved_speculation(&mut rank, &metadata).is_err());
+        rank.aic_verify_width = Some(8);
+        rank.aic_nextn = Some(7);
+        assert!(apply_resolved_speculation(&mut rank, &metadata).is_err());
     }
 
     #[test]
-    fn ngram_timing_rejects_unmodeled_trigger_rate_and_unknown_schemes() {
-        for payload in [
-            serde_json::json!({"kind": "mtp", "params": {"num_speculative_tokens": 2}}),
-            serde_json::json!({"kind": "ngram", "params": {"num_speculative_tokens": 2, "trigger_rate": 0.5}}),
-        ] {
-            assert!(
-                serde_json::from_value::<crate::ForwardPassSpeculationConfig>(payload).is_err()
-            );
-        }
+    fn generic_timing_preserves_cost_identity_and_rejects_legacy_conflict() {
+        let mut config = aic_config();
+        config.speculation = Some(
+            serde_json::from_value(serde_json::json!({
+                "kind": "eagle3", "params": {"tree_shape": [1, 2], "verify_token_budget": 8},
+                "draft_config": {"hidden_size": 128}, "draft_model_path": "example/draft"
+            }))
+            .unwrap(),
+        );
+        let canonical = config
+            .estimator_request(ForwardPassWorkerType::Aggregated)
+            .unwrap();
+        assert_eq!(canonical.speculation, config.speculation);
+        assert_eq!(canonical.nextn, 0);
+        config.nextn = 2;
+        assert!(config.validate_parallel_shape().is_err());
     }
 
     #[test]

@@ -176,8 +176,18 @@ def test_factory_is_pickleable_and_advertises_engine_only_capabilities():
     assert capabilities.supported_agentic_topologies == ("agg", "disagg")
     assert capabilities.supported_agentic_backends == ("vllm", "sglang")
     assert capabilities.supports_agentic_host_offload
-    assert not capabilities.supports_agentic_speculative_decoding
+    assert capabilities.supports_agentic_speculative_decoding
     assert capabilities.agentic_qualification == "functional_only"
+
+
+@pytest.mark.parametrize("speculation", ["mtp", [], {"kind": "mtp", "params": "bad"}, {"kind": "mtp", "params": None}])
+def test_canonical_speculation_rejects_malformed_mappings(speculation):
+    from aisimulate.runner import _materialize_engine_role
+
+    args = _engine_args(timing={"type": "external", "provider": "aic", "config": {"speculation": speculation}})
+    args["aic_nextn"] = 3
+    with pytest.raises(ValueError, match=r"speculation(?:\.params)? must be a mapping"):
+        _materialize_engine_role("vllm", "test", {}, args, "aggregated")
 
 
 @pytest.mark.parametrize("trace_format", ["weka", "agentic_mooncake", "dynamo"])
@@ -186,8 +196,8 @@ def test_factory_is_pickleable_and_advertises_engine_only_capabilities():
 @pytest.mark.parametrize(
     ("unsupported", "message"),
     [
-        ({"aic_nextn": 1}, "speculative decoding disabled"),
-        ({"nextn": 1}, "speculative decoding disabled"),
+        ({"g3_offload": {}}, "G3 offload"),
+        ({"native_host_offload": {"num_host_blocks": 8}, "aic_nextn": 1}, "speculative decoding disabled"),
     ],
 )
 def test_agentic_capabilities_reject_unqualified_decode_modes(trace_format, nested_rank, role, unsupported, message):

@@ -410,7 +410,7 @@ class EngineReplayRunnerFactory:
             supported_agentic_topologies=("agg", "disagg"),
             supported_agentic_backends=("vllm", "sglang"),
             supports_agentic_host_offload=True,
-            supports_agentic_speculative_decoding=False,
+            supports_agentic_speculative_decoding=True,
             agentic_qualification="functional_only",
         )
 
@@ -1705,16 +1705,22 @@ def _materialize_engine_role(
     speculation_raw = rank.pop("speculation", None)
     speculation = None
     if speculation_raw is not None:
-        from .config.engine import NgramSpeculationConfig
+        from pydantic import TypeAdapter
 
-        speculation = NgramSpeculationConfig.model_validate(speculation_raw)
-        if backend != "vllm" or rank.get("native_host_offload") is not None:
-            raise ValueError("ngram speculation requires vllm without host_offload")
+        from .config.engine import NgramSpeculationConfig, SpeculationConfig
+
+        speculation = TypeAdapter(SpeculationConfig).validate_python(speculation_raw)
+        supported = {"vllm"} if isinstance(speculation, NgramSpeculationConfig) else {"vllm", "sglang"}
+        if backend not in supported or rank.get("native_host_offload") is not None:
+            raise ValueError(f"{speculation.kind} speculation requires a supported backend without host_offload")
         if any(
             rank.get(key) is not None
+            and not (speculation.kind == "mtp" and key in {"aic_nextn", "nextn"} and rank[key] == 0)
             for key in (
                 "aic_nextn",
                 "nextn",
+                "aic_nextn_accepted",
+                "nextn_accepted",
                 "aic_nextn_accept_rates",
                 "nextn_accept_rates",
                 "aic_mtp_seed",
@@ -1722,14 +1728,18 @@ def _materialize_engine_role(
             )
         ):
             raise ValueError("speculation cannot be combined with legacy speculative decoding fields")
-        rank["aic_nextn"] = speculation.num_speculative_tokens
+        rank.pop("nextn", None)
+        rank["aic_nextn"] = speculation.max_accepted_draft_tokens
+        rank["aic_verify_width"] = speculation.verify_width
         rank["aic_nextn_accept_rates"] = ",".join(str(rate) for rate in speculation.acceptance_rates)
         rank["aic_mtp_seed"] = speculation.seed
 
     nextn = _pop_alias(rank, "aic_nextn", ("aic_nextn", "nextn"))
     if nextn is not None:
         nextn = _positive_int(nextn, f"engine provider {role} aic_nextn")
-        if nextn > 5:
+        timing = rank.get("timing_model", {})
+        canonical_speculation = timing.get("config", {}).get("speculation") if isinstance(timing, dict) else None
+        if nextn > 5 and speculation is None and canonical_speculation is None:
             raise ValueError(f"engine provider {role} aic_nextn must be in 1..=5")
         rank["aic_nextn"] = nextn
 
@@ -1824,22 +1834,33 @@ def _materialize_engine_role(
             if speculation is not None:
                 cost_config = speculation.cost_config()
                 if timing_config.get("nextn") not in (None, 0):
-                    raise ValueError("ngram speculation conflicts with timing_model.config.nextn")
+                    raise ValueError("speculation conflicts with timing_model.config.nextn")
                 if timing_config.get("speculation") not in (None, cost_config):
-                    raise ValueError("ngram speculation conflicts with timing_model.config.speculation")
-                if timing_config.get("forward_model", "op_level") != "op_level":
-                    raise ValueError("ngram speculation requires op_level timing")
+                    raise ValueError("speculation conflicts with timing_model.config.speculation")
+                if speculation.kind == "ngram" and timing_config.get("forward_model", "op_level") != "op_level":
+                    raise ValueError("speculation requires op_level timing")
                 timing_config["speculation"] = cost_config
             configured_nextn = timing_config.get("nextn")
-            if speculation is None and configured_nextn is not None and configured_nextn != nextn:
+            canonical = timing_config.get("speculation")
+            if canonical is not None and not isinstance(canonical, Mapping):
+                raise ValueError("timing_model.config.speculation must be a mapping")
+            canonical_params = canonical.get("params", {}) if canonical is not None else {}
+            if not isinstance(canonical_params, Mapping):
+                raise ValueError("timing_model.config.speculation.params must be a mapping")
+            canonical_depth = canonical_params.get("depth", canonical_params.get("num_speculative_tokens"))
+            if canonical is not None and canonical.get("kind") in {"mtp", "ngram"} and canonical_depth != nextn:
+                raise ValueError("speculation depth conflicts with native aic_nextn")
+            if speculation is None and canonical is None and configured_nextn is not None and configured_nextn != nextn:
                 raise ValueError(
                     f"engine provider {role} aic_nextn={nextn} conflicts with "
                     f"timing_model.config.nextn={configured_nextn!r}"
                 )
-            if speculation is None:
+            if speculation is None and canonical is None:
                 timing_config["nextn"] = nextn
             timing_model["config"] = timing_config
             rank["timing_model"] = timing_model
+        elif speculation is not None and speculation.kind != "ngram":
+            raise ValueError(f"{speculation.kind} speculation requires external AIC timing")
 
     host_offload = rank.get("native_host_offload")
     if (
@@ -1938,14 +1959,10 @@ def _accept_rates_for_expected(nextn: int, value: JSONValue, *, role: str) -> st
         or not 0.0 <= float(value) <= nextn
     ):
         raise ValueError(f"engine provider {role} aic_nextn_accepted must be finite and within [0, {nextn}]")
-    expected = float(value)
-    whole = int(expected)
-    fraction = expected - whole
-    rates = [1.0] * whole
-    if len(rates) < nextn:
-        rates.append(fraction)
-    rates.extend([0.0] * (nextn - len(rates)))
-    return ",".join(format(rate, ".17g") for rate in rates)
+    from .config.engine import MtpSpeculationConfig
+
+    assumption = MtpSpeculationConfig(kind="mtp", num_speculative_tokens=nextn, expected_accepted_tokens=value)
+    return ",".join(format(rate, ".17g") for rate in assumption.acceptance_rates)
 
 
 def _random_range_ratio(value: JSONValue) -> float:

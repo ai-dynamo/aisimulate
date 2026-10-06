@@ -434,6 +434,7 @@ fn core_args(config: &EngineConfig, timing: Arc<dyn TimingModel>) -> MockEngineA
         },
         perf_model: Arc::new(PerfModel::External { timing }),
         aic_nextn: config.aic_nextn,
+        aic_verify_width: config.aic_verify_width,
         aic_nextn_accept_rates: config.aic_nextn_accept_rates.clone(),
         aic_mtp_seed: config.aic_mtp_seed,
         kv_transfer_bytes_per_token: config.kv_transfer_bytes_per_token,

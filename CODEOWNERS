@@ -65,6 +65,7 @@
 /tests/test_runner.py                                    @ai-dynamo/aisimulate-replay-codeowners
 /crates/core/examples/                                   @ai-dynamo/aisimulate-replay-codeowners
 /tests/test_epd_cli.py                                   @ai-dynamo/aisimulate-replay-codeowners
+/tests/test_mtp_cli.py                                   @ai-dynamo/aisimulate-replay-codeowners
 /tests/test_traffic.py                                   @ai-dynamo/aisimulate-replay-codeowners
 /crates/core/src/replay/                                 @ai-dynamo/aisimulate-replay-codeowners
 /tests/test_agentx_g2.py                                 @ai-dynamo/aisimulate-replay-codeowners
@@ -154,6 +155,7 @@
 /crates/core/deny.toml                                   @ai-dynamo/aisimulate-mocker-codeowners @ai-dynamo/aisimulate-replay-codeowners @ai-dynamo/aisimulate-forward-pass-engine-codeowners @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
 /crates/core/examples/                                   @ai-dynamo/aisimulate-replay-codeowners @ai-dynamo/access-aisimulate-maintain
 /tests/test_epd_cli.py                                   @ai-dynamo/aisimulate-replay-codeowners @ai-dynamo/aisimulate-sweeper-codeowners @ai-dynamo/aisimulate-forward-pass-engine-codeowners @ai-dynamo/access-aisimulate-maintain
+/tests/test_mtp_cli.py                                   @ai-dynamo/aisimulate-replay-codeowners @ai-dynamo/aisimulate-sweeper-codeowners @ai-dynamo/aisimulate-forward-pass-engine-codeowners @ai-dynamo/access-aisimulate-maintain
 /tests/test_traffic.py                                   @ai-dynamo/aisimulate-replay-codeowners @ai-dynamo/access-aisimulate-maintain
 /crates/core/Cargo.toml                                  @ai-dynamo/aisimulate-mocker-codeowners @ai-dynamo/aisimulate-replay-codeowners @ai-dynamo/aisimulate-forward-pass-engine-codeowners @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
 /crates/core/perfmodel/                                  @ai-dynamo/aisimulate-forward-pass-engine-codeowners @ai-dynamo/access-aisimulate-maintain

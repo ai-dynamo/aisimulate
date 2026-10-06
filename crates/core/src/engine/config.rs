@@ -533,6 +533,10 @@ pub struct EngineConfig {
     /// MTP/EAGLE draft-token count. One verification forward can emit up to
     /// `aic_nextn + 1` output tokens.
     pub aic_nextn: Option<usize>,
+    /// Target verification candidates including the base token. Defaults to
+    /// aic_nextn + 1 for legacy chain inputs; tree verification can be wider.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub aic_verify_width: Option<usize>,
     /// Conditional draft acceptance rates, comma-separated.
     ///
     /// Entry `i` is the probability that draft `i` is accepted given that
@@ -624,6 +628,8 @@ struct EngineConfigWire {
     #[serde(default)]
     aic_nextn: Option<usize>,
     #[serde(default)]
+    aic_verify_width: Option<usize>,
+    #[serde(default)]
     aic_nextn_accept_rates: Option<String>,
     #[serde(default = "default_aic_mtp_seed")]
     aic_mtp_seed: u64,
@@ -696,6 +702,7 @@ impl<'de> Deserialize<'de> for EngineConfig {
             speedup_ratio: wire.speedup_ratio,
             decode_speedup_ratio: wire.decode_speedup_ratio,
             aic_nextn: wire.aic_nextn,
+            aic_verify_width: wire.aic_verify_width,
             aic_nextn_accept_rates: wire.aic_nextn_accept_rates,
             aic_mtp_seed: wire.aic_mtp_seed,
             worker_type: wire.worker_type,
@@ -739,6 +746,7 @@ impl Default for EngineConfig {
             speedup_ratio: 1.0,
             decode_speedup_ratio: 1.0,
             aic_nextn: None,
+            aic_verify_width: None,
             aic_nextn_accept_rates: None,
             aic_mtp_seed: default_aic_mtp_seed(),
             worker_type: WorkerType::Aggregated,
@@ -876,12 +884,24 @@ impl EngineConfig {
             "decode_speedup_ratio must be finite and non-negative"
         );
         if let Some(nextn) = self.aic_nextn {
+            ensure!(
+                self.aic_verify_width.is_some() || nextn <= 5,
+                "legacy aic_nextn must be in 1..=5"
+            );
+            ensure!(
+                self.aic_verify_width.is_none_or(|width| width > nextn),
+                "aic_verify_width must include all accepted draft tokens plus the base token"
+            );
             normalize_conditional_accept_rates(nextn, self.aic_nextn_accept_rates.as_deref())?;
             ensure!(
                 self.decode_speedup_ratio == 1.0,
                 "aic_nextn requires decode_speedup_ratio=1.0 because MTP output acceleration is modeled by burst sampling"
             );
         } else {
+            ensure!(
+                self.aic_verify_width.is_none(),
+                "aic_verify_width requires aic_nextn"
+            );
             ensure!(
                 self.aic_nextn_accept_rates.is_none(),
                 "aic_nextn_accept_rates requires aic_nextn"

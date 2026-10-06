@@ -411,6 +411,25 @@ def _engine_config_dict(
     # flattened Option deserializes to None.
     if speculative is not None:
         engine["nextn"] = speculative["nextn"]
+        scheme = getattr(model, "spec_scheme", None)
+        if scheme is not None:
+            from aisimulate_core.sdk.common import DSPARK_ARCHITECTURES
+
+            kind = scheme.kind
+            # Legacy NextN shares the MTP adapter, but these model families
+            # construct their existing DSpark draft graph in the target model.
+            if (
+                kind == "mtp"
+                and getattr(cfg, "speculation", None) is None
+                and getattr(model, "architecture", None) in DSPARK_ARCHITECTURES
+            ):
+                kind = "dspark"
+            engine["speculation_metadata"] = {
+                "kind": kind,
+                "verify_width": scheme.verify_width(),
+                "max_accepted_draft_tokens": scheme.max_accepted_draft_tokens(),
+                "draft_weights_bytes": scheme.draft_weights_bytes(model),
+            }
     return engine
 
 
@@ -708,7 +727,12 @@ def compile_engine(
         resolve_sglang_mla_compute(
             model_config, model_path, backend, literal_version, load_system_spec(system, systems_path)
         )
-    model = get_model(model_path, model_config, backend)
+    try:
+        model = get_model(model_path, model_config, backend)
+    except (ValueError, TypeError, KeyError) as exc:
+        if resolved_speculation is not None:
+            raise InvalidEngineConfigurationError(str(exc)) from exc
+        raise
     if deployment is not None and forward_model == "fpm":
         from aisimulate_core.sdk.fpm_identity import LEGACY_EXECUTION_IDENTITY
 

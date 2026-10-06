@@ -40,8 +40,8 @@ def prediction_to_replay_spec(
 ) -> ReplaySpec:
     """Compile one concrete public prediction config."""
 
-    if config.engine.speculation is not None and (adapter_specs or execution_mode != "offline"):
-        raise ValueError("ngram speculation requires the offline engine stack without adapters")
+    if config.engine.speculation is not None and execution_mode != "offline":
+        raise ValueError("speculation requires offline execution")
     workload, concurrency = _traffic(config)
     deployment = _deployment(
         config.engine,

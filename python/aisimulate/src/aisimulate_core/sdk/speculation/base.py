@@ -32,7 +32,7 @@ import hashlib
 import json
 import logging
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, ClassVar
 
 logger = logging.getLogger(__name__)
@@ -70,6 +70,40 @@ class SpeculationConfig:
         }
         canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
         return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def resolve_draft_config(config: SpeculationConfig) -> SpeculationConfig:
+    """Load missing draft geometry once, retaining its checkpoint identity.
+
+    Resolved configurations carry both the source path and its parsed config,
+    so applying this to a saved configuration is deliberately idempotent.
+    """
+    if config.kind == "mtp" and "num_speculative_tokens" in config.params:
+        params = dict(config.params)
+        depth = params.pop("num_speculative_tokens")
+        if "depth" in params and params["depth"] != depth:
+            raise ValueError("conflicting MTP depth and num_speculative_tokens")
+        params["depth"] = depth
+        config = replace(config, params=params)
+    if config.kind in {"none", "mtp", "ngram"}:
+        if config.draft_model_path is not None or config.draft_config is not None:
+            raise ValueError(f"speculation kind {config.kind!r} does not accept a draft checkpoint")
+        return config
+    if config.draft_config is None and config.draft_model_path:
+        from aisimulate_core.sdk.utils import _load_model_config_from_model_path, get_model_config_from_model_path
+
+        raw = (
+            get_model_config_from_model_path(config.draft_model_path)["raw_config"]
+            if config.kind == "draft_model"
+            else _load_model_config_from_model_path(config.draft_model_path)
+        )
+        return replace(
+            config,
+            # Draft architectures are validated by their scheme; target-model
+            # parsing would reject genuine Eagle/DFlash checkpoint classes.
+            draft_config=dict(raw),
+        )
+    return config
 
 
 def positive_integer(value: Any, name: str) -> int:
@@ -141,6 +175,10 @@ class SpecSchemeBase(ABC):
     @abstractmethod
     def verify_width(self) -> int:
         """Tokens per target verify forward per request (>= 1)."""
+
+    def max_accepted_draft_tokens(self) -> int:
+        """Maximum output path length excluding the base token."""
+        return self.verify_width() - 1
 
     @abstractmethod
     def build_draft_generation_ops(self, model) -> list[DraftOpSpec]:

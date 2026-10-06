@@ -452,7 +452,9 @@ class RunnerCapabilities:
                 raise ValueError(
                     f"runner does not support engine model controls {unsupported_controls}; use --stack engine"
                 )
-            if any(rank.get(name) is not None for name in ("aic_nextn_accepted", "nextn_accepted")):
+            requested_speculation = rank.get("speculation")
+            explicit_mtp = isinstance(requested_speculation, Mapping) and requested_speculation.get("kind") == "mtp"
+            if explicit_mtp or any(rank.get(name) is not None for name in ("aic_nextn_accepted", "nextn_accepted")):
                 if is_afd:
                     raise ValueError("explicit MTP expected acceptance is unsupported for AFD")
                 if not self.supports_mtp_expected_acceptance:
@@ -553,10 +555,19 @@ class RunnerCapabilities:
                 raise ValueError("agentic replay does not support G3 offload")
             _require_agentic_g2_scope(spec, roles)
             for rank in ranks:
-                if not self.supports_agentic_speculative_decoding and any(
-                    rank.get(key) is not None for key in ("aic_nextn", "nextn", "speculation")
-                ):
+                timing = rank.get("timing_model")
+                timing_config = timing.get("config", {}) if isinstance(timing, Mapping) else {}
+                if not isinstance(timing_config, Mapping):
+                    timing_config = {}
+                selections = (rank.get("speculation"), timing_config.get("speculation"))
+                has_sd = (
+                    any(rank.get(key) not in (None, 0) for key in ("aic_nextn", "nextn"))
+                    or any(selection is not None for selection in selections)
+                    or timing_config.get("nextn") not in (None, 0)
+                )
+                if has_sd and not self.supports_agentic_speculative_decoding:
                     raise ValueError("agentic replay requires speculative decoding disabled")
+
         unsupported = [hook for hook in spec.runtime_hooks if not self.supports_hook(hook)]
         if unsupported:
             labels = ", ".join(f"{hook.provider}:{hook.kind}@{hook.api_version}" for hook in unsupported)

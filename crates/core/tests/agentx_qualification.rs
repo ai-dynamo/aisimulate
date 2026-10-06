@@ -548,3 +548,86 @@ fn agentx_g2_profile_cancels_pending_host_restore_and_releases_server_resources(
     assert_eq!(restore.first_admit_ms, None);
     assert_eq!(restore.output_length, 0);
 }
+
+#[rstest]
+fn speculative_bursts_preserve_spawn_join_and_output_limits(
+    #[values(Backend::Vllm, Backend::Sglang)] backend: Backend,
+    #[values(false, true)] disaggregated: bool,
+    #[values(None, Some(8))] verify_width: Option<usize>,
+) {
+    // Non-aligned output lengths exercise terminal bursts in the existing DAG.
+    let mut source: serde_json::Value =
+        serde_json::from_reader(File::open(fixture("weka-relative.json")).unwrap()).unwrap();
+    fn extend(requests: &mut serde_json::Value) {
+        for request in requests.as_array_mut().unwrap() {
+            if request["type"] == "s" {
+                request["out"] = 8.into();
+            } else if request.get("requests").is_some() {
+                extend(&mut request["requests"]);
+            }
+        }
+    }
+    extend(&mut source["requests"]);
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("burst-weka.json");
+    serde_json::to_writer(File::create(&path).unwrap(), &source).unwrap();
+    let graph = load_weka_agentic_graph(&path, Some(4)).unwrap();
+    let topology = if disaggregated {
+        ReplayTopology::Disaggregated {
+            prefill: WorkerPoolSpec {
+                initial_workers: 1,
+                startup_delay_ms: 0.0,
+            },
+            decode: WorkerPoolSpec {
+                initial_workers: 1,
+                startup_delay_ms: 0.0,
+            },
+            handoff_latency_ms: 1.0,
+        }
+    } else {
+        ReplayTopology::aggregated(1)
+    };
+    let mut rank = EngineConfig {
+        num_gpu_blocks: 128,
+        block_size: 4,
+        max_num_seqs: 4,
+        max_num_batched_tokens: 64,
+        timing_model: TimingModelConfig::Fixed {
+            prefill_ms: 2.0,
+            decode_ms: 2.0,
+        },
+        ..EngineConfig::for_backend(backend)
+    };
+    let baseline = run_config(graph.clone(), rank.clone(), topology.clone());
+    rank.aic_nextn = Some(2);
+    // A tree can verify eight candidates while accepting at most two drafts.
+    rank.aic_verify_width = verify_width;
+    rank.aic_nextn_accept_rates = Some("1,1".into());
+    let report = run_config(graph, rank, topology);
+    assert_eq!(report.request_counts.completed_requests, 4);
+    assert_eq!(report.request_counts.total_output_tokens, 32);
+    assert!(
+        report
+            .per_request
+            .iter()
+            .all(|request| request.output_length == 8)
+    );
+    // Fixed costs isolate scheduler progress; real MTP costs are tested separately.
+    assert!(report.throughput.duration_ms < baseline.throughput.duration_ms);
+    let events = &report.agentic_lifecycle.as_ref().unwrap().events;
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event.event == AgenticLifecycleEventKind::CausalTerminal)
+            .count(),
+        4
+    );
+    assert_eq!(
+        events.last().unwrap().event,
+        AgenticLifecycleEventKind::PlayQuiescent
+    );
+    assert_eq!(
+        report.agentic_play_outcomes.as_ref().unwrap()[0].status,
+        AgenticPlayStatus::Completed
+    );
+}

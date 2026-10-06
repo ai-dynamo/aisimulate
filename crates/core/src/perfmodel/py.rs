@@ -1607,7 +1607,8 @@ fn compile_engine_from_request(request: EngineBuildRequest) -> Result<Engine, Ai
         kwargs.set_item("strict_provenance", request.strict_provenance)?;
         kwargs.set_item("nextn", request.nextn)?;
         if let Some(speculation) = &request.speculation {
-            let json = serde_json::to_string(speculation)
+            let sdk_speculation = speculation.sdk_config().map_err(aic_to_py)?;
+            let json = serde_json::to_string(&sdk_speculation)
                 .map_err(|e| PyValueError::new_err(e.to_string()))?;
             let value = PyModule::import(py, "json")?.call_method1("loads", (json,))?;
             kwargs.set_item("speculation", value)?;
@@ -1658,6 +1659,30 @@ fn compile_engine_from_request(request: EngineBuildRequest) -> Result<Engine, Ai
         )));
     }
     Engine::from_spec_bytes(&spec_bytes, systems_root.as_path() as &Path)
+}
+
+/// Resolve draft artifact content once, before canonical cache/provenance identity.
+pub(crate) fn resolve_speculation_identity(
+    config: &crate::ForwardPassSpeculationConfig,
+) -> Result<crate::ForwardPassSpeculationConfig, AicError> {
+    Python::with_gil(|py| -> PyResult<_> {
+        let json = PyModule::import(py, "json")?;
+        let value = serde_json::to_string(&config.sdk_config().map_err(aic_to_py)?)
+            .map_err(|error| PyValueError::new_err(error.to_string()))?;
+        let fields = json.call_method1("loads", (value,))?;
+        let module = PyModule::import(py, "aisimulate_core.sdk.speculation")?;
+        let spec = module
+            .getattr("SpeculationConfig")?
+            .call((), Some(fields.downcast()?))?;
+        let resolved = module.call_method1("resolve_draft_config", (spec,))?;
+        let fields = PyModule::import(py, "dataclasses")?.call_method1("asdict", (resolved,))?;
+        let value: String = json.call_method1("dumps", (fields,))?.extract()?;
+        let mut resolved: crate::ForwardPassSpeculationConfig = serde_json::from_str(&value)
+            .map_err(|error| PyValueError::new_err(error.to_string()))?;
+        resolved.params = config.params.clone();
+        Ok(resolved)
+    })
+    .map_err(|error| AicError::InvalidEngineConfig(format!("speculation: {error}")))
 }
 
 /// Profile schema/identity facts supplied by Python without choosing an estimator.
@@ -2020,6 +2045,12 @@ impl PyForwardPassPerfModel {
         let config = parse_forward_pass_config(config_json)?;
         let inner = crate::ForwardPassPerfModel::best_available(config).map_err(aic_to_py)?;
         Ok(Self { inner })
+    }
+
+    /// Resolved scheme dimensions from this model's compiled graph.
+    fn speculation_metadata_json(&self) -> PyResult<String> {
+        serde_json::to_string(&self.inner.speculation_metadata())
+            .map_err(|error| PyValueError::new_err(error.to_string()))
     }
 
     /// Expand and validate the canonical schema without constructing an engine.

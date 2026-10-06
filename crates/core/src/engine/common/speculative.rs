@@ -15,8 +15,8 @@ pub fn normalize_conditional_accept_rates(
     rates: Option<&str>,
 ) -> anyhow::Result<Vec<f64>> {
     anyhow::ensure!(
-        (1..=5).contains(&nextn),
-        "aic_nextn must be in 1..=5, got {nextn}"
+        nextn > 0,
+        "accepted draft prefix length must be positive, got {nextn}"
     );
     let mut parsed = match rates.map(str::trim).filter(|rates| !rates.is_empty()) {
         Some(rates) => rates
@@ -39,6 +39,20 @@ pub fn normalize_conditional_accept_rates(
 
     parsed.resize(nextn, 0.0);
     Ok(parsed)
+}
+
+/// Branching verification reserves all candidates, even near the output limit.
+/// Chain-shaped proposals retain the legacy terminal-burst allocation policy.
+pub(crate) fn verification_lookahead_tokens(
+    verify_width: usize,
+    max_accepted_draft_tokens: usize,
+    remaining_output_tokens: usize,
+) -> usize {
+    if verify_width > max_accepted_draft_tokens.saturating_add(1) {
+        verify_width
+    } else {
+        verify_width.min(remaining_output_tokens)
+    }
 }
 
 pub(crate) struct SpeculativeDecodeSampler {
@@ -71,6 +85,13 @@ impl SpeculativeDecodeSampler {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tree_tail_reserves_candidates_while_chains_keep_legacy_capacity() {
+        assert_eq!(verification_lookahead_tokens(8, 2, 2), 8);
+        assert_eq!(verification_lookahead_tokens(3, 2, 2), 2);
+        assert_eq!(verification_lookahead_tokens(3, 2, 8), 3);
+    }
 
     #[test]
     fn zero_and_one_rates_are_exact() {

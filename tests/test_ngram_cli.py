@@ -185,7 +185,7 @@ def test_canonical_estimator_round_trip_preserves_prompt_lookup_cost():
 def test_canonical_prompt_lookup_rejects_unsupported_estimators(mode):
     from aisimulate_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
 
-    with pytest.raises(ValueError, match="ngram speculation requires op_level timing"):
+    with pytest.raises(ValueError, match="speculation requires op_level timing"):
         RustForwardPassPerfModel.best_available(
             ForwardPassPerfModelConfig(
                 model="m",
@@ -330,20 +330,19 @@ def test_ngram_rejection_still_pays_target_verification_cost():
     assert speculative.metrics["mean_e2e_latency_ms"] > ordinary.metrics["mean_e2e_latency_ms"]
 
 
-def test_agentic_execution_rejects_ngram_before_loading_trace():
+def test_agentic_capabilities_accept_ngram():
     raw = _prediction()
     raw["traffic"] = {
         "source": {"type": "trace", "paths": ["not-loaded.jsonl"], "format": "weka"},
         "load": {"type": "trace_timestamps"},
     }
     spec = prediction_to_replay_spec(CorePredictionConfig.model_validate(raw))
-    with pytest.raises(ValueError, match="speculative decoding disabled"):
-        EngineReplayRunnerFactory().capabilities().require_compatible(spec)
+    EngineReplayRunnerFactory().capabilities().require_compatible(spec)
 
 
 def test_online_prediction_rejects_ngram():
     config = CorePredictionConfig.model_validate(_prediction())
-    with pytest.raises(ValueError, match="offline engine stack"):
+    with pytest.raises(ValueError, match="offline execution"):
         prediction_to_replay_spec(config, execution_mode="online")
 
 
