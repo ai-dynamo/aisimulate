@@ -2,168 +2,16 @@
 # SPDX-License-Identifier: Apache-2.0
 
 name: Simulation Performance (advisory)
-
-on:
-  workflow_dispatch:
-    inputs:
-      pr_number:
-        description: Pull request number to compare
-        required: true
-        type: number
-      self_compare:
-        description: Qualify this head with three same-revision comparisons
-        required: false
-        default: false
-        type: boolean
-  push:
-    # Start even when copy-pr-bot creates a ref with an empty push commit list.
-    # Select relevant PR files in the hosted job before allocating a benchmark runner.
-    branches:
-      - "pull-request/*"
-
+run-name: 'SGLang KV routing backtest: #397 fixed head versus slow merge base'
+'on':
+  workflow_dispatch: {}
 permissions:
   contents: read
-  pull-requests: read
-
 concurrency:
-  group: simulation-performance-${{ github.event_name == 'workflow_dispatch' && format('pull-request/{0}', inputs.pr_number) || github.ref_name }}
-  cancel-in-progress: true
-
+  group: simulation-kv-backtest-397-${{ github.ref }}
+  cancel-in-progress: false
 jobs:
-  select:
-    name: Select Simulation Performance
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    outputs:
-      number: ${{ steps.scope.outputs.number }}
-      head_sha: ${{ steps.scope.outputs.head_sha }}
-      base_sha: ${{ steps.revisions.outputs.base_sha }}
-      validate_head_controller: ${{ steps.revisions.outputs.validate_head_controller }}
-      run_comparison: ${{ steps.revisions.outputs.run_comparison }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ github.sha }}
-          persist-credentials: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
-        with:
-          python-version: "3.12"
-      - name: Select from the complete PR change set
-        id: scope
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PR_NUMBER: ${{ inputs.pr_number }}
-        run: python scripts/select_simulation_perf.py
-
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        if: steps.scope.outputs.run_comparison == 'true'
-        with:
-          ref: ${{ steps.scope.outputs.head_sha }}
-          fetch-depth: 0
-          persist-credentials: false
-      - name: Prepare exact revisions
-        id: revisions
-        if: steps.scope.outputs.run_comparison == 'true'
-        env:
-          PR_HEAD_SHA: ${{ steps.scope.outputs.head_sha }}
-          BASE_REF: ${{ steps.scope.outputs.base_ref }}
-          SELF_COMPARE: ${{ inputs.self_compare }}
-        run: |
-          set -euo pipefail
-          actual_head="$(git rev-parse HEAD)"
-          if [[ "${actual_head}" != "${PR_HEAD_SHA}" ]]; then
-            echo "checked out ${actual_head}, expected PR head ${PR_HEAD_SHA}" >&2
-            exit 1
-          fi
-          base_tip="$(git rev-parse "refs/remotes/origin/${BASE_REF}")"
-          base_sha="$(git merge-base "${PR_HEAD_SHA}" "${base_tip}")"
-
-          if [[ "${SELF_COMPARE}" == "true" ]]; then
-            base_sha="${PR_HEAD_SHA}"
-          fi
-
-          gate_path="python/aisimulate/tools/simulation_perf_gate"
-          skip_reason=""
-          invalid_reason=""
-          for revision_label in head base; do
-            if [[ "${revision_label}" == "base" ]]; then
-              revision="${base_sha}"
-            else
-              revision="${PR_HEAD_SHA}"
-            fi
-            for gate_file in __init__.py cases.py compare.py contract.py run.py worker.py; do
-              if ! git cat-file -e "${revision}:${gate_path}/${gate_file}" 2>/dev/null; then
-                if [[ "${revision_label}" == "base" ]]; then
-                  skip_reason="base revision \`${revision}\` does not contain the complete simulation-performance gate"
-                else
-                  invalid_reason="head revision \`${revision}\` is missing ${gate_file}"
-                fi
-                break 2
-              fi
-            done
-          done
-
-          if [[ -z "${skip_reason}" && -z "${invalid_reason}" ]]; then
-            base_protocol="$(
-              git show "${base_sha}:${gate_path}/__init__.py" 2>/dev/null |
-                sed -nE 's/^PROTOCOL_VERSION[[:space:]]*=[[:space:]]*([0-9]+)[[:space:]]*$/\1/p'
-            )"
-            head_protocol="$(
-              git show "${PR_HEAD_SHA}:${gate_path}/__init__.py" 2>/dev/null |
-                sed -nE 's/^PROTOCOL_VERSION[[:space:]]*=[[:space:]]*([0-9]+)[[:space:]]*$/\1/p'
-            )"
-            if [[ ! "${base_protocol}" =~ ^[0-9]+$ ]]; then
-              invalid_reason="could not read PROTOCOL_VERSION from base revision \`${base_sha}\`"
-            elif [[ ! "${head_protocol}" =~ ^[0-9]+$ ]]; then
-              invalid_reason="could not read PROTOCOL_VERSION from head revision \`${PR_HEAD_SHA}\`"
-            elif (( base_protocol < head_protocol )); then
-              skip_reason="base protocol ${base_protocol} does not support head protocol ${head_protocol}; rebase after rollout"
-            elif [[ "${base_protocol}" != "${head_protocol}" ]]; then
-              invalid_reason="protocol versions differ: base is ${base_protocol}, head is ${head_protocol}"
-            fi
-          fi
-
-          if [[ -n "${invalid_reason}" ]]; then
-            echo "run_comparison=false" >> "${GITHUB_OUTPUT}"
-            {
-              echo "## Simulation Performance (advisory)"
-              echo
-              echo "**INVALID_COMPARISON** — ${invalid_reason}."
-              echo
-              echo "Base \`${base_sha}\`; head \`${PR_HEAD_SHA}\`. No benchmark was run."
-            } >> "${GITHUB_STEP_SUMMARY}"
-            echo "::error::Incompatible simulation benchmark protocol; see the summary."
-            exit 1
-          fi
-
-          if [[ -n "${skip_reason}" ]]; then
-            echo "run_comparison=false" >> "${GITHUB_OUTPUT}"
-            {
-              echo "## Simulation Performance (advisory)"
-              echo
-              echo "**SKIPPED** — ${skip_reason}."
-              echo
-              echo "Head \`${PR_HEAD_SHA}\` was not benchmarked."
-            } >> "${GITHUB_STEP_SUMMARY}"
-            exit 0
-          fi
-
-          controller_changes="$(git diff --name-only "${base_sha}" "${PR_HEAD_SHA}" -- \
-            ":(glob)${gate_path}/**/*.py" \
-            ":(glob)${gate_path}/fixtures/*.json" \
-            ":(glob)${gate_path}/fixtures/*.jsonl")"
-          if [[ -n "${controller_changes}" ]]; then
-            echo "validate_head_controller=true" >> "${GITHUB_OUTPUT}"
-          else
-            echo "validate_head_controller=false" >> "${GITHUB_OUTPUT}"
-          fi
-
-          echo "base_sha=${base_sha}" >> "${GITHUB_OUTPUT}"
-          echo "run_comparison=true" >> "${GITHUB_OUTPUT}"
-
   build:
-    needs: select
-    if: needs.select.outputs.run_comparison == 'true'
     name: Build simulation wheel (${{ matrix.side }})
     runs-on: prod-aisimulate-default-amd64-v1
     timeout-minutes: 30
@@ -171,10 +19,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - side: base
-            sha: ${{ needs.select.outputs.base_sha }}
-          - side: head
-            sha: ${{ needs.select.outputs.head_sha }}
+        - side: base
+          sha: 988edba8732af6f45990d0cb567c001119121566
+        - side: head
+          sha: 9093044260aa703c7e231ea54021940083843ada
     defaults:
       run:
         shell: bash
@@ -184,72 +32,72 @@ jobs:
         HOME: /__w/aisimulate/aisimulate
         USER: runner
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ needs.select.outputs.head_sha }}
-          persist-credentials: false
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ matrix.sha }}
-          path: source
-          persist-credentials: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
-        with:
-          python-version: "3.12"
-      - name: Configure Python linker path
-        run: echo "LIBRARY_PATH=${pythonLocation}/lib" >> "${GITHUB_ENV}"
-      - name: Select pinned Dynamo source
-        run: python -c 'from scripts.build_simulation_dynamo import DYNAMO_REVISION; print("DYNAMO_SHA=" + DYNAMO_REVISION)' >> "${GITHUB_ENV}"
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          repository: ai-dynamo/dynamo
-          ref: ${{ env.DYNAMO_SHA }}
-          path: dynamo
-          persist-credentials: false
-      - name: Install native build toolchain
-        run: bash scripts/ci_install_build_tools.sh
-      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
-        with:
-          toolchain: "1.99.0"
-      - name: Install wheel builder
-        run: |
-          python -m pip install 'maturin>=1.12,<2' 'uv==0.11.3' 'hatchling==1.27.0'
-          as_root=()
-          if [[ "$(id -u)" != 0 ]]; then as_root=(sudo); fi
-          "${as_root[@]}" apt-get update
-          "${as_root[@]}" apt-get install --yes --no-install-recommends protobuf-compiler clang libclang-dev pkg-config libssl-dev libudev-dev cmake unzip
-      - name: Build exact revision
-        env:
-          SOURCE_SHA: ${{ matrix.sha }}
-          BUILD_SIDE: ${{ matrix.side }}
-          BUILD_CONTAINER: ${{ vars.CI_JOB_CONTAINER_IMAGE }}
-        run: |
-          set -euo pipefail
-          started="$(date +%s)"
-          test "$(git -C source rev-parse HEAD)" = "${SOURCE_SHA}"
-          export CARGO_TARGET_DIR="${RUNNER_TEMP}/simulation-perf-target"
-          (
-            cd source/python/aisimulate
-            python -m maturin build --release --locked --out "${RUNNER_TEMP}/wheel"
-          )
-          uv export --project source/python/aisimulate --frozen --no-dev --no-emit-project \
-            --format requirements-txt --output-file "${RUNNER_TEMP}/wheel/requirements.txt"
-          python scripts/build_simulation_dynamo.py source dynamo "${RUNNER_TEMP}/wheel"
-          cp scripts/simulation_dynamo_requirements.txt "${RUNNER_TEMP}/wheel/dynamo-requirements.txt"
-          export BUILD_SECONDS=$(( $(date +%s) - started ))
-          python scripts/simulation_perf_artifact.py record "${RUNNER_TEMP}/wheel" \
-            "${BUILD_SIDE}" "${SOURCE_SHA}" source
-      - name: Upload exact wheel
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: simulation-wheel-${{ matrix.side }}-${{ matrix.sha }}
-          path: ${{ runner.temp }}/wheel
-          if-no-files-found: error
-          retention-days: 30
-
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        ref: ${{ github.sha }}
+        persist-credentials: false
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        ref: ${{ matrix.sha }}
+        path: source
+        persist-credentials: false
+    - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+      with:
+        python-version: '3.12'
+    - name: Configure Python linker path
+      run: echo "LIBRARY_PATH=${pythonLocation}/lib" >> "${GITHUB_ENV}"
+    - name: Select pinned Dynamo source
+      run: python -c 'from scripts.build_simulation_dynamo import DYNAMO_REVISION; print("DYNAMO_SHA=" + DYNAMO_REVISION)'
+        >> "${GITHUB_ENV}"
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        repository: ai-dynamo/dynamo
+        ref: ${{ env.DYNAMO_SHA }}
+        path: dynamo
+        persist-credentials: false
+    - name: Install native build toolchain
+      run: bash scripts/ci_install_build_tools.sh
+    - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+      with:
+        toolchain: 1.99.0
+    - name: Install wheel builder
+      run: |
+        python -m pip install 'maturin>=1.12,<2' 'uv==0.11.3' 'hatchling==1.27.0'
+        as_root=()
+        if [[ "$(id -u)" != 0 ]]; then as_root=(sudo); fi
+        "${as_root[@]}" apt-get update
+        "${as_root[@]}" apt-get install --yes --no-install-recommends protobuf-compiler clang libclang-dev pkg-config libssl-dev libudev-dev cmake unzip
+    - name: Build exact revision
+      env:
+        SOURCE_SHA: ${{ matrix.sha }}
+        BUILD_SIDE: ${{ matrix.side }}
+        BUILD_CONTAINER: ${{ vars.CI_JOB_CONTAINER_IMAGE }}
+      run: |
+        set -euo pipefail
+        started="$(date +%s)"
+        test "$(git -C source rev-parse HEAD)" = "${SOURCE_SHA}"
+        export CARGO_TARGET_DIR="${RUNNER_TEMP}/simulation-perf-target"
+        (
+          cd source/python/aisimulate
+          python -m maturin build --release --locked --out "${RUNNER_TEMP}/wheel"
+        )
+        uv export --project source/python/aisimulate --frozen --no-dev --no-emit-project \
+          --format requirements-txt --output-file "${RUNNER_TEMP}/wheel/requirements.txt"
+        python scripts/build_simulation_dynamo.py source dynamo "${RUNNER_TEMP}/wheel"
+        cp scripts/simulation_dynamo_requirements.txt "${RUNNER_TEMP}/wheel/dynamo-requirements.txt"
+        export BUILD_SECONDS=$(( $(date +%s) - started ))
+        python scripts/simulation_perf_artifact.py record "${RUNNER_TEMP}/wheel" \
+          "${BUILD_SIDE}" "${SOURCE_SHA}" source
+    - name: Upload exact wheel
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: simulation-wheel-${{ matrix.side }}-${{ matrix.sha }}
+        path: ${{ runner.temp }}/wheel
+        if-no-files-found: error
+        retention-days: 30
   compare:
-    needs: [select, build]
-    if: needs.select.outputs.run_comparison == 'true'
+    needs:
+    - build
     name: Simulation Performance (advisory)
     runs-on: prod-aisimulate-default-amd64-v1
     timeout-minutes: 75
@@ -262,168 +110,143 @@ jobs:
         HOME: /__w/aisimulate/aisimulate
         USER: runner
     env:
-      BASE_SHA: ${{ needs.select.outputs.base_sha }}
-      HEAD_SHA: ${{ needs.select.outputs.head_sha }}
+      BASE_SHA: 988edba8732af6f45990d0cb567c001119121566
+      HEAD_SHA: 9093044260aa703c7e231ea54021940083843ada
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ needs.select.outputs.head_sha }}
-          fetch-depth: 0
-          persist-credentials: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
-        with:
-          python-version: "3.12"
-      - name: Prepare comparison environments
-        run: |
-          set -euo pipefail
-          git worktree prune
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        ref: ${{ github.sha }}
+        fetch-depth: 0
+        persist-credentials: false
+    - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+      with:
+        python-version: '3.12'
+    - name: Prepare comparison environments
+      run: |
+        set -euo pipefail
+        git worktree prune
 
-          run_root="${RUNNER_TEMP}/simulation-perf-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          base_src="${run_root}/base-src"
-          head_src="${run_root}/head-src"
-          mkdir -p "${run_root}"
+        run_root="${RUNNER_TEMP}/simulation-perf-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+        base_src="${run_root}/base-src"
+        head_src="${run_root}/head-src"
+        mkdir -p "${run_root}"
 
-          {
-            echo "BASE_SRC=${base_src}"
-            echo "HEAD_SRC=${head_src}"
-            echo "BASE_DIST=${run_root}/base-dist"
-            echo "HEAD_DIST=${run_root}/head-dist"
-            echo "BASE_VENV=${run_root}/base-venv"
-            echo "HEAD_VENV=${run_root}/head-venv"
-            echo "RESULTS_DIR=${run_root}/results"
-          } >> "${GITHUB_ENV}"
+        {
+          echo "BASE_SRC=${base_src}"
+          echo "HEAD_SRC=${head_src}"
+          echo "BASE_DIST=${run_root}/base-dist"
+          echo "HEAD_DIST=${run_root}/head-dist"
+          echo "BASE_VENV=${run_root}/base-venv"
+          echo "HEAD_VENV=${run_root}/head-venv"
+          echo "RESULTS_DIR=${run_root}/results"
+        } >> "${GITHUB_ENV}"
 
-          git worktree add --detach "${base_src}" "${BASE_SHA}"
-          git worktree add --detach "${head_src}" "${HEAD_SHA}"
+        git worktree add --detach "${base_src}" "${BASE_SHA}"
+        git worktree add --detach "${head_src}" "${HEAD_SHA}"
 
-      - name: Download base wheel
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: simulation-wheel-base-${{ needs.select.outputs.base_sha }}
-          path: ${{ env.BASE_DIST }}
-      - name: Download head wheel
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: simulation-wheel-head-${{ needs.select.outputs.head_sha }}
-          path: ${{ env.HEAD_DIST }}
-      - name: Verify and install both artifacts
-        id: install
-        run: |
-          set -euo pipefail
-          command -v taskset
-          python scripts/simulation_perf_artifact.py verify \
-            --base-dir "${BASE_DIST}" --base-sha "${BASE_SHA}" \
-            --head-dir "${HEAD_DIST}" --head-sha "${HEAD_SHA}"
-          started="$(date +%s)"
-          mkdir -p "${RESULTS_DIR}/provenance"
-          for side in base head; do
-            if [[ "${side}" == "base" ]]; then
-              dist="${BASE_DIST}"
-              venv="${BASE_VENV}"
-            else
-              dist="${HEAD_DIST}"
-              venv="${HEAD_VENV}"
-            fi
-            python -m venv "${venv}"
-            "${venv}/bin/python" -m pip install --require-hashes -r "${dist}/requirements.txt"
-            "${venv}/bin/python" -m pip install --require-hashes -r "${dist}/dynamo-requirements.txt"
-            "${venv}/bin/python" -m pip install --no-deps "${dist}"/*.whl
-            cp "${dist}/requirements.txt" "${RESULTS_DIR}/provenance/${side}-requirements.txt"
-            cp "${dist}/dynamo-requirements.txt" "${RESULTS_DIR}/provenance/${side}-dynamo-requirements.txt"
-            cp "${dist}/dynamo-build.patch" "${RESULTS_DIR}/provenance/${side}-dynamo-build.patch"
-            cp "${dist}/provenance.json" "${RESULTS_DIR}/provenance/${side}-build.json"
-            "${venv}/bin/python" -c 'import aisimulate._runtime, dynamo._core, dynamo.replay.simulation; print(aisimulate._runtime.__file__); print(dynamo._core.__file__); print(dynamo.replay.simulation.__file__)' \
-              > "${RESULTS_DIR}/provenance/${side}-imports.txt"
-            "${venv}/bin/python" -m pip freeze > "${RESULTS_DIR}/provenance/${side}-packages.txt"
-          done
-          echo "$(( $(date +%s) - started ))" > "${RESULTS_DIR}/provenance/install-seconds.txt"
-
-      - name: Run paired benchmark
-        env:
-          SELF_COMPARE: ${{ inputs.self_compare }}
-        run: |
-          set -euo pipefail
-          repetitions=1
-          qualification_args=()
-          if [[ "${SELF_COMPARE}" == "true" ]]; then
-            repetitions=3
-            qualification_args=(--qualification)
+        # Overlay only the benchmark adapter. Installed runtime wheels retain exact source identities.
+        mkdir -p "${run_root}/results/provenance"
+        git merge-base --is-ancestor "${HEAD_SHA}" "${BASE_SHA}"
+        git diff --exit-code "${BASE_SHA}" "${HEAD_SHA}" -- Cargo.lock python/aisimulate/uv.lock
+        for source in "${base_src}" "${head_src}"; do
+          git -C "${source}" diff --exit-code HEAD
+          git archive "${GITHUB_SHA}" python/aisimulate/tools/simulation_perf_gate | tar -x -C "${source}"
+        done
+        git diff "${BASE_SHA}" "${HEAD_SHA}" > "${run_root}/results/provenance/candidate.patch"
+        git -C "${base_src}" diff HEAD > "${run_root}/results/provenance/base-adapter.patch"
+        git -C "${head_src}" diff HEAD > "${run_root}/results/provenance/head-adapter.patch"
+        echo "${GITHUB_SHA}" > "${run_root}/results/provenance/adapter-revision.txt"
+        cp BACKTEST.md "${run_root}/results/provenance/BACKTEST.md"
+    - name: Download base wheel
+      uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+      with:
+        name: simulation-wheel-base-988edba8732af6f45990d0cb567c001119121566
+        path: ${{ env.BASE_DIST }}
+    - name: Download head wheel
+      uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+      with:
+        name: simulation-wheel-head-9093044260aa703c7e231ea54021940083843ada
+        path: ${{ env.HEAD_DIST }}
+    - name: Verify and install both artifacts
+      id: install
+      run: |
+        set -euo pipefail
+        command -v taskset
+        python scripts/simulation_perf_artifact.py verify \
+          --base-dir "${BASE_DIST}" --base-sha "${BASE_SHA}" \
+          --head-dir "${HEAD_DIST}" --head-sha "${HEAD_SHA}"
+        started="$(date +%s)"
+        mkdir -p "${RESULTS_DIR}/provenance"
+        for side in base head; do
+          if [[ "${side}" == "base" ]]; then
+            dist="${BASE_DIST}"
+            venv="${BASE_VENV}"
+          else
+            dist="${HEAD_DIST}"
+            venv="${HEAD_VENV}"
           fi
-          status=0
-          for attempt in $(seq 1 "${repetitions}"); do
-            destination="${RESULTS_DIR}"
-            if [[ "${SELF_COMPARE}" == "true" ]]; then
-              destination="${RESULTS_DIR}/qualification-${attempt}"
-            fi
-            "${BASE_VENV}/bin/python" \
-              "${BASE_SRC}/python/aisimulate/tools/simulation_perf_gate/run.py" \
-              --base-python "${BASE_VENV}/bin/python" \
-              --base-worker "${BASE_SRC}/python/aisimulate/tools/simulation_perf_gate/worker.py" \
-              --base-revision "${BASE_SHA}" \
-              --head-python "${HEAD_VENV}/bin/python" \
-              --head-worker "${HEAD_SRC}/python/aisimulate/tools/simulation_perf_gate/worker.py" \
-              --head-revision "${HEAD_SHA}" \
-              --output-dir "${destination}" "${qualification_args[@]}" || status=1
-          done
-          exit "${status}"
-
-      - name: Validate PR benchmark controller
-        if: ${{ !cancelled() && steps.install.outcome == 'success' && needs.select.outputs.validate_head_controller == 'true' }}
-        run: |
-          set -euo pipefail
-          "${HEAD_VENV}/bin/python" \
-            "${HEAD_SRC}/python/aisimulate/tools/simulation_perf_gate/run.py" \
-            --base-python "${BASE_VENV}/bin/python" \
-            --base-worker "${BASE_SRC}/python/aisimulate/tools/simulation_perf_gate/worker.py" \
-            --base-revision "${BASE_SHA}" \
-            --head-python "${HEAD_VENV}/bin/python" \
-            --head-worker "${HEAD_SRC}/python/aisimulate/tools/simulation_perf_gate/worker.py" \
-            --head-revision "${HEAD_SHA}" \
-            --output-dir "${RESULTS_DIR}/head-controller"
-
-      - name: Publish summary and annotations
-        if: always()
-        run: |
-          for result in "${RESULTS_DIR}" "${RESULTS_DIR}"/qualification-*; do
-            if [[ -f "${result}/summary.md" ]]; then
-              cat "${result}/summary.md" >> "${GITHUB_STEP_SUMMARY}"
-            fi
-            if [[ -s "${result}/annotations.txt" ]]; then
-              echo "::error::Simulation performance needs review; see the summary and artifact."
-            fi
-          done
-
-      - name: Publish PR controller validation
-        if: always() && needs.select.outputs.validate_head_controller == 'true'
-        run: |
-          if [[ -f "${RESULTS_DIR}/head-controller/summary.md" ]]; then
-            {
-              echo "## PR controller validation"
-              echo
-              cat "${RESULTS_DIR}/head-controller/summary.md"
-            } >> "${GITHUB_STEP_SUMMARY}"
+          python -m venv "${venv}"
+          "${venv}/bin/python" -m pip install --require-hashes -r "${dist}/requirements.txt"
+          "${venv}/bin/python" -m pip install --require-hashes -r "${dist}/dynamo-requirements.txt"
+          "${venv}/bin/python" -m pip install --no-deps "${dist}"/*.whl
+          cp "${dist}/requirements.txt" "${RESULTS_DIR}/provenance/${side}-requirements.txt"
+          cp "${dist}/dynamo-requirements.txt" "${RESULTS_DIR}/provenance/${side}-dynamo-requirements.txt"
+          cp "${dist}/dynamo-build.patch" "${RESULTS_DIR}/provenance/${side}-dynamo-build.patch"
+          cp "${dist}/provenance.json" "${RESULTS_DIR}/provenance/${side}-build.json"
+          "${venv}/bin/python" -c 'import aisimulate._runtime, dynamo._core, dynamo.replay.simulation; print(aisimulate._runtime.__file__); print(dynamo._core.__file__); print(dynamo.replay.simulation.__file__)' \
+            > "${RESULTS_DIR}/provenance/${side}-imports.txt"
+          "${venv}/bin/python" -m pip freeze > "${RESULTS_DIR}/provenance/${side}-packages.txt"
+        done
+        echo "$(( $(date +%s) - started ))" > "${RESULTS_DIR}/provenance/install-seconds.txt"
+    - name: Run paired benchmark
+      run: |
+        set -euo pipefail
+        status=0
+        "${BASE_VENV}/bin/python" \
+          "${BASE_SRC}/python/aisimulate/tools/simulation_perf_gate/run.py" \
+          --base-python "${BASE_VENV}/bin/python" \
+          --base-worker "${BASE_SRC}/python/aisimulate/tools/simulation_perf_gate/worker.py" \
+          --base-revision "${BASE_SHA}" \
+          --head-python "${HEAD_VENV}/bin/python" \
+          --head-worker "${HEAD_SRC}/python/aisimulate/tools/simulation_perf_gate/worker.py" \
+          --head-revision "${HEAD_SHA}" \
+          --case agentx-sglang-disaggregated \
+          --output-dir "${RESULTS_DIR}" || status=$?
+        test "${status}" -le 1
+        python - <<'PY'
+        import json, os
+        from pathlib import Path
+        results = json.loads((Path(os.environ["RESULTS_DIR"]) / "comparison.json").read_text())
+        assert len(results) == 1, results
+        assert results[0]["classification"] == "PERFORMANCE_REGRESSION", results
+        print("The existing threshold detected the restored #397 cost.")
+        PY
+    - name: Publish summary and annotations
+      if: always()
+      run: |
+        for result in "${RESULTS_DIR}" "${RESULTS_DIR}"/qualification-*; do
+          if [[ -f "${result}/summary.md" ]]; then
+            cat "${result}/summary.md" >> "${GITHUB_STEP_SUMMARY}"
           fi
-          if [[ -s "${RESULTS_DIR}/head-controller/annotations.txt" ]]; then
-            blocker_count="$(grep -c . "${RESULTS_DIR}/head-controller/annotations.txt")"
-            echo "::error::PR controller validation found ${blocker_count} blocker(s); see the job summary and artifact for details."
+          if [[ -s "${result}/annotations.txt" ]]; then
+            echo "::error::Simulation performance needs review; see the summary and artifact."
           fi
-
-      - name: Upload benchmark artifacts
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: simulation-performance-pr-${{ needs.select.outputs.number }}
-          path: ${{ env.RESULTS_DIR }}
-          if-no-files-found: warn
-          retention-days: 30
-
-      - name: Remove benchmark worktrees
-        if: always()
-        run: |
-          if [[ -n "${BASE_SRC:-}" ]]; then
-            git worktree remove --force "${BASE_SRC}" || true
-          fi
-          if [[ -n "${HEAD_SRC:-}" ]]; then
-            git worktree remove --force "${HEAD_SRC}" || true
-          fi
-          git worktree prune || true
+        done
+    - name: Upload benchmark artifacts
+      if: always()
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: simulation-kv-routing-backtest-397
+        path: ${{ env.RESULTS_DIR }}
+        if-no-files-found: error
+        retention-days: 30
+    - name: Remove benchmark worktrees
+      if: always()
+      run: |
+        if [[ -n "${BASE_SRC:-}" ]]; then
+          git worktree remove --force "${BASE_SRC}" || true
+        fi
+        if [[ -n "${HEAD_SRC:-}" ]]; then
+          git worktree remove --force "${HEAD_SRC}" || true
+        fi
+        git worktree prune || true
