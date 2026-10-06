@@ -70,10 +70,16 @@ def _latest_support_matrix_version(
     Matches system and backend case-insensitively. When a model is provided,
     exact-model rows win, then architecture rows. If neither model nor
     architecture matches, return None instead of selecting an unrelated row.
-    When ``queryable_versions`` is given, rows for other versions are ignored.
+    When ``queryable_versions`` is given, rows for other versions are ignored
+    before model precedence applies, so an exact-model row at a stale version
+    cannot hide a queryable architecture row.
     """
     rows = [
-        row for row in matrix if row["System"].lower() == system.lower() and row["Backend"].lower() == backend.lower()
+        row
+        for row in matrix
+        if row["System"].lower() == system.lower()
+        and row["Backend"].lower() == backend.lower()
+        and (queryable_versions is None or row["Version"] in queryable_versions)
     ]
 
     if model:
@@ -105,8 +111,7 @@ def _latest_support_matrix_version(
     versions = [
         (version, parsed)
         for version in {row["Version"] for row in rows}
-        if (queryable_versions is None or version in queryable_versions)
-        and (parsed := common.parse_support_matrix_version(version))
+        if (parsed := common.parse_support_matrix_version(version))
     ]
     if not versions:
         return None

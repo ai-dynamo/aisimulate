@@ -141,6 +141,26 @@ def test_latest_support_matrix_version_does_not_fall_back_to_unrelated_rows():
     )
 
 
+def test_latest_support_matrix_version_filters_queryable_versions_before_model_precedence():
+    # An exact-model row at a stale version must not hide a queryable row for the same architecture.
+    matrix = [
+        _row(model="Qwen/Qwen3-32B", architecture="Qwen3ForCausalLM", version="0.5.16"),
+        _row(model="Qwen/Qwen3-8B", architecture="Qwen3ForCausalLM", version="0.5.14"),
+    ]
+
+    assert (
+        _latest_support_matrix_version(
+            matrix,
+            "b200_sxm",
+            "sglang",
+            model="Qwen/Qwen3-32B",
+            architecture="Qwen3ForCausalLM",
+            queryable_versions={"0.5.14", "0.5.17"},
+        )
+        == "0.5.14"
+    )
+
+
 def test_run_support_mode_stops_when_auto_version_is_unavailable(monkeypatch, capsys):
     monkeypatch.setattr(
         "aisimulate.legacy_cli.main.get_model_config_from_model_path",

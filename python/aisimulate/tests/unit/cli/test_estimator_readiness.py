@@ -172,6 +172,50 @@ def test_unrelated_replay_error_keeps_original_message():
     assert perf_data_missing_message(RuntimeError("replay deadline exceeded")) is None
 
 
+@pytest.mark.parametrize(
+    "detail",
+    [
+        "perf file is an unresolved git-lfs pointer: /data/b200_sxm/vllm/0.24.0/gemm_perf.parquet; run `git lfs pull`",
+        "malformed scale table",
+    ],
+)
+def test_other_perf_database_errors_keep_original_message(detail):
+    error = RuntimeError(f"AISimulate replay failed: PerfDataNotAvailableError: perf database error: {detail}")
+
+    assert perf_data_missing_message(error) is None
+
+
+def test_recommend_unready_error_reports_cause_without_regression_text(vllm_slots, monkeypatch):
+    from aisimulate.sweeper.config import SearchSpace
+    from aisimulate.sweeper.forward_pass_estimator import (
+        ForwardPassEstimatorResolutionError,
+        ForwardPassEstimatorResolver,
+    )
+    from aisimulate_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
+
+    diagnostics = _diagnostics([_architecture_failure("OpLevel"), _architecture_failure("FpmInterpolation")])
+
+    class UnsupportedModel:
+        def diagnostics(self):
+            return diagnostics
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(RustForwardPassPerfModel, "best_available", lambda request: UnsupportedModel())
+    resolver = ForwardPassEstimatorResolver(SearchSpace(model_name="microsoft/phi-4", hardware_sku="h200_sxm"))
+    request = ForwardPassPerfModelConfig(
+        model="microsoft/phi-4", system="h200_sxm", backend="vllm", worker_type="decode"
+    )
+
+    with pytest.raises(ForwardPassEstimatorResolutionError) as excinfo:
+        resolver._resolve(request, "decode")
+
+    message = str(excinfo.value)
+    assert message.startswith("estimator for decode is not ready: architecture Phi3ForCausalLM")
+    assert "training observations" not in message
+
+
 def test_prediction_lowering_reports_cause_instead_of_untrained_regression(tmp_path):
     from aisimulate.capacity import materialize_aic_num_gpu_blocks
 

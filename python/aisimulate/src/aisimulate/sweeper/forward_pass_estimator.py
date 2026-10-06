@@ -151,8 +151,7 @@ class ForwardPassEstimatorResolver:
         resolved_config = dict(provenance["config"])
         if diagnostics.get("readiness") != "ready":
             raise ForwardPassEstimatorResolutionError(
-                f"estimator for {role} is not ready; regression requires training observations: "
-                f"{unready_estimator_message(diagnostics)}"
+                f"estimator for {role} is not ready: {unready_estimator_message(diagnostics)}"
             )
         if not resolved_config.get("backend_version"):
             raise ForwardPassEstimatorResolutionError(

@@ -25,6 +25,13 @@ _WRAPPER_PREFIXES = (
     "ValueError: ",
 )
 _PERF_DATA_MISSING = re.compile(r"perf database error: (.+)", re.DOTALL)
+# Core reports other problems (unresolved git-lfs pointers, malformed or
+# unparseable tables) with the same prefix. Only a lookup miss gets the
+# missing-measurement explanation; anything else keeps its original text.
+_MISSING_ROW = re.compile(
+    r"data missing for|data empty for|data unavailable for|no rows in |has no compatible data|has data for|"
+    r"no data to anchor"
+)
 
 
 def unready_estimator_message(diagnostics: dict[str, Any]) -> str:
@@ -66,11 +73,10 @@ def unready_estimator_message(diagnostics: dict[str, Any]) -> str:
 def perf_data_missing_message(error: BaseException | str) -> str | None:
     """Explain a missing performance-table row hit during replay, or return None."""
 
-    text = str(error)
-    if "PerfDataNotAvailableError" not in text and "perf database error" not in text:
+    match = _PERF_DATA_MISSING.search(str(error))
+    if match is None or _MISSING_ROW.search(match.group(1)) is None:
         return None
-    match = _PERF_DATA_MISSING.search(text)
-    detail = match.group(1).strip() if match is not None else text
+    detail = match.group(1).strip()
     return (
         f"missing performance data: {detail}. The bundled data has no measurement for a shape this model "
         "and parallelism need. Try another parallelism, backend or backend_version; to add a new model, "
