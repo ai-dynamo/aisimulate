@@ -674,6 +674,29 @@ def test_invalid_rerun_with_overwrite_keeps_previous_results_byte_identical(tmp_
     assert error in rerun.stderr
 
 
+def test_invalid_predict_rerun_with_recommendation_section_keeps_previous_results(tmp_path):
+    # _require_known_sections skips recommendation-only sections and leaves the
+    # predict restriction to split_config_sections, which must still run before the clear.
+    import subprocess
+
+    config = _small_cli_config(tmp_path, "predict")
+    output = tmp_path / "output"
+    base = [sys.executable, "-m", "aisimulate", "predict", "--config", str(config), "--output-dir", str(output)]
+    first = subprocess.run([*base, "--format", "json"], capture_output=True, text=True, timeout=60)
+    assert first.returncode == 0, first.stderr
+    before = _output_bytes(output)
+    assert "prediction.json" in before
+
+    raw = yaml.safe_load(config.read_text())
+    raw["optimization"] = {"target": "throughput"}
+    config.write_text(yaml.safe_dump(raw))
+
+    rerun = subprocess.run([*base, "--overwrite"], capture_output=True, text=True, timeout=60)
+    assert rerun.returncode == 2, rerun.stderr
+    assert _output_bytes(output) == before
+    assert "predict does not accept ['optimization']" in rerun.stderr
+
+
 def test_unavailable_output_adapter_with_overwrite_keeps_previous_results(tmp_path):
     import subprocess
 
