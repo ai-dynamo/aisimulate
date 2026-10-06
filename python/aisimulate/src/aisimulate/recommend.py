@@ -99,9 +99,10 @@ def _run_recommendation(
         )
     if config.engine.context_length == "max":
         logging.getLogger(__name__).warning(
-            "engine.context_length is 'max'; using the model maximum of %s tokens. Parallel shapes whose "
+            "engine.context_length is 'max'; using the %s of %s tokens. Parallel shapes whose "
             "KV cache cannot hold one sequence of that length are excluded from the search. Set "
             "engine.context_length to your longest request to admit them.",
+            "model maximum" if config.engine.fpm_profile is None else "FPM profile context length",
             smart.search_space.context_length,
         )
     smart.sweep.parallel_evals = min(config.optimizer.parallelism, budget["cpu_limit"])

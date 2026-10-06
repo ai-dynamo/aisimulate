@@ -47,9 +47,10 @@ DEFAULT_MEMORY_FRACTION = 0.9
 
 logger = logging.getLogger(__name__)
 
-# Model builders reject a tensor-parallel size that does not evenly split the
-# attention heads (or linear-attention heads). That is a property of the shape,
-# not of the model, so enumeration skips the shape instead of aborting.
+# Model builders reject a tensor-parallel size that does not evenly split a
+# tensor-parallel dimension (attention heads, linear-attention heads, or another
+# sharded size such as intermediate_size). That is a property of the shape, not
+# of the model, so enumeration skips the shape instead of aborting.
 _TP_DIVISIBILITY = re.compile(r"divisible by (tp_size|tensor parallel size)")
 
 

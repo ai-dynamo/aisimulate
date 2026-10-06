@@ -55,8 +55,19 @@ def test_estimate_kv_tokens_propagates_other_errors(monkeypatch):
 
     monkeypatch.setattr(kv_estimate_mod, "estimate_kv_cache", boom)
     sh = ParallelShape(tp=1, dp=1, moe_tp=1, moe_ep=1)
-    with pytest.raises(ValueError, match="incompatible"):
+    with pytest.raises(ValueError, match="incompatible") as excinfo:
         estimate_kv_tokens(sh, **_COMMON)
+    assert not isinstance(excinfo.value, IllegalParallelShape)
+
+
+def test_feasible_shape_tokens_propagates_other_errors(monkeypatch):
+    def boom(*a, **k):
+        raise ValueError("incompatible memory fraction")
+
+    monkeypatch.setattr(kv_estimate_mod, "estimate_kv_cache", boom)
+    with pytest.raises(ValueError, match="incompatible") as excinfo:
+        feasible_shape_tokens([ParallelShape(tp=2, dp=1, moe_tp=1, moe_ep=2)], max_seq_len=1024, **_COMMON)
+    assert not isinstance(excinfo.value, IllegalParallelShape)
 
 
 def test_feasible_shape_tokens_filters_short_and_oom_and_dedups(monkeypatch):
