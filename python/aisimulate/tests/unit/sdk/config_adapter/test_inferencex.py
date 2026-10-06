@@ -9,6 +9,7 @@ from aisimulate.sdk.config_adapter import (
     AdapterOverrides,
     EstimateRequestV1,
     InferenceXSource,
+    ResolvedInferenceXSource,
     adapt_config,
     to_cli_estimate_kwargs,
 )
@@ -335,3 +336,33 @@ def test_other_topologies_keep_reported_gpu_count(framework, tp, attention_dp, m
     assert worker.moe_tp_size == moe_tp
     assert worker.moe_ep_size == moe_ep
     assert all(d.code != "inferencex_gpu_count_normalized" for d in outcome.diagnostics)
+
+
+@pytest.mark.parametrize("backend_version", [None, "0.11.0"])
+def test_resolved_source_public_export_and_backend_warning(backend_version):
+    source = ResolvedInferenceXSource(
+        deployment={
+            "schema_version": "resolved-deployment/1",
+            "backend": "vllm",
+            "system": "h200_sxm",
+            "model_path": "meta-llama/Meta-Llama-3.1-70B",
+            "workload": {"isl": 1024, "osl": 128, "concurrency": 16},
+            "roles": {
+                "aggregated": {
+                    "topology": {"tp": 4, "pp": 1, "attention_dp": 1, "moe_tp": 4, "moe_ep": 1, "workers": 1},
+                    "args": {"gpu_memory_utilization": 0.9, "kv_cache_dtype": "bfloat16"},
+                    "quantization": {"gemm": "fp8", "moe": "fp8"},
+                }
+            },
+        },
+        config={**_config(), "id": 7},
+        benchmark=_benchmark(),
+        source_reference="fixture",
+    )
+    report = adapt_config(source, AdapterOverrides(backend_version=backend_version))
+    assert report.outcomes[0].status == "adapted"
+    lowered = to_cli_estimate_kwargs(report.requests[0])
+    assert lowered.get("backend_version") == backend_version
+    assert [item.code for item in report.outcomes[0].diagnostics] == (
+        ["backend_version_unpinned"] if backend_version is None else []
+    )

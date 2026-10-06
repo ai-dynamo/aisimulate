@@ -74,8 +74,10 @@ nesting would add import churn without simplifying those rules.
   flushes completed outcomes to `--evidence/results.jsonl`. Internal Actions
   artifacts retain checkpoints and complete shard results for seven days.
   Explicit PR previews additionally retain full resolved inputs for local review.
-- For policy `gym-resolved-config-v2`, each shard hashes its complete resolved
-  inputs, including source evidence. The aggregate `cohort_sha256` hashes the
+- For policy `gym-resolved-config-v2`, each shard hashes selected point IDs, measurement
+  rows, and resolved deployments, including pinned checkpoint bytes. Error text
+  and diagnostic messages do not affect cohort identity. Full resolution evidence
+  remains in the internal artifacts. The aggregate `cohort_sha256` hashes the
   ordered list of shard hashes; unsharded local runs hash their inputs directly.
   `driver_sha256` includes resolver code and source manifests. Qualification
   checks all partitions and provenance before producing the Pages summary.
@@ -156,3 +158,18 @@ The full cohort resolves to 964 verified and 1,107 estimated candidates, with
 210 unresolved. Summary counts and each published point label their evidence
 quality. Coverage parity does not promise equal predictions across predictor
 revisions; fresh replay outcomes and errors determine the report.
+
+### Review safeguards
+
+- Same-day measurements and images are ordered by run start time, GitHub run ID,
+  attempt, and benchmark ID, independent of dump order.
+- Non-`none` speculation and active speculative server controls are excluded.
+- Unpinned checkpoint revisions require estimated mode. Configuration MAPE is
+  published separately for verified, estimated, and unrecorded evidence. The
+  combined MAPE includes all configurations; AIC also reports status and coverage.
+- New runtime archives use stable measurement identities with separate content
+  hashes. Existing version 1 archives remain readable; a known measurement with
+  changed content is an error, never a silent recipe fallback. Run start time is
+  ordering metadata and is not part of the original measurement digest.
+- Immutable recipe cache files are written atomically. Resolved public adapter
+  requests warn when the prediction database version is not pinned.

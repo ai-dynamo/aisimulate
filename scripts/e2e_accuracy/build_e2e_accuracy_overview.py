@@ -205,6 +205,14 @@ def _series_metrics(rows: list[dict[str, Any]], prefix: str) -> dict[str, Any]:
         tpot_errors.append(_absolute_percentage_error(predicted_tpot, measured_tpot))
 
     return {
+        **(
+            {
+                "status_counts": _status_counts(rows, "aic"),
+                "coverage_pct": _round_metric(len(eligible_rows) / len(rows) * 100) if rows else 0,
+            }
+            if prefix == "aic"
+            else {}
+        ),
         "points": len(eligible_rows),
         "ttft_mape_pct": _round_metric(_mean(ttft_errors)),
         "tpot_mape_pct": _round_metric(_mean(tpot_errors)),
@@ -213,10 +221,10 @@ def _series_metrics(rows: list[dict[str, Any]], prefix: str) -> dict[str, Any]:
     }
 
 
-def _status_counts(rows: list[dict[str, Any]]) -> dict[str, int]:
+def _status_counts(rows: list[dict[str, Any]], prefix: str = "aisimulate") -> dict[str, int]:
     counts = {"success": 0, "unsupported": 0, "failed": 0, "unknown": 0}
     for row in rows:
-        status = row.get("aisimulate_status")
+        status = row.get(f"{prefix}_status", "success" if prefix == "aic" else None)
         if status not in counts:
             status = "unknown"
         counts[status] += 1
@@ -629,6 +637,15 @@ def build_summary(
             },
         },
         "models": [_model_summary(model, by_model[model]) for model in sorted(by_model, key=str.casefold)],
+    }
+    result["totals"]["by_configuration_quality"] = {
+        quality: {
+            "rows": len(group),
+            "aic": _series_metrics(group, "aic"),
+            "aisimulate": _series_metrics(group, "dynamo"),
+        }
+        for quality in ("verified", "estimated", "not_recorded")
+        if (group := [row for row in scoped_rows if row.get("configuration_quality", "not_recorded") == quality])
     }
     revision = _evaluated_revision(runtime, branch, preview=preview)
     if preview:

@@ -138,7 +138,19 @@ def adapt_resolved_inferencex(source: ResolvedInferenceXSource, overrides: Adapt
                 },
             }
         )
-        outcome = AdaptationOutcome(point_id=point_id, status="adapted", request=request)
+        diagnostics = (
+            ()
+            if overrides.backend_version is not None
+            else (
+                AdaptationDiagnostic(
+                    severity="warning",
+                    code="backend_version_unpinned",
+                    message="Backend version is not pinned; AIC will select its latest compatible database version.",
+                    path="backend.version",
+                ),
+            )
+        )
+        outcome = AdaptationOutcome(point_id=point_id, status="adapted", request=request, diagnostics=diagnostics)
     except (ValueError, TypeError, KeyError) as error:
         outcome = AdaptationOutcome(
             point_id=point_id,

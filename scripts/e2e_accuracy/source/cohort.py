@@ -33,6 +33,7 @@ def select_points(tables, max_age_days=180):
         run = runs.get(bench["workflow_run_id"], {})
         values = {**config, **bench}
         values.update(
+            run_started_at=run.get("run_started_at"),
             silicon_model=config["model"],
             bench_id=bench["id"],
             github_run_id=str(run["github_run_id"]) if run.get("github_run_id") is not None else None,

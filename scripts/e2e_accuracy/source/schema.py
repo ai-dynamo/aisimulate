@@ -54,6 +54,7 @@ class SiliconRow:
     # workflow_runs join. These fields identify the immutable InferenceX
     # source revision that produced the benchmark.
     github_run_id: str | None = None
+    run_started_at: str | None = None
     run_attempt: int | None = None
     head_sha: str | None = None
     head_branch: str | None = None

@@ -24,16 +24,33 @@ MAX_BYTES = 512 * 1024 * 1024
 
 
 def row_digest(row):
-    return hashlib.sha256(json.dumps(asdict(row), sort_keys=True, allow_nan=False).encode()).hexdigest()
+    # Version 1 binds the original measurement schema, before run ordering metadata.
+    values = asdict(row)
+    values.pop("run_started_at")
+    return hashlib.sha256(json.dumps(values, sort_keys=True, allow_nan=False).encode()).hexdigest()
+
+
+def observation_id(row):
+    return json.dumps([row.bench_id, row.config_id, row.github_run_id, row.run_attempt, row.head_sha])
 
 
 def archived_recipe(row, part="parsed"):
     manifest = load_manifest("runtime_observations.json")
-    if manifest["schema_version"] != "reviewed-runtime-observations/1":
+    version = manifest["schema_version"]
+    if version not in {"reviewed-runtime-observations/1", "reviewed-runtime-observations/2"}:
         raise ValueError("unsupported runtime observation schema")
     records = manifest["records"]
     key = row_digest(row)
-    record = records.get(key)
+    if version.endswith("/2"):
+        record = records.get(observation_id(row))
+        if record is not None and record["measurement_sha256"] != key:
+            raise ValueError("runtime observation measurement identity mismatch")
+    else:
+        record = records.get(key)
+        # Old archives have only benchmark ID and the original measurement digest.
+        # A known benchmark with changed inputs must never silently fall back.
+        if record is None and any(item["benchmark_id"] == row.bench_id for item in records.values()):
+            raise ValueError("runtime observation measurement identity mismatch")
     if record is None or part not in record:
         return None
     if record["benchmark_id"] != row.bench_id:
@@ -172,10 +189,18 @@ def freeze_records(points, source, read_recipe):
             if row.disagg:
                 workload = inspect_cached_runtime_workload(row, source._cache_dir)["parsed"]
                 if workload is not None:
-                    records[row_digest(row)] = {"benchmark_id": row.bench_id, "workload": workload}
+                    records[observation_id(row)] = {
+                        "benchmark_id": row.bench_id,
+                        "measurement_sha256": row_digest(row),
+                        "workload": workload,
+                    }
             continue
         evidence = parsed[-1]
         if not any(evidence.get(key) for key in ("artifact", "single_node_runtime", "runtime_workload")):
             continue
-        records[row_digest(row)] = {"benchmark_id": row.bench_id, "parsed": parsed}
-    return {"schema_version": "reviewed-runtime-observations/1", "records": records}
+        records[observation_id(row)] = {
+            "benchmark_id": row.bench_id,
+            "measurement_sha256": row_digest(row),
+            "parsed": parsed,
+        }
+    return {"schema_version": "reviewed-runtime-observations/2", "records": records}

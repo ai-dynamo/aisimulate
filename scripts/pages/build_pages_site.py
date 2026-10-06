@@ -404,6 +404,34 @@ def _accuracy_summary(text: str, *, allow_preview: bool = False) -> dict:
         require(isinstance(scope.get("claim"), str), "scope claim")
         totals = summary.get("totals")
         aggregate(totals)
+        groups = totals.get("by_configuration_quality")
+        if groups is not None:
+            require(isinstance(groups, dict) and bool(groups), "configuration quality groups")
+            require(set(groups) <= {"verified", "estimated", "not_recorded"}, "configuration quality keys")
+            for group in groups.values():
+                require(
+                    isinstance(group, dict) and type(group.get("rows")) is int and group["rows"] > 0,
+                    "configuration quality rows",
+                )
+                for name in ("aic", "aisimulate"):
+                    metrics = group.get(name)
+                    require(
+                        isinstance(metrics, dict)
+                        and type(metrics.get("points")) is int
+                        and 0 <= metrics["points"] <= group["rows"],
+                        "configuration quality points",
+                    )
+                    for metric in ("ttft_mape_pct", "tpot_mape_pct", "ttft_shape_error_pct", "tpot_shape_error_pct"):
+                        require(
+                            metric in metrics and (metrics[metric] is None or number(metrics[metric])),
+                            "configuration quality metrics",
+                        )
+            require(sum(group["rows"] for group in groups.values()) == totals["rows"], "configuration quality coverage")
+            for name in ("aic", "aisimulate"):
+                require(
+                    sum(group[name]["points"] for group in groups.values()) == totals[name]["points"],
+                    "configuration quality successes",
+                )
         require(strings(totals.get("gpu_skus")) and strings(totals.get("precisions")), "total dimensions")
         models = summary.get("models")
         require(isinstance(models, list) and bool(models) and len(models) == totals.get("models"), "models")

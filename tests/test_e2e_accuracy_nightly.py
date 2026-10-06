@@ -955,7 +955,7 @@ def test_invalid_committed_timestamp_does_not_block_other_branches(artifact, tmp
     monkeypatch.setattr(
         publish,
         "committed_accuracy",
-        lambda repo, ref: ((json.dumps(previous), "pages/e2e-accuracy/summary.json") if ref == "origin/main" else None),
+        lambda repo, ref: (json.dumps(previous), "pages/e2e-accuracy/summary.json") if ref == "origin/main" else None,
     )
     output = tmp_path / "prepared"
     publish.prepare(ROOT, output)
@@ -1660,10 +1660,18 @@ def test_resolved_campaign_publishes_replay_when_baseline_fails(artifact, tmp_pa
     assert publish.validate_artifact(archive(summary), run) == summary
     resolved = json.loads((evidence / "resolved-points.json").read_text())
     qualification = json.loads((output / "qualification.json").read_text())
-    assert qualification["cohort_sha256"] == campaign.sha(resolved)
+    assert qualification["cohort_sha256"] == campaign.sha(
+        [
+            {"id": point["id"], "source_row": point["source_row"], "deployment": point.get("deployment")}
+            for point in resolved
+        ]
+    )
     results = json.loads((evidence / "results.json").read_text())
     assert results[0]["row"]["aic_status"] == "failed"
     assert summary["totals"]["rows"] == 1
+    assert summary["totals"]["aic"]["status_counts"]["failed"] == 1
+    assert summary["totals"]["aic"]["coverage_pct"] == 0
+    assert summary["totals"]["by_configuration_quality"]["verified"]["aisimulate"]["points"] == 1
 
 
 def test_resolved_cohort_joins_provenance_and_accounts_for_every_row():
@@ -2159,3 +2167,100 @@ def test_public_artifact_validates_inferencex_run_links(artifact, run_id):
             publish.validate_artifact(archive(summary), run)
         with pytest.raises(pages.PagesBuildError, match="InferenceX GitHub run ID"):
             pages._accuracy_summary(json.dumps(summary))
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_same_day_freshness_uses_run_timestamp_not_dump_order(reverse):
+    from scripts.e2e_accuracy.source.cohort import select_points
+
+    data = resolved_tables()
+    run = data["workflow_runs"][0]
+    run["run_started_at"] = "2026-09-28T08:00:00Z"
+    data["workflow_runs"].append({**run, "id": 2, "github_run_id": 101, "run_started_at": "2026-09-28T09:00:00Z"})
+    bench = data["benchmark_results"][0]
+    data["benchmark_results"].extend(
+        [
+            {**bench, "id": 2, "workflow_run_id": 2, "image": "new"},
+            {**bench, "id": 3, "conc": 128},
+        ]
+    )
+    if reverse:
+        data["benchmark_results"].reverse()
+    points, stats = select_points(data)
+    assert [point["benchmark"]["id"] for point in points] == [2]
+    assert points[0]["source_row"]["run_started_at"] == "2026-09-28T09:00:00Z"
+    assert stats["excluded"] == {"superseded_row": 1, "superseded_image": 1}
+
+
+@pytest.mark.parametrize("method", ["mtp", "nextn", "eagle", "unknown"])
+def test_unmodeled_speculation_is_excluded(method):
+    from scripts.e2e_accuracy.source.cohort import select_points
+
+    data = resolved_tables()
+    data["configs"][0]["spec_method"] = method
+    points, stats = select_points(data)
+    assert points == []
+    assert stats["excluded"] == {"source_filter": 1}
+
+
+@pytest.mark.parametrize("pinned", [False, True])
+def test_resolved_adapter_warns_for_unpinned_backend(source_config_adapter, pinned):
+    adapter = source_config_adapter
+    point = resolved_point()
+    report = adapter.adapt_config(
+        adapter.ResolvedInferenceXSource(point["deployment"], point["config"], point["benchmark"], "fixture"),
+        adapter.AdapterOverrides(backend_version="1.0" if pinned else None),
+    )
+    assert report.requests
+    assert [diagnostic.code for diagnostic in report.outcomes[0].diagnostics] == (
+        [] if pinned else ["backend_version_unpinned"]
+    )
+
+
+@pytest.mark.parametrize("pinned,estimated", [(False, False), (False, True), (True, False)])
+def test_checkpoint_revision_controls_configuration_quality(monkeypatch, pinned, estimated):
+    from scripts.e2e_accuracy.source import deployment as resolver
+    from scripts.e2e_accuracy.source.cohort import select_points
+    from scripts.e2e_accuracy.source.schema import SiliconRow
+
+    point = resolved_point("sglang")
+    role = point["deployment"]["roles"]["aggregated"]
+    args = role["args"] | ({"revision": "a" * 40} if pinned else {})
+    row = SiliconRow(**select_points(resolved_tables())[0][0]["source_row"])
+    monkeypatch.setattr(resolver, "verified_defaults", lambda *a, **kw: ({}, []))
+    monkeypatch.setattr(resolver, "_checkpoint_config", lambda *a: ({}, "digest", "a" * 40))
+    monkeypatch.setattr(resolver, "_pinned_checkpoint_config", lambda *a: ({}, "digest", "a" * 40))
+    monkeypatch.setattr(resolver, "apply_framework_defaults", lambda args, *a, **kw: (args, []))
+    monkeypatch.setattr(resolver, "apply_additional_sglang_defaults", lambda args, *a, **kw: (args, []))
+    monkeypatch.setattr(resolver, "role_topology", lambda *a: role["topology"])
+    monkeypatch.setattr(resolver, "resolve_quantization", lambda *a, **kw: role["quantization"])
+    monkeypatch.setattr(resolver, "resolve_workload_defaults", lambda value, *a: (value, []))
+    parsed = (
+        "source/checkpoint",
+        {"aggregated": args},
+        "1.0",
+        "sglang",
+        {"random_range_ratio": 1, "num_prompts_mult": 1},
+        {},
+    )
+    deployment, _, issues = resolver.inspect_deployment(
+        row,
+        SimpleNamespace(read_text=lambda *a: ""),
+        parsed=parsed,
+        allow_estimated_defaults=estimated,
+    )
+    if not pinned and not estimated:
+        assert deployment is None
+        assert any(issue["stage"] == "checkpoint_revision" for issue in issues)
+    else:
+        assert not issues
+        assert deployment["configuration_quality"] == ("verified" if pinned else "estimated")
+    parsed[1]["aggregated"]["speculative_algorithm"] = "EAGLE"
+    deployment, _, issues = resolver.inspect_deployment(
+        row,
+        SimpleNamespace(read_text=lambda *a: ""),
+        parsed=parsed,
+        allow_estimated_defaults=True,
+    )
+    assert deployment is None
+    assert any(issue["stage"] == "speculation" for issue in issues)

@@ -103,8 +103,12 @@ function renderSummary() {
     basicCard("Points (AIC CLI)", totals.aic.points.toLocaleString()),
     basicCard("Points (AISim CLI)", totals.aisimulate.points.toLocaleString()),
     basicCard("GPU SKUs", String(totals.gpu_skus.length)),
-    accuracyCard("AISim CLI (new) Error", totals.aisimulate, "aisimulate"),
-    accuracyCard("AIC CLI (legacy) Error", totals.aic, "aic"),
+    accuracyCard("AISim CLI (new) Error · all configurations", totals.aisimulate, "aisimulate"),
+    accuracyCard("AIC CLI (legacy) Error · all configurations", totals.aic, "aic"),
+    ...Object.entries(totals.by_configuration_quality ?? {}).map(([quality, group]) =>
+      `<article class="summary-card"><div class="summary-label">Configuration: ${escapeHtml(quality.replaceAll("_", " "))}</div>
+      <p>AISim: ${group.aisimulate.points} points; TPOT / TTFT MAPE ${formatPercent(group.aisimulate.tpot_mape_pct)} / ${formatPercent(group.aisimulate.ttft_mape_pct)}</p>
+      <p>AIC (legacy CLI): ${group.aic.points} points; TPOT / TTFT MAPE ${formatPercent(group.aic.tpot_mape_pct)} / ${formatPercent(group.aic.ttft_mape_pct)}</p></article>`),
   ].join("");
 }
 
@@ -603,6 +607,15 @@ function validateSummary(data) {
     !["latest-complete-config-run-v1", "gym-resolved-config-v2"].includes(campaign.selection_policy) ||
     !validExclusions)) {
     throw new Error("invalid accuracy campaign provenance");
+  }
+  const groups = data.totals.by_configuration_quality;
+  if (groups !== undefined && (!object(groups) || !Object.keys(groups).length ||
+    Object.entries(groups).some(([quality, group]) => !["verified", "estimated", "not_recorded"].includes(quality) ||
+      !object(group) || !Number.isInteger(group.rows) || group.rows <= 0 ||
+      !metrics(group.aic, group.rows) || !metrics(group.aisimulate, group.rows)) ||
+    Object.values(groups).reduce((sum, group) => sum + group.rows, 0) !== data.totals.rows ||
+    ["aic", "aisimulate"].some((name) => Object.values(groups).reduce((sum, group) => sum + group[name].points, 0) !== data.totals[name].points))) {
+    throw new Error("invalid configuration quality metrics");
   }
   return data;
 }

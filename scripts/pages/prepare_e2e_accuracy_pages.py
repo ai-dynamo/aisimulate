@@ -145,7 +145,9 @@ def public_contract(summary):
 
     def aggregate(item, extra):
         keys(item, {"rows", "aic", "aisimulate"} | extra)
-        keys(item["aic"], METRICS)
+        keys(item["aic"], METRICS | {"status_counts", "coverage_pct"})
+        if "status_counts" in item["aic"]:
+            keys(item["aic"]["status_counts"], {"success", "failed", "unsupported", "unknown"})
         keys(item["aisimulate"], METRICS | {"status_counts", "coverage_pct"})
         keys(
             item["aisimulate"]["status_counts"],
@@ -153,7 +155,15 @@ def public_contract(summary):
         )
 
     dimensions = {"gpu_skus", "frameworks", "precisions", "workloads"}
-    aggregate(summary["totals"], dimensions | {"models"})
+    aggregate(summary["totals"], dimensions | {"models", "by_configuration_quality"})
+    if "by_configuration_quality" in summary["totals"]:
+        groups = summary["totals"]["by_configuration_quality"]
+        keys(groups, {"verified", "estimated", "not_recorded"})
+        for group in groups.values():
+            keys(group, {"rows", "aic", "aisimulate"})
+            keys(group["aisimulate"], METRICS)
+            keys(group["aic"], METRICS | {"status_counts", "coverage_pct"})
+            keys(group["aic"]["status_counts"], {"success", "failed", "unsupported", "unknown"})
     for model in summary["models"]:
         aggregate(model, dimensions | {"model", "hf_model_paths"})
         for workload in model["workloads"]:

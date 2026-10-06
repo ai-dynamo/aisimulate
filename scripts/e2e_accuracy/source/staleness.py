@@ -31,6 +31,24 @@ def _parse_date(s: str) -> _dt.datetime:
     return _dt.datetime.fromisoformat(s.replace("Z", "+00:00"))
 
 
+def _freshness(row: SiliconRow) -> tuple:
+    def timestamp(value):
+        parsed = _parse_date(value)
+        return parsed.replace(tzinfo=parsed.tzinfo or _dt.UTC).timestamp()
+
+    def identifier(value):
+        text = str(value or "")
+        return (int(text) if text.isdecimal() else -1, text)
+
+    return (
+        timestamp(row.date),
+        timestamp(row.run_started_at or row.date),
+        identifier(row.github_run_id),
+        row.run_attempt or 0,
+        identifier(row.bench_id),
+    )
+
+
 # 1. Row dedupe ------------------------------------------------------------
 
 
@@ -58,7 +76,7 @@ def dedupe_rows(rows: Iterable[SiliconRow]) -> tuple[list[SiliconRow], list[Drop
 
     kept: list[SiliconRow] = []
     for group in by_key.values():
-        group_sorted = sorted(group, key=lambda x: x.date, reverse=True)
+        group_sorted = sorted(group, key=_freshness, reverse=True)
         kept.append(group_sorted[0])
         for older in group_sorted[1:]:
             drops.append(
@@ -111,15 +129,9 @@ def apply_image_coherence(rows: Iterable[SiliconRow]) -> tuple[list[SiliconRow],
 
 
 def _select_latest_image(cfg_rows: list[SiliconRow]) -> str | None:
-    """Image whose row has the latest `date` within the config; ties
-    broken by frequency."""
-    candidates = [(r.date, r.image) for r in cfg_rows if r.image is not None]
-    if not candidates:
-        return None
-    latest_date = max(date for date, _img in candidates)
-    images_at_latest = [img for date, img in candidates if date == latest_date]
-    counts = collections.Counter(images_at_latest)
-    return counts.most_common(1)[0][0]
+    """Choose the image from the newest run with deterministic identity ties."""
+    candidates = [row for row in cfg_rows if row.image is not None]
+    return max(candidates, key=_freshness).image if candidates else None
 
 
 # 3. Config staleness ------------------------------------------------------

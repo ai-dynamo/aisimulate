@@ -6,7 +6,11 @@ from dataclasses import replace
 
 import pytest
 
-from scripts.e2e_accuracy.source.defaults.research_defaults import can_assume_recipe, fill_missing, resolve_auto_kv
+from scripts.e2e_accuracy.source.defaults.research_defaults import (
+    can_assume_recipe,
+    fill_missing,
+    resolve_auto_kv,
+)
 from scripts.e2e_accuracy.source.recipes import runtime_evidence as runtime
 from scripts.e2e_accuracy.source.schema import SiliconRow
 
@@ -50,7 +54,21 @@ def test_reviewed_runtime_is_bound_to_complete_measurement_and_not_mutable(monke
     assert restored[-1]["archived_runtime"]["historical_artifacts_revalidated"] is False
     restored[-1]["artifact"]["sha256"] = "changed"
     assert runtime.archived_recipe(row)[-1]["artifact"]["sha256"] == "a" * 64
-    assert runtime.archived_recipe(replace(row, metrics={"mean_ttft": 101})) is None
+    assert runtime.archived_recipe(replace(row, run_started_at="2026-09-28T12:00:00Z")) is not None
+    with pytest.raises(ValueError, match="measurement identity mismatch"):
+        runtime.archived_recipe(replace(row, metrics={"mean_ttft": 101}))
+    assert runtime.archived_recipe(replace(row, bench_id="8")) is None
+    manifest["schema_version"] = "reviewed-runtime-observations/2"
+    manifest["records"] = {
+        runtime.observation_id(row): {
+            "benchmark_id": row.bench_id,
+            "measurement_sha256": runtime.row_digest(row),
+            "parsed": parsed,
+        }
+    }
+    assert runtime.archived_recipe(row) is not None
+    with pytest.raises(ValueError, match="measurement identity mismatch"):
+        runtime.archived_recipe(replace(row, metrics={"mean_ttft": 101}))
 
 
 @pytest.mark.parametrize("name", ["../secret", "/tmp/secret", "..", "a/b"])

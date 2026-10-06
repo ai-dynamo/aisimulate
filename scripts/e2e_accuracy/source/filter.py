@@ -27,8 +27,8 @@ def _row_drop_reason(row: SiliconRow) -> str | None:
         return f"filter:framework (got {row.framework!r}, not in supported set)"
     if row.benchmark_type != "single_turn":
         return f"filter:benchmark_type (got {row.benchmark_type!r}, expected 'single_turn')"
-    if row.spec_method == "mtp":
-        return "filter:spec_method=mtp (deferred to v2)"
+    if row.spec_method != "none":
+        return f"filter:spec_method={row.spec_method} (speculative decoding is not modeled)"
     if row.metrics is None:  # error rows are stripped at dedupe; this is a belt-and-braces guard
         return "filter:no-metrics"
     return None

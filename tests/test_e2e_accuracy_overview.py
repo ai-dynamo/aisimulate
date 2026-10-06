@@ -336,7 +336,9 @@ def test_public_page_prioritizes_aisimulate_over_aic_baseline() -> None:
     script = (public_dir / "app.js").read_text()
 
     assert page.index("AISim CLI TPOT MAPE") < page.index("AIC CLI TPOT MAPE")
-    assert script.index('accuracyCard("AISim CLI (new) Error"') < script.index('accuracyCard("AIC CLI (legacy) Error"')
+    assert script.index('accuracyCard("AISim CLI (new) Error · all configurations"') < script.index(
+        'accuracyCard("AIC CLI (legacy) Error · all configurations"'
+    )
     assert "data-series" not in page
 
 

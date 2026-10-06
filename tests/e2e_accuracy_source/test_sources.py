@@ -54,3 +54,24 @@ def test_manifests_load_outside_repository_cwd(monkeypatch, tmp_path):
         manifest = sources.load_manifest(name)
         assert manifest
         assert sources.load_manifest(name) is manifest
+
+
+def test_recipe_cache_is_never_partially_visible(monkeypatch, tmp_path):
+    from scripts.e2e_accuracy.source.recipes import inferencex_recipe as recipe
+
+    session = SimpleNamespace(
+        get=lambda *a, **kw: SimpleNamespace(status_code=200, text="complete recipe", raise_for_status=lambda: None)
+    )
+    source = recipe.GitHubRecipeSource(session=session, cache_dir=tmp_path)
+    target = tmp_path / ("a" * 40) / "recipe.yml"
+    replace = recipe.os.replace
+
+    def check_replace(temporary, destination):
+        assert not target.exists()
+        assert recipe.Path(temporary).read_text() == "complete recipe"
+        replace(temporary, destination)
+
+    monkeypatch.setattr(recipe.os, "replace", check_replace)
+    assert source.read_text("a" * 40, "recipe.yml") == "complete recipe"
+    assert target.read_text() == "complete recipe"
+    assert list(target.parent.iterdir()) == [target]

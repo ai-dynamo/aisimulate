@@ -757,7 +757,14 @@ def campaign(args) -> None:
     validate_outcomes(points, results)
     if wheel_identity(args.wheel) != identity:
         raise ValueError("runtime changed during campaign")
-    cohort_sha = sha(points if resolved else [point["id"] for point in points])
+    cohort_sha = sha(
+        [
+            {"id": point["id"], "source_row": point["source_row"], "deployment": point.get("deployment")}
+            for point in points
+        ]
+        if resolved
+        else [point["id"] for point in points]
+    )
     if shard_count > 1:
         args.output.mkdir(parents=True, exist_ok=True)
         bundle = {

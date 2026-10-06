@@ -9,7 +9,9 @@ Source commands are never executed.
 
 from __future__ import annotations
 
+import os
 import re
+import tempfile
 import threading
 from functools import lru_cache
 from pathlib import Path
@@ -83,7 +85,14 @@ class GitHubRecipeSource:
         self._cache[key] = response.text
         if disk_path is not None:
             disk_path.parent.mkdir(parents=True, exist_ok=True)
-            disk_path.write_text(response.text)
+            # Same-directory replace prevents a reader from seeing partial content.
+            descriptor, temporary = tempfile.mkstemp(dir=disk_path.parent, prefix=".recipe-")
+            try:
+                with os.fdopen(descriptor, "w") as output:
+                    output.write(response.text)
+                os.replace(temporary, disk_path)
+            finally:
+                Path(temporary).unlink(missing_ok=True)
         return response.text
 
 

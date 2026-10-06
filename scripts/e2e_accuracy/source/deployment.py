@@ -681,10 +681,20 @@ def inspect_deployment(
     if not isinstance(model, str) or "/" not in model or model.startswith("/"):
         issue("model_identity", "source model path is an unresolved alias")
         return None, evidence, issues
+    if row.spec_method != "none":
+        issue("speculation", "speculative decoding is not modeled")
     resolved_roles = {}
     checkpoint_snapshot = None
     for role, args in roles.items():
         args = dict(args)
+        active_speculation = [
+            key
+            for key, value in args.items()
+            if key.startswith(("speculative_", "speculation_"))
+            and value not in (None, False, 0, "", "none", "None", "disabled")
+        ]
+        if active_speculation:
+            issue("speculation", "unsupported speculative controls: " + ", ".join(sorted(active_speculation)), role)
         if backend == "trtllm":
             kv = args.get("kv_cache_config", {})
             args.update(
@@ -870,7 +880,6 @@ def inspect_deployment(
         if allow_estimated_defaults:
             args, assumptions = resolve_auto_kv(args, checkpoint_snapshot, role=role)
             evidence.setdefault("estimated_defaults", []).extend(assumptions)
-        estimated_knobs = {}
         required = [
             "max_num_seqs",
             "max_num_batched_tokens",
@@ -896,7 +905,6 @@ def inspect_deployment(
             topology=topology,
             args=args,
             quantization=quantization,
-            estimated_knobs=estimated_knobs,
         )
     if row.disagg:
         evidence["server_args_by_role"] = {role: spec["args"] for role, spec in resolved_roles.items()}
@@ -925,6 +933,17 @@ def inspect_deployment(
                 raise ValueError("benchmark range ratio and request count must be positive, with ratio <= 1")
         except (ValueError, TypeError) as error:
             issue("workload", str(error))
+
+    def has_unpinned_checkpoint(value):
+        if isinstance(value, dict):
+            return value.get("historical_revision_verified") is False or any(
+                has_unpinned_checkpoint(item) for item in value.values()
+            )
+        return isinstance(value, list) and any(has_unpinned_checkpoint(item) for item in value)
+
+    unpinned_checkpoint = has_unpinned_checkpoint(evidence) or has_unpinned_checkpoint(resolved_roles)
+    if unpinned_checkpoint and not allow_estimated_defaults:
+        issue("checkpoint_revision", "historical checkpoint revision is unpinned; estimated mode is required")
     evidence["resolution_issues"] = issues
     if issues:
         return None, evidence, issues
@@ -932,7 +951,7 @@ def inspect_deployment(
         dict(
             schema_version="resolved-deployment/1",
             configuration_quality="estimated"
-            if evidence.get("estimated_knobs") or evidence.get("estimated_defaults")
+            if evidence.get("estimated_defaults") or unpinned_checkpoint
             else "verified",
             estimated_defaults=evidence.get("estimated_defaults", []),
             backend=backend,
