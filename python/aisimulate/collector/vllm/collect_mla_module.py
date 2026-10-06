@@ -1036,80 +1036,105 @@ def run_mla_module(
         # rows while the pipeline reports success.
         raise
 
-    # 5. Benchmark
-    def kernel_func():
-        attn_module.forward(positions, hidden_states, None)
-
-    # DSA context previously bypassed graphs to avoid retained scratch pools.
-    # Keep graph timing for small as well as large cases: eager launch gaps can
-    # dominate small module latency. The helper resets each graph, and the
-    # ExitStack releases vLLM's workspace after its forward contexts unwind.
-    with benchmark_with_power(
-        device=torch.device(device),
-        kernel_func=kernel_func,
-        num_warmups=warming_up,
-        num_runs=test_ite,
-        repeat_n=1,
-        use_cuda_graph=True,
-        allow_graph_fail=False,
-    ) as results:
-        pass
-
-    if results.get("used_cuda_graph") is not True:
-        raise RuntimeError("vLLM MLA/DSA module requires CUDA graph timing; refusing to publish eager timing")
-    latency = results["latency_ms"]
-
-    # 6. Log results — schema aligned with TRT-LLM
-    if is_context:
-        isl = seq_len
-        step = prefix_len
-    else:
-        isl = 1
-        step = seq_len
-
-    op_name = f"{attn_type}_{phase}_module"
-
-    # Record architecture to distinguish different DSA models in the perf CSV.
-    # perf_database uses this as a dict key when loading data.
-    # Aligns with sdk/models.py which uses architectures[0] throughout.
-    hf_cfg = vllm_config.model_config.hf_config
-    architecture = getattr(hf_cfg, "architectures", [getattr(hf_cfg, "model_type", "unknown")])[0]
-    mla_layer = attn_module.mla_attn.mla_attn
-    backend_name = _mla_backend_name(mla_layer, attn_type, is_context, attn_metadata)
-    actual_kv_cache_dtype = "fp8" if mla_layer.kv_cache_dtype.startswith("fp8") else "bfloat16"
-
-    log_perf(
-        item_list=[
-            {
-                "model": model_path,
-                "architecture": architecture,
-                "mla_dtype": "bfloat16" if compute_dtype == "bfloat16" else compute_dtype,
-                "kv_cache_dtype": actual_kv_cache_dtype,
-                "gemm_type": "bfloat16" if gemm_type == "bfloat16" else gemm_type,
-                "num_heads": num_heads,
-                "batch_size": batch_size,
-                "isl": isl,
-                "tp_size": 1,
-                "step": step,
-                "latency": f"{latency:.4f}",
-            }
-        ],
-        framework="VLLM",
-        version=vllm_version,
-        device_name=torch.cuda.get_device_name(device),
-        op_name=op_name,
-        kernel_source=backend_name,
-        perf_filename=perf_filename,
-        power_stats=results["power_stats"],
+    # The full dry run above populates the shared top-k indices. Native vLLM
+    # uses skip_topk to reuse that buffer while retaining MLA projections and
+    # sparse attention (deepseek_v2.py:1080-1104,1150-1162 and layers/mla.py
+    # MultiHeadLatentAttentionWrapper @752a3a504485790a2e8491cacbb35c137339ad34).
+    # Emit both existing op_name variants for checkpoints declaring reuse;
+    # no model-averaged latency is written into a full-indexer row.
+    hf_text_config = vllm_config.model_config.hf_text_config
+    reuse_pattern = getattr(hf_text_config, "index_topk_pattern", None)
+    has_reuse = attn_type == "dsa" and (
+        "S" in reuse_pattern if reuse_pattern is not None else getattr(hf_text_config, "index_topk_freq", 1) > 1
     )
+    if has_reuse:
+        if not hasattr(attn_module.mla_attn, "skip_topk"):
+            raise RuntimeError("vLLM DSA reuse requires the native skip_topk execution path")
+        exit_stack.callback(setattr, attn_module.mla_attn, "skip_topk", attn_module.mla_attn.skip_topk)
 
-    print(
-        f"  [{phase}] b={batch_size}, s={seq_len}, heads={num_heads}, "
-        f"prefix={prefix_len}, gemm={gemm_type}, compute={compute_dtype}, "
-        f"kv={kv_cache_dtype}, backend={backend_name}: {latency:.4f} ms"
-    )
+    def measure_and_log(skip_indexer):
+        if has_reuse:
+            attn_module.mla_attn.skip_topk = skip_indexer
 
-    return latency
+        # 5. Benchmark
+        def kernel_func():
+            attn_module.forward(positions, hidden_states, None)
+
+        # DSA context previously bypassed graphs to avoid retained scratch pools.
+        # Keep graph timing for small as well as large cases: eager launch gaps can
+        # dominate small module latency. The helper resets each graph, and the
+        # ExitStack releases vLLM's workspace after its forward contexts unwind.
+        with benchmark_with_power(
+            device=torch.device(device),
+            kernel_func=kernel_func,
+            num_warmups=warming_up,
+            num_runs=test_ite,
+            repeat_n=1,
+            use_cuda_graph=True,
+            allow_graph_fail=False,
+        ) as results:
+            pass
+
+        if results.get("used_cuda_graph") is not True:
+            raise RuntimeError("vLLM MLA/DSA module requires CUDA graph timing; refusing to publish eager timing")
+        latency = results["latency_ms"]
+
+        # 6. Log results — schema aligned with TRT-LLM
+        if is_context:
+            isl = seq_len
+            step = prefix_len
+        else:
+            isl = 1
+            step = seq_len
+
+        op_name = f"{attn_type}_{phase}_module" + ("_skip_indexer" if skip_indexer else "")
+
+        # Record architecture to distinguish different DSA models in the perf CSV.
+        # perf_database uses this as a dict key when loading data.
+        # Aligns with sdk/models.py which uses architectures[0] throughout.
+        hf_cfg = vllm_config.model_config.hf_config
+        architecture = getattr(hf_cfg, "architectures", [getattr(hf_cfg, "model_type", "unknown")])[0]
+        mla_layer = attn_module.mla_attn.mla_attn
+        backend_name = _mla_backend_name(mla_layer, attn_type, is_context, attn_metadata)
+        actual_kv_cache_dtype = "fp8" if mla_layer.kv_cache_dtype.startswith("fp8") else "bfloat16"
+
+        log_perf(
+            item_list=[
+                {
+                    "model": model_path,
+                    "architecture": architecture,
+                    "mla_dtype": "bfloat16" if compute_dtype == "bfloat16" else compute_dtype,
+                    "kv_cache_dtype": actual_kv_cache_dtype,
+                    "gemm_type": "bfloat16" if gemm_type == "bfloat16" else gemm_type,
+                    "num_heads": num_heads,
+                    "batch_size": batch_size,
+                    "isl": isl,
+                    "tp_size": 1,
+                    "step": step,
+                    "latency": f"{latency:.4f}",
+                }
+            ],
+            framework="VLLM",
+            version=vllm_version,
+            device_name=torch.cuda.get_device_name(device),
+            op_name=op_name,
+            kernel_source=backend_name,
+            perf_filename=perf_filename,
+            power_stats=results["power_stats"],
+        )
+
+        print(
+            f"  [{phase}] b={batch_size}, s={seq_len}, heads={num_heads}, "
+            f"prefix={prefix_len}, gemm={gemm_type}, compute={compute_dtype}, "
+            f"kv={kv_cache_dtype}, backend={backend_name}: {latency:.4f} ms"
+        )
+
+        return latency
+
+    full_latency = measure_and_log(False)
+    if has_reuse:
+        measure_and_log(True)
+    return full_latency
 
 
 def run_mla_module_worker(

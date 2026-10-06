@@ -24,7 +24,7 @@ def _load_function(path, name, namespace):
     return namespace[name]
 
 
-def _module_runner(*, graph_flag=True, failure=None):
+def _module_runner(*, graph_flag=True, failure=None, reuse_frequency=1, reuse_pattern=None):
     events, published, benchmark_calls = [], [], []
     error = RuntimeError(f"{failure} failed")
     active_contexts = []
@@ -50,10 +50,12 @@ def _module_runner(*, graph_flag=True, failure=None):
         events.append("forward")
 
     layer = SimpleNamespace(kv_cache_dtype="fp8_ds_mla")
-    module = SimpleNamespace(forward=forward, mla_attn=SimpleNamespace(mla_attn=layer))
+    module = SimpleNamespace(forward=forward, mla_attn=SimpleNamespace(mla_attn=layer, skip_topk=False))
     config = SimpleNamespace(
         model_config=SimpleNamespace(
-            hf_text_config=SimpleNamespace(hidden_size=7168),
+            hf_text_config=SimpleNamespace(
+                hidden_size=7168, index_topk_freq=reuse_frequency, index_topk_pattern=reuse_pattern
+            ),
             hf_config=SimpleNamespace(architectures=["GlmMoeDsaForCausalLM"]),
         ),
         compilation_config=SimpleNamespace(static_forward_context={"model.layers.0.self_attn.attn": SimpleNamespace()}),
@@ -68,16 +70,18 @@ def _module_runner(*, graph_flag=True, failure=None):
 
     @contextmanager
     def benchmark(**kwargs):
-        benchmark_calls.append(kwargs)
+        benchmark_calls.append(dict(kwargs, skip_indexer=module.mla_attn.skip_topk))
+        assert "forward" in events  # Real full dry run seeds the shared top-k buffer.
         assert kwargs["use_cuda_graph"] is True
         assert kwargs["allow_graph_fail"] is False
-        if failure == "capture":
+        if failure == "capture" or (failure == "skip_capture" and module.mla_attn.skip_topk):
             raise error
         yield {"used_cuda_graph": graph_flag, "latency_ms": 0.015, "power_stats": None}
         events.append("graph teardown")
 
     def cleanup():
         assert active_contexts == []
+        assert module.mla_attn.skip_topk is False
         events.append("cleanup")
 
     namespace = {
@@ -142,6 +146,44 @@ def test_graph_publication_and_workspace_teardown_after_context_exit(attn_type, 
     assert row["latency"] == "0.0150"
     assert row["step"] == (128 if phase == "context" else 16)
     assert published[0]["kernel_source"] == "FLASHINFER_MLA_SPARSE"
+
+
+@pytest.mark.parametrize("phase", ["context", "generation"])
+@pytest.mark.parametrize("reuse", [{"reuse_frequency": 4}, {"reuse_pattern": "FFSS"}])
+def test_reuse_checkpoint_publishes_native_full_and_skip_measurements(phase, reuse):
+    execute, _, published, calls, _ = _module_runner(**reuse)
+    assert execute(phase=phase) == 0.015
+    assert [call["skip_indexer"] for call in calls] == [False, True]
+    assert [row["op_name"] for row in published] == [
+        f"dsa_{phase}_module",
+        f"dsa_{phase}_module_skip_indexer",
+    ]
+    assert published[0]["perf_filename"] == published[1]["perf_filename"]
+    assert published[0]["item_list"][0] == published[1]["item_list"][0]
+
+
+def test_failed_skip_capture_is_raised_and_does_not_publish_a_skip_row():
+    execute, events, published, calls, error = _module_runner(reuse_frequency=4, failure="skip_capture")
+    with pytest.raises(RuntimeError) as caught:
+        execute()
+    assert caught.value is error
+    assert [call["skip_indexer"] for call in calls] == [False, True]
+    assert [row["op_name"] for row in published] == ["dsa_context_module"]
+    assert events[-1] == "cleanup"
+
+
+def test_ordinary_mla_does_not_publish_dsa_reuse_rows():
+    execute, _, published, calls, _ = _module_runner(reuse_frequency=4)
+    execute(attn_type="mla")
+    assert len(calls) == 1
+    assert [row["op_name"] for row in published] == ["mla_context_module"]
+
+
+def test_explicit_full_pattern_overrides_reuse_frequency():
+    execute, _, published, calls, _ = _module_runner(reuse_frequency=4, reuse_pattern="FFFF")
+    execute()
+    assert len(calls) == 1
+    assert [row["op_name"] for row in published] == ["dsa_context_module"]
 
 
 @pytest.mark.parametrize("failure", ["construction", "forward", "capture"])
