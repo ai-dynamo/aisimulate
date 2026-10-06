@@ -411,13 +411,6 @@ def _engine_config_dict(
     # flattened Option deserializes to None.
     if speculative is not None:
         engine["nextn"] = speculative["nextn"]
-        scheme = getattr(model, "spec_scheme", None)
-        if scheme is not None and cfg.speculation is not None:
-            engine["speculation_metadata"] = {
-                "kind": scheme.kind,
-                "verify_width": scheme.verify_width(),
-                "max_accepted_draft_tokens": scheme.max_accepted_draft_tokens(),
-            }
     return engine
 
 
@@ -715,12 +708,7 @@ def compile_engine(
         resolve_sglang_mla_compute(
             model_config, model_path, backend, literal_version, load_system_spec(system, systems_path)
         )
-    try:
-        model = get_model(model_path, model_config, backend)
-    except (ValueError, TypeError, KeyError) as exc:
-        if resolved_speculation is not None:
-            raise InvalidEngineConfigurationError(str(exc)) from exc
-        raise
+    model = get_model(model_path, model_config, backend)
     if deployment is not None and forward_model == "fpm":
         from aisimulate_core.sdk.fpm_identity import LEGACY_EXECUTION_IDENTITY
 

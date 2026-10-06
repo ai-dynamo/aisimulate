@@ -14,7 +14,7 @@ use crate::engine::common::protocols::{
     PrefillCost, WorkerType,
 };
 use crate::engine::common::speculative::{
-    SpeculativeDecodeSampler, normalize_conditional_accept_rates, verification_lookahead_tokens,
+    SpeculativeDecodeSampler, normalize_conditional_accept_rates,
 };
 use crate::engine::common::utils::{
     compute_prefill_handoff_delay_ms, prefill_handoff_transfer_timing,
@@ -3065,12 +3065,10 @@ impl VllmCore {
         let max_burst = if self.args.worker_type == WorkerType::Prefill {
             1
         } else {
-            self.args.aic_verify_width.unwrap_or_else(|| {
-                self.args
-                    .aic_nextn
-                    .expect("speculative sampler requires nextn")
-                    + 1
-            })
+            self.args
+                .aic_nextn
+                .expect("speculative sampler requires nextn")
+                + 1
         };
         let mut rejected_signals = Vec::new();
         let mut running_changed = false;
@@ -3080,14 +3078,10 @@ impl VllmCore {
                 .iter()
                 .filter_map(|uuid| self.state.requests.get(uuid).map(|r| (*uuid, r)))
                 .map(|(uuid, request)| {
-                    let burst = verification_lookahead_tokens(
-                        max_burst,
-                        self.args.aic_nextn.unwrap_or(0),
-                        policy::remaining_generation_tokens(
-                            &request.sequence,
-                            self.args.max_model_len,
-                        ),
-                    );
+                    let burst = max_burst.min(policy::remaining_generation_tokens(
+                        &request.sequence,
+                        self.args.max_model_len,
+                    ));
                     match self.kv_manager.decode_requirement(
                         &request.sequence.lease,
                         request.sequence.len(),

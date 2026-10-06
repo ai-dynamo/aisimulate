@@ -404,8 +404,9 @@ impl AicTimingConfig {
     }
 
     fn speculative_depth(&self) -> Result<u32> {
-        if self.speculation.is_some() {
+        if let Some(speculation) = &self.speculation {
             ensure!(self.nextn == 0, "speculation cannot be combined with nextn");
+            return Ok(speculation.replay_depth()?);
         }
         Ok(self.nextn)
     }
@@ -1126,16 +1127,10 @@ fn materialize_aic_capacity(
     );
     let engine_nextn = role.rank.aic_nextn.unwrap_or(0);
     let timing_depth = config.speculative_depth()?;
-    if config
-        .speculation
-        .as_ref()
-        .is_none_or(|spec| spec.kind == "none")
-    {
-        ensure!(
-            timing_depth as usize == engine_nextn,
-            "AIC speculative depth={timing_depth} does not match engine aic_nextn={engine_nextn}"
-        );
-    }
+    ensure!(
+        timing_depth as usize == engine_nextn,
+        "AIC speculative depth={timing_depth} does not match engine aic_nextn={engine_nextn}"
+    );
     let resources = if config.backend == "vllm" && config.pp == 1 {
         config
             .estimator_request(
@@ -1243,27 +1238,6 @@ fn role_capacity_is_explicit(engine_value: &serde_json::Value, role: Option<&str
         })
 }
 
-fn apply_resolved_speculation(
-    rank: &mut EngineConfig,
-    metadata: &crate::ResolvedSpeculationConfig,
-) -> Result<()> {
-    let accepted = metadata.max_accepted_draft_tokens as usize;
-    let width = metadata.verify_width as usize;
-    if accepted > 0 {
-        ensure!(
-            rank.aic_nextn.is_none_or(|value| value == accepted),
-            "aic_nextn conflicts with resolved accepted draft prefix length {accepted}"
-        );
-        ensure!(
-            rank.aic_verify_width.is_none_or(|value| value == width),
-            "aic_verify_width conflicts with resolved verification width {width}"
-        );
-        rank.aic_nextn = Some(accepted);
-        rank.aic_verify_width = Some(width);
-    }
-    Ok(())
-}
-
 fn resolve_role_timing(
     role: &mut ReplayRoleConfig,
     capacity_is_explicit: bool,
@@ -1290,20 +1264,13 @@ fn resolve_role_timing(
         resources.require_memory()?;
     }
     let mut timing = AicTimingModel::build(&mut config, worker_type)?;
-    let metadata = timing
-        .diagnostic_model
-        .as_ref()
-        .and_then(|model| model.speculation_metadata());
-    ensure!(
-        config
-            .speculation
-            .as_ref()
-            .is_none_or(|spec| spec.kind == "none")
-            || metadata.is_some(),
-        "compiled speculative graph omitted resolved scheme metadata"
-    );
-    if let Some(metadata) = metadata {
-        apply_resolved_speculation(&mut role.rank, metadata)?;
+    if config.speculation.is_some() {
+        let depth = config.speculative_depth()? as usize;
+        ensure!(
+            role.rank.aic_nextn.is_none_or(|value| value == depth),
+            "aic_nextn conflicts with resolved speculative depth {depth}"
+        );
+        role.rank.aic_nextn = (depth > 0).then_some(depth);
     }
     if let Some(model) = &timing.fpm_model
         && model.fpm_query_coverage()?.is_some()
@@ -3795,24 +3762,6 @@ mod tests {
     }
 
     #[test]
-    fn resolved_tree_dimensions_keep_verification_separate_from_progress() {
-        let metadata = crate::ResolvedSpeculationConfig {
-            kind: "eagle3".into(),
-            verify_width: 8,
-            max_accepted_draft_tokens: 2,
-        };
-        let mut rank = EngineConfig::for_backend(Backend::Vllm);
-        apply_resolved_speculation(&mut rank, &metadata).unwrap();
-        assert_eq!(rank.aic_nextn, Some(2));
-        assert_eq!(rank.aic_verify_width, Some(8));
-        rank.aic_verify_width = Some(3);
-        assert!(apply_resolved_speculation(&mut rank, &metadata).is_err());
-        rank.aic_verify_width = Some(8);
-        rank.aic_nextn = Some(7);
-        assert!(apply_resolved_speculation(&mut rank, &metadata).is_err());
-    }
-
-    #[test]
     fn capacity_is_estimated_only_when_not_explicit() {
         let mut role = aggregated_role(&ReplayEngineConfig::default());
         materialize_aic_capacity(&aic_config(), &mut role, false, |_config, rank| {
@@ -3834,14 +3783,17 @@ mod tests {
         .unwrap();
         assert_eq!(role.rank.num_gpu_blocks, 17);
         let mut config = aic_config();
-        config.speculation =
-            Some(serde_json::from_value(serde_json::json!({"kind": "eagle3"})).unwrap());
+        config.speculation = Some(
+            serde_json::from_value(serde_json::json!({"kind": "mtp", "params": {"depth": 3}}))
+                .unwrap(),
+        );
         assert!(
             materialize_aic_capacity(&config, &mut role, false, |_, _| unreachable!())
                 .unwrap_err()
                 .to_string()
                 .contains("explicit num_gpu_blocks")
         );
+        role.rank.aic_nextn = Some(3);
         materialize_aic_capacity(&config, &mut role, true, |_, _| unreachable!()).unwrap();
         config.speculation =
             Some(serde_json::from_value(serde_json::json!({"kind": "none"})).unwrap());

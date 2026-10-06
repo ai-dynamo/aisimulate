@@ -4,7 +4,7 @@
 use std::time::Duration;
 
 use crate::engine::common::protocols::OutputSignal;
-use crate::engine::common::speculative::{SpeculativeDecodeSampler, verification_lookahead_tokens};
+use crate::engine::common::speculative::SpeculativeDecodeSampler;
 use crate::engine::common::utils::compute_prefill_handoff_delay_ms;
 use crate::engine::kv_manager::SglangKvManager;
 use crate::engine::{
@@ -54,19 +54,15 @@ fn retraction_ratio_estimate(running: &[SglangRequest]) -> f64 {
 
 fn decode_page_growth_needed(
     running: &[SglangRequest],
-    config: &SglangConfig,
+    block_size: usize,
     max_burst: usize,
 ) -> usize {
     running
         .iter()
         .map(|req| {
-            let burst = verification_lookahead_tokens(
-                max_burst,
-                config.speculative_max_accepted_draft_tokens,
-                req.remaining_output_tokens(),
-            );
+            let burst = max_burst.min(req.remaining_output_tokens());
             let target =
-                super::config::ceil_to_block(req.current_sequence_len() + burst, config.block_size);
+                super::config::ceil_to_block(req.current_sequence_len() + burst, block_size);
             target.saturating_sub(req.allocated_tokens)
         })
         .sum()
@@ -83,7 +79,7 @@ fn decode_capacity_state(
     // Full partial pages are already owned by PagePool and excluded from
     // `actual_available`; subtracting their slack again would double-charge it.
     let logical_available = actual_available;
-    let page_growth_needed = decode_page_growth_needed(running, config, max_burst);
+    let page_growth_needed = decode_page_growth_needed(running, config.block_size, max_burst);
 
     (actual_available, logical_available, page_growth_needed)
 }
@@ -191,7 +187,7 @@ fn check_decode_mem_for_burst(
     }
 
     let available = kv_manager.cache().available_tokens();
-    let page_growth_needed = decode_page_growth_needed(running, config, max_burst);
+    let page_growth_needed = decode_page_growth_needed(running, config.block_size, max_burst);
     if available < page_growth_needed {
         kv_manager.evict(page_growth_needed - available);
     }
@@ -293,7 +289,7 @@ fn prefill_first_tokens(
     completed_requests.extend(newly_completed);
 
     // The rest need a slot for the first output token. Make room by evicting cached pages only.
-    let needed = decode_page_growth_needed(running, config, 1);
+    let needed = decode_page_growth_needed(running, config.block_size, 1);
     let available = kv_manager.cache().available_tokens();
     if available < needed {
         kv_manager.evict(needed - available);
@@ -510,7 +506,7 @@ fn simulate_step(
     let modeled_ms = modeled_duration_ms(decode_time, speedup_ratio)?;
     let total_time = Duration::from_secs_f64(modeled_ms / 1_000.0);
 
-    let reserved_page_tokens = decode_page_growth_needed(running, config, max_burst);
+    let reserved_page_tokens = decode_page_growth_needed(running, config.block_size, max_burst);
     let reserved_pages = reserved_page_tokens / config.block_size;
     let Some(mut reservation) = kv_manager.reserve_decode_pages(reserved_pages) else {
         tracing::warn!(
@@ -606,44 +602,4 @@ fn simulate_step(
         end_ms: current_time_ms + total_time.as_secs_f64() * 1000.0,
         decode_acceptance,
     })
-}
-
-#[cfg(test)]
-mod verification_reservation_tests {
-    use super::*;
-    use crate::engine::common::protocols::MockEngineArgs;
-    use crate::engine::kv_manager::sglang_backend::RadixRequestLease;
-
-    #[rstest::rstest]
-    #[case::legacy_chain(None, 0)]
-    #[case::explicit_chain(Some(3), 0)]
-    #[case::tree(Some(8), 8)]
-    fn short_output_tail_keeps_tree_candidate_pages(
-        #[case] verify_width: Option<usize>,
-        #[case] expected_growth: usize,
-    ) {
-        let config = SglangConfig::from_args(
-            &MockEngineArgs::builder()
-                .block_size(4)
-                .aic_nextn(Some(2))
-                .aic_verify_width(verify_width)
-                .build()
-                .unwrap(),
-        );
-        let running = vec![SglangRequest {
-            is_decode_handoff: false,
-            uuid: uuid::Uuid::nil(),
-            sequence_tokens: vec![1, 2, 3, 4, 5, 6],
-            prompt_len: 4,
-            max_output_tokens: 4,
-            planned_output_ids: None,
-            kv_lease: RadixRequestLease::default(),
-            materialized_tokens: 6,
-            allocated_tokens: 8,
-        }];
-        assert_eq!(
-            decode_page_growth_needed(&running, &config, config.speculative_max_tokens.unwrap()),
-            expected_growth,
-        );
-    }
 }

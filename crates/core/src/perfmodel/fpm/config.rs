@@ -65,6 +65,15 @@ pub struct ForwardPassSpeculationConfig {
     pub draft_config: Option<serde_json::Map<String, serde_json::Value>>,
 }
 
+#[cfg(feature = "python")]
+impl ForwardPassSpeculationConfig {
+    /// Resolve the depth supported by the existing replay executor.
+    /// Static cost construction does not apply this replay-only restriction.
+    pub fn replay_depth(&self) -> Result<u32, AicError> {
+        crate::py::speculation_replay_depth(self)
+    }
+}
+
 /// Immutable model identity and selection policy for a forward-pass estimator.
 ///
 /// This is the one public construction schema shared by Rust, Python, Replay,
@@ -892,6 +901,29 @@ mod tests {
         let cfg = config(serde_json::json!({"speculation": spec}));
         cfg.validate().unwrap();
         assert_eq!(serde_json::to_value(&cfg).unwrap()["speculation"], spec);
+    }
+
+    #[cfg(feature = "embed-python")]
+    #[test]
+    fn replay_depth_uses_the_existing_executor_bounds() {
+        for (spec, expected) in [
+            (serde_json::json!({"kind": "none"}), Some(0)),
+            (
+                serde_json::json!({"kind": "mtp", "params": {"depth": 3}}),
+                Some(3),
+            ),
+            (
+                serde_json::json!({"kind": "mtp", "params": {"depth": 6}}),
+                None,
+            ),
+            (
+                serde_json::json!({"kind": "ngram", "params": {"num_speculative_tokens": 2}}),
+                Some(2),
+            ),
+        ] {
+            let spec: ForwardPassSpeculationConfig = serde_json::from_value(spec).unwrap();
+            assert_eq!(spec.replay_depth().ok(), expected);
+        }
     }
 
     #[test]

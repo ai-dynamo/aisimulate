@@ -1739,18 +1739,17 @@ def _materialize_engine_role(
             )
         ):
             raise ValueError("speculation cannot be combined with legacy speculative decoding fields")
-        rank.pop("nextn", None)
-        rank["aic_nextn"] = speculation.max_accepted_draft_tokens
-        rank["aic_verify_width"] = speculation.verify_width
-        rank["aic_nextn_accept_rates"] = ",".join(str(rate) for rate in speculation.acceptance_rates)
+        rank["aic_nextn"] = speculation.num_speculative_tokens
+        if isinstance(speculation, NgramSpeculationConfig):
+            rank["aic_nextn_accept_rates"] = ",".join(str(rate) for rate in speculation.acceptance_rates)
+        else:
+            rank["aic_nextn_accepted"] = speculation.expected_accepted_tokens
         rank["aic_mtp_seed"] = speculation.seed
 
     nextn = _pop_alias(rank, "aic_nextn", ("aic_nextn", "nextn"))
     if nextn is not None:
         nextn = _positive_int(nextn, f"engine provider {role} aic_nextn")
-        timing = rank.get("timing_model", {})
-        canonical_speculation = timing.get("config", {}).get("speculation") if isinstance(timing, dict) else None
-        if nextn > 5 and speculation is None and canonical_speculation is None:
+        if nextn > 5:
             raise ValueError(f"engine provider {role} aic_nextn must be in 1..=5")
         rank["aic_nextn"] = nextn
 
@@ -1853,14 +1852,6 @@ def _materialize_engine_role(
                 timing_config["speculation"] = cost_config
             configured_nextn = timing_config.get("nextn")
             canonical = timing_config.get("speculation")
-            if canonical is not None and not isinstance(canonical, Mapping):
-                raise ValueError("timing_model.config.speculation must be a mapping")
-            canonical_params = canonical.get("params", {}) if canonical is not None else {}
-            if not isinstance(canonical_params, Mapping):
-                raise ValueError("timing_model.config.speculation.params must be a mapping")
-            canonical_depth = canonical_params.get("depth", canonical_params.get("num_speculative_tokens"))
-            if canonical is not None and canonical.get("kind") in {"mtp", "ngram"} and canonical_depth != nextn:
-                raise ValueError("speculation depth conflicts with native aic_nextn")
             if speculation is None and canonical is None and configured_nextn is not None and configured_nextn != nextn:
                 raise ValueError(
                     f"engine provider {role} aic_nextn={nextn} conflicts with "

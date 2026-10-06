@@ -45,7 +45,6 @@ pub(super) struct SglangConfig {
     pub(super) kv_transfer_bandwidth: Option<f64>,
     pub(super) kv_transfer_timing_mode: KvTransferTimingMode,
     pub(super) speculative_max_tokens: Option<usize>,
-    pub(super) speculative_max_accepted_draft_tokens: usize,
 }
 
 impl SglangConfig {
@@ -105,10 +104,7 @@ impl SglangConfig {
             kv_transfer_bytes_per_token: args.kv_transfer_bytes_per_token,
             kv_transfer_bandwidth: args.kv_transfer_bandwidth,
             kv_transfer_timing_mode: args.kv_transfer_timing_mode,
-            speculative_max_accepted_draft_tokens: args.aic_nextn.unwrap_or(0),
-            speculative_max_tokens: args
-                .aic_verify_width
-                .or_else(|| args.aic_nextn.map(|nextn| nextn + 1)),
+            speculative_max_tokens: args.aic_nextn.map(|nextn| nextn + 1),
         }
     }
 

@@ -45,7 +45,7 @@ pub use perfmodel::{
     FpmRegressionConfig, KvCacheEstimate, KvCacheEstimateAdjusted, KvCacheEstimateError,
     KvCacheEstimateOptions, KvCacheEstimateRequest, KvCacheMemoryFraction, MemoryBreakdown,
     ParallelMapping, QuantizationConfig, QueuedRequestMetrics, RegressionFeatureWeights,
-    ResolvedSpeculationConfig, SamplingConfig, ScheduledRequestMetrics, SpeculativeConfig,
+    SamplingConfig, ScheduledRequestMetrics, SpeculativeConfig,
 };
 pub use perfmodel::{
     CorrectionFactorBounds, CorrectionFeatureSpace, FpmInterpolationConfig, FpmInterpolationMethod,

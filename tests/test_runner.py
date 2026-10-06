@@ -180,16 +180,6 @@ def test_factory_is_pickleable_and_advertises_engine_only_capabilities():
     assert capabilities.agentic_qualification == "functional_only"
 
 
-@pytest.mark.parametrize("speculation", ["mtp", [], {"kind": "mtp", "params": "bad"}, {"kind": "mtp", "params": None}])
-def test_canonical_speculation_rejects_malformed_mappings(speculation):
-    from aisimulate.runner import _materialize_engine_role
-
-    args = _engine_args(timing={"type": "external", "provider": "aic", "config": {"speculation": speculation}})
-    args["aic_nextn"] = 3
-    with pytest.raises(ValueError, match=r"speculation(?:\.params)? must be a mapping"):
-        _materialize_engine_role("vllm", "test", {}, args, "aggregated")
-
-
 @pytest.mark.parametrize("trace_format", ["weka", "agentic_mooncake", "dynamo"])
 @pytest.mark.parametrize("nested_rank", [False, True])
 @pytest.mark.parametrize("role", ["aggregated", "prefill", "decode"])

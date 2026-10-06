@@ -202,8 +202,6 @@ pub(crate) struct MockEngineArgs {
     #[builder(default = "None")]
     pub aic_nextn: Option<usize>,
     #[builder(default = "None")]
-    pub aic_verify_width: Option<usize>,
-    #[builder(default = "None")]
     pub aic_nextn_accept_rates: Option<String>,
     #[builder(default = "42")]
     pub aic_mtp_seed: u64,

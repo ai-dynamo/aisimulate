@@ -8,14 +8,7 @@ from __future__ import annotations
 
 from typing import Annotated, Any, Literal
 
-from pydantic import (
-    Field,
-    PrivateAttr,
-    StrictBool,
-    field_validator,
-    model_serializer,
-    model_validator,
-)
+from pydantic import Field, PrivateAttr, StrictBool, field_validator, model_serializer, model_validator
 
 from aisimulate.fpm_profile import FpmModelProfile
 
@@ -302,14 +295,6 @@ class NgramSpeculationConfig(StrictModel):
     def cost_config(self) -> dict[str, Any]:
         return {"kind": self.kind, "params": {"num_speculative_tokens": self.num_speculative_tokens}}
 
-    @property
-    def max_accepted_draft_tokens(self) -> int:
-        return self.num_speculative_tokens
-
-    @property
-    def verify_width(self) -> int:
-        return self.num_speculative_tokens + 1
-
 
 class SchemeSpeculationConfig(StrictModel):
     """SDK scheme cost identity plus an explicit replay acceptance assumption."""
@@ -320,47 +305,29 @@ class SchemeSpeculationConfig(StrictModel):
     draft_config: dict[str, Any] | None = None
     expected_accepted_tokens: NonNegativeFloat
     seed: Annotated[int, Field(strict=True, ge=0, le=0xFFFF_FFFF_FFFF_FFFF)] = 42
-    _max_accepted_draft_tokens: int = PrivateAttr(default=0)
-    _verify_width: int = PrivateAttr(default=1)
+    _num_speculative_tokens: int = PrivateAttr(default=0)
 
     @model_validator(mode="after")
     def _resolve_scheme(self) -> SchemeSpeculationConfig:
-        from aisimulate_core.sdk.speculation import SpeculationConfig, build_spec_scheme, resolve_draft_config
+        from aisimulate_core.sdk.speculation.base import SpeculationConfig, resolve_draft_config
 
         resolved = resolve_draft_config(SpeculationConfig(**self.cost_config()))
         self.params = resolved.params
         self.draft_config = resolved.draft_config
-        scheme = build_spec_scheme(None, resolved)
-        self._max_accepted_draft_tokens = scheme.max_accepted_draft_tokens()
-        self._verify_width = scheme.verify_width()
-        maximum = self.max_accepted_draft_tokens
+        self._num_speculative_tokens = resolved.replay_depth()
+        maximum = self.num_speculative_tokens
+        if maximum == 0:
+            raise ValueError("omit speculation to disable it")
         if self.expected_accepted_tokens > maximum:
             raise ValueError(f"expected_accepted_tokens must be within [0, {maximum}] accepted draft tokens")
         return self
 
     @property
-    def max_accepted_draft_tokens(self) -> int:
-        return self._max_accepted_draft_tokens
-
-    @property
-    def verify_width(self) -> int:
-        return self._verify_width
-
-    @property
-    def acceptance_rates(self) -> list[float]:
-        whole = int(self.expected_accepted_tokens)
-        rates = [1.0] * whole
-        if whole < self.max_accepted_draft_tokens:
-            rates.append(self.expected_accepted_tokens - whole)
-        return rates + [0.0] * (self.max_accepted_draft_tokens - len(rates))
+    def num_speculative_tokens(self) -> int:
+        return self._num_speculative_tokens
 
     def cost_config(self) -> dict[str, Any]:
-        result = {"kind": self.kind, "params": dict(self.params)}
-        if self.draft_model_path is not None:
-            result["draft_model_path"] = self.draft_model_path
-        if self.draft_config is not None:
-            result["draft_config"] = self.draft_config
-        return result
+        return self.model_dump(exclude={"expected_accepted_tokens", "seed"}, exclude_none=True)
 
 
 SpeculationConfig = NgramSpeculationConfig | SchemeSpeculationConfig
@@ -955,8 +922,8 @@ def _validate_speculation(engine, *, modes: set[str], backends: set[str]) -> Non
         worker = getattr(engine.workers, role)
         if worker is None:
             continue
-        if worker.kv_cache.host_offload is not None or getattr(worker.kv_cache, "g3_offload", None) is not None:
-            raise ValueError(f"{kind} speculation does not support host_offload or g3_offload")
+        if worker.kv_cache.host_offload is not None:
+            raise ValueError(f"{kind} speculation does not support host_offload")
         mode = worker.timing.estimation_mode or engine.estimation_mode
         if kind == "ngram" and (worker.timing.forward_model != "op_level" or mode not in (None, "auto", "op_level")):
             raise ValueError(f"{kind} speculation requires op_level timing")

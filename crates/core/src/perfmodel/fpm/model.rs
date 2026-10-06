@@ -941,14 +941,6 @@ impl ForwardPassPerfModel {
         }
     }
 
-    /// Scheme dimensions from the same graph used for timing.
-    pub fn speculation_metadata(&self) -> Option<&crate::ResolvedSpeculationConfig> {
-        match &self.mode {
-            ForwardPassPerfMode::Native { engine, .. } => engine.speculation_metadata(),
-            ForwardPassPerfMode::Regression { .. } => None,
-        }
-    }
-
     /// Exact immutable construction identity and selected systems root.
     pub fn provenance(&self) -> Option<&ForwardPassPerfProvenance> {
         self.provenance.as_ref()

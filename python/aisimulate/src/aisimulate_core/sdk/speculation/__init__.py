@@ -36,7 +36,6 @@ from aisimulate_core.sdk.speculation.base import (
     build_spec_scheme,
     get_spec_scheme_cls,
     register_spec_scheme,
-    resolve_draft_config,
 )
 
 _SKIP = {"base"}
@@ -53,5 +52,4 @@ __all__ = [
     "build_spec_scheme",
     "get_spec_scheme_cls",
     "register_spec_scheme",
-    "resolve_draft_config",
 ]

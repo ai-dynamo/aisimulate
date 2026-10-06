@@ -31,7 +31,7 @@ import pytest
 from pydantic import TypeAdapter, ValidationError
 
 from aisimulate.config.engine import SpeculationConfig as ReplaySpeculationConfig
-from aisimulate_core.sdk import common, models
+from aisimulate_core.sdk import RustForwardPassPerfModel, common, models
 from aisimulate_core.sdk import config as sdk_config
 from aisimulate_core.sdk.speculation import SpeculationConfig
 from aisimulate_core.sdk.speculation.dflash import DFlashScheme
@@ -506,29 +506,20 @@ def test_dense_draft_attention_keeps_checkpoint_window_in_both_phases(kind, conf
 REPLAY_CONFIG = TypeAdapter(ReplaySpeculationConfig)
 REPLAY_TARGET = "Qwen/Qwen3-8B"
 REPLAY_SCHEMES = [
-    ({"kind": "mtp", "params": {"depth": 3}}, 3, 4),
-    ({"kind": "ngram", "params": {"num_speculative_tokens": 3}}, 3, 4),
-    ({"kind": "eagle3", "params": {"num_speculative_tokens": 3}, "draft_config": EAGLE3_CONFIG}, 3, 4),
-    (
-        {
-            "kind": "eagle3",
-            "params": {"tree_shape": [1, 4, 4], "verify_token_budget": 10},
-            "draft_config": EAGLE3_CONFIG,
-        },
-        3,
-        10,
-    ),
-    ({"kind": "dflash", "params": {}, "draft_config": DFLASH_CONFIG}, 15, 16),
-    ({"kind": "dspark", "params": {}, "draft_config": DSPARK_8B_CONFIG}, 7, 8),
-    ({"kind": "draft_model", "params": {"num_speculative_tokens": 3}, "draft_model_path": REPLAY_TARGET}, 3, 4),
+    {"kind": "mtp", "params": {"depth": 3}},
+    {"kind": "ngram", "params": {"num_speculative_tokens": 3}},
+    {"kind": "eagle3", "params": {"num_speculative_tokens": 3}, "draft_config": EAGLE3_CONFIG},
+    {"kind": "eagle3", "params": {"tree_shape": [1, 4, 4], "verify_token_budget": 10}, "draft_config": EAGLE3_CONFIG},
+    {"kind": "dflash", "params": {}, "draft_config": DFLASH_CONFIG},
+    {"kind": "dspark", "params": {}, "draft_config": DSPARK_8B_CONFIG},
+    {"kind": "draft_model", "params": {"num_speculative_tokens": 3}, "draft_model_path": REPLAY_TARGET},
 ]
 
 
-@pytest.mark.parametrize("cost,depth,width", REPLAY_SCHEMES)
-def test_public_scheme_roundtrip_separates_acceptance_and_cost(cost, depth, width):
+@pytest.mark.parametrize("cost", REPLAY_SCHEMES[:3] + REPLAY_SCHEMES[-1:])
+def test_public_scheme_roundtrip_separates_acceptance_and_cost(cost):
     public = REPLAY_CONFIG.validate_python({**deepcopy(cost), "expected_accepted_tokens": 1.5, "seed": 73})
-    assert (public.max_accepted_draft_tokens, public.verify_width) == (depth, width)
-    assert public.acceptance_rates == [1.0, 0.5] + [0.0] * (depth - 2)
+    assert public.num_speculative_tokens == 3
     assert REPLAY_CONFIG.validate_json(public.model_dump_json()) == public
     changed = REPLAY_CONFIG.validate_python({**public.model_dump(), "expected_accepted_tokens": 0, "seed": 74})
     assert changed.cost_config() == public.cost_config()
@@ -576,24 +567,84 @@ def test_public_draft_resolution_retains_geometry_and_cache_identity(tmp_path):
         {"seed": -1},
     ],
 )
-def test_public_tree_rejects_invalid_or_conflicting_assumptions(updates):
+def test_public_scheme_rejects_invalid_or_conflicting_assumptions(updates):
     with pytest.raises(ValidationError):
-        REPLAY_CONFIG.validate_python({**REPLAY_SCHEMES[3][0], "expected_accepted_tokens": 1.5, **updates})
+        REPLAY_CONFIG.validate_python({**REPLAY_SCHEMES[2], "expected_accepted_tokens": 1.5, **updates})
 
 
 def test_public_standalone_draft_rejects_mismatched_injected_geometry():
-    public = REPLAY_CONFIG.validate_python({**REPLAY_SCHEMES[-1][0], "expected_accepted_tokens": 1.5})
+    public = REPLAY_CONFIG.validate_python({**REPLAY_SCHEMES[-1], "expected_accepted_tokens": 1.5})
     changed = deepcopy(public.model_dump())
     changed["draft_config"]["num_hidden_layers"] += 1
     with pytest.raises(ValidationError, match="draft_config must match"):
         REPLAY_CONFIG.validate_python(changed)
 
 
-def test_existing_flat_ngram_matches_generic_assumptions():
-    flat = REPLAY_CONFIG.validate_python(
-        {"kind": "ngram", "num_speculative_tokens": 3, "acceptance_rates": [1, 0.5, 0]}
+@pytest.mark.parametrize("cost", REPLAY_SCHEMES)
+def test_canonical_cost_preserves_all_schemes_without_replay_expansion(cost):
+    model = RustForwardPassPerfModel.best_available(
+        dict(
+            model=REPLAY_TARGET,
+            system="b200_sxm",
+            backend="vllm",
+            backend_version="0.24.0",
+            worker_type="aggregated",
+            speculation=cost,
+        )
     )
-    generic = REPLAY_CONFIG.validate_python({**flat.cost_config(), "expected_accepted_tokens": 1.5})
-    assert (generic.max_accepted_draft_tokens, generic.verify_width) == (3, 4)
-    assert generic.acceptance_rates == flat.acceptance_rates
-    assert REPLAY_CONFIG.validate_json(flat.model_dump_json()) == flat
+    try:
+        assert model.static_phase_latency(batch_size=1, input_tokens=128, output_tokens=2, prefill=False) > 0
+        saved = model.diagnostics()["provenance"]["config"]["speculation"]
+        assert saved["kind"] == cost["kind"] and saved["params"] == cost["params"]
+        if "draft_config" in cost:
+            assert saved["draft_config"] == cost["draft_config"]
+    finally:
+        model.close()
+
+
+@pytest.mark.parametrize(
+    "cost",
+    [
+        REPLAY_SCHEMES[3],
+        REPLAY_SCHEMES[4],
+        REPLAY_SCHEMES[5],
+        {"kind": "mtp", "params": {"depth": 6}},
+        {"kind": "eagle3", "params": {"tree_shape": [1, 2], "verify_token_budget": 3}, "draft_config": EAGLE3_CONFIG},
+        {"kind": "eagle3", "params": {"tree_shape": [1, 1], "verify_token_budget": 4}, "draft_config": EAGLE3_CONFIG},
+    ],
+)
+def test_replay_rejects_tree_and_non_chain_width(cost):
+    with pytest.raises(ValueError, match="speculative replay requires"):
+        SpeculationConfig(**cost).replay_depth()
+    with pytest.raises(ValidationError, match="speculative replay requires"):
+        REPLAY_CONFIG.validate_python({**cost, "expected_accepted_tokens": 1.5})
+
+
+def test_disabled_scheme_is_cost_only():
+    assert SpeculationConfig().replay_depth() == 0
+    with pytest.raises(ValidationError, match="omit speculation"):
+        REPLAY_CONFIG.validate_python({"kind": "none", "expected_accepted_tokens": 0})
+
+
+@pytest.mark.parametrize(
+    "cost,target,backend,tp,error",
+    [
+        (REPLAY_SCHEMES[2], "MiniMaxAI/MiniMax-M2.7", "vllm", 4, "model families"),
+        (REPLAY_SCHEMES[0], "moonshotai/Kimi-K3", "sglang", 8, "DSPARK"),
+    ],
+)
+def test_explicit_scheme_preserves_model_family_validation(cost, target, backend, tp, error):
+    with pytest.raises(ValueError, match=error):
+        RustForwardPassPerfModel.best_available(
+            dict(
+                model=target,
+                system="b200_sxm",
+                backend=backend,
+                backend_version="0.24.0" if backend == "vllm" else "0.5.14",
+                worker_type="aggregated",
+                tp=tp,
+                moe_tp_size=tp,
+                moe_ep_size=1,
+                speculation=cost,
+            )
+        )

@@ -141,9 +141,6 @@ class EagleScheme(SpecSchemeBase):
     def verify_width(self) -> int:
         return self.verify_token_budget
 
-    def max_accepted_draft_tokens(self) -> int:
-        return min(len(self.tree_shape), self.verify_width() - 1)
-
     # ------------------------------------------------------------------
     # Draft op graphs
     # ------------------------------------------------------------------

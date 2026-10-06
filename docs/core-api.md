@@ -417,13 +417,10 @@ mode with deny so saved replay input repeats that selection.
 
 ### Speculative decoding
 
-The canonical `speculation` cost configuration reuses the SDK envelope:
-`kind`, `params`, optional `draft_model_path` and resolved `draft_config`.
-Supported scheme names are `mtp`, `ngram`, `eagle3`, `dflash`, `draft_model` and
-`dspark`; existing SDK model-family and backend constraints apply. Resolved
-provenance retains the target and draft identities when saved and reloaded.
-
-For [AgentX replay](agentx-quickstart.md), add this to the prediction engine:
+Canonical `speculation` reuses the SDK cost configuration: `kind`, `params`,
+optional `draft_model_path` and resolved `draft_config`. Existing SDK scheme,
+model-family and backend constraints apply; saved configurations retain draft
+identity. For [AgentX replay](agentx-quickstart.md), add to the prediction engine:
 
 ```yaml
 speculation:
@@ -433,21 +430,15 @@ speculation:
   seed: 42
 ```
 
-The example uses a hypothetical acceptance assumption. Accepted tokens exclude
-the mandatory base token. Acceptance and seed control replay progress separately
-from draft and verification costs; they are absent from canonical cost identity.
-For EAGLE3, supply its draft checkpoint/config and SDK parameters, for example
-`params: {tree_shape: [1, 4, 4], verify_token_budget: 10}`: the accepted path has
-at most three drafts while verification prices ten tokens.
-
-AgentX supports vLLM/SGLang aggregated and P/D replay with ordinary HBM KV,
-subject to the selected scheme's existing constraints.
-Configure fixed KV block capacity for MTP and learned draft schemes, accounting
-for the draft's reservations. Existing prefix/grouped-cache restrictions apply.
-MiniMax EAGLE3 remains unsupported; an MTP override is a labeled approximation
-of that algorithm. These simulations do not establish measured hardware speedup.
-Legacy `nextn`/`nextn_accepted` and flat ngram inputs remain available; do not
-combine a legacy depth with explicit `speculation`.
+Acceptance is a workload assumption excluding the base token; acceptance and
+seed do not change cost identity. Replay reuses the existing 1–5 draft-token
+chain executor. EAGLE3 uses `params: {num_speculative_tokens: 3}` and a draft
+checkpoint/config; EAGLE trees and wider blocks remain cost-model-only.
+Use fixed HBM KV capacity for MTP and learned drafts, accounting for their
+reservations. Existing prefix/grouped-cache restrictions apply. MiniMax EAGLE3
+remains unsupported; an MTP override approximates that algorithm. Simulation
+does not establish measured hardware speedup. Legacy `nextn`/`nextn_accepted`
+and flat ngram inputs remain available; do not combine them with `speculation`.
 
 ### Estimator controls
 

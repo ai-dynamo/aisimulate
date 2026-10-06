@@ -874,10 +874,7 @@ mod tests {
                 fpm_fmha_dtype: None,
                 kv_cache_dtype: Some(DataType::Fp8),
             },
-            speculative: Some(SpeculativeConfig {
-                nextn: Some(1),
-                speculation_metadata: None,
-            }),
+            speculative: Some(SpeculativeConfig { nextn: Some(1) }),
             enable_shared_layer: None,
             strict_provenance: false,
             database_mode: Default::default(),

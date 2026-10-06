@@ -312,7 +312,6 @@ pub struct Engine {
     /// `(nextn + 1)` exactly as Python `_run_generation_phase:200`
     /// (`batch_size = batch_size * (model._nextn + 1)`). 0 disables scaling.
     nextn: u32,
-    speculation_metadata: Option<crate::ResolvedSpeculationConfig>,
     prefill_graph_profile: bool,
 }
 
@@ -327,10 +326,6 @@ impl std::fmt::Debug for Engine {
 }
 
 impl Engine {
-    pub fn speculation_metadata(&self) -> Option<&crate::ResolvedSpeculationConfig> {
-        self.speculation_metadata.as_ref()
-    }
-
     fn decode_profile_spec(
         spec: &EngineSpec,
     ) -> Result<Option<&crate::operators::MoeOp>, AicError> {
@@ -436,27 +431,12 @@ impl Engine {
             .as_ref()
             .and_then(|s| s.nextn)
             .unwrap_or(0);
-        let speculation_metadata = spec
-            .engine
-            .speculative
-            .as_ref()
-            .and_then(|config| config.speculation_metadata.clone());
-        if let Some(metadata) = &speculation_metadata {
-            if metadata.verify_width != nextn.saturating_add(1)
-                || metadata.max_accepted_draft_tokens >= metadata.verify_width
-            {
-                return Err(AicError::InvalidEngineConfig(
-                    "resolved speculation metadata disagrees with the compiled graph".into(),
-                ));
-            }
-        }
         Self::validate_fpm_spec(&spec)?;
         Ok(Engine {
             context_ops: spec.context_ops,
             generation_ops: spec.generation_ops,
             db,
             nextn,
-            speculation_metadata,
             prefill_graph_profile,
         })
     }
@@ -2694,10 +2674,7 @@ mod tests {
                 fpm_fmha_dtype: None,
                 kv_cache_dtype: None,
             },
-            speculative: nextn.map(|n| crate::SpeculativeConfig {
-                nextn: Some(n),
-                speculation_metadata: None,
-            }),
+            speculative: nextn.map(|n| crate::SpeculativeConfig { nextn: Some(n) }),
             enable_shared_layer: None,
             strict_provenance: false,
             tolerate_dirless_version: false,

@@ -474,7 +474,6 @@ fn speculative_batch_drains_zero_output_before_emitting_tokens() {
 fn speculative_retraction_preserves_only_executed_work(
     #[case] blocks: usize,
     #[case] prefill_pass: bool,
-    #[values(None, Some(3))] verify_width: Option<usize>,
 ) {
     let args = MockEngineArgs::builder()
         .block_size(4)
@@ -486,7 +485,6 @@ fn speculative_retraction_preserves_only_executed_work(
         .preemption_mode(PreemptionMode::Lifo)
         .speedup_ratio(0.0)
         .aic_nextn(Some(2))
-        .aic_verify_width(verify_width)
         .aic_nextn_accept_rates(Some("1,1".to_string()))
         .build()
         .unwrap();
