@@ -50,10 +50,11 @@ uv pip compile --group scripts/pyproject.toml:ci --generate-hashes \
 python -m pip install --require-hashes -r scripts/ci/requirements.txt
 ```
 
-The other group/output pairs are `fpm-accuracy` → `fpm_accuracy/`, and `pages`,
-`readme`, and `release` → the same-named directories. E2E campaign scripts use
-only the standard library and the separately installed predictor wheel, so they
-have no tooling dependency group. Fast CI regenerates every group lock with
+The other group/output pairs are `e2e-accuracy` → `e2e_accuracy/`,
+`fpm-accuracy` → `fpm_accuracy/`, and `pages`, `readme`, and `release` → the
+same-named directories. The E2E source resolver uses requests and PyYAML; its
+group is also included in Pages, which imports the resolver during validation.
+Fast CI regenerates every group lock with
 `uv==0.12.6` from the hashed CI lock and rejects changed or missing locks. It retains existing transitive pins unless
 the declarations require a change; use `--upgrade` for an intentional refresh.
 The `ci`, `pages`, and `readme` groups use pytest 9 to match AISimulate's dev extra.
