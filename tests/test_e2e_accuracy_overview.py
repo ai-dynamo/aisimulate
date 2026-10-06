@@ -595,3 +595,42 @@ def test_baseline_provenance_matches_selected_modules(entry, api, adapter):
         document["aic_run"]["runtime"]["config_adapter"] = "foreign.adapter"
     with pytest.raises(OVERVIEW.SnapshotError, match="modules disagree"):
         OVERVIEW._aic_source(predictions, metadata, coverage, None)
+
+
+@pytest.mark.parametrize("run_id", [28196140241, "28196140241", None])
+def test_summary_exports_public_run_id_without_internal_id(run_id):
+    predictions, metadata, coverage = _inputs()
+    for row in predictions["rows"]:
+        row.update(silicon_github_run_id=run_id, silicon_workflow_run_id=1961)
+    summary = OVERVIEW.build_summary(
+        predictions,
+        metadata,
+        coverage,
+        predictions_sha256="c" * 64,
+        source_url="https://github.com/SemiAnalysisAI/InferenceX-app/releases/tag/" + predictions["release_tag"],
+    )
+    points = [
+        p
+        for m in summary["models"]
+        for w in m["workloads"]
+        for g in w["gpus"]
+        for t in g["topologies"]
+        for p in t["points"]
+    ]
+    assert points
+    assert all(p["infx_run_id"] == (str(run_id) if run_id is not None else None) for p in points)
+    assert "silicon_workflow_run_id" not in json.dumps(summary)
+
+
+@pytest.mark.parametrize("run_id", [True, 0, -1, 1.5, "", "001", "1/2", "https://example.com"])
+def test_summary_rejects_malformed_public_run_id(run_id):
+    predictions, metadata, coverage = _inputs()
+    predictions["rows"][0]["silicon_github_run_id"] = run_id
+    with pytest.raises(OVERVIEW.SnapshotError, match="InferenceX GitHub run ID"):
+        OVERVIEW.build_summary(
+            predictions,
+            metadata,
+            coverage,
+            predictions_sha256="c" * 64,
+            source_url="https://github.com/SemiAnalysisAI/InferenceX-app/releases/tag/" + predictions["release_tag"],
+        )

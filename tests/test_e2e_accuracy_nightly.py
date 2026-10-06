@@ -1403,6 +1403,7 @@ def test_ep_prediction_preserves_physical_gpus_through_publication(
 ):
     point = expert_parallel_point()
     point["config"]["framework"] = framework
+    point["github_run_id"] = "28196140241"
     calls = []
 
     def estimate(**kwargs):
@@ -1455,6 +1456,7 @@ def test_ep_prediction_preserves_physical_gpus_through_publication(
     monkeypatch.setattr(campaign.importlib, "import_module", modules.__getitem__)
     result = campaign.predict_point(point)
     row = result["row"]
+    assert row["silicon_github_run_id"] == "28196140241"
     assert row["aisimulate_total_gpus"] == 4
     assert row["silicon_ttft_ms"] == 500
     assert row["silicon_tpot_ms"] == 20
@@ -1746,6 +1748,7 @@ def test_source_resolved_prediction_preserves_settings_and_independent_outcomes(
     monkeypatch, source_config_adapter, framework, disagg, baseline_fails
 ):
     point = resolved_point(framework, disagg)
+    point["source_row"]["github_run_id"] = "28196140241"
     calls = []
 
     def estimate(**kwargs):
@@ -1807,6 +1810,7 @@ def test_source_resolved_prediction_preserves_settings_and_independent_outcomes(
     )
     result = campaign.predict_point(point)
     assert result["outcome"] == "evaluated"
+    assert result["row"]["silicon_github_run_id"] == "28196140241"
     assert result["row"]["aic_status"] == ("failed" if baseline_fails else "success")
     assert result["row"]["aisimulate_status"] == "success"
     assert calls == ["estimate", "replay", "close"]
@@ -2131,3 +2135,27 @@ def test_resolved_shards_partition_before_resolution(artifact, tmp_path, monkeyp
             for index in range(4)
         ]
     )
+
+
+def test_legacy_selection_uses_public_github_run_id_not_database_id():
+    data = tables()
+    for run in data["workflow_runs"]:
+        run["github_run_id"] = 28196140241 + run["id"]
+    points, _ = campaign.select_points(data, 30)
+    for point in points:
+        assert point["github_run_id"] == 28196140241 + point["benchmark"]["workflow_run_id"]
+
+
+@pytest.mark.parametrize("run_id", ["28196140241", None, "", "0", "12/3", "https://example.com", True, 123])
+def test_public_artifact_validates_inferencex_run_links(artifact, run_id):
+    summary, run = artifact
+    point = summary["models"][0]["workloads"][0]["gpus"][0]["topologies"][0]["points"][0]
+    point["infx_run_id"] = run_id
+    if run_id is None or run_id == "28196140241":
+        publish.validate_artifact(archive(summary), run)
+        pages._accuracy_summary(json.dumps(summary))
+    else:
+        with pytest.raises((ValueError, pages.PagesBuildError), match="InferenceX GitHub run ID"):
+            publish.validate_artifact(archive(summary), run)
+        with pytest.raises(pages.PagesBuildError, match="InferenceX GitHub run ID"):
+            pages._accuracy_summary(json.dumps(summary))

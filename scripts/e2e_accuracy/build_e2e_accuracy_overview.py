@@ -6,7 +6,8 @@
 The source ``predictions.json`` retains historical ``dynamo_*`` field names for
 frontend compatibility. Rows with ``aisimulate_runner`` provenance are emitted
 as AISimulate results. The public output contains aggregate errors and identity
-dimensions only; it deliberately omits raw measurements and internal run IDs.
+dimensions and chart metrics, with public InferenceX GitHub run IDs for tracing
+measurements. Internal database run IDs are never published.
 """
 
 from __future__ import annotations
@@ -275,7 +276,16 @@ def _topology_summaries(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         anchors = {metric: first[f"silicon_{metric}_ms"] for metric in ("ttft", "tpot")}
         points = []
         for row in topology_rows:
-            point: dict[str, Any] = {"concurrency": row["conc"], "status": row["aisimulate_status"]}
+            run_id = row.get("silicon_github_run_id")
+            if run_id is not None and (
+                type(run_id) not in (str, int) or re.fullmatch(r"[1-9][0-9]*", str(run_id)) is None
+            ):
+                raise SnapshotError("invalid InferenceX GitHub run ID")
+            point: dict[str, Any] = {
+                "concurrency": row["conc"],
+                "status": row["aisimulate_status"],
+                "infx_run_id": str(run_id) if run_id is not None else None,
+            }
             if "configuration_quality" in row:
                 point["configuration_quality"] = row["configuration_quality"]
             if "aic_status" in row:

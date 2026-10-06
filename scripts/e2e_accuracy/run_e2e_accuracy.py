@@ -175,6 +175,7 @@ def select_points(tables: dict, max_age_days: int) -> tuple[list[dict], dict]:
                     "id": sha([bench["id"], bench["config_id"]]),
                     "config": configs[bench["config_id"]],
                     "benchmark": bench,
+                    "github_run_id": runs[bench["workflow_run_id"]].get("github_run_id"),
                 }
             )
     if not points:
@@ -371,6 +372,7 @@ def predict_point(point: dict) -> dict:
         }
     worker = request.topology.worker if request.topology.kind == "agg" else request.topology.decode
     row = {
+        "silicon_github_run_id": point.get("github_run_id"),
         "silicon_model": config["model"],
         "display_name": config["model"],
         "hf_model_path": request.model.path,
@@ -498,6 +500,7 @@ def predict_resolved_point(point):
     roles = deployment["roles"]
     shape = roles["decode" if config["disagg"] else "aggregated"]["topology"]
     row = {
+        "silicon_github_run_id": point["source_row"].get("github_run_id"),
         "silicon_model": config["model"],
         "display_name": config["model"],
         "hf_model_path": deployment["model_path"],

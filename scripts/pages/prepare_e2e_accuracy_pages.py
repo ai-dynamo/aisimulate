@@ -191,11 +191,17 @@ def public_contract(summary):
                                 "status",
                                 "aic_status",
                                 "configuration_quality",
+                                "infx_run_id",
                                 "measured",
                                 "aic",
                                 "aisimulate",
                             },
                         )
+                        run_id = point.get("infx_run_id")
+                        if run_id is not None and (
+                            not isinstance(run_id, str) or re.fullmatch(r"[1-9][0-9]*", run_id) is None
+                        ):
+                            raise ValueError("invalid InferenceX GitHub run ID")
                         for name in ("measured", "aic", "aisimulate"):
                             keys(
                                 point[name],

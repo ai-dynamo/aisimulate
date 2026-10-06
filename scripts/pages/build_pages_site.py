@@ -246,6 +246,11 @@ def _accuracy_summary(text: str, *, allow_preview: bool = False) -> dict:
         aic_successes = 0
         for point in points:
             require(isinstance(point, dict), "point")
+            run_id = point.get("infx_run_id")
+            require(
+                run_id is None or (isinstance(run_id, str) and bool(re.fullmatch(r"[1-9][0-9]*", run_id))),
+                "InferenceX GitHub run ID",
+            )
             if "configuration_quality" in point:
                 require(
                     point["configuration_quality"] in ("verified", "estimated"),

@@ -470,3 +470,14 @@ These metrics are written to CI artifacts, not committed evaluation JSON.
 Pages packages qualified artifacts during production builds; the existing
 committed snapshot remains a historical fallback. Chart presentation lives in
 the separate op-based UI change (#368).
+
+### Public InferenceX run links
+
+Prediction rows carry the source workflow's `github_run_id` as
+`silicon_github_run_id`; summary points export it as `infx_run_id`, a positive
+integer string. The details UI links it to the public InferenceX Actions run.
+Both resolved-source and legacy selection paths preserve this provenance,
+including failed predictions. Missing historical IDs remain null; internal
+`workflow_run_id` database keys are never substituted for GitHub run IDs.
+The exporter and Pages validators reject malformed IDs. This metadata does not
+change predictions, cohort selection, or accuracy metrics.
