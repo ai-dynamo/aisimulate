@@ -3,7 +3,7 @@
 
 use std::collections::BTreeSet;
 use std::marker::PhantomData;
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
 use crate::engine::generalized::{PassId, SameTimestampRetry, SchedulerCommand};
 use crate::engine::{
@@ -31,10 +31,7 @@ const MAX_CONSECUTIVE_SAME_TIMESTAMP_RETRIES: usize = 1024;
 
 #[derive(Clone)]
 struct PendingPass {
-    // Keep the engine's allocation. Only profile cancellation needs an index;
-    // ordinary replay drops these IDs at pass completion without building one.
-    committed_requests: Vec<Uuid>,
-    committed_request_index: OnceLock<BTreeSet<Uuid>>,
+    committed_requests: BTreeSet<Uuid>,
     pass_id: PassId,
     started_at_ms: f64,
     end_ms: f64,
@@ -806,11 +803,7 @@ where
             .required_worker(owner.worker_id)?
             .pending_pass
             .as_ref()
-            .is_some_and(|pass| {
-                pass.committed_request_index
-                    .get_or_init(|| pass.committed_requests.iter().copied().collect())
-                    .contains(&request_id)
-            }))
+            .is_some_and(|pass| pass.committed_requests.contains(&request_id)))
     }
 
     pub(crate) fn drive_ready(
@@ -847,8 +840,7 @@ where
 
             let same_timestamp_retry = started.same_timestamp_retry;
             let mut pending = PendingPass {
-                committed_requests: Vec::new(),
-                committed_request_index: OnceLock::new(),
+                committed_requests: BTreeSet::new(),
                 pass_id: started.pass_id,
                 started_at_ms: started.started_at_ms,
                 end_ms: started.end_ms,
@@ -856,13 +848,9 @@ where
 
             let mut effects: EngineEffects<Observation::Batch> = EngineEffects::default();
             for rank in started.by_rank {
-                if pending.committed_requests.is_empty() {
-                    pending.committed_requests = rank.effects.committed_requests;
-                } else {
-                    pending
-                        .committed_requests
-                        .extend(rank.effects.committed_requests);
-                }
+                pending
+                    .committed_requests
+                    .extend(rank.effects.committed_requests);
                 effects
                     .admissions
                     .extend(rank.effects.admissions.into_iter().map(|admission| {
