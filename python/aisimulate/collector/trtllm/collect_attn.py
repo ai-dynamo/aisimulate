@@ -137,7 +137,12 @@ def run_attention_torch(
     device="cuda:0",
 ):
     device = torch.device(device)
-    torch.set_default_device(device)
+    # No torch.set_default_device(device): the FLASHINFER sub-backend builds its HOST block
+    # tables with torch.zeros(..., pin_memory=True) (attention/backends/flashinfer.py:1566
+    # @1.3.0rc29); under a CUDA default device that allocation lands on the GPU and pinning
+    # raises "Only dense CPU tensors can be pinned" — 2,942 FLASHINFER decode cases (every
+    # Gemma-4 head_dim 256/512 x window 1024/0 cell) on b200 rc29, job 469988228. Serving
+    # never sets a default device; every tensor this collector creates names its device.
     torch.cuda.set_device(device)
 
     if attn_backend_name not in {"TRTLLM", "FLASHINFER"}:
@@ -417,10 +422,10 @@ def run_attention_torch(
     else:
         num_tokens = batch_size
 
-    sinks = torch.randn(num_heads, dtype=torch.float32) if head_dim == 64 else None
-    q = torch.randn([num_tokens, num_heads * head_dim]).bfloat16().to(torch.device(device))
-    k = torch.randn([num_tokens, num_key_value_heads * head_dim]).bfloat16().to(torch.device(device))
-    v = torch.randn([num_tokens, num_key_value_heads * head_dim]).bfloat16().to(torch.device(device))
+    sinks = torch.randn(num_heads, dtype=torch.float32, device=device) if head_dim == 64 else None
+    q = torch.randn([num_tokens, num_heads * head_dim], dtype=torch.bfloat16, device=device)
+    k = torch.randn([num_tokens, num_key_value_heads * head_dim], dtype=torch.bfloat16, device=device)
+    v = torch.randn([num_tokens, num_key_value_heads * head_dim], dtype=torch.bfloat16, device=device)
     if is_flashinfer:
         # Serving splits Q/K/V for backends without fused-QKV support
         # (modules/attention.py:619,641-646@1.3.0rc20; FlashInferAttention

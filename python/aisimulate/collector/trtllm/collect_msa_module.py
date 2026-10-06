@@ -774,7 +774,15 @@ def create_kv_cache_and_metadata(
                 "the MSA cache-write buffers (msa_backend.py:549-609@1.3.0rc23); "
                 "the KV cache manager is not the M3 sparse manager"
             )
-        if not is_context and attn_metadata.msa_decode_proxy_plan is None:
+        # rc23 exposed the graph-safe decode plan as ``msa_decode_proxy_plan``; rc29's
+        # MiniMaxM3MsaSparseAttentionMetadata no longer has that attribute (AttributeError
+        # on every generation case: 2,760/2,760, b200 job 469988228). Check the plan only
+        # where the contract still names it; on later series rely on _msa_fields_ready
+        # above. FIXME(re-verify): confirm rc29's decode-plan field name and restore an
+        # explicit check once known.
+        unset = object()
+        proxy_plan = getattr(attn_metadata, "msa_decode_proxy_plan", unset)
+        if not is_context and proxy_plan is None:
             raise RuntimeError(
                 "MSA decode plans were not built for a pure generation batch "
                 "(msa_backend.py:428-460@1.3.0rc23); sparse_metadata_params "

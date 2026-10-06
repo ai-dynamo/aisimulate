@@ -269,13 +269,28 @@ def _build_module_test_cases(attn_type: str, mode: str):
     base_cases = get_context_test_cases(attn_type) if mode == "context" else get_generation_test_cases(attn_type)
     model_specs = get_mla_module_model_specs(attention_type=attn_type, backend="trtllm")
     cases = []
+    dropped_small_heads = 0
+    sm_version = get_sm_version()
     for model_spec in model_specs:
         for base_case in base_cases:
             s, b, h, kv_dtype, compute_dtype, gemm_type, *rest = base_case
+            if attn_type == "dsa" and sm_version in (100, 103) and h < 8:
+                # FIXME(kernel-limit): TRT-LLM's sparse-MLA path on SM100/103 falls back to the FMHA
+                # that requires "Num. rows must be a multiple of 8" — per-rank heads 1/2/4 (TP 32/64/128
+                # of a 128-head model) failed 15,408 of the b200 rc29 DSA cases after a full module load
+                # each (job 469988228); vLLM's trtllm-gen sparse decode has no kernel for the same cells
+                # (tileSizeQ < 8). No serving deployment reaches them. Dropped at plan time, counted.
+                dropped_small_heads += 1
+                continue
             case = [s, b, h, kv_dtype, compute_dtype, gemm_type, model_spec.model_path, attn_type]
             if rest:
                 case.append(rest[0])
             cases.append(case)
+    if dropped_small_heads:
+        print(
+            f"[trtllm-mla-module-cases] {attn_type}/{mode}: dropped {dropped_small_heads} cases with per-rank "
+            f"heads < 8 (SM{sm_version} sparse-MLA FMHA row-multiple-of-8 domain)"
+        )
     return cases
 
 

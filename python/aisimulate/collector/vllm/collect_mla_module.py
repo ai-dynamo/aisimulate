@@ -266,6 +266,26 @@ def get_generation_test_cases(attn_type: str):
     return cases
 
 
+# SM100/103: trtllm-gen sparse-MLA decode has no kernel below tileSizeQ 8 (see the
+# FIXME in _build_module_test_cases). Hopper/Ada/SM120 route sparse decode elsewhere.
+_DSA_SPARSE_DECODE_MIN_HEADS = 8
+_DSA_SPARSE_DECODE_MIN_HEADS_SMS = (100, 103)
+
+
+def _model_max_position_embeddings(model_id: str) -> int | None:
+    """The model's max context length from its cached config (same file the
+    sglang module collector reads); None when unavailable (no cap applied)."""
+    config_file = os.path.join(_AIS_MODEL_CONFIG_DIR, f"{model_id.replace('/', '--')}_config.json")
+    if not os.path.exists(config_file):
+        return None
+    try:
+        with open(config_file) as f:
+            value = json.load(f).get("max_position_embeddings")
+        return int(value) if value else None
+    except Exception:
+        return None
+
+
 def _build_module_test_cases(attn_type: str, mode: str):
     """Build module-level test cases for a specific attention type and phase.
 
@@ -274,13 +294,43 @@ def _build_module_test_cases(attn_type: str, mode: str):
     """
     base_cases = get_context_test_cases(attn_type) if mode == "context" else get_generation_test_cases(attn_type)
     cases = []
+    dropped_small_heads = 0
+    dropped_over_ceiling = 0
+    sm_version = get_sm_version()
     for model_spec in get_mla_module_model_specs(attention_type=attn_type, backend="vllm"):
+        max_position = _model_max_position_embeddings(model_spec.model_path) if attn_type == "dsa" else None
         for base_case in base_cases:
             s, b, h, kv_dtype, compute_dtype, gemm_type, *rest = base_case
+            small_head_hole = sm_version in _DSA_SPARSE_DECODE_MIN_HEADS_SMS and h < _DSA_SPARSE_DECODE_MIN_HEADS
+            if attn_type == "dsa" and small_head_hole:
+                # FIXME(kernel-limit): FlashInfer's trtllm-gen sparse-MLA decode ships no kernel for
+                # tileSizeQ < 8 (= per-rank heads at q_len 1): "Missing TRTLLM-GEN kernel (decode) ...
+                # tileSizeQ=4, sparseMlaType=1" (trtllm_fmha_kernel_launcher.cu:320, flashinfer 0.6.x).
+                # Heads 1/2/4 (TP 32/64/128 of a 128-head model) failed 68,435 of the b200 vllm 0.30.0
+                # DSA cases AFTER loading a full module each (job 471043976); trtllm's fallback FMHA
+                # rejects the same cells ("Num. rows must be a multiple of 8"). Serving has no such
+                # deployment either. Dropped at plan time, counted here, not silently.
+                dropped_small_heads += 1
+                continue
+            prefix_len = rest[0] if rest else 0
+            if attn_type == "dsa" and max_position is not None and prefix_len + s > max_position:
+                # The shared dsa_prefix_lengths axis reaches 1,048,575 (GLM-5.2's ceiling); a model
+                # with a smaller max_position_embeddings (DeepSeek-V3.2 163,840, GLM-5 202,752) cannot
+                # build an engine past it: vLLM rejects max_model_len > derived limit (7,050 cases,
+                # job 471043976). sglang's module collector applies the same per-model cap
+                # (_prefix_fits_model); mirror it here.
+                dropped_over_ceiling += 1
+                continue
             case = [s, b, h, kv_dtype, compute_dtype, gemm_type, model_spec.model_path, attn_type]
             if rest:
                 case.append(rest[0])
             cases.append(case)
+    if dropped_small_heads or dropped_over_ceiling:
+        print(
+            f"[vllm-mla-module-cases] {attn_type}/{mode}: dropped {dropped_small_heads} cases with per-rank heads "
+            f"< {_DSA_SPARSE_DECODE_MIN_HEADS} (SM{sm_version} sparse-MLA decode kernel domain) and "
+            f"{dropped_over_ceiling} cases whose prefix+isl exceeds the model's max_position_embeddings"
+        )
     return cases
 
 
@@ -1184,6 +1234,23 @@ def run_mla_module_worker(
     device: str = "cuda:0",
 ):
     """Worker-compatible positional wrapper used by collector/collect.py."""
+    # FIXME(kernel-limit): on SM100/103 with FP8 KV, vLLM selects FLASHINFER_MLA_SPARSE for DSA and
+    # FlashInfer's auto backend has nothing for 64 < per-rank heads < 128: trtllm-gen refuses the head
+    # range, cute-dsl refuses sparse_mla_top_k ("auto: no backend supports this configuration", 11,442
+    # cases = every heads-96 fp8 cell, both phases, job 471043976). Serving fails identically (the same
+    # gap closes Kimi-K3 tp1 on sglang: finding sm100_probe_failures_recheck_2026_10_04 (i)). Raise
+    # before the module is built so the cell is a classified failure, not a 20 s load + crash.
+    if (
+        attn_type == "dsa"
+        and "fp8" in str(kv_cache_dtype)
+        and get_sm_version() in _DSA_SPARSE_DECODE_MIN_HEADS_SMS
+        and 64 < num_heads < 128
+    ):
+        raise RuntimeError(
+            "FIXME(kernel-limit): vLLM FLASHINFER_MLA_SPARSE on SM100/103 has no decode backend for "
+            f"64 < per-rank heads < 128 with FP8 KV (num_heads={num_heads}); trtllm-gen rejects the head "
+            "range and cute-dsl rejects sparse_mla_top_k (flashinfer mla/_core.py:4271); serving fails identically"
+        )
     # Serving executes model forward under inference mode (vLLM dd10e03f9,
     # v1/worker/gpu_model_runner.py:4069-4070). Keep module initialization,
     # dry runs, graph warmup and timing in the SAME mode: FlashInfer 0.6.13

@@ -26,6 +26,7 @@ import torch
 from tensorrt_llm._torch.autotuner import AutoTuner, autotune
 from tensorrt_llm._torch.model_config import ModelConfig
 from tensorrt_llm._torch.models.modeling_deepseekv3 import DeepseekV3Gate
+
 # trtllm >=1.3.0rc29 moved _torch.attention_backend.* -> _torch.attention.backends.* and
 # _torch.modules.fused_moe -> _torch.moe.fused_moe (the old package root is a deprecation shim
 # without submodules). Path-only compat: same classes, same kernels (layer_permissions.md
@@ -63,6 +64,7 @@ from collector.helper import (
     log_perf,
     power_law_logits_v3,
 )
+from collector.version_resolver import _check_compat
 
 aic_debug = int(os.getenv("aic_moe_debug", "0"))  # noqa: SIM112
 
@@ -329,6 +331,21 @@ def run_moe_torch(
     dtype = torch.bfloat16
     quant_group_size = 128
     quant_algo = None
+    # FIXME(kernel-limit): TRT-LLM >= 1.3.0rc29 MoE resolution has no implementation for W4A16 on
+    # SM100/103 ("no MoE implementation can serve this layer ... CutlassFusedMoE: quant_unsupported
+    # (quant_algo=W4A16)", 114/114 int4_wo cases, b200 job 469988228). Serving cannot load the
+    # W4A16 checkpoint either (results/sm100/trtllm-1.3.0rc29.yaml: Kimi-K2.5 fail, finding
+    # sm100_probe_failures_recheck_2026_10_04 (g)). The lane is unreachable on this pin, not a
+    # per-shape failure; refuse before building weights.
+    if (
+        moe_type == "int4_wo"
+        and get_sm_version() in (100, 103)
+        and _check_compat("tensorrt_llm>=1.3.0rc29", _TRTLLM_VERSION)
+    ):
+        raise RuntimeError(
+            "FIXME(kernel-limit): TRT-LLM int4_wo (W4A16) MoE has no implementation on SM100/103 at "
+            f"{_TRTLLM_VERSION}; serving fails identically (Kimi-K2.5 identity probe)"
+        )
     if moe_type == "fp8_block":
         quant_algo = QuantAlgo.FP8_BLOCK_SCALES
     elif moe_type == "w4afp8":

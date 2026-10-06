@@ -262,6 +262,15 @@ def run_mla(
     assert num_heads % tp_size == 0, "num_heads != N * tp_size"
     num_heads = num_heads // tp_size
     num_kv_heads = num_heads
+    # FIXME(kernel-limit): TRT-LLM's MLA decode FMHA on SM100/103 tiles 16 q-heads per CTA and
+    # rejects head counts above 16 that are not a multiple of 16 ("Internal error numHeadsQ=24,
+    # numHeadsPerCta=16", 724 cases = every heads-24 decode cell of the 96-head model at tp4,
+    # b200 rc29 job 469988228). Classified before the layer is built.
+    if not is_context_phase and get_sm_version() in (100, 103) and num_heads > 16 and num_heads % 16:
+        raise RuntimeError(
+            "FIXME(kernel-limit): TRT-LLM MLA decode on SM100/103 needs per-rank heads <= 16 or a multiple "
+            f"of 16 (numHeadsPerCta=16); got {num_heads}"
+        )
 
     context_sequence_lengths = [input_len for _ in range(batch_size)]
 

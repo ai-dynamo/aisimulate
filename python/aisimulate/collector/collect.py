@@ -2077,6 +2077,14 @@ def parallel_run(tasks, func, num_processes, module_name="unknown", resume_optio
         if p.is_alive():
             logger.warning(f"Process {p.pid} did not terminate, forcing...")
             p.terminate()
+            p.join(timeout=10)
+            if p.is_alive():
+                # a worker wedged in a CUDA call ignores SIGTERM; without SIGKILL the
+                # interpreter's multiprocessing atexit join waits forever (pipeline
+                # watchdogs had to reap collect.py itself, 2026-10-05 campaign)
+                logger.warning(f"Process {p.pid} survived SIGTERM, killing")
+                p.kill()
+                p.join(timeout=10)
 
     # Shutdown manager to clean up resources (semaphores, etc.)
     manager.shutdown()
@@ -2582,7 +2590,15 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 def _git_collector_ref(repo_root: Path) -> str:
-    """The repo SHA the collector ran from (design §5), "unknown" outside a repo."""
+    """The repo SHA the collector ran from (design §5), "unknown" outside a repo.
+
+    ``AISIM_COLLECTOR_REF`` (legacy ``AIC_COLLECTOR_REF``) wins when set: the
+    framework images carry no git, so pipelines that check the collector out
+    by SHA pass it in (every b200 shard run of 2026-10-05 recorded 'unknown').
+    """
+    forced = (os.environ.get("AISIM_COLLECTOR_REF") or os.environ.get("AIC_COLLECTOR_REF") or "").strip()
+    if forced:
+        return forced
     try:
         result = subprocess.run(
             ["git", "rev-parse", "HEAD"],
