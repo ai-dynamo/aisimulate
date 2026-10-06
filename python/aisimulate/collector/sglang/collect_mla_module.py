@@ -251,9 +251,12 @@ def _initialize_dsa_history(model_runner, attention_module, forward_batch, histo
     from sglang.srt.layers.attention.dsa.triton_kernel import act_quant
 
     pool = model_runner.token_to_kv_pool
-    locations = model_runner.req_to_token_pool.req_to_token[
-        forward_batch.req_pool_indices.long(), :history_length
-    ].flatten().long().contiguous()
+    locations = (
+        model_runner.req_to_token_pool.req_to_token[forward_batch.req_pool_indices.long(), :history_length]
+        .flatten()
+        .long()
+        .contiguous()
+    )
     expected = int(forward_batch.batch_size) * history_length
     if locations.numel() != expected:
         raise ValueError(f"DSA history has {locations.numel()} locations; expected {expected}")
@@ -1155,7 +1158,7 @@ def load_model_runner(
         tp_size=1,
         trust_remote_code=True,
         disable_radix_cache=True,
-        disable_prefill_cuda_graph=True,
+        disable_prefill_cuda_graph=attention_backend != "dsa",
         kv_cache_dtype=sglang_kv_dtype,
         max_total_tokens=max_total_tokens,
         chunked_prefill_size=chunked_prefill_size,
@@ -1451,6 +1454,7 @@ def _run_prefill(
 
     print(f"\nPrefill: batch_size={batch_size}, seq_length={seq_length}, prefix_len={prefix_len}")
 
+    native_graph_context = None
     try:
         model_runner.req_to_token_pool.clear()
         model_runner.token_to_kv_pool_allocator.clear()
@@ -1515,8 +1519,8 @@ def _run_prefill(
         attn_inputs = AttentionInputs(hidden_states, forward_batch, dummy_qkv_latent_func)
         get_attn_tp_context().set_attn_inputs(attn_inputs)
 
-        # SGLang 0.5.14's prefill graph runner owns a full-model compile
-        # contract. This module microbenchmark measures the eager serving path.
+        # Preparation starts eagerly. Below, eligible DSA batches enter the
+        # native TC piecewise runner with an attention-only model adapter.
         use_module_piecewise_replay = False
         use_full_model_piecewise_replay = False
         use_module_cuda_graph = False
@@ -2005,6 +2009,32 @@ def _run_prefill(
                 "refusing to record a skip row with full-indexer latency."
             )
 
+        if attn_type == "dsa":
+            from collector.sglang.dsa_prefill_graph import dsa_prefill_graph, graph_token_bucket
+
+            if graph_token_bucket(model_runner, token_count) is not None:
+                graph_context = dsa_prefill_graph(
+                    model_runner,
+                    attention_module,
+                    forward_batch,
+                    hidden_states,
+                    zero_allocator,
+                    skip_indexer=_skip_indexer,
+                )
+                call_target = graph_context.__enter__()
+                native_graph_context = graph_context
+                # Native piecewise metadata disables MHA_ONE_SHOT even for
+                # small inputs (dsa_backend.py:2436-2444 @ 49e384ce).
+                # Label the path selected after native load_batch, not the
+                # earlier eager preparation or the requested backend.
+                if model_runner.attn_backend.use_mha:
+                    raise RuntimeError("Native piecewise DSA unexpectedly selected dense MHA")
+                indexer_mode = "skip_indexer" if _skip_indexer else "indexer"
+                executed_dsa_source = f"sglang_dsa_{indexer_mode}_{model_runner.attn_backend.dsa_prefill_impl}"
+                for _ in range(num_warmup):
+                    call_target()
+                torch.cuda.synchronize()
+
         module_cuda_graph = None
         if use_module_cuda_graph:
             try:
@@ -2103,11 +2133,19 @@ def _run_prefill(
         return False
     finally:
         cleanup_errors = []
-        for cleanup_name, cleanup_fn in (
-            ("req_to_token_pool.clear", model_runner.req_to_token_pool.clear),
-            ("token_to_kv_pool_allocator.clear", model_runner.token_to_kv_pool_allocator.clear),
-            ("torch.cuda.empty_cache", torch.cuda.empty_cache),
-        ):
+        cleanup_actions = []
+        if native_graph_context is not None:
+            cleanup_actions.append(
+                ("native_prefill_graph.close", lambda: native_graph_context.__exit__(None, None, None))
+            )
+        cleanup_actions.extend(
+            (
+                ("req_to_token_pool.clear", model_runner.req_to_token_pool.clear),
+                ("token_to_kv_pool_allocator.clear", model_runner.token_to_kv_pool_allocator.clear),
+                ("torch.cuda.empty_cache", torch.cuda.empty_cache),
+            )
+        )
+        for cleanup_name, cleanup_fn in cleanup_actions:
             try:
                 cleanup_fn()
             except Exception as cleanup_exc:
