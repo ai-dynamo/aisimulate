@@ -1274,11 +1274,14 @@ def run_attention_torch(
         if attn_type != "mla" or any(not case[2] for case in test_cases):
             raise ValueError("ordinary_mla collects MLA context modules only")
         _validate_mla_projection_precision(attention_module, gemm_type)
-        # SGLang 0.5.14 (4289f36), deepseek_v2.py:1902-1921,
-        # 2068: serving supplies this method to AttentionInputs. Invoke the
-        # framework method so its fused/quantized projection dispatch is kept.
-        dummy_qkv_latent_func = attention_module.prepare_qkv_latent
         log_mla_dtype = "fp8" if backend_name == "trtllm_mla" and kv_cache_dtype == "fp8" else "bfloat16"
+
+    if ordinary_mla or attn_type == "dsa":
+        # SGLang 0.5.14 @ 49e384ce9d304648e9959666ecb8ce8cd98d0deb:
+        # deepseek_v2.py:1902-1921,2068 supplies the native projection to
+        # AttentionInputs for both MLA and DSA. Keep its fused/quantized
+        # dispatch; the module perf row includes this down-projection.
+        dummy_qkv_latent_func = attention_module.prepare_qkv_latent
 
     model_runner.req_to_token_pool.clear()
     model_runner.token_to_kv_pool_allocator.clear()
@@ -1834,7 +1837,7 @@ def _run_prefill(
             return {}
 
         def call_attention_module():
-            if ordinary_mla:
+            if ordinary_mla or attn_type == "dsa":
                 # communicator.py:235-246 caches QKV within AttentionInputs.
                 # Serving constructs fresh inputs per layer/forward (:685-689).
                 # Reset inside EVERY timed iteration, including warmup, so the
@@ -2194,6 +2197,14 @@ def _run_decode(
 
             capture_context = model_capture_mode() if use_benchmark_cuda_graph else nullcontext()
             with capture_context, forward_context(forward_context_type(attn_backend=model_runner.attn_backend)):
+                if attn_type == "dsa":
+                    # SGLang 0.5.14 @ 49e384ce, communicator.py:235-246,
+                    # 685-689: QKV is cached within one AttentionInputs only.
+                    # Refresh for every forward so capture includes the native
+                    # projection instead of reusing the warmup's latent.
+                    get_attn_tp_context().set_attn_inputs(
+                        AttentionInputs(decode_hidden, forward_batch_decode, dummy_qkv_latent_func)
+                    )
                 return attention_module(
                     positions=decode_positions,
                     hidden_states=decode_hidden,
