@@ -49,6 +49,57 @@ def test_materialization_rejects_meta_runtime_buffer_without_a_constructor_value
         move(module, "cpu")
 
 
+@pytest.mark.parametrize("dtype_name", ["float8_e4m3fn", "float8_e5m2"])
+def test_synthetic_fp8_weights_produce_nonzero_queries_without_changing_buffers_or_rng(dtype_name):
+    torch = pytest.importorskip("torch")
+
+    def make_module():
+        module = torch.nn.Module()
+        module.weight = torch.nn.Parameter(torch.empty(128, 256, dtype=getattr(torch, dtype_name)), requires_grad=False)
+        module.weight_scale_inv = torch.nn.Parameter(torch.empty(1, dtype=torch.float32), requires_grad=False)
+        module.dense_weight = torch.nn.Parameter(torch.empty(4, dtype=torch.bfloat16), requires_grad=False)
+        module.packed_weight = torch.nn.Parameter(torch.empty(8, dtype=torch.uint8), requires_grad=False)
+        module.register_buffer("cos_sin_cache", torch.tensor([0.5, 0.75]), persistent=False)
+        return module
+
+    initialize = _load_function("_initialize_synthetic_parameters", torch)
+    first, second = make_module(), make_module()
+    rng_before = torch.get_rng_state()
+    initialize(first)
+    initialize(second)
+    assert torch.equal(torch.get_rng_state(), rng_before)
+    weights = first.weight.float()
+    assert torch.equal(weights, second.weight.float())
+    assert torch.isfinite(weights).all()
+    assert (weights < 0).any() and (weights > 0).any()
+    queries = torch.ones(3, 256) @ weights.T
+    assert torch.isfinite(queries).all()
+    assert torch.count_nonzero(queries) > 0
+    assert queries[0].unique().numel() > 64
+    assert first.weight_scale_inv.item() == 0.5
+    assert torch.equal(first.cos_sin_cache, torch.tensor([0.5, 0.75]))
+    assert torch.equal(first.dense_weight, torch.full((4,), 0.01, dtype=torch.bfloat16))
+    assert torch.count_nonzero(first.packed_weight) == 0
+
+
+def test_nvfp4_fp8_scale_storage_is_not_treated_as_a_projection_weight():
+    torch = pytest.importorskip("torch")
+    module = torch.nn.Module()
+    module.projection = torch.nn.Module()
+    module.projection.weight = torch.nn.Parameter(torch.empty(16, 64, dtype=torch.uint8), requires_grad=False)
+    module.projection.weight_scale = torch.nn.Parameter(
+        torch.empty(16, 8, dtype=torch.float8_e4m3fn), requires_grad=False
+    )
+    module.projection.weight_scale_2 = torch.nn.Parameter(torch.empty(1, dtype=torch.float32), requires_grad=False)
+    initialize = _load_function("_initialize_synthetic_parameters", torch)
+    initialize(module)
+    # Preserve the pre-existing packed-NVFP4 policy; this change qualifies
+    # floating FP8 projection weights, not NVFP4 dummy-input fidelity.
+    assert torch.count_nonzero(module.projection.weight) == 0
+    assert torch.count_nonzero(module.projection.weight_scale.float()) == 0
+    assert module.projection.weight_scale_2.item() == 0.5
+
+
 def test_indexer_history_uses_native_quantization_with_bounded_diverse_keys(monkeypatch):
     torch = pytest.importorskip("torch")
     calls = []

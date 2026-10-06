@@ -362,6 +362,39 @@ def _move_module_preserving_buffers(module, device):
     return module
 
 
+def _initialize_synthetic_parameters(module):
+    """Keep synthetic FP8 projections nonzero without using CUDA RNG."""
+    generator = torch.Generator(device="cpu").manual_seed(0)
+    with torch.no_grad():
+        for name, tensor in module.named_parameters():
+            if tensor.is_meta:
+                continue
+            if tensor.dtype in (torch.float8_e4m3fn, torch.float8_e5m2):
+                if name.rsplit(".", 1)[-1] != "weight":
+                    # NVFP4's weight_scale also uses FP8 storage (modelopt.py:
+                    # 1117,1188-1199 at the revision below). It is a scale,
+                    # not a projection weight; retain its previous policy.
+                    tensor.zero_()
+                    continue
+                # Serialized FP8 weights feed the real indexer query projection
+                # (Indexer.wq_b in deepseek_v2.py:666-672 @ vLLM
+                # 752a3a504485790a2e8491cacbb35c137339ad34). Zero weights
+                # make every query/logit zero even with valid historical keys;
+                # top-k latency depends on that distribution. Generate on CPU
+                # because CUDA RNG can be unavailable after module construction.
+                flat = tensor.view(-1)
+                for start in range(0, flat.numel(), 1048576):
+                    end = min(start + 1048576, flat.numel())
+                    values = torch.randn(end - start, generator=generator, dtype=torch.float32, device="cpu") * 0.02
+                    flat[start:end].copy_(values.to(device=tensor.device, dtype=tensor.dtype))
+            elif tensor.dtype == torch.uint8:
+                tensor.zero_()
+            elif tensor.dtype == torch.float32 and "scale" in name:
+                tensor.fill_(0.5)
+            else:
+                tensor.fill_(0.01)
+
+
 def _create_attention_module(
     model_path: str,
     attn_type: str,
@@ -551,24 +584,12 @@ def _create_attention_module(
     attn_module.eval()
     attn_module.requires_grad_(False)
 
-    # Retain the existing synthetic parameter policy: FP8/uint8 values are
-    # zero, FP32 scale parameters are 0.5, and other parameters are 0.01.
-    # Runtime buffers, including position-dependent RoPE tables, retain their
-    # constructor values. CUDA RNG previously failed here with "Offset
-    # increment outside graph capture" (vllm-project/vllm#39371).
-    # Constant parameters do not establish checkpoint-value timing parity:
-    # the indexer top-k path is data-dependent. Historical indexer keys below
-    # use independent CPU-generated values and the native cache producer.
-    with torch.no_grad():
-        for name, tensor in attn_module.named_parameters():
-            if tensor.is_meta:
-                continue
-            if tensor.dtype in (torch.float8_e4m3fn, torch.float8_e5m2, torch.uint8):
-                tensor.data.zero_()
-            elif tensor.dtype == torch.float32 and "scale" in name:
-                tensor.data.fill_(0.5)
-            else:
-                tensor.data.fill_(0.01)
+    # FP8 weights use finite, diverse values; auxiliary FP8 parameters, packed
+    # uint8 parameters and other dtypes retain the previous policy. Buffers (including
+    # RoPE) are untouched. These remain synthetic inputs, not a claim of
+    # checkpoint-activation timing parity; CUDA RNG is deliberately avoided
+    # (vllm-project/vllm#39371).
+    _initialize_synthetic_parameters(attn_module)
 
     return attn_module, vllm_config
 
