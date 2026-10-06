@@ -37,6 +37,23 @@ def host():
     return HostResources(32 * GB, 16 * GB, 8)
 
 
+def _supervised(monkeypatch, memory_limit_bytes=8 * GB):
+    # Unit admission tests must not depend on the pytest process or its children.
+    monkeypatch.setattr(resources.psutil.Process, "memory_info", lambda self: SimpleNamespace(rss=64 * resources.MIB))
+    monkeypatch.setattr(resources, "_child_memory_bytes", lambda: 0)
+    monkeypatch.setenv(
+        "_AISIMULATE_SUPERVISED_BUDGET",
+        json.dumps(
+            {
+                "supervisor_pid": os.getpid(),
+                "memory_limit_bytes": memory_limit_bytes,
+                "cpu_limit": 4,
+                "reserved_host_memory_bytes": GB,
+            }
+        ),
+    )
+
+
 def _config():
     return {
         "engine": {
@@ -366,30 +383,24 @@ def test_missing_container_mount_probe_fails_closed(tmp_path, host):
 
 
 @pytest.mark.parametrize("trace_format", ["mooncake", "agentic_mooncake"])
-@pytest.mark.parametrize("length_field", ["input_length", "output_length"])
+@pytest.mark.parametrize("length_field", ["input_length", "output_length", "input_tokens", "output_tokens"])
 @pytest.mark.parametrize("stack", ["engine", "dynamo"])
 def test_trace_scalar_lengths_are_counted_before_token_expansion(
     tmp_path, host, monkeypatch, trace_format, length_field, stack
 ):
     trace = tmp_path / "large.jsonl"
-    row = {"input_length": 1, "output_length": 1, "hash_ids": [1], length_field: 10**12}
+    row = {"input_length": 1, "output_length": 1, "hash_ids": [1]}
+    row.pop(length_field.replace("_tokens", "_length"))
+    row[length_field] = 10**12
     trace.write_text(json.dumps(row) + "\n")
-    monkeypatch.setenv(
-        "_AISIMULATE_SUPERVISED_BUDGET",
-        json.dumps(
-            {
-                "supervisor_pid": os.getpid(),
-                "memory_limit_bytes": 8 * GB,
-                "cpu_limit": 4,
-                "reserved_host_memory_bytes": GB,
-            }
-        ),
-    )
+    _supervised(monkeypatch)
     plan = build_plan({"trace_path": str(trace), "trace_format": trace_format}, stack=stack, host=host)
     assert plan["status"] == "resource_limited"
     if trace_format == "agentic_mooncake":
         assert plan["estimate"]["estimated_peak_bytes"] is None
         assert plan["estimate"]["lower_bound_bytes"] >= 4 * 10**12
+        assert "lower bound plus worker baseline exceeds available host memory" in plan["reason"]
+        assert "requires supervised" not in plan["reason"]
     else:
         assert plan["estimate"]["estimated_peak_bytes"] > 32 * 10**12
 
@@ -438,21 +449,9 @@ def test_cgroup_parent_components_never_escape_a_root_mount(tmp_path, host):
 
 
 def test_unqualified_estimate_requires_supervision_and_serial_admission(monkeypatch, host):
-    import os
-
     workload = {"source_type": "synthetic-session", "request_count": 4, "turns_per_session": 2}
     assert build_plan(workload, stack="dynamo", host=host)["status"] == "resource_limited"
-    monkeypatch.setenv(
-        "_AISIMULATE_SUPERVISED_BUDGET",
-        json.dumps(
-            {
-                "supervisor_pid": os.getpid(),
-                "memory_limit_bytes": 8 * GB,
-                "cpu_limit": 4,
-                "reserved_host_memory_bytes": GB,
-            }
-        ),
-    )
+    _supervised(monkeypatch)
     plan = build_plan(workload, stack="dynamo", host=host, requested_parallelism=4)
     assert plan["status"] == "admitted"
     assert plan["effective_parallelism"] == 1
@@ -506,18 +505,9 @@ def test_finite_agentic_lanes_share_compact_trace_and_require_supervision(tmp_pa
         assert plan["estimate"]["estimated_peak_bytes"] is None
         assert plan["estimate"]["lower_bound_bytes"] == 4 * resources.MIB  # One expanded prompt, not the corpus.
         assert plan["status"] == "resource_limited"  # An unknown peak needs the live supervisor.
+        assert plan["reason"] == "unknown peak requires supervised serial execution"
 
-    monkeypatch.setenv(
-        "_AISIMULATE_SUPERVISED_BUDGET",
-        json.dumps(
-            {
-                "supervisor_pid": os.getpid(),
-                "memory_limit_bytes": 2 * GB,
-                "cpu_limit": 4,
-                "reserved_host_memory_bytes": GB,
-            }
-        ),
-    )
+    _supervised(monkeypatch, memory_limit_bytes=2 * GB)
     for lanes in (1, 32, 128, 512):
         workload = {**base, "agentic_lanes": lanes}
         original = deepcopy(workload)
@@ -543,6 +533,121 @@ def test_finite_agentic_lanes_share_compact_trace_and_require_supervision(tmp_pa
     assert factory.admit_wave([spec])["status"] == "admitted"
     with pytest.raises(ResourceLimitError, match="wave"):
         factory.admit_wave([spec, spec])
+
+
+@pytest.mark.parametrize("output_length,authored,expected", [(0, None, 16), (5, None, 28), (2, [7, 8], 24)])
+def test_finite_agentic_arrays_ignore_unloaded_fields(tmp_path, output_length, authored, expected):
+    trace = tmp_path / "agentic.jsonl"
+    row = {
+        "request_id": "r",
+        "input_tokens": 2,
+        "output_tokens": output_length,
+        "hash_ids": [1, 2],
+        "output_token_ids": authored,
+    }
+    workload = {"trace_path": str(trace), "trace_format": "agentic_mooncake"}
+    trace.write_text(json.dumps(row) + "\n")
+    original = estimate_workload(workload, stack="engine")
+    # Two source u64 hashes occupy 16 bytes; five planned u32 outputs plus
+    # compact hashes occupy 28; two authored u32 outputs beside source hashes occupy 24.
+    assert original.lower_bound_bytes == expected
+    row["input_sequence_hashes"] = [1] * 100
+    row["provenance"] = {
+        "input_length": "ignored",
+        "output_tokens": 10**12,
+        "hash_ids": [1] * 100,
+        "output_token_ids": [1] * 100,
+    }
+    trace.write_text(json.dumps(row) + "\n")
+    assert estimate_workload(workload, stack="engine") == original
+
+
+@pytest.mark.parametrize(
+    "prefix,lower", [("input_tokens", 4), ("output_tokens", 4), ("hash_ids.item", 8), ("output_token_ids.item", 4)]
+)
+def test_finite_agentic_inspection_stops_when_storage_cannot_fit(tmp_path, monkeypatch, prefix, lower):
+    trace = tmp_path / "agentic.jsonl"
+    trace.write_text("{}\n")
+
+    def events(*args, **kwargs):
+        yield "", "start_map", None
+        yield prefix, "number", 1
+        pytest.fail("must stop before reading more metadata after the lower bound cannot fit")
+
+    monkeypatch.setattr(resources.ijson, "parse", events)
+    estimate = estimate_workload(
+        {"trace_path": str(trace), "trace_format": "agentic_mooncake"},
+        stack="engine",
+        inspection_budget_bytes=resources.WORKER_BASELINE_BYTES + lower - 1,
+    )
+    assert estimate.estimated_peak_bytes is None
+    assert estimate.lower_bound_bytes == lower
+
+
+@pytest.mark.parametrize("peak", [None, GB])
+def test_only_unknown_peaks_add_baseline_to_array_bound(monkeypatch, host, peak):
+    # Fixed supervisor RSS plus coordinator reserve leaves exactly 1 GB free.
+    _supervised(monkeypatch, memory_limit_bytes=GB + 320 * resources.MIB)
+    factory = SimpleNamespace(
+        estimate_host_resources=lambda *args, **kwargs: ResourceEstimate("test-v1", 1, 0, 900_000_000, peak)
+    )
+    plan = build_plan({}, stack="engine", host=host, factory=factory)
+    if peak is None:
+        assert plan["status"] == "resource_limited"  # 900 MB alone fits; adding the baseline does not.
+        assert "lower bound plus worker baseline" in plan["reason"]
+        _supervised(monkeypatch, memory_limit_bytes=900_000_000 + resources.WORKER_BASELINE_BYTES + 320 * resources.MIB)
+        assert build_plan({}, stack="engine", host=host, factory=factory)["status"] == "admitted"
+    else:
+        assert plan["status"] == "admitted"  # A qualified peak already includes its baseline.
+
+
+def test_unknown_peak_wave_reserves_arrays_after_child_rss(monkeypatch, host):
+    _supervised(monkeypatch)
+    monkeypatch.setattr(resources, "discover_host", lambda: host)
+    factory = GuardedRunnerFactory(
+        SimpleNamespace(
+            estimate_host_resources=lambda *args, **kwargs: ResourceEstimate("test-v1", 1, 0, 6 * GB, None)
+        ),
+        "engine",
+        ResourceConfig(),
+    )
+    spec = SimpleNamespace(workload={}, concurrency=None)
+    assert factory.admit_wave([spec])["required_bytes"] == 6 * GB + resources.WORKER_BASELINE_BYTES
+    monkeypatch.setattr(resources, "_child_memory_bytes", lambda: 5 * GB)
+    with pytest.raises(ResourceLimitError) as caught:
+        factory.admit_wave([spec])
+    assert caught.value.plan["required_bytes"] == 6 * GB + resources.WORKER_BASELINE_BYTES
+    assert caught.value.plan["available_bytes"] < 3 * GB
+
+
+@pytest.mark.parametrize("warmup", [False, True])
+def test_snapshot_and_warmup_keep_previous_accounting(tmp_path, warmup):
+    from aisimulate.recommend import recommendation_to_sweeper
+
+    trace = tmp_path / "agentic.jsonl"
+    trace.write_text(json.dumps({"input_length": 4, "output_length": 1, "hash_ids": [1]}) + "\n")
+    raw = _config()
+    raw["traffic"] = {
+        "source": {"type": "trace", "format": "agentic_mooncake", "paths": [str(trace)], "block_size": 4},
+        "load": {
+            "type": "trace_timestamps",
+            "agentic_lanes": 32,
+            "agentic_snapshot": {"seed": 42},
+            "agentic_warmup": warmup,
+        },
+    }
+    config = CoreRecommendationConfig.model_validate(raw)
+    bounds = workload_bounds(config)
+    assert bounds["agentic_snapshot"] == {"seed": 42}
+    assert bounds["agentic_warmup"] is warmup
+    concrete = recommendation_to_sweeper(config).workload.model_dump(mode="python", exclude_none=True)
+    for stack in ("engine", "dynamo"):
+        estimate = estimate_workload(bounds, stack=stack)
+        assert estimate.allocation_model == "trace-json-metadata-v1"
+        assert estimate.estimated_peak_bytes is not None
+        assert estimate_workload(concrete, stack=stack) == estimate
+    ordinary = {key: value for key, value in bounds.items() if key not in {"agentic_snapshot", "agentic_warmup"}}
+    assert estimate_workload(ordinary, stack="engine").estimated_peak_bytes is None
 
 
 @pytest.mark.parametrize("profile", [{}, {"duration_seconds": 86400}])
@@ -590,17 +695,7 @@ def test_profile_resource_admission_requires_supervision_and_one_worker(tmp_path
     monkeypatch.setattr(resources, "discover_host", lambda: host)
     with pytest.raises(ResourceLimitError, match="profile"):
         guard_replay(spec, stack="engine")
-    monkeypatch.setenv(
-        "_AISIMULATE_SUPERVISED_BUDGET",
-        json.dumps(
-            {
-                "supervisor_pid": os.getpid(),
-                "memory_limit_bytes": 8 * GB,
-                "cpu_limit": 4,
-                "reserved_host_memory_bytes": GB,
-            }
-        ),
-    )
+    _supervised(monkeypatch)
     plan = build_plan(bounds, stack="engine", host=host, requested_parallelism=4)
     assert plan["status"] == "admitted"
     assert plan["effective_parallelism"] == 1

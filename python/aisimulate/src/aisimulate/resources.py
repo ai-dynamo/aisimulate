@@ -213,9 +213,7 @@ def workload_bounds(config: Any) -> dict[str, Any]:
             "trace_format": source["format"],
             "trace_block_size": source.get("block_size"),
             "agentic_lanes": load.get("agentic_lanes", 1),
-            **({"agentic_snapshot": load["agentic_snapshot"]} if "agentic_snapshot" in load else {}),
-            **({"agentic_warmup": True} if load.get("agentic_warmup") else {}),
-            **({"agentic_profile": load["agentic_profile"]} if "agentic_profile" in load else {}),
+            **{key: load[key] for key in ("agentic_snapshot", "agentic_warmup", "agentic_profile") if key in load},
         }
     session = source["type"] == "synthetic-session"
     count = stop.get("sessions" if session else "requests")
@@ -460,6 +458,18 @@ def _estimate_weka_trace(workload: Mapping[str, Any], *, inspection_budget_bytes
     )
 
 
+def _finite_agentic_estimate(lower: int) -> ResourceEstimate:
+    return ResourceEstimate(
+        "agentic-trace-unqualified-v1",
+        None,
+        0,
+        lower,
+        None,
+        "finite agentic array storage and largest prompt provide only a lower bound; "
+        "the full-run peak is unknown and requires supervised serial execution",
+    )
+
+
 def _estimate_trace(
     workload: Mapping[str, Any], *, stack: str, inspection_budget_bytes: int | None = None
 ) -> ResourceEstimate:
@@ -477,7 +487,12 @@ def _estimate_trace(
         "weka",
     }:
         return unqualified("trace format or runner has no qualified allocation model")
-    finite_agentic = format_name == "agentic_mooncake" and workload.get("agentic_profile") is None
+    finite_agentic = (
+        format_name == "agentic_mooncake"
+        and workload.get("agentic_profile") is None
+        and workload.get("agentic_snapshot") is None
+        and not workload.get("agentic_warmup")
+    )
     length_keys = {
         "in",
         "out",
@@ -496,7 +511,7 @@ def _estimate_trace(
     token_keys = {"input_token_ids", "output_token_ids", "prompt_token_ids"}
     hash_keys = {"hash_ids", "input_sequence_hashes"}
     total_bytes = tokens = hashes = records = turns = 0
-    output_tokens = max_input_tokens = 0
+    output_tokens = authored_outputs = max_input_tokens = lower = 0
     block_size = int(workload.get("trace_block_size") or 512)
 
     paths = workload.get("trace_paths") or [workload["trace_path"]]
@@ -532,6 +547,32 @@ def _estimate_trace(
                             records += int(maps.pop())
                         elif event == "map_key" and value in length_keys | token_keys:
                             maps[-1] = True
+                        elif finite_agentic:
+                            # Agentic rows consume only these top-level fields.
+                            # Nested provenance and input_sequence_hashes are ignored.
+                            if prefix in {"input_length", "input_tokens", "output_length", "output_tokens"}:
+                                if event != "number" or type(value) is not int or value < 0:
+                                    raise ValueError("trace token lengths must be nonnegative integers")
+                                if prefix in {"input_length", "input_tokens"}:
+                                    max_input_tokens = max(max_input_tokens, value)
+                                else:
+                                    output_tokens += value
+                            elif prefix == "hash_ids.item" and event == "number":
+                                hashes += 1
+                            elif prefix == "output_token_ids.item" and event == "number":
+                                authored_outputs += 1
+                            else:
+                                continue
+                            # Source u64 hashes coexist with authored u32 outputs.
+                            # Prepared hashes/outputs and expanded prompts use u32.
+                            lower = max(
+                                8 * hashes + 4 * authored_outputs, 4 * (hashes + output_tokens), 4 * max_input_tokens
+                            )
+                            if (
+                                inspection_budget_bytes is not None
+                                and WORKER_BASELINE_BYTES + lower > inspection_budget_bytes
+                            ):
+                                return _finite_agentic_estimate(lower)
                         else:
                             parts = prefix.rsplit(".", 2)
                             key = parts[-2] if parts[-1] == "item" and len(parts) > 1 else parts[-1]
@@ -539,10 +580,6 @@ def _estimate_trace(
                                 if event != "number" or type(value) is not int or value < 0:
                                     raise ValueError("trace token lengths must be nonnegative integers")
                                 tokens += value
-                                if key == "input_length":
-                                    max_input_tokens = max(max_input_tokens, value)
-                                elif key == "output_length":
-                                    output_tokens += value
                             elif key in token_keys and parts[-1] == "item" and event == "number":
                                 tokens += 1
                             elif key in hash_keys and parts[-1] == "item" and event in {"number", "string"}:
@@ -557,20 +594,8 @@ def _estimate_trace(
     if records == 0:
         return unqualified("trace metadata contains no recognized request token lengths")
     if finite_agentic:
-        # The loader holds u64 hash IDs; the driver holds compact u32 hash IDs
-        # and planned u32 outputs. An admitted prompt materializes u32 tokens.
-        # These stages share one corpus across lanes. Take their maximum, not
-        # their sum; metadata, temporary copies and live caches are excluded.
-        lower = max(8 * hashes, 4 * (hashes + output_tokens), 4 * max_input_tokens)
-        return ResourceEstimate(
-            "agentic-trace-unqualified-v1",
-            None,
-            0,
-            lower,
-            None,
-            "finite agentic array storage and largest prompt provide only a lower bound; "
-            "the full-run peak is unknown and requires supervised serial execution",
-        )
+        # One corpus is shared across lanes. Other allocations are excluded.
+        return _finite_agentic_estimate(lower)
     tokens += hashes * block_size
     count = max(records, turns)
     # Delta and tool-turn sources can accumulate every preceding turn's tokens.
@@ -684,12 +709,15 @@ def build_plan(
     if peak is not None and (type(peak) is not int or peak <= 0 or peak < estimate.lower_bound_bytes):
         raise ResourceLimitError("runner returned an invalid host resource estimate")
     workers = min(requested_parallelism, budget["cpu_limit"], free // peak) if peak else 0
-    if (
-        peak is None
-        and os.environ.get("_AISIMULATE_SUPERVISED_BUDGET")
-        and free >= max(WORKER_BASELINE_BYTES, estimate.lower_bound_bytes)
-    ):
-        workers = 1  # Unqualified estimates require serial, continuously monitored execution.
+    reason = "" if workers else "candidate exceeds the host memory budget"
+    if peak is None:
+        if free < WORKER_BASELINE_BYTES + estimate.lower_bound_bytes:
+            reason = "candidate lower bound plus worker baseline exceeds available host memory"
+        elif not os.environ.get("_AISIMULATE_SUPERVISED_BUDGET"):
+            reason = "unknown peak requires supervised serial execution"
+        else:
+            workers = 1  # Unqualified estimates require serial, continuously monitored execution.
+            reason = estimate.reason
     return {
         "schema_version": 1,
         "status": "admitted" if workers else "resource_limited",
@@ -699,7 +727,7 @@ def build_plan(
         "estimate": asdict(estimate),
         "requested_parallelism": requested_parallelism,
         "effective_parallelism": workers,
-        "reason": estimate.reason if peak is None else ("" if workers else "candidate exceeds the host memory budget"),
+        "reason": reason,
     }
 
 
@@ -803,7 +831,10 @@ class GuardedRunnerFactory:
             ),
         )
         peaks = [plan["estimate"]["estimated_peak_bytes"] for plan in plans]
-        required = sum(peak or WORKER_BASELINE_BYTES for peak in peaks)
+        required = sum(
+            peak if peak is not None else WORKER_BASELINE_BYTES + candidate["estimate"]["lower_bound_bytes"]
+            for peak, candidate in zip(peaks, plans, strict=True)
+        )
         admitted = (
             required <= available
             and len(specs) <= budget["cpu_limit"]

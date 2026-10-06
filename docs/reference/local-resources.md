@@ -118,26 +118,30 @@ returns `aisimulate.resources.ResourceEstimate` with `api_version=1`:
 - `estimated_peak_bytes`: positive integer bytes, or null when unqualified;
 - `reason`: explanation of unresolved dimensions.
 
-The built-in native-engine planning model accounts for eager session/hash
-metadata, planned output tokens and active prompts. The Dynamo compatibility
-model accounts for the older eager u32 input vectors and additional runtime
-and output storage. A verified newer adapter can supply its own estimate;
+For synthetic workloads, the built-in native-engine planning model accounts for
+eager session/hash metadata, planned output tokens and active prompts. The Dynamo
+compatibility model accounts for the older eager u32 input vectors and additional
+runtime and output storage. A verified newer adapter can supply its own estimate;
 AISimulate does not import Dynamo or assume that installing a core lazy-source
-API automatically changes the adapter's allocation behavior.
+API automatically changes the adapter's allocation behavior. Ordinary finite
+`agentic_mooncake` replay uses the shared workload driver with deferred prompts
+on both stacks; it does not use the synthetic eager-prompt estimate.
 
 An estimate is a planning heuristic, not a hard RSS limit. An unavoidable lower
 bound can prove a candidate does not fit; it cannot prove that execution fits.
 Supported JSON and JSONL traces are inspected as a stream, including scalar
 token lengths, hash expansion and cumulative delta/tool turns. Inspection does
 not load complete documents or token arrays. There is no fixed file or record
-size cutoff. Except for finite `agentic_mooncake` replay, the conservative storage
-estimate is checked against live headroom before parsing, since a streaming
-parser still holds individual scalar strings. Finite AgentX uses the array
-accounting described below and requires runtime supervision.
+size cutoff. Except for ordinary finite `agentic_mooncake` replay, the conservative
+storage estimate is checked against live headroom before parsing, since a
+streaming parser still holds individual scalar strings. Ordinary finite AgentX
+uses the array accounting described below and requires runtime supervision.
 Unknown allocation models can run one candidate at a time under runtime
-supervision when baseline headroom exists; this is explicitly an unqualified
-estimate. Known lower bounds still reject impossible workloads before allocation.
-The low-level Runner protocol itself remains an execution primitive.
+supervision when the worker baseline plus the lower bound fits available headroom;
+this is explicitly an unqualified estimate. Wave admission reserves that same
+sum after subtracting live child RSS. Known lower bounds still reject impossible
+workloads before allocation. The low-level Runner protocol itself remains an
+execution primitive.
 
 Direct `Sweeper` callers also receive bounded process-pool cleanup. A timeout
 or orchestration failure stops and reaps owned workers and their observed
@@ -154,22 +158,29 @@ available RAM between samples. macOS offers no portable hard RSS cap; preallocat
 checks remain necessary. A successful plan or watchdog test does not guarantee bounded peak RSS for
 every workload and external adapter.
 
-Finite `agentic_mooncake` replay loads one compact trace. `agentic_lanes` controls
-active plays within that trace; it does not create a copy of the trace per lane.
+Ordinary finite `agentic_mooncake` replay, without snapshots or warmup, loads one
+compact trace. `agentic_lanes` controls active plays within that trace; it does
+not create a copy of the trace per lane.
 Preflight records a lower bound from the maximum of three allocation requirements:
-8 bytes per source hash ID during loading; 4 bytes per compact hash ID plus
-4 bytes per planned output token in the prepared replay; and 4 bytes per token
+8 bytes per source hash ID plus 4 bytes per authored output token during loading;
+4 bytes per compact hash ID plus 4 bytes per planned output token in the prepared
+replay; and 4 bytes per token
 in the largest expanded input prompt. These stages are not added together.
 File bytes, lane count, and total logical input tokens do not multiply this bound.
+The scan recognizes the loader's `input_tokens` and `output_tokens` aliases and
+ignores `input_sequence_hashes` and nested provenance. It stops early when the
+running lower bound plus the worker baseline cannot fit the supplied headroom.
 
 Strings, graph metadata, temporary copies, active requests, caches, and report
 storage are outside this lower bound. The full-run peak remains unknown
 (`agentic-trace-unqualified-v1`). Such runs require the existing live supervisor
 and execute one simulation at a time. All configured agentic lanes and simulated
-workers are retained. Admission still checks baseline and host headroom and
-rejects a lower bound that cannot fit. The monitor covers metadata inspection
-and replay, but allocations can outpace its sampling; this is not an OOM guarantee.
-Continuous profiles and other trace formats retain their existing accounting.
+workers are retained. Admission adds the 512 MiB worker baseline to the array
+lower bound and reports insufficient memory separately from missing supervision.
+The monitor covers metadata inspection and replay, but allocations can outpace
+its sampling; this is not an OOM guarantee.
+Snapshots, warmup, continuous profiles, and other trace formats retain their
+existing accounting; they are outside this correction.
 
 ### Allocation-model provenance
 
@@ -185,7 +196,7 @@ energy, or GPU capacity. Their provenance and qualification are:
 | Trace expansion | Streamed field counts, hash block expansion, and cumulative delta/tool turns; 128 times file bytes, 32 bytes per counted token, and 65,536 bytes per counted request/turn. | Conservative policy allowances. The file-size guard also bounds parser scalar risk before metadata inspection. |
 | Native Weka traces | Separate per-play import and replay phases; see below. | Uses the native importer/driver contracts, including real output arrays and synthesized hashes. External Dynamo adapters retain their existing compatibility model unless they supply their own estimator. |
 | Process allowances | 256 MiB for native Weka, otherwise 512 MiB per worker; coordinator RSS plus 256 MiB. | Engineering reserves, not calibrated platform-specific measurements. |
-| Finite AgentX arrays | Maximum of source `Vec<u64>` hash storage, prepared `Vec<u32>` hash/output storage, and the largest `Vec<u32>` input prompt. No file-size or lane multiplier. | Array widths are concrete. Other allocations are excluded: this is a lower bound, not a peak RSS estimate, and requires supervised serial execution. |
+| Ordinary finite AgentX arrays | Maximum of source `Vec<u64>` hashes plus authored `Vec<u32>` outputs, prepared `Vec<u32>` hash/output storage, and the largest `Vec<u32>` input prompt. No file-size or lane multiplier. | Array widths are concrete. Other allocations are excluded: this is a lower bound, not a peak RSS estimate, and requires supervised serial execution. Snapshot and warmup modes are excluded. |
 | Admission and recovery | The sum of candidate estimates must fit one live budget; observed pressure stops workers before bounded retry. | Budget/accounting invariants tested with bounded fixtures and real owned subprocesses. |
 
 The resource tests exercise arithmetic boundaries, combined-wave accounting,
