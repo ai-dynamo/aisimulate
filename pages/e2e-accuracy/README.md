@@ -15,6 +15,10 @@ visible in coverage accounting.
 
 ## Views and filters
 
+The tabs sit directly below the main header. Measurement source, release, and
+multi-node scope are recorded under **About this comparison** rather than in a
+separate header row.
+
 Display names are **AISim** and **AIC (legacy CLI)** throughout the E2E page.
 The model matrix pairs TPOT / TTFT MAPE in one column per predictor; each metric
 can still be sorted independently. Each predictor’s point count appears immediately

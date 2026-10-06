@@ -257,25 +257,18 @@ test("legacy summary loads with historical provenance and branch-specific downlo
   assert.match(app.element("provenance-content").innerHTML, /Repository provenance was not recorded/);
 });
 
-test("branch switching updates the multi-node scope label, check, and tooltip", async () => {
+test("branch switching keeps multi-node scope in provenance", async () => {
   const included = structuredClone(historical);
   included.scope.multinode = "included";
   included.scope.excluded_multinode_rows = 0;
   included.scope.raw_rows = included.scope.published_rows;
   const app = setup(async (path) => response(path === `./${pathFor("b")}` ? included : historical));
   await app.run('loadBranch("main")');
-  assert.equal(app.element("scope-check").hidden, true);
-  assert.match(app.element("multinode-label").textContent, /Snapshot: single-node only/);
-
+  assert.match(app.element("provenance-content").innerHTML, /Multi-node measurements: excluded/);
   await app.run('loadBranch("release/0.12.0")');
-  assert.equal(app.element("scope-check").hidden, true);
-  assert.equal(app.element("multinode-label").textContent, "Multi-node predictions included");
-  assert.equal(app.element("scope-control").title, "This snapshot includes multi-node predictions.");
-
+  assert.match(app.element("provenance-content").innerHTML, /Multi-node measurements: included \(0 points not exported\)/);
   await app.run('loadBranch("main")');
-  assert.equal(app.element("scope-check").hidden, true);
-  assert.match(app.element("multinode-label").textContent, /Snapshot: single-node only.*not exported/);
-  assert.equal(app.element("scope-control").title, "This snapshot includes single-node predictions only.");
+  assert.match(app.element("provenance-content").innerHTML, /Multi-node measurements: excluded/);
 });
 
 test("bundled AIC (legacy CLI) provenance links to AISim and rejects another repository or revision", async () => {
@@ -545,7 +538,6 @@ test("invalid branch data clears rendered accuracy and disables its download", a
     assert.match(app.element("summary-grid").innerHTML, /Accuracy data unavailable/);
     assert.match(app.element("matrix-body").innerHTML, /Accuracy data unavailable/);
     assert.equal(app.element("identity-line").textContent, "");
-    assert.equal(app.element("release-label").textContent, "");
     assert.equal(app.element("drilldown").hidden, true);
     assert.equal(app.element("download-json").href, undefined);
     assert.equal(app.element("download-json").attributes["aria-disabled"], "true");

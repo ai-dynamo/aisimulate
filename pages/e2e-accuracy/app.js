@@ -26,11 +26,6 @@ const state = {
 const summaryGrid = document.getElementById("summary-grid");
 const matrixBody = document.getElementById("matrix-body");
 const identityLine = document.getElementById("identity-line");
-const releaseLabel = document.getElementById("release-label");
-const scopeControl = document.getElementById("scope-control");
-const scopeCheck = document.getElementById("scope-check");
-const multinodeLabel = document.getElementById("multinode-label");
-const measurementSourceLink = document.getElementById("measurement-source-link");
 const scopeClaim = document.getElementById("scope-claim");
 const provenanceContent = document.getElementById("provenance-content");
 const errorBanner = document.getElementById("error-banner");
@@ -157,27 +152,18 @@ function renderSnapshot() {
   if (!isSafeHttpsUrl(snapshot.measurement_source_url)) {
     throw new Error("unsafe measurement source URL");
   }
-  releaseLabel.textContent = `Measurements: ${snapshot.release_tag}`;
-  const includesMultinode = scope.multinode === "included";
-  scopeCheck.hidden = true;
-  scopeControl.title = includesMultinode
-    ? "This snapshot includes multi-node predictions."
-    : "This snapshot includes single-node predictions only.";
-  multinodeLabel.textContent = includesMultinode
-    ? "Multi-node predictions included"
-    : `Snapshot: single-node only (${scope.excluded_multinode_rows.toLocaleString()} multi-node points not exported)`;
   identityLine.textContent = `GPU SKUs: ${totals.gpu_skus.join(", ")} · Precisions: ${totals.precisions.join(", ")}`;
   if (snapshot.campaign?.configuration) {
     const counts = snapshot.campaign.configuration.counts;
     identityLine.textContent += ` · Configuration: ${counts.verified ?? 0} verified, ${counts.estimated ?? 0} estimated (assumptions) · ${snapshot.campaign.selected - snapshot.campaign.published} excluded`;
   }
-  measurementSourceLink.href = snapshot.measurement_source_url;
   scopeClaim.textContent = scope.claim;
   provenanceContent.innerHTML = `
     <p>
       Measurements: <a href="${escapeHtml(snapshot.measurement_source_url)}">${escapeHtml(
         snapshot.measurement_source,
       )} ${escapeHtml(snapshot.release_tag)}</a><br />
+      Multi-node measurements: ${escapeHtml(scope.multinode)} (${scope.excluded_multinode_rows.toLocaleString()} points not exported).<br />
       Measured through: ${escapeHtml(formatDate(snapshot.measurement_date_through))}<br />
       AISim run completed: ${escapeHtml(formatDate(snapshot.aisimulate_completed_at))}<br />
       Packages: ${escapeHtml(
@@ -716,13 +702,10 @@ function clearSnapshot(message) {
   summaryGrid.innerHTML = `<div class="loading-card">${escapeHtml(message)}</div>`;
   matrixBody.innerHTML = `<tr><td colspan="7" class="empty-cell">${escapeHtml(message)}</td></tr>`;
   identityLine.textContent = "";
-  releaseLabel.textContent = "";
-  multinodeLabel.textContent = "";
   provenanceContent.textContent = "No snapshot selected.";
   scopeClaim.textContent = "No accuracy claim is available until a snapshot loads.";
   downloadJson.removeAttribute("href");
   downloadJson.setAttribute("aria-disabled", "true");
-  measurementSourceLink.href = "https://github.com/SemiAnalysisAI/InferenceX-app/releases";
   errorBanner.hidden = true;
   renderDrilldown();
   document.getElementById("details-view").innerHTML = `<p role="status">${escapeHtml(message)}</p>`;
