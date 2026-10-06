@@ -66,7 +66,7 @@ jobs:
         as_root=()
         if [[ "$(id -u)" != 0 ]]; then as_root=(sudo); fi
         "${as_root[@]}" apt-get update
-        "${as_root[@]}" apt-get install --yes --no-install-recommends protobuf-compiler libprotobuf-dev clang libclang-dev pkg-config libssl-dev libudev-dev cmake unzip
+        "${as_root[@]}" apt-get install --yes --no-install-recommends protobuf-compiler libprotobuf-dev clang libclang-dev pkg-config libssl-dev libudev-dev cmake unzip patchelf
     - name: Build exact revision
       env:
         SOURCE_SHA: ${{ matrix.sha }}
