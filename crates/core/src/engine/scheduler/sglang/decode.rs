@@ -144,6 +144,7 @@ fn check_decode_mem_for_burst(
     pressure_events: &mut Vec<PressureEvent>,
 ) -> Vec<SglangRequest> {
     let mut retracted = Vec::new();
+    let mut native_ordered = false;
 
     loop {
         let (_actual_available, logical_available, page_growth_needed) =
@@ -155,13 +156,15 @@ fn check_decode_mem_for_burst(
             break;
         }
 
-        let Some((idx, _)) = running
-            .iter()
-            .enumerate()
-            .min_by_key(|(_, req)| req.output_len())
-        else {
-            break;
-        };
+        if !native_ordered {
+            // Native length policy stably sorts keep preference by descending
+            // output progress, then ascending prompt length, and pops the end.
+            // Exact ties therefore retract the later batch member first.
+            running.sort_by(|a, b| b.output_len().cmp(&a.output_len())
+                .then_with(|| a.prompt_len().cmp(&b.prompt_len())));
+            native_ordered = true;
+        }
+        let idx = running.len() - 1;
 
         let request = &running[idx];
         let request_id = request.uuid;

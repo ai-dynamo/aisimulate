@@ -1638,6 +1638,38 @@ mod core_behavior {
     }
 
     #[test]
+    fn retraction_ties_keep_shorter_prompts_and_earlier_batch_members() {
+        fn retracted(shapes: &[(usize, usize)]) -> u128 {
+            let capacity: usize = shapes.iter().map(|(p,o)| (p+o).div_ceil(4)*4).sum();
+            let config = SglangConfig::from_args(&MockEngineArgs::builder()
+                .engine_type(EngineType::Sglang).block_size(4)
+                .num_gpu_blocks(capacity/4).speedup_ratio(1.0).build().unwrap());
+            let mut kv = SglangKvManager::new(capacity,4,KvEventPublishers::default(),0);
+            let mut running = Vec::new();
+            for (i, &(prompt,output)) in shapes.iter().enumerate() {
+                let len=prompt+output;
+                let pages=kv.cache_mut().page_pool.allocate_pages(len.div_ceil(4)).unwrap();
+                running.push(SglangRequest {
+                    is_decode_handoff:false,
+                    uuid:Uuid::from_u128(i as u128+1),
+                    sequence_tokens:(0..len as u32).map(|t|1000*(i as u32+1)+t).collect(),
+                    prompt_len:prompt,max_output_tokens:20,max_new_tokens:20,
+                    planned_output_ids:None,
+                    kv_lease:RadixRequestLease::from_parts(pages,len,4,kv.cache().root()),
+                    materialized_tokens:len,allocated_tokens:len.div_ceil(4)*4,
+                });
+            }
+            let removed=decode::check_decode_mem(&mut running,&mut kv,&config);
+            assert_eq!(removed.len(),1);
+            removed[0].uuid.as_u128()
+        }
+        // Native stable descending (output_len, -prompt_len), then pop the end.
+        assert_eq!(retracted(&[(4,4),(4,4)]),2,"latest exact tie leaves first");
+        assert_eq!(retracted(&[(4,4),(8,4)]),2,"longer prompt leaves first at equal progress");
+        assert_eq!(retracted(&[(2,2),(4,4)]),1,"least decode progress has first priority");
+    }
+
+    #[test]
     fn test_unfinished_decode_request_is_cached_after_output() {
         let config = SglangConfig::from_args(
             &MockEngineArgs::builder()
