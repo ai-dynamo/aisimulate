@@ -176,25 +176,32 @@ def dsa_prefill_graph(model_runner, attention, forward_batch, hidden_states, zer
             static_batch = runner.load_batch(forward_batch)
             produce_topk(runner, static_batch)
 
-        def replay():
-            with (
-                runner.backend.replay_session(),
-                forward_context(ForwardContext(attn_backend=owned.attn_backend)),
-                set_tc_piecewise_forward_context(
-                    static_batch,
-                    runner.attention_layers,
-                    runner.quant_config,
-                    runner.moe_layers,
-                    runner.moe_fusions,
-                    dsa_indexers=runner.dsa_indexers,
-                    num_tokens=bucket,
-                    raw_num_tokens=len(hidden_states),
-                ),
-            ):
-                return runner.backend.replay(bucket, static_batch)
-
         print(f"DSA native tc_piecewise: tokens={len(hidden_states)} capture_bucket={bucket} skip={skip_indexer}")
-        yield replay
+        # Native execute enters these scopes once for the whole model
+        # (prefill_cuda_graph_runner.py:866-930). Keep them outside the
+        # per-layer timer, as well as Outer/logits processing. The instance
+        # forward is the native installed compile.py:190-202 trampoline;
+        # its compiled pieces and custom-op dispatch remain in the timer.
+        with (
+            torch.no_grad(),
+            runner.backend.replay_session(),
+            forward_context(ForwardContext(attn_backend=owned.attn_backend)),
+            set_tc_piecewise_forward_context(
+                static_batch,
+                runner.attention_layers,
+                runner.quant_config,
+                runner.moe_layers,
+                runner.moe_fusions,
+                dsa_indexers=runner.dsa_indexers,
+                num_tokens=bucket,
+                raw_num_tokens=len(hidden_states),
+            ),
+        ):
+
+            def replay():
+                return owned.model.model.forward(static_batch.input_ids, static_batch.positions, static_batch)
+
+            yield replay
     finally:
         attention.skip_topk = original_skip
         attention.next_skip_topk = original_next_skip
