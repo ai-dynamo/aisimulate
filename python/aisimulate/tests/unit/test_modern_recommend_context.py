@@ -54,6 +54,31 @@ def test_aggregate_worker_context_limit_must_use_engine_field():
         CoreRecommendationConfig.model_validate(config)
 
 
+@pytest.mark.parametrize(
+    ("role", "context_length", "minimum"),
+    [("prefill", 1023, 1024), ("decode", 1151, 1152)],
+)
+def test_role_context_limits_cover_configured_workload(role, context_length, minimum):
+    config = _recommendation_config().model_dump(mode="python")
+    config["traffic"] = {
+        "source": {"type": "synthetic", "input_tokens": 1024, "output_tokens": 128},
+        "load": {"type": "concurrency", "concurrency": 1},
+        "stop": {"requests": 1},
+    }
+    config["engine"]["workers"][role]["context_length"] = context_length
+
+    with pytest.raises(ValueError, match=f"{role}.*{minimum}"):
+        CoreRecommendationConfig.model_validate(config)
+
+
+def test_role_context_limits_cover_default_workload_without_traffic():
+    config = _recommendation_config().model_dump(mode="python")
+    config["engine"]["workers"]["prefill"]["context_length"] = 1023
+
+    with pytest.raises(ValueError, match="prefill.*1024"):
+        CoreRecommendationConfig.model_validate({**config, "traffic": None})
+
+
 def test_worker_context_limit_overrides_engine_context_for_prediction():
     engine = EnginePredictionConfig(
         model="Qwen/Qwen3-32B",

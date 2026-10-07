@@ -184,9 +184,6 @@ def parallel_configs_for(
     else:
         mh = resolve_model_hardware(model_name, hardware_sku, backend=backend, systems_paths=systems_paths)
         seq_len = max_seq_len if max_seq_len is not None else mh.max_context
-    if seq_len is None:
-        raise ValueError(f"max_seq_len is required: {model_name} config exposes no max context length")
-
     # Enumerate from 1 GPU/worker; the KV estimate is the sole feasibility filter.
     # MoE tensor-parallel (moe_ep == 1) is enabled for every MoE model, MLA
     # included: real deployments (e.g. InferenceX GLM-5, reported as EP=1) run it,
@@ -208,6 +205,13 @@ def parallel_configs_for(
             raise ValueError(f"deployment_mode must be 'agg' or 'disagg', got {deployment_mode!r}")
 
     # KV-cache validity: keep configs whose every role-shape holds a max_seq_len sequence.
+    def resolved_role_seq_len(role: str) -> int:
+        configured_role_seq_len = (role_max_seq_len or {}).get(role)
+        resolved = seq_len if configured_role_seq_len is None else configured_role_seq_len
+        if resolved is None:
+            raise ValueError(f"max_seq_len is required: {model_name} config exposes no max context length")
+        return resolved
+
     def feasible_for(role: str, shapes):
         profile_role = worker_type if role == "agg" else role
         runtime = (role_runtime or {}).get(role, (max_num_tokens, max_batch_size, memory_fraction))
@@ -220,9 +224,7 @@ def parallel_configs_for(
             raise ValueError(
                 "role_runtime values must be (tokens, batch, memory) or (tokens, batch, memory, fixed_tokens)"
             )
-        role_seq_len = (role_max_seq_len or {}).get(role, seq_len)
-        if role_seq_len is None:
-            raise ValueError(f"max_seq_len is required: {model_name} config exposes no max context length")
+        role_seq_len = resolved_role_seq_len(role)
         grouped_shapes = set()
         if profile is not None:
             for shape in dict.fromkeys(shapes):
@@ -303,8 +305,12 @@ def parallel_configs_for(
         decode_feasible = feasible_for("decode", [c.decode.shape for c in configs])
         kept = [c for c in configs if c.prefill.shape in prefill_feasible and c.decode.shape in decode_feasible]
     if not kept:
+        if deployment_mode == "agg":
+            effective_seq_len = str(resolved_role_seq_len("agg"))
+        else:
+            effective_seq_len = f"prefill={resolved_role_seq_len('prefill')}, decode={resolved_role_seq_len('decode')}"
         raise NoViableParallelConfig(
-            f"{model_name} on {hardware_sku}: no parallel config holds a {seq_len}-token "
+            f"{model_name} on {hardware_sku}: no parallel config holds a {effective_seq_len}-token "
             f"sequence within {gpu_budget} GPUs ({backend} KV-cache estimate)"
         )
     return kept
