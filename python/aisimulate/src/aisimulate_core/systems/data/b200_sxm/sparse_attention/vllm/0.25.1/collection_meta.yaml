@@ -16,18 +16,18 @@ runtime:
     flashinfer: 0.6.13
 tables:
   dsa_context_module_perf:
-    collector_ref: 8f7dfc09383f19bb9eda247f01289385202b4e67
-    collector_hash: sha256:2b438021184351c08324b900223ce5eaa5e438c65c64819376e3693619a07997
+    collector_ref: 36f40cd4a611adb1590ccf0f2f8f006154c6bb72
+    collector_hash: sha256:2900cc46c8a54eac8f3305b20b495b911fba92f189c2e2a11ef457f2d9dcfb26
     case_plan_hash: sha256:1ede0b496c4a03420e831f0f0db174405565f227104c526322f109d2a4138ee1
-    collected_at: '2026-10-06T23:56:13Z'
+    collected_at: '2026-10-07T00:14:14Z'
     rows: 184
     classified_failures: 0
     status: complete
   dsa_generation_module_perf:
-    collector_ref: 8f7dfc09383f19bb9eda247f01289385202b4e67
-    collector_hash: sha256:2b438021184351c08324b900223ce5eaa5e438c65c64819376e3693619a07997
+    collector_ref: 36f40cd4a611adb1590ccf0f2f8f006154c6bb72
+    collector_hash: sha256:2900cc46c8a54eac8f3305b20b495b911fba92f189c2e2a11ef457f2d9dcfb26
     case_plan_hash: sha256:1ede0b496c4a03420e831f0f0db174405565f227104c526322f109d2a4138ee1
-    collected_at: '2026-10-06T23:56:13Z'
+    collected_at: '2026-10-07T00:14:14Z'
     rows: 80
     classified_failures: 0
     status: complete
