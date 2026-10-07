@@ -9,10 +9,12 @@ Details and 3D Visualization are separate tabs with independent controls.
 ## What is published
 
 - Overview: expandable model/configuration rows and one sortable Best MAPE
-  column, with the winning predictor, coverage, errors, and input evidence.
+  column, with the winning predictor, errors, and input evidence.
   Model rows average their configurations' best MAPEs equally and say
-  “Mixed predictors” when winners differ. Counts and coverage combine the
-  winning results. The Overall MAPE card averages configuration winners once
+  “Mixed predictors” when winners differ. Prediction counts, coverage, and
+  contributing configuration counts are omitted from Overview/Predictors table
+  cells; summary cards retain their contributing counts, and Details/Trends
+  retain coverage. The Overall MAPE card averages configuration winners once
   each, independently of model grouping or collapsed rows.
 - Predictors: the same branch and table layout, with Regression, FPM (KV warmup
   on), and FPM (KV warmup off) columns. Three cards average each predictor's

@@ -61,7 +61,6 @@
     const methods = new Set(winners.map(winner => winner.method));
     return {
       mape: winners.length ? winners.reduce((sum, winner) => sum + winner.mape, 0) / winners.length : null,
-      count: winners.length,
       method: methods.size === 1 ? winners[0].method : null,
       label: methods.size > 1 ? 'Mixed predictors' : methods.size ? labels[winners[0].method] : 'Unavailable',
       ...Object.fromEntries(['predicted', 'measured', 'errors', 'tuning'].map(key =>
@@ -75,16 +74,16 @@
       const method = metric.method;
       const value = metric.mape === null ? "—" : `${metric.mape.toFixed(2)}%`;
       const tone = metric.mape === null ? "missing" : "";
-      let note = metric.measured ? `${integer(metric.predicted)}/${integer(metric.measured)} predicted · ${(100 * metric.predicted / metric.measured).toFixed(1)}% coverage` : "Unavailable";
-      if (metric.errors) note += ` · ${integer(metric.errors)} errors`;
-      if (metric.tuning) note += ` · ${integer(metric.tuning)} tuning errors`;
+      const notes = [];
+      if (metric.errors) notes.push(`${integer(metric.errors)} errors`);
+      if (metric.tuning) notes.push(`${integer(metric.tuning)} tuning errors`);
       const result = rows.length === 1 ? rows[0].results[method] : null;
-      if (result?.status === "no_fpm_input") note += " · No reviewed input";
-      if (result?.status === "unsupported_predictor") note += " · Unsupported by this AISim revision";
+      if (result?.status === "no_fpm_input") notes.push("No reviewed input");
+      if (result?.status === "unsupported_predictor") notes.push("Unsupported by this AISim revision");
       const evidence = result?.artifact ? link(hf(summary.snapshot, result.artifact.path), "FPM input ↗") : "";
       const winner = comparison ? '' : `<span class="predictor-name">${escape(metric.label)}</span>`;
-      const count = !comparison && rows.length > 1 ? `<span>${metric.count} / ${rows.length} configurations with MAPE</span>` : '';
-      return `<td class="overview-method-cell ${tone}" data-label="${escape(metric.label)}"><strong>${value}</strong>${winner}<span>${escape(note)}</span>${count}${evidence}</td>`;
+      const note = notes.length ? `<span>${escape(notes.join(" · "))}</span>` : '';
+      return `<td class="overview-method-cell ${tone}" data-label="${escape(metric.label)}"><strong>${value}</strong>${winner}${note}${evidence}</td>`;
     }).join("");
   }
 
