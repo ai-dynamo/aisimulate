@@ -56,6 +56,9 @@ pub(crate) struct SglangCore {
     prebuilt_ready: VecDeque<SglangRequest>,
     pub(super) running: Vec<SglangRequest>,
     pub(super) new_token_ratio: f64,
+    // SGLang 0.5.19 stops retrying a full batch until completion/retraction.
+    // Ratio decay alone does not reopen admission. Chunk continuations may run.
+    batch_is_full: bool,
     pub(super) kv_manager: SglangKvManager,
     belady: Option<BeladyOracle>,
     speculative_sampler: Option<SpeculativeDecodeSampler>,
@@ -202,6 +205,7 @@ impl SglangCore {
             prebuilt_ready: VecDeque::new(),
             running: Vec::new(),
             new_token_ratio: SglangConfig::from_args(&args).init_new_token_ratio,
+            batch_is_full: false,
             kv_manager: SglangKvManager::new_with_prefix_caching(
                 total_tokens,
                 args.block_size,
@@ -612,6 +616,7 @@ impl SglangCore {
         self.source_holds.remove_request(request_id);
         self.active_destination_handoffs.remove_request(request_id);
         if capacity_improved {
+            self.batch_is_full = false;
             self.bump_capacity_generation();
         }
         true
@@ -895,6 +900,8 @@ impl SglangCore {
         });
         let running_before_admission = self.running.len();
         let mut admissions = self.promote_prebuilt_ready();
+        let chunk_continuation = self.waiting.iter().any(|req| req.materialized_tokens > 0);
+        let allow_prefill = !self.batch_is_full || self.running.is_empty() || chunk_continuation;
         let materialized_waiting = !self.prebuilt_ready.is_empty();
         apply_schedule_policy(&mut self.waiting, &self.kv_manager, &self.config);
 
@@ -903,7 +910,7 @@ impl SglangCore {
             AdmissionStage::Materialized | AdmissionStage::PendingDestinationHead => {
                 Default::default()
             }
-            AdmissionStage::FreshKv if !defer_prefill => get_new_batch_prefill(
+            AdmissionStage::FreshKv if !defer_prefill && allow_prefill => get_new_batch_prefill(
                 &mut self.waiting,
                 &mut self.kv_manager,
                 &self.config,
@@ -982,6 +989,10 @@ impl SglangCore {
             }
         };
 
+        // Commit the latch only after fallible timing validation succeeded.
+        if !defer_prefill && allow_prefill {
+            self.batch_is_full = admit.batch_is_full;
+        }
         admissions.append(&mut admit.admissions);
         for admission in &admissions {
             if let Some(collector) = collector.as_deref_mut() {
@@ -1100,6 +1111,9 @@ impl SglangCore {
             self.running = stalled;
         }
 
+        if !decode.requests.is_empty() || decode.output_signals.iter().any(|s| s.completed) {
+            self.batch_is_full = false;
+        }
         for request in decode.completed_requests.drain(..) {
             self.complete_source(request);
         }

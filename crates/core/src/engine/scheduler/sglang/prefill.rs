@@ -22,6 +22,8 @@ pub(super) struct PrefillFpmItem {
 
 #[derive(Default)]
 pub(super) struct AdmitResult {
+    /// Native NO_TOKEN / no free request slot; suppress retries until a request leaves.
+    pub(super) batch_is_full: bool,
     pub(super) can_run: Vec<SglangRequest>,
     pub(super) admissions: Vec<AdmissionEvent>,
     pub(super) total_isl: usize,
@@ -65,6 +67,7 @@ pub(super) fn get_new_batch_prefill(
     let mut rejected = VecDeque::new();
     let mut total_isl = 0usize;
     let mut total_prefix = 0usize;
+    let mut batch_is_full = false;
 
     let available_running_slots = config.max_running_requests.saturating_sub(running.len());
     while can_run.len() < available_running_slots
@@ -122,6 +125,7 @@ pub(super) fn get_new_batch_prefill(
                 .min(config.clip_max_new_tokens)
         };
         if charged_input_tokens + output_reserve as f64 >= rem_total_tokens {
+            batch_is_full = true;
             rejected.push_back(req);
             break;
         }
@@ -152,6 +156,7 @@ pub(super) fn get_new_batch_prefill(
         };
 
         let Some(prefix_len) = prefix_len else {
+            batch_is_full = true;
             req.kv_lease = lease;
             rejected.push_back(req);
             break;
@@ -195,11 +200,16 @@ pub(super) fn get_new_batch_prefill(
         }
     }
 
+    if can_run.len() == available_running_slots && !waiting.is_empty() {
+        batch_is_full = true;
+    }
+
     while let Some(req) = rejected.pop_back() {
         waiting.push_front(req);
     }
 
     AdmitResult {
+        batch_is_full,
         can_run,
         admissions,
         total_isl,

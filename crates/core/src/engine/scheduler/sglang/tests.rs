@@ -2363,22 +2363,19 @@ mod forward_pass_metrics {
         let r1 = Uuid::from_u128(1);
         let r2 = Uuid::from_u128(2);
         let fresh = Uuid::from_u128(3);
-        for (uuid, tokens, max_output_tokens) in [
-            (r1, (0..4).collect::<Vec<_>>(), 30),
-            (r2, (100..104).collect(), 30),
-        ] {
-            core.receive(DirectRequest {
-                tokens,
-                max_output_tokens,
-                output_token_ids: None,
-                uuid: Some(uuid),
-                arrival_timestamp_ms: None,
-            });
-        }
-        // Pass 1 admits r1 only (r2 needs its full output reserved); r2 is admitted on the next
-        // pass once r1's remaining output is only reserved at `new_token_ratio`.
+        core.receive(DirectRequest {
+            tokens: (0..4).collect(), max_output_tokens: 30, output_token_ids: None,
+            uuid: Some(r1), arrival_timestamp_ms: None,
+        });
+        // Stagger the second arrival so the first admission does not close
+        // the native full-batch latch. Its discounted running reservation
+        // then allows r2, and their combined output creates real pressure.
         let first = core.execute_pass(&mut collector, 0.0);
         assert_eq!(core.running.len(), 1);
+        core.receive(DirectRequest {
+            tokens: (100..104).collect(), max_output_tokens: 30, output_token_ids: None,
+            uuid: Some(r2), arrival_timestamp_ms: None,
+        });
         // A request that does not fit waits in the queue ahead of any retraction.
         core.receive(DirectRequest {
             tokens: (200..232).collect(),
