@@ -22,12 +22,14 @@ from aisimulate.sweeper import SmartSearchConfig, Sweeper
 if __name__ == "__main__":
     config = SmartSearchConfig.from_yaml("examples/sweeper/epd.yaml")
     result = Sweeper(runner_factory=EngineReplayRunnerFactory()).run(config)
-    for candidate in result.selected_candidates:
-        print(candidate.candidate_id, candidate.score, candidate.used_gpus)
+    for candidate_id, candidate in zip(result.selected_candidate_ids, result.selected_candidates, strict=True):
+        print(candidate_id, candidate.score, candidate.used_gpus)
 ```
 
-`run()` returns a `SweepResult`, not a list; its complete ledger and selected
-view remain available independently. Worker factories and provider arguments
+`run()` returns a `SweepResult`, not a list. `selected_candidate_ids` contains
+the stable ledger IDs; `selected_candidates` contains `Candidate` objects in
+the same order. The complete records remain available through `result.candidates`.
+Worker factories and provider arguments
 must be serializable when processes are used. Each run creates fresh search
 state and workers. Direct `Sweeper` calls have bounded pool cleanup; host-memory
 admission and RSS supervision belong to the public CLI/`run_recommendation`

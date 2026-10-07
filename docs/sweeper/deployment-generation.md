@@ -279,8 +279,12 @@ Run the repository validator inside the matching backend runtime:
 
 ```bash
 python python/aisimulate/tools/generator_validator/validator.py \
-  --backend vllm --path deployment-study/generated
+  --backend vllm --path deployment-study/generated/k8s_deploy.yaml
 ```
+
+Pass the manifest file for this single-candidate output. The validator's
+directory mode expects an AIC results tree with both `agg/top1/k8s_deploy.yaml`
+and `disagg/top1/k8s_deploy.yaml`.
 
 The validator supports Dynamo outputs. It loads the installed backend's argument
 schema (vLLM `EngineArgs`, SGLang `ServerArgs`, or TensorRT-LLM `TorchLlmArgs`);
