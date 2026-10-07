@@ -276,11 +276,22 @@ impl SteppableAgg {
             None,
             |dp_size, topology| Ok(AggregatedRoundRobinPlacement::new(dp_size, topology)),
         )?
+        .with_capture_options(overcooked_diagnostic_capture())
         .into_steppable();
         Ok(Self {
             runtime,
             live: LiveRequests::default(),
         })
+    }
+}
+
+// Optional evidence only: scheduling, placement and determinism stay unchanged.
+// Kept in this external-driver seam so ordinary trace replay is unaffected.
+fn overcooked_diagnostic_capture() -> ReplayCaptureOptions {
+    ReplayCaptureOptions {
+        capture_canonical_evidence: std::env::var_os("OVERCOOKED_CAPTURE_PRESSURE")
+            .is_some_and(|v| v == "1"),
+        ..ReplayCaptureOptions::default()
     }
 }
 
@@ -304,7 +315,7 @@ where
             engine,
             factory,
             num_workers,
-            ReplayCaptureOptions::default(),
+            overcooked_diagnostic_capture(),
             make_placement,
         )
     }
