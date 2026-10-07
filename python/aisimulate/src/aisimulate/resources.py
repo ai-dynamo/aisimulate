@@ -296,7 +296,7 @@ def _estimate_weka_trace(workload: Mapping[str, Any], *, inspection_budget_bytes
     These are planning allowances, not a hard RSS guarantee. Import materializes
     one play at a time before building the cached corpus graph. Replay retains
     compact hashes and planned outputs; full prompts exist for active requests.
-    See docs/local-resources.md for the consumer contracts and calibration.
+    See docs/reference/local-resources.md for the consumer contracts and calibration.
     """
     baseline = 256 * MIB
     buffer_size = 64 * 1024
