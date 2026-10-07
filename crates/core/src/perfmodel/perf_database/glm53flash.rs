@@ -23,7 +23,8 @@
 //! every malformed present file is fatal. Provenance: one source/runtime
 //! identity per file, one `config_sha256` per checkpoint format (a version
 //! directory holds both checkpoints), and one `used_cuda_graph` value per
-//! geometry (serving runs prefill eagerly and decode under CUDA graphs).
+//! geometry (shipped tables time both prefill and decode under the serving
+//! CUDA graphs; prefill uses the frameworks' breakable/piecewise graphs).
 //! Within one geometry the reader
 //! interpolates utilization (`SOL / latency`) hierarchically over batch,
 //! prefix and work (`x`), holding the boundary utilization outside the

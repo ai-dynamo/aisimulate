@@ -60,7 +60,8 @@ and vLLM `resolved-config-node0.json`) run:
 - vLLM: `CompilationMode.NONE`, `cudagraph_mode=FULL_AND_PIECEWISE`, capture
   sizes up to 64 tokens, `FLASHINFER_MLA_SPARSE`, FP8 KV, 8192 batched tokens.
 
-Therefore prefill is timed eagerly and decode through a CUDA graph:
+Therefore revision 1 timed prefill eagerly and decode through a CUDA graph
+(the shipped prefill rows are revision 2, below):
 
 - **Prefill** (`used_cuda_graph=false`): the probe fires inside the real
   framework forward of the planned step, repeats the module call (3 warmups +
