@@ -56,11 +56,12 @@ from collector.glm53flash_attention_runtime import (
     EventTimer,
     RawWriter,
     config_sha256,
-    corpus_tokens,
     package_source_sha256,
     request_tokens,
     target_id,
 )
+from collector.glm53flash_attention_tokens import manifest_tokens
+from collector.glm53flash_attention_tokens import spec as input_token_spec
 
 
 def _quant_name(module) -> str:
@@ -584,11 +585,10 @@ def run_worker(server_args, port_args, bench_args, gpu_id, tp_rank):
         "layer_id": manifest["layer_id"],
     }
     plan = manifest["plan"]
-    longest = max(s["targets"][-1] + (s["query"] if s["phase"] == "context" else 0) for s in plan["sets"])
-    tokens, corpus = corpus_tokens(tokenizer, Path(options.corpus), longest + 32 * 4099)
+    tokens, inputs = manifest_tokens(manifest, tokenizer, Path(server_args.model_path))
     if tp_rank == 0:
         (output / "source_hashes.json").write_text(json.dumps(sources, sort_keys=True))
-        (output / "input_provenance.json").write_text(json.dumps({**corpus, **writer.provenance}, sort_keys=True))
+        (output / "input_provenance.json").write_text(json.dumps({**inputs, **writer.provenance}, sort_keys=True))
         (output / "resolved_server_args.json").write_text(
             json.dumps({k: str(v) for k, v in sorted(vars(server_args).items())})
         )
@@ -664,7 +664,6 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--manifest", required=True)
     parser.add_argument("--output", required=True)
-    parser.add_argument("--corpus", required=True)
     parser.add_argument("--only-sets", nargs="*", default=None)
     parser.add_argument("--dry-run", action="store_true", help="resolve everything, then exit before CUDA work")
     options, rest = parser.parse_known_args()
@@ -672,6 +671,8 @@ def main():
     plan = manifest["plan"]
     if plan != build_plan(manifest["sweep"]):
         raise ValueError("manifest plan differs from its frozen sweep")
+    if manifest.get("input_tokens") != input_token_spec(plan):
+        raise ValueError("manifest input_tokens differ from this collector's generator")
     if manifest.get("only_sets") is not None:
         # A split attempt measures exactly the manifest's set selection.
         if options.only_sets and sorted(options.only_sets) != manifest["only_sets"]:

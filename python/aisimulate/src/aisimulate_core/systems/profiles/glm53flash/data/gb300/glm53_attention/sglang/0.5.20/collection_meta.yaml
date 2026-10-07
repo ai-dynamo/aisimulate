@@ -11,6 +11,13 @@ tables:
     data_sha256: f3d0b4a24df3fec427700c67a3b581ff4616c4a5a394c3f836634253dcbb4bd5
     collector: collector.sglang.glm53flash_attention_runner
     measurement: one real sparse-MLA layer (3); output all-reduce excluded
+    # Measured with request token ids encoded from a text corpus (a
+    # concatenation of this repository's docs/*.md), not the seeded generator
+    # that future collections use (collector/glm53flash_attention_tokens.py).
+    input_tokens:
+      source: repository_docs_text
+      corpus_sha256: a3d68e546dab8276e08e58e3ffaa191bb86d6e4c2d80a086ce72b428a422d3b6
+      corpus_bytes: 1262927
     execution_mode:
       fp8-tp2-context: cuda_graph
       fp8-tp2-generation: cuda_graph

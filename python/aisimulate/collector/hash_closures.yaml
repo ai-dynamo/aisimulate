@@ -120,6 +120,7 @@ collector.sglang.glm53flash_attention_runner:
   - collector/cases/base_ops/glm53flash_attention.yaml
   - collector/glm53flash_attention_contract.py
   - collector/glm53flash_attention_runtime.py
+  - collector/glm53flash_attention_tokens.py
   - collector/glm53flash_attention_launch.py
   - src/aisimulate_core/model_configs/zai-org--GLM-5.3-Flash_config.json
   - src/aisimulate_core/model_configs/nvidia--GLM-5.3-Flash-NVFP4_config.json
@@ -297,6 +298,7 @@ collector.vllm.glm53flash_attention_runner:
   - collector/cases/base_ops/glm53flash_attention.yaml
   - collector/glm53flash_attention_contract.py
   - collector/glm53flash_attention_runtime.py
+  - collector/glm53flash_attention_tokens.py
   - collector/glm53flash_attention_launch.py
   - src/aisimulate_core/model_configs/zai-org--GLM-5.3-Flash_config.json
   - src/aisimulate_core/model_configs/nvidia--GLM-5.3-Flash-NVFP4_config.json

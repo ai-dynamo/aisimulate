@@ -151,8 +151,11 @@ once. Used for the staged revision:
 8192-token serving budget; up to 106496 context), decode batch 1–32 × absolute
 length 64–131072. Grid points bracket the IndexPool boundary (`prefix + x <=
 2048` short regime selects every pool without scoring; otherwise pooled +
-retained tail). Requests are real tokenized text; KV, IndexPool and tail state
-are produced by the framework's own allocation and forward helpers:
+retained tail). Request token ids come from the seeded random-token generator
+`collector/glm53flash_attention_tokens.py` (seed 53, 262240 ids for the full
+plan, ordinary tokenizer vocabulary only; the shipped tables predate it, see
+`input_tokens` in their `collection_meta.yaml`); KV, IndexPool and tail state are
+produced by the framework's own allocation and forward helpers:
 
 - SGLang: `one_batch.load_model`, `prepare_synthetic_inputs_for_latency_test`,
   and `extend`/`decode`; continuations re-extend each request from its own

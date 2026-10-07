@@ -25,6 +25,7 @@ from collector.glm53flash_attention_contract import (
     representative_layer_is_uniform,
     sha256_json,
 )
+from collector.glm53flash_attention_tokens import spec as input_token_spec
 
 SMOKE_SWEEP = {
     "layer_id": 3,
@@ -86,6 +87,7 @@ def prepare(args) -> Path:
     else:
         sweep = yaml.safe_load(Path(args.sweep).read_text())["common_case_values"][OP_NAME]
     representative_layer_is_uniform(config, sweep["layer_id"], args.checkpoint)
+    plan = build_plan(sweep)
     body = {
         "schema_version": 1,
         "op": OP_NAME,
@@ -97,7 +99,9 @@ def prepare(args) -> Path:
         "runtime_digest": RUNTIME_IMAGES[args.backend],
         "layer_id": sweep["layer_id"],
         "sweep": sweep,
-        "plan": build_plan(sweep),
+        "plan": plan,
+        # Request token ids come from the in-repo seeded generator.
+        "input_tokens": input_token_spec(plan),
         "source_commit": args.source_commit,
         # Allocator policy only (no kernel change): the same 16384 MiB split the
         # qualified SGLang FP8 TP2 FPM campaign uses against fragmentation of
@@ -134,7 +138,7 @@ def prepare(args) -> Path:
     job = f"{prefix}-{args.backend}-{args.checkpoint}-tp{args.tp}{suffix}"
     container = f"{args.remote_attempt}"
     runner = f"collector.{args.backend}.glm53flash_attention_runner"
-    common = "--manifest /results/manifest.json --output /results/raw --corpus /results/corpus.txt"
+    common = "--manifest /results/manifest.json --output /results/raw"
     model = f"/models/{args.checkpoint}"
     mounts = [
         f"{args.remote_source}:/workspace:ro",
@@ -176,7 +180,7 @@ def prepare(args) -> Path:
 #SBATCH --output={container}/slurm-%j.out
 set -euo pipefail
 cd {container}
-sha256sum manifest.json corpus.txt > inputs.sha256
+sha256sum manifest.json > inputs.sha256
 nvidia-smi -q > nvidia-smi-before.txt || true
 srun --container-image={args.image} --container-mounts={",".join(mounts)} --no-container-mount-home \\
   --container-workdir=/workspace bash -c "export {exports}; \\

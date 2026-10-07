@@ -41,21 +41,8 @@ def config_sha256(checkpoint: Path) -> str:
     return sha256_json(json.loads((Path(checkpoint) / "config.json").read_text()))
 
 
-def corpus_tokens(tokenizer, corpus: Path, minimum: int) -> tuple[list[int], dict]:
-    text = Path(corpus).read_text()
-    tokens = tokenizer.encode(text)
-    if len(tokens) < minimum:
-        raise RuntimeError(f"corpus has {len(tokens)} tokens, fewer than the {minimum} a request needs")
-    return tokens, {
-        "corpus_sha256": hashlib.sha256(text.encode()).hexdigest(),
-        "token_ids_sha256": hashlib.sha256(json.dumps(tokens).encode()).hexdigest(),
-        "token_count": len(tokens),
-        "unique_token_count": len(set(tokens)),
-    }
-
-
 def request_tokens(tokens: list[int], request: int, length: int) -> list[int]:
-    """Distinct real-text window per request (deterministic offset)."""
+    """Distinct window of the generated ids per request (deterministic offset)."""
     start = (request * 4099) % (len(tokens) - length + 1)
     return tokens[start : start + length]
 

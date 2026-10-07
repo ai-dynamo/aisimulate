@@ -40,11 +40,12 @@ from collector.glm53flash_attention_contract import (
 )
 from collector.glm53flash_attention_runtime import (
     config_sha256,
-    corpus_tokens,
     package_source_sha256,
     request_tokens,
     target_id,
 )
+from collector.glm53flash_attention_tokens import manifest_tokens
+from collector.glm53flash_attention_tokens import spec as input_token_spec
 
 PLUGIN_ENTRY = "glm53flash_w4 = collector.vllm.glm53flash_attention_worker:register\n"
 
@@ -215,7 +216,6 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--manifest", required=True)
     parser.add_argument("--output", required=True)
-    parser.add_argument("--corpus", required=True)
     parser.add_argument("--model-path", required=True)
     parser.add_argument("--only-sets", nargs="*", default=None)
     parser.add_argument("--gpu-memory-utilization", type=float, default=0.9)
@@ -226,6 +226,8 @@ def main():
     plan = manifest["plan"]
     if plan != build_plan(manifest["sweep"]):
         raise ValueError("manifest plan differs from its frozen sweep")
+    if manifest.get("input_tokens") != input_token_spec(plan):
+        raise ValueError("manifest input_tokens differ from this collector's generator")
     if manifest.get("only_sets") is not None:
         # A split attempt measures exactly the manifest's set selection.
         if options.only_sets and sorted(options.only_sets) != manifest["only_sets"]:
@@ -326,10 +328,9 @@ def main():
         "layer_id": manifest["layer_id"],
     }
     tokenizer = llm.get_tokenizer()
-    longest = max(s["targets"][-1] + (s.get("query") or 0) for s in plan["sets"])
-    tokens, corpus = corpus_tokens(tokenizer, Path(options.corpus), longest + 32 * 4099)
+    tokens, inputs = manifest_tokens(manifest, tokenizer, Path(options.model_path))
     (output / "source_hashes.json").write_text(json.dumps(sources, sort_keys=True))
-    (output / "input_provenance.json").write_text(json.dumps({**corpus, **provenance}, sort_keys=True))
+    (output / "input_provenance.json").write_text(json.dumps({**inputs, **provenance}, sort_keys=True))
     driver = Driver(llm, plan, tokens, output, graph_prefill=graph_prefill)
     setup = driver.rpc(
         "rpc_setup",

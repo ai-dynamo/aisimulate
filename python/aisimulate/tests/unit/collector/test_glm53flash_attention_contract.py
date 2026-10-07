@@ -32,6 +32,7 @@ from collector.glm53flash_attention_contract import (
     write_parquet,
 )
 from collector.glm53flash_attention_launch import SMOKE_SWEEP
+from collector.glm53flash_attention_tokens import spec as input_token_spec
 
 pytestmark = pytest.mark.unit
 
@@ -309,6 +310,7 @@ def _attempt(tmp_path, role="full", graph_prefill=False, only_sets=None, name=No
         "layer_id": 3,
         "sweep": SMOKE_SWEEP,
         "plan": build_plan(SMOKE_SWEEP),
+        "input_tokens": input_token_spec(build_plan(SMOKE_SWEEP)),
         "source_commit": "c" * 40,
     }
     if graph_prefill:
@@ -367,6 +369,7 @@ def test_finalize_writes_table_evidence_and_collection_sidecar(tmp_path, monkeyp
     assert meta["runtime"]["image_digest"] == RUNTIME_IMAGES["vllm"]
     assert table["rows"] == pq.read_table(output).num_rows and len(table["data_sha256"]) == 64
     assert json.loads(evidence.read_text())["attempts"][0]["deployment"] == "fp8-tp2"
+    assert table["input_tokens"] == {"source": "seeded_random_tokens", **input_token_spec(build_plan(SMOKE_SWEEP))}
 
 
 def test_graph_prefill_revision_replaces_only_prefill_rows(tmp_path, monkeypatch):
@@ -396,6 +399,7 @@ def test_graph_prefill_revision_replaces_only_prefill_rows(tmp_path, monkeypatch
     table = meta["tables"]["glm53_attention_module_perf"]
     assert table["execution_mode"] == {"fp8-tp2-context": "cuda_graph", "fp8-tp2-generation": "cuda_graph"}
     assert table["attempts"][-1]["phases"] == ["generation"]
+    assert table["attempts"][-1]["input_tokens"]["source"] == "seeded_random_tokens"
 
 
 def test_split_attempts_must_cover_the_plan_exactly_once(tmp_path, monkeypatch):

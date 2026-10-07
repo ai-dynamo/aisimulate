@@ -661,6 +661,11 @@ def main() -> None:
             }
         )
     check_split_closure(loaded)
+    # Request token provenance (glm53flash_attention_tokens) must be one spec.
+    input_specs = {canonical_json(m.get("input_tokens")) for m, _ in loaded}
+    if len(input_specs) != 1 or None in (m.get("input_tokens") for m, _ in loaded):
+        raise ValueError("attempts must share one recorded input_tokens generator spec")
+    input_tokens = {"source": "seeded_random_tokens", **json.loads(input_specs.pop())}
     backends = {json.loads(r["geometry"])["backend"] for r in rows}
     if len(backends) != 1:
         raise ValueError("one table holds one backend")
@@ -687,6 +692,15 @@ def main() -> None:
                 ),
             }
         )
+        # Kept rows keep their own table's input provenance.
+        previous = Path(args.keep_from).parent / "collection_meta.yaml"
+        if previous.is_file():
+            import yaml
+
+            old_tables = (yaml.safe_load(previous.read_text()) or {}).get("tables", {})
+            old_inputs = old_tables.get(Path(BASENAME).stem, {}).get("input_tokens")
+            if old_inputs is not None:
+                manifests[-1]["input_tokens"] = old_inputs
         rows += kept
     write_parquet(rows, args.output)
     Path(args.evidence).write_text(json.dumps({"attempts": manifests, "rows": evidence}, indent=1) + "\n")
@@ -707,6 +721,7 @@ def main() -> None:
                 "data_sha256": hashlib.sha256(Path(args.output).read_bytes()).hexdigest(),
                 "collector": f"collector.{backend}.glm53flash_attention_runner",
                 "measurement": "one real sparse-MLA layer (3); output all-reduce excluded",
+                "input_tokens": input_tokens,
                 # One execution mode per geometry (checkpoint, TP, phase).
                 "execution_mode": dict(sorted(_execution_modes(rows).items())),
                 "attempts": manifests,
