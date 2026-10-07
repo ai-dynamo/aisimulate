@@ -488,8 +488,16 @@ def test_trace_storage_is_rejected_before_parser_allocates_scalars(tmp_path, hos
     assert "before metadata parsing" in plan["estimate"]["reason"]
 
 
-@pytest.mark.parametrize("stack", ["engine", "dynamo"])
-@pytest.mark.parametrize("trace_format", ["agentic_mooncake", "weka", "dynamo"])
+@pytest.mark.parametrize(
+    "trace_format,stack",
+    [
+        ("agentic_mooncake", "engine"),
+        ("agentic_mooncake", "dynamo"),
+        ("weka", "dynamo"),
+        ("dynamo", "engine"),
+        ("dynamo", "dynamo"),
+    ],
+)
 def test_finite_agentic_lanes_share_compact_trace_and_require_supervision(
     tmp_path, host, monkeypatch, stack, trace_format
 ):
@@ -564,6 +572,28 @@ def test_finite_agentic_lanes_share_compact_trace_and_require_supervision(
     assert factory.admit_wave([spec])["status"] == "admitted"
     with pytest.raises(ResourceLimitError, match="wave"):
         factory.admit_wave([spec, spec])
+
+
+def test_native_weka_keeps_qualified_parallel_admission(tmp_path, host, monkeypatch):
+    trace = tmp_path / "play.json"
+    trace.write_text(json.dumps({"block_size": 4, "requests": [{"t": 0, "type": "s", "in": 4, "out": 1}]}))
+    monkeypatch.delenv("_AISIMULATE_SUPERVISED_BUDGET", raising=False)
+    monkeypatch.setattr(resources, "discover_host", lambda: host)
+    monkeypatch.setattr(resources, "_child_memory_bytes", lambda: 0)
+    factory = GuardedRunnerFactory(object(), "engine", ResourceConfig())
+    workload = {"trace_path": str(trace), "trace_format": "weka"}
+    expected = estimate_workload(workload, stack="engine")
+    assert expected.allocation_model == "weka-materialized-v1"
+    assert expected.estimated_peak_bytes is not None
+    for lanes in (1, 32, 128, 512):
+        candidate = {**workload, "agentic_lanes": lanes}
+        assert estimate_workload(candidate, stack="engine") == expected
+        plan = build_plan(candidate, stack="engine", host=host, requested_parallelism=2)
+        assert plan["effective_parallelism"] == 2
+        spec = SimpleNamespace(workload=candidate, concurrency=None)
+        wave = factory.admit_wave([spec, spec])
+        assert wave["status"] == "admitted"
+        assert wave["required_bytes"] == 2 * expected.estimated_peak_bytes
 
 
 @pytest.mark.parametrize("output_length,authored,expected", [(0, None, 16), (5, None, 28), (2, [7, 8], 24)])
@@ -679,7 +709,9 @@ def test_snapshot_and_warmup_keep_previous_accounting(tmp_path, warmup, trace_fo
     assert bounds["agentic_snapshot"] == {"seed": 42}
     assert bounds["agentic_warmup"] is warmup
     concrete = recommendation_to_sweeper(config).workload.model_dump(mode="python", exclude_none=True)
-    for stack in ("engine", "dynamo"):
+    # Native Weka snapshot/warmup accounting has its own peak-model tests.
+    stacks = ("dynamo",) if trace_format == "weka" else ("engine", "dynamo")
+    for stack in stacks:
         estimate = estimate_workload(bounds, stack=stack)
         assert estimate.allocation_model == "trace-json-metadata-v1"
         assert estimate.estimated_peak_bytes is not None
@@ -689,7 +721,8 @@ def test_snapshot_and_warmup_keep_previous_accounting(tmp_path, warmup, trace_fo
         trace.write_text(json.dumps({"block_size": 4, "requests": [{"type": "s", "in": 4, "out": 1}]}))
     elif trace_format == "dynamo":
         trace.write_text(json.dumps(_dynamo_row()))
-    assert estimate_workload(ordinary, stack="engine").estimated_peak_bytes is None
+    for stack in stacks:
+        assert estimate_workload(ordinary, stack=stack).estimated_peak_bytes is None
 
 
 @pytest.mark.parametrize("layout", ["json", "jsonl", "directory"])
@@ -720,12 +753,11 @@ def test_weka_counts_nested_requests_and_generated_hashes(tmp_path, layout):
         (source / "ignored.txt").write_text("not a trace")
     else:
         source.write_text((json.dumps(play) + "\n") * copies)
-    for stack in ("engine", "dynamo"):
-        estimate = estimate_workload({"trace_path": str(source), "trace_format": "weka"}, stack=stack)
-        assert estimate.allocation_model == "agentic-trace-unqualified-v1"
-        # ceil(5/4) + ceil(4/4) + ceil(9/4) = six u64 hashes per play.
-        assert estimate.lower_bound_bytes == 48 * copies
-        assert estimate.estimated_peak_bytes is None
+    estimate = estimate_workload({"trace_path": str(source), "trace_format": "weka"}, stack="dynamo")
+    assert estimate.allocation_model == "agentic-trace-unqualified-v1"
+    # ceil(5/4) + ceil(4/4) + ceil(9/4) = six u64 hashes per play.
+    assert estimate.lower_bound_bytes == 48 * copies
+    assert estimate.estimated_peak_bytes is None
 
 
 @pytest.mark.parametrize("compressed", [False, True])
@@ -769,9 +801,8 @@ def test_standard_dynamo_keeps_previous_accounting_and_rejects_mixed_context(tmp
             estimate_workload(workload, stack="engine")
 
 
-@pytest.mark.parametrize("trace_format", ["weka", "dynamo"])
+@pytest.mark.parametrize("trace_format,stack", [("weka", "dynamo"), ("dynamo", "engine"), ("dynamo", "dynamo")])
 @pytest.mark.parametrize("input_oversized", [False, True])
-@pytest.mark.parametrize("stack", ["engine", "dynamo"])
 def test_added_agentic_formats_reject_oversized_arrays(
     tmp_path, monkeypatch, host, trace_format, input_oversized, stack
 ):

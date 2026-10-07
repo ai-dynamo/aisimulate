@@ -10,9 +10,9 @@ capacity. They are conservative planning estimates, not promises about peak RSS.
 from __future__ import annotations
 
 import bisect
+import gzip
 import heapq
 import itertools
-import gzip
 import json
 import math
 import os
@@ -595,6 +595,7 @@ def _estimate_trace(
     unqualified = lambda reason: ResourceEstimate("trace-unqualified-v1", None, 0, 0, None, reason)
     format_name = workload.get("trace_format", "mooncake")
     if format_name == "weka" and stack == "engine":
+        # Native Weka has a peak model, including snapshot and warmup storage.
         return _estimate_weka_trace(workload, inspection_budget_bytes=inspection_budget_bytes)
     if stack not in {"engine", "dynamo"} or format_name not in {
         "mooncake",
