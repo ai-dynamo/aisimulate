@@ -14,9 +14,10 @@ precedent).
 
 | Backend | Version directory | Runtime |
 | --- | --- | --- |
-| vLLM | `0.30.0+glm53tail.eb4704514fdf` | `vllm/vllm-openai:v0.30.0` (arm64 child `sha256:4864d466…`) plus the glm53tail PYTHONPATH overlay |
+| vLLM | `0.31.0` | `vllm/vllm-openai:v0.31.0` (arm64 child `sha256:3f7dd5b7…`), stock, no overlay; the model-pinned collector runtime |
+| vLLM | `0.30.0+glm53tail.eb4704514fdf` | `vllm/vllm-openai:v0.30.0` (arm64 child `sha256:4864d466…`) plus the retired glm53tail PYTHONPATH overlay; superseded, kept until the `0.31.0` tables are staged |
 | SGLang | `0.5.20` | `lmsysorg/sglang:v0.5.20` (arm64 child `sha256:b0d8718a…`) |
-| NCCL | `2.30.7` | nccl-tests against the `libnccl.so.2` both images load |
+| NCCL | `2.30.7` | nccl-tests against the `libnccl.so.2` both images load (unchanged in `vllm/vllm-openai:v0.31.0`) |
 
 `gb300.yaml` is the fleet GB300 system file with `nccl_version: '2.30.7'`.
 Every version directory has a `collection_meta.yaml` with the collector

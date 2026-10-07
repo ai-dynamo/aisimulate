@@ -579,13 +579,13 @@ mod tests {
 
     #[test]
     fn glm53_silicon_admits_only_exact_runtime_generic_tables() {
-        const TAIL: &str = "0.30.0+glm53tail.eb4704514fdf";
+        const RUNTIME: &str = "0.31.0";
         let root = systems();
         let data = root.path().join("data/b200_sxm");
-        // Earlier runtime rows exist; the requested tail runtime has only GEMM.
+        // Earlier runtime rows exist; the requested GLM runtime has only GEMM.
         table(&data.join("mhc/vllm/0.24.0/mhc_module_perf.parquet"));
         table(&data.join("glm53_attention/vllm/0.24.0/glm53_attention_module_perf.parquet"));
-        table(&data.join(format!("gemm/vllm/{TAIL}/gemm_perf.parquet")));
+        table(&data.join(format!("gemm/vllm/{RUNTIME}/gemm_perf.parquet")));
         let mhc: Op = serde_json::from_value(serde_json::json!({"Glm53Mhc": {
             "name": "mhc_pre_attn_1", "role": "pre", "backend": "vllm",
             "checkpoint_format": "fp8", "tp_size": 2, "is_context": true,
@@ -596,7 +596,7 @@ mod tests {
         sparse.checkpoint_format = "fp8".into();
         let sparse = Op::Glm53Attention(sparse);
         let load = |mode| {
-            PerfDatabase::load_resolved(root.path(), "b200_sxm", "vllm", TAIL, true, false, false)
+            PerfDatabase::load_resolved(root.path(), "b200_sxm", "vllm", RUNTIME, true, false, false)
                 .unwrap()
                 .with_mode(mode, TransferPolicy::ALL)
         };
@@ -607,9 +607,9 @@ mod tests {
             validate(&load(DatabaseMode::Hybrid), [op].into_iter()).unwrap();
             validate(&load(DatabaseMode::Sol), [op].into_iter()).unwrap();
         }
-        table(&data.join(format!("mhc/vllm/{TAIL}/mhc_module_perf.parquet")));
+        table(&data.join(format!("mhc/vllm/{RUNTIME}/mhc_module_perf.parquet")));
         table(&data.join(format!(
-            "glm53_attention/vllm/{TAIL}/glm53_attention_module_perf.parquet"
+            "glm53_attention/vllm/{RUNTIME}/glm53_attention_module_perf.parquet"
         )));
         validate(&load(DatabaseMode::Silicon), [&mhc, &sparse].into_iter()).unwrap();
         // A GLM boundary without a generic composition cannot be SILICON.

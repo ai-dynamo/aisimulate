@@ -118,7 +118,7 @@ generic child's labelled fallback and falls back to the GLM SOL
 Existing Kimi-K3 KDA rows (12/24/48/96 heads) never cover GLM's 16/32/64-head
 shards.
 
-The pinned runtimes are data coordinates `vllm/0.30.0+glm53tail.eb4704514fdf`
+The pinned runtimes are data coordinates `vllm/0.31.0` (stock v0.31.0, no overlay)
 and `sglang/0.5.20`. Like the DeepSeek-V4.1 databases, GLM Ops data lives in a
 separate systems root, `systems/profiles/glm53flash/` (its own `gb300.yaml`
 and `data/gb300/<family>/<backend>/<version>/`), selected by passing that
