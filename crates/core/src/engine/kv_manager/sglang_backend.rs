@@ -171,6 +171,10 @@ pub struct SglangKvManager {
     /// transient slot ownership.
     block_hash_refcounts: FxHashMap<SequenceHash, usize>,
     pending_admission: Option<PendingAdmission>,
+    /// Committed events not yet handed to the publishers. Like SGLang's radix
+    /// cache event queue, a new event merges into a compatible tail, and the
+    /// scheduler drains the queue only where SGLang publishes a batch.
+    queued_events: Vec<KvEvent>,
 }
 
 #[must_use = "admission must be committed or rolled back"]
@@ -287,6 +291,7 @@ impl SglangKvManager {
             page_to_block_hash,
             block_hash_refcounts: FxHashMap::default(),
             pending_admission: None,
+            queued_events: Vec::new(),
         }
     }
 
@@ -383,8 +388,33 @@ impl SglangKvManager {
         if let Some(admission) = self.pending_admission.as_mut() {
             debug_assert!(admission.checkpoint.is_some(), "event before KV checkpoint");
             admission.events.push(event);
-        } else if let Err(error) = self.kv_event_publishers.publish(event, None) {
-            tracing::warn!("Failed to publish SGLang KV event: {error}");
+        } else {
+            self.enqueue_event(event);
+        }
+    }
+
+    fn enqueue_event(&mut self, event: KvEvent) {
+        let unmerged = match self.queued_events.last_mut() {
+            Some(tail) => merge_into_tail(tail, event),
+            None => Some(event),
+        };
+        if let Some(event) = unmerged {
+            self.queued_events.push(event);
+        }
+    }
+
+    /// Hand every queued event to the publishers, numbering them in publish order.
+    pub(crate) fn flush_events(&mut self) {
+        debug_assert!(
+            self.pending_admission.is_none(),
+            "flush during KV admission"
+        );
+        for mut event in std::mem::take(&mut self.queued_events) {
+            event.event_id = self.next_event_id;
+            self.next_event_id += 1;
+            if let Err(error) = self.kv_event_publishers.publish(event, None) {
+                tracing::warn!("Failed to publish SGLang KV event: {error}");
+            }
         }
     }
 
@@ -457,10 +487,8 @@ impl SglangKvManager {
         };
         pages.append(&mut new_pages);
         let allocated_tokens = available_before - self.cache.available_tokens();
-
-        // Observer-visible KV events are complete-block only.
-        self.publish_stored_hashes(materialized_hashes, &pages, prefix_len, token_ids);
-
+        // New pages become visible to routers only when their tokens are inserted into the
+        // radix tree, as in SGLang (`cache_unfinished_req` / `release_kv_cache`).
         self.log_trace("allocation", allocated_tokens);
 
         lease.pages = pages;
@@ -523,13 +551,6 @@ impl SglangKvManager {
         lease.materialized_tokens = token_ids.len();
         lease.ensure_page_hashes(token_ids, page_size);
         let allocated_tokens = available_before - self.cache.available_tokens();
-
-        self.publish_stored_hashes(
-            lease.page_hashes_through(token_ids.len(), page_size),
-            &lease.pages,
-            prefix_len,
-            token_ids,
-        );
         self.log_trace("allocation", allocated_tokens);
         Some(prefix_len)
     }
@@ -1141,8 +1162,9 @@ impl SglangKvManager {
             return hashed_blocks;
         }
 
+        // `flush_events` assigns the published event ID.
         let event = KvEvent {
-            event_id: self.next_event_id,
+            event_id: 0,
             data: KvEventData::Stored(StoredBlocks {
                 parent_hash,
                 start_position: None,
@@ -1151,8 +1173,6 @@ impl SglangKvManager {
             dp_rank: self.dp_rank,
             tier: KvEventTier::Device,
         };
-        self.next_event_id += 1;
-
         self.publish_event(event);
 
         hashed_blocks
@@ -1190,14 +1210,38 @@ impl SglangKvManager {
         }
 
         let event = KvEvent {
-            event_id: self.next_event_id,
+            event_id: 0,
             data: KvEventData::Removed { block_hashes },
             dp_rank: self.dp_rank,
             tier: KvEventTier::Device,
         };
-        self.next_event_id += 1;
-
         self.publish_event(event);
+    }
+}
+
+/// Merge `event` into `tail` where SGLang's radix cache event queue would, and
+/// return it unchanged otherwise.
+fn merge_into_tail(tail: &mut KvEvent, event: KvEvent) -> Option<KvEvent> {
+    if tail.dp_rank != event.dp_rank || tail.tier != event.tier {
+        return Some(event);
+    }
+    match (&mut tail.data, event.data) {
+        (
+            KvEventData::Removed {
+                block_hashes: tail_hashes,
+            },
+            KvEventData::Removed { block_hashes },
+        ) => {
+            tail_hashes.extend(block_hashes);
+            None
+        }
+        (KvEventData::Stored(tail_stored), KvEventData::Stored(stored))
+            if tail_stored.blocks.last().map(|block| block.block_hash) == stored.parent_hash =>
+        {
+            tail_stored.blocks.extend(stored.blocks);
+            None
+        }
+        (_, data) => Some(KvEvent { data, ..event }),
     }
 }
 
@@ -1215,6 +1259,18 @@ mod tests {
         let mut lease = RadixRequestLease::default();
         lease.ensure_page_hashes(tokens, page_size);
         lease
+    }
+
+    /// Publish a lease's complete pages without inserting them, as a publication
+    /// inside an admission would.
+    fn publish_lease(mgr: &mut SglangKvManager, lease: &RadixRequestLease, tokens: &[u32]) {
+        let page_size = mgr.cache().page_size();
+        mgr.publish_stored_hashes(
+            lease.page_hashes_through(tokens.len(), page_size),
+            lease.pages(),
+            0,
+            tokens,
+        );
     }
 
     struct MockSink {
@@ -1459,6 +1515,7 @@ mod tests {
                 mgr.activate_destination_lease(reservation, &tokens[..4], &mut lease),
                 0
             );
+            mgr.flush_events();
 
             let events = sink.clone_events();
             let [
@@ -1631,8 +1688,10 @@ mod tests {
             let tokens = [1, 2, 3, 4, 5, 6, 7, 8, 9];
             let mut alloc = mgr.allocate_for_request(&tokens[..4]).unwrap();
             mgr.extend_cached_prefix(&tokens[..4], &mut alloc.lease);
+            mgr.flush_events();
             mgr.extend_allocation(&tokens, &mut alloc.lease).unwrap();
             mgr.finish(&tokens, alloc.lease);
+            mgr.flush_events();
             let events = sink.clone_events();
             let stored = events
                 .iter()
@@ -1654,10 +1713,12 @@ mod tests {
             let cached = mgr.allocate_for_request(&tokens[..8]).unwrap();
             assert_eq!(cached.prefix_len, 8);
             mgr.finish(&tokens[..8], cached.lease);
+            mgr.flush_events();
             assert_eq!(sink.event_count(), event_count);
             mgr.evict(8);
             let reused = mgr.allocate_for_request(&tokens[..4]).unwrap();
             mgr.finish(&tokens[..4], reused.lease);
+            mgr.flush_events();
             let events = sink.clone_events();
             let KvEventData::Stored(stored) = &events.last().unwrap().data else {
                 panic!("expected a store after eviction");
@@ -1692,13 +1753,17 @@ mod tests {
         let mut mgr = SglangKvManager::new(100, 1, KvEventPublishers::new(Some(sink.clone())), 0);
 
         let r = mgr.allocate_for_request(&[1, 2, 3]).unwrap();
-        assert_eq!(sink.event_count(), 1); // BlockStored for 3 new pages
+        mgr.flush_events();
+        assert_eq!(sink.event_count(), 0); // Allocated pages are not in the radix tree yet.
 
         mgr.finish(&[1, 2, 3], r.lease);
+        mgr.flush_events();
+        assert_eq!(sink.event_count(), 1); // BlockStored for 3 new pages
 
         // Second request with full cache hit → no new events
         let r2 = mgr.allocate_for_request(&[1, 2, 3]).unwrap();
         assert_eq!(r2.prefix_len, 3);
+        mgr.flush_events();
         assert_eq!(sink.event_count(), 1); // no new event
     }
 
@@ -1709,10 +1774,12 @@ mod tests {
 
         let first = mgr.allocate_for_request(&[1]).unwrap();
         let page = first.lease.pages()[0];
-        assert!(mgr.abort(first.lease));
+        mgr.finish(&[1], first.lease);
 
         let second = mgr.allocate_for_request(&[2]).unwrap();
-        assert_eq!(second.lease.pages(), &[page]);
+        assert_eq!(second.lease.pages(), &[page]); // Eviction reuses the page.
+        mgr.finish(&[2], second.lease);
+        mgr.flush_events();
 
         let events = sink.clone_events();
         assert_eq!(events.len(), 3);
@@ -1743,19 +1810,23 @@ mod tests {
             let first = mgr.allocate_for_request(&[1]).unwrap();
             let page = first.lease.pages()[0];
             mgr.finish(&[1], first.lease);
+            mgr.flush_events();
             let pages_before = mgr.page_to_block_hash.clone();
             let counts_before = mgr.block_hash_refcounts.clone();
 
             let admission = mgr.begin_admission();
             let second = mgr.allocate_for_request(&[2]).unwrap();
             assert_eq!(second.lease.pages(), &[page]); // Eviction reuses the page.
+            publish_lease(&mut mgr, &second.lease, &[2]);
             assert!(mgr.abort(second.lease));
             let third = mgr.allocate_for_request(&[3]).unwrap();
             assert_eq!(third.lease.pages(), &[page]); // Mutate the same slot again.
+            publish_lease(&mut mgr, &third.lease, &[3]);
             assert_eq!(sink.event_count(), 1); // Nothing speculative is published.
 
             if commit {
                 mgr.commit_admission(admission);
+                mgr.flush_events();
                 let events = sink.clone_events();
                 assert_eq!(events.len(), 5);
                 for (index, event) in events.iter().enumerate() {
@@ -1781,6 +1852,7 @@ mod tests {
                 assert_eq!(sink.event_count(), 1);
                 let retry = mgr.allocate_for_request(&[2]).unwrap();
                 assert_eq!(retry.lease.pages(), &[page]);
+                mgr.flush_events();
                 assert_eq!(sink.clone_events()[1].event_id, 1);
                 mgr.abort(retry.lease);
             }
@@ -1794,7 +1866,9 @@ mod tests {
         let pages_before = mgr.page_to_block_hash.clone();
         let admission = mgr.begin_admission();
         let first = mgr.allocate_for_request(&[1]).unwrap();
+        publish_lease(&mut mgr, &first.lease, &[1]);
         let second = mgr.allocate_for_request(&[1]).unwrap();
+        publish_lease(&mut mgr, &second.lease, &[1]);
         let hash = mgr.page_to_block_hash[first.lease.pages()[0].index()].unwrap();
         assert_eq!(mgr.block_hash_refcounts[&hash], 2);
         mgr.abort(first.lease);
@@ -1809,9 +1883,12 @@ mod tests {
         assert_eq!(sink.event_count(), 0);
 
         let first = mgr.allocate_for_request(&[1]).unwrap();
+        publish_lease(&mut mgr, &first.lease, &[1]);
+        mgr.flush_events();
         let pages_before = mgr.page_to_block_hash.clone();
         let admission = mgr.begin_admission();
         let second = mgr.allocate_for_request(&[1]).unwrap();
+        publish_lease(&mut mgr, &second.lease, &[1]);
         assert_eq!(mgr.block_hash_refcounts[&hash], 2);
         mgr.rollback_admission(admission);
         assert_eq!(mgr.page_to_block_hash, pages_before);
@@ -1819,6 +1896,7 @@ mod tests {
         assert_eq!(sink.event_count(), 1);
         drop(second); // The speculative lease was invalidated by rollback.
         mgr.abort(first.lease);
+        mgr.flush_events();
         assert_eq!(sink.event_count(), 2);
     }
 
@@ -1829,6 +1907,7 @@ mod tests {
 
         let r = mgr.allocate_for_request(&[1, 2, 3, 4, 5, 6]).unwrap();
         mgr.finish(&[1, 2, 3, 4, 5, 6], r.lease);
+        mgr.flush_events();
 
         let events = sink.clone_events();
         assert_eq!(events.len(), 1);
@@ -1855,6 +1934,7 @@ mod tests {
             mgr.publish_stored_hashes(lease.page_hashes_through(4, 4), &pages[..1], 0, &tokens),
             1
         );
+        mgr.flush_events();
         assert_eq!(
             mgr.publish_stored_hashes(lease.page_hashes_through(8, 4), &pages, 0, &tokens),
             1
@@ -1863,6 +1943,7 @@ mod tests {
             mgr.publish_stored_hashes(lease.page_hashes_through(8, 4), &pages, 0, &tokens),
             0
         );
+        mgr.flush_events();
 
         let events = sink.clone_events();
         assert_eq!(events.len(), 2);
@@ -1885,6 +1966,7 @@ mod tests {
 
         let mut alloc = mgr.allocate_for_request(&tokens[..2]).unwrap();
         mgr.extend_cached_prefix(&tokens[..2], &mut alloc.lease);
+        mgr.flush_events();
         assert_eq!(sink.event_count(), 1);
 
         assert!(
@@ -1892,6 +1974,7 @@ mod tests {
                 .is_some()
         );
         mgr.extend_cached_prefix(&tokens[..4], &mut alloc.lease);
+        mgr.flush_events();
         let events = sink.clone_events();
         assert_eq!(events.len(), 2);
         let KvEventData::Stored(first_store) = &events[1].data else {
@@ -1905,6 +1988,7 @@ mod tests {
 
         assert!(mgr.extend_allocation(&tokens, &mut alloc.lease).is_some());
         mgr.finish(&tokens, alloc.lease);
+        mgr.flush_events();
         let events = sink.clone_events();
         assert_eq!(events.len(), 3);
         let KvEventData::Stored(final_store) = &events[2].data else {
@@ -1924,6 +2008,9 @@ mod tests {
 
         let req1 = mgr.allocate_for_request(&[1, 2, 3]).unwrap();
         let req2 = mgr.allocate_for_request(&[1, 2, 3]).unwrap();
+        publish_lease(&mut mgr, &req1.lease, &[1, 2, 3]);
+        publish_lease(&mut mgr, &req2.lease, &[1, 2, 3]);
+        mgr.flush_events();
 
         let events = sink.clone_events();
         assert_eq!(events.len(), 1);
@@ -1933,9 +2020,11 @@ mod tests {
         assert_eq!(store.blocks.len(), 3);
 
         mgr.free_pages(&req1.lease.pages);
+        mgr.flush_events();
         assert_eq!(sink.event_count(), 1);
 
         mgr.free_pages(&req2.lease.pages);
+        mgr.flush_events();
         let events = sink.clone_events();
         assert_eq!(events.len(), 2);
         let KvEventData::Removed { block_hashes } = &events[1].data else {
@@ -2062,9 +2151,12 @@ mod tests {
 
         let mut alloc1 = mgr.allocate_for_request(&tokens[..chunk1_len]).unwrap();
         mgr.extend_cached_prefix(&tokens[..chunk1_len], &mut alloc1.lease);
+        mgr.flush_events();
 
-        let alloc2 = mgr.allocate_for_request(&tokens[..chunk2_len]).unwrap();
+        let mut alloc2 = mgr.allocate_for_request(&tokens[..chunk2_len]).unwrap();
+        mgr.extend_cached_prefix(&tokens[..chunk2_len], &mut alloc2.lease);
         assert!(mgr.abort(alloc1.lease));
+        mgr.flush_events();
 
         let events = sink.events.lock().unwrap();
         assert_eq!(events.len(), 2, "expected two stored events");

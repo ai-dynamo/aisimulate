@@ -568,7 +568,10 @@ fn fresh_prefill_tracks_cache_owned_prefix_pages_and_pressure_event() {
         materialized_tokens: 3,
         allocated_tokens: 4,
     };
-    buffer.drain();
+    // The request recomputes the second page into a fresh, still private page, so the evicted
+    // cached copy was the only visible one: routers see its removal right away.
+    kv_manager.flush_events();
+    assert_eq!(removed_event_count(&buffer.drain()), 1);
 
     let mut running = vec![req, blocker];
     let (retracted, pressure_events) = decode::check_decode_mem_with_pressure_events(
@@ -594,10 +597,10 @@ fn fresh_prefill_tracks_cache_owned_prefix_pages_and_pressure_event() {
     assert_eq!(pressure.logical_available_blocks_before, Some(0));
     assert_eq!(pressure.required_blocks_before, Some(1));
     assert!(pressure.state_after.active_blocks <= pressure.state_before.active_blocks);
-    // The retracted request frees the page it owned beyond the cached prefix (one stored block
-    // removed); the cached first page survives, the second cached page had already been evicted
-    // for the blocker.
-    assert_eq!(removed_event_count(&buffer.drain()), 1);
+    // The retracted request frees the page it owned beyond the cached prefix. That page never
+    // entered the radix tree, so no removal is published; the cached first page survives.
+    kv_manager.flush_events();
+    assert_eq!(removed_event_count(&buffer.drain()), 0);
     assert_eq!(kv_manager.cache().page_pool.available(), 4);
     assert_eq!(kv_manager.cache_mut().match_prefix(&prompt).0, 4);
 }
@@ -677,6 +680,34 @@ mod source_holds {
         core.apply_command(SchedulerCommand::ReleaseSource { handoff_id })
             .unwrap();
         assert_eq!(occupied_tokens(&core), released_tokens);
+    }
+
+    /// SGLang caches a disaggregated prefill's prompt right after the prefill forward
+    /// (`cache_unfinished_req` in `process_batch_result_disagg_prefill`) and publishes it with
+    /// that batch, so routers and later prefills see it while its KV transfers.
+    #[test]
+    fn held_source_prompt_is_cached_and_published_after_prefill() {
+        let mut core = SglangCore::new_with_kv_capture(args(), 0);
+        let handoff_id = HandoffId::from(Uuid::from_u128(408));
+        let mut prefill = request(Uuid::from_u128(308));
+        prefill.max_output_tokens = 1;
+        let prompt = prefill.tokens.clone();
+        core.apply_command(SchedulerCommand::SubmitHandoffPrefill {
+            handoff_id,
+            request: prefill,
+        })
+        .unwrap();
+
+        let pass = execute(&mut core, 0.0);
+        assert!(pass.output_signals[0].completed);
+        assert!(core.source_is_held(handoff_id));
+        assert_eq!(stored_hashes(&pass.kv_events).len(), 2);
+        assert_eq!(core.kv_manager.cache().prefix_match_len(&prompt), 8);
+
+        core.apply_command(SchedulerCommand::ReleaseSource { handoff_id })
+            .unwrap();
+        assert!(core.drain_kv_events().is_empty());
+        assert_eq!(core.kv_manager.cache().prefix_match_len(&prompt), 8);
     }
 
     #[test]
@@ -1010,8 +1041,8 @@ mod destination_lifecycle {
         assert_eq!(ready.kv_pages(), reserved_pages);
         assert_eq!(destination.running.len(), 1);
         assert!(destination.kv_manager.cache().protected_size >= protected_before_activation);
-        let activation_stores = stored_hashes(&destination.drain_kv_events());
-        assert!(!activation_stores.is_empty());
+        // The decode worker is busy, so the activation insert waits for SGLang's next publish.
+        assert!(destination.drain_kv_events().is_empty());
 
         assert_eq!(
             source
@@ -1033,9 +1064,12 @@ mod destination_lifecycle {
             .prebuilt_request(logical_uuid)
             .expect("full running batch must keep request ready");
         assert_eq!(ready.kv_pages(), reserved_pages);
-        assert_no_republished_stores(&activation_stores, &stored_hashes(&blocked.kv_events));
+        assert!(stored_hashes(&blocked.kv_events).is_empty());
 
         let blocker_terminal = execute(&mut destination, blocked.end_ms);
+        // The blocker's completion idles the running batch, which publishes the activation.
+        let activation_stores = stored_hashes(&blocker_terminal.kv_events);
+        assert!(!activation_stores.is_empty());
         assert!(
             blocker_terminal
                 .admissions
@@ -1362,6 +1396,91 @@ mod core_behavior {
         }
     }
 
+    /// Run `core` until it drains and return each pass's KV events as (kind, blocks) pairs,
+    /// keyed by pass index and skipping passes that published nothing.
+    fn kv_event_shapes_by_pass(core: &mut SglangCore) -> Vec<(usize, Vec<(&'static str, usize)>)> {
+        let mut collector = crate::engine::trace::TraceCollector::default();
+        let mut now_ms = 0.0;
+        let mut next_event_id = None;
+        let mut shapes = Vec::new();
+        for pass_index in 0.. {
+            if core.is_empty() {
+                break;
+            }
+            let pass = core.execute_pass(&mut collector, now_ms);
+            now_ms = pass.end_ms;
+            for event in &pass.kv_events {
+                let expected_id = *next_event_id.get_or_insert(event.event_id);
+                assert_eq!(
+                    event.event_id, expected_id,
+                    "published event IDs must be dense"
+                );
+                next_event_id = Some(expected_id + 1);
+            }
+            if pass.kv_events.is_empty() {
+                continue;
+            }
+            let shape = pass
+                .kv_events
+                .iter()
+                .map(|event| match &event.data {
+                    KvEventData::Stored(stored) => ("stored", stored.blocks.len()),
+                    KvEventData::Removed { block_hashes } => ("removed", block_hashes.len()),
+                })
+                .collect();
+            shapes.push((pass_index, shape));
+        }
+        shapes
+    }
+
+    /// SGLang inserts a request into its radix tree after the prefill forward
+    /// (`cache_unfinished_req`) and again when the request finishes (`release_kv_cache`), so
+    /// routers see two stores per request and no decoded block before the request finishes.
+    #[rstest::rstest]
+    fn kv_events_store_prompt_after_prefill_and_outputs_at_finish(
+        #[values(1, 4)] page_size: usize,
+    ) {
+        let mut core = SglangCore::new_with_kv_capture(test_args(64, page_size, 64), 0);
+        core.receive(direct_request((1..=8).collect(), 50));
+
+        // One prefill pass emits the first token; 49 decode passes emit the rest. The prefill
+        // insert covers the prompt only: the first output token's KV is not computed yet.
+        let prefill_blocks = 8 / page_size;
+        let finished_blocks = 58 / page_size;
+        assert_eq!(
+            kv_event_shapes_by_pass(&mut core),
+            vec![
+                (0, vec![("stored", prefill_blocks)]),
+                (49, vec![("stored", finished_blocks - prefill_blocks)]),
+            ]
+        );
+    }
+
+    /// SGLang merges consecutive removals in its event queue and publishes the queue after each
+    /// prefill batch, every `--decode-log-interval` (40) decode batches, and when it goes idle.
+    #[test]
+    fn kv_event_removals_are_batched_like_sglang() {
+        // Sixty cached one-token prompts fill the pool except for room for an eight-token prompt,
+        // so every output token of the next request evicts one cached page.
+        let mut core = SglangCore::new_with_kv_capture(test_args(68, 1, 64), 0);
+        for token in 1_000..1_060 {
+            let cached = core.kv_manager.allocate_for_request(&[token]).unwrap();
+            core.kv_manager.finish(&[token], cached.lease);
+        }
+        core.kv_manager.flush_events();
+        core.drain_kv_events();
+        core.receive(direct_request((1..=8).collect(), 50));
+
+        assert_eq!(
+            kv_event_shapes_by_pass(&mut core),
+            vec![
+                (0, vec![("removed", 1), ("stored", 8)]),
+                (40, vec![("removed", 40)]),
+                (49, vec![("removed", 9), ("stored", 50)]),
+            ]
+        );
+    }
+
     #[test]
     fn test_chunked_prefill_admits_next_chunk_when_full_prompt_does_not_fit() {
         let config = SglangConfig {
@@ -1548,7 +1667,7 @@ mod core_behavior {
     }
 
     #[test]
-    fn test_unfinished_decode_request_is_cached_after_output() {
+    fn test_decoded_tokens_are_cached_only_when_the_request_finishes() {
         let config = SglangConfig::from_args(
             &MockEngineArgs::builder()
                 .engine_type(EngineType::Sglang)
@@ -1558,22 +1677,114 @@ mod core_behavior {
                 .unwrap(),
         );
         let mut kv_manager = SglangKvManager::new(64, 4, KvEventPublishers::default(), 0);
-        let alloc = kv_manager.allocate_for_request(&[1, 2, 3, 4]).unwrap();
+        let mut alloc = kv_manager.allocate_for_request(&[1, 2, 3, 4]).unwrap();
+        // SGLang `cache_unfinished_req` after the prefill forward.
+        kv_manager.extend_cached_prefix(&[1, 2, 3, 4], &mut alloc.lease);
         let mut running = vec![SglangRequest {
             is_decode_handoff: false,
             uuid: Uuid::new_v4(),
             sequence_tokens: vec![1, 2, 3, 4],
             prompt_len: 4,
-            max_output_tokens: 4,
+            max_output_tokens: 5,
             planned_output_ids: None,
             kv_lease: alloc.lease,
             materialized_tokens: 4,
             allocated_tokens: 4,
         }];
 
+        for _ in 0..4 {
+            simulate_decode_step(&mut running, &mut kv_manager, &config, 0.0, false);
+        }
+        assert_eq!(running.len(), 1);
+        let sequence = running[0].sequence_prefix(8).to_vec();
+        assert_eq!(kv_manager.cache().prefix_match_len(&sequence), 4);
+
         simulate_decode_step(&mut running, &mut kv_manager, &config, 0.0, false);
-        let prefix = running[0].sequence_prefix(4);
-        assert_eq!(kv_manager.cache().prefix_match_len(prefix), 4);
+        assert!(running.is_empty());
+        assert_eq!(kv_manager.cache().prefix_match_len(&sequence), 8);
+    }
+
+    /// SGLang inserts the prompt after the prefill forward even when the first output slots do
+    /// not fit, and retraction (`release_kv_cache(is_insert=False)`) keeps that cached prompt.
+    #[test]
+    fn prompt_is_cached_after_prefill_when_first_output_slots_do_not_fit() {
+        let config = SglangConfig::from_args(&test_args(4, 4, 16));
+        let (buffer, sink) = capture_kv_event_sink();
+        // Four pages: the two prompts take three, and their first output tokens need two more.
+        let mut kv_manager = SglangKvManager::new(16, 4, KvEventPublishers::new(Some(sink)), 0);
+        let mut prefilled = |uuid: u128, prompt: Vec<u32>| {
+            let alloc = kv_manager.allocate_for_request(&prompt).unwrap();
+            SglangRequest {
+                is_decode_handoff: false,
+                uuid: Uuid::from_u128(uuid),
+                prompt_len: prompt.len(),
+                materialized_tokens: prompt.len(),
+                allocated_tokens: prompt.len(),
+                sequence_tokens: prompt,
+                max_output_tokens: 4,
+                planned_output_ids: None,
+                kv_lease: alloc.lease,
+            }
+        };
+        let short_prompt: Vec<u32> = (1..=4).collect();
+        let long_prompt: Vec<u32> = (11..=18).collect();
+        let mut running = vec![
+            prefilled(90_101, short_prompt.clone()),
+            prefilled(90_102, long_prompt.clone()),
+        ];
+
+        let first =
+            decode::simulate_prefill_first_tokens(&mut running, &mut kv_manager, &config, 0.0)
+                .unwrap();
+        assert!(first.output_signals.is_empty());
+        assert!(running.iter().all(|req| req.output_len() == 0));
+        assert_eq!(kv_manager.cache().prefix_match_len(&short_prompt), 4);
+        assert_eq!(kv_manager.cache().prefix_match_len(&long_prompt), 8);
+        kv_manager.flush_events();
+        let stored_blocks: Vec<_> = buffer
+            .drain()
+            .iter()
+            .map(|event| match &event.data {
+                KvEventData::Stored(stored) => stored.blocks.len(),
+                KvEventData::Removed { .. } => panic!("nothing is evicted"),
+            })
+            .collect();
+        assert_eq!(stored_blocks, vec![1, 2]);
+
+        let decode = simulate_decode_step(&mut running, &mut kv_manager, &config, 0.0, false);
+        let [retracted] = decode.requests.as_slice() else {
+            panic!("expected one retraction");
+        };
+        assert_eq!(retracted.uuid, Uuid::from_u128(90_101));
+        assert_eq!(running[0].output_len(), 1);
+        assert_eq!(kv_manager.cache().prefix_match_len(&short_prompt), 4);
+    }
+
+    /// SGLang aborts a running request by finishing it (`to_finish`), and the finish
+    /// (`release_kv_cache` with insertion) caches the tokens it decoded.
+    #[test]
+    fn cancelled_running_request_caches_its_decoded_tokens() {
+        let mut core = SglangCore::new_with_kv_capture(test_args(64, 4, 64), 0);
+        let uuid = Uuid::from_u128(90_201);
+        let mut request = direct_request((1..=8).collect(), 50);
+        request.uuid = Some(uuid);
+        core.receive(request);
+
+        // One prefill pass and seven decode passes: eight output tokens, two full decoded pages.
+        let mut collector = crate::engine::trace::TraceCollector::default();
+        let mut now_ms = 0.0;
+        for _ in 0..8 {
+            now_ms = core.execute_pass(&mut collector, now_ms).end_ms;
+        }
+        let sequence = core.running[0].sequence_prefix(16).to_vec();
+        assert_eq!(core.kv_manager.cache().prefix_match_len(&sequence), 8);
+        core.drain_kv_events();
+
+        core.apply_command(SchedulerCommand::CancelRequest { request_id: uuid })
+            .unwrap();
+        assert!(core.is_empty());
+        assert_eq!(core.kv_manager.cache().prefix_match_len(&sequence), 16);
+        assert_eq!(stored_hashes(&core.drain_kv_events()).len(), 2);
     }
 
     #[test]

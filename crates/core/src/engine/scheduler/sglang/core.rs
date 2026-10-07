@@ -48,6 +48,10 @@ use crate::engine::scheduler::{
     capture_kv_event_sink,
 };
 
+/// SGLang `--decode-log-interval` default. SGLang publishes its queued KV events after every
+/// prefill batch, after every this many decode batches, and when the scheduler goes idle.
+const DECODE_LOG_INTERVAL: usize = 40;
+
 pub(crate) struct SglangCore {
     pub(super) config: SglangConfig,
     dp_rank: u32,
@@ -73,6 +77,8 @@ pub(crate) struct SglangCore {
     prefill_in_pass: bool,
     model_work_in_pass: bool,
     interval_idle_in_pass: bool,
+    /// SGLang `forward_ct_decode`: decode forwards run so far, which paces KV event publishing.
+    decode_forwards: usize,
 }
 
 struct HeldSglangPrefill {
@@ -223,6 +229,7 @@ impl SglangCore {
             prefill_in_pass: false,
             model_work_in_pass: false,
             interval_idle_in_pass: false,
+            decode_forwards: 0,
             #[cfg(test)]
             destination_reservation_attempts: 0,
             lifecycle_events: Vec::new(),
@@ -254,6 +261,23 @@ impl SglangCore {
     }
 
     pub(crate) fn apply_command_effects(
+        &mut self,
+        command: SchedulerCommand,
+        allow_destination_admission: bool,
+    ) -> anyhow::Result<SchedulerCommandEffects> {
+        let effects = self.dispatch_command(command, allow_destination_admission);
+        self.publish_kv_events_if_idle();
+        effects
+    }
+
+    /// An idle SGLang scheduler publishes queued KV events on its next loop iteration.
+    fn publish_kv_events_if_idle(&mut self) {
+        if self.running.is_empty() {
+            self.kv_manager.flush_events();
+        }
+    }
+
+    fn dispatch_command(
         &mut self,
         command: SchedulerCommand,
         allow_destination_admission: bool,
@@ -440,6 +464,8 @@ impl SglangCore {
         let reservation = self
             .kv_manager
             .reserve_destination_lease(request.kv_lease.page_hashes(), request.prompt_len());
+        // Reservation can evict outside a pass, including at a rank's pass-completion boundary.
+        self.publish_kv_events_if_idle();
         self.pending_destinations.mark_front_attempted(generation);
         let Some(kv) = reservation else {
             return Vec::new();
@@ -571,26 +597,26 @@ impl SglangCore {
     }
 
     fn cancel_active_request(&mut self, request_id: Uuid) -> bool {
-        let request = if let Some(index) = self
+        let (request, was_running) = if let Some(index) = self
             .waiting
             .iter()
             .position(|request| request.uuid == request_id)
         {
-            self.waiting.remove(index)
+            (self.waiting.remove(index), false)
         } else if let Some(index) = self
             .prebuilt_ready
             .iter()
             .position(|request| request.uuid == request_id)
         {
-            self.prebuilt_ready.remove(index)
+            (self.prebuilt_ready.remove(index), false)
         } else if let Some(index) = self
             .running
             .iter()
             .position(|request| request.uuid == request_id)
         {
-            Some(self.running.remove(index))
+            (Some(self.running.remove(index)), true)
         } else {
-            None
+            (None, false)
         };
         let Some(mut request) = request else {
             return false;
@@ -599,7 +625,15 @@ impl SglangCore {
         if let Some(oracle) = &self.belady {
             oracle.retire_requests([request_id]);
         }
-        let capacity_improved = self.kv_manager.abort(std::mem::take(&mut request.kv_lease));
+        // SGLang aborts a running request by finishing it, and the finish (`release_kv_cache`)
+        // inserts the KV it computed. Other requests release their KV without inserting it.
+        let capacity_improved = if was_running {
+            let releases_kv = request.kv_lease.is_active();
+            cleanup_completed_request(&mut request, &mut self.kv_manager, self.config.block_size);
+            releases_kv
+        } else {
+            self.kv_manager.abort(std::mem::take(&mut request.kv_lease))
+        };
         self.source_holds.remove_request(request_id);
         self.active_destination_handoffs.remove_request(request_id);
         if capacity_improved {
@@ -1116,6 +1150,16 @@ impl SglangCore {
             // The ratio decays in `update_running_batch`, i.e. only on decode passes.
             self.new_token_ratio = (self.new_token_ratio - self.config.new_token_ratio_decay_step)
                 .max(self.config.min_new_token_ratio);
+        }
+
+        let decode_forward = !prefill_pass && self.model_work_in_pass;
+        if decode_forward {
+            self.decode_forwards += 1;
+        }
+        if !decode_forward || self.decode_forwards.is_multiple_of(DECODE_LOG_INTERVAL) {
+            self.kv_manager.flush_events();
+        } else {
+            self.publish_kv_events_if_idle();
         }
 
         // Build FPM snapshot now that all state has settled.
