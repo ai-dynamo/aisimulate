@@ -290,6 +290,39 @@ def _initialize_dsa_history(model_runner, attention_module, forward_batch, histo
             )
 
 
+def _dsa_forward_input_relay(model_runner, batch):
+    """Own the native scheduler relay needed by SGLang 0.5.14 input staging.
+
+    At 49e384ce, managers/overlap_utils.py:65-97 materializes input IDs;
+    scheduler.py:3269-3280 uses it and FutureMap.stash even without overlap.
+    Attention-only execution skips embeddings, but ForwardBatch still needs
+    these IDs to derive the actual token count and native graph eligibility.
+    """
+    from sglang.srt.managers.overlap_utils import FutureMap, decide_needs_cpu_seq_lens
+
+    if not hasattr(model_runner, "_aic_dsa_input_relay"):
+        model_runner._aic_dsa_input_relay = FutureMap(
+            device=batch.device,
+            spec_algo=batch.spec_algorithm,
+            req_to_token_pool=model_runner.req_to_token_pool,
+            needs_cpu_seq_lens=decide_needs_cpu_seq_lens(model_runner.server_args, [model_runner.attn_backend]),
+        )
+    return model_runner._aic_dsa_input_relay
+
+
+def _validate_dsa_forward_tokens(forward_batch, expected_tokens: int) -> None:
+    """Reject missing scheduler inputs before they alter native dispatch."""
+    for name in ("input_ids", "positions", "out_cache_loc"):
+        value = getattr(forward_batch, name)
+        if value is None or value.numel() != expected_tokens:
+            actual = None if value is None else value.numel()
+            raise ValueError(f"DSA {name} has {actual} tokens; expected {expected_tokens}")
+    if forward_batch.num_token_non_padded_cpu != expected_tokens:
+        raise ValueError(
+            f"DSA num_token_non_padded_cpu={forward_batch.num_token_non_padded_cpu}; expected {expected_tokens}"
+        )
+
+
 def _resolve_local_model_path(model_id: str) -> str:
     """Resolve a HuggingFace model ID to a local config directory.
 
@@ -1500,7 +1533,13 @@ def _run_prefill(
         )
         with _temporarily_chunked_alloc_extend(model_runner, batch_size * seq_length):
             batch.prepare_for_extend()
+        if attn_type == "dsa":
+            from sglang.srt.managers.overlap_utils import resolve_forward_inputs
+
+            resolve_forward_inputs(batch, _dsa_forward_input_relay(model_runner, batch))
         forward_batch = ForwardBatch.init_new(batch, model_runner)
+        if attn_type == "dsa":
+            _validate_dsa_forward_tokens(forward_batch, batch_size * seq_length)
         model_runner.attn_backend.init_forward_metadata(forward_batch)
         if attn_type == "dsa":
             _initialize_dsa_history(model_runner, attention_module, forward_batch, prefix_len)
@@ -1975,6 +2014,29 @@ def _run_prefill(
             else call_attention_module
         )
 
+        if attn_type == "dsa":
+            from collector.sglang.dsa_prefill_graph import dsa_prefill_graph, graph_token_bucket
+
+            if graph_token_bucket(model_runner, token_count) is not None:
+                graph_context = dsa_prefill_graph(
+                    model_runner,
+                    attention_module,
+                    forward_batch,
+                    hidden_states,
+                    zero_allocator,
+                    skip_indexer=_skip_indexer,
+                )
+                call_target = graph_context.__enter__()
+                native_graph_context = graph_context
+                # Native piecewise metadata disables MHA_ONE_SHOT even for
+                # small inputs (dsa_backend.py:2436-2444 @ 49e384ce).
+                # Label the path selected after native load_batch, not the
+                # earlier eager preparation or the requested backend.
+                if model_runner.attn_backend.use_mha:
+                    raise RuntimeError("Native piecewise DSA unexpectedly selected dense MHA")
+                indexer_mode = "skip_indexer" if _skip_indexer else "indexer"
+                executed_dsa_source = f"sglang_dsa_{indexer_mode}_{model_runner.attn_backend.dsa_prefill_impl}"
+
         # Warmup — run UNDER the flashinfer autotune context so the fp4_gemm
         # autotuning is absorbed into this module warmup (tuned here, cached for
         # the timed region) instead of running as a separate model-init phase.
@@ -1983,7 +2045,7 @@ def _run_prefill(
         try:
             from flashinfer.autotuner import autotune as _fi_autotune
 
-            _tune_ctx = _fi_autotune(True)
+            _tune_ctx = _fi_autotune(True) if native_graph_context is None else contextlib.nullcontext()
         except Exception:
             _tune_ctx = contextlib.nullcontext()
         try:
@@ -2007,37 +2069,16 @@ def _run_prefill(
         if use_full_model_piecewise_replay or use_module_piecewise_replay:
             print(f"  Piecewise can_run_graph={last_can_run_graph}")
 
-        if _skip_indexer and not _skip_uses_dense_mha and _skip_state["prev_topk"] is None:
+        if (
+            _skip_indexer
+            and native_graph_context is None
+            and not _skip_uses_dense_mha
+            and _skip_state["prev_topk"] is None
+        ):
             raise RuntimeError(
                 f"skip_indexer pass for {attn_type} captured no topk index during warmup; "
                 "refusing to record a skip row with full-indexer latency."
             )
-
-        if attn_type == "dsa":
-            from collector.sglang.dsa_prefill_graph import dsa_prefill_graph, graph_token_bucket
-
-            if graph_token_bucket(model_runner, token_count) is not None:
-                graph_context = dsa_prefill_graph(
-                    model_runner,
-                    attention_module,
-                    forward_batch,
-                    hidden_states,
-                    zero_allocator,
-                    skip_indexer=_skip_indexer,
-                )
-                call_target = graph_context.__enter__()
-                native_graph_context = graph_context
-                # Native piecewise metadata disables MHA_ONE_SHOT even for
-                # small inputs (dsa_backend.py:2436-2444 @ 49e384ce).
-                # Label the path selected after native load_batch, not the
-                # earlier eager preparation or the requested backend.
-                if model_runner.attn_backend.use_mha:
-                    raise RuntimeError("Native piecewise DSA unexpectedly selected dense MHA")
-                indexer_mode = "skip_indexer" if _skip_indexer else "indexer"
-                executed_dsa_source = f"sglang_dsa_{indexer_mode}_{model_runner.attn_backend.dsa_prefill_impl}"
-                for _ in range(num_warmup):
-                    call_target()
-                torch.cuda.synchronize()
 
         module_cuda_graph = None
         if use_module_cuda_graph:
@@ -2240,10 +2281,24 @@ def _run_decode(
         )
         # Allocate KV cache slots, then switch to decode
         batch.prepare_for_extend()
+        if attn_type == "dsa":
+            from sglang.srt.managers.overlap_utils import resolve_forward_inputs
+
+            input_relay = _dsa_forward_input_relay(model_runner, batch)
+            resolve_forward_inputs(batch, input_relay)
         for req in batch.reqs:
             req.output_ids.append(0)
+        if attn_type == "dsa":
+            # Match the non-overlap scheduler's sampled-token handoff. The
+            # synthetic next token is the same zero appended to each Req.
+            input_relay.stash(batch.req_pool_indices, torch.zeros(batch_size, dtype=torch.int64, device=batch.device))
+            batch.input_ids = None
         batch.prepare_for_decode()
+        if attn_type == "dsa":
+            resolve_forward_inputs(batch, input_relay)
         forward_batch_decode = ForwardBatch.init_new(batch, model_runner)
+        if attn_type == "dsa":
+            _validate_dsa_forward_tokens(forward_batch_decode, batch_size)
         model_runner.attn_backend.init_forward_metadata(forward_batch_decode)
         if attn_type == "dsa":
             _initialize_dsa_history(model_runner, attention_module, forward_batch_decode, seq_length)
