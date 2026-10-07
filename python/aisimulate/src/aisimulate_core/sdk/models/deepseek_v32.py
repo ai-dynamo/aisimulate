@@ -179,7 +179,7 @@ def _generation_ops_for_engine(model: BaseModel, identity: dict) -> list:
         return generation
     expected = {
         "model_name": "nvidia/GLM-5.2-NVFP4",
-        "system_name": "vr200_hecate",
+        "system_name": "vr_nvl72",
         "backend": "sglang",
         "backend_version": "0.5.18+nvinternal.rubin.0.8full.66997102",
         "tp_size": 4,
@@ -298,6 +298,41 @@ class DeepSeekV32Model(BaseModel):
             ops.ElementWise("context_routed_shared_add", 75, 2 * 6144, 6144),
             *(original[name] for name in retained),
         ]
+
+    @classmethod
+    def supports_dcp(cls, backend_name: str) -> bool:
+        # Sparse-MLA (DSA) decode CP: vLLM `flashmla_sparse` / `flashinfer_mla_sparse`
+        # + DCP-aware indexer. SGLang's NSA backend has no DCP path yet (the
+        # DSA-family DCP PRs, #39330 / #36990 / #39117, are open), so it is not
+        # claimed. The GenerationDSAModule op prices the gathered heads over
+        # the per-rank KV stripe with the sparse attention over the rank's
+        # ceil(topk / dcp) owned slots; BaseModel._apply_decode_context_parallel
+        # adds the merge collectives and the indexer top-k gather.
+        return backend_name == "vllm"
+
+    def _validate_dcp_topology(self) -> None:
+        super()._validate_dcp_topology()
+        # vLLM's FlashMLA sparse backend (the default DSA decode kernel unless
+        # FLASHINFER_MLA_SPARSE is selected, `attention_backend="flashinfer"`
+        # here) only serves DCP with the `ag_rs` merge and the fp8_ds_mla
+        # mixed-batch KV path (`flashmla_sparse.py`: NotImplementedError
+        # otherwise). Do not price a configuration vLLM refuses to launch.
+        backend = getattr(self, "_backend_name", None)
+        attention_backend = str(getattr(self.config, "attention_backend", None) or "").lower()
+        if backend != "vllm" or "flashinfer" in attention_backend:
+            return
+        if self._dcp_comm_style() != "ag_rs":
+            raise ValueError(
+                f"{self.architecture} decode context parallelism on vLLM's FlashMLA sparse backend only runs "
+                f"with dcp_comm='ag_rs' (got {self.config.dcp_comm!r}); select attention_backend='flashinfer' "
+                "(FLASHINFER_MLA_SPARSE) for the a2a merges."
+            )
+        if self.config.kvcache_quant_mode.value.memory != 1:
+            raise ValueError(
+                f"{self.architecture} decode context parallelism on vLLM's FlashMLA sparse backend requires an "
+                f"fp8 KV cache (got kvcache_quant_mode={self.config.kvcache_quant_mode.name}); the bf16 sparse "
+                "path returns no LSE for the DCP merge."
+            )
 
     @classmethod
     def create(cls, model_info: dict, model_config, backend_name: str) -> BaseModel:

@@ -13,7 +13,7 @@ from typing import ParamSpec, TypeVar
 
 logger = logging.getLogger(__name__)
 
-_MIGRATION_GUIDE = "https://github.com/ai-dynamo/aisimulate/blob/main/docs/cli/migrate-from-aiconfigurator.md"
+_MIGRATION_GUIDE = "https://github.com/ai-dynamo/aisimulate/blob/main/docs/MIGRATION.md"
 _warned_entry_points: set[str] = set()
 
 _P = ParamSpec("_P")

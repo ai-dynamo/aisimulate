@@ -1353,3 +1353,86 @@ def test_on_candidate_reports_infeasible_outcomes_too(monkeypatch):
     assert len(seen) == 33
     assert all(record.status == CandidateStatus.INFEASIBLE for record in seen)
     assert all("over gpu_budget" in (record.reason or "") for record in seen)
+
+
+@pytest.mark.parametrize("transient", [False, True])
+def test_duplicate_failure_cache_preserves_transient_retries(monkeypatch, capsys, transient):
+    from dataclasses import replace
+
+    from aisimulate.sweeper.result import ReasonCategory
+
+    _stub(monkeypatch, _branch(_pc()))
+    runner = _FakeRunner()
+    score = search_mod._score_prepared
+
+    def controlled_score(prepared, replay_result, **kwargs):
+        result = score(prepared, replay_result, **kwargs)
+        if transient and runner.calls > 1:
+            return result
+        return replace(
+            result,
+            candidate=None,
+            observe_metrics=None,
+            outcome="resource_limited" if transient else "infeasible",
+            reason="test host admission" if transient else "test fixed SLA violation",
+            reason_category=ReasonCategory.RESOURCE_LIMIT if transient else ReasonCategory.SLA_CONSTRAINT,
+        )
+
+    monkeypatch.setattr(search_mod, "_score_prepared", controlled_score)
+    sampler_seen = []
+
+    def factory(branch, study_id, objectives=None, **kwargs):
+        sampler = _FakeSampler(branch, study_id, objectives)
+        sampler_seen.append(sampler)
+        return sampler
+
+    result = Sweeper(runner_factory=_FakeRunnerFactory(runner), sampler_factory=factory, show_progress=True).run(
+        _config(max_rounds=4, max_trials=4, candidates_per_round=1, max_eval_seconds=None),
+        top_n=None,
+    )
+    assert len(sampler_seen[0].scored) == 4
+    assert runner.calls == (2 if transient else 1)
+    assert result.counts.cache_hits == (2 if transient else 3)
+    assert result.counts.resource_limited == (1 if transient else 0)
+    assert result.counts.infeasible == (0 if transient else 1)
+    assert len(result.selected_candidates) == (1 if transient else 0)
+    captured = capsys.readouterr()
+    assert "4/4" in captured.err
+    assert "Search coverage: 4/4 suggestions" in captured.out
+
+
+def test_random_retries_transient_failure_before_exhausting_space(monkeypatch):
+    from dataclasses import replace
+
+    from aisimulate.sweeper.result import ReasonCategory
+    from aisimulate.sweeper.sampler import make_branch_sampler
+
+    branch = _branch(_pc())
+    branch.knob_choices.update(agg_max_num_batched_tokens=[8192], agg_max_num_seqs=[256])
+    _stub(monkeypatch, branch)
+    runner = _FakeRunner()
+    score = search_mod._score_prepared
+
+    def refuse_first(prepared, replay_result, **kwargs):
+        result = score(prepared, replay_result, **kwargs)
+        if runner.calls == 1:
+            return replace(
+                result,
+                candidate=None,
+                observe_metrics=None,
+                outcome="resource_limited",
+                reason="temporary host pressure",
+                reason_category=ReasonCategory.RESOURCE_LIMIT,
+            )
+        return result
+
+    monkeypatch.setattr(search_mod, "_score_prepared", refuse_first)
+    result = Sweeper(
+        runner_factory=_FakeRunnerFactory(runner), sampler_factory=make_branch_sampler, show_progress=False
+    ).run(
+        _config(max_rounds=3, max_trials=3, candidates_per_round=1, max_eval_seconds=None, algorithm="random"),
+    )
+    assert runner.calls == 2
+    assert result.counts.resource_limited == result.counts.feasible == 1
+    assert result.counts.cache_hits == 0
+    assert len(result.selected_candidates) == 1

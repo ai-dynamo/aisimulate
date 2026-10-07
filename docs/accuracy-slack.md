@@ -59,7 +59,7 @@ For each branch:
 - Require identical measurement revision/content and evaluation-rule fingerprints.
   The rule fingerprint covers evaluator source and its branch workflow at the
   producer revision, not the evaluated AISimulate package revision. The FPM
-  fingerprint includes `scripts/accuracy_digest.py`, which supplies its point
+  fingerprint includes `scripts/notifications/accuracy_digest.py`, which supplies its point
   codec. A change
   establishes a new baseline and reports comparison unavailable, not recovery.
 - Compare each E2E topology/configuration and FPM configuration/predictor on the
@@ -141,7 +141,7 @@ Before the workflow is merged/registered, run the same dependency-free Python
 entrypoint from its checkout with a read-only GitHub credential:
 
 ```bash
-GH_TOKEN="$(gh auth token)" python3 scripts/notify_accuracy.py \
+GH_TOKEN="$(gh auth token)" python3 scripts/notifications/notify_accuracy.py \
   --e2e-run-id 36643620072 --fpm-run-id 36558333115 \
   --output /tmp/accuracy-preview
 ```

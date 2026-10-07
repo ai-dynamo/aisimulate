@@ -3,7 +3,7 @@
 This guide documents the legacy `aiconfigurator cli` compatibility commands that still ship
 with AISimulate. For the unified `aisimulate` CLI, see the
 [AISimulate CLI User Guide](user-guide.md) and
-[AIC migration guide](migrate-from-aiconfigurator.md).
+[AIC migration guide](../MIGRATION.md).
 
 ## Basic Command
 As mentioned in root Readme, CLI supports six modes: `default`, `recommend`, `exp`, `generate`, `estimate`, and `support`. We'll go through these modes one by one.

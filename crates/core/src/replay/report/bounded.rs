@@ -138,6 +138,7 @@ pub(super) struct BoundedSummary {
     reused: usize,
     first_reused: usize,
     duration_ms: f64,
+    first_successful_arrival_ms: Option<f64>,
     good_requests: usize,
     good_output: usize,
     ttft: Samples,
@@ -168,6 +169,10 @@ impl BoundedSummary {
         self.reused += stats.reused_input_tokens;
         self.first_reused += stats.first_admission_reused_input_tokens;
         self.duration_ms = self.duration_ms.max(terminal_ms);
+        self.first_successful_arrival_ms = Some(
+            self.first_successful_arrival_ms
+                .map_or(stats.arrival_time_ms, |at| at.min(stats.arrival_time_ms)),
+        );
         let (Some(first), Some(last)) = (stats.first_token_ms(), stats.last_token_ms()) else {
             if sla.is_set()
                 && sla.is_good_without_tokens((terminal_ms - stats.arrival_time_ms).max(0.0))
@@ -202,7 +207,17 @@ impl BoundedSummary {
         };
         // The base collector already subtracts the profile epoch origin.
         let throughput = &mut report.throughput;
+        if let Some(profile) = &mut report.agentic_profile {
+            throughput.duration_ms = self
+                .first_successful_arrival_ms
+                .map_or(0.0, |start| (self.duration_ms - start).max(0.0));
+            profile.observation_duration_ms = Some(throughput.duration_ms);
+            profile.successful_request_throughput = (throughput.duration_ms > 0.0)
+                .then_some(self.completed as f64 * 1000.0 / throughput.duration_ms);
+        }
         let seconds = (throughput.duration_ms / 1000.0).max(1e-9);
+        // Provisioned worker time is already based on the reporting epoch in
+        // the base collector. The success-only cohort affects throughput only.
         throughput.request_throughput_rps = self.completed as f64 / seconds;
         throughput.input_throughput_tok_s = self.input as f64 / seconds;
         throughput.output_throughput_tok_s = self.output as f64 / seconds;

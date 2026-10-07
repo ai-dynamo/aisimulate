@@ -1,0 +1,26 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+# Functional smoke using a locally authored fixture and fixed latency.
+traffic:
+  source:
+    type: trace
+    format: weka
+    paths: [tests/e2e/configs/unified_cli/fixtures/traces/weka-two-plays.jsonl]
+  load:
+    type: trace_timestamps
+    agentic_lanes: 2
+    agentic_snapshot: {seed: 42}
+    agentic_warmup: true
+    agentic_profile: {duration_seconds: 30}
+engine:
+  mode: aggregated
+  model: tests/e2e/configs/unified_cli/fixtures/tiny-model
+  hardware: h200_sxm
+  backend: vllm
+  context_length: 2048
+  workers:
+    aggregated:
+      parallelism: {replicas: 1, tensor: 1}
+      scheduler: {max_batched_tokens: 8192, max_sequences: 256}
+      kv_cache: {block_size: 64, prefix_caching: true, capacity: {type: fixed, blocks: 256}}
+      timing: {type: fixed, prefill_ms: 100, decode_ms: 100}

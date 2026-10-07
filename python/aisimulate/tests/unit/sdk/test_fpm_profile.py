@@ -422,16 +422,18 @@ def test_profile_engine_controls_fail_before_model_lookup(profile_dict, direct_c
         profile_memory(**controls)
 
 
-@pytest.mark.parametrize("cp_size", [2, 0, True, 1.0, "1", None])
+# Prefill CP (cp_size > 1) is a supported knob at these entry points; only malformed
+# sizes are rejected, and before any model construction.
+@pytest.mark.parametrize("cp_size", [0, True, 1.0, "1", None])
 @pytest.mark.parametrize("with_profile", [False, True])
 def test_sdk_entry_points_reject_unsupported_cp_before_construction(profile_dict, monkeypatch, cp_size, with_profile):
     monkeypatch.setattr(engine, "build_model_config", _fail_graph)
     monkeypatch.setattr(memory.KVCacheEstimator, "from_request", _fail_graph)
     monkeypatch.setattr(memory.NaiveKVCacheEstimator, "from_model_path", _fail_graph)
     kwargs = {"cp_size": cp_size, "fpm_profile": profile_dict if with_profile else None}
-    with pytest.raises(ValueError, match="cp_size must be the integer 1"):
+    with pytest.raises(ValueError, match="cp_size must be a positive integer"):
         engine.compile_engine("test/unknown-decoder", "test_gpu", "vllm", "0.25.1", forward_model="fpm", **kwargs)
-    with pytest.raises(ValueError, match="cp_size must be the integer 1"):
+    with pytest.raises(ValueError, match="cp_size must be a positive integer"):
         memory.estimate_kv_cache(
             "test/unknown-decoder",
             "test_gpu",
@@ -1053,7 +1055,8 @@ def test_profile_block_budget_preserves_resource_provenance(profile_dict, profil
         ({"max_num_tokens": True}, "positive integer"),
         ({"fmha_quant_mode": "bfloat16"}, "identity conflict"),
         ({"attention_backend": "different"}, "identity conflict"),
-        ({"cp_size": 2}, "cp_size must be the integer 1"),
+        # Prefill CP is a supported knob; a profile without that cell fails loud.
+        ({"cp_size": 2}, "no matching FPM deployment profile"),
         ({"nextn": 1}, "nextn must be 0"),
         ({"gpu_memory_capacity_bytes_override": 200}, "no KV budget"),
         ({"memory_fraction_kind": "of_free"}, "incompatible memory fraction"),

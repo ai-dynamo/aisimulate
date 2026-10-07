@@ -543,13 +543,13 @@ mod tests {
                 moe_kernel_source: None,
                 kv_block_size: None,
                 parallel: ParallelMapping {
-                    dcp_size: None,
                     tp_size: 1,
                     pp_size: 1,
                     attention_dp_size: Some(1),
                     moe_tp_size: None,
                     moe_ep_size: None,
                     cp_size: None,
+                    dcp_size: None,
                 },
                 quantization: QuantizationConfig {
                     weight_dtype: None,

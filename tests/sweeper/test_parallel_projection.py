@@ -241,7 +241,10 @@ def test_preset_off_exposes_independent_parallel_knobs() -> None:
         "moe_tp",
         "moe_ep",
     }
-    assert projection.config == ReplicaParallelConfig(shape=ParallelShape(tp=2, dp=1, moe_tp=1, moe_ep=1), replicas=2)
+    assert projection.config == legal
+    assert projection.requested_features["replicas"] == 2
+    assert projection.actual_features["replicas"] == 1
+    assert projection.distance > 0
 
 
 def test_independent_parallel_domain_preserves_explicit_scale() -> None:

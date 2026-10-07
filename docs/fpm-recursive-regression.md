@@ -5,23 +5,29 @@ SPDX-License-Identifier: Apache-2.0
 
 # Recursive regression in the forward-pass performance model
 
-AISimulate updates its regression fit when a retained observation is inserted
-or evicted. It maintains small, centered sufficient statistics and solves the
-default standardized, nonnegative linear regression from those statistics.
+AISimulate updates centered sufficient statistics when a retained observation
+is inserted or evicted. By default it also solves the standardized, nonnegative
+linear regression after each accepted update transaction. Opt-in lazy updates
+defer coefficient publication while retaining every accepted statistical update.
 The usual fitting path therefore does not scan the retained observations.
-Numerically ambiguous cases still use a fresh batch fit on the exact retained
-data.
+Numerically ambiguous cases use one full rebuild of statistics and batch
+coefficients on the exact retained data.
 
 The default linear model has two features and one fitted plane per workload
-store. Recursive updates make maintaining that plane cheaper; sample selection and the plane's
-ability to describe a workload remain separate concerns. Periodic statistics
+store. Recursive updates make maintaining that plane cheaper; sample selection
+and the plane's ability to describe a workload remain separate concerns. Periodic statistics
 rebuilding is disabled by default (`None` in Rust/Python, `null` in JSON).
 Numerical recovery and conservative batch fallbacks remain enabled.
+The optional `fit.linear` controls support one to six fitted features, signed
+slopes, and lazy updates. Independently, `sampling.axes` and `bins_per_axis`
+configure one to six retention dimensions. The defaults remain two A/M axes,
+a 4×4 grid, capacity 64 per store, nonnegative fitting, and eager updates.
 
 The optional `fit.kind: spline` model learns two or three knots per feature axis.
 It uses the same feature extraction, workload stores, and retained observations.
-The plane equations and historical speed measurements below describe the linear
-model; the next section explains the spline's additional state.
+The two-feature equations and historical speed measurements below describe the
+default linear model; the next section explains the spline's additional state.
+Historical timings are not measurements of the new optional configurations.
 
 ## Learned-knot spline regression
 
@@ -82,8 +88,8 @@ records controls, not trained state.
 
 ## What one store learns
 
-An observation contains two finite, nonnegative raw features and a positive,
-finite observed latency in milliseconds:
+By default, an observation contains two finite, nonnegative raw features and
+a positive, finite observed latency in milliseconds:
 
 $$
 x = [x_0, x_1], \qquad y = \text{observed latency in ms}.
@@ -115,6 +121,17 @@ A query selects its workload store. Training another store does not change
 its answer. The default capacity of 64 applies to **each store**; the default
 four-by-four retention grid inside a store does not create 16 fitted planes.
 
+`fit.linear.feature_axes` selects the fitted coordinates independently from
+`sampling.axes`. Both lists must contain one to six distinct supported axes;
+each sampling axis has its own positive bin count. All retention coordinates
+use `log1p` of the selected feature value, including when that feature itself
+contains a logarithm. This transformation does not alter the fitted feature.
+The catalog and a complete lazy-update example are in the
+[canonical API reference](core-api.md#linear-features-and-lazy-coefficient-updates).
+Features requiring aligned scheduled-request lengths fail if those inputs are
+absent; missing extrema or cross moments are not inferred from aggregate counters.
+Spline fitting and its retention grid remain restricted to the default A/M axes.
+
 ## The fitted plane and standardization
 
 For the current $n$ retained observations, the population mean and scale of
@@ -143,7 +160,8 @@ $$
 $$
 
 The intercept $a$ is free, including negative values. The slopes are
-constrained to be nonnegative. For active axes, the corresponding raw plane
+constrained to be nonnegative by default; `fit.linear.non_negative: false`
+permits signed slopes. For active axes, the corresponding raw plane
 has coefficients
 
 $$
@@ -318,24 +336,33 @@ difference, including:
 - fitted slopes close to the zero constraint boundary;
 - failed or nonfinite solves, invalid SSE, and numerically tied candidate SSE.
 
-The batch fallback rebuilds standardized observations from the retained raw
-rows and scores direct residuals, using the same ridge configuration. It
-returns a fit for the current update without replacing the incremental
-statistics or resetting their mutation clock.
+All three linear rebuild reasons—periodic maintenance, numerical recovery,
+and a conservative batch fallback—use the same **full rebuild**. It
+reaccumulates the means and scatter and recomputes batch coefficients from the
+same retained rows, scores direct residuals using the configured ridge, and
+resets the mutation clock. It never publishes a fresh batch fit while retaining
+the old incremental statistics. For `fit.kind: linear`, a finite, identifiable
+candidate with all feature slopes zero is rejected while preserving the previous
+serving snapshot, including its coefficients and normalization. The statistics
+are still rebuilt and the mutation clock still resets. Without a previous fit,
+the store remains unready. Other unusable batch results clear readiness. This
+exception does not change spline fitting or its linear fallback.
 
-A **statistics rebuild** is different: it reaccumulates the means and scatter
-from the retained raw rows and resets the clock. Recovery rebuilds run when
-the statistics become nonfinite, a scatter diagonal becomes negative, or a
+Recovery rebuilds run when the statistics become nonfinite, a scatter diagonal
+becomes negative, or a
 downdate removes almost all previously represented variance. These guards
 remain active when periodic rebuilding is disabled. They reduce numerical
 risk but do not constitute a bound on roundoff for every possible stream.
 
-A store is ready only if it has enough retained observations (five by default)
-and at least one varying feature. After selecting a fit, it also requires a
+A new fit requires enough retained observations (five by default)
+and at least one varying feature. The default nonnegative fit also requires a
 positive slope, except for the existing low-observation case $n\le d$, where
 $d$ is the number of varying axes. This count is not the rank of the feature
-matrix. With the default minimum, an intercept-only solution is unready. A
-store can lose readiness after an eviction.
+matrix. With the default minimum, an intercept-only candidate cannot become the
+serving model, but rejection preserves any previous linear serving model. Signed
+fits allow negative slopes; identifiable all-zero candidates are still rejected.
+A store can still lose readiness after an eviction if another fit requirement
+fails, such as having no varying features.
 
 For a valid nonempty query, a ready store transforms features using its fit
 snapshot. If transformation and evaluation are finite, it returns the prediction
@@ -345,6 +372,38 @@ with no scheduled work returns zero through the outer model and adds no
 observation. A cold workload store returns no prediction even if another store
 is ready.
 
+## Lazy coefficient updates
+
+`fit.linear.update_policy` is `always` by default. The optional
+`error_threshold` policy monitors the raw, unclipped prediction before the
+new target enters retention or statistics. For positive observed latency $y$,
+an error is excessive only when
+
+$$
+|\widehat y-y| > \max(\text{absolute\_tolerance\_ms},\;\text{relative\_tolerance}\,y).
+$$
+
+Equality is acceptable. The monitor retains the most recent `window` accepted
+observation flags with finite prior predictions and requests a fit when its excessive count is at least
+`trigger` and at least `cooldown` accepted observations have passed since the
+last successful fit. It need not fill the whole window; the current error may
+be acceptable while older excessive flags still meet the trigger. Prediction
+calls and rejected observations do not advance these counts.
+
+The first `startup_observations` accepted rows are eager, with a default of 10.
+An unready or numerically unusable model bypasses the lazy gate and retries.
+Successful fits clear the monitor; failed or rejected fits do not. Retaining the
+previous snapshot after an all-zero candidate does not reset the error window or
+cooldown, so subsequent observations can trigger another attempt. A periodic
+rebuild or numerical recovery also overrides deferral. These operations do not have a
+fixed 256-row minimum gap, and there is no separate batch-fallback interval.
+
+Retention, actual evictions, and centered statistics advance on every accepted
+row. A skipped solve leaves coefficients, means, scales, and active-axis flags
+together as one prediction snapshot. The eager default avoids the extra
+monitoring prediction. Lazy gating reduces optional solve work; it does not
+remove retention or maintenance costs or promise an error bound.
+
 ## Configuring periodic rebuilding
 
 The canonical field is
@@ -353,7 +412,7 @@ and validation:
 
 | Setting | Behavior |
 |---|---|
-| Omitted, Rust/Python `None`, or JSON `null` | No periodic statistics rebuild |
+| Omitted, Rust/Python `None`, or JSON `null` | No scheduled full rebuild |
 | Positive integer $I$ | Rebuild after at least $I$ retained-sample mutations |
 | Zero, negative, noninteger, or boolean | Field-specific configuration error |
 
@@ -362,12 +421,12 @@ as another. The check runs once after the complete transaction. A full-store
 replacement therefore contributes two mutations; it can cross an odd interval
 by one before the clock resets to zero. Interval 1 produces one rebuild per
 accepted transaction, including when that transaction inserts and evicts.
-Rejected input and spatial rebucketing do not advance the clock. Each actual
-statistics rebuild resets it; an ordinary batch fallback does not. The clock
+Rejected input and spatial rebucketing do not advance the clock. Every full
+rebuild, including a conservative batch fallback, resets it. The clock
 saturates instead of overflowing when left running indefinitely.
 
 For an explicitly configured interval of 4096 and capacity 64, with no earlier
-recovery rebuild, the first periodic rebuild is after 2080 accepted inputs:
+recovery or batch fallback, the first periodic rebuild is after 2080 accepted inputs:
 64 initial insertions plus 2016 insert/evict pairs. Later rebuilds occur every
 2048 accepted inputs while the store stays full. This schedule is per store,
 not per prediction query or elapsed time.
@@ -420,8 +479,9 @@ for selection, diagnostics, migration, and saved-configuration behavior.
 
 ## Sample retention and total tuning cost
 
-The sampler uses $\log(1+x_j)$ coordinates to choose retention cells. Fitting
-uses the raw $x_j$. Grid bounds expand with incoming observations and do not
+The sampler uses $\log(1+x_j)$ of its selected retention coordinates to choose
+cells. The independent fit uses its selected feature values. Grid bounds expand
+with incoming observations and do not
 shrink on eviction. If the store exceeds its capacity, it evicts the oldest
 observation in a most-populated cell. Hash-map ordering can affect tied
 choices. Each retained observation has weight one; an evicted observation
@@ -429,17 +489,23 @@ has weight zero. This is spatially balanced retention, not a FIFO window or
 exponential forgetting.
 
 Let $M$ be retained capacity, $B$ the bucket-map storage scanned to select an
-eviction, and $k$ the population of the selected cell. With two fixed features:
+eviction. With two fixed features:
 
 | Work in a tuning update | Cost |
 |---|---|
 | Feature validation and reduction | Linear in the supplied rank count |
 | Centered insertion/removal and small constrained fit | Constant in $M$ on the healthy path |
 | Finding a fattest retention cell | Scan of the bucket map, $O(B)$ |
-| Removing the oldest row from that cell's vector | $O(k)$, up to $O(M)$ |
+| Removing the oldest row from that cell's `VecDeque` | $O(1)$ |
 | Rebucketing after dynamic bounds expand | $O(M)$ |
-| Statistics rebuild or batch-fit fallback | $O(M)$ |
+| Full statistics and batch-coefficient rebuild | $O(M)$ |
 | Stored observations | $O(M)$, plus constant-sized fitting state |
+
+The table holds the feature count fixed. Linear fitting supports up to six
+features: statistics scale quadratically in feature count, and nonnegative
+fitting examines up to 64 constraint faces. Signed fitting uses one face.
+Request-level features scan the supplied request lists once per observation;
+scalar-only configurations do not require those lists.
 
 The healthy fitter requests retained rows lazily, so it avoids both a scan
 and a temporary observation copy. Periodic rebuilding, when enabled, adds
@@ -475,7 +541,12 @@ inverse for each possible constraint face. It still performs recursive
 least-squares estimation; it does not use a forgetting factor or the classic
 inverse-matrix coefficient update.
 
-## Speed measurements
+## Historical PR #297 speed measurements
+
+These measurements predate unified statistics/coefficient rebuilding and lazy
+updates. They describe the earlier implementation, not the cost of this change.
+See [current validation](fpm-lazy-regression-validation.md) for the registered
+Gym cohort and continuous-update measurements of the new implementation.
 
 The following CPU measurements time one **retained-sample update**:
 `BucketedRegression::add_observation` from already computed raw features.
@@ -838,6 +909,9 @@ linear availability.
 | [samples.rs](../crates/core/src/perfmodel/fpm/samples.rs) | Retention grid and `SampleInsertion` carrying the actual eviction |
 | [regression.rs](../crates/core/src/perfmodel/fpm/regression.rs) | `BucketedRegression`, original batch fit, small linear solvers, prediction floor |
 | [regression/recursive.rs](../crates/core/src/perfmodel/fpm/regression/recursive.rs) | Centered updates, constrained fit from statistics, guards, rebuild clock |
+| [regression/selected.rs](../crates/core/src/perfmodel/fpm/regression/selected.rs) | Bounded selected-feature linear fits and independent retention coordinates |
+| [regression/feature_axes.rs](../crates/core/src/perfmodel/fpm/regression/feature_axes.rs) | Scheduled-input feature projection |
+| [regression/update.rs](../crates/core/src/perfmodel/fpm/regression/update.rs) | Opt-in error monitor and accepted-observation update clock |
 | [regression/spline.rs](../crates/core/src/perfmodel/fpm/regression/spline.rs) | Shared retention, knot-search policies, range guard, spline diagnostics |
 | [regression/spline/fit.rs](../crates/core/src/perfmodel/fpm/regression/spline/fit.rs) | Additive basis, nonnegative segment slopes, learned knot positions |
 | [regression/spline/recursive.rs](../crates/core/src/perfmodel/fpm/regression/spline/recursive.rs) | Fixed-basis statistics, coefficient updates, numerical recovery |

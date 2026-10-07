@@ -76,7 +76,7 @@ Agentic Mooncake v2 is the optional materialized interchange format, not a
 required preprocessing step. A downstream Dynamo integration should call this
 public loader and must not maintain a second Weka parser or lowering pipeline.
 
-Run `python3 scripts/qualify_weka_samples.py` from the repository root to check
+Run `python3 scripts/prediction_regression/qualify_weka_samples.py` from the repository root to check
 the importer against two revision-pinned rows from the public SemiAnalysis
 `cc-traces-weka-062126-256k` dataset. The rows are held in a temporary directory
 and deleted when the check exits; the complete 570 MB corpus is not downloaded.
@@ -173,7 +173,7 @@ run these commands from the repository root:
 cargo test --locked -p aisimulate-core --test agentx_qualification --example qualify_weka
 cargo test --locked -p aisimulate-core --lib agentic_pd_qualification
 python/aisimulate/.venv/bin/pytest -q tests/test_unified_traffic_runtime.py tests/e2e/test_unified_cli_engine.py -k 'weka or agentx_replay or agentic_snapshot or agentic_warmup'
-python/aisimulate/.venv/bin/python scripts/qualify_agentx_replay.py --output /tmp/agentx-replay.json
+python/aisimulate/.venv/bin/python scripts/prediction_regression/qualify_agentx_replay.py --output /tmp/agentx-replay.json
 ```
 
 The last command is an aggregated, turn-zero opt-in network gate. It verifies

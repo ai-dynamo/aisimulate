@@ -14,11 +14,13 @@ use rustc_hash::FxHashMap;
 use std::sync::Arc;
 use uuid::Uuid;
 
+use super::g3_offload::G3Restore;
 use crate::engine::common::protocols::PrefillCost;
 use crate::engine::common::sequence::RequestSequence;
 use crate::engine::host_offload::{
-    CompletedTransfer, HostBlockKey, HostOffloadObservation, HostOffloadObservationData,
-    HostStoreBlockMapping, HostTier, HostTierConfig, LoadOutcome, Lookup, StoreOutcome, TransferId,
+    CompletedTransfer, G2Binding, HostBlockKey, HostBlockMeta, HostClient, HostOffloadObservation,
+    HostOffloadObservationData, HostStoreBlockMapping, LoadOutcome, Lookup, StoreOutcome,
+    TransferId,
 };
 use crate::engine::kv_manager::{
     BlockRequestLease, DestinationReservation, G1Acquire, G1Manager, SourceReuseDependency,
@@ -51,6 +53,9 @@ enum LoadState {
 pub(super) struct VllmHostRequestState {
     owner: Uuid,
     prompt_keys: Vec<HostBlockKey>,
+    /// Router identities, retained only for `HostPinned` residency events.
+    prompt_meta: Option<Vec<HostBlockMeta>>,
+    g3_restore: G3Restore,
     next_store_block: usize,
     latest_store: Option<TransferId>,
     load: Option<LoadState>,
@@ -62,9 +67,10 @@ impl VllmHostRequestState {
         sequence: &RequestSequence,
         lease: &BlockRequestLease,
         block_size: usize,
+        retain_meta: bool,
     ) -> Self {
         let prompt_blocks = sequence.num_input_tokens() / block_size;
-        let prompt_keys = (0..prompt_blocks)
+        let prompt_keys: Vec<_> = (0..prompt_blocks)
             .map(|index| {
                 HostBlockKey::new(
                     lease
@@ -73,9 +79,24 @@ impl VllmHostRequestState {
                 )
             })
             .collect();
+        let prompt_meta = retain_meta.then(|| {
+            (0..prompt_blocks)
+                .map(|index| HostBlockMeta {
+                    parent: index
+                        .checked_sub(1)
+                        .map(|parent| prompt_keys[parent].sequence_hash()),
+                    tokens_hash: lease
+                        .local_hash(index)
+                        .expect("shared G2 metadata requires retained local hashes"),
+                    position: index,
+                })
+                .collect()
+        });
         Self {
             owner: lease.owner(),
             prompt_keys,
+            prompt_meta,
+            g3_restore: G3Restore::default(),
             next_store_block: 0,
             latest_store: None,
             load: None,
@@ -143,7 +164,10 @@ pub(super) struct HostTransferProgress {
 }
 
 pub(super) struct VllmHostOffloadAdapter {
-    tier: HostTier,
+    host: HostClient,
+    shared: bool,
+    /// The rank publishes G2 residency as `HostPinned` KV events.
+    publishes_residency: bool,
     g3: Option<super::g3_offload::VllmG3OffloadAdapter>,
     load_epoch: u64,
     load_by_key: FxHashMap<HostBlockKey, TransferId>,
@@ -159,6 +183,7 @@ impl VllmHostOffloadAdapter {
         registry: crate::engine::g3_offload::SharedG3Tier,
         node: usize,
     ) {
+        self.host.lock().hold_completed_sources(self.host.id());
         self.g3 = Some(super::g3_offload::VllmG3OffloadAdapter::new(registry, node));
     }
 
@@ -166,32 +191,52 @@ impl VllmHostOffloadAdapter {
         self.g3.as_ref().map(|g3| g3.epoch + self.load_epoch)
     }
 
+    pub(super) fn note_rank_progress(&mut self) {
+        if let Some(g3) = &mut self.g3 {
+            g3.note_rank_progress();
+        }
+    }
+
     pub(super) fn set_observer(&mut self, observer: Arc<dyn HostOffloadObserver>) {
-        self.tier.set_observer(Arc::clone(&observer));
+        self.host.lock().set_observer(Arc::clone(&observer));
         self.observer = Some(observer);
     }
 
+    /// `subscribe` delivers the pool's `HostPinned` residency events to this
+    /// rank: its private cache, or every block of a shared pool.
     pub(super) fn new(
         config: &NativeHostOffloadConfig,
         block_size: usize,
         kv_bytes_per_token: usize,
+        binding: Option<&G2Binding>,
+        subscribe: bool,
     ) -> anyhow::Result<Self> {
-        let block_bytes = block_size
-            .checked_mul(kv_bytes_per_token)
-            .ok_or_else(|| anyhow::anyhow!("native host block byte size overflow"))?;
+        let host = HostClient::new(config, block_size, kv_bytes_per_token, binding)?;
+        let shared = host.lock().is_shared();
+        if subscribe {
+            host.lock().subscribe(host.id());
+        }
         Ok(Self {
-            tier: HostTier::new(HostTierConfig {
-                capacity_blocks: config.num_host_blocks,
-                block_bytes,
-                d2h_bandwidth_gbps: config.d2h_bandwidth_gbps,
-                h2d_bandwidth_gbps: config.h2d_bandwidth_gbps,
-            })?,
+            host,
+            shared,
+            publishes_residency: subscribe,
             g3: None,
             load_epoch: 0,
             load_by_key: FxHashMap::default(),
             compute_not_before_ms: 0.0,
             observer: None,
         })
+    }
+
+    /// A cluster-shared pool: router metadata is retained and D2H completion
+    /// times are not fixed.
+    pub(super) fn is_shared(&self) -> bool {
+        self.shared
+    }
+
+    /// Whether requests must retain router identities for residency events.
+    pub(super) fn publishes_residency(&self) -> bool {
+        self.shared || self.publishes_residency
     }
 
     /// Query G2 after the scheduler's one authoritative G1 prefix lookup.
@@ -209,78 +254,75 @@ impl VllmHostOffloadAdapter {
         if matches!(request.load, Some(LoadState::Loading(_))) {
             return HostLookup::Deferred;
         }
+        let Self {
+            host,
+            g3,
+            load_by_key,
+            ..
+        } = self;
+        let mut tier = host.lock();
         if let Some(transfer_id) = request.latest_store {
-            if self.tier.has_transfer(transfer_id) {
+            if tier.has_transfer(transfer_id) {
                 return HostLookup::Deferred;
             }
             request.latest_store = None;
         }
 
-        let outcome = self.lookup_visited(request, sequence, g1_cost, block_size, now_ms);
+        debug_assert_eq!(g1_cost.cached_tokens % block_size, 0);
+        let base_g1_blocks = g1_cost.cached_tokens / block_size;
+        let outcome = if base_g1_blocks >= request.prompt_keys.len() {
+            if let Some(g3) = g3 {
+                g3.release(request.owner);
+            }
+            HostLookup::Miss
+        } else if let Some(g3) = g3
+            && !request.g3_restore.bypassed()
+            && g3.stage(
+                &mut tier,
+                host.id(),
+                request.owner,
+                &mut request.g3_restore,
+                &request.prompt_keys[base_g1_blocks..],
+                request
+                    .prompt_meta
+                    .as_deref()
+                    .map(|meta| &meta[base_g1_blocks..]),
+                now_ms,
+            )
+        {
+            HostLookup::Deferred
+        } else {
+            let mut matched = 0usize;
+            let mut deferred = false;
+            for key in request.prompt_keys[base_g1_blocks..].iter().copied() {
+                match tier.lookup(key) {
+                    Lookup::Hit => deferred |= load_by_key.contains_key(&key),
+                    Lookup::Pending { .. } => deferred = true,
+                    Lookup::Miss => break,
+                }
+                matched += 1;
+            }
+            let keys = &request.prompt_keys[base_g1_blocks..base_g1_blocks + matched];
+            if matched == 0 {
+                HostLookup::Miss
+            } else if deferred {
+                HostLookup::Deferred
+            } else {
+                HostLookup::Hit(HostLookupHit {
+                    keys: keys.to_vec(),
+                    base_g1_blocks,
+                    original_g1_tokens: g1_cost.cached_tokens,
+                    request_footprint_blocks: sequence.current_known_blocks(),
+                })
+            }
+        };
 
         // vLLM passes this ordered logical list after lookup to
         // LRUCachePolicy.touch(), which explicitly iterates it in reverse.
         for key in request.prompt_keys.iter().rev().copied() {
-            self.tier.touch(key);
+            tier.touch(key);
         }
         outcome
-    }
-
-    fn lookup_visited(
-        &mut self,
-        request: &mut VllmHostRequestState,
-        sequence: &RequestSequence,
-        g1_cost: &PrefillCost,
-        block_size: usize,
-        now_ms: f64,
-    ) -> HostLookup {
-        debug_assert_eq!(g1_cost.cached_tokens % block_size, 0);
-        let base_g1_blocks = g1_cost.cached_tokens / block_size;
-        if base_g1_blocks >= request.prompt_keys.len() {
-            if let Some(g3) = &mut self.g3 {
-                g3.release(request.owner);
-            }
-            return HostLookup::Miss;
-        }
-
-        if let Some(g3) = &mut self.g3
-            && g3.stage(
-                &mut self.tier,
-                request.owner,
-                &request.prompt_keys[base_g1_blocks..],
-                now_ms,
-            )
-        {
-            return HostLookup::Deferred;
-        }
-        let mut matched = 0usize;
-        let mut deferred = false;
-        for key in request.prompt_keys[base_g1_blocks..].iter().copied() {
-            match self.tier.lookup(key) {
-                Lookup::Hit => {
-                    matched += 1;
-                    deferred |= self.load_by_key.contains_key(&key);
-                }
-                Lookup::Pending { .. } => {
-                    matched += 1;
-                    deferred = true;
-                }
-                Lookup::Miss => break,
-            }
-        }
-        if matched == 0 {
-            return HostLookup::Miss;
-        }
-        let keys = request.prompt_keys[base_g1_blocks..base_g1_blocks + matched].to_vec();
-        if deferred || keys.iter().any(|key| self.load_by_key.contains_key(key)) {
-            return HostLookup::Deferred;
-        }
-        HostLookup::Hit(HostLookupHit {
-            keys,
-            base_g1_blocks,
-            original_g1_tokens: g1_cost.cached_tokens,
-            request_footprint_blocks: sequence.current_known_blocks(),
-        })
     }
 
     /// Reserve real G1 capacity before queuing the H2D.
@@ -315,28 +357,29 @@ impl VllmHostOffloadAdapter {
             G1Acquire::CapacityExhausted => return StartLoad::CapacityBlocked,
         };
 
+        let mut tier = self.host.lock();
+        // Only a private lane hands out G1 capacity that is still being
+        // copied; a shared pool holds it until the copy completes.
         let dependencies = kv_manager.native_destination_pending_dependencies(&reservation);
         let mut not_before_ms = now_ms;
         for dependency in dependencies {
             assert!(kv_manager.is_native_source_dependency_pending(dependency));
-            let deadline = self
-                .tier
+            let deadline = tier
                 .transfer_deadline(transfer_id(dependency))
                 .expect("pending source dependency must retain a submitted D2H");
             not_before_ms = not_before_ms.max(deadline);
         }
 
         // Transfer bookkeeping follows the logical prefix, unlike LRU touches.
-        let transfer_id = match self
-            .tier
-            .schedule_load(uuid, &hit.keys, now_ms, not_before_ms)
-        {
-            LoadOutcome::Queued(transfer_id) => transfer_id,
-            LoadOutcome::Miss => {
-                kv_manager.cancel_destination(reservation);
-                return StartLoad::Retry;
-            }
-        };
+        let transfer_id =
+            match tier.schedule_load(self.host.id(), uuid, &hit.keys, now_ms, not_before_ms) {
+                LoadOutcome::Queued(transfer_id) => transfer_id,
+                LoadOutcome::Miss => {
+                    kv_manager.cancel_destination(reservation);
+                    return StartLoad::Retry;
+                }
+            };
+        drop(tier);
 
         for key in &hit.keys {
             assert!(self.load_by_key.insert(*key, transfer_id).is_none());
@@ -363,8 +406,9 @@ impl VllmHostOffloadAdapter {
         kv_manager: &mut G1Manager,
         now_ms: f64,
     ) -> HostTransferProgress {
-        let completed = self.tier.tick(now_ms);
-        let mut completed_any = !completed.is_empty();
+        let mut tier = self.host.lock();
+        let client = self.host.id();
+        let (completed, mut completed_any) = tier.tick(client, now_ms);
         self.load_epoch += completed.len() as u64;
         for transfer in &completed {
             let CompletedTransfer::Store {
@@ -377,12 +421,17 @@ impl VllmHostOffloadAdapter {
             };
             assert!(kv_manager.satisfy_native_source_dependency(source_dependency(*transfer_id)));
             if let Some(g3) = &mut self.g3 {
-                g3.store(&mut self.tier, blocks, now_ms);
+                g3.store(&mut tier, blocks, now_ms);
             }
         }
 
         if let Some(g3) = &mut self.g3 {
-            completed_any |= g3.advance(&mut self.tier, now_ms);
+            completed_any |= g3.advance(&mut tier, now_ms);
+        }
+        // Drain after G3: a promotion landing in G2 above publishes residency
+        // that no later deadline would otherwise deliver.
+        for event in tier.take_events(client) {
+            kv_manager.publish_host_pinned_event(event);
         }
         let mut loads = Vec::new();
         for transfer in completed {
@@ -413,13 +462,14 @@ impl VllmHostOffloadAdapter {
         now_ms: f64,
     ) -> HostTransferProgress {
         let mut progress = self.advance(kv_manager, now_ms);
-        self.tier.submit_prepared_stores(now_ms);
+        self.host
+            .lock()
+            .submit_prepared_stores(self.host.id(), now_ms);
         let settled = self.advance(kv_manager, now_ms);
         progress.completed_loads.extend(settled.completed_loads);
         progress.completed_any |= settled.completed_any;
         progress
     }
-
     pub(super) fn activate_completed_load(
         &mut self,
         uuid: Uuid,
@@ -474,6 +524,7 @@ impl VllmHostOffloadAdapter {
         reused_tokens: usize,
         block_size: usize,
     ) -> Option<(usize, usize)> {
+        request.g3_restore.reset();
         let attribution = match request.load.take() {
             Some(LoadState::Activated(load)) => {
                 assert!(reused_tokens / block_size <= load.loaded_prefix_blocks);
@@ -513,8 +564,9 @@ impl VllmHostOffloadAdapter {
             return;
         }
         let start = request.next_store_block;
+        let mut tier = self.host.lock();
         let missing_indices = (start..end)
-            .filter(|index| matches!(self.tier.lookup(request.prompt_keys[*index]), Lookup::Miss))
+            .filter(|index| matches!(tier.lookup(request.prompt_keys[*index]), Lookup::Miss))
             .collect::<Vec<_>>();
         if missing_indices.is_empty() {
             request.next_store_block = end;
@@ -532,10 +584,13 @@ impl VllmHostOffloadAdapter {
                 .zip(missing_indices.iter().copied())
                 .all(|(hash, index)| HostBlockKey::new(hash) == request.prompt_keys[index])
         );
-        match self
-            .tier
-            .prepare_store(uuid, &request.prompt_keys[start..end], now_ms)
-        {
+        match tier.prepare_store(
+            self.host.id(),
+            uuid,
+            &request.prompt_keys[start..end],
+            request.prompt_meta.as_deref().map(|meta| &meta[start..end]),
+            now_ms,
+        ) {
             StoreOutcome::AlreadyPresent => request.next_store_block = end,
             StoreOutcome::RetryCapacity { .. } => {}
             StoreOutcome::Prepared {
@@ -569,14 +624,14 @@ impl VllmHostOffloadAdapter {
                 request.latest_store = Some(transfer_id);
                 request.next_store_block = end;
                 for key in request.prompt_keys.iter().rev().copied() {
-                    self.tier.touch(key);
+                    tier.touch(key);
                 }
             }
         }
     }
 
     /// Fence and authorize newly acquired G1 capacity whose prior owner is
-    /// still being copied to host.
+    /// still being copied to host by a private lane.
     pub(super) fn fence_allocation(
         &mut self,
         uuid: Uuid,
@@ -587,9 +642,9 @@ impl VllmHostOffloadAdapter {
         if dependencies.is_empty() {
             return;
         }
+        let tier = self.host.lock();
         for dependency in dependencies {
-            let deadline = self
-                .tier
+            let deadline = tier
                 .transfer_deadline(transfer_id(*dependency))
                 .expect("pending dependency must retain a submitted D2H");
             self.compute_not_before_ms = self.compute_not_before_ms.max(deadline);
@@ -597,10 +652,13 @@ impl VllmHostOffloadAdapter {
         kv_manager.authorize_native_compute_after_dependencies(uuid, lease, dependencies);
     }
 
-    /// vLLM flushes this request's prepared stores before releasing its G1 capacity.
-    pub(super) fn preempt_request(&mut self, request: &VllmHostRequestState) {
+    /// vLLM flushes this request's prepared stores before releasing its G1
+    /// capacity. A shared pool instead holds the capacity until each copy
+    /// completes.
+    pub(super) fn preempt_request(&mut self, request: &mut VllmHostRequestState) {
+        request.g3_restore.reset();
         if let Some(transfer_id) = request.latest_store
-            && let Some(deadline) = self.tier.transfer_deadline(transfer_id)
+            && let Some(deadline) = self.host.lock().transfer_deadline(transfer_id)
         {
             self.compute_not_before_ms = self.compute_not_before_ms.max(deadline);
         }
@@ -623,10 +681,12 @@ impl VllmHostOffloadAdapter {
         for key in &load.keys {
             assert_eq!(self.load_by_key.remove(key), Some(load.transfer_id));
         }
-        assert!(
-            self.tier
-                .cancel_load(load.transfer_id, mutation_now_ms, observed_at_ms)
-        );
+        assert!(self.host.lock().cancel_load(
+            self.host.id(),
+            load.transfer_id,
+            mutation_now_ms,
+            observed_at_ms
+        ));
         kv_manager.cancel_destination(load.reservation);
         true
     }
@@ -636,24 +696,21 @@ impl VllmHostOffloadAdapter {
     }
 
     pub(super) fn next_deadline(&self) -> Option<f64> {
-        self.tier
-            .next_deadline()
+        self.host
+            .lock()
+            .next_deadline(self.host.id())
             .into_iter()
             .chain(self.g3.as_ref().and_then(|g3| g3.next_deadline()))
             .min_by(f64::total_cmp)
     }
 
     pub(super) fn current_time_ms(&self) -> f64 {
-        self.tier.current_time_ms()
+        self.host.lock().current_time_ms()
     }
 
     pub(super) fn has_work(&self) -> bool {
-        self.tier.has_pending_work() || self.g3.as_ref().is_some_and(|g3| g3.has_work())
-    }
-
-    #[cfg(test)]
-    pub(super) fn resident_blocks(&self) -> usize {
-        self.tier.resident_blocks()
+        self.host.lock().has_pending_work(self.host.id())
+            || self.g3.as_ref().is_some_and(|g3| g3.has_work())
     }
 }
 
@@ -671,6 +728,7 @@ mod tests {
 
     use super::*;
     use crate::engine::common::protocols::{DirectRequest, KvEventPublishers, MockEngineArgs};
+    use crate::engine::host_offload::C;
     use crate::engine::kv_manager::NativeAllocation;
     use crate::engine::scheduler::vllm::core::VllmCore;
     use crate::engine::trace::TraceCollector;
@@ -678,13 +736,11 @@ mod tests {
 
     fn adapter(capacity_blocks: usize) -> VllmHostOffloadAdapter {
         VllmHostOffloadAdapter::new(
-            &NativeHostOffloadConfig {
-                num_host_blocks: capacity_blocks,
-                d2h_bandwidth_gbps: 1.0,
-                h2d_bandwidth_gbps: 1.0,
-            },
+            &NativeHostOffloadConfig::new(capacity_blocks).with_bandwidths(1.0, 1.0),
             4,
             250_000,
+            None,
+            false,
         )
         .unwrap()
     }
@@ -696,20 +752,23 @@ mod tests {
         let (sequence, identities) =
             RequestSequence::new(owner, tokens, 0, 0, 4, true, false, false, None);
         let lease = BlockRequestLease::new(owner, identities);
-        let host = VllmHostRequestState::new(&sequence, &lease, 4);
+        let host = VllmHostRequestState::new(&sequence, &lease, 4, false);
         (sequence, lease, host)
     }
 
     fn seed_host(adapter: &mut VllmHostOffloadAdapter, key: HostBlockKey) -> f64 {
         let StoreOutcome::Prepared { transfer_id, .. } =
-            adapter.tier.prepare_store(Uuid::nil(), &[key], 0.0)
+            adapter
+                .host
+                .lock()
+                .prepare_store(C, Uuid::nil(), &[key], None, 0.0)
         else {
             panic!("host seed was prechecked as absent")
         };
-        assert_eq!(adapter.tier.submit_prepared_stores(0.0), 1);
-        let deadline = adapter.tier.transfer_deadline(transfer_id).unwrap();
+        assert_eq!(adapter.host.lock().submit_prepared_stores(C, 0.0), 1);
+        let deadline = adapter.host.lock().transfer_deadline(transfer_id).unwrap();
         assert!(matches!(
-            adapter.tier.tick(deadline).as_slice(),
+            adapter.host.lock().tick(C, deadline).0.as_slice(),
             [CompletedTransfer::Store { .. }]
         ));
         deadline
@@ -721,6 +780,35 @@ mod tests {
         lease: &BlockRequestLease,
     ) -> PrefillCost {
         manager.get_native_prefill_cost(sequence, lease)
+    }
+
+    /// Compute one fresh block for `id`; the allocation must not wait on a
+    /// source-reuse dependency.
+    fn computed(
+        manager: &mut G1Manager,
+        id: Uuid,
+        tokens: Vec<u32>,
+    ) -> (RequestSequence, BlockRequestLease, VllmHostRequestState) {
+        let (mut sequence, mut lease, host) = request(id, tokens);
+        assert!(matches!(
+            manager.allocate_native(id, &mut lease, 4, 0),
+            NativeAllocation::Ready { dependencies, .. } if dependencies.is_empty()
+        ));
+        manager.finalize_native_computed_prefix(id, 0, 4, &mut sequence, &mut lease);
+        (sequence, lease, host)
+    }
+
+    /// [`computed`], then offer the completed block to G2 at `now`.
+    fn stored(
+        adapter: &mut VllmHostOffloadAdapter,
+        manager: &mut G1Manager,
+        id: Uuid,
+        tokens: Vec<u32>,
+        now: f64,
+    ) -> (RequestSequence, BlockRequestLease, VllmHostRequestState) {
+        let (sequence, lease, mut host) = computed(manager, id, tokens);
+        adapter.observe_completed_blocks(id, &mut host, &lease, 4, 4, 4, manager, now);
+        (sequence, lease, host)
     }
 
     #[derive(Default)]
@@ -753,11 +841,9 @@ mod tests {
             .enable_chunked_prefill(true)
             .enable_prefix_caching(true)
             .kv_cache_bytes_per_token(Some(250_000))
-            .native_host_offload(Some(NativeHostOffloadConfig {
-                num_host_blocks: 4,
-                d2h_bandwidth_gbps: 0.0,
-                h2d_bandwidth_gbps: 0.0,
-            }))
+            .native_host_offload(Some(
+                NativeHostOffloadConfig::new(4).with_bandwidths(0.0, 0.0),
+            ))
             .speedup_ratio(0.0)
             .build()
             .unwrap();
@@ -861,18 +947,7 @@ mod tests {
 
         let mut manager = G1Manager::new_with_caching(1, 4, KvEventPublishers::default(), 0, true);
         let source_id = Uuid::from_u128(2);
-        let (mut source_sequence, mut source_lease, _) = request(source_id, vec![5, 6, 7, 8]);
-        assert!(matches!(
-            manager.allocate_native(source_id, &mut source_lease, 4, 0),
-            NativeAllocation::Ready { dependencies, .. } if dependencies.is_empty()
-        ));
-        manager.finalize_native_computed_prefix(
-            source_id,
-            0,
-            4,
-            &mut source_sequence,
-            &mut source_lease,
-        );
+        let (_, source_lease, _) = computed(&mut manager, source_id, vec![5, 6, 7, 8]);
 
         let HostLookup::Hit(hit) = adapter.lookup(
             &mut destination_host,
@@ -930,9 +1005,11 @@ mod tests {
             HostLookup::Deferred
         ));
         assert_eq!(manager.num_active_blocks(), 1);
-        adapter.cancel_request(&mut destination_host, &mut manager, now_ms, now_ms);
+        assert!(adapter.cancel_request(&mut destination_host, &mut manager, now_ms, now_ms));
         assert_eq!(manager.num_active_blocks(), 0);
-        assert!(adapter.tier.is_resident(key));
+        // Cancellation leaves no due work that would reject a same-time command.
+        assert_eq!(adapter.next_deadline(), None);
+        assert!(adapter.host.lock().is_resident(key));
         assert!(matches!(
             adapter.lookup(
                 &mut follower_host,
@@ -969,7 +1046,7 @@ mod tests {
             Some(LoadState::Loading(load)) => load.transfer_id,
             _ => panic!("request must be loading"),
         };
-        let deadline = adapter.tier.transfer_deadline(transfer_id).unwrap();
+        let deadline = adapter.host.lock().transfer_deadline(transfer_id).unwrap();
         let completed = adapter.advance(&mut manager, deadline).completed_loads;
         assert_eq!(completed.len(), 1);
         adapter.activate_completed_load(
@@ -982,7 +1059,7 @@ mod tests {
         );
         assert_eq!(raw_cost(&manager, &sequence, &lease).cached_tokens, 4);
         assert_eq!(lease.resident_block_count(), 1);
-        assert_eq!(adapter.resident_blocks(), 1);
+        assert_eq!(adapter.host.lock().resident_snapshot().len(), 1);
     }
 
     #[test]
@@ -990,33 +1067,12 @@ mod tests {
         let mut adapter = adapter(2);
         let mut manager = G1Manager::new_with_caching(1, 4, KvEventPublishers::default(), 0, true);
         let source_id = Uuid::from_u128(6);
-        let (mut source_sequence, mut source_lease, mut source_host) =
-            request(source_id, vec![1, 2, 3, 4]);
-        assert!(matches!(
-            manager.allocate_native(source_id, &mut source_lease, 4, 0),
-            NativeAllocation::Ready { dependencies, .. } if dependencies.is_empty()
-        ));
-        manager.finalize_native_computed_prefix(
-            source_id,
-            0,
-            4,
-            &mut source_sequence,
-            &mut source_lease,
-        );
-        adapter.observe_completed_blocks(
-            source_id,
-            &mut source_host,
-            &source_lease,
-            4,
-            4,
-            4,
-            &mut manager,
-            0.0,
-        );
+        let (source_sequence, source_lease, mut source_host) =
+            stored(&mut adapter, &mut manager, source_id, vec![1, 2, 3, 4], 0.0);
         let store_id = source_host.latest_store.unwrap();
         assert!(manager.is_native_source_dependency_pending(source_dependency(store_id)));
         adapter.complete_engine_boundary(&mut manager, 0.0);
-        assert_eq!(adapter.tier.transfer_deadline(store_id), Some(1.0));
+        assert_eq!(adapter.host.lock().transfer_deadline(store_id), Some(1.0));
         assert!(matches!(
             adapter.lookup(
                 &mut source_host,
@@ -1054,6 +1110,338 @@ mod tests {
         assert_eq!(adapter.compute_not_before_ms(0.0), 1.0);
         adapter.advance(&mut manager, 1.0);
         assert!(!manager.is_native_source_dependency_pending(source_dependency(store_id)));
+    }
+
+    #[test]
+    fn shared_store_holds_its_g1_source_until_the_actual_d2h_completes() {
+        use crate::engine::host_offload::{G2Binding, G2Registry};
+        let registry: Arc<G2Registry> = Arc::default();
+        let join = || {
+            let mut config = NativeHostOffloadConfig::new(4)
+                .with_bandwidths(1.0, 1.0)
+                .cluster_shared("tp1");
+            config.shared_d2h_bandwidth_gbps = 1.0;
+            let binding = G2Binding {
+                registry: Arc::clone(&registry),
+                tensor_parallel_size: 1,
+            };
+            VllmHostOffloadAdapter::new(&config, 4, 250_000, Some(&binding), false).unwrap()
+        };
+        let (mut adapter, mut peer) = (join(), join());
+        let mut manager = G1Manager::new_with_caching(1, 4, KvEventPublishers::default(), 0, true);
+        manager.hold_native_store_sources();
+        let source_id = Uuid::from_u128(6);
+        let (_, source_lease, source_host) =
+            stored(&mut adapter, &mut manager, source_id, vec![1, 2, 3, 4], 0.0);
+        let store = source_dependency(source_host.latest_store.unwrap());
+        adapter.complete_engine_boundary(&mut manager, 0.0);
+        // Alone on the 1 GB/s pool the 1 MB D2H would finish at 1 ms; a peer
+        // store joining later halves its share and moves completion to 1.5 ms.
+        assert_eq!(adapter.next_deadline(), Some(1.0));
+        let mut peer_manager =
+            G1Manager::new_with_caching(1, 4, KvEventPublishers::default(), 0, true);
+        let _peer = stored(
+            &mut peer,
+            &mut peer_manager,
+            Uuid::from_u128(7),
+            vec![5, 6, 7, 8],
+            0.5,
+        );
+        peer.complete_engine_boundary(&mut peer_manager, 0.5);
+
+        manager.finish_native(source_id, source_lease);
+        assert_eq!(manager.num_active_blocks(), 1, "the D2H still holds G1");
+        let destination_id = Uuid::from_u128(8);
+        let (_, mut destination_lease, _) = request(destination_id, vec![9, 10, 11, 12]);
+        for (now, pending) in [(1.0, true), (1.5, false)] {
+            assert!(matches!(
+                manager.allocate_native(destination_id, &mut destination_lease, 4, 0),
+                NativeAllocation::CapacityExhausted
+            ));
+            adapter.advance(&mut manager, now);
+            assert_eq!(
+                manager.is_native_source_dependency_pending(store),
+                pending,
+                "{now}"
+            );
+        }
+        // The completed copy returned the block, so its next owner neither
+        // inherits a dependency nor waits for a projected fence.
+        assert!(matches!(
+            manager.allocate_native(destination_id, &mut destination_lease, 4, 0),
+            NativeAllocation::Ready { dependencies, .. } if dependencies.is_empty()
+        ));
+        assert_eq!(adapter.compute_not_before_ms(1.5), 1.5);
+    }
+
+    #[test]
+    fn shared_residency_reaches_subscribed_ranks_as_host_pinned_events() {
+        use crate::engine::host_offload::{G2Binding, G2Registry};
+        use crate::engine::{KvBlock, KvEvent, KvEventData, KvEventTier, StoredBlocks};
+        let mut host = NativeHostOffloadConfig::new(4)
+            .with_bandwidths(0.0, 0.0)
+            .cluster_shared("tp1");
+        (
+            host.shared_d2h_bandwidth_gbps,
+            host.shared_h2d_bandwidth_gbps,
+        ) = (0.0, 0.0);
+        let args = MockEngineArgs::builder()
+            .num_gpu_blocks(16)
+            .block_size(4)
+            .kv_cache_bytes_per_token(Some(250_000))
+            .native_host_offload(Some(host))
+            .speedup_ratio(0.0)
+            .build()
+            .unwrap();
+        let tokens = vec![1, 2, 3, 4, 5, 6, 7, 8, 9];
+        // The router identity a subscriber receives must not depend on whether
+        // the rank that stored the blocks publishes events itself.
+        let (_, identities) = RequestSequence::new(
+            Uuid::nil(),
+            tokens.clone(),
+            0,
+            0,
+            4,
+            true,
+            true,
+            false,
+            None,
+        );
+        let lease = BlockRequestLease::new(Uuid::nil(), identities);
+        let block = |index: usize| KvBlock {
+            block_hash: lease.sequence_hash(index).unwrap(),
+            tokens_hash: lease.local_hash(index).unwrap(),
+            token_ids: None,
+        };
+        let expected = KvEvent {
+            event_id: 0,
+            dp_rank: 0,
+            data: KvEventData::Stored(StoredBlocks {
+                parent_hash: None,
+                start_position: Some(0),
+                blocks: vec![block(0), block(1)],
+            }),
+            tier: KvEventTier::HostPinned,
+        };
+        for producer_publishes in [true, false] {
+            let binding = G2Binding {
+                registry: Arc::<G2Registry>::default(),
+                tensor_parallel_size: 1,
+            };
+            let rank = |id, capture| {
+                VllmCore::new_with_worker_rank(args.clone(), id, 0, id, capture, Some(&binding))
+                    .unwrap()
+            };
+            let (mut producer, mut peer) = (rank(0, producer_publishes), rank(1, true));
+            producer.receive(DirectRequest {
+                tokens: tokens.clone(),
+                max_output_tokens: 1,
+                uuid: Some(Uuid::from_u128(1)),
+                arrival_timestamp_ms: Some(0.0),
+                ..Default::default()
+            });
+            let mut device = Vec::new();
+            while !producer.is_empty() {
+                let pass = producer.execute_pass(&mut TraceCollector::default(), 0.0);
+                producer.complete_engine_boundary(pass.end_ms);
+                device.extend(pass.kv_events);
+            }
+            if producer_publishes {
+                assert!(device.iter().all(|event| event.tier == KvEventTier::Device));
+                let KvEventData::Stored(stored) = &device[0].data else {
+                    panic!("the first device event stores the prompt");
+                };
+                assert_eq!(stored.blocks[..2], [block(0), block(1)]);
+            } else {
+                assert!(device.is_empty());
+            }
+
+            peer.process_internal_work(0.0);
+            assert_eq!(peer.drain_kv_events(), vec![expected.clone()]);
+        }
+        // Device events keep their JSON shape; a missing tier reads as device.
+        let mut json = serde_json::to_value(&expected).unwrap();
+        assert_eq!(json["tier"], "host_pinned");
+        json.as_object_mut().unwrap().remove("tier");
+        let device_event: KvEvent = serde_json::from_value(json).unwrap();
+        assert_eq!(device_event.tier, KvEventTier::Device);
+        assert!(
+            serde_json::to_value(&device_event)
+                .unwrap()
+                .get("tier")
+                .is_none()
+        );
+    }
+
+    /// Serve each arrival wave to completion and drain its host transfers
+    /// before the next wave. Returns every KV event per wave and each
+    /// admission's host-reused prompt tokens.
+    fn served_kv_events(
+        host: Option<NativeHostOffloadConfig>,
+        waves: &[&[&[u32]]],
+    ) -> (Vec<Vec<crate::engine::KvEvent>>, Vec<usize>) {
+        let args = MockEngineArgs::builder()
+            .num_gpu_blocks(4)
+            .block_size(4)
+            .enable_prefix_caching(true)
+            .kv_cache_bytes_per_token(Some(250_000))
+            .native_host_offload(host)
+            .speedup_ratio(0.0)
+            .build()
+            .unwrap();
+        let mut core = VllmCore::new_with_worker_rank(args, 0, 0, 0, true, None).unwrap();
+        let (mut now_ms, mut next_uuid) = (0.0, 0u128);
+        let mut host_reused = Vec::new();
+        let events = waves
+            .iter()
+            .map(|wave| {
+                for prompt in *wave {
+                    next_uuid += 1;
+                    core.receive(DirectRequest {
+                        tokens: prompt.to_vec(),
+                        max_output_tokens: 1,
+                        uuid: Some(Uuid::from_u128(next_uuid)),
+                        arrival_timestamp_ms: Some(now_ms),
+                        ..Default::default()
+                    });
+                }
+                let mut events = Vec::new();
+                for _ in 0..8 {
+                    if core.is_ready() {
+                        let pass = core.execute_pass(&mut TraceCollector::default(), now_ms);
+                        now_ms = pass.end_ms;
+                        core.complete_engine_boundary(now_ms);
+                        events.extend(pass.kv_events);
+                        host_reused.extend(pass.admissions.iter().map(|admission| {
+                            admission
+                                .cache_tier_attribution
+                                .map_or(0, |tiers| tiers.host_reused_input_tokens)
+                        }));
+                    } else if let Some(deadline) = core.next_internal_deadline_ms() {
+                        now_ms = now_ms.max(deadline);
+                        core.process_internal_work(now_ms);
+                    } else {
+                        assert!(core.is_empty());
+                        return events;
+                    }
+                    events.extend(core.drain_kv_events());
+                }
+                panic!("wave did not drain")
+            })
+            .collect();
+        (events, host_reused)
+    }
+
+    #[test]
+    fn private_g2_publishes_host_evictions() {
+        use crate::engine::{KvEventData, KvEventTier};
+        let (a, x, y) = ([1, 2, 3, 4, 5], [11, 12, 13, 14, 15], [21, 22, 23, 24, 25]);
+        // A two-block private G2 holds A and X; storing Y evicts A, the LRU block.
+        let waves: [&[&[u32]]; 3] = [&[&a], &[&x], &[&y]];
+        let (events, _) = served_kv_events(
+            Some(NativeHostOffloadConfig::new(2).with_bandwidths(1.0, 1.0)),
+            &waves,
+        );
+        let block = |tokens: &[u32]| {
+            let (_, _, host) = request(Uuid::nil(), tokens.to_vec());
+            host.prompt_keys[0].sequence_hash()
+        };
+        let (a0, x0, y0) = (block(&a), block(&x), block(&y));
+        let host = events
+            .iter()
+            .flatten()
+            .filter(|event| event.tier == KvEventTier::HostPinned)
+            .map(|event| match &event.data {
+                KvEventData::Stored(stored) => (
+                    "stored",
+                    stored.blocks.iter().map(|block| block.block_hash).collect(),
+                ),
+                KvEventData::Removed { block_hashes } => ("removed", block_hashes.clone()),
+            })
+            .collect::<Vec<(&str, Vec<u64>)>>();
+        assert_eq!(
+            host,
+            vec![
+                ("stored", vec![a0]),
+                ("stored", vec![x0]),
+                ("removed", vec![a0]),
+                ("stored", vec![y0]),
+            ]
+        );
+    }
+
+    #[test]
+    fn private_g2_publishes_host_residency_without_changing_device_residency() {
+        use crate::engine::{KvEvent, KvEventData, KvEventTier};
+        let (a, x, y) = ([1, 2, 3, 4, 5], [11, 12, 13, 14, 15], [21, 22, 23, 24, 25]);
+        // X and Y together evict A's only full block from the four-block G1
+        // and then free their partial blocks, so A's return either recomputes
+        // or restores that block into free capacity without another eviction.
+        let waves: [&[&[u32]]; 3] = [&[&a], &[&x, &y], &[&a]];
+        let (without_g2, g1_host_reused) = served_kv_events(None, &waves);
+        let (private_g2, host_reused) = served_kv_events(
+            Some(NativeHostOffloadConfig::new(4).with_bandwidths(1.0, 1.0)),
+            &waves,
+        );
+        assert_eq!(
+            (g1_host_reused, host_reused),
+            (vec![0; 4], vec![0, 0, 0, 4]),
+            "only the private-G2 run restores A's block by H2D"
+        );
+
+        let block = |tokens: &[u32]| {
+            let (_, _, host) = request(Uuid::nil(), tokens.to_vec());
+            host.prompt_keys[0].sequence_hash()
+        };
+        let (a0, x0, y0) = (block(&a), block(&x), block(&y));
+        let residency = |events: &[Vec<KvEvent>], tier: KvEventTier| {
+            events
+                .iter()
+                .flatten()
+                .filter(|event| event.tier == tier)
+                .map(|event| match &event.data {
+                    KvEventData::Stored(stored) => (
+                        "stored",
+                        stored.blocks.iter().map(|block| block.block_hash).collect(),
+                    ),
+                    KvEventData::Removed { block_hashes } => ("removed", block_hashes.clone()),
+                })
+                .collect::<Vec<(&str, Vec<u64>)>>()
+        };
+        // G1 residency is exactly the G2-off stream; event IDs are shared with
+        // the interleaved HostPinned events, as in one vLLM KV event stream.
+        let device_residency = vec![
+            ("stored", vec![a0]),
+            ("stored", vec![x0]),
+            ("removed", vec![a0]),
+            ("stored", vec![y0]),
+            ("stored", vec![a0]),
+        ];
+        assert_eq!(
+            residency(&without_g2, KvEventTier::Device),
+            device_residency
+        );
+        assert_eq!(
+            residency(&private_g2, KvEventTier::Device),
+            device_residency
+        );
+        assert!(residency(&without_g2, KvEventTier::HostPinned).is_empty());
+        // Native vLLM's OffloadingConnector reports its private CPU cache the
+        // same way, so a KV router can credit A while it is host-only.
+        assert_eq!(
+            residency(&private_g2, KvEventTier::HostPinned),
+            vec![
+                ("stored", vec![a0]),
+                ("stored", vec![x0]),
+                ("stored", vec![y0])
+            ]
+        );
+        let ids = private_g2
+            .iter()
+            .flatten()
+            .map(|event| event.event_id)
+            .collect::<Vec<_>>();
+        assert!(ids.windows(2).all(|pair| pair[0] < pair[1]), "{ids:?}");
     }
 
     #[test]
@@ -1155,10 +1543,13 @@ mod tests {
         let observed = Arc::new(EvictionCapture::default());
         adapter.set_observer(observed.clone());
         assert!(matches!(
-            adapter.tier.reserve_external(Uuid::nil(), &[b], now),
+            adapter
+                .host
+                .lock()
+                .reserve_external(C, Uuid::nil(), &[b], None, now),
             StoreOutcome::Prepared { .. }
         ));
-        assert_eq!(adapter.tier.lookup(a), Lookup::Miss);
+        assert_eq!(adapter.host.lock().lookup(a), Lookup::Miss);
         assert_eq!(
             observed.take(),
             vec![a],
@@ -1173,6 +1564,84 @@ mod tests {
                 check_g3_cancellation(observed_at_ms, foreign_watermark);
             }
         }
+    }
+
+    #[test]
+    fn g3_promotion_into_private_g2_publishes_host_residency_in_the_same_advance() {
+        use crate::engine::g3_offload::{Direction, G3Tier};
+        use crate::engine::scheduler::capture_kv_event_sink;
+        use crate::engine::{G3OffloadConfig, G3Scope, KvEventData, KvEventTier};
+        // A rank that publishes KV events subscribes to its private G2.
+        let mut adapter = VllmHostOffloadAdapter::new(
+            &NativeHostOffloadConfig::new(2).with_bandwidths(1.0, 1.0),
+            4,
+            250_000,
+            None,
+            true,
+        )
+        .unwrap();
+        let owner = Uuid::from_u128(902);
+        let (sequence, identities) =
+            RequestSequence::new(owner, vec![1, 2, 3, 4, 5], 0, 0, 4, true, true, false, None);
+        let lease = BlockRequestLease::new(owner, identities);
+        let mut host = VllmHostRequestState::new(&sequence, &lease, 4, true);
+        let key = host.prompt_keys[0];
+        let registry = G3Tier::new(
+            G3OffloadConfig {
+                scope: G3Scope::ClusterShared,
+                num_g3_blocks: 4,
+                latency_to_first_byte_ms: 0.0,
+                read_bandwidth_gbps: 1.0,
+                write_bandwidth_gbps: 0.0,
+                shared_read_bandwidth_gbps: 1.0,
+                shared_write_bandwidth_gbps: 0.0,
+            },
+            2,
+            1_000_000,
+        )
+        .unwrap();
+        registry
+            .lock()
+            .unwrap()
+            .submit(0, Direction::Write, &[key], 0.0)
+            .unwrap();
+        registry.lock().unwrap().take_completed(0, 0.0);
+        adapter.set_g3(registry, 1);
+        let (buffer, sink) = capture_kv_event_sink();
+        let mut manager =
+            G1Manager::new_with_caching(4, 4, KvEventPublishers::new(Some(sink)), 0, true);
+        adapter.advance(&mut manager, 0.0);
+        assert!(matches!(
+            adapter.lookup(
+                &mut host,
+                &sequence,
+                &raw_cost(&manager, &sequence, &lease),
+                4,
+                adapter.current_time_ms(),
+            ),
+            HostLookup::Deferred
+        ));
+        // The requester leaves; its detached G3 promotion still lands in G2
+        // during the final advance, which leaves no later deadline.
+        assert!(adapter.cancel_request(&mut host, &mut manager, 0.0, 0.5));
+        buffer.drain();
+        adapter.advance(&mut manager, 4.0);
+        assert_eq!(adapter.host.lock().lookup(key), Lookup::Hit);
+        assert!(adapter.next_deadline().is_none());
+        let host_pinned = buffer
+            .drain()
+            .into_iter()
+            .filter(|event| event.tier == KvEventTier::HostPinned)
+            .map(|event| match event.data {
+                KvEventData::Stored(stored) => stored
+                    .blocks
+                    .iter()
+                    .map(|block| block.block_hash)
+                    .collect::<Vec<_>>(),
+                KvEventData::Removed { .. } => panic!("promotion evicts nothing"),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(host_pinned, vec![vec![key.sequence_hash()]]);
     }
 
     fn check_g3_cancellation(observed_at_ms: f64, foreign_watermark: Option<f64>) {
@@ -1221,8 +1690,11 @@ mod tests {
             registry.lock().unwrap().advance(now);
         }
         assert!(adapter.cancel_request(&mut host, &mut manager, 0.0, observed_at_ms));
-        assert_eq!(adapter.tier.current_time_ms(), 0.0);
-        assert!(matches!(adapter.tier.lookup(key), Lookup::Pending { .. }));
+        assert_eq!(adapter.host.lock().current_time_ms(), 0.0);
+        assert!(matches!(
+            adapter.host.lock().lookup(key),
+            Lookup::Pending { .. }
+        ));
         assert_eq!(manager.num_active_blocks(), 0);
         assert_eq!(host.reserved_blocks(), 0);
         let completed = foreign_watermark.is_some_and(|t| t >= 1.0);
@@ -1240,7 +1712,7 @@ mod tests {
                 .completed_loads
                 .is_empty()
         );
-        assert_eq!(adapter.tier.lookup(key), Lookup::Hit);
+        assert_eq!(adapter.host.lock().lookup(key), Lookup::Hit);
         assert_eq!(manager.num_active_blocks(), 0);
         assert!(adapter.next_deadline().is_none());
     }

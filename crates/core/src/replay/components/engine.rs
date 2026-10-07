@@ -3,7 +3,7 @@
 
 use std::collections::BTreeSet;
 use std::marker::PhantomData;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use crate::engine::generalized::{PassId, SameTimestampRetry, SchedulerCommand};
 use crate::engine::{
@@ -29,8 +29,12 @@ use crate::replay::telemetry::{ReplaySchedulerIntervalMetrics, ReplaySchedulerMe
 // 600 decay steps while still bounding a broken scheduler's same-time retry.
 const MAX_CONSECUTIVE_SAME_TIMESTAMP_RETRIES: usize = 1024;
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct PendingPass {
+    // Keep the engine's allocation. Only profile cancellation needs an index;
+    // ordinary replay drops these IDs at pass completion without building one.
+    committed_requests: Vec<Uuid>,
+    committed_request_index: OnceLock<BTreeSet<Uuid>>,
     pass_id: PassId,
     started_at_ms: f64,
     end_ms: f64,
@@ -181,6 +185,8 @@ where
         startup_time_ms: Option<f64>,
     ) -> Result<Self> {
         let mut factory = factory;
+        // A role outside a disaggregated deployment owns its shared G2 pool.
+        factory.bind_g2_registry(&Arc::default());
         if let Some(config) = factory.g3_config.clone() {
             factory.g3_tier = Some(crate::engine::g3_offload::G3Tier::new(
                 config,
@@ -261,6 +267,21 @@ where
             .g3_tier
             .as_ref()
             .map(|r| r.lock().unwrap().snapshot())
+    }
+
+    pub(crate) fn g2_domains(&self) -> Vec<crate::replay::G2DomainStats> {
+        self.factory
+            .g2_registry()
+            .and_then(|registry| registry.occupancy())
+            .map(
+                |(capacity_blocks, resident_blocks, used_blocks)| crate::replay::G2DomainStats {
+                    capacity_blocks,
+                    resident_blocks,
+                    used_blocks,
+                },
+            )
+            .into_iter()
+            .collect()
     }
 
     pub(crate) fn reset_timing_evidence(&self) -> Result<()> {
@@ -775,6 +796,23 @@ where
             .is_some())
     }
 
+    pub(crate) fn request_has_committed_pass(
+        &self,
+        scheduler_id: usize,
+        request_id: Uuid,
+    ) -> Result<bool> {
+        let owner = self.scheduler_owner(scheduler_id)?;
+        Ok(self
+            .required_worker(owner.worker_id)?
+            .pending_pass
+            .as_ref()
+            .is_some_and(|pass| {
+                pass.committed_request_index
+                    .get_or_init(|| pass.committed_requests.iter().copied().collect())
+                    .contains(&request_id)
+            }))
+    }
+
     pub(crate) fn drive_ready(
         &mut self,
         now_ms: f64,
@@ -808,7 +846,9 @@ where
             };
 
             let same_timestamp_retry = started.same_timestamp_retry;
-            let pending = PendingPass {
+            let mut pending = PendingPass {
+                committed_requests: Vec::new(),
+                committed_request_index: OnceLock::new(),
                 pass_id: started.pass_id,
                 started_at_ms: started.started_at_ms,
                 end_ms: started.end_ms,
@@ -816,6 +856,13 @@ where
 
             let mut effects: EngineEffects<Observation::Batch> = EngineEffects::default();
             for rank in started.by_rank {
+                if pending.committed_requests.is_empty() {
+                    pending.committed_requests = rank.effects.committed_requests;
+                } else {
+                    pending
+                        .committed_requests
+                        .extend(rank.effects.committed_requests);
+                }
                 effects
                     .admissions
                     .extend(rank.effects.admissions.into_iter().map(|admission| {
@@ -1295,6 +1342,142 @@ mod tests {
         .unwrap()
     }
 
+    #[rstest::rstest]
+    #[case(Backend::Vllm)]
+    #[case(Backend::Sglang)]
+    fn committed_request_membership_excludes_queued_work_during_chunked_prefill(
+        #[case] backend: Backend,
+        #[values(1, 2, 3)] dp_size: u32,
+        #[values(false, true)] query_before_cancel: bool,
+    ) {
+        let config = ReplayEngineConfig {
+            dp_size,
+            rank: EngineConfig {
+                backend,
+                num_gpu_blocks: 32,
+                block_size: 4,
+                max_num_batched_tokens: 4,
+                max_num_seqs: 1,
+                enable_chunked_prefill: true,
+                enable_prefix_caching: false,
+                sglang: SglangConfig {
+                    // SGLang divides this worker budget across attention-DP ranks.
+                    chunked_prefill_size: 4 * dp_size as usize,
+                    ..Default::default()
+                },
+                timing_model: TimingModelConfig::Fixed {
+                    prefill_ms: 10.0,
+                    decode_ms: 1.0,
+                },
+                ..EngineConfig::for_backend(backend)
+            },
+            ..ReplayEngineConfig::default()
+        };
+        let factory = ReplayEngineFactory::new()
+            .role_factory(&config, WorkerStage::Aggregated, false)
+            .unwrap();
+        let mut component: EngineComponent = EngineComponent::new_with_factory(
+            SimulationWorkerStage::Aggregated,
+            EnginePassMode::Visible,
+            factory,
+            1,
+            None,
+        )
+        .unwrap();
+        // With three ranks, leave rank 0 idle so collection starts at rank 1.
+        let first_active_rank = if dp_size == 3 { 1 } else { 0 };
+        let requests: Vec<_> = (first_active_rank..dp_size)
+            .map(|rank| {
+                (
+                    rank as usize,
+                    Uuid::from_u128(80_001 + u128::from(rank) * 2),
+                    Uuid::from_u128(80_002 + u128::from(rank) * 2),
+                )
+            })
+            .collect();
+        for &(scheduler_id, committed, queued) in &requests {
+            for (uuid, token) in [(committed, 1), (queued, 2)] {
+                component
+                    .dispatch(
+                        scheduler_id,
+                        DirectRequest {
+                            tokens: vec![token; 12],
+                            max_output_tokens: 2,
+                            uuid: Some(uuid),
+                            ..Default::default()
+                        },
+                        0.0,
+                    )
+                    .unwrap();
+            }
+        }
+        let mut started = component.drive_ready(0.0, None).unwrap();
+        let scheduled = started.scheduled_completion.take().unwrap();
+        assert_eq!(scheduled.at_ms, 10.0);
+        // The selected request has not produced output: its first prompt chunk
+        // still owns the committed pass, while the scheduler queue does not.
+        for &(scheduler_id, committed, queued) in &requests {
+            if query_before_cancel {
+                assert!(
+                    component
+                        .request_has_committed_pass(scheduler_id, committed)
+                        .unwrap()
+                );
+                assert!(
+                    !component
+                        .request_has_committed_pass(scheduler_id, queued)
+                        .unwrap()
+                );
+            }
+            for uuid in [queued, committed] {
+                component
+                    .apply_command(
+                        scheduler_id,
+                        Command::CancelRequest {
+                            request_id: uuid,
+                            discard_pending_output: true,
+                        },
+                        1.0,
+                    )
+                    .unwrap();
+            }
+        }
+        assert_eq!(component.in_flight(), 0);
+        // A first lookup after cancellation must still see the committed batch,
+        // including every DP rank, even though the live requests are gone.
+        for &(scheduler_id, committed, queued) in &requests {
+            assert!(
+                component
+                    .request_has_committed_pass(scheduler_id, committed)
+                    .unwrap()
+            );
+            assert!(
+                !component
+                    .request_has_committed_pass(scheduler_id, queued)
+                    .unwrap()
+            );
+        }
+        let completed = component
+            .on_scheduled_completion(scheduled.completion, scheduled.at_ms)
+            .unwrap();
+        assert!(completed.iter().all(|pass| pass.output_signals.is_empty()));
+        assert_eq!(
+            completed
+                .iter()
+                .map(|pass| pass.fpm.as_ref().unwrap().sum_prefill_tokens)
+                .sum::<u64>(),
+            4 * requests.len() as u64
+        );
+        for &(scheduler_id, committed, _) in &requests {
+            assert!(
+                !component
+                    .request_has_committed_pass(scheduler_id, committed)
+                    .unwrap()
+            );
+        }
+        assert!(component.is_drained());
+    }
+
     #[test]
     fn initially_empty_fleet_drains_later_workers_host_store() {
         let config = ReplayEngineConfig {
@@ -1351,6 +1534,95 @@ mod tests {
         assert!(!component.process_internal_work(0.5).unwrap().made_progress);
         assert!(component.process_internal_work(1.0).unwrap().made_progress);
         assert_eq!(component.try_remove_drained().unwrap(), vec![worker]);
+    }
+
+    #[test]
+    fn shared_g2_scale_in_drains_accepted_store_and_keeps_deployment_residency() {
+        let config = serde_json::from_value(serde_json::json!({"rank": {
+            "num_gpu_blocks": 1, "block_size": 4, "max_num_seqs": 1,
+            "max_num_batched_tokens": 4, "enable_prefix_caching": true,
+            "kv_cache_bytes_per_token": 250_000,
+            "timing_model": {"type": "fixed", "prefill_ms": 0.0, "decode_ms": 0.0},
+            "native_host_offload": {
+                "scope": "cluster_shared", "num_host_blocks": 2, "kv_layout_id": "tp1",
+                "d2h_bandwidth_gbps": 1.0, "h2d_bandwidth_gbps": 1.0,
+            },
+        }}))
+        .unwrap();
+        let factory = ReplayEngineFactory::new()
+            .role_factory(&config, WorkerStage::Aggregated, false)
+            .unwrap();
+        let mut component: EngineComponent = EngineComponent::new_with_factory(
+            SimulationWorkerStage::Aggregated,
+            EnginePassMode::Visible,
+            factory,
+            2,
+            None,
+        )
+        .unwrap();
+        let pool = |component: &EngineComponent| {
+            let [domain] = component.g2_domains()[..] else {
+                panic!("one deployment pool")
+            };
+            (domain.resident_blocks, domain.used_blocks)
+        };
+        let request = |id| DirectRequest {
+            tokens: vec![1, 2, 3, 4],
+            max_output_tokens: 0,
+            uuid: Some(Uuid::from_u128(id)),
+            ..Default::default()
+        };
+        // One 1 MB block per prompt: each D2H or H2D takes 1 ms at 1 GB/s.
+        let run = |component: &mut EngineComponent, worker, id, now: f64| {
+            component.dispatch(worker, request(id), now).unwrap();
+            let mut admissions = component.drive_ready(now, None).unwrap().admissions;
+            assert_eq!(component.next_internal_deadline_ms(), Some(now + 1.0));
+            assert!(
+                component
+                    .process_internal_work(now + 1.0)
+                    .unwrap()
+                    .made_progress
+            );
+            admissions.extend(component.drive_ready(now + 1.0, None).unwrap().admissions);
+            assert_eq!(component.in_flight(), 0);
+            admissions
+                .iter()
+                .map(|admission| admission.cache_tier_attribution)
+                .collect::<Vec<_>>()
+        };
+        let restored = Some(crate::engine::CacheTierAttribution {
+            g1_reused_input_tokens: 0,
+            host_reused_input_tokens: 4,
+        });
+
+        // Worker 1 computes the block; scale-in marks it while its D2H runs.
+        component.dispatch(1, request(1), 0.0).unwrap();
+        component.drive_ready(0.0, None).unwrap();
+        assert_eq!(component.in_flight(), 0);
+        assert_eq!(component.next_internal_deadline_ms(), Some(1.0));
+        assert_eq!(
+            component.apply_target_count(1).unwrap(),
+            (vec![], vec![1], vec![])
+        );
+        assert_eq!(pool(&component), (0, 1));
+        assert!(!component.process_internal_work(0.5).unwrap().made_progress);
+        assert!(component.try_remove_drained().unwrap().is_empty());
+        assert!(component.process_internal_work(1.0).unwrap().made_progress);
+        assert_eq!(component.try_remove_drained().unwrap(), [1]);
+        assert_eq!(pool(&component), (1, 1));
+
+        // The survivor restores the retired worker's block from G2.
+        assert_eq!(run(&mut component, 0, 2, 1.0), [restored]);
+        // The deployment owns the pool: it outlives an empty fleet.
+        assert_eq!(
+            component.apply_target_count(0).unwrap(),
+            (vec![], vec![0], vec![0])
+        );
+        assert_eq!(component.worker_count(), 0);
+        assert_eq!(pool(&component), (1, 1));
+        assert_eq!(component.apply_target_count(1).unwrap().0, [2]);
+        assert_eq!(run(&mut component, 2, 3, 3.0), [restored]);
+        assert_eq!(pool(&component), (1, 1));
     }
 
     #[test]

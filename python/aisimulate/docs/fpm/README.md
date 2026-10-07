@@ -5,16 +5,17 @@ SPDX-License-Identifier: Apache-2.0
 
 # Forward-pass models
 
-Start with the [FPM self-benchmarking and onboarding guide](self-benchmarking-and-onboarding.md) to collect
-whole-forward measurements, publish a performance-data pair, load it through
-the SDK, and run an AISimulate prediction. The guide includes prerequisites,
-commands, expected artifacts, acceptance checks, and recovery steps.
+Start with the [FPM self-service overview](../../../../docs/fpm-self-service/README.md)
+for motivation, support and the onboarding workflow. All self-service guidance
+lives under `docs/fpm-self-service/`:
 
-Self-benchmark collection currently supports vLLM configurations that pass
-model/runtime validation; new architectures can require benchmark adaptation.
-SGLang and TensorRT-LLM support is coming soon. The guide includes the collected
-[Kimi K3 TP8+DCP8 profile](self-benchmarking-and-onboarding.md#example-a-onboard-the-collected-kimi-k3-tp8dcp8-profile)
-and a new MiniMax collection campaign as worked examples of the general procedure.
+- [Implementation and CLI reference](../../../../docs/fpm-self-service/implementation.md):
+  commands, artifacts, validation, checkpointing and recovery.
+- [Worked examples](../../../../docs/fpm-self-service/examples.md): import a Kimi K3
+  TP8+DCP8 profile or collect a MiniMax-M2.7 TP4 profile.
+
+This directory contains developer integration guidance, FPM design background
+and model-specific profiles.
 
 There are two distinct workflows:
 
@@ -31,6 +32,9 @@ AISimulate checkout; pass its path as `estimator_config.fpm_interpolation.fpm_pa
 
 ## References
 
+- [Add a model architecture for SOL-assisted FPM](sol-model-integration.md):
+  developer instructions for analytical model descriptions and SOL-path tests;
+  not required for direct-FPM self-service.
 - [Collector usage and publication contract](../../collector/README.md#whole-forward-fpm-campaign)
 - [Generator FPM target and runtime responsibilities](../generator_overview.md#fpm-v1-target)
 - [AISimulate CLI configuration](../../../../docs/cli/user-guide.md)

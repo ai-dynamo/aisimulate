@@ -55,8 +55,9 @@ pub use fpm::{
 };
 pub use fpm::{
     CorrectionFactorBounds, CorrectionFeatureSpace, FpmInterpolationConfig, FpmInterpolationMethod,
-    FpmQueryCoverage, FpmQueryCoverageCounts, FpmQueryGap, FpmQueryPurpose, OpLevelConfig,
-    RegressionFitConfig, RegressionFitKind, SplineFitConfig, SplineSearchConfig,
+    FpmQueryCoverage, FpmQueryCoverageCounts, FpmQueryGap, FpmQueryPurpose, LinearFitConfig,
+    OpLevelConfig, RegressionFeatureAxis, RegressionFitConfig, RegressionFitKind,
+    RegressionSamplingConfig, RegressionUpdatePolicy, SplineFitConfig, SplineSearchConfig,
     UnrecordedFpmQuantMode,
 };
 pub use fpm::{

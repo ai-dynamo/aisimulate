@@ -326,6 +326,7 @@ impl AgenticPreparation {
                 scheduled_ready_at_ms: lane.ready_at_ms,
                 replay_hashes,
                 emit_session_metadata,
+                synthetic_session_id: false,
                 request,
             });
         }
