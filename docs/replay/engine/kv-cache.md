@@ -16,6 +16,8 @@ SPDX-License-Identifier: Apache-2.0
 Recurrent-state models also use `state_cache`; see
 [state cache](#state-cache).
 
+Merge this fragment into an existing `engine` block from the [engine overview](README.md):
+
 ```yaml
 engine:
   workers:
@@ -27,7 +29,7 @@ engine:
         capacity: {type: default, memory_fraction: 0.9}
         host_offload:            # optional G2
           num_host_blocks: 4096
-        g3_offload:              # optional G3, requires host_offload
+        g3_offload:              # optional G3: aggregated only, requires host_offload
           scope: cluster_shared
           num_g3_blocks: 16384
 ```
@@ -58,9 +60,9 @@ Tensor parallelism splits each token's KV across GPUs. `bytes_per_token` and
 `capacity` are therefore per TP shard and per DP rank.
 
 With `capacity.type: default`, the number of G1 blocks comes from the
-performance model's memory estimate: the GPU memory fraction minus weights,
-activations and `cuda_graph_reserved_bytes`. See
-[memory accounting](../../perf-model/memory.md). Use `fixed` capacity to pin an
+performance model's memory estimate, which applies `memory_fraction` the way
+each backend does. The backends differ in what they subtract before and after
+the fraction; see [memory accounting](../../perf-model/memory.md#kv-cache-capacity-reservation). Use `fixed` capacity to pin an
 exact block count, for example to compare cache sizes or to match a measured
 deployment.
 
@@ -99,7 +101,7 @@ engine:
   hardware: h200_sxm
   backend: vllm
   backend_version: "0.24.0"
-  context_length: 4096
+  context_length: 8192
   workers:
     aggregated:
       scheduler: {max_batched_tokens: 8192, max_sequences: 16}
@@ -237,7 +239,8 @@ the request recomputes the missing part instead. Each time this happens
 
 Models with recurrent layers (such as Kimi K3's KDA layers) keep a fixed-size
 state per request in addition to per-token KV. `state_cache` reserves that state
-in the same G1 pool.
+in the same G1 pool. The fragment below goes under
+`engine.workers.aggregated`:
 
 ```yaml
 kv_cache:

@@ -130,7 +130,6 @@ engine:
   workers:
     prefill:
       parallelism: {replicas: 2, tensor: 2}
-      scheduler: {max_batched_tokens: 16384}
     decode:
       parallelism: {replicas: 1, tensor: 4}
       scheduler: {max_sequences: 512}

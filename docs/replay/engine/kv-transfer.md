@@ -7,7 +7,8 @@ SPDX-License-Identifier: Apache-2.0
 
 In `mode: disaggregated`, each request is prefilled by a `prefill` worker and
 then decoded by a `decode` worker. `engine.kv_transfer` sets how long moving the
-prompt's KV cache between them takes.
+prompt's KV cache between them takes. Add it to a disaggregated configuration
+such as the [P/D example](README.md#a-complete-pd-example):
 
 ```yaml
 engine:

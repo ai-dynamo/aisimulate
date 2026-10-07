@@ -37,6 +37,8 @@ draft length or acceptance.
 
 ## Prompt lookup (ngram)
 
+Merge this fragment into an existing `engine` block from the [engine overview](README.md):
+
 ```yaml
 engine:
   backend: vllm
@@ -76,6 +78,8 @@ Prompt lookup is unrelated to `kv_cache.prefix_caching`.
 <a id="mtp"></a>
 
 ## MTP / EAGLE
+
+Merge this fragment into an existing `engine` block from the [engine overview](README.md):
 
 ```yaml
 engine:
