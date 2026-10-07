@@ -68,10 +68,13 @@ class _CliExecutionError(RuntimeError):
 
 def _write_incomplete_fpm_coverage(root: Path, error: BaseException) -> None:
     coverage = getattr(error, "fpm_query_coverage", None)
-    if isinstance(coverage, str):
-        coverage = json.loads(coverage)
-    if isinstance(coverage, dict):
-        write_fpm_coverage(root, {**coverage, "status": "incomplete", "error": str(error)})
+    try:
+        if isinstance(coverage, str):
+            coverage = json.loads(coverage)
+        if isinstance(coverage, dict):
+            write_fpm_coverage(root, {**coverage, "status": "incomplete", "error": str(error)})
+    except (ValueError, OSError) as write_error:
+        sys.stderr.write(f"could not save FPM coverage: {write_error}\n")
 
 
 class _PredictionCliRunner:

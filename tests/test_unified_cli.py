@@ -657,6 +657,42 @@ def test_predict_writes_incomplete_fpm_coverage_on_failure(tmp_path, monkeypatch
     }
 
 
+@pytest.mark.parametrize("coverage_value", ["{malformed", {"schema_version": 1}])
+def test_predict_failure_preserves_primary_error_when_coverage_persistence_fails(
+    tmp_path, monkeypatch, capsys, coverage_value
+) -> None:
+    config_path = tmp_path / "prediction.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "engine": {
+                    "model": "example/model",
+                    "hardware": "h200_sxm",
+                    "context_length": 4096,
+                    "workers": {"aggregated": {}},
+                }
+            }
+        )
+    )
+
+    class FailingRunner(_Runner):
+        def run(self, spec, *, output_requirements=None):
+            error = RuntimeError("primary runner failure")
+            error.fpm_query_coverage = coverage_value
+            raise error
+
+    if isinstance(coverage_value, dict):
+
+        def fail_write(*_args, **_kwargs):
+            raise OSError("disk")
+
+        monkeypatch.setattr(cli, "write_fpm_coverage", fail_write)
+    monkeypatch.setattr(cli, "resolve_runner_factory", lambda stack: _Factory(FailingRunner()))
+
+    assert cli.main(["predict", "--config", str(config_path), "--output-dir", str(tmp_path / "out")]) == 1
+    assert "primary runner failure" in capsys.readouterr().err
+
+
 @pytest.mark.parametrize("command", ["predict", "recommend"])
 def test_dry_run_is_rejected_before_execution(command, monkeypatch, capsys) -> None:
     monkeypatch.setattr(cli, "resolve_runner_factory", lambda _: pytest.fail("removed option must stop before replay"))
