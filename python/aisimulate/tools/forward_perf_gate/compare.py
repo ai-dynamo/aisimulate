@@ -215,7 +215,7 @@ def _cell_summaries(points: list[dict]) -> list[dict]:
         grouped.setdefault(key, []).append(point)
 
     cells = []
-    for key, cell_points in sorted(grouped.items()):
+    for key, cell_points in grouped.items():
         valid = [point for point in cell_points if "median_ratio" in point]
         ratios = [point["median_ratio"] for point in valid if point["median_ratio"] > 0]
         worst = max(valid, key=lambda point: point["median_ratio"], default=None)

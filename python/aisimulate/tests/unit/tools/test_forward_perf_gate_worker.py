@@ -193,11 +193,14 @@ def test_worker_reraises_control_flow(error: BaseException) -> None:
 
 
 def test_missing_database_is_a_data_miss(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(measurement.perf_database, "get_database_view", lambda *args, **kwargs: None)
+    def missing_database(*args, **kwargs):
+        assert kwargs == {"database_mode": "SILICON", "shared_layer": True}
+        return None
+
+    monkeypatch.setattr(measurement.perf_database, "get_database_view", missing_database)
     with pytest.raises(PerfDataNotAvailableError, match="failed to load perf database"):
         measurement.build_session(
             measurement.BenchmarkCase(model_path="model"),
-            suppress_loader_output=True,
             database_mode="SILICON",
         )
 
@@ -296,7 +299,6 @@ def test_case_group_resets_and_builds_once_and_continues_after_case_failure(
     monkeypatch.setattr(worker, "clear_caches", lambda case: reset_calls.append(case))
 
     def fake_setup(*args: object, **kwargs: object) -> tuple[float, object, object]:
-        assert kwargs["shared_layer"] is True
         setup_calls.append(None)
         return 1.0, object(), runtime
 

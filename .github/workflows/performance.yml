@@ -189,12 +189,12 @@ jobs:
           (
             cd "${BASE_SRC}/python/aisimulate"
             CARGO_TARGET_DIR="${RUNNER_TEMP}/forward-perf-base-target" \
-              python -m maturin build --release --out "${BASE_DIST}"
+              python -m maturin build --release --locked --out "${BASE_DIST}"
           )
           (
             cd "${HEAD_SRC}/python/aisimulate"
             CARGO_TARGET_DIR="${RUNNER_TEMP}/forward-perf-head-target" \
-              python -m maturin build --release --out "${HEAD_DIST}"
+              python -m maturin build --release --locked --out "${HEAD_DIST}"
           )
           python -m venv "${BASE_VENV}"
           python -m venv "${HEAD_VENV}"

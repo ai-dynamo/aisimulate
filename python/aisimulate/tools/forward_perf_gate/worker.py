@@ -252,9 +252,7 @@ def _run_case_group(cases: list[dict], *, warmup: int, iterations: int, revision
         clear_caches(representative)
         session_setup_ms, session, group_runtime_config = measure_session_setup_ms(
             representative,
-            suppress_loader_output=True,
             database_mode=cases[0]["database_mode"],
-            shared_layer=True,
         )
     except BaseException as exc:
         _reraise_control_flow(exc)
@@ -264,7 +262,7 @@ def _run_case_group(cases: list[dict], *, warmup: int, iterations: int, revision
 
     phases = list(dict.fromkeys(case["phase"] for case in cases))
     failed_phases = set()
-    with redirect_output(True):
+    with redirect_output():
         for phase in phases:
             try:
                 phase_case = next(case for case in cases if case["phase"] == phase)
@@ -298,7 +296,7 @@ def _run_case_group(cases: list[dict], *, warmup: int, iterations: int, revision
                 phase=case["phase"],
                 stride=case["stride"],
             )
-            with redirect_output(True):
+            with redirect_output():
                 predicted_value, cold_us, warm_samples, warm_stats = measure_cold_and_warm(
                     call,
                     warmup=warmup,

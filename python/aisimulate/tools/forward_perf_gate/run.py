@@ -256,7 +256,6 @@ def main() -> int:
             )
             if disposition == "INVALID":
                 raw["run_errors"].append(f"prewarm failed for {case['case_id']}: {reason}")
-                _checkpoint(raw, args.output_dir)
                 return _finish(raw, args.output_dir)
         _checkpoint(raw, args.output_dir)
 
