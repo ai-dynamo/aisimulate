@@ -4,11 +4,14 @@ schema_version: 1
 op: glm53flash_attention
 description: >-
   GLM-5.3-Flash NoPE sparse-MLA + IndexPool attention, one real checkpoint layer
-  timed standalone over real KV/IndexPool state. Prefill (x = new tokens per
-  request, exact prefix grid) and decode (x = absolute sequence length) up to
-  131072 context and batch 1-32, both IndexPool regimes (prefix+x <= 2048 short,
-  otherwise pooled + retained tail). Every step stays inside the pinned serving
-  chunked-prefill budget of 8192 scheduled tokens.
+  timed standalone over real KV/IndexPool state (GPU kernel time only).
+  Prefill (x = new tokens per request, exact prefix grid) and decode (x =
+  absolute sequence length) up to 131072 context and batch 1-32, both IndexPool
+  regimes (prefix+x <= 2048 short, otherwise pooled + retained tail), plus B=1
+  long-context rows at 256K, 512K and ~1M. Every step stays inside the pinned
+  serving chunked-prefill budget of 8192 scheduled tokens, and every prefill
+  chunk starts on a multiple of the IndexPool size 4 (stock vLLM 0.31.0
+  corrupts unaligned chunk starts).
 common_case_values:
   glm53flash_attention:
     # All 11 NoPE sparse-MLA layers (3, 7, ..., 43) are identical modules with
@@ -20,6 +23,9 @@ common_case_values:
     iterations: 10
     max_step_tokens: 8192
     max_context: 131072
+    # Serving server context limit (vLLM --max-model-len, SGLang
+    # --context-length) of the regular rows, as in the clean-truth servers.
+    max_model_len: 131079
     prefill:
       batch_sizes: [1, 2, 4, 8, 16, 32]
       query_lengths:
@@ -43,3 +49,20 @@ common_case_values:
         "16": *decode_full
         "24": *decode_short
         "32": *decode_full
+    # B=1 rows beyond the serving context, collected by separate attempts whose
+    # server limit is the model's max_position_embeddings (1048576). A prompt
+    # must stay below max_model_len, and a decode reading L tokens needs
+    # L <= max_model_len - 1 (vLLM caps a request at max_model_len tokens), so
+    # the ~1M points are prefix 1032192 and decode 1048575.
+    long_context:
+      max_context: 1048575
+      max_model_len: 1048576
+      prefill:
+        batch_sizes: [1]
+        query_lengths:
+          "1": [1024, 8192]
+        prefix_lengths: [262144, 524288, 1032192]
+      decode:
+        batch_sizes: [1]
+        sequence_lengths:
+          "1": [262144, 524288, 1048575]

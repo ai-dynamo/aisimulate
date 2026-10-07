@@ -12,26 +12,29 @@ import yaml
 from collector.glm53flash_attention_contract import (
     BASENAME,
     COLUMNS,
-    GRAPH_DECODE,
-    GRAPH_PREFILL,
+    KERNEL_DECODE,
+    KERNEL_PREFILL,
     RUNTIME_IMAGES,
     RUNTIME_VERSIONS,
     TIMING_METHODS,
     aggregate_rank_samples,
     attention_body,
     build_plan,
+    context_class_sets,
     geometry,
     geometry_key,
     indexer_regime,
     load_attempt,
     projection_quant_mode,
     representative_layer_is_uniform,
+    seed_chunk,
     sha256_json,
     target_keys,
+    unaligned_targets,
     validate_row,
     write_parquet,
 )
-from collector.glm53flash_attention_launch import SMOKE_SWEEP
+from collector.glm53flash_attention_launch import SMOKE_SWEEPS
 from collector.glm53flash_attention_tokens import spec as input_token_spec
 
 pytestmark = pytest.mark.unit
@@ -82,7 +85,7 @@ def test_fp8_representative_layer_rejects_a_differently_quantized_layer():
 
 @pytest.mark.parametrize("backend", ["vllm", "sglang"])
 @pytest.mark.parametrize("checkpoint", ["fp8", "nvfp4"])
-@pytest.mark.parametrize("tp", [2, 4])
+@pytest.mark.parametrize("tp", [1, 2, 4])
 def test_geometry_key_is_the_model_operator_body(backend, checkpoint, tp):
     from aisimulate_core.sdk import common
     from aisimulate_core.sdk.config import ModelConfig
@@ -130,37 +133,81 @@ def test_repository_plan_covers_both_regimes_inside_the_serving_budget():
     plan = build_plan(sweep())
     assert plan["layer_id"] == 3
     keys = target_keys(plan)
-    assert len(keys) == len(set(keys)) == 454
+    assert len(keys) == len(set(keys)) == 463
+    regular = {s["set_id"] for s in plan["sets"] if s["context_class"] == "regular"}
+    regular_plan = {**plan, "sets": [s for s in plan["sets"] if s["set_id"] in regular]}
+    regular_keys = target_keys(regular_plan)
+    assert len(regular_keys) == 454
     regimes = {(phase, indexer_regime(phase, prefix, x, 2048)) for phase, _, prefix, x in keys}
     assert regimes == {(p, r) for p in ("context", "generation") for r in ("short", "pooled")}
     for request_set in plan["sets"]:
         batch = request_set["batch_size"]
         assert batch * request_set["seed_chunk"] <= plan["max_step_tokens"]
+        assert request_set["seed_chunk"] % 4 == 0
+        limit = request_set["max_model_len"]
         if request_set["phase"] == "context":
             query = request_set["query"]
             assert batch * query <= plan["max_step_tokens"]
-            assert request_set["targets"][-1] + query <= plan["max_context"]
+            assert request_set["targets"][-1] + query < limit
             gaps = [b - a for a, b in zip(request_set["targets"], request_set["targets"][1:], strict=False)]
             assert all(gap >= query for gap in gaps)
         else:
             assert request_set["targets"] == sorted(request_set["targets"])
-            assert request_set["targets"][-1] <= plan["max_context"]
-    batches = {(phase, batch) for phase, batch, _, _ in keys}
+            assert request_set["targets"][-1] <= limit - 1
+    # Stock vLLM 0.31.0 runs every repository prefill chunk on the pool grid.
+    assert unaligned_targets(plan) == []
+    batches = {(phase, batch) for phase, batch, _, _ in regular_keys}
     assert {b for p, b in batches if p == "context"} == {1, 2, 4, 8, 16, 32}
     assert {b for p, b in batches if p == "generation"} == {1, 2, 3, 4, 6, 8, 12, 16, 24, 32}
-    assert max(x for phase, _, _, x in keys if phase == "generation") == 131072
-    assert max(prefix + x for phase, _, prefix, x in keys if phase == "context") == 106496
+    assert max(x for phase, _, _, x in regular_keys if phase == "generation") == 131072
+    assert max(prefix + x for phase, _, prefix, x in regular_keys if phase == "context") == 106496
+    assert {s["max_model_len"] for s in regular_plan["sets"]} == {131079}
 
 
-def test_plan_rejects_budget_overflow_and_unaligned_targets():
-    bad = copy.deepcopy(SMOKE_SWEEP)
+def test_long_context_rows_are_b1_and_use_the_model_position_limit():
+    plan = build_plan(sweep())
+    long_sets = [s for s in plan["sets"] if s["set_id"] in context_class_sets(plan, "long")]
+    assert {s["max_model_len"] for s in long_sets} == {1048576}
+    long_plan = {**plan, "sets": long_sets}
+    assert sorted(target_keys(long_plan)) == sorted(
+        [("context", 1, p, q) for p in (262144, 524288, 1032192) for q in (1024, 8192)]
+        + [("generation", 1, 0, x) for x in (262144, 524288, 1048575)]
+    )
+    assert all(s["set_id"].startswith("long-") for s in long_sets)
+
+
+def test_seed_chunks_are_floored_to_the_index_pool():
+    assert [seed_chunk(8192, b) for b in (1, 3, 6, 12, 24, 32)] == [8192, 2728, 1364, 680, 340, 256]
+    with pytest.raises(ValueError):
+        seed_chunk(8, 3)
+
+
+def test_plan_rejects_budget_overflow_and_reports_unaligned_targets():
+    bad = copy.deepcopy(SMOKE_SWEEPS["validation-vllm"])
     bad["prefill"]["query_lengths"]["4"] = [4096]
     with pytest.raises(ValueError, match="step budget"):
         build_plan(bad)
-    bad = copy.deepcopy(SMOKE_SWEEP)
-    bad["prefill"]["prefix_lengths"] = [0, 1023]
-    with pytest.raises(ValueError, match="aligned"):
-        build_plan(bad)
+    assert unaligned_targets(build_plan(SMOKE_SWEEPS["validation-vllm"])) == []
+    sglang = unaligned_targets(build_plan(SMOKE_SWEEPS["validation-sglang"]))
+    assert "prefill-b1-q2042-c0:prefix=0" in sglang and "prefill-b32-q10-c0:prefix=0" in sglang
+    long = copy.deepcopy(SMOKE_SWEEPS["long"])
+    long["long_context"]["decode"]["sequence_lengths"]["1"] = [1048576]
+    with pytest.raises(ValueError, match="must fit"):
+        build_plan(long)
+
+
+def test_explicit_prefix_grids_select_exact_validation_geometries():
+    keys = set(target_keys(build_plan(SMOKE_SWEEPS["validation-sglang"])))
+    assert {k for k in keys if k[0] == "context"} == {
+        ("context", 1, 128, 32),
+        ("context", 1, 0, 2042),
+        ("context", 1, 0, 8189),
+        ("context", 4, 12032, 256),
+        ("context", 32, 0, 10),
+        ("context", 32, 4352, 32),
+        ("context", 32, 0, 250),
+        ("context", 32, 98048, 256),
+    }
 
 
 def _flat(backend="vllm", checkpoint="fp8", tp=2):
@@ -168,7 +215,7 @@ def _flat(backend="vllm", checkpoint="fp8", tp=2):
 
 
 def _records(flat, phase, batch, prefix, x, latencies_by_rank, source=SHA, extra=None, method=None):
-    method = method or {"context": "cuda_events_eager_repeated_module_call", "generation": GRAPH_DECODE}[phase]
+    method = method or {"context": KERNEL_PREFILL, "generation": KERNEL_DECODE}[phase]
     graph = TIMING_METHODS[phase][method]
     key = {
         "geometry": geometry_key(attention_body(flat, phase == "context")),
@@ -215,8 +262,10 @@ def test_rank_maximum_then_median_and_published_schema():
     # Rank maxima per repetition are 3, 5, 2; median 3.
     assert row["latency"] == 3.0 and row["sample_count"] == 3
     assert row["measurement_scope"] == "local_compute" and row["execution_profile"] == "full"
-    assert row["used_cuda_graph"] is False and row["kv_seed_regime"] == "real_kv"
+    assert row["used_cuda_graph"] is True and row["kv_seed_regime"] == "real_kv"
     assert evidence[0]["rank_max_ms"] == [3.0, 5.0, 2.0]
+    assert evidence[0]["timing_method"] == KERNEL_PREFILL
+    assert evidence[0]["latency_cv"] == pytest.approx(0.3742, abs=1e-4)
     assert evidence[0]["indexer_regime"] == "pooled"
     decode, _ = aggregate_rank_samples(_records(flat, "generation", 4, 0, 4096, [[1.0], [2.0]]), 2)
     assert decode[0]["used_cuda_graph"] is True and decode[0]["prefix"] == 0
@@ -263,12 +312,10 @@ def test_writer_emits_the_reader_schema_and_rejects_duplicates_and_mixed_provena
     )[0]
     with pytest.raises(ValueError, match="one backend/runtime/source"):
         write_parquet(rows + other_source, tmp_path / "mixed.parquet")
-    wrong_graph = dict(rows[0], batch_size=3, used_cuda_graph=True)
-    with pytest.raises(ValueError, match="mixes CUDA graph identities"):
-        write_parquet(rows + [wrong_graph], tmp_path / "graph.parquet")
-    eager_decode = dict(rows[1], batch_size=3, used_cuda_graph=False)
-    with pytest.raises(ValueError, match="CUDA graph use"):
-        validate_row(eager_decode)
+    for row in rows[:2]:
+        # Both phases are timed under the serving CUDA graphs.
+        with pytest.raises(ValueError, match="CUDA graph use"):
+            validate_row(dict(row, used_cuda_graph=False))
     other_config = dict(rows[0], batch_size=3, config_sha256="c" * 64)
     with pytest.raises(ValueError, match="configuration identities"):
         write_parquet(rows + [other_config], tmp_path / "config.parquet")
@@ -297,10 +344,12 @@ def test_rows_the_reader_would_reject_fail_before_publication():
             validate_row(dict(row, geometry=geometry_key(dict(body, **change))))
 
 
-def _attempt(tmp_path, role="full", graph_prefill=False, only_sets=None, name=None):
+def _attempt(tmp_path, role="full", only_sets=None, name=None, sweep_spec=None, max_model_len=None):
     flat = _flat()
+    sweep_spec = sweep_spec or SMOKE_SWEEPS["validation-vllm"]
+    plan = build_plan(sweep_spec)
     body = {
-        "schema_version": 1,
+        "schema_version": 2,
         "op": "glm53flash_attention",
         "role": role,
         "geometry": flat,
@@ -308,29 +357,22 @@ def _attempt(tmp_path, role="full", graph_prefill=False, only_sets=None, name=No
         "framework_version": RUNTIME_VERSIONS["vllm"],
         "runtime_digest": RUNTIME_IMAGES["vllm"],
         "layer_id": 3,
-        "sweep": SMOKE_SWEEP,
-        "plan": build_plan(SMOKE_SWEEP),
-        "input_tokens": input_token_spec(build_plan(SMOKE_SWEEP)),
+        "sweep": sweep_spec,
+        "plan": plan,
+        "input_tokens": input_token_spec(plan),
         "source_commit": "c" * 40,
     }
-    if graph_prefill:
-        body["phases"] = ["context"]
-        body["prefill_execution"] = "framework_breakable_cuda_graph"
     if only_sets is not None:
         body["only_sets"] = sorted(only_sets)
-    attempt = tmp_path / (name or (role + ("-graph" if graph_prefill else "")))
+        plan = {**plan, "sets": [s for s in plan["sets"] if s["set_id"] in only_sets]}
+    body["max_model_len"] = max_model_len or plan["sets"][0]["max_model_len"]
+    attempt = tmp_path / (name or role)
     raw = attempt / "raw"
     raw.mkdir(parents=True)
     (attempt / "manifest.json").write_text(json.dumps({**body, "manifest_sha256": sha256_json(body)}))
     records = []
-    plan = body["plan"]
-    if only_sets is not None:
-        plan = {**plan, "sets": [s for s in plan["sets"] if s["set_id"] in only_sets]}
     for phase, batch, prefix, x in target_keys(plan):
-        if graph_prefill and phase != "context":
-            continue
-        method = GRAPH_PREFILL if graph_prefill else None
-        records += _records(flat, phase, batch, prefix, x, [[1.0, 2.0], [1.5, 1.0]], method=method)
+        records += _records(flat, phase, batch, prefix, x, [[1.0, 2.0], [1.5, 1.0]])
     for rank in (0, 1):
         lines = [json.dumps(r) for r in records if r["tp_rank"] == rank]
         (raw / f"rank-{rank}.jsonl").write_text("\n".join(lines) + "\n")
@@ -363,68 +405,120 @@ def test_finalize_writes_table_evidence_and_collection_sidecar(tmp_path, monkeyp
         "sys.argv", ["x", "finalize", str(attempt), "--output", str(output), "--evidence", str(evidence)]
     )
     contract.main()
-    assert pq.read_table(output).num_rows == len(target_keys(build_plan(SMOKE_SWEEP)))
+    assert pq.read_table(output).num_rows == len(target_keys(build_plan(SMOKE_SWEEPS["validation-vllm"])))
     meta = yaml.safe_load((output.parent / "collection_meta.yaml").read_text())
     table = meta["tables"]["glm53_attention_module_perf"]
     assert meta["runtime"]["image_digest"] == RUNTIME_IMAGES["vllm"]
     assert table["rows"] == pq.read_table(output).num_rows and len(table["data_sha256"]) == 64
     assert json.loads(evidence.read_text())["attempts"][0]["deployment"] == "fp8-tp2"
-    assert table["input_tokens"] == {"source": "seeded_random_tokens", **input_token_spec(build_plan(SMOKE_SWEEP))}
+    assert table["input_tokens"] == {
+        "source": "seeded_random_tokens",
+        **input_token_spec(build_plan(SMOKE_SWEEPS["validation-vllm"])),
+    }
+    assert table["timing_method"] == {"context": [KERNEL_PREFILL], "generation": [KERNEL_DECODE]}
+    assert table["attempts"][0]["max_model_len"] == 131079
 
 
-def test_graph_prefill_revision_replaces_only_prefill_rows(tmp_path, monkeypatch):
+def test_regular_and_long_context_attempts_finalize_into_one_table(tmp_path, monkeypatch):
     from collector import glm53flash_attention_contract as contract
 
-    eager, _ = _attempt(tmp_path)
-    output = tmp_path / "rev1" / BASENAME
-    monkeypatch.setattr(
-        "sys.argv", ["x", "finalize", str(eager), "--output", str(output), "--evidence", str(tmp_path / "e1.json")]
-    )
+    spec = copy.deepcopy(SMOKE_SWEEPS["validation-vllm"])
+    spec["long_context"] = copy.deepcopy(SMOKE_SWEEPS["long"]["long_context"])
+    spec["long_context"]["decode"]["sequence_lengths"]["1"] = [1048575]
+    plan = build_plan(spec)
+    regular, long = context_class_sets(plan, "regular"), context_class_sets(plan, "long")
+    first, _ = _attempt(tmp_path, only_sets=regular, name="regular", sweep_spec=spec)
+    second, _ = _attempt(tmp_path, only_sets=long, name="long", sweep_spec=spec)
+    assert load_attempt(second)[0]["max_model_len"] == 1048576
+    out = tmp_path / "t" / BASENAME
+    argv = ["x", "finalize", str(first), str(second), "--output", str(out), "--evidence", str(tmp_path / "e.json")]
+    monkeypatch.setattr("sys.argv", argv)
     contract.main()
-    graph, _ = _attempt(tmp_path, graph_prefill=True)
-    manifest, rows, _ = load_attempt(graph)
-    assert rows and all(json.loads(r["geometry"])["is_context"] and r["used_cuda_graph"] for r in rows)
-    revised = tmp_path / "rev2" / BASENAME
-    argv = ["x", "finalize", str(graph), "--output", str(revised), "--evidence", str(tmp_path / "e2.json")]
-    monkeypatch.setattr("sys.argv", argv + ["--keep-from", str(output)])
-    contract.main()
-    old = pq.read_table(output).to_pylist()
-    new = pq.read_table(revised).to_pylist()
-    assert len(new) == len(old)
-    assert all(r["used_cuda_graph"] for r in new)
-    decode_old = [r for r in old if not json.loads(r["geometry"])["is_context"]]
-    decode_new = [r for r in new if not json.loads(r["geometry"])["is_context"]]
-    assert decode_old == decode_new
-    meta = yaml.safe_load((revised.parent / "collection_meta.yaml").read_text())
-    table = meta["tables"]["glm53_attention_module_perf"]
-    assert table["execution_mode"] == {"fp8-tp2-context": "cuda_graph", "fp8-tp2-generation": "cuda_graph"}
-    assert table["attempts"][-1]["phases"] == ["generation"]
-    assert table["attempts"][-1]["input_tokens"]["source"] == "seeded_random_tokens"
+    assert pq.read_table(out).num_rows == len(target_keys(plan))
+    meta = yaml.safe_load((out.parent / "collection_meta.yaml").read_text())
+    limits = [a["max_model_len"] for a in meta["tables"]["glm53_attention_module_perf"]["attempts"]]
+    assert limits == [131079, 1048576]
+    wrong, _ = _attempt(tmp_path, only_sets=long, name="wrong", sweep_spec=spec, max_model_len=131079)
+    with pytest.raises(ValueError, match="max_model_len"):
+        load_attempt(wrong)
+    mixed, _ = _attempt(tmp_path, only_sets=regular[:1] + long, name="mixed", sweep_spec=spec)
+    with pytest.raises(ValueError, match="one context class"):
+        load_attempt(mixed)
 
 
 def test_split_attempts_must_cover_the_plan_exactly_once(tmp_path, monkeypatch):
     from collector import glm53flash_attention_contract as contract
 
-    context = [s["set_id"] for s in build_plan(SMOKE_SWEEP)["sets"] if s["phase"] == "context"]
-    assert len(context) >= 2
-    first, _ = _attempt(tmp_path, graph_prefill=True, only_sets=context[:-1], name="a")
-    last, _ = _attempt(tmp_path, graph_prefill=True, only_sets=context[-1:], name="b")
+    plan = build_plan(SMOKE_SWEEPS["validation-vllm"])
+    sets = [s["set_id"] for s in plan["sets"]]
+    assert len(sets) >= 2
+    first, _ = _attempt(tmp_path, only_sets=sets[:-1], name="a")
+    last, _ = _attempt(tmp_path, only_sets=sets[-1:], name="b")
     assert load_attempt(last)[1]
     out = tmp_path / "t" / BASENAME
     base = ["x", "finalize", "--output", str(out), "--evidence", str(tmp_path / "e.json")]
     monkeypatch.setattr("sys.argv", base[:2] + [str(first), str(last)] + base[2:])
     contract.main()
     rows = pq.read_table(out).to_pylist()
-    assert len(rows) == sum(k[0] == "context" for k in target_keys(build_plan(SMOKE_SWEEP)))
+    assert len(rows) == len(target_keys(plan))
     meta = yaml.safe_load((out.parent / "collection_meta.yaml").read_text())
     assert [a.get("only_sets") for a in meta["tables"]["glm53_attention_module_perf"]["attempts"]] == [
-        sorted(context[:-1]),
-        context[-1:],
+        sorted(sets[:-1]),
+        sets[-1:],
     ]
     monkeypatch.setattr("sys.argv", base[:2] + [str(first)] + base[2:])
     with pytest.raises(ValueError, match="cover"):
         contract.main()
-    twice, _ = _attempt(tmp_path, graph_prefill=True, only_sets=context, name="c")
+    twice, _ = _attempt(tmp_path, only_sets=sets, name="c")
     monkeypatch.setattr("sys.argv", base[:2] + [str(first), str(twice)] + base[2:])
     with pytest.raises(ValueError, match="twice"):
         contract.main()
+
+
+def _launch_args(tmp_path, name, **overrides):
+    from argparse import Namespace
+
+    values = {
+        "attempt": tmp_path / name,
+        "config": CONFIGS["nvfp4"],
+        "smoke": None,
+        "sweep": SWEEP,
+        "context_class": "regular",
+        "tag": "",
+        "layer_id": None,
+        "backend": "vllm",
+        "checkpoint": "nvfp4",
+        "tp": 1,
+        "source_commit": "c" * 40,
+        "allocator_max_split_mb": None,
+        "only_sets": None,
+        "skip_sets": None,
+        "sglang_mem_fraction": None,
+        "vllm_gpu_memory_utilization": None,
+        "remote_attempt": "/remote/attempt",
+        "remote_source": "/remote/src",
+        "remote_model": "/remote/model",
+        "image": "image.sqsh",
+        "account": "acct",
+        "partition": "batch",
+        "time": "01:00:00",
+    }
+    return Namespace(**{**values, **overrides})
+
+
+def test_launch_selects_one_context_class_and_guards_vllm_alignment(tmp_path):
+    from collector.glm53flash_attention_launch import prepare
+
+    regular = json.loads((prepare(_launch_args(tmp_path, "r")) / "manifest.json").read_text())
+    assert regular["max_model_len"] == 131079 and regular["geometry"]["tp_size"] == 1
+    assert len(regular["only_sets"]) == len(context_class_sets(regular["plan"], "regular"))
+    run = (tmp_path / "r" / "run.sbatch").read_text()
+    assert "glm53-v031c-attn-vllm-nvfp4-tp1" in run and "glm53flash-candidate" not in run
+    long = json.loads((prepare(_launch_args(tmp_path, "l", context_class="long")) / "manifest.json").read_text())
+    assert long["max_model_len"] == 1048576 and all(s.startswith("long-") for s in long["only_sets"])
+    sglang = prepare(_launch_args(tmp_path, "s", backend="sglang", context_class="long"))
+    assert "--context-length 1048576" in (sglang / "run.sbatch").read_text()
+    with pytest.raises(SystemExit, match="kpool_align4"):
+        prepare(_launch_args(tmp_path, "v", smoke="validation-sglang", sweep=None))
+    smoke = prepare(_launch_args(tmp_path, "g", smoke="validation-sglang", sweep=None, backend="sglang"))
+    assert json.loads((smoke / "manifest.json").read_text())["role"] == "smoke"

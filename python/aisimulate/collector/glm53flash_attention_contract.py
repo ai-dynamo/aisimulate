@@ -37,17 +37,19 @@ CHECKPOINTS = {
     "fp8": ("zai-org/GLM-5.3-Flash", "eb9eb208eb0d988989d07a6a12d0fdeb5f52574a"),
     "nvfp4": ("nvidia/GLM-5.3-Flash-NVFP4", "09b04e5e74bca08ca8549fc736d4cdd8624bfde3"),
 }
-# Exact runtimes the collectors are pinned to. vLLM runs with the reviewed
-# retained-tail overlay because stock 0.30.0 corrupts unaligned pooled prefill
-# (vllm/model_executor/layers/sparse_attn_indexer_kpool.py: _kpool_compress_insert
-# borrows the request's retained tail; kv_cache_interface.py KpoolTailSpec
-# uses_slot_mapping=False). Both overlay files change the IndexPool/KPool path
-# this table measures, so the stock and tail identities are never mixed.
-RUNTIME_VERSIONS = {"vllm": "0.30.0+glm53tail.eb4704514fdf", "sglang": "0.5.20"}
+# Exact runtimes the collectors are pinned to: stock vLLM v0.31.0 (upstream
+# tag commit db9527a46873454610df6dbedf79a36d6bf1a7f6, aarch64 image digest
+# below) and SGLang 0.5.20. Stock v0.31.0 still corrupts the boundary pool of
+# a prefill chunk whose start is not a multiple of index_kpool (4)
+# (vllm/models/glm5next/nvidia/sparse_indexer.py:47-90 _kpool_compress_insert,
+# "Assumes pool-aligned chunk starts"); every planned vLLM chunk therefore
+# starts on a multiple of KPOOL_ALIGN (see build_plan and the vLLM runner).
+RUNTIME_VERSIONS = {"vllm": "0.31.0", "sglang": "0.5.20"}
 RUNTIME_IMAGES = {
-    "vllm": "sha256:4864d46625cbc3307623e29ac742030655e27249feba7b97ec925ce4cc4dfb56",
+    "vllm": "sha256:3f7dd5b777d34d1724456ce71f87385dca288c3bb23029ab27dee358f5d2b971",
     "sglang": "sha256:b0d8718a4424bb22e448e04407ab3ce5f7399a4c5fc702d6fbe36c3772ec8862",
 }
+KPOOL_ALIGN = 4
 PHASES = ("context", "generation")
 # Published columns, exactly the Rust reader's schema.
 COLUMNS = (
@@ -90,24 +92,23 @@ BODY_FIELDS = (
     "tp_size",
     "value_head_dim",
 )
+# GPU kernel time only (no host launch gaps): the module call is replayed under
+# the framework's own serving CUDA graph mechanism (prefill: the breakable /
+# piecewise prefill graph whose eager breaks launch from the host; decode: a
+# full graph captured from the framework's decode-graph capture), and each
+# repetition's latency is the union of the GPU-busy intervals of the CUPTI
+# kernel, memcpy and memset activities attributed to that repetition
+# (glm53flash_attention_runtime.KernelTimer). This matches the graph-mode
+# kernel-time basis of the KDA and the other operator tables.
+KERNEL_PREFILL = "cupti_gpu_busy_union_framework_breakable_module_graph_replay"
+KERNEL_DECODE = "cupti_gpu_busy_union_captured_module_graph_replay"
 TIMING_METHODS = {
-    # Execution mode of the measured module, matching the pinned serving
-    # deployment. Revision 1 (2026-09-30) timed prefill eagerly, the then
-    # serving default (SGLang prefill graph backend "disabled"; vLLM captured
-    # only <=64 tokens). Revision 2 follows the 2026-10-01 serving decision to
-    # run prefill under the framework's breakable CUDA graphs (SGLang
-    # --cuda-graph-backend-prefill breakable up to 8192 tokens; vLLM
-    # FULL_AND_PIECEWISE with 62 capture sizes up to 8192). Decode always
-    # replays full CUDA graphs.
-    "context": {
-        "cuda_events_eager_repeated_module_call": False,
-        "cuda_events_framework_breakable_module_graph_replay": True,
-    },
-    "generation": {"cuda_events_captured_module_graph_replay": True},
+    "context": {KERNEL_PREFILL: True},
+    "generation": {KERNEL_DECODE: True},
 }
-EAGER_PREFILL = "cuda_events_eager_repeated_module_call"
-GRAPH_PREFILL = "cuda_events_framework_breakable_module_graph_replay"
-GRAPH_DECODE = "cuda_events_captured_module_graph_replay"
+# Capacity-only attempt settings (memory pool sizes, allocator split); they
+# never change a kernel, bucket or schedule and are frozen per manifest.
+CAPACITY_KNOBS = ("vllm_gpu_memory_utilization", "sglang_mem_fraction_static", "allocator_max_split_size_mb")
 
 
 def canonical_json(value: object) -> str:
@@ -129,7 +130,7 @@ def mla_layers(config: dict) -> list[int]:
 def projection_quant_mode(backend: str, checkpoint_format: str) -> str:
     """Actual MLA projection precision in the pinned framework model builders.
 
-    vLLM 0.30.0 ``models/glm5next/nvidia/model.py`` builds
+    vLLM 0.31.0 ``models/glm5next/common/model.py:318-334`` builds
     ``Glm5NextMLAAttention(quant_config=None)`` and dequantizes FP8 q_a/kv_a/o
     weights to BF16 on load, so every vLLM projection is BF16. SGLang 0.5.20
     ``models/glm5_next.py`` passes the checkpoint quant_config to
@@ -241,8 +242,9 @@ def geometry_key(body: dict) -> str:
 def indexer_regime(phase: str, prefix: int, x: int, index_topk: int) -> str:
     """Short-prefix regimes select every pool without MQA scoring.
 
-    vLLM sparse_attn_indexer_kpool.py skips scoring when the batch's maximum
-    prefill sequence (prefix + query) or decode sequence length is at most
+    vLLM 0.31.0 skips scoring when the batch's maximum prefill sequence
+    (prefix + query; models/glm5next/nvidia/sparse_indexer.py:250-271) or
+    decode sequence length (common/sparse_indexer.py:116-129) is at most
     ``topk_tokens``; SGLang dsa_indexer_kpool.py skips extend logits when
     ``max_kv_len <= index_topk``. The key keeps both regimes apart so a curve
     never interpolates across that discontinuity.
@@ -256,22 +258,65 @@ def indexer_regime(phase: str, prefix: int, x: int, index_topk: int) -> str:
     raise ValueError(f"unknown phase {phase!r}")
 
 
-def build_plan(sweep: dict) -> dict:
-    """Expand the base-op sweep into request sets with explicit target steps.
+def seed_chunk(budget: int, batch: int) -> int:
+    """Per-request seeding chunk: the batch's share of the step budget, floored
+    to the IndexPool size so every seeding chunk of every request starts on a
+    multiple of KPOOL_ALIGN (stock vLLM 0.31.0 corrupts the boundary pool of an
+    unaligned chunk start; SGLang only seeds state with it)."""
+    chunk = budget // batch // KPOOL_ALIGN * KPOOL_ALIGN
+    if chunk < KPOOL_ALIGN:
+        raise ValueError(f"batch {batch} leaves no aligned seeding chunk in a {budget}-token step")
+    return chunk
+
+
+def _prefix_grid(spec, batch: int, query: int) -> list[int]:
+    """Prefix grid: one list for every (B, Q), or explicit lists per B (and Q)."""
+    if not isinstance(spec, dict):
+        return list(spec)
+    per_batch = spec.get(str(batch), spec.get(batch))
+    if per_batch is None:
+        raise ValueError(f"no prefill prefix grid for batch {batch}")
+    if isinstance(per_batch, dict):
+        per_query = per_batch.get(str(query), per_batch.get(query))
+        if per_query is None:
+            raise ValueError(f"no prefill prefix grid for batch {batch} query {query}")
+        return list(per_query)
+    return list(per_batch)
+
+
+def unaligned_targets(plan: dict) -> list[str]:
+    """Prefill targets whose chunk start or length is off the IndexPool grid.
+
+    Stock vLLM 0.31.0 must never run such a chunk (``_kpool_compress_insert``);
+    SGLang is unaffected and keeps its own geometry.
+    """
+    bad = []
+    for request_set in plan["sets"]:
+        if request_set["seed_chunk"] % KPOOL_ALIGN:
+            bad.append(f"{request_set['set_id']}:seed_chunk={request_set['seed_chunk']}")
+        if request_set["phase"] == "context":
+            bad += [
+                f"{request_set['set_id']}:prefix={prefix}"
+                for prefix in request_set["targets"]
+                if prefix % KPOOL_ALIGN or request_set["query"] % KPOOL_ALIGN
+            ]
+    return bad
+
+
+def _context_sets(section: dict, budget: int, max_context: int, max_model_len: int, label: str) -> list[dict]:
+    """Request sets of one context class (regular serving or long context).
 
     Prefill sets keep B homogeneous requests in lockstep. The request grows
-    through ``prefix_lengths`` with seeding chunks of at most
-    ``max_step_tokens // B`` tokens per request (the serving chunked-prefill
-    budget), and at each target prefix one step extends every request by
-    exactly Q tokens. Decode sets seed B requests to L-1 tokens, then one real
-    decode step reads L tokens (x=L). SGLang may continue a decode set to the
-    next L (the decoded token remains part of the real sequence); vLLM cannot
-    append prompt tokens after decoding and runs one set per L.
+    through ``prefix_lengths`` with seeding chunks of ``seed_chunk(budget, B)``
+    tokens per request (inside the serving chunked-prefill budget), and at each
+    target prefix one step extends every request by exactly Q tokens. Decode
+    sets seed B requests to L-1 tokens, then one real decode step reads L
+    tokens (x=L). Every prompt stays below ``max_model_len`` (vLLM rejects a
+    prompt of max_model_len tokens; a decode needs L <= max_model_len - 1).
     """
-    budget = int(sweep["max_step_tokens"])
-    max_context = int(sweep["max_context"])
-    prefill = sweep["prefill"]
     sets = []
+    prefix_id = "" if label == "regular" else f"{label}-"
+    prefill = section["prefill"]
     for batch in prefill["batch_sizes"]:
         queries = prefill["query_lengths"].get(str(batch), prefill["query_lengths"].get(batch))
         if queries is None:
@@ -279,11 +324,11 @@ def build_plan(sweep: dict) -> dict:
         for query in queries:
             if batch * query > budget:
                 raise ValueError(f"prefill B={batch} Q={query} exceeds the {budget}-token step budget")
-            prefixes = [p for p in prefill["prefix_lengths"] if p + query <= max_context]
+            prefixes = [p for p in _prefix_grid(prefill["prefix_lengths"], batch, query) if p + query <= max_context]
             if not prefixes:
                 raise ValueError(f"prefill B={batch} Q={query} has no admissible prefix")
-            if any(p % 4 or query % 4 for p in prefixes):
-                raise ValueError("prefill targets must be IndexPool-aligned (multiples of 4)")
+            if max(prefixes) + query >= max_model_len:
+                raise ValueError(f"prefill B={batch} Q={query} prompt reaches max_model_len {max_model_len}")
             # A measured step advances every request by Q, so one request set
             # can only visit prefixes at least Q apart. Greedy chains keep the
             # long, expensive prefixes in the first chain; the remainder are
@@ -299,45 +344,91 @@ def build_plan(sweep: dict) -> dict:
             for index, chain in enumerate(chains):
                 sets.append(
                     {
-                        "set_id": f"prefill-b{batch}-q{query}-c{index}",
+                        "set_id": f"{prefix_id}prefill-b{batch}-q{query}-c{index}",
                         "phase": "context",
+                        "context_class": label,
+                        "max_model_len": max_model_len,
                         "batch_size": batch,
                         "query": query,
                         "targets": chain,
-                        "seed_chunk": budget // batch,
+                        "seed_chunk": seed_chunk(budget, batch),
                     }
                 )
-    decode = sweep["decode"]
+    decode = section["decode"]
     for batch in decode["batch_sizes"]:
         lengths = decode["sequence_lengths"].get(str(batch), decode["sequence_lengths"].get(batch))
         if lengths is None:
             raise ValueError(f"no decode length grid for batch {batch}")
-        if any(length < 2 or length > max_context for length in lengths):
+        if any(length < 2 or length > max_context or length >= max_model_len for length in lengths):
             raise ValueError("decode lengths need one real past token and must fit the context")
         sets.append(
             {
-                "set_id": f"decode-b{batch}",
+                "set_id": f"{prefix_id}decode-b{batch}",
                 "phase": "generation",
+                "context_class": label,
+                "max_model_len": max_model_len,
                 "batch_size": batch,
                 "targets": sorted(lengths),
-                "seed_chunk": budget // batch,
+                "seed_chunk": seed_chunk(budget, batch),
             }
         )
-    identities = [s["set_id"] for s in sets]
-    if len(set(identities)) != len(identities):
-        raise ValueError("duplicate request-set identity")
+    return sets
+
+
+def build_plan(sweep: dict) -> dict:
+    """Expand the base-op sweep into request sets with explicit target steps.
+
+    The regular class covers the serving context (``max_context``, served with
+    ``max_model_len``); the optional ``long_context`` class adds B=1 rows up to
+    the model's 1M positions, collected by attempts whose server limit is the
+    long class's ``max_model_len`` (a capacity setting recorded per set). SGLang
+    may continue a decode set to the next L (the decoded token remains part of
+    the real sequence); vLLM cannot append prompt tokens after decoding and
+    runs one request set per L.
+    """
+    budget = int(sweep["max_step_tokens"])
+    if budget % KPOOL_ALIGN:
+        raise ValueError("the step budget must be a multiple of the IndexPool size")
+    max_context = int(sweep["max_context"])
+    max_model_len = int(sweep["max_model_len"])
+    sets = _context_sets(sweep, budget, max_context, max_model_len, "regular")
     plan = {
-        "schema_version": 1,
+        "schema_version": 2,
         "op": OP_NAME,
         "layer_id": int(sweep["layer_id"]),
         "warmup": int(sweep["warmup"]),
         "iterations": int(sweep["iterations"]),
         "max_step_tokens": budget,
         "max_context": max_context,
-        "sets": sets,
+        "max_model_len": max_model_len,
     }
+    long_context = sweep.get("long_context")
+    if long_context is not None:
+        long_len = int(long_context["max_model_len"])
+        long_max = int(long_context["max_context"])
+        if long_max <= max_context:
+            raise ValueError("long-context rows must extend beyond the regular context")
+        sets += _context_sets(long_context, budget, long_max, long_len, "long")
+        plan["long_context"] = {"max_context": long_max, "max_model_len": long_len}
+    identities = [s["set_id"] for s in sets]
+    if len(set(identities)) != len(identities):
+        raise ValueError("duplicate request-set identity")
+    plan["sets"] = sets
     plan["plan_sha256"] = sha256_json(plan)
     return plan
+
+
+def context_class_sets(plan: dict, context_class: str) -> list[str]:
+    """Set identities of one context class (one server ``max_model_len``)."""
+    return [s["set_id"] for s in plan["sets"] if s["context_class"] == context_class]
+
+
+def selected_max_model_len(manifest: dict) -> int:
+    """The single server context limit of an attempt's selected sets."""
+    limits = {s["max_model_len"] for s in selected_plan(manifest)["sets"]}
+    if len(limits) != 1:
+        raise ValueError(f"an attempt must select sets of one context class, got max_model_len {sorted(limits)}")
+    return limits.pop()
 
 
 def target_keys(plan: dict) -> list[tuple[str, int, int, int]]:
@@ -471,6 +562,7 @@ def aggregate_rank_samples(records: list[dict], tp_size: int) -> tuple[list[dict
                 "indexer_regime": indexer_regime(phase, row["prefix"], row["x"], body["index_topk"]),
                 "latency_min": float(min(maxima)),
                 "latency_max": float(max(maxima)),
+                "latency_cv": float(statistics.pstdev(maxima) / statistics.fmean(maxima)),
                 "rank_max_ms": maxima,
                 "timing_method": first["timing_method"],
                 **{k: provenance[k] for k in ("framework_version", "checkpoint_revision", "layer_id")},
@@ -485,8 +577,8 @@ def validate_table(rows: list[dict]) -> None:
 
     ``source_sha256``/``runtime_digest`` are table-wide (one runtime per
     <backend>/<version> directory); ``config_sha256`` is uniform per
-    checkpoint; ``used_cuda_graph`` per (checkpoint, TP, phase), because serving
-    runs prefill eagerly and decode under CUDA graphs. ``kernel_source`` is a
+    checkpoint; ``used_cuda_graph`` per (checkpoint, TP, phase) (serving runs
+    both phases under the frameworks' CUDA graphs). ``kernel_source`` is a
     per-row witness: the dispatched method changes with the IndexPool regime.
     """
     if not rows:
@@ -558,17 +650,15 @@ def check_split_closure(attempts: list[tuple[dict, list[dict]]]) -> None:
         by_deployment.setdefault((geometry["checkpoint_format"], geometry["tp_size"]), []).append((manifest, rows))
     for deployment, group in by_deployment.items():
         plans = {json.dumps(m["plan"], sort_keys=True) for m, _ in group}
-        phases = {tuple(sorted(m.get("phases", PHASES))) for m, _ in group}
-        if len(plans) != 1 or len(phases) != 1:
-            raise ValueError(f"{deployment} attempts disagree on plan or phases")
+        if len(plans) != 1:
+            raise ValueError(f"{deployment} attempts disagree on the plan")
         seen: set[tuple] = set()
         for _, rows in group:
             keys = {(r["geometry"], r["batch_size"], r["prefix"], r["x"]) for r in rows}
             if keys & seen:
                 raise ValueError(f"{deployment} attempts measure a key twice")
             seen |= keys
-        selected = set(phases.pop())
-        wanted = [key for key in target_keys(group[0][0]["plan"]) if key[0] in selected]
+        wanted = target_keys(group[0][0]["plan"])
         if len(seen) != len(wanted):
             raise ValueError(f"{deployment} attempts cover {len(seen)} of {len(wanted)} planned keys")
 
@@ -606,9 +696,9 @@ def load_attempt(attempt: Path) -> tuple[dict, list[dict], list[dict]]:
             raise ValueError(f"{attempt} sample layer differs from the manifest")
     rows, evidence = aggregate_rank_samples(records, tp_size)
     measured = {(bodies[r["geometry"]], r["batch_size"], r["prefix"], r["x"]) for r in rows}
-    # A revision may re-collect only some phases (e.g. graph-mode prefill).
-    phases = set(manifest.get("phases", PHASES))
-    expected = {key for key in target_keys(selected_plan(manifest)) if key[0] in phases}
+    expected = set(target_keys(selected_plan(manifest)))
+    if manifest["max_model_len"] != selected_max_model_len(manifest):
+        raise ValueError(f"{attempt} server max_model_len differs from its selected context class")
     if measured != expected:
         missing = sorted(expected - measured)[:4]
         extra = sorted(measured - expected)[:4]
@@ -635,7 +725,6 @@ def main() -> None:
     finalize.add_argument("attempts", type=Path, nargs="+")
     finalize.add_argument("--output", type=Path, required=True)
     finalize.add_argument("--evidence", type=Path, required=True, help="per-row sample evidence JSON")
-    finalize.add_argument("--keep-from", type=Path, help="previous table whose other-phase rows are kept as-is")
     args = parser.parse_args()
     if args.command == "plan":
         import yaml
@@ -657,6 +746,8 @@ def main() -> None:
                 "plan_sha256": manifest["plan"]["plan_sha256"],
                 "deployment": f"{manifest['geometry']['checkpoint_format']}-tp{manifest['geometry']['tp_size']}",
                 "source_commit": manifest["source_commit"],
+                "max_model_len": manifest["max_model_len"],
+                **{k: manifest[k] for k in CAPACITY_KNOBS if manifest.get(k) is not None},
                 **({"only_sets": manifest["only_sets"]} if manifest.get("only_sets") is not None else {}),
             }
         )
@@ -670,38 +761,6 @@ def main() -> None:
     if len(backends) != 1:
         raise ValueError("one table holds one backend")
     backend = backends.pop()
-    if args.keep_from is not None:
-        # Carry rows of other phases unchanged from a previous table revision.
-        import pyarrow.parquet as pq
-
-        new_phases = {json.loads(r["geometry"])["is_context"] for r in rows}
-        kept = []
-        for old in pq.read_table(args.keep_from).to_pylist():
-            body = validate_row(old)
-            if body["is_context"] not in new_phases:
-                kept.append(old)
-        if not kept:
-            raise ValueError("--keep-from contributed no rows")
-        manifests.append(
-            {
-                "attempt": f"kept:{Path(args.keep_from).name}",
-                "data_sha256": hashlib.sha256(Path(args.keep_from).read_bytes()).hexdigest(),
-                "rows": len(kept),
-                "phases": sorted(
-                    {"context" if json.loads(r["geometry"])["is_context"] else "generation" for r in kept}
-                ),
-            }
-        )
-        # Kept rows keep their own table's input provenance.
-        previous = Path(args.keep_from).parent / "collection_meta.yaml"
-        if previous.is_file():
-            import yaml
-
-            old_tables = (yaml.safe_load(previous.read_text()) or {}).get("tables", {})
-            old_inputs = old_tables.get(Path(BASENAME).stem, {}).get("input_tokens")
-            if old_inputs is not None:
-                manifests[-1]["input_tokens"] = old_inputs
-        rows += kept
     write_parquet(rows, args.output)
     Path(args.evidence).write_text(json.dumps({"attempts": manifests, "rows": evidence}, indent=1) + "\n")
     import yaml
@@ -720,7 +779,10 @@ def main() -> None:
                 "rows": len(rows),
                 "data_sha256": hashlib.sha256(Path(args.output).read_bytes()).hexdigest(),
                 "collector": f"collector.{backend}.glm53flash_attention_runner",
-                "measurement": "one real sparse-MLA layer (3); output all-reduce excluded",
+                "measurement": "one real sparse-MLA layer (3); output all-reduce excluded; GPU kernel time only",
+                # Per phase: CUPTI GPU-busy union of the module's kernels,
+                # memcpys and memsets per repetition under the serving graphs.
+                "timing_method": {phase: sorted(methods) for phase, methods in TIMING_METHODS.items()},
                 "input_tokens": input_tokens,
                 # One execution mode per geometry (checkpoint, TP, phase).
                 "execution_mode": dict(sorted(_execution_modes(rows).items())),

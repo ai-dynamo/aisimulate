@@ -16,7 +16,7 @@ DeepSeek-V4.1 precedent in `sglang/README.dsv41.md`.
 
 | Backend | Version directory | Image | Notes |
 | --- | --- | --- | --- |
-| vLLM | `0.30.0+glm53tail.eb4704514fdf` | `vllm/vllm-openai@sha256:4864d466…dfb56` | Reviewed retained-tail overlay mounted first on `PYTHONPATH`. It changes `model_executor/layers/sparse_attn_indexer_kpool.py` (`_kpool_compress_insert` borrows each request's retained tail) and `v1/kv_cache_interface.py` (`KpoolTailSpec.uses_slot_mapping=False`), i.e. exactly the pooled-index/tail path measured here; stock 0.30.0 is never mixed in. |
+| vLLM | `0.31.0` | `vllm/vllm-openai@sha256:3f7dd5b7…b2971` (`v0.31.0-aarch64`; tag commit `db9527a4`) | Stock, no overlay. Its pooled-index prefill write still assumes pool-aligned chunk starts (see "IndexPool alignment"). |
 | SGLang | `0.5.20` | `lmsysorg/sglang@sha256:b0d8718a…c8862` | Stock. |
 
 Checkpoints: `zai-org/GLM-5.3-Flash@eb9eb208…` (FP8 block-128) and
@@ -49,49 +49,23 @@ key: SGLang FP8 serves q_a/kv_a, q_b and o_proj as FP8 block-128 (kv_b and the
 indexer BF16); SGLang NVFP4 and every vLLM deployment serve BF16 MLA
 projections (vLLM builds MLA with `quant_config=None`).
 
-## Execution mode (evidence)
+## Execution mode and timing
 
-The pinned serving configurations (FPM calibration `sglang-resolved-config.json`
-and vLLM `resolved-config-node0.json`) run:
+Both phases run under the frameworks' serving CUDA graphs (clean-truth server
+flags):
 
-- SGLang: `cuda_graph_config.decode.backend=full` for bs 1..32 and
-  `prefill.backend=disabled`, `attention_backend=dsa`, DSA prefill/decode
-  `trtllm`, top-k `sgl-kernel`, page 64, FP8 KV, chunked prefill 8192.
-- vLLM: `CompilationMode.NONE`, `cudagraph_mode=FULL_AND_PIECEWISE`, capture
-  sizes up to 64 tokens, `FLASHINFER_MLA_SPARSE`, FP8 KV, 8192 batched tokens.
+- SGLang: `--cuda-graph-backend-prefill breakable --cuda-graph-max-bs-prefill
+  8192` (58 token buckets) and full decode graphs for bs 1..32;
+  `attention_backend=dsa`, DSA prefill/decode `trtllm`, page 64, FP8 KV,
+  chunked prefill 8192.
+- vLLM: default `CompilationMode.NONE` + `FULL_AND_PIECEWISE` with the 62
+  `--cudagraph-capture-sizes` up to 8192 (breakable piecewise prefill graphs,
+  FULL uniform-decode graphs), `FLASHINFER_MLA_SPARSE`, FP8 KV, 8192 batched
+  tokens.
 
-Therefore revision 1 timed prefill eagerly and decode through a CUDA graph
-(the shipped prefill rows are revision 2, below):
+How the frameworks execute the module:
 
-- **Prefill** (`used_cuda_graph=false`): the probe fires inside the real
-  framework forward of the planned step, repeats the module call (3 warmups +
-  10 timed, back-to-back CUDA events; SGLang recreates `AttentionInputs` so the
-  latent projection is recomputed every time) and then performs the real call.
-- **Decode** (`used_cuda_graph=true`): the probe records the module's
-  arguments and forward context while the framework captures its own decode
-  graphs. After a real decode step replays the framework graph (witnessed via
-  `DecodeCudaGraphRunner.execute` / `ModelCudaGraphManager.run_fullgraph`),
-  the module is captured into its own CUDA graph from those capture-time
-  arguments under the framework's capture mode, so it reads the persistent
-  metadata buffers the replay just refreshed, and is replayed 3+10 times.
-
-vLLM runs with `cudagraph_mode=FULL_DECODE_ONLY`: the same FULL uniform-decode
-graphs as serving, but every prefill step eager. Serving replays prefill steps
-of at most 64 tokens through breakable piecewise graphs, so vLLM prefill rows
-with `batch * x <= 64` include launch overhead serving partly hides.
-
-### Revision 2: prefill under the serving prefill CUDA graphs
-
-On 2026-10-01 the serving deployment switched prefill to the frameworks'
-breakable CUDA graphs (evidence: GLM prefill-graph A/B smoke v4): SGLang
-`--cuda-graph-backend-prefill breakable --cuda-graph-max-bs-prefill 8192`
-(58 token buckets), vLLM default `FULL_AND_PIECEWISE` with 62
-`--cudagraph-capture-sizes` up to 8192. Revision 2 re-collects only the prefill
-rows under exactly that mechanism; decode rows are carried from revision 1.
-
-How the frameworks execute the module in graph-mode prefill:
-
-- SGLang (`runner/prefill_cuda_graph_runner.py`,
+- SGLang prefill (`runner/prefill_cuda_graph_runner.py`,
   `runner_backend/breakable_cuda_graph_backend.py`): the transformer body is
   captured per token bucket as graph segments separated by `eager_on_graph`
   breaks. For this module the absorbed MLA method is pinned in graph mode
@@ -100,70 +74,120 @@ How the frameworks execute the module in graph-mode prefill:
   TcPiecewise context) and the MLA BMM + attention core
   (`attention_forward_methods/forward_mla.py` `bcg_mla_bmm_then_unified_attention`)
   are eager breaks; projections, norms and o_proj replay from segments.
-- vLLM (`v1/worker/gpu/cudagraph_utils.py` `run_pw_graph`,
+- vLLM prefill (`v1/worker/gpu/cudagraph_utils.py:552-557` `run_pw_graph`,
   `compilation/breakable_cudagraph.py`): ops decorated with
   `eager_break_during_capture` -- the IndexPool indexer
-  (`sparse_attn_indexer_kpool.py`) and the MLA attention op
-  (`attention/mla_attention.py`) -- run eagerly against the step's forward
-  context; everything else replays from captured segments.
+  (`models/glm5next/nvidia/sparse_indexer.py:93`) and the MLA attention op
+  (`model_executor/layers/attention/mla_attention.py:1466`) -- run eagerly
+  against the step's forward context; everything else replays from captured
+  segments.
+- Decode (both): FULL graphs (`DecodeCudaGraphRunner.execute`;
+  vLLM `ModelCudaGraphManager.run_fullgraph`, cudagraph_utils.py:751-764).
 
-The probe records the module's capture-time inputs for every bucket while the
-framework captures, executes the real planned step (the framework replays its
-own prefill graph for the padded bucket; witnessed), then captures the module
-alone with the framework's own `BreakableCUDAGraphCapture` under that step's
-live contexts and replays it 3+10 times (`timing_method`
-`cuda_events_framework_breakable_module_graph_replay`, `used_cuda_graph=true`).
-Padding to the framework bucket is therefore included. The eager breaks keep
-their host launch cost, as in serving.
+The probe records the module's capture-time inputs for every graph size while
+the framework captures, executes the real planned step (the framework replays
+its own graph for the padded size; witnessed), then captures the module alone
+with the framework's own capture mechanism (SGLang/vLLM
+`BreakableCUDAGraphCapture` for prefill, `torch.cuda.graph` under the
+framework's capture mode for decode) under that step's live contexts.
+Padding to the framework bucket is therefore included.
 
-Memory: per-target module graphs make reserved memory grow across targets
-(vLLM: one shared private pool, the previous graph kept alive until the next
-capture). Headroom therefore comes from capacity-only knobs
-(KV pool size; no kernel, bucket or scheduling change), and a deployment's plan
-may be split across attempts whose manifests carry disjoint `only_sets`;
-`finalize` admits split attempts only if they cover the planned keys exactly
-once. Used for the staged revision:
+### Timing: GPU kernel time only
 
-- vLLM `--gpu-memory-utilization`: fp8-tp4 and nvfp4-tp4 0.70, nvfp4-tp2 0.55
-  (one attempt each); fp8-tp2 0.68 in two attempts (the last set,
-  `prefill-b32-q256-c1`, alone), since the KV pool must still hold
-  32 x 98560 tokens.
-- SGLang: each module graph is captured into its own `torch.cuda.MemPool`,
-  deleted after the target (releases only that pool). Prefix state is seeded
-  eagerly, as in revision 1; only the measured step replays the serving
-  prefill graph (witnessed). Under the graph the pooled indexer materializes
-  dense batch-wide MQA logits, and 8192-token seed steps at 8+ requests x 64K+
-  cached tokens do not fit. The default pool is never trimmed:
-  `torch.cuda.empty_cache` (and the allocator's own release on an OOM retry)
-  exposed an illegal address in a later framework BCG replay. To avoid
-  fragmentation OOMs, batch sizes 4-32 run one batch size per attempt, and
-  `--mem-fraction-static` is sized per deployment so the KV pool still holds
-  the largest planned context (the exact value, and
-  `PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:16384` where used, are in each
-  attempt manifest listed in `collection_meta.yaml`). Attempts from earlier
-  commits (batch 1-2, and fp8-tp2 batch 4) predate the MemPool and eager-seeding changes (shared pool, seeding
-  under the graph); both choices only manage memory and state construction,
-  not the measured step, and each attempt's source commit is recorded.
+`timing_method` `cupti_gpu_busy_union_framework_breakable_module_graph_replay`
+(prefill) and `cupti_gpu_busy_union_captured_module_graph_replay` (decode),
+`used_cuda_graph=true` (`glm53flash_attention_runtime.KernelTimer`):
+
+1. The module graph is replayed `warmup + iterations` (3 + 10) times under the
+   torch profiler (kineto/CUPTI, CPU + CUDA activities). Each repetition is a
+   `record_function` range that encloses the replay (graph launches and the
+   eager breaks' kernel launches) and a trailing `torch.cuda.synchronize()`,
+   so the GPU work of two repetitions never interleaves and the profiler's
+   start/stop work lies outside every range.
+2. Every CUPTI GPU activity on the rank's device -- kernels (CUDA-graph kernels
+   are reported per node), device memcpys and memsets -- is attributed to the
+   repetition whose range contains the CUDA runtime/driver call with the same
+   correlation id. An activity without a recorded launch call is attributed
+   only if it executes entirely inside one range (counted as `time_only`); a
+   correlation/time contradiction, an activity of a call outside every range
+   that executes inside one, or a repetition without kernels fails the target.
+3. Repetition latency = the length of the union of its activities' GPU-busy
+   intervals (overlapping streams count once, host launch gaps never count).
+4. Row latency = median over the 10 timed repetitions of the maximum across TP
+   ranks (as before).
+
+Per-target diagnostics in the evidence JSON: per repetition the busy union,
+the plain kernel-duration sum, kernel/memcpy/memset counts, the GPU span, the
+CUDA-event interval of the profiled repetition and of an unprofiled
+back-to-back replay of the same graph (the previous host-inclusive method),
+the host enqueue time, and the CV of the rank maxima.
+
+Previous revisions (`0.30.0+glm53tail` tables) bracketed the replay with CUDA
+events, so their prefill rows also contained the eager breaks' host launch
+gaps; their decode rows were event-timed full-graph replays.
+
+### IndexPool alignment (vLLM)
+
+Stock vLLM 0.31.0 leaves the boundary pool of a prefill chunk that starts off
+the 4-token pool grid unwritten, or fills it with another request's tokens
+(`models/glm5next/nvidia/sparse_indexer.py:47-90` `_kpool_compress_insert`).
+Every planned vLLM chunk therefore starts on a multiple of 4: prefill targets
+(prefix and new tokens) are multiples of 4, seeding chunks are the batch's
+share of the 8192-token budget floored to a multiple of 4
+(`contract.seed_chunk`: B=3 2728, B=6 1364, B=12 680, B=24 340), and
+requests advance in lockstep. The launcher refuses an unaligned vLLM plan, and
+the runner checks every scheduled prefill chunk before the step
+(`KpoolAlignmentError`) and records the chunk starts per row
+(`prefill_chunk_starts`). A decode reads L tokens after a prompt of L-1
+tokens; only its last seeding chunk may end off the grid, which completes in
+the tail as in serving. No planned geometry moved (`kpool_align4` would be the
+recorded reason). SGLang is unaffected; its smoke validation rows keep the
+serving geometry.
 
 ## Workload and state
 
-`cases/base_ops/glm53flash_attention.yaml` (454 points): prefill batch
-1–32 × new tokens 8–8192 × cached prefix 0–98304 (every step within the
-8192-token serving budget; up to 106496 context), decode batch 1–32 × absolute
-length 64–131072. Grid points bracket the IndexPool boundary (`prefix + x <=
-2048` short regime selects every pool without scoring; otherwise pooled +
-retained tail). Request token ids come from the seeded random-token generator
-`collector/glm53flash_attention_tokens.py` (seed 53, 262240 ids for the full
-plan, ordinary tokenizer vocabulary only; the shipped tables predate it, see
-`input_tokens` in their `collection_meta.yaml`); KV, IndexPool and tail state are
+`cases/base_ops/glm53flash_attention.yaml` (463 points):
+
+- regular class (454, server context limit 131079 as in serving): prefill
+  batch 1–32 × new tokens 8–8192 × cached prefix 0–98304 (every step within the
+  8192-token serving budget; up to 106496 context), decode batch 1–32 ×
+  absolute length 64–131072;
+- long class (9, server context limit 1048576 = the model's
+  `max_position_embeddings`): B=1 prefill with prefix 262144, 524288, 1032192
+  and new tokens 1024, 8192, and B=1 decode at 262144, 524288 and 1048575 (a
+  prompt must stay below the limit and vLLM caps a request at it, so the
+  largest decode reads 1048575 tokens).
+
+One attempt measures one context class (`--context-class`), so the server
+context limit (`max_model_len` in the manifest and `collection_meta.yaml`) is
+uniform per attempt. TP1 is collected for the NVFP4 checkpoint only (the FP8
+weights do not fit one GB300).
+
+Grid points bracket the IndexPool boundary (`prefix + x <= 2048` short regime
+selects every pool without scoring; otherwise pooled + retained tail). Request
+token ids come from the seeded random-token generator
+`collector/glm53flash_attention_tokens.py` (seed 53, 1179743 ids for the full
+plan, ordinary tokenizer vocabulary only); KV, IndexPool and tail state are
 produced by the framework's own allocation and forward helpers:
 
 - SGLang: `one_batch.load_model`, `prepare_synthetic_inputs_for_latency_test`,
   and `extend`/`decode`; continuations re-extend each request from its own
   `req_to_token` prefix (as `prepare_extend_inputs_for_correctness_test`).
+  Prefix state is seeded eagerly; only the measured step replays the serving
+  prefill graph (witnessed).
 - vLLM: the in-process `LLM` engine and its scheduler. Before each step the
   driver sets `max_num_scheduled_tokens` and `long_prefill_token_threshold`
   so B homogeneous requests advance in lockstep; this only decides batching.
+
+Memory: per-target module graphs make reserved memory grow across targets
+(vLLM: one shared private pool, the previous graph kept alive until the next
+capture; SGLang: one `torch.cuda.MemPool` per prefill target, deleted after
+it). Headroom therefore comes from capacity-only knobs (vLLM
+`--gpu-memory-utilization`, SGLang `--mem-fraction-static`, the allocator
+split), and a deployment's plan may be split across attempts whose manifests
+carry disjoint `only_sets`; `finalize` admits split attempts only if they
+cover the planned keys exactly once. Each attempt's knobs are frozen in its
+manifest and listed in `collection_meta.yaml`.
 
 ## Allocator policy
 
@@ -185,7 +209,7 @@ read by `crates/core/src/perfmodel/perf_database/glm53flash.rs`:
 | `component` | `attention` |
 | `geometry` | canonical sorted compact JSON of the model's `Glm53Attention` body without `name`/`measured` (backend, checkpoint, TP, local heads, phase, projection precision, FP8 KV, dimensions) |
 | `batch_size`, `prefix`, `x` | prefill: requests, cached tokens and new tokens per request; decode: requests, 0 and absolute sequence length |
-| `latency` | ms; median over repetitions of the maximum across TP ranks |
+| `latency` | ms, GPU kernel time only; median over repetitions of the maximum across TP ranks of the repetition's GPU-busy union |
 | `kernel_source` | observed module/quant-method/attention-backend witness |
 | `measurement_scope`, `kv_seed_regime`, `execution_profile` | `local_compute`, `real_kv`, `full` |
 | `source_sha256`, `config_sha256`, `runtime_digest`, `used_cuda_graph`, `sample_count` | provenance |
@@ -193,24 +217,30 @@ read by `crates/core/src/perfmodel/perf_database/glm53flash.rs`:
 The writer (`glm53flash_attention_contract.write_parquet`) rejects duplicate
 physical keys, a second runtime/source identity, a checkpoint with two
 configurations and a phase that mixes CUDA-graph modes. Per-row sample ranges,
-IndexPool regime and repetition maxima are kept in the adjacent evidence JSON.
+CV, IndexPool regime, repetition maxima and the timing diagnostics are kept in
+the adjacent evidence JSON; `collection_meta.yaml` names the timing method per
+phase and each attempt's context limit and capacity knobs.
 
 ## Running
 
 ```bash
-python -m collector.glm53flash_attention_launch --backend sglang --checkpoint fp8 --tp 2 \
-  --config src/aisimulate_core/model_configs/zai-org--GLM-5.3-Flash_config.json \
+python -m collector.glm53flash_attention_launch --backend sglang --checkpoint nvfp4 --tp 1 \
+  --config src/aisimulate_core/model_configs/nvidia--GLM-5.3-Flash-NVFP4_config.json \
+  [--context-class long] [--only-sets ...] [--smoke validation-sglang|validation-vllm|long] \
   --attempt <local dir> --remote-attempt <shared dir> --remote-source <shared collector copy> \
-  --remote-model <checkpoint dir> --image <sqsh> --source-commit <sha> [--smoke]
+  --remote-model <checkpoint dir> --image <sqsh> --source-commit <sha>
+sbatch <shared dir>/dryrun.sbatch   # CPU: framework, manifest, geometry, native args
 sbatch <shared dir>/run.sbatch
 python -m collector.glm53flash_attention_contract finalize <attempt>... \
   --output .../glm53_attention_module_perf.parquet --evidence <evidence.json>
 ```
 
-Sources: vLLM `models/glm5next/nvidia/{attention,model}.py`,
-`model_executor/layers/{mla,sparse_attn_indexer_kpool}.py`,
-`v1/worker/gpu/{model_runner,cudagraph_utils}.py`; SGLang
-`models/glm5_next.py`, `models/deepseek_v2.py`,
+Sources: vLLM `models/glm5next/common/{attention,model}.py`,
+`models/glm5next/nvidia/sparse_indexer.py`, `model_executor/layers/mla.py`,
+`model_executor/layers/attention/mla_attention.py`,
+`v1/worker/gpu/{model_runner,cudagraph_utils}.py`,
+`compilation/breakable_cudagraph.py`, `v1/core/sched/scheduler.py` (all at
+v0.31.0, `db9527a4`); SGLang `models/glm5_next.py`, `models/deepseek_v2.py`,
 `layers/attention/dsa/dsa_indexer_kpool.py`, `layers/communicator*.py`,
 `benchmark/one_batch.py`, `model_executor/runner/decode_cuda_graph_runner.py`.
 The adapters are original code that call these Apache-2.0 sources; no code is

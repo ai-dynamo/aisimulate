@@ -18,7 +18,7 @@ measured call contains no collective. The lazily computed q/kv latent
 (``AttentionInputs.fetch_qkv_latent``, layers/communicator.py) is recreated
 before every repetition so the fused q_a/kv_a projection is always measured.
 
-Graph-mode prefill (revision 2): serving captures prefill with SGLang's
+Execution (serving configuration): prefill is captured with SGLang's
 breakable CUDA graph (``--cuda-graph-backend-prefill breakable``;
 model_executor/runner/prefill_cuda_graph_runner.py with
 runner_backend/breakable_cuda_graph_backend.py). In that mode the absorbed MLA
@@ -27,11 +27,12 @@ pooled-key indexer and the MLA attention core run as eager graph breaks that
 read the live batch (layers/attention/dsa/kpool_prefill_cuda_graph.py,
 models/deepseek_common/attention_forward_methods/forward_mla.py
 ``bcg_mla_bmm_then_unified_attention``) and every other kernel of the module
-is replayed from captured segments. The probe records the module's
-capture-time arguments for every prefill bucket while the framework captures,
-witnesses the real step's framework replay, then captures the module alone
-with the same BreakableCUDAGraphCapture under the step's live forward and
-TcPiecewise contexts and replays it.
+is replayed from captured segments; decode replays full graphs for bs 1..32.
+The probe records the module's capture-time arguments for every prefill bucket
+and decode batch while the framework captures, witnesses the real step's
+framework replay, then captures the module alone with the same capture
+mechanism under the step's live forward and TcPiecewise contexts and times
+its replays with ``KernelTimer`` (GPU kernel time only).
 """
 
 from __future__ import annotations
@@ -45,20 +46,19 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from collector.glm53flash_attention_contract import (
-    GRAPH_PREFILL,
-    PHASES,
     RUNTIME_VERSIONS,
     build_plan,
     geometry,
     representative_layer_is_uniform,
+    selected_max_model_len,
 )
 from collector.glm53flash_attention_runtime import (
-    EventTimer,
     RawWriter,
     config_sha256,
     package_source_sha256,
     request_tokens,
     target_id,
+    time_replays,
 )
 from collector.glm53flash_attention_tokens import manifest_tokens
 from collector.glm53flash_attention_tokens import spec as input_token_spec
@@ -81,9 +81,6 @@ class AttentionProbe:
         self.original = attention.forward
         self.captured = {}
         self.prefill_captured = {}
-        self.replay_witness = None
-        self.armed = None
-        self.done = None
         self.pool = None
         attention.forward = self._forward
 
@@ -164,52 +161,6 @@ class AttentionProbe:
         if get_is_capture_mode() and torch.cuda.is_current_stream_capturing():
             self._record_capture(args, kwargs)
             return self.original(*args, **kwargs)
-        target = self.armed
-        if target is None or target["phase"] != "context":
-            return self.original(*args, **kwargs)
-        forward_batch = kwargs["forward_batch"]
-        observed = {
-            "extend": bool(forward_batch.forward_mode.is_extend()),
-            "batch": int(forward_batch.batch_size),
-            "prefix": sorted(set(forward_batch.extend_prefix_lens_cpu)),
-            "query": sorted(set(forward_batch.extend_seq_lens_cpu)),
-        }
-        expected = {
-            "extend": True,
-            "batch": target["batch_size"],
-            "prefix": [target["prefix"]],
-            "query": [target["x"]],
-        }
-        if observed != expected:
-            raise RuntimeError(f"framework batch {observed} differs from planned target {expected}")
-        from sglang.srt.runtime_context import get_forward
-
-        attn_inputs = get_forward().attn_inputs
-        zero_allocator = kwargs["zero_allocator"]
-        pointer = zero_allocator._pointer
-        # The dispatched forward method differs by regime (dense MHA vs sparse MLA).
-        source = self._source(forward_batch)
-        timer = EventTimer(torch)
-        outputs = []
-        for _ in range(self.options.warmup + self.options.iterations):
-            self._fresh_inputs(attn_inputs, forward_batch, zero_allocator, pointer)
-            result = timer(lambda: self.original(*args, **kwargs))
-            outputs.append(result[0] if isinstance(result, tuple) else result)
-        latencies = timer.read()
-        host = [round(v, 4) for v in timer.host_ms[self.options.warmup :]]
-        finite = all(bool(torch.isfinite(o).all().item()) for o in outputs)
-        drift = float((outputs[-1].float() - outputs[0].float()).abs().max().item())
-        self.writer.samples(
-            target,
-            latencies,
-            self.options.warmup,
-            source,
-            {"finite": finite, "repeat_max_abs_diff": drift, "host_enqueue_ms": host},
-        )
-        if not finite:
-            raise RuntimeError(f"nonfinite attention output for {target['target_id']}")
-        self.done = target["target_id"]
-        self._fresh_inputs(attn_inputs, forward_batch, zero_allocator, pointer)
         return self.original(*args, **kwargs)
 
     # -- graph-mode prefill: the framework's breakable capture, module only ---
@@ -259,13 +210,10 @@ class AttentionProbe:
                 with BreakableCUDAGraphCapture(cuda_graph=graph, pool=pool, stream=torch.cuda.Stream()):
                     output = call()
                 torch.cuda.synchronize()
-                timer = EventTimer(torch)
-                for _ in range(self.options.warmup + self.options.iterations):
-                    timer(graph.replay)
-                latencies = timer.read()
+                # The eager breaks replay against the live contexts above.
+                latencies, timing = time_replays(torch, graph.replay, self.options.warmup, self.options.iterations)
             finally:
                 tc_context._tc_piecewise_forward_context = previous
-        host = [round(v, 4) for v in timer.host_ms[self.options.warmup :]]
         result = output[0] if isinstance(output, tuple) else output
         finite = bool(torch.isfinite(result[:tokens]).all().item())
         self.writer.samples(
@@ -275,13 +223,12 @@ class AttentionProbe:
             source,
             {
                 "finite": finite,
-                "host_enqueue_ms": host,
                 "padded_tokens": witness.size,
                 "reserved_gib": round(torch.cuda.memory_reserved() / 2**30, 2),
                 "segments": len(graph._segments),
                 "eager_breaks": len(graph._break_fns),
+                **timing,
             },
-            timing_method=GRAPH_PREFILL,
         )
         del graph, output, result
         del mempool
@@ -318,14 +265,10 @@ class AttentionProbe:
             graph = torch.cuda.CUDAGraph()
             with torch.cuda.graph(graph, pool=self.pool):
                 output = call()
-        timer = EventTimer(torch)
-        for _ in range(self.options.warmup + self.options.iterations):
-            timer(graph.replay)
-        latencies = timer.read()
-        host = [round(v, 4) for v in timer.host_ms[self.options.warmup :]]
+        latencies, timing = time_replays(torch, graph.replay, self.options.warmup, self.options.iterations)
         result = output[0] if isinstance(output, tuple) else output
         finite = bool(torch.isfinite(result[:batch]).all().item())
-        self.writer.samples(target, latencies, self.options.warmup, source, {"finite": finite, "host_enqueue_ms": host})
+        self.writer.samples(target, latencies, self.options.warmup, source, {"finite": finite, **timing})
         del graph
         from sglang.srt.layers.communicator import get_attn_tp_context
 
@@ -352,7 +295,7 @@ def _extend_all(runner, bench, reqs, tokens, start: int, end: int):
     return runner.extend(reqs)
 
 
-def run_set(runner, bench, probe, request_set, tokens_all, options, progress, graph_prefill=False):
+def run_set(runner, bench, probe, request_set, tokens_all, options, progress):
     torch = probe.torch
     batch = request_set["batch_size"]
     chunk = request_set["seed_chunk"]
@@ -368,8 +311,7 @@ def run_set(runner, bench, probe, request_set, tokens_all, options, progress, gr
 
     def advance(end):
         nonlocal reqs, computed, result
-        if graph_prefill:
-            prefill_runner.w4_seeding = True
+        prefill_runner.w4_seeding = True
         try:
             while computed < end:
                 step = min(chunk, end - computed)
@@ -380,8 +322,7 @@ def run_set(runner, bench, probe, request_set, tokens_all, options, progress, gr
                     result = _extend_all(runner, bench, reqs, tokens, computed, computed + step)
                 computed += step
         finally:
-            if graph_prefill:
-                prefill_runner.w4_seeding = False
+            prefill_runner.w4_seeding = False
 
     for value in request_set["targets"]:
         started = time.monotonic()
@@ -395,69 +336,55 @@ def run_set(runner, bench, probe, request_set, tokens_all, options, progress, gr
                 "target_id": target_id("context", batch, value, query),
             }
             advance(value)
-            if graph_prefill:
-                before = prefill_runner.w4_replays
-                if reqs is None:
-                    reqs = bench.prepare_synthetic_inputs_for_latency_test(batch, query, [t[:query] for t in tokens])
-                    result = runner.extend(reqs)
-                else:
-                    result = _extend_all(runner, bench, reqs, tokens, computed, computed + query)
-                computed += query
-                if prefill_runner.w4_replays != before + 1:
-                    raise RuntimeError(f"{target['target_id']} did not replay the framework prefill CUDA graph")
-                witness = prefill_runner.w4_witness
-                if witness.raw_tokens != batch * query:
-                    raise RuntimeError(f"framework replayed {witness.raw_tokens} tokens, planned {batch * query}")
-                probe.measure_prefill(target, witness)
-                progress(
-                    {
-                        "set_id": request_set["set_id"],
-                        "target_id": target["target_id"],
-                        "elapsed_seconds": time.monotonic() - started,
-                        "status": "passed",
-                        "padded_tokens": witness.size,
-                    }
-                )
-                continue
-            probe.armed, probe.done = target, None
-            try:
-                if reqs is None:
-                    reqs = bench.prepare_synthetic_inputs_for_latency_test(batch, query, [t[:query] for t in tokens])
-                    result = runner.extend(reqs)
-                else:
-                    result = _extend_all(runner, bench, reqs, tokens, computed, computed + query)
-            finally:
-                probe.armed = None
+            before = prefill_runner.w4_replays
+            if reqs is None:
+                reqs = bench.prepare_synthetic_inputs_for_latency_test(batch, query, [t[:query] for t in tokens])
+                result = runner.extend(reqs)
+            else:
+                result = _extend_all(runner, bench, reqs, tokens, computed, computed + query)
             computed += query
-            if probe.done != target["target_id"]:
-                raise RuntimeError(f"layer {probe.layer_id} was not called for {target['target_id']}")
-        else:
-            target = {
-                "phase": "generation",
-                "batch_size": batch,
-                "prefix": 0,
-                "x": value,
-                "target_id": target_id("generation", batch, 0, value),
-            }
-            if computed >= value:
-                raise RuntimeError("decode targets must increase")
-            advance(value - 1)
-            next_ids, _, schedule_batch = result
-            graph_runner = runner.torch_runner.decode_cuda_graph_runner
-            before = graph_runner.w4_executions
-            new_ids, _ = runner.decode(next_ids, schedule_batch)
-            if graph_runner.w4_executions != before + 1 or graph_runner.w4_last_bs != batch:
-                raise RuntimeError("real decode did not replay the framework decode CUDA graph at this batch")
-            if [int(v) for v in schedule_batch.seq_lens.tolist()] != [value] * batch:
-                raise RuntimeError("decode batch does not read the planned absolute sequence length")
-            probe.measure_decode(target)
-            # The decoded token stays part of each real sequence.
-            decoded = next_ids.tolist()
-            for req, request_tokens_, token in zip(reqs, tokens, decoded, strict=True):
-                req.full_untruncated_fill_ids.append(int(token))
-                request_tokens_[value - 1] = int(token)
-            computed = value
-            del new_ids
+            if prefill_runner.w4_replays != before + 1:
+                raise RuntimeError(f"{target['target_id']} did not replay the framework prefill CUDA graph")
+            witness = prefill_runner.w4_witness
+            if witness.raw_tokens != batch * query:
+                raise RuntimeError(f"framework replayed {witness.raw_tokens} tokens, planned {batch * query}")
+            probe.measure_prefill(target, witness)
+            progress(
+                {
+                    "set_id": request_set["set_id"],
+                    "target_id": target["target_id"],
+                    "elapsed_seconds": time.monotonic() - started,
+                    "status": "passed",
+                    "padded_tokens": witness.size,
+                }
+            )
+            continue
+        target = {
+            "phase": "generation",
+            "batch_size": batch,
+            "prefix": 0,
+            "x": value,
+            "target_id": target_id("generation", batch, 0, value),
+        }
+        if computed >= value:
+            raise RuntimeError("decode targets must increase")
+        advance(value - 1)
+        next_ids, _, schedule_batch = result
+        graph_runner = runner.torch_runner.decode_cuda_graph_runner
+        before = graph_runner.w4_executions
+        new_ids, _ = runner.decode(next_ids, schedule_batch)
+        if graph_runner.w4_executions != before + 1 or graph_runner.w4_last_bs != batch:
+            raise RuntimeError("real decode did not replay the framework decode CUDA graph at this batch")
+        if [int(v) for v in schedule_batch.seq_lens.tolist()] != [value] * batch:
+            raise RuntimeError("decode batch does not read the planned absolute sequence length")
+        probe.measure_decode(target)
+        # The decoded token stays part of each real sequence.
+        decoded = next_ids.tolist()
+        for req, request_tokens_, token in zip(reqs, tokens, decoded, strict=True):
+            req.full_untruncated_fill_ids.append(int(token))
+            request_tokens_[value - 1] = int(token)
+        computed = value
+        del new_ids
         progress(
             {
                 "set_id": request_set["set_id"],
@@ -487,8 +414,6 @@ def run_worker(server_args, port_args, bench_args, gpu_id, tp_rank):
 
     key_base = dict(manifest["geometry"])
     writer = RawWriter(output, tp_rank, key_base, {})
-    graph_prefill = manifest.get("prefill_execution") == "framework_breakable_cuda_graph"
-    phases = set(manifest.get("phases", PHASES))
     probes = {}
     original_init_graphs = ModelRunner.init_cuda_graphs
 
@@ -516,51 +441,50 @@ def run_worker(server_args, port_args, bench_args, gpu_id, tp_rank):
             return execute(forward_batch, *a, **k)
 
         graph_runner.execute = counted
-        if graph_prefill:
-            from sglang.srt.model_executor.forward_context import get_forward_context
-            from sglang.srt.model_executor.runner_backend.breakable_cuda_graph_backend import (
-                BreakableCudaGraphBackend,
+        from sglang.srt.model_executor.forward_context import get_forward_context
+        from sglang.srt.model_executor.runner_backend.breakable_cuda_graph_backend import (
+            BreakableCudaGraphBackend,
+        )
+        from sglang.srt.model_executor.runner_backend_utils.tc_piecewise_cuda_graph import (
+            get_tc_piecewise_forward_context,
+        )
+
+        prefill_runner = model_runner.prefill_cuda_graph_runner
+        if prefill_runner is None or not isinstance(prefill_runner.backend, BreakableCudaGraphBackend):
+            raise RuntimeError("serving breakable prefill CUDA graphs are not active")
+        captured = sorted(probes["probe"].prefill_captured)
+        if captured != sorted(prefill_runner.capture_num_tokens):
+            raise RuntimeError(f"probe recorded prefill buckets {captured}")
+        prefill_runner.w4_replays, prefill_runner.w4_witness = 0, None
+        replay = prefill_runner.backend.replay
+
+        def witnessed(shape_key, static_forward_batch, **k):
+            # PrefillCudaGraphRunner.execute -> _execute_body_capture runs this
+            # inside its live forward and TcPiecewise contexts.
+            tc = get_tc_piecewise_forward_context()
+            prefill_runner.w4_replays += 1
+            prefill_runner.w4_witness = SimpleNamespace(
+                size=int(shape_key.size),
+                raw_tokens=int(tc.raw_num_tokens if tc.raw_num_tokens is not None else shape_key.size),
+                tc_context=tc,
+                forward_context=get_forward_context(),
             )
-            from sglang.srt.model_executor.runner_backend_utils.tc_piecewise_cuda_graph import (
-                get_tc_piecewise_forward_context,
-            )
+            return replay(shape_key, static_forward_batch, **k)
 
-            prefill_runner = model_runner.prefill_cuda_graph_runner
-            if prefill_runner is None or not isinstance(prefill_runner.backend, BreakableCudaGraphBackend):
-                raise RuntimeError("serving breakable prefill CUDA graphs are not active")
-            captured = sorted(probes["probe"].prefill_captured)
-            if captured != sorted(prefill_runner.capture_num_tokens):
-                raise RuntimeError(f"probe recorded prefill buckets {captured}")
-            prefill_runner.w4_replays, prefill_runner.w4_witness = 0, None
-            replay = prefill_runner.backend.replay
+        prefill_runner.backend.replay = witnessed
+        # State seeding (prefix fill) runs eagerly, as in revision 1; only
+        # the measured step uses the serving prefill graph. Under the graph
+        # the pooled indexer materializes dense batch-wide logits, which at
+        # 8+ requests x 64K+ cached tokens per 8192-token seed step exceed
+        # device memory; the eager path produces the same KV, IndexPool,
+        # tail and KDA state.
+        can_run_graph = prefill_runner.can_run_graph
+        prefill_runner.w4_seeding = False
 
-            def witnessed(shape_key, static_forward_batch, **k):
-                # PrefillCudaGraphRunner.execute -> _execute_body_capture runs this
-                # inside its live forward and TcPiecewise contexts.
-                tc = get_tc_piecewise_forward_context()
-                prefill_runner.w4_replays += 1
-                prefill_runner.w4_witness = SimpleNamespace(
-                    size=int(shape_key.size),
-                    raw_tokens=int(tc.raw_num_tokens if tc.raw_num_tokens is not None else shape_key.size),
-                    tc_context=tc,
-                    forward_context=get_forward_context(),
-                )
-                return replay(shape_key, static_forward_batch, **k)
+        def gated(forward_batch):
+            return False if prefill_runner.w4_seeding else can_run_graph(forward_batch)
 
-            prefill_runner.backend.replay = witnessed
-            # State seeding (prefix fill) runs eagerly, as in revision 1; only
-            # the measured step uses the serving prefill graph. Under the graph
-            # the pooled indexer materializes dense batch-wide logits, which at
-            # 8+ requests x 64K+ cached tokens per 8192-token seed step exceed
-            # device memory; the eager path produces the same KV, IndexPool,
-            # tail and KDA state.
-            can_run_graph = prefill_runner.can_run_graph
-            prefill_runner.w4_seeding = False
-
-            def gated(forward_batch):
-                return False if prefill_runner.w4_seeding else can_run_graph(forward_batch)
-
-            prefill_runner.can_run_graph = gated
+        prefill_runner.can_run_graph = gated
         return result
 
     ModelRunner.init_cuda_graphs = init_with_probe
@@ -600,10 +524,8 @@ def run_worker(server_args, port_args, bench_args, gpu_id, tp_rank):
     for request_set in plan["sets"]:
         if options.only_sets and request_set["set_id"] not in options.only_sets:
             continue
-        if request_set["phase"] not in phases:
-            continue
         try:
-            run_set(runner, bench, probe, request_set, tokens, plan, progress, graph_prefill=graph_prefill)
+            run_set(runner, bench, probe, request_set, tokens, plan, progress)
         except BaseException as error:
             progress(
                 {
@@ -698,17 +620,16 @@ def main():
     if expected != manifest["geometry"] or server_args.tp_size != expected["tp_size"]:
         raise ValueError("checkpoint/TP geometry differs from the manifest")
     representative_layer_is_uniform(config, manifest["layer_id"], expected["checkpoint_format"])
-    if manifest.get("prefill_execution") == "framework_breakable_cuda_graph":
-        graph = manifest["serving_graph"]["sglang_args"].split()
-        if any(flag not in rest for flag in graph[::2]) or [rest[rest.index(f) + 1] for f in graph[::2]] != graph[1::2]:
-            raise ValueError(f"serving prefill graph arguments {graph} are missing from {rest}")
+    graph = manifest["serving_graph"]["sglang_args"].split()
+    if any(flag not in rest for flag in graph[::2]) or [rest[rest.index(f) + 1] for f in graph[::2]] != graph[1::2]:
+        raise ValueError(f"serving prefill graph arguments {graph} are missing from {rest}")
+    # Serving context limit of the selected context class (capacity only).
+    if server_args.context_length != manifest["max_model_len"] or manifest["max_model_len"] != selected_max_model_len(
+        manifest
+    ):
+        raise ValueError(f"--context-length {server_args.context_length} differs from the manifest context class")
     if options.dry_run:
-        sets = [
-            s["set_id"]
-            for s in plan["sets"]
-            if s["phase"] in set(manifest.get("phases", PHASES))
-            and (not options.only_sets or s["set_id"] in options.only_sets)
-        ]
+        sets = [s["set_id"] for s in plan["sets"] if not options.only_sets or s["set_id"] in options.only_sets]
         print(
             json.dumps(
                 {
@@ -716,7 +637,6 @@ def main():
                     "framework": installed,
                     "geometry": expected,
                     "sets": len(sets),
-                    "prefill_execution": manifest.get("prefill_execution", "eager"),
                     "native_cli_args": rest,
                     "cuda_graph_backend_prefill": getattr(server_args, "cuda_graph_backend_prefill", None),
                     "cuda_graph_max_bs_prefill": getattr(server_args, "cuda_graph_max_bs_prefill", None),
