@@ -85,6 +85,7 @@ class TestMistral3ConfigParsing:
         assert ep.spatial_merge_size == 2
         assert ep.out_hidden_size == 12288
         assert ep.gated_mlp is True
+        assert ep.projector_merger_replicated is True
         assert ep.partial_rotary_factor > 0
 
     def test_projector_dims_are_three_pixtral_gemms(self):
@@ -165,6 +166,25 @@ class TestMistral3ModelGraph:
         assert "encoder_projector_fc0_act" not in enc
         assert "encoder_projector_fc1_act" in enc
         assert "encoder_projector_fc2_gemm" in enc
+
+    def test_patch_merger_stays_replicated_under_encoder_tp(self):
+        model_config = sdk_config.ModelConfig(tp_size=4, attention_dp_size=1, enable_encoder_dp=False)
+        model = get_model(_MODEL_PATH, model_config, backend_name="vllm")
+        ops_by_name = {op._name: op for op in model.encoder_ops}
+
+        assert "encoder_dp_all_gather" not in ops_by_name
+        assert (ops_by_name["encoder_projector_fc0_gemm"]._n, ops_by_name["encoder_projector_fc0_gemm"]._k) == (
+            1664,
+            6656,
+        )
+        assert (ops_by_name["encoder_projector_fc1_gemm"]._n, ops_by_name["encoder_projector_fc1_gemm"]._k) == (
+            12288 // 4,
+            1664,
+        )
+        assert (ops_by_name["encoder_projector_fc2_gemm"]._n, ops_by_name["encoder_projector_fc2_gemm"]._k) == (
+            12288,
+            12288 // 4,
+        )
 
     def test_fp8_static_text_gemm_from_checkpoint(self):
         model_config = sdk_config.ModelConfig(tp_size=1, attention_dp_size=1)

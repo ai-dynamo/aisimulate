@@ -7,6 +7,9 @@
 # https://github.com/huggingface/transformers/blob/cbc1651a032b923da7f4b44b3d0e6f68e6ba6b55/src/transformers/models/kimi_k25/video_processing_kimi_k25.py
 # https://github.com/vllm-project/vllm/blob/d2906091bfc579cebefe3d8e8fb9077397ce9882/vllm/model_executor/models/kimi_k25_vit.py
 # https://github.com/vllm-project/vllm/blob/d2906091bfc579cebefe3d8e8fb9077397ce9882/vllm/model_executor/layers/quantization/modelopt.py
+# Mistral3 projector topology is adapted and modified for performance modeling
+# from vLLM (Apache-2.0), copyright contributors to the vLLM project:
+# https://github.com/vllm-project/vllm/blob/ee0da84ab9e04ac7610e28580af62c365e898389/vllm/model_executor/models/mistral3.py
 
 import importlib.resources as pkg_resources
 import json
@@ -1529,6 +1532,7 @@ def _parse_hf_config_json(config: dict) -> dict:
                 out_hidden_size=text_hidden,
                 projector_dims=((merger_dim, vit_hidden), (vit_hidden, text_hidden), (text_hidden, text_hidden)),
                 projector_n_instances=1,
+                projector_merger_replicated=True,
                 partial_rotary_factor=0.5,
                 gated_mlp=True,
             )

@@ -264,6 +264,9 @@ class VisionEncoderConfig:
     max_video_frames: int = 0
     # Some towers use replicated projector linear layers even with encoder TP.
     projector_replicated: bool = False
+    # Some PatchMerger implementations replicate only the merger projection;
+    # subsequent projector layers retain their encoder-TP sharding.
+    projector_merger_replicated: bool = field(default=False, kw_only=True)
     # Keyword-only additions preserve positional callers of this config and
     # existing subclasses such as Gemma4VisionEncoderConfig.
     qkv_hidden_size: int = field(default=0, kw_only=True)

@@ -22,3 +22,13 @@ checkpoint `config.json` files:
 
 These configs are covered by the Llama 4 Community License. See the packaged
 `THIRD_PARTY_NOTICES.md` for the required attribution and license text.
+
+`mistralai--Mistral-Medium-3.5-128B_config.json` is an unmodified, byte-for-byte
+copy of `config.json` from `mistralai/Mistral-Medium-3.5-128B` at immutable
+revision `c4be198050fb5789774a55b92ed697becfbf20ae`:
+
+https://huggingface.co/mistralai/Mistral-Medium-3.5-128B/blob/c4be198050fb5789774a55b92ed697becfbf20ae/config.json
+
+The upstream model repository identifies Mistral AI as the copyright owner and
+licenses the model under the Modified MIT License. See the packaged
+`THIRD_PARTY_NOTICES.md` for the required attribution and license terms.

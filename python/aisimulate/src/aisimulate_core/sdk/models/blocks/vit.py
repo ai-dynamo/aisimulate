@@ -12,6 +12,9 @@
 # Kimi topology is a modified adaptation (Apache-2.0), copyright contributors
 # to the vLLM project:
 # https://github.com/vllm-project/vllm/blob/d2906091bfc579cebefe3d8e8fb9077397ce9882/vllm/model_executor/models/kimi_k25_vit.py
+# Mistral3 projector topology is adapted and modified for performance modeling
+# from vLLM (Apache-2.0), copyright contributors to the vLLM project:
+# https://github.com/vllm-project/vllm/blob/ee0da84ab9e04ac7610e28580af62c365e898389/vllm/model_executor/models/mistral3.py
 
 """Generic ViT encoder op builder for multimodal VL models.
 
@@ -61,14 +64,16 @@ The ViT transformer ends with a CustomAllReduce so every projector layer
 receives a full (un-sharded) first-layer input.  For a two-layer projector
 (the common case for PatchMerger-style architectures):
 
-  - Layer 0: row-parallel   (M = out // tp, K = in      — shards the output)
-  - Layer 1: column-parallel (M = out,       K = in // tp — input is sharded
+  - Layer 0: column-parallel (M = out // tp, K = in      — shards the output)
+  - Layer 1: row-parallel    (M = out,       K = in // tp — input is sharded
                                from the previous layer, output is reduced by AR)
 
-For P = 1 the single layer is row-parallel (M = out // tp, K = in) followed by
+For P = 1 the single layer is column-parallel (M = out // tp, K = in) followed by
 the AllReduce.  For P > 2 intermediate layers also receive sharded inputs; callers
 are responsible for choosing a projector_dims layout that is TP-correct.
 Replicated projectors retain full dimensions for every layer and omit AllReduce.
+Some PatchMerger layouts replicate only their first projection; those use
+``projector_merger_replicated`` while retaining TP sharding on later layers.
 """
 
 from __future__ import annotations
@@ -211,9 +216,9 @@ def _projector_ops(
     """Build the projector MLP ops from enc_cfg.projector_dims.
 
     TP layout per layer:
-      - Non-final layers: row-parallel (M = out // tp, K = in; output sharded) + activation
-      - Final layer: column-parallel if P > 1 (M = out, K = in // tp; input sharded)
-                     row-parallel if P == 1 (M = out // tp, K = in; full input)
+      - Non-final layers: column-parallel (M = out // tp, K = in; output sharded) + activation
+      - Final layer: row-parallel if P > 1 (M = out, K = in // tp; input sharded)
+                     column-parallel if P == 1 (M = out // tp, K = in; full input)
       - Ends with a CustomAllReduce over the final output dimension unless
         projector_replicated=True (full dimensions and no projector collectives).
 
@@ -252,22 +257,27 @@ def _projector_ops(
         )
     for i, (in_d, out_d) in enumerate(dims):
         is_last = i == n_layers - 1
+        merger_replicated = i == 0 and enc_cfg.projector_merger_replicated
         # Final layer in a multi-layer projector takes sharded input from the previous
-        # row-parallel layer (column-parallel style). Single-layer and non-final layers
-        # always receive a full (non-sharded) input (row-parallel style).
-        col_parallel = is_last and n_layers > 1
-        if col_parallel:
+        # column-parallel layer (row-parallel style). Single-layer and non-final layers
+        # always receive a full (non-sharded) input (column-parallel style), except for
+        # architectures that explicitly replicate only their patch-merger projection.
+        row_parallel = is_last and n_layers > 1
+        if merger_replicated:
+            m, k = out_d, in_d
+        elif row_parallel:
             m, k = out_d, in_d // tp_size
         else:
             m, k = out_d // tp_size, in_d
         result.append(ops.GEMM(f"encoder_projector_fc{i}_gemm", n_inst, m, k, vit_gemm_mode))
         if not is_last and (activation_indices is None or i in activation_indices):
+            activation_width = out_d if merger_replicated else out_d // tp_size
             result.append(
                 ops.ElementWise(
                     f"encoder_projector_fc{i}_act",
                     n_inst,
-                    out_d // tp_size,
-                    out_d // tp_size,
+                    activation_width,
+                    activation_width,
                     0.8,
                 )
             )
