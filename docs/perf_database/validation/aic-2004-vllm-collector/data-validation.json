@@ -75,7 +75,8 @@
     "memory_clock_mhz": 3996,
     "power_measurement_enabled": false,
     "helper_throttled_flag_is_not_independent_health_evidence": true,
-    "limits": "Periodic clock samples and pre/postflight receipts are not per-kernel clock telemetry."
+    "limits": "Periodic clock samples and pre/postflight receipts are not per-kernel clock telemetry.",
+    "later_node_flag": "Node-level pegged-clock DRAIN recorded 2026-10-07T00:30:26Z, 16m12s after the final sample; see later-node-observation.json. The affected GPU and onset are unknown."
   },
   "tests": {
     "collector_unit_suite": {

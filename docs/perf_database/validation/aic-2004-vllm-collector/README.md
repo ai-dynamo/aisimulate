@@ -65,6 +65,13 @@ attempted workload. `timing-receipts.json` preserves raw full-precision timings;
 production parquet uses the collector's normal four-decimal millisecond
 serialization. `repeat-controls/` stays outside the production dataset.
 
+A subsequent node-level pegged-clock flag was recorded at 00:30:26 UTC,
+16 minutes 12 seconds after this run finished at 00:14:14 UTC.
+`later-node-observation.json` preserves it. The retained pre/postflight checks
+had no flag, and the sampled clocks and repeat controls remain documented.
+The later flag identifies neither the affected GPU nor an earlier onset; it
+neither invalidates these timings nor proves they were unaffected.
+
 The original first pass preceded the decode-coordinate repair. A later pass
 on that same node was also superseded after the node was administratively
 flagged for pegged clocks; this does not establish which GPU was affected.
