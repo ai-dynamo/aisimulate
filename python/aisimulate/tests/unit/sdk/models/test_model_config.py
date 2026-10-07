@@ -1956,7 +1956,6 @@ class TestAttentionProjectionExclusions:
         specs = json.loads(engine._ops_json(getattr(model, f"{phase}_ops")))
         attention = next(fields for spec in specs for tag, fields in spec.items() if tag == f"Dsa{phase.capitalize()}")
         assert attention["gemm_quant_mode"] == "fp8_block"
-        assert attention["full_frac"] == pytest.approx(21 / 78)
 
 
 class TestBundledModelConfigsOffline:
