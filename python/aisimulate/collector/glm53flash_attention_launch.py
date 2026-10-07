@@ -108,8 +108,8 @@ VLLM_ENV = {
     "NCCL_P2P_LEVEL": "NVL",
     "VLLM_USE_NCCL_SYMM_MEM": "1",
 }
-# One GB300 holds ~279 GiB; the FP8 checkpoint's weights are 306 GB on disk
-# (zai-org/GLM-5.3-Flash@eb9eb208), the NVFP4 checkpoint's 191 GB. TP1 is
+# One GB300 holds ~279 GiB; the FP8 checkpoint's safetensors are 305.8 GiB
+# (zai-org/GLM-5.3-Flash@eb9eb208), the NVFP4 checkpoint's 190.4 GiB. TP1 is
 # therefore an NVFP4-only deployment (campaign decision; capacity fact).
 TP1_CHECKPOINTS = ("nvfp4",)
 

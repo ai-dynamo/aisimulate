@@ -271,7 +271,9 @@ def kernel_samples(attributed: dict, event_ms: list[float], warmup: int) -> tupl
     latencies = [stats["busy_us"] / 1e3 for stats in reps]
     timed = reps[warmup:]
 
-    def column(name, scale=1.0, digits=5):
+    def column(name, scale=None, digits=5):
+        if scale is None:
+            return [int(stats[name]) for stats in timed]
         return [round(stats[name] * scale, digits) for stats in timed]
 
     return latencies, {
@@ -283,7 +285,7 @@ def kernel_samples(attributed: dict, event_ms: list[float], warmup: int) -> tupl
         "memcpy_count": column("memcpy"),
         "memset_count": column("memset"),
         "time_only_count": column("time_only"),
-        "event_ms_profiled": column("event_ms_profiled"),
+        "event_ms_profiled": column("event_ms_profiled", 1.0),
         "event_ms_unprofiled": [round(v, 5) for v in event_ms[warmup:]],
         "attribution": attributed["diagnostics"],
     }
