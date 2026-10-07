@@ -71,7 +71,9 @@ one-token warmup requests per lane on the same engine. Preparation is excluded
 from profile metrics and the configured profile time limit; `agentic_phases`
 retains its separate evidence. The built-in offline Engine runner supports
 aggregated and separate prefill/decode workers on vLLM and SGLang, with HBM-only
-KV cache and speculative decoding disabled. P/D uses the same snapshot and
+KV cache. vLLM also supports local or shared [G2 host offload](../agentx-g2.md)
+on a static single aggregated worker or 1P1D, with attention DP1 on every role.
+Speculative decoding remains disabled. P/D uses the same snapshot and
 warmup fields and retains both worker pools across the barrier. See
 [warmup inputs and barrier behavior](../agentic-warmup.md).
 
@@ -564,7 +566,8 @@ The reference tables below use five columns:
   repeated prose below the table.
 
 A preset is a list of complete mappings. Each mapping must specify every knob belonging to the
-smallest preset class shown in the table, including a `null` value for a conditionally inactive knob.
+smallest preset class shown in the table. Use `null` for an inactive knob only where the component
+allows it; see the Planner interval rules below.
 A mapping is one atomic candidate choice; values inside it are not independently combined.
 
 For any preset-capable object in `recommend`, `preset` has these forms:
@@ -713,7 +716,7 @@ the current SA convention.
 | `traffic.load.speedup` | `1` | `-` | `-` | Positive; trace timestamp load only. |
 | `traffic.load.agentic_lanes` | `null` | `x` | `-` | Positive integer; `weka`, `agentic_mooncake`, or agentic `dynamo` timestamp replay only. |
 | `traffic.load.agentic_snapshot` | `null` (unset) | `x` | `-` | Optional object `{seed: u64}`; required `seed` is an unsigned 64-bit integer (`0` through `2^64 - 1`). Requires `traffic.load.type: trace_timestamps` and positive `agentic_lanes`; supported formats are `weka`, `agentic_mooncake`, and agentic `dynamo`. Unset preserves turn-zero execution. |
-| `traffic.load.agentic_warmup` | `false` | `x` | `-` | Optional boolean; `true` requires `agentic_snapshot` and positive `agentic_lanes`. Physically primes the saved prefixes, completes ten warmup requests per lane, then profiles the saved suffix. Available on offline aggregated or disaggregated vLLM/SGLang Engine replay, with HBM-only KV cache and speculative decoding disabled. |
+| `traffic.load.agentic_warmup` | `false` | `x` | `-` | Optional boolean; `true` requires `agentic_snapshot` and positive `agentic_lanes`. Physically primes the saved prefixes, completes ten warmup requests per lane, then profiles the saved suffix. Available on offline aggregated or disaggregated vLLM/SGLang Engine replay with HBM-only KV cache, or [qualified vLLM G2 configurations](../agentx-g2.md). Speculative decoding remains disabled. |
 | `traffic.load.agentic_profile` | `null` (unset) | `x` | `-` | Optional object; `{}` enables continuous lane replenishment with the defaults below. Requires `trace_timestamps`, positive `agentic_lanes`, and `agentic_snapshot`; cannot be combined with `traffic.stop.max_virtual_time_seconds`. Unset preserves finite replay. See [continuous agentic profiles](../agentic-profile.md) for the full configuration, supported runtimes, and reporting semantics. |
 | `traffic.load.agentic_profile.duration_seconds` | `3600` when enabled | `x` | `-` | Positive finite admission duration, starting at the preparation barrier or simulation start without warmup. No new workload requests or replacement plays are issued after the deadline. |
 | `traffic.load.agentic_profile.response_grace_seconds` | `30` when enabled | `x` | `-` | Nonnegative finite time for already submitted requests to respond after the admission deadline; remaining client requests are then canceled. |
@@ -858,8 +861,10 @@ row above. If `traffic.source.block_size` is supplied for `dynamo` or `weka`, it
 embedded block size. For the other formats, `block_size` is the trace hash-block size used to
 reconstruct prompts.
 
-Agentic Engine replay requires HBM-only KV cache with speculative decoding
-disabled; TensorRT-LLM is not qualified. P/D workers must share the same target
+Agentic Engine replay supports HBM-only KV cache on vLLM/SGLang and local or shared
+[G2 host offload](../agentx-g2.md) on vLLM with a static single aggregated worker
+or 1P1D, attention DP1 on every role, and no G3. Speculative decoding is disabled;
+TensorRT-LLM is not qualified. P/D workers must share the same target
 model. Online P/D fails validation. These functional replay guarantees do not
 qualify the separate Dynamo runner, even when the input format is `dynamo`.
 
@@ -888,7 +893,9 @@ models are not supported yet.
 The lowering records a zero-based `source_play_ordinal` on every v2 row so materialized graphs retain
 deterministic directory and JSONL order; missing ordinals remain valid for older v2 inputs, but an
 ordered graph must provide one unique contiguous ordinal for every play.
-Without `agentic_profile`, an explicit `agentic_lanes: N` assigns plays round-robin to N client lanes.
+Without `agentic_profile`, `agentic_lanes: N` starts the first N plays and replenishes each
+free client lane from one shared queue in normalized graph order. Plays are not preassigned
+to private lane queues, so a later play cannot overtake the next queued play when a lane finishes early.
 The next play starts when the current play's client work ends: all authored requests complete on
 success, or all dispatched requests become terminal after a failure skips undispatched work. Background requests remain part
 of their play even without a parent join. P/D source holds and other server cleanup may outlive this
@@ -897,7 +904,8 @@ Omitting `agentic_lanes` preserves authored timestamp behavior. With `agentic_sn
 `agentic_profile`, completed lanes take replacement plays from a shared sequential corpus cursor,
 which wraps at the end of the corpus until the admission deadline. Replacement plays start at turn
 zero with fresh request, conversation, play, and cache identities. This opt-in path supports offline
-aggregated and P/D vLLM/SGLang Engine replay with HBM-only KV cache and speculative decoding disabled.
+aggregated and P/D vLLM/SGLang Engine replay with HBM-only KV cache, and the
+[qualified vLLM G2 configurations](../agentx-g2.md), with speculative decoding disabled.
 It retains AISimulate's snapshot sampling and warmup frontier behavior; it does not establish complete
 AgentX parity. See [continuous agentic profiles](../agentic-profile.md) for defaults, lifecycle and
 idle controls, a runnable example, and the remaining limitations.
@@ -1538,8 +1546,15 @@ deferred until the Router exposes that name.
 ## 14. Planner (Dynamo Adapter)
 
 Planner is not part of the AISimulate core schema. The `dynamo.planner` config adapter owns this
-section's concrete model, presets, recommendation domains, validation, and runtime lowering. The
-section is accepted only when the selected stack provides that adapter.
+section's presets, recommendation domains, and runtime lowering. Concrete enabled settings use
+Dynamo's production `PlannerConfig` for defaults, validation, and target normalization. The section
+is accepted only when the selected stack provides that adapter.
+
+> [!IMPORTANT]
+> The defaults, normalization, and interval rules below require a Dynamo build containing
+> [Dynamo #15678](https://github.com/ai-dynamo/dynamo/pull/15678). The README-pinned
+> `ai-dynamo==1.6.0.dev20260930` predates that change and uses the separate simulation configuration
+> model. Upgrade Dynamo to a build containing the change before using these rules.
 
 ```yaml
 planner:
@@ -1548,16 +1563,16 @@ planner:
 
 | Knob | Default | Default Range | Preset | Rules |
 |---|---:|---|---|---|
-| `planner.scaling_policy.preset` | `default` in `recommend` | `{choices: [disabled, throughput_180_5, throughput_600_5, load_180_5, load_180_10, hybrid_180_5, hybrid_600_5]}` | `-` | Throughput and hybrid presets require `planner.target: sla` plus TTFT/ITL thresholds. |
+| `planner.scaling_policy.preset` | `default` in `recommend` | `{choices: [disabled, throughput_180_5, throughput_600_5, load_180_5, load_180_10, hybrid_180_5, hybrid_600_5]}` | `-` | Default lists are filtered for the derived target and SLA. Explicit lists must be compatible. |
 | `planner.fpm_sampling.preset` | `default` in `recommend` | `{choices: [small, default, large, fine]}` | `-` | Built-in preset choices, complete mapping list, `false`, or `{}`. |
 | `planner.load_sensitivity.preset` | `default` in `recommend` | `{choices: [aggressive, default, conservative]}` | `-` | Built-in preset choices, complete mapping list, `false`, or `{}`. |
 | `planner.load_predictor.preset` | `default` in `recommend` | `{choices: [constant_last, arima_raw, arima_log1p, prophet_w20_raw, prophet_w20_log1p, prophet_w50_raw, prophet_w50_log1p, kalman_default_raw, kalman_default_log1p, kalman_reactive_raw, kalman_reactive_log1p]}` | `-` | Interval-level predictor pre-sweep candidates; complete mapping list, `false`, or `{}`. |
 | `planner.policy` | `disabled` | `{choices: [disabled, enabled]}` | `-` | `disabled` or `enabled`. |
 | `planner.target` | `throughput` | `x` | `-` | Derived from `optimization.target` in `recommend`. |
-| `planner.enable_throughput_scaling` | `true` | `{choices: [false, true]}` | `scaling_policy` | `true` requires `planner.target: sla` plus TTFT/ITL thresholds. |
-| `planner.enable_load_scaling` | `false` | `{choices: [false, true]}` | `scaling_policy` | Planner policy only. |
-| `planner.throughput_adjustment_interval_seconds` | `180` | `{choices: [180, 600]}` | `scaling_policy` | Positive; throughput scaling only. |
-| `planner.load_adjustment_interval_seconds` | `5` | `{choices: [5, 10]}` | `scaling_policy` | Positive and shorter than throughput interval when used. |
+| `planner.enable_throughput_scaling` | `false` for the default target; `true` for `sla` | `{choices: [false, true]}` | `scaling_policy` | Non-SLA targets normalize this to `false`; effective throughput scaling requires TTFT/ITL thresholds. |
+| `planner.enable_load_scaling` | `true` for the default target; `false` for `sla` | `{choices: [false, true]}` | `scaling_policy` | Non-SLA targets normalize this to `true`. |
+| `planner.throughput_adjustment_interval_seconds` | `180` | `{choices: [180, 600]}` | `scaling_policy` | Omitted uses the production default; `null` is accepted only when this scaling mode is disabled. |
+| `planner.load_adjustment_interval_seconds` | `5` | `{choices: [5, 10]}` | `scaling_policy` | Also controls FPM updates. Must be shorter than the throughput interval only when both modes are enabled. Inactive `null` uses the production default. |
 | `planner.max_num_fpm_samples` | `64` | `{choices: [32, 64, 128]}` | `fpm_sampling` | Positive. |
 | `planner.fpm_sample_bucket_size` | `16` | `{choices: [4, 16, 64]}` | `fpm_sampling` | Positive perfect square. |
 | `planner.load_scaling_down_sensitivity` | `80` | `{choices: [70, 80, 90]}` | `load_sensitivity` | From `0` through `100`; load scaling only. |
@@ -1569,7 +1584,8 @@ planner:
 | `planner.kalman_q_trend` | `0.1` | `{choices: [0.1, 1.0]}` | `load_predictor` | Positive; Kalman only. |
 | `planner.kalman_r` | `10.0` | `{choices: [5.0, 10.0]}` | `load_predictor` | Positive; Kalman only. |
 | `planner.kalman_min_points` | `5` | `{choices: [3, 5]}` | `load_predictor` | Positive; Kalman only. |
-| `planner.max_num_gpus` | `8` | `x` | `-` | Positive Planner runtime scaling ceiling; maps to Dynamo Planner `max_gpu_budget`. |
+| `planner.max_num_gpus` | `8` | `x` | `-` | Planner runtime ceiling; maps to `max_gpu_budget`. Positive in `recommend`; concrete `predict` also accepts `-1` for unlimited. |
+| `planner.min_num_gpus` | `-1` | `x` | `-` | Concrete `predict` only; maps to `min_gpu_budget` (`-1` disables the floor). Recommendations export `optimization.constraints.min_candidate_gpus` here when set. |
 | `planner.min_workers` | `1` | `-` | `-` | Nonnegative. |
 | `planner.prefill_min_workers` | `null` | `-` | `-` | Positive when set. |
 | `planner.decode_min_workers` | `null` | `-` | `-` | Positive when set. |
@@ -1585,27 +1601,44 @@ sub-item mapping. It materializes back to the concrete scalar `planner.load_pred
 recommended prediction YAML.
 
 `scaling_policy`, `fpm_sampling`, and `load_sensitivity` are composed as independent main-search
-dimensions. `load_predictor` is different: its candidates run in a pre-sweep for every selected
-throughput-adjustment interval, and the winning predictor mapping is materialized into the candidate.
+dimensions. FPM sampling is included only when a retained policy enables throughput scaling; load
+sensitivity is included only when a retained policy enables load scaling. Independent knob domains
+(`preset: false`) use the same compatible subset, and invalid combinations are skipped as infeasible.
+Explicit preset and predictor candidate lists remain within the user-selected subset.
+`load_predictor` is different: its candidates run in a pre-sweep for every selected throughput-adjustment
+interval, and the winning predictor mapping is materialized into the candidate.
 
-`planner.policy`, `planner.target`, `planner.max_num_gpus`, and the three runtime minimum-worker knobs
+`planner.policy`, `planner.target`, the runtime GPU limits, and the three minimum-worker knobs
 are not covered by a preset. `predict` may set a concrete target and otherwise uses `throughput`. In
-`recommend`, target is derived: throughput targets and Pareto map to `throughput`, `ttft` and
-`e2e_latency` map to `latency`, and goodput targets map to `sla`.
+`recommend`, target is derived: throughput targets map to `throughput`, `ttft` and `e2e_latency`
+map to `latency`, and goodput targets map to `sla`. Pareto uses `sla` when it includes a goodput
+objective and otherwise uses `throughput`. Thus `planner: {policy: enabled}` is a valid minimal
+prediction configuration: the production Planner normalizes the default target to load-only scaling.
 
 Throughput-based Planner scaling is legal only for the `sla` target with concrete
 `evaluation.sla.ttft_ms` and `evaluation.sla.itl_ms`. For `throughput`, `latency`, or `load` Planner
-targets, the adapter rejects any scaling-policy preset or custom mapping that enables throughput
-scaling before search begins.
+targets, the default recommendation search removes throughput and hybrid presets before searching.
+An explicitly selected incompatible preset or custom mapping is rejected before search begins.
+Concrete prediction flags are normalized by the production Planner for the selected target.
+
+Custom scaling-policy mappings may use `null` for an inactive mode's adjustment interval. An
+omitted concrete interval also uses the production default; an explicitly null active interval is
+rejected. Enabled configurations export both intervals as numbers: the load interval still drives
+FPM updates during throughput-only scaling. A fully disabled custom policy uses null for both
+intervals. These rules avoid passing null into the Planner runtime.
 
 Planner runtime limits and recommendation candidate GPU constraints are separate:
 
 - `planner.max_num_gpus`, `min_workers`, `prefill_min_workers`, and `decode_min_workers` constrain
   runtime scaling during one predicted candidate run.
 - `optimization.constraints` constrains which static candidate deployments the recommender evaluates.
+  When set, `min_candidate_gpus` also becomes the Planner runtime floor and is preserved in the
+  exported prediction YAML as `planner.min_num_gpus`.
 
 When `planner.policy: disabled` or the `disabled` scaling-policy preset is selected, no Planner
-runtime hook is materialized and conditionally inactive fields are omitted from concrete output.
+runtime hook is materialized and only `policy: disabled` is emitted. Enabled output contains the
+normalized Planner settings, including defaults for inactive knobs, so the same concrete configuration
+can be replayed without changing its effective Planner settings.
 
 <a id="evaluation"></a>
 

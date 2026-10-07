@@ -100,7 +100,7 @@ jobs:
         run: |
           # The old comparison checkout may predate this helper. Use the
           # workflow commit for setup while each snapshot uses its own code.
-          git show "${GITHUB_SHA}:scripts/ci_install_build_tools.sh" | bash
+          git show "${GITHUB_SHA}:scripts/ci/ci_install_build_tools.sh" | bash
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
         if: steps.harness.outputs.present == 'true'
       - name: Install AISimulate and development dependencies

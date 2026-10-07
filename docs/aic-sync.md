@@ -25,7 +25,7 @@ Rust composition, Replay, and PyO3 integration remain outside the estimator
 source mirror.
 
 The machine-readable mapping and synchronization ledger live in
-`scripts/aic_sync.toml`. Manual-path reviews for each synchronization range are
+`scripts/aic_sync/aic_sync.toml`. Manual-path reviews for each synchronization range are
 recorded in
 [synchronization ff2be1 to 095f58a](migration-history.md#synchronization-ff2be1-to-095f58a)
 and
@@ -37,7 +37,7 @@ To generate a binary-safe patch from the recorded AIC boundary to a newer AIC
 commit:
 
 ```bash
-python scripts/render_aic_sync_patch.py \
+python scripts/aic_sync/render_aic_sync_patch.py \
   --source ../aiconfigurator \
   --to-ref <new-aic-sha> \
   --manual-report /tmp/aic-manual-changes.md \

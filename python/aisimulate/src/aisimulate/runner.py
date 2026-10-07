@@ -409,7 +409,7 @@ class EngineReplayRunnerFactory:
             supports_agentic_profile=True,
             supported_agentic_topologies=("agg", "disagg"),
             supported_agentic_backends=("vllm", "sglang"),
-            supports_agentic_host_offload=False,
+            supports_agentic_host_offload=True,
             supports_agentic_speculative_decoding=False,
             agentic_qualification="functional_only",
         )
@@ -1362,6 +1362,35 @@ def _materialize_sla(spec: ReplaySpec) -> dict[str, JSONValue]:
         for key in ("ttft_ms", "itl_ms", "e2e_ms")
         if raw.get(key) is not None
     }
+
+
+def canonical_performance_config(config: Mapping[str, Any], *, worker_type: str) -> dict[str, Any]:
+    """Normalize Runner timing metadata through the native estimator contract."""
+    from . import _runtime
+
+    return json.loads(_runtime.canonical_timing_config_json(json.dumps(dict(config), allow_nan=False), worker_type))
+
+
+def materialize_engine_launch_config(
+    deployment_backend: str,
+    deployment_backend_version: str,
+    parallel_config: Mapping[str, JSONValue],
+    raw_config: Mapping[str, JSONValue],
+    role: str,
+) -> dict[str, JSONValue]:
+    """Resolve Runner inputs into the canonical engine launch contract for adapters."""
+    from . import _runtime
+
+    descriptor = _materialize_engine_role(
+        deployment_backend, deployment_backend_version, parallel_config, raw_config, role
+    )
+    descriptor["rank"]["worker_type"] = role
+    return json.loads(
+        _runtime.engine_launch_from_replay_role_json(
+            json.dumps(descriptor, allow_nan=False),
+            _startup_delay_ms(raw_config) / 1000.0,
+        )
+    )
 
 
 def _materialize_engine_role(

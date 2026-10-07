@@ -9,14 +9,14 @@ name: Main branch nightly CI
 # trigger waits for the matrix refresh, and a failed refresh fails the run,
 # so consumers (who resolve the newest successful run) never advance to a
 # nightly whose matrix did not refresh. Release artifacts are built via
-# scripts/build_release_artifacts.py, the artifact contract's only sanctioned
+# scripts/release/build_release_artifacts.py, the artifact contract's only sanctioned
 # entry point. Isolated compliance jobs gate the build/staging jobs. Each
 # arch job then builds, stages to Artifactory, and smoke-tests the downloaded
 # wheel on every supported Python. Verified copies, checksums, and
 # provenance remain in nightly-dist-* for FPE, accuracy, and installation
 # consumers; GitHub also retains dependency inventories and license evidence.
 #
-# Versioning: every run stamps the tree with scripts/apply_dev_version.py —
+# Versioning: every run stamps the tree with scripts/release/apply_dev_version.py —
 # wheels get `<base>.devYYYYMMDDNNNNNNNNNN`, and the crate gets the same
 # numeric suffix after `-dev.`. The ten-digit workflow run number makes
 # scheduled and manual publications distinct while preserving date ordering.
@@ -320,7 +320,7 @@ jobs:
           PYTHON_SERIES: ${{ matrix.python-version }}
         run: |
           python -m venv "${RUNNER_TEMP}/venv-licenses"
-          python scripts/check_python_licenses.py \
+          python scripts/ci/check_python_licenses.py \
             --pyproject source/python/aisimulate/pyproject.toml \
             --python "${RUNNER_TEMP}/venv-licenses/bin/python" \
             --inventory "${RUNNER_TEMP}/python-inventory/${MATRIX_ARCH}-${PYTHON_SERIES}.csv"
@@ -407,8 +407,8 @@ jobs:
           ref: ${{ github.sha }}
           path: release-tooling
           sparse-checkout: |
-            /scripts/apply_dev_version.py
-            /scripts/build_release_artifacts.py
+            /scripts/release/apply_dev_version.py
+            /scripts/release/build_release_artifacts.py
           sparse-checkout-cone-mode: false
           persist-credentials: false
 
@@ -507,17 +507,17 @@ jobs:
       - name: Stamp nightly dev version
         run: |
           set -euo pipefail
-          "${TOOLS_DIR}/venv-build/bin/python" release-tooling/scripts/apply_dev_version.py ".dev${DEV_DATE}" .
+          "${TOOLS_DIR}/venv-build/bin/python" release-tooling/scripts/release/apply_dev_version.py ".dev${DEV_DATE}" .
 
       - name: Validate release manifests
         run: |
           set -euo pipefail
-          "${TOOLS_DIR}/venv-build/bin/python" release-tooling/scripts/build_release_artifacts.py --root . --check-only
+          "${TOOLS_DIR}/venv-build/bin/python" release-tooling/scripts/release/build_release_artifacts.py --root . --check-only
 
       - name: Build release artifacts
         run: |
           set -euo pipefail
-          "${TOOLS_DIR}/venv-build/bin/python" release-tooling/scripts/build_release_artifacts.py --root . \
+          "${TOOLS_DIR}/venv-build/bin/python" release-tooling/scripts/release/build_release_artifacts.py --root . \
             --output-dir "${DIST_DIR}"
 
       - name: Drop duplicate crate (non-amd64 legs)

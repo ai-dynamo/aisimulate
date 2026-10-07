@@ -14,9 +14,9 @@ product workspace. Imported AIConfigurator source does not retain another builda
 The legacy `aiconfigurator` executable uses `aisimulate.legacy_cli`; the old
 Python import namespaces are removed. See the [migration guide](MIGRATION.md#python-imports-and-resources).
 
-The pinned-image `collector.sglang_rubin` operation collectors are source-checkout tools and are not wheel payloads. Collection runs from `python/aisimulate/` inside the pinned SGLang image; the wheel includes their qualified VR200 data and prediction APIs. This does not change the packaged FPM Collector workflow/runtime listed above. See the [pilot collector instructions](../python/aisimulate/collector/sglang_rubin/README.md).
+The pinned-image `collector.sglang_rubin` operation collectors are source-checkout tools and are not wheel payloads. Collection runs from `python/aisimulate/` inside the pinned SGLang image; the wheel includes their qualified Vera Rubin NVL72 data and prediction APIs. This does not change the packaged FPM Collector workflow/runtime listed above. See the [pilot collector instructions](../python/aisimulate/collector/sglang_rubin/README.md).
 
-`scripts/build_release_artifacts.py` validates the manifest set before it
+`scripts/release/build_release_artifacts.py` validates the manifest set before it
 builds and validates the output directory afterward. A release build fails if
 an additional wheel, source distribution, or crate appears.
 
@@ -34,11 +34,11 @@ The root `LICENSE` and `THIRD_PARTY_NOTICES.md` are the canonical repository
 legal files. The wheel build is rooted at `python/aisimulate/`, so exact copies
 are retained there and declared as wheel license files by `pyproject.toml`.
 Both are installed under the wheel's distribution metadata; the nested copies
-do not create a separate licensing boundary. `scripts/check_packaged_legal_files.py`
+do not create a separate licensing boundary. `scripts/ci/check_packaged_legal_files.py`
 fails CI if either packaging copy differs byte-for-byte from its root original,
 and the release-artifact validator checks the bytes installed in the wheel.
 
-Nightly builds stamp a dev suffix with `scripts/apply_dev_version.py` before
+Nightly builds stamp a dev suffix with `scripts/release/apply_dev_version.py` before
 building: the wheel becomes `0.13.0.devYYYYMMDD` (PEP 440) and the crate
 `0.13.0-dev.YYYYMMDD` (SemVer — cargo rejects the PEP 440 spelling, and the
 dotted date is a numeric identifier so pre-release versions order

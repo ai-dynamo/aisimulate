@@ -11,11 +11,12 @@ from datetime import UTC, date, datetime
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
-import accuracy_digest as digest
-import notify_accuracy as notify
-import prepare_e2e_accuracy_pages as pages
 import pytest
 import yaml
+
+import scripts.notifications.accuracy_digest as digest
+import scripts.notifications.notify_accuracy as notify
+import scripts.pages.prepare_e2e_accuracy_pages as pages
 
 
 def snapshot(errors, *, kind="e2e", dataset="data", rules="rules"):

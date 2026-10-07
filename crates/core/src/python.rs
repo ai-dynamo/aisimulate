@@ -139,31 +139,76 @@ fn require_agentic_execution_model(traffic: &RuntimeTraffic) -> Result<&str> {
         .context("agentic execution requires a configured target model")
 }
 
-fn validate_public_agentic_engine(input: &ReplayRuntimeInput, rank: &EngineConfig) -> Result<()> {
+fn validate_public_agentic_engine(
+    input: &ReplayRuntimeInput,
+    spec: &ReplaySpec,
+    engine: &ReplayEngineConfig,
+) -> Result<()> {
     let ReplayRuntimeInput::Workload(driver) = input else {
         return Ok(());
     };
     if !driver.is_agentic() {
         return Ok(());
     }
-    ensure!(
-        matches!(rank.backend, Backend::Vllm | Backend::Sglang),
-        "agentic replay supports only vLLM and SGLang backends"
-    );
-    ensure!(
-        rank.native_host_offload.is_none(),
-        "agentic replay requires HBM-only KV cache; host offload is unsupported"
-    );
-    ensure!(
-        rank.aic_nextn.is_none(),
-        "agentic replay requires speculative decoding disabled"
-    );
+    let roles = match &spec.topology {
+        ReplayTopology::Aggregated { .. } => vec![aggregated_role(engine)],
+        ReplayTopology::Disaggregated { .. } => vec![
+            engine.role(crate::replay::WorkerStage::Prefill),
+            engine.role(crate::replay::WorkerStage::Decode),
+        ],
+    };
+    for role in &roles {
+        ensure!(
+            role.rank.g3_offload.is_none(),
+            "agentic replay does not support G3 offload"
+        );
+        ensure!(
+            matches!(role.rank.backend, Backend::Vllm | Backend::Sglang),
+            "agentic replay supports only vLLM and SGLang backends"
+        );
+        ensure!(
+            role.rank.aic_nextn.is_none(),
+            "agentic replay requires speculative decoding disabled"
+        );
+    }
+    // HBM-only deployments retain their existing worker/DP support. Once any
+    // active role enables G2, qualify the entire deployment, not just that rank.
+    if roles
+        .iter()
+        .any(|role| role.rank.native_host_offload.is_some())
+    {
+        let single_worker_per_role = match &spec.topology {
+            ReplayTopology::Aggregated { workers } => workers.initial_workers == 1,
+            ReplayTopology::Disaggregated {
+                prefill, decode, ..
+            } => prefill.initial_workers == 1 && decode.initial_workers == 1,
+        };
+        ensure!(
+            single_worker_per_role,
+            "agentic host offload requires one aggregated worker or one prefill and one decode worker"
+        );
+        ensure!(
+            spec.adapters.scaling.provider == "none",
+            "agentic host offload requires static worker pools without a scaling policy"
+        );
+        for role in &roles {
+            ensure!(
+                role.rank.backend == Backend::Vllm,
+                "agentic host offload requires backend=vllm on every role"
+            );
+            ensure!(
+                role.dp_size == 1,
+                "agentic host offload requires attention DP=1 on every role"
+            );
+        }
+    }
     Ok(())
 }
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct AicTimingConfig {
+    #[serde(alias = "model_path")]
     model: String,
     backend: String,
     system: String,
@@ -171,9 +216,9 @@ struct AicTimingConfig {
     tp: u32,
     #[serde(default)]
     backend_version: Option<String>,
-    #[serde(default = "one")]
+    #[serde(default = "one", alias = "pp_size")]
     pp: u32,
-    #[serde(default = "one")]
+    #[serde(default = "one", alias = "attention_dp_size")]
     attention_dp: u32,
     #[serde(default)]
     dcp: Option<u32>,
@@ -2275,7 +2320,7 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
                 .map(|traffic| build_runtime_input(traffic, engine_config.rank.block_size))
                 .transpose()?;
             if let Some(built) = &built_input {
-                validate_public_agentic_engine(&built.input, &engine_config.rank)?;
+                validate_public_agentic_engine(&built.input, &spec, &engine_config)?;
             }
             let resolved_basis = built_input
                 .as_ref()
@@ -2392,12 +2437,7 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
                 .transpose()?,
             };
             if let Some(built) = &built_input {
-                for role in [&engine_config.prefill, &engine_config.decode] {
-                    validate_public_agentic_engine(
-                        &built.input,
-                        &role.as_ref().expect("P/D role was materialized").rank,
-                    )?;
-                }
+                validate_public_agentic_engine(&built.input, &spec, &engine_config)?;
             }
             let resolved_basis = built_input
                 .as_ref()
@@ -2563,9 +2603,64 @@ fn run_replay_with_artifacts_json(py: Python<'_>, payload: &str) -> PyResult<Str
         .map_err(replay_python_error)
 }
 
+#[pyfunction]
+fn canonical_timing_config_json(payload: &str, worker_type: &str) -> PyResult<String> {
+    let convert = || -> anyhow::Result<String> {
+        let timing: AicTimingConfig = serde_json::from_str(payload)?;
+        let role = serde_json::from_value(serde_json::json!(worker_type))?;
+        let config = timing.estimator_request(role)?;
+        config.validate()?;
+        Ok(serde_json::to_string(&config)?)
+    };
+    convert().map_err(|error| pyo3::exceptions::PyValueError::new_err(format!("{error:#}")))
+}
+
+/// Share the Runner's resolved role descriptor with downstream adapters.
+#[pyfunction]
+#[pyo3(signature = (payload, startup_time=None))]
+fn engine_launch_from_replay_role_json(
+    payload: &str,
+    startup_time: Option<f64>,
+) -> PyResult<String> {
+    let convert = || -> anyhow::Result<String> {
+        let role: crate::replay::ReplayRoleConfig = serde_json::from_str(payload)?;
+        let mut launch = crate::engine::EngineLaunchConfig {
+            engine: role.rank,
+            dp_size: role.dp_size,
+            tensor_parallel_size: role.tensor_parallel_size as usize,
+            num_gpu_blocks_is_explicit: role.num_gpu_blocks_is_explicit.unwrap_or(false),
+            startup_time,
+            ..Default::default()
+        };
+        if let crate::engine::TimingModelConfig::External { provider, config } =
+            &launch.engine.timing_model
+            && matches!(provider.as_str(), "aic" | "ais")
+        {
+            let timing: AicTimingConfig = serde_json::from_value(config.clone())?;
+            let worker_type = serde_json::from_value(serde_json::to_value(launch.worker_type)?)?;
+            let canonical = timing.estimator_request(worker_type)?;
+            launch.gpu_memory_utilization = timing.gpu_memory_utilization;
+            launch.mem_fraction_static = timing.mem_fraction_static;
+            launch.free_gpu_memory_fraction = timing.free_gpu_memory_fraction;
+            launch.cuda_graph_reserved_bytes = Some(timing.cuda_graph_reserved_bytes);
+            launch.engine.timing_model = crate::engine::TimingModelConfig::External {
+                provider: "ais".into(),
+                config: serde_json::to_value(canonical)?,
+            };
+        }
+        Ok(serde_json::to_string(&launch.normalized()?)?)
+    };
+    convert().map_err(|error| pyo3::exceptions::PyValueError::new_err(format!("{error:#}")))
+}
+
 /// AISimulate native runtime module.
 #[pymodule]
 fn _runtime(module: &Bound<'_, PyModule>) -> PyResult<()> {
+    module.add_function(wrap_pyfunction!(
+        engine_launch_from_replay_role_json,
+        module
+    )?)?;
+    module.add_function(wrap_pyfunction!(canonical_timing_config_json, module)?)?;
     module.add_function(wrap_pyfunction!(run_replay_json, module)?)?;
     module.add_function(wrap_pyfunction!(run_replay_with_artifacts_json, module)?)?;
     crate::perfmodel::register_python(module)?;
@@ -2819,6 +2914,108 @@ mod tests {
     }
 
     #[test]
+    fn public_agentic_json_host_offload_validates_the_whole_deployment() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("original-weka.jsonl");
+        std::fs::write(&path, serde_json::json!({
+            "id": "play", "models": ["model"], "block_size": 4, "hash_id_scope": "local",
+            "requests": [{"t": 0.0, "type": "s", "model": "model", "in": 4, "out": 1, "hash_ids": [1]}]
+        }).to_string()).unwrap();
+        let rank = serde_json::json!({
+            "backend": "vllm", "block_size": 4, "num_gpu_blocks": 16,
+            "kv_cache_bytes_per_token": 16,
+            "timing_model": {"type": "fixed", "prefill_ms": 1.0, "decode_ms": 1.0}
+        });
+        let with_host = |scope: Option<&str>| {
+            let mut rank = rank.clone();
+            if let Some(scope) = scope {
+                rank["native_host_offload"] = serde_json::json!({
+                    "scope": scope, "num_host_blocks": 8, "kv_layout_id": "original-test-layout"
+                });
+            }
+            serde_json::json!({"tensor_parallel_size": 2, "rank": rank})
+        };
+        let payload = |topology, engine| {
+            serde_json::json!({
+                "spec": {"version": 1, "topology": topology, "engine": engine, "requests": []},
+                "traffic": {
+                    "source_type": "trace", "load_type": "trace_timestamps", "trace_format": "weka",
+                    "trace_path": path, "trace_block_size": 4, "execution_model": "model"
+                }
+            })
+        };
+        let run = |payload: &serde_json::Value| -> serde_json::Value {
+            serde_json::from_str(&execute_json(&payload.to_string(), false).unwrap()).unwrap()
+        };
+        let scopes = [None, Some("dp_rank_local"), Some("cluster_shared")];
+        for scope in scopes {
+            let agg = payload(
+                serde_json::json!({"kind": "aggregated", "workers": {"initial_workers": 1}}),
+                with_host(scope),
+            );
+            let report = run(&agg);
+            assert_eq!(report["completed_requests"], 1);
+            for other in scopes {
+                let pd = payload(
+                    serde_json::json!({"kind": "disaggregated", "prefill": {"initial_workers": 1}, "decode": {"initial_workers": 1}}),
+                    serde_json::json!({"prefill": with_host(scope), "decode": with_host(other)}),
+                );
+                let report = run(&pd);
+                assert_eq!(report["completed_requests"], 1, "{scope:?}/{other:?}");
+                if scope.is_none() && other.is_none() {
+                    continue;
+                }
+                for (pointer, value, message) in [
+                    (
+                        "/spec/topology/prefill/initial_workers",
+                        serde_json::json!(2),
+                        "one aggregated worker or one prefill and one decode worker",
+                    ),
+                    (
+                        "/spec/topology/decode/initial_workers",
+                        serde_json::json!(2),
+                        "one aggregated worker or one prefill and one decode worker",
+                    ),
+                    ("/spec/engine/prefill/dp_size", serde_json::json!(2), "DP=1"),
+                    ("/spec/engine/decode/dp_size", serde_json::json!(2), "DP=1"),
+                    (
+                        "/spec/engine/prefill/rank/backend",
+                        serde_json::json!("sglang"),
+                        "backend=vllm",
+                    ),
+                    (
+                        "/spec/engine/decode/rank/backend",
+                        serde_json::json!("sglang"),
+                        "backend=vllm",
+                    ),
+                    (
+                        "/spec/engine/decode/rank/aic_nextn",
+                        serde_json::json!(1),
+                        "speculative decoding disabled",
+                    ),
+                    (
+                        "/spec/engine/decode/rank/g3_offload",
+                        serde_json::json!({"scope": "worker_local", "num_g3_blocks": 8}),
+                        "G3",
+                    ),
+                ] {
+                    let mut invalid = pd.clone();
+                    let (parent, key) = pointer.rsplit_once('/').unwrap();
+                    invalid.pointer_mut(parent).unwrap()[key] = value;
+                    let error = format!(
+                        "{:#}",
+                        execute_json(&invalid.to_string(), false).unwrap_err()
+                    );
+                    assert!(
+                        error.contains(message),
+                        "{scope:?}/{other:?} {pointer}: {error}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn public_agentic_json_rejects_unqualified_modes_without_restricting_standard_dynamo() {
         let directory = tempfile::tempdir().unwrap();
         let dynamo = serde_json::json!({
@@ -2878,13 +3075,6 @@ mod tests {
                 (
                     serde_json::json!({"aic_nextn": 1}),
                     "speculative decoding disabled",
-                ),
-                (
-                    serde_json::json!({
-                        "kv_cache_bytes_per_token": 16,
-                        "native_host_offload": {"num_host_blocks": 8}
-                    }),
-                    "HBM-only",
                 ),
             ] {
                 let mut rank = serde_json::json!({

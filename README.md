@@ -11,15 +11,15 @@ Maintainers and agents: CI executes the bash/yaml examples in this README.
   change fence labels or formatting to bypass command coverage.
 - When adding a block, copy an existing marker's format and use a new ID made
   of lowercase letters, digits, and hyphens. Add the matching entry to
-  scripts/readme_commands.json; remove both together when deleting a block.
+  scripts/readme/readme_commands.json; remove both together when deleting a block.
 - The manifest contains profiles, dependencies, timeouts, output assertions,
   and YAML filenames, not copies of commands. README blocks are the source.
 - Keep dependencies before their consumers (source-install is bootstrapped
   first). Update manifest paths/assertions when changing outputs or examples.
 - Validate structure before committing (requires psutil and PyYAML):
-  python scripts/check_readme_commands.py --validate
+  python scripts/readme/check_readme_commands.py --validate
   This checks parsing/manifest consistency; CI also executes the commands.
-See docs/ci.md and scripts/check_readme_commands.py for execution details.
+See docs/ci.md and scripts/readme/check_readme_commands.py for execution details.
 -->
 
 # AISimulate

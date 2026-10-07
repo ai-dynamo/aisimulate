@@ -27,13 +27,14 @@ from urllib.parse import parse_qs, urlsplit
 import pytest
 import yaml
 
-from scripts import build_manylinux_wheel as manylinux_builder
-from scripts import check_python_licenses as python_licenses
-from scripts import select_forward_perf as forward_perf
-from scripts.build_manylinux_wheel import manylinux_platform
-from scripts.check_application_test_inventory import Inventory, assignment
-from scripts.require_fast_ci import REQUIRED_JOBS, GateError, latest_run, require_fast_ci, verify_jobs
-from scripts.select_full_ci import COMPONENTS, select_components
+from scripts.ci import check_python_licenses as python_licenses
+from scripts.ci.check_application_test_inventory import Inventory, assignment
+from scripts.ci.require_fast_ci import REQUIRED_JOBS, GateError, latest_run, require_fast_ci, verify_jobs
+from scripts.ci.select_full_ci import COMPONENTS, select_components
+from scripts.performance import select_forward_perf as forward_perf
+from scripts.release import build_manylinux_wheel as manylinux_builder
+from scripts.release import build_release_artifacts as release_artifacts
+from scripts.release.build_manylinux_wheel import manylinux_platform
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW_ROOT = REPOSITORY_ROOT / ".github" / "workflows"
@@ -41,7 +42,7 @@ ACTION_ROOT = REPOSITORY_ROOT / ".github" / "actions"
 
 
 def test_stable_release_migrations_require_reviewed_clearance(tmp_path):
-    from scripts.check_release_migrations import GATES, require_completed_migrations
+    from scripts.release.check_release_migrations import GATES, require_completed_migrations
 
     with pytest.raises(RuntimeError, match="dynamo/pull/14065"):
         require_completed_migrations(GATES)
@@ -72,7 +73,7 @@ def test_nightly_can_publish_the_wheel_needed_by_pending_downstream_migrations()
     assert steps.index("target") < steps.index("version") < steps.index("decide")
     assert guard["outputs"]["dev-version"] == "${{ steps.version.outputs.dev-version }}"
     build = jobs["build-artifacts"]
-    assert "scripts/apply_dev_version.py" in _run_commands(build)
+    assert "scripts/release/apply_dev_version.py" in _run_commands(build)
     assert {"changes-guard", "manual-approval", "python-compliance"} <= set(build["needs"])
     assert "needs.changes-guard.outputs.should-build == 'true'" in build["if"]
     publish = jobs["trigger-gitlab-security"]
@@ -92,7 +93,7 @@ def test_nightly_can_publish_the_wheel_needed_by_pending_downstream_migrations()
     ],
 )
 def test_stable_publication_checks_current_policy_and_selected_target(tmp_path, monkeypatch, current, target, expected):
-    from scripts import check_release_migrations as checker
+    from scripts.release import check_release_migrations as checker
 
     paths = {}
     for name, state in (("current", current), ("target", target)):
@@ -113,7 +114,7 @@ def test_forward_perf_selects_before_allocating_the_benchmark_runner():
     selector = workflow["jobs"]["select"]
     compare = workflow["jobs"]["compare"]
     assert selector["runs-on"] == "ubuntu-latest"
-    assert "python scripts/select_forward_perf.py" in _run_commands(selector)
+    assert "python scripts/performance/select_forward_perf.py" in _run_commands(selector)
     assert compare["needs"] == "select"
     assert compare["if"] == "needs.select.outputs.run_comparison == 'true'"
     assert set(selector["outputs"]) == {
@@ -283,7 +284,7 @@ def test_forward_perf_uses_complete_pr_files(pages, count, expected):
 @pytest.mark.parametrize(
     ("path", "expected"),
     [
-        ("scripts/select_forward_perf.py", True),
+        ("scripts/performance/select_forward_perf.py", True),
         ("Cargo.toml.bak", False),
         ("crates/core/src/engine/nested/predict.rs", True),
         ("crates/core/src/engine-other/predict.rs", False),
@@ -532,7 +533,7 @@ def _run_fast_prerequisite_cli(tmp_path, *, overrides=False, failure=None):
         "TEST_API_CALLS": str(tmp_path / "calls"),
         "TEST_API_FAILURE": str(failure == "api").lower(),
     }
-    args = [sys.executable, str(REPOSITORY_ROOT / "scripts/require_fast_ci.py"), "--timeout", "0"]
+    args = [sys.executable, str(REPOSITORY_ROOT / "scripts/ci/require_fast_ci.py"), "--timeout", "0"]
     if overrides:
         for option, variable in (
             ("--repository", "GITHUB_REPOSITORY"),
@@ -712,7 +713,7 @@ def test_full_ci_owns_migrated_expensive_suites() -> None:
     assert "--ignore" not in integration_steps[0]["run"]
     assert "-m" not in shlex.split(integration_steps[0]["run"])[3:]
     assert integration_steps[0]["working-directory"] == "python/aisimulate"
-    assert "scripts/check_application_test_inventory.py" in application_commands
+    assert "scripts/ci/check_application_test_inventory.py" in application_commands
     assert "tests/e2e/cli" in application_commands
     assert "tests/e2e/support_matrix" in application_commands
     assert "tests/e2e/tools" in application_commands
@@ -724,6 +725,7 @@ def test_full_ci_owns_migrated_expensive_suites() -> None:
     ]
     assert len(contract_steps) == 1
     contract_command = contract_steps[0]["run"]
+    assert "--group scripts/pyproject.toml:e2e-accuracy" in contract_command
     assert "--ignore=tests/fpm_accuracy" not in contract_command
     assert "--ignore=tests/test_ci_workflow_contracts.py" in contract_command
 
@@ -954,16 +956,16 @@ def test_linux_release_wheels_are_repaired_for_manylinux_2_28() -> None:
             assert len(images[arch].removeprefix(prefix)) == 64
 
     application_commands = _run_commands(full_ci["application-test-wheel"])
-    assert "scripts/build_manylinux_wheel.py" in application_commands
+    assert "scripts/release/build_manylinux_wheel.py" in application_commands
     assert "maturin build" not in application_commands
 
     fpe_prepare = _workflow("fpe-support-matrix.yml")["jobs"]["prepare-wheel"]
     assert fpe_prepare["container"]["image"].startswith(expected_images["amd64"])
-    assert "scripts/build_manylinux_wheel.py" in _run_commands(fpe_prepare)
+    assert "scripts/release/build_manylinux_wheel.py" in _run_commands(fpe_prepare)
 
-    release_builder = (REPOSITORY_ROOT / "scripts" / "build_release_artifacts.py").read_text()
+    release_builder = (REPOSITORY_ROOT / "scripts/release/build_release_artifacts.py").read_text()
     assert 'sys.platform.startswith("linux")' in release_builder
-    assert '"build_manylinux_wheel.py"' in release_builder
+    assert '"scripts/release/build_manylinux_wheel.py"' in release_builder
 
     dockerfile = (REPOSITORY_ROOT / "python" / "aisimulate" / "docker" / "Dockerfile").read_text()
     assert 'MATURIN_PEP517_ARGS="--auditwheel skip"' in dockerfile
@@ -1197,7 +1199,7 @@ def test_fast_ci_is_standalone_with_an_exact_commit_prerequisite() -> None:
     assert gate["name"] == "Require Fast CI"
     assert "uses" not in gate
     assert gate["permissions"] == {"contents": "read", "actions": "read"}
-    assert "scripts/require_fast_ci.py" in _run_commands(gate)
+    assert "scripts/ci/require_fast_ci.py" in _run_commands(gate)
     assert "workflow_run" not in _workflow("ci.yml")["on"]
     whitespace = _run_commands(fast_ci["jobs"]["python-static"])
     assert "[.head.sha, .base.sha] | @tsv" in whitespace
@@ -1917,7 +1919,7 @@ def test_full_ci_selector_maps_python_rust_and_data_boundaries() -> None:
         [],
         ["future/unclassified.file"],
         [".github/workflows/ci.yml"],
-        ["scripts/select_full_ci.py"],
+        ["scripts/ci/select_full_ci.py"],
     ],
 )
 def test_full_ci_selector_defaults_unknown_or_contract_changes_to_all(
@@ -1957,7 +1959,7 @@ def test_full_ci_selector_cli_decodes_paths_and_writes_outputs(tmp_path: Path) -
     result = subprocess.run(
         [
             "python3",
-            "scripts/select_full_ci.py",
+            "scripts/ci/select_full_ci.py",
             "--base64-paths-file",
             str(encoded),
             "--github-output",
@@ -2368,7 +2370,7 @@ def test_nightly_dependency_execution_cannot_modify_staged_artifacts_or_inherit_
     compliance = jobs["python-compliance"]
     assert "environment" not in compliance
     assert not re.search(r"\$\{\{\s*secrets\.", json.dumps(compliance))
-    assert "scripts/check_python_licenses.py" in _run_commands(compliance)
+    assert "scripts/ci/check_python_licenses.py" in _run_commands(compliance)
     assert "--inventory" in _run_commands(compliance)
     assert not any("download-artifact@" in s.get("uses", "") for s in compliance["steps"])
     assert all(
@@ -2570,7 +2572,7 @@ def test_full_ci_license_failure_blocks_readiness_and_staging():
 def test_python_compliance_workflows_use_the_same_policy():
     for workflow in ("ci.yml", "nightly-ci.yml"):
         commands = _run_commands(_workflow(workflow)["jobs"]["python-compliance"])
-        assert "python scripts/check_python_licenses.py" in commands
+        assert "python scripts/ci/check_python_licenses.py" in commands
         assert "--allow-only" not in commands
 
 
@@ -2961,7 +2963,7 @@ def test_nightly_versions_are_unique_date_ordered_and_stable_across_retries():
 def test_current_release_tools_stamp_and_validate_historical_manifests(tmp_path, suffix, base_version):
     current_version = _current_product_version()
     base_version = base_version or current_version
-    for name in ("Cargo.toml", "crates/core/Cargo.toml", "python/aisimulate/pyproject.toml"):
+    for name in ("Cargo.toml", "crates/core/Cargo.toml", "python/aisimulate/pyproject.toml", "scripts/pyproject.toml"):
         target = tmp_path / name
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(
@@ -2975,7 +2977,7 @@ def test_current_release_tools_stamp_and_validate_historical_manifests(tmp_path,
         ["-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-qm", "source"],
     ):
         subprocess.run(["git", *args], cwd=tmp_path, check=True, capture_output=True)
-    stamp = [sys.executable, str(REPOSITORY_ROOT / "scripts/apply_dev_version.py"), suffix, str(tmp_path)]
+    stamp = [sys.executable, str(REPOSITORY_ROOT / "scripts/release/apply_dev_version.py"), suffix, str(tmp_path)]
     subprocess.run(stamp, check=True, capture_output=True)
     before = {str(p): p.read_bytes() for p in tmp_path.rglob("*.toml")}
     subprocess.run(stamp, check=True, capture_output=True)
@@ -2983,7 +2985,7 @@ def test_current_release_tools_stamp_and_validate_historical_manifests(tmp_path,
     result = subprocess.run(
         [
             sys.executable,
-            str(REPOSITORY_ROOT / "scripts/build_release_artifacts.py"),
+            str(REPOSITORY_ROOT / "scripts/release/build_release_artifacts.py"),
             "--root",
             str(tmp_path),
             "--check-only",
@@ -3012,12 +3014,14 @@ def test_manual_fpe_uses_current_harness_and_selected_inventory_for_every_job():
         ("generate", "probe"),
         ("build-web-matrix", "package"),
     ]:
-        assert f"scripts/run_release_fpe.py {action}" in _run_commands(workflow["jobs"][job])
+        assert f"scripts/fpe/run_release_fpe.py {action}" in _run_commands(workflow["jobs"][job])
     nightly = _workflow("nightly-ci.yml")["jobs"]
     assert nightly["fpe-support-matrix"]["with"]["source_branch"] == "${{ needs.changes-guard.outputs.target-ref }}"
     assert nightly["build-artifacts"]["env"]["DEV_DATE"] == "${{ needs.changes-guard.outputs.dev-version }}"
-    assert "release-tooling/scripts/apply_dev_version.py" in _run_commands(nightly["build-artifacts"])
-    assert "release-tooling/scripts/build_release_artifacts.py --root ." in _run_commands(nightly["build-artifacts"])
+    assert "release-tooling/scripts/release/apply_dev_version.py" in _run_commands(nightly["build-artifacts"])
+    assert "release-tooling/scripts/release/build_release_artifacts.py --root ." in _run_commands(
+        nightly["build-artifacts"]
+    )
 
 
 def test_simulation_performance_rollout_and_revision_contract():
@@ -3028,7 +3032,7 @@ def test_simulation_performance_rollout_and_revision_contract():
     assert "if" not in selector
     assert workflow["concurrency"]["group"].startswith("simulation-performance-")
     assert selector["runs-on"] == "ubuntu-latest"
-    assert "python scripts/select_simulation_perf.py" in _run_commands(selector)
+    assert "python scripts/performance/select_simulation_perf.py" in _run_commands(selector)
     comparison = workflow["jobs"]["compare"]
     assert comparison["if"] == "needs.select.outputs.run_comparison == 'true'"
     commands = _run_commands(selector)
@@ -3079,7 +3083,7 @@ def test_simulation_performance_rollout_and_revision_contract():
     ],
 )
 def test_simulation_performance_selects_complete_pr_files(path, expected):
-    from scripts import select_simulation_perf
+    from scripts.performance import select_simulation_perf
 
     pull = {"head": {"sha": "a" * 40}, "base": {"sha": "b" * 40, "ref": "main"}, "changed_files": 1}
 
@@ -3236,7 +3240,7 @@ def test_simulation_perf_invocations(tmp_path, self_compare, fail_first, count):
 
 @pytest.mark.parametrize("fault", [None, "revision", "side", "wheel", "requirements", "extra_wheel"])
 def test_simulation_perf_artifact_verification(tmp_path, fault):
-    from scripts.simulation_perf_artifact import sha256, verify
+    from scripts.performance.simulation_perf_artifact import sha256, verify
 
     wheel = tmp_path / "aisimulate-test.whl"
     wheel.write_bytes(b"built wheel")
@@ -3263,3 +3267,63 @@ def test_simulation_perf_artifact_verification(tmp_path, fault):
             verify(tmp_path, "base", "a" * 40)
     else:
         assert verify(tmp_path, "base", "a" * 40) == manifest
+
+
+@pytest.mark.parametrize("layout", ["scripts/build_manylinux_wheel.py", "scripts/release/build_manylinux_wheel.py"])
+def test_standalone_fpe_uses_current_requirements_and_revision_builder(tmp_path, layout):
+    step = next(
+        s
+        for s in _workflow("fpe-support-matrix.yml")["jobs"]["prepare-wheel"]["steps"]
+        if s.get("name") == "Build one wheel for standalone qualification"
+    )
+    source = tmp_path / "release-source"
+    builder = source / layout
+    builder.parent.mkdir(parents=True)
+    builder.touch()
+    if layout == "scripts/release/build_manylinux_wheel.py":
+        (source / "scripts/build_manylinux_wheel.py").touch()
+    requirements = tmp_path / "scripts/release/requirements.txt"
+    requirements.parent.mkdir(parents=True)
+    requirements.touch()
+    capture = """
+python() {
+  if [ "$1" = "-m" ]; then
+    test "$4" = "--require-hashes" || return 1
+    test "$6" = "${GITHUB_WORKSPACE}/scripts/release/requirements.txt" || return 1
+    test -f "$6" || return 1
+  else
+    test -f "$1" || return 1
+    test "$2" = "--output-dir" || return 1
+    test "$3" = "../fpe-wheel" || return 1
+    echo "$1"
+  fi
+}
+"""
+    result = subprocess.run(
+        ["bash", "-e", "-c", capture + step["run"]],
+        cwd=source,
+        env={**os.environ, "GITHUB_WORKSPACE": str(tmp_path)},
+        text=True,
+        capture_output=True,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == layout
+
+
+@pytest.mark.parametrize("extra", ["other/pyproject.toml", "python/aisimulate/pyproject.toml"])
+def test_release_manifest_discovery_rejects_unknown_tool_only_manifests(tmp_path, monkeypatch, extra):
+    for name in ("Cargo.toml", "crates/core/Cargo.toml", "python/aisimulate/pyproject.toml", "scripts/pyproject.toml"):
+        target = tmp_path / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes((REPOSITORY_ROOT / name).read_bytes())
+    monkeypatch.setattr(release_artifacts, "ROOT", tmp_path)
+    monkeypatch.setattr(
+        release_artifacts, "EXPECTED_PYTHON_PROJECTS", {tmp_path / "python/aisimulate/pyproject.toml": "aisimulate"}
+    )
+    monkeypatch.setattr(release_artifacts, "EXPECTED_CRATE", tmp_path / "crates/core/Cargo.toml")
+    release_artifacts.check_manifests()
+    target = tmp_path / extra
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("[dependency-groups]\nci = []\n")
+    with pytest.raises(AssertionError, match="missing project name"):
+        release_artifacts.check_manifests()

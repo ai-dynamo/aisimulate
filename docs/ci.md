@@ -19,6 +19,9 @@ their support matrices each day.
 assess behavior, design, compatibility, and evidence. Passing validation,
 receiving review approval, and publishing artifacts are separate outcomes.
 
+CI entrypoints are grouped by job responsibility under [`scripts/`](../scripts/README.md).
+Their dependency groups are declared in one [`scripts/pyproject.toml`](../scripts/pyproject.toml).
+
 ## Contents
 
 - [Workflow map and triggers](#workflow-map-and-triggers)
@@ -209,7 +212,7 @@ Full CI first verifies the target commit, checks the standalone Fast CI
 prerequisite, and calculates validation scope. Expensive jobs wait for the
 prerequisite and scope selection.
 
-[The prerequisite checker](../scripts/require_fast_ci.py) waits up to ten minutes
+[The prerequisite checker](../scripts/ci/require_fast_ci.py) waits up to ten minutes
 for the latest Fast run on the exact branch and SHA. A push requires a Fast push
 run on that branch; manual Full CI accepts a same-branch Fast push or manual run.
 It verifies the current attempt and every job, rejects missing/failed/skipped or
@@ -224,7 +227,7 @@ another workflow or grant new release permissions.
 
 ### Component selection
 
-[The selector](../scripts/select_full_ci.py) uses the complete changed-file set
+[The selector](../scripts/ci/select_full_ci.py) uses the complete changed-file set
 of a trusted PR copy, classifying both paths of a rename. The independent
 [selection cases](../.github/full-ci-selection-cases.yml) document expected
 components and their consumer rationale; Fast CI checks this contract.
@@ -258,7 +261,7 @@ marked it N/A.
 
 ### Numerical and installed-package evidence
 
-[Native numerical checks](../scripts/check_prediction_numerics.py) exercise
+[Native numerical checks](../scripts/prediction_regression/check_prediction_numerics.py) exercise
 16 frozen queries on B200: eight vLLM 0.24.0 queries for dense Qwen3-32B and
 MoE MiniMax-M2.5, plus four Qwen3-32B queries each for TRT-LLM 1.3.0rc20 and
 SGLang 0.5.14. Every backend covers prefill/decode and short/long sequences.
@@ -271,7 +274,7 @@ AISimulate runtime; the subsequent checks validate the complete manifest.
 To prepare a checkout locally, run:
 
 ```sh
-python scripts/check_prediction_numerics.py --fetch-baseline-only
+python scripts/prediction_regression/check_prediction_numerics.py --fetch-baseline-only
 ```
 
 Tolerances are 2% relative and 0.0001 ms absolute. Missing, duplicate, failed, nonfinite,
@@ -346,7 +349,7 @@ includes configuration-adapter estimates, memory estimation, configuration
 picking, and TRT-LLM KV capacity; selecting the whole directory includes newly
 added modules without requiring a marker.
 
-The [inventory checker](../scripts/check_application_test_inventory.py) uses
+The [inventory checker](../scripts/ci/check_application_test_inventory.py) uses
 actual pytest collection and uploads `application-test-inventory-<arch>`.
 Every collected case needs a shard or documented manual destination. Unknown
 categories, unexplained collection skips, and collection errors fail the check.
@@ -537,6 +540,15 @@ the public summary retains that entry point. Wheel byte checks and imports run b
 The client reads the dump without starting a database server. Artifact upload
 uses the output directory so the runner container hook remaps the full path.
 
+Each branch prepares measurements once and runs four independent prediction
+shards, with two CPU workers per shard and `fail-fast: false`. Results and
+incremental checkpoints are retained as internal Actions artifacts for seven days.
+`gh run rerun RUN_ID --failed` reuses successful shard artifacts from that run;
+only failed partitions repeat. A separate qualification job verifies full coverage
+and matching provenance before combining per-point results. Preview runs also
+retain resolved source evidence per shard. Actual concurrency depends on runner
+capacity (up to eight shard jobs across the two admitted branches).
+
 Complete campaigns upload sanitized `e2e-accuracy-web-<branch-key>` artifacts.
 Pages validates the branch's successful qualification job in the artifact's exact
 run attempt, producer, revision, coverage, and checksums before combining it with
@@ -718,7 +730,7 @@ for cross-system/op comparisons. Retain complete collection and all assertions
 when optimizing CI; faster execution must not silently reduce coverage.
 
 For existing runner images,
-[`ci_install_build_tools.sh`](../scripts/ci_install_build_tools.sh) skips apt if
+[`ci_install_build_tools.sh`](../scripts/ci/ci_install_build_tools.sh) skips apt if
 `cc`, `c++`, and `make` already exist; otherwise it makes three bounded bootstrap
 attempts with transport retries and refreshed indexes. Signature and checksum
 verification stay enabled. The prediction comparison uses setup helpers from
@@ -726,12 +738,12 @@ the workflow checkout when preparing a historical comparison revision.
 
 The [prepared runner image](../.github/ci-image/Dockerfile) installs build tools
 once. An authorized runner-image owner can build **and push** both Linux
-architectures with [the wrapper](../scripts/build_ci_image.sh): set
+architectures with [the wrapper](../scripts/ci/build_ci_image.sh): set
 `AISIM_BASE_IMAGE_BY_DIGEST` to an immutable `image@sha256:...` reference and
 `AISIM_BUILD_IMAGE_TAG` to an authorized destination, then run:
 
 ```bash
-bash scripts/build_ci_image.sh
+bash scripts/ci/build_ci_image.sh
 ```
 
 Validate runner user/entrypoint, both architectures, native compilation, and a
@@ -776,9 +788,9 @@ runs from main. Every run executes fresh Linux installation profiles, all root
 README examples, the complete documented Rust/Python suites, and a macOS ARM64
 source smoke run. It does not reuse prior Full CI results or skip unchanged SHAs.
 
-`scripts/check_readme_commands.py` reads executable text from README. Every Bash
+`scripts/readme/check_readme_commands.py` reads executable text from README. Every Bash
 and YAML fence needs a unique `readme-check` comment and an entry in
-`scripts/readme_commands.json`. The manifest supplies profiles, dependencies,
+`scripts/readme/readme_commands.json`. The manifest supplies profiles, dependencies,
 timeouts, and output assertions; it contains no copied commands. Add new blocks
 to both files. Prediction must complete requests, recommendations must contain
 concrete candidates, and the best candidate must predict successfully. The option

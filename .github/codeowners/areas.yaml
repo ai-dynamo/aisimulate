@@ -70,6 +70,7 @@ areas:
       - tests/golden/afd-*
       - tests/test_g3_offload_cli.py
       - tests/test_shared_g2_cli.py
+      - tests/test_agentx_g2.py
       - tests/test_runner.py
       - tests/test_traffic.py
       - tests/e2e/
@@ -98,6 +99,7 @@ areas:
       - tests/test_release_fpe.py
       - tests/test_e2e_accuracy_overview.py
       - tests/fpm_accuracy/
+      - tests/e2e_accuracy_source/
       - tests/test_fpm_accuracy_workflow.mjs
       - tests/test_e2e_accuracy_ui.mjs
       - tests/test_e2e_accuracy_nightly.py
@@ -152,6 +154,8 @@ shared:
   - glob: tests/test_e2e_accuracy_ui.mjs
     owners: [forward-pass-engine, infra, maintainers]
   - glob: tests/test_e2e_accuracy_nightly.py
+    owners: [forward-pass-engine, replay, infra, maintainers]
+  - glob: tests/e2e_accuracy_source/
     owners: [forward-pass-engine, replay, infra, maintainers]
   - glob: tests/test_e2e_accuracy_workflow.mjs
     owners: [forward-pass-engine, replay, infra, maintainers]
@@ -219,6 +223,8 @@ shared:
     owners: [replay, sweeper, maintainers]
   - glob: tests/test_host_resources.py
     owners: [replay, sweeper, maintainers]
+  - glob: tests/test_weka_host_resources.py
+    owners: [replay, sweeper, maintainers]
   - glob: docs/local-resources.md
     owners: [replay, sweeper, maintainers]
   - glob: tests/test_power_diagnostics.py
@@ -244,6 +250,8 @@ shared:
   - glob: tests/test_g3_offload_cli.py
     owners: [replay, maintainers]
   - glob: tests/test_shared_g2_cli.py
+    owners: [replay, maintainers]
+  - glob: tests/test_agentx_g2.py
     owners: [replay, maintainers]
   - glob: tests/test_runner.py
     owners: [replay, maintainers]

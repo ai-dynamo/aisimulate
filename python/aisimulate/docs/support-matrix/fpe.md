@@ -266,7 +266,7 @@ missing-date state because the committed legacy index contains no provenance.
 
 To reproduce the browser checks, install Chromium with
 `uv run --python 3.12 --with playwright playwright install chromium`, then run
-`uv run --python 3.12 --with playwright python scripts/check_legacy_support_matrix_browser.py`.
+`uv run --python 3.12 --with playwright python scripts/pages/check_legacy_support_matrix_browser.py`.
 The script builds a temporary site and verifies real data, commit links, missing
 and malformed metadata, calendar-date boundaries, and unchanged matrix rows.
 Use `--browser-executable /path/to/chrome` to reuse an installed browser, or

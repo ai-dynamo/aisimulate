@@ -858,7 +858,7 @@ def test_agentx_replay_default_python_result_retains_qualification_without_dynam
 def test_agentx_replay_gate_config_preserves_local_source_block_size(backend: str, monkeypatch) -> None:
     scripts = Path(__file__).resolve().parents[1] / "scripts"
     monkeypatch.syspath_prepend(str(scripts))
-    gate = runpy.run_path(str(scripts / "qualify_agentx_replay.py"))
+    gate = runpy.run_path(str(scripts / "prediction_regression" / "qualify_agentx_replay.py"))
     source = _TRACE_FIXTURES / "weka-relative.json"
     block_size = json.loads(source.read_text())["block_size"]
     assert block_size == 4

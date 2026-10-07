@@ -1442,7 +1442,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         std::fs::write(
             root.path()
-                .join("sglang_glm52_nvfp4_vr200_tp4_graph_v1.profile.json"),
+                .join("sglang_glm52_nvfp4_vr_nvl72_tp4_graph_v1.profile.json"),
             "{}",
         )
         .unwrap();

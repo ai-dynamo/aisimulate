@@ -1058,7 +1058,26 @@ Copyright 2018- The Hugging Face team. All rights reserved.
   publish this code under Apache-2.0.
 - Modified: development-only two-predictor evaluation, public overview export,
   GitHub Pages presentation, local import paths, and canonical estimator API
-  adaptation with older-wheel compatibility. No Plotly assets included.
+  adaptation with older-wheel compatibility.
+- Additional revision: `f934c030afc3a03cb04d8f3ff4709194f7445c98`.
+  Original paths: `src/aisim_fpm/dashboard/{data,measurement_heatmaps,visualization,visualization_diagnostics}.py`,
+  `dashboard/3d-visualization.html`, `dashboard/assets/visualization.{js,css}`,
+  and `tests/test_visualization.py`.
+  Derived files: `scripts/fpm_accuracy/dashboard/`,
+  `pages/fpm-accuracy/3d-visualization.html`, `pages/fpm-accuracy/assets/visualization.{js,css}`,
+  `tests/fpm_accuracy/test_visualization.py`, and its synthetic outputs in
+  `tests/fpm_accuracy/fixtures/dashboard/`.
+  Modified imports, reduced contracts, GitHub artifact publication, navigation,
+  theme integration, and tests. Same NVIDIA copyright and Apache-2.0 license.
+
+## Plotly.js (FPM visualization)
+
+- Upstream: https://github.com/plotly/plotly.js/tree/v3.4.0
+- Immutable release tag: `v3.4.0`; original path: `dist/plotly.min.js`.
+- Distributed unmodified as `pages/fpm-accuracy/assets/plotly.min.js`.
+- Copyright 2012–2026 Plotly, Inc.; MIT license preserved in the bundled header
+  and `pages/fpm-accuracy/assets/PLOTLY-LICENSE.txt`. The Pages build copies both.
+
 
 ## vLLM Kimi KDA state sizing
 
