@@ -922,7 +922,9 @@ def test_predict_detail_uses_real_native_evidence(tmp_path, capsys):
     assert stdout["details"] == saved["details"]
     from jsonschema import validate
 
-    schema = json.loads((Path(__file__).resolve().parents[1] / "docs/cli/prediction-details.schema.json").read_text())
+    schema = json.loads(
+        (Path(__file__).resolve().parents[1] / "docs/reference/schemas/prediction-details.schema.json").read_text()
+    )
     validate(stdout["details"], schema)
     sections = stdout["details"]["sections"]
     assert set(sections) == {"summary", "memory", "time", "energy", "source"}

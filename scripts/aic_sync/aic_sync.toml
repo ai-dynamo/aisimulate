@@ -35,9 +35,9 @@ target = "python/aisimulate/collector"
 source = "tools"
 target = "python/aisimulate/tools"
 
-[[mirror]]
+[[manual]]
 source = "docs"
-target = "python/aisimulate/docs"
+reason = "Adapt upstream documentation into the AISimulate component docs; do not recreate the retired python/aisimulate/docs mirror."
 
 [[mirror]]
 source = "aic-core/rust/aiconfigurator-core/src"

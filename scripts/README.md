@@ -29,8 +29,8 @@ the repository root unless a script documents another working directory.
 Keep shared code with its owning job family; consumers import it instead of
 copying it. Colocated fixtures and small script tests move with their scripts.
 Cross-workflow contract tests remain in the repository's `tests/` directory.
-The historical PR244 audit and its evidence stay at their existing paths;
-archiving them is a separate change.
+The PR244 audit remains at `scripts/audit_pr244_data.py`; its sanitized data
+and verification contract live in `benchmarks/evidence/collector/pr244/`.
 
 ## Dependencies
 

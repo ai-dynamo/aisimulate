@@ -55,5 +55,5 @@ Sweeper, Replay, Planner, and other consumers must use the same contract.
   regression tests, including saved-config round trips. Estimation math and
   data-selection changes must also follow [Rust core parity rules](rust-core/parity.md).
 
-See the [Core API](../../../../docs/core-api.md#choosing-a-forward-pass-api) for
+See the [Core API](../../../../docs/perf-model/configuration.md#choosing-a-forward-pass-api) for
 the schema and supported controls.
