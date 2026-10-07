@@ -49,6 +49,7 @@ def trace_benchmark(monkeypatch, *, source=SOURCE, failure=None, explicit=None, 
                 fault("timed_replay")
 
         def reset(self):
+            assert state["stream"] == "caller"
             events.append("graph:reset")
             fault("reset")
             self.resets += 1

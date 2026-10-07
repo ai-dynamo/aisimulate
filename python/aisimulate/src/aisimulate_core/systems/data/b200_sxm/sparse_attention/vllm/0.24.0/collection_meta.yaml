@@ -36,7 +36,6 @@ tables:
   dsv4_paged_mqa_logits_module_perf:
     status: complete
 # Mixed v1 directory: six existing DSV4 legacy entries/runtime remain unchanged.
-# The two DSA tables were fully replaced; their complete new runtime identity is in
-# docs/perf_database/validation/aic-2004-vllm-collector/full-replacement/new-dsa/collection_meta.yaml
-# Collected-only sidecar SHA-256: 5a1c93f532ec338089e5b070739916185e489818495fefc4e52a64ae44645f97
-# This does not claim legacy append/fresh-update validation passed.
+# Replacement DSA runtime: vLLM ee0da84ab9e04ac7610e28580af62c365e898389,
+# Torch 2.11.0+cu130, CUDA 13.0, FlashInfer 0.6.12; B200 campaign 4778966.
+# Collection results and limitations: https://github.com/ai-dynamo/aisimulate/pull/404

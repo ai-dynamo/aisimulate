@@ -1,2 +1,0 @@
-index, uuid, name, pstate, clocks.current.sm [MHz], clocks.current.memory [MHz], power.draw [W], power.limit [W], temperature.gpu, clocks_event_reasons.active
-0, GPU-2eba6257-9bb3-2747-fc09-864946248a91, NVIDIA B200, P0, 1965 MHz, 3996 MHz, 248.49 W, 1000.00 W, 32, 0x0000000000000000
