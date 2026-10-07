@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""All-reduce collector setup for the GLM-5.3-Flash runtimes (vLLM 0.30.0, SGLang 0.5.20).
+"""All-reduce collector setup for the GLM-5.3-Flash runtimes (vLLM 0.31.0, SGLang 0.5.20).
 
 Static (ast) checks: the collector needs a framework plus GPUs to import.
 """

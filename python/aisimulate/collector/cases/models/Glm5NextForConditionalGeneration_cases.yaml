@@ -17,12 +17,13 @@ description: >
   layers (288 routed experts, top-8, moe_intermediate 2048, one shared
   expert, sigmoid noaux_tc, n_group 1, routed scale 2.5, swiglu clamp 10,
   FP32 router); hidden 4096, vocab 154880; mHC hc_mult 4. Serving topology
-  is pure TP in {2, 4} (TP1 optional), EP=PP=CP=DP=1, FP8 KV cache.
+  is pure TP in {2, 4}, plus TP1 for the NVFP4 checkpoint only (the FP8
+  checkpoint's weights do not fit one GB300), EP=PP=CP=DP=1, FP8 KV cache.
   Checkpoints: zai-org/GLM-5.3-Flash (FP8 e4m3 128x128 block for dense MLP,
   shared + routed experts and MLA q_a/q_b/kv_a/o; BF16 elsewhere) and
   nvidia/GLM-5.3-Flash-NVFP4 (NVFP4 routed experts + dense MLP; everything
   else, including the shared expert, BF16). Runtimes are model-pinned in
-  framework_manifest.yaml (vLLM 0.30.0 + glm53tail overlay, SGLang 0.5.20).
+  framework_manifest.yaml (stock vLLM 0.31.0, SGLang 0.5.20).
   Generic ops land in the generic tables (gemm_perf, moe_perf, kda_perf,
   mhc_module_perf, comm); only the GLM attention layer gets a GLM-specific
   module table (DeepSeek-V4.1 precedent).
@@ -54,7 +55,8 @@ model_case_values:
 
   # Routed experts only (gate, shared expert and the TP all-reduce are
   # separate GEMM/comm ops). Pure TP: the base moe grid supplies the
-  # moe_tp_size/moe_ep_size expansion; serving needs tp 2/4, ep 1.
+  # moe_tp_size/moe_ep_size expansion; serving needs tp 2/4 (and tp 1 for
+  # the NVFP4 checkpoint), ep 1.
   # Checkpoint quantization is artifact-distinct, so one row per path.
   moe:
     - model_path: zai-org/GLM-5.3-Flash
@@ -111,13 +113,22 @@ model_case_values:
   # KDA (workstream W2). GLM-5.3-Flash KDA structural tuple per attention-TP
   # shard (text_config.linear_attn_config: 64 heads x head_dim 128,
   # short_conv_kernel_size 4; hidden_size 4096). 64 heads shard to 32 / 16
-  # local heads at TP2 / TP4 (the served topologies). KDA projections, conv
+  # local heads at TP2 / TP4 and stay 64 at TP1 (TP1 is served with the
+  # NVFP4 checkpoint only; the row is checkpoint-independent). KDA projections, conv
   # and state are BF16/FP32 in BOTH checkpoints (the NVFP4 and FP8
   # quantization configs exclude linear_attn), so the NVFP4 artifact is a
   # shape-only alias of the same physical case. num_k_heads == num_v_heads.
   # The collectors route these model paths to the glm5next serving dispatch
   # (collector/{vllm,sglang}/collect_kda.py GLM5_NEXT_KDA_MODEL_PATHS).
   kda:
+    - model_path: zai-org/GLM-5.3-Flash
+      model_aliases: [nvidia/GLM-5.3-Flash-NVFP4]
+      d_model: 4096
+      d_conv: 4
+      num_k_heads: 64
+      head_k_dim: 128
+      num_v_heads: 64
+      head_v_dim: 128
     - model_path: zai-org/GLM-5.3-Flash
       model_aliases: [nvidia/GLM-5.3-Flash-NVFP4]
       d_model: 4096
@@ -155,7 +166,7 @@ model_case_values:
   # heads x head_dim 128, short_conv_kernel_size 4 (conv window 3 over the
   # merged q|k|v channels). The collectors shard the state per TP rank
   # through each framework's own state-shape calculator. Serving is TP2/TP4
-  # (TP1 optional); TP8 (8 local heads) extends interpolation support. State
+  # (TP1 for the NVFP4 checkpoint); TP8 (8 local heads) extends interpolation support. State
   # dtypes (BF16 conv, FP32 recurrent) are identical in both checkpoints
   # (neither quantizes linear_attn), so the NVFP4 artifact is a shape-only
   # alias of the same physical case.
@@ -183,15 +194,15 @@ framework_specific_op_cases:
       cases: all
     compute_scale:
       cases: all
-    # vLLM 0.30.0 is the audited GLM KDA / mHC runtime
+    # Stock vLLM 0.31.0 is the audited GLM KDA / mHC runtime
     # (collect_kda.py _KDA_ARCHITECTURE_COMPAT,
     # collect_mhc_module.py _ARCHITECTURE_COMPAT).
     kda:
       cases: all
     mhc_module:
       cases: all
-    # vllm_precopy variant; audited only on 0.30.0
-    # (collect_glm53_mamba_state_copy.py _AUDITED_RUNTIME).
+    # vllm_precopy variant; audited only on 0.31.0
+    # (glm53_mamba_state_copy_common.py AUDITED_RUNTIMES).
     glm53_mamba_state_checkpoint_copy:
       cases: all
   sglang:

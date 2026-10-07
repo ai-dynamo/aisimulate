@@ -83,8 +83,8 @@ def test_active_cuda_vllm_collectors_are_exactly_pinned_to_manifest_version():
 def test_vllm_target_lane_collectors_declare_the_exact_bumped_compat_range(module):
     expected = '__compat__ = "vllm>=0.24.0,<=0.27.1,!=0.25.1,!=0.26.0,!=0.27.0"'
     if module in {"collector.vllm.collect_gemm", "collector.vllm.collect_moe"}:
-        # GLM-5.3-Flash model pin: 0.30.0 audited; 0.28.0/0.29.0 are not.
-        expected = '__compat__ = "vllm>=0.24.0,<=0.30.0,!=0.25.1,!=0.26.0,!=0.27.0,!=0.28.0,!=0.29.0"'
+        # GLM-5.3-Flash model pin: 0.30.0 and 0.31.0 audited; 0.28.0/0.29.0 are not.
+        expected = '__compat__ = "vllm>=0.24.0,<=0.31.0,!=0.25.1,!=0.26.0,!=0.27.0,!=0.28.0,!=0.29.0"'
     source = (REPO_ROOT / f"{module.replace('.', '/')}.py").read_text(encoding="utf-8")
     declarations = [line.strip() for line in source.splitlines() if line.startswith("__compat__")]
     assert declarations == [expected], module
@@ -800,7 +800,8 @@ frameworks:
         ("0.29.0", False),
         ("0.30.0", True),
         ("0.30.0+glm53tail.eb4704514fdf", True),
-        ("0.30.1", False),
+        ("0.31.0", True),
+        ("0.31.1", False),
     ],
 )
 def test_gemm_025_qualification_preserves_other_release_gaps(version, accepted):

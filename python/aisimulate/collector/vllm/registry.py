@@ -192,7 +192,7 @@ REGISTRY: list[OpEntry] = [
     ),
     # GLM-5.3-Flash prefix-cache KDA state checkpoint copy (align pre-copy
     # kernel). Routed only by the GLM model case file; the module gates
-    # execution to the audited 0.30.0 release.
+    # execution to the audited 0.31.0 release.
     OpEntry(
         op="glm53_mamba_state_checkpoint_copy",
         module="collector.vllm.collect_glm53_mamba_state_copy",

@@ -569,22 +569,35 @@ def benchmark_vllm_allreduce(
 
             if use_graph:
                 # Serving warms every captured shape eagerly before CUDA graph
-                # capture. vLLM 0.30.0 creates the FlashInfer all-reduce
-                # workspace lazily on the first eligible 2-D call
-                # (flashinfer_all_reduce.py:403-452 via cuda_communicator.py:
-                # 327-361); doing that inside capture fails with
+                # capture. vLLM creates the FlashInfer all-reduce workspace
+                # lazily on the first eligible 2-D call
+                # (flashinfer_all_reduce.py:414-463 via cuda_communicator.py:
+                # 335-369 @v0.31.0; byte-identical to :403-452 / :327-361
+                # @v0.30.0); doing that inside capture fails with
                 # CUDA_ERROR_STREAM_CAPTURE_UNSUPPORTED. One eager call per
                 # shape reproduces serving's order; it changes when state is
                 # initialized, not which all-reduce implementation runs.
+                # 0.31.0 memoizes a failed creation
+                # (flashinfer_all_reduce.py:186-187,229 @v0.31.0): the eager
+                # call then disables FlashInfer AR for the process exactly as
+                # serving's first call would, and dispatch falls through to
+                # the next backend in cuda_communicator.py:335-400.
                 warm = torch.ones(input_shape, dtype=torch_dtype, device="cuda")
                 _ = vllm_mods["tensor_model_parallel_all_reduce"](warm)
                 torch.cuda.synchronize()
                 del warm
                 # Serving captures into the platform graph pool and publishes
                 # it to the NCCL symmetric-memory allocator first
-                # (compilation/cuda_graph.py:305-318 @v0.30.0); the symm-mem
-                # all-reduce asserts it under capture
-                # (pynccl_allocator.py:168-173). Older vLLM has no such hook.
+                # (compilation/cuda_graph.py:305-318 @v0.31.0, byte-identical
+                # to @v0.30.0); the symm-mem all-reduce asserts it under
+                # capture (pynccl_allocator.py:169-174 @v0.31.0, :168-173
+                # @v0.30.0). Older vLLM has no such hook.
+                # Dispatch order and size thresholds are unchanged at 0.31.0:
+                # CudaCommunicator.all_reduce (cuda_communicator.py:335-400),
+                # FlashInferAllReduce.should_use_fi_ar
+                # (flashinfer_all_reduce.py:432-483), CustomAllreduce
+                # .should_custom_ar (custom_all_reduce.py:493-508), symm_mem.py
+                # and all_reduce_utils.py size tables are identical to v0.30.0.
                 graph_pool = _vllm_graph_pool()
                 # Graph capture mode
                 with vllm_mods["graph_capture"](device=torch.cuda.current_device()) as graph_capture_context:

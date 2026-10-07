@@ -106,8 +106,12 @@ def test_glm_row_conventions_match_the_shared_table(monkeypatch):
         ("vllm", DSV4, "0.24.0", True),
         ("vllm", DSV4, "0.25.0", True),
         ("vllm", DSV4, "0.30.0+glm53tail.eb4704514fdf", False),
-        ("vllm", GLM, "0.30.0+glm53tail.eb4704514fdf", True),
-        ("vllm", GLM, "0.30.0", True),
+        ("vllm", DSV4, "0.31.0", False),
+        # GLM moved to stock 0.31.0 (no overlay); the 0.30.0+glm53tail runtime
+        # is no longer an audited GLM mHC runtime.
+        ("vllm", GLM, "0.31.0", True),
+        ("vllm", GLM, "0.30.0+glm53tail.eb4704514fdf", False),
+        ("vllm", GLM, "0.30.0", False),
         ("vllm", GLM, "0.25.0", False),
         ("vllm", GLM, "0.27.1", False),
         ("sglang", DSV4, "0.5.14", True),
@@ -139,10 +143,26 @@ def test_audited_releases_never_overlap_across_architectures(monkeypatch, backen
     module = _load(monkeypatch, backend)
     from collector.version_resolver import _check_compat
 
-    candidates = ["0.24.0", "0.25.0", "0.27.1", "0.30.0", "0.5.14", "0.5.16", "0.5.20"]
+    candidates = ["0.24.0", "0.25.0", "0.27.1", "0.30.0", "0.31.0", "0.5.14", "0.5.16", "0.5.20"]
     for version in candidates:
         admitted = [arch for arch, spec in module._ARCHITECTURE_COMPAT.items() if _check_compat(spec, version)]
         assert len(admitted) <= 1, (version, admitted)
+
+
+def test_vllm_file_compat_admits_glm_runtime_and_keeps_dsv4_releases(monkeypatch):
+    module = _load(monkeypatch, "vllm")
+    from collector.version_resolver import _check_compat
+
+    for version in ("0.24.0", "0.25.0", "0.31.0"):
+        assert _check_compat(module.__compat__, version), version
+    assert not _check_compat(module.__compat__, "0.32.0")
+
+
+def test_vllm_glm_sites_import_the_0_31_0_module_location():
+    # vllm.models.glm5next.nvidia.model moved to .common.model at 0.31.0.
+    source = (COLLECTOR_DIR / "vllm" / "collect_mhc_module.py").read_text(encoding="utf-8")
+    assert "from vllm.models.glm5next.common.model import Glm5NextDecoderLayer" in source
+    assert "vllm.models.glm5next.nvidia.model" not in source
 
 
 def test_worker_rejects_unknown_architecture(monkeypatch):

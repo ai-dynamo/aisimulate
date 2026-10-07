@@ -73,13 +73,13 @@ VARIANTS = {
 }
 
 # Releases whose serving source was audited for these call sites (file:line
-# citations in the backend modules). Local build metadata is ignored by
-# _check_compat, so the installed vLLM overlay 0.30.0+glm53tail.eb4704514fdf
-# (which patches only sparse_attn_indexer_kpool.py and kv_cache_interface.py's
-# KpoolTailSpec, neither on this op's path) satisfies "vllm==0.30.0".
+# citations in the backend modules). GLM-5.3-Flash serves on stock vLLM
+# 0.31.0 (no overlay); 0.30.0 (formerly audited with the
+# 0.30.0+glm53tail.eb4704514fdf overlay) is no longer a GLM runtime and is
+# not admitted. Local build metadata is ignored by _check_compat.
 AUDITED_RUNTIMES = {
     "sglang": "sglang==0.5.20",
-    "vllm": "vllm==0.30.0",
+    "vllm": "vllm==0.31.0",
 }
 
 WARMUP_REPLAYS = 5

@@ -194,7 +194,7 @@ def test_persist_row_writes_op_name_and_kernel_source():
     common.persist_row(
         row,
         framework_label="VLLM",
-        version="0.30.0+glm53tail",
+        version="0.31.0",
         device_name="GB300",
         perf_filename="x",
         log_perf=fake_log_perf,
@@ -215,10 +215,12 @@ def test_persist_row_writes_op_name_and_kernel_source():
         ("sglang", "0.5.19", False),
         ("sglang", "0.5.14", False),
         ("sglang", "0.5.21", False),
-        ("vllm", "0.30.0", True),
-        ("vllm", "0.30.0+glm53tail.eb4704514fdf", True),
+        ("vllm", "0.31.0", True),
+        ("vllm", "0.31.0+cu130", True),
+        ("vllm", "0.30.0", False),
+        ("vllm", "0.30.0+glm53tail.eb4704514fdf", False),
         ("vllm", "0.29.0", False),
-        ("vllm", "0.30.1", False),
+        ("vllm", "0.31.1", False),
         ("vllm", "0.24.0", False),
     ],
 )
@@ -275,6 +277,14 @@ def test_vllm_mamba_groups_split_like_the_hybrid_kv_cache_grouping():
     flat = [name for group in groups for name in group]
     assert sorted(flat) == sorted(set(flat)) and len(flat) == 34
     assert groups[1][:2] == ["language_model.model.layers.1.linear_attn", "language_model.model.layers.5.linear_attn"]
+
+
+def test_vllm_precopy_idx_mapping_matches_serving_int32_upload():
+    # vLLM 0.31.0 uploads idx_mapping as int32 (v1/worker/gpu/model_runner.py:1336-1338).
+    tree = ast.parse(Path(vllm_copy.__file__).read_text())
+    fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "_time_precopy")
+    source = ast.get_source_segment(Path(vllm_copy.__file__).read_text(), fn)
+    assert "idx_mapping = torch.arange(batch_size, dtype=torch.int32, device=device)" in source
 
 
 def test_collector_modules_import_without_torch():

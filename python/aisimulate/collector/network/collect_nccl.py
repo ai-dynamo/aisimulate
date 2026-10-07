@@ -49,8 +49,10 @@ def runtime_nccl_version() -> str:
     Frameworks' own collectives (vLLM/SGLang pynccl) dlopen ``libnccl.so.2``;
     in some images that library differs from the version torch reports at
     ``torch.cuda.nccl.version()`` (e.g. the vLLM 0.30.0 / SGLang 0.5.20 images:
-    torch reports 2.29.7 while the loaded libnccl.so.2 is 2.30.7). nccl-tests
-    link the same shared library, so its version is the one to require.
+    torch reports 2.29.7 while the loaded libnccl.so.2 is 2.30.7; the vLLM
+    0.31.0 image ships the same torch 2.13.0+cu130 and nvidia-nccl-cu13
+    2.30.7). nccl-tests link the same shared library, so its version is the
+    one to require.
     Falls back to torch when no shared libnccl is loadable.
     """
     import ctypes

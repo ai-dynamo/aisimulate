@@ -1,68 +1,79 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""GLM-5.3-Flash prefix-cache KDA state checkpoint copy — vLLM 0.30.0.
+"""GLM-5.3-Flash prefix-cache KDA state checkpoint copy — stock vLLM 0.31.0.
 
 With prefix caching on, vLLM switches the hybrid GLM-5.3-Flash to mamba
 cache mode ``align``. Every step, the V2 model runner
-(v1/worker/gpu/model_runner.py:1717-1727) calls
+(v1/worker/gpu/model_runner.py:1772-1782) calls
 ``MambaHybridModelState.preprocess_state``
-(v1/worker/gpu/model_states/mamba_hybrid.py:183-230), which launches
+(v1/worker/gpu/model_states/mamba_hybrid.py:179-226), which launches
 ``MambaSpecDecodeGPUContext.run_fused_precopy`` (v1/worker/mamba_utils.py:
-1190-1233): one eager ``precopy_mamba_align_fused_kernel`` (:550-632) with
-grid ``(num_reqs, num_states = 2 x 34, _TEMPORAL_TILES = 16)``. A request
-copies its conv + recurrent state of every KDA layer from block column
-``src_col`` to ``dst_col`` only when it crossed a mamba block boundary
+1188-1232): one eager ``precopy_mamba_align_fused_kernel`` (:549-631) with
+grid ``(num_reqs, num_states = 2 x 34, _TEMPORAL_TILES = 16)`` (:35). A
+request copies its conv + recurrent state of every KDA layer from block
+column ``src_col`` to ``dst_col`` only when it crossed a mamba block boundary
 (``src_col != dst_col``); every other program exits early.
 
 One row variant: ``vllm_precopy`` (op ``glm53_mamba_state_checkpoint_copy``,
 kernel_source ``precopy_mamba_align_fused_kernel``, graph_mode ``eager``,
 table ``glm53_mamba_state_copy_perf``). The collector builds the context
 exactly as serving does (``MambaSpecDecodeGPUContext.create`` +
-``initialize_from_forward_context``, mamba_hybrid.py:141-181) from a
+``initialize_from_forward_context``, mamba_hybrid.py:137-177) from a
 synthetic KVCacheConfig and forward context, then times the stock
 ``run_fused_precopy`` launch with CUDA events. The first
 ``num_copy_requests`` rows copy (src_col 0 -> dst_col 1, token_bias 0: no
 speculative decoding, so num_accepted - 1 = 0); the rest have
 src_col == dst_col == 0 and early-exit. ``latency == gpu_time``.
 
-Synthetic serving state (every field cites its population site, vllm
-0.30.0 tag ced6857a, read from the 0.30.0+glm53tail overlay sources):
+Synthetic serving state (every field cites its population site at stock
+vllm v0.31.0, tag commit db9527a4, no overlay):
 - State shapes/dtypes from the GLM KDA layer's own calculators
-  (models/glm5next/nvidia/kda.py:158-180 ->
-  model_executor/layers/mamba/mamba_utils.py:298-321 kda_state_shape with
+  (models/glm5next/common/kda.py:158-180, moved from
+  models/glm5next/nvidia/kda.py at 0.30.0 with identical content ->
+  model_executor/layers/mamba/mamba_utils.py:303-326 kda_state_shape with
   num_spec 0, :133-149 kda_state_dtype with the bf16 model dtype and
   mamba_cache_dtype "auto": conv bf16 [3, conv_dim] (SD layout, the default
   of get_conv_state_layout :29-45), recurrent fp32 [H, 128, 128]).
 - Per-layer state views: one int8 page per block, sliced into the conv and
   recurrent views by the stock ``MambaBase.bind_kv_cache``
-  (model_executor/layers/mamba/abstract.py:29-43). Pages are unpadded
+  (model_executor/layers/mamba/abstract.py:28-42). Pages are unpadded
   (serving pads a mamba page up to the attention page,
   ``page_size_padded``, which only widens the gap between blocks; the
   bytes copied per block are the natural state sizes,
-  v1/worker/mamba_utils.py:1036-1048,322,357).
+  v1/worker/mamba_utils.py:1034-1046,322,357).
 - KV-cache groups: the 34 KDA layers split like
-  v1/core/kv_cache_utils.py:1540-1574 (group size = the 11 attention
+  v1/core/kv_cache_utils.py:1558-1592 (group size = the 11 attention
   layers, ``layers[i::4]``), i.e. 4 mamba groups with their own int32 block
-  tables (v1/worker/gpu/block_table.py:53-76); README section 1 records the
-  4 mamba groups of the GLM serving trace.
+  tables (v1/worker/gpu/block_table.py:58-80); README section 1 records the
+  4 mamba groups of the GLM serving trace (0.30.0; the grouping functions
+  get_kv_cache_groups / _get_kv_cache_groups_uniform_page_size are
+  unchanged at 0.31.0 apart from docstrings and MTP-only eagle annotation).
 - Copy functions: ``MambaStateCopyFuncCalculator.kda_state_copy_func()``
-  (mamba_utils.py:441-443) keyed by the layer's mamba_type GDN_ATTN
+  (mamba_utils.py:446-448) keyed by the layer's mamba_type GDN_ATTN
   (model_executor/layers/mamba/gdn/base.py:49-51), as
   ``Glm5NextForCausalLM.get_mamba_state_copy_func`` +
   ``IsHybrid.get_mamba_state_copy_funcs`` return them
-  (models/glm5next/nvidia/model.py:1004-1011,
-  model_executor/models/interfaces.py:1147-1153).
-- ``idx_mapping``: batch-ordered int64 request-state indices
-  (v1/worker/gpu/input_batch.py:133-134).
+  (models/glm5next/common/model.py:1005-1012,
+  model_executor/models/interfaces.py:1141-1147).
+- ``idx_mapping``: batch-ordered int32 request-state indices
+  (v1/worker/gpu/model_runner.py:1336-1338; int64 at 0.30.0, int32 since
+  0.31.0 in both the real and the dummy batch, input_batch.py:140).
+
+0.31.0 audit (2026-10-07, source-only: tag v0.31.0 == db9527a4 vs v0.30.0
+ced6857a): every cited block above is byte-identical to its 0.30.0
+counterpart (lines shifted; v1/worker/mamba_utils.py differs only in
+docstrings), except block_table.py (num_blocks formatting only) and the
+idx_mapping dtype (int64 -> int32, followed here). The earlier 0.30.0
+audit targeted the 0.30.0+glm53tail.eb4704514fdf overlay, which did not
+touch this op's path.
 
 Timing method: see collector/glm53_mamba_state_copy_common.py.
 """
 
-# Audited serving source: vllm v0.30.0 (tag commit ced6857a) with the
-# glm53tail overlay (installed 0.30.0+glm53tail.eb4704514fdf). Any other
+# Audited serving source: stock vllm v0.31.0 (tag commit db9527a4). Any other
 # release raises MambaStateCopyRuntimeNotAuditedError inside the run function.
-__compat__ = "vllm==0.30.0"
+__compat__ = "vllm==0.31.0"
 
 import gc
 import os
@@ -98,13 +109,13 @@ except ModuleNotFoundError:
 
 VLLM_VARIANTS = ("vllm_precopy",)
 
-# v1/core/kv_cache_utils.py:1540-1574: hybrid layers are split into groups of
+# v1/core/kv_cache_utils.py:1558-1592 @v0.31.0: hybrid layers are split into groups of
 # min-layer-count (the 11 GLM attention layers) layers; the 34 KDA layers
 # therefore form ceil(34 / 11) = 4 groups with layers[i::4].
 NUM_MAMBA_GROUPS = 4
 # MambaSpec.block_size steers WHEN serving crosses a block (expressed here
 # directly through src_col/dst_col); run_fused_precopy and the precopy
-# kernel never read it (mamba_utils.py:550-632,1190-1233). Recorded only to
+# kernel never read it (mamba_utils.py:549-631,1188-1232). Recorded only to
 # build a valid spec.
 _UNUSED_MAMBA_BLOCK_SIZE = 1
 _MODEL_DTYPE_NAME = "bfloat16"  # GLM-5.3-Flash config.json "dtype"
@@ -132,14 +143,14 @@ def get_glm53_mamba_state_copy_test_cases():
 
 
 def mamba_group_layer_names(num_layers: int, num_groups: int = NUM_MAMBA_GROUPS) -> list[list[str]]:
-    """KDA layer names per mamba group, split like kv_cache_utils.py:1567-1574."""
+    """KDA layer names per mamba group, split like kv_cache_utils.py:1585-1592."""
     names = [f"language_model.model.layers.{index}.linear_attn" for index in range(num_layers)]
     return [names[group::num_groups] for group in range(num_groups)]
 
 
 class _KdaStateLayer:
     """The GLM KDA layer surface the align context reads: its state
-    shape/dtype hooks (models/glm5next/nvidia/kda.py:158-180) and the
+    shape/dtype hooks (models/glm5next/common/kda.py:158-180) and the
     ``kv_cache`` tuple bound by MambaBase.bind_kv_cache."""
 
     def __init__(self, shapes, dtypes):
@@ -175,7 +186,7 @@ def _build_context(torch, device, tp_size, num_layers, num_heads, head_dim, conv
         num_spec=0,
     )
     dtypes = MambaStateDtypeCalculator.kda_state_dtype(getattr(torch, _MODEL_DTYPE_NAME), "auto")
-    # MambaBase.get_kv_cache_spec (abstract.py:66-83) in align mode, no
+    # MambaBase.get_kv_cache_spec (abstract.py:64-81) in align mode, no
     # speculative blocks.
     spec = MambaSpec(
         block_size=_UNUSED_MAMBA_BLOCK_SIZE,
@@ -209,7 +220,7 @@ def _build_context(torch, device, tp_size, num_layers, num_heads, head_dim, conv
     block_tables = [block_table.clone() for _ in groups]
 
     copy_funcs = {MambaAttentionBackendEnum.GDN_ATTN: MambaStateCopyFuncCalculator.kda_state_copy_func()}
-    # mamba_hybrid.py:160-181
+    # mamba_hybrid.py:156-177
     ctx = MambaSpecDecodeGPUContext.create(
         max_num_reqs=batch_size,
         kv_cache_config=kv_cache_config,
@@ -226,17 +237,18 @@ def _build_context(torch, device, tp_size, num_layers, num_heads, head_dim, conv
 
 
 def _time_precopy(torch, device, ctx, batch_size, num_copy_requests, flusher):
-    # Per-request-slot GPU state of mamba_hybrid.py:100-110 after
+    # Per-request-slot GPU state of mamba_hybrid.py:96-106 after
     # preprocess_mamba_align_fused_kernel: int32 dst column (state idx), src
     # column and token bias (src_off).
     dst_col = torch.zeros(batch_size, dtype=torch.int32, device=device)
     dst_col[:num_copy_requests] = 1
     src_col = torch.zeros(batch_size, dtype=torch.int32, device=device)
     token_bias = torch.zeros(batch_size, dtype=torch.int32, device=device)
-    idx_mapping = torch.arange(batch_size, dtype=torch.int64, device=device)
+    # Serving uploads idx_mapping as int32 (model_runner.py:1336-1338 @v0.31.0).
+    idx_mapping = torch.arange(batch_size, dtype=torch.int32, device=device)
 
     def launch_precopy():
-        # mamba_hybrid.py:224-230
+        # mamba_hybrid.py:220-226
         ctx.run_fused_precopy(batch_size, dst_col, src_col, token_bias, idx_mapping)
 
     gpu_ms = median_device_ms(torch, launch_precopy, flusher)
