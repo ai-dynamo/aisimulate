@@ -192,8 +192,17 @@ def test_g3_rejects_invalid_scalar_values(field, value) -> None:
         G3OffloadConfig.model_validate({**_g3_offload(), field: value})
 
 
-@pytest.mark.parametrize("mutation", ["sglang", "trtllm", "no_prefix", "disaggregated"])
-def test_g3_rejects_unsupported_engine_scope(mutation) -> None:
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    [
+        ("sglang", "host_offload is supported only for backend=vllm"),
+        ("trtllm", "host_offload is supported only for backend=vllm"),
+        ("no_prefix", "host_offload requires prefix_caching=true"),
+        ("disaggregated", "g3_offload is supported only for the aggregated worker with attention_data=1"),
+        ("attention_dp", "g3_offload is supported only for the aggregated worker with attention_data=1"),
+    ],
+)
+def test_g3_rejects_unsupported_engine_scope(mutation, message) -> None:
     engine = _prediction_engine(mode="disaggregated" if mutation == "disaggregated" else "aggregated")
     role = "prefill" if mutation == "disaggregated" else "aggregated"
     cache = engine["workers"][role]["kv_cache"]
@@ -202,7 +211,9 @@ def test_g3_rejects_unsupported_engine_scope(mutation) -> None:
         engine["backend"] = mutation
     elif mutation == "no_prefix":
         cache["prefix_caching"] = False
-    with pytest.raises(ValidationError, match="host_offload"):
+    elif mutation == "attention_dp":
+        engine["workers"][role]["parallelism"]["attention_data"] = 2
+    with pytest.raises(ValidationError, match=message):
         CorePredictionConfig.model_validate({"engine": engine})
 
 

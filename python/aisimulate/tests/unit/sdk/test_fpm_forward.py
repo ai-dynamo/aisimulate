@@ -309,7 +309,10 @@ def test_public_tail_fpm_qualified_unaligned_exact_and_bracket(tmp_path, model_p
     try:
         resolved = predictor.diagnostics()["provenance"]["config"]
         assert resolved["backend_version"] == _TAIL_VERSION
-        assert ForwardPassPerfModelConfig(**resolved).to_dict() == resolved
+        # Rust omits unset optional topology keys (e.g. cp_size); Python's
+        # to_dict() keeps them as None. Compare the populated identity only.
+        rebuilt = ForwardPassPerfModelConfig(**resolved).to_dict()
+        assert {k: v for k, v in rebuilt.items() if v is not None or k in resolved} == resolved
         for batch in (1, 4, 32):
             for prefix in _TAIL_PREFIXES:
                 value = predictor.estimate_forward_pass_time_ms(_tail_metrics(batch, 32, prefix))

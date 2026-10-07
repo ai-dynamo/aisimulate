@@ -142,7 +142,7 @@ def test_representative_routing_contract() -> None:
     assert _owners(".github/workflows/ci.yml") == {INFRA}
     assert _owners(".github/workflows/fast-ci.yml") == {INFRA}
     assert _owners(".gitattributes") == {INFRA, MAINTAINERS}
-    assert _owners("scripts/build_release_artifacts.py") == {INFRA, MAINTAINERS}
+    assert _owners("scripts/release/build_release_artifacts.py") == {INFRA, MAINTAINERS}
     assert _owners("tests/test_source_compliance.py") == {INFRA}
     assert _owners("python/aisimulate/.github/workflows/build-test.yml") == {
         INFRA,
@@ -236,7 +236,7 @@ def test_fast_and_full_ci_keep_their_cost_boundary() -> None:
     assert "uses" not in prerequisite
     prerequisite_steps = [
         step for step in prerequisite["steps"]
-        if step.get("run") == "python scripts/require_fast_ci.py"
+        if step.get("run") == "python scripts/ci/require_fast_ci.py"
     ]
     assert len(prerequisite_steps) == 1
     assert prerequisite_steps[0]["env"]["GH_TOKEN"] == "${{ github.token }}"
@@ -328,6 +328,7 @@ def test_fast_and_full_ci_keep_their_cost_boundary() -> None:
         "python-compatibility",
         "engine-golden-regression",
         "release-artifact-contract",
+        "readme-commands",
         "application-wheel",
         "python-compliance",
     }

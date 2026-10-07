@@ -70,7 +70,7 @@ jobs:
           if [[ "$MODE" != daily ]]; then
             args+=(--e2e-run-id "$E2E_RUN_ID" --fpm-run-id "$FPM_RUN_ID")
           fi
-          python scripts/notify_accuracy.py "${args[@]}"
+          python scripts/notifications/notify_accuracy.py "${args[@]}"
       - name: Preserve frozen report before any Slack write
         if: hashFiles('accuracy-preview/report.json') != ''
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -92,7 +92,7 @@ jobs:
         env:
           SLACK_ACCURACY_BOT_TOKEN: ${{ secrets.SLACK_ACCURACY_BOT_TOKEN }}
           SLACK_ACCURACY_CHANNEL_ID: ${{ vars.SLACK_ACCURACY_CHANNEL_ID }}
-        run: python scripts/notify_accuracy.py --mode "$MODE" --deliver accuracy-preview/report.json
+        run: python scripts/notifications/notify_accuracy.py --mode "$MODE" --deliver accuracy-preview/report.json
       - name: Preserve delivered baseline and recovery state
         if: hashFiles('accuracy-preview/delivery/state.json') != ''
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7

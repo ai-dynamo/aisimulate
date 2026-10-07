@@ -173,7 +173,10 @@ def get_model(
     rewrites each phase list to a single whole-model ``FPMForwardOp``.
     """
     forward_model = getattr(model_config, "forward_model", "op_level") or "op_level"
-    if (model_config.dcp_size or 1) > 1 and (forward_model != "fpm" or backend_name != "vllm"):
+    # Whole-forward DCP timing needs a measured vLLM cell (the recorded-DCP FPM
+    # identity); the op-level path prices the sharded attention itself and is
+    # gated per model class by ``supports_dcp`` below.
+    if (model_config.dcp_size or 1) > 1 and forward_model == "fpm" and backend_name != "vllm":
         raise NotImplementedError("DCP timing requires measured vLLM FPM interpolation")
     if forward_model not in _FORWARD_MODELS:
         raise InvalidEngineConfigurationError(
@@ -248,6 +251,18 @@ def get_model(
     else:
         model_config.cp_style = "none"
 
+    # Decode context parallelism is a separate modeling capability: the model
+    # class must price the KV-sharded decode attention (+ LSE merge comm) before
+    # dcp>1 can be estimated. Deployment policy (whether a role may combine
+    # prefill CP with DCP) is decided by the topology layer, not here; this only
+    # guards against silently wrong numbers.
+    if (model_config.dcp_size or 1) > 1 and forward_model != "fpm" and not cls.supports_dcp(backend_name):
+        raise NotImplementedError(
+            f"Decode context parallelism (dcp_size={model_config.dcp_size}) is not supported for "
+            f"model_family={model_family!r} on backend={backend_name!r}. The model class "
+            f"must override ``supports_dcp`` and implement the KV-sharded decode path."
+        )
+
     # Resolve the speculative scheme BEFORE construction (an explicit mtp
     # scheme writes its depth back onto nextn, which model families read),
     # attach it after, and gate unsupported (model, backend) combinations.
@@ -264,9 +279,20 @@ def get_model(
     _validate_decode_moe_profile(model_path, model_config, backend_name)
     _validate_prefill_graph_profile(model_path, model_config, backend_name)
     model = cls.create(model_info, model_config, backend_name)
+    # Backend-specific defaults below construction (e.g. the DCP merge
+    # collective: a2a on sglang, ag_rs elsewhere) read the backend identity off
+    # the model; families whose constructors do not record it get it here.
+    if getattr(model, "_backend_name", None) is None:
+        model._backend_name = backend_name
     model.spec_scheme = build_spec_scheme(model_config, spec_config)
     model.spec_scheme.validate(model, backend_name)
     materialize_spec_scheme(model)
+    # Op-level decode CP: rewrite the decode attention (sharded KV stripe +
+    # merge collectives) after speculation materialized the draft ops. The
+    # whole-forward path prices DCP from the recorded-DCP measured cell instead
+    # (the per-rank KV stripe still enters memory via _cp_kv_memory_divisor).
+    if (model_config.dcp_size or 1) > 1 and forward_model != "fpm":
+        model._apply_decode_context_parallel()
     if model_config.prefill_graph_profile is not None:
         model.apply_prefill_graph_profile()
     if model_config.moe_kernel_source is not None:

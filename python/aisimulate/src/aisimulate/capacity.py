@@ -132,6 +132,10 @@ def materialize_aic_num_gpu_blocks(
                         "aic_pp_size": resolved["pp"],
                         "aic_moe_tp_size": resolved["moe_tp_size"],
                         "aic_moe_ep_size": resolved["moe_ep_size"],
+                        # Rust serializes the context-parallel knobs only when set;
+                        # decode CP must reach the KV-capacity estimate (1/dcp per rank).
+                        "aic_cp_size": resolved.get("cp_size"),
+                        "aic_dcp_size": resolved.get("dcp"),
                         "aic_fpm_profile": resolved.get("fpm_profile"),
                         "worker_type": resolved["worker_type"],
                     }.items()
@@ -173,10 +177,6 @@ def materialize_aic_num_gpu_blocks(
         return finish_lowering(lowered)
     if lowered.get("num_gpu_blocks") is not None:
         return finish_lowering(lowered)
-    if canonical_result is not None and (resolved.get("dcp") or 1) > 1:
-        raise ValueError(
-            "DCP FPM replay requires explicit KV block capacity; automatic DCP/hybrid sizing is unsupported"
-        )
     backend = lowered.get("aic_backend")
     if backend is None:
         return finish_lowering(lowered)
@@ -225,6 +225,8 @@ def materialize_aic_num_gpu_blocks(
         moe_tp_size=lowered.get("aic_moe_tp_size"),
         moe_ep_size=lowered.get("aic_moe_ep_size"),
         attention_dp_size=attention_dp,
+        cp_size=(lowered.get("aic_cp_size") if lowered.get("aic_cp_size") is not None else 1),
+        dcp_size=(lowered.get("aic_dcp_size") if lowered.get("aic_dcp_size") is not None else 1),
         gemm_dtype=lowered.get("aic_gemm_dtype"),
         moe_dtype=lowered.get("aic_moe_dtype"),
         fmha_dtype=lowered.get("aic_fmha_dtype"),
@@ -334,6 +336,8 @@ def estimate_num_gpu_blocks(
     moe_tp_size: int | None = None,
     moe_ep_size: int | None = None,
     attention_dp_size: int | None = None,
+    cp_size: int = 1,
+    dcp_size: int = 1,
     gemm_dtype: str | None = None,
     moe_dtype: str | None = None,
     fmha_dtype: str | None = None,
@@ -409,6 +413,8 @@ def estimate_num_gpu_blocks(
             attention_dp_size=(attention_dp_size if attention_dp_size is not None else 1),
             moe_tp_size=moe_tp_size,
             moe_ep_size=moe_ep_size,
+            cp_size=cp_size,
+            dcp_size=dcp_size,
             gemm_quant_mode=_quant_mode_name("gemm", gemm_dtype),
             moe_quant_mode=_quant_mode_name("moe", moe_dtype),
             fmha_quant_mode=_quant_mode_name("fmha", fmha_dtype),

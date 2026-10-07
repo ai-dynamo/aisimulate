@@ -19,9 +19,9 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from huggingface_hub import HfApi, snapshot_download
 
-from fpm_accuracy.contract import strict_json
-from fpm_accuracy.exceptions import ConfigurationError, DataError
-from fpm_accuracy.hf.models import (
+from scripts.fpm_accuracy.contract import strict_json
+from scripts.fpm_accuracy.exceptions import ConfigurationError, DataError
+from scripts.fpm_accuracy.hf.models import (
     CaseStatus,
     ConfigurationSnapshot,
     FpmArtifact,
@@ -31,14 +31,14 @@ from fpm_accuracy.hf.models import (
     MeasurementReference,
     OrderingKind,
 )
-from fpm_accuracy.hf.overrides import HfCaseOverride, HfOverrides, load_overrides
-from fpm_accuracy.hf.protocols import (
+from scripts.fpm_accuracy.hf.overrides import HfCaseOverride, HfOverrides, load_overrides
+from scripts.fpm_accuracy.hf.protocols import (
     SUPPORTED_EVIDENCE_FORMAT_IDS,
     ParsedObservation,
     adapter_for,
 )
-from fpm_accuracy.types.forward_pass import WorkloadKind
-from fpm_accuracy.types.worker_config import WorkerConfig, WorkerConfigRecord
+from scripts.fpm_accuracy.types.forward_pass import WorkloadKind
+from scripts.fpm_accuracy.types.worker_config import WorkerConfig, WorkerConfigRecord
 
 DEFAULT_REPO_ID = "nvidia/aisimulate-fpm-dataset"
 _FULL_SHA = re.compile(r"[0-9a-f]{40}")

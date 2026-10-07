@@ -9,14 +9,14 @@ name: Main branch nightly CI
 # trigger waits for the matrix refresh, and a failed refresh fails the run,
 # so consumers (who resolve the newest successful run) never advance to a
 # nightly whose matrix did not refresh. Release artifacts are built via
-# scripts/build_release_artifacts.py, the artifact contract's only sanctioned
+# scripts/release/build_release_artifacts.py, the artifact contract's only sanctioned
 # entry point. Isolated compliance jobs gate the build/staging jobs. Each
 # arch job then builds, stages to Artifactory, and smoke-tests the downloaded
 # wheel on every supported Python. Verified copies, checksums, and
 # provenance remain in nightly-dist-* for FPE, accuracy, and installation
 # consumers; GitHub also retains dependency inventories and license evidence.
 #
-# Versioning: every run stamps the tree with scripts/apply_dev_version.py —
+# Versioning: every run stamps the tree with scripts/release/apply_dev_version.py —
 # wheels get `<base>.devYYYYMMDDNNNNNNNNNN`, and the crate gets the same
 # numeric suffix after `-dev.`. The ten-digit workflow run number makes
 # scheduled and manual publications distinct while preserving date ordering.
@@ -320,7 +320,7 @@ jobs:
           PYTHON_SERIES: ${{ matrix.python-version }}
         run: |
           python -m venv "${RUNNER_TEMP}/venv-licenses"
-          python scripts/check_python_licenses.py \
+          python scripts/ci/check_python_licenses.py \
             --pyproject source/python/aisimulate/pyproject.toml \
             --python "${RUNNER_TEMP}/venv-licenses/bin/python" \
             --inventory "${RUNNER_TEMP}/python-inventory/${MATRIX_ARCH}-${PYTHON_SERIES}.csv"
@@ -407,8 +407,8 @@ jobs:
           ref: ${{ github.sha }}
           path: release-tooling
           sparse-checkout: |
-            /scripts/apply_dev_version.py
-            /scripts/build_release_artifacts.py
+            /scripts/release/apply_dev_version.py
+            /scripts/release/build_release_artifacts.py
           sparse-checkout-cone-mode: false
           persist-credentials: false
 
@@ -463,7 +463,9 @@ jobs:
           archive="${TOOLS_DIR}/uv.tar.gz"
           # -q must be curl's first argument: HOME is the workspace, so this
           # ignores any repo-root .curlrc.
-          curl -q --fail --location --silent --show-error --retry 3 \
+          curl -q --fail --location --silent --show-error \
+            --retry 5 --retry-delay 10 --retry-max-time 300 \
+            --connect-timeout 30 --max-time 120 \
             --output "${archive}" \
             "https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/uv-${UV_TARGET}.tar.gz"
           echo "${UV_SHA256}  ${archive}" | sha256sum --check
@@ -479,7 +481,9 @@ jobs:
         run: |
           set -euo pipefail
           rustup_init="${TOOLS_DIR}/rustup-init"
-          curl -q --fail --location --silent --show-error --retry 3 \
+          curl -q --fail --location --silent --show-error \
+            --retry 5 --retry-delay 10 --retry-max-time 300 \
+            --connect-timeout 30 --max-time 120 \
             --output "${rustup_init}" \
             "https://static.rust-lang.org/rustup/archive/${RUSTUP_VERSION}/${RUST_TARGET}/rustup-init"
           echo "${RUSTUP_INIT_SHA256}  ${rustup_init}" | sha256sum --check
@@ -503,17 +507,17 @@ jobs:
       - name: Stamp nightly dev version
         run: |
           set -euo pipefail
-          "${TOOLS_DIR}/venv-build/bin/python" release-tooling/scripts/apply_dev_version.py ".dev${DEV_DATE}" .
+          "${TOOLS_DIR}/venv-build/bin/python" release-tooling/scripts/release/apply_dev_version.py ".dev${DEV_DATE}" .
 
       - name: Validate release manifests
         run: |
           set -euo pipefail
-          "${TOOLS_DIR}/venv-build/bin/python" release-tooling/scripts/build_release_artifacts.py --root . --check-only
+          "${TOOLS_DIR}/venv-build/bin/python" release-tooling/scripts/release/build_release_artifacts.py --root . --check-only
 
       - name: Build release artifacts
         run: |
           set -euo pipefail
-          "${TOOLS_DIR}/venv-build/bin/python" release-tooling/scripts/build_release_artifacts.py --root . \
+          "${TOOLS_DIR}/venv-build/bin/python" release-tooling/scripts/release/build_release_artifacts.py --root . \
             --output-dir "${DIST_DIR}"
 
       - name: Drop duplicate crate (non-amd64 legs)

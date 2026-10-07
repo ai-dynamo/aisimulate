@@ -237,22 +237,35 @@ impl RecursiveSpline {
         }) && self.scatter.iter().flatten().all(|v| v.is_finite())
     }
 
+    /// Check after the complete insert/evict transaction, before a lazy skip.
+    pub(super) fn rebuild_required(&self) -> bool {
+        self.damaged
+            || !self.valid_statistics()
+            || self
+                .rebuild_interval
+                .is_some_and(|interval| self.mutations >= interval as u64)
+    }
+
+    fn rebuild_and_fit(&mut self, rows: &[Row]) -> Option<Model> {
+        self.rebuild(rows);
+        // The caller replaces the whole model, including an unusable None result.
+        batch_fit(rows, &self.knots)
+    }
+
     #[cfg(test)]
     pub(super) fn damage_for_test(&mut self) {
         self.scatter[0][0] = f64::NAN;
     }
 
     /// Healthy fixed-basis updates do not collect or traverse retained samples.
-    /// The caller supplies the actual sampler contents only for recovery.
+    /// Full rebuilds use one retained snapshot to refresh statistics and the
+    /// reference batch coefficients, including when periodic rebuilding is due.
     pub(super) fn fit_lazy(&mut self, mut retained: impl FnMut() -> Vec<Row>) -> Option<Model> {
+        if self.rebuild_required() {
+            return self.rebuild_and_fit(&retained());
+        }
         if self.count == 0 {
             return None;
-        }
-        let periodic = self
-            .rebuild_interval
-            .is_some_and(|interval| self.mutations >= interval as u64);
-        if self.damaged || !self.valid_statistics() || periodic {
-            self.rebuild(&retained());
         }
         let threshold = 1e-12 * (self.count as f64).sqrt();
         let norms: [f64; P] = std::array::from_fn(|j| {
@@ -284,7 +297,7 @@ impl RecursiveSpline {
         });
         if !self.valid_statistics() || fragile_spread || rank_deficient(&gram, self.p) {
             self.batch_fallbacks = self.batch_fallbacks.saturating_add(1);
-            return batch_fit(&retained(), &self.knots);
+            return self.rebuild_and_fit(&retained());
         }
         let standardized = nnls(&gram, &rhs, self.p);
         let slopes: [f64; P] = std::array::from_fn(|j| {
@@ -317,9 +330,7 @@ impl RecursiveSpline {
             || !kkt_valid(&gram, &rhs, &standardized, self.p)
         {
             self.batch_fallbacks = self.batch_fallbacks.saturating_add(1);
-            let rows = retained();
-            self.rebuild(&rows);
-            return batch_fit(&rows, &self.knots);
+            return self.rebuild_and_fit(&retained());
         }
         Some(Model {
             knots: self.knots.clone(),
@@ -327,5 +338,58 @@ impl RecursiveSpline {
             intercept,
             sse: sse.max(0.0),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn full_rebuild_coalesces_triggers_and_preserves_failed_fit_readiness() {
+        let knots = [vec![], vec![]];
+        // Independent hand oracle: 5 + 2*x + 3*z gives 34 at (7, 5).
+        let rows = (0..16)
+            .map(|i| {
+                let (x, z) = ((i % 4) as f64, (i / 4) as f64);
+                [x, z, 5.0 + 2.0 * x + 3.0 * z]
+            })
+            .collect::<Vec<_>>();
+        let mut state = RecursiveSpline::new(&rows, &knots, Some(1));
+        let means = state.means;
+        let scatter = state.scatter;
+        state.mutations = 1;
+        state.damage_for_test();
+        assert!(state.rebuild_required());
+        let mut reads = 0;
+        let model = state
+            .fit_lazy(|| {
+                reads += 1;
+                rows.clone()
+            })
+            .unwrap();
+        assert_eq!(reads, 1);
+        assert_eq!(state.rebuilds, 1);
+        assert_eq!(state.mutations, 0);
+        assert_eq!(state.means, means);
+        assert_eq!(state.scatter, scatter);
+        assert!(!state.rebuild_required());
+        assert!((model.predict([7.0, 5.0]) - 34.0).abs() < 1e-9);
+
+        // Finite targets whose squared residuals overflow are not a usable fit.
+        let huge = [[0.0, 0.0, f64::MAX], [1.0, 1.0, 1.0]];
+        let mut failed = RecursiveSpline::new(&huge, &knots, None);
+        let mut reads = 0;
+        assert!(
+            failed
+                .fit_lazy(|| {
+                    reads += 1;
+                    huge.to_vec()
+                })
+                .is_none()
+        );
+        assert_eq!(reads, 1);
+        assert_eq!(failed.rebuilds, 1);
+        assert!(failed.rebuild_required());
     }
 }

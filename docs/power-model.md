@@ -19,7 +19,7 @@ The migration boundary is:
 
 This PR does not change current AIC or FPE runtime behavior, and the contract
 does not by itself make modeled power available in unified AISimulate commands.
-The [AIC migration guide](cli/migrate-from-aiconfigurator.md) is authoritative
+The [AIC migration guide](MIGRATION.md) is authoritative
 for which workflows are implemented in the current release.
 
 Most semantics below match AIC directly. AISimulate normalizes unavailable

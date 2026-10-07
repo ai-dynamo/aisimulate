@@ -1,5 +1,5 @@
 {
-  "max_age_days": 30,
+  "max_age_days": 180,
   "minimum_free_bytes": 35000000000,
   "parts": [
     {
@@ -70,5 +70,5 @@
   ],
   "release_tag": "db-dump/2026-09-14",
   "schema_version": 1,
-  "selection_policy": "latest-complete-config-run-v1"
+  "selection_policy": "gym-resolved-config-v2"
 }

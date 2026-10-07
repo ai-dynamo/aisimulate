@@ -1113,6 +1113,7 @@ struct EngineBuildRequest {
     fpm_options: crate::FpmInterpolationConfig,
     moe_tp_size: Option<u32>,
     moe_ep_size: Option<u32>,
+    cp_size: Option<u32>,
     gemm_quant_mode: Option<String>,
     moe_quant_mode: Option<String>,
     kvcache_quant_mode: Option<String>,
@@ -1132,7 +1133,6 @@ struct EngineBuildRequest {
     fpm_profile: Option<String>,
     worker_type: Option<String>,
     fpm_interpolation: Option<String>,
-    cp_size: u32,
     decode_workload_distribution: Option<String>,
     prefill_graph_profile: Option<String>,
     fpm_parquet_path: Option<String>,
@@ -1173,6 +1173,7 @@ impl AicEngineBuilder {
                 fpm_options: crate::FpmInterpolationConfig::default(),
                 moe_tp_size: None,
                 moe_ep_size: None,
+                cp_size: None,
                 gemm_quant_mode: None,
                 moe_quant_mode: None,
                 kvcache_quant_mode: None,
@@ -1192,7 +1193,6 @@ impl AicEngineBuilder {
                 fpm_profile: None,
                 worker_type: None,
                 fpm_interpolation: None,
-                cp_size: 1,
                 decode_workload_distribution: None,
                 prefill_graph_profile: None,
                 fpm_parquet_path: None,
@@ -1276,6 +1276,15 @@ impl AicEngineBuilder {
     pub fn moe_parallelism(mut self, tp_size: Option<u32>, ep_size: Option<u32>) -> Self {
         self.request.moe_tp_size = tp_size;
         self.request.moe_ep_size = ep_size;
+        self
+    }
+
+    /// Set optional prefill context parallelism (`cp_size`, widens the attention
+    /// side) and decode context parallelism (`dcp_size`, stripes the decode KV
+    /// across the existing TP ranks). Unset keeps both at one.
+    pub fn context_parallelism(mut self, cp_size: Option<u32>, dcp_size: Option<u32>) -> Self {
+        self.request.cp_size = cp_size;
+        self.request.dcp_size = dcp_size;
         self
     }
 
@@ -1466,7 +1475,7 @@ mod builder_tests {
         assert_eq!(request.strict_provenance, Some(true));
         assert_eq!(request.fpm_profile.as_deref(), Some(r#"{"model":"model"}"#));
         assert_eq!(request.fpm_interpolation.as_deref(), Some("direct"));
-        assert_eq!(request.cp_size, 1);
+        assert_eq!(request.cp_size, None);
         assert_eq!(
             request.fpm_parquet_path.as_deref(),
             Some("/artifacts/reviewed-fpm.parquet")
@@ -1522,10 +1531,9 @@ fn build_engine_from_request(request: EngineBuildRequest) -> Result<AicEngine, A
 /// The public builder and [`compile_engine_to_engine`] both use this function,
 /// so Python argument names and defaults cannot drift.
 fn compile_engine_from_request(request: EngineBuildRequest) -> Result<Engine, AicError> {
-    if request.cp_size != 1 {
+    if request.cp_size == Some(0) {
         return Err(AicError::InvalidEngineConfig(
-            "cp_size must be the integer 1; this SDK entry point does not support context parallelism"
-                .to_string(),
+            "cp_size must be a positive integer, got 0".to_string(),
         ));
     }
     if request.fpm_fmha_quant_mode.is_some() && request.forward_model.as_deref() != Some("fpm") {
@@ -1571,6 +1579,7 @@ fn compile_engine_from_request(request: EngineBuildRequest) -> Result<Engine, Ai
         }
         kwargs.set_item("moe_tp_size", request.moe_tp_size)?;
         kwargs.set_item("moe_ep_size", request.moe_ep_size)?;
+        kwargs.set_item("cp_size", request.cp_size.unwrap_or(1))?;
         kwargs.set_item("gemm_quant_mode", request.gemm_quant_mode.as_deref())?;
         kwargs.set_item("moe_quant_mode", request.moe_quant_mode.as_deref())?;
         kwargs.set_item("kvcache_quant_mode", request.kvcache_quant_mode.as_deref())?;
@@ -1591,7 +1600,6 @@ fn compile_engine_from_request(request: EngineBuildRequest) -> Result<Engine, Ai
             kwargs.set_item("worker_type", worker_type)?;
         }
         kwargs.set_item("fpm_interpolation", request.fpm_interpolation.as_deref())?;
-        kwargs.set_item("cp_size", request.cp_size)?;
         kwargs.set_item(
             "decode_workload_distribution",
             request.decode_workload_distribution.as_deref(),
@@ -1711,6 +1719,7 @@ pub(crate) fn compile_forward_pass_model_to_engine(
         fpm_options: config.estimator_config.fpm_interpolation.clone(),
         moe_tp_size: config.moe_tp_size,
         moe_ep_size: config.moe_ep_size,
+        cp_size: config.cp_size,
         gemm_quant_mode: config.gemm_quant_mode.clone(),
         moe_quant_mode: config.moe_quant_mode.clone(),
         kvcache_quant_mode: config.kvcache_quant_mode.clone(),
@@ -1751,7 +1760,6 @@ pub(crate) fn compile_forward_pass_model_to_engine(
                 .as_str()
                 .to_owned(),
         ),
-        cp_size: 1,
         decode_workload_distribution: config
             .estimator_config
             .op_level
@@ -1874,6 +1882,7 @@ fn engine_build_request(
         fpm_options: crate::FpmInterpolationConfig::default(),
         moe_tp_size: config.parallel.moe_tp_size,
         moe_ep_size: config.parallel.moe_ep_size,
+        cp_size: config.parallel.cp_size,
         gemm_quant_mode: gemm_quant_name(config.quantization.weight_dtype.as_ref())
             .map(str::to_owned),
         moe_quant_mode: moe_quant_name(config.quantization.moe_dtype.as_ref()).map(str::to_owned),
@@ -1899,7 +1908,6 @@ fn engine_build_request(
         fpm_profile: config.extra.get("fpm_profile").cloned(),
         worker_type: config.extra.get("worker_type").cloned(),
         fpm_interpolation: config.extra.get("fpm_interpolation").cloned(),
-        cp_size: config.parallel.cp_size.unwrap_or(1),
         decode_workload_distribution: None,
         prefill_graph_profile: config.prefill_graph_profile.clone(),
         fpm_parquet_path: crate::config::validate_fpm_parquet_path(
@@ -2138,9 +2146,9 @@ impl PyForwardPassPerfModel {
             request.kvcache_quant_mode = modes.remove("kvcache_quant_mode");
             request.comm_quant_mode = modes.remove("comm_quant_mode");
         }
-        if request.cp_size != 1 {
+        if request.cp_size == Some(0) {
             return Err(PyValueError::new_err(
-                "cp_size must be the integer 1; this SDK entry point does not support context parallelism",
+                "cp_size must be a positive integer, got 0",
             ));
         }
         let estimator_config = crate::EstimatorConfig::migrate_legacy_inputs(
@@ -2179,6 +2187,7 @@ impl PyForwardPassPerfModel {
             dcp: request.dcp_size,
             moe_tp_size: request.moe_tp_size,
             moe_ep_size: request.moe_ep_size,
+            cp_size: request.cp_size,
             gemm_quant_mode: request.gemm_quant_mode,
             moe_quant_mode: request.moe_quant_mode,
             fmha_quant_mode: request.fmha_quant_mode,
@@ -2464,6 +2473,7 @@ mod tests {
                 cp_size: 1,
                 lane_order: crate::operators::attention::b200_vllm_context_lane_order(),
                 apply_rope: true,
+                dcp_size: 1,
             }),
         ]
     }
@@ -2491,6 +2501,7 @@ mod tests {
                 use_qk_norm: false,
                 scale_num_tokens: 1,
                 verify_query_tokens: 0,
+                dcp_size: 1,
             }),
         ]
     }

@@ -19,7 +19,7 @@ use crate::{AicError, ForwardPassMetrics};
 use super::config::{EstimationMode, ForwardPassFallbackPolicy, ForwardPassPerfModelConfig};
 use super::correction::CorrectionBuckets;
 use super::coverage::{FpmCoverageState, FpmQueryCoverage};
-use super::estimator::RegressionFitConfig;
+use super::estimator::{RegressionFitConfig, RegressionSamplingConfig};
 use super::metrics::validate_forward_pass_metrics;
 use super::options::{ForwardPassPerfOptions, validate_regression_options};
 use super::regression::{ForwardPassSplineDiagnostics, RegressionStore};
@@ -143,6 +143,7 @@ impl RegressionStores {
         worker_type: ForwardPassWorkerType,
         options: &ForwardPassPerfOptions,
         fit: &RegressionFitConfig,
+        sampling: &RegressionSamplingConfig,
     ) -> Self {
         use ForwardPassRegressionWorkloadKind::*;
         let kinds: &[ForwardPassRegressionWorkloadKind] = match worker_type {
@@ -158,7 +159,7 @@ impl RegressionStores {
         Self {
             stores: kinds
                 .iter()
-                .map(|kind| (*kind, RegressionStore::new(options, fit)))
+                .map(|kind| (*kind, RegressionStore::new(options, fit, sampling)))
                 .collect(),
         }
     }
@@ -306,17 +307,38 @@ impl ForwardPassPerfModel {
     /// selected logical store has a usable fit from at least
     /// `options.min_observations` tuning samples.
     /// Correction factor getters always return `None` in this mode.
+    #[cfg(test)]
     pub(crate) fn from_regression(
         worker_type: ForwardPassWorkerType,
         options: ForwardPassPerfOptions,
         fit: &RegressionFitConfig,
+    ) -> Result<Self, AicError> {
+        let sampling = RegressionSamplingConfig {
+            bins_per_axis: options
+                .bucket_shape
+                .unwrap_or_else(|| {
+                    let side = super::samples::integer_sqrt(options.bucket_count);
+                    [side, side]
+                })
+                .to_vec(),
+            max_observations: options.max_observations,
+            ..Default::default()
+        };
+        Self::from_regression_config(worker_type, options, fit, &sampling)
+    }
+
+    fn from_regression_config(
+        worker_type: ForwardPassWorkerType,
+        options: ForwardPassPerfOptions,
+        fit: &RegressionFitConfig,
+        sampling: &RegressionSamplingConfig,
     ) -> Result<Self, AicError> {
         validate_regression_options(&options)?;
         super::estimator::validate_rebuild_interval(fit.rebuild_interval)?;
         Ok(Self {
             mode: ForwardPassPerfMode::Regression {
                 worker_type,
-                regression: RegressionStores::new(worker_type, &options, fit),
+                regression: RegressionStores::new(worker_type, &options, fit, sampling),
             },
             options,
             last_warning: None,
@@ -354,9 +376,13 @@ impl ForwardPassPerfModel {
                 last_error = Some(error);
                 continue;
             }
+            // Op-level DCP is priced by the sharded attention ops and their
+            // collectives; the whole-forward paths need a measured vLLM cell
+            // (the regression tables carry no DCP column).
             if config.dcp.is_some_and(|dcp| dcp > 1)
-                && (mode != EstimationMode::FpmInterpolation
-                    || config.backend != crate::BackendKind::Vllm)
+                && (mode == EstimationMode::FpmRegression
+                    || (mode == EstimationMode::FpmInterpolation
+                        && config.backend != crate::BackendKind::Vllm))
             {
                 let error = AicError::UnsupportedModel(
                     "DCP timing requires measured vLLM FPM interpolation".into(),
@@ -374,10 +400,11 @@ impl ForwardPassPerfModel {
             }
             if mode == EstimationMode::FpmRegression {
                 let options = config.estimator_config.regression_options();
-                let mut model = Self::from_regression(
+                let mut model = Self::from_regression_config(
                     config.worker_type,
                     options,
                     &config.estimator_config.fpm_regression.fit,
+                    &config.estimator_config.fpm_regression.sampling,
                 )?;
                 let mut resolved = config.clone();
                 resolved.estimation_mode = mode;
@@ -429,8 +456,17 @@ impl ForwardPassPerfModel {
                 Err(err) => return Err(err),
             }
         }
-        Err(last_error
-            .unwrap_or_else(|| AicError::UnsupportedModel("no estimator candidates".into())))
+        // Every candidate mode failed. Surface all of them: the last one is
+        // usually a whole-forward gate (for instance the DCP FPM rule) that
+        // would otherwise mask the op-level reason the user actually hit.
+        Err(match failures.len() {
+            0 => AicError::UnsupportedModel("no estimator candidates".into()),
+            1 => last_error.expect("one recorded failure"),
+            _ => AicError::UnsupportedModel(format!(
+                "no estimator mode accepted this configuration: {}",
+                failures.join("; ")
+            )),
+        })
     }
 
     /// API:
@@ -491,7 +527,9 @@ impl ForwardPassPerfModel {
                 else {
                     return Ok(Some(0.0));
                 };
-                Ok(regression.store(feature.workload_kind).predict(&feature.x))
+                regression
+                    .store(feature.workload_kind)
+                    .predict_metrics(feature.x, metrics_by_rank)
             }
         }
     }
@@ -564,7 +602,7 @@ impl ForwardPassPerfModel {
     /// configured correction-grid workload ranges are ignored by native
     /// correction models. Regression models validate compatibility with their
     /// fixed worker type and update the selected logical store's
-    /// two-dimensional constrained linear fit.
+    /// configured regression fit.
     ///
     /// Pure Rust over the `Engine` — no Python re-entry.
     pub fn tune_with_fpms(
@@ -619,7 +657,11 @@ impl ForwardPassPerfModel {
                     };
                     regression
                         .store_mut(observation.feature.workload_kind)
-                        .add_observation(observation.feature.x, observation.wall_time_ms);
+                        .add_metrics(
+                            observation.feature.x,
+                            observation.wall_time_ms,
+                            metrics_by_rank,
+                        )?;
                 }
             }
         }
@@ -1355,6 +1397,7 @@ mod rebuild_tests {
             ForwardPassWorkerType::Aggregated,
             &ForwardPassPerfOptions::default(),
             &fit,
+            &RegressionSamplingConfig::default(),
         );
         // Analytic one-axis plane: y=3+2*x. Other workload stores remain cold.
         for i in 1..=32 {
@@ -1416,6 +1459,7 @@ mod rebuild_tests {
                 rebuild_interval: Some(3),
                 ..RegressionFitConfig::default()
             },
+            &RegressionSamplingConfig::default(),
         );
         assert!(
             stores
@@ -1461,6 +1505,7 @@ mod rebuild_tests {
             ForwardPassWorkerType::Aggregated,
             &ForwardPassPerfOptions::default(),
             &RegressionFitConfig::default(),
+            &RegressionSamplingConfig::default(),
         );
         // Constant features avoid fit work without numerical damage. A change
         // back to a 4096-operation default would reset each clock at 4096.

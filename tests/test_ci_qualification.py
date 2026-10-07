@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from scripts.check_prediction_numerics import check_results, resolve_baseline, validate_cases
+from scripts.prediction_regression.check_prediction_numerics import check_results, resolve_baseline, validate_cases
 
 ROOT = Path(__file__).resolve().parents[1]
 BASELINE_SHA = json.loads((ROOT / ".github/prediction-numerical-sentinels.json").read_text())["baseline_source_sha"]
@@ -122,7 +122,7 @@ def test_fetch_baseline_cli_does_not_require_prediction_cases_or_write_results(t
     result = subprocess.run(
         [
             sys.executable,
-            str(ROOT / "scripts/check_prediction_numerics.py"),
+            str(ROOT / "scripts/prediction_regression/check_prediction_numerics.py"),
             "--manifest",
             str(manifest),
             "--fetch-baseline-only",
@@ -139,7 +139,7 @@ def test_fetch_baseline_cli_does_not_require_prediction_cases_or_write_results(t
 @pytest.mark.parametrize("arguments", [[], ["--fetch-baseline-only", "--output", "results.json"]])
 def test_numerical_cli_requires_exactly_one_mode(tmp_path, arguments):
     result = subprocess.run(
-        [sys.executable, str(ROOT / "scripts/check_prediction_numerics.py"), *arguments],
+        [sys.executable, str(ROOT / "scripts/prediction_regression/check_prediction_numerics.py"), *arguments],
         cwd=tmp_path,
         capture_output=True,
         text=True,
@@ -171,7 +171,7 @@ def _build_image(tmp_path, base):
     binary.write_text('#!/bin/bash\nprintf "%s\\n" "$@" > "$AUDIT_DOCKER_LOG"\n')
     binary.chmod(0o755)
     result = subprocess.run(
-        ["/bin/bash", str(ROOT / "scripts/build_ci_image.sh")],
+        ["/bin/bash", str(ROOT / "scripts/ci/build_ci_image.sh")],
         env={
             **os.environ,
             "PATH": f"{tmp_path}:{os.environ['PATH']}",
@@ -237,7 +237,7 @@ fi
         for name in ("cc", "c++", "make"):
             (binaries / name).symlink_to("/usr/bin/true")
     result = subprocess.run(
-        ["/bin/bash", str(ROOT / "scripts/ci_install_build_tools.sh")],
+        ["/bin/bash", str(ROOT / "scripts/ci/ci_install_build_tools.sh")],
         env={
             **os.environ,
             "PATH": str(binaries),

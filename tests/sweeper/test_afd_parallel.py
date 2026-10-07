@@ -20,7 +20,7 @@ from aisimulate.sweeper import (
     enumerate_afd_topologies,
 )
 
-_AFD_MIGRATION_GUIDE = Path(__file__).resolve().parents[2] / "docs" / "cli" / "migrate-from-aiconfigurator.md"
+_AFD_MIGRATION_GUIDE = Path(__file__).resolve().parents[2] / "docs" / "MIGRATION.md"
 
 
 def _documented_afd_recommendation() -> dict:
@@ -61,20 +61,19 @@ def test_documented_afd_migration_contract_is_well_formed():
         "input_tokens": 1024,
         "output_tokens": 128,
     }
-    assert payload["engine"] == {
-        "mode": "afd",
-        "model": "Qwen/Qwen3-32B",
-        "hardware": "h200_sxm",
-        "backend": "trtllm",
-        "afd": {
-            "phase": "decode",
-            "combined_with_pd": True,
-            "a_batch_size": 128,
-        },
-    }
+    config = CoreRecommendationConfig.model_validate(payload)
+    assert config.engine.context_length == 2048
+    assert config.engine.afd.phase == "decode"
+    assert config.engine.afd.combined_with_pd is True
+    assert config.engine.afd.a_batch_size == 128
+    assert config.engine.afd.tp_a == 8
+    assert config.optimizer.max_trials == 2
+    worker = payload["engine"]["workers"]["prefill"]
+    assert worker["parallelism"]["preset"][0]["tensor"] == 16
+    assert worker["scheduler"]["max_sequences"] == 16
     assert payload["evaluation"]["sla"] == {
         "ttft_ms": 800,
-        "itl_ms": 30,
+        "itl_ms": 300,
     }
     assert payload["optimization"] == {
         "target": "throughput_per_gpu",

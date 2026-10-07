@@ -16,7 +16,7 @@ from typing import Any, Literal
 
 from .afd_parallel import AFDParallelConfig
 from .parallel_enum import DisaggParallelConfig, ParallelShape, ReplicaParallelConfig
-from .search_space import BranchSpace
+from .search_space import BranchSpace, _parallel_leaf_values, matches_parallel_domains
 
 ParallelConfig = ReplicaParallelConfig | DisaggParallelConfig | AFDParallelConfig
 
@@ -157,8 +157,21 @@ class ParallelConfigProjector:
             shape.moe_tp > 1 or shape.moe_ep > 1 for config in branch.parallel_configs for shape in _all_shapes(config)
         )
         self._features = {config: self._encode(config) for config in branch.parallel_configs}
+        self._indices = {config: index for index, config in enumerate(branch.parallel_configs)}
         self.parameters = self._build_parameters()
         self.constants = {parameter.name: parameter.default for parameter in self.parameters if parameter.is_constant}
+
+    def for_config(self, config: ParallelConfig) -> ParallelProjection:
+        """Describe a directly sampled legal topology without snapping it."""
+        values = dict(self._features[config])
+        if self._flat:
+            values[PARALLEL_CONFIG_CHOICE] = float(self._indices[config])
+        elif self._independent:
+            values.update(_parallel_leaf_values(config))
+        for role, choices in self.branch.parallel_custom_choices.items():
+            values[f"{role}_{PARALLEL_CONFIG_CHOICE}"] = float(choices.index(_parallel_role(config, role)))
+        features = {parameter.name: values[parameter.name] for parameter in self.parameters}
+        return ParallelProjection(config, features, dict(features), distance=0.0, mode_projected=False)
 
     def _role_features(self, prefix: str, role: ReplicaParallelConfig) -> dict[str, float | str]:
         features: dict[str, float | str] = {
@@ -387,11 +400,37 @@ class ParallelConfigProjector:
                     decode=role("decode_"),
                 )
             )
+            candidates = [
+                config
+                for config in self.branch.parallel_configs
+                if backend in self.branch.supported_backends.get(config, frozenset())
+                and matches_parallel_domains(
+                    config, self.branch.parallel_independent_choices, self.branch.parallel_independent_log_ranges
+                )
+            ]
+            if not candidates:
+                raise InfeasibleParallelSelection(f"no feasible independent parallelism for backend {backend!r}")
+            requested_values = _parallel_leaf_values(selected)
+
+            def distance(config):
+                values = _parallel_leaf_values(config)
+                total = 0.0
+                for parameter in self.parameters:
+                    lower = parameter.minimum if parameter.kind == "integer" else min(parameter.values)
+                    upper = parameter.maximum if parameter.kind == "integer" else max(parameter.values)
+                    actual, target = values[parameter.name], requested_values[parameter.name]
+                    if parameter.log_scale:
+                        lower, upper, actual, target = map(math.log, (lower, upper, actual, target))
+                    if upper != lower:
+                        total += ((actual - target) / (upper - lower)) ** 2
+                return total
+
+            selected = min(candidates, key=lambda config: (distance(config), _config_key(config)))
             return ParallelProjection(
                 config=selected,
                 requested_features=requested,
-                actual_features=dict(requested),
-                distance=0.0,
+                actual_features={name: _parallel_leaf_values(selected)[name] for name in requested},
+                distance=distance(selected),
                 mode_projected=False,
             )
         candidates = [

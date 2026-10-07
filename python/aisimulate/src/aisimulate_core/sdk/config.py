@@ -29,6 +29,13 @@ def normalize_kernel_backend(
         raise ValueError(f"{field_name} must be one of {choices}, got {value!r}.") from exc
 
 
+def validate_parallel_size(name: str, value: object) -> int:
+    """Return ``value`` when it is a positive ``int`` (not ``bool``); raise ``ValueError`` otherwise."""
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ValueError(f"{name} must be a positive integer, got {value!r}")
+    return value
+
+
 def normalize_kernel_source(value: str | None, field_name: str) -> str | None:
     """Validate an optional exact collected kernel-source label."""
     if value is None:
@@ -93,6 +100,25 @@ class ModelConfig:
     # from backend_name when cp_size > 1; default "none". Dense models branch on
     # this in their op pipeline; GLM-5 DSA ignores it (handled in ContextDSAModule).
     cp_style: str = "none"
+    # Decode context parallelism (vLLM ``-dcp`` / SGLang ``--dcp-size``) is the
+    # keyword-only ``dcp_size`` above: it stripes the DECODE KV cache by token
+    # position across ranks that already belong to the attention group, so it
+    # does NOT fold into attn_width or total_gpus_per_worker. ``None`` means not
+    # requested (priced as 1) and keeps the FPM cell identity on the unrecorded
+    # profiles; an explicit 1 selects recorded-DCP1 cells. ``cp_size`` (prefill
+    # CP) and ``dcp_size`` are orthogonal per-phase knobs; whether one deployment
+    # may set both is a topology-layer decision (agg vs disagg), not a ModelConfig one.
+    # DCP partial-output merge collective: "ag_rs" (query all-gather + LSE
+    # all-gather + output reduce-scatter; vLLM default) or "a2a" (query
+    # all-gather + one packed all-to-all; SGLang default on CUDA). None picks
+    # the backend default in BaseModel._dcp_comm_style.
+    dcp_comm: str | None = None
+    # Replicated query projection under DCP (vLLM ``dcp_q_replicate`` / SGLang
+    # ``--dcp-replicate-q-proj``): every rank runs the Q up-projection for the
+    # whole DCP group's heads and skips the per-layer query all-gather. Only
+    # meaningful with the a2a-style merges. None picks the backend/model default
+    # in BaseModel._dcp_q_replicate.
+    dcp_q_replicate: bool | None = None
     workload_distribution: str = "power_law"
     # Explicit decode-only profile. Context retains workload_distribution.
     decode_workload_distribution: str | None = field(default=None, kw_only=True)
@@ -159,6 +185,7 @@ class ModelConfig:
     fpm_fmha_quant_mode: common.FMHAQuantMode | None = field(default=None, kw_only=True)
 
     def __post_init__(self) -> None:
+        validate_parallel_size("cp_size", self.cp_size)
         if self.dcp_size is not None and (
             type(self.dcp_size) is not int or self.dcp_size <= 0 or self.tp_size % self.dcp_size
         ):

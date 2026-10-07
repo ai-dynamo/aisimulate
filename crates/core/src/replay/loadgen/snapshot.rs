@@ -244,6 +244,7 @@ impl AgenticReplayContext {
             lane_id,
             play_ordinal,
             cut_ms.map_or(PlayCut::Sampled, PlayCut::Absolute),
+            None,
         )
     }
 
@@ -254,7 +255,30 @@ impl AgenticReplayContext {
         lane_id: usize,
         play_ordinal: u64,
     ) -> Result<AgenticPlaySnapshot> {
-        self.prepare_play_with_cut(lane_id, play_ordinal, PlayCut::FromStart)
+        self.prepare_play_with_cut(lane_id, play_ordinal, PlayCut::FromStart, None)
+    }
+
+    /// Select a corpus source independently of the lane incarnation used for
+    /// request/cache identity. The caller owns the shared sequential cursor.
+    pub fn prepare_source_play_from_start(
+        self: &Arc<Self>,
+        source_play_index: usize,
+        lane_id: usize,
+        play_ordinal: u64,
+    ) -> Result<AgenticPlaySnapshot> {
+        if source_play_index >= self.graph.plays.len() {
+            bail!("source play index is outside the corpus");
+        }
+        self.prepare_play_with_cut(
+            lane_id,
+            play_ordinal,
+            PlayCut::FromStart,
+            Some(source_play_index),
+        )
+    }
+
+    pub fn source_play_count(&self) -> usize {
+        self.graph.plays.len()
     }
 
     fn prepare_play_with_cut(
@@ -262,6 +286,7 @@ impl AgenticReplayContext {
         lane_id: usize,
         play_ordinal: u64,
         cut: PlayCut,
+        source_play_index: Option<usize>,
     ) -> Result<AgenticPlaySnapshot> {
         if lane_id >= self.lanes {
             bail!("snapshot lane is outside the configured lane count");
@@ -277,7 +302,8 @@ impl AgenticReplayContext {
         if range_end > u64::from(u32::MAX) + 1 {
             bail!("play token identity range exceeds u32 capacity; identities cannot be recycled");
         }
-        let source_play_index = (slot % self.graph.plays.len() as u64) as usize;
+        let source_play_index =
+            source_play_index.unwrap_or((slot % self.graph.plays.len() as u64) as usize);
         let play = &self.graph.plays[source_play_index];
         let first = play
             .nodes

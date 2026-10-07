@@ -11,7 +11,7 @@ and unified native PyO3 extension. It does not depend on another core
 distribution or on Dynamo. The crate owns the compiled engine, forward-pass
 model, Replay runtime, KV-cache request/response types, and the embedded
 Rust-to-Python construction path. Legacy Python import namespaces are removed
-in AISimulate 0.13.0; see the [Python migration guide](python-source-migration.md).
+in AISimulate 0.13.0; see the [Python migration guide](MIGRATION.md#python-imports-and-resources).
 
 ## Stable Python facade
 
@@ -145,11 +145,8 @@ does not estimate the reservation; callers must supply a value from a source
 they trust.
 
 Serialized Rust requests and estimates that omit the field remain compatible
-because deserialization defaults it to zero. Rust source that constructs
-`KvCacheEstimateRequest` with a struct literal must add
-`cuda_graph_reserved_bytes: 0`; exhaustive `MemoryBreakdown` literals and
-patterns must include the new field. This source migration is part of the next
-minor API update.
+because deserialization defaults it to zero. See [Rust literal migration](MIGRATION.md#rust-resource-and-memory-literals)
+for required source changes to request and memory-breakdown structs.
 
 ### FPM profile cache groups and byte budgets
 
@@ -185,8 +182,8 @@ cannot coexist with any of the four legacy non-KV fields. Python exposes
 `FpmRuntimeMemoryProfile` and resource properties `memory_source`
 (`pending`, `declared`, or `runtime`) and `memory_ready`; `require_memory()`
 rejects pending resources. Rust exposes `FpmRuntimeMemoryConfig` and
-`FpmResourceConfig::require_memory()`. Rust callers using resource struct literals
-must wrap legacy byte values in `Some(...)` and supply `runtime_memory: None`.
+`FpmResourceConfig::require_memory()`. See [Rust literal migration](MIGRATION.md#rust-resource-and-memory-literals)
+for resource construction changes.
 
 Each group has a unique `name`, `kind` (`attention` or `convolution`), positive
 `num_layers`, `block_size_tokens`, and `page_size_bytes`, and an optional positive
@@ -195,7 +192,7 @@ groups require a window. `page_size_bytes` is the **rank-local aggregate for all
 layers in the group**, including runtime padding. Do not multiply it by
 `num_layers` again. Runtime block sizes and padding are deployment inputs; model
 geometry alone does not establish them. See the
-[grouped-profile review workflow](fpm-self-service.md#review-grouped-cache-resources).
+[grouped-profile review workflow](fpm-self-service/implementation.md#review-grouped-cache-resources).
 
 Use `RustForwardPassPerfModel.estimate_cache_budget(config, budget)` with the
 same canonical `ForwardPassPerfModelConfig` used for timing. Rust exposes
@@ -275,6 +272,13 @@ Use `RustForwardPassPerfModel.best_available(config)` from Python or
 `ForwardPassPerfModelConfig` owns model, hardware, backend, topology, data
 policies, a required immutable `worker_type`, and the complete nested
 `estimator_config`. Worker roles are `prefill`, `decode`, and `aggregated`.
+Topology carries two optional context-parallel knobs next to `tp`, `pp`,
+`attention_dp`, `moe_tp_size`, and `moe_ep_size`: `cp_size` (prefill context
+parallelism, SGLang `--attn-cp-size` / vLLM `-pcp`; extra attention ranks, so
+`tp * attention_dp * cp_size == moe_tp_size * moe_ep_size`) and `dcp_size`
+(decode context parallelism, vLLM `-dcp` / SGLang `--dcp-size`; stripes the
+decode KV cache across the existing TP ranks and adds no GPUs). Both default to
+one and stay out of the serialized identity when unset.
 
 ```python
 from aisimulate_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
@@ -304,14 +308,23 @@ print(model.diagnostics()["provenance"])
 
 ### Vera Rubin GLM-5.2 graph-prefill pilot
 
-The opt-in `sglang_glm52_nvfp4_vr200_tp4_graph_v1` profile uses the same canonical constructor and a latency-only direct method. It is qualified for seven homogeneous prefill shapes on the pinned SGLang runtime, TP4/EP1, NVFP4 experts, BF16 projections and FP8 KV. The profile preserves its immutable SHA-256 in `diagnostics()["provenance"]["config"]["estimator_config"]["op_level"]`; save that complete configuration when reproducing a prediction.
+The canonical system name is `vr_nvl72` (Vera Rubin NVL72). The previous
+`vr200_hecate` system and `sglang_glm52_nvfp4_vr200_tp4_graph_v1` selector are
+removed without aliases. Update configurations to `vr_nvl72` and
+`sglang_glm52_nvfp4_vr_nvl72_tp4_graph_v1`, discard the old resolved
+`prefill_graph_profile_id`, and save a fresh configuration from the canonical
+constructor. Rebuild compiled engines from that configuration. This rename
+preserves the four-GPU pilot's measurements and restrictions; it does not
+qualify a complete NVL72 rack. See the [offline artifact migration](../python/aisimulate/collector/sglang_rubin/README.md#migrate-the-published-system-name).
+
+The opt-in `sglang_glm52_nvfp4_vr_nvl72_tp4_graph_v1` profile uses the same canonical constructor and a latency-only direct method. It is qualified for seven homogeneous prefill shapes on the pinned SGLang runtime, TP4/EP1, NVFP4 experts, BF16 projections and FP8 KV. The profile preserves its immutable SHA-256 in `diagnostics()["provenance"]["config"]["estimator_config"]["op_level"]`; save that complete configuration when reproducing a prediction.
 
 ```python
 from aisimulate_core.sdk import RustForwardPassPerfModel
 
 model = RustForwardPassPerfModel.best_available({
     "model": "nvidia/GLM-5.2-NVFP4",
-    "system": "vr200_hecate",
+    "system": "vr_nvl72",
     "backend": "sglang",
     "backend_version": "0.5.18+nvinternal.rubin.0.8full.66997102",
     "worker_type": "prefill",
@@ -323,7 +336,7 @@ model = RustForwardPassPerfModel.best_available({
     "estimation_mode": "op_level", "fallback_policy": "deny",
     "database_mode": "SILICON", "enable_shared_layer": False,
     "estimator_config": {
-        "op_level": {"prefill_graph_profile": "sglang_glm52_nvfp4_vr200_tp4_graph_v1"},
+        "op_level": {"prefill_graph_profile": "sglang_glm52_nvfp4_vr_nvl72_tp4_graph_v1"},
         "correction": {"enabled": False},
     },
 })
@@ -332,9 +345,9 @@ milliseconds = model.predict_prefill_latency(bs=1, isl=2048, prefix=1024)
 
 `isl` is the total input length, including cached tokens. That call processes 1,024 new tokens after a 1,024-token prefix. The admitted `(batch, isl, prefix)` calls are `(1,1024,0)`, `(2,1024,0)`, `(1,2048,1024)`, `(1,8192,0)`, `(2,8192,0)`, `(1,16384,0)` and `(1,32768,16384)`. Arguments must be ordinary Python integers in the unsigned 32-bit range; the Rust API uses `u32`. Other shapes and batch-token products that overflow fail before lookup. The tables have exact keys and do not interpolate or inherit another profile's data.
 
-The independent forward-step comparison passes all seven shapes within 15%, with worst absolute relative error 5.2333%. This is a measured mean forward-time comparison for the exact runtime. Scheduler TTFT, model quality and general Vera Rubin coverage remain unqualified by this prefill comparison. Aggregate telemetry cannot establish each request's exact new/past lengths, so this selected profile rejects `estimate_forward_pass_time_ms`, tuning, static energy/SOL diagnostics and replay-provider construction. Use the direct scalar method; no CLI scheduler selection is supported. Other profiles retain their existing behavior. See the [dedicated collector](../python/aisimulate/collector/sglang_rubin/README.md) and [packaged data provenance](../python/aisimulate/src/aisimulate_core/systems/data/vr200_hecate/README.md).
+The independent forward-step comparison passes all seven shapes within 15%, with worst absolute relative error 5.2333%. This is a measured mean forward-time comparison for the exact runtime. Scheduler TTFT, model quality and general Vera Rubin coverage remain unqualified by this prefill comparison. Aggregate telemetry cannot establish each request's exact new/past lengths, so this selected profile rejects `estimate_forward_pass_time_ms`, tuning, static energy/SOL diagnostics and replay-provider construction. Use the direct scalar method; no CLI scheduler selection is supported. Other profiles retain their existing behavior. See the [dedicated collector](../python/aisimulate/collector/sglang_rubin/README.md) and [packaged data provenance](../python/aisimulate/src/aisimulate_core/systems/data/vr_nvl72/README.md).
 
-Decode is validated separately through the default op-level estimator with `worker_type="decode"`, no `prefill_graph_profile`, and correction disabled. Use `static_phase_latency(batch_size=B, input_tokens=K, output_tokens=2, prefill=False)` for one decode step with `K` past KV tokens and attention length `K + 1`; `output_tokens=1` requests zero decode iterations. The [combined accuracy report](vr200-glm52-accuracy.md) lists all seven prefill and 18 decode cases, the exact configuration and measurement boundary. Decode meets the original ±15% criterion in 17/18 cases; the pilot accepts the remaining observed −17.09% batch-1 residual. This does not extend the opt-in prefill profile to decode or qualify scheduler TTFT.
+Decode is validated separately through the default op-level estimator with `worker_type="decode"`, no `prefill_graph_profile`, and correction disabled. Use `static_phase_latency(batch_size=B, input_tokens=K, output_tokens=2, prefill=False)` for one decode step with `K` past KV tokens and attention length `K + 1`; `output_tokens=1` requests zero decode iterations. The [combined accuracy report](vr-nvl72-glm52-accuracy.md) lists all seven prefill and 18 decode cases, the exact configuration and measurement boundary. Decode meets the original ±15% criterion in 17/18 cases; the pilot accepts the remaining observed −17.09% batch-1 residual. This does not extend the opt-in prefill profile to decode or qualify scheduler TTFT.
 
 ### External whole-forward FPM data
 
@@ -447,6 +460,8 @@ nested paths. The supported namespaces are:
   The default fit kind is `standardized_nnls` (also accepted as `linear`),
   with a free intercept and nonnegative slopes. `spline` selects an additive
   piecewise-linear fit with learned knots and nonnegative segment slopes.
+  Optional `fit.linear` controls fitted axes, signed slopes, and lazy updates;
+  omission preserves the existing linear behavior and serialized defaults.
   `singular_ridge_scale` defaults to `1e-9` and applies to the shared linear
   fit only when retrying a singular equation. `rebuild_interval` defaults to JSON `null` / Python
   `None`, disabling periodic rebuilding. A positive integer opts into
@@ -508,7 +523,7 @@ continues to later systems roots when a required phase is unavailable. Query
 coverage still needs an exact point or supported interpolation. Cross-KV prefill
 uses the nearest same-batch lower and upper KV curves that both cover the
 requested token count, without a KV distance limit. SOL's site-distance guard
-does not apply to this direct bracket. See the [self-service coverage rules](fpm-self-service.md#choose-the-model-execution-route).
+does not apply to this direct bracket. See the [self-service coverage rules](fpm-self-service/implementation.md#choose-the-model-execution-route).
 
 The returned provenance pins both the selected estimation mode and interpolation
 method, alongside the complete normalized profile. Reusing its `config` keeps
@@ -530,8 +545,12 @@ follows the configured estimator ordering and policy.
 Engine replay rank arguments accept `decode_workload_distribution` (alias `aic_decode_workload_distribution`) only with AIC timing. An active selector paired with a non-AIC timing model, including fixed or polynomial timing, is rejected. The AFD companion's fixed timing and legacy estimator paths also reject active selectors because they cannot apply the profile. `None` preserves ordinary timing in these paths.
 
 Sampling defaults to `bins_per_axis: [4, 4]` and `max_observations: 64` per
-logical store. Rectangular grids are supported. Regression uses dynamic
-`log1p` retention coordinates and fits standardized raw features. Correction
+logical store. Rectangular grids were already supported. Regression's
+`sampling.axes` now selects one to six distinct coordinates, defaulting to
+`[attention, moe]`; `bins_per_axis` must have the same length, contain positive
+integers, and have a representable product. The dimension is the number of
+selected axes, independent of how many features the fit uses. Regression uses
+dynamic `log1p` retention coordinates and fits standardized feature values. Correction
 uses fixed raw workload coordinates; its one-dimensional prefill grid uses
 the product of the two axis counts. Retention evicts the oldest sample from
 the most populated cell when the store exceeds its budget.
@@ -596,12 +615,21 @@ let model = ForwardPassPerfModel::best_available(config)?;
 
 Rust source compatibility: exhaustive matches on `RegressionFitKind` must now
 handle `RegressionFitKind::Spline`. Existing full `RegressionFitConfig` literals
-for linear fits must add `spline: None`; this type implements `Default`, so
+for linear fits must include the optional `linear` and `spline` fields; this type
+implements `Default`, so
 `..RegressionFitConfig::default()` is also available when its other defaults
 are appropriate. Full `ForwardPassRegressionStoreDiagnostics` literals must
 likewise provide the new `spline` field (`None` for linear stores). That
 diagnostics type does not implement `Default`. Existing serialized linear
 configurations and diagnostics continue to omit `spline` when it is `None`.
+Likewise, absent `fit.linear` and default regression sampling axes remain omitted.
+`FpmRegressionConfig.sampling` uses the public `RegressionSamplingConfig` with
+vector-valued axes and bin counts. Correction retains `SamplingConfig` and its
+two-element bin array. `LinearFitConfig`, `RegressionFeatureAxis`, and
+`RegressionUpdatePolicy` are public Rust types; legacy flat options still migrate
+to the unchanged two-axis default. Full `ScheduledRequestMetrics` literals must
+initialize `extend_lengths` and `past_kv_lengths` to `None`, or use
+`..ScheduledRequestMetrics::default()` when appropriate.
 
 The new `SplineSearchConfig` enum, its policy variants, and
 `ForwardPassSplineDiagnostics` are `#[non_exhaustive]` so additional policies or
@@ -767,14 +795,96 @@ replay; the Python exception retains a `fpm_query_coverage` attribute for that
 failure path. A passing replay coverage status requires completed requests,
 nonempty resolved queries and no unsupported lookup. It is distinct from
 operation/energy evidence, which whole-model FPM does not provide. See
-[FPM replay validation](fpm-self-service.md#validate-fpm-query-coverage-with-agentx-replay)
+[FPM replay validation](fpm-self-service/implementation.md#validate-fpm-query-coverage-with-agentx-replay)
 for the stricter whole-corpus completion checks and saved onboarding artifacts.
+
+### Linear features and lazy coefficient updates
+
+Configure linear fits under `estimator_config.fpm_regression.fit.linear`.
+`feature_axes` defaults to `[attention, moe]`, `non_negative` defaults to `true`,
+and `update_policy` defaults to `{kind: always}`. Setting `non_negative: false`
+allows signed slopes; the intercept is always unconstrained. Fitting and
+retention may select different ordered lists of one to six distinct axes.
+The supported names are `attention`, `moe`, `n`, `E`, `P`, `maxE`, `maxP`,
+`minP`, `P2`, `F`, `nE`, `logF`, `meanE`, `meanP`, `cvE2`, `cvP2`, `logN`,
+`n2`, and `logP`. Features use scheduled work only. Request-list features require
+the corresponding aligned request lengths; unavailable input is rejected, not
+reconstructed from aggregate counts. These controls do not change the workload
+store selected from all active attention-DP ranks.
+
+`attention`, `moe`, `n`, `logN`, and `n2` need only the existing scheduled scalar
+counters. Other axes require both optional `scheduled_requests.extend_lengths`
+and `scheduled_requests.past_kv_lengths`, each an array of unsigned 64-bit
+integers. Both arrays must have one entry per scheduled request and identical
+lengths. Their sums may differ from aggregate token counters because backends
+can use different counting conventions, such as padded prefill tokens. Omitted
+arrays do not add null fields to existing serialized metrics. Existing Gym inputs without
+these lists can evaluate the scalar axes; they cannot qualify list-derived ones.
+Prediction needs the request lists only when fitted axes use them. Tuning also
+requires them when retention axes use request-level features.
+
+This example uses three retention dimensions and a different three-feature fit:
+
+```yaml
+estimator_config:
+  fpm_regression:
+    sampling:
+      axes: [attention, moe, n]
+      bins_per_axis: [2, 4, 2]
+      max_observations: 128
+    fit:
+      linear:
+        feature_axes: [attention, moe, logN]
+        non_negative: false
+        update_policy:
+          kind: error_threshold
+          relative_tolerance: 0.05
+          absolute_tolerance_ms: 0.1
+          window: 8
+          trigger: 2
+          cooldown: 4
+          startup_observations: 10
+```
+
+Lazy updating is opt-in. Every accepted observation still updates retention and
+centered statistics. Before admitting it, the model compares its **raw, unclipped
+prior prediction** with the positive measured latency `y`. An error is excessive
+only when `abs(prediction - y) > max(absolute_tolerance_ms, relative_tolerance * y)`;
+equality does not trigger. The rolling monitor counts the latest `window`
+accepted observations with finite prior predictions. A fit is requested when at least `trigger` flags are
+excessive and at least `cooldown` accepted observations have passed since the
+last successful fit. A full window is unnecessary, and an observation with a
+small error can satisfy the cooldown while earlier excessive flags remain.
+
+For `fit.kind: linear`, a finite, identifiable candidate whose feature weights
+are all zero is rejected without replacing the previous serving snapshot. Its
+coefficients and normalization remain together; a store with no previous fit
+stays unready. This safeguard applies to eager and lazy updates, including full
+rebuilds. Other failures, such as insufficient data or an unavailable numerical
+solution, still clear the serving fit. The default nonnegative constraint and
+its existing underdetermined-fit exception are unchanged. Signed fits may use
+negative weights, but an identifiable all-zero result is still rejected.
+Spline fitting and its linear fallback retain their existing behavior.
+
+The first `startup_observations` accepted rows are eager (default 10). An unready
+or unusable model keeps trying to fit. A successful fit clears the monitor;
+a failed or rejected fit does not. Periodic full rebuilds and numerical recovery
+override lazy deferral. Between fits, coefficients and the feature means/scales used
+with them remain one prediction snapshot. Eager defaults do not collect this
+monitor or compute its extra prediction. Lazy thresholds are not a guarantee
+on future prediction error.
+
+Both tolerances must be finite and nonnegative. Window, trigger, cooldown, and
+startup count must be positive integers, with `trigger <= window`. Unknown axes,
+duplicate axes, invalid grid shapes, and incompatible policy fields fail before
+estimator selection. `fit.linear` is rejected with `fit.kind: spline`;
+the spline fit and retention axes remain `[attention, moe]`.
 
 ### Recursive regression and statistics rebuilding
 
 Linear regression maintains centered sufficient statistics for the retained
-samples and applies the existing standardized nonnegative least-squares fit. The
-objective and readiness rules stay the same. The retention grid still controls
+samples and applies the selected standardized linear fit. The default objective
+is unchanged. The retention grid still controls
 which samples are kept; it does not create separate fitted planes within a
 workload store. Spline regression maintains statistics in its current basis and
 rebuilds them when knot positions change. Its knot-search policy and
@@ -795,7 +905,7 @@ saved configuration and reload. No flat legacy option is added.
 When enabled, the interval counts **one insertion and one eviction as separate
 mutations**. A rebuild runs after the complete retained-sample update transaction
 and resets the mutation counter to zero. With an explicit interval of 4096, a
-capacity of 64, an initially empty store, and no earlier recovery rebuild, the
+capacity of 64, an initially empty store, and no earlier recovery or batch fallback, the
 first rebuild occurs after 2,080 accepted observations: 64 initial insertions,
 then 2,016 insert/evict pairs. Further rebuilds occur every 2,048 accepted
 observations while the store stays full. This counts accepted observations per
@@ -804,9 +914,14 @@ store, not prediction queries or wall-clock time.
 There is at most one periodic rebuild after an update transaction. A full-store
 insert/evict pair can cross an odd interval by one mutation; it still produces
 one rebuild and a reset to zero. Rejected observations and spatial rebucketing
-do not advance the counter. A batch-fit fallback alone does not reset it;
-rebuilding the statistics does. The setting is fixed for each store when the
-model is constructed.
+do not advance the counter. For linear fits, periodic rebuilding, numerical
+recovery, and a conservative batch fallback all use one full-rebuild operation:
+reaccumulate statistics and recompute batch coefficients from the same retained
+rows, then reset the mutation clock. An identifiable all-zero linear candidate
+preserves the previous serving snapshot even though the rebuild refreshes the
+statistics and resets its clock. Other failed batch fits leave the model unready.
+There is no fixed 256-observation gap or separate batch-fallback interval.
+The setting is fixed for each store when the model is constructed.
 
 The default and explicit Python `None` both disable only the periodic schedule.
 Numerical recovery rebuilds and conservative batch fallbacks remain enabled:
@@ -915,36 +1030,7 @@ and profiles without DCP remain accepted as unrecorded DCP.
 
 ### Migrating saved configuration
 
-Use `ForwardPassPerfModelConfig.from_legacy_engine_config(old_config,
-worker_type, old_options, allow_regression=False)` to convert a saved flat
-EngineConfig and tuning options. It pins the old explicit native mode instead
-of changing it to auto. Set `allow_regression=True` only for an old caller that
-allowed direct regression fallback; the migration preserves that two-mode
-order rather than adding interpolation. Legacy `forward_model: fpm` maps to
-`fpm_interpolation`, and `fallback_policy: error` maps to deny. The deprecated
-`regression` policy remains readable for these saved direct-fallback requests.
-Legacy `extra.fpm_profile` and `extra.fpm_interpolation` migrate to the full
-canonical profile and nested interpolation method; newly exported configuration
-uses only the canonical fields.
-
-Migration merges saved estimator controls with explicitly supplied legacy
-options before applying ordinary defaults. It preserves disjoint settings and
-accepts agreeing overlaps; contradictory explicit values report the canonical
-setting's path. The same rule applies to legacy and canonical interpolation
-methods, including an explicit `auto`. An omitted field does not override a
-saved value. `ForwardPassPerfOptions.to_dict()` serializes only arguments
-explicitly supplied to that legacy options object, including explicit defaults.
-
-The migration adapter rejects any non-null `prefill_graph_profile`, `prefill_graph_profile_id`, or `decode_workload_distribution` field, including an orphan profile ID. These selectors require the canonical `ForwardPassPerfModelConfig.estimator_config.op_level` configuration; pass a saved canonical configuration directly to `RustForwardPassPerfModel.best_available` to preserve its profile identity and supported API restrictions. Profile-free legacy configurations continue to migrate normally.
-
-Previously saved CLI timing with `forward_model` retains explicit selection
-and deny. Newly authored requests without a selection use auto. `ForwardPassPerfOptions`
-is retained as a legacy migration value type; new construction has one complete
-config and no separate options argument. The raw PyO3 class also exposes
-`normalize_config` and migration helpers for JSON-oriented consumers.
-
-The [FPM regression design](../python/aisimulate/docs/fpm/aic-fpm-regression-design.md)
-explains the retained workload routing and feature mathematics.
+See the [migration guide](MIGRATION.md#saved-performance-model-configuration) for required caller changes.
 
 ## Stable Rust facade
 
@@ -962,8 +1048,8 @@ auto-initialization. The matching `aisimulate` wheel must be importable for nati
 construction. Explicit `fpm_regression` construction works without the Python feature. See the
 [crate README](../crates/core/README.md) for setup and usage examples.
 
-The flat `build_aic_engine` adapter was removed from `main`; consumers must use
-`AicEngineBuilder`.
+See [SDK entry-point migration](MIGRATION.md#sdk-entry-points) for the removed
+flat engine adapter and constructor replacements.
 
 The supported `aisimulate_core::perfmodel` Rust surface is grouped as follows:
 
@@ -1063,18 +1149,11 @@ past-KV coordinate rather than the op-level mean-context coordinate.
 
 ## Agentic report source migration (0.13)
 
-The replay report additions require the coordinated 0.13.0 wheel/crate version,
-aligned with main's release preparation in PR #268. They must not be released
-as a 0.12 patch. Downstream exhaustive Rust `ReplayReport` literals must supply
-`agentic_phases: None` for a cold run (or its prepared phase evidence).
-Exhaustive `PerRequestRecord` literals must supply `agentic_phase: None` for
-cold replay, or `Some(AgenticReplayPhase::Profile)` for measured warmed requests.
-Exhaustive destructuring must name these fields or use `..`.
+See the [migration guide](MIGRATION.md#agentic-report-source-migration) for required caller changes.
 
-The external-consumer compile fixture `rebuild_replay_report_literals` constructs
-both public structs exhaustively against this boundary. JSON consumers retain
-the existing cold shape: absent optional phase evidence is not serialized.
-This source migration does not change the engine-config/spec or FPM wire schemas.
+## Offload replay API migration
+
+See the [migration guide](MIGRATION.md#offload-replay-api-migration) for required caller changes.
 
 ## Compatibility rules
 
@@ -1093,7 +1172,7 @@ This source migration does not change the engine-config/spec or FPM wire schemas
   values. Downstream Dynamo callers must migrate before this API's stable release;
   keep the crate and wheel versions aligned at the coordinated minor release.
 - [The migration checklist](../.github/release-gates.json) and
-  `scripts/check_release_migrations.py` apply before stable publication. Clear the
+  `scripts/release/check_release_migrations.py` apply before stable publication. Clear the
   pending entry in a reviewed change after downstream validation and merge.
   There is currently no standalone stable-publication workflow in this repository;
   that release process must invoke the checker for both its policy and target

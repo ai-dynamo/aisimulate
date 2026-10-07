@@ -392,6 +392,29 @@ fn artifact_capture_rejects_unsupported_topologies() {
 }
 
 #[test]
+fn artifact_capture_rejects_a_cluster_shared_host_pool() {
+    // Shared-pool transfers have no completion time to record at submission.
+    let mut replay_spec = host_offload_spec(4);
+    let mut engine: ReplayEngineConfig =
+        serde_json::from_value(replay_spec.engine.clone()).unwrap();
+    engine.rank.native_host_offload = engine
+        .rank
+        .native_host_offload
+        .map(|host| host.cluster_shared("tp1"));
+    replay_spec.engine = serde_json::to_value(engine).unwrap();
+    // The same spec replays without artifacts.
+    replayer(replay_spec.clone(), &[0.0]).run().unwrap();
+    let error = replayer(replay_spec, &[0.0])
+        .run_with_artifacts(ReplayArtifactKvEventVisibility::Native)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("detailed replay artifacts require dp_rank_local host_offload"),
+        "{error}"
+    );
+}
+
+#[test]
 fn h2d_activation_is_captured_at_the_internal_work_boundary() {
     let mut replay_spec = host_offload_spec(2);
     replay_spec.requests = [

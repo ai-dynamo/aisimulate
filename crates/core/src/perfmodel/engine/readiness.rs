@@ -419,14 +419,14 @@ mod tests {
                     .unwrap()
             });
         let source = PrefillGraphTable::new(&root).snapshot().unwrap();
-        let db = PerfDatabase::load(source.path(), "vr200_hecate", "sglang", VERSION).unwrap();
+        let db = PerfDatabase::load(source.path(), "vr_nvl72", "sglang", VERSION).unwrap();
         let ops: Vec<Op> = serde_json::from_str(include_str!(
             "../operators/testdata/glm52_prefill_graph_context.json"
         ))
         .unwrap();
         let gemm = source
             .path()
-            .join("data/vr200_hecate/gemm/sglang")
+            .join("data/vr_nvl72/gemm/sglang")
             .join(VERSION)
             .join("gemm_perf.parquet");
         let approved = std::fs::read(&gemm).unwrap();

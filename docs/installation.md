@@ -22,9 +22,8 @@ python -c 'import aisimulate, aisimulate._runtime; print(aisimulate.__file__); p
 
 ### Published packages
 
-As checked on **September 14, 2026**, PyPI publishes `0.12.0.dev1`; the GitHub
-`v0.12.0` release is still a draft. This is a dated publication snapshot, not
-a promise that `main` is included in that wheel. Check the
+As checked on **October 2, 2026**, the stable PyPI release is `0.12.1`. Use its
+[versioned documentation](https://github.com/ai-dynamo/aisimulate/tree/v0.12.1). Check the
 [PyPI release files](https://pypi.org/project/aisimulate/#files) and
 [GitHub releases](https://github.com/ai-dynamo/aisimulate/releases) for newer
 artifacts and use the documentation associated with the selected release.
@@ -33,21 +32,21 @@ artifacts and use the documentation associated with the selected release.
 python3.13 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
-python -m pip install --pre 'aisimulate==0.12.0.dev1'
+python -m pip install 'aisimulate==0.12.1'
 aisimulate --help
 ```
 
 An exact version pin makes the choice explicit. To discover newer published
-prereleases, use `python -m pip index versions --pre aisimulate`. Once a stable
-release is published, `python -m pip install aisimulate` normally selects a
-stable release; `--pre` allows prereleases. Neither command requests the
-latest repository source or an internal nightly automatically.
+prereleases, use `python -m pip index versions --pre aisimulate`.
+`python -m pip install aisimulate` normally selects a stable release; `--pre`
+allows prereleases. Neither command requests the latest repository source or
+an internal nightly automatically.
 
 When replacing standalone AIConfigurator, first follow the
 [package migration instructions](../README.md#upgrade-from-standalone-aiconfigurator)
 in the environment you intend to use. The `aisimulate` wheel owns both console
 commands. Python imports use `aisimulate` and `aisimulate_core`; see
-[Python source migration](python-source-migration.md) for the breaking import change.
+[Python source migration](MIGRATION.md#python-imports-and-resources) for the breaking import change.
 
 ## Platform matrix
 
@@ -132,20 +131,25 @@ The [artifact contract](artifact-contract.md) describes wheel/crate versioning.
 
 The engine stack does not require Dynamo. For `--stack dynamo`, install a
 Dynamo distribution that supplies the required runner and adapters into the
-same environment. The verified **source** pairing on September 14, 2026 is:
+same environment. The root [README](../README.md#with-dynamo) pins the pair
+validated on October 1, 2026: `ai-dynamo==1.6.0.dev20260930` and
+`aisimulate==0.13.0.dev202609270000000058`, from the NVIDIA prerelease index.
+Installation, `pip check`, CPU prediction, an eight-trial recommendation, and
+prediction of the best candidate pass with Python 3.12 on Linux.
 
-| Dynamo source | Declared AISimulate dependency | Integration registration |
-|---|---|---|
-| [`cf944aebb23aafd758ffa2c3fa0ecfdd8804926b`](https://github.com/ai-dynamo/dynamo/blob/cf944aebb23aafd758ffa2c3fa0ecfdd8804926b/pyproject.toml), manifest version `1.5.0` | `aisimulate==0.12.0.dev1` on Python 3.11–3.13 | `aisimulate.runner_factories`, `aisimulate.config_adapters`, and `aisimulate.sweep_config_providers` |
+The AISimulate wheel corresponds to source
+[`9f140b71b75e43147e88ac76a8c72371077c2bee`](https://github.com/ai-dynamo/aisimulate/commit/9f140b71b75e43147e88ac76a8c72371077c2bee)
+and [nightly run 36305697606](https://github.com/ai-dynamo/aisimulate/actions/runs/36305697606).
+Dynamo's September 30 build source is
+[`777977d5ee0e70128c3dbe83c27fd22a74120874`](https://github.com/ai-dynamo/dynamo/commit/777977d5ee0e70128c3dbe83c27fd22a74120874).
+This is a README simulation qualification, not a claim that Dynamo's entire
+nightly pipeline passed. The daily README lane retests the installed artifacts.
 
-This source manifest does not establish a published or runtime-qualified
-package pair. At that date, PyPI's latest `ai-dynamo` release is `1.4.2`, and
-`1.5.0` is not published there. For source integration, follow the build and
-integration instructions at the matching Dynamo revision; for published
-packages, check the selected wheel's dependency and entry-point metadata.
-Do not assume an unpinned `pip install ai-dynamo` contains the source pairing
-above. Record both package versions and source/build identities; successful
-dependency installation alone does not establish adapter compatibility.
+Keep this environment separate from a current AISimulate source checkout.
+Dynamo pins an exact AISimulate nightly; substituting TOT violates that package
+contract. Public Dynamo 1.4.2 lacks the modern stack registration, and 1.5.0 uses
+removed AISimulate imports when forced alongside TOT. Do not bypass dependency
+resolution with `--no-deps` or independently upgrade AISimulate in this pair.
 
 The [Dynamo deployment guide](../python/aisimulate/docs/dynamo_deployment_guide.md)
 separately explains generated serving artifacts and runtime version pins.

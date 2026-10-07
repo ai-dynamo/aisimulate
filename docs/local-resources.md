@@ -50,8 +50,9 @@ speed or simulation duration. An explicit positive `memory_limit_gb` or integer
 `cpu_limit` must fit the live host limits. Unavailable resource probes stop
 execution with an explanation.
 
-The plan reserves coordinator RSS plus 256 MiB and a 512 MiB baseline within
-each candidate estimate. Recommendation execution parallelism is the minimum
+The plan reserves coordinator RSS plus 256 MiB and a baseline within each
+candidate estimate: 256 MiB for native Weka replay, 512 MiB for the other
+built-in allocation models. Recommendation execution parallelism is the minimum
 of the requested parallelism, CPU allowance, and memory slots. Reducing it
 preserves the suggestion batch size, trial budget and requested traffic.
 Admission checks each concrete candidate and the combined memory estimate of
@@ -71,6 +72,10 @@ model, lower bound and estimated peak. Refusals during earlier host discovery or
 budget resolution also write the plan, with null for any unavailable host, budget
 or workload estimate. Admitted work proceeds automatically;
 there is no separate dry-run option.
+
+The refusal message includes the estimated peak (or `unknown`), the unavoidable
+lower bound, and the host budget. These are different quantities: a zero lower
+bound does not mean the estimate that triggered rejection was zero.
 
 Execution runs inside an owned subprocess tree. The supervisor fixes the memory
 budget at startup, then samples total owned RSS and live host headroom every
@@ -167,7 +172,8 @@ energy, or GPU capacity. Their provenance and qualification are:
 | Engine session/token retention | The engine model reserves prompt, output, and session/hash bookkeeping from the declared request and turn counts. | The 32-byte token multiplier and 4,096-byte per-request term are conservative policy allowances, not measured object sizes. |
 | Dynamo peak expansion | Twice the eager prompt bytes, plus 4,096 bytes per request and 16 bytes per output token. | These extra terms are policy headroom; they do not certify an adapter's peak RSS. |
 | Trace expansion | Streamed field counts, hash block expansion, and cumulative delta/tool turns; 128 times file bytes, 32 bytes per counted token, and 65,536 bytes per counted request/turn. | Conservative policy allowances. The file-size guard also bounds parser scalar risk before metadata inspection. |
-| Process allowances | 512 MiB per worker and coordinator RSS plus 256 MiB. | Engineering reserves, not calibrated platform-specific measurements. |
+| Native Weka traces | Separate per-play import and replay phases; see below. | Uses the native importer/driver contracts, including real output arrays and synthesized hashes. External Dynamo adapters retain their existing compatibility model unless they supply their own estimator. |
+| Process allowances | 256 MiB for native Weka, otherwise 512 MiB per worker; coordinator RSS plus 256 MiB. | Engineering reserves, not calibrated platform-specific measurements. |
 | Admission and recovery | The sum of candidate estimates must fit one live budget; observed pressure stops workers before bounded retry. | Budget/accounting invariants tested with bounded fixtures and real owned subprocesses. |
 
 The resource tests exercise arithmetic boundaries, combined-wave accounting,
@@ -175,3 +181,54 @@ allocation sentinels, real process cleanup, and retained candidate outcomes.
 These establish control-flow and accounting behavior; they do not qualify the
 heuristic multipliers against every workload's measured peak RSS. Hardware
 prediction regression and the original workload's qualification remain separate.
+
+### Native Weka allocation model
+
+`weka-materialized-v1` streams the source metadata without loading hash or token
+arrays. The source's `block_size` is authoritative; a configured block size is
+an equality assertion, as in the native importer. Missing source hashes are
+counted using `ceil(in / block_size)`, because the importer synthesizes them.
+All request `out` lengths remain counted: the driver eagerly plans `u32` output
+arrays even for requests that will later exceed the simulated context window.
+Play summaries such as `totals`, `tool_tokens`, and `system_tokens` do not
+represent additional replayed requests.
+
+The planning peak is the 256 MiB process allowance plus the larger of these phases:
+
+- **Import:** the largest single play's JSON bytes times 32, source or normalized
+  hash count (whichever is larger) times 128, and request count times 32 KiB.
+  The importer lowers and validates one play at a time, spools its rows to disk,
+  and only then builds the complete corpus graph. The parser's byte count may
+  include buffer lookahead. Before parsing, four times source-file bytes plus
+  the process allowance checks the memory available for a single decoded scalar.
+- **Replay:** 32 bytes per normalized hash, 32 bytes per planned output token,
+  32 KiB per request, and 16 bytes per concurrently active input token. Weka's
+  sequence and cross-stream completion dependencies bound active inputs by the
+  maximum weighted overlap of recorded API intervals in each original request
+  array; scopes are then summed. Equal starts are treated as concurrent, including
+  missing/zero API durations. A possible detached preamble additionally reserves
+  the largest main-stream prompt that its later recorded end could hide from
+  a completion frontier. Scopes with hashless requests or possible end-order
+  reversals within the importer's one-microsecond join tolerance reserve all
+  input lengths. These exceptions cover cases where recorded interval overlap
+  does not bound native concurrency. The native P/D success path releases its full
+  original request before admitting requests unblocked by completion.
+
+Ordinary finite lanes partition the corpus. Snapshot lanes cycle through source
+plays, so selected full-play allocations are conservatively multiplied by
+`ceil(lanes / plays)`, rather than multiplying the entire corpus by every lane.
+Snapshots also retain an immutable corpus graph/rank/output context: 12 bytes
+per normalized hash, four bytes per output token, and 2 KiB per request. Warmup
+adds 32 KiB of evidence allowance per selected request and per warmup request
+(ten per lane); its prompt buffers do not overlap profile buffers across the
+quiescent preparation barrier. Continuing agentic profiles still have unknown
+total peaks and require supervised serial execution because retained lifecycle
+evidence grows beyond the finite corpus.
+
+The four/eight-byte array element widths are concrete; the larger multipliers
+and baseline are planning headroom for copies, identifiers, hash maps, KV state,
+and reports, not exact object sizes or hard memory limits. The native sources
+are [Weka ingestion](../crates/core/src/replay/loadgen/weka.rs),
+[snapshot preparation](../crates/core/src/replay/loadgen/snapshot.rs), and
+[workload execution](../crates/core/src/replay/loadgen/driver.rs). The model
+does not change simulated token lengths, lane counts, snapshots, or timing.
