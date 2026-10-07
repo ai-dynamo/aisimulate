@@ -466,7 +466,9 @@ rule.
 The prediction summary includes `g3_offload` only when enabled, alongside the
 existing TTFT, TPOT, and throughput metrics:
 
-For a reused runtime, G3 counters accumulate across reports and its cache remains warm.
+For Python `EngineReplayRunner`, each `run` creates a new native replay, so G3
+cache contents and counters do not carry across reports, even when the Python
+runner object is reused.
 
 - `lookup_probes`, `lookup_hits`, `lookup_pending` count block probes, including
   retries. Hit ratio is hits / probes; pending probes are not hits.

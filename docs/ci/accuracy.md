@@ -167,8 +167,8 @@ unsupported report cannot satisfy that requirement. Classified exploratory
 coverage gaps remain visible; they do not certify support.
 
 `fpe-qualification.json` records the accepted source, wheel digest, shard count,
-and status counts. Nightly release artifacts do not advance to Artifactory if
-qualification fails. The FPE
+and status counts. FPE qualification gates the later GitLab security handoff,
+not initial Artifactory staging. The FPE
 workflow remains manually dispatchable for an out-of-band refresh. This avoids
 leaving runners idle when a small system finishes before the largest systems.
 Full runs also suppress repeated SDK warnings at the console while preserving

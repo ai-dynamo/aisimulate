@@ -357,8 +357,9 @@ Sweeper, serving orchestration, or prediction accuracy.
 
 The matrix was introduced in
 [AISimulate PR #41](https://github.com/ai-dynamo/aisimulate/pull/41). Nightly
-CI refreshes the complete matrix at the nightly source SHA before release
-artifacts advance to Artifactory.
+CI refreshes the complete matrix from the staged nightly wheel at its source
+SHA. Qualification gates the later GitLab security handoff, not initial
+Artifactory staging.
 
 ### AIC CLI support matrix
 

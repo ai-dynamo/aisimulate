@@ -36,6 +36,8 @@ Replay need finalized resource evidence.
 Set `estimator_config.fpm_interpolation.fpm_parquet_path` on the canonical configuration to use an external parquet and its required same-stem `.metadata.json` sidecar:
 
 ```python
+from aisimulate_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
+
 config = ForwardPassPerfModelConfig(
     model="Qwen/Qwen3-0.6B",
     system="h200_sxm",
@@ -141,6 +143,8 @@ already aggregated by the producer; the loader preserves their latency.
 For a Kimi K3 text profile, an explicit configuration can be:
 
 ```python
+from aisimulate_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
+
 config = ForwardPassPerfModelConfig(
     model="moonshotai/Kimi-K3", system="gb300", backend="vllm",
     backend_version="0.29.0", worker_type="aggregated",

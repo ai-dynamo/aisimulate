@@ -8,6 +8,9 @@ SPDX-License-Identifier: Apache-2.0
 The `aisimulate` wheel provides the `aisimulate_core` estimator namespace and
 native extension. It does not require a separate core wheel or Dynamo.
 
+Operation energy alone does not guarantee published power. Unified reporting
+also applies the [modeled-power coverage gate](../power.md#publication-gate).
+
 ## Canonical estimator
 
 ```python

@@ -1534,7 +1534,7 @@ disagg_full:
 We keep only the full agg and disagg versions here. Note:
 1. The worker spec is **top-level for agg** (`gemm_quant_mode`, `agg_tp_candidates`, ...) and **per-role for disagg** (`prefill_*` / `decode_*`); the two roles look very similar.
 2. Disagg additionally has the replica-shaping fields (`num_gpu_per_replica`, `max_*_workers`) and the correction fields (`*_latency_correction`, `*_max_batch_size`).
-Let's discuss them. Please refer to [Legacy AIC CLI User Guide]() for basic info and as a pre-reading.
+For prerequisites, read [Common Arguments](#common-arguments-all-modes) before tuning the search space.
 
 Let's focus on search system config section. Let's take `disagg config` as an example,
 ### replica config
@@ -1603,7 +1603,7 @@ pool is rate-matched against the LM pools; result rows carry `(e)workers`/`(e)tp
 - `rate_match_encoder_degradation`: encode-pool rate-matching degradation (default 0.9, alongside the
   prefill/decode factors)
 
-See the `vl_epd_agg` experiment in `src/aisimulate/legacy_cli/example.yaml` for a complete template.
+See the `vl_epd_agg` experiment in [`python/aisimulate/src/aisimulate/legacy_cli/example.yaml`](../../python/aisimulate/src/aisimulate/legacy_cli/example.yaml) for a complete template.
 
 ### Practical suggestion
 In order to save search time, you need to reduce the search space by choosing fewer parallel options. Say for `*_num_gpu_candidates` here, it's DeepSeek V3 with 671B model
