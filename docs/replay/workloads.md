@@ -72,7 +72,7 @@ the current SA convention.
 | `traffic.load.speedup` | `1` | `-` | `-` | Positive; trace timestamp load only. |
 | `traffic.load.agentic_lanes` | `null` | `x` | `-` | Positive integer; `weka`, `agentic_mooncake`, or agentic `dynamo` timestamp replay only. |
 | `traffic.load.agentic_snapshot` | `null` (unset) | `x` | `-` | Optional object `{seed: u64}`; required `seed` is an unsigned 64-bit integer (`0` through `2^64 - 1`). Requires `traffic.load.type: trace_timestamps` and positive `agentic_lanes`; supported formats are `weka`, `agentic_mooncake`, and agentic `dynamo`. Unset preserves turn-zero execution. |
-| `traffic.load.agentic_warmup` | `false` | `x` | `-` | Optional boolean; `true` requires `agentic_snapshot` and positive `agentic_lanes`. Physically primes the saved prefixes, completes ten warmup requests per lane, then profiles the saved suffix. Available on offline aggregated or disaggregated vLLM/SGLang Engine replay with HBM-only KV cache, or [qualified vLLM G2 configurations](cache.md#agentic-g2). Speculative decoding remains disabled. |
+| `traffic.load.agentic_warmup` | `false` | `x` | `-` | Optional boolean; `true` requires `agentic_snapshot` and positive `agentic_lanes`. Physically primes the saved prefixes, completes ten warmup requests per lane, then profiles the saved suffix. Available on offline aggregated or disaggregated vLLM/SGLang Engine replay with HBM-only KV cache, or [qualified vLLM G2 configurations](engine/kv-cache.md#agentic-g2). Speculative decoding remains disabled. |
 | `traffic.load.agentic_profile` | `null` (unset) | `x` | `-` | Optional object; `{}` enables continuous lane replenishment with the defaults below. Requires `trace_timestamps`, positive `agentic_lanes`, and `agentic_snapshot`; cannot be combined with `traffic.stop.max_virtual_time_seconds`. Unset preserves finite replay. See [continuous agentic profiles](agentic/continuous-profiles.md) for the full configuration, supported runtimes, and reporting semantics. |
 | `traffic.load.agentic_profile.duration_seconds` | `3600` when enabled | `x` | `-` | Positive finite admission duration, starting at the preparation barrier or simulation start without warmup. No new workload requests or replacement plays are issued after the deadline. |
 | `traffic.load.agentic_profile.response_grace_seconds` | `30` when enabled | `x` | `-` | Nonnegative finite time for already submitted requests to respond after the admission deadline; remaining client requests are then canceled. |
@@ -218,7 +218,7 @@ embedded block size. For the other formats, `block_size` is the trace hash-block
 reconstruct prompts.
 
 Agentic Engine replay supports HBM-only KV cache on vLLM/SGLang and local or shared
-[G2 host offload](cache.md#agentic-g2) on vLLM with a static single aggregated worker
+[G2 host offload](engine/kv-cache.md#agentic-g2) on vLLM with a static single aggregated worker
 or 1P1D, attention DP1 on every role, and no G3. Speculative decoding is disabled;
 TensorRT-LLM is not qualified. P/D workers must share the same target
 model. Online P/D fails validation. These functional replay guarantees do not
@@ -261,7 +261,7 @@ Omitting `agentic_lanes` preserves authored timestamp behavior. With `agentic_sn
 which wraps at the end of the corpus until the admission deadline. Replacement plays start at turn
 zero with fresh request, conversation, play, and cache identities. This opt-in path supports offline
 aggregated and P/D vLLM/SGLang Engine replay with HBM-only KV cache, and the
-[qualified vLLM G2 configurations](cache.md#agentic-g2), with speculative decoding disabled.
+[qualified vLLM G2 configurations](engine/kv-cache.md#agentic-g2), with speculative decoding disabled.
 It retains AISimulate's snapshot sampling and warmup frontier behavior; it does not establish complete
 AgentX parity. See [continuous agentic profiles](agentic/continuous-profiles.md) for defaults, lifecycle and
 idle controls, a runnable example, and the remaining limitations.

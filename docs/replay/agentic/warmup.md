@@ -61,7 +61,7 @@ The opt-in control is `traffic.load.agentic_warmup: true`, alongside positive
 the existing cold snapshot behavior. The built-in Engine runner supports offline
 vLLM and SGLang replay with either aggregated workers or separate prefill/decode
 pools and HBM-only KV cache. vLLM also supports local or shared
-[G2 host offload](../cache.md#agentic-g2) on a static single aggregated worker or 1P1D,
+[G2 host offload](../engine/kv-cache.md#agentic-g2) on a static single aggregated worker or 1P1D,
 with attention DP1 on every role. Speculative decoding remains disabled. For example:
 
 ```yaml

@@ -48,6 +48,6 @@ checks and CLI artifact checks. AgentX qualification does not establish full
 AgentX benchmark parity or measured model accuracy. The
 [retained replay evidence](../../benchmarks/evidence/accuracy/replay-evidence.md)
 keeps scoped GPU/simulator comparisons, revisions and caveats separate from
-feature acceptance. See [topology](topology-and-scheduling.md),
-[cache](cache.md), and [traffic-format compatibility](workloads.md#trace-format-compatibility)
+feature acceptance. See [engine](engine/README.md),
+[KV cache](engine/kv-cache.md), and [traffic-format compatibility](workloads.md#trace-format-compatibility)
 for the detailed constraints.

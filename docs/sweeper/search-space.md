@@ -375,7 +375,7 @@ AFD requires concrete positive input/output lengths and synthetic request-rate
 or absolute-concurrency traffic. Candidate-relative KV load is rejected because
 the analytical path does not expose scheduler-visible KV capacity. The candidate
 GPU total includes attention, FFN and any P/D companion. Read
-[topology and scheduling](../replay/topology-and-scheduling.md) for the full
+[Replay AFD](../replay/engine/analytical.md#afd) for the full
 shape contract, staging and analytical limits.
 
 ### Finite AFD topology enumeration
@@ -393,7 +393,7 @@ For AFD+P/D, the full legal topology-by-companion product must also fit
 `afd_max_candidates`. Candidate provenance records the phase, shape, A/F GPU
 accounting, generated dimensions and filters; pinned shapes identify their
 explicit source. Performance measurements and staged scheduling are documented
-in [Replay's AFD contract](../replay/topology-and-scheduling.md#analytical-afd).
+in [Replay's AFD contract](../replay/engine/analytical.md#afd).
 
 ## Analytical encoder search
 
@@ -409,7 +409,7 @@ means; `strict_sla: true` is required when bounds are present, except `min_gpus`
 which always enforces them. Goodput objectives, a goodput rate floor,
 `min_candidate_gpus`, adapters, variable loads, traces, sessions and per-request
 capture are unsupported. EPD cannot combine with AFD. See
-[Replay's analytical boundaries](../replay/topology-and-scheduling.md) and the
+[Replay's analytical boundaries](../replay/engine/analytical.md) and the
 [existing EPD example](../../examples/cli/epd-recommend.yaml).
 
 <a id="removed-kvbm-fields"></a>
@@ -429,5 +429,5 @@ the same explicit integer (an omitted value is searched), their KV block geometr
 must match, and either both or neither must use default timing. This does not add disk offload or
 restore the removed KVBM search fields.
 
-See [Native vLLM host-offload prediction](../replay/cache.md#native-vllm-host-offload-prediction)
+See [Native vLLM host-offload prediction](../replay/engine/kv-cache.md#host-offload-g2)
 for a complete YAML example and CLI command.

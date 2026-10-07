@@ -12,7 +12,7 @@ Use the public `Sweeper` execution interface with an explicit runner factory.
 ## Execute a built-in engine sweep
 
 The checked-in EPD example is one complete SDK input; it evaluates the existing
-analytical encoder integration, with the [limits](../replay/topology-and-scheduling.md)
+analytical encoder integration, with the [limits](../replay/engine/analytical.md)
 described by Replay. Run from the repository root:
 
 ```python
@@ -225,7 +225,7 @@ shared synthetic knobs carried by `ReplaySpec.workload`.
 
 Profile controls are concrete workload values, not search dimensions. The built-in Engine runner
 supports profiles on offline aggregated or P/D vLLM/SGLang replay with HBM-only KV cache.
-vLLM also supports local or shared [G2 host offload](../replay/cache.md) on a static single
+vLLM also supports local or shared [G2 host offload](../replay/engine/kv-cache.md) on a static single
 aggregated worker or 1P1D, with attention DP1 on every role. Speculative decoding and G3
 remain unsupported. Warmup is optional; enabling it retains the saved snapshot frontier.
 A completed lane takes a new turn-zero play from the shared corpus cursor, wrapping as necessary

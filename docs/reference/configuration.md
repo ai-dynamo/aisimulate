@@ -75,8 +75,8 @@ apply. See [override semantics](cli.md#override-semantics).
 |---|---|
 | `traffic.source`, `traffic.load`, `traffic.stop` | [Replay workloads](../replay/workloads.md) |
 | `engine.model`, hardware/backend identity, estimator policy and worker controls | [Performance-model configuration](../perf-model/configuration.md) |
-| Worker roles, parallel execution and transfer | [Replay topology](../replay/topology-and-scheduling.md) |
-| Prefix caching, host and storage offload | [Replay cache](../replay/cache.md) |
+| Worker roles, parallelism, scheduler and P/D transfer | [Replay engine](../replay/engine/README.md) |
+| Prefix caching, host and storage offload | [Replay KV cache](../replay/engine/kv-cache.md) |
 | `router`, `planner` | [Dynamo integration](../replay/dynamo.md) |
 | `execution.resources` | [Local execution resources](local-resources.md) |
 | `optimization` | [Optimization goals](../sweeper/optimization-goals.md) |

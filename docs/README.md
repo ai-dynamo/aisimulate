@@ -44,7 +44,7 @@ implementation, while the product layers above describe user capabilities.
 | Install and run a first prediction/search | [Installation](getting-started/installation.md), [quickstart](getting-started/quickstart.md), [understand results](getting-started/understand-results.md) |
 | Choose or query an estimator | [Model configuration](perf-model/configuration.md), [memory](perf-model/memory.md), [Python API](perf-model/api/python.md), [Rust API](perf-model/api/rust.md) |
 | Collect FPM data for a model and target | [FPM self-service](perf-model/fpm-self-service/README.md), [implementation/reference](perf-model/fpm-self-service/implementation.md), [examples](perf-model/fpm-self-service/examples.md) |
-| Replay traffic or AgentX sessions | [Workloads](replay/workloads.md), [AgentX quickstart](replay/agentic/quickstart.md), [cache](replay/cache.md), [Dynamo integration](replay/dynamo.md) |
+| Replay traffic or AgentX sessions | [Workloads](replay/workloads.md), [AgentX quickstart](replay/agentic/quickstart.md), [engine](replay/engine/README.md), [Dynamo integration](replay/dynamo.md) |
 | Search and materialize a deployment | [Search space](sweeper/search-space.md), [goals](sweeper/optimization-goals.md), [results](sweeper/results.md), [deployment generation](sweeper/deployment-generation.md) |
 | Implement an integration boundary | [Adapter ABI reference](adapters/README.md) |
 | Extend a component | [Performance modeling](perf-model/extending.md), [Collector](perf-model/collector/README.md), [Replay](replay/extending.md), [Sweeper SDK](sweeper/sdk.md) |

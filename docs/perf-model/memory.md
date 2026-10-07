@@ -192,4 +192,4 @@ pages have no scalar block capacity. Use the byte fields for capacity comparison
 These fields are currently exposed through the Rust observer API, not the Python
 JSON replay runtime. Linear snapshots retain their existing block metrics.
 
-Cache reuse, eviction, and offload lifecycle are documented in [Replay cache](../replay/cache.md).
+Cache reuse, eviction, and offload lifecycle are documented in [Replay KV cache](../replay/engine/kv-cache.md).

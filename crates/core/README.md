@@ -58,9 +58,9 @@ one-time model compilation.
 
 The replay engine models vLLM's attention-DP prefill cadence through
 `EngineConfig::prefill_schedule_interval`. See the
-[configuration and validation notes](../../docs/replay/topology-and-scheduling.md#vllm-prefill-scheduling-cadence).
+[configuration and validation notes](../../docs/replay/engine/workers.md#vllm-prefill-schedule-interval).
 
 SGLang uses `EngineConfig::prefill_decode_interval` to block prefill for N
 scheduler rounds after a group-wide EXTEND. Its default is zero and its semantics
 are separate from vLLM's cadence; see the
-[SGLang configuration and scope](../../docs/replay/topology-and-scheduling.md#sglang-prefilldecode-interval).
+[SGLang configuration and scope](../../docs/replay/engine/workers.md#sglang-prefilldecode-interval).

@@ -236,8 +236,8 @@ counterpart. It requires prefix caching and supports aggregated or token-only
 P/D workers, including attention DP. Recommendation keeps host capacity and
 bandwidth fixed while searching supported parallelism. Cluster-shared G2 on
 both P/D roles requires identical explicit integer tensor/pipeline values.
-See the [host-offload contract](../replay/cache.md#native-vllm-host-offload-prediction)
-and [G2 scope](../replay/cache.md).
+See the [host-offload contract](../replay/engine/kv-cache.md#host-offload-g2)
+and [G2 scope](../replay/engine/kv-cache.md).
 
 ### Estimator selection and data policies
 
@@ -272,7 +272,7 @@ recommendation can search encoder/language-worker configurations. These paths
 require fixed synthetic images and concurrency, with aggregate-only SLA
 semantics. They model encoder capacity and latency without event-level encoder
 queueing or embedding transfer. Traces, sessions, and per-request capture are
-unsupported. See [EPD inputs and limits](../replay/topology-and-scheduling.md#analytical-epd).
+unsupported. See [EPD inputs and limits](../replay/engine/analytical.md#epd).
 
 ### Heterogeneous P/D hardware
 
@@ -334,7 +334,7 @@ language workers with op-level timing. Search preserves draft count and
 acceptance assumptions rather than optimizing them. Lookup drafts are assumed
 available every round; actual token matching, host lookup latency, and mixed
 drafted/draftless rounds are not modeled. KV prefix reuse is separate. See
-[ngram combinations](../replay/topology-and-scheduling.md#prompt-lookup-ngram-speculative-decoding).
+[ngram combinations](../replay/engine/speculation.md#prompt-lookup-ngram).
 
 ### Preserve pinned engine and request controls
 
@@ -490,7 +490,7 @@ aisimulate predict --stack engine --config ./afd-search/recommendations/0001.yam
 Inspect `afd-selected/afd-replay-spec.json` and `afd-qualification.json` for
 analytical inputs and GPU accounting. AIC's capped/truncated topology search and
 this fixed attention-batch search do not enumerate identical operating points.
-See [AFD topology and limits](../replay/topology-and-scheduling.md#analytical-afd).
+See [AFD topology and limits](../replay/engine/analytical.md#afd).
 
 ## Compatibility-only workflows
 

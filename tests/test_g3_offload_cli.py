@@ -227,7 +227,7 @@ def test_g3_recommendation_is_rejected_not_silently_dropped() -> None:
 def test_documented_g3_extension_validates_and_lowers_with_host_example(monkeypatch) -> None:
     from pathlib import Path
 
-    text = (Path(__file__).resolve().parents[1] / "docs/replay/cache.md").read_text()
+    text = (Path(__file__).resolve().parents[1] / "docs/replay/engine/kv-cache.md").read_text()
     host = text.split('<a id="native-vllm-host-offload-prediction"></a>', 1)[1]
     host, optional = host.split('<a id="optional-g3-offload"></a>', 1)
     config = yaml.safe_load(host.split("```yaml\n", 1)[1].split("```", 1)[0])
