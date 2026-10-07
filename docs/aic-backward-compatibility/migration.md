@@ -237,7 +237,7 @@ P/D workers, including attention DP. Recommendation keeps host capacity and
 bandwidth fixed while searching supported parallelism. Cluster-shared G2 on
 both P/D roles requires identical explicit integer tensor/pipeline values.
 See the [host-offload contract](../replay/engine/kv-cache.md#host-offload-g2)
-and [G2 scope](../replay/engine/kv-cache.md).
+and [G2 scope](../replay/engine/kv-cache.md#g2-scope).
 
 ### Estimator selection and data policies
 

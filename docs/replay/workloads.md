@@ -267,8 +267,8 @@ traffic:
 
 Supported runtimes: offline `engine` stack, vLLM or SGLang, aggregated or P/D
 workers, HBM-only KV cache, and no speculative decoding. vLLM additionally
-supports [G2 host offload](engine/kv-cache.md#agentic-g2) on one aggregated
-worker or 1P1D with `attention_data: 1`. TensorRT-LLM, G3 offload and online
+supports [G2 host offload](engine/kv-cache.md#agentic-g2) with static workers,
+either one aggregated worker or 1P1D, and `attention_data: 1` on every role. TensorRT-LLM, G3 offload and online
 P/D are rejected. Results are qualified `functional_only`, not hardware
 accuracy. [Start an AgentX simulation](agentic/quickstart.md) walks through a
 complete run.
