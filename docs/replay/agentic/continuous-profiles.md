@@ -36,7 +36,7 @@ Sweeper workloads, and the native JSON execution boundary.
 
 The built-in engine supports offline vLLM and SGLang with aggregated or separate
 prefill/decode workers, HBM-only KV cache, and speculative decoding disabled.
-vLLM also supports local or shared [G2 host offload](../cache.md#agentic-g2) on a static
+vLLM also supports local or shared [G2 host offload](../engine/kv-cache.md#agentic-g2) on a static
 single aggregated worker or 1P1D, with attention DP=1 on every role.
 Weka, Agentic Mooncake, and agentic Dynamo traces share this path. Online execution,
 other backends, and Dynamo-owned routing need their own qualified integration.

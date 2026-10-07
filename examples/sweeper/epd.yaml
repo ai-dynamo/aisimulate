@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-# SDK input, not unified predict/recommend YAML. See docs/replay/topology-and-scheduling.md#analytical-epd.
+# SDK input, not unified predict/recommend YAML. See docs/replay/engine/analytical.md#epd.
 search_space:
   model_name: Qwen/Qwen3-VL-8B-Instruct
   hardware_sku: h200_sxm

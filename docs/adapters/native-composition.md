@@ -92,6 +92,22 @@ AISimulate core. Offline P/D decode routing is overlap-blind and does not requir
 its own KV event stream. A requested deterministic selector uses
 `ReplayDeterminism::selector_seed`, not an independently chosen seed.
 
+<a id="kv-events"></a>
+
+### KV events
+
+Device (G1) events omit `tier`; a missing `tier` means `device`. A vLLM rank
+with G2 also publishes G2 residency changes as `Stored`/`Removed` events with
+`"tier": "host_pinned"`, as vLLM's offloading connector does. With
+`dp_rank_local` these cover the rank's own cache. With `cluster_shared` they
+cover the whole pool, starting with a snapshot when the rank joins. A child block can become resident before its parent, so each
+`Stored` run carries the prompt index of its first block as `start_position`.
+The join snapshot is ordered parent-first, but the live stream keeps landing
+order, and a snapshot taken after a parent was evicted contains the children
+without it. Consumers must place blocks by `start_position`, not by arrival.
+Every rank of a shared pool retains its blocks' `tokens_hash`, so a block's
+Router identity does not depend on which rank stored it.
+
 `ReplayTelemetryObserver` is independent of scaling. It samples at a positive
 finite cadence after workload settlement and before same-time scaling. It must
 remain observational and cannot keep an otherwise deadlocked runtime alive.

@@ -38,6 +38,19 @@ measured serving accuracy separate, as required by the guide.
 - Allowed types: `feat|fix|docs|style|refactor|perf|test|chore|ci|build|revert`.
 - Check the title before creating or updating a PR.
 
+## Documentation
+
+- Document a new or changed configuration field on the page for the YAML block
+  it belongs to, such as `traffic` in
+  [`docs/replay/workloads.md`](docs/replay/workloads.md) or `engine.*` in
+  [`docs/replay/engine/`](docs/replay/engine/README.md). Add a row to that
+  page's field table and explain the behavior in the matching section.
+- Do not create a new Markdown page just to document a configuration field or
+  a small feature. Extend the existing page for that area instead. Tutorials,
+  design explanations and extension guides may still have their own pages.
+- Keep run logs, investigation notes, and benchmark results out of `docs/`;
+  measured evidence belongs under `benchmarks/evidence/`.
+
 ## Performance Model Changes
 
 Before changing a performance model, its configuration, or a caller in Rust,

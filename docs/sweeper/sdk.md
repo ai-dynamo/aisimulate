@@ -12,7 +12,7 @@ Use the public `Sweeper` execution interface with an explicit runner factory.
 ## Execute a built-in engine sweep
 
 The checked-in EPD example is one complete SDK input; it evaluates the existing
-analytical encoder integration, with the [limits](../replay/topology-and-scheduling.md)
+analytical encoder integration, with the [limits](../replay/engine/analytical.md)
 described by Replay. Run from the repository root:
 
 ```python
@@ -209,8 +209,8 @@ Every `Workload` field:
 | `arrival_speedup_ratio` | `float` | `1.0` | Scales the trace's inter-arrival times (open-loop trace only). `>1` speeds arrivals up. |
 | `agentic_lanes` | `int \| None` | `None` | Positive number of client play lanes for `weka`, `agentic_mooncake`, or agentic `dynamo` timestamp replay; does not cap concurrent child requests. Requires `source_type: trace`, `trace_path`, and `load_type: trace_timestamps`, with no `replay_concurrency`. |
 | `agentic_snapshot` | `AgenticSnapshotOptions \| None` | `None` (unset) | Optional object `{seed: u64}`; required `seed` is an unsigned 64-bit integer (`0` through `2^64 - 1`). Requires positive `agentic_lanes`, `source_type: trace`, `trace_path`, and `load_type: trace_timestamps`, with no `replay_concurrency`; supported formats are `weka`, `agentic_mooncake`, and agentic `dynamo`. Unset preserves turn-zero execution. |
-| `agentic_warmup` | `bool` | `False` | Requires `agentic_snapshot` and positive lanes when enabled. Runs primers and ten warmup requests per lane before measured replay, preserving native cache state; see [warmup behavior](../replay/agentic/warmup.md). Failed preparation is retained as candidate evidence and excluded from ranking. |
-| `agentic_profile` | `AgenticProfileOptions \| None` | `None` (unset) | Optional object; `{}` enables continuous lane replenishment with the defaults below. Requires `agentic_snapshot` and its agentic trace/lane controls; cannot be combined with `max_sim_time_ms`. Unset preserves finite replay. See [continuous agentic profiles](../replay/agentic/continuous-profiles.md) for the complete configuration, lifecycle, results, and limitations. |
+| `agentic_warmup` | `bool` | `False` | Requires `agentic_snapshot` and positive lanes when enabled. Runs primers and ten warmup requests per lane before measured replay, preserving native cache state; see [warmup behavior](../replay/workloads.md#agentic-warmup). Failed preparation is retained as candidate evidence and excluded from ranking. |
+| `agentic_profile` | `AgenticProfileOptions \| None` | `None` (unset) | Optional object; `{}` enables continuous lane replenishment with the defaults below. Requires `agentic_snapshot` and its agentic trace/lane controls; cannot be combined with `max_sim_time_ms`. Unset preserves finite replay. See [continuous profile](../replay/workloads.md#agentic-profile) for the complete configuration, results, and limits. |
 | `agentic_profile.duration_seconds` | `float` | `3600.0` when enabled | Positive finite admission duration, starting at the preparation barrier or simulation start without warmup. Stops new workload requests and replacement plays at the deadline. |
 | `agentic_profile.response_grace_seconds` | `float` | `30.0` when enabled | Nonnegative finite response window after admission closes; remaining client requests are then canceled. |
 | `agentic_profile.cancel_drain_seconds` | `float` | `10.0` when enabled | Nonnegative finite upper bound for cancellation acknowledgements. Supported offline runtimes acknowledge synchronously; server/GPU cleanup is not guaranteed by this budget. |
@@ -225,12 +225,12 @@ shared synthetic knobs carried by `ReplaySpec.workload`.
 
 Profile controls are concrete workload values, not search dimensions. The built-in Engine runner
 supports profiles on offline aggregated or P/D vLLM/SGLang replay with HBM-only KV cache.
-vLLM also supports local or shared [G2 host offload](../replay/cache.md) on a static single
+vLLM also supports local or shared [G2 host offload](../replay/engine/kv-cache.md) on a static single
 aggregated worker or 1P1D, with attention DP1 on every role. Speculative decoding and G3
 remain unsupported. Warmup is optional; enabling it retains the saved snapshot frontier.
 A completed lane takes a new turn-zero play from the shared corpus cursor, wrapping as necessary
 until the admission deadline. Snapshot sampling and warmup still differ from the AgentX reference;
-see the [profile limits](../replay/agentic/continuous-profiles.md#results-and-limits). Injected runners must advertise
+see the [profile limits](../replay/workloads.md#agentic-profile). Injected runners must advertise
 `supports_agentic_profile`; unsupported runners fail validation.
 
 ## Validation (`Workload._validate_workload`)

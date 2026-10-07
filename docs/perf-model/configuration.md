@@ -223,89 +223,21 @@ computation are owned by Rust.
 For fit configuration see [Online regression](methods/online-regression.md).
 For direct measurement coverage see [Whole-forward FPM](methods/whole-forward.md).
 
-## Unified CLI engine fields
+## Unified CLI timing fields
 
-These are the public `predict` / `recommend` YAML names. They differ from SDK
-constructor names (for example, `parallelism.tensor` becomes `tp`). A Default
-Range of `x` is concrete-only; `-` means no automatic domain. Search-domain
-rules and complete parallelism presets are in [Sweeper search space](../sweeper/search-space.md).
-Scheduling, speculative acceptance, and cache lifecycle are in
-[Replay topology and scheduling](../replay/topology-and-scheduling.md) and
-[Replay cache](../replay/cache.md).
+The `engine` block of `predict` and `recommend` YAML is documented in
+[Replay engine](../replay/engine/README.md). The per-role `timing` fields below
+select the forward-pass timing provider. SDK constructor names differ (for
+example, `parallelism.tensor` becomes `tp`). A Default Range of `x` is
+concrete-only.
 
 | Knob | Default | Default Range | Preset | Rules |
 |---|---:|---|---|---|
-| `engine.mode` | `aggregated` | `{choices: [aggregated, disaggregated]}` | `-` | `aggregated`, `disaggregated`, or explicit `afd`. AFD cannot be mixed into a recommendation mode domain. |
-| `engine.model` | Required | `x` | `-` | Nonempty and fixed during recommendation. |
-| `engine.hardware` | Required | `auto` | `-` | Fallback hardware identifier; `recommend` also accepts `auto` resolved from `optimization.hardware`. P/D workers may override it. |
-| `engine.backend` | `vllm` | `{choices: [vllm, sglang]}` | `-` | `vllm`, `sglang`, or `trtllm`; explicit choices may include supported alternatives. |
-| `engine.backend_version` | `null` | `x` | `-` | Fixed when set. |
-| `engine.speculation` | Omitted (disabled) | `x` | `-` | Optional ngram draft count, conditional acceptance rates, and sampling seed; see [prompt lookup](../replay/topology-and-scheduling.md#prompt-lookup-ngram-speculative-decoding). |
-| `engine.context_length` | `"max"` | `x` | `-` | `"max"` derives the effective maximum from the resolved Hugging Face model config; a concrete value must be positive. |
-| `engine.workers` | Mode-dependent | `x` | `-` | Aggregated role; prefill plus decode roles; or the optional opposite-phase companion for AFD+P/D. Aggregated and disaggregated modes also support an optional analytical `encoder` pool. |
-| `engine.workers.prefill.hardware`, `.decode.hardware` | Inherit `engine.hardware` | `x` | `-` | Concrete nonempty SKU; no `auto` or search domain. Disaggregated roles only; aggregated workers and AFD companions reject hardware overrides. Saved recommendations retain the overrides. |
-| `engine.workers.encoder.tensor`, `.replicas`, `.batch_size` | `1` | Scalar or finite `choices` | `encoder` | Positive; batch size at most 8. Not a language-worker parallelism preset. |
-| `engine.workers.encoder.hardware`, `.backend_version` | Inherit/resolve | `x` | `-` | Encoder hardware and performance data; backend follows language backend. Saved prediction YAML pins resolved values. |
-| `engine.workers.encoder.latency_correction`, `.rate_degradation` | `1.0`, `0.9` | `x` | `-` | Finite positive factors; degradation at most 1. See [EPD CLI semantics](../replay/topology-and-scheduling.md#analytical-epd). |
-| `engine.workers.<role>.parallelism.preset` | `default` in `recommend` | `auto` | `-` | Generated default space, complete mapping list, `false`, or `{}`. |
-| `engine.workers.<role>.parallelism.replicas` | `1` | Feasible positive values within GPU budget | `parallelism` | Positive. |
-| `engine.workers.<role>.parallelism.tensor` | `1` | Feasible registry values | `parallelism` | Positive and model/backend compatible. |
-| `engine.workers.<role>.parallelism.pipeline` | `1` | Feasible registry values | `parallelism` | Positive and model/backend compatible. |
-| `engine.workers.<role>.parallelism.attention_data` | `1` | Feasible registry values | `parallelism` | Positive and model/backend compatible. |
-| `engine.workers.<role>.parallelism.moe_tensor` | `1` | Feasible registry values | `parallelism` | Positive and model/backend compatible. |
-| `engine.workers.<role>.parallelism.moe_expert` | `1` | Feasible registry values | `parallelism` | Positive and model/backend compatible. |
-| `engine.workers.<role>.parallelism.prefill_context` | `1` | `x` | `-` | `predict` only. Prefill context parallelism (SGLang `--attn-cp-size`, vLLM `-pcp`): splits prefill tokens across extra attention ranks; decode stays replicated on them. Requires model/backend CP support. |
-| `engine.workers.<role>.parallelism.decode_context` | `1` | `x` | `-` | `predict` only. Decode context parallelism (vLLM `-dcp`, SGLang `--dcp-size`): stripes the decode KV cache across ranks inside the attention group without adding GPUs. Aggregated workers accept at most one of `prefill_context` / `decode_context` above 1; disaggregated roles carry each knob independently. Modeled for DeepSeek-V3-class MLA (vLLM, SGLang), DeepSeek-V3.2 / GLM-5 DSA (vLLM only), Kimi-K3 (SGLang only), and dense / Qwen-MoE GQA (vLLM, `decode_context <= tensor / kv_heads`). See [DCP scope](#decode-context-parallelism) for the op-level versus measured-FPM distinction. |
-| `engine.workers.<role>.scheduler.max_batched_tokens` | Aggregated/prefill/decode: `8192` | Prefill/aggregated: `{choices: [8192, 16384, 32768]}`; decode: `-` | `-` | Positive. |
-| `engine.workers.<role>.scheduler.max_sequences` | Aggregated `256`; prefill `1`; decode `256` | Prefill: `{choices: [1, 2, 4, 8, 16, 32, 64, 128, 256]}`; aggregated/decode: `{choices: [256, 512, 1024]}` | `-` | Positive. |
-| `engine.workers.<role>.scheduler.prefill_schedule_interval` | `1` | `x` | `-` | `predict` only. Positive. Values above one throttle prefill admission only for vLLM attention-DP groups. |
-| `engine.workers.<role>.kv_cache.block_size` | vLLM `64`; SGLang `1`; TensorRT-LLM `32` | `-` | `-` | Positive and backend-supported. Defaults are backend-specific, not version-specific. |
-| `engine.workers.<role>.kv_cache.prefix_caching` | `true` | `x` | `-` | Backend-supported. |
-| `engine.workers.<role>.kv_cache.bytes_per_token` | `auto` | `x` | `-` | Positive when concrete. `auto` resolves once per worker role from the model and that role's TP/PP/MoE shape. |
-| `engine.workers.<role>.kv_cache.capacity.type` | `default` | `x` | `-` | `default` or `fixed`. |
-| `engine.workers.<role>.kv_cache.capacity.memory_fraction` | vLLM/TensorRT-LLM `0.9`; SGLang `0.88` | `-` | `-` | `(0, 1]`; `default` capacity only. |
-| `engine.workers.<role>.kv_cache.capacity.blocks` | `null` | `x` | `-` | Positive; `fixed` capacity only. Required unless `predict` supplies `capacity.bytes`. |
-| `engine.workers.<role>.kv_cache.capacity.bytes` | `null` | `-` | `-` | `predict` only. Positive per-rank G1 byte budget; `fixed` capacity only, mutually exclusive with `blocks`. Requires explicit `block_size` and numeric `bytes_per_token`, or automatic K3 state sizing. |
-| `engine.workers.<role>.kv_cache.state_cache.bytes_per_request` | Disabled | `-` | `-` | `predict --stack engine` only, aggregated vLLM without host or G3 offload. Positive recurrent-state bytes per request per rank; requires fixed capacity. Omit the byte count to resolve K3 state and token geometry; see [state-cache sizing](../replay/cache.md#manual-state-cache-sizing). |
-| `engine.workers.<role>.kv_cache.prefix_match_unit` | Omitted | `-` | `-` | `predict --stack engine` only. Positive divisor of the resolved `block_size`; requires aggregated vLLM G1 `state_cache`. Rejects `engine.speculation`, `engine.nextn > 0`, KV event export, and Belady eviction. See [manual state-cache sizing](../replay/cache.md#manual-state-cache-sizing). |
-| `engine.workers.<role>.kv_cache.capacity.cuda_graph_reserved_bytes` | `0` | `-` | `-` | `predict` only. Integer from `0` through `2**53`; `default` capacity only. |
-| `engine.workers.<role>.kv_cache.host_offload.scope` | `dp_rank_local` | `x` | `-` | `dp_rank_local` (one cache per DP rank) or `cluster_shared` (one deployment pool). See [G2 host-cache scope](../replay/cache.md#g2-ownership). |
-| `engine.workers.<role>.kv_cache.host_offload.num_host_blocks` | Required when `host_offload` is present | `x` | `-` | Positive; fixed descriptor. Per DP rank for `dp_rank_local`, pool total for `cluster_shared`. |
-| `engine.workers.<role>.kv_cache.host_offload.d2h_bandwidth_gbps` | `32.0` | `x` | `-` | Per DP rank; finite and nonnegative, `0` is unlimited. |
-| `engine.workers.<role>.kv_cache.host_offload.h2d_bandwidth_gbps` | `32.0` | `x` | `-` | Per DP rank; finite and nonnegative, `0` is unlimited. |
-| `engine.workers.<role>.kv_cache.host_offload.shared_d2h_bandwidth_gbps` | `80.0` | `x` | `-` | Pool-wide cap; `cluster_shared` only. |
-| `engine.workers.<role>.kv_cache.host_offload.shared_h2d_bandwidth_gbps` | `80.0` | `x` | `-` | Pool-wide cap; `cluster_shared` only. |
-| `engine.workers.<role>.kv_cache.host_offload.latency_to_first_byte_ms` | `0.0` | `x` | `-` | Delay before a transfer moves bytes; consumes no bandwidth. |
 | `engine.workers.<role>.timing.type` | `default` | `x` | `-` | `default`, `fixed`, or `polynomial`. |
 | `engine.workers.<role>.timing.prefill_ms` | `null` | `x` | `-` | Nonnegative and required for `fixed` timing. |
 | `engine.workers.<role>.timing.decode_ms` | `null` | `x` | `-` | Nonnegative and required for `fixed` timing. |
 | `engine.workers.<role>.timing.forward_model` | `op_level` | `x` | `-` | `op_level` or `fpm`; `default` timing only. `fpm` replays whole-forward (FPM) latency measured for the role's exact model, hardware, backend version, parallel shape and quantization, and fails closed when no such cell exists. |
 | `engine.workers.<role>.timing.fpm_parquet_path` | `null` | `x` | `-` | External FPM parquet for `forward_model: fpm`; the adjacent same-stem `.metadata.json` sidecar is required. Relative paths are anchored to the working directory when the engine is constructed. Preserved per role in recommendations, candidate YAML, and regular prefill/decode companions in AFD+PD. |
-| `engine.workers.<role>.startup_seconds` | `0` | `x` | `-` | Nonnegative. |
-| `engine.kv_transfer.bytes_per_token` | `auto` | `x` | `-` | Positive when concrete. Independent from worker KV-cache geometry; `auto` resolves from the prefill/source role's TP/PP/MoE shape. |
-| `engine.kv_transfer.bandwidth_gb_per_second` | `null` | `x` | `-` | Positive when set; `null` disables transfer delay. |
-| `engine.kv_transfer.timing_mode` | `destination_missing` | `x` | `-` | `full_prompt` or `destination_missing`; disaggregated mode only. |
-| `engine.afd.phase` | Required for AFD | `x` | `-` | `both` for pure AFD; `prefill` or `decode` when `combined_with_pd: true`. |
-| `engine.afd.combined_with_pd` | Required for AFD | `x` | `-` | Selects pure `afd` or internal `afd+pd`; it is never inferred from workers. |
-| `engine.afd.a_batch_size` | Required for AFD | User-supplied finite domain | `-` | Positive, memory-qualified A-worker batch size. Prediction requires one value. |
-| `engine.afd.n_a_nodes`, `n_f_nodes`, `tp_a` | Required for AFD prediction | Enumerated within the GPU budget | `-` | Positive concrete topology fields. Recommendation may optionally constrain `tp_a`. |
-| `engine.afd.f_moe_ep_size` | `1` for prediction; model-derived domain for recommendation | Optional choices | `-` | Positive; recommendation also accepts `n_f_nodes` or `ffn_tp`. Dense models require `1`. |
-| `engine.afd.num_microbatches` | `3` for prediction | `{choices: [2, 3, 4]}` | `-` | Positive. |
-| `engine.afd.pipeline_model` | `optimistic` for prediction | `{choices: [optimistic, conservative]}` | `-` | `optimistic`, `conservative`, or `serial`. |
-| `engine.afd.comm_overhead_factor` | `1.0` | `x` | `-` | Positive factor applied once by the AFD evaluator. |
-| `engine.afd.boundary_on_attn` | `true` | `x` | `-` | Fixed A/F boundary convention. |
-
-Language-worker roles share the top-level model, backend, backend version, and
-context length. Per-role overrides of these fields are rejected. Disaggregated
-prefill/decode workers may override hardware; an omitted role inherits the
-fallback. If backend version is omitted, it must resolve identically on both
-SKUs. Pin a common supported version when their defaults differ. The analytical
-encoder pool has separate hardware and backend-version settings.
-
-`hardware: auto` is recommendation-only and resolves from the single
-`optimization.hardware` identifier. Saved candidate YAML records concrete
-hardware and retains role overrides. A recommendation mode domain can declare
-all three language-worker roles; each candidate keeps only its active roles.
 
 The canonical `estimation_mode`, `fallback_policy`, `estimator_config`, and
 `fpm_profile` controls pass through the CLI into the same native constructor.
@@ -313,12 +245,6 @@ A role's `timing.estimator_config` replaces the global dictionary for that role;
 include all required controls in that override. Legacy `timing.forward_model: fpm`
 and `timing.fpm_parquet_path` normalize to FPM interpolation and its external pair.
 The mode does not fall back to op-level on a missing measured cell.
-
-Physical GPUs per role are replicas times pipeline stages times attention TP,
-attention DP, and prefill CP. Decode CP partitions existing ranks and adds no
-GPUs. MoE TP/EP repartition that shape rather than multiplying the GPU count
-again. Recommendation currently searches its supported CP=1 space; prediction
-can select supported explicit context parallelism.
 
 ## Flat engine precision and execution controls
 

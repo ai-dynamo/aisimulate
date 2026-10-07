@@ -13,7 +13,7 @@ not the [`SmartSearchConfig` SDK schema](../sweeper/sdk.md).
 
 ## Configuration Model
 
-Jump to [traffic](../replay/workloads.md), [engine](../perf-model/configuration.md),
+Jump to [traffic](../replay/workloads.md), [engine](../replay/engine/README.md),
 [search domains](../sweeper/search-space.md#recommendation-domains), [presets](../sweeper/search-space.md#presets-and-default-ranges),
 [optimization goals](../sweeper/optimization-goals.md#optimization-goal), [search controls](../sweeper/search-space.md#optimizer-controls), or [outputs](cli.md#outputs).
 
@@ -74,9 +74,8 @@ apply. See [override semantics](cli.md#override-semantics).
 | Fields | Canonical guide |
 |---|---|
 | `traffic.source`, `traffic.load`, `traffic.stop` | [Replay workloads](../replay/workloads.md) |
-| `engine.model`, hardware/backend identity, estimator policy and worker controls | [Performance-model configuration](../perf-model/configuration.md) |
-| Worker roles, parallel execution and transfer | [Replay topology](../replay/topology-and-scheduling.md) |
-| Prefix caching, host and storage offload | [Replay cache](../replay/cache.md) |
+| `engine` deployment fields, worker roles, parallelism, scheduler, KV cache, P/D transfer, speculation | [Replay engine](../replay/engine/README.md) |
+| `engine.workers.<role>.timing`, estimator policy, precision and kernel selectors | [Performance-model configuration](../perf-model/configuration.md) |
 | `router`, `planner` | [Dynamo integration](../replay/dynamo.md) |
 | `execution.resources` | [Local execution resources](local-resources.md) |
 | `optimization` | [Optimization goals](../sweeper/optimization-goals.md) |

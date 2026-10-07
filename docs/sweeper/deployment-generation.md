@@ -127,7 +127,7 @@ The bridge preserves evaluated parallelism, worker counts, token limits, and
 supported cache settings. Environment overrides must not silently replace
 those choices. It rejects combinations it cannot lower, including analytical
 AFD/EPD and heterogeneous P/D hardware. AFD predictions instead produce their
-own analytical artifacts; see [AFD topology](../replay/topology-and-scheduling.md#analytical-afd).
+own analytical artifacts; see [AFD topology](../replay/engine/analytical.md#afd).
 
 The renderer currently reports that vLLM `0.24.0` uses the closest prior
 `cli_args.0.20.1.j2` flag template. Keep that warning with the generated artifacts
