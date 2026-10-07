@@ -17,6 +17,7 @@ import hashlib
 import itertools
 import json
 import os
+import statistics
 from pathlib import Path
 
 from collector.glm53flash_attention_contract import (
@@ -148,7 +149,7 @@ def attribute_repetitions(trace_events: list[dict], repetitions: int, device: in
         start = float(event["ts"])
         launch_repetition[int(correlation)] = _containing(ordered, start, start)
     per = [
-        {"intervals": [], "kernel_us": 0.0, "kernels": 0, "memcpy": 0, "memset": 0, "time_only": 0}
+        {"intervals": [], "kernel_us": 0.0, "kernels": 0, "memcpy": 0, "memset": 0, "time_only": 0, "by_name": {}}
         for _ in range(repetitions)
     ]
     diagnostics = {"devices": set(), "outside": 0, "time_only": 0}
@@ -186,6 +187,8 @@ def attribute_repetitions(trace_events: list[dict], repetitions: int, device: in
             continue
         stats = per[repetition]
         stats["intervals"].append((start, end))
+        name = str(event.get("name", category))[:96]
+        stats["by_name"][name] = stats["by_name"].get(name, 0.0) + end - start
         if category == "kernel":
             stats["kernels"] += 1
             stats["kernel_us"] += end - start
@@ -287,6 +290,11 @@ def kernel_samples(attributed: dict, event_ms: list[float], warmup: int) -> tupl
         "time_only_count": column("time_only"),
         "event_ms_profiled": column("event_ms_profiled", 1.0),
         "event_ms_unprofiled": [round(v, 5) for v in event_ms[warmup:]],
+        # Median per-activity-name duration (us) over the timed repetitions.
+        "activity_us_by_name": {
+            name: round(statistics.median(stats["by_name"].get(name, 0.0) for stats in timed), 3)
+            for name in sorted({n for stats in timed for n in stats["by_name"]})
+        },
         "attribution": attributed["diagnostics"],
     }
 

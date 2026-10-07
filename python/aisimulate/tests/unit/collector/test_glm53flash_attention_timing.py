@@ -65,6 +65,7 @@ def test_busy_union_excludes_host_gaps_and_counts_overlap_once():
     assert latencies == pytest.approx([0.044, 0.044])
     assert timing["kernel_busy_ms"] == [0.044] and timing["event_ms_unprofiled"] == [0.6]
     assert timing["kernel_count"] == [5]
+    assert timing["activity_us_by_name"]["mqa_logits"] == 20.0 and timing["activity_us_by_name"]["Memset"] == 1.0
 
 
 def test_other_devices_and_activity_outside_repetitions_are_ignored():
