@@ -66,8 +66,8 @@ a draft is available in every round; real n-gram matching, rounds without a
 draft and CPU lookup time are not modeled. With `fixed` or `polynomial` timing,
 the decode time you supply is used per verification round as-is.
 
-Supported: vLLM aggregated or disaggregated workers, `op_level` timing, offline
-`engine` stack. Rejected: SGLang, TensorRT-LLM, FPM timing, AFD/EPD, and host
+Supported: vLLM aggregated or disaggregated workers with `op_level`, `fixed` or
+`polynomial` timing, offline `engine` stack. Rejected: SGLang, TensorRT-LLM, FPM timing, AFD/EPD, and host
 or G3 offload. Agentic traffic and the Dynamo stack are not supported.
 Deployment artifacts are not generated for ngram candidates.
 

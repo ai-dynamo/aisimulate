@@ -93,7 +93,7 @@ Field tables on these pages use the following columns:
 | `engine.hardware` | Required | `auto` allowed | System identifier, such as `h200_sxm`. `auto` is recommendation-only and resolves from `optimization.hardware`. |
 | `engine.backend` | `vllm` | `{choices: [vllm, sglang]}` | `vllm`, `sglang`, or `trtllm`. Selects both the scheduler semantics and the performance data. |
 | `engine.backend_version` | Latest data for the backend | fixed | Selects performance data only. It does not change scheduler behavior. |
-| `engine.context_length` | `max` | fixed | Positive token limit or `max` (the model config's maximum). Prompts at or above the limit are rejected; generation stops at the limit. |
+| `engine.context_length` | `max` | fixed | Positive prompt-plus-output token limit, or `max`. With a number, prompts at or above the limit are rejected and generation stops at the limit. `max` applies the model config's maximum on vLLM; SGLang and TensorRT-LLM then run without a limit. |
 | `engine.workers` | Required | Per mode | Role mappings; see [Worker roles](#worker-roles). A role may be `{}` to use all defaults. |
 
 <a id="worker-roles"></a>
