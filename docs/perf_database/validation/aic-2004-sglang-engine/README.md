@@ -13,6 +13,13 @@ calibration, SOL diagnostics and FPM's SOL-based transfer use the same variant.
 The FPM decode roofline now applies the existing `21/78` full-layer fraction.
 This changes timing calculations, not memory-capacity or scheduler accounting.
 
+Checkpoint exclusion parsing also distinguished norm exclusions incorrectly:
+GLM FP8's `self_attn.q_a_layernorm` and `kv_a_layernorm` entries were treated as
+exclusions of the entire attention block. Named norms and `indexers_proj` now
+leave the FP8 projection table key intact. Across bundled configurations, this
+changes GLM-5, 5.1, 5.2 and 5.3 FP8 keys; all 25 NVFP4 configurations retain
+their previous whole-block or per-projection exclusion sets.
+
 The executed boundary is documented by SGLang at immutable revision
 [`49e384ce9d304648e9959666ecb8ce8cd98d0deb`](https://github.com/sgl-project/sglang/blob/49e384ce9d304648e9959666ecb8ce8cd98d0deb/python/sglang/srt/models/deepseek_common/attention_forward_methods/forward_mla.py#L261-L295):
 reuse layers bypass the entire indexer call. Its projection ownership is in
@@ -48,3 +55,26 @@ Synthetic inputs do not establish checkpoint-value parity. The available
 historical GLM/SGLang whole-forward data uses a different framework revision,
 model revision and speculative setup; whole-model accuracy remains
 `NOT_EVALUATED` for stock SGLang 0.5.14.
+
+To isolate a new GPU decode slice without shared-source leakage:
+
+```bash
+python docs/perf_database/validation/aic-2004-sglang-engine/prepare_decode_validation.py \
+  --source-parquet /path/to/collected/dsa_generation_module_perf.parquet \
+  --systems-root python/aisimulate/src/aisimulate_core/systems \
+  --output-dir /path/to/new/private-validation
+python docs/perf_database/validation/aic-2004-sglang-engine/validate.py \
+  --label baseline-or-fixed-anchor --context \
+  --systems-root /path/to/new/private-validation/anchor/systems \
+  --output sdk-anchor.json
+```
+
+Run the second command with both independently built wheels, and repeat using
+the `exact/systems` root. The preparation script retains the full/skip pairs at
+history lengths 8192, 131072 and 1048575 for exact lookup; only the 8192 pair is
+available to the held-out estimates. It removes every other DSA generation
+table from each private systems root, including other backends and versions.
+Full, reuse and the `21 * full + 57 * reuse` attention composition must all be
+reported: fixing one variant can remove an accidental cancellation with error
+in the other. The composition is a sum of module measurements, not a measured
+whole-model reference.

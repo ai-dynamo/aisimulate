@@ -28,7 +28,7 @@ def main():
     parser.add_argument("--label", required=True)
     parser.add_argument("--systems-root", type=Path, required=True)
     parser.add_argument("--decode-history", type=int, nargs="+", default=[8192, 131072, 1048575])
-    parser.add_argument("--context", nargs="+", default=["128:128", "1024:131072"])
+    parser.add_argument("--context", nargs="*", default=["128:128", "1024:131072"])
     args = parser.parse_args()
     root = args.systems_root.resolve()
     database = PerfDatabase(
