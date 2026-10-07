@@ -242,8 +242,10 @@ A Weka corpus can name several source models. Replay runs every request on
 
 Agentic traces (`weka`, `agentic_mooncake` and agentic `dynamo`) are made of
 *plays*: dependency trees of requests from one agent session. Four
-`traffic.load` fields control how plays are replayed. Each one requires the
-previous:
+`traffic.load` fields control how plays are replayed. `agentic_snapshot`
+requires `agentic_lanes`; `agentic_warmup` and `agentic_profile` each require
+`agentic_snapshot` and are independent of each other, so a profile can measure
+from cold or warmed caches:
 
 ```yaml
 traffic:

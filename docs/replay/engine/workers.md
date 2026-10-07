@@ -14,7 +14,6 @@ timing and P/D transfer have their own pages; see the
 engine:
   workers:
     aggregated:                 # or prefill / decode
-      hardware: h200_sxm        # P/D roles only; defaults to engine.hardware
       startup_seconds: 0
       parallelism:
         replicas: 2

@@ -45,7 +45,7 @@ All paths below are under `engine.workers.<role>.kv_cache`.
 | `capacity.memory_fraction` | vLLM/TensorRT-LLM `0.9`, SGLang `0.88` | Searchable; fixed by default | In `(0, 1]`. `default` capacity only. Same meaning as vLLM `gpu_memory_utilization`, SGLang `mem_fraction_static`, TensorRT-LLM `free_gpu_memory_fraction`. |
 | `capacity.cuda_graph_reserved_bytes` | `0` | predict only | Bytes held back from G1 for CUDA graphs. `default` capacity only. |
 | `capacity.blocks` | Unset | fixed | G1 blocks per attention-DP rank. `fixed` capacity only. |
-| `capacity.bytes` | Unset | predict only | G1 bytes per attention-DP rank, instead of `blocks`. Requires explicit `block_size` and numeric `bytes_per_token`. |
+| `capacity.bytes` | Unset | predict only | G1 bytes per attention-DP rank, instead of `blocks`. Requires explicit `block_size` and numeric `bytes_per_token`, unless `state_cache: {}` infers them. |
 | `host_offload` | Unset (off) | fixed | G2 block; see [host offload](#host-offload-g2). |
 | `g3_offload` | Unset (off) | Rejected | G3 block; see [G3 offload](#g3-offload). |
 | `state_cache` | Unset (off) | Rejected | Recurrent-state block; see [state cache](#state-cache). |
@@ -177,7 +177,7 @@ native MTP, ngram speculation, `state_cache`, and Belady eviction.
 
 For shared pools, the report's `g2_domains` gives capacity and resident blocks.
 Workers that publish KV events report G2 changes with `"tier": "host_pinned"`;
-see [output ABI](../../adapters/output-abi.md).
+see [KV events](../../adapters/native-composition.md#kv-events).
 
 <a id="g3-offload"></a>
 <a id="optional-g3-offload"></a>
