@@ -95,11 +95,11 @@ The [CLI guide](https://github.com/ai-dynamo/aisimulate/blob/main/docs/reference
 covers workload inputs, latency constraints, and detailed output. To create
 deployment manifests and launch scripts, use the bundled compatibility CLI or
 generator SDK; see the
-[deployment generation guide](https://github.com/ai-dynamo/aisimulate/blob/main/docs/aic-backward-compatibility/migration.md#compatibility-only-workflows).
+[deployment generation guide](https://github.com/ai-dynamo/aisimulate/blob/main/docs/sweeper/deployment-generation.md).
 
 ## Documentation and coverage
 
-- [Replay](https://github.com/ai-dynamo/aisimulate/blob/main/crates/core/src/replay/README.md) and
+- [Replay](https://github.com/ai-dynamo/aisimulate/blob/main/docs/replay/README.md) and
   [Sweeper](https://github.com/ai-dynamo/aisimulate/blob/main/docs/sweeper/README.md)
   — embed replay and configuration search through Python APIs.
 - [Core API](https://github.com/ai-dynamo/aisimulate/blob/main/docs/perf-model/api/python.md)

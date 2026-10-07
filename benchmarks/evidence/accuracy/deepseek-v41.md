@@ -34,6 +34,9 @@ The measured pool, native precision/runtime routes, memory limits and immutable
 dataset/source pins are recorded in the packaged
 [profile evidence](../../../python/aisimulate/src/aisimulate_core/systems/profiles/dsv41_fpm/README.md).
 Use the [model contract](../../../docs/perf-model/models/deepseek-v41.md) for
-current usage. The [source qualification record](https://github.com/ai-dynamo/aisimulate/blob/acaca5d169769b41d4c594d68dd0964c35d0f3bf/python/aisimulate/docs/fpm/deepseek-v41-four-gpu.md)
-pins the detailed acquisition and original failed-admission evidence; this
-summary does not generalize to different precision, memory placement or loads.
+current usage and the [native replay instructions](../../../python/aisimulate/collector/fpm_forward/README.md)
+for reproducing profile admission with its pinned artifacts. B200 bounded
+replay requires the separately hashed source supplement identified in the
+profile evidence; the original archive and failed first admission are retained,
+and the supplement does not replace or reselect measurements. This summary
+does not generalize to different precision, memory placement or loads.

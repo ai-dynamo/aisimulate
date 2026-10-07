@@ -43,10 +43,10 @@ the history imported from Dynamo's former `aisimulate/` tree.
 Preserve immutable source revisions, license notices, collector/runtime
 identities, performance-data hashes and deliberate adaptations. The canonical
 [third-party notices](../../THIRD_PARTY_NOTICES.md) describe imported material;
-the ledger records paths requiring manual adaptation. The historical migration
-record remains available in [the pre-reorganization revision](https://github.com/ai-dynamo/aisimulate/blob/acaca5d169769b41d4c594d68dd0964c35d0f3bf/docs/migration-history.md),
-including selective transfers and source-tree exceptions. This fixed reference
-is provenance, not a second current usage guide.
+the [synchronization ledger](../../scripts/aic_sync/aic_sync.toml) records
+mirrored subtrees and paths requiring manual adaptation. Use those current
+records when applying another upstream change; completed PR transfer logs are
+not a second synchronization procedure.
 
 Documentation is no longer a mirrored subtree: upstream prose must be adapted
 to the appropriate component rather than recreating `python/aisimulate/docs/`.
