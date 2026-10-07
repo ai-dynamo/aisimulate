@@ -3,8 +3,6 @@
 
 from __future__ import annotations
 
-import math
-
 import aisimulate_core.sdk.operations as ops
 from aisimulate_core.sdk import common
 from aisimulate_core.sdk.models.base import BaseModel, register_model
@@ -57,6 +55,7 @@ class MuseGlimmerModel(BaseModel):
             model_info["context"],
             model_config,
         )
+        model._backend_name = backend_name
         model.set_muse_glimmer_config(model_info["extra_params"])
         return model
 
@@ -285,35 +284,23 @@ class MuseGlimmerModel(BaseModel):
         return self._binary_search_kvcache_max_tokens(kv_budget_bytes)
 
     def get_kvcache_batch_capacity(self, kv_budget_bytes: float, max_batch_size: int) -> int:
-        """Capacity with vLLM block-aligned SWA reservation amortised over context."""
+        """Capacity with vLLM block-aligned SWA reservation (vLLM only)."""
         if not self._muse_glimmer_config:
             return super().get_kvcache_batch_capacity(kv_budget_bytes, max_batch_size)
 
         cfg = self._muse_glimmer_config
-        max_model_len = getattr(self.config, "max_model_len", None)
-
-        if cfg.sliding_window_size <= 0 or not max_model_len:
-            return self.get_kvcache_max_tokens(kv_budget_bytes)
-
-        budget = float(kv_budget_bytes)
-        if budget <= 0.0:
-            return 0
-
-        block_size = 16
         bytes_per_elem = self.config.kvcache_quant_mode.value.memory
         tp = self.config.tp_size
         n_kv_per_gpu = (self._num_kv_heads + tp - 1) // tp
         per_layer_per_token = n_kv_per_gpu * self._head_size * 2 * bytes_per_elem
 
         counts = self._count_layer_types()
-        swa_per_token = counts["swa"] * per_layer_per_token
-        global_per_token = counts["global"] * per_layer_per_token
-
-        context = max(self._context_length, 1)
-        swa_reservation = (math.ceil((cfg.sliding_window_size - 1 + max_model_len) / block_size) + 1) * block_size
-
-        effective_per_token = global_per_token + swa_per_token * swa_reservation / context
-
-        if effective_per_token <= 0.0:
-            return 0
-        return int(budget / effective_per_token)
+        result = self._vllm_swa_batch_capacity(
+            kv_budget_bytes,
+            window_size=cfg.sliding_window_size,
+            swa_per_token=counts["swa"] * per_layer_per_token,
+            global_per_token=counts["global"] * per_layer_per_token,
+        )
+        if result is not None:
+            return result
+        return self.get_kvcache_max_tokens(kv_budget_bytes)

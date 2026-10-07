@@ -25,8 +25,6 @@ but Step-3.7 needs:
 
 from __future__ import annotations
 
-import math
-
 from aisimulate_core.sdk.models.base import register_model
 from aisimulate_core.sdk.models.hybrid_moe import HybridMoEModel
 
@@ -152,32 +150,19 @@ class Step3p7Model(HybridMoEModel):
         return self._binary_search_kvcache_max_tokens(kv_budget_bytes)
 
     def get_kvcache_batch_capacity(self, kv_budget_bytes: float, max_batch_size: int) -> int:
-        """Capacity with vLLM block-aligned SWA reservation amortised over context."""
+        """Capacity with vLLM block-aligned SWA reservation (vLLM only)."""
         if not self._hybrid_config:
             return super().get_kvcache_batch_capacity(kv_budget_bytes, max_batch_size)
 
-        cfg = self._hybrid_config
-        max_model_len = getattr(self.config, "max_model_len", None)
-
-        if cfg.sliding_window_size <= 0 or not max_model_len:
-            return self.get_kvcache_max_tokens(kv_budget_bytes)
-
-        budget = float(kv_budget_bytes)
-        if budget <= 0.0:
-            return 0
-
-        block_size = 16
         num_swa, num_global = self._swa_global_counts()
         per = self._kv_per_layer_per_token()
 
-        swa_per_token = num_swa * per
-        global_per_token = num_global * per
-
-        context = max(self._context_length, 1)
-        swa_reservation = (math.ceil((cfg.sliding_window_size - 1 + max_model_len) / block_size) + 1) * block_size
-
-        effective_per_token = global_per_token + swa_per_token * swa_reservation / context
-
-        if effective_per_token <= 0.0:
-            return 0
-        return int(budget / effective_per_token)
+        result = self._vllm_swa_batch_capacity(
+            kv_budget_bytes,
+            window_size=self._hybrid_config.sliding_window_size,
+            swa_per_token=num_swa * per,
+            global_per_token=num_global * per,
+        )
+        if result is not None:
+            return result
+        return self.get_kvcache_max_tokens(kv_budget_bytes)

@@ -1269,18 +1269,34 @@ def test_context_length_none_forwards_none(monkeypatch):
     assert received["max_model_len"] is None
 
 
-def test_non_swa_capacity_invariant_to_context_length():
+def test_non_swa_capacity_invariant_to_context_length(monkeypatch):
     """For non-SWA models, capacity is identical with and without context_length.
 
-    Uses a synthetic breakdown with a linear tokens_from_kv_bytes inverse
-    (the default for standard GQA/MHA models), verifying that presence of
-    max_model_len on the config does not change the budget math.
+    Routes through ``estimate_kv_cache`` (the real entry point) so the
+    ``context_length`` parameter is forwarded as ``max_model_len`` to
+    ``from_request``. A synthetic breakdown with a linear
+    ``tokens_from_kv_bytes`` inverse (the default for standard GQA/MHA
+    models) verifies that the budget math is unaffected.
     """
     capacity, non_kv, kv_per_token = 141.0 * _GIB, 60.0 * _GIB, 327_680.0
     bd = _breakdown(non_kv, kv_per_token, capacity)
 
-    kwargs = dict(is_of_free=True, fraction=0.9, gpu_memory_capacity_bytes_override=None)
-    without = memory.KVCacheEstimator(bd).estimate(**kwargs)
-    with_ctx = memory.KVCacheEstimator(bd).estimate(**kwargs)
+    monkeypatch.setattr(
+        memory.KVCacheEstimator,
+        "from_request",
+        classmethod(lambda cls, *a, **k: cls(bd)),
+    )
+
+    common = dict(
+        system="h200_sxm",
+        backend="trtllm",
+        max_num_tokens=8192,
+        max_batch_size=256,
+        memory_fraction_kind="of_free",
+        memory_fraction_value=0.9,
+    )
+    without = memory.estimate_kv_cache("Qwen/Qwen3-32B", **common)
+    with_ctx = memory.estimate_kv_cache("Qwen/Qwen3-32B", context_length=4096, **common)
+
     assert without["total_kv_size_tokens"] == with_ctx["total_kv_size_tokens"]
     assert without["total_kv_size_bytes"] == with_ctx["total_kv_size_bytes"]

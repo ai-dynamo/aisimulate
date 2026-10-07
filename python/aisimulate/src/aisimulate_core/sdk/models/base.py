@@ -32,6 +32,7 @@ Adding a new model:
 from __future__ import annotations
 
 import logging
+import math
 from typing import ClassVar
 
 from aisimulate_core.sdk import config
@@ -345,3 +346,37 @@ class BaseModel:
             else:
                 hi = mid
         return lo
+
+    def _vllm_swa_batch_capacity(
+        self,
+        kv_budget_bytes: float,
+        *,
+        window_size: int,
+        swa_per_token: float,
+        global_per_token: float,
+    ) -> int | None:
+        """vLLM block-aligned SWA reservation, or ``None`` when not applicable.
+
+        Returns the effective token capacity when the model runs on vLLM AND
+        ``max_model_len`` is set; returns ``None`` otherwise so the caller falls
+        back to its idealized inverse. Subclasses compute the model-specific
+        ``swa_per_token`` / ``global_per_token`` byte rates and delegate here.
+        """
+        if getattr(self, "_backend_name", None) != "vllm":
+            return None
+        max_model_len = getattr(self.config, "max_model_len", None)
+        if not max_model_len or window_size <= 0:
+            return None
+
+        budget = float(kv_budget_bytes)
+        if budget <= 0.0:
+            return 0
+
+        block_size = 16
+        context = max(self._context_length, 1)
+        swa_reservation = (math.ceil((window_size - 1 + max_model_len) / block_size) + 1) * block_size
+        effective_per_token = global_per_token + swa_per_token * swa_reservation / context
+
+        if effective_per_token <= 0.0:
+            return 0
+        return int(budget / effective_per_token)

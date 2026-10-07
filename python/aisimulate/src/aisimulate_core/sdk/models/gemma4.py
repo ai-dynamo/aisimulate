@@ -3,8 +3,6 @@
 
 from __future__ import annotations
 
-import math
-
 import aisimulate_core.sdk.operations as ops
 from aisimulate_core.sdk import common
 from aisimulate_core.sdk.models.base import BaseModel, register_model
@@ -572,81 +570,31 @@ class Gemma4MixModel(BaseModel):
         return self._binary_search_kvcache_max_tokens(kv_budget_bytes)
 
     def get_kvcache_batch_capacity(self, kv_budget_bytes: float, max_batch_size: int) -> int:
-        """Token capacity accounting for vLLM SlidingWindowSpec block reservation.
+        """Token capacity with vLLM block-aligned SWA reservation (vLLM only).
 
-        vLLM allocates KV cache in fixed-size blocks (default 16 tokens).  For
-        sliding-window (SWA) layers the allocator reserves more slots per
-        request than the idealized ``min(seq_len, window)`` because block
-        boundaries prevent partial reclamation and an extra alignment block is
-        added.
-
-        **Block reservation formula** (from vLLM's ``SlidingWindowSpec``)::
-
-            swa_reservation = (ceil((window - 1 + max_model_len) / block_size) + 1)
-                              * block_size
-
-        For Gemma 4 31B with window=1024, max_model_len=8192, block_size=16::
-
-            swa_reservation = (ceil((1024 - 1 + 8192) / 16) + 1) * 16
-                            = (ceil(9215 / 16) + 1) * 16
-                            = (576 + 1) * 16 = 9,232 tokens
-
-        **Effective per-token KV rate** — global layers cost a fixed amount per
-        token; SWA layers contribute a fixed reservation that is amortised over
-        the model's full context length (``max_position_embeddings``)::
-
-            effective_per_token = global_per_token
-                                 + swa_per_token * swa_reservation / context
-
-        For Gemma 4 31B (TP=1, bf16)::
-
-            global_per_token = 10 layers * 4 kv_heads * 512 head_dim * 2(K+V) * 2B
-                             = 81,920 B  (80 KiB)
-            swa_per_token    = 50 layers * 16 kv_heads * 256 head_dim * 2(K+V) * 2B
-                             = 819,200 B (800 KiB)
-
-            effective = 81,920 + 819,200 * 9,232 / 262,144
-                      = 81,920 + 28,840 = 110,760 B  (~108.2 KiB)
-
-        **Total capacity** = ``budget / effective_per_token``, which matches
-        vLLM's reported token capacity within 0.004% on logged deployments.
-
-        Falls back to the idealized inverse when ``config.max_model_len`` is
-        not set or the model has no SWA layers.
+        On vLLM, SWA layers reserve block-aligned slots per request; this
+        amortises that reservation over the full context length. On other
+        backends (or when ``max_model_len`` is unset) falls back to the
+        idealized binary-search inverse.
         """
         if not self._gemma4_config:
             return super().get_kvcache_batch_capacity(kv_budget_bytes, max_batch_size)
 
         cfg = self._gemma4_config
-        max_model_len = getattr(self.config, "max_model_len", None)
-
-        if cfg.sliding_window_size <= 0 or not max_model_len:
-            return self.get_kvcache_max_tokens(kv_budget_bytes)
-
-        budget = float(kv_budget_bytes)
-        if budget <= 0.0:
-            return 0
-
         bytes_per_elem = self.config.kvcache_quant_mode.value.memory
         tp = self.config.tp_size
-
-        block_size = 16
 
         swa_kv_per_gpu = (cfg.swa_num_kv_heads + tp - 1) // tp
         global_kv_per_gpu = (cfg.global_num_kv_heads + tp - 1) // tp
         num_swa = cfg.layer_types.count("sliding_attention")
         num_global = cfg.layer_types.count("full_attention")
 
-        swa_per_token = num_swa * swa_kv_per_gpu * cfg.swa_head_dim * 2 * bytes_per_elem
-        global_per_token = num_global * global_kv_per_gpu * cfg.global_head_dim * 2 * bytes_per_elem
-
-        context = max(self._context_length, 1)
-        swa_reservation = (
-            math.ceil((cfg.sliding_window_size - 1 + max_model_len) / block_size) + 1
-        ) * block_size
-
-        effective_per_token = global_per_token + swa_per_token * swa_reservation / context
-
-        if effective_per_token <= 0.0:
-            return 0
-        return int(budget / effective_per_token)
+        result = self._vllm_swa_batch_capacity(
+            kv_budget_bytes,
+            window_size=cfg.sliding_window_size,
+            swa_per_token=num_swa * swa_kv_per_gpu * cfg.swa_head_dim * 2 * bytes_per_elem,
+            global_per_token=num_global * global_kv_per_gpu * cfg.global_head_dim * 2 * bytes_per_elem,
+        )
+        if result is not None:
+            return result
+        return self.get_kvcache_max_tokens(kv_budget_bytes)
