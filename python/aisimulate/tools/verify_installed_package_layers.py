@@ -341,6 +341,10 @@ def _verify_fpm_workflow() -> str:
             "glm53flash/runtime-source-sha256.json",
             "collector/fpm_forward/runtime/glm53flash/runtime-source-sha256.json",
         ),
+        (
+            "glm53flash/runtime-source-sha256-vllm-0.30.0.json",
+            "collector/fpm_forward/runtime/glm53flash/runtime-source-sha256-vllm-0.30.0.json",
+        ),
         ("glm53flash/README.md", "collector/fpm_forward/runtime/glm53flash/README.md"),
         ("glm53flash/LICENSE", "collector/fpm_forward/runtime/glm53flash/LICENSE"),
         (

@@ -15,7 +15,7 @@ MODEL_REVISIONS = {
     "nvidia/GLM-5.3-Flash-NVFP4": "09b04e5e74bca08ca8549fc736d4cdd8624bfde3",
 }
 BACKEND_REVISIONS = {
-    "vllm": "ced6857afa0ea7b2e3f0846a62e1394e90f15607",
+    "vllm": "db9527a46873454610df6dbedf79a36d6bf1a7f6",
     "sglang": "94602c9c2b7cbdb8efd5c52802dac6a1c180089e",
 }
 

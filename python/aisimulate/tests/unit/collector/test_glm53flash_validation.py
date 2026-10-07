@@ -51,7 +51,7 @@ def write_plan(tmp_path, key, role):
         "schema_name": "aic_fpm_collection_plan",
         "system": "gb300",
         "backend": backend,
-        "capability": {"aic_database_version": {"vllm": "0.30.0", "sglang": "0.5.20"}[backend]},
+        "capability": {"aic_database_version": {"vllm": "0.31.0", "sglang": "0.5.20"}[backend]},
         "sha256": "d" * 64,
         "model_path": "zai-org/GLM-5.3-Flash" if quant == "fp8" else "nvidia/GLM-5.3-Flash-NVFP4",
         "cells": [cell],
@@ -88,7 +88,7 @@ def campaign(tmp_path, monkeypatch):
             "request_ids": {run["spec"]["cell_id"]},
             "receipts": [{"path": "raw.json", "sha256": "e" * 64}],
             "runtime_run_id": run["spec"]["cell_id"],
-            "backend_version": {"vllm": "0.30.0", "sglang": "0.5.20"}[run["key"][0]],
+            "backend_version": {"vllm": "0.31.0", "sglang": "0.5.20"}[run["key"][0]],
             **(
                 validation._sglang_execution_policy({"mem_fraction_static": 0.9063, "random_seed": 1})
                 if run["key"][0] == "sglang"
@@ -293,7 +293,7 @@ def test_native_adapter_uses_validated_producer_timings_and_real_request_ids(tmp
             },
             runtime_run_id="actual-run",
             runtime_grid_digest="actual-grid",
-            backend_version="0.30.0",
+            backend_version="0.31.0",
         )
 
     monkeypatch.setattr(validation, "validate_native_collection", reader)
@@ -303,7 +303,7 @@ def test_native_adapter_uses_validated_producer_timings_and_real_request_ids(tmp
     assert calls[0][2] == {
         "expected_plan_sha256": "d" * 64,
         "expected_attempt_id": spec["attempt_id"],
-        "expected_backend_version": "0.30.0",
+        "expected_backend_version": "0.31.0",
     }
 
 
@@ -318,7 +318,7 @@ def calibration_table(tmp_path):
         "values": {1: 10.0, 2: 20.0, 3: 30.0},
         "runtime_run_id": "real-run",
         "runtime_grid_digest": "f" * 64,
-        "backend_version": "0.30.0",
+        "backend_version": "0.31.0",
         "input_provenance": {"token_ids_sha256": "e" * 64},
     }
     rows = [
@@ -339,7 +339,7 @@ def calibration_table(tmp_path):
             input_tokenizer_revision=validation.MODEL_REVISIONS[run["plan"]["model_path"]],
             state_protocol=PROTOCOL,
             timing_boundary=validation.TIMING_BOUNDARIES["vllm"],
-            backend_version="0.30.0",
+            backend_version="0.31.0",
             pp=1,
             dp=1,
             cp=1,
@@ -414,7 +414,7 @@ def test_predict_calls_public_sdk_for_every_frozen_point(tmp_path, monkeypatch, 
         for p in tmp_path.iterdir()
         if p.is_file()
     ]
-    entry = {"consumer_config": {"backend_version": "0.30.0", "systems_paths": ["."]}, "consumer_data": receipts}
+    entry = {"consumer_config": {"backend_version": "0.31.0", "systems_paths": ["."]}, "consumer_data": receipts}
     result = validation._predict(holdout, entry, mode, tmp_path, calibration=calibration, calibration_native=native)
     assert len(calls) == 3 and closed == [True]
     assert [row["prediction_ms"] for row in result["rows"].values()] == [12.0] * 3

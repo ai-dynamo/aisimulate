@@ -6,9 +6,13 @@
 #   (requests injected into and scheduled by the parent vLLM scheduler);
 # - 99dae1f53e5a0534c274223ff9daa97f0b1fc2ea (shipped as ai-dynamo 1.5.0.dev20260917): prefix-cache
 #   real-seed staging (_bench_realseed_stage_point / _bench_realseed_pending_step: seed shot,
-#   untimed warm shot, validated measured shot), ported onto the 54960177 overlay.
+#   untimed warm shot, validated measured shot), ported onto the 54960177 overlay;
+# - 395f02405c1dd1835ab73a39f7a5984ae5fd4552 (vLLM v0.31.0 bump): queued-request classification
+#   over vLLM 0.31's ``waiting`` + ``kv_holding_waiting`` queues (_compute_queued), overriding the
+#   54960177 method that reads the removed ``Scheduler.skipped_waiting``.
 # Modified: GLM-5.3-Flash default-serving hybrid state (prefix caching on, Mamba "align" mode),
-# real text tokens, repeated measurements and compact deferred evidence. Upstream license: LICENSE.
+# seeded token inputs, align-4 prefill chunk-start checks, repeated measurements and compact
+# deferred evidence. Upstream license: LICENSE.
 """GLM-5.3-Flash native FPM producer on the default serving configuration.
 
 Timing is the unchanged Dynamo ``InstrumentedScheduler`` FPM ``wall_time``:
@@ -25,17 +29,30 @@ State construction (prefix caching on):
   ``prefix_i`` real tokens (cached by the native prefix cache); each repetition
   then submits ``prefix_i`` + a repetition-unique suffix, which must hit exactly
   ``prefix_i`` (validated from the native measured FPM, never assumed).
-* decode ``context_i``: a seed request computes the hit-aligned part of the
-  ``context_i - 1`` token prompt; each repetition submits that prompt with
-  ``max_tokens=3``; the second pure decode step (all B requests, KV read
-  ``sum(context_i)``) is the measured steady sample.
+* decode ``context_i``: the prompt is ``P_i = 4 * floor((context_i - 1) / 4)``
+  tokens (a multiple of 4) and a seed request computes its first ``P_i - 4``
+  tokens; each repetition submits that prompt with ``max_tokens = k + 1`` where
+  pure decode step ``k = context_i - P_i + 1`` (2..5, equal for all B requests)
+  reads KV ``context_i``; that steady step (consecutive output arrivals, KV read
+  ``sum(context_i)``) is the measured sample. ``k = 2`` when ``context_i - 1``
+  is a multiple of 4, which is the earlier fixed protocol.
 
 No host work is added between steps of a repetition: the only per-step work is
 the native Dynamo FPM bookkeeping plus a reference to the native
-``cudagraph_stats`` object. Validation, medians and evidence serialization run
-after a repetition's requests have finished, and the compact evidence record of
-a point (prompt specifications, not token arrays) is written after all of its
-repetitions.
+``cudagraph_stats`` object and of the native ``SchedulerOutput``. Validation,
+medians and evidence serialization run after a repetition's requests have
+finished, and the compact evidence record of a point (prompt specifications,
+not token arrays) is written after all of its repetitions.
+
+Stock vLLM v0.31.0 does not complete IndexPool entries at a cached/chunked
+prefill start that is not a multiple of the pool width (4). Every prompt,
+prefix and new-token length is therefore a multiple of 4, and every scheduled
+prefill chunk start (seed, warmup and measured shots) is recorded from the
+native ``SchedulerOutput`` and checked after its stage; an unaligned start
+fails the run instead of being measured.
+
+Inputs are the seeded token stream of ``collector.glm53flash_attention_tokens``
+(seed 53, ordinary BPE vocabulary of the pinned tokenizer), not a text corpus.
 """
 
 from __future__ import annotations
@@ -47,21 +64,27 @@ import statistics
 import time
 import uuid
 from dataclasses import asdict
+from itertools import chain
 from pathlib import Path
 
 import dynamo.vllm.instrumented_scheduler as native
 from vllm.sampling_params import SamplingParams
 from vllm.tokenizers import get_tokenizer
-from vllm.v1.request import Request
+from vllm.v1.request import Request, RequestStatus
 
 DYNAMO_SHA = "54960177085413259859c88bd34ed0734d4c2ea9"
 REAL_SEED_SOURCE = "ai-dynamo/dynamo@99dae1f53e5a0534c274223ff9daa97f0b1fc2ea instrumented_scheduler._bench_realseed_*"
-VLLM_SHA = "ced6857afa0ea7b2e3f0846a62e1394e90f15607"
-MODEL_SHAS = {
-    "eb9eb208eb0d988989d07a6a12d0fdeb5f52574a",
-    "09b04e5e74bca08ca8549fc736d4cdd8624bfde3",
-}
+QUEUED_PORT_SOURCE = "ai-dynamo/dynamo@395f02405c1dd1835ab73a39f7a5984ae5fd4552 instrumented_scheduler._compute_queued"
+VLLM_SHA = "db9527a46873454610df6dbedf79a36d6bf1a7f6"
+FP8_SHA = "eb9eb208eb0d988989d07a6a12d0fdeb5f52574a"
+NVFP4_SHA = "09b04e5e74bca08ca8549fc736d4cdd8624bfde3"
+MODEL_SHAS = {FP8_SHA, NVFP4_SHA}
+# TP1 is collected for NVFP4 only (campaign decision; FP8 weights are 306 GB).
+TP_SIZES = {FP8_SHA: (2, 4), NVFP4_SHA: (1, 2, 4)}
+# IndexPool width: stock v0.31.0 requires pool-aligned prefill chunk starts.
+CHUNK_ALIGN = 4
 STATE_PROTOCOL = "glm53flash_prefix_cache_real_seed_v1"
+INPUT_SOURCE = "seeded_tokens"
 TIMING_BOUNDARY = "dynamo_vllm_instrumented_scheduler_fpm_wall_time"
 WARMUP_REPEATS = 5
 MEASUREMENT_REPEATS = 10
@@ -75,7 +98,7 @@ DECODE_REAL_KV_REASON = "kvwarm_real_kv"
 
 
 def token_slice(pool: list[int], length: int, offset: int) -> list[int]:
-    """Rotate and repeat the tokenizer's real-text stream deterministically."""
+    """Rotate and repeat the seeded token stream deterministically."""
     if not pool or length < 0:
         raise ValueError("non-empty token pool and nonnegative length required")
     size = len(pool)
@@ -95,6 +118,25 @@ def build_prompt(pool: list[int], spec: list[list[int]]) -> list[int]:
     for offset, length in spec:
         tokens.extend(token_slice(pool, length, offset))
     return tokens
+
+
+def prefill_chunk_starts(scheduler_output, prompt_lengths: dict[str, int]) -> list[list]:
+    """``[[request_id, start, tokens], ...]`` of every prefill chunk in one native step.
+
+    Starts are the native ``num_computed_tokens`` at schedule time
+    (``NewRequestData`` / ``CachedRequestData``); a chunk is a prefill chunk when
+    it starts before the prompt end. Requests outside this producer are ignored.
+    """
+    scheduled = scheduler_output.num_scheduled_tokens
+    rows = [(new.req_id, new.num_computed_tokens) for new in scheduler_output.scheduled_new_reqs]
+    cached = scheduler_output.scheduled_cached_reqs
+    rows.extend(zip(cached.req_ids, cached.num_computed_tokens, strict=True))
+    chunks = []
+    for req_id, start in rows:
+        prompt = prompt_lengths.get(req_id)
+        if prompt is not None and start < prompt:
+            chunks.append([req_id, int(start), int(scheduled[req_id])])
+    return chunks
 
 
 def scheduled_dict(metrics) -> dict:
@@ -122,6 +164,8 @@ class Glm53FlashPrefixSeedScheduler(native.InstrumentedScheduler):
         self._glm_rep_record = None
         self._glm_rep_dispatches = []
         self._glm_rep_scheduled = []
+        self._glm_step_outputs = []
+        self._glm_prompt_lengths = {}
         self._glm_seed = None
         self._glm_point_records = {}
         self._glm_evidence_count = 0
@@ -166,8 +210,11 @@ class Glm53FlashPrefixSeedScheduler(native.InstrumentedScheduler):
             raise ValueError("GLM FPM campaign freezes synchronous scheduling (--no-async-scheduling)")
         parallel = config.parallel_config
         self._glm_tp_size = parallel.tensor_parallel_size
+        revision = os.environ.get("DYN_FPM_TOKENIZER_REVISION")
+        if revision not in MODEL_SHAS:
+            raise ValueError("tokenizer revision must equal the pinned GLM-5.3-Flash checkpoint revision")
         if (
-            parallel.tensor_parallel_size not in (2, 4)
+            parallel.tensor_parallel_size not in TP_SIZES[revision]
             or parallel.pipeline_parallel_size != 1
             or parallel.data_parallel_size != 1
             or parallel.use_ubatching
@@ -176,7 +223,9 @@ class Glm53FlashPrefixSeedScheduler(native.InstrumentedScheduler):
             or parallel.enable_expert_parallel
             or config.speculative_config is not None
         ):
-            raise ValueError("GLM-5.3-Flash requires pure TP2/TP4, DP/PP/CP 1, no EP/ubatching/speculation")
+            raise ValueError(
+                "GLM-5.3-Flash requires pure TP2/TP4 (TP1 NVFP4 only), DP/PP/CP 1, no EP/ubatching/speculation"
+            )
         if self.connector is not None or self.ec_connector is not None:
             raise ValueError("GLM-5.3-Flash FPM forbids KV/encoder connectors")
         if self._bench_explicit_points is None:
@@ -203,33 +252,44 @@ class Glm53FlashPrefixSeedScheduler(native.InstrumentedScheduler):
                 strict=True,
             )
         )
-        revision = os.environ.get("DYN_FPM_TOKENIZER_REVISION")
-        if revision not in MODEL_SHAS:
-            raise ValueError("tokenizer revision must equal the pinned GLM-5.3-Flash checkpoint revision")
         expected_model = next(model for model, pin in MODEL_REVISIONS.items() if pin == revision)
         if raw_config != get_model_config_from_model_path(expected_model)["raw_config"]:
             raise ValueError("loaded model metadata differs from the pinned GLM checkpoint")
-        text_bytes = Path(os.environ["DYN_FPM_INPUT_TEXT"]).read_bytes()
+        if config.scheduler_config.max_num_batched_tokens % CHUNK_ALIGN:
+            raise ValueError("the native token budget must be a multiple of the IndexPool width (4)")
+        from collector import glm53flash_attention_tokens as seeded
+
+        tokenizer_json = Path(config.model_config.tokenizer) / "tokenizer.json"
+        tokenizer_sha = hashlib.sha256(tokenizer_json.read_bytes()).hexdigest()
+        if tokenizer_sha != seeded.TOKENIZER_JSON_SHA256:
+            raise ValueError(f"tokenizer.json {tokenizer_sha} is not the pinned GLM-5.3-Flash tokenizer")
         tokenizer = get_tokenizer(
             config.model_config.tokenizer,
             tokenizer_mode=config.model_config.tokenizer_mode,
             trust_remote_code=config.model_config.trust_remote_code,
             revision=revision,
         )
-        self._glm_tokens = list(tokenizer.encode(text_bytes.decode("utf-8"), add_special_tokens=False))
-        if len(set(self._glm_tokens)) < 2 or not all(type(x) is int and x >= 0 for x in self._glm_tokens):
-            raise ValueError("tokenizer text stream must contain distinct valid token ids")
+        low, high = seeded.ordinary_vocab_range(tokenizer)
+        if (low, high) != (seeded.VOCAB_LOW, seeded.VOCAB_HIGH):
+            raise ValueError(f"tokenizer ordinary vocabulary {(low, high)} differs from the pinned range")
+        count = MAX_CONTEXT + MAX_BATCH * seeded.REQUEST_STRIDE
+        self._glm_tokens = seeded.generate(seeded.SEED, count, low, high)
         self._glm_input = {
-            "source": "tokenizer_text",
-            "text_sha256": hashlib.sha256(text_bytes).hexdigest(),
+            "source": INPUT_SOURCE,
+            "generator": seeded.GENERATOR,
+            "generator_version": seeded.GENERATOR_VERSION,
+            "seed": seeded.SEED,
+            "count": count,
+            "vocab_low": low,
+            "vocab_high_exclusive": high,
+            "tokenizer_json_sha256": tokenizer_sha,
+            "tokenizer_revision": revision,
             "token_ids_sha256": hashlib.sha256(
                 json.dumps(self._glm_tokens, separators=(",", ":")).encode()
             ).hexdigest(),
-            "token_ids": list(self._glm_tokens),
-            "tokenizer_revision": revision,
-            "token_count": len(self._glm_tokens),
             "unique_token_count": len(set(self._glm_tokens)),
-            "sampling": "prompt = concatenated [offset, length] rotations of token_ids (see prompt specs)",
+            "sampling": "prompt = concatenated [offset, length] rotations of the seeded stream (see prompt specs)",
+            "chunk_start_alignment": CHUNK_ALIGN,
         }
 
     def _bench_eager_warmup_points(self):
@@ -260,6 +320,8 @@ class Glm53FlashPrefixSeedScheduler(native.InstrumentedScheduler):
                 num_local_computed_tokens=0,
                 num_tokens_main_model=num_tokens,
                 apply_admission_cap=apply_admission_cap,
+                # v0.31.0 KVCacheManager.allocate_slots: max(num_prompt_tokens, num_tokens - 1).
+                prefill_end=num_tokens,
             )
             for manager in self.kv_cache_manager.coordinator.single_type_managers
         )
@@ -314,10 +376,28 @@ class Glm53FlashPrefixSeedScheduler(native.InstrumentedScheduler):
                         f"benchmark_id={point.benchmark_id}: prefix not on the native prefix-match grid ({unit}); "
                         "the frozen manifest must carry the executed geometry"
                     )
+                if any(length % CHUNK_ALIGN for length in (*prefixes, *queries)):
+                    raise ValueError(
+                        f"benchmark_id={point.benchmark_id}: prefix/new-token lengths must be multiples of "
+                        f"{CHUNK_ALIGN} (kpool_align4); the frozen manifest must carry the executed geometry"
+                    )
             else:
                 contexts = self._bench_decode_context_lengths(point.total_kv_read_tokens, point.batch_size)
-                if min(contexts) < 3:
-                    raise ValueError("GLM real decode requires per-request context >= 3; no clamping")
+                if min(contexts) <= CHUNK_ALIGN or len({self._glm_decode_step(c) for c in contexts}) != 1:
+                    # Lockstep decode measures one step index for all B requests.
+                    raise ValueError(
+                        f"benchmark_id={point.benchmark_id}: aligned-prompt decode requires contexts > "
+                        f"{CHUNK_ALIGN} with one common steady step index; no clamping"
+                    )
+
+    @staticmethod
+    def _glm_decode_prompt(context):
+        """Largest multiple of 4 below the measured context (kpool_align4)."""
+        return (context - 1) // CHUNK_ALIGN * CHUNK_ALIGN
+
+    def _glm_decode_step(self, context):
+        """1-based pure decode step whose per-request KV read equals ``context``."""
+        return context - self._glm_decode_prompt(context) + 1
 
     def _glm_prefill_rows(self, point):
         prefixes = self._bench_prefill_kv_read_lengths(
@@ -340,11 +420,44 @@ class Glm53FlashPrefixSeedScheduler(native.InstrumentedScheduler):
 
     def _update_from_output(self, scheduler_output, model_runner_output):
         result = super()._update_from_output(scheduler_output, model_runner_output)
-        if self._glm_stage == "measure" and scheduler_output.total_num_scheduled_tokens > 0:
-            # References only: conversion happens after the repetition.
-            self._glm_rep_dispatches.append(getattr(model_runner_output, "cudagraph_stats", None))
-            self._glm_rep_scheduled.append(scheduler_output.total_num_scheduled_tokens)
+        if self._glm_stage is not None and scheduler_output.total_num_scheduled_tokens > 0:
+            # References only: chunk starts are checked after the stage.
+            self._glm_step_outputs.append(scheduler_output)
+            if self._glm_stage == "measure":
+                self._glm_rep_dispatches.append(getattr(model_runner_output, "cudagraph_stats", None))
+                self._glm_rep_scheduled.append(scheduler_output.total_num_scheduled_tokens)
         return result
+
+    def _compute_queued(self):
+        # Ported from QUEUED_PORT_SOURCE: vLLM v0.31.0 replaced
+        # Scheduler.skipped_waiting by kv_holding_waiting (scheduler.py:216).
+        prefill = native.WelfordAccumulator()
+        decode_kv = native.WelfordAccumulator()
+        for request in chain(self.waiting, self.kv_holding_waiting):
+            if request.status in (RequestStatus.PREEMPTED, RequestStatus.WAITING_FOR_REMOTE_KVS):
+                decode_kv.add(request.num_computed_tokens)
+            else:
+                prefill.add(request.num_tokens)
+        return native.QueuedRequestMetrics(
+            num_prefill_requests=prefill.n,
+            sum_prefill_tokens=prefill.s,
+            var_prefill_length=prefill.variance(),
+            num_decode_requests=decode_kv.n,
+            sum_decode_kv_tokens=decode_kv.s,
+            var_decode_kv_tokens=decode_kv.variance(),
+        )
+
+    def _glm_take_chunk_starts(self, stage):
+        """Check every prefill chunk start of the finished stage; returns compact evidence."""
+        steps = [prefill_chunk_starts(output, self._glm_prompt_lengths) for output in self._glm_step_outputs]
+        self._glm_step_outputs = []
+        unaligned = [chunk for chunks in steps for chunk in chunks if chunk[1] % CHUNK_ALIGN]
+        if unaligned:
+            raise RuntimeError(
+                f"benchmark_id={self._glm_point.benchmark_id}: {stage} scheduled prefill chunks at starts not "
+                f"divisible by {CHUNK_ALIGN} (stock vLLM IndexPool defect path): {unaligned[:8]}"
+            )
+        return [[[start, tokens] for _, start, tokens in chunks] for chunks in steps if chunks]
 
     # ------------------------------------------------------------------
     # State machine (every request is natively scheduled)
@@ -386,6 +499,7 @@ class Glm53FlashPrefixSeedScheduler(native.InstrumentedScheduler):
                 block_hasher=self._bench_block_hasher,
                 cache_salt=salt,
             )
+            self._glm_prompt_lengths[req_id] = len(prompt)
             self.add_request(request)
             self._bench_active_req_ids.add(req_id)
             ids.append(req_id)
@@ -413,6 +527,7 @@ class Glm53FlashPrefixSeedScheduler(native.InstrumentedScheduler):
         self._bench_cleanup_requests()
         if self._glm_stage == "seed":
             self._glm_seed["completed_unix_ns"] = time.time_ns()
+            self._glm_seed["prefill_chunks"] = self._glm_take_chunk_starts("seed")
             self._glm_start_repetition()
         elif self._glm_stage == "measure":
             if self._glm_finish_repetition():
@@ -442,8 +557,12 @@ class Glm53FlashPrefixSeedScheduler(native.InstrumentedScheduler):
         else:
             contexts = self._bench_decode_context_lengths(point.total_kv_read_tokens, point.batch_size)
             unit = self._glm_serving["hash_block_size"]
-            prompt_lengths = [context - 1 for context in contexts]
-            self._glm_rows = {"context": contexts, "prompt": prompt_lengths}
+            prompt_lengths = [self._glm_decode_prompt(context) for context in contexts]
+            self._glm_rows = {
+                "context": contexts,
+                "prompt": prompt_lengths,
+                "measured_decode_step": self._glm_decode_step(contexts[0]),
+            }
             # Largest hit-aligned prefix strictly shorter than the prompt.
             seed_lengths = [(length - 1) // unit * unit for length in prompt_lengths]
             reason = DECODE_REAL_KV_REASON
@@ -495,7 +614,7 @@ class Glm53FlashPrefixSeedScheduler(native.InstrumentedScheduler):
         specs, salts = self._glm_repetition_prompts(point, attempt)
         self._bench_current_point = point
         self._bench_current_fpms = []
-        self._bench_expected_fpms = 2 if point.point_type == "decode" else 1
+        self._bench_expected_fpms = self._glm_rows["measured_decode_step"] if point.point_type == "decode" else 1
         self._glm_rep_dispatches = []
         self._glm_rep_scheduled = []
         self._glm_rep_record = {
@@ -508,11 +627,14 @@ class Glm53FlashPrefixSeedScheduler(native.InstrumentedScheduler):
         self._glm_stage = "measure"
         prompts = [build_prompt(self._glm_tokens, spec) for spec in specs]
         self._glm_rep_record["request_ids"] = self._glm_inject(
-            prompts, max_tokens=3 if point.point_type == "decode" else 1, salts=salts, role=f"r{attempt}"
+            prompts,
+            max_tokens=self._bench_expected_fpms + 1 if point.point_type == "decode" else 1,
+            salts=salts,
+            role=f"r{attempt}",
         )
 
     def _glm_rejection(self, point, fpms):
-        expected_count = 2 if point.point_type == "decode" else 1
+        expected_count = self._glm_rows["measured_decode_step"] if point.point_type == "decode" else 1
         if len(fpms) != expected_count:
             return f"recorded {len(fpms)} native FPMs, expected {expected_count}"
         reason = self._bench_fpm_validation_failure(point, fpms[-1])
@@ -523,9 +645,8 @@ class Glm53FlashPrefixSeedScheduler(native.InstrumentedScheduler):
             return "measured prefill step is mixed with decode"
         if point.point_type == "decode":
             first = fpms[0]["scheduled_requests"]
-            if (
-                first.get("num_decode_requests") != point.batch_size
-                or first.get("sum_decode_kv_tokens") != point.total_kv_read_tokens - point.batch_size
+            if first.get("num_decode_requests") != point.batch_size or first.get("sum_decode_kv_tokens") != sum(
+                self._glm_rows["prompt"]
             ):
                 return "first decode step is not the all-B lockstep step"
         return None
@@ -539,6 +660,7 @@ class Glm53FlashPrefixSeedScheduler(native.InstrumentedScheduler):
         record = {
             **self._glm_rep_record,
             "ended_unix_ns": time.time_ns(),
+            "prefill_chunks": self._glm_take_chunk_starts(f"repetition {self._glm_rep_record['attempt']}"),
             "fpms": fpms,
             "scheduled_token_counts": list(self._glm_rep_scheduled),
             "dispatches": dispatches,
@@ -589,6 +711,7 @@ class Glm53FlashPrefixSeedScheduler(native.InstrumentedScheduler):
         self._glm_point = None
         self._glm_seed = None
         self._glm_rows = None
+        self._glm_prompt_lengths = {}
 
     def _bench_cleanup_requests(self):
         super()._bench_cleanup_requests()
@@ -667,6 +790,7 @@ class Glm53FlashPrefixSeedScheduler(native.InstrumentedScheduler):
         output["producer"] = {
             "instrumentation_revision": DYNAMO_SHA,
             "real_seed_port_source": REAL_SEED_SOURCE,
+            "queued_metrics_port_source": QUEUED_PORT_SOURCE,
             "vllm_package_version": __import__("vllm").__version__,
             "reviewed_scheduler_api_revision": VLLM_SHA,
             "runtime_source_manifest_sha256": vllm_source_manifest_sha256(

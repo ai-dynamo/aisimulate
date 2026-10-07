@@ -47,7 +47,11 @@ def chain(tmp_path, monkeypatch, outer, actual):
     for entry in payload["input_provenance"]["native_hardware_manifest"]:
         hardware_path = pod / entry["file"]
         receipt = json.loads(hardware_path.read_bytes())
-        receipt.update(backend_version=actual, collector_provenance_sha256=provenance_sha)
+        receipt.update(
+            backend_version=actual,
+            collector_provenance_sha256=provenance_sha,
+            worker_source_sha256=identity.vllm_source_pins(actual, manifest)["vllm/v1/worker/gpu_worker.py"],
+        )
         if closure:
             receipt["runtime_closure"] = {
                 "contract_sha256": identity._canonical_sha256(closure),
@@ -69,7 +73,7 @@ def read_provenance(cell, payload, path, expected=None):
     )
 
 
-@pytest.mark.parametrize("version", ["0.30.0", CANDIDATE])
+@pytest.mark.parametrize("version", ["0.31.0", CANDIDATE])
 @pytest.mark.parametrize("has_plan", [False, True])
 def test_matching_actual_runtime_chain(tmp_path, monkeypatch, version, has_plan):
     cell, payload, path = chain(tmp_path, monkeypatch, version, version)
@@ -77,7 +81,7 @@ def test_matching_actual_runtime_chain(tmp_path, monkeypatch, version, has_plan)
     validate_vllm_hardware_receipts(cell, payload, path)
 
 
-@pytest.mark.parametrize("outer,actual", [("0.30.0", CANDIDATE), (CANDIDATE, "0.30.0")])
+@pytest.mark.parametrize("outer,actual", [("0.31.0", CANDIDATE), (CANDIDATE, "0.31.0")])
 def test_rehashed_collector_provenance_cannot_relabel_actual_workers(tmp_path, monkeypatch, outer, actual):
     cell, payload, path = chain(tmp_path, monkeypatch, outer, actual)
     with pytest.raises(ValueError, match="producer differs from Collector runtime"):
@@ -90,7 +94,7 @@ def test_rehashed_collector_provenance_cannot_relabel_actual_workers(tmp_path, m
         native_artifact.validate_native_collection(cell, path.parent.parent)
 
 
-@pytest.mark.parametrize("actual,expected", [("0.30.0", CANDIDATE), (CANDIDATE, "0.30.0")])
+@pytest.mark.parametrize("actual,expected", [("0.31.0", CANDIDATE), (CANDIDATE, "0.31.0")])
 def test_consistent_actual_runtime_cannot_replace_frozen_plan_version(tmp_path, monkeypatch, actual, expected):
     cell, payload, path = chain(tmp_path, monkeypatch, actual, actual)
     monkeypatch.setattr(native_artifact, "_rank_artifacts", lambda _: [(path, payload)])
@@ -100,7 +104,7 @@ def test_consistent_actual_runtime_cannot_replace_frozen_plan_version(tmp_path, 
 
 @pytest.mark.parametrize("producer", [None, {}, {"vllm_package_version": "0.30.0+unknown"}])
 def test_missing_or_unqualified_producer_is_not_aliased(tmp_path, monkeypatch, producer):
-    cell, payload, path = chain(tmp_path, monkeypatch, "0.30.0", "0.30.0")
+    cell, payload, path = chain(tmp_path, monkeypatch, "0.31.0", "0.31.0")
     payload["producer"] = producer
     with pytest.raises(ValueError, match="producer differs"):
         read_provenance(cell, payload, path)

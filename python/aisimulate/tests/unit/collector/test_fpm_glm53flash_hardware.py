@@ -19,7 +19,7 @@ def native_worker(monkeypatch, tmp_path, *, name="NVIDIA GB300", rank=0):
     output = tmp_path / "benchmark.json"
     monkeypatch.setenv("DYN_FPM_BENCHMARK_OUTPUT_PATH", str(output))
     (tmp_path / "collector-provenance.json").write_text('{"attempt_id":"test-attempt"}\n')
-    monkeypatch.setattr(hardware.importlib.metadata, "version", lambda _: "0.30.0")
+    monkeypatch.setattr(hardware.importlib.metadata, "version", lambda _: "0.31.0")
     ready = []
 
     class Worker:
@@ -79,14 +79,14 @@ def artifact(tmp_path):
     source_manifest = source_path.read_bytes()
     source_pin = json.loads(source_manifest)["vllm/v1/worker/gpu_worker.py"]
     provenance = tmp_path / "collector-provenance.json"
-    provenance.write_text('{"attempt_id":"test-attempt","runtime":{"backend":"vllm","backend_version":"0.30.0"}}\n')
+    provenance.write_text('{"attempt_id":"test-attempt","runtime":{"backend":"vllm","backend_version":"0.31.0"}}\n')
     entries = []
     for rank in range(2):
         receipt = {
             "schema_version": 1,
             "status": "passed",
             "backend": "vllm",
-            "backend_version": "0.30.0",
+            "backend_version": "0.31.0",
             "collector_provenance_sha256": hashlib.sha256(provenance.read_bytes()).hexdigest(),
             "tp_rank": rank,
             "tp_size": 2,
@@ -106,7 +106,7 @@ def artifact(tmp_path):
     payload = {
         "producer": {
             "hardware_contract_version": 1,
-            "vllm_package_version": "0.30.0",
+            "vllm_package_version": "0.31.0",
             "runtime_source_manifest_sha256": hashlib.sha256(source_manifest).hexdigest(),
         },
         "input_provenance": {"native_hardware_manifest": entries},
@@ -193,7 +193,11 @@ def test_rehashed_repair_receipt_needs_actual_every_rank_binary_closure(monkeypa
         receipt_path = path.with_name(entry["file"])
         receipt = json.loads(receipt_path.read_text())
         receipt.update(
-            backend_version=version, runtime_closure=observations, collector_provenance_sha256=provenance_sha
+            backend_version=version,
+            runtime_closure=observations,
+            collector_provenance_sha256=provenance_sha,
+            # A 0.30.0-based repair binds the 0.30.0 worker source.
+            worker_source_sha256=identity.vllm_source_pins(version, manifest)["vllm/v1/worker/gpu_worker.py"],
         )
         receipt_path.write_text(json.dumps(receipt))
         entry["sha256"] = hashlib.sha256(receipt_path.read_bytes()).hexdigest()

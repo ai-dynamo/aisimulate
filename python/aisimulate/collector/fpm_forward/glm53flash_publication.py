@@ -54,7 +54,8 @@ def partition_table(source: Path, metadata: Path, destination: Path) -> list[dic
             model not in MODEL_REVISIONS
             or backend not in {"vllm", "sglang"}
             or type(tp) is not int
-            or tp not in (2, 4)
+            # TP1 is collected for the NVFP4 checkpoint only.
+            or tp not in ((1, 2, 4) if model == "nvidia/GLM-5.3-Flash-NVFP4" else (2, 4))
             or row.get("system") != "gb300"
             or original.get("system") != "gb300"
             or original.get("backend") != backend

@@ -335,7 +335,7 @@ def test_acceptance_crossbinds_vllm_capture_policy_and_checks_holdout_markers(tm
             },
             runtime_run_id="run",
             runtime_grid_digest="grid",
-            backend_version="0.30.0",
+            backend_version="0.31.0",
         )
 
     monkeypatch.setattr(validation, "validate_native_collection", reader)
@@ -435,7 +435,7 @@ def test_database_and_acceptance_use_the_tp_latency_with_the_admitted_label(tmp_
             },
             runtime_run_id="run",
             runtime_grid_digest="grid",
-            backend_version="0.30.0",
+            backend_version="0.31.0",
             latency_reduction="sglang_tp_fastest_rank_duration_median_v1",
         )
 
