@@ -9,6 +9,7 @@ import importlib.metadata
 import inspect
 import json
 import os
+import subprocess
 import time
 import traceback
 from pathlib import Path
@@ -91,6 +92,26 @@ def observe(**kwargs):
 collector.benchmark_with_power = observe
 completed = []
 failed = []
+
+
+def clock_receipt(label):
+    fields = (
+        "index,uuid,clocks.current.graphics,clocks.current.sm,clocks.current.memory,"
+        "pstate,temperature.gpu,power.draw,power.limit"
+    )
+    observed = subprocess.run(
+        ["nvidia-smi", "--query-gpu=" + fields, "--format=csv"], capture_output=True, text=True, check=True
+    )
+    with (out / "gpu-clock-observations.jsonl").open("a") as stream:
+        stream.write(
+            json.dumps(
+                dict(label=label, time_utc=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), csv=observed.stdout)
+            )
+            + "\n"
+        )
+
+
+clock_receipt("before-first-case")
 keys = [
     "seq_len",
     "batch_size",
@@ -126,11 +147,14 @@ for case in [*plan["cases"], *plan["repeat_controls"]]:
             )
         )
         save("completed.json", completed)
+        if len(completed) % 20 == 0:
+            clock_receipt(case["id"])
         print("COMPLETE", case["id"], flush=True)
     except Exception as exc:
         failed.append(dict(case_id=case["id"], error=repr(exc), traceback=traceback.format_exc()))
         save("failures.json", failed)
         raise
+clock_receipt("after-last-case")
 for dest in [out / "data", out / "controls"]:
     if dest.exists():
         for csv in sorted(dest.glob("*_perf.txt")):

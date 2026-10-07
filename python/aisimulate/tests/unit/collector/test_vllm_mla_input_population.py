@@ -13,21 +13,15 @@ import pytest
 pytestmark = pytest.mark.unit
 SOURCE = Path(__file__).resolve().parents[3] / "collector/vllm/collect_mla_module.py"
 
-# Fork-worker tests retain a torch mock in sys.modules. Resolve real tensors
-# without replacing the mock those tests need, including when torch is absent.
-_saved_torch = sys.modules.get("torch")
-if isinstance(_saved_torch, MagicMock):
-    sys.modules.pop("torch")
-try:
-    torch = pytest.importorskip("torch")
-finally:
-    if isinstance(_saved_torch, MagicMock):
-        sys.modules["torch"] = _saved_torch
 
-
-@pytest.fixture(autouse=True)
-def _use_real_torch(monkeypatch):
-    monkeypatch.setitem(sys.modules, "torch", torch)
+@pytest.fixture
+def torch(monkeypatch):
+    # Resolve optional tensors at execution time so CPU-only CI can still
+    # inventory every test. Other collector suites may retain a torch mock.
+    with monkeypatch.context() as context:
+        if isinstance(sys.modules.get("torch"), MagicMock):
+            context.delitem(sys.modules, "torch")
+        yield pytest.importorskip("torch")
 
 
 def _load_function(name, torch):
@@ -39,7 +33,7 @@ def _load_function(name, torch):
 
 
 @pytest.mark.parametrize("meta_weight", [False, True])
-def test_materialization_preserves_nonpersistent_rotary_and_scale_buffers(meta_weight):
+def test_materialization_preserves_nonpersistent_rotary_and_scale_buffers(meta_weight, torch):
     module = torch.nn.Module()
     module.projection = torch.nn.Linear(4, 4, device="meta" if meta_weight else "cpu")
     module.rotary = torch.nn.Module()
@@ -56,7 +50,7 @@ def test_materialization_preserves_nonpersistent_rotary_and_scale_buffers(meta_w
     assert "rotary.cos_sin_cache" not in moved.state_dict()
 
 
-def test_materialization_rejects_meta_runtime_buffer_without_a_constructor_value():
+def test_materialization_rejects_meta_runtime_buffer_without_a_constructor_value(torch):
     module = torch.nn.Linear(4, 4, device="meta")
     module.register_buffer("cos_sin_cache", torch.empty(4, device="meta"), persistent=False)
     move = _load_function("_move_module_preserving_buffers", torch)
@@ -65,7 +59,7 @@ def test_materialization_rejects_meta_runtime_buffer_without_a_constructor_value
 
 
 @pytest.mark.parametrize("dtype_name", ["float8_e4m3fn", "float8_e5m2"])
-def test_synthetic_fp8_weights_produce_nonzero_queries_without_changing_buffers_or_rng(dtype_name):
+def test_synthetic_fp8_weights_produce_nonzero_queries_without_changing_buffers_or_rng(dtype_name, torch):
     def make_module():
         module = torch.nn.Module()
         module.weight = torch.nn.Parameter(torch.empty(128, 256, dtype=getattr(torch, dtype_name)), requires_grad=False)
@@ -95,7 +89,7 @@ def test_synthetic_fp8_weights_produce_nonzero_queries_without_changing_buffers_
     assert torch.count_nonzero(first.packed_weight) == 0
 
 
-def test_nvfp4_fp8_scale_storage_is_not_treated_as_a_projection_weight():
+def test_nvfp4_fp8_scale_storage_is_not_treated_as_a_projection_weight(torch):
     module = torch.nn.Module()
     module.projection = torch.nn.Module()
     module.projection.weight = torch.nn.Parameter(torch.empty(16, 64, dtype=torch.uint8), requires_grad=False)
@@ -112,7 +106,7 @@ def test_nvfp4_fp8_scale_storage_is_not_treated_as_a_projection_weight():
     assert module.projection.weight_scale_2.item() == 0.5
 
 
-def test_indexer_history_uses_native_quantization_with_bounded_diverse_keys(monkeypatch):
+def test_indexer_history_uses_native_quantization_with_bounded_diverse_keys(monkeypatch, torch):
     calls = []
 
     def native_insert(keys, cache, slots, block_size, scale_format):
@@ -145,7 +139,7 @@ def test_indexer_history_uses_native_quantization_with_bounded_diverse_keys(monk
     assert torch.equal(first_keys, calls[0][0])
 
 
-def test_indexer_history_rejects_an_incompatible_packed_cache(monkeypatch):
+def test_indexer_history_rejects_an_incompatible_packed_cache(monkeypatch, torch):
     monkeypatch.setitem(sys.modules, "vllm", SimpleNamespace(_custom_ops=SimpleNamespace()))
     populate = _load_function("_populate_indexer_kv_cache", torch)
     with pytest.raises(ValueError, match="FP8 values and FP32 scales"):

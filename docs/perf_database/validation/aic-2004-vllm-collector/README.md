@@ -35,22 +35,27 @@ mean completion of the full collector grid or qualification of other GPUs.
 
 The paired simulation PR consumes full/reuse measurements using the physical
 21/57 GLM layer split; DeepSeek-V3.2 remains 61 full-indexer layers. Historical
-whole-forward comparisons are cross-version diagnostics and are reported in
-that PR, separately from native module measurements.
+whole-forward comparisons use the original vLLM 0.25.1 truth cohort and are
+reported in that PR. They are historical diagnostics, not fresh deployment-matched
+whole-model accuracy acceptance; other operation tables can resolve mixed versions.
 
 `independent-review.json` records the independent review, the two findings
 subsequently fixed (decode coordinates and engine backend selection), and the
-limits of CPU lifecycle tests. GPU receipts retain the actual collector revision `8f7dfc09`. The subsequent
-source-only import ordering change does not change the measurement functions.
+limits of CPU lifecycle tests. GPU receipts retain the actual collector revision `36f40cd4`. Since the
+reviewed revision, collector source changed only in import ordering.
 
 ## Measured data
 
 The B200 campaign completed 154 target cases and 2 repeat controls on GPU
-`7adde65f-566f-24de-aef0-1167ac85806d`, node `umb-b200-263`, Slurm job
-4763305. It produced 184 context rows (106 full, 78 reuse) and 80 decode rows
+`2eba6257-9bb3-2747-fc09-864946248a91`, node `umb-b200-235`, Slurm job
+4763807 (driver 615.71.09). It produced 184 context rows (106 full, 78 reuse) and 80 decode rows
 (48 full, 32 reuse). All 267 timing observations used CUDA graphs, executed
-30 iterations after 10 warmups, and reported no throttling. The three repeated
-full/reuse observations changed by at most 4.47%. Rows have unique consumer
+30 iterations after 10 warmups. The three repeated full/reuse observations
+changed by at most 1.16%. The node had no drain flag before or after collection;
+periodic active-run samples recorded 1965 MHz SM and 3996 MHz memory clocks,
+and the postflight clock-event bitmask was zero. These are periodic observations,
+not per-kernel clock telemetry. Power measurement was disabled, so the helper
+`throttled=False` flag alone is not independent clock-health evidence. Rows have unique consumer
 identities and finite positive latencies; all seven collector-data rules pass.
 
 `data-validation.json` records row counts, hashes, repeated observations and
@@ -60,13 +65,22 @@ attempted workload. `timing-receipts.json` preserves raw full-precision timings;
 production parquet uses the collector's normal four-decimal millisecond
 serialization. `repeat-controls/` stays outside the production dataset.
 
-The original first pass completed too, but preceded the decode-coordinate
-repair. It is not shipped as corrected data. Both phases were recollected
-from the fixed source, so no old row was relabeled.
+The original first pass preceded the decode-coordinate repair. A later pass
+on that same node was also superseded after the node was administratively
+flagged for pegged clocks; this does not establish which GPU was affected.
+`superseded-node-observation.json` preserves the old identity and data hashes.
+Both production tables come entirely from the final job on node 235, from fixed
+source; no old row was relabeled or blended into these two tables.
+
+The 20 new backend-fact entries were drafted from the new native labels and
+reviewed against `platforms/cuda.py:91–116` at the pinned vLLM commit: SM100
+FP8 KV selects FlashInfer; BF16 KV selects FlashInfer at local heads <=16 and
+FlashMLA above that. Both appear in a BF16 precision slice because the registry
+intentionally does not key on head count. Existing registry entries are unchanged.
 
 ## Reproduce
 
-Check out collector revision `8f7dfc09383f19bb9eda247f01289385202b4e67`.
+Check out collector revision `36f40cd4a611adb1590ccf0f2f8f006154c6bb72`.
 In the pinned vLLM image from `runtime-identity.json`, expose exactly one
 B200, mount that revision's `python/aisimulate` at `/task/payload`, this evidence
 directory at `/repro`, and an empty writable directory at `/output`. Set

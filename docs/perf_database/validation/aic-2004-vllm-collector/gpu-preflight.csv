@@ -1,2 +1,2 @@
-index, uuid, name, driver_version, memory.total [MiB], memory.used [MiB], power.limit [W]
-0, GPU-7adde65f-566f-24de-aef0-1167ac85806d, NVIDIA B200, 615.71.09, 183359 MiB, 0 MiB, 1000.00 W
+index, uuid, name, driver_version, memory.total [MiB], memory.used [MiB], pstate, clocks.current.sm [MHz], clocks.current.memory [MHz], power.draw [W], power.limit [W], temperature.gpu, clocks_event_reasons.active
+0, GPU-2eba6257-9bb3-2747-fc09-864946248a91, NVIDIA B200, 615.71.09, 183359 MiB, 0 MiB, P0, 120 MHz, 3996 MHz, 192.24 W, 1000.00 W, 30, 0x0000000000000001

@@ -1,13 +1,13 @@
 {
   "scope": "Bounded B200 DSA target matrix, not full supported grid or whole-model acceptance.",
   "accuracy_acceptance": "NOT_EVALUATED",
-  "collector_ref": "8f7dfc09383f19bb9eda247f01289385202b4e67",
+  "collector_ref": "36f40cd4a611adb1590ccf0f2f8f006154c6bb72",
   "tables": {
     "dsa_context_module_perf.parquet": {
       "rows": 184,
-      "sha256": "eff67f980ed77aee7272334392da9395d17927c616c322de89183374913a46cd",
-      "min_latency_ms": 0.0492,
-      "max_latency_ms": 96.0302,
+      "sha256": "715e196598f34d28f6935a6a998e280d9b7cc9970bd26e6faca83a081cd27632",
+      "min_latency_ms": 0.0489,
+      "max_latency_ms": 100.5754,
       "op_counts": {
         "dsa_context_module": 106,
         "dsa_context_module_skip_indexer": 78
@@ -15,9 +15,9 @@
     },
     "dsa_generation_module_perf.parquet": {
       "rows": 80,
-      "sha256": "66012a2a2aba421947bc968cccc8da3230355b167056ecd7ea423ce171371c5a",
-      "min_latency_ms": 0.05,
-      "max_latency_ms": 0.1589,
+      "sha256": "81075710ddd5ac1aea5077aea80e11bb5c07d524d86edad0a978b7ab69610712",
+      "min_latency_ms": 0.0501,
+      "max_latency_ms": 0.1872,
       "op_counts": {
         "dsa_generation_module": 48,
         "dsa_generation_module_skip_indexer": 32
@@ -39,32 +39,51 @@
     "Complete means completion of the attested target manifest, not the full collector grid.",
     "Serving version 0.25.1 is retained; public next slot resolves these with older same-backend data for unmeasured coordinates."
   ],
-  "repeatability": [
+  "repeated_observations": [
     {
       "case_id": "glm-bf16-h8-fp8-generation-s8192-p0",
       "skip_indexer": false,
-      "initial_ms": 0.0863754669825236,
-      "repeat_ms": 0.08808639844258627,
-      "relative_change_pct": 1.9808071896257884
+      "initial_ms": 0.09106773535410563,
+      "repeat_ms": 0.09202666282653808,
+      "relative_change_pct": 1.0529826713091994
     },
     {
       "case_id": "glm-bf16-h8-fp8-generation-s8192-p0",
       "skip_indexer": true,
-      "initial_ms": 0.05002453327178955,
-      "repeat_ms": 0.05225919882456462,
-      "relative_change_pct": 4.467139234730788
+      "initial_ms": 0.05010666847229004,
+      "repeat_ms": 0.049525332450866696,
+      "relative_change_pct": -1.1601969141988189
     },
     {
       "case_id": "deepseek-fp8-h16-fp8-context-s1024-p131072",
       "skip_indexer": false,
-      "initial_ms": 2.2085952758789062,
-      "repeat_ms": 2.2081387837727866,
-      "relative_change_pct": -0.020668889004027413
+      "initial_ms": 2.300896962483724,
+      "repeat_ms": 2.299421946207682,
+      "relative_change_pct": -0.0641061420868505
     }
   ],
-  "max_abs_repeat_change_pct": 4.467139234730788,
-  "all_observations_used_cuda_graph": true,
-  "all_observations_executed_iterations": 30,
-  "observed_throttled_count": 0,
-  "validation_rules": "check_collector_data.py R1-R7 passed"
+  "max_absolute_repeat_change_pct": 1.1601969141988189,
+  "gpu_health": {
+    "job": "4763807",
+    "node": "umb-b200-235",
+    "gpu_uuid": "GPU-2eba6257-9bb3-2747-fc09-864946248a91",
+    "driver": "615.71.09",
+    "node_pre_post_no_drain_flag": true,
+    "postflight_clock_event_reasons": "0x0000000000000000",
+    "clock_samples": 9,
+    "active_interval_sm_clock_mhz": 1965,
+    "memory_clock_mhz": 3996,
+    "power_measurement_enabled": false,
+    "helper_throttled_flag_is_not_independent_health_evidence": true,
+    "limits": "Periodic clock samples and pre/postflight receipts are not per-kernel clock telemetry."
+  },
+  "tests": {
+    "collector_unit_suite": {
+      "passed": 3814,
+      "skipped": 47,
+      "deselected": 39
+    },
+    "native_input_graph_row_real_torch": 32,
+    "independent_lifecycle_rows": 30
+  }
 }

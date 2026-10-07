@@ -1,6 +1,6 @@
 {
   "scope": "Bounded B200 DSA target matrix, not full supported grid or whole-model acceptance.",
-  "collector_ref": "8f7dfc09383f19bb9eda247f01289385202b4e67",
+  "collector_ref": "36f40cd4a611adb1590ccf0f2f8f006154c6bb72",
   "warmups": 10,
   "iterations": 30,
   "cases": [
