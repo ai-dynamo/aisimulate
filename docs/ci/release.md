@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0
 
 # Release artifacts and qualification
 
-AISimulate 0.13.0 has one product version and exactly two release artifacts:
+AISimulate 0.14.0 has one product version and exactly two release artifacts:
 
 | Artifact | Build manifest | Public purpose |
 | --- | --- | --- |
@@ -25,7 +25,7 @@ The pinned-image `collector.sglang_rubin` operation collectors are source-checko
 builds and validates the output directory afterward. A release build fails if
 an additional wheel, source distribution, or crate appears.
 
-Both artifacts use version `0.13.0`. The wheel builds its native extension from
+Both artifacts use version `0.14.0`. The wheel builds its native extension from
 the same Rust source as the published crate; it does not install a second core
 distribution.
 
@@ -44,8 +44,8 @@ fails CI if either packaging copy differs byte-for-byte from its root original,
 and the release-artifact validator checks the bytes installed in the wheel.
 
 Nightly builds stamp a dev suffix with `scripts/release/apply_dev_version.py` before
-building: the wheel becomes `0.13.0.devYYYYMMDD` (PEP 440) and the crate
-`0.13.0-dev.YYYYMMDD` (SemVer — cargo rejects the PEP 440 spelling, and the
+building: the wheel becomes `0.14.0.devYYYYMMDD` (PEP 440) and the crate
+`0.14.0-dev.YYYYMMDD` (SemVer — cargo rejects the PEP 440 spelling, and the
 dotted date is a numeric identifier so pre-release versions order
 numerically). The wheel form follows the ai-dynamo/dynamo nightly
 convention. The release script accepts only this suffix pair and still
@@ -76,7 +76,7 @@ Main branch nightly CI builds the approved release surface: one `aisimulate` whe
 architecture and one `aisimulate-core` Rust source crate. A changes guard compares
 `main` with the last successful scheduled nightly. The build stamps a dev version using the original UTC run-creation date followed
 by its zero-padded ten-digit workflow run number, for example
-`0.13.0.dev202609170000001234`. Scheduled and manual runs have distinct versions;
+`0.14.0.dev202609170000001234`. Scheduled and manual runs have distinct versions;
 retries retain the same version, and later dates sort after earlier dates. Builds
 use pinned tooling and record checksums and provenance.
 
