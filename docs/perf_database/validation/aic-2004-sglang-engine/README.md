@@ -13,7 +13,7 @@ calibration, SOL diagnostics and FPM's SOL-based transfer use the same variant.
 The FPM decode roofline now applies the existing `21/78` full-layer fraction.
 This changes timing calculations, not memory-capacity or scheduler accounting.
 
-Checkpoint exclusion parsing also distinguished norm exclusions incorrectly:
+Checkpoint exclusion parsing also misclassified norm exclusions:
 GLM FP8's `self_attn.q_a_layernorm` and `kv_a_layernorm` entries were treated as
 exclusions of the entire attention block. Named norms and `indexers_proj` now
 leave the FP8 projection table key intact. Across bundled configurations, this
@@ -49,18 +49,39 @@ the baseline receipt here uses a separate build directory and verified distinct
 native bytes and behavior. The script calls Rust for every estimate and uses
 `RustForwardPassPerfModel.best_available` for whole-model composition.
 
-B200 recollection and held-out validation are pending. They will distinguish
-exact measured-coordinate lookups from extrapolation against withheld points.
-Synthetic inputs do not establish checkpoint-value parity. The available
-historical GLM/SGLang whole-forward data uses a different framework revision,
-model revision and speculative setup; whole-model accuracy remains
-`NOT_EVALUATED` for stock SGLang 0.5.14.
+B200 decode recollection and bounded held-out validation are recorded in
+[`gpu-decode-validation.json`](gpu-decode-validation.json), with the six original
+rows in [`measured-decode.parquet`](measured-decode.parquet). Each case executes
+one new token, with native input IDs, positions and total KV length verified;
+the collector records 50 CUDA graph iterations under stock SGLang 0.5.14.
+Both engines return all six measured coordinates exactly. The existing
+21-full/57-reuse composition also matches all three measured-row sums.
+
+With only the history-8192 full/skip pair retained, the two longer histories
+produce these unweighted held-out errors:
+
+| Component | Baseline MAPE | Fixed MAPE |
+| --- | ---: | ---: |
+| Full layer | 48.18% | 48.18% |
+| Reuse layer | 91.35% | 1.99% |
+| 21 full + 57 reuse layers | 18.64% | 35.41% |
+
+The full-layer extrapolation still underestimates the long histories. Removing
+the reuse overestimate removes an accidental cancellation, so the combined
+attention error increases. This is a remaining limitation, not an accuracy
+acceptance pass. The combined reference is a sum of module observations, not
+an eight-GPU whole forward. These points share one campaign and synthetic
+inputs; they do not establish checkpoint-value parity or full-matrix accuracy.
+Historical GLM/SGLang whole-forward data uses a different framework revision,
+model revision and speculative setup. Whole-model accuracy remains
+`NOT_EVALUATED` for stock SGLang 0.5.14. The earlier six-point trial omitted
+native input materialization and is excluded from this validation.
 
 To isolate a new GPU decode slice without shared-source leakage:
 
 ```bash
 python docs/perf_database/validation/aic-2004-sglang-engine/prepare_decode_validation.py \
-  --source-parquet /path/to/collected/dsa_generation_module_perf.parquet \
+  --source-parquet docs/perf_database/validation/aic-2004-sglang-engine/measured-decode.parquet \
   --systems-root python/aisimulate/src/aisimulate_core/systems \
   --output-dir /path/to/new/private-validation
 python docs/perf_database/validation/aic-2004-sglang-engine/validate.py \
