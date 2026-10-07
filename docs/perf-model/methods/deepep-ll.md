@@ -33,46 +33,46 @@ the established large-EP compute predictor.
 
 Let:
 
-- \(B_r\): source tokens presented to each rank for one decode step;
-- \(P\): number of ranks/GPUs in the MoE expert-parallel group;
-- \(K\): Top-K experts selected by each token;
-- \(N\): total experts;
-- \(H\): hidden size.
+- $B_r$: source tokens presented to each rank for one decode step;
+- $P$: number of ranks/GPUs in the MoE expert-parallel group;
+- $K$: Top-K experts selected by each token;
+- $N$: total experts;
+- $H$: hidden size.
 
 `MoEAllToAll` receives **per-rank source tokens**, so its table/Monte Carlo
-query uses \(B_r\). The corresponding global source-token count is
+query uses $B_r$. The corresponding global source-token count is
 
-\[
+```math
 B = P B_r,
-\]
+```
 
-and the routing matrix contains \(B K=P B_r K\) token-to-expert assignments.
+and the routing matrix contains $B K=P B_r K$ token-to-expert assignments.
 The model does not multiply communication tokens by attention-DP again.
 
 ## 3. Logical routes and physical bottlenecks
 
-Routing can be represented by a \(P\times P\) matrix \(M\), where
-\(M_{ij}\) is the number of expert assignments sent from source rank \(i\) to
-destination rank \(j\). These are \(P^2\) **logical flows**, not \(P^2\)
+Routing can be represented by a $`P\times P`$ matrix $M$, where
+$`M_{ij}`$ is the number of expert assignments sent from source rank $i$ to
+destination rank $j$. These are $P^2$ **logical flows**, not $P^2$
 independent physical channels.
 
-The critical communication resources are the \(P\) GPU endpoints. For one
-path (NVLink/MNVL or IB), endpoint \(i\)'s directional loads are
+The critical communication resources are the $P$ GPU endpoints. For one
+path (NVLink/MNVL or IB), endpoint $i$'s directional loads are
 
-\[
+```math
 TX_i=\sum_j M_{ij},\qquad RX_i=\sum_j M_{ji}.
-\]
+```
 
 The hardware bandwidth values in `SystemSpec` are bytes/s per GPU in one
 direction. RDMA, IB, and NVLink can transmit and receive concurrently, so a
 full-duplex endpoint is modeled with
 
-\[
+```math
 L_{endpoint}=\max(\max_i TX_i,\max_i RX_i),
-\]
+```
 
-not `send + recv`. This aggregation is why the model sizes \(P\) endpoints
-while still sampling the full \(P^2\) traffic matrix.
+not `send + recv`. This aggregation is why the model sizes $P$ endpoints
+while still sampling the full $P^2$ traffic matrix.
 
 ## 4. Per-assignment payload
 
@@ -87,18 +87,18 @@ combine in the
 
 For hidden size divisible by 128,
 
-\[
+```math
 S_d = H + 4\frac{H}{128} + 16\quad\text{bytes}.
-\]
+```
 
-The terms are \(H\) FP8 activation bytes, one four-byte scale per 128 values,
+The terms are $H$ FP8 activation bytes, one four-byte scale per 128 values,
 and 16 bytes of routing metadata.
 
 ### 4.2 Combine: BF16
 
-\[
+```math
 S_c = 2H\quad\text{bytes}.
-\]
+```
 
 The implementation makes the phase dtypes explicit (`fp8` for dispatch and
 `bfloat16` for combine). The current DeepEP collector persists both phases as
@@ -131,9 +131,9 @@ coverage rule (“at least one viable node-1 curve”) identical to runtime even
 when the preferred donor curve is present but unusable.
 
 No interpolation or nearest-neighbor substitution is permitted along
-\(H\), \(K\), or \(N\). Within the selected curve, an exact token point is
+$H$, $K$, or $N$. Within the selected curve, an exact token point is
 used directly; otherwise the existing token-axis interpolation is used. Both
-cases are exact-topology calibration when the curve's \(P\) and node topology
+cases are exact-topology calibration when the curve's $P$ and node topology
 match the request; token interpolation alone does not turn it into a donor.
 
 Calibration provenance has four states: `ExactOls`, `ExactOneShot`,
@@ -149,19 +149,19 @@ historical EP=`node_num * 8` behavior.
 ## 6. OLS, startup latency, and fitted bandwidth
 
 When the selected curve has at least two points, every token point
-\((x_i,y_i)\) participates in an unweighted ordinary least-squares fit:
+$(x_i,y_i)$ participates in an unweighted ordinary least-squares fit:
 
-\[
+```math
 y=ax+b.
-\]
+```
 
 The model uses
 
-\[
+```math
 t_0=\max(b,0)
-\]
+```
 
-as the fixed startup/kernel overhead and interprets \(a\) as the fitted
+as the fixed startup/kernel overhead and interprets $a$ as the fitted
 per-source-token variable-time slope. A finite negative intercept caused by
 measurement noise is clamped to zero. A curve is rejected when it has fewer
 than two points for OLS, non-positive slope, zero token variance, or
@@ -172,45 +172,45 @@ pool contains valid multi-point OLS curves from the same database/system,
 framework version, `deepep_ll` backend, phase, SMS, and equivalent physical
 dtype. Typed and `default` copies of the same physical curve count once. The
 borrowed startup is the standard median of their intercepts. For the point
-\((B_1,T_1)\), the one-shot slope is
+$(B_1,T_1)$, the one-shot slope is
 
-\[
+```math
 a=\frac{T_1-t_0}{B_1}.
-\]
+```
 
 The point is rejected, and resolution continues, when no system startup is
-available, \(B_1\leq0\), \(T_1\leq t_0\), or the result is non-finite. This is
+available, $`B_1\leq0`$, $`T_1\leq t_0`$, or the result is non-finite. This is
 a coverage rule as well as a runtime rule: coverage cannot admit a candidate
 that runtime cannot calibrate.
 
-For phase payload \(S\), the fitted effective one-direction bandwidth is
+For phase payload $S$, the fitted effective one-direction bandwidth is
 
-\[
+```math
 \beta_{fit}=\frac{KS}{a\times 10^{-3}},
-\]
+```
 
-where \(a\) is in milliseconds per source token. This bandwidth is a
+where $a$ is in milliseconds per source token. This bandwidth is a
 diagnostic interpretation of the OLS slope; the runtime equivalently retains
-the measured variable-time term \(\max(T_{base}-t_0,0)\).
+the measured variable-time term $`\max(T_{base}-t_0,0)`$.
 
 ## 7. Two bandwidth sources
 
 The model deliberately retains two independent bandwidth sources:
 
-- \(\beta_{fit}\) comes from the parquet curve's OLS slope. It includes the
+- $`\beta_{fit}`$ comes from the parquet curve's OLS slope. It includes the
   behavior of the measured LL kernel and communication stack.
-- \(\beta_{spec}\) comes from the system YAML (`SystemSpec`) and is a hardware
+- $`\beta_{spec}`$ comes from the system YAML (`SystemSpec`) and is a hardware
   path limit. It is not a fitted slope.
 
 For an exact-topology curve, the runtime uses the measured variable-time term
-and does not apply a \(\beta_{spec}\) floor. For a single-domain donor, it
+and does not apply a $`\beta_{spec}`$ floor. For a single-domain donor, it
 compares the fit-derived and topology-spec **times** and selects the slower
 one. It never silently replaces a measured slope with the larger advertised
 bandwidth.
 
 ## 8. Topology paths
 
-Ranks and experts use continuous placement. Each rank owns \(N/P\) adjacent
+Ranks and experts use continuous placement. Each rank owns $N/P$ adjacent
 expert IDs.
 
 - GB200/GB300: ranks in the same NVL72 rack use MNVL/NVSwitch. Traffic beyond
@@ -229,7 +229,7 @@ Every positive power-law exponent, including `power_law_1.0`, executes a
 deterministic 4,096-trial Monte Carlo estimate and caches its P50. A value of
 1.0 remains a sampled long-tail distribution; it is not the balanced case.
 Explicit `uniform` and `balanced` routing first guarantee exactly
-\(BK/P=B_rK\) destination assignments per rank and then distribute that quota
+$BK/P=B_rK$ destination assignments per rank and then distribute that quota
 within each rank. Balanced exact-topology latency can therefore be evaluated once because
 its endpoint imbalance is exactly one. Balanced donor modeling still executes
 4,096 random assignment trials to expose source-to-destination path variation.
@@ -237,8 +237,8 @@ its endpoint imbalance is exactly one. Balanced donor modeling still executes
 For each power-law trial:
 
 1. independently sample one power-law weight for every expert;
-2. normalize the weights to \(BK\) assignments and round to integer quotas;
-3. cap each quota at \(B\), so one token cannot select the same expert twice;
+2. normalize the weights to $BK$ assignments and round to integer quotas;
+3. cap each quota at $B$, so one token cannot select the same expert twice;
 4. use the existing rank-round-robin correction to restore the exact quota
    sum;
 5. exchange the busiest contiguous expert rank with rank 0, preserving the
@@ -267,7 +267,7 @@ weights explicitly.
 
 A model string
 `power_law_<alpha>` preserves its alpha; bare `power_law` and unknown names
-use the current default \(\alpha=1.2\).
+use the current default $`\alpha=1.2`$.
 
 The random generator is `ChaCha8Rng` with base seed
 `0xA1C0_DEE5_EED0_0001`. Each trial derives a stable sub-seed from that base,
@@ -275,48 +275,48 @@ so parallel execution and cache misses remain reproducible.
 
 ## 10. Final communication latency
 
-For each trial, let \(\alpha_{comm,trial}\) be the busiest full-duplex logical
+For each trial, let $`\alpha_{comm,trial}`$ be the busiest full-duplex logical
 endpoint load divided by the uniform average endpoint load.
 
 When the selected curve matches the requested topology exactly,
 
-\[
+```math
 T_{trial}^{exact}=t_0+
   \alpha_{comm,trial}\max(T_{base}-t_0,0).
-\]
+```
 
 The measured curve already carries that topology's communication behavior, so
 advertised NVLink/IB bandwidth does not rescale or floor this branch.
 For explicit `balanced`/`uniform` routing, the exact-topology result preserves
-the measured or token-interpolated (T_{base}) verbatim. This is algebraically
-the same expression when (T_{base}\geq t_0), and it deliberately preserves
+the measured or token-interpolated $`T_{base}`$ verbatim. This is algebraically
+the same expression when $`T_{base}\geq t_0`$, and it deliberately preserves
 the anchor when measurement noise puts an individual point below the fitted
 OLS intercept.
 
-When the curve is a single-domain donor, let \(T_{NVLink-spec,trial}\) and
-\(T_{IB-spec,trial}\) be the path times computed from sampled bytes and
+When the curve is a single-domain donor, let $`T_{NVLink-spec,trial}`$ and
+$`T_{IB-spec,trial}`$ be the path times computed from sampled bytes and
 `SystemSpec` bandwidths. Then
 
-\[
+```math
 T_{trial}^{donor}=t_0+\max\left(
   \alpha_{comm,trial}\max(T_{base}-t_0,0),
   T_{NVLink-spec,trial},
   T_{IB-spec,trial}
 \right).
-\]
+```
 
 The runtime scalar is the standard median of the 4,096 complete trial
 latencies (the average of the middle two values for an even sample count):
 
-\[
+```math
 T_{dispatch/combine}=P50(T_{trial}).
-\]
+```
 
 The target load is applied directly to the measured variable-time term. It is
 not divided by a separately simulated uniform baseline. `t0` is added once
 and is never amplified by routing skew.
 
-The cache key contains \(B_r,P,K,N,\alpha\), phase, topology-domain size,
+The cache key contains $`B_r,P,K,N,\alpha`$, phase, topology-domain size,
 payload, fitted variable time, and calibration mode. Donor entries also key on
 both path bandwidths; exact entries deliberately do not. The bounded cache has
 capacity 4,096 and stores the P50 latency consumed by runtime.
@@ -333,10 +333,10 @@ errors.
 DeepEP-LL expert compute uses the existing measured `MoeExpertCompute`
 predictor:
 
-\[
+```math
 T_{compute}=f_{MoeExpertCompute}(B, H, I, K, N, EP,
 \text{quant}, \text{distribution}, \text{phase}).
-\]
+```
 
 The query globalizes per-rank tokens by attention-DP, uses pure expert
 parallelism (`moe_tp_size=1`), and selects the model's already-resolved
@@ -358,12 +358,12 @@ phase/shape curves. An OLS fit over every token point gave:
 
 - 192/192 positive slopes;
 - 192/192 positive raw intercepts, with a minimum of approximately 6.02 µs;
-- median \(R^2\) approximately 0.99909;
-- minimum \(R^2\) approximately 0.9522.
+- median $R^2$ approximately 0.99909;
+- minimum $R^2$ approximately 0.9522.
 
-For GB200, \(H=7168,K=8,N=256,EP=4\):
+For GB200, $H=7168,K=8,N=256,EP=4$:
 
-| Phase | OLS intercept \(b\) | OLS slope \(a\) | \(\beta_{fit}\) | NVLink spec |
+| Phase | OLS intercept $b$ | OLS slope $a$ | $`\beta_{fit}`$ | NVLink spec |
 |---|---:|---:|---:|---:|
 | dispatch | 15.935 µs | 0.0934 µs/token | 634.3 GB/s | 900 GB/s |
 | combine | 16.861 µs | 0.1476 µs/token | 776.8 GB/s | 900 GB/s |
@@ -378,7 +378,7 @@ donor for an unmeasured topology.
 ## 13. Fixed assumptions
 
 - balanced source-token count across ranks;
-- continuous expert placement and \(N\) divisible by \(P\);
+- continuous expert placement and $N$ divisible by $P$;
 - existing AIC independent power-law weight/quota semantics;
 - 4,096 trials for every power-law request and for balanced donors; balanced
   exact topology uses its one equivalent deterministic endpoint trial;

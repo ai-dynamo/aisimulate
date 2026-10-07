@@ -90,9 +90,9 @@ records controls, not trained state.
 By default, an observation contains two finite, nonnegative raw features and
 a positive, finite observed latency in milliseconds:
 
-$$
+```math
 x = [x_0, x_1], \qquad y = \text{observed latency in ms}.
-$$
+```
 
 `RegressionIterationFeatures` computes $x_0$ as critical attention work: a
 maximum over attention-DP ranks after composing each rank's attention score.
@@ -136,37 +136,37 @@ Spline fitting and its retention grid remain restricted to the default A/M axes.
 For the current $n$ retained observations, the population mean and scale of
 feature $j$ are
 
-$$
+```math
 \mu_j = \frac{1}{n}\sum_i x_{ij}, \qquad
 s_j = \sqrt{\frac{1}{n}\sum_i (x_{ij}-\mu_j)^2}.
-$$
+```
 
 The denominator is $n$, not $n-1$. A feature is active only when its scale is
 finite and
 
-$$
+```math
 s_j > 10^{-12}\max(1, |\mu_j|).
-$$
+```
 
-An active feature is transformed to $u_j=(x_j-\mu_j)/s_j$. An inactive feature
+An active feature is transformed to $`u_j=(x_j-\mu_j)/s_j`$. An inactive feature
 has transformed value zero and fitted coefficient zero. The target stays in
 milliseconds; it is not divided by a target standard deviation.
 
 The fitted prediction is
 
-$$
+```math
 \widehat y = a + b_0 u_0 + b_1 u_1, \qquad b_j \ge 0.
-$$
+```
 
 The intercept $a$ is free, including negative values. The slopes are
 constrained to be nonnegative by default; `fit.linear.non_negative: false`
 permits signed slopes. For active axes, the corresponding raw plane
 has coefficients
 
-$$
+```math
 \theta_j = b_j/s_j, \qquad
 \theta_{\mathrm{intercept}} = a - \sum_{j\text{ active}} \theta_j\mu_j.
-$$
+```
 
 Thus nonnegative standardized slopes also mean nonnegative raw slopes.
 The stored intercept $a$ is the value at the retained feature means, not
@@ -178,59 +178,59 @@ uses a consistent snapshot.
 
 Combine the two raw features and target into a three-dimensional vector:
 
-$$
+```math
 z_i = [x_{i0}, x_{i1}, y_i]^\mathsf T.
-$$
+```
 
 `RecursiveFit` maintains a count $n$, mean vector $m$, and symmetric centered
 scatter matrix $C$:
 
-$$
+```math
 m = \frac{1}{n}\sum_i z_i, \qquad
 C = \sum_i (z_i-m)(z_i-m)^\mathsf T
   = \begin{bmatrix} C_{xx} & C_{xy} \\ C_{xy}^\mathsf T & C_{yy}\end{bmatrix}.
-$$
+```
 
-Here $C_{xx}$ is two-by-two, $C_{xy}$ has two entries, and $C_{yy}$ is a scalar.
+Here $`C_{xx}`$ is two-by-two, $`C_{xy}`$ has two entries, and $`C_{yy}`$ is a scalar.
 They contain everything needed to standardize the features, build the normal
 equations, and score a candidate's residual error. Keeping centered scatter
 avoids routinely subtracting two large raw quantities such as
-$\sum x_i^2-n\mu^2$ to recover a small variance. Floating-point roundoff is
+$`\sum x_i^2-n\mu^2`$ to recover a small variance. Floating-point roundoff is
 still possible, especially during removal.
 
 ### Adding one observation
 
-Let $z$ be the incoming observation and $\delta=z-m$ before insertion. Then
+Let $z$ be the incoming observation and $`\delta=z-m`$ before insertion. Then
 
-$$
+```math
 \begin{aligned}
 n' &= n+1,\\
 m' &= m + \frac{\delta}{n+1},\\
 C' &= C + \frac{n}{n+1}\delta\delta^\mathsf T.
 \end{aligned}
-$$
+```
 
 To see the scatter update, recenter the old points at $m'$. Their centered
-deviations sum to zero, leaving $C+n(m-m')(m-m')^\mathsf T$. Adding the new
-point's deviation $(z-m')(z-m')^\mathsf T$ gives the factor $n/(n+1)$ above.
+deviations sum to zero, leaving $`C+n(m-m')(m-m')^\mathsf T`$. Adding the new
+point's deviation $`(z-m')(z-m')^\mathsf T`$ gives the factor $n/(n+1)$ above.
 The first insertion initializes $m=z$ and $C=0$.
 
 The code uses the equivalent Welford expression
-$\delta(z-m')^\mathsf T$. For off-diagonal entries it averages the two
+$`\delta(z-m')^\mathsf T`$. For off-diagonal entries it averages the two
 coordinate orders and mirrors the result to retain symmetry.
 
 ### Removing one retained observation
 
-For $n>1$, let $z$ be the actual evicted observation and $\delta=z-m$ before
+For $`n>1`$, let $z$ be the actual evicted observation and $`\delta=z-m`$ before
 removal. Inverting the insertion identity gives
 
-$$
+```math
 \begin{aligned}
 n' &= n-1,\\
 m' &= m - \frac{\delta}{n-1},\\
 C' &= C - \frac{n}{n-1}\delta\delta^\mathsf T.
 \end{aligned}
-$$
+```
 
 Removing the last observation clears the count, mean, and scatter. A full
 store performs insertion followed by removal; the removal formula uses the
@@ -239,36 +239,36 @@ the update does not assume that the globally oldest observation was removed.
 
 For example, start with $(x_0,x_1,y)=(0,0,1)$ and $(2,0,5)$:
 
-$$
+```math
 n=2,\quad m=[1,0,3]^\mathsf T,\quad
 C=\begin{bmatrix}2&0&4\\0&0&0\\4&0&8\end{bmatrix}.
-$$
+```
 
-Inserting $(4,0,9)$ gives $m'=[2,0,5]^\mathsf T$ and
-$C'=\left[\begin{smallmatrix}8&0&16\\0&0&0\\16&0&32\end{smallmatrix}\right]$.
-Removing $(0,0,1)$ then gives mean $[3,0,7]^\mathsf T$ and the original
+Inserting $(4,0,9)$ gives $`m'=[2,0,5]^\mathsf T`$ and
+$`C'=\left[\begin{smallmatrix}8&0&16\\0&0&0\\16&0&32\end{smallmatrix}\right]`$.
+Removing $(0,0,1)$ then gives mean $`[3,0,7]^\mathsf T`$ and the original
 scatter matrix. The remaining points have feature scale $s_0=1$, so their
 line is $7+2(x_0-3)=1+2x_0$. This illustrates the statistics; with only two
 retained points, the default minimum of five still prevents a ready fit.
 
 ## Solving the constrained fit from the statistics
 
-For active axes, let $D=\operatorname{diag}(s_j)$ and define
+For active axes, let $`D=\mathrm{diag}(s_j)`$ and define
 
-$$
+```math
 G=D^{-1}C_{xx}D^{-1}, \qquad h=D^{-1}C_{xy}.
-$$
+```
 
 These are the standardized feature Gram matrix and feature-target cross
 products. Centered features have zero sum, so the intercept separates from
 the slopes. For a selected subset of fitted axes $S$, the normal equations are
 
-$$
+```math
 \begin{bmatrix}n&0\\0&G_{SS}\end{bmatrix}
 \begin{bmatrix}a\\b_S\end{bmatrix}
 =
 \begin{bmatrix}n m_y\\h_S\end{bmatrix}.
-$$
+```
 
 In exact arithmetic, the free intercept is $a=m_y$. Axes outside $S$ have
 coefficient zero. With two active features the implementation considers four
@@ -279,9 +279,9 @@ and chooses the smallest residual sum of squares (SSE). It does not simply
 clip a negative unconstrained coefficient to zero: the remaining coefficients
 must be refitted on that face.
 
-For a hand-derived example, take all nine combinations $x_0,x_1\in\{0,1,2\}$
+For a hand-derived example, take all nine combinations $`x_0,x_1\in\{0,1,2\}`$
 and labels $y=20-2x_0+3x_1$. The independent feature columns make the
-nonnegative optimum $\widehat y=18+3x_1$: the forbidden negative term is
+nonnegative optimum $`\widehat y=18+3x_1`$: the forbidden negative term is
 replaced by its mean $-2$. This plane predicts 30 at $(100,4)$, regardless of
 the first coordinate. A production test anchors this behavior independently
 of the batch comparator.
@@ -291,35 +291,35 @@ of the batch comparator.
 Each candidate first attempts an unregularized solve. Only a failed solve
 retries with a penalty on its fitted slopes:
 
-$$
-\left(H+\lambda\operatorname{diag}(0,1,\ldots,1)\right)c=r,
+```math
+\left(H+\lambda\,\mathrm{diag}(0,1,\ldots,1)\right)c=r,
 \qquad
 \lambda=\texttt{singular\_ridge\_scale}\,
 \max\!\left(1,\sum_k |H_{kk}|\right).
-$$
+```
 
 $H$ is that candidate's normal-equation matrix, including the intercept
-entry $n$. `singular_ridge_scale` defaults to $10^{-9}$. The intercept remains
+entry $n$. `singular_ridge_scale` defaults to $`10^{-9}`$. The intercept remains
 unpenalized, and the penalty applies in standardized feature coordinates.
 The configured scale also reaches every batch fallback.
 
 This preserves the existing algorithm: some candidates can use ridge and
 others can use ordinary least squares, and all are ranked by **unpenalized
 SSE**. It is not a single always-regularized ridge objective. The small linear
-solver treats a pivot below $10^{-12}$ in absolute magnitude as singular.
+solver treats a pivot below $`10^{-12}`$ in absolute magnitude as singular.
 
 ### Scoring without another pass over the observations
 
 For a candidate $a,b$, with omitted slopes filled with zeros, expansion of
-$\sum_i(y_i-a-b^\mathsf T u_i)^2$ yields
+$`\sum_i(y_i-a-b^\mathsf T u_i)^2`$ yields
 
-$$
-\operatorname{SSE}
+```math
+\mathrm{SSE}
 =C_{yy}-2b^\mathsf T h+b^\mathsf T G b+n(a-m_y)^2.
-$$
+```
 
-The centered cross terms disappear because $\sum_i u_i=0$ and
-$\sum_i(y_i-m_y)=0$. This avoids a residual scan for each face. Its terms can
+The centered cross terms disappear because $`\sum_i u_i=0`$ and
+$`\sum_i(y_i-m_y)=0`$. This avoids a residual scan for each face. Its terms can
 nearly cancel for a good fit, so the implementation checks negative/nonfinite
 scores and close candidate scores before trusting the selected face.
 
@@ -331,7 +331,7 @@ original batch fitter to handle decisions that are sensitive to that
 difference, including:
 
 - feature spread close to the active-axis threshold;
-- nearly collinear active features, including $1-\rho^2\le10^{-8}$;
+- nearly collinear active features, including $`1-\rho^2\le10^{-8}`$;
 - fitted slopes close to the zero constraint boundary;
 - failed or nonfinite solves, invalid SSE, and numerically tied candidate SSE.
 
@@ -355,7 +355,7 @@ risk but do not constitute a bound on roundoff for every possible stream.
 
 A new fit requires enough retained observations (five by default)
 and at least one varying feature. The default nonnegative fit also requires a
-positive slope, except for the existing low-observation case $n\le d$, where
+positive slope, except for the existing low-observation case $`n\le d`$, where
 $d$ is the number of varying axes. This count is not the rank of the feature
 matrix. With the default minimum, an intercept-only candidate cannot become the
 serving model, but rejection preserves any previous linear serving model. Signed
@@ -365,7 +365,7 @@ fails, such as having no varying features.
 
 For a valid nonempty query, a ready store transforms features using its fit
 snapshot. If transformation and evaluation are finite, it returns the prediction
-floored at $10^{-6}$ ms; otherwise it returns no prediction. The floor
+floored at $`10^{-6}`$ ms; otherwise it returns no prediction. The floor
 is applied after fitting; training SSE uses raw predictions. A valid iteration
 with no scheduled work returns zero through the outer model and adds no
 observation. A cold workload store returns no prediction even if another store
@@ -378,9 +378,9 @@ is ready.
 new target enters retention or statistics. For positive observed latency $y$,
 an error is excessive only when
 
-$$
+```math
 |\widehat y-y| > \max(\text{absolute\_tolerance\_ms},\;\text{relative\_tolerance}\,y).
-$$
+```
 
 Equality is acceptable. The monitor retains the most recent `window` accepted
 observation flags with finite prior predictions and requests a fit when its excessive count is at least
@@ -478,7 +478,7 @@ for selection, diagnostics, migration, and saved-configuration behavior.
 
 ## Sample retention and total tuning cost
 
-The sampler uses $\log(1+x_j)$ of its selected retention coordinates to choose
+The sampler uses $`\log(1+x_j)`$ of its selected retention coordinates to choose
 cells. The independent fit uses its selected feature values. Grid bounds expand
 with incoming observations and do not
 shrink on eviction. If the store exceeds its capacity, it evicts the oldest
@@ -522,13 +522,13 @@ well as a resource choice.
 
 ## Relationship to classic inverse-matrix RLS
 
-For fixed features $\phi=[1,x_0,x_1]^\mathsf T$, ordinary RLS often maintains
-the inverse normal matrix $P=(\sum_i\phi_i\phi_i^\mathsf T)^{-1}$. For one
+For fixed features $`\phi=[1,x_0,x_1]^\mathsf T`$, ordinary RLS often maintains
+the inverse normal matrix $`P=(\sum_i\phi_i\phi_i^\mathsf T)^{-1}`$. For one
 insertion, its rank-one update is
 
-$$
+```math
 P'=P-\frac{P\phi\phi^\mathsf T P}{1+\phi^\mathsf T P\phi}.
-$$
+```
 
 That is useful when the feature coordinates and fitting objective stay fixed.
 Our implementation uses recursive **sufficient statistics** instead. Means
@@ -677,20 +677,20 @@ $K_d$ is a sum over that rank's Decode requests. They are not per-request
 lengths. $N_d$ and $B_d$ are the corresponding per-rank request counts.
 
 The telemetry schema permits fully cached metadata with $P_d=0$ and
-$H_d>0$. Cached Prefill KV creates attention work only when fresh Prefill
+$`H_d>0`$. Cached Prefill KV creates attention work only when fresh Prefill
 work exists:
 
-$$
+```math
 \widetilde H_d=H_d\,\mathbf{1}[P_d>0].
-$$
+```
 
 The default aggregate A/M feature path estimates Prefill attention pairs using a
 balanced-request approximation. Under that approximation, each of the $N_d$
 requests has cached length $H_d/N_d$ and newly computed length $P_d/N_d$.
-For $P_d>0$, metric validation guarantees $N_d>0$, and the total
+For $`P_d>0`$, metric validation guarantees $`N_d>0`$, and the total
 attention-pair estimate for rank $d$ is
 
-$$
+```math
 \begin{aligned}
 Q_d
 &=N_d\left[
@@ -699,7 +699,7 @@ Q_d
 \right]\\
 &=\dfrac{H_dP_d}{N_d}+\dfrac{P_d^2}{2N_d}+\dfrac{P_d}{2}.
 \end{aligned}
-$$
+```
 
 When $P_d=0$, define $Q_d=0$. Thus $Q_d$ already includes the factor $N_d$:
 it estimates total Prefill attention-pair work on the rank, not work for one
@@ -709,46 +709,46 @@ reduced only by the role-specific maximum and sum below.
 
 All roles share the axis order
 
-$$
+```math
 x=[\text{critical attention},\ \text{global FFN/MoE}].
-$$
+```
 
-With $\alpha$ the KV-attention weight, $\beta$ the Prefill
-attention-pair weight, and $\gamma$ the tokenwise FFN/MoE weight, the exact
+With $`\alpha`$ the KV-attention weight, $`\beta`$ the Prefill
+attention-pair weight, and $`\gamma`$ the tokenwise FFN/MoE weight, the exact
 features are:
 
-$$
+```math
 x_P=
 \left[
 \max_d\left(\alpha\widetilde H_d+\beta Q_d\right),
 \ \gamma\sum_d P_d
 \right],
-$$
+```
 
-$$
+```math
 x_D=
 \left[
 \alpha\max_d K_d,
 \ \gamma\sum_d B_d
 \right],
-$$
+```
 
-$$
+```math
 x_A=
 \left[
 \max_d\left(\alpha(\widetilde H_d+K_d)+\beta Q_d\right),
 \ \gamma\sum_d(P_d+B_d)
 \right].
-$$
+```
 
 The reductions for one and multiple attention-DP ranks are shown below.
 Unsubscripted symbols in the `attention_dp = 1` column refer to the sole rank.
 
 | Worker | `attention_dp = 1` | `attention_dp > 1` |
 |---|---|---|
-| Prefill | $x[0]=\alpha\widetilde H+\beta Q$<br>$x[1]=\gamma P$ | $x[0]=\max_d(\alpha\widetilde H_d+\beta Q_d)$<br>$x[1]=\gamma\sum_d P_d$ |
-| Decode | $x[0]=\alpha K$<br>$x[1]=\gamma B$ | $x[0]=\alpha\max_d K_d$<br>$x[1]=\gamma\sum_d B_d$ |
-| Aggregated | $x[0]=\alpha(\widetilde H+K)+\beta Q$<br>$x[1]=\gamma(P+B)$ | $x[0]=\max_d[\alpha(\widetilde H_d+K_d)+\beta Q_d]$<br>$x[1]=\gamma\sum_d(P_d+B_d)$ |
+| Prefill | $`x[0]=\alpha\widetilde H+\beta Q`$<br>$`x[1]=\gamma P`$ | $`x[0]=\max_d(\alpha\widetilde H_d+\beta Q_d)`$<br>$`x[1]=\gamma\sum_d P_d`$ |
+| Decode | $`x[0]=\alpha K`$<br>$`x[1]=\gamma B`$ | $`x[0]=\alpha\max_d K_d`$<br>$`x[1]=\gamma\sum_d B_d`$ |
+| Aggregated | $`x[0]=\alpha(\widetilde H+K)+\beta Q`$<br>$`x[1]=\gamma(P+B)`$ | $`x[0]=\max_d[\alpha(\widetilde H_d+K_d)+\beta Q_d]`$<br>$`x[1]=\gamma\sum_d(P_d+B_d)`$ |
 
 The default regression remains two-dimensional at every attention-DP size. Critical
 attention uses a maximum across ranks, while global FFN/MoE work uses a sum.
@@ -762,16 +762,16 @@ The options are construction-time knobs and all default to `1.0`:
 
 | Formula | `estimator_config.features` field |
 |---|---|
-| $\alpha$ | `attention_kv_weight` |
-| $\beta$ | `prefill_attention_pair_weight` |
-| $\gamma$ | `ffn_token_weight` |
+| $`\alpha`$ | `attention_kv_weight` |
+| $`\beta`$ | `prefill_attention_pair_weight` |
+| $`\gamma`$ | `ffn_token_weight` |
 
-- $\alpha$ scales KV-token-related attention work for every role:
-  $\widetilde H$ for Prefill, $K$ for Decode, and $\widetilde H+K$ for
+- $`\alpha`$ scales KV-token-related attention work for every role:
+  $`\widetilde H`$ for Prefill, $K$ for Decode, and $`\widetilde H+K`$ for
   Aggregated. It is not a Prefill-only weight.
-- $\beta$ scales only the Prefill attention-pair estimate $Q$. It does not
+- $`\beta`$ scales only the Prefill attention-pair estimate $Q$. It does not
   represent Decode attention.
-- $\gamma$ scales global tokenwise FFN/MoE work: $P$ for Prefill, $B$ for
+- $`\gamma`$ scales global tokenwise FFN/MoE work: $P$ for Prefill, $B$ for
   Decode, and $P+B$ for Aggregated.
 
 They must be finite and strictly positive when regression is constructed. They
