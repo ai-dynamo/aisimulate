@@ -41,6 +41,8 @@ Agentic results explicitly retain `functional_only` qualification.
 - [Feature support](features.md): backend, topology, workload and composition limits.
 - [Workloads](workloads.md): the `traffic` block, trace formats, sessions, stopping rules and
   [agentic lanes, snapshots, warmup and profiles](workloads.md#agentic-load-controls).
+- [Agentic warmup](agentic/warmup.md) and [continuous profiles](agentic/continuous-profiles.md):
+  detailed preparation, barrier, lane-recycling and reporting contracts.
 - [Engine](engine/README.md): the `engine` block, with pages for
   [workers](engine/workers.md), [KV cache](engine/kv-cache.md),
   [P/D KV transfer](engine/kv-transfer.md),

@@ -273,19 +273,36 @@ P/D are rejected. Results are qualified `functional_only`, not hardware
 accuracy. [Start an AgentX simulation](agentic/quickstart.md) walks through a
 complete run.
 
+These controls only shape the workload. Forward-pass timing comes from the
+worker's `timing` settings like any other workload; see
+[performance-model configuration](../perf-model/configuration.md). Replaying an
+AgentX trace also does not enable conversation affinity: on the `engine` stack,
+placement stays round-robin.
+
 <a id="agentic-lanes"></a>
 
 ### Lanes
 
-`agentic_lanes: N` starts the first `N` plays in corpus order. When a play's
-client work ends, its lane takes the next play from one shared queue. A play's
-client work ends when all its requests complete, or, after a failure, when all
-dispatched requests are terminal. Server cleanup, such as P/D source holds, can
-continue after the lane moves on. Lanes limit whole plays, not the concurrent
-child requests inside a play.
+`agentic_lanes: N` runs at most `N` plays at once. Lanes limit whole plays,
+not the concurrent child requests inside a play. Which plays run depends on the
+other controls:
 
-A child request becomes ready after its dependencies complete, plus the
-recorded gap between them. Background children run without a join.
+| Configuration | Plays replayed |
+| --- | --- |
+| `agentic_lanes` only | The whole corpus once, in order. A free lane takes the next play from one shared queue. |
+| `+ agentic_snapshot` | Only the `N` initial snapshot plays, from their cuts. The run ends when they finish. |
+| `+ agentic_profile` | Lanes keep taking plays, wrapping at the end of the corpus, until the deadline. |
+
+For example, a 100-play corpus with 4 lanes and a snapshot replays 4 plays,
+not 100.
+
+A play's client work ends when all its requests complete, or, after a failure,
+when all dispatched requests are terminal. Server cleanup, such as P/D source
+holds, can continue after the lane moves on.
+
+Inside a play, a child request starts when the source request it depends on is
+dispatched or completes, as the trace records, plus the recorded delay.
+Background children run without a join.
 
 <a id="agentic-snapshot"></a>
 
@@ -310,7 +327,7 @@ empty.
 
 | Stage | Requests | Output |
 | --- | --- | --- |
-| Primer | For each conversation with history, its last historical request's full input | 1 token each |
+| Primer | For each conversation that has both history and remaining requests, its last historical request's full input | 1 token each |
 | Warmup | 10 per lane, repeating that lane's primer inputs (or its first remaining request if it has no history) | 1 token each |
 | Profile | The remaining requests of each play | Original output lengths |
 
@@ -323,7 +340,8 @@ starts. If any preparation request fails, the run stops before profiling:
 
 Warmup repeats the saved prefixes and does not advance the plays. Primed
 prefixes can still be evicted or placed on another worker, so warmup does not
-guarantee cache hits.
+guarantee cache hits. See [agentic warmup](agentic/warmup.md) for the full
+preparation, barrier and reporting contract.
 
 <a id="agentic-profile"></a>
 
@@ -352,7 +370,9 @@ their latest response, so it can be shorter or longer than `duration_seconds`.
 
 Long profiles keep lifecycle records for every play and can use much more host
 memory than the trace itself. The CLI runs them under host-memory supervision;
-a run that exceeds its budget stops with `resource_limited`.
+a run that exceeds its budget stops with `resource_limited`. See
+[continuous agentic profiles](agentic/continuous-profiles.md) for lane recycling,
+idle guards, cancellation and result details.
 [`examples/cli/agentic-profile.yaml`](../../examples/cli/agentic-profile.yaml)
 is a small offline example with fixed timing:
 
@@ -388,24 +408,11 @@ with vLLM's 64-token blocks and 127 tokens with SGLang's 1-token pages.
 
 ### Behavior references
 
-Snapshots follow NVIDIA AIPerf's
-[`trajectory_source.py`](https://github.com/ai-dynamo/aiperf/blob/7db2ba37a62aa80c882bc90eaf61cc8073e2387b/src/aiperf/timing/trajectory_source.py)
-and [`session_tree.py`](https://github.com/ai-dynamo/aiperf/blob/7db2ba37a62aa80c882bc90eaf61cc8073e2387b/src/aiperf/timing/session_tree.py)
-(Apache-2.0). The one-token primers and ten warmups per lane follow the
-[InferenceX-app methodology article](https://github.com/SemiAnalysisAI/InferenceX-app/blob/9bb7b13eb4985217a6282f340459fd5948613276/packages/app/src/components/datasets/agentx-methodology-article.tsx)
-(GPL-3.0) and the
-[AgentX harness tutorial](https://github.com/SemiAnalysisAI/agentx-harness/blob/56a0cf70f4c0359454ee4bd15a17770b541a3e3e/docs/tutorials/agentx-mvp.md)
-(Apache-2.0). Continuous profiles follow the
-[`agentx-harness` timing modules](https://github.com/SemiAnalysisAI/agentx-harness/tree/754356e9a39acc6cc6afb242d123bb57c3fb6f75/src/aiperf/timing)
-(Apache-2.0) as pinned by
-[InferenceX](https://github.com/SemiAnalysisAI/InferenceX/tree/4ab85c1e33b66d6bd5a3087b3de5ba3e86cbbe80).
-These sources describe the behavior; no code or prose was copied. The
-implementation, tests and example workloads are written for AISimulate.
-
-Known differences: AISimulate samples snapshots with its own deterministic
-algorithm, and its warmup repeats saved prefixes instead of advancing the live
-trajectory. This is not full AgentX parity. Source review notes are kept in the
-[replay evidence record](../../benchmarks/evidence/accuracy/replay-evidence.md).
+AISimulate's snapshot, warmup and profile behavior is modeled on AIPerf,
+InferenceX and the AgentX harness, implemented independently and not at full
+AgentX parity. Pinned revisions, licenses and known differences are listed in
+[agentic warmup](agentic/warmup.md#reference-and-validation-boundary) and
+[continuous agentic profiles](agentic/continuous-profiles.md#behavioral-reference).
 
 <a id="mooncake-and-mooncake-delta-jsonl"></a>
 

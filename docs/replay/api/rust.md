@@ -100,7 +100,7 @@ The authoritative exports are in
 integration seams are `pub` but marked `#[doc(hidden)]` (runtime input,
 request payloads, engine observations and internal collectors). They are not
 promoted here as stable end-user APIs. In-tree workload import and snapshot
-APIs live under `replay::loadgen`; see [workloads](../workloads.md#agentic-load-controls) for
-their semantics. To build snapshots directly, call
+APIs live under `replay::loadgen`; see [workloads](../workloads.md#agentic-load-controls) and
+[agentic warmup](../agentic/warmup.md#seeded-request-boundary-snapshots) for their semantics. To build snapshots directly, call
 `ValidatedAgenticGraph::prepare_snapshots` with `AgenticSnapshotOptions` and pass
 the result to `WorkloadDriver::new_agentic_snapshots`.
