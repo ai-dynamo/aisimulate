@@ -174,6 +174,13 @@ fn check_decode_mem_for_burst(
         let required_blocks_before = page_growth_needed.div_ceil(config.block_size);
         let mut req = running.remove(idx);
         kv_manager.retract_in_place(&mut req.kv_lease);
+        // Native release_req immediately evicts newly unlocked cache pages for
+        // RETRACT_DECODE_STEPS tokens per survivor, even if the next decode fits.
+        let headroom = RETRACT_DECODE_STEPS * running.len();
+        let available_after_release = kv_manager.cache().available_tokens();
+        if available_after_release < headroom {
+            kv_manager.evict(headroom - available_after_release);
+        }
         req.reset_for_retract();
         req.debug_assert_invariants(config.block_size);
         pressure_events.push(PressureEvent {

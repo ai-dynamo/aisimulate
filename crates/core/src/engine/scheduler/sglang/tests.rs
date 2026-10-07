@@ -675,12 +675,12 @@ fn fresh_prefill_tracks_cache_owned_prefix_pages_and_pressure_event() {
     assert_eq!(pressure.logical_available_blocks_before, Some(0));
     assert_eq!(pressure.required_blocks_before, Some(1));
     assert!(pressure.state_after.active_blocks <= pressure.state_before.active_blocks);
-    // The retracted request frees the page it owned beyond the cached prefix (one stored block
-    // removed); the cached first page survives, the second cached page had already been evicted
-    // for the blocker.
-    assert_eq!(removed_event_count(&buffer.drain()), 1);
-    assert_eq!(kv_manager.cache().page_pool.available(), 4);
-    assert_eq!(kv_manager.cache_mut().match_prefix(&prompt).0, 4);
+    // Retraction frees its private page, then native survivor headroom also
+    // evicts the newly unlocked first prefix page. The second cached page had
+    // already been evicted for the blocker.
+    assert_eq!(removed_event_count(&buffer.drain()), 2);
+    assert_eq!(kv_manager.cache().page_pool.available(), 8);
+    assert_eq!(kv_manager.cache_mut().match_prefix(&prompt).0, 0);
 }
 
 mod source_holds {
@@ -3635,4 +3635,40 @@ fn cache_publication_completion_excludes_the_terminal_sampled_token() {
     sequence.extend(output);
     assert_eq!(core.kv_manager.cache().prefix_match_len(&sequence), 4,
                "the terminal output has no computed KV; a seven-token context caches one page");
+}
+
+
+#[test]
+fn retraction_evicts_unlocked_prefix_for_survivor_headroom() {
+    let config = SglangConfig::from_args(&test_args(4, 4, 16));
+    let mut manager = SglangKvManager::new(16, 4, KvEventPublishers::default(), 0);
+    let victim_tokens: Vec<u32> = (0..8).collect();
+    let mut victim_alloc = manager.allocate_for_request(&victim_tokens).unwrap();
+    manager.extend_cached_prefix(&victim_tokens[..4], &mut victim_alloc.lease);
+    let survivor_tokens: Vec<u32> = (100..107).collect();
+    let survivor_alloc = manager.allocate_for_request(&survivor_tokens).unwrap();
+    let mut running = vec![
+        SglangRequest {
+            is_decode_handoff: false,
+            uuid: Uuid::from_u128(91_001), sequence_tokens: survivor_tokens,
+            prompt_len: 3, max_output_tokens: 20, max_new_tokens: 20,
+            planned_output_ids: None, kv_lease: survivor_alloc.lease,
+            materialized_tokens: 7, allocated_tokens: 8,
+        },
+        SglangRequest {
+            is_decode_handoff: false,
+            uuid: Uuid::from_u128(91_002), sequence_tokens: victim_tokens.clone(),
+            prompt_len: 8, max_output_tokens: 20, max_new_tokens: 20,
+            planned_output_ids: None, kv_lease: victim_alloc.lease,
+            materialized_tokens: 8, allocated_tokens: 8,
+        },
+    ];
+    let retracted = decode::check_decode_mem(&mut running, &mut manager, &config);
+    assert_eq!(retracted.len(), 1);
+    assert_eq!(retracted[0].uuid, Uuid::from_u128(91_002));
+    // Native release_req evicts for 20 tokens per survivor immediately. The
+    // next pass already fits in the survivor's partial page, but the newly
+    // unlocked four-token prefix must still leave the radix cache.
+    assert_eq!(manager.cache().prefix_match_len(&victim_tokens), 0);
+    assert_eq!(manager.cache().available_tokens(), 8);
 }
