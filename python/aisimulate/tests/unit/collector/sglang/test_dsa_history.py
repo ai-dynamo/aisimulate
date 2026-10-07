@@ -26,6 +26,8 @@ def load_initializer(torch, context_factory=None):
 @pytest.mark.parametrize("length", [1, 63, 64, 65, 8193])
 def test_native_writers_cover_each_history_slot_and_no_new_token(monkeypatch, length):
     torch = pytest.importorskip("torch")
+    if not isinstance(torch, ModuleType) or not isinstance(getattr(torch, "__version__", None), str):
+        pytest.skip("requires real torch, not another collector test's import stub")
     quant_module = ModuleType("sglang.srt.layers.attention.dsa.triton_kernel")
     quant_module.act_quant = object()
     monkeypatch.setitem(sys.modules, quant_module.__name__, quant_module)
