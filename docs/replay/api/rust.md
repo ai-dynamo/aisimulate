@@ -102,5 +102,7 @@ request payloads, engine observations and internal collectors). They are not
 promoted here as stable end-user APIs. In-tree workload import and snapshot
 APIs live under `replay::loadgen`; see [workloads](../workloads.md#agentic-load-controls) and
 [agentic warmup](../agentic/warmup.md#seeded-request-boundary-snapshots) for their semantics. To build snapshots directly, call
-`ValidatedAgenticGraph::prepare_snapshots` with `AgenticSnapshotOptions` and pass
-the result to `WorkloadDriver::new_agentic_snapshots`.
+`ValidatedAgenticGraph::prepare_snapshots(lanes, options)` with a positive lane
+count and `AgenticSnapshotOptions`. It returns `Result<PreparedAgenticSnapshots>`
+and fails for zero lanes or an empty corpus. Pass the prepared snapshots to
+`WorkloadDriver::new_agentic_snapshots`.
