@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use aisimulate_core::engine::{
-    Backend, EngineConfig, KvEvent, NativeHostOffloadConfig, TimingModelConfig,
+    Backend, EngineConfig, KvEvent, KvEventData, NativeHostOffloadConfig, TimingModelConfig,
 };
 use aisimulate_core::replay::loadgen::{SessionTrace, Trace, TurnTrace, WorkloadDriver};
 use aisimulate_core::replay::{
@@ -262,6 +262,98 @@ fn cache_events_advertise_reusable_prefixes_only_when_caching_is_enabled() {
 }
 
 #[test]
+fn canonical_replay_reproduces_unplanned_output_tokens_and_kv_hashes() {
+    let output_tokens = |artifacts: &ReplayArtifacts, request_index: usize| -> Vec<u32> {
+        let request_id = artifacts.requests[request_index].request_id;
+        artifacts
+            .outputs
+            .iter()
+            .filter(|output| output.request_id == request_id)
+            .filter_map(|output| output.token_id)
+            .collect()
+    };
+    let mut first_request_streams = Vec::new();
+    for backend in [Backend::Vllm, Backend::Trtllm, Backend::Sglang] {
+        let run = || {
+            let mut replay_spec = spec(backend, 1, 1);
+            let mut config: ReplayEngineConfig =
+                serde_json::from_value(replay_spec.engine.clone()).unwrap();
+            config.rank.emit_kv_events = true;
+            config.rank.emit_kv_token_ids = true;
+            replay_spec.engine = serde_json::to_value(config).unwrap();
+            // Identical length-only requests carry no output plan, so every
+            // generated token and output-block hash is engine-synthesized.
+            replay_spec.requests = (0..2)
+                .map(|index| {
+                    let mut request =
+                        replay_request(&format!("unplanned-{index}"), 0.0, (0..6).collect());
+                    request.output_tokens = 9;
+                    request
+                })
+                .collect();
+            Replayer::new(replay_spec, ReplayEngineFactory::new())
+                .unwrap()
+                .with_capture_options(ReplayCaptureOptions {
+                    determinism: ReplayDeterminism::CanonicalV1,
+                    ..ReplayCaptureOptions::default()
+                })
+                .run_with_artifacts(ReplayArtifactKvEventVisibility::Native)
+                .unwrap()
+                .1
+        };
+        let first = run();
+        let second = run();
+        for request_index in 0..2 {
+            let tokens = output_tokens(&first, request_index);
+            assert_eq!(tokens.len(), 9, "{backend:?}");
+            assert_eq!(
+                tokens,
+                output_tokens(&second, request_index),
+                "{backend:?} request {request_index}"
+            );
+        }
+        assert_ne!(
+            output_tokens(&first, 0),
+            output_tokens(&first, 1),
+            "{backend:?}: distinct requests must not share synthetic output blocks"
+        );
+        assert_eq!(kv_parts(&first), kv_parts(&second), "{backend:?}");
+
+        // Block 2 of request 0 (block_size 4, 6 prompt tokens) holds only generated
+        // tokens; it must be published with a hash derived from those tokens.
+        let request_tokens: Vec<u32> = (0..6).chain(output_tokens(&first, 0)).collect();
+        let output_block = &request_tokens[8..12];
+        let stored = first
+            .kv_events
+            .iter()
+            .filter_map(|event| match &event.event.data {
+                KvEventData::Stored(stored) => Some(&stored.blocks),
+                KvEventData::Removed { .. } => None,
+            })
+            .flatten()
+            .find(|block| block.token_ids.as_deref() == Some(output_block))
+            .unwrap_or_else(|| panic!("{backend:?}: no stored block holds generated tokens"));
+        let bytes: Vec<u8> = output_block
+            .iter()
+            .flat_map(|token| token.to_le_bytes())
+            .collect();
+        assert_eq!(
+            stored.tokens_hash,
+            xxhash_rust::xxh3::xxh3_64_with_seed(&bytes, 1337),
+            "{backend:?}"
+        );
+        first_request_streams.push(output_tokens(&first, 0));
+    }
+    // Every engine derives unplanned tokens from the same request identity.
+    assert!(
+        first_request_streams
+            .windows(2)
+            .all(|pair| pair[0] == pair[1]),
+        "engines diverged: {first_request_streams:?}"
+    );
+}
+
+#[test]
 fn capped_passes_respect_visibility_boundaries() {
     let capped = |visibility| {
         let mut replay_spec = spec(Backend::Vllm, 1, 1);
@@ -297,6 +389,29 @@ fn artifact_capture_rejects_unsupported_topologies() {
         handoff_latency_ms: 0.0,
     };
     assert!(error(disagg).contains("require aggregated topology"));
+}
+
+#[test]
+fn artifact_capture_rejects_a_cluster_shared_host_pool() {
+    // Shared-pool transfers have no completion time to record at submission.
+    let mut replay_spec = host_offload_spec(4);
+    let mut engine: ReplayEngineConfig =
+        serde_json::from_value(replay_spec.engine.clone()).unwrap();
+    engine.rank.native_host_offload = engine
+        .rank
+        .native_host_offload
+        .map(|host| host.cluster_shared("tp1"));
+    replay_spec.engine = serde_json::to_value(engine).unwrap();
+    // The same spec replays without artifacts.
+    replayer(replay_spec.clone(), &[0.0]).run().unwrap();
+    let error = replayer(replay_spec, &[0.0])
+        .run_with_artifacts(ReplayArtifactKvEventVisibility::Native)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("detailed replay artifacts require dp_rank_local host_offload"),
+        "{error}"
+    );
 }
 
 #[test]

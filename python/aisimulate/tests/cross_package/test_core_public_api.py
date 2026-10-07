@@ -302,6 +302,122 @@ def test_legacy_options_inherit_rust_rebuild_default_without_a_new_flat_control(
     )
 
 
+@pytest.mark.parametrize(
+    ("fit", "expected_kind", "expected_spline"),
+    [
+        ({"kind": "linear"}, "standardized_nnls", None),
+        (
+            {"kind": "spline"},
+            "spline",
+            {
+                "knots_per_axis": 2,
+                "search": {
+                    "kind": "adaptive",
+                    "window": 16,
+                    "trigger": 8,
+                    "tolerance": 0.05,
+                    "absolute_tolerance_ms": 1.0,
+                    "cooldown": 64,
+                },
+            },
+        ),
+        (
+            {"kind": "spline", "spline": {"knots_per_axis": 3, "search": {"kind": "periodic", "step": 17}}},
+            "spline",
+            {"knots_per_axis": 3, "search": {"kind": "periodic", "step": 17}},
+        ),
+    ],
+)
+def test_raw_spline_controls_normalize_and_reload(fit, expected_kind, expected_spline):
+    raw = aisimulate_core.RustForwardPassPerfModel
+    request = {
+        "model": "test/model",
+        "system": "test",
+        "backend": "vllm",
+        "worker_type": "decode",
+        "estimation_mode": "fpm_regression",
+        "estimator_config": {"fpm_regression": {"fit": fit}},
+    }
+    normalized = json.loads(raw.normalize_config(json.dumps(request)))
+    normalized_fit = normalized["estimator_config"]["fpm_regression"]["fit"]
+    assert normalized_fit["kind"] == expected_kind
+    if expected_spline is None:
+        assert "spline" not in normalized_fit
+    else:
+        assert normalized_fit["spline"] == expected_spline
+    model = raw.best_available(json.dumps(normalized))
+    saved = json.loads(model.diagnostics())["provenance"]["config"]
+    assert saved["estimator_config"] == normalized["estimator_config"]
+    restored = raw.best_available(json.dumps(saved))
+    assert json.loads(restored.diagnostics())["provenance"]["config"] == saved
+
+
+@pytest.mark.parametrize("entrypoint", ["normalize_config", "best_available"])
+@pytest.mark.parametrize(
+    ("fit", "path"),
+    [
+        ({"kind": "unknown"}, "kind"),
+        ({"kind": "linear", "spline": {}}, "spline"),
+        ({"spline": {}}, "spline"),
+        *[
+            ({"kind": "spline", "spline": {"knots_per_axis": value}}, "spline.knots_per_axis")
+            for value in (0, 1, 4, True, 2.0, "2")
+        ],
+        *[
+            ({"kind": "spline", "spline": {"search": {"kind": "periodic", "step": value}}}, "spline.search")
+            for value in (0, -1, True, 64.0, "64")
+        ],
+        *[
+            ({"kind": "spline", "spline": {"search": {"kind": "adaptive", field: value}}}, "spline.search")
+            for field, value in (
+                ("window", 0),
+                ("trigger", 0),
+                ("trigger", 17),
+                ("cooldown", 0),
+                ("tolerance", 0.0),
+                ("tolerance", -0.1),
+                ("absolute_tolerance_ms", -1.0),
+            )
+        ],
+        ({"kind": "spline", "spline": {"search": {"kind": "unknown"}}}, "spline.search"),
+        ({"kind": "spline", "spline": {"search": {"kind": "periodic", "window": 16}}}, "spline.search"),
+        ({"kind": "spline", "spline": {"search": {"kind": "adaptive", "step": 64}}}, "spline.search"),
+        ({"kind": "spline", "spline": {"unknown": 1}}, "spline"),
+    ],
+)
+def test_raw_spline_controls_reject_invalid_values_before_fallback(entrypoint, fit, path):
+    request = {
+        "model": "test/model",
+        "system": "test",
+        "backend": "vllm",
+        "worker_type": "decode",
+        "estimation_mode": "auto",
+        "fallback_policy": "allow",
+        "estimator_config": {"fpm_regression": {"fit": fit}},
+    }
+    with pytest.raises(ValueError, match="estimator_config.fpm_regression.fit." + path):
+        getattr(aisimulate_core.RustForwardPassPerfModel, entrypoint)(json.dumps(request))
+
+
+@pytest.mark.parametrize("entrypoint", ["normalize_config", "best_available"])
+def test_raw_spline_requires_room_for_initial_search(entrypoint):
+    request = {
+        "model": "test/model",
+        "system": "test",
+        "backend": "vllm",
+        "worker_type": "decode",
+        "estimation_mode": "fpm_regression",
+        "estimator_config": {
+            "fpm_regression": {
+                "fit": {"kind": "spline"},
+                "sampling": {"max_observations": 31},
+            }
+        },
+    }
+    with pytest.raises(ValueError, match=r"estimator_config\.fpm_regression\.sampling\.max_observations"):
+        getattr(aisimulate_core.RustForwardPassPerfModel, entrypoint)(json.dumps(request))
+
+
 def test_raw_fpm_binding_validates_regression_weights() -> None:
     with pytest.raises(ValueError, match="regression_attention_kv_weight"):
         _raw_regression_model(

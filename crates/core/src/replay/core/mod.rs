@@ -33,6 +33,9 @@ pub struct ReadyArrival<Request, Metadata> {
     pub dispatched_at_ms: f64,
     pub session_id: Option<String>,
     pub turn_index: Option<usize>,
+    /// Set when the loader synthesized `session_id`: it then labels the report record only and is
+    /// withheld from placement. Authored session IDs still reach placement.
+    pub synthetic_session_id: bool,
 }
 
 pub trait AdmissionSource {

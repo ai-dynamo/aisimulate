@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import json
+import os
 from copy import deepcopy
+from types import SimpleNamespace
 
 import pytest
 import yaml
@@ -16,12 +18,14 @@ from aisimulate.config import CorePredictionConfig, CoreRecommendationConfig
 from aisimulate.config.common import ResourceConfig, split_config_sections
 from aisimulate.resources import (
     GB,
+    GuardedRunnerFactory,
     HostResources,
     ResourceEstimate,
     ResourceLimitError,
     build_plan,
     constrain_to_cgroups,
     estimate_workload,
+    guard_replay,
     require_plan,
     resolve_budget,
     workload_bounds,
@@ -223,6 +227,7 @@ def test_cli_blocks_before_runner_creation(tmp_path, monkeypatch, host, command)
 def test_recommendation_applies_slots_without_changing_suggestion_batches(monkeypatch):
     import aisimulate.recommend as recommendation
     import aisimulate.sweeper.search as search
+    from aisimulate.output_adapter import OUTPUT_ADAPTER_API_VERSION, RecommendationOutputCallbacks
 
     raw = _config()
     raw["traffic"]["load"]["concurrency"] = 8
@@ -230,19 +235,44 @@ def test_recommendation_applies_slots_without_changing_suggestion_batches(monkey
     monkeypatch.setattr(recommendation, "resolve_budget", lambda *a, **kw: {"cpu_limit": 2})
     seen = []
 
+    class SubscribedAdapter:
+        name = "dgd"
+        api_version = OUTPUT_ADAPTER_API_VERSION
+
+        def subscribe(self, config):
+            assert config == {"socket": "/tmp/events.sock"}
+            return RecommendationOutputCallbacks(on_candidate=lambda candidate: None)
+
+        def write(self, config, *, result, output_dir):
+            del config, result, output_dir
+            return []
+
     class CaptureSweeper:
         def __init__(self, **kwargs):
             pass
 
-        def run(self, smart, *, top_n):
-            seen.append(smart.sweep)
+        def run(self, smart, *, top_n, on_candidate=None, on_round=None):
+            del top_n
+            seen.append((smart.sweep, on_candidate, on_round))
             return "result"
 
     monkeypatch.setattr(search, "Sweeper", CaptureSweeper)
-    assert recommendation._run_recommendation(config, stack="engine", runner_factory=object()) == "result"
-    assert seen[0].parallel_evals == 2
-    assert seen[0].candidates_per_round == 8
-    assert seen[0].max_trials == 256
+    assert (
+        recommendation._run_recommendation(
+            config,
+            stack="engine",
+            runner_factory=object(),
+            output_configs={"dgd": {"socket": "/tmp/events.sock"}},
+            output_adapters={"dgd": SubscribedAdapter()},
+        )
+        == "result"
+    )
+    sweep, on_candidate, on_round = seen[0]
+    assert sweep.parallel_evals == 2
+    assert sweep.candidates_per_round == 8
+    assert sweep.max_trials == 256
+    assert on_candidate is not None
+    assert on_round is None
     assert config.optimizer.parallelism == 8
 
 
@@ -417,3 +447,96 @@ def test_trace_storage_is_rejected_before_parser_allocates_scalars(tmp_path, hos
     assert plan["status"] == "resource_limited"
     assert plan["estimate"]["estimated_peak_bytes"] > plan["budget"]["memory_limit_bytes"]
     assert "before metadata parsing" in plan["estimate"]["reason"]
+
+
+@pytest.mark.parametrize("profile", [{}, {"duration_seconds": 86400}])
+def test_profile_resource_admission_requires_supervision_and_one_worker(tmp_path, host, monkeypatch, profile):
+    from aisimulate.recommend import recommendation_to_sweeper
+
+    trace = tmp_path / "play.json"
+    trace.write_text(
+        json.dumps(
+            {
+                "id": "play",
+                "block_size": 64,
+                "hash_id_scope": "local",
+                "models": ["model"],
+                "requests": [{"t": 0, "type": "s", "model": "model", "in": 8, "out": 1}],
+            }
+        )
+    )
+    raw = _config()
+    raw["traffic"] = {
+        "source": {"type": "trace", "format": "weka", "paths": [str(trace)]},
+        "load": {
+            "type": "trace_timestamps",
+            "agentic_lanes": 1,
+            "agentic_snapshot": {"seed": 42},
+            "agentic_profile": profile,
+        },
+    }
+    config = CoreRecommendationConfig.model_validate(raw)
+    bounds = workload_bounds(config)
+    assert bounds["agentic_profile"] == config.traffic.load.agentic_profile.model_dump(mode="python")
+    assert bounds["agentic_profile"]["duration_seconds"] == profile.get("duration_seconds", 3600)
+    finite = {key: value for key, value in bounds.items() if key != "agentic_profile"}
+    assert build_plan(finite, stack="engine", host=host, requested_parallelism=4)["effective_parallelism"] == 4
+    monkeypatch.delenv("_AISIMULATE_SUPERVISED_BUDGET", raising=False)
+    unmonitored = build_plan(bounds, stack="engine", host=host, requested_parallelism=4)
+    assert unmonitored["status"] == "resource_limited"
+    assert unmonitored["estimate"]["estimated_peak_bytes"] is None
+    assert unmonitored["estimate"]["allocation_model"] == "agentic-profile-unqualified-v1"
+
+    # The recommendation compiler's concrete workload reaches both the per-run
+    # guard and whole-wave admission; profile estimates must not admit a pool.
+    smart = recommendation_to_sweeper(config)
+    spec = SimpleNamespace(workload=smart.workload.model_dump(mode="python", exclude_none=True), concurrency=None)
+    monkeypatch.setattr(resources, "discover_host", lambda: host)
+    with pytest.raises(ResourceLimitError, match="profile"):
+        guard_replay(spec, stack="engine")
+    monkeypatch.setenv(
+        "_AISIMULATE_SUPERVISED_BUDGET",
+        json.dumps(
+            {
+                "supervisor_pid": os.getpid(),
+                "memory_limit_bytes": 8 * GB,
+                "cpu_limit": 4,
+                "reserved_host_memory_bytes": GB,
+            }
+        ),
+    )
+    plan = build_plan(bounds, stack="engine", host=host, requested_parallelism=4)
+    assert plan["status"] == "admitted"
+    assert plan["effective_parallelism"] == 1
+    assert guard_replay(spec, stack="engine")["estimate"]["estimated_peak_bytes"] is None
+    factory = GuardedRunnerFactory(object(), "engine", config.execution.resources)
+    assert factory.admit_wave([spec])["status"] == "admitted"
+    with pytest.raises(ResourceLimitError, match="wave"):
+        factory.admit_wave([spec, spec])
+
+
+@pytest.mark.parametrize("oversized", ["storage", "tokens"])
+def test_profile_keeps_initial_trace_materialization_guards(tmp_path, host, monkeypatch, oversized):
+    trace = tmp_path / "oversized.jsonl"
+    if oversized == "storage":
+        with trace.open("wb") as stream:
+            stream.truncate(4 * 1024**3)  # Sparse scalar sentinel; refused without reading.
+        monkeypatch.setattr(resources.ijson, "parse", lambda *a, **kw: pytest.fail("must refuse before parsing"))
+    else:
+        trace.write_text(
+            json.dumps(
+                {
+                    "id": "play",
+                    "block_size": 64,
+                    "hash_id_scope": "local",
+                    "models": ["model"],
+                    "requests": [{"t": 0, "type": "s", "model": "model", "in": 10**12, "out": 1}],
+                }
+            )
+            + "\n"
+        )
+    plan = build_plan(
+        {"trace_path": str(trace), "trace_format": "weka", "agentic_profile": {}}, stack="engine", host=host
+    )
+    assert plan["status"] == "resource_limited"
+    assert plan["estimate"]["estimated_peak_bytes"] > plan["budget"]["memory_limit_bytes"]

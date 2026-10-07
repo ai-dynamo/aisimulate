@@ -52,6 +52,8 @@ MODEL_PATHS = {
     ("minimaxm2.5", "bf16"): "MiniMaxAI/MiniMax-M2.5",
     ("minimaxm2.5", "fp4"): "MiniMaxAI/MiniMax-M2.5",
     ("minimaxm2.5", "fp8"): "MiniMaxAI/MiniMax-M2.5",
+    ("minimaxm2.7", "bf16"): "MiniMaxAI/MiniMax-M2.7",
+    ("minimaxm2.7", "fp4"): "nvidia/MiniMax-M2.7-NVFP4",
     ("dsr1", "bf16"): "deepseek-ai/DeepSeek-V3",
     ("dsr1", "fp4"): "deepseek-ai/DeepSeek-V3",
     ("dsr1", "fp8"): "deepseek-ai/DeepSeek-V3",
@@ -59,6 +61,8 @@ MODEL_PATHS = {
     ("kimik2.5", "fp4"): "moonshotai/Kimi-K2.5",
     ("kimik2.5", "fp8"): "moonshotai/Kimi-K2.5",
     ("kimik2.5", "int4"): "moonshotai/Kimi-K2.5",
+    ("kimik2.6", "fp4"): "nvidia/Kimi-K2.6-NVFP4",
+    ("kimik3", "fp4"): "moonshotai/Kimi-K3",
     ("qwen3.5", "bf16"): "Qwen/Qwen3.5-397B-A17B",
     ("qwen3.5", "fp4"): "Qwen/Qwen3.5-397B-A17B",
     ("qwen3.5", "fp8"): "Qwen/Qwen3.5-397B-A17B",
@@ -82,7 +86,21 @@ MODEL_PATHS = {
     ("minimaxm3", "fp8"): "MiniMaxAI/MiniMax-M3",
 }
 MOE_MODELS = frozenset(
-    {"minimaxm2.5", "dsr1", "kimik2.5", "qwen3.5", "gptoss120b", "dsv4", "glm5", "glm5.1", "glm5.2", "minimaxm3"}
+    {
+        "minimaxm2.5",
+        "minimaxm2.7",
+        "dsr1",
+        "kimik2.5",
+        "kimik2.6",
+        "kimik3",
+        "qwen3.5",
+        "gptoss120b",
+        "dsv4",
+        "glm5",
+        "glm5.1",
+        "glm5.2",
+        "minimaxm3",
+    }
 )
 PRECISION_QUANT = {
     "bf16": (None, None),
@@ -90,7 +108,16 @@ PRECISION_QUANT = {
     "fp8": ("fp8", "fp8"),
     "int4": ("int4_wo", "int4_wo"),
 }
-NATIVE_QUANT_MODELS = frozenset({("gptoss120b", "fp4"), ("dsv4", "fp4"), ("dsv4", "fp8")})
+NATIVE_QUANT_MODELS = frozenset(
+    {
+        ("gptoss120b", "fp4"),
+        ("dsv4", "fp4"),
+        ("dsv4", "fp8"),
+        ("minimaxm2.7", "fp4"),
+        ("kimik2.6", "fp4"),
+        ("kimik3", "fp4"),
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -135,12 +162,35 @@ def _worker(
     ep = _integer(config, f"{role}_ep")
     if tp <= 0 or ep <= 0:
         raise ValueError(f"{role} TP and EP must be positive")
+    single_node_ep = not disagg and is_moe and ep > 1 and replicas == 1 and config.get("is_multinode") is False
+    if single_node_ep:
+        # In single-node InferenceX exports, TP names the shared rank group.
+        # Legacy records multiply that width by EP although EP reuses its GPUs.
+        if tp % ep or (backend == "vllm" and ep != tp):
+            raise ValueError(
+                f"{role} single-node TP ({tp}) and EP ({ep}) do not establish a supported shared GPU group"
+            )
+        if gpus_per_replica not in {tp, tp * ep}:
+            raise ValueError(
+                f"{role} single-node expert-parallel GPU count ({gpus_per_replica}) "
+                f"must equal TP ({tp}) or the legacy TP * EP product ({tp * ep})"
+            )
+        gpus_per_replica = tp
+    elif (
+        not disagg
+        and is_moe
+        and ep > 1
+        and replicas == 1
+        and config.get("is_multinode") is not True
+        and gpus_per_replica == tp * ep
+    ):
+        raise ValueError(f"{role} TP * EP GPU count is ambiguous without an explicit boolean is_multinode")
     attention_dp_enabled = bool(config.get(f"{role}_dp_attention", False))
     if backend == "vllm":
         if gpus_per_replica % tp:
             raise ValueError(f"{role} GPUs per worker ({gpus_per_replica}) must be divisible by TP ({tp})")
-        attention_tp = tp
-        attention_dp = gpus_per_replica // tp
+        attention_tp = 1 if attention_dp_enabled else tp
+        attention_dp = gpus_per_replica // attention_tp
     elif attention_dp_enabled:
         if tp not in {1, gpus_per_replica}:
             raise ValueError(f"{role} declared TP ({tp}) conflicts with attention-DP width ({gpus_per_replica})")
@@ -268,6 +318,22 @@ def adapt_inferencex(source: InferenceXSource, overrides: AdapterOverrides) -> A
                     prefill_batch_override=None,
                 )
             )
+            reported_gpus = _integer(agg_config, "num_decode_gpu")
+            effective_gpus = topology.worker.replicas * topology.worker.gpus_per_replica
+            if reported_gpus != effective_gpus:
+                correction = (
+                    f"InferenceX single-node num_decode_gpu={reported_gpus} counts TP * EP; "
+                    f"EP shares the TP GPU group, so the effective GPU count is {effective_gpus}."
+                )
+                assumptions.append(correction)
+                diagnostics.append(
+                    AdaptationDiagnostic(
+                        severity="warning",
+                        code="inferencex_gpu_count_normalized",
+                        message=correction,
+                        path="config.num_decode_gpu",
+                    )
+                )
             systems = SystemSettingsV1(prefill=system)
 
         gemm, moe = (None, None) if (model_alias, precision) in NATIVE_QUANT_MODELS else PRECISION_QUANT[precision]
@@ -311,14 +377,18 @@ def adapt_inferencex(source: InferenceXSource, overrides: AdapterOverrides) -> A
             runtime=RuntimeSettingsV1(
                 systems_paths=overrides.systems_paths,
                 free_gpu_memory_fraction=overrides.free_gpu_memory_fraction,
+                prefill_free_gpu_memory_fraction=overrides.prefill_free_gpu_memory_fraction,
+                decode_free_gpu_memory_fraction=overrides.decode_free_gpu_memory_fraction,
                 max_seq_len=overrides.max_seq_len,
+                prefill_max_seq_len=overrides.prefill_max_seq_len,
+                decode_max_seq_len=overrides.decode_max_seq_len,
                 engine_step_backend=overrides.engine_step_backend,
             ),
             provenance=SourceProvenanceV1(
                 source_type="inferencex",
                 source_reference=source.source_reference,
                 source_ids={
-                    "config_id": config.get("config_id"),
+                    "config_id": config.get("config_id", config.get("id")),
                     "benchmark_id": benchmark.get("bench_id", benchmark.get("id")),
                 },
                 assumptions=tuple(assumptions),

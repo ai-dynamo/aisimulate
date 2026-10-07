@@ -11,6 +11,7 @@ derived. Native full-forward measurements are not inputs to the timing reducers.
 from __future__ import annotations
 
 import argparse
+import copy
 import hashlib
 import importlib.util
 import json
@@ -21,8 +22,19 @@ import sys
 import tempfile
 from pathlib import Path
 
+import pyarrow as pa
+import pyarrow.parquet as pq
+
+from collector import helper
+
 MODULE = "collector.sglang_rubin.publish_prefill_graph"
 PROFILE = "sglang_glm52_nvfp4_vr200_tp4_graph_v1"
+# The acquisition publisher retains its historical identity. This offline
+# migration changes packaging names, never measurements or collection history.
+RENAMED_PROFILE = "sglang_glm52_nvfp4_vr_nvl72_tp4_graph_v1"
+ORIGINAL_PROFILE_ID = "829a83e1629ba546dd4bd90e75a2e2496b7fb24ddc8b60dfbf076ba02312cbce"
+ORIGINAL_RECEIPT_SHA256 = "9024eec577689051fe9e176a6c4a229179197296b7aeeb06dc26cd6a0a3a38f9"
+VERSION = "0.5.18+nvinternal.rubin.0.8full.66997102"
 IDENTITY_PATH = Path(__file__).with_name("prefill_graph_identity.json")
 PROTOCOLS = {"attention": "joint_attention_sequence", "communication": "block_5x20"}
 ATTENTION_ARMS = ("separate_intervals", "common_interval_separate_graphs", "joint_attention_sequence")
@@ -521,12 +533,147 @@ def publish(*, evidence, base_systems, output_systems, validate_only=False):
     return {"status": "PUBLISHED", **result}
 
 
+def migrate_vr_nvl72(*, base, output):
+    """Relabel the verified published pilot without re-running GPU collection.
+
+    The original receipt predates two source-attribution corrections documented
+    in the bundle README. Pin those corrected metadata bytes separately; do not
+    change the original receipt or pretend the migration is a collection event.
+    """
+    base, output = Path(base).absolute(), Path(output).absolute()
+    _require(base.resolve() == base and base.is_dir(), "Invalid base directory")
+    _require(
+        output.resolve() == output and not output.exists() and not output.is_relative_to(base),
+        "Migration requires a fresh output directory outside the base",
+    )
+    receipt_name = f"prefill_graph_publications/{PROFILE}.json"
+    receipt_path = _relative(base, receipt_name)
+    _require(_record(receipt_path)["sha256"] == ORIGINAL_RECEIPT_SHA256, "Unapproved source publication")
+    receipt = _read(receipt_path)
+    pins = copy.deepcopy(receipt["published_files"])
+    for family, digest, size in (
+        ("gemm", "c9c09f861c031d32b7afc4ce0b674be21030a389a53dbbe2c4790ea880e013e0", 879),
+        ("moe", "4741124d2b1ffb8a9a129def0433b3bec9399cd8158500a9d4fce2dbac127d44", 2196),
+    ):
+        pins[f"data/vr200_hecate/{family}/sglang/{VERSION}/collection_meta.yaml"] = {
+            "sha256": digest,
+            "size_bytes": size,
+        }
+    pins["profile-evidence.json"] = {
+        "sha256": "f18eee63ef8f097b05f2776d7571d388e9355af6fe6b7b776d54f6fe72fe65d8",
+        "size_bytes": 18449,
+    }
+    pins[receipt_name] = _record(receipt_path)
+    for name, pin in pins.items():
+        _pin(base, {"path": name, **pin})
+
+    def renamed(name):
+        return name.replace("vr200_hecate", "vr_nvl72").replace(PROFILE, RENAMED_PROFILE)
+
+    with tempfile.TemporaryDirectory(prefix="aisim-vr-nvl72-", dir=output.parent) as temporary:
+        staged = Path(temporary) / "systems"
+        staged.mkdir()
+        for name in pins:
+            if name == receipt_name:
+                continue
+            target = _relative(staged, renamed(name))
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(_relative(base, name), target)
+        hardware = staged / "vr_nvl72.yaml"
+        hardware.write_text(
+            hardware.read_text()
+            .replace("Experimental Hecate", "Experimental Vera Rubin NVL72")
+            .replace("data/vr200_hecate", "data/vr_nvl72")
+        )
+        evidence = _read(staged / "profile-evidence.json")
+        evidence["scope"]["system"] = "vr_nvl72"
+        evidence["profile"]["data_dir"] = "data/vr_nvl72"
+        evidence["status"] = evidence["status"].replace("Hecate", "Vera Rubin NVL72")
+        evidence["hardware_yaml_sha256"] = _record(hardware)["sha256"]
+        (staged / "profile-evidence.json").write_text(json.dumps(evidence, indent=2, allow_nan=False) + "\n")
+
+        profile_path = f"data/vr_nvl72/sparse_attention/sglang/{VERSION}/{RENAMED_PROFILE}.profile.json"
+        profile = _read(staged / profile_path)
+        _require(_record(staged / profile_path)["sha256"] == ORIGINAL_PROFILE_ID, "Unapproved source profile")
+        profile["profile_name"] = RENAMED_PROFILE
+        profile["runtime"]["system"] = "vr_nvl72"
+        for table in profile["tables"].values():
+            table["relative_path"] = renamed(table["relative_path"])
+        for pin in profile["retained_files"]:
+            pin["path"] = renamed(pin["path"])
+            pin.update(_record(_relative(staged, pin["path"])))
+        migration = {
+            "original_system": "vr200_hecate",
+            "system": "vr_nvl72",
+            "original_profile_id": ORIGINAL_PROFILE_ID,
+            "original_publication": pins[receipt_name],
+            "measurements_changed": False,
+        }
+        profile["provenance"]["naming_migration"] = migration
+        data = _bytes(profile)
+        profile_id = hashlib.sha256(data).hexdigest()
+        for table in profile["tables"].values():
+            path = _relative(staged, table["relative_path"])
+            measured = pq.read_table(path)
+            index = measured.schema.get_field_index("profile_id")
+            _require(set(measured["profile_id"].to_pylist()) == {ORIGINAL_PROFILE_ID}, "Source row identity changed")
+            migrated = measured.set_column(index, measured.schema.field(index), pa.array([profile_id] * len(measured)))
+            pq.write_table(migrated, path)
+            _require(
+                pq.read_table(path).drop(["profile_id"]).equals(measured.drop(["profile_id"])),
+                "Measured payload changed",
+            )
+            (path.parent / f"{RENAMED_PROFILE}.profile.json").write_bytes(data)
+        result = {
+            "profile_id": profile_id,
+            "profile_name": RENAMED_PROFILE,
+            "rows": receipt["rows"],
+        }
+        migrated_receipt = {
+            **result,
+            "migration": migration,
+            "migration_tool": {"module": MODULE, **_record(Path(__file__))},
+            "pyarrow_version": pa.__version__,
+            "original_files": pins,
+            "source_publication": receipt,
+            "published_files": _inventory(staged),
+        }
+        target = staged / renamed(receipt_name)
+        target.parent.mkdir(parents=True)
+        target.write_bytes(_bytes(migrated_receipt))
+        for name, pin in pins.items():
+            _pin(base, {"path": name, **pin})
+        helper._rename_noreplace(staged, output)
+    return {"status": "MIGRATED", **result}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--migrate-vr-nvl72", action="store_true")
+    parser.add_argument("--base", type=Path)
+    parser.add_argument("--output", type=Path)
     for name in ("evidence", "base-systems", "output-systems"):
-        parser.add_argument(f"--{name}", type=Path, required=True)
+        parser.add_argument(f"--{name}", type=Path)
     parser.add_argument("--validate-only", action="store_true")
-    print(json.dumps(publish(**vars(parser.parse_args())), indent=2, allow_nan=False))
+    args = parser.parse_args()
+    if args.migrate_vr_nvl72:
+        if (
+            not args.base
+            or not args.output
+            or any((args.evidence, args.base_systems, args.output_systems, args.validate_only))
+        ):
+            parser.error("--migrate-vr-nvl72 requires only --base and --output")
+        result = migrate_vr_nvl72(base=args.base, output=args.output)
+    else:
+        if args.base or args.output or not all((args.evidence, args.base_systems, args.output_systems)):
+            parser.error("publication requires --evidence, --base-systems and --output-systems")
+        result = publish(
+            evidence=args.evidence,
+            base_systems=args.base_systems,
+            output_systems=args.output_systems,
+            validate_only=args.validate_only,
+        )
+    print(json.dumps(result, indent=2, allow_nan=False))
 
 
 if __name__ == "__main__":

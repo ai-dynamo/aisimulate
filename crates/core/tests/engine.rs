@@ -617,11 +617,11 @@ fn sglang_split_prefixes_remain_reusable_across_cache_pressure() {
 fn sglang_prefill_packs_remaining_pages_and_completes_partial_chunks() {
     for (budget, cached_prefix, prompts, expected_work) in [
         (8, 0, vec![4, 8], vec![8, 4]),
-        (6, 0, vec![5], vec![4, 1]),
+        (4, 0, vec![5], vec![4, 1]),
         (8, 0, vec![6], vec![6]),
         (8, 0, vec![7, 8], vec![7, 8]),
         (8, 4, vec![4, 8], vec![8, 4]),
-        (6, 4, vec![5], vec![4, 1]),
+        (4, 4, vec![5], vec![4, 1]),
     ] {
         let mut config = sglang_interval_config(0);
         config.block_size = 4;
@@ -1275,33 +1275,6 @@ fn host_store_capacity_retry_preserves_the_request_cursor() {
 }
 
 #[test]
-fn native_host_offload_rejects_attention_dp_and_disaggregated_roles() {
-    let mut config = engine_config(TimingModelConfig::Fixed {
-        prefill_ms: 0.0,
-        decode_ms: 0.0,
-    });
-    config.rank.kv_cache_bytes_per_token = Some(1);
-    config.rank.native_host_offload =
-        Some(NativeHostOffloadConfig::new(1).with_bandwidths(1.0, 1.0));
-
-    let mut attention_dp = config.clone();
-    attention_dp.dp_size = 2;
-    let error = run_engine_replay(spec(attention_dp)).unwrap_err();
-    let message = format!("{error:#}");
-    assert!(message.contains("dp_size=1"), "{message}");
-
-    let mut disaggregated = spec(config);
-    disaggregated.topology = ReplayTopology::Disaggregated {
-        prefill: WorkerPoolSpec::default(),
-        decode: WorkerPoolSpec::default(),
-        handoff_latency_ms: 0.0,
-    };
-    let error = run_engine_replay(disaggregated).unwrap_err();
-    let message = format!("{error:#}");
-    assert!(message.contains("only aggregated replay"), "{message}");
-}
-
-#[test]
 fn replay_report_retains_authored_request_correlation() {
     let mut replay = spec(engine_config(TimingModelConfig::Fixed {
         prefill_ms: 1.0,
@@ -1861,4 +1834,64 @@ fn native_trtllm_disaggregated_replay_completes() {
     assert_eq!(report.request_counts.completed_requests, 1);
     assert_eq!(report.request_counts.total_input_tokens, 4);
     assert_eq!(report.request_counts.total_output_tokens, 2);
+}
+
+#[test]
+fn chunked_recompute_of_a_preempted_request_completes_its_generated_final_block() {
+    // r9 (13 prompt tokens) is preempted right after its third output token
+    // fills block 3, before that token is computed. Readmitted with a 12-token
+    // prefix hit and a 3-token budget, it recomputes 12..13 and then 13..15
+    // while block 3 still has no hash; debug builds used to reject that state.
+    let requests = [
+        ("r7", 5.5, 0, 12, 11),
+        ("r8", 6.0, 0, 7, 9),
+        ("r9", 6.5, 0, 13, 4),
+    ]
+    .map(
+        |(id, arrival_ms, first, input_tokens, output_tokens): (&str, f64, u32, u32, u32)| {
+            serde_json::json!({
+                "id": id, "arrival_time_ms": arrival_ms, "input_tokens": input_tokens,
+                "input_token_ids": (first..first + input_tokens).collect::<Vec<_>>(),
+                "output_tokens": output_tokens,
+            })
+        },
+    );
+    let spec: ReplaySpec = serde_json::from_value(serde_json::json!({
+        "version": 1,
+        "topology": {"kind": "aggregated", "workers": {"initial_workers": 1}},
+        "engine": {
+            "rank": {
+                "block_size": 4,
+                "kv_cache_bytes_per_token": 1000,
+                "max_num_batched_tokens": 3,
+                "max_num_seqs": 4,
+                "num_gpu_blocks": 7,
+                "timing_model": {"decode_ms": 0.25, "prefill_ms": 0.5, "type": "fixed"},
+            },
+        },
+        "requests": requests,
+        "record_per_request": true,
+    }))
+    .unwrap();
+    let report = run_canonical_engine_replay(spec);
+    let requests = report
+        .per_request
+        .iter()
+        .map(|record| {
+            (
+                record.request_id.as_deref(),
+                record.readmission_count,
+                record.reused_input_tokens,
+                record.terminal_time_ms,
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        requests,
+        [
+            (Some("r7"), 0, 0, 11.0),
+            (Some("r8"), 1, 8, 12.25),
+            (Some("r9"), 1, 12, 12.25),
+        ]
+    );
 }

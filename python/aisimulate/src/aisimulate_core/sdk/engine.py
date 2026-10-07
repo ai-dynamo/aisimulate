@@ -48,6 +48,7 @@ import os
 from typing import Any
 
 import aisimulate_core
+from aisimulate_core.sdk.config import validate_parallel_size
 from aisimulate_core.sdk.config_builders import apply_nextn, build_model_config, validate_moe_controls
 from aisimulate_core.sdk.deepseek_v41 import MODEL_PATH as DEEPSEEK_V41_MODEL_PATH
 from aisimulate_core.sdk.errors import InvalidEngineConfigurationError as InvalidEngineConfigurationError
@@ -153,6 +154,8 @@ from aisimulate_core.sdk.rust_engine_step import (
 # - 23 (DCP identity): optional recorded dcp_size in ParallelMapping.
 # - 24 (typed FPM DCP): dcp_size moves out of the op matching tuple.
 # - 25 (FPM decoupling): merge the SOL/direct selector into the typed DCP layout.
+# - 26 (decode context parallelism): Generation/Context attention, MLA, DSA
+#   and MLAModule ops gained a tail-appended `dcp_size` (positional bincode).
 # Single owner: the Rust crate constant. Python re-exports it for
 # diagnostics/tests instead of declaring a twin to keep in sync.
 ENGINE_SPEC_SCHEMA_VERSION = aisimulate_core.engine_spec_schema_version()
@@ -361,6 +364,8 @@ def _engine_config_dict(
         "moe_tp_size": _opt_int(getattr(cfg, "moe_tp_size", None)),
         "moe_ep_size": _opt_int(getattr(cfg, "moe_ep_size", None)),
         "cp_size": _opt_int(getattr(cfg, "cp_size", None)),
+        # Decode CP joins the identity too: a dcp variant prices decode attention
+        # and KV capacity differently, so it must never share a compiled handle.
         "dcp_size": _opt_int(getattr(cfg, "dcp_size", None)),
         # QuantizationConfig (flattened)
         "weight_dtype": _rust_quant_to_dtype(getattr(cfg, "gemm_quant_mode", None)),
@@ -510,13 +515,14 @@ def compile_engine(
 
     ``decode_workload_distribution=None`` preserves the default model and latency
     behavior. The observed GLM-5.2 NVFP4 pilot profile selects only generation MoE
-    on the exact VR200 SGLang runtime, TP4/MoETP4/EP1, BF16 GEMM/FMHA, FP8 KV and
+    on the exact Vera Rubin NVL72 SGLang runtime, TP4/MoETP4/EP1, BF16 GEMM/FMHA, FP8 KV and
     half communication. Its measured physical nodes are 1, 8 and 32; intermediate
     logical batches are exploratory and queries outside 1..32 fail. Missing or
     mismatched approved profile data raises ``DecodeMoeProfileError``.
 
-    Engine schema 25 combines the FPM interpolation selector, typed DCP, and
-    exact-profile policy on MoE operators. Older binary specs require
+    Engine schema 26 adds decode context parallelism on top of the schema-25
+    FPM interpolation selector, typed DCP and exact-profile policy on MoE
+    operators. Older binary specs require
     recompilation; default representations are therefore not byte-identical.
     """
     if not isinstance(decoder_replay, bool):
@@ -525,8 +531,8 @@ def compile_engine(
         raise InvalidEngineConfigurationError(
             f"decoder_replay requires model={DEEPSEEK_V41_MODEL_PATH!r} and backend='sglang'"
         )
-    if type(cp_size) is not int or cp_size != 1:
-        raise ValueError("cp_size must be the integer 1; this SDK entry point does not support context parallelism")
+    # Before any model construction: the profile and op-level paths both read it.
+    validate_parallel_size("cp_size", cp_size)
     if fpm_parquet_path is not None:
         if not fpm_parquet_path:
             raise ValueError("fpm_parquet_path cannot be empty")
@@ -676,6 +682,7 @@ def compile_engine(
             moe_backend=moe_backend,
             enable_eplb=enable_eplb,
             wideep_num_slots=wideep_num_slots,
+            cp_size=cp_size,
             speculation=resolved_speculation,
         )
         model_config.fpm_config = fpm_config
@@ -1006,6 +1013,7 @@ def build_database_probe_spec_json(
         "moe_tp_size": None,
         "moe_ep_size": None,
         "cp_size": None,
+        "dcp_size": None,
         "weight_dtype": None,
         "moe_dtype": None,
         "activation_dtype": None,

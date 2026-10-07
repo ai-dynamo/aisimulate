@@ -1,0 +1,103 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+name: Accuracy Slack Daily
+
+on:
+  workflow_run:
+    workflows: [E2E Accuracy Matrix, FPM Accuracy Matrix]
+    types: [completed]
+  schedule:
+    # 09:00 Los Angeles is 16:00 UTC in summer, 17:00 in winter.
+    # The script checks the actual local deadline. Rechecks resume interrupted delivery.
+    - cron: "0,30 16-18 * * *"
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Preview only, or send one test report to the configured channel with a TEST label
+        type: choice
+        options: [dry-run, test]
+        default: dry-run
+      e2e_run_id:
+        description: Completed E2E run ID (manual runs are allowed for testing)
+        type: string
+        required: true
+      fpm_run_id:
+        description: Completed FPM run ID
+        type: string
+        required: true
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: accuracy-slack-delivery
+  cancel-in-progress: false
+
+jobs:
+  report:
+    if: >-
+      github.repository == 'ai-dynamo/aisimulate' &&
+      ((github.event_name == 'workflow_dispatch' &&
+        (inputs.mode == 'dry-run' || github.ref == 'refs/heads/main')) ||
+       (vars.SLACK_ACCURACY_ENABLED == 'true' && github.ref == 'refs/heads/main' &&
+        (github.event_name == 'schedule' ||
+         (github.event.workflow_run.event == 'schedule' &&
+          github.event.workflow_run.head_branch == 'main' &&
+          github.event.workflow_run.head_repository.full_name == github.repository))))
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      GH_TOKEN: ${{ github.token }}
+      MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.mode || 'daily' }}
+      E2E_RUN_ID: ${{ inputs.e2e_run_id }}
+      FPM_RUN_ID: ${{ inputs.fpm_run_id }}
+    steps:
+      # Never check out the triggering accuracy run's code in this privileged consumer.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: '3.13'
+      - name: Prepare report and preview
+        env:
+          SLACK_ACCURACY_BOT_TOKEN: ${{ env.MODE != 'dry-run' && secrets.SLACK_ACCURACY_BOT_TOKEN || '' }}
+          SLACK_ACCURACY_CHANNEL_ID: ${{ vars.SLACK_ACCURACY_CHANNEL_ID }}
+        run: |
+          args=(--mode "$MODE" --prepare-only)
+          if [[ "$MODE" != daily ]]; then
+            args+=(--e2e-run-id "$E2E_RUN_ID" --fpm-run-id "$FPM_RUN_ID")
+          fi
+          python scripts/notifications/notify_accuracy.py "${args[@]}"
+      - name: Preserve frozen report before any Slack write
+        if: hashFiles('accuracy-preview/report.json') != ''
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: accuracy-report
+          path: accuracy-preview/report.json
+          overwrite: true
+          retention-days: 90
+      - name: Preserve readable preview
+        if: hashFiles('accuracy-preview/preview.md') != ''
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: accuracy-preview
+          path: accuracy-preview/preview.md
+          overwrite: true
+          retention-days: 30
+      - name: Deliver main message and detail thread
+        if: env.MODE != 'dry-run' && hashFiles('accuracy-preview/report.json') != ''
+        env:
+          SLACK_ACCURACY_BOT_TOKEN: ${{ secrets.SLACK_ACCURACY_BOT_TOKEN }}
+          SLACK_ACCURACY_CHANNEL_ID: ${{ vars.SLACK_ACCURACY_CHANNEL_ID }}
+        run: python scripts/notifications/notify_accuracy.py --mode "$MODE" --deliver accuracy-preview/report.json
+      - name: Preserve delivered baseline and recovery state
+        if: hashFiles('accuracy-preview/delivery/state.json') != ''
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: accuracy-delivery-state
+          path: accuracy-preview/delivery/state.json
+          overwrite: true
+          retention-days: 90

@@ -311,6 +311,25 @@ def test_recommendation_accepts_domains_and_parallel_preset() -> None:
     assert isinstance(config.engine, EngineRecommendationConfig)
 
 
+def test_parallel_preset_entries_round_trip_with_context_knobs() -> None:
+    # A preset entry dumped back to a mapping carries prefill_context unset
+    # (decode CP lives on the prediction config only); recommend must accept the
+    # knobs (unset or at 1) so a config can be re-validated from model_dump,
+    # while unrelated keys stay rejected.
+    from aisimulate.config.engine import ParallelismRecommendationConfig
+
+    entry = {"replicas": 1, "tensor": 2, "pipeline": 1, "attention_data": 1, "moe_tensor": 1, "moe_expert": 1}
+    parallelism = ParallelismRecommendationConfig.model_validate({"preset": [entry]})
+    dumped = parallelism.model_dump()["preset"][0]
+    assert dumped["prefill_context"] is None and "decode_context" not in dumped
+
+    again = ParallelismRecommendationConfig.model_validate({"preset": [dumped]})
+    assert again.preset[0].tensor == 2
+
+    with pytest.raises(ValidationError, match="unknown=\\['mystery'\\]"):
+        ParallelismRecommendationConfig.model_validate({"preset": [{**entry, "mystery": 1}]})
+
+
 def test_parallel_preset_modes_lower_without_conflating_semantics() -> None:
     independent = {
         "preset": False,
@@ -1363,6 +1382,178 @@ def test_pd_predict_checks_effective_prefill_hardware_in_router_hook(router_hard
             prediction_to_replay_spec(config, adapter_specs={"dynamo.router": spec})
 
 
+def test_prediction_parallelism_accepts_context_parallel_knobs() -> None:
+    config = CorePredictionConfig.model_validate(
+        {"engine": {**_engine(), "workers": {"aggregated": {"parallelism": {"decode_context": 4}}}}}
+    )
+    assert config.engine.workers.aggregated is not None
+    parallel = config.engine.workers.aggregated.parallelism
+    assert parallel.prefill_context is None
+    assert parallel.decode_context == 4
+
+
+@pytest.mark.parametrize("field", ["prefill_context", "decode_context"])
+def test_prediction_rejects_nonpositive_context_parallel(field: str) -> None:
+    with pytest.raises(ValidationError):
+        CorePredictionConfig.model_validate(
+            {"engine": {**_engine(), "workers": {"aggregated": {"parallelism": {field: 0}}}}}
+        )
+
+
+def test_aggregated_deployment_rejects_prefill_and_decode_cp_together() -> None:
+    from aisimulate.compiler import _deployment
+
+    config = CorePredictionConfig.model_validate(
+        {
+            "engine": {
+                **_engine(),
+                "backend": "sglang",
+                "workers": {"aggregated": {"parallelism": {"prefill_context": 2, "decode_context": 2}}},
+            }
+        }
+    )
+    with pytest.raises(ValueError, match="at most one of parallelism.prefill_context"):
+        _deployment(config.engine, workload={}, afd_performance_model=None)
+
+
+def test_aggregated_deployment_accepts_one_context_parallel_knob() -> None:
+    from aisimulate.compiler import _deployment
+
+    config = CorePredictionConfig.model_validate(
+        {
+            "engine": {
+                **_engine(),
+                "backend": "sglang",
+                "workers": {"aggregated": {"parallelism": {"tensor": 4, "decode_context": 4}}},
+            }
+        }
+    )
+    spec = _deployment(config.engine, workload={}, afd_performance_model=None)
+    # cp=1 is not spelled out, so pre-CP deployments stay byte-identical.
+    assert "cp" not in spec.parallel_config
+    assert spec.parallel_config["dcp"] == 4
+    # Default timing lowers the canonical estimator config onto the rank; the
+    # knob must ride that identity (the native engine is built from it).
+    timing = spec.agg_engine_args["timing_model"]["config"]
+    assert timing["dcp"] == 4
+    assert timing["cp_size"] is None
+    assert spec.performance_model_metadata["aggregated"]["config"]["dcp"] == 4
+    assert "cp_size" not in spec.performance_model_metadata["aggregated"]["config"]
+
+
+@pytest.mark.parametrize("knob", ["prefill_context", "decode_context"])
+def test_afd_companion_rejects_context_parallelism(knob: str) -> None:
+    # The companion's ParallelShape / GPU accounting carry tp/pp/dp/moe only, so
+    # a CP knob would price a wider worker than the topology reports.
+    from pathlib import Path
+
+    from aisimulate.compiler import prediction_to_replay_spec
+
+    tiny_model = Path(__file__).resolve().parents[1] / "tests/e2e/configs/unified_cli/fixtures/tiny-model"
+    config = CorePredictionConfig.model_validate(
+        {
+            "engine": {
+                "mode": "afd",
+                "model": str(tiny_model),
+                "hardware": "h200_sxm",
+                "backend": "vllm",
+                "context_length": 2048,
+                "afd": {
+                    "phase": "decode",
+                    "combined_with_pd": True,
+                    "n_a_nodes": 1,
+                    "n_f_nodes": 1,
+                    "tp_a": 8,
+                    "a_batch_size": 8,
+                },
+                "workers": {"prefill": {"parallelism": {knob: 2}}},
+            }
+        }
+    )
+    with pytest.raises(ValueError, match="AFD companion .* do not support context parallelism"):
+        prediction_to_replay_spec(config)
+
+
+def test_disaggregated_deployment_carries_each_context_parallel_knob_per_role() -> None:
+    from aisimulate.compiler import _deployment
+
+    config = CorePredictionConfig.model_validate(
+        {
+            "engine": {
+                **_engine(),
+                "mode": "disaggregated",
+                "backend": "sglang",
+                "workers": {
+                    "prefill": {"parallelism": {"prefill_context": 2}},
+                    "decode": {"parallelism": {"tensor": 4, "decode_context": 4}},
+                },
+            }
+        }
+    )
+    spec = _deployment(config.engine, workload={}, afd_performance_model=None)
+    assert spec.parallel_config["prefill_cp"] == 2
+    assert "prefill_dcp" not in spec.parallel_config
+    assert "decode_cp" not in spec.parallel_config
+    assert spec.parallel_config["decode_dcp"] == 4
+    prefill_timing = spec.prefill_engine_args["timing_model"]["config"]
+    decode_timing = spec.decode_engine_args["timing_model"]["config"]
+    assert (prefill_timing["cp_size"], prefill_timing.get("dcp")) == (2, None)
+    assert (decode_timing["cp_size"], decode_timing["dcp"]) == (None, 4)
+    assert spec.performance_model_metadata["prefill"]["config"]["cp_size"] == 2
+    assert spec.performance_model_metadata["decode"]["config"]["dcp"] == 4
+
+
+@pytest.mark.parametrize(
+    ("backend", "prefill", "decode", "needle"),
+    [
+        # A prefill engine stripes its KV only as the PCP+DCP layout.
+        ("sglang", {"decode_context": 4}, {}, "only as 1 or equal to prefill_context"),
+        ("vllm", {"prefill_context": 2, "decode_context": 4}, {"decode_context": 4}, "only as 1 or equal"),
+        # vLLM NIXL: replicated PCP cannot feed a DCP-sharded decode ...
+        ("vllm", {"prefill_context": 2}, {"decode_context": 4}, "replicated-PCP"),
+        # ... and the two DCP sizes must divide one another.
+        ("vllm", {"prefill_context": 4, "decode_context": 4}, {"decode_context": 6}, "divide one another"),
+    ],
+)
+def test_disaggregated_context_parallel_layout_rules(backend: str, prefill: dict, decode: dict, needle: str) -> None:
+    from aisimulate.compiler import _deployment
+
+    config = CorePredictionConfig.model_validate(
+        {
+            "engine": {
+                **_engine(),
+                "mode": "disaggregated",
+                "backend": backend,
+                "workers": {"prefill": {"parallelism": prefill}, "decode": {"parallelism": decode}},
+            }
+        }
+    )
+    with pytest.raises(ValueError, match=needle):
+        _deployment(config.engine, workload={}, afd_performance_model=None)
+
+
+def test_vllm_disaggregated_pcp_plus_dcp_prefill_pairs_with_a_dividing_decode_dcp() -> None:
+    from aisimulate.compiler import _deployment
+
+    config = CorePredictionConfig.model_validate(
+        {
+            "engine": {
+                **_engine(),
+                "mode": "disaggregated",
+                "backend": "vllm",
+                "context_length": 4096,
+                "workers": {
+                    "prefill": {"parallelism": {"tensor": 2, "prefill_context": 2, "decode_context": 2}},
+                    "decode": {"parallelism": {"tensor": 8, "decode_context": 8}},
+                },
+            }
+        }
+    )
+    spec = _deployment(config.engine, workload={}, afd_performance_model=None)
+    assert (spec.parallel_config["prefill_cp"], spec.parallel_config["prefill_dcp"]) == (2, 2)
+    assert spec.parallel_config["decode_dcp"] == 8
+
+
 @pytest.mark.parametrize("seed", [0, 42, 2**64 - 1])
 @pytest.mark.parametrize("warmup", [False, True])
 def test_agentic_snapshot_seed_compiles_for_prediction_and_recommendation(seed: int, warmup: bool) -> None:
@@ -1449,6 +1640,111 @@ def test_agentic_snapshot_is_opt_in() -> None:
     assert "agentic_snapshot" not in prediction_to_replay_spec(config).workload
     assert config.traffic.load.agentic_warmup is False
     assert "agentic_warmup" not in prediction_to_replay_spec(config).workload
+    assert config.traffic.load.agentic_profile is None
+    assert "agentic_profile" not in prediction_to_replay_spec(config).workload
+
+
+@pytest.mark.parametrize("warmup", [False, True])
+@pytest.mark.parametrize("profile", [{}, {"duration_seconds": 2.0, "response_grace_seconds": 0.0}])
+def test_agentic_profile_roundtrip_and_compiler_preserve_controls(warmup: bool, profile: dict) -> None:
+    from aisimulate.compiler import prediction_to_replay_spec
+    from aisimulate.config import AgenticProfileOptions, TrafficPredictionConfig, TrafficRecommendationConfig
+    from aisimulate.recommend import _recommendation_workload
+    from aisimulate.sweeper.config import Workload
+
+    traffic = {
+        "source": {"type": "trace", "format": "weka", "paths": ["corpus"]},
+        "load": {
+            "type": "trace_timestamps",
+            "agentic_lanes": 2,
+            "agentic_snapshot": {"seed": 42},
+            "agentic_warmup": warmup,
+            "agentic_profile": profile,
+        },
+    }
+    expected = AgenticProfileOptions.model_validate(profile).model_dump(mode="json")
+    for schema in (TrafficPredictionConfig, TrafficRecommendationConfig):
+        config = schema.model_validate(traffic)
+        reloaded = schema.model_validate_json(config.model_dump_json())
+        assert reloaded.load.agentic_profile.model_dump(mode="json") == expected
+    prediction = CorePredictionConfig.model_validate(
+        {"engine": _engine() | {"context_length": 1024}, "traffic": traffic}
+    )
+    assert prediction_to_replay_spec(prediction).workload["agentic_profile"] == expected
+    recommended = Workload.model_validate(_recommendation_workload(traffic))
+    assert recommended.model_dump(mode="json")["agentic_profile"] == expected
+    assert Workload.model_validate_json(recommended.model_dump_json()).agentic_profile == recommended.agentic_profile
+
+
+@pytest.mark.parametrize(
+    "profile",
+    [
+        {"duration_seconds": 0},
+        {"duration_seconds": True},
+        {"duration_seconds": "3"},
+        {"duration_seconds": float("inf")},
+        {"duration_seconds": 1e308},
+        {"response_grace_seconds": -1},
+        {"cancel_drain_seconds": float("nan")},
+        {"tree_idle_cap_seconds": 0},
+        {"global_idle_cap_seconds": -1},
+        {"unknown": 1},
+    ],
+)
+def test_agentic_profile_rejects_invalid_controls(profile: dict) -> None:
+    from aisimulate.config import AgenticProfileOptions
+
+    with pytest.raises(ValidationError):
+        AgenticProfileOptions.model_validate(profile)
+
+
+@pytest.mark.parametrize("missing", ["agentic_snapshot", "agentic_lanes"])
+def test_agentic_profile_requires_seeded_lanes(missing: str) -> None:
+    from aisimulate.config import TrafficPredictionConfig, TrafficRecommendationConfig
+    from aisimulate.sweeper.config import Workload
+
+    load = {
+        "type": "trace_timestamps",
+        "agentic_lanes": 1,
+        "agentic_snapshot": {"seed": 42},
+        "agentic_profile": {},
+    }
+    del load[missing]
+    for schema in (TrafficPredictionConfig, TrafficRecommendationConfig):
+        with pytest.raises(ValidationError, match=missing):
+            schema.model_validate({"source": {"type": "trace", "format": "weka", "paths": ["corpus"]}, "load": load})
+    with pytest.raises(ValidationError, match=missing):
+        Workload.model_validate(
+            {
+                "source_type": "trace",
+                "trace_path": "corpus",
+                "trace_format": "weka",
+                "load_type": load.pop("type"),
+                **load,
+            }
+        )
+
+
+def test_agentic_profile_rejects_legacy_time_stop() -> None:
+    from aisimulate.config import TrafficPredictionConfig, TrafficRecommendationConfig
+    from aisimulate.recommend import _recommendation_workload
+    from aisimulate.sweeper.config import Workload
+
+    traffic = {
+        "source": {"type": "trace", "format": "dynamo", "paths": ["corpus"]},
+        "load": {
+            "type": "trace_timestamps",
+            "agentic_lanes": 1,
+            "agentic_snapshot": {"seed": 42},
+            "agentic_profile": {},
+        },
+        "stop": {"max_virtual_time_seconds": 1.0},
+    }
+    for schema in (TrafficPredictionConfig, TrafficRecommendationConfig):
+        with pytest.raises(ValidationError, match="agentic_profile cannot be combined"):
+            schema.model_validate(traffic)
+    with pytest.raises(ValidationError, match="agentic_profile cannot be combined"):
+        Workload.model_validate(_recommendation_workload(traffic))
 
 
 @pytest.mark.parametrize("warmup", [None, 0, 1, "true", {}])
@@ -1599,13 +1895,11 @@ def test_prediction_dcp_identity_roundtrip_and_explicit_capacity():
     assert timing["estimation_mode"] == "fpm_interpolation"
     assert deployment.agg_engine_args["num_gpu_blocks"] == 2175
     assert deployment.parallel_config["dcp"] == 8
-    raw["engine"]["workers"]["aggregated"]["kv_cache"]["capacity"] = {"type": "default"}
-    with pytest.raises(ValueError, match="explicit KV block capacity"):
-        prediction_to_replay_spec(CorePredictionConfig.model_validate(raw))
+    # Automatic KV capacity and transfer sizing stay available under DCP: the
+    # capacity estimate prices the 1/dcp KV stripe and the per-token transfer
+    # bytes are unchanged by striping.
     cache = raw["engine"]["workers"]["aggregated"]["kv_cache"]
     cache.update(capacity={"type": "fixed", "blocks": 2175}, host_offload={"num_host_blocks": 32})
-    with pytest.raises(ValueError, match="explicit bytes_per_token"):
-        prediction_to_replay_spec(CorePredictionConfig.model_validate(raw))
     cache["bytes_per_token"] = 1728
     deployment = prediction_to_replay_spec(CorePredictionConfig.model_validate(raw)).backend_deployment
     assert deployment.agg_engine_args["kv_cache_bytes_per_token"] == 1728

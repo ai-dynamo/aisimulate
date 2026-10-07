@@ -147,6 +147,81 @@ def test_invalid_cli_input_preserves_outputs_and_stack_error_order(tmp_path, fai
         assert "invalid --set" not in result.stderr
 
 
+@pytest.mark.parametrize(
+    "name,section,error",
+    [
+        ("traffic", {}, "collides"),
+        ("placement", {}, "collides"),
+        ("bad.name", {}, "invalid --output name"),
+        ("missing", {}, "requires a top-level"),
+        ("artifact", [], "must be a mapping"),
+    ],
+)
+def test_recommend_output_validation_preserves_outputs(tmp_path, name, section, error):
+    import os
+    import subprocess
+
+    raw = {
+        "engine": {
+            "mode": "aggregated",
+            "model": "example/model",
+            "hardware": "h200_sxm",
+            "context_length": 4096,
+            "workers": {"aggregated": {}},
+        },
+        "optimization": {
+            "target": "throughput",
+            "constraints": {"max_candidate_gpus": 1},
+        },
+    }
+    if name != "missing":
+        raw[name] = section
+    config = tmp_path / "config.yaml"
+    config.write_text(yaml.safe_dump(raw))
+    # Metadata discovery must reject this collision without loading its provider.
+    metadata = tmp_path / "test_config_adapter-1.0.dist-info"
+    metadata.mkdir()
+    (metadata / "METADATA").write_text("Metadata-Version: 2.1\nName: test-config-adapter\nVersion: 1.0\n")
+    (metadata / "entry_points.txt").write_text(
+        "[aisimulate.config_adapters]\nengine.placement = nonexistent_adapter:factory\n"
+    )
+    output = tmp_path / "output"
+    (output / "recommendations").mkdir(parents=True)
+    original = {
+        "recommendation.json": "old result",
+        "recommendation.csv": "old candidates",
+        "recommendations/0001.yaml": "old config",
+        "resource-runtime.json": "old diagnostics",
+        "keep.txt": "unrelated file",
+    }
+    for filename, contents in original.items():
+        (output / filename).write_text(contents)
+    env = dict(os.environ)
+    env["PYTHONPATH"] = os.pathsep.join(filter(None, (str(tmp_path), env.get("PYTHONPATH"))))
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "aisimulate",
+            "recommend",
+            "--config",
+            str(config),
+            "--output",
+            name,
+            "--output-dir",
+            str(output),
+            "--overwrite",
+        ],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    assert result.returncode == 2, result.stderr
+    assert error in result.stderr
+    assert {str(path.relative_to(output)): path.read_text() for path in output.rglob("*") if path.is_file()} == original
+
+
 def _cli_arguments(tmp_path):
     config = tmp_path / "config.yaml"
     config.write_text("engine:\n  model: example/model\n  hardware: h200_sxm\n  workers:\n    aggregated: {}\n")
@@ -315,6 +390,82 @@ def test_public_cli_runs_small_native_prediction_with_resource_evidence(tmp_path
     assert runtime["peak_observed_rss_bytes"] > 0
     events = [json.loads(line) for line in (output / "execution-events.jsonl").read_text().splitlines()]
     assert any(event["event"] == "resource_plan" for event in events)
+
+
+@pytest.mark.parametrize("profile", [{}, {"duration_seconds": 86400}])
+def test_public_cli_profile_uses_unqualified_supervised_resource_plan(tmp_path, profile):
+    import subprocess
+
+    trace = tmp_path / "play.json"
+    trace.write_text(
+        json.dumps(
+            {
+                "id": "play",
+                "models": ["model"],
+                "block_size": 4,
+                "hash_id_scope": "local",
+                "requests": [{"t": 0, "type": "s", "model": "model", "in": 4, "out": 1, "hash_ids": [1]}],
+            }
+        )
+    )
+    config = tmp_path / "profile.yaml"
+    config.write_text(
+        yaml.safe_dump(
+            {
+                "engine": {
+                    "model": "example/model",
+                    "hardware": "h200_sxm",
+                    "context_length": 1024,
+                    "workers": {
+                        "aggregated": {
+                            "kv_cache": {"block_size": 4, "capacity": {"type": "fixed", "blocks": 128}},
+                            "timing": {"type": "fixed", "prefill_ms": 600000, "decode_ms": 1},
+                        }
+                    },
+                },
+                "traffic": {
+                    "source": {"type": "trace", "format": "weka", "paths": [str(trace)]},
+                    "load": {
+                        "type": "trace_timestamps",
+                        "agentic_lanes": 1,
+                        "agentic_snapshot": {"seed": 42},
+                        "agentic_profile": profile,
+                    },
+                },
+            }
+        )
+    )
+    output = tmp_path / "output"
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "aisimulate",
+            "predict",
+            "--config",
+            str(config),
+            "--output-dir",
+            str(output),
+            "--format",
+            "json",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    runtime = json.loads((output / "resource-runtime.json").read_text())
+    assert runtime["status"] == "completed"
+    assert runtime["peak_observed_rss_bytes"] > 0
+    events = [json.loads(line) for line in (output / "execution-events.jsonl").read_text().splitlines()]
+    plan = next(event["value"] for event in events if event["event"] == "resource_plan")
+    assert plan["effective_parallelism"] == 1
+    assert plan["estimate"]["estimated_peak_bytes"] is None
+    assert plan["estimate"]["allocation_model"] == "agentic-profile-unqualified-v1"
+    report = json.loads((output / "prediction.json").read_text())["agentic_profile"]
+    assert report["options"]["duration_seconds"] == profile.get("duration_seconds", 3600)
+    assert report["plays_started"] > 1
+    assert report["successful_responses"] > 0
 
 
 def test_sdk_recommendation_is_supervised_and_refuses_oversized_input():
@@ -519,6 +670,7 @@ def test_supervisor_argument_and_output_setup_do_not_import_runtime():
             """
 import sys
 import aisimulate.supervision, aisimulate.cli_args, aisimulate.output
+aisimulate.cli_args._extract_output_configs({'artifact': {}}, ['artifact'], stack='engine')
 
 runtime = ('aisimulate._runtime', 'aisimulate.sweeper', 'numpy', 'pandas')
 assert not any(name == root or name.startswith(root + '.') for name in sys.modules for root in runtime)

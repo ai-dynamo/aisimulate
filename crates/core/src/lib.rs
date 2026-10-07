@@ -41,16 +41,18 @@ pub use perfmodel::{
     ForwardPassPerfModel, ForwardPassPerfModelConfig, ForwardPassPerfOptions,
     ForwardPassPerfProvenance, ForwardPassPerfReadiness, ForwardPassPerfSource,
     ForwardPassRegressionStoreDiagnostics, ForwardPassRegressionWorkloadKind,
-    ForwardPassSpeculationConfig, ForwardPassWorkerType, FpmRegressionConfig, KvCacheEstimate,
-    KvCacheEstimateAdjusted, KvCacheEstimateError, KvCacheEstimateOptions, KvCacheEstimateRequest,
-    KvCacheMemoryFraction, MemoryBreakdown, ParallelMapping, QuantizationConfig,
-    QueuedRequestMetrics, RegressionFeatureWeights, SamplingConfig, ScheduledRequestMetrics,
-    SpeculativeConfig,
+    ForwardPassSpeculationConfig, ForwardPassSplineDiagnostics, ForwardPassWorkerType,
+    FpmRegressionConfig, KvCacheEstimate, KvCacheEstimateAdjusted, KvCacheEstimateError,
+    KvCacheEstimateOptions, KvCacheEstimateRequest, KvCacheMemoryFraction, MemoryBreakdown,
+    ParallelMapping, QuantizationConfig, QueuedRequestMetrics, RegressionFeatureWeights,
+    SamplingConfig, ScheduledRequestMetrics, SpeculativeConfig,
 };
 pub use perfmodel::{
     CorrectionFactorBounds, CorrectionFeatureSpace, FpmInterpolationConfig, FpmInterpolationMethod,
-    FpmQueryCoverage, FpmQueryCoverageCounts, FpmQueryGap, FpmQueryPurpose, OpLevelConfig,
-    RegressionFitConfig, RegressionFitKind, UnrecordedFpmQuantMode,
+    FpmQueryCoverage, FpmQueryCoverageCounts, FpmQueryGap, FpmQueryPurpose, LinearFitConfig,
+    OpLevelConfig, RegressionFeatureAxis, RegressionFitConfig, RegressionFitKind,
+    RegressionSamplingConfig, RegressionUpdatePolicy, SplineFitConfig, SplineSearchConfig,
+    UnrecordedFpmQuantMode,
 };
 
 #[cfg(feature = "python")]

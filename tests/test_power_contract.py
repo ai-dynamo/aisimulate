@@ -16,7 +16,7 @@ from jsonschema import Draft202012Validator
 from jsonschema.exceptions import ValidationError
 
 ROOT = Path(__file__).parents[1]
-SCHEMA_PATH = ROOT / "docs" / "schemas" / "power-metrics-v1.schema.json"
+SCHEMA_PATH = ROOT / "docs" / "perf-model" / "schemas" / "power-metrics-v1.schema.json"
 EXAMPLES_PATH = ROOT / "tests" / "fixtures" / "power-contract-v1.json"
 
 
@@ -185,17 +185,18 @@ def test_reproducible_examples_reject_invalid_operation_evidence(
 
 
 def test_public_docs_keep_availability_separate_from_semantics() -> None:
-    contract = (ROOT / "docs" / "power-model.md").read_text(encoding="utf-8")
-    migration = (ROOT / "docs" / "cli" / "migrate-from-aiconfigurator.md").read_text(encoding="utf-8")
-    core_api = (ROOT / "docs" / "core-api.md").read_text(encoding="utf-8")
+    contract = " ".join((ROOT / "docs" / "perf-model" / "power.md").read_text(encoding="utf-8").split())
+    migration = (ROOT / "docs" / "aic-backward-compatibility" / "migration.md").read_text(encoding="utf-8")
+    core_api = (ROOT / "docs" / "perf-model" / "api" / "python.md").read_text(encoding="utf-8")
 
-    assert "This PR does not change current AIC or FPE runtime behavior" in contract
-    assert "the contract\ndoes not by itself make modeled power available" in contract
-    assert "exactly `0.90` is sufficient;\n`0.899` is not" in contract
-    assert "Once the follow-up runtime work adds a conforming producer" in contract
+    assert "Unified prediction and recommendation preserve and display `power_w` and `power_coverage`" in contract
+    assert "exactly `0.90` is sufficient; `0.899` is not" in contract
+    assert "Whole-forward FPM, fixed, and polynomial timing remain latency-only" in contract
+    assert "Below the threshold, JSON output keeps numeric `power_coverage` and sets `power_w` to `null`" in contract
     assert "fixtures/power-contract-v1.json" in contract
-    assert "[modeled-power contract](../power-model.md)" in migration
-    assert "Typed per-op energy alone does\nnot make unified replay power available" in core_api
+    assert "[modeled-power contract](../perf-model/power.md)" in migration
+    assert "Operation energy alone does not guarantee published power" in core_api
+    assert "[modeled-power coverage gate](../power.md#publication-gate)" in core_api
 
 
 def test_exact_oracle_withholds_power_that_overflows_float(

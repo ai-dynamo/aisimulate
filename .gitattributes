@@ -5,3 +5,5 @@ python/aisimulate/src/aisimulate_core/systems/**/*.parquet diff=parquet -text
 # (byte-identical to the hub file; the M3 one enumerates 22k quantized
 # tensors) — mark generated so review diffs collapse them.
 python/aisimulate/src/aisimulate_core/model_configs/*_hf_quant_config.json linguist-generated=true
+# Preserve the byte-identical Plotly distribution, including upstream whitespace.
+pages/fpm-accuracy/assets/plotly.min.js -whitespace linguist-vendored=true

@@ -89,6 +89,7 @@ fn context_ops() -> Vec<Op> {
             cp_size: 1,
             lane_order: crate::operators::attention::b200_vllm_context_lane_order(),
             apply_rope: true,
+            dcp_size: 1,
         }),
     ]
 }
@@ -114,6 +115,7 @@ fn generation_ops() -> Vec<Op> {
             use_qk_norm: false,
             scale_num_tokens: 1,
             verify_query_tokens: 0,
+            dcp_size: 1,
         }),
     ]
 }
@@ -134,13 +136,13 @@ fn fixture_engine_config() -> EngineConfig {
         moe_kernel_source: None,
         kv_block_size: None,
         parallel: ParallelMapping {
-            dcp_size: None,
             tp_size: 8,
             pp_size: 1,
             attention_dp_size: Some(1),
             moe_tp_size: Some(1),
             moe_ep_size: Some(8),
             cp_size: None,
+            dcp_size: None,
         },
         quantization: QuantizationConfig {
             weight_dtype: None,
@@ -406,7 +408,7 @@ fn regression_model(
     ForwardPassPerfModel::from_regression(
         worker_type,
         options,
-        super::estimator::RegressionFitConfig::default().rebuild_interval,
+        &super::estimator::RegressionFitConfig::default(),
     )
 }
 
@@ -770,6 +772,193 @@ fn invalid_schema_rejected() {
     let mut bad = prefill_fpm(10, 0.0);
     bad.version = 999;
     assert!(model.estimate_forward_pass_time_ms(&[bad]).is_err());
+}
+
+#[test]
+fn optional_request_lists_validate_at_public_prediction_and_tuning_boundaries() {
+    use super::{LinearFitConfig, RegressionFeatureAxis};
+
+    let legacy = serde_json::to_value(ScheduledRequestMetrics::default()).unwrap();
+    assert!(legacy.get("extend_lengths").is_none());
+    assert!(legacy.get("past_kv_lengths").is_none());
+
+    let mut config = crate::ForwardPassPerfModelConfig::new(
+        "test/model",
+        "test-system",
+        BackendKind::Vllm,
+        ForwardPassWorkerType::Decode,
+    );
+    config.estimation_mode = crate::EstimationMode::FpmRegression;
+    config.estimator_config.fpm_regression.fit.linear = Some(LinearFitConfig {
+        feature_axes: vec![RegressionFeatureAxis::MaxPast],
+        ..Default::default()
+    });
+    let mut model = ForwardPassPerfModel::best_available(config).unwrap();
+    let sample = |i: u32| {
+        // Independent oracle: y = 3 + 0.5 * max(past), with past = [i, 2i].
+        let mut row = decode_fpm(2, 3 * i, (3.0 + f64::from(i)) / 1000.0);
+        row.scheduled_requests.extend_lengths = Some(vec![1, 1]);
+        row.scheduled_requests.past_kv_lengths = Some(vec![u64::from(i), 2 * u64::from(i)]);
+        row
+    };
+    for i in 1..=8 {
+        model.tune_with_fpms(&[vec![sample(i)]]).unwrap();
+    }
+    let query = sample(9);
+    let before = model
+        .estimate_forward_pass_time_ms(std::slice::from_ref(&query))
+        .unwrap();
+    assert_close(before.unwrap(), 12.0);
+    let diagnostics_before = model.regression_store_diagnostics();
+
+    let mut missing_past = query.clone();
+    missing_past.scheduled_requests.past_kv_lengths = None;
+    let mut missing_extend = query.clone();
+    missing_extend.scheduled_requests.extend_lengths = None;
+    let mut short_past = query.clone();
+    short_past.scheduled_requests.past_kv_lengths = Some(vec![27]);
+    let mut short_extend = query.clone();
+    short_extend.scheduled_requests.extend_lengths = Some(vec![2]);
+    let mut short_pair = query.clone();
+    short_pair.scheduled_requests.extend_lengths = Some(vec![2]);
+    short_pair.scheduled_requests.past_kv_lengths = Some(vec![27]);
+    for invalid in [
+        missing_past,
+        missing_extend,
+        short_past,
+        short_extend,
+        short_pair,
+    ] {
+        assert!(matches!(
+            model.estimate_forward_pass_time_ms(std::slice::from_ref(&invalid)),
+            Err(AicError::InvalidForwardPassMetrics(_))
+        ));
+        // A valid rank before the malformed rank must not partially tune an iteration.
+        assert!(matches!(
+            model.tune_with_fpms(&[vec![sample(10), invalid]]),
+            Err(AicError::InvalidForwardPassMetrics(_))
+        ));
+        assert_eq!(model.regression_store_diagnostics(), diagnostics_before);
+        assert_eq!(
+            model
+                .estimate_forward_pass_time_ms(std::slice::from_ref(&query))
+                .unwrap(),
+            before
+        );
+    }
+
+    let mut independent_sum = query.clone();
+    independent_sum.scheduled_requests.past_kv_lengths = Some(vec![9, 19]);
+    independent_sum.wall_time = 0.0125;
+    let mut overflow_sum = query;
+    overflow_sum.scheduled_requests.extend_lengths = Some(vec![u64::MAX, 1]);
+    // Neither a different aggregate sum nor an unrepresentable u64 array sum
+    // invalidates a paired list. The selected maxP feature still predicts
+    // 3 + 0.5 * 19 = 12.5 ms and 3 + 0.5 * 18 = 12 ms respectively.
+    for (row, expected_ms) in [(independent_sum, 12.5), (overflow_sum, 12.0)] {
+        assert_close(
+            model
+                .estimate_forward_pass_time_ms(std::slice::from_ref(&row))
+                .unwrap()
+                .unwrap(),
+            expected_ms,
+        );
+        let retained = model.regression_store_diagnostics()[0].retained_observations;
+        model.tune_with_fpms(&[vec![row]]).unwrap();
+        assert_eq!(
+            model.regression_store_diagnostics()[0].retained_observations,
+            retained + 1
+        );
+    }
+}
+
+#[test]
+fn request_features_accept_sglang_arrays_with_independent_aggregate_counters() {
+    use super::{LinearFitConfig, RegressionFeatureAxis};
+
+    for (worker_type, axis, query_length, expected_ms) in [
+        (
+            ForwardPassWorkerType::Prefill,
+            RegressionFeatureAxis::MaxExtend,
+            7533,
+            10.533,
+        ),
+        (
+            ForwardPassWorkerType::Decode,
+            RegressionFeatureAxis::MaxPast,
+            106276,
+            13.6276,
+        ),
+    ] {
+        let mut config = crate::ForwardPassPerfModelConfig::new(
+            "test/model",
+            "test-system",
+            BackendKind::Sglang,
+            worker_type,
+        );
+        config.estimation_mode = crate::EstimationMode::FpmRegression;
+        config.estimator_config.fpm_regression.fit.linear = Some(LinearFitConfig {
+            feature_axes: vec![axis],
+            ..Default::default()
+        });
+        let mut model = ForwardPassPerfModel::best_available(config).unwrap();
+        let sample = |length: u32| {
+            let (scheduled_requests, observed_ms) = match worker_type {
+                ForwardPassWorkerType::Prefill => (
+                    ScheduledRequestMetrics {
+                        num_prefill_requests: 1,
+                        sum_prefill_tokens: length.div_ceil(256) * 256,
+                        sum_prefill_kv_tokens: length,
+                        extend_lengths: Some(vec![u64::from(length)]),
+                        past_kv_lengths: Some(vec![0]),
+                        ..Default::default()
+                    },
+                    // Hand-derived oracle: 3 ms overhead plus 1 us per raw extend token.
+                    3.0 + f64::from(length) / 1000.0,
+                ),
+                ForwardPassWorkerType::Decode => (
+                    ScheduledRequestMetrics {
+                        num_decode_requests: 1,
+                        sum_decode_kv_tokens: length - 1,
+                        extend_lengths: Some(vec![1]),
+                        past_kv_lengths: Some(vec![u64::from(length)]),
+                        ..Default::default()
+                    },
+                    // Hand-derived oracle: 3 ms overhead plus 0.1 us per raw past token.
+                    3.0 + f64::from(length) / 10000.0,
+                ),
+                ForwardPassWorkerType::Aggregated => unreachable!(),
+            };
+            ForwardPassMetrics {
+                scheduled_requests,
+                wall_time: observed_ms / 1000.0,
+                ..Default::default()
+            }
+        };
+        for i in 1..=8 {
+            let length = if worker_type == ForwardPassWorkerType::Prefill {
+                i * 1000
+            } else {
+                i * 20000
+            };
+            model.tune_with_fpms(&[vec![sample(length)]]).unwrap();
+        }
+        // These counters and arrays reproduce the mismatches in captured SGLang
+        // rows: prefill 7680/7533 versus [7533]/[0], and decode 106275 versus [106276].
+        let query = sample(query_length);
+        assert_close(
+            model
+                .estimate_forward_pass_time_ms(std::slice::from_ref(&query))
+                .unwrap()
+                .unwrap(),
+            expected_ms,
+        );
+        model.tune_with_fpms(&[vec![query]]).unwrap();
+        assert_eq!(
+            model.regression_store_diagnostics()[0].retained_observations,
+            9
+        );
+    }
 }
 
 // ---- options validation ----

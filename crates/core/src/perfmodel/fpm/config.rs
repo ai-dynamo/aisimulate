@@ -104,6 +104,11 @@ pub struct ForwardPassPerfModelConfig {
     pub moe_tp_size: Option<u32>,
     #[serde(default)]
     pub moe_ep_size: Option<u32>,
+    /// Prefill context parallelism (SGLang `--attn-cp-size`, vLLM `-pcp`): extra
+    /// attention ranks that split prefill tokens, so it widens the attention side
+    /// (`tp * attention_dp * cp_size == moe_tp_size * moe_ep_size`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cp_size: Option<u32>,
 
     #[serde(default, alias = "gemm_dtype")]
     pub gemm_quant_mode: Option<String>,
@@ -181,6 +186,7 @@ impl ForwardPassPerfModelConfig {
             dcp: None,
             moe_tp_size: None,
             moe_ep_size: None,
+            cp_size: None,
             gemm_quant_mode: None,
             moe_quant_mode: None,
             fmha_quant_mode: None,
@@ -241,6 +247,7 @@ impl ForwardPassPerfModelConfig {
     /// adding transient registry facts to the serialized request.
     pub(crate) fn resolve_with_registration(mut self) -> Result<(Self, Option<bool>), AicError> {
         self.resolve_prefill_graph_profile()?;
+        self.estimator_config.resolve_defaults();
         self.validate()?;
         let registered = if self.fpm_profile.is_some() {
             self.estimator_config
@@ -362,6 +369,11 @@ impl ForwardPassPerfModelConfig {
         if self.tp == 0 || self.pp == 0 || self.attention_dp == 0 {
             return Err(invalid_config("tp, pp, and attention_dp must be positive"));
         }
+        if self.cp_size == Some(0) {
+            return Err(invalid_config("cp_size must be positive"));
+        }
+        // Decode CP stripes the KV inside the TP group: it must divide tp and
+        // never enters the width identity below.
         if self.dcp.is_some_and(|dcp| dcp == 0 || self.tp % dcp != 0) {
             return Err(invalid_config("dcp must be positive and divide tp"));
         }
@@ -384,14 +396,18 @@ impl ForwardPassPerfModelConfig {
                     "moe_tp_size and moe_ep_size must be positive",
                 ));
             }
-            // Profile schema also admits dense TP with unused MoE dimensions
-            // equal to one, and checks the exact requested deployment below.
+            // Prefill CP adds attention ranks; decode CP reuses them, so only
+            // `cp_size` folds into the attention width (same identity as the
+            // replay-side `AicTimingConfig::validate_parallel_shape`). Profile
+            // schema also admits dense TP with unused MoE dimensions equal to
+            // one, and checks the exact requested deployment below.
+            let cp = u64::from(self.cp_size.unwrap_or(1));
             if self.fpm_profile.is_none()
-                && u64::from(self.tp) * u64::from(self.attention_dp)
+                && u64::from(self.tp) * u64::from(self.attention_dp) * cp
                     != u64::from(moe_tp) * u64::from(moe_ep)
             {
                 return Err(invalid_config(
-                    "topology requires tp * attention_dp == moe_tp_size * moe_ep_size",
+                    "topology requires tp * attention_dp * cp_size == moe_tp_size * moe_ep_size",
                 ));
             }
         }
@@ -549,6 +565,44 @@ mod tests {
             .unwrap()
             .extend(value.as_object().unwrap().clone());
         serde_json::from_value(base).unwrap()
+    }
+
+    #[test]
+    fn config_resolution_preserves_spline_defaults_and_registration_contract() {
+        use super::super::estimator::{SplineFitConfig, SplineSearchConfig};
+
+        for (fit, expected) in [
+            (
+                serde_json::json!({"kind": "spline"}),
+                SplineFitConfig::default(),
+            ),
+            (
+                serde_json::json!({"kind": "spline", "spline": {
+                    "search": {"kind": "periodic", "step": 17}
+                }}),
+                SplineFitConfig {
+                    knots_per_axis: 2,
+                    search: SplineSearchConfig::periodic(17),
+                },
+            ),
+        ] {
+            let cfg = config(serde_json::json!({
+                "estimation_mode": "fpm_regression", "estimator_config": {"fpm_regression": {"fit": fit}}
+            }));
+            let normalized = cfg.clone().resolve().unwrap();
+            let (with_registration, registered) = cfg.resolve_with_registration().unwrap();
+            assert_eq!(normalized, with_registration);
+            assert_eq!(registered, None);
+            assert_eq!(
+                normalized.estimator_config.fpm_regression.fit.spline,
+                Some(expected)
+            );
+            let reloaded: ForwardPassPerfModelConfig =
+                serde_json::from_str(&serde_json::to_string(&normalized).unwrap()).unwrap();
+            assert_eq!(reloaded.resolve().unwrap(), normalized);
+        }
+        let linear = config(serde_json::json!({})).resolve().unwrap();
+        assert!(linear.estimator_config.fpm_regression.fit.spline.is_none());
     }
 
     #[test]
@@ -839,6 +893,38 @@ mod tests {
             cfg.candidate_modes(),
             vec![EstimationMode::OpLevel, EstimationMode::FpmRegression]
         );
+    }
+
+    #[test]
+    fn context_parallel_knobs_fold_prefill_cp_only_and_round_trip() {
+        // Unset knobs stay out of the serialized identity (pre-CP configs are
+        // byte-identical) and deserialize back to None.
+        let plain = config(serde_json::json!({}));
+        let json = serde_json::to_string(&plain).unwrap();
+        assert!(!json.contains("cp_size"), "{json}");
+        assert_eq!(
+            serde_json::from_str::<ForwardPassPerfModelConfig>(&json).unwrap(),
+            plain
+        );
+
+        // Prefill CP widens the attention side to match the MoE width ...
+        let mut cfg = config(serde_json::json!({
+            "moe_tp_size": 1, "moe_ep_size": 8, "cp_size": 8, "dcp": 1
+        }));
+        cfg.validate().unwrap();
+        let json = serde_json::to_string(&cfg).unwrap();
+        assert!(json.contains("\"cp_size\":8") && json.contains("\"dcp\":1"));
+        assert_eq!(
+            serde_json::from_str::<ForwardPassPerfModelConfig>(&json).unwrap(),
+            cfg
+        );
+        // ... decode CP does not: without prefill CP the widths no longer match.
+        cfg.cp_size = None;
+        assert!(cfg.validate().is_err());
+        // Zero is rejected like every other parallel size.
+        cfg.cp_size = Some(8);
+        cfg.dcp = Some(0);
+        assert!(cfg.validate().is_err());
     }
 
     #[test]

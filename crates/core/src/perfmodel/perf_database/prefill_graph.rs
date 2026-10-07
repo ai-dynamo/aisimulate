@@ -17,11 +17,11 @@ use crate::common::enums::DatabaseMode;
 use crate::common::error::AicError;
 use crate::perfmodel::{BackendKind, DataType, EngineConfig};
 
-pub const PROFILE_NAME: &str = "sglang_glm52_nvfp4_vr200_tp4_graph_v1";
+pub const PROFILE_NAME: &str = "sglang_glm52_nvfp4_vr_nvl72_tp4_graph_v1";
 // Identity only; no performance value is hard-coded in the consumer.
-pub const PROFILE_ID: &str = "829a83e1629ba546dd4bd90e75a2e2496b7fb24ddc8b60dfbf076ba02312cbce";
+pub const PROFILE_ID: &str = "530a1359d5d14ec5d9f39c1adede0631388c89ff2c549d66c37c62d7aaaf0b10";
 pub const VERSION: &str = "0.5.18+nvinternal.rubin.0.8full.66997102";
-pub const PROFILE_FILE: &str = "sglang_glm52_nvfp4_vr200_tp4_graph_v1.profile.json";
+pub const PROFILE_FILE: &str = "sglang_glm52_nvfp4_vr_nvl72_tp4_graph_v1.profile.json";
 pub const CONTEXTS: [(u32, u32, u32); 7] = [
     (1, 1024, 0),
     (2, 1024, 0),
@@ -95,7 +95,7 @@ pub(crate) fn validate_config(config: &EngineConfig) -> Result<bool, AicError> {
     let p = &config.parallel;
     let q = &config.quantization;
     if config.model_name != "nvidia/GLM-5.2-NVFP4"
-        || config.system_name != "vr200_hecate"
+        || config.system_name != "vr_nvl72"
         || config.backend != BackendKind::Sglang
         || config.backend_version.as_deref() != Some(VERSION)
         || config.database_mode != DatabaseMode::Silicon
@@ -118,7 +118,7 @@ pub(crate) fn validate_config(config: &EngineConfig) -> Result<bool, AicError> {
         || config.enable_shared_layer != Some(false)
     {
         return Err(error(
-            "requires the pinned GLM-5.2 NVFP4 VR200 SGLang TP4/EP1 BF16/FP8-KV op-level SILICON runtime with shared-source inheritance disabled",
+            "requires the pinned GLM-5.2 NVFP4 Vera Rubin NVL72 SGLang TP4/EP1 BF16/FP8-KV op-level SILICON runtime with shared-source inheritance disabled",
         ));
     }
     Ok(true)
@@ -282,7 +282,7 @@ impl PrefillGraphTable {
     }
 
     fn table_relative(family: &str, file: &str) -> PathBuf {
-        PathBuf::from("data/vr200_hecate")
+        PathBuf::from("data/vr_nvl72")
             .join(family)
             .join("sglang")
             .join(VERSION)
@@ -677,7 +677,7 @@ mod tests {
         let source = PrefillGraphTable::new(&root).snapshot().unwrap();
         let config: EngineConfig = serde_json::from_value(serde_json::json!({
             "schema_version": crate::ENGINE_CONFIG_SCHEMA_VERSION,
-            "model_name": "nvidia/GLM-5.2-NVFP4", "system_name": "vr200_hecate",
+            "model_name": "nvidia/GLM-5.2-NVFP4", "system_name": "vr_nvl72",
             "systems_path": source.path(), "backend": "sglang", "backend_version": VERSION,
             "tp_size": 4, "pp_size": 1, "moe_tp_size": 4, "moe_ep_size": 1,
             "weight_dtype": "bfloat16", "activation_dtype": "bfloat16",
@@ -691,7 +691,7 @@ mod tests {
         .unwrap();
         let spec = EngineSpec::new(config, ops, vec![]);
         let supplied_db =
-            Arc::new(PerfDatabase::load(source.path(), "vr200_hecate", "sglang", VERSION).unwrap());
+            Arc::new(PerfDatabase::load(source.path(), "vr_nvl72", "sglang", VERSION).unwrap());
         let engine = Engine::build(spec, Arc::clone(&supplied_db)).unwrap();
         assert!(!Arc::ptr_eq(engine.database(), &supplied_db));
         let private_root = engine.database().prefill_graph.systems_root.clone();

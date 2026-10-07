@@ -78,7 +78,7 @@ def test_additional_profiles_preserve_original_cache_groups() -> None:
 
 def test_workflow_filters_cover_matrix_dependencies() -> None:
     repo_root = Path(__file__).resolve().parents[5]
-    matches_path = runpy.run_path(str(repo_root / "scripts/select_forward_perf.py"))["matches_path"]
+    matches_path = runpy.run_path(str(repo_root / "scripts/performance/select_forward_perf.py"))["matches_path"]
     dependencies = set()
     for case in cases.expand_cases():
         root = "python/aisimulate/src/aisimulate_core"

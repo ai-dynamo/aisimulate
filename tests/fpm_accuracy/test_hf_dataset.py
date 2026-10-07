@@ -15,8 +15,9 @@ from types import SimpleNamespace
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
-from fpm_accuracy.exceptions import ConfigurationError, DataError
-from fpm_accuracy.hf import (
+
+from scripts.fpm_accuracy.exceptions import ConfigurationError, DataError
+from scripts.fpm_accuracy.hf import (
     SUPPORTED_EVIDENCE_FORMAT_IDS,
     SUPPORTED_PROTOCOL_IDS,
     CaseStatus,
@@ -25,7 +26,7 @@ from fpm_accuracy.hf import (
     OrderingKind,
     adapter_for,
 )
-from fpm_accuracy.hf import dataset as dataset_module
+from scripts.fpm_accuracy.hf import dataset as dataset_module
 
 REVISION = "a" * 40
 CONFIGURATION_PATH = "data/Org--Model/h100-sxm/vllm/1.0/single"

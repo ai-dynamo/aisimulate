@@ -8,7 +8,7 @@
 //! https://github.com/SemiAnalysisAI/InferenceX-app/blob/9bb7b13eb4985217a6282f340459fd5948613276/packages/app/src/components/datasets/agentx-methodology-article.tsx
 //! This module implements those requirements using AISimulate's prepared plays
 //! and native completion feedback. Repeating saved prefixes without advancing
-//! the frontier is an AISimulate policy. See docs/agentic-warmup.md for the
+//! the frontier is an AISimulate policy. See docs/replay/agentic/warmup.md for the
 //! reference scope, upstream licenses, and separate AIPerf snapshot comparison.
 
 use anyhow::{Context, Result, ensure};
@@ -326,6 +326,7 @@ impl AgenticPreparation {
                 scheduled_ready_at_ms: lane.ready_at_ms,
                 replay_hashes,
                 emit_session_metadata,
+                synthetic_session_id: false,
                 request,
             });
         }

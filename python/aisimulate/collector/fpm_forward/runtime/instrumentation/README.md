@@ -7,7 +7,7 @@ SPDX-License-Identifier: Apache-2.0
 
 These are original AISimulate adapters written against inspected runtime interfaces. They contain no copied vLLM or Dynamo implementation. The immutable upstream revisions and installation-relative file SHA-256 values are recorded in each manifest. The version-specific source note is part of the hashed bundle. vLLM and Dynamo are Apache-2.0 projects; these references document the interfaces used, without redistributing their source.
 
-`vllm-0.27.0.json` is the bundled selection. `vllm-0.28.0.example.json` is an explicit campaign-local example for its inspected runtime build. Freeze the latter with `load_instrumentation` and `freeze_instrumentation` into a fresh campaign directory, as shown in the [user guide](../../../../../../docs/fpm-self-service.md#resolve-cache-geometry-with-a-runtime-probe). Other runtime pins need their own source audit, manifest and adapter changes; changing the version string alone is insufficient. An example bundle is implementation evidence, not qualification of every model, backend, GPU or topology on that version.
+`vllm-0.27.0.json` is the bundled selection. `vllm-0.28.0.example.json` is an explicit campaign-local example for its inspected runtime build. Freeze the latter with `load_instrumentation` and `freeze_instrumentation` into a fresh campaign directory, as shown in the [user guide](../../../../../../docs/perf-model/fpm-self-service/implementation.md#resolve-cache-geometry-with-a-runtime-probe). Other runtime pins need their own source audit, manifest and adapter changes; changing the version string alone is insufficient. An example bundle is implementation evidence, not qualification of every model, backend, GPU or topology on that version.
 
 ## Runtime interface
 

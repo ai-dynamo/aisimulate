@@ -53,6 +53,7 @@ pub use model::{
     ForwardPassRegressionWorkloadKind, ForwardPassWorkerType,
 };
 pub use options::ForwardPassPerfOptions;
+pub use regression::ForwardPassSplineDiagnostics;
 pub use resources::{
     FpmCacheBudget, FpmCacheBudgetAdjusted, FpmCacheBudgetRequest, FpmCacheGroup, FpmCacheKind,
     FpmCacheLayout, FpmResourceConfig, FpmRuntimeMemoryConfig,

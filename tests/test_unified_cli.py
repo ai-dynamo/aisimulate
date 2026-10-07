@@ -13,6 +13,7 @@ import yaml
 
 import aisimulate.main as cli
 from aisimulate.output import prepare_output_directory
+from aisimulate.output_adapter import OUTPUT_ADAPTER_API_VERSION, resolve_output_adapters
 from aisimulate.sweeper.config import Candidate
 from aisimulate.sweeper.provider import AdapterReplaySpec, AdapterSearchPlan
 from aisimulate.sweeper.replay import ReplayReport, RunnerCapabilities
@@ -220,6 +221,26 @@ class _PlacementAdapter:
     def materialize_candidate(self, plan, selection, context):
         del selection, context
         return AdapterReplaySpec(config=dict(plan.state))
+
+
+class _DGDOutputAdapter:
+    name = "dgd"
+    api_version = OUTPUT_ADAPTER_API_VERSION
+
+    def __init__(self) -> None:
+        self.calls = []
+
+    def write(self, config, *, result, output_dir):
+        self.calls.append((config, result, output_dir))
+        path = output_dir / f"{config['name']}.yaml"
+        path.write_text("kind: DynamoGraphDeployment\n")
+        return [path.relative_to(output_dir)]
+
+
+class _MissingArtifactOutputAdapter(_DGDOutputAdapter):
+    def write(self, config, *, result, output_dir):
+        self.calls.append((config, result, output_dir))
+        return ["missing.yaml"]
 
 
 def test_predict_is_the_single_concrete_cli(tmp_path, monkeypatch, capsys) -> None:
@@ -840,8 +861,118 @@ def test_partial_sla_recommendation_yaml_round_trips_into_predict(
     assert unsupported_summary["power_coverage"] is None
 
 
-@pytest.mark.parametrize("resource_limited", [0, 1])
-def test_recommendation_outputs_each_concrete_prediction_once(tmp_path, monkeypatch, capsys, resource_limited) -> None:
+@pytest.mark.parametrize("completed", [0, 2])
+def test_recommendation_exports_completed_results_after_invalid_suggestion(
+    tmp_path, monkeypatch, capsys, caplog, completed
+) -> None:
+    from vizier import pyvizier as vz
+
+    from aisimulate.recommend import _run_recommendation
+    from aisimulate.sweeper.sampler import SeededBayesianBranchSampler
+
+    # Exercise the real sampler validation, search, ranking and CLI exporters.
+    # Only replace the upstream proposals and the expensive replay runner.
+    asks = []
+    original_init = SeededBayesianBranchSampler.__init__
+
+    def initialize(self, *args, **kwargs):
+        original_init(self, *args, **kwargs)
+
+        def suggest(count):
+            asks.append(count)
+            params = {"agg_max_num_seqs": 128 * len(asks)} if len(asks) <= completed else {}
+            return [vz.TrialSuggestion(parameters=params)]
+
+        monkeypatch.setattr(self._designer, "suggest", suggest)
+
+    monkeypatch.setattr(SeededBayesianBranchSampler, "__init__", initialize)
+    monkeypatch.setattr("aisimulate.recommend.run_recommendation", _run_recommendation)
+    monkeypatch.setattr(cli, "resolve_runner_factory", lambda stack: _Factory(_Runner()))
+    config = {
+        "engine": {
+            "mode": "aggregated",
+            "model": "deepseek-ai/DeepSeek-V3",
+            "hardware": "gb200",
+            "backend": "trtllm",
+            "backend_version": "1.3.0rc20",
+            "context_length": 2048,
+            "workers": {
+                "aggregated": {
+                    "parallelism": {
+                        "preset": False,
+                        "replicas": 1,
+                        "tensor": 4,
+                        "pipeline": 1,
+                        "attention_data": 1,
+                        "moe_tensor": 4,
+                        "moe_expert": 1,
+                    },
+                    "scheduler": {
+                        "max_batched_tokens": 8192,
+                        "max_sequences": {"choices": [128, 256]},
+                    },
+                    "kv_cache": {
+                        "block_size": 64,
+                        "capacity": {"type": "fixed", "blocks": 256},
+                    },
+                    "timing": {"type": "fixed", "prefill_ms": 1, "decode_ms": 1},
+                }
+            },
+        },
+        "optimization": {
+            "target": "throughput",
+            "constraints": {"max_candidate_gpus": 4},
+        },
+        "optimizer": {"algorithm": "bayesian", "max_trials": 4, "parallelism": 1},
+    }
+    config_path = tmp_path / "recommend.yaml"
+    config_path.write_text(yaml.safe_dump(config))
+    output = tmp_path / "out"
+
+    status = cli.main(
+        [
+            "recommend",
+            "-c",
+            str(config_path),
+            "--output-dir",
+            str(output),
+            "--format",
+            "json",
+        ]
+    )
+
+    assert status == (0 if completed else 1)
+    assert len(asks) == completed + 1
+    assert "agg_max_num_seqs" in caplog.text
+    assert "search is incomplete" in caplog.text
+    assert "No traffic configured; using synthetic traffic: input_tokens=1024" in caplog.text
+    result = json.loads((output / "recommendation.json").read_text())
+    assert result["counts"]["feasible"] == result["counts"]["evaluated"] == completed
+    assert result["counts"]["failed"] == 0
+    assert (output / "recommendation.csv").exists()
+    captured = capsys.readouterr()
+    if completed:
+        rows = json.loads(captured.out)
+        assert rows[0]["rank"] == 1
+        assert rows[0]["score"] == 8.0
+        for index, candidate_id in enumerate(result["views"]["top_n"], start=1):
+            record = next(record for record in result["candidates"] if record["candidate_id"] == candidate_id)
+            saved = yaml.safe_load((output / "recommendations" / f"{index:04d}.yaml").read_text())
+            assert saved == record["prediction_config"]
+            assert cli.CorePredictionConfig.model_validate(saved)
+    else:
+        assert result["views"]["top_n"] == []
+        assert "no feasible candidate found" in captured.err
+        assert not list(output.glob("recommendations/*.yaml"))
+
+
+@pytest.mark.parametrize(
+    ("resource_limited", "variant"),
+    [(0, "exact"), (1, "exact"), (0, "scheduler"), (0, "different_metrics")],
+)
+def test_recommendation_outputs_each_concrete_prediction_once(
+    tmp_path, monkeypatch, capsys, resource_limited, variant
+) -> None:
     concrete = {
         "traffic": {
             "source": {"type": "synthetic", "input_tokens": 8, "output_tokens": 2},
@@ -915,6 +1046,14 @@ def test_recommendation_outputs_each_concrete_prediction_once(tmp_path, monkeypa
         )
         for selection, score in (("first", 2.0), ("second", 1.0))
     ]
+    if variant != "exact":
+        for candidate in candidates:
+            candidate.score = 2.0
+            candidate.metrics = {"output_throughput_tok_s": 2.0, "mean_tpot_ms": 1.0}
+        candidates[1].prediction_config = deepcopy(concrete)
+        candidates[1].prediction_config["engine"]["workers"]["aggregated"]["scheduler"]["max_sequences"] = 512
+        if variant == "different_metrics":
+            candidates[1].metrics["mean_tpot_ms"] = 2.0
     monkeypatch.setattr(cli, "resolve_runner_factory", lambda stack: _Factory(_Runner()))
     partial = _RecommendationResult(candidates)
     partial.counts.resource_limited = resource_limited
@@ -936,16 +1075,127 @@ def test_recommendation_outputs_each_concrete_prediction_once(tmp_path, monkeypa
         ]
     ) == (3 if resource_limited else 0)
 
-    rows = json.loads(capsys.readouterr().out)
-    assert len(rows) == 1
+    captured = capsys.readouterr()
+    rows = json.loads(captured.out)
+    expected = 2 if variant == "different_metrics" else 1
+    assert len(rows) == expected
     assert rows[0]["score"] == 2.0
-    assert [path.name for path in (output / "recommendations").iterdir()] == ["0001.yaml"]
+    assert sorted(path.name for path in (output / "recommendations").iterdir()) == [
+        f"{index:04d}.yaml" for index in range(1, expected + 1)
+    ]
     result = json.loads((output / "recommendation.json").read_text())
     assert result["counts"]["feasible"] == 2
-    assert result["views"]["top_n"] == ["candidate-000001"]
+    assert len(result["candidates"]) == 2
+    assert result["views"]["top_n"] == [f"candidate-{index:06d}" for index in range(1, expected + 1)]
+    if variant == "scheduler":
+        assert "Folded 1 scheduler-limit variant" in captured.err
     assert result["candidates"][0]["prediction_config"] == yaml.safe_load(
         (output / "recommendations" / "0001.yaml").read_text()
     )
+
+
+@pytest.mark.parametrize("stack", ["engine", "dynamo"])
+@pytest.mark.parametrize("missing_artifact", [False, True])
+def test_recommendation_invokes_selected_output_adapter(tmp_path, monkeypatch, capsys, stack, missing_artifact) -> None:
+    prediction = {
+        "engine": {
+            "mode": "aggregated",
+            "model": "example/model",
+            "hardware": "h200_sxm",
+            "context_length": 4096,
+            "workers": {"aggregated": {}},
+        }
+    }
+    config_path = tmp_path / "recommend.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                **prediction,
+                "optimization": {
+                    "target": "throughput",
+                    "constraints": {"max_candidate_gpus": 1},
+                },
+                "dgd": {
+                    "name": "original",
+                    "renderer": "aic",
+                    "format": "manifest",
+                },
+            }
+        )
+    )
+    candidate = Candidate(
+        config={"backend": "vllm"},
+        used_gpus=1,
+        score=1.0,
+        metrics={},
+        prediction_config=prediction,
+    )
+    result = _RecommendationResult([candidate])
+    selected_stack = []
+    recommendation_kwargs = {}
+    adapter = _MissingArtifactOutputAdapter() if missing_artifact else _DGDOutputAdapter()
+
+    def resolve_stack(name):
+        selected_stack.append(name)
+        return _Factory(_Runner())
+
+    monkeypatch.setattr(cli, "resolve_runner_factory", resolve_stack)
+    monkeypatch.setattr(
+        cli,
+        "resolve_output_adapters",
+        lambda names: resolve_output_adapters(
+            names,
+            injected={"dgd": adapter},
+            entry_points=[],
+        ),
+    )
+
+    def run_recommendation(*args, **kwargs):
+        del args
+        recommendation_kwargs.update(kwargs)
+        return result
+
+    monkeypatch.setattr("aisimulate.recommend.run_recommendation", run_recommendation)
+
+    output = tmp_path / "out"
+    assert cli.main(
+        [
+            "recommend",
+            "--stack",
+            stack,
+            "--config",
+            str(config_path),
+            "--set",
+            "dgd.name=qwen",
+            "--output",
+            "dgd",
+            "--output-dir",
+            str(output),
+            "--format",
+            "json",
+        ]
+    ) == (1 if missing_artifact else 0)
+
+    captured = capsys.readouterr()
+    assert selected_stack == [stack]
+    assert len(adapter.calls) == 1
+    output_config, received_result, received_dir = adapter.calls[0]
+    assert output_config == {
+        "name": "qwen",
+        "renderer": "aic",
+        "format": "manifest",
+    }
+    assert recommendation_kwargs["output_configs"] == {"dgd": output_config}
+    assert received_result is result
+    assert received_dir == output
+    for filename in ("recommendation.json", "recommendation.csv", "recommendations/0001.yaml"):
+        assert (output / filename).is_file()
+    assert "dgd" not in yaml.safe_load((output / "recommendations" / "0001.yaml").read_text())
+    if missing_artifact:
+        assert "reported missing artifact" in captured.err
+    else:
+        assert (output / "qwen.yaml").read_text() == "kind: DynamoGraphDeployment\n"
+        assert json.loads(captured.out)[0]["score"] == 1.0
 
 
 def test_overwrite_only_removes_known_outputs(tmp_path) -> None:
@@ -1078,7 +1328,9 @@ def test_detail_rejects_unsupported_sections_before_loading_config(selector, mon
 def _detail_schema():
     from pathlib import Path
 
-    return json.loads((Path(__file__).resolve().parents[1] / "docs/cli/prediction-details.schema.json").read_text())
+    return json.loads(
+        (Path(__file__).resolve().parents[1] / "docs/reference/schemas/prediction-details.schema.json").read_text()
+    )
 
 
 @pytest.mark.parametrize(
@@ -1374,7 +1626,10 @@ def test_energy_detail_reports_missing_adapter_export(tmp_path, monkeypatch, cap
     assert "downstream Dynamo adapter export is not qualified" in text
 
 
-def test_snapshot_seed_override_reaches_the_existing_predict_path(tmp_path, monkeypatch, capsys) -> None:
+@pytest.mark.parametrize("profile", [False, True])
+def test_snapshot_seed_override_reaches_the_existing_predict_path(tmp_path, monkeypatch, capsys, profile) -> None:
+    import os
+
     from aisimulate.runner import EngineReplayRunnerFactory
 
     class SnapshotFactory(_Factory):
@@ -1404,6 +1659,22 @@ def test_snapshot_seed_override_reaches_the_existing_predict_path(tmp_path, monk
     )
     runner = _Runner()
     monkeypatch.setattr(cli, "resolve_runner_factory", lambda stack: SnapshotFactory(runner))
+    if profile:
+        # This unit test calls the internal child entry point directly. Model
+        # its supervisor context; public-process supervision is tested separately.
+        monkeypatch.setenv(
+            "_AISIMULATE_SUPERVISED_BUDGET",
+            json.dumps(
+                {
+                    "supervisor_pid": os.getpid(),
+                    "memory_limit_bytes": 4_000_000_000,
+                    "cpu_limit": 1,
+                    "reserved_host_memory_bytes": 1_000_000_000,
+                    "events_path": str(tmp_path / "events.jsonl"),
+                    "ready_path": str(tmp_path / "ready"),
+                }
+            ),
+        )
     assert (
         cli.main(
             [
@@ -1414,6 +1685,7 @@ def test_snapshot_seed_override_reaches_the_existing_predict_path(tmp_path, monk
                 str(tmp_path / "out"),
                 "--set",
                 "traffic.load.agentic_snapshot.seed=42",
+                *(["--set", "traffic.load.agentic_profile.duration_seconds=5.0"] if profile else []),
                 "--format",
                 "json",
             ]
@@ -1422,6 +1694,11 @@ def test_snapshot_seed_override_reaches_the_existing_predict_path(tmp_path, monk
     )
     assert runner.spec.workload["agentic_snapshot"] == {"seed": 42}
     assert runner.spec.workload["agentic_lanes"] == 2
+    if profile:
+        assert runner.spec.workload["agentic_profile"]["duration_seconds"] == 5.0
+        assert runner.spec.workload["agentic_profile"]["response_grace_seconds"] == 30.0
+    else:
+        assert "agentic_profile" not in runner.spec.workload
     assert json.loads(capsys.readouterr().out)["completed_requests"] == 1
 
 
