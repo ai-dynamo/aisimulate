@@ -194,6 +194,10 @@ class ModelConfig:
             type(self.dcp_size) is not int or self.dcp_size <= 0 or self.tp_size % self.dcp_size
         ):
             raise ValueError("dcp_size must be positive and divide tp_size")
+        if self.max_model_len is not None and (
+            isinstance(self.max_model_len, bool) or not isinstance(self.max_model_len, int) or self.max_model_len <= 0
+        ):
+            raise ValueError(f"max_model_len must be a positive integer, got {self.max_model_len!r}")
         self.moe_backend = normalize_kernel_backend(self.moe_backend, common.MoEBackend, "moe_backend")
         self.attention_backend = normalize_kernel_backend(
             self.attention_backend,

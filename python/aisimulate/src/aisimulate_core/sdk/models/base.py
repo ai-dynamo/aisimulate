@@ -702,9 +702,8 @@ class BaseModel:
             return 0
 
         block_size = 16
-        context = max(self._context_length, 1)
         swa_reservation = (math.ceil((window_size - 1 + max_model_len) / block_size) + 1) * block_size
-        effective_per_token = global_per_token + swa_per_token * swa_reservation / context
+        effective_per_token = global_per_token + swa_per_token * swa_reservation / max_model_len
 
         if effective_per_token <= 0.0:
             return 0
