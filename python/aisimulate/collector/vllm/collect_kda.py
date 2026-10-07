@@ -1169,6 +1169,16 @@ def run_glm5_next_kda_decode(
 
             def run_recurrent():
                 # kda.py:702-720
+                # FIXME(kernel-limit): unverified claim from GB300 smoke job
+                # 867268 (TP1 shard, 64 local heads): batch 1024 fails with
+                # "Triton Error [CUDA]: invalid argument". fused_recurrent_kda
+                # launches grid (NK, NV, N * HV)
+                # (glm5next/nvidia/ops/third_party/kda/kernels.py:98 @v0.31.0),
+                # so N * HV = 65536 exceeds the CUDA grid z limit (65535);
+                # the packed-decode sibling splits its grid for this case
+                # (fused_recurrent.py:510-511) and this one does not. Serving
+                # would hit the same launch at >= 1024 decode requests on TP1.
+                # The case fails into the classified log; no guard here.
                 fused_recurrent_kda(
                     q=q,
                     k=k,
