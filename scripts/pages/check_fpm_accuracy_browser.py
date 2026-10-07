@@ -411,6 +411,15 @@ async def check():
                 assert await page.evaluate("document.documentElement.scrollWidth <= innerWidth")
                 await page.set_viewport_size({"width": 1400, "height": 1000})
                 await check_history_links(page, url)
+                # Emulate the cached pre-banner script's startup. Updated HTML must
+                # request a new asset URL instead of executing this removed-node write.
+                await page.route(
+                    url + "assets/visualization.js",
+                    lambda route: route.fulfill(
+                        content_type="application/javascript",
+                        body='document.getElementById("nav-status-text").textContent = "HF revision";',
+                    ),
+                )
                 await page.goto(url + "3d-visualization.html?branch=release/0.12.0")
                 await expect(page.get_by_role("link", name="Evaluation run")).to_have_attribute(
                     "href", "https://github.com/ai-dynamo/aisimulate/actions/runs/456/attempts/2"

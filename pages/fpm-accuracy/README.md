@@ -130,6 +130,11 @@ directory so that both assets are available.
 
 ## Local checks and smoke evaluation
 
+Dashboard script URLs carry a shared version (`evaluation-banner-1`) so returning
+visitors fetch scripts compatible with the unified banner. Bump this version
+across all five tabs when changing shared DOM or navigation APIs. The browser
+check covers a cached 3D script that still references the removed status header.
+
 ```bash
 python -m pip install pytest
 python -m pip install --require-hashes -r scripts/fpm_accuracy/requirements.txt
