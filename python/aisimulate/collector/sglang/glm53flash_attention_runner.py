@@ -49,6 +49,7 @@ from collector.glm53flash_attention_contract import (
     RUNTIME_VERSIONS,
     build_plan,
     geometry,
+    queued_plan,
     representative_layer_is_uniform,
     selected_max_model_len,
 )
@@ -521,7 +522,8 @@ def run_worker(server_args, port_args, bench_args, gpu_id, tp_rank):
         with (output / f"progress-rank-{tp_rank}.jsonl").open("a") as stream:
             stream.write(json.dumps({"tp_rank": tp_rank, **payload}) + "\n")
 
-    for request_set in plan["sets"]:
+    # The attempt's queue: its selected sets without memory-dropped targets.
+    for request_set in queued_plan(manifest)["sets"]:
         if options.only_sets and request_set["set_id"] not in options.only_sets:
             continue
         try:
@@ -629,7 +631,7 @@ def main():
     ):
         raise ValueError(f"--context-length {server_args.context_length} differs from the manifest context class")
     if options.dry_run:
-        sets = [s["set_id"] for s in plan["sets"] if not options.only_sets or s["set_id"] in options.only_sets]
+        sets = [s["set_id"] for s in queued_plan(manifest)["sets"]]
         print(
             json.dumps(
                 {

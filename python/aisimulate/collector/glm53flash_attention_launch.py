@@ -25,6 +25,7 @@ from collector.glm53flash_attention_contract import (
     build_plan,
     context_class_sets,
     geometry,
+    memory_drops,
     representative_layer_is_uniform,
     sha256_json,
     unaligned_targets,
@@ -183,6 +184,23 @@ def prepare(args) -> Path:
         # Split attempt: one deployment's plan measured by several attempts
         # whose set selections finalize unions exactly once.
         body["only_sets"] = sorted(selection)
+    if args.kv_token_capacity is not None:
+        # Sanctioned generation-time memory-feasibility filter: the measured
+        # KV pool and transient headroom of this deployment at this memory
+        # setting (size vs capacity only); dropped targets are never queued.
+        budget = {
+            "kv_tokens": args.kv_token_capacity,
+            "transient_gib": args.transient_gib,
+            "device_gib": args.device_gib,
+            "evidence": args.memory_evidence,
+        }
+        drops = memory_drops({**plan, "sets": selected}, budget)
+        total = sum(len(s["targets"]) for s in selected)
+        print(f"{OP_NAME}: dropped {len(drops)}/{total} cases (memory budget, device={args.device_gib}GB)")
+        for drop in drops:
+            print(f"  {drop['set_id']} {drop['key']}: {drop['reason']}")
+        body["memory_budget"] = budget
+        body["memory_drops"] = drops
     if args.sglang_mem_fraction is not None:
         body["sglang_mem_fraction_static"] = args.sglang_mem_fraction
     if args.vllm_gpu_memory_utilization is not None:
@@ -294,9 +312,18 @@ def main():
     parser.add_argument("--only-sets", nargs="+", help="split attempt: measure only these plan sets")
     parser.add_argument("--skip-sets", nargs="+", help="split attempt: measure every other set of the class")
     parser.add_argument("--vllm-gpu-memory-utilization", type=float, default=None)
+    parser.add_argument("--kv-token-capacity", type=int, help="measured KV pool tokens (memory-feasibility filter)")
+    parser.add_argument("--transient-gib", type=float, help="measured transient headroom (memory-feasibility filter)")
+    parser.add_argument("--device-gib", type=float, help="device memory (memory-feasibility log)")
+    parser.add_argument("--memory-evidence", default="", help="jobs/logs the budget was measured in")
     args = parser.parse_args()
     if (args.layer_id is not None or args.warmup is not None) and not args.smoke:
         parser.error("--layer-id and --warmup are smoke-only")
+    budget = (args.kv_token_capacity, args.transient_gib, args.device_gib)
+    if any(v is not None for v in budget) and (None in budget or not args.memory_evidence):
+        parser.error(
+            "the memory-feasibility filter needs --kv-token-capacity, --transient-gib, --device-gib, --memory-evidence"
+        )
     if args.tp == 1 and args.checkpoint not in TP1_CHECKPOINTS:
         parser.error("TP1 is NVFP4-only: the FP8 checkpoint's weights exceed one GB300")
     print(prepare(args))

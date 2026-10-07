@@ -122,6 +122,21 @@ CUDA-event interval of the profiled repetition and of an unprofiled
 back-to-back replay of the same graph (the previous host-inclusive method),
 the host enqueue time, and the CV of the rank maxima.
 
+Validation (smoke rows vs in-serving nsys node traces of the module's kernels,
+per MLA layer, rank maximum):
+
+- SGLang 0.5.20, 8 holdout geometries x 4 deployments: 0.93-1.02x (one point,
+  fp8-tp4 B32 prefix 98048, 1.105x).
+- vLLM 0.31.0 (stock `vllm serve`, fp8-tp2 and nvfp4-tp4, 7 points each):
+  1.02-1.12x, median 1.06x. **Known bias, accepted:** per kernel, the cuBLAS
+  (nvjet) projection GEMMs run 5-18% slower in the standalone module replay
+  while the sparse fmha and the FWHT quantization match; 200 warmup
+  repetitions do not change it. This is the standalone-op method of the other
+  operator tables; `collection_meta.yaml` records it.
+- Decode: kernel-only = 0.87-0.98x the CUDA-event interval of the same
+  full-graph replay (the plain kernel-duration sum is 1.01-1.26x, because
+  kernels overlap; hence the union).
+
 Previous revisions (`0.30.0+glm53tail` tables) bracketed the replay with CUDA
 events, so their prefill rows also contained the eager breaks' host launch
 gaps; their decode rows were event-timed full-graph replays.
@@ -140,7 +155,8 @@ the runner checks every scheduled prefill chunk before the step
 (`KpoolAlignmentError`) and records the chunk starts per row
 (`prefill_chunk_starts`). A decode reads L tokens after a prompt of L-1
 tokens; only its last seeding chunk may end off the grid, which completes in
-the tail as in serving. No planned geometry moved (`kpool_align4` would be the
+the tail as in serving. Decode keys therefore keep their true L: the rule is
+enforced where the defect triggers, at prefill chunk starts. No planned geometry moved (`kpool_align4` would be the
 recorded reason). SGLang is unaffected; its smoke validation rows keep the
 serving geometry.
 
@@ -160,7 +176,22 @@ serving geometry.
 
 One attempt measures one context class (`--context-class`), so the server
 context limit (`max_model_len` in the manifest and `collection_meta.yaml`) is
-uniform per attempt. TP1 is collected for the NVFP4 checkpoint only (the FP8
+uniform per attempt. Regular rows use the serving limit 131079; the
+long-context rows exist for table extrapolation coverage only (a 1M limit
+changes graph-captured decode host bounds; measured effect on regular-length
+decode rows <= 3%).
+
+Memory feasibility (the sanctioned generation-time filter): an attempt may
+carry its deployment's measured capacity (`--kv-token-capacity`,
+`--transient-gib`, `--device-gib`, `--memory-evidence`). A target is never
+queued when `batch * context` exceeds the KV pool or one step's IndexPool MQA
+logits (`8192 * batch * ceil(context / 4) * 4` bytes) exceed the transient
+headroom; the launcher logs `glm53flash_attention: dropped N/M cases (memory
+budget, device=<GB>)`, and the drops and budget are frozen in the manifest and
+listed in `collection_meta.yaml`. Used for SGLang NVFP4 TP1 (KV pool 3396928
+tokens and 18 GiB headroom at `--mem-fraction-static 0.74`; 0.82 leaves too
+little for SGLang's own prefill-graph capture): B32 prefill at prefix 98304
+and B32 decode at 98304/131072 do not fit. TP1 is collected for the NVFP4 checkpoint only (the FP8
 weights do not fit one GB300).
 
 Grid points bracket the IndexPool boundary (`prefix + x <= 2048` short regime

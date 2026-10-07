@@ -106,6 +106,29 @@ TIMING_METHODS = {
     "context": {KERNEL_PREFILL: True},
     "generation": {KERNEL_DECODE: True},
 }
+# Documented properties of the published tables (collection_meta.yaml notes).
+_COMMON_NOTES = [
+    "IndexPool alignment: every prefill chunk starts on a multiple of 4 (the stock vLLM 0.31.0 "
+    "defect's trigger); decode rows keep their true sequence length L (prompt L-1, whose last seeding "
+    "chunk may end off the pool grid and completes in the tail as in serving).",
+    "Regular rows are collected at the serving context limit 131079; long-context rows (prefill "
+    "prefix >= 262144, decode x >= 262144, B=1) at the model limit 1048576 are table-extrapolation "
+    "coverage. Each attempt's limit is its max_model_len.",
+]
+TABLE_NOTES = {
+    "vllm": _COMMON_NOTES
+    + [
+        "Known bias: kernel-only rows read 2-12% (median 6%) above the per-layer MLA kernels of stock "
+        "vllm serve under nsys (fp8-tp2, nvfp4-tp4; 7 points each). Per kernel, the cuBLAS (nvjet) "
+        "projection GEMMs run 5-18% slower in the standalone module replay while fmha and fwht match; "
+        "200 warmup repetitions do not change it. Same standalone-op method as the other tables.",
+    ],
+    "sglang": _COMMON_NOTES
+    + [
+        "Validation: kernel-only rows are 0.93-1.02x (one point 1.105x) the per-layer MLA kernels of "
+        "the SGLang serving node traces at 8 geometries x 4 deployments.",
+    ],
+}
 # Capacity-only attempt settings (memory pool sizes, allocator split); they
 # never change a kernel, bucket or schedule and are frozen per manifest.
 CAPACITY_KNOBS = ("vllm_gpu_memory_utilization", "sglang_mem_fraction_static", "allocator_max_split_size_mb")
@@ -642,6 +665,61 @@ def selected_plan(manifest: dict) -> dict:
     return {**plan, "sets": [s for s in plan["sets"] if s["set_id"] in set(only)]}
 
 
+def _target_context(request_set: dict, value: int) -> tuple[tuple, int]:
+    batch = request_set["batch_size"]
+    if request_set["phase"] == "context":
+        return ("context", batch, value, request_set["query"]), value + request_set["query"]
+    return ("generation", batch, 0, value), value
+
+
+def memory_drops(plan: dict, budget: dict | None) -> list[dict]:
+    """Generation-time memory-feasibility filter (layer_permissions.md).
+
+    ``budget`` holds the deployment's measured capacity: ``kv_tokens`` (the
+    framework's KV pool size at the attempt's memory setting) and
+    ``transient_gib`` (device memory left for transient buffers). A target is
+    never queued when its live KV (``batch * context`` tokens) exceeds the pool,
+    or when the IndexPool MQA logits of one full step at its context
+    (``step_tokens * batch * ceil(context / index_pool) * 4`` bytes: one fp32
+    logit per pool for every query token of the step against every request's
+    pooled keys) exceed the transient memory. Size vs capacity only.
+    """
+    if not budget:
+        return []
+    drops = []
+    for request_set in plan["sets"]:
+        batch = request_set["batch_size"]
+        for value in request_set["targets"]:
+            key, context = _target_context(request_set, value)
+            kv = batch * context
+            logits = plan["max_step_tokens"] * batch * -(-context // KPOOL_ALIGN) * 4
+            reasons = []
+            if kv > budget["kv_tokens"]:
+                reasons.append(f"kv {kv} tokens > pool {budget['kv_tokens']}")
+            if logits > budget["transient_gib"] * 2**30:
+                reasons.append(f"mqa logits {logits / 2**30:.1f} GiB > {budget['transient_gib']} GiB")
+            if reasons:
+                drops.append({"set_id": request_set["set_id"], "key": list(key), "reason": "; ".join(reasons)})
+    return drops
+
+
+def queued_plan(manifest: dict) -> dict:
+    """The attempt's selected sets without its memory-dropped targets."""
+    plan = selected_plan(manifest)
+    dropped = manifest.get("memory_drops") or []
+    if dropped != memory_drops(plan, manifest.get("memory_budget")):
+        raise ValueError("manifest memory drops differ from its memory budget")
+    gone = {(d["set_id"], tuple(d["key"])) for d in dropped}
+    sets = []
+    for request_set in plan["sets"]:
+        keep = [
+            v for v in request_set["targets"] if (request_set["set_id"], _target_context(request_set, v)[0]) not in gone
+        ]
+        if keep:
+            sets.append({**request_set, "targets": keep})
+    return {**plan, "sets": sets}
+
+
 def check_split_closure(attempts: list[tuple[dict, list[dict]]]) -> None:
     """Attempts of one deployment must cover its planned phases exactly once."""
     by_deployment: dict[tuple, list[tuple[dict, list[dict]]]] = {}
@@ -658,7 +736,8 @@ def check_split_closure(attempts: list[tuple[dict, list[dict]]]) -> None:
             if keys & seen:
                 raise ValueError(f"{deployment} attempts measure a key twice")
             seen |= keys
-        wanted = target_keys(group[0][0]["plan"])
+        dropped = {tuple(d["key"]) for m, _ in group for d in m.get("memory_drops") or []}
+        wanted = [key for key in target_keys(group[0][0]["plan"]) if key not in dropped]
         if len(seen) != len(wanted):
             raise ValueError(f"{deployment} attempts cover {len(seen)} of {len(wanted)} planned keys")
 
@@ -696,7 +775,7 @@ def load_attempt(attempt: Path) -> tuple[dict, list[dict], list[dict]]:
             raise ValueError(f"{attempt} sample layer differs from the manifest")
     rows, evidence = aggregate_rank_samples(records, tp_size)
     measured = {(bodies[r["geometry"]], r["batch_size"], r["prefix"], r["x"]) for r in rows}
-    expected = set(target_keys(selected_plan(manifest)))
+    expected = set(target_keys(queued_plan(manifest)))
     if manifest["max_model_len"] != selected_max_model_len(manifest):
         raise ValueError(f"{attempt} server max_model_len differs from its selected context class")
     if measured != expected:
@@ -749,6 +828,11 @@ def main() -> None:
                 "max_model_len": manifest["max_model_len"],
                 **{k: manifest[k] for k in CAPACITY_KNOBS if manifest.get(k) is not None},
                 **({"only_sets": manifest["only_sets"]} if manifest.get("only_sets") is not None else {}),
+                **(
+                    {"memory_budget": manifest["memory_budget"], "memory_drops": manifest["memory_drops"]}
+                    if manifest.get("memory_drops")
+                    else {}
+                ),
             }
         )
     check_split_closure(loaded)
@@ -783,6 +867,7 @@ def main() -> None:
                 # Per phase: CUPTI GPU-busy union of the module's kernels,
                 # memcpys and memsets per repetition under the serving graphs.
                 "timing_method": {phase: sorted(methods) for phase, methods in TIMING_METHODS.items()},
+                "notes": TABLE_NOTES[backend],
                 "input_tokens": input_tokens,
                 # One execution mode per geometry (checkpoint, TP, phase).
                 "execution_mode": dict(sorted(_execution_modes(rows).items())),

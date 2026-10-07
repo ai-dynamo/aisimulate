@@ -44,6 +44,7 @@ from collector.glm53flash_attention_contract import (
     RUNTIME_VERSIONS,
     build_plan,
     geometry,
+    queued_plan,
     representative_layer_is_uniform,
     selected_max_model_len,
     selected_plan,
@@ -309,7 +310,8 @@ def main():
                     "dry_run": "ok",
                     "framework": installed,
                     "geometry": expected,
-                    "sets": sum(not options.only_sets or s["set_id"] in options.only_sets for s in plan["sets"]),
+                    "sets": len(queued_plan(manifest)["sets"]),
+                    "memory_drops": len(manifest.get("memory_drops") or []),
                     "engine_args": engine_args,
                     "plugins": plugins,
                 },
@@ -347,7 +349,8 @@ def main():
         with (output / "progress.jsonl").open("a") as stream:
             stream.write(json.dumps(payload) + "\n")
 
-    for request_set in plan["sets"]:
+    # The attempt's queue: its selected sets without memory-dropped targets.
+    for request_set in queued_plan(manifest)["sets"]:
         if options.only_sets and request_set["set_id"] not in options.only_sets:
             continue
         try:

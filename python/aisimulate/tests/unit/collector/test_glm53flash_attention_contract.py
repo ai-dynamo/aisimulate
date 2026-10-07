@@ -487,6 +487,10 @@ def _launch_args(tmp_path, name, **overrides):
         "tag": "",
         "layer_id": None,
         "warmup": None,
+        "kv_token_capacity": None,
+        "transient_gib": None,
+        "device_gib": None,
+        "memory_evidence": "",
         "backend": "vllm",
         "checkpoint": "nvfp4",
         "tp": 1,
@@ -523,3 +527,46 @@ def test_launch_selects_one_context_class_and_guards_vllm_alignment(tmp_path):
         prepare(_launch_args(tmp_path, "v", smoke="validation-sglang", sweep=None))
     smoke = prepare(_launch_args(tmp_path, "g", smoke="validation-sglang", sweep=None, backend="sglang"))
     assert json.loads((smoke / "manifest.json").read_text())["role"] == "smoke"
+
+
+def test_memory_feasibility_drops_are_generation_time_and_close_the_plan(tmp_path, monkeypatch, capsys):
+    from collector import glm53flash_attention_contract as contract
+    from collector.glm53flash_attention_contract import memory_drops, queued_plan
+    from collector.glm53flash_attention_launch import prepare
+
+    budget = {"kv_tokens": 3396928, "transient_gib": 18.0}
+    drops = memory_drops(build_plan(sweep()), budget)
+    assert {tuple(d["key"]) for d in drops} == {("context", 32, 98304, q) for q in (8, 32, 64, 128, 256)} | {
+        ("generation", 32, 0, 98304),
+        ("generation", 32, 0, 131072),
+    }
+    args = _launch_args(
+        tmp_path,
+        "m",
+        backend="sglang",
+        only_sets=["decode-b32", "prefill-b32-q8-c0"],
+        kv_token_capacity=3396928,
+        transient_gib=18.0,
+        device_gib=276.6,
+        memory_evidence="jobs 867530 867891 870375",
+    )
+    manifest = json.loads((prepare(args) / "manifest.json").read_text())
+    assert "glm53flash_attention: dropped 3/" in capsys.readouterr().out
+    queued = queued_plan(manifest)
+    decode = next(s for s in queued["sets"] if s["set_id"] == "decode-b32")
+    assert 131072 not in decode["targets"] and 4096 in decode["targets"]
+    with pytest.raises(ValueError, match="memory drops"):
+        queued_plan({**manifest, "memory_drops": []})
+    # Finalize admits the attempt when it measured exactly the queued targets.
+    attempt = tmp_path / "attempt-m"
+    raw = attempt / "raw"
+    raw.mkdir(parents=True)
+    (attempt / "manifest.json").write_text(json.dumps(manifest))
+    body = manifest
+    flat = manifest["geometry"]
+    records = []
+    for phase, batch, prefix, x in target_keys(queued_plan(body)):
+        records += _records(flat, phase, batch, prefix, x, [[1.0]])
+    (raw / "rank-0.jsonl").write_text("\n".join(json.dumps(r) for r in records) + "\n")
+    (raw / "COMPLETE").write_text("done\n")
+    assert len(contract.load_attempt(attempt)[1]) == len(records)
