@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 #SBATCH --job-name=aic2004-sg-final-bounded
 #SBATCH --account=tensorrt
 #SBATCH --qos=interactive-isolated-short

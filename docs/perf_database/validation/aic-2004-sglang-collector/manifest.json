@@ -98,5 +98,22 @@
       "max_over_min_minus_one_percent": 0.0
     }
   ],
-  "repeat_selection_note": "Priority cohort was selected deterministically, not by speed. Full-indexer repeated values differ by about17%; no timing stability or input-distribution invariance claim."
+  "repeat_selection_note": "Priority cohort was selected deterministically, not by speed. Full-indexer repeated values differ by about17%; no timing stability or input-distribution invariance claim.",
+  "published_script_copies": {
+    "collect_target.py": {
+      "original_sha256": "3be00ee13ad9bcf3468362a872bbd1fadb93871a1aed7f57b366c4118b2fcaca",
+      "published_sha256": "4a27ebed2a44df3c12b2069e37c7b409d8c76b33fed9755a299d898026e3258c",
+      "amendment": "SPDX comments only; original executable content unchanged"
+    },
+    "launch.sh": {
+      "original_sha256": "ae79e041097f7ad7e3199c5281a7fdba2f69138aa2a4657b284da28b864b299c",
+      "published_sha256": "0c88df9f925fc0a0a53f82d5b81d303a328d11487c3a421086973575a54f2332",
+      "amendment": "SPDX comments only; original executable content unchanged"
+    },
+    "stage-job.sh": {
+      "original_sha256": "f3988167675994a52b0379b248ed59301c0b34e0a36e720d37f38318883eb51e",
+      "published_sha256": "0323b30e45c74b5ae7346cff88d936aab3b991f8103c675bf94f4bb77c016981",
+      "amendment": "SPDX comments only; original executable content unchanged"
+    }
+  }
 }
