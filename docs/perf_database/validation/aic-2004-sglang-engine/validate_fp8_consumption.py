@@ -38,13 +38,18 @@ def main():
     args = parser.parse_args()
     inputs = {"context": args.context_parquet, "generation": args.generation_parquet}
     rows = {phase: pq.read_table(path).to_pylist() for phase, path in inputs.items()}
-    for phase_rows in rows.values():
+    for phase, phase_rows in rows.items():
         for row in phase_rows:
             assert row["model"] == "zai-org/GLM-5.2-FP8"
             assert row["architecture"] == "GlmMoeDsaForCausalLM"
             assert row["gemm_type"] == "fp8_block" and row["num_heads"] == 8
             assert row["mla_dtype"] == "bfloat16" and row["kv_cache_dtype"] == "fp8"
             assert row["framework"] == "SGLang" and row["version"] == "0.5.14"
+            if phase == "context":
+                # The final qualified cohort uses native eager prefill above
+                # the runtime's 2048-token TC graph coverage. Smaller TC
+                # module measurements remain diagnostic, not final evidence.
+                assert row["batch_size"] * row["isl"] > 2048
 
     args.scratch_root.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="fp8-consumer-", dir=args.scratch_root) as tmp:
@@ -160,7 +165,7 @@ def main():
             "Private isolated systems root with strict_provenance=False; default packaged data unchanged.",
             "Exact cell consumption validates model precision and layer accounting, not prediction accuracy.",
             "Synthetic single-GPU module data uses TP8 head geometry; not a whole-model forward reference.",
-            "Prefill includes the native single-module compiler entry cost; whole-model amortization unqualified.",
+            "Prefill is restricted to qualified native eager cases above 2048 total new tokens; TC cases excluded.",
         ],
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)

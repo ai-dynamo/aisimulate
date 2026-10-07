@@ -1,0 +1,38 @@
+{
+  "node": "DFW3-079",
+  "gpu_uuid": "GPU-e6961f25-a4ed-893a-9bde-dd1b8fe0905d",
+  "driver": "615.71.09",
+  "campaign_post_case_samples": 50,
+  "event_counts": {
+    "0x0000000000000000": 49,
+    "0x0000000000000004": 1
+  },
+  "nonzero_post_case_observations": [
+    {
+      "group": "glm-fp8_block-bfloat16-h8",
+      "case": "context-b1-q4096-p0-skip",
+      "time": 1791334476.557818,
+      "observation": {
+        "index": "0",
+        "uuid": "GPU-e6961f25-a4ed-893a-9bde-dd1b8fe0905d",
+        "clocks.current.sm [MHz]": "1965 MHz",
+        "clocks.current.memory [MHz]": "3996 MHz",
+        "pstate": "P0",
+        "temperature.gpu": "36",
+        "power.draw [W]": "459.45 W",
+        "power.limit [W]": "1000.00 W",
+        "clocks_event_reasons.active": "0x0000000000000004",
+        "ecc.errors.uncorrected.volatile.total": "0"
+      }
+    }
+  ],
+  "clock_file_sha256": {
+    "glm-fp8_block-fp8-h8/gpu-clocks.jsonl": "0f888c583a0d2fe39f08332e3e18b62cf9bc37716645c5e4d66f951105dfe1dc",
+    "glm-fp8_block-bfloat16-h8/gpu-clocks.jsonl": "9df27d014c7b3178ef3165cb82b5f8773a034f1a9fc070875af6d2f2b8fc3a1d",
+    "deepseek-fp8_block-fp8-h16/gpu-clocks.jsonl": "b1c7195cf08a5248b963933b10d94fb88207f9e5eaea6192d64074ac55514f0d",
+    "glm-bfloat16-fp8-h8/gpu-clocks.jsonl": "b501b6bd00c7abe346e7a28397e174d71822456f4446001ea144efc32d5a6fee",
+    "priority-decode/gpu-clocks.jsonl": "36e29327098df561b46a1bf1925651a1a2adb3130ad86ad80629b88af2deaf1f",
+    "deepseek-fp8_block-bfloat16-h16/gpu-clocks.jsonl": "4c7ed6150a25d5e1c8f38a9098fd634dd85991d32d2ae9b2bd794da3dc297435"
+  },
+  "scope_note": "Clock snapshots are after each case, not continuous telemetry over each timed iteration. One campaign post-sample has event mask 0x4 with SM clock still 1965 MHz; it is retained, not described as all events zero."
+}

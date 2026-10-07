@@ -32,7 +32,7 @@ all full-layer rooflines remain unchanged; reuse-layer rooflines change. An
 independent GLM projection ledger and a synthetic 2 ms measured anchor test
 verify the new arithmetic and extrapolation behavior. Neither fixture is a GPU
 accuracy result. The two parity suites pass all 386 cases without golden changes;
-46 DSA Rust tests pass, including FPM blend and invalid-fraction cases.
+47 DSA Rust tests pass, including FPM blend, invalid-fraction and reuse-capability cases.
 
 To reproduce the SDK receipt using either wheel:
 
@@ -62,9 +62,9 @@ produce these unweighted held-out errors:
 
 | Component | Baseline MAPE | Fixed MAPE |
 | --- | ---: | ---: |
-| Full layer | 48.18% | 48.18% |
-| Reuse layer | 91.35% | 1.99% |
-| 21 full + 57 reuse layers | 18.64% | 35.41% |
+| Full layer | 46.34% | 46.34% |
+| Reuse layer | 88.45% | 0.00% |
+| 21 full + 57 reuse layers | 19.57% | 35.30% |
 
 The full-layer extrapolation still underestimates the long histories. Removing
 the reuse overestimate removes an accidental cancellation, so the combined
@@ -72,6 +72,15 @@ attention error increases. This is a remaining limitation, not an accuracy
 acceptance pass. The combined reference is a sum of module observations, not
 an eight-GPU whole forward. These points share one campaign and synthetic
 inputs; they do not establish checkpoint-value parity or full-matrix accuracy.
+These final rows come from node 079, job 4764836. The anchor remains the
+preselected `priority-decode` group. Repeated full-layer measurements in the
+same job differ by about 17% at histories 8192 and 131072, while reuse timings
+remain close; neither stability nor a cause for that variation is established.
+The zero reuse MAPE above uses rounded four-decimal table values. The raw
+post-case clock observations are retained in
+[`gpu-sampling-health.json`](gpu-sampling-health.json): one of the campaign's
+50 post-case samples has event mask `0x4` while reporting 1965 MHz. These
+snapshots are not continuous monitoring of every timed iteration.
 Historical GLM/SGLang whole-forward data uses a different framework revision,
 model revision and speculative setup. Whole-model accuracy remains
 `NOT_EVALUATED` for stock SGLang 0.5.14. The earlier six-point trial omitted
@@ -102,16 +111,18 @@ whole-model reference.
 
 The projection-key change has an additional real-data check in
 [`gpu-fp8-consumption.json`](gpu-fp8-consumption.json). Both binaries return
-all 14 native GLM FP8 measurements exactly when explicitly given the FP8 key.
+all eight qualified GLM FP8 measurements exactly when explicitly given the FP8 key.
 With only these FP8 rows available, the baseline canonical
-`zai-org/GLM-5.2-FP8` model instead requests BF16 and fails all seven queries;
+`zai-org/GLM-5.2-FP8` model instead requests BF16 and fails all four queries;
 ordinary legacy data could silently satisfy that incorrect key. The fixed
-canonical model needs no quantization override and matches all seven
-`21 * full + 57 * reuse` attention sums, covering five prefill coordinates
-(including one batch-32 point) and two decode histories. This proves precision
-routing and table consumption, not whole-model accuracy. In particular, the
-native prefill module measurements still include the compiler entry cost for
-one standalone layer; its amortization across the serving model is unqualified.
+canonical model needs no quantization override and matches all four
+`21 * full + 57 * reuse` attention sums, covering two native eager prefill
+coordinates (each with 4096 total new tokens) and two decode histories. This
+proves precision routing and table consumption, not whole-model accuracy.
+TC-covered prefill remains diagnostic: a guard-checked per-layer native TC
+entry has not been qualified. The earlier 14-cell cohort is retained under
+[`superseded-job-4764263`](superseded-job-4764263/README.md) and is excluded
+from the final qualified measurements.
 
 To reproduce this isolated consumer check with either wheel:
 
