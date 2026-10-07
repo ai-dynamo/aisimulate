@@ -19,7 +19,7 @@ Maintainers and agents: CI executes the bash/yaml examples in this README.
 - Validate structure before committing (requires psutil and PyYAML):
   python scripts/readme/check_readme_commands.py --validate
   This checks parsing/manifest consistency; CI also executes the commands.
-See docs/ci.md and scripts/readme/check_readme_commands.py for execution details.
+See docs/ci/README.md and scripts/readme/check_readme_commands.py for execution details.
 -->
 
 # AISimulate
@@ -82,7 +82,7 @@ aisimulate predict --help
 ```
 
 This pair exercises the nightly AISimulate wheel, not the current source checkout.
-The daily README workflow records installed versions and runs both Dynamo
+The Full CI README checks record installed versions and run both Dynamo
 prediction and recommendation; `--help` alone does not validate the adapters.
 
 **Planner needs additional dependencies.** Install the requirements from the

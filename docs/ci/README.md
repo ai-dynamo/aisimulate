@@ -531,64 +531,23 @@ an executed shard or an explicit exception; verify actual collection.
   establish that combined gate.
 
 
-## README command guardrails
+## README command checks
 
-`Full CI Success` includes the root README's source examples and pinned Dynamo
-nightly examples when README, Python, Rust, or CI changes. Fast CI is unchanged.
-The Dynamo lane tests the exact published nightly pair in README; it does not
-substitute current source under Dynamo's exact AISimulate dependency pin.
+Full CI runs the README source and pinned Dynamo examples when README, Python,
+Rust, or CI changes. Their results remain required by `Full CI Success` when
+selected. The standalone daily README scan and report workflows are removed;
+README checks have no independent schedule.
 
-`Daily README validation` runs at 17:17 America/Los_Angeles and supports manual
-runs from main. Every run executes fresh Linux installation profiles, all root
-README examples, the complete documented Rust/Python suites, and a macOS ARM64
-source smoke run. It does not reuse prior Full CI results or skip unchanged SHAs.
+The local harness remains available:
 
-`scripts/readme/check_readme_commands.py` reads executable text from README. Every Bash
-and YAML fence needs a unique `readme-check` comment and an entry in
-`scripts/readme/readme_commands.json`. The manifest supplies profiles, dependencies,
-timeouts, and output assertions; it contains no copied commands. Add new blocks
-to both files. Prediction must complete requests, recommendations must contain
-concrete candidates, and the best candidate must predict successfully. The option
-example also checks configuration overrides, overwrite, JSON stdout, and
-per-request capture.
+```bash
+python scripts/readme/check_readme_commands.py --validate
+python scripts/readme/check_readme_commands.py --profile source \
+  --workspace /tmp/aisim-readme-source --output /tmp/aisim-readme-results
+```
 
-Each lane uploads `readme-<profile>` with per-block logs, timings, source SHA,
-installed versions, and `report.json`. A timeout, missing prerequisite, canceled
-run, or missing report fails qualification. Shell failures stop their block;
-dependent blocks become blocked while independent checks continue. The runner
-kills descendants, including workers that created separate sessions. Each profile
-uses an isolated Hugging Face cache and anonymous public-model access so a stale
-host login cannot poison the checks. Existing credentials are not modified. CI allows 60 seconds per pip network
-read to tolerate slow package mirrors; the per-command deadline still applies.
-
-### Slack workflow setup
-
-Delivery is disabled by default. Create a webhook-triggered Slack workflow for
-`#swdl-dynamo-aisim-daily`, then configure repository secret
-`SLACK_README_WEBHOOK_URL` and variable `SLACK_README_ENABLED=true`.
-The webhook accepts four string fields: `event`, `incident_id`, `message`, and
-`details`. It must acknowledge receipt with JSON `{"ok": true}`.
-
-- `failure`: post `message` as a root message and `details` as its thread reply.
-  Persist the resulting channel and message timestamp under `incident_id`.
-- `update`: resolve the same incident and reply with the changed failures.
-- `recovery`: resolve the same incident and reply with the successful run link.
-- Deduplicate repeated deliveries of the same event payload. Do not blindly
-  retry a failed HTTP delivery: a lost acknowledgement may already have posted.
-
-**Cross-run storage is required.** A basic webhook that always creates a new
-message cannot provide recovery replies. Configure the incident lookup in your
-Slack workflow before enabling delivery; otherwise use a bot integration that
-returns message timestamps. The repository sends an incident ID, not a Slack
-message timestamp, and cannot perform that lookup on behalf of a plain webhook.
-
-The separate `Daily README report` workflow executes trusted main-branch code
-with read-only GitHub permissions. It reads evidence rather than executing
-producer artifacts. Healthy runs are quiet; unchanged failures are suppressed.
-Recovery is emitted only after all profiles and full suites pass in a later
-complete daily/manual run. A PR merge, partial run, or canceled run cannot recover
-an incident. Retrying a run qualifies recovery only when every profile ran in
-the new attempt; rerunning failed jobs alone cannot reuse older passing evidence.
-Preview payloads and the delivery ledger are saved in
-`readme-report-state` for 90 days. After ledger expiry, the next failure opens a
-new incident; recovery cannot reference an expired incident automatically.
+Each Bash and YAML fence in the root README has a `readme-check` comment and an
+entry in `scripts/readme/readme_commands.json`. Keep both in sync when editing
+examples. The manifest supplies profiles, dependencies, timeouts, and output
+assertions; the harness reads the commands from README and records per-block
+logs and results locally. See `--help` for the available profiles and options.
