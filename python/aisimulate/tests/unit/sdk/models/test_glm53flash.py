@@ -137,7 +137,11 @@ def test_canonical_sol_constructor_and_saved_identity(path, backend):
     try:
         resolved = model.diagnostics()["provenance"]["config"]
         assert resolved["model"] == path
-        assert ForwardPassPerfModelConfig(**resolved).to_dict() == resolved
+        # Rust omits an unset optional cp_size; Python to_dict keeps it as None.
+        assert "cp_size" not in resolved
+        saved = ForwardPassPerfModelConfig(**resolved).to_dict()
+        assert saved.pop("cp_size") is None
+        assert saved == resolved
         latency = model.static_phase_latency(batch_size=1, input_tokens=131072, output_tokens=2, prefill=False)
         assert latency > 0
     finally:
