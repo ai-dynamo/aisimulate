@@ -28,6 +28,21 @@ def _module_runner(*, graph_flag=True, failure=None, reuse_frequency=1, reuse_pa
     events, published, benchmark_calls = [], [], []
     error = RuntimeError(f"{failure} failed")
     active_contexts = []
+    active_slot_mapping = {}
+    query_slots = object()
+    attn_name = "model.layers.0.self_attn.attn"
+    indexer_name = "model.layers.0.self_attn.indexer.k_cache"
+
+    @contextmanager
+    def forward_context(metadata, _config, *, slot_mapping=None):
+        nonlocal active_slot_mapping
+        assert set(slot_mapping or {}) == set(metadata)
+        active_slot_mapping = slot_mapping or {}
+        try:
+            with context("forward"):
+                yield
+        finally:
+            active_slot_mapping = {}
 
     @contextmanager
     def context(name):
@@ -48,6 +63,11 @@ def _module_runner(*, graph_flag=True, failure=None, reuse_frequency=1, reuse_pa
         if failure == "forward":
             raise error
         events.append("forward")
+        # The native updater is a no-op if the layer mapping is absent. The
+        # attention metadata alone does not supply this separate dependency.
+        if active_slot_mapping.get(attn_name) is not None:
+            assert active_slot_mapping[attn_name] is query_slots
+            events.append(("current KV written", module.mla_attn.skip_topk))
 
     layer = SimpleNamespace(kv_cache_dtype="fp8_ds_mla")
     module = SimpleNamespace(forward=forward, mla_attn=SimpleNamespace(mla_attn=layer, skip_topk=False))
@@ -58,7 +78,9 @@ def _module_runner(*, graph_flag=True, failure=None, reuse_frequency=1, reuse_pa
             ),
             hf_config=SimpleNamespace(architectures=["GlmMoeDsaForCausalLM"]),
         ),
-        compilation_config=SimpleNamespace(static_forward_context={"model.layers.0.self_attn.attn": SimpleNamespace()}),
+        compilation_config=SimpleNamespace(
+            static_forward_context={attn_name: SimpleNamespace(), indexer_name: SimpleNamespace()}
+        ),
     )
 
     def create_module(**kwargs):
@@ -76,6 +98,7 @@ def _module_runner(*, graph_flag=True, failure=None, reuse_frequency=1, reuse_pa
         assert kwargs["allow_graph_fail"] is False
         if failure == "capture" or (failure == "skip_capture" and module.mla_attn.skip_topk):
             raise error
+        kwargs["kernel_func"]()
         yield {"used_cuda_graph": graph_flag, "latency_ms": 0.015, "power_stats": None}
         events.append("graph teardown")
 
@@ -105,9 +128,15 @@ def _module_runner(*, graph_flag=True, failure=None, reuse_frequency=1, reuse_pa
         "init_workspace_manager": lambda device: events.append("workspace init"),
         "_create_attention_module": create_module,
         "_process_module_weights": lambda *args: None,
-        "_create_kv_cache_and_metadata": lambda **kwargs: (Tensor(), object(), None, None, None),
+        "_create_kv_cache_and_metadata": lambda **kwargs: (
+            Tensor(),
+            object(),
+            SimpleNamespace(slot_mapping=query_slots),
+            Tensor() if kwargs["attn_type"] == "dsa" else None,
+            object() if kwargs["attn_type"] == "dsa" else None,
+        ),
         "set_current_vllm_config": lambda config: context("config"),
-        "set_forward_context": lambda *args: context("forward"),
+        "set_forward_context": forward_context,
         "benchmark_with_power": benchmark,
         "_mla_backend_name": lambda *args: "FLASHINFER_MLA_SPARSE",
         "log_perf": lambda **kwargs: published.append(kwargs),
@@ -147,6 +176,18 @@ def test_graph_publication_and_workspace_teardown_after_context_exit(attn_type, 
     assert row["step"] == (128 if phase == "context" else 15)
     assert row["isl"] + row["step"] == (144 if phase == "context" else 16)
     assert published[0]["kernel_source"] == "FLASHINFER_MLA_SPARSE"
+
+
+@pytest.mark.parametrize("attn_type", ["mla", "dsa"])
+@pytest.mark.parametrize("phase", ["context", "generation"])
+def test_current_token_cache_mapping_reaches_dry_run_and_timed_native_forward(attn_type, phase):
+    execute, events, _, _, _ = _module_runner(reuse_frequency=4)
+    execute(attn_type, phase)
+    writes = [event for event in events if isinstance(event, tuple) and event[0] == "current KV written"]
+    expected = [("current KV written", False), ("current KV written", False)]
+    if attn_type == "dsa":
+        expected.append(("current KV written", True))
+    assert writes == expected
 
 
 @pytest.mark.parametrize("phase", ["context", "generation"])

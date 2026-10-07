@@ -1,0 +1,17 @@
+{
+  "scope": "Fresh DSA tables only; no legacy DSV4 runtime attribution",
+  "tables": {
+    "dsa_context_module_perf": {
+      "rows": 26005,
+      "parquet_sha256": "39ff778af7afb941424fe1b9faf65fe116e1d08273cfda6918d4b38f61ce18c9",
+      "raw_csv_sha256": "42a90e67631fac80b6e86e7e563ee0ad59a2a0c7e01e0d6507b219d930ed90b4"
+    },
+    "dsa_generation_module_perf": {
+      "rows": 22580,
+      "parquet_sha256": "2b4300d3019caf75f068cf8db5efe2ccab603061acfe265d7dc070d01b9d2f85",
+      "raw_csv_sha256": "d0e8a8c61d99adbc02f93e70217074904e522af6c472c434bcc3d6c7b9ad15bb"
+    }
+  },
+  "source_binding_sha256": "a5b653e681c5fda2b108d2c93db87f33c8e48e94ee77e6731a2b4f9e15e87a6a",
+  "metadata_sha256": "5a1c93f532ec338089e5b070739916185e489818495fefc4e52a64ae44645f97"
+}

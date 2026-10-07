@@ -1,0 +1,56 @@
+{
+  "status": "PASS",
+  "scope": "Same actual native SDK against frozen before vs final systems; SG/TRT current/next, default/false/true sharing. Exact source reports, all four native full/reuse DSA loader views, and fixed whole-forward SOL/SILICON diagnostics. This isolates data/manifest replacement; code-regression CI and silicon accuracy remain separate.",
+  "accuracy_acceptance": "NOT_EVALUATED",
+  "changed_physical_files": [
+    "data/b200_sxm/sparse_attention/vllm/0.24.0/collection_meta.yaml",
+    "data/b200_sxm/sparse_attention/vllm/0.24.0/dsa_context_module_perf.parquet",
+    "data/b200_sxm/sparse_attention/vllm/0.24.0/dsa_generation_module_perf.parquet",
+    "data/b200_sxm/sparse_attention/vllm/0.25.1/collection_meta.yaml",
+    "data/b200_sxm/sparse_attention/vllm/0.25.1/dsa_context_module_perf.parquet",
+    "data/b200_sxm/sparse_attention/vllm/0.25.1/dsa_generation_module_perf.parquet",
+    "perf_data_reuse_manifest.yaml"
+  ],
+  "source_queries": 5040,
+  "native_dsa_view_queries": 105,
+  "prediction_configurations": 3360,
+  "requested_prediction_points": 13440,
+  "returned_prediction_points": {
+    "before/sglang/SILICON": 1120,
+    "after/sglang/SILICON": 1120,
+    "before/sglang/SOL": 2976,
+    "after/sglang/SOL": 2976,
+    "before/trtllm/SILICON": 1120,
+    "after/trtllm/SILICON": 1120,
+    "before/trtllm/SOL": 2784,
+    "after/trtllm/SOL": 2784
+  },
+  "returned_constructions": {
+    "before/sglang/SOL": 864,
+    "after/sglang/SOL": 864,
+    "before/trtllm/SOL": 816,
+    "after/trtllm/SOL": 816,
+    "before/sglang/SILICON": 528,
+    "after/sglang/SILICON": 528,
+    "before/trtllm/SILICON": 480,
+    "after/trtllm/SILICON": 480
+  },
+  "prediction_errors_preserved": {
+    "before/construction/PerfDataNotAvailableError": 672,
+    "after/construction/PerfDataNotAvailableError": 672,
+    "before/query/MissingSystemFlopsError": 1200,
+    "after/query/MissingSystemFlopsError": 1200,
+    "before/query/PerfDataNotAvailableError": 1552,
+    "after/query/PerfDataNotAvailableError": 1552
+  },
+  "failures": [],
+  "evidence_sha256": {
+    "binding.json": "0e9c000922fb8a9cd2e1195cfdf5436d70998fdce09042d685e4e19de0ccdf2f",
+    "observations.jsonl": "0837503d419e91109ed0a9d6f539e1c905e0735708c1360fb5760384c44346db",
+    "manifest-diff.json": "74deb63e7cba2e90faf54353f96c53d95f8a62c4ce31b9ea38db7248bb1b4869"
+  },
+  "full_report_sha256": "bb1b1274f07c7fbe041ea5a9c418d8c9720b8451ba4dd82108cae02b331b7371",
+  "native_source_binding_sha256": "0e9c000922fb8a9cd2e1195cfdf5436d70998fdce09042d685e4e19de0ccdf2f",
+  "private_full_report": "/home/harrli/.local/state/aisimulate/aic-2004-replace-20261007/non-vllm-final-isolation/after-v5-4778966/report.json",
+  "actual_returned_points_per_side": 8000
+}

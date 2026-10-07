@@ -54,6 +54,7 @@ import math
 import os
 import tempfile
 import traceback
+from functools import partial
 from pathlib import Path
 
 import torch
@@ -62,7 +63,8 @@ from collector.case_generator import (
     get_mla_module_precision_specs,
     get_mla_module_sweep_spec,
 )
-from collector.helper import benchmark_with_power, get_sm_version, log_perf
+from collector.helper import benchmark_with_power as _benchmark_with_power
+from collector.helper import get_sm_version, log_perf
 from collector.registry_types import PerfFile
 from collector.vllm.utils import (
     BatchSpec,
@@ -86,6 +88,10 @@ from vllm.forward_context import set_forward_context
 from vllm.transformers_utils.config import _CONFIG_REGISTRY
 from vllm.v1.worker.workspace import init_workspace_manager
 from vllm.version import __version__ as vllm_version
+
+# Keep graph lifetime handling local to the MLA/DSA module collector. Other
+# collectors retain benchmark_with_power's default cleanup and synchronization.
+benchmark_with_power = partial(_benchmark_with_power, explicit_graph_cleanup=True)
 
 if "glm_moe_dsa" not in _CONFIG_REGISTRY:
     _CONFIG_REGISTRY["glm_moe_dsa"] = "DeepseekV3Config"
@@ -316,15 +322,24 @@ def _create_gemm_quant_config(gemm_type: str):
     """Create the vLLM QuantizationConfig for a given gemm_type.
 
     Returns None for bfloat16 (unquantised GEMMs).
-    For fp8_block / nvfp4, returns an online-quantisation config so that
-    dummy BF16 weights are dynamically quantised during
-    ``process_weights_after_loading``.
+    Quantized modes use their serialized native weight format; synthetic
+    parameters are populated before native ``process_weights_after_loading``.
     """
     if gemm_type == "bfloat16":
         return None
-    if gemm_type == "fp8_block":
+    if gemm_type in ("fp8", "fp8_block"):
         from vllm.model_executor.layers.quantization.fp8 import Fp8Config
 
+        # Match the existing GEMM collector's fp8 contract: tensor-scaled
+        # weights with dynamic activations, not fp8_static. Native Fp8LinearMethod
+        # selects the activation granularity/kernel (fp8.py:298-322 at
+        # vllm-project/vllm@752a3a504485790a2e8491cacbb35c137339ad34).
+        if gemm_type == "fp8":
+            return Fp8Config(
+                is_checkpoint_fp8_serialized=True,
+                activation_scheme="dynamic",
+                weight_block_size=None,
+            )
         # vLLM requires is_checkpoint_fp8_serialized=True for block-scaled
         # FP8 (fp8.py raises ValueError otherwise).  This routes through
         # Fp8LinearMethod (block_quant=True) → W8A8BlockFp8LinearOp →
@@ -395,6 +410,64 @@ def _initialize_synthetic_parameters(module):
                 tensor.fill_(0.01)
 
 
+def _initialize_nvfp4_parameters(module):
+    """Populate ModelOpt NVFP4 linears through the native quantizer.
+
+    This is synthetic format qualification, not checkpoint calibration. The
+    CPU RNG is local, temporary tensors are bounded, and framework buffers are
+    untouched. vLLM subsequently performs its own layout conversion/dispatch.
+    """
+    from vllm import _custom_ops as ops
+    from vllm.model_executor.layers.quantization.modelopt import ModelOptNvFp4LinearMethod
+
+    # Native API contracts at vllm-project/vllm commit
+    # 752a3a504485790a2e8491cacbb35c137339ad34:
+    # modelopt.py:1111-1199 stores two E2M1 values per uint8, one E4M3 scale
+    # per 16 inputs, and dequantizing FP32 global scales. _custom_ops.py:1492-
+    # 1571 accepts the inverse global scale and can return unswizzled scales;
+    # modelopt.py:1203-1238 performs native conversion only after loading.
+    generator = torch.Generator(device="cpu").manual_seed(0)
+    initialized = 0
+    with torch.no_grad():
+        for name, layer in module.named_modules():
+            if not isinstance(getattr(layer, "quant_method", None), ModelOptNvFp4LinearMethod):
+                continue
+            weight, scales = layer.weight, layer.weight_scale
+            if weight.dtype != torch.uint8 or scales.dtype != torch.float8_e4m3fn:
+                raise ValueError(f"Unexpected native NVFP4 storage for {name}")
+            if weight.ndim != 2 or tuple(scales.shape) != (weight.shape[0], weight.shape[1] // 8):
+                raise ValueError(f"Unexpected native NVFP4 block layout for {name}")
+            if layer.quant_method.quant_config.group_size != 16 or weight.shape[1] % 8:
+                raise ValueError(f"Native NVFP4 quantization requires 16-input blocks for {name}")
+            input_size = weight.shape[1] * 2
+            rows_per_chunk = max(1, 1048576 // input_size)
+            # Bounded N(0,.02) weights, clipped to +/- .08, and a unit-range
+            # synthetic activation calibration. E2M1 max=6, E4M3 max=448.
+            # These fixed source ranges are unrelated to timing/accuracy targets.
+            weight_global_scale = 0.08 / (6.0 * 448.0)
+            layer.weight_scale_2.fill_(weight_global_scale)
+            layer.input_scale.fill_(1.0 / (6.0 * 448.0))
+            inverse_scale = torch.tensor(1.0 / weight_global_scale, dtype=torch.float32, device=weight.device)
+            for start in range(0, weight.shape[0], rows_per_chunk):
+                end = min(start + rows_per_chunk, weight.shape[0])
+                values = torch.randn((end - start, input_size), generator=generator, dtype=torch.float32, device="cpu")
+                values.clamp_(-4.0, 4.0).mul_(0.02)
+                packed, block_scales = ops.scaled_fp4_quant(
+                    values.to(device=weight.device, dtype=torch.bfloat16),
+                    inverse_scale,
+                    is_sf_swizzled_layout=False,
+                )
+                if packed.shape != weight[start:end].shape or block_scales.shape != scales[start:end].shape:
+                    raise ValueError(f"Native NVFP4 quantizer returned an incompatible shape for {name}")
+                if not bool(torch.isfinite(block_scales.float()).all()) or not bool((block_scales.float() > 0).all()):
+                    raise ValueError(f"Native NVFP4 quantizer returned invalid block scales for {name}")
+                weight[start:end].copy_(packed)
+                scales[start:end].copy_(block_scales)
+            initialized += 1
+    if not initialized:
+        raise RuntimeError("NVFP4 was requested but no native ModelOpt NVFP4 linear was constructed")
+
+
 def _create_attention_module(
     model_path: str,
     attn_type: str,
@@ -434,7 +507,7 @@ def _create_attention_module(
             _create_kv_cache_and_metadata fails closed if the decision
             does not match the case label.
         gemm_type: Precision for linear-layer GEMMs — "bfloat16",
-            "fp8_block", or "nvfp4".
+            "fp8", "fp8_block", or "nvfp4".
     """
     from vllm.model_executor.models.deepseek_v2 import DeepseekV2MLAAttention
 
@@ -486,7 +559,7 @@ def _create_attention_module(
     # Override quant_config to control linear-layer GEMM precision.
     # DeepSeek-V3.2 ships with FP8 quantisation by default, so we
     # must always set quant_config explicitly: None for bf16,
-    # Fp8Config (blockwise) for fp8_block, ModelOptNvFp4Config for nvfp4.
+    # Fp8Config for fp8/fp8_block, ModelOptNvFp4Config for nvfp4.
     vllm_config.quant_config = _create_gemm_quant_config(gemm_type)
 
     # Opt in to FP8 prefill query compute before the module (and later the
@@ -584,12 +657,15 @@ def _create_attention_module(
     attn_module.eval()
     attn_module.requires_grad_(False)
 
-    # FP8 weights use finite, diverse values; auxiliary FP8 parameters, packed
-    # uint8 parameters and other dtypes retain the previous policy. Buffers (including
-    # RoPE) are untouched. These remain synthetic inputs, not a claim of
+    # FP8 weights use finite, diverse values; other dtypes initially retain the
+    # previous policy. NVFP4 below then populates its packed weights and scales
+    # through the native quantizer. Buffers (including RoPE) are untouched.
+    # These remain synthetic inputs, not a claim of
     # checkpoint-activation timing parity; CUDA RNG is deliberately avoided
     # (vllm-project/vllm#39371).
     _initialize_synthetic_parameters(attn_module)
+    if gemm_type == "nvfp4":
+        _initialize_nvfp4_parameters(attn_module)
 
     return attn_module, vllm_config
 
@@ -917,16 +993,18 @@ def run_mla_module(
 
     # 2. Create KV cache + metadata
     with set_current_vllm_config(vllm_config):
-        kv_cache, attn_metadata, _, indexer_kv_cache, indexer_metadata = _create_kv_cache_and_metadata(
-            vllm_config=vllm_config,
-            attn_type=attn_type,
-            batch_size=batch_size,
-            seq_len=seq_len,
-            is_context=is_context,
-            prefix_len=prefix_len,
-            compute_dtype=compute_dtype,
-            device=device,
-            indexer=getattr(attn_module, "indexer", None),
+        kv_cache, attn_metadata, common_attn_metadata, indexer_kv_cache, indexer_metadata = (
+            _create_kv_cache_and_metadata(
+                vllm_config=vllm_config,
+                attn_type=attn_type,
+                batch_size=batch_size,
+                seq_len=seq_len,
+                is_context=is_context,
+                prefix_len=prefix_len,
+                compute_dtype=compute_dtype,
+                device=device,
+                indexer=getattr(attn_module, "indexer", None),
+            )
         )
 
     # 2b. Bind KV cache to the 0.24.0 attention layer.
@@ -1019,7 +1097,14 @@ def run_mla_module(
     attn_metadata_dict = {attn_layer_name: attn_metadata}
     if indexer_metadata is not None:
         attn_metadata_dict[indexer_layer_name] = indexer_metadata
-    exit_stack.enter_context(set_forward_context(attn_metadata_dict, vllm_config))
+    # Native MLA cache insertion reads the per-layer forward-context mapping,
+    # separately from the attention metadata. Omitting it silently suppresses
+    # current-token writes (vLLM mla_attention.py:1037-1058 and
+    # attention.py:726-766 @752a3a504485790a2e8491cacbb35c137339ad34).
+    slot_mapping_dict = {attn_layer_name: common_attn_metadata.slot_mapping}
+    if indexer_metadata is not None:
+        slot_mapping_dict[indexer_layer_name] = common_attn_metadata.slot_mapping
+    exit_stack.enter_context(set_forward_context(attn_metadata_dict, vllm_config, slot_mapping=slot_mapping_dict))
     try:
         with torch.inference_mode():
             attn_module.forward(positions, hidden_states, None)
@@ -1200,15 +1285,16 @@ def _cleanup():
 # ═══════════════════════════════════════════════════════════════════════
 
 
-def _supported_model_map() -> dict[str, str]:
+def _supported_model_map(*, apply_model_filter: bool = True) -> dict[str, str]:
     return {
         spec.model_path: spec.attention_type
-        for spec in get_mla_module_model_specs(backend="vllm", apply_model_filter=False)
+        for spec in get_mla_module_model_specs(backend="vllm", apply_model_filter=apply_model_filter)
+        if spec.attention_type in {"mla", "dsa"}
     }
 
 
 def main():
-    supported_models = _supported_model_map()
+    supported_models = _supported_model_map(apply_model_filter=False)
     model_names = list(supported_models.keys())
 
     parser = argparse.ArgumentParser(
@@ -1220,7 +1306,7 @@ def main():
         type=str,
         default=None,
         choices=model_names,
-        help=f"Model to benchmark. If not specified, runs all: {model_names}",
+        help="Model to benchmark. If omitted, run one declared canonical reference per consumer identity.",
     )
     parser.add_argument("--num-heads", type=int, default=None, help="Filter by number of heads")
     parser.add_argument("--batch-size", type=int, default=None, help="Single batch size (for --quick)")
@@ -1242,7 +1328,7 @@ def main():
     parser.add_argument(
         "--gemm-type",
         type=str,
-        choices=["bfloat16", "fp8_block", "nvfp4"],
+        choices=["bfloat16", "fp8", "fp8_block", "nvfp4"],
         default=None,
         help="GEMM quantisation type for linear layers (default: run all supported by GPU)",
     )
@@ -1254,7 +1340,7 @@ def main():
     if args.model:
         models_to_run = {args.model: supported_models[args.model]}
     else:
-        models_to_run = supported_models
+        models_to_run = _supported_model_map()
 
     for model_path, attn_type in models_to_run.items():
         print(f"\n{'=' * 60}")
@@ -1273,7 +1359,7 @@ def main():
             kv_dtype = args.kv_cache_dtype or "bfloat16"
             compute = args.compute_dtype or "bfloat16"
             gemm = args.gemm_type or "bfloat16"
-            run_mla_module(
+            run_mla_module_worker(
                 seq_len=s,
                 batch_size=b,
                 num_heads=h,
@@ -1305,16 +1391,17 @@ def main():
             test_cases = [tc for tc in test_cases if tc[5] == args.gemm_type]
 
         print(f"Running {len(test_cases)} {args.mode} {attn_type.upper()} module test cases...")
-        for i, (s, b, h, kv_dtype, compute, gemm) in enumerate(test_cases):
+        for i, (s, b, h, kv_dtype, compute, gemm, *prefix) in enumerate(test_cases):
             print(f"[{i + 1}/{len(test_cases)}]", end="")
             try:
-                run_mla_module(
+                run_mla_module_worker(
                     seq_len=s,
                     batch_size=b,
                     num_heads=h,
                     kv_cache_dtype=kv_dtype,
                     compute_dtype=compute,
                     gemm_type=gemm,
+                    prefix_len=prefix[0] if prefix else 0,
                     perf_filename=perf_filename,
                     model_path=model_path,
                     attn_type=attn_type,

@@ -1,0 +1,52 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+schema_version: 1
+provenance: collected
+runtime:
+  framework: vllm
+  version: 0.24.0
+  image_digest: sha256:251eba5cc7c12fed0b75da22a9240e582b1c9e39f6fbc064f86781b963bd814f
+  source_commit: ee0da84ab9e04ac7610e28580af62c365e898389
+  abi:
+    vllm: 0.24.0
+    torch: 2.11.0+cu130
+    transformers: 5.12.1
+    flashinfer-python: 0.6.12
+    cuda: '13.0'
+  live_abi:
+    gpu_name: NVIDIA B200
+    gpu_uuids:
+    - 18129208-aa74-4d56-40b2-e4d9c357d7b7
+    - 26fd8812-1d94-e6e3-b6a9-7af2b2d0d15e
+    - 39caba6d-9872-92a0-a3e7-33667c56df0b
+    - 43619094-e66d-f51c-dc44-e85f0f27abae
+    - 60677281-95fc-77bd-1a12-20ae249182b3
+    - 62d7f754-c1ba-3d65-7076-68098ea9e24c
+    - 6a20d01d-dc91-8b06-5109-cc8b395efeb2
+    - 72f949d9-cd47-e660-96a7-9dc3d03db810
+    - 7bd84cf6-851f-cc2c-2d15-6f7c71fa098f
+    - 850b7a93-9aaa-4f4b-20d9-c86748803acb
+    - 90cb51b3-acca-3b9e-eea1-e1c80e1a3a03
+    - 9e8317a7-93cb-9869-0e4d-6f565d57ed05
+    - e1727779-b7e4-aee7-9734-afcfd8772513
+    - e729f2af-a6ca-8e2f-b88c-669e5e041ca0
+    - ee4e160b-baef-00fa-eaaf-82fcedc34551
+    - f1750993-7178-ea95-7f2f-67b14be2bd14
+tables:
+  dsa_context_module_perf:
+    collector_ref: a5c6c7bd25b1bf6a535d245d705b601b0daa4063+dirty
+    collector_hash: sha256:38f5ad7b03c9978c4af13cffaab032fc8de11f4b5a1b846901933c3d59c22f18
+    case_plan_hash: sha256:d9d68cc9cffdb58ff731eaacbc56fd57b92b57bc697fb11e7dbf97c9ec5bc4a3
+    collected_at: '2026-10-07T14:00:07.661496+00:00'
+    rows: 26005
+    classified_failures: 2240
+    status: complete
+  dsa_generation_module_perf:
+    collector_ref: a5c6c7bd25b1bf6a535d245d705b601b0daa4063+dirty
+    collector_hash: sha256:38f5ad7b03c9978c4af13cffaab032fc8de11f4b5a1b846901933c3d59c22f18
+    case_plan_hash: sha256:59610aa5c0af32fe0da71753706453c05bc013f28a4cde04fb4f750d4e0e0864
+    collected_at: '2026-10-07T14:00:07.661496+00:00'
+    rows: 22580
+    classified_failures: 0
+    status: complete

@@ -94,7 +94,7 @@ def test_graph_is_reset_even_when_python_references_survive(monkeypatch, failure
     benchmark, graphs, events, error = _benchmark(monkeypatch, failure)
 
     def execute():
-        with benchmark() as result:
+        with benchmark(explicit_graph_cleanup=True) as result:
             assert result["used_cuda_graph"] is True
             assert result["latency_ms"] == 4.0
             if failure == "caller":
@@ -116,7 +116,7 @@ def test_graph_is_reset_even_when_python_references_survive(monkeypatch, failure
 
 def test_explicit_capture_fallback_resets_graph_before_eager_timing(monkeypatch):
     benchmark, graphs, events, _ = _benchmark(monkeypatch, "capture")
-    with benchmark(allow_graph_fail=True) as result:
+    with benchmark(allow_graph_fail=True, explicit_graph_cleanup=True) as result:
         assert result["used_cuda_graph"] is False
     assert graphs[0].resets == 1
     assert events.index("reset") < events.index("event")

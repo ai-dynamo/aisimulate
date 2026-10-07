@@ -1,0 +1,1257 @@
+{
+  "status": "ACTUAL_SUCCESSFUL_LABELS_MATCH_NATIVE_BACKENDS",
+  "actual_successful_rows_checked": 48585,
+  "actual_slices": 48,
+  "draft_review_sha256": "7e2e21df3c55272b83e162d824cb4821ae3ad9acfe27344514cbd709f060ce08",
+  "slices": [
+    {
+      "op_file": "dsa_context_module_perf",
+      "framework": "vllm",
+      "version": "0.24.0",
+      "system": "b200_sxm",
+      "op_name": "dsa_context_module",
+      "architecture": "DeepseekV32ForCausalLM",
+      "kv_cache_dtype": "bfloat16",
+      "mla_dtype": "bfloat16",
+      "gemm_type": "bfloat16",
+      "backends": [
+        "flashinfer",
+        "flashmla"
+      ],
+      "kernel_sources": [
+        "FLASHINFER_MLA_SPARSE",
+        "FLASHMLA_SPARSE"
+      ],
+      "actual_rows": 1140,
+      "actual_native_backend_counts": {
+        "FLASHINFER_MLA_SPARSE": 408,
+        "FLASHMLA_SPARSE": 732
+      },
+      "actual_native_implementations": [
+        "vllm.v1.attention.backends.mla.flashinfer_mla_sparse.FlashInferMLASparseImpl",
+        "vllm.v1.attention.backends.mla.flashmla_sparse.FlashMLASparseImpl"
+      ]
+    },
+    {
+      "op_file": "dsa_context_module_perf",
+      "framework": "vllm",
+      "version": "0.24.0",
+      "system": "b200_sxm",
+      "op_name": "dsa_context_module",
+      "architecture": "DeepseekV32ForCausalLM",
+      "kv_cache_dtype": "bfloat16",
+      "mla_dtype": "bfloat16",
+      "gemm_type": "fp8",
+      "backends": [
+        "flashinfer",
+        "flashmla"
+      ],
+      "kernel_sources": [
+        "FLASHINFER_MLA_SPARSE",
+        "FLASHMLA_SPARSE"
+      ],
+      "actual_rows": 1140,
+      "actual_native_backend_counts": {
+        "FLASHINFER_MLA_SPARSE": 408,
+        "FLASHMLA_SPARSE": 732
+      },
+      "actual_native_implementations": [
+        "vllm.v1.attention.backends.mla.flashinfer_mla_sparse.FlashInferMLASparseImpl",
+        "vllm.v1.attention.backends.mla.flashmla_sparse.FlashMLASparseImpl"
+      ]
+    },
+    {
+      "op_file": "dsa_context_module_perf",
+      "framework": "vllm",
+      "version": "0.24.0",
+      "system": "b200_sxm",
+      "op_name": "dsa_context_module",
+      "architecture": "DeepseekV32ForCausalLM",
+      "kv_cache_dtype": "bfloat16",
+      "mla_dtype": "bfloat16",
+      "gemm_type": "fp8_block",
+      "backends": [
+        "flashinfer",
+        "flashmla"
+      ],
+      "kernel_sources": [
+        "FLASHINFER_MLA_SPARSE",
+        "FLASHMLA_SPARSE"
+      ],
+      "actual_rows": 1144,
+      "actual_native_backend_counts": {
+        "FLASHINFER_MLA_SPARSE": 409,
+        "FLASHMLA_SPARSE": 735
+      },
+      "actual_native_implementations": [
+        "vllm.v1.attention.backends.mla.flashinfer_mla_sparse.FlashInferMLASparseImpl",
+        "vllm.v1.attention.backends.mla.flashmla_sparse.FlashMLASparseImpl"
+      ]
+    },
+    {
+      "op_file": "dsa_context_module_perf",
+      "framework": "vllm",
+      "version": "0.24.0",
+      "system": "b200_sxm",
+      "op_name": "dsa_context_module",
+      "architecture": "DeepseekV32ForCausalLM",
+      "kv_cache_dtype": "bfloat16",
+      "mla_dtype": "bfloat16",
+      "gemm_type": "nvfp4",
+      "backends": [
+        "flashinfer",
+        "flashmla"
+      ],
+      "kernel_sources": [
+        "FLASHINFER_MLA_SPARSE",
+        "FLASHMLA_SPARSE"
+      ],
+      "actual_rows": 1140,
+      "actual_native_backend_counts": {
+        "FLASHMLA_SPARSE": 732,
+        "FLASHINFER_MLA_SPARSE": 408
+      },
+      "actual_native_implementations": [
+        "vllm.v1.attention.backends.mla.flashinfer_mla_sparse.FlashInferMLASparseImpl",
+        "vllm.v1.attention.backends.mla.flashmla_sparse.FlashMLASparseImpl"
+      ]
+    },
+    {
+      "op_file": "dsa_context_module_perf",
+      "framework": "vllm",
+      "version": "0.24.0",
+      "system": "b200_sxm",
+      "op_name": "dsa_context_module",
+      "architecture": "DeepseekV32ForCausalLM",
+      "kv_cache_dtype": "fp8",
+      "mla_dtype": "bfloat16",
+      "gemm_type": "bfloat16",
+      "backends": [
+        "flashinfer"
+      ],
+      "kernel_sources": [
+        "FLASHINFER_MLA_SPARSE"
+      ],
+      "actual_rows": 1020,
+      "actual_native_backend_counts": {
+        "FLASHINFER_MLA_SPARSE": 1020
+      },
+      "actual_native_implementations": [
+        "vllm.v1.attention.backends.mla.flashinfer_mla_sparse.FlashInferMLASparseImpl"
+      ]
+    },
+    {
+      "op_file": "dsa_context_module_perf",
+      "framework": "vllm",
+      "version": "0.24.0",
+      "system": "b200_sxm",
+      "op_name": "dsa_context_module",
+      "architecture": "DeepseekV32ForCausalLM",
+      "kv_cache_dtype": "fp8",
+      "mla_dtype": "bfloat16",
+      "gemm_type": "fp8",
+      "backends": [
+        "flashinfer"
+      ],
+      "kernel_sources": [
+        "FLASHINFER_MLA_SPARSE"
+      ],
+      "actual_rows": 1020,
+      "actual_native_backend_counts": {
+        "FLASHINFER_MLA_SPARSE": 1020
+      },
+      "actual_native_implementations": [
+        "vllm.v1.attention.backends.mla.flashinfer_mla_sparse.FlashInferMLASparseImpl"
+      ]
+    },
+    {
+      "op_file": "dsa_context_module_perf",
+      "framework": "vllm",
+      "version": "0.24.0",
+      "system": "b200_sxm",
+      "op_name": "dsa_context_module",
+      "architecture": "DeepseekV32ForCausalLM",
+      "kv_cache_dtype": "fp8",
+      "mla_dtype": "bfloat16",
+      "gemm_type": "fp8_block",
+      "backends": [
+        "flashinfer"
+      ],
+      "kernel_sources": [
+        "FLASHINFER_MLA_SPARSE"
+      ],
+      "actual_rows": 1027,
+      "actual_native_backend_counts": {
+        "FLASHINFER_MLA_SPARSE": 1027
+      },
+      "actual_native_implementations": [
+        "vllm.v1.attention.backends.mla.flashinfer_mla_sparse.FlashInferMLASparseImpl"
+      ]
+    },
+    {
+      "op_file": "dsa_context_module_perf",
+      "framework": "vllm",
+      "version": "0.24.0",
+      "system": "b200_sxm",
+      "op_name": "dsa_context_module",
+      "architecture": "DeepseekV32ForCausalLM",
+      "kv_cache_dtype": "fp8",
+      "mla_dtype": "bfloat16",
+      "gemm_type": "nvfp4",
+      "backends": [
+        "flashinfer"
+      ],
+      "kernel_sources": [
+        "FLASHINFER_MLA_SPARSE"
+      ],
+      "actual_rows": 1020,
+      "actual_native_backend_counts": {
+        "FLASHINFER_MLA_SPARSE": 1020
+      },
+      "actual_native_implementations": [
+        "vllm.v1.attention.backends.mla.flashinfer_mla_sparse.FlashInferMLASparseImpl"
+      ]
+    },
+    {
+      "op_file": "dsa_context_module_perf",
+      "framework": "vllm",
+      "version": "0.24.0",
+      "system": "b200_sxm",
+      "op_name": "dsa_context_module",
+      "architecture": "GlmMoeDsaForCausalLM",
+      "kv_cache_dtype": "bfloat16",
+      "mla_dtype": "bfloat16",
+      "gemm_type": "bfloat16",
+      "backends": [
+        "flashinfer",
+        "flashmla"
+      ],
+      "kernel_sources": [
+        "FLASHINFER_MLA_SPARSE",
+        "FLASHMLA_SPARSE"
+      ],
+      "actual_rows": 1144,
+      "actual_native_backend_counts": {
+        "FLASHMLA_SPARSE": 734,
+        "FLASHINFER_MLA_SPARSE": 410
+      },
+      "actual_native_implementations": [
+        "vllm.v1.attention.backends.mla.flashinfer_mla_sparse.FlashInferMLASparseImpl",
+        "vllm.v1.attention.backends.mla.flashmla_sparse.FlashMLASparseImpl"
+      ]
+    },
+    {
+      "op_file": "dsa_context_module_perf",
+      "framework": "vllm",
+      "version": "0.24.0",
+      "system": "b200_sxm",
+      "op_name": "dsa_context_module",
+      "architecture": "GlmMoeDsaForCausalLM",
+      "kv_cache_dtype": "bfloat16",
+      "mla_dtype": "bfloat16",
+      "gemm_type": "fp8",
+      "backends": [
+        "flashinfer",
+        "flashmla"
+      ],
+      "kernel_sources": [
+        "FLASHINFER_MLA_SPARSE",
+        "FLASHMLA_SPARSE"
+      ],
+      "actual_rows": 1140,
+      "actual_native_backend_counts": {
+        "FLASHINFER_MLA_SPARSE": 408,
+        "FLASHMLA_SPARSE": 732
+      },
+      "actual_native_implementations": [
+        "vllm.v1.attention.backends.mla.flashinfer_mla_sparse.FlashInferMLASparseImpl",
+        "vllm.v1.attention.backends.mla.flashmla_sparse.FlashMLASparseImpl"
+      ]
+    },
+    {
+      "op_file": "dsa_context_module_perf",
+      "framework": "vllm",
+      "version": "0.24.0",
+      "system": "b200_sxm",
+      "op_name": "dsa_context_module",
+      "architecture": "GlmMoeDsaForCausalLM",
+      "kv_cache_dtype": "bfloat16",
+      "mla_dtype": "bfloat16",
+      "gemm_type": "fp8_block",
+      "backends": [
+        "flashinfer",
+        "flashmla"
+      ],
+      "kernel_sources": [
+        "FLASHINFER_MLA_SPARSE",
+        "FLASHMLA_SPARSE"
+      ],
+      "actual_rows": 1144,
+      "actual_native_backend_counts": {
+        "FLASHINFER_MLA_SPARSE": 410,
+        "FLASHMLA_SPARSE": 734
+      },
+      "actual_native_implementations": [
+        "vllm.v1.attention.backends.mla.flashinfer_mla_sparse.FlashInferMLASparseImpl",
+        "vllm.v1.attention.backends.mla.flashmla_sparse.FlashMLASparseImpl"
+      ]
+    },
+    {
+      "op_file": "dsa_context_module_perf",
+      "framework": "vllm",
+      "version": "0.24.0",
+      "system": "b200_sxm",
+      "op_name": "dsa_context_module",
+      "architecture": "GlmMoeDsaForCausalLM",
+      "kv_cache_dtype": "bfloat16",
+      "mla_dtype": "bfloat16",
+      "gemm_type": "nvfp4",
+      "backends": [
+        "flashinfer",
+        "flashmla"
+      ],
+      "kernel_sources": [
+        "FLASHINFER_MLA_SPARSE",
+        "FLASHMLA_SPARSE"
+      ],
+      "actual_rows": 1140,
+      "actual_native_backend_counts": {
+        "FLASHMLA_SPARSE": 732,
+        "FLASHINFER_MLA_SPARSE": 408
+      },
+      "actual_native_implementations": [
+        "vllm.v1.attention.backends.mla.flashinfer_mla_sparse.FlashInferMLASparseImpl",
+        "vllm.v1.attention.backends.mla.flashmla_sparse.FlashMLASparseImpl"
+      ]
+    },
+    {
+      "op_file": "dsa_context_module_perf",
+      "framework": "vllm",
+      "version": "0.24.0",
+      "system": "b200_sxm",
+      "op_name": "dsa_context_module",
+      "architecture": "GlmMoeDsaForCausalLM",
+      "kv_cache_dtype": "fp8",
+      "mla_dtype": "bfloat16",
+      "gemm_type": "bfloat16",
+      "backends": [
+        "flashinfer"
+      ],
+      "kernel_sources": [
+        "FLASHINFER_MLA_SPARSE"
+      ],
+      "actual_rows": 1042,
+      "actual_native_backend_counts": {
+        "FLASHINFER_MLA_SPARSE": 1042
+      },
+      "actual_native_implementations": [
+        "vllm.v1.attention.backends.mla.flashinfer_mla_sparse.FlashInferMLASparseImpl"
+      ]
+    },
+    {
+      "op_file": "dsa_context_module_perf",
+      "framework": "vllm",
+      "version": "0.24.0",
+      "system": "b200_sxm",
+      "op_name": "dsa_context_module",
+      "architecture": "GlmMoeDsaForCausalLM",
+      "kv_cache_dtype": "fp8",
+      "mla_dtype": "bfloat16",
+      "gemm_type": "fp8",
+      "backends": [
+        "flashinfer"
+      ],
+      "kernel_sources": [
+        "FLASHINFER_MLA_SPARSE"
+      ],
+      "actual_rows": 1020,
+      "actual_native_backend_counts": {
+        "FLASHINFER_MLA_SPARSE": 1020
+      },
+      "actual_native_implementations": [
+        "vllm.v1.attention.backends.mla.flashinfer_mla_sparse.FlashInferMLASparseImpl"
+      ]
+    },
+    {
+      "op_file": "dsa_context_module_perf",
+      "framework": "vllm",
+      "version": "0.24.0",
+      "system": "b200_sxm",
+      "op_name": "dsa_context_module",
+      "architecture": "GlmMoeDsaForCausalLM",
+      "kv_cache_dtype": "fp8",
+      "mla_dtype": "bfloat16",
+      "gemm_type": "fp8_block",
+      "backends": [
+        "flashinfer"
+      ],
+      "kernel_sources": [
+        "FLASHINFER_MLA_SPARSE"
+      ],
+      "actual_rows": 1027,
+      "actual_native_backend_counts": {
+        "FLASHINFER_MLA_SPARSE": 1027
+      },
+      "actual_native_implementations": [
+        "vllm.v1.attention.backends.mla.flashinfer_mla_sparse.FlashInferMLASparseImpl"
+      ]
+    },
+    {
+      "op_file": "dsa_context_module_perf",
+      "framework": "vllm",
+      "version": "0.24.0",
+      "system": "b200_sxm",
+      "op_name": "dsa_context_module",
+      "architecture": "GlmMoeDsaForCausalLM",
+      "kv_cache_dtype": "fp8",
+      "mla_dtype": "bfloat16",
+      "gemm_type": "nvfp4",
+      "backends": [
+        "flashinfer"
+      ],
+      "kernel_sources": [
+        "FLASHINFER_MLA_SPARSE"
+      ],
+      "actual_rows": 1020,
+      "actual_native_backend_counts": {
+        "FLASHINFER_MLA_SPARSE": 1020
+      },
+      "actual_native_implementations": [
+        "vllm.v1.attention.backends.mla.flashinfer_mla_sparse.FlashInferMLASparseImpl"
+      ]
+    },
+    {
+      "op_file": "dsa_context_module_perf",
+      "framework": "vllm",
+      "version": "0.24.0",
+      "system": "b200_sxm",
+      "op_name": "dsa_context_module_skip_indexer",
+      "architecture": "GlmMoeDsaForCausalLM",
+      "kv_cache_dtype": "bfloat16",
+      "mla_dtype": "bfloat16",
+      "gemm_type": "bfloat16",
+      "backends": [
+        "flashinfer",
+        "flashmla"
+      ],
+      "kernel_sources": [
+        "FLASHINFER_MLA_SPARSE",
+        "FLASHMLA_SPARSE"
+      ],
+      "actual_rows": 1144,
+      "actual_native_backend_counts": {
+        "FLASHMLA_SPARSE": 734,
+        "FLASHINFER_MLA_SPARSE": 410
+      },
+      "actual_native_implementations": [
+        "vllm.v1.attention.backends.mla.flashinfer_mla_sparse.FlashInferMLASparseImpl",
+        "vllm.v1.attention.backends.mla.flashmla_sparse.FlashMLASparseImpl"
+      ]
+    },
+    {
+      "op_file": "dsa_context_module_perf",
+      "framework": "vllm",
+      "version": "0.24.0",
+      "system": "b200_sxm",
+      "op_name": "dsa_context_module_skip_indexer",
+      "architecture": "GlmMoeDsaForCausalLM",
+      "kv_cache_dtype": "bfloat16",
+      "mla_dtype": "bfloat16",
+      "gemm_type": "fp8",
+      "backends": [
+        "flashinfer",
+        "flashmla"
+      ],
+      "kernel_sources": [
+        "FLASHINFER_MLA_SPARSE",
+        "FLASHMLA_SPARSE"
+      ],
+      "actual_rows": 1140,
+      "actual_native_backend_counts": {
+        "FLASHINFER_MLA_SPARSE": 408,
+        "FLASHMLA_SPARSE": 732
+      },
+      "actual_native_implementations": [
+        "vllm.v1.attention.backends.mla.flashinfer_mla_sparse.FlashInferMLASparseImpl",
+        "vllm.v1.attention.backends.mla.flashmla_sparse.FlashMLASparseImpl"
+      ]
+    },
+    {
+      "op_file": "dsa_context_module_perf",
+      "framework": "vllm",
+      "version": "0.24.0",
+      "system": "b200_sxm",
+      "op_name": "dsa_context_module_skip_indexer",
+      "architecture": "GlmMoeDsaForCausalLM",
+      "kv_cache_dtype": "bfloat16",
+      "mla_dtype": "bfloat16",
+      "gemm_type": "fp8_block",
+      "backends": [
+        "flashinfer",
+        "flashmla"
+      ],
+      "kernel_sources": [
+        "FLASHINFER_MLA_SPARSE",
+        "FLASHMLA_SPARSE"
+      ],
+      "actual_rows": 1144,
+      "actual_native_backend_counts": {
+        "FLASHINFER_MLA_SPARSE": 410,
+        "FLASHMLA_SPARSE": 734
+      },
+      "actual_native_implementations": [
+        "vllm.v1.attention.backends.mla.flashinfer_mla_sparse.FlashInferMLASparseImpl",
+        "vllm.v1.attention.backends.mla.flashmla_sparse.FlashMLASparseImpl"
+      ]
+    },
+    {
+      "op_file": "dsa_context_module_perf",
+      "framework": "vllm",
+      "version": "0.24.0",
+      "system": "b200_sxm",
+      "op_name": "dsa_context_module_skip_indexer",
+      "architecture": "GlmMoeDsaForCausalLM",
+      "kv_cache_dtype": "bfloat16",
+      "mla_dtype": "bfloat16",
+      "gemm_type": "nvfp4",
+      "backends": [
+        "flashinfer",
+        "flashmla"
+      ],
+      "kernel_sources": [
+        "FLASHINFER_MLA_SPARSE",
+        "FLASHMLA_SPARSE"
+      ],
+      "actual_rows": 1140,
+      "actual_native_backend_counts": {
+        "FLASHMLA_SPARSE": 732,
+        "FLASHINFER_MLA_SPARSE": 408
+      },
+      "actual_native_implementations": [
+        "vllm.v1.attention.backends.mla.flashinfer_mla_sparse.FlashInferMLASparseImpl",
+        "vllm.v1.attention.backends.mla.flashmla_sparse.FlashMLASparseImpl"
+      ]
+    },
+    {
+      "op_file": "dsa_context_module_perf",
+      "framework": "vllm",
+      "version": "0.24.0",
+      "system": "b200_sxm",
+      "op_name": "dsa_context_module_skip_indexer",
+      "architecture": "GlmMoeDsaForCausalLM",
+      "kv_cache_dtype": "fp8",
+      "mla_dtype": "bfloat16",
+      "gemm_type": "bfloat16",
+      "backends": [
+        "flashinfer"
+      ],
+      "kernel_sources": [
+        "FLASHINFER_MLA_SPARSE"
+      ],
+      "actual_rows": 1042,
+      "actual_native_backend_counts": {
+        "FLASHINFER_MLA_SPARSE": 1042
+      },
+      "actual_native_implementations": [
+        "vllm.v1.attention.backends.mla.flashinfer_mla_sparse.FlashInferMLASparseImpl"
+      ]
+    },
+    {
+      "op_file": "dsa_context_module_perf",
+      "framework": "vllm",
+      "version": "0.24.0",
+      "system": "b200_sxm",
+      "op_name": "dsa_context_module_skip_indexer",
+      "architecture": "GlmMoeDsaForCausalLM",
+      "kv_cache_dtype": "fp8",
+      "mla_dtype": "bfloat16",
+      "gemm_type": "fp8",
+      "backends": [
+        "flashinfer"
+      ],
+      "kernel_sources": [
+        "FLASHINFER_MLA_SPARSE"
+      ],
+      "actual_rows": 1020,
+      "actual_native_backend_counts": {
+        "FLASHINFER_MLA_SPARSE": 1020
+      },
+      "actual_native_implementations": [
+        "vllm.v1.attention.backends.mla.flashinfer_mla_sparse.FlashInferMLASparseImpl"
+      ]
+    },
+    {
+      "op_file": "dsa_context_module_perf",
+      "framework": "vllm",
+      "version": "0.24.0",
+      "system": "b200_sxm",
+      "op_name": "dsa_context_module_skip_indexer",
+      "architecture": "GlmMoeDsaForCausalLM",
+      "kv_cache_dtype": "fp8",
+      "mla_dtype": "bfloat16",
+      "gemm_type": "fp8_block",
+      "backends": [
+        "flashinfer"
+      ],
+      "kernel_sources": [
+        "FLASHINFER_MLA_SPARSE"
+      ],
+      "actual_rows": 1027,
+      "actual_native_backend_counts": {
+        "FLASHINFER_MLA_SPARSE": 1027
+      },
+      "actual_native_implementations": [
+        "vllm.v1.attention.backends.mla.flashinfer_mla_sparse.FlashInferMLASparseImpl"
+      ]
+    },
+    {
+      "op_file": "dsa_context_module_perf",
+      "framework": "vllm",
+      "version": "0.24.0",
+      "system": "b200_sxm",
+      "op_name": "dsa_context_module_skip_indexer",
+      "architecture": "GlmMoeDsaForCausalLM",
+      "kv_cache_dtype": "fp8",
+      "mla_dtype": "bfloat16",
+      "gemm_type": "nvfp4",
+      "backends": [
+        "flashinfer"
+      ],
+      "kernel_sources": [
+        "FLASHINFER_MLA_SPARSE"
+      ],
+      "actual_rows": 1020,
+      "actual_native_backend_counts": {
+        "FLASHINFER_MLA_SPARSE": 1020
+      },
+      "actual_native_implementations": [
+        "vllm.v1.attention.backends.mla.flashinfer_mla_sparse.FlashInferMLASparseImpl"
+      ]
+    },
+    {
+      "op_file": "dsa_generation_module_perf",
+      "framework": "vllm",
+      "version": "0.24.0",
+      "system": "b200_sxm",
+      "op_name": "dsa_generation_module",
+      "architecture": "DeepseekV32ForCausalLM",
+      "kv_cache_dtype": "bfloat16",
+      "mla_dtype": "bfloat16",
+      "gemm_type": "bfloat16",
+      "backends": [
+        "flashinfer",
+        "flashmla"
+      ],
+      "kernel_sources": [
+        "FLASHINFER_MLA_SPARSE",
+        "FLASHMLA_SPARSE"
+      ],
+      "actual_rows": 920,
+      "actual_native_backend_counts": {
+        "FLASHMLA_SPARSE": 552,
+        "FLASHINFER_MLA_SPARSE": 368
+      },
+      "actual_native_implementations": [
+        "vllm.v1.attention.backends.mla.flashinfer_mla_sparse.FlashInferMLASparseImpl",
+        "vllm.v1.attention.backends.mla.flashmla_sparse.FlashMLASparseImpl"
+      ]
+    },
+    {
+      "op_file": "dsa_generation_module_perf",
+      "framework": "vllm",
+      "version": "0.24.0",
+      "system": "b200_sxm",
+      "op_name": "dsa_generation_module",
+      "architecture": "DeepseekV32ForCausalLM",
+      "kv_cache_dtype": "bfloat16",
+      "mla_dtype": "bfloat16",
+      "gemm_type": "fp8",
+      "backends": [
+        "flashinfer",
+        "flashmla"
+      ],
+      "kernel_sources": [
+        "FLASHINFER_MLA_SPARSE",
+        "FLASHMLA_SPARSE"
+      ],
+      "actual_rows": 920,
+      "actual_native_backend_counts": {
+        "FLASHINFER_MLA_SPARSE": 368,
+        "FLASHMLA_SPARSE": 552
+      },
+      "actual_native_implementations": [
+        "vllm.v1.attention.backends.mla.flashinfer_mla_sparse.FlashInferMLASparseImpl",
+        "vllm.v1.attention.backends.mla.flashmla_sparse.FlashMLASparseImpl"
+      ]
+    },
+    {
+      "op_file": "dsa_generation_module_perf",
+      "framework": "vllm",
+      "version": "0.24.0",
+      "system": "b200_sxm",
+      "op_name": "dsa_generation_module",
+      "architecture": "DeepseekV32ForCausalLM",
+      "kv_cache_dtype": "bfloat16",
+      "mla_dtype": "bfloat16",
+      "gemm_type": "fp8_block",
+      "backends": [
+        "flashinfer",
+        "flashmla"
+      ],
+      "kernel_sources": [
+        "FLASHINFER_MLA_SPARSE",
+        "FLASHMLA_SPARSE"
+      ],
+      "actual_rows": 928,
+      "actual_native_backend_counts": {
+        "FLASHINFER_MLA_SPARSE": 370,
+        "FLASHMLA_SPARSE": 558
+      },
+      "actual_native_implementations": [
+        "vllm.v1.attention.backends.mla.flashinfer_mla_sparse.FlashInferMLASparseImpl",
+        "vllm.v1.attention.backends.mla.flashmla_sparse.FlashMLASparseImpl"
+      ]
+    },
+    {
+      "op_file": "dsa_generation_module_perf",
+      "framework": "vllm",
+      "version": "0.24.0",
+      "system": "b200_sxm",
+      "op_name": "dsa_generation_module",
+      "architecture": "DeepseekV32ForCausalLM",
+      "kv_cache_dtype": "bfloat16",
+      "mla_dtype": "bfloat16",
+      "gemm_type": "nvfp4",
+      "backends": [
+        "flashinfer",
+        "flashmla"
+      ],
+      "kernel_sources": [
+        "FLASHINFER_MLA_SPARSE",
+        "FLASHMLA_SPARSE"
+      ],
+      "actual_rows": 920,
+      "actual_native_backend_counts": {
+        "FLASHINFER_MLA_SPARSE": 368,
+        "FLASHMLA_SPARSE": 552
+      },
+      "actual_native_implementations": [
+        "vllm.v1.attention.backends.mla.flashinfer_mla_sparse.FlashInferMLASparseImpl",
+        "vllm.v1.attention.backends.mla.flashmla_sparse.FlashMLASparseImpl"
+      ]
+    },
+    {
+      "op_file": "dsa_generation_module_perf",
+      "framework": "vllm",
+      "version": "0.24.0",
+      "system": "b200_sxm",
+      "op_name": "dsa_generation_module",
+      "architecture": "DeepseekV32ForCausalLM",
+      "kv_cache_dtype": "fp8",
+      "mla_dtype": "bfloat16",
+      "gemm_type": "bfloat16",
+      "backends": [
+        "flashinfer"
+      ],
+      "kernel_sources": [
+        "FLASHINFER_MLA_SPARSE"
+      ],
+      "actual_rows": 920,
+      "actual_native_backend_counts": {
+        "FLASHINFER_MLA_SPARSE": 920
+      },
+      "actual_native_implementations": [
+        "vllm.v1.attention.backends.mla.flashinfer_mla_sparse.FlashInferMLASparseImpl"
+      ]
+    },
+    {
+      "op_file": "dsa_generation_module_perf",
+      "framework": "vllm",
+      "version": "0.24.0",
+      "system": "b200_sxm",
+      "op_name": "dsa_generation_module",
+      "architecture": "DeepseekV32ForCausalLM",
+      "kv_cache_dtype": "fp8",
+      "mla_dtype": "bfloat16",
+      "gemm_type": "fp8",
+      "backends": [
+        "flashinfer"
+      ],
+      "kernel_sources": [
+        "FLASHINFER_MLA_SPARSE"
+      ],
+      "actual_rows": 920,
+      "actual_native_backend_counts": {
+        "FLASHINFER_MLA_SPARSE": 920
+      },
+      "actual_native_implementations": [
+        "vllm.v1.attention.backends.mla.flashinfer_mla_sparse.FlashInferMLASparseImpl"
+      ]
+    },
+    {
+      "op_file": "dsa_generation_module_perf",
+      "framework": "vllm",
+      "version": "0.24.0",
+      "system": "b200_sxm",
+      "op_name": "dsa_generation_module",
+      "architecture": "DeepseekV32ForCausalLM",
+      "kv_cache_dtype": "fp8",
+      "mla_dtype": "bfloat16",
+      "gemm_type": "fp8_block",
+      "backends": [
+        "flashinfer"
+      ],
+      "kernel_sources": [
+        "FLASHINFER_MLA_SPARSE"
+      ],
+      "actual_rows": 928,
+      "actual_native_backend_counts": {
+        "FLASHINFER_MLA_SPARSE": 928
+      },
+      "actual_native_implementations": [
+        "vllm.v1.attention.backends.mla.flashinfer_mla_sparse.FlashInferMLASparseImpl"
+      ]
+    },
+    {
+      "op_file": "dsa_generation_module_perf",
+      "framework": "vllm",
+      "version": "0.24.0",
+      "system": "b200_sxm",
+      "op_name": "dsa_generation_module",
+      "architecture": "DeepseekV32ForCausalLM",
+      "kv_cache_dtype": "fp8",
+      "mla_dtype": "bfloat16",
+      "gemm_type": "nvfp4",
+      "backends": [
+        "flashinfer"
+      ],
+      "kernel_sources": [
+        "FLASHINFER_MLA_SPARSE"
+      ],
+      "actual_rows": 920,
+      "actual_native_backend_counts": {
+        "FLASHINFER_MLA_SPARSE": 920
+      },
+      "actual_native_implementations": [
+        "vllm.v1.attention.backends.mla.flashinfer_mla_sparse.FlashInferMLASparseImpl"
+      ]
+    },
+    {
+      "op_file": "dsa_generation_module_perf",
+      "framework": "vllm",
+      "version": "0.24.0",
+      "system": "b200_sxm",
+      "op_name": "dsa_generation_module",
+      "architecture": "GlmMoeDsaForCausalLM",
+      "kv_cache_dtype": "bfloat16",
+      "mla_dtype": "bfloat16",
+      "gemm_type": "bfloat16",
+      "backends": [
+        "flashinfer",
+        "flashmla"
+      ],
+      "kernel_sources": [
+        "FLASHINFER_MLA_SPARSE",
+        "FLASHMLA_SPARSE"
+      ],
+      "actual_rows": 928,
+      "actual_native_backend_counts": {
+        "FLASHMLA_SPARSE": 556,
+        "FLASHINFER_MLA_SPARSE": 372
+      },
+      "actual_native_implementations": [
+        "vllm.v1.attention.backends.mla.flashinfer_mla_sparse.FlashInferMLASparseImpl",
+        "vllm.v1.attention.backends.mla.flashmla_sparse.FlashMLASparseImpl"
+      ]
+    },
+    {
+      "op_file": "dsa_generation_module_perf",
+      "framework": "vllm",
+      "version": "0.24.0",
+      "system": "b200_sxm",
+      "op_name": "dsa_generation_module",
+      "architecture": "GlmMoeDsaForCausalLM",
+      "kv_cache_dtype": "bfloat16",
+      "mla_dtype": "bfloat16",
+      "gemm_type": "fp8",
+      "backends": [
+        "flashinfer",
+        "flashmla"
+      ],
+      "kernel_sources": [
+        "FLASHINFER_MLA_SPARSE",
+        "FLASHMLA_SPARSE"
+      ],
+      "actual_rows": 920,
+      "actual_native_backend_counts": {
+        "FLASHINFER_MLA_SPARSE": 368,
+        "FLASHMLA_SPARSE": 552
+      },
+      "actual_native_implementations": [
+        "vllm.v1.attention.backends.mla.flashinfer_mla_sparse.FlashInferMLASparseImpl",
+        "vllm.v1.attention.backends.mla.flashmla_sparse.FlashMLASparseImpl"
+      ]
+    },
+    {
+      "op_file": "dsa_generation_module_perf",
+      "framework": "vllm",
+      "version": "0.24.0",
+      "system": "b200_sxm",
+      "op_name": "dsa_generation_module",
+      "architecture": "GlmMoeDsaForCausalLM",
+      "kv_cache_dtype": "bfloat16",
+      "mla_dtype": "bfloat16",
+      "gemm_type": "fp8_block",
+      "backends": [
+        "flashinfer",
+        "flashmla"
+      ],
+      "kernel_sources": [
+        "FLASHINFER_MLA_SPARSE",
+        "FLASHMLA_SPARSE"
+      ],
+      "actual_rows": 928,
+      "actual_native_backend_counts": {
+        "FLASHMLA_SPARSE": 556,
+        "FLASHINFER_MLA_SPARSE": 372
+      },
+      "actual_native_implementations": [
+        "vllm.v1.attention.backends.mla.flashinfer_mla_sparse.FlashInferMLASparseImpl",
+        "vllm.v1.attention.backends.mla.flashmla_sparse.FlashMLASparseImpl"
+      ]
+    },
+    {
+      "op_file": "dsa_generation_module_perf",
+      "framework": "vllm",
+      "version": "0.24.0",
+      "system": "b200_sxm",
+      "op_name": "dsa_generation_module",
+      "architecture": "GlmMoeDsaForCausalLM",
+      "kv_cache_dtype": "bfloat16",
+      "mla_dtype": "bfloat16",
+      "gemm_type": "nvfp4",
+      "backends": [
+        "flashinfer",
+        "flashmla"
+      ],
+      "kernel_sources": [
+        "FLASHINFER_MLA_SPARSE",
+        "FLASHMLA_SPARSE"
+      ],
+      "actual_rows": 920,
+      "actual_native_backend_counts": {
+        "FLASHMLA_SPARSE": 552,
+        "FLASHINFER_MLA_SPARSE": 368
+      },
+      "actual_native_implementations": [
+        "vllm.v1.attention.backends.mla.flashinfer_mla_sparse.FlashInferMLASparseImpl",
+        "vllm.v1.attention.backends.mla.flashmla_sparse.FlashMLASparseImpl"
+      ]
+    },
+    {
+      "op_file": "dsa_generation_module_perf",
+      "framework": "vllm",
+      "version": "0.24.0",
+      "system": "b200_sxm",
+      "op_name": "dsa_generation_module",
+      "architecture": "GlmMoeDsaForCausalLM",
+      "kv_cache_dtype": "fp8",
+      "mla_dtype": "bfloat16",
+      "gemm_type": "bfloat16",
+      "backends": [
+        "flashinfer"
+      ],
+      "kernel_sources": [
+        "FLASHINFER_MLA_SPARSE"
+      ],
+      "actual_rows": 928,
+      "actual_native_backend_counts": {
+        "FLASHINFER_MLA_SPARSE": 928
+      },
+      "actual_native_implementations": [
+        "vllm.v1.attention.backends.mla.flashinfer_mla_sparse.FlashInferMLASparseImpl"
+      ]
+    },
+    {
+      "op_file": "dsa_generation_module_perf",
+      "framework": "vllm",
+      "version": "0.24.0",
+      "system": "b200_sxm",
+      "op_name": "dsa_generation_module",
+      "architecture": "GlmMoeDsaForCausalLM",
+      "kv_cache_dtype": "fp8",
+      "mla_dtype": "bfloat16",
+      "gemm_type": "fp8",
+      "backends": [
+        "flashinfer"
+      ],
+      "kernel_sources": [
+        "FLASHINFER_MLA_SPARSE"
+      ],
+      "actual_rows": 1025,
+      "actual_native_backend_counts": {
+        "FLASHINFER_MLA_SPARSE": 1025
+      },
+      "actual_native_implementations": [
+        "vllm.v1.attention.backends.mla.flashinfer_mla_sparse.FlashInferMLASparseImpl"
+      ]
+    },
+    {
+      "op_file": "dsa_generation_module_perf",
+      "framework": "vllm",
+      "version": "0.24.0",
+      "system": "b200_sxm",
+      "op_name": "dsa_generation_module",
+      "architecture": "GlmMoeDsaForCausalLM",
+      "kv_cache_dtype": "fp8",
+      "mla_dtype": "bfloat16",
+      "gemm_type": "fp8_block",
+      "backends": [
+        "flashinfer"
+      ],
+      "kernel_sources": [
+        "FLASHINFER_MLA_SPARSE"
+      ],
+      "actual_rows": 928,
+      "actual_native_backend_counts": {
+        "FLASHINFER_MLA_SPARSE": 928
+      },
+      "actual_native_implementations": [
+        "vllm.v1.attention.backends.mla.flashinfer_mla_sparse.FlashInferMLASparseImpl"
+      ]
+    },
+    {
+      "op_file": "dsa_generation_module_perf",
+      "framework": "vllm",
+      "version": "0.24.0",
+      "system": "b200_sxm",
+      "op_name": "dsa_generation_module",
+      "architecture": "GlmMoeDsaForCausalLM",
+      "kv_cache_dtype": "fp8",
+      "mla_dtype": "bfloat16",
+      "gemm_type": "nvfp4",
+      "backends": [
+        "flashinfer"
+      ],
+      "kernel_sources": [
+        "FLASHINFER_MLA_SPARSE"
+      ],
+      "actual_rows": 1025,
+      "actual_native_backend_counts": {
+        "FLASHINFER_MLA_SPARSE": 1025
+      },
+      "actual_native_implementations": [
+        "vllm.v1.attention.backends.mla.flashinfer_mla_sparse.FlashInferMLASparseImpl"
+      ]
+    },
+    {
+      "op_file": "dsa_generation_module_perf",
+      "framework": "vllm",
+      "version": "0.24.0",
+      "system": "b200_sxm",
+      "op_name": "dsa_generation_module_skip_indexer",
+      "architecture": "GlmMoeDsaForCausalLM",
+      "kv_cache_dtype": "bfloat16",
+      "mla_dtype": "bfloat16",
+      "gemm_type": "bfloat16",
+      "backends": [
+        "flashinfer",
+        "flashmla"
+      ],
+      "kernel_sources": [
+        "FLASHINFER_MLA_SPARSE",
+        "FLASHMLA_SPARSE"
+      ],
+      "actual_rows": 928,
+      "actual_native_backend_counts": {
+        "FLASHMLA_SPARSE": 556,
+        "FLASHINFER_MLA_SPARSE": 372
+      },
+      "actual_native_implementations": [
+        "vllm.v1.attention.backends.mla.flashinfer_mla_sparse.FlashInferMLASparseImpl",
+        "vllm.v1.attention.backends.mla.flashmla_sparse.FlashMLASparseImpl"
+      ]
+    },
+    {
+      "op_file": "dsa_generation_module_perf",
+      "framework": "vllm",
+      "version": "0.24.0",
+      "system": "b200_sxm",
+      "op_name": "dsa_generation_module_skip_indexer",
+      "architecture": "GlmMoeDsaForCausalLM",
+      "kv_cache_dtype": "bfloat16",
+      "mla_dtype": "bfloat16",
+      "gemm_type": "fp8",
+      "backends": [
+        "flashinfer",
+        "flashmla"
+      ],
+      "kernel_sources": [
+        "FLASHINFER_MLA_SPARSE",
+        "FLASHMLA_SPARSE"
+      ],
+      "actual_rows": 920,
+      "actual_native_backend_counts": {
+        "FLASHINFER_MLA_SPARSE": 368,
+        "FLASHMLA_SPARSE": 552
+      },
+      "actual_native_implementations": [
+        "vllm.v1.attention.backends.mla.flashinfer_mla_sparse.FlashInferMLASparseImpl",
+        "vllm.v1.attention.backends.mla.flashmla_sparse.FlashMLASparseImpl"
+      ]
+    },
+    {
+      "op_file": "dsa_generation_module_perf",
+      "framework": "vllm",
+      "version": "0.24.0",
+      "system": "b200_sxm",
+      "op_name": "dsa_generation_module_skip_indexer",
+      "architecture": "GlmMoeDsaForCausalLM",
+      "kv_cache_dtype": "bfloat16",
+      "mla_dtype": "bfloat16",
+      "gemm_type": "fp8_block",
+      "backends": [
+        "flashinfer",
+        "flashmla"
+      ],
+      "kernel_sources": [
+        "FLASHINFER_MLA_SPARSE",
+        "FLASHMLA_SPARSE"
+      ],
+      "actual_rows": 928,
+      "actual_native_backend_counts": {
+        "FLASHMLA_SPARSE": 556,
+        "FLASHINFER_MLA_SPARSE": 372
+      },
+      "actual_native_implementations": [
+        "vllm.v1.attention.backends.mla.flashinfer_mla_sparse.FlashInferMLASparseImpl",
+        "vllm.v1.attention.backends.mla.flashmla_sparse.FlashMLASparseImpl"
+      ]
+    },
+    {
+      "op_file": "dsa_generation_module_perf",
+      "framework": "vllm",
+      "version": "0.24.0",
+      "system": "b200_sxm",
+      "op_name": "dsa_generation_module_skip_indexer",
+      "architecture": "GlmMoeDsaForCausalLM",
+      "kv_cache_dtype": "bfloat16",
+      "mla_dtype": "bfloat16",
+      "gemm_type": "nvfp4",
+      "backends": [
+        "flashinfer",
+        "flashmla"
+      ],
+      "kernel_sources": [
+        "FLASHINFER_MLA_SPARSE",
+        "FLASHMLA_SPARSE"
+      ],
+      "actual_rows": 920,
+      "actual_native_backend_counts": {
+        "FLASHMLA_SPARSE": 552,
+        "FLASHINFER_MLA_SPARSE": 368
+      },
+      "actual_native_implementations": [
+        "vllm.v1.attention.backends.mla.flashinfer_mla_sparse.FlashInferMLASparseImpl",
+        "vllm.v1.attention.backends.mla.flashmla_sparse.FlashMLASparseImpl"
+      ]
+    },
+    {
+      "op_file": "dsa_generation_module_perf",
+      "framework": "vllm",
+      "version": "0.24.0",
+      "system": "b200_sxm",
+      "op_name": "dsa_generation_module_skip_indexer",
+      "architecture": "GlmMoeDsaForCausalLM",
+      "kv_cache_dtype": "fp8",
+      "mla_dtype": "bfloat16",
+      "gemm_type": "bfloat16",
+      "backends": [
+        "flashinfer"
+      ],
+      "kernel_sources": [
+        "FLASHINFER_MLA_SPARSE"
+      ],
+      "actual_rows": 928,
+      "actual_native_backend_counts": {
+        "FLASHINFER_MLA_SPARSE": 928
+      },
+      "actual_native_implementations": [
+        "vllm.v1.attention.backends.mla.flashinfer_mla_sparse.FlashInferMLASparseImpl"
+      ]
+    },
+    {
+      "op_file": "dsa_generation_module_perf",
+      "framework": "vllm",
+      "version": "0.24.0",
+      "system": "b200_sxm",
+      "op_name": "dsa_generation_module_skip_indexer",
+      "architecture": "GlmMoeDsaForCausalLM",
+      "kv_cache_dtype": "fp8",
+      "mla_dtype": "bfloat16",
+      "gemm_type": "fp8",
+      "backends": [
+        "flashinfer"
+      ],
+      "kernel_sources": [
+        "FLASHINFER_MLA_SPARSE"
+      ],
+      "actual_rows": 1025,
+      "actual_native_backend_counts": {
+        "FLASHINFER_MLA_SPARSE": 1025
+      },
+      "actual_native_implementations": [
+        "vllm.v1.attention.backends.mla.flashinfer_mla_sparse.FlashInferMLASparseImpl"
+      ]
+    },
+    {
+      "op_file": "dsa_generation_module_perf",
+      "framework": "vllm",
+      "version": "0.24.0",
+      "system": "b200_sxm",
+      "op_name": "dsa_generation_module_skip_indexer",
+      "architecture": "GlmMoeDsaForCausalLM",
+      "kv_cache_dtype": "fp8",
+      "mla_dtype": "bfloat16",
+      "gemm_type": "fp8_block",
+      "backends": [
+        "flashinfer"
+      ],
+      "kernel_sources": [
+        "FLASHINFER_MLA_SPARSE"
+      ],
+      "actual_rows": 928,
+      "actual_native_backend_counts": {
+        "FLASHINFER_MLA_SPARSE": 928
+      },
+      "actual_native_implementations": [
+        "vllm.v1.attention.backends.mla.flashinfer_mla_sparse.FlashInferMLASparseImpl"
+      ]
+    },
+    {
+      "op_file": "dsa_generation_module_perf",
+      "framework": "vllm",
+      "version": "0.24.0",
+      "system": "b200_sxm",
+      "op_name": "dsa_generation_module_skip_indexer",
+      "architecture": "GlmMoeDsaForCausalLM",
+      "kv_cache_dtype": "fp8",
+      "mla_dtype": "bfloat16",
+      "gemm_type": "nvfp4",
+      "backends": [
+        "flashinfer"
+      ],
+      "kernel_sources": [
+        "FLASHINFER_MLA_SPARSE"
+      ],
+      "actual_rows": 1025,
+      "actual_native_backend_counts": {
+        "FLASHINFER_MLA_SPARSE": 1025
+      },
+      "actual_native_implementations": [
+        "vllm.v1.attention.backends.mla.flashinfer_mla_sparse.FlashInferMLASparseImpl"
+      ]
+    }
+  ],
+  "note": "Only actual successful rows enter backend facts. Failed native calls remain separate reviewed failures, not support claims for their shapes. Translation uses existing FLASHMLA_SPARSE -> flashmla and FLASHINFER_MLA_SPARSE -> flashinfer catalog-level labels; does not relabel whole-module timings as pure leaf-kernel measurements."
+}

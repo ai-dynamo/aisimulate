@@ -1,0 +1,9 @@
+[OK]   R1 sidecar coverage
+[OK]   R2 reuse validity
+[OK]   R3 comm exclusion
+[OK]   R4 family placement
+[OK]   R5 identity (manifest v2 resolution)
+[OK]   R6 no legacy markers
+[OK]   R7 attested collection events
+
+collector data check OK: all rules passed

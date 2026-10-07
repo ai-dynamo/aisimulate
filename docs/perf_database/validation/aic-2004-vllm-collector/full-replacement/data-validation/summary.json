@@ -1,0 +1,174 @@
+{
+  "status": "APPLIED_VALID_SUBSET_WITH_DOCUMENTED_NATIVE_FAILURES",
+  "collection_status": "COMPLETE_ATTEMPTS_WITH_NATIVE_FAILURES",
+  "campaign_job_id": "4778966",
+  "scope": "B200 vLLM 0.24.0 DSA only; original consumer domain plus required precisions and GLM-5.2 full/reuse. Other GPU data is not recollected.",
+  "coverage": {
+    "status": "COMPLETE_ATTEMPTS_WITH_NATIVE_FAILURES",
+    "planned_cases": 34546,
+    "attempted_cases": 34546,
+    "successful_cases": 32306,
+    "failed_cases": 2240,
+    "planned_rows": 51945,
+    "valid_rows": 48585,
+    "failed_variants_no_rows": 3360,
+    "old_obligations": 25639,
+    "removed_old_obligations": 1680,
+    "no_old_rows_borrowed": true
+  },
+  "tables": {
+    "dsa_context_module_perf": {
+      "rows": 26005,
+      "parquet_sha256": "39ff778af7afb941424fe1b9faf65fe116e1d08273cfda6918d4b38f61ce18c9",
+      "raw_csv_sha256": "42a90e67631fac80b6e86e7e563ee0ad59a2a0c7e01e0d6507b219d930ed90b4"
+    },
+    "dsa_generation_module_perf": {
+      "rows": 22580,
+      "parquet_sha256": "2b4300d3019caf75f068cf8db5efe2ccab603061acfe265d7dc070d01b9d2f85",
+      "raw_csv_sha256": "d0e8a8c61d99adbc02f93e70217074904e522af6c472c434bcc3d6c7b9ad15bb"
+    }
+  },
+  "failed_case_counts": {
+    "failures_by_precision": {
+      "fp8_block": 560,
+      "fp8": 560,
+      "nvfp4": 560,
+      "bfloat16": 560
+    },
+    "failures_by_heads": {
+      "128": 320,
+      "64": 320,
+      "8": 640,
+      "32": 320,
+      "16": 640
+    },
+    "failures_by_kv_cache_dtype": {
+      "fp8": 1600,
+      "bfloat16": 640
+    }
+  },
+  "all_16_allocations_completed_exit_zero": true,
+  "native_workers": {
+    "positive_dead_exit_zero_observations": 2971
+  },
+  "controls": {
+    "calls": 512,
+    "timings": 768,
+    "paired_variant_measurements": 384,
+    "numeric_threshold_predeclared": false,
+    "median_after_minus_before_pct": -6.219,
+    "worst_after_minus_before_pct": -17.674,
+    "decision": "Retain and disclose drift; publish unadjusted successful observations. No repeatability-pass claim.",
+    "wrapper_prequalified": false,
+    "source_disposition": "SOURCE_ATTESTED_AFTER_RUN",
+    "reviewed_source_attestation_sha256": "13a209ac1153b69b03c70ee42efd24e4bd9c3d986df302171ff1f02064994d6c"
+  },
+  "official_data_rules": "R1-R7 PASS",
+  "official_backend_facts_slices": 2186,
+  "official_full_manifest_generated": true,
+  "manifest_sha256": "0db63b06454cfb7b5a66c3d541b2afd255d8b8d1f8cbcaf5943963ba0a14af63",
+  "unchanged_non_target_source_comparisons": 10236,
+  "unchanged_systems_files": 1590,
+  "changed_systems_files": [
+    {
+      "path": "data/b200_sxm/sparse_attention/vllm/0.24.0/collection_meta.yaml",
+      "before_sha256": "50d203450efd9cdd0e9285cfd5b260cfdfa6a774f93739bf8421fa3f2e7c8a58",
+      "after_sha256": "50add6ca8690a1b5d84a307657fc92a5d9a0692572b48ef85cf24a89f08ca31d"
+    },
+    {
+      "path": "data/b200_sxm/sparse_attention/vllm/0.24.0/dsa_context_module_perf.parquet",
+      "before_sha256": "1a84ef438d329427456e0687b5be1e412f77eff649a023943609daf3c902f798",
+      "after_sha256": "39ff778af7afb941424fe1b9faf65fe116e1d08273cfda6918d4b38f61ce18c9"
+    },
+    {
+      "path": "data/b200_sxm/sparse_attention/vllm/0.24.0/dsa_generation_module_perf.parquet",
+      "before_sha256": "b9192da1f76ce03241c8967b91876628a85f562fece8c09dc18f949bdd9bfeba",
+      "after_sha256": "2b4300d3019caf75f068cf8db5efe2ccab603061acfe265d7dc070d01b9d2f85"
+    },
+    {
+      "path": "data/b200_sxm/sparse_attention/vllm/0.25.1/collection_meta.yaml",
+      "before_sha256": "d15fbcf2f41a242d12337b885d6e60a753e52bcc1089e4366db03f37899fe08d",
+      "after_sha256": null
+    },
+    {
+      "path": "data/b200_sxm/sparse_attention/vllm/0.25.1/dsa_context_module_perf.parquet",
+      "before_sha256": "715e196598f34d28f6935a6a998e280d9b7cc9970bd26e6faca83a081cd27632",
+      "after_sha256": null
+    },
+    {
+      "path": "data/b200_sxm/sparse_attention/vllm/0.25.1/dsa_generation_module_perf.parquet",
+      "before_sha256": "81075710ddd5ac1aea5077aea80e11bb5c07d524d86edad0a978b7ab69610712",
+      "after_sha256": null
+    },
+    {
+      "path": "perf_data_reuse_manifest.yaml",
+      "before_sha256": "02bb2f460e69c5768fc85c63e2471d9e680231cf479d22314069876346d203ff",
+      "after_sha256": "0db63b06454cfb7b5a66c3d541b2afd255d8b8d1f8cbcaf5943963ba0a14af63"
+    }
+  ],
+  "original_qualification_unchanged_sha256": "ba5c0c5b954ce8ea84d30281474357f2981615b4fc7e2a401d968f1d0ec20669",
+  "reviewed_failure_manifest_sha256": "f4684c308aae91680d8862f5df6e69e7d3230e88b59b56770efbb764e057df68",
+  "publication_receipt_sha256": "12a643fb57517c2f14d2db06936921854854887fbc9687998aa7a52b20082d10",
+  "source_binding_sha256": "a5b653e681c5fda2b108d2c93db87f33c8e48e94ee77e6731a2b4f9e15e87a6a",
+  "source_evidence": {
+    "source-evidence/verified-native-source-hashes.json": "7a930d49246d54242ad6303ce4b0f4c67c198e79ff5d5162fd18b576eda4b9fa",
+    "source-evidence/actual-image-source-identity.json": "d4368a7fb012f0aa3169755e005b829c9e969d9399ef4fd783a4524b3905f572",
+    "source-evidence/binding.json": "a5b653e681c5fda2b108d2c93db87f33c8e48e94ee77e6731a2b4f9e15e87a6a"
+  },
+  "private_raw_evidence_root": "/home/harrli/.local/state/aisimulate/aic-2004-replace-20261007/full-v024-v5-4778966",
+  "private_publication_package": "/home/harrli/.local/state/aisimulate/aic-2004-replace-20261007/publication-candidate-v5-final-4778966",
+  "private_complete_ledgers": {
+    "coverage-and-old-removal-map.json": "faf5049dda9d7aaf2efc0ba8fd9b927b80e1e0eaba0cbf0f35e3c7124a6deb8f",
+    "final-sync-workers.json": "c61b486097f94146a0dfc0f8a7e6d19dd3757e2ee12722b2e92822dd2f42c86d",
+    "failure-manifest-REVIEWED.json": "f4684c308aae91680d8862f5df6e69e7d3230e88b59b56770efbb764e057df68",
+    "root-failure-review.json": "1b52616f8c42b4d79619a22864c42bb1c49ca6e9716f0fc58c2760f050ca9f01",
+    "failure-manifest-DRAFT.json": "90419d79e36ebc858f1211a5f3bf100e578281c94722f5402a820c509a1cb521",
+    "paired-controls.json": "f9ff70201f5ee492d6c6930ffeb0a1f1f62e783da5076d7e6a4ff456f4bf8477",
+    "native-worker-health.json": "4ee28af72898c2c49e6425f4011663062f5d629e5ac13f64d2dcc76816c7d6fb",
+    "summary.json": "ef5be7d8fe545f69f574e395b7015f2d9b3e930ea048d18ca7319e9b8d60152f"
+  },
+  "external_source_bytes_copied": false,
+  "final_sg_trt_native_isolation": {
+    "status": "PASS",
+    "comparisons": {
+      "source": 5040,
+      "native_views": 105,
+      "prediction_configurations": 3360,
+      "requested_points": 13440,
+      "actually_returned_points_per_side": 8000
+    },
+    "changes": 0,
+    "full_report_sha256": "bb1b1274f07c7fbe041ea5a9c418d8c9720b8451ba4dd82108cae02b331b7371"
+  },
+  "historical_prediction_accuracy": {
+    "status": "HISTORICAL_COMPARISON_COMPLETED_SEPARATELY",
+    "companion_pr": "https://github.com/ai-dynamo/aisimulate/pull/407",
+    "report_path": "docs/perf_database/validation/aic-2004-vllm-engine/full-replacement/accuracy/",
+    "final_ledger_sha256": "0c55a7200540e241f9e5475eee6a7fb750f226816e8a1a706adac457138ea8d9",
+    "outputs": 276,
+    "same_runtime_accuracy_acceptance": false
+  },
+  "ci_status": "SEPARATE_NOT_ASSERTED_BY_DATA_VALIDATION",
+  "generated_evidence_sha256": {
+    "data-validation/native-backend-label-audit.json": "ad8d2625c2e35ef63f3addf56eee073ae90fad6e19b11b98abceb73e594a50bb",
+    "data-validation/applied.json": "dab7b80458e33a327eb2e70bb579dfa610d34be3715171c29937be547041de75",
+    "data-validation/sg-trt-final-isolation.json": "90aa7d3790ad69c464b2ec33c4b75d68f11f8e4c36a1025b75135c42ce6b9084",
+    "data-validation/source-verification-summary.json": "c79e76985ad531bf26afa07404391c60fd62f6cdc0e159d3a865e3d904a687f4",
+    "data-validation/actual-failed-cases.csv": "79fec922a42ffb04fc8a997fd68b13943970cd4ea4ddc46ba50801a2bbbb434f",
+    "data-validation/backend-facts-source-update.json": "346cf815c063c76754e7c54d3f65016bee912fce769b0c7f953c07da83663db4",
+    "data-validation/timing-health-audit.json": "87488865e4a29f2165076437fe4b238a7071e0911b66bf9531a17ddbf098e90a",
+    "data-validation/allocation-summary.csv": "1bfd48e95baf8c4246ac00971672288d4d7f8496dec3f8af24f62f40eed8e999",
+    "data-validation/README.md": "b975d51c2e2af233931077654589e86737a4834ec60fd86086674c66ee8ab9b7",
+    "data-validation/official-backend-facts-check.log": "f2cc380eeb4dcf18d58fb4b084b1b289498ad275c2ddee21a2aca792fc542828",
+    "data-validation/root-failure-review.json": "1b52616f8c42b4d79619a22864c42bb1c49ca6e9716f0fc58c2760f050ca9f01",
+    "data-validation/generated-manifest-diff.json": "74deb63e7cba2e90faf54353f96c53d95f8a62c4ce31b9ea38db7248bb1b4869",
+    "data-validation/metadata-strategy.json": "a5bb4dcea27bc86be0fa125b77da7b4b9e8a812e35daf44efacde90e7be7e1c6",
+    "data-validation/post-apply-check.json": "17eb244bdecd41d157dad748077a3593f739421d49d7aa828b287bac59bf636d",
+    "data-validation/old-coordinates-without-new-measurement.csv": "f11ddc066b3d1760510a8cda8d994b844e6069dccb8f3aa7787b8acd93a6c749",
+    "data-validation/official-data-check.log": "117c54405cb05306092b99f5efd6a38197a953f91dc53961ee2f85564f4a634c",
+    "new-dsa/table-sha256.json": "cebd601075ee0773ee322c34f5d8e5523d017ec81aab88488ea56ce3b9cd9bc3",
+    "new-dsa/collection_meta.yaml": "5a1c93f532ec338089e5b070739916185e489818495fefc4e52a64ae44645f97"
+  },
+  "applied_receipt_sha256": "dab7b80458e33a327eb2e70bb579dfa610d34be3715171c29937be547041de75",
+  "post_apply_check": "PASS"
+}

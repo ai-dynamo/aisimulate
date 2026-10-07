@@ -1,0 +1,2034 @@
+{
+  "schema": "aic2004-qualified-vllm-collector-source-summary-v1",
+  "document_status": "QUALIFIED_SOURCE_FULL_REPLACEMENT_APPLIED",
+  "as_of": "2026-10-07",
+  "production_data_replacement": "APPLIED: see data-validation/summary.json",
+  "formal_campaign": {
+    "job_id": 4778966,
+    "binding_sha256": "a5b653e681c5fda2b108d2c93db87f33c8e48e94ee77e6731a2b4f9e15e87a6a",
+    "qualification_sha256": "ba5c0c5b954ce8ea84d30281474357f2981615b4fc7e2a401d968f1d0ec20669",
+    "planned_native_invocations": 34546,
+    "planned_full_reuse_variants": 51945,
+    "successful_variants_only_become_rows": true,
+    "final_success_count": 32306,
+    "final_failure_count": 2240,
+    "publication_status": "APPLIED_VALID_SUBSET_WITH_DOCUMENTED_FAILURES",
+    "whole_model_accuracy_acceptance": "HISTORICAL_COMPARISON_COMPLETED_SEPARATELY; not a same-runtime accuracy oracle",
+    "other_gpu_data": "DEFERRED",
+    "final_valid_rows": 48585
+  },
+  "qualification": {
+    "job_id": 4778662,
+    "status": "PASS",
+    "phase_exit": 0,
+    "scope": "One scheduler-allocated B200; no concurrent-GPU claim",
+    "node": "umb-b200-237",
+    "gpu_uuid": "GPU-9e8317a7-93cb-9869-0e4d-6f565d57ed05",
+    "canonical_cases": 32,
+    "graph_measurements": 56,
+    "all_outputs_finite_nonzero": true,
+    "native_gemm_precisions": [
+      "bfloat16",
+      "fp8_block",
+      "fp8",
+      "nvfp4"
+    ],
+    "kv_requests_exercised": [
+      "bfloat16",
+      "fp8"
+    ],
+    "native_precision_checks": {
+      "projection_layers": [
+        "fused_qkv_a_proj",
+        "q_b_proj",
+        "kv_b_proj",
+        "o_proj",
+        "indexer.wq_b"
+      ],
+      "bf16": "UnquantizedLinearMethod with BF16 weights",
+      "fp8": "Fp8LinearMethod with E4M3 weights; block_quant=False",
+      "fp8_block": "Fp8LinearMethod with E4M3 weights; block_quant=True",
+      "nvfp4": "ModelOptNvFp4LinearMethod with packed uint8 weights; finite positive weight_scale, weight_scale_2 and input_scale",
+      "native_fused_indexer_wk_weights_proj": "Remains UnquantizedLinearMethod",
+      "indexer_wq_b_actual_untimed_calls": "Observed in every canonical case"
+    },
+    "measurement_contract": {
+      "num_warmups": 10,
+      "num_runs": 30,
+      "repeat_n": 1,
+      "use_cuda_graph": true,
+      "allow_graph_fail": false,
+      "output_check": "Outside timed region"
+    },
+    "native_controls": {
+      "cases_passed": 16,
+      "benchmark_requests": 24,
+      "resume_recollected_cases": 0,
+      "resume_new_workers": 0,
+      "native_checkpoint_atomic_write": true
+    },
+    "failure_observation_protocol": {
+      "status": "PASS",
+      "native_success_cases": 1,
+      "native_failed_cases": 2,
+      "failed_case_classification": "unexpected",
+      "case_outcomes": [
+        {
+          "case_id": "probe-dsv32-bf16-b1-q32768-h8",
+          "status": "COMPLETE",
+          "worker_pid": 1126171,
+          "exception_type": null,
+          "native_log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "native_error_lines": 0,
+          "terminal_receipt_sha256": "3bfdd1a1f94c556666148a8157a6aa1e2ca15db0c1738c4d4e515c8a24d8f0e2",
+          "native_attention_backend": "FLASHINFER_MLA_SPARSE",
+          "native_attention_impl": "vllm.v1.attention.backends.mla.flashinfer_mla_sparse.FlashInferMLASparseImpl",
+          "classification": null,
+          "publishable_perf_data": false
+        },
+        {
+          "case_id": "probe-dsv32-bf16-b2-q32768-h8",
+          "status": "FAILED",
+          "worker_pid": 1126171,
+          "exception_type": "AcceleratorError",
+          "native_log_sha256": "01273ee9a3fa57094f8ec1285185e36aba33d08bf917bfb47dee4a60a6287032",
+          "native_error_lines": 12,
+          "terminal_receipt_sha256": "3642b5363651fb6c21a36a05a670742dd23fce74a78e331cef6f2c34b8712bd6",
+          "native_attention_backend": "FLASHINFER_MLA_SPARSE",
+          "native_attention_impl": "vllm.v1.attention.backends.mla.flashinfer_mla_sparse.FlashInferMLASparseImpl",
+          "classification": "unexpected",
+          "publishable_perf_data": false
+        },
+        {
+          "case_id": "probe-glm52-fp8-b2-q32768-h8",
+          "status": "FAILED",
+          "worker_pid": 1126447,
+          "exception_type": "AcceleratorError",
+          "native_log_sha256": "01273ee9a3fa57094f8ec1285185e36aba33d08bf917bfb47dee4a60a6287032",
+          "native_error_lines": 12,
+          "terminal_receipt_sha256": "354677ed99ad120cec32d7a1b780b4344e1c4e62ef0c1ec9b7562032566b550c",
+          "native_attention_backend": "FLASHINFER_MLA_SPARSE",
+          "native_attention_impl": "vllm.v1.attention.backends.mla.flashinfer_mla_sparse.FlashInferMLASparseImpl",
+          "classification": "unexpected",
+          "publishable_perf_data": false
+        }
+      ],
+      "all_case_timings_diagnostic_only": true
+    },
+    "native_workers": {
+      "0/native-executor/worker-exit-initial.json": {
+        "receipt_sha256": "2651b78dd41a7ad138378c985f3858aa9fe108c453aa52f98472c8a12404ef63",
+        "workers": [
+          {
+            "pid": 1125531,
+            "exit_code": 0,
+            "is_alive": false
+          }
+        ],
+        "resume_no_workers": false,
+        "status": "PASS"
+      },
+      "0/native-executor/worker-exit-resumed.json": {
+        "receipt_sha256": "421c9a2314452f5087f17be53af63d10368116c816406a6681b02c1bcb1a2b98",
+        "workers": [],
+        "resume_no_workers": true,
+        "status": "PASS"
+      },
+      "0/native-failure-observation/worker-exit.json": {
+        "receipt_sha256": "a1d684aca6d4bae6dc287ce2840c462edf4d5beb551e313622bf82d4f939dcee",
+        "workers": [
+          {
+            "pid": 1126171,
+            "exit_code": 0,
+            "is_alive": false
+          },
+          {
+            "pid": 1126447,
+            "exit_code": 0,
+            "is_alive": false
+          }
+        ],
+        "resume_no_workers": false,
+        "status": "PASS"
+      }
+    },
+    "canonical_case_receipts": [
+      {
+        "case": {
+          "id": "GLM-5.2-bfloat16-bfloat16-context-h8",
+          "gemm_type": "bfloat16",
+          "kv_cache_dtype": "bfloat16",
+          "phase": "context",
+          "seq_len": 128,
+          "prefix_len": 0,
+          "model_path": "zai-org/GLM-5.2",
+          "num_heads": 8,
+          "batch_size": 1,
+          "compute_dtype": "bfloat16",
+          "attn_type": "dsa"
+        },
+        "status": "PASSED",
+        "receipt_sha256": "e96680ec12e5cc3e35c3987cb2620a143d2397553c1acdaf20165346736e4dc4",
+        "stdout_sha256": "849bb0e9aefc4249508bbcb71480097f69fb9c0a5c17e85b051ee44a3ba56ef0",
+        "variants": [
+          "full",
+          "reuse"
+        ],
+        "native_output_observations": [
+          {
+            "variant": "full",
+            "used_cuda_graph": true,
+            "finite": true,
+            "nonzero_elements": 786432,
+            "numel": 786432,
+            "shape": [
+              128,
+              6144
+            ],
+            "dtype": "torch.bfloat16"
+          },
+          {
+            "variant": "reuse",
+            "used_cuda_graph": true,
+            "finite": true,
+            "nonzero_elements": 786432,
+            "numel": 786432,
+            "shape": [
+              128,
+              6144
+            ],
+            "dtype": "torch.bfloat16"
+          }
+        ]
+      },
+      {
+        "case": {
+          "id": "GLM-5.2-bfloat16-bfloat16-generation-h8",
+          "gemm_type": "bfloat16",
+          "kv_cache_dtype": "bfloat16",
+          "phase": "generation",
+          "seq_len": 8193,
+          "prefix_len": 0,
+          "model_path": "zai-org/GLM-5.2",
+          "num_heads": 8,
+          "batch_size": 1,
+          "compute_dtype": "bfloat16",
+          "attn_type": "dsa"
+        },
+        "status": "PASSED",
+        "receipt_sha256": "3af16029fe41092ed2b8bfb05658a8eb3799663322b367dd2a4cc797f0e0ac04",
+        "stdout_sha256": "d8b2102250c42b55f491d4f272fdaacfdb5e9d0916a59d3417a213370e2698a8",
+        "variants": [
+          "full",
+          "reuse"
+        ],
+        "native_output_observations": [
+          {
+            "variant": "full",
+            "used_cuda_graph": true,
+            "finite": true,
+            "nonzero_elements": 6144,
+            "numel": 6144,
+            "shape": [
+              1,
+              6144
+            ],
+            "dtype": "torch.bfloat16"
+          },
+          {
+            "variant": "reuse",
+            "used_cuda_graph": true,
+            "finite": true,
+            "nonzero_elements": 6144,
+            "numel": 6144,
+            "shape": [
+              1,
+              6144
+            ],
+            "dtype": "torch.bfloat16"
+          }
+        ]
+      },
+      {
+        "case": {
+          "id": "GLM-5.2-bfloat16-fp8-context-h8",
+          "gemm_type": "bfloat16",
+          "kv_cache_dtype": "fp8",
+          "phase": "context",
+          "seq_len": 128,
+          "prefix_len": 0,
+          "model_path": "zai-org/GLM-5.2",
+          "num_heads": 8,
+          "batch_size": 1,
+          "compute_dtype": "bfloat16",
+          "attn_type": "dsa"
+        },
+        "status": "PASSED",
+        "receipt_sha256": "8f585db888b1430b36704746bc7e5805f77f4ea18fd0d82f873bc34101b3f9e9",
+        "stdout_sha256": "4a177672289bbd0e20a117f4108f07d073be3df9d0b97c334bfd06a1d9d47498",
+        "variants": [
+          "full",
+          "reuse"
+        ],
+        "native_output_observations": [
+          {
+            "variant": "full",
+            "used_cuda_graph": true,
+            "finite": true,
+            "nonzero_elements": 786432,
+            "numel": 786432,
+            "shape": [
+              128,
+              6144
+            ],
+            "dtype": "torch.bfloat16"
+          },
+          {
+            "variant": "reuse",
+            "used_cuda_graph": true,
+            "finite": true,
+            "nonzero_elements": 786432,
+            "numel": 786432,
+            "shape": [
+              128,
+              6144
+            ],
+            "dtype": "torch.bfloat16"
+          }
+        ]
+      },
+      {
+        "case": {
+          "id": "GLM-5.2-bfloat16-fp8-generation-h8",
+          "gemm_type": "bfloat16",
+          "kv_cache_dtype": "fp8",
+          "phase": "generation",
+          "seq_len": 8193,
+          "prefix_len": 0,
+          "model_path": "zai-org/GLM-5.2",
+          "num_heads": 8,
+          "batch_size": 1,
+          "compute_dtype": "bfloat16",
+          "attn_type": "dsa"
+        },
+        "status": "PASSED",
+        "receipt_sha256": "008f7a859f745b5d75eef8531c3ac25540c91f4991499efcedcbb3cee79d275e",
+        "stdout_sha256": "7dc420e831f0efc2d8e4397abb5ccc0bcb88b5199385fd0945866834e28197d1",
+        "variants": [
+          "full",
+          "reuse"
+        ],
+        "native_output_observations": [
+          {
+            "variant": "full",
+            "used_cuda_graph": true,
+            "finite": true,
+            "nonzero_elements": 6144,
+            "numel": 6144,
+            "shape": [
+              1,
+              6144
+            ],
+            "dtype": "torch.bfloat16"
+          },
+          {
+            "variant": "reuse",
+            "used_cuda_graph": true,
+            "finite": true,
+            "nonzero_elements": 6144,
+            "numel": 6144,
+            "shape": [
+              1,
+              6144
+            ],
+            "dtype": "torch.bfloat16"
+          }
+        ]
+      },
+      {
+        "case": {
+          "id": "GLM-5.2-fp8_block-bfloat16-context-h8",
+          "gemm_type": "fp8_block",
+          "kv_cache_dtype": "bfloat16",
+          "phase": "context",
+          "seq_len": 128,
+          "prefix_len": 0,
+          "model_path": "zai-org/GLM-5.2",
+          "num_heads": 8,
+          "batch_size": 1,
+          "compute_dtype": "bfloat16",
+          "attn_type": "dsa"
+        },
+        "status": "PASSED",
+        "receipt_sha256": "a005dd78894467eaa102a7f7b3337d9ff0370aa11fa8e0a1307db1064a8b7ce3",
+        "stdout_sha256": "23d99d46f8559de4fdfce457cf924907748eddde39492ea1100bcfc1146a3197",
+        "variants": [
+          "full",
+          "reuse"
+        ],
+        "native_output_observations": [
+          {
+            "variant": "full",
+            "used_cuda_graph": true,
+            "finite": true,
+            "nonzero_elements": 786432,
+            "numel": 786432,
+            "shape": [
+              128,
+              6144
+            ],
+            "dtype": "torch.bfloat16"
+          },
+          {
+            "variant": "reuse",
+            "used_cuda_graph": true,
+            "finite": true,
+            "nonzero_elements": 786432,
+            "numel": 786432,
+            "shape": [
+              128,
+              6144
+            ],
+            "dtype": "torch.bfloat16"
+          }
+        ]
+      },
+      {
+        "case": {
+          "id": "GLM-5.2-fp8_block-bfloat16-generation-h8",
+          "gemm_type": "fp8_block",
+          "kv_cache_dtype": "bfloat16",
+          "phase": "generation",
+          "seq_len": 8193,
+          "prefix_len": 0,
+          "model_path": "zai-org/GLM-5.2",
+          "num_heads": 8,
+          "batch_size": 1,
+          "compute_dtype": "bfloat16",
+          "attn_type": "dsa"
+        },
+        "status": "PASSED",
+        "receipt_sha256": "5c41b389b135a35e885c1683d63950d14cc654427eadfe5107bfb4837a9e6a1c",
+        "stdout_sha256": "61ea80f14134b794b8e996d7c2ce7f1ac39008736b0ce6b723f2294d4ff98d8b",
+        "variants": [
+          "full",
+          "reuse"
+        ],
+        "native_output_observations": [
+          {
+            "variant": "full",
+            "used_cuda_graph": true,
+            "finite": true,
+            "nonzero_elements": 6144,
+            "numel": 6144,
+            "shape": [
+              1,
+              6144
+            ],
+            "dtype": "torch.bfloat16"
+          },
+          {
+            "variant": "reuse",
+            "used_cuda_graph": true,
+            "finite": true,
+            "nonzero_elements": 6144,
+            "numel": 6144,
+            "shape": [
+              1,
+              6144
+            ],
+            "dtype": "torch.bfloat16"
+          }
+        ]
+      },
+      {
+        "case": {
+          "id": "GLM-5.2-fp8_block-fp8-context-h8",
+          "gemm_type": "fp8_block",
+          "kv_cache_dtype": "fp8",
+          "phase": "context",
+          "seq_len": 128,
+          "prefix_len": 0,
+          "model_path": "zai-org/GLM-5.2",
+          "num_heads": 8,
+          "batch_size": 1,
+          "compute_dtype": "bfloat16",
+          "attn_type": "dsa"
+        },
+        "status": "PASSED",
+        "receipt_sha256": "4ecfff9e047a3ae5c689678335e875461616829e208f98e89b2a4592ac62b160",
+        "stdout_sha256": "99bb6a47f05424d32a5e7c43c1ceab008edd8576e1a7c2c61aa0a766a3caabfd",
+        "variants": [
+          "full",
+          "reuse"
+        ],
+        "native_output_observations": [
+          {
+            "variant": "full",
+            "used_cuda_graph": true,
+            "finite": true,
+            "nonzero_elements": 786432,
+            "numel": 786432,
+            "shape": [
+              128,
+              6144
+            ],
+            "dtype": "torch.bfloat16"
+          },
+          {
+            "variant": "reuse",
+            "used_cuda_graph": true,
+            "finite": true,
+            "nonzero_elements": 786432,
+            "numel": 786432,
+            "shape": [
+              128,
+              6144
+            ],
+            "dtype": "torch.bfloat16"
+          }
+        ]
+      },
+      {
+        "case": {
+          "id": "GLM-5.2-fp8_block-fp8-generation-h8",
+          "gemm_type": "fp8_block",
+          "kv_cache_dtype": "fp8",
+          "phase": "generation",
+          "seq_len": 8193,
+          "prefix_len": 0,
+          "model_path": "zai-org/GLM-5.2",
+          "num_heads": 8,
+          "batch_size": 1,
+          "compute_dtype": "bfloat16",
+          "attn_type": "dsa"
+        },
+        "status": "PASSED",
+        "receipt_sha256": "424ecd71a97aa7a9f7188474e99a48113e43c2a9d37cad83a54f689e4d3f8262",
+        "stdout_sha256": "2cc1d13cb84a27fb78ee2ce909ce379594aa6c54065c0be5c806fb8d4449b91b",
+        "variants": [
+          "full",
+          "reuse"
+        ],
+        "native_output_observations": [
+          {
+            "variant": "full",
+            "used_cuda_graph": true,
+            "finite": true,
+            "nonzero_elements": 6144,
+            "numel": 6144,
+            "shape": [
+              1,
+              6144
+            ],
+            "dtype": "torch.bfloat16"
+          },
+          {
+            "variant": "reuse",
+            "used_cuda_graph": true,
+            "finite": true,
+            "nonzero_elements": 6144,
+            "numel": 6144,
+            "shape": [
+              1,
+              6144
+            ],
+            "dtype": "torch.bfloat16"
+          }
+        ]
+      },
+      {
+        "case": {
+          "id": "GLM-5.2-fp8-bfloat16-context-h8",
+          "gemm_type": "fp8",
+          "kv_cache_dtype": "bfloat16",
+          "phase": "context",
+          "seq_len": 128,
+          "prefix_len": 0,
+          "model_path": "zai-org/GLM-5.2",
+          "num_heads": 8,
+          "batch_size": 1,
+          "compute_dtype": "bfloat16",
+          "attn_type": "dsa"
+        },
+        "status": "PASSED",
+        "receipt_sha256": "1e0a9a12bdc1730244423e7db6a2b29d11e2b34d37bf72a64ffdc2a03ac8e2af",
+        "stdout_sha256": "e69e431a0cd46d953fc9d9f85cd2adcd2e3e9ca0fa3e68226c7f422b238d8e8d",
+        "variants": [
+          "full",
+          "reuse"
+        ],
+        "native_output_observations": [
+          {
+            "variant": "full",
+            "used_cuda_graph": true,
+            "finite": true,
+            "nonzero_elements": 786432,
+            "numel": 786432,
+            "shape": [
+              128,
+              6144
+            ],
+            "dtype": "torch.bfloat16"
+          },
+          {
+            "variant": "reuse",
+            "used_cuda_graph": true,
+            "finite": true,
+            "nonzero_elements": 786432,
+            "numel": 786432,
+            "shape": [
+              128,
+              6144
+            ],
+            "dtype": "torch.bfloat16"
+          }
+        ]
+      },
+      {
+        "case": {
+          "id": "GLM-5.2-fp8-bfloat16-generation-h8",
+          "gemm_type": "fp8",
+          "kv_cache_dtype": "bfloat16",
+          "phase": "generation",
+          "seq_len": 8193,
+          "prefix_len": 0,
+          "model_path": "zai-org/GLM-5.2",
+          "num_heads": 8,
+          "batch_size": 1,
+          "compute_dtype": "bfloat16",
+          "attn_type": "dsa"
+        },
+        "status": "PASSED",
+        "receipt_sha256": "0eead110c3b446a8c33aa8a8c89737cbfb33eab9a91726b5e0bfa74235f69ca7",
+        "stdout_sha256": "e648b01a30f400a2fe262a3acd610c7dd6b3869f306ae788b6c70f55dd8726f0",
+        "variants": [
+          "full",
+          "reuse"
+        ],
+        "native_output_observations": [
+          {
+            "variant": "full",
+            "used_cuda_graph": true,
+            "finite": true,
+            "nonzero_elements": 6144,
+            "numel": 6144,
+            "shape": [
+              1,
+              6144
+            ],
+            "dtype": "torch.bfloat16"
+          },
+          {
+            "variant": "reuse",
+            "used_cuda_graph": true,
+            "finite": true,
+            "nonzero_elements": 6144,
+            "numel": 6144,
+            "shape": [
+              1,
+              6144
+            ],
+            "dtype": "torch.bfloat16"
+          }
+        ]
+      },
+      {
+        "case": {
+          "id": "GLM-5.2-fp8-fp8-context-h8",
+          "gemm_type": "fp8",
+          "kv_cache_dtype": "fp8",
+          "phase": "context",
+          "seq_len": 128,
+          "prefix_len": 0,
+          "model_path": "zai-org/GLM-5.2",
+          "num_heads": 8,
+          "batch_size": 1,
+          "compute_dtype": "bfloat16",
+          "attn_type": "dsa"
+        },
+        "status": "PASSED",
+        "receipt_sha256": "256ce6ed2f87f2b9968dee4acb4f192909a694316ff2dd04c4e155d21ff5f3d8",
+        "stdout_sha256": "6fb23e82b794c81637cae4318290857b45ed204ee110a2cf19fe93f2d4a603a4",
+        "variants": [
+          "full",
+          "reuse"
+        ],
+        "native_output_observations": [
+          {
+            "variant": "full",
+            "used_cuda_graph": true,
+            "finite": true,
+            "nonzero_elements": 786432,
+            "numel": 786432,
+            "shape": [
+              128,
+              6144
+            ],
+            "dtype": "torch.bfloat16"
+          },
+          {
+            "variant": "reuse",
+            "used_cuda_graph": true,
+            "finite": true,
+            "nonzero_elements": 786432,
+            "numel": 786432,
+            "shape": [
+              128,
+              6144
+            ],
+            "dtype": "torch.bfloat16"
+          }
+        ]
+      },
+      {
+        "case": {
+          "id": "GLM-5.2-fp8-fp8-generation-h8",
+          "gemm_type": "fp8",
+          "kv_cache_dtype": "fp8",
+          "phase": "generation",
+          "seq_len": 8193,
+          "prefix_len": 0,
+          "model_path": "zai-org/GLM-5.2",
+          "num_heads": 8,
+          "batch_size": 1,
+          "compute_dtype": "bfloat16",
+          "attn_type": "dsa"
+        },
+        "status": "PASSED",
+        "receipt_sha256": "e275e8126f3eadd218717fa011211e3bfe0d38767ca2f1c46a770a5b2a549608",
+        "stdout_sha256": "0026a4987627b32e67966d4ea424534d8c8693845798c9550aa33b8e18b8a5b9",
+        "variants": [
+          "full",
+          "reuse"
+        ],
+        "native_output_observations": [
+          {
+            "variant": "full",
+            "used_cuda_graph": true,
+            "finite": true,
+            "nonzero_elements": 6144,
+            "numel": 6144,
+            "shape": [
+              1,
+              6144
+            ],
+            "dtype": "torch.bfloat16"
+          },
+          {
+            "variant": "reuse",
+            "used_cuda_graph": true,
+            "finite": true,
+            "nonzero_elements": 6144,
+            "numel": 6144,
+            "shape": [
+              1,
+              6144
+            ],
+            "dtype": "torch.bfloat16"
+          }
+        ]
+      },
+      {
+        "case": {
+          "id": "GLM-5.2-nvfp4-bfloat16-context-h8",
+          "gemm_type": "nvfp4",
+          "kv_cache_dtype": "bfloat16",
+          "phase": "context",
+          "seq_len": 128,
+          "prefix_len": 0,
+          "model_path": "zai-org/GLM-5.2",
+          "num_heads": 8,
+          "batch_size": 1,
+          "compute_dtype": "bfloat16",
+          "attn_type": "dsa"
+        },
+        "status": "PASSED",
+        "receipt_sha256": "33519e7b985c62efffee13bc3f96bfefea6b84aaf7bdb687d66423d44f62cec8",
+        "stdout_sha256": "6dcb7fefec77c3188f220e9f9fab45565b7be2ded2cf56fe0f45c697b84acb79",
+        "variants": [
+          "full",
+          "reuse"
+        ],
+        "native_output_observations": [
+          {
+            "variant": "full",
+            "used_cuda_graph": true,
+            "finite": true,
+            "nonzero_elements": 786432,
+            "numel": 786432,
+            "shape": [
+              128,
+              6144
+            ],
+            "dtype": "torch.bfloat16"
+          },
+          {
+            "variant": "reuse",
+            "used_cuda_graph": true,
+            "finite": true,
+            "nonzero_elements": 786432,
+            "numel": 786432,
+            "shape": [
+              128,
+              6144
+            ],
+            "dtype": "torch.bfloat16"
+          }
+        ]
+      },
+      {
+        "case": {
+          "id": "GLM-5.2-nvfp4-bfloat16-generation-h8",
+          "gemm_type": "nvfp4",
+          "kv_cache_dtype": "bfloat16",
+          "phase": "generation",
+          "seq_len": 8193,
+          "prefix_len": 0,
+          "model_path": "zai-org/GLM-5.2",
+          "num_heads": 8,
+          "batch_size": 1,
+          "compute_dtype": "bfloat16",
+          "attn_type": "dsa"
+        },
+        "status": "PASSED",
+        "receipt_sha256": "3e92da68deaebccc9c2d181db0f7ff61c5766525e0b6b6bba08a49b8b3be6047",
+        "stdout_sha256": "2c67c417955c43f7d43a483070f0615a9a6bb945157a845aec0779c4b59fd59f",
+        "variants": [
+          "full",
+          "reuse"
+        ],
+        "native_output_observations": [
+          {
+            "variant": "full",
+            "used_cuda_graph": true,
+            "finite": true,
+            "nonzero_elements": 6144,
+            "numel": 6144,
+            "shape": [
+              1,
+              6144
+            ],
+            "dtype": "torch.bfloat16"
+          },
+          {
+            "variant": "reuse",
+            "used_cuda_graph": true,
+            "finite": true,
+            "nonzero_elements": 6144,
+            "numel": 6144,
+            "shape": [
+              1,
+              6144
+            ],
+            "dtype": "torch.bfloat16"
+          }
+        ]
+      },
+      {
+        "case": {
+          "id": "GLM-5.2-nvfp4-fp8-context-h8",
+          "gemm_type": "nvfp4",
+          "kv_cache_dtype": "fp8",
+          "phase": "context",
+          "seq_len": 128,
+          "prefix_len": 0,
+          "model_path": "zai-org/GLM-5.2",
+          "num_heads": 8,
+          "batch_size": 1,
+          "compute_dtype": "bfloat16",
+          "attn_type": "dsa"
+        },
+        "status": "PASSED",
+        "receipt_sha256": "f67f66eaca75ecbcdbfec3a52e83daeb814bbd04ca98b460909207e836ba592f",
+        "stdout_sha256": "645e3b756a8139a5c4b63f047a654d6048ae4c952cb215d8a09c56c6511891ea",
+        "variants": [
+          "full",
+          "reuse"
+        ],
+        "native_output_observations": [
+          {
+            "variant": "full",
+            "used_cuda_graph": true,
+            "finite": true,
+            "nonzero_elements": 786432,
+            "numel": 786432,
+            "shape": [
+              128,
+              6144
+            ],
+            "dtype": "torch.bfloat16"
+          },
+          {
+            "variant": "reuse",
+            "used_cuda_graph": true,
+            "finite": true,
+            "nonzero_elements": 786432,
+            "numel": 786432,
+            "shape": [
+              128,
+              6144
+            ],
+            "dtype": "torch.bfloat16"
+          }
+        ]
+      },
+      {
+        "case": {
+          "id": "GLM-5.2-nvfp4-fp8-generation-h8",
+          "gemm_type": "nvfp4",
+          "kv_cache_dtype": "fp8",
+          "phase": "generation",
+          "seq_len": 8193,
+          "prefix_len": 0,
+          "model_path": "zai-org/GLM-5.2",
+          "num_heads": 8,
+          "batch_size": 1,
+          "compute_dtype": "bfloat16",
+          "attn_type": "dsa"
+        },
+        "status": "PASSED",
+        "receipt_sha256": "c951ffb00328929700d2394e40a06015e232bb8870cea074b420a02b0f1c55cf",
+        "stdout_sha256": "1f00f1bd2920b89cfd3fdf9febb45446d25ac49ec174b57d5c0d54de7e8c4548",
+        "variants": [
+          "full",
+          "reuse"
+        ],
+        "native_output_observations": [
+          {
+            "variant": "full",
+            "used_cuda_graph": true,
+            "finite": true,
+            "nonzero_elements": 6144,
+            "numel": 6144,
+            "shape": [
+              1,
+              6144
+            ],
+            "dtype": "torch.bfloat16"
+          },
+          {
+            "variant": "reuse",
+            "used_cuda_graph": true,
+            "finite": true,
+            "nonzero_elements": 6144,
+            "numel": 6144,
+            "shape": [
+              1,
+              6144
+            ],
+            "dtype": "torch.bfloat16"
+          }
+        ]
+      },
+      {
+        "case": {
+          "id": "GLM-5.2-bfloat16-bfloat16-context-h128",
+          "gemm_type": "bfloat16",
+          "kv_cache_dtype": "bfloat16",
+          "phase": "context",
+          "seq_len": 128,
+          "prefix_len": 0,
+          "model_path": "zai-org/GLM-5.2",
+          "num_heads": 128,
+          "batch_size": 1,
+          "compute_dtype": "bfloat16",
+          "attn_type": "dsa"
+        },
+        "status": "PASSED",
+        "receipt_sha256": "9992c876436db768407615b4fb69ad37fa0711b74c984f9ac47d8e89c5c4aaeb",
+        "stdout_sha256": "b191df82d37b3aa91628aa583762a83b4278d03039f7da9f78d72cfeb3c7c528",
+        "variants": [
+          "full",
+          "reuse"
+        ],
+        "native_output_observations": [
+          {
+            "variant": "full",
+            "used_cuda_graph": true,
+            "finite": true,
+            "nonzero_elements": 786432,
+            "numel": 786432,
+            "shape": [
+              128,
+              6144
+            ],
+            "dtype": "torch.bfloat16"
+          },
+          {
+            "variant": "reuse",
+            "used_cuda_graph": true,
+            "finite": true,
+            "nonzero_elements": 786432,
+            "numel": 786432,
+            "shape": [
+              128,
+              6144
+            ],
+            "dtype": "torch.bfloat16"
+          }
+        ]
+      },
+      {
+        "case": {
+          "id": "GLM-5.2-bfloat16-bfloat16-generation-h128",
+          "gemm_type": "bfloat16",
+          "kv_cache_dtype": "bfloat16",
+          "phase": "generation",
+          "seq_len": 8193,
+          "prefix_len": 0,
+          "model_path": "zai-org/GLM-5.2",
+          "num_heads": 128,
+          "batch_size": 1,
+          "compute_dtype": "bfloat16",
+          "attn_type": "dsa"
+        },
+        "status": "PASSED",
+        "receipt_sha256": "e997522a9ec80e98045a6b53f846bdfc30376bc5cf9f6ee22d9cfa4bb8120b36",
+        "stdout_sha256": "196e404b8a8720e0484765682ed6d3e770526b84de85ac3566ed2b96dc734703",
+        "variants": [
+          "full",
+          "reuse"
+        ],
+        "native_output_observations": [
+          {
+            "variant": "full",
+            "used_cuda_graph": true,
+            "finite": true,
+            "nonzero_elements": 6144,
+            "numel": 6144,
+            "shape": [
+              1,
+              6144
+            ],
+            "dtype": "torch.bfloat16"
+          },
+          {
+            "variant": "reuse",
+            "used_cuda_graph": true,
+            "finite": true,
+            "nonzero_elements": 6144,
+            "numel": 6144,
+            "shape": [
+              1,
+              6144
+            ],
+            "dtype": "torch.bfloat16"
+          }
+        ]
+      },
+      {
+        "case": {
+          "id": "GLM-5.2-nvfp4-bfloat16-context-h128",
+          "gemm_type": "nvfp4",
+          "kv_cache_dtype": "bfloat16",
+          "phase": "context",
+          "seq_len": 128,
+          "prefix_len": 0,
+          "model_path": "zai-org/GLM-5.2",
+          "num_heads": 128,
+          "batch_size": 1,
+          "compute_dtype": "bfloat16",
+          "attn_type": "dsa"
+        },
+        "status": "PASSED",
+        "receipt_sha256": "495bb453e690022cb9cf888a4b94736dbfee91ada71c2f6323bd109df5aa43ba",
+        "stdout_sha256": "fa07dad1bbb2c2f0ec4431ef40ee84db735ced5d3ffe01d3bb5d33d4edbf2df7",
+        "variants": [
+          "full",
+          "reuse"
+        ],
+        "native_output_observations": [
+          {
+            "variant": "full",
+            "used_cuda_graph": true,
+            "finite": true,
+            "nonzero_elements": 786432,
+            "numel": 786432,
+            "shape": [
+              128,
+              6144
+            ],
+            "dtype": "torch.bfloat16"
+          },
+          {
+            "variant": "reuse",
+            "used_cuda_graph": true,
+            "finite": true,
+            "nonzero_elements": 786432,
+            "numel": 786432,
+            "shape": [
+              128,
+              6144
+            ],
+            "dtype": "torch.bfloat16"
+          }
+        ]
+      },
+      {
+        "case": {
+          "id": "GLM-5.2-nvfp4-bfloat16-generation-h128",
+          "gemm_type": "nvfp4",
+          "kv_cache_dtype": "bfloat16",
+          "phase": "generation",
+          "seq_len": 8193,
+          "prefix_len": 0,
+          "model_path": "zai-org/GLM-5.2",
+          "num_heads": 128,
+          "batch_size": 1,
+          "compute_dtype": "bfloat16",
+          "attn_type": "dsa"
+        },
+        "status": "PASSED",
+        "receipt_sha256": "0241eacbe7a2d897fa4da2874d28cc5ae2673d7ce285e94651518764fe352fc3",
+        "stdout_sha256": "74f5f42758f37a9db86d5707b06ca5c94129c9ca9b0af600fb7d3b63cdb2e710",
+        "variants": [
+          "full",
+          "reuse"
+        ],
+        "native_output_observations": [
+          {
+            "variant": "full",
+            "used_cuda_graph": true,
+            "finite": true,
+            "nonzero_elements": 6144,
+            "numel": 6144,
+            "shape": [
+              1,
+              6144
+            ],
+            "dtype": "torch.bfloat16"
+          },
+          {
+            "variant": "reuse",
+            "used_cuda_graph": true,
+            "finite": true,
+            "nonzero_elements": 6144,
+            "numel": 6144,
+            "shape": [
+              1,
+              6144
+            ],
+            "dtype": "torch.bfloat16"
+          }
+        ]
+      },
+      {
+        "case": {
+          "id": "DeepSeek-V3.2-bfloat16-bfloat16-context-h128",
+          "gemm_type": "bfloat16",
+          "kv_cache_dtype": "bfloat16",
+          "phase": "context",
+          "seq_len": 128,
+          "prefix_len": 0,
+          "model_path": "deepseek-ai/DeepSeek-V3.2",
+          "num_heads": 128,
+          "batch_size": 1,
+          "compute_dtype": "bfloat16",
+          "attn_type": "dsa"
+        },
+        "status": "PASSED",
+        "receipt_sha256": "3cca40a4ae65c3c73739dcf2a2064dab10470c1d04323564aacd06311430f309",
+        "stdout_sha256": "babdacbe7cd781f88d615e0513358280d7a7280df67350d7d26ab54ac920a5dd",
+        "variants": [
+          "full"
+        ],
+        "native_output_observations": [
+          {
+            "variant": "full",
+            "used_cuda_graph": true,
+            "finite": true,
+            "nonzero_elements": 917504,
+            "numel": 917504,
+            "shape": [
+              128,
+              7168
+            ],
+            "dtype": "torch.bfloat16"
+          }
+        ]
+      },
+      {
+        "case": {
+          "id": "DeepSeek-V3.2-bfloat16-bfloat16-generation-h128",
+          "gemm_type": "bfloat16",
+          "kv_cache_dtype": "bfloat16",
+          "phase": "generation",
+          "seq_len": 8193,
+          "prefix_len": 0,
+          "model_path": "deepseek-ai/DeepSeek-V3.2",
+          "num_heads": 128,
+          "batch_size": 1,
+          "compute_dtype": "bfloat16",
+          "attn_type": "dsa"
+        },
+        "status": "PASSED",
+        "receipt_sha256": "c629bc50378bba3bb595c173daf58d768e160792444b15db20e2b0f2413836af",
+        "stdout_sha256": "7907a52f2efba21be3c5b161d3d40d952f6ff1b065e368e1501a96c536f5efc0",
+        "variants": [
+          "full"
+        ],
+        "native_output_observations": [
+          {
+            "variant": "full",
+            "used_cuda_graph": true,
+            "finite": true,
+            "nonzero_elements": 7168,
+            "numel": 7168,
+            "shape": [
+              1,
+              7168
+            ],
+            "dtype": "torch.bfloat16"
+          }
+        ]
+      },
+      {
+        "case": {
+          "id": "DeepSeek-V3.2-nvfp4-bfloat16-context-h128",
+          "gemm_type": "nvfp4",
+          "kv_cache_dtype": "bfloat16",
+          "phase": "context",
+          "seq_len": 128,
+          "prefix_len": 0,
+          "model_path": "deepseek-ai/DeepSeek-V3.2",
+          "num_heads": 128,
+          "batch_size": 1,
+          "compute_dtype": "bfloat16",
+          "attn_type": "dsa"
+        },
+        "status": "PASSED",
+        "receipt_sha256": "6980ce5cc9c162cfc5acce7aefcc8ab205c60f7c353c13dd9c85d7bf45ce19f4",
+        "stdout_sha256": "47ade4a1bc8190ae9f9a983c066098f36998950c0b70f262b1ce9600252de0b5",
+        "variants": [
+          "full"
+        ],
+        "native_output_observations": [
+          {
+            "variant": "full",
+            "used_cuda_graph": true,
+            "finite": true,
+            "nonzero_elements": 917504,
+            "numel": 917504,
+            "shape": [
+              128,
+              7168
+            ],
+            "dtype": "torch.bfloat16"
+          }
+        ]
+      },
+      {
+        "case": {
+          "id": "DeepSeek-V3.2-nvfp4-bfloat16-generation-h128",
+          "gemm_type": "nvfp4",
+          "kv_cache_dtype": "bfloat16",
+          "phase": "generation",
+          "seq_len": 8193,
+          "prefix_len": 0,
+          "model_path": "deepseek-ai/DeepSeek-V3.2",
+          "num_heads": 128,
+          "batch_size": 1,
+          "compute_dtype": "bfloat16",
+          "attn_type": "dsa"
+        },
+        "status": "PASSED",
+        "receipt_sha256": "bdc82f27c566246fb452a96cd9a8712125420313b6a6f231f13a28367729eaba",
+        "stdout_sha256": "50642399991f6485f1464575aca7c449a0be1413421f358cfdbb58cb88653baa",
+        "variants": [
+          "full"
+        ],
+        "native_output_observations": [
+          {
+            "variant": "full",
+            "used_cuda_graph": true,
+            "finite": true,
+            "nonzero_elements": 7168,
+            "numel": 7168,
+            "shape": [
+              1,
+              7168
+            ],
+            "dtype": "torch.bfloat16"
+          }
+        ]
+      },
+      {
+        "case": {
+          "id": "DeepSeek-V3.2-fp8_block-fp8-context-h16",
+          "gemm_type": "fp8_block",
+          "kv_cache_dtype": "fp8",
+          "phase": "context",
+          "seq_len": 128,
+          "prefix_len": 0,
+          "model_path": "deepseek-ai/DeepSeek-V3.2",
+          "num_heads": 16,
+          "batch_size": 1,
+          "compute_dtype": "bfloat16",
+          "attn_type": "dsa"
+        },
+        "status": "PASSED",
+        "receipt_sha256": "0e196f97a9704f45acd4254bd53a2fd9fd8d18c7a279f1d63880eba9c797a1a6",
+        "stdout_sha256": "51be98efe7c0727dc0a1da23d62976aa69e2e3d01bf273987729b2bf8acd100d",
+        "variants": [
+          "full"
+        ],
+        "native_output_observations": [
+          {
+            "variant": "full",
+            "used_cuda_graph": true,
+            "finite": true,
+            "nonzero_elements": 917504,
+            "numel": 917504,
+            "shape": [
+              128,
+              7168
+            ],
+            "dtype": "torch.bfloat16"
+          }
+        ]
+      },
+      {
+        "case": {
+          "id": "DeepSeek-V3.2-fp8_block-fp8-generation-h16",
+          "gemm_type": "fp8_block",
+          "kv_cache_dtype": "fp8",
+          "phase": "generation",
+          "seq_len": 8193,
+          "prefix_len": 0,
+          "model_path": "deepseek-ai/DeepSeek-V3.2",
+          "num_heads": 16,
+          "batch_size": 1,
+          "compute_dtype": "bfloat16",
+          "attn_type": "dsa"
+        },
+        "status": "PASSED",
+        "receipt_sha256": "76b5631f7914b1fac6b649021f3806562878bd12446f3b9d3f2ece0bc6ed4c86",
+        "stdout_sha256": "0c693f4adc4acf8c1c687668b78c48433ff8dd03aa78a354cc37f6b5fd17ca6d",
+        "variants": [
+          "full"
+        ],
+        "native_output_observations": [
+          {
+            "variant": "full",
+            "used_cuda_graph": true,
+            "finite": true,
+            "nonzero_elements": 7168,
+            "numel": 7168,
+            "shape": [
+              1,
+              7168
+            ],
+            "dtype": "torch.bfloat16"
+          }
+        ]
+      },
+      {
+        "case": {
+          "id": "DeepSeek-V3.2-fp8-fp8-context-h16",
+          "gemm_type": "fp8",
+          "kv_cache_dtype": "fp8",
+          "phase": "context",
+          "seq_len": 128,
+          "prefix_len": 0,
+          "model_path": "deepseek-ai/DeepSeek-V3.2",
+          "num_heads": 16,
+          "batch_size": 1,
+          "compute_dtype": "bfloat16",
+          "attn_type": "dsa"
+        },
+        "status": "PASSED",
+        "receipt_sha256": "d187595a0b0b23c41fae9f185812c492771fc7d6ea8f6e16c3cf862614a75650",
+        "stdout_sha256": "f2f2a49db9a1aa0f6bfbfbe7617aca35772b0c9215912da6ab98ebe966162c1f",
+        "variants": [
+          "full"
+        ],
+        "native_output_observations": [
+          {
+            "variant": "full",
+            "used_cuda_graph": true,
+            "finite": true,
+            "nonzero_elements": 917504,
+            "numel": 917504,
+            "shape": [
+              128,
+              7168
+            ],
+            "dtype": "torch.bfloat16"
+          }
+        ]
+      },
+      {
+        "case": {
+          "id": "DeepSeek-V3.2-fp8-fp8-generation-h16",
+          "gemm_type": "fp8",
+          "kv_cache_dtype": "fp8",
+          "phase": "generation",
+          "seq_len": 8193,
+          "prefix_len": 0,
+          "model_path": "deepseek-ai/DeepSeek-V3.2",
+          "num_heads": 16,
+          "batch_size": 1,
+          "compute_dtype": "bfloat16",
+          "attn_type": "dsa"
+        },
+        "status": "PASSED",
+        "receipt_sha256": "4d6783a086ddeeb31d11f2ed9e3d63383f7d8ec7ae3b99f06d47bfde322249e1",
+        "stdout_sha256": "e374078698c560690814db0ccfe8e29cc1e8f528b52f0d812700f63eb6df8013",
+        "variants": [
+          "full"
+        ],
+        "native_output_observations": [
+          {
+            "variant": "full",
+            "used_cuda_graph": true,
+            "finite": true,
+            "nonzero_elements": 7168,
+            "numel": 7168,
+            "shape": [
+              1,
+              7168
+            ],
+            "dtype": "torch.bfloat16"
+          }
+        ]
+      },
+      {
+        "case": {
+          "id": "GLM-5.2-fp8-long-prefix",
+          "gemm_type": "fp8",
+          "kv_cache_dtype": "fp8",
+          "phase": "context",
+          "seq_len": 1024,
+          "prefix_len": 131072,
+          "model_path": "zai-org/GLM-5.2",
+          "num_heads": 8,
+          "batch_size": 1,
+          "compute_dtype": "bfloat16",
+          "attn_type": "dsa"
+        },
+        "status": "PASSED",
+        "receipt_sha256": "ee9d221ceccb50eb27f34ea630a6f24618915d8c06aa414f2d326ddf8180c2a2",
+        "stdout_sha256": "d2179e5a4abeff33547049d7522e2db98e989e90868f9f30c9fb61ab4f8db043",
+        "variants": [
+          "full",
+          "reuse"
+        ],
+        "native_output_observations": [
+          {
+            "variant": "full",
+            "used_cuda_graph": true,
+            "finite": true,
+            "nonzero_elements": 6291456,
+            "numel": 6291456,
+            "shape": [
+              1024,
+              6144
+            ],
+            "dtype": "torch.bfloat16"
+          },
+          {
+            "variant": "reuse",
+            "used_cuda_graph": true,
+            "finite": true,
+            "nonzero_elements": 6291456,
+            "numel": 6291456,
+            "shape": [
+              1024,
+              6144
+            ],
+            "dtype": "torch.bfloat16"
+          }
+        ]
+      },
+      {
+        "case": {
+          "id": "GLM-5.2-fp8-single-query-no-prefix",
+          "gemm_type": "fp8",
+          "kv_cache_dtype": "fp8",
+          "phase": "context",
+          "seq_len": 1,
+          "prefix_len": 0,
+          "model_path": "zai-org/GLM-5.2",
+          "num_heads": 8,
+          "batch_size": 1,
+          "compute_dtype": "bfloat16",
+          "attn_type": "dsa"
+        },
+        "status": "PASSED",
+        "receipt_sha256": "30dfbfb818792bdbe9d39a1342005f1c1c029990ebd6ba568977c65b936085a8",
+        "stdout_sha256": "4cbc1d0698119fd630fe3a993d99d19a435c5ed0dde79b9427e9a93bd602a2f6",
+        "variants": [
+          "full",
+          "reuse"
+        ],
+        "native_output_observations": [
+          {
+            "variant": "full",
+            "used_cuda_graph": true,
+            "finite": true,
+            "nonzero_elements": 6144,
+            "numel": 6144,
+            "shape": [
+              1,
+              6144
+            ],
+            "dtype": "torch.bfloat16"
+          },
+          {
+            "variant": "reuse",
+            "used_cuda_graph": true,
+            "finite": true,
+            "nonzero_elements": 6144,
+            "numel": 6144,
+            "shape": [
+              1,
+              6144
+            ],
+            "dtype": "torch.bfloat16"
+          }
+        ]
+      },
+      {
+        "case": {
+          "id": "GLM-5.2-nvfp4-long-prefix",
+          "gemm_type": "nvfp4",
+          "kv_cache_dtype": "fp8",
+          "phase": "context",
+          "seq_len": 1024,
+          "prefix_len": 131072,
+          "model_path": "zai-org/GLM-5.2",
+          "num_heads": 8,
+          "batch_size": 1,
+          "compute_dtype": "bfloat16",
+          "attn_type": "dsa"
+        },
+        "status": "PASSED",
+        "receipt_sha256": "7b340d3d10a5a7928a0521b342e162d95acf5ff9b974a7be682fffa002195da7",
+        "stdout_sha256": "8305b27c9ceb33c082e25a1e154321426fea04682fb3e87ddfa940afb9c70aac",
+        "variants": [
+          "full",
+          "reuse"
+        ],
+        "native_output_observations": [
+          {
+            "variant": "full",
+            "used_cuda_graph": true,
+            "finite": true,
+            "nonzero_elements": 6291456,
+            "numel": 6291456,
+            "shape": [
+              1024,
+              6144
+            ],
+            "dtype": "torch.bfloat16"
+          },
+          {
+            "variant": "reuse",
+            "used_cuda_graph": true,
+            "finite": true,
+            "nonzero_elements": 6291456,
+            "numel": 6291456,
+            "shape": [
+              1024,
+              6144
+            ],
+            "dtype": "torch.bfloat16"
+          }
+        ]
+      },
+      {
+        "case": {
+          "id": "GLM-5.2-nvfp4-single-query-no-prefix",
+          "gemm_type": "nvfp4",
+          "kv_cache_dtype": "fp8",
+          "phase": "context",
+          "seq_len": 1,
+          "prefix_len": 0,
+          "model_path": "zai-org/GLM-5.2",
+          "num_heads": 8,
+          "batch_size": 1,
+          "compute_dtype": "bfloat16",
+          "attn_type": "dsa"
+        },
+        "status": "PASSED",
+        "receipt_sha256": "1760a837b96e8751f9088f330a32bc285814c5ea7599a7b271cf89594b960d83",
+        "stdout_sha256": "d1236989a28a43f89f6f5c188fbf28fcdd9ffd7c2724e593041bba858912104b",
+        "variants": [
+          "full",
+          "reuse"
+        ],
+        "native_output_observations": [
+          {
+            "variant": "full",
+            "used_cuda_graph": true,
+            "finite": true,
+            "nonzero_elements": 6144,
+            "numel": 6144,
+            "shape": [
+              1,
+              6144
+            ],
+            "dtype": "torch.bfloat16"
+          },
+          {
+            "variant": "reuse",
+            "used_cuda_graph": true,
+            "finite": true,
+            "nonzero_elements": 6144,
+            "numel": 6144,
+            "shape": [
+              1,
+              6144
+            ],
+            "dtype": "torch.bfloat16"
+          }
+        ]
+      }
+    ]
+  },
+  "source_binding": {
+    "collector_closure_sha256": "sha256:38f5ad7b03c9978c4af13cffaab032fc8de11f4b5a1b846901933c3d59c22f18",
+    "payload_files": 427,
+    "qualification_bundle_files": 439,
+    "collector_files_sha256": {
+      "collector/helper.py": "4fca81a683fe87680b10a7dd2486e3a5a95a6467fb46238fa143ef777b183e22",
+      "collector/vllm/collect_mla_module.py": "3e08fba4496fefaaeee025c4ef0fa53ca688e75ad38ec6b63c1b7336b0caa4d5",
+      "collector/vllm/utils.py": "5775eee3bb4a1d7fac5f36ad73e65ad80670242b318771c8dd0528ed81cec54e",
+      "collector/hash_closures.yaml": "78d10c1ea47de276b1903626d446cc51316669c5b8bb8e82c2269b924a4267da"
+    },
+    "external_driver_sha256": {
+      "runtime_support.py": "ed6cbd27ddaf241b16207a5d7b130901587e56445c1c4911262b6bc830aadd6a",
+      "native_lifecycle.py": "faf12252ab52a02d370f83b68a554b5415648b7994227ba2743fd681fa327c73",
+      "observed_failure.py": "2ae114f9f6b4145069054919f53c7bdea53985d292a172582931aef0d2775bd3"
+    },
+    "qualification_native_probed_files": 4,
+    "actual_image_native_file_hashes": {
+      "_version.py": "763ed234b0648da39d230104ca1afb879dd874d64a4fb6363a43a73649592804",
+      "model_executor/models/deepseek_v2.py": "c580e5c53398820fed8177ede091578c8e07706089fde15094dc5265dcb30c9f",
+      "model_executor/models/registry.py": "ab52495073a046b79d00a314cbc96e719e3ed916ea8a8bf6f3202015062b5676",
+      "model_executor/layers/mla.py": "d461e5bf42efd431a38dc1b7a408c6ddf8b15793f8a4e234322410394d46d7b9",
+      "model_executor/layers/attention/mla_attention.py": "a3619af33ad55ceec011f4764faba22723862a45494536a9b7591e7a9a92c7a0",
+      "model_executor/layers/attention/attention.py": "3414faca4cc04c699dbb880ba1761230e1ed97035f2934604cad9a5490f4dba1",
+      "forward_context.py": "1c6fa51e9a02a120fed5e7357afb1190516cbdfefd1c644dfcd860603f1527c5",
+      "model_executor/layers/quantization/fp8.py": "efde0be91112ae27a67b27543c7315b3e69d495fd816cbf997e5b9b47d1bc6de",
+      "model_executor/layers/quantization/modelopt.py": "26ce878d207fbe34ce7e404d55d53e908f57ecc5993e03ebb5b2086618667563",
+      "_custom_ops.py": "cbc7fec3a616e318870a2f117ed73cc17b779ef00460320df11e8a5a4dd8a5c8",
+      "v1/attention/backends/mla/indexer.py": "63df117af9959e7beb515e47948d09c432d4b7087ea4dc0be90d4cfe5cbe20d7",
+      "v1/attention/backends/mla/flashinfer_mla_sparse.py": "fe93493205924fa8f80feb24709dd590876d338b0aa62e7553b5bad2ebc97dfa",
+      "v1/attention/backends/mla/flashmla_sparse.py": "31316f5d852a06d8e9dd919395f52671732548559486371b06c08a6e2504f723",
+      "v1/attention/backends/utils.py": "f1375ec8e3a2d5c77ab15773eef2c00a4117826a3c238ceb5bcd4efe9fa55381",
+      "v1/worker/workspace.py": "d0650393bc657064acc97fe2b227ebff8f85799a8f727a8c136098f1f79964df",
+      "platforms/cuda.py": "d89827b5a063d81cb57f3c7255155e8a3fda111e537409a5c830de4b56a76b1b"
+    }
+  },
+  "runtime": {
+    "vllm": "0.24.0",
+    "vllm_source_commit": "ee0da84ab9e04ac7610e28580af62c365e898389",
+    "torch": "2.11.0+cu130",
+    "cuda": "13.0",
+    "flashinfer": "0.6.12",
+    "flashinfer_source_commit": "d768c14e7cf5dd5df45a8a1de78ae815879f108a",
+    "sqsh_artifact_sha256": "e34a40cb957ea15986ccbc2597ad9d16dbc707dd0aaefadf510aed0fde0cf12f",
+    "declared_oci_reference": "sha256:251eba5cc7c12fed0b75da22a9240e582b1c9e39f6fbc064f86781b963bd814f",
+    "sqsh_to_oci_cryptographic_association": "NOT_ESTABLISHED",
+    "verified_identity_scope": "Cached artifact hash, actual runtime versions, and native source bytes; declared registry reference retained separately"
+  },
+  "slot_mapping": {
+    "status": "SOURCE_AND_EXECUTED_PATH_VERIFIED",
+    "native_common_metadata_slots_forwarded_to_attention_and_indexer_keys": true,
+    "prefix_zero_single_query_and_long_prefix_outputs_finite_nonzero": true,
+    "slot_tensor_values_serialized": false,
+    "independent_numerical_or_historical_latency_equivalence": "NOT_EVALUATED"
+  },
+  "native_error_handling": {
+    "fd_stdout_stderr_capture": true,
+    "native_printed_error_in_returned_timing": "FAILED_NOT_PUBLISHABLE",
+    "graph_exception_preserved": true,
+    "errors_do_not_change_timing_or_native_invocations": true,
+    "case_preskipping_by_predicted_shape": false,
+    "eager_fallback_for_failed_graph": false,
+    "failed_rows_replaced_with_old_data": false,
+    "publishing_successful_subset": "Requires completed attempts, exact-case failure evidence and explicit reviewed failure manifest; failed cases remain FAILED"
+  },
+  "large_query_failure": {
+    "native_attention_backend": "FLASHINFER_MLA_SPARSE",
+    "flattened_query_tokens_became_native_batch_and_grid_z": true,
+    "observed_failing_total_query_tokens": 65536,
+    "qualified_failed_shapes": [
+      {
+        "model": "deepseek-ai/DeepSeek-V3.2",
+        "batch_size": 2,
+        "query_length": 32768,
+        "prefix_length": 0,
+        "heads": 8,
+        "gemm_type": "bfloat16",
+        "kv_cache_dtype": "bfloat16"
+      },
+      {
+        "model": "zai-org/GLM-5.2",
+        "batch_size": 2,
+        "query_length": 32768,
+        "prefix_length": 0,
+        "heads": 8,
+        "gemm_type": "fp8",
+        "kv_cache_dtype": "fp8"
+      }
+    ],
+    "earliest_error": "CUDA Error: CUDA_ERROR_INVALID_VALUE /workspace/include/flashinfer/trtllm/fmha/fmhaKernels.cuh 328",
+    "earliest_error_count_per_failed_qualification_case": 12,
+    "later_exception": "AcceleratorError: capture invalidated; original traceback includes _v_up_proj and CUBLAS_STATUS_EXECUTION_FAILED",
+    "eager_return_is_not_sufficient_for_validity": true,
+    "scope": "Selected pinned native FlashInfer path; not all heads/backends and not a pre-dispatch skip rule",
+    "upstream_references": [
+      {
+        "repository": "vllm-project/vllm",
+        "revision": "ee0da84ab9e04ac7610e28580af62c365e898389",
+        "original_path": "vllm/v1/attention/backends/mla/flashinfer_mla_sparse.py",
+        "source_url": "https://github.com/vllm-project/vllm/blob/ee0da84ab9e04ac7610e28580af62c365e898389/vllm/v1/attention/backends/mla/flashinfer_mla_sparse.py",
+        "actual_image_file_sha256": "fe93493205924fa8f80feb24709dd590876d338b0aa62e7553b5bad2ebc97dfa",
+        "source_bytes_copied_into_this_report": false
+      },
+      {
+        "repository": "flashinfer-ai/flashinfer",
+        "revision": "d768c14e7cf5dd5df45a8a1de78ae815879f108a",
+        "original_path": "flashinfer/mla/_core.py",
+        "source_url": "https://github.com/flashinfer-ai/flashinfer/blob/d768c14e7cf5dd5df45a8a1de78ae815879f108a/flashinfer/mla/_core.py",
+        "actual_image_file_sha256": "fe05a0fe0bc69597e08e1beeca254835d57b9cf7ce2ab395dadcc83a8289601e",
+        "source_bytes_copied_into_this_report": false
+      },
+      {
+        "repository": "flashinfer-ai/flashinfer",
+        "revision": "d768c14e7cf5dd5df45a8a1de78ae815879f108a",
+        "original_path": "csrc/trtllm_fmha_kernel_launcher.cu",
+        "source_url": "https://github.com/flashinfer-ai/flashinfer/blob/d768c14e7cf5dd5df45a8a1de78ae815879f108a/csrc/trtllm_fmha_kernel_launcher.cu",
+        "actual_image_file_sha256": "866129de2b56b165be5d4dd1bbb1b92729ddc13d31020aa1c378e1639cdac3f3",
+        "source_bytes_copied_into_this_report": false
+      },
+      {
+        "repository": "flashinfer-ai/flashinfer",
+        "revision": "d768c14e7cf5dd5df45a8a1de78ae815879f108a",
+        "original_path": "include/flashinfer/trtllm/fmha/fmhaKernels.cuh",
+        "source_url": "https://github.com/flashinfer-ai/flashinfer/blob/d768c14e7cf5dd5df45a8a1de78ae815879f108a/include/flashinfer/trtllm/fmha/fmhaKernels.cuh",
+        "actual_image_file_sha256": "728a29df0f717990ed8b7987600c84e2f2c836200c882b733bdf79e29416d0b0",
+        "source_bytes_copied_into_this_report": false
+      },
+      {
+        "repository": "flashinfer-ai/flashinfer",
+        "revision": "d768c14e7cf5dd5df45a8a1de78ae815879f108a",
+        "original_path": "include/flashinfer/trtllm/common.h",
+        "source_url": "https://github.com/flashinfer-ai/flashinfer/blob/d768c14e7cf5dd5df45a8a1de78ae815879f108a/include/flashinfer/trtllm/common.h",
+        "actual_image_file_sha256": "049f3678f64d28e5d50583c227f8e29060515f00e4cf7f574d6f4f069cc4810a",
+        "source_bytes_copied_into_this_report": false
+      }
+    ]
+  },
+  "non_vllm_collector_isolation": {
+    "scope": "CPU default-helper/case generation comparisons; separate final data/native-view/prediction isolation passed, see data-validation/sg-trt-final-isolation.json",
+    "baseline_revision": "e45612e18376c6aef28fb697f3131602613354f4",
+    "helper_actual_function_oracle_comparisons": 36,
+    "default_matches_original_scenarios": 18,
+    "opt_in_matches_pre_isolation_scenarios": 18,
+    "explicit_graph_cleanup_default": false,
+    "only_opt_in_caller": "collector.vllm.collect_mla_module",
+    "ordered_case_lists_compared": 200,
+    "list_elements_compared": 468812,
+    "all_ordered_lists_equal": true,
+    "backends": [
+      "sglang",
+      "trtllm"
+    ],
+    "sm_values": [
+      90,
+      100,
+      103,
+      120
+    ],
+    "model_filter_scope": [
+      "default",
+      "GLM-5",
+      "GLM-5.2",
+      "GLM-5.2-NVFP4",
+      "DeepSeek-V3.2"
+    ],
+    "provenance_hashes_change_truthfully": true,
+    "representative_provenance_hashes": {
+      "collector.sglang.collect_mla_module": {
+        "baseline": "sha256:e6aed5ba403df0fad88efe83650a19091c064c7501009329ca83d4e4df7083df",
+        "candidate": "sha256:10c542489a4267edc522d2e04d0aec129483af484e7519bac525cf8152a2ede7"
+      },
+      "collector.trtllm.collect_mla_module": {
+        "baseline": "sha256:953cb80054b6ac2c847cc5b4a09a8c20ff46471dc57990bf96678535fc2c8314",
+        "candidate": "sha256:b02b469b5330ac6c3b70a506c0d44ae52480b313311e8a044fe080238690d2f1"
+      },
+      "collector.sglang.collect_gemm": {
+        "baseline": "sha256:7f27b85ca4a39cd97a964f1a0373d86694b100d8bdd0e32a69ef0d1182c5c97d",
+        "candidate": "sha256:52fee5f8f3e000857700f521f26185cda3424600ea05118a762609bb46f97f9a"
+      },
+      "collector.trtllm.collect_gemm": {
+        "baseline": "sha256:15cfcc96b57deca281735cdcc4dfe8bc91e89e60f1167b2d71a3909bc6636ab7",
+        "candidate": "sha256:504de612986490ffdcbfb6d20d1aee6cf55d9363182903d1566b9d99191b141a"
+      }
+    },
+    "hash_bypass_used": false,
+    "resume_claim": "No claim that collector_hash alone invalidates collect.py local resume",
+    "untested_framework_native_behavior": "NOT_QUALIFIED",
+    "targeted_collector_unit_tests_passed": 63
+  },
+  "health": {
+    "node_flags_preserved": {
+      "preflight": [
+        "State=MIXED+DYNAMIC_NORM+REBOOT_REQUESTED ThreadsPerCore=2 TmpDisk=0 Weight=1296 Owner=N/A MCS_label=N/A",
+        "NextState=UNDRAIN"
+      ],
+      "postflight": [
+        "State=MIXED+DYNAMIC_NORM+REBOOT_REQUESTED+PLANNED ThreadsPerCore=2 TmpDisk=0 Weight=1296 Owner=N/A MCS_label=N/A",
+        "NextState=UNDRAIN"
+      ]
+    },
+    "gpu_recovery_action": "None",
+    "postflight_hardware_thermal_or_power_brake_slowdown": "Not Active",
+    "postflight_uncorrectable_ecc": 0
+  },
+  "evidence_receipts": [
+    {
+      "private_state_relative_path": "qualification-v3-audit.json",
+      "sha256": "e1eb9dee82cf62effcbbfe21d891d030b0c1aea45aa0394d4dfad95f4499db5a"
+    },
+    {
+      "private_state_relative_path": "campaign-v024-v5/input/qualification.json",
+      "sha256": "ba5c0c5b954ce8ea84d30281474357f2981615b4fc7e2a401d968f1d0ec20669"
+    },
+    {
+      "private_state_relative_path": "campaign-v024-v5/input/binding.json",
+      "sha256": "a5b653e681c5fda2b108d2c93db87f33c8e48e94ee77e6731a2b4f9e15e87a6a"
+    },
+    {
+      "private_state_relative_path": "native-log-qualification-v3/bundle-files-sha256.json",
+      "sha256": "a152f48b3160d8112ab2072ca7c58ff5e403815f962e447b88b649eb717b82b2"
+    },
+    {
+      "private_state_relative_path": "native-log-qualification-v3/payload-sha256.json",
+      "sha256": "036dcf4851fbe0db7f1354feae5d9e251da82f0fad612ea0b255a44ec2baed44"
+    },
+    {
+      "private_state_relative_path": "helper-scope-isolation/validation.json",
+      "sha256": "963465e61dbd5f81111ef9181650ef536acd993533c8918593ec1876a97023d1"
+    },
+    {
+      "private_state_relative_path": "helper-scope-isolation/actual-helper-differential.json",
+      "sha256": "1b1f51d486cb3cca25c58aafdfc138d36d57759bc7c04f8f6c336045d9c8f50e"
+    },
+    {
+      "private_state_relative_path": "helper-scope-isolation/source-identity.json",
+      "sha256": "00ac1cdca3bcb9f1a8c88dfd8510e397d2077073ad4a5bc39e5c98fccc1f90df"
+    },
+    {
+      "private_state_relative_path": "helper-scope-isolation/independent-readonly-review.json",
+      "sha256": "26d65b7d67438d4e41248f388e8d54ec22c90c6b5b60dd21d603e37690777d51"
+    },
+    {
+      "private_state_relative_path": "collector-scope-prereview/review.json",
+      "sha256": "5a42f7ed04b161502f8ee4d42976408b373b8f8fef516415c60952d45eb65c3f"
+    },
+    {
+      "private_state_relative_path": "collector-scope-prereview/case-differential.json",
+      "sha256": "100289dbee17c76ad26a13469d289855099a5a8797942b28f82d244c92a8dcb8"
+    },
+    {
+      "private_state_relative_path": "collector-scope-prereview/provenance-review.json",
+      "sha256": "3e24921905e8a84fb17ec0e9195a008ea730741881ef31bca6ac84bd28ca96e8"
+    }
+  ],
+  "historical_0251_archive": {
+    "status": "SUPERSEDED_DIAGNOSTIC_ONLY",
+    "production_qualification": false,
+    "reason": "Missing native slot_mapping prevented current-query MLA KV writes",
+    "existing_files_preserved": true
+  },
+  "evidence_limits": [
+    "The bounded source qualification itself is not the full-matrix completion receipt; final applied data is recorded separately in data-validation/summary.json",
+    "Finite/nonzero outputs do not establish independent numerical correctness",
+    "Source qualification alone does not establish matched-silicon accuracy; the separate historical comparison uses different runtimes",
+    "No single-GPU result relabeled as concurrent-GPU qualification",
+    "Native unsupported/failed cases retain failed outcomes and no valid perf rows",
+    "No copied upstream implementation in this report; references and actual-image hashes only"
+  ],
+  "full_cpu_validation": {
+    "evidence_kind": "Verified existing completed pytest log; not rerun during this documentation update.",
+    "test_scope": "python/aisimulate/tests/unit/collector",
+    "counts": {
+      "passed": 3870,
+      "skipped": 57,
+      "deselected": 39,
+      "failed": 0
+    },
+    "private_state_log": "collector-unit-full.log",
+    "log_sha256": "84caf92070051b36c87508f8be691e460c9d305116dc18fe5b67f88333551a29",
+    "final_gpu_and_accuracy_acceptance": "Separate final GPU collection and data replacement completed; these CPU checks alone do not qualify data or model accuracy. See data-validation/summary.json and companion engine PR #407."
+  },
+  "ruff_validation": {
+    "version": "ruff 0.14.1",
+    "workflow": ".github/workflows/fast-ci.yml:133-150",
+    "workflow_sha256": "3a83b9fccd9f36ee715a3821070e9ee24934f2749fd232bcbdb5c79b2d202fe9",
+    "config_sha256": "ec2d8c3735fa4fe53d7b72fe8d6be92ee157c9c8da4dcecc3bf07530a2db4982",
+    "actual_ci_check_and_format": "PASS",
+    "changed_python_check_and_format": "PASS",
+    "changed_python_file_count": 14,
+    "changed_python_files": [
+      "docs/perf_database/validation/aic-2004-vllm-collector/reproduce.py",
+      "python/aisimulate/collector/case_generator.py",
+      "python/aisimulate/collector/helper.py",
+      "python/aisimulate/collector/vllm/collect_mla_module.py",
+      "python/aisimulate/collector/vllm/utils.py",
+      "python/aisimulate/tests/unit/collector/test_benchmark_graph_lifecycle.py",
+      "python/aisimulate/tests/unit/collector/test_benchmark_graph_scope.py",
+      "python/aisimulate/tests/unit/collector/test_model_cases.py",
+      "python/aisimulate/tests/unit/collector/test_provenance.py",
+      "python/aisimulate/tests/unit/collector/test_vllm_distributed_setup.py",
+      "python/aisimulate/tests/unit/collector/test_vllm_mla_cli.py",
+      "python/aisimulate/tests/unit/collector/test_vllm_mla_graph_timing.py",
+      "python/aisimulate/tests/unit/collector/test_vllm_mla_input_population.py",
+      "python/aisimulate/tests/unit/collector/test_vllm_mla_quantized_inputs.py"
+    ],
+    "broad_package_check": "FAIL: exactly one pre-existing I001 at test_support_plan.py:749; not claimed green.",
+    "broad_package_format": "PASS",
+    "baseline_issue": {
+      "file": "python/aisimulate/tests/unit/test_support_plan.py",
+      "line": 749,
+      "code": "I001",
+      "file_sha256": "fc1385a28f0921eeab74d7db0e7f16ecfeda669a1d0ad4c2278cac499092bdca",
+      "baseline_commit": "e45612e18376c6aef28fb697f3131602613354f4",
+      "byte_equal_baseline_and_origin_main": true,
+      "proof": "Actual baseline git blob passed via stdin with the same filename/config reproduces the identical I001 diagnostic. The unrelated test was not modified.",
+      "actual_ci_excludes_this_package_unit_test": true
+    },
+    "commands_and_results": {
+      "ci-check": {
+        "command": [
+          "ruff",
+          "check",
+          "--config",
+          "python/aisimulate/pyproject.toml",
+          "python/aisimulate/src/aisimulate",
+          "python/aisimulate/tests/e2e/cli/test_cli_experiments.py",
+          "python/aisimulate/tests/e2e/cli/test_cli_recommend.py",
+          "tests"
+        ],
+        "exit_code": 0,
+        "log": "vllm-collector-ci-check.log",
+        "log_sha256": "82b3e6a6c090a57601d22943bd23fca9218d1031dbe5a7b754092f9a156b4f18"
+      },
+      "ci-format": {
+        "command": [
+          "ruff",
+          "format",
+          "--check",
+          "--config",
+          "python/aisimulate/pyproject.toml",
+          "python/aisimulate/src/aisimulate",
+          "python/aisimulate/tests/e2e/cli/test_cli_experiments.py",
+          "python/aisimulate/tests/e2e/cli/test_cli_recommend.py",
+          "tests"
+        ],
+        "exit_code": 0,
+        "log": "vllm-collector-ci-format.log",
+        "log_sha256": "41370db5edd9a86009e12fb20fa2f7633dedd9ea4e76d2fda79c69312e6cc209"
+      },
+      "changed-check": {
+        "command": [
+          "ruff",
+          "check",
+          "--config",
+          "python/aisimulate/pyproject.toml",
+          "docs/perf_database/validation/aic-2004-vllm-collector/reproduce.py",
+          "python/aisimulate/collector/case_generator.py",
+          "python/aisimulate/collector/helper.py",
+          "python/aisimulate/collector/vllm/collect_mla_module.py",
+          "python/aisimulate/collector/vllm/utils.py",
+          "python/aisimulate/tests/unit/collector/test_benchmark_graph_lifecycle.py",
+          "python/aisimulate/tests/unit/collector/test_benchmark_graph_scope.py",
+          "python/aisimulate/tests/unit/collector/test_model_cases.py",
+          "python/aisimulate/tests/unit/collector/test_provenance.py",
+          "python/aisimulate/tests/unit/collector/test_vllm_distributed_setup.py",
+          "python/aisimulate/tests/unit/collector/test_vllm_mla_cli.py",
+          "python/aisimulate/tests/unit/collector/test_vllm_mla_graph_timing.py",
+          "python/aisimulate/tests/unit/collector/test_vllm_mla_input_population.py",
+          "python/aisimulate/tests/unit/collector/test_vllm_mla_quantized_inputs.py"
+        ],
+        "exit_code": 0,
+        "log": "vllm-collector-changed-check.log",
+        "log_sha256": "82b3e6a6c090a57601d22943bd23fca9218d1031dbe5a7b754092f9a156b4f18"
+      },
+      "changed-format": {
+        "command": [
+          "ruff",
+          "format",
+          "--check",
+          "--config",
+          "python/aisimulate/pyproject.toml",
+          "docs/perf_database/validation/aic-2004-vllm-collector/reproduce.py",
+          "python/aisimulate/collector/case_generator.py",
+          "python/aisimulate/collector/helper.py",
+          "python/aisimulate/collector/vllm/collect_mla_module.py",
+          "python/aisimulate/collector/vllm/utils.py",
+          "python/aisimulate/tests/unit/collector/test_benchmark_graph_lifecycle.py",
+          "python/aisimulate/tests/unit/collector/test_benchmark_graph_scope.py",
+          "python/aisimulate/tests/unit/collector/test_model_cases.py",
+          "python/aisimulate/tests/unit/collector/test_provenance.py",
+          "python/aisimulate/tests/unit/collector/test_vllm_distributed_setup.py",
+          "python/aisimulate/tests/unit/collector/test_vllm_mla_cli.py",
+          "python/aisimulate/tests/unit/collector/test_vllm_mla_graph_timing.py",
+          "python/aisimulate/tests/unit/collector/test_vllm_mla_input_population.py",
+          "python/aisimulate/tests/unit/collector/test_vllm_mla_quantized_inputs.py"
+        ],
+        "exit_code": 0,
+        "log": "vllm-collector-changed-format.log",
+        "log_sha256": "2afb1c293434bc55d84b35d54454a0bf9aa84e41cda426817a5c6693d432e37a"
+      },
+      "full-package-check": {
+        "command": [
+          "ruff",
+          "check",
+          "--config",
+          "python/aisimulate/pyproject.toml",
+          "python/aisimulate",
+          "tests"
+        ],
+        "exit_code": 1,
+        "log": "vllm-collector-full-package-check.log",
+        "log_sha256": "9be30ca59485721fd7af2d6cc41477c7577fb1828a8481ff371fba10326464aa"
+      },
+      "full-package-format": {
+        "command": [
+          "ruff",
+          "format",
+          "--check",
+          "--config",
+          "python/aisimulate/pyproject.toml",
+          "python/aisimulate",
+          "tests"
+        ],
+        "exit_code": 0,
+        "log": "vllm-collector-full-package-format.log",
+        "log_sha256": "6fdf0363c0a2573dd3d6183351ecede0b24dd2c2e53af8dc0be1cb7a124b8797"
+      },
+      "original-baseline-stdin": {
+        "command": [
+          "ruff",
+          "check",
+          "--config",
+          "python/aisimulate/pyproject.toml",
+          "--stdin-filename",
+          "python/aisimulate/tests/unit/test_support_plan.py",
+          "-"
+        ],
+        "stdin_source": "git show e45612e18376c6aef28fb697f3131602613354f4:python/aisimulate/tests/unit/test_support_plan.py",
+        "exit_code": 1,
+        "log": "vllm-collector-original-baseline-stdin.log",
+        "log_sha256": "9be30ca59485721fd7af2d6cc41477c7577fb1828a8481ff371fba10326464aa"
+      }
+    },
+    "full_audit_receipt_sha256": "bcdfe7e20dbf4475059442811d903da9c5b1e5f1b2e4ec4a605fcccb43d1633f"
+  }
+}

@@ -218,6 +218,8 @@ def benchmark_with_power(
     power_min_duration: float | None = None,  # Auto-detect from environment if None
     allow_graph_fail: bool = False,  # Enable graceful fallback on graph capture failure
     use_cuda_graph: bool = True,  # Set False only for explicitly eager measurements.
+    *,
+    explicit_graph_cleanup: bool = False,
 ):
     """
     Context manager that handles warmup, graph capture, timing, and power monitoring.
@@ -237,6 +239,10 @@ def benchmark_with_power(
                          iteration eagerly. Defaults to True so all existing callers
                          keep graph-mode measurement. The caller must release any
                          framework-owned tensors that outlive the captured graph.
+        explicit_graph_cleanup: Restore the caller stream and reset the graph even
+                         when capture fails or a traceback retains it. Opted into
+                         by the vLLM MLA/DSA collector; other callers retain their
+                         existing graph lifetime and synchronization behavior.
 
     Yields:
         dict with keys:
@@ -292,34 +298,42 @@ def benchmark_with_power(
     # CUDA Graph Capture with Optional Fallback
     # ═══════════════════════════════════════════════════════════════════
     g = None
-    # Capture itself must be protected too: its exception traceback can keep
-    # the graph object alive even after this generator exits. Attempt explicit
-    # teardown of graph resources without waiting for that traceback to be
-    # dropped; an interrupted capture may still leave CUDA state unusable.
+    capture_phase_completed = False
+    # Explicit cleanup also covers capture: a traceback can retain the graph.
+    # The default preserves the pre-existing lifetime on capture failure.
+    # Neither mode guarantees CUDA recovery after an interrupted capture.
     try:
         use_graph = torch.cuda.is_available() and use_cuda_graph
         if use_graph:
             g = torch.cuda.CUDAGraph()
-            original_stream = torch.cuda.current_stream()
+            if explicit_graph_cleanup:
+                original_stream = torch.cuda.current_stream()
             try:
-                try:
+                if explicit_graph_cleanup:
+                    try:
+                        with torch.cuda.graph(g):
+                            for _ in range(repeat_n):
+                                kernel_func()
+                    finally:
+                        # capture_begin/end may raise before torch's stream
+                        # context restores the caller's current stream.
+                        torch.cuda.set_stream(original_stream)
+                else:
                     with torch.cuda.graph(g):
                         for _ in range(repeat_n):
                             kernel_func()
-                finally:
-                    # torch.cuda.graph may raise from capture_begin/end before
-                    # its stream context restores the caller's current stream.
-                    torch.cuda.set_stream(original_stream)
                 torch.cuda.synchronize()
             except Exception as e:
                 if not allow_graph_fail:
                     raise
                 logging.getLogger(__name__).warning(f"CUDA graph capture failed: {e}. Falling back to eager execution.")
-                g.reset()
+                if explicit_graph_cleanup:
+                    g.reset()
                 g = None
                 torch.cuda.empty_cache()
                 use_graph = False
 
+        capture_phase_completed = True
         # ═══════════════════════════════════════════════════════════════
         # Warmup the ACTUAL execution path (after graph capture)
         # ═══════════════════════════════════════════════════════════════
@@ -403,13 +417,16 @@ def benchmark_with_power(
             "used_cuda_graph": use_graph,  # NEW: Inform caller which path was used
         }
     finally:
-        # Reset the graph even when a traceback or a caller keeps its Python
-        # object alive. A graph pool may still contain framework-owned tensors;
-        # those must also be released by the collector before it is reclaimable.
-        if g is not None:
-            g.reset()
+        # Preserve default cleanup after timing starts. Explicit cleanup also
+        # resets graphs retained by capture tracebacks; framework-owned tensors
+        # must still be released by the collector to reclaim their pool memory.
+        if g is not None and (explicit_graph_cleanup or capture_phase_completed):
+            if explicit_graph_cleanup:
+                g.reset()
             g = None
             if torch.cuda.is_available():
+                if not explicit_graph_cleanup:
+                    torch.cuda.synchronize()
                 torch.cuda.empty_cache()
 
 

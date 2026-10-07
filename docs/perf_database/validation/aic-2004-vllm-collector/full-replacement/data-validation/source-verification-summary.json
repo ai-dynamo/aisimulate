@@ -1,0 +1,170 @@
+{
+  "status": "PASS",
+  "slots_unchanged": {
+    "current": "0.24.0",
+    "next": "0.27.1"
+  },
+  "target": [
+    {
+      "slot": "current",
+      "version": "0.24.0",
+      "shared_layer": false,
+      "table": "dsa_context_module_perf",
+      "report": {
+        "records": [
+          {
+            "version": "0.24.0",
+            "path": "<SYSTEMS>/data/b200_sxm/sparse_attention/vllm/0.24.0/dsa_context_module_perf.parquet",
+            "channel": "primary",
+            "exists": true,
+            "ks_filter": null
+          }
+        ],
+        "warnings": []
+      }
+    },
+    {
+      "slot": "current",
+      "version": "0.24.0",
+      "shared_layer": false,
+      "table": "dsa_generation_module_perf",
+      "report": {
+        "records": [
+          {
+            "version": "0.24.0",
+            "path": "<SYSTEMS>/data/b200_sxm/sparse_attention/vllm/0.24.0/dsa_generation_module_perf.parquet",
+            "channel": "primary",
+            "exists": true,
+            "ks_filter": null
+          }
+        ],
+        "warnings": []
+      }
+    },
+    {
+      "slot": "current",
+      "version": "0.24.0",
+      "shared_layer": true,
+      "table": "dsa_context_module_perf",
+      "report": {
+        "records": [
+          {
+            "version": "0.24.0",
+            "path": "<SYSTEMS>/data/b200_sxm/sparse_attention/vllm/0.24.0/dsa_context_module_perf.parquet",
+            "channel": "primary",
+            "exists": true,
+            "ks_filter": null
+          }
+        ],
+        "warnings": []
+      }
+    },
+    {
+      "slot": "current",
+      "version": "0.24.0",
+      "shared_layer": true,
+      "table": "dsa_generation_module_perf",
+      "report": {
+        "records": [
+          {
+            "version": "0.24.0",
+            "path": "<SYSTEMS>/data/b200_sxm/sparse_attention/vllm/0.24.0/dsa_generation_module_perf.parquet",
+            "channel": "primary",
+            "exists": true,
+            "ks_filter": null
+          }
+        ],
+        "warnings": []
+      }
+    },
+    {
+      "slot": "next",
+      "version": "0.27.1",
+      "shared_layer": true,
+      "table": "dsa_context_module_perf",
+      "report": {
+        "records": [
+          {
+            "version": "0.27.1",
+            "path": "<SYSTEMS>/data/b200_sxm/vllm/0.27.1/dsa_context_module_perf.parquet",
+            "channel": "primary",
+            "exists": false,
+            "ks_filter": null
+          },
+          {
+            "version": "0.24.0",
+            "path": "<SYSTEMS>/data/b200_sxm/sparse_attention/vllm/0.24.0/dsa_context_module_perf.parquet",
+            "channel": "fallback",
+            "exists": true,
+            "ks_filter": null
+          }
+        ],
+        "warnings": []
+      }
+    },
+    {
+      "slot": "next",
+      "version": "0.27.1",
+      "shared_layer": true,
+      "table": "dsa_generation_module_perf",
+      "report": {
+        "records": [
+          {
+            "version": "0.27.1",
+            "path": "<SYSTEMS>/data/b200_sxm/vllm/0.27.1/dsa_generation_module_perf.parquet",
+            "channel": "primary",
+            "exists": false,
+            "ks_filter": null
+          },
+          {
+            "version": "0.24.0",
+            "path": "<SYSTEMS>/data/b200_sxm/sparse_attention/vllm/0.24.0/dsa_generation_module_perf.parquet",
+            "channel": "fallback",
+            "exists": true,
+            "ks_filter": null
+          }
+        ],
+        "warnings": []
+      }
+    },
+    {
+      "slot": "next",
+      "shared_layer": false,
+      "table": "dsa_context_module_perf",
+      "baseline_unchanged": true,
+      "report": {
+        "records": [
+          {
+            "version": "0.27.1",
+            "path": "<SYSTEMS>/data/b200_sxm/vllm/0.27.1/dsa_context_module_perf.parquet",
+            "channel": "primary",
+            "exists": false,
+            "ks_filter": null
+          }
+        ],
+        "warnings": []
+      }
+    },
+    {
+      "slot": "next",
+      "shared_layer": false,
+      "table": "dsa_generation_module_perf",
+      "baseline_unchanged": true,
+      "report": {
+        "records": [
+          {
+            "version": "0.27.1",
+            "path": "<SYSTEMS>/data/b200_sxm/vllm/0.27.1/dsa_generation_module_perf.parquet",
+            "channel": "primary",
+            "exists": false,
+            "ks_filter": null
+          }
+        ],
+        "warnings": []
+      }
+    }
+  ],
+  "unchanged_non_target_source_comparisons": 10236,
+  "complete_private_report_sha256": "4b1fbbbdd48c4c6fcaa19c7adb21a284804660b8d5f9e3fef0a8eb7340442871",
+  "note": "Each source comparison includes candidate order, existence, backend filter and warnings. Dedicated final SG/TRT native view and prediction isolation is a separate check."
+}
