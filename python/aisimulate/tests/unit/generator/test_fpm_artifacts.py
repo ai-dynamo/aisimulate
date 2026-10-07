@@ -892,6 +892,83 @@ def test_fpm_run_script_honors_explicit_flashinfer_cubin_dir(tmp_path):
     assert "HF_HOME is not writable" not in stderr
 
 
+def _engine_kvwarm_cache_dir(tmp_path: Path, model_cache: Path, **case_env: str) -> tuple[str, str]:
+    """Run run.sh with HF_HOME rendered under ``model_cache``; return the
+    DYN_BENCH_KV_WARMUP_CACHE_DIR the engine inherits and run.sh's stderr."""
+    report_path = tmp_path / "kvwarm-cache-dir.txt"
+    pythonpath = _write_fake_engine(
+        tmp_path,
+        """\
+import os
+import pathlib
+
+pathlib.Path(os.environ["FAKE_REPORT_PATH"]).write_text(os.environ.get("DYN_BENCH_KV_WARMUP_CACHE_DIR", ""))
+""",
+    )
+    params = _params()
+    params["K8sConfig"]["k8s_pvc_mount_path"] = str(model_cache)
+    params["K8sConfig"]["k8s_hf_home"] = f"{model_cache}/GLM-5"
+    artifacts = _render(params)
+    completed = subprocess.run(
+        ["bash", str(_write_runtime(tmp_path, artifacts))],
+        text=True,
+        capture_output=True,
+        env=_clean_env(PYTHONPATH=str(pythonpath), FAKE_REPORT_PATH=str(report_path), **case_env),
+        timeout=8,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
+    return report_path.read_text(), completed.stderr
+
+
+def test_fpm_run_script_keeps_engine_kvwarm_cache_default_on_writable_model_cache(tmp_path):
+    model_cache = tmp_path / "models"
+    (model_cache / "GLM-5").mkdir(parents=True)
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+
+    cache_dir, stderr = _engine_kvwarm_cache_dir(tmp_path, model_cache, TMPDIR=str(scratch))
+
+    # Unset means the engine uses its own default, fpm_datasets/ next to HF_HOME.
+    assert cache_dir == ""
+    assert "KV warm-up dataset" not in stderr
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses directory permission bits")
+def test_fpm_run_script_falls_back_to_scratch_kvwarm_cache_when_model_cache_is_read_only(tmp_path):
+    """The engine defaults the KV warm-up dataset cache to fpm_datasets/ next
+    to HF_HOME. On a read-only shared model cache that cannot be created, so
+    warm-up is skipped and readiness blocks warm-required strategies."""
+    model_cache = tmp_path / "models"
+    (model_cache / "GLM-5").mkdir(parents=True)
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    model_cache.chmod(0o555)
+    try:
+        cache_dir, stderr = _engine_kvwarm_cache_dir(tmp_path, model_cache, TMPDIR=str(scratch))
+    finally:
+        model_cache.chmod(0o755)
+
+    assert cache_dir == f"{scratch}/fpm_datasets"
+    assert not (model_cache / "fpm_datasets").exists()
+    assert "KV warm-up dataset" in stderr
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses directory permission bits")
+def test_fpm_run_script_honors_explicit_kvwarm_cache_dir(tmp_path):
+    model_cache = tmp_path / "models"
+    (model_cache / "GLM-5").mkdir(parents=True)
+    explicit = tmp_path / "operator-datasets"
+    model_cache.chmod(0o555)
+    try:
+        cache_dir, stderr = _engine_kvwarm_cache_dir(tmp_path, model_cache, DYN_BENCH_KV_WARMUP_CACHE_DIR=str(explicit))
+    finally:
+        model_cache.chmod(0o755)
+
+    assert cache_dir == str(explicit)
+    assert "KV warm-up dataset" not in stderr
+
+
 def test_default_and_explicit_normal_targets_remain_identical():
     params = _params()
     params["K8sConfig"].pop("extra_env")

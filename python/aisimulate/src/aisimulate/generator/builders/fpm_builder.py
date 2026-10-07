@@ -623,6 +623,20 @@ def _render_run_script(
             ' $FLASHINFER_CUBIN_DIR (not reused across runs)." >&2',
             "  fi",
             "fi",
+            "",
+            "# The engine caches the decode KV warm-up dataset in",
+            "# DYN_BENCH_KV_WARMUP_CACHE_DIR, defaulting to fpm_datasets/ next to",
+            "# HF_HOME. On a read-only shared model cache that default cannot be",
+            "# created, warm-up is skipped as dataset_unavailable, and readiness",
+            "# rejects warm-required strategies. Apply the same scratch fallback;",
+            "# an explicit DYN_BENCH_KV_WARMUP_CACHE_DIR always wins.",
+            'if [[ -z "${DYN_BENCH_KV_WARMUP_CACHE_DIR:-}" && -n "${HF_HOME:-}" ]]; then',
+            '  if ! mkdir -p "${HF_HOME}/../fpm_datasets" 2>/dev/null || [[ ! -w "${HF_HOME}/../fpm_datasets" ]]; then',
+            '    export DYN_BENCH_KV_WARMUP_CACHE_DIR="${TMPDIR:-/tmp}/fpm_datasets"',
+            '    echo "run.sh: fpm_datasets next to HF_HOME is not writable; caching the KV warm-up'
+            ' dataset in $DYN_BENCH_KV_WARMUP_CACHE_DIR (not reused across runs)." >&2',
+            "  fi",
+            "fi",
         ]
     )
 
