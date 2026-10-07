@@ -15,6 +15,12 @@ and [machine-readable summary](full-replacement/data-validation/summary.json).
 The bounded GPU source qualification remains in
 [qualified-source-summary.json](full-replacement/qualified-source-summary.json).
 
+Eight DeepSeek-V3.2/B200/vLLM golden records were refreshed for the prediction
+changes caused solely by replacing the two DSA tables. The official golden
+maintenance tool pinned the values after the original baseline native engine
+and final engine reproduced identical new-table results; all eight targeted
+checks passed ([attribution and values](full-replacement/golden-refresh.json)).
+
 The previous 0.25.1 pilot and its report are superseded because the collector
 omitted native `slot_mapping`, preventing current-query MLA KV writes. Its
 receipts remain in this directory solely as historical diagnostic evidence;

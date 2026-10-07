@@ -735,9 +735,10 @@
   "retained_evidence": {
     "independent_audit_path": "/home/harrli/.local/state/aisimulate/aic-2004-replace-20261007/control-drift-audit/paired-controls-independent.json",
     "independent_audit_sha256": "ce84c796df46cc61858e1c97901d0e24ff1100c9b53fdfa7017129e4545a11aa",
-    "paired_csv_sha256": "7185b0d0a7fcc4fa7d9579b6f4b4385a91048d5d61a088ae95c0f6a50b2a3812",
     "before_only_audit_sha256": "4f3b0f7db6882c7ea4fae5ee26b7294dbeba32ae0dba038ade8fec962e440aec",
-    "source_file_count": 1929
+    "source_file_count": 1929,
+    "paired_csv_source_sha256": "7185b0d0a7fcc4fa7d9579b6f4b4385a91048d5d61a088ae95c0f6a50b2a3812",
+    "paired_csv_source_format": "Original CRLF source bytes; retained unchanged."
   },
   "source_disposition": {
     "kind": "EXPLICIT_REVIEWED_POSTRUN_SOURCE_ATTESTATION",
@@ -752,5 +753,14 @@
     "default_strict_qualification_route_preserved": true,
     "alternate_route_requires_explicit_attestation_and_reviewed_sha": true,
     "previous_pending_document_sha256": "0ec822f5efb4d6e0fe01d04fff8de72dc34be2131e33a41c9a2c618a8499c707"
+  },
+  "repository_csv": {
+    "path": "paired-control-points.csv",
+    "sha256": "13c5a3870e22c50028a4f0b7bada2cfe8d58fedc24a638489cd362a3d2bf8599",
+    "line_endings": "LF",
+    "original_source_sha256": "7185b0d0a7fcc4fa7d9579b6f4b4385a91048d5d61a088ae95c0f6a50b2a3812",
+    "format_receipt": "../artifact-format.json",
+    "format_receipt_sha256": "c16b779d13e8d11e00f94b28fe9a154e82c8d971436b5fca92f523ed64191abf",
+    "ordered_rows_and_cells_equal": true
   }
 }

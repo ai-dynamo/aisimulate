@@ -47,3 +47,7 @@ Its 44 validator tests passed. This is a source-chain disposition only:
 it does not accept numeric repeatability drift, native failures, final
 publication, model accuracy or merge readiness. Full raw source receipts
 remain retained outside the PR, with paths and hashes in the reviews.
+
+The repository CSV copies use LF line endings. The [format receipt](../artifact-format.json)
+records their original CRLF source hashes and LF copy hashes, and verifies
+identical ordered rows and cells. Original private evidence bytes are unchanged.

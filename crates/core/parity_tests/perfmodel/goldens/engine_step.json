@@ -129,56 +129,56 @@
     "deepseek-v32-b200-vllm-empirical": {
       "agg": {
         "values": {
-          "agg_request": 384.7981398952146,
-          "agg_tpot": 155.24618348010097,
-          "agg_ttft": 229.5519564151136
+          "agg_request": 202.92176998046523,
+          "agg_tpot": 69.65730352021893,
+          "agg_ttft": 133.2644664602463
         }
       },
       "disagg": {
         "values": {
-          "disagg_request": 307.169,
-          "disagg_tpot": 19.104,
-          "disagg_ttft": 288.065
+          "disagg_request": 140.169,
+          "disagg_tpot": 14.275,
+          "disagg_ttft": 125.894
         }
       },
       "mixed": {
         "values": {
-          "mixed_step": 155.24618348010097
+          "mixed_step": 69.65730352021893
         }
       },
       "static": {
         "values": {
-          "static_ctx": 145.487,
-          "static_gen": 15.165,
-          "static_total": 160.652
+          "static_ctx": 63.583,
+          "static_gen": 11.48,
+          "static_total": 75.063
         }
       }
     },
     "deepseek-v32-b200-vllm-isl1024-osl2": {
       "agg": {
         "values": {
-          "agg_request": 385.0603863780549,
-          "agg_tpot": 155.3695935896729,
-          "agg_ttft": 229.690792788382
+          "agg_request": 203.18384002795722,
+          "agg_tpot": 69.78063060139162,
+          "agg_ttft": 133.40320942656558
         }
       },
       "disagg": {
         "values": {
-          "disagg_request": 306.977,
-          "disagg_tpot": 19.132,
-          "disagg_ttft": 287.845
+          "disagg_request": 139.977,
+          "disagg_tpot": 14.303,
+          "disagg_ttft": 125.674
         }
       },
       "mixed": {
         "values": {
-          "mixed_step": 155.3695935896729
+          "mixed_step": 69.78063060139164
         }
       },
       "static": {
         "values": {
-          "static_ctx": 145.377,
-          "static_gen": 15.191,
-          "static_total": 160.568
+          "static_ctx": 63.472,
+          "static_gen": 11.507,
+          "static_total": 74.979
         }
       }
     },
@@ -1915,35 +1915,35 @@
     },
     "deepseek-v32-b200-vllm-empirical::agg": {
       "engine": "rust",
-      "git_head": "0a51476b6ab90bc0e475bd41d4b1c7abbef07b95"
+      "git_head": "7d53044041e030bba5b5ebc0e04522a0bf2c7750"
     },
     "deepseek-v32-b200-vllm-empirical::disagg": {
       "engine": "rust",
-      "git_head": "0a51476b6ab90bc0e475bd41d4b1c7abbef07b95"
+      "git_head": "7d53044041e030bba5b5ebc0e04522a0bf2c7750"
     },
     "deepseek-v32-b200-vllm-empirical::mixed": {
       "engine": "rust",
-      "git_head": "0a51476b6ab90bc0e475bd41d4b1c7abbef07b95"
+      "git_head": "7d53044041e030bba5b5ebc0e04522a0bf2c7750"
     },
     "deepseek-v32-b200-vllm-empirical::static": {
       "engine": "rust",
-      "git_head": "0a51476b6ab90bc0e475bd41d4b1c7abbef07b95"
+      "git_head": "7d53044041e030bba5b5ebc0e04522a0bf2c7750"
     },
     "deepseek-v32-b200-vllm-isl1024-osl2::agg": {
       "engine": "rust",
-      "git_head": "0a51476b6ab90bc0e475bd41d4b1c7abbef07b95"
+      "git_head": "7d53044041e030bba5b5ebc0e04522a0bf2c7750"
     },
     "deepseek-v32-b200-vllm-isl1024-osl2::disagg": {
       "engine": "rust",
-      "git_head": "0a51476b6ab90bc0e475bd41d4b1c7abbef07b95"
+      "git_head": "7d53044041e030bba5b5ebc0e04522a0bf2c7750"
     },
     "deepseek-v32-b200-vllm-isl1024-osl2::mixed": {
       "engine": "rust",
-      "git_head": "0a51476b6ab90bc0e475bd41d4b1c7abbef07b95"
+      "git_head": "7d53044041e030bba5b5ebc0e04522a0bf2c7750"
     },
     "deepseek-v32-b200-vllm-isl1024-osl2::static": {
       "engine": "rust",
-      "git_head": "0a51476b6ab90bc0e475bd41d4b1c7abbef07b95"
+      "git_head": "7d53044041e030bba5b5ebc0e04522a0bf2c7750"
     },
     "deepseek-v4-flash-b200-vllm-isl1024-osl2::agg": {
       "engine": "rust",

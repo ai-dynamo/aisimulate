@@ -104,3 +104,7 @@ PR #407; see the [parent report](../../README.md). Remote CI remains separate.
 Raw native logs, full source inventories and complete case ledgers remain in
 the private locations and SHA ledgers recorded by `summary.json`; this report
 does not duplicate them.
+
+The repository CSV copies use LF line endings. The [format receipt](../artifact-format.json)
+records their original CRLF source hashes and LF copy hashes, and verifies
+identical ordered rows and cells. Original private evidence bytes are unchanged.
