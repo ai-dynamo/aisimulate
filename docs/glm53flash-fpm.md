@@ -41,7 +41,12 @@ prefix-seed producer (`glm53flash_prefix_scheduler.py`).
 - Inputs are the seeded token stream of `collector/glm53flash_attention_tokens.py`
   (generator `sha256_counter_rejection` v1, seed 53, ids `[0, 154820)` of the
   pinned tokenizer), recorded in `input_provenance`; there is no text corpus.
-- Deployments: FP8 and NVFP4 at TP2/TP4, plus NVFP4 TP1.
+- Deployments: FP8 and NVFP4 at TP2/TP4, plus NVFP4 TP1. FP8 TP1 does not
+  fit one GB300: a stock v0.31.0 startup ran out of memory while creating the
+  weights (275.26 of 276.62 GiB allocated). NVFP4 TP1 reads back a Mamba block
+  of 8576 tokens and 7,198,858 KV tokens at memory 0.92. The block is larger
+  than the 8192 budget, so a long prefill advances by whole 8192-token chunks
+  and then stops at the next block boundary. Both are multiples of 4.
 - Dynamo: the instrumentation stays at `54960177`. Its `_compute_queued`
   reads `Scheduler.skipped_waiting`, which v0.31.0 removed. The producer
   overrides that one method with the v0.31.0 version from Dynamo `395f0240`.
