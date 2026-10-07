@@ -9,7 +9,8 @@ Details and 3D Visualization are separate tabs with independent controls.
 ## What is published
 
 - Overview: expandable model/configuration rows and one sortable Best MAPE
-  column, with the winning predictor, errors, and input evidence.
+  column, with the winning predictor and errors. FPM input links are available
+  in Details rather than table cells.
   Model rows average their configurations' best MAPEs equally and say
   “Mixed predictors” when winners differ. Prediction counts, coverage, and
   contributing configuration counts are omitted from Overview/Predictors table

@@ -80,10 +80,9 @@
       const result = rows.length === 1 ? rows[0].results[method] : null;
       if (result?.status === "no_fpm_input") notes.push("No reviewed input");
       if (result?.status === "unsupported_predictor") notes.push("Unsupported by this AISim revision");
-      const evidence = result?.artifact ? link(hf(summary.snapshot, result.artifact.path), "FPM input ↗") : "";
       const winner = comparison ? '' : `<span class="predictor-name">${escape(metric.label)}</span>`;
       const note = notes.length ? `<span>${escape(notes.join(" · "))}</span>` : '';
-      return `<td class="overview-method-cell ${tone}" data-label="${escape(metric.label)}"><strong>${value}</strong>${winner}${note}${evidence}</td>`;
+      return `<td class="overview-method-cell ${tone}" data-label="${escape(metric.label)}"><strong>${value}</strong>${winner}${note}</td>`;
     }).join("");
   }
 
