@@ -480,12 +480,181 @@ def test_predict_online_rejects_runner_without_online_capability(tmp_path, monke
             }
         )
     )
+    output = tmp_path / "out"
+    output.mkdir()
+    previous = output / "prediction.json"
+    previous.write_text('{"previous": true}\n')
     monkeypatch.setattr(cli, "resolve_runner_factory", lambda stack: _Factory(_Runner()))
 
     with pytest.raises(SystemExit, match="2"):
-        cli.main(["predict", "--online", "--config", str(config_path)])
+        cli.main(
+            [
+                "predict",
+                "--online",
+                "--config",
+                str(config_path),
+                "--output-dir",
+                str(output),
+                "--overwrite",
+            ]
+        )
 
     assert "runner does not support execution mode 'online'" in capsys.readouterr().err
+    assert json.loads(previous.read_text()) == {"previous": True}
+
+
+def test_predict_adapter_compilation_failure_preserves_previous_output(tmp_path, monkeypatch) -> None:
+    config_path = tmp_path / "prediction.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "engine": {
+                    "model": "example/model",
+                    "hardware": "h200_sxm",
+                    "context_length": 4096,
+                    "workers": {"aggregated": {}},
+                }
+            }
+        )
+    )
+    output = tmp_path / "out"
+    output.mkdir()
+    previous = output / "prediction.json"
+    previous.write_text('{"previous": true}\n')
+    monkeypatch.setattr(cli, "resolve_runner_factory", lambda stack: _Factory(_Runner()))
+    monkeypatch.setattr(
+        cli,
+        "resolve_config_adapters",
+        lambda names: {"engine.placement": _PlacementAdapter()},
+    )
+
+    with pytest.raises(SystemExit, match="2"):
+        cli.main(
+            [
+                "predict",
+                "--config",
+                str(config_path),
+                "--set",
+                "placement.policy=unsupported",
+                "--output-dir",
+                str(output),
+                "--overwrite",
+            ]
+        )
+
+    assert json.loads(previous.read_text()) == {"previous": True}
+
+
+def test_predict_supervision_brackets_runner_lifecycle(tmp_path, monkeypatch) -> None:
+    from aisimulate import supervision
+
+    config_path = tmp_path / "prediction.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "engine": {
+                    "model": "example/model",
+                    "hardware": "h200_sxm",
+                    "context_length": 4096,
+                    "workers": {"aggregated": {}},
+                }
+            }
+        )
+    )
+    events = []
+
+    class TrackedRunner(_Runner):
+        def run(self, spec, *, output_requirements=None):
+            events.append("run")
+            return super().run(spec, output_requirements=output_requirements)
+
+        def close(self):
+            events.append("close")
+            super().close()
+
+    class TrackedFactory(_Factory):
+        def create(self, worker_id):
+            events.append("create")
+            return super().create(worker_id)
+
+    monkeypatch.setattr(cli, "resolve_runner_factory", lambda stack: TrackedFactory(TrackedRunner()))
+    monkeypatch.setattr(supervision, "mark_execution_ready", lambda: events.append("ready"))
+    monkeypatch.setattr(supervision, "mark_shutdown", lambda: events.append("shutdown"))
+
+    assert cli.main(["predict", "--config", str(config_path), "--output-dir", str(tmp_path / "out")]) == 0
+
+    assert events == ["create", "ready", "run", "shutdown", "close", "ready"]
+
+
+def test_predict_writes_successful_fpm_coverage(tmp_path, monkeypatch) -> None:
+    config_path = tmp_path / "prediction.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "engine": {
+                    "model": "example/model",
+                    "hardware": "h200_sxm",
+                    "context_length": 4096,
+                    "workers": {"aggregated": {}},
+                }
+            }
+        )
+    )
+    coverage = {"schema_version": 1, "status": "covered"}
+
+    class CoverageRunner(_Runner):
+        def run(self, spec, *, output_requirements=None):
+            report = super().run(spec, output_requirements=output_requirements)
+            native = {**report.metadata["native_report"], "fpm_query_coverage": coverage}
+            return ReplayReport(metrics=report.metrics, metadata={**report.metadata, "native_report": native})
+
+    monkeypatch.setattr(cli, "resolve_runner_factory", lambda stack: _Factory(CoverageRunner()))
+    output = tmp_path / "out"
+
+    assert cli.main(["predict", "--config", str(config_path), "--output-dir", str(output)]) == 0
+
+    assert json.loads((output / "fpm-coverage.json").read_text()) == coverage
+
+
+@pytest.mark.parametrize("close_fails", [False, True])
+def test_predict_writes_incomplete_fpm_coverage_on_failure(tmp_path, monkeypatch, close_fails) -> None:
+    config_path = tmp_path / "prediction.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "engine": {
+                    "model": "example/model",
+                    "hardware": "h200_sxm",
+                    "context_length": 4096,
+                    "workers": {"aggregated": {}},
+                }
+            }
+        )
+    )
+    coverage = {"schema_version": 1, "status": "uncovered"}
+
+    class CoverageFailureRunner(_Runner):
+        def run(self, spec, *, output_requirements=None):
+            error = RuntimeError("missing timing point")
+            error.fpm_query_coverage = json.dumps(coverage)
+            raise error
+
+        def close(self):
+            super().close()
+            if close_fails:
+                raise RuntimeError("close failed")
+
+    monkeypatch.setattr(cli, "resolve_runner_factory", lambda stack: _Factory(CoverageFailureRunner()))
+    output = tmp_path / "out"
+
+    assert cli.main(["predict", "--config", str(config_path), "--output-dir", str(output)]) == 1
+
+    saved = json.loads((output / "fpm-coverage.json").read_text())
+    assert saved == {
+        **coverage,
+        "status": "incomplete",
+        "error": "missing timing point",
+    }
 
 
 @pytest.mark.parametrize("command", ["predict", "recommend"])

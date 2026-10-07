@@ -10,6 +10,7 @@ import json
 import sys
 from collections.abc import Sequence
 from copy import deepcopy
+from pathlib import Path
 from typing import Any
 
 from pydantic import ValidationError
@@ -33,6 +34,7 @@ from .output import (
     format_prediction_stdout,
     format_recommendation_stdout,
     prepare_output_directory,
+    write_fpm_coverage,
     write_prediction_report,
     write_recommendation_csv,
     write_recommendation_result,
@@ -62,6 +64,57 @@ from .sweeper.replay import ReplayOutputRequirements
 
 class _CliExecutionError(RuntimeError):
     pass
+
+
+def _write_incomplete_fpm_coverage(root: Path, error: BaseException) -> None:
+    coverage = getattr(error, "fpm_query_coverage", None)
+    if isinstance(coverage, str):
+        coverage = json.loads(coverage)
+    if isinstance(coverage, dict):
+        write_fpm_coverage(root, {**coverage, "status": "incomplete", "error": str(error)})
+
+
+class _PredictionCliRunner:
+    def __init__(self, runner, output_root: Path, mark_execution_ready, mark_shutdown) -> None:
+        self._runner = runner
+        self._output_root = output_root
+        self._mark_execution_ready = mark_execution_ready
+        self._mark_shutdown = mark_shutdown
+
+    def run(self, spec, *, output_requirements=None):
+        try:
+            return self._runner.run(spec, output_requirements=output_requirements)
+        except BaseException as exc:
+            # Persist native query evidence before close() can replace the
+            # execution error.
+            _write_incomplete_fpm_coverage(self._output_root, exc)
+            raise
+
+    def close(self) -> None:
+        self._mark_shutdown()
+        try:
+            self._runner.close()
+        finally:
+            self._mark_execution_ready()
+
+
+class _PredictionCliRunnerFactory:
+    def __init__(self, factory, output_dir, overwrite, mark_execution_ready, mark_shutdown) -> None:
+        self._factory = factory
+        self._output_dir = output_dir
+        self._overwrite = overwrite
+        self._mark_execution_ready = mark_execution_ready
+        self._mark_shutdown = mark_shutdown
+        self.output_root: Path | None = None
+
+    def capabilities(self):
+        return self._factory.capabilities()
+
+    def create(self, worker_id):
+        self.output_root = prepare_output_directory(self._output_dir, overwrite=self._overwrite)
+        runner = self._factory.create(worker_id)
+        self._mark_execution_ready()
+        return _PredictionCliRunner(runner, self.output_root, self._mark_execution_ready, self._mark_shutdown)
 
 
 def _resolve_section_adapters(sections: dict[str, dict[str, Any]], stack: str) -> dict[str, SimulationConfigAdapter]:
@@ -112,32 +165,35 @@ def _predict(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
     if epd and (args.stack != "engine" or args.online or args.capture_per_request or adapter_raw):
         raise ValueError("analytical EPD requires offline --stack engine without adapters or per-request capture")
     adapters = _resolve_section_adapters(adapter_raw, args.stack)
-    root = prepare_output_directory(args.output_dir, overwrite=args.overwrite)
-    # run_prediction owns compile -> replay -> summarize; the supervision marks
-    # bracket it, and the guarded factory enforces resource limits (its
-    # ResourceLimitError propagates unwrapped for the main() handler).
-    mark_execution_ready()
-    try:
-        result = run_prediction(
-            config,
-            adapter_configs=adapter_raw,
-            stack=args.stack,
-            runner_factory=factory,
-            providers=adapters,
-            execution_mode="online" if args.online else "offline",
-            output_requirements=ReplayOutputRequirements(
-                include_raw_report=not epd,
-                capture_per_request=args.capture_per_request,
-                capture_memory_diagnostics="memory" in args.detail,
-                capture_performance_diagnostics=bool({"time", "source"}.intersection(args.detail)),
-            ),
-        )
-    finally:
-        mark_shutdown()
-        mark_execution_ready()
+    factory = _PredictionCliRunnerFactory(
+        factory,
+        args.output_dir,
+        args.overwrite,
+        mark_execution_ready,
+        mark_shutdown,
+    )
+    result = run_prediction(
+        config,
+        adapter_configs=adapter_raw,
+        stack=args.stack,
+        runner_factory=factory,
+        providers=adapters,
+        execution_mode="online" if args.online else "offline",
+        output_requirements=ReplayOutputRequirements(
+            include_raw_report=not epd,
+            capture_per_request=args.capture_per_request,
+            capture_memory_diagnostics="memory" in args.detail,
+            capture_performance_diagnostics=bool({"time", "source"}.intersection(args.detail)),
+        ),
+    )
+    root = factory.output_root
+    if root is None:
+        raise RuntimeError("prediction runner was not created")
     spec = result.replay_spec
     summary = result.summary
     native = result.native
+    if isinstance(native.get("fpm_query_coverage"), dict):
+        write_fpm_coverage(root, native["fpm_query_coverage"])
     power_diagnostics = None
     if args.diagnostics == "power":
         power_diagnostics = energy_diagnostics(native)

@@ -29,6 +29,10 @@ from .sweeper.replay import ReplayOutputRequirements, ReplayReport, ReplaySpec, 
 class PredictionExecutionError(RuntimeError):
     """A runner failure while executing a prediction replay."""
 
+    def __init__(self, message: str, *, fpm_query_coverage: Any = None) -> None:
+        super().__init__(message)
+        self.fpm_query_coverage = fpm_query_coverage
+
 
 @dataclass(frozen=True)
 class PredictionResult:
@@ -129,7 +133,10 @@ def run_prediction(
             # unwrapped so it can be handled distinctly from execution failures.
             raise
         except Exception as exc:
-            raise PredictionExecutionError(f"{type(exc).__name__}: {exc}") from exc
+            raise PredictionExecutionError(
+                f"{type(exc).__name__}: {exc}",
+                fpm_query_coverage=getattr(exc, "fpm_query_coverage", None),
+            ) from exc
     finally:
         runner.close()
     native = report.metadata.get("native_report")
