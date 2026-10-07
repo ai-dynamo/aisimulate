@@ -435,7 +435,7 @@ impl SglangKvManager {
         // Protect the matched path before making room. Otherwise an LRU
         // eviction can remove the prefix used to size this allocation, and a
         // second match would require more pages than were freed.
-        let reservable = self.cache.available_tokens() + self.cache.evictable_size;
+        let reservable = self.cache.available_tokens() + self.cache.evictable_size();
         if required_tokens > reservable {
             self.cache.dec_lock_ref(last_node);
             return None;
@@ -508,7 +508,7 @@ impl SglangKvManager {
         let target_pages = token_ids.len().div_ceil(page_size);
         let new_pages = target_pages.saturating_sub(lease.pages.len());
         let required_tokens = new_pages * page_size;
-        let reservable = self.cache.available_tokens() + self.cache.evictable_size;
+        let reservable = self.cache.available_tokens() + self.cache.evictable_size();
         if required_tokens > reservable {
             return None;
         }
@@ -647,12 +647,15 @@ impl SglangKvManager {
         first_new_token: usize,
         token_ids: &[u32],
     ) {
-        let complete_len = page_hashes.len() * self.cache.page_size();
         self.publish_stored_hashes(page_hashes, pages, first_new_token, token_ids);
-        let new_last_node =
-            self.cache
-                .insert_page_hashes_from_node(last_node, first_new_token, page_hashes, pages);
-        self.release_unretained_finished_pages(pages, new_last_node, first_new_token, complete_len);
+        let insert = self.cache.insert_page_hashes_from_node(
+            last_node,
+            first_new_token,
+            page_hashes,
+            pages,
+            false,
+        );
+        self.free_pages(&insert.unretained_pages);
         self.cache.dec_lock_ref(last_node);
     }
 
@@ -683,9 +686,14 @@ impl SglangKvManager {
         );
 
         self.publish_stored_hashes(page_hashes, pages, first_new_token, token_ids);
-        let new_last_node =
-            self.cache
-                .insert_page_hashes_from_node(last_node, first_new_token, page_hashes, pages);
+        let insert = self.cache.insert_page_hashes_from_node(
+            last_node,
+            first_new_token,
+            page_hashes,
+            pages,
+            true,
+        );
+        let new_last_node = insert.last_node;
 
         // An interleaved insert can retain different physical pages for the same prefix.
         // Move the active request to canonical pages before releasing its duplicates.
@@ -694,7 +702,15 @@ impl SglangKvManager {
         if new_last_node != last_node {
             self.cache.inc_lock_ref(new_last_node);
         }
-        self.canonicalize_unfinished_pages(pages, new_last_node, first_new_token, complete_len);
+        let first_new_page = first_new_token / block_size;
+        let suffix_end = first_new_page + insert.canonical_suffix.len();
+        assert_eq!(
+            suffix_end,
+            complete_len / block_size,
+            "SGLang core returned a canonical suffix with the wrong length"
+        );
+        pages[first_new_page..suffix_end].copy_from_slice(&insert.canonical_suffix);
+        self.free_pages(&insert.unretained_pages);
         if new_last_node != last_node {
             self.cache.dec_lock_ref(last_node);
         }
@@ -725,7 +741,7 @@ impl SglangKvManager {
         };
         let fresh_tokens = allocated_tokens.saturating_sub(prefix_len);
         let fresh_pages = fresh_tokens / self.cache.page_size();
-        let reservable = self.cache.available_tokens() + self.cache.evictable_size;
+        let reservable = self.cache.available_tokens() + self.cache.evictable_size();
         if fresh_tokens > reservable {
             self.cache.dec_lock_ref(last_node);
             return None;
@@ -843,187 +859,8 @@ impl SglangKvManager {
         }
     }
 
-    /// Collect physical pages from the matched prefix path by walking root→last_node.
-    fn collect_path_pages(&self, last_node: NodeId) -> Vec<KvPageId> {
-        if last_node == self.cache.root() {
-            return Vec::new();
-        }
-
-        // Walk from last_node to root, collecting node IDs
-        let mut path = Vec::new();
-        let mut current = last_node;
-        loop {
-            let node = self.cache.node(current);
-            if node.parent.is_none() {
-                break;
-            }
-            path.push(current);
-            current = node.parent.unwrap();
-        }
-        path.reverse();
-
-        let mut pages = Vec::new();
-        for node_id in path {
-            pages.extend_from_slice(&self.cache.node(node_id).value);
-        }
-        pages
-    }
-
     fn collect_path_pages_through(&self, last_node: NodeId, prefix_len: usize) -> Vec<KvPageId> {
-        assert_eq!(
-            prefix_len % self.cache.page_size(),
-            0,
-            "matched SGLang prefix must be page-aligned"
-        );
-        let expected_pages = prefix_len / self.cache.page_size();
-        let mut pages = self.collect_path_pages(last_node);
-        assert!(
-            pages.len() >= expected_pages,
-            "SGLang radix path returned {} pages for a {expected_pages}-page prefix",
-            pages.len()
-        );
-        pages.truncate(expected_pages);
-        pages
-    }
-
-    fn release_unretained_finished_pages(
-        &mut self,
-        pages: &[KvPageId],
-        last_node: NodeId,
-        first_new_token: usize,
-        complete_len: usize,
-    ) {
-        let block_size = self.cache.page_size();
-        if complete_len == 0 {
-            return;
-        }
-
-        let mut unretained_pages = Vec::new();
-        let mut current = last_node;
-        let first_new_page = first_new_token / block_size;
-        let mut path_end = complete_len / block_size;
-
-        while path_end > first_new_page {
-            debug_assert_ne!(current, self.cache.root());
-            if current == self.cache.root() {
-                tracing::error!(
-                    path_end,
-                    first_new_token,
-                    complete_len,
-                    "SGLang radix path ended before finished-request reconciliation"
-                );
-                break;
-            }
-
-            let node = self.cache.node(current);
-            let node_len = node.value.len();
-            debug_assert!(node_len <= path_end);
-            if node_len > path_end {
-                tracing::error!(
-                    node_len,
-                    path_end,
-                    complete_len,
-                    "SGLang radix node exceeds finished materialized prefix"
-                );
-                break;
-            }
-            let path_start = path_end - node_len;
-            let reconcile_start = path_start.max(first_new_page);
-
-            for (page_idx, &incoming_page) in pages
-                .iter()
-                .enumerate()
-                .take(path_end)
-                .skip(reconcile_start)
-            {
-                let canonical_page = node.value[page_idx - path_start];
-                if incoming_page != canonical_page {
-                    unretained_pages.push(incoming_page);
-                }
-            }
-
-            path_end = path_start;
-            current = node.parent.unwrap_or(self.cache.root());
-        }
-
-        self.free_pages(&unretained_pages);
-    }
-
-    fn canonicalize_unfinished_pages(
-        &mut self,
-        pages: &mut [KvPageId],
-        last_node: NodeId,
-        first_new_token: usize,
-        complete_len: usize,
-    ) {
-        let block_size = self.cache.page_size();
-        debug_assert_eq!(complete_len % block_size, 0);
-        debug_assert_eq!(first_new_token % block_size, 0);
-        debug_assert!(complete_len / block_size <= pages.len());
-        debug_assert!(first_new_token <= complete_len);
-
-        assert!(
-            first_new_token.is_multiple_of(block_size)
-                && complete_len.is_multiple_of(block_size)
-                && complete_len / block_size <= pages.len()
-                && first_new_token <= complete_len
-                && self.radix_path_covers(last_node, first_new_token, complete_len),
-            "invalid SGLang canonicalization range or radix path: first_new_token={first_new_token}, complete_len={complete_len}, pages={}",
-            pages.len()
-        );
-
-        let mut unretained_pages = Vec::new();
-        let mut current = last_node;
-        let first_new_page = first_new_token / block_size;
-        let mut path_end = complete_len / block_size;
-
-        while path_end > first_new_page {
-            let node = self.cache.node(current);
-            let node_len = node.value.len();
-            let path_start = path_end - node_len;
-            let reconcile_start = path_start.max(first_new_page);
-
-            for (page_idx, incoming_page) in pages
-                .iter_mut()
-                .enumerate()
-                .take(path_end)
-                .skip(reconcile_start)
-            {
-                let canonical_page = node.value[page_idx - path_start];
-                if *incoming_page != canonical_page {
-                    unretained_pages.push(*incoming_page);
-                    *incoming_page = canonical_page;
-                }
-            }
-
-            path_end = path_start;
-            current = node.parent.unwrap_or_else(|| self.cache.root());
-        }
-
-        self.free_pages(&unretained_pages);
-    }
-
-    fn radix_path_covers(
-        &self,
-        mut current: NodeId,
-        first_new_token: usize,
-        path_end: usize,
-    ) -> bool {
-        let page_size = self.cache.page_size();
-        let first_new_page = first_new_token / page_size;
-        let mut path_end = path_end / page_size;
-        while path_end > first_new_page {
-            if current == self.cache.root() {
-                return false;
-            }
-            let node = self.cache.node(current);
-            if node.value.len() > path_end {
-                return false;
-            }
-            path_end -= node.value.len();
-            current = node.parent.unwrap_or_else(|| self.cache.root());
-        }
-        true
+        self.cache.collect_path_pages_through(last_node, prefix_len)
     }
 
     /// Evict tokens from the cache, publish BlockRemoved events, and log a trace.
@@ -1051,8 +888,8 @@ impl SglangKvManager {
             num_tokens,
             page_size: self.cache.page_size(),
             available_tokens: self.cache.available_tokens(),
-            evictable_tokens: self.cache.evictable_size,
-            protected_tokens: self.cache.protected_size,
+            evictable_tokens: self.cache.evictable_size(),
+            protected_tokens: self.cache.protected_size(),
             total_tokens: self.cache.total_tokens(),
         });
     }
@@ -1374,7 +1211,9 @@ mod tests {
 
         assert_eq!(alloc.prefix_len, prefix.len());
         assert_eq!(mgr.cache().prefix_match_len(&prefix), prefix.len());
-        assert_eq!(mgr.cache().available_tokens(), 0);
+        // The SGLang core evicts the complete two-page compressed leaf, then
+        // the new request consumes one of those pages.
+        assert_eq!(mgr.cache().available_tokens(), 4);
     }
 
     #[test]
@@ -1431,8 +1270,8 @@ mod tests {
         assert!(mgr.retract(alloc.lease));
 
         assert_eq!(mgr.cache().page_pool.available(), 12);
-        assert_eq!(mgr.cache().protected_size, 0);
-        assert_eq!(mgr.cache().evictable_size, 4);
+        assert_eq!(mgr.cache().protected_size(), 0);
+        assert_eq!(mgr.cache().evictable_size(), 4);
         assert_eq!(mgr.cache().prefix_match_len(&[1, 2, 3, 4]), 4);
     }
 
@@ -1509,7 +1348,7 @@ mod tests {
     }
 
     #[test]
-    fn retained_tail_split_releases_leases_before_eviction() {
+    fn retained_tail_child_releases_leases_before_eviction() {
         let mut mgr = SglangKvManager::new(16, 4, KvEventPublishers::default(), 0);
 
         let first_tokens = [1, 2, 3, 4, 5, 6, 7, 8];
@@ -1522,24 +1361,25 @@ mod tests {
         );
         mgr.extend_cached_prefix(&first_tokens, &mut first.lease);
 
-        assert_eq!(first.lease.last_node(), retained_tail);
-        assert_eq!(mgr.cache().num_nodes(), 2);
+        let extended_tail = first.lease.last_node();
+        assert_ne!(extended_tail, retained_tail);
+        assert_eq!(mgr.cache().num_nodes(), 3);
         let second_tokens = [1, 2, 3, 4, 9, 10, 11, 12];
         let mut second = mgr.allocate_for_request(&second_tokens).unwrap();
         assert_eq!(second.prefix_len, 4);
-        assert_eq!(first.lease.last_node(), retained_tail);
+        assert_eq!(first.lease.last_node(), extended_tail);
         assert_eq!(mgr.cache().num_nodes(), 3);
         mgr.extend_cached_prefix(&second_tokens, &mut second.lease);
         assert_eq!(mgr.cache().num_nodes(), 4);
         mgr.finish(&first_tokens, first.lease);
         assert!(mgr.retract(second.lease));
-        assert_eq!(mgr.cache().protected_size, 0);
-        assert_eq!(mgr.cache().evictable_size, 12);
+        assert_eq!(mgr.cache().protected_size(), 0);
+        assert_eq!(mgr.cache().evictable_size(), 12);
 
         mgr.evict(12);
         assert_eq!(mgr.cache().page_pool.available(), 16);
-        assert_eq!(mgr.cache().protected_size, 0);
-        assert_eq!(mgr.cache().evictable_size, 0);
+        assert_eq!(mgr.cache().protected_size(), 0);
+        assert_eq!(mgr.cache().evictable_size(), 0);
         assert_eq!(mgr.cache().num_nodes(), 1);
     }
 
@@ -1613,7 +1453,7 @@ mod tests {
         assert!(mgr.abort(result.lease));
 
         // The request path is unlocked and its private pages are returned.
-        assert_eq!(mgr.cache().protected_size, 0);
+        assert_eq!(mgr.cache().protected_size(), 0);
     }
 
     #[test]
@@ -1945,13 +1785,14 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "invalid SGLang canonicalization range or radix path")]
+    #[should_panic(expected = "insert continuation anchor")]
     fn invalid_canonical_path_is_fatal() {
         let mut mgr = SglangKvManager::new(8, 4, KvEventPublishers::default(), 0);
         let mut pages = mgr.cache_mut().page_pool.allocate_pages(1).unwrap();
         let root = mgr.cache().root();
+        let page_hashes = compute_block_hash_for_seq(&[1, 2, 3, 4], 4);
 
-        mgr.canonicalize_unfinished_pages(&mut pages, root, 0, 4);
+        mgr.cache_unfinished_hashes(&page_hashes, &mut pages, root, 4, &[1, 2, 3, 4]);
     }
 
     #[test]

@@ -1,25 +1,30 @@
 // SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Radix-tree KV cache for SGLang engine simulation.
+//! SGLang radix-cache adapter for engine simulation.
 //!
-//! Reference: sglang/python/sglang/srt/mem_cache/radix_cache.py
+//! Tree structure, matching, locking, and eviction are delegated to the
+//! `sglang-radix-tree` crate. AISimulate continues to own physical page
+//! allocation, request leases, event publication, and token accounting.
+
+use std::borrow::{Borrow, Cow};
+use std::cmp::Reverse;
+use std::collections::{BinaryHeap, HashMap};
+use std::sync::Arc;
 
 use crate::engine::belady::BeladyOracle;
+use crate::engine::common::hashing::{SequenceHash, compute_next_seq_hash};
+
+use sglang_radix_tree::{
+    CacheAction, CacheInitParams, ChildKeyType, ComponentSet, DecLockRefParams, FULL, InsertParams,
+    KeyNamespaceRef, MatchPrefixParams, PageValue, UnifiedTreeCore,
+};
+
+use crate::engine::common::hashing::LocalBlockHash;
 #[cfg(test)]
 use crate::engine::common::hashing::compute_block_hash_for_seq;
-use crate::engine::common::hashing::{LocalBlockHash, SequenceHash, compute_next_seq_hash};
-use rustc_hash::FxHashMap;
-use slotmap::{SlotMap, new_key_type};
-use std::cmp::Reverse;
-use std::collections::BTreeSet;
-use std::sync::Arc;
-use std::time::Instant;
 
-new_key_type! {
-    /// Stable identifier for a tree node inside the [`RadixCache`].
-    pub struct NodeId;
-}
+pub use sglang_radix_tree::NodeId;
 
 /// Physical page identifier in the simulated SGLang KV pool.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -158,138 +163,91 @@ impl PagePool {
     }
 }
 
-/// A single node in the radix tree.
-#[derive(Clone)]
-pub struct TreeNode {
-    /// Children keyed by the first complete page on the child edge.
-    pub children: FxHashMap<LocalBlockHash, NodeId>,
-    pub parent: Option<NodeId>,
-    /// One content identity per complete page stored on this compressed edge.
-    ///
-    /// The mocker intentionally uses the router's 64-bit local block hash as
-    /// page identity so completed radix state does not retain token IDs.
-    /// Consequently, as in router-side indexing, hash collisions are treated
-    /// as identical pages rather than guarded by an exact-token comparison.
-    /// Admission snapshots share edge contents. Copy only an edge that changes
-    /// while a snapshot is live; normal decode extensions retain their capacity.
-    pub key: Arc<Vec<LocalBlockHash>>,
-    /// One physical page ID per key. Length = `key.len()`.
-    pub value: Arc<Vec<KvPageId>>,
-    /// Walk-to-root reference count (protected when > 0).
-    pub lock_ref: usize,
-    /// Monotonic timestamp for LRU eviction.
-    pub last_access_time: Instant,
+pub(crate) struct InsertPageResult {
+    pub(crate) last_node: NodeId,
+    pub(crate) canonical_suffix: Vec<KvPageId>,
+    pub(crate) unretained_pages: Vec<KvPageId>,
 }
 
-/// Radix tree for SGLang KV cache simulation.
+/// Shared immutable keys keep admission checkpoints proportional to node metadata.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+struct PageKey(Arc<[LocalBlockHash]>);
+
+impl From<Vec<LocalBlockHash>> for PageKey {
+    fn from(value: Vec<LocalBlockHash>) -> Self {
+        Self(value.into())
+    }
+}
+impl AsRef<[LocalBlockHash]> for PageKey {
+    fn as_ref(&self) -> &[LocalBlockHash] {
+        &self.0
+    }
+}
+impl Borrow<[LocalBlockHash]> for PageKey {
+    fn borrow(&self) -> &[LocalBlockHash] {
+        &self.0
+    }
+}
+impl ChildKeyType for PageKey {
+    type Atom = LocalBlockHash;
+    const IS_BIGRAM: bool = false;
+    fn key_from(ids: Cow<'_, Vec<i64>>) -> Cow<'_, Self> {
+        Cow::Owned(
+            ids.iter()
+                .map(|&value| LocalBlockHash(value as u64))
+                .collect::<Vec<_>>()
+                .into(),
+        )
+    }
+    fn hash_words(atom: &LocalBlockHash) -> impl Iterator<Item = u32> {
+        [atom.0 as u32, (atom.0 >> 32) as u32].into_iter()
+    }
+    fn raw_token_ids(atoms: &[LocalBlockHash]) -> Cow<'_, [i64]> {
+        Cow::Owned(atoms.iter().map(|atom| atom.0 as i64).collect())
+    }
+}
+
+impl From<KvPageId> for i64 {
+    fn from(page: KvPageId) -> Self {
+        i64::try_from(page.0).expect("page ID fits in i64")
+    }
+}
+
+type SglangTree = UnifiedTreeCore<PageKey, PageValue<KvPageId>>;
+
+#[derive(Clone)]
+struct BeladyPages {
+    oracle: BeladyOracle,
+    page_hashes: Vec<Option<SequenceHash>>,
+}
+
+/// Thin adapter from AISimulate's page-native cache contract to SGLang's tree.
 pub struct RadixCache {
-    nodes: SlotMap<NodeId, TreeNode>,
-    root: NodeId,
+    tree: SglangTree,
+    belady: Option<BeladyPages>,
     pub page_pool: PagePool,
     page_size: usize,
-    #[cfg(test)]
-    test_now: Option<Instant>,
-    /// Unlocked leaves ordered by their last access time for O(log n) updates
-    /// and O(1) oldest-victim lookup.
-    evictable_leaves: BTreeSet<(Instant, NodeId)>,
-    belady: Option<BeladyLeaves>,
-    /// Total token count in evictable nodes.
-    pub evictable_size: usize,
-    /// Total token count in protected (locked) nodes.
-    pub protected_size: usize,
-}
-
-/// Optional forecast metadata; physical ownership and leaf eligibility stay in the radix tree.
-#[derive(Clone)]
-struct BeladyLeaves {
-    oracle: BeladyOracle,
-    cursor: usize,
-    page_hashes: Vec<Option<SequenceHash>>,
-    candidates: BTreeSet<(Reverse<usize>, Instant, NodeId)>,
-    by_hash: FxHashMap<SequenceHash, BTreeSet<NodeId>>,
-    indexed: FxHashMap<NodeId, (SequenceHash, usize)>,
-}
-
-/// Leave the suffix in `edge` and return a compact prefix. When a snapshot
-/// shares the edge, copy each half once instead of cloning before splitting.
-fn split_edge_prefix<T: Clone>(edge: &mut Arc<Vec<T>>, at: usize) -> Vec<T> {
-    if let Some(values) = Arc::get_mut(edge) {
-        let suffix = values.split_off(at);
-        let mut prefix = std::mem::replace(values, suffix);
-        // The short prefix must not retain the original edge's allocation.
-        prefix.shrink_to_fit();
-        prefix
-    } else {
-        let prefix = edge[..at].to_vec();
-        *edge = Arc::new(edge[at..].to_vec());
-        prefix
-    }
-}
-
-fn truncate_edge<T: Clone>(edge: &mut Arc<Vec<T>>, len: usize) {
-    if let Some(values) = Arc::get_mut(edge) {
-        values.truncate(len);
-    } else {
-        *edge = Arc::new(edge[..len].to_vec());
-    }
 }
 
 impl RadixCache {
-    /// Snapshot allocator and radix metadata for a fallible admission transaction.
-    /// This is not a second owner of live request leases; only one cache state may commit.
     pub(crate) fn admission_checkpoint(&self) -> Self {
         Self {
-            nodes: self.nodes.clone(),
-            root: self.root,
+            tree: self.tree.snapshot_full_device(),
+            belady: self.belady.clone(),
             page_pool: self.page_pool.clone(),
             page_size: self.page_size,
-            #[cfg(test)]
-            test_now: self.test_now,
-            evictable_leaves: self.evictable_leaves.clone(),
-            belady: self.belady.clone(),
-            evictable_size: self.evictable_size,
-            protected_size: self.protected_size,
-        }
-    }
-
-    pub fn new(total_tokens: usize, page_size: usize) -> Self {
-        assert!(page_size >= 1, "page_size must be >= 1");
-        let mut nodes = SlotMap::with_key();
-        let root = nodes.insert(TreeNode {
-            children: FxHashMap::default(),
-            parent: None,
-            key: Arc::default(),
-            value: Arc::default(),
-            lock_ref: 0,
-            last_access_time: Instant::now(),
-        });
-        Self {
-            nodes,
-            root,
-            page_pool: PagePool::new(total_tokens, page_size),
-            page_size,
-            #[cfg(test)]
-            test_now: None,
-            evictable_leaves: BTreeSet::new(),
-            belady: None,
-            evictable_size: 0,
-            protected_size: 0,
         }
     }
 
     pub(crate) fn set_belady_oracle(&mut self, oracle: BeladyOracle) {
         assert_eq!(
-            self.nodes.len(),
-            1,
+            self.tree.evictable_size() + self.tree.protected_size(),
+            0,
             "attach Belady before populating the cache"
         );
-        self.belady = Some(BeladyLeaves {
+        self.belady = Some(BeladyPages {
             oracle,
-            cursor: 0,
-            page_hashes: vec![None; self.page_pool.total() / self.page_size],
-            candidates: BTreeSet::new(),
-            by_hash: FxHashMap::default(),
-            indexed: FxHashMap::default(),
+            page_hashes: vec![None; self.page_pool.total_pages],
         });
     }
 
@@ -299,12 +257,16 @@ impl RadixCache {
         keys: &[LocalBlockHash],
         pages: &[KvPageId],
     ) {
-        let Some(belady) = &mut self.belady else {
+        let Some(belady) = self.belady.as_mut() else {
             return;
         };
-        let mut previous = self.nodes[prefix_node]
-            .value
-            .last()
+        let prefix = self
+            .tree
+            .get_component_device_value(prefix_node, FULL)
+            .expect("live prefix");
+        let mut previous = prefix
+            .as_ref()
+            .and_then(|values| values.as_slice().last())
             .map(|page| belady.page_hashes[page.index()].expect("cached page has prefix identity"));
         for (&key, &page) in keys.iter().zip(pages) {
             let hash = previous.map_or(key.0, |parent| compute_next_seq_hash(parent, key));
@@ -313,150 +275,373 @@ impl RadixCache {
         }
     }
 
-    fn sync_belady_priorities(&mut self) {
-        let Some(belady) = &mut self.belady else {
-            return;
-        };
-        for (hash, next_use) in belady.oracle.changes_since(&mut belady.cursor) {
-            let Some(leaves) = belady.by_hash.get(&hash) else {
-                continue;
+    fn evict_belady(&mut self, target_pages: usize) -> Vec<KvPageId> {
+        let belady = self.belady.as_ref().expect("Belady configured");
+        let priority =
+            |candidate: sglang_radix_tree::FullDeviceEvictionCandidate<'_, PageValue<KvPageId>>| {
+                let page = candidate.value.as_slice().last().expect("nonempty leaf");
+                let hash =
+                    belady.page_hashes[page.index()].expect("cached page has prefix identity");
+                Reverse((
+                    Reverse(belady.oracle.next_use(hash)),
+                    candidate.last_access_counter,
+                    candidate.node_id,
+                ))
             };
-            for &id in leaves {
-                let (_, previous) = belady.indexed.get_mut(&id).expect("indexed leaf");
-                let accessed = self.nodes[id].last_access_time;
-                belady
-                    .candidates
-                    .remove(&(Reverse(*previous), accessed, id));
-                belady.candidates.insert((Reverse(next_use), accessed, id));
-                *previous = next_use;
+        // Start from the core's current unlocked leaves. Global forecast changes
+        // are observed at each eviction; they never create or unlock local KV.
+        let mut candidates: BinaryHeap<_> = self
+            .tree
+            .full_device_eviction_candidates()
+            .map(priority)
+            .collect();
+        let mut pages = Vec::with_capacity(target_pages.min(self.tree.evictable_size()));
+        while pages.len() < target_pages {
+            let Some(Reverse((_, _, node_id))) = candidates.pop() else {
+                break;
+            };
+            let (parent, step) = self
+                .tree
+                .evict_full_device_suffix(node_id, 1)
+                .expect("live eviction candidate");
+            for chunk in step.device_frees.get(&FULL).into_iter().flatten() {
+                pages.extend_from_slice(chunk.as_slice());
             }
+            if let Some(parent) = parent.and_then(|id| self.tree.full_device_eviction_candidate(id))
+            {
+                candidates.push(priority(parent));
+            }
+        }
+        let belady = self.belady.as_mut().expect("Belady configured");
+        for page in &pages {
+            belady.page_hashes[page.index()] = None;
+        }
+        pages
+    }
+    pub fn new(total_tokens: usize, page_size: usize) -> Self {
+        assert!(page_size >= 1, "page_size must be >= 1");
+        let tree = SglangTree::new(
+            CacheInitParams {
+                // A request key already contains one hash per physical KV page.
+                page_size: 1,
+                eviction_policy: "lru".to_string(),
+                ..Default::default()
+            },
+            vec![FULL],
+        );
+        Self {
+            tree,
+            belady: None,
+            page_pool: PagePool::new(total_tokens, page_size),
+            page_size,
         }
     }
 
     pub fn root(&self) -> NodeId {
-        self.root
+        self.tree.root_node_handle(None)
     }
-    pub fn node(&self, id: NodeId) -> &TreeNode {
-        &self.nodes[id]
-    }
+
     pub fn page_size(&self) -> usize {
         self.page_size
     }
+
     #[cfg(test)]
     pub fn num_nodes(&self) -> usize {
-        self.nodes.len()
-    }
-
-    fn now(&self) -> Instant {
-        #[cfg(test)]
-        if let Some(now) = self.test_now {
-            return now;
-        }
-        Instant::now()
+        self.tree.inspect_get_all_node_ids().len()
     }
 
     #[cfg(test)]
-    fn set_test_now(&mut self, now: Instant) {
-        self.test_now = Some(now);
-    }
-
-    fn evictable_key(&self, id: NodeId) -> (Instant, NodeId) {
-        (self.nodes[id].last_access_time, id)
-    }
-
-    fn is_evictable_leaf(&self, id: NodeId) -> bool {
-        id != self.root && self.nodes[id].lock_ref == 0 && self.is_leaf(id)
-    }
-
-    fn insert_evictable_leaf(&mut self, id: NodeId) {
-        debug_assert!(
-            self.is_evictable_leaf(id),
-            "only unlocked non-root leaves are directly evictable"
-        );
-        let inserted = self.evictable_leaves.insert(self.evictable_key(id));
-        debug_assert!(inserted, "evictable leaf was already indexed");
-        if let Some(belady) = &mut self.belady {
-            let node = &self.nodes[id];
-            let page = node.value.last().expect("non-root edge has pages");
-            let hash = belady.page_hashes[page.index()].expect("cached page has prefix identity");
-            let next_use = belady.oracle.next_use(hash);
-            belady
-                .candidates
-                .insert((Reverse(next_use), node.last_access_time, id));
-            belady.by_hash.entry(hash).or_default().insert(id);
-            let previous = belady.indexed.insert(id, (hash, next_use));
-            debug_assert!(previous.is_none(), "Belady leaf was already indexed");
-        }
-    }
-
-    fn remove_evictable_leaf(&mut self, id: NodeId) -> bool {
-        if !self.is_evictable_leaf(id) {
-            return false;
-        }
-        let removed = self.evictable_leaves.remove(&self.evictable_key(id));
-        if removed && let Some(belady) = &mut self.belady {
-            let (hash, next_use) = belady.indexed.remove(&id).expect("indexed leaf");
-            belady
-                .candidates
-                .remove(&(Reverse(next_use), self.nodes[id].last_access_time, id));
-            let leaves = belady.by_hash.get_mut(&hash).expect("indexed hash");
-            leaves.remove(&id);
-            if leaves.is_empty() {
-                belady.by_hash.remove(&hash);
-            }
-        }
-        removed
-    }
-
-    fn touch_node(&mut self, id: NodeId, now: Instant) {
-        let was_indexed = self.remove_evictable_leaf(id);
-        self.nodes[id].last_access_time = now;
-        if was_indexed {
-            self.insert_evictable_leaf(id);
-        }
-    }
-
-    #[cfg(test)]
-    fn debug_assert_evictable_index(&self) {
-        let expected = self
-            .nodes
-            .iter()
-            .filter(|(id, node)| *id != self.root && node.lock_ref == 0 && node.children.is_empty())
-            .map(|(id, node)| (node.last_access_time, id))
-            .collect::<BTreeSet<_>>();
-        assert_eq!(
-            self.evictable_leaves, expected,
-            "SGLang evictable-leaf index drifted from radix nodes"
-        );
-        if let Some(belady) = &self.belady {
-            let expected_candidates = expected
-                .iter()
-                .map(|&(accessed, id)| {
-                    let page = self.nodes[id].value.last().unwrap();
-                    let hash = belady.page_hashes[page.index()].unwrap();
-                    let &(indexed_hash, next_use) = belady.indexed.get(&id).unwrap();
-                    assert_eq!(indexed_hash, hash);
-                    assert!(belady.by_hash[&hash].contains(&id));
-                    (Reverse(next_use), accessed, id)
+    pub(crate) fn node(&self, id: NodeId) -> TreeNodeSnapshot {
+        TreeNodeSnapshot {
+            parent: self.tree.inspect_get_parent_node_id(id).unwrap(),
+            children: self
+                .tree
+                .inspect_get_child_node_ids(id)
+                .unwrap()
+                .into_iter()
+                .map(|child| {
+                    let first = self.tree.inspect_get_node_token_ids(child).unwrap()[0];
+                    (LocalBlockHash(first as u64), child)
                 })
-                .collect::<BTreeSet<_>>();
-            assert_eq!(belady.candidates, expected_candidates);
-            assert_eq!(belady.indexed.len(), expected.len());
-            assert_eq!(
-                belady.by_hash.values().map(BTreeSet::len).sum::<usize>(),
-                expected.len()
-            );
+                .collect(),
+            lock_ref: self
+                .tree
+                .inspect_get_component_device_lock_ref(id, FULL)
+                .unwrap(),
+            last_access_counter: self.tree.inspect_get_node_access_counter(id).unwrap(),
+            key: self
+                .tree
+                .inspect_get_node_token_ids(id)
+                .unwrap()
+                .into_iter()
+                .map(|value| LocalBlockHash(value as u64))
+                .collect(),
+            value: self
+                .tree
+                .get_component_device_value(id, FULL)
+                .unwrap()
+                .map_or_else(Vec::new, |value| value.as_slice().to_vec()),
         }
-    }
-
-    #[cfg(test)]
-    fn evictable_leaf_is_indexed(&self, id: NodeId) -> bool {
-        self.evictable_leaves.contains(&self.evictable_key(id))
     }
 
     #[cfg(test)]
     pub(crate) fn page_hashes(&self, tokens: &[u32]) -> Vec<LocalBlockHash> {
         compute_block_hash_for_seq(tokens, self.page_size)
+    }
+
+    #[cfg(test)]
+    pub fn match_prefix(&mut self, key: &[u32]) -> (usize, NodeId) {
+        let page_keys = self.page_hashes(key);
+        self.match_prefix_hashes(&page_keys)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn match_prefix_hashes(&mut self, page_keys: &[LocalBlockHash]) -> (usize, NodeId) {
+        let key: PageKey = page_keys.to_vec().into();
+        let result = self.tree.match_prefix(&MatchPrefixParams {
+            key: &key,
+            namespace: KeyNamespaceRef::default(),
+        });
+        assert!(
+            result.cache_actions.is_empty(),
+            "Full-only device match unexpectedly produced cache actions"
+        );
+        (
+            result.device_indices.as_slice().len() * self.page_size,
+            result.last_device_node_id,
+        )
+    }
+
+    /// Match and protect a prefix using page hashes already owned by the request.
+    pub(crate) fn match_prefix_hashes_and_lock(
+        &mut self,
+        page_keys: &[LocalBlockHash],
+    ) -> (usize, NodeId) {
+        let key: PageKey = page_keys.to_vec().into();
+        let result = self.tree.match_prefix(&MatchPrefixParams {
+            key: &key,
+            namespace: KeyNamespaceRef::default(),
+        });
+        assert!(
+            result.cache_actions.is_empty(),
+            "Full-only device match unexpectedly produced cache actions"
+        );
+        let last_node = result.last_device_node_id;
+        let matched_tokens = result.device_indices.as_slice().len() * self.page_size;
+        self.tree
+            .inc_lock_ref(last_node, ComponentSet::EMPTY)
+            .expect("live prefix");
+        (matched_tokens, last_node)
+    }
+
+    #[cfg(test)]
+    pub fn prefix_match_len(&self, key: &[u32]) -> usize {
+        let page_keys = self.page_hashes(key);
+        self.prefix_match_hashes_len(&page_keys)
+    }
+
+    /// Read-only prefix match using page hashes already owned by the request.
+    pub(crate) fn prefix_match_hashes_len(&self, page_keys: &[LocalBlockHash]) -> usize {
+        self.tree
+            .full_kv_prefix_len(page_keys, KeyNamespaceRef::default())
+            * self.page_size
+    }
+
+    #[cfg(test)]
+    pub fn insert(&mut self, key: &[u32], value: &[usize]) -> NodeId {
+        let aligned_len = key.len() / self.page_size * self.page_size;
+        assert!(
+            value.len() >= aligned_len,
+            "not enough token indices: need {aligned_len}, got {}",
+            value.len()
+        );
+        let page_keys = self.page_hashes(&key[..aligned_len]);
+        let pages = self.page_ids(&value[..aligned_len], page_keys.len());
+        self.insert_page_hashes_from_node(self.root(), 0, &page_keys, &pages, false)
+            .last_node
+    }
+
+    /// Insert page identities already materialized by the request lease.
+    pub(crate) fn insert_page_hashes_from_node(
+        &mut self,
+        prefix_node: NodeId,
+        prefix_len: usize,
+        page_keys: &[LocalBlockHash],
+        pages: &[KvPageId],
+        chunked: bool,
+    ) -> InsertPageResult {
+        assert_eq!(
+            prefix_len % self.page_size,
+            0,
+            "prefix length must be page-aligned"
+        );
+        assert!(
+            pages.len() >= page_keys.len(),
+            "not enough KV pages: need {}, got {}",
+            page_keys.len(),
+            pages.len()
+        );
+        let prefix_pages = prefix_len / self.page_size;
+        assert!(
+            prefix_pages <= page_keys.len(),
+            "prefix pages {prefix_pages} exceed hashed pages {}",
+            page_keys.len()
+        );
+
+        self.record_belady_pages(
+            prefix_node,
+            &page_keys[prefix_pages..],
+            &pages[prefix_pages..page_keys.len()],
+        );
+        let key: PageKey = page_keys.to_vec().into();
+        let suffix_value = PageValue::from_vec(pages[prefix_pages..page_keys.len()].to_vec());
+        let result = self.tree.insert_suffix_from_node(
+            prefix_node,
+            prefix_pages,
+            &InsertParams {
+                rotation_base: None,
+                session_id: None,
+                swa_branching_seqlen: None,
+                key: &key,
+                namespace: KeyNamespaceRef::default(),
+                value: suffix_value,
+                prev_prefix_len: prefix_pages,
+                swa_evicted_seqlen: 0,
+                mamba_value: None,
+                chunked,
+                priority: 0,
+                track_adopted_ranges: false,
+            },
+        );
+        let last_node = result
+            .last_device_node_id
+            .expect("non-empty Full insert must end on a device node");
+        let canonical_suffix = self
+            .tree
+            .collect_full_device_indices(last_node, prefix_node)
+            .expect("live continuation path")
+            .as_slice()
+            .to_vec();
+        assert_eq!(
+            canonical_suffix.len(),
+            page_keys.len() - prefix_pages,
+            "SGLang core returned an incomplete canonical suffix"
+        );
+
+        InsertPageResult {
+            last_node,
+            canonical_suffix,
+            unretained_pages: collect_unretained_pages(result.cache_actions),
+        }
+    }
+
+    pub(crate) fn collect_path_pages(&self, last_node: NodeId) -> Vec<KvPageId> {
+        self.tree
+            .collect_full_device_indices(last_node, self.root())
+            .expect("live prefix path")
+            .as_slice()
+            .to_vec()
+    }
+
+    pub(crate) fn collect_path_pages_through(
+        &self,
+        last_node: NodeId,
+        prefix_len: usize,
+    ) -> Vec<KvPageId> {
+        assert_eq!(
+            prefix_len % self.page_size,
+            0,
+            "matched SGLang prefix must be page-aligned"
+        );
+        let expected_pages = prefix_len / self.page_size;
+        let mut pages = self.collect_path_pages(last_node);
+        assert!(
+            pages.len() >= expected_pages,
+            "SGLang radix path returned {} pages for a {expected_pages}-page prefix",
+            pages.len()
+        );
+        pages.truncate(expected_pages);
+        pages
+    }
+
+    pub fn inc_lock_ref(&mut self, node_id: NodeId) {
+        self.tree
+            .inc_lock_ref(node_id, ComponentSet::EMPTY)
+            .expect("live lock anchor");
+    }
+
+    pub fn dec_lock_ref(&mut self, node_id: NodeId) {
+        // Full-only trees have no component UUIDs; the anchor identifies the receipt.
+        self.tree
+            .dec_lock_ref(
+                node_id,
+                &DecLockRefParams {
+                    node_id: Some(node_id),
+                    ..Default::default()
+                },
+                false,
+            )
+            .expect("live lock anchor");
+    }
+
+    /// Evict cache pages in SGLang LRU order.
+    ///
+    /// SGLang evicts complete compressed leaves, so this can release more than
+    /// the requested number of tokens.
+    pub fn evict(&mut self, num_tokens: usize) -> (usize, Vec<KvPageId>) {
+        let target_pages = num_tokens.div_ceil(self.page_size);
+        if target_pages == 0 {
+            return (0, Vec::new());
+        }
+        if self.belady.is_some() {
+            let pages = self.evict_belady(target_pages);
+            self.page_pool.free_pages(&pages);
+            return (pages.len() * self.page_size, pages);
+        }
+
+        let mut tracker = HashMap::from([(FULL, 0)]);
+        let mut evicted_pages = Vec::with_capacity(target_pages.min(self.tree.evictable_size()));
+        self.tree.evict_device_start(FULL, target_pages);
+        loop {
+            let (candidate, step) = self.tree.evict_device_next_node(FULL, &tracker);
+            absorb_eviction_step(&mut tracker, &mut evicted_pages, step);
+            let Some(candidate) = candidate else {
+                break;
+            };
+
+            let (backup, step) = self
+                .tree
+                .evict_device_leaf(candidate, false)
+                .expect("live eviction candidate");
+            assert!(
+                backup.is_none(),
+                "write-through eviction requested a backup"
+            );
+            absorb_eviction_step(&mut tracker, &mut evicted_pages, step);
+            if tracker.get(&FULL).copied().unwrap_or(0) >= target_pages {
+                break;
+            }
+        }
+        self.tree.evict_device_end(FULL);
+
+        self.page_pool.free_pages(&evicted_pages);
+        (evicted_pages.len() * self.page_size, evicted_pages)
+    }
+
+    pub fn evictable_size(&self) -> usize {
+        self.tree.evictable_size() * self.page_size
+    }
+
+    pub fn protected_size(&self) -> usize {
+        self.tree.protected_size() * self.page_size
+    }
+
+    pub fn available_tokens(&self) -> usize {
+        self.page_pool.available()
+    }
+
+    pub fn total_tokens(&self) -> usize {
+        self.page_pool.total()
     }
 
     #[cfg(test)]
@@ -479,622 +664,60 @@ impl RadixCache {
             })
             .collect()
     }
+}
 
-    fn key_match(key0: &[LocalBlockHash], key1: &[LocalBlockHash]) -> usize {
-        key0.iter().zip(key1).take_while(|(a, b)| a == b).count()
-    }
-
-    #[cfg(test)]
-    pub fn match_prefix(&mut self, key: &[u32]) -> (usize, NodeId) {
-        let page_keys = self.page_hashes(key);
-        self.match_prefix_hashes(&page_keys)
-    }
-
-    /// Match a prefix using page hashes already owned by the request.
-    #[cfg(test)]
-    pub(crate) fn match_prefix_hashes(&mut self, page_keys: &[LocalBlockHash]) -> (usize, NodeId) {
-        self.match_prefix_hashes_impl(page_keys, false)
-    }
-
-    /// Match and protect a prefix using page hashes already owned by the request.
-    pub(crate) fn match_prefix_hashes_and_lock(
-        &mut self,
-        page_keys: &[LocalBlockHash],
-    ) -> (usize, NodeId) {
-        self.match_prefix_hashes_impl(page_keys, true)
-    }
-
-    fn match_prefix_hashes_impl(
-        &mut self,
-        page_keys: &[LocalBlockHash],
-        lock_match: bool,
-    ) -> (usize, NodeId) {
-        let now = self.now();
-        self.nodes[self.root].last_access_time = now;
-
-        let mut current = self.root;
-        let mut matched_pages: usize = 0;
-        // Delay the most recently matched node's touch until we know whether it
-        // is the terminal match. The match-and-lock path can then remove an
-        // unlocked terminal leaf once without reinserting it before locking.
-        let mut pending_touch = None;
-
-        while matched_pages < page_keys.len() {
-            let child_id = match self.nodes[current]
-                .children
-                .get(&page_keys[matched_pages])
-                .copied()
-            {
-                Some(id) => id,
-                None => break,
-            };
-
-            if let Some(id) = pending_touch.take() {
-                self.touch_node(id, now);
-            }
-
-            let (common_len, child_len) = {
-                let child_key = &self.nodes[child_id].key;
-                (
-                    Self::key_match(child_key, &page_keys[matched_pages..]),
-                    child_key.len(),
-                )
-            };
-
-            if common_len < child_len {
-                if common_len > 0 {
-                    let intermediate = self.split_node(child_id, common_len);
-                    current = intermediate;
-                }
-                matched_pages += common_len;
-                break;
-            }
-
-            matched_pages += common_len;
-            current = child_id;
-            pending_touch = Some(current);
-        }
-
-        if let Some(id) = pending_touch {
-            if lock_match {
-                self.touch_and_inc_lock_ref(id, now);
-            } else {
-                self.touch_node(id, now);
-            }
-        } else if lock_match {
-            // A partial edge match keeps the split node's inherited timestamp.
-            self.inc_lock_ref(current);
-        }
-
-        #[cfg(test)]
-        self.debug_assert_evictable_index();
-        (matched_pages * self.page_size, current)
-    }
-
-    /// Read-only prefix match length (does not mutate timestamps or split nodes).
-    /// Used for LPM scheduling scoring.
-    #[cfg(test)]
-    pub fn prefix_match_len(&self, key: &[u32]) -> usize {
-        let page_keys = self.page_hashes(key);
-        self.prefix_match_hashes_len(&page_keys)
-    }
-
-    /// Read-only prefix match using page hashes already owned by the request.
-    pub(crate) fn prefix_match_hashes_len(&self, page_keys: &[LocalBlockHash]) -> usize {
-        let mut current = self.root;
-        let mut matched_pages: usize = 0;
-
-        while matched_pages < page_keys.len() {
-            let child_id = match self.nodes[current]
-                .children
-                .get(&page_keys[matched_pages])
-                .copied()
-            {
-                Some(id) => id,
-                None => break,
-            };
-
-            let child_key = &self.nodes[child_id].key;
-            let common_len = Self::key_match(child_key, &page_keys[matched_pages..]);
-
-            if common_len < child_key.len() {
-                matched_pages += common_len;
-                break;
-            }
-
-            matched_pages += common_len;
-            current = child_id;
-        }
-
-        matched_pages * self.page_size
-    }
-
-    /// Insert a token sequence into the tree. Key is page-aligned before insertion.
-    #[cfg(test)]
-    pub fn insert(&mut self, key: &[u32], value: &[usize]) -> NodeId {
-        let aligned_len = key.len() / self.page_size * self.page_size;
-        assert!(
-            value.len() >= aligned_len,
-            "not enough token indices: need {aligned_len}, got {}",
-            value.len()
-        );
-        let page_ids = self.page_ids(&value[..aligned_len], aligned_len / self.page_size);
-        let inserted = self.insert_page_suffix(self.root, 0, key, &page_ids, false);
-        #[cfg(test)]
-        self.debug_assert_evictable_index();
-        inserted
-    }
-
-    /// Insert only the suffix after a retained, page-aligned prefix.
-    ///
-    /// `prefix_node` must be the locked terminal node for `prefix_len`. Keeping
-    /// that handle lets decode growth avoid walking the full sequence from the
-    /// root on every completed page.
-    #[cfg(test)]
-    pub fn insert_from_node(
-        &mut self,
-        prefix_node: NodeId,
-        prefix_len: usize,
-        key: &[u32],
-        value: &[usize],
-    ) -> NodeId {
-        let aligned_len = key.len() / self.page_size * self.page_size;
-        assert_eq!(
-            prefix_len % self.page_size,
-            0,
-            "prefix length must be page-aligned"
-        );
-        assert!(
-            prefix_len <= aligned_len,
-            "prefix length {prefix_len} exceeds aligned key length {aligned_len}"
-        );
-        assert!(
-            value.len() >= aligned_len,
-            "not enough token indices: need {aligned_len}, got {}",
-            value.len()
-        );
-        let page_ids = self.page_ids(
-            &value[prefix_len..aligned_len],
-            (aligned_len - prefix_len) / self.page_size,
-        );
-        let inserted = self.insert_page_suffix(prefix_node, prefix_len, key, &page_ids, true);
-        #[cfg(test)]
-        self.debug_assert_evictable_index();
-        inserted
-    }
-
-    /// Insert page identities already materialized by the request lease.
-    pub(crate) fn insert_page_hashes_from_node(
-        &mut self,
-        prefix_node: NodeId,
-        prefix_len: usize,
-        page_keys: &[LocalBlockHash],
-        pages: &[KvPageId],
-    ) -> NodeId {
-        assert_eq!(
-            prefix_len % self.page_size,
-            0,
-            "prefix length must be page-aligned"
-        );
-        assert!(
-            pages.len() >= page_keys.len(),
-            "not enough KV pages: need {}, got {}",
-            page_keys.len(),
-            pages.len()
-        );
-        let prefix_pages = prefix_len / self.page_size;
-        assert!(
-            prefix_pages <= page_keys.len(),
-            "prefix pages {prefix_pages} exceed hashed pages {}",
-            page_keys.len()
-        );
-        let inserted = self.insert_page_hash_suffix(
-            prefix_node,
-            &page_keys[prefix_pages..],
-            &pages[prefix_pages..page_keys.len()],
-            true,
-        );
-        #[cfg(test)]
-        self.debug_assert_evictable_index();
-        inserted
-    }
-
-    #[cfg(test)]
-    fn insert_page_suffix(
-        &mut self,
-        start_node: NodeId,
-        prefix_len: usize,
-        key: &[u32],
-        page_ids: &[KvPageId],
-        allow_locked_tail_extension: bool,
-    ) -> NodeId {
-        let aligned_len = key.len() / self.page_size * self.page_size;
-        assert_eq!(
-            prefix_len % self.page_size,
-            0,
-            "prefix length must be page-aligned"
-        );
-        assert!(
-            prefix_len <= aligned_len,
-            "prefix length {prefix_len} exceeds aligned key length {aligned_len}"
-        );
-        if aligned_len == prefix_len {
-            return start_node;
-        }
-        let page_keys = self.page_hashes(&key[prefix_len..aligned_len]);
-        self.insert_page_hash_suffix(
-            start_node,
-            &page_keys,
-            page_ids,
-            allow_locked_tail_extension,
-        )
-    }
-
-    fn insert_page_hash_suffix(
-        &mut self,
-        start_node: NodeId,
-        page_keys: &[LocalBlockHash],
-        page_ids: &[KvPageId],
-        allow_locked_tail_extension: bool,
-    ) -> NodeId {
-        assert!(
-            page_ids.len() >= page_keys.len(),
-            "not enough KV pages: need {}, got {}",
-            page_keys.len(),
-            page_ids.len()
-        );
-        if page_keys.is_empty() {
-            return start_node;
-        }
-        let now = self.now();
-        self.touch_path(start_node, now);
-
-        let mut current = start_node;
-        let mut key_offset = 0;
-
-        while key_offset < page_keys.len() {
-            let can_extend_leaf = current != self.root
-                && self.nodes[current].children.is_empty()
-                && (self.nodes[current].lock_ref == 0
-                    || (allow_locked_tail_extension
-                        && current == start_node
-                        && self.nodes[current].lock_ref == 1));
-            if can_extend_leaf {
-                return self.extend_leaf(
-                    current,
-                    &page_keys[key_offset..],
-                    &page_ids[key_offset..],
-                    now,
-                );
-            }
-
-            let child_id = match self.nodes[current]
-                .children
-                .get(&page_keys[key_offset])
-                .copied()
-            {
-                Some(id) => id,
-                None => {
-                    return self.create_child(
-                        current,
-                        &page_keys[key_offset..],
-                        &page_ids[key_offset..],
-                    );
-                }
-            };
-
-            let (common_len, child_len) = {
-                let child_key = &self.nodes[child_id].key;
-                (
-                    Self::key_match(child_key, &page_keys[key_offset..]),
-                    child_key.len(),
-                )
-            };
-
-            if common_len == child_len {
-                key_offset += common_len;
-                current = child_id;
-                self.touch_node(current, now);
-            } else {
-                if common_len > 0 {
-                    let intermediate = self.split_node(child_id, common_len);
-                    key_offset += common_len;
-                    if key_offset < page_keys.len() {
-                        return self.create_child(
-                            intermediate,
-                            &page_keys[key_offset..],
-                            &page_ids[key_offset..],
-                        );
-                    }
-                    return intermediate;
-                }
-                return current;
-            }
-        }
-
-        current
-    }
-
-    fn touch_path(&mut self, node_id: NodeId, now: Instant) {
-        let mut current = Some(node_id);
-        while let Some(id) = current {
-            let parent = self.nodes[id].parent;
-            self.touch_node(id, now);
-            current = parent;
-        }
-    }
-
-    fn extend_leaf(
-        &mut self,
-        node_id: NodeId,
-        key: &[LocalBlockHash],
-        value: &[KvPageId],
-        now: Instant,
-    ) -> NodeId {
-        let was_indexed = self.remove_evictable_leaf(node_id);
-        self.record_belady_pages(node_id, key, value);
-        let node = &mut self.nodes[node_id];
-        node.last_access_time = now;
-        debug_assert!(node.children.is_empty());
-        debug_assert!(node.lock_ref <= 1);
-        Arc::make_mut(&mut node.key).extend_from_slice(key);
-        Arc::make_mut(&mut node.value).extend_from_slice(value);
-        if node.lock_ref == 0 {
-            self.evictable_size += key.len() * self.page_size;
-        } else {
-            self.protected_size += key.len() * self.page_size;
-        }
-        if was_indexed {
-            self.insert_evictable_leaf(node_id);
-        }
-        node_id
-    }
-
-    fn split_node(&mut self, child_id: NodeId, split_pos: usize) -> NodeId {
-        // Keep child_id as the suffix node so its last-access timestamp and
-        // evictable-index key remain valid across the split.
-        let (child_parent, original_ck, prefix_key, prefix_value, suffix_ck, lock_ref, accessed) = {
-            let child = &mut self.nodes[child_id];
-            let child_parent = child.parent;
-            let original_ck = child.key[0];
-            let prefix_key = split_edge_prefix(&mut child.key, split_pos);
-            let prefix_value = split_edge_prefix(&mut child.value, split_pos);
-            let suffix_ck = child.key[0];
-            (
-                child_parent,
-                original_ck,
-                prefix_key,
-                prefix_value,
-                suffix_ck,
-                child.lock_ref,
-                child.last_access_time,
-            )
-        };
-
-        let mut inter_children = FxHashMap::default();
-        inter_children.insert(suffix_ck, child_id);
-
-        let intermediate = TreeNode {
-            children: inter_children,
-            parent: child_parent,
-            key: Arc::new(prefix_key),
-            value: Arc::new(prefix_value),
-            lock_ref,
-            last_access_time: accessed,
-        };
-        let inter_id = self.nodes.insert(intermediate);
-
-        let child = &mut self.nodes[child_id];
-        child.parent = Some(inter_id);
-
-        if let Some(parent_id) = child_parent {
-            self.nodes[parent_id].children.insert(original_ck, inter_id);
-        }
-
-        // Both size totals are unchanged: the intermediate and suffix split
-        // the original edge without changing its lock state or token count.
-
-        inter_id
-    }
-
-    fn create_child(
-        &mut self,
-        parent_id: NodeId,
-        key: &[LocalBlockHash],
-        value: &[KvPageId],
-    ) -> NodeId {
-        self.record_belady_pages(parent_id, key, value);
-        let now = self.now();
-        let new_node = TreeNode {
-            children: FxHashMap::default(),
-            parent: Some(parent_id),
-            key: Arc::new(key.to_vec()),
-            value: Arc::new(value.to_vec()),
-            lock_ref: 0,
-            last_access_time: now,
-        };
-        let ck = key[0];
-        let new_id = self.nodes.insert(new_node);
-
-        self.remove_evictable_leaf(parent_id);
-
-        self.nodes[parent_id].children.insert(ck, new_id);
-
-        self.insert_evictable_leaf(new_id);
-        self.evictable_size += key.len() * self.page_size;
-
-        new_id
-    }
-
-    pub fn is_leaf(&self, id: NodeId) -> bool {
-        self.nodes[id].children.is_empty()
-    }
-
-    fn touch_and_inc_lock_ref(&mut self, node_id: NodeId, now: Instant) {
-        let terminal_unindexed = self.remove_evictable_leaf(node_id);
-        self.nodes[node_id].last_access_time = now;
-        self.inc_lock_ref_impl(node_id, terminal_unindexed);
-    }
-
-    pub fn inc_lock_ref(&mut self, node_id: NodeId) {
-        self.inc_lock_ref_impl(node_id, false);
-    }
-
-    fn inc_lock_ref_impl(&mut self, node_id: NodeId, terminal_unindexed: bool) {
-        let mut current = Some(node_id);
-        let mut is_terminal = true;
-        while let Some(id) = current {
-            if id == self.root {
-                break;
-            }
-            let was_unlocked = self.nodes[id].lock_ref == 0;
-            if was_unlocked && !(is_terminal && terminal_unindexed) {
-                self.remove_evictable_leaf(id);
-            }
-            let node = &mut self.nodes[id];
-            let tokens = node.key.len() * self.page_size;
-            node.lock_ref += 1;
-            if was_unlocked {
-                self.evictable_size -= tokens;
-                self.protected_size += tokens;
-            }
-            current = self.nodes[id].parent;
-            is_terminal = false;
-        }
-        #[cfg(test)]
-        self.debug_assert_evictable_index();
-    }
-
-    pub fn dec_lock_ref(&mut self, node_id: NodeId) {
-        let mut current = Some(node_id);
-        while let Some(id) = current {
-            if id == self.root {
-                break;
-            }
-            let node = &mut self.nodes[id];
-            if node.lock_ref == 0 {
-                tracing::warn!("dec_lock_ref on node with lock_ref == 0, skipping");
-                break;
-            }
-            node.lock_ref -= 1;
-            if node.lock_ref == 0 {
-                let tokens = node.key.len() * self.page_size;
-                self.protected_size -= tokens;
-                self.evictable_size += tokens;
-                if self.is_leaf(id) {
-                    self.insert_evictable_leaf(id);
+fn collect_unretained_pages(actions: Vec<CacheAction<PageValue<KvPageId>>>) -> Vec<KvPageId> {
+    let mut pages = Vec::new();
+    for action in actions {
+        match action {
+            CacheAction::FreeDeviceKV(chunks) | CacheAction::FreeDeviceKVFullOnly(chunks) => {
+                for chunk in chunks {
+                    pages.extend_from_slice(chunk.as_slice());
                 }
             }
-            current = self.nodes[id].parent;
-        }
-        #[cfg(test)]
-        self.debug_assert_evictable_index();
-    }
-
-    /// Evict eligible leaf pages using the selected policy, rounding to full pages.
-    /// Returns `(num_tokens_evicted, evicted_page_ids)`.
-    pub fn evict(&mut self, num_tokens: usize) -> (usize, Vec<KvPageId>) {
-        self.sync_belady_priorities();
-        let mut evicted = 0;
-        let mut evicted_indices =
-            Vec::with_capacity(num_tokens.min(self.evictable_size).div_ceil(self.page_size));
-        while evicted < num_tokens {
-            // Global input demand can execute on another worker. It intentionally ranks only
-            // this worker's causally resident, unlocked leaves; it never creates or unlocks KV.
-            let victim = if let Some(belady) = &self.belady {
-                let Some(&(_, accessed, id)) = belady.candidates.first() else {
-                    break;
-                };
-                self.remove_evictable_leaf(id);
-                Some((accessed, id))
-            } else {
-                // LRU can select and remove directly, without a second keyed lookup.
-                self.evictable_leaves.pop_first()
-            };
-            let Some((last_access_time, victim_id)) = victim else {
-                break;
-            };
-            debug_assert_eq!(
-                last_access_time, self.nodes[victim_id].last_access_time,
-                "eviction index timestamp drifted from radix node"
-            );
-
-            let victim_pages = self.nodes[victim_id].key.len();
-            let victim_tokens = victim_pages * self.page_size;
-            let remaining = num_tokens - evicted;
-            // A compressed edge can contain pages with different future demand. Expose and
-            // rerank its next tail after each Belady eviction instead of discarding the edge.
-            let eviction_pages = if self.belady.is_some() {
-                1
-            } else {
-                remaining.div_ceil(self.page_size).min(victim_pages)
-            };
-            let eviction_len = eviction_pages * self.page_size;
-
-            // A compressed leaf may span pages. Preserve its indexed prefix when
-            // only the newest suffix pages are needed to satisfy this eviction.
-            if eviction_len < victim_tokens {
-                let split_pos = victim_pages - eviction_pages;
-                let (nodes, page_pool) = (&mut self.nodes, &mut self.page_pool);
-                let victim_node = &mut nodes[victim_id];
-                truncate_edge(&mut victim_node.key, split_pos);
-                let evicted_values = &victim_node.value[split_pos..];
-                if let Some(belady) = &mut self.belady {
-                    for page in evicted_values {
-                        belady.page_hashes[page.index()] = None;
-                    }
-                }
-                page_pool.free_pages(evicted_values);
-                evicted_indices.extend_from_slice(evicted_values);
-                truncate_edge(&mut victim_node.value, split_pos);
-
-                self.evictable_size -= eviction_len;
-                evicted += eviction_len;
-                self.insert_evictable_leaf(victim_id);
-                continue;
-            }
-
-            let victim_node = self
-                .nodes
-                .remove(victim_id)
-                .expect("evictable leaf disappeared before removal");
-            let tokens = victim_node.key.len() * self.page_size;
-            let parent_id = victim_node.parent;
-
-            self.evictable_size -= tokens;
-            evicted += tokens;
-
-            evicted_indices.extend_from_slice(&victim_node.value);
-            if let Some(belady) = &mut self.belady {
-                for page in victim_node.value.iter() {
-                    belady.page_hashes[page.index()] = None;
-                }
-            }
-            self.page_pool.free_pages(&victim_node.value);
-
-            if let Some(pid) = parent_id {
-                self.nodes[pid].children.remove(&victim_node.key[0]);
-
-                if pid != self.root
-                    && self.nodes[pid].children.is_empty()
-                    && self.nodes[pid].lock_ref == 0
-                {
-                    self.insert_evictable_leaf(pid);
-                }
+            CacheAction::BackupKV(_)
+            | CacheAction::ReplaceWriteThroughOnNodeSplit { .. }
+            | CacheAction::MambaEvictExcessPathStates { .. }
+            | CacheAction::FreeComponentDeviceSlot { .. }
+            | CacheAction::FreeComponentHostSlot { .. }
+            | CacheAction::RebuildFullToSwaMapping { .. }
+            | CacheAction::RecoverSwaWithLockedFull { .. }
+            | CacheAction::SwaRebuild { .. } => {
+                panic!("Full-only simulation insert produced an unsupported cache action")
             }
         }
-        #[cfg(test)]
-        self.debug_assert_evictable_index();
-        (evicted, evicted_indices)
     }
+    pages
+}
 
-    pub fn available_tokens(&self) -> usize {
-        self.page_pool.available()
+fn absorb_eviction_step(
+    tracker: &mut HashMap<sglang_radix_tree::ComponentType, usize>,
+    evicted_pages: &mut Vec<KvPageId>,
+    step: sglang_radix_tree::EvictionStepResult<PageValue<KvPageId>>,
+) {
+    for (component, count) in step.tracker {
+        *tracker.entry(component).or_default() += count;
     }
+    for (component, chunks) in step.device_frees {
+        assert_eq!(component, FULL, "Full-only tree evicted an auxiliary pool");
+        for chunk in chunks {
+            evicted_pages.extend_from_slice(chunk.as_slice());
+        }
+    }
+    assert!(
+        step.host_frees.is_empty(),
+        "device-only simulation tree unexpectedly freed host pages"
+    );
+}
 
-    pub fn total_tokens(&self) -> usize {
-        self.page_pool.total()
-    }
+#[cfg(test)]
+pub(crate) struct TreeNodeSnapshot {
+    pub(crate) parent: Option<NodeId>,
+    pub(crate) children: rustc_hash::FxHashMap<LocalBlockHash, NodeId>,
+    pub(crate) lock_ref: u32,
+    pub(crate) last_access_counter: i64,
+    pub(crate) key: Vec<LocalBlockHash>,
+    pub(crate) value: Vec<KvPageId>,
 }
 
 #[cfg(test)]
@@ -1168,7 +791,13 @@ mod tests {
         let parent = cache.insert(&[1, 2], &pages);
         cache.inc_lock_ref(parent);
         pages.extend(cache.page_pool.allocate(1).unwrap());
-        cache.insert_from_node(parent, 2, &[1, 2, 3], &pages);
+        cache.insert_page_hashes_from_node(
+            parent,
+            2,
+            &cache.page_hashes(&[1, 2, 3]),
+            &pages.iter().copied().map(KvPageId).collect::<Vec<_>>(),
+            true,
+        );
         cache.dec_lock_ref(parent);
         let mut branch = pages[..2].to_vec();
         branch.extend(cache.page_pool.allocate(1).unwrap());
@@ -1181,7 +810,7 @@ mod tests {
         let (_, locked) = cache.match_prefix(&[1, 2]);
         cache.inc_lock_ref(locked);
         assert_eq!(cache.evict(8).1, vec![KvPageId(3)]);
-        assert_eq!(cache.protected_size, 2);
+        assert_eq!(cache.protected_size(), 2);
         cache.dec_lock_ref(locked);
         assert_eq!(cache.evict(2).1, vec![KvPageId(1), KvPageId(0)]);
         assert_eq!(cache.available_tokens(), 8);
@@ -1219,28 +848,25 @@ mod tests {
     }
 
     #[test]
-    fn test_page_pool_allocate_extend_and_free() {
+    fn page_pool_allocate_extend_and_free() {
         let mut pool = PagePool::new(12, 4);
         assert_eq!(pool.available(), 12);
         assert!(pool.allocate(usize::MAX).is_none());
-        let a = pool.allocate(3).unwrap();
-        assert_eq!(a.len(), 3);
+        let first = pool.allocate(3).unwrap();
         assert_eq!(pool.available(), 8);
-        let mut extended = a.clone();
+        let mut extended = first.clone();
         assert!(pool.allocate_indices_into(1, &mut extended));
         assert_eq!(extended, vec![0, 1, 2, 3]);
-        assert_eq!(pool.available(), 8);
-        let b = pool.allocate(5).unwrap();
+        let second = pool.allocate(5).unwrap();
         assert_eq!(pool.available(), 0);
         assert!(pool.allocate(1).is_none());
-        pool.free(&a);
-        assert_eq!(pool.available(), 4);
-        pool.free(&b);
+        pool.free(&first);
+        pool.free(&second);
         assert_eq!(pool.available(), 12);
     }
 
     #[test]
-    fn test_allocate_indices_into_failure_is_atomic() {
+    fn allocation_failure_is_atomic() {
         let mut pool = PagePool::new(8, 4);
         let mut destination = pool.allocate(4).unwrap();
         let _other = pool.allocate(4).unwrap();
@@ -1253,384 +879,65 @@ mod tests {
     }
 
     #[test]
-    fn test_match_prefix() {
-        let mut cache = RadixCache::new(100, 1);
+    fn match_insert_and_read_only_score_use_sglang_core() {
+        let mut cache = RadixCache::new(64, 4);
+        cache.insert(&[1, 2, 3, 4, 5, 6, 7, 8], &[0, 1, 2, 3, 4, 5, 6, 7]);
+        cache.insert(&[1, 2, 3, 4, 9, 10, 11, 12], &[0, 1, 2, 3, 8, 9, 10, 11]);
 
-        // Empty tree
-        let (len, node) = cache.match_prefix(&[1, 2, 3]);
-        assert_eq!(len, 0);
-        assert_eq!(node, cache.root());
-
-        // Full match
-        cache.insert(&[1, 2, 3, 4, 5], &[10, 20, 30, 40, 50]);
-        assert_eq!(cache.match_prefix(&[1, 2, 3, 4, 5]).0, 5);
-
-        // Partial match with split
-        cache.insert(&[1, 2, 3, 4, 5, 6, 7], &[10, 20, 30, 40, 50, 60, 70]);
-        let (len, node) = cache.match_prefix(&[1, 2, 3, 4, 5, 9, 9]);
-        assert_eq!(len, 5);
-        let n = cache.node(node);
-        assert_eq!(*n.key, cache.page_hashes(&[1, 2, 3, 4, 5]));
-        assert_eq!(
-            *n.value,
-            vec![
-                KvPageId(10),
-                KvPageId(20),
-                KvPageId(30),
-                KvPageId(40),
-                KvPageId(50)
-            ]
-        );
-        let suffix_key = cache.page_hashes(&[6])[0];
-        let &suffix_id = n.children.get(&suffix_key).unwrap();
-        assert_eq!(
-            *cache.node(suffix_id).value,
-            vec![KvPageId(60), KvPageId(70)]
-        );
-    }
-
-    #[test]
-    fn test_insert() {
-        let mut cache = RadixCache::new(100, 1);
-
-        // Shared prefix splits the tree
-        cache.insert(&[1, 2, 3, 4, 5], &[10, 20, 30, 40, 50]);
-        cache.insert(&[1, 2, 3, 6, 7], &[10, 20, 30, 60, 70]);
-        assert_eq!(cache.match_prefix(&[1, 2, 3, 4, 5]).0, 5);
-        assert_eq!(cache.match_prefix(&[1, 2, 3, 6, 7]).0, 5);
-        assert_eq!(cache.match_prefix(&[1, 2, 3, 9]).0, 3);
-
-        // Extend existing prefix
-        let mut cache = RadixCache::new(100, 1);
-        cache.insert(&[1, 2, 3], &[10, 20, 30]);
-        cache.insert(&[1, 2, 3, 4, 5], &[10, 20, 30, 40, 50]);
-        assert_eq!(cache.match_prefix(&[1, 2, 3, 4, 5]).0, 5);
-
-        // Duplicate insert is idempotent
-        cache.insert(&[1, 2, 3], &[10, 20, 30]);
-
-        // Match then insert suffix
-        let mut cache = RadixCache::new(100, 1);
-        cache.insert(&[1, 2, 3, 4, 5], &[10, 20, 30, 40, 50]);
-        assert_eq!(cache.match_prefix(&[1, 2, 3, 4, 5, 6, 7, 8]).0, 5);
-        cache.insert(&[1, 2, 3, 4, 5, 6, 7, 8], &[10, 20, 30, 40, 50, 60, 70, 80]);
-        assert_eq!(cache.match_prefix(&[1, 2, 3, 4, 5, 6, 7, 8]).0, 8);
-    }
-
-    #[rstest::rstest]
-    fn repeated_prefix_splits_keep_retained_capacity_proportional_to_live_pages(
-        #[values(false, true)] shared: bool,
-    ) {
-        let mut cache = RadixCache::new(512, 1);
-        let tokens: Vec<u32> = (0..512).collect();
-        let indices: Vec<usize> = (0..512).collect();
-        cache.insert(&tokens, &indices);
-
-        for prefix_len in (1..512).step_by(4) {
-            let snapshot = shared.then(|| cache.admission_checkpoint());
-            let saved_edges = snapshot.as_ref().map(|saved| {
-                saved
-                    .nodes
-                    .iter()
-                    .map(|(id, node)| (id, (node.key.to_vec(), node.value.to_vec())))
-                    .collect::<FxHashMap<_, _>>()
-            });
-            assert_eq!(cache.match_prefix(&tokens[..prefix_len]).0, prefix_len);
-            if let Some(saved) = snapshot {
-                for (id, (key, pages)) in saved_edges.unwrap() {
-                    assert_eq!(*saved.node(id).key, key);
-                    assert_eq!(*saved.node(id).value, pages);
-                }
-            }
-        }
-        assert_eq!(cache.match_prefix(&tokens).0, tokens.len());
-
-        // Repeated splits must not leave each short prefix holding a copy of
-        // the original edge's capacity. Allow allocator slack, not exact sizes.
-        let (key_capacity, page_capacity) = cache.nodes.values().fold((0, 0), |sum, node| {
-            (sum.0 + node.key.capacity(), sum.1 + node.value.capacity())
-        });
-        assert!(
-            key_capacity <= 2 * tokens.len(),
-            "retained key capacity: {key_capacity}"
-        );
-        assert!(
-            page_capacity <= 2 * tokens.len(),
-            "retained page capacity: {page_capacity}"
-        );
-    }
-
-    #[test]
-    fn test_retained_tail_extends_unique_leaf_in_place() {
-        let mut cache = RadixCache::new(100, 4);
-        cache.insert(&[1, 2, 3, 4], &[0, 1, 2, 3]);
-        let (_, tail) = cache.match_prefix(&[1, 2, 3, 4]);
-        cache.inc_lock_ref(tail);
+        assert_eq!(cache.prefix_match_len(&[1, 2, 3, 4, 13, 14, 15, 16]), 4);
         let nodes_before = cache.num_nodes();
-
-        let extended = cache.insert_from_node(
-            tail,
-            4,
-            &[1, 2, 3, 4, 5, 6, 7, 8],
-            &[0, 1, 2, 3, 4, 5, 6, 7],
-        );
-
-        assert_eq!(extended, tail);
+        assert_eq!(cache.prefix_match_len(&[1, 2, 3, 4, 13, 14, 15, 16]), 4);
         assert_eq!(cache.num_nodes(), nodes_before);
-        assert_eq!(
-            *cache.node(tail).key,
-            cache.page_hashes(&[1, 2, 3, 4, 5, 6, 7, 8])
-        );
-        assert_eq!(cache.protected_size, 8);
         assert_eq!(cache.match_prefix(&[1, 2, 3, 4, 5, 6, 7, 8]).0, 8);
     }
 
     #[test]
-    fn test_retained_tail_does_not_extend_shared_leaf_in_place() {
-        let mut cache = RadixCache::new(100, 4);
-        cache.insert(&[1, 2, 3, 4], &[0, 1, 2, 3]);
-        let (_, tail) = cache.match_prefix(&[1, 2, 3, 4]);
-        cache.inc_lock_ref(tail);
-        cache.inc_lock_ref(tail);
-        let nodes_before = cache.num_nodes();
+    fn continuation_returns_canonical_suffix_and_duplicate_pages() {
+        let mut cache = RadixCache::new(64, 4);
+        let existing = cache.page_pool.allocate_pages(2).unwrap();
+        let key = cache.page_hashes(&[1, 2, 3, 4, 5, 6, 7, 8]);
+        let _ = cache.insert_page_hashes_from_node(cache.root(), 0, &key, &existing, false);
 
-        let extended = cache.insert_from_node(
-            tail,
-            4,
-            &[1, 2, 3, 4, 5, 6, 7, 8],
-            &[0, 1, 2, 3, 4, 5, 6, 7],
-        );
+        let (prefix_len, prefix_node) = cache.match_prefix_hashes_and_lock(&key[..1]);
+        assert_eq!(prefix_len, 4);
+        let incoming_suffix = cache.page_pool.allocate_pages(1).unwrap();
+        let incoming = [existing[0], incoming_suffix[0]];
+        let result =
+            cache.insert_page_hashes_from_node(prefix_node, prefix_len, &key, &incoming, true);
 
-        assert_ne!(extended, tail);
-        assert_eq!(cache.num_nodes(), nodes_before + 1);
-        assert_eq!(*cache.node(tail).key, cache.page_hashes(&[1, 2, 3, 4]));
-        assert_eq!(*cache.node(extended).key, cache.page_hashes(&[5, 6, 7, 8]));
+        assert_eq!(result.canonical_suffix, vec![existing[1]]);
+        assert_eq!(result.unretained_pages, incoming_suffix);
+        assert_eq!(cache.collect_path_pages(result.last_node), existing);
+        cache.dec_lock_ref(prefix_node);
     }
 
     #[test]
-    fn test_page_size() {
-        // Insert and match with page_size=4
-        let mut cache = RadixCache::new(100, 4);
-        assert_eq!(cache.page_pool.total(), 100);
-        cache.insert(&[1, 2, 3, 4, 5, 6, 7], &[0, 1, 2, 3, 4, 5, 6]);
-        assert_eq!(cache.match_prefix(&[1, 2, 3, 4]).0, 4);
-        let (_, node) = cache.match_prefix(&[1, 2, 3, 4]);
-        assert_eq!(*cache.node(node).value, vec![KvPageId(0)]);
-
+    fn lock_accounting_and_lru_eviction_follow_sglang() {
+        let mut cache = RadixCache::new(64, 4);
         cache.insert(&[1, 2, 3, 4, 5, 6, 7, 8], &[0, 1, 2, 3, 4, 5, 6, 7]);
+        cache.insert(&[9, 10, 11, 12], &[8, 9, 10, 11]);
+
+        let first_key = cache.page_hashes(&[1, 2, 3, 4, 5, 6, 7, 8]);
+        let (_, locked) = cache.match_prefix_hashes_and_lock(&first_key);
+        assert_eq!(cache.protected_size(), 8);
+        assert_eq!(cache.evictable_size(), 4);
+
+        let (evicted, pages) = cache.evict(4);
+        assert_eq!(evicted, 4);
+        assert_eq!(pages, vec![KvPageId(2)]);
+        assert_eq!(cache.match_prefix(&[9, 10, 11, 12]).0, 0);
         assert_eq!(cache.match_prefix(&[1, 2, 3, 4, 5, 6, 7, 8]).0, 8);
 
-        // Children disambiguated by first page_size tokens
-        let mut cache = RadixCache::new(100, 4);
-        cache.insert(&[1, 2, 3, 4], &[0, 1, 2, 3]);
-        cache.insert(&[1, 2, 3, 5], &[4, 5, 6, 7]);
-        assert_eq!(cache.match_prefix(&[1, 2, 3, 4]).0, 4);
-        assert_eq!(cache.match_prefix(&[1, 2, 3, 5]).0, 4);
-        assert_eq!(cache.match_prefix(&[1, 2, 3, 6]).0, 0);
-
-        // Split at page boundary preserves value
-        let mut cache = RadixCache::new(100, 4);
-        cache.insert(&[1, 2, 3, 4, 5, 6, 7, 8], &[0, 1, 2, 3, 4, 5, 6, 7]);
-        cache.match_prefix(&[1, 2, 3, 4, 9, 9, 9, 9]);
-        let (_, node) = cache.match_prefix(&[1, 2, 3, 4]);
-        assert_eq!(*cache.node(node).value, vec![KvPageId(0)]);
+        cache.dec_lock_ref(locked);
+        assert_eq!(cache.protected_size(), 0);
+        assert_eq!(cache.evictable_size(), 8);
     }
 
     #[test]
-    fn completed_edges_store_one_key_and_page_id_per_page() {
-        let mut cache = RadixCache::new(256, 64);
-        let tokens = (0..128).collect::<Vec<u32>>();
-        let indices = cache.page_pool.allocate(tokens.len()).unwrap();
-        let node = cache.insert(&tokens, &indices);
-
-        assert_eq!(cache.node(node).key.len(), 2);
-        assert_eq!(cache.node(node).value.len(), 2);
-        assert_eq!(*cache.node(node).value, vec![KvPageId(0), KvPageId(1)]);
-        assert_eq!(cache.match_prefix(&tokens).0, tokens.len());
-    }
-
-    #[test]
-    fn test_lock_unlock_shared_prefix() {
-        let mut cache = RadixCache::new(100, 1);
-        cache.insert(&[1, 2, 3, 4, 5], &[0, 1, 2, 3, 4]);
-        cache.insert(&[1, 2, 3, 6, 7], &[0, 1, 2, 5, 6]);
-
-        let (_, node_a) = cache.match_prefix(&[1, 2, 3, 4, 5]);
-        let (_, node_b) = cache.match_prefix(&[1, 2, 3, 6, 7]);
-
-        cache.inc_lock_ref(node_a);
-        cache.inc_lock_ref(node_b);
-        assert_eq!(cache.protected_size, 7); // 2+2+3
-
-        cache.dec_lock_ref(node_a);
-        assert!(cache.evictable_leaf_is_indexed(node_a));
-        cache.dec_lock_ref(node_b);
-        assert_eq!(cache.protected_size, 0);
-    }
-
-    #[test]
-    fn test_evict() {
-        // LRU order: oldest evicted first
-        let mut cache = RadixCache::new(100, 1);
-        let base = Instant::now();
-        cache.set_test_now(base);
-        cache.insert(&[1, 2, 3], &[0, 1, 2]);
-        let (_, n1) = cache.match_prefix(&[1, 2, 3]);
-        cache.inc_lock_ref(n1);
-        cache.dec_lock_ref(n1);
-
-        cache.set_test_now(base + std::time::Duration::from_secs(1));
-        cache.insert(&[4, 5, 6], &[3, 4, 5]);
-        let (_, n2) = cache.match_prefix(&[4, 5, 6]);
-        cache.inc_lock_ref(n2);
-        cache.dec_lock_ref(n2);
-
-        let (evicted_count, evicted_indices) = cache.evict(3);
-        assert_eq!(evicted_count, 3);
-        // Evicted indices should match the pool indices originally inserted for [1,2,3]
-        let mut sorted_evicted = evicted_indices.clone();
-        sorted_evicted.sort();
-        let mut expected_indices = vec![KvPageId(0), KvPageId(1), KvPageId(2)];
-        expected_indices.sort();
-        assert_eq!(
-            sorted_evicted, expected_indices,
-            "evicted indices should match inserted indices"
-        );
-        assert_eq!(cache.match_prefix(&[1, 2, 3]).0, 0); // oldest evicted
-        assert_eq!(cache.match_prefix(&[4, 5, 6]).0, 3); // newer kept
-
-        // Locked nodes are not evicted
-        let mut cache = RadixCache::new(100, 1);
-        cache.insert(&[1, 2, 3], &[0, 1, 2]);
-        cache.insert(&[4, 5, 6], &[3, 4, 5]);
-        let (_, locked) = cache.match_prefix(&[1, 2, 3]);
-        cache.inc_lock_ref(locked);
-        let (_, unlocked) = cache.match_prefix(&[4, 5, 6]);
-        cache.inc_lock_ref(unlocked);
-        cache.dec_lock_ref(unlocked);
-        let (evicted_count, evicted_indices) = cache.evict(6);
-        assert_eq!(evicted_count, 3); // only unlocked evicted
-        let mut sorted_evicted = evicted_indices;
-        sorted_evicted.sort();
-        assert_eq!(
-            sorted_evicted,
-            vec![KvPageId(3), KvPageId(4), KvPageId(5)],
-            "should evict unlocked [4,5,6] indices"
-        );
-        assert_eq!(cache.match_prefix(&[1, 2, 3]).0, 3);
-    }
-
-    #[test]
-    fn touching_an_evictable_leaf_updates_order() {
-        let mut cache = RadixCache::new(100, 1);
-        let base = Instant::now();
-        cache.set_test_now(base);
-        cache.insert(&[1, 2, 3], &[0, 1, 2]);
-        cache.set_test_now(base + std::time::Duration::from_secs(1));
-        cache.insert(&[4, 5, 6], &[3, 4, 5]);
-        cache.set_test_now(base + std::time::Duration::from_secs(2));
-        let (_, extended) = cache.match_prefix(&[1, 2, 3]);
-        cache.insert_from_node(extended, 3, &[1, 2, 3, 7], &[0, 1, 2, 6]);
-
-        assert_eq!(cache.evict(3).0, 3);
-        assert_eq!(cache.match_prefix(&[1, 2, 3, 7]).0, 4);
-        assert_eq!(cache.match_prefix(&[4, 5, 6]).0, 0);
-    }
-
-    #[test]
-    fn unlocking_preserves_last_access_order() {
-        let mut cache = RadixCache::new(100, 1);
-        let base = Instant::now();
-        cache.set_test_now(base);
-        cache.insert(&[1, 2, 3], &[0, 1, 2]);
-        let older_hashes = cache.page_hashes(&[1, 2, 3]);
-        let (_, older) = cache.match_prefix_hashes_and_lock(&older_hashes);
-
-        cache.set_test_now(base + std::time::Duration::from_secs(1));
-        cache.insert(&[4, 5, 6], &[3, 4, 5]);
-        let newer_hashes = cache.page_hashes(&[4, 5, 6]);
-        let (_, newer) = cache.match_prefix_hashes_and_lock(&newer_hashes);
-        cache.dec_lock_ref(newer);
-        cache.dec_lock_ref(older);
-
-        assert_eq!(cache.evict(3).0, 3);
-        assert_eq!(cache.match_prefix(&[1, 2, 3]).0, 0);
-        assert_eq!(cache.match_prefix(&[4, 5, 6]).0, 3);
-    }
-
-    #[rstest::rstest]
-    fn partial_eviction_and_parent_promotion_keep_index_consistent(
-        #[values(false, true)] shared: bool,
-    ) {
-        let mut cache = RadixCache::new(100, 1);
-        let base = Instant::now();
-        cache.set_test_now(base);
-        cache.insert(&[1, 2, 3, 4], &[0, 1, 2, 3]);
-        let (_, leaf) = cache.match_prefix(&[1, 2, 3, 4]);
-        cache.set_test_now(base + std::time::Duration::from_secs(1));
-        cache.insert(&[5, 6, 7], &[4, 5, 6]);
-        let snapshot = shared.then(|| cache.admission_checkpoint());
-
-        assert_eq!(cache.evict(2).0, 2);
-        assert_eq!(cache.node(leaf).key.len(), 2);
-        assert!(cache.evictable_leaf_is_indexed(leaf));
-        assert_eq!(cache.evict(2).0, 2);
-        assert_eq!(cache.match_prefix(&[1, 2, 3, 4]).0, 0);
-        assert_eq!(cache.match_prefix(&[5, 6, 7]).0, 3);
-        if let Some(mut saved) = snapshot {
-            assert_eq!(*saved.node(leaf).key, saved.page_hashes(&[1, 2, 3, 4]));
-            assert_eq!(
-                *saved.node(leaf).value,
-                vec![KvPageId(0), KvPageId(1), KvPageId(2), KvPageId(3)]
-            );
-            assert!(saved.evictable_leaf_is_indexed(leaf));
-            assert_eq!(saved.evict(2).1, vec![KvPageId(2), KvPageId(3)]);
-        }
-
-        let mut branched = RadixCache::new(100, 1);
-        branched.set_test_now(base);
-        branched.insert(&[10, 11, 12], &[0, 1, 2]);
-        branched.set_test_now(base + std::time::Duration::from_secs(1));
-        branched.insert(&[10, 11, 13], &[0, 1, 3]);
-        branched.set_test_now(base + std::time::Duration::from_secs(2));
-        branched.insert(&[20, 21], &[4, 5]);
-        let parent_hash = branched.page_hashes(&[10])[0];
-        let parent = *branched.nodes[branched.root]
-            .children
-            .get(&parent_hash)
-            .unwrap();
-        assert!(!branched.is_leaf(parent));
-
-        assert_eq!(branched.evict(2).0, 2);
-        assert!(branched.is_leaf(parent));
-        assert!(branched.evictable_leaf_is_indexed(parent));
-        assert_eq!(branched.evict(2).0, 2);
-        assert_eq!(branched.match_prefix(&[10, 11, 12]).0, 0);
-        assert_eq!(branched.match_prefix(&[20, 21]).0, 2);
-    }
-
-    #[test]
-    fn test_evictable_size_includes_unlocked_internal_prefix() {
-        let mut cache = RadixCache::new(16, 4);
-        let first = cache.page_pool.allocate(8).unwrap();
-        cache.insert(&[1; 8], &first);
-        let mut branch = first[..4].to_vec();
-        branch.extend(cache.page_pool.allocate(4).unwrap());
-        cache.insert(&[1, 1, 1, 1, 2, 2, 2, 2], &branch);
-
-        assert_eq!(cache.evictable_size, 12);
-        assert_eq!(cache.evict(12).0, 12);
-        assert_eq!(cache.available_tokens(), 16);
-    }
-
-    #[test]
-    fn test_query_methods() {
-        let cache = RadixCache::new(100, 1);
+    fn query_methods_report_physical_token_capacity() {
+        let cache = RadixCache::new(100, 4);
         assert_eq!(cache.available_tokens(), 100);
         assert_eq!(cache.total_tokens(), 100);
-
-        let cache4 = RadixCache::new(100, 4);
-        assert_eq!(cache4.available_tokens(), 100);
-        assert_eq!(cache4.total_tokens(), 100);
+        assert_eq!(cache.root(), 0);
     }
 }

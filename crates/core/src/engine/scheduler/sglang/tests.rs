@@ -996,7 +996,7 @@ mod destination_lifecycle {
         assert!(stored_hashes(&destination.drain_kv_events()).is_empty());
 
         let reserved_pages = destination.destination_pages(handoff_id);
-        let protected_before_activation = destination.kv_manager.cache().protected_size;
+        let protected_before_activation = destination.kv_manager.cache().protected_size();
         assert!(!reserved_pages.is_empty());
         assert_eq!(
             destination
@@ -1009,7 +1009,7 @@ mod destination_lifecycle {
             .expect("activated request must be prebuilt-ready");
         assert_eq!(ready.kv_pages(), reserved_pages);
         assert_eq!(destination.running.len(), 1);
-        assert!(destination.kv_manager.cache().protected_size >= protected_before_activation);
+        assert!(destination.kv_manager.cache().protected_size() >= protected_before_activation);
         let activation_stores = stored_hashes(&destination.drain_kv_events());
         assert!(!activation_stores.is_empty());
 
@@ -1076,7 +1076,7 @@ mod destination_lifecycle {
         assert!(destination.is_empty());
         assert!(destination.is_drained());
         assert!(!destination.destination_is_held(handoff_id));
-        assert_eq!(destination.kv_manager.cache().protected_size, 0);
+        assert_eq!(destination.kv_manager.cache().protected_size(), 0);
     }
 
     #[test]
@@ -2797,8 +2797,8 @@ mod admission_validation_rollback {
         let cache = core.kv_manager.cache();
         (
             cache.available_tokens(),
-            cache.evictable_size,
-            cache.protected_size,
+            cache.evictable_size(),
+            cache.protected_size(),
             cache.num_nodes(),
         )
     }
@@ -2976,7 +2976,7 @@ mod admission_validation_rollback {
         core.drain_kv_events();
 
         // Own the saved arrays so the assertion does not share the live cache's
-        // copy-on-write buffers. Compare topology and timestamps as well as counts.
+        // copy-on-write buffers. Compare topology and access counters as well as counts.
         let radix_state = |core: &SglangCore| {
             let cache = core.kv_manager.cache();
             let mut nodes = rustc_hash::FxHashMap::default();
@@ -2992,12 +2992,12 @@ mod admission_validation_rollback {
                         node.key.to_vec(),
                         node.value.to_vec(),
                         node.lock_ref,
-                        node.last_access_time,
+                        node.last_access_counter,
                     ),
                 );
             }
             let mut probe = cache.admission_checkpoint();
-            let eviction_order = probe.evict(probe.evictable_size).1;
+            let eviction_order = probe.evict(probe.evictable_size()).1;
             (nodes, eviction_order)
         };
         let state_before = radix_state(&core);

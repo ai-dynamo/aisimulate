@@ -75,7 +75,7 @@ fn decode_capacity_state(
     max_burst: usize,
 ) -> (usize, usize, usize) {
     let actual_available =
-        kv_manager.cache().available_tokens() + kv_manager.cache().evictable_size;
+        kv_manager.cache().available_tokens() + kv_manager.cache().evictable_size();
     // Full partial pages are already owned by PagePool and excluded from
     // `actual_available`; subtracting their slack again would double-charge it.
     let logical_available = actual_available;
