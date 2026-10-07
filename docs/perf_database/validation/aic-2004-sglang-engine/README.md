@@ -127,3 +127,20 @@ python docs/perf_database/validation/aic-2004-sglang-engine/validate_fp8_consump
 
 This creates and removes its own temporary systems copy, strips all other DSA
 context/generation donors, and leaves the production database unchanged.
+
+This change publishes bounded overlays and retains the packaged SGLang tables.
+[`production-replacement-risk.json`](production-replacement-risk.json) records
+the actual Rust source reports and existing table hashes/counts: B200 SGLang
+0.5.14 has 95,203 context rows and 6,048 decode rows, with batches through 1024.
+Each table has exactly one admitted primary and **zero fallback sources**.
+The loader merges sources by coordinate, but there are no earlier SGLang or
+authorized cross-backend DSA rows to fill the holes after whole-file replacement.
+
+New measurements include a batch-32 full/skip pair at 128 new tokens and a
+128-token prefix; they are not restricted entirely to batch 1. That bounded
+sampling still does not qualify interpolation across the retired grid. The
+separate `glm5_dsa_attn` table cannot fill monolithic DSA holes, and CP modeling
+retains its legacy MQA/topK dependencies. Preserving overlays avoids silently
+shrinking default coverage; it also means the packaged default measurements
+retain the identified collector limitations. Default-data and whole-model
+accuracy are not declared repaired by these validation results.
