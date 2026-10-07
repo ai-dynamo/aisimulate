@@ -149,10 +149,10 @@ class TestGetGenerationTestCases:
 
 
 class TestDsaContextPrefixShape:
-    def test_rejects_single_token_prefill(self):
+    def test_accepts_single_token_extend_without_reclassifying_it_as_decode(self):
         mod = _import_module()
-        assert not mod._dsa_context_prefix_shape_is_valid(1, 1, 0)
-        assert not mod._dsa_context_prefix_shape_is_valid(32, 1, 1024)
+        assert mod._dsa_context_prefix_shape_is_valid(1, 1, 0)
+        assert mod._dsa_context_prefix_shape_is_valid(32, 1, 1024)
 
     def test_accepts_multi_token_prefill_with_prefix(self):
         mod = _import_module()

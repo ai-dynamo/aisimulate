@@ -613,9 +613,8 @@ def _dsa_context_prefix_shape_is_valid(
 ) -> bool:
     """Return whether a DSA prefix-context sample is structurally valid.
 
-    Single-token extension is a decode/generation shape.  SGLang's DSA prefill
-    indexer can illegal-access on that shape, so context collection skips it
-    before launching kernels.
+    The scheduler's forward mode distinguishes prefill from decode, including
+    a one-token extension. Native graph dispatch handles its padded bucket.
 
     **Per-request context ceiling (SGLang mechanism, not an empirical constant).**
     The DSA/NSA indexer builds its rotary cos/sin cache for
