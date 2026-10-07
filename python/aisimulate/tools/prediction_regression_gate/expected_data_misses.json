@@ -19,6 +19,6 @@
     "kv_quant": "fp8",
     "gemm_quant": "fp8"
   },
-  "expected_failure_enabled": true,
+  "expected_failure_enabled": false,
   "followup": "https://github.com/ai-dynamo/aisimulate/pull/409"
 }
