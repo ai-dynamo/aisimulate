@@ -129,8 +129,8 @@ consumers. Current `MAINTENANCE_IDENTITY` names
 `69cdb67ed6659a0a8b9aadbd71ccd8820e16cc42`. It differs from v5 only in that the
 cleanup-only executor also accepts the reviewed post-main collector `slurm.py`
 (`cleanup_reconciliation.CLEANUP_SLURM_SOURCES`); the original-host
-`slurm_sha256` check is unchanged. The review (Claude coordinator on the
-user's behalf, 2026-10-02) confirmed that `cleanup()`, the module imports and
+`slurm_sha256` check is unchanged. The maintainer review
+(2026-10-02) confirmed that `cleanup()`, the module imports and
 every member the cleanup subclass inherits are byte-identical to `432dc0b5`.
 The previous `fpm_sglang_public_factory_history_v5` profile and 0346 base
 identified the explicit factory-history and startup-failure supplement

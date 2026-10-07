@@ -37,8 +37,8 @@ TERMINAL = {
 }
 DEPLOYMENTS = {f"{q}-tp{t}" for q in ("fp8", "nvfp4") for t in (2, 4)}
 # v6: cleanup-only executor accepts the reviewed post-main collector Slurm
-# source (see cleanup_reconciliation.CLEANUP_SLURM_SOURCES; reviewed by Claude
-# coordinator on the user's behalf, 2026-10-02). v5 remains historical.
+# source (see cleanup_reconciliation.CLEANUP_SLURM_SOURCES; reviewed by the
+# maintainer, 2026-10-02). v5 remains historical.
 MAINTENANCE_IDENTITY = {
     "kind": "public_source_review_followup",
     "profile": "fpm_cleanup_slurm_source_review_v6",
@@ -47,7 +47,7 @@ MAINTENANCE_IDENTITY = {
 MAINTENANCE = {
     "accounting_termination.py": "67cffe873c0f4225fd07f8786970c27e3ced8ac63366b38540443f4aa8efc890",
     "cleanup_executor.py": "9fe114e5ba4d5283f0aedad3a7f1d22efa673642dd6d4fdf00850315afb75ba1",
-    "cleanup_reconciliation.py": "d54b0bcc17c1b382de6437e6ac4d817f16540af044019b0e6fdb9df95e97669e",
+    "cleanup_reconciliation.py": "aaff0d811fb60839aa953fd4c382860732444702b4748c5ed2716c8670a09f73",
     "external_control.py": "2d3799c0e04030df72728a9ad2333f4220a09a999b16a48ff43730a409874a23",
     "external_control_current.py": "c84aeda99141400a1dfc478c6249badfa25a7bfcdd9b478686697fba92fbc85e",
     "external_control_sglang_factory.py": "36be308ea67d3999d4f17a2dafb9cd05026ed01543c8c3c5e070b7955160c07e",

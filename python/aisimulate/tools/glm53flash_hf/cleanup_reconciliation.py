@@ -35,7 +35,7 @@ REVIEW_CONTRACT = "fpm_original_terminal_failure_review_v1"
 SLURM_SOURCE = "432dc0b578a8d738bf0b691de5009f2df2bb274b75ecb74363f7fc92c2d9e01b"
 # Reviewed collector/fpm_forward/slurm.py sources accepted for the cleanup-only
 # executor. SLURM_SOURCE alone remains the original-host identity check.
-# e187717a review (Claude coordinator on the user's behalf, 2026-10-02, merge
+# e187717a review (maintainer review, 2026-10-02, merge
 # 69cdb67e of main 568b195e): the executor subclass replaces __init__ and
 # _command and disables apply/stage/execute/prepare_attempt; cleanup() reads
 # only job_id, step_name, owner_path and _command. Module imports (lines 1-27)
