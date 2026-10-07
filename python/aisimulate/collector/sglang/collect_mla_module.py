@@ -1044,6 +1044,10 @@ class CudaIllegalAccessError(RuntimeError):
     """Stop the current subprocess after a CUDA illegal access poisons context."""
 
 
+class MeasurementBoundaryError(RuntimeError):
+    """Native dispatch ran, but its module timing boundary is not qualified."""
+
+
 class PerfLogWriteError(RuntimeError):
     """Fail the subprocess when a measured row was not durably persisted."""
 
@@ -1381,6 +1385,7 @@ def run_attention_torch(
     model_runner.token_to_kv_pool_allocator.clear()
 
     logged_count = 0
+    boundary_failures = []
     for test_case in test_cases:
         if len(test_case) == 4:
             batch_size, seq_length, is_prefill, prefix_len = test_case
@@ -1389,34 +1394,45 @@ def run_attention_torch(
             prefix_len = 0
 
         if is_prefill:
-            logged_count += int(
-                _run_prefill(
-                    model_runner=model_runner,
-                    attention_module=attention_module,
-                    batch_size=batch_size,
-                    seq_length=seq_length,
-                    head_num=head_num,
-                    num_warmup=num_warmup,
-                    num_iterations=num_iterations,
-                    device=device,
-                    output_path=output_path,
-                    dummy_qkv_latent_func=dummy_qkv_latent_func,
-                    attn_type=attn_type,
-                    model_path=model_path,
-                    architecture=architecture,
-                    backend_name=backend_name,
-                    version=version,
-                    device_name=device_name,
-                    log_mla_dtype=log_mla_dtype,
-                    log_kv_dtype=log_kv_dtype,
-                    log_gemm_type=log_gemm_type,
-                    target_tp_size=target_tp_size,
-                    prefix_len=prefix_len,
-                    use_module_cuda_graph=use_module_cuda_graph,
-                    dsa_prefill_backend=resolved_dsa_prefill_backend,
-                    ordinary_mla=ordinary_mla,
+            try:
+                logged_count += int(
+                    _run_prefill(
+                        model_runner=model_runner,
+                        attention_module=attention_module,
+                        batch_size=batch_size,
+                        seq_length=seq_length,
+                        head_num=head_num,
+                        num_warmup=num_warmup,
+                        num_iterations=num_iterations,
+                        device=device,
+                        output_path=output_path,
+                        dummy_qkv_latent_func=dummy_qkv_latent_func,
+                        attn_type=attn_type,
+                        model_path=model_path,
+                        architecture=architecture,
+                        backend_name=backend_name,
+                        version=version,
+                        device_name=device_name,
+                        log_mla_dtype=log_mla_dtype,
+                        log_kv_dtype=log_kv_dtype,
+                        log_gemm_type=log_gemm_type,
+                        target_tp_size=target_tp_size,
+                        prefix_len=prefix_len,
+                        use_module_cuda_graph=use_module_cuda_graph,
+                        dsa_prefill_backend=resolved_dsa_prefill_backend,
+                        ordinary_mla=ordinary_mla,
+                    )
                 )
-            )
+            except MeasurementBoundaryError as exc:
+                failure = {
+                    "batch_size": batch_size,
+                    "seq_length": seq_length,
+                    "prefix_len": prefix_len,
+                    "error_type": type(exc).__name__,
+                    "message": str(exc),
+                }
+                boundary_failures.append(failure)
+                print(f"DSA measurement boundary failure: {json.dumps(failure, sort_keys=True)}")
         else:
             logged_count += int(
                 _run_decode(
@@ -1444,6 +1460,11 @@ def run_attention_torch(
                     dsa_prefill_backend=resolved_dsa_decode_backend,
                 )
             )
+    if boundary_failures:
+        raise MeasurementBoundaryError(
+            "DSA prefill collection incomplete: "
+            + json.dumps({"logged_count": logged_count, "boundary_failures": boundary_failures}, sort_keys=True)
+        )
     return logged_count
 
 
@@ -2035,6 +2056,17 @@ def _run_prefill(
                     raise RuntimeError("Native piecewise DSA unexpectedly selected dense MHA")
                 indexer_mode = "skip_indexer" if _skip_indexer else "indexer"
                 executed_dsa_source = f"sglang_dsa_{indexer_mode}_{model_runner.attn_backend.dsa_prefill_impl}"
+                # Native dispatch/capture above is observed, not predicted from
+                # the requested shape. The installed compiled Inner still has
+                # a model-level Dynamo entry on every replay. Profiles in
+                # docs/perf_database/validation/aic-2004-sglang-collector/ show
+                # that it cannot currently be charged as one attention layer.
+                # Preserve the native path and its failure; never emit a row
+                # with this known measurement-boundary error or fall back to eager.
+                raise MeasurementBoundaryError(
+                    f"Unqualified SGLang DSA native TC prefill measurement boundary: {executed_dsa_source}; "
+                    "per-model Dynamo entry remains inside per-layer timing; no perf row was written"
+                )
 
         # Warmup — run UNDER the flashinfer autotune context so the fp4_gemm
         # autotuning is absorbed into this module warmup (tuned here, cached for
@@ -2157,7 +2189,7 @@ def _run_prefill(
         print(f"  Prefill: {avg_time_ms:.3f} ms (back-to-back avg over {num_iterations} iters)")
         return True
 
-    except PerfLogWriteError:
+    except (MeasurementBoundaryError, PerfLogWriteError):
         raise
     except (torch.cuda.OutOfMemoryError, torch.OutOfMemoryError):
         print(f"  OOM: b={batch_size}, s={seq_length} — skipping")

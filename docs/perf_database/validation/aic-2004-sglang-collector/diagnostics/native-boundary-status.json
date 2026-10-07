@@ -1,0 +1,231 @@
+{
+  "status": "NOT_QUALIFIED",
+  "measurement_eligible": false,
+  "job_id": 4765022,
+  "job_completion_is_not_acceptance": true,
+  "case_results": [
+    {
+      "case": {
+        "id": "context-b1-q1-p0-full",
+        "mode": "context",
+        "q": 1,
+        "p": 0,
+        "b": 1,
+        "skip": false
+      },
+      "status": "passed",
+      "emitted_rows_diagnostic_only": 1
+    },
+    {
+      "case": {
+        "id": "context-b1-q1-p0-skip",
+        "mode": "context",
+        "q": 1,
+        "p": 0,
+        "b": 1,
+        "skip": true
+      },
+      "status": "passed",
+      "emitted_rows_diagnostic_only": 1
+    },
+    {
+      "case": {
+        "id": "context-b1-q129-p128-full",
+        "mode": "context",
+        "q": 129,
+        "p": 128,
+        "b": 1,
+        "skip": false
+      },
+      "status": "passed",
+      "emitted_rows_diagnostic_only": 1
+    },
+    {
+      "case": {
+        "id": "context-b1-q129-p128-skip",
+        "mode": "context",
+        "q": 129,
+        "p": 128,
+        "b": 1,
+        "skip": true
+      },
+      "status": "passed",
+      "emitted_rows_diagnostic_only": 1
+    },
+    {
+      "case": {
+        "id": "context-b1-q1024-p131072-full",
+        "mode": "context",
+        "q": 1024,
+        "p": 131072,
+        "b": 1,
+        "skip": false
+      },
+      "status": "failed",
+      "emitted_rows_diagnostic_only": 0
+    },
+    {
+      "case": {
+        "id": "context-b1-q1024-p131072-skip",
+        "mode": "context",
+        "q": 1024,
+        "p": 131072,
+        "b": 1,
+        "skip": true
+      },
+      "status": "failed",
+      "emitted_rows_diagnostic_only": 0
+    }
+  ],
+  "successful_small_case_observations": [
+    {
+      "case": "q1-p0-full",
+      "native_callable_class": "GraphModule",
+      "outputs_finite": true,
+      "outputs_exact_numeric_equal": true,
+      "bytewise_equality_not_tested": true,
+      "guarded_output_raw_aliases": [
+        [
+          1
+        ]
+      ],
+      "timings_ms_diagnostic_only": [
+        {
+          "guarded": 0.576690559387207,
+          "native_backend": 0.3680147171020508
+        },
+        {
+          "guarded": 0.5757465744018555,
+          "native_backend": 0.366495361328125
+        },
+        {
+          "guarded": 0.5745375823974609,
+          "native_backend": 0.36995391845703124
+        }
+      ]
+    },
+    {
+      "case": "q1-p0-skip",
+      "native_callable_class": "GraphModule",
+      "outputs_finite": true,
+      "outputs_exact_numeric_equal": true,
+      "bytewise_equality_not_tested": true,
+      "guarded_output_raw_aliases": [
+        [
+          1
+        ]
+      ],
+      "timings_ms_diagnostic_only": [
+        {
+          "guarded": 0.3097036743164063,
+          "native_backend": 0.17881471633911133
+        },
+        {
+          "guarded": 0.3132076835632324,
+          "native_backend": 0.181015682220459
+        },
+        {
+          "guarded": 0.31444416046142576,
+          "native_backend": 0.1822559928894043
+        }
+      ]
+    },
+    {
+      "case": "q129-p128-full",
+      "native_callable_class": "GraphModule",
+      "outputs_finite": true,
+      "outputs_exact_numeric_equal": true,
+      "bytewise_equality_not_tested": true,
+      "guarded_output_raw_aliases": [
+        [
+          1
+        ]
+      ],
+      "timings_ms_diagnostic_only": [
+        {
+          "guarded": 0.6826918029785156,
+          "native_backend": 0.4517388916015625
+        },
+        {
+          "guarded": 0.6651251220703125,
+          "native_backend": 0.45374526977539065
+        },
+        {
+          "guarded": 0.6681951904296874,
+          "native_backend": 0.45180736541748046
+        }
+      ]
+    },
+    {
+      "case": "q129-p128-skip",
+      "native_callable_class": "GraphModule",
+      "outputs_finite": true,
+      "outputs_exact_numeric_equal": true,
+      "bytewise_equality_not_tested": true,
+      "guarded_output_raw_aliases": [
+        [
+          1
+        ]
+      ],
+      "timings_ms_diagnostic_only": [
+        {
+          "guarded": 0.3150060844421387,
+          "native_backend": 0.17717056274414061
+        },
+        {
+          "guarded": 0.31171775817871095,
+          "native_backend": 0.17383808135986328
+        },
+        {
+          "guarded": 0.31476095199584964,
+          "native_backend": 0.17722879409790038
+        }
+      ]
+    }
+  ],
+  "trace_comparison": [
+    {
+      "case": "q1-p0-full",
+      "kernels_equal": true,
+      "customops_equal": true,
+      "graph_launches_equal": true
+    },
+    {
+      "case": "q1-p0-skip",
+      "kernels_equal": true,
+      "customops_equal": true,
+      "graph_launches_equal": true
+    },
+    {
+      "case": "q129-p128-full",
+      "kernels_equal": true,
+      "customops_equal": true,
+      "graph_launches_equal": true
+    },
+    {
+      "case": "q129-p128-skip",
+      "kernels_equal": true,
+      "customops_equal": true,
+      "graph_launches_equal": true
+    }
+  ],
+  "unresolved_long_cases": {
+    "full": "Zero-tolerance guarded/direct output comparison failed: greatest absolute difference 1.57356e-5. No repeated guarded/guarded or direct/direct control completed, so native nondeterminism versus bypassed frontend behavior is unresolved.",
+    "skip": "Initial guarded/direct numerical comparison passed; final model output did not change after hidden input perturbation. This is an insufficient negative control and does not prove a missing QKV calculation; all raw output slots must be compared."
+  },
+  "followup": {
+    "target_010_job": 4765355,
+    "target_010_state": "CANCELLED while pending after node079 DRAIN",
+    "target_011_job": 4765498,
+    "target_011_state": "CANCELLED during image extraction before container measurement",
+    "target_011_reason": "Allocation preflight showed REBOOT_REQUESTED. Exclusion inventory matched umbriel-b200 names but missed umb-b200 aliases. This launcher/inventory error is not a native kernel failure.",
+    "future_control": "Frozen six-point G/G,D/D,direct-first perturbation and raw-tree bytewise comparison remains unexecuted. No further allocation requested."
+  },
+  "original_artifact_hashes": {
+    "receipt.json": "df058e04dd77f1cf78f5d42bd4d068ac38da050bf46c91000aed0f638cecc46b",
+    "native-backend-observations.json": "fff3919ab1e8f7a947aabef19e46f73b7d1bdd4e00aec674af9ecd6f7121303c",
+    "kernel-parity-summary.json": "aebb5d3dbf3adf54463eee9287033d741464a43ac2b861eeb1aecd7cd7573ef1",
+    "native_boundary_control.py": "4436400f17a27b66a0b95c3c7b77aa0561852fe662d6387047656f76b4a0c2be",
+    "manifest.json": "e7e7237a4d659fedfb74e24bb77817d084f86e4bb881a0d0c2f1ee071a53fdf2"
+  }
+}

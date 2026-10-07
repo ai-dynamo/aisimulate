@@ -123,5 +123,32 @@
     "onset": "unknown",
     "affected_gpu": "unknown",
     "qualification_limit": "Measurements have endpoint/periodic observations, not continuous host-health certification; later alert does not establish earlier onset."
+  },
+  "formal_tc_export": {
+    "status": "rejected_after_observed_native_dispatch",
+    "exception": "MeasurementBoundaryError",
+    "timing_or_row_written": false,
+    "other_cases": "continue only after this specific classified error, then raise aggregate failure",
+    "fallback": "none",
+    "data_source_revision": "6a3f8fc6 remains the measured eager/decode source"
+  },
+  "native_boundary_diagnostic": "diagnostics/native-boundary-status.json",
+  "optional_control_cancellation": "runtime/optional-control-cancellation.json",
+  "validation": {
+    "pre_guard_full_collector": {
+      "source_commit": "6a3f8fc6",
+      "passed": 3808,
+      "skipped": 51,
+      "deselected": 39
+    },
+    "final_guard_sglang_collector": {
+      "passed": 280,
+      "skipped": 5,
+      "deselected": 39,
+      "new_behavioral_tests": 8,
+      "collector_sha256": "e2ace68dc7120bdce52d5243763713684292c419c5ee0cd702a36fd55d7bd196",
+      "junit_sha256": "887ce7cea2f5085cb9e90f159cd1fa42a2c51b915566f110c8e2444593ac9280"
+    },
+    "full_suite_rerun_after_guard": false
   }
 }
