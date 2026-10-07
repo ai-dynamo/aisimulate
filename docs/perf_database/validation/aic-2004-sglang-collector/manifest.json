@@ -55,5 +55,48 @@
     "full B200 grid coverage",
     "TC graph prefill latency qualification",
     "checkpoint numerical accuracy"
-  ]
+  ],
+  "repeat_spread": [
+    {
+      "op_name": "dsa_generation_module",
+      "history": 8192,
+      "observations_ms": [
+        0.0781,
+        0.0913
+      ],
+      "selected_priority_ms": 0.0913,
+      "max_over_min_minus_one_percent": 16.901408450704224
+    },
+    {
+      "op_name": "dsa_generation_module",
+      "history": 131072,
+      "observations_ms": [
+        0.1371,
+        0.1608
+      ],
+      "selected_priority_ms": 0.1608,
+      "max_over_min_minus_one_percent": 17.286652078774623
+    },
+    {
+      "op_name": "dsa_generation_module_skip_indexer",
+      "history": 8192,
+      "observations_ms": [
+        0.039,
+        0.039
+      ],
+      "selected_priority_ms": 0.039,
+      "max_over_min_minus_one_percent": 0.0
+    },
+    {
+      "op_name": "dsa_generation_module_skip_indexer",
+      "history": 131072,
+      "observations_ms": [
+        0.039,
+        0.039
+      ],
+      "selected_priority_ms": 0.039,
+      "max_over_min_minus_one_percent": 0.0
+    }
+  ],
+  "repeat_selection_note": "Priority cohort was selected deterministically, not by speed. Full-indexer repeated values differ by about17%; no timing stability or input-distribution invariance claim."
 }
