@@ -15,8 +15,38 @@ The required matrix is GB300 × vLLM/SGLang × native FP8/NVIDIA NVFP4 × TP2/TP
 
 - FP8: `zai-org/GLM-5.3-Flash@eb9eb208eb0d988989d07a6a12d0fdeb5f52574a`.
 - NVFP4: `nvidia/GLM-5.3-Flash-NVFP4@09b04e5e74bca08ca8549fc736d4cdd8624bfde3`.
-- vLLM: `v0.30.0`, source `ced6857afa0ea7b2e3f0846a62e1394e90f15607`.
+- vLLM: stock `v0.31.0`, source `db9527a46873454610df6dbedf79a36d6bf1a7f6` (earlier campaigns:
+  `v0.30.0`, source `ced6857afa0ea7b2e3f0846a62e1394e90f15607`, and its local repairs below).
 - SGLang: `v0.5.20`, source `94602c9c2b7cbdb8efd5c52802dac6a1c180089e`.
+
+### vLLM v0.31.0 recollection (stock runtime)
+
+The vLLM FPM is recollected on stock vLLM `0.31.0` without a local patch. The
+default serving configuration is unchanged: prefix caching on (Mamba `align`
+mode, `--prefix-match-unit 4`), `FULL_AND_PIECEWISE` graphs with the 62 capture
+sizes, `--no-async-scheduling`, GPU memory 0.92, budget 8192. Timing is the
+engine-native Dynamo `InstrumentedScheduler` FPM `wall_time` of the
+prefix-seed producer (`glm53flash_prefix_scheduler.py`).
+
+- Stock v0.31.0 does not complete IndexPool entries at a cached or chunked
+  prefill start that is not a multiple of 4. Every prompt, prefix and new-token
+  length is a multiple of 4. A decode point with context `c` uses the prompt
+  `4 * floor((c - 1) / 4)` and measures the pure decode step whose KV read is
+  `c`. The producer records every prefill chunk start from the native
+  `SchedulerOutput` and fails on an unaligned start. Geometry moved to satisfy
+  this is executed geometry with reason `kpool_align4`. The consumer still
+  rejects unaligned cached-prefill queries on stock runtimes.
+- Inputs are the seeded token stream of `collector/glm53flash_attention_tokens.py`
+  (generator `sha256_counter_rejection` v1, seed 53, ids `[0, 154820)` of the
+  pinned tokenizer), recorded in `input_provenance`; there is no text corpus.
+- Deployments: FP8 and NVFP4 at TP2/TP4, plus NVFP4 TP1.
+- Dynamo: the instrumentation stays at `54960177`. Its `_compute_queued`
+  reads `Scheduler.skipped_waiting`, which v0.31.0 removed. The producer
+  overrides that one method with the v0.31.0 version from Dynamo `395f0240`.
+- Source pins: `runtime-source-sha256.json` holds the v0.31.0 stock closure.
+  It uses the moved `vllm/models/glm5next/common/` and `nvidia/sparse_indexer.py`
+  modules. The 0.30.0 closure that the historical repairs extend is kept in
+  `runtime-source-sha256-vllm-0.30.0.json`.
 
 These are qualification candidates, not evidence of measured GB300 coverage. Preserve the checkpoint's actual per-module precision; do not relabel all weights as FP8 or NVFP4. TensorRT-LLM serving support is outside this initial matrix.
 

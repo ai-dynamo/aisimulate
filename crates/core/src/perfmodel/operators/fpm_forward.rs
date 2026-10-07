@@ -1280,6 +1280,33 @@ mod tests {
     }
 
     #[test]
+    fn stock_vllm_v031_admits_only_pool_aligned_glm_prefill_starts() {
+        // Stock v0.31.0 keeps the unaligned IndexPool start defect; its FPM
+        // inputs are collected on the 4-token grid only.
+        let mut prefill = op(FpmPhase::Prefill);
+        prefill.model_path = "nvidia/GLM-5.3-Flash-NVFP4".into();
+        for coords in [
+            [1.0, 4.0, 4096.0],
+            [2.0, 64.0, 8192.0],
+            [1.0, 3.0, 4096.0],
+            [1.0, 1.0, 4097.0],
+        ] {
+            assert!(
+                prefill
+                    .validate_glm53flash_native_start("vllm", "0.31.0", &coords)
+                    .is_ok()
+            );
+        }
+        assert!(
+            prefill
+                .validate_glm53flash_native_start("vllm", "0.31.0", &[1.0, 4.0, 4098.0])
+                .unwrap_err()
+                .to_string()
+                .contains("cached-prefill start is unqualified")
+        );
+    }
+
+    #[test]
     fn unqualified_glm_repair_suffix_does_not_bypass_native_pool_start() {
         let mut prefill = op(FpmPhase::Prefill);
         prefill.model_path = "zai-org/GLM-5.3-Flash".into();
@@ -1289,6 +1316,8 @@ mod tests {
             "0.30.0+glm53kpool.bf5f6b0e689d.other",
             "0.30.0+glm53tail.eb4704514fdf.other",
             "0.30.0+glm53tail.eb4704514fde",
+            "0.31.0",
+            "0.31.0+glm53tail.eb4704514fdf",
         ] {
             assert!(
                 prefill
