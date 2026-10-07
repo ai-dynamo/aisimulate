@@ -80,7 +80,14 @@ The zero reuse MAPE above uses rounded four-decimal table values. The raw
 post-case clock observations are retained in
 [`gpu-sampling-health.json`](gpu-sampling-health.json): one of the campaign's
 50 post-case samples has event mask `0x4` while reporting 1965 MHz. These
-snapshots are not continuous monitoring of every timed iteration.
+snapshots are not continuous monitoring of every timed iteration. Collection
+endpoint snapshots had no DRAIN/reboot flag. A later node-level `pegged clocks`
+DRAIN was recorded at 18:07:10 PDT on October 6, after this collection ended
+at 17:55:24 and the following prototype ended at 18:01:06. The
+[raw later observation](../aic-2004-sglang-collector/runtime/node-later-observation.json)
+preserves that alert. Its onset and affected GPU are unknown; it establishes
+neither earlier invalidity nor continuous health. No measurement or SDK result
+is changed on the basis of that later observation.
 Historical GLM/SGLang whole-forward data uses a different framework revision,
 model revision and speculative setup. Whole-model accuracy remains
 `NOT_EVALUATED` for stock SGLang 0.5.14. The earlier six-point trial omitted
