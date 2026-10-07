@@ -721,6 +721,7 @@ _MLA_ARCHITECTURES = frozenset({
     "DeepseekV32ForCausalLM",
     "GlmMoeDsaForCausalLM",
     "DeepseekV4ForCausalLM",
+    "DeepseekV41ForCausalLM",
     "KimiK25ForConditionalGeneration",
     "KimiK3ForConditionalGeneration",
 })

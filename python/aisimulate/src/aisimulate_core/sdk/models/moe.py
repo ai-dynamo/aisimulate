@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import logging
+import math
 
 import aisimulate_core.sdk.operations as ops
 from aisimulate_core.sdk import common
@@ -88,6 +89,40 @@ class MOEModel(BaseModel):
         if self.architecture != "GptOssForCausalLM":
             return super().get_kvcache_max_tokens(kv_budget_bytes)
         return self._binary_search_kvcache_max_tokens(kv_budget_bytes)
+
+    def get_kvcache_batch_capacity(self, kv_budget_bytes: float, max_batch_size: int) -> int:
+        """Capacity with vLLM block-aligned SWA reservation amortised over context."""
+        if self.architecture != "GptOssForCausalLM":
+            return super().get_kvcache_batch_capacity(kv_budget_bytes, max_batch_size)
+
+        max_model_len = getattr(self.config, "max_model_len", None)
+
+        if not max_model_len:
+            return self.get_kvcache_max_tokens(kv_budget_bytes)
+
+        budget = float(kv_budget_bytes)
+        if budget <= 0.0:
+            return 0
+
+        block_size = 16
+        bytes_per_elem = self.config.kvcache_quant_mode.value.memory
+        num_kv_heads_per_gpu = (self._num_kv_heads + self.config.tp_size - 1) // self.config.tp_size
+        per_layer_per_token = num_kv_heads_per_gpu * self._head_size * 2 * bytes_per_elem
+
+        num_swa = self._num_layers // self._GPTOSS_ATTN_SCALE_FACTOR
+        num_global = self._num_layers - num_swa
+
+        swa_per_token = num_swa * per_layer_per_token
+        global_per_token = num_global * per_layer_per_token
+
+        context = max(self._context_length, 1)
+        swa_reservation = (math.ceil((self._GPTOSS_WINDOW_SIZE - 1 + max_model_len) / block_size) + 1) * block_size
+
+        effective_per_token = global_per_token + swa_per_token * swa_reservation / context
+
+        if effective_per_token <= 0.0:
+            return 0
+        return int(budget / effective_per_token)
 
     def __init__(self, topk: int, num_experts: int, moe_inter_size: int, *args, backend_name: str = "") -> None:
         super().__init__(*args)

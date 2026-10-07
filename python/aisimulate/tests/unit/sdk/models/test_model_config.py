@@ -1226,6 +1226,17 @@ class TestQuantizationModes:
         assert model_config.kvcache_quant_mode == common.KVCacheQuantMode.fp8
         assert model_config.fmha_quant_mode == common.FMHAQuantMode.bfloat16
 
+    @pytest.mark.parametrize("backend_name", ["vllm", "sglang"])
+    def test_deepseek_v41_keeps_fp8_kvcache_on_vllm_and_sglang(self, backend_name):
+        model_config = config.ModelConfig()
+        models._apply_model_quant_defaults(
+            model_config,
+            {},
+            "DeepseekV41ForCausalLM",
+            backend_name,
+        )
+        assert model_config.kvcache_quant_mode == common.KVCacheQuantMode.fp8
+
 
 class TestMOEModelFP8BlockQuantizationValidation:
     """Test MOEModel._validate_fp8_block_quantized_moe_config() method."""

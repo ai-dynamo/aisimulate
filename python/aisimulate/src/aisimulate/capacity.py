@@ -242,7 +242,7 @@ def materialize_aic_num_gpu_blocks(
             if lowered.get("aic_fpm_profile") is not None
             else {}
         ),
-        **({"context_length": lowered.get("max_model_len")} if lowered.get("aic_fpm_profile") is not None else {}),
+        context_length=lowered.get("max_model_len"),
         **({"diagnostics": memory_diagnostics} if memory_diagnostics is not None else {}),
     )
     return finish_lowering(lowered)

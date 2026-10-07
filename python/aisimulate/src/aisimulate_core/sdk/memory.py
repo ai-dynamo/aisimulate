@@ -297,6 +297,7 @@ class KVCacheEstimator:
         wideep_num_slots: int | None = None,
         nextn: int = 0,
         systems_path: str | None = None,
+        max_model_len: int | None = None,
     ) -> KVCacheEstimator:
         """Build the model/backend/perf-DB and the non-KV memory breakdown.
 
@@ -352,6 +353,8 @@ class KVCacheEstimator:
         # Memory is cost-side only; accepted-token progress never enters
         # capacity math.
         apply_nextn(model_config, nextn)
+        if max_model_len is not None:
+            model_config.max_model_len = max_model_len
         # Capacity needs model/system metadata, including when external FPM
         # timing has no backend data directory.
         database = perf_database.get_database(
@@ -1258,6 +1261,7 @@ def estimate_kv_cache(
             wideep_num_slots=wideep_num_slots,
             nextn=int(nextn),
             systems_path=systems_path,
+            max_model_len=context_length,
         )
     except Exception as exc:  # native model build unsupported (model/backend/perf DB)
         if (

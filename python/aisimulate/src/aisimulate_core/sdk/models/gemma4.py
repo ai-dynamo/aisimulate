@@ -566,7 +566,13 @@ class Gemma4MixModel(BaseModel):
         return float(swa_bytes + global_bytes)
 
     def get_kvcache_max_tokens(self, kv_budget_bytes: float) -> int:
-        """Capacity inverse accounting for vLLM SlidingWindowSpec block reservation.
+        """Monotonic-search inverse of :meth:`get_kvcache_bytes_per_sequence`."""
+        if not self._gemma4_config:
+            return super().get_kvcache_max_tokens(kv_budget_bytes)
+        return self._binary_search_kvcache_max_tokens(kv_budget_bytes)
+
+    def get_kvcache_batch_capacity(self, kv_budget_bytes: float, max_batch_size: int) -> int:
+        """Token capacity accounting for vLLM SlidingWindowSpec block reservation.
 
         vLLM allocates KV cache in fixed-size blocks (default 16 tokens).  For
         sliding-window (SWA) layers the allocator reserves more slots per
@@ -605,20 +611,17 @@ class Gemma4MixModel(BaseModel):
         **Total capacity** = ``budget / effective_per_token``, which matches
         vLLM's reported token capacity within 0.004% on logged deployments.
 
-        Falls back to the idealized binary-search inverse when
-        ``config.max_model_len`` is not set or the model has no SWA layers.
+        Falls back to the idealized inverse when ``config.max_model_len`` is
+        not set or the model has no SWA layers.
         """
         if not self._gemma4_config:
-            return super().get_kvcache_max_tokens(kv_budget_bytes)
+            return super().get_kvcache_batch_capacity(kv_budget_bytes, max_batch_size)
 
         cfg = self._gemma4_config
         max_model_len = getattr(self.config, "max_model_len", None)
 
-        # Without max_model_len or a sliding window, the block reservation
-        # cannot be computed — fall back to the idealized curve inversion
-        # that caps SWA layers at min(seq_len, window).
         if cfg.sliding_window_size <= 0 or not max_model_len:
-            return self._binary_search_kvcache_max_tokens(kv_budget_bytes)
+            return self.get_kvcache_max_tokens(kv_budget_bytes)
 
         budget = float(kv_budget_bytes)
         if budget <= 0.0:
@@ -627,39 +630,21 @@ class Gemma4MixModel(BaseModel):
         bytes_per_elem = self.config.kvcache_quant_mode.value.memory
         tp = self.config.tp_size
 
-        # vLLM default KV cache block size (tokens per block).
         block_size = 16
 
-        # ---------- per-GPU KV head counts after tensor-parallel sharding ----------
         swa_kv_per_gpu = (cfg.swa_num_kv_heads + tp - 1) // tp
         global_kv_per_gpu = (cfg.global_num_kv_heads + tp - 1) // tp
         num_swa = cfg.layer_types.count("sliding_attention")
         num_global = cfg.layer_types.count("full_attention")
 
-        # ---------- architectural per-token KV bytes per layer type ----------
-        # Each layer stores both K and V tensors (x2), summed over all layers
-        # of that type.
-        #   e.g. swa_per_token = 50 * 16 * 256 * 2 * 2 = 819,200 B (800 KiB)
         swa_per_token = num_swa * swa_kv_per_gpu * cfg.swa_head_dim * 2 * bytes_per_elem
         global_per_token = num_global * global_kv_per_gpu * cfg.global_head_dim * 2 * bytes_per_elem
 
-        # ---------- vLLM SlidingWindowSpec block reservation ----------
-        # Token slots pre-allocated per request for SWA layers:
-        #   (window - 1) = sliding history carried from prior chunks
-        #   max_model_len = newly scheduled tokens in the prefill
-        #   ceil(... / block_size) = round up to whole blocks
-        #   + 1 block = alignment padding
         context = max(self._context_length, 1)
         swa_reservation = (
             math.ceil((cfg.sliding_window_size - 1 + max_model_len) / block_size) + 1
         ) * block_size
 
-        # ---------- effective per-token rate ----------
-        # Global layers scale linearly with sequence length.
-        # SWA layers contribute a fixed reservation (swa_reservation tokens)
-        # that is amortised over the model's max_position_embeddings (context).
-        # This blended rate reproduces vLLM's capacity report:
-        #   total_tokens = budget / effective_per_token
         effective_per_token = global_per_token + swa_per_token * swa_reservation / context
 
         if effective_per_token <= 0.0:
