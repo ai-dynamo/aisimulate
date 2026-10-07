@@ -321,6 +321,16 @@ class Glm53FlashModel(BaseModel):
                 allreduce("embedding_allreduce", context),
                 mhc("mhc_expand", "expand"),
             ]
+            # Prefix caching adds framework state-checkpoint work: SGLang
+            # extra_buffer copies KDA conv/SSM state at 256-token boundaries in
+            # decode and on every chunk of 64+ new tokens in prefill; vLLM align
+            # mode does precopies at Mamba block crossings, which are hidden
+            # behind host prep under synchronous scheduling. It is intentionally
+            # not modeled. On GB300 clean truth, prefix-cache ON vs OFF Ops
+            # error changed only slightly or in opposite directions by
+            # backend/phase (SGLang prefill improved about 1.5 points when it
+            # was modeled, SGLang decode worsened 0.5-2.8 points, vLLM
+            # unchanged).
             for layer in range(len(d.layer_types)):
                 if backend_name == "vllm":
                     target.append(
