@@ -144,3 +144,20 @@ retains its legacy MQA/topK dependencies. Preserving overlays avoids silently
 shrinking default coverage; it also means the packaged default measurements
 retain the identified collector limitations. Default-data and whole-model
 accuracy are not declared repaired by these validation results.
+
+The prediction regression gate also exposed a separate reuse-capability bug.
+B300, GB200 and GB300 have GLM FP8 full rows but only BF16 reuse rows. The
+SGLang query now requires a matching precision, architecture, head count and
+selected backend before amortizing reuse layers. Otherwise it preserves the
+existing conservative all-full behavior. Six real default-model queries that
+previously failed now succeed; the precision remains FP8.
+
+[`prediction-regression-classification.json`](prediction-regression-classification.json)
+classifies the original 1,674 missing-data transitions: 162 default-precision
+cases had that capability defect, while 1,512 explicitly requested per-tensor
+FP8 or NVFP4. The old successful queries silently used BF16 attention because
+of the norm-exclusion bug. Those explicit requests now correctly report missing
+DSA silicon. The SDK permits such precision studies, so replacing their request
+with checkpoint precision would hide the problem. The gate, thresholds and grid
+remain unchanged; the remaining data-coverage transitions require review, and
+this report does not declare the prediction gate green.

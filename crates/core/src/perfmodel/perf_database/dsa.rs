@@ -132,11 +132,51 @@ pub(crate) fn select_dsa_backend<'a, T>(
     by_backend: &'a BTreeMap<String, T>,
     dsa_backend: &str,
 ) -> Option<&'a T> {
-    by_backend
-        .get(dsa_backend)
-        .or_else(|| by_backend.get("flashmla_kv"))
-        .or_else(|| by_backend.get("trtllm"))
-        .or_else(|| by_backend.values().next())
+    select_dsa_backend_name(by_backend, dsa_backend).and_then(|name| by_backend.get(name))
+}
+
+fn select_dsa_backend_name<'a, T>(
+    by_backend: &'a BTreeMap<String, T>,
+    requested: &str,
+) -> Option<&'a str> {
+    [requested, "flashmla_kv", "trtllm"]
+        .into_iter()
+        .find_map(|name| by_backend.get_key_value(name).map(|(key, _)| key.as_str()))
+        .or_else(|| by_backend.keys().next().map(String::as_str))
+}
+
+/// Reuse observations must describe the same precision, architecture, executed
+/// backend bucket and local head count as the full observation. A skip row for
+/// a different model/precision/head cannot authorize a cross-head estimate.
+fn has_paired_skip_slice(
+    full: &DsaGrids,
+    skip: &DsaGrids,
+    key: &DsaKey,
+    requested_backend: &str,
+    num_heads: u32,
+) -> bool {
+    let Some(full_backends) = full.by_keys.get(key) else {
+        return false;
+    };
+    let Some(backend) = select_dsa_backend_name(full_backends, requested_backend) else {
+        return false;
+    };
+    let Some(skip_backends) = skip.by_keys.get(key) else {
+        return false;
+    };
+    // Each query applies the same fallback order independently. Even if the
+    // skip map contains the full bucket, it may select a different, preferred
+    // bucket; that pair does not establish matching execution measurements.
+    if select_dsa_backend_name(skip_backends, requested_backend) != Some(backend) {
+        return false;
+    }
+    full_backends[backend]
+        .get(&num_heads)
+        .is_some_and(|grid| !grid.is_empty())
+        && skip_backends
+            .get(backend)
+            .and_then(|heads| heads.get(&num_heads))
+            .is_some_and(|grid| !grid.is_empty())
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -557,6 +597,48 @@ impl DsaTable {
     pub fn has_context_skip_rows(&self) -> Result<bool, AicError> {
         match self.load_context_skip() {
             Ok(grids) => Ok(!grids.by_keys.is_empty()),
+            Err(AicError::PerfDatabase(msg)) if msg.contains(NO_DSA_ROWS_PREFIX) => Ok(false),
+            Err(err) => Err(err),
+        }
+    }
+
+    /// Reuse capability for the actual query identity. Source resolution
+    /// happens before this check, so a new version label alone never enables
+    /// reuse of an older full-only fallback table. Corrupt tables still error.
+    pub fn has_context_skip_slice(
+        &self,
+        key: &DsaKey,
+        backend: &str,
+        num_heads: u32,
+    ) -> Result<bool, AicError> {
+        match self.load_context_skip() {
+            Ok(skip) => Ok(has_paired_skip_slice(
+                self.load_context()?,
+                skip,
+                key,
+                backend,
+                num_heads,
+            )),
+            Err(AicError::PerfDatabase(msg)) if msg.contains(NO_DSA_ROWS_PREFIX) => Ok(false),
+            Err(err) => Err(err),
+        }
+    }
+
+    /// Generation twin of [`Self::has_context_skip_slice`].
+    pub fn has_generation_skip_slice(
+        &self,
+        key: &DsaKey,
+        backend: &str,
+        num_heads: u32,
+    ) -> Result<bool, AicError> {
+        match self.load_generation_skip() {
+            Ok(skip) => Ok(has_paired_skip_slice(
+                self.load_generation()?,
+                skip,
+                key,
+                backend,
+                num_heads,
+            )),
             Err(AicError::PerfDatabase(msg)) if msg.contains(NO_DSA_ROWS_PREFIX) => Ok(false),
             Err(err) => Err(err),
         }
@@ -1972,6 +2054,13 @@ mod tests {
             !err.to_string().contains(NO_DSA_ROWS_PREFIX),
             "the propagated error must not be the absence outcome: {err}"
         );
+        let key = DsaKey {
+            architecture: "DeepseekV32ForCausalLM".into(),
+            fmha_quant: "bfloat16".into(),
+            kv_quant: "bfloat16".into(),
+            gemm_quant: "bfloat16".into(),
+        };
+        assert!(table.has_context_skip_slice(&key, "trtllm", 128).is_err());
         // The FULL variant of the same file still loads and answers.
         let spec = b200_sxm_spec();
         table
@@ -1990,6 +2079,90 @@ mod tests {
                 false,
             )
             .expect("full-variant query must survive a malformed skip row");
+    }
+
+    /// A reuse table is a capability of one measured identity, not of every
+    /// operation sharing its parquet. The fallback backend must also match
+    /// the full table's selected backend rather than independently switching.
+    #[test]
+    fn paired_skip_probe_requires_matching_precision_backend_and_heads() {
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        let rows = [
+            ("dsa_context_module", "trtllm_gen", "fp8", 1024, 10.0),
+            ("dsa_context_module", "default", "fp8", 1024, 12.0),
+            (
+                "dsa_context_module_skip_indexer",
+                "default",
+                "fp8",
+                1024,
+                2.0,
+            ),
+        ];
+        for name in [
+            "dsa_context_module_perf.parquet",
+            "dsa_generation_module_perf.parquet",
+        ] {
+            write_dsa_module_parquet_rows(&tmp.path().join(name), &rows);
+        }
+        let table = DsaTable::new(tmp.path().to_path_buf());
+        let key = DsaKey {
+            architecture: "DeepseekV32ForCausalLM".into(),
+            fmha_quant: "bfloat16".into(),
+            kv_quant: "fp8".into(),
+            gemm_quant: "bfloat16".into(),
+        };
+        let probes = [
+            DsaTable::has_context_skip_slice,
+            DsaTable::has_generation_skip_slice,
+        ];
+        for probe in probes {
+            assert!(probe(&table, &key, "flashmla_kv", 128).expect("matching slice"));
+            assert!(probe(&table, &key, "unknown", 128).expect("same full/skip fallback"));
+            assert!(!probe(&table, &key, "trtllm", 128).expect("full uses a different backend"));
+            assert!(!probe(&table, &key, "flashmla_kv", 64).expect("unmeasured local heads"));
+            for field in ["architecture", "fmha", "kv", "gemm"] {
+                let mut other = key.clone();
+                match field {
+                    "architecture" => other.architecture = "GlmMoeDsaForCausalLM".into(),
+                    "fmha" => other.fmha_quant = "fp8".into(),
+                    "kv" => other.kv_quant = "bfloat16".into(),
+                    _ => other.gemm_quant = "fp8_block".into(),
+                }
+                assert!(!probe(&table, &other, "flashmla_kv", 128).expect("unmatched key"));
+            }
+        }
+        // Reverse asymmetry: the skip map contains both buckets, but full
+        // has only FlashMLA. A TRT request independently selects different
+        // full and skip backends, despite their common FlashMLA bucket.
+        let reverse = tempfile::tempdir().expect("tmpdir");
+        let rows = [
+            ("dsa_context_module", "default", "fp8", 1024, 12.0),
+            (
+                "dsa_context_module_skip_indexer",
+                "default",
+                "fp8",
+                1024,
+                2.0,
+            ),
+            (
+                "dsa_context_module_skip_indexer",
+                "trtllm_gen",
+                "fp8",
+                1024,
+                3.0,
+            ),
+        ];
+        for name in [
+            "dsa_context_module_perf.parquet",
+            "dsa_generation_module_perf.parquet",
+        ] {
+            write_dsa_module_parquet_rows(&reverse.path().join(name), &rows);
+        }
+        let table = DsaTable::new(reverse.path().to_path_buf());
+        for probe in probes {
+            assert!(!probe(&table, &key, "trtllm", 128).expect("skip prefers another bucket"));
+            assert!(probe(&table, &key, "flashmla_kv", 128).expect("both select FlashMLA"));
+        }
     }
 
     /// FP8-KV rows bucket by executed-kernel name (the serving FP8-KV

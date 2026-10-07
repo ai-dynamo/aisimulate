@@ -190,14 +190,12 @@ impl DsaModuleOp {
         bytes * self.scale_factor
     }
 
-    /// Amortization weight after the missing-skip-table degradation. Verbatim
-    /// mirror of Python `operations/dsa.py::_effective_full_frac`: the
-    /// `*_skip_indexer` rows are produced only by the sglang collector and only
-    /// from 0.5.14 on, so a (system, backend, version) whose parquet omits them
-    /// degrades to all-full (`w = 1.0`) instead of failing the query — the same
-    /// policy `models/deepseek_v32.py` already applies to backends with no skip
-    /// producer ("we just cannot model their saving without data, so we count
-    /// them as full"). PESSIMISTIC: the indexer is charged on every layer.
+    /// Amortization weight after the missing-skip-table degradation. A
+    /// (system, backend, version) without suitable reuse measurements degrades
+    /// to all-full (`w = 1.0`) instead of omitting the unmeasured layers.
+    /// vLLM and SGLang callers check the exact
+    /// precision/architecture/backend/head slice.
+    /// PESSIMISTIC: the indexer is charged on every layer.
     ///
     /// KNOWN GAP (accepted, AIC-1747 review): the degradation is SILENT.
     /// The crate has no logging facility (the "Rust has no logging"
@@ -213,6 +211,15 @@ impl DsaModuleOp {
             self.full_frac
         } else {
             1.0
+        }
+    }
+
+    fn table_key(&self) -> DsaKey {
+        DsaKey {
+            architecture: self.architecture.clone(),
+            fmha_quant: self.fmha_quant_mode.name().to_string(),
+            kv_quant: self.kv_cache_dtype.name().to_string(),
+            gemm_quant: self.gemm_quant_mode.name().to_string(),
         }
     }
 
@@ -246,6 +253,17 @@ impl DsaModuleOp {
             || matches!(db.database_mode, DatabaseMode::Sol | DatabaseMode::SolFull)
         {
             self.full_frac
+        } else if matches!(db.backend.as_str(), "vllm" | "sglang") {
+            let backend = if self.cp_size > 1 {
+                "flashmla_kv"
+            } else {
+                "trtllm"
+            };
+            self.effective_full_frac(db.dsa.has_context_skip_slice(
+                &self.table_key(),
+                backend,
+                self.num_heads,
+            )?)
         } else {
             self.effective_full_frac(db.dsa.has_context_skip_rows()?)
         };
@@ -512,6 +530,14 @@ impl DsaModuleOp {
             || matches!(db.database_mode, DatabaseMode::Sol | DatabaseMode::SolFull)
         {
             self.full_frac
+        } else if matches!(db.backend.as_str(), "vllm" | "sglang") {
+            let (heads, _) =
+                crate::operators::attention::dcp_geometry(self.num_heads, s, self.dcp_size);
+            self.effective_full_frac(db.dsa.has_generation_skip_slice(
+                &self.table_key(),
+                "trtllm",
+                heads,
+            )?)
         } else {
             self.effective_full_frac(db.dsa.has_generation_skip_rows()?)
         };
