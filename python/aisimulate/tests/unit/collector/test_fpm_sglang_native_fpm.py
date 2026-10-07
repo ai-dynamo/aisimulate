@@ -3,7 +3,6 @@
 """CPU checks of the SGLang native-FPM client: request plans and measured-step attribution."""
 
 import pytest
-
 from collector.fpm_forward import sglang_native_fpm as drv
 
 pytestmark = pytest.mark.unit
