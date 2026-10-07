@@ -61,7 +61,7 @@ python examples/sweeper/tools/run_load_predictor_sweep.py \
 
 ## Documentation
 
-Read the canonical [Sweeper documentation](../../docs/sweeper/overview.md)
+Read the canonical [Sweeper documentation](../../docs/sweeper/README.md)
 for the search flow, workload schema, optimization goals, and search-space reference. Dynamo-specific
 composition is documented in the [Dynamo integration
 guide](https://github.com/ai-dynamo/dynamo/blob/main/docs/fern/pages/developer-guide/knowledge-base/modular-components/ai-simulate-experimental/sweeper-experimental/dynamo-integration.md).

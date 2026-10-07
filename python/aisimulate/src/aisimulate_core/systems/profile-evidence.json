@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
-  "status": "Experimental Hecate hardware assumptions used by the exact GLM-5.2 graph-prefill pilot; not a general platform characterization.",
+  "status": "Experimental Vera Rubin NVL72 hardware assumptions used by the exact GLM-5.2 graph-prefill pilot; not a general platform characterization.",
   "scope": {
-    "system": "vr200_hecate",
+    "system": "vr_nvl72",
     "model": "GLM-5.2 NVFP4",
     "backend": "sglang",
     "version": "0.5.18+nvinternal.rubin.0.8full.66997102",
@@ -13,7 +13,7 @@
     "attention_dp": 1
   },
   "original_evidence_sha256": "2e3ee2731423509066e9f19771ce22c37ade8a3e4c69890966c7542913636100",
-  "hardware_yaml_sha256": "e8a7954725309d5d1fdbd2d11da89bb031874b978ee29b96df8d4295d7656949",
+  "hardware_yaml_sha256": "7f6bec3257be77782a2d2d08696365d5c2d7f0dbf56022fcc531341acf820520",
   "evidence_note": "This portable summary retains measured inputs and modeling assumptions. Original hardware observations and source captures remain external evidence identified by the hashes below.",
   "input_files": [
     {
@@ -57,7 +57,7 @@
     }
   },
   "profile": {
-    "data_dir": "data/vr200_hecate",
+    "data_dir": "data/vr_nvl72",
     "gpu": {
       "mem_bw": 19160064000000.0,
       "mem_bw_empirical_scaling_factor": 0.5227797525079052,

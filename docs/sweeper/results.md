@@ -76,7 +76,7 @@ power is `*_w`, duration is `duration_ms`, and `gpu_hours` is GPU-hours. `score`
 have a unit; use the named metric or `objectives` for display and comparisons.
 
 `power_w` and `power_coverage` follow the
-[modeled-power contract](../power-model.md): active-forward-pass power per GPU,
+[modeled-power contract](../perf-model/power.md): active-forward-pass power per GPU,
 energy-over-active-latency aggregation, and AIC's existing coverage rule.
 Coverage is the share of modeled active time with operation-energy evidence.
 For every candidate with a valid replay report, both keys must be present in
@@ -95,7 +95,7 @@ become zero or enter objective arithmetic.
 
 This contract applies to AISimulate `ReplayReport` and `SweepResult` outputs.
 Raw DataFrames from the compatibility `aiconfigurator` sweep/picking APIs retain
-their legacy schema and sentinels; the mapping below describes conversion targets,
+their legacy schema and sentinels; the [AIC mapping](../aic-backward-compatibility/migration.md#legacy-aic-result-mapping) describes conversion targets,
 not an automatic converter. They do not satisfy this power contract as-is. A
 converter must establish coverage and preserve unavailable values before emitting
 a conforming result; it cannot infer coverage from a legacy wattage column alone.
@@ -161,56 +161,6 @@ mapping keys, includes empty-run provenance, and round-trips through `SweepResul
 Nested fields are canonical JSON cells rather than lossy dotted columns. CSV is not the interchange
 format: an empty CSV has only its header and therefore cannot carry run provenance or counts.
 
-## Legacy AIC mapping
-
-The legacy AIC `ColumnsAgg`, `ColumnsDisagg`, `ColumnsAggEpd`, and `ColumnsAFD` DataFrame rows map to
-candidate records as follows. Parenthesized role prefixes become explicit prefill/decode/encoder or
-attention/FFN keys in `provenance.topology` and `config`; they are not retained as punctuation-based
-field names.
-
-| Legacy DataFrame/CLI field or artifact | Canonical field | Conversion |
-|---|---|---|
-| `best_config_topn.csv` row | `candidates[]` plus `views.top_n[]` | Convert the row, then place its ID in best-first view order. |
-| `pareto.csv` row | `candidates[]` plus `views.pareto_front[]` | Convert the row, then place its ID in frontier order. |
-| `model` | `provenance.model` | Exact string. |
-| `system`, `(p)system`, `(d)system` | `provenance.hardware`, `provenance.topology` | A homogeneous system is candidate hardware; role-specific systems remain role topology fields. |
-| `backend`, `(p)backend`, `(d)backend` | `provenance.backend`, `config` | Exact backend strings; heterogeneous role values remain explicit in `config`. |
-| `version`, `(p)version`, `(d)version` | `provenance.backend_version`, `config` | Exact resolved versions; heterogeneous versions remain role-specific in `config`. |
-| `isl`, `osl`, `prefix`, `concurrency`, `request_rate` | `provenance.workload` and concrete `config` load | Token counts are tokens; rate is requests/s. |
-| `tp`, `pp`, `dp`, `moe_tp`, `moe_ep`, `cp`, role-prefixed variants | `provenance.topology` and `config` | Integers copy without reinterpretation; `dp` maps to `attention_dp`. |
-| `workers`, `replicas`, `(p)workers`, `(d)workers`, `(e)workers` | `provenance.topology` and `config` | Counts of role replicas. |
-| `bs`, `global_bs`, role-prefixed variants | `config` batching fields | Preserve concrete per-worker/global batching values. |
-| `num_total_gpus` | `used_gpus` | Integer GPUs. |
-| `ttft` | `metrics.mean_ttft_ms` | Milliseconds. |
-| `tpot` | `metrics.mean_tpot_ms` | Milliseconds/token. |
-| `request_latency` | `metrics.mean_e2e_latency_ms` | Milliseconds. |
-| `encoder_latency`, `encoder_memory` | `metrics` and encoder fields in `provenance.topology` | Milliseconds and bytes/GiB as declared by the legacy source schema. |
-| `tokens/s` | `metrics.output_throughput_tok_s` | Output tokens/s. |
-| `tokens/s/gpu`, `tokens/s/gpu_cluster` | `objectives.throughput_per_gpu` or derived display field | Tokens/s/GPU; retain the source numerator and GPU normalization evidence. |
-| `tokens/s/user` | `metrics.mean_output_token_throughput_per_user` | Tokens/s/user. |
-| `seq/s`, `seq/s/gpu`, role worker rates | `metrics` | Sequences/s, with the legacy label preserved in migration metadata until a typed metric is added. |
-| `balance_score`, `num_ctx_reqs`, `num_gen_reqs`, `num_tokens`, `ctx_tokens`, `gen_tokens` | `metrics` | Exact numeric values; request/token counts are counts. |
-| `power_w`, `power_coverage` | `metrics` and `provenance.power` | Both keys are required in a conforming summary. Use watts per GPU and a latency-weighted ratio in `[0, 1]`, or `null` for each unavailable value; `power_w` is `null` below the gate. |
-| `gemm`, `kvcache`, `fmha`, `moe`, `comm`, `memory`, role variants | `metrics` | Legacy component estimates remain named metrics with original units recorded by the converter. |
-| EPD `(a)workers` and `(e)workers`, `(e)tp`, `(e)pp`, `(e)bs`, `(e)parallel`, `(e)memory` | `config` and `provenance.topology` | Preserve the rate-matched aggregate and encoder cell as explicit roles. |
-| AFD `phase`, `(a)nodes/tp/bs/micro_bs/workers`, `(f)nodes/tp/ep/workers` | `config` and `provenance.topology` | Preserve attention/FFN role topology and whether AFD applies to prefill, decode, or both. |
-| AFD `t_a_layer`, `t_f_layer`, transfer/collective times, `t_step`, `balance_ratio`, `comm_hidden`, and prefill/decode variants | `metrics` | Preserve per-phase numeric values and source units; do not select one headline value for `phase=both`. |
-| Legacy `is_oom` role flags | `status`, `reason_category`, `reason` | Map an OOM candidate to `infeasible`; preserve the role and memory detail in the reason/config. |
-| `_per_ops_source` and saved `per_ops_source.json` | `provenance.operations` | One typed operation/source/version record per entry. |
-| CLI warning/skip text | `status`, `reason_category`, `reason` | Convert known gates to stable categories; preserve original text as detail. |
-| Missing/empty DataFrame | empty `SweepResult` | Preserve zero counts and run provenance instead of returning only `None`/empty output. |
-
-Approved migration exceptions:
-
-- Legacy DataFrames round many display columns to three decimal places. Canonical JSON retains the
-  unrounded replay float; rounding is a presentation concern.
-- `parallel` is a legacy display string. Canonical topology fields are authoritative; a converter
-  may preserve the display string under runner metadata.
-- Legacy component columns do not consistently declare units. A converter preserves their names and
-  records the source schema instead of guessing units.
-- PNG plots and generated deployment artifacts are not embedded. Plots derive from result views;
-  deployable artifacts remain owned by the generator component and reference a selected candidate ID.
-
 ## Examples
 
 Scalar result: two feasible rows may be retained while `views.top_n` contains only the best row.
@@ -254,38 +204,61 @@ Failure row:
 }
 ```
 
-## Replay specification
+## Replay and deployment boundaries
 
-The result contract complements, rather than replaces, `ReplaySpec`. `ReplaySpec` version 1 contains
-the concrete backend deployment, workload, goal, execution mode, concurrency, adapter configuration,
-and runtime hooks. `RunnerCapabilities.require_compatible` checks it before execution, and
-`canonical_json` creates deterministic strict JSON for the replay boundary.
+Exact repeated suggestions reuse a result within the current `run`; the cache
+is not shared between runs. The [runner ABI](../adapters/runner-abi.md) owns
+`ReplaySpec` and normalized report obligations. A ranked candidate is not a
+serving manifest; use [deployment generation](deployment-generation.md) to
+render supported candidates, and choose one point explicitly for a Pareto result.
 
-Exact repeated suggestions reuse a result from the current `run` call. The cache does not persist
-between calls, even when the same `Sweeper` instance is reused.
+## Host resource interruptions
 
-## Deployment Artifact Generation
-
-A `Candidate` is a ranked simulation result, not a deployment manifest. The downstream
-AIConfigurator generator owns artifact rendering. In the unified AISimulate application, pass the
-selected candidate and its matching workload to
-`aisimulate.generator.request.from_sweeper_candidate`, then render the resulting typed request
-with `aisimulate.generator.api.generate_from_request`.
-
-The bridge preserves evaluated engine limits and supported adapter configuration, and rejects
-candidate data it cannot lower without loss. Pareto output has no implicit winner: callers must
-select one point before requesting deployment artifacts.
-
-AFD candidates are intentionally outside that native generator bridge because its renderers have
-no A/F worker or routing contract. Pass a selected AFD recommendation to `aisimulate predict`
-instead; the prediction writes deterministic `afd-replay-spec.json` and
-`afd-qualification.json` analytical artifacts and marks native launch generation unsupported.
-
-### Host resource interruptions
 
 `resource_limited` candidates have reason category `resource_limit` and no
 simulated metrics or score. `counts.resource_limited` is separate from
 `counts.evaluated`: a host admission refusal is not evidence about model
 feasibility. A recommendation with resource-limited candidates covers only
 completed evaluations. The CLI preserves completed results and exits with
-status 3 to make this partial coverage visible. See [local execution resources](../local-resources.md).
+status 3 to make this partial coverage visible. See [local execution resources](../reference/local-resources.md).
+
+<a id="recommendation-directory"></a>
+
+## CLI recommendation directory
+
+```text
+<output-dir>/
+├── recommendation.json
+├── recommendation.csv
+├── resource-plan.json             # on refusal before the sweep starts
+├── resource-runtime.json
+├── execution-events.jsonl
+└── recommendations/
+    ├── 0001.yaml
+    ├── 0002.yaml
+    └── ...
+```
+
+- `recommendation.json` is the canonical lossless result (schema 1.1, with explicit upgrade of 1.0
+  input). Its candidate ledger retains feasible, infeasible, unsupported, timed-out, failed, and
+  `resource_limited` rows according to the declared retention policy;
+  its counts describe the complete run. `views.top_n` or `views.pareto_front` lists the candidate IDs
+  corresponding to numbered YAML files in order.
+- Resource-limited rows have no simulated score or metrics. `counts.resource_limited` is separate
+  from `counts.evaluated`; selected configurations cover completed evaluations. The CSV is a
+  tabular view of the result. See [local resources](../reference/local-resources.md) for the diagnostic files.
+- Each numbered YAML is a concrete prediction config. It excludes `optimization`, `optimizer`, and
+  `preset`, contains no domains or `auto` values, and can be passed directly to
+  `aisimulate predict`.
+
+For scalar optimization, file numbering follows best-to-worst rank. For Pareto optimization, it
+follows the deterministic display order of the complete nondominated front; that order does not
+imply a scalar ranking.
+
+If a completed search has no feasible candidate, the CLI still writes `recommendation.json` with empty views, zero
+selected YAML files, complete counts and retained failure records. It exits with status `1` when
+there are no resource-limited candidates. Any resource-limited candidate makes the exit status `3`,
+even when fitting candidates and selected YAML files remain available. Other failed trials remain
+in the ledger and permit status `0` when at least one selected configuration remains.
+If the supervisor stops the entire execution, the event log may contain completed candidates
+without a finalized `recommendation.json`; it is partial evidence, not a completed sweep.

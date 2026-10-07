@@ -29,7 +29,7 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - id: releases
-        run: python3 scripts/run_release_fpe.py list-releases
+        run: python3 scripts/fpe/run_release_fpe.py list-releases
 
   releases:
     name: FPE Support Matrix (release/${{ matrix.release.version }})

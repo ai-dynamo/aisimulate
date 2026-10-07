@@ -1,0 +1,254 @@
+{
+  "source_revision": "67b1b9a51388bc8202df5d237cd3de4d4f07414f",
+  "systems_tree": "6ebd5a9cdfea041cea9cc01e35778cfb24fb405b",
+  "model_configs_tree": "41e0e38b4c8972461f0ffc8d9718e44f1c13a921",
+  "environment": {
+    "python": "3.12.14",
+    "platform": "Darwin",
+    "machine": "arm64",
+    "aisimulate": "0.13.0",
+    "native_extension_sha256": "712e01dda9fe0b3add32c0d34b0fb24a4c112fd6147d0b642c1f7dc7020a3b8c"
+  },
+  "scope": "CLI execution and output contracts; simulated results, not silicon accuracy or AIC equivalence.",
+  "numeric_checks": "Request counts and GPU budgets are exact. Reported timing/throughput values are captured observations, not golden assertions. Metrics must be finite and nonnegative; throughput must be positive.",
+  "inputs": {
+    "prediction.yaml": {
+      "sha256": "9f39a838780ac05071e1b476300f25aaca54d83d2d5c61d6e1f444ac8577e828",
+      "source": "docs/MIGRATION.md"
+    },
+    "budget-search.yaml": {
+      "sha256": "a7d56c4b2d06db1bf8c1102e9a75fb7388d2f59010660632914f60df4215c089",
+      "source": "docs/MIGRATION.md"
+    },
+    "controls.yaml": {
+      "sha256": "ad301ddc3654cabccdb98699e0fd696b871432b7c2c59e134823cfe05ee42e9b",
+      "source": "docs/MIGRATION.md"
+    },
+    "afd-recommendation.yaml": {
+      "sha256": "176dd3aea5bffb5af44854b2163bd1cb0f47012d73f99f49126662545719ad78",
+      "source": "docs/MIGRATION.md"
+    }
+  },
+  "commands": [
+    {
+      "command": "aisimulate predict --stack engine --config prediction.yaml --output-dir ./prediction-output",
+      "exit_code": 0
+    },
+    {
+      "command": "aisimulate recommend --stack engine --config budget-search.yaml --output-dir ./budget-search",
+      "exit_code": 0
+    },
+    {
+      "command": "aisimulate predict --stack engine --config ./budget-search/recommendations/0001.yaml   --output-dir ./budget-selected",
+      "exit_code": 0
+    },
+    {
+      "command": "aisimulate recommend --stack engine --config controls.yaml --output-dir ./controls-search",
+      "exit_code": 0
+    },
+    {
+      "command": "aisimulate recommend --stack engine --config afd-recommendation.yaml --output-dir ./afd-search",
+      "exit_code": 0
+    },
+    {
+      "command": "aisimulate predict --stack engine --config ./afd-search/recommendations/0001.yaml   --output-dir ./afd-selected",
+      "exit_code": 0
+    },
+    {
+      "python": [
+        "from aisimulate_core.sdk import EngineHandle, estimate_kv_cache",
+        "from aisimulate.sdk.task_v2 import Task"
+      ],
+      "exit_code": 0
+    }
+  ],
+  "outputs": {
+    "prediction-output": {
+      "completed_requests": 100,
+      "mean_ttft_ms": 362.65848183999975,
+      "mean_itl_ms": 8.532085796614117,
+      "mean_tpot_ms": 8.532085796614167,
+      "mean_e2e_latency_ms": 1446.233378009999,
+      "output_throughput_tok_s": 5126.07233503594,
+      "power_w": null,
+      "power_coverage": 0.0
+    },
+    "budget-selected": {
+      "completed_requests": 320,
+      "mean_ttft_ms": 64.32553353125002,
+      "mean_itl_ms": 3.2738872753937183,
+      "mean_tpot_ms": 3.2738872753937165,
+      "mean_e2e_latency_ms": 480.1092175062511,
+      "output_throughput_tok_s": 8525.49489563832,
+      "power_w": null,
+      "power_coverage": 0.0
+    },
+    "afd-selected": {
+      "completed_requests": 40.0,
+      "mean_ttft_ms": 157.05348488335216,
+      "mean_tpot_ms": 314.1067070722731,
+      "mean_e2e_latency_ms": 40048.60528306203,
+      "output_throughput_tok_s": 58.5099908488031,
+      "num_total_gpus": 24.0,
+      "power_w": null,
+      "power_coverage": null,
+      "afd-replay-spec.json": {
+        "top_level_keys": [
+          "adapters",
+          "api_version",
+          "backend_deployment",
+          "concurrency",
+          "execution_mode",
+          "goal",
+          "workload"
+        ]
+      },
+      "afd-qualification.json": {
+        "top_level_keys": [
+          "adapters",
+          "concurrency",
+          "deployment_plan",
+          "goal",
+          "identity",
+          "kind",
+          "performance_model",
+          "qualification",
+          "schema_version",
+          "workload"
+        ]
+      }
+    },
+    "budget-search": {
+      "candidates": [
+        {
+          "id": "candidate-000001",
+          "status": "feasible",
+          "used_gpus": 4,
+          "score": 6031.602747522278,
+          "reason": null
+        },
+        {
+          "id": "candidate-000002",
+          "status": "feasible",
+          "used_gpus": 6,
+          "score": 6754.807475638301,
+          "reason": null
+        },
+        {
+          "id": "candidate-000003",
+          "status": "feasible",
+          "used_gpus": 2,
+          "score": 3745.816873981014,
+          "reason": null
+        },
+        {
+          "id": "candidate-000004",
+          "status": "feasible",
+          "used_gpus": 6,
+          "score": 6758.221134249952,
+          "reason": null
+        },
+        {
+          "id": "candidate-000005",
+          "status": "feasible",
+          "used_gpus": 2,
+          "score": 4362.927387935822,
+          "reason": null
+        },
+        {
+          "id": "candidate-000006",
+          "status": "feasible",
+          "used_gpus": 8,
+          "score": 8525.49489563832,
+          "reason": null
+        },
+        {
+          "id": "candidate-000007",
+          "status": "feasible",
+          "used_gpus": 4,
+          "score": 6381.72211567137,
+          "reason": null
+        },
+        {
+          "id": "candidate-000008",
+          "status": "feasible",
+          "used_gpus": 4,
+          "score": 6381.72211567137,
+          "reason": null
+        }
+      ],
+      "optimization_target": "throughput"
+    },
+    "controls-search": {
+      "candidates": [
+        {
+          "id": "candidate-000001",
+          "status": "feasible",
+          "used_gpus": 4,
+          "score": 572.1257056430981,
+          "reason": null
+        },
+        {
+          "id": "candidate-000002",
+          "status": "feasible",
+          "used_gpus": 6,
+          "score": 581.3122434780371,
+          "reason": null
+        }
+      ],
+      "optimization_target": "throughput"
+    },
+    "afd-search": {
+      "candidates": [
+        {
+          "id": "candidate-000001",
+          "status": "feasible",
+          "used_gpus": 24,
+          "score": 3.1440601859878563,
+          "reason": null
+        },
+        {
+          "id": "candidate-000002",
+          "status": "infeasible",
+          "used_gpus": 20,
+          "score": null,
+          "reason": "strict aggregate SLA violation: tpot 392.739ms > 300ms"
+        }
+      ],
+      "optimization_target": "throughput_per_gpu"
+    }
+  },
+  "checked_on": "2026-10-02",
+  "setup": [
+    "uv sync --project python/aisimulate --extra dev --locked",
+    "Run each command with python/aisimulate/.venv/bin on PATH, from a fresh directory containing the four YAML inputs copied from docs/MIGRATION.md."
+  ],
+  "checks_passed": [
+    "prediction-output: expected completed request count",
+    "prediction-output: finite nonnegative reported metrics",
+    "prediction-output: positive output throughput",
+    "budget-selected: expected completed request count",
+    "budget-selected: finite nonnegative reported metrics",
+    "budget-selected: positive output throughput",
+    "afd-selected: expected completed request count",
+    "afd-selected: finite nonnegative reported metrics",
+    "afd-selected: positive output throughput",
+    "budget-search: feasible candidate exists",
+    "budget-search: candidate GPU budgets respected",
+    "budget-search: finite feasible scores",
+    "budget-search: selected prediction YAML exists",
+    "controls-search: feasible candidate exists",
+    "controls-search: candidate GPU budgets respected",
+    "controls-search: finite feasible scores",
+    "controls-search: selected prediction YAML exists",
+    "afd-search: feasible candidate exists",
+    "afd-search: candidate GPU budgets respected",
+    "afd-search: finite feasible scores",
+    "afd-search: selected prediction YAML exists",
+    "controls-search: exact shared prefix retained",
+    "controls-search: KV precision retained",
+    "controls-search: memory fraction retained",
+    "afd-selected: nonempty afd-replay-spec.json",
+    "afd-selected: nonempty afd-qualification.json"
+  ]
+}

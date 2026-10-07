@@ -12,7 +12,7 @@
 //! python/sglang/srt/mem_cache/deepseek_v4_memory_pool.py, plus
 //! python/sglang/kernels/ops/attention/dsv4/sm90_fp4_indexer.py (Apache-2.0,
 //! Copyright SGLang contributors). Independently expressed analytical
-//! adaptations; see THIRD_PARTY_NOTICES.md and docs/deepseek-v41-storage.md.
+//! adaptations; see THIRD_PARTY_NOTICES.md and docs/perf-model/models/deepseek-v41.md.
 
 use serde::{Deserialize, Serialize};
 

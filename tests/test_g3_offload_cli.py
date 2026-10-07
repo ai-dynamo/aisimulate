@@ -192,8 +192,17 @@ def test_g3_rejects_invalid_scalar_values(field, value) -> None:
         G3OffloadConfig.model_validate({**_g3_offload(), field: value})
 
 
-@pytest.mark.parametrize("mutation", ["sglang", "trtllm", "no_prefix", "disaggregated"])
-def test_g3_rejects_unsupported_engine_scope(mutation) -> None:
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    [
+        ("sglang", "host_offload is supported only for backend=vllm"),
+        ("trtllm", "host_offload is supported only for backend=vllm"),
+        ("no_prefix", "host_offload requires prefix_caching=true"),
+        ("disaggregated", "g3_offload is supported only for the aggregated worker with attention_data=1"),
+        ("attention_dp", "g3_offload is supported only for the aggregated worker with attention_data=1"),
+    ],
+)
+def test_g3_rejects_unsupported_engine_scope(mutation, message) -> None:
     engine = _prediction_engine(mode="disaggregated" if mutation == "disaggregated" else "aggregated")
     role = "prefill" if mutation == "disaggregated" else "aggregated"
     cache = engine["workers"][role]["kv_cache"]
@@ -202,7 +211,9 @@ def test_g3_rejects_unsupported_engine_scope(mutation) -> None:
         engine["backend"] = mutation
     elif mutation == "no_prefix":
         cache["prefix_caching"] = False
-    with pytest.raises(ValidationError, match="host_offload"):
+    elif mutation == "attention_dp":
+        engine["workers"][role]["parallelism"]["attention_data"] = 2
+    with pytest.raises(ValidationError, match=message):
         CorePredictionConfig.model_validate({"engine": engine})
 
 
@@ -216,10 +227,9 @@ def test_g3_recommendation_is_rejected_not_silently_dropped() -> None:
 def test_documented_g3_extension_validates_and_lowers_with_host_example(monkeypatch) -> None:
     from pathlib import Path
 
-    text = (Path(__file__).resolve().parents[1] / "docs/cli/user-guide.md").read_text()
+    text = (Path(__file__).resolve().parents[1] / "docs/replay/engine/kv-cache.md").read_text()
     host = text.split('<a id="native-vllm-host-offload-prediction"></a>', 1)[1]
     host, optional = host.split('<a id="optional-g3-offload"></a>', 1)
-    optional, _router = optional.split('<a id="router-dynamo-adapter"></a>', 1)
     config = yaml.safe_load(host.split("```yaml\n", 1)[1].split("```", 1)[0])
     extension = yaml.safe_load(optional.split("```yaml\n", 1)[1].split("```", 1)[0])
     assert list(extension) == ["g3_offload"]

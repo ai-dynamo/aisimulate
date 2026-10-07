@@ -1,0 +1,38 @@
+/* Modified from AISim FPM Gym f934c030afc3a03cb04d8f3ff4709194f7445c98.
+ * Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. Apache-2.0. See ../README.md. */
+
+#gym-visualization{color-scheme:light;--gym-ink:#152019;--gym-muted:#59665d;--gym-green:#365f08;--gym-line:#dfe6df;font:14px Inter,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:var(--gym-ink);background:radial-gradient(circle at 92% 3%,#c5e58f38,transparent 420px),#f4f7f4;width:100%}
+#gym-visualization *{box-sizing:border-box}#gym-visualization [hidden]{display:none!important}#gym-visualization a{color:var(--gym-green)}#gym-visualization button,#gym-visualization select{font:inherit}#gym-visualization button{cursor:pointer}
+#gym-visualization .gv-header{background:linear-gradient(110deg,#101a14,#142017 60%,#24390d);color:#fff}
+#gym-visualization .gv-nav{display:flex;min-height:68px;margin:0 24px;align-items:center;gap:22px}
+#gym-visualization .gv-brand{color:#fff;text-decoration:none;flex:0 0 auto}#gym-visualization .gv-brand strong{display:block;font-size:15px;font-weight:800}#gym-visualization .gv-brand small{font-size:12px;color:#aeb9b0}
+#gym-visualization .gv-tabs{display:flex;flex:1;justify-content:center;flex-wrap:wrap;gap:4px}#gym-visualization .gv-tab{display:inline-flex;align-items:center;min-height:40px;padding:10px 12px;border-radius:8px;color:#b6c0b8;font-size:13px;font-weight:700;white-space:nowrap;text-decoration:none}#gym-visualization .gv-tab:hover{color:#fff;background:#ffffff0f}#gym-visualization .gv-tab[aria-current=page]{color:#fff;background:#75ad2040}
+#gym-visualization .gv-preview{color:#b7c2b9;font-size:12px;white-space:nowrap}
+#gym-visualization .gv-content{margin:0 24px;padding:25px 0 28px}#gym-visualization .gv-breadcrumb{display:flex;gap:8px;margin-bottom:18px;color:var(--gym-muted);font-size:12px}#gym-visualization .gv-breadcrumb a{text-decoration:none;font-weight:700}
+#gym-visualization h1{margin:6px 0 8px;font-size:clamp(30px,4vw,42px);font-weight:750;letter-spacing:-.045em;line-height:1.1;color:var(--gym-ink)}#gym-visualization .gv-intro{margin:0 0 22px;color:var(--gym-muted);font-size:15px;line-height:1.5}
+#gym-visualization .gv-control-panel{padding:16px 18px;border:1px solid var(--gym-line);border-radius:14px;background:#fff;box-shadow:0 12px 30px #182a1c0a}
+#gym-visualization .gv-controls{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));align-items:end;gap:12px}#gym-visualization label{display:block;min-width:0;color:var(--gym-muted);font-size:11px;font-weight:700;line-height:1.4}
+#gym-visualization select{display:block;width:100%;min-width:0;height:38px;margin-top:6px;padding:0 27px 0 10px;border:1px solid #c9d3cb;border-radius:8px;background:#fff;color:#27382d;font-size:12px;font-weight:550;text-overflow:ellipsis}
+#gym-visualization select:disabled{background:#f4f6f4;color:#6d776f}#gym-visualization .gv-fixed{height:38px;display:flex;align-items:center;margin-top:6px;color:#365f08;font-size:12px;font-weight:700;white-space:nowrap}
+#gym-visualization .gv-density-note{margin-top:10px;color:var(--gym-muted);font-size:11px;line-height:1.5}#gym-visualization .gv-density-note a{font-weight:650}
+#gym-visualization .gv-catalog-line{margin:14px 2px;color:var(--gym-muted);font-size:11px;line-height:1.5}
+#gym-visualization .gv-panels{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px}
+#gym-visualization .gv-pane{min-width:0;border:1px solid var(--gym-line);border-radius:14px;background:#fff;box-shadow:0 12px 30px #182a1c0c;overflow:hidden}
+#gym-visualization .gv-pane-head{padding:17px 18px 15px;border-bottom:1px solid #e5eae5}#gym-visualization .gv-pane-title{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:14px}#gym-visualization h2{margin:0;color:var(--gym-ink);font-size:15px;font-weight:750;line-height:1.4}
+#gym-visualization .gv-source{font-size:11px;font-weight:650;text-decoration:none;white-space:nowrap}#gym-visualization .gv-selectors{display:grid;grid-template-columns:1fr;gap:11px}#gym-visualization .gv-selectors select{height:36px}
+#gym-visualization .gv-chart-wrap{position:relative;min-width:0}#gym-visualization .gv-chart{height:440px;width:100%;touch-action:none}#gym-visualization .gv-chart-hint{padding:12px 18px 0;color:var(--gym-muted);font-size:11px;line-height:1.4}
+#gym-visualization .gv-empty{min-height:440px;display:flex;flex-direction:column;justify-content:center;align-items:flex-start;padding:30px;color:var(--gym-muted);font-size:13px;line-height:1.6}#gym-visualization .gv-empty strong{font-size:15px;color:var(--gym-ink);margin-bottom:8px}#gym-visualization .gv-empty p{margin:0 0 10px}
+#gym-visualization .gv-count{padding:13px 18px;border-top:1px solid #e5eae5;color:var(--gym-muted);font-size:11px;line-height:1.6;min-height:64px;overflow-wrap:anywhere}#gym-visualization .gv-count strong{color:var(--gym-ink)}
+#gym-visualization .gv-key{display:flex;flex-wrap:wrap;gap:8px 20px;justify-content:space-between;margin-top:14px;font-size:11px;color:var(--gym-muted);line-height:1.6}#gym-visualization .gv-key .gv-color{display:inline-block;width:68px;height:7px;margin:0 6px;background:linear-gradient(90deg,#326bb0,#5b8f16,#c76528);vertical-align:middle}
+#gym-visualization .gv-footer{padding:12px 24px 22px;color:var(--gym-muted);font-size:11px;text-align:center;line-height:1.5}#gym-visualization .gv-footer a{text-decoration:none}
+#gym-visualization .gv-error{padding:16px;margin-top:12px;border:1px solid #d6a69e;border-radius:8px;background:#fff5f3;color:#8c3026}
+@media(max-width:850px){#gym-visualization .gv-nav{flex-wrap:wrap;gap:10px;padding:14px 0 10px}#gym-visualization .gv-preview{margin-left:auto}#gym-visualization .gv-tabs{order:3;flex-basis:100%;justify-content:flex-start}#gym-visualization .gv-controls{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:760px){#gym-visualization .gv-panels{grid-template-columns:1fr}#gym-visualization .gv-chart{height:420px}#gym-visualization .gv-selectors{grid-template-columns:1fr 1fr}#gym-visualization .gv-selectors label:nth-child(2){grid-column:1/-1;grid-row:2}}
+@media(max-width:480px){#gym-visualization .gv-nav,#gym-visualization .gv-content{margin-left:16px;margin-right:16px}#gym-visualization .gv-tab{min-height:44px;padding:10px;font-size:12px}#gym-visualization .gv-controls,#gym-visualization .gv-selectors{grid-template-columns:1fr}#gym-visualization .gv-selectors label:nth-child(2){grid-row:auto}#gym-visualization .gv-chart{height:380px}#gym-visualization .gv-fixed{height:24px}#gym-visualization .gv-control-panel,#gym-visualization .gv-pane-head{padding:15px}#gym-visualization .gv-empty{min-height:300px;padding:22px}}
+@media(pointer:coarse){#gym-visualization select{height:44px!important;font-size:16px}}
+
+#gym-visualization .gv-content{margin:0 auto;width:min(2100px,calc(100% - 48px))}
+@media(max-width:480px){#gym-visualization .gv-content{width:calc(100% - 32px)}}
+/* Modified for AISimulate's shared light/dark theme. See ../README.md. */
+#gym-visualization { color-scheme:inherit; --gym-ink:var(--text); --gym-muted:var(--muted); --gym-green:var(--accent); --gym-line:var(--border); background:var(--bg); }
+#gym-visualization .gv-control-panel, #gym-visualization .gv-pane, #gym-visualization select { background:var(--panel); color:var(--text); border-color:var(--border); }

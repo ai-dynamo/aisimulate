@@ -109,9 +109,11 @@ pub struct StoredBlocks {
     pub parent_hash: Option<u64>,
     /// Optional absolute zero-based position of the first block.
     ///
-    /// `None` preserves the parent-linked stream emitted by the native
+    /// `None` preserves the parent-linked device stream emitted by the native
     /// schedulers; adapters must not invent an absolute position because that
     /// changes how downstream radix indexes reconcile stores and removals.
+    /// `HostPinned` events carry the prompt block index, because shared-pool
+    /// residency can land a child before its parent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub start_position: Option<usize>,
     /// Blocks in sequence order.
@@ -128,6 +130,24 @@ pub enum KvEventData {
     Removed { block_hashes: Vec<u64> },
 }
 
+/// Cache tier whose residency a [`KvEvent`] describes.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum KvEventTier {
+    /// Device (G1) KV cache. Omitted from serialized events.
+    #[default]
+    Device,
+    /// The native G2 host cache reachable by the publishing rank: its private
+    /// `dp_rank_local` cache or a `cluster_shared` pool.
+    HostPinned,
+}
+
+impl KvEventTier {
+    fn is_device(&self) -> bool {
+        *self == Self::Device
+    }
+}
+
 /// Ordered runtime-neutral KV event emitted by one rank.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct KvEvent {
@@ -137,6 +157,9 @@ pub struct KvEvent {
     pub dp_rank: u32,
     /// Event payload.
     pub data: KvEventData,
+    /// Residency tier; absent means [`KvEventTier::Device`].
+    #[serde(default, skip_serializing_if = "KvEventTier::is_device")]
+    pub tier: KvEventTier,
 }
 
 /// First-admission provenance for prompt tokens reused across cache tiers.
@@ -300,6 +323,9 @@ pub struct CommandEffects {
 /// Effects visible as soon as an engine pass starts.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct PassStartEffects {
+    /// Requests selected for this committed pass, including chunked prefill.
+    /// Queue ownership alone does not imply unfinished model work.
+    pub committed_requests: Vec<Uuid>,
     pub admissions: Vec<Admission>,
     pub pressure_events: Vec<PressureEvent>,
     pub kv_events: Vec<KvEvent>,

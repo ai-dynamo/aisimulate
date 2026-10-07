@@ -41,6 +41,45 @@ parameters:
   sglang: null
   trtllm: null
 
+# Context parallelism. Two orthogonal per-worker knobs; version gates and the
+# SGLang layout choice live in generator/context_parallel.py (the single
+# decision point both request paths funnel through), so an unsupported knob
+# fails there instead of vanishing from a template that has no line for it.
+- param_key: context_parallel_size
+  # Prefill CP. vLLM -pcp (>= 0.12.0; expands the world size). SGLang
+  # --attn-cp-size: the CP ranks live INSIDE --tp, so sglang.rule folds
+  # tensor_parallel_size = tp * cp for dense models (MoE is already folded to
+  # moe_tp * moe_ep, which equals tp * dp * cp); the SGLang template emits the
+  # inseparable --enable-prefill-cp switch next to it. TRT-LLM: no mapping
+  # (its Ulysses/Ring CP has no perf data in the simulator).
+  vllm: prefill-context-parallel-size
+  sglang: attn-cp-size
+  trtllm: null
+
+- param_key: cp_strategy
+  # SGLang prefill CP layout: "interleave" for DSA architectures (zigzag is
+  # rejected at startup for them), "zigzag" otherwise. Resolved in
+  # generator/context_parallel.py::cp_strategy_for.
+  vllm: null
+  sglang: cp-strategy
+  trtllm: null
+
+- param_key: decode_context_parallel_size
+  # Decode CP: stripes the decode KV across ranks already in the attention
+  # group; adds no GPUs. vLLM -dcp (>= 0.10.2), SGLang --dcp-size (>= 0.5.15).
+  # TRT-LLM Helix is a disaggregated-decode-only layout the simulator does not
+  # model: null here, rejected in context_parallel.py.
+  vllm: decode-context-parallel-size
+  sglang: dcp-size
+  trtllm: null
+
+- param_key: dcp_comm_backend
+  # Partial-output merge collective for DCP: vLLM ag_rs|a2a (>= 0.18.0),
+  # SGLang ag_rs|a2a|fi_a2a (>= 0.5.17). Unset lets the framework resolve it.
+  vllm: dcp-comm-backend
+  sglang: dcp-comm-backend
+  trtllm: null
+
 # Vision encoder parallelism (VL models).
 # Guard: SGLang's --mm-enable-dp-encoder only exists >= 0.5.10.
 - param_key: enable_encoder_dp
