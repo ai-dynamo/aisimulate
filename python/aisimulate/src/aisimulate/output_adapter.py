@@ -129,14 +129,19 @@ def resolve_output_adapters(
     return resolved
 
 
-def _subscribe_accepts_context(subscribe: Callable[..., Any]) -> bool:
+def _subscribe_accepts_context(subscribe: Callable[..., Any], config: Any, context: Any) -> bool:
+    """True when ``subscribe(config, context=context)`` is a valid call.
+
+    Binds the real call shape rather than looking at parameter names, so legacy signatures such as
+    ``(config, context=None, /)``, ``(config, *context)`` or ``(context)`` keep receiving
+    ``subscribe(config)``. Binding never calls the adapter, so a ``TypeError`` raised by an adapter
+    body is never mistaken for a signature mismatch and retried.
+    """
     try:
-        parameters = inspect.signature(subscribe).parameters.values()
+        inspect.signature(subscribe).bind(config, context=context)
     except (TypeError, ValueError):
         return False
-    return any(
-        parameter.name == "context" or parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in parameters
-    )
+    return True
 
 
 def _dispatch_callback(name: str, event: str, callback: Callable[..., None], *args: Any) -> None:
@@ -167,8 +172,11 @@ def resolve_output_callbacks(
         if subscribe is None:
             continue
         try:
-            if context is not None and _subscribe_accepts_context(subscribe):
-                callbacks = subscribe(configs[name], context=context)
+            if context is not None and _subscribe_accepts_context(subscribe, configs[name], context):
+                # Each subscriber gets a detached copy: the workload is the same object the search
+                # consumes, and the output adapters must not be able to change the simulation or
+                # each other's view of it.
+                callbacks = subscribe(configs[name], context=deepcopy(context))
             else:
                 callbacks = subscribe(configs[name])
         except KeyboardInterrupt:

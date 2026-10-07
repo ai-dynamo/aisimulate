@@ -8,8 +8,11 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
+
 from aisimulate.output_adapter import (
     OUTPUT_ADAPTER_API_VERSION,
+    OutputAdapterExecutionError,
     RecommendationOutputCallbacks,
     RecommendationOutputContext,
     resolve_output_callbacks,
@@ -45,7 +48,8 @@ def test_context_is_passed_when_subscribe_accepts_it() -> None:
     )
 
     assert seen["config"] == {"x": 1}
-    assert seen["context"].workload is WORKLOAD
+    assert seen["context"].workload == WORKLOAD
+    assert seen["context"].workload is not WORKLOAD
     assert callbacks.on_candidate is not None
     callbacks.on_candidate(SimpleNamespace(candidate_id="c1"))
     assert [c.candidate_id for c in candidates] == ["c1"]
@@ -63,7 +67,7 @@ def test_context_is_passed_through_var_keyword_subscribe() -> None:
         context=RecommendationOutputContext(workload=WORKLOAD),
     )
 
-    assert seen["context"].workload is WORKLOAD
+    assert seen["context"].workload == WORKLOAD
 
 
 def test_legacy_subscribe_without_context_still_works() -> None:
@@ -88,8 +92,103 @@ def test_no_context_means_subscribe_is_called_as_before() -> None:
     def subscribe(self: Any, config: Any, context: Any = None) -> None:
         seen.append(context)
 
-    resolve_output_callbacks(
-        {"live": {}}, injected={"live": _adapter("live", subscribe)}
-    )
+    resolve_output_callbacks({"live": {}}, injected={"live": _adapter("live", subscribe)})
 
     assert seen == [None]
+
+
+# -- signature compatibility (review of aisimulate#384) ------------------------
+
+
+def _legacy_positional_only(self: Any, config: Any, context: Any = None, /) -> None:
+    legacy_calls.append(("positional_only", config, context))
+
+
+def _legacy_var_positional(self: Any, config: Any, *context: Any) -> None:
+    legacy_calls.append(("var_positional", config, context))
+
+
+def _legacy_config_named_context(self: Any, context: Any) -> None:
+    legacy_calls.append(("named_context", context, None))
+
+
+legacy_calls: list[Any] = []
+
+
+@pytest.mark.parametrize(
+    "subscribe, label, expected_second",
+    [
+        (_legacy_positional_only, "positional_only", None),
+        (_legacy_var_positional, "var_positional", ()),
+        (_legacy_config_named_context, "named_context", None),
+    ],
+)
+def test_legacy_signatures_that_cannot_take_context_keep_the_legacy_call(subscribe, label, expected_second) -> None:
+    legacy_calls.clear()
+
+    resolve_output_callbacks(
+        {"legacy": {"z": 3}},
+        injected={"legacy": _adapter("legacy", subscribe)},
+        context=RecommendationOutputContext(workload=WORKLOAD),
+    )
+
+    assert legacy_calls == [(label, {"z": 3}, expected_second)]
+
+
+def test_positional_only_context_with_var_keyword_does_not_break_subscription() -> None:
+    calls: list[Any] = []
+
+    def subscribe(self: Any, config: Any, context: Any = None, /, **kwargs: Any) -> None:
+        calls.append((config, context, kwargs))
+
+    resolve_output_callbacks(
+        {"live": {"q": 1}},
+        injected={"live": _adapter("live", subscribe)},
+        context=RecommendationOutputContext(workload=WORKLOAD),
+    )
+
+    # Whether the context arrives via **kwargs depends on the interpreter's signature binding
+    # (3.13 accepts it, 3.11 does not); either way the call must succeed and config arrive.
+    assert len(calls) == 1
+    assert calls[0][:2] == ({"q": 1}, None)
+
+
+def test_a_type_error_from_the_adapter_body_is_not_retried_as_legacy() -> None:
+    calls: list[Any] = []
+
+    def subscribe(self: Any, config: Any, context: Any) -> None:
+        calls.append(context)
+        raise TypeError("adapter bug")
+
+    with pytest.raises(OutputAdapterExecutionError, match="adapter bug"):
+        resolve_output_callbacks(
+            {"live": {}},
+            injected={"live": _adapter("live", subscribe)},
+            context=RecommendationOutputContext(workload=WORKLOAD),
+        )
+
+    assert len(calls) == 1
+
+
+# -- isolation (review of aisimulate#384) ---------------------------------------
+
+
+def test_subscribers_cannot_change_the_workload_the_search_uses_or_each_other() -> None:
+    workload = SimpleNamespace(isl=1024, concurrency=8)
+    seen: list[tuple[int, int]] = []
+
+    def mutating(self: Any, config: Any, context: RecommendationOutputContext) -> None:
+        context.workload.isl = 1
+        context.workload.concurrency = 64
+
+    def observing(self: Any, config: Any, context: RecommendationOutputContext) -> None:
+        seen.append((context.workload.isl, context.workload.concurrency))
+
+    resolve_output_callbacks(
+        {"a": {}, "b": {}},
+        injected={"a": _adapter("a", mutating), "b": _adapter("b", observing)},
+        context=RecommendationOutputContext(workload=workload),
+    )
+
+    assert (workload.isl, workload.concurrency) == (1024, 8)
+    assert seen == [(1024, 8)]

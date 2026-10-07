@@ -276,6 +276,69 @@ def test_recommendation_applies_slots_without_changing_suggestion_batches(monkey
     assert config.optimizer.parallelism == 8
 
 
+def test_recommendation_passes_isolated_workload_context_to_subscribers(monkeypatch):
+    import aisimulate.recommend as recommendation
+    import aisimulate.sweeper.search as search
+    from aisimulate.output_adapter import OUTPUT_ADAPTER_API_VERSION, RecommendationOutputCallbacks
+
+    raw = _config()
+    raw["traffic"]["load"]["concurrency"] = 8
+    config = CoreRecommendationConfig.model_validate(raw)
+    monkeypatch.setattr(recommendation, "resolve_budget", lambda *a, **kw: {"cpu_limit": 2})
+    received = []
+    searched = []
+
+    class ContextAdapter:
+        def __init__(self, name, mutate):
+            self.name = name
+            self.api_version = OUTPUT_ADAPTER_API_VERSION
+            self._mutate = mutate
+
+        def subscribe(self, config, context):
+            workload = context.workload
+            received.append((self.name, workload.model_copy(deep=True)))
+            if self._mutate:
+                # A misbehaving adapter edits "its" workload while preparing output.
+                object.__setattr__(workload, "isl", workload.isl + 1)
+                assert workload.isl != received[-1][1].isl
+            return RecommendationOutputCallbacks(on_candidate=lambda candidate: None)
+
+        def write(self, config, *, result, output_dir):
+            del config, result, output_dir
+            return []
+
+    class CaptureSweeper:
+        def __init__(self, **kwargs):
+            pass
+
+        def run(self, smart, *, top_n, on_candidate=None, on_round=None):
+            del top_n, on_candidate, on_round
+            searched.append(smart.workload)
+            return "result"
+
+    monkeypatch.setattr(search, "Sweeper", CaptureSweeper)
+    assert (
+        recommendation._run_recommendation(
+            config,
+            stack="engine",
+            runner_factory=object(),
+            output_configs={"first": {}, "second": {}},
+            output_adapters={
+                "first": ContextAdapter("first", mutate=True),
+                "second": ContextAdapter("second", mutate=False),
+            },
+        )
+        == "result"
+    )
+
+    # Both subscribers saw the workload the search consumes, and the second one saw it
+    # unchanged even though the first mutated its copy; the search itself was not affected.
+    assert [name for name, _ in received] == ["first", "second"]
+    assert received[0][1] == received[1][1]
+    assert searched[0] == received[0][1]
+    assert searched[0].isl == received[0][1].isl
+
+
 def test_resource_refusal_is_not_a_failed_replay_observation():
     from aisimulate.sweeper.search import _run_replay_detailed
 
