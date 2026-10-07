@@ -486,6 +486,7 @@ def _launch_args(tmp_path, name, **overrides):
         "context_class": "regular",
         "tag": "",
         "layer_id": None,
+        "warmup": None,
         "backend": "vllm",
         "checkpoint": "nvfp4",
         "tp": 1,

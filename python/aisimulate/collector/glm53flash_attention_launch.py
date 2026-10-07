@@ -127,6 +127,9 @@ def prepare(args) -> Path:
             # Smoke-only cross-check that another sparse-MLA layer times like
             # the representative one; full attempts always use the YAML layer.
             sweep["layer_id"] = args.layer_id
+        if args.warmup is not None:
+            # Smoke-only study of the warmup length (GPU clock steady state).
+            sweep["warmup"] = args.warmup
     else:
         sweep = yaml.safe_load(Path(args.sweep).read_text())["common_case_values"][OP_NAME]
     representative_layer_is_uniform(config, sweep["layer_id"], args.checkpoint)
@@ -189,6 +192,7 @@ def prepare(args) -> Path:
     (attempt / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
     suffix = (f"-smoke-{args.smoke}" if args.smoke else "") + (f"-{args.tag}" if args.tag else "")
     suffix += f"-l{args.layer_id}" if args.layer_id is not None else ""
+    suffix += f"-w{args.warmup}" if args.warmup is not None else ""
     job = f"glm53-v031c-attn-{args.backend}-{args.checkpoint}-tp{args.tp}{suffix}"
     container = f"{args.remote_attempt}"
     runner = f"collector.{args.backend}.glm53flash_attention_runner"
@@ -274,6 +278,7 @@ def main():
     parser.add_argument("--smoke", choices=sorted(SMOKE_SWEEPS))
     parser.add_argument("--context-class", choices=("regular", "long"), default="regular")
     parser.add_argument("--layer-id", type=int, help="smoke-only representative-layer cross-check")
+    parser.add_argument("--warmup", type=int, help="smoke-only warmup repetitions per target")
     parser.add_argument("--attempt", required=True, help="local fresh attempt directory")
     parser.add_argument("--remote-attempt", required=True)
     parser.add_argument("--remote-source", required=True, help="shared-storage copy of python/aisimulate")
@@ -290,8 +295,8 @@ def main():
     parser.add_argument("--skip-sets", nargs="+", help="split attempt: measure every other set of the class")
     parser.add_argument("--vllm-gpu-memory-utilization", type=float, default=None)
     args = parser.parse_args()
-    if args.layer_id is not None and not args.smoke:
-        parser.error("--layer-id is a smoke-only cross-check")
+    if (args.layer_id is not None or args.warmup is not None) and not args.smoke:
+        parser.error("--layer-id and --warmup are smoke-only")
     if args.tp == 1 and args.checkpoint not in TP1_CHECKPOINTS:
         parser.error("TP1 is NVFP4-only: the FP8 checkpoint's weights exceed one GB300")
     print(prepare(args))

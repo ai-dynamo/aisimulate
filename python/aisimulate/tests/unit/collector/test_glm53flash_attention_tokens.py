@@ -110,6 +110,7 @@ def test_launcher_freezes_the_generator_and_needs_no_corpus(tmp_path, backend):
         context_class="regular",
         tag="",
         layer_id=None,
+        warmup=None,
         sweep=None,
         backend=backend,
         checkpoint="fp8",
