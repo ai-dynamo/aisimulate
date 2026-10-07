@@ -7,11 +7,11 @@
 # _CONFIG_REGISTRY gap (glm_moe_dsa still unmapped),
 # backend_supports_prefill_query_quantization (mla_attention.py) and the
 # prefill selector surface are all unchanged vs the 0.24.0 citations below.
-# B200 0.25.0 module qualification after inference-mode correction: job
-# 1968407 passed 30 representative MLA/DSA context/generation cases, including
+# B200 0.25.0 module qualification after inference-mode correction passed
+# 30 representative MLA/DSA context/generation cases, including
 # cached-prefix cases and positive supported head-count controls. Known kernel
 # failures at smaller head counts remain observations, not removed cases.
-# B200 0.25.1 API qualification (job 4757223): 23 DSA prefill coordinates,
+# B200 0.25.1 API qualification: 23 DSA prefill coordinates,
 # repeated long/small graph lifetimes, MLA context/generation, and block-FP8
 # DSA context passed. This does not qualify every precision and shape.
 __compat__ = "vllm>=0.24.0,<=0.25.1"
@@ -35,16 +35,17 @@ just the attention module.
 
 Usage:
     # MLA context phase (DeepSeek-V3 style)
-    python collect_mla_module.py --mode context --model mla
+    python collect_mla_module.py --mode context --model deepseek-ai/DeepSeek-V3
 
     # DSA generation phase (DeepSeek-V3.2 style)
-    python collect_mla_module.py --mode generation --model dsa
+    python collect_mla_module.py --mode generation --model deepseek-ai/DeepSeek-V3.2
 
-    # All models, context phase
+    # Default canonical references: DeepSeek-V3, DeepSeek-V3.2, and GLM-5.2
+    # (one model per consumer identity), context phase
     python collect_mla_module.py --mode context
 
     # Quick single-point test
-    python collect_mla_module.py --mode context --model mla --quick --batch-size 4 --seq-len 2048
+    python collect_mla_module.py --mode context --model deepseek-ai/DeepSeek-V3 --quick --batch-size 4 --seq-len 2048
 """
 
 import argparse
@@ -333,7 +334,7 @@ def _create_gemm_quant_config(gemm_type: str):
         # Match the existing GEMM collector's fp8 contract: tensor-scaled
         # weights with dynamic activations, not fp8_static. Native Fp8LinearMethod
         # selects the activation granularity/kernel (fp8.py:298-322 at
-        # vllm-project/vllm@752a3a504485790a2e8491cacbb35c137339ad34).
+        # vLLM v0.25.1, commit 752a3a504485790a).
         if gemm_type == "fp8":
             return Fp8Config(
                 is_checkpoint_fp8_serialized=True,
@@ -392,8 +393,8 @@ def _initialize_synthetic_parameters(module):
                     tensor.zero_()
                     continue
                 # Serialized FP8 weights feed the real indexer query projection
-                # (Indexer.wq_b in deepseek_v2.py:666-672 @ vLLM
-                # 752a3a504485790a2e8491cacbb35c137339ad34). Zero weights
+                # (Indexer.wq_b in deepseek_v2.py:666-672 @ vLLM v0.25.1,
+                # commit 752a3a504485790a). Zero weights
                 # make every query/logit zero even with valid historical keys;
                 # top-k latency depends on that distribution. Generate on CPU
                 # because CUDA RNG can be unavailable after module construction.
@@ -420,8 +421,7 @@ def _initialize_nvfp4_parameters(module):
     from vllm import _custom_ops as ops
     from vllm.model_executor.layers.quantization.modelopt import ModelOptNvFp4LinearMethod
 
-    # Native API contracts at vllm-project/vllm commit
-    # 752a3a504485790a2e8491cacbb35c137339ad34:
+    # Native API contracts at vLLM v0.25.1, commit 752a3a504485790a:
     # modelopt.py:1111-1199 stores two E2M1 values per uint8, one E4M3 scale
     # per 16 inputs, and dequantizing FP32 global scales. _custom_ops.py:1492-
     # 1571 accepts the inverse global scale and can return unswizzled scales;
@@ -750,7 +750,7 @@ def _populate_indexer_kv_cache(
             # values/scales are block-planar, not token-interleaved. Serving
             # uses this producer in sparse_attn_indexer.py:380-390; its layout
             # and ue8m0 rounding are in csrc/libtorch_stable/cache_kernels.cu:
-            # 550-609 (vLLM 752a3a504485790a2e8491cacbb35c137339ad34).
+            # 550-609 (vLLM v0.25.1, commit 752a3a504485790a).
             # The physical slot is the page-table block ID plus token offset.
             ops.indexer_k_quant_and_cache(keys, indexer_kv_cache, slots, quant_block_size, scale_fmt)
 
@@ -1100,7 +1100,7 @@ def run_mla_module(
     # Native MLA cache insertion reads the per-layer forward-context mapping,
     # separately from the attention metadata. Omitting it silently suppresses
     # current-token writes (vLLM mla_attention.py:1037-1058 and
-    # attention.py:726-766 @752a3a504485790a2e8491cacbb35c137339ad34).
+    # attention.py:726-766 @ vLLM v0.25.1, commit 752a3a504485790a).
     slot_mapping_dict = {attn_layer_name: common_attn_metadata.slot_mapping}
     if indexer_metadata is not None:
         slot_mapping_dict[indexer_layer_name] = common_attn_metadata.slot_mapping
@@ -1124,7 +1124,7 @@ def run_mla_module(
     # The full dry run above populates the shared top-k indices. Native vLLM
     # uses skip_topk to reuse that buffer while retaining MLA projections and
     # sparse attention (deepseek_v2.py:1080-1104,1150-1162 and layers/mla.py
-    # MultiHeadLatentAttentionWrapper @752a3a504485790a2e8491cacbb35c137339ad34).
+    # MultiHeadLatentAttentionWrapper @ vLLM v0.25.1, commit 752a3a504485790a).
     # Emit both existing op_name variants for checkpoints declaring reuse;
     # no model-averaged latency is written into a full-indexer row.
     hf_text_config = vllm_config.model_config.hf_text_config
