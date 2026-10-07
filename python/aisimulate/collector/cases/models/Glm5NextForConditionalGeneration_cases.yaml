@@ -160,25 +160,6 @@ model_case_values:
       hidden_size: 4096
       hc_mult: 4
 
-  # Prefix-cache KDA state checkpoint copy (SGLang MambaRadixCache
-  # extra_buffer track copies, vLLM align pre-copy). One tuple per model:
-  # the 34 KDA layers of text_config.linear_attn_config.kda_layers, 64 linear
-  # heads x head_dim 128, short_conv_kernel_size 4 (conv window 3 over the
-  # merged q|k|v channels). The collectors shard the state per TP rank
-  # through each framework's own state-shape calculator. Serving is TP2/TP4
-  # (TP1 for the NVFP4 checkpoint); TP8 (8 local heads) extends interpolation support. State
-  # dtypes (BF16 conv, FP32 recurrent) are identical in both checkpoints
-  # (neither quantizes linear_attn), so the NVFP4 artifact is a shape-only
-  # alias of the same physical case.
-  glm53_mamba_state_checkpoint_copy:
-    - model_path: zai-org/GLM-5.3-Flash
-      model_aliases: [nvidia/GLM-5.3-Flash-NVFP4]
-      num_layers: 34
-      num_heads: 64
-      head_dim: 128
-      conv_kernel_size: 4
-      tensor_parallel_sizes: [1, 2, 4, 8]
-
 # The GLM NoPE sparse-MLA + IndexPool attention module (workstream W4) is a
 # standalone Slurm collector (collector/glm53flash_attention_launch.py,
 # declared in collector.provenance.STANDALONE_COLLECTOR_MODULES) driven by
@@ -201,10 +182,6 @@ framework_specific_op_cases:
       cases: all
     mhc_module:
       cases: all
-    # vllm_precopy variant; audited only on 0.31.0
-    # (glm53_mamba_state_copy_common.py AUDITED_RUNTIMES).
-    glm53_mamba_state_checkpoint_copy:
-      cases: all
   sglang:
     moe:
       cases: all
@@ -214,7 +191,4 @@ framework_specific_op_cases:
     kda:
       cases: all
     mhc_module:
-      cases: all
-    # sglang_decode + sglang_prefill variants; audited only on 0.5.20.
-    glm53_mamba_state_checkpoint_copy:
       cases: all

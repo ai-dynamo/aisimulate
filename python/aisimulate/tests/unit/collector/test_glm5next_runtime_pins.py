@@ -34,16 +34,6 @@ def test_glm_vllm_pin_rejects_the_retired_tail_overlay_runtime(model_path):
         )
 
 
-def test_glm_state_copy_family_pin_matches_the_model_pin():
-    family = require_collector_runtime("vllm", "0.31.0", requested_ops={"glm53_mamba_state_checkpoint_copy"})
-    model = require_collector_runtime(
-        "vllm", "0.31.0", requested_ops={"glm53_mamba_state_checkpoint_copy"}, model_path=GLM_MODEL_PATHS[0]
-    )
-    assert family.version == model.version == "0.31.0"
-    assert family.image() == model.image() == VLLM_INDEX
-    assert family.source_commit == model.source_commit
-
-
 @pytest.mark.parametrize("model_path", GLM_MODEL_PATHS)
 def test_glm_sglang_pin_resolves_every_op_to_0_5_20(model_path):
     runtime = require_collector_runtime(

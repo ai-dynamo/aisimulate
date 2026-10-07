@@ -190,16 +190,6 @@ REGISTRY: list[OpEntry] = [
         # Only SM80 (no probe hardware) remains unverified.
         unverified_sms=(80,),
     ),
-    # GLM-5.3-Flash prefix-cache KDA state checkpoint copy (align pre-copy
-    # kernel). Routed only by the GLM model case file; the module gates
-    # execution to the audited 0.31.0 release.
-    OpEntry(
-        op="glm53_mamba_state_checkpoint_copy",
-        module="collector.vllm.collect_glm53_mamba_state_copy",
-        get_func="get_glm53_mamba_state_copy_test_cases",
-        run_func="run_glm53_mamba_state_copy",
-        perf_filename=PerfFile.GLM53_MAMBA_STATE_COPY,
-    ),
 ]
 
 REGISTRY_XPU: list[OpEntry] = [

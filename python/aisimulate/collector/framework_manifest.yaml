@@ -35,17 +35,6 @@ frameworks:
         version: "0.5.16"
         images:
           default: "lmsysorg/sglang:v0.5.16@sha256:7b6a35df9839fd593a94a1eaee82d7777f472225d9f3ad1f8a2e0cb2bd1785d0"
-      # GLM-5.3-Flash prefix-cache KDA state checkpoint copy
-      # (glm53_mamba_state_copy_perf): its call sites exist only in the
-      # GLM runtime, audited at 0.5.20 (collect_glm53_mamba_state_copy.py
-      # __compat__). Same runtime as the GLM model pin below, so a GLM
-      # model-pinned run and a family-resolved run of this op agree.
-      mamba_state_copy:
-        version: "0.5.20"
-        source_commit: "94602c9c2b7cbdb8efd5c52802dac6a1c180089e"
-        images:
-          default: "lmsysorg/sglang:v0.5.20@sha256:06e4f2ed21afde4ff513cda65070124e727ba23ccaeff7712b8c40e1097d611f"
-          cu130: "lmsysorg/sglang:v0.5.20-cu130@sha256:06e4f2ed21afde4ff513cda65070124e727ba23ccaeff7712b8c40e1097d611f"
     # Model-scoped collector runtime pins: when the resolved run model_path
     # exactly equals one of these keys, the pin overrides BOTH the family
     # pins above and the framework default for every op in the run — the
@@ -191,15 +180,6 @@ frameworks:
         version: "0.27.0"
         images:
           default: *vllm_0270_image
-      # GLM-5.3-Flash prefix-cache KDA state checkpoint copy
-      # (glm53_mamba_state_copy_perf): the align pre-copy path is audited at
-      # stock v0.31.0 (collect_glm53_mamba_state_copy.py __compat__). Same
-      # runtime (image, source) as the GLM model pin under models: below.
-      mamba_state_copy:
-        version: "0.31.0"
-        source_commit: "db9527a46873454610df6dbedf79a36d6bf1a7f6"
-        images:
-          default: "vllm/vllm-openai:v0.31.0@sha256:c1c9f6fd5c109ba7f0546a59f5b2f15fb87f64c77782e90a27b648b42a8e67c3"
       # moe: NO family pin (owner decision 2026-08-02, reverting the
       # 2026-08-01 family-wide preview pin — a temporary preview build must
       # not own a family default; a family pin here hijacks image selection

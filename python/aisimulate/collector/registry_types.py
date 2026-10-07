@@ -33,9 +33,6 @@ class PerfFile(str, Enum):
     MLA_BMM = "mla_bmm_perf.txt"
     GDN = "gdn_perf.txt"
     KDA = "kda_perf.txt"
-    # GLM-5.3-Flash prefix-cache KDA state checkpoint copy (SGLang
-    # extra_buffer decode/prefill track copies, vLLM align pre-copy).
-    GLM53_MAMBA_STATE_COPY = "glm53_mamba_state_copy_perf.txt"
     MAMBA2 = "mamba2_perf.txt"
     COMPUTESCALE = "computescale_perf.txt"
     WIDEEP_CONTEXT_MLA = "wideep_context_mla_perf.txt"

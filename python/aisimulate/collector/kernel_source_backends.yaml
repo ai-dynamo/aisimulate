@@ -181,9 +181,6 @@ mappings:
   - {framework: sglang, kernel_source: "sglang.hc_post[tilelang]", backend: tilelang, source: "collector/sglang/collect_mhc_module.py (GLM; kernels/ops/layernorm/mhc.py mhc_post_tilelang)"}
   - {framework: sglang, kernel_source: "sglang.kernels.ops.layernorm.mhc.hc_expand", backend: torch, source: "kernels/ops/layernorm/mhc.py:1762 x.repeat @v0.5.20"}
   - {framework: sglang, kernel_source: "sglang.kernels.ops.layernorm.mhc.hc_contract", backend: torch, source: "kernels/ops/layernorm/mhc.py:1766 mean @v0.5.20"}
-  # GLM-5.3-Flash prefix-cache state checkpoint copy (glm53_mamba_state_copy_perf, 0.5.20).
-  - {framework: sglang, kernel_source: track_mamba_states_all_layers_kernel, backend: triton, source: "collector/sglang/collect_glm53_mamba_state_copy.py _time_decode calls track_mamba_states_all_layers; kernels/ops/mamba/mamba_state_scatter_triton.py:801-857 (@triton.jit track_mamba_states_all_layers_kernel) launched by :859-895 @v0.5.20, from hybrid_linear_attn_backend.py:891-899"}
-  - {framework: sglang, kernel_source: index_gather_put_per_layer, backend: torch, source: "collector/sglang/collect_glm53_mamba_state_copy.py _time_prefill: per KDA layer the conv window snapshot (srt/layers/attention/linear/kda_backend.py:837-839) and _track_mamba_state_extend's ssm_states[dst] = ssm_states[src] (hybrid_linear_attn_backend.py:951-954) @v0.5.20 — ATen advanced-indexing gather + index_put_ kernels"}
 
   # --- Kimi-K3 (#1435) labels: KDA module kernels (0.5.16) and MoE
   # situ-as-silu measurement variants (0.5.14; suffix marks the activation
@@ -354,7 +351,6 @@ mappings:
   - {framework: vllm, kernel_source: "vllm.mhc_fused_post_pre_tilelang[fused_post_gemm,norm=fused]", backend: tilelang, source: "collector/vllm/collect_mhc_module.py (GLM; fused post+GEMM TileLang kernel, small token counts)"}
   - {framework: vllm, kernel_source: "vllm.mhc_fused_post_pre_tilelang[post+prenorm_gemm=deepgemm,norm=fused]", backend: deepgemm, source: "collector/vllm/collect_mhc_module.py (GLM; post + DeepGEMM prenorm GEMM, large token counts)"}
   - {framework: vllm, kernel_source: "vllm.model_executor.layers.mhc.hc_expand", backend: torch, source: "vllm/model_executor/layers/mhc.py:969 @v0.31.0 (byte-identical to 0.30.0)"}
-  - {framework: vllm, kernel_source: precopy_mamba_align_fused_kernel, backend: triton, source: "collector/vllm/collect_glm53_mamba_state_copy.py _time_precopy calls MambaSpecDecodeGPUContext.run_fused_precopy (v1/worker/mamba_utils.py:1188-1232), which launches @triton.jit precopy_mamba_align_fused_kernel (:549-631) @v0.31.0 (glm53_mamba_state_copy_perf)"}
   - {framework: vllm, kernel_source: "vllm.model_executor.layers.mhc.hc_contract", backend: torch, source: "vllm/model_executor/layers/mhc.py:974 @v0.31.0 (byte-identical to 0.30.0)"}
   - {framework: vllm, kernel_source: "vllm.utils.deep_gemm.fp8_fp4_paged_mqa_logits", backend: deepgemm, source: "PR#1344 collect_dsv4_attn.py"}
 
