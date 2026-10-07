@@ -155,13 +155,12 @@ The selective reference-generation command is `pin_goldens.py --refresh deepseek
 
 ## Engine-Step Benchmark
 
-Historical Python-vs-Rust speedup numbers (dated + commit-stamped) live in
-[`perf-speedup-report.md`](https://github.com/ai-dynamo/aisimulate/blob/acaca5d169769b41d4c594d68dd0964c35d0f3bf/crates/core/perfmodel/docs/perf-speedup-report.md); they cannot be
-regenerated (the Python arm is gone). The benchmark now times the rust
-engine-step alone:
+[The engine-step benchmark](benchmark_engine_step.py) measures the current Rust
+engine. Run it from the repository root with the matching native extension
+installed:
 
 ```bash
-python aic-core/rust/aiconfigurator-core/parity_tests/benchmark_engine_step.py --warmup 5 --iterations 50
+python crates/core/parity_tests/perfmodel/benchmark_engine_step.py --warmup 5 --iterations 50
 ```
 
 When `--case` is omitted, the benchmark runs all predefined cases.
