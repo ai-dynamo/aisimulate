@@ -322,3 +322,21 @@ def test_mismatched_geometry_is_never_published(monkeypatch, tmp_path):
     with pytest.raises(RuntimeError, match="too many rejected repetitions"):
         run(s, engine, "prefill")
     assert not s.saved
+
+
+def test_explicit_align4_decode_contexts_override_the_even_split(monkeypatch, tmp_path):
+    module = load_producer(monkeypatch)
+    contexts = tmp_path / "decode-contexts.json"
+    contexts.write_text(json.dumps([[2, 246, [125, 121]]]))
+    monkeypatch.setenv("DYN_FPM_GLM53FLASH_DECODE_CONTEXTS", str(contexts))
+    monkeypatch.setattr(module, "_DECODE_CONTEXTS", None)
+    s = make_scheduler(module, tmp_path, [Point("decode", 1, 2, 0, 246)])
+    run(s, Engine(s), "decode")
+    ((point, fpms),) = s.saved
+    assert fpms[0]["scheduled_requests"]["sum_decode_kv_tokens"] == 246
+    record = json.loads((tmp_path / "benchmark.repetitions.jsonl").read_text())
+    assert record["rows"] == {"context": [125, 121], "prompt": [124, 120], "measured_decode_step": 2}
+    assert record["seed"]["lengths"] == [120, 116]
+    assert all(rep["prefill_chunks"] == [[[120, 4], [116, 4]]] for rep in record["repetitions"])
+    with pytest.raises(ValueError, match="no frozen per-request contexts"):
+        module.Glm53FlashPrefixSeedScheduler._bench_decode_context_lengths(250, 2)

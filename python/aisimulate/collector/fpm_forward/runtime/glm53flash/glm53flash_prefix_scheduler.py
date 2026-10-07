@@ -139,6 +139,30 @@ def prefill_chunk_starts(scheduler_output, prompt_lengths: dict[str, int]) -> li
     return chunks
 
 
+_DECODE_CONTEXTS: dict | None = None
+
+
+def explicit_decode_contexts() -> dict[tuple[int, int], list[int]]:
+    """Frozen per-request decode contexts keyed by ``(batch_size, total_kv_read_tokens)``.
+
+    Dynamo's explicit decode points carry totals only and split them evenly
+    (``_balanced_partition``). Executed align-4 geometry splits on the 4-token
+    grid instead, so the frozen split is supplied next to the points file
+    (``DYN_FPM_GLM53FLASH_DECODE_CONTEXTS``: ``[[batch, total, [contexts...]], ...]``).
+    """
+    global _DECODE_CONTEXTS
+    if _DECODE_CONTEXTS is None:
+        path = os.environ.get("DYN_FPM_GLM53FLASH_DECODE_CONTEXTS")
+        table = {}
+        for batch, total, contexts in json.loads(Path(path).read_text()) if path else []:
+            key = (int(batch), int(total))
+            if key in table or len(contexts) != batch or sum(contexts) != total or min(contexts) < 1:
+                raise ValueError(f"invalid or duplicate explicit decode contexts for {key}")
+            table[key] = [int(c) for c in contexts]
+        _DECODE_CONTEXTS = table
+    return _DECODE_CONTEXTS
+
+
 def scheduled_dict(metrics) -> dict:
     return {
         "num_prefill_requests": int(metrics.num_prefill_requests),
@@ -290,7 +314,24 @@ class Glm53FlashPrefixSeedScheduler(native.InstrumentedScheduler):
             "unique_token_count": len(set(self._glm_tokens)),
             "sampling": "prompt = concatenated [offset, length] rotations of the seeded stream (see prompt specs)",
             "chunk_start_alignment": CHUNK_ALIGN,
+            "decode_contexts_sha256": (
+                hashlib.sha256(Path(os.environ["DYN_FPM_GLM53FLASH_DECODE_CONTEXTS"]).read_bytes()).hexdigest()
+                if os.environ.get("DYN_FPM_GLM53FLASH_DECODE_CONTEXTS")
+                else None
+            ),
         }
+
+    @classmethod
+    def _bench_decode_context_lengths(cls, total_kv_read_tokens, batch_size):
+        explicit = explicit_decode_contexts()
+        if not explicit:
+            return super()._bench_decode_context_lengths(total_kv_read_tokens, batch_size)
+        contexts = explicit.get((int(batch_size), int(total_kv_read_tokens)))
+        if contexts is None:
+            raise ValueError(
+                f"decode point B={batch_size} KV={total_kv_read_tokens} has no frozen per-request contexts"
+            )
+        return list(contexts)
 
     def _bench_eager_warmup_points(self):
         return []  # five warmup repetitions run per exact geometry

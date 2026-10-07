@@ -32,7 +32,9 @@ prefix-seed producer (`glm53flash_prefix_scheduler.py`).
   prefill start that is not a multiple of 4. Every prompt, prefix and new-token
   length is a multiple of 4. A decode point with context `c` uses the prompt
   `4 * floor((c - 1) / 4)` and measures the pure decode step whose KV read is
-  `c`. The producer records every prefill chunk start from the native
+  `c`. Per-request decode contexts come from a frozen sidecar
+  (`DYN_FPM_GLM53FLASH_DECODE_CONTEXTS`), because Dynamo's explicit decode
+  points carry totals only. The producer records every prefill chunk start from the native
   `SchedulerOutput` and fails on an unaligned start. Geometry moved to satisfy
   this is executed geometry with reason `kpool_align4`. The consumer still
   rejects unaligned cached-prefill queries on stock runtimes.
