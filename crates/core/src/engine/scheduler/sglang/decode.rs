@@ -291,6 +291,12 @@ fn prefill_first_tokens(
     newly_completed.reverse();
     completed_requests.extend(newly_completed);
 
+    // Native cache_unfinished_req publishes only the prefill input. The token
+    // sampled by that forward has no computed KV yet and must not enter the tree.
+    for req in running.iter_mut() {
+        cache_materialized_prefix(req, kv_manager, config);
+    }
+
     // The rest need a slot for the first output token. Make room by evicting cached pages only.
     let needed = decode_page_growth_needed(running, config.block_size, 1);
     let available = kv_manager.cache().available_tokens();
@@ -314,7 +320,6 @@ fn prefill_first_tokens(
         }
         let token_id = req.next_output_token();
         req.append_output_token(token_id, config.block_size);
-        cache_materialized_prefix(req, kv_manager, config);
         req.debug_assert_invariants(config.block_size);
         output_signals.push(OutputSignal {
             uuid: req.uuid,
@@ -347,7 +352,11 @@ pub(super) fn cleanup_completed_request(
     kv_manager: &mut SglangKvManager,
     block_size: usize,
 ) {
-    let tokens_to_cache = floor_to_block(request.current_sequence_len(), block_size);
+    // Native cache_finished_req excludes the terminal sampled token: no forward
+    // computed its KV. Explicit zero-output prefix replays have no sampled tail.
+    let computed_len = request.current_sequence_len()
+        .saturating_sub(usize::from(request.output_len() > 0));
+    let tokens_to_cache = floor_to_block(computed_len, block_size);
     if !request.kv_lease.is_active() {
         return;
     }
@@ -581,7 +590,8 @@ fn simulate_step(
                 break;
             }
 
-            cache_materialized_prefix(req, kv_manager, config);
+            // Ordinary native decode leaves the generated suffix private until
+            // completion. Retraction frees it instead of retaining reusable KV.
             req.debug_assert_invariants(config.block_size);
         }
     }

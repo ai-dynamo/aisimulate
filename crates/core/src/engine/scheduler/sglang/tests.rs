@@ -1673,7 +1673,7 @@ mod core_behavior {
     }
 
     #[test]
-    fn test_unfinished_decode_request_is_cached_after_output() {
+    fn test_unfinished_decode_request_keeps_its_prefill_cache() {
         let config = SglangConfig::from_args(
             &MockEngineArgs::builder()
                 .engine_type(EngineType::Sglang)
@@ -1697,6 +1697,8 @@ mod core_behavior {
             allocated_tokens: 4,
         }];
 
+        // This fixture starts after a native prefill, which publishes its input.
+        decode::cache_materialized_prefix(&mut running[0], &mut kv_manager, &config);
         simulate_decode_step(&mut running, &mut kv_manager, &config, 0.0, false);
         let prefix = running[0].sequence_prefix(4);
         assert_eq!(kv_manager.cache().prefix_match_len(prefix), 4);
@@ -3589,4 +3591,48 @@ fn read_only_prefix_budget_counts_only_newly_locked_matching_pages() {
     assert_eq!(manager.cache().prefix_match_hashes_budget(&hashes[..2]), (8, 0));
     manager.finish(&tokens[..8], active.lease);
     assert_eq!(manager.cache().prefix_match_hashes_budget(&hashes), (12, 12));
+}
+
+
+#[test]
+fn cache_publication_decode_suffix_stays_private_and_is_freed_on_retraction() {
+    let mut core = SglangCore::new(test_args(16, 4, 16));
+    core.receive(direct_request((0..4).collect(), 8));
+    for step in 0..4 { core.execute_hidden_pass(step as f64); }
+    let mut req = core.running.pop().unwrap();
+    assert_eq!(req.output_len(), 4);
+    assert_eq!(req.current_sequence_len(), 8);
+    assert_eq!(core.kv_manager.cache().prefix_match_len(req.sequence_tokens()), 4,
+               "native only publishes the prefill prefix while ordinary decode is active");
+    let available = core.kv_manager.cache().available_tokens();
+    core.kv_manager.retract_in_place(&mut req.kv_lease);
+    assert_eq!(core.kv_manager.cache().available_tokens(), available + 4,
+               "retraction frees the private generated page immediately");
+    assert_eq!(core.kv_manager.cache().prefix_match_len(req.sequence_tokens()), 4,
+               "generated suffix must be recomputed after re-admission");
+}
+
+#[test]
+fn cache_publication_prefill_does_not_publish_its_newly_sampled_token() {
+    let mut core = SglangCore::new(test_args(16, 4, 16));
+    core.receive(direct_request((0..3).collect(), 8));
+    core.execute_hidden_pass(0.0);
+    let req = &core.running[0];
+    assert_eq!(req.current_sequence_len(), 4);
+    assert_eq!(core.kv_manager.cache().prefix_match_len(req.sequence_tokens()), 0,
+               "three input tokens plus a sampled output do not constitute a computed page");
+}
+
+#[test]
+fn cache_publication_completion_excludes_the_terminal_sampled_token() {
+    let mut core = SglangCore::new(test_args(16, 4, 16));
+    let mut sequence: Vec<u32> = (0..4).collect();
+    let output: Vec<u32> = (100..104).collect();
+    core.receive(DirectRequest { tokens: sequence.clone(), max_output_tokens: 4,
+                                output_token_ids: Some(output.clone()), ..Default::default() });
+    for step in 0..4 { core.execute_hidden_pass(step as f64); }
+    assert!(core.is_empty());
+    sequence.extend(output);
+    assert_eq!(core.kv_manager.cache().prefix_match_len(&sequence), 4,
+               "the terminal output has no computed KV; a seven-token context caches one page");
 }
