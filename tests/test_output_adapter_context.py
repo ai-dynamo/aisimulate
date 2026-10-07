@@ -192,3 +192,67 @@ def test_subscribers_cannot_change_the_workload_the_search_uses_or_each_other() 
 
     assert (workload.isl, workload.concurrency) == (1024, 8)
     assert seen == [(1024, 8)]
+
+
+def test_keyword_only_context_is_passed() -> None:
+    seen: dict[str, Any] = {}
+
+    def subscribe(self: Any, config: Any, *, context: RecommendationOutputContext) -> None:
+        seen.update(config=config, context=context)
+
+    resolve_output_callbacks(
+        {"live": {"k": 1}},
+        injected={"live": _adapter("live", subscribe)},
+        context=RecommendationOutputContext(workload=WORKLOAD),
+    )
+
+    assert seen["config"] == {"k": 1}
+    assert seen["context"].workload == WORKLOAD
+
+
+def test_nested_workload_state_is_isolated_between_subscribers() -> None:
+    from copy import deepcopy
+
+    workload = SimpleNamespace(isl=1024, load=[1, 2, {"concurrency": 8}])
+    observed: list[Any] = []
+
+    def mutating(self: Any, config: Any, context: RecommendationOutputContext) -> None:
+        context.workload.load.append(3)
+        context.workload.load[2]["concurrency"] = 64
+
+    def observing(self: Any, config: Any, context: RecommendationOutputContext) -> None:
+        observed.append(deepcopy(context.workload.load))
+
+    resolve_output_callbacks(
+        {"a": {}, "b": {}},
+        injected={"a": _adapter("a", mutating), "b": _adapter("b", observing)},
+        context=RecommendationOutputContext(workload=workload),
+    )
+
+    assert workload.load == [1, 2, {"concurrency": 8}]
+    assert observed == [[1, 2, {"concurrency": 8}]]
+
+
+def test_mutating_a_retained_context_from_a_callback_does_not_reach_the_search() -> None:
+    workload = SimpleNamespace(isl=1024, load=[1, 2])
+    retained: list[RecommendationOutputContext] = []
+
+    def subscribe(self: Any, config: Any, context: RecommendationOutputContext) -> RecommendationOutputCallbacks:
+        retained.append(context)
+
+        def on_candidate(record: Any) -> None:
+            retained[0].workload.isl = 1
+            retained[0].workload.load.append(99)
+
+        return RecommendationOutputCallbacks(on_candidate=on_candidate)
+
+    callbacks = resolve_output_callbacks(
+        {"live": {}},
+        injected={"live": _adapter("live", subscribe)},
+        context=RecommendationOutputContext(workload=workload),
+    )
+    assert callbacks.on_candidate is not None
+    callbacks.on_candidate(SimpleNamespace(candidate_id="c1"))
+
+    assert retained[0].workload.isl == 1  # the adapter's own copy did change
+    assert (workload.isl, workload.load) == (1024, [1, 2])
