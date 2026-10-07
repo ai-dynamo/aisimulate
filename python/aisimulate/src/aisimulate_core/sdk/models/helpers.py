@@ -82,7 +82,7 @@ _PROJECTION_GROUP_MARKERS = {
     "q": ("q_a_proj", "q_b_proj", "q_proj"),
     "kv": ("kv_a_proj", "kv_b_proj", "kv_proj", "k_proj", "v_proj"),
     "o": ("o_proj",),
-    "indexer": ("indexer",),
+    "indexer": ("indexer.wq_b", "indexer.wk", "indexer.weights_proj"),
 }
 
 
@@ -96,9 +96,16 @@ def attention_projection_exclusions(raw_config: dict) -> frozenset:
     excluded: set = set()
     for pattern in quant_exclude_patterns(raw_config):
         p = str(pattern)
-        if "self_attn" in p and not any(m in p for markers in _PROJECTION_GROUP_MARKERS.values() for m in markers):
-            # whole-block glob (e.g. "model.layers.N.self_attn*", "re:.*self_attn.*")
+        # A named child such as q_a_layernorm is not an exclusion of the
+        # entire attention block. Native GLM FP8 configs exclude many such
+        # norms while retaining FP8 attention projections.
+        block_suffixes = {"", "*", ".*", r"\..*"}
+        if "self_attn" in p and p.rsplit("self_attn", 1)[1] in block_suffixes:
             return frozenset(ATTENTION_PROJECTION_GROUPS)
+        # Preserve an explicit indexer block exclusion, but not its k_norm or
+        # the separate indexers_proj module. Neither excludes wq_b/wk GEMMs.
+        if "indexer" in p and p.rsplit("indexer", 1)[1] in block_suffixes:
+            excluded.add("indexer")
         for group, markers in _PROJECTION_GROUP_MARKERS.items():
             if any(m in p for m in markers):
                 excluded.add(group)
