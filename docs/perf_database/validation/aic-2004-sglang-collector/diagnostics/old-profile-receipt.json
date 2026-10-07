@@ -1,0 +1,18 @@
+[
+  {
+    "path": "/output/profile-old/q1-full-replay.json",
+    "replays": 5,
+    "skip": false,
+    "output_parity": null,
+    "grad_enabled": true,
+    "capture_stream": 571457136
+  },
+  {
+    "path": "/output/profile-old/q1-skip-replay.json",
+    "replays": 5,
+    "skip": true,
+    "output_parity": null,
+    "grad_enabled": true,
+    "capture_stream": 571488096
+  }
+]

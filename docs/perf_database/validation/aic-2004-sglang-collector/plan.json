@@ -1,0 +1,1283 @@
+{
+  "scope": "Final bounded decode/native eager qualification; graph-covered prefill omitted pending compiler-entry boundary resolution",
+  "groups": [
+    {
+      "model": "nvidia/GLM-5.2-NVFP4",
+      "heads": 8,
+      "kv": "fp8",
+      "gemm": "bfloat16",
+      "tp": 8,
+      "id": "priority-decode",
+      "cases": [
+        {
+          "id": "generation-b1-q8192-p0-full",
+          "mode": "generation",
+          "q": 8192,
+          "p": 0,
+          "b": 1,
+          "skip": false
+        },
+        {
+          "id": "generation-b1-q8192-p0-skip",
+          "mode": "generation",
+          "q": 8192,
+          "p": 0,
+          "b": 1,
+          "skip": true
+        },
+        {
+          "id": "generation-b1-q131072-p0-full",
+          "mode": "generation",
+          "q": 131072,
+          "p": 0,
+          "b": 1,
+          "skip": false
+        },
+        {
+          "id": "generation-b1-q131072-p0-skip",
+          "mode": "generation",
+          "q": 131072,
+          "p": 0,
+          "b": 1,
+          "skip": true
+        },
+        {
+          "id": "generation-b1-q1048575-p0-full",
+          "mode": "generation",
+          "q": 1048575,
+          "p": 0,
+          "b": 1,
+          "skip": false
+        },
+        {
+          "id": "generation-b1-q1048575-p0-skip",
+          "mode": "generation",
+          "q": 1048575,
+          "p": 0,
+          "b": 1,
+          "skip": true
+        }
+      ]
+    },
+    {
+      "id": "glm-bfloat16-fp8-h8",
+      "model": "nvidia/GLM-5.2-NVFP4",
+      "heads": 8,
+      "kv": "fp8",
+      "gemm": "bfloat16",
+      "tp": 8,
+      "cases": [
+        {
+          "id": "context-b32-q128-p128-full",
+          "mode": "context",
+          "q": 128,
+          "p": 128,
+          "b": 32,
+          "skip": false
+        },
+        {
+          "id": "context-b32-q128-p128-skip",
+          "mode": "context",
+          "q": 128,
+          "p": 128,
+          "b": 32,
+          "skip": true
+        },
+        {
+          "id": "context-b1-q4096-p0-full",
+          "mode": "context",
+          "q": 4096,
+          "p": 0,
+          "b": 1,
+          "skip": false
+        },
+        {
+          "id": "context-b1-q4096-p0-skip",
+          "mode": "context",
+          "q": 4096,
+          "p": 0,
+          "b": 1,
+          "skip": true
+        },
+        {
+          "id": "generation-b1-q8192-p0-full",
+          "mode": "generation",
+          "q": 8192,
+          "p": 0,
+          "b": 1,
+          "skip": false
+        },
+        {
+          "id": "generation-b1-q8192-p0-skip",
+          "mode": "generation",
+          "q": 8192,
+          "p": 0,
+          "b": 1,
+          "skip": true
+        },
+        {
+          "id": "generation-b1-q131072-p0-full",
+          "mode": "generation",
+          "q": 131072,
+          "p": 0,
+          "b": 1,
+          "skip": false
+        },
+        {
+          "id": "generation-b1-q131072-p0-skip",
+          "mode": "generation",
+          "q": 131072,
+          "p": 0,
+          "b": 1,
+          "skip": true
+        },
+        {
+          "id": "context-b1-q8192-p0-full",
+          "mode": "context",
+          "q": 8192,
+          "p": 0,
+          "b": 1,
+          "skip": false
+        },
+        {
+          "id": "context-b1-q8192-p0-skip",
+          "mode": "context",
+          "q": 8192,
+          "p": 0,
+          "b": 1,
+          "skip": true
+        },
+        {
+          "id": "context-b2-q4096-p0-full",
+          "mode": "context",
+          "q": 4096,
+          "p": 0,
+          "b": 2,
+          "skip": false
+        },
+        {
+          "id": "context-b2-q4096-p0-skip",
+          "mode": "context",
+          "q": 4096,
+          "p": 0,
+          "b": 2,
+          "skip": true
+        },
+        {
+          "id": "context-b4-q2048-p0-full",
+          "mode": "context",
+          "q": 2048,
+          "p": 0,
+          "b": 4,
+          "skip": false
+        },
+        {
+          "id": "context-b4-q2048-p0-skip",
+          "mode": "context",
+          "q": 2048,
+          "p": 0,
+          "b": 4,
+          "skip": true
+        },
+        {
+          "id": "context-b1-q4096-p1044416-full",
+          "mode": "context",
+          "q": 4096,
+          "p": 1044416,
+          "b": 1,
+          "skip": false
+        },
+        {
+          "id": "context-b1-q4096-p1044416-skip",
+          "mode": "context",
+          "q": 4096,
+          "p": 1044416,
+          "b": 1,
+          "skip": true
+        },
+        {
+          "id": "context-b2-q4096-p524288-full",
+          "mode": "context",
+          "q": 4096,
+          "p": 524288,
+          "b": 2,
+          "skip": false
+        },
+        {
+          "id": "context-b2-q4096-p524288-skip",
+          "mode": "context",
+          "q": 4096,
+          "p": 524288,
+          "b": 2,
+          "skip": true
+        },
+        {
+          "id": "context-b4-q2048-p262144-full",
+          "mode": "context",
+          "q": 2048,
+          "p": 262144,
+          "b": 4,
+          "skip": false
+        },
+        {
+          "id": "context-b4-q2048-p262144-skip",
+          "mode": "context",
+          "q": 2048,
+          "p": 262144,
+          "b": 4,
+          "skip": true
+        }
+      ]
+    },
+    {
+      "id": "glm-fp8_block-fp8-h8",
+      "model": "zai-org/GLM-5.2-FP8",
+      "heads": 8,
+      "kv": "fp8",
+      "gemm": "fp8_block",
+      "tp": 8,
+      "cases": [
+        {
+          "id": "context-b32-q128-p128-full",
+          "mode": "context",
+          "q": 128,
+          "p": 128,
+          "b": 32,
+          "skip": false
+        },
+        {
+          "id": "context-b32-q128-p128-skip",
+          "mode": "context",
+          "q": 128,
+          "p": 128,
+          "b": 32,
+          "skip": true
+        },
+        {
+          "id": "context-b1-q4096-p0-full",
+          "mode": "context",
+          "q": 4096,
+          "p": 0,
+          "b": 1,
+          "skip": false
+        },
+        {
+          "id": "context-b1-q4096-p0-skip",
+          "mode": "context",
+          "q": 4096,
+          "p": 0,
+          "b": 1,
+          "skip": true
+        },
+        {
+          "id": "generation-b1-q8192-p0-full",
+          "mode": "generation",
+          "q": 8192,
+          "p": 0,
+          "b": 1,
+          "skip": false
+        },
+        {
+          "id": "generation-b1-q8192-p0-skip",
+          "mode": "generation",
+          "q": 8192,
+          "p": 0,
+          "b": 1,
+          "skip": true
+        },
+        {
+          "id": "generation-b1-q131072-p0-full",
+          "mode": "generation",
+          "q": 131072,
+          "p": 0,
+          "b": 1,
+          "skip": false
+        },
+        {
+          "id": "generation-b1-q131072-p0-skip",
+          "mode": "generation",
+          "q": 131072,
+          "p": 0,
+          "b": 1,
+          "skip": true
+        }
+      ]
+    },
+    {
+      "id": "glm-fp8_block-bfloat16-h8",
+      "model": "zai-org/GLM-5.2-FP8",
+      "heads": 8,
+      "kv": "bfloat16",
+      "gemm": "fp8_block",
+      "tp": 8,
+      "cases": [
+        {
+          "id": "context-b32-q128-p128-full",
+          "mode": "context",
+          "q": 128,
+          "p": 128,
+          "b": 32,
+          "skip": false
+        },
+        {
+          "id": "context-b32-q128-p128-skip",
+          "mode": "context",
+          "q": 128,
+          "p": 128,
+          "b": 32,
+          "skip": true
+        },
+        {
+          "id": "context-b1-q4096-p0-full",
+          "mode": "context",
+          "q": 4096,
+          "p": 0,
+          "b": 1,
+          "skip": false
+        },
+        {
+          "id": "context-b1-q4096-p0-skip",
+          "mode": "context",
+          "q": 4096,
+          "p": 0,
+          "b": 1,
+          "skip": true
+        },
+        {
+          "id": "generation-b1-q8192-p0-full",
+          "mode": "generation",
+          "q": 8192,
+          "p": 0,
+          "b": 1,
+          "skip": false
+        },
+        {
+          "id": "generation-b1-q8192-p0-skip",
+          "mode": "generation",
+          "q": 8192,
+          "p": 0,
+          "b": 1,
+          "skip": true
+        },
+        {
+          "id": "generation-b1-q131072-p0-full",
+          "mode": "generation",
+          "q": 131072,
+          "p": 0,
+          "b": 1,
+          "skip": false
+        },
+        {
+          "id": "generation-b1-q131072-p0-skip",
+          "mode": "generation",
+          "q": 131072,
+          "p": 0,
+          "b": 1,
+          "skip": true
+        }
+      ]
+    },
+    {
+      "id": "deepseek-fp8_block-fp8-h16",
+      "model": "deepseek-ai/DeepSeek-V3.2",
+      "heads": 16,
+      "kv": "fp8",
+      "gemm": "fp8_block",
+      "tp": 8,
+      "cases": [
+        {
+          "id": "context-b32-q128-p128-full",
+          "mode": "context",
+          "q": 128,
+          "p": 128,
+          "b": 32,
+          "skip": false
+        },
+        {
+          "id": "context-b1-q4096-p0-full",
+          "mode": "context",
+          "q": 4096,
+          "p": 0,
+          "b": 1,
+          "skip": false
+        },
+        {
+          "id": "generation-b1-q8192-p0-full",
+          "mode": "generation",
+          "q": 8192,
+          "p": 0,
+          "b": 1,
+          "skip": false
+        },
+        {
+          "id": "generation-b1-q131072-p0-full",
+          "mode": "generation",
+          "q": 131072,
+          "p": 0,
+          "b": 1,
+          "skip": false
+        }
+      ]
+    },
+    {
+      "id": "deepseek-fp8_block-bfloat16-h16",
+      "model": "deepseek-ai/DeepSeek-V3.2",
+      "heads": 16,
+      "kv": "bfloat16",
+      "gemm": "fp8_block",
+      "tp": 8,
+      "cases": [
+        {
+          "id": "context-b32-q128-p128-full",
+          "mode": "context",
+          "q": 128,
+          "p": 128,
+          "b": 32,
+          "skip": false
+        },
+        {
+          "id": "context-b1-q4096-p0-full",
+          "mode": "context",
+          "q": 4096,
+          "p": 0,
+          "b": 1,
+          "skip": false
+        },
+        {
+          "id": "generation-b1-q8192-p0-full",
+          "mode": "generation",
+          "q": 8192,
+          "p": 0,
+          "b": 1,
+          "skip": false
+        },
+        {
+          "id": "generation-b1-q131072-p0-full",
+          "mode": "generation",
+          "q": 131072,
+          "p": 0,
+          "b": 1,
+          "skip": false
+        }
+      ]
+    }
+  ],
+  "excluded_graph_prefill": [
+    {
+      "group": "priority-prefill",
+      "case": {
+        "id": "context-b1-q128-p128-full",
+        "mode": "context",
+        "q": 128,
+        "p": 128,
+        "b": 1,
+        "skip": false
+      },
+      "reason": "native TC module timing still includes per-model Dynamo entry"
+    },
+    {
+      "group": "priority-prefill",
+      "case": {
+        "id": "context-b1-q128-p128-skip",
+        "mode": "context",
+        "q": 128,
+        "p": 128,
+        "b": 1,
+        "skip": true
+      },
+      "reason": "native TC module timing still includes per-model Dynamo entry"
+    },
+    {
+      "group": "priority-prefill",
+      "case": {
+        "id": "context-b1-q1024-p131072-full",
+        "mode": "context",
+        "q": 1024,
+        "p": 131072,
+        "b": 1,
+        "skip": false
+      },
+      "reason": "native TC module timing still includes per-model Dynamo entry"
+    },
+    {
+      "group": "priority-prefill",
+      "case": {
+        "id": "context-b1-q1024-p131072-skip",
+        "mode": "context",
+        "q": 1024,
+        "p": 131072,
+        "b": 1,
+        "skip": true
+      },
+      "reason": "native TC module timing still includes per-model Dynamo entry"
+    },
+    {
+      "group": "priority-prefill",
+      "case": {
+        "id": "context-b1-q129-p128-full",
+        "mode": "context",
+        "q": 129,
+        "p": 128,
+        "b": 1,
+        "skip": false
+      },
+      "reason": "native TC module timing still includes per-model Dynamo entry"
+    },
+    {
+      "group": "priority-prefill",
+      "case": {
+        "id": "context-b1-q129-p128-skip",
+        "mode": "context",
+        "q": 129,
+        "p": 128,
+        "b": 1,
+        "skip": true
+      },
+      "reason": "native TC module timing still includes per-model Dynamo entry"
+    },
+    {
+      "group": "priority-prefill",
+      "case": {
+        "id": "context-b1-q1-p0-full",
+        "mode": "context",
+        "q": 1,
+        "p": 0,
+        "b": 1,
+        "skip": false
+      },
+      "reason": "native TC module timing still includes per-model Dynamo entry"
+    },
+    {
+      "group": "priority-prefill",
+      "case": {
+        "id": "context-b1-q1-p0-skip",
+        "mode": "context",
+        "q": 1,
+        "p": 0,
+        "b": 1,
+        "skip": true
+      },
+      "reason": "native TC module timing still includes per-model Dynamo entry"
+    },
+    {
+      "group": "priority-prefill",
+      "case": {
+        "id": "context-b1-q1-p131072-full",
+        "mode": "context",
+        "q": 1,
+        "p": 131072,
+        "b": 1,
+        "skip": false
+      },
+      "reason": "native TC module timing still includes per-model Dynamo entry"
+    },
+    {
+      "group": "priority-prefill",
+      "case": {
+        "id": "context-b1-q1-p131072-skip",
+        "mode": "context",
+        "q": 1,
+        "p": 131072,
+        "b": 1,
+        "skip": true
+      },
+      "reason": "native TC module timing still includes per-model Dynamo entry"
+    },
+    {
+      "group": "glm-bfloat16-fp8-h8",
+      "case": {
+        "id": "context-b1-q128-p128-full",
+        "mode": "context",
+        "q": 128,
+        "p": 128,
+        "b": 1,
+        "skip": false
+      },
+      "reason": "native TC module timing still includes per-model Dynamo entry"
+    },
+    {
+      "group": "glm-bfloat16-fp8-h8",
+      "case": {
+        "id": "context-b1-q128-p128-skip",
+        "mode": "context",
+        "q": 128,
+        "p": 128,
+        "b": 1,
+        "skip": true
+      },
+      "reason": "native TC module timing still includes per-model Dynamo entry"
+    },
+    {
+      "group": "glm-bfloat16-fp8-h8",
+      "case": {
+        "id": "context-b1-q1024-p131072-full",
+        "mode": "context",
+        "q": 1024,
+        "p": 131072,
+        "b": 1,
+        "skip": false
+      },
+      "reason": "native TC module timing still includes per-model Dynamo entry"
+    },
+    {
+      "group": "glm-bfloat16-fp8-h8",
+      "case": {
+        "id": "context-b1-q1024-p131072-skip",
+        "mode": "context",
+        "q": 1024,
+        "p": 131072,
+        "b": 1,
+        "skip": true
+      },
+      "reason": "native TC module timing still includes per-model Dynamo entry"
+    },
+    {
+      "group": "glm-bfloat16-fp8-h8",
+      "case": {
+        "id": "context-b1-q2048-p0-full",
+        "mode": "context",
+        "q": 2048,
+        "p": 0,
+        "b": 1,
+        "skip": false
+      },
+      "reason": "native TC module timing still includes per-model Dynamo entry"
+    },
+    {
+      "group": "glm-bfloat16-fp8-h8",
+      "case": {
+        "id": "context-b1-q2048-p0-skip",
+        "mode": "context",
+        "q": 2048,
+        "p": 0,
+        "b": 1,
+        "skip": true
+      },
+      "reason": "native TC module timing still includes per-model Dynamo entry"
+    },
+    {
+      "group": "glm-bfloat16-fp8-h8",
+      "case": {
+        "id": "context-b1-q512-p0-full",
+        "mode": "context",
+        "q": 512,
+        "p": 0,
+        "b": 1,
+        "skip": false
+      },
+      "reason": "native TC module timing still includes per-model Dynamo entry"
+    },
+    {
+      "group": "glm-bfloat16-fp8-h8",
+      "case": {
+        "id": "context-b1-q512-p0-skip",
+        "mode": "context",
+        "q": 512,
+        "p": 0,
+        "b": 1,
+        "skip": true
+      },
+      "reason": "native TC module timing still includes per-model Dynamo entry"
+    },
+    {
+      "group": "glm-bfloat16-fp8-h8",
+      "case": {
+        "id": "context-b1-q1-p0-full",
+        "mode": "context",
+        "q": 1,
+        "p": 0,
+        "b": 1,
+        "skip": false
+      },
+      "reason": "native TC module timing still includes per-model Dynamo entry"
+    },
+    {
+      "group": "glm-bfloat16-fp8-h8",
+      "case": {
+        "id": "context-b1-q1-p0-skip",
+        "mode": "context",
+        "q": 1,
+        "p": 0,
+        "b": 1,
+        "skip": true
+      },
+      "reason": "native TC module timing still includes per-model Dynamo entry"
+    },
+    {
+      "group": "glm-bfloat16-fp8-h8",
+      "case": {
+        "id": "context-b2-q256-p0-full",
+        "mode": "context",
+        "q": 256,
+        "p": 0,
+        "b": 2,
+        "skip": false
+      },
+      "reason": "native TC module timing still includes per-model Dynamo entry"
+    },
+    {
+      "group": "glm-bfloat16-fp8-h8",
+      "case": {
+        "id": "context-b2-q256-p0-skip",
+        "mode": "context",
+        "q": 256,
+        "p": 0,
+        "b": 2,
+        "skip": true
+      },
+      "reason": "native TC module timing still includes per-model Dynamo entry"
+    },
+    {
+      "group": "glm-bfloat16-fp8-h8",
+      "case": {
+        "id": "context-b2-q1-p0-full",
+        "mode": "context",
+        "q": 1,
+        "p": 0,
+        "b": 2,
+        "skip": false
+      },
+      "reason": "native TC module timing still includes per-model Dynamo entry"
+    },
+    {
+      "group": "glm-bfloat16-fp8-h8",
+      "case": {
+        "id": "context-b2-q1-p0-skip",
+        "mode": "context",
+        "q": 1,
+        "p": 0,
+        "b": 2,
+        "skip": true
+      },
+      "reason": "native TC module timing still includes per-model Dynamo entry"
+    },
+    {
+      "group": "glm-bfloat16-fp8-h8",
+      "case": {
+        "id": "context-b4-q136-p0-full",
+        "mode": "context",
+        "q": 136,
+        "p": 0,
+        "b": 4,
+        "skip": false
+      },
+      "reason": "native TC module timing still includes per-model Dynamo entry"
+    },
+    {
+      "group": "glm-bfloat16-fp8-h8",
+      "case": {
+        "id": "context-b4-q136-p0-skip",
+        "mode": "context",
+        "q": 136,
+        "p": 0,
+        "b": 4,
+        "skip": true
+      },
+      "reason": "native TC module timing still includes per-model Dynamo entry"
+    },
+    {
+      "group": "glm-bfloat16-fp8-h8",
+      "case": {
+        "id": "context-b4-q1-p0-full",
+        "mode": "context",
+        "q": 1,
+        "p": 0,
+        "b": 4,
+        "skip": false
+      },
+      "reason": "native TC module timing still includes per-model Dynamo entry"
+    },
+    {
+      "group": "glm-bfloat16-fp8-h8",
+      "case": {
+        "id": "context-b4-q1-p0-skip",
+        "mode": "context",
+        "q": 1,
+        "p": 0,
+        "b": 4,
+        "skip": true
+      },
+      "reason": "native TC module timing still includes per-model Dynamo entry"
+    },
+    {
+      "group": "glm-bfloat16-fp8-h8",
+      "case": {
+        "id": "context-b1-q1024-p1047488-full",
+        "mode": "context",
+        "q": 1024,
+        "p": 1047488,
+        "b": 1,
+        "skip": false
+      },
+      "reason": "native TC module timing still includes per-model Dynamo entry"
+    },
+    {
+      "group": "glm-bfloat16-fp8-h8",
+      "case": {
+        "id": "context-b1-q1024-p1047488-skip",
+        "mode": "context",
+        "q": 1024,
+        "p": 1047488,
+        "b": 1,
+        "skip": true
+      },
+      "reason": "native TC module timing still includes per-model Dynamo entry"
+    },
+    {
+      "group": "glm-bfloat16-fp8-h8",
+      "case": {
+        "id": "context-b1-q1057-p1047488-full",
+        "mode": "context",
+        "q": 1057,
+        "p": 1047488,
+        "b": 1,
+        "skip": false
+      },
+      "reason": "native TC module timing still includes per-model Dynamo entry"
+    },
+    {
+      "group": "glm-bfloat16-fp8-h8",
+      "case": {
+        "id": "context-b1-q1057-p1047488-skip",
+        "mode": "context",
+        "q": 1057,
+        "p": 1047488,
+        "b": 1,
+        "skip": true
+      },
+      "reason": "native TC module timing still includes per-model Dynamo entry"
+    },
+    {
+      "group": "glm-bfloat16-fp8-h8",
+      "case": {
+        "id": "context-b1-q1056-p1047488-full",
+        "mode": "context",
+        "q": 1056,
+        "p": 1047488,
+        "b": 1,
+        "skip": false
+      },
+      "reason": "native TC module timing still includes per-model Dynamo entry"
+    },
+    {
+      "group": "glm-bfloat16-fp8-h8",
+      "case": {
+        "id": "context-b1-q1056-p1047488-skip",
+        "mode": "context",
+        "q": 1056,
+        "p": 1047488,
+        "b": 1,
+        "skip": true
+      },
+      "reason": "native TC module timing still includes per-model Dynamo entry"
+    },
+    {
+      "group": "glm-bfloat16-fp8-h8",
+      "case": {
+        "id": "context-b2-q256-p524288-full",
+        "mode": "context",
+        "q": 256,
+        "p": 524288,
+        "b": 2,
+        "skip": false
+      },
+      "reason": "native TC module timing still includes per-model Dynamo entry"
+    },
+    {
+      "group": "glm-bfloat16-fp8-h8",
+      "case": {
+        "id": "context-b2-q256-p524288-skip",
+        "mode": "context",
+        "q": 256,
+        "p": 524288,
+        "b": 2,
+        "skip": true
+      },
+      "reason": "native TC module timing still includes per-model Dynamo entry"
+    },
+    {
+      "group": "glm-bfloat16-fp8-h8",
+      "case": {
+        "id": "context-b2-q1-p524288-full",
+        "mode": "context",
+        "q": 1,
+        "p": 524288,
+        "b": 2,
+        "skip": false
+      },
+      "reason": "native TC module timing still includes per-model Dynamo entry"
+    },
+    {
+      "group": "glm-bfloat16-fp8-h8",
+      "case": {
+        "id": "context-b2-q1-p524288-skip",
+        "mode": "context",
+        "q": 1,
+        "p": 524288,
+        "b": 2,
+        "skip": true
+      },
+      "reason": "native TC module timing still includes per-model Dynamo entry"
+    },
+    {
+      "group": "glm-bfloat16-fp8-h8",
+      "case": {
+        "id": "context-b4-q136-p262144-full",
+        "mode": "context",
+        "q": 136,
+        "p": 262144,
+        "b": 4,
+        "skip": false
+      },
+      "reason": "native TC module timing still includes per-model Dynamo entry"
+    },
+    {
+      "group": "glm-bfloat16-fp8-h8",
+      "case": {
+        "id": "context-b4-q136-p262144-skip",
+        "mode": "context",
+        "q": 136,
+        "p": 262144,
+        "b": 4,
+        "skip": true
+      },
+      "reason": "native TC module timing still includes per-model Dynamo entry"
+    },
+    {
+      "group": "glm-bfloat16-fp8-h8",
+      "case": {
+        "id": "context-b4-q1-p262144-full",
+        "mode": "context",
+        "q": 1,
+        "p": 262144,
+        "b": 4,
+        "skip": false
+      },
+      "reason": "native TC module timing still includes per-model Dynamo entry"
+    },
+    {
+      "group": "glm-bfloat16-fp8-h8",
+      "case": {
+        "id": "context-b4-q1-p262144-skip",
+        "mode": "context",
+        "q": 1,
+        "p": 262144,
+        "b": 4,
+        "skip": true
+      },
+      "reason": "native TC module timing still includes per-model Dynamo entry"
+    },
+    {
+      "group": "glm-bfloat16-fp8-h8",
+      "case": {
+        "id": "context-b2-q576-p1010496-full",
+        "mode": "context",
+        "q": 576,
+        "p": 1010496,
+        "b": 2,
+        "skip": false
+      },
+      "reason": "native TC module timing still includes per-model Dynamo entry"
+    },
+    {
+      "group": "glm-bfloat16-fp8-h8",
+      "case": {
+        "id": "context-b2-q576-p1010496-skip",
+        "mode": "context",
+        "q": 576,
+        "p": 1010496,
+        "b": 2,
+        "skip": true
+      },
+      "reason": "native TC module timing still includes per-model Dynamo entry"
+    },
+    {
+      "group": "glm-bfloat16-fp8-h8",
+      "case": {
+        "id": "context-b2-q64-p1011040-full",
+        "mode": "context",
+        "q": 64,
+        "p": 1011040,
+        "b": 2,
+        "skip": false
+      },
+      "reason": "native TC module timing still includes per-model Dynamo entry"
+    },
+    {
+      "group": "glm-bfloat16-fp8-h8",
+      "case": {
+        "id": "context-b2-q64-p1011040-skip",
+        "mode": "context",
+        "q": 64,
+        "p": 1011040,
+        "b": 2,
+        "skip": true
+      },
+      "reason": "native TC module timing still includes per-model Dynamo entry"
+    },
+    {
+      "group": "glm-bfloat16-fp8-h8",
+      "case": {
+        "id": "context-b2-q28-p1011040-full",
+        "mode": "context",
+        "q": 28,
+        "p": 1011040,
+        "b": 2,
+        "skip": false
+      },
+      "reason": "native TC module timing still includes per-model Dynamo entry"
+    },
+    {
+      "group": "glm-bfloat16-fp8-h8",
+      "case": {
+        "id": "context-b2-q28-p1011040-skip",
+        "mode": "context",
+        "q": 28,
+        "p": 1011040,
+        "b": 2,
+        "skip": true
+      },
+      "reason": "native TC module timing still includes per-model Dynamo entry"
+    },
+    {
+      "group": "glm-bfloat16-fp8-h8",
+      "case": {
+        "id": "context-b2-q1-p1011040-full",
+        "mode": "context",
+        "q": 1,
+        "p": 1011040,
+        "b": 2,
+        "skip": false
+      },
+      "reason": "native TC module timing still includes per-model Dynamo entry"
+    },
+    {
+      "group": "glm-bfloat16-fp8-h8",
+      "case": {
+        "id": "context-b2-q1-p1011040-skip",
+        "mode": "context",
+        "q": 1,
+        "p": 1011040,
+        "b": 2,
+        "skip": true
+      },
+      "reason": "native TC module timing still includes per-model Dynamo entry"
+    },
+    {
+      "group": "glm-fp8_block-fp8-h8",
+      "case": {
+        "id": "context-b1-q128-p128-full",
+        "mode": "context",
+        "q": 128,
+        "p": 128,
+        "b": 1,
+        "skip": false
+      },
+      "reason": "native TC module timing still includes per-model Dynamo entry"
+    },
+    {
+      "group": "glm-fp8_block-fp8-h8",
+      "case": {
+        "id": "context-b1-q128-p128-skip",
+        "mode": "context",
+        "q": 128,
+        "p": 128,
+        "b": 1,
+        "skip": true
+      },
+      "reason": "native TC module timing still includes per-model Dynamo entry"
+    },
+    {
+      "group": "glm-fp8_block-fp8-h8",
+      "case": {
+        "id": "context-b1-q1024-p131072-full",
+        "mode": "context",
+        "q": 1024,
+        "p": 131072,
+        "b": 1,
+        "skip": false
+      },
+      "reason": "native TC module timing still includes per-model Dynamo entry"
+    },
+    {
+      "group": "glm-fp8_block-fp8-h8",
+      "case": {
+        "id": "context-b1-q1024-p131072-skip",
+        "mode": "context",
+        "q": 1024,
+        "p": 131072,
+        "b": 1,
+        "skip": true
+      },
+      "reason": "native TC module timing still includes per-model Dynamo entry"
+    },
+    {
+      "group": "glm-fp8_block-fp8-h8",
+      "case": {
+        "id": "context-b1-q2048-p0-full",
+        "mode": "context",
+        "q": 2048,
+        "p": 0,
+        "b": 1,
+        "skip": false
+      },
+      "reason": "native TC module timing still includes per-model Dynamo entry"
+    },
+    {
+      "group": "glm-fp8_block-fp8-h8",
+      "case": {
+        "id": "context-b1-q2048-p0-skip",
+        "mode": "context",
+        "q": 2048,
+        "p": 0,
+        "b": 1,
+        "skip": true
+      },
+      "reason": "native TC module timing still includes per-model Dynamo entry"
+    },
+    {
+      "group": "glm-fp8_block-bfloat16-h8",
+      "case": {
+        "id": "context-b1-q128-p128-full",
+        "mode": "context",
+        "q": 128,
+        "p": 128,
+        "b": 1,
+        "skip": false
+      },
+      "reason": "native TC module timing still includes per-model Dynamo entry"
+    },
+    {
+      "group": "glm-fp8_block-bfloat16-h8",
+      "case": {
+        "id": "context-b1-q128-p128-skip",
+        "mode": "context",
+        "q": 128,
+        "p": 128,
+        "b": 1,
+        "skip": true
+      },
+      "reason": "native TC module timing still includes per-model Dynamo entry"
+    },
+    {
+      "group": "glm-fp8_block-bfloat16-h8",
+      "case": {
+        "id": "context-b1-q1024-p131072-full",
+        "mode": "context",
+        "q": 1024,
+        "p": 131072,
+        "b": 1,
+        "skip": false
+      },
+      "reason": "native TC module timing still includes per-model Dynamo entry"
+    },
+    {
+      "group": "glm-fp8_block-bfloat16-h8",
+      "case": {
+        "id": "context-b1-q1024-p131072-skip",
+        "mode": "context",
+        "q": 1024,
+        "p": 131072,
+        "b": 1,
+        "skip": true
+      },
+      "reason": "native TC module timing still includes per-model Dynamo entry"
+    },
+    {
+      "group": "glm-fp8_block-bfloat16-h8",
+      "case": {
+        "id": "context-b1-q2048-p0-full",
+        "mode": "context",
+        "q": 2048,
+        "p": 0,
+        "b": 1,
+        "skip": false
+      },
+      "reason": "native TC module timing still includes per-model Dynamo entry"
+    },
+    {
+      "group": "glm-fp8_block-bfloat16-h8",
+      "case": {
+        "id": "context-b1-q2048-p0-skip",
+        "mode": "context",
+        "q": 2048,
+        "p": 0,
+        "b": 1,
+        "skip": true
+      },
+      "reason": "native TC module timing still includes per-model Dynamo entry"
+    },
+    {
+      "group": "deepseek-fp8_block-fp8-h16",
+      "case": {
+        "id": "context-b1-q128-p128-full",
+        "mode": "context",
+        "q": 128,
+        "p": 128,
+        "b": 1,
+        "skip": false
+      },
+      "reason": "native TC module timing still includes per-model Dynamo entry"
+    },
+    {
+      "group": "deepseek-fp8_block-fp8-h16",
+      "case": {
+        "id": "context-b1-q1024-p131072-full",
+        "mode": "context",
+        "q": 1024,
+        "p": 131072,
+        "b": 1,
+        "skip": false
+      },
+      "reason": "native TC module timing still includes per-model Dynamo entry"
+    },
+    {
+      "group": "deepseek-fp8_block-fp8-h16",
+      "case": {
+        "id": "context-b1-q2048-p0-full",
+        "mode": "context",
+        "q": 2048,
+        "p": 0,
+        "b": 1,
+        "skip": false
+      },
+      "reason": "native TC module timing still includes per-model Dynamo entry"
+    },
+    {
+      "group": "deepseek-fp8_block-bfloat16-h16",
+      "case": {
+        "id": "context-b1-q128-p128-full",
+        "mode": "context",
+        "q": 128,
+        "p": 128,
+        "b": 1,
+        "skip": false
+      },
+      "reason": "native TC module timing still includes per-model Dynamo entry"
+    },
+    {
+      "group": "deepseek-fp8_block-bfloat16-h16",
+      "case": {
+        "id": "context-b1-q1024-p131072-full",
+        "mode": "context",
+        "q": 1024,
+        "p": 131072,
+        "b": 1,
+        "skip": false
+      },
+      "reason": "native TC module timing still includes per-model Dynamo entry"
+    },
+    {
+      "group": "deepseek-fp8_block-bfloat16-h16",
+      "case": {
+        "id": "context-b1-q2048-p0-full",
+        "mode": "context",
+        "q": 2048,
+        "p": 0,
+        "b": 1,
+        "skip": false
+      },
+      "reason": "native TC module timing still includes per-model Dynamo entry"
+    }
+  ]
+}

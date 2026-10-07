@@ -1,0 +1,4571 @@
+[
+  {
+    "group": {
+      "model": "nvidia/GLM-5.2-NVFP4",
+      "heads": 8,
+      "kv": "fp8",
+      "gemm": "bfloat16",
+      "tp": 8,
+      "id": "priority-decode",
+      "cases": [
+        {
+          "id": "generation-b1-q8192-p0-full",
+          "mode": "generation",
+          "q": 8192,
+          "p": 0,
+          "b": 1,
+          "skip": false
+        },
+        {
+          "id": "generation-b1-q8192-p0-skip",
+          "mode": "generation",
+          "q": 8192,
+          "p": 0,
+          "b": 1,
+          "skip": true
+        },
+        {
+          "id": "generation-b1-q131072-p0-full",
+          "mode": "generation",
+          "q": 131072,
+          "p": 0,
+          "b": 1,
+          "skip": false
+        },
+        {
+          "id": "generation-b1-q131072-p0-skip",
+          "mode": "generation",
+          "q": 131072,
+          "p": 0,
+          "b": 1,
+          "skip": true
+        },
+        {
+          "id": "generation-b1-q1048575-p0-full",
+          "mode": "generation",
+          "q": 1048575,
+          "p": 0,
+          "b": 1,
+          "skip": false
+        },
+        {
+          "id": "generation-b1-q1048575-p0-skip",
+          "mode": "generation",
+          "q": 1048575,
+          "p": 0,
+          "b": 1,
+          "skip": true
+        }
+      ]
+    },
+    "status": "passed",
+    "cases": [
+      {
+        "case": {
+          "id": "generation-b1-q8192-p0-full",
+          "mode": "generation",
+          "q": 8192,
+          "p": 0,
+          "b": 1,
+          "skip": false
+        },
+        "status": "passed",
+        "started": 1791334291.871502,
+        "memory_before": {
+          "allocated": 15766510592,
+          "reserved": 15791554560
+        },
+        "dynamo_hook_count_before": 0,
+        "native_batch": {
+          "forward_mode": "2",
+          "input_ids_shape": [
+            1
+          ],
+          "input_ids_dtype": "torch.int64",
+          "num_token_non_padded_cpu": 1,
+          "positions_shape": [
+            1
+          ],
+          "position_ranges": [
+            [
+              8192,
+              8192
+            ]
+          ],
+          "out_cache_loc_shape": [
+            1
+          ],
+          "unique_new_cache_locations": 1,
+          "seq_lens": [
+            8193
+          ],
+          "expected_new_tokens": 1
+        },
+        "benchmark_result": {
+          "latency_ms": 0.09134528160095215,
+          "power_stats": null,
+          "throttled": false,
+          "num_runs_executed": 50,
+          "used_cuda_graph": true
+        },
+        "emitted_rows": 1,
+        "elapsed_seconds": 44.16892051696777,
+        "memory_after": {
+          "allocated": 15783644672,
+          "reserved": 15835594752
+        },
+        "dynamo_hook_count_after": 0
+      },
+      {
+        "case": {
+          "id": "generation-b1-q8192-p0-skip",
+          "mode": "generation",
+          "q": 8192,
+          "p": 0,
+          "b": 1,
+          "skip": true
+        },
+        "status": "passed",
+        "started": 1791334336.3630016,
+        "memory_before": {
+          "allocated": 15783644672,
+          "reserved": 15835594752
+        },
+        "dynamo_hook_count_before": 0,
+        "native_batch": {
+          "forward_mode": "2",
+          "input_ids_shape": [
+            1
+          ],
+          "input_ids_dtype": "torch.int64",
+          "num_token_non_padded_cpu": 1,
+          "positions_shape": [
+            1
+          ],
+          "position_ranges": [
+            [
+              8192,
+              8192
+            ]
+          ],
+          "out_cache_loc_shape": [
+            1
+          ],
+          "unique_new_cache_locations": 1,
+          "seq_lens": [
+            8193
+          ],
+          "expected_new_tokens": 1
+        },
+        "benchmark_result": {
+          "latency_ms": 0.03902143955230713,
+          "power_stats": null,
+          "throttled": false,
+          "num_runs_executed": 50,
+          "used_cuda_graph": true
+        },
+        "emitted_rows": 1,
+        "elapsed_seconds": 0.06035804748535156,
+        "memory_after": {
+          "allocated": 15783644672,
+          "reserved": 15835594752
+        },
+        "dynamo_hook_count_after": 0
+      },
+      {
+        "case": {
+          "id": "generation-b1-q131072-p0-full",
+          "mode": "generation",
+          "q": 131072,
+          "p": 0,
+          "b": 1,
+          "skip": false
+        },
+        "status": "passed",
+        "started": 1791334336.6211815,
+        "memory_before": {
+          "allocated": 15783644672,
+          "reserved": 15835594752
+        },
+        "dynamo_hook_count_before": 0,
+        "native_batch": {
+          "forward_mode": "2",
+          "input_ids_shape": [
+            1
+          ],
+          "input_ids_dtype": "torch.int64",
+          "num_token_non_padded_cpu": 1,
+          "positions_shape": [
+            1
+          ],
+          "position_ranges": [
+            [
+              131072,
+              131072
+            ]
+          ],
+          "out_cache_loc_shape": [
+            1
+          ],
+          "unique_new_cache_locations": 1,
+          "seq_lens": [
+            131073
+          ],
+          "expected_new_tokens": 1
+        },
+        "benchmark_result": {
+          "latency_ms": 0.16080127716064452,
+          "power_stats": null,
+          "throttled": false,
+          "num_runs_executed": 50,
+          "used_cuda_graph": true
+        },
+        "emitted_rows": 1,
+        "elapsed_seconds": 0.3037412166595459,
+        "memory_after": {
+          "allocated": 15784143872,
+          "reserved": 15835594752
+        },
+        "dynamo_hook_count_after": 0
+      },
+      {
+        "case": {
+          "id": "generation-b1-q131072-p0-skip",
+          "mode": "generation",
+          "q": 131072,
+          "p": 0,
+          "b": 1,
+          "skip": true
+        },
+        "status": "passed",
+        "started": 1791334337.1266124,
+        "memory_before": {
+          "allocated": 15784143872,
+          "reserved": 15835594752
+        },
+        "dynamo_hook_count_before": 0,
+        "native_batch": {
+          "forward_mode": "2",
+          "input_ids_shape": [
+            1
+          ],
+          "input_ids_dtype": "torch.int64",
+          "num_token_non_padded_cpu": 1,
+          "positions_shape": [
+            1
+          ],
+          "position_ranges": [
+            [
+              131072,
+              131072
+            ]
+          ],
+          "out_cache_loc_shape": [
+            1
+          ],
+          "unique_new_cache_locations": 1,
+          "seq_lens": [
+            131073
+          ],
+          "expected_new_tokens": 1
+        },
+        "benchmark_result": {
+          "latency_ms": 0.039007999897003175,
+          "power_stats": null,
+          "throttled": false,
+          "num_runs_executed": 50,
+          "used_cuda_graph": true
+        },
+        "emitted_rows": 1,
+        "elapsed_seconds": 0.2857935428619385,
+        "memory_after": {
+          "allocated": 15784143872,
+          "reserved": 15835594752
+        },
+        "dynamo_hook_count_after": 0
+      },
+      {
+        "case": {
+          "id": "generation-b1-q1048575-p0-full",
+          "mode": "generation",
+          "q": 1048575,
+          "p": 0,
+          "b": 1,
+          "skip": false
+        },
+        "status": "passed",
+        "started": 1791334337.61812,
+        "memory_before": {
+          "allocated": 15784143872,
+          "reserved": 15835594752
+        },
+        "dynamo_hook_count_before": 0,
+        "native_batch": {
+          "forward_mode": "2",
+          "input_ids_shape": [
+            1
+          ],
+          "input_ids_dtype": "torch.int64",
+          "num_token_non_padded_cpu": 1,
+          "positions_shape": [
+            1
+          ],
+          "position_ranges": [
+            [
+              1048575,
+              1048575
+            ]
+          ],
+          "out_cache_loc_shape": [
+            1
+          ],
+          "unique_new_cache_locations": 1,
+          "seq_lens": [
+            1048576
+          ],
+          "expected_new_tokens": 1
+        },
+        "benchmark_result": {
+          "latency_ms": 0.5904441452026368,
+          "power_stats": null,
+          "throttled": false,
+          "num_runs_executed": 50,
+          "used_cuda_graph": true
+        },
+        "emitted_rows": 1,
+        "elapsed_seconds": 2.114191770553589,
+        "memory_after": {
+          "allocated": 15787870208,
+          "reserved": 15835594752
+        },
+        "dynamo_hook_count_after": 0
+      },
+      {
+        "case": {
+          "id": "generation-b1-q1048575-p0-skip",
+          "mode": "generation",
+          "q": 1048575,
+          "p": 0,
+          "b": 1,
+          "skip": true
+        },
+        "status": "passed",
+        "started": 1791334339.9687066,
+        "memory_before": {
+          "allocated": 15787870208,
+          "reserved": 15835594752
+        },
+        "dynamo_hook_count_before": 0,
+        "native_batch": {
+          "forward_mode": "2",
+          "input_ids_shape": [
+            1
+          ],
+          "input_ids_dtype": "torch.int64",
+          "num_token_non_padded_cpu": 1,
+          "positions_shape": [
+            1
+          ],
+          "position_ranges": [
+            [
+              1048575,
+              1048575
+            ]
+          ],
+          "out_cache_loc_shape": [
+            1
+          ],
+          "unique_new_cache_locations": 1,
+          "seq_lens": [
+            1048576
+          ],
+          "expected_new_tokens": 1
+        },
+        "benchmark_result": {
+          "latency_ms": 0.038996479511260985,
+          "power_stats": null,
+          "throttled": false,
+          "num_runs_executed": 50,
+          "used_cuda_graph": true
+        },
+        "emitted_rows": 1,
+        "elapsed_seconds": 2.062190532684326,
+        "memory_after": {
+          "allocated": 15787870208,
+          "reserved": 15835594752
+        },
+        "dynamo_hook_count_after": 0
+      }
+    ],
+    "measurement": "production run_attention_torch, no observer/timing substitution",
+    "accuracy_acceptance": "NOT_EVALUATED",
+    "source_commit": "6a3f8fc6",
+    "image_digest": "sha256:9611bd4c5624b0e9e17829506188a12f17205f2083de0dd44d6c521733553a50",
+    "job_id": "4764836",
+    "runtime": {
+      "sglang": "0.5.14",
+      "torch": "2.11.0+cu130",
+      "cuda": "13.0",
+      "gpu": "NVIDIA B200",
+      "collector_sha256": "df3ee69249f554a6ff610c5012b18f8fed8cea080acba1a11b58ff72e782666d"
+    },
+    "module": {
+      "class": "DeepseekV2AttentionMLA",
+      "heads": 8,
+      "indexer": "Indexer",
+      "pool": "DSATokenToKVPool",
+      "page_size": 64,
+      "prefill_graph": "PhaseConfig(backend='tc_piecewise', max_bs=2048, bs=[4, 8, 12, 16, 20, 24, 28, 32, 48, 64, 80, 96, 112, 128, 144, 160, 176, 192, 208, 224, 240, 256, 288, 320, 352, 384, 416, 448, 480, 512, 576, 640, 704, 768, 832, 896, 960, 1024, 1280, 1536, 1792, 2048], tc_compiler='eager')",
+      "chunked_prefill_size": 8192,
+      "max_total_tokens": 1100992
+    },
+    "parquet_files": [
+      "/output/priority-decode/dsa_generation_module_perf.parquet"
+    ]
+  },
+  {
+    "group": {
+      "id": "glm-bfloat16-fp8-h8",
+      "model": "nvidia/GLM-5.2-NVFP4",
+      "heads": 8,
+      "kv": "fp8",
+      "gemm": "bfloat16",
+      "tp": 8,
+      "cases": [
+        {
+          "id": "context-b32-q128-p128-full",
+          "mode": "context",
+          "q": 128,
+          "p": 128,
+          "b": 32,
+          "skip": false
+        },
+        {
+          "id": "context-b32-q128-p128-skip",
+          "mode": "context",
+          "q": 128,
+          "p": 128,
+          "b": 32,
+          "skip": true
+        },
+        {
+          "id": "context-b1-q4096-p0-full",
+          "mode": "context",
+          "q": 4096,
+          "p": 0,
+          "b": 1,
+          "skip": false
+        },
+        {
+          "id": "context-b1-q4096-p0-skip",
+          "mode": "context",
+          "q": 4096,
+          "p": 0,
+          "b": 1,
+          "skip": true
+        },
+        {
+          "id": "generation-b1-q8192-p0-full",
+          "mode": "generation",
+          "q": 8192,
+          "p": 0,
+          "b": 1,
+          "skip": false
+        },
+        {
+          "id": "generation-b1-q8192-p0-skip",
+          "mode": "generation",
+          "q": 8192,
+          "p": 0,
+          "b": 1,
+          "skip": true
+        },
+        {
+          "id": "generation-b1-q131072-p0-full",
+          "mode": "generation",
+          "q": 131072,
+          "p": 0,
+          "b": 1,
+          "skip": false
+        },
+        {
+          "id": "generation-b1-q131072-p0-skip",
+          "mode": "generation",
+          "q": 131072,
+          "p": 0,
+          "b": 1,
+          "skip": true
+        },
+        {
+          "id": "context-b1-q8192-p0-full",
+          "mode": "context",
+          "q": 8192,
+          "p": 0,
+          "b": 1,
+          "skip": false
+        },
+        {
+          "id": "context-b1-q8192-p0-skip",
+          "mode": "context",
+          "q": 8192,
+          "p": 0,
+          "b": 1,
+          "skip": true
+        },
+        {
+          "id": "context-b2-q4096-p0-full",
+          "mode": "context",
+          "q": 4096,
+          "p": 0,
+          "b": 2,
+          "skip": false
+        },
+        {
+          "id": "context-b2-q4096-p0-skip",
+          "mode": "context",
+          "q": 4096,
+          "p": 0,
+          "b": 2,
+          "skip": true
+        },
+        {
+          "id": "context-b4-q2048-p0-full",
+          "mode": "context",
+          "q": 2048,
+          "p": 0,
+          "b": 4,
+          "skip": false
+        },
+        {
+          "id": "context-b4-q2048-p0-skip",
+          "mode": "context",
+          "q": 2048,
+          "p": 0,
+          "b": 4,
+          "skip": true
+        },
+        {
+          "id": "context-b1-q4096-p1044416-full",
+          "mode": "context",
+          "q": 4096,
+          "p": 1044416,
+          "b": 1,
+          "skip": false
+        },
+        {
+          "id": "context-b1-q4096-p1044416-skip",
+          "mode": "context",
+          "q": 4096,
+          "p": 1044416,
+          "b": 1,
+          "skip": true
+        },
+        {
+          "id": "context-b2-q4096-p524288-full",
+          "mode": "context",
+          "q": 4096,
+          "p": 524288,
+          "b": 2,
+          "skip": false
+        },
+        {
+          "id": "context-b2-q4096-p524288-skip",
+          "mode": "context",
+          "q": 4096,
+          "p": 524288,
+          "b": 2,
+          "skip": true
+        },
+        {
+          "id": "context-b4-q2048-p262144-full",
+          "mode": "context",
+          "q": 2048,
+          "p": 262144,
+          "b": 4,
+          "skip": false
+        },
+        {
+          "id": "context-b4-q2048-p262144-skip",
+          "mode": "context",
+          "q": 2048,
+          "p": 262144,
+          "b": 4,
+          "skip": true
+        }
+      ]
+    },
+    "status": "passed",
+    "cases": [
+      {
+        "case": {
+          "id": "context-b32-q128-p128-full",
+          "mode": "context",
+          "q": 128,
+          "p": 128,
+          "b": 32,
+          "skip": false
+        },
+        "status": "passed",
+        "started": 1791334360.914899,
+        "memory_before": {
+          "allocated": 15780280320,
+          "reserved": 15799943168
+        },
+        "dynamo_hook_count_before": 0,
+        "native_batch": {
+          "forward_mode": "1",
+          "input_ids_shape": [
+            4096
+          ],
+          "input_ids_dtype": "torch.int64",
+          "num_token_non_padded_cpu": 4096,
+          "positions_shape": [
+            4096
+          ],
+          "position_ranges": [
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ]
+          ],
+          "out_cache_loc_shape": [
+            4096
+          ],
+          "unique_new_cache_locations": 4096,
+          "seq_lens": [
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256
+          ],
+          "expected_new_tokens": 4096
+        },
+        "emitted_rows": 1,
+        "elapsed_seconds": 11.225065469741821,
+        "memory_after": {
+          "allocated": 15852444160,
+          "reserved": 15873343488
+        },
+        "dynamo_hook_count_after": 0
+      },
+      {
+        "case": {
+          "id": "context-b32-q128-p128-skip",
+          "mode": "context",
+          "q": 128,
+          "p": 128,
+          "b": 32,
+          "skip": true
+        },
+        "status": "passed",
+        "started": 1791334372.4422574,
+        "memory_before": {
+          "allocated": 15852444160,
+          "reserved": 15873343488
+        },
+        "dynamo_hook_count_before": 0,
+        "native_batch": {
+          "forward_mode": "1",
+          "input_ids_shape": [
+            4096
+          ],
+          "input_ids_dtype": "torch.int64",
+          "num_token_non_padded_cpu": 4096,
+          "positions_shape": [
+            4096
+          ],
+          "position_ranges": [
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ]
+          ],
+          "out_cache_loc_shape": [
+            4096
+          ],
+          "unique_new_cache_locations": 4096,
+          "seq_lens": [
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256
+          ],
+          "expected_new_tokens": 4096
+        },
+        "emitted_rows": 1,
+        "elapsed_seconds": 0.07075810432434082,
+        "memory_after": {
+          "allocated": 15852444160,
+          "reserved": 15873343488
+        },
+        "dynamo_hook_count_after": 0
+      },
+      {
+        "case": {
+          "id": "context-b1-q4096-p0-full",
+          "mode": "context",
+          "q": 4096,
+          "p": 0,
+          "b": 1,
+          "skip": false
+        },
+        "status": "passed",
+        "started": 1791334372.682209,
+        "memory_before": {
+          "allocated": 15852444160,
+          "reserved": 15873343488
+        },
+        "dynamo_hook_count_before": 0,
+        "native_batch": {
+          "forward_mode": "1",
+          "input_ids_shape": [
+            4096
+          ],
+          "input_ids_dtype": "torch.int64",
+          "num_token_non_padded_cpu": 4096,
+          "positions_shape": [
+            4096
+          ],
+          "position_ranges": [
+            [
+              0,
+              4095
+            ]
+          ],
+          "out_cache_loc_shape": [
+            4096
+          ],
+          "unique_new_cache_locations": 4096,
+          "seq_lens": [
+            4096
+          ],
+          "expected_new_tokens": 4096
+        },
+        "emitted_rows": 1,
+        "elapsed_seconds": 2.843498468399048,
+        "memory_after": {
+          "allocated": 15852361728,
+          "reserved": 15873343488
+        },
+        "dynamo_hook_count_after": 0
+      },
+      {
+        "case": {
+          "id": "context-b1-q4096-p0-skip",
+          "mode": "context",
+          "q": 4096,
+          "p": 0,
+          "b": 1,
+          "skip": true
+        },
+        "status": "passed",
+        "started": 1791334375.816656,
+        "memory_before": {
+          "allocated": 15852361728,
+          "reserved": 15873343488
+        },
+        "dynamo_hook_count_before": 0,
+        "native_batch": {
+          "forward_mode": "1",
+          "input_ids_shape": [
+            4096
+          ],
+          "input_ids_dtype": "torch.int64",
+          "num_token_non_padded_cpu": 4096,
+          "positions_shape": [
+            4096
+          ],
+          "position_ranges": [
+            [
+              0,
+              4095
+            ]
+          ],
+          "out_cache_loc_shape": [
+            4096
+          ],
+          "unique_new_cache_locations": 4096,
+          "seq_lens": [
+            4096
+          ],
+          "expected_new_tokens": 4096
+        },
+        "emitted_rows": 1,
+        "elapsed_seconds": 0.07282686233520508,
+        "memory_after": {
+          "allocated": 15852361728,
+          "reserved": 15873343488
+        },
+        "dynamo_hook_count_after": 0
+      },
+      {
+        "case": {
+          "id": "generation-b1-q8192-p0-full",
+          "mode": "generation",
+          "q": 8192,
+          "p": 0,
+          "b": 1,
+          "skip": false
+        },
+        "status": "passed",
+        "started": 1791334376.0905619,
+        "memory_before": {
+          "allocated": 15852361728,
+          "reserved": 15873343488
+        },
+        "dynamo_hook_count_before": 0,
+        "native_batch": {
+          "forward_mode": "2",
+          "input_ids_shape": [
+            1
+          ],
+          "input_ids_dtype": "torch.int64",
+          "num_token_non_padded_cpu": 1,
+          "positions_shape": [
+            1
+          ],
+          "position_ranges": [
+            [
+              8192,
+              8192
+            ]
+          ],
+          "out_cache_loc_shape": [
+            1
+          ],
+          "unique_new_cache_locations": 1,
+          "seq_lens": [
+            8193
+          ],
+          "expected_new_tokens": 1
+        },
+        "benchmark_result": {
+          "latency_ms": 0.07806015968322753,
+          "power_stats": null,
+          "throttled": false,
+          "num_runs_executed": 50,
+          "used_cuda_graph": true
+        },
+        "emitted_rows": 1,
+        "elapsed_seconds": 0.7459192276000977,
+        "memory_after": {
+          "allocated": 15797414400,
+          "reserved": 15843983360
+        },
+        "dynamo_hook_count_after": 0
+      },
+      {
+        "case": {
+          "id": "generation-b1-q8192-p0-skip",
+          "mode": "generation",
+          "q": 8192,
+          "p": 0,
+          "b": 1,
+          "skip": true
+        },
+        "status": "passed",
+        "started": 1791334377.0493762,
+        "memory_before": {
+          "allocated": 15797414400,
+          "reserved": 15843983360
+        },
+        "dynamo_hook_count_before": 0,
+        "native_batch": {
+          "forward_mode": "2",
+          "input_ids_shape": [
+            1
+          ],
+          "input_ids_dtype": "torch.int64",
+          "num_token_non_padded_cpu": 1,
+          "positions_shape": [
+            1
+          ],
+          "position_ranges": [
+            [
+              8192,
+              8192
+            ]
+          ],
+          "out_cache_loc_shape": [
+            1
+          ],
+          "unique_new_cache_locations": 1,
+          "seq_lens": [
+            8193
+          ],
+          "expected_new_tokens": 1
+        },
+        "benchmark_result": {
+          "latency_ms": 0.03897151947021484,
+          "power_stats": null,
+          "throttled": false,
+          "num_runs_executed": 50,
+          "used_cuda_graph": true
+        },
+        "emitted_rows": 1,
+        "elapsed_seconds": 0.055574893951416016,
+        "memory_after": {
+          "allocated": 15797414400,
+          "reserved": 15843983360
+        },
+        "dynamo_hook_count_after": 0
+      },
+      {
+        "case": {
+          "id": "generation-b1-q131072-p0-full",
+          "mode": "generation",
+          "q": 131072,
+          "p": 0,
+          "b": 1,
+          "skip": false
+        },
+        "status": "passed",
+        "started": 1791334377.3024614,
+        "memory_before": {
+          "allocated": 15797414400,
+          "reserved": 15843983360
+        },
+        "dynamo_hook_count_before": 0,
+        "native_batch": {
+          "forward_mode": "2",
+          "input_ids_shape": [
+            1
+          ],
+          "input_ids_dtype": "torch.int64",
+          "num_token_non_padded_cpu": 1,
+          "positions_shape": [
+            1
+          ],
+          "position_ranges": [
+            [
+              131072,
+              131072
+            ]
+          ],
+          "out_cache_loc_shape": [
+            1
+          ],
+          "unique_new_cache_locations": 1,
+          "seq_lens": [
+            131073
+          ],
+          "expected_new_tokens": 1
+        },
+        "benchmark_result": {
+          "latency_ms": 0.13712384223937987,
+          "power_stats": null,
+          "throttled": false,
+          "num_runs_executed": 50,
+          "used_cuda_graph": true
+        },
+        "emitted_rows": 1,
+        "elapsed_seconds": 0.3154788017272949,
+        "memory_after": {
+          "allocated": 15797913600,
+          "reserved": 15843983360
+        },
+        "dynamo_hook_count_after": 0
+      },
+      {
+        "case": {
+          "id": "generation-b1-q131072-p0-skip",
+          "mode": "generation",
+          "q": 131072,
+          "p": 0,
+          "b": 1,
+          "skip": true
+        },
+        "status": "passed",
+        "started": 1791334377.8031693,
+        "memory_before": {
+          "allocated": 15797913600,
+          "reserved": 15843983360
+        },
+        "dynamo_hook_count_before": 0,
+        "native_batch": {
+          "forward_mode": "2",
+          "input_ids_shape": [
+            1
+          ],
+          "input_ids_dtype": "torch.int64",
+          "num_token_non_padded_cpu": 1,
+          "positions_shape": [
+            1
+          ],
+          "position_ranges": [
+            [
+              131072,
+              131072
+            ]
+          ],
+          "out_cache_loc_shape": [
+            1
+          ],
+          "unique_new_cache_locations": 1,
+          "seq_lens": [
+            131073
+          ],
+          "expected_new_tokens": 1
+        },
+        "benchmark_result": {
+          "latency_ms": 0.03899519920349121,
+          "power_stats": null,
+          "throttled": false,
+          "num_runs_executed": 50,
+          "used_cuda_graph": true
+        },
+        "emitted_rows": 1,
+        "elapsed_seconds": 0.28887248039245605,
+        "memory_after": {
+          "allocated": 15797913600,
+          "reserved": 15843983360
+        },
+        "dynamo_hook_count_after": 0
+      },
+      {
+        "case": {
+          "id": "context-b1-q8192-p0-full",
+          "mode": "context",
+          "q": 8192,
+          "p": 0,
+          "b": 1,
+          "skip": false
+        },
+        "status": "passed",
+        "started": 1791334378.2804818,
+        "memory_before": {
+          "allocated": 15797913600,
+          "reserved": 15843983360
+        },
+        "dynamo_hook_count_before": 0,
+        "native_batch": {
+          "forward_mode": "1",
+          "input_ids_shape": [
+            8192
+          ],
+          "input_ids_dtype": "torch.int64",
+          "num_token_non_padded_cpu": 8192,
+          "positions_shape": [
+            8192
+          ],
+          "position_ranges": [
+            [
+              0,
+              8191
+            ]
+          ],
+          "out_cache_loc_shape": [
+            8192
+          ],
+          "unique_new_cache_locations": 8192,
+          "seq_lens": [
+            8192
+          ],
+          "expected_new_tokens": 8192
+        },
+        "emitted_rows": 1,
+        "elapsed_seconds": 0.18252968788146973,
+        "memory_after": {
+          "allocated": 15942490112,
+          "reserved": 15986589696
+        },
+        "dynamo_hook_count_after": 0
+      },
+      {
+        "case": {
+          "id": "context-b1-q8192-p0-skip",
+          "mode": "context",
+          "q": 8192,
+          "p": 0,
+          "b": 1,
+          "skip": true
+        },
+        "status": "passed",
+        "started": 1791334378.6482937,
+        "memory_before": {
+          "allocated": 15942490112,
+          "reserved": 15986589696
+        },
+        "dynamo_hook_count_before": 0,
+        "native_batch": {
+          "forward_mode": "1",
+          "input_ids_shape": [
+            8192
+          ],
+          "input_ids_dtype": "torch.int64",
+          "num_token_non_padded_cpu": 8192,
+          "positions_shape": [
+            8192
+          ],
+          "position_ranges": [
+            [
+              0,
+              8191
+            ]
+          ],
+          "out_cache_loc_shape": [
+            8192
+          ],
+          "unique_new_cache_locations": 8192,
+          "seq_lens": [
+            8192
+          ],
+          "expected_new_tokens": 8192
+        },
+        "emitted_rows": 1,
+        "elapsed_seconds": 0.12730050086975098,
+        "memory_after": {
+          "allocated": 15942490112,
+          "reserved": 15986589696
+        },
+        "dynamo_hook_count_after": 0
+      },
+      {
+        "case": {
+          "id": "context-b2-q4096-p0-full",
+          "mode": "context",
+          "q": 4096,
+          "p": 0,
+          "b": 2,
+          "skip": false
+        },
+        "status": "passed",
+        "started": 1791334378.9538698,
+        "memory_before": {
+          "allocated": 15942490112,
+          "reserved": 15986589696
+        },
+        "dynamo_hook_count_before": 0,
+        "native_batch": {
+          "forward_mode": "1",
+          "input_ids_shape": [
+            8192
+          ],
+          "input_ids_dtype": "torch.int64",
+          "num_token_non_padded_cpu": 8192,
+          "positions_shape": [
+            8192
+          ],
+          "position_ranges": [
+            [
+              0,
+              4095
+            ],
+            [
+              0,
+              4095
+            ]
+          ],
+          "out_cache_loc_shape": [
+            8192
+          ],
+          "unique_new_cache_locations": 8192,
+          "seq_lens": [
+            4096,
+            4096
+          ],
+          "expected_new_tokens": 8192
+        },
+        "emitted_rows": 1,
+        "elapsed_seconds": 0.3884456157684326,
+        "memory_after": {
+          "allocated": 15942490112,
+          "reserved": 15986589696
+        },
+        "dynamo_hook_count_after": 0
+      },
+      {
+        "case": {
+          "id": "context-b2-q4096-p0-skip",
+          "mode": "context",
+          "q": 4096,
+          "p": 0,
+          "b": 2,
+          "skip": true
+        },
+        "status": "passed",
+        "started": 1791334379.5420892,
+        "memory_before": {
+          "allocated": 15942490112,
+          "reserved": 15986589696
+        },
+        "dynamo_hook_count_before": 0,
+        "native_batch": {
+          "forward_mode": "1",
+          "input_ids_shape": [
+            8192
+          ],
+          "input_ids_dtype": "torch.int64",
+          "num_token_non_padded_cpu": 8192,
+          "positions_shape": [
+            8192
+          ],
+          "position_ranges": [
+            [
+              0,
+              4095
+            ],
+            [
+              0,
+              4095
+            ]
+          ],
+          "out_cache_loc_shape": [
+            8192
+          ],
+          "unique_new_cache_locations": 8192,
+          "seq_lens": [
+            4096,
+            4096
+          ],
+          "expected_new_tokens": 8192
+        },
+        "emitted_rows": 1,
+        "elapsed_seconds": 0.11780905723571777,
+        "memory_after": {
+          "allocated": 15942490112,
+          "reserved": 15986589696
+        },
+        "dynamo_hook_count_after": 0
+      },
+      {
+        "case": {
+          "id": "context-b4-q2048-p0-full",
+          "mode": "context",
+          "q": 2048,
+          "p": 0,
+          "b": 4,
+          "skip": false
+        },
+        "status": "passed",
+        "started": 1791334379.8362803,
+        "memory_before": {
+          "allocated": 15942490112,
+          "reserved": 15986589696
+        },
+        "dynamo_hook_count_before": 0,
+        "native_batch": {
+          "forward_mode": "1",
+          "input_ids_shape": [
+            8192
+          ],
+          "input_ids_dtype": "torch.int64",
+          "num_token_non_padded_cpu": 8192,
+          "positions_shape": [
+            8192
+          ],
+          "position_ranges": [
+            [
+              0,
+              2047
+            ],
+            [
+              0,
+              2047
+            ],
+            [
+              0,
+              2047
+            ],
+            [
+              0,
+              2047
+            ]
+          ],
+          "out_cache_loc_shape": [
+            8192
+          ],
+          "unique_new_cache_locations": 8192,
+          "seq_lens": [
+            2048,
+            2048,
+            2048,
+            2048
+          ],
+          "expected_new_tokens": 8192
+        },
+        "emitted_rows": 1,
+        "elapsed_seconds": 0.17377305030822754,
+        "memory_after": {
+          "allocated": 15942490112,
+          "reserved": 15986589696
+        },
+        "dynamo_hook_count_after": 0
+      },
+      {
+        "case": {
+          "id": "context-b4-q2048-p0-skip",
+          "mode": "context",
+          "q": 2048,
+          "p": 0,
+          "b": 4,
+          "skip": true
+        },
+        "status": "passed",
+        "started": 1791334380.2003198,
+        "memory_before": {
+          "allocated": 15942490112,
+          "reserved": 15986589696
+        },
+        "dynamo_hook_count_before": 0,
+        "native_batch": {
+          "forward_mode": "1",
+          "input_ids_shape": [
+            8192
+          ],
+          "input_ids_dtype": "torch.int64",
+          "num_token_non_padded_cpu": 8192,
+          "positions_shape": [
+            8192
+          ],
+          "position_ranges": [
+            [
+              0,
+              2047
+            ],
+            [
+              0,
+              2047
+            ],
+            [
+              0,
+              2047
+            ],
+            [
+              0,
+              2047
+            ]
+          ],
+          "out_cache_loc_shape": [
+            8192
+          ],
+          "unique_new_cache_locations": 8192,
+          "seq_lens": [
+            2048,
+            2048,
+            2048,
+            2048
+          ],
+          "expected_new_tokens": 8192
+        },
+        "emitted_rows": 1,
+        "elapsed_seconds": 0.06175708770751953,
+        "memory_after": {
+          "allocated": 15942490112,
+          "reserved": 15986589696
+        },
+        "dynamo_hook_count_after": 0
+      },
+      {
+        "case": {
+          "id": "context-b1-q4096-p1044416-full",
+          "mode": "context",
+          "q": 4096,
+          "p": 1044416,
+          "b": 1,
+          "skip": false
+        },
+        "status": "passed",
+        "started": 1791334380.4444418,
+        "memory_before": {
+          "allocated": 15942490112,
+          "reserved": 15986589696
+        },
+        "dynamo_hook_count_before": 0,
+        "native_batch": {
+          "forward_mode": "1",
+          "input_ids_shape": [
+            4096
+          ],
+          "input_ids_dtype": "torch.int64",
+          "num_token_non_padded_cpu": 4096,
+          "positions_shape": [
+            4096
+          ],
+          "position_ranges": [
+            [
+              1044416,
+              1048511
+            ]
+          ],
+          "out_cache_loc_shape": [
+            4096
+          ],
+          "unique_new_cache_locations": 4096,
+          "seq_lens": [
+            1048512
+          ],
+          "expected_new_tokens": 4096
+        },
+        "emitted_rows": 1,
+        "elapsed_seconds": 5.016294002532959,
+        "memory_after": {
+          "allocated": 15873644544,
+          "reserved": 15936258048
+        },
+        "dynamo_hook_count_after": 0
+      },
+      {
+        "case": {
+          "id": "context-b1-q4096-p1044416-skip",
+          "mode": "context",
+          "q": 4096,
+          "p": 1044416,
+          "b": 1,
+          "skip": true
+        },
+        "status": "passed",
+        "started": 1791334385.745546,
+        "memory_before": {
+          "allocated": 15873644544,
+          "reserved": 15936258048
+        },
+        "dynamo_hook_count_before": 0,
+        "native_batch": {
+          "forward_mode": "1",
+          "input_ids_shape": [
+            4096
+          ],
+          "input_ids_dtype": "torch.int64",
+          "num_token_non_padded_cpu": 4096,
+          "positions_shape": [
+            4096
+          ],
+          "position_ranges": [
+            [
+              1044416,
+              1048511
+            ]
+          ],
+          "out_cache_loc_shape": [
+            4096
+          ],
+          "unique_new_cache_locations": 4096,
+          "seq_lens": [
+            1048512
+          ],
+          "expected_new_tokens": 4096
+        },
+        "emitted_rows": 1,
+        "elapsed_seconds": 2.168694496154785,
+        "memory_after": {
+          "allocated": 15873644544,
+          "reserved": 15936258048
+        },
+        "dynamo_hook_count_after": 0
+      },
+      {
+        "case": {
+          "id": "context-b2-q4096-p524288-full",
+          "mode": "context",
+          "q": 4096,
+          "p": 524288,
+          "b": 2,
+          "skip": false
+        },
+        "status": "passed",
+        "started": 1791334388.1218936,
+        "memory_before": {
+          "allocated": 15873644544,
+          "reserved": 15936258048
+        },
+        "dynamo_hook_count_before": 0,
+        "native_batch": {
+          "forward_mode": "1",
+          "input_ids_shape": [
+            8192
+          ],
+          "input_ids_dtype": "torch.int64",
+          "num_token_non_padded_cpu": 8192,
+          "positions_shape": [
+            8192
+          ],
+          "position_ranges": [
+            [
+              524288,
+              528383
+            ],
+            [
+              524288,
+              528383
+            ]
+          ],
+          "out_cache_loc_shape": [
+            8192
+          ],
+          "unique_new_cache_locations": 8192,
+          "seq_lens": [
+            528384,
+            528384
+          ],
+          "expected_new_tokens": 8192
+        },
+        "emitted_rows": 1,
+        "elapsed_seconds": 4.816876649856567,
+        "memory_after": {
+          "allocated": 15945701888,
+          "reserved": 16036921344
+        },
+        "dynamo_hook_count_after": 0
+      },
+      {
+        "case": {
+          "id": "context-b2-q4096-p524288-skip",
+          "mode": "context",
+          "q": 4096,
+          "p": 524288,
+          "b": 2,
+          "skip": true
+        },
+        "status": "passed",
+        "started": 1791334393.1621826,
+        "memory_before": {
+          "allocated": 15945701888,
+          "reserved": 16036921344
+        },
+        "dynamo_hook_count_before": 0,
+        "native_batch": {
+          "forward_mode": "1",
+          "input_ids_shape": [
+            8192
+          ],
+          "input_ids_dtype": "torch.int64",
+          "num_token_non_padded_cpu": 8192,
+          "positions_shape": [
+            8192
+          ],
+          "position_ranges": [
+            [
+              524288,
+              528383
+            ],
+            [
+              524288,
+              528383
+            ]
+          ],
+          "out_cache_loc_shape": [
+            8192
+          ],
+          "unique_new_cache_locations": 8192,
+          "seq_lens": [
+            528384,
+            528384
+          ],
+          "expected_new_tokens": 8192
+        },
+        "emitted_rows": 1,
+        "elapsed_seconds": 2.248641014099121,
+        "memory_after": {
+          "allocated": 15945701888,
+          "reserved": 15992881152
+        },
+        "dynamo_hook_count_after": 0
+      },
+      {
+        "case": {
+          "id": "context-b4-q2048-p262144-full",
+          "mode": "context",
+          "q": 2048,
+          "p": 262144,
+          "b": 4,
+          "skip": false
+        },
+        "status": "passed",
+        "started": 1791334395.6615336,
+        "memory_before": {
+          "allocated": 15945701888,
+          "reserved": 15992881152
+        },
+        "dynamo_hook_count_before": 0,
+        "native_batch": {
+          "forward_mode": "1",
+          "input_ids_shape": [
+            8192
+          ],
+          "input_ids_dtype": "torch.int64",
+          "num_token_non_padded_cpu": 8192,
+          "positions_shape": [
+            8192
+          ],
+          "position_ranges": [
+            [
+              262144,
+              264191
+            ],
+            [
+              262144,
+              264191
+            ],
+            [
+              262144,
+              264191
+            ],
+            [
+              262144,
+              264191
+            ]
+          ],
+          "out_cache_loc_shape": [
+            8192
+          ],
+          "unique_new_cache_locations": 8192,
+          "seq_lens": [
+            264192,
+            264192,
+            264192,
+            264192
+          ],
+          "expected_new_tokens": 8192
+        },
+        "emitted_rows": 1,
+        "elapsed_seconds": 3.682326078414917,
+        "memory_after": {
+          "allocated": 15945701888,
+          "reserved": 15992881152
+        },
+        "dynamo_hook_count_after": 0
+      },
+      {
+        "case": {
+          "id": "context-b4-q2048-p262144-skip",
+          "mode": "context",
+          "q": 2048,
+          "p": 262144,
+          "b": 4,
+          "skip": true
+        },
+        "status": "passed",
+        "started": 1791334399.563335,
+        "memory_before": {
+          "allocated": 15945701888,
+          "reserved": 15992881152
+        },
+        "dynamo_hook_count_before": 0,
+        "native_batch": {
+          "forward_mode": "1",
+          "input_ids_shape": [
+            8192
+          ],
+          "input_ids_dtype": "torch.int64",
+          "num_token_non_padded_cpu": 8192,
+          "positions_shape": [
+            8192
+          ],
+          "position_ranges": [
+            [
+              262144,
+              264191
+            ],
+            [
+              262144,
+              264191
+            ],
+            [
+              262144,
+              264191
+            ],
+            [
+              262144,
+              264191
+            ]
+          ],
+          "out_cache_loc_shape": [
+            8192
+          ],
+          "unique_new_cache_locations": 8192,
+          "seq_lens": [
+            264192,
+            264192,
+            264192,
+            264192
+          ],
+          "expected_new_tokens": 8192
+        },
+        "emitted_rows": 1,
+        "elapsed_seconds": 2.211432456970215,
+        "memory_after": {
+          "allocated": 15945701888,
+          "reserved": 15992881152
+        },
+        "dynamo_hook_count_after": 0
+      }
+    ],
+    "measurement": "production run_attention_torch, no observer/timing substitution",
+    "accuracy_acceptance": "NOT_EVALUATED",
+    "source_commit": "6a3f8fc6",
+    "image_digest": "sha256:9611bd4c5624b0e9e17829506188a12f17205f2083de0dd44d6c521733553a50",
+    "job_id": "4764836",
+    "runtime": {
+      "sglang": "0.5.14",
+      "torch": "2.11.0+cu130",
+      "cuda": "13.0",
+      "gpu": "NVIDIA B200",
+      "collector_sha256": "df3ee69249f554a6ff610c5012b18f8fed8cea080acba1a11b58ff72e782666d"
+    },
+    "module": {
+      "class": "DeepseekV2AttentionMLA",
+      "heads": 8,
+      "indexer": "Indexer",
+      "pool": "DSATokenToKVPool",
+      "page_size": 64,
+      "prefill_graph": "PhaseConfig(backend='tc_piecewise', max_bs=2048, bs=[4, 8, 12, 16, 20, 24, 28, 32, 48, 64, 80, 96, 112, 128, 144, 160, 176, 192, 208, 224, 240, 256, 288, 320, 352, 384, 416, 448, 480, 512, 576, 640, 704, 768, 832, 896, 960, 1024, 1280, 1536, 1792, 2048], tc_compiler='eager')",
+      "chunked_prefill_size": 8192,
+      "max_total_tokens": 1109568
+    },
+    "parquet_files": [
+      "/output/glm-bfloat16-fp8-h8/dsa_context_module_perf.parquet",
+      "/output/glm-bfloat16-fp8-h8/dsa_generation_module_perf.parquet"
+    ]
+  },
+  {
+    "group": {
+      "id": "glm-fp8_block-fp8-h8",
+      "model": "zai-org/GLM-5.2-FP8",
+      "heads": 8,
+      "kv": "fp8",
+      "gemm": "fp8_block",
+      "tp": 8,
+      "cases": [
+        {
+          "id": "context-b32-q128-p128-full",
+          "mode": "context",
+          "q": 128,
+          "p": 128,
+          "b": 32,
+          "skip": false
+        },
+        {
+          "id": "context-b32-q128-p128-skip",
+          "mode": "context",
+          "q": 128,
+          "p": 128,
+          "b": 32,
+          "skip": true
+        },
+        {
+          "id": "context-b1-q4096-p0-full",
+          "mode": "context",
+          "q": 4096,
+          "p": 0,
+          "b": 1,
+          "skip": false
+        },
+        {
+          "id": "context-b1-q4096-p0-skip",
+          "mode": "context",
+          "q": 4096,
+          "p": 0,
+          "b": 1,
+          "skip": true
+        },
+        {
+          "id": "generation-b1-q8192-p0-full",
+          "mode": "generation",
+          "q": 8192,
+          "p": 0,
+          "b": 1,
+          "skip": false
+        },
+        {
+          "id": "generation-b1-q8192-p0-skip",
+          "mode": "generation",
+          "q": 8192,
+          "p": 0,
+          "b": 1,
+          "skip": true
+        },
+        {
+          "id": "generation-b1-q131072-p0-full",
+          "mode": "generation",
+          "q": 131072,
+          "p": 0,
+          "b": 1,
+          "skip": false
+        },
+        {
+          "id": "generation-b1-q131072-p0-skip",
+          "mode": "generation",
+          "q": 131072,
+          "p": 0,
+          "b": 1,
+          "skip": true
+        }
+      ]
+    },
+    "status": "passed",
+    "cases": [
+      {
+        "case": {
+          "id": "context-b32-q128-p128-full",
+          "mode": "context",
+          "q": 128,
+          "p": 128,
+          "b": 32,
+          "skip": false
+        },
+        "status": "passed",
+        "started": 1791334418.1689382,
+        "memory_before": {
+          "allocated": 13868803584,
+          "reserved": 14019461120
+        },
+        "dynamo_hook_count_before": 0,
+        "native_batch": {
+          "forward_mode": "1",
+          "input_ids_shape": [
+            4096
+          ],
+          "input_ids_dtype": "torch.int64",
+          "num_token_non_padded_cpu": 4096,
+          "positions_shape": [
+            4096
+          ],
+          "position_ranges": [
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ]
+          ],
+          "out_cache_loc_shape": [
+            4096
+          ],
+          "unique_new_cache_locations": 4096,
+          "seq_lens": [
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256
+          ],
+          "expected_new_tokens": 4096
+        },
+        "emitted_rows": 1,
+        "elapsed_seconds": 13.795330047607422,
+        "memory_after": {
+          "allocated": 13940967424,
+          "reserved": 14053015552
+        },
+        "dynamo_hook_count_after": 0
+      },
+      {
+        "case": {
+          "id": "context-b32-q128-p128-skip",
+          "mode": "context",
+          "q": 128,
+          "p": 128,
+          "b": 32,
+          "skip": true
+        },
+        "status": "passed",
+        "started": 1791334432.2442563,
+        "memory_before": {
+          "allocated": 13940967424,
+          "reserved": 14053015552
+        },
+        "dynamo_hook_count_before": 0,
+        "native_batch": {
+          "forward_mode": "1",
+          "input_ids_shape": [
+            4096
+          ],
+          "input_ids_dtype": "torch.int64",
+          "num_token_non_padded_cpu": 4096,
+          "positions_shape": [
+            4096
+          ],
+          "position_ranges": [
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ]
+          ],
+          "out_cache_loc_shape": [
+            4096
+          ],
+          "unique_new_cache_locations": 4096,
+          "seq_lens": [
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256
+          ],
+          "expected_new_tokens": 4096
+        },
+        "emitted_rows": 1,
+        "elapsed_seconds": 0.09149813652038574,
+        "memory_after": {
+          "allocated": 13940967424,
+          "reserved": 14053015552
+        },
+        "dynamo_hook_count_after": 0
+      },
+      {
+        "case": {
+          "id": "context-b1-q4096-p0-full",
+          "mode": "context",
+          "q": 4096,
+          "p": 0,
+          "b": 1,
+          "skip": false
+        },
+        "status": "passed",
+        "started": 1791334432.502804,
+        "memory_before": {
+          "allocated": 13940967424,
+          "reserved": 14053015552
+        },
+        "dynamo_hook_count_before": 0,
+        "native_batch": {
+          "forward_mode": "1",
+          "input_ids_shape": [
+            4096
+          ],
+          "input_ids_dtype": "torch.int64",
+          "num_token_non_padded_cpu": 4096,
+          "positions_shape": [
+            4096
+          ],
+          "position_ranges": [
+            [
+              0,
+              4095
+            ]
+          ],
+          "out_cache_loc_shape": [
+            4096
+          ],
+          "unique_new_cache_locations": 4096,
+          "seq_lens": [
+            4096
+          ],
+          "expected_new_tokens": 4096
+        },
+        "emitted_rows": 1,
+        "elapsed_seconds": 11.803396463394165,
+        "memory_after": {
+          "allocated": 13940884992,
+          "reserved": 14019461120
+        },
+        "dynamo_hook_count_after": 0
+      },
+      {
+        "case": {
+          "id": "context-b1-q4096-p0-skip",
+          "mode": "context",
+          "q": 4096,
+          "p": 0,
+          "b": 1,
+          "skip": true
+        },
+        "status": "passed",
+        "started": 1791334444.5794945,
+        "memory_before": {
+          "allocated": 13940884992,
+          "reserved": 14019461120
+        },
+        "dynamo_hook_count_before": 0,
+        "native_batch": {
+          "forward_mode": "1",
+          "input_ids_shape": [
+            4096
+          ],
+          "input_ids_dtype": "torch.int64",
+          "num_token_non_padded_cpu": 4096,
+          "positions_shape": [
+            4096
+          ],
+          "position_ranges": [
+            [
+              0,
+              4095
+            ]
+          ],
+          "out_cache_loc_shape": [
+            4096
+          ],
+          "unique_new_cache_locations": 4096,
+          "seq_lens": [
+            4096
+          ],
+          "expected_new_tokens": 4096
+        },
+        "emitted_rows": 1,
+        "elapsed_seconds": 0.07264995574951172,
+        "memory_after": {
+          "allocated": 13940884992,
+          "reserved": 14019461120
+        },
+        "dynamo_hook_count_after": 0
+      },
+      {
+        "case": {
+          "id": "generation-b1-q8192-p0-full",
+          "mode": "generation",
+          "q": 8192,
+          "p": 0,
+          "b": 1,
+          "skip": false
+        },
+        "status": "passed",
+        "started": 1791334444.8332276,
+        "memory_before": {
+          "allocated": 13940884992,
+          "reserved": 14019461120
+        },
+        "dynamo_hook_count_before": 0,
+        "native_batch": {
+          "forward_mode": "2",
+          "input_ids_shape": [
+            1
+          ],
+          "input_ids_dtype": "torch.int64",
+          "num_token_non_padded_cpu": 1,
+          "positions_shape": [
+            1
+          ],
+          "position_ranges": [
+            [
+              8192,
+              8192
+            ]
+          ],
+          "out_cache_loc_shape": [
+            1
+          ],
+          "unique_new_cache_locations": 1,
+          "seq_lens": [
+            8193
+          ],
+          "expected_new_tokens": 1
+        },
+        "benchmark_result": {
+          "latency_ms": 0.0812006378173828,
+          "power_stats": null,
+          "throttled": false,
+          "num_runs_executed": 50,
+          "used_cuda_graph": true
+        },
+        "emitted_rows": 1,
+        "elapsed_seconds": 7.342909097671509,
+        "memory_after": {
+          "allocated": 13877417984,
+          "reserved": 14042529792
+        },
+        "dynamo_hook_count_after": 0
+      },
+      {
+        "case": {
+          "id": "generation-b1-q8192-p0-skip",
+          "mode": "generation",
+          "q": 8192,
+          "p": 0,
+          "b": 1,
+          "skip": true
+        },
+        "status": "passed",
+        "started": 1791334452.4274445,
+        "memory_before": {
+          "allocated": 13877417984,
+          "reserved": 14042529792
+        },
+        "dynamo_hook_count_before": 0,
+        "native_batch": {
+          "forward_mode": "2",
+          "input_ids_shape": [
+            1
+          ],
+          "input_ids_dtype": "torch.int64",
+          "num_token_non_padded_cpu": 1,
+          "positions_shape": [
+            1
+          ],
+          "position_ranges": [
+            [
+              8192,
+              8192
+            ]
+          ],
+          "out_cache_loc_shape": [
+            1
+          ],
+          "unique_new_cache_locations": 1,
+          "seq_lens": [
+            8193
+          ],
+          "expected_new_tokens": 1
+        },
+        "benchmark_result": {
+          "latency_ms": 0.04329728126525879,
+          "power_stats": null,
+          "throttled": false,
+          "num_runs_executed": 50,
+          "used_cuda_graph": true
+        },
+        "emitted_rows": 1,
+        "elapsed_seconds": 0.06179451942443848,
+        "memory_after": {
+          "allocated": 13877417984,
+          "reserved": 14042529792
+        },
+        "dynamo_hook_count_after": 0
+      },
+      {
+        "case": {
+          "id": "generation-b1-q131072-p0-full",
+          "mode": "generation",
+          "q": 131072,
+          "p": 0,
+          "b": 1,
+          "skip": false
+        },
+        "status": "passed",
+        "started": 1791334452.6710775,
+        "memory_before": {
+          "allocated": 13877417984,
+          "reserved": 14042529792
+        },
+        "dynamo_hook_count_before": 0,
+        "native_batch": {
+          "forward_mode": "2",
+          "input_ids_shape": [
+            1
+          ],
+          "input_ids_dtype": "torch.int64",
+          "num_token_non_padded_cpu": 1,
+          "positions_shape": [
+            1
+          ],
+          "position_ranges": [
+            [
+              131072,
+              131072
+            ]
+          ],
+          "out_cache_loc_shape": [
+            1
+          ],
+          "unique_new_cache_locations": 1,
+          "seq_lens": [
+            131073
+          ],
+          "expected_new_tokens": 1
+        },
+        "benchmark_result": {
+          "latency_ms": 0.13370944023132325,
+          "power_stats": null,
+          "throttled": false,
+          "num_runs_executed": 50,
+          "used_cuda_graph": true
+        },
+        "emitted_rows": 1,
+        "elapsed_seconds": 0.31874537467956543,
+        "memory_after": {
+          "allocated": 13877917184,
+          "reserved": 14044626944
+        },
+        "dynamo_hook_count_after": 0
+      },
+      {
+        "case": {
+          "id": "generation-b1-q131072-p0-skip",
+          "mode": "generation",
+          "q": 131072,
+          "p": 0,
+          "b": 1,
+          "skip": true
+        },
+        "status": "passed",
+        "started": 1791334453.175936,
+        "memory_before": {
+          "allocated": 13877917184,
+          "reserved": 14044626944
+        },
+        "dynamo_hook_count_before": 0,
+        "native_batch": {
+          "forward_mode": "2",
+          "input_ids_shape": [
+            1
+          ],
+          "input_ids_dtype": "torch.int64",
+          "num_token_non_padded_cpu": 1,
+          "positions_shape": [
+            1
+          ],
+          "position_ranges": [
+            [
+              131072,
+              131072
+            ]
+          ],
+          "out_cache_loc_shape": [
+            1
+          ],
+          "unique_new_cache_locations": 1,
+          "seq_lens": [
+            131073
+          ],
+          "expected_new_tokens": 1
+        },
+        "benchmark_result": {
+          "latency_ms": 0.0431001615524292,
+          "power_stats": null,
+          "throttled": false,
+          "num_runs_executed": 50,
+          "used_cuda_graph": true
+        },
+        "emitted_rows": 1,
+        "elapsed_seconds": 0.29639124870300293,
+        "memory_after": {
+          "allocated": 13877917184,
+          "reserved": 14044626944
+        },
+        "dynamo_hook_count_after": 0
+      }
+    ],
+    "measurement": "production run_attention_torch, no observer/timing substitution",
+    "accuracy_acceptance": "NOT_EVALUATED",
+    "source_commit": "6a3f8fc6",
+    "image_digest": "sha256:9611bd4c5624b0e9e17829506188a12f17205f2083de0dd44d6c521733553a50",
+    "job_id": "4764836",
+    "runtime": {
+      "sglang": "0.5.14",
+      "torch": "2.11.0+cu130",
+      "cuda": "13.0",
+      "gpu": "NVIDIA B200",
+      "collector_sha256": "df3ee69249f554a6ff610c5012b18f8fed8cea080acba1a11b58ff72e782666d"
+    },
+    "module": {
+      "class": "DeepseekV2AttentionMLA",
+      "heads": 8,
+      "indexer": "Indexer",
+      "pool": "DSATokenToKVPool",
+      "page_size": 64,
+      "prefill_graph": "PhaseConfig(backend='tc_piecewise', max_bs=2048, bs=[4, 8, 12, 16, 20, 24, 28, 32, 48, 64, 80, 96, 112, 128, 144, 160, 176, 192, 208, 224, 240, 256, 288, 320, 352, 384, 416, 448, 480, 512, 576, 640, 704, 768, 832, 896, 960, 1024, 1280, 1536, 1792, 2048], tc_compiler='eager')",
+      "chunked_prefill_size": 8192,
+      "max_total_tokens": 137600
+    },
+    "parquet_files": [
+      "/output/glm-fp8_block-fp8-h8/dsa_context_module_perf.parquet",
+      "/output/glm-fp8_block-fp8-h8/dsa_generation_module_perf.parquet"
+    ]
+  },
+  {
+    "group": {
+      "id": "glm-fp8_block-bfloat16-h8",
+      "model": "zai-org/GLM-5.2-FP8",
+      "heads": 8,
+      "kv": "bfloat16",
+      "gemm": "fp8_block",
+      "tp": 8,
+      "cases": [
+        {
+          "id": "context-b32-q128-p128-full",
+          "mode": "context",
+          "q": 128,
+          "p": 128,
+          "b": 32,
+          "skip": false
+        },
+        {
+          "id": "context-b32-q128-p128-skip",
+          "mode": "context",
+          "q": 128,
+          "p": 128,
+          "b": 32,
+          "skip": true
+        },
+        {
+          "id": "context-b1-q4096-p0-full",
+          "mode": "context",
+          "q": 4096,
+          "p": 0,
+          "b": 1,
+          "skip": false
+        },
+        {
+          "id": "context-b1-q4096-p0-skip",
+          "mode": "context",
+          "q": 4096,
+          "p": 0,
+          "b": 1,
+          "skip": true
+        },
+        {
+          "id": "generation-b1-q8192-p0-full",
+          "mode": "generation",
+          "q": 8192,
+          "p": 0,
+          "b": 1,
+          "skip": false
+        },
+        {
+          "id": "generation-b1-q8192-p0-skip",
+          "mode": "generation",
+          "q": 8192,
+          "p": 0,
+          "b": 1,
+          "skip": true
+        },
+        {
+          "id": "generation-b1-q131072-p0-full",
+          "mode": "generation",
+          "q": 131072,
+          "p": 0,
+          "b": 1,
+          "skip": false
+        },
+        {
+          "id": "generation-b1-q131072-p0-skip",
+          "mode": "generation",
+          "q": 131072,
+          "p": 0,
+          "b": 1,
+          "skip": true
+        }
+      ]
+    },
+    "status": "passed",
+    "cases": [
+      {
+        "case": {
+          "id": "context-b32-q128-p128-full",
+          "mode": "context",
+          "q": 128,
+          "p": 128,
+          "b": 32,
+          "skip": false
+        },
+        "status": "passed",
+        "started": 1791334464.612863,
+        "memory_before": {
+          "allocated": 14028187136,
+          "reserved": 14178844672
+        },
+        "dynamo_hook_count_before": 0,
+        "native_batch": {
+          "forward_mode": "1",
+          "input_ids_shape": [
+            4096
+          ],
+          "input_ids_dtype": "torch.int64",
+          "num_token_non_padded_cpu": 4096,
+          "positions_shape": [
+            4096
+          ],
+          "position_ranges": [
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ]
+          ],
+          "out_cache_loc_shape": [
+            4096
+          ],
+          "unique_new_cache_locations": 4096,
+          "seq_lens": [
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256
+          ],
+          "expected_new_tokens": 4096
+        },
+        "emitted_rows": 1,
+        "elapsed_seconds": 5.963681221008301,
+        "memory_after": {
+          "allocated": 14100318208,
+          "reserved": 14212399104
+        },
+        "dynamo_hook_count_after": 0
+      },
+      {
+        "case": {
+          "id": "context-b32-q128-p128-skip",
+          "mode": "context",
+          "q": 128,
+          "p": 128,
+          "b": 32,
+          "skip": true
+        },
+        "status": "passed",
+        "started": 1791334470.8571525,
+        "memory_before": {
+          "allocated": 14100318208,
+          "reserved": 14212399104
+        },
+        "dynamo_hook_count_before": 0,
+        "native_batch": {
+          "forward_mode": "1",
+          "input_ids_shape": [
+            4096
+          ],
+          "input_ids_dtype": "torch.int64",
+          "num_token_non_padded_cpu": 4096,
+          "positions_shape": [
+            4096
+          ],
+          "position_ranges": [
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ]
+          ],
+          "out_cache_loc_shape": [
+            4096
+          ],
+          "unique_new_cache_locations": 4096,
+          "seq_lens": [
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256
+          ],
+          "expected_new_tokens": 4096
+        },
+        "emitted_rows": 1,
+        "elapsed_seconds": 0.09527063369750977,
+        "memory_after": {
+          "allocated": 14100318208,
+          "reserved": 14212399104
+        },
+        "dynamo_hook_count_after": 0
+      },
+      {
+        "case": {
+          "id": "context-b1-q4096-p0-full",
+          "mode": "context",
+          "q": 4096,
+          "p": 0,
+          "b": 1,
+          "skip": false
+        },
+        "status": "passed",
+        "started": 1791334471.12223,
+        "memory_before": {
+          "allocated": 14100318208,
+          "reserved": 14212399104
+        },
+        "dynamo_hook_count_before": 0,
+        "native_batch": {
+          "forward_mode": "1",
+          "input_ids_shape": [
+            4096
+          ],
+          "input_ids_dtype": "torch.int64",
+          "num_token_non_padded_cpu": 4096,
+          "positions_shape": [
+            4096
+          ],
+          "position_ranges": [
+            [
+              0,
+              4095
+            ]
+          ],
+          "out_cache_loc_shape": [
+            4096
+          ],
+          "unique_new_cache_locations": 4096,
+          "seq_lens": [
+            4096
+          ],
+          "expected_new_tokens": 4096
+        },
+        "emitted_rows": 1,
+        "elapsed_seconds": 4.847269773483276,
+        "memory_after": {
+          "allocated": 14100268544,
+          "reserved": 14178844672
+        },
+        "dynamo_hook_count_after": 0
+      },
+      {
+        "case": {
+          "id": "context-b1-q4096-p0-skip",
+          "mode": "context",
+          "q": 4096,
+          "p": 0,
+          "b": 1,
+          "skip": true
+        },
+        "status": "passed",
+        "started": 1791334476.2347162,
+        "memory_before": {
+          "allocated": 14100268544,
+          "reserved": 14178844672
+        },
+        "dynamo_hook_count_before": 0,
+        "native_batch": {
+          "forward_mode": "1",
+          "input_ids_shape": [
+            4096
+          ],
+          "input_ids_dtype": "torch.int64",
+          "num_token_non_padded_cpu": 4096,
+          "positions_shape": [
+            4096
+          ],
+          "position_ranges": [
+            [
+              0,
+              4095
+            ]
+          ],
+          "out_cache_loc_shape": [
+            4096
+          ],
+          "unique_new_cache_locations": 4096,
+          "seq_lens": [
+            4096
+          ],
+          "expected_new_tokens": 4096
+        },
+        "emitted_rows": 1,
+        "elapsed_seconds": 0.1453876495361328,
+        "memory_after": {
+          "allocated": 14100268544,
+          "reserved": 14178844672
+        },
+        "dynamo_hook_count_after": 0
+      },
+      {
+        "case": {
+          "id": "generation-b1-q8192-p0-full",
+          "mode": "generation",
+          "q": 8192,
+          "p": 0,
+          "b": 1,
+          "skip": false
+        },
+        "status": "passed",
+        "started": 1791334476.558819,
+        "memory_before": {
+          "allocated": 14100268544,
+          "reserved": 14178844672
+        },
+        "dynamo_hook_count_before": 0,
+        "native_batch": {
+          "forward_mode": "2",
+          "input_ids_shape": [
+            1
+          ],
+          "input_ids_dtype": "torch.int64",
+          "num_token_non_padded_cpu": 1,
+          "positions_shape": [
+            1
+          ],
+          "position_ranges": [
+            [
+              8192,
+              8192
+            ]
+          ],
+          "out_cache_loc_shape": [
+            1
+          ],
+          "unique_new_cache_locations": 1,
+          "seq_lens": [
+            8193
+          ],
+          "expected_new_tokens": 1
+        },
+        "benchmark_result": {
+          "latency_ms": 0.08519167900085449,
+          "power_stats": null,
+          "throttled": false,
+          "num_runs_executed": 50,
+          "used_cuda_graph": true
+        },
+        "emitted_rows": 1,
+        "elapsed_seconds": 0.8312742710113525,
+        "memory_after": {
+          "allocated": 14036801536,
+          "reserved": 14201913344
+        },
+        "dynamo_hook_count_after": 0
+      },
+      {
+        "case": {
+          "id": "generation-b1-q8192-p0-skip",
+          "mode": "generation",
+          "q": 8192,
+          "p": 0,
+          "b": 1,
+          "skip": true
+        },
+        "status": "passed",
+        "started": 1791334477.609507,
+        "memory_before": {
+          "allocated": 14036801536,
+          "reserved": 14201913344
+        },
+        "dynamo_hook_count_before": 0,
+        "native_batch": {
+          "forward_mode": "2",
+          "input_ids_shape": [
+            1
+          ],
+          "input_ids_dtype": "torch.int64",
+          "num_token_non_padded_cpu": 1,
+          "positions_shape": [
+            1
+          ],
+          "position_ranges": [
+            [
+              8192,
+              8192
+            ]
+          ],
+          "out_cache_loc_shape": [
+            1
+          ],
+          "unique_new_cache_locations": 1,
+          "seq_lens": [
+            8193
+          ],
+          "expected_new_tokens": 1
+        },
+        "benchmark_result": {
+          "latency_ms": 0.047226881980895995,
+          "power_stats": null,
+          "throttled": false,
+          "num_runs_executed": 50,
+          "used_cuda_graph": true
+        },
+        "emitted_rows": 1,
+        "elapsed_seconds": 0.060297250747680664,
+        "memory_after": {
+          "allocated": 14036801536,
+          "reserved": 14201913344
+        },
+        "dynamo_hook_count_after": 0
+      },
+      {
+        "case": {
+          "id": "generation-b1-q131072-p0-full",
+          "mode": "generation",
+          "q": 131072,
+          "p": 0,
+          "b": 1,
+          "skip": false
+        },
+        "status": "passed",
+        "started": 1791334477.8523784,
+        "memory_before": {
+          "allocated": 14036801536,
+          "reserved": 14201913344
+        },
+        "dynamo_hook_count_before": 0,
+        "native_batch": {
+          "forward_mode": "2",
+          "input_ids_shape": [
+            1
+          ],
+          "input_ids_dtype": "torch.int64",
+          "num_token_non_padded_cpu": 1,
+          "positions_shape": [
+            1
+          ],
+          "position_ranges": [
+            [
+              131072,
+              131072
+            ]
+          ],
+          "out_cache_loc_shape": [
+            1
+          ],
+          "unique_new_cache_locations": 1,
+          "seq_lens": [
+            131073
+          ],
+          "expected_new_tokens": 1
+        },
+        "benchmark_result": {
+          "latency_ms": 0.1374828815460205,
+          "power_stats": null,
+          "throttled": false,
+          "num_runs_executed": 50,
+          "used_cuda_graph": true
+        },
+        "emitted_rows": 1,
+        "elapsed_seconds": 0.3120396137237549,
+        "memory_after": {
+          "allocated": 14037300736,
+          "reserved": 14204010496
+        },
+        "dynamo_hook_count_after": 0
+      },
+      {
+        "case": {
+          "id": "generation-b1-q131072-p0-skip",
+          "mode": "generation",
+          "q": 131072,
+          "p": 0,
+          "b": 1,
+          "skip": true
+        },
+        "status": "passed",
+        "started": 1791334478.338429,
+        "memory_before": {
+          "allocated": 14037300736,
+          "reserved": 14204010496
+        },
+        "dynamo_hook_count_before": 0,
+        "native_batch": {
+          "forward_mode": "2",
+          "input_ids_shape": [
+            1
+          ],
+          "input_ids_dtype": "torch.int64",
+          "num_token_non_padded_cpu": 1,
+          "positions_shape": [
+            1
+          ],
+          "position_ranges": [
+            [
+              131072,
+              131072
+            ]
+          ],
+          "out_cache_loc_shape": [
+            1
+          ],
+          "unique_new_cache_locations": 1,
+          "seq_lens": [
+            131073
+          ],
+          "expected_new_tokens": 1
+        },
+        "benchmark_result": {
+          "latency_ms": 0.047183361053466794,
+          "power_stats": null,
+          "throttled": false,
+          "num_runs_executed": 50,
+          "used_cuda_graph": true
+        },
+        "emitted_rows": 1,
+        "elapsed_seconds": 0.3018770217895508,
+        "memory_after": {
+          "allocated": 14037300736,
+          "reserved": 14204010496
+        },
+        "dynamo_hook_count_after": 0
+      }
+    ],
+    "measurement": "production run_attention_torch, no observer/timing substitution",
+    "accuracy_acceptance": "NOT_EVALUATED",
+    "source_commit": "6a3f8fc6",
+    "image_digest": "sha256:9611bd4c5624b0e9e17829506188a12f17205f2083de0dd44d6c521733553a50",
+    "job_id": "4764836",
+    "runtime": {
+      "sglang": "0.5.14",
+      "torch": "2.11.0+cu130",
+      "cuda": "13.0",
+      "gpu": "NVIDIA B200",
+      "collector_sha256": "df3ee69249f554a6ff610c5012b18f8fed8cea080acba1a11b58ff72e782666d"
+    },
+    "module": {
+      "class": "DeepseekV2AttentionMLA",
+      "heads": 8,
+      "indexer": "Indexer",
+      "pool": "DSATokenToKVPool",
+      "page_size": 64,
+      "prefill_graph": "PhaseConfig(backend='tc_piecewise', max_bs=2048, bs=[4, 8, 12, 16, 20, 24, 28, 32, 48, 64, 80, 96, 112, 128, 144, 160, 176, 192, 208, 224, 240, 256, 288, 320, 352, 384, 416, 448, 480, 512, 576, 640, 704, 768, 832, 896, 960, 1024, 1280, 1536, 1792, 2048], tc_compiler='eager')",
+      "chunked_prefill_size": 8192,
+      "max_total_tokens": 137600
+    },
+    "parquet_files": [
+      "/output/glm-fp8_block-bfloat16-h8/dsa_context_module_perf.parquet",
+      "/output/glm-fp8_block-bfloat16-h8/dsa_generation_module_perf.parquet"
+    ]
+  },
+  {
+    "group": {
+      "id": "deepseek-fp8_block-fp8-h16",
+      "model": "deepseek-ai/DeepSeek-V3.2",
+      "heads": 16,
+      "kv": "fp8",
+      "gemm": "fp8_block",
+      "tp": 8,
+      "cases": [
+        {
+          "id": "context-b32-q128-p128-full",
+          "mode": "context",
+          "q": 128,
+          "p": 128,
+          "b": 32,
+          "skip": false
+        },
+        {
+          "id": "context-b1-q4096-p0-full",
+          "mode": "context",
+          "q": 4096,
+          "p": 0,
+          "b": 1,
+          "skip": false
+        },
+        {
+          "id": "generation-b1-q8192-p0-full",
+          "mode": "generation",
+          "q": 8192,
+          "p": 0,
+          "b": 1,
+          "skip": false
+        },
+        {
+          "id": "generation-b1-q131072-p0-full",
+          "mode": "generation",
+          "q": 131072,
+          "p": 0,
+          "b": 1,
+          "skip": false
+        }
+      ]
+    },
+    "status": "passed",
+    "cases": [
+      {
+        "case": {
+          "id": "context-b32-q128-p128-full",
+          "mode": "context",
+          "q": 128,
+          "p": 128,
+          "b": 32,
+          "skip": false
+        },
+        "status": "passed",
+        "started": 1791334492.7655628,
+        "memory_before": {
+          "allocated": 6689604096,
+          "reserved": 6748635136
+        },
+        "dynamo_hook_count_before": 0,
+        "native_batch": {
+          "forward_mode": "1",
+          "input_ids_shape": [
+            4096
+          ],
+          "input_ids_dtype": "torch.int64",
+          "num_token_non_padded_cpu": 4096,
+          "positions_shape": [
+            4096
+          ],
+          "position_ranges": [
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ]
+          ],
+          "out_cache_loc_shape": [
+            4096
+          ],
+          "unique_new_cache_locations": 4096,
+          "seq_lens": [
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256
+          ],
+          "expected_new_tokens": 4096
+        },
+        "emitted_rows": 1,
+        "elapsed_seconds": 8.155490159988403,
+        "memory_after": {
+          "allocated": 6765962240,
+          "reserved": 6826229760
+        },
+        "dynamo_hook_count_after": 0
+      },
+      {
+        "case": {
+          "id": "context-b1-q4096-p0-full",
+          "mode": "context",
+          "q": 4096,
+          "p": 0,
+          "b": 1,
+          "skip": false
+        },
+        "status": "passed",
+        "started": 1791334501.2015004,
+        "memory_before": {
+          "allocated": 6765962240,
+          "reserved": 6826229760
+        },
+        "dynamo_hook_count_before": 0,
+        "native_batch": {
+          "forward_mode": "1",
+          "input_ids_shape": [
+            4096
+          ],
+          "input_ids_dtype": "torch.int64",
+          "num_token_non_padded_cpu": 4096,
+          "positions_shape": [
+            4096
+          ],
+          "position_ranges": [
+            [
+              0,
+              4095
+            ]
+          ],
+          "out_cache_loc_shape": [
+            4096
+          ],
+          "unique_new_cache_locations": 4096,
+          "seq_lens": [
+            4096
+          ],
+          "expected_new_tokens": 4096
+        },
+        "emitted_rows": 1,
+        "elapsed_seconds": 2.717805862426758,
+        "memory_after": {
+          "allocated": 6765879808,
+          "reserved": 6826229760
+        },
+        "dynamo_hook_count_after": 0
+      },
+      {
+        "case": {
+          "id": "generation-b1-q8192-p0-full",
+          "mode": "generation",
+          "q": 8192,
+          "p": 0,
+          "b": 1,
+          "skip": false
+        },
+        "status": "passed",
+        "started": 1791334504.1788027,
+        "memory_before": {
+          "allocated": 6765879808,
+          "reserved": 6826229760
+        },
+        "dynamo_hook_count_before": 0,
+        "native_batch": {
+          "forward_mode": "2",
+          "input_ids_shape": [
+            1
+          ],
+          "input_ids_dtype": "torch.int64",
+          "num_token_non_padded_cpu": 1,
+          "positions_shape": [
+            1
+          ],
+          "position_ranges": [
+            [
+              8192,
+              8192
+            ]
+          ],
+          "out_cache_loc_shape": [
+            1
+          ],
+          "unique_new_cache_locations": 1,
+          "seq_lens": [
+            8193
+          ],
+          "expected_new_tokens": 1
+        },
+        "benchmark_result": {
+          "latency_ms": 0.08479871749877929,
+          "power_stats": null,
+          "throttled": false,
+          "num_runs_executed": 50,
+          "used_cuda_graph": true
+        },
+        "emitted_rows": 1,
+        "elapsed_seconds": 2.521501064300537,
+        "memory_after": {
+          "allocated": 6698219520,
+          "reserved": 6771703808
+        },
+        "dynamo_hook_count_after": 0
+      },
+      {
+        "case": {
+          "id": "generation-b1-q131072-p0-full",
+          "mode": "generation",
+          "q": 131072,
+          "p": 0,
+          "b": 1,
+          "skip": false
+        },
+        "status": "passed",
+        "started": 1791334506.981038,
+        "memory_before": {
+          "allocated": 6698219520,
+          "reserved": 6771703808
+        },
+        "dynamo_hook_count_before": 0,
+        "native_batch": {
+          "forward_mode": "2",
+          "input_ids_shape": [
+            1
+          ],
+          "input_ids_dtype": "torch.int64",
+          "num_token_non_padded_cpu": 1,
+          "positions_shape": [
+            1
+          ],
+          "position_ranges": [
+            [
+              131072,
+              131072
+            ]
+          ],
+          "out_cache_loc_shape": [
+            1
+          ],
+          "unique_new_cache_locations": 1,
+          "seq_lens": [
+            131073
+          ],
+          "expected_new_tokens": 1
+        },
+        "benchmark_result": {
+          "latency_ms": 0.13776448249816894,
+          "power_stats": null,
+          "throttled": false,
+          "num_runs_executed": 50,
+          "used_cuda_graph": true
+        },
+        "emitted_rows": 1,
+        "elapsed_seconds": 0.32100677490234375,
+        "memory_after": {
+          "allocated": 6698718720,
+          "reserved": 6771703808
+        },
+        "dynamo_hook_count_after": 0
+      }
+    ],
+    "measurement": "production run_attention_torch, no observer/timing substitution",
+    "accuracy_acceptance": "NOT_EVALUATED",
+    "source_commit": "6a3f8fc6",
+    "image_digest": "sha256:9611bd4c5624b0e9e17829506188a12f17205f2083de0dd44d6c521733553a50",
+    "job_id": "4764836",
+    "runtime": {
+      "sglang": "0.5.14",
+      "torch": "2.11.0+cu130",
+      "cuda": "13.0",
+      "gpu": "NVIDIA B200",
+      "collector_sha256": "df3ee69249f554a6ff610c5012b18f8fed8cea080acba1a11b58ff72e782666d"
+    },
+    "module": {
+      "class": "DeepseekV2AttentionMLA",
+      "heads": 16,
+      "indexer": "Indexer",
+      "pool": "DSATokenToKVPool",
+      "page_size": 64,
+      "prefill_graph": "PhaseConfig(backend='tc_piecewise', max_bs=2048, bs=[4, 8, 12, 16, 20, 24, 28, 32, 48, 64, 80, 96, 112, 128, 144, 160, 176, 192, 208, 224, 240, 256, 288, 320, 352, 384, 416, 448, 480, 512, 576, 640, 704, 768, 832, 896, 960, 1024, 1280, 1536, 1792, 2048], tc_compiler='eager')",
+      "chunked_prefill_size": 8192,
+      "max_total_tokens": 137600
+    },
+    "parquet_files": [
+      "/output/deepseek-fp8_block-fp8-h16/dsa_context_module_perf.parquet",
+      "/output/deepseek-fp8_block-fp8-h16/dsa_generation_module_perf.parquet"
+    ]
+  },
+  {
+    "group": {
+      "id": "deepseek-fp8_block-bfloat16-h16",
+      "model": "deepseek-ai/DeepSeek-V3.2",
+      "heads": 16,
+      "kv": "bfloat16",
+      "gemm": "fp8_block",
+      "tp": 8,
+      "cases": [
+        {
+          "id": "context-b32-q128-p128-full",
+          "mode": "context",
+          "q": 128,
+          "p": 128,
+          "b": 32,
+          "skip": false
+        },
+        {
+          "id": "context-b1-q4096-p0-full",
+          "mode": "context",
+          "q": 4096,
+          "p": 0,
+          "b": 1,
+          "skip": false
+        },
+        {
+          "id": "generation-b1-q8192-p0-full",
+          "mode": "generation",
+          "q": 8192,
+          "p": 0,
+          "b": 1,
+          "skip": false
+        },
+        {
+          "id": "generation-b1-q131072-p0-full",
+          "mode": "generation",
+          "q": 131072,
+          "p": 0,
+          "b": 1,
+          "skip": false
+        }
+      ]
+    },
+    "status": "passed",
+    "cases": [
+      {
+        "case": {
+          "id": "context-b32-q128-p128-full",
+          "mode": "context",
+          "q": 128,
+          "p": 128,
+          "b": 32,
+          "skip": false
+        },
+        "status": "passed",
+        "started": 1791334518.186679,
+        "memory_before": {
+          "allocated": 6848987648,
+          "reserved": 6908018688
+        },
+        "dynamo_hook_count_before": 0,
+        "native_batch": {
+          "forward_mode": "1",
+          "input_ids_shape": [
+            4096
+          ],
+          "input_ids_dtype": "torch.int64",
+          "num_token_non_padded_cpu": 4096,
+          "positions_shape": [
+            4096
+          ],
+          "position_ranges": [
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ],
+            [
+              128,
+              255
+            ]
+          ],
+          "out_cache_loc_shape": [
+            4096
+          ],
+          "unique_new_cache_locations": 4096,
+          "seq_lens": [
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256
+          ],
+          "expected_new_tokens": 4096
+        },
+        "emitted_rows": 1,
+        "elapsed_seconds": 1.4692490100860596,
+        "memory_after": {
+          "allocated": 6925313024,
+          "reserved": 6985613312
+        },
+        "dynamo_hook_count_after": 0
+      },
+      {
+        "case": {
+          "id": "context-b1-q4096-p0-full",
+          "mode": "context",
+          "q": 4096,
+          "p": 0,
+          "b": 1,
+          "skip": false
+        },
+        "status": "passed",
+        "started": 1791334519.9414868,
+        "memory_before": {
+          "allocated": 6925313024,
+          "reserved": 6985613312
+        },
+        "dynamo_hook_count_before": 0,
+        "native_batch": {
+          "forward_mode": "1",
+          "input_ids_shape": [
+            4096
+          ],
+          "input_ids_dtype": "torch.int64",
+          "num_token_non_padded_cpu": 4096,
+          "positions_shape": [
+            4096
+          ],
+          "position_ranges": [
+            [
+              0,
+              4095
+            ]
+          ],
+          "out_cache_loc_shape": [
+            4096
+          ],
+          "unique_new_cache_locations": 4096,
+          "seq_lens": [
+            4096
+          ],
+          "expected_new_tokens": 4096
+        },
+        "emitted_rows": 1,
+        "elapsed_seconds": 0.7100129127502441,
+        "memory_after": {
+          "allocated": 6925263360,
+          "reserved": 6985613312
+        },
+        "dynamo_hook_count_after": 0
+      },
+      {
+        "case": {
+          "id": "generation-b1-q8192-p0-full",
+          "mode": "generation",
+          "q": 8192,
+          "p": 0,
+          "b": 1,
+          "skip": false
+        },
+        "status": "passed",
+        "started": 1791334520.9213026,
+        "memory_before": {
+          "allocated": 6925263360,
+          "reserved": 6985613312
+        },
+        "dynamo_hook_count_before": 0,
+        "native_batch": {
+          "forward_mode": "2",
+          "input_ids_shape": [
+            1
+          ],
+          "input_ids_dtype": "torch.int64",
+          "num_token_non_padded_cpu": 1,
+          "positions_shape": [
+            1
+          ],
+          "position_ranges": [
+            [
+              8192,
+              8192
+            ]
+          ],
+          "out_cache_loc_shape": [
+            1
+          ],
+          "unique_new_cache_locations": 1,
+          "seq_lens": [
+            8193
+          ],
+          "expected_new_tokens": 1
+        },
+        "benchmark_result": {
+          "latency_ms": 0.08646016120910645,
+          "power_stats": null,
+          "throttled": false,
+          "num_runs_executed": 50,
+          "used_cuda_graph": true
+        },
+        "emitted_rows": 1,
+        "elapsed_seconds": 0.8064298629760742,
+        "memory_after": {
+          "allocated": 6857603072,
+          "reserved": 6931087360
+        },
+        "dynamo_hook_count_after": 0
+      },
+      {
+        "case": {
+          "id": "generation-b1-q131072-p0-full",
+          "mode": "generation",
+          "q": 131072,
+          "p": 0,
+          "b": 1,
+          "skip": false
+        },
+        "status": "passed",
+        "started": 1791334521.9697254,
+        "memory_before": {
+          "allocated": 6857603072,
+          "reserved": 6931087360
+        },
+        "dynamo_hook_count_before": 0,
+        "native_batch": {
+          "forward_mode": "2",
+          "input_ids_shape": [
+            1
+          ],
+          "input_ids_dtype": "torch.int64",
+          "num_token_non_padded_cpu": 1,
+          "positions_shape": [
+            1
+          ],
+          "position_ranges": [
+            [
+              131072,
+              131072
+            ]
+          ],
+          "out_cache_loc_shape": [
+            1
+          ],
+          "unique_new_cache_locations": 1,
+          "seq_lens": [
+            131073
+          ],
+          "expected_new_tokens": 1
+        },
+        "benchmark_result": {
+          "latency_ms": 0.13989055633544922,
+          "power_stats": null,
+          "throttled": false,
+          "num_runs_executed": 50,
+          "used_cuda_graph": true
+        },
+        "emitted_rows": 1,
+        "elapsed_seconds": 0.31738710403442383,
+        "memory_after": {
+          "allocated": 6858102272,
+          "reserved": 6931087360
+        },
+        "dynamo_hook_count_after": 0
+      }
+    ],
+    "measurement": "production run_attention_torch, no observer/timing substitution",
+    "accuracy_acceptance": "NOT_EVALUATED",
+    "source_commit": "6a3f8fc6",
+    "image_digest": "sha256:9611bd4c5624b0e9e17829506188a12f17205f2083de0dd44d6c521733553a50",
+    "job_id": "4764836",
+    "runtime": {
+      "sglang": "0.5.14",
+      "torch": "2.11.0+cu130",
+      "cuda": "13.0",
+      "gpu": "NVIDIA B200",
+      "collector_sha256": "df3ee69249f554a6ff610c5012b18f8fed8cea080acba1a11b58ff72e782666d"
+    },
+    "module": {
+      "class": "DeepseekV2AttentionMLA",
+      "heads": 16,
+      "indexer": "Indexer",
+      "pool": "DSATokenToKVPool",
+      "page_size": 64,
+      "prefill_graph": "PhaseConfig(backend='tc_piecewise', max_bs=2048, bs=[4, 8, 12, 16, 20, 24, 28, 32, 48, 64, 80, 96, 112, 128, 144, 160, 176, 192, 208, 224, 240, 256, 288, 320, 352, 384, 416, 448, 480, 512, 576, 640, 704, 768, 832, 896, 960, 1024, 1280, 1536, 1792, 2048], tc_compiler='eager')",
+      "chunked_prefill_size": 8192,
+      "max_total_tokens": 137600
+    },
+    "parquet_files": [
+      "/output/deepseek-fp8_block-bfloat16-h16/dsa_context_module_perf.parquet",
+      "/output/deepseek-fp8_block-bfloat16-h16/dsa_generation_module_perf.parquet"
+    ]
+  }
+]
