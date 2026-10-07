@@ -876,7 +876,8 @@ def test_fpm_run_script_falls_back_to_scratch_when_model_cache_is_read_only(tmp_
     finally:
         snapshot.chmod(0o755)
 
-    assert cubin_dir == f"{scratch}/flashinfer-cubins"
+    assert cubin_dir.startswith(f"{scratch}/flashinfer-cubins.")
+    assert (os.stat(cubin_dir).st_mode & 0o077) == 0
     assert not (snapshot / "flashinfer-cubins").exists()
     assert "HF_HOME is not writable" in stderr
 
@@ -954,7 +955,8 @@ def test_fpm_run_script_falls_back_to_scratch_kvwarm_cache_when_model_cache_is_r
     finally:
         model_cache.chmod(0o755)
 
-    assert cache_dir == f"{scratch}/fpm_datasets"
+    assert cache_dir.startswith(f"{scratch}/fpm_datasets.")
+    assert (os.stat(cache_dir).st_mode & 0o077) == 0
     assert not (model_cache / "fpm_datasets").exists()
     assert "KV warm-up dataset" in stderr
 
@@ -1012,7 +1014,8 @@ def test_fpm_run_script_probes_engine_kvwarm_path_for_symlinked_hf_home(tmp_path
     finally:
         model_cache.chmod(0o755)
 
-    assert cache_dir == f"{scratch}/fpm_datasets"
+    assert cache_dir.startswith(f"{scratch}/fpm_datasets.")
+    assert (os.stat(cache_dir).st_mode & 0o077) == 0
     assert not (real_parent / "fpm_datasets").exists()
     assert "KV warm-up dataset" in stderr
 
