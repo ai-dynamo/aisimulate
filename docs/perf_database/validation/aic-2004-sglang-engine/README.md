@@ -99,3 +99,31 @@ Full, reuse and the `21 * full + 57 * reuse` attention composition must all be
 reported: fixing one variant can remove an accidental cancellation with error
 in the other. The composition is a sum of module measurements, not a measured
 whole-model reference.
+
+The projection-key change has an additional real-data check in
+[`gpu-fp8-consumption.json`](gpu-fp8-consumption.json). Both binaries return
+all 14 native GLM FP8 measurements exactly when explicitly given the FP8 key.
+With only these FP8 rows available, the baseline canonical
+`zai-org/GLM-5.2-FP8` model instead requests BF16 and fails all seven queries;
+ordinary legacy data could silently satisfy that incorrect key. The fixed
+canonical model needs no quantization override and matches all seven
+`21 * full + 57 * reuse` attention sums, covering five prefill coordinates
+(including one batch-32 point) and two decode histories. This proves precision
+routing and table consumption, not whole-model accuracy. In particular, the
+native prefill module measurements still include the compiler entry cost for
+one standalone layer; its amortization across the serving model is unqualified.
+
+To reproduce this isolated consumer check with either wheel:
+
+```bash
+python docs/perf_database/validation/aic-2004-sglang-engine/validate_fp8_consumption.py \
+  --label baseline-or-fixed \
+  --systems-root python/aisimulate/src/aisimulate_core/systems \
+  --context-parquet docs/perf_database/validation/aic-2004-sglang-engine/measured-fp8-context.parquet \
+  --generation-parquet docs/perf_database/validation/aic-2004-sglang-engine/measured-fp8-generation.parquet \
+  --scratch-root /path/to/private-scratch \
+  --output fp8-consumption.json
+```
+
+This creates and removes its own temporary systems copy, strips all other DSA
+context/generation donors, and leaves the production database unchanged.

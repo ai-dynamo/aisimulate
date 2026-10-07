@@ -1,0 +1,1093 @@
+{
+  "scope": "Real GLM-5.2-FP8 projection-key and 21/57 layer-ledger consumption using stock SGLang B200 observations",
+  "accuracy_acceptance": "NOT_EVALUATED",
+  "baseline_revision": "e45612e18376c6aef28fb697f3131602613354f4",
+  "engine_review_revision": "0e89ae78",
+  "source_identity": {
+    "source_commit": "5d6cb80a",
+    "image_digest": "sha256:9611bd4c5624b0e9e17829506188a12f17205f2083de0dd44d6c521733553a50",
+    "job_id": "4764263",
+    "runtime": {
+      "sglang": "0.5.14",
+      "torch": "2.11.0+cu130",
+      "cuda": "13.0",
+      "gpu": "NVIDIA B200",
+      "collector_sha256": "37d4442553728e2761a164de4da38d1fbd83ee030aa1ffbb7305717ddb06f3d0"
+    },
+    "module": {
+      "class": "DeepseekV2AttentionMLA",
+      "heads": 8,
+      "indexer": "Indexer",
+      "pool": "DSATokenToKVPool",
+      "page_size": 64,
+      "prefill_graph": "PhaseConfig(backend='tc_piecewise', max_bs=2048, bs=[4, 8, 12, 16, 20, 24, 28, 32, 48, 64, 80, 96, 112, 128, 144, 160, 176, 192, 208, 224, 240, 256, 288, 320, 352, 384, 416, 448, 480, 512, 576, 640, 704, 768, 832, 896, 960, 1024, 1280, 1536, 1792, 2048], tc_compiler='eager')",
+      "chunked_prefill_size": 8192,
+      "max_total_tokens": 138688
+    },
+    "measurement": "production run_attention_torch, no observer/timing substitution"
+  },
+  "native_receipt_sha256": "f4715afa1b203f6106a7553400ba55d0c35baf516c2716e85f3118d4840a4a5f",
+  "native_input_checks": [
+    {
+      "case": {
+        "id": "context-b1-q128-p128-full",
+        "mode": "context",
+        "q": 128,
+        "p": 128,
+        "b": 1,
+        "skip": false
+      },
+      "status": "passed",
+      "input_ids_shape": [
+        128
+      ],
+      "num_token_non_padded_cpu": 128,
+      "unique_new_cache_locations": 128,
+      "dynamo_hook_count_before": 0,
+      "dynamo_hook_count_after": 0
+    },
+    {
+      "case": {
+        "id": "context-b1-q128-p128-skip",
+        "mode": "context",
+        "q": 128,
+        "p": 128,
+        "b": 1,
+        "skip": true
+      },
+      "status": "passed",
+      "input_ids_shape": [
+        128
+      ],
+      "num_token_non_padded_cpu": 128,
+      "unique_new_cache_locations": 128,
+      "dynamo_hook_count_before": 0,
+      "dynamo_hook_count_after": 0
+    },
+    {
+      "case": {
+        "id": "context-b32-q128-p128-full",
+        "mode": "context",
+        "q": 128,
+        "p": 128,
+        "b": 32,
+        "skip": false
+      },
+      "status": "passed",
+      "input_ids_shape": [
+        4096
+      ],
+      "num_token_non_padded_cpu": 4096,
+      "unique_new_cache_locations": 4096,
+      "dynamo_hook_count_before": 0,
+      "dynamo_hook_count_after": 0
+    },
+    {
+      "case": {
+        "id": "context-b32-q128-p128-skip",
+        "mode": "context",
+        "q": 128,
+        "p": 128,
+        "b": 32,
+        "skip": true
+      },
+      "status": "passed",
+      "input_ids_shape": [
+        4096
+      ],
+      "num_token_non_padded_cpu": 4096,
+      "unique_new_cache_locations": 4096,
+      "dynamo_hook_count_before": 0,
+      "dynamo_hook_count_after": 0
+    },
+    {
+      "case": {
+        "id": "context-b1-q4096-p0-full",
+        "mode": "context",
+        "q": 4096,
+        "p": 0,
+        "b": 1,
+        "skip": false
+      },
+      "status": "passed",
+      "input_ids_shape": [
+        4096
+      ],
+      "num_token_non_padded_cpu": 4096,
+      "unique_new_cache_locations": 4096,
+      "dynamo_hook_count_before": 0,
+      "dynamo_hook_count_after": 0
+    },
+    {
+      "case": {
+        "id": "context-b1-q4096-p0-skip",
+        "mode": "context",
+        "q": 4096,
+        "p": 0,
+        "b": 1,
+        "skip": true
+      },
+      "status": "passed",
+      "input_ids_shape": [
+        4096
+      ],
+      "num_token_non_padded_cpu": 4096,
+      "unique_new_cache_locations": 4096,
+      "dynamo_hook_count_before": 0,
+      "dynamo_hook_count_after": 0
+    },
+    {
+      "case": {
+        "id": "context-b1-q1024-p131072-full",
+        "mode": "context",
+        "q": 1024,
+        "p": 131072,
+        "b": 1,
+        "skip": false
+      },
+      "status": "passed",
+      "input_ids_shape": [
+        1024
+      ],
+      "num_token_non_padded_cpu": 1024,
+      "unique_new_cache_locations": 1024,
+      "dynamo_hook_count_before": 0,
+      "dynamo_hook_count_after": 0
+    },
+    {
+      "case": {
+        "id": "context-b1-q1024-p131072-skip",
+        "mode": "context",
+        "q": 1024,
+        "p": 131072,
+        "b": 1,
+        "skip": true
+      },
+      "status": "passed",
+      "input_ids_shape": [
+        1024
+      ],
+      "num_token_non_padded_cpu": 1024,
+      "unique_new_cache_locations": 1024,
+      "dynamo_hook_count_before": 0,
+      "dynamo_hook_count_after": 0
+    },
+    {
+      "case": {
+        "id": "context-b1-q2048-p0-full",
+        "mode": "context",
+        "q": 2048,
+        "p": 0,
+        "b": 1,
+        "skip": false
+      },
+      "status": "passed",
+      "input_ids_shape": [
+        2048
+      ],
+      "num_token_non_padded_cpu": 2048,
+      "unique_new_cache_locations": 2048,
+      "dynamo_hook_count_before": 0,
+      "dynamo_hook_count_after": 0
+    },
+    {
+      "case": {
+        "id": "context-b1-q2048-p0-skip",
+        "mode": "context",
+        "q": 2048,
+        "p": 0,
+        "b": 1,
+        "skip": true
+      },
+      "status": "passed",
+      "input_ids_shape": [
+        2048
+      ],
+      "num_token_non_padded_cpu": 2048,
+      "unique_new_cache_locations": 2048,
+      "dynamo_hook_count_before": 0,
+      "dynamo_hook_count_after": 0
+    },
+    {
+      "case": {
+        "id": "generation-b1-q8192-p0-full",
+        "mode": "generation",
+        "q": 8192,
+        "p": 0,
+        "b": 1,
+        "skip": false
+      },
+      "status": "passed",
+      "input_ids_shape": [
+        1
+      ],
+      "num_token_non_padded_cpu": 1,
+      "unique_new_cache_locations": 1,
+      "dynamo_hook_count_before": 0,
+      "dynamo_hook_count_after": 0
+    },
+    {
+      "case": {
+        "id": "generation-b1-q8192-p0-skip",
+        "mode": "generation",
+        "q": 8192,
+        "p": 0,
+        "b": 1,
+        "skip": true
+      },
+      "status": "passed",
+      "input_ids_shape": [
+        1
+      ],
+      "num_token_non_padded_cpu": 1,
+      "unique_new_cache_locations": 1,
+      "dynamo_hook_count_before": 0,
+      "dynamo_hook_count_after": 0
+    },
+    {
+      "case": {
+        "id": "generation-b1-q131072-p0-full",
+        "mode": "generation",
+        "q": 131072,
+        "p": 0,
+        "b": 1,
+        "skip": false
+      },
+      "status": "passed",
+      "input_ids_shape": [
+        1
+      ],
+      "num_token_non_padded_cpu": 1,
+      "unique_new_cache_locations": 1,
+      "dynamo_hook_count_before": 0,
+      "dynamo_hook_count_after": 0
+    },
+    {
+      "case": {
+        "id": "generation-b1-q131072-p0-skip",
+        "mode": "generation",
+        "q": 131072,
+        "p": 0,
+        "b": 1,
+        "skip": true
+      },
+      "status": "passed",
+      "input_ids_shape": [
+        1
+      ],
+      "num_token_non_padded_cpu": 1,
+      "unique_new_cache_locations": 1,
+      "dynamo_hook_count_before": 0,
+      "dynamo_hook_count_after": 0
+    }
+  ],
+  "removed_dsa_sources": [
+    "data/b200_sxm/sparse_attention/sglang/0.5.14/dsa_context_module_perf.parquet",
+    "data/b200_sxm/sparse_attention/trtllm/1.3.0rc20/dsa_context_module_perf.parquet",
+    "data/b200_sxm/sparse_attention/vllm/0.24.0/dsa_context_module_perf.parquet",
+    "data/b300_sxm/sparse_attention/sglang/0.5.14/dsa_context_module_perf.parquet",
+    "data/b300_sxm/sparse_attention/trtllm/1.3.0rc20/dsa_context_module_perf.parquet",
+    "data/b300_sxm/sparse_attention/vllm/0.24.0/dsa_context_module_perf.parquet",
+    "data/gb200/sparse_attention/sglang/0.5.14/dsa_context_module_perf.parquet",
+    "data/gb200/sparse_attention/trtllm/1.3.0rc20/dsa_context_module_perf.parquet",
+    "data/gb200/sparse_attention/vllm/0.24.0/dsa_context_module_perf.parquet",
+    "data/gb300/sparse_attention/sglang/0.5.14/dsa_context_module_perf.parquet",
+    "data/gb300/sparse_attention/trtllm/1.3.0rc20/dsa_context_module_perf.parquet",
+    "data/gb300/sparse_attention/vllm/0.24.0/dsa_context_module_perf.parquet",
+    "data/h100_sxm/sparse_attention/sglang/0.5.14/dsa_context_module_perf.parquet",
+    "data/h100_sxm/sparse_attention/trtllm/1.3.0rc20/dsa_context_module_perf.parquet",
+    "data/h100_sxm/sparse_attention/trtllm/1.3.0rc23/dsa_context_module_perf.parquet",
+    "data/h100_sxm/sparse_attention/vllm/0.24.0/dsa_context_module_perf.parquet",
+    "data/h200_sxm/sparse_attention/sglang/0.5.14/dsa_context_module_perf.parquet",
+    "data/h200_sxm/sparse_attention/trtllm/1.3.0rc20/dsa_context_module_perf.parquet",
+    "data/h200_sxm/sparse_attention/trtllm/1.3.0rc23/dsa_context_module_perf.parquet",
+    "data/h200_sxm/sparse_attention/vllm/0.24.0/dsa_context_module_perf.parquet",
+    "data/vr_nvl72/sparse_attention/sglang/0.5.18+nvinternal.rubin.0.8full.66997102/dsa_context_module_perf.parquet",
+    "data/b200_sxm/sparse_attention/sglang/0.5.14/dsa_generation_module_perf.parquet",
+    "data/b200_sxm/sparse_attention/trtllm/1.3.0rc20/dsa_generation_module_perf.parquet",
+    "data/b200_sxm/sparse_attention/vllm/0.24.0/dsa_generation_module_perf.parquet",
+    "data/b300_sxm/sparse_attention/sglang/0.5.14/dsa_generation_module_perf.parquet",
+    "data/b300_sxm/sparse_attention/trtllm/1.3.0rc20/dsa_generation_module_perf.parquet",
+    "data/b300_sxm/sparse_attention/vllm/0.24.0/dsa_generation_module_perf.parquet",
+    "data/gb200/sparse_attention/sglang/0.5.14/dsa_generation_module_perf.parquet",
+    "data/gb200/sparse_attention/trtllm/1.3.0rc20/dsa_generation_module_perf.parquet",
+    "data/gb200/sparse_attention/vllm/0.24.0/dsa_generation_module_perf.parquet",
+    "data/gb300/sparse_attention/sglang/0.5.14/dsa_generation_module_perf.parquet",
+    "data/gb300/sparse_attention/trtllm/1.3.0rc20/dsa_generation_module_perf.parquet",
+    "data/gb300/sparse_attention/vllm/0.24.0/dsa_generation_module_perf.parquet",
+    "data/h100_sxm/sparse_attention/sglang/0.5.14/dsa_generation_module_perf.parquet",
+    "data/h100_sxm/sparse_attention/trtllm/1.3.0rc20/dsa_generation_module_perf.parquet",
+    "data/h100_sxm/sparse_attention/trtllm/1.3.0rc23/dsa_generation_module_perf.parquet",
+    "data/h100_sxm/sparse_attention/vllm/0.24.0/dsa_generation_module_perf.parquet",
+    "data/h200_sxm/sparse_attention/sglang/0.5.14/dsa_generation_module_perf.parquet",
+    "data/h200_sxm/sparse_attention/trtllm/1.3.0rc20/dsa_generation_module_perf.parquet",
+    "data/h200_sxm/sparse_attention/trtllm/1.3.0rc23/dsa_generation_module_perf.parquet",
+    "data/h200_sxm/sparse_attention/vllm/0.24.0/dsa_generation_module_perf.parquet",
+    "data/vr_nvl72/sparse_attention/sglang/0.5.18+nvinternal.rubin.0.8full.66997102/dsa_generation_module_perf.parquet"
+  ],
+  "measurements": [
+    {
+      "framework": "SGLang",
+      "version": "0.5.14",
+      "device": "NVIDIA B200",
+      "op_name": "dsa_context_module",
+      "kernel_source": "sglang_dsa_indexer_trtllm",
+      "model": "zai-org/GLM-5.2-FP8",
+      "architecture": "GlmMoeDsaForCausalLM",
+      "mla_dtype": "bfloat16",
+      "kv_cache_dtype": "fp8",
+      "gemm_type": "fp8_block",
+      "num_heads": 8,
+      "batch_size": 1,
+      "isl": 128,
+      "tp_size": 8,
+      "step": 128,
+      "latency": 0.5673
+    },
+    {
+      "framework": "SGLang",
+      "version": "0.5.14",
+      "device": "NVIDIA B200",
+      "op_name": "dsa_context_module_skip_indexer",
+      "kernel_source": "sglang_dsa_skip_indexer_trtllm",
+      "model": "zai-org/GLM-5.2-FP8",
+      "architecture": "GlmMoeDsaForCausalLM",
+      "mla_dtype": "bfloat16",
+      "kv_cache_dtype": "fp8",
+      "gemm_type": "fp8_block",
+      "num_heads": 8,
+      "batch_size": 1,
+      "isl": 128,
+      "tp_size": 8,
+      "step": 128,
+      "latency": 0.2859
+    },
+    {
+      "framework": "SGLang",
+      "version": "0.5.14",
+      "device": "NVIDIA B200",
+      "op_name": "dsa_context_module",
+      "kernel_source": "sglang_dsa_dense_mha_trtllm_ragged",
+      "model": "zai-org/GLM-5.2-FP8",
+      "architecture": "GlmMoeDsaForCausalLM",
+      "mla_dtype": "bfloat16",
+      "kv_cache_dtype": "fp8",
+      "gemm_type": "fp8_block",
+      "num_heads": 8,
+      "batch_size": 32,
+      "isl": 128,
+      "tp_size": 8,
+      "step": 128,
+      "latency": 0.9277
+    },
+    {
+      "framework": "SGLang",
+      "version": "0.5.14",
+      "device": "NVIDIA B200",
+      "op_name": "dsa_context_module_skip_indexer",
+      "kernel_source": "sglang_dsa_dense_mha_trtllm_ragged",
+      "model": "zai-org/GLM-5.2-FP8",
+      "architecture": "GlmMoeDsaForCausalLM",
+      "mla_dtype": "bfloat16",
+      "kv_cache_dtype": "fp8",
+      "gemm_type": "fp8_block",
+      "num_heads": 8,
+      "batch_size": 32,
+      "isl": 128,
+      "tp_size": 8,
+      "step": 128,
+      "latency": 0.932
+    },
+    {
+      "framework": "SGLang",
+      "version": "0.5.14",
+      "device": "NVIDIA B200",
+      "op_name": "dsa_context_module",
+      "kernel_source": "sglang_dsa_indexer_trtllm",
+      "model": "zai-org/GLM-5.2-FP8",
+      "architecture": "GlmMoeDsaForCausalLM",
+      "mla_dtype": "bfloat16",
+      "kv_cache_dtype": "fp8",
+      "gemm_type": "fp8_block",
+      "num_heads": 8,
+      "batch_size": 1,
+      "isl": 4096,
+      "tp_size": 8,
+      "step": 0,
+      "latency": 1.4963
+    },
+    {
+      "framework": "SGLang",
+      "version": "0.5.14",
+      "device": "NVIDIA B200",
+      "op_name": "dsa_context_module_skip_indexer",
+      "kernel_source": "sglang_dsa_skip_indexer_trtllm",
+      "model": "zai-org/GLM-5.2-FP8",
+      "architecture": "GlmMoeDsaForCausalLM",
+      "mla_dtype": "bfloat16",
+      "kv_cache_dtype": "fp8",
+      "gemm_type": "fp8_block",
+      "num_heads": 8,
+      "batch_size": 1,
+      "isl": 4096,
+      "tp_size": 8,
+      "step": 0,
+      "latency": 0.741
+    },
+    {
+      "framework": "SGLang",
+      "version": "0.5.14",
+      "device": "NVIDIA B200",
+      "op_name": "dsa_context_module",
+      "kernel_source": "sglang_dsa_indexer_trtllm",
+      "model": "zai-org/GLM-5.2-FP8",
+      "architecture": "GlmMoeDsaForCausalLM",
+      "mla_dtype": "bfloat16",
+      "kv_cache_dtype": "fp8",
+      "gemm_type": "fp8_block",
+      "num_heads": 8,
+      "batch_size": 1,
+      "isl": 1024,
+      "tp_size": 8,
+      "step": 131072,
+      "latency": 1.4021
+    },
+    {
+      "framework": "SGLang",
+      "version": "0.5.14",
+      "device": "NVIDIA B200",
+      "op_name": "dsa_context_module_skip_indexer",
+      "kernel_source": "sglang_dsa_skip_indexer_trtllm",
+      "model": "zai-org/GLM-5.2-FP8",
+      "architecture": "GlmMoeDsaForCausalLM",
+      "mla_dtype": "bfloat16",
+      "kv_cache_dtype": "fp8",
+      "gemm_type": "fp8_block",
+      "num_heads": 8,
+      "batch_size": 1,
+      "isl": 1024,
+      "tp_size": 8,
+      "step": 131072,
+      "latency": 0.2808
+    },
+    {
+      "framework": "SGLang",
+      "version": "0.5.14",
+      "device": "NVIDIA B200",
+      "op_name": "dsa_context_module",
+      "kernel_source": "sglang_dsa_indexer_trtllm",
+      "model": "zai-org/GLM-5.2-FP8",
+      "architecture": "GlmMoeDsaForCausalLM",
+      "mla_dtype": "bfloat16",
+      "kv_cache_dtype": "fp8",
+      "gemm_type": "fp8_block",
+      "num_heads": 8,
+      "batch_size": 1,
+      "isl": 2048,
+      "tp_size": 8,
+      "step": 0,
+      "latency": 0.5577
+    },
+    {
+      "framework": "SGLang",
+      "version": "0.5.14",
+      "device": "NVIDIA B200",
+      "op_name": "dsa_context_module_skip_indexer",
+      "kernel_source": "sglang_dsa_skip_indexer_trtllm",
+      "model": "zai-org/GLM-5.2-FP8",
+      "architecture": "GlmMoeDsaForCausalLM",
+      "mla_dtype": "bfloat16",
+      "kv_cache_dtype": "fp8",
+      "gemm_type": "fp8_block",
+      "num_heads": 8,
+      "batch_size": 1,
+      "isl": 2048,
+      "tp_size": 8,
+      "step": 0,
+      "latency": 0.344
+    },
+    {
+      "framework": "SGLang",
+      "version": "0.5.14",
+      "device": "NVIDIA B200",
+      "op_name": "dsa_generation_module",
+      "kernel_source": "sglang_dsa_indexer_trtllm",
+      "model": "zai-org/GLM-5.2-FP8",
+      "architecture": "GlmMoeDsaForCausalLM",
+      "mla_dtype": "bfloat16",
+      "kv_cache_dtype": "fp8",
+      "gemm_type": "fp8_block",
+      "num_heads": 8,
+      "batch_size": 1,
+      "isl": 1,
+      "tp_size": 8,
+      "step": 8192,
+      "latency": 0.0818
+    },
+    {
+      "framework": "SGLang",
+      "version": "0.5.14",
+      "device": "NVIDIA B200",
+      "op_name": "dsa_generation_module_skip_indexer",
+      "kernel_source": "sglang_dsa_skip_indexer_trtllm",
+      "model": "zai-org/GLM-5.2-FP8",
+      "architecture": "GlmMoeDsaForCausalLM",
+      "mla_dtype": "bfloat16",
+      "kv_cache_dtype": "fp8",
+      "gemm_type": "fp8_block",
+      "num_heads": 8,
+      "batch_size": 1,
+      "isl": 1,
+      "tp_size": 8,
+      "step": 8192,
+      "latency": 0.0431
+    },
+    {
+      "framework": "SGLang",
+      "version": "0.5.14",
+      "device": "NVIDIA B200",
+      "op_name": "dsa_generation_module",
+      "kernel_source": "sglang_dsa_indexer_trtllm",
+      "model": "zai-org/GLM-5.2-FP8",
+      "architecture": "GlmMoeDsaForCausalLM",
+      "mla_dtype": "bfloat16",
+      "kv_cache_dtype": "fp8",
+      "gemm_type": "fp8_block",
+      "num_heads": 8,
+      "batch_size": 1,
+      "isl": 1,
+      "tp_size": 8,
+      "step": 131072,
+      "latency": 0.133
+    },
+    {
+      "framework": "SGLang",
+      "version": "0.5.14",
+      "device": "NVIDIA B200",
+      "op_name": "dsa_generation_module_skip_indexer",
+      "kernel_source": "sglang_dsa_skip_indexer_trtllm",
+      "model": "zai-org/GLM-5.2-FP8",
+      "architecture": "GlmMoeDsaForCausalLM",
+      "mla_dtype": "bfloat16",
+      "kv_cache_dtype": "fp8",
+      "gemm_type": "fp8_block",
+      "num_heads": 8,
+      "batch_size": 1,
+      "isl": 1,
+      "tp_size": 8,
+      "step": 131072,
+      "latency": 0.0431
+    }
+  ],
+  "sdk_comparison": {
+    "baseline": {
+      "label": "baseline",
+      "runtime_sha256": "d7170254600f612f02f98e49693ef08d6932e00b42579c2c34ed455e62b65725",
+      "script_sha256": "617be205c489fd9532e5fd02766a2680f4ab48808f4851c792133bc14f5c7e87",
+      "input_sha256": {
+        "context": "58cb1fd0d94faf349cfc3fe61f6f447929fa6c154e2cf5716dd86b7c73fcbb21",
+        "generation": "f658ae980c47ae58a835f20f07c764eca45410544537fa3b216a317bbcc3e597"
+      },
+      "canonical_model_cells": [
+        {
+          "phase": "context",
+          "batch_size": 1,
+          "isl": 128,
+          "step": 128,
+          "measured_attention_sum_ms": 28.209600000000002,
+          "lookup_error": "perf database error: context DSA module data missing for DsaKey { architecture: \"GlmMoeDsaForCausalLM\", fmha_quant: \"bfloat16\", kv_quant: \"fp8\", gemm_quant: \"bfloat16\" }"
+        },
+        {
+          "phase": "context",
+          "batch_size": 32,
+          "isl": 128,
+          "step": 128,
+          "measured_attention_sum_ms": 72.6057,
+          "lookup_error": "perf database error: context DSA module data missing for DsaKey { architecture: \"GlmMoeDsaForCausalLM\", fmha_quant: \"bfloat16\", kv_quant: \"fp8\", gemm_quant: \"bfloat16\" }"
+        },
+        {
+          "phase": "context",
+          "batch_size": 1,
+          "isl": 4096,
+          "step": 0,
+          "measured_attention_sum_ms": 73.6593,
+          "lookup_error": "perf database error: context DSA module data missing for DsaKey { architecture: \"GlmMoeDsaForCausalLM\", fmha_quant: \"bfloat16\", kv_quant: \"fp8\", gemm_quant: \"bfloat16\" }"
+        },
+        {
+          "phase": "context",
+          "batch_size": 1,
+          "isl": 1024,
+          "step": 131072,
+          "measured_attention_sum_ms": 45.4497,
+          "lookup_error": "perf database error: context DSA module data missing for DsaKey { architecture: \"GlmMoeDsaForCausalLM\", fmha_quant: \"bfloat16\", kv_quant: \"fp8\", gemm_quant: \"bfloat16\" }"
+        },
+        {
+          "phase": "context",
+          "batch_size": 1,
+          "isl": 2048,
+          "step": 0,
+          "measured_attention_sum_ms": 31.319699999999997,
+          "lookup_error": "perf database error: context DSA module data missing for DsaKey { architecture: \"GlmMoeDsaForCausalLM\", fmha_quant: \"bfloat16\", kv_quant: \"fp8\", gemm_quant: \"bfloat16\" }"
+        },
+        {
+          "phase": "generation",
+          "batch_size": 1,
+          "isl": 1,
+          "step": 8192,
+          "measured_attention_sum_ms": 4.1745,
+          "lookup_error": "perf database error: generation DSA module data missing for DsaKey { architecture: \"GlmMoeDsaForCausalLM\", fmha_quant: \"bfloat16\", kv_quant: \"fp8\", gemm_quant: \"bfloat16\" } at /home/harrli/.local/state/aisimulate/aic-2004-four-pr-20261006/sglang-evidence/fp8-consumer-9z5a97tc/systems/data/b200_sxm/sglang/0.5.14"
+        },
+        {
+          "phase": "generation",
+          "batch_size": 1,
+          "isl": 1,
+          "step": 131072,
+          "measured_attention_sum_ms": 5.249700000000001,
+          "lookup_error": "perf database error: generation DSA module data missing for DsaKey { architecture: \"GlmMoeDsaForCausalLM\", fmha_quant: \"bfloat16\", kv_quant: \"fp8\", gemm_quant: \"bfloat16\" } at /home/harrli/.local/state/aisimulate/aic-2004-four-pr-20261006/sglang-evidence/fp8-consumer-9z5a97tc/systems/data/b200_sxm/sglang/0.5.14"
+        }
+      ],
+      "direct_exact_cell_count": 14,
+      "direct_cells": [
+        {
+          "phase": "context",
+          "op_name": "dsa_context_module",
+          "batch_size": 1,
+          "isl": 128,
+          "step": 128,
+          "sdk_latency_ms": 0.5673,
+          "source": "silicon"
+        },
+        {
+          "phase": "context",
+          "op_name": "dsa_context_module_skip_indexer",
+          "batch_size": 1,
+          "isl": 128,
+          "step": 128,
+          "sdk_latency_ms": 0.2859,
+          "source": "silicon"
+        },
+        {
+          "phase": "context",
+          "op_name": "dsa_context_module",
+          "batch_size": 32,
+          "isl": 128,
+          "step": 128,
+          "sdk_latency_ms": 0.9277,
+          "source": "silicon"
+        },
+        {
+          "phase": "context",
+          "op_name": "dsa_context_module_skip_indexer",
+          "batch_size": 32,
+          "isl": 128,
+          "step": 128,
+          "sdk_latency_ms": 0.932,
+          "source": "silicon"
+        },
+        {
+          "phase": "context",
+          "op_name": "dsa_context_module",
+          "batch_size": 1,
+          "isl": 4096,
+          "step": 0,
+          "sdk_latency_ms": 1.4963,
+          "source": "silicon"
+        },
+        {
+          "phase": "context",
+          "op_name": "dsa_context_module_skip_indexer",
+          "batch_size": 1,
+          "isl": 4096,
+          "step": 0,
+          "sdk_latency_ms": 0.741,
+          "source": "silicon"
+        },
+        {
+          "phase": "context",
+          "op_name": "dsa_context_module",
+          "batch_size": 1,
+          "isl": 1024,
+          "step": 131072,
+          "sdk_latency_ms": 1.4021,
+          "source": "silicon"
+        },
+        {
+          "phase": "context",
+          "op_name": "dsa_context_module_skip_indexer",
+          "batch_size": 1,
+          "isl": 1024,
+          "step": 131072,
+          "sdk_latency_ms": 0.2808,
+          "source": "silicon"
+        },
+        {
+          "phase": "context",
+          "op_name": "dsa_context_module",
+          "batch_size": 1,
+          "isl": 2048,
+          "step": 0,
+          "sdk_latency_ms": 0.5577,
+          "source": "silicon"
+        },
+        {
+          "phase": "context",
+          "op_name": "dsa_context_module_skip_indexer",
+          "batch_size": 1,
+          "isl": 2048,
+          "step": 0,
+          "sdk_latency_ms": 0.344,
+          "source": "silicon"
+        },
+        {
+          "phase": "generation",
+          "op_name": "dsa_generation_module",
+          "batch_size": 1,
+          "isl": 1,
+          "step": 8192,
+          "sdk_latency_ms": 0.0818,
+          "source": "silicon"
+        },
+        {
+          "phase": "generation",
+          "op_name": "dsa_generation_module_skip_indexer",
+          "batch_size": 1,
+          "isl": 1,
+          "step": 8192,
+          "sdk_latency_ms": 0.0431,
+          "source": "silicon"
+        },
+        {
+          "phase": "generation",
+          "op_name": "dsa_generation_module",
+          "batch_size": 1,
+          "isl": 1,
+          "step": 131072,
+          "sdk_latency_ms": 0.133,
+          "source": "silicon"
+        },
+        {
+          "phase": "generation",
+          "op_name": "dsa_generation_module_skip_indexer",
+          "batch_size": 1,
+          "isl": 1,
+          "step": 131072,
+          "sdk_latency_ms": 0.0431,
+          "source": "silicon"
+        }
+      ]
+    },
+    "fixed": {
+      "label": "fixed",
+      "runtime_sha256": "5f5f3bb2559293921dfdc13f3d48c78aac43d2bbd09a8179070aede6db01e54c",
+      "script_sha256": "617be205c489fd9532e5fd02766a2680f4ab48808f4851c792133bc14f5c7e87",
+      "input_sha256": {
+        "context": "58cb1fd0d94faf349cfc3fe61f6f447929fa6c154e2cf5716dd86b7c73fcbb21",
+        "generation": "f658ae980c47ae58a835f20f07c764eca45410544537fa3b216a317bbcc3e597"
+      },
+      "canonical_model_cells": [
+        {
+          "phase": "context",
+          "batch_size": 1,
+          "isl": 128,
+          "step": 128,
+          "measured_attention_sum_ms": 28.209600000000002,
+          "sdk_attention": {
+            "name": "context_attention",
+            "latency_ms": 28.209600000000002,
+            "energy_wms": 0.0,
+            "source": "silicon",
+            "details": {
+              "sol": {
+                "latency_ms": 0.3813939864935065,
+                "math_ms": 0.18019236795733337,
+                "memory_ms": 0.3813939864935065
+              },
+              "sol_unavailable_reason": null,
+              "fallbacks": []
+            }
+          },
+          "exact": true
+        },
+        {
+          "phase": "context",
+          "batch_size": 32,
+          "isl": 128,
+          "step": 128,
+          "measured_attention_sum_ms": 72.6057,
+          "sdk_attention": {
+            "name": "context_attention",
+            "latency_ms": 72.6057,
+            "energy_wms": 0.0,
+            "source": "silicon",
+            "details": {
+              "sol": {
+                "latency_ms": 5.766155774634668,
+                "math_ms": 5.766155774634668,
+                "memory_ms": 1.0811141984415584
+              },
+              "sol_unavailable_reason": null,
+              "fallbacks": []
+            }
+          },
+          "exact": true
+        },
+        {
+          "phase": "context",
+          "batch_size": 1,
+          "isl": 4096,
+          "step": 0,
+          "measured_attention_sum_ms": 73.6593,
+          "sdk_attention": {
+            "name": "context_attention",
+            "latency_ms": 73.6593,
+            "energy_wms": 0.0,
+            "source": "silicon",
+            "details": {
+              "sol": {
+                "latency_ms": 9.729076800170667,
+                "math_ms": 9.729076800170667,
+                "memory_ms": 0.7957964135064935
+              },
+              "sol_unavailable_reason": null,
+              "fallbacks": []
+            }
+          },
+          "exact": true
+        },
+        {
+          "phase": "context",
+          "batch_size": 1,
+          "isl": 1024,
+          "step": 131072,
+          "measured_attention_sum_ms": 45.4497,
+          "sdk_attention": {
+            "name": "context_attention",
+            "latency_ms": 45.4497,
+            "energy_wms": 0.0,
+            "source": "silicon",
+            "details": {
+              "sol": {
+                "latency_ms": 7.759305812650668,
+                "math_ms": 7.759305812650668,
+                "memory_ms": 0.5869498846753247
+              },
+              "sol_unavailable_reason": null,
+              "fallbacks": []
+            }
+          },
+          "exact": true
+        },
+        {
+          "phase": "context",
+          "batch_size": 1,
+          "isl": 2048,
+          "step": 0,
+          "measured_attention_sum_ms": 31.319699999999997,
+          "sdk_attention": {
+            "name": "context_attention",
+            "latency_ms": 31.319699999999994,
+            "energy_wms": 0.0,
+            "source": "silicon",
+            "details": {
+              "sol": {
+                "latency_ms": 3.9113646407680003,
+                "math_ms": 3.9113646407680003,
+                "memory_ms": 0.6243708342857144
+              },
+              "sol_unavailable_reason": null,
+              "fallbacks": []
+            }
+          },
+          "exact": true
+        },
+        {
+          "phase": "generation",
+          "batch_size": 1,
+          "isl": 1,
+          "step": 8192,
+          "measured_attention_sum_ms": 4.1745,
+          "sdk_attention": {
+            "name": "generation_attention",
+            "latency_ms": 4.1745,
+            "energy_wms": 0.0,
+            "source": "silicon",
+            "details": {
+              "sol": {
+                "latency_ms": 0.3737215277922078,
+                "math_ms": 0.0028407179946666667,
+                "memory_ms": 0.3737215277922078
+              },
+              "sol_unavailable_reason": null,
+              "fallbacks": []
+            }
+          },
+          "exact": true
+        },
+        {
+          "phase": "generation",
+          "batch_size": 1,
+          "isl": 1,
+          "step": 131072,
+          "measured_attention_sum_ms": 5.249700000000001,
+          "sdk_attention": {
+            "name": "generation_attention",
+            "latency_ms": 5.249700000000001,
+            "energy_wms": 0.0,
+            "source": "silicon",
+            "details": {
+              "sol": {
+                "latency_ms": 0.4179583277922078,
+                "math_ms": 0.007538338474666667,
+                "memory_ms": 0.4179583277922078
+              },
+              "sol_unavailable_reason": null,
+              "fallbacks": []
+            }
+          },
+          "exact": true
+        }
+      ],
+      "direct_exact_cell_count": 14,
+      "direct_cells": [
+        {
+          "phase": "context",
+          "op_name": "dsa_context_module",
+          "batch_size": 1,
+          "isl": 128,
+          "step": 128,
+          "sdk_latency_ms": 0.5673,
+          "source": "silicon"
+        },
+        {
+          "phase": "context",
+          "op_name": "dsa_context_module_skip_indexer",
+          "batch_size": 1,
+          "isl": 128,
+          "step": 128,
+          "sdk_latency_ms": 0.2859,
+          "source": "silicon"
+        },
+        {
+          "phase": "context",
+          "op_name": "dsa_context_module",
+          "batch_size": 32,
+          "isl": 128,
+          "step": 128,
+          "sdk_latency_ms": 0.9277,
+          "source": "silicon"
+        },
+        {
+          "phase": "context",
+          "op_name": "dsa_context_module_skip_indexer",
+          "batch_size": 32,
+          "isl": 128,
+          "step": 128,
+          "sdk_latency_ms": 0.932,
+          "source": "silicon"
+        },
+        {
+          "phase": "context",
+          "op_name": "dsa_context_module",
+          "batch_size": 1,
+          "isl": 4096,
+          "step": 0,
+          "sdk_latency_ms": 1.4963,
+          "source": "silicon"
+        },
+        {
+          "phase": "context",
+          "op_name": "dsa_context_module_skip_indexer",
+          "batch_size": 1,
+          "isl": 4096,
+          "step": 0,
+          "sdk_latency_ms": 0.741,
+          "source": "silicon"
+        },
+        {
+          "phase": "context",
+          "op_name": "dsa_context_module",
+          "batch_size": 1,
+          "isl": 1024,
+          "step": 131072,
+          "sdk_latency_ms": 1.4021,
+          "source": "silicon"
+        },
+        {
+          "phase": "context",
+          "op_name": "dsa_context_module_skip_indexer",
+          "batch_size": 1,
+          "isl": 1024,
+          "step": 131072,
+          "sdk_latency_ms": 0.2808,
+          "source": "silicon"
+        },
+        {
+          "phase": "context",
+          "op_name": "dsa_context_module",
+          "batch_size": 1,
+          "isl": 2048,
+          "step": 0,
+          "sdk_latency_ms": 0.5577,
+          "source": "silicon"
+        },
+        {
+          "phase": "context",
+          "op_name": "dsa_context_module_skip_indexer",
+          "batch_size": 1,
+          "isl": 2048,
+          "step": 0,
+          "sdk_latency_ms": 0.344,
+          "source": "silicon"
+        },
+        {
+          "phase": "generation",
+          "op_name": "dsa_generation_module",
+          "batch_size": 1,
+          "isl": 1,
+          "step": 8192,
+          "sdk_latency_ms": 0.0818,
+          "source": "silicon"
+        },
+        {
+          "phase": "generation",
+          "op_name": "dsa_generation_module_skip_indexer",
+          "batch_size": 1,
+          "isl": 1,
+          "step": 8192,
+          "sdk_latency_ms": 0.0431,
+          "source": "silicon"
+        },
+        {
+          "phase": "generation",
+          "op_name": "dsa_generation_module",
+          "batch_size": 1,
+          "isl": 1,
+          "step": 131072,
+          "sdk_latency_ms": 0.133,
+          "source": "silicon"
+        },
+        {
+          "phase": "generation",
+          "op_name": "dsa_generation_module_skip_indexer",
+          "batch_size": 1,
+          "isl": 1,
+          "step": 131072,
+          "sdk_latency_ms": 0.0431,
+          "source": "silicon"
+        }
+      ]
+    }
+  },
+  "findings": [
+    "Both binaries return all 14 measured cells exactly when the FP8 key is explicitly requested.",
+    "The unmodified canonical GLM FP8 model selects BF16 attention before the norm-exclusion fix: all seven isolated model queries fail looking for absent BF16 DSA rows. This isolation failure exposes wrong precision; normal legacy data could silently satisfy it.",
+    "The fixed canonical model consumes the FP8 rows without a quantization override: all seven attention diagnostics equal 21*measured_full+57*measured_skip.",
+    "The five prefill coordinates include B1/B32 q128 p128, B1 q4096 p0, B1 q1024 p131072, and B1 q2048 p0; decode histories8192/131072 each use one new token."
+  ],
+  "limitations": [
+    "Private isolated systems root with strict_provenance=False; default packaged data unchanged.",
+    "Exact cell consumption validates model precision and layer accounting, not prediction accuracy.",
+    "Synthetic single-GPU module data uses TP8 head geometry; not a whole-model forward reference.",
+    "Prefill includes the native single-module compiler entry cost; whole-model amortization unqualified."
+  ]
+}
