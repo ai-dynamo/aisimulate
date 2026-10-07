@@ -23,7 +23,11 @@
     if (!response.ok) throw new Error(`Data unavailable (HTTP ${response.status}).`);
     return response.json();
   }
-  function status(message) { $('dashboard-status').textContent = message; $('nav-status-text').textContent = message; }
+  function status(message) {
+    $('dashboard-status').textContent = message;
+    $('dashboard-status').hidden = !message;
+    if (message && !$('evaluation-run')) window.fpmNavigation.setSnapshot(null);
+  }
   function options(element, values, all = true) {
     const prior = element.value;
     element.replaceChildren(...(all ? [new Option('All', '')] : []), ...values.map(([value, label]) => new Option(label, value)));
@@ -59,7 +63,7 @@
     trendEvents = new AbortController();
     const phase = $('phase-filter').value;
     const data = summaries.map(s=>({s,rows:matching(s.rows)})).filter(d=>d.rows.length);
-    window.fpmNavigation.setRun(data.at(-1)?.s.snapshot);
+    window.fpmNavigation.setSnapshot(data.at(-1)?.s.snapshot);
     const points = [];
     const max = Math.max(1,...data.flatMap(d=>methods.map(m=>metric(d.rows,m,phase).mape || 0)));
     const x = i => (data.length === 1 ? 480 : 60 + i * 820 / Math.max(1,data.length-1)), y = v => 270 - v / max * 230;
@@ -185,6 +189,7 @@
     heatmap($('error-heatmap'),map,true);
   }
   async function configuration() {
+    status('');
     const token = ++request;
     const index = Number($('evaluation-filter').value), summary = summaries[index], entry = entries[index];
     selected = summary?.rows.find(r=>r.configuration_id+'/'+r.snapshot_id === $('configuration-filter').value);
@@ -200,8 +205,7 @@
       const document = await load('data/'+entry.details_path);
       if (token !== request) return;
       detail = document.rows.find(r=>r.configuration_id === selected.configuration_id && r.snapshot_id === selected.snapshot_id);
-      const age = Date.now()-Date.parse(summary.snapshot.completed_at);
-      status(`${age>48*3600000 ? 'Stale · ' : ''}AISim ${summary.snapshot.commit_sha.slice(0,12)} · HF ${summary.snapshot.hf_revision.slice(0,12)} · ${completed(summary.snapshot.completed_at)}`);
+      status('');
       if (detail && !detail.workload_heatmaps[$('phase-filter').value]) {
         const available = ['prefill','decode','mixed'].find(phase => detail.workload_heatmaps[phase]);
         if (available) $('phase-filter').value = available;
@@ -226,11 +230,11 @@
   }
   function evaluation() {
     const summary = summaries[Number($('evaluation-filter').value)];
-    window.fpmNavigation.setRun(summary?.snapshot);
+    window.fpmNavigation.setSnapshot(summary?.snapshot);
     populate(summary?.rows || []); configurations();
   }
   async function start() {
-    window.fpmNavigation.setRun(null);
+    window.fpmNavigation.setSnapshot(null, 'Loading evaluation…');
     const [history, branchCatalog] = await Promise.all([load('data/history.json',true), load('branches.json')]);
     const branches = branchCatalog.branches.map(entry=>entry.branch);
     options($('branch'),branches.map(b=>[b,b]),false); $('branch').disabled = false;
@@ -242,7 +246,7 @@
     else entries.sort((a,b)=>(a.revision_order || 0)-(b.revision_order || 0));
     summaries = await Promise.all(entries.map(e=>load('data/'+e.summary_path)));
     if (!summaries.length) { status(view === 'trends' ? 'No completed evaluation at or after the Trends baseline.' : 'No completed evaluation for this branch.'); return; }
-    status(`${Date.now()-Date.parse(summaries.at(view === 'trends' ? -1 : 0).snapshot.completed_at)>48*3600000 ? 'Stale · ' : ''}${summaries.length} retained evaluations · latest HF ${summaries.at(view === 'trends' ? -1 : 0).snapshot.hf_revision.slice(0,12)}`);
+    status('');
     if (view === 'trends') { populate(summaries.flatMap(s=>s.rows)); trends(); }
     else {
       options($('evaluation-filter'),summaries.map((s,i)=>[String(i),`${s.snapshot.commit_sha.slice(0,12)} · HF ${s.snapshot.hf_revision.slice(0,12)} · ${completed(s.snapshot.completed_at)}`]),false);

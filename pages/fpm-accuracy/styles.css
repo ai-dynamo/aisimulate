@@ -5,20 +5,18 @@
 .fpm-summary { grid-template-columns: repeat(5, minmax(0, 1fr)); }
 .predictors-summary { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .summary-note { margin-top: 6px; color: var(--muted); font-size: 12px; }
-#evaluation-run[hidden] { display: none; }
+.evaluation-banner a, .evaluation-banner time { white-space: nowrap; }
 .predictor-reference { padding: 20px; margin-bottom: 24px; }
 .predictor-reference p, .predictor-reference dd { color: var(--muted); font-size: 13px; line-height: 1.6; }
 .predictor-reference dt { font-weight: 600; margin-top: 18px; }
 .predictor-reference dd { margin: 4px 0 0; }
 .predictor-reference summary { cursor:pointer; color:var(--text); margin-top:4px; font-size:12px; overflow-wrap:anywhere; }
-.evaluation-banner .snapshot-links { display:flex; flex-wrap:wrap; gap:12px; }
 .predictor-reference pre { padding: 12px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; overflow-x: auto; color: var(--text); font-size: 12px; }
 .predictor-reference a { color: var(--accent); }
 .overview-method-cell .predictor-name { color: var(--text); margin: 3px 0; }
-.snapshot-value { overflow-wrap: anywhere; }
-.snapshot-value a, .overview-config-row a, .overview-method-cell a { color: var(--accent); text-decoration: none; }
-.snapshot-value a:hover, .overview-config-row a:hover, .overview-method-cell a:hover { text-decoration: underline; }
-.evaluation-banner { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:8px 20px; padding:12px 16px; margin-bottom:12px; border:1px solid var(--border); border-radius:8px; background:var(--panel); color:var(--muted); font-size:12px; }
+.evaluation-banner a, .overview-config-row a, .overview-method-cell a { color: var(--accent); text-decoration: none; }
+.evaluation-banner a:hover, .overview-config-row a:hover, .overview-method-cell a:hover { text-decoration: underline; }
+.evaluation-banner { display:flex; flex-wrap:wrap; align-items:center; justify-content:flex-start; gap:8px; padding:12px 16px; margin:20px 0 0; border:1px solid var(--border); border-radius:8px; background:var(--panel); color:var(--muted); font-size:12px; }
 #table-count { float: right; font-size: 12px; font-weight: 400; }
 .overview-model-row th { background: transparent; color: var(--text); }
 .overview-model-button { display: flex; align-items: center; justify-content: flex-start; gap: 8px; width: 100%; padding: 0; border: 0; background: none; color: inherit; font: inherit; font-weight: 600; text-align: left; cursor: pointer; }

@@ -64,17 +64,17 @@ Details and 3D Visualization are separate tabs with independent controls.
   prediction errors, and regression tuning errors. Cold-start misses count
   against coverage. Missing FPM inputs never remove measurements from coverage.
 - Dataset configuration and measurement links pinned to the evaluated HF commit.
-- The evaluated AISim commit, HF commit, and UTC completion time. Overview and
-  Predictors show evaluation status, the daily schedule, and an Evaluation run
-  link in a banner directly below the tabs, without introductory comparison
-  text or an age-based stale warning.
-- Evaluation run links point to the exact GitHub Actions run attempt: the loaded
-  snapshot on Overview/Predictors, the selected evaluation on Details, and the
-  newest represented evaluation on filtered Trends. 3D Visualization links to
-  the selected branch's latest completed evaluation, labeled “Latest evaluation
-  run” because its measurement catalog is independent. Links are hidden while
-  loading or when no applicable evaluation exists. Dataset links remain in the
-  snapshot identity and configuration/measurement evidence.
+- Every tab uses one left-aligned evaluation box below the tabs:
+  `Daily evaluation · YYYY-MM-DD · Evaluation run · AISim <commit> · HF <revision>`.
+  The date is the evaluation completion date in UTC. All three links belong to
+  that snapshot. Separate schedule headers, evaluated-configuration counts,
+  revision/timestamp lines, and age-based stale warnings are removed.
+- The box follows the loaded snapshot on Overview/Predictors, the selected
+  evaluation on Details, and the newest represented evaluation on filtered
+  Trends. On 3D Visualization it describes the selected branch's latest
+  completed evaluation; the independent measurement catalog still identifies
+  its own HF revision. Loading/unavailable states clear prior snapshot links.
+  Dataset links remain in configuration/measurement evidence as well.
 
 There is no op-based evaluation or FPM Coverage tab.
 FPM variants use the same observations. One winner per KV warmup mode is selected

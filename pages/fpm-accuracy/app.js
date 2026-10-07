@@ -153,10 +153,8 @@
     body.innerHTML = `<tr><td colspan="${columns}" class="empty-cell">${escape(message)}</td></tr>`;
     document.querySelectorAll('.summary-value').forEach(element => { element.textContent = '—'; });
     document.querySelectorAll('.summary-note').forEach(element => { element.textContent = ''; });
-    window.fpmNavigation.setRun(null);
-    document.querySelector(".snapshot-value").textContent = message;
+    window.fpmNavigation.setSnapshot(null, message);
     document.getElementById("table-count").textContent = "";
-    document.getElementById("nav-status-text").textContent = message;
   }
 
   async function select(branch) {
@@ -173,11 +171,8 @@
       const rows = data.rows.filter((row) => row.measurement_count > 0);
       summary = { ...data, rows };
       const snapshot = data.snapshot;
-      const ready = rows.filter((row) => row.status === "ready").length;
       cards(rows);
-      window.fpmNavigation.setRun(snapshot);
-      document.querySelector(".snapshot-value").innerHTML = `${link(`https://github.com/ai-dynamo/aisimulate/commit/${snapshot.commit_sha}`, `AISim ${snapshot.commit_sha.slice(0, 8)}`)} · ${link(`https://huggingface.co/datasets/nvidia/aisimulate-fpm-dataset/tree/${snapshot.hf_revision}`, `HF ${snapshot.hf_revision.slice(0, 8)}`)}<br>${escape(new Date(snapshot.completed_at).toISOString())}`;
-      document.getElementById("nav-status-text").textContent = `${ready} evaluated configurations`;
+      window.fpmNavigation.setSnapshot(snapshot);
       render();
     } catch (error) {
       if (current === request) clear(`Overview unavailable: ${error.message}`);

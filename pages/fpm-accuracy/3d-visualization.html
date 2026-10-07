@@ -73,20 +73,13 @@ SPDX-License-Identifier: Apache-2.0
       </div>
     </header>
 
-    <section class="scope-bar" aria-label="Evaluation scope">
-      <div class="shell heading-controls">
-        <span id="nav-status-text" class="scope-control" aria-live="polite">Loading evaluation…</span>
-        <div class="snapshot-links">
-          <span>Daily evaluation · 10:47 UTC</span>
-          <a id="evaluation-run" hidden target="_blank" rel="noopener">Evaluation run</a>
-        </div>
-      </div>
-    </section>
-
     <nav class="shell fpm-tabs" aria-label="FPM dashboard">
       <a href="index.html">Overview</a><a href="predictors.html">Predictors</a><a href="trends.html">Trends</a>
       <a href="evaluation-detail.html">Details</a><a href="3d-visualization.html">3D Visualization</a>
     </nav>
+    <div class="shell evaluation-context">
+      <section id="evaluation-banner" class="evaluation-banner" aria-label="Evaluation snapshot" aria-live="polite">Loading evaluation…</section>
+    </div>
 <main id="gym-visualization" aria-label="Interactive latency visualization">
 <section class="gv-content" id="gv-main" aria-labelledby="gv-title">
   <nav class="gv-breadcrumb" aria-label="Breadcrumb"><a href="index.html">AISimulate</a><span>/</span><span>3D visualization</span></nav>

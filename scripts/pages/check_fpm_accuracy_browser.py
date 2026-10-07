@@ -62,6 +62,19 @@ def prepare_visualization_fixtures(directory: Path):
     (directory / "manifest.json").write_text(json.dumps(manifest))
 
 
+async def check_evaluation_banner(page, date="2026-09-17"):
+    banner = page.locator("#evaluation-banner")
+    await expect(banner).to_have_count(1)
+    await expect(banner.locator("time")).to_have_text(date)
+    await expect(banner.locator("a")).to_have_count(3)
+    await expect(banner.locator("#evaluation-aisim")).to_contain_text("AISim ")
+    await expect(banner.locator("#evaluation-hf")).to_contain_text("HF ")
+    await expect(banner).not_to_contain_text("evaluated configurations")
+    await expect(banner).not_to_contain_text("10:47")
+    await expect(page.locator(".scope-bar, .snapshot-value, #nav-status-text")).to_have_count(0)
+    assert await banner.evaluate("node => getComputedStyle(node).justifyContent === 'flex-start'")
+
+
 async def check_predictor_views(page, url, data, screenshot):
     """Unequal counts distinguish configuration means from weighted/model means."""
     summary = copy.deepcopy(data)
@@ -109,6 +122,7 @@ async def check_predictor_views(page, url, data, screenshot):
     await expect(page.locator(".overview-model-row").last).to_contain_text("Example/Missing")
     await page.get_by_role("link", name="Predictors", exact=True).click()
     await expect(page.locator('.fpm-tabs [aria-current="page"]')).to_have_text("Predictors")
+    await check_evaluation_banner(page)
     await expect(page.locator(".summary-card")).to_have_count(3)
     await expect(page.locator("thead th")).to_have_count(7)
     await expect(page.locator("#overview-body")).not_to_contain_text("predicted")
@@ -150,6 +164,7 @@ async def check_predictor_views(page, url, data, screenshot):
 
 
 async def check_trend_tooltip(page, screenshot):
+    await check_evaluation_banner(page)
     point = page.locator(".trend-point").first
     tooltip = page.locator("#trend-tooltip")
     await point.evaluate("node => node.blur()")
@@ -209,7 +224,9 @@ async def check_history_links(page, url):
     )
     await page.locator(".trend-point").first.hover()
     await expect(page.locator("#trend-tooltip")).to_be_visible()
+    await check_evaluation_banner(page, "2026-09-18")
     await page.locator("#model-filter").select_option("Org/Model")
+    await check_evaluation_banner(page)
     await expect(page.locator("#evaluation-run")).to_have_attribute(
         "href", "https://github.com/ai-dynamo/aisimulate/actions/runs/123/attempts/1"
     )
@@ -217,7 +234,9 @@ async def check_history_links(page, url):
     await expect(page.locator("#evaluation-run")).to_have_attribute(
         "href", "https://github.com/ai-dynamo/aisimulate/actions/runs/789/attempts/3"
     )
+    await check_evaluation_banner(page, "2026-09-18")
     await page.locator("#evaluation-filter").select_option("1")
+    await check_evaluation_banner(page)
     await expect(page.locator("#evaluation-run")).to_have_attribute(
         "href", "https://github.com/ai-dynamo/aisimulate/actions/runs/123/attempts/1"
     )
@@ -282,6 +301,7 @@ async def check():
                 await expect(page.locator("html")).to_have_attribute("data-theme", "light")
                 await expect(page.locator(".overview-model-row")).to_have_count(2)
                 await expect(page.locator("#freshness")).to_have_count(0)
+                await check_evaluation_banner(page)
                 await expect(page.locator(".evaluation-banner")).to_contain_text("Daily evaluation")
                 await expect(page.locator(".evaluation-banner #evaluation-run")).to_have_attribute(
                     "href", "https://github.com/ai-dynamo/aisimulate/actions/runs/123/attempts/1"
@@ -392,7 +412,7 @@ async def check():
                 await page.set_viewport_size({"width": 1400, "height": 1000})
                 await check_history_links(page, url)
                 await page.goto(url + "3d-visualization.html?branch=release/0.12.0")
-                await expect(page.get_by_role("link", name="Latest evaluation run")).to_have_attribute(
+                await expect(page.get_by_role("link", name="Evaluation run")).to_have_attribute(
                     "href", "https://github.com/ai-dynamo/aisimulate/actions/runs/456/attempts/2"
                 )
                 await expect(page.locator("#gv-left-chart .plot-container")).to_be_visible(timeout=30000)
@@ -442,6 +462,7 @@ async def check():
                     "Plotly.relayout(document.querySelector('#gv-left-chart'), {'scene.camera': {eye:{x:2,y:1,z:1}}})"
                 )
                 await page.locator("#gv-density").select_option("all")
+                await check_evaluation_banner(page)
                 await expect(page.locator("#gv-left-count")).to_contain_text("40")
                 await page.locator("#gv-phase").select_option("decode")
                 await page.locator("#gv-density").select_option("sample")
