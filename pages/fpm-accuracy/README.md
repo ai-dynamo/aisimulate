@@ -31,7 +31,8 @@ Details and 3D Visualization are separate tabs with independent controls.
   each commit ID with its evaluation date (UTC). Hover, focus, or tap a sample
   for a structured tooltip with MAPE, counts, coverage, errors, evaluation time,
   and short revision IDs. Full revisions remain in accessible point labels.
-  Larger targets and active markers help selection; tooltips stay inside the
+  Larger targets and active markers help selection; connecting lines do not
+  intercept sample hover targets. Tooltips stay inside the
   viewport and dismiss with Escape or when leaving the point and tooltip.
   The separate trend-values table is removed; the latest phase summary remains.
 - Details: retained branch evaluations, selected FPM inputs, phase summaries,

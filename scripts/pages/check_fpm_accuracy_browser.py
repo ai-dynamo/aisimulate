@@ -203,6 +203,8 @@ async def check_history_links(page, url):
     await expect(page.locator("#evaluation-run")).to_have_attribute(
         "href", "https://github.com/ai-dynamo/aisimulate/actions/runs/789/attempts/3"
     )
+    await page.locator(".trend-point").first.hover()
+    await expect(page.locator("#trend-tooltip")).to_be_visible()
     await page.locator("#model-filter").select_option("Org/Model")
     await expect(page.locator("#evaluation-run")).to_have_attribute(
         "href", "https://github.com/ai-dynamo/aisimulate/actions/runs/123/attempts/1"

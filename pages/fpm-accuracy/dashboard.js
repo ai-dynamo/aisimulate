@@ -72,7 +72,7 @@
     methods.forEach((method,k)=>data.forEach((d,i)=> {
       const m = metric(d.rows,method,phase); if (m.mape == null) return;
       const previous = i ? metric(data[i-1].rows,method,phase) : null;
-      if (previous?.mape != null && signature(d.rows,method) === signature(data[i-1].rows,method)) chart += `<path d="M${x(i-1)} ${y(previous.mape)} L${x(i)} ${y(m.mape)}" stroke="${colors[k]}" fill="none"/>`;
+      if (previous?.mape != null && signature(d.rows,method) === signature(data[i-1].rows,method)) chart += `<path d="M${x(i-1)} ${y(previous.mape)} L${x(i)} ${y(m.mape)}" stroke="${colors[k]}" fill="none" pointer-events="none"/>`;
       const text = `${labels[method]}: ${value(m)} · AISim ${d.s.snapshot.commit_sha} · Evaluated ${completed(d.s.snapshot.completed_at)} · HF ${d.s.snapshot.hf_revision} · evaluator ${d.s.snapshot.evaluator_sha}`;
       const index = points.push({method, metric:m, snapshot:d.s.snapshot, color:colors[k]}) - 1;
       chart += `<g class="trend-point" role="img" tabindex="0" data-point="${index}" transform="translate(${x(i)} ${y(m.mape)})" style="--point-color:${colors[k]}" aria-label="${esc(text)}"><circle class="trend-hit" r="14" fill="transparent"/><circle class="trend-dot" r="5" fill="${colors[k]}"/></g>`;
