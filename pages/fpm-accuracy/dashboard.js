@@ -53,13 +53,17 @@
   function signature(rows, method) {
     return JSON.stringify(rows.map(r=>[r.configuration_id,r.snapshot_id,r.membership_sha256,r.parser_policy_id,r.results[method]?.artifact]).sort((a,b)=>String(a[0]).localeCompare(String(b[0]))));
   }
+  let trendEvents;
   function trends() {
+    trendEvents?.abort();
+    trendEvents = new AbortController();
     const phase = $('phase-filter').value;
     const data = summaries.map(s=>({s,rows:matching(s.rows)})).filter(d=>d.rows.length);
-    $('trend-table').innerHTML = '<thead><tr><th>Revision / HF / completed</th>'+methods.map(m=>`<th>${labels[m]}</th>`).join('')+'</tr></thead><tbody>'+data.map(({s,rows})=>`<tr><th><a href="https://github.com/ai-dynamo/aisimulate/commit/${s.snapshot.commit_sha}">${s.snapshot.commit_sha.slice(0,12)}</a><br>HF ${s.snapshot.hf_revision.slice(0,12)}<br>${esc(completed(s.snapshot.completed_at))}</th>${methods.map(m=>`<td>${value(metric(rows,m,phase))}</td>`).join('')}</tr>`).join('')+'</tbody>';
+    window.fpmNavigation.setRun(data.at(-1)?.s.snapshot);
+    const points = [];
     const max = Math.max(1,...data.flatMap(d=>methods.map(m=>metric(d.rows,m,phase).mape || 0)));
     const x = i => (data.length === 1 ? 480 : 60 + i * 820 / Math.max(1,data.length-1)), y = v => 270 - v / max * 230;
-    let chart = '<svg viewBox="0 0 960 320" role="img" aria-label="MAPE across revisions; equivalent values in the table below"><path d="M60 30 V270 H900" fill="none" stroke="currentColor"/>';
+    let chart = '<svg viewBox="0 0 960 320" role="group" aria-label="MAPE across revisions. Focus or tap a sample for metrics and evaluation details."><path d="M60 30 V270 H900" fill="none" stroke="currentColor"/>';
     for (let n=0;n<=4;n++) chart += `<text x="4" y="${y(n*max/4)}" fill="currentColor" font-size="12">${(n*max/4).toFixed(1)}%</text>`;
     data.forEach((d,i)=> {
       if (i && methods.some(m=>signature(d.rows,m) !== signature(data[i-1].rows,m))) chart += `<path d="M${(x(i)+x(i-1))/2} 30 V270" stroke="currentColor" stroke-dasharray="4 5"><title>Measurement population or FPM input changed</title></path>`;
@@ -70,24 +74,73 @@
       const previous = i ? metric(data[i-1].rows,method,phase) : null;
       if (previous?.mape != null && signature(d.rows,method) === signature(data[i-1].rows,method)) chart += `<path d="M${x(i-1)} ${y(previous.mape)} L${x(i)} ${y(m.mape)}" stroke="${colors[k]}" fill="none"/>`;
       const text = `${labels[method]}: ${value(m)} · AISim ${d.s.snapshot.commit_sha} · Evaluated ${completed(d.s.snapshot.completed_at)} · HF ${d.s.snapshot.hf_revision} · evaluator ${d.s.snapshot.evaluator_sha}`;
-      chart += `<circle tabindex="0" cx="${x(i)}" cy="${y(m.mape)}" r="5" fill="${colors[k]}" aria-label="${esc(text)}"><title>${esc(text)}</title></circle>`;
+      const index = points.push({method, metric:m, snapshot:d.s.snapshot, color:colors[k]}) - 1;
+      chart += `<g class="trend-point" role="img" tabindex="0" data-point="${index}" transform="translate(${x(i)} ${y(m.mape)})" style="--point-color:${colors[k]}" aria-label="${esc(text)}"><circle class="trend-hit" r="14" fill="transparent"/><circle class="trend-dot" r="5" fill="${colors[k]}"/></g>`;
     }));
     $('trend-chart').innerHTML = chart+'</svg>'+ (data.length === 1 ? '<p>One evaluation available. More daily evaluations will form the trend.</p>' : '') +'<p>'+methods.map((m,i)=>`<span style="color:${colors[i]}">● ${labels[m]}</span>`).join(' · ')+'</p>';
     const tooltip = document.createElement('div');
     tooltip.id = 'trend-tooltip'; tooltip.setAttribute('role','tooltip'); tooltip.hidden = true;
     $('trend-chart').append(tooltip);
-    const hide = () => { tooltip.hidden = true; };
-    $('trend-chart').querySelectorAll('circle').forEach(point => {
-      const show = () => {
-        tooltip.textContent = point.getAttribute('aria-label'); tooltip.hidden = false;
-        const rect = point.getBoundingClientRect();
-        tooltip.style.left = Math.max(8,Math.min(rect.left,innerWidth-340))+'px';
-        tooltip.style.top = Math.max(8,rect.top-tooltip.offsetHeight-12)+'px';
-      };
-      point.addEventListener('mouseenter',show); point.addEventListener('focus',show);
-      point.addEventListener('mouseleave',hide); point.addEventListener('blur',hide);
-      point.addEventListener('keydown',event=> { if (event.key === 'Escape') hide(); });
+    let active, pinned = false, timer;
+    const listen = (target, event, callback, options = {}) => target.addEventListener(event, callback, {...options, signal:trendEvents.signal});
+    const hide = () => {
+      clearTimeout(timer);
+      tooltip.hidden = true;
+      active?.classList.remove('active');
+      active?.removeAttribute('aria-describedby');
+      active = null; pinned = false;
+    };
+    const leave = () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        if (!pinned && document.activeElement !== active && !tooltip.matches(':hover') && !active?.matches(':hover')) hide();
+      }, 140);
+    };
+    trendEvents.signal.addEventListener('abort', () => clearTimeout(timer), {once:true});
+    const show = point => {
+      clearTimeout(timer);
+      if (active !== point) hide();
+      active = point;
+      const {method, metric:m, snapshot:s, color} = points[Number(point.dataset.point)];
+      const rows = [
+        ['Predicted / measured', `${m.predicted.toLocaleString()} / ${m.measured.toLocaleString()}`],
+        ['Coverage', `${m.measured ? (100*m.predicted/m.measured).toFixed(1) : '0'}%`],
+        ['Errors', m.errors.toLocaleString()],
+        ['Evaluated', completed(s.completed_at)],
+        ['AISim', s.commit_sha.slice(0,8)],
+        ['HF dataset', s.hf_revision.slice(0,8)],
+        ['Evaluator', s.evaluator_sha.slice(0,8)],
+      ];
+      tooltip.innerHTML = `<div class="trend-tooltip-heading" style="--point-color:${color}">${esc(labels[method])}</div><div class="trend-tooltip-mape">${m.mape.toFixed(2)}% <small>MAPE</small></div><dl>${rows.map(([label,value])=>`<dt>${label}</dt><dd>${esc(value)}</dd>`).join('')}</dl>`;
+      tooltip.hidden = false;
+      point.classList.add('active');
+      point.setAttribute('aria-describedby', tooltip.id);
+      const rect = point.getBoundingClientRect();
+      const width = tooltip.offsetWidth, height = tooltip.offsetHeight;
+      tooltip.style.left = Math.max(8,Math.min(rect.left+rect.width/2-width/2,innerWidth-width-8))+'px';
+      const top = rect.top-height-10 >= 8 ? rect.top-height-10 : rect.bottom+10;
+      tooltip.style.top = Math.max(8,Math.min(top,innerHeight-height-8))+'px';
+    };
+    $('trend-chart').querySelectorAll('.trend-point').forEach(point => {
+      listen(point, 'pointerenter', event => { if (event.pointerType !== 'touch') show(point); });
+      listen(point, 'focus', () => show(point));
+      listen(point, 'pointerleave', leave);
+      listen(point, 'blur', hide);
+      listen(point, 'pointerdown', event => {
+        if (event.pointerType !== 'touch') return;
+        event.preventDefault();
+        if (active === point && pinned) hide();
+        else { show(point); pinned = true; }
+      });
     });
+    listen(tooltip, 'pointerenter', () => clearTimeout(timer));
+    listen(tooltip, 'pointerleave', leave);
+    listen(document, 'keydown', event => { if (event.key === 'Escape') hide(); });
+    listen(document, 'pointerdown', event => {
+      if (!event.target.closest('.trend-point, #trend-tooltip')) hide();
+    });
+    listen(window, 'resize', hide);
+    listen(window, 'scroll', hide, {capture:true});
     phaseTable(data.at(-1)?.rows || []);
   }
   function heatmap(target, map, error) {
@@ -171,8 +224,13 @@
     }
     configuration();
   }
-  function evaluation() { populate(summaries[Number($('evaluation-filter').value)]?.rows || []); configurations(); }
+  function evaluation() {
+    const summary = summaries[Number($('evaluation-filter').value)];
+    window.fpmNavigation.setRun(summary?.snapshot);
+    populate(summary?.rows || []); configurations();
+  }
   async function start() {
+    window.fpmNavigation.setRun(null);
     const [history, branchCatalog] = await Promise.all([load('data/history.json',true), load('branches.json')]);
     const branches = branchCatalog.branches.map(entry=>entry.branch);
     options($('branch'),branches.map(b=>[b,b]),false); $('branch').disabled = false;

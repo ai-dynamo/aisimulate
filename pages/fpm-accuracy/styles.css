@@ -1,12 +1,23 @@
 /* SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved. */
 /* SPDX-License-Identifier: Apache-2.0 */
 /* E2E supplies the shared page styles; FPM views extend them here. */
-.fpm-summary { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.fpm-summary { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+.predictors-summary { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.summary-note { margin-top: 6px; color: var(--muted); font-size: 12px; }
+#evaluation-run[hidden] { display: none; }
+.predictor-reference { padding: 20px; margin-bottom: 24px; }
+.predictor-reference p, .predictor-reference dd { color: var(--muted); font-size: 13px; line-height: 1.6; }
+.predictor-reference dt { font-weight: 600; margin-top: 18px; }
+.predictor-reference dd { margin: 4px 0 0; }
+.predictor-reference summary { cursor:pointer; color:var(--text); margin-top:4px; font-size:12px; overflow-wrap:anywhere; }
+.evaluation-banner .snapshot-links { display:flex; flex-wrap:wrap; gap:12px; }
+.predictor-reference pre { padding: 12px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; overflow-x: auto; color: var(--text); font-size: 12px; }
+.predictor-reference a { color: var(--accent); }
+.overview-method-cell .predictor-name { color: var(--text); margin: 3px 0; }
 .snapshot-value { overflow-wrap: anywhere; }
 .snapshot-value a, .overview-config-row a, .overview-method-cell a { color: var(--accent); text-decoration: none; }
 .snapshot-value a:hover, .overview-config-row a:hover, .overview-method-cell a:hover { text-decoration: underline; }
-.branch-status:empty { display: none; }
-.branch-status.stale { border-left: 3px solid var(--accent); }
+.evaluation-banner { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:8px 20px; padding:12px 16px; margin-bottom:12px; border:1px solid var(--border); border-radius:8px; background:var(--panel); color:var(--muted); font-size:12px; }
 #table-count { float: right; font-size: 12px; font-weight: 400; }
 .overview-model-row th { background: transparent; color: var(--text); }
 .overview-model-button { display: flex; align-items: center; gap: 8px; width: 100%; padding: 0; border: 0; background: none; color: inherit; font: inherit; font-weight: 600; text-align: left; cursor: pointer; }
@@ -64,7 +75,19 @@
 [data-view] label { max-width:100%; min-width:0; }
 [data-view] select { min-width:0; }
 
-#trend-tooltip { position:fixed; z-index:20; width:320px; padding:12px; border:1px solid var(--border); border-radius:8px; background:var(--panel); color:var(--text); overflow-wrap:anywhere; pointer-events:none; }
+#trend-tooltip { position:fixed; z-index:20; box-sizing:border-box; width:320px; max-width:calc(100vw - 16px); max-height:calc(100vh - 16px); overflow:auto; padding:16px; border:1px solid var(--border); border-radius:10px; background:var(--panel); color:var(--text); box-shadow:0 8px 28px #0003; font-size:12px; }
+#trend-tooltip[hidden] { display:none; }
+.trend-tooltip-heading { color:var(--text); font-size:13px; font-weight:600; }
+.trend-tooltip-heading::before { content:''; display:inline-block; width:8px; height:8px; margin-right:8px; border-radius:50%; background:var(--point-color); }
+.trend-tooltip-mape { margin:10px 0 14px; font-size:26px; font-weight:600; font-variant-numeric:tabular-nums; }
+.trend-tooltip-mape small { font-size:11px; color:var(--muted); font-weight:400; }
+#trend-tooltip dl { display:grid; grid-template-columns:auto 1fr; gap:7px 14px; margin:0; }
+#trend-tooltip dt { color:var(--muted); }
+#trend-tooltip dd { margin:0; text-align:right; font-variant-numeric:tabular-nums; overflow-wrap:anywhere; }
+.trend-point { cursor:pointer; outline:none; }
+.trend-dot { pointer-events:none; }
+.trend-point.active .trend-dot, .trend-point:focus-visible .trend-dot { r:7; stroke:var(--text); stroke-width:2; }
+.trend-point.active .trend-hit, .trend-point:focus-visible .trend-hit { fill:var(--point-color); fill-opacity:.15; }
 
 .variant-evidence { font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
 .variant-evidence a { color: inherit; }

@@ -62,6 +62,163 @@ def prepare_visualization_fixtures(directory: Path):
     (directory / "manifest.json").write_text(json.dumps(manifest))
 
 
+async def check_predictor_views(page, url, data, screenshot):
+    """Unequal counts distinguish configuration means from weighted/model means."""
+    summary = copy.deepcopy(data)
+    second = copy.deepcopy(summary["rows"][0])
+    second.update(configuration_id="alpha-small", parallelism="tp8", measurement_count=10)
+    for method, mape in (("regression", 20), ("warmup", 0), ("nowarmup", None)):
+        second["results"][method]["metrics"]["all"].update(
+            mape_pct=mape, predicted_count=10 if mape is not None else 0, measured_count=10
+        )
+    summary["rows"].append(second)
+    for method in ("regression", "warmup", "nowarmup"):
+        summary["rows"][1]["results"][method]["metrics"]["all"]["mape_pct"] = (
+            "nonfinite" if method == "nowarmup" else 30
+        )
+    missing = copy.deepcopy(summary["rows"][0])
+    missing.update(model="Example/Missing", configuration_id="missing")
+    for result in missing["results"].values():
+        result["metrics"]["all"].update(mape_pct=None, predicted_count=0)
+    summary["rows"].append(missing)
+    empty = copy.deepcopy(missing)
+    empty.update(model="Example/Empty", configuration_id="empty", measurement_count=0)
+    summary["rows"].append(empty)
+    pattern = "**/" + artifact_key("main") + "/summary.json"
+    await page.route(pattern, lambda route: route.fulfill(body=json.dumps(summary).replace('"nonfinite"', "1e400")))
+    await page.set_viewport_size({"width": 1400, "height": 1000})
+    await page.goto(url + "?branch=main")
+    await expect(page.locator("#overall-value")).to_have_text("14.17%")
+    await expect(page.locator("#overall-count")).to_have_text("3 / 4 configurations with MAPE")
+    alpha = page.locator(".overview-model-row").filter(has_text="Example/Alpha")
+    await expect(alpha).to_contain_text("6.25%")
+    await expect(alpha).to_contain_text("Mixed predictors")
+    await expect(alpha).to_contain_text("90/110 predicted")
+    await expect(page.locator(".overview-config-row").first).to_contain_text("Regression")
+    await expect(page.locator(".overview-config-row").nth(1)).to_contain_text("0.00%")
+    await expect(page.locator(".overview-config-row").nth(1)).to_contain_text("FPM (KV warmup on)")
+    await expect(page.locator(".overview-model-row").last).to_contain_text("Unavailable")
+    await page.locator('[data-model="Example/Alpha"]').click()
+    await expect(page.locator("#overall-value")).to_have_text("14.17%")
+    await page.locator('[data-sort="best"]').click()
+    await expect(page.locator(".overview-model-row").first).to_contain_text("Example/Beta")
+    await page.locator('[data-sort="best"]').click()
+    await expect(page.locator(".overview-model-row").first).to_contain_text("Example/Alpha")
+    await expect(page.locator(".overview-model-row").last).to_contain_text("Example/Missing")
+    await page.get_by_role("link", name="Predictors", exact=True).click()
+    await expect(page.locator('.fpm-tabs [aria-current="page"]')).to_have_text("Predictors")
+    await expect(page.locator(".summary-card")).to_have_count(3)
+    await expect(page.locator("thead th")).to_have_count(7)
+    await expect(page.locator("#regression-value")).to_have_text("20.83%")
+    await expect(page.locator("#warmup-value")).to_have_text("14.17%")
+    await expect(page.locator("#nowarmup-value")).to_have_text("12.50%")
+    await expect(page.locator("#nowarmup-count")).to_have_text("1 / 4 configurations with MAPE")
+    await expect(alpha).to_contain_text("13.33%")
+    await expect(alpha).to_contain_text("11.11%")
+    await page.locator(".predictor-reference summary").first.click()
+    await expect(page.locator(".predictor-reference pre").first).to_be_visible()
+    await expect(page.locator(".predictor-reference")).to_contain_text("tune_with_fpms")
+    await page.locator(".predictor-reference summary").first.click()
+    await page.locator('[data-sort="method:regression"]').click()
+    await expect(page.locator(".overview-model-row").first).to_contain_text("Example/Beta")
+    for theme in ("dark", "light"):
+        await page.get_by_role("button", name=f"Switch to {theme} theme").click()
+        await expect(page.locator("html")).to_have_attribute("data-theme", theme)
+        if screenshot:
+            await page.evaluate("scrollTo(0, 0)")
+            await page.screenshot(path=str(Path(screenshot).with_stem(f"fpm-predictors-{theme}")), full_page=True)
+    await page.set_viewport_size({"width": 390, "height": 844})
+    assert await page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+    if screenshot:
+        await page.screenshot(path=str(Path(screenshot).with_stem("fpm-predictors-mobile")), full_page=True)
+    await page.locator("#branch").select_option("release/0.12.0")
+    await expect(page.locator(".overview-model-row")).to_have_count(2)
+    await expect(page.locator("#evaluation-run")).to_have_attribute(
+        "href", "https://github.com/ai-dynamo/aisimulate/actions/runs/456/attempts/2"
+    )
+    await expect(page.get_by_role("link", name="Overview", exact=True)).to_have_attribute(
+        "href", "index.html?branch=release%2F0.12.0"
+    )
+    await page.locator("#branch").select_option("release/0.13.0")
+    await expect(page.locator("#regression-value")).to_have_text("—")
+    await expect(page.locator("#evaluation-run")).to_be_hidden()
+    await page.unroute(pattern)
+
+
+async def check_trend_tooltip(page, screenshot):
+    point = page.locator(".trend-point").first
+    tooltip = page.locator("#trend-tooltip")
+    await point.evaluate("node => node.blur()")
+    await point.hover()
+    await expect(tooltip).to_be_visible()
+    await expect(tooltip.locator("dt")).to_contain_text(
+        ["Predicted / measured", "Coverage", "Errors", "Evaluated", "AISim", "HF dataset", "Evaluator"]
+    )
+    await expect(point.locator("title")).to_have_count(0)
+    await expect(page.locator("#evaluation-run")).to_have_attribute(
+        "href", "https://github.com/ai-dynamo/aisimulate/actions/runs/123/attempts/1"
+    )
+    await tooltip.hover()
+    await page.wait_for_timeout(180)
+    await expect(tooltip).to_be_visible()
+    if screenshot:
+        await page.screenshot(path=str(Path(screenshot).with_stem("fpm-trend-tooltip")))
+    await page.mouse.move(0, 0)
+    await expect(tooltip).to_be_hidden()
+    await point.focus()
+    await expect(tooltip).to_be_visible()
+    await page.locator("#phase-filter").focus()
+    await expect(tooltip).to_be_hidden()
+    await point.dispatch_event("pointerdown", {"pointerType": "touch"})
+    await expect(tooltip).to_be_visible()
+    await page.locator("h2").first.click()
+    await expect(tooltip).to_be_hidden()
+    await point.focus()
+    await page.set_viewport_size({"width": 390, "height": 844})
+    await expect(tooltip).to_be_hidden()
+    await point.scroll_into_view_if_needed()
+    await point.dispatch_event("pointerdown", {"pointerType": "touch"})
+    await expect(tooltip).to_be_visible()
+    assert await tooltip.evaluate(
+        "node => { const r = node.getBoundingClientRect(); return r.left >= 0 && r.right <= innerWidth "
+        "&& r.top >= 0 && r.bottom <= innerHeight; }"
+    )
+    await page.locator("#phase-filter").select_option("prefill")
+    await expect(tooltip).to_be_hidden()
+    await page.set_viewport_size({"width": 1400, "height": 1000})
+
+
+async def check_history_links(page, url):
+    fixtures = ROOT / "tests/fpm_accuracy/fixtures/dashboard"
+    history = json.loads((fixtures / "history.json").read_text())
+    summary = json.loads((fixtures / "synthetic-summary.json").read_text())
+    summary["snapshot"].update(run_id="789", run_attempt="3", completed_at="2026-09-18T12:00:00Z")
+    summary["rows"][0]["model"] = "Org/New"
+    entry = copy.deepcopy(history["entries"][0])
+    entry.update(snapshot=summary["snapshot"], summary_path="new-summary.json", revision_order=1)
+    history["entries"].append(entry)
+    await page.route("**/data/history.json", lambda route: route.fulfill(json=history))
+    await page.route("**/data/new-summary.json", lambda route: route.fulfill(json=summary))
+    await page.goto(url + "trends.html?branch=main")
+    await expect(page.locator("#evaluation-run")).to_have_attribute(
+        "href", "https://github.com/ai-dynamo/aisimulate/actions/runs/789/attempts/3"
+    )
+    await page.locator("#model-filter").select_option("Org/Model")
+    await expect(page.locator("#evaluation-run")).to_have_attribute(
+        "href", "https://github.com/ai-dynamo/aisimulate/actions/runs/123/attempts/1"
+    )
+    await page.goto(url + "evaluation-detail.html?branch=main")
+    await expect(page.locator("#evaluation-run")).to_have_attribute(
+        "href", "https://github.com/ai-dynamo/aisimulate/actions/runs/789/attempts/3"
+    )
+    await page.locator("#evaluation-filter").select_option("1")
+    await expect(page.locator("#evaluation-run")).to_have_attribute(
+        "href", "https://github.com/ai-dynamo/aisimulate/actions/runs/123/attempts/1"
+    )
+    await page.unroute("**/data/history.json")
+    await page.unroute("**/data/new-summary.json")
+
+
 async def check():
     with tempfile.TemporaryDirectory() as directory:
         site = Path(directory)
@@ -75,6 +232,7 @@ async def check():
             summary["snapshot"]["branch"] = branch
             if branch != "main":
                 summary["rows"][0]["model"] = "Release/Alpha"
+                summary["snapshot"].update(run_id="456", run_attempt="2")
             path = f"branches/{artifact_key(branch)}/summary.json"
             target = site / "fpm-accuracy" / path
             target.parent.mkdir(parents=True)
@@ -117,10 +275,14 @@ async def check():
                 await page.goto(url + "?branch=main")
                 await expect(page.locator("html")).to_have_attribute("data-theme", "light")
                 await expect(page.locator(".overview-model-row")).to_have_count(2)
-                await expect(page.locator("#freshness")).to_contain_text("Stale result")
-                await expect(page.locator("thead th")).to_have_count(7)
+                await expect(page.locator("#freshness")).to_have_count(0)
+                await expect(page.locator(".evaluation-banner")).to_contain_text("Daily evaluation")
+                await expect(page.locator(".evaluation-banner #evaluation-run")).to_have_attribute(
+                    "href", "https://github.com/ai-dynamo/aisimulate/actions/runs/123/attempts/1"
+                )
+                await expect(page.locator("thead th")).to_have_count(5)
                 assert not await page.locator('a[href*="coverage.html"]').count()
-                await expect(page.locator(".fpm-tabs a")).to_have_count(4)
+                await expect(page.locator(".fpm-tabs a")).to_have_count(5)
                 assert "op-based" not in await page.locator("body").inner_text()
                 await expect(page.locator(".overview-config-row").first).to_contain_text("7 excluded or unavailable")
                 await expect(page.locator(".overview-config-row").first).to_contain_text("80/100 predicted")
@@ -129,7 +291,7 @@ async def check():
                     page.locator(".overview-config-row").first.get_by_role("link", name="3D Viz →")
                 ).to_have_attribute(
                     "href",
-                    "3d-visualization.html?configuration="
+                    "3d-visualization.html?branch=main&configuration="
                     + quote(data["rows"][0]["configuration_id"], safe="")
                     + "&snapshot="
                     + data["rows"][0]["snapshot_id"],
@@ -147,6 +309,7 @@ async def check():
                 await expect(page.locator("#branch")).to_have_value("release/0.12.0")
                 await expect(page.locator(".overview-model-row")).to_have_count(2)
                 await page.locator("#branch").select_option("release/0.13.0")
+                await expect(page.locator("#evaluation-run")).to_be_hidden()
                 await expect(page.locator("#overview-body")).to_contain_text("No completed evaluation")
                 await expect(page.locator(".overview-model-row")).to_have_count(0)
                 await page.goto(url + "?branch=release/0.11.0")
@@ -184,20 +347,26 @@ async def check():
                     await page.screenshot(
                         path=str(Path(screenshot).with_stem(Path(screenshot).stem + "-mobile")), full_page=True
                     )
+                await check_predictor_views(page, url, data, screenshot)
                 await page.set_viewport_size({"width": 1400, "height": 1000})
                 await page.goto(url + "trends.html?branch=main")
-                await expect(page.locator("#trend-table tbody tr")).to_have_count(1)
-                await expect(page.locator("#trend-chart circle")).to_have_count(2)
+                await expect(page.locator("#trend-table")).to_have_count(0)
+                await expect(page.locator("#trend-chart .trend-point")).to_have_count(2)
                 await page.locator("#phase-filter").select_option("decode")
-                await page.locator("#trend-chart circle").first.focus()
-                await expect(page.locator("#trend-chart circle").first).to_be_focused()
+                await page.locator("#trend-chart .trend-point").first.focus()
+                await expect(page.locator("#trend-chart .trend-point").first).to_be_focused()
                 await expect(page.locator("#trend-tooltip")).to_be_visible()
                 await page.keyboard.press("Escape")
                 await expect(page.locator("#trend-tooltip")).to_be_hidden()
+                await check_trend_tooltip(page, screenshot)
                 await page.locator("#branch").select_option("release/0.12.0")
+                await expect(page.locator("#evaluation-run")).to_be_hidden()
                 await expect(page.locator("#dashboard-status")).to_contain_text("main only")
                 await page.goto(url + "evaluation-detail.html?branch=main")
                 await expect(page.locator("#distribution table")).to_be_visible()
+                await expect(page.locator("#evaluation-run")).to_have_attribute(
+                    "href", "https://github.com/ai-dynamo/aisimulate/actions/runs/123/attempts/1"
+                )
                 await page.locator("#phase-filter").select_option("decode")
                 await expect(page.locator("#error-heatmap table")).to_be_visible()
                 await page.locator("#method-filter").select_option("nowarmup")
@@ -215,7 +384,11 @@ async def check():
                 await page.set_viewport_size({"width": 390, "height": 844})
                 assert await page.evaluate("document.documentElement.scrollWidth <= innerWidth")
                 await page.set_viewport_size({"width": 1400, "height": 1000})
-                await page.goto(url + "3d-visualization.html")
+                await check_history_links(page, url)
+                await page.goto(url + "3d-visualization.html?branch=release/0.12.0")
+                await expect(page.get_by_role("link", name="Latest evaluation run")).to_have_attribute(
+                    "href", "https://github.com/ai-dynamo/aisimulate/actions/runs/456/attempts/2"
+                )
                 await expect(page.locator("#gv-left-chart .plot-container")).to_be_visible(timeout=30000)
                 held = asyncio.Event()
                 release = asyncio.Event()
@@ -276,6 +449,13 @@ async def check():
                     await page.screenshot(path=str(Path(screenshot).with_stem("fpm-3d")), full_page=True)
                 await page.set_viewport_size({"width": 390, "height": 844})
                 assert await page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+                mobile = await browser.new_page(viewport={"width": 390, "height": 844}, has_touch=True)
+                await mobile.goto(url + "trends.html?branch=main")
+                await mobile.locator(".trend-point").first.tap()
+                await expect(mobile.locator("#trend-tooltip")).to_be_visible()
+                await mobile.locator("h2").first.tap()
+                await expect(mobile.locator("#trend-tooltip")).to_be_hidden()
+                await mobile.close()
                 await page.goto(url + "trends.html?branch=main")
                 await page.route("**/data/history.json", lambda route: route.fulfill(status=404, body="{}"))
                 await page.reload()

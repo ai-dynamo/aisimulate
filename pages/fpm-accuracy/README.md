@@ -8,12 +8,32 @@ Details and 3D Visualization are separate tabs with independent controls.
 
 ## What is published
 
-- Overview: expandable model/configuration rows and sortable metrics.
+- Overview: expandable model/configuration rows and one sortable Best MAPE
+  column, with the winning predictor, coverage, errors, and input evidence.
+  Model rows average their configurations' best MAPEs equally and say
+  “Mixed predictors” when winners differ. Counts and coverage combine the
+  winning results. The Overall MAPE card averages configuration winners once
+  each, independently of model grouping or collapsed rows.
+- Predictors: the same branch and table layout, with Regression, FPM (KV warmup
+  on), and FPM (KV warmup off) columns. Three cards average each predictor's
+  available configuration MAPEs equally; model table rows retain weighting by
+  successful prediction count. A reference section explains mechanisms and the
+  canonical Python construction, prediction, and regression tuning APIs. KV
+  warmup selects the collected library, not a prediction-time switch.
+- Averages exclude unavailable/nonfinite MAPEs and show contributing
+  configuration counts. No available MAPE displays as a dash. Best selection
+  compares unrounded values; exact ties prefer Regression, warmup on, then
+  warmup off. Winning a low MAPE does not imply complete prediction coverage.
 - Trends: main-only, rolling 90-day history starting at
   `8dad9634735b6875e22a90927216e542e73ba237`. Each code/population pair
   retains its newest qualified evaluation. Dataset or FPM input changes break
   the series; MAPE is weighted by successful prediction count. Chart labels pair
-  each commit ID with its evaluation date (UTC); tooltips include the time.
+  each commit ID with its evaluation date (UTC). Hover, focus, or tap a sample
+  for a structured tooltip with MAPE, counts, coverage, errors, evaluation time,
+  and short revision IDs. Full revisions remain in accessible point labels.
+  Larger targets and active markers help selection; tooltips stay inside the
+  viewport and dismiss with Escape or when leaving the point and tooltip.
+  The separate trend-values table is removed; the latest phase summary remains.
 - Details: retained branch evaluations, selected FPM inputs, phase summaries,
   measurement-only workload distributions, and prediction-error heatmaps.
   Heatmaps use compact cells and size independently, with scrolling only when
@@ -36,8 +56,16 @@ Details and 3D Visualization are separate tabs with independent controls.
   prediction errors, and regression tuning errors. Cold-start misses count
   against coverage. Missing FPM inputs never remove measurements from coverage.
 - Dataset configuration and measurement links pinned to the evaluated HF commit.
-- The evaluated AISim commit, HF commit, and UTC completion time. Results are
-  marked stale after 48 hours or when the selected branch has advanced.
+- The evaluated AISim commit, HF commit, and UTC completion time. Overview and
+  Predictors show evaluation status, the daily schedule, and an Evaluation run
+  link in a banner below the tabs, without an age-based stale warning.
+- Evaluation run links point to the exact GitHub Actions run attempt: the loaded
+  snapshot on Overview/Predictors, the selected evaluation on Details, and the
+  newest represented evaluation on filtered Trends. 3D Visualization links to
+  the selected branch's latest completed evaluation, labeled “Latest evaluation
+  run” because its measurement catalog is independent. Links are hidden while
+  loading or when no applicable evaluation exists. Dataset links remain in the
+  snapshot identity and configuration/measurement evidence.
 
 There is no op-based evaluation or FPM Coverage tab.
 FPM variants use the same observations. One winner per KV warmup mode is selected
@@ -121,8 +149,9 @@ node --test tests/test_fpm_accuracy_workflow.mjs
 The overview structure and behavior were adapted from NVIDIA
 [AISim FPM Gym](https://gitlab-master.nvidia.com/dl/ai-dynamo/aisim-fpm-gym/-/tree/e8221729db2802e822f6919fd68bc2941743385b/dashboard),
 commit `e8221729db2802e822f6919fd68bc2941743385b`, originally
-`dashboard/index.html` and `dashboard/assets/gym.css`. Modified for a three-column
-public overview, qualified branch snapshots, and public-only provenance. The
+`dashboard/index.html` and `dashboard/assets/gym.css`. Modified for a best-MAPE
+overview, a three-column Predictors page (derived from the same overview),
+qualified branch snapshots, and public-only provenance. The
 visual presentation now uses AISimulate's E2E accuracy stylesheet.
 Apache-2.0, with maintainer-confirmed migration permission. The new tabs adapt
 Gym behavior from `f934c030afc3a03cb04d8f3ff4709194f7445c98`; the 3D HTML,
