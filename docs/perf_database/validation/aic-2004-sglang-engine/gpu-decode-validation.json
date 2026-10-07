@@ -35,7 +35,9 @@
     "baseline_runtime_sha256": "d7170254600f612f02f98e49693ef08d6932e00b42579c2c34ed455e62b65725",
     "fixed_runtime_sha256": "95e9e696ea771d6e50dbea9b195147d8c6410cdc2a5335e9d919d3df5b436589",
     "fixed_wheel_sha256": "e87fcd8f19984bdf9a333647dbf4b2c66ee1179c681c27f395c486a836459d10",
-    "helper_sha256": "ccd1f8b3456a0761eb207c41f7d2daeb556c028cbac28126829c7260e9405659"
+    "helper_sha256": "ccd1f8b3456a0761eb207c41f7d2daeb556c028cbac28126829c7260e9405659",
+    "restacked_source_revision": "9c3de93a",
+    "restack_note": "Restacked onto collector 900a6749; both Rust DSA implementation files and the projection helper are byte-identical to the measured 3fdc042b implementation."
   },
   "isolation": {
     "anchor_history": 8192,
@@ -618,7 +620,17 @@
     "rust_dsa_tests": "47 passed",
     "paired_capability_regressions": "10 passed",
     "parquet_roundtrip": "All source row values and column types preserved.",
-    "parity_suites": "Pending completion; recorded separately when complete."
+    "parity_suites": {
+      "result": "386 passed",
+      "elapsed_seconds": 527.67,
+      "exit_code": 0,
+      "log_sha256": "2ea37c4f76e40add54c930216a4880f6d1119dfffbfaf22535ecdaea58cfd32d",
+      "suites": [
+        "crates/core/parity_tests/perfmodel/test_compile_engine_parity.py",
+        "crates/core/parity_tests/perfmodel/test_engine_step_parity.py"
+      ],
+      "native_sha256": "95e9e696ea771d6e50dbea9b195147d8c6410cdc2a5335e9d919d3df5b436589"
+    }
   },
   "interpretation": [
     "All six measured coordinates and all three attention compositions are consumed exactly in both binaries.",
