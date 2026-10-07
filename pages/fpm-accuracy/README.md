@@ -49,7 +49,7 @@ Details and 3D Visualization are separate tabs with independent controls.
   configurations. Overview counts reflect visible configurations; complete
   evaluation artifacts still retain all configurations.
 - Table headings, model/configuration labels, metrics, and evidence links are
-  centered across Overview, Predictors, Trends phase summaries, and Details.
+  left-aligned across Overview, Predictors, Trends phase summaries, and Details.
 - The E2E accuracy page's compact AISimulate header, branch selector, summary
   cards and table. Light/dark mode shares the `sm-theme`
   preference across the accuracy pages. Filters use compact responsive columns with smaller labels and controls;
