@@ -127,7 +127,11 @@ canonical model needs no quantization override and matches all four
 coordinates (each with 4096 total new tokens) and two decode histories. This
 proves precision routing and table consumption, not whole-model accuracy.
 TC-covered prefill remains diagnostic: a guard-checked per-layer native TC
-entry has not been qualified. The earlier 14-cell cohort is retained under
+entry has not been qualified. The parent collector now explicitly rejects
+ordinary TC performance-row publication, while retaining eligible eager/decode
+collection and reporting incomplete groups as failures. This prevents new
+unqualified rows from being treated as measured layer costs; it does not repair
+the TC timing boundary. The earlier 14-cell cohort is retained under
 [`superseded-job-4764263`](superseded-job-4764263/README.md) and is excluded
 from the final qualified measurements.
 
