@@ -1119,11 +1119,11 @@ The geometry in `src/aisimulate_core/sdk/glm53flash.py`,
 `crates/core/src/perfmodel/operators/glm53flash.rs`, and their GLM tests is a
 modified analytical adaptation of those configurations. Execution boundaries
 and precision partitions are independently expressed adaptations of
-`vllm/models/glm5next/nvidia/{model,attention,kda}.py` and
-`vllm/model_executor/layers/sparse_attn_indexer_kpool.py`,
+`vllm/models/glm5next/common/{model,attention,kda}.py` and
+`vllm/models/glm5next/{nvidia,common}/sparse_indexer.py`,
 `vllm/model_executor/layers/logits_processor.py`, and
 `vllm/platforms/interface.py` from vLLM at
-https://github.com/vllm-project/vllm/tree/ced6857afa0ea7b2e3f0846a62e1394e90f15607
+https://github.com/vllm-project/vllm/tree/db9527a46873454610df6dbedf79a36d6bf1a7f6 (v0.31.0)
 (Copyright vLLM contributors, Apache-2.0), and
 `python/sglang/srt/models/glm5_next.py`, `python/sglang/srt/models/deepseek_v2.py`,
 `python/sglang/srt/layers/attention/dsa/dsa_indexer_kpool.py`, and

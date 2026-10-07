@@ -32,9 +32,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 Execution grouping and analytical adaptations reference vLLM
-`ced6857afa0ea7b2e3f0846a62e1394e90f15607`,
-`vllm/models/glm5next/nvidia/{model,attention,kda}.py` and
-`vllm/model_executor/layers/sparse_attn_indexer_kpool.py`, and SGLang
+`db9527a46873454610df6dbedf79a36d6bf1a7f6` (v0.31.0),
+`vllm/models/glm5next/common/{model,attention,kda}.py` and
+`vllm/models/glm5next/{nvidia,common}/sparse_indexer.py`, and SGLang
 `94602c9c2b7cbdb8efd5c52802dac6a1c180089e`,
 `python/sglang/srt/models/glm5_next.py`, `python/sglang/srt/models/deepseek_v2.py`,
 `python/sglang/srt/layers/attention/dsa/dsa_indexer_kpool.py`, and
