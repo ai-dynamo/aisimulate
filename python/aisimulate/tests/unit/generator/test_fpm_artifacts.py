@@ -226,7 +226,12 @@ def _nvcc_stub_dir() -> Path:
 
 def _clean_env(**overrides: str) -> dict[str, str]:
     """Subprocess environment without host FPM/orchestrator contamination."""
-    env = {name: value for name, value in os.environ.items() if not name.startswith(("FPM_", "LWS_", "GROVE_"))}
+    env = {
+        name: value
+        for name, value in os.environ.items()
+        if not name.startswith(("FPM_", "LWS_", "GROVE_"))
+        and name not in ("FLASHINFER_CUBIN_DIR", "DYN_BENCH_KV_WARMUP_CACHE_DIR")
+    }
     env["PATH"] = f"{_nvcc_stub_dir()}{os.pathsep}{env.get('PATH', '')}"
     env.update(overrides)
     return env
@@ -967,6 +972,49 @@ def test_fpm_run_script_honors_explicit_kvwarm_cache_dir(tmp_path):
 
     assert cache_dir == str(explicit)
     assert "KV warm-up dataset" not in stderr
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses directory permission bits")
+def test_fpm_run_script_uses_private_scratch_when_shared_scratch_name_is_unwritable(tmp_path):
+    """Another user may already own ${TMPDIR}/flashinfer-cubins; the fallback
+    must then hand the engine a private writable directory, not that path."""
+    model_cache = tmp_path / "models"
+    snapshot = model_cache / "GLM-5"
+    snapshot.mkdir(parents=True)
+    scratch = tmp_path / "scratch"
+    (scratch / "flashinfer-cubins").mkdir(parents=True)
+    (scratch / "flashinfer-cubins").chmod(0o555)
+    snapshot.chmod(0o555)
+    try:
+        cubin_dir, stderr = _engine_cubin_dir(tmp_path, model_cache, TMPDIR=str(scratch))
+        assert cubin_dir.startswith(f"{scratch}/flashinfer-cubins.")
+        assert os.access(cubin_dir, os.W_OK)
+    finally:
+        snapshot.chmod(0o755)
+        (scratch / "flashinfer-cubins").chmod(0o755)
+    assert "HF_HOME is not writable" in stderr
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses directory permission bits")
+def test_fpm_run_script_probes_engine_kvwarm_path_for_symlinked_hf_home(tmp_path):
+    """The engine resolves fpm_datasets lexically (os.path.abspath), so a
+    symlinked HF_HOME must be probed at its lexical parent, not the target's."""
+    real_parent = tmp_path / "cache"
+    (real_parent / "checkpoint").mkdir(parents=True)
+    model_cache = tmp_path / "models"
+    model_cache.mkdir()
+    (model_cache / "GLM-5").symlink_to(real_parent / "checkpoint")
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    model_cache.chmod(0o555)
+    try:
+        cache_dir, stderr = _engine_kvwarm_cache_dir(tmp_path, model_cache, TMPDIR=str(scratch))
+    finally:
+        model_cache.chmod(0o755)
+
+    assert cache_dir == f"{scratch}/fpm_datasets"
+    assert not (real_parent / "fpm_datasets").exists()
+    assert "KV warm-up dataset" in stderr
 
 
 def test_default_and_explicit_normal_targets_remain_identical():
