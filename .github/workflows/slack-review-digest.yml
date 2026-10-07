@@ -32,7 +32,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Check digest calculations
-        run: python3 scripts/test_slack_review_digest.py
+        run: python3 scripts/notifications/test_slack_review_digest.py
       - name: Generate and send digest
         env:
           GH_TOKEN: ${{ github.token }}
@@ -43,4 +43,4 @@ jobs:
           if [[ "$DRY_RUN" == "true" ]]; then
             args+=(--dry-run)
           fi
-          python3 scripts/slack_review_digest.py "${args[@]}"
+          python3 scripts/notifications/slack_review_digest.py "${args[@]}"

@@ -359,7 +359,7 @@ impl MoeAllToAllOp {
     /// fitted variable-time candidate. Exact-topology curves receive only the
     /// Monte Carlo routing-skew factor; a single-domain donor additionally
     /// compares that candidate with topology-spec NVLink/MNVL and IB times.
-    /// See `python/aisimulate/docs/DEEPEP_LL_MODELING.md`, sections 8-10.
+    /// See `docs/perf-model/methods/deepep-ll.md`, sections 8-10.
     fn query_deepep_ll(
         &self,
         db: &PerfDatabase,

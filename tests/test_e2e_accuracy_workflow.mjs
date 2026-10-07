@@ -121,7 +121,7 @@ const run = {
   head_repository: { full_name: "ai-dynamo/aisimulate" },
 };
 
-async function resolve({ event = "schedule", runs = [run], built = true, expired = false, inputs = {}, branches = [] } = {}) {
+async function resolve({ event = "schedule", ref = "refs/heads/main", pr, runs = [run], built = true, expired = false, inputs = {}, branches = [] } = {}) {
   const outputs = {};
   const actions = {
     listWorkflowRuns: async (args) => {
@@ -134,10 +134,10 @@ async function resolve({ event = "schedule", runs = [run], built = true, expired
   };
   const context = vm.createContext({
     require: createRequire(import.meta.url),
-    context: { eventName: event, sha, repo: { owner: "ai-dynamo", repo: "aisimulate" } },
+    context: { eventName: event, ref, sha, repo: { owner: "ai-dynamo", repo: "aisimulate" } },
     process: { env: inputs },
     core: { notice() {}, setOutput: (name, value) => { outputs[name] = value; } },
-    github: { rest: { actions, repos: { listBranches: "branches" } }, paginate: async (method, args) => {
+    github: { rest: { pulls: { get: async () => ({data: pr}) }, actions, repos: { listBranches: "branches" } }, paginate: async (method, args) => {
       assert.equal(args.per_page, 100);
       if (method === "branches") {
         assert.equal(event, "schedule");
@@ -221,4 +221,22 @@ test("Pages accepts failed accuracy matrices while preserving other producer gat
       }
     }
   }
+});
+
+test("PR preview requires an exact trusted copy of the open same-repository PR", async () => {
+  const branch = "simonec/preview";
+  const pr = {state: "open", head: {sha, ref: branch, repo: {full_name: "ai-dynamo/aisimulate"}}};
+  const args = {event: "workflow_dispatch", ref: "refs/heads/pull-request/372", pr,
+    inputs: {PREVIEW: "true", EXPECTED_SHA: sha, EVALUATED_BRANCH: branch}};
+  assert.deepEqual(await resolve(args), [{...entry(branch, sha), preview: true}]);
+  for (const ref of ["refs/heads/main", "refs/heads/simonec/preview", "refs/heads/pull-request/bad"]) {
+    await assert.rejects(resolve({...args, ref}), /exact trusted/);
+  }
+  await assert.rejects(resolve({...args, event: "schedule"}), /exact trusted/);
+  await assert.rejects(resolve({...args, inputs: {...args.inputs, EXPECTED_SHA: "b".repeat(40)}}), /exact trusted/);
+  for (const change of [{sha: "b".repeat(40)}, {ref: "other"}, {repo: {full_name: "fork/aisimulate"}}]) {
+    await assert.rejects(resolve({...args, pr: {...pr, head: {...pr.head, ...change}}}), /does not match/);
+  }
+  await assert.rejects(resolve({...args, pr: {...pr, state: "closed"}}), /does not match/);
+  await assert.rejects(resolve({...args, inputs: {...args.inputs, PREVIEW: "false"}}), /must run from main/);
 });

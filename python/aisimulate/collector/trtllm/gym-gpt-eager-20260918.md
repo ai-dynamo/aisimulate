@@ -8,7 +8,7 @@
   16.53 ms versus the original unprofiled reproduction's 48.86 ms.
   No kernel rows, latency constants, or 263-point predictions are changed.
 - The proposed op-based correction needs an execution-mode/CPU-timing
-  data contract; see the [reviewable plan](../../../../docs/trtllm-eager-execution-plan.md).
+  data contract; see the [reviewable plan](../../../../docs/perf-model/limitations.md).
   The user chose to defer this extension and retain the collection evidence.
   No producer/consumer implementation is approved.
 

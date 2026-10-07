@@ -160,6 +160,55 @@ def test_predict_cli_reaches_native_rank_host_offload(tmp_path, monkeypatch, cap
     assert rank["native_host_offload"] == _host_offload()
 
 
+@pytest.mark.parametrize(
+    "scopes",
+    [("default",), ("dp_rank_local",), ("cluster_shared",)]
+    + [
+        (prefill, decode)
+        for prefill in (None, "dp_rank_local", "cluster_shared")
+        for decode in (None, "dp_rank_local", "cluster_shared")
+        if prefill is not None or decode is not None
+    ],
+)
+def test_agentic_g2_public_config_preserves_role_scopes_through_native_payload(scopes) -> None:
+    mode = "aggregated" if len(scopes) == 1 else "disaggregated"
+    engine = _prediction_engine(mode=mode)
+    if mode == "disaggregated":
+        engine["kv_transfer"] = {"bytes_per_token": 131_072}
+    roles = ("aggregated",) if mode == "aggregated" else ("prefill", "decode")
+    for role, scope in zip(roles, scopes, strict=True):
+        worker = engine["workers"][role]
+        worker["parallelism"]["tensor"] = 1
+        if scope is not None:
+            offload = _host_offload()
+            if scope != "default":
+                offload["scope"] = scope
+            worker["kv_cache"].update(bytes_per_token=131_072, host_offload=offload)
+    public = CorePredictionConfig.model_validate(
+        {
+            "engine": engine,
+            "traffic": {
+                "source": {"type": "trace", "paths": ["self-authored-weka.jsonl"], "format": "weka"},
+                "load": {"type": "trace_timestamps", "agentic_lanes": 1},
+            },
+        }
+    )
+    runtime = _RecordingRuntime()
+    EngineReplayRunnerFactory(runtime=runtime).create(0).run(prediction_to_replay_spec(public))
+    native = runtime.execution_spec["spec"]["engine"]
+    for role, scope in zip(roles, scopes, strict=True):
+        rank = native["rank"] if role == "aggregated" else native[role]["rank"]
+        if scope is None:
+            assert rank.get("native_host_offload") is None
+        else:
+            offload = rank["native_host_offload"]
+            assert offload.get("scope", "dp_rank_local") == ("dp_rank_local" if scope == "default" else scope)
+            assert {key: offload[key] for key in _host_offload()} == _host_offload()
+            assert rank["kv_cache_bytes_per_token"] == 131_072
+            if scope == "cluster_shared":
+                assert offload["kv_layout_id"]
+
+
 def test_prediction_host_offload_auto_geometry_uses_aggregated_shape(
     monkeypatch,
 ) -> None:

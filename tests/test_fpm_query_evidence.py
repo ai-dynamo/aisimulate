@@ -314,7 +314,9 @@ def test_native_prediction_replay_and_source_detail_roundtrip(profile, evidence_
     }
     native = report.metadata["native_report"]
     detail = build_prediction_details(native, ["source"])
-    schema = json.loads((Path(__file__).resolve().parents[1] / "docs/cli/prediction-details.schema.json").read_text())
+    schema = json.loads(
+        (Path(__file__).resolve().parents[1] / "docs/reference/schemas/prediction-details.schema.json").read_text()
+    )
     jsonschema.validate(detail, schema)
     jsonschema.validate(build_prediction_details(native, ["time"]), schema)
     assert detail["sections"]["source"]["status"] == "available"
@@ -489,7 +491,9 @@ def test_prediction_details_preserve_valid_nested_fpm_evidence(profile, evidence
     operation["fpm_estimates"] = [{"estimate": estimate, "count": 1, "latency_scale": 1.0} for estimate in estimates]
     original = deepcopy(native_prediction_report)
     details = build_prediction_details(native_prediction_report, ("source", "time"))
-    schema = json.loads((Path(__file__).resolve().parents[1] / "docs/cli/prediction-details.schema.json").read_text())
+    schema = json.loads(
+        (Path(__file__).resolve().parents[1] / "docs/reference/schemas/prediction-details.schema.json").read_text()
+    )
     jsonschema.validate(details, schema)
     for section in (details["sections"]["source"], details["sections"]["time"]["diagnostics"]):
         published = section["phases"][0]["operations"][0]["fpm_estimates"]

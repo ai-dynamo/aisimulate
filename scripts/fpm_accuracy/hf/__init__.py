@@ -4,8 +4,8 @@
 
 """Hugging Face source-evidence access for AISim FPM Gym."""
 
-from fpm_accuracy.hf.dataset import DEFAULT_REPO_ID, HfDataset
-from fpm_accuracy.hf.models import (
+from scripts.fpm_accuracy.hf.dataset import DEFAULT_REPO_ID, HfDataset
+from scripts.fpm_accuracy.hf.models import (
     CaseStatus,
     ConfigurationSnapshot,
     FpmArtifact,
@@ -17,8 +17,8 @@ from fpm_accuracy.hf.models import (
     MeasurementState,
     OrderingKind,
 )
-from fpm_accuracy.hf.overrides import HfCaseOverride, HfOverrides, load_overrides
-from fpm_accuracy.hf.protocols import (
+from scripts.fpm_accuracy.hf.overrides import HfCaseOverride, HfOverrides, load_overrides
+from scripts.fpm_accuracy.hf.protocols import (
     SUPPORTED_EVIDENCE_FORMAT_IDS,
     SUPPORTED_PROTOCOL_IDS,
     ProtocolAdapter,

@@ -5,7 +5,7 @@ This file adds explicit repository-wide development guards.
 ## FPM model onboarding
 
 When asked to onboard a model for FPM simulation on designated hardware, follow
-all six stages in [the canonical FPM self-service guide](docs/fpm-self-service/implementation.md#onboard-with-an-agent).
+all six stages in [the canonical FPM self-service guide](docs/perf-model/fpm-self-service/implementation.md#onboard-with-an-agent).
 Use this checkout's `aisimulate onboard` CLI and inspect its current help.
 Start with only a missing Hugging Face model ID and target GPU platform; accept
 an already supplied local config, profile or checkpoint instead. Inspect supplied
@@ -15,13 +15,13 @@ authorization; stage transitions do not add approval gates.
 
 Create one `onboarding-checkpoint.json` during stage 1, even with incomplete
 inputs, outside every fresh `init --output-dir` root. Follow the guide's
-[checkpoint workflow](docs/fpm-self-service/implementation.md#checkpoint-and-resume-an-onboarding-session):
+[checkpoint workflow](docs/perf-model/fpm-self-service/implementation.md#checkpoint-and-resume-an-onboarding-session):
 invoke `onboard checkpoint` after meaningful findings, decisions, draft edits,
 acceptance and command results, including unfinished work. Save sources,
 confidence, unresolved questions and each configuration's progress. Other
 onboarding commands do not automatically persist the conversation. Use the
 returned revision for updates; reload and reconcile stale-writer conflicts.
-Follow the guide's [writer coordination rule](docs/fpm-self-service/implementation.md#orchestrate-independent-collection-campaigns)
+Follow the guide's [writer coordination rule](docs/perf-model/fpm-self-service/implementation.md#orchestrate-independent-collection-campaigns)
 for probe/import commands that also save the checkpoint.
 
 On resumption, run `aisimulate onboard resume --checkpoint PATH` first. Inspect
@@ -91,7 +91,7 @@ substantially derived from an external project, MUST:
   license, and whether the files were modified. The root notice is canonical;
   keep `python/aisimulate/THIRD_PARTY_NOTICES.md` byte-identical so the notice
   is included in Python distributions. Run
-  `python3 scripts/check_packaged_legal_files.py` after either copy changes.
+  `python3 scripts/ci/check_packaged_legal_files.py` after either copy changes.
 - Do not hand-edit generated attribution artifacts. Update their source or
   generation process instead.
 

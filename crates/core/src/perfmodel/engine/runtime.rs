@@ -2726,7 +2726,7 @@ mod tests {
         // Exact paths and the deferred-finalize=0 scope are in THIRD_PARTY_NOTICES.md.
         let mut config = fixture_engine_config(None);
         config.model_name = "nvidia/GLM-5.2-NVFP4".into();
-        config.system_name = "vr200_hecate".into();
+        config.system_name = "vr_nvl72".into();
         config.backend = BackendKind::Sglang;
         config.backend_version = Some("0.5.18+nvinternal.rubin.0.8full.66997102".into());
         config.parallel = ParallelMapping {
@@ -2750,7 +2750,7 @@ mod tests {
         let db = Arc::new(
             PerfDatabase::load_resolved(
                 &systems_root(),
-                "vr200_hecate",
+                "vr_nvl72",
                 "sglang",
                 config.backend_version.as_deref().unwrap(),
                 false,
@@ -2775,7 +2775,7 @@ mod tests {
                 Op::Elementwise(ElementwiseOp::new("generation_final_add_norm", 49_152.0)),
             ],
         );
-        // Independent decimal calculation from vr200_hecate.yaml: bandwidth
+        // Independent decimal calculation from vr_nvl72.yaml: bandwidth
         // 19160064000000 B/s, efficiency 0.5227797525079052 and constant
         // 1.6518125736605135e-6 s. BF16 add moves 3*6144*2 bytes per token;
         // norm follows the existing 4*6144*2-byte analytical convention.

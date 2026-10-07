@@ -2464,7 +2464,7 @@ pub fn table_view_json(tables: &PerfTables, attribute: &str) -> Result<Option<St
         attribute,
         "_sglang_prefill_attention_sequence_data" | "_sglang_prefill_comm_norm_boundary_data"
     ) {
-        if tables.system != "vr200_hecate"
+        if tables.system != "vr_nvl72"
             || tables.backend != "sglang"
             || tables.version != super::prefill_graph::VERSION
         {

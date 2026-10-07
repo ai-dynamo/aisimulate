@@ -21,7 +21,9 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def load_script(name):
-    spec = importlib.util.spec_from_file_location(name, ROOT / "scripts" / f"{name}.py")
+    spec = importlib.util.spec_from_file_location(
+        name, ROOT / "scripts" / {"run_release_fpe": "fpe", "prepare_fpe_pages": "pages"}[name] / f"{name}.py"
+    )
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -229,7 +231,7 @@ def test_complete_release_reports_produce_publishable_ci_artifact(tmp_path):
     assert len(rows) == 4
     assert all(
         shlex.split(row["Command"])[3:6]
-        == ["release-source/python/aisimulate/.venv/bin/python", "scripts/run_release_fpe.py", "probe"]
+        == ["release-source/python/aisimulate/.venv/bin/python", "scripts/fpe/run_release_fpe.py", "probe"]
         for row in rows
     )
     assert all(SHA in row["Command"] and TOOLING in row["Command"] for row in rows)

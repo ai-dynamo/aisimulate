@@ -26,7 +26,7 @@ from aisimulate_core.sdk.perf_database import PerfDatabase
 
 pytestmark = pytest.mark.unit
 VERSION = "0.5.18+nvinternal.rubin.0.8full.66997102"
-PROFILE = "sglang_glm52_nvfp4_vr200_tp4_graph_v1"
+PROFILE = "sglang_glm52_nvfp4_vr_nvl72_tp4_graph_v1"
 PUBLIC_CALLS = [
     (1, 1024, 0),
     (2, 1024, 0),
@@ -76,7 +76,7 @@ def model(selected=True, **overrides):
 def spec_json(selected=True, root=None, **overrides):
     kwargs = dict(
         model_path="nvidia/GLM-5.2-NVFP4",
-        system="vr200_hecate",
+        system="vr_nvl72",
         backend="sglang",
         backend_version=VERSION,
         kv_block_size=None,
@@ -101,7 +101,7 @@ def test_direct_profile_shared_policy_matches_the_python_view_before_lane_resolu
     database = (
         None
         if database_shared_layer is None
-        else PerfDatabase("vr200_hecate", "sglang", VERSION, str(systems_root()), shared_layer=database_shared_layer)
+        else PerfDatabase("vr_nvl72", "sglang", VERSION, str(systems_root()), shared_layer=database_shared_layer)
     )
     resolved_views = []
     resolve = engine._resolve_attention_lane_orders
@@ -129,7 +129,7 @@ def test_direct_profile_shared_policy_matches_the_python_view_before_lane_resolu
 def test_compile_profile_shared_policy_matches_direct_builder(shared_layer):
     kwargs = dict(
         model_path="nvidia/GLM-5.2-NVFP4",
-        system="vr200_hecate",
+        system="vr_nvl72",
         backend="sglang",
         backend_version=VERSION,
         systems_path=str(systems_root()),
@@ -187,7 +187,7 @@ def copy_bundle(tmp_path):
     import shutil
 
     root = systems_root()
-    sidecar = root / "data/vr200_hecate/sparse_attention/sglang" / VERSION / f"{PROFILE}.profile.json"
+    sidecar = root / "data/vr_nvl72/sparse_attention/sglang" / VERSION / f"{PROFILE}.profile.json"
     profile = json.loads(sidecar.read_text())
     paths = {item["path"] for item in profile["retained_files"]}
     for table in profile["tables"].values():
@@ -246,7 +246,7 @@ def test_public_legacy_migration_preserves_profile_free_prediction(explicit_null
 @pytest.mark.parametrize("selected_first", [False, True])
 def test_warm_engine_cache_cannot_bypass_graph_profile_query_restrictions(selected_first):
     database = PerfDatabase(
-        "vr200_hecate", "sglang", VERSION, str(systems_root()), shared_layer=False, strict_provenance=True
+        "vr_nvl72", "sglang", VERSION, str(systems_root()), shared_layer=False, strict_provenance=True
     )
     ordinary, selected = model(False), model(True)
     identity = json.loads(json.loads(rust_engine_step._engine_config_json(ordinary, database))["extra"]["identity"])
@@ -310,7 +310,7 @@ def test_selected_engine_ignores_stale_default_engine_tables(tmp_path):
         "dsa_generation_module_perf.parquet",
         "sglang_prefill_attention_sequence_perf.parquet",
         "sglang_prefill_comm_norm_boundary_perf.parquet",
-        "vr200_hecate.yaml",
+        "vr_nvl72.yaml",
         f"{PROFILE}.profile.json",
     ],
 )

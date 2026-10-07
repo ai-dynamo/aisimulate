@@ -116,10 +116,11 @@ pub(crate) fn validate_runtime(
     version: &str,
     mode: DatabaseMode,
 ) -> Result<(), AicError> {
-    if (system, backend, version) != ("vr200_hecate", "sglang", VERSION)
+    if (system, backend, version) != ("vr_nvl72", "sglang", VERSION)
         || mode != DatabaseMode::Silicon
     {
-        return Err(selected.error("requires the measured VR200 SGLang runtime and SILICON mode"));
+        return Err(selected
+            .error("requires the measured Vera Rubin NVL72 SGLang runtime and SILICON mode"));
     }
     Ok(())
 }

@@ -408,7 +408,7 @@ def test_validation_recommendation_and_user_runtime_replica_budget(
 
 @pytest.mark.parametrize("missing_samples", [False, True])
 def test_documented_recommendation_command_evaluates_one_worker(tmp_path, missing_samples):
-    guide = Path(__file__).resolve().parents[4] / "docs/fpm-self-service/implementation.md"
+    guide = Path(__file__).resolve().parents[4] / "docs/perf-model/fpm-self-service/implementation.md"
     snippet = "aisimulate recommend " + guide.read_text().split("\naisimulate recommend ", 1)[1].split("\n```", 1)[0]
     workdir = tmp_path / "work with 'quotes'; $(literal)"
     workdir.mkdir()
@@ -746,8 +746,9 @@ def test_preview_is_shell_safe_and_does_not_create_outputs_or_import_collector(t
 
 
 def _mock_collector_execution(monkeypatch, calls):
-    from aisimulate.support import collection_readiness, fpm
     from collector.fpm_forward import cli, entry
+
+    from aisimulate.support import collection_readiness, fpm
 
     def resolve(command):
         calls.append(command[3:])

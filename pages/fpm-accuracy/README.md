@@ -1,18 +1,35 @@
-# FPM Accuracy Overview
+# FPM Accuracy dashboard
 
 The public [FPM Accuracy Overview](https://ai-dynamo.org/aisimulate/fpm-accuracy/?branch=main)
 compares forward-pass predictions with measurements from the public
 [nvidia/aisimulate-fpm-dataset](https://huggingface.co/datasets/nvidia/aisimulate-fpm-dataset).
 
+Details and 3D Visualization are separate tabs with independent controls.
+
 ## What is published
 
-- Only Overview: expandable model/configuration rows and sortable metrics.
+- Overview: expandable model/configuration rows and sortable metrics.
+- Trends: main-only, rolling 90-day history starting at
+  `8dad9634735b6875e22a90927216e542e73ba237`. Each code/population pair
+  retains its newest qualified evaluation. Dataset or FPM input changes break
+  the series; MAPE is weighted by successful prediction count. Chart labels pair
+  each commit ID with its evaluation date (UTC); tooltips include the time.
+- Details: retained branch evaluations, selected FPM inputs, phase summaries,
+  measurement-only workload distributions, and prediction-error heatmaps.
+  Heatmaps use compact cells and size independently, with scrolling only when
+  their contents exceed the available width. A Hugging Face icon identifies the
+  pinned configuration and measurement evidence links in a small, muted line.
+- 3D Visualization: independent panels, seven workload axes, stable samples,
+  full gzip chunks, native rank provenance, camera controls, and PNG export.
+  Diagnostic unsynchronized DP groups remain separate from accepted truth.
 - Hide configurations with zero measurements and models with no measured
   configurations. Overview counts reflect visible configurations; complete
   evaluation artifacts still retain all configurations.
 - The E2E accuracy page's compact AISimulate header, branch selector, summary
   cards and table. Light/dark mode shares the `sm-theme`
-  preference across the accuracy pages.
+  preference across the accuracy pages. Filters use compact responsive columns with smaller labels and controls;
+  evaluation times use UTC minutes. Trend plots have a bounded size and center
+  the point when only one evaluation is available.
 - Predictor columns: online Regression, FPM (KV warmup on), then
   FPM (KV warmup off) (KV-off input).
 - MAPE over successful predictions, with predicted/measured counts, coverage,
@@ -22,20 +39,26 @@ compares forward-pass predictions with measurements from the public
 - The evaluated AISim commit, HF commit, and UTC completion time. Results are
   marked stale after 48 hours or when the selected branch has advanced.
 
-There is no op-based evaluation or navigation to the internal Gym's other tabs.
+There is no op-based evaluation or FPM Coverage tab.
 FPM variants use the same observations. One winner per KV warmup mode is selected
 by coverage descending, MAPE ascending, then artifact ID. This reproduces Gym's
 comparison policy; it is not an independent held-out ranking of input libraries.
 Regression predicts and scores each observation before tuning on its target;
 state is isolated by worker. Worker roles are inferred from scheduled workload
 across the case, never latency. This is an offline role-inference policy.
+New evaluations select Gym's recommended signed 4×1 lazy regression: 64 retained
+observations per store, attention/MoE features, minimum five observations,
+ridge 1e-9, no scheduled rebuilds, and updates with 1% / 0.1 ms tolerances,
+window 8, trigger 2, cooldown 1, and startup 10. This is an evaluator setting;
+shared AISim defaults and the AgentX/ShareGPT/LongBench configurations remain
+unchanged. Retained historical evaluations keep their original settings.
 Configurations with decode context parallelism (`dcp>1`) retain their measured
 coverage and worker regression results, but show native FPM as unsupported.
 The evaluator validates DCP identity without treating it as ordinary CP.
-Revisions without the worker-scoped regression API (including `release/0.12.0`
-at `1f728534`) show Regression as unsupported. Their measurements remain in its
-coverage denominator; FPM evaluation continues. Legacy shared regression state
-is not substituted for the Gym contract.
+Revisions without worker-scoped regression or configurable signed lazy controls
+show Regression as unsupported. Their measurements remain in its coverage
+denominator; FPM evaluation continues. An older regression policy is not
+substituted for the Gym contract.
 
 ## Daily data flow
 
@@ -45,10 +68,12 @@ Manual dispatch accepts an eligible branch and a full commit belonging to it.
 At most two branch jobs run concurrently. A verified exact nightly wheel is
 reused for scheduled main when available; otherwise the exact source is built.
 
-Each completed branch uploads `summary.json` and `qualification.json` as
+Each completed branch uploads `summary.json`, `details.json`, and `qualification.json` as
 `fpm-accuracy-web-<branch-key>`, retained for 90 days. Results are not committed.
 Upload the output directory as one path so container runners preserve both
 files at the archive root; the publisher rejects missing or extra files.
+Qualification v2 hashes summary and detail separately; legacy v1 remains
+readable for Overview with explicit unavailable detail states.
 The main-branch Pages publisher verifies checksums, schema, source ancestry,
 producer repository/workflow, evaluator SHA, run attempt, and successful branch
 job. It selects the newest eligible source commit, then latest completion time.
@@ -72,12 +97,12 @@ directory so that both assets are available.
 python -m pip install pytest
 python -m pip install --require-hashes -r scripts/fpm_accuracy/requirements.txt
 python -m pytest -c /dev/null -o cache_dir=.cache/pytest tests/fpm_accuracy
-python scripts/build_pages_site.py --output-dir /tmp/aisim-pages
+python scripts/pages/build_pages_site.py --output-dir /tmp/aisim-pages
 python -m http.server --directory /tmp/aisim-pages 8000
 ```
 
 Install an exact AISim wheel with **pip** (which records its SHA-256 in
-`direct_url.json`) before a real evaluation. Run `python scripts/run_fpm_accuracy.py
+`direct_url.json`) before a real evaluation. Run `python -m scripts.fpm_accuracy.run_fpm_accuracy
 --help` for the required source, evaluator, HF, wheel, run-identity, and output
 arguments. `--configuration` limits a local smoke to selected configuration paths;
 it writes `SMOKE_ONLY.txt` and never writes a qualification manifest. Omit it
@@ -87,7 +112,7 @@ workflow publishes results; the runner reads HF and writes local output.
 ```bash
 python -m pip install playwright==1.63.0
 python -m playwright install chromium
-python scripts/check_fpm_accuracy_browser.py
+python scripts/pages/check_fpm_accuracy_browser.py
 node --test tests/test_fpm_accuracy_workflow.mjs
 ```
 
@@ -99,5 +124,82 @@ commit `e8221729db2802e822f6919fd68bc2941743385b`, originally
 `dashboard/index.html` and `dashboard/assets/gym.css`. Modified for a three-column
 public overview, qualified branch snapshots, and public-only provenance. The
 visual presentation now uses AISimulate's E2E accuracy stylesheet.
-Apache-2.0, with maintainer-confirmed migration permission. See the root
-THIRD_PARTY_NOTICES.md and LICENSE. Plotly and other tabs are not included.
+Apache-2.0, with maintainer-confirmed migration permission. The new tabs adapt
+Gym behavior from `f934c030afc3a03cb04d8f3ff4709194f7445c98`; the 3D HTML,
+JS and CSS derive from `dashboard/3d-visualization.html` and
+`dashboard/assets/visualization.{js,css}` at that revision. They are modified
+for AISimulate navigation, styling and GitHub artifact data. Plotly.js v3.4.0
+is bundled unmodified, loaded only by the 3D page, with its MIT license.
+The repository copyright check pins the vendor bundle and MIT license bytes;
+updates must refresh those hashes together with the attribution.
+See the root THIRD_PARTY_NOTICES.md and LICENSE.
+
+## Latest dataset and storage
+
+Scheduled and manual campaigns resolve HF `main` once to an immutable SHA.
+Every branch and the shared `Qualify FPM measurements` job receives that SHA;
+HF cache directories include it. The shared job discovers current
+measurement snapshots and uploads `fpm-accuracy-measurements` once per campaign.
+Branch scoring retains current-snapshot membership. No evaluated results are
+committed, and no long-lived Git branch or external database stores history.
+
+A new HF snapshot produces new assets even when the AISim commit is unchanged.
+The Pages publisher keeps distinct measurement/FPM populations, checks every
+checksum and producer job, and selects visualization data matching the latest
+qualified main evaluation's HF revision when available. Otherwise 3D retains
+the latest qualified measurement snapshot with its original HF revision and
+a stale label; without any retained measurement snapshot it shows unavailable. Failed evaluations retain prior qualified
+accuracy results and their original HF revision; results older than 48 hours
+are marked stale. Expired/deleted artifacts disappear at the next publication.
+Full-point chunks load only when requested; summaries and heatmaps contain
+aggregates. Point assets contain public HF measurement evidence, never tokens
+or credentials. Browser fixtures are synthetic and are never deployed as data.
+
+## Rollout
+
+After the workflow changes land on main, dispatch `fpm-accuracy.yml` with
+`branch=main` and `expected_sha=8dad9634735b6875e22a90927216e542e73ba237`.
+This evaluates the exact baseline using that campaign's latest pinned HF
+snapshot; it does not recreate historical HF evidence. Confirm the branch and
+measurement qualification jobs and the following Pages deployment succeed.
+Subsequent daily runs extend history automatically. A failed baseline must be
+retried explicitly; do not relabel a newer result as the baseline.
+
+The initial 3D export uses validated current snapshots, matching scoring.
+At HF `68fa3add95b32a0399d781b043cb0f1008c8040d`, two archived DeepSeek
+manifests lack current-manifest hash bindings. Archived source traversal is
+therefore excluded without weakening loader validation. Retained evaluation
+history remains available for Details and Trends.
+
+Measurement artifact downloads allow up to 900 MiB, matching the archive bundle
+bound. Other Actions responses retain the 64 MiB default; individual assets,
+checksums, and archive paths remain validated before publication.
+
+Partial reruns can combine independently qualified attempts from the same campaign
+when HF revision, evaluator identity, and measurement membership match. Switching
+3D selections does not wait for obsolete downloads; chart mutations remain serialized.
+
+Manual preview campaigns may run the workflow from a development branch while
+evaluating an eligible main/release source revision. These artifacts retain the
+development evaluator SHA and are excluded from automatic Pages publication.
+The container campaign uses an explicit `/tmp/fpm-accuracy-venv/bin/python` for
+installation and evaluation so runner path remapping cannot select another Python.
+
+Details initially selects a configuration with accepted measurements and an
+available workload. Empty configurations remain labeled and directly linkable.
+
+Details uses the evaluation-selected FPM variant for each method and links its pinned input.
+Only Method and Workload controls are shown above the heatmaps. Missing inputs,
+unsupported predictors, initialization failures, and workloads without successful
+predictions show an explanation in place of the error map; measured distributions remain visible.
+
+Browser visualization fixtures use readable sample/chunk JSON filenames. Test setup
+creates SHA-256 asset names, gzip chunks, and the checksum manifest in its temporary
+site directory, keeping generated assets out of the repository.
+
+Overview configuration rows link to Details and 3D Viz side by side. The 3D link
+selects the matching configuration and snapshot in the left panel when available
+in the published measurement catalog.
+
+The browser regression check verifies Sample renders while a superseded Full
+download is held, and stays selected after that download and redraw finish.
