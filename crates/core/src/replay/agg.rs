@@ -687,11 +687,14 @@ where
                 replay_hashes,
                 session_id,
                 turn_index,
+                synthetic_session_id,
             } = ready;
             let input_length = request.input_length();
             let output_length = request.metadata().effective_max_output_tokens();
             let session_metadata = session_id.clone().zip(turn_index);
-            let uuid = self.assign_request(request, arrival_time_ms, metadata, session_id)?;
+            let placement_session_id = session_id.filter(|_| !synthetic_session_id);
+            let uuid =
+                self.assign_request(request, arrival_time_ms, metadata, placement_session_id)?;
             if let (Some(request_id), Some(play_id)) = (authored_request_id, play_id) {
                 self.collector
                     .on_agentic_metadata(uuid, request_id, play_id, dispatched_at_ms);

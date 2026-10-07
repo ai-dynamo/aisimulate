@@ -12,7 +12,7 @@ pytestmark = pytest.mark.unit
 
 ROOT = Path(__file__).resolve().parents[1]
 PACKAGE_ROOT = ROOT / "python" / "aisimulate"
-CHECK_COPYRIGHT = ROOT / "scripts" / "check_copyright.py"
+CHECK_COPYRIGHT = ROOT / "scripts/ci/check_copyright.py"
 
 ROOT_ONLY_GOVERNANCE_FILES = (
     "AGENTS.md",
@@ -119,3 +119,22 @@ def test_packaged_readme_links_root_governance_to_github(name):
     readme = (PACKAGE_ROOT / "README.md").read_text()
 
     assert f"https://github.com/ai-dynamo/aisimulate/blob/main/{name}" in readme
+
+
+def test_pinned_vendor_files_keep_upstream_license(checker):
+    assert checker.invalid_vendored_files(ROOT) == []
+
+
+@pytest.mark.parametrize("fault", ["modified_source", "missing_source", "modified_license", "missing_license"])
+def test_vendor_integrity_fails_closed(checker, tmp_path, fault):
+    for name in checker.VENDORED_FILES:
+        path = tmp_path / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes((ROOT / name).read_bytes())
+    name = "pages/fpm-accuracy/assets/" + ("PLOTLY-LICENSE.txt" if "license" in fault else "plotly.min.js")
+    path = tmp_path / name
+    if fault.startswith("modified"):
+        path.write_bytes(path.read_bytes() + b"changed")
+    else:
+        path.unlink()
+    assert checker.invalid_vendored_files(tmp_path) == [name]

@@ -2293,17 +2293,24 @@ impl VllmCore {
         // Speculative lookahead reservation may retract decode candidates after
         // scheduling. Keep already executed prefill, but only count surviving
         // decode work that actually produced an output token.
-        let mut committed_requests: Vec<_> = scheduled
-            .iter()
-            .filter(|(_, work)| work.prompt_tokens > 0)
-            .map(|(uuid, _)| *uuid)
-            .collect();
+        let mut committed_requests = Vec::with_capacity(scheduled.len());
         committed_requests.extend(
-            output_signals
+            scheduled
                 .iter()
-                .filter(|signal| signal.token_id.is_some() && scheduled.contains_key(&signal.uuid))
-                .map(|signal| signal.uuid),
+                .filter(|(_, work)| work.prompt_tokens > 0)
+                .map(|(uuid, _)| *uuid),
         );
+        for signal in &output_signals {
+            // Speculative bursts emit consecutive tokens for the same request.
+            if signal.token_id.is_some()
+                && committed_requests.last() != Some(&signal.uuid)
+                && scheduled
+                    .get(&signal.uuid)
+                    .is_some_and(|work| work.prompt_tokens == 0)
+            {
+                committed_requests.push(signal.uuid);
+            }
+        }
         committed_requests.sort_unstable();
         committed_requests.dedup();
         self.state.debug_assert_invariants();

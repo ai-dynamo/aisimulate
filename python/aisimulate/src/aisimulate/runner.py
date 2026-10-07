@@ -14,7 +14,7 @@ import random
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from numbers import Real
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Literal, Protocol, runtime_checkable
 
 import numpy as np
 
@@ -376,6 +376,7 @@ class EngineReplayRunnerFactory:
     """
 
     trace_block_size: int = 512
+    determinism: Literal["random", "canonical_v1"] = field(default="random", kw_only=True)
     runtime: EngineReplayRuntime | None = field(default=None, repr=False, compare=False)
     afd_companion_model: AFDCompanionPerformanceModel | None = field(
         default=None,
@@ -408,7 +409,7 @@ class EngineReplayRunnerFactory:
             supports_agentic_profile=True,
             supported_agentic_topologies=("agg", "disagg"),
             supported_agentic_backends=("vllm", "sglang"),
-            supports_agentic_host_offload=False,
+            supports_agentic_host_offload=True,
             supports_agentic_speculative_decoding=False,
             agentic_qualification="functional_only",
         )
@@ -418,6 +419,7 @@ class EngineReplayRunnerFactory:
             worker_id=worker_id,
             capabilities=self.capabilities(),
             trace_block_size=self.trace_block_size,
+            determinism=self.determinism,
             runtime=self.runtime,
             afd_companion_model=self.afd_companion_model,
         )
@@ -430,6 +432,7 @@ class EngineReplayRunner:
     worker_id: int
     capabilities: RunnerCapabilities
     trace_block_size: int = 512
+    determinism: Literal["random", "canonical_v1"] = field(default="random", kw_only=True)
     runtime: EngineReplayRuntime | None = None
     afd_companion_model: AFDCompanionPerformanceModel | None = None
 
@@ -464,6 +467,12 @@ class EngineReplayRunner:
         output_requirements: ReplayOutputRequirements | None = None,
     ) -> ReplayReport:
         output_requirements = output_requirements or ReplayOutputRequirements()
+        if self.determinism not in {"random", "canonical_v1"}:
+            raise ValueError(f"unsupported replay determinism: {self.determinism!r}")
+        if self.determinism != "random" and (
+            spec.backend_deployment.deployment_mode in {"afd", "afd+pd"} or spec.backend_deployment.encoder is not None
+        ):
+            raise InvalidRunnerError("canonical determinism requires native text replay")
         if output_requirements.capture_telemetry:
             raise InvalidRunnerError("EngineReplayRunner's JSON runtime does not yet expose replay telemetry")
         if spec.workload.get("source_type") is not None and "length_sampler" in spec.workload:
@@ -544,6 +553,10 @@ class EngineReplayRunner:
             if "spec" not in execution_spec:
                 execution_spec = {"spec": execution_spec}
             execution_spec["capture_performance_diagnostics"] = True
+        if self.determinism != "random":
+            if "spec" not in execution_spec:
+                execution_spec = {"spec": execution_spec}
+            execution_spec["determinism"] = self.determinism
         execution_spec_json = json.dumps(
             execution_spec,
             allow_nan=False,
@@ -1349,6 +1362,35 @@ def _materialize_sla(spec: ReplaySpec) -> dict[str, JSONValue]:
         for key in ("ttft_ms", "itl_ms", "e2e_ms")
         if raw.get(key) is not None
     }
+
+
+def canonical_performance_config(config: Mapping[str, Any], *, worker_type: str) -> dict[str, Any]:
+    """Normalize Runner timing metadata through the native estimator contract."""
+    from . import _runtime
+
+    return json.loads(_runtime.canonical_timing_config_json(json.dumps(dict(config), allow_nan=False), worker_type))
+
+
+def materialize_engine_launch_config(
+    deployment_backend: str,
+    deployment_backend_version: str,
+    parallel_config: Mapping[str, JSONValue],
+    raw_config: Mapping[str, JSONValue],
+    role: str,
+) -> dict[str, JSONValue]:
+    """Resolve Runner inputs into the canonical engine launch contract for adapters."""
+    from . import _runtime
+
+    descriptor = _materialize_engine_role(
+        deployment_backend, deployment_backend_version, parallel_config, raw_config, role
+    )
+    descriptor["rank"]["worker_type"] = role
+    return json.loads(
+        _runtime.engine_launch_from_replay_role_json(
+            json.dumps(descriptor, allow_nan=False),
+            _startup_delay_ms(raw_config) / 1000.0,
+        )
+    )
 
 
 def _materialize_engine_role(

@@ -12,13 +12,13 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Literal
 
-from fpm_accuracy.types.forward_pass import (
+from scripts.fpm_accuracy.types.forward_pass import (
     ForwardPassInput,
     ForwardPassIteration,
     RequestMetrics,
     WorkloadKind,
 )
-from fpm_accuracy.types.worker_config import WorkerConfigRecord
+from scripts.fpm_accuracy.types.worker_config import WorkerConfigRecord
 
 
 class CaseStatus(StrEnum):

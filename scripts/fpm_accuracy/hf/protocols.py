@@ -18,9 +18,14 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, TextIO
 
-from fpm_accuracy.exceptions import DataError
-from fpm_accuracy.hf.models import MeasurementFile, MeasurementIssue, MeasurementState
-from fpm_accuracy.types.forward_pass import ForwardPassIteration, ForwardPassMetric, RequestMetrics, WorkloadKind
+from scripts.fpm_accuracy.exceptions import DataError
+from scripts.fpm_accuracy.hf.models import MeasurementFile, MeasurementIssue, MeasurementState
+from scripts.fpm_accuracy.types.forward_pass import (
+    ForwardPassIteration,
+    ForwardPassMetric,
+    RequestMetrics,
+    WorkloadKind,
+)
 
 
 @dataclass(frozen=True, slots=True)

@@ -560,6 +560,7 @@ impl MooncakeTraceBuilder {
             priority,
             strict_priority,
             policy_class,
+            synthetic_session_id: raw_session_id.is_none(),
         });
         if let Some(timestamp_ms) = timestamp_ms {
             self.last_timestamps[session_index] = Some(timestamp_ms);

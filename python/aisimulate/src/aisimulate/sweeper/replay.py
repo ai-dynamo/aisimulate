@@ -239,6 +239,77 @@ class HookCapability:
         )
 
 
+def _require_agentic_g2_scope(spec: ReplaySpec, roles: list[tuple[str, Mapping[str, Any]]]) -> None:
+    """Constrain agentic offload without narrowing ordinary HBM-only replay.
+
+    Inspect every role, including roles without G2: the supported P/D fleet is
+    one DP1 worker per role. Canonical timing and flat topology aliases must
+    receive the same early gate before a runner materializes either form.
+    """
+
+    ranks = [(role, args, args.get("rank", args)) for role, args in roles]
+    if not any(isinstance(rank, Mapping) and rank.get("native_host_offload") is not None for _, _, rank in ranks):
+        return
+    deployment = spec.backend_deployment
+    if spec.execution_mode != "offline":
+        raise ValueError("agentic host offload requires offline execution")
+    if deployment.backend != "vllm":
+        raise ValueError("agentic host offload requires backend=vllm on every role")
+    if deployment.deployment_mode == "agg":
+        counts = (deployment.num_workers,)
+    elif deployment.deployment_mode == "disagg":
+        counts = (deployment.num_prefill_workers, deployment.num_decode_workers)
+    else:
+        raise ValueError("agentic host offload supports only aggregated or disaggregated workers")
+    if any(type(count) is not int or count != 1 for count in counts):
+        raise ValueError("agentic host offload requires one aggregated worker or one prefill and one decode worker")
+    if any(hook.kind == "scaling_policy" for hook in spec.runtime_hooks):
+        raise ValueError("agentic host offload requires static worker pools without a scaling policy")
+    for role, args, rank in ranks:
+        if not isinstance(rank, Mapping):
+            continue  # The engine descriptor validator reports malformed ranks.
+        offload = rank.get("native_host_offload")
+        if isinstance(offload, Mapping) and offload.get("scope", "dp_rank_local") not in (
+            "dp_rank_local",
+            "cluster_shared",
+        ):
+            raise ValueError("agentic host offload requires scope=dp_rank_local or scope=cluster_shared")
+        timing = rank.get("timing_model")
+        identity = timing.get("config", {}) if isinstance(timing, Mapping) else {}
+        if not isinstance(identity, Mapping):
+            identity = {}
+        if any(
+            source.get(name) is not None and source[name] != "vllm"
+            for source, names in (
+                (args, ("engine_type", "aic_backend")),
+                (rank, ("backend", "engine_type", "aic_backend")),
+                (identity, ("backend",)),
+            )
+            for name in names
+        ):
+            raise ValueError("agentic host offload requires backend=vllm on every role")
+        if (
+            any(rank.get(name) is not None for name in ("aic_nextn", "nextn", "speculation"))
+            or any(identity.get(name) is not None for name in ("aic_nextn", "speculation"))
+            or identity.get("nextn") not in (None, 0)
+        ):
+            raise ValueError("agentic replay requires speculative decoding disabled")
+        prefix = "" if role == "aggregated" else f"{role}_"
+        dp_values = [
+            source[name]
+            for source, names in (
+                (args, ("dp_size", "aic_attention_dp_size")),
+                (rank, ("dp_size", "aic_attention_dp_size")),
+                (identity, ("attention_dp", "attention_dp_size")),
+                (deployment.parallel_config, (f"{prefix}attention_dp",)),
+            )
+            for name in names
+            if name in source
+        ]
+        if any(type(value) is not int or value != 1 for value in dp_values):
+            raise ValueError("agentic host offload requires attention DP=1 on every role")
+
+
 @dataclass(frozen=True)
 class RunnerCapabilities:
     """Replay-spec, backend/topology, and runtime-hook support advertised up front."""
@@ -465,19 +536,23 @@ class RunnerCapabilities:
         if agentic_topology_required:
             if "*" not in self.supported_agentic_backends and deployment.backend not in self.supported_agentic_backends:
                 raise ValueError(f"runner does not support agentic execution with backend {deployment.backend!r}")
-            role_args = (
-                [deployment.agg_engine_args]
+            roles = (
+                [("aggregated", deployment.agg_engine_args)]
                 if deployment.deployment_mode == "agg"
-                else [deployment.prefill_engine_args, deployment.decode_engine_args]
+                else [("prefill", deployment.prefill_engine_args), ("decode", deployment.decode_engine_args)]
             )
-            for args in role_args:
-                if not args:
-                    continue
-                rank = args.get("rank", args)
-                if not isinstance(rank, Mapping):
-                    continue  # The engine descriptor validator reports malformed ranks.
-                if not self.supports_agentic_host_offload and rank.get("native_host_offload") is not None:
-                    raise ValueError("agentic replay requires HBM-only KV cache; host offload is unsupported")
+            roles = [(role, args) for role, args in roles if isinstance(args, Mapping)]
+            # The engine descriptor validator reports malformed ranks.
+            ranks = [args.get("rank", args) for _, args in roles]
+            ranks = [rank for rank in ranks if isinstance(rank, Mapping)]
+            if not self.supports_agentic_host_offload and any(
+                rank.get("native_host_offload") is not None for rank in ranks
+            ):
+                raise ValueError("agentic replay requires HBM-only KV cache; host offload is unsupported")
+            if any(rank.get("g3_offload") is not None for rank in ranks):
+                raise ValueError("agentic replay does not support G3 offload")
+            _require_agentic_g2_scope(spec, roles)
+            for rank in ranks:
                 if not self.supports_agentic_speculative_decoding and any(
                     rank.get(key) is not None for key in ("aic_nextn", "nextn", "speculation")
                 ):
