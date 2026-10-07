@@ -100,7 +100,7 @@ SPDX-License-Identifier: Apache-2.0
         <dl>
           <dt>Regression</dt>
           <dd>Learns from preceding observations per worker. Predict first, then tune on the observed latency.
-            <details><summary>Python API: <code>RustForwardPassPerfModel.best_available(config)</code></summary>
+            <details><summary>Python API: <code>model = RustForwardPassPerfModel.best_available(replace(base_config, estimation_mode="fpm_regression", fallback_policy="deny"))</code></summary>
             <pre><code>config = replace(base_config, estimation_mode="fpm_regression", fallback_policy="deny")
 model = RustForwardPassPerfModel.best_available(config)
 latency_ms = model.estimate_forward_pass_time_ms(workload)
@@ -108,7 +108,7 @@ model.tune_with_fpms(observations)</code></pre></details>
           </dd>
           <dt>FPM (KV warmup on)</dt>
           <dd>Uses a whole-forward library collected with KV warmup, interpolation, and supported analytical scaling.
-            <details><summary>Python API: <code>RustForwardPassPerfModel.best_available(config)</code></summary>
+            <details><summary>Python API: <code>model = RustForwardPassPerfModel.best_available(replace(base_config, estimation_mode="fpm_interpolation", fallback_policy="deny", systems_paths=(warmup_library_root,)))</code></summary>
             <pre><code>config = replace(base_config, estimation_mode="fpm_interpolation", fallback_policy="deny",
                  systems_paths=(warmup_library_root,))
 model = RustForwardPassPerfModel.best_available(config)
@@ -116,7 +116,7 @@ latency_ms = model.estimate_forward_pass_time_ms(workload)</code></pre></details
           </dd>
           <dt>FPM (KV warmup off)</dt>
           <dd>Uses the same prediction mechanism with a library collected without KV warmup.
-            <details><summary>Python API: <code>RustForwardPassPerfModel.best_available(config)</code></summary>
+            <details><summary>Python API: <code>model = RustForwardPassPerfModel.best_available(replace(base_config, estimation_mode="fpm_interpolation", fallback_policy="deny", systems_paths=(no_warmup_library_root,)))</code></summary>
             <pre><code>config = replace(base_config, estimation_mode="fpm_interpolation", fallback_policy="deny",
                  systems_paths=(no_warmup_library_root,))
 model = RustForwardPassPerfModel.best_available(config)

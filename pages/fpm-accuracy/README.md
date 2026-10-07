@@ -18,7 +18,9 @@ Details and 3D Visualization are separate tabs with independent controls.
   on), and FPM (KV warmup off) columns. Three cards average each predictor's
   available configuration MAPEs equally; model table rows retain weighting by
   successful prediction count. A reference section explains mechanisms and the
-  canonical Python construction, prediction, and regression tuning APIs. KV
+  canonical Python construction, prediction, and regression tuning APIs. The
+  visible API summaries include each predictor's explicit mode and library root
+  through the configuration object accepted by `best_available`. KV
   warmup selects the collected library, not a prediction-time switch.
 - Averages exclude unavailable/nonfinite MAPEs and show contributing
   configuration counts. No available MAPE displays as a dash. Best selection
