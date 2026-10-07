@@ -57,10 +57,11 @@ def verify(directory: Path, side: str, revision: str) -> dict:
     adapter = list(directory.glob("ai_dynamo-*.whl"))
     if len(wheels) != 1 or len(runtime) != 1 or len(adapter) != 1:
         raise ValueError(f"{side}: expected AISimulate, Dynamo runtime and adapter wheels")
+    expected_wheels = {wheels[0].name, runtime[0].name, adapter[0].name}
+    if {path.name for path in directory.glob("*.whl")} != expected_wheels:
+        raise ValueError(f"{side}: unexpected wheel in artifact")
     expected = {
-        wheels[0].name,
-        runtime[0].name,
-        adapter[0].name,
+        *expected_wheels,
         "requirements.txt",
         "dynamo-requirements.txt",
         "dynamo-build.json",

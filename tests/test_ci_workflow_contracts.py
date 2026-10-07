@@ -3278,7 +3278,18 @@ def test_simulation_perf_invocations(tmp_path, self_compare, fail_first, count):
 
 
 @pytest.mark.parametrize(
-    "fault", [None, "revision", "side", "wheel", "requirements", "extra_wheel", "embedded_core", "dynamo_wheel"]
+    "fault",
+    [
+        None,
+        "revision",
+        "side",
+        "wheel",
+        "requirements",
+        "extra_wheel",
+        "unverified_wheel",
+        "embedded_core",
+        "dynamo_wheel",
+    ],
 )
 def test_simulation_perf_artifact_verification(tmp_path, fault):
     from scripts.performance.simulation_perf_artifact import sha256, verify
@@ -3315,6 +3326,8 @@ def test_simulation_perf_artifact_verification(tmp_path, fault):
         requirements.write_text("wrong dependencies\n")
     elif fault == "extra_wheel":
         (tmp_path / "aisimulate-other.whl").write_bytes(b"another wheel")
+    elif fault == "unverified_wheel":
+        (tmp_path / "unexpected_package-1.0-py3-none-any.whl").write_bytes(b"unverified wheel")
     elif fault == "embedded_core":
         manifest["dynamo"]["aisimulate_sha"] = "b" * 40
     elif fault == "dynamo_wheel":
