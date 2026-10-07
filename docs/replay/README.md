@@ -39,14 +39,14 @@ Agentic results explicitly retain `functional_only` qualification.
 ## Read by task
 
 - [Feature support](features.md): backend, topology, workload and composition limits.
-- [Workloads](workloads.md): the `traffic` block, trace formats, sessions and stopping rules.
+- [Workloads](workloads.md): the `traffic` block, trace formats, sessions, stopping rules and
+  [agentic lanes, snapshots, warmup and profiles](workloads.md#agentic-load-controls).
 - [Engine](engine/README.md): the `engine` block, with pages for
   [workers](engine/workers.md), [KV cache](engine/kv-cache.md),
   [P/D KV transfer](engine/kv-transfer.md),
   [speculative decoding](engine/speculation.md) and
   [analytical AFD/EPD](engine/analytical.md).
 - [Agentic quickstart](agentic/quickstart.md): run a reproducible Weka simulation.
-- [Warmup](agentic/warmup.md) and [continuous profiles](agentic/continuous-profiles.md): snapshots, preparation, duration and reporting.
 - [Dynamo integration](dynamo.md): install matching dependencies and enable Router/Planner.
 - [Python API](api/python.md) and [Rust API](api/rust.md): inputs, reports and execution contracts.
 - [Extending Replay](extending.md): internal ownership and validation requirements.

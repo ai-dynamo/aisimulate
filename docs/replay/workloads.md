@@ -71,9 +71,9 @@ the current SA convention.
 | `traffic.load.fraction` | `null` | `-` | `-` | Positive finite number; `kv_capacity_fraction` only and may exceed `1`. |
 | `traffic.load.speedup` | `1` | `-` | `-` | Positive; trace timestamp load only. |
 | `traffic.load.agentic_lanes` | `null` | `x` | `-` | Positive integer; `weka`, `agentic_mooncake`, or agentic `dynamo` timestamp replay only. |
-| `traffic.load.agentic_snapshot` | `null` (unset) | `x` | `-` | Optional object `{seed: u64}`; required `seed` is an unsigned 64-bit integer (`0` through `2^64 - 1`). Requires `traffic.load.type: trace_timestamps` and positive `agentic_lanes`; supported formats are `weka`, `agentic_mooncake`, and agentic `dynamo`. Unset preserves turn-zero execution. |
-| `traffic.load.agentic_warmup` | `false` | `x` | `-` | Optional boolean; `true` requires `agentic_snapshot` and positive `agentic_lanes`. Physically primes the saved prefixes, completes ten warmup requests per lane, then profiles the saved suffix. Available on offline aggregated or disaggregated vLLM/SGLang Engine replay with HBM-only KV cache, or [qualified vLLM G2 configurations](engine/kv-cache.md#agentic-g2). Speculative decoding remains disabled. |
-| `traffic.load.agentic_profile` | `null` (unset) | `x` | `-` | Optional object; `{}` enables continuous lane replenishment with the defaults below. Requires `trace_timestamps`, positive `agentic_lanes`, and `agentic_snapshot`; cannot be combined with `traffic.stop.max_virtual_time_seconds`. Unset preserves finite replay. See [continuous agentic profiles](agentic/continuous-profiles.md) for the full configuration, supported runtimes, and reporting semantics. |
+| `traffic.load.agentic_snapshot` | `null` (unset) | `x` | `-` | Optional object `{seed: u64}`; required `seed` is an unsigned 64-bit integer (`0` through `2^64 - 1`). Requires `traffic.load.type: trace_timestamps` and positive `agentic_lanes`; supported formats are `weka`, `agentic_mooncake`, and agentic `dynamo`. Unset preserves turn-zero execution. See [snapshot](#agentic-snapshot). |
+| `traffic.load.agentic_warmup` | `false` | `x` | `-` | Optional boolean; `true` requires `agentic_snapshot` and positive `agentic_lanes`. Primes caches before measurement; see [warmup](#agentic-warmup). |
+| `traffic.load.agentic_profile` | `null` (unset) | `x` | `-` | Optional object; `{}` enables continuous lane replenishment with the defaults below. Requires `trace_timestamps`, positive `agentic_lanes`, and `agentic_snapshot`; cannot be combined with `traffic.stop.max_virtual_time_seconds`. Unset preserves finite replay. See [continuous profile](#agentic-profile). |
 | `traffic.load.agentic_profile.duration_seconds` | `3600` when enabled | `x` | `-` | Positive finite admission duration, starting at the preparation barrier or simulation start without warmup. No new workload requests or replacement plays are issued after the deadline. |
 | `traffic.load.agentic_profile.response_grace_seconds` | `30` when enabled | `x` | `-` | Nonnegative finite time for already submitted requests to respond after the admission deadline; remaining client requests are then canceled. |
 | `traffic.load.agentic_profile.cancel_drain_seconds` | `10` when enabled | `x` | `-` | Nonnegative finite upper bound for cancellation acknowledgements. The supported offline runtimes acknowledge synchronously; this does not guarantee server/GPU cleanup. |
@@ -217,54 +217,193 @@ row above. If `traffic.source.block_size` is supplied for `dynamo` or `weka`, it
 embedded block size. For the other formats, `block_size` is the trace hash-block size used to
 reconstruct prompts.
 
-Agentic Engine replay supports HBM-only KV cache on vLLM/SGLang and local or shared
-[G2 host offload](engine/kv-cache.md#agentic-g2) on vLLM with a static single aggregated worker
-or 1P1D, attention DP1 on every role, and no G3. Speculative decoding is disabled;
-TensorRT-LLM is not qualified. P/D workers must share the same target
-model. Online P/D fails validation. These functional replay guarantees do not
-qualify the separate Dynamo runner, even when the input format is `dynamo`.
+Agentic formats are qualified on the offline `engine` stack; see
+[agentic load controls](#agentic-load-controls) for supported runtimes. P/D workers
+must share one target model. Reading a `dynamo` trace does not require the Dynamo stack.
 
-Weka is the public AgentX source format and AISimulate is its prediction entry point. AISimulate
-deterministically lowers Weka into Agentic Mooncake v2, the versioned producer-neutral interchange
-format, and then validates that lower IR as a `ValidatedAgenticGraph`, the runtime representation.
-Dynamo is an optional integration and is not required to parse, convert, or predict a Weka corpus.
-Two producer timestamp conventions exist: raw kv-cache-tester nested request timestamps are relative
-to their subagent marker, while SemiAnalysis-published AgentX timestamps are root-trace absolute.
-`nested_timestamp_basis` may select either convention explicitly. When omitted (or set to `auto`),
-AISimulate scans every nested request in every JSON/JSONL row before lowering. If any child timestamp
-is earlier than its subagent marker by more than the join epsilon, the complete corpus is interpreted
-as relative; otherwise it is interpreted as absolute. This is one corpus-wide heuristic, never a
-per-request rewrite. It cannot prove that a corpus is homogeneous: a malformed absolute request can
-select relative for the entire corpus, while relative offsets that are all at or above their markers
-can select absolute. Producers with ambiguous data should set the basis explicitly. Both conventions
-lower uniformly to root-absolute canonical timestamps. The selected basis and whether it was inferred
-heuristically or configured are logged; the resolved value is reported as
-`weka_nested_timestamp_basis` and included in source identity.
-The neutral importer accepts mixed source models and preserves each request's model label in graph
-provenance and identity. Execution currently supports one target: before the graph enters
-the model-neutral `WorkloadDriver`, AISimulate projects every request onto the one model configured by
-`engine.model`. The report records the sorted source-model set, target model, and
-`project_to_configured_target` policy under `agentic_model_projection`; per-node heterogeneous timing
-models are not supported yet.
-The lowering records a zero-based `source_play_ordinal` on every v2 row so materialized graphs retain
-deterministic directory and JSONL order; missing ordinals remain valid for older v2 inputs, but an
-ordered graph must provide one unique contiguous ordinal for every play.
-Without `agentic_profile`, `agentic_lanes: N` starts the first N plays and replenishes each
-free client lane from one shared queue in normalized graph order. Plays are not preassigned
-to private lane queues, so a later play cannot overtake the next queued play when a lane finishes early.
-The next play starts when the current play's client work ends: all authored requests complete on
-success, or all dispatched requests become terminal after a failure skips undispatched work. Background requests remain part
-of their play even without a parent join. P/D source holds and other server cleanup may outlive this
-boundary; they still constrain engine admission and final drain, but do not delay client submission.
-Omitting `agentic_lanes` preserves authored timestamp behavior. With `agentic_snapshot` and
-`agentic_profile`, completed lanes take replacement plays from a shared sequential corpus cursor,
-which wraps at the end of the corpus until the admission deadline. Replacement plays start at turn
-zero with fresh request, conversation, play, and cache identities. This opt-in path supports offline
-aggregated and P/D vLLM/SGLang Engine replay with HBM-only KV cache, and the
-[qualified vLLM G2 configurations](engine/kv-cache.md#agentic-g2), with speculative decoding disabled.
-It retains AISimulate's snapshot sampling and warmup frontier behavior; it does not establish complete
-AgentX parity. See [continuous agentic profiles](agentic/continuous-profiles.md) for defaults, lifecycle and
-idle controls, a runnable example, and the remaining limitations.
+Weka is the AgentX source format. AISimulate converts a Weka corpus into
+Agentic Mooncake and replays it natively; the Dynamo stack is not needed.
+
+Weka producers use two timestamp conventions for requests inside a subagent:
+raw kv-cache-tester traces are relative to the subagent marker, while published
+AgentX traces are absolute. Set `traffic.source.nested_timestamp_basis` to
+`relative` or `absolute` when you know which one applies. With `auto` (the
+default), AISimulate picks `relative` for the whole corpus if any child request
+is earlier than its subagent marker, and `absolute` otherwise. The chosen basis
+is reported as `weka_nested_timestamp_basis`.
+
+A Weka corpus can name several source models. Replay runs every request on
+`engine.model` and records the source models and target under
+`agentic_model_projection`.
+
+<a id="agentic-load-controls"></a>
+
+## Agentic Load Controls
+
+Agentic traces (`weka`, `agentic_mooncake` and agentic `dynamo`) are made of
+*plays*: dependency trees of requests from one agent session. Four
+`traffic.load` fields control how plays are replayed. Each one requires the
+previous:
+
+```yaml
+traffic:
+  source: {type: trace, format: weka, paths: [trace.jsonl]}
+  load:
+    type: trace_timestamps
+    agentic_lanes: 4              # concurrent plays
+    agentic_snapshot: {seed: 42}  # start each lane mid-play
+    agentic_warmup: true          # fill caches before measuring
+    agentic_profile: {}           # recycle plays for a fixed duration
+```
+
+| Control | Without it | With it |
+| --- | --- | --- |
+| `agentic_lanes` | Every play starts at its authored timestamp. | At most `N` plays run at once. |
+| `agentic_snapshot` | Each play starts at turn zero. | Each lane starts from a sampled point inside its play. |
+| `agentic_warmup` | Measurement starts with cold caches. | Caches are primed before measurement starts. |
+| `agentic_profile` | The run ends when the selected plays finish. | Lanes keep taking new plays until a deadline. |
+
+Supported runtimes: offline `engine` stack, vLLM or SGLang, aggregated or P/D
+workers, HBM-only KV cache, and no speculative decoding. vLLM additionally
+supports [G2 host offload](engine/kv-cache.md#agentic-g2) on one aggregated
+worker or 1P1D with `attention_data: 1`. TensorRT-LLM, G3 offload and online
+P/D are rejected. Results are qualified `functional_only`, not hardware
+accuracy. [Start an AgentX simulation](agentic/quickstart.md) walks through a
+complete run.
+
+<a id="agentic-lanes"></a>
+
+### Lanes
+
+`agentic_lanes: N` starts the first `N` plays in corpus order. When a play's
+client work ends, its lane takes the next play from one shared queue. A play's
+client work ends when all its requests complete, or, after a failure, when all
+dispatched requests are terminal. Server cleanup, such as P/D source holds, can
+continue after the lane moves on. Lanes limit whole plays, not the concurrent
+child requests inside a play.
+
+A child request becomes ready after its dependencies complete, plus the
+recorded gap between them. Background children run without a join.
+
+<a id="agentic-snapshot"></a>
+
+### Snapshot
+
+`agentic_snapshot: {seed: S}` starts each initial lane partway through its play.
+The cut is sampled uniformly between 25% and 75% of the play's span of request
+start times. Requests that started before the cut become history and are not
+replayed; the rest are replayed with their original timers. The same corpus,
+lane count and seed always give the same cuts. `S` is an unsigned 64-bit
+integer.
+
+A snapshot is cut at request boundaries. It does not model partial decode
+progress or restore an engine checkpoint: without warmup, the caches start
+empty.
+
+<a id="agentic-warmup"></a>
+
+### Warmup
+
+`agentic_warmup: true` fills the caches before measurement, in three stages:
+
+| Stage | Requests | Output |
+| --- | --- | --- |
+| Primer | For each conversation with history, its last historical request's full input | 1 token each |
+| Warmup | 10 per lane, repeating that lane's primer inputs (or its first remaining request if it has no history) | 1 token each |
+| Profile | The remaining requests of each play | Original output lengths |
+
+Within a lane, preparation requests run one after another; lanes prepare in
+parallel. Profiling starts at a barrier, after every preparation request has
+succeeded and all its server work has settled, including P/D transfers. At the
+barrier, worker caches and play identities are kept, and the measurement clock
+starts. If any preparation request fails, the run stops before profiling:
+`predict` exits with an error and `recommend` drops the candidate.
+
+Warmup repeats the saved prefixes and does not advance the plays. Primed
+prefixes can still be evicted or placed on another worker, so warmup does not
+guarantee cache hits.
+
+<a id="agentic-profile"></a>
+
+### Continuous profile
+
+`agentic_profile` keeps every lane busy until an admission deadline. When a
+play finishes, its lane takes the next play from the corpus, wrapping at the
+end. Replacement plays start at turn zero with fresh identities.
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `duration_seconds` | `3600` | Admission window, starting at the warmup barrier (or at time zero without warmup). No new requests or plays are issued after it. |
+| `response_grace_seconds` | `30` | Time for already issued requests to finish after the deadline. Requests still running are then canceled. |
+| `cancel_drain_seconds` | `10` | Upper bound for cancellation acknowledgements. Offline runtimes acknowledge immediately. |
+| `tree_idle_cap_seconds` | `300` | Longest idle wait inside a play with no outstanding requests; longer authored waits are shortened. |
+| `global_idle_cap_seconds` | `10` | Longest idle wait when no client request is outstanding. |
+
+`agentic_profile: {}` uses all defaults. Durations and idle caps must be
+positive; grace periods may be zero. The profile cannot be combined with
+`traffic.stop.max_virtual_time_seconds`. Idle caps shorten client wait timers
+only; engine work keeps its real timing.
+
+Throughput uses the successful requests, including those that finish during
+the grace period. The observed interval runs from their earliest arrival to
+their latest response, so it can be shorter or longer than `duration_seconds`.
+
+Long profiles keep lifecycle records for every play and can use much more host
+memory than the trace itself. The CLI runs them under host-memory supervision;
+a run that exceeds its budget stops with `resource_limited`.
+[`examples/cli/agentic-profile.yaml`](../../examples/cli/agentic-profile.yaml)
+is a small offline example with fixed timing:
+
+```bash
+aisimulate predict --config examples/cli/agentic-profile.yaml \
+  --capture-per-request --format json --output-dir ./agentic-profile
+```
+
+<a id="agentic-results"></a>
+
+### Agentic results
+
+`prediction.json` adds these sections:
+
+| Section | Contents |
+| --- | --- |
+| `agentic_snapshots` | Seed, sampled cut, history and remaining timers for each initial lane |
+| `agentic_phases` | Preparation requests, barrier state and time (`profile_start_ms`) |
+| `agentic_play_outcomes` | Each play's terminal status (`completed`, `failed` or `incomplete`) and times |
+| `agentic_profile` | Resolved profile options, deadline, recycled plays, canceled and never-issued requests, unsettled server work |
+
+With warmup, per-request records in `requests.jsonl` contain only profile
+requests, and their timestamps start at the barrier. Preparation is excluded
+from latency, throughput and reuse metrics. `wall_time_ms` is host time for the
+whole run, including preparation.
+
+To check cache reuse, use `first_admission_prefix_cache_reused_ratio` and the
+per-request reuse fields described in [KV cache](engine/kv-cache.md#gpu-cache-g1).
+Reuse is counted in whole blocks: a resident 128-token prefix reuses 64 tokens
+with vLLM's 64-token blocks and 127 tokens with SGLang's 1-token pages.
+
+<a id="agentic-references"></a>
+
+### Behavior references
+
+Snapshots follow NVIDIA AIPerf's
+[`trajectory_source.py`](https://github.com/ai-dynamo/aiperf/blob/7db2ba37a62aa80c882bc90eaf61cc8073e2387b/src/aiperf/timing/trajectory_source.py)
+and [`session_tree.py`](https://github.com/ai-dynamo/aiperf/blob/7db2ba37a62aa80c882bc90eaf61cc8073e2387b/src/aiperf/timing/session_tree.py)
+(Apache-2.0). The one-token primers and ten warmups per lane follow the
+[InferenceX-app methodology article](https://github.com/SemiAnalysisAI/InferenceX-app/blob/9bb7b13eb4985217a6282f340459fd5948613276/packages/app/src/components/datasets/agentx-methodology-article.tsx)
+(GPL-3.0) and the
+[AgentX harness tutorial](https://github.com/SemiAnalysisAI/agentx-harness/blob/56a0cf70f4c0359454ee4bd15a17770b541a3e3e/docs/tutorials/agentx-mvp.md)
+(Apache-2.0). Continuous profiles follow the
+[`agentx-harness` timing modules](https://github.com/SemiAnalysisAI/agentx-harness/tree/754356e9a39acc6cc6afb242d123bb57c3fb6f75/src/aiperf/timing)
+(Apache-2.0) as pinned by
+[InferenceX](https://github.com/SemiAnalysisAI/InferenceX/tree/4ab85c1e33b66d6bd5a3087b3de5ba3e86cbbe80).
+These sources describe the behavior; no code or prose was copied. The
+implementation, tests and example workloads are written for AISimulate.
+
+Known differences: AISimulate samples snapshots with its own deterministic
+algorithm, and its warmup repeats saved prefixes instead of advancing the live
+trajectory. This is not full AgentX parity. Source review notes are kept in the
+[replay evidence record](../../benchmarks/evidence/accuracy/replay-evidence.md).
 
 <a id="mooncake-and-mooncake-delta-jsonl"></a>
 

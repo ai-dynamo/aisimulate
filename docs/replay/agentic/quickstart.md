@@ -17,7 +17,7 @@ qualified for functional behavior, not hardware performance accuracy.
 
 The YAML below sets `traffic.load.agentic_profile.duration_seconds: 3600`.
 This controls simulated time for issuing profile requests, not CPU wall time.
-See [continuous agentic profiles](continuous-profiles.md) for the detailed contract.
+See [agentic load controls](../workloads.md#agentic-load-controls) for every option.
 
 ## 1. Install from source
 
@@ -210,8 +210,7 @@ work has settled; the report records any remaining server work separately.
 
 Historical, primer, and warmup requests do not count as measured requests.
 Preparation can improve reuse, but routing, capacity, and eviction still affect
-actual cache hits. See [warmup inputs, outputs, and barrier semantics](warmup.md)
-for the detailed contract and qualification boundaries.
+actual cache hits. See [warmup](../workloads.md#agentic-warmup) for details.
 
 ## 5. Read the results
 
