@@ -115,5 +115,13 @@
       "published_sha256": "0323b30e45c74b5ae7346cff88d936aab3b991f8103c675bf94f4bb77c016981",
       "amendment": "SPDX comments only; original executable content unchanged"
     }
+  },
+  "later_node_observation": {
+    "path": "runtime/node-later-observation.json",
+    "sha256": "8f04fd632a4815f6f9a2ad05fab0b0a8e38b99b3f7e0e198c0c74d59a1999936",
+    "alert_recorded_local": "2026-10-06T18:07:10-07:00",
+    "onset": "unknown",
+    "affected_gpu": "unknown",
+    "qualification_limit": "Measurements have endpoint/periodic observations, not continuous host-health certification; later alert does not establish earlier onset."
   }
 }
