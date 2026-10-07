@@ -66,7 +66,8 @@ Details and 3D Visualization are separate tabs with independent controls.
 - Dataset configuration and measurement links pinned to the evaluated HF commit.
 - The evaluated AISim commit, HF commit, and UTC completion time. Overview and
   Predictors show evaluation status, the daily schedule, and an Evaluation run
-  link in a banner below the tabs, without an age-based stale warning.
+  link in a banner directly below the tabs, without introductory comparison
+  text or an age-based stale warning.
 - Evaluation run links point to the exact GitHub Actions run attempt: the loaded
   snapshot on Overview/Predictors, the selected evaluation on Details, and the
   newest represented evaluation on filtered Trends. 3D Visualization links to
