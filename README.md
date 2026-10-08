@@ -126,6 +126,29 @@ aisimulate predict \
   --output-dir ./aisimulate-prediction
 ```
 
+### Python prediction API
+
+Use the same `prediction.yaml` from Python. In the activated AISimulate
+environment, save this as `predict_example.py` and run `python predict_example.py`:
+
+```python
+from aisimulate.config.cli import CorePredictionConfig
+from aisimulate.predict import run_prediction
+from aisimulate.runner import EngineReplayRunnerFactory
+
+if __name__ == "__main__":
+    result = run_prediction(
+        CorePredictionConfig.from_yaml("prediction.yaml"),
+        stack="engine",
+        runner_factory=EngineReplayRunnerFactory(),
+    )
+    print(result.summary)
+```
+
+The API returns metrics and reports; the caller chooses how to save them.
+See the [prediction API contract](docs/core-api.md#python-prediction-api)
+for result fields, capture options, errors and resource supervision.
+
 ### Dynamo-integrated prediction
 
 <!-- readme-check: dynamo-predict -->
@@ -201,6 +224,33 @@ aisimulate recommend \
   --config recommendation.yaml \
   --output-dir ./aisimulate-recommendation
 ```
+
+### Python recommendation API
+
+Use the same `recommendation.yaml` from Python. In the activated AISimulate
+environment, save this as `recommend_example.py` and run `python recommend_example.py`.
+Keep the main guard because recommendation runs in supervised subprocesses.
+
+```python
+from aisimulate.config.cli import CoreRecommendationConfig
+from aisimulate.recommend import run_recommendation
+from aisimulate.runner import EngineReplayRunnerFactory
+
+if __name__ == "__main__":
+    result = run_recommendation(
+        CoreRecommendationConfig.from_yaml("recommendation.yaml"),
+        stack="engine",
+        runner_factory=EngineReplayRunnerFactory(),
+        show_progress=False,
+    )
+    print(result.counts)
+    for candidate in result.selected_candidates:
+        print(candidate.score, candidate.used_gpus, candidate.prediction_config)
+```
+
+The API returns a `SweepResult` with the candidate ledger and selected deployments.
+See the [recommendation API contract](docs/core-api.md#python-recommendation-api)
+for arguments, result fields, output adapters and resource supervision.
 
 ### Dynamo-integrated recommendation
 
@@ -309,7 +359,7 @@ Use the focused SDK documentation instead of treating CLI internals as public
 APIs:
 
 - [Estimator/FPE Python and Rust SDK](docs/core-api.md)
-- [Single-point prediction Python API](docs/core-api.md#python-single-point-prediction)
+- [Prediction and recommendation Python APIs](docs/core-api.md#python-prediction-api)
 - [FPM self-service: onboard a model on target hardware](docs/fpm-self-service/README.md)
 - [FPM self-service implementation and CLI reference](docs/fpm-self-service/implementation.md)
 - [FPM self-service examples](docs/fpm-self-service/examples.md)

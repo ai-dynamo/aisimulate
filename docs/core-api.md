@@ -13,6 +13,23 @@ model, Replay runtime, KV-cache request/response types, and the embedded
 Rust-to-Python construction path. Legacy Python import namespaces are removed
 in AISimulate 0.13.0; see the [Python migration guide](MIGRATION.md#python-imports-and-resources).
 
+## Table of contents
+
+- [Stable Python facade](#stable-python-facade)
+- [Python prediction API](#python-prediction-api)
+- [Python recommendation API](#python-recommendation-api)
+- [Engine context limits](#engine-context-limits)
+- [KV-cache capacity reservation](#kv-cache-capacity-reservation)
+- [Choosing a forward-pass API](#choosing-a-forward-pass-api)
+- [Stable Rust facade](#stable-rust-facade)
+- [Direct FPM query evidence](#direct-fpm-query-evidence)
+- [Static phase diagnostics](#static-phase-diagnostics)
+- [Replay timing evidence](#replay-timing-evidence)
+- [Agentic report source migration (0.13)](#agentic-report-source-migration-013)
+- [Offload replay API migration](#offload-replay-api-migration)
+- [Compatibility rules](#compatibility-rules)
+- [CI contract](#ci-contract)
+
 ## Stable Python facade
 
 New Python code should import from the small facade:
@@ -78,54 +95,15 @@ unavailable. An empty operation list returns an empty list. `aisimulate_core.Aic
 method; `EngineHandle` provides an annotated SDK wrapper with the same query
 options.
 
-## Python single-point prediction
+## Python prediction API
 
 Use `aisimulate.predict.run_prediction` to compile and execute one public
 `CorePredictionConfig`. It checks runner capabilities, creates and closes the
 runner, and returns a `PredictionResult` with the same summary the CLI renders.
 
-In an activated environment with AISimulate and its native extension installed,
-run this complete example. Fixed timing and KV capacity avoid model downloads
-and performance-data queries; the result demonstrates execution, not measured
-model accuracy.
-
-```bash
-python - <<'PY'
-from aisimulate.config.cli import CorePredictionConfig
-from aisimulate.predict import run_prediction
-from aisimulate.runner import EngineReplayRunnerFactory
-
-config = CorePredictionConfig.model_validate({
-    "engine": {
-        "model": "example/model",
-        "hardware": "h200_sxm",
-        "context_length": 128,
-        "workers": {"aggregated": {
-            "timing": {"type": "fixed", "prefill_ms": 1, "decode_ms": 1},
-            "kv_cache": {
-                "bytes_per_token": 128,
-                "capacity": {"type": "fixed", "blocks": 100},
-            },
-        }},
-    },
-    "traffic": {
-        "source": {"type": "synthetic", "input_tokens": 32, "output_tokens": 4},
-        "load": {"type": "concurrency", "concurrency": 1},
-        "stop": {"requests": 1},
-    },
-})
-result = run_prediction(
-    config, stack="engine", runner_factory=EngineReplayRunnerFactory()
-)
-assert result.summary["completed_requests"] == 1
-print(result.summary)
-PY
-```
-
-For an existing core prediction YAML, load it with
-`CorePredictionConfig.from_yaml("prediction.yaml")` instead. See the
-[prediction configuration guide](cli/user-guide.md) for model-backed timing
-and workload options.
+Start with the [README Python prediction example](../README.md#python-prediction-api),
+which uses the same `prediction.yaml` as the CLI. See the
+[prediction configuration guide](cli/user-guide.md) for timing and workload options.
 
 | Argument | Contract |
 | --- | --- |
@@ -158,6 +136,55 @@ factory does not enable the CLI's host-memory admission or subprocess supervisio
 use the CLI for the automatic [local resource controls](local-resources.md).
 
 Source: [prediction entry point](../python/aisimulate/src/aisimulate/predict.py).
+
+## Python recommendation API
+
+Use `aisimulate.recommend.run_recommendation` to search a public
+`CoreRecommendationConfig` and return a `SweepResult`. Start with the
+[README Python recommendation example](../README.md#python-recommendation-api),
+which uses the same `recommendation.yaml` as the CLI. This entry point lowers the
+public configuration into the [Sweeper SDK](sweeper/overview.md); it does not
+accept a `SmartSearchConfig` in place of `CoreRecommendationConfig`.
+
+| Argument | Contract |
+| --- | --- |
+| `config` | Required validated `CoreRecommendationConfig`. |
+| `stack` | Required keyword naming the execution stack; use `"engine"` with `EngineReplayRunnerFactory`. |
+| `runner_factory` | Required keyword supplying the candidate replay factory. |
+| `adapter_configs` | Optional raw adapter blocks keyed by section name. |
+| `providers` | Resolved config adapters keyed by `"<stack>.<section>"`; required for every supplied adapter block. |
+| `output_configs` | Optional output-adapter configuration blocks for candidate and round callbacks. |
+| `afd_performance_model` | Optional performance-model provider for analytical AFD search. |
+| `show_progress` | Defaults to `True`; set `False` to disable progress display. |
+| `output_requirements` | Optional `ReplayOutputRequirements` forwarded to each candidate replay. |
+
+`SweepResult` contains:
+
+- `candidates`: candidate records, including status, metrics, score, provenance,
+  concrete prediction configuration and any rejection or failure reason.
+- `counts`: totals for evaluated, feasible, failed, resource-limited and other
+  candidate outcomes. A returned result does not imply that every candidate succeeded.
+- `selected_candidate_ids` and `selected_candidates`: selected ledger IDs and
+  corresponding `Candidate` objects in the same order. Each selected candidate's
+  `prediction_config` can be used for a prediction.
+- `execution_resources`: host-resource supervision evidence for this run.
+
+Call `result.to_json()` to serialize the sweep result. Without output adapters,
+this API does not publish the CLI's recommendation directory or YAML files.
+
+Recommendation applies host-resource admission and subprocess supervision,
+limits worker concurrency and cleans up its workers. Put calls behind
+`if __name__ == "__main__":` in scripts; factories and providers must be
+pickleable. See [local resource controls](local-resources.md) for budgets,
+resource-limited candidate results and bounded partial evidence.
+
+Invalid core input fails schema validation. Supervised execution failures raise
+`RuntimeError`; host-resource refusal or interruption raises `ResourceLimitError`,
+and cancellation raises `KeyboardInterrupt`. Individual candidate failures are
+recorded in the result rather than necessarily stopping the entire search.
+
+Source: [recommendation entry point](../python/aisimulate/src/aisimulate/recommend.py)
+and [result contract](../python/aisimulate/src/aisimulate/sweeper/result.py).
 
 ## Engine context limits
 
