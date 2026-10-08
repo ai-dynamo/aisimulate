@@ -56,6 +56,8 @@ backend fails validation.
 Each worker's `context_length` overrides `engine.context_length` for that role.
 Prediction supports the override on aggregated, prefill and decode workers;
 aggregated recommendations must use the shared engine field.
+Saved candidate YAML keeps inherited limits unset on the worker, so editing
+`engine.context_length` still updates every worker without an explicit override.
 
 For synthetic recommendation traffic, an explicit prefill limit must cover the
 input tokens plus one generated token. An explicit decode limit must cover input

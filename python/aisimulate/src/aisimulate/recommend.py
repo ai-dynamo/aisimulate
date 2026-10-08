@@ -1000,8 +1000,8 @@ def _candidate_prediction(
             if sample.get(f"{role}_startup_time") is not None
             else raw_worker.get("startup_seconds", 0),
         }
-        if role != "agg":
-            worker_config["context_length"] = sample.get(f"{role}_context_length") or sample.get("context_length")
+        if role != "agg" and sample.get(f"{role}_context_length") is not None:
+            worker_config["context_length"] = sample[f"{role}_context_length"]
         engine["workers"][public_role] = worker_config
         if deployment.deployment_mode == "disagg" and raw_worker.get("hardware") is not None:
             engine["workers"][public_role]["hardware"] = sample[f"{role}_hardware_sku"]
