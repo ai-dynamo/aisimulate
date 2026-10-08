@@ -2400,7 +2400,15 @@ def test_nightly_dependency_execution_cannot_modify_staged_artifacts_or_inherit_
 
 
 def _nightly_license_report(
-    tmp_path, crates, prior=None, lookup_error=None, workspace_members=(), manual_prior=None, artifact_pages=None
+    tmp_path,
+    crates,
+    prior=None,
+    lookup_error=None,
+    workspace_members=(),
+    manual_prior=None,
+    artifact_pages=None,
+    failure_stage=None,
+    missing_deps=False,
 ):
     inventories = tmp_path / "python"
     inventories.mkdir(exist_ok=True)
@@ -2420,24 +2428,30 @@ def _nightly_license_report(
         )
     )
 
-    def archived(rows):
+    def archived(rows, include_deps=True):
         prior_csv = io.StringIO()
         writer = csv.DictWriter(prior_csv, fieldnames=["dependency_type", "name", "version", "spdx_license"])
         writer.writeheader()
         writer.writerows(rows or [])
         archive = io.BytesIO()
         with zipfile.ZipFile(archive, "w") as zipped:
-            zipped.writestr("deps.csv", prior_csv.getvalue())
+            if include_deps:
+                zipped.writestr("deps.csv", prior_csv.getvalue())
+            else:
+                zipped.writestr("unrelated.csv", "name\nfixture\n")
         return archive.getvalue()
 
-    archives = {"https://fixture/archive": archived(prior), "https://fixture/manual-archive": archived(manual_prior)}
+    archives = {
+        "https://fixture/archive": archived(prior, include_deps=not missing_deps),
+        "https://fixture/manual-archive": archived(manual_prior),
+    }
 
     responses = []
 
     def urlopen(request, timeout):
         assert timeout == 30
         assert request.get_header("Authorization") == "Bearer fixture"
-        if lookup_error is not None:
+        if lookup_error is not None and failure_stage is None:
             raise lookup_error
         if "/runs?" in request.full_url:
             query = parse_qs(urlsplit(request.full_url).query)
@@ -2448,6 +2462,8 @@ def _nightly_license_report(
                 runs.insert(0, {"id": 3, "artifacts_url": "https://fixture/manual-artifacts"})
             payload = {"workflow_runs": runs}
         elif request.full_url.startswith("https://fixture/artifacts?"):
+            if failure_stage == "artifacts":
+                raise lookup_error
             query = parse_qs(urlsplit(request.full_url).query)
             assert query["per_page"] == ["100"]
             if artifact_pages is not None:
@@ -2461,6 +2477,8 @@ def _nightly_license_report(
                 "artifacts": [{"name": "license-artifacts", "archive_download_url": "https://fixture/manual-archive"}]
             }
         elif request.full_url in archives:
+            if failure_stage == "archive":
+                raise lookup_error
             # Exercise urllib's actual redirect handling, which used to carry
             # the GitHub bearer token to the signed storage URL and cause 401.
             from urllib.request import HTTPRedirectHandler
@@ -2532,6 +2550,27 @@ def test_nightly_license_first_run_uses_empty_baseline(tmp_path, capsys):
 def test_nightly_license_baseline_lookup_failure_does_not_publish_diff(tmp_path):
     with pytest.raises(OSError, match="baseline API unavailable"):
         _nightly_license_report(tmp_path, [("0.2.17", "MIT")], lookup_error=OSError("baseline API unavailable"))
+    assert not (tmp_path / "deps-diff.csv").exists()
+
+
+@pytest.mark.parametrize("failure_stage", ["artifacts", "archive"])
+def test_nightly_license_post_selection_failure_does_not_publish_diff(tmp_path, failure_stage):
+    prior = [{"dependency_type": "crate", "name": "getrandom", "version": "0.2.17", "spdx_license": "MIT"}]
+    with pytest.raises(OSError, match=f"{failure_stage} unavailable"):
+        _nightly_license_report(
+            tmp_path,
+            [("0.2.17", "MIT")],
+            prior,
+            lookup_error=OSError(f"{failure_stage} unavailable"),
+            failure_stage=failure_stage,
+        )
+    assert not (tmp_path / "deps-diff.csv").exists()
+
+
+def test_nightly_license_missing_deps_csv_does_not_publish_diff(tmp_path):
+    prior = [{"dependency_type": "crate", "name": "getrandom", "version": "0.2.17", "spdx_license": "MIT"}]
+    with pytest.raises(RuntimeError, match="missing deps.csv"):
+        _nightly_license_report(tmp_path, [("0.2.17", "MIT")], prior, missing_deps=True)
     assert not (tmp_path / "deps-diff.csv").exists()
 
 
