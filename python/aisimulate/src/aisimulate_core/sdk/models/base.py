@@ -684,17 +684,19 @@ class BaseModel:
         swa_per_token: float,
         global_per_token: float,
     ) -> int | None:
-        """vLLM block-aligned SWA reservation, or ``None`` when not applicable.
+        """token count assuming the use of vLLM block-aligned SWA, or ``None``
+        if vLLM or a max sequence length isn't specified.
 
-        Returns the effective token capacity when the model runs on vLLM AND
-        ``max_model_len`` is set; returns ``None`` otherwise so the caller falls
-        back to its idealized inverse. Subclasses compute the model-specific
-        ``swa_per_token`` / ``global_per_token`` byte rates and delegate here.
+        For a given memory budget, returns the effective token capacity when
+        the model runs on vLLM AND ``max_model_len`` is set; returns ``None``
+        otherwise so the caller falls back to its idealized inverse. Subclasses
+        compute the model-specific ``swa_per_token`` and ``global_per_token``
+        byte rates and call this function to perform the token calculation.
         """
         if getattr(self, "_backend_name", None) != "vllm":
             return None
         max_model_len = getattr(self.config, "max_model_len", None)
-        if not max_model_len or window_size <= 0:
+        if not max_model_len or window_size < 1:
             return None
 
         budget = float(kv_budget_bytes)
@@ -702,7 +704,9 @@ class BaseModel:
             return 0
 
         block_size = 16
-        swa_reservation = (math.ceil((window_size - 1 + max_model_len) / block_size) + 1) * block_size
+        swa_seq_tokens = window_size - 1 + max_model_len
+        swa_reservation = (math.ceil(swa_seq_tokens / block_size) + 1) * block_size
+
         effective_per_token = global_per_token + swa_per_token * swa_reservation / max_model_len
 
         if effective_per_token <= 0.0:

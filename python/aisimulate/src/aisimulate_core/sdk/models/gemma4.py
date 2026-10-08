@@ -564,7 +564,8 @@ class Gemma4MixModel(BaseModel):
         return float(swa_bytes + global_bytes)
 
     def get_kvcache_max_tokens(self, kv_budget_bytes: float) -> int:
-        """Monotonic-search inverse of :meth:`get_kvcache_bytes_per_sequence`."""
+        """Monotonic-search inverse of :meth:`get_kvcache_bytes_per_sequence`.
+        Find the longest sequence that fits in the given budget."""
         if not self._gemma4_config:
             return super().get_kvcache_max_tokens(kv_budget_bytes)
         return self._binary_search_kvcache_max_tokens(kv_budget_bytes)
@@ -572,10 +573,9 @@ class Gemma4MixModel(BaseModel):
     def get_kvcache_batch_capacity(self, kv_budget_bytes: float, max_batch_size: int) -> int:
         """Token capacity with vLLM block-aligned SWA reservation (vLLM only).
 
-        On vLLM, SWA layers reserve block-aligned slots per request; this
-        amortises that reservation over the full context length. On other
-        backends (or when ``max_model_len`` is unset) falls back to the
-        idealized binary-search inverse.
+        Find the token capacity using vLLM's per-request SWA block reservation
+        based on the max_model_len. If max_model_len is not set, fall back to
+        the default KV Cache token calculation.
         """
         if not self._gemma4_config:
             return super().get_kvcache_batch_capacity(kv_budget_bytes, max_batch_size)
