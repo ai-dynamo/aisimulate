@@ -129,6 +129,19 @@ def get_gemm_test_cases():
 
 @with_exit_stack
 def run_gemm(exit_stack, gemm_type, m, n, k, *, perf_filename, device="cuda:0"):
+    if gemm_type == "fp8_block" and (n % 16 or k % 16):
+        # FIXME(kernel-limit): vLLM routes block-fp8 GEMMs whose weight dims are not multiples
+        # of 16 away from cutlass (_custom_ops.cutlass_scaled_mm: `cutlass_compatible_b =
+        # b.shape[0] % 16 == 0 and b.shape[1] % 16 == 0` @0.30.0:819) into triton_scaled_mm,
+        # whose scale-shape assert cannot take 128x128 block scales (triton_scaled_mm.py:201).
+        # Deterministic per shape: gb200 1,110 cases, every one N in {1,4,8,12,24} (pipeline
+        # 72343556; b200/b300 ~130 of the same shard). The ed9109ec attempt to classify by a
+        # pre-flight forward never ran: create_gemm()'s own dry run asserts first. Refuse before
+        # the layer is built; serving linears with these N take the same path.
+        raise RuntimeError(
+            f"FIXME(kernel-limit): vLLM fp8_block GEMM needs n and k multiples of 16 for cutlass_scaled_mm "
+            f"(n={n}, k={k}); the triton_scaled_mm fallback asserts on 128x128 block scales"
+        )
     setup_distributed(device)
 
     if envs.VLLM_BATCH_INVARIANT:
@@ -287,23 +300,6 @@ def run_gemm(exit_stack, gemm_type, m, n, k, *, perf_filename, device="cuda:0"):
     def kernel_func():
         for op in op_list:
             op.forward(x)
-
-    if gemm_type == "fp8_block":
-        # FIXME(kernel-limit): for small N vLLM's cutlass_scaled_mm declines the shape and
-        # falls back to triton_scaled_mm, whose scale-shape assert cannot take 128x128 block
-        # scales (compressed_tensors/triton_scaled_mm.py:201). Deterministic per shape and
-        # per platform: gb200 (aarch64) 1,110 cases at N in {1,4,8,12,24}, b200/b300 ~130
-        # of the same shard (job batch 2026-10-08). Serving linears with these N take the same
-        # path. Run one forward first so the assert becomes a classified failure, not an
-        # anonymous AssertionError out of the timing loop.
-        try:
-            kernel_func()
-        except AssertionError as error:
-            raise RuntimeError(
-                "FIXME(kernel-limit): vLLM fp8_block GEMM "
-                f"(m={m}, n={n}, k={k}): cutlass_scaled_mm declined the shape and the "
-                "triton_scaled_mm fallback asserts on block scales (triton_scaled_mm.py:201)"
-            ) from error
 
     with benchmark_with_power(
         device=device,

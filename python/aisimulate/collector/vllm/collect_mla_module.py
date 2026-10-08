@@ -266,6 +266,26 @@ def get_generation_test_cases(attn_type: str):
     return cases
 
 
+def _rope_tolerating_missing_key(forward):
+    """Wrap a rotary module's forward so `forward(positions, query)` (key=None) works.
+
+    vLLM 0.30's DeepseekV32 attention ropes q_pe alone in its dense-MHA FP8 branch, but
+    both DeepseekScalingRotaryEmbedding implementations require a key (FlashInfer op:
+    key.view; native: assert). Rope the query against a throwaway copy and drop it.
+    """
+    import functools
+
+    @functools.wraps(forward)
+    def wrapped(positions, query, key=None, offsets=None, *args, **kwargs):
+        if key is None:
+            out = forward(positions, query, query.clone(), offsets, *args, **kwargs)
+            q = out[0] if isinstance(out, tuple) else out
+            return q, None
+        return forward(positions, query, key, offsets, *args, **kwargs)
+
+    return wrapped
+
+
 # SM100/103: trtllm-gen sparse-MLA decode has no kernel below tileSizeQ 8 (see the
 # FIXME in _build_module_test_cases). Hopper/Ada/SM120 route sparse decode elsewhere.
 _DSA_SPARSE_DECODE_MIN_HEADS = 8
@@ -998,23 +1018,27 @@ def run_mla_module(
         is_context=is_context,
     )
     if attn_type == "dsa" and use_fp8_kv_cache:
-        # vLLM 0.30 DeepseekV32 attention, sparse-MHA prefill branch with an FP8 query:
-        # `self.rotary_emb(positions, q_pe)[0]` (models/deepseek_v32/attention.py:534) passes
-        # key=None. Under torch.compile (serving) the rotary CustomOp is disabled and
-        # forward_native handles None; this collector runs eagerly with custom_ops=["all"]
-        # (utils.create_vllm_config) so forward_cuda takes the FlashInfer op, which does
-        # `key.view(...)` -> "'NoneType' object has no attribute 'view'" (3,864 b200 + ~3k b300
-        # + ~3k gb200 cases, isl 512-3072, every head count). Serving never runs this op here;
-        # use the native rope for the module's rotary like serving does. FIXME(re-verify):
-        # drop once vLLM guards key=None in deepseek_scaling_rope.forward_cuda.
-        _rope_patched = 0
+        # vLLM 0.30 DeepseekV32 attention: the short-prefill dense-MHA branch with an FP8 query
+        # calls `self.rotary_emb(positions, q_pe)[0]` (models/deepseek_v32/attention.py:534) —
+        # key=None. NEITHER rope implementation accepts that: the FlashInfer custom op does
+        # `key.view(...)` ("'NoneType' object has no attribute 'view'", 3.9k b200 + ~3k b300 +
+        # ~3k gb200 cases) and forward_native asserts `key is not None`
+        # (deepseek_scaling_rope.py:123; the ed9109ec attempt to run native moved every case
+        # onto that assert: gb200 pipeline 72343556). The call's intent is "rope q_pe only";
+        # give the module's rotary that contract: when key is None, rope the query against a
+        # throwaway copy and return (query, None). One tiny extra elementwise op on a
+        # prefill-only branch; kernels and labels unchanged. Whether serving ever takes this
+        # branch with FP8 KV is NOT established (identity probes run isl 4096 > topk; the
+        # dense-MHA skip fires for prompts <= topk) — FIXME(re-verify): probe DeepSeek-V3.2
+        # fp8 KV at isl 512-2048 on sm100 vllm 0.30 and drop this shim if vLLM fixes :534.
+        _patched = 0
         for _name, _m in attn_module.named_modules():
-            if _m.__class__.__name__.endswith("RotaryEmbedding") and getattr(_m, "use_flashinfer", False):
-                _m.use_flashinfer = False
-                _rope_patched += 1
-        if _rope_patched:
-            print(f"[vllm-mla-module] dsa fp8: {_rope_patched} rotary module(s) switched to the native rope "
-                  "(serving runs it native under compile; eager FlashInfer rope rejects key=None)")
+            if _m.__class__.__name__.endswith("RotaryEmbedding") and hasattr(_m, "forward"):
+                _patched += 1
+                _m.forward = _rope_tolerating_missing_key(_m.forward)
+        if _patched:
+            print(f"[vllm-mla-module] dsa fp8: {_patched} rotary module(s) accept key=None "
+                  "(vLLM 0.30 attention.py:534 ropes q_pe alone; both rope impls reject None)")
 
     # 1b. Process weights (FP8 quantization + create W_UK_T / W_UV for MLA)
     _process_module_weights(attn_module, vllm_config, device)
