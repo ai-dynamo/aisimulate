@@ -78,7 +78,7 @@ def perf_data_missing_message(error: BaseException | str) -> str | None:
         return None
     detail = match.group(1).strip()
     return (
-        f"missing performance data: {detail}. The bundled data has no measurement for a shape this model "
+        f"missing performance data: {detail}. The selected performance data has no measurement for a shape this model "
         "and parallelism need. Try another parallelism, backend or backend_version; to add a new model, "
         f"follow the FPM self-service guide ({FPM_SELF_SERVICE_GUIDE})"
     )
