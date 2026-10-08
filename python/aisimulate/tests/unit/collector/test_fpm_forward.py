@@ -17,8 +17,6 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-
-from aisimulate.sdk.utils import HuggingFaceDownloadError
 from collector.fpm_forward.capabilities import resolve_model_capability
 from collector.fpm_forward.config import (
     FPMCollectionOptions,
@@ -41,6 +39,8 @@ from collector.fpm_forward.planner import (
 )
 from collector.fpm_forward.topology import enumerate_fpm_topologies
 from collector.fpm_forward.types import ParallelTopology
+
+from aisimulate.sdk.utils import HuggingFaceDownloadError
 
 pytestmark = pytest.mark.unit
 
@@ -2805,8 +2805,9 @@ def test_v41_cached_prefill_requires_real_computed_state(tmp_path, marker):
 
 @pytest.mark.parametrize("mode", [None, "PIECEWISE", "FULL", False])
 def test_v41_reader_rejects_unqualified_graph_or_missing_execution_mode(tmp_path, mode):
-    from aisimulate_core.sdk.fpm_identity import EXECUTION_COLUMNS
     from collector.fpm_forward.native_artifact import _validate_execution_provenance
+
+    from aisimulate_core.sdk.fpm_identity import EXECUTION_COLUMNS
 
     identity = ("c" * 64, "full", "hbm_tp_sharded", "text")
     cell = SimpleNamespace(execution_identity=identity)

@@ -438,9 +438,10 @@ def test_readiness_rejects_execution_flags_before_any_runtime_probe(tmp_path, mo
 
 def test_public_collect_smoke_readiness_and_resume_route_to_same_resolved_campaign(tmp_path, monkeypatch):
     """Run CLI orchestration with a synthetic worker and checkpoint, no cluster."""
-    from aisimulate.support import collection_readiness, fpm, versioning
     from collector.fpm_forward import cli as collector_cli
     from collector.fpm_forward import entry
+
+    from aisimulate.support import collection_readiness, fpm, versioning
 
     source, resources = _files(tmp_path)
     draft = tmp_path / "draft.yaml"
@@ -584,8 +585,9 @@ def test_custom_label_formal_publication_and_memory_finalization_use_actual_runt
 
 
 def test_runtime_probe_does_not_launch_a_configuration_whose_metadata_probe_failed(tmp_path, monkeypatch):
-    from aisimulate.support import versioning
     from collector.fpm_forward import runtime_probe
+
+    from aisimulate.support import versioning
 
     from .test_onboard_runtime import _campaign
 
@@ -650,8 +652,9 @@ def test_custom_label_runtime_observation_import_keeps_actual_adapter_version(tm
 
 
 def test_runtime_probe_resolves_omitted_backend_label_before_launch_validation(tmp_path, monkeypatch):
-    from aisimulate.support import versioning
     from collector.fpm_forward import runtime_probe
+
+    from aisimulate.support import versioning
 
     from . import test_onboard_runtime as workflow
 
@@ -736,9 +739,10 @@ def test_grouped_topology_with_pending_version_defers_native_memory_estimate(tmp
 
 
 def test_detected_version_reopens_checkpoint_with_a_version_pending_profile(tmp_path, monkeypatch):
+    from collector.fpm_forward import runtime_probe
+
     from aisimulate.support import runtime, versioning
     from aisimulate.support.checkpoint import _load, save_checkpoint
-    from collector.fpm_forward import runtime_probe
 
     source, resources = _files(tmp_path)
     draft_path = tmp_path / "draft.yaml"

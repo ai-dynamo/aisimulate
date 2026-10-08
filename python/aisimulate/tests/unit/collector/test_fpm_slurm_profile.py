@@ -14,7 +14,6 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
-
 from collector.fpm_forward import cli, database, runner, runtime_memory
 from collector.fpm_forward.config import FPMCollectionOptions
 from collector.fpm_forward.runtime import fpm_memory_observer as observer

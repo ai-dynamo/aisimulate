@@ -9,16 +9,16 @@ import json
 from pathlib import Path
 
 import pytest
+from collector.fpm_forward import cli as collector_cli
+from collector.fpm_forward import planner, repeatability
+from collector.fpm_forward.config import FPMCollectionOptions
+from collector.fpm_forward.database import aggregate_cell, write_formal_database
 
 from aisimulate import main as cli
 from aisimulate.config import CorePredictionConfig, CoreRecommendationConfig
 from aisimulate.support import finalization, validation_workflow
 from aisimulate.support.plan import check_plan, create_plan
 from aisimulate.support.schema import SupportRequest
-from collector.fpm_forward import cli as collector_cli
-from collector.fpm_forward import planner, repeatability
-from collector.fpm_forward.config import FPMCollectionOptions
-from collector.fpm_forward.database import aggregate_cell, write_formal_database
 
 from .collector.test_fpm_repeatability import _runtime_config, _write_campaign
 from .test_onboard_finalization import _memory, _prepare_collection, _write, build_completed_collection

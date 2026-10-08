@@ -12,7 +12,6 @@ from dataclasses import replace
 
 import pytest
 import yaml
-
 from collector.fpm_forward import capabilities, cli, memory_admission, planner, runner
 from collector.fpm_forward.config import FPMCollectionOptions, reject_fpm_arguments_without_fpm
 from collector.fpm_forward.model_capability import load_model_config

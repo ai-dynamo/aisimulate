@@ -13,7 +13,6 @@ import time
 from types import SimpleNamespace
 
 import pytest
-
 from collector.fpm_forward.slurm import SlurmCellRunner
 
 pytestmark = pytest.mark.unit

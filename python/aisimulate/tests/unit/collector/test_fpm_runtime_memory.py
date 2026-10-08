@@ -11,11 +11,11 @@ from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
 import pytest
-
-from aisimulate_core.fpm_profile import FpmResourceProfile
 from collector.fpm_forward import planner, runner, runtime_memory
 from collector.fpm_forward.runtime import fpm_memory_observer as observer
 from collector.fpm_forward.types import ParallelTopology
+
+from aisimulate_core.fpm_profile import FpmResourceProfile
 
 from .test_fpm_profile_collection import _plan, _profile, no_models_or_timing_data  # noqa: F401
 from .test_fpm_runner import _cell, _native_payload, _write_provenance
@@ -868,8 +868,9 @@ def test_unaudited_runtime_keeps_native_timing_launch_and_pending_memory():
 
 @pytest.mark.usefixtures("no_models_or_timing_data")
 def test_historical_v10_plan_keeps_hash_and_reaches_native_aggregation(tmp_path):
-    from aisimulate_core.sdk.fpm_identity import EXECUTION_COLUMNS, LEGACY_EXECUTION_IDENTITY
     from collector.fpm_forward import database
+
+    from aisimulate_core.sdk.fpm_identity import EXECUTION_COLUMNS, LEGACY_EXECUTION_IDENTITY
 
     # Captured from the actual schema-10 producer at 4d702ff6b756b21e74b76f30273e9828fdde6861.
     # Absolute source paths are immutable provenance; this reader must not open them.

@@ -747,8 +747,9 @@ def test_preview_is_shell_safe_and_does_not_create_outputs_or_import_collector(t
 
 
 def _mock_collector_execution(monkeypatch, calls):
-    from aisimulate.support import collection_readiness, fpm
     from collector.fpm_forward import cli, entry
+
+    from aisimulate.support import collection_readiness, fpm
 
     def resolve(command):
         calls.append(command[3:])

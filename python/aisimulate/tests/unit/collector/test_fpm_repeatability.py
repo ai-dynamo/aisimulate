@@ -11,7 +11,6 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-
 from collector.fpm_forward import cli, execution_evidence, repeatability, runner
 from collector.fpm_forward.config import with_kv_warmup_defaults
 from collector.fpm_forward.database import aggregate_cell
