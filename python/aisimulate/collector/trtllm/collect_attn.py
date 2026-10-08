@@ -162,7 +162,7 @@ def run_attention_torch(
     # supported-arch set against fmhaRunner.cuh on the next framework version bump.
     if is_flashinfer and get_sm_version() not in (100, 103):
         raise ValueError(
-            f"FlashInfer trtllm-gen FMHA is Blackwell-only (SM100/103); Gemma4 dense "
+            f"FIXME(kernel-limit): FlashInfer trtllm-gen FMHA is Blackwell-only (SM100/103); Gemma4 dense "
             f"attention has no kernel on SM{get_sm_version()} "
             f"(fmhaRunner.cuh:37 + modeling_gemma4.py:270 @1.3.0rc20)"
         )
@@ -186,23 +186,29 @@ def run_attention_torch(
             "FIXME(kernel-limit): TRT-LLM trtllm-gen FMHA has no head_dim=192 kernel on SM100/103 "
             f"({'context' if is_context_phase else 'decode'}; trtllm_fmha_kernel_launcher.cu:320)"
         )
-    # FIXME(kernel-limit): SM90 decode with an FP8 KV cache at GQA ratio >= 24 (96 q-heads over
-    # 4 kv-heads) crashes inside the TRTLLM decode kernel — "CUDA error: unspecified launch
-    # failure" plus SIGABRT, 681 + 681 cases on h100/h200 rc29 (2026-10-08), every one
-    # num_heads=96, kv_heads=4, fp8 KV, head_dim 64/128/256. Same class as the rc23 campaign's
-    # "decode fails for fp8 KV at GQA ratio 24/32" (finding campaign_1002 (3)). Classified here
-    # so the worker does not die mid-sweep; re-verify on the next TRT-LLM bump.
-    if (
-        not is_context_phase
-        and use_fp8_kv_cache
-        and get_sm_version() == 90
-        and num_key_value_heads
-        and num_heads // num_key_value_heads >= 24
-    ):
-        raise ValueError(
-            "FIXME(kernel-limit): TRT-LLM SM90 FP8-KV decode crashes at GQA ratio >= 24 "
-            f"(num_heads={num_heads}, num_key_value_heads={num_key_value_heads}); launch failure + SIGABRT"
-        )
+    # FIXME(kernel-limit): SM90 FP8-KV decode crashes ("CUDA error: unspecified launch failure"
+    # + SIGABRT) in two measured envelopes (h200 rc29, job 2026-10-08, 681 + 681 cases; the
+    # passing rows of the same shard bound them exactly):
+    #   (a) num_heads 96 / kv_heads 4 (GQA 24): EVERY head_dim (64/128/256), every batch, isl
+    #       and window — 512 cases, 0 passing rows;
+    #   (b) head_dim 256 at GQA 32 (32/1, 64/2, 128/4), full attention (window 0): isl >= 255
+    #       — 169 cases; isl <= 127 passes at every batch.
+    # GQA 32/64 at other head_dims and GQA 24 never crashed and keep collecting (the first
+    # version of this guard, ed9109ec, refused every GQA >= 24 cell and lost 4,119 good rows:
+    # pipeline 72346027). Same family as the rc23 campaign's "decode fails for fp8 KV at GQA
+    # ratio 24/32" (finding campaign_1002 (3)). Re-verify on the next TRT-LLM bump.
+    if not is_context_phase and use_fp8_kv_cache and get_sm_version() == 90 and num_key_value_heads:
+        gqa_ratio = num_heads // num_key_value_heads
+        if (num_heads, num_key_value_heads) == (96, 4):
+            raise ValueError(
+                "FIXME(kernel-limit): TRT-LLM SM90 FP8-KV decode crashes for 96 q-heads over 4 kv-heads "
+                f"(head_dim={head_dim}); launch failure + SIGABRT on every cell"
+            )
+        if head_dim == 256 and gqa_ratio == 32 and attention_window_size == 0 and input_len >= 255:
+            raise ValueError(
+                "FIXME(kernel-limit): TRT-LLM SM90 FP8-KV decode crashes for head_dim 256 at GQA ratio 32 "
+                f"with kv length >= 255 (num_heads={num_heads}, kv_heads={num_key_value_heads}, isl={input_len})"
+            )
 
     # if XQA JIT is enabled, the context phase will also trigger XQA prepare which causes the error
     # with specifc q/kv head and seq setting.
