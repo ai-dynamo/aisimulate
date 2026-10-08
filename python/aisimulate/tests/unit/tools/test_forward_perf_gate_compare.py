@@ -316,12 +316,15 @@ def test_prewarm_disposition_validates_status_and_metrics() -> None:
 def test_reports_write_json_csv_markdown_and_annotations(tmp_path: Path) -> None:
     result = compare.compare_raw(_raw([1.11] * 5))
     compare.write_outputs(result, tmp_path)
-    assert json.loads((tmp_path / "comparison.json").read_text())["blocking"] is True
+    saved = json.loads((tmp_path / "comparison.json").read_text())
+    assert saved["schema_version"] == 2
+    assert saved["blocking"] is True
+    assert all("skipped" not in cell for cell in saved["cells"])
     assert "qwen3-32b" in (tmp_path / "comparison.csv").read_text()
     with (tmp_path / "comparison.csv").open(newline="") as stream:
         rows = list(csv.DictReader(stream))
     assert {row["metric"] for row in rows} == {"cold", "warm"}
-    assert all(row["invalid_reasons"] == "" and row["skip_reason"] == "" for row in rows)
+    assert all(row["invalid_reasons"] == "" and "skip_reason" not in row for row in rows)
     assert "Confirmed regressions" in (tmp_path / "summary.md").read_text()
     assert "REGRESSION" in (tmp_path / "annotations.txt").read_text()
 
@@ -334,9 +337,8 @@ def test_reports_write_json_csv_markdown_and_annotations(tmp_path: Path) -> None
 def test_report_summarizes_all_results_and_collapses_noise() -> None:
     result = compare.compare_raw(_raw([1.11, 1.0, 1.0, 1.0, 1.0], cold_ratio=0.8))
     summary = compare.render_markdown(result)
-    assert (
-        "**PASS** — 1 of 2 comparisons stable: 1 faster, 0 unchanged, 0 regressions; 1 noisy, 0 invalid, 0 skipped."
-    ) in summary
+    assert "**PASS** — 1 of 2 comparisons stable: 1 faster, 0 unchanged, 0 regressions; 1 noisy, 0 invalid." in summary
+    assert "skipped" not in summary.lower()
     assert "<summary>⚠️ Noisy comparisons (1)</summary>" in summary
     assert "| case | cache | base | head | change | rounds |" in summary
     assert "<summary>Full matrix (2 cells)</summary>" in summary
@@ -388,7 +390,6 @@ def test_report_keeps_blocking_errors_and_data_misses_visible() -> None:
     assert "### ❌ Invalid comparisons" in visible
     assert "base and head case hashes differ" in visible
     assert "Noisy comparisons" not in invalid_summary
-    assert "Skipped comparisons" not in invalid_summary
 
     missing_raw = _raw([1.0] * 5)
     case = missing_raw["cases"][0]["case"]
@@ -400,4 +401,3 @@ def test_report_keeps_blocking_errors_and_data_misses_visible() -> None:
     assert "**FAIL**" in visible
     assert case["case_id"] in visible
     assert "DATA_MISS not available" in visible
-    assert "Skipped comparisons" not in missing_summary

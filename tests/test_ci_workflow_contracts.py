@@ -138,7 +138,10 @@ def test_forward_perf_validates_the_pr_controller_without_replacing_the_base_com
     assert "!cancelled()" in head["if"]
     assert "steps.build.outcome == 'success'" in head["if"]
     assert "steps.revisions.outputs.validate_head_controller == 'true'" in head["if"]
-    assert next(step for step in steps if step.get("id") == "build")["name"] == "Build and install both revisions"
+    build = next(step for step in steps if step.get("id") == "build")
+    assert build["name"] == "Build and install both revisions"
+    for destination in ("${BASE_DIST}", "${HEAD_DIST}"):
+        assert f'python -m maturin build --release --locked --out "{destination}"' in build["run"]
     expected = base["run"].replace('"${BASE_VENV}/bin/python"', '"${HEAD_VENV}/bin/python"', 1)
     expected = expected.replace(
         "${BASE_SRC}/python/aisimulate/tools/forward_perf_gate/run.py",
