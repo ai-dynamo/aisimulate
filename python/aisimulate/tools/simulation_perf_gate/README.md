@@ -149,7 +149,7 @@ and release settings. Each side also builds Dynamo at
 `def3b79b15c266805540a678dd400aeb6ccada1d`, with both AISimulate dependencies
 pointing at that side's exact source. The lock edit changes only the core's
 registry identity to a local path; builds remain locked. Additional offline
-adapter dependencies are hash-locked in `scripts/simulation_dynamo_requirements.txt`.
+adapter dependencies are hash-locked in `scripts/performance/simulation_dynamo_requirements.txt`.
 Each job uploads its three wheels, locked requirements, dependency patch, and build
 provenance. The comparison job waits for both builds and downloads artifacts by
 exact side and SHA from the current run. It verifies revisions, checksums, and
