@@ -56,6 +56,18 @@ The bundled performance database can exceed a registry's default per-file upload
 Verify the target index quota and the staged wheel before publication; do not
 split the product into another distribution to work around an upload limit.
 
+Full CI uploads `license-artifacts` for trusted PR copies and post-merge pushes
+to `main` and `release/*`. It contains `deps.csv` (Python and Rust dependency
+versions and licenses), `deps-diff.csv`, and `evidence.json` with the source and
+comparison commit identities. PR evidence compares with the validated PR base;
+post-merge evidence compares with the push's previous commit. Missing baseline
+inputs fail CI. Python inventories resolve runtime requirements at collection
+time on amd64/Python 3.12; they are not a wheel payload or a frozen PyPI lock.
+An unchanged Python manifest reuses the same resolution for both commits.
+The report runs independently of wheel builds and tests, and Full CI Success
+requires it. Nightly CI uses the same report generator with its broader
+Python/architecture matrix and previous successful scheduled nightly baseline.
+
 ## Source layout is not the publication boundary
 
 The combined artifacts deliberately retain stable source subtrees:
