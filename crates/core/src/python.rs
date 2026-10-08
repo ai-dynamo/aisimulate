@@ -2187,7 +2187,7 @@ fn _runtime(module: &Bound<'_, PyModule>) -> PyResult<()> {
 mod tests {
     use crate::engine::{EngineConfig, TimingModelConfig};
     use crate::replay::{
-        EncoderSpec, ProviderSpec, ReplayAdapters, ReplayEngineConfig, ReplayRequest, ReplaySpec,
+        ProviderSpec, ReplayAdapters, ReplayEngineConfig, ReplayRequest, ReplaySpec,
         ReplayTopology, WorkerPoolSpec,
     };
 
@@ -3274,7 +3274,7 @@ mod tests {
             let mut config = aic_config();
             config.fpm_parquet_path = Some(path.into());
             config.forward_model = Some(model.into());
-            let err = AicTimingModel::build(&mut config, ForwardPassWorkerType::Aggregated)
+            let err = AicTimingModel::build(&mut config, ForwardPassWorkerType::Aggregated, false)
                 .err()
                 .expect("invalid path");
             assert!(err.to_string().contains("fpm_parquet_path"), "{err}");

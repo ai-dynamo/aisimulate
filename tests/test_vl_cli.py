@@ -690,12 +690,14 @@ def test_native_encoder_pool_recommend_yaml_predict_roundtrip(tmp_path, capsys):
         validate_epd_prediction_mapping(raw_saved, spec)
 
 
-@pytest.mark.parametrize("case", ["constant_rate", "kv_capacity_fraction", "fixed_timing"])
+@pytest.mark.parametrize("case", ["constant_rate", "rate_relative_stop", "kv_capacity_fraction", "fixed_timing"])
 def test_prediction_mapping_accepts_the_scored_spellings(case):
     """The callback compares resolved execution meaning, not the compiler's derived keys."""
     raw = _prediction()
-    if case == "constant_rate":
+    if case.startswith(("constant_rate", "rate_")):
         raw["traffic"]["load"] = {"type": "constant_rate", "requests_per_second": 4.0}
+    if case == "rate_relative_stop":
+        raw["traffic"]["stop"] = {"requests_per_load_unit": 2}
     elif case == "fixed_timing":
         del raw["traffic"]["source"]["images"]
         raw["engine"]["workers"]["aggregated"]["timing"] = {"type": "fixed", "prefill_ms": 5.0, "decode_ms": 1.0}
@@ -707,4 +709,8 @@ def test_prediction_mapping_accepts_the_scored_spellings(case):
             concurrency=spec.workload["concurrency"],
             workload={**spec.workload, "load_type": "kv_capacity_fraction"},
         )
+    elif case == "rate_relative_stop":
+        # The sweeper scores the relative stop as a ratio of the rate; the compiler resolved it.
+        workload = {key: value for key, value in spec.workload.items() if key != "request_count"}
+        spec = dataclasses.replace(spec, workload={**workload, "num_request_ratio": 2.0})
     validate_vl_prediction_mapping(raw, spec)

@@ -989,22 +989,24 @@ impl SglangCore {
             // The forward encodes the cache-miss images whose placeholders overlap this
             // pass's chunks before the language-model prefill runs over the batch. The
             // lookup touches the cache, so it follows the batch validation a provider
-            // may still reject.
+            // may still reject. A decode rank prefills again only after a retraction;
+            // its images were encoded on the prefill rank, so it prices no tower, as it
+            // prices no prefill (`simulate_prefill_duration`).
             let vision_misses =
-                self.vision_cache
-                    .misses(
-                        admit
-                            .can_run
-                            .iter()
-                            .zip(&admit.prefill_fpm)
-                            .map(|(request, item)| {
+                if self.config.worker_type == WorkerType::Decode {
+                    Vec::new()
+                } else {
+                    self.vision_cache
+                        .misses(admit.can_run.iter().zip(&admit.prefill_fpm).map(
+                            |(request, item)| {
                                 (
                                     request.images.as_slice(),
                                     item.prefix_tokens,
                                     item.prefix_tokens + item.tokens_computed,
                                 )
-                            }),
-                    );
+                            },
+                        ))
+                };
             let vision_ms = modeled_duration_ms(
                 self.config.perf_model.predict_vision_time(&vision_misses)?,
                 self.config.speedup_ratio,

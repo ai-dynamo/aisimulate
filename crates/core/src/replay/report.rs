@@ -2241,6 +2241,11 @@ impl TraceCollector {
                     &mut record.destination_activated_ms,
                     &mut record.decode_admit_ms,
                     &mut record.source_released_ms,
+                    &mut record.encoder_ready_ms,
+                    &mut record.frontend_ready_ms,
+                    &mut record.scheduler_received_ms,
+                    &mut record.selected_ms,
+                    &mut record.prefill_complete_ms,
                 ] {
                     if let Some(time) = timestamp {
                         *time -= origin;

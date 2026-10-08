@@ -3565,6 +3565,40 @@ mod vision_batches {
     }
 
     #[test]
+    fn decode_ranks_prefill_again_without_pricing_the_tower() {
+        // A retracted request prefills again on its decode rank, whose timing model
+        // has no vision prices: the images were encoded on the prefill rank.
+        struct LatencyOnly;
+        impl crate::engine::TimingModel for LatencyOnly {
+            fn prefill_batch_validation_can_fail(&self) -> bool {
+                false
+            }
+            fn predict_prefill_ms(&self, _: usize, _: usize, _: usize) -> anyhow::Result<f64> {
+                Ok(10.0)
+            }
+            fn predict_decode_ms(
+                &self,
+                _: usize,
+                _: usize,
+                _: usize,
+                _: usize,
+            ) -> anyhow::Result<f64> {
+                Ok(1.0)
+            }
+        }
+        let mut args = test_args(128, 1, 8);
+        args.worker_type = crate::engine::common::protocols::WorkerType::Decode;
+        args.perf_model = crate::engine::common::perf_model::PerfModel::External {
+            timing: Arc::new(LatencyOnly),
+        }
+        .into();
+        let mut core = SglangCore::new(args);
+        core.receive(request(0, vec![image(1, 0)]));
+        core.try_execute_hidden_pass(0.0)
+            .expect("a decode rank prices neither the prefill nor the tower");
+    }
+
+    #[test]
     fn prefill_chunks_encode_only_their_cache_misses() {
         let observed = Arc::new(Mutex::new(Vec::new()));
         // Chunks of 8 tokens; the cache holds exactly two embeddings.

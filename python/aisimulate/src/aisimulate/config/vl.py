@@ -44,7 +44,7 @@ def _execution_traffic(spec: ReplaySpec) -> dict[str, Any]:
     traffic.pop("kv_load_ratio", None)
     ratio = traffic.pop("num_request_ratio", None)
     if traffic.get("request_count") is None and ratio is not None:
-        load = traffic.get("concurrency") or traffic.get("request_rate")
+        load = traffic.get("concurrency") or rate
         if load is not None:
             traffic["request_count"] = max(1, round(ratio * load))
     return traffic
