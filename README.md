@@ -309,6 +309,7 @@ Use the focused SDK documentation instead of treating CLI internals as public
 APIs:
 
 - [Estimator/FPE Python and Rust SDK](docs/core-api.md)
+- [Single-point prediction Python API](docs/core-api.md#python-single-point-prediction)
 - [FPM self-service: onboard a model on target hardware](docs/fpm-self-service/README.md)
 - [FPM self-service implementation and CLI reference](docs/fpm-self-service/implementation.md)
 - [FPM self-service examples](docs/fpm-self-service/examples.md)

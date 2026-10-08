@@ -78,6 +78,87 @@ unavailable. An empty operation list returns an empty list. `aisimulate_core.Aic
 method; `EngineHandle` provides an annotated SDK wrapper with the same query
 options.
 
+## Python single-point prediction
+
+Use `aisimulate.predict.run_prediction` to compile and execute one public
+`CorePredictionConfig`. It checks runner capabilities, creates and closes the
+runner, and returns a `PredictionResult` with the same summary the CLI renders.
+
+In an activated environment with AISimulate and its native extension installed,
+run this complete example. Fixed timing and KV capacity avoid model downloads
+and performance-data queries; the result demonstrates execution, not measured
+model accuracy.
+
+```bash
+python - <<'PY'
+from aisimulate.config.cli import CorePredictionConfig
+from aisimulate.predict import run_prediction
+from aisimulate.runner import EngineReplayRunnerFactory
+
+config = CorePredictionConfig.model_validate({
+    "engine": {
+        "model": "example/model",
+        "hardware": "h200_sxm",
+        "context_length": 128,
+        "workers": {"aggregated": {
+            "timing": {"type": "fixed", "prefill_ms": 1, "decode_ms": 1},
+            "kv_cache": {
+                "bytes_per_token": 128,
+                "capacity": {"type": "fixed", "blocks": 100},
+            },
+        }},
+    },
+    "traffic": {
+        "source": {"type": "synthetic", "input_tokens": 32, "output_tokens": 4},
+        "load": {"type": "concurrency", "concurrency": 1},
+        "stop": {"requests": 1},
+    },
+})
+result = run_prediction(
+    config, stack="engine", runner_factory=EngineReplayRunnerFactory()
+)
+assert result.summary["completed_requests"] == 1
+print(result.summary)
+PY
+```
+
+For an existing core prediction YAML, load it with
+`CorePredictionConfig.from_yaml("prediction.yaml")` instead. See the
+[prediction configuration guide](cli/user-guide.md) for model-backed timing
+and workload options.
+
+| Argument | Contract |
+| --- | --- |
+| `config` | Required validated `CorePredictionConfig`. |
+| `stack` | Required keyword naming the execution stack; use `"engine"` with `EngineReplayRunnerFactory`. |
+| `runner_factory` | Required keyword supplying a factory compatible with the compiled replay. |
+| `adapter_configs` | Optional raw adapter blocks keyed by section name. |
+| `providers` | Resolved config adapters keyed by `"<stack>.<section>"`; required for every supplied adapter block. Core config does not accept Router/Planner top-level sections. |
+| `execution_mode` | Defaults to `"offline"`; the selected runner must support the requested mode. The built-in engine stack is offline. |
+| `output_requirements` | Optional `ReplayOutputRequirements` from `aisimulate.sweeper.replay`. Omission enables raw-report capture except for analytical EPD. An explicit value replaces that default. |
+
+`PredictionResult` contains:
+
+- `summary`: merged prediction metrics, including normalized power fields.
+- `native`: the native report with the summary merged in, or a summary fallback
+  when the runner supplies no native report. Analytical EPD retains its metadata
+  and approximation semantics instead of a token-replay report.
+- `replay_spec`: the compiled specification that was executed.
+- `report`: the runner's original `ReplayReport`, including metrics and metadata.
+
+After creating a runner, the call closes it even when execution fails. Runner
+execution exceptions are wrapped in `PredictionExecutionError`, preserving the
+cause and any `fpm_query_coverage` attribute. `KeyboardInterrupt` and
+`ResourceLimitError` propagate unchanged; configuration, compilation, capability
+and runner-creation failures also propagate directly.
+
+The call does not create output directories, save report files or print results.
+The caller owns those actions and resource budgets. Passing the plain engine
+factory does not enable the CLI's host-memory admission or subprocess supervision;
+use the CLI for the automatic [local resource controls](local-resources.md).
+
+Source: [prediction entry point](../python/aisimulate/src/aisimulate/predict.py).
+
 ## Engine context limits
 
 `EngineConfig.max_model_len` is an optional positive prompt-plus-output token
