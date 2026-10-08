@@ -147,11 +147,14 @@ Revision and protocol checks run in the hosted selection job. A two-entry build
 matrix builds base and head in parallel with the same container, Python, Rust,
 and release settings. Each side also builds Dynamo at
 `def3b79b15c266805540a678dd400aeb6ccada1d`, with both AISimulate dependencies
-pointing at that side's exact source. The lock edit changes only the core's
-registry identity to a local path; builds remain locked. Additional offline
+pointing at that side's exact source. Cargo resolves the local core's dependency
+graph from Dynamo's existing lock before compilation. The wheel build uses
+`--locked` with that resolved graph. Additional offline
 adapter dependencies are hash-locked in `scripts/performance/simulation_dynamo_requirements.txt`.
-Each job uploads its three wheels, locked requirements, dependency patch, and build
-provenance. The comparison job waits for both builds and downloads artifacts by
+Each job uploads its three wheels, locked requirements, resolved `dynamo-Cargo.lock`,
+dependency patch, and build provenance. The resolved lock is required and checksum-verified;
+base and head locks can differ with their core dependencies.
+The comparison job waits for both builds and downloads artifacts by
 exact side and SHA from the current run. It verifies revisions, checksums, and
 matching build settings before separate installations. Paired measurements then
 run sequentially on one CPU.

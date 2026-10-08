@@ -7,7 +7,6 @@ import json
 import re
 import subprocess
 import sys
-import tomllib
 from pathlib import Path
 
 DYNAMO_REVISION = "def3b79b15c266805540a678dd400aeb6ccada1d"
@@ -34,21 +33,12 @@ def build(source: Path, dynamo: Path, output: Path) -> None:
         if count != 1:
             raise ValueError(f"expected one AISimulate dependency in {manifest}")
         manifest.write_text(text)
-    # Only replace the registry identity with the local crate. Keep every
-    # transitive dependency pinned; --locked rejects dependency changes.
-    version = tomllib.loads((core / "Cargo.toml").read_text())["package"]["version"]
+    # Resolve the local core's dependency graph from Dynamo's existing lock.
+    # Compilation stays locked to this resolved graph, which is saved below.
     lock = bindings / "Cargo.lock"
-    text, count = re.subn(
-        r'(name = "aisimulate-core"\n)version = [^\n]+\nsource = [^\n]+\nchecksum = [^\n]+\n',
-        lambda match: match[1] + f"version = {json.dumps(version)}\n",
-        lock.read_text(),
-    )
-    if count != 1:
-        raise ValueError("expected one registry AISimulate lock entry")
-    lock.write_text(text)
     metadata = json.loads(
         subprocess.check_output(
-            ["cargo", "metadata", "--locked", "--format-version", "1", "--features", "ais-forward-pass"],
+            ["cargo", "metadata", "--format-version", "1", "--features", "ais-forward-pass"],
             cwd=bindings,
         )
     )
@@ -75,6 +65,7 @@ def build(source: Path, dynamo: Path, output: Path) -> None:
         ["uv", "build", "--wheel", "--no-build-isolation", "--out-dir", str(output), str(dynamo)],
         check=True,
     )
+    (output / "dynamo-Cargo.lock").write_bytes(lock.read_bytes())
     (output / "dynamo-build.json").write_text(
         json.dumps(
             {

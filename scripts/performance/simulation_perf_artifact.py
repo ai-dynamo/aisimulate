@@ -66,6 +66,7 @@ def verify(directory: Path, side: str, revision: str) -> dict:
         "dynamo-requirements.txt",
         "dynamo-build.json",
         "dynamo-build.patch",
+        "dynamo-Cargo.lock",
     }
     if set(manifest["files"]) != expected or manifest["dynamo"]["aisimulate_sha"] != revision:
         raise ValueError(f"{side}: incomplete artifact or wrong embedded AISimulate revision")

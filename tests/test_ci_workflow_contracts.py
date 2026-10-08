@@ -3280,6 +3280,75 @@ def test_simulation_perf_invocations(tmp_path, self_compare, fail_first, count):
         )
 
 
+@pytest.mark.parametrize("wrong_core", [False, True])
+def test_simulation_dynamo_resolves_then_builds_locked(tmp_path, monkeypatch, wrong_core):
+    from scripts.performance import build_simulation_dynamo as builder
+
+    source, dynamo, output = (tmp_path / name for name in ("source", "dynamo", "output"))
+    core = source / "crates/core/Cargo.toml"
+    core.parent.mkdir(parents=True)
+    core.write_text('[package]\nname = "aisimulate-core"\nversion = "0.13.0"\n')
+    bindings = dynamo / "lib/bindings/python"
+    bindings.mkdir(parents=True)
+    output.mkdir()
+    for manifest in (dynamo / "Cargo.toml", bindings / "Cargo.toml"):
+        manifest.write_text('[dependencies]\naisimulate-core = "0.13.0"\n')
+    lock = bindings / "Cargo.lock"
+    old_lock = b'[[package]]\nname = "parquet"\nversion = "55.2.0"\n'
+    resolved_lock = old_lock.replace(b"55.2.0", b"59.0.0")
+    lock.write_bytes(old_lock)
+    built = []
+
+    def check_output(args, **kwargs):
+        if args[:2] == ["cargo", "metadata"]:
+            assert "--locked" not in args
+            assert kwargs["cwd"] == bindings
+            assert lock.read_bytes() == old_lock
+            for manifest in (dynamo / "Cargo.toml", bindings / "Cargo.toml"):
+                assert tomllib.loads(manifest.read_text())["dependencies"]["aisimulate-core"]["path"] == str(
+                    core.parent
+                )
+            lock.write_bytes(resolved_lock)
+            return json.dumps(
+                {
+                    "packages": [
+                        {"name": "aisimulate-core", "manifest_path": str(core) + (".wrong" if wrong_core else "")}
+                    ]
+                }
+            )
+        if args[-2:] == ["rev-parse", "HEAD"]:
+            return builder.DYNAMO_REVISION if args[2] == str(dynamo) else "a" * 40
+        assert args == ["git", "-C", str(dynamo), "diff", "HEAD"]
+        return b"dependency patch\n"
+
+    def run(args, **kwargs):
+        assert kwargs["check"]
+        if args[0] == "git":
+            assert args == ["git", "-C", str(dynamo), "diff", "--exit-code", "HEAD"]
+            return
+        assert lock.read_bytes() == resolved_lock
+        if "maturin" in args:
+            assert "--locked" in args
+            assert kwargs["cwd"] == bindings
+        else:
+            assert args[:2] == ["uv", "build"]
+        built.append(args)
+
+    monkeypatch.setattr(builder.subprocess, "check_output", check_output)
+    monkeypatch.setattr(builder.subprocess, "run", run)
+    if wrong_core:
+        with pytest.raises(ValueError, match="different AISimulate core"):
+            builder.build(source, dynamo, output)
+        assert not built
+        assert not list(output.iterdir())
+    else:
+        builder.build(source, dynamo, output)
+        assert len(built) == 2
+        assert (output / "dynamo-Cargo.lock").read_bytes() == resolved_lock
+        assert json.loads((output / "dynamo-build.json").read_text())["aisimulate_sha"] == "a" * 40
+        assert (output / "dynamo-build.patch").read_bytes() == b"dependency patch\n"
+
+
 @pytest.mark.parametrize(
     "fault",
     [
@@ -3292,6 +3361,8 @@ def test_simulation_perf_invocations(tmp_path, self_compare, fail_first, count):
         "unverified_wheel",
         "embedded_core",
         "dynamo_wheel",
+        "missing_lock",
+        "changed_lock",
     ],
 )
 def test_simulation_perf_artifact_verification(tmp_path, fault):
@@ -3309,6 +3380,7 @@ def test_simulation_perf_artifact_verification(tmp_path, fault):
             "dynamo-requirements.txt",
             "dynamo-build.json",
             "dynamo-build.patch",
+            "dynamo-Cargo.lock",
         )
     ]
     for path in additional:
@@ -3335,6 +3407,11 @@ def test_simulation_perf_artifact_verification(tmp_path, fault):
         manifest["dynamo"]["aisimulate_sha"] = "b" * 40
     elif fault == "dynamo_wheel":
         additional[0].write_bytes(b"wrong Dynamo wheel")
+    elif fault == "missing_lock":
+        (tmp_path / "dynamo-Cargo.lock").unlink()
+        del manifest["files"]["dynamo-Cargo.lock"]
+    elif fault == "changed_lock":
+        (tmp_path / "dynamo-Cargo.lock").write_text("different dependency graph\n")
     (tmp_path / "provenance.json").write_text(json.dumps(manifest))
     if fault:
         with pytest.raises(ValueError):
