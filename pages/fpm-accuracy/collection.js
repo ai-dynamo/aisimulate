@@ -82,19 +82,12 @@
       return `<section class="collection-run">${link(revision, file.path, label)}${details || '<p>Workload settings not recorded.</p>'}</section>`;
     }));
     const benchmark = method === 'Self-benchmark';
-    const description = benchmark
-      ? 'Self-benchmark sweeps forward-pass points. Batch size and token coordinates are not fixed serving ISL / OSL / concurrency / num_req.'
-      : 'MAPE pools the evaluated observations in this configuration. The sources below describe collection runs; they do not have separate MAPE scores here.';
     // A manifest may contain helper runs alongside benchmark truth; label those explicitly.
     const heading = benchmark ? 'Supporting collection evidence' : 'Collection evidence';
     const runs = results.filter(result => result.status === 'fulfilled').map(result => result.value).join('');
     const failed = results.some(result => result.status === 'rejected');
-    const campaign = manifest.provenance?.source_campaign_id;
-    content.innerHTML = `<p>${escape(description)}</p>${campaign ? fields([['Campaign', campaign]]) : ''}`
-      + (benchmark && hasAgentXEvidence(files) ? '<p>AgentX replay metadata is available as supporting evidence, but replay measurements are not part of this evaluation.</p>' : '')
-      + (method.includes('General trace replay') ? '<p>General trace replay covers captured serving workloads without an AgentX marker. It does not establish production-traffic origin.</p>' : '')
+    content.innerHTML = (runs ? `<strong>${heading}</strong>${runs}` : '<p>Collection evidence unavailable.</p>')
       + `<p>${link(revision, manifest.path, 'Measurement manifest')}</p>`
-      + (runs ? `<strong>${heading}</strong>${runs}` : '<p>AgentX ID and fixed ISL / OSL / concurrency / num_req are not recorded in supported collection metadata.</p>')
       + (failed ? '<p>Some evidence could not be loaded. Open the measurement manifest to inspect its source links.</p>' : '');
   }
 

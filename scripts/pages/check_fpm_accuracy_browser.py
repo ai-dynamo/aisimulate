@@ -105,9 +105,6 @@ async def check_collection_provenance(page, url, data):
     await expect(beta.locator(".collection-content")).to_contain_text(
         "ISL: 128 · OSL: 256 · Concurrency: 4 · num_req: 20"
     )
-    await expect(beta.locator(".collection-content")).to_contain_text(
-        "replay measurements are not part of this evaluation"
-    )
     # Categories describe declared truth, not the existence of unrelated helper runs.
     pattern = "**/Example--Alpha/**/measurements/manifest.json"
     root = data["rows"][0]["configuration_path"] + "/measurements/"

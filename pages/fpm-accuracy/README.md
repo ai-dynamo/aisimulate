@@ -63,8 +63,9 @@ Details and 3D Visualization are separate tabs with independent controls.
   and **General trace replay**. AgentX collection JSON or `agx_windows` markers
   distinguish AgentX replay from general captured serving workloads; the general
   label does not establish production-traffic origin. Mixed truth lists both
-  categories. Supporting replay metadata alone never changes a benchmark label;
-  an explanation states when replay metadata is present but not evaluated.
+  categories. Supporting replay metadata alone never changes a benchmark label.
+  Expanded details start with collection evidence and recorded settings, followed
+  by the manifest link; explanatory paragraphs and campaign metadata are omitted.
   These labels describe source artifacts, not a new validation of the collection campaign or a train/test independence claim.
   Small collection JSON and named-column window TSV files expose recorded
   job/benchmark IDs, concurrency, duration, and request settings. Trace-defined
@@ -152,7 +153,7 @@ directory so that both assets are available.
 
 ## Local checks and smoke evaluation
 
-Dashboard script URLs carry a shared version (`collection-counts-1`) so returning
+Dashboard script URLs carry a shared version (`collection-compact-1`) so returning
 visitors fetch scripts compatible with the unified banner. Bump this version
 across all five tabs when changing shared DOM or navigation APIs. The browser
 check covers a cached 3D script that still references the removed status header.
