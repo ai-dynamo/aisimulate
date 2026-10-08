@@ -232,42 +232,28 @@ def _deployment(
         worker = engine.workers.aggregated
         _require_exclusive_context_parallelism(worker)
         parallel = _parallel_mapping(worker, prefix="")
-        state_size = resolve_state_size(engine, worker)
-        if worker.kv_cache.state_cache is not None:
-            resolved_state = worker.kv_cache.state_cache.model_copy(
-                update={"bytes_per_request": state_size["bytes_per_request"]}
-            )
-            worker = worker.model_copy(
-                update={
-                    "kv_cache": worker.kv_cache.model_copy(
-                        update={
-                            "state_cache": resolved_state,
-                            "block_size": state_size["block_size"],
-                            "bytes_per_token": state_size["kv_bytes_per_token"],
-                        }
-                    )
-                }
-            )
-        metadata = _worker_performance_model_metadata(engine, worker)
-        if worker.kv_cache.state_cache is not None:
-            metadata["state_cache"] = state_size
+        worker, state_size = _resolve_state_cache(engine, worker)
         return BackendDeploymentSpec(
             parallel_config=parallel,
-            performance_model_metadata={"aggregated": metadata},
+            performance_model_metadata={"aggregated": _state_metadata(engine, worker, state_size)},
             agg_engine_args=_worker_engine_args(engine, worker, "aggregated", transfer_bytes_per_token=None),
             num_workers=worker.parallelism.replicas,
             **common,
         )
     assert engine.workers.prefill is not None and engine.workers.decode is not None
-    prefill = engine.workers.prefill
-    decode = engine.workers.decode
-    _require_disaggregated_context_parallelism(engine.backend, prefill, decode)
+    _require_disaggregated_context_parallelism(engine.backend, engine.workers.prefill, engine.workers.decode)
+    prefill, prefill_state = _resolve_state_cache(engine, engine.workers.prefill)
+    decode, decode_state = _resolve_state_cache(engine, engine.workers.decode)
     transfer_bytes_per_token = None
     if engine.kv_transfer is not None:
+        configured = engine.kv_transfer.bytes_per_token
+        if configured == "auto" and prefill_state is not None:
+            # The state estimate already resolved this role's token KV bytes.
+            configured = prefill.kv_cache.bytes_per_token
         transfer_bytes_per_token = _resolve_kv_bytes_per_token(
             engine,
             prefill,
-            engine.kv_transfer.bytes_per_token,
+            configured,
             role="prefill",
         )
     parallel = {
@@ -277,8 +263,8 @@ def _deployment(
     return BackendDeploymentSpec(
         parallel_config=parallel,
         performance_model_metadata={
-            "prefill": _worker_performance_model_metadata(engine, prefill),
-            "decode": _worker_performance_model_metadata(engine, decode),
+            "prefill": _state_metadata(engine, prefill, prefill_state),
+            "decode": _state_metadata(engine, decode, decode_state),
         },
         prefill_engine_args=_worker_engine_args(
             engine, prefill, "prefill", transfer_bytes_per_token=transfer_bytes_per_token
@@ -290,6 +276,33 @@ def _deployment(
         num_decode_workers=decode.parallelism.replicas,
         **common,
     )
+
+
+def _resolve_state_cache(
+    engine: EnginePredictionConfig, worker: WorkerPredictionConfig
+) -> tuple[WorkerPredictionConfig, dict[str, Any] | None]:
+    """Return the worker with resolved state geometry and its sizing report."""
+    cache = worker.kv_cache
+    if cache.state_cache is None:
+        return worker, None
+    size = resolve_state_size(engine, worker)
+    resolved = cache.model_copy(
+        update={
+            "state_cache": cache.state_cache.model_copy(update={"bytes_per_request": size["bytes_per_request"]}),
+            "block_size": size["block_size"],
+            "bytes_per_token": size["kv_bytes_per_token"],
+        }
+    )
+    return worker.model_copy(update={"kv_cache": resolved}), size
+
+
+def _state_metadata(
+    engine: EnginePredictionConfig, worker: WorkerPredictionConfig, state_size: dict[str, Any] | None
+) -> dict[str, Any]:
+    metadata = _worker_performance_model_metadata(engine, worker)
+    if state_size is not None:
+        metadata["state_cache"] = state_size
+    return metadata
 
 
 def _afd_deployment(

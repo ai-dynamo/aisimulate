@@ -988,14 +988,20 @@ def _validate_prediction_host_offload(engine: EnginePredictionConfig) -> None:
 
 
 def _validate_prediction_state_cache(engine: EnginePredictionConfig) -> None:
+    roles = []
     for role in ("aggregated", "prefill", "decode"):
         worker = getattr(engine.workers, role)
         if worker is None or worker.kv_cache.state_cache is None:
             continue
+        roles.append(role)
         if worker.kv_cache.prefix_match_unit is not None and (engine.speculation is not None or engine.nextn > 0):
             raise ValueError("prefix_match_unit does not support speculative decoding (speculation or nextn > 0)")
-        if engine.backend != "vllm" or engine.mode != "aggregated" or role != "aggregated":
-            raise ValueError("state_cache requires backend=vllm and mode=aggregated (G1 only)")
+        supported = role == "aggregated" if engine.mode == "aggregated" else engine.mode == "disaggregated"
+        if engine.backend != "vllm" or not supported:
+            raise ValueError("state_cache requires backend=vllm and mode=aggregated or disaggregated (G1 only)")
+    # Both roles run the same hybrid model, and decode resumes from the transferred state.
+    if engine.mode == "disaggregated" and roles and roles != ["prefill", "decode"]:
+        raise ValueError("disaggregated state_cache must be set on both prefill and decode workers")
 
 
 def _validate_recommendation_host_offload(engine: EngineRecommendationConfig) -> None:

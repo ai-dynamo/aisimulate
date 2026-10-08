@@ -304,12 +304,17 @@ pub(crate) struct DecodeBlockReservation {
 pub(crate) struct DestinationReservation {
     request_id: Uuid,
     block_count: usize,
+    /// Fresh blocks for the transferred recurrent state; not prompt tokens.
+    state_blocks: usize,
     pool: BlockReservation,
 }
 
 impl DestinationReservation {
     pub(crate) fn transferable_prompt_tokens(&self, block_size: usize) -> usize {
-        self.pool.fresh_len().saturating_mul(block_size)
+        self.pool
+            .fresh_len()
+            .saturating_sub(self.state_blocks)
+            .saturating_mul(block_size)
     }
 
     pub(crate) fn len(&self) -> usize {
@@ -562,7 +567,7 @@ impl VllmKvManager {
         }
     }
 
-    fn state_cache_blocks(&self) -> usize {
+    pub(crate) fn state_cache_blocks(&self) -> usize {
         self.state_cache
             .as_ref()
             .map_or(0, |state| state.blocks_per_state)
@@ -1092,15 +1097,20 @@ impl VllmKvManager {
             .num_input_tokens()
             .div_ceil(self.block_size)
             .min(lease.entries.len());
+        // Token reuse is unchanged. The transferred state always takes fresh
+        // blocks: vLLM's NIXL path sends it even after a local token hit.
+        let state_blocks = self.state_cache_blocks();
         let outcome = match mode {
             super::DestinationReservationMode::ReuseResidentPrefix => {
                 let prefix_candidates = lease.entries[..prompt_blocks]
                     .iter()
                     .map_while(|entry| entry.identity.sequence_hash);
                 self.pool
-                    .reserve_resident_prefix(prefix_candidates, prompt_blocks)
+                    .reserve_resident_prefix(prefix_candidates, prompt_blocks + state_blocks)
             }
-            super::DestinationReservationMode::FreshOnly => self.pool.reserve(&[], prompt_blocks),
+            super::DestinationReservationMode::FreshOnly => {
+                self.pool.reserve(&[], prompt_blocks + state_blocks)
+            }
         };
         let Some(outcome) = outcome else {
             return VllmAcquire::CapacityExhausted;
@@ -1109,6 +1119,7 @@ impl VllmKvManager {
         VllmAcquire::Ready(DestinationReservation {
             request_id: owner,
             block_count: prompt_blocks,
+            state_blocks,
             pool: outcome.reservation,
         })
     }
@@ -1166,6 +1177,7 @@ impl VllmKvManager {
         VllmAcquire::Ready(DestinationReservation {
             request_id: owner,
             block_count,
+            state_blocks: 0,
             pool: outcome.reservation,
         })
     }
@@ -1291,6 +1303,18 @@ impl VllmKvManager {
             },
         );
         lease.allocated_tokens = (prompt_blocks * self.block_size).min(sequence.num_input_tokens());
+        if let Some(manager) = &self.state_cache {
+            // The transferred state already covers the prompt.
+            let prompt = sequence.num_input_tokens();
+            let state = lease.state.get_or_insert_with(Default::default);
+            state.working = (0..manager.blocks_per_state)
+                .map(|_| self.pool.allocate_private(&mut reservation.pool))
+                .collect();
+            state.computed_tokens = prompt;
+            if self.prefix_match_unit.is_some() {
+                state.working_slot = Some(prompt.saturating_sub(1) / self.block_size);
+            }
+        }
         assert_eq!(
             reservation.pool.len(),
             0,

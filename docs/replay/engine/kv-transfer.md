@@ -25,7 +25,7 @@ Omitting `kv_transfer` is the same as `{}`: the transfer happens with no delay.
 
 | Knob | Default | Recommend | Rules |
 |---|---|---|---|
-| `engine.kv_transfer.bytes_per_token` | `auto` | fixed | Positive integer or `auto`. Bytes moved per prompt token. `auto` derives it from the model and the prefill role's TP/PP/MoE shape. It can differ from either worker's `kv_cache.bytes_per_token`. |
+| `engine.kv_transfer.bytes_per_token` | `auto` | fixed | Positive integer or `auto`. Bytes moved per prompt token. `auto` derives it from the model and the prefill role's TP/PP/MoE shape. It can differ from either worker's `kv_cache.bytes_per_token`. With `state_cache`, `auto` uses the prefill role's resolved `kv_cache.bytes_per_token`. |
 | `engine.kv_transfer.bandwidth_gb_per_second` | `null` | fixed | Positive, in decimal GB/s. `null` means no transfer delay, not a zero-bandwidth link. |
 | `engine.kv_transfer.timing_mode` | `destination_missing` | fixed | `destination_missing` charges only the prompt KV the chosen decode worker does not already hold in its cache. `full_prompt` charges the whole prompt. |
 
@@ -35,13 +35,15 @@ All fields accept only concrete values; `recommend` does not search them.
 Transfer time in seconds is
 
 ```text
-transferred_tokens × bytes_per_token / (bandwidth_gb_per_second × 10^9)
+(transferred_tokens × bytes_per_token + state_bytes) / (bandwidth_gb_per_second × 10^9)
 ```
 
 where `transferred_tokens` follows `timing_mode`. With
 `destination_missing`, a decode worker that already caches a shared prefix
 receives the request sooner, so prefix reuse on the decode side can lower TTFT
-even when compute time does not change.
+even when compute time does not change. `state_bytes` is the prefill role's
+`state_cache.bytes_per_request` for
+[recurrent-state models](kv-cache.md#state-cache), and 0 otherwise.
 
 <a id="handoff"></a>
 

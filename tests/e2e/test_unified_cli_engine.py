@@ -224,6 +224,51 @@ traffic:
     assert report.get("summary", report)["duration_ms"] == pytest.approx(expected_duration_ms)
 
 
+def test_pd_state_cache_runs_through_native_engine(tmp_path: Path) -> None:
+    worker = {
+        "parallelism": {"tensor": 8},
+        "scheduler": {"max_batched_tokens": 256, "max_sequences": 2},
+        "kv_cache": {"bytes_per_token": "auto", "state_cache": {}, "capacity": {"type": "fixed", "blocks": 6}},
+        "timing": {"type": "fixed", "prefill_ms": 1, "decode_ms": 1},
+    }
+    payload = {
+        "engine": {
+            "mode": "disaggregated",
+            "backend": "vllm",
+            "model": "moonshotai/Kimi-K3",
+            "hardware": "h200_sxm",
+            "context_length": 2048,
+            "kv_transfer": {"bandwidth_gb_per_second": 50},
+            "workers": {"prefill": worker, "decode": json.loads(json.dumps(worker))},
+        },
+        "traffic": {
+            "source": {"type": "synthetic", "input_tokens": 128, "output_tokens": 2},
+            "load": {"type": "concurrency", "concurrency": 2},
+            "stop": {"requests": 4},
+        },
+    }
+    config = tmp_path / "pd-state-cache.yaml"
+    config.write_text(yaml.safe_dump(payload), encoding="utf-8")
+    output = tmp_path / "pd-state-cache"
+    result = _run_cli(
+        "predict",
+        "--stack",
+        "engine",
+        "--config",
+        str(config),
+        "--output-dir",
+        str(output),
+        "--format",
+        "json",
+        timeout=30.0,
+    )
+    assert json.loads(result.stdout)["completed_requests"] == 4
+    report = json.loads((output / "prediction.json").read_text(encoding="utf-8"))
+    for role in ("prefill", "decode"):
+        state = report["state_cache"][role]
+        assert (state["source"], state["bytes_per_request"]) == ("inferred", 61046784)
+
+
 @pytest.mark.parametrize("config_path", _PREDICT_CASES, ids=lambda path: path.stem)
 def test_engine_predict_cli_cases(config_path: Path, tmp_path: Path) -> None:
     output = tmp_path / config_path.stem
