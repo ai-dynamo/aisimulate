@@ -30,6 +30,7 @@ from .config_adapter import (
     resolve_config_adapters,
 )
 from .detail import build_prediction_details, energy_diagnostics
+from .estimator_readiness import perf_data_missing_message
 from .output import (
     format_prediction_stdout,
     format_recommendation_stdout,
@@ -424,7 +425,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             sys.stderr.write(f"could not save resource plan: {output_error}\n")
         return 3
     except PredictionExecutionError as exc:
-        sys.stderr.write(f"aisimulate {args.command} failed: {exc}\n")
+        message = perf_data_missing_message(exc) or str(exc)
+        sys.stderr.write(f"aisimulate {args.command} failed: {message}\n")
         return 1
     except Exception as exc:
         sys.stderr.write(f"aisimulate {args.command} failed: {type(exc).__name__}: {exc}\n")

@@ -306,6 +306,13 @@ recommendation.yaml: router.prefill_load_model.type:
 
 Unsupported stack, backend, or policy combinations are reported as errors.
 
+An unavailable timing model reports the rejected architecture, backend version,
+or estimator selection reasons. Missing performance measurements during replay
+name the missing data and suggest another parallelism or backend version.
+An explicitly selected, untrained regression model still requires training
+observations. For a new model, follow the
+[FPM self-service guide](../perf-model/fpm-self-service/README.md).
+
 <a id="troubleshooting"></a>
 
 ## Troubleshooting
