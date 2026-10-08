@@ -278,13 +278,19 @@ class MuseGlimmerModel(BaseModel):
         return float(counts["swa"] * per_token_layer * swa_seq + counts["global"] * per_token_layer * seq_len)
 
     def get_kvcache_max_tokens(self, kv_budget_bytes: float) -> int:
-        """Capacity inverse over the window-capped KV curve (non-linear past the window)."""
+        """Monotonic-search inverse of :meth:`get_kvcache_bytes_per_sequence`.
+        Find the longest sequence that fits in the given budget."""
         if not self._muse_glimmer_config:
             return super().get_kvcache_max_tokens(kv_budget_bytes)
         return self._binary_search_kvcache_max_tokens(kv_budget_bytes)
 
     def get_kvcache_batch_capacity(self, kv_budget_bytes: float, max_batch_size: int) -> int:
-        """Capacity with vLLM block-aligned SWA reservation (vLLM only)."""
+        """Token capacity with vLLM block-aligned SWA reservation (vLLM only).
+
+        Find the token capacity using vLLM's per-request SWA block reservation
+        based on the max_model_len. If max_model_len is not set, fall back to
+        the default KV Cache token calculation.
+        """
         if not self._muse_glimmer_config:
             return super().get_kvcache_batch_capacity(kv_budget_bytes, max_batch_size)
 
