@@ -200,7 +200,9 @@ Specifically, overwrite may replace `prediction.json`, `recommendation.json`, `r
 `requests.jsonl`, `resource-plan.json`, `resource-runtime.json`, `execution-events.jsonl`,
 `afd-replay-spec.json`, `afd-qualification.json`, and numbered `recommendations/NNNN.yaml` files.
 Other files, including non-numbered files inside `recommendations/`, are preserved. Invalid
-configuration loading, overrides, or core-schema validation leave existing artifacts intact.
+configuration loading, overrides, core-schema validation, unknown top-level sections, and stacks or
+output adapters that are not installed leave existing artifacts intact. Errors raised while
+importing an installed plugin or inside an adapter occur after the known outputs are removed.
 
 <a id="standard-output"></a>
 
