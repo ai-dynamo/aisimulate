@@ -3041,3 +3041,31 @@ def test_aggregation_rejects_observed_backend_drift_even_with_custom_label(tmp_p
     plan.runtime_backend_version = "0.28.0"
     with pytest.raises(ValueError, match="observed backend version differs"):
         aggregate_cell(plan, cell, cell_dir, expected_attempt_id="attempt")
+
+
+def test_formal_database_preserves_runtime_provenance_when_legacy_row_sorts_first(tmp_path):
+    import pyarrow.parquet as pq
+
+    plan, cell, cell_dir = _synthetic_plan_and_cell(tmp_path)
+    row = aggregate_cell(plan, cell, cell_dir, expected_attempt_id="attempt")[0]
+    old = {**row, "cell_id": "a-legacy"}
+    root = tmp_path / "systems"
+    parquet, metadata, _ = write_formal_database(plan, [old], systems_root=root)
+    # Model a sealed schema-v7 publication predating the additive runtime field.
+    table = pq.read_table(parquet).drop(["runtime_backend_version"])
+    pq.write_table(table, parquet)
+    committed = json.loads(metadata.read_text())
+    committed["parquet_sha256"] = hashlib.sha256(parquet.read_bytes()).hexdigest()
+    metadata.write_text(json.dumps(committed))
+    incoming = {**row, "cell_id": "z-new", "runtime_backend_version": "0.28.0+observed"}
+
+    _, _, skipped = write_formal_database(plan, [incoming], systems_root=root)
+
+    assert skipped == ()
+    published = pq.read_table(parquet).to_pylist()
+    assert [(item["cell_id"], item["runtime_backend_version"]) for item in published] == [
+        ("a-legacy", None),
+        ("z-new", "0.28.0+observed"),
+    ]
+    write_formal_database(plan, [incoming], systems_root=root)
+    assert pq.read_table(parquet).to_pylist() == published

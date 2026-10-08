@@ -1223,6 +1223,8 @@ Retain real shapes and byte strides, including KV-plane-first layouts. Obtain th
 
 Use the same deployment options for preview, execution and resume. These commands show two already selected configurations; omit or add configuration keys to match the campaign. The checkpoint stays outside the fresh output directories.
 
+Without explicit instrumentation, a preview awaiting runtime-version detection records every selected configuration's status in checkpoint history and leaves the probe output directory untouched. Configurations with a known version are deferred until the remaining versions are resolved. Continue with `--execute` in the same `--output-dir`; no new directory is needed solely because the preview was pending.
+
 ```bash
 aisimulate onboard probe-runtime \
   --checkpoint ./model-onboarding/onboarding-checkpoint.json \

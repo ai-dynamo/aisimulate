@@ -869,10 +869,12 @@ def probe_runtime(
                 "status": "pending_runtime_version",
                 "configurations": {
                     name: {
-                        "status": "pending_runtime_version",
-                        "message": "Detect the backend in the target container.",
+                        "status": "pending_runtime_version" if name in unresolved else "deferred",
+                        "message": "Detect the backend in the target container."
+                        if name in unresolved
+                        else "Preview is deferred until every selected runtime version is known.",
                     }
-                    for name in unresolved
+                    for name in configurations
                 },
             }
         if len(versions) != 1:

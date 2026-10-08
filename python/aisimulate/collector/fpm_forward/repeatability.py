@@ -60,6 +60,13 @@ class _IncompleteSample(ValueError):
     pass
 
 
+def _deployment_hashes(overrides: dict[str, Any]) -> set[str]:
+    return {
+        _canonical_hash(semantic_generator_overrides(overrides)),
+        _canonical_hash(with_kv_warmup_defaults(overrides)),  # Historical schema-v11 launch hash.
+    }
+
+
 def load_repeatability_deployment(source_campaign_dir: str | Path) -> dict[str, Any]:
     """Load the archived effective deployment inputs and verify their plan hash."""
     root = Path(source_campaign_dir).expanduser().resolve()
@@ -76,10 +83,7 @@ def load_repeatability_deployment(source_campaign_dir: str | Path) -> dict[str, 
         raise ValueError("archived deployment inputs must be an object")
     if not isinstance(overrides.get("K8sConfig", {}), dict):
         raise ValueError("archived K8sConfig must be an object")
-    if saved["generator_config_sha256"] not in {
-        _canonical_hash(semantic_generator_overrides(overrides)),
-        _canonical_hash(with_kv_warmup_defaults(overrides)),  # Historical schema-v11 launch hash.
-    }:
+    if saved["generator_config_sha256"] not in _deployment_hashes(overrides):
         raise ValueError("archived deployment inputs differ from the source plan")
     return overrides
 
@@ -1058,7 +1062,7 @@ def run_repeatability(
     """
     if retry_failed and not resume:
         raise ValueError("repeatability retry_failed requires resume")
-    if _canonical_hash(semantic_generator_overrides(generator_overrides)) != source_plan.generator_config_sha256:
+    if source_plan.generator_config_sha256 not in _deployment_hashes(generator_overrides):
         raise ValueError("repeatability deployment inputs differ from the original launch")
     root = Path(output_dir).expanduser().resolve()
     previous = json.loads((root / PLAN_FILENAME).read_text()) if resume and (root / PLAN_FILENAME).exists() else None

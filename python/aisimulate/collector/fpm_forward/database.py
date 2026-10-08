@@ -771,7 +771,12 @@ def write_formal_database(
         # as null instead.
         for row in merged:
             row.setdefault("kv_seed_regime", None)
-            for field in ("input_text_sha256", "input_token_ids_sha256", "input_tokenizer_revision"):
+            for field in (
+                "input_text_sha256",
+                "input_token_ids_sha256",
+                "input_tokenizer_revision",
+                "runtime_backend_version",
+            ):
                 row.setdefault(field, None)
 
         temporary = _temporary_path(parquet_path)

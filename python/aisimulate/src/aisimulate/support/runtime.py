@@ -995,12 +995,18 @@ def run_runtime_command(args: argparse.Namespace) -> int:
         if launches
         else {"status": "failed", "configurations": {}}
     )
+    pending_preview = result["status"] == "pending_runtime_version"
     result["configurations"].update(failed)
     if failed:
         result["status"] = "partial" if launches else "failed"
-    output.mkdir(parents=True, exist_ok=True)
-    path = output / f"onboarding-probe-{uuid.uuid4().hex}.json"
-    path.write_text(_json(result))
+    report_reference = {"output_dir": str(output)}
+    if not pending_preview:
+        output.mkdir(parents=True, exist_ok=True)
+        path = output / f"onboarding-probe-{uuid.uuid4().hex}.json"
+        path.write_text(_json(result))
+        report_reference.update(report=str(path), sha256=_hash(path))
+    # Pending previews have no executable probe plan yet. Record their result
+    # directly in the checkpoint without occupying the future probe directory.
     patches = {}
     for name in names:
         config = state.configurations[name]
@@ -1009,8 +1015,7 @@ def run_runtime_command(args: argparse.Namespace) -> int:
                 *config.history,
                 {
                     "event": "runtime_probe",
-                    "report": str(path),
-                    "sha256": _hash(path),
+                    **report_reference,
                     "result": result["configurations"][name],
                 },
             ]

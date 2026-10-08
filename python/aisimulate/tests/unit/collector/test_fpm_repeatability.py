@@ -1532,3 +1532,40 @@ def test_legacy_report_stays_historical_and_unqualified_during_offline_inspectio
     assert inspected["historical_assessment"]["status"] == "passed"
     assert inspected["source_qualification"]["status"] == "unestablished"
     assert report == before
+
+
+def test_historical_dynamo_deployment_hash_loads_executes_and_resumes(campaign, tmp_path, monkeypatch):
+    plan, source, checkpoint = campaign
+    overrides = {"generator_dynamo_version": "1.3.0", "K8sConfig": {"k8s_image": "image:source"}}
+    historical = replace(
+        plan, generator_config_sha256=repeatability._canonical_hash(with_kv_warmup_defaults(overrides))
+    )
+    historical = repeatability._subset_plan(
+        historical,
+        {
+            "cell_id": historical.cells[0].cell_id,
+            "benchmark_points": json.loads(historical.options.benchmark_points_json),
+        },
+    )
+    _write_campaign(source, checkpoint, historical, generator_overrides=overrides)
+    before = {path: path.read_bytes() for path in source.rglob("*") if path.is_file()}
+    loaded = repeatability.load_repeatability_source(source)
+    deployment = repeatability.load_repeatability_deployment(source)
+    assert loaded.sha256 == historical.sha256
+    assert loaded.generator_config_sha256 == historical.generator_config_sha256
+    calls = _fake_collector(monkeypatch)
+    args = _args((loaded, source, checkpoint), tmp_path, generator_overrides=deployment)
+
+    report = repeatability.run_repeatability(**args)
+    assert report["status"] == "passed"
+    assert calls
+    assert report["source_plan_sha256"] == historical.sha256
+    count = len(calls)
+    assert repeatability.run_repeatability(**args, resume=True)["status"] == "passed"
+    assert len(calls) == count
+    changed = copy.deepcopy(deployment)
+    changed["K8sConfig"]["k8s_image"] = "image:different"
+    with pytest.raises(ValueError, match="deployment inputs differ"):
+        repeatability.run_repeatability(**{**args, "generator_overrides": changed}, resume=True)
+    assert len(calls) == count
+    assert all(path.read_bytes() == content for path, content in before.items())
